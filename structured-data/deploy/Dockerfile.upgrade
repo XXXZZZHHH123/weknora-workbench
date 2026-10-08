@@ -1,0 +1,5 @@
+# Local offline upgrade: reuses installed dependencies; fresh installs use ../Dockerfile.
+FROM weknora-cotton-cotton-data
+COPY src /app/src
+ENV STRUCTURED_DATA_DIR=/data
+CMD ["python", "-m", "structured_data.cli", "--data-dir", "/data", "serve", "--host", "0.0.0.0", "--port", "18082"]

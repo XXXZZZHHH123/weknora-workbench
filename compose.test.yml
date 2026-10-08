@@ -1,0 +1,26 @@
+services:
+  frontend:
+    image: weknora-eval-ui:field-resolution
+    container_name: weknora-eval-frontend
+    environment:
+      MAX_FILE_SIZE_MB: "100"
+    ports: !override
+      - "127.0.0.1:18080:80"
+  app:
+    image: weknora-eval-app:mcp-direct
+    container_name: weknora-eval-app
+    environment:
+      SSRF_WHITELIST_EXTRA: "searxng,qdrant,milvus,weaviate,doris-fe,doris-be,minio,dashscope.aliyuncs.com,cotton-data,structured-data,html.duckduckgo.com,api.duckduckgo.com"
+      BATCH_EMBED_SIZE: "2"
+      MAX_FILE_SIZE_MB: "100"
+    ports: !override
+      - "127.0.0.1:18081:8080"
+  docreader:
+    container_name: weknora-eval-docreader
+    environment:
+      MAX_FILE_SIZE_MB: "100"
+      DOCREADER_GRPC_MAX_FILE_SIZE_MB: "100"
+  postgres:
+    container_name: weknora-eval-postgres
+  redis:
+    container_name: weknora-eval-redis

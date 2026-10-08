@@ -1,0 +1,4 @@
+FROM wechatopenai/weknora-ui:v0.8.2
+COPY dist/ /usr/share/nginx/html/
+COPY structured-proxy.conf /etc/nginx/structured-proxy.conf
+RUN sed -i '/server_name localhost;/a\    include /etc/nginx/structured-proxy.conf;' /etc/nginx/templates/default.conf.template

@@ -1,0 +1,31 @@
+# Local credentials and environment
+.private/
+.env
+.env.*
+!.env.example
+!*.example.json
+model-config.json
+**/model-settings.json
+**/service-token
+*.pem
+*.key
+# Business data and local run evidence
+/STATE.md
+/results/
+/logs/
+/samples/
+/structured-data/data/
+/structured-data/backups/
+/structured-data/notes/
+/structured-data/results/
+/structured-data/tests/acceptance_cases.json
+/structured-data/tests/general_acceptance_cases.json
+# Build products and dependencies
+.build/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+node_modules/
+.DS_Store

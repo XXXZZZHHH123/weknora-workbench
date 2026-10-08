@@ -1,0 +1,7 @@
+{
+  "notice": "待填写的本地配置示例；本文件尚未接入模型，密钥请使用环境变量或私有配置文件。",
+  "chat": {"provider": "", "base_url": "", "model": "", "api_key_env": "WEKNORA_TEST_CHAT_KEY", "supports_tools": true},
+  "embedding": {"provider": "", "base_url": "", "model": "", "api_key_env": "WEKNORA_TEST_EMBEDDING_KEY", "dimension": null},
+  "vision": {"provider": "", "base_url": "", "model": "", "api_key_env": "WEKNORA_TEST_VISION_KEY", "can_share_chat_endpoint": true},
+  "rerank": {"enabled": false, "provider": "", "base_url": "", "model": "", "api_key_env": "WEKNORA_TEST_RERANK_KEY"}
+}
