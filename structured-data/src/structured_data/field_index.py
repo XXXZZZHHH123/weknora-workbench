@@ -15,6 +15,17 @@ def without_date(text):
     return re.sub(r'(?<!\d)\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?(?!\d)', ' ', normalize(text))
 
 
+def literal_fields(catalog, question):
+    """Recall explicit headers without interpreting intent or choosing a definition."""
+    q=normalize(question)
+    for sheet in sorted({s['sheet'] for s in catalog},key=len,reverse=True):
+        q=q.replace(normalize(sheet),' ')
+    matches=[s for s in catalog if len(normalize(s['metric']))>=3 and normalize(s['metric']) in q]
+    # A longer named header may contain a different, shorter definition.
+    return [s for s in matches if not any(normalize(s['metric']) != normalize(other['metric'])
+            and normalize(s['metric']) in normalize(other['metric']) for other in matches)]
+
+
 def tokens(text):
     # Chinese bigrams require no external tokenizer; numbers/specifications remain
     # searchable across adjacent Latin letters (3128 vs 3128B, CF01 vs 01).
@@ -61,8 +72,9 @@ class FieldIndex:
         ranked=sorted(scores,key=lambda sid:(-scores[sid],self.lookup[sid].get('sheet')!=context_sheet,sid))
         # Preserve candidates from each expanded search (e.g. a conversion factor),
         # rather than letting a heavily duplicated price crowd all factors out.
-        selected=list(dict.fromkeys([*prior_ids,*per_query,*ranked]))[:64]
-        return [self.lookup[sid] for sid in selected], {'method':'sqlite_fts5_bm25','queries':terms,'candidate_count':len(selected),'catalog_count':len(self.catalog),'truncated':len(scores)>len(selected)}
+        named=[s['series_id'] for s in literal_fields(self.catalog,queries[0])] if queries else []
+        selected=list(dict.fromkeys([*named,*prior_ids,*per_query,*ranked]))[:64]
+        return [self.lookup[sid] for sid in selected], {'method':'sqlite_fts5_bm25','queries':terms,'candidate_count':len(selected),'catalog_count':len(self.catalog),'truncated':len(set(named)|set(prior_ids)|set(scores))>len(selected)}
 
 
 def exact_lookup(catalog, question, date, prior_ids=()):

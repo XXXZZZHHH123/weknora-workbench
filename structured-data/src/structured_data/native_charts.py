@@ -230,15 +230,20 @@ def catalog(store, dataset_id, sheet=None, question=''):
     chart_sheets = {c['sheet'] for c in idx['charts']}
     mentioned = {name for name in chart_sheets if name in question}
     titles = {c['title'] for c in idx['charts'] if len(c['title'])>3 and c['title'] in question}
-    if sheet in chart_sheets or (mentioned and sheet is None):
+    chart_request = bool(literal_curves) or any(word in question for word in ('图表','图中','曲线','图里'))
+    # A sheet may contain both tables and charts. Merely mentioning its name
+    # (including an agent's follow-up context) must not hide its real columns.
+    # A chart-only sheet still needs its source-backed views when explicitly scoped.
+    chart_only_scope = sheet in chart_sheets and not any(s['sheet'] == sheet for s in base)
+    if chart_only_scope or (chart_request and (sheet in chart_sheets or (mentioned and sheet is None))):
         scopes = {sheet} if sheet else mentioned
         selected = [v for v in views if v['chart_sheet'] in scopes and (not titles or v.get('chart_title',v['metric']) in titles)]
-        return selected + ([s for s in base if s['sheet'] == sheet] if sheet and not titles else [])
+        return selected
     if sheet:
         return [s for s in base if s['sheet'] == sheet]
     # Keep the general catalogue compact: graph titles are source-backed aliases,
     # not hand-written business synonyms. Exact graph-title questions use its view.
-    if titles and any(word in question for word in ('图表','图中','曲线','图里')):
+    if titles and chart_request:
         return [v for v in views if v.get('chart_title',v['metric']) in titles]
     aliases = {}
     for v in views:

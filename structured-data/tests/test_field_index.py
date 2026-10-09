@@ -67,3 +67,11 @@ def test_planner_cannot_choose_real_but_not_retrieved_id(catalogue):
     resolver=FieldResolver(store,lambda p:proposal([['noise-0']]))
     with pytest.raises(ValueError,match='实际候选目录'):
         resolver.resolve(ds,'2023/9/7美国 EMOT M 1-1/8趋势')
+
+
+def test_named_header_survives_crowded_sheet_context_and_keeps_duplicate_definitions(tmp_path):
+    cat=[dict(series_id=f'noise-{i}',metric=f'累计公检量{i}',sheet='新疆棉入库和公检量') for i in range(90)]
+    cat.extend([dict(series_id='inventory',metric='在库量',sheet='新疆棉入库和公检量'),
+                dict(series_id='inventory-other',metric='在库量',sheet='另一表')])
+    recalled,_=FieldIndex(tmp_path,cat).search(['新疆棉入库和公检量的在库量哪天最多'],prior_ids=['noise-0'],limit=1)
+    assert {'inventory','inventory-other','noise-0'}.issubset({s['series_id'] for s in recalled})
