@@ -87,7 +87,7 @@ bash ~/weknora-workbench/bin/poll.sh /home/codexuser/weknora-workbench
 
 发布前检查 Docker 数据目录所在文件系统至少有 15 GiB 可用空间，建议预留 20 GiB 以上。2026-10-09 检查时 Docker 数据目录在 `/sysvol/docker_image_var`，`/sysvol` 已满，因此首次启动暂时使用 `shared/PAUSED` 阻止轮询，待存储准备完成后解除。
 
-数据库、Redis、原文件、结构化表格均使用 Docker 命名卷，随 Docker 数据目录位于新盘；发布脚本、运行配置、令牌和数据库备份位于 `~/weknora-workbench/`。
+数据库、Redis、原文件、结构化表格均使用 Docker 命名卷，随 Docker 数据目录位于新盘；数据库备份也保存在新盘的 Docker 命名卷；发布脚本、运行配置和令牌位于 `~/weknora-workbench/`。
 
 每次发布从镜像中启动代码，不挂载源码。下载发布包并验证 SHA256 及归档成员后才解压；所有镜像拉取成功才更新服务。镜像使用完整提交号、流水线编号和运行次数组成的独立标签。只有测试、镜像构建和发布步骤全部成功的版本才会进入服务器。不要手动把其他类型的 Release 标记为 Latest，以免阻断生产发布发现。
 
@@ -117,7 +117,7 @@ rm ~/weknora-workbench/shared/PAUSED
 bash ~/weknora-workbench/bin/poll.sh /home/codexuser/weknora-workbench --retry-failed
 ```
 
-每次升级先将 PostgreSQL 保存到 `shared/backups/*.pg.dump`；备份失败则中止发布。需要另行备份 `shared/.env` 以及命名卷中的结构化数据和原文件等数据，并定期清理旧备份/镜像/版本。数据库备份发生时现有服务可能继续写入，不是全部业务数据的同一时点快照。
+每次升级先将 PostgreSQL 保存到 `weknora-workbench-prod_postgres-backups` 命名卷（postgres 容器的 `/backups/*.pg.dump`）；备份失败则中止发布。需要另行备份 `shared/.env` 以及命名卷中的结构化数据和原文件等数据，并定期清理旧备份/镜像/版本。数据库备份发生时现有服务可能继续写入，不是全部业务数据的同一时点快照。
 
 回到旧镜像前先暂停轮询，核对旧代码与当前数据库结构兼容性，再运行 previous 目录下的 deploy.sh。脚本仅回退镜像/Compose，不还原数据库，数据库恢复须停写并从选定备份恢复。不要使用 `docker compose down -v`。服务器卷固定使用 `weknora-workbench-prod` 项目名，不能随版本改变。
 

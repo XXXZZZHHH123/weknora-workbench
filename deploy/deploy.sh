@@ -25,11 +25,10 @@ free_kib="$(df -Pk "${docker_root:?Docker data directory unavailable}" | awk 'NR
 # Failed backups abort deployment; no service or volume is removed.
 postgres_id="$("${compose[@]}" ps -q postgres)"
 if [[ -n "$postgres_id" ]]; then
-  backup="$root/shared/backups/$(date -u +%Y%m%dT%H%M%SZ)-$release_id.pg.dump"
+  backup="$(date -u +%Y%m%dT%H%M%SZ)-$release_id.pg.dump"
   # Variables belong to the container's environment, not this SSH shell.
   # shellcheck disable=SC2016
-  "${compose[@]}" exec -T postgres sh -c 'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$backup.tmp"
-  mv "$backup.tmp" "$backup"
+  "${compose[@]}" exec --user 0 -T postgres sh -c 'umask 077; pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f "/backups/$1.tmp" && mv "/backups/$1.tmp" "/backups/$1"' sh "$backup"
 fi
 
 if ! "${compose[@]}" up -d --no-build --wait --wait-timeout 300; then

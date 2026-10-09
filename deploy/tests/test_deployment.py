@@ -43,7 +43,7 @@ if 'info' in a: print(str(r))
 elif 'ps' in a and (r/'existing-db').exists(): print('existing-postgres')
 elif 'exec' in a and 'pg_dump' in ' '.join(a):
  if (r/'fail-backup').exists(): sys.exit(1)
- print('database-backup')
+ (r/'shared'/'backups'/a[-1]).write_text('database-backup')
 elif 'up' in a and (r/'fail-up').exists(): sys.exit(1)
 elif 'exec' in a and 'curl' in a: print('200' if (r/'bad-api-proxy').exists() else '401', end='')
 ''')

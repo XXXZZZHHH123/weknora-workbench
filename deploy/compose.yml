@@ -98,6 +98,7 @@ services:
       POSTGRES_DB: ${DB_NAME:?set DB_NAME}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - postgres-backups:/backups
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
@@ -125,3 +126,4 @@ volumes:
   data-files:
   docreader-tmp:
   structured-data:
+  postgres-backups:
