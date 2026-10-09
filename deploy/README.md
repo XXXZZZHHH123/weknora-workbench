@@ -71,7 +71,7 @@ unset server_token
 
 编辑 `~/weknora-workbench/shared/.env`。内网直接访问可设置 `FRONTEND_BIND=0.0.0.0`；默认 `127.0.0.1:18080` 供宿主机 HTTPS 反向代理或 SSH 转发访问。只发布前端端口，数据库、后端和结构化服务都留在容器网络内。
 
-本次服务器使用 `FRONTEND_BIND=0.0.0.0`、`FRONTEND_PORT=18090`，访问地址为 `http://10.11.60.130:18090/`。18080 已被原有 Tomcat 使用。2026-10-09 首次部署已验证六个服务健康、浏览器登录页正常、API 未登录返回 401、结构化健康接口返回 JSON，并验证 PostgreSQL 备份归档可读取。
+本次服务器使用 `FRONTEND_BIND=0.0.0.0`、`FRONTEND_PORT=18090`、`STRUCTURED_PUBLIC_ORIGIN=http://10.11.60.130:18090`，访问地址为 `http://10.11.60.130:18090/`。18080 已被原有 Tomcat 使用。更换访问 IP、域名或 HTTPS 时同步修改公开 origin；只接受一个明确的 HTTP(S) origin，不使用通配符，认证和同源检查继续保留。2026-10-09 首次部署已验证六个服务健康、浏览器登录页正常、API 未登录返回 401、结构化健康接口返回 JSON，并验证 PostgreSQL 备份归档可读取。
 
 注册首个账号后关闭注册（`DISABLE_REGISTRATION=true`），确认真实租户 ID 并修改 `STRUCTURED_TENANT_ID`。在 WeKnora 和工作台页面分别配置聊天模型、字段理解模型。新部署默认没有任何本机账号、知识库或表格数据。
 

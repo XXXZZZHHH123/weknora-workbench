@@ -9,6 +9,7 @@ import secrets
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -33,6 +34,23 @@ class SuggestRequest(BaseModel):
 
 
 def create_app(data_dir: str | Path | None = None):
+    public_origin = os.environ.get("STRUCTURED_PUBLIC_ORIGIN", "").rstrip("/")
+    public_authority = ""
+    if public_origin:
+        public_url = urlsplit(public_origin)
+        if (public_url.scheme not in {"http", "https"} or not public_url.hostname
+                or public_url.username is not None or public_url.password is not None
+                or public_url.path or public_url.query or public_url.fragment
+                or "*" in public_origin or any(c.isspace() for c in public_origin)):
+            raise ValueError("STRUCTURED_PUBLIC_ORIGIN must be one HTTP(S) origin")
+        # Validate a supplied port before accepting the authority as a Host.
+        _ = public_url.port
+        public_authority = public_url.netloc
+
+    def expected_origin(request: Request) -> str:
+        authority = request.headers.get("host", "")
+        return public_origin if public_authority and authority == public_authority else f"http://{authority}"
+
     root = Path(data_dir or os.environ.get("STRUCTURED_DATA_DIR", os.environ.get("COTTON_DATA_DIR", "data"))).resolve()
     root.mkdir(parents=True, exist_ok=True)
     token_path = root / "service-token"
@@ -54,8 +72,12 @@ def create_app(data_dir: str | Path | None = None):
     job_lock = threading.Lock()
     import_lock = threading.Lock()
     hosts = ["127.0.0.1:*", "localhost:*", "structured-data:*", "cotton-data:*", "host.docker.internal:*"]
+    origins = ["http://127.0.0.1:*", "http://localhost:*"]
+    if public_authority:
+        hosts.append(public_authority)
+        origins.append(public_origin)
     mcp = FastMCP("结构化数据工作台", stateless_http=True, json_response=True,
-                  transport_security=TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=["http://127.0.0.1:*", "http://localhost:*"]))
+                  transport_security=TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins))
 
     @mcp.tool()
     def resolve_fields(question: str, dataset_id: str | None = None, context_sheet: str | None = None, prior_series_ids: list[str] | None = None, date: str | None = None, sheet: str | None = None) -> dict:
@@ -145,8 +167,9 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.middleware("http")
     async def protect(request: Request, call_next):
-        host = request.headers.get("host", "").split(":")[0]
-        if host not in {"127.0.0.1", "localhost", "structured-data", "cotton-data", "host.docker.internal", "testserver"}:
+        authority = request.headers.get("host", "")
+        host = authority.split(":")[0]
+        if host not in {"127.0.0.1", "localhost", "structured-data", "cotton-data", "host.docker.internal", "testserver"} and not (public_authority and authority == public_authority):
             return JSONResponse({"detail": "Host not allowed"}, status_code=403)
         path = request.url.path
         if path in {"/", "/health", "/login", "/api/ui-config"}:
@@ -168,7 +191,7 @@ def create_app(data_dir: str | Path | None = None):
                     return JSONResponse({"detail": "请先从本地 WeKnora 登录。"}, status_code=401)
             if request.method not in {"GET", "HEAD"}:
                 origin = request.headers.get("origin", "")
-                if origin != f"http://{request.headers.get('host')}":
+                if origin != expected_origin(request):
                     return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
         return await call_next(request)
 
@@ -191,7 +214,7 @@ def create_app(data_dir: str | Path | None = None):
         import httpx
 
         origin = request.headers.get("origin", "")
-        if origin != f"http://{request.headers.get('host')}":
+        if origin != expected_origin(request):
             raise HTTPException(403, "Origin not allowed")
         body = await request.json()
         base = os.environ.get("WEKNORA_API_URL", "http://127.0.0.1:18081")

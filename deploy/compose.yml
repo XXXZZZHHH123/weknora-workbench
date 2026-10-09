@@ -58,6 +58,7 @@ services:
     environment:
       WEKNORA_API_URL: http://app:8080
       STRUCTURED_TENANT_ID: ${STRUCTURED_TENANT_ID:?set the actual tenant ID}
+      STRUCTURED_PUBLIC_ORIGIN: ${STRUCTURED_PUBLIC_ORIGIN:-}
       STRUCTURED_DATA_DIR: /data
     volumes:
       - structured-data:/data

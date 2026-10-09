@@ -62,6 +62,13 @@ fi
 status="$("${compose[@]}" exec -T app curl -sS -o /dev/null -w '%{http_code}' http://frontend/api/v1/auth/me)"
 [[ "$status" == 401 ]] || { echo "API proxy probe failed: HTTP $status" >&2; exit 1; }
 "${compose[@]}" exec -T frontend sh -c 'wget -q -O - http://127.0.0.1/structured/health | grep -q '"'"'"status":"ok"'"'"''
+public_origin="$("${compose[@]}" exec -T structured-data python -c 'import os; print(os.environ.get("STRUCTURED_PUBLIC_ORIGIN", "").rstrip("/"))')"
+if [[ -n "$public_origin" ]]; then
+  authority="${public_origin#*://}"
+  # $1 is expanded by the container shell, not the deployment shell.
+  # shellcheck disable=SC2016
+  "${compose[@]}" exec -T frontend sh -c 'wget -q -O - --header="Host: $1" http://127.0.0.1/structured/health | grep -q '"'"'"status":"ok"'"'"'' sh "$authority"
+fi
 if [[ -L "$root/current" ]]; then
   ln -sfn "$(readlink "$root/current")" "$root/previous"
 fi

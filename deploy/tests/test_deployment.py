@@ -49,10 +49,12 @@ elif 'exec' in a and 'pg_dump' in ' '.join(a):
  (r/'shared'/'backups'/a[-1]).write_text('database-backup')
 elif 'up' in a and (r/'fail-up').exists(): sys.exit(1)
 elif 'exec' in a and 'curl' in a: print('200' if (r/'bad-api-proxy').exists() else '401', end='')
+elif 'exec' in a and 'structured-data' in a and 'python' in a:
+ print((r/'public-origin').read_text() if (r/'public-origin').exists() else '')
 ''')
         # This test stand-in emits healthy structured JSON for the probe command.
         with (self.mockbin / 'docker').open('a') as f:
-            f.write("elif 'exec' in a and 'frontend' in a: print('')\n")
+            f.write("elif 'exec' in a and 'frontend' in a:\n if '--header' in ' '.join(a) and (r/'bad-public-host').exists(): sys.exit(1)\n print('')\n")
         self.executable('curl', '''#!/usr/bin/env python3
 import os, sys
 from pathlib import Path
@@ -144,6 +146,20 @@ sys.exit(subprocess.call(['/usr/bin/sed']+args))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / 'current').resolve(), new)
         self.assertEqual((self.root / 'previous').resolve(), old)
+
+    def test_public_host_is_checked_before_promotion(self):
+        old = self.previous()
+        new = self.release()
+        (self.root / 'public-origin').write_text('http://10.11.60.130:18090')
+        (self.root / 'bad-public-host').touch()
+        result = self.run_script('deploy.sh', TAG)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.root / 'current').resolve(), old)
+        self.assertIn('sh 10.11.60.130:18090', self.log.read_text())
+        (self.root / 'bad-public-host').unlink()
+        result = self.run_script('deploy.sh', TAG)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'current').resolve(), new)
 
     def test_unhealthy_release_does_not_promote(self):
         old = self.previous()
