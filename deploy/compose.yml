@@ -60,7 +60,7 @@ services:
       STRUCTURED_TENANT_ID: ${STRUCTURED_TENANT_ID:?set the actual tenant ID}
       STRUCTURED_DATA_DIR: /data
     volumes:
-      - ${DEPLOY_SHARED_DIR:?shared directory required}/structured-data:/data
+      - structured-data:/data
     networks:
       default:
         aliases: [cotton-data]
@@ -118,3 +118,4 @@ volumes:
   redis-data:
   data-files:
   docreader-tmp:
+  structured-data:

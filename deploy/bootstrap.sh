@@ -11,7 +11,7 @@ command -v flock >/dev/null
 docker info >/dev/null
 docker compose version
 umask 077
-mkdir -p "$root"/{bin,releases,shared/structured-data,shared/backups}
+mkdir -p "$root"/{bin,releases,shared/backups}
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 if [[ ! -e "$root/shared/.env" ]]; then
   cp "$script_dir/.env.example" "$root/shared/.env"
