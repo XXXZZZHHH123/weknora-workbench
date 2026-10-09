@@ -123,6 +123,18 @@ jobs:
         run: |
           echo "prefix=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
           echo "tag=production-$COMMIT-$RUN_ID-$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Make room for the Go and Rust build
+        if: matrix.service == 'app'
+        run: |
+          # This job owns a disposable hosted runner. These SDKs are unused here.
+          sudo python3 - <<'PY'
+          import os, shutil
+          print('Free bytes before:', shutil.disk_usage('/').free)
+          for path in ('/usr/local/lib/android', '/usr/share/dotnet', '/opt/ghc'):
+              if os.path.isdir(path):
+                  shutil.rmtree(path)
+          print('Free bytes after:', shutil.disk_usage('/').free)
+          PY
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
