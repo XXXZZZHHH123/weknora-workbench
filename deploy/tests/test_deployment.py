@@ -1,6 +1,6 @@
 """Exercise the real shell scripts with isolated Docker and HTTP stand-ins.
 
-These tests cover promotion/failure/backup/polling decisions, not container
+These tests cover promotion/failure/backup/manual update decisions, not container
 compatibility or application correctness on the production host.
 """
 import hashlib
@@ -240,7 +240,7 @@ sys.exit(subprocess.call(['/usr/bin/sed']+args))
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn(' up ', self.log.read_text())
 
-    def test_poller_records_failure_then_suppresses_retries(self):
+    def test_updater_reports_previous_failure_and_requires_explicit_retry(self):
         self.bundle()
         (self.root / 'fail-up').touch()
         result = self.run_script('poll.sh')
@@ -248,7 +248,8 @@ sys.exit(subprocess.call(['/usr/bin/sed']+args))
         self.assertEqual((self.shared / 'failed-release').read_text().strip(), TAG)
         calls = self.log.read_text()
         result = self.run_script('poll.sh')
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--retry-failed', result.stderr)
         self.assertEqual(self.log.read_text(), calls)
         (self.root / 'fail-up').unlink()
         result = self.run_script('poll.sh', '--retry-failed')
@@ -265,8 +266,35 @@ sys.exit(subprocess.call(['/usr/bin/sed']+args))
         self.http_log.unlink()
         (self.shared / 'PAUSED').touch()
         result = self.run_script('poll.sh')
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('paused', result.stderr)
         self.assertFalse(self.http_log.exists())
+
+    def test_installed_manual_update_defaults_to_its_server_directory(self):
+        result = self.run_script('bootstrap.sh', 'owner/repo')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.release()
+        (self.root / 'current').symlink_to(self.root / 'releases' / TAG)
+        self.bundle()
+        result = subprocess.run(['bash', str(self.root / 'bin' / 'update.sh')], env=self.env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Already running the latest release', result.stdout)
+        self.assertIn('Already running the latest release', (self.shared / 'deploy.log').read_text())
+        self.assertEqual(sum('/latest' in line for line in self.http_log.read_text().splitlines()), 1)
+        self.assertNotIn(' up ', self.log.read_text())
+
+    def test_manual_update_logs_failure_and_preserves_exit_status(self):
+        self.bundle()
+        (self.root / 'fail-up').touch()
+        result = self.run_script('update.sh')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Deployment failed', (self.shared / 'deploy.log').read_text())
+        self.assertEqual((self.shared / 'failed-release').read_text().strip(), TAG)
+        (self.root / 'fail-up').unlink()
+        result = self.run_script('update.sh', '--retry-failed')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'current').resolve(), self.root / 'releases' / TAG)
 
     def test_corrupt_bundle_cannot_run_deployment(self):
         self.bundle()

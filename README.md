@@ -69,7 +69,7 @@ Docker 项目名 `weknora-eval`、`weknora-structured` 保留以复用现有数�
 
 ## CI/CD 与服务器部署
 
-GitHub Actions 在 PR 和 main 更新时执行检查；main 检查通过后构建 linux/amd64 镜像并发布部署包。内网服务器通过定时拉取自动更新，适配 CentOS 7 / Docker 24，无需服务器运行 GitHub Actions Runner。首次配置、只读凭据、健康检查、备份和恢复见 [服务器部署说明](deploy/README.md)。
+GitHub Actions 在 PR 和 main 更新时执行检查；main 检查通过后构建 linux/amd64 镜像并发布部署包。在内网服务器手动运行 `bash ~/weknora-workbench/bin/update.sh` 拉取最新已发布版本并部署；不设置定时获取任务。适配 CentOS 7 / Docker 24，无需服务器运行 GitHub Actions Runner。首次配置、只读凭据、健康检查、备份和恢复见 [服务器部署说明](deploy/README.md)。
 
 ## 测试
 

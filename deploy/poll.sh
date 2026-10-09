@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# CentOS 7-compatible pull deployment: no Python or Actions runner required.
+# One-shot release lookup used by update.sh; this script creates no scheduler.
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 root="${1:?usage: poll.sh ABSOLUTE_DEPLOY_DIR [--retry-failed]}"
 [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
 root="$(cd "$root" && pwd -P)"
 shared="$root/shared"
-[[ ! -e "$shared/PAUSED" ]] || exit 0
+[[ ! -e "$shared/PAUSED" ]] || { echo 'Updates are paused: remove shared/PAUSED when maintenance is complete.' >&2; exit 1; }
 umask 077
 exec 8>"$shared/poll.lock"
-flock -n 8 || exit 0
+flock -n 8 || { echo 'Another update is already running.' >&2; exit 1; }
 repo="$(jq -er .repository "$shared/poller.json")"
 [[ "$repo" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || exit 1
 proxy="$(jq -r '.proxy // ""' "$shared/poller.json")"
@@ -26,15 +26,17 @@ if [[ -s "$shared/github-token" ]]; then
 fi
 api="https://api.github.com/repos/$repo"
 code="$(curl "${curl_opts[@]}" --config "$temp/auth.conf" -H 'Accept: application/vnd.github+json' -o "$temp/latest.json" -w '%{http_code}' "$api/releases/latest")"
-[[ "$code" != 404 ]] || exit 0
+[[ "$code" != 404 ]] || { echo 'No published release is available; current services were kept.'; exit 0; }
 [[ "$code" == 200 ]] || { echo "Release lookup failed: HTTP $code" >&2; exit 1; }
 release_id="$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name' "$temp/latest.json")"
 [[ "$release_id" =~ ^production-[a-f0-9]{40}-[0-9]+-[0-9]+$ ]] || { echo 'Latest release is not a production deployment' >&2; exit 1; }
 if [[ -L "$root/current" && "$(basename "$(readlink "$root/current")")" == "$release_id" ]]; then
+  echo "Already running the latest release: $release_id"
   exit 0
 fi
 if [[ -f "$shared/failed-release" && "$(cat "$shared/failed-release")" == "$release_id" && "${2:-}" != --retry-failed ]]; then
-  exit 0
+  echo "Release $release_id previously failed. Fix the cause, then run bin/update.sh --retry-failed." >&2
+  exit 1
 fi
 
 download_asset() {
@@ -68,6 +70,6 @@ if bash "$release/deploy.sh" "$root" "$release_id"; then
   rm -f "$shared/failed-release"
 else
   printf '%s\n' "$release_id" > "$shared/failed-release"
-  echo 'Deployment failed; this version will not be retried until --retry-failed is used or a new release is published.' >&2
+  echo 'Deployment failed; fix the cause and run bin/update.sh --retry-failed, or wait for a new published release.' >&2
   exit 1
 fi

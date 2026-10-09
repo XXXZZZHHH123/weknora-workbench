@@ -24,5 +24,6 @@ if [[ ! -e "$root/shared/poller.json" ]]; then
   jq -n --arg repo "$repo" --arg proxy "$proxy" '{repository: $repo, proxy: $proxy}' > "$root/shared/poller.json"
 fi
 install -m 700 "$script_dir/poll.sh" "$root/bin/poll.sh"
+install -m 700 "$script_dir/update.sh" "$root/bin/update.sh"
 echo "Prepared $root; existing configuration was preserved."
-echo "Review shared/.env, authenticate Docker to GHCR if needed, then install the cron entry in deploy/README.md."
+echo "Review shared/.env, authenticate Docker to GHCR if needed, then run bash $root/bin/update.sh. No scheduled updates are installed."

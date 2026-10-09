@@ -1,6 +1,6 @@
-# 自动部署（CentOS 7 / x86_64 / 内网）
+# 手动更新部署（CentOS 7 / x86_64 / 内网）
 
-流程：main 更新 → Python / 前端 / Go MCP 回归及部署脚本检查 → 比较每个服务的构建输入，复用未变化镜像、构建变化镜像（linux/amd64） → 发布完整的 GitHub Release → 服务器每两分钟拉取新版本 → PostgreSQL 备份 → Compose 更新与健康检查 → 更新 current 指针。
+流程：main 更新 → Python / 前端 / Go MCP 回归及部署脚本检查 → 比较每个服务的构建输入，复用未变化镜像、构建变化镜像（linux/amd64） → 发布完整的 GitHub Release → 在服务器手动运行 `bin/update.sh` 拉取最新已发布版本 → PostgreSQL 备份 → Compose 更新与健康检查 → 更新 current 指针。
 
 PR 运行检查和镜像构建，不推送镜像、不发布部署版本。发布权限使用流水线自带的 GITHUB_TOKEN，服务器只保存专用的读取令牌，不需要开放公网 SSH。
 
@@ -33,7 +33,7 @@ bash ~/weknora-workbench/setup/bootstrap.sh \
 
 工具安装器验证 SHA256，安装 Compose v2.39.2、jq 1.7.1 和 regctl 0.8.3 到用户目录。bootstrap 一次生成数据库、Redis、JWT、AES 和签名密钥，再次执行保留已有配置。服务器不需要 Node、Go 或 Python 3。
 
-实测服务器命令行可以读取 GHCR 清单，但 Docker daemon 拉取经常连接超时。可在 `shared/poller.json` 设置 `image_transport: "regctl"` 和 `proxy: "http://127.0.0.1:17890"`，通过用户态客户端下载并导入 Docker；不重启 daemon，也不修改其他项目的代理。所有镜像导入成功后才更新容器，Compose 使用 `--pull never`。健康网络环境可保留默认 `image_transport: "docker"`。17890 若来自 Mac 的 SSH 反向转发，自动更新依赖该连接和 Mac 代理在线；长期无人值守部署应使用服务器常驻代理。
+实测服务器命令行可以读取 GHCR 清单，但 Docker daemon 拉取经常连接超时。可在 `shared/poller.json` 设置 `image_transport: "regctl"` 和 `proxy: "http://127.0.0.1:17890"`，通过用户态客户端下载并导入 Docker；不重启 daemon，也不修改其他项目的代理。所有镜像导入成功后才更新容器，Compose 使用 `--pull never`。健康网络环境可保留默认 `image_transport: "docker"`。17890 若来自 Mac 的 SSH 反向转发，运行更新脚本时需要该连接和 Mac 代理在线；也可使用服务器常驻代理。
 
 ## Docker 存储维护（需管理员维护窗口）
 
@@ -65,7 +65,7 @@ printf '%s' "$server_token" | docker login ghcr.io -u XXXZZZHHH123 --password-st
 unset server_token
 ```
 
-若 API 令牌与镜像令牌分开，登录时输入镜像读取令牌。poller 的令牌只用于 GitHub API，不进入业务容器；下载跳转时移除认证头。Docker 在 `~/.docker/config.json` 保存登录凭据，保留该文件的用户访问权限。
+若 API 令牌与镜像令牌分开，登录时输入镜像读取令牌。更新脚本的令牌只用于 GitHub API，不进入业务容器；下载跳转时移除认证头。Docker 在 `~/.docker/config.json` 保存登录凭据，保留该文件的用户访问权限。
 
 ## 3. 业务配置与首次启动
 
@@ -78,14 +78,12 @@ unset server_token
 首次运行前检查 `shared/.env` 不含空白密钥。main 首次成功构建后运行：
 
 ```sh
-bash ~/weknora-workbench/bin/poll.sh /home/codexuser/weknora-workbench
+bash ~/weknora-workbench/bin/update.sh
 ```
 
-确认成功后，用 `crontab -e` 添加一条（仅添加一次）：
+以后需要更新时执行同一条命令。脚本只查询一次最新 Release；当前已是最新版时提示并退出，不重新下载镜像或重启服务。正常更新会校验发布包、准备所需镜像、备份 PostgreSQL、启动服务并检查健康状态，输出同时保存到 `shared/deploy.log`。
 
-```cron
-*/2 * * * * /bin/bash /home/codexuser/weknora-workbench/bin/poll.sh /home/codexuser/weknora-workbench >> /home/codexuser/weknora-workbench/shared/deploy.log 2>&1
-```
+服务器不设置定时获取任务；2026-10-09 已移除原来的每两分钟 cron。GitHub Actions 仍自动测试、构建并发布版本，但服务器只有在执行 `update.sh` 时才更新。安装脚本不会添加 cron；已有服务器切换时需移除对应旧任务，保留其他项目的定时任务。
 
 发布前检查 Docker 数据目录所在文件系统至少有 15 GiB 可用空间，建议预留 20 GiB 以上。2026-10-09 初次检查时 `/sysvol/docker_image_var` 所在分区已满；现已迁移到 `/mnt/weknora-storage/docker-data`。迁移期间曾使用 `shared/PAUSED` 阻止发布，存储准备完成后解除。
 
@@ -107,29 +105,29 @@ tail -n 50 ~/weknora-workbench/shared/deploy.log
 docker ps --filter label=com.docker.compose.project=weknora-workbench-prod
 ```
 
-暂时停止自动更新（不停止服务）：
+维护时可以暂时禁止更新脚本执行（不停止服务）：
 
 ```sh
 touch ~/weknora-workbench/shared/PAUSED
-# 恢复轮询
+# 维护完成后允许手动更新
 rm ~/weknora-workbench/shared/PAUSED
 ```
 
-健康检查失败不移动 current，也不自动删除/还原数据卷；部分容器可能已运行新镜像，数据库迁移也可能已执行。失败版本会记录到 `shared/failed-release`，避免每两分钟重复重启。查看容器日志、修复原因后可显式重试：
+健康检查失败不移动 current，也不自动删除/还原数据卷；部分容器可能已运行新镜像，数据库迁移也可能已执行。失败版本会记录到 `shared/failed-release`，下次手动运行会报告该版本曾经失败并返回非零退出码。查看容器日志、修复原因后可显式重试：
 
 ```sh
-bash ~/weknora-workbench/bin/poll.sh /home/codexuser/weknora-workbench --retry-failed
+bash ~/weknora-workbench/bin/update.sh --retry-failed
 ```
 
 每次升级先将 PostgreSQL 保存到 `weknora-workbench-prod_postgres-backups` 命名卷（postgres 容器的 `/backups/*.pg.dump`）；备份失败则中止发布。需要另行备份 `shared/.env` 以及命名卷中的结构化数据和原文件等数据，并定期清理旧备份/镜像/版本。数据库备份发生时现有服务可能继续写入，不是全部业务数据的同一时点快照。
 
-回到旧镜像前先暂停轮询，核对旧代码与当前数据库结构兼容性，再运行 previous 目录下的 deploy.sh。脚本仅回退镜像/Compose，不还原数据库，数据库恢复须停写并从选定备份恢复。不要使用 `docker compose down -v`。服务器卷固定使用 `weknora-workbench-prod` 项目名，不能随版本改变。
+回到旧镜像前先设置 `shared/PAUSED`，核对旧代码与当前数据库结构兼容性，再运行 previous 目录下的 deploy.sh。脚本仅回退镜像/Compose，不还原数据库，数据库恢复须停写并从选定备份恢复。不要使用 `docker compose down -v`。服务器卷固定使用 `weknora-workbench-prod` 项目名，不能随版本改变。
 
 ## 5. 验证范围
 
 CI 检查结构化服务测试、前端类型与测试、Go MCP 回归、ShellCheck、部署状态与失败路径测试、Compose 配置以及六个镜像构建；用户态镜像导入及失败中止也有回归测试。没有访问生产密钥、生产数据或调用收费模型。只有服务器实际拉取、启动并通过健康检查，才证明该版本可以在这台 CentOS 7 主机上运行；源码检查不能替代该验证。
 
-GitHub Actions 绿色表示发布包已准备好；服务器部署状态目前记录在 `shared/deploy.log`，未回写 GitHub Deployments。代理离线或令牌失效时服务器保留当前版本，恢复连接后继续检查新版本。
+GitHub Actions 绿色表示发布包已准备好；服务器部署状态目前记录在 `shared/deploy.log`，未回写 GitHub Deployments。代理离线或令牌失效时更新脚本报错，服务器保留当前版本；恢复连接后重新手动运行更新脚本。
 
 实现依据：[GitHub 镜像发布](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)、[GHCR 认证](https://docs.github.com/en/packages/working-with-the-container-registry/working-with-the-container-registry)、[Release API](https://docs.github.com/en/rest/releases/releases)、[Compose 等待健康检查](https://docs.docker.com/reference/cli/docker/compose/up/)。
 
