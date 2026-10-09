@@ -1,5 +1,6 @@
 # Local credentials and environment
 .private/
+.local-backups/
 .env
 .env.*
 !.env.example
@@ -9,6 +10,10 @@ model-config.json
 **/service-token
 *.pem
 *.key
+*.duckdb
+*.duckdb.wal
+*.sqlite
+*.sqlite3
 # Business data and local run evidence
 /STATE.md
 /results/

@@ -6,7 +6,7 @@
 当前后端镜像名：weknora-eval-app:mcp-direct
 当前前端镜像名：weknora-eval-ui:field-resolution
 
-本地原工程在 weknora-evaluation，发布快照在 weknora-workbench。快照不自动同步；后续提交前须同步原工程的代码修改。
+本文件记录初始提交时的版本基线。2026-10-08 已将开发和运行统一至 weknora-workbench；后续修改直接在此提交，无需在两个目录之间同步。旧 weknora-evaluation 目录已于 2026-10-09 合并清理，独有文件归档至本机 .local-backups/。详见 MIGRATION.md。
 
 本版已完成的近期验证：MCP相关 Go 测试76项（含子用例）通过；新、旧网页会话原题复测成功。此前极值日期修复完成72项相关后端测试、11项前端测试及浏览器取数核验。
 

@@ -1,0 +1,25 @@
+services:
+  structured-data:
+    build: .
+    image: weknora-structured-data:local
+    command: ["python", "-m", "structured_data.cli", "--data-dir", "/data", "serve", "--host", "0.0.0.0", "--port", "18082"]
+    container_name: weknora-structured-data
+    restart: unless-stopped
+    environment:
+      WEKNORA_API_URL: http://app:8080
+      STRUCTURED_TENANT_ID: "10000"
+      PYTHONPATH: /app/src
+      STRUCTURED_MODEL_CONFIG: /run/secrets/model-config.json
+    ports:
+      - "127.0.0.1:18082:18082"
+    volumes:
+      - ./data:/data
+      - ./src:/app/src:ro
+      - ../.private/model-config.json:/run/secrets/model-config.json:ro
+    networks:
+      weknora:
+        aliases: [cotton-data]
+networks:
+  weknora:
+    external: true
+    name: weknora-eval_WeKnora-network

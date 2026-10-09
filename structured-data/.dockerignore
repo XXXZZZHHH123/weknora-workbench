@@ -1,0 +1,9 @@
+# Only application source is required by the runtime Dockerfile.
+# Keep local workbooks, databases, backups and the virtualenv out of the context.
+*
+!Dockerfile
+!pyproject.toml
+!src/
+!src/**
+src/**/__pycache__/
+src/**/*.pyc
