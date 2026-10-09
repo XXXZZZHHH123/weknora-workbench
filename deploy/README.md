@@ -8,11 +8,11 @@ PR 运行检查和镜像构建，不推送镜像、不发布部署版本。发�
 
 ## 1. 服务器准备（只需一次）
 
-已知服务器：SSH 别名 `codex-linux`，内网地址 `10.11.60.130`，用户 `codexuser`，CentOS 7，Docker 24.0.7。部署检查已确认服务器可直连 GitHub API、Release 下载和 GHCR；Docker Hub 超时。
+已知服务器：SSH 别名 `codex-linux`，内网地址 `10.11.60.130`，用户 `codexuser`，CentOS 7，Docker 24.0.7。部署检查已确认服务器可直连 GitHub API、Release 下载和 GHCR 清单；完整镜像下载需要代理，Docker Hub 超时。
 
 `17890` 当前来自 SSH 转发，只作为下载工具时的可选代理。控制 API 曾验证直连可用，但完整镜像下载需代理；正式发布应在 `shared/poller.json` 中设置持续可用的代理，避免依赖临时 SSH 会话。查询 IP 得到的代理出口不能用作服务器公网 SSH 地址。
 
-root 执行（目前 socket 属于 root:root，codexuser 无权使用 Docker）：
+新服务器若部署用户无权访问 Docker，由 root 执行（本次服务器已完成）：
 
 ```sh
 groupadd -f docker
@@ -70,6 +70,8 @@ unset server_token
 ## 3. 业务配置与首次启动
 
 编辑 `~/weknora-workbench/shared/.env`。内网直接访问可设置 `FRONTEND_BIND=0.0.0.0`；默认 `127.0.0.1:18080` 供宿主机 HTTPS 反向代理或 SSH 转发访问。只发布前端端口，数据库、后端和结构化服务都留在容器网络内。
+
+本次服务器使用 `FRONTEND_BIND=0.0.0.0`、`FRONTEND_PORT=18090`，访问地址为 `http://10.11.60.130:18090/`。18080 已被原有 Tomcat 使用。2026-10-09 首次部署已验证六个服务健康、浏览器登录页正常、API 未登录返回 401、结构化健康接口返回 JSON，并验证 PostgreSQL 备份归档可读取。
 
 注册首个账号后关闭注册（`DISABLE_REGISTRATION=true`），确认真实租户 ID 并修改 `STRUCTURED_TENANT_ID`。在 WeKnora 和工作台页面分别配置聊天模型、字段理解模型。新部署默认没有任何本机账号、知识库或表格数据。
 
