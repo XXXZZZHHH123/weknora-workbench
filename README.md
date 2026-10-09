@@ -39,7 +39,9 @@ Docker 项目名 `weknora-eval`、`weknora-structured` 保留以复用现有数�
 | `compose.test.yml` | 本地试点部署覆盖配置 |
 | `model-config.example.json` | 不含密钥的模型配置示例 |
 
-上游：Tencent/WeKnora，基线提交 `3e8b0bfc80b845b2d4b2ed683994748741450a97`。上游许可证与版权声明位于 `WeKnora/LICENSE` 等原文件中，已完整保留。初始提交采用源码快照，未导入上游全部 Git 历史；后续修改直接在本仓库维护。
+上游：[Tencent/WeKnora](https://github.com/Tencent/WeKnora)。初始源码基线为正式版 `v0.8.2` 的提交 `3e8b0bfc80b845b2d4b2ed683994748741450a97`，当前合入的上游版本记录在 `.upstream/weknora.json`。许可证与版权声明位于 `WeKnora/LICENSE` 等原文件中，已完整保留。初始提交采用源码快照，未导入上游全部 Git 历史；后续修改直接在本仓库维护。
+
+每天北京时间 10:20 的 GitHub 工作流检查 WeKnora 正式发布，有更新时通过三方合并生成更新 PR；GitHub 可能延迟定时运行，也可在 Actions 手动运行。更新不会自动合并，需审查测试与业务兼容性后由你确认；合并 `main` 后才进入现有 CI/CD。冲突 PR 保持草稿并阻止检查通过。操作和冲突处理见 [上游更新说明](deploy/UPSTREAM.md)。
 
 ## 本地配置与构建
 

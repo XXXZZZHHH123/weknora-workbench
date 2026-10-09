@@ -1,0 +1,8 @@
+{
+  "repository": "Tencent/WeKnora",
+  "directory": "WeKnora",
+  "base_commit": "3e8b0bfc80b845b2d4b2ed683994748741450a97",
+  "last_release": "v0.8.2",
+  "release_url": "https://github.com/Tencent/WeKnora/releases/tag/v0.8.2",
+  "exclude": ["website", "website-docs"]
+}

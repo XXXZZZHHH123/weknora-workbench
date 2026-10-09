@@ -1,0 +1,50 @@
+name: WeKnora upstream update PR
+
+on:
+  schedule:
+    # 10:20 Asia/Shanghai. GitHub may delay scheduled runs.
+    - cron: '20 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: weknora-upstream-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Prepare a reviewed update from the latest formal release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/sync_weknora.py --create-pr --output "$RUNNER_TEMP/upstream-report.json"
+      - name: Record the outcome
+        if: always()
+        env:
+          REPORT: ${{ runner.temp }}/upstream-report.json
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['REPORT'])
+          text = '检查失败，请查看前一步日志。'
+          if path.exists():
+              report = json.loads(path.read_text())
+              text = 'WeKnora upstream status: **' + report['status'] + '**\n\n'
+              text += 'Release: ' + report.get('tag', 'none') + '\n\n'
+              if report.get('pull_request_url'):
+                  text += '[Review update PR](' + report['pull_request_url'] + ')\n'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(text + '\n')
+          PY
