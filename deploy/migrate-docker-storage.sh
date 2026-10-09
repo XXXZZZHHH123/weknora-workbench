@@ -5,6 +5,7 @@ export PATH=/usr/sbin:/sbin:/usr/bin:/bin
 mount_dir="${1:?usage: migrate-docker-storage.sh MOUNT_DIR [--migrate]}"
 [[ "$mount_dir" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
 [[ "$(id -u)" == 0 ]] || { echo 'Run as root' >&2; exit 1; }
+systemctl is-active --quiet docker.service || { echo 'Docker must be managed by the active docker.service; review manually started daemons before migration' >&2; exit 1; }
 mountpoint -q "$mount_dir" || { echo 'Destination filesystem is not mounted' >&2; exit 1; }
 [[ "$(findmnt -n -o FSTYPE --target "$mount_dir")" == xfs ]] || { echo 'Expected an existing XFS filesystem; no formatting is performed' >&2; exit 1; }
 xfs_info "$mount_dir" | grep -q 'ftype=1' || { echo 'Docker overlay2 requires XFS ftype=1' >&2; exit 1; }
@@ -22,6 +23,7 @@ docker ps --format 'Will stop/restart: {{.Names}}'
 [[ ! -e /etc/systemd/system/docker.service.d/weknora-storage.conf ]] || { echo 'Existing storage drop-in; review it manually' >&2; exit 1; }
 
 umask 077
+mount -o remount,rw "$mount_dir"
 state="$mount_dir/.weknora-docker-migration-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir "$state"
 cp -a /etc/docker/daemon.json "$state/daemon.json.before"
@@ -40,7 +42,6 @@ with open(sys.argv[2], 'w') as target:
 PY
 dockerd --validate --config-file "$state/daemon.json.after"
 
-mount -o remount,rw "$mount_dir"
 mkdir "$new"
 # Warm copy while services run; the second copy after stopping is authoritative.
 copy_status=0
@@ -56,6 +57,7 @@ if systemctl list-unit-files docker.socket --no-legend | grep -q docker.socket; 
   systemctl stop docker.socket
 fi
 systemctl stop docker.service
+[[ -z "$(pgrep -x dockerd || true)" ]] || { echo 'A Docker daemon is still running; aborting before final synchronization' >&2; exit 1; }
 # Destination was freshly created above, never an existing business directory.
 rsync -aHAXx --numeric-ids --delete --info=progress2 "$old/" "$new/"
 
