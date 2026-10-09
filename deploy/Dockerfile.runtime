@@ -1,0 +1,3 @@
+# Mirror a versioned runtime dependency into this repository's GHCR namespace.
+ARG BASE_IMAGE=redis:7.0-alpine
+FROM ${BASE_IMAGE}

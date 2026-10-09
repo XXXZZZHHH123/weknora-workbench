@@ -1,0 +1,120 @@
+services:
+  frontend:
+    image: ${IMAGE_PREFIX:?release.env required}-frontend:${IMAGE_TAG:?release.env required}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-18080}:80"
+    environment:
+      MAX_FILE_SIZE_MB: "100"
+    depends_on:
+      app:
+        condition: service_healthy
+      structured-data:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ && wget -q -O /dev/null http://127.0.0.1/structured/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  app:
+    image: ${IMAGE_PREFIX:?release.env required}-app:${IMAGE_TAG:?release.env required}
+    restart: unless-stopped
+    env_file: ${DEPLOY_SHARED_DIR:?shared directory required}/.env
+    environment:
+      DB_DRIVER: postgres
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      RETRIEVE_DRIVER: postgres
+      REDIS_ADDR: redis:6379
+      DOCREADER_ADDR: docreader:50051
+      STORAGE_TYPE: local
+      LOCAL_STORAGE_BASE_DIR: /data/files
+      GIN_MODE: release
+      MAX_FILE_SIZE_MB: "100"
+      BATCH_EMBED_SIZE: "2"
+      SSRF_WHITELIST_EXTRA: "structured-data,cotton-data"
+      WEKNORA_SANDBOX_DOCKER_ENABLED: "false"
+    volumes:
+      - data-files:/data/files
+      - docreader-tmp:/tmp/docreader:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      docreader:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+
+  structured-data:
+    image: ${IMAGE_PREFIX:?release.env required}-structured-data:${IMAGE_TAG:?release.env required}
+    restart: unless-stopped
+    environment:
+      WEKNORA_API_URL: http://app:8080
+      STRUCTURED_TENANT_ID: ${STRUCTURED_TENANT_ID:?set the actual tenant ID}
+      STRUCTURED_DATA_DIR: /data
+    volumes:
+      - ${DEPLOY_SHARED_DIR:?shared directory required}/structured-data:/data
+    networks:
+      default:
+        aliases: [cotton-data]
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18082/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  docreader:
+    image: ${IMAGE_PREFIX:?release.env required}-docreader:${IMAGE_TAG:?release.env required}
+    restart: unless-stopped
+    environment:
+      DOCREADER_IMAGE_OUTPUT_DIR: /tmp/docreader
+      MAX_FILE_SIZE_MB: "100"
+      DOCREADER_GRPC_MAX_FILE_SIZE_MB: "100"
+    volumes:
+      - docreader-tmp:/tmp/docreader
+
+  postgres:
+    image: ${IMAGE_PREFIX:?release.env required}-postgres:${IMAGE_TAG:?release.env required}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:?set DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:?set DB_NAME}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    stop_grace_period: 1m
+
+  redis:
+    image: ${IMAGE_PREFIX:?release.env required}-redis:${IMAGE_TAG:?release.env required}
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  postgres-data:
+  redis-data:
+  data-files:
+  docreader-tmp:

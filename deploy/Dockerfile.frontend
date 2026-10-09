@@ -1,0 +1,21 @@
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS builder
+WORKDIR /frontend
+COPY WeKnora/frontend/package.json WeKnora/frontend/package-lock.json ./
+RUN npm ci
+COPY WeKnora/frontend/ ./
+ARG VITE_FRONTEND_COMMIT=unknown
+ENV VITE_IS_DOCKER=true VITE_FRONTEND_COMMIT=${VITE_FRONTEND_COMMIT} NODE_OPTIONS=--max-old-space-size=4096
+RUN npm run build
+
+# Use the same CentOS 7-compatible runtime base as the upstream frontend.
+FROM nginx:1.30.3-alpine@sha256:0d3b80406a13a767339fbe2f41406d6c7da727ab89cf8fae399e81f780f814d1
+COPY --from=builder /frontend/dist /usr/share/nginx/html
+COPY WeKnora/frontend/nginx.conf /etc/nginx/templates/default.conf.template
+COPY WeKnora/frontend/nginx-api-proxy.conf /etc/nginx/api-proxy.conf
+COPY WeKnora/frontend/nginx-http.conf /etc/nginx/conf.d/00-weknora-http.conf
+COPY WeKnora/frontend/docker-entrypoint.sh /docker-entrypoint.sh
+COPY structured-data/deploy/structured-proxy.conf /etc/nginx/structured-proxy.conf
+RUN chmod +x /docker-entrypoint.sh && sed -i '/server_name localhost;/a\    include /etc/nginx/structured-proxy.conf;' /etc/nginx/templates/default.conf.template
+ENV MAX_FILE_SIZE_MB=100
+EXPOSE 80
+ENTRYPOINT ["/docker-entrypoint.sh"]

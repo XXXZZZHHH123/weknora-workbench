@@ -1,0 +1,18 @@
+# Root context is only used by deploy/Dockerfile.frontend.
+*
+!deploy/
+!deploy/Dockerfile.frontend
+!deploy/Dockerfile.runtime
+!WeKnora/
+!WeKnora/frontend/
+!WeKnora/frontend/**
+!structured-data/
+!structured-data/deploy/
+!structured-data/deploy/structured-proxy.conf
+**/node_modules/
+**/dist/
+**/.env
+**/.env.*
+**/*.tsbuildinfo
+**/coverage/
+**/.DS_Store
