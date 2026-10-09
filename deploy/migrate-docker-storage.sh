@@ -19,6 +19,18 @@ available_kib="$(df -Pk "$mount_dir" | awk 'NR == 2 {print $4}')"
 [[ "$available_kib" -gt $((source_kib + 20971520)) ]] || { echo 'Insufficient destination capacity' >&2; exit 1; }
 echo "Copy Docker store: $old -> $new ($source_kib KiB). Original is retained."
 docker ps --format 'Will stop/restart: {{.Names}}'
+mapfile -t managed_units < <(systemctl list-dependencies --reverse --plain --no-pager docker.service | awk '$1 ~ /\.service$/ && $1 != "docker.service" {print $1}' | while read -r unit; do systemctl is-active --quiet "$unit" && printf '%s\n' "$unit"; done)
+# Auto-removing containers need their original manager, not docker start by ID.
+while read -r container_id; do
+  [[ "$(docker inspect --format '{{.HostConfig.AutoRemove}}' "$container_id")" == true ]] || continue
+  container_name="$(docker inspect --format '{{.Name}}' "$container_id")"
+  container_name="${container_name#/}"
+  managed=false
+  for unit in ${managed_units[@]+"${managed_units[@]}"}; do
+    if systemctl cat "$unit" | grep -F -q -- "--name $container_name "; then managed=true; break; fi
+  done
+  [[ "$managed" == true ]] || { echo "Auto-removing container $container_name has no identified systemd manager; prepare its recreation before migration." >&2; exit 1; }
+done < <(docker ps -q)
 [[ "${2:-}" == --migrate ]] || { echo 'Inspection only. Add --migrate only during an approved maintenance window.'; exit 0; }
 [[ ! -e /etc/systemd/system/docker.service.d/weknora-storage.conf ]] || { echo 'Existing storage drop-in; review it manually' >&2; exit 1; }
 
@@ -28,6 +40,8 @@ state="$mount_dir/.weknora-docker-migration-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir "$state"
 cp -a /etc/docker/daemon.json "$state/daemon.json.before"
 cp -a /etc/fstab "$state/fstab.before"
+docker ps -q | xargs -r docker inspect > "$state/running-containers.inspect.json"
+printf '%s\n' ${managed_units[@]+"${managed_units[@]}"} > "$state/managed-services"
 printf '%s\n' "$old" > "$state/old-data-root"
 trap 'echo "Migration stopped on an error. Original data remains at $old; backups and running container IDs are in $state. Review before recovery." >&2' ERR
 
@@ -48,6 +62,8 @@ copy_status=0
 rsync -aHAXx --numeric-ids --stats "$old/" "$new/" || copy_status=$?
 [[ "$copy_status" == 0 || "$copy_status" == 24 ]] || exit "$copy_status"
 
+# Stop systemd-managed services first so --rm/Restart=always cannot race us.
+for unit in ${managed_units[@]+"${managed_units[@]}"}; do systemctl stop "$unit"; done
 docker ps -q > "$state/running-containers"
 mapfile -t running < "$state/running-containers"
 if [[ "${#running[@]}" -gt 0 ]]; then
@@ -75,6 +91,7 @@ systemctl start docker.service
 if [[ "${#running[@]}" -gt 0 ]]; then
   docker start "${running[@]}"
 fi
+for unit in ${managed_units[@]+"${managed_units[@]}"}; do systemctl start "$unit"; done
 docker ps --format '{{.Names}} {{.Status}}'
 echo "Storage switched successfully. Do not delete $old until recovery and all existing services have been verified."
 echo "Configuration backups: $state"

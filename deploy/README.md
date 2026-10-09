@@ -37,7 +37,7 @@ bash ~/weknora-workbench/setup/bootstrap.sh \
 
 ## Docker 存储维护（需管理员维护窗口）
 
-当前 Docker 数据目录所在 `/sysvol` 已满；新盘 `/dev/vdb1` 已有 XFS ftype=1 文件系统，约 1 TB 可用，现以只读方式挂载到 `/mnt/weknora-storage`。不要格式化这块盘，它已经有其他数据。
+当前 Docker 数据目录所在 `/sysvol` 已满；新盘 `/dev/vdb1` 已有 XFS ftype=1 文件系统，挂载到 `/mnt/weknora-storage`。Docker 现已切换到 `/mnt/weknora-storage/docker-data`，旧目录保留作为维护备份。不要格式化这块盘，它已经有其他数据。
 
 `migrate-docker-storage.sh` 默认只检查容量并展示计划；只有显式加 `--migrate` 才会修改挂载/配置、暂停现有容器并切换数据目录。脚本复制到新建的 `docker-data` 目录，保留旧目录和配置备份，加入持久挂载及 Docker 挂载依赖；不会删除原数据或触碰新盘其他目录。仅在管理员批准停机时由 root 执行，不属于日常发布流程。
 
@@ -48,7 +48,7 @@ bash /home/codexuser/weknora-workbench/setup/migrate-docker-storage.sh /mnt/wekn
 bash /home/codexuser/weknora-workbench/setup/migrate-docker-storage.sh /mnt/weknora-storage --migrate
 ```
 
-拷贝时间取决于旧 Docker 数据量。预复制期间原容器继续运行，最后同步期间会停止并重新启动原先运行的容器。失败时先核对输出中的状态目录，原配置备份为 `daemon.json.before`；恢复原数据目录前需要停 Docker、恢复配置并重新启动，再核对原有业务。脚本的 ShellCheck 已验证，真实数据迁移仍须管理员在服务器验收。
+拷贝时间取决于旧 Docker 数据量。预复制期间原容器继续运行，最后同步期间会停止并重新启动原先运行的容器。依赖 Docker 的 systemd 服务会按原服务恢复，避免带 `--rm` 的容器在停止后无法按旧 ID 启动；未找到管理服务的自动删除容器会在迁移前拒绝执行。迁移状态目录中的容器 inspect 快照可能含运行凭据，应保持 root-only 权限。失败时先核对输出中的状态目录，原配置备份为 `daemon.json.before`；恢复原数据目录前需要停 Docker、恢复配置并重新启动，再核对原有业务。脚本的 ShellCheck 已验证，真实数据迁移仍须管理员在服务器验收。
 
 ## 2. 私有仓库与镜像读取凭据
 
@@ -85,7 +85,7 @@ bash ~/weknora-workbench/bin/poll.sh /home/codexuser/weknora-workbench
 */2 * * * * /bin/bash /home/codexuser/weknora-workbench/bin/poll.sh /home/codexuser/weknora-workbench >> /home/codexuser/weknora-workbench/shared/deploy.log 2>&1
 ```
 
-发布前检查 Docker 数据目录所在文件系统至少有 15 GiB 可用空间，建议预留 20 GiB 以上。2026-10-09 检查时 Docker 数据目录在 `/sysvol/docker_image_var`，`/sysvol` 已满，因此首次启动暂时使用 `shared/PAUSED` 阻止轮询，待存储准备完成后解除。
+发布前检查 Docker 数据目录所在文件系统至少有 15 GiB 可用空间，建议预留 20 GiB 以上。2026-10-09 初次检查时 `/sysvol/docker_image_var` 所在分区已满；现已迁移到 `/mnt/weknora-storage/docker-data`。迁移期间曾使用 `shared/PAUSED` 阻止发布，存储准备完成后解除。
 
 数据库、Redis、原文件、结构化表格均使用 Docker 命名卷，随 Docker 数据目录位于新盘；数据库备份也保存在新盘的 Docker 命名卷；发布脚本、运行配置和令牌位于 `~/weknora-workbench/`。
 
