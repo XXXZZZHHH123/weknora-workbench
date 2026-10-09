@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: Rebuild all service images
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -76,8 +81,40 @@ jobs:
           sed -i 's/^DB_PASSWORD=$/DB_PASSWORD=ci-placeholder/; s/^REDIS_PASSWORD=$/REDIS_PASSWORD=ci-placeholder/' "$DEPLOY_SHARED_DIR/.env"
           docker compose --env-file "$DEPLOY_SHARED_DIR/.env" -f deploy/compose.yml config --quiet
 
-  images:
+  image-plan:
     needs: [python, frontend, go, deployment-checks]
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Reuse images with identical tracked build inputs
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild == true }}
+        run: |
+          previous_args=()
+          if gh api "repos/$REPOSITORY/releases/latest" > latest.json 2> lookup.err; then
+            previous_tag="$(jq -er '.tag_name | select(test("^production-[a-f0-9]{40}-[0-9]+-[0-9]+$"))' latest.json)"
+            mkdir previous
+            gh release download "$previous_tag" --repo "$REPOSITORY" --pattern deployment.tar.gz --dir previous
+            previous_args=(--previous previous/deployment.tar.gz)
+          elif ! grep -q 'HTTP 404' lookup.err; then
+            cat lookup.err >&2
+            exit 1
+          fi
+          force_args=()
+          if [[ "$FORCE_REBUILD" == true ]]; then force_args=(--force); fi
+          matrix="$(python3 deploy/image_plan.py --repository "$REPOSITORY" "${previous_args[@]}" "${force_args[@]}")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq '.include[] | {service, reuse_image}'
+
+  images:
+    needs: image-plan
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -85,56 +122,9 @@ jobs:
       packages: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - service: app
-            context: WeKnora
-            dockerfile: WeKnora/docker/Dockerfile.app
-            base_image: redis:7.0-alpine
-          - service: frontend
-            context: .
-            dockerfile: deploy/Dockerfile.frontend
-            base_image: redis:7.0-alpine
-          - service: structured-data
-            context: structured-data
-            dockerfile: structured-data/Dockerfile
-            base_image: redis:7.0-alpine
-          - service: docreader
-            context: .
-            dockerfile: deploy/Dockerfile.runtime
-            base_image: wechatopenai/weknora-docreader:v0.8.2
-          - service: postgres
-            context: .
-            dockerfile: deploy/Dockerfile.runtime
-            base_image: paradedb/paradedb:v0.22.6-pg17
-          - service: redis
-            context: .
-            dockerfile: deploy/Dockerfile.runtime
-            base_image: redis:7.0-alpine
+      matrix: ${{ fromJSON(needs.image-plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Image coordinates
-        id: image
-        env:
-          REPOSITORY: ${{ github.repository }}
-          COMMIT: ${{ github.sha }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          echo "prefix=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-          echo "tag=production-$COMMIT-$RUN_ID-$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-      - name: Make room for the Go and Rust build
-        if: matrix.service == 'app'
-        run: |
-          # This job owns a disposable hosted runner. These SDKs are unused here.
-          sudo python3 - <<'PY'
-          import os, shutil
-          print('Free bytes before:', shutil.disk_usage('/').free)
-          for path in ('/usr/local/lib/android', '/usr/share/dotnet', '/opt/ghc'):
-              if os.path.isdir(path):
-                  shutil.rmtree(path)
-          print('Free bytes after:', shutil.disk_usage('/').free)
-          PY
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -142,13 +132,47 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify reused image or prepare a fresh build
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SERVICE: ${{ matrix.service }}
+          CANDIDATE: ${{ matrix.reuse_image }}
+          PUBLISH_IMAGES: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+        run: |
+          prefix="ghcr.io/${REPOSITORY,,}"
+          tag="production-$COMMIT-$RUN_ID-$RUN_ATTEMPT"
+          image="$prefix-$SERVICE:$tag"
+          reused=false
+          if [[ "$PUBLISH_IMAGES" == true && -n "$CANDIDATE" ]] && docker buildx imagetools inspect "$CANDIDATE" >/dev/null; then
+            image="$CANDIDATE"
+            reused=true
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "reused=$reused" >> "$GITHUB_OUTPUT"
+      - name: Make room for the Go and Rust build
+        if: matrix.service == 'app' && steps.image.outputs.reused != 'true'
+        run: |
+          sudo python3 - <<'PYTHON'
+          import os, shutil
+          print('Free bytes before:', shutil.disk_usage('/').free)
+          for path in ('/usr/local/lib/android', '/usr/share/dotnet', '/opt/ghc'):
+              if os.path.isdir(path):
+                  shutil.rmtree(path)
+          print('Free bytes after:', shutil.disk_usage('/').free)
+          PYTHON
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        if: steps.image.outputs.reused != 'true'
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
-          tags: ${{ steps.image.outputs.prefix }}-${{ matrix.service }}:${{ steps.image.outputs.tag }}
+          tags: ${{ steps.image.outputs.image }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -159,6 +183,26 @@ jobs:
             BASE_IMAGE=${{ matrix.base_image }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+      - name: Record actual service image
+        env:
+          SERVICE: ${{ matrix.service }}
+          IMAGE_REF: ${{ steps.image.outputs.image }}
+          INPUT_HASH: ${{ matrix.input_hash }}
+        run: |
+          mkdir coordinates
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          service = os.environ['SERVICE']
+          Path('coordinates', service + '.json').write_text(json.dumps({
+              'service': service, 'image': os.environ['IMAGE_REF'], 'input_hash': os.environ['INPUT_HASH']}))
+          PYTHON
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-${{ matrix.service }}
+          path: coordinates/*.json
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
     needs: images
@@ -168,6 +212,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: coordinates
       - name: Publish deployment bundle after all images succeed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -179,10 +228,9 @@ jobs:
           release_id="production-$COMMIT-$RUN_ID-$RUN_ATTEMPT"
           mkdir -p bundle
           cp deploy/compose.yml deploy/deploy.sh bundle/
-          printf 'IMAGE_PREFIX=ghcr.io/%s\nIMAGE_TAG=%s\n' "${REPOSITORY,,}" "$release_id" > bundle/release.env
+          python3 deploy/image_plan.py --repository "$REPOSITORY" --coordinates coordinates --tag "$release_id" --output bundle/release.env
           tar -czf deployment.tar.gz -C bundle compose.yml deploy.sh release.env
           sha256sum deployment.tar.gz > deployment.tar.gz.sha256
-          printf 'Commit: %s\nPlatform: linux/amd64\nTests and all six image builds passed. The server deploys this release by polling.\n' "$COMMIT" > release-notes.txt
-          # Upload to a draft first: pollers must never see an incomplete bundle.
+          printf 'Commit: %s\nPlatform: linux/amd64\nTests passed. All six service images were built or verified for reuse; exact references are in release.env.\n' "$COMMIT" > release-notes.txt
           gh release create "$release_id" deployment.tar.gz deployment.tar.gz.sha256 --repo "$REPOSITORY" --target "$COMMIT" --title "$release_id" --notes-file release-notes.txt --draft
           gh release edit "$release_id" --repo "$REPOSITORY" --draft=false --latest

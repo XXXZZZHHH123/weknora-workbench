@@ -1,0 +1,8 @@
+[
+  {"service":"app","context":"WeKnora","dockerfile":"WeKnora/docker/Dockerfile.app","base_image":"redis:7.0-alpine"},
+  {"service":"frontend","context":".","dockerfile":"deploy/Dockerfile.frontend","base_image":"redis:7.0-alpine"},
+  {"service":"structured-data","context":"structured-data","dockerfile":"structured-data/Dockerfile","base_image":"redis:7.0-alpine"},
+  {"service":"docreader","context":".","dockerfile":"deploy/Dockerfile.runtime","base_image":"wechatopenai/weknora-docreader:v0.8.2"},
+  {"service":"postgres","context":".","dockerfile":"deploy/Dockerfile.runtime","base_image":"paradedb/paradedb:v0.22.6-pg17"},
+  {"service":"redis","context":".","dockerfile":"deploy/Dockerfile.runtime","base_image":"redis:7.0-alpine"}
+]

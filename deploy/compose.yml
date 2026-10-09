@@ -1,6 +1,6 @@
 services:
   frontend:
-    image: ${IMAGE_PREFIX:?release.env required}-frontend:${IMAGE_TAG:?release.env required}
+    image: ${FRONTEND_IMAGE:-${IMAGE_PREFIX:?release.env required}-frontend:${IMAGE_TAG:?release.env required}}
     restart: unless-stopped
     ports:
       - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-18080}:80"
@@ -18,7 +18,7 @@ services:
       retries: 5
 
   app:
-    image: ${IMAGE_PREFIX:?release.env required}-app:${IMAGE_TAG:?release.env required}
+    image: ${APP_IMAGE:-${IMAGE_PREFIX:?release.env required}-app:${IMAGE_TAG:?release.env required}}
     restart: unless-stopped
     env_file: ${DEPLOY_SHARED_DIR:?shared directory required}/.env
     environment:
@@ -53,7 +53,7 @@ services:
       start_period: 60s
 
   structured-data:
-    image: ${IMAGE_PREFIX:?release.env required}-structured-data:${IMAGE_TAG:?release.env required}
+    image: ${STRUCTURED_DATA_IMAGE:-${IMAGE_PREFIX:?release.env required}-structured-data:${IMAGE_TAG:?release.env required}}
     restart: unless-stopped
     environment:
       WEKNORA_API_URL: http://app:8080
@@ -75,7 +75,7 @@ services:
       retries: 5
 
   docreader:
-    image: ${IMAGE_PREFIX:?release.env required}-docreader:${IMAGE_TAG:?release.env required}
+    image: ${DOCREADER_IMAGE:-${IMAGE_PREFIX:?release.env required}-docreader:${IMAGE_TAG:?release.env required}}
     restart: unless-stopped
     environment:
       DOCREADER_IMAGE_OUTPUT_DIR: /tmp/docreader
@@ -91,7 +91,7 @@ services:
       start_period: 60s
 
   postgres:
-    image: ${IMAGE_PREFIX:?release.env required}-postgres:${IMAGE_TAG:?release.env required}
+    image: ${POSTGRES_IMAGE:-${IMAGE_PREFIX:?release.env required}-postgres:${IMAGE_TAG:?release.env required}}
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:?set DB_USER}
@@ -108,7 +108,7 @@ services:
     stop_grace_period: 1m
 
   redis:
-    image: ${IMAGE_PREFIX:?release.env required}-redis:${IMAGE_TAG:?release.env required}
+    image: ${REDIS_IMAGE:-${IMAGE_PREFIX:?release.env required}-redis:${IMAGE_TAG:?release.env required}}
     restart: unless-stopped
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
