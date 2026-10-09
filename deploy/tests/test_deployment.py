@@ -66,6 +66,8 @@ elif 'release-assets.githubusercontent.com/' in url:
  out.write_bytes((r/('bundle.tar.gz' if url.endswith('/1') else 'bundle.sha256')).read_bytes())
 else: sys.exit(1)
 ''')
+        # Tests simulate server capacity independently of runner disk usage.
+        self.executable('df', '#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\n/dev/test 41943040 10485760 31457280 25%% /test\\n"\n')
         if not shutil.which('flock'):
             self.executable('flock', '#!/bin/sh\nexit 0\n')
         # Production uses GNU mv on Linux. Keep tests runnable on macOS too.
@@ -74,6 +76,11 @@ else: sys.exit(1)
 import os, subprocess, sys
 if sys.argv[1]=='-Tf': os.replace(sys.argv[2],sys.argv[3])
 else: sys.exit(subprocess.call(['/bin/mv']+sys.argv[1:]))
+''')
+            self.executable('sed', '''#!/usr/bin/env python3
+import subprocess, sys
+args=['-i','']+sys.argv[2:] if sys.argv[1]=='-i' else sys.argv[1:]
+sys.exit(subprocess.call(['/usr/bin/sed']+args))
 ''')
 
     def tearDown(self):
