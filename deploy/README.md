@@ -6,6 +6,146 @@ PR 运行检查和镜像构建，不推送镜像、不发布部署版本。发�
 
 首次构建 Go/Rust/BrowserSkill 和下载原生依赖会较慢。上游 docreader、PostgreSQL、Redis 使用明确的版本标签，在 GitHub 上重新发布到本项目 GHCR 下，使服务器无需访问 Docker Hub。这里只启动 PostgreSQL 检索、本地文件存储和结构化工作台；需要额外检索引擎或 SearXNG 时应扩展配置。原本的本机 Compose 和数据卷不受影响。
 
+## 日常指令清单（当前已配置服务器）
+
+除 SSH 登录和代理转发外，以下命令都在服务器的 `codexuser` 终端执行。项目已经完成 Docker 存储迁移与本地账户/数据迁移，不需要再次初始化。浏览器访问 `http://10.11.60.130:18090/`，使用原来的邮箱和密码。
+
+### 登录和退出
+
+在 Mac 终端登录；此写法沿用 `codex-linux` 的密钥配置，并关闭该次连接的自动端口转发，避免与现有代理隧道冲突：
+
+```sh
+ssh -o ClearAllForwardings=yes codex-linux
+```
+
+如果已经登录服务器但提示符是 `[root@localhost ~]#`，先切换用户：
+
+```sh
+su - codexuser
+```
+
+退出当前用户会话：
+
+```sh
+exit
+```
+
+### 手动部署最新版
+
+代码合并到 main 后，等待 GitHub Actions 的 Workbench CI/CD 发布成功，再在服务器运行：
+
+```sh
+bash /home/codexuser/weknora-workbench/bin/update.sh
+```
+
+该命令只检查一次最新已发布版本。已是最新版则提示退出；有新版本则准备镜像、备份 PostgreSQL、部署并检查健康状态。服务器没有每两分钟检查的任务。排除上一次部署失败原因后，显式重试：
+
+```sh
+bash /home/codexuser/weknora-workbench/bin/update.sh --retry-failed
+```
+
+### 查看版本、状态、日志和磁盘
+
+```sh
+# 当前成功部署的版本
+readlink /home/codexuser/weknora-workbench/current
+# 本项目容器；正常情况下六个服务均为 healthy
+docker ps -a --filter label=com.docker.compose.project=weknora-workbench-prod
+# 最近的更新日志
+tail -n 100 /home/codexuser/weknora-workbench/shared/deploy.log
+# 持续查看后端日志；Ctrl+C 结束查看，不停止服务
+docker logs --tail 100 -f weknora-workbench-prod-app-1
+# 结构化工作台日志
+docker logs --tail 100 -f weknora-workbench-prod-structured-data-1
+# 接口健康检查
+curl -fsS http://127.0.0.1:18090/structured/health
+# Docker 实际数据目录及新盘剩余空间
+docker info --format '{{.DockerRootDir}}'
+df -h /mnt/weknora-storage
+```
+
+### 启停、配置和数据库备份
+
+每次 SSH 登录后，如果需要以下维护操作，先在服务器粘贴这个函数。它自动使用当前版本、服务器配置和固定项目名；不会输出 `.env` 中的密钥：
+
+```bash
+wb() {
+  local wb_root=/home/codexuser/weknora-workbench
+  DEPLOY_SHARED_DIR="$wb_root/shared" docker compose \
+    --project-name weknora-workbench-prod \
+    --env-file "$wb_root/shared/.env" \
+    --env-file "$wb_root/current/release.env" \
+    -f "$wb_root/current/compose.yml" "$@"
+}
+```
+
+按需执行一条操作：
+
+```sh
+# 查看本项目状态
+wb ps
+# 停止本项目服务，保留容器和数据卷
+wb stop
+# 启动当前已部署版本，等待依赖及健康检查；不下载镜像
+wb up -d --no-build --pull never --wait --wait-timeout 300
+# 重启应用服务；不重新读取修改后的 .env
+wb restart app structured-data frontend
+# 查看所有服务最近日志
+wb logs --tail 100
+# 编辑运行配置；不要重新生成 AES 密钥，否则原有加密凭据无法解密
+vi /home/codexuser/weknora-workbench/shared/.env
+# 编辑完成后，重新应用配置并检查健康状态
+wb up -d --no-build --pull never --wait --wait-timeout 300
+# 列出已有 PostgreSQL 备份
+wb exec -T postgres ls -lh /backups
+```
+
+需要额外手动备份数据库时执行：
+
+```sh
+wb exec --user 0 -T postgres sh -c 'set -e; umask 077; backup="/backups/manual-$(date -u +%Y%m%dT%H%M%SZ).pg.dump"; pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f "$backup.tmp"; mv "$backup.tmp" "$backup"; printf "Saved: %s\n" "$backup"'
+```
+
+这个备份仅含 PostgreSQL。结构化数据文件、原文件和 `shared/.env` 需要另行保留；数据库恢复会覆盖当前内容，应按选定备份和对应代码版本执行，不作为日常更新步骤。不要使用 `docker compose down -v` 或删除 `/mnt/weknora-storage/docker-data`。
+
+### 维护时禁止更新、回退版本
+
+设置维护标记只阻止更新脚本，不停止正在运行的服务：
+
+```sh
+touch /home/codexuser/weknora-workbench/shared/PAUSED
+# 维护完成后允许手动更新
+rm -f /home/codexuser/weknora-workbench/shared/PAUSED
+```
+
+回退前先核对旧代码与当前数据库结构兼容。下面的命令重新部署 previous 版本，并执行数据库备份和健康检查；不会还原数据库。维护标记不会阻止直接运行 deploy.sh：
+
+```sh
+touch /home/codexuser/weknora-workbench/shared/PAUSED
+previous_release=$(readlink /home/codexuser/weknora-workbench/previous)
+test -f "$previous_release/deploy.sh" && bash "$previous_release/deploy.sh" \
+  /home/codexuser/weknora-workbench "$(basename "$previous_release")"
+```
+
+确认回退后的服务正常后，移除 `shared/PAUSED`。下一次运行 `update.sh` 仍会部署 GitHub 最新版本，所以原问题未修复时不要再次运行更新命令。
+
+### 下载需要代理时：在 Mac 建立转发
+
+当前配置使用服务器 `127.0.0.1:17890` 作为下载代理，并转发到 Mac 的 `127.0.0.1:1082`。如果代理隧道已在线，不需重复建立。若离线，先启动 Mac 上监听 1082 的代理软件，再在一个独立的 Mac 终端运行并保持连接：
+
+```sh
+ssh -o ClearAllForwardings=yes -o ExitOnForwardFailure=yes \
+  -N -R 127.0.0.1:17890:127.0.0.1:1082 codex-linux
+```
+
+另开 Mac 终端按上面的登录命令连接服务器，检查代理：
+
+```sh
+curl --max-time 15 --proxy http://127.0.0.1:17890 https://api.github.com
+```
+
+返回 GitHub JSON 说明代理请求可用；无法连接时先恢复代理再部署。服务已启动后，本地 Docker 可以保持关闭；上述 SSH 隧道与本地 Docker 容器无关。
+
 ## 1. 服务器准备（只需一次）
 
 已知服务器：SSH 别名 `codex-linux`，内网地址 `10.11.60.130`，用户 `codexuser`，CentOS 7，Docker 24.0.7。部署检查已确认服务器可直连 GitHub API、Release 下载和 GHCR 清单；完整镜像下载需要代理，Docker Hub 超时。
