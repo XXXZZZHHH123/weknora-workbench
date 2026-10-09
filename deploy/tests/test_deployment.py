@@ -155,6 +155,29 @@ else: sys.exit(subprocess.call(['/bin/mv']+sys.argv[1:]))
         self.assertNotIn(' up ', self.log.read_text())
         self.assertEqual((self.root / 'current').resolve(), old)
 
+    def test_full_docker_filesystem_prevents_image_download(self):
+        old = self.previous()
+        self.release()
+        self.executable('df', '#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\n/dev/test 100 100 0 100%% /test\\n"\n')
+        result = self.run_script('deploy.sh', TAG)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('15 GiB free', result.stderr)
+        self.assertNotIn(' pull ', self.log.read_text())
+        self.assertEqual((self.root / 'current').resolve(), old)
+
+    def test_bootstrap_keeps_existing_secrets_on_second_run(self):
+        (self.shared / '.env').unlink()
+        result = self.run_script('bootstrap.sh', 'owner/repo')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = (self.shared / '.env').read_text()
+        config = dict(line.split('=', 1) for line in first.splitlines() if line and not line.startswith('#'))
+        self.assertEqual(len(config['SYSTEM_AES_KEY']), 32)
+        self.assertEqual(len(config['JWT_SECRET']), 64)
+        self.assertEqual((self.shared / '.env').stat().st_mode & 0o777, 0o600)
+        result = self.run_script('bootstrap.sh', 'owner/repo')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.shared / '.env').read_text(), first)
+
     def test_existing_database_is_backed_up_before_update(self):
         self.release()
         (self.root / 'existing-db').touch()

@@ -35,6 +35,21 @@ bash ~/weknora-workbench/setup/bootstrap.sh \
 
 实测本服务器可直连 GHCR，Docker Hub 拉取会超时，Docker daemon 尚无代理。本流程所有运行镜像均来自 GHCR，因此无需为此次部署重启 Docker 或修改 daemon 的全局代理。若其他环境连 GHCR 也需要代理，管理员应另行配置 Docker daemon 的代理；它独立于 poller 的 curl 代理。
 
+## Docker 存储维护（需管理员维护窗口）
+
+当前 Docker 数据目录所在 `/sysvol` 已满；新盘 `/dev/vdb1` 已有 XFS ftype=1 文件系统，约 1 TB 可用，现以只读方式挂载到 `/mnt/weknora-storage`。不要格式化这块盘，它已经有其他数据。
+
+`migrate-docker-storage.sh` 默认只检查容量并展示计划；只有显式加 `--migrate` 才会修改挂载/配置、暂停现有容器并切换数据目录。脚本复制到新建的 `docker-data` 目录，保留旧目录和配置备份，加入持久挂载及 Docker 挂载依赖；不会删除原数据或触碰新盘其他目录。仅在管理员批准停机时由 root 执行，不属于日常发布流程。
+
+```sh
+# 只检查
+bash /home/codexuser/weknora-workbench/setup/migrate-docker-storage.sh /mnt/weknora-storage
+# 批准维护后执行
+bash /home/codexuser/weknora-workbench/setup/migrate-docker-storage.sh /mnt/weknora-storage --migrate
+```
+
+拷贝时间取决于旧 Docker 数据量。预复制期间原容器继续运行，最后同步期间会停止并重新启动原先运行的容器。失败时先核对输出中的状态目录，原配置备份为 `daemon.json.before`；恢复原数据目录前需要停 Docker、恢复配置并重新启动，再核对原有业务。脚本的 ShellCheck 已验证，真实数据迁移仍须管理员在服务器验收。
+
 ## 2. 私有仓库与镜像读取凭据
 
 服务器建议使用独立的 classic PAT：`repo`（classic PAT 读取私有仓库所需，范围较宽）及 `read:packages`，不要使用开发者的日常推送令牌。也可以分别使用 Contents:read 的 fine-grained PAT 读取发布包，以及另一个 read:packages 的 classic PAT 登录 GHCR。令牌还需要拥有该仓库及六个镜像包的读取权限；组织 SSO 需按组织要求授权。
