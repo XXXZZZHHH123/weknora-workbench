@@ -40,6 +40,9 @@ from pathlib import Path
 r=Path(os.environ['MOCK_ROOT']); a=sys.argv[1:]
 with (r/'docker.log').open('a') as f: f.write(' '.join(a)+'\\n')
 if 'info' in a: print(str(r))
+elif 'image' in a and 'inspect' in a: sys.exit(1)
+elif 'config' in a and '--images' in a: print('ghcr.io/owner/repo-app:test\\nghcr.io/owner/repo-frontend:test')
+elif 'load' in a: sys.stdin.read(); print('Loaded image')
 elif 'ps' in a and (r/'existing-db').exists(): print('existing-postgres')
 elif 'exec' in a and 'pg_dump' in ' '.join(a):
  if (r/'fail-backup').exists(): sys.exit(1)
@@ -68,6 +71,14 @@ else: sys.exit(1)
 ''')
         # Tests simulate server capacity independently of runner disk usage.
         self.executable('df', '#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\n/dev/test 41943040 10485760 31457280 25%% /test\\n"\n')
+        self.executable('regctl', '''#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+r=Path(os.environ['MOCK_ROOT'])
+with (r/'exports.log').open('a') as f: f.write(' '.join(sys.argv[1:])+'\\n')
+if (r/'fail-export').exists(): sys.exit(1)
+print('test-image-archive')
+''')
         if not shutil.which('flock'):
             self.executable('flock', '#!/bin/sh\nexit 0\n')
         # Production uses GNU mv on Linux. Keep tests runnable on macOS too.
@@ -195,6 +206,23 @@ sys.exit(subprocess.call(['/usr/bin/sed']+args))
         self.assertIn('database-backup', backups[0].read_text())
         log = self.log.read_text()
         self.assertLess(log.index('pg_dump'), log.index(' up '))
+
+    def test_regctl_imports_each_image_without_daemon_pull(self):
+        self.release()
+        (self.shared / 'poller.json').write_text(json.dumps({'repository': 'owner/repo', 'image_transport': 'regctl'}))
+        result = self.run_script('deploy.sh', TAG)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len((self.root / 'exports.log').read_text().splitlines()), 2)
+        self.assertNotIn(' pull ', self.log.read_text())
+        self.assertIn('--pull never', self.log.read_text())
+
+    def test_failed_image_export_prevents_service_update(self):
+        self.release()
+        (self.shared / 'poller.json').write_text(json.dumps({'repository': 'owner/repo', 'image_transport': 'regctl'}))
+        (self.root / 'fail-export').touch()
+        result = self.run_script('deploy.sh', TAG)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(' up ', self.log.read_text())
 
     def test_poller_records_failure_then_suppresses_retries(self):
         self.bundle()

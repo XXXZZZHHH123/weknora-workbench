@@ -10,7 +10,7 @@ PR 运行检查和镜像构建，不推送镜像、不发布部署版本。发�
 
 已知服务器：SSH 别名 `codex-linux`，内网地址 `10.11.60.130`，用户 `codexuser`，CentOS 7，Docker 24.0.7。部署检查已确认服务器可直连 GitHub API、Release 下载和 GHCR；Docker Hub 超时。
 
-`17890` 当前来自 SSH 转发，只作为下载工具时的可选代理。正式轮询使用直连，避免依赖 Mac 的 SSH 会话；若网络策略变化，可在 `shared/poller.json` 中修改代理。查询 IP 得到的代理出口不能用作服务器公网 SSH 地址。
+`17890` 当前来自 SSH 转发，只作为下载工具时的可选代理。控制 API 曾验证直连可用，但完整镜像下载需代理；正式发布应在 `shared/poller.json` 中设置持续可用的代理，避免依赖临时 SSH 会话。查询 IP 得到的代理出口不能用作服务器公网 SSH 地址。
 
 root 执行（目前 socket 属于 root:root，codexuser 无权使用 Docker）：
 
@@ -31,9 +31,9 @@ bash ~/weknora-workbench/setup/bootstrap.sh \
   /home/codexuser/weknora-workbench XXXZZZHHH123/weknora-workbench
 ```
 
-工具安装器验证官方 SHA256，安装 Compose v2.39.2 和 jq 1.7.1 到用户目录。bootstrap 一次生成数据库、Redis、JWT、AES 和签名密钥，再次执行保留已有配置。服务器不需要 Node、Go 或 Python 3。
+工具安装器验证 SHA256，安装 Compose v2.39.2、jq 1.7.1 和 regctl 0.8.3 到用户目录。bootstrap 一次生成数据库、Redis、JWT、AES 和签名密钥，再次执行保留已有配置。服务器不需要 Node、Go 或 Python 3。
 
-实测本服务器可直连 GHCR，Docker Hub 拉取会超时，Docker daemon 尚无代理。本流程所有运行镜像均来自 GHCR，因此无需为此次部署重启 Docker 或修改 daemon 的全局代理。若其他环境连 GHCR 也需要代理，管理员应另行配置 Docker daemon 的代理；它独立于 poller 的 curl 代理。
+实测服务器命令行可以读取 GHCR 清单，但 Docker daemon 拉取经常连接超时。可在 `shared/poller.json` 设置 `image_transport: "regctl"` 和 `proxy: "http://127.0.0.1:17890"`，通过用户态客户端下载并导入 Docker；不重启 daemon，也不修改其他项目的代理。所有镜像导入成功后才更新容器，Compose 使用 `--pull never`。健康网络环境可保留默认 `image_transport: "docker"`。17890 若来自 Mac 的 SSH 反向转发，自动更新依赖该连接和 Mac 代理在线；长期无人值守部署应使用服务器常驻代理。
 
 ## Docker 存储维护（需管理员维护窗口）
 
@@ -123,8 +123,10 @@ bash ~/weknora-workbench/bin/poll.sh /home/codexuser/weknora-workbench --retry-f
 
 ## 5. 验证范围
 
-CI 检查结构化服务测试、前端类型与测试、Go MCP 回归、ShellCheck、部署状态与失败路径测试、Compose 配置以及六个镜像构建。没有访问生产密钥、生产数据或调用收费模型。只有服务器实际拉取、启动并通过健康检查，才证明该版本可以在这台 CentOS 7 主机上运行；源码检查不能替代该验证。
+CI 检查结构化服务测试、前端类型与测试、Go MCP 回归、ShellCheck、部署状态与失败路径测试、Compose 配置以及六个镜像构建；用户态镜像导入及失败中止也有回归测试。没有访问生产密钥、生产数据或调用收费模型。只有服务器实际拉取、启动并通过健康检查，才证明该版本可以在这台 CentOS 7 主机上运行；源码检查不能替代该验证。
 
 GitHub Actions 绿色表示发布包已准备好；服务器部署状态目前记录在 `shared/deploy.log`，未回写 GitHub Deployments。代理离线或令牌失效时服务器保留当前版本，恢复连接后继续检查新版本。
 
 实现依据：[GitHub 镜像发布](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)、[GHCR 认证](https://docs.github.com/en/packages/working-with-the-container-registry/working-with-the-container-registry)、[Release API](https://docs.github.com/en/rest/releases/releases)、[Compose 等待健康检查](https://docs.docker.com/reference/cli/docker/compose/up/)。
+
+用户态镜像导入依据：[regctl image export](https://regclient.org/cli/regctl/image/export/)。

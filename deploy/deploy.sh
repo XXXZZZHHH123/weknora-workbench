@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
 root="${1:?usage: deploy.sh ABSOLUTE_DEPLOY_DIR RELEASE_ID}"
 release_id="${2:?release ID required}"
 [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ && "$release_id" =~ ^production-[a-f0-9]{40}-[0-9]+-[0-9]+$ ]] || { echo 'Invalid deployment arguments' >&2; exit 1; }
@@ -19,7 +20,27 @@ free_kib="$(df -Pk "${docker_root:?Docker data directory unavailable}" | awk 'NR
   echo "Docker data filesystem needs at least 15 GiB free before deployment: $docker_root" >&2
   exit 1
 }
-"${compose[@]}" pull --quiet
+transport=docker
+if [[ -f "$root/shared/poller.json" ]]; then
+  transport="$(jq -r '.image_transport // "docker"' "$root/shared/poller.json")"
+fi
+case "$transport" in
+  docker) "${compose[@]}" pull --quiet ;;
+  regctl)
+    command -v regctl >/dev/null
+    proxy="$(jq -r '.proxy // ""' "$root/shared/poller.json")"
+    if [[ -n "$proxy" ]]; then export HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy"; fi
+    while IFS= read -r image; do
+      if docker image inspect "$image" >/dev/null 2>&1; then
+        echo "Image already available: $image"
+        continue
+      fi
+      echo "Importing $image"
+      regctl image export "$image" --platform linux/amd64 | docker load
+    done < <("${compose[@]}" config --images)
+    ;;
+  *) echo 'Unsupported image transport' >&2; exit 1 ;;
+esac
 
 # Back up PostgreSQL before starting the new app (which may run migrations).
 # Failed backups abort deployment; no service or volume is removed.
@@ -31,7 +52,7 @@ if [[ -n "$postgres_id" ]]; then
   "${compose[@]}" exec --user 0 -T postgres sh -c 'umask 077; pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f "/backups/$1.tmp" && mv "/backups/$1.tmp" "/backups/$1"' sh "$backup"
 fi
 
-if ! "${compose[@]}" up -d --no-build --wait --wait-timeout 300; then
+if ! "${compose[@]}" up -d --no-build --pull never --wait --wait-timeout 300; then
   "${compose[@]}" ps
   echo "Release $release_id failed health checks; current pointer was not changed. Inspect container logs locally. Database migrations may already have run; follow the recovery instructions." >&2
   exit 1

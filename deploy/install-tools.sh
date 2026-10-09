@@ -21,5 +21,10 @@ expected="$(awk '$2 == "jq-linux-amd64" {print $1}' "$temp/jq.sha256")"
 mkdir -p "$HOME/.docker/cli-plugins" "$HOME/.local/bin"
 install -m 700 "$temp/docker-compose" "$HOME/.docker/cli-plugins/docker-compose"
 install -m 700 "$temp/jq" "$HOME/.local/bin/jq"
+# SHA256 independently checked against the official v0.8.3 binary.
+curl "${opts[@]}" https://github.com/regclient/regclient/releases/download/v0.8.3/regctl-linux-amd64 -o "$temp/regctl"
+expected=b4f352d3acbe5cd3d2255ebac618a0f8da80b72f16ec30182275cb891f5e6ee5
+[[ "$(sha256sum "$temp/regctl" | cut -d ' ' -f1)" == "$expected" ]] || { echo 'regctl checksum mismatch' >&2; exit 1; }
+install -m 700 "$temp/regctl" "$HOME/.local/bin/regctl"
 docker compose version
 "$HOME/.local/bin/jq" --version
