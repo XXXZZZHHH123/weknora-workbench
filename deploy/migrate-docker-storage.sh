@@ -45,7 +45,7 @@ dockerd --validate --config-file "$state/daemon.json.after"
 mkdir "$new"
 # Warm copy while services run; the second copy after stopping is authoritative.
 copy_status=0
-rsync -aHAXx --numeric-ids --info=progress2 "$old/" "$new/" || copy_status=$?
+rsync -aHAXx --numeric-ids --stats "$old/" "$new/" || copy_status=$?
 [[ "$copy_status" == 0 || "$copy_status" == 24 ]] || exit "$copy_status"
 
 docker ps -q > "$state/running-containers"
@@ -59,7 +59,7 @@ fi
 systemctl stop docker.service
 [[ -z "$(pgrep -x dockerd || true)" ]] || { echo 'A Docker daemon is still running; aborting before final synchronization' >&2; exit 1; }
 # Destination was freshly created above, never an existing business directory.
-rsync -aHAXx --numeric-ids --delete --info=progress2 "$old/" "$new/"
+rsync -aHAXx --numeric-ids --delete --stats "$old/" "$new/"
 
 device="$(findmnt -n -o SOURCE --target "$mount_dir")"
 uuid="$(blkid -s UUID -o value "$device")"
