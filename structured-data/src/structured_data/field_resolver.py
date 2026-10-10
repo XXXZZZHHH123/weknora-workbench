@@ -508,6 +508,11 @@ class FieldResolver:
 
     def confirm(self,resolution_id,selections=None,note=''):
         original=json.loads(self._path(resolution_id).read_text())
+        if original.get('resolver_version') != VERSION:
+            # Old saved plans may have mistaken a catalogue question for a
+            # dated value query. Reinterpret the original task while retaining
+            # the human selection; do not preserve that obsolete intent.
+            note=note or '按完整原始问题重新判断任务类型，保留本次已确认字段；目录查询无需取具体报价或要求日期。'
         if note:
             selected=[]
             if set(selections or {})-{f['role'] for f in original['fields']}:raise ValueError('包含未知字段角色')

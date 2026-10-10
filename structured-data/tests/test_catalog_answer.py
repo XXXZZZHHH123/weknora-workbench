@@ -114,3 +114,16 @@ def test_metadata_scope_ambiguity_requires_specific_missing_information(fields_s
     raw['clarification']={'missing_input':'scope','reason':'不同范围会列出不同种类'}
     result=FieldResolver(store,lambda p:raw).answer('有哪些价格',dataset_id=ds)
     assert result['status']=='needs_clarification' and result['requires_note'] and 'answer' not in result
+
+
+def test_legacy_clarification_is_reinterpreted_instead_of_asking_for_date(fields_store):
+    store,ds=fields_store
+    import json
+    resolver=FieldResolver(store,lambda p:metadata(['收盘价','结算价','盘中价']))
+    old={'kind':'structured_field_resolution','status':'needs_clarification','intent':'lookup',
+         'resolution_id':'b'*24,'dataset_id':ds,'original_question':'有几种价格',
+         'resolver_version':'semantic-fields-v20-table-chart-scope','date':None,
+         'fields':[{'role':'v1','label':'价格','candidates':[{'series_id':'B-0','sheet':'期货报价','metric':'收盘价'},{'series_id':'K-0','sheet':'期货报价','metric':'结算价'}]}]}
+    (resolver.root/('b'*24+'.json')).write_text(json.dumps(old))
+    result=resolver.attach_answer(resolver.confirm(old['resolution_id'],{'v1':'B-0'}))
+    assert result['status']=='resolved' and result['intent']=='metadata' and result['answer']['count']==3
