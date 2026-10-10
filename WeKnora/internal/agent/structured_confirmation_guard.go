@@ -86,9 +86,22 @@ func fieldResolutionIdentity(content string) (string, string) {
 
 func guardFieldConfirmation(ctx context.Context, name string, args map[string]any) error {
 	turn, ok := ctx.Value(fieldConfirmationTurnKey{}).(*fieldConfirmationTurn)
-	if !ok || !confirmToolName.MatchString(name) || ctx.Value(fieldConfirmationHumanKey{}) == true {
+	if !ok || ctx.Value(fieldConfirmationHumanKey{}) == true {
 		return nil
 	}
+	if fieldToolName.MatchString(name) && !confirmToolName.MatchString(name) {
+		proposed, _ := args["question"].(string)
+		if turn.pendingID != "" && proposed != turn.question && !strings.Contains(proposed, turn.question) {
+			args["question"] = proposed + "\n用户本轮原话：" + turn.question
+		} else {
+			args["question"] = turn.question
+		}
+		return nil
+	}
+	if !confirmToolName.MatchString(name) {
+		return nil
+	}
+
 	id, _ := args["resolution_id"].(string)
 	if turn.pendingID == "" || id != turn.pendingID {
 		return fmt.Errorf("FIELD_CONFIRMATION_WAIT_FOR_USER: 本轮待选方案尚未收到用户选择；请结束本轮等待用户，不得替用户确认")

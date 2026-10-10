@@ -477,7 +477,7 @@ func (e *AgentEngine) runToolCall(
 	if err := guardFieldConfirmation(ctx, confirmationName, executionArgs); err != nil {
 		return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: args, Result: &types.ToolResult{Success: false, Error: err.Error()}}
 	}
-	if ctx.Value(fieldConfirmationTurnKey{}) != nil && confirmToolName.MatchString(confirmationName) {
+	if ctx.Value(fieldConfirmationTurnKey{}) != nil && fieldToolName.MatchString(confirmationName) {
 		if tc.Function.Name == agenttools.ToolCallMCPTool {
 			args["arguments"] = executionArgs
 		} else {

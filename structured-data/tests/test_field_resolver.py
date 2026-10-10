@@ -369,3 +369,18 @@ def test_named_daily_high_field_is_not_forced_into_global_extremum(catalogue):
     result=FieldResolver(store,lambda p:proposal([['price']])).answer('2023/9/7最高价是多少',dataset_id=ds)
     assert result['query']['operation']=='rows'
     assert result['answer']['date']=='2023-09-07'
+
+
+def test_explicit_header_is_respected_even_when_model_uses_a_generic_role_label(catalogue):
+    store,ds=catalogue
+    calls=[]
+    def model(payload):
+        calls.append(payload)
+        if len(calls)==1:
+            return proposal([['price','usd-price']],decision='clarify')
+        assert '用户已明确原表字段口径' in payload['repair_instruction']
+        return proposal([['price']])
+    plan=FieldResolver(store,model).answer('请告诉我2023/9/7美国 EMOT M 1-1/8是多少',ds)
+    assert len(calls)==2
+    assert plan['status']=='resolved'
+    assert plan['answer']['sources']['v1']['series']['series_id']=='price'
