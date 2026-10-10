@@ -1,8 +1,14 @@
 <template>
   <div v-if="plan" class="field-clarification-card">
-    <strong>需要你确认字段</strong>
+    <strong>{{ noteOnly ? plan.clarification?.title || '请补充一点信息' : '请选择需要查询的指标' }}</strong>
     <p>{{ plan.question }}</p>
-    <t-button theme="primary" variant="outline" :disabled="!active || submitted" @click="visible = true">{{ submitted ? '已提交选择' : '选择字段或补充说明' }}</t-button>
+    <form v-if="noteOnly" class="inline-clarification" @submit.prevent="submit">
+      <label :for="`clarification-${plan.resolution_id}`">{{ plan.clarification?.type === 'time_range' ? '时间范围' : '补充说明' }}</label>
+      <textarea :id="`clarification-${plan.resolution_id}`" v-model="note" maxlength="1200" rows="2" :disabled="!active || submitted" :placeholder="plan.clarification?.placeholder || '直接说明你的意思即可。'" />
+      <small v-if="plan.fields.length">已确定指标：{{ plan.fields.map(f => f.candidates[0]?.metric || f.label).join('、') }}</small>
+      <t-button type="submit" :disabled="!canSubmit || !active || submitted">{{ submitted ? '已提交补充' : '继续查询' }}</t-button>
+    </form>
+    <t-button v-else theme="primary" variant="outline" :disabled="!active || submitted" @click="visible = true">{{ submitted ? '已提交选择' : '选择指标' }}</t-button>
     <t-dialog attach="body" placement="center" v-model:visible="visible" header="你想查询哪一项？" width="min(720px, 94vw)" :footer="false" :close-on-overlay-click="false">
       <div class="field-clarification-body" v-if="plan">
         <p>{{ plan.question }}</p>
@@ -25,17 +31,18 @@
 </template>
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { fieldClarification, confirmationText, dimensionLabel, canConfirmFields } from '@/utils/fieldClarification';
+import { fieldClarification, confirmationText, dimensionLabel, canConfirmFields, isNoteOnlyClarification } from '@/utils/fieldClarification';
 const props = defineProps<{ session: any; active: boolean }>();
 const emit = defineEmits<{ submit: [text: string] }>();
 const plan = computed(() => fieldClarification(props.session.agentEventStream || [], !!props.session.is_completed));
 const visible = ref(false), submitted = ref(false), note = ref('');
 const selections = ref<Record<string, string>>({});
-const visibleFields=computed(()=>plan.value?.fields.filter(f=>!plan.value?.same_series_roles?.includes(f.role) || f.role===plan.value.same_series_roles[0]) || []);
+const visibleFields=computed(()=>plan.value?.fields.filter(f=>f.candidates.length!==1 && (!plan.value?.same_series_roles?.includes(f.role) || f.role===plan.value.same_series_roles[0])) || []);
+const noteOnly = computed(() => isNoteOnlyClarification(plan.value));
 const needsText = computed(() => !!plan.value?.requires_note && !plan.value.fields.some(f => f.candidates.length > 1));
 const canSubmit = computed(() => canConfirmFields(plan.value, selections.value, note.value));
 const submitHint = computed(() => canSubmit.value
-  ? '可以提交当前选择或说明；如果仍缺计算口径，系统会继续询问。'
+  ? '将按你选择的指标和补充说明继续查询。'
   : needsText.value ? '请在输入框补充上方问题所需的信息后继续。' : '请为每项用途选择一个字段，或输入补充说明。');
 watch(() => plan.value?.resolution_id, () => {
   selections.value = {}; note.value = ''; submitted.value = false;
@@ -52,6 +59,7 @@ function submit() {
 <style scoped>
 .field-clarification-card { margin: 12px 0; padding: 18px; border: 1px solid #b7d9ca; border-radius: var(--app-radius-xl); background: #f3faf6; color: #243d34; }
 .field-clarification-card p { margin: 8px 0 14px; }
+.inline-clarification small { margin: 8px 0; }
 .field-clarification-body { max-height: 65vh; overflow-y: auto; color: #243d34; }
 fieldset { border: 0; padding: 0; margin: 20px 0; }
 legend { font-weight: 600; margin-bottom: 10px; }

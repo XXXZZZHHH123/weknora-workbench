@@ -1,0 +1,68 @@
+{
+  "groups": [
+    {
+      "id": "calendar_whole_year_note",
+      "cases": [
+        {
+          "id": "C01",
+          "question": "2022/23年度中国棉花产量加进口，合计是多少？"
+        },
+        {
+          "id": "C02",
+          "question": "两年整年的",
+          "confirm_note": "两年整年的"
+        }
+      ]
+    },
+    {
+      "id": "calendar_short_year_note",
+      "cases": [
+        {
+          "id": "C03",
+          "question": "2022/23年度中国棉花产量加进口，合计是多少？"
+        },
+        {
+          "id": "C04",
+          "question": "2022年1月到23年12月",
+          "confirm_note": "2022年1月到23年12月"
+        }
+      ]
+    },
+    {
+      "id": "calendar_chat_note",
+      "cases": [
+        {
+          "id": "C05",
+          "question": "2022/23年度中国棉花产量加进口，合计是多少？"
+        },
+        {
+          "id": "C06",
+          "question": "两个完整自然年"
+        }
+      ]
+    },
+    {
+      "id": "calendar_explicit",
+      "cases": [
+        {
+          "id": "C07",
+          "question": "2022年1月到23年12月中国棉花产量加进口，合计是多少？"
+        }
+      ]
+    },
+    {
+      "id": "calendar_business_year",
+      "cases": [
+        {
+          "id": "C08",
+          "question": "2022/23年度中国棉花产量加进口，合计是多少？"
+        },
+        {
+          "id": "C09",
+          "question": "2022年9月至23年8月",
+          "confirm_note": "2022年9月至23年8月"
+        }
+      ]
+    }
+  ]
+}

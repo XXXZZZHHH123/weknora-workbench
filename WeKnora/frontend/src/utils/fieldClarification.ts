@@ -1,7 +1,12 @@
 /** Only structured results from the dedicated field tools may open a dialog. */
 export interface Candidate { series_id: string; sheet: string; metric: string; unit?: string; reason?: string; header_cells?: string[]; dimensions?: Record<string, unknown>; chart_sheet?: string }
 export interface Field { role: string; label: string; candidates: Candidate[] }
-export interface Clarification { kind: string; status: string; resolution_id: string; question: string; original_question?: string; source_tool?: string; requires_note?: boolean; same_series_roles?: string[]; fields: Field[]; answer?: any }
+export interface Clarification { kind: string; status: string; resolution_id: string; question: string; original_question?: string; source_tool?: string; requires_note?: boolean; clarification?: {type: string; title?: string; placeholder?: string}; same_series_roles?: string[]; fields: Field[]; answer?: any }
+
+/** With no field alternatives, ask for the missing detail in place. */
+export function isNoteOnlyClarification(plan: Clarification | null): boolean {
+  return !!plan?.requires_note && !plan.fields.some(f => f.candidates.length > 1);
+}
 
 export function linkedSelections(plan: Clarification, selections: Record<string,string>): Record<string,string> {
   const result={...selections}; const roles=plan.same_series_roles || [];
@@ -46,7 +51,7 @@ export function confirmationText(plan: Clarification, selections: Record<string,
   selections=linkedSelections(plan,selections);
   if (!canConfirmFields(plan, selections, note)) throw new Error('请选择字段或补充说明');
   const selected = Object.fromEntries(plan.fields.flatMap(f => f.candidates.some(c => c.series_id === selections[f.role]) ? [[f.role, selections[f.role]]] : []));
-    return '字段确认提交：' + JSON.stringify({resolution_id: plan.resolution_id, source_tool: plan.source_tool, selections: selected, note: note.trim(), summary: plan.fields.flatMap(f => {
+    return '字段确认提交：' + JSON.stringify({resolution_id: plan.resolution_id, source_tool: plan.source_tool, selections: selected, note: note.trim(), summary: (isNoteOnlyClarification(plan) ? [] : plan.fields).flatMap(f => {
       const c = f.candidates.find(c => c.series_id === selected[f.role]);
       return c ? [`${f.label}：“${c.sheet}”的“${c.metric}”${dimensionLabel(c.dimensions) ? '（'+dimensionLabel(c.dimensions)+'）' : ''}`] : [];
     }).join('\n')});

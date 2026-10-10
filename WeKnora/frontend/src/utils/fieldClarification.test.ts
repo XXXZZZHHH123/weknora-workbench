@@ -1,8 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fieldClarification, confirmationText, confirmationDisplayText, structuredFieldIssue, structuredFieldAnswer, canConfirmFields } from './fieldClarification';
+import { fieldClarification, confirmationText, confirmationDisplayText, structuredFieldIssue, structuredFieldAnswer, canConfirmFields, isNoteOnlyClarification } from './fieldClarification';
 const plan = { kind: 'structured_field_resolution', status: 'needs_clarification', resolution_id: 'a'.repeat(24), question: '查哪种汇率？', fields: [{ role: 'v1', label: '汇率', candidates: [{ series_id: 'eur', sheet: '商品报价', metric: '欧元兑人民币', unit: '人民币/欧元', header_cells: ['G1'] }] }] };
 const event = (output: unknown, tool = 'mcp__resolve_fields_a123') => ({ type: 'tool_call', tool_name: tool, success: true, output });
+test('time-only clarification preserves unique bindings but only displays the human reply', () => {
+  const p={...plan,requires_note:true,clarification:{type:'time_range',title:'请补充时间范围'}};
+  assert.equal(isNoteOnlyClarification(p),true);
+  assert.equal(canConfirmFields(p,{v1:'eur'},''),false);
+  const text=confirmationText(p,{v1:'eur'},'两年整年的');
+  const payload=JSON.parse(text.slice('字段确认提交：'.length));
+  assert.deepEqual(payload.selections,{v1:'eur'});
+  assert.equal(confirmationDisplayText(text),'已补充：两年整年的');
+  assert.equal(isNoteOnlyClarification({...p,fields:[{...p.fields[0],candidates:[...p.fields[0].candidates,{...p.fields[0].candidates[0],series_id:'other'}]}]}),false);
+});
 test('linked extrema ask once and submit the same source for both operations', () => {
   const p = {...plan, same_series_roles:['v1','v2'], fields:[plan.fields[0],{...plan.fields[0],role:'v2'}]};
   assert.equal(canConfirmFields(p,{v1:'eur'},''),true);

@@ -6,7 +6,6 @@ by its proposed plan. Unknown tasks fail visibly rather than run a substitute.
 """
 from copy import deepcopy
 from datetime import date, timedelta
-import calendar
 import math
 import re
 
@@ -35,30 +34,8 @@ def requirements(question):
         without_dates=re.sub(r'\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?月?',' ',q)
         months=[int(n) for n in re.findall(r'(?<!\d)(0?[1-9]|1[0-2])(?:月(?:份)?|合约)',without_dates)]
         if months:result['contract_months']=list(dict.fromkeys(months))
-    for y,m,d in re.findall(r'(?<!\d)(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?!\d)',q):
-        try:day=date(int(y),int(m),int(d)).isoformat()
-        except ValueError:raise ValueError('所问日期不存在，请修正日期；尚未查询数值') from None
-        if day not in result['dates']:result['dates'].append(day)
-    year=int(result['dates'][0][:4]) if result['dates'] else None
-    if year:
-        for m,d in re.findall(r'(?<![\d/年-])(\d{1,2})月(\d{1,2})日',q):
-            day=date(year,int(m),int(d)).isoformat()
-            if day not in result['dates']:result['dates'].append(day)
-    if len(result['dates'])>=2 and re.search(r'至|到|范围|期间|之间',q):
-        result['bounds']={'start_date':min(result['dates']), 'end_date':max(result['dates'])}
-    if not result['dates']:
-        month=re.search(r'(?<!\d)(\d{4})年(\d{1,2})月',q)
-        crop=re.search(r'(?<!\d)(\d{4})/(\d{2,4})年度',q)
-        yearly=re.search(r'(?<!\d)(\d{4})年',q)
-        if month:
-            y,m=map(int,month.groups())
-            if not 1<=m<=12:raise ValueError('月份不存在，请修正月份')
-            result['bounds']={'start_date':date(y,m,1).isoformat(),'end_date':date(y,m,calendar.monthrange(y,m)[1]).isoformat()}
-        elif crop:
-            result['period_label']=crop.group(0).replace('年度','')
-            result['needs_period_definition']=True
-        elif yearly:
-            y=int(yearly[1]);result['bounds']={'start_date':f'{y}-01-01','end_date':f'{y}-12-31'}
+    from .time_scope import calendar_scope
+    result.update(calendar_scope(question))
     if re.search(r'有哪些|有几种|多少种|价格种类|价格类型|几种价格|几种指标|都有什么|什么库存数据|字段单位',q):result['metadata']=True
     if result.get('metadata') and '库存' in q and not re.search(r'负荷|开机|订单|成交|上市|出库|入库|产量|需求|价格|报价',q):result['inventory_directory_only']=True
     if re.search(r'最近|最新|现在|目前|当前',q):result['latest']=True
@@ -113,7 +90,8 @@ def normalize_proposal(raw, req, question, prior=()):
     if not isinstance(fields,list) or any(not isinstance(f,dict) for f in fields):raise ValueError('候选字段格式无效，未执行查询')
     for field in fields:
         if field.get('date') and (req['bounds'] or field['date'] not in req['dates']):field.pop('date')
-    if req.get('bounds'):query.update(req['bounds'])
+    if req.get('bounds'):
+        query.update(req['bounds']);query['period']=None
     for key in ('last_n','top_n','order'):
         if key in req:query[key]=req[key]
     if req['filters']:

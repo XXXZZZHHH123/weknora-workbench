@@ -17,9 +17,11 @@
     <p v-if="answer.operation==='rows' && (answer.start_date || answer.end_date)">范围：{{answer.start_date || '记录起点'}} 至 {{answer.end_date || '记录终点'}}</p>
     <p v-if="answer.operation && answer.operation !== 'rows'">{{ operationLabel(answer.operation) }} · {{ answer.start_date || answer.end_date ? `${answer.start_date || '记录起点'} 至 ${answer.end_date || '记录终点'}` : '全部已导入记录' }}</p>
     <p v-if="plan?.status === 'no_data'">{{ answer.notice }}</p>
+    <p v-if="answer.scope_notice" role="status" class="scope-notice">{{ answer.scope_notice }}</p>
     <div v-for="(source, role) in answer.sources" :key="role" class="source-result">
       <h3><template v-if="answer.operation === 'statistics'">{{ operationLabel(source.filters?.operation) }} · </template>{{ source.series?.metric }}<template v-if="dimensionLabel(source.series?.dimensions)"> · {{ dimensionLabel(source.series?.dimensions) }}</template></h3>
       <small>来源：{{ source.source?.file }} · {{ source.source?.sheet }} · 表头：{{ (source.series?.header_cells || []).join('、') }}</small>
+      <small v-if="source.coverage">{{ source.coverage.notice }}</small>
       <small v-if="source.series?.chart_sheet">图表位置：{{ source.series.chart_sheet }}；源指标：{{ source.series.source_metric }}</small>
       <p v-if="source.filters?.operation && !['rows','latest','max','min','top'].includes(source.filters.operation)" class="answer-value">
         {{ operationLabel(source.filters.operation) }}：{{ source.aggregate == null ? '无有效数值' : number(source.aggregate) }} {{ source.filters.operation === 'count' ? '条' : (source.series?.unit || '（原表未注明单位）') }}
@@ -32,7 +34,8 @@
         <small>来源：{{ source.source?.file }} · {{ source.source?.sheet }} · {{ row.source_cell }}<template v-if="row.date_cell">；日期：{{ row.date_cell }}</template><template v-if="row.period_cell">；期间：{{ row.period_cell }}</template></small>
       </p>
       <template v-if="source.filters?.operation && source.filters.operation !== 'rows'">
-        <small>有效数值 {{ source.valid_count }} 条；缺失或错误 {{ source.missing_count }} 条，不按零计算。</small>
+        <small v-if="source.coverage">已记录的 {{ source.record_count }} 条数据中，有效 {{ source.valid_count }} 条，空值或错误 {{ source.missing_count }} 条。</small>
+        <small v-else>有效数值 {{ source.valid_count }} 条；缺失或错误 {{ source.missing_count }} 条，不按零计算。</small>
         <small v-if="source.extremum_count > 1">共有 {{ source.extremum_count }} 条并列极值记录，{{ source.truncated ? `当前展示 ${source.rows.length} 条` : '已全部列出' }}。</small>
       </template>
       <small v-if="source.rows?.some((row: any) => row.formula && row.value === 0)">结果包含原表公式保存的零值；需核验上游是否缺数，不能据此推断真实交易价格为零。</small>
@@ -68,10 +71,10 @@
     </figure>
     <p v-for="output in answer.outputs || []" :key="output.label">{{output.label}}：{{output.rounded_value}} {{output.unit}}</p>
     <div v-if="answer.intent === 'calculation' && answer.rounded_value != null" class="calculated-result">
-      <h3>{{ answer.operation === 'statistics' ? '统计计算结果' : '计算结果' }}：{{ answer.rounded_value }} {{ answer.unit }}</h3>
+      <h3>{{ answer.coverage_complete === false ? '已记录月份小计' : answer.operation === 'statistics' ? '统计计算结果' : '计算结果' }}：{{ answer.rounded_value }} {{ answer.unit }}</h3>
       <p>{{ answer.explanation }}</p>
       <p>计算式：{{ readableExpression }}</p>
-      <small>{{ answer.operation === 'statistics' ? '极值与差值由程序按同一范围计算，请结合原表来源核对。' : '上述数值由程序计算。换算公式和业务口径由模型提出，请结合来源核对。' }}</small>
+      <small>{{ answer.operation === 'statistics' ? '统计与计算使用上方列出的实际范围和记录。' : '上述数值由程序计算。换算公式和业务口径由模型提出，请结合来源核对。' }}</small>
     </div>
     </template>
   </section>
@@ -105,6 +108,7 @@ const readableExpression = computed(() => String(answer.value.expression || '').
 .structured-answer { line-height: 1.75; color: var(--app-text-primary, #243d34); padding: 12px 0; }
 table {width:100%;border-collapse:collapse;font-size: var(--app-text-md);} th,td {text-align:left;padding:6px;border-bottom:1px solid #dbe5de;} .source-chart {margin:18px 0;} .source-chart svg {width:100%;height:auto;font-size: var(--app-text-xs);}
 .answer-label { color: #66766c; font-size: var(--app-text-md); }
+.scope-notice { padding: 12px; background: #fff8ed; border: 1px solid #ecd2a7; border-radius: var(--app-radius-md); }
 h3 { font-size: var(--app-text-xl); margin: 14px 0 4px; }
 .answer-value { font-size: var(--app-text-3xl); font-weight: 600; margin: 6px 0 16px; }
 .answer-value span { font-size: var(--app-text-lg); font-weight: 400; }

@@ -262,6 +262,35 @@ class DataStore:
     def _connect(self, dataset_id):
         return duckdb.connect(str(self._path(dataset_id) / "data.duckdb"), read_only=True, config={"enable_external_access": "false", "threads": "2", "memory_limit": "256MB"})
 
+    def monthly_coverage(self, dataset_id, series_id, start_date, end_date):
+        """Check full calendar months only for actual one-record-per-month series.
+
+        Missing rows outside the file's date span are not counted by SQL NULL
+        counts. Report them separately; never manufacture observations or zeros.
+        """
+        series=self._series(dataset_id,series_id)
+        if series.get('chart_id') or (series.get('date_mode') or 'date')!='date':return None
+        start=dt.date.fromisoformat(start_date);end=dt.date.fromisoformat(end_date)
+        import calendar
+        if start.day!=1 or end.day!=calendar.monthrange(end.year,end.month)[1]:return None
+        with self._connect(dataset_id) as con:
+            months=con.execute("SELECT strftime(date,'%Y-%m'), count(*), count(value), min(date) FROM observations WHERE series_id=? AND date IS NOT NULL GROUP BY 1 ORDER BY 1",[series_id]).fetchall()
+        if len(months)<3 or any(r[1]!=1 for r in months):return None
+        # Monthly sources may mix first-day and month-end date conventions.
+        days={r[3].day for r in months}
+        if len(days)>1 and not all(r[3].day in (1,calendar.monthrange(r[3].year,r[3].month)[1]) for r in months):return None
+        expected=[];y,m=start.year,start.month
+        while (y,m)<=(end.year,end.month):
+            expected.append(f'{y:04d}-{m:02d}');y,m=(y+1,1) if m==12 else (y,m+1)
+        present={r[0]:r for r in months if start<=r[3]<=end}
+        valid=[m for m in expected if m in present and present[m][2]]
+        missing=[m for m in expected if m not in valid]
+        notice=f'请求 {len(expected)} 个月，原表有 {len(valid)} 个月有效记录'
+        if valid:notice+='（'+valid[0]+' 至 '+valid[-1]+'）'
+        if missing:notice+='；缺少有效数值的月份：'+'、'.join(missing[:24])+('等' if len(missing)>24 else '')+'，未补零'
+        return {'frequency':'monthly','basis':'原表日期每月一条记录','expected_month_count':len(expected),'valid_month_count':len(valid),
+                'missing_months':missing,'first_valid_month':valid[0] if valid else None,'last_valid_month':valid[-1] if valid else None,'complete':not missing,'notice':notice+'。'}
+
     def query_series(self, dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, *, value_filters=None, last_n=None, top_n=None, order='desc', _complete=False) -> dict:
         if _complete:
             if type(limit)!=int or not 1<=limit<=20000:raise ValueError('分析最多读取20000条原表记录')

@@ -4,6 +4,9 @@
 def summarize(answer):
     def fmt(v):return format(v,'.10g') if isinstance(v,(int,float)) else str(v)
     lines=[]
+    if answer.get('start_date') or answer.get('end_date'):
+        lines.append('请求范围：'+str(answer.get('start_date') or '记录起点')+' 至 '+str(answer.get('end_date') or '记录终点'))
+    if answer.get('scope_notice'):lines.append(answer['scope_notice'])
     if answer.get('intent')=='metadata':
         lines.append('原表共'+str(answer['count'])+'种：'+'、'.join(g['metric'] for g in answer['groups']))
         for unit,names in answer.get('unit_groups',{}).items():lines.append(unit+'：'+'、'.join(names))
@@ -13,14 +16,15 @@ def summarize(answer):
     for role,source in answer.get('sources',{}).items():
         s=source['series'];unit=s.get('unit') or '原表未注明单位'
         lines.append(s['metric']+'（'+unit+'）')
-        if source.get('aggregate') is not None:lines.append('统计值：'+fmt(source['aggregate']))
+        if source.get('aggregate') is not None:lines.append(('已记录月份统计值：' if source.get('coverage',{}).get('complete') is False else '统计值：')+fmt(source['aggregate']))
+        if source.get('coverage'):lines.append(source['coverage']['notice'])
         rows=source.get('window_rows') or (source.get('rows',[]) if source.get('rows_are')!='source_examples_not_all_inputs' else [])
         if not rows and source.get('status')=='no_data':lines.append('指定范围没有有效记录，不采用相邻日期替代。')
         for r in rows[:200]:
             lines.append((r.get('date') or r.get('period') or '')+'：'+(fmt(r['value']) if r['value'] is not None else '无有效数值')+'；来源 '+source['source']['file']+' / '+s['sheet']+' / '+r['source_cell']+'；日期单元格 '+str(r.get('date_cell') or '无'))
         if any(r.get('formula') and r.get('value')==0 for r in rows):lines.append('原表公式保存的零值不能据此证明真实成交价为零。')
         if source.get('missing_count'):lines.append('缺失或错误记录 '+str(source['missing_count'])+' 条，不补零。')
-    if 'rounded_value' in answer:lines.append('计算结果：'+answer['rounded_value']+' '+answer.get('unit',''))
+    if 'rounded_value' in answer:lines.append(('已记录月份小计：' if answer.get('coverage_complete') is False else '计算结果：')+answer['rounded_value']+' '+answer.get('unit',''))
     for o in answer.get('outputs',[]):lines.append(o['label']+'：'+o['rounded_value']+' '+o['unit'])
     a=answer.get('analysis')
     if a:
