@@ -1,7 +1,6 @@
 """Local metadata retrieval. Scores recall candidates; they never authorize a value query."""
 from hashlib import sha256
 import json
-from os.path import commonprefix
 import re
 import sqlite3
 import unicodedata
@@ -49,6 +48,7 @@ class FieldIndex:
         # Scope/question-dependent chart views get separate fingerprints as well.
         self.path=root/(fingerprint+'.sqlite')
         with sqlite3.connect(self.path,timeout=30) as con:
+            con.execute('BEGIN IMMEDIATE')
             con.execute('CREATE VIRTUAL TABLE IF NOT EXISTS fields USING fts5(id UNINDEXED, metric, context)')
             if con.execute('SELECT count(*) FROM fields').fetchone()[0]!=len(catalog):
                 con.execute('DELETE FROM fields')
@@ -81,34 +81,3 @@ class FieldIndex:
             sheet_fields=list(dict.fromkeys([sid for sid in ranked if self.lookup[sid]['sheet'] in named_sheets]+sheet_fields))[:32]
         selected=list(dict.fromkeys([*named,*prior_ids,*sheet_fields,*per_query,*ranked]))[:64]
         return [self.lookup[sid] for sid in selected], {'method':'sqlite_fts5_bm25','queries':terms,'candidate_count':len(selected),'catalog_count':len(self.catalog),'truncated':len(set(named)|set(prior_ids)|set(scores))>len(selected)}
-
-
-def exact_lookup(catalog, question, date, prior_ids=()):
-    """Only a literal single-field request may skip semantic planning. Never top-1."""
-    if not date or prior_ids or '\n' in question:return None
-    q=without_date(question)
-    # This grammar strips only lookup phrasing, not business synonyms or units.
-    def compact(t):return re.sub(r'[\s，,。？?：:]', '', normalize(t))
-    q=compact(q)
-    matches=[]
-    for s in catalog:
-        if (s.get('date_mode') or 'date')!='date':continue
-        name=compact(s['metric'])
-        if len(name)<4 or name not in q:continue
-        dims={k:v for k,v in (s.get('dimensions') or {}).items() if k!='block' and v is not None and str(v).strip()}
-        if any(compact(str(v)) not in q for v in dims.values()):continue
-        rest=q.replace(name,'',1)
-        for value in dims.values():rest=rest.replace(compact(str(value)),'',1)
-        for phrase in ('请问','查询','请查','查一下','是多少','多少钱','数值','价格','报价','多少','的'):
-            rest=rest.replace(phrase,'')
-        if not rest:matches.append(s)
-    if len(matches)!=1:return None
-    chosen=matches[0]
-    # A longer field name can introduce an unspecified definition. Do not bypass
-    # clarification merely because one short header happens to match exactly.
-    name=compact(chosen['metric'])
-    for s in catalog:
-        if s['series_id']==chosen['series_id']:continue
-        other=compact(s['metric'])
-        if name in other or len(commonprefix([name,other]))>=max(4,len(name)/2):return None
-    return chosen

@@ -1,33 +1,29 @@
 import json
 import pytest
-from structured_data.field_index import FieldIndex, exact_lookup
+from structured_data.field_index import FieldIndex, literal_fields
 from structured_data.field_resolver import FieldResolver
 from test_catalog_aliases import catalogue
 from test_field_resolver import proposal
 
 
-def test_literal_unique_lookup_skips_model_and_keeps_missing_date(catalogue):
-    store,ds=catalogue
-    def forbidden(_):raise AssertionError('Literal unique field must not call model')
-    resolver=FieldResolver(store,forbidden)
-    present=resolver.answer('2023/9/7美国 EMOT M 1-1/8价格是多少',dataset_id=ds)
-    assert present['retrieval']['model_calls']==0
+def test_literal_unique_lookup_still_uses_semantic_model(catalogue):
+    store,ds=catalogue;calls=[]
+    def model(p):
+        calls.append(p)
+        return proposal([['price']])
+    resolver=FieldResolver(store,model)
+    present=resolver.answer('美国 EMOT M 1-1/8价格是多少',dataset_id=ds,date='2023-09-07')
+    assert len(calls)==1
     assert present['answer']['sources']['v1']['rows'][0]['value']==99.7
-    missing=resolver.answer('2023/9/8美国 EMOT M 1-1/8价格是多少',dataset_id=ds)
-    assert missing['answer']['sources']['v1']['record_count']==0
+    missing=resolver.answer('美国 EMOT M 1-1/8价格是多少',dataset_id=ds,date='2023-09-08')
+    assert len(calls)==2 and missing['answer']['sources']['v1']['record_count']==0
     assert missing['fields'][0]['candidates'][0]['series_id']=='price'
 
 
-def test_literal_does_not_resolve_duplicate_definition_or_conversion():
-    a=dict(series_id='a',metric='商品报价',sheet='表1',dimensions={})
-    assert exact_lookup([a,dict(a,series_id='b',sheet='表2')],'2023/9/7商品报价是多少','2023-09-07') is None
-    assert exact_lookup([a,dict(a,series_id='b',metric='商品报价结算价')],'商品报价是多少','2023-09-07') is None
-    assert exact_lookup([a],'商品报价换算成美元','2023-09-07') is None
-    assert exact_lookup([dict(a,dimensions={'产地':'美国'})],'商品报价是多少','2023-09-07') is None
-    siblings=[dict(a,series_id=str(i),metric=m) for i,m in enumerate(['合约甲01','合约甲01收盘价','合约甲01结算价'])]
-    assert exact_lookup(siblings,'合约甲01价格是多少','2023-09-07') is None
-    siblings=[dict(a,series_id=str(i),metric=m) for i,m in enumerate(['郑棉01合约','郑棉01收盘价','郑棉01结算价'])]
-    assert exact_lookup(siblings,'郑棉01合约价格是多少','2023-09-07') is None
+def test_literal_header_recall_keeps_both_definitions_for_model():
+    fields=[dict(series_id='a',metric='商品收盘价',sheet='表'),dict(series_id='b',metric='商品结算价',sheet='表')]
+    assert {s['series_id'] for s in literal_fields(fields,'不要商品收盘价，只要商品结算价')}=={'a','b'}
+    # Recall is not interpretation: negation and choosing a field belong to the model.
 
 
 def test_index_rebuilds_for_new_metadata_and_ignores_observation_availability(tmp_path):
@@ -54,7 +50,7 @@ def test_expansion_searches_alias_without_full_catalogue_or_hardcoded_pair(catal
         calls.append(p)
         assert sum(len(g['columns']) for g in p['catalog'])<24
         return proposal([['eur']])
-    result=FieldResolver(store,model,expand).answer('2023/9/7欧币汇价',dataset_id=ds)
+    result=FieldResolver(store,model,expand).answer('2023/9/7欧币汇价',dataset_id=ds,date='2023-09-07')
     assert result['answer']['sources']['v1']['series']['series_id']=='eur'
     assert not result['retrieval']['full_catalogue_fallback']
 
@@ -75,3 +71,15 @@ def test_named_header_survives_crowded_sheet_context_and_keeps_duplicate_definit
                 dict(series_id='inventory-other',metric='在库量',sheet='另一表')])
     recalled,_=FieldIndex(tmp_path,cat).search(['新疆棉入库和公检量的在库量哪天最多'],prior_ids=['noise-0'],limit=1)
     assert {'inventory','inventory-other','noise-0'}.issubset({s['series_id'] for s in recalled})
+
+
+def test_parallel_index_initialization_does_not_duplicate_fields(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import sqlite3
+    from structured_data.field_index import FieldIndex
+    catalog=[{'series_id':str(i),'sheet':'来源','metric':'价格'+str(i)} for i in range(20)]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        indexes=list(pool.map(lambda _:FieldIndex(tmp_path,catalog),range(12)))
+    with sqlite3.connect(indexes[0].path) as con:
+        assert con.execute('SELECT count(*) FROM fields').fetchone()[0]==20
+        assert con.execute('SELECT count(DISTINCT id) FROM fields').fetchone()[0]==20

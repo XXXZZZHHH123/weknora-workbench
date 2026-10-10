@@ -1,219 +1,226 @@
+"""Executor contract tests. Language understanding is evaluated with live cases.
+
+The mock supplies a complete semantic plan: the executor must never turn words
+in the question into a different operation or silently repair an invalid plan.
+"""
+from copy import deepcopy
 import pytest
 from structured_data.store import DataStore
 from structured_data.field_resolver import FieldResolver
-from structured_data.task_plan import requirements,analyze,literal_scope_matches
+from structured_data.task_plan import normalize_proposal, requirements, analyze
 
 
 @pytest.fixture
 def data(tmp_path):
-    store=DataStore(tmp_path)
-    rows=[]
+    store=DataStore(tmp_path);rows=[]
     for sid,values,col in [('p',[10,20,None,0,15,30],'B'),('q',[11,21,None,1,16,31],'C')]:
         for i,v in enumerate(values,1):rows.append(dict(series_id=sid,date=f'2023-01-{i:02}',value=v,raw_value=v,source_cell=f'{col}{i+1}',date_cell=f'A{i+1}',value_status='valid' if v is not None else 'missing',formula=None))
     ds=store.publish(dict(source_file='example.xlsx',sha256='d'*64,rule_version='tasks',series=[dict(series_id=sid,sheet='记录',metric=name,dimensions={},header_cells=[col+'1'],unit=None) for sid,name,col in [('p','收盘价','B'),('q','结算价','C')]],observations=rows,sheets=[],excluded_regions=[],issues=[]))['dataset_id']
     return store,ds
 
 
-def model(fields=('p',),**kw):
-    return lambda _:dict(intent='lookup',decision='resolved',fields=[dict(role=f'v{i+1}',label='指标',candidate_ids=[sid]) for i,sid in enumerate(fields)],**kw)
+def plan(operation='rows', ids=('p',), **query):
+    return dict(intent='lookup',decision='resolved',fields=[dict(role=f'v{i+1}',label='指标',candidate_ids=[sid]) for i,sid in enumerate(ids)],query=dict(operation=operation,**query),time_scope=dict(kind='unbounded',evidence=[],explanation='未限定日历范围'))
 
 
-def test_window_uses_last_dates_before_filter_and_returns_evidence(data):
+def answer(data,raw,question='读取指标'):
     store,ds=data
-    answer=FieldResolver(store,model()).answer('最近3个交易日收盘价平均多少？列出这3天',ds)['answer']
-    s=answer['sources']['v1']
-    assert s['aggregate']==15
-    assert [r['date'] for r in s['window_rows']]==['2023-01-04','2023-01-05','2023-01-06']
-    assert s['valid_count']==3
+    return FieldResolver(store,lambda _:deepcopy(raw)).answer(question,ds)
 
 
-def test_zero_filter_and_conditional_count_are_not_dropped(data):
-    store,ds=data;f=FieldResolver(store,model())
-    a=f.answer('收盘价排除0和空值后的最低价多少？',ds)['answer']['sources']['v1']
-    assert a['aggregate']==10 and a['rows'][0]['source_cell']=='B2'
-    a=f.answer('2023年收盘价超过15的有多少个交易日？',ds)['answer']['sources']['v1']
-    assert a['aggregate']==2  # Strictly >15: 20 and 30, not >=15.
-    a=f.answer('2023年收盘价超过100的有多少个交易日？',ds)['answer']['sources']['v1']
-    assert a['aggregate']==0 and a['status']=='ok' and a['scope_record_count']==6
+def test_window_uses_last_dates_and_returns_evidence(data):
+    result=answer(data,plan('mean',last_n=3))['answer']['sources']['v1']
+    assert result['aggregate']==15
+    assert [r['date'] for r in result['window_rows']]==['2023-01-04','2023-01-05','2023-01-06']
 
 
-def test_month_range_and_top_n(data):
-    store,ds=data;f=FieldResolver(store,model(time_scope=dict(kind='range',evidence=['2023年1月'],explanation='指定完整月份',start_date='2023-01-01',end_date='2023-01-31')))
-    p=f.answer('2023年1月收盘价平均多少？',ds,date='2023-01')
-    assert p['answer']['sources']['v1']['aggregate']==15
-    assert p['answer']['start_date']=='2023-01-01'
-    s=FieldResolver(store,model()).answer('收盘价最高的三天分别多少？',ds)['answer']['sources']['v1']
-    assert [(r['date'],r['value']) for r in s['rows']]==[('2023-01-06',30),('2023-01-02',20),('2023-01-05',15)]
+@pytest.mark.parametrize('op,threshold,expected',[('count',15,2),('count',100,0),('min',0,10)])
+def test_filters_are_applied_to_actual_rows(data,op,threshold,expected):
+    result=answer(data,plan(op,value_filters=[dict(op='gt',value=threshold)]))['answer']['sources']['v1']
+    assert result['aggregate']==expected
 
 
-def test_ambiguous_extrema_need_one_source_choice_not_missing_operation(data):
-    store,ds=data
-    def ambiguous(_):return dict(intent='calculation',decision='clarify',fields=[dict(role='v1',label='最高价',candidate_ids=['p','q']),dict(role='v2',label='最低价',candidate_ids=['p','q'])],query={'operation':'statistics'})
-    f=FieldResolver(store,ambiguous);p=f.answer('最高价和最低价差值多少？分别是哪天？',ds)
-    assert p['status']=='needs_clarification'
-    assert not p['requires_note'] and 'answer' not in p
-    assert p['same_series_roles']==['v1','v2']
-    chosen=f.attach_answer(f.confirm(p['resolution_id'],{'v1':'p'}))
-    assert chosen['answer']['value']==30
-    with pytest.raises(ValueError,match='同一'):
-        f.confirm(p['resolution_id'],{'v1':'p','v2':'q'})
+def test_top_and_range_are_not_rewritten(data):
+    raw=plan('top',top_n=3,order='desc')
+    raw['time_scope']=dict(kind='range',evidence=['整个一月'],explanation='指定月份',start_date='2023-01-01',end_date='2023-01-31')
+    result=answer(data,raw,'整个一月')['answer']['sources']['v1']
+    assert [r['value'] for r in result['rows']]==[30,20,15]
 
 
-def test_single_day_and_cross_day_calculation(data):
-    store,ds=data
-    def calc(_):return dict(intent='calculation',decision='resolved',fields=[dict(role='v1',candidate_ids=['q']),dict(role='v2',candidate_ids=['p'])],calculation={'expression':'v1-v2','unit':'元/吨'},query={'operation':'rows','start_date':'2023-01-06','end_date':'2023-01-06'})
-    p=FieldResolver(store,calc).answer('2023年1月6日结算价减收盘价是多少？',ds)
-    assert p['answer']['value']==1 and p['answer']['unit']=='原表未注明单位'
-    def comparison(_):
-        return dict(intent='calculation',decision='resolved',
-            fields=[dict(role='v1',candidate_ids=['p'],date='2023-01-06'),dict(role='v2',candidate_ids=['p'],date='2023-01-05')],
-            time_scope=dict(kind='dates',evidence=['2023年1月6日','1月5日'],explanation='比较所问日期',dates=['2023-01-06','2023-01-05']),
-            query={'operation':'rows'},calculation=dict(expression='v1-v2',unit='原表未注明单位',outputs=[dict(label='差值',expression='v1-v2',unit='原表未注明单位'),dict(label='涨幅',expression='(v1-v2)/v2*100',unit='%')]))
-    p=FieldResolver(store,comparison).answer('2023年1月6日收盘价比1月5日涨了多少？涨幅多少？',ds)
-    assert [o['value'] for o in p['answer']['outputs']]==[15,100]
-    assert p['answer']['sources']['v2']['rows'][0]['date']=='2023-01-05'
+@pytest.mark.parametrize('question,raw',[
+    ('不要最高，只要最低',plan('min')),
+    ('不画图，最新值就行',plan('latest')),
+    ('不是问为什么，列最近三条价格',plan('rows',last_n=3)),
+])
+def test_negated_words_do_not_override_model_plan(data,question,raw):
+    result=answer(data,raw,question)
+    assert result['query']['operation']==raw['query']['operation']
+    assert 'analysis' not in result['answer'] and 'chart' not in result['answer']
 
 
-def test_analysis_uses_complete_intersection_and_causality_boundary(data):
-    store,ds=data
-    p=FieldResolver(store,model(('p','q'))).answer('2023年收盘价和结算价按共同日期算Pearson相关系数',ds)
-    a=p['answer']['analysis'];assert a['value']==pytest.approx(1) and a['sample_count']==5
-    assert not any(r['date']=='2023-01-03' for r in a['aligned_rows'])
-    p=FieldResolver(store,model()).answer('2023年1月收盘价总体是涨还是跌？首尾差多少，最大回撤多少？',ds)
-    assert p['answer']['analysis']['change']==20 and p['answer']['analysis']['max_drawdown_percent']==100
-    p=FieldResolver(store,model()).answer('2023年1月收盘价为什么变化？区分文件证据和推测',ds)
-    assert '不能' in p['answer']['analysis']['notice']
+def test_maximum_minus_mean_remains_compound_statistics(data):
+    raw=plan('statistics',ids=('p','p'));raw['intent']='calculation'
+    for field,op in zip(raw['fields'],['max','mean']):field['operation']=op
+    raw['calculation']=dict(expression='v1-v2',unit='原表未注明单位')
+    result=answer(data,raw,'最高价比均价高多少？')['answer']
+    assert result['value']==15 and result['sources']['v2']['aggregate']==15
 
 
-def test_chart_has_raw_values_and_future_is_not_historical_fact(data):
-    store,ds=data;f=FieldResolver(store,model())
-    p=f.answer('把2023年1月收盘价画成折线图，标出最高最低',ds)
-    assert len(p['answer']['chart']['series'][0]['rows'])==5
-    assert p['answer']['analysis']['max']['source_cell']=='B7'
-    p=f.answer('根据收盘价预测2026年10月11日价格，说明最后数据日期',ds)
-    a=p['answer']['analysis'];assert a['last_observation']['date']=='2023-01-06' and 'value' not in a
+def test_two_extremes_do_not_imply_subtraction(data):
+    raw=plan('statistics',ids=('p','p'))
+    for f,op in zip(raw['fields'],['max','min']):f['operation']=op
+    result=answer(data,raw,'最高和最低分别多少，不用算差值')['answer']
+    assert 'value' not in result and [s['aggregate'] for s in result['sources'].values()]==[30,0]
 
 
-def test_invalid_filters_and_excessive_window_fail_before_query(data):
-    store,ds=data
-    with pytest.raises(ValueError):store.query_series(ds,'p',value_filters=[{'op':'gt;DROP TABLE observations','value':1}])
-    with pytest.raises(ValueError):requirements('最近50000个交易日均价')
-    with pytest.raises(ValueError):requirements('2023年2月30日价格')
+def test_real_source_choice_only_is_confirmed(data):
+    store,ds=data;raw=plan('statistics',ids=('p','p'));raw['intent']='calculation'
+    for f,op in zip(raw['fields'],['max','min']):f.update(operation=op,candidate_ids=['p','q'])
+    raw.update(same_series_roles=['v1','v2'],calculation=dict(expression='v1-v2',unit='原表未注明单位'))
+    f=FieldResolver(store,lambda _:deepcopy(raw));pending=f.answer('两个极值之差',ds)
+    assert pending['status']=='needs_clarification' and not pending['requires_note']
+    with pytest.raises(ValueError,match='同一'):f.confirm(pending['resolution_id'],{'v1':'p','v2':'q'})
+    assert f.attach_answer(f.confirm(pending['resolution_id'],{'v1':'p'}))['answer']['value']==30
 
 
-def test_literal_fast_path_preserves_unmatched_entity_and_one_day_latest():
-    field={'metric':'在库量','sheet':'新疆棉入库','dimensions':{}}
-    assert literal_scope_matches('在库量哪天最多？有多少货？',field)
-    assert not literal_scope_matches('印度在库量哪天最多？',field)
-    assert requirements('最近一天的价格')['latest']
-    assert 'last_n' not in requirements('最近一天的价格')
-    assert requirements('不超过1.7万的有多少天')['filters']==[{'op':'lte','value':17000}]
-    assert requirements('不低于1.7万的有多少天')['filters']==[{'op':'gte','value':17000}]
-
-
-def test_pending_followup_keeps_alternatives_until_actual_human_choice(data):
-    store,ds=data
-    f=FieldResolver(store,lambda _:dict(intent='lookup',decision='clarify',question='哪一种价格？',fields=[dict(role='v1',candidate_ids=['p','q'])],query={'operation':'latest'}))
-    first=f.answer('最近一天的价格',ds)
-    p=f.answer('最高价和最低价差值多少？分别是哪天？',ds,pending_resolution_id=first['resolution_id'])
-    assert p['status']=='needs_clarification' and 'answer' not in p
-    assert p['same_series_roles']==['v1','v2']
-    assert all({c['series_id'] for c in group['candidates']}=={'p','q'} for group in p['fields'])
-    assert f.attach_answer(f.confirm(p['resolution_id'],{'v1':'p'}))['answer']['value']==30
-
-
-def test_human_note_dates_are_not_lost_after_confirmed_json():
-    req=requirements('2022/23年度产量与进口合计\n已确认字段：{"series_id":"a"}\n用户补充：按2022年9月1日到2023年8月31日求和')
-    assert req['dates']==['2022-09-01','2023-08-31']
-    assert req['bounds']=={}  # Tokens alone do not decide range versus comparison.
-    assert not req.get('needs_period_definition')
-    assert requirements('2009年1月6日01合约结算价')['contract_months']==[1]
-    assert requirements('2023年9月22日1月和5月合约结算价差')['contract_months']==[1,5]
-
-
-def test_equivalent_copies_use_newest_coverage_and_preserve_confirmed_source(tmp_path):
-    store=DataStore(tmp_path)
-    series=[dict(series_id=sid,sheet='交易记录',metric=name,dimensions={},header_cells=[col+'1'],unit=None) for sid,name,col in [('current','收盘价','B'),('copy','活跃收盘','C'),('undated','收盘价','D')]]
-    obs=[dict(series_id=sid,date=day,value=v,raw_value=v,source_cell=cell,date_cell='A2',value_status='valid',formula=None) for sid,day,v,cell in [('current','2023-01-02',20,'B2'),('current','2023-01-03',30,'B3'),('copy','2023-01-02',20,'C2')]]
-    ds=store.publish(dict(source_file='copies.xlsx',sha256='f'*64,rule_version='tasks',series=series,observations=obs,sheets=[],excluded_regions=[],issues=[]))['dataset_id']
-    def proposal(_):return dict(intent='lookup',decision='resolved',fields=[dict(role='v1',label='活跃交易价格',candidate_ids=['copy'],equivalent_source_ids=['current','copy'])],query={'operation':'latest'})
-    f=FieldResolver(store,proposal)
-    p=f.answer('交易记录最新的活跃交易价格',ds)
-    assert p['answer']['sources']['v1']['series']['series_id']=='current'
-    assert p['answer']['sources']['v1']['rows'][0]['source_cell']=='B3'
-    p=f.answer('交易记录最新的活跃交易价格',ds,prior_series_ids=['copy'])
-    assert p['answer']['sources']['v1']['series']['series_id']=='copy'
-
-
-def test_equivalent_sources_cannot_merge_conflicting_units(tmp_path):
-    store=DataStore(tmp_path)
-    series=[dict(series_id=sid,sheet='价格记录',metric='报价'+sid,dimensions={},header_cells=['B1'],unit=unit) for sid,unit in [('rmb','元/吨'),('usd','美元/吨')]]
-    obs=[dict(series_id=sid,date='2023-01-02',value=20,raw_value=20,source_cell='B2',date_cell='A2',value_status='valid',formula=None) for sid in ('rmb','usd')]
-    ds=store.publish(dict(source_file='currency.xlsx',sha256='e'*64,rule_version='tasks',series=series,observations=obs,sheets=[],excluded_regions=[],issues=[]))['dataset_id']
-    def bad(_):return dict(intent='lookup',decision='resolved',fields=[dict(role='v1',candidate_ids=['rmb'],equivalent_source_ids=['rmb','usd'])],query={'operation':'latest'})
-    with pytest.raises(ValueError,match='单位不同'):
-        FieldResolver(store,bad).answer('当前交易价格',ds)
-
-
-def test_pending_filter_followup_keeps_source_choices_without_another_model_call(data):
+def test_multi_turn_receives_complete_task_and_current_words(data):
     store,ds=data;calls=[]
-    def ambiguous(_):
-        calls.append(1)
-        return dict(intent='lookup',decision='clarify',fields=[dict(role='v1',label='价格',candidate_ids=['p','q'])],query={'operation':'latest'})
-    f=FieldResolver(store,ambiguous);first=f.answer('记录最新价格',ds)
-    p=f.answer('记录收盘价排除0和空值后的最低价是多少？在哪天？',ds,pending_resolution_id=first['resolution_id'])
-    assert len(calls)==1 and p['status']=='needs_clarification'
-    assert '最低价' in p['question'] and '最新价格' not in p['question']
-    assert p['query']['value_filters']==[{'op':'ne','value':0}]
-    assert f.attach_answer(f.confirm(p['resolution_id'],{'v1':'p'}))['answer']['sources']['v1']['aggregate']==10
+    def model(payload):
+        calls.append(deepcopy(payload));raw=plan('mean')
+        if len(calls)==1:raw['time_scope']=dict(kind='range',evidence=['整个一月'],explanation='指定月份',start_date='2023-01-01',end_date='2023-01-31')
+        else:
+            previous=payload['previous_task']
+            assert previous['query']['operation']=='mean'
+            assert previous['task_requirements']['time_scope']['end_date']=='2023-01-31'
+            assert previous['original_question']=='整个一月均价'
+            raw['query']['operation']='sum';raw['time_scope']=previous['task_requirements']['time_scope']
+        return raw
+    f=FieldResolver(store,model);first=f.answer('整个一月均价',ds)
+    second=f.answer('改成合计',ds,previous_resolution_id=first['resolution_id'])
+    assert calls[-1]['question']=='改成合计'
+    assert second['answer']['sources']['v1']['aggregate']==75
+    assert second['answer']['end_date']=='2023-01-31'
+
+
+def test_model_repairs_invalid_formula_not_a_user_popup(data):
+    store,ds=data;calls=[]
+    def model(payload):
+        calls.append(payload);raw=plan('mean',last_n=3)
+        if len(calls)==1:raw.update(intent='calculation',calculation=dict(expression='mean(v1)',unit='元'))
+        else:assert 'repair_instruction' in payload
+        return raw
+    result=FieldResolver(store,model).answer('最近三条均价',ds)
+    assert len(calls)==2 and result['answer']['sources']['v1']['aggregate']==15
+    bad=plan('rows');bad.update(intent='calculation',calculation=dict(expression='mean(v1)',unit='元'))
+    result=FieldResolver(store,lambda _:deepcopy(bad)).tool_answer('求均价',ds)
+    assert result['kind']=='structured_tool_notice' and 'fields' not in result
+
+
+@pytest.mark.parametrize('features,ids',[({'analysis':'correlation'},('p','q')),({'analysis':'trend'},('p',)),({'analysis':'causality'},('p',)),({'chart':True},('p',))])
+def test_analysis_uses_real_full_inputs(data,features,ids):
+    raw=plan(ids=ids);raw['presentation']=features
+    a=answer(data,raw)['answer']['analysis']
+    if features.get('analysis')=='correlation':assert a['value']==pytest.approx(1) and a['sample_count']==5
+    else:assert a['change']==20 and a['max_drawdown_percent']==100
+    if features.get('analysis')=='causality':assert '不能' in a['notice']
+
+
+@pytest.mark.parametrize('query',[{'last_n':50000},{'top_n':0},{'value_filters':[{'op':'DROP TABLE','value':1}]},{'order':'random'}])
+def test_invalid_plan_does_not_execute(data,query):
+    store,ds=data
+    result=FieldResolver(store,lambda _:plan('mean',**query)).tool_answer('查询',ds)
+    assert result['kind']=='structured_tool_notice'
+
+
+def test_unsupported_request_does_not_ask_user_to_confirm_fields(data):
+    store,ds=data
+    result=FieldResolver(store,lambda _:dict(intent='unsupported',reason='不支持分组滚动统计')).tool_answer('按年滚动统计',ds)
+    assert result['kind']=='structured_tool_notice' and '不支持' in result['message']
+
 
 def test_large_correlation_uses_all_dates_but_bounds_display_rows():
-    import datetime,math
+    import datetime
     rows=[dict(date=(datetime.date(2020,1,1)+datetime.timedelta(days=i)).isoformat(),value=float(i+1),source_cell='B'+str(i+2)) for i in range(250)]
     other=[dict(r,value=float(i+1) if i<200 else float(501-i)) for i,r in enumerate(rows)]
     a=analyze('correlation',{'v1':{'rows':rows},'v2':{'rows':other}})
     assert a['sample_count']==250 and len(a['aligned_rows'])==200 and a['aligned_rows_truncated']
-    assert a['value']<0.99 and '全部250' in a['notice']
+    assert a['value']<0.99
 
 
-def test_aggregate_task_owns_expression_and_duplicate_output_roles(data):
+def test_equality_filter_has_same_contract_in_plan_and_executor(data):
+    result=answer(data,plan('count',value_filters=[dict(op='eq',value=15)]))['answer']['sources']['v1']
+    assert result['aggregate']==1 and result['rows'][0]['source_cell']=='B6'
+
+
+def test_rank_count_cannot_be_silently_ignored_on_rows():
+    with pytest.raises(ValueError,match='top_n'):
+        normalize_proposal(plan('rows',top_n=3),{},'读取指标')
+
+
+def test_validated_time_evidence_survives_bounded_conversation(data):
     store,ds=data
-    def invalid_model(_):return dict(intent='calculation',decision='resolved',fields=[dict(role='v1',candidate_ids=['p'],operation='mean'),dict(role='v2',candidate_ids=['p'],operation='mean')],query={'operation':'statistics'},calculation={'expression':'mean(v1)','unit':'元/吨'})
-    a=FieldResolver(store,invalid_model).answer('最近3个交易日收盘价平均多少？列出这3天',ds)
-    assert a['intent']=='lookup' and len(a['fields'])==1
-    assert a['answer']['sources']['v1']['aggregate']==15
-    assert len(a['answer']['sources']['v1']['window_rows'])==3
+    def model(payload):
+        raw=plan('mean')
+        raw['time_scope']=dict(kind='range',evidence=['整个一月'],explanation='保留用户先前的范围',start_date='2023-01-01',end_date='2023-01-31')
+        return raw
+    f=FieldResolver(store,model);result=f.answer('整个一月均价',ds)
+    for i in range(9):
+        result=f.answer(f'继续核对第{i+1}次',ds,previous_resolution_id=result['resolution_id'])
+    assert '整个一月均价' not in result['user_messages']
+    assert result['query']['start_date']=='2023-01-01'
+    assert result['answer']['sources']['v1']['aggregate']==15
 
-def test_explicit_addition_and_cumulative_sum_are_different_tasks():
-    assert requirements('产量加进口合计多少')['arithmetic']
-    assert not requirements('累计入库量每天加起来多少').get('arithmetic')
 
-
-def test_top_records_are_not_a_free_form_calculation(data):
+def test_source_formula_is_bounded_metadata_not_an_executable_instruction(data):
     store,ds=data
-    def invalid_model(_):return dict(intent='calculation',decision='resolved',fields=[dict(role='v1',candidate_ids=['p']),dict(role='v2',candidate_ids=['p'])],query={'operation':'rows'},calculation={'expression':'top(v1)','unit':'原表未注明单位'})
-    a=FieldResolver(store,invalid_model).answer('收盘价最高的三天分别是哪天、多少钱？',ds)
-    assert a['intent']=='lookup' and len(a['fields'])==1
-    assert [(r['date'],r['value']) for r in a['answer']['sources']['v1']['rows']]==[('2023-01-06',30),('2023-01-02',20),('2023-01-05',15)]
+    import duckdb
+    with duckdb.connect(str(store._path(ds)/"data.duckdb")) as con:
+        con.execute("UPDATE observations SET formula=? WHERE series_id=?",['=VLOOKUP(A2,原始表!A:C,2,0)','p'])
+    assert store.formula_examples(ds,['p'])=={'p':'=VLOOKUP(A2,原始表!A:C,2,0)'}
+    assert store.formula_examples(ds,['q'])=={}
+    def model(payload):
+        p=next(c for g in payload['catalog'] for c in g['columns'] if c['id']=='p')
+        assert p['formula_example']=='=VLOOKUP(A2,原始表!A:C,2,0)'
+        return plan('latest')
+    result=FieldResolver(store,model).answer('读取已保存的最后记录',ds)
+    assert result['answer']['sources']['v1']['rows'][0]['value']==30
 
 
-def test_overlap_is_complete_supplementary_evidence_not_an_auto_selector(data):
-    store,ds=data
-    evidence=store.source_overlap(ds,'p','q')
-    assert evidence['common_valid_dates']==5 and evidence['exactly_equal_values']==0
-    assert evidence['first_date']=='2023-01-01' and evidence['last_date']=='2023-01-06'
-    with pytest.raises(ValueError):store.source_overlap(ds,'p','nonexistent')
-    assert not requirements('累计入库量每天加起来是多少？这样加是不是会重复计算？').get('arithmetic')
+def test_partial_equivalent_group_is_repaired_internally_not_a_user_choice(data):
+    store,ds=data;calls=[]
+    import json,duckdb
+    path=store._path(ds)/'series.json';series=json.loads(path.read_text())
+    for item in series:
+        if item['series_id']=='q':item.update(sheet='同源副本',metric='收盘价')
+    path.write_text(json.dumps(series))
+    with duckdb.connect(str(store._path(ds)/'data.duckdb')) as con:
+        con.execute("UPDATE observations AS q SET value=p.value FROM observations AS p WHERE q.series_id='q' AND p.series_id='p' AND q.date=p.date")
+    def model(payload):
+        calls.append(deepcopy(payload));raw=plan('latest')
+        raw['fields'][0].update(candidate_ids=['p','q'],equivalent_source_ids=['q'] if len(calls)==1 else ['p','q'])
+        return raw
+    result=FieldResolver(store,model).answer('已确定同口径的最新记录',ds)
+    assert len(calls)==2 and '同源关系声明不完整' in calls[1]['repair_instruction']
+    assert result['status']=='resolved' and len(result['fields'][0]['candidates'])==1
 
 
-def test_multiple_dates_do_not_implicitly_request_subtraction(data):
-    store,ds=data
-    def proposal(_):
-        return dict(intent='lookup',decision='resolved',fields=[
-            dict(role='v1',candidate_ids=['p'],date='2023-01-06'),
-            dict(role='v2',candidate_ids=['p'],date='2023-01-05')],
-            query={'operation':'rows'},time_scope=dict(kind='dates',evidence=['2023年1月6日','1月5日'],explanation='分别列出两天',dates=['2023-01-06','2023-01-05']))
-    p=FieldResolver(store,proposal).answer('分别列出2023年1月6日和1月5日收盘价',ds)
-    assert p['status']=='resolved' and p['intent']=='lookup'
-    assert 'value' not in p['answer']
-    assert [s['rows'][0]['value'] for s in p['answer']['sources'].values()]==[30,15]
+def test_sequence_analysis_tag_is_normalized_without_changing_the_analysis(data):
+    raw=plan('rows');raw.update(intent='calculation',presentation={'analysis':'trend'},calculation={'expression':'','unit':'原表未注明单位'})
+    result=answer(data,raw)
+    assert result['intent']=='lookup' and result['query']['operation']=='rows'
+    assert result['answer']['analysis']['change']==20
+    raw['calculation']['expression']='v1+1'
+    with pytest.raises(ValueError,match='calculation'):
+        normalize_proposal(raw,{},'读取指标')
+
+
+def test_distinct_same_sheet_metrics_cannot_be_collapsed_as_equivalent(data):
+    store,ds=data;calls=[]
+    def model(payload):
+        calls.append(deepcopy(payload));raw=plan('latest')
+        raw['fields'][0]['candidate_ids']=['p','q']
+        if len(calls)==1:raw['fields'][0]['equivalent_source_ids']=['p','q']
+        return raw
+    result=FieldResolver(store,model).answer('两种实际价格定义待选择',ds)
+    assert len(calls)==2 and '不同原始指标' in calls[1]['repair_instruction']
+    assert result['status']=='needs_clarification' and len(result['fields'][0]['candidates'])==2

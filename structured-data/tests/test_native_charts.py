@@ -74,7 +74,7 @@ def test_chart_scope_resolves_to_evidenced_source_and_keeps_other_scope(chart_st
         cols=[c for g in payload['catalog'] for c in g['columns']]
         assert len(cols)==1 and cols[0]['name']=='现货销售价格'
         return {'intent':'lookup','decision':'resolved','fields':[{'role':'v1','label':'价格','candidate_ids':[cols[0]['id']]}]}
-    result=FieldResolver(store,model).answer('利润图中2023/9/7现货销售价格',dataset_id=ds,sheet='利润图')
+    result=FieldResolver(store,model).answer('利润图中2023/9/7现货销售价格',dataset_id=ds,sheet='利润图',date='2023-09-07')
     assert result['answer']['sources']['v1']['rows'][0]['value']==10
     assert store.catalog(ds,sheet='不存在',question='利润图')==[]
     assert store.list_series(ds,sheet='利润图')['series'][0]['chart_sheet']=='利润图'

@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
 )
@@ -17,6 +15,7 @@ type fieldConfirmationTurnKey struct{}
 type fieldConfirmationHumanKey struct{}
 type fieldConfirmationTurn struct {
 	question     string
+	previousID   string
 	pendingID    string
 	priorIDs     []string
 	contextSheet string
@@ -43,6 +42,7 @@ func withFieldConfirmationTurn(ctx context.Context, query string, history []chat
 			continue
 		}
 		if id, status := fieldResolutionIdentity(msg.Content); id != "" {
+			turn.previousID = id
 			turn.pendingID = ""
 			if status == "needs_clarification" {
 				turn.pendingID = id
@@ -140,17 +140,8 @@ func (t *fieldConfirmationTurn) resolveArgs() map[string]any {
 			args["context_sheet"] = t.contextSheet
 		}
 	}
-	if t.date != "" {
-		if regexp.MustCompile(`^\s*(那一天|当天)(呢|的呢)?[？?]?\s*$`).MatchString(t.question) || strings.Contains(t.question, "那一天") {
-			args["date"] = t.date
-		}
-		if m := regexp.MustCompile(`^\s*(\d{1,2})号(?:呢|的呢)?[？?]?\s*$`).FindStringSubmatch(t.question); m != nil {
-			previous, err := time.Parse("2006-01-02", t.date)
-			if err == nil {
-				day, _ := strconv.Atoi(m[1])
-				args["date"] = fmt.Sprintf("%04d-%02d-%02d", previous.Year(), previous.Month(), day)
-			}
-		}
+	if t.previousID != "" {
+		args["previous_resolution_id"] = t.previousID
 	}
 	return args
 }
@@ -199,6 +190,10 @@ func guardFieldConfirmation(ctx context.Context, name string, args map[string]an
 		return nil
 	}
 	if fieldToolName.MatchString(name) && !confirmToolName.MatchString(name) {
+		delete(args, "previous_resolution_id")
+		if turn.previousID != "" {
+			args["previous_resolution_id"] = turn.previousID
+		}
 		proposed, _ := args["question"].(string)
 		if turn.pendingID != "" && proposed != turn.question && !strings.Contains(proposed, turn.question) {
 			args["question"] = proposed + "\n用户本轮原话：" + turn.question

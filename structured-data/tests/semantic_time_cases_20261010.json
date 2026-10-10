@@ -7,7 +7,9 @@
           "id": "T01",
           "question": "2021/23年度中国棉花产量加进口，合计是多少？",
           "expected_start": "2021-01-01",
-          "expected_end": "2023-12-31"
+          "expected_end": "2023-12-31",
+          "allow_time_clarification": true,
+          "acceptance_note": "A genuinely undefined reporting year may receive one time-only clarification; the explicit calendar follow-up must calculate. Never describe the span as two years."
         },
         {
           "id": "T02",

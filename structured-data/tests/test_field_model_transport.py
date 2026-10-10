@@ -10,6 +10,11 @@ def setup_model(tmp_path, monkeypatch, replies):
     def post(self,url,**kwargs):
         calls.append(kwargs['json'])
         response=replies.pop(0)
+        try:
+            value=json.loads(response)
+            if isinstance(value,dict) and 'fields' in value:value.setdefault('time_scope',{'kind':'unbounded','evidence':[],'explanation':'test'})
+            response=json.dumps(value)
+        except json.JSONDecodeError:pass
         return httpx.Response(200,json={'choices':[{'message':{'content':response},'finish_reason':'stop'}]})
     monkeypatch.setattr(httpx.Client,'post',post)
     return calls
@@ -18,31 +23,31 @@ def setup_model(tmp_path, monkeypatch, replies):
 def test_multiple_plans_are_not_guessed_and_retry_is_bounded(tmp_path,monkeypatch):
     valid={'fields':[{'candidate_ids':['c1']}],'intent':'lookup','decision':'resolved'}
     calls=setup_model(tmp_path,monkeypatch,['说明\n```json\n{}\n```\n```json\n{}\n```',json.dumps(valid)])
-    assert ask_model({'question':'测试'},tmp_path)==valid
+    assert ask_model({'question':'测试','_catalog_selection':True},tmp_path)['fields']==valid['fields']
     assert len(calls)==2 and 'response_format' not in calls[0]
 
 
 def test_scalar_id_is_normalized_without_changing_its_value(tmp_path,monkeypatch):
     setup_model(tmp_path,monkeypatch,[json.dumps({'fields':[{'candidate_ids':'c230'}]})])
-    assert ask_model({},tmp_path)['fields'][0]['candidate_ids']==['c230']
+    assert ask_model({'_catalog_selection':True},tmp_path)['fields'][0]['candidate_ids']==['c230']
 
 
 def test_format_failure_reports_real_cause_and_stops(tmp_path,monkeypatch):
     calls=setup_model(tmp_path,monkeypatch,['not JSON','still not JSON'])
-    with pytest.raises(ValueError,match='输出格式错误'):ask_model({},tmp_path)
+    with pytest.raises(ValueError,match='输出格式错误'):ask_model({'_catalog_selection':True},tmp_path)
     assert len(calls)==2
 
 
 def test_empty_string_candidate_is_missing_not_an_invented_identifier(tmp_path,monkeypatch):
     setup_model(tmp_path,monkeypatch,[json.dumps({'fields':[{'candidate_ids':['']}],'local_data_missing':True})])
-    assert ask_model({},tmp_path)['fields'][0]['candidate_ids']==[]
+    assert ask_model({'_catalog_selection':True},tmp_path)['fields'][0]['candidate_ids']==[]
 
 
 def test_candidate_written_as_json_key_requires_format_repair(tmp_path,monkeypatch):
     bad={'fields':[{'role':'v1','candidate_ids':['c196'],'c200':'另一种价格'}]}
     fixed={'fields':[{'role':'v1','candidate_ids':['c196','c200'],'reason':'价格口径不同'}]}
     calls=setup_model(tmp_path,monkeypatch,[json.dumps(bad),json.dumps(fixed)])
-    result=ask_model({},tmp_path)
+    result=ask_model({'_catalog_selection':True},tmp_path)
     assert result['fields'][0]['candidate_ids']==['c196','c200']
     assert len(calls)==2 and '候选ID全部放入' in calls[1]['messages'][-1]['content']
 
@@ -67,18 +72,31 @@ def test_thinking_option_is_explicit_and_preserved_not_guessed_from_model_name(t
     calls=setup_model(tmp_path,monkeypatch,[json.dumps({'fields':[]})])
     assert save_model(tmp_path,{'model':'configured-provider','base_url':'https://model.invalid/v1','enable_thinking':False})['model']=='configured-provider'
     assert read_model(tmp_path)['enable_thinking'] is False
-    ask_model({},tmp_path)
+    ask_model({'_catalog_selection':True},tmp_path)
     assert calls[0]['enable_thinking'] is False
     save_model(tmp_path,{'model':'another-model','base_url':'https://model.invalid/v1'})
     assert read_model(tmp_path)['enable_thinking'] is False
     with pytest.raises(ValueError):save_model(tmp_path,{'model':'test','base_url':'https://model.invalid/v1','enable_thinking':'false'})
 
 
-def test_time_plan_schema_repairs_without_asking_user_for_system_errors(tmp_path,monkeypatch):
-    bad={'intent':'lookup','decision':'resolved','fields':[{'candidate_ids':['c1']}]}
-    fixed={'kind':'range','evidence':['今年'], 'explanation':'当前自然年', 'start_date':'2026-01-01','end_date':'2026-12-31'}
-    calls=setup_model(tmp_path,monkeypatch,['{}',json.dumps(fixed),json.dumps(bad)])
-    result=ask_model({'question':'今年合计多少','semantic_time_required':True},tmp_path)
+def test_unified_plan_schema_repairs_without_a_separate_time_interpreter(tmp_path,monkeypatch):
+    fixed={'intent':'lookup','decision':'resolved','fields':[{'role':'v1','candidate_ids':[]}],
+           'time_scope':{'kind':'range','evidence':['今年'],'explanation':'当前自然年','start_date':'2026-01-01','end_date':'2026-12-31'}}
+    calls=setup_model(tmp_path,monkeypatch,['{}',json.dumps(fixed)])
+    result=ask_model({'question':'今年合计多少','_intent':True},tmp_path)
     assert result['time_scope']['end_date']=='2026-12-31'
-    assert len(calls)==3 and 'kind' in calls[1]['messages'][-1]['content']
-    assert json.loads(calls[2]['messages'][1]['content'])['resolved_time_scope']['end_date']=='2026-12-31'
+    assert len(calls)==2
+    assert all('_time_scope' not in json.loads(c['messages'][1]['content']) for c in calls)
+
+
+def test_directory_screening_does_not_force_previous_topic_into_results():
+    from structured_data.field_resolver import narrow_catalogue
+    payload={'question':'换个对象有哪些字段','task_requirements':{'metadata':True},
+             'previous_task':{'original_question':'先前对象的价格'},
+             'prior_series':[{'id':'old'}],
+             'catalog':[{'sheet':'来源','columns':[{'id':'old','name':'前一对象'},{'id':'new','name':'新对象'}]}]}
+    def select(request,root):
+        assert request['previous_task']==payload['previous_task']
+        return {'metadata':{'series_ids':['new']}}
+    out=narrow_catalogue(payload,None,select)
+    assert [c['id'] for g in out['catalog'] for c in g['columns']]==['new']

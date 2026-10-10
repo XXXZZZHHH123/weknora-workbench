@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"regexp"
 	"strings"
 	"time"
 
@@ -27,13 +26,8 @@ func (e *AgentEngine) executeStructuredQuery(ctx context.Context, state *types.A
 	}
 	name, err := agenttools.StructuredResolveTool(ctx, e.toolRegistry)
 	args := turn.resolveArgs()
-	// A short answer to the last actual confirmation is human note text. A
-	// new question/date/task starts a new resolution instead of recycling it.
-	newTask := regexp.MustCompile(`多少|几种|有哪些|什么数据|哪天|[0-9]{4}|\d{1,2}号|平均|最高|最低|画|预测|相关|为什么`).MatchString(query)
-	if err == nil && turn.pendingID != "" && !newTask {
-		name, err = agenttools.StructuredConfirmationTool(ctx, e.toolRegistry, "")
-		args = map[string]any{"resolution_id": turn.pendingID, "note": query}
-	}
+	// Forward the exact message plus trusted previous task identity. The task
+	// planner decides continuation/correction/new topic; keywords cannot do so.
 	state.FinalAnswer = "结构化查询未完成，尚未取得可核验的结果。"
 	if err == nil {
 		body, _ := json.Marshal(args)

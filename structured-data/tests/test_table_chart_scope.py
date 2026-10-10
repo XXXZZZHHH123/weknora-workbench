@@ -63,7 +63,7 @@ def test_followup_switches_to_real_inventory_header_and_global_max(mixed_store):
         matches=[c for c in cols if c['name']==metric]
         assert len(matches)==1
         return dict(intent='lookup',decision='resolved',fields=[dict(role='v1',label=metric,candidate_ids=[matches[0]['id']])],
-                    query={'operation':'max' if metric=='在库量' else 'rows'})
+                    query={'operation':'max' if metric=='在库量' else 'rows'},time_scope=({'kind':'unbounded','evidence':[],'explanation':'全历史极值'} if metric=='在库量' else {'kind':'dates','dates':['2022-11-12'],'evidence':['2022/11/12'],'explanation':'所问日期'}))
     resolver=FieldResolver(store,model)
     first=resolver.answer('2022/11/12当日入库量是多少',dataset_id=ds)
     assert first['answer']['sources']['v1']['rows'][0]['value']==25
@@ -79,26 +79,26 @@ def test_followup_switches_to_real_inventory_header_and_global_max(mixed_store):
     assert source['extremum_rows'][0]['date_cell']=='A3'
 
 
-def test_unrelated_candidates_are_repaired_before_asking_user(mixed_store):
+def test_out_of_catalogue_candidates_are_repaired_before_asking_user(mixed_store):
     store,ds,_=mixed_store;calls=[]
     def model(p):
         calls.append(p)
         cols={c['name']:c['id'] for g in p['catalog'] for c in g['columns']}
-        ids=[cols['当日公检量'],cols['累计公检量']] if len(calls)==1 else [cols['在库量']]
+        ids=['not-a-real-id'] if len(calls)==1 else [cols['在库量']]
         return dict(intent='lookup',decision='clarify' if len(calls)==1 else 'resolved',
                     fields=[dict(role='v1',label='在库量',candidate_ids=ids)],query={'operation':'max'})
     result=FieldResolver(store,model).answer('请核对原表：在库量哪天最多？有多少货？',dataset_id=ds)
     assert result['status']=='resolved' and len(calls)==2
-    assert '无关指标' in calls[1]['repair_instruction']
+    assert '实际候选目录' in calls[1]['repair_instruction']
     assert result['answer']['sources']['v1']['aggregate']==40
 
 
-def test_repeated_unrelated_proposal_stops_without_business_clarification(mixed_store):
+def test_repeated_invalid_identifier_stops_without_business_clarification(mixed_store):
     store,ds,_=mixed_store
     def model(p):
         cols={c['name']:c['id'] for g in p['catalog'] for c in g['columns']}
         return dict(intent='lookup',decision='clarify',fields=[dict(role='v1',label='在库量',
-                    candidate_ids=[cols['累计公检量']])],query={'operation':'max'})
+                    candidate_ids=['not-a-real-id'])],query={'operation':'max'})
     result=FieldResolver(store,model).tool_answer('请核对原表：在库量哪天最多？',dataset_id=ds)
     assert result['kind']=='structured_tool_notice' and result['status']=='query_unavailable'
     assert 'answer' not in result

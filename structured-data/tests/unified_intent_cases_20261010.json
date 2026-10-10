@@ -1,0 +1,134 @@
+{
+  "groups": [
+    {
+      "id": "negation",
+      "cases": [
+        {
+          "id": "U01",
+          "question": "郑棉期货CF.CZC收盘价，不要最高，只要最低值和日期",
+          "check": "min"
+        },
+        {
+          "id": "U02",
+          "question": "最高和最低分别多少？不用算差值",
+          "check": "extremes"
+        },
+        {
+          "id": "U03",
+          "question": "最高值比平均值高多少？",
+          "check": "max_mean"
+        },
+        {
+          "id": "U04",
+          "question": "不用画图，只给我最新的收盘数值",
+          "check": "latest"
+        },
+        {
+          "id": "U05",
+          "question": "不是问为什么，直接列最近三个交易日的价格",
+          "check": "last_three"
+        },
+        {
+          "id": "U06",
+          "question": "那最低的三个交易日呢，零值不要算",
+          "check": "bottom_three"
+        }
+      ]
+    },
+    {
+      "id": "human-correction",
+      "cases": [
+        {
+          "id": "U07",
+          "question": "郑棉期货CF.CZC最近一天价格",
+          "check": "price_choice"
+        },
+        {
+          "id": "U08",
+          "question": "收盘的就行，别用结算价",
+          "check": "latest"
+        },
+        {
+          "id": "U09",
+          "question": "最高价和最低价差多少？分别是哪天？",
+          "check": "max_min"
+        }
+      ]
+    },
+    {
+      "id": "plain-time-followup",
+      "cases": [
+        {
+          "id": "U10",
+          "question": "2022/23年度中国棉花产量加进口，合计是多少？",
+          "check": "time_choice"
+        },
+        {
+          "id": "U11",
+          "question": "2022年1月开始，23年12月结束",
+          "check": "sum_24"
+        },
+        {
+          "id": "U12",
+          "question": "再改成21年初开始，截止时间不变",
+          "check": "sum_36"
+        },
+        {
+          "id": "U13",
+          "question": "换个问题，郑棉期货CF.CZC最新收盘价是多少",
+          "check": "latest"
+        }
+      ]
+    },
+    {
+      "id": "directory-and-alias",
+      "cases": [
+        {
+          "id": "U14",
+          "question": "郑棉期货有几种价格？",
+          "check": "metadata"
+        },
+        {
+          "id": "U15",
+          "question": "新疆棉在库量哪天最多？有多少货？",
+          "check": "inventory"
+        },
+        {
+          "id": "U16",
+          "question": "不看图表，最近一天的新疆棉在库量还有多少？",
+          "check": "inventory_latest"
+        }
+      ]
+    },
+    {
+      "id": "common-alias-analysis",
+      "cases": [
+        {
+          "id": "U17",
+          "question": "最近一天郑棉主力收盘价是多少？",
+          "check": "latest"
+        },
+        {
+          "id": "U18",
+          "question": "最近五个交易日平均下来多少？",
+          "check": "last_five_mean"
+        },
+        {
+          "id": "U19",
+          "question": "2023年9月整个月的均价呢？",
+          "check": "september_mean"
+        },
+        {
+          "id": "U20",
+          "question": "这个月总体涨了还是跌了，最大回撤多少？",
+          "check": "september_trend"
+        },
+        {
+          "id": "U21",
+          "question": "给我画成走势图",
+          "check": "september_chart"
+        }
+      ]
+    }
+  ]
+}

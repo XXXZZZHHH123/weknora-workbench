@@ -69,7 +69,7 @@ def test_real_confirmation_keeps_fields_and_exposes_incomplete_months(monthly,no
     store,ds=monthly
     def proposal(payload):
         temporal=(dict(kind='range',evidence=[note],explanation='补充说明完整起止年月',start_date='2022-01-01',end_date='2023-12-31') if '用户补充：' in payload['question'] else dict(kind='clarify',evidence=['2022/23年度'],explanation='尚未明确统计期间',question='您指自然年范围还是另有统计起止月份？',placeholder='说明希望统计的期间'))
-        return dict(time_scope=temporal,intent='calculation',decision='resolved',fields=[dict(role='v1',label='产量',candidate_ids=['p']),dict(role='v2',label='进口',candidate_ids=['i'])],query={'operation':'rows'},calculation={'expression':'v1+v2','unit':'原表未注明单位','explanation':'完整两年总量，这是错误的模型文案'})
+        return dict(time_scope=temporal,intent='calculation',decision='resolved',fields=[dict(role='v1',label='产量',candidate_ids=['p'],operation='sum'),dict(role='v2',label='进口',candidate_ids=['i'],operation='sum')],query={'operation':'statistics'},calculation={'expression':'v1+v2','unit':'原表未注明单位','explanation':'完整两年总量，这是错误的模型文案'})
     resolver=FieldResolver(store,proposal)
     first=resolver.answer('2022/23年度产量加进口，合计是多少？',ds)
     assert first['clarification']['type']=='time_range' and first['requires_note']

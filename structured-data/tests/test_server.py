@@ -72,3 +72,24 @@ def test_invalid_public_origins_refuse_startup(tmp_path, monkeypatch, origin):
     monkeypatch.setenv('STRUCTURED_PUBLIC_ORIGIN', origin)
     with pytest.raises(ValueError):
         create_app(tmp_path)
+
+
+def test_model_call_does_not_block_health_requests(tmp_path,monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from structured_data.field_resolver import FieldResolver
+    started=threading.Event();release=threading.Event()
+    def slow_model(*args,**kwargs):
+        started.set();release.wait(3)
+        return {'status':'test_complete'}
+    monkeypatch.setattr(FieldResolver,'tool_answer',slow_model)
+    with TestClient(create_app(tmp_path)) as client,ThreadPoolExecutor(max_workers=2) as pool:
+        headers={'Host':'localhost:18082','Accept':'application/json, text/event-stream','Authorization':'Bearer '+(tmp_path/'service-token').read_text()}
+        pending=pool.submit(client.post,'/mcp',headers=headers,json={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'resolve_fields','arguments':{'question':'测试'}}})
+        try:
+            assert started.wait(1)
+            health=pool.submit(client.get,'/health')
+            assert health.result(timeout=1).status_code==200
+            assert not pending.done()
+        finally:release.set()
+        assert pending.result(timeout=2).status_code==200

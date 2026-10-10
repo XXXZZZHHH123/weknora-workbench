@@ -21,6 +21,7 @@ def compound():
     return dict(intent='calculation', decision='resolved', question='已确认收盘价',
                 fields=[dict(role='v1', label='最高价', candidate_ids=['price'], operation='max'),
                         dict(role='v2', label='最低价', candidate_ids=['price'], operation='min')],
+                time_scope=dict(kind='unbounded',evidence=[],explanation='全部记录'),
                 query=dict(operation='statistics', start_date=None, end_date=None, period=None),
                 calculation=dict(expression='v1-v2', unit='原表未注明单位', explanation='最高价减最低价'))
 
@@ -55,30 +56,30 @@ def test_compound_preserves_prior_scope_and_all_tied_dates(series):
 def test_compound_respects_explicit_bounds_and_empty_results(series):
     store, ds = series
     raw=compound()
-    raw['query'].update(start_date='2023-01-01',end_date='2023-01-02')
+    raw['time_scope']=dict(kind='range',evidence=['2023/1/1至2023/1/2'],explanation='指定范围',start_date='2023-01-01',end_date='2023-01-02')
     resolver=FieldResolver(store,lambda _:raw)
     plan=resolver.answer('2023/1/1至2023/1/2最高和最低差值多少？',ds)
     assert plan['answer']['value']==4.5
-    raw['query'].update(start_date='2024-01-01',end_date='2024-01-02')
+    raw['time_scope']=dict(kind='range',evidence=['2024/1/1至2024/1/2'],explanation='指定范围',start_date='2024-01-01',end_date='2024-01-02')
     plan=resolver.answer('2024/1/1至2024/1/2最高和最低差值多少？',ds)
     assert 'value' not in plan['answer']
     assert '不按零' in plan['answer']['notice']
 
 
-def test_partial_extremum_plan_is_completed_from_explicit_task_requirements(series):
+def test_incomplete_statistics_schema_is_repaired_by_model(series):
     store, ds=series
     requests=[]
     def model(payload):
         requests.append(payload)
         sid=payload['catalog'][0]['columns'][0]['id']
         if len(requests)==1:
-            return dict(intent='lookup',decision='resolved',fields=[dict(role='v1',candidate_ids=[sid])],query={'operation':'max'})
-        assert '完整返回' in payload['repair_instruction']
+            return dict(intent='lookup',decision='resolved',fields=[dict(role='v1',candidate_ids=[sid])],query={'operation':'statistics'})
+        assert 'operation' in payload['repair_instruction']
         raw=compound()
         for f in raw['fields']: f['candidate_ids']=[sid]
         return raw
     plan=FieldResolver(store,model).answer('最高价和最低价差值多少？分别是哪天？',ds)
-    assert len(requests)==1  # Fields selected by model; operations supplied by task.
+    assert len(requests)==2  # The model, never phrase rules, repairs missing operations.
     assert plan['status']=='resolved'
     assert plan['answer']['value']==12
 
@@ -102,7 +103,7 @@ def test_model_response_preserves_statistical_role_operations(monkeypatch, tmp_p
         status_code=200
         def json(self): return {'choices':[{'finish_reason':'stop','message':{'content':__import__('json').dumps(compound())}}]}
     monkeypatch.setattr(httpx.Client,'post',lambda *a,**k:Reply())
-    value=ask_model({'question':'最高价和最低价差值多少？'},tmp_path)
+    value=ask_model({'question':'最高价和最低价差值多少？','semantic_task':compound()},tmp_path)
     assert [f['operation'] for f in value['fields']]==['max','min']
 
 

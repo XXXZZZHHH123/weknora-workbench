@@ -23,6 +23,7 @@ def test_metadata_counts_types_from_all_contracts_without_observation_query(fiel
     store,ds=fields_store
     monkeypatch.setattr(store,'query_series',lambda *a,**kw:pytest.fail('Metadata must never query observations'))
     def model(p):
+        if not p.get('task_requirements',{}).get('metadata'):return metadata(['收盘价','结算价','盘中价'])
         assert p['catalog_summary']==[{'sheet':'期货报价','metrics':['收盘价','盘中价','结算价']}]
         return metadata(['收盘价','结算价','盘中价'])
     plan=FieldResolver(store,model).answer('期货报价有几种价格',dataset_id=ds,date='2023-09-07')
@@ -44,6 +45,7 @@ def test_catalog_summary_does_not_depend_on_fts_subset(fields_store,monkeypatch)
     def model(p):
         # A directory query must inspect every field, even when FTS retrieves
         # just one. The model can select actual IDs across all relevant sheets.
+        if not p.get('task_requirements',{}).get('metadata'):return metadata(['收盘价','结算价','盘中价'])
         assert sum(len(g['columns']) for g in p['catalog'])==51
         assert next(g for g in p['catalog_summary'] if g['sheet']=='期货报价')['metrics']==['收盘价','盘中价','结算价']
         return metadata(['收盘价','结算价','盘中价'])
@@ -61,7 +63,7 @@ def test_metadata_rejects_invented_names_and_does_not_open_field_choice(fields_s
 def test_single_field_model_clarify_is_not_itself_business_ambiguity(fields_store):
     store,ds=fields_store
     raw=dict(intent='lookup',decision='clarify',question='请确认是否查询这个字段',fields=[{'role':'v1','label':'收盘价','candidate_ids':['B-0']}])
-    result=FieldResolver(store,lambda p:raw).answer('2023/9/7 C0收盘价',dataset_id=ds)
+    result=FieldResolver(store,lambda p:raw).answer('2023/9/7 C0收盘价',dataset_id=ds,date='2023-09-07')
     assert result['status']=='resolved' and result['answer']['sources']['v1']['rows'][0]['value']==10
 
 
@@ -69,7 +71,7 @@ def test_two_requested_metrics_return_two_sources_not_choice(fields_store):
     store,ds=fields_store
     raw=dict(intent='lookup',decision='clarify',fields=[{'role':'v1','label':'收盘价','candidate_ids':['B-0']},
                                                     {'role':'v2','label':'结算价','candidate_ids':['K-0']}])
-    result=FieldResolver(store,lambda p:raw).answer('2023/9/7 C0收盘价和结算价都给我',dataset_id=ds)
+    result=FieldResolver(store,lambda p:raw).answer('2023/9/7 C0收盘价和结算价都给我',dataset_id=ds,date='2023-09-07')
     assert result['status']=='resolved' and len(result['answer']['sources'])==2
 
 
@@ -104,7 +106,7 @@ def test_note_can_change_pending_lookup_to_metadata_without_discarding_scope(fie
 def test_repeated_same_id_does_not_create_truncation_or_ambiguity(fields_store):
     store,ds=fields_store
     raw=dict(intent='lookup',decision='clarify',fields=[{'role':'v1','label':'收盘价','candidate_ids':['B-0']*7}])
-    result=FieldResolver(store,lambda p:raw).answer('2023/9/7 C0收盘价',dataset_id=ds)
+    result=FieldResolver(store,lambda p:raw).answer('2023/9/7 C0收盘价',dataset_id=ds,date='2023-09-07')
     assert result['status']=='resolved' and not result['candidates_truncated']
 
 

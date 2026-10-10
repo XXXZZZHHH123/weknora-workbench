@@ -45,7 +45,7 @@ def main():
         else:
             plan=plans[-1];answer=plan.get('answer',{});scope=plan.get('task_requirements',{}).get('time_scope',{})
             detail.update(scope=scope,status=plan['status'])
-            if case.get('expect')=='clarification':
+            if case.get('expect')=='clarification' or case.get('allow_time_clarification') and plan['status']=='needs_clarification':
                 if plan['status']!='needs_clarification' or plan.get('clarification',{}).get('type')!='time_range':issues.append('Expected time-only clarification')
                 if any(len(f['candidates'])!=1 for f in plan.get('fields',[])):issues.append('Unnecessary field selection')
                 if answer:issues.append('Calculated before unresolved scope was answered')

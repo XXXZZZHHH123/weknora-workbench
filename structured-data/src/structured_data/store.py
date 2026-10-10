@@ -291,6 +291,14 @@ class DataStore:
         return {'frequency':'monthly','basis':'原表日期每月一条记录','expected_month_count':len(expected),'valid_month_count':len(valid),
                 'missing_months':missing,'first_valid_month':valid[0] if valid else None,'last_valid_month':valid[-1] if valid else None,'complete':not missing,'notice':notice+'。'}
 
+    def formula_examples(self, dataset_id, series_ids):
+        """Expose bounded source expressions as metadata, never evaluate them."""
+        ids=list(dict.fromkeys(series_ids))
+        if not ids:return {}
+        with self._connect(dataset_id) as con:
+            rows=con.execute('SELECT series_id,min(formula) FROM observations WHERE series_id IN ('+','.join('?' for _ in ids)+') AND formula IS NOT NULL AND length(formula) BETWEEN 1 AND 400 GROUP BY series_id',ids).fetchall()
+        return dict(rows)
+
     def query_series(self, dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, *, value_filters=None, last_n=None, top_n=None, order='desc', _complete=False) -> dict:
         if _complete:
             if type(limit)!=int or not 1<=limit<=20000:raise ValueError('分析最多读取20000条原表记录')
@@ -302,7 +310,7 @@ class DataStore:
             if n is not None and (type(n)!=int or not 1<=n<=200):raise ValueError('窗口或排序条数必须为1至200')
         filters=value_filters or []
         if not isinstance(filters,list) or len(filters)>8:raise ValueError('数值筛选条件无效')
-        operators={'gt':'>','gte':'>=','lt':'<','lte':'<=','ne':'!='}
+        operators={'gt':'>','gte':'>=','lt':'<','lte':'<=','eq':'=','ne':'!='}
         import math
         for f in filters:
             if not isinstance(f,dict) or set(f)!={'op','value'} or f['op'] not in operators or type(f['value']) not in (int,float) or not math.isfinite(f['value']):raise ValueError('数值筛选条件无效')

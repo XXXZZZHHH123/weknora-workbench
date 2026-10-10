@@ -80,22 +80,22 @@ def create_app(data_dir: str | Path | None = None):
                   transport_security=TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins))
 
     @mcp.tool()
-    def resolve_fields(question: str, dataset_id: str | None = None, context_sheet: str | None = None, prior_series_ids: list[str] | None = None, date: str | None = None, sheet: str | None = None, pending_resolution_id: str | None = None) -> dict:
-        """用大模型知识理解用户别称和真实表头的关系。只发送字段目录，不发送整表数据。question写完整用户意图及必要的上文；context_sheet及prior_series_ids用于连续追问。sheet仅在用户明确限制工作表时填写。返回真实候选列、理由和查询/计算方案。needs_clarification会触发网页选择弹窗：立即结束本轮并等用户选择，不能猜选或取数。resolved会同时返回answer中的原值或确定性计算结果及来源，直接据此回答，不要另行心算。dataset_id可省略，只有一份文件时自动选最新版本；多文件需指定。"""
-        return resolver.tool_answer(question,dataset_id,context_sheet,prior_series_ids,date,sheet,pending_resolution_id)
+    async def resolve_fields(question: str, dataset_id: str | None = None, context_sheet: str | None = None, prior_series_ids: list[str] | None = None, date: str | None = None, sheet: str | None = None, pending_resolution_id: str | None = None, previous_resolution_id: str | None = None) -> dict:
+        """用大模型知识理解用户别称和真实表头的关系。只发送字段目录，不发送整表数据。question保留本轮用户原话；previous_resolution_id只能来自上一轮真实工具结果，系统据此读取完整任务，理解续问、补充和改口。context_sheet及prior_series_ids仅用于候选召回。sheet仅在用户明确限制工作表时填写。返回真实候选列、理由和查询/计算方案。needs_clarification会在网页展示实际待补信息：立即结束本轮，等用户补充或选择，不能代替用户确认或取数。resolved会同时返回answer中的原值或确定性计算结果及来源，直接据此回答，不要另行心算。dataset_id可省略，只有一份文件时自动选最新版本；多文件需指定。"""
+        return await run_in_threadpool(resolver.tool_answer,question,dataset_id,context_sheet,prior_series_ids,date,sheet,pending_resolution_id,previous_resolution_id)
 
     @mcp.tool()
-    def confirm_fields(resolution_id: str, selections: dict[str,str] | None = None, note: str = '') -> dict:
+    async def confirm_fields(resolution_id: str, selections: dict[str,str] | None = None, note: str = '') -> dict:
         """仅在用户回复字段确认弹窗后使用。resolution_id来自待确认结果；selections是用户选择的角色v1等到真实series_id映射；用户自行补充的文字放note，会重新识别。不能替用户选择；结果仍needs_clarification时再次等待。"""
         try:
-            return resolver.attach_answer(resolver.confirm(resolution_id,selections,note))
+            return await run_in_threadpool(lambda: resolver.attach_answer(resolver.confirm(resolution_id,selections,note)))
         except ValueError as exc:
             return resolver.tool_notice('confirmation_unavailable',str(exc),False)
 
     @mcp.tool()
-    def execute_field_plan(resolution_id: str, date: str | None = None) -> dict:
+    async def execute_field_plan(resolution_id: str, date: str | None = None) -> dict:
         """执行已明确/经用户确认的字段方案。待确认方案会拒绝。具体日期可传YYYY-MM-DD或沿用方案日期；返回原数值及双方来源，四则计算用Decimal，不能自行改写返回的计算结果。每个输入必须是同日唯一有效值；未知、缺失不补造。"""
-        return resolver.execute(resolution_id,date)
+        return await run_in_threadpool(resolver.execute,resolution_id,date)
 
     @mcp.tool()
     def list_datasets() -> dict:

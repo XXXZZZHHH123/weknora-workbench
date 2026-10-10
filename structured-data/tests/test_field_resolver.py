@@ -67,7 +67,7 @@ def test_incomplete_calculation_accepts_choice_and_replans_without_premature_exe
         calls.append(payload)
         if len(calls)==1:return proposal([['price','usd-price']],'calculation',decision='clarify')
         assert '用户已确认字段' in payload['question'] and 'usd-price' in payload['question']
-        return proposal([['usd-price']],'calculation',decision='clarify')
+        return dict(proposal([['usd-price']],'calculation',decision='clarify'),clarification={'missing_input':'unit','reason':'需要计量单位才能换算'})
     resolver=FieldResolver(store,model);plan=resolver.resolve(ds,'价格换算',date='2023-09-07')
     assert plan['requires_note']
     with pytest.raises(ValueError,match='请选择'):resolver.confirm(plan['resolution_id'],{})
@@ -100,10 +100,10 @@ def test_currency_conversion_cannot_invent_a_cents_factor():
     validate_constants('v1*0.01*v2',[{'unit':'美分/磅'},{'unit':None}],'换算人民币','元/磅')
 
 
-def test_orchestrator_executes_clear_plan_and_infers_literal_date(catalogue):
+def test_orchestrator_executes_clear_plan_with_protocol_date(catalogue):
     store,ds=catalogue
     resolver=FieldResolver(store,lambda p:proposal([['price']]))
-    answer=resolver.answer('2023/9/7价格是多少')
+    answer=resolver.answer('2023/9/7价格是多少',date='2023-09-07')
     assert answer['date']=='2023-09-07'
     assert answer['answer']['sources']['v1']['rows'][0]['value']==99.7
     missing=resolver.answer('价格是多少')
@@ -144,7 +144,7 @@ def test_large_catalogue_expands_missing_factor_without_full_dump(catalogue):
         assert sum(len(s['columns']) for s in payload['catalog'])<24
         assert any(s['sheet']=='另一张表' for s in payload['catalog'])
         return proposal([['price'],['fx-context']],'calculation','v1*0.01*v2','元/磅')
-    plan=FieldResolver(store,model,lambda p:{'search_terms':['美元兑人民币']}).answer('2023年9月7日美国 EMOT M 1-1/8换算',dataset_id=ds)
+    plan=FieldResolver(store,model,lambda p:{'search_terms':['美元兑人民币']}).answer('2023年9月7日美国 EMOT M 1-1/8换算',dataset_id=ds,date='2023-09-07')
     assert len(calls)==2 and plan['answer']['value_decimal']=='7.3065145'
     assert not plan['retrieval']['full_catalogue_fallback']
 
@@ -208,10 +208,10 @@ def test_missing_formula_is_audited_before_asking_user_again(catalogue):
         calls.append(payload)
         if len(calls)<2:
             return proposal([['price'],['fx-context']],'calculation',decision='clarify')
-        assert 'proposed_plan' in payload
+        assert 'invalid_proposal' in payload
         assert len([c for s in payload['catalog'] for c in s['columns']])<=24
         return proposal([['price'],['fx-context']],'calculation','v1*0.01*v2','元/磅')
-    plan=FieldResolver(store,model,lambda p:{'search_terms':[]}).answer('2023年9月7日，美国 EMOT M 1-1/8使用美元兑人民币换算',dataset_id=ds)
+    plan=FieldResolver(store,model,lambda p:{'search_terms':[]}).answer('2023年9月7日，美国 EMOT M 1-1/8使用美元兑人民币换算',dataset_id=ds,date='2023-09-07')
     assert len(calls)==2
     assert plan['status']=='resolved' and plan['answer']['rounded_value']=='7.31'
 
@@ -276,7 +276,7 @@ def test_multiple_result_formula_is_repaired_without_asking_user(catalogue):
         if len(calls)==1:return proposal([['price'],['fx-context']],'calculation','v1, v1*v2','元, 美元')
         assert 'repair_instruction' in payload
         return proposal([['price'],['fx-context']],'calculation','v1*0.01*v2','元/磅')
-    result=FieldResolver(store,model).answer('2023-09-07原价和换算价',dataset_id=ds)
+    result=FieldResolver(store,model).answer('2023-09-07原价和换算价',dataset_id=ds,date='2023-09-07')
     assert len(calls)==2 and result['status']=='resolved' and result['answer']['rounded_value']=='7.31'
 
 
@@ -285,7 +285,7 @@ def test_dated_query_never_uses_undated_value(catalogue):
     next(s for s in data if s['series_id']=='price')['date_mode']='none';path.write_text(json.dumps(data))
     resolver=FieldResolver(store,lambda p:proposal([['price']]))
     with pytest.raises(ValueError,match='无日期字段'):
-        resolver.resolve(ds,'2023-09-07价格')
+        resolver.resolve(ds,'2023-09-07价格',date='2023-09-07')
     plan=resolver.resolve(ds,'无日期表的数值')
     with pytest.raises(ValueError,match='没有日期'):
         resolver.execute(plan['resolution_id'],date='2023-09-07')
@@ -293,12 +293,12 @@ def test_dated_query_never_uses_undated_value(catalogue):
 
 def test_all_candidates_missing_on_date_report_absence_without_clarification(catalogue):
     store,ds=catalogue;resolver=FieldResolver(store,lambda p:proposal([['price','usd-price']],decision='clarify'))
-    result=resolver.answer('2023-09-08价格',dataset_id=ds)
+    result=resolver.answer('2023-09-08价格',dataset_id=ds,date='2023-09-08')
     assert result['status']=='no_data' and not result['requires_note']
     assert len(result['answer']['sources'])==2
     assert all(s['valid_count']==0 for s in result['answer']['sources'].values())
     with pytest.raises(ValueError,match='尚未确认'):resolver.execute(result['resolution_id'])
-    present=resolver.answer('2023-09-07价格',dataset_id=ds)
+    present=resolver.answer('2023-09-07价格',dataset_id=ds,date='2023-09-07')
     assert present['status']=='needs_clarification' and 'answer' not in present
 
 
@@ -315,7 +315,7 @@ def test_extremum_question_does_not_require_unknown_date(catalogue):
 
 def test_extremum_ignores_prior_single_day_but_honors_explicit_range(catalogue):
     store,ds=catalogue
-    raw=dict(proposal([['price']]),query={'operation':'max'})
+    raw=dict(proposal([['price']]),query={'operation':'max'},time_scope={'kind':'unbounded','evidence':[],'explanation':'全部记录'})
     resolver=FieldResolver(store,lambda p:raw)
     result=resolver.answer('价格最高是哪天',dataset_id=ds,date='2020-01-01')
     assert result['date'] is None and result['answer']['sources']['v1']['aggregate']==99.7
@@ -347,37 +347,33 @@ def test_missing_statistical_operation_is_repaired_not_asked_of_user(catalogue):
     def model(p):
         calls.append(p)
         raw=proposal([['price']])
-        if len(calls)>1:raw['query']={'operation':'max'}
+        raw['query']={'operation':'statistics' if len(calls)==1 else 'max'}
         return raw
     result=FieldResolver(store,model).answer('价格最高的是哪一天？是多少？',dataset_id=ds)
-    assert len(calls)==1 and result['status']=='resolved'
+    assert len(calls)==2 and result['status']=='resolved'
     assert result['query']['operation']=='max'
 
 
-def test_model_cannot_invent_extremum_date_filter(catalogue):
+def test_unbounded_scope_clears_inconsistent_query_date_filter(catalogue):
     store,ds=catalogue
-    raw=dict(proposal([['price']]),query={'operation':'max','start_date':'2013-02-01'})
-    with pytest.raises(ValueError,match='不可擅自限定范围'):
-        FieldResolver(store,lambda p:raw).answer('价格最高是哪天',dataset_id=ds)
+    raw=dict(proposal([['price']]),query={'operation':'max','start_date':'2013-02-01'},
+             time_scope={'kind':'unbounded','evidence':[],'explanation':'无日期限制'})
+    result=FieldResolver(store,lambda p:raw).answer('价格最高是哪天',dataset_id=ds)
+    assert result['query']['start_date'] is None and result['answer']['sources']['v1']['aggregate']==99.7
 
 
 def test_named_daily_high_field_is_not_forced_into_global_extremum(catalogue):
     store,ds=catalogue
-    result=FieldResolver(store,lambda p:proposal([['price']])).answer('2023/9/7最高价是多少',dataset_id=ds)
+    result=FieldResolver(store,lambda p:proposal([['price']])).answer('2023/9/7最高价是多少',dataset_id=ds,date='2023-09-07')
     assert result['query']['operation']=='rows'
     assert result['answer']['date']=='2023-09-07'
 
 
-def test_explicit_header_is_respected_even_when_model_uses_a_generic_role_label(catalogue):
-    store,ds=catalogue
-    calls=[]
+def test_field_binding_is_owned_by_semantic_model(catalogue):
+    store,ds=catalogue;calls=[]
     def model(payload):
         calls.append(payload)
-        if len(calls)==1:
-            return proposal([['price','usd-price']],decision='clarify')
-        assert '用户已明确原表字段口径' in payload['repair_instruction']
         return proposal([['price']])
-    plan=FieldResolver(store,model).answer('请告诉我2023/9/7美国 EMOT M 1-1/8是多少',ds)
-    assert len(calls)==1  # Explicit real header excludes the other definition.
-    assert plan['status']=='resolved'
+    plan=FieldResolver(store,model).answer('请告诉我美国 EMOT M 1-1/8是多少',ds,date='2023-09-07')
+    assert len(calls)==1 and plan['status']=='resolved'
     assert plan['answer']['sources']['v1']['series']['series_id']=='price'
