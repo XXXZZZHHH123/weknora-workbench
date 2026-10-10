@@ -664,6 +664,89 @@ func loadMCPServiceTools(
 	return mcpTools, instructions, nil
 }
 
+// StructuredConfirmationTool resolves a UI submission only within registered,
+// authorized tools. It never constructs a function name or changes service scope.
+func StructuredConfirmationTool(ctx context.Context, registry *ToolRegistry, sourceName string) (string, error) {
+	if registry == nil {
+		return "", fmt.Errorf("当前智能体没有字段确认工具")
+	}
+	if catalog := registry.mcpCatalog(); catalog != nil {
+		if err := catalog.authorize(ctx); err != nil {
+			return "", err
+		}
+		var matches []*MCPTool
+		for id := range catalog.servers {
+			tools, _, err := catalog.snapshot(ctx, id, false)
+			if err != nil {
+				continue
+			}
+			visible, err := catalog.visibleTools(ctx, id, tools)
+			if err != nil {
+				continue
+			}
+			sourceMatches := sourceName == ""
+			for _, source := range visible {
+				if (source.mcpTool.Name == "resolve_fields" || source.mcpTool.Name == "confirm_fields") && (mcpRegisteredName(source) == sourceName || source.Name() == sourceName) {
+					sourceMatches = true
+				}
+			}
+			if !sourceMatches {
+				continue
+			}
+			for _, tool := range visible {
+				if tool.mcpTool.Name == "confirm_fields" {
+					matches = append(matches, tool)
+				}
+			}
+		}
+		if len(matches) != 1 {
+			return "", fmt.Errorf("无法唯一定位已授权的字段确认工具，请从对应查询结果重新提交")
+		}
+		tool := matches[0]
+		bound := NewMCPTool(tool.service, tool.mcpTool, tool.mcpManager, tool.gate, tool.authWaitTimeoutSeconds)
+		bound.registeredName = mcpRegisteredName(tool)
+		registry.RegisterTool(&MCPRegisteredTool{MCPTool: bound, catalog: catalog, ref: mcpToolRef(tool)})
+		return bound.Name(), nil
+	}
+	unwrap := func(tool types.Tool) *MCPTool {
+		if direct, ok := tool.(*MCPRegisteredTool); ok {
+			return direct.MCPTool
+		}
+		if bound, ok := tool.(*MCPTool); ok {
+			return bound
+		}
+		return nil
+	}
+	serviceID := ""
+	if sourceName != "" {
+		source, err := registry.GetTool(sourceName)
+		if err != nil {
+			return "", fmt.Errorf("字段确认的来源工具已不可用，请重新查询")
+		}
+		bound := unwrap(source)
+		if bound == nil || bound.service == nil || (bound.mcpTool.Name != "resolve_fields" && bound.mcpTool.Name != "confirm_fields") {
+			return "", fmt.Errorf("字段确认的来源工具无效")
+		}
+		serviceID = bound.service.ID
+	}
+	found := ""
+	for _, name := range registry.ListTools() {
+		tool, _ := registry.GetTool(name)
+		bound := unwrap(tool)
+		if bound == nil || bound.service == nil || bound.mcpTool.Name != "confirm_fields" || (serviceID != "" && bound.service.ID != serviceID) {
+			continue
+		}
+		if found != "" {
+			return "", fmt.Errorf("存在多个字段确认服务，请重新查询并从对应结果提交")
+		}
+		found = name
+	}
+	if found == "" {
+		return "", fmt.Errorf("当前智能体没有可用的字段确认工具")
+	}
+	return found, nil
+}
+
 // MCPToolNamesByServiceID returns registered MCP tool names grouped by service ID.
 func MCPToolNamesByServiceID(registry *ToolRegistry) map[string][]string {
 	if registry == nil {

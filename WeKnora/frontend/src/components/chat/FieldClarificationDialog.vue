@@ -40,7 +40,8 @@ watch(() => plan.value?.resolution_id, () => {
   selections.value = {}; note.value = ''; submitted.value = false;
   for (const f of plan.value?.fields || []) if (f.candidates.length === 1) selections.value[f.role] = f.candidates[0].series_id;
 }, { immediate: true });
-watch(() => [plan.value?.resolution_id, props.active], () => { visible.value = !!plan.value && props.active && !submitted.value; }, { immediate: true });
+// Keep a confirmation available without interrupting every assistant reply.
+watch(() => plan.value?.resolution_id, () => { visible.value = false; });
 function submit() {
   if (!plan.value || !canSubmit.value || !props.active || submitted.value) return;
   const text = confirmationText(plan.value, selections.value, note.value);

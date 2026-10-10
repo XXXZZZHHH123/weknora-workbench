@@ -1,7 +1,7 @@
 /** Only structured results from the dedicated field tools may open a dialog. */
 export interface Candidate { series_id: string; sheet: string; metric: string; unit?: string; reason?: string; header_cells?: string[]; dimensions?: Record<string, unknown>; chart_sheet?: string }
 export interface Field { role: string; label: string; candidates: Candidate[] }
-export interface Clarification { kind: string; status: string; resolution_id: string; question: string; original_question?: string; requires_note?: boolean; fields: Field[]; answer?: any }
+export interface Clarification { kind: string; status: string; resolution_id: string; question: string; original_question?: string; source_tool?: string; requires_note?: boolean; fields: Field[]; answer?: any }
 
 export function canConfirmFields(plan: Clarification | null, selections: Record<string, string>, note: string): boolean {
   if (!plan) return false;
@@ -25,7 +25,7 @@ export function fieldResolution(events: any[]): Clarification | null {
         if (data.kind !== 'structured_field_resolution' || !/^[a-f0-9]{24}$/.test(data.resolution_id) || !['needs_clarification', 'resolved', 'no_data'].includes(data.status)) continue;
         if (!Array.isArray(data.fields) || data.fields.length > 8 || typeof data.question !== 'string') continue;
         if (!data.fields.every((f: any) => /^v[1-8]$/.test(f.role) && typeof f.label === 'string' && Array.isArray(f.candidates) && f.candidates.length <= 5 && f.candidates.every((c: any) => typeof c.series_id === 'string' && typeof c.sheet === 'string' && typeof c.metric === 'string'))) continue;
-        latest = data;
+        latest = {...data, source_tool: event.tool_name};
         break;
       } catch { /* Other tool text is not a clarification request. */ }
     }
@@ -34,21 +34,12 @@ export function fieldResolution(events: any[]): Clarification | null {
 }
 
 export function confirmationText(plan: Clarification, selections: Record<string, string>, note: string): string {
+  if (!canConfirmFields(plan, selections, note)) throw new Error('请选择字段或补充说明');
   const selected = Object.fromEntries(plan.fields.flatMap(f => f.candidates.some(c => c.series_id === selections[f.role]) ? [[f.role, selections[f.role]]] : []));
-  if (note.trim() && Object.keys(selected).length) {
-    return '字段确认提交：' + JSON.stringify({resolution_id: plan.resolution_id, selections: selected, note: note.trim(), summary: plan.fields.flatMap(f => {
+    return '字段确认提交：' + JSON.stringify({resolution_id: plan.resolution_id, source_tool: plan.source_tool, selections: selected, note: note.trim(), summary: plan.fields.flatMap(f => {
       const c = f.candidates.find(c => c.series_id === selected[f.role]);
       return c ? [`${f.label}：“${c.sheet}”的“${c.metric}”${dimensionLabel(c.dimensions) ? '（'+dimensionLabel(c.dimensions)+'）' : ''}`] : [];
     }).join('\n')});
-  }
-  if (note.trim()) return `字段确认：关于“${plan.original_question || plan.question}”，我的补充说明是：${note.trim()}。请依据这条补充重新确认字段，仍有歧义时继续问我。`;
-  const choices = plan.fields.map(f => {
-    const c = f.candidates.find(c => c.series_id === selections[f.role]) || (f.candidates.length === 1 ? f.candidates[0] : undefined);
-    if (!c && !f.candidates.length && plan.fields.some(item => item.candidates.length > 1)) return '';
-    if (!c) throw new Error('请为每项用途选择一个字段');
-    return `${f.label}：选择工作表“${c.sheet}”的“${c.metric}”${c.chart_sheet ? '（图表所在页：'+c.chart_sheet+'）' : ''}${dimensionLabel(c.dimensions) ? '（'+dimensionLabel(c.dimensions)+'）' : ''}（单位：${c.unit || '原表未注明'}；表头位置：${(c.header_cells || []).join('、') || '未注明'}）`;
-  });
-  return `字段确认：\n${choices.filter(Boolean).join('\n')}\n请使用我确认的字段继续回答刚才的问题；如计算口径仍不明确，请继续问我。`;
 }
 
 /** Display-only summary of our generated confirmation envelopes, including saved history.
@@ -58,7 +49,7 @@ export function confirmationDisplayText(content: string): string {
   if (content.startsWith('字段确认提交：')) {
     try {
       const data = JSON.parse(content.slice('字段确认提交：'.length));
-      if (typeof data.summary === 'string' && typeof data.note === 'string') return `已确认：\n${data.summary}\n已补充：${data.note}`;
+      if (typeof data.summary === 'string' && typeof data.note === 'string') return [data.summary.trim() ? `已确认：\n${data.summary}` : '', data.note.trim() ? `已补充：${data.note}` : ''].filter(Boolean).join('\n');
     } catch { /* Keep ordinary user messages intact. */ }
   }
   const note = /^字段确认：关于“[\s\S]*”，我的补充说明是：([\s\S]*)。请依据这条补充重新确认字段，仍有歧义时继续问我。$/.exec(content);
@@ -71,6 +62,7 @@ export function confirmationDisplayText(content: string): string {
 }
 
 export function fieldClarification(events: any[]): Clarification | null {
+  if (structuredFieldIssue(events)) return null;
   const latest = fieldResolution(events);
   return latest?.status === 'needs_clarification' ? latest : null;
 }

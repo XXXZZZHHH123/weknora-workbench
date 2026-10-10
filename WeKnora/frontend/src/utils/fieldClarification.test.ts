@@ -31,7 +31,7 @@ test('incomplete calculation allows an actual field choice but not missing selec
 test('confirmation display hides generated instructions but preserves choice and free text', () => {
   const query = confirmationText(plan, {v1:'eur'}, '');
   assert.equal(confirmationDisplayText(query), '已确认：\n汇率：“商品报价”的“欧元兑人民币”');
-  assert.match(query, /请使用我确认的字段/);
+  assert.deepEqual(JSON.parse(query.slice('字段确认提交：'.length)).selections, {v1:'eur'});
   const nested = {...plan, original_question:'原问题\n用户补充：用户确认：价格选择收盘价。'};
   assert.equal(confirmationDisplayText(confirmationText(nested, {}, '当日汇率')), '已补充：当日汇率');
   assert.equal(confirmationDisplayText(confirmationText(plan, {}, '第一行\n第二行')), '已补充：第一行\n第二行');
@@ -48,7 +48,7 @@ test('live and restored MCP envelopes open only validated field dialog', () => {
 });
 test('choice produces readable user reply with exact source and no internal identifiers', () => {
   const text=confirmationText(plan, { v1:'eur' }, '');
-  assert.match(text,/欧元兑人民币/); assert.match(text,/G1/); assert.ok(!text.includes(plan.resolution_id));
+  assert.match(text,/欧元兑人民币/); assert.equal(JSON.parse(text.slice('字段确认提交：'.length)).resolution_id, plan.resolution_id); assert.ok(!confirmationDisplayText(text).includes(plan.resolution_id));
   assert.match(confirmationText(plan, {}, '我要日元'),/我要日元/);
   assert.throws(() => confirmationText({...plan,fields:[{role:'v1',label:'汇率',candidates:[]}]}, {}, ''));
 });
@@ -90,4 +90,22 @@ test('direct extremum query uses bound rows and never old source examples', () =
   assert.equal(structuredFieldAnswer([event(JSON.stringify({...source,rows_are:'source_examples_not_all_inputs'}),'query_series')]),null);
   assert.equal(structuredFieldAnswer([event(JSON.stringify(plan)),e]),null);
   assert.equal(structuredFieldAnswer([e,{...e,success:false}]),null);
+});
+
+test('metadata answers render without observation rows or a field dialog', () => {
+  const data={...plan,status:'resolved',fields:[],answer:{intent:'metadata',sources:{},count:2,complete:true,
+    groups:[{metric:'收盘价',source_count:7,sources:[{sheet:'期货',header_cells:['B1']}]},{metric:'结算价',source_count:7,sources:[{sheet:'期货',header_cells:['K1']}]}]}};
+  assert.equal(fieldClarification([event(JSON.stringify(data))]),null);
+  assert.equal(structuredFieldAnswer([event(JSON.stringify(data))])?.answer.count,2);
+});
+
+test('confirmation preserves originating tool and errors suppress stale clarification', () => {
+  const p=fieldClarification([event(JSON.stringify(plan))]);
+  assert.ok(p);
+  const payload=JSON.parse(confirmationText(p,{v1:'eur'},'').slice('字段确认提交：'.length));
+  assert.equal(payload.source_tool,'mcp__resolve_fields_a123');
+  assert.deepEqual(payload.selections,{v1:'eur'});
+  const failed={...event(null,'mcp__confirm_fields_a123'),success:false,error:'got string, want object'};
+  assert.equal(fieldClarification([event(JSON.stringify(plan)),failed]),null);
+  assert.ok(structuredFieldIssue([event(JSON.stringify(plan)),failed]));
 });

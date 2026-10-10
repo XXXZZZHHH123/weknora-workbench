@@ -1,5 +1,16 @@
 <template>
   <section class="structured-answer">
+    <template v-if="answer.intent === 'metadata'">
+      <p class="answer-label">原表字段目录 · {{ (answer.sheets || []).join('、') }}</p>
+      <p class="answer-value">共 {{ answer.count }} 种：{{ (answer.groups || []).map((g:any) => g.metric).join('、') }}</p>
+      <div v-for="group in answer.groups" :key="group.metric" class="source-result">
+        <h3>{{ group.metric }}</h3>
+        <small v-for="source in group.sources" :key="source.series_id">来源：{{ answer.file }} · {{ source.sheet }} · 表头：{{ (source.header_cells || []).join('、') }}<template v-if="dimensionLabel(source.dimensions)"> · {{ dimensionLabel(source.dimensions) }}</template> · 单位：{{ source.unit || '原表未注明' }}</small>
+        <small v-if="group.sources_truncated">共 {{ group.source_count }} 个来源列，以上展示部分表头证据。</small>
+      </div>
+      <small>{{ answer.notice }}</small>
+    </template>
+    <template v-else>
     <p class="answer-label">原表查询结果<span v-if="answer.date"> · {{ answer.date }}</span></p>
     <p v-if="answer.operation && answer.operation !== 'rows'">{{ operationLabel(answer.operation) }} · {{ answer.start_date || answer.end_date ? `${answer.start_date || '记录起点'} 至 ${answer.end_date || '记录终点'}` : '全部已导入记录' }}</p>
     <p v-if="plan?.status === 'no_data'">{{ answer.notice }}</p>
@@ -32,6 +43,7 @@
       <p>计算式：{{ readableExpression }}</p>
       <small>上述数值由程序计算。换算公式和业务口径由模型提出，请结合来源核对。</small>
     </div>
+    </template>
   </section>
 </template>
 <script setup lang="ts">

@@ -397,6 +397,10 @@ func (e *AgentEngine) Execute(
 		"tools":      toolListStr,
 	})
 
+	if e.executeStructuredConfirmation(ctx, state, query, sessionID, messageID) {
+		finishAgentSpan(agentSpan, state, nil)
+		return state, nil
+	}
 	_, err := e.executeLoop(ctx, state, query, messages, tools, sessionID, messageID)
 	if err != nil {
 		logger.Errorf(ctx, "[Agent] Execution failed: %v", err)
