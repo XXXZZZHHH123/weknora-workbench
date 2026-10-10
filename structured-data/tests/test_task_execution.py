@@ -38,11 +38,11 @@ def test_zero_filter_and_conditional_count_are_not_dropped(data):
 
 
 def test_month_range_and_top_n(data):
-    store,ds=data;f=FieldResolver(store,model())
+    store,ds=data;f=FieldResolver(store,model(time_scope=dict(kind='range',evidence=['2023年1月'],explanation='指定完整月份',start_date='2023-01-01',end_date='2023-01-31')))
     p=f.answer('2023年1月收盘价平均多少？',ds,date='2023-01')
     assert p['answer']['sources']['v1']['aggregate']==15
     assert p['answer']['start_date']=='2023-01-01'
-    s=f.answer('收盘价最高的三天分别多少？',ds)['answer']['sources']['v1']
+    s=FieldResolver(store,model()).answer('收盘价最高的三天分别多少？',ds)['answer']['sources']['v1']
     assert [(r['date'],r['value']) for r in s['rows']]==[('2023-01-06',30),('2023-01-02',20),('2023-01-05',15)]
 
 
@@ -64,7 +64,12 @@ def test_single_day_and_cross_day_calculation(data):
     def calc(_):return dict(intent='calculation',decision='resolved',fields=[dict(role='v1',candidate_ids=['q']),dict(role='v2',candidate_ids=['p'])],calculation={'expression':'v1-v2','unit':'元/吨'},query={'operation':'rows','start_date':'2023-01-06','end_date':'2023-01-06'})
     p=FieldResolver(store,calc).answer('2023年1月6日结算价减收盘价是多少？',ds)
     assert p['answer']['value']==1 and p['answer']['unit']=='原表未注明单位'
-    p=FieldResolver(store,model()).answer('2023年1月6日收盘价比1月5日涨了多少？涨幅多少？',ds)
+    def comparison(_):
+        return dict(intent='calculation',decision='resolved',
+            fields=[dict(role='v1',candidate_ids=['p'],date='2023-01-06'),dict(role='v2',candidate_ids=['p'],date='2023-01-05')],
+            time_scope=dict(kind='dates',evidence=['2023年1月6日','1月5日'],explanation='比较所问日期',dates=['2023-01-06','2023-01-05']),
+            query={'operation':'rows'},calculation=dict(expression='v1-v2',unit='原表未注明单位',outputs=[dict(label='差值',expression='v1-v2',unit='原表未注明单位'),dict(label='涨幅',expression='(v1-v2)/v2*100',unit='%')]))
+    p=FieldResolver(store,comparison).answer('2023年1月6日收盘价比1月5日涨了多少？涨幅多少？',ds)
     assert [o['value'] for o in p['answer']['outputs']]==[15,100]
     assert p['answer']['sources']['v2']['rows'][0]['date']=='2023-01-05'
 
@@ -119,7 +124,8 @@ def test_pending_followup_keeps_alternatives_until_actual_human_choice(data):
 
 def test_human_note_dates_are_not_lost_after_confirmed_json():
     req=requirements('2022/23年度产量与进口合计\n已确认字段：{"series_id":"a"}\n用户补充：按2022年9月1日到2023年8月31日求和')
-    assert req['bounds']=={'start_date':'2022-09-01','end_date':'2023-08-31'}
+    assert req['dates']==['2022-09-01','2023-08-31']
+    assert req['bounds']=={}  # Tokens alone do not decide range versus comparison.
     assert not req.get('needs_period_definition')
     assert requirements('2009年1月6日01合约结算价')['contract_months']==[1]
     assert requirements('2023年9月22日1月和5月合约结算价差')['contract_months']==[1,5]
@@ -198,3 +204,16 @@ def test_overlap_is_complete_supplementary_evidence_not_an_auto_selector(data):
     assert evidence['first_date']=='2023-01-01' and evidence['last_date']=='2023-01-06'
     with pytest.raises(ValueError):store.source_overlap(ds,'p','nonexistent')
     assert not requirements('累计入库量每天加起来是多少？这样加是不是会重复计算？').get('arithmetic')
+
+
+def test_multiple_dates_do_not_implicitly_request_subtraction(data):
+    store,ds=data
+    def proposal(_):
+        return dict(intent='lookup',decision='resolved',fields=[
+            dict(role='v1',candidate_ids=['p'],date='2023-01-06'),
+            dict(role='v2',candidate_ids=['p'],date='2023-01-05')],
+            query={'operation':'rows'},time_scope=dict(kind='dates',evidence=['2023年1月6日','1月5日'],explanation='分别列出两天',dates=['2023-01-06','2023-01-05']))
+    p=FieldResolver(store,proposal).answer('分别列出2023年1月6日和1月5日收盘价',ds)
+    assert p['status']=='resolved' and p['intent']=='lookup'
+    assert 'value' not in p['answer']
+    assert [s['rows'][0]['value'] for s in p['answer']['sources'].values()]==[30,15]

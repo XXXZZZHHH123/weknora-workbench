@@ -18,7 +18,7 @@ def literal_scope_matches(question, series):
         text=text.replace(field['metric'],' ')
         for value in field.get('dimensions',{}).values():
             if isinstance(value,(str,int,float)):text=text.replace(str(value),' ')
-    text=re.sub(r'\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?|\d{4}年\d{1,2}月|\d{4}年',' ',text)
+    text=re.sub(r'\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?',' ',text)
     words=('哪一天','有多少货','分别是哪天','的时候','最近','最新','平均数','平均','均值','交易日','记录','排除','空值','后的','最高','最低','最大','最小','最多','最少','差值','多少','哪天','一共','合计','超过','大于','不低于','不超过','至少','至多','小于','低于','首尾差','最大回撤','总体是涨还是跌','折线图','画成','标出','相关系数','共同日期','对齐','不填补','Pearson','按','算','有','是','在','把','分别','和','的','呢','条','个','天','价')
     for word in sorted((*words,'相关吗'),key=len,reverse=True):text=text.replace(word,' ')
     parts=re.findall(r'[A-Za-z]+|[\u4e00-\u9fff]+',text)
@@ -34,8 +34,8 @@ def requirements(question):
         without_dates=re.sub(r'\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?月?',' ',q)
         months=[int(n) for n in re.findall(r'(?<!\d)(0?[1-9]|1[0-2])(?:月(?:份)?|合约)',without_dates)]
         if months:result['contract_months']=list(dict.fromkeys(months))
-    from .time_scope import calendar_scope
-    result.update(calendar_scope(question))
+    from .time_scope import literal_dates
+    result['dates']=literal_dates(question)
     if re.search(r'有哪些|有几种|多少种|价格种类|价格类型|几种价格|几种指标|都有什么|什么库存数据|字段单位',q):result['metadata']=True
     if result.get('metadata') and '库存' in q and not re.search(r'负荷|开机|订单|成交|上市|出库|入库|产量|需求|价格|报价',q):result['inventory_directory_only']=True
     if re.search(r'最近|最新|现在|目前|当前',q):result['latest']=True
@@ -86,6 +86,8 @@ def normalize_proposal(raw, req, question, prior=()):
     if not isinstance(raw,dict):raise ValueError('字段模型没有返回JSON对象，尚未查询数值')
     raw=deepcopy(raw)
     if raw.get('intent')=='metadata':return raw
+    from .time_scope import bind_scope
+    bind_scope(raw,req,question)
     fields=raw.get('fields',[]);query=raw.setdefault('query',{})
     if not isinstance(fields,list) or any(not isinstance(f,dict) for f in fields):raise ValueError('候选字段格式无效，未执行查询')
     for field in fields:
@@ -107,7 +109,7 @@ def normalize_proposal(raw, req, question, prior=()):
         if len(fields)>1 and ids[0] and all(s==ids[0] for s in ids):fields=fields[:1];raw['fields']=fields
         for field in fields:field.pop('operation',None)
     elif req.get('aggregate'):
-        if not any(req.get(k) for k in ('arithmetic','percentage','currency_conversion')):
+        if not any(req.get(k) for k in ('arithmetic','percentage','currency_conversion')) and not (raw.get('intent')=='calculation' and len({tuple(sorted(f.get('candidate_ids',[]))) for f in fields})>1 and raw.get('calculation',{}).get('expression')):
             # An average/sum/count is owned by the executor. It is not an
             # arbitrary symbolic expression proposed by a language model.
             raw['intent']='lookup';raw['calculation']={};query['operation']=req['aggregate']
@@ -136,7 +138,7 @@ def normalize_proposal(raw, req, question, prior=()):
         raw['intent']='calculation';query['operation']='rows';query['start_date']=query['end_date']=None
         raw['calculation']={'expression':'v1-v2','unit':'原表未注明单位','explanation':'指定日期原值之差'}
         if req.get('percentage'):raw['calculation']['outputs']=[{'label':'差值','expression':'v1-v2','unit':'原表未注明单位'}, {'label':'涨幅','expression':'(v1-v2)/v2*100','unit':'%'}]
-    if req.get('needs_period_definition'):
+    if req.get('time_scope',{}).get('kind')=='clarify':
         # Preserve the selected fields before asking for an actual calendar
         # boundary. A crop-year string is not a monthly table's period label.
         query.update(operation='rows',start_date=None,end_date=None,period=None)

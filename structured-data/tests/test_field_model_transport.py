@@ -72,3 +72,13 @@ def test_thinking_option_is_explicit_and_preserved_not_guessed_from_model_name(t
     save_model(tmp_path,{'model':'another-model','base_url':'https://model.invalid/v1'})
     assert read_model(tmp_path)['enable_thinking'] is False
     with pytest.raises(ValueError):save_model(tmp_path,{'model':'test','base_url':'https://model.invalid/v1','enable_thinking':'false'})
+
+
+def test_time_plan_schema_repairs_without_asking_user_for_system_errors(tmp_path,monkeypatch):
+    bad={'intent':'lookup','decision':'resolved','fields':[{'candidate_ids':['c1']}]}
+    fixed={'kind':'range','evidence':['今年'], 'explanation':'当前自然年', 'start_date':'2026-01-01','end_date':'2026-12-31'}
+    calls=setup_model(tmp_path,monkeypatch,['{}',json.dumps(fixed),json.dumps(bad)])
+    result=ask_model({'question':'今年合计多少','semantic_time_required':True},tmp_path)
+    assert result['time_scope']['end_date']=='2026-12-31'
+    assert len(calls)==3 and 'kind' in calls[1]['messages'][-1]['content']
+    assert json.loads(calls[2]['messages'][1]['content'])['resolved_time_scope']['end_date']=='2026-12-31'

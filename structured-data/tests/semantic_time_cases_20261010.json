@@ -1,0 +1,138 @@
+{
+  "groups": [
+    {
+      "id": "semantic-span",
+      "cases": [
+        {
+          "id": "T01",
+          "question": "2021/23年度中国棉花产量加进口，合计是多少？",
+          "expected_start": "2021-01-01",
+          "expected_end": "2023-12-31"
+        },
+        {
+          "id": "T02",
+          "question": "中国棉花产量加进口，从21年年初算起，中间都算，到23年底结束，合计是多少？",
+          "expected_start": "2021-01-01",
+          "expected_end": "2023-12-31"
+        }
+      ]
+    },
+    {
+      "id": "semantic-user",
+      "cases": [
+        {
+          "id": "T03",
+          "question": "2022/23年度中国棉花产量加进口，合计是多少？",
+          "expect": "clarification"
+        },
+        {
+          "id": "T04",
+          "question": "已补充：2022年1月开始，23年12月结束",
+          "confirm_note": "2022年1月开始，23年12月结束",
+          "expected_start": "2022-01-01",
+          "expected_end": "2023-12-31"
+        }
+      ]
+    },
+    {
+      "id": "semantic-whole",
+      "cases": [
+        {
+          "id": "T05",
+          "question": "2022/23年度中国棉花产量加进口，合计是多少？",
+          "expect": "clarification"
+        },
+        {
+          "id": "T06",
+          "question": "已补充：两年整年的",
+          "confirm_note": "两年整年的",
+          "expected_start": "2022-01-01",
+          "expected_end": "2023-12-31"
+        }
+      ]
+    },
+    {
+      "id": "semantic-correction",
+      "cases": [
+        {
+          "id": "T07",
+          "question": "2022/23年度中国棉花产量加进口，合计是多少？",
+          "expect": "clarification"
+        },
+        {
+          "id": "T08",
+          "question": "已补充：我改一下，只算22年开头到22年结束的这些月份",
+          "confirm_note": "我改一下，只算22年开头到22年结束的这些月份",
+          "expected_start": "2022-01-01",
+          "expected_end": "2022-12-31"
+        }
+      ]
+    },
+    {
+      "id": "semantic-T09",
+      "cases": [
+        {
+          "id": "T09",
+          "question": "2018到2020这三年，从头到尾的中国棉花产量加上进口总共多少？",
+          "expected_start": "2018-01-01",
+          "expected_end": "2020-12-31"
+        }
+      ]
+    },
+    {
+      "id": "semantic-T10",
+      "cases": [
+        {
+          "id": "T10",
+          "question": "从2019年第四季度开始，到2020年一季度结束，中国棉花产量与进口量合计多少？",
+          "expected_start": "2019-10-01",
+          "expected_end": "2020-03-31"
+        }
+      ]
+    },
+    {
+      "id": "semantic-T11",
+      "cases": [
+        {
+          "id": "T11",
+          "question": "2020年2月份中国棉花产量加进口一共多少？",
+          "expected_start": "2020-02-01",
+          "expected_end": "2020-02-29"
+        }
+      ]
+    },
+    {
+      "id": "semantic-T12",
+      "cases": [
+        {
+          "id": "T12",
+          "question": "中国棉花产量加进口，2021年7月开始，到22年2月截止，合计多少？",
+          "expected_start": "2021-07-01",
+          "expected_end": "2022-02-28"
+        }
+      ]
+    },
+    {
+      "id": "semantic-T13",
+      "cases": [
+        {
+          "id": "T13",
+          "question": "中国棉花产量加进口，2022年1月开始，23年12月结束，合计多少？",
+          "expected_start": "2022-01-01",
+          "expected_end": "2023-12-31"
+        }
+      ]
+    },
+    {
+      "id": "semantic-T14",
+      "cases": [
+        {
+          "id": "T14",
+          "question": "中国棉花产量加进口，统计2022年9月1日至2023年8月31日，合计多少？",
+          "expected_start": "2022-09-01",
+          "expected_end": "2023-08-31"
+        }
+      ]
+    }
+  ]
+}
