@@ -230,7 +230,9 @@ def catalog(store, dataset_id, sheet=None, question=''):
     chart_sheets = {c['sheet'] for c in idx['charts']}
     mentioned = {name for name in chart_sheets if name in question}
     titles = {c['title'] for c in idx['charts'] if len(c['title'])>3 and c['title'] in question}
-    chart_request = bool(literal_curves) or any(word in question for word in ('图表','图中','曲线','图里'))
+    # A year matching a seasonal legend is not a request to restrict sources.
+    # Cross-table analysis must retain its explicitly named raw fields.
+    chart_request = any(word in question for word in ('图表','图中','曲线','图里'))
     # A sheet may contain both tables and charts. Merely mentioning its name
     # (including an agent's follow-up context) must not hide its real columns.
     # A chart-only sheet still needs its source-backed views when explicitly scoped.

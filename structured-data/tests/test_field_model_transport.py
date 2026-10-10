@@ -60,3 +60,15 @@ def test_catalogue_batches_cover_all_columns_without_out_of_batch_ids():
     assert [c['id'] for g in result['catalog'] for c in g['columns']]==['id44']
     with pytest.raises(ValueError,match='批次外'):
         narrow_catalogue({'catalog':catalogue,'question':'字段'},None,lambda p,r:{'fields':[{'candidate_ids':['invented']}]})
+
+
+def test_thinking_option_is_explicit_and_preserved_not_guessed_from_model_name(tmp_path,monkeypatch):
+    from structured_data.model_settings import save_model,read_model
+    calls=setup_model(tmp_path,monkeypatch,[json.dumps({'fields':[]})])
+    assert save_model(tmp_path,{'model':'configured-provider','base_url':'https://model.invalid/v1','enable_thinking':False})['model']=='configured-provider'
+    assert read_model(tmp_path)['enable_thinking'] is False
+    ask_model({},tmp_path)
+    assert calls[0]['enable_thinking'] is False
+    save_model(tmp_path,{'model':'another-model','base_url':'https://model.invalid/v1'})
+    assert read_model(tmp_path)['enable_thinking'] is False
+    with pytest.raises(ValueError):save_model(tmp_path,{'model':'test','base_url':'https://model.invalid/v1','enable_thinking':'false'})

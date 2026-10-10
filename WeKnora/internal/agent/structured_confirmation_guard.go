@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
 )
@@ -13,8 +16,11 @@ import (
 type fieldConfirmationTurnKey struct{}
 type fieldConfirmationHumanKey struct{}
 type fieldConfirmationTurn struct {
-	question  string
-	pendingID string
+	question     string
+	pendingID    string
+	priorIDs     []string
+	contextSheet string
+	date         string
 }
 
 var fieldToolName = regexp.MustCompile(`^(?:mcp__)?(?:resolve_fields|confirm_fields)(?:_[a-z0-9]+)?$`)
@@ -40,10 +46,113 @@ func withFieldConfirmationTurn(ctx context.Context, query string, history []chat
 			turn.pendingID = ""
 			if status == "needs_clarification" {
 				turn.pendingID = id
+				turn.priorIDs = nil
+				turn.contextSheet = ""
+				turn.date = ""
+			}
+			if status == "resolved" {
+				data := structuredOutcome(msg.Content)
+				turn.priorIDs = nil
+				turn.contextSheet = ""
+				turn.date = ""
+				answer, _ := data["answer"].(map[string]any)
+				sources, _ := answer["sources"].(map[string]any)
+				seen := map[string]bool{}
+				dates := map[string]bool{}
+				sheets := map[string]bool{}
+				for _, item := range sources {
+					source, _ := item.(map[string]any)
+					series, _ := source["series"].(map[string]any)
+					sid, _ := series["series_id"].(string)
+					if sid != "" && !seen[sid] {
+						turn.priorIDs = append(turn.priorIDs, sid)
+						seen[sid] = true
+					}
+					if sheet, _ := series["sheet"].(string); sheet != "" {
+						sheets[sheet] = true
+					}
+					if op, _ := answer["operation"].(string); op == "latest" || op == "rows" {
+						if rows, _ := source["rows"].([]any); len(rows) == 1 {
+							row, _ := rows[0].(map[string]any)
+							if day, _ := row["date"].(string); day != "" {
+								dates[day] = true
+							}
+						}
+					}
+				}
+				sort.Strings(turn.priorIDs)
+				if len(dates) == 1 {
+					for day := range dates {
+						turn.date = day
+					}
+				}
+				if len(sheets) == 1 {
+					for sheet := range sheets {
+						turn.contextSheet = sheet
+					}
+				}
 			}
 		}
 	}
 	return context.WithValue(ctx, fieldConfirmationTurnKey{}, turn)
+}
+
+// Decode data only from a completed tool outcome, never from user messages.
+func structuredOutcome(content string) map[string]any {
+	start := strings.Index(content, "{")
+	if start < 0 || len(content) > 200000 {
+		return nil
+	}
+	var data map[string]any
+	if json.NewDecoder(strings.NewReader(content[start:])).Decode(&data) != nil {
+		return nil
+	}
+	if data["kind"] == "structured_field_resolution" || data["kind"] == "structured_tool_notice" {
+		return data
+	}
+	for _, key := range []string{"content_items", "content"} {
+		if items, ok := data[key].([]any); ok {
+			for _, item := range items {
+				if part, ok := item.(map[string]any); ok {
+					if s, ok := part["text"].(string); ok {
+						if result := structuredOutcome(s); result != nil {
+							return result
+						}
+					}
+				}
+			}
+		}
+	}
+	if s, ok := data["output"].(string); ok {
+		return structuredOutcome(s)
+	}
+	return nil
+}
+
+func (t *fieldConfirmationTurn) resolveArgs() map[string]any {
+	args := map[string]any{"question": t.question}
+	if t.pendingID != "" {
+		args["pending_resolution_id"] = t.pendingID
+	}
+	if len(t.priorIDs) > 0 {
+		args["prior_series_ids"] = t.priorIDs
+		if t.contextSheet != "" {
+			args["context_sheet"] = t.contextSheet
+		}
+	}
+	if t.date != "" {
+		if regexp.MustCompile(`^\s*(那一天|当天)(呢|的呢)?[？?]?\s*$`).MatchString(t.question) || strings.Contains(t.question, "那一天") {
+			args["date"] = t.date
+		}
+		if m := regexp.MustCompile(`^\s*(\d{1,2})号(?:呢|的呢)?[？?]?\s*$`).FindStringSubmatch(t.question); m != nil {
+			previous, err := time.Parse("2006-01-02", t.date)
+			if err == nil {
+				day, _ := strconv.Atoi(m[1])
+				args["date"] = fmt.Sprintf("%04d-%02d-%02d", previous.Year(), previous.Month(), day)
+			}
+		}
+	}
+	return args
 }
 
 func fieldResolutionIdentity(content string) (string, string) {

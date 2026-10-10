@@ -87,6 +87,15 @@ func (t *MCPTool) Name() string {
 	return name
 }
 
+// Field results are an indivisible JSON contract, not prose to truncate inside
+// strings/objects. Keep the bounded schema-sized envelope valid for UI/API.
+func (t *MCPTool) OutputLimitChars(_ json.RawMessage) int {
+	if t.mcpTool != nil && (t.mcpTool.Name == "resolve_fields" || t.mcpTool.Name == "confirm_fields") {
+		return 256 * 1024
+	}
+	return 0
+}
+
 // Description returns the tool description.
 // Prefix indicates external/untrusted source to reduce indirect prompt injection impact.
 func (t *MCPTool) Description() string {
@@ -667,6 +676,16 @@ func loadMCPServiceTools(
 // StructuredConfirmationTool resolves a UI submission only within registered,
 // authorized tools. It never constructs a function name or changes service scope.
 func StructuredConfirmationTool(ctx context.Context, registry *ToolRegistry, sourceName string) (string, error) {
+	return structuredFieldTool(ctx, registry, sourceName, "confirm_fields")
+}
+
+// StructuredResolveTool binds the sole authorized field service through the
+// same live tenant/permission checks as human confirmation.
+func StructuredResolveTool(ctx context.Context, registry *ToolRegistry) (string, error) {
+	return structuredFieldTool(ctx, registry, "", "resolve_fields")
+}
+
+func structuredFieldTool(ctx context.Context, registry *ToolRegistry, sourceName, operation string) (string, error) {
 	if registry == nil {
 		return "", fmt.Errorf("当前智能体没有字段确认工具")
 	}
@@ -694,7 +713,7 @@ func StructuredConfirmationTool(ctx context.Context, registry *ToolRegistry, sou
 				continue
 			}
 			for _, tool := range visible {
-				if tool.mcpTool.Name == "confirm_fields" {
+				if tool.mcpTool.Name == operation {
 					matches = append(matches, tool)
 				}
 			}
@@ -733,7 +752,7 @@ func StructuredConfirmationTool(ctx context.Context, registry *ToolRegistry, sou
 	for _, name := range registry.ListTools() {
 		tool, _ := registry.GetTool(name)
 		bound := unwrap(tool)
-		if bound == nil || bound.service == nil || bound.mcpTool.Name != "confirm_fields" || (serviceID != "" && bound.service.ID != serviceID) {
+		if bound == nil || bound.service == nil || bound.mcpTool.Name != operation || (serviceID != "" && bound.service.ID != serviceID) {
 			continue
 		}
 		if found != "" {

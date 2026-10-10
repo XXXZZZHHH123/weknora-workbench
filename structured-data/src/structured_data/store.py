@@ -196,6 +196,17 @@ class DataStore:
         return {"dataset_id": dataset_id, "series": selected, "total": len(matches), "offset": offset, "next_offset": offset+limit if len(matches)>offset+limit else None, "truncated": len(matches) > offset+limit,
                 "match_mode": mode, "notice": notice.get(mode,"已找到符合关键词的指标；按原指标名称、单位及用户条件选择ID查询数值。" if matches else "目录搜索无结果不等于工作簿没有数据，可使用单个关键词或留空查看目录。")}
 
+    def source_overlap(self, dataset_id, left_id, right_id):
+        """Whole-history date/value agreement, supplementary identity evidence.
+
+        Agreement never selects a business definition or overrides units.
+        Parameterized joins use only verified IDs from this dataset.
+        """
+        self._series(dataset_id,left_id);self._series(dataset_id,right_id)
+        with self._connect(dataset_id) as con:
+            count,equal,first,last=con.execute("SELECT count(*),count(*) FILTER(WHERE a.value=b.value),min(a.date),max(a.date) FROM observations a JOIN observations b ON a.date=b.date WHERE a.series_id=? AND b.series_id=? AND a.value IS NOT NULL AND b.value IS NOT NULL",[left_id,right_id]).fetchone()
+        return {'common_valid_dates':count,'exactly_equal_values':equal,'first_date':str(first) if first else None,'last_date':str(last) if last else None,'use':'辅助比较来源；数值相同不自动授权选择或合并不同业务定义'}
+
     def convert_price(self, dataset_id, price_series_id, fx_series_id, date, target_unit='元/吨'):
         """Source-bound decimal conversion; never guess rate direction or units."""
         from decimal import Decimal, ROUND_HALF_UP
@@ -251,10 +262,21 @@ class DataStore:
     def _connect(self, dataset_id):
         return duckdb.connect(str(self._path(dataset_id) / "data.duckdb"), read_only=True, config={"enable_external_access": "false", "threads": "2", "memory_limit": "256MB"})
 
-    def query_series(self, dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None) -> dict:
-        self._limit(limit)
-        if operation not in {"rows", "latest", "mean", "sum", "min", "max", "count"}:
+    def query_series(self, dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, *, value_filters=None, last_n=None, top_n=None, order='desc', _complete=False) -> dict:
+        if _complete:
+            if type(limit)!=int or not 1<=limit<=20000:raise ValueError('分析最多读取20000条原表记录')
+        else:self._limit(limit)
+        if operation not in {"rows", "latest", "mean", "sum", "min", "max", "count", "top"}:
             raise ValueError("不支持的操作。")
+        if order not in ('asc','desc'):raise ValueError('排序方向无效')
+        for n in (last_n,top_n):
+            if n is not None and (type(n)!=int or not 1<=n<=200):raise ValueError('窗口或排序条数必须为1至200')
+        filters=value_filters or []
+        if not isinstance(filters,list) or len(filters)>8:raise ValueError('数值筛选条件无效')
+        operators={'gt':'>','gte':'>=','lt':'<','lte':'<=','ne':'!='}
+        import math
+        for f in filters:
+            if not isinstance(f,dict) or set(f)!={'op','value'} or f['op'] not in operators or type(f['value']) not in (int,float) or not math.isfinite(f['value']):raise ValueError('数值筛选条件无效')
         start, end = self._date(start_date), self._date(end_date)
         if start and end and start > end:
             raise ValueError("开始日期不能晚于结束日期。")
@@ -285,12 +307,20 @@ class DataStore:
         if mode=='period' and not period and operation not in ('rows','count'):
             raise ValueError('不同年度/版本可能不可加总，请先指定期间标签再统计')
         with self._connect(dataset_id) as con:
+            if last_n:
+                if mode!='date':raise ValueError('日期窗口需要原表日期字段')
+                window_where,window_params=where,list(params)
+                where+=' AND date IN (SELECT DISTINCT date FROM observations WHERE '+window_where+' AND date IS NOT NULL ORDER BY date DESC LIMIT ?)'
+                params.extend(window_params+[last_n])
+            scope_count=con.execute(f'SELECT count(*) FROM observations WHERE {where}',params).fetchone()[0]
+            for f in filters:
+                where+=' AND value '+operators[f['op']]+' ?';params.append(f['value'])
             columns={r[1] for r in con.execute("PRAGMA table_info('observations')").fetchall()}
             extra=",period,period_cell,metric_cell" if 'period' in columns else ",NULL,NULL,NULL"
             count, valid, first, last = con.execute(f"SELECT count(*),count(value),min(date),max(date) FROM observations WHERE {where}", params).fetchone()
             aggregate = None
             extremum_count = None
-            if operation not in {"rows", "latest"}:
+            if operation not in {"rows", "latest", "top"}:
                 function = {"mean": "avg", "sum": "sum", "min": "min", "max": "max", "count": "count"}[operation]
                 aggregate = con.execute(f"SELECT {function}(value) FROM observations WHERE {where}", params).fetchone()[0]
             if operation == "latest":
@@ -300,8 +330,11 @@ class DataStore:
                 # source examples that a caller could pair with the aggregate.
                 extremum_count=con.execute(f"SELECT count(*) FROM observations WHERE {where} AND value=?",params+[aggregate]).fetchone()[0]
                 rows=con.execute(f"SELECT date,value,source_cell,value_status,formula,date_cell,raw_value{extra} FROM observations WHERE {where} AND value=? ORDER BY date NULLS LAST,source_cell LIMIT ?",params+[aggregate,limit]).fetchall()
+            elif operation=='top':
+                rows=con.execute(f"SELECT date,value,source_cell,value_status,formula,date_cell,raw_value{extra} FROM observations WHERE {where} AND value IS NOT NULL ORDER BY value {order.upper()},date,source_cell LIMIT ?",params+[top_n or limit]).fetchall()
             else:
                 rows = con.execute(f"SELECT date,value,source_cell,value_status,formula,date_cell,raw_value{extra} FROM observations WHERE {where} ORDER BY date NULLS LAST,source_cell LIMIT ?", params + [limit if operation == "rows" else 10]).fetchall()
+        if _complete and operation=='rows' and count>len(rows):raise ValueError('分析范围超过20000条，未使用截断样本替代完整计算；请缩小范围')
         records = [{"date": str(r[0]) if r[0] else None, "period":r[7],"period_cell":r[8],"metric_cell":r[9], "value": r[1], "source_cell": r[2], "value_status": r[3], "formula": r[4], "date_cell": r[5], "raw_value": r[6]} for r in rows]
         for record in records:
             record['category_cell']=series.get('category_provenance',{}).get(record['source_cell'])
@@ -328,8 +361,8 @@ class DataStore:
         if series["sheet"] == "郑棉仓单":
             warnings.append("源工作簿包含 Wind ShowBlank==0 配置，已有零值可能含上游缺失填充，无法逆向区分。")
         warnings.append("missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。")
-        filters = {"series_id": series_id, "start_date": start_date, "end_date": end_date, "operation": operation, "period":period}
-        return {"dataset_id": dataset_id, "status": "ok" if valid else "no_data", "series": series, "filters": filters, "record_count": count, "valid_count": valid, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation == "rows" else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation != "latest" and count > len(records), "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
+        filters = {"series_id": series_id, "start_date": start_date, "end_date": end_date, "operation": operation, "period":period, 'value_filters':value_filters or [], 'last_n':last_n,'top_n':top_n,'order':order}
+        return {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
 
     def compare_series(self, dataset_id: str, left_series_id: str, right_series_id: str, date: str) -> dict:
         if not self._date(date):

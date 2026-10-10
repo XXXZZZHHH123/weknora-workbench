@@ -180,14 +180,11 @@ def test_partial_current_sheet_match_falls_back_to_all_sheets(catalogue):
     store,ds=catalogue;calls=[]
     def model(payload):
         calls.append(payload)
-        if len(calls)==1:
-            assert len(payload['catalog'])==1
-            return proposal([['price'],[]],'calculation',decision='clarify')
         assert any(g['sheet']=='另一张表' for g in payload['catalog'])
         assert 'available_on_date' not in payload
         return proposal([['price'],['fx-other']],'calculation','v1*0.01*v2','元/磅')
-    p=FieldResolver(store,model).answer('按当日汇率换算',dataset_id=ds,context_sheet='商品报价',prior_series_ids=['price'],date='2023-09-07')
-    assert len(calls)==2 and p['answer']['sources']['v2']['source']['sheet']=='另一张表'
+    p=FieldResolver(store,model,lambda p:{'search_terms':['美元兑人民币']}).answer('按当日汇率换算',dataset_id=ds,context_sheet='商品报价',prior_series_ids=['price'],date='2023-09-07')
+    assert len(calls)==1 and p['answer']['sources']['v2']['source']['sheet']=='另一张表'
 
 
 def test_web_fallback_only_after_full_catalogue_has_missing_input(catalogue):
@@ -260,7 +257,7 @@ def test_index_shortlist_expands_before_declaring_missing(catalogue):
 def test_price_ambiguity_is_not_bypassed_by_external_missing_input(catalogue):
     store,ds=catalogue
     raw=dict(proposal([['price','usd-price'],[]],decision='clarify'),local_data_missing=True,missing_inputs=['换算因子'])
-    result=FieldResolver(store,lambda p:raw).resolve(ds,'价格')
+    result=FieldResolver(store,lambda p:raw).resolve(ds,'原价和换算价')
     assert result['status']=='needs_clarification' and 'web_fallback' not in result
 
 
@@ -353,8 +350,8 @@ def test_missing_statistical_operation_is_repaired_not_asked_of_user(catalogue):
         if len(calls)>1:raw['query']={'operation':'max'}
         return raw
     result=FieldResolver(store,model).answer('价格最高的是哪一天？是多少？',dataset_id=ds)
-    assert len(calls)==2 and result['status']=='resolved'
-    assert 'repair_instruction' in calls[1]
+    assert len(calls)==1 and result['status']=='resolved'
+    assert result['query']['operation']=='max'
 
 
 def test_model_cannot_invent_extremum_date_filter(catalogue):
@@ -381,6 +378,6 @@ def test_explicit_header_is_respected_even_when_model_uses_a_generic_role_label(
         assert '用户已明确原表字段口径' in payload['repair_instruction']
         return proposal([['price']])
     plan=FieldResolver(store,model).answer('请告诉我2023/9/7美国 EMOT M 1-1/8是多少',ds)
-    assert len(calls)==2
+    assert len(calls)==1  # Explicit real header excludes the other definition.
     assert plan['status']=='resolved'
     assert plan['answer']['sources']['v1']['series']['series_id']=='price'

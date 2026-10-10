@@ -14,6 +14,10 @@ def additive_statistics_unit(expression, fields):
         if not names or names-set(units):return None
         if any(not isinstance(n,(ast.Expression,ast.BinOp,ast.UnaryOp,ast.Name,ast.Load,ast.Add,ast.Sub,ast.UAdd,ast.USub)) for n in ast.walk(tree)):return None
         bases={units[name] for name in names}
+        if len(bases)>1 and all(isinstance(b,tuple) and b[0]=='unknown' for b in bases) and len({f['candidates'][0]['sheet'] for f in fields if f['role'] in names})==1:
+            # This is explicitly arithmetic on the original numbers in one
+            # table, not a claim that their unstated physical unit is known.
+            return '原始数值（原表未注明单位）'
         if len(bases)!=1:raise ValueError('相加减的统计值必须具有相同来源单位，不能将不同单位直接相减')
         basis=next(iter(bases))
         return '原表未注明单位' if isinstance(basis,tuple) else basis

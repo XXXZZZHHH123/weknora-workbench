@@ -6,7 +6,7 @@
     <t-dialog attach="body" placement="center" v-model:visible="visible" header="你想查询哪一项？" width="min(720px, 94vw)" :footer="false" :close-on-overlay-click="false">
       <div class="field-clarification-body" v-if="plan">
         <p>{{ plan.question }}</p>
-        <fieldset v-for="field in plan.fields" :key="field.role">
+        <fieldset v-for="field in visibleFields" :key="field.role">
           <legend>{{ field.label }}</legend>
           <label v-for="candidate in field.candidates" :key="candidate.series_id" class="field-candidate">
             <input type="radio" :name="`${plan.resolution_id}-${field.role}`" :value="candidate.series_id" v-model="selections[field.role]" />
@@ -31,6 +31,7 @@ const emit = defineEmits<{ submit: [text: string] }>();
 const plan = computed(() => fieldClarification(props.session.agentEventStream || [], !!props.session.is_completed));
 const visible = ref(false), submitted = ref(false), note = ref('');
 const selections = ref<Record<string, string>>({});
+const visibleFields=computed(()=>plan.value?.fields.filter(f=>!plan.value?.same_series_roles?.includes(f.role) || f.role===plan.value.same_series_roles[0]) || []);
 const needsText = computed(() => !!plan.value?.requires_note && !plan.value.fields.some(f => f.candidates.length > 1));
 const canSubmit = computed(() => canConfirmFields(plan.value, selections.value, note.value));
 const submitHint = computed(() => canSubmit.value
@@ -49,15 +50,15 @@ function submit() {
 }
 </script>
 <style scoped>
-.field-clarification-card { margin: 12px 0; padding: 18px; border: 1px solid #b7d9ca; border-radius: 12px; background: #f3faf6; color: #243d34; }
+.field-clarification-card { margin: 12px 0; padding: 18px; border: 1px solid #b7d9ca; border-radius: var(--app-radius-xl); background: #f3faf6; color: #243d34; }
 .field-clarification-card p { margin: 8px 0 14px; }
 .field-clarification-body { max-height: 65vh; overflow-y: auto; color: #243d34; }
 fieldset { border: 0; padding: 0; margin: 20px 0; }
 legend { font-weight: 600; margin-bottom: 10px; }
-.field-candidate { display: flex; gap: 12px; align-items: flex-start; padding: 14px; border: 1px solid #d8e3dd; border-radius: 9px; margin: 8px 0; cursor: pointer; }
+.field-candidate { display: flex; gap: 12px; align-items: flex-start; padding: 14px; border: 1px solid #d8e3dd; border-radius: var(--app-radius-lg); margin: 8px 0; cursor: pointer; }
 .field-candidate:has(input:checked) { background: #edf9f1; border-color: #168a55; }
 input { margin-top: 5px; accent-color: #168a55; } small { display: block; margin-top: 5px; line-height: 1.6; color: #5a6b63; overflow-wrap: anywhere; }
-textarea { display: block; box-sizing: border-box; width: 100%; margin-top: 10px; padding: 12px; border: 1px solid #b8c8bf; border-radius: 8px; font: inherit; resize: vertical; }
-.field-help { color: #69766f; font-size: 12px; line-height: 1.6; }
+textarea { display: block; box-sizing: border-box; width: 100%; margin-top: 10px; padding: 12px; border: 1px solid #b8c8bf; border-radius: var(--app-radius-md); font: inherit; resize: vertical; }
+.field-help { color: #69766f; font-size: var(--app-text-sm); line-height: 1.6; }
 .field-actions { position: sticky; bottom: 0; background: white; display: flex; justify-content: flex-end; gap: 12px; padding: 8px 0; }
 </style>

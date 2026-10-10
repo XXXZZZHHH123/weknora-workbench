@@ -42,7 +42,9 @@ def test_catalog_summary_does_not_depend_on_fts_subset(fields_store,monkeypatch)
     path.write_text(json.dumps(cols))
     monkeypatch.setattr(FieldIndex,'search',lambda self,*a,**kw:([cols[0]],{'method':'test_partial'}))
     def model(p):
-        assert sum(len(g['columns']) for g in p['catalog'])==1
+        # A directory query must inspect every field, even when FTS retrieves
+        # just one. The model can select actual IDs across all relevant sheets.
+        assert sum(len(g['columns']) for g in p['catalog'])==51
         assert next(g for g in p['catalog_summary'] if g['sheet']=='期货报价')['metrics']==['收盘价','盘中价','结算价']
         return metadata(['收盘价','结算价','盘中价'])
     result=FieldResolver(store,model).answer('有几种价格',dataset_id=ds)
@@ -94,7 +96,7 @@ def test_note_can_change_pending_lookup_to_metadata_without_discarding_scope(fie
         if '用户补充' in p['question']:return metadata(['收盘价','结算价','盘中价'])
         return dict(intent='lookup',decision='clarify',fields=[{'role':'v1','label':'价格','candidate_ids':['B-0','K-0']}])
     resolver=FieldResolver(store,model)
-    first=resolver.resolve(ds,'有哪些价格')
+    first=resolver.resolve(ds,'价格是多少')
     result=resolver.attach_answer(resolver.confirm(first['resolution_id'],{'v1':'B-0'},'问价格种类，不需要具体报价'))
     assert result['status']=='resolved' and result['answer']['count']==3
 

@@ -65,7 +65,7 @@ def test_compound_respects_explicit_bounds_and_empty_results(series):
     assert '不按零' in plan['answer']['notice']
 
 
-def test_partial_extremum_plan_is_repaired_not_returned_as_answer(series):
+def test_partial_extremum_plan_is_completed_from_explicit_task_requirements(series):
     store, ds=series
     requests=[]
     def model(payload):
@@ -78,7 +78,7 @@ def test_partial_extremum_plan_is_repaired_not_returned_as_answer(series):
         for f in raw['fields']: f['candidate_ids']=[sid]
         return raw
     plan=FieldResolver(store,model).answer('最高价和最低价差值多少？分别是哪天？',ds)
-    assert len(requests)==2
+    assert len(requests)==1  # Fields selected by model; operations supplied by task.
     assert plan['status']=='resolved'
     assert plan['answer']['value']==12
 

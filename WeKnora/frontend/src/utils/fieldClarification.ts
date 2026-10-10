@@ -1,10 +1,19 @@
 /** Only structured results from the dedicated field tools may open a dialog. */
 export interface Candidate { series_id: string; sheet: string; metric: string; unit?: string; reason?: string; header_cells?: string[]; dimensions?: Record<string, unknown>; chart_sheet?: string }
 export interface Field { role: string; label: string; candidates: Candidate[] }
-export interface Clarification { kind: string; status: string; resolution_id: string; question: string; original_question?: string; source_tool?: string; requires_note?: boolean; fields: Field[]; answer?: any }
+export interface Clarification { kind: string; status: string; resolution_id: string; question: string; original_question?: string; source_tool?: string; requires_note?: boolean; same_series_roles?: string[]; fields: Field[]; answer?: any }
+
+export function linkedSelections(plan: Clarification, selections: Record<string,string>): Record<string,string> {
+  const result={...selections}; const roles=plan.same_series_roles || [];
+  const choices=[...new Set(roles.map(r=>result[r]).filter(Boolean))];
+  if(choices.length===1)for(const role of roles)result[role]=choices[0];
+  return result;
+}
 
 export function canConfirmFields(plan: Clarification | null, selections: Record<string, string>, note: string): boolean {
   if (!plan) return false;
+  selections=linkedSelections(plan,selections);
+  if(new Set((plan.same_series_roles || []).map(r=>selections[r]).filter(Boolean)).size>1)return false;
   if (note.trim()) return true;
   const selectable = plan.fields.filter(f => f.candidates.length > 0);
   const complete = selectable.length > 0 && selectable.every(f => f.candidates.some(c => c.series_id === selections[f.role]));
@@ -34,6 +43,7 @@ export function fieldResolution(events: any[]): Clarification | null {
 }
 
 export function confirmationText(plan: Clarification, selections: Record<string, string>, note: string): string {
+  selections=linkedSelections(plan,selections);
   if (!canConfirmFields(plan, selections, note)) throw new Error('请选择字段或补充说明');
   const selected = Object.fromEntries(plan.fields.flatMap(f => f.candidates.some(c => c.series_id === selections[f.role]) ? [[f.role, selections[f.role]]] : []));
     return '字段确认提交：' + JSON.stringify({resolution_id: plan.resolution_id, source_tool: plan.source_tool, selections: selected, note: note.trim(), summary: plan.fields.flatMap(f => {

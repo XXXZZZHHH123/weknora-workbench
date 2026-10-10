@@ -87,7 +87,7 @@ def test_unrelated_candidates_are_repaired_before_asking_user(mixed_store):
         ids=[cols['当日公检量'],cols['累计公检量']] if len(calls)==1 else [cols['在库量']]
         return dict(intent='lookup',decision='clarify' if len(calls)==1 else 'resolved',
                     fields=[dict(role='v1',label='在库量',candidate_ids=ids)],query={'operation':'max'})
-    result=FieldResolver(store,model).answer('在库量哪天最多？有多少货？',dataset_id=ds)
+    result=FieldResolver(store,model).answer('请核对原表：在库量哪天最多？有多少货？',dataset_id=ds)
     assert result['status']=='resolved' and len(calls)==2
     assert '无关指标' in calls[1]['repair_instruction']
     assert result['answer']['sources']['v1']['aggregate']==40
@@ -99,7 +99,7 @@ def test_repeated_unrelated_proposal_stops_without_business_clarification(mixed_
         cols={c['name']:c['id'] for g in p['catalog'] for c in g['columns']}
         return dict(intent='lookup',decision='clarify',fields=[dict(role='v1',label='在库量',
                     candidate_ids=[cols['累计公检量']])],query={'operation':'max'})
-    result=FieldResolver(store,model).tool_answer('在库量哪天最多？',dataset_id=ds)
+    result=FieldResolver(store,model).tool_answer('请核对原表：在库量哪天最多？',dataset_id=ds)
     assert result['kind']=='structured_tool_notice' and result['status']=='query_unavailable'
     assert 'answer' not in result
 
@@ -120,7 +120,7 @@ def test_missing_named_header_expands_to_full_catalog_before_clarifying(mixed_st
         sid=cols.get('在库量',cols['累计公检量'])
         return dict(intent='lookup',decision='resolved',fields=[dict(role='v1',label='在库量',candidate_ids=[sid])],query={'operation':'max'})
     resolver=FieldResolver(store,model,lambda p:{'search_terms':['库存']})
-    result=resolver.answer('在库量哪天最多？',dataset_id=ds)
+    result=resolver.answer('请核对原表：在库量哪天最多？',dataset_id=ds)
     assert len(calls)==2 and result['retrieval']['full_catalogue_fallback']
     assert result['status']=='resolved' and result['answer']['sources']['v1']['aggregate']==40
 

@@ -80,9 +80,9 @@ def create_app(data_dir: str | Path | None = None):
                   transport_security=TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins))
 
     @mcp.tool()
-    def resolve_fields(question: str, dataset_id: str | None = None, context_sheet: str | None = None, prior_series_ids: list[str] | None = None, date: str | None = None, sheet: str | None = None) -> dict:
+    def resolve_fields(question: str, dataset_id: str | None = None, context_sheet: str | None = None, prior_series_ids: list[str] | None = None, date: str | None = None, sheet: str | None = None, pending_resolution_id: str | None = None) -> dict:
         """用大模型知识理解用户别称和真实表头的关系。只发送字段目录，不发送整表数据。question写完整用户意图及必要的上文；context_sheet及prior_series_ids用于连续追问。sheet仅在用户明确限制工作表时填写。返回真实候选列、理由和查询/计算方案。needs_clarification会触发网页选择弹窗：立即结束本轮并等用户选择，不能猜选或取数。resolved会同时返回answer中的原值或确定性计算结果及来源，直接据此回答，不要另行心算。dataset_id可省略，只有一份文件时自动选最新版本；多文件需指定。"""
-        return resolver.tool_answer(question,dataset_id,context_sheet,prior_series_ids,date,sheet)
+        return resolver.tool_answer(question,dataset_id,context_sheet,prior_series_ids,date,sheet,pending_resolution_id)
 
     @mcp.tool()
     def confirm_fields(resolution_id: str, selections: dict[str,str] | None = None, note: str = '') -> dict:
