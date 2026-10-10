@@ -41,8 +41,11 @@ func CastParams(args json.RawMessage, schema json.RawMessage) json.RawMessage {
 		if !ok {
 			continue
 		}
-		targetType, _ := prop["type"].(string)
-		if targetType == "" {
+		targetType := unambiguousParamType(prop)
+		// Keep explicit object envelopes strict; optional MCP dictionaries
+		// may repair JSON strings only when their nullable union permits it.
+		_, explicitType := prop["type"].(string)
+		if targetType == "" || (targetType == "object" && explicitType) {
 			continue
 		}
 
@@ -64,10 +67,65 @@ func CastParams(args json.RawMessage, schema json.RawMessage) json.RawMessage {
 	return result
 }
 
+// Nullable unions are emitted by MCP schemas for optional collections. Only
+// coerce a single non-null type; never guess among business alternatives.
+func unambiguousParamType(prop map[string]interface{}) string {
+	if kind, ok := prop["type"].(string); ok {
+		return kind
+	}
+	kinds := map[string]bool{}
+	if union, ok := prop["type"].([]interface{}); ok {
+		for _, value := range union {
+			kind, ok := value.(string)
+			if !ok {
+				return ""
+			}
+			if kind != "null" {
+				kinds[kind] = true
+			}
+		}
+	} else {
+		union, ok := prop["anyOf"].([]interface{})
+		if !ok {
+			union, ok = prop["oneOf"].([]interface{})
+		}
+		if !ok {
+			return ""
+		}
+		for _, value := range union {
+			branch, ok := value.(map[string]interface{})
+			if !ok {
+				return ""
+			}
+			kind, ok := branch["type"].(string)
+			if !ok {
+				return ""
+			}
+			if kind != "null" {
+				kinds[kind] = true
+			}
+		}
+	}
+	if len(kinds) != 1 {
+		return ""
+	}
+	for kind := range kinds {
+		return kind
+	}
+	return ""
+}
+
 // castValue attempts to convert val to the expected targetType.
 // Returns (newValue, true) if a conversion was made, (val, false) otherwise.
 func castValue(val interface{}, targetType string) (interface{}, bool) {
 	switch targetType {
+	case "object":
+		if s, ok := val.(string); ok {
+			var parsed map[string]interface{}
+			if json.Unmarshal([]byte(s), &parsed) == nil && parsed != nil {
+				return parsed, true
+			}
+		}
 	case "array":
 		if s, ok := val.(string); ok {
 			// Try JSON parsing first (handles "[{...}]" → []interface{})

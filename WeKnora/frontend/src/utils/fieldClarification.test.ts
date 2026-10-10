@@ -109,3 +109,28 @@ test('confirmation preserves originating tool and errors suppress stale clarific
   assert.equal(fieldClarification([event(JSON.stringify(plan)),failed]),null);
   assert.ok(structuredFieldIssue([event(JSON.stringify(plan)),failed]));
 });
+
+test('intermediate retries never flash a failure, an earlier answer or a choice card', async () => {
+  const {suppressStructuredProse}=await import('./fieldClarification');
+  const failed={...event(''),success:false,error:'got string, want array'};
+  const oldAnswer=event(JSON.stringify({...plan,status:'resolved',answer:{sources:{v1:{rows:[{value:17110}]}}}}));
+  const choice=event(JSON.stringify(plan));
+  const stages=[[failed],[failed,oldAnswer],[failed,oldAnswer,choice]];
+  for(const events of stages) {
+    assert.equal(structuredFieldIssue(events,false),null);
+    assert.equal(structuredFieldAnswer(events,false),null);
+    assert.equal(fieldClarification(events,false),null);
+    assert.equal(suppressStructuredProse(events,false),true);
+  }
+  assert.equal(structuredFieldIssue(stages[2],true),null);
+  assert.equal(structuredFieldAnswer(stages[2],true),null);
+  assert.equal(fieldClarification(stages[2],true)?.resolution_id,plan.resolution_id);
+  assert.equal(suppressStructuredProse([],false),false);
+});
+
+test('blocking an unprompted model confirmation keeps the genuine human choice available', () => {
+  const blocked={...event('', 'mcp__confirm_fields_a123'),success:false,error:'FIELD_CONFIRMATION_WAIT_FOR_USER: wait for human'};
+  assert.equal(structuredFieldIssue([event(JSON.stringify(plan)),blocked]),null);
+  assert.equal(fieldClarification([event(JSON.stringify(plan)),blocked])?.resolution_id,plan.resolution_id);
+  assert.ok(structuredFieldIssue([blocked]));
+});

@@ -14,6 +14,13 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
+// Runtime rules also apply to agents saved before the structured protocol upgrade.
+const structuredFieldTurnInstructions = `
+结构化表格工具的当前规则：resolve_fields.question保留本轮用户原话，不追加上一轮日期、数值或猜测条件。连续追问通过prior_series_ids数组传递已确认实际series_id，context_sheet可用真实来源表；用户换主题或口径时重新判断。已确认字段的统计追问无需重复选择。“最近一天/最新一天”从原表取最新记录，不是今天；latest和未限定范围的统计不传date。date只填写用户明确的日期或可靠的单日追问上下文，不把系统当前日期当用户日期。
+最高值、最低值、各自日期及差值是完整的复合统计任务；服务支持query.operation=statistics和各角色max/min的程序计算，必须完整回答，不能只返回最大值。
+needs_clarification只表示真实未知信息；工具参数错误不得要求用户确认字段。返回确认请求后结束本轮等待用户，不擅自调用confirm_fields。返回完整answer后结束本轮，避免再次调用同一任务并改变答案。
+`
+
 const fieldConfirmationPrefix = "字段确认提交："
 
 type structuredConfirmation struct {
@@ -71,7 +78,8 @@ func (e *AgentEngine) executeStructuredConfirmation(ctx context.Context, state *
 		if marshalErr != nil {
 			err = marshalErr
 		} else {
-			call := e.runToolCall(ctx, types.LLMToolCall{ID: generateEventID("field-confirm"), Type: "function", Function: types.FunctionCall{Name: name, Arguments: string(args)}}, 0, 0, 1, sessionID, messageID)
+			humanCtx := context.WithValue(ctx, fieldConfirmationHumanKey{}, true)
+			call := e.runToolCall(humanCtx, types.LLMToolCall{ID: generateEventID("field-confirm"), Type: "function", Function: types.FunctionCall{Name: name, Arguments: string(args)}}, 0, 0, 1, sessionID, messageID)
 			state.RoundSteps = append(state.RoundSteps, types.AgentStep{Iteration: 0, Timestamp: started, ToolCalls: []types.ToolCall{call}})
 			e.emitToolOutcome(ctx, call, 0, sessionID)
 			state.FinalAnswer = "已处理字段确认，请查看原表结果。"

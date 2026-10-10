@@ -73,7 +73,13 @@ class FieldIndex:
         # Preserve candidates from each expanded search (e.g. a conversion factor),
         # rather than letting a heavily duplicated price crowd all factors out.
         named=[s['series_id'] for s in literal_fields(self.catalog,queries[0])] if queries else []
-        selected=list(dict.fromkeys([*named,*prior_ids,*per_query,*ranked]))[:64]
+        named_sheets={s['sheet'] for s in self.catalog if queries and normalize(s['sheet']) in normalize(queries[0])}
+        # Include the actual named sheet's bounded columns even when generic
+        # headers (price/volume) have less lexical overlap than other sheets.
+        sheet_fields=[s['series_id'] for s in self.catalog if s['sheet'] in named_sheets]
+        if len(sheet_fields)>32:
+            sheet_fields=list(dict.fromkeys([sid for sid in ranked if self.lookup[sid]['sheet'] in named_sheets]+sheet_fields))[:32]
+        selected=list(dict.fromkeys([*named,*prior_ids,*sheet_fields,*per_query,*ranked]))[:64]
         return [self.lookup[sid] for sid in selected], {'method':'sqlite_fts5_bm25','queries':terms,'candidate_count':len(selected),'catalog_count':len(self.catalog),'truncated':len(set(named)|set(prior_ids)|set(scores))>len(selected)}
 
 

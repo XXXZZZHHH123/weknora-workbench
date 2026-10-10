@@ -312,6 +312,7 @@ func (e *AgentEngine) Execute(
 ) (*types.AgentState, error) {
 	logger.Infof(ctx, "[Agent] Starting execution: session=%s, message=%s, query_len=%d, context_msgs=%d",
 		sessionID, messageID, len(query), len(llmContext))
+	ctx = withFieldConfirmationTurn(ctx, query, llmContext)
 	// Ensure tools are cleaned up after execution
 	defer e.toolRegistry.Cleanup(ctx)
 
@@ -380,7 +381,7 @@ func (e *AgentEngine) Execute(
 	if len(imageURLs) > 0 {
 		imgs = imageURLs[0]
 	}
-	messages := e.buildMessagesWithLLMContext(systemPrompt, query, sessionID, llmContext, imgs)
+	messages := e.buildMessagesWithLLMContext(systemPrompt+structuredFieldTurnInstructions, query, sessionID, llmContext, imgs)
 	if e.toolRegistry != nil {
 		e.toolRegistry.RememberMCPHistory(messages)
 		e.toolRegistry.RefreshMCPTools(ctx)

@@ -4,6 +4,22 @@ import re
 from decimal import Decimal, DecimalException, ROUND_HALF_UP, localcontext
 
 
+def additive_statistics_unit(expression, fields):
+    """Addition/subtraction preserves actual source units, even if not stated."""
+    units={f['role']:('条' if f.get('operation')=='count' else (f['candidates'][0].get('unit') or ('unknown',f['candidates'][0]['series_id'])))
+           for f in fields if len(f.get('candidates',[]))==1}
+    try:
+        tree=ast.parse(expression,mode='eval')
+        names={n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+        if not names or names-set(units):return None
+        if any(not isinstance(n,(ast.Expression,ast.BinOp,ast.UnaryOp,ast.Name,ast.Load,ast.Add,ast.Sub,ast.UAdd,ast.USub)) for n in ast.walk(tree)):return None
+        bases={units[name] for name in names}
+        if len(bases)!=1:raise ValueError('相加减的统计值必须具有相同来源单位，不能将不同单位直接相减')
+        basis=next(iter(bases))
+        return '原表未注明单位' if isinstance(basis,tuple) else basis
+    except (SyntaxError,TypeError):return None
+
+
 def validate_output_unit(output_unit, sources, question=''):
     """Do not invent a per-unit basis absent from both source metadata and the user."""
     import re

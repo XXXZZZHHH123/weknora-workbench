@@ -124,8 +124,8 @@
                             <div v-if="session.role == 'assistant' && shouldRenderAssistantMessage(session)"
                                 class="message-row"
                                 :data-message-id="session.id || undefined">
-                                <StructuredFieldAnswer v-if="structuredFieldAnswer(session.agentEventStream)" :plan="structuredFieldAnswer(session.agentEventStream)" />
-                                <botmsg v-else :content="structuredFieldIssue(session.agentEventStream) ? '' : session.content" :session="session" :session-id="session_id"
+                                <StructuredFieldAnswer v-if="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)" :plan="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)" />
+                                <botmsg v-else :content="structuredFieldIssue(session.agentEventStream, !!session.is_completed) ? '' : session.content" :session="session" :session-id="session_id"
                                     :user-query="getUserQuery(index)" @scroll-bottom="scrollToBottom"
                                     :isFirstEnter="isFirstEnter" :embeddedMode="embeddedMode"
                                     :follow-up-loading="Boolean(session.suggestionLoading && !session.suggestionSet?.questions?.length)"
@@ -135,7 +135,7 @@
                                     @rewind="handleRewind"
                                     @render-complete-change="(ready) => handleAnswerRenderComplete(session, ready)">
                                 </botmsg>
-                                <section v-if="structuredFieldIssue(session.agentEventStream)" role="alert" style="margin:12px 0;padding:16px;border:1px solid #ead6b6;border-radius:8px;background:#fff9ed;color:#725324;line-height:1.7">{{ structuredFieldIssue(session.agentEventStream) }}</section>
+                                <section v-if="structuredFieldIssue(session.agentEventStream, !!session.is_completed)" role="alert" style="margin:12px 0;padding:16px;border:1px solid #ead6b6;border-radius:8px;background:#fff9ed;color:#725324;line-height:1.7">{{ structuredFieldIssue(session.agentEventStream, !!session.is_completed) }}</section>
                                 <FieldClarificationDialog :session="session" :active="index === messagesList.length - 1 && !isReplying && !isStreaming" @submit="handleFieldClarification" />
                                 <FollowUpSuggestions v-if="session.answerFullyRendered && !session.steerForked && !session.suggestionsDismissed"
                                     :suggestion-set="session.suggestionSet"

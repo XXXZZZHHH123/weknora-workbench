@@ -28,7 +28,7 @@ import { computed, ref, watch } from 'vue';
 import { fieldClarification, confirmationText, dimensionLabel, canConfirmFields } from '@/utils/fieldClarification';
 const props = defineProps<{ session: any; active: boolean }>();
 const emit = defineEmits<{ submit: [text: string] }>();
-const plan = computed(() => fieldClarification(props.session.agentEventStream || []));
+const plan = computed(() => fieldClarification(props.session.agentEventStream || [], !!props.session.is_completed));
 const visible = ref(false), submitted = ref(false), note = ref('');
 const selections = ref<Record<string, string>>({});
 const needsText = computed(() => !!plan.value?.requires_note && !plan.value.fields.some(f => f.candidates.length > 1));

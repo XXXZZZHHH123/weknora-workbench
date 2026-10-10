@@ -98,3 +98,30 @@ func TestCastParams_StringToStringArray(t *testing.T) {
 		t.Fatalf("expected [OpenClaw], got %v", patterns)
 	}
 }
+
+func TestCastParams_NullableMCPCollections(t *testing.T) {
+	schema := json.RawMessage(`{"properties":{"prior_series_ids":{"anyOf":[{"type":"array","items":{"type":"string"}},{"type":"null"}]},"selections":{"anyOf":[{"type":"object","additionalProperties":{"type":"string"}},{"type":"null"}]}}}`)
+	args := json.RawMessage(`{"prior_series_ids":"[\"futures.close.CF.CZC\"]","selections":"{\"v1\":\"futures.close.CF.CZC\"}"}`)
+	var result map[string]interface{}
+	if err := json.Unmarshal(CastParams(args, schema), &result); err != nil {
+		t.Fatal(err)
+	}
+	if ids, ok := result["prior_series_ids"].([]interface{}); !ok || len(ids) != 1 || ids[0] != "futures.close.CF.CZC" {
+		t.Fatalf("lost prior series: %#v", result)
+	}
+	if choices, ok := result["selections"].(map[string]interface{}); !ok || choices["v1"] != "futures.close.CF.CZC" {
+		t.Fatalf("lost choices: %#v", result)
+	}
+}
+func TestCastParams_UnionDoesNotGuessOrBypassValidation(t *testing.T) {
+	schema := json.RawMessage(`{"properties":{"choice":{"anyOf":[{"type":"string"},{"type":"object"}]},"nullable":{"anyOf":[{"type":"object"},{"type":"null"}]}}}`)
+	for _, args := range []json.RawMessage{
+		json.RawMessage(`{"choice":"{\"v1\":\"a\"}","nullable":"not json"}`),
+		json.RawMessage(`{"choice":"ordinary text","nullable":null}`),
+		json.RawMessage(`{"nullable":"null"}`),
+	} {
+		if got := CastParams(args, schema); string(got) != string(args) {
+			t.Fatalf("ambiguous/invalid values changed: %s", got)
+		}
+	}
+}

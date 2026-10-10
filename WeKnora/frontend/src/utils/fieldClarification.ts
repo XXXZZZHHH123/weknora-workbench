@@ -61,12 +61,14 @@ export function confirmationDisplayText(content: string): string {
   return content;
 }
 
-export function fieldClarification(events: any[]): Clarification | null {
+export function fieldClarification(events: any[], completed = true): Clarification | null {
+  if (!completed) return null;
   if (structuredFieldIssue(events)) return null;
   const latest = fieldResolution(events);
   return latest?.status === 'needs_clarification' ? latest : null;
 }
-export function structuredFieldAnswer(events: any[]): Clarification | null {
+export function structuredFieldAnswer(events: any[], completed = true): Clarification | null {
+  if (!completed) return null;
   if (structuredFieldIssue(events)) return null;
   const latest = fieldResolution(events);
   if (latest?.status === 'needs_clarification') return null;
@@ -98,12 +100,14 @@ export function dimensionLabel(dimensions?: Record<string, unknown>): string {
 }
 
 /** Surface structured failures even when the outer model produces an empty final reply. */
-export function structuredFieldIssue(events: any[]): string | null {
+export function structuredFieldIssue(events: any[], completed = true): string | null {
+  if (!completed) return null;
   let issue: string | null = null;
   for (const event of events || []) {
     if(event.type !== 'tool_call' || event.pending || !/^(?:mcp__)?(?:resolve_fields|confirm_fields)(?:_[a-z0-9]+)?$/.test(event.tool_name || '')) continue;
     if(event.success === false) {
       const error = String(event.error || event.tool_data?.error || '');
+      if (error.includes('FIELD_CONFIRMATION_WAIT_FOR_USER') && fieldResolution(events)?.status === 'needs_clarification') continue;
       issue = /指定范围|工作表|目录过大/.test(error)
         ? '结构化查询未完成：工具传入的工作表范围无效，或字段目录超出处理范围。系统没有取得数值；这不表示原文件缺少数据。'
         : '结构化查询未完成。工具调用失败，尚未取得可验证的数值。请展开调用详情查看原因。';
@@ -121,4 +125,10 @@ export function structuredFieldIssue(events: any[]): string | null {
     }
   }
   return issue;
+}
+
+/** Keep intermediate results/failures in the tool timeline until this turn commits. */
+export function suppressStructuredProse(events: any[], completed: boolean): boolean {
+  const active = (events || []).some(e => e.type === 'tool_call' && /^(?:mcp__)?(?:resolve_fields|confirm_fields|query_series)(?:_[a-z0-9]+)?$/.test(e.tool_name || ''));
+  return active && (!completed || !!structuredFieldAnswer(events) || !!fieldClarification(events) || !!structuredFieldIssue(events));
 }

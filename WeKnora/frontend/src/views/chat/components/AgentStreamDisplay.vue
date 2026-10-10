@@ -376,7 +376,7 @@
             </div>
 
             <!-- Answer Event -->
-            <div v-else-if="event.type === 'answer' && !structuredFieldIssue(session.agentEventStream || []) && !fieldClarification(session.agentEventStream || []) && (event.done || (event.content && event.content.trim()))"
+            <div v-else-if="event.type === 'answer' && !suppressStructuredProse(session.agentEventStream || [], !!session.is_completed) && (event.done || (event.content && event.content.trim()))"
               class="answer-event">
               <div v-if="event.content && event.content.trim()" class="answer-content markdown-content">
                 <div v-stable-html="renderAnswerContent(event === activeAnswerEventRef ? typedAnswer : event.content)">
@@ -670,7 +670,7 @@ import {
 } from '@/utils/sandboxArtifactRefs';
 import type { ProtectedFileAccessContext } from '@/utils/protectedFileAccess';
 import { unwrapFinalAnswerWrappers, thinkingEqualsAnswer } from '@/utils/finalAnswer';
-import { structuredFieldIssue, fieldClarification } from '@/utils/fieldClarification';
+import { suppressStructuredProse } from '@/utils/fieldClarification';
 import { getAgentToolIconName } from '@/utils/agent-tool-icons';
 import { getMcpToolDisplayType, getMcpToolTitle, mcpToolResultOutput } from '@/utils/mcpToolDisplay';
 import { getQueryText, getWikiPageText } from '@/utils/agent-tool-display';

@@ -15,7 +15,7 @@
     <p v-if="answer.operation && answer.operation !== 'rows'">{{ operationLabel(answer.operation) }} · {{ answer.start_date || answer.end_date ? `${answer.start_date || '记录起点'} 至 ${answer.end_date || '记录终点'}` : '全部已导入记录' }}</p>
     <p v-if="plan?.status === 'no_data'">{{ answer.notice }}</p>
     <div v-for="(source, role) in answer.sources" :key="role" class="source-result">
-      <h3>{{ source.series?.metric }}<template v-if="dimensionLabel(source.series?.dimensions)"> · {{ dimensionLabel(source.series?.dimensions) }}</template></h3>
+      <h3><template v-if="answer.operation === 'statistics'">{{ operationLabel(source.filters?.operation) }} · </template>{{ source.series?.metric }}<template v-if="dimensionLabel(source.series?.dimensions)"> · {{ dimensionLabel(source.series?.dimensions) }}</template></h3>
       <small v-if="source.series?.chart_sheet">图表位置：{{ source.series.chart_sheet }}；源指标：{{ source.series.source_metric }}</small>
       <p v-if="source.filters?.operation && !['rows','latest','max','min'].includes(source.filters.operation)" class="answer-value">
         {{ operationLabel(source.filters.operation) }}：{{ source.aggregate == null ? '无有效数值' : source.aggregate }} {{ source.filters.operation === 'count' ? '条' : (source.series?.unit || '（原表未注明单位）') }}
@@ -30,6 +30,7 @@
       <template v-if="source.filters?.operation && source.filters.operation !== 'rows'">
         <small>有效数值 {{ source.valid_count }} 条；缺失或错误 {{ source.missing_count }} 条，不按零计算。</small>
         <small v-if="source.extremum_count > 1">共有 {{ source.extremum_count }} 条并列极值记录，{{ source.truncated ? `当前展示 ${source.rows.length} 条` : '已全部列出' }}。</small>
+        <small v-if="source.rows?.some((row: any) => row.formula && row.value === 0)">当前极值包含原表公式保存的零值；本次按保存值统计，需核验上游是否缺数，不能据此推断真实交易价格为零。</small>
         <small v-if="source.rows?.some((row: any) => row.formula)">公式结果取自原文件保存的数值，系统未重新计算整本 Excel。</small>
       </template>
       <details v-if="source.series?.chart_id && source.warnings?.length" class="chart-notice" open>
@@ -38,10 +39,10 @@
       </details>
     </div>
     <div v-if="answer.intent === 'calculation'" class="calculated-result">
-      <h3>计算结果：{{ answer.rounded_value }} {{ answer.unit }}</h3>
+      <h3>{{ answer.operation === 'statistics' ? '统计计算结果' : '计算结果' }}：{{ answer.rounded_value }} {{ answer.unit }}</h3>
       <p>{{ answer.explanation }}</p>
       <p>计算式：{{ readableExpression }}</p>
-      <small>上述数值由程序计算。换算公式和业务口径由模型提出，请结合来源核对。</small>
+      <small>{{ answer.operation === 'statistics' ? '极值与差值由程序按同一范围计算，请结合原表来源核对。' : '上述数值由程序计算。换算公式和业务口径由模型提出，请结合来源核对。' }}</small>
     </div>
     </template>
   </section>
@@ -52,11 +53,12 @@ import type { Clarification } from '@/utils/fieldClarification';
 import { dimensionLabel } from '@/utils/fieldClarification';
 const props = defineProps<{ plan: Clarification | null }>();
 const answer = computed(() => props.plan?.answer || {});
-const operationLabels: Record<string, string> = {max:'最大值',min:'最小值',mean:'算术平均值',sum:'合计',count:'有效记录数',latest:'最新有效值'};
+const operationLabels: Record<string, string> = {max:'最大值',min:'最小值',mean:'算术平均值',sum:'合计',count:'有效记录数',latest:'最新有效值',statistics:'复合统计'};
 const operationLabel = (operation: string) => operationLabels[operation] || '查询';
 const readableExpression = computed(() => String(answer.value.expression || '').replace(/\bv[1-8]\b/g, key => {
   const source = answer.value.sources?.[key];
-  return source?.rows?.[0]?.value == null ? key : String(source.rows[0].value);
+  const value = answer.value.operation === 'statistics' && source?.filters?.operation !== 'latest' ? source?.aggregate : source?.rows?.[0]?.value;
+  return value == null ? key : String(value);
 }));
 </script>
 <style scoped>
