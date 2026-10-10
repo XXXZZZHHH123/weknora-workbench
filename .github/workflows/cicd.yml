@@ -60,7 +60,7 @@ jobs:
         with:
           go-version-file: WeKnora/go.mod
           cache-dependency-path: WeKnora/go.sum
-      - run: go test ./internal/agent/tools ./internal/agent -run TestMCP -count=1
+      - run: go test ./internal/agent/tools ./internal/agent -run 'TestMCP|TestCastParams' -count=1
 
   deployment-checks:
     runs-on: ubuntu-24.04
@@ -127,6 +127,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        id: buildx
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
@@ -166,6 +167,20 @@ jobs:
                   shutil.rmtree(path)
           print('Free bytes after:', shutil.disk_usage('/').free)
           PYTHON
+      - name: Restore Go compiler cache for the app image
+        if: matrix.service == 'app' && steps.image.outputs.reused != 'true'
+        id: go-build-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: .build/app-go-build-cache
+          key: linux-amd64-app-go-build-${{ hashFiles('WeKnora/go.mod', 'WeKnora/go.sum', 'WeKnora/third_party/anydoc-go/go.mod') }}
+      - name: Inject and preserve the Go compiler cache mount
+        if: matrix.service == 'app' && steps.image.outputs.reused != 'true'
+        uses: reproducible-containers/buildkit-cache-dance@5b81f4d29dc8397a7d341dba3aeecc7ec54d6361 # v3.3.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: '{".build/app-go-build-cache":"/root/.cache/go-build"}'
+          skip-extraction: ${{ steps.go-build-cache.outputs.cache-hit }}
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         if: steps.image.outputs.reused != 'true'
         with:

@@ -28,7 +28,8 @@ Docker 项目名 `weknora-eval`、`weknora-structured` 保留以复用现有数�
 - 确定性查询和计算，返回原文件、工作表、数值与日期单元格。
 - 原生 Excel 图表读取及源数据关联；不解析截图式图表。
 - 工作台嵌入 WeKnora，复用登录；模型可在页面配置。
-- 极值查询绑定真实数值所在行的日期；工具调用采用绑定函数入口。
+- 极值查询绑定真实数值所在行的日期；复合统计可同时返回最高、最低及各自日期，并由程序计算差值。已确认口径用于连续追问。
+- 结构化答案与确认提示在本轮完成后显示，调用重试过程保留在详情中。
 
 ## 目录
 
@@ -51,7 +52,13 @@ Docker 项目名 `weknora-eval`、`weknora-structured` 保留以复用现有数�
 
 1. 按 `WeKnora/.env.example` 和上游部署说明准备 `WeKnora/.env`。
 2. 将 `model-config.example.json` 复制到 `.private/model-config.json`，填写自己的模型配置。账号注册后，可在 `.private/accounts.json` 保存注册脚本所需的本地账号列表（email/password）。这些文件均被忽略。
-3. 构建修改后的后端：
+3. 已有本地运行镜像时，日常调试可复用运行环境和 Go 缓存，只重新编译应用（使用现有外部 docreader；内置 anydoc 不在此快速构建中）：
+
+   ```sh
+   bash scripts/build_local_app.sh
+   ```
+
+   首次启动或需要完整运行环境时，构建完整后端：
 
    ```sh
    docker build -f WeKnora/docker/Dockerfile.app -t weknora-eval-app:mcp-direct WeKnora
@@ -71,7 +78,9 @@ Docker 项目名 `weknora-eval`、`weknora-structured` 保留以复用现有数�
 
 ## CI/CD 与服务器部署
 
-GitHub Actions 在 PR 和 main 更新时执行检查；main 检查通过后构建 linux/amd64 镜像并发布部署包。在内网服务器手动运行 `bash ~/weknora-workbench/bin/update.sh` 拉取最新已发布版本并部署；不设置定时获取任务。适配 CentOS 7 / Docker 24，无需服务器运行 GitHub Actions Runner。首次配置、只读凭据、健康检查、备份和恢复见 [服务器部署说明](deploy/README.md)。
+GitHub Actions 在 PR 和 main 更新时执行检查；main 检查通过后构建 linux/amd64 镜像并发布部署包。Go 依赖保存在可复用的 Docker 层，编译缓存单独跨构建保存；依赖清单不变时无需每次重新下载整套 Go 模块。
+
+在内网服务器手动运行 `bash ~/weknora-workbench/bin/update.sh` 拉取最新已发布版本并部署；不设置定时获取任务。适配 CentOS 7 / Docker 24，无需服务器运行 GitHub Actions Runner。首次配置、只读凭据、健康检查、备份和恢复见 [服务器部署说明](deploy/README.md)。
 
 ## 测试
 
