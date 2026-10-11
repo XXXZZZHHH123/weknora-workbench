@@ -120,6 +120,7 @@ func (a *CustomAgent) ValidateAvatar() error {
 
 // CustomAgentConfig represents the configuration of a custom agent
 type CustomAgentConfig struct {
+	ThinkingBudgetTokens int `yaml:"thinking_budget_tokens,omitempty" json:"thinking_budget_tokens,omitempty"`
 	// ===== Basic Settings =====
 	// Agent mode: "quick-answer" for RAG mode, "smart-reasoning" for ReAct agent mode
 	AgentMode string `yaml:"agent_mode" json:"agent_mode"`
@@ -171,7 +172,8 @@ type CustomAgentConfig struct {
 	// Allowed tools (only for agent type)
 	AllowedTools []string `yaml:"allowed_tools" json:"allowed_tools"`
 	// MCP service selection mode: "all" = all enabled MCP services, "selected" = specific services, "none" = no MCP
-	MCPSelectionMode string `yaml:"mcp_selection_mode" json:"mcp_selection_mode"`
+	MCPSelectionMode    string `yaml:"mcp_selection_mode" json:"mcp_selection_mode"`
+	MCPToolExposureMode string `yaml:"mcp_tool_exposure_mode,omitempty" json:"mcp_tool_exposure_mode,omitempty"`
 	// Selected MCP service IDs (only used when MCPSelectionMode is "selected")
 	MCPServices []string `yaml:"mcp_services" json:"mcp_services"`
 	// MCPAuthWaitTimeout is how many seconds to wait for in-conversation OAuth

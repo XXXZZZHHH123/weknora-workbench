@@ -15,6 +15,8 @@ def summarize(answer):
             for s in g['sources']:lines.append(g['metric']+'；来源 '+answer['file']+' / '+s['sheet']+' / '+','.join(s['header_cells']))
     for role,source in answer.get('sources',{}).items():
         s=source['series'];unit=s.get('unit') or '原表未注明单位'
+        if source.get('actual_first_date'):
+            lines.append('实际记录范围：'+source['actual_first_date']+' 至 '+str(source.get('actual_last_date'))+'；有效记录 '+str(source.get('valid_count',0))+' 条。')
         lines.append(s['metric']+'（'+unit+'）')
         if source.get('aggregate') is not None:lines.append(('已记录月份统计值：' if source.get('coverage',{}).get('complete') is False else '统计值：')+fmt(source['aggregate']))
         if source.get('coverage'):lines.append(source['coverage']['notice'])

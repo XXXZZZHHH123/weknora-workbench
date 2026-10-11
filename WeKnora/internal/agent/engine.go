@@ -34,6 +34,7 @@ const langfuseQueryPreview = 2000
 // engine therefore does not maintain its own cache, system-prompt store, or
 // cross-turn buffer.
 type AgentEngine struct {
+	structuredReviewMode bool // bounded source review must not restart open-ended reasoning
 	config               *types.AgentConfig
 	toolRegistry         *agenttools.ToolRegistry
 	chatModel            chat.Chat
@@ -310,6 +311,7 @@ func (e *AgentEngine) Execute(
 	llmContext []chat.Message,
 	imageURLs ...[]string,
 ) (*types.AgentState, error) {
+	e.structuredReviewMode = false
 	logger.Infof(ctx, "[Agent] Starting execution: session=%s, message=%s, query_len=%d, context_msgs=%d",
 		sessionID, messageID, len(query), len(llmContext))
 	ctx = withFieldConfirmationTurn(ctx, query, llmContext)
@@ -374,6 +376,9 @@ func (e *AgentEngine) Execute(
 	// Build system prompt using progressive RAG prompt
 	// If skills are enabled, include skills metadata (Level 1 - Progressive Disclosure)
 	systemPrompt := e.buildSystemPrompt(ctx)
+	if e.toolRegistry.HasStructuredDataTools() {
+		systemPrompt += structuredFieldTurnInstructions
+	}
 	logger.Debugf(ctx, "[Agent] SystemPrompt: %d chars", len(systemPrompt))
 
 	// Initialize messages with history
@@ -381,7 +386,7 @@ func (e *AgentEngine) Execute(
 	if len(imageURLs) > 0 {
 		imgs = imageURLs[0]
 	}
-	messages := e.buildMessagesWithLLMContext(systemPrompt+structuredFieldTurnInstructions, query, sessionID, llmContext, imgs)
+	messages := e.buildMessagesWithLLMContext(systemPrompt, query, sessionID, llmContext, imgs)
 	if e.toolRegistry != nil {
 		e.toolRegistry.RememberMCPHistory(messages)
 		e.toolRegistry.RefreshMCPTools(ctx)
@@ -398,11 +403,7 @@ func (e *AgentEngine) Execute(
 		"tools":      toolListStr,
 	})
 
-	if e.executeStructuredConfirmation(ctx, state, query, sessionID, messageID) {
-		finishAgentSpan(agentSpan, state, nil)
-		return state, nil
-	}
-	if e.executeStructuredQuery(ctx, state, query, sessionID, messageID) {
+	if e.executeStructuredConfirmation(ctx, state, query, sessionID, messageID, &messages) {
 		finishAgentSpan(agentSpan, state, nil)
 		return state, nil
 	}
@@ -494,6 +495,10 @@ func (e *AgentEngine) withinIterationBudget(round int) bool {
 // spinning without ever finishing: empty answers, the same answer repeated,
 // and rounds cut off at the completion-token cap.
 type loopGuards struct {
+	structuredAnswerReviewed  bool
+	structuredEvidenceRepairs int
+	structuredReviewEvidence  []chat.Message
+	structuredReviewInput     string
 	// emptyRetries counts nudges sent after a stop with no content.
 	emptyRetries int
 	// consecutiveSameContent counts plain rounds that repeated the previous
@@ -940,6 +945,51 @@ func (e *AgentEngine) runReActIteration(
 			state.RoundSteps = append(state.RoundSteps, step)
 		}
 		return iterOutcomeBreak, nil
+	}
+
+	// A successful data tool only proves execution. Give the reasoning model
+	// a bounded audit turn before committing numeric claims. The audit can use
+	// more tools; it is not a classifier or a list of supported user intents.
+	if len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && (hasStructuredEvidence(state.RoundSteps) || hasStructuredHistoryEvidence(*messagesPtr)) {
+		guards.structuredAnswerReviewed = true
+		e.structuredReviewMode = true
+		guards.structuredReviewEvidence = append([]chat.Message(nil), (*messagesPtr)...)
+		*messagesPtr = independentStructuredReview(*messagesPtr, query, response.Content)
+		guards.structuredReviewInput = (*messagesPtr)[1].Content
+		e.contextRewrites++
+		e.lastUsage = types.TokenUsage{}
+		e.lastSentMsgCount = 0
+		state.RoundSteps = append(state.RoundSteps, step)
+		return iterOutcomeNext, nil
+	}
+	if len(response.ToolCalls) == 0 && response.Content != "" && (hasStructuredEvidence(state.RoundSteps) || hasStructuredHistoryEvidence(*messagesPtr) || hasStructuredHistoryEvidence(guards.structuredReviewEvidence)) {
+		evidenceMessages := append([]chat.Message(nil), guards.structuredReviewEvidence...)
+		for _, msg := range *messagesPtr {
+			// The review envelope is runtime data, not a new human claim. Its
+			// unverified draft must not become numeric provenance.
+			if guards.structuredReviewInput == "" || msg.Content != guards.structuredReviewInput {
+				evidenceMessages = append(evidenceMessages, msg)
+			}
+		}
+		// Validate against durable raw results as well as the model's compacted
+		// context. Context encoding/trimming must not erase numeric provenance.
+		for _, priorStep := range state.RoundSteps {
+			for _, call := range priorStep.ToolCalls {
+				if call.Result != nil && call.Result.Success {
+					evidenceMessages = append(evidenceMessages, chat.Message{Role: "tool", Content: call.Result.Output})
+				}
+			}
+		}
+		unsupported := ungroundedStructuredNumbers(response.Content, evidenceMessages)
+		if len(unsupported) > 0 && guards.structuredEvidenceRepairs < 2 {
+			guards.structuredEvidenceRepairs++
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "assistant", Content: response.Content}, chat.Message{Role: "system", Content: "内部运行时反馈；最终仍须回答用户原始问题。数值依据检查：草稿中以下数字尚未匹配真实程序结果（可能为未经计算的补充数字或错误舍入）：" + strings.Join(unsupported, "、") + "。请调用计算工具取得依据或删去未核验的补充数字，不能凭记忆补数。"})
+			state.RoundSteps = append(state.RoundSteps, step)
+			return iterOutcomeNext, nil
+		}
+		if len(unsupported) > 0 {
+			response.Content = "已经取得原表依据，但完整回答的部分数字未通过来源核验，暂不提供未经核验的统计结论。请查看取数依据。"
+		}
 	}
 
 	// 2. Analyze: Check for stop conditions (natural stop with no tool calls)

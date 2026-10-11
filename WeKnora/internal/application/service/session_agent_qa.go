@@ -333,6 +333,8 @@ func (s *sessionService) buildAgentConfig(
 		MultiTurnEnabled:            customAgent.Config.MultiTurnEnabled,
 		MemoryEnabled:               customAgent.Config.MemoryEnabled,
 		MCPSelectionMode:            customAgent.Config.MCPSelectionMode,
+		MCPToolExposureMode:         customAgent.Config.MCPToolExposureMode,
+		ThinkingBudgetTokens:        customAgent.Config.ThinkingBudgetTokens,
 		MCPServices:                 customAgent.Config.MCPServices,
 		MCPAuthWaitTimeout:          customAgent.Config.MCPAuthWaitTimeout,
 		Thinking:                    customAgent.Config.Thinking,

@@ -687,8 +687,10 @@ func (h *ModelHandler) UpdateModel(c *gin.Context) {
 	)
 	model.Parameters = newParams
 
-	model.Source = req.Source
-	model.Type = req.Type
+	if req.Source != "" {
+		model.Source = req.Source
+	}
+	model.Type = effectiveType
 
 	logger.Infof(ctx, "Updating model, ID: %s, Name: %s", id, model.Name)
 	if err := h.service.UpdateModel(ctx, model); err != nil {

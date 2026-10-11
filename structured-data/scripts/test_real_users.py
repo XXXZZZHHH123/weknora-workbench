@@ -39,7 +39,7 @@ def run_group(group, output, agent_id, account, model_id=None, stop=None):
         start = time.monotonic()
         try:
             query=case['question']
-            if case.get('confirm_series_ids') or case.get('confirm_note'):
+            if (case.get('confirm_series_ids') or case.get('confirm_note')) and pending and pending.get('status')=='needs_clarification':
                 if not pending or pending.get('status')!='needs_clarification':raise ValueError('No genuine pending choice for this test confirmation')
                 selections={}
                 for f in pending['fields']:

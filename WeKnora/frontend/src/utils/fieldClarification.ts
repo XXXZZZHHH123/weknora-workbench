@@ -85,6 +85,9 @@ export function fieldClarification(events: any[], completed = true): Clarificati
 export function structuredFieldAnswer(events: any[], completed = true): Clarification | null {
   if (!completed) return null;
   if (structuredFieldIssue(events)) return null;
+  const analysisIndex=[...(events || [])].reverse().findIndex(e=>e.type==='tool_call' && /^(?:mcp__)?analyze_table(?:_[a-z0-9]+)?$/.test(e.tool_name || ''));
+  const fieldIndex=[...(events || [])].reverse().findIndex(e=>e.type==='tool_call' && /^(?:mcp__)?(?:resolve_fields|confirm_fields|query_series)(?:_[a-z0-9]+)?$/.test(e.tool_name || ''));
+  if(analysisIndex>=0 && (fieldIndex<0 || analysisIndex<fieldIndex))return null;
   const latest = fieldResolution(events);
   if (latest?.status === 'needs_clarification') return null;
   if (latest && ['resolved','no_data'].includes(latest.status) && latest.answer && typeof latest.answer.sources === 'object') return latest;
@@ -142,8 +145,29 @@ export function structuredFieldIssue(events: any[], completed = true): string | 
   return issue;
 }
 
-/** Keep intermediate results/failures in the tool timeline until this turn commits. */
+/** Tool output stays in the timeline; the agent's answer remains conversational. */
 export function suppressStructuredProse(events: any[], completed: boolean): boolean {
-  const active = (events || []).some(e => e.type === 'tool_call' && /^(?:mcp__)?(?:resolve_fields|confirm_fields|query_series)(?:_[a-z0-9]+)?$/.test(e.tool_name || ''));
-  return active && (!completed || !!structuredFieldAnswer(events) || !!fieldClarification(events) || !!structuredFieldIssue(events));
+  // During execution text belongs to progress. Once committed, even a genuine
+  // clarification or an unrecovered error must not hide the model's explanation.
+  return !completed && (events || []).some(e => e.type === 'tool_call' && /^(?:mcp__)?(?:resolve_fields|confirm_fields|query_series|analyze_table)(?:_[a-z0-9]+)?$/.test(e.tool_name || ''));
+}
+
+/** The last analysis is evidence for the final response, never its replacement. */
+export function structuredAnalysisEvidence(events: any[], completed=true): any | null {
+  if(!completed)return null;
+  let result:any=null;
+  for(const event of events || []) {
+    if(event.type!=='tool_call' || !/^(?:mcp__)?analyze_table(?:_[a-z0-9]+)?$/.test(event.tool_name || ''))continue;
+    result=null;
+    if(event.pending || event.success===false)continue;
+    const chunks=[...(event.tool_data?.content_items || []).filter((x:any)=>x.type==='text').map((x:any)=>x.text),event.tool_data?.output,event.output];
+    for(const chunk of chunks) {
+      if(typeof chunk!=='string' || chunk.length>250000)continue;
+      try {
+        const data=JSON.parse(chunk.slice(chunk.indexOf('{')));
+        if(data.kind==='structured_analysis' && data.status==='ok' && Array.isArray(data.columns) && data.columns.every((c:any)=>typeof c==='string') && Array.isArray(data.rows) && data.rows.every((r:any)=>Array.isArray(r) && r.length===data.columns.length)) {result=data;break;}
+      }catch { /* Never render unvalidated tool content as evidence. */ }
+    }
+  }
+  return result;
 }

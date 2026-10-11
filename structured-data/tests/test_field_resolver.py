@@ -168,11 +168,11 @@ def test_invalid_tool_scope_is_recoverable_without_guessing_or_model_call(catalo
     assert 'answer' not in result
 
 
-def test_model_failure_has_terminal_tool_notice(catalogue):
+def test_model_failure_returns_feedback_for_agent_recovery(catalogue):
     store,ds=catalogue
     def fail(p):raise ValueError('模型服务暂不可用')
     result=FieldResolver(store,fail).tool_answer('价格')
-    assert result['retryable'] is False and result['max_retries']==0
+    assert result['retryable'] is True and result['max_retries']==1
     assert result['message']=='模型服务暂不可用' and 'answer' not in result
 
 

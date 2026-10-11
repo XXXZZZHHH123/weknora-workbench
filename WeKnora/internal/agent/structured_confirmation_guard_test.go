@@ -38,13 +38,16 @@ func TestMCPResolvedHistoryDoesNotAuthorizeNewAutomaticSelections(t *testing.T) 
 	require.Error(t, guardFieldConfirmation(ctx, "confirm_fields", map[string]any{"resolution_id": "aaaaaaaaaaaaaaaaaaaaaaaa"}))
 }
 
-func TestMCPResolverCannotDropTheCurrentHumanReply(t *testing.T) {
+func TestMCPResolverPreservesDecompositionAndFillsMissingQuestion(t *testing.T) {
 	history := []chat.Message{{Role: "tool", Name: "resolve_fields", Content: `{"kind":"structured_field_resolution","status":"needs_clarification","resolution_id":"aaaaaaaaaaaaaaaaaaaaaaaa"}`}}
 	ctx := withFieldConfirmationTurn(context.Background(), "就是收盘价", history)
 	args := map[string]any{"question": "最近一天的价格"}
 	require.NoError(t, guardFieldConfirmation(ctx, "resolve_fields", args))
-	require.Equal(t, "最近一天的价格\n用户本轮原话：就是收盘价", args["question"])
+	require.Equal(t, "最近一天的价格", args["question"])
 	fresh := withFieldConfirmationTurn(context.Background(), "最高价和最低价差值多少？", nil)
+	require.NoError(t, guardFieldConfirmation(fresh, "resolve_fields", args))
+	require.Equal(t, "最近一天的价格", args["question"])
+	delete(args, "question")
 	require.NoError(t, guardFieldConfirmation(fresh, "resolve_fields", args))
 	require.Equal(t, "最高价和最低价差值多少？", args["question"])
 }

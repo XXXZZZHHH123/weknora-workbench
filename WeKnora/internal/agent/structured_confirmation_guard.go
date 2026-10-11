@@ -194,10 +194,9 @@ func guardFieldConfirmation(ctx context.Context, name string, args map[string]an
 		if turn.previousID != "" {
 			args["previous_resolution_id"] = turn.previousID
 		}
-		proposed, _ := args["question"].(string)
-		if turn.pendingID != "" && proposed != turn.question && !strings.Contains(proposed, turn.question) {
-			args["question"] = proposed + "\n用户本轮原话：" + turn.question
-		} else {
+		// The main agent may decompose a request into distinct subqueries.
+		// Preserve its question; only fill a missing question from the human turn.
+		if proposed, _ := args["question"].(string); strings.TrimSpace(proposed) == "" {
 			args["question"] = turn.question
 		}
 		return nil

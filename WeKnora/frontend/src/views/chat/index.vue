@@ -124,8 +124,7 @@
                             <div v-if="session.role == 'assistant' && shouldRenderAssistantMessage(session)"
                                 class="message-row"
                                 :data-message-id="session.id || undefined">
-                                <StructuredFieldAnswer v-if="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)" :plan="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)" />
-                                <botmsg v-else :content="structuredFieldIssue(session.agentEventStream, !!session.is_completed) ? '' : session.content" :session="session" :session-id="session_id"
+                                <botmsg :content="session.content" :session="session" :session-id="session_id"
                                     :user-query="getUserQuery(index)" @scroll-bottom="scrollToBottom"
                                     :isFirstEnter="isFirstEnter" :embeddedMode="embeddedMode"
                                     :follow-up-loading="Boolean(session.suggestionLoading && !session.suggestionSet?.questions?.length)"
@@ -135,7 +134,9 @@
                                     @rewind="handleRewind"
                                     @render-complete-change="(ready) => handleAnswerRenderComplete(session, ready)">
                                 </botmsg>
-                                <section v-if="structuredFieldIssue(session.agentEventStream, !!session.is_completed)" role="alert" style="margin:12px 0;padding:16px;border:1px solid #ead6b6;border-radius:8px;background:#fff9ed;color:#725324;line-height:1.7">{{ structuredFieldIssue(session.agentEventStream, !!session.is_completed) }}</section>
+                                <details v-if="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)"><summary>查看原表取数依据</summary><StructuredFieldAnswer :plan="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)" /></details>
+                                <section v-if="!session.content?.trim() && structuredFieldIssue(session.agentEventStream, !!session.is_completed)" role="alert" style="margin:12px 0;padding:16px;border:1px solid #ead6b6;border-radius:8px;background:#fff9ed;color:#725324;line-height:1.7">{{ structuredFieldIssue(session.agentEventStream, !!session.is_completed) }}</section>
+                                <StructuredAnalysisEvidence v-if="structuredAnalysisEvidence(session.agentEventStream, !!session.is_completed)" :evidence="structuredAnalysisEvidence(session.agentEventStream, !!session.is_completed)" />
                                 <FieldClarificationDialog :session="session" :active="index === messagesList.length - 1 && !isReplying && !isStreaming" @submit="handleFieldClarification" />
                                 <FollowUpSuggestions v-if="session.answerFullyRendered && !session.steerForked && !session.suggestionsDismissed"
                                     :suggestion-set="session.suggestionSet"
@@ -227,7 +228,8 @@ import ChatAttachmentPreviewDrawer from '@/components/ChatAttachmentPreviewDrawe
 import FollowUpSuggestions from '@/components/chat/FollowUpSuggestions.vue';
 import FieldClarificationDialog from '@/components/chat/FieldClarificationDialog.vue';
 import StructuredFieldAnswer from '@/components/chat/StructuredFieldAnswer.vue';
-import { structuredFieldAnswer, structuredFieldIssue, confirmationDisplayText } from '@/utils/fieldClarification';
+import StructuredAnalysisEvidence from '@/components/chat/StructuredAnalysisEvidence.vue';
+import { structuredFieldAnswer, structuredFieldIssue, confirmationDisplayText, structuredAnalysisEvidence } from '@/utils/fieldClarification';
 import MessageTimestamp from '@/components/chat/MessageTimestamp.vue';
 import ChatQuestionMinimap from '@/components/chat/ChatQuestionMinimap.vue';
 import { shouldShowConversationTimestamp } from '@/utils/messageTimestamp';

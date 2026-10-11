@@ -231,3 +231,23 @@ func TestFillSecretsFromStoredModel_SkipsSecretExtraOfAnotherVendor(t *testing.T
 	assert.NotContains(t, req.ExtraConfig, "secret_key")
 	assert.Equal(t, "AKID-public-id", req.APIKey, "the api_key still comes from the stored row")
 }
+
+func TestUpdateModel_PreservesTypeAndSourceWhenOnlyParametersAreProvided(t *testing.T) {
+	registerSecretExtraVendor(t)
+	svc := &stubUpdateModelService{stored: storedSecretExtraModel()}
+	h := NewModelHandler(svc)
+	body, err := json.Marshal(UpdateModelRequest{Parameters: types.ModelParameters{Provider: secretExtraProvider, ExtraConfig: map[string]string{"region": "ap-guangzhou"}}})
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/models/m-rerank", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), types.TenantRoleContextKey, types.TenantRoleAdmin))
+	c.Params = gin.Params{{Key: "id", Value: "m-rerank"}}
+	h.UpdateModel(c)
+	require.Empty(t, c.Errors.Errors())
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, types.ModelTypeRerank, svc.updated.Type)
+	require.Equal(t, types.ModelSourceRemote, svc.updated.Source)
+	require.Equal(t, "AKID-public-id", svc.updated.Parameters.APIKey)
+}

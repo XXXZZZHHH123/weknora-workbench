@@ -72,6 +72,28 @@ def test_immutable_snapshots_and_duplicate_rejection(snapshot):
     assert store.query_series(id, "price", operation="sum")["aggregate"] == 30
 
 
+def test_dataset_selection_uses_only_current_version_of_single_source(snapshot):
+    store, old_id, parsed = snapshot
+    assert store.select_dataset() == old_id
+    newer = copy.deepcopy(parsed)
+    newer['sha256'] = 'd' * 64
+    new_id = store.publish(newer)['dataset_id']
+    assert store.select_dataset() == new_id
+    assert store.select_dataset(old_id) == old_id
+    other = copy.deepcopy(parsed)
+    other['source_file'] = 'other.xlsx'
+    other['sha256'] = 'e' * 64
+    store.publish(other)
+    with pytest.raises(ValueError, match='多份'):
+        store.select_dataset()
+    assert store.select_dataset(new_id) == new_id
+
+
+def test_empty_dataset_selection_reports_missing_import(tmp_path):
+    with pytest.raises(ValueError, match='尚无已导入'):
+        DataStore(tmp_path).select_dataset()
+
+
 def test_invalid_queries_do_not_reach_database(snapshot):
     store, id, _ = snapshot
     with pytest.raises(ValueError): store.query_series("../../etc", "price")

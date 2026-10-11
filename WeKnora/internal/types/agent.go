@@ -102,6 +102,7 @@ const UnlimitedMaxIterations = -1
 // AgentConfig represents the full agent configuration (used at tenant level and runtime)
 // This includes all configuration parameters for agent execution
 type AgentConfig struct {
+	ThinkingBudgetTokens int `json:"thinking_budget_tokens,omitempty"` // optional per-call reasoning budget; 0 uses vendor default
 	// MaxIterations caps ReAct rounds. Zero is unset (filled with a default);
 	// a negative value is unlimited — the loop runs until the model stops,
 	// the user cancels, or another guard fires. See UnlimitedMaxIterations.
@@ -123,8 +124,9 @@ type AgentConfig struct {
 	MemoryEnabled           *bool         `json:"memory_enabled,omitempty"`             // nil inherits workspace
 	SearchTargets           SearchTargets `json:"-"`                                    // Pre-computed unified search targets (runtime only)
 	// MCP service selection
-	MCPSelectionMode string   `json:"mcp_selection_mode"` // MCP selection mode: "all", "selected", "none"
-	MCPServices      []string `json:"mcp_services"`       // Selected MCP service IDs (when mode is "selected")
+	MCPSelectionMode    string   `json:"mcp_selection_mode"`               // MCP selection mode: "all", "selected", "none"
+	MCPToolExposureMode string   `json:"mcp_tool_exposure_mode,omitempty"` // direct for small authorized toolsets; empty defers discovery
+	MCPServices         []string `json:"mcp_services"`                     // Selected MCP service IDs (when mode is "selected")
 	// MCPAuthWaitTimeout is how many seconds an agent run waits for
 	// in-conversation OAuth authorization before skipping. <=0 falls back to
 	// the gate's configured timeout. The wait is always bounded (no leak).

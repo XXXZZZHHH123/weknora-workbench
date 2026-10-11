@@ -60,7 +60,9 @@ jobs:
         with:
           go-version-file: WeKnora/go.mod
           cache-dependency-path: WeKnora/go.sum
-      - run: go test ./internal/agent/tools ./internal/agent -run 'TestMCP|TestCastParams' -count=1
+      - run: go test ./internal/agent/tools ./internal/agent -run 'TestMCP|TestCastParams|TestStructured|TestIndependentReview|TestReviewDraft' -count=1
+      - run: go test ./internal/handler -run TestUpdateModel -count=1
+      - run: go test ./internal/application/service -run 'TestAgentConfig|TestBuildAssistantHistoryMessages|TestBuildTurnBodyMessages|TestMCPProxyHistory' -count=1
 
   deployment-checks:
     runs-on: ubuntu-24.04

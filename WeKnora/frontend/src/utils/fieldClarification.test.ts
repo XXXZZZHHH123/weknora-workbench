@@ -151,3 +151,21 @@ test('blocking an unprompted model confirmation keeps the genuine human choice a
   assert.equal(fieldClarification([event(JSON.stringify(plan)),blocked])?.resolution_id,plan.resolution_id);
   assert.ok(structuredFieldIssue([blocked]));
 });
+
+test('committed conversational explanation is never hidden by evidence or errors', async () => {
+  const {suppressStructuredProse}=await import('./fieldClarification');
+  for(const e of [event(JSON.stringify(plan)),event(JSON.stringify({...plan,status:'resolved',answer:{sources:{}}})),{...event(''),success:false}]) {
+    assert.equal(suppressStructuredProse([e],true),false);
+  }
+});
+
+test('analysis evidence follows the last substep without replacing the final answer', async () => {
+  const {structuredAnalysisEvidence}=await import('./fieldClarification');
+  const raw={kind:'structured_analysis',status:'ok',columns:['均值'],rows:[[15]],inputs:{},input_count:3};
+  const analysis=event(JSON.stringify(raw),'mcp__analyze_table_abc');
+  const old=event(JSON.stringify({...plan,status:'resolved',answer:{sources:{}}}));
+  assert.equal(structuredAnalysisEvidence([analysis],false),null);
+  assert.equal(structuredAnalysisEvidence([analysis])?.rows[0][0],15);
+  assert.equal(structuredFieldAnswer([old,analysis]),null);
+  assert.equal(structuredAnalysisEvidence([analysis,{...analysis,success:false}]),null);
+});

@@ -29,3 +29,12 @@ func TestMCPStructuredConfirmationIsBoundToSourceService(t *testing.T) {
 	_, err = StructuredConfirmationTool(context.Background(), registry, foreign)
 	require.Error(t, err)
 }
+
+func TestStructuredDataGuidanceRequiresActualCapabilityMetadata(t *testing.T) {
+	registry := NewToolRegistry()
+	require.False(t, registry.HasStructuredDataTools())
+	registry.RegisterTool(newTestMCPTool("general", "service", "search"))
+	require.False(t, registry.HasStructuredDataTools())
+	registry.RegisterDeferredTool(newTestMCPTool("data", "data-service", "analyze_table"))
+	require.True(t, registry.HasStructuredDataTools())
+}

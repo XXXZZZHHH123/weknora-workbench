@@ -221,7 +221,11 @@ func (s *agentService) CreateAgentEngine(
 	s.registerWebPageFiles(ctx, toolRegistry, config, sessionID, assistantMessageID)
 	// Advertise cached service summaries independently of @mentions. Concrete
 	// tool definitions are published after describe, before the next model request.
-	toolRegistry.PrepareMCPTools(ctx)
+	if config.MCPToolExposureMode == "direct" {
+		toolRegistry.PrepareMCPToolsDirect(ctx)
+	} else {
+		toolRegistry.PrepareMCPTools(ctx)
+	}
 
 	// 3. Resolve knowledge base and selected document metadata
 	kbInfos, selectedDocs := s.resolveKBAndDocInfos(ctx, config)

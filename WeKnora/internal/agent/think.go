@@ -258,19 +258,28 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	sessionID string,
 ) (*types.ChatResponse, error) {
 	budget := e.clampCompletionBudgetToContext(e.tokenEstimator.EstimateMessages(messages))
-	logger.Debugf(ctx, "[Agent][Thinking] Iteration-%d: temp=%.2f, tools=%d, thinking=%v, max_tokens=%d",
-		iteration+1, e.config.Temperature, len(tools), e.config.Thinking, budget)
-
 	parallelToolCalls := true
 	opts := &chat.ChatOptions{
-		Temperature:         e.config.Temperature,
-		MaxCompletionTokens: budget,
-		Tools:               tools,
-		Thinking:            e.config.Thinking,
-		ReasoningEffort:     chat.SanitizeReasoningEffort(ctx, e.config.ReasoningEffort, "agent config"),
-		ParallelToolCalls:   &parallelToolCalls,
-		PromptCacheKey:      sessionID,
+		Temperature:          e.config.Temperature,
+		MaxCompletionTokens:  budget,
+		Tools:                tools,
+		Thinking:             e.config.Thinking,
+		ReasoningEffort:      chat.SanitizeReasoningEffort(ctx, e.config.ReasoningEffort, "agent config"),
+		ThinkingBudgetTokens: e.config.ThinkingBudgetTokens,
+		ParallelToolCalls:    &parallelToolCalls,
+		PromptCacheKey:       sessionID,
 	}
+	if e.structuredReviewMode {
+		disabled := false
+		opts.Thinking = &disabled
+		opts.ReasoningEffort = chat.ReasoningEffort("off")
+		opts.ThinkingBudgetTokens = 0
+		if opts.MaxCompletionTokens > 4096 {
+			opts.MaxCompletionTokens = 4096
+		}
+	}
+	logger.Debugf(ctx, "[Agent][Thinking] Iteration-%d: temp=%.2f, tools=%d, thinking=%v, max_tokens=%d, source_review=%v",
+		iteration+1, opts.Temperature, len(tools), opts.Thinking, opts.MaxCompletionTokens, e.structuredReviewMode)
 
 	pendingToolCalls := make(map[string]bool)
 	thinkingToolIDs := make(map[string]string) // tool_call_id -> event ID for thinking tool streams

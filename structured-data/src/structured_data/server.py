@@ -81,7 +81,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     async def resolve_fields(question: str, dataset_id: str | None = None, context_sheet: str | None = None, prior_series_ids: list[str] | None = None, date: str | None = None, sheet: str | None = None, pending_resolution_id: str | None = None, previous_resolution_id: str | None = None) -> dict:
-        """用大模型知识理解用户别称和真实表头的关系。只发送字段目录，不发送整表数据。question保留本轮用户原话；previous_resolution_id只能来自上一轮真实工具结果，系统据此读取完整任务，理解续问、补充和改口。context_sheet及prior_series_ids仅用于候选召回。sheet仅在用户明确限制工作表时填写。返回真实候选列、理由和查询/计算方案。needs_clarification会在网页展示实际待补信息：立即结束本轮，等用户补充或选择，不能代替用户确认或取数。resolved会同时返回answer中的原值或确定性计算结果及来源，直接据此回答，不要另行心算。dataset_id可省略，只有一份文件时自动选最新版本；多文件需指定。"""
+        """用大模型知识理解用户别称和真实表头的关系。只发送字段目录，不发送整表数据。question描述当前需要识别或执行的完整子任务，保留相关条件；组合分析可先用list_series绑定真实字段，再交analyze_table，不要求此工具表达整套分析。previous_resolution_id只能来自上一轮真实工具结果，系统据此读取完整任务，理解续问、补充和改口。context_sheet及prior_series_ids仅用于候选召回。sheet仅在用户明确限制工作表时填写。返回真实候选列、理由和查询/计算方案。needs_clarification会在网页展示实际待补信息：等用户补充或选择，不能代替用户确认或取数；系统错误不属于业务歧义。resolved返回answer原值/计算和来源；检查是否满足本轮完整需求，必要时组合其他工具，最终解释实际覆盖，不要另行心算。dataset_id可省略，只有一份文件时自动选最新版本；多文件需指定。"""
         return await run_in_threadpool(resolver.tool_answer,question,dataset_id,context_sheet,prior_series_ids,date,sheet,pending_resolution_id,previous_resolution_id)
 
     @mcp.tool()
@@ -118,14 +118,14 @@ def create_app(data_dir: str | Path | None = None):
         return store.list_charts(dataset_id, sheet, search, limit, offset)
 
     @mcp.tool()
-    def list_series(dataset_id: str, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None) -> dict:
-        """字面查指标ID、单位、日期范围。用户用别称、概念或连续追问时优先resolve_fields语义识别，不靠手写同义词。search空格分词AND。sheet严格过滤；context_sheet仅优先排序。partial_candidates须核对口径；truncated用next_offset分页。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
-        return store.list_series(dataset_id, search, limit, offset, sheet, context_sheet)
+    def list_series(dataset_id: str | None = None, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None) -> dict:
+        """字面查指标ID、单位、日期范围。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。用户用别称、概念或连续追问时优先resolve_fields语义识别，不靠手写同义词。search空格分词AND。sheet严格过滤；context_sheet仅优先排序。partial_candidates须核对口径；truncated用next_offset分页。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
+        return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
 
     @mcp.tool()
-    def query_series(dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None) -> dict:
-        """确定性查询：具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
-        return store.query_series(dataset_id, series_id, start_date, end_date, operation, limit, period)
+    def query_series(series_id: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None) -> dict:
+        """确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
+        return store.query_series(store.select_dataset(dataset_id), series_id, start_date, end_date, operation, limit, period)
 
     @mcp.tool()
     def convert_price(dataset_id: str, price_series_id: str, fx_series_id: str, date: str, target_unit: str = '元/吨') -> dict:
@@ -136,6 +136,31 @@ def create_app(data_dir: str | Path | None = None):
     def compare_series(dataset_id: str, left_series_id: str, right_series_id: str, date: str) -> dict:
         """同日两个同单位指标作差，严格按左减右。额外允许原表同一合约收盘/结算的原始数值比较，但单位未知必须明说。先从list_series取得准确ID，回答附双方原单元格。缺失不补造，其他单位未知/不一致拒绝。"""
         return store.compare_series(dataset_id, left_series_id, right_series_id, date)
+
+    @mcp.tool()
+    async def get_result_evidence(resolution_id: str) -> dict:
+        """读取上次查询的事实而不重新理解问题：请求范围、各字段实际记录/有效值范围、数值、来源、缺失情况和公式。resolution_id来自真实历史工具结果，亦可填写analyze_table返回的result_id以读取该次分析。日期边界不是极值日期。旧结果没有保存证据时只重新执行原计划，不调用意图模型。"""
+        def read():
+            import re
+            if not isinstance(resolution_id,str) or not re.fullmatch(r'[a-f0-9]{24}',resolution_id):raise ValueError('结果编号无效')
+            analysis_path=store.root/'analysis-results'/(resolution_id+'.json')
+            if analysis_path.is_file():return json.loads(analysis_path.read_text())
+            plan=json.loads(resolver._path(resolution_id).read_text())
+            if plan['status'] not in ('resolved','no_data'):
+                return {'status':plan['status'],'question':plan.get('question'),'notice':'此方案尚未得到可执行结果'}
+            from .result_evidence import result_evidence
+            evidence=plan.get('result_evidence') or result_evidence(resolver.execute(resolution_id))
+            return {'kind':'structured_result_evidence','status':'ok','resolution_id':resolution_id,'original_question':plan['original_question'],'evidence':evidence}
+        return await run_in_threadpool(read)
+
+    @mcp.tool()
+    async def analyze_table(series_ids: list[str], sql: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, limit: int = 200) -> dict:
+        """只读通用分析SQL；先取得真实series_id并核验口径。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。隔离表data仅含指定字段/日期范围的全部记录（最多50000条），列series_id VARCHAR,date DATE,value DOUBLE,source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR；缺失value为NULL。SQL方言为DuckDB，支持SELECT/WITH、四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先使用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入而非向下取整，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时根据反馈修正，不让用户选字段。每个输入最多一个文件版本，不允许读取文件、联网、修改数据或多条语句。不要混加存量、累计值与当期流量。"""
+        from .table_analysis import analyze_table as run_analysis
+        try:
+            return await run_in_threadpool(run_analysis,store,store.select_dataset(dataset_id),series_ids,sql,start_date,end_date,limit)
+        except ValueError as exc:
+            return {'kind':'structured_analysis','status':'error','error':str(exc),'retryable':True,'next_step':'修正SQL或输入范围；这是系统反馈，不是字段确认请求'}
 
     mcp_app = mcp.streamable_http_app()
 
@@ -262,7 +287,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.get("/api/datasets/{dataset_id}/series")
     def series(dataset_id: str, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None):
-        return store.list_series(dataset_id, search, limit, offset, sheet, context_sheet)
+        return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
 
     @app.get("/api/datasets/{dataset_id}/charts")
     def charts(dataset_id: str, sheet: str | None = None, search: str = '', limit: int = 50, offset: int = 0):
@@ -288,7 +313,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.get("/api/query")
     def query(dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None):
-        return store.query_series(dataset_id, series_id, start_date, end_date, operation, limit, period)
+        return store.query_series(store.select_dataset(dataset_id), series_id, start_date, end_date, operation, limit, period)
 
     def run_import(job_id: str, path: Path):
         try:

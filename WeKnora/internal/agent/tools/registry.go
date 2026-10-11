@@ -117,6 +117,37 @@ func (r *ToolRegistry) ListTools() []string {
 	return names
 }
 
+// HasStructuredDataTools only inspects this engine's authorized tool metadata.
+// Prompt selection must not connect to a service or classify a user's question.
+func (r *ToolRegistry) HasStructuredDataTools() bool {
+	if r == nil {
+		return false
+	}
+	isDataTool := func(tool *MCPTool) bool {
+		return tool != nil && tool.mcpTool != nil &&
+			(tool.mcpTool.Name == "resolve_fields" || tool.mcpTool.Name == "analyze_table")
+	}
+	for _, tool := range r.tools {
+		if mcpTool, ok := tool.(*MCPTool); ok && isDataTool(mcpTool) {
+			return true
+		}
+	}
+	if catalog := r.mcpCatalog(); catalog != nil {
+		for _, server := range catalog.servers {
+			server.mu.Lock()
+			found := false
+			for _, tool := range server.tools {
+				found = found || isDataTool(tool)
+			}
+			server.mu.Unlock()
+			if found {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // GetFunctionDefinitions returns function definitions for all registered tools.
 // The slice is sorted by tool name so the serialized payload sent to the LLM
 // is byte-identical across requests. Providers that key prompt caching on a

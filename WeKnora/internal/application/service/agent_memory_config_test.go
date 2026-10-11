@@ -66,6 +66,21 @@ func TestAgentConfigCarriesMaxCompletionTokens(t *testing.T) {
 	require.Equal(t, 64000, agentConfig.MaxCompletionTokens)
 }
 
+func TestAgentConfigCarriesExplicitMCPExposureMode(t *testing.T) {
+	svc := &sessionService{cfg: &config.Config{}, webSearchProviderRepo: &sharedAgentWebSearchRepo{}}
+	req := &types.QARequest{
+		Session: &types.Session{ID: "session-1", TenantID: 1},
+		CustomAgent: &types.CustomAgent{TenantID: 1, Config: types.CustomAgentConfig{
+			MaxIterations: 5, MCPSelectionMode: "selected", MCPServices: []string{"service-1"}, MCPToolExposureMode: "direct", ThinkingBudgetTokens: 2048,
+		}},
+	}
+	got, err := svc.buildAgentConfig(t.Context(), req, &types.Tenant{ID: 1}, 1)
+	require.NoError(t, err)
+	require.Equal(t, "direct", got.MCPToolExposureMode)
+	require.Equal(t, 2048, got.ThinkingBudgetTokens)
+	require.Equal(t, []string{"service-1"}, got.MCPServices)
+}
+
 func boolPtr(v bool) *bool { return &v }
 
 // An unset MCP mode runs as "all" for the owner, but the share scope shows it

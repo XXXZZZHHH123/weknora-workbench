@@ -32,6 +32,18 @@ class DataStore:
         self.datasets = self.root / "datasets"
         self.datasets.mkdir(exist_ok=True)
 
+    def select_dataset(self, dataset_id=None):
+        """One explicit snapshot, or the only current source; never guess a file."""
+        if dataset_id:
+            self._path(dataset_id)
+            return dataset_id
+        latest=[d for d in self.list_datasets() if d['is_latest_for_source']]
+        if not latest:
+            raise ValueError('尚无已导入的数据集，请先导入文件')
+        if len(latest)!=1:
+            raise ValueError('有多份当前文件，请先list_datasets按用户所问文件选择真实dataset_id')
+        return latest[0]['dataset_id']
+
     def _path(self, dataset_id: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{24}", dataset_id):
             raise ValueError("数据集 ID 无效，请先调用 list_datasets。")
@@ -74,7 +86,7 @@ class DataStore:
             item["sheets"] = [{k:s[k] for k in ("name","observations","series_count","parsed_range") if k in s} for s in item["sheets"]]
             item["excluded_regions"] = [s for s in item["excluded_regions"] if s.get("range") != "entire_sheet"]
             if coverage:
-                item["coverage_notice"] = "pending_sheets仅说明这些工作表尚未确认或不支持，不代表同名主题在已导入指标中不存在。未指定工作表时必须先用resolve_fields理解字段；明确指定未导入表时不可换表。已导入sheet也仅覆盖parsed_range。"
+                item["coverage_notice"] = "pending_sheets仅说明这些工作表尚未确认或不支持，不代表同名主题在已导入指标中不存在。未指定工作表时核验真实目录字段，可按需用resolve_fields语义识别；明确指定未导入表时不可换表。已导入sheet也仅覆盖parsed_range。"
         items.sort(key=lambda d: d["imported_at"], reverse=True)
         seen = set()
         for item in items:
@@ -354,7 +366,7 @@ class DataStore:
                 where+=' AND value '+operators[f['op']]+' ?';params.append(f['value'])
             columns={r[1] for r in con.execute("PRAGMA table_info('observations')").fetchall()}
             extra=",period,period_cell,metric_cell" if 'period' in columns else ",NULL,NULL,NULL"
-            count, valid, first, last = con.execute(f"SELECT count(*),count(value),min(date),max(date) FROM observations WHERE {where}", params).fetchone()
+            count, valid, first, last, valid_first, valid_last = con.execute(f"SELECT count(*),count(value),min(date),max(date),min(date) FILTER(WHERE value IS NOT NULL),max(date) FILTER(WHERE value IS NOT NULL) FROM observations WHERE {where}", params).fetchone()
             aggregate = None
             extremum_count = None
             if operation not in {"rows", "latest", "top"}:
@@ -399,7 +411,7 @@ class DataStore:
             warnings.append("源工作簿包含 Wind ShowBlank==0 配置，已有零值可能含上游缺失填充，无法逆向区分。")
         warnings.append("missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。")
         filters = {"series_id": series_id, "start_date": start_date, "end_date": end_date, "operation": operation, "period":period, 'value_filters':value_filters or [], 'last_n':last_n,'top_n':top_n,'order':order}
-        return {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
+        return {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "valid_first_date":str(valid_first) if valid_first else None,"valid_last_date":str(valid_last) if valid_last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source_semantics":{"date_representation":series.get('date_mode','date'),"statistical_calendar":series.get('statistical_calendar'),"aggregation_rule":series.get('aggregation_rule'),"notice":"未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"}, "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
 
     def compare_series(self, dataset_id: str, left_series_id: str, right_series_id: str, date: str) -> dict:
         if not self._date(date):

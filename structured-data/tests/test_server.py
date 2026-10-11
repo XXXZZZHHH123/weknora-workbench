@@ -3,6 +3,7 @@ import httpx
 import pytest
 
 from structured_data.server import create_app
+from test_store import snapshot
 
 
 def test_authentication_and_mcp_read_only_surface(tmp_path):
@@ -20,7 +21,7 @@ def test_authentication_and_mcp_read_only_surface(tmp_path):
         result = client.post("/mcp", json=request, headers=headers)
         assert result.status_code == 200
         names = {t["name"] for t in result.json()["result"]["tools"]}
-        assert names == {"list_datasets", "list_series", "list_charts", "query_series", "compare_series", "convert_price", "resolve_fields", "confirm_fields", "execute_field_plan"}
+        assert names == {"list_datasets", "list_series", "list_charts", "query_series", "compare_series", "convert_price", "resolve_fields", "confirm_fields", "execute_field_plan", "get_result_evidence", "analyze_table"}
         headers["Host"] = "malicious.invalid"
         assert client.post("/mcp", json=request, headers=headers).status_code == 403
 
@@ -93,3 +94,31 @@ def test_model_call_does_not_block_health_requests(tmp_path,monkeypatch):
             assert not pending.done()
         finally:release.set()
         assert pending.result(timeout=2).status_code==200
+
+
+def test_mcp_analysis_and_persisted_evidence_without_dataset_guessing(snapshot):
+    import json
+    store, dataset_id, _ = snapshot
+    with TestClient(create_app(store.root)) as client:
+        headers = {'Host': 'localhost:18082', 'Accept': 'application/json, text/event-stream',
+                   'Authorization': 'Bearer ' + (store.root / 'service-token').read_text()}
+
+        def call(name, arguments):
+            response = client.post('/mcp', headers=headers, json={
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': name, 'arguments': arguments}})
+            assert response.status_code == 200
+            result = response.json()['result']
+            assert not result.get('isError'), result
+            return result.get('structuredContent') or json.loads(result['content'][0]['text'])
+
+        result = call('analyze_table', {'series_ids': ['price'],
+            'sql': 'SELECT sum(value) AS total,min(date) AS used_first_date,max(date) AS used_last_date,count(value) AS used_count FROM data'})
+        assert result['dataset_id'] == dataset_id
+        assert result['rows'] == [[30, '2023-09-21', '2023-09-23', 2]]
+        evidence = call('get_result_evidence', {'resolution_id': result['result_id']})
+        assert evidence == result
+        failure = call('analyze_table', {'series_ids': ['price'], 'sql': 'DELETE FROM data'})
+        assert failure['status'] == 'error' and failure['retryable']
+        unchanged = call('query_series', {'series_id': 'price', 'operation': 'sum'})
+        assert unchanged['aggregate'] == 30
