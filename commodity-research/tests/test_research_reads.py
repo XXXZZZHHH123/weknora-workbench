@@ -61,6 +61,21 @@ def test_series_pagination_has_distinct_older_observations(loaded):
     assert second["data"]["offset"] == 1 and second["data"]["truncated"] is False
 
 
+def test_latest_brief_is_found_when_market_data_has_advanced(loaded):
+    from tin.models import TradingDay
+    me=seed_researcher(loaded)
+    loaded.add(DailyBrief(researcher_id=me.id,variety="SN",trade_date="2026-09-18",
+                         generated_at=datetime.now(SHANGHAI),status="草稿"))
+    loaded.add(TradingDay(trade_date="2026-09-21",year=2026,year_seq=175))
+    loaded.commit()
+    result=read_research(loaded,ReadRequest(operation="brief"))
+    assert result["latest_trade_date"].isoformat() == "2026-09-21"
+    assert result["effective_date"].isoformat() == "2026-09-18"
+    assert result["data"]["status"] == "草稿"
+    missing=read_research(loaded,ReadRequest(operation="brief",date="2026-09-19"))
+    assert missing["data"] is None and missing["effective_date"].isoformat() == "2026-09-19"
+
+
 def signed_headers(body, key, identity, stamp=None):
     stamp = str(int(time.time()) if stamp is None else stamp)
     encoded = base64.urlsafe_b64encode(json.dumps(identity).encode()).decode().rstrip("=")

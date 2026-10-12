@@ -43,7 +43,17 @@ def read_research(session, body: ReadRequest):
     """Return actual coverage, provenance and explicit gaps, without generating data."""
     latest = latest_trade_date(session)
     day = body.date or latest
-    if body.date:
+    brief_row = None
+    if body.operation == Operation.brief:
+        me = seed_researcher(session)
+        query = select(DailyBrief).where(DailyBrief.researcher_id == me.id, DailyBrief.variety == "SN")
+        if body.date:
+            query = query.where(DailyBrief.trade_date == body.date.isoformat())
+            day = body.date
+        brief_row = session.scalar(query.order_by(DailyBrief.trade_date.desc(), DailyBrief.generated_at.desc()).limit(1))
+        if brief_row is not None:
+            day = Date.fromisoformat(brief_row.trade_date)
+    elif body.date:
         matched = session.scalar(select(TradingDay.trade_date).where(
             TradingDay.trade_date <= body.date.isoformat()).order_by(TradingDay.trade_date.desc()).limit(1))
         day = Date.fromisoformat(matched) if matched else None
@@ -111,9 +121,7 @@ def read_research(session, body: ReadRequest):
                          "total": len(rows), "offset": body.offset, "truncated": len(rows) > body.offset + body.limit,
                          "url": research_url("/")}
     if body.operation == Operation.brief:
-        me = seed_researcher(session)
-        row = session.scalar(select(DailyBrief).where(DailyBrief.researcher_id == me.id,
-            DailyBrief.variety == "SN", DailyBrief.trade_date == day.isoformat()))
+        row = brief_row
         return result | {"data": None if row is None else {
             "id": row.id, "status": row.status, "tone": row.tone, "tone_note": row.tone_note,
             "range_low": row.range_low, "range_high": row.range_high,
