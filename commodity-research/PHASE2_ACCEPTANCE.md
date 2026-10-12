@@ -32,8 +32,8 @@
 
 | 验证 | 结果 |
 |---|---|
-| 研究服务完整测试（Mac，含 Node 页面逻辑测试） | 526 passed，1 skipped（私有 PRD）；已有框架弃用警告。最后仅将来源 `ok` 展示改成中文，相关 5 个 UI 测试再次通过。 |
-| 研究服务镜像内测试 | 521 passed，6 skipped；其中 5 个 Node 测试在 Mac 单独通过。 |
+| 研究服务完整测试（Mac，SQLAlchemy 2.0.54，含 Node 页面逻辑测试） | 528 passed，1 skipped（私有 PRD）；已有框架弃用警告。包括真实迁移后的模型结构校验。 |
+| 研究服务镜像依赖测试（SQLAlchemy 2.1.4） | 523 passed，6 skipped；其中 5 个 Node 测试在 Mac 通过。 |
 | 结构化服务完整测试 | 262 passed，19 skipped。 |
 | 前端完整测试 | 1244 passed，1 skipped；TypeScript type-check 与生产 build 通过。 |
 | Go 工具、Agent、session handler、service、modelcontext | 五个包在排除已复现的旧 DNS 环境失败后完整通过；本次新增默认对话、原生表格、caller 空间、人工字段确认测试通过。 |
@@ -45,6 +45,12 @@
 Go service 原始全包测试有 40 个既有网络依赖失败：本机代理把 `example.com`/`api.e2b.app` 解析到 198.18.0.0/15，出站 SSRF 守卫拒绝。用原 HEAD 源码覆盖复跑得到完全相同的 40 个失败名称，本次没有新增失败，也没有关闭保护。故不能将该环境中的原始 Go 全包测试称为全部通过。
 
 本机证据在主仓忽略目录 `.build/phase2-live/`：`research-oracle.json`、`file-acceptance.json`、`bridge-acceptance.json`、`materials-acceptance.json`、普通对话 JSON、个人记录对照和 `refresh.png`。相关测试日志位于 `.build/phase2-*.log`；凭据、数据库、原件和含真实内容的完整日志不进入 Git。
+
+### CI 依赖版本补充校验
+
+首轮 CI 的业务测试通过，但独立 `alembic check` 发现 `signals.current_value` 的模型类型为 `Double`，历史迁移类型为 `FLOAT`。CI 安装 SQLAlchemy 2.1.4，而首轮本机迁移校验使用 2.0.54；原字段依赖隐式浮点类型推断，两个版本推断不同。
+
+模型现显式使用历史表的 `Float`，无需变更数据库或历史迁移。新增两种真实数据库校验：空库和旧版本 `c12d8e49a601` 均升级到 head 后执行 `alembic check`。在 2.1.4 上修复前两项均复现类型差异，修复后通过；同版本独立 CLI `upgrade head` 与 `check` 也通过。保留严格类型比较，未忽略差异。补充证据位于 `.build/ci-signal-float/`。
 
 ## 使用边界
 

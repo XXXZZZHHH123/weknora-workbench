@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import Date, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tin.db import Base, JSONType, UTCDateTime
@@ -79,7 +79,8 @@ class Signal(Base):
     rule_type: Mapped[str] = mapped_column(String(16))
     trade_date: Mapped[str] = mapped_column(String(10))
     state: Mapped[str] = mapped_column(String(8))  # 未触发 / 触发 / 数据缺失 —— 没有“建议”字段
-    current_value: Mapped[float | None]
+    # Keep the existing migration's FLOAT type across SQLAlchemy versions.
+    current_value: Mapped[float | None] = mapped_column(Float)
     evidence: Mapped[list] = mapped_column(JSONType)
     gap_note: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[int] = mapped_column(Integer, default=100)

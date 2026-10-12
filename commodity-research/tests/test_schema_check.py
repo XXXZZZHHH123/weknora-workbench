@@ -9,6 +9,7 @@
 **按表逐个兜是补不完的**，所以改成统一检查迁移版本。这一组测试守的就是这件事。
 """
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
@@ -57,6 +58,22 @@ def test_a_database_at_head_is_not_flagged():
     engine = _fresh_engine()
     _stamp(engine, sorted(schema_check.script_heads())[0])
     assert schema_check.migration_gap(engine) is None
+
+
+@pytest.mark.parametrize("revision", ["base", "c12d8e49a601"])
+def test_migrated_schema_matches_models_for_fresh_and_existing_databases(tmp_path, revision):
+    """Check real migration DDL, including inferred types after dependency upgrades."""
+    from alembic import command
+    from alembic.config import Config
+
+    db = tmp_path / "migration-check.db"
+    engine = _real_db_at(db, revision)
+    engine.dispose()
+    cfg = Config()
+    cfg.set_main_option("script_location", str(schema_check.ROOT / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db}")
+    command.upgrade(cfg, "head")
+    command.check(cfg)
 
 
 def test_a_database_left_behind_says_exactly_what_to_run():
