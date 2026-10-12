@@ -216,7 +216,7 @@ func (s *agentService) CreateAgentEngine(
 	// Register the shell first: file discovery needs a separate tool only
 	// when no shell is available. File access still follows the sandbox
 	// capability independently of the existing SkillsEnabled execution gate.
-	if !config.WorkbenchDefault {
+	if workbenchUsesSandbox(config) {
 		s.registerSandboxShellIfAllowed(ctx, toolRegistry, sessionID, config)
 		s.registerSandboxFileTools(ctx, toolRegistry, sessionID, config)
 		s.registerWebPageFiles(ctx, toolRegistry, config, sessionID, assistantMessageID)
@@ -354,7 +354,7 @@ func (s *agentService) registerMCPTools(
 
 	enabledServices := make([]*types.MCPService, 0)
 	for _, svc := range mcpServices {
-		if svc != nil && svc.Enabled {
+		if svc != nil && svc.Enabled && !workbenchReplacesMCP(config, svc) {
 			enabledServices = append(enabledServices, svc)
 		}
 	}
@@ -1581,6 +1581,9 @@ func (s *agentService) resolvePinnedMCPServiceInfos(
 			continue
 		}
 		if svc, ok := byID[id]; ok {
+			if workbenchReplacesMCP(config, svc) {
+				continue
+			}
 			result = append(result, &agent.PinnedMCPServiceInfo{
 				ID:          svc.ID,
 				Name:        svc.Name,

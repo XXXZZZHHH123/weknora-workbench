@@ -172,7 +172,7 @@ func (s *sessionService) AgentQA(
 	// the first resolve: if the previous turn left a stale mark, that is
 	// where the new image is picked up. HTTP send already holds the lease it
 	// took before persisting the turn, so only direct callers take one here.
-	if !req.TurnLeaseHeld && !agentConfig.WorkbenchDefault {
+	if !req.TurnLeaseHeld && workbenchUsesSandbox(agentConfig) {
 		releaseTurn, err := s.holdSandboxTurn(ctx, sessionID, agentConfig.SandboxConfigID)
 		if err != nil {
 			return err
@@ -187,7 +187,7 @@ func (s *sessionService) AgentQA(
 	// filesystem capability so provider-neutral remote wiring stays here.
 	var stagedAttachments []stagedSessionAttachment
 	var layout sandbox.WorkspaceLayout
-	if !agentConfig.WorkbenchDefault {
+	if workbenchUsesSandbox(agentConfig) {
 		stager, ok := s.agentService.(sessionAttachmentStager)
 		if !ok {
 			return errors.New("agent service does not support session attachment staging")

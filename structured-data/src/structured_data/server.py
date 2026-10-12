@@ -121,6 +121,24 @@ def create_app(data_dir: str | Path | None = None):
         return store.list_charts(dataset_id, sheet, search, limit, offset)
 
     @mcp.tool()
+    def inspect_source(dataset_id: str, sheet: str | None = None, searches: list[str] | None = None,
+                       ranges: list[str] | None = None, sums: list[list[str]] | None = None,
+                       max_matches: int = 10, max_cells: int = 200,
+                       padding_rows: int = 2, padding_cols: int = 2) -> dict:
+        """只读核验保留的原 Excel，包括 parsed_range 外区域。dataset_id 必须来自真实目录，文件 SHA256 必须与该版本一致。searches 是原值/公式的字面匹配（最多8词），可跨全部列；未指定 sheet 时按原工作簿顺序扫描，预算可能耗在其他表，目标表根本未扫描。已定位字段后必须指定该字段的真实 sheet 定向检索。跨多表搜索截断时看 scan.unscanned_sheets/incomplete_sheets、truncated 和 next_step；matches=[] 不等于没有数据，继续目标表检索。ranges 支持 A1、$绝对坐标、大小写及同工作表前缀；给出 sheet，或每个引用都带同一真实工作表前缀，最多8段、总格数不超过 max_cells(1..400)，返回每格原值、坐标及公式缓存。sums 最多8组、每组1..16个A1引用（单格或有限矩形范围，如 C74:C85、D74:D85），展开后每组至少2格；组内重叠坐标拒绝，组间重复按实际输出格数计入 max_cells。同样允许同表前缀与 $，不接受公式、整列、跨表或外部文件，由 Decimal 求和并返回全部展开原单元格；缺失/错误/无缓存不补零。max_matches 1..30；邻域 padding_rows 0..3、padding_cols 0..4。只检视原件，不重解析、不重新计算公式、不猜单位或年度；年度小表可能与月度汇总/不同定义冲突，必须核对并展示，不能自行选优先表。"""
+        from .source_inspection import inspect_source as run_inspection
+        try:
+            return run_inspection(store, dataset_id, sheet, searches, ranges, sums,
+                                  max_matches, max_cells, padding_rows, padding_cols)
+        except ValueError as exc:
+            error = str(exc)
+            damaged_original = any(marker in error for marker in ('SHA256', '原 Excel 发生变化', '没有保留原 Excel'))
+            return {'kind': 'structured_source_inspection', 'status': 'error', 'error': error,
+                    'retryable': not damaged_original,
+                    'next_step': '原件完整性无法核验；重新导入可信原件并获取真实版本目录，不使用本次数据作答'
+                    if damaged_original else '缩小读取范围或修正参数；数据集编号必须重新从当前空间的版本目录取得。这是系统反馈，不是原表没有数据。'}
+
+    @mcp.tool()
     def list_series(dataset_id: str | None = None, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None) -> dict:
         """字面查指标ID、单位、日期范围。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。用户用别称、概念或连续追问时优先resolve_fields语义识别，不靠手写同义词。search空格分词AND。sheet严格过滤；context_sheet仅优先排序。partial_candidates须核对口径；truncated用next_offset分页。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
         return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
@@ -167,7 +185,7 @@ def create_app(data_dir: str | Path | None = None):
 
     read_operations = {name: fn for name, fn in locals().copy().items() if name in {
         'list_datasets','list_series','list_charts','query_series','compare_series','convert_price',
-        'resolve_fields','confirm_fields','execute_field_plan','get_result_evidence','analyze_table'}}
+        'resolve_fields','confirm_fields','execute_field_plan','get_result_evidence','analyze_table','inspect_source'}}
     argument_models = {}
     for name, fn in read_operations.items():
         hints = get_type_hints(fn)
@@ -198,7 +216,7 @@ def create_app(data_dir: str | Path | None = None):
         if body['operation'] == 'describe_tools':
             selected = body['arguments'].get('operations', [])
             if (set(body['arguments']) - {'operations'} or not isinstance(selected, list)
-                    or len(selected)>11 or any(not isinstance(n,str) or n not in read_operations for n in selected)):
+                    or len(selected)>len(read_operations) or any(not isinstance(n,str) or n not in read_operations for n in selected)):
                 raise HTTPException(400, '请指定目录中的操作名称')
             tools = await mcp.list_tools()
             return {'tools':[{'name':tool.name, 'description':tool.description,

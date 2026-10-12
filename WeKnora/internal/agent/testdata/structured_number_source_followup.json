@@ -1,0 +1,481 @@
+{
+  "note": "Bounded real local acceptance excerpt, 2026-10-12: exact model draft and only its executed aggregates and necessary monthly date/production/import cells retained. Other original columns omitted. No credentials or private session identifiers.",
+  "answer": "原件单元格已逐格复核，行号与数值均与程序结果一致。\n\n## 结论\n\n按你指定的**月度汇总范围 2022-09-01 至 2023-08-31**（原表 A 列实际标签 2022-09-30 至 2023-08-31，共 12 个月）：\n\n| 指标 | 使用月份数 | 有效值 | 合计 |\n|---|---|---|---|\n| 产量（C 列） | 12 | 12 | **650** |\n| 进口（D 列） | 12 | 12 | **127.0080629647059** |\n| **产量 + 进口** | 24 条记录 | 24 | **777.0080629647059** |\n\n三项合计均由程序直接算出（分列聚合与合并聚合各执行一次，结果一致），空值数为 0。\n\n## 来源与口径\n\n- **文件**：`棉花数据库(2).xlsx`（该来源的当前最新版本，dataset 导入时间 2026-10-09；SHA256 `108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe` 已核验）\n- **工作表**：`中国棉花平衡表`；产量列为已解析序列 `balance.primary.C`（表头 C1「产量」），进口列为 `balance.primary.D`（表头 D1「进口」），日期取 A 列\n- **日期范围**：A74 = 2022-09-30 至 A85 = 2023-08-31，共 12 行\n- **原件单元格逐格复核（A74:D85）**：\n\n| 行 | A 列日期 | C 列产量 | D 列进口 |\n|---|---|---|---|\n| 74 | 2022-09-30 | 0 | 8.8574289 |\n| 75 | 2022-10-31 | 20 | 12.9498982 |\n| 76 | 2022-11-30 | 100 | 17.7969464 |\n| 77 | 2022-12-31 | 175 | 17.0661852 |\n| 78 | 2023-01-31 | 180 | 13.9645362 |\n| 79 | 2023-02-28 | 95 | 8.5040456 |\n| 80 | 2023-03-31 | 60 | 7.2343742 |\n| 81 | 2023-04-30 | 15 | 8.383731 |\n| 82 | 2023-05-31 | 5 | 10.9206637 |\n| 83 | 2023-06-30 | 0 | 8.3073378 |\n| 84 | 2023-07-31 | 0 | 6.322915764705883 |\n| 85 | 2023-08-31 | 0 | 6.7 |\n\n## 计算与缺失\n\n- 合计由程序完成：原件逐格 Decimal 求和得 650 与 127.008062964705883；表格工具对同一范围独立聚合得 650 与 127.0080629647059，两者一致。合并合计 777.0080629647059 由程序直接取得。\n- 该 12 个月内两列均无空值/错误值（各 12 条，有效值 12），缺失不补零；范围外月份未计入。\n\n## 单位与年度说明\n\n- **原表 C1/D1 表头未标注单位**（unit_status 为 needs_review），因此**未推定为万吨，也未作任何换算**，以上均为原表原始数值。\n- 该结果仅为你指定的 9 月 1 日至次年 8 月 31 日月度窗口的原始数值加总，**不主张它构成已证实的年度定义**。\n\n## 覆盖范围提示\n\n原件该表中已解析范围之外还有未导入区域（`Z1:FE170`，含独立日期列与辅助计算块，本版未导入），故本结果仅覆盖已解析范围 A2:Y170。",
+  "user_query": "请按2022年9月1日至2023年8月31日，使用“中国棉花平衡表”月度产量列和进口列的原始数值相加。不要推定为万吨，标明使用的文件、版本、日期范围、原单元格和缺失情况。这是明确的月度汇总范围，不要求把它认定为已证实的年度定义。",
+  "tool_results": [
+    {
+      "kind": "structured_analysis",
+      "status": "ok",
+      "dataset_id": "424aed70d6a68ef7b97a067e",
+      "rows": [
+        [
+          "balance.primary.C",
+          12,
+          12,
+          650,
+          "2022-09-30",
+          "2023-08-31"
+        ],
+        [
+          "balance.primary.D",
+          12,
+          12,
+          127.0080629647059,
+          "2022-09-30",
+          "2023-08-31"
+        ]
+      ],
+      "source": {
+        "file": "棉花数据库(2).xlsx",
+        "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe"
+      },
+      "inputs": {
+        "balance.primary.C": {
+          "actual_first_date": "2016-09-30",
+          "actual_last_date": "2023-10-31",
+          "example_cells": [
+            "C2",
+            "C3",
+            "C4",
+            "C5",
+            "C6"
+          ],
+          "input_count": 86,
+          "series": {
+            "description": "中国棉花平衡表 / 产量；日期取A列；源表未明确单位，尚待确认",
+            "dimensions": {
+              "block": "primary"
+            },
+            "first_date": "2016-09-30",
+            "first_valid_date": "2016-09-30",
+            "header_cells": [
+              "C1"
+            ],
+            "last_date": "2023-10-31",
+            "last_valid_date": "2023-10-31",
+            "metric": "产量",
+            "record_count": 86,
+            "series_id": "balance.primary.C",
+            "sheet": "中国棉花平衡表",
+            "unit": null,
+            "unit_status": "needs_review",
+            "valid_count": 86
+          },
+          "valid_count": 86,
+          "valid_first_date": "2016-09-30",
+          "valid_last_date": "2023-10-31"
+        },
+        "balance.primary.D": {
+          "actual_first_date": "2016-09-30",
+          "actual_last_date": "2023-10-31",
+          "example_cells": [
+            "D2",
+            "D3",
+            "D4",
+            "D5",
+            "D6"
+          ],
+          "input_count": 86,
+          "series": {
+            "description": "中国棉花平衡表 / 进口；日期取A列；源表未明确单位，尚待确认",
+            "dimensions": {
+              "block": "primary"
+            },
+            "first_date": "2016-09-30",
+            "first_valid_date": "2016-09-30",
+            "header_cells": [
+              "D1"
+            ],
+            "last_date": "2023-10-31",
+            "last_valid_date": "2023-10-31",
+            "metric": "进口",
+            "record_count": 86,
+            "series_id": "balance.primary.D",
+            "sheet": "中国棉花平衡表",
+            "unit": null,
+            "unit_status": "needs_review",
+            "valid_count": 86
+          },
+          "valid_count": 86,
+          "valid_first_date": "2016-09-30",
+          "valid_last_date": "2023-10-31"
+        }
+      }
+    },
+    {
+      "kind": "structured_analysis",
+      "status": "ok",
+      "dataset_id": "424aed70d6a68ef7b97a067e",
+      "rows": [
+        [
+          777.0080629647059,
+          24,
+          0
+        ]
+      ],
+      "source": {
+        "file": "棉花数据库(2).xlsx",
+        "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe"
+      }
+    },
+    {
+      "kind": "structured_source_inspection",
+      "status": "ok",
+      "dataset_id": "424aed70d6a68ef7b97a067e",
+      "source_file": "棉花数据库(2).xlsx",
+      "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+      "hash_verified": true,
+      "ranges": [
+        {
+          "cells": [
+            {
+              "cached_value": null,
+              "cell": "A74",
+              "formula": null,
+              "raw_value": "2022-09-30T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2022-09-30T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C74",
+              "formula": null,
+              "raw_value": 0,
+              "sheet": "中国棉花平衡表",
+              "value": 0,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D74",
+              "formula": null,
+              "raw_value": 8.8574289,
+              "sheet": "中国棉花平衡表",
+              "value": 8.8574289,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A75",
+              "formula": null,
+              "raw_value": "2022-10-31T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2022-10-31T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C75",
+              "formula": null,
+              "raw_value": 20,
+              "sheet": "中国棉花平衡表",
+              "value": 20,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D75",
+              "formula": null,
+              "raw_value": 12.9498982,
+              "sheet": "中国棉花平衡表",
+              "value": 12.9498982,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A76",
+              "formula": null,
+              "raw_value": "2022-11-30T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2022-11-30T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C76",
+              "formula": null,
+              "raw_value": 100,
+              "sheet": "中国棉花平衡表",
+              "value": 100,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D76",
+              "formula": null,
+              "raw_value": 17.7969464,
+              "sheet": "中国棉花平衡表",
+              "value": 17.7969464,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A77",
+              "formula": null,
+              "raw_value": "2022-12-31T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2022-12-31T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C77",
+              "formula": null,
+              "raw_value": 175,
+              "sheet": "中国棉花平衡表",
+              "value": 175,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D77",
+              "formula": null,
+              "raw_value": 17.0661852,
+              "sheet": "中国棉花平衡表",
+              "value": 17.0661852,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A78",
+              "formula": null,
+              "raw_value": "2023-01-31T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2023-01-31T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C78",
+              "formula": null,
+              "raw_value": 180,
+              "sheet": "中国棉花平衡表",
+              "value": 180,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D78",
+              "formula": null,
+              "raw_value": 13.9645362,
+              "sheet": "中国棉花平衡表",
+              "value": 13.9645362,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A79",
+              "formula": null,
+              "raw_value": "2023-02-28T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2023-02-28T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C79",
+              "formula": null,
+              "raw_value": 95,
+              "sheet": "中国棉花平衡表",
+              "value": 95,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D79",
+              "formula": null,
+              "raw_value": 8.5040456,
+              "sheet": "中国棉花平衡表",
+              "value": 8.5040456,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A80",
+              "formula": null,
+              "raw_value": "2023-03-31T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2023-03-31T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C80",
+              "formula": null,
+              "raw_value": 60,
+              "sheet": "中国棉花平衡表",
+              "value": 60,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D80",
+              "formula": null,
+              "raw_value": 7.2343742,
+              "sheet": "中国棉花平衡表",
+              "value": 7.2343742,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A81",
+              "formula": null,
+              "raw_value": "2023-04-30T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2023-04-30T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C81",
+              "formula": null,
+              "raw_value": 15,
+              "sheet": "中国棉花平衡表",
+              "value": 15,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D81",
+              "formula": null,
+              "raw_value": 8.383731,
+              "sheet": "中国棉花平衡表",
+              "value": 8.383731,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A82",
+              "formula": null,
+              "raw_value": "2023-05-31T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2023-05-31T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C82",
+              "formula": null,
+              "raw_value": 5,
+              "sheet": "中国棉花平衡表",
+              "value": 5,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D82",
+              "formula": null,
+              "raw_value": 10.9206637,
+              "sheet": "中国棉花平衡表",
+              "value": 10.9206637,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A83",
+              "formula": null,
+              "raw_value": "2023-06-30T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2023-06-30T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C83",
+              "formula": null,
+              "raw_value": 0,
+              "sheet": "中国棉花平衡表",
+              "value": 0,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D83",
+              "formula": null,
+              "raw_value": 8.3073378,
+              "sheet": "中国棉花平衡表",
+              "value": 8.3073378,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A84",
+              "formula": null,
+              "raw_value": "2023-07-31T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2023-07-31T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C84",
+              "formula": null,
+              "raw_value": 0,
+              "sheet": "中国棉花平衡表",
+              "value": 0,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D84",
+              "formula": null,
+              "raw_value": 6.322915764705883,
+              "sheet": "中国棉花平衡表",
+              "value": 6.322915764705883,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "A85",
+              "formula": null,
+              "raw_value": "2023-08-31T00:00:00",
+              "sheet": "中国棉花平衡表",
+              "value": "2023-08-31T00:00:00",
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "C85",
+              "formula": null,
+              "raw_value": 0,
+              "sheet": "中国棉花平衡表",
+              "value": 0,
+              "value_status": "original"
+            },
+            {
+              "cached_value": null,
+              "cell": "D85",
+              "formula": null,
+              "raw_value": 6.7,
+              "sheet": "中国棉花平衡表",
+              "value": 6.7,
+              "value_status": "original"
+            }
+          ],
+          "range": "A74:D85",
+          "sheet": "中国棉花平衡表"
+        }
+      ]
+    },
+    {
+      "kind": "structured_source_inspection",
+      "status": "ok",
+      "source_file": "棉花数据库(2).xlsx",
+      "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+      "hash_verified": true,
+      "calculations": [
+        {
+          "numeric_value": 650,
+          "operation": "sum",
+          "value": "650"
+        },
+        {
+          "numeric_value": 127.00806296470589,
+          "operation": "sum",
+          "value": "127.008062964705883"
+        }
+      ]
+    }
+  ]
+}

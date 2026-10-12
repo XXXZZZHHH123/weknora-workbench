@@ -66,11 +66,16 @@ type toolHandlePolicy struct {
 // alone are deliberately insufficient: a dynamic MCP tool may use the same
 // name with unrelated semantics and must remain opaque.
 var toolHandlePolicies = map[string]toolHandlePolicy{
-	"commodity_research": {},
-	"structured_data":    {opaqueOutput: true},
-	"discover_mcp_tools": {opaqueOutput: true, mcpRoutingKey: "server_id", mcpDirectoryOutput: true},
-	"call_mcp_tool":      {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
-	"read_file":          {},
+	"commodity_research":             {},
+	"structured_data":                {opaqueOutput: true},
+	"structured_list_series":         {opaqueOutput: true},
+	"structured_query_series":        {opaqueOutput: true},
+	"structured_analyze_table":       {opaqueOutput: true},
+	"structured_inspect_source":      {opaqueOutput: true},
+	"structured_get_result_evidence": {opaqueOutput: true},
+	"discover_mcp_tools":             {opaqueOutput: true, mcpRoutingKey: "server_id", mcpDirectoryOutput: true},
+	"call_mcp_tool":                  {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
+	"read_file":                      {},
 	"search_knowledge": {
 		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}},
 		sourceOutput: true,

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -390,6 +391,10 @@ func (e *AgentEngine) Execute(
 	if e.toolRegistry != nil {
 		e.toolRegistry.RememberMCPHistory(messages)
 		e.toolRegistry.RefreshMCPTools(ctx)
+	}
+
+	if !strings.HasPrefix(query, fieldConfirmationPrefix) {
+		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID)
 	}
 
 	// Get tool definitions for function calling
@@ -976,9 +981,13 @@ func (e *AgentEngine) runReActIteration(
 		for _, priorStep := range state.RoundSteps {
 			for _, call := range priorStep.ToolCalls {
 				if call.Result != nil && call.Result.Success {
-					evidenceMessages = append(evidenceMessages, chat.Message{Role: "tool", Content: call.Result.Output})
+					evidenceMessages = append(evidenceMessages, chat.Message{Role: "tool", Name: call.Name, Content: call.Result.Output})
 				}
 			}
+		}
+		if values := scopedCitedDocumentNumbers(response.Content, state.RoundSteps); len(values) > 0 {
+			raw, _ := json.Marshal(map[string]any{"cited_document_values": values})
+			evidenceMessages = append(evidenceMessages, chat.Message{Role: "tool", Content: string(raw)})
 		}
 		unsupported := ungroundedStructuredNumbers(response.Content, evidenceMessages)
 		if len(unsupported) > 0 && guards.structuredEvidenceRepairs < 2 {
@@ -1090,6 +1099,7 @@ func (e *AgentEngine) runReActIteration(
 
 	// 3. Act: Execute tool calls
 	e.executeToolCalls(ctx, response, &step, state.CurrentRound, sessionID, assistantMessageID)
+	e.inspectWorkbenchPeriodSources(ctx, state, &step, query, sessionID, assistantMessageID)
 	toolCallCount = len(step.ToolCalls)
 
 	// 4. Observe: Add tool results to messages and write to context

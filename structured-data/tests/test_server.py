@@ -21,7 +21,7 @@ def test_authentication_and_mcp_read_only_surface(tmp_path):
         result = client.post("/mcp", json=request, headers=headers)
         assert result.status_code == 200
         names = {t["name"] for t in result.json()["result"]["tools"]}
-        assert names == {"list_datasets", "list_series", "list_charts", "query_series", "compare_series", "convert_price", "resolve_fields", "confirm_fields", "execute_field_plan", "get_result_evidence", "analyze_table"}
+        assert names == {"list_datasets", "list_series", "list_charts", "query_series", "compare_series", "convert_price", "resolve_fields", "confirm_fields", "execute_field_plan", "get_result_evidence", "analyze_table", "inspect_source"}
         headers["Host"] = "malicious.invalid"
         assert client.post("/mcp", json=request, headers=headers).status_code == 403
 

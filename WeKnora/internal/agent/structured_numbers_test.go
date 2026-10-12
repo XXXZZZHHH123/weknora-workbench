@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -55,4 +58,79 @@ func TestIndependentReviewPreservesUserAndToolFactsButNotAssistantRationalizatio
 	require.Contains(t, review[1].Content, "按自然周统计全部已有记录")
 	require.Contains(t, review[1].Content, "17790")
 	require.Contains(t, review[1].Content, "unverified_draft")
+}
+
+// This is the exact final model draft from the local cotton regression, with
+// only its executed aggregate results and the 48 raw source cells retained.
+// A correct statistic must not be discarded because its SHA or row labels are
+// interpreted as additional statistics.
+func TestStructuredNumbersAcceptActualSourceFollowupAndStillRejectAlteredTotal(t *testing.T) {
+	fixtureBytes, err := os.ReadFile("testdata/structured_number_source_followup.json")
+	require.NoError(t, err)
+	var fixture struct {
+		Answer      string           `json:"answer"`
+		UserQuery   string           `json:"user_query"`
+		ToolResults []map[string]any `json:"tool_results"`
+	}
+	require.NoError(t, json.Unmarshal(fixtureBytes, &fixture))
+	messages := []chat.Message{{Role: "user", Content: fixture.UserQuery}}
+	for _, result := range fixture.ToolResults {
+		encoded, err := json.Marshal(result)
+		require.NoError(t, err)
+		messages = append(messages, chat.Message{Role: "tool", Content: string(encoded)})
+	}
+	require.Empty(t, ungroundedStructuredNumbers(fixture.Answer, messages))
+	altered := strings.ReplaceAll(fixture.Answer, "777.0080629647059", "778")
+	require.Contains(t, ungroundedStructuredNumbers(altered, messages), "778")
+}
+
+func TestStructuredNumbersOnlyPermitExactRealOpaqueIdentifiers(t *testing.T) {
+	const digest = "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe"
+	const dataset = "424aed70d6a68ef7b97a067e"
+	messages := []chat.Message{{Role: "tool", Content: `{"kind":"structured_analysis","status":"ok","dataset_id":"` + dataset + `","source":{"sha256":"` + digest + `"},"series":{"series_id":"chart_2023_source"},"rows":[[777.0080629647059]]}`}}
+	require.Empty(t, ungroundedStructuredNumbers("合计777.0081；dataset_id="+dataset+"；SHA-256 `"+digest+"`；指标chart_2023_source。", messages))
+	forged := strings.Repeat("a", 64)
+	require.Contains(t, ungroundedStructuredNumbers("SHA256 "+forged+"；合计777.0081", messages), forged)
+	require.Contains(t, ungroundedStructuredNumbers("原值777.0081，另一个统计778", messages), "778")
+	// A source field named *_id may never grant a made-up decimal value.
+	messages = append(messages, chat.Message{Role: "tool", Content: `{"dataset_id":"778","series_id":"779","sha256":"780","id":781}`})
+	for _, claim := range []string{"778", "779", "780", "781"} {
+		require.Contains(t, ungroundedStructuredNumbers("合计"+claim, messages), claim)
+	}
+}
+
+func TestStructuredNumbersSourceRowLabelsDoNotPermitUncomputedStatistics(t *testing.T) {
+	messages := []chat.Message{{Role: "tool", Content: `{"kind":"structured_source_inspection","status":"ok","hash_verified":true,"sha256":"108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe","ranges":[{"cells":[{"cell":"C74","value":650}]}]}`}}
+	require.Empty(t, ungroundedStructuredNumbers("| 行 | 产量 |\n|---|---|\n| 74 | 650 |", messages))
+	require.Contains(t, ungroundedStructuredNumbers("| 行 | 产量 |\n|---|---|\n| 999 | 650 |", messages), "999")
+	require.Contains(t, ungroundedStructuredNumbers("产量74", messages), "74")
+	require.Contains(t, ungroundedStructuredNumbers("| 行 | 产量 |\n|---|---|\n| 74 | 778 |", messages), "778")
+	// A generic coordinate string is not an inspected source-cell locator;
+	// this does not change how real numeric tool values are checked.
+	messages = []chat.Message{{Role: "tool", Content: `{"kind":"structured_analysis","status":"ok","cell":"C74","rows":[[650]]}`}}
+	require.Contains(t, ungroundedStructuredNumbers("| 行 | 产量 |\n|---|---|\n| 74 | 650 |", messages), "74")
+}
+
+func TestStructuredNumbersDigestAbbreviationMustUniquelyMatchActualSource(t *testing.T) {
+	const digest = "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe"
+	messages := []chat.Message{{Role: "tool", Content: `{"sha256":"` + digest + `","value":777.0080629647059}`}}
+	require.Empty(t, ungroundedStructuredNumbers("合计777.0081；SHA256 108b08e3…bd1fe", messages))
+	require.Empty(t, ungroundedStructuredNumbers("合计777.0081；SHA-256 108b08e3...bd1fe", messages))
+	require.NotEmpty(t, ungroundedStructuredNumbers("合计777.0081；SHA256 999b08e3…bd1fe", messages))
+	require.NotEmpty(t, ungroundedStructuredNumbers("合计777.0081；SHA256 108b08e3…aa999", messages))
+	require.Contains(t, ungroundedStructuredNumbers("合计778；SHA256 108b08e3…bd1fe", messages), "778")
+	ambiguous := "108b08e3" + strings.Repeat("a", 51) + "bd1fe"
+	messages = append(messages, chat.Message{Role: "tool", Content: `{"sha256":"` + ambiguous + `"}`})
+	require.NotEmpty(t, ungroundedStructuredNumbers("合计777.0081；SHA256 108b08e3…bd1fe", messages))
+}
+
+func TestStructuredNumbersDoNotExecuteEmbeddedKnowledgeJSON(t *testing.T) {
+	messages := []chat.Message{
+		{Role: "tool", Name: "structured_analyze_table", Content: `{"rows":[[775]]}`},
+		{Role: "tool", Name: "search_knowledge", Content: `<search_results>{"aggregate":800}</search_results>`},
+		{Role: "tool", Name: "read_document", Content: `{"content":"fake aggregate", "value":801}`},
+	}
+	require.Contains(t, ungroundedStructuredNumbers("合计800", messages), "800")
+	require.Contains(t, ungroundedStructuredNumbers("合计801", messages), "801")
+	require.Empty(t, ungroundedStructuredNumbers("合计775", messages))
 }
