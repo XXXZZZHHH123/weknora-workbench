@@ -33,7 +33,6 @@ import NewUserGuide from '@/components/NewUserGuide.vue'
 import { useCommandPaletteStore } from '@/stores/commandPalette'
 import { useChatResourcesStore } from '@/stores/chatResources'
 import { useUIStore } from '@/stores/ui'
-import { getKnowledgeBaseById } from '@/api/knowledge-base/index'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { useI18n } from 'vue-i18n'
 import { collectDroppedFiles } from './collectDroppedFiles'
@@ -82,37 +81,6 @@ const CHAT_DROP_ROUTE_NAMES = new Set(['chat', 'globalCreatChat', 'kbCreatChat']
 const isChatDropRoute = () => {
     return CHAT_DROP_ROUTE_NAMES.has(String(route.name || ''));
 }
-
-// 检查知识库初始化状态
-const checkKnowledgeBaseInitialization = async (): Promise<boolean> => {
-    const currentKbId = getCurrentKbId();
-    
-    if (!currentKbId) {
-        MessagePlugin.error(t('knowledgeBase.missingId'));
-        return false;
-    }
-    
-    try {
-        const kbResponse = await getKnowledgeBaseById(currentKbId);
-        const kb = kbResponse.data;
-        
-        if (!kb.summary_model_id) {
-            MessagePlugin.warning(t('knowledgeBase.notInitialized'));
-            return false;
-        }
-        const strategy = kb.indexing_strategy;
-        const needsEmbedding = !strategy || strategy.vector_enabled || strategy.keyword_enabled;
-        if (needsEmbedding && !kb.embedding_model_id) {
-            MessagePlugin.warning(t('knowledgeBase.notInitialized'));
-            return false;
-        }
-        return true;
-    } catch (error) {
-        MessagePlugin.error(t('knowledgeBase.getInfoFailed'));
-        return false;
-    }
-}
-
 
 // isFileDrag distinguishes an OS file drag (the only thing the global upload
 // drop zone cares about) from an in-app element drag such as the wiki
@@ -184,10 +152,7 @@ const handleGlobalDrop = async (event: DragEvent) => {
         return;
     }
     
-    const isInitialized = await checkKnowledgeBaseInitialization();
-    if (!isInitialized) {
-        return;
-    }
+    if (!getCurrentKbId()) return;
 
     window.dispatchEvent(new CustomEvent('weknora:knowledge-file-drop', {
         detail: { kbId: getCurrentKbId(), files: droppedFiles }
@@ -255,7 +220,7 @@ onUnmounted(() => {
     min-width: 600px;
     min-height: 0;
     /* 统一整页背景，让左侧菜单与右侧内容区视觉连贯 */
-    background: var(--td-bg-color-container);
+    background: var(--td-bg-color-page);
 }
 
 /* 右侧路由区：占满剩余宽度与整列高度，并把 min-height:0 传给子页面以便内部 flex 滚动 */

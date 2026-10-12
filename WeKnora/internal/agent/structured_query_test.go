@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
@@ -9,6 +10,87 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
+
+type documentPhraseTool struct {
+	agenttools.BaseTool
+}
+
+func (t *documentPhraseTool) Execute(context.Context, json.RawMessage) (*types.ToolResult, error) {
+	return &types.ToolResult{Success: true,
+		Output: `<document knowledge_id="doc-phrase" title="验收文档"><chunk chunk_id="chunk-phrase"><content>唯一识别短语：原件蓝桥 8427。</content></chunk></document>`,
+		Data: map[string]interface{}{
+			"total_chunks": int64(1), "fetched_chunks": 1,
+			"document": map[string]interface{}{"file_name": "验收文档(2026).txt", "chunk_count": int64(1), "file_size": "213 B",
+				"metadata": map[string]interface{}{"sha256": "999888777"}},
+			"chunks": []map[string]interface{}{{"chunk_id": "chunk-phrase", "knowledge_id": "doc-phrase", "knowledge_base": "kb-phrase", "content": "唯一识别短语：原件蓝桥 8427。"}},
+		},
+	}, nil
+}
+
+func TestDocumentAnswerAfterHistoricalTableDoesNotInheritTableNumericReview(t *testing.T) {
+	answer := `唯一识别短语：原件蓝桥 8427。验收文档(2026).txt 全文仅1个片段，原件大小213 B；这是合成验收样例。<ref id="c1" />`
+	model := &mockChat{responses: []mockResponse{
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, ToolCalls: []types.LLMToolCall{{ID: "read", Type: "function", Function: types.FunctionCall{Name: "read_document", Arguments: `{"id":"doc-phrase"}`}}}, Done: true, FinishReason: "tool_calls"}}},
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: answer, Done: true, FinishReason: "stop"}}},
+	}}
+	e := newTestEngine(t, model)
+	e.toolRegistry = agenttools.NewToolRegistry()
+	e.toolRegistry.RegisterTool(&documentPhraseTool{BaseTool: agenttools.NewBaseTool("read_document", "test", json.RawMessage(`{"type":"object"}`))})
+	history := []chat.Message{
+		{Role: "user", Content: "求上一个Excel最大值"},
+		{Role: "tool", Name: "structured_data", Content: `{"kind":"structured_analysis","status":"ok","rows":[[789]],"cell":"B3"}`},
+		{Role: "assistant", Content: "最大值789，来源B3。"},
+	}
+	state, err := e.Execute(context.Background(), "session", "message", "刚上传文档的唯一识别短语是什么？请引用文件。", history)
+	require.NoError(t, err)
+	require.True(t, state.IsComplete)
+	require.Contains(t, state.FinalAnswer, "原件蓝桥 8427")
+	require.Contains(t, state.FinalAnswer, `chunk_id="chunk-phrase"`)
+	require.Len(t, model.calls, 2, "an unrelated historical table must not trigger extra audit/repair rounds")
+}
+
+func TestDocumentMetadataAndCitationDoNotApproveUnsupportedProseNumbers(t *testing.T) {
+	result, err := (&documentPhraseTool{}).Execute(context.Background(), nil)
+	require.NoError(t, err)
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{{Name: "read_document", Result: result}}}}
+	history := []chat.Message{{Role: "tool", Content: `{"kind":"structured_analysis","status":"ok","rows":[[789]]}`}}
+	require.False(t, needsStructuredAnswerReview(steps, history, `8427，1个片段，213 B。<kb chunk_id="chunk-phrase" />`))
+	require.True(t, needsStructuredAnswerReview(steps, history, `8427，2个片段。<kb chunk_id="chunk-phrase" />`))
+	require.True(t, needsStructuredAnswerReview(steps, history, `最大值999888777。<kb chunk_id="chunk-phrase" />`), "hash digits are not evidence for numeric claims")
+}
+
+func TestCurrentTableEvidenceStillRequiresNumericReviewWithDocumentCitation(t *testing.T) {
+	tool := newCountingTool("structured_data")
+	model := &mockChat{responses: []mockResponse{
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "最大值999。", Done: true, FinishReason: "stop"}}},
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "最大值999。", Done: true, FinishReason: "stop"}}},
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "最大值789。", Done: true, FinishReason: "stop"}}},
+	}}
+	e := newTestEngine(t, model)
+	e.toolRegistry = agenttools.NewToolRegistry()
+	e.toolRegistry.RegisterTool(tool)
+	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{
+		{Name: "structured_data", Result: &types.ToolResult{Success: true, Output: `{"kind":"structured_analysis","status":"ok","rows":[[789]]}`}},
+		{Name: "read_document", Result: &types.ToolResult{Success: true, Data: map[string]interface{}{"chunks": []map[string]interface{}{{"chunk_id": "chunk-phrase", "content": "文档引用"}}}}},
+	}}}}
+	require.True(t, needsStructuredAnswerReview(state.RoundSteps, nil, `最大值999。<kb chunk_id="chunk-phrase" />`))
+	_, err := e.executeLoop(context.Background(), state, "Excel最大值是多少？", []chat.Message{{Role: "user", Content: "Excel最大值是多少？"}}, nil, "session", "message")
+	require.NoError(t, err)
+	require.Equal(t, "最大值789。", state.FinalAnswer)
+	require.Len(t, model.calls, 3, "the unsupported current table value must be repaired")
+}
+
+func TestHistoricalTableGuardCannotBeBypassedByUnfetchedOrFailedDocumentCitations(t *testing.T) {
+	history := []chat.Message{{Role: "tool", Content: `{"kind":"structured_analysis","status":"ok","rows":[[789]]}`}}
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{{Name: "read_document", Result: &types.ToolResult{
+		Success: false, Data: map[string]interface{}{"chunks": []map[string]interface{}{{"chunk_id": "chunk-phrase", "content": "引用"}}},
+	}}}}}
+	require.True(t, needsStructuredAnswerReview(steps, history, `<kb chunk_id="chunk-phrase" />`))
+	steps[0].ToolCalls[0].Result.Success = true
+	require.True(t, needsStructuredAnswerReview(steps, history, `<kb chunk_id="unfetched" />`))
+	require.True(t, needsStructuredAnswerReview(steps, history, "上个表的最大值999"))
+	require.True(t, needsStructuredAnswerReview(steps, history, `上个表的最大值999。<kb chunk_id="chunk-phrase" />`), "a document citation cannot approve a fabricated historical table number")
+}
 
 func TestStructuredAgentCanExplainExistingEvidenceWithoutAQuery(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{

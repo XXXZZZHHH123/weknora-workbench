@@ -17,6 +17,13 @@ func TestStructuredNumberEvidenceIsNotTakenFromAssistantDrafts(t *testing.T) {
 	require.Equal(t, []string{"12345"}, ungroundedStructuredNumbers("12345", messages))
 }
 
+func TestStructuredNumbersIgnoreOpaqueCitationIDsButStillRejectWrongProseValue(t *testing.T) {
+	messages := []chat.Message{{Role: "tool", Content: `{"kind":"structured_analysis","status":"ok","rows":[[789]]}`}}
+	citation := `<kb doc="验收文档" chunk_id="eadedf42-820a-4581-bfa9-d0c78bd8a68f" kb_id="9cd1dcbd-556b-4a9d-86df-4533ab1174f0" />`
+	require.Empty(t, ungroundedStructuredNumbers("最大值789。"+citation, messages))
+	require.Equal(t, []string{"999"}, ungroundedStructuredNumbers("最大值999。"+citation, messages))
+}
+
 func TestStructuredNumbersIgnoreSourceFilenamesAndFormatPercentRatios(t *testing.T) {
 	messages := []chat.Message{{Role: "tool", Content: `{"source":{"file":"棉花数据库(2).xlsx"},"aggregate":334158.1435,"valid_count":46,"ratio":0.5625,"actual_last_date":"2023-10-31"}`}}
 	require.Empty(t, ungroundedStructuredNumbers("来自棉花数据库(2).xlsx，数量334158.1435；比例56.25%，10月31日。", messages))

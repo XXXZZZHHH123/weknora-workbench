@@ -174,3 +174,69 @@ def test_prefixed_page_does_not_duplicate_root_in_form_or_navigation(embedded):
     assert 'href="/research/static/app.css' in html
     assert 'src="/research/static/app.js' in html
     assert 'value="/research/' in html
+
+
+
+def test_primary_navigation_uses_unified_materials_center_and_keeps_legacy_routes(embedded):
+    client, _, _ = embedded
+    assert login(client).status_code == 200
+    response = client.get('/research/')
+    assert response.status_code == 200
+    nav = response.text.split('<nav', 1)[1].split('</nav>', 1)[0]
+    assert 'href="/platform/materials" target="_top"' in nav
+    assert 'href="/research/files"' not in nav
+    assert 'href="/research/materials"' not in nav
+    assert client.get('/research/files').status_code == 200
+    assert client.get('/research/materials').status_code == 200
+
+
+def test_old_source_urls_hide_duplicate_ingest_and_keep_exact_source_inspection(embedded):
+    from lxml import html
+    from tin.provenance.service import preserve_blob, snapshot_workbook
+    client, identities, _ = embedded
+    assert login(client).status_code == 200
+    raw = b'date,value\n2026-09-18,100\n'
+    marker = current_identity.set(identities['alice'])
+    try:
+        with SessionLocal() as session:
+            artifact = preserve_blob(session, raw, 'source.csv', kind='automatic')
+            snapshot_workbook(session, artifact)
+            session.commit()
+            source = artifact.id
+    finally:
+        current_identity.reset(marker)
+    page = client.get('/research/files', params={'source': source})
+    assert page.status_code == 200
+    doc = html.fromstring(page.text)
+    for block in ('legacy-source-upload', 'legacy-source-bridge', 'import-preview'):
+        assert 'workbench-ingest-hidden' in doc.get_element_by_id(block).get('class', '')
+    for node in ('upload-form', 'file-input', 'load-datasets', 'bridge-target', 'commit-upload'):
+        assert doc.get_element_by_id(node) is not None
+    assert doc.get_element_by_id('source-inspector') is not None
+    assert doc.xpath(f'//a[@href="/platform/materials?source={source}" and @target="_top"]')
+    result = client.get(f'/research/api/sources/{source}')
+    assert result.status_code == 200
+    assert any(cell['address'] == 'B2' and str(cell['value']) == '100' for cell in result.json()['cells'])
+    downloaded = client.get(f'/research/api/sources/{source}/download')
+    assert downloaded.status_code == 200 and downloaded.content == raw
+    assert downloaded.headers['x-source-sha256'] == source
+    material_page = client.get('/research/materials', params={'source': source})
+    assert material_page.status_code == 200
+    material_doc = html.fromstring(material_page.text)
+    for block in ('legacy-materials-binding', 'legacy-materials-upload', 'legacy-materials-status'):
+        assert 'workbench-ingest-hidden' in material_doc.get_element_by_id(block).get('class', '')
+    assert material_doc.xpath(f'//a[@href="/platform/materials?source={source}" and @target="_top"]')
+
+
+def test_standalone_source_upload_dom_remains_available(session, monkeypatch):
+    from lxml import html
+    import tin.provenance.router as source_router
+    monkeypatch.setattr(settings, 'weknora_api_url', None)
+    monkeypatch.setattr(source_router, 'SessionLocal', lambda: session)
+    monkeypatch.setattr('tin.web.app.SessionLocal', lambda: session)
+    page = TestClient(app).get('/files')
+    assert page.status_code == 200
+    doc = html.fromstring(page.text)
+    for block in ('legacy-source-upload', 'legacy-source-bridge', 'import-preview'):
+        assert 'workbench-ingest-hidden' not in doc.get_element_by_id(block).get('class', '')
+    assert doc.get_element_by_id('upload-form') is not None

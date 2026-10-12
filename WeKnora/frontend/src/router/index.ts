@@ -102,6 +102,12 @@ const router = createRouter({
       meta: { requiresInit: true, requiresAuth: true },
       children: [
         {
+          path: "materials",
+          name: "materialsCenter",
+          component: () => import("../views/materials/MaterialsCenter.vue"),
+          meta: { requiresInit: true, requiresAuth: true }
+        },
+        {
           path: "tenant",
           redirect: "/platform/settings"
         },

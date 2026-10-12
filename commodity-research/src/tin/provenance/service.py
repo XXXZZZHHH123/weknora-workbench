@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, or_
 
 from tin.config import settings
 from tin.models import Observation, ObservationSource, SourceArtifact, SourceBatch
@@ -17,6 +17,17 @@ from tin.ownership import scoped_directory, verified_actor
 
 MAX_SOURCE_BYTES = 100 * 1024 * 1024
 MAX_SNAPSHOT_CELLS = 2_000_000
+
+
+def research_visible(artifact):
+    """A KB-only center upload never implicitly becomes a research source."""
+    return not artifact.details.get("library_restricted") or artifact.details.get("shared_research") is True
+
+
+def research_visible_clause():
+    return or_(SourceArtifact.details["library_restricted"].as_boolean().is_(None),
+               SourceArtifact.details["library_restricted"].as_boolean() == False,
+               SourceArtifact.details["shared_research"].as_boolean() == True)
 
 
 def _now():
@@ -182,7 +193,8 @@ def observation_sources(session, observation_id):
              "filename": r.locator.get("filename") or session.get(SourceArtifact, r.artifact_id).filename,
              "download_url": research_url(f"/api/sources/{r.artifact_id}/download"),
              "locator": r.locator, "mapping_version": r.mapping_version,
-             "transformation": r.transformation, "batch_id": r.batch_id} for r in rows]
+             "transformation": r.transformation, "batch_id": r.batch_id} for r in rows
+            if research_visible(session.get(SourceArtifact, r.artifact_id))]
 
 
 def workbook_cells(data, filename):

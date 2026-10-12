@@ -1,7 +1,7 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
-    <title>WeKnora</title>
+    <title>中哲物产 · 研究工作台</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, minimal-ui">
     <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
@@ -9,10 +9,10 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <meta name="keywords" content="知识问答、微信对话开放平台、对话开放平台、对话平台、人工智能定制、人机对话、智能问答、人机交互、自然语言处理、自然语言理解、NLP、人工智能产品、人工智能开源、人工智能算法、语音助手"/>
-    <meta name="description" content="WeKnora是一款基于大语言模型的文档理解与语义检索框架，专为结构复杂、内容异构的文档场景而打造。"/>
-    <link rel="shortcut icon" type="image/png" href="./public/favicon.ico"/>
-    <link rel="apple-touch-icon" sizes="120x120" type="image/png" href="./public/favicon.ico"/>
+    <meta name="keywords" content="中哲物产、商品研究、研究工作台、表格分析、研究资料、知识库"/>
+    <meta name="description" content="中哲物产研究工作台：统一研究资料、表格分析与商品研究，保留来源证据，支持空间协作与个人判断。"/>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+    <meta name="theme-color" content="#18345b"/>
 </head>
 <body>
 <script>
@@ -20,8 +20,8 @@
   var t=localStorage.getItem('WeKnora_theme')||'light';
   if(t==='system')t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';
   document.documentElement.setAttribute('theme-mode',t);
-  /* 与 theme.css 中 --td-bg-color-page 一致，避免样式加载后整页背景从 #fff 跳到 #eee 触发重绘闪动 */
-  var bg=t==='dark'?'#181818':'#eee';
+  /* 与 theme.css 中 --td-bg-color-page 一致，避免样式加载后整页背景从白色跳到灰蓝色 触发重绘闪动 */
+  var bg=t==='dark'?'#111b2b':'#f3f5f9';
   document.documentElement.style.background=bg;
   document.documentElement.style.minHeight='100%';
   document.documentElement.style.colorScheme=t==='dark'?'dark':'light';
@@ -32,10 +32,10 @@
     if(w){
       if(t==='dark'){
         if(w.WindowSetDarkTheme)w.WindowSetDarkTheme();
-        if(w.WindowSetBackgroundColour)w.WindowSetBackgroundColour(24,24,24,255);
+        if(w.WindowSetBackgroundColour)w.WindowSetBackgroundColour(17,27,43,255);
       }else{
         if(w.WindowSetLightTheme)w.WindowSetLightTheme();
-        if(w.WindowSetBackgroundColour)w.WindowSetBackgroundColour(238,238,238,255);
+        if(w.WindowSetBackgroundColour)w.WindowSetBackgroundColour(243,245,249,255);
       }
     }
   }catch(_){}
@@ -68,7 +68,7 @@
 (function(){
   var t=localStorage.getItem('WeKnora_theme')||'light';
   if(t==='system')t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';
-  var bg=t==='dark'?'#181818':'#eee';
+  var bg=t==='dark'?'#111b2b':'#f3f5f9';
   var el=document.getElementById('app');
   if(el){ el.style.background=bg; el.style.minHeight='100%'; }
 })();

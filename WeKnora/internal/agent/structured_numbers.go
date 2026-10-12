@@ -15,6 +15,7 @@ import (
 var evidenceDate = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 var proseNumber = regexp.MustCompile(`[-+−]?\d+(?:,\d{3})*(?:\.\d+)?`)
 var dateOrCell = regexp.MustCompile(`\b\d{1,2}[-/]\d{1,2}\b|\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?|\d{2,4}年(?:\d{1,2}月(?:\d{1,2}日)?)?|\d{1,2}月(?:\d{1,2}日)?|\b[A-Z]{1,3}\d+\b|(?m)^\s*(?:[#>*-]|\*\*)*\s*\d+[.)）、]`)
+var sourceCitationTag = regexp.MustCompile(`<(?:kb|web)\b[^>]*>`)
 
 func ungroundedStructuredNumbers(answer string, messages []chat.Message) []string {
 	values := []float64{}
@@ -83,7 +84,9 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message) []strin
 	for _, file := range filenames {
 		answer = strings.ReplaceAll(answer, file, "")
 	}
-	text := dateOrCell.ReplaceAllString(answer, "")
+	// Citation attributes contain opaque chunk/KB IDs and source URLs, not
+	// numeric claims. Keep checking every number in the surrounding prose.
+	text := dateOrCell.ReplaceAllString(sourceCitationTag.ReplaceAllString(answer, ""), "")
 	unsupported := []string{}
 	seen := map[string]bool{}
 	for _, span := range proseNumber.FindAllStringIndex(text, -1) {

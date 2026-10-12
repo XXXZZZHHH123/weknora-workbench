@@ -2,11 +2,107 @@ package agent
 
 import (
 	"encoding/json"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
+
+var documentAnswerCitation = regexp.MustCompile(`<kb\b[^>]*\bchunk_id="([^"]+)"[^>]*>`)
+
+// Historical table results remain evidence for follow-up questions, but do not
+// turn a newly retrieved, cited document into a table answer. Current executed
+// table results always retain the numeric guard, including mixed-source turns.
+func needsStructuredAnswerReview(steps []types.AgentStep, messages []chat.Message, answer string) bool {
+	if hasStructuredEvidence(steps) {
+		return true
+	}
+	if !hasStructuredHistoryEvidence(messages) {
+		return false
+	}
+	cited := map[string]bool{}
+	documentValues := []float64{}
+	documentFiles := []string{}
+	fetchedCitation := false
+	for _, match := range documentAnswerCitation.FindAllStringSubmatch(answer, -1) {
+		cited[match[1]] = true
+	}
+	for _, step := range steps {
+		for _, call := range step.ToolCalls {
+			if (call.Name != "read_document" && call.Name != "search_knowledge") || call.Result == nil || !call.Result.Success {
+				continue
+			}
+			// Use the verified tool's actual fetched chunks, never assistant
+			// citations, document metadata, or historical tool output alone.
+			encoded, err := json.Marshal(call.Result.Data["chunks"])
+			if err != nil {
+				continue
+			}
+			var chunks []struct {
+				ID      string `json:"chunk_id"`
+				Content string `json:"content"`
+			}
+			if json.Unmarshal(encoded, &chunks) != nil {
+				continue
+			}
+			for _, chunk := range chunks {
+				if chunk.ID != "" && strings.TrimSpace(chunk.Content) != "" && cited[chunk.ID] {
+					fetchedCitation = true
+					for _, token := range proseNumber.FindAllString(chunk.Content, -1) {
+						if value, err := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(token, ",", ""), "−", "-"), 64); err == nil {
+							documentValues = append(documentValues, value)
+						}
+					}
+					// These are authoritative read_document facts, unlike numeric
+					// substrings inside arbitrary metadata, hashes or source IDs.
+					for _, key := range []string{"total_chunks", "fetched_chunks"} {
+						encoded, _ := json.Marshal(call.Result.Data[key])
+						var value float64
+						if json.Unmarshal(encoded, &value) == nil && string(encoded) != "null" {
+							documentValues = append(documentValues, value)
+						}
+					}
+					if document, ok := call.Result.Data["document"].(map[string]interface{}); ok {
+						if filename, ok := document["file_name"].(string); ok {
+							documentFiles = append(documentFiles, filename)
+						}
+						encoded, _ := json.Marshal(document["chunk_count"])
+						var count float64
+						if json.Unmarshal(encoded, &count) == nil && string(encoded) != "null" {
+							documentValues = append(documentValues, count)
+						}
+						if size, ok := document["file_size"].(string); ok {
+							parts := strings.Fields(size)
+							if len(parts) == 2 && (parts[1] == "B" || parts[1] == "KB" || parts[1] == "MB" || parts[1] == "GB") {
+								if value, err := strconv.ParseFloat(parts[0], 64); err == nil {
+									documentValues = append(documentValues, value)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if fetchedCitation {
+		// A citation cannot bypass a table claim: all prose numbers must be
+		// found in the actual cited text, otherwise retain the table guard.
+		text := documentAnswerCitation.ReplaceAllString(answer, "")
+		for _, filename := range documentFiles {
+			if filename != "" {
+				text = strings.ReplaceAll(text, filename, "")
+			}
+		}
+		if len(documentValues) == 0 {
+			return len(proseNumber.FindAllString(dateOrCell.ReplaceAllString(text, ""), -1)) > 0
+		}
+		encoded, _ := json.Marshal(map[string]any{"values": documentValues})
+		return len(ungroundedStructuredNumbers(text, []chat.Message{{Role: "tool", Content: string(encoded)}})) > 0
+	}
+	return true
+}
 
 // Review starts with source facts, not the previous assistant's chain of
 // explanations. A draft is explicitly marked unverified. Tools remain usable

@@ -30,9 +30,10 @@ export const useMenuStore = defineStore('menuStore', () => {
       childrenPath: 'chat',
       children: createMenuChildren()
     },
-    { title: '', titleKey: 'menu.knowledgeBase', icon: 'zhishiku', path: 'knowledge-bases' },
-    { title: '结构化数据', icon: 'zhishiku', path: 'structured-data' },
+    { title: '资料中心', icon: 'file-add', path: 'materials' },
     { title: '商品研究', icon: 'zhishiku', path: 'commodity-research' },
+    { title: '表格分析', icon: 'zhishiku', path: 'structured-data' },
+    { title: '', titleKey: 'menu.knowledgeBase', icon: 'zhishiku', path: 'knowledge-bases' },
     // Artifacts only exist where skills run in a sandbox.
     { title: '', titleKey: 'menu.artifacts', icon: 'artifact', path: 'artifacts', requiredCapability: 'settings.sandbox' },
     { title: '', titleKey: 'menu.agents', icon: 'agent', path: 'agents', requiredCapability: 'agents' },

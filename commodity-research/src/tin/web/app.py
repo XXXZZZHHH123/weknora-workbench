@@ -161,10 +161,12 @@ templates.env.filters["local"] = lambda dt: dt.astimezone(SHANGHAI).strftime("%Y
 from tin.integration.read_api import router as research_read_router
 from tin.web.materials import router as materials_router
 from tin.web.refresh import router as refresh_router
+from tin.web.library import router as library_router
 from tin.provenance.router import router as sources_router
 app.include_router(research_read_router)
 app.include_router(materials_router)
 app.include_router(refresh_router)
+app.include_router(library_router)
 app.include_router(sources_router)
 
 

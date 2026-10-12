@@ -82,6 +82,7 @@ const props = withDefaults(defineProps<{
   dataGuide?: string
   tooltip?: string
   placement?: 'top' | 'bottom' | 'bottom-right' | 'bottom-left'
+  unified?: boolean
 }>(), {
   acceptFileTypes: '',
   supportedFileTypes: () => [],
@@ -91,12 +92,14 @@ const props = withDefaults(defineProps<{
   dataGuide: '',
   tooltip: '',
   placement: 'bottom-right',
+  unified: false,
 })
 
 const emit = defineEmits<{
   files: [files: File[]]
   url: [url: string]
   manual: []
+  intake: [mode: string]
 }>()
 
 const { t } = useI18n()
@@ -145,6 +148,10 @@ const dropdownOptions = computed(() => {
 })
 
 const handleActionSelect = (data: { value: string }) => {
+  if (props.unified && data.value !== 'manualCreate') {
+    emit('intake', data.value)
+    return
+  }
   switch (data.value) {
     case 'upload':
       fileInputRef.value?.click()
@@ -224,6 +231,7 @@ const handleUrlDialogCancel = () => {
 }
 
 const openUrlDialog = () => {
+  if (props.unified) { emit('intake', 'importURL'); return }
   urlInputValue.value = ''
   urlDialogVisible.value = true
 }

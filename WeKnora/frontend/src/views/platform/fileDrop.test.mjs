@@ -93,14 +93,14 @@ test('unrelated pages and a knowledge route without an ID ignore global upload',
   }
 })
 
-test('knowledge file drops still validate initialization and reach the knowledge page', async () => {
+test('knowledge drops preserve the target without requiring text parsing models before material routing', async () => {
   const f = fixture('knowledgeBaseDetail', { kbId: 'kb-1' })
   const event = fileDrag()
   f.handleGlobalDragEnter(event)
   assert.equal(f.ismask.value, true)
   await f.handleGlobalDrop(event)
   assert.equal(f.ismask.value, false)
-  assert.deepEqual(f.requests, ['kb-1'])
+  assert.deepEqual(f.requests, [])
   assert.equal(f.dispatched[0].type, 'weknora:knowledge-file-drop')
   assert.equal(f.dispatched[0].detail.kbId, 'kb-1')
   assert.equal(f.dispatched[0].detail.files, event.dataTransfer.files)

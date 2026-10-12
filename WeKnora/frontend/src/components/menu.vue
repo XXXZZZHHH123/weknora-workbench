@@ -2,10 +2,9 @@
     <div class="aside_box" :class="{ 'aside_box--collapsed': uiStore.sidebarCollapsed, 'aside_box--resizing': uiStore.sidebarResizing }">
         <!-- 展开时：Logo + 搜索/折叠按钮同行 -->
         <div class="logo_row" v-if="!uiStore.sidebarCollapsed">
-            <div class="logo_box" @click="router.push('/platform/knowledge-bases')" style="cursor: pointer;">
-                <img class="logo" src="@/assets/img/weknora.png" alt="">
-                <sup v-if="isLiteEdition" class="lite-badge">Lite</sup>
-            </div>
+            <button type="button" class="logo_box" @click="router.push('/platform/materials')" aria-label="中哲物产研究工作台，进入资料中心">
+                <BrandWordmark compact />
+            </button>
             <div class="logo_actions">
                 <t-tooltip placement="bottom">
                     <template #content>
@@ -86,9 +85,7 @@
                         :class="['menu_item', item.childrenPath && item.childrenPath == currentpath ? 'menu_item_c_active' : isMenuItemActive(item.path) ? 'menu_item_active' : '']">
                         <div class="menu_item-box">
                             <div class="menu_icon">
-                                <img class="icon"
-                                    :src="getImgSrc(item.icon == 'zhishiku' ? knowledgeIcon : item.icon == 'agent' ? agentIcon : item.icon == 'artifact' ? artifactIcon : item.icon == 'toolbox' ? toolboxIcon : item.icon == 'organization' ? organizationIcon : item.icon == 'logout' ? logoutIcon : item.icon == 'setting' ? settingIcon : prefixIcon)"
-                                    alt="">
+                                <t-icon class="icon" :name="menuIconName(item.path)" size="18px" />
                             </div>
                             <template v-if="!uiStore.sidebarCollapsed">
                                 <span class="menu_title" :title="item.title">{{ item.title }}</span>
@@ -275,6 +272,7 @@ import { useUIStore } from '@/stores/ui';
 import { useCommandPaletteStore } from '@/stores/commandPalette';
 import { MessagePlugin, DialogPlugin, Icon as TIcon } from "tdesign-vue-next";
 import UserMenu from '@/components/UserMenu.vue';
+import BrandWordmark from '@/components/BrandWordmark.vue';
 import TenantSelector from '@/components/TenantSelector.vue';
 import { useI18n } from 'vue-i18n';
 import { getSystemInfo } from '@/api/system';
@@ -439,6 +437,12 @@ const isMenuItemActive = (itemPath: string): boolean => {
     const currentRoute = route.name;
 
     switch (itemPath) {
+        case 'materials':
+            return currentRoute === 'materialsCenter';
+        case 'structured-data':
+            return currentRoute === 'structuredData';
+        case 'commodity-research':
+            return currentRoute === 'commodityResearch';
         case 'knowledge-bases':
             return currentRoute === 'knowledgeBaseList' ||
                 currentRoute === 'knowledgeBaseDetail' ||
@@ -460,24 +464,14 @@ const isMenuItemActive = (itemPath: string): boolean => {
     }
 };
 
-// 统一的图标激活状态判断
-const getIconActiveState = (itemPath: string) => {
-    const currentRoute = route.name;
-
-    return {
-        isKbActive: itemPath === 'knowledge-bases' && (
-            currentRoute === 'knowledgeBaseList' ||
-            currentRoute === 'knowledgeBaseDetail' ||
-            currentRoute === 'knowledgeBaseSettings'
-        ),
-        isCreatChatActive: itemPath === 'creatChat' && (currentRoute === 'kbCreatChat' || currentRoute === 'globalCreatChat'),
-        isSettingsActive: itemPath === 'settings' && currentRoute === 'settings',
-        isChatActive: itemPath === 'chat' && currentRoute === 'chat'
-    };
-};
-
 // 分离上下两部分菜单（使用 visibleMenuArr 以便 lite 模式过滤 logout）
-const TOP_MENU_PATHS = new Set(['creatChat', 'knowledge-bases', 'structured-data', 'commodity-research', 'artifacts', 'agents', 'toolbox', 'organizations']);
+const TOP_MENU_PATHS = new Set(['creatChat', 'materials', 'knowledge-bases', 'structured-data', 'commodity-research', 'artifacts', 'agents', 'toolbox', 'organizations']);
+
+const menuIconName = (path: string) => ({
+    creatChat: 'chat', materials: 'file-add', 'knowledge-bases': 'folder',
+    'structured-data': 'table', 'commodity-research': 'chart-bar', artifacts: 'file',
+    agents: 'user', toolbox: 'tools', organizations: 'usergroup', settings: 'setting', logout: 'logout',
+} as Record<string, string>)[path] || 'folder';
 
 const topMenuItems = computed<MenuItem[]>(() => {
     return (visibleMenuArr.value as unknown as MenuItem[]).filter((item: MenuItem) => TOP_MENU_PATHS.has(item.path));
@@ -1106,55 +1100,12 @@ watch([() => route.name, () => route.params], (newvalue, oldvalue) => {
     }
 
     // 路由变化时更新图标状态和知识库信息（不涉及对话列表）
-    getIcon(nameStr);
 
     // 如果切换了知识库，更新知识库名称但不重新加载对话列表
     if (newvalue[1].kbId !== oldvalue?.[1]?.kbId) {
         loadCurrentKbInfo((newvalue[1] as any)?.kbId as string);
     }
 });
-let knowledgeIcon = ref('zhishiku-green.svg');
-let prefixIcon = ref('prefixIcon.svg');
-let logoutIcon = ref('logout.svg');
-let settingIcon = ref('setting.svg');
-let agentIcon = ref('agent.svg');
-let artifactIcon = ref('artifact.svg');
-let toolboxIcon = ref('toolbox.svg');
-let organizationIcon = ref('organization.svg');
-let pathPrefix = ref(route.name)
-const getIcon = (path: string) => {
-    // 根据当前路由状态更新所有图标
-    const kbActiveState = getIconActiveState('knowledge-bases');
-    const creatChatActiveState = getIconActiveState('creatChat');
-    const settingsActiveState = getIconActiveState('settings');
-    const agentsActiveState = route.name === 'agentList';
-    const artifactsActiveState = route.name === 'artifactLibrary';
-    const organizationsActiveState = route.name === 'organizationList';
-
-    // 知识库图标：只在知识库页面显示绿色
-    knowledgeIcon.value = kbActiveState.isKbActive ? 'zhishiku-green.svg' : 'zhishiku.svg';
-
-    // 智能体图标：只在智能体页面显示绿色
-    agentIcon.value = agentsActiveState ? 'agent-green.svg' : 'agent.svg';
-
-    // 产物图标：只在产物页面显示绿色
-    artifactIcon.value = artifactsActiveState ? 'artifact-green.svg' : 'artifact.svg';
-
-    toolboxIcon.value = route.name === 'toolbox' ? 'toolbox-green.svg' : 'toolbox.svg';
-
-    // 组织图标：只在组织页面显示绿色
-    organizationIcon.value = organizationsActiveState ? 'organization-green.svg' : 'organization.svg';
-
-    // 对话图标：只在对话创建页面显示绿色，其他情况显示默认
-    prefixIcon.value = creatChatActiveState.isCreatChatActive ? 'prefixIcon-green.svg' : 'prefixIcon.svg';
-
-    // 设置图标：只在设置页面显示绿色
-    settingIcon.value = settingsActiveState.isSettingsActive ? 'setting-green.svg' : 'setting.svg';
-
-    // 退出图标：始终显示默认
-    logoutIcon.value = 'logout.svg';
-}
-getIcon(typeof route.name === 'string' ? route.name as string : (route.name ? String(route.name) : ''))
 const handleMenuClick = async (path: string) => {
     if (path === 'knowledge-bases') {
         // 知识库菜单项：如果在知识库内部，跳转到当前知识库文件页；否则跳转到知识库列表
@@ -1192,7 +1143,6 @@ const getCurrentKbId = async (): Promise<string | null> => {
 }
 
 const gotopage = async (path: string) => {
-    pathPrefix.value = path;
     // 处理退出登录
     if (path === 'logout') {
         try {
@@ -1220,7 +1170,6 @@ const gotopage = async (path: string) => {
             router.push(`/platform/${path}`);
         }
     }
-    getIcon(path)
 }
 
 const getImgSrc = (url: string) => {
@@ -1261,7 +1210,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     min-width: 0;
     width: var(--sidebar-width, 260px);
     flex-shrink: 0;
-    padding: 8px 6px 6px;
+    padding: var(--app-space-3) var(--app-space-2) var(--app-space-2);
     background: var(--td-bg-color-sidebar);
     box-sizing: border-box;
     /* Avoid 100vh because <html> carries a `zoom` multiplier for font-size
@@ -1320,7 +1269,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 50px;
+        height: 68px;
         flex-shrink: 0;
         padding: 0 10px 0 var(--sidebar-inset-x);
     }
@@ -1350,22 +1299,11 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         flex: 1;
         min-width: 0;
         overflow: hidden;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        cursor: pointer;
 
-        .logo {
-            width: 128px;
-            height: auto;
-        }
-
-        .lite-badge {
-            margin-left: 2px;
-            align-self: flex-start;
-            margin-top: 2px;
-            font-size: 9px;
-            font-weight: 600;
-            color: var(--td-text-color-placeholder);
-            user-select: none;
-            white-space: nowrap;
-        }
     }
 
     .menu_top {
@@ -1439,7 +1377,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
 
     .menu_item_active {
         border-radius: var(--app-radius-xs);
-        background: var(--td-bg-color-secondarycontainer) !important;
+        background: var(--td-brand-color-light) !important;
 
         .menu_icon,
         .menu_title {
@@ -1946,11 +1884,6 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
 }
 </style>
 <style lang="less">
-// Dark mode: invert dark logo to light
-html[theme-mode="dark"] .aside_box .logo_box .logo {
-    filter: invert(1) hue-rotate(180deg);
-}
-
 // Dark mode: 滚动条在深色背景下需要更亮的颜色才看得见
 html[theme-mode="dark"] .aside_box .menu_top:hover {
     scrollbar-color: rgba(255, 255, 255, 0.22) transparent;

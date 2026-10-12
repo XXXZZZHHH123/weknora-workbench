@@ -265,12 +265,12 @@ export default {
     reopen: 'Product tour',
     steps: {
       welcome: {
-        title: 'Welcome to WeKnora',
+        title: 'Welcome to 中哲物产研究工作台',
         desc: 'A few quick steps to get you familiar with knowledge bases, chat and agents. Click "Next" to begin.'
       },
       knowledge: {
         title: 'Create your knowledge base',
-        desc: 'Everything starts here: upload documents, web pages or FAQs and WeKnora parses and indexes them automatically. Click here to open knowledge bases.'
+        desc: 'Everything starts here: upload documents, web pages or FAQs and 中哲物产研究工作台 parses and indexes them automatically. Click here to open knowledge bases.'
       },
       chat: {
         title: 'Start an AI chat',
@@ -2487,11 +2487,11 @@ export default {
     haveAccount: 'Already have an account?',
     backToLogin: 'Back to Login',
     loginHint: 'Sign in to continue, or create an account below if this is your first time.',
-    firstTime: 'New to WeKnora?',
+    firstTime: 'New to the research workbench?',
     registerSuccess: 'Registration successful. Please sign in',
     registerFailed: 'Registration failed',
-    subtitle: 'RAG Q&A, ReAct Agent and Wiki — an LLM-powered enterprise knowledge framework',
-    registerSubtitle: 'Create your account and start using WeKnora',
+    subtitle: 'Access your workspace documents, table analysis and personal research judgments',
+    registerSubtitle: 'Create an account for the Zhongzhe research workbench',
     emailPlaceholder: 'Enter email address',
     passwordPlaceholder: 'Enter password',
     confirmPasswordPlaceholder: 'Enter password again',
@@ -2785,7 +2785,7 @@ export default {
     goToAgentSettings: 'Go to agent settings'
   },
   createChat: {
-    title: 'Hi, I am WeKnora — your knowledge, within reach',
+    title: 'Research conversation',
     newSessionTitle: 'New Session',
     openProject: 'Select project',
     clearProject: 'Clear',

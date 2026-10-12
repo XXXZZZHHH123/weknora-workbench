@@ -265,12 +265,12 @@ export default {
     reopen: 'プロダクトツアー',
     steps: {
       welcome: {
-        title: 'WeKnoraへようこそ',
+        title: '中哲物产研究工作台へようこそ',
         desc: '数ステップでナレッジベース、チャット、エージェントの使い方をご紹介します。「次へ」をクリックして開始してください。'
       },
       knowledge: {
         title: 'ナレッジベースを作成',
-        desc: 'すべてはここから始まります。ドキュメント、Webページ、FAQをアップロードすると、WeKnoraが自動で解析してインデックスを作成します。ここをクリックしてナレッジベースを開いてください。'
+        desc: 'すべてはここから始まります。ドキュメント、Webページ、FAQをアップロードすると、中哲物产研究工作台が自動で解析してインデックスを作成します。ここをクリックしてナレッジベースを開いてください。'
       },
       chat: {
         title: 'AIチャットを開始',
@@ -2487,11 +2487,11 @@ export default {
     haveAccount: 'すでにアカウントをお持ちですか？',
     backToLogin: 'ログインに戻る',
     loginHint: 'ログインして続行してください。初めての方は下からアカウントを作成できます。',
-    firstTime: 'WeKnoraは初めてですか？',
+    firstTime: '研究ワークベンチを初めて利用しますか？',
     registerSuccess: '登録が完了しました。ログインしてください',
     registerFailed: '登録に失敗しました',
-    subtitle: 'RAG質問応答、ReActエージェント、Wiki。LLMが支える企業向けナレッジフレームワーク',
-    registerSubtitle: 'アカウントを作成してWeKnoraを使い始めましょう',
+    subtitle: 'ワークスペースの研究資料、表計算分析、個人の判断を確認',
+    registerSubtitle: '中哲物産の研究ワークベンチでアカウントを作成',
     emailPlaceholder: 'メールアドレスを入力',
     passwordPlaceholder: 'パスワードを入力',
     confirmPasswordPlaceholder: 'パスワードを再入力',
@@ -2785,7 +2785,7 @@ export default {
     goToAgentSettings: 'エージェント設定に移動'
   },
   createChat: {
-    title: 'こんにちは、WeKnoraです。あなたのナレッジを、すぐそばに',
+    title: '研究対話',
     newSessionTitle: '新しいセッション',
     openProject: 'プロジェクトを選択',
     clearProject: '解除',

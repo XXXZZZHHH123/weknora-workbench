@@ -73,9 +73,9 @@ const onSystemThemeChange = (event: MediaQueryListEvent) => {
 prefersDark?.addEventListener('change', onSystemThemeChange);
 
 // ANSI palette: ls --color uses the usual dircolors mapping (dir=blue,
-// exec=green, link=cyan). Only the green slots stay WeKnora brand so
-// user@host (01;32) matches the product color; path (01;34) stays blue
-// like directories.
+// exec=green, link=cyan). Preserve these semantic terminal colors independently
+// of the workbench's blue brand. user@host (01;32) remains green and
+// path (01;34) stays blue like directories.
 function xtermTheme(dark: boolean) {
     return dark
         ? {

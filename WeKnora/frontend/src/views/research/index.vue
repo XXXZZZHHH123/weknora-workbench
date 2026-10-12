@@ -1,6 +1,6 @@
 <template>
   <div class="research-workspace">
-    <div class="research-toolbar"><strong>商品研究</strong><span>当前空间的研究数据与个人判断</span></div>
+    <div class="research-toolbar"><strong>商品研究</strong><span>当前空间的研究数据与个人判断</span><router-link to="/platform/materials?purpose=research&add=1">添加研究资料</router-link></div>
     <iframe v-if="auth.token && tenantId" :key="generation" ref="frame" :src="bootstrapUrl"
       title="商品研究工作台" @load="sendAuth" />
     <div v-else class="research-empty">请先选择空间。</div>
@@ -40,5 +40,6 @@ onBeforeUnmount(() => window.removeEventListener('message', receive))
 .research-workspace{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;background:var(--app-bg,#f4f7f5)}
 .research-toolbar{display:flex;gap:24px;align-items:center;padding:16px 24px;background:var(--app-card-bg,white);border-bottom:1px solid var(--app-border-color,#dce5df)}
 .research-toolbar span{font-size:var(--app-text-md);color:var(--app-text-secondary,#5b6b63)}
+.research-toolbar a{margin-left:auto;font-size:var(--app-text-md);color:var(--td-brand-color);text-decoration:none}
 .research-empty{padding:24px}iframe{width:100%;flex:1;min-height:0;border:0}
 </style>

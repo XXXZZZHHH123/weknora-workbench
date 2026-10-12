@@ -208,7 +208,7 @@ def test_source_http_upload_known_mapping_updates_without_second_review(session,
         assert second.json()['automatically_imported'] and second.json()['import_result']['revisions']==1
         page=client.get('/files',params={'source':result['artifact_id']})
         assert page.status_code==200 and 'researchFetch(sourcePrefix+path' in page.text
-        assert '研报 PDF' in page.text and 'const selectedSource' in page.text
+        assert 'const selectedSource' in page.text
         details=client.get('/api/sources/'+result['artifact_id']).json()
         assert details['details']['sheets']['S']['rows']==2
         original=client.get('/api/sources/'+result['artifact_id']+'/download')

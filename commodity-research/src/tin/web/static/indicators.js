@@ -134,7 +134,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const id = jumpLock || (location.hash || "").slice(1);
     const target = document.getElementById(id);
     if (!target) return;
-    const margin = id === "indicator-top" ? 68 : stickyOffset();
+    const navHeight = document.querySelector("nav.top")?.getBoundingClientRect().height || 110;
+    const margin = id === "indicator-top" ? navHeight + 12 : stickyOffset();
     const top = Math.max(0, target.getBoundingClientRect().top + window.scrollY - margin);
     const behavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
     window.scrollTo({ top, behavior });

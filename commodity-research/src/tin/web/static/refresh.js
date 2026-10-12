@@ -30,17 +30,21 @@
     }
     const recent = data.active || data.last_attempt;
     text('refresh-status', recent ? `${recent.label}${recent.error ? '：' + recent.error : ''}` : '尚未执行更新。可以立即更新，或等待计划时间。');
-    text('refresh-summary', `${data.scheduler_available ? ('自动更新' + (data.enabled ? '已开启' : '已暂停')) : '服务自动更新未启用，可手动更新'} · 每天 ${data.times.join('、')}（北京时间） · 下次 ${stamp(data.next_run_at)} · 最近成功 ${stamp(data.last_success)} · 行情截至 ${data.latest_trade_date || '暂无'}`);
+    byId('refresh-status').dataset.state = recent?.status || 'idle';
+    text('refresh-summary', `${data.scheduler_available ? ('自动更新' + (data.enabled ? '已开启' : '已暂停')) : '可手动更新'} · 每天 ${data.times.join('、')}（北京时间）`);
+    text('refresh-trade', data.latest_trade_date || '暂无行情');
+    text('refresh-next', stamp(data.next_run_at));
+    text('refresh-success', stamp(data.last_success));
     const rows = byId('refresh-sources'); rows.replaceChildren();
     data.sources.forEach(source => {
-      const row = document.createElement('tr'); row.className = 'border-b border-[var(--line)]';
+      const row = document.createElement('tr'); row.className = 'refresh-source-row';
       [source.name + (source.enabled ? '' : '（自动更新已关闭）'), (source.status === 'ok' ? '更新成功' : source.status) + (source.error ? '：' + source.error : ''),
        stamp(source.data_cutoff), stamp(source.last_attempt) + ' / ' + stamp(source.last_success), String(source.written)].forEach(value => {
-        const cell = document.createElement('td'); cell.className = 'py-2 pr-4 align-top'; cell.textContent = value; row.append(cell);
+        const cell = document.createElement('td'); cell.className = 'refresh-source-cell'; cell.textContent = value; row.append(cell);
       });
       const action = document.createElement('td'); action.className = 'py-2 whitespace-nowrap';
       const button = document.createElement('button'); button.type = 'button';
-      button.className = 'px-2.5 py-1.5 rounded-md border border-[var(--line)]';
+      button.className = 'research-button compact secondary';
       button.textContent = ['失败', '部分失败'].includes(source.status) ? '重试' : '更新';
       button.disabled = !!data.active || panel.dataset.readonly === 'true';
       button.addEventListener('click', () => startUpdate([source.id], button));

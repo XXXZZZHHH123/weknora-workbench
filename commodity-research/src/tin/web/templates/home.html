@@ -1,8 +1,7 @@
 {% extends "base.html" %}
 {% from "_card.html" import card %}
-{% block title %}锡 SN · 今日工作台{% endblock %}
+{% block title %}今日研究 · 中哲物产{% endblock %}
 {% block main %}
-{% include '_refresh.html' %}
 
 {#
   首屏四个区，从上到下就是研究员早上的动作顺序：
@@ -10,32 +9,26 @@
   数据墙不重做，折起来放在最后——它在 /sn 已经有一整页。
 #}
 
-<div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
-  <div>
-    <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">DAILY WORKBENCH · SN</div>
-    <h1 class="text-2xl font-black tracking-tight flex items-center gap-3 flex-wrap">今天我该干什么
-      {% if d %}<span class="text-xs font-normal px-2 py-0.5 rounded bg-[var(--surface-soft)] text-[var(--text-muted)] border border-[var(--line)] tabular">{{ d }}</span>{% endif %}
-    </h1>
-    <p class="text-xs text-[var(--text-muted)] mt-1">
-      {{ researcher.display_name }} 的工作台 · 待办与简报按研究员过滤 · 全景数据留在
-      <a href="{{ research_prefix() }}/sn{% if d %}?date={{ d }}{% endif %}" class="text-[var(--primary)] hover:underline">总览页</a>
-    </p>
-  </div>
-  <div class="flex items-center gap-6 text-right shrink-0">
-    <div>
-      <div class="text-xl font-bold tabular {{ 'text-[var(--alert)]' if todos else '' }}">{{ todos | length }}</div>
-      <div class="text-[11px] text-[var(--text-muted)]">待办</div>
-    </div>
-    <div class="h-8 w-px bg-[var(--line)]"></div>
-    <div>
-      <div class="text-xl font-bold tabular">{{ changes.core | length }}</div>
-      <div class="text-[11px] text-[var(--text-muted)]">核心数字有变化</div>
+<header class="research-hero">
+  <div class="research-hero-copy">
+    <div class="research-eyebrow">商品研究 <span>/</span> 锡 · SN</div>
+    <h1>今日研究工作台</h1>
+    <p>{{ researcher.display_name }} 的个人研究 · 跟进待办、核对市场变化，复核今日简报。</p>
+    <div class="research-hero-meta">
+      {% if d %}<span class="research-date-chip">{% if request.query_params.get('date') %}历史日期{% else %}行情截至{% endif %} <b class="tabular">{{ d }}</b></span>{% else %}<span class="research-date-chip">尚无行情数据</span>{% endif %}
+      <a href="{{ research_prefix() }}/sn{% if d %}?date={{ d }}{% endif %}">查看市场总览 <span aria-hidden="true">↗</span></a>
+      {% if research_prefix() %}<a href="/platform/materials" target="_top">打开资料中心 <span aria-hidden="true">↗</span></a>{% endif %}
     </div>
   </div>
-</div>
+  <div class="research-hero-stats">
+    <div class="research-stat {{ 'has-alert' if todos }}"><small>待办事项</small><strong class="tabular">{{ todos | length }}</strong><span>需要跟进</span></div>
+    <div class="research-stat"><small>核心数字有变化</small><strong class="tabular">{{ changes.core | length }}</strong><span>较上一数据点</span></div>
+  </div>
+</header>
+{% include '_refresh.html' %}
 
 {# ---------- 01 待办 ---------- #}
-<section class="space-y-3">
+<section class="research-section space-y-3">
   <div class="flex items-center gap-2">
     <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">01</span>
     <h2 class="text-sm font-bold">待办</h2>
@@ -73,7 +66,7 @@
 </section>
 
 {# ---------- 02 今日简报 ---------- #}
-<section class="space-y-3">
+<section class="research-section space-y-3">
   <div class="flex items-center gap-2">
     <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">02</span>
     <h2 class="text-sm font-bold">今日简报</h2>
@@ -86,7 +79,7 @@
     <div class="text-sm font-bold text-[var(--text)]">今天还没有简报</div>
     <p class="text-xs text-[var(--text-muted)] mt-1.5 leading-relaxed">{{ brief_gap }}</p>
     <p class="text-[11px] text-[var(--text-muted)] mt-2">
-      外部 API 断连时系统降级为「只做确定性信号，不出简报」，而不是出一份差的。
+      待办、市场指标和来源核验仍可使用。
     </p>
   </div>
 
@@ -278,7 +271,7 @@
 </section>
 
 {# ---------- 03 昨夜到今早什么变了 ---------- #}
-<section class="space-y-3">
+<section class="research-section space-y-3">
   <div class="flex items-center gap-2">
     <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">03</span>
     <h2 class="text-sm font-bold">昨夜到今早什么变了</h2>
@@ -323,7 +316,7 @@
 </section>
 
 {# ---------- 04 全景数据墙（默认折叠） ---------- #}
-<section class="space-y-3">
+<section class="research-section space-y-3">
   <details id="home-wall" class="rounded-lg border border-[var(--line)] bg-[var(--surface)] shadow-sm">
     <summary class="flex items-center gap-2 px-4 py-3 cursor-pointer select-none">
       <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">04</span>

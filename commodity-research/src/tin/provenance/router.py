@@ -11,7 +11,7 @@ from sqlalchemy import select
 from tin.db import SessionLocal
 from tin.models import SourceArtifact, SourceBatch, Indicator, ImportPreview, ObservationSource
 from tin.ownership import verified_actor
-from tin.provenance.service import artifact_path, source_cells, preserve_blob, snapshot_workbook, start_batch, MAX_SOURCE_BYTES, verified_artifact_bytes
+from tin.provenance.service import artifact_path, source_cells, preserve_blob, snapshot_workbook, start_batch, MAX_SOURCE_BYTES, verified_artifact_bytes, research_visible, research_visible_clause
 from tin.provenance import bridge
 
 router = APIRouter()
@@ -19,7 +19,7 @@ router = APIRouter()
 
 def _artifact(session, source):
     row = session.get(SourceArtifact, source)
-    if row is None:
+    if row is None or not research_visible(row):
         raise HTTPException(404, "当前空间没有此来源文件")
     return row
 
@@ -35,7 +35,7 @@ def files_page(request: Request, source: str | None = None):
     from tin.web.app import templates, _shell
     from tin.compute.engine import latest_trade_date
     with SessionLocal() as session:
-        files = session.scalars(select(SourceArtifact).order_by(SourceArtifact.created_at.desc()).limit(100)).all()
+        files = session.scalars(select(SourceArtifact).where(research_visible_clause()).order_by(SourceArtifact.created_at.desc()).limit(100)).all()
         indicators = session.scalars(select(Indicator).where(Indicator.status == "可用").order_by(Indicator.series_id)).all()
         return templates.TemplateResponse(request, "sources.html", _shell(session, "files", latest_trade_date(session),
             sources=[_info(a) for a in files], selected_source=source,
@@ -45,7 +45,7 @@ def files_page(request: Request, source: str | None = None):
 @router.get("/api/sources")
 def list_sources(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200)):
     with SessionLocal() as session:
-        return {"sources": [_info(a) for a in session.scalars(select(SourceArtifact)
+        return {"sources": [_info(a) for a in session.scalars(select(SourceArtifact).where(research_visible_clause())
             .order_by(SourceArtifact.created_at.desc()).offset(offset).limit(limit))]}
 
 
@@ -89,6 +89,8 @@ async def upload_source(file: UploadFile = File(...)):
         raise HTTPException(400, "表格请上传Excel或CSV；文档请使用研报资料入口")
     with SessionLocal() as session:
         artifact = preserve_blob(session, data, filename)
+        if artifact.details.get("library_restricted"):
+            artifact.details = {**artifact.details, "shared_research": True}
         session.commit()  # Parse failure must not erase the original uploaded bytes.
         try:
             snapshot_workbook(session, artifact, filename=filename)

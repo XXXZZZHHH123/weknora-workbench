@@ -53,6 +53,7 @@ import BatchTagDialog from './components/BatchTagDialog.vue';
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess';
 import { useUploadConfirmStore, type UploadConfirmResult } from '@/stores/uploadConfirm';
 import { useUploadTasksStore } from '@/stores/uploadTasks';
+import { offerIntake } from '@/views/materials/intake';
 import WikiBrowser from './wiki/WikiBrowser.vue';
 import { getWikiStats } from '@/api/wiki';
 import {
@@ -1738,9 +1739,19 @@ const openUploadConfirmDialog = async (files: File[], urls: string[] = []) => {
 };
 
 const handleUploadSourceFiles = (files: File[]) => {
-  if (!ensureDocumentKbReady()) return;
+  if (!canEdit.value) return;
   if (files.length === 0) return;
-  openUploadConfirmDialog(files);
+  openMaterials('upload', files);
+};
+
+const openMaterials = (mode = 'upload', files: File[] = [], incomingUrl = '') => {
+  if (!canEdit.value || !kbId.value) return;
+  offerIntake({ userId: authStore.user?.id || '', tenantId: String(authStore.effectiveTenantId || '') }, files,
+    { kbId: kbId.value, folder: selectedFolderPath.value, tagIds: [...selectedTagIds.value], url: incomingUrl });
+  router.push({ path: '/platform/materials', query: {
+    kb_id: kbId.value, add: '1', mode: mode === 'importURL' ? 'url' : mode === 'uploadFolder' ? 'folder' : 'file',
+    ...(selectedFolderPath.value ? { folder: selectedFolderPath.value } : {}),
+  } });
 };
 
 const handleUploadSourceUrl = (url: string) => {
@@ -2464,7 +2475,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
                     </t-tooltip>
                   </div>
                   <div v-if="canEdit" class="doc-filter-actions">
-                    <KbUploadSourceDropdown ref="uploadSourceRef" :accept-file-types="acceptFileTypes"
+                    <KbUploadSourceDropdown ref="uploadSourceRef" unified @intake="openMaterials" :accept-file-types="acceptFileTypes"
                       :supported-file-types="[...supportedFileTypes]" include-manual trigger-icon="add" :trigger-label="t('knowledgeBase.addDocument')"
                       trigger-class="content-bar-icon-btn" data-guide="kb-detail-add-doc"
                       :tooltip="t('knowledgeBase.addDocument')" placement="bottom-right" @files="handleUploadSourceFiles"

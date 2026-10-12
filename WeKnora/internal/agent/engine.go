@@ -950,7 +950,7 @@ func (e *AgentEngine) runReActIteration(
 	// A successful data tool only proves execution. Give the reasoning model
 	// a bounded audit turn before committing numeric claims. The audit can use
 	// more tools; it is not a classifier or a list of supported user intents.
-	if len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && (hasStructuredEvidence(state.RoundSteps) || hasStructuredHistoryEvidence(*messagesPtr)) {
+	if len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && needsStructuredAnswerReview(state.RoundSteps, *messagesPtr, response.Content) {
 		guards.structuredAnswerReviewed = true
 		e.structuredReviewMode = true
 		guards.structuredReviewEvidence = append([]chat.Message(nil), (*messagesPtr)...)
@@ -962,7 +962,7 @@ func (e *AgentEngine) runReActIteration(
 		state.RoundSteps = append(state.RoundSteps, step)
 		return iterOutcomeNext, nil
 	}
-	if len(response.ToolCalls) == 0 && response.Content != "" && (hasStructuredEvidence(state.RoundSteps) || hasStructuredHistoryEvidence(*messagesPtr) || hasStructuredHistoryEvidence(guards.structuredReviewEvidence)) {
+	if len(response.ToolCalls) == 0 && response.Content != "" && (needsStructuredAnswerReview(state.RoundSteps, *messagesPtr, response.Content) || needsStructuredAnswerReview(state.RoundSteps, guards.structuredReviewEvidence, response.Content)) {
 		evidenceMessages := append([]chat.Message(nil), guards.structuredReviewEvidence...)
 		for _, msg := range *messagesPtr {
 			// The review envelope is runtime data, not a new human claim. Its

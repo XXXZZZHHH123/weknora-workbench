@@ -1,13 +1,18 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>锡研究资料</title><style>body{font:14px system-ui;margin:32px auto;max-width:980px;padding:0 20px;color:#22372e;background:#f5f8f6}section{background:white;border:1px solid #dce6df;border-radius:12px;padding:20px;margin:16px 0}button,select,input{font:inherit;padding:9px;margin:4px;border-radius:6px;border:1px solid #bfd1c4}button{cursor:pointer;background:#176750;color:white}a{color:#176750}td,th{padding:10px;text-align:left;border-bottom:1px solid #eee}table{width:100%}#notice{white-space:pre-wrap;color:#8c4d11}</style>
-<a href="{{ prefix }}/">返回研究工作台</a> · <a href="{{ prefix }}/files">表格与文件来源</a><h1>锡研究资料</h1>
+<title>锡研究资料</title><link rel="stylesheet" href="{{ prefix }}/static/app.css"><style>
+.legacy-materials-main{max-width:1040px;margin:0 auto;padding:30px 28px 48px}.legacy-materials-main h1{font-size:25px;font-weight:700;margin:25px 0 10px}.legacy-materials-main>p{font-size:13px;color:var(--text-muted)}.legacy-materials-main section{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:22px;margin:20px 0}.legacy-materials-main h2{font-size:15px;font-weight:650;margin-bottom:12px}.legacy-materials-main button,.legacy-materials-main select,.legacy-materials-main input{font:inherit;padding:9px 12px;margin:4px 7px 4px 0;border-radius:7px;border:1px solid var(--line-strong)}.legacy-materials-main button{cursor:pointer;background:var(--primary);color:white;border-color:var(--primary);font-size:12px;font-weight:600}.legacy-materials-main a{color:var(--primary);text-decoration:none}.legacy-materials-main section p{font-size:12px;color:var(--text-muted);margin-top:12px}.legacy-materials-main td,.legacy-materials-main th{padding:13px 10px;text-align:left;border-bottom:1px solid var(--line);font-size:12px}.legacy-materials-main th{color:var(--text-muted);font-weight:600}.legacy-materials-main table{width:100%;border-collapse:collapse}.legacy-materials-main #notice{white-space:pre-wrap;color:var(--amber);font-size:12px}.legacy-materials-links{display:flex;gap:18px;font-size:12px}
+</style>
+<body class="research-body"><main class="legacy-materials-main">
+<div class="legacy-materials-links"><a href="{{ prefix }}/">← 返回研究工作台</a><a href="{{ prefix }}/files{% if request.query_params.get('source') %}?source={{ request.query_params.get('source') | urlencode }}{% endif %}">原件与来源核验</a></div>
+{% if prefix %}<div class="legacy-source-banner" style="margin-top:20px"><div><strong>统一资料中心</strong><p>在资料中心统一管理研报、表格与处理状态。原件与单元格核验可从上方“原件与来源核验”进入。</p></div><a href="/platform/materials{% if request.query_params.get('source') %}?source={{ request.query_params.get('source') | urlencode }}{% endif %}" target="_top" class="research-button primary" style="color:white">打开资料中心 ↗</a></div>{% endif %}
+<h1>{% if identity %}资料与来源{% else %}研究资料关联{% endif %}</h1>
 <p>PDF、Word、文本和图片进入文档知识库；数值表格从文件接入入口导入。普通对话会按需读取这些资料。</p>
-<section><h2>资料归属</h2><select id="library"></select><button id="bind">保存知识库绑定</button>
-<p>选择当前空间的文档知识库，沿用其解析和模型配置。还没有知识库时，请先在 WeKnora 知识库页面创建。</p></section>
-<section><h2>添加资料</h2><input id="file" type="file" accept=".pdf,.docx,.doc,.txt,.md,.html,.png,.jpg,.jpeg,.webp"><button id="upload">上传并解析</button><br>
+<section id="legacy-materials-binding" class="{% if identity %}workbench-ingest-hidden{% endif %}"><h2>资料归属</h2><select id="library"></select><button id="bind">保存知识库绑定</button>
+<p>选择当前空间的文档知识库，沿用其解析和模型配置。还没有知识库时，请先在资料中心创建或选择文档知识库。</p></section>
+<section id="legacy-materials-upload" class="{% if identity %}workbench-ingest-hidden{% endif %}"><h2>添加资料</h2><input id="file" type="file" accept=".pdf,.docx,.doc,.txt,.md,.html,.png,.jpg,.jpeg,.webp"><button id="upload">上传并解析</button><br>
 <input id="url" type="url" placeholder="公告或研报网址" style="width:65%"><button id="addUrl">添加网页</button>
 <p>原文件保留。图片及扫描件需要知识库已配置视觉模型；不会把识别出的数字自动当作研究观测。</p></section>
-<div id="notice" role="status"></div><section><h2>资料与解析状态</h2><button id="refresh">刷新状态</button><table><thead><tr><th>资料</th><th>解析状态</th></tr></thead><tbody id="documents"></tbody></table><button id="previous">上一页</button><span id="pageStatus"></span><button id="next">下一页</button></section>
+<div id="notice" role="status" class="{% if identity %}workbench-ingest-hidden{% endif %}"></div><section id="legacy-materials-status" class="{% if identity %}workbench-ingest-hidden{% endif %}"><h2>资料与解析状态</h2><button id="refresh">刷新状态</button><table><thead><tr><th>资料</th><th>解析状态</th></tr></thead><tbody id="documents"></tbody></table><button id="previous">上一页</button><span id="pageStatus"></span><button id="next">下一页</button></section>
 <script>
 const prefix={{ prefix|tojson }},identity={{ identity|tojson }},$=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,options={}){const h=new Headers(options.headers||{});if(identity){h.set('X-Tenant-ID',String(identity.tenant));h.set('X-Research-User',identity.user)}const r=await fetch(prefix+path,{credentials:'same-origin',...options,headers:h});const d=await r.json();if(!r.ok)throw Error(d.detail||'操作失败');return d}
@@ -18,5 +23,5 @@ $('bind').onclick=task(async()=>{await api('/api/materials/library',{method:'POS
 $('upload').onclick=task(async()=>{const f=$('file').files[0];if(!f)throw Error('请选择文件');const body=new FormData();body.append('file',f);const d=await api('/api/materials/upload',{method:'POST',body});$('notice').textContent=d.notice+'\n文件校验值：'+d.sha256});
 $('addUrl').onclick=task(async()=>{const d=await api('/api/materials/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('url').value})});$('notice').textContent=d.notice});
 $('previous').onclick=task(async()=>{documentPage-=1;$('notice').textContent=''});$('next').onclick=task(async()=>{documentPage+=1;$('notice').textContent=''});
-$('refresh').onclick=task(async()=>{$('notice').textContent='状态已刷新'});refresh().catch(e=>$('notice').textContent=e.message);
-</script></html>
+$('refresh').onclick=task(async()=>{$('notice').textContent='状态已刷新'});if(!identity)refresh().catch(e=>$('notice').textContent=e.message);
+</script></main></body></html>

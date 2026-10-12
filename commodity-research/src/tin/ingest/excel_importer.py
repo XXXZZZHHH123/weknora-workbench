@@ -600,7 +600,8 @@ def commit_preview(session: Session, preview_id: str, selected_row_keys: list[st
                 continue
             if warn := magnitude_warning(session, series_id, value):
                 warnings.append({"row_key": raw["row_key"], "warn": warn})
-        elif category != raw["category"]:
+        elif category != raw["category"] or (category == REVISION and
+                (raw.get("old_value") is None or not math.isclose(old, raw["old_value"], rel_tol=1e-12))):
             stale.append({"row_key": raw["row_key"], "series_id": series_id,
                           "as_of": raw["as_of"], "old_value": old,
                           "reason": "预览后库内数据已变化，已拦截改写"})
