@@ -78,6 +78,8 @@ class DataStore:
     def list_datasets(self) -> list[dict]:
         items = []
         for path in sorted(self.datasets.glob("*/manifest.json")):
+            if not re.fullmatch(r"[0-9a-f]{24}", path.parent.name):
+                continue
             doc = json.loads(path.read_text())
             items.append({k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")})
         for item in items:
