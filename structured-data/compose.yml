@@ -10,12 +10,14 @@ services:
       STRUCTURED_TENANT_ID: "10000"
       PYTHONPATH: /app/src
       STRUCTURED_MODEL_CONFIG: /run/secrets/model-config.json
+      STRUCTURED_SERVICE_TOKEN_FILE: /run/secrets/research-token
     ports:
       - "127.0.0.1:18082:18082"
     volumes:
       - ./data:/data
       - ./src:/app/src:ro
       - ../.private/model-config.json:/run/secrets/model-config.json:ro
+      - ../commodity-research/data/service-token:/run/secrets/research-token:ro
     networks:
       weknora:
         aliases: [cotton-data]

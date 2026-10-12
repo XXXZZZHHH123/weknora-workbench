@@ -93,8 +93,12 @@ def _same_origin(request):
         return False
 
 
-def bootstrap_html():
+def bootstrap_html(source=None):
     prefix = json.dumps(research_prefix())
+    import re
+    target = research_prefix() + '/'
+    if isinstance(source,str) and re.fullmatch('[a-f0-9]{64}',source):
+        target = research_prefix() + '/files?source=' + source
     return HTMLResponse('''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>商品研究</title>
 <p id="status">正在连接研究工作台…</p><script>
 const prefix = PREFIX;
@@ -109,11 +113,11 @@ window.addEventListener('message', async event => {
     const response = await fetch(prefix + '/auth/session', {method:'POST', credentials:'same-origin',
       headers:{'Authorization':'Bearer ' + token,'X-Tenant-ID':String(tenant)}});
     if (!response.ok) throw new Error('登录或空间权限核验失败，请重新登录后重试。');
-    location.replace(prefix + '/');
+    location.replace(TARGET);
   } catch (error) { document.getElementById('status').textContent = error.message; connecting = false; }
 });
 parent.postMessage({type:'research-ready'}, location.origin);
-</script></html>'''.replace('PREFIX', prefix), headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+</script></html>'''.replace('PREFIX', prefix).replace('TARGET', json.dumps(target)), headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
 class ResearchAuthMiddleware(BaseHTTPMiddleware):
@@ -136,7 +140,7 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
         if path == "/healthz":
             return JSONResponse({"status": "ok", "mode": "weknora"})
         if path == "/auth/bootstrap" and request.method == "GET":
-            return bootstrap_html()
+            return bootstrap_html(request.query_params.get('source'))
         if path.startswith("/static/") and request.method == "GET":
             return await call_next(request)
         try:

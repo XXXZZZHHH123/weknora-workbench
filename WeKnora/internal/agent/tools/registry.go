@@ -128,6 +128,9 @@ func (r *ToolRegistry) HasStructuredDataTools() bool {
 			(tool.mcpTool.Name == "resolve_fields" || tool.mcpTool.Name == "analyze_table")
 	}
 	for _, tool := range r.tools {
+		if tool.Name() == ToolStructuredData {
+			return true
+		}
 		if mcpTool, ok := tool.(*MCPTool); ok && isDataTool(mcpTool) {
 			return true
 		}

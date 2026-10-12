@@ -168,7 +168,7 @@ def _execute(job_id: str) -> None:
     try:
         with SessionLocal() as session:
             report = load(session, path, entered_by=job.actor, variety=job.variety,
-                          progress=progress)
+                          progress=progress, filename=job.filename)
             session.add(AuditLog(
                 at=datetime.now(timezone.utc), actor=job.actor, action="导入",
                 target_type="vendor_terminal", target_id=job.filename[:80],

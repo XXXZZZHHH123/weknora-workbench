@@ -1,6 +1,7 @@
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,9 +23,14 @@ class Settings(BaseSettings):
     public_prefix: str = "/research"
     auth_cache_seconds: int = 15
     session_seconds: int = 3600
+    structured_data_url: str = "http://structured-data:18082"
+    refresh_scheduler_enabled: bool = True
+    refresh_poll_seconds: float = 30.0
+    refresh_workers: int = 2
     variety: str = "SN"
     liquidity_min_volume: int = 500
     http_timeout: float = 40.0
+    sqlite_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
 
     # 启动时自动把库升到最新。默认开：部署脚本和容器启动都没有迁移步骤，
     # 不自动跑就意味着每次带迁移的发布都得有人手动上服务器执行——而漏跑的代价

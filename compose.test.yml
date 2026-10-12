@@ -12,6 +12,7 @@ services:
     environment:
       SSRF_WHITELIST_EXTRA: "searxng,qdrant,milvus,weaviate,doris-fe,doris-be,minio,dashscope.aliyuncs.com,cotton-data,structured-data,commodity-research,html.duckduckgo.com,api.duckduckgo.com"
       COMMODITY_RESEARCH_URL: http://commodity-research:8765
+      STRUCTURED_DATA_URL: http://structured-data:18082
       COMMODITY_RESEARCH_TOKEN_FILE: /run/secrets/research-token
       BATCH_EMBED_SIZE: "2"
       MAX_FILE_SIZE_MB: "100"

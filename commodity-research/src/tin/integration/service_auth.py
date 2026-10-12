@@ -15,7 +15,7 @@ from tin.integration.identity import Identity
 async def verify_service_request(request):
     try:
         timestamp = request.headers["x-research-timestamp"]
-        if abs(time.time() - int(timestamp)) > 60:
+        if len(timestamp)>20 or not timestamp.isdecimal() or abs(int(time.time()) - int(timestamp)) > 60:
             raise ValueError("expired")
         encoded = request.headers["x-research-identity"]
         if len(encoded) > 4096:

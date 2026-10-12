@@ -689,6 +689,11 @@ func structuredFieldTool(ctx context.Context, registry *ToolRegistry, sourceName
 	if registry == nil {
 		return "", fmt.Errorf("当前智能体没有字段确认工具")
 	}
+	if sourceName == "" || sourceName == ToolStructuredData {
+		if _, err := registry.GetTool(ToolStructuredData); err == nil {
+			return ToolStructuredData, nil
+		}
+	}
 	if catalog := registry.mcpCatalog(); catalog != nil {
 		if err := catalog.authorize(ctx); err != nil {
 			return "", err

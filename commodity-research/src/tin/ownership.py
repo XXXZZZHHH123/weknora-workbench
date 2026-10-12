@@ -13,6 +13,14 @@ from tin.models import Judgment, Researcher
 
 
 def current_researcher(session: Session) -> Researcher | None:
+    if session.info.get("system_refresh"):
+        rid = session.info.get("researcher_scope_id")
+        if not isinstance(rid, int) or isinstance(rid, bool):
+            raise PermissionError("后台个人研究操作必须明确研究员范围")
+        row = session.get(Researcher, rid)
+        if row is None:
+            raise PermissionError("后台研究员范围不存在")
+        return row
     user_id = session.info.get("weknora_user_id")
     if not user_id:
         return None
@@ -71,6 +79,8 @@ def require_owned(session: Session, row):
 
 
 def verified_actor(session: Session, fallback: str) -> str:
+    if session.info.get("system_refresh"):
+        return session.info.get("system_actor") or "自动刷新"
     user_id = session.info.get("weknora_user_id")
     return str(user_id) if user_id else fallback
 

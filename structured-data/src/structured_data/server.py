@@ -9,17 +9,21 @@ import secrets
 import threading
 import time
 import uuid
+import contextvars
+import inspect
+from typing import get_type_hints
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, create_model, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from .store import DataStore, dump
 from .imports import ImportManager
+from .workspaces import WorkspaceRegistry, Identity, current_identity
 
 MAX_UPLOAD = 100 * 1024 * 1024
 
@@ -63,14 +67,13 @@ def create_app(data_dir: str | Path | None = None):
     token = token_path.read_text().strip()
     if not token:
         raise RuntimeError("Empty service token")
-    store = DataStore(root)
-    manager = ImportManager(root)
-    from .field_resolver import FieldResolver
-    resolver = FieldResolver(store)
-    sessions: dict[str, float] = {}
+    pilot = int(os.environ.get('STRUCTURED_TENANT_ID', os.environ.get('COTTON_TENANT_ID', '10000')))
+    registry = WorkspaceRegistry(root, pilot)
+    store, manager, resolver = (registry.proxy(name) for name in ('store', 'manager', 'resolver'))
+    sessions: dict[str, dict] = {}
     jobs: dict[str, dict] = {}
     job_lock = threading.Lock()
-    import_lock = threading.Lock()
+    import_lock = registry.proxy('import_lock')
     hosts = ["127.0.0.1:*", "localhost:*", "structured-data:*", "cotton-data:*", "host.docker.internal:*"]
     origins = ["http://127.0.0.1:*", "http://localhost:*"]
     if public_authority:
@@ -162,6 +165,16 @@ def create_app(data_dir: str | Path | None = None):
         except ValueError as exc:
             return {'kind':'structured_analysis','status':'error','error':str(exc),'retryable':True,'next_step':'修正SQL或输入范围；这是系统反馈，不是字段确认请求'}
 
+    read_operations = {name: fn for name, fn in locals().copy().items() if name in {
+        'list_datasets','list_series','list_charts','query_series','compare_series','convert_price',
+        'resolve_fields','confirm_fields','execute_field_plan','get_result_evidence','analyze_table'}}
+    argument_models = {}
+    for name, fn in read_operations.items():
+        hints = get_type_hints(fn)
+        fields = {key:(hints.get(key,object), ... if value.default is inspect.Parameter.empty else value.default)
+                  for key,value in inspect.signature(fn).parameters.items()}
+        argument_models[name] = create_model(name+'_Arguments', __config__=ConfigDict(extra='forbid',strict=True), **fields)
+
     mcp_app = mcp.streamable_http_app()
 
     @asynccontextmanager
@@ -173,22 +186,89 @@ def create_app(data_dir: str | Path | None = None):
     app.state.store = store
     app.state.import_manager = manager
     app.state.mcp = mcp
+    app.state.workspaces = registry
+
+    @app.post('/api/tools/read')
+    async def native_read(request: Request):
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {'operation','arguments'}:
+            raise HTTPException(400, '只接受 operation 和 arguments')
+        if not isinstance(body['operation'], str) or not isinstance(body['arguments'], dict):
+            raise HTTPException(400, '未知只读操作')
+        if body['operation'] == 'describe_tools':
+            selected = body['arguments'].get('operations', [])
+            if (set(body['arguments']) - {'operations'} or not isinstance(selected, list)
+                    or len(selected)>11 or any(not isinstance(n,str) or n not in read_operations for n in selected)):
+                raise HTTPException(400, '请指定目录中的操作名称')
+            tools = await mcp.list_tools()
+            return {'tools':[{'name':tool.name, 'description':tool.description,
+                              **({'inputSchema':tool.inputSchema} if selected else {})}
+                             for tool in tools if not selected or tool.name in selected]}
+        fn = read_operations.get(body['operation'])
+        if fn is None or not isinstance(body['arguments'], dict):
+            raise HTTPException(400, '未知只读操作')
+        try:
+            arguments = argument_models[body['operation']].model_validate(body['arguments']).model_dump()
+        except (TypeError,ValidationError):
+            raise HTTPException(400, '查询参数与操作不匹配') from None
+        if inspect.iscoroutinefunction(fn):
+            return await fn(**arguments)
+        return await run_in_threadpool(lambda: fn(**arguments))
+
+    @app.post('/api/research/export')
+    async def research_export(request: Request):
+        body = await request.json()
+        if (not isinstance(body, dict) or set(body) - {'dataset_id','series_id','offset','limit'}
+                or not body.get('dataset_id') or not body.get('series_id')):
+            raise HTTPException(400, '请指定真实数据集版本和字段')
+        offset, limit = body.get('offset', 0), body.get('limit', 10000)
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 10000:
+            raise HTTPException(400, '导出分页参数无效')
+        dataset, series_id = body['dataset_id'], body['series_id']
+        spec = store._series(dataset, series_id)
+        with store._connect(dataset) as con:
+            total = con.execute('SELECT count(*) FROM observations WHERE series_id=?', [series_id]).fetchone()[0]
+            cursor = con.execute('SELECT * FROM observations WHERE series_id=? ORDER BY source_cell LIMIT ? OFFSET ?', [series_id, limit, offset])
+            names = [column[0] for column in cursor.description]
+            rows = [dict(zip(names, row)) for row in cursor.fetchall()]
+        return {'manifest':store.manifest(dataset), 'series':spec, 'rows':rows, 'total':total,
+                'offset':offset, 'next_offset':offset+len(rows) if offset+len(rows)<total else None,
+                'truncated':offset+len(rows)<total}
+
+    @app.get('/api/research/source/{dataset_id}')
+    def research_source(dataset_id: str):
+        return source(dataset_id)
 
     async def verify_weknora(authorization, active_tenant=None):
         import httpx
         base=os.environ.get('WEKNORA_API_URL','http://127.0.0.1:18081')
-        expected=os.environ.get('STRUCTURED_TENANT_ID',os.environ.get('COTTON_TENANT_ID','10000'))
-        if active_tenant and active_tenant != expected:
-            raise HTTPException(403,'此工作台尚未配置当前空间的数据目录。')
+        headers = {'Authorization': authorization}
+        if active_tenant:
+            headers['X-Tenant-ID'] = str(active_tenant)
         try:
-            async with httpx.AsyncClient(trust_env=False,timeout=10) as client:
-                result=await client.get(base+'/api/v1/auth/me',headers={'Authorization':authorization})
+            async with httpx.AsyncClient(trust_env=False,timeout=10,follow_redirects=False) as client:
+                result=await client.get(base+'/api/v1/auth/me',headers=headers)
         except httpx.HTTPError:
             raise HTTPException(503,'无法核验 WeKnora 登录，请稍后重试。') from None
         if result.status_code != 200:raise HTTPException(401,'WeKnora 登录已过期，请重新登录。')
-        identity=result.json(); user=identity.get('data',identity); user=user.get('user',user)
-        if str(user.get('tenant_id')) != expected:
-            raise HTTPException(403,'此工作台尚未配置当前空间的数据目录。')
+        doc = result.json(); data = doc.get('data', doc)
+        if not isinstance(data,dict) or data.get('tenant_required') or ('tenant' in data and not isinstance(data['tenant'],dict)):
+            raise HTTPException(403, '请先选择有权限的空间')
+        user = data.get('user', data)
+        if not isinstance(user,dict):
+            raise HTTPException(403, '没有已核验的空间成员权限')
+        tenant = data.get('tenant', {}).get('id', user.get('tenant_id'))
+        try:
+            tenant = int(tenant)
+            if tenant <= 0 or (active_tenant and tenant != int(active_tenant)):
+                raise ValueError('workspace mismatch')
+            membership = next((m for m in data.get('memberships', []) if int(m['tenant_id']) == tenant), None)
+            role = membership.get('role') if membership else None
+            if user.get('is_active') is False or not user.get('id') or role not in {'owner','admin','contributor','viewer'}:
+                raise ValueError('membership missing')
+            return Identity(str(user['id']), str(user.get('email','')), str(user.get('username') or user.get('email','')), tenant, role)
+        except (ValueError, TypeError, KeyError):
+            raise HTTPException(403, '没有已核验的空间成员权限') from None
 
     @app.middleware("http")
     async def protect(request: Request, call_next):
@@ -199,26 +279,50 @@ def create_app(data_dir: str | Path | None = None):
         path = request.url.path
         if path in {"/", "/health", "/login", "/api/ui-config"}:
             return await call_next(request)
-        if path.startswith("/mcp"):
+        identity = None
+        signed = path in {'/api/tools/read', '/api/research/export'} or path.startswith('/api/research/source/')
+        if signed:
+            from .service_auth import verify_service
+            try:
+                identity = await verify_service(request)
+            except HTTPException as exc:
+                return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
+        elif path.startswith("/mcp"):
             auth = request.headers.get("authorization", "")
             if not secrets.compare_digest(auth, "Bearer " + token):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            # Legacy MCP registrations remain bound to their original pilot space.
+            identity = Identity('legacy-mcp', '', '', pilot, 'viewer')
         else:
             authorization=request.headers.get('authorization','')
             if authorization.startswith('Bearer '):
                 try:
-                    await verify_weknora(authorization,request.headers.get('x-tenant-id'))
+                    identity = await verify_weknora(authorization,request.headers.get('x-tenant-id'))
                 except HTTPException as exc:
                     return JSONResponse({'detail':exc.detail},status_code=exc.status_code)
             else:
                 sid = request.cookies.get("structured_session", request.cookies.get("cotton_session", ""))
-                if sessions.get(sid, 0) < time.time():
+                session = sessions.get(sid)
+                if not session or session['expires'] < time.time():
                     return JSONResponse({"detail": "请先从本地 WeKnora 登录。"}, status_code=401)
+                try:
+                    identity = await verify_weknora(session['authorization'], session['identity'].tenant_id)
+                except HTTPException as exc:
+                    return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
+                requested = request.headers.get('x-tenant-id')
+                if requested and requested != str(identity.tenant_id):
+                    return JSONResponse({'detail':'当前空间已改变，请重新打开工作台'}, status_code=403)
             if request.method not in {"GET", "HEAD"}:
+                if not identity.can_write and not path.endswith('/preview'):
+                    return JSONResponse({'detail':'当前空间角色只有读取权限'}, status_code=403)
                 origin = request.headers.get("origin", "")
                 if origin != expected_origin(request):
                     return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
-        return await call_next(request)
+        marker = current_identity.set(identity)
+        try:
+            return await call_next(request)
+        finally:
+            current_identity.reset(marker)
 
     @app.get("/")
     def index():
@@ -231,7 +335,7 @@ def create_app(data_dir: str | Path | None = None):
     @app.get("/api/ui-config")
     def ui_config():
         from .ui_config import read_ui_config
-        return read_ui_config(store.root)
+        return read_ui_config(root)
 
     @app.post("/login")
     async def login(request: Request):
@@ -243,30 +347,22 @@ def create_app(data_dir: str | Path | None = None):
             raise HTTPException(403, "Origin not allowed")
         body = await request.json()
         base = os.environ.get("WEKNORA_API_URL", "http://127.0.0.1:18081")
-        async with httpx.AsyncClient(trust_env=False, timeout=10) as client:
+        async with httpx.AsyncClient(trust_env=False, timeout=10, follow_redirects=False) as client:
             if not body.get("email") or not body.get("password"):
                 raise HTTPException(401, "请输入 WeKnora 邮箱和密码。")
             authenticated = await client.post(base + "/api/v1/auth/login", json={"email": body["email"], "password": body["password"]})
             if authenticated.status_code != 200:
                 raise HTTPException(401, "邮箱或密码错误，请使用本地 WeKnora 账号。")
-            user_token = authenticated.json().get("token", "")
-            result = await client.get(base + "/api/v1/auth/me", headers={"Authorization": "Bearer " + user_token})
-        if result.status_code != 200:
-            raise HTTPException(401, "WeKnora 登录状态无效。")
-        identity = result.json()
-        user = identity.get("data", identity)
-        if "user" in user:
-            user = user["user"]
-        tenant = user.get("tenant_id")
-        expected = os.environ.get("STRUCTURED_TENANT_ID", os.environ.get("COTTON_TENANT_ID", "10000"))
-        if str(tenant) != expected:
-            raise HTTPException(403, "当前结构化试点只开放给已配置的测试租户。")
+            auth_doc = authenticated.json()
+            user_token = auth_doc.get('data', auth_doc).get('token', '')
+        authorization = 'Bearer ' + user_token
+        identity = await verify_weknora(authorization, body.get('tenant_id'))
         now = time.time()
-        for sid, expiry in list(sessions.items()):
-            if expiry < now:
+        for sid, session in list(sessions.items()):
+            if session['expires'] < now:
                 sessions.pop(sid, None)
         sid = secrets.token_urlsafe(32)
-        sessions[sid] = now + 8 * 3600
+        sessions[sid] = {'expires': now + 8*3600, 'identity':identity, 'authorization':authorization}
         response = JSONResponse({"ok": True})
         response.set_cookie("structured_session", sid, httponly=True, samesite="strict", max_age=8*3600)
         return response
@@ -274,12 +370,14 @@ def create_app(data_dir: str | Path | None = None):
     @app.get('/api/model-settings')
     def model_settings():
         from .model_settings import public_model
-        return public_model(root)
+        return public_model(store.root)
 
     @app.post('/api/model-settings')
     async def update_model_settings(request: Request):
         from .model_settings import save_model
-        return save_model(root,await request.json())
+        if current_identity.get().role not in {'owner','admin'}:
+            raise HTTPException(403, '只有空间所有者或管理员可修改模型配置')
+        return save_model(store.root,await request.json())
 
     @app.get("/api/datasets")
     def datasets():
@@ -319,10 +417,10 @@ def create_app(data_dir: str | Path | None = None):
         try:
             result = manager.ingest(path)
             with job_lock:
-                jobs[job_id] = {"id": job_id, "status": "completed", "result": result}
+                jobs[job_id].update(status='completed', result=result)
         except Exception as exc:
             with job_lock:
-                jobs[job_id] = {"id": job_id, "status": "failed", "error": str(exc)}
+                jobs[job_id].update(status='failed', error=str(exc))
         finally:
             path.unlink(missing_ok=True)
             path.parent.rmdir()
@@ -335,7 +433,7 @@ def create_app(data_dir: str | Path | None = None):
         if not import_lock.acquire(blocking=False):
             raise HTTPException(409, "已有导入任务，请等待完成。")
         job_id = uuid.uuid4().hex
-        uploads = root / "uploads" / job_id
+        uploads = store.root / "uploads" / job_id
         uploads.mkdir(parents=True)
         path = uploads / Path(file.filename.replace("\\", "/")).name
         try:
@@ -347,8 +445,9 @@ def create_app(data_dir: str | Path | None = None):
                         raise HTTPException(413, "文件超过100MB。")
                     f.write(chunk)
             with job_lock:
-                jobs[job_id] = {"id": job_id, "status": "processing", "stage": "扫描全部工作表并导入结构明确的表，不调用模型"}
-            threading.Thread(target=run_import, args=(job_id, path), daemon=True).start()
+                jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, "status": "processing", "stage": "扫描全部工作表并导入结构明确的表，不调用模型"}
+            context = contextvars.copy_context()
+            threading.Thread(target=context.run, args=(run_import, job_id, path), daemon=True).start()
         except Exception:
             path.unlink(missing_ok=True)
             uploads.rmdir()
@@ -359,7 +458,7 @@ def create_app(data_dir: str | Path | None = None):
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str):
         with job_lock:
-            if job_id not in jobs:
+            if job_id not in jobs or jobs[job_id].get('tenant_id') != current_identity.get().tenant_id:
                 raise HTTPException(404, "任务不存在；服务重启后请查看数据集列表确认导入结果。")
             return jobs[job_id]
 
@@ -395,10 +494,10 @@ def create_app(data_dir: str | Path | None = None):
         try:
             result = manager.confirm(import_id, body.mapping, body.save_template)
             with job_lock:
-                jobs[job_id] = {"id": job_id, "status": "completed", "result": result}
+                jobs[job_id].update(status='completed', result=result)
         except Exception as exc:
             with job_lock:
-                jobs[job_id] = {"id": job_id, "status": "failed", "error": str(exc)}
+                jobs[job_id].update(status='failed', error=str(exc))
         finally:
             import_lock.release()
 
@@ -409,8 +508,9 @@ def create_app(data_dir: str | Path | None = None):
             raise HTTPException(409, "已有导入或确认任务，请等待完成。")
         job_id = uuid.uuid4().hex
         with job_lock:
-            jobs[job_id] = {"id": job_id, "status": "processing", "stage": "校验映射并保存新版本"}
-        threading.Thread(target=run_confirm, args=(job_id, import_id, body), daemon=True).start()
+            jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, "status": "processing", "stage": "校验映射并保存新版本"}
+        context = contextvars.copy_context()
+        threading.Thread(target=context.run, args=(run_confirm, job_id, import_id, body), daemon=True).start()
         return {"id": job_id, "status": "processing"}
 
     @app.post("/api/imports/{import_id}/suggest")

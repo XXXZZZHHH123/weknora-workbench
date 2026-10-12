@@ -102,7 +102,8 @@ const UnlimitedMaxIterations = -1
 // AgentConfig represents the full agent configuration (used at tenant level and runtime)
 // This includes all configuration parameters for agent execution
 type AgentConfig struct {
-	ThinkingBudgetTokens int `json:"thinking_budget_tokens,omitempty"` // optional per-call reasoning budget; 0 uses vendor default
+	WorkbenchDefault     bool `json:"-"`                                // scoped ordinary-chat runtime, never a user configurable agent preset
+	ThinkingBudgetTokens int  `json:"thinking_budget_tokens,omitempty"` // optional per-call reasoning budget; 0 uses vendor default
 	// MaxIterations caps ReAct rounds. Zero is unset (filled with a default);
 	// a negative value is unlimited — the loop runs until the model stops,
 	// the user cancels, or another guard fires. See UnlimitedMaxIterations.

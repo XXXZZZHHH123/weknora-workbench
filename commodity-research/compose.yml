@@ -11,6 +11,7 @@ services:
       TIN_EXPORTS_DIR: /data/exports
       TIN_STAGING_DIR: /data/import_staging
       TIN_SERVICE_TOKEN_FILE: /run/secrets/research-token
+      TIN_STRUCTURED_DATA_URL: http://structured-data:18082
     ports:
       - "127.0.0.1:8765:8765"
     volumes:

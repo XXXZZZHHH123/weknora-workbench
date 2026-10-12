@@ -79,7 +79,11 @@ func (e *AgentEngine) executeStructuredConfirmation(ctx context.Context, state *
 		name, err = agenttools.StructuredConfirmationTool(ctx, e.toolRegistry, submission.SourceTool)
 	}
 	if err == nil {
-		args, marshalErr := json.Marshal(map[string]any{"resolution_id": submission.ResolutionID, "selections": submission.Selections, "note": submission.Note})
+		input := map[string]any{"resolution_id": submission.ResolutionID, "selections": submission.Selections, "note": submission.Note}
+		if name == agenttools.ToolStructuredData {
+			input = map[string]any{"operation": "confirm_fields", "arguments": input}
+		}
+		args, marshalErr := json.Marshal(input)
 		if marshalErr != nil {
 			err = marshalErr
 		} else {

@@ -52,6 +52,7 @@ class Series:
     sheet: str
     description: str | None = None
     points: dict[date, float] = field(default_factory=dict)
+    locations: dict[date, list[dict]] = field(default_factory=dict)
 
 
 class VendorFormatError(ValueError):
@@ -126,8 +127,8 @@ def read_workbook(data_or_path) -> list[Series]:
             for i in range(1, len(names)):
                 code = get(fields["code"], i)
                 code = str(code).strip() if code else ""
-                if not names[i] or not code or code in seen:
-                    continue  # 同一编码重复出现（短名 + 全名）时只取先出现的那份
+                if not names[i] or not code:
+                    continue
                 seen.add(code)
                 desc = get(fields.get("description", ""), i)
                 cols[i] = Series(
@@ -136,7 +137,8 @@ def read_workbook(data_or_path) -> list[Series]:
                     frequency=str(get(fields["frequency"], i) or "").strip(),
                     description=str(desc).strip() if desc and str(desc).strip() != "·" else None,
                 )
-            for row in ws.iter_rows(min_row=start + 1, values_only=True):
+            from openpyxl.utils import get_column_letter
+            for row_number, row in enumerate(ws.iter_rows(min_row=start + 1, values_only=True), start + 1):
                 day = row[0]
                 if not isinstance(day, datetime):
                     continue
@@ -149,12 +151,34 @@ def read_workbook(data_or_path) -> list[Series]:
                                          and value.strip() in vendor.missing):
                         continue
                     try:
-                        series.points[day] = float(value)
+                        number = float(value)
+                        if day in series.points and series.points[day] != number:
+                            raise VendorFormatError(f"{sheet} {series.code} {day} 同一日期包含不同值，请核对原件")
+                        series.points[day] = number
+                        series.locations.setdefault(day, []).append({"sheet": sheet, "row": row_number,
+                            "value_cell": f"{get_column_letter(i+1)}{row_number}", "date_cell": f"A{row_number}",
+                            "header_cells": [f"{get_column_letter(i+1)}{r}" for r in range(1,start+1)],
+                            "raw_value": value, "raw_date": day.isoformat(), "vendor_code": series.code})
                     except (TypeError, ValueError):
                         continue  # 文本备注，不是数值序列
             out.extend(cols.values())
     finally:
         wb.close()
+    combined = {}
+    for series in out:
+        key = (series.vendor, series.code)
+        if key not in combined:
+            combined[key] = series
+            continue
+        original = combined[key]
+        if original.unit != series.unit or original.frequency != series.frequency:
+            raise VendorFormatError(f"{series.code} 在多个位置具有不同单位或频率，请先确认口径")
+        for day, value in series.points.items():
+            if day in original.points and original.points[day] != value:
+                raise VendorFormatError(f"{series.code} {day} 多个单元格的数值冲突，请先核对原件")
+            original.points[day] = value
+            original.locations.setdefault(day, []).extend(series.locations[day])
+    out = list(combined.values())
     if not out:
         raise VendorFormatError(f"{getattr(data_or_path, 'name', '文件')} 里没有可识别的数据商终端格式工作表")
     if not any(s.points for s in out):
@@ -608,7 +632,7 @@ class LoadReport:
 
 def load(session, data_or_path, *, entered_by: str, variety: str = "SN",
          dry_run: bool = False, progress=None, register_new: bool = True,
-         catalog_only: bool = False) -> LoadReport:
+         catalog_only: bool = False, filename: str | None = None) -> LoadReport:
     """整本入库。所有观测仍逐条走 `record()` 闸门，只是共用一份预取的最新值索引。
 
     `register_new=False` 时拒绝库里没见过的编码，只更新已登记序列。**无人值守的自动导入
@@ -623,6 +647,27 @@ def load(session, data_or_path, *, entered_by: str, variety: str = "SN",
     from tin.models import Indicator
 
     report = LoadReport()
+    from tin.provenance.service import preserve_blob, snapshot_workbook, start_batch, record_with_evidence
+    from tin.ownership import verified_actor
+    entered_by = verified_actor(session, entered_by)
+    artifact = batch = None
+    if not dry_run:
+        if isinstance(data_or_path, bytes):
+            blob = data_or_path
+        elif hasattr(data_or_path, "getvalue"):
+            blob = data_or_path.getvalue()
+        else:
+            blob = Path(data_or_path).read_bytes()
+        original_name = filename or (Path(data_or_path).name if isinstance(data_or_path, (str, Path)) else "vendor.xlsx")
+        artifact = preserve_blob(session, blob, original_name)
+        snapshot_workbook(session, artifact)
+        batch = start_batch(session, artifact, kind="vendor", mapping={"variety": variety,
+            "register_new": register_new, "catalog_only": catalog_only, "filename": original_name})
+        if batch.status == "committed":
+            prior = dict(batch.result)
+            prior.update(written=0, unchanged=prior["written"]+prior["unchanged"], registered=0,
+                         reused=prior["registered"]+prior["reused"])
+            return LoadReport(**prior)
     everything = read_workbook(data_or_path)
     wanted = [s for s in everything if not discontinued(s)]
     report.skipped_series = len(everything) - len(wanted)
@@ -657,6 +702,9 @@ def load(session, data_or_path, *, entered_by: str, variety: str = "SN",
                 )
                 session.add(existing)
         else:
+            if series.unit and existing.unit != spec.unit:
+                report.rejected.append(f"{series.code}: 原件单位 {series.unit} 与已确认单位 {existing.unit} 不符，请重新确认转换")
+                continue
             report.reused += 1
             if not dry_run and not existing.vendor_code:
                 existing.vendor_code = series.code
@@ -668,6 +716,8 @@ def load(session, data_or_path, *, entered_by: str, variety: str = "SN",
         report.written = sum(len(s.points) for s in wanted)
         return report
     if catalog_only:
+        from dataclasses import asdict
+        batch.status, batch.result, batch.committed_at = "committed", asdict(report), datetime.now().astimezone()
         session.commit()
         return report
 
@@ -677,15 +727,26 @@ def load(session, data_or_path, *, entered_by: str, variety: str = "SN",
         for obs in observations(series, entered_by, registered.get(series.code), variety,
                                 series_id=ids[series.code]):
             try:
-                row = record(session, obs, cache=cache)
+                written = False
+                row = None
+                for locator in series.locations.get(obs.as_of.date(), [{"sheet": series.sheet, "vendor_code": series.code,
+                        "location_status": "unavailable"}]):
+                    row, added = record_with_evidence(session, obs, artifact=artifact,
+                        locator={**locator, "filename": original_name},
+                        batch_id=batch.id, cache=cache, mapping_version="vendor-v1",
+                        transformation={"note": obs.note, "time_filled": True})
+                    written = written or added
             except RecordError as exc:
                 report.rejected.append(f"{ids[series.code]}: {exc}")
                 break  # 同一序列后续点必然同样被拒，不必刷屏
-            report.written += row is not None
-            report.unchanged += row is None
+            report.written += written
+            report.unchanged += not written
         session.flush()
         # 最后一条必定回调：否则不足 20 条的工作簿进度永远停在 0%
         if progress and (n % 20 == 0 or n == len(wanted)):
             progress(n, len(wanted), report)
+    from dataclasses import asdict
+    batch.status = "partial" if report.rejected else "committed"
+    batch.result, batch.committed_at = asdict(report), datetime.now().astimezone()
     session.commit()
     return report

@@ -8,15 +8,15 @@
 import {computed,onMounted,onBeforeUnmount,ref,watch} from 'vue'
 import {useRoute,useRouter} from 'vue-router'
 import {useAuthStore} from '@/stores/auth'
-const auth=useAuthStore(),route=useRoute(),router=useRouter(),frame=ref<HTMLIFrameElement>()
-const src=computed(()=>'/structured/'+(route.query.view==='model-settings'?'?view=model-settings':''))
+const auth=useAuthStore(),route=useRoute(),router=useRouter(),frame=ref<HTMLIFrameElement>(),generation=ref(0)
+const src=computed(()=>'/structured/?session='+generation.value+(route.query.view==='model-settings'?'&view=model-settings':''))
 function sendAuth(){frame.value?.contentWindow?.postMessage({type:'structured-auth',token:auth.token,tenant:auth.selectedTenantId??auth.tenant?.id},window.location.origin)}
 function receive(e:MessageEvent){
   if(e.origin!==window.location.origin||e.source!==frame.value?.contentWindow)return
   if(e.data?.type==='structured-ready')sendAuth()
   if(e.data?.type==='structured-navigate')router.push({path:'/platform/structured-data',query:e.data.view==='model-settings'?{view:'model-settings'}:{}})
 }
-watch(()=>[auth.token,auth.selectedTenantId,auth.tenant?.id],sendAuth)
+watch(()=>[auth.token,auth.selectedTenantId,auth.tenant?.id,auth.user?.id],()=>{generation.value+=1},{flush:'sync'})
 onMounted(()=>window.addEventListener('message',receive))
 onBeforeUnmount(()=>window.removeEventListener('message',receive))
 </script>

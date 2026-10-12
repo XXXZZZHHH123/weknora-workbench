@@ -26,7 +26,8 @@ class FakeAuthClient:
 
     async def get(self, url, headers):
         assert url.endswith('/api/v1/auth/me')
-        return Reply({'data': {'user': {'tenant_id': 10000}}})
+        return Reply({'data': {'user': {'id':'test-user','tenant_id':10000},
+                              'memberships':[{'tenant_id':10000,'role':'owner'}]}})
 
 
 class Reply:

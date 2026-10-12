@@ -474,11 +474,18 @@ func (e *AgentEngine) runToolCall(
 	if target != nil {
 		confirmationName = target.ToolName
 	}
+	if tc.Function.Name == agenttools.ToolStructuredData {
+		confirmationName, _ = args["operation"].(string)
+		executionArgs, _ = args["arguments"].(map[string]any)
+		if executionArgs == nil {
+			executionArgs = map[string]any{}
+		}
+	}
 	if err := guardFieldConfirmation(ctx, confirmationName, executionArgs); err != nil {
 		return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: args, Result: &types.ToolResult{Success: false, Error: err.Error()}}
 	}
 	if ctx.Value(fieldConfirmationTurnKey{}) != nil && fieldToolName.MatchString(confirmationName) {
-		if tc.Function.Name == agenttools.ToolCallMCPTool {
+		if tc.Function.Name == agenttools.ToolCallMCPTool || tc.Function.Name == agenttools.ToolStructuredData {
 			args["arguments"] = executionArgs
 		} else {
 			args = executionArgs

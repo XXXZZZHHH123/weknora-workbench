@@ -169,3 +169,17 @@ test('analysis evidence follows the last substep without replacing the final ans
   assert.equal(structuredFieldAnswer([old,analysis]),null);
   assert.equal(structuredAnalysisEvidence([analysis,{...analysis,success:false}]),null);
 });
+
+test('native structured_data opens the same verified clarification and confirmation submission',()=>{
+ const e=event(JSON.stringify(plan),'structured_data');
+ const value=fieldClarification([e]);
+ assert.equal(value?.source_tool,'structured_data');
+ assert.equal(JSON.parse(confirmationText(value!,{v1:'eur'},'').split('字段确认提交：')[1]).source_tool,'structured_data');
+ assert.equal(fieldClarification([event(JSON.stringify(plan),'commodity_research')]),null);
+});
+
+test('native clarification uses full trusted tool_data when display output is truncated',()=>{
+ const value=fieldClarification([{type:'tool_call',tool_name:'structured_data',success:true,tool_data:plan,output:'{truncated'}]);
+ assert.equal(value?.resolution_id,plan.resolution_id);
+ assert.equal(value?.source_tool,'structured_data');
+});

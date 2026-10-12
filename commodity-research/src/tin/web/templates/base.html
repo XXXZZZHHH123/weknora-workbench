@@ -49,7 +49,8 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
         ('home', '00', '工作台', '/'), ('variety', '01', '总览', '/sn'), ('indicators', '02', '指标', '/sn/indicators'),
         ('judgment', '03', '判断', '/sn/judgment'), ('strategies', '04', '策略', '/sn/strategies'),
         ('diagram', '05', '产业图', '/sn/diagram'),
-        ('reports', '06', '日报', '/sn/reports'), ('entry', '07', '录入通道', '/sn/entry')] %}
+        ('reports', '06', '日报', '/sn/reports'), ('entry', '07', '录入通道', '/sn/entry'),
+        ('files', '08', '文件与来源', '/files'), ('materials', '09', '研报资料', '/materials')] %}
       <a href="{{ research_url(href) }}{% if key in ('home', 'variety', 'indicators') and d %}?date={{ d }}{% endif %}"
          class="nav-btn shrink-0 px-3 py-1.5 rounded-md font-medium {{ 'active text-[var(--primary)]' if nav == key else 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-soft)]' }}">
         <span class="tabular">{{ num }}</span> {{ label }}</a>

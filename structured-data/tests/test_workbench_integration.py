@@ -45,14 +45,16 @@ def test_shared_login_checks_identity_and_model_settings_redact_key(tmp_path,mon
         async def get(self,url,headers):
             token=headers['Authorization']
             if token=='Bearer expired':return httpx.Response(401,json={})
-            return httpx.Response(200,json={'data':{'user':{'tenant_id':10001 if token=='Bearer other' else 10000}}})
+            tenant=10001 if token=='Bearer other' else 10000
+            return httpx.Response(200,json={'data':{'user':{'id':'user-a','tenant_id':tenant},
+                'memberships':[{'tenant_id':tenant,'role':'owner'}]}})
     monkeypatch.setattr('httpx.AsyncClient',AuthClient)
     monkeypatch.setenv('STRUCTURED_TENANT_ID','10000')
     monkeypatch.setenv('STRUCTURED_MODEL_CONFIG',str(tmp_path/'absent'))
     with TestClient(create_app(tmp_path)) as c:
         assert c.get('/api/datasets').status_code==401
         assert c.get('/api/datasets',headers={'Authorization':'Bearer expired'}).status_code==401
-        assert c.get('/api/datasets',headers={'Authorization':'Bearer other'}).status_code==403
+        assert c.get('/api/datasets',headers={'Authorization':'Bearer other'}).json()=={'datasets':[]}
         good={'Authorization':'Bearer valid','Origin':'http://testserver','X-Tenant-ID':'10000'}
         assert c.get('/api/datasets',headers=good).status_code==200
         assert c.get('/api/datasets',headers=good|{'X-Tenant-ID':'10001'}).status_code==403

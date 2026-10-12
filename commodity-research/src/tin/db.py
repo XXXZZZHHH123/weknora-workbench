@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import JSON, DateTime, create_engine, event
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
@@ -41,11 +41,17 @@ def _enable_sqlite_fk(dbapi_conn, _record):
     if isinstance(dbapi_conn, sqlite3.Connection):
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute(f"PRAGMA busy_timeout={int(settings.sqlite_timeout_seconds * 1000)}")
         cur.close()
 
 
 def make_engine(url: str | None = None, **kwargs) -> Engine:
-    engine = create_engine(url or settings.database_url, **kwargs)
+    selected = url or settings.database_url
+    if make_url(selected).get_backend_name() == "sqlite":
+        connect_args = dict(kwargs.get("connect_args") or {})
+        connect_args.setdefault("timeout", settings.sqlite_timeout_seconds)
+        kwargs["connect_args"] = connect_args
+    engine = create_engine(selected, **kwargs)
     event.listen(engine, "connect", _enable_sqlite_fk)
     return engine
 
@@ -95,6 +101,15 @@ def tenant_session_factory(tenant_id: int):
             command.upgrade(cfg, "head")
             path.chmod(0o600)
             tenant_engine = make_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+            # Change journal mode exactly once per engine initialization, before
+            # serving requests. WAL permits status/page readers during an ingest
+            # write transaction; per-connection busy_timeout handles short write
+            # contention without taking a global reader lock.
+            with tenant_engine.connect() as connection:
+                mode = connection.exec_driver_sql("PRAGMA journal_mode=WAL").scalar()
+                if mode != "wal":
+                    raise RuntimeError("Workspace SQLite WAL initialization failed")
+                connection.commit()
             factory = sessionmaker(tenant_engine, expire_on_commit=False)
             # Workspace-wide indicator definitions; no personal default judgment.
             from tin.jobs.seed import seed_indicators
@@ -115,9 +130,13 @@ def SessionLocal(**kwargs):
     session = tenant_session_factory(identity.tenant_id)(**kwargs)
     session.info.update(identity.session_info())
     from tin.ownership import current_researcher
+    from tin.models import Researcher
+    from sqlalchemy import select
     try:
-        current_researcher(session)
-        session.commit()
+        existing = session.scalar(select(Researcher.id).where(Researcher.weknora_user_id == identity.user_id))
+        if existing is None:
+            current_researcher(session)
+            session.commit()
     except Exception:
         session.close()
         raise
@@ -126,3 +145,15 @@ def SessionLocal(**kwargs):
 
 # Compatibility for standalone schema checks and callers inspecting sessionmaker.kw.
 SessionLocal.kw = _legacy_sessions.kw
+
+
+
+def SystemSession(tenant_id: int):
+    """Internal scheduler access to workspace facts; never creates a user account.
+
+    Callers must obtain the workspace from verified HTTP context or the local
+    registry of existing databases. This factory is never exposed as an endpoint.
+    """
+    session = tenant_session_factory(tenant_id)()
+    session.info.update(tenant_id=tenant_id, system_refresh=True, system_actor="自动刷新")
+    return session

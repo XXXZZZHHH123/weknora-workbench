@@ -37,7 +37,8 @@ def test_public_origin_keeps_host_authentication_and_origin_checks(tmp_path, mon
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def get(self, url, headers):
-            return httpx.Response(200, json={'data': {'user': {'tenant_id': 10000}}})
+            return httpx.Response(200, json={'data': {'user': {'id':'user-a', 'tenant_id':10000},
+                'memberships':[{'tenant_id':10000,'role':'owner'}]}})
 
     monkeypatch.setattr('httpx.AsyncClient', AuthClient)
     with TestClient(create_app(tmp_path)) as client:

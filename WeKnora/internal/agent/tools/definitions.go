@@ -100,6 +100,7 @@ func AvailableToolDefinitions() []AvailableTool {
 		{Name: ToolDatabaseQuery, Label: "查询数据库", Description: "查询数据库中的信息"},
 		{Name: ToolDataAnalysis, Label: "数据分析", Description: "理解数据文件并进行数据分析"},
 		{Name: ToolDataSchema, Label: "查看数据元信息", Description: "获取表格文件的元信息"},
+		{Name: ToolStructuredData, Label: "结构化表格", Description: "读取当前空间Excel、原单元格证据并执行只读SQL计算"},
 		{Name: ToolCommodityResearch, Label: "商品研究", Description: "读取当前空间指标及个人判断、信号、简报和策略"},
 		{Name: ToolWikiReadPage, Label: "读取Wiki页面", Description: "读取指定的Wiki页面内容"},
 		{Name: ToolWikiSearch, Label: "搜索Wiki", Description: "在Wiki中搜索页面"},

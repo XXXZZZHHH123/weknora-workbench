@@ -4,23 +4,37 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from contextvars import ContextVar
+from urllib.parse import urlsplit
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tin.config import settings
 from tin.ingest import NotPublished, cboe, cfets, fred, shfe
-from tin.ingest.record import ensure_indicator, record
+from tin.ingest.record import ensure_indicator, latest_index, record
 from tin.ingest.shfe import Batch
-from tin.models import FetchRun, TradingDay
+from tin.models import FetchRun, TradingDay, Indicator, ObservationSource
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"}
+_CAPTURES = ContextVar("source_responses", default=None)
+
+
+def _capture(response, captures=None, url=None):
+    captures = _CAPTURES.get() if captures is None else captures
+    if captures is not None:
+        captures.append({"data": response.content, "source_url": url or str(response.request.url),
+                         "response_url": str(response.request.url),
+                         "filename": urlsplit(str(response.request.url)).path.rsplit("/",1)[-1] or "response.bin",
+                         "http_status": response.status_code})
 
 
 def _get(client: httpx.Client, url: str, method: str = "GET") -> httpx.Response:
     r = client.request(method, url)
+    _capture(r, url=url)
     if r.status_code == 404:
         raise NotPublished(f"{url} 返回 404")
     r.raise_for_status()
@@ -64,12 +78,14 @@ def _vix(c, d):
 def _fred(c, d):
     """并发下载独立序列；FRED 多 ID 下载会忽略日期窗口并返回过大的完整历史。"""
     merged = Batch()
+    captures = _CAPTURES.get()
 
     def fetch_one(spec):
         url = fred.url_for(spec, d)
         # 独立连接避免代理环境下共享连接池在线程间阻塞。
         # 并且不要带上 UA：FRED 对带浏览器 UA 的并发请求会挂住不响应，直到读超时。
         response = httpx.get(url, timeout=15, follow_redirects=True)
+        _capture(response, captures, url=url)
         response.raise_for_status()
         return fred.parse_series(response.text, spec, through=d, source_url=url)
 
@@ -98,7 +114,7 @@ FETCHERS = (
 )
 
 
-def store(session: Session, batch: Batch) -> int:
+def store(session: Session, batch: Batch, *, documents=None, batch_label=None) -> int:
     for spec in batch.indicators:
         ensure_indicator(session, spec)
     if batch.trading_day:
@@ -106,7 +122,41 @@ def store(session: Session, batch: Batch) -> int:
         if session.get(TradingDay, d.isoformat()) is None:
             session.add(TradingDay(trade_date=d.isoformat(), year=d.year, year_seq=seq))
     fetched_at = datetime.now(timezone.utc)
-    return sum(record(session, o, fetched_at=fetched_at) is not None for o in batch.observations)
+    if not documents:
+        return sum(record(session, o, fetched_at=fetched_at) is not None for o in batch.observations)
+    from tin.provenance.service import preserve_blob, start_batch, record_with_evidence
+    from tin.provenance.automatic import locate_document
+    artifacts = []
+    for document in documents:
+        artifact = preserve_blob(session, document["data"], document["filename"], kind="automatic",
+                                 source_url=document["source_url"], metadata={"http_status": document.get("http_status")})
+        imported = start_batch(session, artifact, kind="automatic", key={"artifact": artifact.id,
+            "url": document["source_url"], "target": batch_label})
+        artifacts.append((document, artifact, imported, {}))
+    documents_by_url = {}
+    for item in artifacts:
+        documents_by_url.setdefault(item[0]["source_url"], []).append(item)
+    series_ids = list({obs.series_id for obs in batch.observations})
+    cache = latest_index(session, series_ids)
+    # Keep strong references for record()'s session.get checks: SQLAlchemy's
+    # identity map otherwise evicts unreferenced indicators between rows.
+    _indicators = session.scalars(select(Indicator).where(Indicator.series_id.in_(series_ids))).all()
+    evidence_ids = set(session.scalars(select(ObservationSource.id).where(
+        ObservationSource.artifact_id.in_([artifact.id for _, artifact, _, _ in artifacts]))))
+    written = 0
+    for obs in batch.observations:
+        candidates = documents_by_url.get(obs.source_url, [])
+        if len(candidates) != 1:
+            raise ValueError(f"{obs.series_id} 原件不能唯一匹配，拒绝入库")
+        doc, artifact, imported, prepared = candidates[0]
+        _, added = record_with_evidence(session, obs, artifact=artifact,
+            locator=locate_document(doc["data"], obs, prepared=prepared), batch_id=imported.id,
+            mapping_version="official-parser-v1", transformation={"parser": batch_label, "response_url": doc.get("response_url")},
+            cache=cache, evidence_ids=evidence_ids)
+        written += added
+    for _, _, imported, _ in artifacts:
+        imported.status, imported.committed_at = "committed", fetched_at
+    return written
 
 
 def run_one(session: Session, client: httpx.Client, f: Fetcher, d: date) -> FetchRun:
@@ -114,10 +164,12 @@ def run_one(session: Session, client: httpx.Client, f: Fetcher, d: date) -> Fetc
                    status="running", attempts=0)
     for attempt in (1, 2):
         run.attempts = attempt
+        captures = []
+        marker = _CAPTURES.set(captures)
         try:
             batch = f.fetch(client, d)
             with session.begin_nested():
-                run.written = store(session, batch)
+                run.written = store(session, batch, documents=captures, batch_label=f"{f.name}:{d}")
             run.status = "部分失败" if batch.errors else "ok"
             run.error = "；".join(batch.errors) if batch.errors else None
             break
@@ -127,6 +179,18 @@ def run_one(session: Session, client: httpx.Client, f: Fetcher, d: date) -> Fetc
         except Exception as e:  # noqa: BLE001 —— 任一数据源故障都不能中断其余采数
             run.status, run.error = "失败", f"{type(e).__name__}: {e}"
             log.warning("%s %s 第 %d 次失败：%s", f.name, d, attempt, run.error)
+        finally:
+            _CAPTURES.reset(marker)
+            # Even unpublished or malformed real responses remain auditable.
+            from tin.provenance.service import preserve_blob
+            for document in captures:
+                try:
+                    with session.begin_nested():
+                        preserve_blob(session, document["data"], document["filename"], kind="automatic",
+                                      source_url=document["source_url"], metadata={"http_status": document.get("http_status"),
+                                      "fetcher": f.name, "target_date": d.isoformat(), "status": run.status})
+                except Exception as exc:
+                    run.status, run.error = "失败", f"原件留存失败 {type(exc).__name__}: {exc}"
     run.finished_at = datetime.now(timezone.utc)
     session.add(run)
     session.commit()

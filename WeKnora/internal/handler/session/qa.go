@@ -939,7 +939,12 @@ func (h *Handler) KnowledgeQA(c *gin.Context) {
 		_ = c.Error(errors.NewBadRequestError("Local browser requests must use the agent endpoint"))
 		return
 	}
-	h.executeQA(reqCtx, qaModeNormal, !request.DisableTitle)
+	h.prepareWorkbenchDefault(reqCtx, request)
+	if reqCtx.customAgent != nil && reqCtx.customAgent.WorkbenchDefault {
+		h.executeQA(reqCtx, qaModeAgent, !request.DisableTitle)
+	} else {
+		h.executeQA(reqCtx, qaModeNormal, !request.DisableTitle)
+	}
 }
 
 // AgentQA godoc
@@ -963,6 +968,8 @@ func (h *Handler) AgentQA(c *gin.Context) {
 		c.Error(err)
 		return
 	}
+
+	h.prepareWorkbenchDefault(reqCtx, request)
 
 	// Determine if agent mode should be enabled
 	// Priority: customAgent.IsAgentMode() > request.AgentEnabled

@@ -9,11 +9,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { useRoute } from 'vue-router'
 const auth = useAuthStore()
+const route = useRoute()
 const frame = ref<HTMLIFrameElement>()
 const generation = ref(0)
 const tenantId = computed(() => auth.selectedTenantId ?? auth.tenant?.id)
-const bootstrapUrl = computed(() => `/research/auth/bootstrap?session=${generation.value}`)
+const bootstrapUrl = computed(() => {
+  const source=typeof route.query.source==='string' && /^[a-f0-9]{64}$/.test(route.query.source) ? route.query.source : ''
+  return `/research/auth/bootstrap?session=${generation.value}${source ? '&source='+source : ''}`
+})
 function restartSession() { generation.value += 1 }
 function sendAuth() {
   if (!auth.token || !tenantId.value) return
@@ -34,6 +39,6 @@ onBeforeUnmount(() => window.removeEventListener('message', receive))
 <style scoped>
 .research-workspace{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;background:var(--app-bg,#f4f7f5)}
 .research-toolbar{display:flex;gap:24px;align-items:center;padding:16px 24px;background:var(--app-card-bg,white);border-bottom:1px solid var(--app-border-color,#dce5df)}
-.research-toolbar span{font-size:13px;color:var(--app-text-secondary,#5b6b63)}
+.research-toolbar span{font-size:var(--app-text-md);color:var(--app-text-secondary,#5b6b63)}
 .research-empty{padding:24px}iframe{width:100%;flex:1;min-height:0;border:0}
 </style>

@@ -159,7 +159,25 @@ templates.env.filters["local"] = lambda dt: dt.astimezone(SHANGHAI).strftime("%Y
 
 # Resolve SessionLocal at request time, preserving the app's test/deployment overrides.
 from tin.integration.read_api import router as research_read_router
+from tin.web.materials import router as materials_router
+from tin.web.refresh import router as refresh_router
+from tin.provenance.router import router as sources_router
 app.include_router(research_read_router)
+app.include_router(materials_router)
+app.include_router(refresh_router)
+app.include_router(sources_router)
+
+
+@app.on_event('startup')
+def _start_workspace_refresh():
+    from tin.refresh.scheduler import start
+    start()
+
+
+@app.on_event('shutdown')
+def _stop_workspace_refresh():
+    from tin.refresh.scheduler import stop
+    stop()
 
 app.include_router(build_strategy_router(lambda: SessionLocal(), templates,
                                          lambda *args, **kwargs: _shell(*args, **kwargs)))

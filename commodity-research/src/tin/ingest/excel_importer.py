@@ -59,6 +59,8 @@ class ColumnSpec:
     candidates: list[str] = field(default_factory=list)
     as_of_time: str | None = None  # "11:30"，仅当单元格只有日期时使用
     error: str | None = None
+    factor: float = 1
+    source_unit: str | None = None
 
 
 @dataclass
@@ -73,6 +75,7 @@ class RowItem:
     old_value: float | None = None
     time_filled: bool = False
     warn: str | None = None
+    locator: dict = field(default_factory=dict)
 
 
 def _norm(text: str) -> str:
@@ -279,10 +282,83 @@ def _classify(session: Session, series_id: str, as_of: datetime, value: float) -
     return REVISION, latest.value
 
 
+def read_tables(data, filename):
+    name = filename.lower()
+    if name.endswith((".xlsx", ".xlsm")):
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+        try:
+            tables = [(ws.title, [list(r) for r in ws.iter_rows(values_only=True)]) for ws in wb.worksheets]
+        finally:
+            wb.close()
+    elif name.endswith(".xls"):
+        import xlrd
+        wb = xlrd.open_workbook(file_contents=data)
+        tables = [(ws.name, [[_xls_cell(ws.cell(r,c), wb.datemode) for c in range(ws.ncols)]
+                            for r in range(ws.nrows)]) for ws in wb.sheets()]
+    elif name.endswith((".csv", ".tsv")):
+        tables = [("CSV", [list(r) for r in csv.reader(io.StringIO(_decode_csv(data)),
+                                  delimiter="\t" if name.endswith(".tsv") else ",")])]
+    else:
+        raise ImportError_("不支持的表格格式")
+    count = sum(len(r) for _, rows in tables for r in rows)
+    if count > MAX_CELLS:
+        raise ImportError_(f"文件超出规模限制（最大支持 {MAX_CELLS:,} 单元格），请分批导入")
+    tables = [(sheet, rows) for sheet, rows in tables if any(any(v not in (None, "") for v in r) for r in rows)]
+    if not tables:
+        raise ImportError_("文件里没有任何数据")
+    return tables
+
+
 def build_preview(session: Session, data: bytes, filename: str, actor: str, variety: str) -> dict:
     from tin.ownership import verified_actor
+    from tin.provenance.service import preserve_blob, snapshot_workbook, stable_hash, source_family
+    from tin.models import SourceMapping
     actor = verified_actor(session, actor)
-    rows = read_table(data, filename)
+    artifact = preserve_blob(session, data, filename)
+    snapshot_workbook(session, artifact, filename=filename)
+    tables = read_tables(data, filename)
+    fingerprint_sheets = []
+    for sheet, rows in tables:
+        identifiers = []
+        if detect_shape(rows[0]) == "narrow":
+            code_col = _find(rows[0], NARROW_HINTS)
+            identifiers = list(dict.fromkeys(str(r[code_col]) for r in rows[1:] if code_col is not None and len(r)>code_col))
+        fingerprint_sheets.append([sheet, [_json_cell(v) for v in rows[0]], identifiers])
+    fingerprint = stable_hash({"format": "table-v1", "variety": variety, "sheets": fingerprint_sheets,
+                               "source_family": source_family(filename)})
+    learned = session.get(SourceMapping, fingerprint)
+    columns, items = [], []
+    for index, (sheet, rows) in enumerate(tables):
+        prefix = "" if index == 0 else f"s{index}:"
+        cols, values = _sheet_payload(session, rows, sheet, learned=learned, prefix=prefix)
+        for col in cols:
+            col.col_key = prefix + col.col_key
+            columns.append(asdict(col))
+        for item in values:
+            item.col_key = prefix + item.col_key
+            item.row_key = prefix + item.row_key
+            items.append(asdict(item))
+    payload = {"variety": variety, "artifact_id": artifact.id, "format_fingerprint": fingerprint,
+               "columns": columns, "rows": items, "sheets": list(artifact.details.get("sheets", {}))}
+    now = datetime.now(timezone.utc)
+    preview = ImportPreview(id=str(uuid.uuid4()), variety=variety, actor=actor, filename=filename,
+                            payload=payload, created_at=now, expires_at=now + PREVIEW_TTL)
+    session.execute(ImportPreview.__table__.delete().where(ImportPreview.expires_at < now))
+    session.add(preview)
+    session.commit()
+    return {"preview_id": preview.id, "artifact_id": artifact.id, "sheets": payload["sheets"],
+            "known_mapping": learned is not None and all(not c.get("error") for c in columns), **summarize(payload)}
+
+
+def _json_cell(value):
+    from tin.provenance.service import _json
+    return _json(value)
+
+
+def _sheet_payload(session, rows, sheet, *, learned=None, prefix=""):
+    from openpyxl.utils import get_column_letter
+    from tin.provenance.service import _json
     header = rows[0]
     indicators = list(session.scalars(select(Indicator)))
     columns: list[ColumnSpec] = []
@@ -302,11 +378,17 @@ def build_preview(session: Session, data: bytes, filename: str, actor: str, vari
             if spec is None:
                 spec = match_header(str(raw_series or ""), indicators)
                 spec.col_key = f"c{len(by_key)}"
+                _learn_spec(session, spec, learned, prefix)
                 by_key[str(raw_series)] = spec
                 columns.append(spec)
             _append(session, items, spec, r, row[i_as_of] if i_as_of < len(row) else None,
                     row[i_value] if i_value < len(row) else None,
-                    row[i_note] if i_note is not None and i_note < len(row) else None)
+                    row[i_note] if i_note is not None and i_note < len(row) else None,
+                    locator={"sheet": sheet, "row": r, "value_cell": f"{get_column_letter(i_value+1)}{r}",
+                             "date_cell": f"{get_column_letter(i_as_of+1)}{r}",
+                             "header_cells": [f"{get_column_letter(i_value+1)}1", f"{get_column_letter(i_series+1)}{r}"],
+                             "raw_value": _json(row[i_value] if i_value < len(row) else None),
+                             "raw_date": _json(row[i_as_of] if i_as_of < len(row) else None)})
     else:
         i_as_of = _find(header, DATE_HINTS) or 0
         for c, cell in enumerate(header):
@@ -314,25 +396,45 @@ def build_preview(session: Session, data: bytes, filename: str, actor: str, vari
                 continue
             spec = match_header(str(cell), indicators)
             spec.col_key = f"c{c}"
+            _learn_spec(session, spec, learned, prefix)
             columns.append(spec)
         for r, row in enumerate(rows[1:], start=2):
             when = row[i_as_of] if i_as_of < len(row) else None
             for spec in columns:
                 c = int(spec.col_key[1:])
-                _append(session, items, spec, r, when, row[c] if c < len(row) else None, None)
+                _append(session, items, spec, r, when, row[c] if c < len(row) else None, None,
+                        locator={"sheet": sheet, "row": r, "value_cell": f"{get_column_letter(c+1)}{r}",
+                                 "date_cell": f"{get_column_letter(i_as_of+1)}{r}",
+                                 "header_cells": [f"{get_column_letter(c+1)}1"],
+                                 "raw_value": _json(row[c] if c < len(row) else None), "raw_date": _json(when)})
 
-    payload = {"variety": variety, "columns": [asdict(c) for c in columns],
-               "rows": [asdict(i) for i in items]}
-    now = datetime.now(timezone.utc)
-    preview = ImportPreview(id=str(uuid.uuid4()), variety=variety, actor=actor, filename=filename,
-                            payload=payload, created_at=now, expires_at=now + PREVIEW_TTL)
-    session.execute(ImportPreview.__table__.delete().where(ImportPreview.expires_at < now))
-    session.add(preview)
-    session.commit()
-    return {"preview_id": preview.id, **summarize(payload)}
+    return columns, items
 
 
-def _append(session: Session, items: list[RowItem], spec: ColumnSpec, row_no: int,
+def _learn_spec(session, spec, learned, prefix):
+    if learned and prefix + spec.col_key in learned.config:
+        selected = learned.config[prefix + spec.col_key]
+        ind = session.get(Indicator, selected["series_id"])
+        if ind is not None:
+            if selected.get("unit") != ind.unit or selected.get("caliber") != ind.caliber:
+                spec.needs_choice = True
+                spec.error = "已确认指标的单位或口径已改变，请重新确认"
+                return
+            spec.series_id, spec.needs_choice, spec.error = ind.series_id, False, None
+            _finish(spec, ind)
+            spec.factor, spec.source_unit = selected.get("factor", 1), selected.get("source_unit")
+            if selected.get("as_of_time"):
+                spec.as_of_time = selected["as_of_time"]
+
+
+def _append(session, items, spec, row_no, raw_when, raw_value, raw_note, *, locator=None):
+    count = len(items)
+    _append_core(session, items, spec, row_no, raw_when, raw_value, raw_note)
+    if len(items) > count:
+        items[-1].locator = locator or {}
+
+
+def _append_core(session: Session, items: list[RowItem], spec: ColumnSpec, row_no: int,
             raw_when: Any, raw_value: Any, raw_note: Any) -> None:
     if raw_value is None or str(raw_value).strip() == "":
         return
@@ -349,7 +451,9 @@ def _append(session: Session, items: list[RowItem], spec: ColumnSpec, row_no: in
                              f"第 {row_no} 行 [时点]：{e}"))
         return
     try:
-        value = parse_value(raw_value, spec.unit)
+        value = parse_value(raw_value, spec.source_unit or spec.unit) * spec.factor
+        if not math.isfinite(value):
+            raise ValueError("换算结果不是有限数值")
     except ValueError as e:
         items.append(RowItem(key, spec.col_key, spec.series_id or "", as_of.isoformat(), 0.0, ERROR,
                              f"第 {row_no} 行 [{spec.header}]：{e}"))
@@ -411,11 +515,42 @@ def commit_preview(session: Session, preview_id: str, selected_row_keys: list[st
             col["as_of_time"] = at
         if note := override.get("note"):
             col["note"] = note
+        if "factor" in override:
+            factor = override["factor"]
+            if isinstance(factor, bool) or not isinstance(factor,(int,float)) or not math.isfinite(factor) or factor <= 0:
+                raise ImportError_("单位换算系数必须是明确的正有限数")
+            col["factor"] = factor
+        if override.get("source_unit"):
+            col["source_unit"] = override["source_unit"]
 
     selected = set(selected_row_keys)
     committed, revisions, stale, dates, warnings = 0, 0, [], set(), []
+    from tin.provenance.service import start_batch, record_with_evidence, verified_artifact_bytes
+    from tin.models import SourceArtifact, SourceMapping
+    artifact = session.get(SourceArtifact, preview.payload.get("artifact_id")) if preview.payload.get("artifact_id") else None
+    if artifact is not None:
+        verified_artifact_bytes(session, artifact)
+    learned = {key: {"series_id": col.get("series_id"), "as_of_time": col.get("as_of_time"),
+                    "factor": col.get("factor",1), "source_unit": col.get("source_unit") or indicators[col["series_id"]].unit,
+                    "unit": indicators[col["series_id"]].unit, "caliber": indicators[col["series_id"]].caliber}
+               for key, col in columns.items() if col.get("series_id") and not col.get("error")}
+    batch = start_batch(session, artifact, kind="table", mapping=learned,
+        key={"artifact": artifact.id, "mapping": learned, "selection": sorted(selected),
+             "format": preview.payload.get("format_fingerprint"), "filename": preview.filename}) if artifact else None
+    if batch is not None and batch.status == "committed":
+        return {**batch.result, "committed": 0, "revisions": 0, "already_imported": True, "previous_result": batch.result}
+    fingerprint = preview.payload.get("format_fingerprint")
+    if fingerprint and learned:
+        profile = session.get(SourceMapping, fingerprint)
+        if profile is None:
+            profile = SourceMapping(id=fingerprint, config=learned, version=1,
+                                    confirmed_by=actor, confirmed_at=datetime.now(timezone.utc))
+            session.add(profile)
+        elif profile.config != learned:
+            profile.config, profile.version = learned, profile.version + 1
+            profile.confirmed_by, profile.confirmed_at = actor, datetime.now(timezone.utc)
     for raw in preview.payload["rows"]:
-        if raw["row_key"] not in selected or raw["category"] == SKIP:
+        if raw["row_key"] not in selected and raw["category"] != SKIP:
             continue
         col = columns[raw["col_key"]]
         series_id = col.get("series_id")
@@ -423,18 +558,40 @@ def commit_preview(session: Session, preview_id: str, selected_row_keys: list[st
             stale.append({"row_key": raw["row_key"], "reason": col.get("error") or "该列未完成口径确认"})
             continue
 
-        as_of = datetime.fromisoformat(raw["as_of"])
+        try:
+            if raw.get("locator"):
+                source_date = raw["locator"]["raw_date"]
+                if isinstance(source_date, str) and "T" in source_date:
+                    source_date = datetime.fromisoformat(source_date)
+                as_of, _ = parse_as_of(source_date, time.fromisoformat(col["as_of_time"]) if col.get("as_of_time") else None)
+                value = parse_value(raw["locator"]["raw_value"], col.get("source_unit") or indicators[series_id].unit) * col.get("factor",1)
+                if not math.isfinite(value):
+                    raise ValueError("换算结果不是有限数值")
+            else:
+                as_of = datetime.fromisoformat(raw["as_of"])
+                value = raw["value"]
+        except (ValueError, TypeError, KeyError) as exc:
+            stale.append({"row_key": raw["row_key"], "reason": f"原始单元格不能作为观测：{exc}"})
+            continue
         if col.get("as_of_time") and raw["time_filled"]:
             hh, mm = (int(x) for x in col["as_of_time"].split(":"))
             as_of = as_of.replace(hour=hh, minute=mm)
-        value = raw["value"]
 
         # 并发陈旧检测：预览与确认之间库内可能已被写入
         category, old = _classify(session, series_id, as_of, value)
+        if category == SKIP and artifact:
+            ind = indicators[series_id]
+            record_with_evidence(session, ObservationIn(series_id=series_id, value=value, as_of=as_of,
+                caliber=Caliber.model_validate(ind.caliber), source="人工", entered_by=actor,
+                note=col.get("note") or default_note), artifact=artifact, locator={**raw.get("locator", {}), "filename": preview.filename},
+                batch_id=batch.id, mapping_version=f"table-v1:{profile.version if fingerprint and learned else 1}",
+                transformation={"time_filled": raw["time_filled"], "fill_time": col.get("as_of_time"),
+                                "format_fingerprint": fingerprint, "mapping": learned.get(raw["col_key"])})
+            continue
         if category == SKIP:
             continue
         # 改绑、或预览时该列尚未完成口径确认（行被归为异常），都要按当前状态重新判定
-        rebound = col.get("series_id") != raw["series_id"] or raw["category"] == ERROR
+        rebound = col.get("series_id") != raw["series_id"] or raw["category"] == ERROR or value != raw["value"]
         if rebound:
             # 若重判后变成修订，用户勾选时并不知情，仍要拦下
             if category == REVISION:
@@ -454,10 +611,19 @@ def commit_preview(session: Session, preview_id: str, selected_row_keys: list[st
         if raw["time_filled"]:
             note = f"[截点补齐: {col.get('as_of_time') or ''}] {note}".strip()
         try:
-            row = record(session, ObservationIn(
+            obs = ObservationIn(
                 series_id=series_id, value=value, as_of=as_of,
                 caliber=Caliber.model_validate(ind.caliber), source="人工",
-                entered_by=actor, note=note))
+                entered_by=actor, note=note)
+            if artifact:
+                row, added = record_with_evidence(session, obs, artifact=artifact,
+                    locator={**raw.get("locator", {}), "filename": preview.filename},
+                    batch_id=batch.id, mapping_version=f"table-v1:{profile.version if fingerprint and learned else 1}",
+                    transformation={"time_filled": raw["time_filled"], "fill_time": col.get("as_of_time"),
+                                    "format_fingerprint": fingerprint, "mapping": learned.get(raw["col_key"])})
+                row = row if added else None
+            else:
+                row = record(session, obs)
         except RecordError as e:
             stale.append({"row_key": raw["row_key"], "reason": str(e)})
             continue
@@ -465,10 +631,14 @@ def commit_preview(session: Session, preview_id: str, selected_row_keys: list[st
             committed += 1
             revisions += 1 if row.revision else 0
             dates.add(as_of.astimezone(SHANGHAI).date())
+    result = {"committed": committed, "revisions": revisions, "stale_rows": stale,
+              "warnings": warnings, "recalculated_dates": [d.isoformat() for d in sorted(dates)]}
+    if batch:
+        batch.status = "committed" if not stale else "partial"
+        batch.result, batch.committed_at = result, datetime.now(timezone.utc)
     session.commit()
 
     # 派生公式只读 observations，重算顺序与结果无关；按升序仅为日志可读
     for d in sorted(dates):
         compute_day(session, d, preview.variety)
-    return {"committed": committed, "revisions": revisions, "stale_rows": stale,
-            "warnings": warnings, "recalculated_dates": [d.isoformat() for d in sorted(dates)]}
+    return result

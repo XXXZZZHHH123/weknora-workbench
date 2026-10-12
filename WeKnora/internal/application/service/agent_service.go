@@ -216,9 +216,11 @@ func (s *agentService) CreateAgentEngine(
 	// Register the shell first: file discovery needs a separate tool only
 	// when no shell is available. File access still follows the sandbox
 	// capability independently of the existing SkillsEnabled execution gate.
-	s.registerSandboxShellIfAllowed(ctx, toolRegistry, sessionID, config)
-	s.registerSandboxFileTools(ctx, toolRegistry, sessionID, config)
-	s.registerWebPageFiles(ctx, toolRegistry, config, sessionID, assistantMessageID)
+	if !config.WorkbenchDefault {
+		s.registerSandboxShellIfAllowed(ctx, toolRegistry, sessionID, config)
+		s.registerSandboxFileTools(ctx, toolRegistry, sessionID, config)
+		s.registerWebPageFiles(ctx, toolRegistry, config, sessionID, assistantMessageID)
+	}
 	// Advertise cached service summaries independently of @mentions. Concrete
 	// tool definitions are published after describe, before the next model request.
 	if config.MCPToolExposureMode == "direct" {
@@ -1157,6 +1159,8 @@ func (s *agentService) registerTools(
 		switch toolName {
 		case tools.ToolThinking:
 			toolToRegister = tools.NewSequentialThinkingTool()
+		case tools.ToolStructuredData:
+			toolToRegister = tools.NewStructuredDataTool()
 		case tools.ToolCommodityResearch:
 			toolToRegister = tools.NewCommodityResearchTool()
 		case tools.ToolTodoWrite:

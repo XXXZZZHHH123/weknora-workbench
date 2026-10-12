@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, func, and_
 
-from tin.compute.engine import latest_trade_date, day_end
+from tin.compute.engine import latest_trade_date, day_end, latest_obs
+from tin.config import SHANGHAI
 from tin.db import SessionLocal
 from tin.export import board, indicators
 from tin.integration.identity import current_identity, research_url
@@ -53,6 +54,18 @@ def read_research(session, body: ReadRequest):
         brief_row = session.scalar(query.order_by(DailyBrief.trade_date.desc(), DailyBrief.generated_at.desc()).limit(1))
         if brief_row is not None:
             day = Date.fromisoformat(brief_row.trade_date)
+    elif body.operation == Operation.series:
+        # Imported/manual series are not limited by the exchange trading calendar.
+        if not body.series_id:
+            raise HTTPException(400, '读取序列必须提供已登记的 series_id，请先检索指标')
+        if session.get(Indicator, body.series_id) is None:
+            raise HTTPException(404, '指标未登记')
+        query = select(Observation.as_of).where(Observation.series_id == body.series_id,
+                                                Observation.status == '正常')
+        if body.date:
+            query = query.where(Observation.as_of < day_end(body.date))
+        timestamp = session.scalar(query.order_by(Observation.as_of.desc()).limit(1))
+        day = timestamp.astimezone(SHANGHAI).date() if timestamp else None
     elif body.date:
         matched = session.scalar(select(TradingDay.trade_date).where(
             TradingDay.trade_date <= body.date.isoformat()).order_by(TradingDay.trade_date.desc()).limit(1))
@@ -79,7 +92,8 @@ def read_research(session, body: ReadRequest):
                                   for r in rows[body.offset:body.offset + body.limit]])
         return result
     if day is None and body.operation in {Operation.summary, Operation.series, Operation.signals, Operation.brief}:
-        return result | {"data": None, "gap": "当前空间尚无行情交易日，未补造研究结果。"}
+        gap = '该指标在指定范围尚无有效观测' if body.operation == Operation.series else '当前空间尚无行情交易日，未补造研究结果。'
+        return result | {"data": None, "gap":gap}
     if body.operation == Operation.series:
         if not body.series_id:
             raise HTTPException(400, "读取序列必须提供已登记的 series_id，请先检索指标")
@@ -95,11 +109,13 @@ def read_research(session, body: ReadRequest):
             Observation.revision == versions.c.revision)).where(Observation.series_id == body.series_id)
         total = session.scalar(select(func.count()).select_from(versions))
         rows = list(reversed(session.scalars(query.order_by(Observation.as_of.desc()).offset(body.offset).limit(body.limit)).all()))
+        from tin.provenance.service import observation_sources
         data = {"series_id": indicator.series_id, "name": indicator.name, "unit": indicator.unit,
                 "total": total, "truncated": total > body.offset + len(rows), "limit": body.limit, "offset": body.offset,
                 "observations": [{"observation_id": r.id, "value": r.value, "as_of": r.as_of,
                     "fetched_at": r.fetched_at, "source": r.source, "source_url": r.source_url,
-                    "revision": r.revision, "caliber": r.caliber_snapshot} for r in rows]}
+                    "revision": r.revision, "caliber": r.caliber_snapshot,
+                    "sources": observation_sources(session, r.id)} for r in rows]}
         return result | {"data": data, "caliber": indicator.caliber,
                          "source_url": indicator.source_url,
                          "url": research_url("/sn/indicators/" + body.series_id)}
@@ -137,7 +153,20 @@ def read_research(session, body: ReadRequest):
                          "total": len(rows), "truncated": len(rows) > body.offset + body.limit,
                          "url": research_url("/sn/strategies")}
     # summary is composed exclusively from current stored facts and owned judgment/signals.
-    return result | {"data": board.snapshot(session, "SN", day), "url": research_url("/")}
+    data = board.snapshot(session, 'SN', day)
+    from tin.provenance.service import observation_sources
+    # Summary answers need the same exact file/cell evidence as series reads.
+    for point in data.get('observations', []):
+        row = latest_obs(session, point['series_id'], day_end(day))
+        if row is not None:
+            point['observation_id'] = row.id
+            point['sources'] = observation_sources(session, row.id)
+    for derived in data.get('derived', []):
+        for point in derived.get('inputs', []):
+            identifier = point.get('observation_id')
+            if type(identifier) is int and session.get(Observation, identifier) is not None:
+                point['sources'] = observation_sources(session, identifier)
+    return result | {'data':data, 'url':research_url('/')}
 
 
 @router.post("/api/tools/read")

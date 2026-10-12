@@ -27,6 +27,42 @@ def test_series_concrete_contract_has_observation_evidence_and_actual_cutoff(loa
     assert result["data"]["unit"] == "元/吨"
 
 
+def test_manual_weekend_series_is_readable_without_exchange_calendar(session):
+    from tin.ingest.record import record
+    from tin.schemas.observation import ObservationIn
+    from tin.schemas.caliber import Caliber
+    row=record(session,ObservationIn(series_id='SMM.SN.spot.1',value=123456,
+        as_of=datetime(2026,10,11,0,tzinfo=SHANGHAI),caliber=Caliber(time_type='发布时点',price_type='均价',spot_source='SMM'),
+        source='Excel',entered_by='test-user',note='original workbook'))
+    session.commit()
+    result=read_research(session,ReadRequest(operation='series',series_id='SMM.SN.spot.1'))
+    assert result['latest_trade_date'] is None
+    assert result['effective_date'].isoformat()=='2026-10-11'
+    assert result['data']['observations'][0]['value']==123456
+    assert result['data']['observations'][0]['sources']==[]
+
+
+def test_summary_returns_exact_original_evidence_for_fact_and_derived_inputs(loaded,tmp_path,monkeypatch):
+    from tin.provenance.service import preserve_blob, record_with_evidence
+    from tin.schemas.caliber import Caliber
+    from tin.schemas.observation import ObservationIn
+    from tin.compute.engine import compute_day
+    monkeypatch.setattr(settings,'data_dir',tmp_path)
+    artifact=preserve_blob(loaded,b'date,value\n2026-09-18,410000\n','spot.csv')
+    record_with_evidence(loaded,ObservationIn(series_id='SMM.SN.spot.1',value=410000,
+        as_of=datetime(2026,9,18,11,30,tzinfo=SHANGHAI),caliber=Caliber(time_type='发布时点',price_type='均价',spot_source='SMM'),
+        source='Excel',entered_by='tester',note='fixture'),artifact=artifact,
+        locator={'sheet':'CSV','value_cell':'B2','date_cell':'A2'},mapping_version='confirmed-v1')
+    loaded.commit();compute_day(loaded,datetime(2026,9,18).date())
+    result=read_research(loaded,ReadRequest(operation='summary'))['data']
+    point=next(p for p in result['observations'] if p['series_id']=='SMM.SN.spot.1')
+    assert point['sources'][0]['artifact_id']==artifact.id
+    assert point['sources'][0]['locator']['value_cell']=='B2'
+    basis=next(d for d in result['derived'] if d['formula_id']=='BASIS')
+    spot=next(p for p in basis['inputs'] if p['series_id']=='SMM.SN.spot.1')
+    assert spot['sources'][0]['locator']['date_cell']=='A2'
+
+
 def test_briefs_never_use_other_person_even_if_same_day(loaded):
     me = seed_researcher(loaded)
     loaded.add(DailyBrief(researcher_id=me.id, variety="SN", trade_date="2026-09-18",

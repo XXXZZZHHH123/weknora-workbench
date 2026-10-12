@@ -14,6 +14,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/models/rerank"
+	"github.com/Tencent/WeKnora/internal/sandbox"
 	"github.com/Tencent/WeKnora/internal/types"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
 )
@@ -118,7 +119,7 @@ func (s *sessionService) AgentQA(
 	// actually run. A disabled KB scope makes all KB tools ineffective, so it
 	// must not force users to configure an otherwise-unused rerank model.
 	var rerankModel rerank.Reranker
-	if agentRequiresRerankModel(req.CustomAgent) {
+	if agentRequiresRerankModel(req.CustomAgent) && (!req.CustomAgent.WorkbenchDefault || req.CustomAgent.Config.RerankModelID != "") {
 		// Rerank model is resolved purely from the agent config now.
 		// We used to fall back to ConversationConfig.RerankModelID at
 		// the tenant level, but that path encouraged "leave rerank
@@ -171,7 +172,7 @@ func (s *sessionService) AgentQA(
 	// the first resolve: if the previous turn left a stale mark, that is
 	// where the new image is picked up. HTTP send already holds the lease it
 	// took before persisting the turn, so only direct callers take one here.
-	if !req.TurnLeaseHeld {
+	if !req.TurnLeaseHeld && !agentConfig.WorkbenchDefault {
 		releaseTurn, err := s.holdSandboxTurn(ctx, sessionID, agentConfig.SandboxConfigID)
 		if err != nil {
 			return err
@@ -185,36 +186,40 @@ func (s *sessionService) AgentQA(
 	// source of truth. Gated on the sandbox manager advertising a session
 	// filesystem capability so provider-neutral remote wiring stays here.
 	var stagedAttachments []stagedSessionAttachment
-	stager, ok := s.agentService.(sessionAttachmentStager)
-	if !ok {
-		return errors.New("agent service does not support session attachment staging")
-	}
-	// Probe the backend this session's sandbox actually runs on. Gating on the
-	// process-wide manager instead could inspect a different backend than the
-	// named workspace config selected by this agent.
-	inputStore, storeErr := stager.sessionSandboxInputStore(ctx, sessionID, agentConfig.SandboxConfigID)
-	if storeErr != nil {
-		return fmt.Errorf("resolve sandbox file store for session %s: %w", sessionID, storeErr)
-	}
-	mgr, _, layoutErr := resolveSandboxForExecution(
-		ctx, s.sandboxResolver, s.sandboxMgr, s.sandboxPinner,
-		req.Session.TenantID, sessionID, agentConfig.SandboxConfigID, s.sandboxPolicy,
-		withLiteHostSandbox(s.hostSandbox),
-	)
-	layout := sessionWorkspaceLayout(
-		ctx, sessionID, mgr, layoutErr, s.hostSandbox, agentConfig.SandboxConfigID,
-	)
-	if inputStore != nil && strings.TrimSpace(layout.InputDir) != "" {
-		sessionAttachments, loadErr := s.messageRepo.GetSessionAttachments(ctx, sessionID)
-		if loadErr != nil {
-			return fmt.Errorf("load session attachments for sandbox staging: %w", loadErr)
+	var layout sandbox.WorkspaceLayout
+	if !agentConfig.WorkbenchDefault {
+		stager, ok := s.agentService.(sessionAttachmentStager)
+		if !ok {
+			return errors.New("agent service does not support session attachment staging")
 		}
-		stagedAttachments, err = stager.stageSessionAttachments(
-			ctx, sessionID, agentConfig.SandboxConfigID, req.Session.TenantID, sessionAttachments, layout,
+		// Probe the backend this session's sandbox actually runs on. Gating on the
+		// process-wide manager instead could inspect a different backend than the
+		// named workspace config selected by this agent.
+		inputStore, storeErr := stager.sessionSandboxInputStore(ctx, sessionID, agentConfig.SandboxConfigID)
+		if storeErr != nil {
+			return fmt.Errorf("resolve sandbox file store for session %s: %w", sessionID, storeErr)
+		}
+		mgr, _, layoutErr := resolveSandboxForExecution(
+			ctx, s.sandboxResolver, s.sandboxMgr, s.sandboxPinner,
+			req.Session.TenantID, sessionID, agentConfig.SandboxConfigID, s.sandboxPolicy,
+			withLiteHostSandbox(s.hostSandbox),
 		)
-		if err != nil {
-			return fmt.Errorf("restore session attachments into sandbox: %w", err)
+		layout = sessionWorkspaceLayout(
+			ctx, sessionID, mgr, layoutErr, s.hostSandbox, agentConfig.SandboxConfigID,
+		)
+		if inputStore != nil && strings.TrimSpace(layout.InputDir) != "" {
+			sessionAttachments, loadErr := s.messageRepo.GetSessionAttachments(ctx, sessionID)
+			if loadErr != nil {
+				return fmt.Errorf("load session attachments for sandbox staging: %w", loadErr)
+			}
+			stagedAttachments, err = stager.stageSessionAttachments(
+				ctx, sessionID, agentConfig.SandboxConfigID, req.Session.TenantID, sessionAttachments, layout,
+			)
+			if err != nil {
+				return fmt.Errorf("restore session attachments into sandbox: %w", err)
+			}
 		}
+
 	}
 
 	// Create agent engine with EventBus
@@ -324,6 +329,7 @@ func (s *sessionService) buildAgentConfig(
 ) (*types.AgentConfig, error) {
 	customAgent := req.CustomAgent
 	agentConfig := &types.AgentConfig{
+		WorkbenchDefault:            customAgent.WorkbenchDefault,
 		MaxIterations:               customAgent.Config.MaxIterations,
 		Temperature:                 customAgent.Config.Temperature,
 		WebSearchEnabled:            customAgent.Config.WebSearchEnabled && req.WebSearchEnabled,

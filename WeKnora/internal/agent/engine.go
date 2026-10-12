@@ -376,7 +376,7 @@ func (e *AgentEngine) Execute(
 	// Build system prompt using progressive RAG prompt
 	// If skills are enabled, include skills metadata (Level 1 - Progressive Disclosure)
 	systemPrompt := e.buildSystemPrompt(ctx)
-	if e.toolRegistry.HasStructuredDataTools() {
+	if e.toolRegistry.HasStructuredDataTools() && !e.config.WorkbenchDefault {
 		systemPrompt += structuredFieldTurnInstructions
 	}
 	logger.Debugf(ctx, "[Agent] SystemPrompt: %d chars", len(systemPrompt))

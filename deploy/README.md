@@ -278,9 +278,9 @@ GitHub Actions 绿色表示发布包已准备好；服务器部署状态目前�
 
 新增第七个服务 `commodity-research`，Python/FastAPI 监听内部 8765。研究入口是 `/platform/commodity-research`，Nginx 将同源 `/research/` 转给研究服务。研究员身份、当前空间由 WeKnora 登录校验；新空间在首次访问时创建独立数据库。公开 `/research/healthz` 只检查进程，不创建数据库、不返回研究数据；部署另外检查未登录研究 API 必须返回 401，研究 CSS 与 JS 必须返回 200 且类型正确，防止页面有 HTML 但样式和按钮失效。
 
-研究持久数据卷是 `weknora-workbench-prod_commodity-research`，目录为 `/data/workspaces/<tenant-id>/tin.db`，其余暂存与导出也放 `/data`。初始化和发布不会复制原 CRP systemd 定时器，不会建立代码轮询任务。第一版暂不自动运行旧 `tin.jobs daily`，因为它默认使用全局库和研究员 `me`；只有接入明确空间与真实操作人后才启用研究取数任务。
+研究持久数据卷是 `weknora-workbench-prod_commodity-research`，目录为 `/data/workspaces/<tenant-id>/tin.db`，其余来源原件、暂存与导出也放 `/data`。第二阶段由研究服务内部按已创建空间的计划更新业务数据，默认北京时间每天 08:00、16:30，首页可启停、改时间和手动更新。`TIN_REFRESH_SCHEDULER_ENABLED=false` 可关闭整个实例的自动取数。不会复制旧 CRP systemd 定时器，不运行默认研究员 `me` 的旧 `daily`，不建立代码轮询或自动部署任务。
 
-服务调用密钥单独保存在 `shared/research-service-token`，启动/更新时只在不存在时生成，权限 0600。app 与研究服务读取同一个密钥；entrypoint 复制到容器内私有目录并降权运行。这个密钥必须与 `shared/.env` 一并安全备份；不要在日志或聊天中打印。历史数据导入和研究智能体配置不随服务器每次更新重复执行。
+服务调用密钥单独保存在 `shared/research-service-token`，启动/更新时只在不存在时生成，权限 0600。app、研究服务与结构化服务共用路径绑定、账号/空间绑定的签名读取密钥；研究 entrypoint 复制到私有目录并降权运行。`STRUCTURED_DATA_URL` 与 `TIN_STRUCTURED_DATA_URL` 固定指向内部结构化服务。这个密钥必须与 `shared/.env` 一并安全备份；不要在日志或聊天中打印。历史数据导入和研究智能体配置不随服务器每次更新重复执行。
 
 ```sh
 # 服务器：健康与日志

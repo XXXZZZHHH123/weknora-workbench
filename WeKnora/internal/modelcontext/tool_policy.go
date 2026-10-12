@@ -67,6 +67,7 @@ type toolHandlePolicy struct {
 // name with unrelated semantics and must remain opaque.
 var toolHandlePolicies = map[string]toolHandlePolicy{
 	"commodity_research": {},
+	"structured_data":    {opaqueOutput: true},
 	"discover_mcp_tools": {opaqueOutput: true, mcpRoutingKey: "server_id", mcpDirectoryOutput: true},
 	"call_mcp_tool":      {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
 	"read_file":          {},

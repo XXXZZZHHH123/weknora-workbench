@@ -63,6 +63,8 @@ const (
 
 // CustomAgent represents a configurable AI agent (similar to GPTs)
 type CustomAgent struct {
+	// WorkbenchDefault is a per-turn runtime adaptation, never stored or client supplied.
+	WorkbenchDefault bool `yaml:"-" json:"-" gorm:"-"`
 	// Unique identifier of the agent (composite primary key with TenantID)
 	// For built-in agents, this is 'builtin-quick-answer' or 'builtin-smart-reasoning'
 	// For custom agents, this is a UUID

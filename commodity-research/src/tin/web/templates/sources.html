@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}文件与来源 · 商品研究{% endblock %}
+{% block main %}
+<div class="space-y-5">
+  <header><h1 class="text-xl font-bold">文件与来源</h1><p class="text-sm text-[var(--text-muted)]">原件按哈希保存。数值可追溯到工作表、单元格、原始记录及已确认的转换。已有历史记录没有原件时，不补造来源。</p></header>
+  <section class="rounded-xl border p-4 space-y-3">
+    <h2 class="font-semibold">导入表格</h2>
+    <p class="text-sm">Excel、旧版 XLS、CSV 或 TSV；保留全部工作表和单元格。未缓存公式不当成零；旧版 XLS 的公式表达式由下载原件核查。</p>
+    <form id="upload-form" class="flex flex-wrap gap-3"><input id="file-input" type="file" accept=".xlsx,.xls,.xlsm,.csv,.tsv" required><button class="btn-primary" type="submit">上传并检查</button></form>
+    <a href="{{ research_url('/materials') }}" class="text-[var(--primary)]">研报 PDF、Word、文本、图片与网页资料 →</a>
+  </section>
+  <section class="rounded-xl border p-4 space-y-3">
+    <h2 class="font-semibold">从已解析的 Excel 导入研究指标</h2>
+    <p class="text-sm">使用当前空间的完整结构化快照和原件，确认一次字段、单位和口径。已有确认映射后可复用；数值冲突仍需明确确认。</p>
+    <button id="load-datasets" class="btn-secondary">选择结构化文件</button>
+    <select id="dataset-select" class="border rounded p-2"><option value="">请选择文件版本</option></select>
+    <select id="series-select" class="border rounded p-2"><option value="">请选择字段</option></select>
+    <button id="preview-bridge" class="btn-secondary">检查并接入已确认字段</button>
+    <div id="bridge-mapping" class="hidden space-y-2">
+      <p id="bridge-summary" class="text-sm"></p>
+      <label>研究指标 <select id="bridge-target" class="border rounded p-2"></select></label>
+      <label>原单位 <input id="bridge-source-unit" class="border rounded p-2" placeholder="必须明确原单位"></label>
+      <label>登记单位 <input id="bridge-target-unit" class="border rounded p-2" readonly></label>
+      <label>换算系数 <input id="bridge-factor" type="number" step="any" value="1" class="border rounded p-2"></label>
+      <label class="block">映射说明 <input id="bridge-note" class="border rounded p-2 w-full" placeholder="说明该字段与指标的关系、单位和统计口径"></label>
+      <label class="block"><input id="bridge-conflicts" type="checkbox"> 已核对冲突，允许保留旧值并新增修订</label>
+      <button id="commit-bridge" class="btn-primary">确认映射并导入</button>
+    </div>
+  </section>
+  <section id="import-preview" class="hidden rounded-xl border p-4 space-y-3">
+    <h2 class="font-semibold">导入检查结果</h2><p id="preview-summary"></p><div id="preview-columns" class="space-y-2"></div>
+    <label id="register-new-box" class="hidden"><input id="register-new" type="checkbox"> 已核对新指标名称与口径，允许登记新编码</label>
+    <button id="commit-upload" class="btn-primary">确认并导入</button>
+  </section>
+  <p id="source-message" role="status" class="text-sm whitespace-pre-wrap"></p>
+  <section class="rounded-xl border p-4 space-y-3">
+    <h2 class="font-semibold">当前空间的原件</h2>
+    <ul class="space-y-2">{% for source in sources %}<li><button type="button" class="source-open text-[var(--primary)]" data-source="{{ source.id }}">{{ source.filename }}</button> <span class="text-xs">{{ source.kind }} · {{ source.size }} 字节 · {{ source.id[:12] }}…</span></li>{% else %}<li>还没有留存原件。历史观测仍保留原有来源说明，但不能反推原始文件。</li>{% endfor %}</ul>
+  </section>
+  <section id="source-inspector" class="hidden rounded-xl border p-4 space-y-3">
+    <h2 id="source-heading" class="font-semibold"></h2><p id="source-hash" class="text-xs break-all"></p>
+    <a id="source-download" class="text-[var(--primary)]">下载不可变原件</a>
+    <label>工作表 <select id="sheet-select" class="border rounded p-2"></select></label>
+    <div class="overflow-auto"><table class="text-xs w-full"><thead><tr><th>工作表</th><th>单元格</th><th>原值</th><th>缓存值</th><th>公式</th><th>状态</th></tr></thead><tbody id="source-cell-rows"></tbody></table></div>
+    <p id="cells-count" class="text-xs"></p><button id="cells-prev" class="btn-secondary">上一页</button> <button id="cells-next" class="btn-secondary">下一页</button>
+    <details><summary>观测来源与转换记录</summary><pre id="source-evidence" class="text-xs overflow-auto whitespace-pre-wrap"></pre></details>
+  </section>
+</div>
+<script>
+const sourceIndicators = {{ source_indicators | tojson }};
+let uploaded = null, bridged = null, opened = null, cellOffset = 0;
+const sourcePrefix = window.RESEARCH_PREFIX || '';
+const sourceMessage = value => document.getElementById('source-message').textContent = typeof value === 'string' ? value : JSON.stringify(value,null,2);
+async function sourceApi(path, body) {
+  const options = body instanceof FormData ? {method:'POST',body} : body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
+  const response = await researchFetch(sourcePrefix+path,options);
+  const result = await response.json(); if (!response.ok) throw new Error(result.detail || '读取失败'); return result;
+}
+function optionsFor(select, value) {
+  select.replaceChildren(new Option('请选择研究指标',''));
+  for (const item of sourceIndicators) select.add(new Option(`${item.name} [${item.series_id}] · ${item.unit}`,item.series_id));
+  select.value = value || '';
+}
+function pinnedUrl(path) {
+  const url = new URL(sourcePrefix+path, location.origin);
+  if (window.RESEARCH_CONTEXT) {url.searchParams.set('_research_tenant',window.RESEARCH_CONTEXT.tenant);url.searchParams.set('_research_user',window.RESEARCH_CONTEXT.user);}
+  return url.pathname+url.search;
+}
+async function inspectSource(id, reset=true) {
+  if (reset) {opened=id;cellOffset=0;}
+  const sheet = reset ? '' : document.getElementById('sheet-select').value;
+  const result = await sourceApi(`/api/sources/${encodeURIComponent(id)}?offset=${cellOffset}&limit=200`+(sheet?'&sheet='+encodeURIComponent(sheet):''));
+  document.getElementById('source-inspector').classList.remove('hidden');
+  document.getElementById('source-heading').textContent=result.filename;
+  document.getElementById('source-hash').textContent='SHA256: '+result.sha256;
+  document.getElementById('source-download').href=pinnedUrl(`/api/sources/${encodeURIComponent(id)}/download`);
+  if(reset){const select=document.getElementById('sheet-select');select.replaceChildren(new Option('全部工作表',''));for(const name of Object.keys(result.details.sheets||{}))select.add(new Option(name,name));}
+  const rows=document.getElementById('source-cell-rows');rows.replaceChildren();
+  for(const cell of result.cells){const tr=document.createElement('tr');for(const value of [cell.sheet,cell.address,cell.raw_value,cell.value,cell.formula,cell.status]){const td=document.createElement('td');td.textContent=value==null?'':String(value);td.className='border p-2 whitespace-pre-wrap';tr.appendChild(td);}rows.appendChild(tr);}
+  document.getElementById('cells-count').textContent=`共 ${result.total} 个单元格；当前 ${cellOffset+1}–${cellOffset+result.cells.length}`;
+  document.getElementById('cells-next').disabled=!result.truncated;document.getElementById('cells-prev').disabled=cellOffset===0;
+  document.getElementById('source-evidence').textContent=JSON.stringify(result.observations,null,2);
+}
+document.getElementById('upload-form').onsubmit=async e=>{e.preventDefault();try{
+  const form=new FormData();form.append('file',document.getElementById('file-input').files[0]);uploaded=await sourceApi('/api/sources/upload',form);
+  document.getElementById('import-preview').classList.remove('hidden');document.getElementById('commit-upload').classList.toggle('hidden',!!uploaded.automatically_imported);document.getElementById('preview-columns').replaceChildren();
+  document.getElementById('register-new-box').classList.toggle('hidden',uploaded.mode!=='vendor');
+  document.getElementById('preview-summary').textContent=uploaded.mode==='vendor'?JSON.stringify(uploaded.summary):`全部 ${uploaded.sheets.length} 个工作表；新增 ${uploaded.ready_count}，修订 ${uploaded.revision_count}，相同 ${uploaded.skipped_count}，待确认/异常 ${uploaded.error_count}`;
+  if(uploaded.mode==='table')for(const col of uploaded.columns){const label=document.createElement('label');label.textContent=col.header+'：';const select=document.createElement('select');select.className='border rounded p-2';select.dataset.key=col.col_key;optionsFor(select,col.series_id);label.appendChild(select);const unit=document.createElement('input');unit.dataset.role='source-unit';unit.className='border rounded p-2';unit.placeholder='原数据单位';unit.value=col.source_unit||col.unit||'';const factor=document.createElement('input');factor.dataset.role='factor';factor.type='number';factor.step='any';factor.value=col.factor||1;factor.className='border rounded p-2';factor.title='换算到登记单位的系数';select.onchange=()=>{if(!unit.value)unit.value=sourceIndicators.find(i=>i.series_id===select.value)?.unit||'';};label.append(unit,document.createTextNode(' × '),factor);document.getElementById('preview-columns').appendChild(label);}
+  sourceMessage(uploaded.automatically_imported?uploaded.import_result:'原件和单元格已保存；确认后才写入研究观测。');await inspectSource(uploaded.artifact_id);
+}catch(error){sourceMessage(error.message);}};
+document.getElementById('commit-upload').onclick=async()=>{try{
+  if(!uploaded)return;let result;
+  if(uploaded.mode==='vendor')result=await sourceApi('/api/sources/vendor/commit',{batch_id:uploaded.batch_id,register_new:document.getElementById('register-new').checked});
+  else{const overrides={};for(const select of document.querySelectorAll('#preview-columns select'))if(select.value)overrides[select.dataset.key]={series_id:select.value,source_unit:select.parentElement.querySelector('[data-role=source-unit]').value,factor:Number(select.parentElement.querySelector('[data-role=factor]').value)};result=await sourceApi('/api/sources/table/commit',{preview_id:uploaded.preview_id,selected_row_keys:uploaded.rows.filter(r=>r.category!=='skip').map(r=>r.row_key),column_overrides:overrides,note:'文件原件及单元格已留存'});}
+  sourceMessage(result);await inspectSource(uploaded.artifact_id);
+}catch(error){sourceMessage(error.message);}};
+document.querySelectorAll('.source-open').forEach(button=>button.onclick=()=>inspectSource(button.dataset.source).catch(e=>sourceMessage(e.message)));
+document.getElementById('sheet-select').onchange=()=>{cellOffset=0;inspectSource(opened,false).catch(e=>sourceMessage(e.message));};
+document.getElementById('cells-prev').onclick=()=>{cellOffset=Math.max(0,cellOffset-200);inspectSource(opened,false).catch(e=>sourceMessage(e.message));};
+document.getElementById('cells-next').onclick=()=>{cellOffset+=200;inspectSource(opened,false).catch(e=>sourceMessage(e.message));};
+document.getElementById('load-datasets').onclick=async()=>{try{const result=await sourceApi('/api/sources/bridge/catalog',{operation:'list_datasets',arguments:{}});const select=document.getElementById('dataset-select');select.replaceChildren(new Option('请选择文件版本',''));for(const item of result.datasets||[])select.add(new Option((item.source_file||item.dataset_id)+' · '+item.dataset_id,item.dataset_id));}catch(error){sourceMessage(error.message);}};
+document.getElementById('dataset-select').onchange=async()=>{try{const select=document.getElementById('series-select');select.replaceChildren(new Option('正在读取完整字段目录…',''));const collected=[];let offset=0;while(true){const result=await sourceApi('/api/sources/bridge/catalog',{operation:'list_series',arguments:{dataset_id:document.getElementById('dataset-select').value,limit:100,offset}});collected.push(...(result.series||[]));if(result.next_offset==null){if(result.truncated)throw new Error('字段目录不完整，未采用截断结果');break;}if(result.next_offset<=offset)throw new Error('字段目录分页异常');offset=result.next_offset;}select.replaceChildren(new Option('请选择字段（共 '+collected.length+' 个）',''));for(const item of collected)select.add(new Option((item.sheet||'')+' · '+(item.metric||item.description||item.series_id)+' · '+(item.unit||'单位待确认'),item.series_id));}catch(error){sourceMessage(error.message);}};
+optionsFor(document.getElementById('bridge-target'));
+document.getElementById('bridge-target').onchange=()=>{document.getElementById('bridge-target-unit').value=sourceIndicators.find(i=>i.series_id===document.getElementById('bridge-target').value)?.unit||'';};
+document.getElementById('preview-bridge').onclick=async()=>{try{bridged=await sourceApi('/api/sources/bridge/preview',{dataset_id:document.getElementById('dataset-select').value,series_id:document.getElementById('series-select').value});document.getElementById('bridge-mapping').classList.remove('hidden');document.getElementById('commit-bridge').classList.toggle('hidden',!!bridged.automatically_imported);if(bridged.import_result)sourceMessage(bridged.import_result);document.getElementById('bridge-summary').textContent=`已读取完整 ${bridged.total} 行并核验原件哈希。${bridged.known_mapping?'已有确认映射，可复用。':'首次使用，请明确单位和研究指标。'}`;const known=bridged.known_mapping||{};document.getElementById('bridge-target').value=known.research_series_id||'';document.getElementById('bridge-source-unit').value=known.source_unit||bridged.series.unit||'';document.getElementById('bridge-factor').value=known.factor||1;document.getElementById('bridge-note').value=known.note||'';document.getElementById('bridge-target').onchange();await inspectSource(bridged.artifact_id);}catch(error){sourceMessage(error.message);}};
+document.getElementById('commit-bridge').onclick=async()=>{try{if(!bridged)return;const mapping={research_series_id:document.getElementById('bridge-target').value,source_unit:document.getElementById('bridge-source-unit').value,target_unit:document.getElementById('bridge-target-unit').value,factor:Number(document.getElementById('bridge-factor').value),note:document.getElementById('bridge-note').value};sourceMessage(await sourceApi('/api/sources/bridge/commit',{batch_id:bridged.batch_id,mapping,allow_conflicts:document.getElementById('bridge-conflicts').checked}));await inspectSource(bridged.artifact_id);}catch(error){sourceMessage(error.message);}};
+const selectedSource = {{ selected_source | tojson }};if(selectedSource)inspectSource(selectedSource).catch(error=>sourceMessage(error.message));
+</script>
+{% endblock %}

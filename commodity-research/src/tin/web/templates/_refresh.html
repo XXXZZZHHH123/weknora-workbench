@@ -1,0 +1,24 @@
+<section id="research-refresh" data-rendered-date="{{ d or '' }}" class="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 space-y-4">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div><h2 class="font-semibold">数据更新</h2><p class="text-xs text-[var(--text-muted)] mt-1">自动收集官方数据、校验并入库，同时更新派生指标与个人信号。</p></div>
+    <div class="flex gap-2">
+      <button id="refresh-now" type="button" class="px-3 py-2 rounded-md text-sm bg-[var(--primary)] text-white"
+        {% if research_identity() and not research_identity().can_write %}disabled{% endif %}>立即更新</button>
+      <button id="refresh-settings-toggle" type="button" class="px-3 py-2 rounded-md text-sm border border-[var(--line)]"
+        {% if research_identity() and not research_identity().can_write %}disabled{% endif %}>更新设置</button>
+    </div>
+  </div>
+  <p id="refresh-status" role="status" class="text-sm text-[var(--text-muted)]">正在读取更新状态…</p>
+  <div id="refresh-summary" class="text-xs text-[var(--text-muted)]"></div>
+  <div class="overflow-x-auto"><table class="w-full text-xs text-left"><thead><tr class="border-b border-[var(--line)]">
+    <th class="py-2 pr-4">来源</th><th class="py-2 pr-4">最近结果</th><th class="py-2 pr-4">数据截至</th><th class="py-2 pr-4">最近尝试 / 成功</th><th class="py-2 pr-4">本次入库</th><th class="py-2">操作</th>
+    </tr></thead><tbody id="refresh-sources"></tbody></table></div>
+  <div id="refresh-settings" class="hidden p-4 rounded-lg bg-[var(--surface-soft)] space-y-3">
+    <label class="flex gap-2 items-center text-sm"><input id="refresh-enabled" type="checkbox">开启每天自动更新</label>
+    <label class="block text-sm">北京时间（用逗号分隔）<input id="refresh-times" class="block mt-1 px-3 py-2 rounded-md text-sm w-full" placeholder="08:00, 16:30"></label>
+    <fieldset id="refresh-source-settings" class="flex flex-wrap gap-x-5 gap-y-2 text-sm"></fieldset>
+    <button id="refresh-settings-save" type="button" class="px-3 py-2 rounded-md text-sm bg-[var(--primary)] text-white">保存设置</button>
+  </div>
+  <p class="text-xs text-[var(--text-muted)]">不改个人判断，不覆盖已审核简报，不自动调用收费模型。“尚未发布”表示来源暂时没有新数据，旧数据保留。</p>
+</section>
+<script src="{{ research_prefix() }}/static/refresh.js?v={{ static_version() }}"></script>

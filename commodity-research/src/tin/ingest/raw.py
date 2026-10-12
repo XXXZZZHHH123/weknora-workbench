@@ -147,6 +147,7 @@ def _drop_dated_files(out_dir: Path, d: date, entry: dict) -> None:
     for f in entry["files"]:
         req = next((r for r in plan_day(d)[entry["_source"]] if r.path == f["path"]), None)
         if req is not None and req.dated:
+            entry.setdefault("unpublished_responses", []).append(f)
             (Path(out_dir) / f["path"]).unlink(missing_ok=True)
         else:
             kept.append(f)
@@ -188,9 +189,17 @@ def snapshot_day(d: date, out_dir: Path, client: httpx.Client | None = None) -> 
                 path = out_dir / req.path
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(content)
+                digest = hashlib.sha256(content).hexdigest()
+                immutable = f"objects/{digest[:2]}/{digest}.bin"
+                original = out_dir / immutable
+                original.parent.mkdir(parents=True, exist_ok=True)
+                if not original.exists():
+                    original.write_bytes(content)
+                elif hashlib.sha256(original.read_bytes()).hexdigest() != digest:
+                    raise ValueError("不可变原件已被改动")
                 blobs[req.key or req.path] = content
                 entry["files"].append({"path": req.path, "url": req.url, "http_status": status,
-                                       "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()})
+                                       "bytes": len(content), "sha256": digest, "immutable_path": immutable})
             if errors:
                 entry["error"] = "；".join(errors[:3])
                 if not blobs and entry["status"] == OK:
@@ -214,6 +223,10 @@ def snapshot_day(d: date, out_dir: Path, client: httpx.Client | None = None) -> 
     path = out_dir / "manifest" / f"{d.isoformat()}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    version = out_dir / "manifest" / "versions" / d.isoformat() / f"{hashlib.sha256(path.read_bytes()).hexdigest()}.json"
+    version.parent.mkdir(parents=True, exist_ok=True)
+    if not version.exists():
+        version.write_bytes(path.read_bytes())
     return manifest
 
 
@@ -229,8 +242,17 @@ def _verify(raw_dir: Path, file_entry: dict, dated: bool) -> bytes:
     「当时看到的样子」这一条线索，不能拿来做校验——否则回放旧日期必然失败。
     解析时按 `through=目标日` 截断，所以用新文件回放旧日期的结果仍然正确。
     """
-    blob = (Path(raw_dir) / file_entry["path"]).read_bytes()
-    if dated and hashlib.sha256(blob).hexdigest() != file_entry["sha256"]:
+    root = Path(raw_dir).resolve()
+    path = (root / file_entry.get("immutable_path", file_entry["path"])).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("原件路径不合法")
+    blob = path.read_bytes()
+    alias = (root / file_entry["path"]).resolve()
+    if not alias.is_relative_to(root):
+        raise ValueError("原件路径不合法")
+    if dated and alias.exists() and hashlib.sha256(alias.read_bytes()).hexdigest() != file_entry["sha256"]:
+        raise ValueError(f"{file_entry['path']} 与台账不符：原件可能已被改动")
+    if hashlib.sha256(blob).hexdigest() != file_entry["sha256"]:
         raise ValueError(f"{file_entry['path']} 与台账不符：原件可能已被改动")
     return blob
 
@@ -257,13 +279,16 @@ def replay_day(session, d: date, raw_dir: Path) -> list:
         else:
             try:
                 blobs = {}
+                documents = []
                 for f in entry["files"]:
                     req = next((r for r in plan_day(d)[name] if r.path == f["path"]), None)
-                    blobs[(req.key if req else "") or f["path"]] = _verify(
-                        raw_dir, f, dated=req.dated if req else True)
+                    blob = _verify(raw_dir, f, dated=req.dated if req else True)
+                    blobs[(req.key if req else "") or f["path"]] = blob
+                    documents.append({"data": blob, "filename": Path(f["path"]).name,
+                                      "source_url": f["url"], "http_status": f.get("http_status")})
                 batch = parse_source(name, blobs, d)
                 with session.begin_nested():
-                    run.written = store(session, batch)
+                    run.written = store(session, batch, documents=documents, batch_label=f"{name}:{d}")
                 run.status = "部分失败" if batch.errors else OK
                 run.error = "；".join(batch.errors) if batch.errors else None
             except NotPublished as e:

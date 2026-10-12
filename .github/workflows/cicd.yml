@@ -47,6 +47,9 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: commodity-research/requirements.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
       - run: python -m pip install -r requirements.txt -e .
       - run: python -m pytest tests -q
       - name: Migrate an isolated empty research database
@@ -84,9 +87,10 @@ jobs:
         with:
           go-version-file: WeKnora/go.mod
           cache-dependency-path: WeKnora/go.sum
-      - run: go test ./internal/agent/tools ./internal/agent -run 'TestMCP|TestCastParams|TestStructured|TestIndependentReview|TestReviewDraft|TestCommodityResearch|TestEveryBuiltIn|TestAvailableToolDefinitions' -count=1
+      - run: go test ./internal/agent/tools ./internal/agent -run 'TestMCP|TestCastParams|TestStructured|TestNative|TestWorkbench|TestIndependentReview|TestReviewDraft|TestCommodityResearch|TestEveryBuiltIn|TestAvailableToolDefinitions' -count=1
+      - run: go test ./internal/handler/session ./internal/modelcontext -count=1
       - run: go test ./internal/handler -run TestUpdateModel -count=1
-      - run: go test ./internal/application/service -run 'TestAgentConfig|TestBuildAssistantHistoryMessages|TestBuildTurnBodyMessages|TestMCPProxyHistory|TestRegisterToolsCommodityResearch' -count=1
+      - run: go test ./internal/application/service -run 'TestAgentConfig|TestDefaultWorkbench|TestWorkbench|TestBuildAssistantHistoryMessages|TestBuildTurnBodyMessages|TestMCPProxyHistory|TestRegisterToolsCommodityResearch' -count=1
 
   deployment-checks:
     runs-on: ubuntu-24.04
@@ -180,9 +184,11 @@ jobs:
             image="$CANDIDATE"
             reused=true
           fi
-          echo "image=$image" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "reused=$reused" >> "$GITHUB_OUTPUT"
+          {
+            echo "image=$image"
+            echo "tag=$tag"
+            echo "reused=$reused"
+          } >> "$GITHUB_OUTPUT"
       - name: Make room for the Go and Rust build
         if: matrix.service == 'app' && steps.image.outputs.reused != 'true'
         run: |

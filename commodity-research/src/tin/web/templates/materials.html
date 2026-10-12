@@ -1,0 +1,22 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>锡研究资料</title><style>body{font:14px system-ui;margin:32px auto;max-width:980px;padding:0 20px;color:#22372e;background:#f5f8f6}section{background:white;border:1px solid #dce6df;border-radius:12px;padding:20px;margin:16px 0}button,select,input{font:inherit;padding:9px;margin:4px;border-radius:6px;border:1px solid #bfd1c4}button{cursor:pointer;background:#176750;color:white}a{color:#176750}td,th{padding:10px;text-align:left;border-bottom:1px solid #eee}table{width:100%}#notice{white-space:pre-wrap;color:#8c4d11}</style>
+<a href="{{ prefix }}/">返回研究工作台</a> · <a href="{{ prefix }}/files">表格与文件来源</a><h1>锡研究资料</h1>
+<p>PDF、Word、文本和图片进入文档知识库；数值表格从文件接入入口导入。普通对话会按需读取这些资料。</p>
+<section><h2>资料归属</h2><select id="library"></select><button id="bind">保存知识库绑定</button>
+<p>选择当前空间的文档知识库，沿用其解析和模型配置。还没有知识库时，请先在 WeKnora 知识库页面创建。</p></section>
+<section><h2>添加资料</h2><input id="file" type="file" accept=".pdf,.docx,.doc,.txt,.md,.html,.png,.jpg,.jpeg,.webp"><button id="upload">上传并解析</button><br>
+<input id="url" type="url" placeholder="公告或研报网址" style="width:65%"><button id="addUrl">添加网页</button>
+<p>原文件保留。图片及扫描件需要知识库已配置视觉模型；不会把识别出的数字自动当作研究观测。</p></section>
+<div id="notice" role="status"></div><section><h2>资料与解析状态</h2><button id="refresh">刷新状态</button><table><thead><tr><th>资料</th><th>解析状态</th></tr></thead><tbody id="documents"></tbody></table><button id="previous">上一页</button><span id="pageStatus"></span><button id="next">下一页</button></section>
+<script>
+const prefix={{ prefix|tojson }},identity={{ identity|tojson }},$=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(path,options={}){const h=new Headers(options.headers||{});if(identity){h.set('X-Tenant-ID',String(identity.tenant));h.set('X-Research-User',identity.user)}const r=await fetch(prefix+path,{credentials:'same-origin',...options,headers:h});const d=await r.json();if(!r.ok)throw Error(d.detail||'操作失败');return d}
+let documentPage=1;
+async function refresh(){const d=await api('/api/materials?page='+documentPage);$('library').innerHTML='<option value="">请选择文档知识库</option>'+d.libraries.map(k=>`<option value="${esc(k.id)}">${esc(k.name)}</option>`).join('');$('library').value=d.kb_id||'';$('documents').innerHTML=d.documents.map(k=>`<tr><td>${esc(k.title||k.file_name||k.id)}</td><td>${esc(k.parse_status||'待处理')}</td></tr>`).join('');$('pageStatus').textContent=`第 ${d.page} 页 · 共 ${d.total} 条`;$('previous').disabled=d.page<=1;$('next').disabled=d.page*d.page_size>=d.total}
+function task(fn){return async()=>{try{$('notice').textContent='处理中…';await fn();await refresh()}catch(e){$('notice').textContent=e.message}}}
+$('bind').onclick=task(async()=>{await api('/api/materials/library',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kb_id:$('library').value})});$('notice').textContent='已保存'});
+$('upload').onclick=task(async()=>{const f=$('file').files[0];if(!f)throw Error('请选择文件');const body=new FormData();body.append('file',f);const d=await api('/api/materials/upload',{method:'POST',body});$('notice').textContent=d.notice+'\n文件校验值：'+d.sha256});
+$('addUrl').onclick=task(async()=>{const d=await api('/api/materials/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('url').value})});$('notice').textContent=d.notice});
+$('previous').onclick=task(async()=>{documentPage-=1;$('notice').textContent=''});$('next').onclick=task(async()=>{documentPage+=1;$('notice').textContent=''});
+$('refresh').onclick=task(async()=>{$('notice').textContent='状态已刷新'});refresh().catch(e=>$('notice').textContent=e.message);
+</script></html>

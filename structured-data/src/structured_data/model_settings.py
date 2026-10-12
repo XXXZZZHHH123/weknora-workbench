@@ -10,6 +10,10 @@ def read_model(root=None):
     root=Path(root or os.environ.get('STRUCTURED_DATA_DIR',os.environ.get('COTTON_DATA_DIR','data')))
     path=root/'model-settings.json'
     if not path.is_file():
+        # New spaces must configure their own provider. A global legacy pilot
+        # secret must never become an editable credential in another space.
+        if root.parent.name=='workspaces' and root.name.isdecimal():
+            return {}
         path=Path(os.environ.get('STRUCTURED_MODEL_CONFIG',os.environ.get('COTTON_MODEL_CONFIG','/run/secrets/model-config.json')))
     cfg=json.loads(path.read_text()).get('chat',{}) if path.is_file() else {}
     cfg=dict(cfg)
@@ -24,6 +28,10 @@ def public_model(root):
 
 def save_model(root, body):
     cfg=read_model(root)
+    old_endpoint=cfg.get('base_url','').rstrip('/')
+    new_endpoint=str(body.get('base_url','')).strip().rstrip('/')
+    if old_endpoint and new_endpoint!=old_endpoint and not body.get('api_key'):
+        raise ValueError('更换 API 地址时必须填写该地址的新密钥，不能转发原密钥')
     for key in ('model','base_url'):
         value=body.get(key)
         if not isinstance(value,str) or not value.strip() or len(value)>1000:raise ValueError('请填写有效的模型名称和 API 地址')

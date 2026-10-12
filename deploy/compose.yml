@@ -37,6 +37,7 @@ services:
       BATCH_EMBED_SIZE: "2"
       SSRF_WHITELIST_EXTRA: "structured-data,cotton-data,commodity-research"
       COMMODITY_RESEARCH_URL: http://commodity-research:8765
+      STRUCTURED_DATA_URL: http://structured-data:18082
       COMMODITY_RESEARCH_TOKEN_FILE: /run/secrets/research-token
       WEKNORA_SANDBOX_DOCKER_ENABLED: "false"
     volumes:
@@ -65,8 +66,10 @@ services:
       STRUCTURED_TENANT_ID: ${STRUCTURED_TENANT_ID:?set the actual tenant ID}
       STRUCTURED_PUBLIC_ORIGIN: ${STRUCTURED_PUBLIC_ORIGIN:-}
       STRUCTURED_DATA_DIR: /data
+      STRUCTURED_SERVICE_TOKEN_FILE: /run/secrets/research-token
     volumes:
       - structured-data:/data
+      - ${DEPLOY_SHARED_DIR:?shared directory required}/research-service-token:/run/secrets/research-token:ro
     networks:
       default:
         aliases: [cotton-data]
@@ -89,6 +92,7 @@ services:
       TIN_EXPORTS_DIR: /data/exports
       TIN_STAGING_DIR: /data/import_staging
       TIN_SERVICE_TOKEN_FILE: /run/secrets/research-token
+      TIN_STRUCTURED_DATA_URL: http://structured-data:18082
     volumes:
       - commodity-research:/data
       - ${DEPLOY_SHARED_DIR:?shared directory required}/research-service-token:/run/secrets/research-token:ro

@@ -29,9 +29,10 @@ export function canConfirmFields(plan: Clarification | null, selections: Record<
 export function fieldResolution(events: any[]): Clarification | null {
   let latest: Clarification | null = null;
   for (const event of events || []) {
-    if (event.type !== 'tool_call' || event.pending || event.success === false || !/^(?:mcp__)?(?:resolve_fields|confirm_fields)(?:_[a-z0-9]+)?$/.test(event.tool_name || '')) continue;
+    if (event.type !== 'tool_call' || event.pending || event.success === false || !/^(?:structured_data|(?:mcp__)?(?:resolve_fields|confirm_fields)(?:_[a-z0-9]+)?)$/.test(event.tool_name || '')) continue;
     const chunks = (event.tool_data?.content_items || []).filter((x: any) => x.type === 'text').map((x: any) => x.text);
     chunks.push(event.tool_data?.output, event.output);
+    if(event.tool_name === 'structured_data' && event.tool_data && typeof event.tool_data === 'object') chunks.push(JSON.stringify(event.tool_data));
     for (const chunk of chunks) {
       if (typeof chunk !== 'string' || chunk.length > 100000) continue;
       try {
@@ -85,8 +86,8 @@ export function fieldClarification(events: any[], completed = true): Clarificati
 export function structuredFieldAnswer(events: any[], completed = true): Clarification | null {
   if (!completed) return null;
   if (structuredFieldIssue(events)) return null;
-  const analysisIndex=[...(events || [])].reverse().findIndex(e=>e.type==='tool_call' && /^(?:mcp__)?analyze_table(?:_[a-z0-9]+)?$/.test(e.tool_name || ''));
-  const fieldIndex=[...(events || [])].reverse().findIndex(e=>e.type==='tool_call' && /^(?:mcp__)?(?:resolve_fields|confirm_fields|query_series)(?:_[a-z0-9]+)?$/.test(e.tool_name || ''));
+  const analysisIndex=[...(events || [])].reverse().findIndex(e=>e.type==='tool_call' && /^(?:structured_data|(?:mcp__)?analyze_table(?:_[a-z0-9]+)?)$/.test(e.tool_name || ''));
+  const fieldIndex=[...(events || [])].reverse().findIndex(e=>e.type==='tool_call' && /^(?:structured_data|(?:mcp__)?(?:resolve_fields|confirm_fields|query_series)(?:_[a-z0-9]+)?)$/.test(e.tool_name || ''));
   if(analysisIndex>=0 && (fieldIndex<0 || analysisIndex<fieldIndex))return null;
   const latest = fieldResolution(events);
   if (latest?.status === 'needs_clarification') return null;
@@ -122,7 +123,7 @@ export function structuredFieldIssue(events: any[], completed = true): string | 
   if (!completed) return null;
   let issue: string | null = null;
   for (const event of events || []) {
-    if(event.type !== 'tool_call' || event.pending || !/^(?:mcp__)?(?:resolve_fields|confirm_fields)(?:_[a-z0-9]+)?$/.test(event.tool_name || '')) continue;
+    if(event.type !== 'tool_call' || event.pending || !/^(?:structured_data|(?:mcp__)?(?:resolve_fields|confirm_fields)(?:_[a-z0-9]+)?)$/.test(event.tool_name || '')) continue;
     if(event.success === false) {
       const error = String(event.error || event.tool_data?.error || '');
       if (error.includes('FIELD_CONFIRMATION_WAIT_FOR_USER') && fieldResolution(events)?.status === 'needs_clarification') continue;
@@ -149,7 +150,7 @@ export function structuredFieldIssue(events: any[], completed = true): string | 
 export function suppressStructuredProse(events: any[], completed: boolean): boolean {
   // During execution text belongs to progress. Once committed, even a genuine
   // clarification or an unrecovered error must not hide the model's explanation.
-  return !completed && (events || []).some(e => e.type === 'tool_call' && /^(?:mcp__)?(?:resolve_fields|confirm_fields|query_series|analyze_table)(?:_[a-z0-9]+)?$/.test(e.tool_name || ''));
+  return !completed && (events || []).some(e => e.type === 'tool_call' && /^(?:structured_data|(?:mcp__)?(?:resolve_fields|confirm_fields|query_series|analyze_table)(?:_[a-z0-9]+)?)$/.test(e.tool_name || ''));
 }
 
 /** The last analysis is evidence for the final response, never its replacement. */
@@ -157,10 +158,11 @@ export function structuredAnalysisEvidence(events: any[], completed=true): any |
   if(!completed)return null;
   let result:any=null;
   for(const event of events || []) {
-    if(event.type!=='tool_call' || !/^(?:mcp__)?analyze_table(?:_[a-z0-9]+)?$/.test(event.tool_name || ''))continue;
+    if(event.type!=='tool_call' || !/^(?:structured_data|(?:mcp__)?analyze_table(?:_[a-z0-9]+)?)$/.test(event.tool_name || ''))continue;
     result=null;
     if(event.pending || event.success===false)continue;
     const chunks=[...(event.tool_data?.content_items || []).filter((x:any)=>x.type==='text').map((x:any)=>x.text),event.tool_data?.output,event.output];
+    if(event.tool_name === 'structured_data' && event.tool_data && typeof event.tool_data === 'object') chunks.push(JSON.stringify(event.tool_data));
     for(const chunk of chunks) {
       if(typeof chunk!=='string' || chunk.length>250000)continue;
       try {

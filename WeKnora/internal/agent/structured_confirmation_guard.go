@@ -38,7 +38,7 @@ func withFieldConfirmationTurn(ctx context.Context, query string, history []chat
 		if name == "" {
 			name = names[msg.ToolCallID]
 		}
-		if msg.Role != "tool" || (!fieldToolName.MatchString(name) && name != "call_mcp_tool") {
+		if msg.Role != "tool" || (!fieldToolName.MatchString(name) && name != "call_mcp_tool" && name != "structured_data") {
 			continue
 		}
 		if id, status := fieldResolutionIdentity(msg.Content); id != "" {
