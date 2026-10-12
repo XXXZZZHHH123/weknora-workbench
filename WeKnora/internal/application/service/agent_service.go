@@ -1157,6 +1157,8 @@ func (s *agentService) registerTools(
 		switch toolName {
 		case tools.ToolThinking:
 			toolToRegister = tools.NewSequentialThinkingTool()
+		case tools.ToolCommodityResearch:
+			toolToRegister = tools.NewCommodityResearchTool()
 		case tools.ToolTodoWrite:
 			toolToRegister = tools.NewTodoWriteTool()
 		case tools.ToolSearchKnowledge:

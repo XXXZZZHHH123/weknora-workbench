@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% from "_card.html" import card, trend %}
+{% block title %}锡 SN · 研究总览{% endblock %}
+{% block main %}
+
+<div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
+  <div>
+    <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">COMMODITY RESEARCH · SN</div>
+    <h1 class="text-2xl font-black tracking-tight flex items-center gap-3 flex-wrap">锡研究总览
+      <span class="text-xs font-normal px-2 py-0.5 rounded bg-[var(--surface-soft)] text-[var(--text-muted)] border border-[var(--line)]">收盘截点 15:00</span>
+    </h1>
+    <p class="text-xs text-[var(--text-muted)] mt-1">行情、研判与宏观驱动同一截点 · 口径不一致不出数 · 派生指标可逐层穿透</p>
+  </div>
+  <div class="flex items-center gap-6 text-right shrink-0">
+    <div>
+      <div class="text-xl font-bold tabular">{{ cards | selectattr('status', 'equalto', 'ok') | list | length }}<span class="text-xs font-normal text-[var(--text-muted)]"> / {{ cards | length }}</span></div>
+      <div class="text-[11px] text-[var(--text-muted)]">核心数据就绪</div>
+    </div>
+    <div class="h-8 w-px bg-[var(--line)]"></div>
+    <div>
+      <div class="text-xl font-bold tabular {{ 'text-[var(--amber)]' if gaps else '' }}">{{ gaps | length }}</div>
+      <div class="text-[11px] text-[var(--text-muted)]">待录入缺口</div>
+    </div>
+    <button onclick="openExportDrawer()" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shadow-sm whitespace-nowrap">自定义导出 Excel</button>
+  </div>
+</div>
+
+{% set j = judgment %}
+{% if j is none %}
+<section class="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-sm flex items-center justify-between gap-4">
+  <div>
+    <div class="text-[10px] font-bold tracking-wider text-[var(--primary)] uppercase">RESEARCH VIEW</div>
+    <h2 class="text-base font-bold mt-1">尚未登记锡的研究判断</h2>
+    <p class="text-xs text-[var(--text-muted)] mt-1">事实区照常显示；登记判断后，阈值与证伪条件将每日自动比对。</p>
+  </div>
+  <a href="{{ research_prefix() }}/sn/judgment" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">登记判断 &rarr;</a>
+</section>
+{% else %}
+<section class="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4 sm:p-5 shadow-sm">
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
+    <div class="lg:col-span-3 lg:pr-4 lg:border-r border-[var(--line)]">
+      <div class="flex items-center justify-between gap-2 mb-1.5">
+        <span class="text-[10px] font-bold tracking-wider text-[var(--primary)] uppercase">RESEARCH VIEW · V{{ j.version }}</span>
+        <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded border
+          {{ 'bg-[var(--amber-soft)] text-[var(--amber)] border-[var(--amber)]/20' if j.status == '草稿' else 'bg-[var(--primary-soft)] text-[var(--primary)] border-[var(--primary)]/20' }}">
+          {{ j.status }}{{ '待生效' if j.status == '草稿' }}</span>
+      </div>
+      <div class="text-2xl font-black tracking-tight text-[var(--primary)] mb-1">{{ j.tone or '未定基调' }}</div>
+      <div class="text-[11px] text-[var(--text-muted)] flex items-center gap-2 flex-wrap">
+        <span>{{ j.author }}</span><span>·</span><span>{{ j.written_at[5:] }} 写定</span>
+        {% if j.expired_days %}<span>·</span><span class="text-[var(--amber)] font-medium">超期 {{ j.expired_days }} 天</span>{% endif %}
+      </div>
+      {% if j.tone_note %}<div class="text-[11px] text-[var(--text-muted)] mt-1.5 line-clamp-2" title="{{ j.tone_note }}">{{ j.tone_note }}</div>{% endif %}
+    </div>
+
+    <div class="lg:col-span-6 grid grid-cols-1 md:grid-cols-2 gap-3.5">
+      <div class="pl-3 border-l-2 border-[var(--primary)]/70 bg-[var(--surface-soft)]/50 p-2 rounded-r-lg">
+        <span class="text-[11px] font-bold text-[var(--primary)]">多方依据</span>
+        <p class="text-xs mt-1 leading-relaxed">{{ j.contradiction.bull.claim or '—' }}</p>
+      </div>
+      <div class="pl-3 border-l-2 border-[var(--alert)]/70 bg-[var(--surface-soft)]/50 p-2 rounded-r-lg">
+        <span class="text-[11px] font-bold text-[var(--alert)]">空方依据</span>
+        <p class="text-xs mt-1 leading-relaxed">{{ j.contradiction.bear.claim or '—' }}</p>
+      </div>
+    </div>
+
+    <div class="lg:col-span-3 border-t lg:border-t-0 pt-3 lg:pt-0 border-[var(--line)] space-y-2">
+      {% for t in radar[:2] %}
+      <div>
+        <div class="flex items-center justify-between gap-2 text-[11px]">
+          <span class="text-[var(--text-muted)] truncate" title="{{ t.name }}">{{ t.name }}（{{ t.condition }}）</span>
+          <span class="tabular font-bold shrink-0 {{ 'text-[var(--alert)]' if t.state == '已触发' and t.type == '风控线' else 'text-[var(--text)]' }}">
+            {{ t.value | num(t.unit) if t.value is not none else '—' }}</span>
+        </div>
+        <div class="w-full bg-[var(--surface-soft)] h-1.5 rounded-full overflow-hidden border border-[var(--line)] my-1">
+          <div class="h-full rounded-full {{ 'bg-[var(--alert)]' if t.state == '已触发' and t.type == '风控线' else 'bg-[var(--amber)]' if t.state in ('已触发', '在区间内') else 'bg-[var(--primary)]' }}" style="width: {{ t.progress | round(0) }}%;"></div>
+        </div>
+        <div class="text-[10px] text-[var(--text-muted)]">{{ t.distance }}</div>
+      </div>
+      {% endfor %}
+      <a href="{{ research_prefix() }}/sn/judgment" class="block text-[10px] text-[var(--primary)] font-semibold hover:underline">查看完整研判 &rarr;</a>
+    </div>
+  </div>
+  {% if j.status == '草稿' and j.blockers %}
+  <div class="mt-3 pt-3 border-t border-[var(--line)] text-[11px] text-[var(--amber)]">
+    <b class="mr-2">尚未生效</b>{{ j.blockers | join('；') }}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="space-y-3">
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <div class="flex items-center gap-2">
+      <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">01</span>
+      <h2 class="text-sm font-bold">核心市场</h2>
+      <span class="text-xs text-[var(--text-muted)]">价格、基差、跨期、仓单与汇率</span>
+    </div>
+    <span class="text-[11px] text-[var(--text-muted)]">数据时点与容差严格比对</span>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+    {% for c in cards %}{{ card(c) }}{% endfor %}
+  </div>
+</section>
+
+<section class="space-y-3">
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <div class="flex items-center gap-2">
+      <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">02</span>
+      <h2 class="text-sm font-bold">沪锡期限结构</h2>
+      {% if curve.shape %}<span class="text-xs px-2 py-0.5 rounded bg-[var(--primary-soft)] text-[var(--primary)] font-medium">活跃段 {{ curve.shape }}</span>
+      {% else %}<span class="text-xs text-[var(--text-muted)]">活跃合约不足，暂不判定结构</span>{% endif %}
+    </div>
+    <span class="text-xs text-[var(--text-muted)]">悬浮表格行可高亮对应点位</span>
+  </div>
+
+  {% if curve.rows %}
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+    <div class="lg:col-span-5 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm flex flex-col justify-between">
+      <div class="flex justify-between text-xs text-[var(--text-muted)] font-medium mb-1 gap-2">
+        <span>结算价结构（元/吨）</span>
+        <span id="chart-hover-indicator" class="text-[var(--primary)] font-bold tabular truncate"></span>
+      </div>
+      <div class="relative w-full h-44 my-auto">
+        <svg class="w-full h-full overflow-visible" viewBox="0 0 400 130" preserveAspectRatio="none">
+          <line x1="0" y1="8" x2="400" y2="8" stroke="var(--line)" stroke-width="0.75" stroke-dasharray="3,3"/>
+          <line x1="0" y1="62" x2="400" y2="62" stroke="var(--line)" stroke-width="0.75" stroke-dasharray="3,3"/>
+          <line x1="0" y1="118" x2="400" y2="118" stroke="var(--line)" stroke-width="0.75" stroke-dasharray="3,3"/>
+          <polyline points="{{ curve.points }}" fill="none" stroke="var(--primary)" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+          {% for r in curve.rows %}
+          <circle cx="{{ r.x }}" cy="{{ r.y }}" r="{{ 5.5 if r.main else 4 }}"
+                  data-contract-point="{{ r.contract }}" data-main="{{ 1 if r.main else 0 }}"
+                  data-caption="{{ r.contract }}{{ '（主力）' if r.main }}: {{ r.settle | num('元/吨') }} 元/吨"
+                  fill="{{ 'var(--primary)' if r.main else 'var(--surface)' }}"
+                  stroke="{{ 'var(--surface)' if r.main else ('var(--primary)' if r.active else 'var(--text-muted)') }}"
+                  stroke-width="2" vector-effect="non-scaling-stroke"/>
+          {% endfor %}
+        </svg>
+      </div>
+      <div class="flex justify-between text-[10px] tabular text-[var(--text-muted)] border-t border-[var(--line)] pt-2 overflow-hidden">
+        {% for r in curve.rows %}
+        <span class="{{ 'font-bold text-[var(--primary)]' if r.main }}{{ ' opacity-50' if not r.active }}">{{ r.month }}</span>
+        {% endfor %}
+      </div>
+      <div class="flex justify-between text-[10px] tabular text-[var(--text-muted)] pt-1">
+        <span>下沿 {{ curve.min | num('元/吨') }}</span><span>上沿 {{ curve.max | num('元/吨') }}</span>
+      </div>
+    </div>
+
+    <div class="lg:col-span-7 rounded-lg border border-[var(--line)] bg-[var(--surface)] overflow-hidden shadow-sm flex flex-col">
+      <div class="overflow-x-auto">
+      <table class="w-full text-left text-xs">
+        <thead class="bg-[var(--surface-soft)] text-[11px] font-semibold text-[var(--text-muted)] border-b border-[var(--line)]">
+          <tr><th class="py-2.5 px-3">合约</th><th class="py-2.5 px-3 text-right">结算价</th>
+            <th class="py-2.5 px-3 text-right">收盘价</th><th class="py-2.5 px-3 text-right">成交量（手）</th>
+            <th class="py-2.5 px-3 text-right">持仓量（手）</th><th class="py-2.5 px-3 text-center">状态</th></tr>
+        </thead>
+        <tbody class="divide-y divide-[var(--line)]">
+          {% for r in curve.rows %}
+          <tr class="contract-row cursor-default transition-colors {{ 'bg-[var(--primary-soft)]/40 font-semibold' if r.main }}"
+              onmouseenter="highlightContract('{{ r.contract }}')" onmouseleave="resetContract()">
+            <td class="py-2 px-3 whitespace-nowrap">{{ r.contract }}
+              {% if r.main %}<span class="ml-1 px-1.5 py-0.5 text-[9px] font-bold rounded bg-[var(--primary)] text-white">主力</span>{% endif %}</td>
+            <td class="py-2 px-3 text-right tabular {{ 'font-bold text-[var(--primary)]' if r.main }}">{{ r.settle | num('元/吨') }}</td>
+            <td class="py-2 px-3 text-right tabular">{{ r.close | num('元/吨') }}</td>
+            <td class="py-2 px-3 text-right tabular {{ '' if r.active else 'text-[var(--text-muted)]' }}">{{ r.volume | num('手') }}</td>
+            <td class="py-2 px-3 text-right tabular text-[var(--text-muted)]">{{ r.oi | num('手') }}</td>
+            <td class="py-2 px-3 text-center">
+              {% if r.active %}<span class="w-1.5 h-1.5 rounded-full bg-[var(--primary)] inline-block" title="活跃"></span>
+              {% else %}<span class="px-1.5 py-0.5 text-[10px] rounded bg-[var(--surface-soft)] text-[var(--text-muted)]">低流动性</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <div class="mt-auto px-3 py-2 bg-[var(--surface-soft)] border-t border-[var(--line)] text-[11px] text-[var(--text-muted)] flex justify-between gap-2">
+        <span>成交低于 {{ liquidity_min }} 手视为低流动性，价差计算自动改用结算价。</span>
+        <a href="{{ research_prefix() }}/sn/contracts.csv?date={{ d }}" class="text-[var(--primary)] hover:underline shrink-0">导出 CSV</a>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-6 text-sm text-[var(--text-muted)]">该交易日没有可用的合约行情。</div>
+  {% endif %}
+</section>
+
+<section class="space-y-3">
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <div class="flex items-center gap-2">
+      <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">03</span>
+      <h2 class="text-sm font-bold">宏观镜头</h2>
+      <span class="text-xs text-[var(--text-muted)]">流动性、风险偏好与半导体景气</span>
+    </div>
+    <a href="{{ research_prefix() }}/sn/indicators?scope=macro&date={{ d }}" class="text-xs font-semibold text-[var(--primary)] hover:underline">查看宏观指标 &rarr;</a>
+  </div>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+    {% for m in macro[:4] %}{{ trend(m, d) }}{% endfor %}
+  </div>
+</section>
+
+<section class="space-y-3">
+  <div class="flex items-center gap-2">
+    <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">04</span>
+    <h2 class="text-sm font-bold">数据完整性与缺口台账</h2>
+    {% if gaps %}<span class="text-xs text-[var(--amber)] font-medium">{{ gaps | length }} 项待补</span>
+    {% else %}<span class="text-xs text-[var(--primary)] font-medium">全部指标在预期更新时间内</span>{% endif %}
+  </div>
+  {% if gaps %}
+  <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] overflow-hidden shadow-sm overflow-x-auto">
+    <table class="w-full text-left text-xs">
+      <thead class="bg-[var(--surface-soft)] text-[11px] font-semibold text-[var(--text-muted)] border-b border-[var(--line)]">
+        <tr><th class="py-2 px-3">指标名称与 series_id</th><th class="py-2 px-3">方式</th>
+          <th class="py-2 px-3">预期更新到</th><th class="py-2 px-3">最近数据点</th>
+          <th class="py-2 px-3">缺口原因</th><th class="py-2 px-3 text-right">操作</th></tr>
+      </thead>
+      <tbody class="divide-y divide-[var(--line)]">
+        {% for g in gaps %}
+        <tr class="hover:bg-[var(--surface-soft)]">
+          <td class="py-2.5 px-3"><div class="font-bold">{{ g.name }}</div>
+            <div class="text-[10px] tabular text-[var(--text-muted)]">{{ g.series_id }}</div></td>
+          <td class="py-2.5 px-3"><span class="px-1.5 py-0.5 text-[10px] rounded font-medium
+            {{ 'bg-[var(--amber-soft)] text-[var(--amber)]' if g.fetch_mode == 'manual' else 'bg-[var(--primary-soft)] text-[var(--primary)]' }}">
+            {{ '人工' if g.fetch_mode == 'manual' else '自动' }}</span></td>
+          <td class="py-2.5 px-3 tabular">{{ g.expected_by }}</td>
+          <td class="py-2.5 px-3 tabular text-[var(--text-muted)]">{{ g.last_as_of or '—' }}</td>
+          <td class="py-2.5 px-3 text-[var(--amber)]">{{ g.reason }}</td>
+          <td class="py-2.5 px-3 text-right">
+            {% if g.fetch_mode == 'manual' %}
+            <button onclick="openDrawerWith('{{ g.series_id }}')" class="px-2.5 py-1 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] whitespace-nowrap">原地快录</button>
+            {% else %}<span class="text-[10px] text-[var(--text-muted)]">等待下次采集</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<p class="text-[11px] text-[var(--text-muted)]">agent 读取：<a class="text-[var(--primary)] hover:underline" href="{{ research_prefix() }}/api/sn/snapshot?date={{ d }}">/api/sn/snapshot?date={{ d }}</a></p>
+{% endblock %}
+
+{% block drawer %}
+<aside id="export-drawer" data-drawer class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-xl bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
+  <div class="flex items-center justify-between pb-3 border-b border-[var(--line)]">
+    <div>
+      <h3 class="text-base font-bold">自定义数据导出</h3>
+      <p class="text-xs text-[var(--text-muted)] mt-0.5">按交易日成表 ｜ 低频指标不填前值 ｜ 阻断与缺失逐格写入批注</p>
+    </div>
+    <button type="button" onclick="closeDrawers()" class="p-1 rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-soft)] text-lg">&times;</button>
+  </div>
+
+  <div class="mt-3 space-y-3 overflow-y-auto flex-1">
+    <div>
+      <div class="text-[11px] font-semibold text-[var(--text-muted)] mb-1">模板预设</div>
+      <div id="export-template-bar" class="flex items-center gap-1.5 flex-wrap"></div>
+    </div>
+
+    <div>
+      <div class="text-[11px] font-semibold text-[var(--text-muted)] mb-1">已选字段与列顺序（点击选中，◀ ▶ 调序或直接拖拽，× 移除）</div>
+      <div id="export-pills" class="flex flex-wrap gap-1.5 p-2 rounded-md bg-[var(--surface-soft)] min-h-[38px]"></div>
+    </div>
+
+    <div>
+      <div class="flex items-center justify-between gap-2 mb-1">
+        <span class="text-[11px] font-semibold text-[var(--text-muted)]">可选字段（按指标类别分组）</span>
+        <span class="flex items-center gap-1 text-[11px]">
+          <button type="button" onclick="exportSelectAll(true)" class="px-1.5 py-0.5 rounded hover:bg-[var(--surface-soft)] text-[var(--primary)]">全选</button>
+          <button type="button" onclick="exportSelectAll(false)" class="px-1.5 py-0.5 rounded hover:bg-[var(--surface-soft)] text-[var(--text-muted)]">清空</button>
+        </span>
+      </div>
+      <div id="export-groups" class="border-t border-[var(--line)]"></div>
+    </div>
+
+    <div class="p-2.5 rounded-md bg-[var(--amber-soft)] text-[var(--amber)] border border-[var(--amber)]/30 text-[11px]">
+      导出文件含 SMM / Mysteel 等商业授权数据时，将在说明页与打印页眉标注「内部投研参考 严禁外发」，并记入审计日志。
+    </div>
+
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <label class="block"><span class="font-semibold">数据区间</span>
+        <select id="export-range" onchange="exportRender()" class="mt-1 w-full px-2 py-1.5 rounded-md">
+          <option value="recent_30_trade_days">最近 30 个交易日</option>
+          <option value="recent_90_trade_days">最近 90 个交易日（约一季度）</option>
+          <option value="recent_180_trade_days">最近 180 个交易日（约半年）</option>
+          <option value="recent_1y">最近一年</option>
+          <option value="recent_2y">最近两年</option>
+          <option value="recent_5y">最近五年</option>
+          <option value="custom">自定义起止日期</option>
+        </select></label>
+      <label class="block"><span class="font-semibold">数据排序</span>
+        <select id="export-sort" class="mt-1 w-full px-2 py-1.5 rounded-md">
+          <option value="desc">按日期倒序（最新在前）</option>
+          <option value="asc">按日期正序</option>
+        </select></label>
+      <div id="export-custom-dates" class="col-span-2 hidden grid grid-cols-2 gap-x-2">
+        <label class="block"><span class="font-semibold">起始日期</span>
+          <input id="export-start" type="date" oninput="exportFieldError(['export-start','export-end'],'export-dates-err','')"
+                 class="mt-1 w-full px-2 py-1.5 rounded-md tabular"></label>
+        <label class="block"><span class="font-semibold">结束日期</span>
+          <input id="export-end" type="date" oninput="exportFieldError(['export-start','export-end'],'export-dates-err','')"
+                 class="mt-1 w-full px-2 py-1.5 rounded-md tabular"></label>
+        <!-- 常驻占位：出错时才有字，但高度始终存在，报错不会把按钮顶走 -->
+        <p id="export-dates-err" class="col-span-2 min-h-[16px] mt-1 text-[11px] text-[var(--alert)]"></p>
+      </div>
+      <div class="col-span-2">
+        <label class="block"><span class="font-semibold">导出人姓名</span>
+          <span class="text-[var(--text-muted)]">（必填，用于合规审计）</span>
+          <input id="export-actor" type="text" required oninput="exportFieldError(['export-actor'],'export-actor-err','')"
+                 class="mt-1 w-full px-2 py-1.5 rounded-md" {% if research_identity() %}value="{{ research_identity().display_name }}" readonly{% endif %}></label>
+        <p id="export-actor-err" class="min-h-[16px] mt-1 text-[11px] text-[var(--alert)]"></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="pt-3 border-t border-[var(--line)] flex justify-end">
+    <button id="export-run" type="button" onclick="exportRun()" class="px-5 py-2 rounded-md bg-[var(--primary)] text-white text-xs font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-40">导出 Excel (.xlsx)</button>
+  </div>
+</aside>
+{% endblock %}

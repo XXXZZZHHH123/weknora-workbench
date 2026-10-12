@@ -11,8 +11,10 @@ services:
         condition: service_healthy
       structured-data:
         condition: service_healthy
+      commodity-research:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ && wget -q -O /dev/null http://127.0.0.1/structured/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ && wget -q -O /dev/null http://127.0.0.1/structured/health && wget -q -O /dev/null http://127.0.0.1/research/healthz && wget -q -O /dev/null http://127.0.0.1/research/static/app.css && wget -q -O /dev/null http://127.0.0.1/research/static/app.js"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -33,11 +35,14 @@ services:
       GIN_MODE: release
       MAX_FILE_SIZE_MB: "100"
       BATCH_EMBED_SIZE: "2"
-      SSRF_WHITELIST_EXTRA: "structured-data,cotton-data"
+      SSRF_WHITELIST_EXTRA: "structured-data,cotton-data,commodity-research"
+      COMMODITY_RESEARCH_URL: http://commodity-research:8765
+      COMMODITY_RESEARCH_TOKEN_FILE: /run/secrets/research-token
       WEKNORA_SANDBOX_DOCKER_ENABLED: "false"
     volumes:
       - data-files:/data/files
       - docreader-tmp:/tmp/docreader:ro
+      - ${DEPLOY_SHARED_DIR:?shared directory required}/research-service-token:/run/secrets/research-token:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,6 +75,28 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18082/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  commodity-research:
+    image: ${COMMODITY_RESEARCH_IMAGE:-${IMAGE_PREFIX:?release.env required}-commodity-research:${IMAGE_TAG:?release.env required}}
+    restart: unless-stopped
+    environment:
+      TIN_WEKNORA_API_URL: http://app:8080
+      TIN_PUBLIC_PREFIX: /research
+      TIN_DATA_DIR: /data
+      TIN_EXPORTS_DIR: /data/exports
+      TIN_STAGING_DIR: /data/import_staging
+      TIN_SERVICE_TOKEN_FILE: /run/secrets/research-token
+    volumes:
+      - commodity-research:/data
+      - ${DEPLOY_SHARED_DIR:?shared directory required}/research-service-token:/run/secrets/research-token:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -128,3 +155,4 @@ volumes:
   docreader-tmp:
   structured-data:
   postgres-backups:
+  commodity-research:

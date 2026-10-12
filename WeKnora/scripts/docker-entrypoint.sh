@@ -65,4 +65,15 @@ case "${DOCKER_HOST:-}" in
 esac
 
 # ─── Drop privileges and exec the main process ───
+# Keep the host's private 0600 signing key private while making a separate
+# runtime copy readable by the application after dropping root privileges.
+if [ -n "${COMMODITY_RESEARCH_TOKEN_FILE:-}" ]; then
+    if [ ! -f "$COMMODITY_RESEARCH_TOKEN_FILE" ]; then
+        echo "weknora: configured research signing key is missing" >&2
+        exit 1
+    fi
+    install -d -m 0700 -o appuser -g appuser /run/weknora-research
+    install -m 0600 -o appuser -g appuser "$COMMODITY_RESEARCH_TOKEN_FILE" /run/weknora-research/service-token
+    export COMMODITY_RESEARCH_TOKEN_FILE=/run/weknora-research/service-token
+fi
 exec gosu appuser "$@"

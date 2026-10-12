@@ -43,12 +43,22 @@ if 'info' in a: print(str(r))
 elif 'image' in a and 'inspect' in a: sys.exit(1)
 elif 'config' in a and '--images' in a: print('ghcr.io/owner/repo-app:test\\nghcr.io/owner/repo-frontend:test')
 elif 'load' in a: sys.stdin.read(); print('Loaded image')
-elif 'ps' in a and (r/'existing-db').exists(): print('existing-postgres')
+elif 'ps' in a and 'postgres' in a and (r/'existing-db').exists(): print('existing-postgres')
+elif 'ps' in a and 'commodity-research' in a and (r/'existing-research').exists(): print('existing-research')
+elif 'exec' in a and 'commodity-research' in a:
+ if (r/'fail-research-backup').exists(): sys.exit(1)
+ import io, tarfile
+ stream=io.BytesIO()
+ with tarfile.open(fileobj=stream, mode='w:gz'): pass
+ sys.stdout.buffer.write(stream.getvalue())
 elif 'exec' in a and 'pg_dump' in ' '.join(a):
  if (r/'fail-backup').exists(): sys.exit(1)
  (r/'shared'/'backups'/a[-1]).write_text('database-backup')
 elif 'up' in a and (r/'fail-up').exists(): sys.exit(1)
-elif 'exec' in a and 'curl' in a: print('200' if (r/'bad-api-proxy').exists() else '401', end='')
+elif 'exec' in a and 'curl' in a:
+ if '/research/static/' in a[-1]:
+  print('404 text/plain' if (r/'bad-research-static').exists() else ('200 text/html' if (r/'research-static-spa').exists() else ('200 text/css' if a[-1].endswith('.css') else '200 text/javascript')), end='')
+ else: print('200' if (r/'bad-api-proxy').exists() or ('http://frontend/research/api/board' in a and (r/'bad-research-proxy').exists()) else '401', end='')
 elif 'exec' in a and 'structured-data' in a and 'python' in a:
  print((r/'public-origin').read_text() if (r/'public-origin').exists() else '')
 ''')
@@ -189,6 +199,56 @@ sys.exit(subprocess.call(['/usr/bin/sed']+args))
         self.assertNotIn(' up ', self.log.read_text())
         self.assertEqual((self.root / 'current').resolve(), old)
 
+    def test_research_backup_is_completed_before_service_update(self):
+        self.release()
+        (self.root / 'existing-research').touch()
+        result = self.run_script('deploy.sh', TAG)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        backups = list((self.shared / 'backups').glob('*.research.tar.gz'))
+        self.assertEqual(len(backups), 1)
+        with tarfile.open(backups[0], 'r:gz') as archive:
+            self.assertEqual(archive.getmembers(), [])
+        log = self.log.read_text()
+        self.assertLess(log.index('/app/deploy/container/backup.py'), log.index(' up '))
+
+    def test_failed_research_backup_aborts_before_update(self):
+        old = self.previous()
+        self.release()
+        (self.root / 'existing-research').touch()
+        (self.root / 'fail-research-backup').touch()
+        result = self.run_script('deploy.sh', TAG)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(' up ', self.log.read_text())
+        self.assertEqual((self.root / 'current').resolve(), old)
+        self.assertEqual(list((self.shared / 'backups').glob('*.tmp')), [])
+
+    def test_missing_research_stylesheet_cannot_promote_healthy_html(self):
+        old = self.previous()
+        self.release()
+        (self.root / 'bad-research-static').touch()
+        result = self.run_script('deploy.sh', TAG)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Research static proxy probe failed: app.css 404', result.stderr)
+        self.assertEqual((self.root / 'current').resolve(), old)
+
+    def test_research_asset_spa_fallback_cannot_promote(self):
+        old = self.previous()
+        self.release()
+        (self.root / 'research-static-spa').touch()
+        result = self.run_script('deploy.sh', TAG)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Research static proxy probe failed: app.css 200 text/html', result.stderr)
+        self.assertEqual((self.root / 'current').resolve(), old)
+
+    def test_research_route_must_reject_unauthenticated_data(self):
+        old = self.previous()
+        self.release()
+        (self.root / 'bad-research-proxy').touch()
+        result = self.run_script('deploy.sh', TAG)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Research auth proxy probe failed', result.stderr)
+        self.assertEqual((self.root / 'current').resolve(), old)
+
     def test_full_docker_filesystem_prevents_image_download(self):
         old = self.previous()
         self.release()
@@ -211,6 +271,9 @@ sys.exit(subprocess.call(['/usr/bin/sed']+args))
         result = self.run_script('bootstrap.sh', 'owner/repo')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.shared / '.env').read_text(), first)
+        token = self.shared / 'research-service-token'
+        self.assertEqual(len(token.read_text().strip()), 64)
+        self.assertEqual(token.stat().st_mode & 0o777, 0o600)
 
     def test_existing_database_is_backed_up_before_update(self):
         self.release()

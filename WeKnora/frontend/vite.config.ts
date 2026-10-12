@@ -132,6 +132,13 @@ export default defineConfig({
     host: true,
     // 代理配置，用于开发环境
     proxy: {
+      '/research/': {
+        target: process.env.VITE_RESEARCH_PROXY_TARGET || 'http://127.0.0.1:8765',
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/research/, ''),
+        timeout: 300_000,
+        proxyTimeout: 300_000,
+      },
       '/mcp/': {
         target: DEV_PROXY_TARGET,
         changeOrigin: true,
@@ -166,6 +173,13 @@ export default defineConfig({
     port: 4173,
     host: true,
     proxy: {
+      '/research/': {
+        target: process.env.VITE_RESEARCH_PROXY_TARGET || 'http://127.0.0.1:8765',
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/research/, ''),
+        timeout: 300_000,
+        proxyTimeout: 300_000,
+      },
       '/mcp/': {
         target: DEV_PROXY_TARGET,
         changeOrigin: true,

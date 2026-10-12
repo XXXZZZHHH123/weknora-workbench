@@ -1,0 +1,34 @@
+# 运行环境：conda env "tin" (Python 3.12)
+# 安装：pip install -r requirements.txt && pip install -e .
+
+# Web 与模板
+fastapi>=0.115
+uvicorn[standard]>=0.32
+jinja2>=3.1
+python-multipart>=0.0.9
+
+# 数据模型与校验
+pydantic>=2.9
+pydantic-settings>=2.5
+
+# 存储与迁移（一期 SQLite；切 PostgreSQL 时加装 psycopg[binary] 并改 TIN_DATABASE_URL）
+SQLAlchemy>=2.0.35
+alembic>=1.13
+
+# 采集：全部直连官方源（上期所 / 外汇交易中心 / CBOE），不经 akshare
+httpx>=0.27
+pandas>=2.2
+lxml>=5.0
+
+# LLM 接入层（二期 F2）。OpenAI 兼容端点（内网 vLLM / Ollama）另需 openai，
+# 现阶段用不到所以不列；openai_provider.py 里做了延迟导入，没装不影响其余代码。
+anthropic>=1.8
+
+# Excel 导入导出（openpyxl 与 xlrd 原为 akshare 的传递依赖，移除 akshare 后需显式声明）
+openpyxl>=3.1.5
+xlrd>=2.0.1
+charset-normalizer>=3.3
+
+# 测试
+pytest>=8.3
+openai>=2.0        # OpenAI 兼容端点（阿里云百炼 / 本地 vLLM）

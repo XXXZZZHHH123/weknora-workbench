@@ -112,6 +112,12 @@ const router = createRouter({
           meta: { requiresInit: true, requiresAuth: true }
         },
         {
+          path: "commodity-research",
+          name: "commodityResearch",
+          component: () => import("../views/research/index.vue"),
+          meta: { requiresInit: true, requiresAuth: true }
+        },
+        {
           path: "settings",
           name: "settings",
           component: () => import("../views/settings/Settings.vue"),

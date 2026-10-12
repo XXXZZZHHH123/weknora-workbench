@@ -2,6 +2,8 @@
 
 基于 WeKnora 的通用结构化表格工作台。这里是开发、运行和 Git 版本管理的统一目录，包含修改后的 WeKnora、Python 数据服务、前端集成和自动化测试。
 
+现已合入 [商品研究工作台](commodity-research/README.md)：统一 WeKnora 登录与空间，指标事实在空间内共享，判断、简报、研究思路和策略按账号保存。左侧“商品研究”打开研究页面；“商品研究助手”通过只读工具查询真实研究结果。首版完成仓库、账号、入口和聊天读取；Excel 与研究指标互通留待下一阶段。
+
 ## 本机日常使用
 
 当前项目目录：`/Users/mac/Code/weknora-workbench`。在此修改源码、运行测试和提交 Git；旧 `weknora-evaluation` 目录已合并清理；独有资料保存在本目录 `.local-backups/` 的压缩备份中，不再保留第二个工程目录。
@@ -38,6 +40,7 @@ Docker 项目名 `weknora-eval`、`weknora-structured` 保留以复用现有数�
 | `WeKnora/` | 上游源码及本项目修改，非 submodule |
 | `structured-data/src/structured_data/` | 解析、目录、查询、模型辅助与工作台 |
 | `structured-data/tests/` | 单元与集成测试，主要使用程序生成的样本 |
+| `commodity-research/` | 商品指标采集、判断监测、简报、策略、空间与账号隔离 |
 | `structured-data/scripts/` | 构建、注册和本地验收工具 |
 | `compose.test.yml` | 本地试点部署覆盖配置 |
 | `model-config.example.json` | 不含密钥的模型配置示例 |

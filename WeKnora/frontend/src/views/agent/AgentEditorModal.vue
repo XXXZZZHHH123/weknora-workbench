@@ -2460,6 +2460,7 @@ const allTools = computed(() => [
   { value: 'wiki_update_issue', label: t('agentEditor.tools.wikiUpdateIssue'), description: t('agentEditor.tools.wikiUpdateIssueDesc'), group: 'wiki_issue' },
   // 数据分析
   { value: 'data_analysis', label: t('agentEditor.tools.dataAnalysis'), description: t('agentEditor.tools.dataAnalysisDesc'), group: 'data' },
+  { value: 'commodity_research', label: '商品研究', description: '读取空间共享指标和当前账号的判断、信号、简报及策略', group: 'data' },
   { value: 'data_schema', label: t('agentEditor.tools.dataSchema'), description: t('agentEditor.tools.dataSchemaDesc'), group: 'data' },
 ]);
 

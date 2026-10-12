@@ -10,11 +10,15 @@ services:
     image: weknora-eval-app:mcp-direct
     container_name: weknora-eval-app
     environment:
-      SSRF_WHITELIST_EXTRA: "searxng,qdrant,milvus,weaviate,doris-fe,doris-be,minio,dashscope.aliyuncs.com,cotton-data,structured-data,html.duckduckgo.com,api.duckduckgo.com"
+      SSRF_WHITELIST_EXTRA: "searxng,qdrant,milvus,weaviate,doris-fe,doris-be,minio,dashscope.aliyuncs.com,cotton-data,structured-data,commodity-research,html.duckduckgo.com,api.duckduckgo.com"
+      COMMODITY_RESEARCH_URL: http://commodity-research:8765
+      COMMODITY_RESEARCH_TOKEN_FILE: /run/secrets/research-token
       BATCH_EMBED_SIZE: "2"
       MAX_FILE_SIZE_MB: "100"
     ports: !override
       - "127.0.0.1:18081:8080"
+    volumes:
+      - ../commodity-research/data/service-token:/run/secrets/research-token:ro
   docreader:
     container_name: weknora-eval-docreader
     environment:

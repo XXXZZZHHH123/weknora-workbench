@@ -15,7 +15,8 @@ COPY WeKnora/frontend/nginx-api-proxy.conf /etc/nginx/api-proxy.conf
 COPY WeKnora/frontend/nginx-http.conf /etc/nginx/conf.d/00-weknora-http.conf
 COPY WeKnora/frontend/docker-entrypoint.sh /docker-entrypoint.sh
 COPY structured-data/deploy/structured-proxy.conf /etc/nginx/structured-proxy.conf
-RUN chmod +x /docker-entrypoint.sh && sed -i '/server_name localhost;/a\    include /etc/nginx/structured-proxy.conf;' /etc/nginx/templates/default.conf.template
+COPY commodity-research/deploy/research-proxy.conf /etc/nginx/research-proxy.conf
+RUN chmod +x /docker-entrypoint.sh && sed -i '/server_name localhost;/a\    include /etc/nginx/structured-proxy.conf;\n    include /etc/nginx/research-proxy.conf;' /etc/nginx/templates/default.conf.template
 ENV MAX_FILE_SIZE_MB=100
 EXPOSE 80
 ENTRYPOINT ["/docker-entrypoint.sh"]

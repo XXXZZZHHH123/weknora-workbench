@@ -66,6 +66,7 @@ type toolHandlePolicy struct {
 // alone are deliberately insufficient: a dynamic MCP tool may use the same
 // name with unrelated semantics and must remain opaque.
 var toolHandlePolicies = map[string]toolHandlePolicy{
+	"commodity_research": {},
 	"discover_mcp_tools": {opaqueOutput: true, mcpRoutingKey: "server_id", mcpDirectoryOutput: true},
 	"call_mcp_tool":      {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
 	"read_file":          {},

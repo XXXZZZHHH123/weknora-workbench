@@ -1,0 +1,28 @@
+services:
+  commodity-research:
+    build: .
+    image: weknora-commodity-research:local
+    container_name: weknora-commodity-research
+    restart: unless-stopped
+    environment:
+      TIN_WEKNORA_API_URL: http://app:8080
+      TIN_PUBLIC_PREFIX: /research
+      TIN_DATA_DIR: /data
+      TIN_EXPORTS_DIR: /data/exports
+      TIN_STAGING_DIR: /data/import_staging
+      TIN_SERVICE_TOKEN_FILE: /run/secrets/research-token
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ./data:/data
+      - ./data/service-token:/run/secrets/research-token:ro
+    networks: [weknora]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+networks:
+  weknora:
+    external: true
+    name: weknora-eval_WeKnora-network

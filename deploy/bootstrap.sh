@@ -20,6 +20,10 @@ if [[ ! -e "$root/shared/.env" ]]; then
   done
   sed -i "s/^SYSTEM_AES_KEY=$/SYSTEM_AES_KEY=$(openssl rand -hex 16)/" "$root/shared/.env"
 fi
+if [[ ! -e "$root/shared/research-service-token" ]]; then
+  openssl rand -hex 32 > "$root/shared/research-service-token"
+  chmod 600 "$root/shared/research-service-token"
+fi
 if [[ ! -e "$root/shared/poller.json" ]]; then
   jq -n --arg repo "$repo" --arg proxy "$proxy" '{repository: $repo, proxy: $proxy}' > "$root/shared/poller.json"
 fi

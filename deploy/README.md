@@ -1,6 +1,6 @@
 # 手动更新部署（CentOS 7 / x86_64 / 内网）
 
-流程：main 更新 → Python / 前端 / Go MCP 回归及部署脚本检查 → 比较每个服务的构建输入，复用未变化镜像、构建变化镜像（linux/amd64） → 发布完整的 GitHub Release → 在服务器手动运行 `bin/update.sh` 拉取最新已发布版本 → PostgreSQL 备份 → Compose 更新与健康检查 → 更新 current 指针。
+流程：main 更新 → Python / 前端 / Go MCP 回归及部署脚本检查 → 比较每个服务的构建输入，复用未变化镜像、构建变化镜像（linux/amd64） → 发布完整的 GitHub Release → 在服务器手动运行 `bin/update.sh` 拉取最新已发布版本 → PostgreSQL 与研究数据库备份 → Compose 更新与健康检查 → 更新 current 指针。
 
 PR 运行检查和镜像构建，不推送镜像、不发布部署版本。发布权限使用流水线自带的 GITHUB_TOKEN，服务器只保存专用的读取令牌，不需要开放公网 SSH。
 
@@ -49,7 +49,7 @@ bash /home/codexuser/weknora-workbench/bin/update.sh --retry-failed
 ```sh
 # 当前成功部署的版本
 readlink /home/codexuser/weknora-workbench/current
-# 本项目容器；正常情况下六个服务均为 healthy
+# 本项目容器；正常情况下七个服务均为 healthy
 docker ps -a --filter label=com.docker.compose.project=weknora-workbench-prod
 # 最近的更新日志
 tail -n 100 /home/codexuser/weknora-workbench/shared/deploy.log
@@ -89,7 +89,7 @@ wb stop
 # 启动当前已部署版本，等待依赖及健康检查；不下载镜像
 wb up -d --no-build --pull never --wait --wait-timeout 300
 # 重启应用服务；不重新读取修改后的 .env
-wb restart app structured-data frontend
+wb restart app structured-data commodity-research frontend
 # 查看所有服务最近日志
 wb logs --tail 100
 # 编辑运行配置；不要重新生成 AES 密钥，否则原有加密凭据无法解密
@@ -192,7 +192,7 @@ bash /home/codexuser/weknora-workbench/setup/migrate-docker-storage.sh /mnt/wekn
 
 ## 2. 私有仓库与镜像读取凭据
 
-服务器建议使用独立的 classic PAT：`repo`（classic PAT 读取私有仓库所需，范围较宽）及 `read:packages`，不要使用开发者的日常推送令牌。也可以分别使用 Contents:read 的 fine-grained PAT 读取发布包，以及另一个 read:packages 的 classic PAT 登录 GHCR。令牌还需要拥有该仓库及六个镜像包的读取权限；组织 SSO 需按组织要求授权。
+服务器建议使用独立的 classic PAT：`repo`（classic PAT 读取私有仓库所需，范围较宽）及 `read:packages`，不要使用开发者的日常推送令牌。也可以分别使用 Contents:read 的 fine-grained PAT 读取发布包，以及另一个 read:packages 的 classic PAT 登录 GHCR。令牌还需要拥有该仓库及七个镜像包的读取权限；组织 SSO 需按组织要求授权。
 
 令牌不要放进项目 `.env`、Git、命令参数或聊天。下面在服务器交互终端执行，输入不会回显：
 
@@ -229,9 +229,9 @@ bash ~/weknora-workbench/bin/update.sh
 
 数据库、Redis、原文件、结构化表格均使用 Docker 命名卷，随 Docker 数据目录位于新盘；数据库备份也保存在新盘的 Docker 命名卷；发布脚本、运行配置和令牌位于 `~/weknora-workbench/`。
 
-每次发布从镜像中启动代码，不挂载源码。下载发布包并验证 SHA256 及归档成员后才解压；所有镜像准备成功才更新服务。发布编号使用整项目提交号、流水线编号和运行次数，`release.env` 分别记录六个服务的镜像引用和构建输入哈希。源码、依赖声明、Dockerfile 或基础镜像版本没有变化时复用原镜像；文档或测试修改不会重建运行镜像。服务器发现镜像已存在便跳过下载。复用前 CI 检查镜像仍可读取，缺失时重新构建；初次迁移到此规则时复用已经在服务器运行的 `3652036` 镜像。镜像中的版本信息表示该服务上次实际构建的提交。
+每次发布从镜像中启动代码，不挂载源码。下载发布包并验证 SHA256 及归档成员后才解压；所有镜像准备成功才更新服务。发布编号使用整项目提交号、流水线编号和运行次数，`release.env` 分别记录七个服务的镜像引用和构建输入哈希。源码、依赖声明、Dockerfile 或基础镜像版本没有变化时复用原镜像；文档或测试修改不会重建运行镜像。服务器发现镜像已存在便跳过下载。复用前 CI 检查镜像仍可读取，缺失时重新构建；初次迁移到此规则时复用已经在服务器运行的 `3652036` 镜像。镜像中的版本信息表示该服务上次实际构建的提交。
 
-基础镜像版本集中在 `deploy/image-builds.json`，变更版本会重建相应服务。手动运行工作流可勾选 `force_rebuild` 强制重建全部镜像。PR 保留六个镜像的构建验证，不推送。只有测试、镜像构建或复用检查、发布步骤全部成功的版本才会进入服务器。不要手动把其他类型的 Release 标记为 Latest，以免阻断生产发布发现。
+基础镜像版本集中在 `deploy/image-builds.json`，变更版本会重建相应服务。手动运行工作流可勾选 `force_rebuild` 强制重建全部镜像。PR 保留七个镜像的构建验证，不推送。只有测试、镜像构建或复用检查、发布步骤全部成功的版本才会进入服务器。不要手动把其他类型的 Release 标记为 Latest，以免阻断生产发布发现。
 
 首次健康检查确认前端、受保护 API 返回 401、结构化 `/health` 返回 JSON；这不等于已验证真实模型问答。首次配置账号及模型后，还需检查页面登录、工作台上传/查询、歧义选择和证据显示。
 
@@ -259,16 +259,60 @@ rm ~/weknora-workbench/shared/PAUSED
 bash ~/weknora-workbench/bin/update.sh --retry-failed
 ```
 
-每次升级先将 PostgreSQL 保存到 `weknora-workbench-prod_postgres-backups` 命名卷（postgres 容器的 `/backups/*.pg.dump`）；备份失败则中止发布。需要另行备份 `shared/.env` 以及命名卷中的结构化数据和原文件等数据，并定期清理旧备份/镜像/版本。数据库备份发生时现有服务可能继续写入，不是全部业务数据的同一时点快照。
+每次升级先将 PostgreSQL 保存到 `weknora-workbench-prod_postgres-backups` 命名卷（postgres 容器的 `/backups/*.pg.dump`）；备份失败则中止发布。需要另行备份 `shared/.env` 以及命名卷中的结构化数据和原文件等数据（研究数据卷已在升级前自动归档），并定期清理旧备份/镜像/版本。数据库备份发生时现有服务可能继续写入，不是全部业务数据的同一时点快照。
 
 回到旧镜像前先设置 `shared/PAUSED`，核对旧代码与当前数据库结构兼容性，再运行 previous 目录下的 deploy.sh。脚本仅回退镜像/Compose，不还原数据库，数据库恢复须停写并从选定备份恢复。不要使用 `docker compose down -v`。服务器卷固定使用 `weknora-workbench-prod` 项目名，不能随版本改变。
 
 ## 5. 验证范围
 
-CI 检查结构化服务测试、前端类型与测试、Go MCP 回归、ShellCheck、部署状态与失败路径测试、Compose 配置以及六个镜像构建；用户态镜像导入及失败中止也有回归测试。没有访问生产密钥、生产数据或调用收费模型。只有服务器实际拉取、启动并通过健康检查，才证明该版本可以在这台 CentOS 7 主机上运行；源码检查不能替代该验证。
+CI 检查结构化服务和商品研究测试、研究空库迁移及模型对齐、前端类型与测试、Go MCP 回归、ShellCheck、部署状态与失败路径测试、Compose 配置以及七个镜像构建；用户态镜像导入及失败中止也有回归测试。没有访问生产密钥、生产数据或调用收费模型。只有服务器实际拉取、启动并通过健康检查，才证明该版本可以在这台 CentOS 7 主机上运行；源码检查不能替代该验证。
 
 GitHub Actions 绿色表示发布包已准备好；服务器部署状态目前记录在 `shared/deploy.log`，未回写 GitHub Deployments。代理离线或令牌失效时更新脚本报错，服务器保留当前版本；恢复连接后重新手动运行更新脚本。
 
 实现依据：[GitHub 镜像发布](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)、[GHCR 认证](https://docs.github.com/en/packages/working-with-the-container-registry/working-with-the-container-registry)、[Release API](https://docs.github.com/en/rest/releases/releases)、[Compose 等待健康检查](https://docs.docker.com/reference/cli/docker/compose/up/)。
 
 用户态镜像导入依据：[regctl image export](https://regclient.org/cli/regctl/image/export/)。
+
+
+## 6. 商品研究服务（第一版合仓）
+
+新增第七个服务 `commodity-research`，Python/FastAPI 监听内部 8765。研究入口是 `/platform/commodity-research`，Nginx 将同源 `/research/` 转给研究服务。研究员身份、当前空间由 WeKnora 登录校验；新空间在首次访问时创建独立数据库。公开 `/research/healthz` 只检查进程，不创建数据库、不返回研究数据；部署另外检查未登录研究 API 必须返回 401，研究 CSS 与 JS 必须返回 200 且类型正确，防止页面有 HTML 但样式和按钮失效。
+
+研究持久数据卷是 `weknora-workbench-prod_commodity-research`，目录为 `/data/workspaces/<tenant-id>/tin.db`，其余暂存与导出也放 `/data`。初始化和发布不会复制原 CRP systemd 定时器，不会建立代码轮询任务。第一版暂不自动运行旧 `tin.jobs daily`，因为它默认使用全局库和研究员 `me`；只有接入明确空间与真实操作人后才启用研究取数任务。
+
+服务调用密钥单独保存在 `shared/research-service-token`，启动/更新时只在不存在时生成，权限 0600。app 与研究服务读取同一个密钥；entrypoint 复制到容器内私有目录并降权运行。这个密钥必须与 `shared/.env` 一并安全备份；不要在日志或聊天中打印。历史数据导入和研究智能体配置不随服务器每次更新重复执行。
+
+```sh
+# 服务器：健康与日志
+curl -fsS http://127.0.0.1:18090/research/healthz
+wb logs --tail 100 commodity-research
+# 查看研究数据归档（每次升级前）
+ls -lh /home/codexuser/weknora-workbench/shared/backups/*.research.tar.gz
+```
+
+升级前对每个 SQLite 数据库使用在线 backup API，并执行完整性检查，再归档数据目录；已提交在 WAL 中的数据也会保存，归档不包含 WAL/SHM 文件或服务密钥。归档写入失败就中止更新，成功文件位于 `shared/backups/<time>-<release>.research.tar.gz`。多个数据库及原文件分别在备份过程中读取，不是跨服务的同一时点快照；需要数据库与导入文件严格同一时点时，先进入维护并停写后另做完整备份。
+
+恢复时先 `touch shared/PAUSED` 并 `wb stop commodity-research`。先把选定归档恢复到一个**新的卷**检查，不覆盖原卷。以下命令使用当前已经下载的研究镜像和 Docker，服务器无需 Python 环境：
+
+```bash
+# 服务器：在同一终端中填写已确认的归档绝对路径和新卷名。
+research_archive=/home/codexuser/weknora-workbench/shared/backups/REPLACE.research.tar.gz
+research_restore_volume=weknora-research-restore-REPLACE
+research_image="$(wb config --format json | jq -r '.services["commodity-research"].image')"
+docker volume create "$research_restore_volume"
+docker run --rm -i --entrypoint sh -v "$research_restore_volume:/data" "$research_image" \
+  -c 'tar -xzf - -C /data && chown -R commodity:commodity /data' < "$research_archive"
+# 检查所有恢复后的数据库。
+docker run --rm --entrypoint python -v "$research_restore_volume:/data:ro" "$research_image" -c '
+from pathlib import Path
+import sqlite3
+for path in Path("/data/workspaces").glob("*/tin.db"):
+    with sqlite3.connect(path.as_uri()+"?mode=ro", uri=True) as db:
+        assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok", str(path)
+        print(path.parent.name, "ok")
+'
+```
+
+核对恢复记录和对应代码的 Alembic 版本后，另行确认将研究服务的数据卷切到已恢复的新卷；原卷继续保留。`previous/deploy.sh` 只回退镜像，不恢复数据。不要使用 `down -v`，也不要把有写入的 SQLite 主文件单独复制当作备份。
+
+本机需先构建研究镜像：`docker compose -p weknora-research -f commodity-research/compose.yml build`，前端仍用 `bash structured-data/scripts/build_frontend.sh`，再执行根目录 `bash start.sh`。本机研究数据绑定 `commodity-research/data`，服务密钥生成一次；启动脚本不会注册或覆盖智能体。生产是否可运行，仍以服务器手动更新和实际健康检查为准。

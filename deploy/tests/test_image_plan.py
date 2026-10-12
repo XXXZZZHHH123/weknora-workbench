@@ -24,7 +24,10 @@ class ImagePlanTests(unittest.TestCase):
                      'WeKnora/docker/Dockerfile.app', 'deploy/Dockerfile.frontend',
                      'deploy/Dockerfile.runtime', 'structured-data/pyproject.toml',
                      'structured-data/Dockerfile', 'structured-data/src/server.py',
-                     'structured-data/deploy/structured-proxy.conf', '.dockerignore'):
+                     'structured-data/deploy/structured-proxy.conf',
+                     'commodity-research/deploy/research-proxy.conf', 'commodity-research/Dockerfile',
+                     'commodity-research/src/tin/web/app.py', 'commodity-research/alembic/versions/initial.py',
+                     'commodity-research/deploy/container/backup.py', 'commodity-research/scripts/run_workspace.py', '.dockerignore'):
             self.write(name, 'initial')
         self.write('WeKnora/.dockerignore', 'frontend/\nWeKnora-Chrome-Extension/\n')
         self.commit()
@@ -66,6 +69,30 @@ class ImagePlanTests(unittest.TestCase):
         self.commit()
         self.assertEqual([row['service'] for row in self.rows() if not row['reuse_image']], ['frontend'])
 
+    def test_research_source_and_migration_only_rebuild_research(self):
+        self.write('commodity-research/src/tin/web/app.py', 'changed')
+        self.write('commodity-research/alembic/versions/initial.py', 'new migration')
+        self.commit()
+        self.assertEqual([row['service'] for row in self.rows() if not row['reuse_image']], ['commodity-research'])
+
+    def test_manual_workspace_runner_only_rebuilds_research(self):
+        self.write('commodity-research/scripts/run_workspace.py', 'changed')
+        self.commit()
+        self.assertEqual([row['service'] for row in self.rows() if not row['reuse_image']], ['commodity-research'])
+
+    def test_research_proxy_only_rebuilds_frontend(self):
+        self.write('commodity-research/deploy/research-proxy.conf', 'changed')
+        self.commit()
+        self.assertEqual([row['service'] for row in self.rows() if not row['reuse_image']], ['frontend'])
+
+    def test_build_manifest_and_production_compose_use_the_same_seven_services(self):
+        import re
+        compose = (ROOT / 'compose.yml').read_text().split('\nvolumes:')[0]
+        services = re.findall(r'^  ([a-z-]+):$', compose, re.MULTILINE)
+        self.assertEqual(sorted(services), sorted(planner.SERVICES))
+        self.assertEqual(len(services), 7)
+        self.assertEqual(sorted(row['service'] for row in self.recipes), sorted(services))
+
     def test_frontend_source_excluded_from_backend_context_only_rebuilds_frontend(self):
         self.write('WeKnora/frontend/index.ts', 'changed')
         self.commit()
@@ -90,7 +117,7 @@ class ImagePlanTests(unittest.TestCase):
         rows = planner.plan(self.root, 'someone/fork', self.recipes, self.baseline)['include']
         self.assertTrue(all(not row['reuse_image'] for row in rows))
 
-    def test_release_records_six_independent_references_and_rejects_missing_service(self):
+    def test_release_records_seven_independent_references_and_rejects_missing_service(self):
         coordinates = self.root / 'coordinates'
         coordinates.mkdir()
         for row in self.rows():
@@ -99,6 +126,7 @@ class ImagePlanTests(unittest.TestCase):
         output = self.root / 'release.env'
         planner.write_release(coordinates, REPO, TAG, output)
         self.assertIn('STRUCTURED_DATA_IMAGE=ghcr.io/owner/workbench-structured-data:', output.read_text())
+        self.assertIn('COMMODITY_RESEARCH_IMAGE=ghcr.io/owner/workbench-commodity-research:', output.read_text())
         (coordinates / 'redis.json').unlink()
         with self.assertRaises(ValueError):
             planner.write_release(coordinates, REPO, TAG, output)

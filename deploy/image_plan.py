@@ -7,13 +7,20 @@ import re
 import subprocess
 import tarfile
 
-SERVICES = ('app', 'frontend', 'structured-data', 'docreader', 'postgres', 'redis')
+SERVICES = ('app', 'frontend', 'structured-data', 'commodity-research', 'docreader', 'postgres', 'redis')
 PATHS = {
     'app': ['WeKnora'],
     'frontend': ['WeKnora/frontend', 'deploy/Dockerfile.frontend', '.dockerignore',
-                 'structured-data/deploy/structured-proxy.conf'],
+                 'structured-data/deploy/structured-proxy.conf',
+                 'commodity-research/deploy/research-proxy.conf'],
     'structured-data': ['structured-data/src', 'structured-data/pyproject.toml',
                         'structured-data/Dockerfile', 'structured-data/.dockerignore'],
+    'commodity-research': ['commodity-research/src', 'commodity-research/alembic',
+                           'commodity-research/seeds', 'commodity-research/scripts', 'commodity-research/pyproject.toml',
+                           'commodity-research/requirements.txt', 'commodity-research/requirements-production.txt',
+                           'commodity-research/alembic.ini', 'commodity-research/Dockerfile',
+                           'commodity-research/.dockerignore', 'commodity-research/deploy/container/entrypoint.sh',
+                           'commodity-research/deploy/container/backup.py'],
     'docreader': ['deploy/Dockerfile.runtime'],
     'postgres': ['deploy/Dockerfile.runtime'],
     'redis': ['deploy/Dockerfile.runtime'],
@@ -79,7 +86,7 @@ def plan(checkout, repository, recipes, baseline, previous=None, force=False):
     same_repo = baseline.get('repository', '').lower() == repository.lower()
     seed = {r['service']: r for r in baseline.get('recipes', [])}
     if sorted(r['service'] for r in recipes) != sorted(SERVICES):
-        raise ValueError('Exactly six unique services are required')
+        raise ValueError('Exactly seven unique services are required')
     rows = []
     for recipe in recipes:
         service = recipe['service']

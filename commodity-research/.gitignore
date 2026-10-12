@@ -1,0 +1,26 @@
+# 运行时数据：数据库与每日快照不入库
+data/
+exports/
+logs/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+.venv
+
+# 原件留证是本地工作副本，不入库
+raw/
+
+# 本地资料，不上传：需求文档、方案与进度、助手配置
+# 三者都只在本机保留；仓库里只放能跑的东西
+PRD/
+docs/
+.claude/
+.codex/
+.DS_Store

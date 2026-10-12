@@ -1,0 +1,357 @@
+/* 设计令牌取自 docs/prototypes/index.html。Tailwind 负责布局工具类，这里只放令牌与少量组件样式。 */
+:root {
+  --bg: #f4f6f5;
+  --surface: #ffffff;
+  --surface-soft: #f8faf9;
+  --line: #e1e7e4;
+  --line-strong: #c8d3ce;
+  --text: #131c17;
+  --text-muted: #5e6f66;
+  --primary: #0e6054;
+  --primary-soft: #eaf4f1;
+  --primary-hover: #094a40;
+  --blue: #236192;
+  --blue-soft: #ebf3f9;
+  --amber: #b45309;
+  --amber-soft: #fef3c7;
+  --alert: #b91c1c;
+  --alert-soft: #fee2e2;
+  --up: #dc2626;     /* 红涨绿跌：仅用于价格涨跌，不表达多空判断（04 §5.1） */
+  --down: #16a34a;
+  --shadow-sm: 0 1px 2px rgba(19, 28, 23, 0.04);
+  --shadow-md: 0 4px 16px rgba(19, 28, 23, 0.06);
+}
+
+.dark {
+  --bg: #0c110e;
+  --surface: #141b17;
+  --surface-soft: #1a241f;
+  --line: #24312a;
+  --line-strong: #36483f;
+  --text: #edf4f0;
+  --text-muted: #889a90;
+  --primary: #45bfae;
+  --primary-soft: #11342d;
+  --primary-hover: #60cfbf;
+  --blue: #5d9fe3;
+  --blue-soft: #14273b;
+  --amber: #f59e0b;
+  --amber-soft: #38270b;
+  --alert: #f87171;
+  --alert-soft: #381818;
+  --up: #f87171;
+  --down: #4ade80;
+  --shadow-sm: none;
+  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", "Segoe UI",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-feature-settings: "tnum" 1;
+}
+
+.tabular {
+  font-family: "JetBrains Mono", "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 主题图标：不依赖 Tailwind 的 dark: 变体，避免额外配置 */
+.icon-dark { display: none; }
+.dark .icon-dark { display: block; }
+.dark .icon-light { display: none; }
+
+.nav-btn.active { background-color: var(--primary-soft); color: var(--primary); font-weight: 650; }
+.contract-row:hover, .contract-row.active { background-color: var(--primary-soft); }
+
+/* 表单控件跟随主题（Tailwind 不接管原生控件配色） */
+input, select, textarea, button { font: inherit; color: inherit; }
+input[type="date"], input[type="datetime-local"], input[type="number"], input[type="text"], select, textarea {
+  background-color: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+input:focus, select:focus, textarea:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
+.dark input[type="date"]::-webkit-calendar-picker-indicator,
+.dark input[type="datetime-local"]::-webkit-calendar-picker-indicator { filter: invert(0.8); }
+
+/* 顶部日期选择器：保留原生日历能力，去掉表单控件的厚重外框。 */
+.date-picker-input {
+  width: 8.8rem;
+  padding: 0.25rem 0.35rem;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  color-scheme: light;
+}
+.dark .date-picker-input { color-scheme: dark; }
+.date-picker-input::-webkit-calendar-picker-indicator { cursor: pointer; opacity: 0.65; }
+.date-picker-label:focus-within { border-radius: 0.3rem; box-shadow: 0 0 0 2px var(--primary-soft); }
+
+/* 宏观分类靠右悬浮；玻璃表面复用主导航的 Tailwind 材质类。 */
+.macro-filter-bar {
+  position: sticky;
+  top: 4rem;
+  z-index: 20;
+  width: 100%;
+  pointer-events: none;
+}
+.macro-filter-inner {
+  width: max-content;
+  max-width: 100%;
+  margin-left: auto;
+  padding: 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  border-radius: 0.65rem;
+  box-shadow: 0 8px 24px rgba(19, 28, 23, 0.08);
+  pointer-events: auto;
+}
+.macro-filter-scroll {
+  display: flex;
+  gap: 0.4rem;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.macro-filter-scroll::-webkit-scrollbar { display: none; }
+.macro-filter-link {
+  flex: 0 0 auto;
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.4rem;
+  background: color-mix(in srgb, var(--surface-soft) 76%, transparent);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.macro-filter-link:hover {
+  background: color-mix(in srgb, var(--surface-soft) 96%, transparent);
+  color: var(--text);
+}
+.macro-filter-link.active {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+.macro-top-anchor { scroll-margin-top: 4.75rem; }
+.macro-anchor { scroll-margin-top: 8rem; }
+html { scroll-behavior: smooth; }
+
+@media (min-width: 1100px) {
+  .macro-filter-bar { height: 0; }
+  .macro-filter-bar + .macro-anchor { margin-top: 0 !important; }
+  .macro-filter-inner { padding: 0.125rem; }
+  .macro-filter-link { padding: 0.25rem 0.65rem; }
+  .macro-group-heading { min-height: 2rem; }
+  .macro-anchor { scroll-margin-top: 4rem; }
+}
+
+/* 打印日报归档时去掉导航与交互件 */
+@media print {
+  nav.top, .ticker-strip, aside, #toast, .no-print { display: none !important; }
+  body { background: #fff; }
+}
+
+/* 分组展开箭头：summary 用了 flex 布局，浏览器默认的三角会消失，这里自己画一个 */
+#export-groups summary { list-style: none; }
+#export-groups summary::-webkit-details-marker { display: none; }
+#export-groups .chev { display: inline-block; transition: transform 0.15s ease; }
+#export-groups details[open] > summary .chev { transform: rotate(90deg); }
+
+/* 校验失败：输入框标红并在下方给出原因，不弹浮层、不改变布局 */
+.field-error {
+  border-color: var(--alert) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--alert) 18%, transparent);
+}
+
+/* 抽屉打开时 toast 挪到左下，否则正好压在抽屉右下角的主操作按钮上 */
+body.drawer-open #toast { right: auto; left: 1.5rem; }
+
+/* 未通过证据校验的论断：显著标灰。这是质量警报（SPEC §4.1），不能藏也不能长得像正经论断——
+   它跟旁边那几条同样是 LLM 写的，只有视觉上拉开差距，研究员才不会顺手当结论用。 */
+.unverified {
+  color: var(--text-muted);
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 7px,
+    color-mix(in srgb, var(--text-muted) 7%, transparent) 7px,
+    color-mix(in srgb, var(--text-muted) 7%, transparent) 14px
+  );
+  filter: grayscale(1);
+  opacity: 0.85;
+}
+
+/* 首屏数据墙默认折叠：summary 是 flex，默认三角会消失，这里自己画 */
+#home-wall > summary { list-style: none; }
+#home-wall > summary::-webkit-details-marker { display: none; }
+
+/* 宏观小图展开与历史图表弹窗。 */
+.macro-trend-card {
+  min-height: 132px;
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+.macro-trend-card.is-interactive:hover,
+.macro-trend-card.is-interactive:focus-within {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.macro-chart-trigger {
+  background: transparent;
+  cursor: zoom-in;
+  outline: 0;
+}
+.macro-chart-trigger:focus-visible { box-shadow: inset 0 0 0 2px var(--primary); }
+.macro-expand-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+  color: var(--text-muted);
+  opacity: 0.55;
+  transition: color 150ms ease, opacity 150ms ease;
+}
+.macro-trend-card.is-interactive:hover .macro-expand-icon,
+.macro-trend-card.is-interactive:focus-within .macro-expand-icon {
+  color: var(--primary);
+  opacity: 1;
+}
+
+.series-chart-modal { z-index: 70; }
+.series-chart-backdrop {
+  background: rgba(4, 12, 8, 0.48);
+  backdrop-filter: blur(5px);
+  cursor: default;
+}
+.series-chart-surface {
+  z-index: 1;
+  width: min(72rem, calc(100vw - 1.5rem));
+  max-height: calc(100vh - 2rem);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 82%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 91%, transparent);
+  box-shadow: 0 24px 70px rgba(5, 14, 9, 0.26);
+  backdrop-filter: blur(18px) saturate(125%);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.series-chart-header,
+.series-chart-toolbar { background: color-mix(in srgb, var(--surface) 76%, transparent); }
+.series-chart-close {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 1.5rem;
+  line-height: 1;
+}
+.series-chart-close:hover { color: var(--text); background: var(--surface-soft); }
+.series-chart-ranges {
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-soft);
+}
+.series-chart-ranges button {
+  min-width: 2.75rem;
+  height: 1.75rem;
+  padding: 0 0.55rem;
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+.series-chart-ranges button:hover { color: var(--text); }
+.series-chart-ranges button.active {
+  background: var(--surface);
+  color: var(--primary);
+  box-shadow: var(--shadow-sm);
+}
+.series-chart-state {
+  display: grid;
+  min-height: min(28rem, 58vh);
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.series-chart-plot {
+  width: 100%;
+  height: clamp(19rem, 52vh, 31rem);
+  min-height: 19rem;
+  overflow: hidden;
+}
+.series-chart-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+.series-chart-readout {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.7rem;
+  min-width: 9.5rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+.series-chart-stats > div {
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border-right: 1px solid var(--line);
+}
+.series-chart-stats > div:last-child { border-right: 0; }
+.series-chart-stats span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.65rem;
+}
+.series-chart-stats strong {
+  display: block;
+  margin-top: 0.15rem;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .series-chart-surface { max-height: calc(100vh - 1rem); }
+  .series-chart-header { padding: 0.8rem 1rem; }
+  .series-chart-toolbar { padding: 0.55rem 1rem; }
+  .series-chart-body { padding-top: 0.5rem; }
+  .series-chart-plot { height: clamp(16rem, 48vh, 22rem); min-height: 16rem; }
+  .series-chart-readout { min-width: 8.2rem; }
+  .series-chart-stats > div:nth-child(2) { border-right: 0; }
+  .series-chart-stats > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+}
+
+/* 动态产业图 */
+.dg-key { display: inline-flex; align-items: center; gap: 0.3rem; }
+.dg-sw { width: 0.7rem; height: 0.7rem; border-radius: 3px; display: inline-block; }
+.dg-sw-empty { border: 1px dashed var(--line-strong); background: var(--surface); }
+.dg-sw-proxy {
+  border: 1px solid var(--text-muted);
+  background: repeating-linear-gradient(45deg, transparent, transparent 2px,
+              color-mix(in srgb, var(--text-muted) 35%, transparent) 2px,
+              color-mix(in srgb, var(--text-muted) 35%, transparent) 3px);
+}
+#dg-canvas .dg-node rect { transition: stroke-width 0.12s ease; }
+#dg-canvas .dg-node:hover rect:first-of-type { stroke-width: 2.4; }
+
+/* 拖线时的候选目标：松手就会连到它。没有这个提示只能靠试。 */
+.dg-link-target { stroke: var(--primary) !important; stroke-width: 3 !important; }

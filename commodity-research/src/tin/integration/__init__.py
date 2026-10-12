@@ -1,0 +1,1 @@
+"""Verified WeKnora integration boundary."""

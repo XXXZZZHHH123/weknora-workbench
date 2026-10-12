@@ -9,6 +9,16 @@
 !structured-data/
 !structured-data/deploy/
 !structured-data/deploy/structured-proxy.conf
+!commodity-research/
+!commodity-research/deploy/
+!commodity-research/deploy/research-proxy.conf
+commodity-research/data/
+commodity-research/exports/
+commodity-research/raw/
+commodity-research/logs/
+commodity-research/results/
+commodity-research/PRD/
+commodity-research/**/service-token
 **/node_modules/
 **/dist/
 **/.env
