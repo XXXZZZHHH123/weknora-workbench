@@ -1,0 +1,1793 @@
+{
+  "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+  "rule_version": "cotton-three-sheets-v2",
+  "review_origin": "Migration of previously source-checked import mapping; no question or answer rules",
+  "sheets": [
+    {
+      "name": "郑棉期货",
+      "header_expectations": {
+        "B1": "收盘价",
+        "B2": "close",
+        "A3": "日期",
+        "A4": "Date",
+        "B4": "CF.CZC",
+        "C4": "CF01M.CZC",
+        "D4": "CF03M.CZC",
+        "E4": "CF05M.CZC",
+        "F4": "CF07M.CZC",
+        "G4": "CF09M.CZC",
+        "H4": "CF11M.CZC",
+        "K1": "结算价",
+        "K2": "settle",
+        "J3": "日期",
+        "J4": "Date",
+        "K4": "CF.CZC",
+        "L4": "CF01M.CZC",
+        "M4": "CF03M.CZC",
+        "N4": "CF05M.CZC",
+        "O4": "CF07M.CZC",
+        "P4": "CF09M.CZC",
+        "Q4": "CF11M.CZC",
+        "T1": "持仓量",
+        "T2": "oi",
+        "S3": "日期",
+        "S4": "Date",
+        "T4": "CF.CZC",
+        "U4": "CF01M.CZC",
+        "V4": "CF03M.CZC",
+        "W4": "CF05M.CZC",
+        "X4": "CF07M.CZC",
+        "Y4": "CF09M.CZC",
+        "Z4": "CF11M.CZC",
+        "AC1": "成交量",
+        "AC2": "volume",
+        "AB3": "日期",
+        "AB4": "Date",
+        "AC4": "CF.CZC",
+        "AD4": "CF01M.CZC",
+        "AE4": "CF03M.CZC",
+        "AF4": "CF05M.CZC",
+        "AG4": "CF07M.CZC",
+        "AH4": "CF09M.CZC",
+        "AI4": "CF11M.CZC"
+      },
+      "specs": [
+        [
+          2,
+          1,
+          "futures.close.CF.CZC",
+          "收盘价",
+          {
+            "contract": "CF.CZC",
+            "block": "close"
+          },
+          null,
+          [
+            "B1",
+            "B4"
+          ]
+        ],
+        [
+          3,
+          1,
+          "futures.close.CF01M.CZC",
+          "收盘价",
+          {
+            "contract": "CF01M.CZC",
+            "block": "close"
+          },
+          null,
+          [
+            "B1",
+            "C4"
+          ]
+        ],
+        [
+          4,
+          1,
+          "futures.close.CF03M.CZC",
+          "收盘价",
+          {
+            "contract": "CF03M.CZC",
+            "block": "close"
+          },
+          null,
+          [
+            "B1",
+            "D4"
+          ]
+        ],
+        [
+          5,
+          1,
+          "futures.close.CF05M.CZC",
+          "收盘价",
+          {
+            "contract": "CF05M.CZC",
+            "block": "close"
+          },
+          null,
+          [
+            "B1",
+            "E4"
+          ]
+        ],
+        [
+          6,
+          1,
+          "futures.close.CF07M.CZC",
+          "收盘价",
+          {
+            "contract": "CF07M.CZC",
+            "block": "close"
+          },
+          null,
+          [
+            "B1",
+            "F4"
+          ]
+        ],
+        [
+          7,
+          1,
+          "futures.close.CF09M.CZC",
+          "收盘价",
+          {
+            "contract": "CF09M.CZC",
+            "block": "close"
+          },
+          null,
+          [
+            "B1",
+            "G4"
+          ]
+        ],
+        [
+          8,
+          1,
+          "futures.close.CF11M.CZC",
+          "收盘价",
+          {
+            "contract": "CF11M.CZC",
+            "block": "close"
+          },
+          null,
+          [
+            "B1",
+            "H4"
+          ]
+        ],
+        [
+          11,
+          10,
+          "futures.settle.CF.CZC",
+          "结算价",
+          {
+            "contract": "CF.CZC",
+            "block": "settle"
+          },
+          null,
+          [
+            "K1",
+            "K4"
+          ]
+        ],
+        [
+          12,
+          10,
+          "futures.settle.CF01M.CZC",
+          "结算价",
+          {
+            "contract": "CF01M.CZC",
+            "block": "settle"
+          },
+          null,
+          [
+            "K1",
+            "L4"
+          ]
+        ],
+        [
+          13,
+          10,
+          "futures.settle.CF03M.CZC",
+          "结算价",
+          {
+            "contract": "CF03M.CZC",
+            "block": "settle"
+          },
+          null,
+          [
+            "K1",
+            "M4"
+          ]
+        ],
+        [
+          14,
+          10,
+          "futures.settle.CF05M.CZC",
+          "结算价",
+          {
+            "contract": "CF05M.CZC",
+            "block": "settle"
+          },
+          null,
+          [
+            "K1",
+            "N4"
+          ]
+        ],
+        [
+          15,
+          10,
+          "futures.settle.CF07M.CZC",
+          "结算价",
+          {
+            "contract": "CF07M.CZC",
+            "block": "settle"
+          },
+          null,
+          [
+            "K1",
+            "O4"
+          ]
+        ],
+        [
+          16,
+          10,
+          "futures.settle.CF09M.CZC",
+          "结算价",
+          {
+            "contract": "CF09M.CZC",
+            "block": "settle"
+          },
+          null,
+          [
+            "K1",
+            "P4"
+          ]
+        ],
+        [
+          17,
+          10,
+          "futures.settle.CF11M.CZC",
+          "结算价",
+          {
+            "contract": "CF11M.CZC",
+            "block": "settle"
+          },
+          null,
+          [
+            "K1",
+            "Q4"
+          ]
+        ],
+        [
+          20,
+          19,
+          "futures.oi.CF.CZC",
+          "持仓量",
+          {
+            "contract": "CF.CZC",
+            "block": "oi"
+          },
+          null,
+          [
+            "T1",
+            "T4"
+          ]
+        ],
+        [
+          21,
+          19,
+          "futures.oi.CF01M.CZC",
+          "持仓量",
+          {
+            "contract": "CF01M.CZC",
+            "block": "oi"
+          },
+          null,
+          [
+            "T1",
+            "U4"
+          ]
+        ],
+        [
+          22,
+          19,
+          "futures.oi.CF03M.CZC",
+          "持仓量",
+          {
+            "contract": "CF03M.CZC",
+            "block": "oi"
+          },
+          null,
+          [
+            "T1",
+            "V4"
+          ]
+        ],
+        [
+          23,
+          19,
+          "futures.oi.CF05M.CZC",
+          "持仓量",
+          {
+            "contract": "CF05M.CZC",
+            "block": "oi"
+          },
+          null,
+          [
+            "T1",
+            "W4"
+          ]
+        ],
+        [
+          24,
+          19,
+          "futures.oi.CF07M.CZC",
+          "持仓量",
+          {
+            "contract": "CF07M.CZC",
+            "block": "oi"
+          },
+          null,
+          [
+            "T1",
+            "X4"
+          ]
+        ],
+        [
+          25,
+          19,
+          "futures.oi.CF09M.CZC",
+          "持仓量",
+          {
+            "contract": "CF09M.CZC",
+            "block": "oi"
+          },
+          null,
+          [
+            "T1",
+            "Y4"
+          ]
+        ],
+        [
+          26,
+          19,
+          "futures.oi.CF11M.CZC",
+          "持仓量",
+          {
+            "contract": "CF11M.CZC",
+            "block": "oi"
+          },
+          null,
+          [
+            "T1",
+            "Z4"
+          ]
+        ],
+        [
+          29,
+          28,
+          "futures.volume.CF.CZC",
+          "成交量",
+          {
+            "contract": "CF.CZC",
+            "block": "volume"
+          },
+          null,
+          [
+            "AC1",
+            "AC4"
+          ]
+        ],
+        [
+          30,
+          28,
+          "futures.volume.CF01M.CZC",
+          "成交量",
+          {
+            "contract": "CF01M.CZC",
+            "block": "volume"
+          },
+          null,
+          [
+            "AC1",
+            "AD4"
+          ]
+        ],
+        [
+          31,
+          28,
+          "futures.volume.CF03M.CZC",
+          "成交量",
+          {
+            "contract": "CF03M.CZC",
+            "block": "volume"
+          },
+          null,
+          [
+            "AC1",
+            "AE4"
+          ]
+        ],
+        [
+          32,
+          28,
+          "futures.volume.CF05M.CZC",
+          "成交量",
+          {
+            "contract": "CF05M.CZC",
+            "block": "volume"
+          },
+          null,
+          [
+            "AC1",
+            "AF4"
+          ]
+        ],
+        [
+          33,
+          28,
+          "futures.volume.CF07M.CZC",
+          "成交量",
+          {
+            "contract": "CF07M.CZC",
+            "block": "volume"
+          },
+          null,
+          [
+            "AC1",
+            "AG4"
+          ]
+        ],
+        [
+          34,
+          28,
+          "futures.volume.CF09M.CZC",
+          "成交量",
+          {
+            "contract": "CF09M.CZC",
+            "block": "volume"
+          },
+          null,
+          [
+            "AC1",
+            "AH4"
+          ]
+        ],
+        [
+          35,
+          28,
+          "futures.volume.CF11M.CZC",
+          "成交量",
+          {
+            "contract": "CF11M.CZC",
+            "block": "volume"
+          },
+          null,
+          [
+            "AC1",
+            "AI4"
+          ]
+        ]
+      ],
+      "start_row": 5,
+      "max_col": 35
+    },
+    {
+      "name": "郑棉仓单",
+      "header_expectations": {
+        "A3": "日期",
+        "A4": "Date",
+        "B3": "仓单数量:一号棉花",
+        "C3": "仓单数量:一号棉:北疆农佳乐",
+        "D3": "仓单数量:一号棉:库尔勒银星",
+        "E3": "仓单数量:一号棉:石河子天银",
+        "F3": "仓单数量:一号棉:新疆中新建",
+        "G3": "仓单数量:一号棉:新疆农资集团",
+        "H3": "仓单数量:一号棉:兵棉奎储",
+        "I3": "仓单数量:一号棉:新疆银棉",
+        "J3": "仓单数量:一号棉:新疆汇锦",
+        "K3": "仓单数量:一号棉:新疆陆德",
+        "L3": "仓单数量:一号棉:中储棉库尔勒",
+        "M3": "仓单数量:一号棉:兵棉宏泰",
+        "N3": "仓单数量:一号棉:阿拉尔鹏宇",
+        "O3": "仓单数量:一号棉:中锦胡杨河",
+        "P3": "有效预报:一号棉花:总计",
+        "Q3": "有效预报:一号棉:北疆农佳乐",
+        "R3": "有效预报:一号棉:库尔勒银星",
+        "S3": "有效预报:一号棉:石河子天银",
+        "T3": "有效预报:一号棉:新疆中新建",
+        "U3": "有效预报:一号棉:新疆农资集团",
+        "V3": "有效预报:一号棉:兵棉奎储",
+        "W3": "有效预报:一号棉:新疆银棉",
+        "X3": "有效预报:一号棉:新疆汇锦",
+        "Y3": "有效预报:一号棉:新疆陆德",
+        "Z3": "有效预报:一号棉:中储棉库尔勒",
+        "AA3": "有效预报:一号棉:兵棉宏泰",
+        "AB3": "有效预报:一号棉:中锦胡杨河",
+        "AC3": "有效预报:一号棉:阿拉尔鹏宇",
+        "AD3": "仓单数量:一号棉:阿克苏益康",
+        "AE3": "有效预报:一号棉:阿克苏益康",
+        "AF3": "仓单和有效预报:合计",
+        "AF4": "万吨",
+        "AG3": "仓单和有效预报:新疆库",
+        "AG4": "万吨",
+        "AH3": "仓单和有效预报:内地库",
+        "AH4": "万吨"
+      },
+      "specs": [
+        [
+          2,
+          1,
+          "warehouse.B",
+          "仓单数量:一号棉花",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0049502"
+          },
+          null,
+          [
+            "B3",
+            "B4"
+          ]
+        ],
+        [
+          3,
+          1,
+          "warehouse.C",
+          "仓单数量:一号棉:北疆农佳乐",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0252366"
+          },
+          null,
+          [
+            "C3",
+            "C4"
+          ]
+        ],
+        [
+          4,
+          1,
+          "warehouse.D",
+          "仓单数量:一号棉:库尔勒银星",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0252367"
+          },
+          null,
+          [
+            "D3",
+            "D4"
+          ]
+        ],
+        [
+          5,
+          1,
+          "warehouse.E",
+          "仓单数量:一号棉:石河子天银",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0252368"
+          },
+          null,
+          [
+            "E3",
+            "E4"
+          ]
+        ],
+        [
+          6,
+          1,
+          "warehouse.F",
+          "仓单数量:一号棉:新疆中新建",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0266284"
+          },
+          null,
+          [
+            "F3",
+            "F4"
+          ]
+        ],
+        [
+          7,
+          1,
+          "warehouse.G",
+          "仓单数量:一号棉:新疆农资集团",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0266286"
+          },
+          null,
+          [
+            "G3",
+            "G4"
+          ]
+        ],
+        [
+          8,
+          1,
+          "warehouse.H",
+          "仓单数量:一号棉:兵棉奎储",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0266290"
+          },
+          null,
+          [
+            "H3",
+            "H4"
+          ]
+        ],
+        [
+          9,
+          1,
+          "warehouse.I",
+          "仓单数量:一号棉:新疆银棉",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0267191"
+          },
+          null,
+          [
+            "I3",
+            "I4"
+          ]
+        ],
+        [
+          10,
+          1,
+          "warehouse.J",
+          "仓单数量:一号棉:新疆汇锦",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0269119"
+          },
+          null,
+          [
+            "J3",
+            "J4"
+          ]
+        ],
+        [
+          11,
+          1,
+          "warehouse.K",
+          "仓单数量:一号棉:新疆陆德",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0269121"
+          },
+          null,
+          [
+            "K3",
+            "K4"
+          ]
+        ],
+        [
+          12,
+          1,
+          "warehouse.L",
+          "仓单数量:一号棉:中储棉库尔勒",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0269129"
+          },
+          null,
+          [
+            "L3",
+            "L4"
+          ]
+        ],
+        [
+          13,
+          1,
+          "warehouse.M",
+          "仓单数量:一号棉:兵棉宏泰",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0272657"
+          },
+          null,
+          [
+            "M3",
+            "M4"
+          ]
+        ],
+        [
+          14,
+          1,
+          "warehouse.N",
+          "仓单数量:一号棉:阿拉尔鹏宇",
+          {
+            "block": "warehouse",
+            "source_series_code": "F6108300"
+          },
+          null,
+          [
+            "N3",
+            "N4"
+          ]
+        ],
+        [
+          15,
+          1,
+          "warehouse.O",
+          "仓单数量:一号棉:中锦胡杨河",
+          {
+            "block": "warehouse",
+            "source_series_code": "H9300413"
+          },
+          null,
+          [
+            "O3",
+            "O4"
+          ]
+        ],
+        [
+          16,
+          1,
+          "warehouse.P",
+          "有效预报:一号棉花:总计",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0049517"
+          },
+          null,
+          [
+            "P3",
+            "P4"
+          ]
+        ],
+        [
+          17,
+          1,
+          "warehouse.Q",
+          "有效预报:一号棉:北疆农佳乐",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0252371"
+          },
+          null,
+          [
+            "Q3",
+            "Q4"
+          ]
+        ],
+        [
+          18,
+          1,
+          "warehouse.R",
+          "有效预报:一号棉:库尔勒银星",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0252372"
+          },
+          null,
+          [
+            "R3",
+            "R4"
+          ]
+        ],
+        [
+          19,
+          1,
+          "warehouse.S",
+          "有效预报:一号棉:石河子天银",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0252373"
+          },
+          null,
+          [
+            "S3",
+            "S4"
+          ]
+        ],
+        [
+          20,
+          1,
+          "warehouse.T",
+          "有效预报:一号棉:新疆中新建",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0266285"
+          },
+          null,
+          [
+            "T3",
+            "T4"
+          ]
+        ],
+        [
+          21,
+          1,
+          "warehouse.U",
+          "有效预报:一号棉:新疆农资集团",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0266287"
+          },
+          null,
+          [
+            "U3",
+            "U4"
+          ]
+        ],
+        [
+          22,
+          1,
+          "warehouse.V",
+          "有效预报:一号棉:兵棉奎储",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0266291"
+          },
+          null,
+          [
+            "V3",
+            "V4"
+          ]
+        ],
+        [
+          23,
+          1,
+          "warehouse.W",
+          "有效预报:一号棉:新疆银棉",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0267192"
+          },
+          null,
+          [
+            "W3",
+            "W4"
+          ]
+        ],
+        [
+          24,
+          1,
+          "warehouse.X",
+          "有效预报:一号棉:新疆汇锦",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0269120"
+          },
+          null,
+          [
+            "X3",
+            "X4"
+          ]
+        ],
+        [
+          25,
+          1,
+          "warehouse.Y",
+          "有效预报:一号棉:新疆陆德",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0269122"
+          },
+          null,
+          [
+            "Y3",
+            "Y4"
+          ]
+        ],
+        [
+          26,
+          1,
+          "warehouse.Z",
+          "有效预报:一号棉:中储棉库尔勒",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0269130"
+          },
+          null,
+          [
+            "Z3",
+            "Z4"
+          ]
+        ],
+        [
+          27,
+          1,
+          "warehouse.AA",
+          "有效预报:一号棉:兵棉宏泰",
+          {
+            "block": "warehouse",
+            "source_series_code": "S0272656"
+          },
+          null,
+          [
+            "AA3",
+            "AA4"
+          ]
+        ],
+        [
+          28,
+          1,
+          "warehouse.AB",
+          "有效预报:一号棉:中锦胡杨河",
+          {
+            "block": "warehouse",
+            "source_series_code": "D6099684"
+          },
+          null,
+          [
+            "AB3",
+            "AB4"
+          ]
+        ],
+        [
+          29,
+          1,
+          "warehouse.AC",
+          "有效预报:一号棉:阿拉尔鹏宇",
+          {
+            "block": "warehouse"
+          },
+          null,
+          [
+            "AC3",
+            "AC4"
+          ]
+        ],
+        [
+          30,
+          1,
+          "warehouse.AD",
+          "仓单数量:一号棉:阿克苏益康",
+          {
+            "block": "warehouse"
+          },
+          null,
+          [
+            "AD3",
+            "AD4"
+          ]
+        ],
+        [
+          31,
+          1,
+          "warehouse.AE",
+          "有效预报:一号棉:阿克苏益康",
+          {
+            "block": "warehouse"
+          },
+          null,
+          [
+            "AE3",
+            "AE4"
+          ]
+        ],
+        [
+          32,
+          1,
+          "warehouse.AF",
+          "仓单和有效预报:合计",
+          {
+            "block": "warehouse"
+          },
+          "万吨",
+          [
+            "AF3",
+            "AF4"
+          ]
+        ],
+        [
+          33,
+          1,
+          "warehouse.AG",
+          "仓单和有效预报:新疆库",
+          {
+            "block": "warehouse"
+          },
+          "万吨",
+          [
+            "AG3",
+            "AG4"
+          ]
+        ],
+        [
+          34,
+          1,
+          "warehouse.AH",
+          "仓单和有效预报:内地库",
+          {
+            "block": "warehouse"
+          },
+          "万吨",
+          [
+            "AH3",
+            "AH4"
+          ]
+        ]
+      ],
+      "start_row": 5,
+      "max_col": 34,
+      "source_code_headers": {
+        "warehouse.B": "B4",
+        "warehouse.C": "C4",
+        "warehouse.D": "D4",
+        "warehouse.E": "E4",
+        "warehouse.F": "F4",
+        "warehouse.G": "G4",
+        "warehouse.H": "H4",
+        "warehouse.I": "I4",
+        "warehouse.J": "J4",
+        "warehouse.K": "K4",
+        "warehouse.L": "L4",
+        "warehouse.M": "M4",
+        "warehouse.N": "N4",
+        "warehouse.O": "O4",
+        "warehouse.P": "P4",
+        "warehouse.Q": "Q4",
+        "warehouse.R": "R4",
+        "warehouse.S": "S4",
+        "warehouse.T": "T4",
+        "warehouse.U": "U4",
+        "warehouse.V": "V4",
+        "warehouse.W": "W4",
+        "warehouse.X": "X4",
+        "warehouse.Y": "Y4",
+        "warehouse.Z": "Z4",
+        "warehouse.AA": "AA4",
+        "warehouse.AB": "AB4",
+        "warehouse.AC": "AC4",
+        "warehouse.AD": "AD4",
+        "warehouse.AE": "AE4"
+      }
+    },
+    {
+      "name": "中国棉花平衡表",
+      "header_expectations": {
+        "B1": "工商业期初库存",
+        "C1": "产量",
+        "D1": "进口",
+        "E1": "公开抛储",
+        "F1": "公开收储",
+        "G1": "工商业期末库存",
+        "H1": "公开国储库存",
+        "I1": "非公开收储",
+        "J1": "非公开抛储",
+        "K1": "表需",
+        "L1": "实际需求",
+        "M1": "非公开库存",
+        "N1": "国储库存",
+        "O1": "合计库存",
+        "P1": "棉纱产量",
+        "Q1": "棉纱进口",
+        "R1": "棉纱出口",
+        "S1": "棉纱净进口",
+        "T1": "棉纱需求",
+        "U1": "棉纱库存",
+        "V1": "纱厂月度负荷",
+        "W1": "布厂月度负荷",
+        "X1": "棉花+棉纱社会库存",
+        "Y1": "棉花+棉纱库存"
+      },
+      "specs": [
+        [
+          2,
+          1,
+          "balance.primary.B",
+          "工商业期初库存",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "B1"
+          ]
+        ],
+        [
+          3,
+          1,
+          "balance.primary.C",
+          "产量",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "C1"
+          ]
+        ],
+        [
+          4,
+          1,
+          "balance.primary.D",
+          "进口",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "D1"
+          ]
+        ],
+        [
+          5,
+          1,
+          "balance.primary.E",
+          "公开抛储",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "E1"
+          ]
+        ],
+        [
+          6,
+          1,
+          "balance.primary.F",
+          "公开收储",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "F1"
+          ]
+        ],
+        [
+          7,
+          1,
+          "balance.primary.G",
+          "工商业期末库存",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "G1"
+          ]
+        ],
+        [
+          8,
+          1,
+          "balance.primary.H",
+          "公开国储库存",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "H1"
+          ]
+        ],
+        [
+          9,
+          1,
+          "balance.primary.I",
+          "非公开收储",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "I1"
+          ]
+        ],
+        [
+          10,
+          1,
+          "balance.primary.J",
+          "非公开抛储",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "J1"
+          ]
+        ],
+        [
+          11,
+          1,
+          "balance.primary.K",
+          "表需",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "K1"
+          ]
+        ],
+        [
+          12,
+          1,
+          "balance.primary.L",
+          "实际需求",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "L1"
+          ]
+        ],
+        [
+          13,
+          1,
+          "balance.primary.M",
+          "非公开库存",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "M1"
+          ]
+        ],
+        [
+          14,
+          1,
+          "balance.primary.N",
+          "国储库存",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "N1"
+          ]
+        ],
+        [
+          15,
+          1,
+          "balance.primary.O",
+          "合计库存",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "O1"
+          ]
+        ],
+        [
+          16,
+          1,
+          "balance.primary.P",
+          "棉纱产量",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "P1"
+          ]
+        ],
+        [
+          17,
+          1,
+          "balance.primary.Q",
+          "棉纱进口",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "Q1"
+          ]
+        ],
+        [
+          18,
+          1,
+          "balance.primary.R",
+          "棉纱出口",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "R1"
+          ]
+        ],
+        [
+          19,
+          1,
+          "balance.primary.S",
+          "棉纱净进口",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "S1"
+          ]
+        ],
+        [
+          20,
+          1,
+          "balance.primary.T",
+          "棉纱需求",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "T1"
+          ]
+        ],
+        [
+          21,
+          1,
+          "balance.primary.U",
+          "棉纱库存",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "U1"
+          ]
+        ],
+        [
+          22,
+          1,
+          "balance.primary.V",
+          "纱厂月度负荷",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "V1"
+          ]
+        ],
+        [
+          23,
+          1,
+          "balance.primary.W",
+          "布厂月度负荷",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "W1"
+          ]
+        ],
+        [
+          24,
+          1,
+          "balance.primary.X",
+          "棉花+棉纱社会库存",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "X1"
+          ]
+        ],
+        [
+          25,
+          1,
+          "balance.primary.Y",
+          "棉花+棉纱库存",
+          {
+            "block": "primary"
+          },
+          null,
+          [
+            "Y1"
+          ]
+        ]
+      ],
+      "start_row": 2,
+      "max_col": 25,
+      "excluded_tail": {
+        "start_column": 26,
+        "reason": "主块以外存在独立日期列、重复指标及辅助计算块，未审核，本版不导入。"
+      }
+    }
+  ],
+  "region_profiles": {
+    "2018年抛储": {
+      "version": "cotton-auction-regions-v1",
+      "blocks": [
+        {
+          "name": "日度主表",
+          "date_column": "A",
+          "date_mode": "date",
+          "header_rows": [
+            4
+          ],
+          "data_start_row": 5,
+          "data_end_row": 147,
+          "columns": [
+            {
+              "column": "B",
+              "metric": "挂牌量（吨）",
+              "unit": "吨",
+              "header_cells": [
+                "B4"
+              ]
+            },
+            {
+              "column": "C",
+              "metric": "抛储:成交量（吨）",
+              "unit": "吨",
+              "header_cells": [
+                "C4"
+              ]
+            },
+            {
+              "column": "D",
+              "metric": "抛储:成交比例",
+              "unit": null,
+              "header_cells": [
+                "D4"
+              ]
+            },
+            {
+              "column": "E",
+              "metric": "抛储:加权均价（右，元/吨）",
+              "unit": null,
+              "header_cells": [
+                "E4"
+              ]
+            },
+            {
+              "column": "F",
+              "metric": "折328价格（元/吨）",
+              "unit": "元/吨",
+              "header_cells": [
+                "F4"
+              ]
+            },
+            {
+              "column": "G",
+              "metric": "纺企占比",
+              "unit": null,
+              "header_cells": [
+                "G4"
+              ]
+            },
+            {
+              "column": "H",
+              "metric": "非纺企占比",
+              "unit": null,
+              "header_cells": [
+                "H4"
+              ]
+            },
+            {
+              "column": "I",
+              "metric": "地产棉挂牌量",
+              "unit": null,
+              "header_cells": [
+                "I4"
+              ]
+            },
+            {
+              "column": "J",
+              "metric": "地产棉成交",
+              "unit": null,
+              "header_cells": [
+                "J4"
+              ]
+            },
+            {
+              "column": "K",
+              "metric": "地产棉成交率（右）",
+              "unit": null,
+              "header_cells": [
+                "K4"
+              ]
+            },
+            {
+              "column": "L",
+              "metric": "地产棉成交均价（右，元吨）",
+              "unit": null,
+              "header_cells": [
+                "L4"
+              ]
+            },
+            {
+              "column": "M",
+              "metric": "地产棉加价（右）",
+              "unit": null,
+              "header_cells": [
+                "M4"
+              ]
+            },
+            {
+              "column": "N",
+              "metric": "新疆棉挂牌量",
+              "unit": null,
+              "header_cells": [
+                "N4"
+              ]
+            },
+            {
+              "column": "O",
+              "metric": "疆棉成交",
+              "unit": null,
+              "header_cells": [
+                "O4"
+              ]
+            },
+            {
+              "column": "P",
+              "metric": "疆棉成交率",
+              "unit": null,
+              "header_cells": [
+                "P4"
+              ]
+            },
+            {
+              "column": "Q",
+              "metric": "疆棉成交均价（右）",
+              "unit": null,
+              "header_cells": [
+                "Q4"
+              ]
+            },
+            {
+              "column": "R",
+              "metric": "疆棉加价（右）",
+              "unit": null,
+              "header_cells": [
+                "R4"
+              ]
+            },
+            {
+              "column": "S",
+              "metric": "成交率变化",
+              "unit": null,
+              "header_cells": [
+                "S4"
+              ]
+            },
+            {
+              "column": "T",
+              "metric": "成交均价变化",
+              "unit": null,
+              "header_cells": [
+                "T4"
+              ]
+            },
+            {
+              "column": "U",
+              "metric": "折3128价变化",
+              "unit": null,
+              "header_cells": [
+                "U4"
+              ]
+            },
+            {
+              "column": "V",
+              "metric": "地产均价变化",
+              "unit": null,
+              "header_cells": [
+                "V4"
+              ]
+            },
+            {
+              "column": "W",
+              "metric": "疆棉均价变化",
+              "unit": null,
+              "header_cells": [
+                "W4"
+              ]
+            },
+            {
+              "column": "X",
+              "metric": "疆棉挂牌变化",
+              "unit": null,
+              "header_cells": [
+                "X4"
+              ]
+            },
+            {
+              "column": "Y",
+              "metric": "地产加价变化",
+              "unit": null,
+              "header_cells": [
+                "Y4"
+              ]
+            },
+            {
+              "column": "Z",
+              "metric": "疆棉加价变化",
+              "unit": null,
+              "header_cells": [
+                "Z4"
+              ]
+            },
+            {
+              "column": "AA",
+              "metric": "新疆成交率变化",
+              "unit": null,
+              "header_cells": [
+                "AA4"
+              ]
+            },
+            {
+              "column": "AB",
+              "metric": "内地成交率变化",
+              "unit": null,
+              "header_cells": [
+                "AB4"
+              ]
+            },
+            {
+              "column": "AC",
+              "metric": "疆棉折3128",
+              "unit": null,
+              "header_cells": [
+                "AC4"
+              ]
+            },
+            {
+              "column": "AD",
+              "metric": "内地棉折3128",
+              "unit": null,
+              "header_cells": [
+                "AD4"
+              ]
+            },
+            {
+              "column": "AE",
+              "metric": "本月累计成交量",
+              "unit": null,
+              "header_cells": [
+                "AE4"
+              ]
+            },
+            {
+              "column": "AF",
+              "metric": "本年度累计轮出",
+              "unit": null,
+              "header_cells": [
+                "AF4"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "国储理论库存",
+          "date_column": "A",
+          "date_mode": "date",
+          "header_rows": [
+            4
+          ],
+          "data_start_row": 90,
+          "data_end_row": 147,
+          "columns": [
+            {
+              "column": "AG",
+              "metric": "国储理论库存",
+              "unit": null,
+              "header_cells": [
+                "AG4"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "按产地划分的成交小表",
+          "date_mode": "shared_cell",
+          "date_cell": "AG15",
+          "category_column": "AG",
+          "category_name": "类别",
+          "header_rows": [
+            16
+          ],
+          "data_start_row": 17,
+          "data_end_row": 19,
+          "columns": [
+            {
+              "column": "AH",
+              "metric": "成交量（吨）",
+              "unit": "吨",
+              "header_cells": [
+                "AH16"
+              ]
+            },
+            {
+              "column": "AI",
+              "metric": "起拍均价（元）",
+              "unit": "元",
+              "header_cells": [
+                "AI16"
+              ]
+            },
+            {
+              "column": "AJ",
+              "metric": "最新均价（元）",
+              "unit": "元",
+              "header_cells": [
+                "AJ16"
+              ]
+            },
+            {
+              "column": "AK",
+              "metric": "最新价折3128B（元）",
+              "unit": "元",
+              "header_cells": [
+                "AK16"
+              ]
+            },
+            {
+              "column": "AL",
+              "metric": "加价幅度（元）",
+              "unit": "元",
+              "header_cells": [
+                "AL16"
+              ]
+            },
+            {
+              "column": "AM",
+              "metric": "纺企加价比例（%）",
+              "unit": "%",
+              "header_cells": [
+                "AM16"
+              ]
+            }
+          ]
+        }
+      ],
+      "regions": [
+        {
+          "range": "A4:AF147",
+          "status": "included",
+          "reason": "日度主表；每行使用A列日期。"
+        },
+        {
+          "range": "AG90:AG147",
+          "status": "included",
+          "reason": "国储理论库存；使用同一行A列日期，不包含上方的小表或零散计算。"
+        },
+        {
+          "range": "AG15:AM19",
+          "status": "included",
+          "reason": "独立成交小表；共用AG15日期，AG17:AG19区分新疆棉、地产棉和总计。"
+        },
+        {
+          "range": "AG5:AM10",
+          "status": "needs_review",
+          "reason": "独立小表，未找到可靠所属日期；不使用左侧A列日期。"
+        },
+        {
+          "range": "AG57:AL59",
+          "status": "needs_review",
+          "reason": "独立小表，所属日期和行类别不明确，暂不导入。"
+        },
+        {
+          "range": "AG22:AG22",
+          "status": "needs_review",
+          "reason": "零散数值缺少明确指标口径，暂不导入。"
+        },
+        {
+          "range": "AG28:AH28",
+          "status": "needs_review",
+          "reason": "独立计算结果，不能当作国储库存。"
+        },
+        {
+          "range": "AH107:AH107",
+          "status": "needs_review",
+          "reason": "独立比例计算，缺少明确指标说明。"
+        },
+        {
+          "range": "D154:F154",
+          "status": "needs_review",
+          "reason": "底部无日期的计算区域，暂不导入。"
+        }
+      ]
+    }
+  }
+}

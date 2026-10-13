@@ -78,13 +78,17 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 	"call_mcp_tool":                  {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
 	"read_file":                      {},
 	"search_knowledge": {
-		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}, "document_ids": {}},
+		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}, "document_ids": {}, "knowledge_id": {}},
 		sourceOutput: true,
 	},
 	// read_document takes one id that may name a document (dN) or a chunk
 	// (cN); the "id" key resolves against both handle tables.
 	"read_document": {
-		sourceIDKeys: map[string]struct{}{"id": {}},
+		sourceIDKeys: map[string]struct{}{"id": {}, "knowledge_id": {}},
+		sourceOutput: true,
+	},
+	"bind_document_scope": {
+		sourceIDKeys: map[string]struct{}{"knowledge_id": {}},
 		sourceOutput: true,
 	},
 	"list_documents": {

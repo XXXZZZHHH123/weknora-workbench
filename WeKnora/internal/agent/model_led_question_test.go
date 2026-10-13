@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -49,4 +50,28 @@ func TestMatchingCatalogueFieldStillReachesModel(t *testing.T) {
 			require.Contains(t, e.RenderUserTurnContent("session", metric), metric)
 		})
 	}
+}
+
+func TestPeriodWordingDoesNotInjectSourceReads(t *testing.T) {
+	operations := []string{}
+	var mu sync.Mutex
+	registry := nativeStructuredRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		var input map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
+		mu.Lock()
+		operations = append(operations, input["operation"].(string))
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"dataset_id": "version", "series": []any{map[string]any{"series_id": "field", "sheet": "records", "metric": "observations"}}})
+	})
+	model := &mockChat{responses: []mockResponse{
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeToolCall, ToolCalls: []types.LLMToolCall{{ID: "catalog", Function: types.FunctionCall{Name: "structured_data", Arguments: `{"operation":"list_series","arguments":{"dataset_id":"version"}}`}}}, Done: true, FinishReason: "tool_calls"}}},
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "模型尚未决定采用哪项时间口径。", Done: true, FinishReason: "stop"}}},
+	}}
+	engine := newTestEngine(t, model)
+	engine.toolRegistry, engine.config.WorkbenchDefault = registry, true
+	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "reader", Role: types.TenantRoleViewer})
+	_, err := engine.Execute(ctx, "session", "message", "2024/25年度，但别改我的来源", nil)
+	require.NoError(t, err)
+	require.Contains(t, operations, "list_series")
+	require.NotContains(t, operations, "inspect_source", "source reads must come from a model plan, never date-pattern triggers")
 }

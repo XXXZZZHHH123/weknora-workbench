@@ -205,14 +205,20 @@ def scan_workbook(path, sample_rows=40):
                 'sample_rows':len(rows),'date_candidates':dates,'mapping':mapping,'reasons':reasons,'charts':visual})
     finally:
         wb.close()
-    # A verified mixed-layout profile is a proposal, never automatic approval.
-    from .regions import auction_profile, apply_profile
-    if any(s['name']=='2018年抛储' for s in sheets):
-        book=load_workbook(path,read_only=True,data_only=True,keep_links=False)
+    # Only an identical reviewed original may supply migrated region metadata.
+    from .profiles.reviewed import reviewed_mapping
+    from .regions import reviewed_regions, apply_profile
+    configuration = reviewed_mapping(path)
+    if configuration and configuration.get('region_profiles'):
+        book = load_workbook(path, read_only=True, data_only=True, keep_links=False)
         try:
-            profile=auction_profile(book['2018年抛储'])
-            if profile:apply_profile(next(s for s in sheets if s['name']=='2018年抛储'),profile)
-        finally:book.close()
+            for sheet in sheets:
+                if sheet['name'] in configuration['region_profiles']:
+                    profile = reviewed_regions(path, book[sheet['name']])
+                    if profile:
+                        apply_profile(sheet, profile)
+        finally:
+            book.close()
     return {'rule_version':RULE_VERSION,'source_file':str(path),'sha256':digest.hexdigest(),
         'sheets':sheets,'summary':dict(Counter(s['status'] for s in sheets)), 'sheet_count':len(sheets),
         'scope':'top_rows_only','sample_rows':sample_rows}

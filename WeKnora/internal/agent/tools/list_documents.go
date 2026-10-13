@@ -148,6 +148,9 @@ func (t *ListDocumentsTool) Execute(ctx context.Context, args json.RawMessage) (
 			"parse_status": k.ParseStatus,
 			"is_faq":       false,
 		}
+		if metadata, ok := documentScopeMetadata(k)["metadata"]; ok {
+			doc["metadata"] = metadata
+		}
 		if !k.UpdatedAt.IsZero() {
 			doc["updated_at"] = k.UpdatedAt.Format("2006-01-02T15:04:05Z07:00")
 		}

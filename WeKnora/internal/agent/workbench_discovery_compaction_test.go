@@ -51,21 +51,17 @@ func TestWorkbenchDiscoveryCompactionKeepsAllCandidatesAndImmutableRawEvidence(t
 		require.Equal(t, catalogue[key], model[key], key)
 	}
 	dataset := model["datasets"].([]any)[0].(map[string]any)
-	require.Equal(t, []any{"明确指定待核对表"}, dataset["pending_sheets"])
-	require.Equal(t, 111, dataset["pending_sheet_count"])
-	require.Equal(t, 110, dataset["pending_sheets_omitted_count"])
-	require.Equal(t, catalogue["datasets"].([]any)[0].(map[string]any)["coverage"], dataset["coverage"])
-	require.Contains(t, model["pending_sheets_notice"], "省略不代表不存在或已导入")
-	require.Contains(t, model["literal_fields_query_hint"], "可直接用query_series查询")
-	require.Contains(t, model["literal_fields_query_hint"], "口径仍不明确，先澄清")
+	require.Equal(t, catalogue["datasets"], model["datasets"], "all actual source coverage remains visible")
+	require.NotContains(t, dataset, "pending_sheets_omitted_count")
+	require.Contains(t, model["literal_fields_query_hint"], "完整问题与上下文")
 	require.Len(t, model["literal_fields"], 4, "every duplicate field remains available")
 	for _, column := range []string{"C", "F", "U", "X"} {
 		require.Contains(t, compact.ToolCalls[0].Result.Output, "actual."+column)
 	}
-	rawRunes := utf8.RuneCountInString(step.ToolCalls[0].Result.Output)
-	modelRunes := utf8.RuneCountInString(compact.ToolCalls[0].Result.Output)
-	require.Less(t, modelRunes, rawRunes*3/4)
-	t.Logf("catalogue chars %d -> %d (%.1f%% reduction), all 4 duplicate candidates/source context/coverage retained", rawRunes, modelRunes, 100*(1-float64(modelRunes)/float64(rawRunes)))
+	for _, question := range []string{"不要用明确指定待核对表", "取其他来源", "另一个问法"} {
+		view := compactWorkbenchDiscovery(step, question, nil)
+		require.Equal(t, model["datasets"], view.ToolCalls[0].Result.Data["datasets"], "wording cannot remove available sources")
+	}
 }
 
 func TestWorkbenchDiscoveryNeverCompactsFailedRetrievalOrUnknownCoverageShape(t *testing.T) {
@@ -142,7 +138,7 @@ func TestWorkbenchDiscoveryModelViewCompactsButFreshAuthorizedCallsAndRawStepsRe
 				schemaText = message.Content
 			}
 		}
-		require.NotContains(t, catalogText, "尚未核对的其他业务工作表_109")
+		require.Contains(t, catalogText, "尚未核对的其他业务工作表_109", "model sees all actual sources independent of wording")
 		for _, column := range []string{"C", "F", "U", "X"} {
 			require.Contains(t, catalogText, "actual."+column)
 		}

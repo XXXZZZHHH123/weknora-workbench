@@ -179,11 +179,21 @@ func (r *sourceRegistry) modelDocumentInfoOutput(data map[string]interface{}, fa
 			fmt.Fprintf(&b, " updated_at=\"%s\"", escapeAttr(updated[:10]))
 		}
 		b.WriteString(">\n")
+		if fileName := stringValue(row, "file_name"); fileName != "" {
+			fmt.Fprintf(&b, "    <source_file_name>%s</source_file_name>\n", escapeText(fileName))
+		}
+		if metadata, ok := row["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+			encoded, _ := json.Marshal(metadata)
+			fmt.Fprintf(&b, "    <source_metadata>%s</source_metadata>\n", escapeText(string(encoded)))
+		}
 		if description := stringValue(row, "description"); description != "" {
 			fmt.Fprintf(&b, "    <description>%s</description>\n", escapeText(description))
 		}
 		b.WriteString("  </document>\n")
 		count++
+	}
+	if notice := stringValue(data, "notice"); notice != "" {
+		fmt.Fprintf(&b, "  <hint>%s</hint>\n", escapeText(notice))
 	}
 	b.WriteString("</documents>")
 	if count == 0 {

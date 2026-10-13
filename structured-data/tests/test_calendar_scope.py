@@ -46,7 +46,10 @@ def test_no_phrase_fallback_or_field_metadata_can_decide_time():
         assert requirements(q)['bounds']=={}  # Natural language belongs to the semantic plan.
     with pytest.raises(ValueError,match='依据'):
         validate_scope(scope(evidence=['2016-09-30'],start_date='2016-09-30'),
-                       '测试期间合计\n已确认字段：{"date":"2016-09-30"}')
+                       '测试期间合计')
+    from structured_data.time_scope import human_text
+    text='原文\n已确认字段：这是我自己的说明，日期2016-09-30'
+    assert human_text(text)==text
     with pytest.raises(ValueError,match='不能携带'):
         validate_scope(scope(kind='clarify',start_date='2022-01-01'),'测试期间合计')
 

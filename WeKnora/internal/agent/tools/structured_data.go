@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -46,6 +47,24 @@ func NewStructuredDataTool() *StructuredDataTool {
 // BindSourceQuestion records the real human request for this per-turn tool.
 func (t *StructuredDataTool) BindSourceQuestion(question string) {
 	t.bindStructuredSourceQuestion(question)
+}
+
+// BindSourceConversation supplies trusted conversation provenance to semantic
+// source review. It preserves the complete current request; older context is
+// bounded by protocol budgets rather than any question vocabulary.
+func (t *StructuredDataTool) BindSourceConversation(question string, messages []chat.Message) {
+	rows := []map[string]string{}
+	budget := 4096
+	for i := len(messages) - 1; i >= 0 && len(rows) < 8; i-- {
+		message := messages[i]
+		if (message.Role != "user" && message.Role != "assistant") || message.Content == question || len(message.Content) > budget {
+			continue
+		}
+		rows = append([]map[string]string{{"role": message.Role, "content": message.Content}}, rows...)
+		budget -= len(message.Content)
+	}
+	payload, _ := json.Marshal(map[string]any{"current_user_question": question, "recent_conversation": rows})
+	t.BindSourceQuestion(string(payload))
 }
 
 func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
@@ -85,7 +104,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 	}
 	sourceQuestion, cacheGeneration := t.structuredSourceQuestion()
-	if sourceQuestion != "" && (operation == "query_series" || operation == "analyze_table" || operation == "compare_series" || operation == "convert_price") {
+	if sourceQuestion != "" && (operation == "query_series" || operation == "analyze_table" || operation == "compare_series" || operation == "convert_price" || operation == "resolve_fields") {
 		question, _ := json.Marshal(sourceQuestion)
 		arguments["source_question"] = question
 		args, err = json.Marshal(map[string]any{"operation": operation, "arguments": arguments})

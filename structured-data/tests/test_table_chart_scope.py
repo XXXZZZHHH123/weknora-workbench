@@ -40,8 +40,11 @@ def mixed_store(tmp_path):
 def test_sheet_mention_does_not_hide_table_fields_or_restrict_other_sheets(mixed_store):
     store,ds,sheet=mixed_store
     question=f'在库量哪天最多？有多少货？（延续上文，指{sheet}相关数据中的在库量）'
-    assert {s['series_id'] for s in store.catalog(ds,question=question)}=={'B','C','D','E','other'}
-    assert {s['series_id'] for s in store.catalog(ds,sheet=sheet,question=question)}=={'B','C','D','E'}
+    full=store.catalog(ds,question=question); scoped=store.catalog(ds,sheet=sheet,question=question)
+    assert {s['series_id'] for s in full if not s.get('chart_id')}=={'B','C','D','E','other'}
+    assert {s['series_id'] for s in scoped if not s.get('chart_id')}=={'B','C','D','E'}
+    assert any(s.get('chart_id') for s in full) and any(s.get('chart_id') for s in scoped)
+    assert store.catalog(ds,question='不要图表，只按原值比较其他表')==full
 
 
 @pytest.mark.parametrize('explicit_sheet',[False,True])
@@ -50,9 +53,11 @@ def test_explicit_chart_query_still_uses_only_linked_curve_ranges(mixed_store,ex
     store,ds,sheet=mixed_store
     views=store.catalog(ds,sheet=sheet if explicit_sheet else None,
                        question=f'{sheet}图中'+('新疆棉公检量' if with_title else '')+'哪天最多')
-    assert len(views)==2 and all(s.get('chart_id') for s in views)
-    assert {s['source_metric'] for s in views}=={'当日公检量','累计公检量'}
-    assert all(s['source_series_id']!='E' for s in views)
+    assert {s['series_id'] for s in views if not s.get('chart_id')}==({'B','C','D','E'} if explicit_sheet else {'B','C','D','E','other'})
+    charts=[s for s in views if s.get('chart_id')]
+    assert {s['source_metric'] for s in charts}=={'当日公检量','累计公检量'}
+    assert all(s['source_series_id']!='E' for s in charts)
+    assert all('source_series_id' in s and s['chart_ranges'] for s in charts)
 
 
 def test_followup_switches_to_real_inventory_header_and_global_max(mixed_store):
@@ -121,7 +126,8 @@ def test_missing_named_header_expands_to_full_catalog_before_clarifying(mixed_st
         return dict(intent='lookup',decision='resolved',fields=[dict(role='v1',label='在库量',candidate_ids=[sid])],query={'operation':'max'})
     resolver=FieldResolver(store,model,lambda p:{'search_terms':['库存']})
     result=resolver.answer('请核对原表：在库量哪天最多？',dataset_id=ds)
-    assert len(calls)==2 and result['retrieval']['full_catalogue_fallback']
+    assert len(calls)==1 and result['retrieval']['full_catalogue_checked']
+    assert any(c['name']=='在库量' for g in calls[0]['catalog'] for c in g['columns']), 'a weak literal recall cannot hide actual fields from model understanding'
     assert result['status']=='resolved' and result['answer']['sources']['v1']['aggregate']==40
 
 

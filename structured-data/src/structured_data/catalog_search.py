@@ -2,31 +2,24 @@
 import re
 import unicodedata
 
-CURRENCIES = {
-    'USD': ('美元', '美金', 'usd'), 'CNY': ('人民币', 'cny', 'rmb'),
-    'CNH': ('离岸人民币', 'cnh'), 'EUR': ('欧元', 'eur'),
-    'JPY': ('日元', 'jpy'), 'GBP': ('英镑', 'gbp'),
-    'HKD': ('港元', '港币', 'hkd'), 'AUD': ('澳元', 'aud'),
-    'CAD': ('加元', 'cad'), 'INR': ('印度卢比', 'inr'),
-}
-
 
 def normalize(text):
     return unicodedata.normalize('NFKC', str(text)).lower().strip()
 
 
 def currency_pair(series):
-    title = re.sub(r'\s+', '', normalize(series.get('metric', '')))
-    # A currency-denominated price is not an exchange rate. Match pair titles
-    # rather than currency words in descriptions or units. Preserve direction.
-    for base, names in CURRENCIES.items():
-        for quote, targets in CURRENCIES.items():
-            if base == quote:
-                continue
-            pair = '(?:'+'|'.join(map(re.escape,names))+')(?:兑|兑换|对|/)(?:'+'|'.join(map(re.escape,targets))+')'
-            if re.fullmatch(r'(?:即期|现汇)?'+pair+r'(?:汇率|中间价|即期汇率)?', title):
-                return base,quote
-    return None
+    """Use reviewed source metadata; a title is recall evidence, not direction."""
+    rate = series.get('exchange_rate')
+    if not isinstance(rate, dict):
+        return None
+    base, quote = rate.get('base_currency'), rate.get('quote_currency')
+    evidence = rate.get('evidence_cells')
+    if (not isinstance(base, str) or not isinstance(quote, str)
+            or not re.fullmatch('[A-Z]{3}', base) or not re.fullmatch('[A-Z]{3}', quote)
+            or base == quote or not isinstance(evidence, list) or not evidence
+            or any(cell not in series.get('header_cells', []) for cell in evidence)):
+        return None
+    return base, quote
 
 
 def aliases_for(series):

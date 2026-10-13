@@ -92,7 +92,12 @@ func TestStructuredDataBindsHumanSourceQuestionBeforeSigning(t *testing.T) {
 	tool := NewStructuredDataTool()
 	tool.BindSourceQuestion("20天原料")
 	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "a", Role: types.TenantRoleViewer})
-	result, err := tool.Execute(ctx, json.RawMessage(`{"operation":"query_series","arguments":{"series_id":"C","source_question":"模型虚构口径"}}`))
-	require.NoError(t, err)
-	require.Contains(t, result.Output, "needs_clarification")
+	for _, arguments := range []string{
+		`{"operation":"query_series","arguments":{"series_id":"C","source_question":"模型虚构口径"}}`,
+		`{"operation":"resolve_fields","arguments":{"question":"模型生成的子任务","source_question":"模型虚构口径"}}`,
+	} {
+		result, err := tool.Execute(ctx, json.RawMessage(arguments))
+		require.NoError(t, err)
+		require.Contains(t, result.Output, "needs_clarification")
+	}
 }

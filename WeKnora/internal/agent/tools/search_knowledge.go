@@ -90,12 +90,13 @@ var searchKnowledgeTool = BaseTool{
 
 // SearchKnowledgeInput defines the input parameters for search_knowledge.
 type SearchKnowledgeInput struct {
-	Query            string   `json:"query"`
-	Mode             string   `json:"mode,omitempty"`
-	KnowledgeBaseIDs []string `json:"knowledge_base_ids,omitempty"`
-	Limit            int      `json:"limit,omitempty"`
-	DocumentIDs      []string `json:"document_ids,omitempty"`
-	Page             int      `json:"page,omitempty"`
+	Query            string             `json:"query"`
+	Mode             string             `json:"mode,omitempty"`
+	KnowledgeBaseIDs []string           `json:"knowledge_base_ids,omitempty"`
+	Limit            int                `json:"limit,omitempty"`
+	DocumentIDs      []string           `json:"document_ids,omitempty"`
+	Page             int                `json:"page,omitempty"`
+	SourceScope      *DocumentScopePlan `json:"source_scope,omitempty"`
 }
 
 // searchResultWithMeta wraps search result with metadata about which query matched it
@@ -146,7 +147,7 @@ func NewSearchKnowledgeTool(
 	cfg *config.Config,
 ) *SearchKnowledgeTool {
 	return &SearchKnowledgeTool{
-		BaseTool:             searchKnowledgeTool,
+		BaseTool:             withDocumentScopeParameter(searchKnowledgeTool),
 		knowledgeBaseService: knowledgeBaseService,
 		knowledgeService:     knowledgeService,
 		chunkService:         chunkService,
@@ -224,22 +225,40 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 	if len(input.DocumentIDs) > 10 || input.Page < 0 {
 		return &types.ToolResult{Success: false, Error: "document_ids accepts at most 10 documents; page must be positive"}, nil
 	}
-	if constraint := t.documentConstraint; constraint != nil {
-		requested, err := constraint.resolve(ctx, t.knowledgeService, t.searchTargets)
-		if err != nil {
+	if input.SourceScope != nil {
+		if t.documentConstraint == nil {
+			t.documentConstraint = NewDocumentScopeState()
+		}
+		if _, err := t.documentConstraint.bind(ctx, *input.SourceScope, t.knowledgeService, t.searchTargets); err != nil {
 			return &types.ToolResult{Success: false, Error: err.Error()}, nil
 		}
-		for _, id := range input.DocumentIDs {
-			if id != requested.ID {
-				return &types.ToolResult{Success: false, Error: "当前问题指定了另一份报告，不能用其他报告的同名图替代"}, nil
-			}
+	}
+	if constraint := t.documentConstraint; constraint != nil {
+		bound := constraint.selectedIDs()
+		if len(bound) == 0 && (len(input.DocumentIDs) > 0 || input.Page > 0) {
+			return &types.ToolResult{Success: false, Error: "读取文档内容前需要明确的来源计划；请提交 source_scope 或 bind_document_scope"}, nil
 		}
-		input.DocumentIDs = []string{requested.ID}
-		if constraint.Page > 0 {
-			if input.Page > 0 && input.Page != constraint.Page {
-				return &types.ToolResult{Success: false, Error: "当前问题指定了不同页码，不能用其他页替代"}, nil
+		if len(bound) > 0 {
+			if len(input.DocumentIDs) == 0 {
+				input.DocumentIDs = bound
 			}
-			input.Page = constraint.Page
+			for _, id := range input.DocumentIDs {
+				if _, err := constraint.selection(id); err != nil {
+					return &types.ToolResult{Success: false, Error: err.Error()}, nil
+				}
+			}
+			for _, id := range input.DocumentIDs {
+				selection, _ := constraint.selection(id)
+				if selection.Page > 0 {
+					if len(input.DocumentIDs) != 1 {
+						return &types.ToolResult{Success: false, Error: "多文档计划包含指定物理页；请分别指定每个 document_ids 读取其页证据后再比较"}, nil
+					}
+					if input.Page > 0 && input.Page != selection.Page {
+						return &types.ToolResult{Success: false, Error: "请求页码与已验证来源计划不同"}, nil
+					}
+					input.Page = selection.Page
+				}
+			}
 		}
 	}
 	if len(input.DocumentIDs) > 0 {
@@ -344,6 +363,9 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 	if len(final) > limit {
 		final = final[:limit]
 	}
+	if t.documentConstraint != nil && len(t.documentConstraint.selectedIDs()) == 0 && len(final) > 0 {
+		return t.documentCandidates(ctx, final, query), nil
+	}
 
 	// Enrich image info for search results (lazy-loaded from child image chunks)
 	if t.chunkService != nil && len(final) > 0 {
@@ -364,7 +386,7 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 	if len(input.DocumentIDs) > 0 {
 		result.Data["document_ids"] = input.DocumentIDs
 		if len(final) > 0 && len(input.DocumentIDs) == 1 {
-			result.Data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": input.DocumentIDs[0]}
+			result.Data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": input.DocumentIDs[0], "plan_validated": t.documentConstraint != nil}
 		}
 	}
 	annotateModeFallback(result.Data, mode, kbModes)

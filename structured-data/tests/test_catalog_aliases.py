@@ -15,6 +15,10 @@ def catalogue(tmp_path):
             ('eur','其他报价','欧元兑人民币',None),
             ('price','商品报价','美国 EMOT M 1-1/8','美分/磅'),
             ('usd-price','商品报价','美元价格','美元/吨')]]
+    for item in series:
+        pair = {'fx-other': ('USD', 'CNY'), 'fx-context': ('USD', 'CNY'), 'reverse': ('CNY', 'USD'), 'eur': ('EUR', 'CNY')}.get(item['series_id'])
+        if pair:
+            item['exchange_rate'] = {'base_currency': pair[0], 'quote_currency': pair[1], 'evidence_cells': ['B1']}
     rows=[dict(series_id=s['series_id'],date='2023-09-07',value=7.3285,source_cell='B2',formula=None,value_status='valid',date_cell='A2',raw_value=7.3285) for s in series]
     next(r for r in rows if r['series_id']=='price').update(value=99.7,raw_value=99.7)
     parsed=dict(source_file='test.xlsx',sha256='a'*64,rule_version='v1',series=series,observations=rows,sheets=[],excluded_regions=[],issues=[])
@@ -98,3 +102,22 @@ def test_decimal_conversion_and_source_provenance(catalogue):
 def test_conversion_refuses_ambiguous_direction_units_or_missing_data(catalogue,price,fx,day,unit):
     store,dataset=catalogue
     with pytest.raises(ValueError):store.convert_price(dataset,price,fx,day,unit)
+
+
+def test_currency_direction_never_inferred_from_title():
+    from structured_data.catalog_search import currency_pair
+    for title in ['美元兑人民币', 'USD/CNY', '欧元兑人民币']:
+        assert currency_pair({'metric': title, 'header_cells': ['B1']}) is None
+    assert currency_pair({'metric':'arbitrary label', 'header_cells':['D2'],
+        'exchange_rate': {'base_currency':'USD','quote_currency':'CNY','evidence_cells':['D2']}}) == ('USD','CNY')
+    assert currency_pair({'header_cells':['D2'],
+        'exchange_rate': {'base_currency':'USD','quote_currency':'CNY','evidence_cells':['Z99']}}) is None
+
+
+def test_reverse_rate_requires_explicit_division_plan(catalogue):
+    store, dataset = catalogue
+    result = store.convert_price(dataset, 'price', 'reverse', '2023-09-07', '元/磅', 'divide')
+    assert result['fx_operation'] == 'divide'
+    assert result['value'] == pytest.approx(.997 / 7.3285)
+    with pytest.raises(ValueError):
+        store.convert_price(dataset, 'price', 'fx-context', '2023-09-07', '元/磅', 'divide')

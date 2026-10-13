@@ -8,7 +8,8 @@ from structured_data.server import create_app
 from structured_data.scanner import scan_workbook
 from structured_data.generic_parser import parse_mapped_workbook
 from structured_data.model_settings import read_model
-from structured_data.native_charts import calendar_year
+import pytest
+from test_native_charts import chart_store
 
 
 def test_merged_headers_keep_category_measure_and_evidence(tmp_path):
@@ -28,13 +29,22 @@ def test_merged_headers_keep_category_measure_and_evidence(tmp_path):
     assert next(o for o in result['observations'] if o['source_cell']=='C3')['value']==20
 
 
-def test_calendar_family_not_contract_codes():
-    contracts=[{'label':s} for s in ['1601','1701','1801','1901','2001','2101','2201']]
-    assert all(calendar_year(c,contracts) is None for c in contracts)
-    years=[{'label':s} for s in ['2021','2022','2023']]
-    assert [calendar_year(c,years) for c in years]==[2021,2022,2023]
-    assert calendar_year({'label':'2023年'},[])==2023
-    assert calendar_year({'label':'1901'},[{'label':'1901'}]) is None
+@pytest.mark.parametrize('labels',[['1901','1902'],['2021','2022'],['2017年','2018年']])
+def test_literal_chart_labels_do_not_override_verified_source_dates(chart_store,monkeypatch,labels):
+    from structured_data import native_charts
+    store,dataset,_=chart_store
+    actual_extract=native_charts.extract
+    def renamed(path):
+        charts=actual_extract(path);charts[0]['curves']=charts[0]['curves'][:2]
+        for curve,label in zip(charts[0]['curves'],labels):curve['label']=label
+        return charts
+    monkeypatch.setattr(native_charts,'extract',renamed)
+    curves=store.chart_index(dataset)['charts'][0]['curves']
+    assert [c['label'] for c in curves]==labels
+    assert all(c['status']=='linked' for c in curves)
+    assert curves[0]['first_date']=='2023-09-07' and curves[1]['first_date']=='2024-01-01'
+    assert store.query_series(dataset,curves[0]['series_id'],operation='sum')['aggregate']==30
+    assert store.query_series(dataset,curves[1]['series_id'],operation='sum')['aggregate']==99
 
 
 def test_shared_login_checks_identity_and_model_settings_redact_key(tmp_path,monkeypatch):

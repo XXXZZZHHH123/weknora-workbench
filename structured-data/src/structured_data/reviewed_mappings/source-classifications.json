@@ -1,0 +1,14 @@
+{
+  "3ddd55c74ccef9e78cf98364c34327c8ca6b6edfbba774c7d1a9794d6f744fec": {
+    "dataset_kind": "sample",
+    "classification_origin": "Previously isolated development fixture; fingerprint-verified migration"
+  },
+  "7d158ff811850bba9b0bc0be33159c9433492601b4cb9d69dda1e7a0af692024": {
+    "dataset_kind": "sample",
+    "classification_origin": "Previously isolated development fixture; fingerprint-verified migration"
+  },
+  "93d685c4a62b2556846900f5c873b3c33cc3e52bc5cf47bf28533b83a033a151": {
+    "dataset_kind": "sample",
+    "classification_origin": "Previously isolated development fixture; fingerprint-verified migration"
+  }
+}

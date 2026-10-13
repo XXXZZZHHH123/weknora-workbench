@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/agent/compaction"
 	"github.com/Tencent/WeKnora/internal/agent/skills"
@@ -549,16 +550,17 @@ func (e *AgentEngine) closeAnswerStream(ctx context.Context, sessionID, answerID
 }
 
 // finishStalledTurn ends a turn that a guard stopped rather than the model.
-// Whatever text the last round produced stands as the answer; when the round
-// produced none, a fallback says why instead of completing with an empty
-// message. The answer stream is closed here because no natural-stop path will
-// reach it once the loop breaks.
+// Nonempty suspicious short output is checked against the actual requested
+// format. Missing or unverified output receives an explicit runtime fallback.
+// The stream is closed here because a stopped loop cannot reach natural stop.
 func (e *AgentEngine) finishStalledTurn(
 	ctx context.Context,
 	state *types.AgentState,
 	sessionID string,
 	response *types.ChatResponse,
 	truncated bool,
+	query string,
+	conversation []chat.Message,
 ) {
 	// Text that arrived alongside tool calls is a preamble — "let me look that
 	// up" — from a round that meant to keep working. Presenting it as the final
@@ -567,6 +569,18 @@ func (e *AgentEngine) finishStalledTurn(
 	answer := response.Content
 	if len(response.ToolCalls) > 0 {
 		answer = ""
+	}
+	if strings.TrimSpace(answer) != "" && (utf8.RuneCountInString(strings.TrimSpace(answer)) <= 4 || suspectAnswerFragment(answer, response.ReasoningContent)) {
+		invalid, checkErr := e.evaluateAnswerCompleteness(ctx, query, answer, state, conversation)
+		if ctx.Err() != nil {
+			return
+		}
+		if checkErr != nil {
+			logger.Warnf(ctx, "[Agent][AnswerCompleteness] stalled answer check failed: %v", checkErr)
+		}
+		if invalid || checkErr != nil {
+			answer = ""
+		}
 	}
 	answerID := ""
 	if response.AnswerStreamed && answer != "" {
@@ -903,7 +917,7 @@ func (e *AgentEngine) runReActIteration(
 				e.failTruncatedToolCalls(ctx, response, &step, state.CurrentRound, sessionID)
 			}
 			state.RoundSteps = append(state.RoundSteps, step)
-			e.finishStalledTurn(ctx, state, sessionID, response, true)
+			e.finishStalledTurn(ctx, state, sessionID, response, true, query, *messagesPtr)
 			return iterOutcomeBreak, nil
 		}
 	} else {
@@ -926,7 +940,7 @@ func (e *AgentEngine) runReActIteration(
 		if guards.consecutiveSameContent >= maxRepeatedResponseRounds {
 			logger.Warnf(ctx, "[Agent][Round-%d] Detected stuck loop: same content repeated %d times (finish=%s), stopping",
 				round, guards.consecutiveSameContent+1, response.FinishReason)
-			e.finishStalledTurn(ctx, state, sessionID, response, false)
+			e.finishStalledTurn(ctx, state, sessionID, response, false, query, *messagesPtr)
 			return iterOutcomeBreak, nil
 		}
 	} else {
@@ -971,21 +985,34 @@ func (e *AgentEngine) runReActIteration(
 	// initial stream prefix is buffered so these fragments never become a
 	// completed answer in the UI. Repair in the same evidence context, with
 	// reasoning switched off for this turn only; never change model settings.
-	if len(response.ToolCalls) == 0 && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) && incompleteAnswer(query, response.Content, response.ReasoningContent) {
+	needsAnswerRepair := false
+	if len(response.ToolCalls) == 0 && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
+		var completenessErr error
+		needsAnswerRepair, completenessErr = e.answerNeedsRepair(ctx, query, response.Content, response.ReasoningContent, state, *messagesPtr)
+		if ctx.Err() != nil {
+			state.RoundSteps = append(state.RoundSteps, step)
+			return iterOutcomeBreak, nil
+		}
+		if completenessErr != nil {
+			logger.Warnf(ctx, "[Agent][Round-%d] Answer completeness check failed: %v", round, completenessErr)
+			needsAnswerRepair = true
+		}
+	}
+	if needsAnswerRepair {
 		state.RoundSteps = append(state.RoundSteps, step)
 		guards.incompleteAnswerRetries++
 		if guards.incompleteAnswerRetries <= 2 {
 			e.structuredReviewMode = true
 			guards.sawPlainRound = false
 			guards.consecutiveSameContent = 0
-			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: "内部运行时反馈：上一轮只有推理或残缺字符，没有完成回答。请依据本轮真实工具结果，直接用简短中文完整回答原问题的各项要求并引用原来源。不要继续长篇推理，不要把草稿当成事实；证据缺失时明确说明缺哪项，不得编造数值。"})
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: "内部运行时反馈：上一轮答复的完整性未能确认。请依据本轮真实工具结果，按用户要求的语言和格式完成原问题；用户要求短答或特定字符时保持该格式。不要继续长篇推理，不要把草稿当成事实；证据缺失时明确说明缺哪项，不得编造数值。"})
 			return iterOutcomeContinue, nil
 		}
 		fallback := *response
 		fallback.Content = incompleteAnswerFallback
 		fallback.AnswerStreamed = false
 		fallback.AnswerEventID = ""
-		e.finishStalledTurn(ctx, state, sessionID, &fallback, false)
+		e.finishStalledTurn(ctx, state, sessionID, &fallback, false, query, *messagesPtr)
 		return iterOutcomeBreak, nil
 	}
 
@@ -1136,7 +1163,6 @@ func (e *AgentEngine) runReActIteration(
 
 	// 3. Act: Execute tool calls
 	e.executeToolCalls(ctx, response, &step, state.CurrentRound, sessionID, assistantMessageID)
-	e.inspectWorkbenchPeriodSources(ctx, state, &step, query, sessionID, assistantMessageID)
 	toolCallCount = len(step.ToolCalls)
 
 	// 4. Observe: Add tool results to messages and write to context

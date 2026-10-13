@@ -19,6 +19,7 @@ func TestBoundedSynthesisAndRepairUseMinimumSupportedReasoning(t *testing.T) {
 
 	model = &mockChat{responses: []mockResponse{
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("推理", 300)}, {ResponseType: types.ResponseTypeAnswer, Content: "-", Done: true, FinishReason: "stop"}}},
+		completenessVerdict(false),
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "完整回答。", Done: true, FinishReason: "stop"}}},
 	}}
 	e = newTestEngine(t, model)
@@ -27,5 +28,7 @@ func TestBoundedSynthesisAndRepairUseMinimumSupportedReasoning(t *testing.T) {
 	_, err := e.executeLoop(context.Background(), &types.AgentState{}, "问题", emptyMessages(), nil, "s", "m")
 	require.NoError(t, err)
 	require.Equal(t, chat.ReasoningEffort("high"), model.opts[0].ReasoningEffort, "primary selected reasoning is preserved")
-	require.Equal(t, chat.ReasoningEffort("minimal"), model.opts[1].ReasoningEffort, "repair uses bounded minimum")
+	require.Equal(t, chat.ReasoningEffort("minimal"), model.opts[1].ReasoningEffort, "completeness check uses bounded minimum")
+	require.Equal(t, 256, model.opts[1].MaxCompletionTokens)
+	require.Equal(t, chat.ReasoningEffort("minimal"), model.opts[2].ReasoningEffort, "repair uses bounded minimum")
 }

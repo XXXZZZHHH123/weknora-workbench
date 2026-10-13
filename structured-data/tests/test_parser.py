@@ -4,10 +4,17 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from openpyxl import Workbook
-from structured_data.profiles.cotton import (
-    parse_workbook, SHEET_NAMES, CONTRACTS, FUTURES_BLOCKS,
-    WAREHOUSE_HEADERS, BALANCE_HEADERS,
-)
+import json, hashlib
+from copy import deepcopy
+from structured_data.profiles.reviewed import parse_workbook as parse_reviewed
+_fixture = json.loads(Path(__file__).with_name('legacy_mapping_fixture.json').read_text())
+globals().update(_fixture['constants'])
+
+def parse_workbook(path):
+    # Explicit fixture review, never registered with production mappings.
+    mapping = deepcopy(_fixture['mapping'])
+    mapping['sha256'] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return parse_reviewed(path, mapping=mapping)
 
 
 def fixture(path: Path):

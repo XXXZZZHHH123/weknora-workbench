@@ -15,7 +15,7 @@ import tempfile
 from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
-VERSION = 'native-charts-v4'
+VERSION = 'native-charts-v6-verified-source-dates'
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
       'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
       'c': 'http://schemas.openxmlformats.org/drawingml/2006/chart',
@@ -96,22 +96,6 @@ def _range_sql(ref):
     return "regexp_extract(source_cell, '^([A-Z]+)', 1) = ? AND try_cast(regexp_extract(source_cell, '([0-9]+)$', 1) AS INTEGER) BETWEEN ? AND ?", [ref['column'], ref['start_row'], ref['end_row']]
 
 
-def calendar_year(curve, curves):
-    """A four-digit legend is not intrinsically a year (e.g. contract 1901)."""
-    label=curve['label'].strip()
-    explicit=re.fullmatch(r'(19\d{2}|20\d{2})年', label)
-    if explicit:return int(explicit[1])
-    numeric=[int(c['label'].strip()) for c in curves if re.fullmatch(r'\d{4}',c['label'].strip())]
-    # Consecutive calendar cohorts provide evidence; mixed centuries or YYMM
-    # sequences don't. Unknown labels retain their literal meaning.
-    years=sorted(set(numeric))
-    if (label.isdigit() and int(label) in years and len(years)>=2
-        and all(1900<=n<=2099 for n in years)
-        and all(b-a==1 for a,b in zip(years,years[1:]))):
-        return int(label)
-    return None
-
-
 def build(store, dataset_id):
     folder = store._path(dataset_id)
     series = json.loads((folder / 'series.json').read_text())
@@ -162,17 +146,12 @@ def build(store, dataset_id):
                              record_count=count, valid_count=valid,
                              first_date=str(first) if first else None, last_date=str(last) if last else None)
                 curve.update(first_valid_date=str(vfirst) if vfirst else None, last_valid_date=str(vlast) if vlast else None)
-                year = calendar_year(curve, chart['curves'])
-                if year and (not first or not last or first.year != year or last.year != year):
-                    curve.update(status='needs_review', reason='图例年份与已导入的源数据日期不一致，或缺少核验日期；不套用横轴年份。')
-                    continue
                 if not valid:
                     curve.update(status='no_data', reason='已关联的源单元格没有有效数值；不使用图表缓存补值。')
                     continue
                 curve.update(status='linked', reason='已关联源单元格；日期使用源表已核验日期，图表缓存不参与取数。')
                 cat = reference(curve['category_ref'])
-                if year or not cat:
-                    curve['date_notice'] = '曲线按源表日期查询；图上的月份横轴或缺省分类不作为完整日期。'
+                curve['date_notice'] = '图例是原始标签，不自动当作年份或合约含义；曲线日期仅来自已核验源单元格，图表横轴与缓存不补造日期。'
                 groups.setdefault(sid, []).append(curve)
             for sid, curves in groups.items():
                 source = byid[sid]
@@ -181,6 +160,9 @@ def build(store, dataset_id):
                 view = dict(source, series_id=view_id, metric=chart['title'], source_metric=source['metric'],
                             chart_sheet=chart['sheet'], chart_id=chart['chart_id'], source_series_id=sid,
                             chart_ranges=[c['reference'] for c in curves], chart_legends=[c['label'] for c in curves],
+                            chart_curve_sources=[{key: c.get(key) for key in
+                                ('label', 'reference', 'source_series_id', 'first_date', 'last_date',
+                                 'first_valid_date', 'last_valid_date', 'date_notice')} for c in curves],
                             description=f"图表 {chart['sheet']} / {chart['title']} → {source['sheet']} / {source['metric']}；仅查询已关联曲线的源单元格范围。")
                 view['chart_excluded_curves'] = [{'label':c['label'],'reason':c['reason']} for c in chart['curves'] if c['status']!='linked']
                 view['first_valid_date'] = min((c['first_valid_date'] for c in curves if c['first_valid_date']), default=None)
@@ -192,6 +174,9 @@ def build(store, dataset_id):
                     curve_views.append(dict(view, series_id=curve_id,
                         metric=chart['title']+' / '+curve['label'], chart_title=chart['title'],
                         chart_ranges=[curve['reference']], chart_legends=[curve['label']],
+                        chart_curve_sources=[{key: curve.get(key) for key in
+                            ('label', 'reference', 'source_series_id', 'first_date', 'last_date',
+                             'first_valid_date', 'last_valid_date', 'date_notice')}],
                         first_valid_date=curve['first_valid_date'],last_valid_date=curve['last_valid_date'],
                         description=view['description']+' 图例：'+curve['label']))
             counts = Counter(c['status'] for c in chart['curves'])
@@ -219,39 +204,18 @@ def index(store, dataset_id):
 
 
 def catalog(store, dataset_id, sheet=None, question=''):
+    """Question text never restricts authorized sources or assigns legend meaning."""
     base = json.loads((store._path(dataset_id) / 'series.json').read_text())
     idx = index(store, dataset_id)
-    views = idx['views']
-    legend_question=re.sub(r'\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?', '',question)
-    literal_curves=[v for v in idx.get('curve_views',[]) if any(re.search(r'(?<![0-9A-Za-z_])'+re.escape(label)+r'(?![0-9A-Za-z_])', legend_question) for label in v['chart_legends'])]
-    if literal_curves:
-        curve_charts={v['chart_id'] for v in literal_curves}
-        views=[v for v in views if v['chart_id'] not in curve_charts]+literal_curves
-    chart_sheets = {c['sheet'] for c in idx['charts']}
-    mentioned = {name for name in chart_sheets if name in question}
-    titles = {c['title'] for c in idx['charts'] if len(c['title'])>3 and c['title'] in question}
-    # A year matching a seasonal legend is not a request to restrict sources.
-    # Cross-table analysis must retain its explicitly named raw fields.
-    chart_request = any(word in question for word in ('图表','图中','曲线','图里'))
-    # A sheet may contain both tables and charts. Merely mentioning its name
-    # (including an agent's follow-up context) must not hide its real columns.
-    # A chart-only sheet still needs its source-backed views when explicitly scoped.
-    chart_only_scope = sheet in chart_sheets and not any(s['sheet'] == sheet for s in base)
-    if chart_only_scope or (chart_request and (sheet in chart_sheets or (mentioned and sheet is None))):
-        scopes = {sheet} if sheet else mentioned
-        selected = [v for v in views if v['chart_sheet'] in scopes and (not titles or v.get('chart_title',v['metric']) in titles)]
-        return selected
-    if sheet:
-        return [s for s in base if s['sheet'] == sheet]
-    # Keep the general catalogue compact: graph titles are source-backed aliases,
-    # not hand-written business synonyms. Exact graph-title questions use its view.
-    if titles and chart_request:
-        return [v for v in views if v.get('chart_title',v['metric']) in titles]
+    views = [*idx['views'], *idx.get('curve_views', [])]
     aliases = {}
-    for v in views:
-        aliases.setdefault(v['source_series_id'], set()).add(v['metric'])
-    for s in base:
-        titles = sorted(t for t in aliases.get(s['series_id'], set()) if t != s['metric'])
+    for view in views:
+        aliases.setdefault(view['source_series_id'], set()).add(view.get('chart_title', view['metric']))
+    for source in base:
+        titles = sorted(title for title in aliases.get(source['series_id'], set()) if title != source['metric'])
         if titles:
-            s['chart_titles'] = titles
-    return base
+            source['chart_titles'] = titles
+    all_sources = [*base, *views]
+    if sheet is not None:
+        return [source for source in all_sources if source['sheet'] == sheet or source.get('chart_sheet') == sheet]
+    return all_sources

@@ -1,4 +1,4 @@
-"""Deterministic, source-preserving parser for the three reviewed cotton sheets."""
+"""Execute source-fingerprint-bound reviewed mappings without business branches."""
 from __future__ import annotations
 
 from collections import Counter
@@ -15,32 +15,20 @@ from zipfile import ZipFile
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-RULE_VERSION = "cotton-three-sheets-v2"
-SHEET_NAMES = ("郑棉期货", "郑棉仓单", "中国棉花平衡表")
-CONTRACTS = ("CF.CZC", "CF01M.CZC", "CF03M.CZC", "CF05M.CZC", "CF07M.CZC", "CF09M.CZC", "CF11M.CZC")
-FUTURES_BLOCKS = (("close", "收盘价", 1), ("settle", "结算价", 10), ("oi", "持仓量", 19), ("volume", "成交量", 28))
-WAREHOUSE_HEADERS = (
-    "仓单数量:一号棉花", "仓单数量:一号棉:北疆农佳乐", "仓单数量:一号棉:库尔勒银星",
-    "仓单数量:一号棉:石河子天银", "仓单数量:一号棉:新疆中新建", "仓单数量:一号棉:新疆农资集团",
-    "仓单数量:一号棉:兵棉奎储", "仓单数量:一号棉:新疆银棉", "仓单数量:一号棉:新疆汇锦",
-    "仓单数量:一号棉:新疆陆德", "仓单数量:一号棉:中储棉库尔勒", "仓单数量:一号棉:兵棉宏泰",
-    "仓单数量:一号棉:阿拉尔鹏宇", "仓单数量:一号棉:中锦胡杨河", "有效预报:一号棉花:总计",
-    "有效预报:一号棉:北疆农佳乐", "有效预报:一号棉:库尔勒银星", "有效预报:一号棉:石河子天银",
-    "有效预报:一号棉:新疆中新建", "有效预报:一号棉:新疆农资集团", "有效预报:一号棉:兵棉奎储",
-    "有效预报:一号棉:新疆银棉", "有效预报:一号棉:新疆汇锦", "有效预报:一号棉:新疆陆德",
-    "有效预报:一号棉:中储棉库尔勒", "有效预报:一号棉:兵棉宏泰", "有效预报:一号棉:中锦胡杨河",
-    "有效预报:一号棉:阿拉尔鹏宇", "仓单数量:一号棉:阿克苏益康", "有效预报:一号棉:阿克苏益康",
-    "仓单和有效预报:合计", "仓单和有效预报:新疆库", "仓单和有效预报:内地库",
-)
-BALANCE_HEADERS = (
-    "工商业期初库存", "产量", "进口", "公开抛储", "公开收储", "工商业期末库存", "公开国储库存",
-    "非公开收储", "非公开抛储", "表需", "实际需求", "非公开库存", "国储库存", "合计库存",
-    "棉纱产量", "棉纱进口", "棉纱出口", "棉纱净进口", "棉纱需求", "棉纱库存", "纱厂月度负荷",
-    "布厂月度负荷", "棉花+棉纱社会库存", "棉花+棉纱库存",
-)
+def reviewed_mapping(path):
+    import hashlib, json
+    with Path(path).open('rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    config = Path(__file__).parent.parent / 'reviewed_mappings' / (digest + '.json')
+    if not config.is_file():
+        return None
+    mapping = json.loads(config.read_text())
+    if mapping.get('sha256') != digest:
+        raise ValueError('已核对映射的文件指纹不匹配')
+    return mapping
 
 
-def _chart_inventory(path: Path) -> dict:
+def _chart_inventory(path: Path, sheet_names) -> dict:
     """Count actual sheet drawing relations, without evaluating or rendering charts."""
     main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     office = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -67,7 +55,7 @@ def _chart_inventory(path: Path) -> dict:
         rels = relations(z, "xl/workbook.xml")
         wb = ET.fromstring(z.read("xl/workbook.xml"))
         for sheet in wb.findall(f"{{{main}}}sheets/{{{main}}}sheet"):
-            if sheet.attrib["name"] not in SHEET_NAMES:
+            if sheet.attrib["name"] not in sheet_names:
                 continue
             part = rels[sheet.attrib[f"{{{office}}}id"]]["target"]
             links = relations(z, part)
@@ -89,7 +77,7 @@ def _chart_inventory(path: Path) -> dict:
     return result
 
 
-def parse_workbook(path: Path | str, *, observations=None, issues=None) -> dict:
+def parse_workbook(path: Path | str, *, observations=None, issues=None, mapping=None) -> dict:
     """Read known layouts; fail on header drift; never recalculate or embed data.
 
     Observations retain errors and dated blank cells as null values with source
@@ -101,10 +89,14 @@ def parse_workbook(path: Path | str, *, observations=None, issues=None) -> dict:
     with path.open("rb") as f:
         for block in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(block)
+    mapping = reviewed_mapping(path) if mapping is None else mapping
+    if not isinstance(mapping, dict) or mapping.get('sha256') != digest.hexdigest():
+        raise ValueError('没有绑定此文件指纹的已核对映射，请使用通用导入核对流程')
+    sheet_names = [s['name'] for s in mapping['sheets']]
     result: dict[str, Any] = {"source_file": str(path), "sha256": digest.hexdigest(),
-        "rule_version": RULE_VERSION, "sheets": [], "series": [],
+        "rule_version": mapping["rule_version"], "sheets": [], "series": [],
         "observations": [] if observations is None else observations,
-        "issues": [] if issues is None else issues, "excluded_regions": [], "charts": _chart_inventory(path)}
+        "issues": [] if issues is None else issues, "excluded_regions": [], "charts": _chart_inventory(path, sheet_names)}
 
     def issue(sheet, cell, code, message, severity="warning"):
         result["issues"].append(dict(sheet=sheet, cell=cell, severity=severity, code=code, message=message))
@@ -112,12 +104,15 @@ def parse_workbook(path: Path | str, *, observations=None, issues=None) -> dict:
     values = load_workbook(path, read_only=True, data_only=True, keep_links=False)
     formulas = load_workbook(path, read_only=True, data_only=False, keep_links=False)
     try:
-        missing = set(SHEET_NAMES) - set(values.sheetnames)
+        missing = set(sheet_names) - set(values.sheetnames)
         if missing:
             raise ValueError("缺少必要工作表：" + ", ".join(sorted(missing)))
-        for name in SHEET_NAMES:
+        for configured in mapping['sheets']:
+            name = configured['name']
             ws, fs = values[name], formulas[name]
-            heads = list(ws.iter_rows(min_row=1, max_row=4, values_only=True))
+            import re
+            header_rows = [int(re.search(r'[0-9]+$', cell).group()) for cell in configured['header_expectations']]
+            heads = list(ws.iter_rows(min_row=1, max_row=max(header_rows), max_col=configured['max_col'], values_only=True))
 
             def header(row, col):
                 return heads[row - 1][col - 1] if col <= len(heads[row - 1]) else None
@@ -127,42 +122,19 @@ def parse_workbook(path: Path | str, *, observations=None, issues=None) -> dict:
                 if actual != expected:
                     raise ValueError(f"表头不匹配 {name}!{get_column_letter(col)}{row}：期望 {expected!r}，实际 {actual!r}；请审核解析规则")
 
-            specs = []
-            if name == SHEET_NAMES[0]:
-                start_row, max_col = 5, 35
-                for key, metric, date_col in FUTURES_BLOCKS:
-                    require(1, date_col + 1, metric)
-                    require(2, date_col + 1, key)
-                    require(3, date_col, "日期")
-                    require(4, date_col, "Date")
-                    for offset, contract in enumerate(CONTRACTS, 1):
-                        col = date_col + offset
-                        require(4, col, contract)
-                        specs.append((col, date_col, f"futures.{key}.{contract}", metric,
-                            {"contract": contract, "block": key}, None,
-                            [f"{get_column_letter(date_col+1)}1", f"{get_column_letter(col)}4"]))
-            elif name == SHEET_NAMES[1]:
-                start_row, max_col = 5, 34
-                require(3, 1, "日期")
-                require(4, 1, "Date")
-                for col, metric in enumerate(WAREHOUSE_HEADERS, 2):
-                    require(3, col, metric)
-                    unit = "万吨" if col >= 32 else None
-                    if unit:
-                        require(4, col, unit)
-                    dimensions = {"block": "warehouse"}
-                    if col < 32 and isinstance(header(4, col), str):
-                        dimensions["source_series_code"] = header(4, col)
-                    specs.append((col, 1, f"warehouse.{get_column_letter(col)}", metric,
-                                  dimensions, unit, [f"{get_column_letter(col)}3", f"{get_column_letter(col)}4"]))
-            else:
-                start_row, max_col = 2, 25
-                for col, metric in enumerate(BALANCE_HEADERS, 2):
-                    require(1, col, metric)
-                    specs.append((col, 1, f"balance.primary.{get_column_letter(col)}", metric,
-                                  {"block": "primary"}, None, [f"{get_column_letter(col)}1"]))
-                result["excluded_regions"].append({"sheet": name, "range": f"Z1:{get_column_letter(max(26,ws.max_column))}{ws.max_row}",
-                    "reason": "主块以外存在独立日期列、重复指标及辅助计算块，未审核，本版不导入。"})
+            import re
+            from copy import deepcopy
+            for coordinate, expected in configured['header_expectations'].items():
+                match = re.fullmatch(r'([A-Z]+)([0-9]+)', coordinate)
+                from openpyxl.utils import column_index_from_string
+                require(int(match.group(2)), column_index_from_string(match.group(1)), expected)
+            specs = deepcopy(configured['specs'])
+            start_row, max_col = configured['start_row'], configured['max_col']
+            if configured.get('excluded_tail'):
+                tail = configured['excluded_tail']
+                result['excluded_regions'].append({'sheet': name,
+                    'range': f"{get_column_letter(tail['start_column'])}1:{get_column_letter(max(tail['start_column'], ws.max_column))}{ws.max_row}",
+                    'reason': tail['reason']})
             for col, dc, sid, metric, dimensions, unit, cells in specs:
                 result["series"].append({"series_id": sid, "sheet": name, "metric": metric,
                     "dimensions": dimensions, "unit": unit, "unit_status": "explicit" if unit else "needs_review",

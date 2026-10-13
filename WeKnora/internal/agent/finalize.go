@@ -80,7 +80,14 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		fullAnswer = agenttools.StripThinkBlocks(llmResult.Content)
 		truncated = isLengthFinishReason(llmResult.FinishReason)
-		invalid := strings.TrimSpace(fullAnswer) == "" || incompleteAnswer(query, fullAnswer, llmResult.ReasoningContent)
+		invalid, completenessErr := e.answerNeedsRepair(ctx, query, fullAnswer, llmResult.ReasoningContent, state, conversation)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if completenessErr != nil {
+			logger.Warnf(ctx, "[Agent][FinalAnswer] Completeness check failed: %v", completenessErr)
+			invalid = true
+		}
 		unsupported := []string{}
 		if !invalid && needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, fullAnswer) {
 			evidence := append([]chat.Message(nil), conversation...)

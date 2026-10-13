@@ -236,6 +236,49 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			}
 		}
 	}
+	// The model-facing context may omit or truncate a large tool payload.
+	// Numeric/source verification uses the canonical successful runtime result,
+	// not a lossy prompt rendering or an assistant's plan. Tool schemas and
+	// document prose are never executed numeric evidence.
+	for _, steps := range rawSteps {
+		for _, call := range steps {
+			for _, executed := range call.ToolCalls {
+				if executed.Result == nil || !executed.Result.Success {
+					continue
+				}
+				operation, _ := executed.Args["operation"].(string)
+				switch executed.Name {
+				case "structured_list_series", "structured_query_series", "structured_analyze_table", "structured_inspect_source", "structured_get_result_evidence":
+				case "structured_data":
+					switch operation {
+					case "list_datasets", "list_series", "query_series", "analyze_table", "inspect_source", "compare_series", "convert_price", "get_result_evidence", "execute_field_plan":
+					default:
+						continue
+					}
+				default:
+					continue
+				}
+				var data map[string]any
+				if executed.Result.Data != nil {
+					// Typed source data is canonical; display Output may have
+					// formatting/redaction that is no longer valid JSON.
+					encoded, err := json.Marshal(executed.Result.Data)
+					if err != nil || json.Unmarshal(encoded, &data) != nil {
+						continue
+					}
+				} else if json.Unmarshal([]byte(executed.Result.Output), &data) != nil {
+					continue
+				}
+				if status, _ := data["status"].(string); status != "" && status != "ok" && status != "no_data" {
+					continue
+				}
+				inspectedSourceRows(data, inspectedRows)
+				queriedSourceRows(data, inspectedRows)
+				collectSourceIdentityLabels(data, identityLabels)
+				collect(data)
+			}
+		}
+	}
 	for _, msg := range messages {
 		if msg.Role == "tool" {
 			// Fetched KB prose uses only separately verified cited chunk evidence;

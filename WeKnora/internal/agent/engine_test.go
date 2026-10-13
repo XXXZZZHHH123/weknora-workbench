@@ -842,8 +842,11 @@ func TestFragmentAfterHeavyReasoningRepairsWithoutStreamingFragment(t *testing.T
 		t.Run(fmt.Sprintf("fragment_%q", fragment), func(t *testing.T) {
 			model := &mockChat{responses: []mockResponse{
 				{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("图表推理", 100)}, {ResponseType: types.ResponseTypeAnswer, Content: fragment, Done: true, FinishReason: "stop"}}},
-				{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "红线为2401；图右端约200至300元/吨。", Done: true, FinishReason: "stop"}}},
 			}}
+			if fragment != "" {
+				model.responses = append(model.responses, completenessVerdict(false))
+			}
+			model.responses = append(model.responses, mockResponse{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "红线为2401；图右端约200至300元/吨。", Done: true, FinishReason: "stop"}}})
 			engine := newTestEngine(t, model)
 			var emitted string
 			engine.eventBus.On(event.EventAgentFinalAnswer, func(_ context.Context, evt event.Event) error {
@@ -858,11 +861,12 @@ func TestFragmentAfterHeavyReasoningRepairsWithoutStreamingFragment(t *testing.T
 			require.True(t, state.IsComplete)
 			require.Equal(t, "红线为2401；图右端约200至300元/吨。", state.FinalAnswer)
 			require.Equal(t, state.FinalAnswer, emitted, "no fragment may leak into the completed answer")
-			require.Len(t, model.calls, 2)
-			require.NotNil(t, model.opts[1].Thinking)
-			require.False(t, *model.opts[1].Thinking)
-			require.Zero(t, model.opts[1].ThinkingBudgetTokens)
-			require.LessOrEqual(t, model.opts[1].MaxCompletionTokens, 4096)
+			require.Len(t, model.calls, len(model.responses))
+			opts := model.opts[len(model.opts)-1]
+			require.NotNil(t, opts.Thinking)
+			require.False(t, *opts.Thinking)
+			require.Zero(t, opts.ThinkingBudgetTokens)
+			require.LessOrEqual(t, opts.MaxCompletionTokens, 4096)
 		})
 	}
 }
@@ -871,6 +875,7 @@ func TestFragmentRepairIsBoundedAndFallsBackClearly(t *testing.T) {
 	model := &mockChat{}
 	for i := 0; i < 3; i++ {
 		model.responses = append(model.responses, mockResponse{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("推理", 200)}, {ResponseType: types.ResponseTypeAnswer, Content: "-", Done: true, FinishReason: "stop"}}})
+		model.responses = append(model.responses, completenessVerdict(false))
 	}
 	engine := newTestEngine(t, model)
 	state := &types.AgentState{}
@@ -883,21 +888,22 @@ func TestFragmentRepairIsBoundedAndFallsBackClearly(t *testing.T) {
 	})
 	_, err := engine.executeLoop(context.Background(), state, "请解释该周报图表", emptyMessages(), nil, "sess", "msg")
 	require.NoError(t, err)
-	require.Len(t, model.calls, 3)
+	require.Len(t, model.calls, 6)
 	require.Contains(t, state.FinalAnswer, "模型未能生成完整回答")
 	require.Equal(t, state.FinalAnswer, emitted)
 	require.NotEqual(t, "-", state.FinalAnswer)
 }
 
 func TestShortCompleteAnswersRemainValidAfterReasoning(t *testing.T) {
-	for _, test := range []struct{ query, answer string }{{"结果是多少？", "6"}, {"是否成立？", "是"}, {"Is it true?", "yes"}, {"只回答一个字：周报的首字是什么？", "周"}} {
+	for _, test := range []struct{ query, answer string }{{"结果是多少？", "6"}, {"是否成立？", "是"}, {"Is it true?", "yes"}, {"只回答一个字：周报的首字是什么？", "周"}, {"用一个汉字确认收到。", "悉"}, {"Return just the separating punctuation.", ";"}} {
 		model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("reasoning ", 100)}, {ResponseType: types.ResponseTypeAnswer, Content: test.answer, Done: true, FinishReason: "stop"}}}}}
+		model.responses = append(model.responses, completenessVerdict(true))
 		engine := newTestEngine(t, model)
 		state := &types.AgentState{}
 		_, err := engine.executeLoop(context.Background(), state, test.query, []chat.Message{{Role: "user", Content: test.query}}, nil, "sess", "msg")
 		require.NoError(t, err)
 		require.Equal(t, test.answer, state.FinalAnswer)
-		require.Len(t, model.calls, 1)
+		require.Len(t, model.calls, 2)
 	}
 }
 
@@ -911,6 +917,9 @@ func TestFinalSynthesisRepairsFragmentsBeforeEmitting(t *testing.T) {
 					answer = "红线代表2401合约年度。"
 				}
 				model.responses = append(model.responses, mockResponse{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("reasoning", 100)}, {ResponseType: types.ResponseTypeAnswer, Content: answer, Done: true, FinishReason: "stop"}}})
+				if answer == "周" {
+					model.responses = append(model.responses, completenessVerdict(false))
+				}
 			}
 			engine := newTestEngine(t, model)
 			state := &types.AgentState{}
@@ -925,10 +934,10 @@ func TestFinalSynthesisRepairsFragmentsBeforeEmitting(t *testing.T) {
 			require.Equal(t, state.FinalAnswer, emitted)
 			if recover {
 				require.Equal(t, "红线代表2401合约年度。", state.FinalAnswer)
-				require.Len(t, model.calls, 2)
+				require.Len(t, model.calls, 3)
 			} else {
 				require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
-				require.Len(t, model.calls, 3)
+				require.Len(t, model.calls, 6)
 			}
 			for _, opts := range model.opts {
 				require.NotNil(t, opts.Thinking)

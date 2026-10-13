@@ -19,7 +19,7 @@ structured-data = "structured_data.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-structured_data = ["*.html", "*.js", "*.css"]
+structured_data = ["*.html", "*.js", "*.css", "reviewed_mappings/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

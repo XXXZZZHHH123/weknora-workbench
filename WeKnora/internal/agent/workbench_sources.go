@@ -24,24 +24,13 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 	if caller.TenantID == 0 || caller.UserID == "" {
 		return messages
 	}
-	// Bind every later knowledge tool call to the report/page named in this
-	// turn. A failed or ambiguous lookup stays constrained rather than falling
-	// through to a similarly titled chart from another report.
-	constraint := agenttools.NewRequestedDocumentConstraint(query)
-	if tool, err := e.toolRegistry.GetTool(agenttools.ToolSearchKnowledge); err == nil {
-		if search, ok := tool.(*agenttools.SearchKnowledgeTool); ok {
-			search.WithDocumentConstraint(constraint)
-		}
-	}
-	if tool, err := e.toolRegistry.GetTool(agenttools.ToolReadDocument); err == nil {
-		if read, ok := tool.(*agenttools.ReadDocumentTool); ok {
-			read.WithDocumentConstraint(constraint)
-		}
-	}
+	// The real QA model plans sources from the complete conversation and
+	// authorized metadata; code validates the explicit plan before content reads.
+	agenttools.PrepareDocumentScope(e.toolRegistry)
 	requests := []types.LLMToolCall{}
 	if tool, err := e.toolRegistry.GetTool(agenttools.ToolStructuredData); err == nil {
 		if base, ok := tool.(*agenttools.StructuredDataTool); ok {
-			base.BindSourceQuestion(query)
+			base.BindSourceConversation(query, messages)
 		}
 		catalogArgs, _ := json.Marshal(map[string]any{"operation": "list_datasets", "arguments": map[string]string{"question": query}})
 		requests = append(requests,
@@ -84,8 +73,8 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 }
 
 // Keep the actual authorized calls and their complete evidence in RoundSteps.
-// Only the model-facing discovery view omits unrelated pending-sheet names and
-// schemas already present in the function definitions. Query results, literal
+// Only duplicate schemas already present in the function definitions are
+// omitted from the model-facing discovery view. Query results, literal
 // field candidates, source context and all coverage evidence remain untouched.
 func compactWorkbenchDiscovery(step types.AgentStep, query string, registered map[string]string) types.AgentStep {
 	modelStep := step
@@ -123,62 +112,17 @@ func copyDiscoveryMap(original map[string]any) map[string]any {
 	return copy
 }
 
-func compactDiscoveryCatalogue(data map[string]any, query string) map[string]any {
-	datasets, ok := data["datasets"].([]any)
-	if !ok {
-		return nil
-	}
-	compact := copyDiscoveryMap(data)
-	rows := make([]any, 0, len(datasets))
-	changed := false
-	pendingOmitted := false
+func compactDiscoveryCatalogue(data map[string]any, _ string) map[string]any {
+	// Every actual source/coverage remains visible regardless of question
+	// wording. Literal matches can add evidence, never remove source metadata.
 	for _, key := range []string{"literal_fields", "literal_field_matches"} {
 		if fields, ok := data[key].([]any); ok && len(fields) > 0 {
-			compact["literal_fields_query_hint"] = "上述是实际目录中的原表字段匹配，dataset_id、series_id及表头/公式来源均来自真实数据。用户已明确口径时可直接用query_series查询，不必仅为重复取得相同ID再调用list_series。若存在同名候选且口径仍不明确，先澄清；候选截断时不能当作完整候选集。"
-			changed = true
-			break
+			compact := copyDiscoveryMap(data)
+			compact["literal_fields_query_hint"] = "这些是实际目录的召回证据，包含真实ID、表头和公式来源。模型根据完整问题与上下文选择来源并生成计划；候选截断时继续补齐，不能将字面命中视为已明确口径。"
+			return compact
 		}
 	}
-	for _, value := range datasets {
-		dataset, ok := value.(map[string]any)
-		if !ok {
-			rows = append(rows, value)
-			continue
-		}
-		pending, ok := dataset["pending_sheets"].([]any)
-		if !ok || len(pending) == 0 {
-			rows = append(rows, value)
-			continue
-		}
-		kept := make([]any, 0)
-		for _, item := range pending {
-			name, ok := item.(string)
-			// Unknown shapes are retained: compaction must not discard an
-			// actionable coverage record whose semantics it does not know.
-			if !ok || name == "" || strings.Contains(query, name) {
-				kept = append(kept, item)
-			}
-		}
-		if len(kept) == len(pending) {
-			rows = append(rows, value)
-			continue
-		}
-		row := copyDiscoveryMap(dataset)
-		row["pending_sheets"] = kept
-		row["pending_sheet_count"] = len(pending)
-		row["pending_sheets_omitted_count"] = len(pending) - len(kept)
-		rows = append(rows, row)
-		changed = true
-		pendingOmitted = true
-	}
-	if !changed {
-		return nil
-	}
-	compact["datasets"] = rows
-	if pendingOmitted {
-		compact["pending_sheets_notice"] = "仅保留当前问题明确提及的待核对工作表名称，其他名称为减少重复输入而省略；省略不代表不存在或已导入。pending_sheets也不代表同名字段不存在，须核对literal_fields；需要补齐目录时再用list_series或resolve_fields。明确指定未导入表时不能换表。"
-	}
-	return compact
+	return nil
 }
 
 func compactDiscoverySchemas(data map[string]any, registered map[string]string) map[string]any {

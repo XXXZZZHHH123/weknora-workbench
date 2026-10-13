@@ -66,6 +66,9 @@ func TestScopedVisualDocumentDoesNotInheritEarlierTableGuard(t *testing.T) {
 	step := documentNumbersStep("read_document", true, "chunks", []map[string]any{{"chunk_id": "weekly-page", "knowledge_id": "weekly", "content": "第12页图，红线2401，坐标和图像可见。"}})
 	step.ToolCalls[0].Result.Data["document_scope"] = map[string]any{"matched": true, "knowledge_id": "weekly", "page": 12, "has_visual_evidence": true}
 	require.False(t, needsStructuredAnswerReviewForQuery(query, []types.AgentStep{step}, history, answer))
+	for _, question := range []string{"interpret the requested source", "不要分析图表", "按指定原件说明"} {
+		require.False(t, needsStructuredAnswerReviewForQuery(question, []types.AgentStep{step}, history, answer), "scope follows trusted evidence, not question keywords")
+	}
 	require.True(t, needsStructuredAnswerReviewForQuery(query, []types.AgentStep{step}, history, answer+`<kb chunk_id="other-report"/>`))
 	step.ToolCalls = append(step.ToolCalls, types.ToolCall{Name: "structured_data", Result: &types.ToolResult{Success: true, Output: `{"kind":"structured_analysis","status":"ok","rows":[[789]]}`}})
 	require.True(t, needsStructuredAnswerReviewForQuery(query, []types.AgentStep{step}, history, answer), "real current table computations must retain their guard")

@@ -85,9 +85,9 @@ def create_app(data_dir: str | Path | None = None):
                   transport_security=TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins))
 
     @mcp.tool()
-    async def resolve_fields(question: str, dataset_id: str | None = None, context_sheet: str | None = None, prior_series_ids: list[str] | None = None, date: str | None = None, sheet: str | None = None, pending_resolution_id: str | None = None, previous_resolution_id: str | None = None) -> dict:
-        """用大模型知识理解用户别称和真实表头的关系。只发送字段目录，不发送整表数据。question描述当前需要识别或执行的完整子任务，保留相关条件；组合分析可先用list_series绑定真实字段，再交analyze_table，不要求此工具表达整套分析。previous_resolution_id只能来自上一轮真实工具结果，系统据此读取完整任务，理解续问、补充和改口。context_sheet及prior_series_ids仅用于候选召回。sheet仅在用户明确限制工作表时填写。返回真实候选列、理由和查询/计算方案。needs_clarification会在网页展示实际待补信息：等用户补充或选择，不能代替用户确认或取数；系统错误不属于业务歧义。resolved返回answer原值/计算和来源；检查是否满足本轮完整需求，必要时组合其他工具，最终解释实际覆盖，不要另行心算。dataset_id可省略，只有一份文件时自动选最新版本；多文件需指定。"""
-        return await run_in_threadpool(resolver.tool_answer,question,dataset_id,context_sheet,prior_series_ids,date,sheet,pending_resolution_id,previous_resolution_id)
+    async def resolve_fields(question: str, dataset_id: str | None = None, context_sheet: str | None = None, prior_series_ids: list[str] | None = None, date: str | None = None, sheet: str | None = None, pending_resolution_id: str | None = None, previous_resolution_id: str | None = None, source_question: str | None = None) -> dict:
+        """用大模型知识理解用户别称和真实表头的关系。只发送字段目录，不发送整表数据。question可描述技术子任务；应用提供source_question时，其真实用户原话和带角色对话是意图与时间依据，question和date仅是父模型技术建议，不得新增用户没要求的统计或时间。web不提供source_question时question就是用户原话。保留相关条件；组合分析可先用list_series绑定真实字段，再交analyze_table，不要求此工具表达整套分析。previous_resolution_id只能来自上一轮真实工具结果，系统据此读取完整任务，理解续问、补充和改口。context_sheet及prior_series_ids仅用于候选召回。sheet仅在用户明确限制工作表时填写。返回真实候选列、理由和查询/计算方案。needs_clarification会在网页展示实际待补信息：等用户补充或选择，不能代替用户确认或取数；系统错误不属于业务歧义。resolved返回answer原值/计算和来源；检查是否满足本轮完整需求，必要时组合其他工具，最终解释实际覆盖，不要另行心算。dataset_id可省略，只有一份文件时自动选最新版本；多文件需指定。"""
+        return await run_in_threadpool(resolver.tool_answer,question,dataset_id,context_sheet,prior_series_ids,date,sheet,pending_resolution_id,previous_resolution_id,source_question)
 
     @mcp.tool()
     async def confirm_fields(resolution_id: str, selections: dict[str,str] | None = None, note: str = '') -> dict:
@@ -125,7 +125,7 @@ def create_app(data_dir: str | Path | None = None):
             result['literal_fields']=matches[:64]
             result['literal_field_count']=len(result['literal_fields'])
             result['literal_fields_truncated']=len(matches)>64 or sum(d['is_latest_for_source'] for d in datasets)>8
-            result['literal_field_notice']='这些是当前问题实际提到的原表表头，仅供发现字段，不执行取数或判断语义。存在同名列时先对照真实表头与公式来源；不得把确有同名表头的价格字段改解释成库存天数，不能随意选择第一列。'
+            result['literal_field_notice']='这些是实际原表表头的字面召回证据，不执行取数或决定语义。模型依据完整问题、上下文和真实来源生成绑定计划；程序核验同名来源的全部实际ID及选择依据，不选择第一列。'
         return result
 
     @mcp.tool()
@@ -161,22 +161,22 @@ def create_app(data_dir: str | Path | None = None):
         """确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
         selected=store.select_dataset(dataset_id)
         from .source_context import verify_selection
-        ambiguity=verify_selection(store,selected,[series_id],source_question)
+        ambiguity=verify_selection(store,selected,[series_id],source_question,model_fn=resolver.model_fn)
         return ambiguity or store.query_series(selected, series_id, start_date, end_date, operation, limit, period)
 
     @mcp.tool()
-    def convert_price(dataset_id: str, price_series_id: str, fx_series_id: str, date: str, target_unit: str = '元/吨', source_question: str | None = None) -> dict:
-        """用同日原价格与美元兑人民币汇率确定性换算，避免模型心算。先list_series选两项准确ID，追问汇率优先同表。输入价格单位必须为美元或美分/磅、公斤、千克、吨；目标支持元/吨(默认)、元/磅、元/公斤、元/千克。date格式YYYY-MM-DD。返回数值、公式及价格/汇率双方原单元格。不同币种方向、未知单位、缺失数据拒绝；不包含税费与通关成本。"""
+    def convert_price(dataset_id: str, price_series_id: str, fx_series_id: str, date: str, target_unit: str = '元/吨', source_question: str | None = None, fx_operation: str = 'multiply') -> dict:
+        """由模型依据完整问题及显式币种方向元数据选择两项真实来源。程序对同日原始价格和汇率确定性计算，不猜标题或默认来源优先级。fx_operation=multiply|divide必须与来源base_currency/quote_currency及evidence_cells一致。先list_series取得真实ID。输入价格单位必须为美元或美分/磅、公斤、千克、吨；目标支持元/吨(默认)、元/磅、元/公斤、元/千克。date格式YYYY-MM-DD。返回数值、公式及价格/汇率双方原单元格。不同币种方向、未知单位、缺失数据拒绝；不包含税费与通关成本。"""
         from .source_context import verify_selection
-        ambiguity=verify_selection(store,dataset_id,[price_series_id,fx_series_id],source_question)
-        return ambiguity or store.convert_price(dataset_id,price_series_id,fx_series_id,date,target_unit)
+        ambiguity=verify_selection(store,dataset_id,[price_series_id,fx_series_id],source_question,model_fn=resolver.model_fn)
+        return ambiguity or store.convert_price(dataset_id,price_series_id,fx_series_id,date,target_unit,fx_operation)
 
     @mcp.tool()
-    def compare_series(dataset_id: str, left_series_id: str, right_series_id: str, date: str, source_question: str | None = None) -> dict:
-        """同日两个同单位指标作差，严格按左减右。额外允许原表同一合约收盘/结算的原始数值比较，但单位未知必须明说。先从list_series取得准确ID，回答附双方原单元格。缺失不补造，其他单位未知/不一致拒绝。"""
+    def compare_series(dataset_id: str, left_series_id: str, right_series_id: str, date: str, source_question: str | None = None, comparison_basis: str = 'same_explicit_unit') -> dict:
+        """同日两个来源作差，严格按左减右。comparison_basis=same_explicit_unit默认需要两侧相同显式单位；raw_values是模型明确提交的原始数值比较计划，保留未知单位和来源，不授权单位换算或推定业务等价。先从list_series取得准确ID，回答附双方原单元格。缺失不补造，其他单位未知/不一致拒绝。"""
         from .source_context import verify_selection
-        ambiguity=verify_selection(store,dataset_id,[left_series_id,right_series_id],source_question)
-        return ambiguity or store.compare_series(dataset_id, left_series_id, right_series_id, date)
+        ambiguity=verify_selection(store,dataset_id,[left_series_id,right_series_id],source_question,model_fn=resolver.model_fn)
+        return ambiguity or store.compare_series(dataset_id, left_series_id, right_series_id, date, comparison_basis)
 
     @mcp.tool()
     async def get_result_evidence(resolution_id: str) -> dict:
@@ -201,7 +201,7 @@ def create_app(data_dir: str | Path | None = None):
         try:
             selected=store.select_dataset(dataset_id)
             from .source_context import verify_selection
-            ambiguity=await run_in_threadpool(verify_selection,store,selected,series_ids,source_question)
+            ambiguity=await run_in_threadpool(verify_selection,store,selected,series_ids,source_question,model_fn=resolver.model_fn)
             if ambiguity:return ambiguity
             return await run_in_threadpool(run_analysis,store,selected,series_ids,sql,start_date,end_date,limit)
         except ValueError as exc:

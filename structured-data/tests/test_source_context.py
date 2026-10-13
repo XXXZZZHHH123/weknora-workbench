@@ -44,46 +44,107 @@ def test_formula_reference_tokens_do_not_follow_external_or_text():
     assert formula_references('=INDIRECT("B3")','本表')==[]
 
 
-@pytest.mark.parametrize('question,expected',[
-    ('20天原料',['C','E','G','I']),('双29的20天原料',['E','I']),
-    ('3128级棉花的20天原料',['C']),('CC Index 3128B的20天原料',['G']),
-    ('CC Index 3128B那套双29棉花的20天原料',['I']),('20天原料，原表C列',['C']),
-])
-def test_model_singleton_cannot_erase_source_ambiguity(duplicate_source,question,expected):
+@pytest.mark.parametrize('question',['20天原料','不选第一套，用另一套','这个字段的滚动值','20天原料，原表C列'])
+def test_singleton_requires_complete_model_binding_for_aliases_and_negation(duplicate_source,question):
     store,dataset=duplicate_source;catalog=store.catalog(dataset)
-    result=protect_duplicate_bindings({'decision':'resolved','fields':[{'role':'v1','candidate_ids':['C']}]},catalog,question)
-    assert result['fields'][0]['candidate_ids']==expected
-    blocked=verify_selection(store,dataset,['C'],question)
-    assert bool(blocked)==(expected!=['C'])
-    if blocked:assert blocked['status']=='needs_clarification' and 'rows' not in blocked
+    proposal={'decision':'resolved','fields':[{'role':'v1','candidate_ids':['C']}]}
+    with pytest.raises(ValueError,match='source_binding'):
+        protect_duplicate_bindings(proposal,catalog,question)
+    binding={'considered_ids':['C','E','G','I'],'selected_ids':['G'],'reason':'模型根据完整问题及真实来源解释，选择第二来源的对应字段'}
+    selected={'decision':'resolved','fields':[{'role':'v1','candidate_ids':['G'],'source_binding':binding}]}
+    assert protect_duplicate_bindings(selected,catalog,question)['fields'][0]['candidate_ids']==['G']
+    assert verify_selection(store,dataset,['G'],question,lambda p:{'decision':'resolved','bindings':[binding]}) is None
+    mismatch=verify_selection(store,dataset,['C'],question,lambda p:{'decision':'resolved','bindings':[binding]})
+    assert mismatch['status']=='plan_mismatch' and 'rows' not in mismatch
 
 
-def test_resolver_does_not_execute_first_duplicate(duplicate_source):
-    store,dataset=duplicate_source
-    resolver=FieldResolver(store,lambda p:{'intent':'lookup','decision':'resolved','fields':[{'role':'v1','label':'原料','candidate_ids':['C']}],'query':{'operation':'rows'}})
-    plan=resolver.resolve(dataset,'20天原料',date='2023-01-01')
-    assert plan['status']=='needs_clarification'
+def test_resolver_repairs_source_plan_in_model_instead_of_fixed_clarification(duplicate_source):
+    store,dataset=duplicate_source;calls=[]
+    def model(payload):
+        calls.append(payload)
+        if len(calls)==1:
+            return {'intent':'lookup','decision':'resolved','fields':[{'role':'v1','label':'滚动输入','candidate_ids':['C']}],'query':{'operation':'rows'}}
+        assert 'source_binding' in payload['repair_instruction']
+        assert {s['series_id'] for group in payload['duplicate_sources'] for s in group}=={'C','E','G','I','D','H'}
+        return {'intent':'lookup','decision':'clarify','question':'模型发现不同输入依赖，请说明使用的那一组来源。',
+            'fields':[{'role':'v1','label':'滚动输入','candidate_ids':['C','E','G','I']}],'query':{'operation':'rows'}}
+    resolver=FieldResolver(store,model)
+    plan=resolver.resolve(dataset,'这个滚动输入是什么？不要选第一组',date='2023-01-01')
+    assert len(calls)==2 and plan['status']=='needs_clarification'
     assert {c['series_id'] for c in plan['fields'][0]['candidates']}=={'C','E','G','I'}
+    assert plan['question'].startswith('模型发现')
     with pytest.raises(ValueError,match='尚未确认'):resolver.execute(plan['resolution_id'])
+    confirmed=resolver.confirm(plan['resolution_id'],{'v1':'G'})
+    assert resolver.execute(confirmed['resolution_id'])['sources']['v1']['rows'][0]['value']==200
 
 
-def test_signed_query_and_sql_cannot_choose_a_duplicate(duplicate_source, monkeypatch):
+def test_direct_source_review_does_not_reuse_question_only_cache(duplicate_source):
+    store,dataset=duplicate_source;calls=[]
+    def model(p):
+        calls.append(p)
+        chosen='C' if len(calls)==1 else 'G'
+        return {'decision':'resolved','bindings':[{'considered_ids':['C','E','G','I'],'selected_ids':[chosen],'reason':'本次模型根据本轮实际上下文选择来源'}]}
+    assert verify_selection(store,dataset,['C'],'还是这个字段',model) is None
+    assert verify_selection(store,dataset,['C'],'还是这个字段',model)['status']=='plan_mismatch'
+    assert len(calls)==2 and all(p['question']=='还是这个字段' for p in calls)
+    assert verify_selection(store,dataset,['C'],None,model)['status']=='error'
+    def unavailable(p):raise ValueError('model timeout')
+    failed=verify_selection(store,dataset,['C'],'滚动字段',unavailable)
+    assert failed['status']=='error' and failed['retryable'] and 'question' not in failed
+
+
+@pytest.mark.parametrize('binding',[
+    {'considered_ids':['C'],'selected_ids':['C'],'reason':'遗漏实际来源'},
+    {'considered_ids':['C','E','G','I'],'selected_ids':['imaginary'],'reason':'虚构ID'},
+    {'considered_ids':['C','E','G','I'],'selected_ids':['C'],'reason':''},
+])
+def test_bad_source_plans_fail_closed_without_querying(duplicate_source,binding):
+    store,dataset=duplicate_source
+    result=verify_selection(store,dataset,['C'],'滚动字段',lambda p:{'decision':'resolved','bindings':[binding]})
+    assert result['status']=='error' and 'rows' not in result
+
+
+def test_model_clarification_can_leave_selection_empty_but_must_cover_all_real_sources(duplicate_source):
+    store,dataset=duplicate_source;calls=[]
+    review={'decision':'clarify','question':'模型发现多个实际依赖，请明确希望使用的来源',
+            'bindings':[{'considered_ids':['C','E','G','I'],'selected_ids':[],
+                         'reason':'完整问题未指定不同来源，尚未选择任意一个字段'}]}
+    def model(payload):calls.append(payload);return review
+    result=verify_selection(store,dataset,['C'],'请解释这个滚动字段',model)
+    assert result['status']=='needs_clarification' and result['question']==review['question']
+    assert result['bindings'][0]['selected_ids']==[] and len(calls)==1
+    assert 'rows' not in result and 'aggregate' not in result
+    invalid=dict(review,decision='resolved')
+    assert verify_selection(store,dataset,['C'],'实际需要明确的选择',lambda p:invalid)['status']=='error'
+    missing_question=dict(review);missing_question.pop('question')
+    assert verify_selection(store,dataset,['C'],'另一次业务问题',lambda p:missing_question)['status']=='error'
+
+
+def test_signed_query_and_sql_use_real_model_source_plan(duplicate_source, monkeypatch):
     from fastapi.testclient import TestClient
     from structured_data.server import create_app
+    from structured_data.field_resolver import FieldResolver
     from test_scoped_service import signed
-    store,dataset=duplicate_source
+    store,dataset=duplicate_source;calls=[]
+    def model(payload):
+        calls.append(payload)
+        assert payload['_source_binding'] and payload['question']=='完整问题和实际上下文'
+        assert payload['source_groups'][0][0]['source_context']['formula_source']
+        return {'decision':'clarify','question':'模型需要确认实际输入依赖',
+                'bindings':[{'considered_ids':['C','E','G','I'],'selected_ids':['C','E','G','I'],'reason':'真实来源依赖不同，完整问题尚未区分'}]}
+    monkeypatch.setattr(FieldResolver,'__init__',lambda self,data: self.__dict__.update(store=data,model_fn=model))
     key=b'actual-source-selection-guard-1234567890'
     path=store.root/'read-key';path.write_bytes(key)
     monkeypatch.setenv('STRUCTURED_SERVICE_TOKEN_FILE',str(path));monkeypatch.setenv('STRUCTURED_TENANT_ID','10000')
     with TestClient(create_app(store.root)) as client:
         for operation,args in [('query_series',{'series_id':'C'}),('analyze_table',{'series_ids':['C'],'sql':'SELECT sum(value) FROM data'}),('compare_series',{'left_series_id':'C','right_series_id':'G','date':'2023-01-01'}),('convert_price',{'price_series_id':'C','fx_series_id':'B','date':'2023-01-01'})]:
-            raw,headers=signed(key,body={'operation':operation,'arguments':{'dataset_id':dataset,'source_question':'20天原料',**args}})
+            raw,headers=signed(key,body={'operation':operation,'arguments':{'dataset_id':dataset,'source_question':'完整问题和实际上下文',**args}})
             response=client.post('/api/tools/read',content=raw,headers=headers)
             assert response.status_code==200,response.text
             assert response.json()['status']=='needs_clarification'
+            assert response.json()['question']=='模型需要确认实际输入依赖'
             assert 'rows' not in response.json() and 'aggregate' not in response.json()
-        raw,headers=signed(key,body={'operation':'query_series','arguments':{'dataset_id':dataset,'series_id':'G','source_question':'CC Index 3128B的20天原料'}})
-        assert client.post('/api/tools/read',content=raw,headers=headers).json()['rows'][0]['value']==200
+    assert len(calls)==4
 
 
 def test_merged_header_anchor_and_scope_cache(duplicate_source,tmp_path):

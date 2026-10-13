@@ -52,9 +52,9 @@ class ImportManager:
     def list(self, *, include_samples=False):
         from .dataset_kind import dataset_kind
         records = [json.loads(p.read_text()) for p in self.directory.glob('*/review.json')]
-        return sorted([{'dataset_kind': dataset_kind(d), **{k: d.get(k) for k in
+        return sorted([{'dataset_kind': dataset_kind(d, self.root), **{k: d.get(k) for k in
                        ('import_id', 'source_file', 'updated_at', 'dataset_id', 'summary')}}
-                       for d in records if include_samples or dataset_kind(d) != 'sample'],
+                       for d in records if include_samples or dataset_kind(d, self.root) != 'sample'],
                       key=lambda d: d['updated_at'], reverse=True)
 
     def sheet(self, import_id, name):
@@ -158,7 +158,7 @@ class ImportManager:
         return json.dumps(clean(mapping), ensure_ascii=False, sort_keys=True)
 
     def _publish(self, doc, changed_sheet=None):
-        from .profiles.cotton import parse_workbook, SHEET_NAMES
+        from .profiles.reviewed import parse_workbook, reviewed_mapping
         from .generic_parser import parse_mapped_workbook, validate_mapping
         from .snapshots import publish_parts
         path = self.source_path(doc)
@@ -184,8 +184,9 @@ class ImportManager:
                     sheet.update({k: prior[k] for k in ('status', 'reasons')})
                     if base_sheets[sheet['name']].get('mapping'):
                         sheet['mapping'] = base_sheets[sheet['name']]['mapping']
-        legacy_names = set(SHEET_NAMES)
-        has_legacy = legacy_names.issubset({s['name'] for s in doc['sheets']})
+        legacy = reviewed_mapping(path)
+        legacy_names = {s['name'] for s in legacy['sheets']} if legacy else set()
+        has_legacy = bool(legacy_names) and legacy_names.issubset({s['name'] for s in doc['sheets']})
         reuse_legacy = has_legacy and legacy_names.issubset(base_sheets)
         changed = [s for s in doc['sheets'] if s['status'] in READY and
                    (s['name'] == changed_sheet if changed_sheet else
@@ -211,7 +212,7 @@ class ImportManager:
                         for sheet in doc['sheets']:
                             if sheet['name'] in legacy_names:
                                 sheet['status'] = 'trusted_existing'
-                                sheet['reasons'] = ['沿用已完成原文件核对的三表专用规则；仅支持原先明确的区域。']
+                                sheet['reasons'] = ['沿用绑定此原文件指纹的已核对映射；仅导入已核对的区域。']
                         yield parsed
             for sheet in changed:
                 if sheet['status'] == 'trusted_existing':

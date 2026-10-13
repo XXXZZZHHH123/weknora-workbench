@@ -83,7 +83,7 @@ class DataStore:
             if not re.fullmatch(r"[0-9a-f]{24}", path.parent.name):
                 continue
             doc = json.loads(path.read_text())
-            kind = dataset_kind(doc)
+            kind = dataset_kind(doc, self.root)
             if kind == 'sample' and not include_samples:
                 continue
             items.append({'dataset_kind': kind, 'changed_sheets': doc.get('changed_sheets', []), **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}})
@@ -104,7 +104,7 @@ class DataStore:
         return describe_history(items)
 
     def import_file(self, path: str | Path) -> dict:
-        from .profiles.cotton import parse_workbook
+        from .profiles.reviewed import parse_workbook
 
         started = time.monotonic()
         parsed = parse_workbook(Path(path))
@@ -227,7 +227,7 @@ class DataStore:
             count,equal,first,last=con.execute("SELECT count(*),count(*) FILTER(WHERE a.value=b.value),min(a.date),max(a.date) FROM observations a JOIN observations b ON a.date=b.date WHERE a.series_id=? AND b.series_id=? AND a.value IS NOT NULL AND b.value IS NOT NULL",[left_id,right_id]).fetchone()
         return {'common_valid_dates':count,'exactly_equal_values':equal,'first_date':str(first) if first else None,'last_date':str(last) if last else None,'use':'辅助比较来源；数值相同不自动授权选择或合并不同业务定义'}
 
-    def convert_price(self, dataset_id, price_series_id, fx_series_id, date, target_unit='元/吨'):
+    def convert_price(self, dataset_id, price_series_id, fx_series_id, date, target_unit='元/吨', fx_operation='multiply'):
         """Source-bound decimal conversion; never guess rate direction or units."""
         from decimal import Decimal, ROUND_HALF_UP
         from .catalog_search import currency_pair
@@ -235,8 +235,9 @@ class DataStore:
         fx=self.query_series(dataset_id,fx_series_id,date,date)
         if not date or price['series'].get('date_mode','date') in ('none','period') or fx['series'].get('date_mode','date') in ('none','period'):
             raise ValueError('换算必须指定两项指标共有的具体日期')
-        if currency_pair(fx['series'])!=('USD','CNY'):
-            raise ValueError('当前只支持原指标明确为美元兑人民币的方向；不猜测或倒置汇率')
+        direction = currency_pair(fx['series'])
+        if (fx_operation, direction) not in {('multiply', ('USD', 'CNY')), ('divide', ('CNY', 'USD'))}:
+            raise ValueError('汇率方向必须来自已核对的 base_currency/quote_currency 及原表来源；计划的乘除方向必须与其一致')
         weight={'磅':Decimal('0.45359237'),'公斤':Decimal('1'),'千克':Decimal('1'),'吨':Decimal('1000')}
         units={f'{currency}/{mass}':(factor,kg) for currency,factor in [('美元',Decimal('1')),('美分',Decimal('0.01'))] for mass,kg in weight.items()}
         source_unit=price['series'].get('unit')
@@ -247,12 +248,14 @@ class DataStore:
         p=Decimal(str(price['rows'][0]['value']));rate=Decimal(str(fx['rows'][0]['value']))
         if rate<=0:raise ValueError('汇率必须为正数')
         currency_factor,source_kg=units[source_unit];target_kg=weight[target_unit.split('/')[1]]
-        value=p*currency_factor*rate*target_kg/source_kg
+        applied_rate = rate if fx_operation == 'multiply' else Decimal(1) / rate
+        value=p*currency_factor*applied_rate*target_kg/source_kg
         return {'date':date,'value':float(value),'value_decimal':str(value),
                 'rounded_value':str(value.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)),
-                'unit':target_unit,'formula':f'{p} × {currency_factor} × {rate} × {target_kg} ÷ {source_kg}',
+                'unit':target_unit,'fx_operation':fx_operation,'exchange_rate_direction':direction,
+                'formula':f'{p} × {currency_factor} '+('×' if fx_operation == 'multiply' else '÷')+f' {rate} × {target_kg} ÷ {source_kg}',
                 'price':price,'exchange_rate':fx,
-                'notice':'纯币种及重量单位换算，不含关税、增值税、运费及其他通关成本。汇率方向来自原指标名称；公式源数据使用Excel保存结果，未重算。'}
+                'notice':'纯币种及重量单位换算，不含关税、增值税、运费及其他通关成本。汇率方向来自已核对的来源元数据；公式源数据使用Excel保存结果，未重算。'}
 
     def _series(self, dataset_id, series_id):
         if isinstance(series_id, str) and series_id.startswith('chart_'):
@@ -419,13 +422,16 @@ class DataStore:
         if operation in {'min','max'}:
             warnings.append('极值日期只能使用extremum_rows中的date；actual_first_date/actual_last_date是查询范围边界，不是极值日期。并列极值均保留，超出limit时标记截断。')
         warnings.append("公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式。")
-        if series["sheet"] == "郑棉仓单":
-            warnings.append("源工作簿包含 Wind ShowBlank==0 配置，已有零值可能含上游缺失填充，无法逆向区分。")
+        from .streaming import read_json_array
+        for issue in read_json_array(self._path(dataset_id) / 'issues.json'):
+            if issue.get('sheet') == series['sheet'] and issue.get('code') == 'source_zero_fill':
+                warnings.append(issue['message'])
+                break
         warnings.append("missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。")
         filters = {"series_id": series_id, "start_date": start_date, "end_date": end_date, "operation": operation, "period":period, 'value_filters':value_filters or [], 'last_n':last_n,'top_n':top_n,'order':order}
         return {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "valid_first_date":str(valid_first) if valid_first else None,"valid_last_date":str(valid_last) if valid_last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source_semantics":{"date_representation":series.get('date_mode','date'),"statistical_calendar":series.get('statistical_calendar'),"aggregation_rule":series.get('aggregation_rule'),"notice":"未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"}, "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
 
-    def compare_series(self, dataset_id: str, left_series_id: str, right_series_id: str, date: str) -> dict:
+    def compare_series(self, dataset_id: str, left_series_id: str, right_series_id: str, date: str, comparison_basis: str = 'same_explicit_unit') -> dict:
         if not self._date(date):
             raise ValueError("必须提供比较日期。")
         left = self.query_series(dataset_id, left_series_id, date, date)
@@ -433,13 +439,12 @@ class DataStore:
         if left["status"] != "ok" or right["status"] != "ok":
             return {"status": "no_data", "difference": None, "left": left, "right": right}
         lu, ru = left["series"].get("unit"), right["series"].get("unit")
-        ls, rs = left["series"], right["series"]
-        raw_price_pair = (lu is None and ru is None and ls["sheet"] == rs["sheet"] == "郑棉期货"
-                          and ls.get("dimensions", {}).get("contract") == rs.get("dimensions", {}).get("contract")
-                          and {ls.get("dimensions", {}).get("block"), rs.get("dimensions", {}).get("block")} == {"close", "settle"})
-        if not raw_price_pair and (not lu or not ru or lu != ru):
-            raise ValueError("两个指标单位不明确或不一致，不能自动计算差值。")
-        return {"status": "ok", "definition": "left_minus_right", "difference": left["rows"][0]["value"]-right["rows"][0]["value"], "unit": lu,
-                "comparison_basis": "same_contract_raw_price_values_unit_unconfirmed" if raw_price_pair else "same_explicit_unit",
-                "warnings": ["仅比较原表同一合约收盘/结算的原始数值；单位尚未确认，未做单位换算，不得补造单位。"] if raw_price_pair else [],
+        if comparison_basis not in ('same_explicit_unit', 'raw_values'):
+            raise ValueError('比较计划必须声明 same_explicit_unit 或 raw_values')
+        raw_values = comparison_basis == 'raw_values'
+        if (lu and ru and lu != ru) or (not raw_values and (not lu or not ru)):
+            raise ValueError("两个指标单位不明确或不一致，不能自动计算差值；未确认单位须由计划明确声明原始数值比较。")
+        return {"status": "ok", "definition": "left_minus_right", "difference": left["rows"][0]["value"]-right["rows"][0]["value"], "unit": lu if lu == ru else None,
+                "comparison_basis": comparison_basis,
+                "warnings": ["按计划仅比较原表保存的数值；未确认单位不补造、不换算，结果不构成已核验的业务口径。"] if raw_values else [],
                 "left": left, "right": right}

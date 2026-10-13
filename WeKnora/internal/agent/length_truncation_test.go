@@ -258,7 +258,7 @@ func TestFinishStalledTurn_EmitsAnswerThatNeverStreamed(t *testing.T) {
 			recorder.attach(engine.eventBus)
 			state := &types.AgentState{}
 
-			engine.finishStalledTurn(context.Background(), state, "sess-1", tc.response, tc.truncated)
+			engine.finishStalledTurn(context.Background(), state, "sess-1", tc.response, tc.truncated, "question", nil)
 
 			assert.True(t, state.IsComplete)
 			assert.Equal(t, tc.wantAnswer, state.FinalAnswer)
@@ -286,7 +286,7 @@ func TestFinishStalledTurn_ReusesTheLiveAnswerStream(t *testing.T) {
 		Content:        "already on screen",
 		AnswerStreamed: true,
 		AnswerEventID:  "answer-live",
-	}, true)
+	}, true, "question", nil)
 
 	emitted := recorder.snapshot()
 	require.Len(t, emitted, 1, "re-emitting would render the answer twice")
@@ -370,7 +370,7 @@ func TestFinishStalledTurn_IgnoresAToolCallPreamble(t *testing.T) {
 			ID: "c1", Type: "function",
 			Function: types.FunctionCall{Name: "wiki_read_page", Arguments: `{"slugs":["a`},
 		}},
-	}, true)
+	}, true, "question", nil)
 
 	assert.Equal(t, truncatedAnswerFallback, state.FinalAnswer,
 		"a preamble must not become the answer")

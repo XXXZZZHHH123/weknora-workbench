@@ -47,12 +47,12 @@ def test_reference_syntax_is_local_and_bounded():
         assert reference(text) is None
 
 
-def test_real_objects_and_date_guard(chart_store):
+def test_real_objects_preserve_literal_legends_and_actual_dates(chart_store):
     store,ds,path=chart_store
     assert len(extract(path))==1
     idx=store.chart_index(ds); chart=idx['charts'][0]
     assert chart['title']=='现货销售价格' and chart['anchor_row']==13
-    assert [c['status'] for c in chart['curves']]==['linked','needs_review','pending_source','unsupported','unsupported']
+    assert [c['status'] for c in chart['curves']]==['linked','linked','pending_source','unsupported','unsupported']
     assert chart['status']=='partial'
     assert store.chart_index(ds)==idx
 
@@ -62,18 +62,24 @@ def test_query_uses_source_not_cache_and_never_leaks_outside_chart(chart_store):
     q=store.query_series(ds,view['series_id'],'2023-09-07','2023-09-07')
     assert q['rows'][0]['value']==10 and q['rows'][0]['source_cell']=='B2'
     assert q['rows'][0]['date_cell']=='A2' and q['source']['sheet']=='源 表'
-    assert store.query_series(ds,view['series_id'],operation='sum')['aggregate']==30
-    assert store.query_series(ds,view['series_id'],'2024-01-01','2024-01-01')['status']=='no_data'
-    assert store.query_series(ds,view['series_id'],operation='latest')['rows'][0]['value']==20
-    assert any('2022' in w for w in q['warnings'])
+    assert store.query_series(ds,view['series_id'],operation='sum')['aggregate']==129
+    assert store.query_series(ds,view['series_id'],'2024-01-01','2024-01-01')['rows'][0]['value']==99
+    assert store.query_series(ds,view['series_id'],operation='latest')['rows'][0]['value']==99
+    assert view['chart_legends']==['2023','2022']
+    assert view['chart_curve_sources'][1]['label']=='2022'
+    assert view['chart_curve_sources'][1]['first_date']=='2024-01-01'
+    assert view['chart_curve_sources'][1]['reference']['start_row']==4
+    assert store.chart_index(ds)['charts'][0]['curves'][1]['first_date']=='2024-01-01'
+    assert all('不自动当作年份' in c['date_notice'] for c in store.chart_index(ds)['charts'][0]['curves'][:2])
 
 
 def test_chart_scope_resolves_to_evidenced_source_and_keeps_other_scope(chart_store):
     store,ds,_=chart_store
     def model(payload):
         cols=[c for g in payload['catalog'] for c in g['columns']]
-        assert len(cols)==1 and cols[0]['name']=='现货销售价格'
-        return {'intent':'lookup','decision':'resolved','fields':[{'role':'v1','label':'价格','candidate_ids':[cols[0]['id']]}]}
+        assert len(cols)==3 and all(c.get('chart_sheet')=='利润图' for c in cols)
+        chosen=next(c for c in cols if c['name']=='现货销售价格')
+        return {'intent':'lookup','decision':'resolved','fields':[{'role':'v1','label':'价格','candidate_ids':[chosen['id']]}]}
     result=FieldResolver(store,model).answer('利润图中2023/9/7现货销售价格',dataset_id=ds,sheet='利润图',date='2023-09-07')
     assert result['answer']['sources']['v1']['rows'][0]['value']==10
     assert store.catalog(ds,sheet='不存在',question='利润图')==[]
@@ -106,5 +112,8 @@ def test_each_curve_has_independent_range(chart_store,monkeypatch):
     assert store.query_series(ds,curves[1]['series_id'],operation='sum')['aggregate']==99
     assert store.query_series(ds,curves[0]['series_id'],'2024-01-01','2024-01-01')['status']=='no_data'
     scoped=store.catalog(ds,sheet='利润图',question='查询1901曲线')
-    # Numeric legend selection should work next to Chinese prose as well.
-    assert len(scoped)==1 and scoped[0]['chart_legends']==['1901']
+    # Literal labels remain evidence for the model; the question cannot hide
+    # the other curve or convert either code into a calendar year.
+    assert len(scoped)==3
+    assert {tuple(v['chart_legends']) for v in scoped}=={('1901','2001'),('1901',),('2001',)}
+    assert store.catalog(ds,sheet='利润图',question='不要1901曲线，要其他来源')==scoped

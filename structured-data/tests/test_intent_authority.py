@@ -76,7 +76,7 @@ def test_directory_source_scope_is_model_selected_from_complete_summary(tmp_path
 
 def test_conversational_references_resolved_before_calendar_and_field_binding(tmp_path,monkeypatch):
     old=dict(kind='range',start_date='2023-09-01',end_date='2023-09-30',dates=[],period=None,evidence=['九月'],explanation='已讨论期间')
-    semantic=task();semantic['time_scope']=dict(old,evidence=['2023年9月'])
+    semantic=task();semantic['time_scope']=dict(old,evidence=['这个月的统计','九月'])
     bound=deepcopy(semantic)
     for f in bound['fields']:f['candidate_ids']=['p']
     calls=configure(tmp_path,monkeypatch,[{'mode':'continue','resolved_question':'讨论中的2023年9月统计'},semantic,bound])
@@ -90,10 +90,10 @@ def test_conversational_references_resolved_before_calendar_and_field_binding(tm
 
 
 def test_ui_confirmation_metadata_is_not_human_time_evidence(tmp_path,monkeypatch):
-    semantic=task();semantic['time_scope']=dict(kind='range',start_date='2022-01-01',end_date='2022-01-31',evidence=['2022年1月'],explanation='所问的一月')
+    semantic=task();semantic['time_scope']=dict(kind='range',start_date='2022-01-01',end_date='2022-01-31',evidence=['整个一月','2022年的'],explanation='所问的一月')
     bound=deepcopy(semantic)
     for f in bound['fields']:f['candidate_ids']=['p']
     configure(tmp_path,monkeypatch,[semantic,bound])
-    out=ask_model({'question':'整个一月\n已确认字段：{"sheet":"预测2028"}\n用户补充：2022年的','catalog':[]},tmp_path)
-    assert out['time_scope']['evidence']==['整个一月\n用户补充：2022年的']
+    out=ask_model({'question':'整个一月\n用户补充：2022年的','catalog':[], 'confirmed_sources':[{'series_id':'p','sheet':'预测2028'}]},tmp_path)
+    assert out['time_scope']['evidence']==['整个一月','2022年的']
     assert out['time_scope']['start_date']=='2022-01-01'

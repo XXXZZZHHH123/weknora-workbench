@@ -122,5 +122,5 @@ func TestExecuteLoop_AllEmptyResponses_FallbackIsSoleTerminalAnswer(t *testing.T
 
 	done, content := recorder.snapshot()
 	assert.Equal(t, 1, done, "retries exhausted must still emit exactly one terminal answer event")
-	assert.Contains(t, content, "unable to generate a response", "the terminal answer must be the fallback text")
+	assert.Equal(t, incompleteAnswerFallback, content, "the terminal answer must be the current bounded-repair fallback text")
 }

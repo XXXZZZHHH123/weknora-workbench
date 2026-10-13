@@ -118,13 +118,16 @@ def test_stale_review_pointer_preserves_newer_published_tables(tmp_path):
         '已导入', '新增表', '另一张待核对表'}
 
 
-def test_known_acceptance_files_are_excluded_from_default_query_and_review_lists(tmp_path):
+def test_explicit_acceptance_sources_are_excluded_from_default_query_and_review_lists(tmp_path):
     manager = ImportManager(tmp_path / 'data')
     business = manager.ingest(source_file(tmp_path, '设备验收业务.xlsx'))
     path = tmp_path / '中哲_范围核对验收_非行情.xlsx'
     wb = Workbook(); ws = wb.active
     ws.append(['日期', '验收值']); ws.append([datetime(2024, 1, 1), 1]); ws.append([datetime(2024, 1, 2), 2]); wb.save(path)
     sample = manager.ingest(path)
+    import json, hashlib
+    (manager.root / 'source-classifications.json').write_text(json.dumps({
+        hashlib.sha256(path.read_bytes()).hexdigest(): {'dataset_kind':'sample'}}))
     assert manager.store.select_dataset() == business['dataset_id']
     assert [d['source_file'] for d in manager.store.list_datasets()] == ['设备验收业务.xlsx']
     assert len(manager.store.list_datasets(include_samples=True)) == 2

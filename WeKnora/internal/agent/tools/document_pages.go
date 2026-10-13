@@ -145,7 +145,7 @@ func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *type
 	data["page_chunks"] = pageTotal
 	data["offset"] = offset
 	data["page_complete"] = offset == 0 && len(selected) == pageTotal
-	data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": knowledge.ID, "page": requested, "has_visual_evidence": visual}
+	data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": knowledge.ID, "page": requested, "has_visual_evidence": visual, "plan_validated": t.documentConstraint != nil}
 	if next := offset + len(selected); next < pageTotal {
 		data["next_offset"] = next
 		data["truncated"] = true
@@ -154,7 +154,7 @@ func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *type
 		row["page"] = requested
 	}
 	output := fmt.Sprintf("指定文档《%s》第 %d 页（真实页码，非分块序号）。只使用本页证据；图表数值为估读时须说明。\n", knowledge.Title, requested) +
-		"保留原图图例的准确标签。可确认的期货YYMM合约代码仅表示合约年份和交割月份，不能据此编造跨年棉花年度、财年或统计年度。" +
+		"保留原图标签与明确的原文定义。业务年度、日期和统计口径必须有实际来源依据，不能从标签外形猜测。" +
 		"各曲线自身绘制的最右端可能属于不同日期；比较这些端点时必须说各自端点，不能称为同日或同期的准确排名。" +
 		"分别核对图例总条数和排除所问曲线后的其他条数；没有读到的年份或时点不补编。\n" + t.buildOutput(knowledge, total, rows, "")
 	return &types.ToolResult{Success: true, Output: output, Data: data}, nil

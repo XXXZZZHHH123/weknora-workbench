@@ -81,3 +81,26 @@ func TestModelDocumentOnlyScopeNeverInventsPhysicalPageZero(t *testing.T) {
 		})
 	}
 }
+
+func TestModelDocumentPlanningUsesActualMetadataAndDecodesNestedSourceHandles(t *testing.T) {
+	r := NewRegistry(true)
+	result := &types.ToolResult{Success: true, Data: map[string]any{"display_type": "document_info", "requires_source_scope": true,
+		"notice":    "Submit an actual source_scope plan before reading content.",
+		"documents": []map[string]any{{"knowledge_id": "real-document", "title": "Actual title", "file_name": "actual20240310.pptx", "metadata": map[string]any{"report_date": "2024-03-10"}}}}}
+	output := r.ModelToolResultForTool("search_knowledge", result)
+	require.Contains(t, output, "actual20240310.pptx")
+	require.Contains(t, output, "2024-03-10")
+	require.Contains(t, output, "source_scope")
+	require.NotContains(t, output, "<chunk")
+	require.NotContains(t, output, "real-document")
+	for _, tool := range []string{"read_document", "search_knowledge", "bind_document_scope"} {
+		args := `{"source_scope":{"selection_reason":"full conversation","sources":[{"knowledge_id":"d1","expected_file_name":"actual20240310.pptx"}]}}`
+		if tool == "bind_document_scope" {
+			args = `{"selection_reason":"full conversation","sources":[{"knowledge_id":"d1","expected_file_name":"actual20240310.pptx"}]}`
+		}
+		calls := []types.LLMToolCall{{Function: types.FunctionCall{Name: tool, Arguments: args}}}
+		r.DecodeToolCalls(calls)
+		require.Contains(t, calls[0].Function.Arguments, "real-document", tool)
+		require.Contains(t, calls[0].Function.Arguments, "actual20240310.pptx", "source metadata must stay literal")
+	}
+}

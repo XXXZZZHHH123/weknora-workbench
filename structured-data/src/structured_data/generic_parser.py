@@ -118,6 +118,10 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                 _column(mo.group(1),sheet_scan['columns'])
                 if int(mo.group(2)) not in headers:raise ValueError('表头来源位置不在声明的表头行内')
             c['header_cells']=cells
+            if c.get('exchange_rate') is not None:
+                from .catalog_search import currency_pair
+                if currency_pair(c) is None:
+                    raise ValueError('汇率元数据须含不同的三字母 base_currency/quote_currency 和真实表头 evidence_cells')
     from .mapping_identity import distinguish_source_columns
     distinguish_source_columns(m)
     return m
@@ -175,8 +179,8 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
     try:
         for m in checked:
             name=m['sheet'];ws=vw[name];fs=fw[name]
-            from .regions import auction_profile, validate_region_mapping
-            profile=auction_profile(ws)
+            from .regions import reviewed_regions, validate_region_mapping
+            profile=reviewed_regions(path,ws)
             validate_region_mapping(m,profile)
             counts=Counter();firsts={};formula_count=0;obs_start=len(result['observations']);series_start=len(result['series'])
             rowblocks=[(bi,b) for bi,b in enumerate(m['blocks']) if b.get('layout')!='matrix']
@@ -221,6 +225,7 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                         'header_cells':c['header_cells'],'date_mode':b['date_mode'],
                         'region_name':b.get('name',f'区块{bi+1}'),'block_index':bi,
                         'description':f"{name} / {c['metric']}；{date_note}；"+('单位：'+c['unit'] if c.get('unit') else '单位待确认')}
+                    if c.get('exchange_rate'):item['exchange_rate']=deepcopy(c['exchange_rate'])
                     if category is not None:item['category_provenance']={}
                     series_map[key]=item;seen[sid]=set();result['series'].append(item)
                 return series_map[key]

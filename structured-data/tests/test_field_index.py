@@ -38,7 +38,7 @@ def test_index_rebuilds_for_new_metadata_and_ignores_observation_availability(tm
     assert updated.search(['新增字段'])[0][0]['series_id']=='x'
 
 
-def test_expansion_searches_alias_without_full_catalogue_or_hardcoded_pair(catalogue):
+def test_alias_field_binding_sees_full_model_catalogue_without_hardcoded_pair(catalogue):
     store,ds=catalogue;path=store._path(ds)/'series.json'
     data=json.loads(path.read_text())
     data.extend(dict(series_id=f'noise-{i}',metric=f'无关销售{i}',sheet='别的表') for i in range(80))
@@ -48,19 +48,19 @@ def test_expansion_searches_alias_without_full_catalogue_or_hardcoded_pair(catal
         return {'search_terms':['欧元兑人民币']}
     def model(p):
         calls.append(p)
-        assert sum(len(g['columns']) for g in p['catalog'])<24
+        assert sum(len(g['columns']) for g in p['catalog'])==86
         return proposal([['eur']])
     result=FieldResolver(store,model,expand).answer('2023/9/7欧币汇价',dataset_id=ds,date='2023-09-07')
     assert result['answer']['sources']['v1']['series']['series_id']=='eur'
     assert not result['retrieval']['full_catalogue_fallback']
 
 
-def test_planner_cannot_choose_real_but_not_retrieved_id(catalogue):
+def test_planner_cannot_choose_nonexistent_id_from_complete_model_catalogue(catalogue):
     store,ds=catalogue;path=store._path(ds)/'series.json'
     data=json.loads(path.read_text())
     data.extend(dict(series_id=f'noise-{i}',metric=f'独立库存{i}',sheet='库存表') for i in range(80))
     path.write_text(json.dumps(data))
-    resolver=FieldResolver(store,lambda p:proposal([['noise-0']]))
+    resolver=FieldResolver(store,lambda p:proposal([['not-imported-id']]))
     with pytest.raises(ValueError,match='实际候选目录'):
         resolver.resolve(ds,'2023/9/7美国 EMOT M 1-1/8趋势')
 

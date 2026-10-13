@@ -82,13 +82,14 @@ var readDocumentTool = BaseTool{
 
 // ReadDocumentInput defines the input parameters for read_document.
 type ReadDocumentInput struct {
-	ID      string `json:"id"`
-	Offset  int    `json:"offset,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
-	Query   string `json:"query,omitempty"`
-	Regex   bool   `json:"regex,omitempty"`
-	Context int    `json:"context,omitempty"`
-	Page    int    `json:"page,omitempty"`
+	ID          string             `json:"id"`
+	Offset      int                `json:"offset,omitempty"`
+	Limit       int                `json:"limit,omitempty"`
+	Query       string             `json:"query,omitempty"`
+	Regex       bool               `json:"regex,omitempty"`
+	Context     int                `json:"context,omitempty"`
+	Page        int                `json:"page,omitempty"`
+	SourceScope *DocumentScopePlan `json:"source_scope,omitempty"`
 }
 
 // ReadDocumentTool reads document metadata and chunks by page, by chunk
@@ -113,7 +114,7 @@ func NewReadDocumentTool(
 	searchTargets types.SearchTargets,
 ) *ReadDocumentTool {
 	return &ReadDocumentTool{
-		BaseTool:         readDocumentTool,
+		BaseTool:         withDocumentScopeParameter(readDocumentTool),
 		knowledgeService: knowledgeService,
 		chunkService:     chunkService,
 		searchTargets:    searchTargets,
@@ -171,19 +172,24 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	if documentIsRetired(knowledge) {
 		return &types.ToolResult{Success: false, Error: "指定文档已删除、正在删除或已归档，不能作为查询来源"}, nil
 	}
+	if input.SourceScope != nil {
+		if t.documentConstraint == nil {
+			t.documentConstraint = NewDocumentScopeState()
+		}
+		if _, err := t.documentConstraint.bind(ctx, *input.SourceScope, t.knowledgeService, t.searchTargets); err != nil {
+			return &types.ToolResult{Success: false, Error: err.Error()}, nil
+		}
+	}
 	if constraint := t.documentConstraint; constraint != nil {
-		requested, err := constraint.resolve(ctx, t.knowledgeService, t.searchTargets)
+		selected, err := constraint.selection(knowledge.ID)
 		if err != nil {
 			return &types.ToolResult{Success: false, Error: err.Error()}, nil
 		}
-		if requested.ID != knowledge.ID {
-			return &types.ToolResult{Success: false, Error: "当前问题指定了另一份报告，不能用本文件的同名图替代；请读取指定报告"}, nil
-		}
-		if constraint.Page > 0 {
-			if input.Page > 0 && input.Page != constraint.Page {
+		if selected.Page > 0 {
+			if input.Page > 0 && input.Page != selected.Page {
 				return &types.ToolResult{Success: false, Error: "当前问题指定了不同页码，不能用其他页替代"}, nil
 			}
-			input.Page = constraint.Page
+			input.Page = selected.Page
 		}
 	}
 	if input.Page < 0 {
@@ -224,7 +230,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 		result, err = t.readPage(ctx, knowledge, offset, limit)
 	}
 	if t.documentConstraint != nil && result != nil && result.Success && result.Data != nil {
-		result.Data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": knowledge.ID}
+		result.Data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": knowledge.ID, "plan_validated": true}
 	}
 	return result, err
 }

@@ -66,7 +66,9 @@ def test_incomplete_calculation_accepts_choice_and_replans_without_premature_exe
     def model(payload):
         calls.append(payload)
         if len(calls)==1:return proposal([['price','usd-price']],'calculation',decision='clarify')
-        assert '用户已确认字段' in payload['question'] and 'usd-price' in payload['question']
+        assert payload['question']=='价格换算'
+        assert [source['series_id'] for source in payload['confirmed_sources']]==['usd-price']
+        assert payload['confirmation_resolution_id']
         return dict(proposal([['usd-price']],'calculation',decision='clarify'),clarification={'missing_input':'unit','reason':'需要计量单位才能换算'})
     resolver=FieldResolver(store,model);plan=resolver.resolve(ds,'价格换算',date='2023-09-07')
     assert plan['requires_note']
@@ -133,19 +135,19 @@ def test_model_date_slashes_are_normalized(catalogue):
     assert result['answer']['date']=='2023-09-07'
 
 
-def test_large_catalogue_expands_missing_factor_without_full_dump(catalogue):
+def test_large_catalogue_is_complete_model_context_before_field_binding(catalogue):
     store,ds=catalogue;path=store._path(ds)/'series.json'
     data=json.loads(path.read_text())
     data.extend(dict(series_id=f'extra-{i}',sheet='其他表',metric=f'无关指标{i}',unit='吨') for i in range(101))
     path.write_text(json.dumps(data));calls=[]
     def model(payload):
         calls.append(payload)
-        if len(calls)==1:return proposal([['price'],[]],'calculation',decision='clarify')
-        assert sum(len(s['columns']) for s in payload['catalog'])<24
+        assert sum(len(s['columns']) for s in payload['catalog'])==107
         assert any(s['sheet']=='另一张表' for s in payload['catalog'])
         return proposal([['price'],['fx-context']],'calculation','v1*0.01*v2','元/磅')
     plan=FieldResolver(store,model,lambda p:{'search_terms':['美元兑人民币']}).answer('2023年9月7日美国 EMOT M 1-1/8换算',dataset_id=ds,date='2023-09-07')
-    assert len(calls)==2 and plan['answer']['value_decimal']=='7.3065145'
+    assert len(calls)==1 and plan['answer']['value_decimal']=='7.3065145'
+    assert plan['retrieval']['full_catalogue_checked']
     assert not plan['retrieval']['full_catalogue_fallback']
 
 
@@ -174,6 +176,31 @@ def test_model_failure_returns_feedback_for_agent_recovery(catalogue):
     result=FieldResolver(store,fail).tool_answer('价格')
     assert result['retryable'] is True and result['max_retries']==1
     assert result['message']=='模型服务暂不可用' and 'answer' not in result
+
+
+def test_parent_subtask_is_separate_from_trusted_user_question_and_source_dates(catalogue,monkeypatch):
+    store,ds=catalogue;calls=[]
+    monkeypatch.setattr(store,'query_series',lambda *args,**kw:pytest.fail('A technical latest suggestion cannot change this metadata task into numeric retrieval'))
+    def model(payload):
+        calls.append(payload)
+        assert payload['question']=='请解释这个字段的定义'
+        assert payload['model_subtask']=='查询字段的最新有效值'
+        assert payload['date'] is None and payload['model_subtask_date']=='2031-01-02'
+        assert payload['source_conversation'][1]['role']=='assistant'
+        return {'intent':'metadata','decision':'resolved','fields':[], 'metadata':{'series_ids':['price']}}
+    resolver=FieldResolver(store,model)
+    context={'current_user_question':'请解释这个字段的定义',
+             'recent_conversation':[{'role':'user','content':'请先看这个文件'},
+                                    {'role':'assistant','content':'来源中显示2031年1月2日'}]}
+    plan=resolver.answer('查询字段的最新有效值',dataset_id=ds,date='2031-01-02',source_question=json.dumps(context,ensure_ascii=False))
+    assert plan['intent']=='metadata' and plan['original_question']==context['current_user_question']
+    assert plan['model_subtask']=='查询字段的最新有效值'
+    assert plan['user_messages']==['请先看这个文件','请解释这个字段的定义']
+    assert '2031' not in '\n'.join(plan['user_messages'])
+    before=len(calls)
+    context['recent_conversation'][0]['content']='现在继续看另一个来源的定义'
+    resolver.answer('查询字段的最新有效值',dataset_id=ds,date='2031-01-02',source_question=json.dumps(context,ensure_ascii=False))
+    assert len(calls)>before, 'Different trusted conversation context cannot reuse a bare-question plan cache'
 
 
 def test_partial_current_sheet_match_falls_back_to_all_sheets(catalogue):
@@ -209,7 +236,7 @@ def test_missing_formula_is_audited_before_asking_user_again(catalogue):
         if len(calls)<2:
             return proposal([['price'],['fx-context']],'calculation',decision='clarify')
         assert 'invalid_proposal' in payload
-        assert len([c for s in payload['catalog'] for c in s['columns']])<=24
+        assert len([c for s in payload['catalog'] for c in s['columns']])==107
         return proposal([['price'],['fx-context']],'calculation','v1*0.01*v2','元/磅')
     plan=FieldResolver(store,model,lambda p:{'search_terms':[]}).answer('2023年9月7日，美国 EMOT M 1-1/8使用美元兑人民币换算',dataset_id=ds,date='2023-09-07')
     assert len(calls)==2
@@ -221,7 +248,8 @@ def test_selected_field_and_note_are_both_preserved(catalogue):
     def model(payload):
         calls.append(payload)
         if len(calls)==1:return proposal([['price','usd-price'],[]],'calculation',decision='clarify')
-        assert 'usd-price' in payload['question'] and '当日汇率' in payload['question']
+        assert 'usd-price' not in payload['question'] and '当日汇率' in payload['question']
+        assert [source['series_id'] for source in payload['confirmed_sources']]==['usd-price']
         assert payload['prior_series'][0]['name']
         return proposal([['usd-price'],['fx-context']],'calculation','v1*v2','元/吨')
     resolver=FieldResolver(store,model);plan=resolver.resolve(ds,'价格换算',date='2023-09-07')
@@ -235,7 +263,7 @@ def test_missing_role_does_not_block_confirmation_of_existing_choices(catalogue)
     def model(payload):
         calls.append(payload)
         if len(calls)==1:return proposal([['price','usd-price'],[]],'calculation',decision='clarify')
-        assert '用户已确认字段' in payload['question']
+        assert payload['question']=='价格换算' and payload['confirmed_sources'][0]['series_id']=='usd-price'
         return proposal([['usd-price'],['fx-context']],'calculation','v1*v2','元/吨')
     resolver=FieldResolver(store,model);plan=resolver.resolve(ds,'价格换算',date='2023-09-07')
     result=resolver.confirm(plan['resolution_id'],{'v1':'usd-price'})
@@ -250,7 +278,7 @@ def test_index_shortlist_expands_before_declaring_missing(catalogue):
         sizes.append(sum(len(g['columns']) for g in payload['catalog']))
         return dict(proposal([[]],decision='clarify'),local_data_missing=True,missing_inputs=['缺少指标'])
     result=FieldResolver(store,model,lambda p:{'search_terms':['不存在字段']}).resolve(ds,'2023-09-07查指标')
-    assert sizes[0]<=24 and 107 in sizes[1:]
+    assert sizes==[107] and result['retrieval']['full_catalogue_checked']
     assert result['status']=='external_lookup_required'
 
 

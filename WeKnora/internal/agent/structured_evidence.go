@@ -23,10 +23,7 @@ func needsStructuredAnswerReviewForQuery(query string, steps []types.AgentStep, 
 	return needsStructuredAnswerReview(steps, messages, answer)
 }
 
-func hasScopedVisualDocumentAnswer(query string, steps []types.AgentStep, answer string) bool {
-	if !strings.Contains(query, "图") || !strings.Contains(query, "页") {
-		return false
-	}
+func hasScopedVisualDocumentAnswer(_ string, steps []types.AgentStep, answer string) bool {
 	cited := map[string]bool{}
 	for _, match := range documentAnswerCitation.FindAllStringSubmatch(answer, -1) {
 		cited[match[1]] = false

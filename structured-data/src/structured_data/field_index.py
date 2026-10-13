@@ -18,7 +18,7 @@ def literal_fields(catalog, question):
     """Recall explicit headers without interpreting intent or choosing a definition."""
     q=normalize(question)
     for sheet in sorted({s['sheet'] for s in catalog},key=len,reverse=True):
-        # A sheet such as 原料 can be part of the actual header 20天原料.
+        # A sheet label can also be part of an actual longer field header.
         # Removing that substring would hide an explicit literal field.
         if any(normalize(sheet) in normalize(s['metric']) for s in catalog):
             continue
@@ -31,7 +31,7 @@ def literal_fields(catalog, question):
 
 def tokens(text):
     # Chinese bigrams require no external tokenizer; numbers/specifications remain
-    # searchable across adjacent Latin letters (3128 vs 3128B, CF01 vs 01).
+    # searchable across adjacent Latin letters without assigning business meanings.
     result=[]
     for part in re.findall(r'[a-z]+\d*|\d+|[\u4e00-\u9fff]+', without_date(text)):
         if re.fullmatch(r'[\u4e00-\u9fff]+',part):

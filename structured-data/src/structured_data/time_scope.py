@@ -4,8 +4,8 @@ import re
 
 
 def human_text(question):
-    # Server-added field identities can contain years; they are not user dates.
-    return re.sub(r'\n(?:用户)?已确认字段：[^\n]*', '', question)
+    """User text is preserved verbatim; trusted source context is separate data."""
+    return question
 
 
 def task_evidence(question, previous=None):
