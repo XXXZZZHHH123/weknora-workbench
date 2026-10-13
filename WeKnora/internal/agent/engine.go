@@ -313,7 +313,6 @@ func (e *AgentEngine) Execute(
 	llmContext []chat.Message,
 	imageURLs ...[]string,
 ) (*types.AgentState, error) {
-	executionStart := time.Now()
 	e.structuredReviewMode = false
 	e.answerReviewPending = false
 	logger.Infof(ctx, "[Agent] Starting execution: session=%s, message=%s, query_len=%d, context_msgs=%d",
@@ -404,20 +403,6 @@ func (e *AgentEngine) Execute(
 			e.emitProgress(ctx, "sources", -1, sessionID)
 		}
 		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID)
-	}
-	// Only an otherwise context-free literal field request is eligible. Follow-up
-	// selections, attachments and calculations must still use normal reasoning.
-	if len(llmContext) == 0 && len(imgs) == 0 && len(e.selectedDocs) == 0 &&
-		len(e.pinnedMCPServices) == 0 && len(e.pinnedSkills) == 0 && e.questionOrigin == nil && e.memoryPrompt == "" {
-		if answer := literalSourceClarification(query, state.RoundSteps); answer != "" &&
-			!e.hasPendingClarificationSteer(ctx, sessionID, messageID) && ctx.Err() == nil {
-			state.FinalAnswer, state.IsComplete = answer, true
-			e.eventBus.Emit(ctx, event.Event{ID: generateEventID("answer"), Type: event.EventAgentFinalAnswer, SessionID: sessionID,
-				Data: event.AgentFinalAnswerData{Content: answer, Done: true}})
-			e.emitCompletionEvent(ctx, state, sessionID, messageID, executionStart)
-			finishAgentSpan(agentSpan, state, nil)
-			return state, nil
-		}
 	}
 
 	// Get tool definitions for function calling
