@@ -27,6 +27,22 @@ def test_statistics_include_all_and_do_not_zero_errors(snapshot):
     assert error["rows"][0]["date_cell"] == "A3"
 
 
+def test_saved_rows_page_keeps_original_evidence_and_counts(snapshot):
+    store, dataset, _ = snapshot
+    pages = [store.query_series(dataset, 'price', limit=1, offset=i) for i in range(3)]
+    assert [page['rows'][0]['source_cell'] for page in pages] == ['B2', 'B3', 'B4']
+    assert [page['rows'][0]['value'] for page in pages] == [10, None, 20]
+    assert pages[1]['rows'][0]['raw_value'] == '#N/A'
+    assert pages[1]['rows'][0]['date_cell'] == 'A3'
+    assert all(page['record_count'] == 3 and page['valid_count'] == 2 for page in pages)
+    assert store.query_series(dataset, 'price', limit=1, offset=3)['rows'] == []
+    for offset in (-1, True, '1', 10000001):
+        with pytest.raises(ValueError):
+            store.query_series(dataset, 'price', offset=offset)
+    with pytest.raises(ValueError):
+        store.query_series(dataset, 'price', operation='sum', offset=1)
+
+
 def test_extrema_bind_value_date_and_source_row(snapshot):
     store,ds,_=snapshot
     maximum=store.query_series(ds,'price',operation='max')

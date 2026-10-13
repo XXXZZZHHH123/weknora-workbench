@@ -164,7 +164,7 @@ dialog p{font-size:13px;line-height:1.7;margin:0 0 10px}
 #confirmList small{display:block;color:#89a18f;font-size:11px}
 .review-focused{position:fixed!important;inset:10px;z-index:30;margin:0!important;max-width:none;overflow:auto;box-shadow:0 0 0 30px #16333170}
 .review-focused .review-panes{height:calc(100dvh - 365px);min-height:240px;max-height:none}
-.review-focused>p,.review-focused #importSummary,.review-focused .review-explanation,.review-focused .full-check-results,.review-focused #draftNotice{display:none}
+.review-focused>p,.review-focused #importSummary,.review-focused .review-explanation,.review-focused #draftNotice{display:none}
 .review-focused>h2{font-size:18px;margin-bottom:12px}
 .review-focused .sheet-tabbar{margin-top:10px}
 .review-focused #sampleImports,body.review-only #sampleImports{display:none}
@@ -172,3 +172,10 @@ dialog p{font-size:13px;line-height:1.7;margin:0 0 10px}
 @media(max-width:1300px){.review-panes{grid-template-columns:minmax(0,1fr) 360px}.window-summary{width:100%;margin-left:0}.sheet-source{padding:12px}.editor-heading small{display:none}.grid-caption>span{display:none}}
 @media(max-width:900px){.review-panes{grid-template-columns:minmax(0,1fr) 325px}.block-strip{padding:9px;gap:5px}.block-chip button{padding:4px 5px}.source-head h3{font-size:14px}.source-head .badge{display:none}}
 @media(max-width:650px){#importReview{padding:12px}main{padding:0 10px}.review-panes{grid-template-columns:minmax(0,1fr);height:auto}.sheet-source{height:440px}.block-editor{border-left:0;border-top:1px solid #dce5df;max-height:460px}.footer-actions{gap:5px}.footer-actions button{font-size:11px;padding:8px}.footer-progress{font-size:11px}.footer-progress small{display:none}.sheet-tab{min-width:105px}.review-focused .review-panes{height:auto}.range-selection-actions{gap:5px;padding:7px}.range-selection-actions button{font-size:10px}}
+
+.import-results-dialog{width:min(1120px,94vw);max-width:1120px;max-height:88dvh;overflow:auto;padding:20px;color:#263b50}
+.result-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;position:sticky;top:-20px;background:white;padding:12px 0;z-index:2}
+.result-heading h3{margin:0}.result-pagination{display:flex;gap:8px;align-items:center;margin:12px 0;font-size:12px}
+.result-catalog{max-height:260px;overflow:auto}.result-selected{background:#edf4ff}
+.import-results-dialog table{font-size:12px}.import-results-dialog th{white-space:nowrap;position:sticky;top:0;z-index:1}.import-results-dialog h4{margin:16px 0 8px}
+.source-head #storedResults{padding:6px 9px;font-size:12px;white-space:nowrap}

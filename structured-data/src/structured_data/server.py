@@ -445,8 +445,8 @@ def create_app(data_dir: str | Path | None = None):
         return FileResponse(path, filename=Path(store.manifest(dataset_id)["source_file"]).name)
 
     @app.get("/api/query")
-    def query(dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None):
-        return store.query_series(store.select_dataset(dataset_id), series_id, start_date, end_date, operation, limit, period)
+    def query(dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, offset: int = 0):
+        return store.query_series(store.select_dataset(dataset_id), series_id, start_date, end_date, operation, limit, period, offset=offset)
 
     def run_import(job_id: str, path: Path):
         try:

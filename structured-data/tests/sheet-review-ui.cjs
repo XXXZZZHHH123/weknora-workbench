@@ -8,6 +8,7 @@ const root = path.join(__dirname, '..', 'src', 'structured_data');
 const requests = [];
 let published = false;
 let sampleDelay = 0;
+let storedDelay = 0;
 let failFullCheck = false;
 const mapping = {sheet:'数据汇总',fingerprint:'fixture-small',blocks:[
   {name:'销售明细',date_mode:'date',date_column:'A',category_column:'B',category_name:'地区',header_rows:[3],data_start_row:4,data_end_row:8,columns:[{column:'C',metric:'销量',unit:'件',header_cells:['C3']},{column:'D',metric:'销售额',unit:'元',header_cells:['D3']}]},
@@ -43,11 +44,13 @@ const server=http.createServer(async(req,res)=>{
   else if(url.pathname.endsWith('/sheet-view')){const s=url.searchParams.get('name')===large.name?large:small;result=view(s,+url.searchParams.get('start_row'),+url.searchParams.get('start_col'),+url.searchParams.get('row_count'),+url.searchParams.get('col_count'));}
   else if(url.pathname.endsWith('/sheet'))result=sheets().find(s=>s.name===url.searchParams.get('name'));
   else if(url.pathname.endsWith('/sample-preview')){const block=data.mapping.blocks[0];if(sampleDelay)await new Promise(resolve=>setTimeout(resolve,sampleDelay));result={sample_only:true,blocks:[{name:block.name,series:[{series_id:'sample',metric:block.columns[0].metric}],sample:[{series_id:'sample',date:'2026-09-04',category:'华东',value:96,source_cell:'C4'}]}],notice:'只有少量样本，完整检查通过后才能导入。'};}
+  else if(url.pathname==='/api/datasets/saved-fixture/series')result={series:['C','F','U','X'].map(c=>({series_id:'saved-'+c,metric:'20天原料',sheet:small.name,dimensions:{原表列:c},unit:'元/吨',header_cells:[c+'3']})),total:4,next_offset:null};
+  else if(url.pathname==='/api/query'){if(storedDelay)await new Promise(resolve=>setTimeout(resolve,storedDelay));const c=url.searchParams.get('series_id').replace('saved-',''),offset=+url.searchParams.get('offset');result={series:{metric:'20天原料',dimensions:{原表列:c},unit:'元/吨'},record_count:26,valid_count:26,rows:[{date:'2026-09-04',value:12055+offset,raw_value:12055+offset,source_cell:c+(4+offset),date_cell:'A'+(4+offset),value_status:'valid'}]};}
   else if(url.pathname.endsWith('/preview'))result={id:'fixture-check',status:'processing'};
-  else if(url.pathname==='/api/jobs/fixture-check')result=failFullCheck?{id:'fixture-check',status:'failed',error:'模拟完整检查失败'}:{id:'fixture-check',status:'completed',result:{series_count:3,observation_count:20,blocks:[{name:'销售明细',series_count:2,observation_count:10,series:[],sample:[],issues:[]}],sample:[],issues:[]}};
+  else if(url.pathname==='/api/jobs/fixture-check')result=failFullCheck?{id:'fixture-check',status:'failed',error:'模拟完整检查失败'}:{id:'fixture-check',status:'completed',result:{series_count:3,observation_count:20,mapping:{...mapping,blocks:[{...mapping.blocks[0],columns:[{column:'C',metric:'20天原料',unit:'元/吨',dimensions:{原表列:'C'}},{column:'F',metric:'20天原料',unit:'元/吨',dimensions:{原表列:'F'}}]}]},blocks:[{name:'销售明细',series_count:2,observation_count:10,series:[],sample:[],issues:[]}],sample:[],issues:[]}};
   else if(url.pathname.endsWith('/confirm')){published=true;result={id:'fixture-publish',status:'processing'};}
   else if(url.pathname==='/api/jobs/fixture-publish')result={status:'completed',result:{}};
-  else if(url.pathname.startsWith('/api/imports/'))result={import_id:'123456789012345678901234',source_file:'销售数据.xlsx',sheets:sheets()};
+  else if(url.pathname.startsWith('/api/imports/'))result={import_id:'123456789012345678901234',source_file:'销售数据.xlsx',dataset_id:'saved-fixture',sheets:sheets()};
   else {const file=url.pathname==='/'?'index.html':url.pathname.slice(1);if(!['index.html','sheet-review.js','sheet-review.css'].includes(file)){res.writeHead(404);res.end();return;}res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(path.join(root,file)));return;}
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify(result));
 });
@@ -139,7 +142,7 @@ const server=http.createServer(async(req,res)=>{
     assert(requests.some(r=>r.params.summary_only==='true'));
     assert.equal(await page.locator('#mappingForm>.mapping-block').count(),3);
     assert.equal(await page.locator('.check-block').count(),0);
-    assert.equal(await page.locator('#previewMapping').count(),0);
+    assert.equal(await page.locator('#previewMapping').isVisible(),true);
     assert.equal(await page.locator('.sheet-tab').count(),2);
     assert.match(await page.locator('.sheet-tab[aria-pressed="true"] small').innerText(),/15 行 × 8 列 · 3 个区块/);
     assert.equal(await page.locator('.sheet-grid th.row-number').count(),15);
@@ -182,6 +185,27 @@ const server=http.createServer(async(req,res)=>{
     await page.locator('[data-select-block]').nth(1).click();await page.locator('#excludeCurrentBlock').click();
     await page.locator('[data-select-block]').nth(2).click();await page.locator('#excludeCurrentBlock').click();
     assert.equal(await page.locator('#confirmMapping').isDisabled(),false);
+    await page.locator('#reviewFocus').click();
+    await page.locator('#previewMapping').click();await page.locator('#resultDialog').waitFor({state:'visible'});
+    assert.match(await page.locator('#resultContent').innerText(),/原表列.*C/s);
+    assert.match(await page.locator('#resultContent').innerText(),/原表列.*F/s);
+    assert.equal(published,false,'Preview must not publish or approve business data');
+    assert.equal(requests.filter(r=>r.path.endsWith('/confirm')).length,0);
+    await page.locator('#closeResults').click();
+    const beforeStored=requests.length;
+    await page.locator('#storedResults').click();await page.locator('#storedRowsNext').waitFor();
+    assert.equal(await page.locator('[data-stored-series]').count(),4,'Every same-name stored column remains visible');
+    for(const c of ['C','F','U','X'])assert.match(await page.locator('[data-result-series="saved-'+c+'"]').innerText(),new RegExp('原表列.*'+c));
+    await page.locator('[data-stored-series="saved-X"]').click();
+    await page.waitForFunction(()=>document.querySelector('#storedRows').textContent.includes('X4'));
+    if(process.argv[4])await page.locator('#resultDialog').screenshot({path:process.argv[4]});
+    await page.locator('#storedRowsNext').click();await page.waitForFunction(()=>document.querySelector('#storedRows').textContent.includes('X29'));
+    assert(requests.some(r=>r.path==='/api/query'&&r.params.offset==='25'&&r.params.dataset_id==='saved-fixture'));
+    assert.equal(requests.slice(beforeStored).filter(r=>r.method!=='GET').length,0,'Stored results cannot run a parser/model/publish');
+    storedDelay=150;await page.locator('[data-stored-series="saved-C"]').click();await page.locator('[data-stored-series="saved-U"]').click();
+    await page.waitForFunction(()=>document.querySelector('#storedRows')?.textContent.includes('U4'));
+    assert.equal(await page.locator('[data-stored-series]').count(),4,'Cancelled record requests cannot replace the result dialog with an error');storedDelay=0;
+    await page.locator('#closeResults').click();await page.keyboard.press('Escape');
     const previewsBefore=requests.filter(r=>r.path.endsWith('/preview')).length;
     await page.locator('#confirmMapping').click();await page.locator('#confirmDialog').waitFor({state:'visible'});
     assert.match(await page.locator('#confirmList').innerText(),/不导入/);

@@ -81,7 +81,10 @@ def preview_mapping_samples(path, sheet_scan, mapping):
                     match = re.fullmatch(r"([A-Z]+)([0-9]+)", date_cell)
                     date = date_at(cell_at(int(match[2]), match[1]), block)
                 sid = "sample." + hashlib.sha256(f"{bi}:{rn}:{ci}:{metric}:{category}".encode()).hexdigest()[:16]
-                series.append({"series_id": sid, "metric": str(metric or "未命名指标"), "unit": unit, "dimensions": {"category": str(category)} if category is not None else {}})
+                dimensions = dict(column.get('dimensions', {}))
+                if category is not None:
+                    dimensions[block.get('category_name') or '类别'] = str(category)
+                series.append({"series_id": sid, "metric": str(metric or "未命名指标"), "unit": unit, "dimensions": dimensions})
                 valid = isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw)
                 status = "valid" if valid else "excel_error" if source.get("data_type") == "e" else "formula_no_cache" if raw is None and source.get("formula") else "blank" if raw is None else "unexpected_text"
                 samples.append({"series_id": sid, "date": date, "period": period, "category": category,

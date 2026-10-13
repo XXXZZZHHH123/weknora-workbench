@@ -12,7 +12,7 @@
   const ui = { mapping:null, states:{}, selected:null, view:null, filter:'pending',
     request:0, controller:null, sheetController:null, jobController:null,
     checkSignature:null, mode:null, drag:null, selection:null, anchor:null, history:[],
-    sample:null, sampleController:null, focusCell:null, restore:false, editable:false, previewMode:'table' };
+    sample:null, sampleController:null, resultController:null, resultRequest:0, focusCell:null, restore:false, editable:false, previewMode:'table' };
   const copy = v => JSON.parse(JSON.stringify(v));
   const colName = n => { let s='';for(;n>0;n=Math.floor((n-1)/26))s=String.fromCharCode(65+(n-1)%26)+s;return s; };
   const colIndex = s => /^[A-Z]{1,3}$/.test(s||'') ? [...s].reduce((n,c)=>n*26+c.charCodeAt(0)-64,0) : 0;
@@ -78,7 +78,7 @@
       if(keys.length>30)keys.map(k=>{try{return [k,JSON.parse(localStorage.getItem(k)).at||0]}catch{return [k,0]}}).sort((a,b)=>a[1]-b[1]).slice(0,keys.length-30).forEach(([k])=>localStorage.removeItem(k));
     } catch {if($('draftNotice'))$('draftNotice').textContent='浏览器无法保存草稿，请在离开前完成确认。';}
   }
-  function stopViewRequests() {ui.controller?.abort();ui.sheetController?.abort();ui.jobController?.abort();ui.sampleController?.abort();ui.request++;ui.view=null;ui.drag=null;ui.selection=null;ui.anchor=null;ui.sample=null;ui.focusCell=null;ui.history=[];ui.mode=null;}
+  function stopViewRequests() {ui.controller?.abort();ui.sheetController?.abort();ui.jobController?.abort();ui.sampleController?.abort();ui.resultController?.abort();ui.resultRequest++;ui.request++;ui.view=null;ui.drag=null;ui.selection=null;ui.anchor=null;ui.sample=null;ui.focusCell=null;ui.history=[];ui.mode=null;}
   function rememberMapping() {
     if(!ui.mapping||mappingBusy)return;
     const item={mapping:copy(ui.mapping),states:copy(ui.states),selected:ui.selected};
@@ -168,9 +168,9 @@
     const switcher = chartCount && !chartOnly ? `<div class="view-switch"><button type="button" data-preview-mode="table" aria-pressed="true">数据表</button><button type="button" data-preview-mode="charts" aria-pressed="false">图表 ${chartCount}</button></div>` : '';
     const strip=ui.editable?`<div class="block-strip"><div id="blockLegend" class="block-chips"></div><button id="addMappingBlock" class="text-button" type="button">+ 添加区块</button><button id="undoMapping" class="text-button" type="button">↶ 撤销</button></div>`:'<div id="blockLegend" hidden></div>';
     const inspector=ui.editable?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对</strong><small>点击来源，对照左侧原表</small></div><div id="mappingForm"></div><div class="editor-footer"><label><input id="ackBlock" type="checkbox"><span id="ackBlockLabel">我已核对这个区块</span></label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div></aside>`:'<div id="mappingForm" hidden></div>';
-    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong><span>单击定位 · 拖动框选 · Shift 扩展 · Esc 取消</span></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
-    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 辅助生成建议</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'已恢复这张表的本地草稿。完整检查需要重新执行。':'调整会自动保存在当前浏览器；切换工作表后可继续核对。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'这张表只有图，不需要确认单元格导入。源表导入后，曲线才会关联到已导入的单元格。':s.status==='trusted_existing'?'本表沿用已核验的专用解析规则，通用区块编辑不覆盖该规则。':'此工作表没有需要确认的数据区块。'}</p>`;
-    $('sheetDetail').innerHTML=`<div class="review-workspace">${strip}<div class="review-panes${ui.editable?'':' readonly'}">${source}${inspector}</div>${footer}${s.reasons?.length?`<details class="review-explanation"><summary>识别说明</summary><ul>${reasonsList(s.reasons)}</ul></details>`:''}<textarea id="mappingEditor" class="hidden">${esc(JSON.stringify(ui.mapping))}</textarea></div>`;
+    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${currentImport?.dataset_id?'<button id="storedResults" class="secondary" type="button">查看已导入数据</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong><span>单击定位 · 拖动框选 · Shift 扩展 · Esc 取消</span></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
+    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="previewMapping" class="secondary" type="button">检查并预览</button><button id="suggestMapping" class="secondary" type="button">AI 辅助生成建议</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'已恢复这张表的本地草稿。完整检查需要重新执行。':'调整会自动保存在当前浏览器；切换工作表后可继续核对。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'这张表只有图，不需要确认单元格导入。源表导入后，曲线才会关联到已导入的单元格。':s.status==='trusted_existing'?'本表沿用已核验的专用解析规则，通用区块编辑不覆盖该规则。':'此工作表没有需要确认的数据区块。'}</p>`;
+    $('sheetDetail').innerHTML=`<div class="review-workspace">${strip}<div class="review-panes${ui.editable?'':' readonly'}">${source}${inspector}</div>${footer}<dialog id="resultDialog" class="import-results-dialog"><div class="result-heading"><h3 id="resultTitle"></h3><button id="closeResults" class="secondary" type="button">关闭</button></div><div id="resultContent"></div></dialog>${s.reasons?.length?`<details class="review-explanation"><summary>识别说明</summary><ul>${reasonsList(s.reasons)}</ul></details>`:''}<textarea id="mappingEditor" class="hidden">${esc(JSON.stringify(ui.mapping))}</textarea></div>`;
     $('mappingEditor').value = JSON.stringify(ui.mapping, null, 2);
     renderMappingForm(ui.mapping); renderLegend(); bindReviewEvents(); updateConfirmState();
     if (chartOnly) showPreview('charts');
@@ -197,7 +197,7 @@
           const remove=row.querySelector('[data-map-action="remove-column"]');if(remove){remove.textContent='×';remove.title='移除此数值列';remove.setAttribute('aria-label',`移除第 ${ci+1} 个数值列`);}
         });
       }
-      body.insertAdjacentHTML('beforeend',`<div class="block-facts">${blockFacts(b)}</div><div class="block-sample"><div class="fields-heading">存储记录样本<button type="button" class="secondary" data-map-action="sample-block" data-block="${i}">预览几条记录</button></div><div class="block-sample-content" role="status">样本只用于核对；导入前仍检查全部选定数据。</div></div>`);
+      body.insertAdjacentHTML('beforeend',`<div class="block-facts">${blockFacts(b)}</div><div class="block-sample"><div class="fields-heading">原文件样本<button type="button" class="secondary" data-map-action="sample-block" data-block="${i}">预览几条记录</button></div><div class="block-sample-content" role="status">样本只用于核对；导入前仍检查全部选定数据。</div></div>`);
       body.querySelector('[data-map-action="remove-block"]')?.remove();
       panel.open=b._review_id===ui.selected;panel.classList.toggle('selected',panel.open);
       if(!ui.editable)body.querySelectorAll('input,select,button').forEach(el=>el.disabled=true);
@@ -268,19 +268,64 @@
     if(!r||p.row<r.start_row||p.row>r.end_row||p.col<r.start_col||p.col>r.end_col)await loadWindow(p.row,p.col);
     renderGrid();$('sheetGrid').querySelector(`[data-cell-row="${p.row}"][data-cell-col="${p.col}"]`)?.scrollIntoView({block:'nearest',inline:'nearest'});
   }
+  function mappingIdentityHTML(mapping) {
+    if(!mapping?.blocks)return '';
+    return `<h4>字段将如何保存</h4><p>同名列分别保存，原表列号用于区分；不会自动合并或补写年度、品种。下方数值是有限解析样本，尚未写入可用数据。</p><div class="scroll"><table><thead><tr><th>区块</th><th>原列</th><th>指标／期间</th><th>保存维度</th><th>单位</th><th>表头来源</th></tr></thead><tbody>${mapping.blocks.flatMap((b,i)=>(b.columns||[]).map(c=>`<tr><td>${esc(b.name||'区块 '+(i+1))}</td><td>${esc(c.column)}</td><td>${esc(c.metric||c.period||'按行标签')}</td><td>${esc(dimensionsText(c.dimensions)||'无额外维度')}</td><td>${esc(c.unit||'原表未注明')}</td><td>${esc((c.header_cells||[]).join('、'))}</td></tr>`)).join('')}</tbody></table></div>`;
+  }
+  async function showStoredResults() {
+    const dataset=currentImport?.dataset_id,sheet=currentSheet?.name,version=reviewVersion;
+    if(!dataset||!sheet)return;
+    const dialog=$('resultDialog'),content=$('resultContent');
+    $('resultTitle').textContent='已导入数据 · '+sheet;
+    content.innerHTML='<p role="status">正在读取已保存的指标与记录…</p>';dialog.showModal();
+    let catalogOffset=0,rowOffset=0,selected=null;
+    async function request(path) {
+      ui.resultController?.abort();const controller=new AbortController();ui.resultController=controller;
+      const sequence=++ui.resultRequest;
+      let result;
+      try{result=await timedApi(path,{},controller);}
+      catch(error){if(controller.signal.aborted||version!==reviewVersion||sequence!==ui.resultRequest)return null;throw error;}
+      if(controller.signal.aborted||version!==reviewVersion||sequence!==ui.resultRequest||!dialog.open)return null;
+      return result;
+    }
+    async function rows() {
+      const host=$('storedRows');if(!host||!selected)return;
+      host.textContent='正在读取已保存记录…';
+      const result=await request('/api/query?'+new URLSearchParams({dataset_id:dataset,series_id:selected,operation:'rows',limit:25,offset:rowOffset}));
+      if(!result)return;
+      const s=result.series;
+      host.innerHTML=`<h4>${esc(s.metric)} · ${esc(dimensionsText(s.dimensions,['block','data_region'])||'无额外维度')}</h4><p>单位：${esc(s.unit||'原表未注明')} · 共 ${result.record_count} 条记录，其中 ${result.valid_count} 条有有效数值。当前 ${result.rows.length?rowOffset+1:0}–${rowOffset+result.rows.length} 条</p><div class="scroll"><table><thead><tr><th>日期／期间</th><th>原列</th><th>保存数值</th><th>原值／公式</th><th>数值来源</th><th>时间／类别来源</th><th>状态</th></tr></thead><tbody>${result.rows.map(r=>`<tr><td>${esc(r.date||r.period||'无时间字段')}</td><td>${esc((r.source_cell||'').replace(/[0-9]+$/,''))}</td><td>${r.value==null?'缺失':esc(r.value)}</td><td>${esc(r.raw_value??'空白')}${r.formula?'<br>'+esc(r.formula):''}</td><td><button class="field-source" type="button" data-result-cell="${esc(r.source_cell)}">${esc(r.source_cell)}</button></td><td>${esc([r.date_cell||r.period_cell,r.category_cell,r.metric_cell].filter(Boolean).join('、')||'—')}</td><td>${esc(valueLabels[r.value_status]||r.value_status)}</td></tr>`).join('')}</tbody></table></div><div class="result-pagination"><button id="storedRowsPrevious" class="secondary" ${rowOffset===0?'disabled':''}>上一页记录</button><button id="storedRowsNext" class="secondary" ${rowOffset+result.rows.length>=result.record_count?'disabled':''}>下一页记录</button></div><p class="muted">公式使用原文件缓存值；空白、错误或无缓存值保持缺失。点击数值来源可返回原表核对。</p>`;
+      $('storedRowsPrevious').onclick=()=>{rowOffset=Math.max(0,rowOffset-25);rows().catch(showError);};
+      $('storedRowsNext').onclick=()=>{rowOffset+=25;rows().catch(showError);};
+      host.querySelectorAll('[data-result-cell]').forEach(button=>button.onclick=()=>{dialog.close();locateSource(button.dataset.resultCell).catch(mappingError);});
+    }
+    function showError(error){if(version===reviewVersion&&dialog.open)content.textContent=error.message;}
+    async function catalog() {
+      const result=await request(`/api/datasets/${encodeURIComponent(dataset)}/series?`+new URLSearchParams({sheet,limit:200,offset:catalogOffset}));
+      if(!result)return;
+      const series=result.series.filter(s=>!s.chart_id);
+      content.innerHTML=`<p>原文件：${esc(currentImport.source_file)} · 本次导入当前可用版本 <code>${esc(dataset.slice(0,8))}</code></p><p>这里读取已保存的数据，不重新解析、不调用模型，也不创建新版本。同名列各自保存，选择一列可查看数值及来源。</p>${series.length?`<div class="scroll result-catalog"><table><thead><tr><th>指标</th><th>保存维度／区块</th><th>单位</th><th>表头来源</th><th>记录</th></tr></thead><tbody>${series.map(s=>`<tr data-result-series="${esc(s.series_id)}"><td>${esc(s.metric)}</td><td>${esc(dimensionsText(s.dimensions)||'无额外维度')}</td><td>${esc(s.unit||'原表未注明')}</td><td>${esc((s.header_cells||[]).join('、'))}</td><td><button type="button" class="secondary" data-stored-series="${esc(s.series_id)}">查看记录</button></td></tr>`).join('')}</tbody></table></div>`:'<p>这张表在该版本中没有已导入的单元格记录。请先检查并导入，图表曲线可在图表入口查看。</p>'}<div class="result-pagination"><span>指标 ${result.total?catalogOffset+1:0}–${catalogOffset+result.series.length} / ${result.total}</span><button id="storedCatalogPrevious" class="secondary" ${catalogOffset===0?'disabled':''}>上一页指标</button><button id="storedCatalogNext" class="secondary" ${result.next_offset==null?'disabled':''}>下一页指标</button></div><div id="storedRows" role="status"></div>`;
+      $('storedCatalogPrevious').onclick=()=>{catalogOffset=Math.max(0,catalogOffset-200);catalog().catch(showError);};
+      $('storedCatalogNext').onclick=()=>{catalogOffset=result.next_offset;catalog().catch(showError);};
+      function choose(id){selected=id;rowOffset=0;content.querySelectorAll('[data-result-series]').forEach(row=>row.classList.toggle('result-selected',row.dataset.resultSeries===id));rows().catch(showError);}
+      content.querySelectorAll('[data-stored-series]').forEach(button=>button.onclick=()=>choose(button.dataset.storedSeries));
+      if(series.length)choose(series[0].series_id);
+    }
+    await catalog().catch(showError);
+  }
   async function previewBlock(index) {
     const b=currentMapping().blocks[index];if(!b)return;
     ui.sampleController?.abort();const controller=new AbortController();ui.sampleController=controller;
     const id=b._review_id,signature=blockSignature(b),version=reviewVersion;
     const panel=[...document.querySelectorAll('[data-block-id]')].find(p=>p.dataset.blockId===id),host=panel?.querySelector('.block-sample-content');if(!host)return;
     if(panel.querySelector('[data-range-input]').value.toUpperCase().trim()!==dataRangeLabel(b)){host.textContent='请先应用输入的范围，再预览这个区块的样本。';return;}
-    host.textContent='正在读取这个区块的少量存储样本…';
+    host.textContent='正在读取这个区块的少量原文件样本…';
     try {
       const mapping=clean({...ui.mapping,blocks:[b]});
       const result=await timedApi(`/api/imports/${encodeURIComponent(currentImport.import_id)}/sample-preview`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping})},controller);
       if(controller.signal.aborted||version!==reviewVersion||id!==ui.selected||signature!==blockSignature(selectedBlock()))return;
       const block=result.blocks?.[0]||{},catalog=Object.fromEntries((block.series||[]).map(s=>[s.series_id,s]));
-      ui.sample={id,signature};host.innerHTML=`<table class="sample-records"><thead><tr><th>时间 / 类别</th><th>字段</th><th>数值</th><th>来源</th></tr></thead><tbody>${(block.sample||[]).slice(0,12).map(row=>`<tr><td>${esc(row.date||row.period||'无时间')}${row.category?'<small>'+esc(row.category)+'</small>':''}</td><td>${esc(catalog[row.series_id]?.metric||'对应指标')}</td><td>${row.value==null?'缺失':esc(row.value)}</td><td><button type="button" class="field-source" data-source-cell="${esc(row.source_cell)}">${esc(row.source_cell)}</button></td></tr>`).join('')}</tbody></table><small>${esc(result.notice||'仅展示少量样本，完整检查通过后才能导入。')}</small>`;
+      ui.sample={id,signature};host.innerHTML=`<table class="sample-records"><thead><tr><th>时间 / 类别</th><th>字段／维度</th><th>数值</th><th>来源</th></tr></thead><tbody>${(block.sample||[]).slice(0,12).map(row=>`<tr><td>${esc(row.date||row.period||'无时间')}${row.category?'<small>'+esc(row.category)+'</small>':''}</td><td>${esc(catalog[row.series_id]?.metric||'对应指标')}<small>${esc(dimensionsText(catalog[row.series_id]?.dimensions)||'原列 '+(row.source_cell||'').replace(/[0-9]+$/,''))}</small></td><td>${row.value==null?'缺失':esc(row.value)}</td><td><button type="button" class="field-source" data-source-cell="${esc(row.source_cell)}">${esc(row.source_cell)}</button></td></tr>`).join('')}</tbody></table><small>${esc(result.notice||'仅展示少量样本，完整检查通过后才能导入。')}</small>`;
     } catch(e){if(!controller.signal.aborted&&version===reviewVersion&&id===ui.selected)host.textContent=e.message;}
   }
   async function loadWindow(startRow,startCol) {
@@ -414,6 +459,9 @@
     invalidateCheck('导入范围已变化，请重新检查全部选定数据。');saveDraft();updateCardStates();renderLegend();renderGrid();updateConfirmState();
   }
   function bindReviewEvents() {
+    $('closeResults').onclick=()=>$('resultDialog').close();
+    $('resultDialog').onclose=()=>{ui.resultController?.abort();ui.resultRequest++;};
+    if($('storedResults'))$('storedResults').onclick=()=>showStoredResults().catch(mappingError);
     const grid=$('sheetGrid');
     if($('blockLegend'))$('blockLegend').onclick=e=>{const edit=e.target.closest('[data-edit-block]'),pick=edit||e.target.closest('[data-select-block]');if(pick)chooseBlock(edit?edit.dataset.editBlock:pick.dataset.selectBlock,true).then(()=>{if(edit)document.querySelector('.mapping-block.selected [data-column-field="metric"],.mapping-block.selected [data-column-field="period"]')?.focus();}).catch(mappingError);};
     $('mappingForm').onclick=e=>{
@@ -443,7 +491,7 @@
       if(e.target.tagName==='INPUT')try{syncFormMapping();}catch(err){mappingError(err);}
     };
     $('mappingForm').onchange=e=>{if(e.target.hasAttribute('data-range-input'))return;try{syncFormMapping();if(e.target.dataset.field==='layout')renderMappingForm(currentMapping());else updateDateSourceControls();}catch(err){mappingError(err);}};
-    if(ui.editable){$('mappingEditor').oninput=()=>{invalidateCheck();try{ui.mapping=ensureBlocks(JSON.parse($('mappingEditor').value));renderMappingForm(ui.mapping);saveDraft();renderLegend();renderGrid();}catch{$('mappingFeedback').textContent='高级设置尚不是完整有效的 JSON。';}updateConfirmState();};if($('addMappingBlock'))$('addMappingBlock').onclick=()=>startDraw('add');if($('previewMapping'))$('previewMapping').onclick=()=>previewMapping().catch(mappingError);if($('confirmMapping'))$('confirmMapping').onclick=()=>confirmMapping().catch(mappingError);if($('suggestMapping'))$('suggestMapping').onclick=()=>suggestMapping(false).catch(mappingError);}
+    if(ui.editable){$('mappingEditor').oninput=()=>{invalidateCheck();try{ui.mapping=ensureBlocks(JSON.parse($('mappingEditor').value));renderMappingForm(ui.mapping);saveDraft();renderLegend();renderGrid();}catch{$('mappingFeedback').textContent='高级设置尚不是完整有效的 JSON。';}updateConfirmState();};if($('addMappingBlock'))$('addMappingBlock').onclick=()=>startDraw('add');if($('previewMapping'))$('previewMapping').onclick=()=>previewMapping(true).catch(mappingError);if($('confirmMapping'))$('confirmMapping').onclick=()=>confirmMapping().catch(mappingError);if($('suggestMapping'))$('suggestMapping').onclick=()=>suggestMapping(false).catch(mappingError);}
     if($('ackBlock'))$('ackBlock').onchange=()=>{
       const b=currentMapping().blocks.find(b=>b._review_id===ui.selected);if(!b)return;
       const rangeInput=document.querySelector('.mapping-block.selected [data-range-input]');
@@ -511,14 +559,14 @@
     const controller=new AbortController();ui.jobController=controller;
     for(;;){if(version!==reviewVersion||controller.signal.aborted)throw Error('工作表已切换，旧任务结果不会应用。');const r=await timedApi('/api/jobs/'+encodeURIComponent(id),{},controller);if(['processing','queued','pending','running'].includes(r.status)){onProgress?.(r.stage||'正在检查全部选定数据…');await new Promise(resolve=>setTimeout(resolve,1000));continue;}if(r.status==='failed')throw Error(r.error||'处理失败');return r.result||r;}
   }
-  previewMapping = async function() {
+  previewMapping = async function(showResults=false) {
     const mapping=readMapping(),signature=JSON.stringify(mapping),version=reviewVersion,importId=currentImport.import_id;setMappingBusy(true);invalidateCheck('正在检查全部选定数据；原表视图仅保留当前范围…');
     try {
       const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/preview?background=true`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping})},new AbortController(),30000);
       if(version!==reviewVersion)return;
       const result=job.id?await scopedJob(job.id,version,s=>{if(version===reviewVersion)$('mappingFeedback').textContent=s;}):job;
       if(version!==reviewVersion||signature!==JSON.stringify(submittedMapping()))return;
-      ui.checkSignature=signature;mappingConfirmed=true;$('mappingFeedback').textContent=`全部选定数据检查通过：${result.series_count} 个指标、${result.observation_count} 条记录。${result.notice||''}完整检查结果可展开查看。`;$('mappingPreview').innerHTML=blockPreviewHTML(result);saveDraft();
+      ui.checkSignature=signature;mappingConfirmed=true;$('mappingFeedback').textContent=`全部选定数据检查通过：${result.series_count} 个指标、${result.observation_count} 条记录。${result.notice||''}完整检查结果可展开查看。`;$('mappingPreview').innerHTML=mappingIdentityHTML(result.mapping)+blockPreviewHTML(result);$('mappingPreview').closest('details').open=true;if(showResults){$('resultTitle').textContent='检查与解析预览 · 尚未导入';$('resultContent').innerHTML=$('mappingPreview').innerHTML;$('resultDialog').showModal();}saveDraft();
     }finally{if(version===reviewVersion)setMappingBusy(false);}
   };
   suggestMapping = async function(confirmed) {

@@ -318,7 +318,11 @@ class DataStore:
             rows=con.execute('SELECT series_id,min(formula) FROM observations WHERE series_id IN ('+','.join('?' for _ in ids)+') AND formula IS NOT NULL AND length(formula) BETWEEN 1 AND 400 GROUP BY series_id',ids).fetchall()
         return dict(rows)
 
-    def query_series(self, dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, *, value_filters=None, last_n=None, top_n=None, order='desc', _complete=False) -> dict:
+    def query_series(self, dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, *, offset=0, value_filters=None, last_n=None, top_n=None, order='desc', _complete=False) -> dict:
+        if type(offset) is not int or offset < 0 or offset > 10000000:
+            raise ValueError('offset 必须为 0 至 10000000 的整数')
+        if offset and (operation != 'rows' or _complete):
+            raise ValueError('只有逐条查看记录支持分页')
         if _complete:
             if type(limit)!=int or not 1<=limit<=20000:raise ValueError('分析最多读取20000条原表记录')
         else:self._limit(limit)
@@ -389,7 +393,7 @@ class DataStore:
             elif operation=='top':
                 rows=con.execute(f"SELECT date,value,source_cell,value_status,formula,date_cell,raw_value{extra} FROM observations WHERE {where} AND value IS NOT NULL ORDER BY value {order.upper()},date,source_cell LIMIT ?",params+[top_n or limit]).fetchall()
             else:
-                rows = con.execute(f"SELECT date,value,source_cell,value_status,formula,date_cell,raw_value{extra} FROM observations WHERE {where} ORDER BY date NULLS LAST,source_cell LIMIT ?", params + [limit if operation == "rows" else 10]).fetchall()
+                rows = con.execute(f"SELECT date,value,source_cell,value_status,formula,date_cell,raw_value{extra} FROM observations WHERE {where} ORDER BY date NULLS LAST,source_cell LIMIT ? OFFSET ?", params + [limit if operation == "rows" else 10, offset]).fetchall()
         if _complete and operation=='rows' and count>len(rows):raise ValueError('分析范围超过20000条，未使用截断样本替代完整计算；请缩小范围')
         records = [{"date": str(r[0]) if r[0] else None, "period":r[7],"period_cell":r[8],"metric_cell":r[9], "value": r[1], "source_cell": r[2], "value_status": r[3], "formula": r[4], "date_cell": r[5], "raw_value": r[6]} for r in rows]
         for record in records:

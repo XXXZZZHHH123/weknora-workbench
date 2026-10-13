@@ -128,6 +128,35 @@ def test_small_sample_never_approves_or_publishes(client, review, monkeypatch):
     assert client.get(base).json()['dataset_id'] == review['dataset_id']
 
 
+def test_saved_result_pages_do_not_parse_or_publish(client, review, monkeypatch):
+    monkeypatch.setattr('structured_data.server.run_review_task', lambda *a, **kw: pytest.fail('view called parser'))
+    dataset = review['dataset_id']
+    catalog = client.get(f'/api/datasets/{dataset}/series', params={'sheet': 'simple'}).json()
+    series = catalog['series'][0]['series_id']
+    params = {'dataset_id': dataset, 'series_id': series, 'limit': 1}
+    first = client.get('/api/query', params=params).json()
+    second = client.get('/api/query', params={**params, 'offset': 1}).json()
+    assert [first['rows'][0]['source_cell'], second['rows'][0]['source_cell']] == ['B2', 'B3']
+    assert [first['rows'][0]['value'], second['rows'][0]['value']] == [10, 11]
+    assert first['record_count'] == second['record_count'] == 2
+    assert client.get('/api/imports/' + review['import_id']).json()['dataset_id'] == dataset
+
+
+def test_source_sample_preserves_duplicate_column_identity(client, review):
+    base = '/api/imports/' + review['import_id']
+    mapping = client.get(base + '/sheet', params={'name': 'parallel'}).json()['mapping']
+    first = mapping['blocks'][0]
+    second = mapping['blocks'][1]['columns'][0]
+    second['metric'] = first['columns'][0]['metric']
+    first['columns'].append(second)
+    mapping['blocks'] = [first]
+    for column in first['columns']:
+        column['dimensions'] = {'品种': '棉花'}
+    result = client.post(base + '/sample-preview', json={'mapping': mapping}).json()
+    assert result['blocks'][0]['series'][0]['dimensions'] == {'品种': '棉花', '原表列': 'B'}
+    assert result['blocks'][0]['series'][1]['dimensions'] == {'品种': '棉花', '原表列': 'E'}
+
+
 def test_full_check_background_job_keeps_published_version(client, review):
     base = '/api/imports/' + review['import_id']
     mapping = client.get(base + '/sheet', params={'name': 'parallel'}).json()['mapping']
