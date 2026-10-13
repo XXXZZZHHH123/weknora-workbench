@@ -54,6 +54,22 @@ const pending={...imported,name:'待核对表',status:'needs_review',mapping:{..
    assert.equal(await page.locator('.sheet-tab[aria-pressed="true"] .sheet-state.ready').count(),1);
    assert.match(await page.locator('.mapping-block.selected .card-state').innerText(),/已导入/);
   }
+  await page.evaluate(()=>{
+   const editor=document.querySelector('#mappingEditor'),mapping=JSON.parse(editor.value);
+   mapping.blocks[0].columns[0].dimensions={header_expectations:'业务维度'};
+   editor.value=JSON.stringify(mapping);editor.dispatchEvent(new Event('input',{bubbles:true}));
+  });
+  assert.equal(await page.locator('#ackBlock').isChecked(),false,'Business dimensions must remain part of the review signature');
+  await page.evaluate(()=>localStorage.clear());await page.reload();await page.locator('.sheet-grid td').first().waitFor();
+  await page.locator('#allSheets').click();await page.locator('#sheetMenuList [data-sheet-index="1"]').click();
+  await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='已导入表'&&document.querySelector('#ackBlock')?.disabled);
+  await page.locator('.mapping-block.selected [data-range-input]').fill('B2:B2');
+  assert.equal(await page.locator('#ackBlock').isChecked(),false);
+  await page.reload();await page.locator('.sheet-grid td').first().waitFor();
+  await page.locator('#allSheets').click();await page.locator('#sheetMenuList [data-sheet-index="1"]').click();
+  await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='已导入表'&&document.querySelector('#ackBlock')?.disabled);
+  assert.equal(await page.locator('.mapping-block.selected [data-range-input]').inputValue(),'B2:B3');
+  assert.match(await page.locator('.mapping-block.selected .card-state').innerText(),/已导入/,'An unapplied range input does not change the published mapping after reopening');
   assert.deepEqual(errors,[]);
   console.log('PASS: imported tabs stay green, pending tabs stay yellow, fresh status replaces stale summary, saved blocks are imported, edited/restored drafts require review.');
  }finally{await browser.close();}

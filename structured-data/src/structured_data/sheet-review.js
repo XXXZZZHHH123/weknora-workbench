@@ -25,10 +25,13 @@
     if(Array.isArray(value))return value.map(canonical);
     if(!value||typeof value!=='object')return value;
     return Object.fromEntries(Object.keys(value).sort()
-      .filter(k=>!k.startsWith('_review')&&k!=='header_expectations')
       .map(k=>[k,canonical(value[k])]));
   }
-  const blockSignature = b => JSON.stringify(canonical({...b,columns:(b.columns||[]).map(c=>({...c,dimensions:c.dimensions||{}}))}));
+  function blockSignature(b) {
+    const normalized={...b,columns:(b.columns||[]).map(c=>({...c,dimensions:c.dimensions||{}}))};
+    delete normalized._review_id;delete normalized.header_expectations;
+    return JSON.stringify(canonical(normalized));
+  }
   const draftKey = () => currentImport&&currentSheet ? ['sheet-review:v1',activeTenant||'local',currentImport.import_id,currentSheet.name,currentSheet.fingerprint].map(encodeURIComponent).join(':') : null;
   const idFor = () => 'b-'+(globalThis.crypto?.randomUUID?.()||Date.now().toString(36)+'-'+Math.random().toString(36).slice(2));
   function isChartOnly(s) {
@@ -158,6 +161,8 @@
         seed = d.mapping; ui.states = d.states || {}; ui.selected = d.selected; ui.restore = true;
       }
     } catch {}
+    // Range input text is not part of a saved mapping until Apply is clicked.
+    Object.values(ui.states).forEach(state=>{state.rangePending=false;});
     ui.mapping = ensureBlocks(seed);
     const chartCount = s.charts?.chart_count || 0;
     const switcher = chartCount && !chartOnly ? `<div class="view-switch"><button type="button" data-preview-mode="table" aria-pressed="true">数据表</button><button type="button" data-preview-mode="charts" aria-pressed="false">图表 ${chartCount}</button></div>` : '';
