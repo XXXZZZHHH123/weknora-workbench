@@ -89,7 +89,7 @@ def _chart_inventory(path: Path) -> dict:
     return result
 
 
-def parse_workbook(path: Path | str) -> dict:
+def parse_workbook(path: Path | str, *, observations=None, issues=None) -> dict:
     """Read known layouts; fail on header drift; never recalculate or embed data.
 
     Observations retain errors and dated blank cells as null values with source
@@ -102,8 +102,9 @@ def parse_workbook(path: Path | str) -> dict:
         for block in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(block)
     result: dict[str, Any] = {"source_file": str(path), "sha256": digest.hexdigest(),
-        "rule_version": RULE_VERSION, "sheets": [], "series": [], "observations": [],
-        "issues": [], "excluded_regions": [], "charts": _chart_inventory(path)}
+        "rule_version": RULE_VERSION, "sheets": [], "series": [],
+        "observations": [] if observations is None else observations,
+        "issues": [] if issues is None else issues, "excluded_regions": [], "charts": _chart_inventory(path)}
 
     def issue(sheet, cell, code, message, severity="warning"):
         result["issues"].append(dict(sheet=sheet, cell=cell, severity=severity, code=code, message=message))

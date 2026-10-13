@@ -75,13 +75,17 @@ class DataStore:
                 'next_offset':offset+limit if len(charts)>offset+limit else None,
                 'sheets':sorted({c['sheet'] for c in idx['charts']}), 'notice':idx['notice']}
 
-    def list_datasets(self) -> list[dict]:
+    def list_datasets(self, *, include_samples=False) -> list[dict]:
+        from .dataset_kind import dataset_kind
         items = []
         for path in sorted(self.datasets.glob("*/manifest.json")):
             if not re.fullmatch(r"[0-9a-f]{24}", path.parent.name):
                 continue
             doc = json.loads(path.read_text())
-            items.append({k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")})
+            kind = dataset_kind(doc)
+            if kind == 'sample' and not include_samples:
+                continue
+            items.append({'dataset_kind': kind, **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}})
         for item in items:
             coverage = self.manifest(item["dataset_id"]).get("coverage", [])
             item["pending_sheets"] = [s["name"] for s in coverage if s["status"] in {"needs_review", "unsupported", "empty"}]

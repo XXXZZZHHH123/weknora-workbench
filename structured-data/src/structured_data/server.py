@@ -409,7 +409,10 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.get("/api/datasets")
     def datasets():
-        return {"datasets": store.list_datasets()}
+        datasets = store.list_datasets(include_samples=True)
+        samples = [d for d in datasets if d["dataset_kind"] == "sample"]
+        return {"datasets": [d for d in datasets if d["dataset_kind"] == "business"],
+                **({"samples": samples} if samples else {})}
 
     @app.get("/api/datasets/{dataset_id}/series")
     def series(dataset_id: str, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None):
@@ -427,8 +430,12 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.get("/api/datasets/{dataset_id}/report")
     def report(dataset_id: str):
-        issues = json.loads((store._path(dataset_id)/"issues.json").read_text())
-        return {"manifest": store.manifest(dataset_id), "issues": issues[:200], "issues_total": len(issues), "issues_truncated": len(issues)>200}
+        from itertools import islice
+        from .streaming import read_json_array
+        manifest = store.manifest(dataset_id)
+        issues = list(islice(read_json_array(store._path(dataset_id) / "issues.json"), 200))
+        total = manifest["issue_count"]
+        return {"manifest": manifest, "issues": issues, "issues_total": total, "issues_truncated": total > 200}
 
     @app.get("/api/datasets/{dataset_id}/source")
     def source(dataset_id: str):
@@ -492,7 +499,10 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.get("/api/imports")
     def imports():
-        return {"imports": manager.list()}
+        records = manager.list(include_samples=True)
+        samples = [d for d in records if d["dataset_kind"] == "sample"]
+        return {"imports": [d for d in records if d["dataset_kind"] == "business"],
+                **({"samples": samples} if samples else {})}
 
     @app.get("/api/imports/{import_id}")
     def import_review(import_id: str, summary_only: bool = False):
@@ -605,7 +615,7 @@ def create_app(data_dir: str | Path | None = None):
             raise HTTPException(409, "已有导入或确认任务，请等待完成。")
         job_id = uuid.uuid4().hex
         with job_lock:
-            jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, "status": "processing", "stage": "校验映射并保存新版本"}
+            jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, "status": "processing", "stage": "校验当前工作表并增量保存，复用其他已导入工作表"}
         context = contextvars.copy_context()
         threading.Thread(target=context.run, args=(run_confirm, job_id, import_id, body), daemon=True).start()
         return {"id": job_id, "status": "processing"}

@@ -1,7 +1,7 @@
 """Durable workbook review, opt-in schema suggestions, and reusable approved mappings."""
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import shutil
 import threading
+import tempfile
+from contextlib import contextmanager
 
 from .store import DataStore, dump
 
@@ -47,9 +49,13 @@ class ImportManager:
     def get(self, import_id):
         return json.loads((self.path(import_id) / 'review.json').read_text())
 
-    def list(self):
+    def list(self, *, include_samples=False):
+        from .dataset_kind import dataset_kind
         records = [json.loads(p.read_text()) for p in self.directory.glob('*/review.json')]
-        return sorted([{k: d.get(k) for k in ('import_id','source_file','updated_at','dataset_id','summary')} for d in records], key=lambda d: d['updated_at'], reverse=True)
+        return sorted([{'dataset_kind': dataset_kind(d), **{k: d.get(k) for k in
+                       ('import_id', 'source_file', 'updated_at', 'dataset_id', 'summary')}}
+                       for d in records if include_samples or dataset_kind(d) != 'sample'],
+                      key=lambda d: d['updated_at'], reverse=True)
 
     def sheet(self, import_id, name):
         for sheet in self.get(import_id)['sheets']:
@@ -93,7 +99,9 @@ class ImportManager:
             folder.mkdir(exist_ok=True)
             saved = folder / Path(path).name
             shutil.copyfile(path, saved)
-            if hashlib.sha256(saved.read_bytes()).hexdigest() != scan['sha256']:
+            with saved.open('rb') as original:
+                saved_digest = hashlib.file_digest(original, 'sha256').hexdigest()
+            if saved_digest != scan['sha256']:
                 raise ValueError('扫描期间源文件改变，请重新上传。')
             doc = {**scan, 'import_id': import_id, 'source_file': Path(path).name,
                    'dataset_id': None, 'publish_status':'pending', 'updated_at': now()}
@@ -126,55 +134,109 @@ class ImportManager:
         return {'import_id': doc['import_id'], 'dataset_id': doc.get('dataset_id'),
                 'summary': doc['summary'], 'reused': reused}
 
-    def _publish(self, doc):
+    @contextmanager
+    def _records(self):
+        from .streaming import DiskRows
+        with tempfile.TemporaryDirectory(prefix='.import-parse-', dir=self.store.datasets) as temporary:
+            observations = DiskRows(Path(temporary) / 'observations.jsonl')
+            issues = DiskRows(Path(temporary) / 'issues.jsonl')
+            try:
+                yield observations, issues
+            finally:
+                observations.close()
+                issues.close()
+
+    @staticmethod
+    def _mapping_signature(mapping):
+        # Review selection identifiers are browser state, never data versions.
+        def clean(value):
+            if isinstance(value, dict):
+                return {k: clean(v) for k, v in value.items() if not k.startswith('_review')}
+            if isinstance(value, list):
+                return [clean(v) for v in value]
+            return value
+        return json.dumps(clean(mapping), ensure_ascii=False, sort_keys=True)
+
+    def _publish(self, doc, changed_sheet=None):
         from .profiles.cotton import parse_workbook, SHEET_NAMES
-        from .generic_parser import parse_mapped_workbook
+        from .generic_parser import parse_mapped_workbook, validate_mapping
+        from .snapshots import publish_parts
         path = self.source_path(doc)
-        parts = []
-        known_names = set(SHEET_NAMES)
-        if known_names.issubset({s['name'] for s in doc['sheets']}):
-            try:
-                legacy = parse_workbook(path)
-                parts.append(legacy)
-                for sheet in doc['sheets']:
-                    if sheet['name'] in known_names:
-                        sheet['status'] = 'trusted_existing'
-                        sheet['reasons'] = ['沿用已完成原文件核对的三表专用规则；仅支持原先明确的区域。']
-            except ValueError as exc:
-                for sheet in doc['sheets']:
-                    if sheet['name'] in known_names:
-                        sheet['status'] = 'needs_review'
-                        sheet['reasons'].append('原专用规则校验失败：' + str(exc))
-        ready = [s for s in doc['sheets'] if s['status'] in READY]
-        # One workbook pass in the usual case. Isolate a failing sheet without hiding errors.
-        if ready:
-            try:
-                parts.append(parse_mapped_workbook(path, [s['mapping'] for s in ready], scan=doc))
-            except ValueError:
-                for sheet in ready:
+        base_id = doc.get('dataset_id')
+        base = self.store.manifest(base_id) if base_id else None
+        # Older pilot tools sometimes published a newer snapshot without moving
+        # review.json. Preserve that snapshot's other tables when confirming one.
+        if base:
+            for item in self.store.list_datasets(include_samples=True):
+                if item['sha256'] != doc['sha256']:
+                    continue
+                candidate = self.store.manifest(item['dataset_id'])
+                if candidate.get('import_id') == doc['import_id']:
+                    if candidate['imported_at'] > base['imported_at']:
+                        base_id, base = item['dataset_id'], candidate
+                    break
+        base_sheets = {s['name']: s for s in base['sheets']} if base else {}
+        if changed_sheet and base_id != doc.get('dataset_id'):
+            published_coverage = {s['name']: s for s in base.get('coverage', [])}
+            for sheet in doc['sheets']:
+                prior = published_coverage.get(sheet['name'])
+                if sheet['name'] != changed_sheet and sheet['name'] in base_sheets and prior:
+                    sheet.update({k: prior[k] for k in ('status', 'reasons')})
+                    if base_sheets[sheet['name']].get('mapping'):
+                        sheet['mapping'] = base_sheets[sheet['name']]['mapping']
+        legacy_names = set(SHEET_NAMES)
+        has_legacy = legacy_names.issubset({s['name'] for s in doc['sheets']})
+        reuse_legacy = has_legacy and legacy_names.issubset(base_sheets)
+        changed = [s for s in doc['sheets'] if s['status'] in READY and
+                   (s['name'] == changed_sheet if changed_sheet else
+                    s['name'] not in base_sheets or
+                    self._mapping_signature(validate_mapping(s['mapping'], s)) !=
+                    self._mapping_signature(base_sheets[s['name']].get('mapping')))]
+        replaced = [s['name'] for s in changed]
+        metadata = {'coverage': [], 'import_id': doc['import_id'],
+                    'charts': {'status': 'inventory_only', 'visual_content_parsed': False,
+                               'sheets': [{'name': s['name'], **s['charts']} for s in doc['sheets']]}}
+
+        def parts():
+            if has_legacy and not reuse_legacy:
+                with self._records() as (observations, issues):
                     try:
-                        parts.append(parse_mapped_workbook(path, [sheet['mapping']], scan=doc))
+                        parsed = parse_workbook(path, observations=observations, issues=issues)
                     except ValueError as exc:
+                        for sheet in doc['sheets']:
+                            if sheet['name'] in legacy_names:
+                                sheet['status'] = 'needs_review'
+                                sheet['reasons'].append('原专用规则校验失败：' + str(exc))
+                    else:
+                        for sheet in doc['sheets']:
+                            if sheet['name'] in legacy_names:
+                                sheet['status'] = 'trusted_existing'
+                                sheet['reasons'] = ['沿用已完成原文件核对的三表专用规则；仅支持原先明确的区域。']
+                        yield parsed
+            for sheet in changed:
+                if sheet['status'] == 'trusted_existing':
+                    continue
+                with self._records() as (observations, issues):
+                    try:
+                        parsed = parse_mapped_workbook(path, [sheet['mapping']], scan=doc,
+                                                       observations=observations, issues=issues)
+                    except ValueError as exc:
+                        if sheet['name'] == changed_sheet:
+                            raise
                         sheet['status'] = 'needs_review'
                         sheet['reasons'].append('全量校验未通过，未导入此表：' + str(exc))
-        if not parts or not any(p['series'] for p in parts):
-            return
-        merged = {**parts[0]}
-        for field in ('series','observations','issues','sheets','excluded_regions'):
-            merged[field] = [v for part in parts for v in part.get(field, [])]
-        coverage = [{'name': s['name'], 'status': s['status'], 'reasons': s['reasons']} for s in doc['sheets']]
-        used = [s['mapping'] for s in doc['sheets'] if s['status'] in READY]
-        signature = json.dumps({'mappings':used,'legacy':[p['rule_version'] for p in parts], 'coverage':coverage}, ensure_ascii=False,sort_keys=True)
-        merged['rule_version'] = 'workbook-review-v1:' + hashlib.sha256(signature.encode()).hexdigest()[:16]
-        merged['source_file'] = str(path)
-        merged['sha256'] = doc['sha256']
-        merged['coverage'] = coverage
-        merged['import_id'] = doc['import_id']
-        merged['charts'] = {'status':'inventory_only', 'visual_content_parsed':False,
-                            'sheets':[{'name':s['name'],**s['charts']} for s in doc['sheets']]}
-        merged['excluded_regions'] += [{'sheet':s['name'],'range':'entire_sheet','reason':'; '.join(s['reasons'])} for s in doc['sheets'] if s['status'] not in READY | {'trusted_existing'}]
-        result = self.store.publish(merged)
-        doc['dataset_id'] = result['dataset_id']
+                    else:
+                        yield parsed
+            coverage = {s['name']: s for s in base.get('coverage', [])} if base and changed_sheet else {}
+            for sheet in doc['sheets']:
+                if sheet['name'] == changed_sheet or sheet['name'] not in coverage:
+                    coverage[sheet['name']] = {k: sheet[k] for k in ('name', 'status', 'reasons')}
+            metadata['coverage'] = [coverage[s['name']] for s in doc['sheets']]
+
+        result = publish_parts(self.store, path, doc['sha256'], parts(), metadata,
+                               base_id=base_id, replace_sheets=replaced)
+        if result:
+            doc['dataset_id'] = result['dataset_id']
 
     def preview(self, import_id, mapping):
         from .generic_parser import parse_mapped_workbook, validate_mapping
@@ -183,27 +245,47 @@ class ImportManager:
         if sheet['status'] == 'trusted_existing':
             raise ValueError('现有专用规则已验证；请使用其他工作表测试通用映射。')
         mapping = validate_mapping(mapping, sheet)
-        parsed = parse_mapped_workbook(self.source_path(doc), [mapping], scan=doc)
-        blocks=[]
-        for bi,b in enumerate(mapping['blocks']):
-            series=[x for x in parsed['series'] if x.get('block_index')==bi]
-            ids={x['series_id'] for x in series}
-            observations=[x for x in parsed['observations'] if x['series_id'] in ids]
-            # Show both beginning and end so wrong region boundaries are visible.
-            if b.get('layout')=='matrix':
-                sample=[]
-                for item in series:
-                    rows=[o for o in observations if o['series_id']==item['series_id']]
-                    sample.extend(rows if len(rows)<=3 else rows[:1]+rows[-2:])
-            else:
-                sample=observations if len(observations)<=20 else observations[:10]+observations[-10:]
-            blocks.append({'name':b.get('name',f'区块{bi+1}'),'series_count':len(series),
-                           'observation_count':len(observations),'series':series,'sample':sample,
-                           'issues':[x for x in parsed.get('issues',[]) if x.get('cell') in {o['source_cell'] for o in observations}]})
-        return {'blocks':blocks,'excluded_regions':parsed.get('excluded_regions',[]),'mapping':mapping,'series_count':len(parsed['series']),
-                'observation_count':len(parsed['observations']), 'series':parsed['series'][:20],
-                'sample':parsed['observations'][:20], 'issues':parsed.get('issues',[])[:50],
-                'notice':'预览已执行全量结构校验，但业务指标、单位和年度口径仍需人工确认。'}
+        with self._records() as (observations, issues):
+            parsed = parse_mapped_workbook(self.source_path(doc), [mapping], scan=doc,
+                                           observations=observations, issues=issues)
+            blocks = []
+            summaries = {i: {'first': [], 'last': deque(maxlen=10), 'count': 0}
+                         for i in range(len(mapping['blocks']))}
+            matrix_samples = {}
+            sample = []
+            for row in observations:
+                if len(sample) < 20:
+                    sample.append(row)
+                bi = row.get('block_index', 0)
+                summary = summaries[bi]
+                summary['count'] += 1
+                if len(summary['first']) < 10:
+                    summary['first'].append(row)
+                summary['last'].append(row)
+                if mapping['blocks'][bi].get('layout') == 'matrix':
+                    item = matrix_samples.setdefault(row['series_id'], {'first': row, 'last': deque(maxlen=2), 'count': 0})
+                    item['last'].append(row)
+                    item['count'] += 1
+            bounded_issues = issues[:50]
+            for bi, block in enumerate(mapping['blocks']):
+                series = [x for x in parsed['series'] if x.get('block_index') == bi]
+                summary = summaries[bi]
+                if block.get('layout') == 'matrix':
+                    block_sample = []
+                    for item in series[:20]:
+                        rows = matrix_samples.get(item['series_id'])
+                        if rows:
+                            block_sample.extend(([rows['first']] if rows['count'] > 2 else []) + list(rows['last']))
+                else:
+                    block_sample = summary['first'] + list(summary['last'])[max(0, 20-summary['count']):] if summary['count'] > 10 else summary['first']
+                blocks.append({'name': block.get('name', f'区块{bi+1}'), 'series_count': len(series),
+                               'observation_count': summary['count'], 'series': series[:20],
+                               'sample': block_sample, 'issues': bounded_issues[:20]})
+            return {'blocks': blocks, 'excluded_regions': parsed.get('excluded_regions', []),
+                    'mapping': mapping, 'series_count': len(parsed['series']),
+                    'observation_count': len(observations), 'series': parsed['series'][:20],
+                    'sample': sample, 'issues': bounded_issues,
+                    'notice': '预览已执行全量结构校验，但业务指标、单位和年度口径仍需人工确认。'}
 
     def confirm(self, import_id, mapping, save_template=True):
         with self.lock:
@@ -215,18 +297,20 @@ class ImportManager:
             sheet['mapping'] = checked['mapping']
             # Local headers inside the sheet must be rechecked on template reuse too.
             from openpyxl import load_workbook
+            from openpyxl.utils import column_index_from_string
             workbook=load_workbook(self.source_path(doc),read_only=True,data_only=True,keep_links=False)
             try:
                 ws=workbook[sheet['name']]
                 refs={cell for b in sheet['mapping']['blocks'] for c in b['columns'] for cell in c['header_cells']}
                 maxrow=max(int(re.search(r'[0-9]+',cell).group()) for cell in refs) if refs else 1
-                values={cell.coordinate:str(cell.value) for row in ws.iter_rows(max_row=maxrow) for cell in row if getattr(cell,'coordinate',None) in refs}
+                maxcol=max((column_index_from_string(re.match(r'[A-Z]+', cell).group()) for cell in refs), default=1)
+                values={cell.coordinate:str(cell.value) for row in ws.iter_rows(max_row=maxrow, max_col=maxcol) for cell in row if getattr(cell,'coordinate',None) in refs}
                 for b in sheet['mapping']['blocks']:
                     b['header_expectations']={cell:values[cell] for c in b['columns'] for cell in c['header_cells']}
             finally:workbook.close()
             sheet['status'] = 'confirmed'
             sheet['reasons'] = ['用户确认映射；保留原文件及单元格来源。']
-            self._publish(doc)
+            self._publish(doc, changed_sheet=sheet['name'])
             if sheet['status'] != 'confirmed':
                 raise ValueError('确认未通过全量校验，原版本保持有效。')
             if save_template:

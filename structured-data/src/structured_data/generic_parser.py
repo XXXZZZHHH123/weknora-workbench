@@ -42,6 +42,11 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
         raise ValueError('工作表结构指纹变化，旧规则不可直接复用，请重新确认')
     blocks=m.get('blocks')
     if not isinstance(blocks,list) or not blocks:raise ValueError('至少需要一个数据区块')
+    for block in blocks:
+        if isinstance(block, dict):
+            for key in list(block):
+                if key.startswith('_review'):
+                    del block[key]
     used=set()
     meanings=set()
     for b in blocks:
@@ -150,7 +155,7 @@ def _date(value, mode, epoch, date_format=None):
     return None
 
 
-def parse_mapped_workbook(path, mappings, scan=None):
+def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issues=None):
     """Parse bounded regions with row dates or a source-cell date shared by categories."""
     path=Path(path).expanduser().resolve()
     current=scan_workbook(path)
@@ -164,7 +169,8 @@ def parse_mapped_workbook(path, mappings, scan=None):
         if not isinstance(m,dict) or m.get('sheet') not in byname:raise ValueError('映射工作表不存在')
         checked.append(validate_mapping(m,byname[m['sheet']]))
     result={'source_file':str(path),'sha256':current['sha256'],'rule_version':RULE_VERSION,
-        'sheets':[],'series':[],'observations':[],'issues':[],'excluded_regions':[],
+        'sheets':[],'series':[],'observations':[] if observations is None else observations,
+        'issues':[] if issues is None else issues,'excluded_regions':[],
         'charts':{'status':'inventory_only','visual_content_parsed':False,
             'sheets':[dict(sheet=m['sheet'],**byname[m['sheet']]['charts']) for m in checked]}}
     vw=load_workbook(path,read_only=True,data_only=True,keep_links=False)

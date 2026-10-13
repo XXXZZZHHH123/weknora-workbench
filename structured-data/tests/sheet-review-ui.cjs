@@ -185,7 +185,7 @@ const server=http.createServer(async(req,res)=>{
     const previewsBefore=requests.filter(r=>r.path.endsWith('/preview')).length;
     await page.locator('#confirmMapping').click();await page.locator('#confirmDialog').waitFor({state:'visible'});
     assert.match(await page.locator('#confirmList').innerText(),/不导入/);
-    assert.match(await page.locator('#confirmDialog .warning').innerText(),/重新发布/);
+    assert.match(await page.locator('#confirmDialog .warning').innerText(),/仅处理本次修改的工作表/);
     failFullCheck=true;await page.locator('#confirmGo').click();
     await page.waitForFunction(()=>document.querySelector('#mappingFeedback').textContent.includes('模拟完整检查失败'));
     assert.equal(published,false,'A failed full check must preserve the existing published version');
