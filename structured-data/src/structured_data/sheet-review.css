@@ -209,3 +209,33 @@ dialog p{font-size:13px;line-height:1.7;margin:0 0 10px}
 #blockEditor input:disabled,#blockEditor select:disabled{color:#526273;background:#f6f8fa;opacity:1}
 #blockEditor .review-invalid{border:2px solid #d43838!important;background:#fff0f0!important;border-radius:4px}
 .sheet-grid td.review-error-cell{background:#ffe1e1!important;box-shadow:inset 0 0 0 2px #d43838!important;color:#a62020!important}
+.sheet-processing-details{font-size:11px;margin:0 0 8px;color:#74877e;flex:none}
+.sheet-processing-details>summary{cursor:pointer;color:#627b6c}
+.sheet-processing-details p{line-height:1.7;margin:5px 0;max-height:100px;overflow:auto}
+.editor-mode{font-size:10px;color:#84958c;font-weight:400;white-space:nowrap}
+#blockEditor.showing-records #mappingForm,#blockEditor.showing-records #samplePreview,#blockEditor.showing-records>.editor-footer{display:none}
+.stored-data-panel{display:flex;flex-direction:column;flex:1;min-height:0;padding:10px 13px}
+.stored-data-panel[hidden]{display:none}
+.stored-data-panel .result-heading{display:flex;align-items:center;justify-content:space-between;gap:6px;flex:none;padding:0 0 8px}
+.stored-data-panel .result-heading h3{font-size:13px;margin:0;min-width:0;overflow-wrap:anywhere}
+.stored-data-panel .result-heading button{font-size:11px;padding:5px 7px;white-space:nowrap}
+#resultContent{min-height:0;overflow:auto;font-size:11px;line-height:1.6}
+#resultContent>p,#storedRows>p{font-size:11px;color:#72867b;margin:5px 0 9px}
+#resultContent h4{font-size:12px;margin:10px 0 5px}
+#blockEditor .stored-data-panel .scroll{overflow:auto;max-height:230px}
+#blockEditor .stored-data-panel table{table-layout:auto;min-width:540px;font-size:11px}
+#blockEditor .stored-data-panel table th{width:auto;white-space:nowrap}
+.stored-series-picker{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+#blockEditor .stored-series-picker select{width:100%;min-width:0}
+.stored-field-directory>summary{cursor:pointer;padding:6px 0;color:#5a7766}
+#resultContent .result-pagination{gap:5px;flex-wrap:wrap;margin:6px 0}
+#resultContent .result-pagination button,#resultContent [data-stored-series]{font-size:11px;padding:5px 7px}
+#resultContent .record-source-selected{background:#e5efff!important;outline:1px solid #24477f}
+.editor-heading .editor-mode{display:inline!important}
+#blockEditor .stored-record-table{min-width:0!important;table-layout:fixed!important;width:100%}
+#blockEditor .stored-record-table th:first-child{width:85px}
+#blockEditor .stored-record-table th:nth-child(2){width:68px}
+#blockEditor .stored-record-table td{word-break:break-word;font-size:11px}
+.stored-record-table small{display:block;font-size:10px;color:#87998e}
+.stored-record-table details{font-size:10px;line-height:1.6}
+.stored-source{display:flex;align-items:center;gap:3px;flex-wrap:wrap}

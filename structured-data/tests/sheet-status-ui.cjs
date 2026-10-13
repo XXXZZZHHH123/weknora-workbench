@@ -31,9 +31,9 @@ const pending={...imported,name:'待核对表',status:'needs_review',mapping:{..
   assert.equal(await page.locator('[data-sheet-filter="pending"]').getAttribute('aria-pressed'),'true');
   assert.equal(await page.locator('.sheet-tab[aria-pressed="true"] .sheet-state.ready').count(),1,'The selected imported sheet remains visible and green under the pending filter');
   assert.equal(await page.locator('.sheet-tab .sheet-state.pending').count(),1,'Other pending sheets remain yellow');
-  assert.match(await page.locator('.mapping-block.selected .card-state').innerText(),/已导入/);
-  assert.match(await page.locator('#confirmHint').innerText(),/本表已导入/);
-  assert.match(await page.locator('#ackBlockLabel').innerText(),/已导入/);
+  assert.match(await page.locator('.mapping-block.selected .card-state').innerText(),/已可查询/);
+  assert.match(await page.locator('#confirmHint').innerText(),/本表已可查询/);
+  assert.match(await page.locator('#ackBlockLabel').innerText(),/已可查询/);
   assert.equal(await page.locator('#confirmMapping').isDisabled(),true);
   const unit=page.locator('.mapping-block.selected [data-column-field="unit"]');
   await unit.fill('万元');
@@ -53,7 +53,12 @@ const pending={...imported,name:'待核对表',status:'needs_review',mapping:{..
    await page.locator('#allSheets').click();await page.locator('#sheetMenuList [data-sheet-index="1"]').click();
    await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='已导入表'&&document.querySelector('#ackBlock')?.disabled);
    assert.equal(await page.locator('.sheet-tab[aria-pressed="true"] .sheet-state.ready').count(),1);
-   assert.match(await page.locator('.mapping-block.selected .card-state').innerText(),/已导入/);
+   assert.equal(await page.locator('.source-head .badge').innerText(),'已可查询');
+   assert.equal(await page.locator('#previewBlockSample').innerText(),'查看记录');
+   await page.locator('.sheet-processing-details>summary').click();
+   const detail={confirmed:'人工确认',template_ready:'模板复用',auto_ready:'自动识别'}[importedStatus];
+   assert.match(await page.locator('.sheet-processing-details').innerText(),new RegExp(detail));
+   assert.match(await page.locator('.mapping-block.selected .card-state').innerText(),/已可查询/);
   }
   await page.evaluate(()=>{
    const editor=document.querySelector('#mappingEditor'),mapping=JSON.parse(editor.value);
@@ -70,7 +75,7 @@ const pending={...imported,name:'待核对表',status:'needs_review',mapping:{..
   await page.locator('#allSheets').click();await page.locator('#sheetMenuList [data-sheet-index="1"]').click();
   await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='已导入表'&&document.querySelector('#ackBlock')?.disabled);
   assert.equal(await page.locator('.mapping-block.selected [data-range-input]').inputValue(),'B2:B3');
-  assert.match(await page.locator('.mapping-block.selected .card-state').innerText(),/已导入/,'An unapplied range input does not change the published mapping after reopening');
+  assert.match(await page.locator('.mapping-block.selected .card-state').innerText(),/已可查询/,'An unapplied range input does not change the published mapping after reopening');
   assert.deepEqual(errors,[]);
   console.log('PASS: imported tabs stay green, pending tabs stay yellow, fresh status replaces stale summary, saved blocks are imported, edited/restored drafts require review.');
  }finally{await browser.close();}

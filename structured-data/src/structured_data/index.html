@@ -96,7 +96,16 @@ function dimensionsText(dimensions,exclude=[]){return Object.entries(dimensions|
 const layoutLabels={horizontal_matrix:'横向期间矩阵',independent_tables:'多个独立小表',mixed_regions:'多种区域布局',single_header:'单层表头',header_and_units:'表头与单位行',multi_header:'多层表头',parallel_blocks:'多个日期区块',period_or_matrix:'年度、月份或矩阵表',unrecognized:'布局待识别',chart_or_image:'图表或图片',empty:'空白表'};
 const templateLabels={matched:'已匹配并复用',layout_changed:'表头已变化，需要重新确认',source_changed:'文件已变化，独立小表需重新确认',saved:'已保存'};
 const valueLabels={valid:'有效数值',blank:'空白',formula_no_cache:'公式没有保存结果',excel_error:'Excel 错误',unexpected_text:'非数值文字',invalid_value:'无效数值'};
-const statusLabels={trusted_existing:'已导入 · 已验证规则',auto_ready:'已导入 · 自动识别',template_ready:'已导入 · 模板复用',confirmed:'已导入 · 已确认',needs_review:'待确认',empty:'无数据',unsupported:'暂不支持'};
+const statusLabels={trusted_existing:'已可查询',auto_ready:'已可查询',template_ready:'已可查询',confirmed:'已可查询',needs_review:'待核对',empty:'待核对',unsupported:'待核对'};
+const processingDetails={
+ trusted_existing:'规则复用：使用已核验且绑定原文件指纹的导入规则。字段与范围当前只读，来源坐标可定位原表。核验的是读取方法，不代表逐个数值经过业务核实。',
+ auto_ready:'自动识别：系统识别字段与范围，完整检查通过后已保存。映射可调整，修改后需要重新核对并导入。',
+ template_ready:'模板复用：使用此前确认的同结构映射，完整检查通过后已保存。映射可调整，修改后需要重新核对并导入。',
+ confirmed:'人工确认：已在界面确认字段与范围，完整检查通过后已保存。映射可调整，修改后需要重新核对并导入。',
+ needs_review:'字段与范围尚需核对。确认并通过完整检查后，本次选定数据才会保存；此前可查询的数据仍然保留。',
+ empty:'这张工作表没有可导入的单元格数据，无需填写字段映射。原文件仍然保留。',
+ unsupported:'当前文件结构暂不支持直接导入，请按识别说明调整处理方式。原文件仍然保留。'
+};
 function statusBadge(status){const klass=status==='needs_review'?'pending':['empty','unsupported'].includes(status)?'quiet':'';return `<span class="badge ${klass}">${esc(statusLabels[status]||status||'待检查')}</span>`}
 function describe(value){if(value==null)return '';if(typeof value==='string')return value;return JSON.stringify(value,null,2)}
 function reasonsList(items){if(!items)return '';return (Array.isArray(items)?items:[items]).map(item=>`<li>${esc(describe(item))}</li>`).join('')}
@@ -109,7 +118,7 @@ async function selectImport(){const id=$('importSelect').value;if(!id)return;con
 function previewHTML(preview){if(!preview)return '<p class="muted">此工作表暂无预览。</p>';let rows=Array.isArray(preview)?preview:preview.rows;if(!Array.isArray(rows))return `<pre class="scroll compact">${esc(describe(preview))}</pre>`;if(rows.length&&Array.isArray(rows[0]))return `<div class="scroll compact"><table><tbody>${rows.map(row=>`<tr>${row.map(v=>`<td>${v&&typeof v==='object'&&'cell' in v?`<small>${esc(v.cell)}</small><br>${esc(describe(v.value))}`:esc(describe(v))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;return `<pre class="scroll compact">${esc(describe(preview))}</pre>`}
 async function selectSheet(index){if(!currentImport)return;const selected=currentImport.sheets[index];if(!selected)return;const version=++reviewVersion;const importId=currentImport.import_id;const s=await api(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(selected.name)}`);if(version!==reviewVersion)return;currentSheet=s;document.querySelectorAll('[data-sheet-index]').forEach(b=>b.setAttribute('aria-pressed',String(Number(b.dataset.sheetIndex)===index)));renderSheet(s)}
 function dateCandidatesHTML(items){return `<div class="scroll"><table><thead><tr><th>候选日期列</th><th>首个数据行</th><th>样本</th></tr></thead><tbody>${items.map(c=>`<tr><td>${esc(c.column)} 列${c.date_mode==='period_needs_review'?'（年度或月份，需明确口径）':''}</td><td>${esc(c.first_data_row||'待确认')}</td><td>${esc((c.examples||[]).join('、')||'尚未识别完整日期')}</td></tr>`).join('')}</tbody></table></div>`}
-function sheetStatusBadge(s){return s.layout==='chart_or_image'&&s.charts?.chart_count?'<span class="badge">图表 · 查看关联</span>':statusBadge(s.status)}
+function sheetStatusBadge(s){return statusBadge(s.status)}
 function renderSheet(s){
   if(s.layout==='chart_or_image'&&s.charts?.chart_count)s={...s,reasons:['原生图表按实际引用关联源表；请在图表目录查看每条曲线的可查询或待核对状态。']};
   mappingConfirmed=false;mappingBusy=false;
