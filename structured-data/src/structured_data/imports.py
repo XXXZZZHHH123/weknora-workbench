@@ -58,8 +58,15 @@ class ImportManager:
                       key=lambda d: d['updated_at'], reverse=True)
 
     def sheet(self, import_id, name):
-        for sheet in self.get(import_id)['sheets']:
+        doc = self.get(import_id)
+        for sheet in doc['sheets']:
             if sheet['name'] == name:
+                if sheet['status'] == 'trusted_existing':
+                    from .profiles.reviewed import reviewed_mapping, review_display_mapping
+                    reviewed = reviewed_mapping(self.source_path(doc))
+                    configured = next((s for s in (reviewed or {}).get('sheets', []) if s['name'] == name), None)
+                    # Display only the actual fingerprint-bound mapping, never the scanner guess.
+                    sheet['mapping'] = review_display_mapping(configured, sheet) if configured else {'sheet': name, 'fingerprint': sheet['fingerprint'], 'blocks': [], 'view_only': True}
                 return sheet
         raise ValueError('工作表不存在。')
 

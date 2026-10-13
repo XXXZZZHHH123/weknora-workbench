@@ -198,3 +198,14 @@ dialog p{font-size:13px;line-height:1.7;margin:0 0 10px}
 .review-feedback.error small{display:block;color:#805454;margin-top:5px}
 
 #samplePreview .sample-records th:last-child,#samplePreview .sample-records td:last-child{width:48px;white-space:nowrap;word-break:normal}
+.source-click-hint,.review-readonly-note{font-size:11px;line-height:1.6;margin:0;padding:7px 13px;flex:none;color:#698274;background:#f4f8f5;border-bottom:1px solid #e4ebe6}
+.review-readonly-note{background:#f4f7fc;color:#5b708c}
+.field-evidence{display:flex;align-items:center;gap:5px;flex-wrap:wrap;color:#7d9484;font-size:10px}
+.field-evidence .field-origin{display:inline-flex;gap:4px;flex-wrap:wrap;margin:0}
+.field-evidence .field-source{white-space:nowrap;border:1px solid #d7e4db;background:#f2f7f3!important;text-decoration:none;min-height:22px}
+#blockEditor .field-evidence-row td{padding:0 3px 9px}
+.field-evidence .field-raw{margin:0 0 0 auto}
+.field-dimensions{display:block;font-size:10px;color:#71857b;padding-top:3px}
+#blockEditor input:disabled,#blockEditor select:disabled{color:#526273;background:#f6f8fa;opacity:1}
+#blockEditor .review-invalid{border:2px solid #d43838!important;background:#fff0f0!important;border-radius:4px}
+.sheet-grid td.review-error-cell{background:#ffe1e1!important;box-shadow:inset 0 0 0 2px #d43838!important;color:#a62020!important}

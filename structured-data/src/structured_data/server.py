@@ -25,6 +25,7 @@ from .store import DataStore, dump
 from .imports import ImportManager
 from .workspaces import WorkspaceRegistry, Identity, current_identity
 from .review_worker import run_review_task
+from .review_errors import error_location
 
 MAX_UPLOAD = 100 * 1024 * 1024
 
@@ -477,7 +478,7 @@ def create_app(data_dir: str | Path | None = None):
                 jobs[job_id].update(status='completed', result=result)
         except Exception as exc:
             with job_lock:
-                jobs[job_id].update(status='failed', error=str(exc))
+                jobs[job_id].update(status='failed', error=str(exc), **error_location(exc))
         finally:
             path.unlink(missing_ok=True)
             path.parent.rmdir()
@@ -615,7 +616,7 @@ def create_app(data_dir: str | Path | None = None):
                 jobs[job_id].update(status="completed", result=result)
         except Exception as exc:
             with job_lock:
-                jobs[job_id].update(status="failed", error=str(exc))
+                jobs[job_id].update(status="failed", error=str(exc), **error_location(exc))
         finally:
             import_lock.release()
 
@@ -626,7 +627,7 @@ def create_app(data_dir: str | Path | None = None):
                 jobs[job_id].update(status='completed', result=result)
         except Exception as exc:
             with job_lock:
-                jobs[job_id].update(status='failed', error=str(exc))
+                jobs[job_id].update(status='failed', error=str(exc), **error_location(exc))
         finally:
             import_lock.release()
 
@@ -652,7 +653,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
-        return JSONResponse({"detail": str(exc)}, status_code=400)
+        return JSONResponse({"detail": str(exc), **error_location(exc)}, status_code=400)
 
     app.mount("/", mcp_app)
     return app

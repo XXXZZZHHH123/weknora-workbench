@@ -176,3 +176,16 @@ def test_empty_metric_identifies_real_column(tmp_path):
         validate_mapping(mapping,sheet)
     assert 'B 列的指标名称不能为空' in str(caught.value)
     assert '对照左侧原表表头' in str(caught.value)
+
+
+def test_invalid_date_locates_date_and_populated_value_cells(tmp_path):
+    from structured_data.review_errors import ReviewValidationError
+    p=book(tmp_path,[['日期','价格'],[datetime(2023,1,1),1],[datetime(2023,1,2),2]])
+    sheet=candidate(p)
+    wb=load_workbook(p);wb.active['A3']='not a date';wb.save(p)
+    # Rescan keeps an explicit user mapping with a current source fingerprint.
+    scan=scan_workbook(p)
+    mapping=sheet['mapping'];mapping['fingerprint']=scan['sheets'][0]['fingerprint']
+    with pytest.raises(ReviewValidationError) as caught:
+        parse_mapped_workbook(p,[mapping],scan=scan)
+    assert caught.value.review_target=={'sheet':sheet['name'],'block_index':0,'field':'date_column','cells':['A3','B3']}

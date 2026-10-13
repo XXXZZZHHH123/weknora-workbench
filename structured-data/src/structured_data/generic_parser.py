@@ -14,6 +14,7 @@ import json
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils.datetime import from_excel
+from .review_errors import ReviewValidationError
 
 from .scanner import complete_date, scan_workbook
 
@@ -24,12 +25,12 @@ def has_period_number(value):
     return isinstance(value,(int,float)) and not isinstance(value,bool) and isfinite(value) and value==int(value)
 
 
-def _column(value, width):
+def _column(value, width, *, field="column"):
     if not isinstance(value,str) or not re.fullmatch('[A-Z]{1,3}',value):
-        raise ValueError('列号必须使用大写Excel列名，例如 A、AB')
+        raise ReviewValidationError('列号必须使用大写Excel列名，例如 A、AB', field=field, column=value)
     col=column_index_from_string(value)
     if not 1<=col<=width:
-        raise ValueError(f'列 {value} 超出工作表范围')
+        raise ReviewValidationError(f'列 {value} 超出工作表范围', field=field, column=value)
     return col
 
 
@@ -61,52 +62,52 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                 continue
             shared=b.get('date_mode')=='shared_cell'
             undated=b.get('date_mode')=='none'
-            dc=None if shared or undated else _column(b.get('date_column'),sheet_scan['columns'])
+            dc=None if shared or undated else _column(b.get('date_column'),sheet_scan['columns'],field='date_column')
             if shared:
                 cell=b.get('date_cell','')
                 match=re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)',cell)
-                if not match or int(match.group(2))>sheet_scan['rows']:raise ValueError('共用日期必须填写原表内的日期单元格，例如 AG15')
+                if not match or int(match.group(2))>sheet_scan['rows']:raise ReviewValidationError('共用日期必须填写原表内的日期单元格，例如 AG15', field='date_cell')
                 _column(match.group(1),sheet_scan['columns'])
-                if b.get('data_end_row') is None:raise ValueError('共用日期区块必须明确结束行，不能延伸到整页末尾')
+                if b.get('data_end_row') is None:raise ReviewValidationError('共用日期区块必须明确结束行，不能延伸到整页末尾', field='data_end_row')
             if b.get('category_column'):
-                _column(b['category_column'],sheet_scan['columns'])
-                if not isinstance(b.get('category_name','类别'),str) or not b.get('category_name','类别').strip():raise ValueError('类别名称不能为空')
+                _column(b['category_column'],sheet_scan['columns'],field='category_column')
+                if not isinstance(b.get('category_name','类别'),str) or not b.get('category_name','类别').strip():raise ReviewValidationError('类别名称不能为空', field='category_name')
             if b.get('date_mode') not in ('date','excel_serial','shared_cell','custom','none','period'):
-                raise ValueError('请选择日期、自定义日期格式、期间标签或无时间字段；年度用期间标签，不转换成某一天')
+                raise ReviewValidationError('请选择日期、自定义日期格式、期间标签或无时间字段；年度用期间标签，不转换成某一天', field='date_mode')
             if b.get('date_mode')=='custom' or shared and b.get('date_format'):_format_pattern(b.get('date_format',''))
-            if b.get('date_mode') in ('none','period') and b.get('data_end_row') is None:raise ValueError('无日期或期间标签表必须明确结束行')
+            if b.get('date_mode') in ('none','period') and b.get('data_end_row') is None:raise ReviewValidationError('无日期或期间标签表必须明确结束行', field='data_end_row')
             start=b.get('data_start_row');end=b.get('data_end_row')
             if type(start) is not int or not 1<=start<=sheet_scan['rows']:
-                raise ValueError(f'数据起始行超出范围：当前填写 {start!r}，本表共 {sheet_scan["rows"]} 行。请在“修改时间与类别来源”中填写有效起始行。')
+                raise ReviewValidationError(f'数据起始行超出范围：当前填写 {start!r}，本表共 {sheet_scan["rows"]} 行。请在“修改时间与类别来源”中填写有效起始行。', field='data_start_row')
             if end is not None and (type(end) is not int or not start<=end<=sheet_scan['rows']):
-                raise ValueError(f'数据结束行超出范围：当前填写 {end!r}，应在第 {start} 至 {sheet_scan["rows"]} 行之间。请修改结束行或重新框选数据范围。')
+                raise ReviewValidationError(f'数据结束行超出范围：当前填写 {end!r}，应在第 {start} 至 {sheet_scan["rows"]} 行之间。请修改结束行或重新框选数据范围。', field='data_end_row')
             headers=b.get('header_rows',[])
             if not isinstance(headers,list) or not headers:
-                raise ValueError('表头行为空：还没有指定指标名称所在的行。请展开“修改时间与类别来源”，填写原表的表头行号；不要填写数据行。')
+                raise ReviewValidationError('表头行为空：还没有指定指标名称所在的行。请展开“修改时间与类别来源”，填写原表的表头行号；不要填写数据行。', field='header_rows')
             if any(type(r) is not int or not 1<=r<start for r in headers):
-                raise ValueError(f'表头行必须在数据起始行之前：当前表头 {headers!r}，数据从第 {start} 行开始。请将表头设为原表指标名称所在行，或将数据起始行移到表头之后。')
+                raise ReviewValidationError(f'表头行必须在数据起始行之前：当前表头 {headers!r}，数据从第 {start} 行开始。请将表头设为原表指标名称所在行，或将数据起始行移到表头之后。', field='header_rows')
             expectations=b.get('header_expectations',{})
             if not isinstance(expectations,dict):raise ValueError('表头核对信息必须是对象')
             for cell,expected in expectations.items():
                 match=re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)',cell) if isinstance(cell,str) else None
-                if not match or int(match.group(2)) not in headers or not isinstance(expected,str):raise ValueError('表头核对信息必须指向声明的表头行')
+                if not match or int(match.group(2)) not in headers or not isinstance(expected,str):raise ReviewValidationError('表头核对信息必须指向声明的表头行', field='header_rows', cells=[cell])
                 _column(match.group(1),sheet_scan['columns'])
             columns=b.get('columns')
-            if not isinstance(columns,list) or not columns:raise ValueError('区块没有指标列：尚未选择要保存的数值列。请添加数值列，或将不需要导入的区块设为“这块不导入”。')
+            if not isinstance(columns,list) or not columns:raise ReviewValidationError('区块没有指标列：尚未选择要保存的数值列。请添加数值列，或将不需要导入的区块设为“这块不导入”。', field='columns')
             for c in columns:
                 if not isinstance(c,dict):raise ValueError('指标列必须是对象')
                 ci=_column(c.get('column'),sheet_scan['columns'])
                 if b.get('category_column')==c.get('column'):raise ValueError('类别列不能同时作为数值指标列')
-                if ci==dc:raise ValueError(f'{c.get("column")} 列被同时选为日期和数值指标。请在“修改时间与类别来源”中指定真正的日期列，或从指标中移除日期列。')
+                if ci==dc:raise ReviewValidationError(f'{c.get("column")} 列被同时选为日期和数值指标。请在“修改时间与类别来源”中指定真正的日期列，或从指标中移除日期列。', field='date_column', cells=[f'{c.get("column")}{start}'])
                 key=(ci,start,end or sheet_scan['rows'])
                 if any(ci==prior[0] and start<=prior[2] and key[2]>=prior[1] for prior in used):
-                    raise ValueError(f'{c.get("column")} 列第 {start}–{end or sheet_scan["rows"]} 行与另一区块重复或重叠。同一单元格不能重复导入，请调整两个区块的范围，或关闭多余区块。')
+                    raise ReviewValidationError(f'{c.get("column")} 列第 {start}–{end or sheet_scan["rows"]} 行与另一区块重复或重叠。同一单元格不能重复导入，请调整两个区块的范围，或关闭多余区块。', field='column', column=c.get('column'), cells=[f'{c.get("column")}{start}'])
                 used.add(key)
                 metric=c.get('metric')
-                if not isinstance(metric,str) or not metric.strip():raise ValueError(f'{c.get("column")} 列的指标名称不能为空。请对照左侧原表表头，在右侧“指标名称”中填写名称；原表没有名称时请先确认该列含义。')
+                if not isinstance(metric,str) or not metric.strip():raise ReviewValidationError(f'{c.get("column")} 列的指标名称不能为空。请对照左侧原表表头，在右侧“指标名称”中填写名称；原表没有名称时请先确认该列含义。', field='metric', column=c.get('column'), cells=c.get('header_cells', []))
                 c['metric']=metric.strip()
                 if c.get('unit') is not None and (not isinstance(c['unit'],str) or not c['unit'].strip()):
-                    raise ValueError(f'{c.get("column")} 列的单位填写无效。请按原表填写单位；原表没有注明时留空，不要只填写空格。')
+                    raise ReviewValidationError(f'{c.get("column")} 列的单位填写无效。请按原表填写单位；原表没有注明时留空，不要只填写空格。', field='unit', column=c.get('column'))
                 dims=c.get('dimensions',{})
                 if not isinstance(dims,dict) or any(not isinstance(k,str) or not isinstance(v,(str,int,float,bool)) for k,v in dims.items()):
                     raise ValueError('dimensions 必须是简单键值对象')
@@ -119,7 +120,7 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                 for cell in cells:
                     mo=re.fullmatch('([A-Z]+)([0-9]+)',cell)
                     _column(mo.group(1),sheet_scan['columns'])
-                    if int(mo.group(2)) not in headers:raise ValueError(f'表头来源 {cell} 不在已声明的表头行 {headers!r} 内。请在“修改时间与类别来源”中核对表头行号，或修正该指标的表头来源单元格。')
+                    if int(mo.group(2)) not in headers:raise ReviewValidationError(f'表头来源 {cell} 不在已声明的表头行 {headers!r} 内。请在“修改时间与类别来源”中核对表头行号，或修正该指标的表头来源单元格。', field='header_rows', cells=[cell])
                 c['header_cells']=cells
                 if c.get('exchange_rate') is not None:
                     from .catalog_search import currency_pair
@@ -127,7 +128,7 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                         raise ValueError('汇率元数据须含不同的三字母 base_currency/quote_currency 和真实表头 evidence_cells')
         except ValueError as exc:
             label = b.get('name') if isinstance(b, dict) else None
-            raise ValueError(f"工作表「{sheet_scan['name']}」· 区块 {bi+1}{'（'+str(label)+'）' if label else ''}：{exc}") from exc
+            raise ReviewValidationError(f"工作表「{sheet_scan['name']}」· 区块 {bi+1}{'（'+str(label)+'）' if label else ''}：{exc}", target=getattr(exc, "review_target", {}), sheet=sheet_scan["name"], block_index=bi) from exc
     from .mapping_identity import distinguish_source_columns
     distinguish_source_columns(m)
     return m
@@ -208,10 +209,10 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
             anchor_dates={}
             for bi,b in rowblocks:
                 for cell,expected in b.get('header_expectations',{}).items():
-                    if str(refvalues.get(cell))!=expected:raise ValueError(f'{name}!{cell} 区块表头已变化：原规则为 {expected!r}，原文件实际为 {refvalues.get(cell)!r}。模板不能直接复用，请重新识别或核对该单元格后更新映射。')
+                    if str(refvalues.get(cell))!=expected:raise ReviewValidationError(f'{name}!{cell} 区块表头已变化：原规则为 {expected!r}，原文件实际为 {refvalues.get(cell)!r}。模板不能直接复用，请重新识别或核对该单元格后更新映射。', sheet=name, block_index=bi, field='header_rows', cells=[cell])
                 if b['date_mode']=='shared_cell':
                     value=_date(refvalues.get(b['date_cell']),'custom' if b.get('date_format') else 'date',vw.epoch,b.get('date_format'))
-                    if not value:raise ValueError(f'{name}!{b["date_cell"]} 不是完整日期，不能作为整个小表的日期')
+                    if not value:raise ReviewValidationError(f'{name}!{b["date_cell"]} 不是完整日期，不能作为整个小表的日期', sheet=name, block_index=bi, field='date_cell', cells=[b['date_cell']])
                     anchor_dates[bi]=value
             seen={};series_map={};last_dates={};block_counts=Counter()
             def add_series(bi,b,c,category,category_cell):
@@ -258,7 +259,7 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                     if cc:
                         if isinstance(category,(int,float)) and not isinstance(category,bool):category=str(category)
                         if category is None and not has_data:continue
-                        if not isinstance(category,str) or not category.strip():raise ValueError(f'{name}!{category_cell} 类别为空或无效，不能把不同类别的数据合并')
+                        if not isinstance(category,str) or not category.strip():raise ReviewValidationError(f'{name}!{category_cell} 类别为空或无效，不能把不同类别的数据合并', sheet=name, block_index=bi, field='category_column', cells=[category_cell])
                         category=category.strip()
                     for c in b['columns']:
                         ci=column_index_from_string(c['column']);cell,fc=row[ci-1],frow[ci-1];raw=cell.value
@@ -268,12 +269,12 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                             if raw is not None or formula is not None:
                                 previous=last_dates.get(bi)
                                 note=f'上一条有效日期位于{previous}。' if previous else ''
-                                raise ValueError(f'{name}!{datecell} 日期无效，但同一行{coord}仍有内容{str(raw)[:100]}，该行不是整行空白。{note}已阻断整页导入，请核对区块范围。')
+                                raise ReviewValidationError(f'{name}!{datecell} 日期无效，但同一行{coord}仍有内容{str(raw)[:100]}，该行不是整行空白。{note}已阻断整页导入，请核对区块范围。', sheet=name, block_index=bi, field='date_column', cells=[datecell or f'{b["date_column"]}{rn}', coord])
                             continue
                         last_dates[bi]=datecell
                         item=add_series(bi,b,c,category,category_cell);sid=item['series_id']
                         record_key=period if period_mode else (coord if undated else dateval)
-                        if record_key in seen[sid]:raise ValueError(f'{name}!{datecell} 指标 {c["metric"]} / {category or ""} 出现重复日期 {dateval}，已阻断整页导入')
+                        if record_key in seen[sid]:raise ReviewValidationError(f'{name}!{datecell} 指标 {c["metric"]} / {category or ""} 出现重复日期 {dateval}，已阻断整页导入', sheet=name, block_index=bi, field='date_column', cells=[datecell])
                         seen[sid].add(record_key)
                         if cc:item['category_provenance'][coord]=category_cell
                         value=None
@@ -292,7 +293,7 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                 result['issues'].append({'sheet':name,'cell':firsts[code],'severity':'warning','code':code,'count':count,'message':f'{label} 共{count}处，保留来源；不填零、不重算。'})
             if formula_count:result['issues'].append({'sheet':name,'cell':None,'severity':'warning','code':'cached_formula_values','message':f'{formula_count}个公式使用原文件缓存，未重算。'})
             for bi,b in rowblocks:
-                if not block_counts[bi]:raise ValueError(f'{name} 区块{bi+1}没有任何可导入记录。请用“预览几条记录”检查所选范围是否包含有效数据；目录、空白或说明区块可设为“这块不导入”。')
+                if not block_counts[bi]:raise ReviewValidationError(f'{name} 区块{bi+1}没有任何可导入记录。请用“预览几条记录”检查所选范围是否包含有效数据；目录、空白或说明区块可设为“这块不导入”。', sheet=name, block_index=bi, field='data_start_row')
             ranges=[]
             for b in m['blocks']:
                 cols=[column_index_from_string(c['column']) for c in b['columns']]

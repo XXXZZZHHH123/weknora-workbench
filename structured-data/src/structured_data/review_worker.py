@@ -20,6 +20,8 @@ import sys
 import tempfile
 import time
 
+from .review_errors import ReviewValidationError, error_location
+
 
 DEFAULT_MEMORY_MB = 768
 DEFAULT_TIMEOUT_SECONDS = 300
@@ -199,7 +201,7 @@ def _review_child(request, result_path, memory_bytes, timeout_seconds):
     except MemoryError:
         _write_result(result_path, {"ok": False, "error": "任务超过内存限制，原有版本仍可使用。"})
     except ValueError as exc:
-        _write_result(result_path, {"ok": False, "error": _safe_business_error(exc, request)})
+        _write_result(result_path, {"ok": False, "error": _safe_business_error(exc, request), **error_location(exc)})
     except Exception:
         # Unexpected library errors may contain absolute paths or other private
         # runtime details; return a stable notice instead of raw exception text.
@@ -317,8 +319,9 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
             except (OSError, ValueError):
                 raise ValueError("工作表任务没有返回完整结果，请重试。") from None
             if not isinstance(payload, dict) or not payload.get("ok"):
-                raise ValueError(payload.get("error", "工作表任务失败。")
-                                 if isinstance(payload, dict) else "工作表任务结果无效。")
+                raise ReviewValidationError(payload.get("error", "工作表任务失败。")
+                                 if isinstance(payload, dict) else "工作表任务结果无效。",
+                                 target=payload.get("review_target") if isinstance(payload, dict) else None)
             result = payload.get("result")
             if not isinstance(result, dict) or "observations" in result:
                 raise ValueError("工作表任务结果无效。")

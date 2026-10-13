@@ -204,3 +204,20 @@ def parse_workbook(path: Path | str, *, observations=None, issues=None, mapping=
         values.close()
         formulas.close()
     return result
+
+
+def review_display_mapping(configured, sheet_scan):
+    """Project the verified mapping into a read-only source inspector, never ingest it."""
+    import re
+    groups = {}
+    headers = configured['header_expectations']
+    for col, dc, sid, metric, dimensions, unit, cells in configured['specs']:
+        group = groups.setdefault(dc, {'name': metric, 'date_mode': 'date',
+            'date_column': get_column_letter(dc),
+            'header_rows': sorted({int(re.search(r'[0-9]+$', cell).group()) for cell in headers}),
+            'data_start_row': configured['start_row'], 'data_end_row': sheet_scan['rows'],
+            'columns': []})
+        group['columns'].append({'column': get_column_letter(col), 'metric': metric,
+            'series_id': sid, 'dimensions': dimensions, 'unit': unit, 'header_cells': cells})
+    return {'sheet': sheet_scan['name'], 'fingerprint': sheet_scan['fingerprint'],
+            'blocks': list(groups.values()), 'view_only': True}

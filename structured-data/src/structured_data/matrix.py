@@ -1,4 +1,5 @@
 """Generic, review-only discovery and parsing of horizontal period matrices."""
+from .review_errors import ReviewValidationError
 import re
 from hashlib import sha256
 from math import isfinite
@@ -51,12 +52,12 @@ def discover_matrices(ws, max_rows=200):
 
 def validate_matrix(b, sheet):
     from .generic_parser import _column
-    rc=_column(b.get('row_label_column'),sheet['columns'])
+    rc=_column(b.get('row_label_column'),sheet['columns'],field='row_label_column')
     start,end=b.get('data_start_row'),b.get('data_end_row')
     if type(start) is not int or type(end) is not int or not 1<=start<=end<=sheet['rows']:
-        raise ValueError('矩阵须填写明确且有效的数据起止行')
+        raise ReviewValidationError('矩阵须填写明确且有效的数据起止行', field='data_start_row' if type(start) is not int or not 1<=start<=sheet['rows'] else 'data_end_row')
     headers=b.get('header_rows',[])
-    if not headers or any(type(r) is not int or not 1<=r<start for r in headers):raise ValueError(f'矩阵表头行必须在数据之前：当前表头 {headers!r}，数据从第 {start} 行开始。请填写原表期间或版本标签所在行，且放在数据起始行之前。')
+    if not headers or any(type(r) is not int or not 1<=r<start for r in headers):raise ReviewValidationError(f'矩阵表头行必须在数据之前：当前表头 {headers!r}，数据从第 {start} 行开始。请填写原表期间或版本标签所在行，且放在数据起始行之前。', field='header_rows')
     if not isinstance(b.get('columns'),list) or not b['columns']:raise ValueError('矩阵至少需要一列期间或版本')
     seen=set();cols=set()
     for c in b['columns']:
@@ -64,7 +65,7 @@ def validate_matrix(b, sheet):
         if col==rc or col in cols:raise ValueError('矩阵数值列重复或与指标名称列重叠')
         cols.add(col)
         p=c.get('period')
-        if not isinstance(p,str) or not p.strip() or p.strip() in seen:raise ValueError('矩阵期间/版本标签必须填写且不能重复；相同年度的不同预测版本请分别命名')
+        if not isinstance(p,str) or not p.strip() or p.strip() in seen:raise ReviewValidationError('矩阵期间/版本标签必须填写且不能重复；相同年度的不同预测版本请分别命名', field='period', column=c.get('column'))
         c['period']=p.strip();seen.add(c['period'])
         c.setdefault('header_cells',[f"{c['column']}{headers[-1]}"])
         if not c['header_cells']:raise ValueError('矩阵须保留列标签来源')
@@ -100,17 +101,17 @@ def parse_matrix(ws,fs,b,bi,sheet,result):
     for cell,expected in b.get('header_expectations',{}).items():
         # Headers may be sparse; always verify exact coordinates on reuse.
         c=column_index_from_string(re.match('[A-Z]+',cell).group());r=int(re.search('[0-9]+',cell).group())
-        if str(rows[r-1][c-1].value)!=expected:raise ValueError(f'{sheet}!{cell} 区块表头已变化，模板不能直接复用')
+        if str(rows[r-1][c-1].value)!=expected:raise ReviewValidationError(f'{sheet}!{cell} 区块表头已变化，模板不能直接复用', sheet=sheet, block_index=bi, field='header_rows', cells=[cell])
     rules={r['row']:r for r in b.get('row_rules',[])};seen=set();n=0
     for rn in range(b['data_start_row'],end+1):
         labelcell=f"{b['row_label_column']}{rn}"
         rawlabel=rows[rn-1][column_index_from_string(b['row_label_column'])-1].value
         values=[rows[rn-1][column_index_from_string(c['column'])-1].value for c in b['columns']]
         if rawlabel is None and not any(v is not None for v in values):continue
-        if not isinstance(rawlabel,str) or not rawlabel.strip():raise ValueError(f'{sheet}!{labelcell} 指标名称为空或无效，请缩小矩阵范围')
+        if not isinstance(rawlabel,str) or not rawlabel.strip():raise ReviewValidationError(f'{sheet}!{labelcell} 指标名称为空或无效，请缩小矩阵范围', sheet=sheet, block_index=bi, field='row_label_column', cells=[labelcell])
         rule=rules.get(rn,{})
         metric=rule.get('metric') or rawlabel.strip()
-        if metric in seen:raise ValueError(f'{sheet} 矩阵指标名称重复：{metric}；请拆分区块或明确指标名称')
+        if metric in seen:raise ReviewValidationError(f'{sheet} 矩阵指标名称重复：{metric}；请拆分区块或明确指标名称', sheet=sheet, block_index=bi, field='row_label_column', cells=[labelcell])
         seen.add(metric)
         sid='generic.'+sha256(f'{sheet}|matrix|{bi}|{rn}|{metric}'.encode()).hexdigest()[:20]
         dims={**b.get('dimensions',{}),'block':f'mapped_{bi+1}'}

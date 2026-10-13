@@ -183,3 +183,17 @@ def test_oversized_request_is_rejected_before_start(tmp_path):
     with pytest.raises(ValueError, match="配置过大"):
         review_worker.run_review_task(tmp_path, "preview", import_id="a" * 24,
                                      mapping={"text": "x" * review_worker.MAX_REQUEST_BYTES})
+
+
+def test_spawn_preserves_structured_error_location_and_existing_data(tmp_path):
+    from structured_data.review_errors import ReviewValidationError
+    root = tmp_path / 'data'
+    source = make_source(root)
+    imported = review_worker.run_review_task(root, 'import', path=source)
+    manager = ImportManager(root)
+    mapping = manager.sheet(imported['import_id'], '复杂表')['mapping']
+    mapping['blocks'][0]['header_rows'] = []
+    with pytest.raises(ReviewValidationError) as caught:
+        review_worker.run_review_task(root, 'preview', import_id=imported['import_id'], mapping=mapping)
+    assert caught.value.review_target == {'sheet': '复杂表', 'block_index': 0, 'field': 'header_rows', 'cells': []}
+    assert manager.get(imported['import_id'])['dataset_id'] == imported['dataset_id']

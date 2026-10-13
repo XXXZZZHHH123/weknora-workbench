@@ -101,3 +101,36 @@ def test_pending_scope_never_falls_back_to_other_table(tmp_path):
     assert result['series']==[]
     assert result['match_mode']=='pending_scope'
     assert result['pending_sheets'][0]['name']=='USDA棉花平衡表-全球'
+
+
+def test_verified_sheet_inspector_uses_actual_fingerprint_bound_mapping(tmp_path, monkeypatch):
+    from structured_data.profiles import reviewed
+    import hashlib
+    root=tmp_path/'data'
+    root.mkdir()
+    source=tmp_path/'source.xlsx'
+    workbook(source)
+    manager=ImportManager(root)
+    imported=manager.ingest(source)
+    doc=manager.get(imported['import_id'])
+    scan=next(s for s in doc['sheets'] if s['name']=='简单表')
+    scan['status']='trusted_existing'
+    manager._save(doc)
+    config_dir=tmp_path/'rules'
+    (config_dir/'reviewed_mappings').mkdir(parents=True)
+    monkeypatch.setattr(reviewed,'__file__',str(config_dir/'profiles'/'reviewed.py'))
+    digest=hashlib.sha256(source.read_bytes()).hexdigest()
+    rule={'sha256':digest,'sheets':[{'name':'简单表','start_row':2,
+        'header_expectations':{'A1':'日期','B1':'价格'},
+        'specs':[[2,1,'verified.price','已保存字段',{'来源':'实际核验规则'},'元',['B1']]]}]}
+    (config_dir/'reviewed_mappings'/(digest+'.json')).write_text(json.dumps(rule))
+    display=manager.sheet(imported['import_id'],'简单表')['mapping']
+    assert display['view_only'] is True
+    assert display['blocks'][0]['columns'][0]['metric']=='已保存字段'
+    assert display['blocks'][0]['columns'][0]['series_id']=='verified.price'
+    assert display['blocks'][0]['columns'][0]['header_cells']==['B1']
+    assert display['blocks'][0]['data_start_row']==2
+    assert manager.get(imported['import_id'])['sheets'][0]['mapping'] != display
+    with manager.source_path(doc).open('ab') as stream:
+        stream.write(b'changed')
+    assert manager.sheet(imported['import_id'],'简单表')['mapping']['blocks']==[]

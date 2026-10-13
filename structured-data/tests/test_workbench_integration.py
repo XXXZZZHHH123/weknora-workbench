@@ -78,3 +78,40 @@ def test_shared_login_checks_identity_and_model_settings_redact_key(tmp_path,mon
         payload.update(api_key='',model='changed-model')
         assert c.post('/api/model-settings',json=payload,headers=good).status_code==200
         assert read_model(tmp_path)['model']=='changed-model' and read_model(tmp_path)['api_key']=='test-private-key'
+
+
+def test_review_error_locations_survive_http_and_background_job(tmp_path, monkeypatch):
+    from structured_data.imports import ImportManager
+    import time
+    class AuthClient:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def get(self, url, headers):
+            return httpx.Response(200, json={'data': {'user': {'id': 'review-user', 'tenant_id': 10000},
+                'memberships': [{'tenant_id': 10000, 'role': 'owner'}]}})
+    monkeypatch.setattr('httpx.AsyncClient', AuthClient)
+    monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
+    source=tmp_path/'review-fixture.xlsx'
+    wb=Workbook();ws=wb.active;ws.title='录入表'
+    ws.append(['日期','数量']);ws.append([datetime(2023,1,1),1]);ws.append([datetime(2023,1,2),2]);wb.save(source)
+    manager=ImportManager(tmp_path)
+    imported=manager.ingest(source)
+    mapping=manager.sheet(imported['import_id'],'录入表')['mapping']
+    mapping['blocks'][0]['header_rows']=[]
+    headers={'Authorization':'Bearer fixture','Origin':'http://testserver','X-Tenant-ID':'10000'}
+    with TestClient(create_app(tmp_path)) as client:
+        response=client.post(f'/api/imports/{imported["import_id"]}/sample-preview',json={'mapping':mapping},headers=headers)
+        assert response.status_code==400
+        assert response.json()['review_target']['field']=='header_rows'
+        assert response.json()['review_target']['sheet']=='录入表'
+        job=client.post(f'/api/imports/{imported["import_id"]}/preview?background=true',json={'mapping':mapping},headers=headers)
+        assert job.status_code==200
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            result=client.get('/api/jobs/'+job.json()['id'],headers=headers).json()
+            if result['status']=='failed': break
+            time.sleep(0.05)
+        assert result['status']=='failed'
+        assert result['review_target']==response.json()['review_target']
+    assert manager.get(imported['import_id'])['dataset_id']==imported['dataset_id']

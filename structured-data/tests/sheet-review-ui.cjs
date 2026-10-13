@@ -18,7 +18,8 @@ const mapping = {sheet:'数据汇总',fingerprint:'fixture-small',blocks:[
 const small={name:'数据汇总',rows:15,columns:8,status:'needs_review',layout:'mixed_regions',fingerprint:'fixture-small',mapping,regions:[],reasons:['发现三个独立区块，请核对。']};
 const large={name:'大数据表',rows:500000,columns:100,status:'needs_review',layout:'single_header',fingerprint:'fixture-large',mapping:{sheet:'大数据表',fingerprint:'fixture-large',blocks:[{name:'大表记录',date_mode:'date',date_column:'A',header_rows:[1],data_start_row:2,data_end_row:null,columns:[{column:'B',metric:'测试数值',unit:null,header_cells:['B1']}]}]},regions:[],reasons:[]};
 const chartOnly={name:'库存图',rows:1,columns:1,status:'needs_review',layout:'chart_or_image',fingerprint:'fixture-chart',mapping:{sheet:'库存图',fingerprint:'fixture-chart',blocks:[]},charts:{chart_count:2,image_count:1},regions:[],reasons:[]};
-const sheets=()=>[{...small,status:published?'confirmed':'needs_review'},large,chartOnly];
+const trusted={...small,name:'已核验规则表',status:'trusted_existing',mapping:{...mapping,sheet:'已核验规则表',view_only:true,blocks:[mapping.blocks[0]]}};
+const sheets=()=>[{...small,status:published?'confirmed':'needs_review'},large,chartOnly,trusted];
 const col=n=>{let s='';for(;n;n=Math.floor((n-1)/26))s=String.fromCharCode(65+(n-1)%26)+s;return s;};
 function view(sheet,sr,sc,nr,nc){
   const rows=sheet.rows,cols=sheet.columns,er=Math.min(rows,sr+nr-1),ec=Math.min(cols,sc+nc-1),cells=[];
@@ -47,7 +48,7 @@ const server=http.createServer(async(req,res)=>{
   else if(url.pathname==='/api/datasets/saved-fixture/series')result={series:['C','F','U','X'].map(c=>({series_id:'saved-'+c,metric:'20天原料',sheet:small.name,dimensions:{原表列:c},unit:'元/吨',header_cells:[c+'3']})),total:4,next_offset:null};
   else if(url.pathname==='/api/query'){if(storedDelay)await new Promise(resolve=>setTimeout(resolve,storedDelay));const c=url.searchParams.get('series_id').replace('saved-',''),offset=+url.searchParams.get('offset');result={series:{metric:'20天原料',dimensions:{原表列:c},unit:'元/吨'},record_count:26,valid_count:26,rows:[{date:'2026-09-04',value:12055+offset,raw_value:12055+offset,source_cell:c+(4+offset),date_cell:'A'+(4+offset),value_status:'valid'}]};}
   else if(url.pathname.endsWith('/preview'))result={id:'fixture-check',status:'processing'};
-  else if(url.pathname==='/api/jobs/fixture-check')result=failFullCheck?{id:'fixture-check',status:'failed',error:'模拟完整检查失败'}:{id:'fixture-check',status:'completed',result:{series_count:3,observation_count:20,mapping:{...mapping,blocks:[{...mapping.blocks[0],columns:[{column:'C',metric:'20天原料',unit:'元/吨',dimensions:{原表列:'C'}},{column:'F',metric:'20天原料',unit:'元/吨',dimensions:{原表列:'F'}}]}]},blocks:[{name:'销售明细',series_count:2,observation_count:10,series:[],sample:[],issues:[]}],sample:[],issues:[]}};
+  else if(url.pathname==='/api/jobs/fixture-check')result=failFullCheck?{id:'fixture-check',status:'failed',error:'模拟完整检查失败',review_target:{sheet:small.name,block_index:0,field:'date_column',cells:['A4','C4']}}:{id:'fixture-check',status:'completed',result:{series_count:3,observation_count:20,mapping:{...mapping,blocks:[{...mapping.blocks[0],columns:[{column:'C',metric:'20天原料',unit:'元/吨',dimensions:{原表列:'C'}},{column:'F',metric:'20天原料',unit:'元/吨',dimensions:{原表列:'F'}}]}]},blocks:[{name:'销售明细',series_count:2,observation_count:10,series:[],sample:[],issues:[]}],sample:[],issues:[]}};
   else if(url.pathname.endsWith('/confirm')){published=true;result={id:'fixture-publish',status:'processing'};}
   else if(url.pathname==='/api/jobs/fixture-publish')result={status:'completed',result:{}};
   else if(url.pathname.startsWith('/api/imports/'))result={import_id:'123456789012345678901234',source_file:'销售数据.xlsx',dataset_id:'saved-fixture',sheets:sheets()};
@@ -118,6 +119,8 @@ const server=http.createServer(async(req,res)=>{
     assert.match(await page.locator('#mappingFeedback').innerText(),/C 列的指标名称为空/);
     assert.equal(await page.locator('#mappingFeedback').getAttribute('role'),'alert');
     assert.match(await page.locator('#mappingFeedback').innerText(),/原文件和当前已导入版本仍然保留/);
+    await page.locator('.mapping-block.selected [data-column-field="metric"].review-invalid').waitFor();
+    assert.equal(await page.locator('[data-cell-row="3"][data-cell-col="3"]').evaluate(el=>el.classList.contains('review-error-cell')),true);
     await nameInput.fill(savedName);await page.locator('#ackBlock').check();await nameInput.fill(savedName+'（核对）');
     assert.equal(await page.locator('#ackBlock').isChecked(),false,'Editing a field name invalidates the previous acknowledgement');
     await nameInput.fill(savedName);
@@ -149,7 +152,7 @@ const server=http.createServer(async(req,res)=>{
     assert.equal(await page.locator('#previewMapping').count(),0);
     assert.equal(await page.locator('#sheetSearch').isVisible(),true);
     assert.deepEqual(await page.locator('[data-sheet-filter]').evaluateAll(els=>els.map(e=>e.dataset.sheetFilter)),['all','pending','charts']);
-    assert.equal(await page.locator('.sheet-tab').count(),3);
+    assert.equal(await page.locator('.sheet-tab').count(),4);
     assert.match(await page.locator('.sheet-tab[aria-pressed="true"] small').innerText(),/15 行 × 8 列 · 3 个区块/);
     assert.equal(await page.locator('.sheet-grid th.row-number').count(),15);
     assert.equal(await page.locator('.range-map').count(),0);
@@ -169,7 +172,7 @@ const server=http.createServer(async(req,res)=>{
     await page.locator('.mapping-block[open] .block-settings>summary').click();await page.locator('.mapping-block[open] [data-field="name"]').fill('销售明细（核对）');
     await page.locator('#sheetSearch').fill('大数据表');
     assert.equal(await page.locator('#sheetMenuList [data-sheet-index]').count(),1,'All-sheet search filters the menu');
-    assert.equal(await page.locator('.sheet-tab').count(),3,'Menu search does not remove the current worksheet tabs');
+    assert.equal(await page.locator('.sheet-tab').count(),4,'Menu search does not remove the current worksheet tabs');
     await page.locator('#sheetMenuList [data-sheet-index="1"]').click();await page.locator('.sheet-grid th.row-number').first().waitFor();
     await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='大数据表'&&document.querySelectorAll('.sheet-grid th.row-number').length===60);
     assert((await page.locator('.sheet-grid td').count())<=1440,'Large sheet must render a bounded window');
@@ -218,6 +221,8 @@ const server=http.createServer(async(req,res)=>{
     assert.match(await page.locator('#confirmDialog .warning').innerText(),/仅处理本次修改的工作表/);
     failFullCheck=true;await page.locator('#confirmGo').click();
     await page.waitForFunction(()=>document.querySelector('#mappingFeedback').textContent.includes('模拟完整检查失败'));
+    await page.locator('.mapping-block.selected [data-field="date_column"].review-invalid').waitFor();
+    assert.equal(await page.locator('[data-cell-row="4"][data-cell-col="1"]').evaluate(el=>el.classList.contains('review-error-cell')),true,'Background errors carry cell coordinates');
     assert.equal(published,false,'A failed full check must preserve the existing published version');
     assert.equal(requests.filter(r=>r.path.endsWith('/confirm')).length,0,'Full-check failure must not send a publish request');
     failFullCheck=false;await page.locator('#confirmMapping').click();
@@ -234,6 +239,20 @@ const server=http.createServer(async(req,res)=>{
     assert.equal(requests.filter(r=>r.path.includes('sheet-view')&&r.params.name==='库存图').length,0);
     if(process.argv[3])await page.locator('#importReview').screenshot({path:process.argv[3]});
     assert.equal(errors.length,0,errors.join('\n'));
+    await page.locator('[data-sheet-filter="all"]').click();
+    await page.locator('.sheet-tab[data-sheet-index="3"]').click();
+    await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='已核验规则表');
+    assert.equal(await page.locator('#blockEditor').isVisible(),true,'Verified rules still show their actual fields and sources');
+    assert.match(await page.locator('.editor-heading').innerText(),/只读/);
+    assert.match(await page.locator('.source-click-hint').innerText(),/左侧原表.*高亮/);
+    assert.equal(await page.locator('.mapping-block.selected [data-column-field="metric"]').first().isDisabled(),true);
+    assert.equal(await page.locator('#confirmMapping').count(),0,'A read-only inspector cannot publish scanner guesses');
+    assert.equal(await page.locator('#addMappingBlock').count(),0);
+    const origins=await page.locator('.mapping-block.selected .field-origin').first().evaluate(el=>{const r=el.getBoundingClientRect();return {width:r.width,parent:el.closest('td').colSpan};});
+    assert.equal(origins.parent,4,'Sources span the complete row below field inputs');
+    await page.locator('.mapping-block.selected [data-source-cell="C3"]').click();
+    assert.equal(await page.locator('[data-cell-row="3"][data-cell-col="3"]').evaluate(el=>el.classList.contains('located-cell')),true,'Read-only source links remain clickable');
+    if(process.argv[5])await page.locator('#importReview').screenshot({path:process.argv[5]});
     published=false;
     const host=await browser.newPage({viewport:{width:1500,height:1000}});
     await host.route('**/*',route=>new Promise((resolve,reject)=>{
