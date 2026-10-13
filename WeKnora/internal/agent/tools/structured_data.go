@@ -26,9 +26,10 @@ const ToolStructuredData = "structured_data"
 // or a shared agent's execution tenant. No operation writes research state.
 type StructuredDataTool struct {
 	BaseTool
-	endpoint string
-	key      []byte
-	client   *http.Client
+	endpoint       string
+	sourceQuestion string
+	key            []byte
+	client         *http.Client
 }
 
 func NewStructuredDataTool() *StructuredDataTool {
@@ -40,6 +41,9 @@ func NewStructuredDataTool() *StructuredDataTool {
 		key:      bytes.TrimSpace(key), client: &http.Client{Timeout: 30 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
 }
+
+// BindSourceQuestion records the real human request for this per-turn tool.
+func (t *StructuredDataTool) BindSourceQuestion(question string) { t.sourceQuestion = question }
 
 func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
 	caller := types.CallerFromContext(ctx)
@@ -75,6 +79,14 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	for _, field := range []string{"tenant_id", "user_id", "role", "token", "api_key", "url", "endpoint", "data_dir"} {
 		if _, exists := arguments[field]; exists {
 			return nil, fmt.Errorf("结构化表格参数不接受身份、凭据或服务配置")
+		}
+	}
+	if t.sourceQuestion != "" && (operation == "query_series" || operation == "analyze_table" || operation == "compare_series" || operation == "convert_price") {
+		question, _ := json.Marshal(t.sourceQuestion)
+		arguments["source_question"] = question
+		args, err = json.Marshal(map[string]any{"operation": operation, "arguments": arguments})
+		if err != nil {
+			return nil, fmt.Errorf("结构化来源口径参数无效")
 		}
 	}
 	identity := map[string]any{"user_id": caller.UserID, "tenant_id": caller.TenantID,

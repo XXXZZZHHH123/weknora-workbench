@@ -49,6 +49,9 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 			mode = "semantic"
 		}
 		output := r.modelKnowledgeOutput(mode, mapsValue(result.Data["results"]), result.Output)
+		if scope := r.documentScopeFooter(result.Data); scope != "" && strings.HasSuffix(output, "</retrieval>") {
+			output = strings.TrimSuffix(output, "</retrieval>") + scope + "</retrieval>"
+		}
 		return r.annotateModeFallbacks(output, result.Data)
 	case "knowledge_chunks_list":
 		return r.modelKnowledgeChunksOutput(result.Data, result.Output)
@@ -353,6 +356,7 @@ func (r *sourceRegistry) modelKnowledgeChunksOutput(data map[string]interface{},
 		return output
 	}
 	var footer strings.Builder
+	footer.WriteString(r.documentScopeFooter(data))
 	if query := stringValue(data, "query"); query != "" {
 		fmt.Fprintf(&footer, "  <matches query=\"%s\" count=\"%d\"", escapeAttr(query), intValue(data, "match_count"))
 		if boolValue(data, "truncated") {
@@ -361,6 +365,9 @@ func (r *sourceRegistry) modelKnowledgeChunksOutput(data map[string]interface{},
 		footer.WriteString(" />\n")
 	} else if _, ok := data["next_offset"]; ok {
 		remaining := intValue(data, "total_chunks") - (intValue(data, "offset") + intValue(data, "fetched_chunks"))
+		if pageTotal := intValue(data, "page_chunks"); pageTotal > 0 {
+			remaining = pageTotal - (intValue(data, "offset") + intValue(data, "fetched_chunks"))
+		}
 		if remaining < 0 {
 			remaining = 0
 		}
@@ -371,6 +378,31 @@ func (r *sourceRegistry) modelKnowledgeChunksOutput(data map[string]interface{},
 		output = strings.TrimSuffix(output, "</retrieval>") + footer.String() + "</retrieval>"
 	}
 	return output
+}
+
+func (r *sourceRegistry) documentScopeFooter(data map[string]interface{}) string {
+	scope, ok := data["document_scope"].(map[string]interface{})
+	if !ok || !boolValue(scope, "matched") {
+		return ""
+	}
+	document := escapeAttr(r.RegisterDocument(stringValue(scope, "knowledge_id")))
+	page := intValue(scope, "page")
+	var footer strings.Builder
+	fmt.Fprintf(&footer, "  <document_scope document=\"%s\" matched=\"true\"", document)
+	if page > 0 {
+		fmt.Fprintf(&footer, " physical_page=\"%d\" visual_evidence=\"%t\"", page, boolValue(scope, "has_visual_evidence"))
+	}
+	footer.WriteString(" />\n")
+	if page <= 0 {
+		footer.WriteString("  <hint>Use only the requested document. Do not substitute evidence from another report with a similar title or chart name. No physical page was selected.</hint>\n")
+		return footer.String()
+	}
+	footer.WriteString("  <hint>Use only the requested document and physical page. Do not replace this chart with a same-name chart from another report. If values are estimated from a chart, label them as approximate.</hint>\n")
+	footer.WriteString("  <chart_interpretation>Preserve exact legend labels. A confirmed futures YYMM code describes contract year and delivery month; it does not establish a cross-year crop year, fiscal year or reporting period. Do not invent such a year range. Curves' own rightmost endpoints may have different dates: compare them as individual endpoints, never as an exact same-date or same-period ranking without source evidence. Count all legend lines separately from other lines after excluding the requested one. Answer each requested item only from the chart evidence; do not invent missing dates, years or values.</chart_interpretation>\n")
+	if _, more := data["next_offset"]; more {
+		fmt.Fprintf(&footer, "  <hint>This physical page is not fully read. Continue read_document(id=%s, page=%d, offset=%d); chart legends, tables or endpoint evidence may be in the remaining chunks. Do not treat omitted content as absent.</hint>\n", document, page, intValue(data, "next_offset"))
+	}
+	return footer.String()
 }
 
 // writeDocumentInfo renders the read_document metadata header as one
@@ -495,7 +527,10 @@ func renderKnowledgeChunks(mode string, chunks []modelChunk, info map[string]int
 					continue
 				}
 				caption := stringValue(image, "caption")
-				fmt.Fprintf(&b, "      ![%s](%s)\n", caption, imageURL)
+				fmt.Fprintf(&b, "      ![%s](%s)\n", escapeText(caption), escapeText(imageURL))
+				if ocr := stringValue(image, "ocr_text"); ocr != "" {
+					fmt.Fprintf(&b, "      <image_ocr>%s</image_ocr>\n", escapeText(ocr))
+				}
 			}
 			b.WriteString("    </chunk>\n")
 		}

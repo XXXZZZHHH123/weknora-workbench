@@ -15,7 +15,10 @@ import (
 // AnydocReader converts office documents to markdown in this process, using
 // the anydoc converter instead of the Python docreader service.
 //
-// Embedded images are rendered in place from the document model. PDFs with no
+// PowerPoint uses the configured DocReader for stable slide numbers and cached
+// OLE chart previews, which the native document model omits. Without DocReader
+// its existing native conversion remains available. Other embedded images are
+// rendered in place from the document model. PDFs with no
 // text layer (scanned exam papers) cannot be converted by anydoc; when a
 // fallback reader is configured (typically the builtin docreader) those files
 // are handed off so pages can be rasterized for OCR.
@@ -23,8 +26,8 @@ type AnydocReader struct {
 	// extractImages controls whether embedded images are parsed and placed
 	// in the markdown. Off halves parse time for text-only indexing.
 	extractImages bool
-	// fallback is used when a PDF has no extractable text. Nil means the
-	// conversion error is returned to the caller.
+	// fallback handles PowerPoint page/chart extraction and scanned PDFs.
+	// Nil retains the native conversion/error behavior.
 	fallback interfaces.DocReader
 }
 
@@ -46,6 +49,9 @@ func (r *AnydocReader) Read(ctx context.Context, req *types.ReadRequest) (*types
 	format, ok := anydoc.FormatForFile(req.FileType, req.FileName)
 	if !ok {
 		return nil, fmt.Errorf("anydoc engine does not support file type %q", fileTypeOf(req))
+	}
+	if (format == "ppt" || format == "pptx") && r.canFallback() {
+		return r.readPowerPoint(ctx, req, format)
 	}
 
 	converted, err := anydoc.Convert(req.FileContent, anydoc.Options{
@@ -113,13 +119,48 @@ func (r *AnydocReader) readScannedPDF(ctx context.Context, req *types.ReadReques
 }
 
 func (r *AnydocReader) canFallback() bool {
-	if r.fallback == nil {
+	return docReaderConnected(r.fallback)
+}
+
+func docReaderConnected(reader interfaces.DocReader) bool {
+	if reader == nil {
 		return false
 	}
-	if connected, ok := r.fallback.(interface{ IsConnected() bool }); ok {
+	if connected, ok := reader.(interface{ IsConnected() bool }); ok {
 		return connected.IsConnected()
 	}
 	return true
+}
+
+func isPowerPointFormat(fileType string) bool {
+	format, ok := anydoc.FormatForFile(fileType, "")
+	return ok && (format == "ppt" || format == "pptx")
+}
+
+func (r *AnydocReader) readPowerPoint(ctx context.Context, req *types.ReadRequest, format string) (*types.ReadResult, error) {
+	logger.Infof(ctx, "[anydoc] %q uses DocReader for PowerPoint slide and cached-chart provenance", req.FileName)
+	remoteReq := *req
+	remoteReq.ParserEngine = "markitdown"
+	remoteReq.FileType = format
+	result, err := r.fallback.Read(ctx, &remoteReq)
+	if err != nil {
+		// A configured chart parser failure must not become text-only native
+		// success: that would once again hide the missing figures/pages.
+		return nil, fmt.Errorf("PowerPoint page/chart parsing failed for %q: %w", req.FileName, err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("PowerPoint page/chart parser returned no result for %q", req.FileName)
+	}
+	if result.Metadata == nil {
+		result.Metadata = map[string]string{}
+	}
+	if result.Metadata["parser"] == "" {
+		result.Metadata["parser"] = "markitdown"
+	}
+	result.Metadata["requested_parser"] = AnydocEngineName
+	result.Metadata["anydoc_fallback"] = "powerpoint_pages_and_cached_charts"
+	result.Metadata["source_format"] = format
+	return result, nil
 }
 
 // imageRefsFromAssets turns extracted assets into ImageRefs that match the

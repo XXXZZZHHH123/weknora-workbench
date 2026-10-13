@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
@@ -69,6 +70,13 @@ func TestCurrentTableEvidenceStillRequiresNumericReviewWithDocumentCitation(t *t
 	e := newTestEngine(t, model)
 	e.toolRegistry = agenttools.NewToolRegistry()
 	e.toolRegistry.RegisterTool(tool)
+	var emitted string
+	e.eventBus.On(event.EventAgentFinalAnswer, func(_ context.Context, evt event.Event) error {
+		if d, ok := evt.Data.(event.AgentFinalAnswerData); ok {
+			emitted += d.Content
+		}
+		return nil
+	})
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{
 		{Name: "structured_data", Result: &types.ToolResult{Success: true, Output: `{"kind":"structured_analysis","status":"ok","rows":[[789]]}`}},
 		{Name: "read_document", Result: &types.ToolResult{Success: true, Data: map[string]interface{}{"chunks": []map[string]interface{}{{"chunk_id": "chunk-phrase", "content": "文档引用"}}}}},
@@ -77,6 +85,7 @@ func TestCurrentTableEvidenceStillRequiresNumericReviewWithDocumentCitation(t *t
 	_, err := e.executeLoop(context.Background(), state, "Excel最大值是多少？", []chat.Message{{Role: "user", Content: "Excel最大值是多少？"}}, nil, "session", "message")
 	require.NoError(t, err)
 	require.Equal(t, "最大值789。", state.FinalAnswer)
+	require.Equal(t, state.FinalAnswer, emitted, "unverified numeric drafts must never stream into the answer")
 	require.Len(t, model.calls, 3, "the unsupported current table value must be repaired")
 }
 

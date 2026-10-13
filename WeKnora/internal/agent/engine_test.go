@@ -837,6 +837,120 @@ func TestExecuteLoop_EmptyThenNonEmpty_ShouldRetryAndComplete(t *testing.T) {
 	assert.Equal(t, "Here is the answer.", state.FinalAnswer)
 }
 
+func TestFragmentAfterHeavyReasoningRepairsWithoutStreamingFragment(t *testing.T) {
+	for _, fragment := range []string{"-", "周", ""} {
+		t.Run(fmt.Sprintf("fragment_%q", fragment), func(t *testing.T) {
+			model := &mockChat{responses: []mockResponse{
+				{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("图表推理", 100)}, {ResponseType: types.ResponseTypeAnswer, Content: fragment, Done: true, FinishReason: "stop"}}},
+				{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "红线为2401；图右端约200至300元/吨。", Done: true, FinishReason: "stop"}}},
+			}}
+			engine := newTestEngine(t, model)
+			var emitted string
+			engine.eventBus.On(event.EventAgentFinalAnswer, func(_ context.Context, evt event.Event) error {
+				if d, ok := evt.Data.(event.AgentFinalAnswerData); ok {
+					emitted += d.Content
+				}
+				return nil
+			})
+			state := &types.AgentState{}
+			_, err := engine.executeLoop(context.Background(), state, "周报第12页图表红线代表什么？", emptyMessages(), nil, "sess", "msg")
+			require.NoError(t, err)
+			require.True(t, state.IsComplete)
+			require.Equal(t, "红线为2401；图右端约200至300元/吨。", state.FinalAnswer)
+			require.Equal(t, state.FinalAnswer, emitted, "no fragment may leak into the completed answer")
+			require.Len(t, model.calls, 2)
+			require.NotNil(t, model.opts[1].Thinking)
+			require.False(t, *model.opts[1].Thinking)
+			require.Zero(t, model.opts[1].ThinkingBudgetTokens)
+			require.LessOrEqual(t, model.opts[1].MaxCompletionTokens, 4096)
+		})
+	}
+}
+
+func TestFragmentRepairIsBoundedAndFallsBackClearly(t *testing.T) {
+	model := &mockChat{}
+	for i := 0; i < 3; i++ {
+		model.responses = append(model.responses, mockResponse{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("推理", 200)}, {ResponseType: types.ResponseTypeAnswer, Content: "-", Done: true, FinishReason: "stop"}}})
+	}
+	engine := newTestEngine(t, model)
+	state := &types.AgentState{}
+	var emitted string
+	engine.eventBus.On(event.EventAgentFinalAnswer, func(_ context.Context, evt event.Event) error {
+		if d, ok := evt.Data.(event.AgentFinalAnswerData); ok {
+			emitted += d.Content
+		}
+		return nil
+	})
+	_, err := engine.executeLoop(context.Background(), state, "请解释该周报图表", emptyMessages(), nil, "sess", "msg")
+	require.NoError(t, err)
+	require.Len(t, model.calls, 3)
+	require.Contains(t, state.FinalAnswer, "模型未能生成完整回答")
+	require.Equal(t, state.FinalAnswer, emitted)
+	require.NotEqual(t, "-", state.FinalAnswer)
+}
+
+func TestShortCompleteAnswersRemainValidAfterReasoning(t *testing.T) {
+	for _, test := range []struct{ query, answer string }{{"结果是多少？", "6"}, {"是否成立？", "是"}, {"Is it true?", "yes"}, {"只回答一个字：周报的首字是什么？", "周"}} {
+		model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("reasoning ", 100)}, {ResponseType: types.ResponseTypeAnswer, Content: test.answer, Done: true, FinishReason: "stop"}}}}}
+		engine := newTestEngine(t, model)
+		state := &types.AgentState{}
+		_, err := engine.executeLoop(context.Background(), state, test.query, []chat.Message{{Role: "user", Content: test.query}}, nil, "sess", "msg")
+		require.NoError(t, err)
+		require.Equal(t, test.answer, state.FinalAnswer)
+		require.Len(t, model.calls, 1)
+	}
+}
+
+func TestFinalSynthesisRepairsFragmentsBeforeEmitting(t *testing.T) {
+	for _, recover := range []bool{true, false} {
+		t.Run(fmt.Sprint(recover), func(t *testing.T) {
+			model := &mockChat{}
+			for i := 0; i < 3; i++ {
+				answer := "周"
+				if recover && i == 1 {
+					answer = "红线代表2401合约年度。"
+				}
+				model.responses = append(model.responses, mockResponse{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("reasoning", 100)}, {ResponseType: types.ResponseTypeAnswer, Content: answer, Done: true, FinishReason: "stop"}}})
+			}
+			engine := newTestEngine(t, model)
+			state := &types.AgentState{}
+			var emitted string
+			engine.eventBus.On(event.EventAgentFinalAnswer, func(_ context.Context, evt event.Event) error {
+				if d, ok := evt.Data.(event.AgentFinalAnswerData); ok {
+					emitted += d.Content
+				}
+				return nil
+			})
+			require.NoError(t, engine.streamFinalAnswerToEventBus(context.Background(), "第12页周报图表红线代表什么？", state, "sess", emptyMessages()))
+			require.Equal(t, state.FinalAnswer, emitted)
+			if recover {
+				require.Equal(t, "红线代表2401合约年度。", state.FinalAnswer)
+				require.Len(t, model.calls, 2)
+			} else {
+				require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
+				require.Len(t, model.calls, 3)
+			}
+			for _, opts := range model.opts {
+				require.NotNil(t, opts.Thinking)
+				require.False(t, *opts.Thinking)
+				require.Equal(t, "none", opts.ToolChoice)
+			}
+		})
+	}
+}
+
+func TestFinalSynthesisCannotInventCurrentStructuredNumbers(t *testing.T) {
+	model := &mockChat{responses: []mockResponse{
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "合计999万吨。", Done: true, FinishReason: "stop"}}},
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "合计775万吨。", Done: true, FinishReason: "stop"}}},
+	}}
+	engine := newTestEngine(t, model)
+	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{{Name: "structured_data", Result: &types.ToolResult{Success: true, Output: `{"kind":"structured_analysis","status":"ok","rows":[[775]]}`}}}}}}
+	require.NoError(t, engine.streamFinalAnswerToEventBus(context.Background(), "产量加进口合计多少？", state, "sess", emptyMessages()))
+	require.Equal(t, "合计775万吨。", state.FinalAnswer)
+	require.Len(t, model.calls, 2)
+}
+
 // ---------------------------------------------------------------------------
 // TC5: FinishReason propagation through streamThinkingToEventBus
 // ---------------------------------------------------------------------------

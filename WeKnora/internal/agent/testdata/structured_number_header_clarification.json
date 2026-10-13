@@ -1,0 +1,1708 @@
+{
+  "answer": "**“20天原料”在原表中是同名多列字段，需你指定口径后才能取数。**（来源：`棉花数据库(2).xlsx`，工作表「纱布利润」；单位按表头标注为元/吨）\n\n| 原表列 | 表头 | 取值来源（原表公式引用） | 公式单元格 |\n|---|---|---|---|\n| C | 20天原料 | = B 列（表头：3128级棉花） | C26 `=B6` |\n| F | 20天原料 | = E 列（表头：双29棉花） | F26 `=E6` |\n| U | 20天原料 | = T 列（表头：CC Index 3128B） | U26 `=T6` |\n| X | 20天原料 | = W 列（表头：双29棉花，另一价格源） | X26 `=W6` |\n\n四列的取值来源属于不同棉价来源与不同品级，数值互不相同，不能合并相加。\n\n**数值尚未取得**：查询工具在识别到同名多口径后要求先澄清，未返回任何数值结果，因此本轮不给出最新值或区间统计。件内核验仅显示该工作表已解析区间止于 2023-09-21（第 2823 行），区间完整性与年度口径仍以你选定的列再计算为准。\n\n请指定用哪一列（C / F / U / X）及所需时间范围（最新值或某区间均值等），我据此从完整区间计算并附单元格来源。",
+  "user_query": "20天原料",
+  "tool_results": [
+    {
+      "dataset_id": "b3e746ccf6612d67b13e3cee",
+      "series": [
+        {
+          "series_id": "generic.5ccb95be3d2410d0bead",
+          "sheet": "纱布利润",
+          "metric": "20天原料",
+          "dimensions": {
+            "原表列": "C",
+            "block": "mapped_1"
+          },
+          "unit": "元/吨",
+          "unit_status": "explicit",
+          "header_cells": [
+            "C1",
+            "C2"
+          ],
+          "date_mode": "date",
+          "region_name": "区块1",
+          "block_index": 0,
+          "description": "纱布利润 / 20天原料；时间标签取A列；单位：元/吨",
+          "record_count": 2821,
+          "valid_count": 1874,
+          "first_date": "2016-01-01",
+          "last_date": "2023-09-21",
+          "first_valid_date": "2016-01-24",
+          "last_valid_date": "2023-09-21",
+          "source_context": {
+            "source_column": "C",
+            "headers": [
+              {
+                "cell": "C1",
+                "value": "20天原料"
+              },
+              {
+                "cell": "C2",
+                "value": "元/吨"
+              }
+            ],
+            "formula_source": {
+              "cell": "C26",
+              "formula": "=B6",
+              "references": [
+                {
+                  "sheet": "纱布利润",
+                  "reference": "B6",
+                  "columns": [
+                    "B"
+                  ],
+                  "fields": [
+                    {
+                      "column": "B",
+                      "headers": [
+                        {
+                          "cell": "B1",
+                          "value": "3128级棉花"
+                        },
+                        {
+                          "cell": "B2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.ac6614f3fafb0223c0b8",
+                      "metric": "3128级棉花",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "B",
+                        "headers": [
+                          {
+                            "cell": "B1",
+                            "value": "3128级棉花"
+                          },
+                          {
+                            "cell": "B2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "B2499",
+                          "formula": "=VLOOKUP(A2499,TTEB价格!A:D,2,0)",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "A2499",
+                              "columns": [
+                                "A"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "A",
+                                  "headers": [
+                                    {
+                                      "cell": "A1",
+                                      "value": "目录"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "notice": "表头与公式引用来自保留的原文件及已保存公式；不执行公式，不推定业务含义、自然日或交易日，不因同名认定同源。"
+          }
+        },
+        {
+          "series_id": "generic.08f0f90b86ab21d1aff7",
+          "sheet": "纱布利润",
+          "metric": "20天原料",
+          "dimensions": {
+            "原表列": "F",
+            "block": "mapped_1"
+          },
+          "unit": "元/吨",
+          "unit_status": "explicit",
+          "header_cells": [
+            "F1",
+            "F2"
+          ],
+          "date_mode": "date",
+          "region_name": "区块1",
+          "block_index": 0,
+          "description": "纱布利润 / 20天原料；时间标签取A列；单位：元/吨",
+          "record_count": 2821,
+          "valid_count": 1874,
+          "first_date": "2016-01-01",
+          "last_date": "2023-09-21",
+          "first_valid_date": "2016-01-24",
+          "last_valid_date": "2023-09-21",
+          "source_context": {
+            "source_column": "F",
+            "headers": [
+              {
+                "cell": "F1",
+                "value": "20天原料"
+              },
+              {
+                "cell": "F2",
+                "value": "元/吨"
+              }
+            ],
+            "formula_source": {
+              "cell": "F26",
+              "formula": "=E6",
+              "references": [
+                {
+                  "sheet": "纱布利润",
+                  "reference": "E6",
+                  "columns": [
+                    "E"
+                  ],
+                  "fields": [
+                    {
+                      "column": "E",
+                      "headers": [
+                        {
+                          "cell": "E1",
+                          "value": "双29棉花"
+                        },
+                        {
+                          "cell": "E2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.6401864b1b97dd050830",
+                      "metric": "双29棉花",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "E",
+                        "headers": [
+                          {
+                            "cell": "E1",
+                            "value": "双29棉花"
+                          },
+                          {
+                            "cell": "E2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "E6",
+                          "formula": "=B6+300",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "B6",
+                              "columns": [
+                                "B"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "B",
+                                  "headers": [
+                                    {
+                                      "cell": "B1",
+                                      "value": "3128级棉花"
+                                    },
+                                    {
+                                      "cell": "B2",
+                                      "value": "元/吨"
+                                    }
+                                  ],
+                                  "series_id": "generic.ac6614f3fafb0223c0b8",
+                                  "metric": "3128级棉花",
+                                  "unit": "元/吨",
+                                  "source_context": {
+                                    "source_column": "B",
+                                    "headers": [
+                                      {
+                                        "cell": "B1",
+                                        "value": "3128级棉花"
+                                      },
+                                      {
+                                        "cell": "B2",
+                                        "value": "元/吨"
+                                      }
+                                    ],
+                                    "formula_source": {
+                                      "cell": "B2499",
+                                      "formula": "=VLOOKUP(A2499,TTEB价格!A:D,2,0)",
+                                      "references": [
+                                        {
+                                          "sheet": "纱布利润",
+                                          "reference": "A2499",
+                                          "columns": [
+                                            "A"
+                                          ],
+                                          "fields": [
+                                            {
+                                              "column": "A",
+                                              "headers": [
+                                                {
+                                                  "cell": "A1",
+                                                  "value": "目录"
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "notice": "表头与公式引用来自保留的原文件及已保存公式；不执行公式，不推定业务含义、自然日或交易日，不因同名认定同源。"
+          }
+        },
+        {
+          "series_id": "generic.bffe88a08594b31f405e",
+          "sheet": "纱布利润",
+          "metric": "20天原料利润",
+          "dimensions": {
+            "原表列": "K",
+            "block": "mapped_1"
+          },
+          "unit": "元/吨",
+          "unit_status": "explicit",
+          "header_cells": [
+            "K1",
+            "K2"
+          ],
+          "date_mode": "date",
+          "region_name": "区块1",
+          "block_index": 0,
+          "description": "纱布利润 / 20天原料利润；时间标签取A列；单位：元/吨",
+          "record_count": 2821,
+          "valid_count": 1395,
+          "first_date": "2016-01-01",
+          "last_date": "2023-09-21",
+          "first_valid_date": "2016-01-25",
+          "last_valid_date": "2023-09-21",
+          "source_context": {
+            "source_column": "K",
+            "headers": [
+              {
+                "cell": "K1",
+                "value": "20天原料利润"
+              },
+              {
+                "cell": "K2",
+                "value": "元/吨"
+              }
+            ],
+            "formula_source": {
+              "cell": "K27",
+              "formula": "=$H27-C27*1.1-5800",
+              "references": [
+                {
+                  "sheet": "纱布利润",
+                  "reference": "$H27",
+                  "columns": [
+                    "H"
+                  ],
+                  "fields": [
+                    {
+                      "column": "H",
+                      "headers": [
+                        {
+                          "cell": "H1",
+                          "value": "国产C32S"
+                        },
+                        {
+                          "cell": "H2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.9b1e1a7acc0b8071c85a",
+                      "metric": "国产C32S",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "H",
+                        "headers": [
+                          {
+                            "cell": "H1",
+                            "value": "国产C32S"
+                          },
+                          {
+                            "cell": "H2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "H2499",
+                          "formula": "=VLOOKUP(A2499,TTEB价格!A:AN,13,0)",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "A2499",
+                              "columns": [
+                                "A"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "A",
+                                  "headers": [
+                                    {
+                                      "cell": "A1",
+                                      "value": "目录"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "sheet": "纱布利润",
+                  "reference": "C27",
+                  "columns": [
+                    "C"
+                  ],
+                  "fields": [
+                    {
+                      "column": "C",
+                      "headers": [
+                        {
+                          "cell": "C1",
+                          "value": "20天原料"
+                        },
+                        {
+                          "cell": "C2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.5ccb95be3d2410d0bead",
+                      "metric": "20天原料",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "C",
+                        "headers": [
+                          {
+                            "cell": "C1",
+                            "value": "20天原料"
+                          },
+                          {
+                            "cell": "C2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "C26",
+                          "formula": "=B6",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "B6",
+                              "columns": [
+                                "B"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "B",
+                                  "headers": [
+                                    {
+                                      "cell": "B1",
+                                      "value": "3128级棉花"
+                                    },
+                                    {
+                                      "cell": "B2",
+                                      "value": "元/吨"
+                                    }
+                                  ],
+                                  "series_id": "generic.ac6614f3fafb0223c0b8",
+                                  "metric": "3128级棉花",
+                                  "unit": "元/吨",
+                                  "source_context": {
+                                    "source_column": "B",
+                                    "headers": [
+                                      {
+                                        "cell": "B1",
+                                        "value": "3128级棉花"
+                                      },
+                                      {
+                                        "cell": "B2",
+                                        "value": "元/吨"
+                                      }
+                                    ],
+                                    "formula_source": {
+                                      "cell": "B2499",
+                                      "formula": "=VLOOKUP(A2499,TTEB价格!A:D,2,0)",
+                                      "references": [
+                                        {
+                                          "sheet": "纱布利润",
+                                          "reference": "A2499",
+                                          "columns": [
+                                            "A"
+                                          ],
+                                          "fields": [
+                                            {
+                                              "column": "A",
+                                              "headers": [
+                                                {
+                                                  "cell": "A1",
+                                                  "value": "目录"
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "notice": "表头与公式引用来自保留的原文件及已保存公式；不执行公式，不推定业务含义、自然日或交易日，不因同名认定同源。"
+          }
+        },
+        {
+          "series_id": "generic.409aaad1792558f13f80",
+          "sheet": "纱布利润",
+          "metric": "20天原料利润",
+          "dimensions": {
+            "原表列": "N",
+            "block": "mapped_1"
+          },
+          "unit": "元/吨",
+          "unit_status": "explicit",
+          "header_cells": [
+            "N1",
+            "N2"
+          ],
+          "date_mode": "date",
+          "region_name": "区块1",
+          "block_index": 0,
+          "description": "纱布利润 / 20天原料利润；时间标签取A列；单位：元/吨",
+          "record_count": 2821,
+          "valid_count": 1395,
+          "first_date": "2016-01-01",
+          "last_date": "2023-09-21",
+          "first_valid_date": "2016-01-25",
+          "last_valid_date": "2023-09-21",
+          "source_context": {
+            "source_column": "N",
+            "headers": [
+              {
+                "cell": "N1",
+                "value": "20天原料利润"
+              },
+              {
+                "cell": "N2",
+                "value": "元/吨"
+              }
+            ],
+            "formula_source": {
+              "cell": "N27",
+              "formula": "=$I27-F27*1.45-12000+0.22*F27",
+              "references": [
+                {
+                  "sheet": "纱布利润",
+                  "reference": "$I27",
+                  "columns": [
+                    "I"
+                  ],
+                  "fields": [
+                    {
+                      "column": "I",
+                      "headers": [
+                        {
+                          "cell": "I1",
+                          "value": "国产JC60S"
+                        },
+                        {
+                          "cell": "I2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.cbae0fcc5600368477a1",
+                      "metric": "国产JC60S",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "I",
+                        "headers": [
+                          {
+                            "cell": "I1",
+                            "value": "国产JC60S"
+                          },
+                          {
+                            "cell": "I2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "I2499",
+                          "formula": "=VLOOKUP(A2499,TTEB价格!A:AN,29,0)",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "A2499",
+                              "columns": [
+                                "A"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "A",
+                                  "headers": [
+                                    {
+                                      "cell": "A1",
+                                      "value": "目录"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "sheet": "纱布利润",
+                  "reference": "F27",
+                  "columns": [
+                    "F"
+                  ],
+                  "fields": [
+                    {
+                      "column": "F",
+                      "headers": [
+                        {
+                          "cell": "F1",
+                          "value": "20天原料"
+                        },
+                        {
+                          "cell": "F2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.08f0f90b86ab21d1aff7",
+                      "metric": "20天原料",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "F",
+                        "headers": [
+                          {
+                            "cell": "F1",
+                            "value": "20天原料"
+                          },
+                          {
+                            "cell": "F2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "F26",
+                          "formula": "=E6",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "E6",
+                              "columns": [
+                                "E"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "E",
+                                  "headers": [
+                                    {
+                                      "cell": "E1",
+                                      "value": "双29棉花"
+                                    },
+                                    {
+                                      "cell": "E2",
+                                      "value": "元/吨"
+                                    }
+                                  ],
+                                  "series_id": "generic.6401864b1b97dd050830",
+                                  "metric": "双29棉花",
+                                  "unit": "元/吨",
+                                  "source_context": {
+                                    "source_column": "E",
+                                    "headers": [
+                                      {
+                                        "cell": "E1",
+                                        "value": "双29棉花"
+                                      },
+                                      {
+                                        "cell": "E2",
+                                        "value": "元/吨"
+                                      }
+                                    ],
+                                    "formula_source": {
+                                      "cell": "E6",
+                                      "formula": "=B6+300",
+                                      "references": [
+                                        {
+                                          "sheet": "纱布利润",
+                                          "reference": "B6",
+                                          "columns": [
+                                            "B"
+                                          ],
+                                          "fields": [
+                                            {
+                                              "column": "B",
+                                              "headers": [
+                                                {
+                                                  "cell": "B1",
+                                                  "value": "3128级棉花"
+                                                },
+                                                {
+                                                  "cell": "B2",
+                                                  "value": "元/吨"
+                                                }
+                                              ],
+                                              "series_id": "generic.ac6614f3fafb0223c0b8",
+                                              "metric": "3128级棉花",
+                                              "unit": "元/吨"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "notice": "表头与公式引用来自保留的原文件及已保存公式；不执行公式，不推定业务含义、自然日或交易日，不因同名认定同源。"
+          }
+        },
+        {
+          "series_id": "generic.e91f85c864e754066c1b",
+          "sheet": "纱布利润",
+          "metric": "20天原料",
+          "dimensions": {
+            "原表列": "U",
+            "block": "mapped_1"
+          },
+          "unit": "元/吨",
+          "unit_status": "explicit",
+          "header_cells": [
+            "U1",
+            "U2"
+          ],
+          "date_mode": "date",
+          "region_name": "区块1",
+          "block_index": 0,
+          "description": "纱布利润 / 20天原料；时间标签取A列；单位：元/吨",
+          "record_count": 2821,
+          "valid_count": 1948,
+          "first_date": "2016-01-01",
+          "last_date": "2023-09-21",
+          "first_valid_date": "2016-01-24",
+          "last_valid_date": "2023-09-21",
+          "source_context": {
+            "source_column": "U",
+            "headers": [
+              {
+                "cell": "U1",
+                "value": "20天原料"
+              },
+              {
+                "cell": "U2",
+                "value": "元/吨"
+              }
+            ],
+            "formula_source": {
+              "cell": "U26",
+              "formula": "=T6",
+              "references": [
+                {
+                  "sheet": "纱布利润",
+                  "reference": "T6",
+                  "columns": [
+                    "T"
+                  ],
+                  "fields": [
+                    {
+                      "column": "T",
+                      "headers": [
+                        {
+                          "cell": "T1",
+                          "value": "CC Index 3128B"
+                        },
+                        {
+                          "cell": "T2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.9dafe9e4affab17c3d56",
+                      "metric": "CC Index 3128B",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "T",
+                        "headers": [
+                          {
+                            "cell": "T1",
+                            "value": "CC Index 3128B"
+                          },
+                          {
+                            "cell": "T2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "T2499",
+                          "formula": "=VLOOKUP(A2499,国内外棉花现货价格指数!A:F,2,0)",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "A2499",
+                              "columns": [
+                                "A"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "A",
+                                  "headers": [
+                                    {
+                                      "cell": "A1",
+                                      "value": "目录"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "notice": "表头与公式引用来自保留的原文件及已保存公式；不执行公式，不推定业务含义、自然日或交易日，不因同名认定同源。"
+          }
+        },
+        {
+          "series_id": "generic.81478f76663bdf036266",
+          "sheet": "纱布利润",
+          "metric": "20天原料",
+          "dimensions": {
+            "原表列": "X",
+            "block": "mapped_1"
+          },
+          "unit": "元/吨",
+          "unit_status": "explicit",
+          "header_cells": [
+            "X1",
+            "X2"
+          ],
+          "date_mode": "date",
+          "region_name": "区块1",
+          "block_index": 0,
+          "description": "纱布利润 / 20天原料；时间标签取A列；单位：元/吨",
+          "record_count": 2821,
+          "valid_count": 1948,
+          "first_date": "2016-01-01",
+          "last_date": "2023-09-21",
+          "first_valid_date": "2016-01-24",
+          "last_valid_date": "2023-09-21",
+          "source_context": {
+            "source_column": "X",
+            "headers": [
+              {
+                "cell": "X1",
+                "value": "20天原料"
+              },
+              {
+                "cell": "X2",
+                "value": "元/吨"
+              }
+            ],
+            "formula_source": {
+              "cell": "X26",
+              "formula": "=W6",
+              "references": [
+                {
+                  "sheet": "纱布利润",
+                  "reference": "W6",
+                  "columns": [
+                    "W"
+                  ],
+                  "fields": [
+                    {
+                      "column": "W",
+                      "headers": [
+                        {
+                          "cell": "W1",
+                          "value": "双29棉花"
+                        },
+                        {
+                          "cell": "W2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.44ed0f0bcb63a0b0b7cd",
+                      "metric": "双29棉花",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "W",
+                        "headers": [
+                          {
+                            "cell": "W1",
+                            "value": "双29棉花"
+                          },
+                          {
+                            "cell": "W2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "W6",
+                          "formula": "=T6+300",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "T6",
+                              "columns": [
+                                "T"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "T",
+                                  "headers": [
+                                    {
+                                      "cell": "T1",
+                                      "value": "CC Index 3128B"
+                                    },
+                                    {
+                                      "cell": "T2",
+                                      "value": "元/吨"
+                                    }
+                                  ],
+                                  "series_id": "generic.9dafe9e4affab17c3d56",
+                                  "metric": "CC Index 3128B",
+                                  "unit": "元/吨",
+                                  "source_context": {
+                                    "source_column": "T",
+                                    "headers": [
+                                      {
+                                        "cell": "T1",
+                                        "value": "CC Index 3128B"
+                                      },
+                                      {
+                                        "cell": "T2",
+                                        "value": "元/吨"
+                                      }
+                                    ],
+                                    "formula_source": {
+                                      "cell": "T2499",
+                                      "formula": "=VLOOKUP(A2499,国内外棉花现货价格指数!A:F,2,0)",
+                                      "references": [
+                                        {
+                                          "sheet": "纱布利润",
+                                          "reference": "A2499",
+                                          "columns": [
+                                            "A"
+                                          ],
+                                          "fields": [
+                                            {
+                                              "column": "A",
+                                              "headers": [
+                                                {
+                                                  "cell": "A1",
+                                                  "value": "目录"
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "notice": "表头与公式引用来自保留的原文件及已保存公式；不执行公式，不推定业务含义、自然日或交易日，不因同名认定同源。"
+          }
+        },
+        {
+          "series_id": "generic.9e7e7e92887eb189c7d6",
+          "sheet": "纱布利润",
+          "metric": "20天原料利润",
+          "dimensions": {
+            "原表列": "AC",
+            "block": "mapped_1"
+          },
+          "unit": "元/吨",
+          "unit_status": "explicit",
+          "header_cells": [
+            "AC1",
+            "AC2"
+          ],
+          "date_mode": "date",
+          "region_name": "区块1",
+          "block_index": 0,
+          "description": "纱布利润 / 20天原料利润；时间标签取A列；单位：元/吨",
+          "record_count": 2821,
+          "valid_count": 1474,
+          "first_date": "2016-01-01",
+          "last_date": "2023-09-21",
+          "first_valid_date": "2016-01-25",
+          "last_valid_date": "2023-09-21",
+          "source_context": {
+            "source_column": "AC",
+            "headers": [
+              {
+                "cell": "AC1",
+                "value": "20天原料利润"
+              },
+              {
+                "cell": "AC2",
+                "value": "元/吨"
+              }
+            ],
+            "formula_source": {
+              "cell": "AC27",
+              "formula": "=$Z27-U27*1.1-5800",
+              "references": [
+                {
+                  "sheet": "纱布利润",
+                  "reference": "$Z27",
+                  "columns": [
+                    "Z"
+                  ],
+                  "fields": [
+                    {
+                      "column": "Z",
+                      "headers": [
+                        {
+                          "cell": "Z1",
+                          "value": "C32S普配"
+                        },
+                        {
+                          "cell": "Z2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.49e6276828e92b2c377b",
+                      "metric": "C32S普配",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "Z",
+                        "headers": [
+                          {
+                            "cell": "Z1",
+                            "value": "C32S普配"
+                          },
+                          {
+                            "cell": "Z2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "Z2499",
+                          "formula": "=VLOOKUP(A2499,'棉纱价格-信息网'!A:AG,3,0)",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "A2499",
+                              "columns": [
+                                "A"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "A",
+                                  "headers": [
+                                    {
+                                      "cell": "A1",
+                                      "value": "目录"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "sheet": "纱布利润",
+                  "reference": "U27",
+                  "columns": [
+                    "U"
+                  ],
+                  "fields": [
+                    {
+                      "column": "U",
+                      "headers": [
+                        {
+                          "cell": "U1",
+                          "value": "20天原料"
+                        },
+                        {
+                          "cell": "U2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.e91f85c864e754066c1b",
+                      "metric": "20天原料",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "U",
+                        "headers": [
+                          {
+                            "cell": "U1",
+                            "value": "20天原料"
+                          },
+                          {
+                            "cell": "U2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "U26",
+                          "formula": "=T6",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "T6",
+                              "columns": [
+                                "T"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "T",
+                                  "headers": [
+                                    {
+                                      "cell": "T1",
+                                      "value": "CC Index 3128B"
+                                    },
+                                    {
+                                      "cell": "T2",
+                                      "value": "元/吨"
+                                    }
+                                  ],
+                                  "series_id": "generic.9dafe9e4affab17c3d56",
+                                  "metric": "CC Index 3128B",
+                                  "unit": "元/吨",
+                                  "source_context": {
+                                    "source_column": "T",
+                                    "headers": [
+                                      {
+                                        "cell": "T1",
+                                        "value": "CC Index 3128B"
+                                      },
+                                      {
+                                        "cell": "T2",
+                                        "value": "元/吨"
+                                      }
+                                    ],
+                                    "formula_source": {
+                                      "cell": "T2499",
+                                      "formula": "=VLOOKUP(A2499,国内外棉花现货价格指数!A:F,2,0)",
+                                      "references": [
+                                        {
+                                          "sheet": "纱布利润",
+                                          "reference": "A2499",
+                                          "columns": [
+                                            "A"
+                                          ],
+                                          "fields": [
+                                            {
+                                              "column": "A",
+                                              "headers": [
+                                                {
+                                                  "cell": "A1",
+                                                  "value": "目录"
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "notice": "表头与公式引用来自保留的原文件及已保存公式；不执行公式，不推定业务含义、自然日或交易日，不因同名认定同源。"
+          }
+        },
+        {
+          "series_id": "generic.65bca512704c0c66c0fd",
+          "sheet": "纱布利润",
+          "metric": "20天原料利润",
+          "dimensions": {
+            "原表列": "AF",
+            "block": "mapped_1"
+          },
+          "unit": "元/吨",
+          "unit_status": "explicit",
+          "header_cells": [
+            "AF1",
+            "AF2"
+          ],
+          "date_mode": "date",
+          "region_name": "区块1",
+          "block_index": 0,
+          "description": "纱布利润 / 20天原料利润；时间标签取A列；单位：元/吨",
+          "record_count": 2821,
+          "valid_count": 1474,
+          "first_date": "2016-01-01",
+          "last_date": "2023-09-21",
+          "first_valid_date": "2016-01-25",
+          "last_valid_date": "2023-09-21",
+          "source_context": {
+            "source_column": "AF",
+            "headers": [
+              {
+                "cell": "AF1",
+                "value": "20天原料利润"
+              },
+              {
+                "cell": "AF2",
+                "value": "元/吨"
+              }
+            ],
+            "formula_source": {
+              "cell": "AF27",
+              "formula": "=$AA27-X27*1.45-12000+0.22*X27",
+              "references": [
+                {
+                  "sheet": "纱布利润",
+                  "reference": "$AA27",
+                  "columns": [
+                    "AA"
+                  ],
+                  "fields": [
+                    {
+                      "column": "AA",
+                      "headers": [
+                        {
+                          "cell": "AA1",
+                          "value": "JC60S"
+                        },
+                        {
+                          "cell": "AA2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.f26e384642a939ad8484",
+                      "metric": "JC60S",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "AA",
+                        "headers": [
+                          {
+                            "cell": "AA1",
+                            "value": "JC60S"
+                          },
+                          {
+                            "cell": "AA2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "AA2499",
+                          "formula": "=VLOOKUP(A2499,'棉纱价格-信息网'!A:AG,9,0)",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "A2499",
+                              "columns": [
+                                "A"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "A",
+                                  "headers": [
+                                    {
+                                      "cell": "A1",
+                                      "value": "目录"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "sheet": "纱布利润",
+                  "reference": "X27",
+                  "columns": [
+                    "X"
+                  ],
+                  "fields": [
+                    {
+                      "column": "X",
+                      "headers": [
+                        {
+                          "cell": "X1",
+                          "value": "20天原料"
+                        },
+                        {
+                          "cell": "X2",
+                          "value": "元/吨"
+                        }
+                      ],
+                      "series_id": "generic.81478f76663bdf036266",
+                      "metric": "20天原料",
+                      "unit": "元/吨",
+                      "source_context": {
+                        "source_column": "X",
+                        "headers": [
+                          {
+                            "cell": "X1",
+                            "value": "20天原料"
+                          },
+                          {
+                            "cell": "X2",
+                            "value": "元/吨"
+                          }
+                        ],
+                        "formula_source": {
+                          "cell": "X26",
+                          "formula": "=W6",
+                          "references": [
+                            {
+                              "sheet": "纱布利润",
+                              "reference": "W6",
+                              "columns": [
+                                "W"
+                              ],
+                              "fields": [
+                                {
+                                  "column": "W",
+                                  "headers": [
+                                    {
+                                      "cell": "W1",
+                                      "value": "双29棉花"
+                                    },
+                                    {
+                                      "cell": "W2",
+                                      "value": "元/吨"
+                                    }
+                                  ],
+                                  "series_id": "generic.44ed0f0bcb63a0b0b7cd",
+                                  "metric": "双29棉花",
+                                  "unit": "元/吨",
+                                  "source_context": {
+                                    "source_column": "W",
+                                    "headers": [
+                                      {
+                                        "cell": "W1",
+                                        "value": "双29棉花"
+                                      },
+                                      {
+                                        "cell": "W2",
+                                        "value": "元/吨"
+                                      }
+                                    ],
+                                    "formula_source": {
+                                      "cell": "W6",
+                                      "formula": "=T6+300",
+                                      "references": [
+                                        {
+                                          "sheet": "纱布利润",
+                                          "reference": "T6",
+                                          "columns": [
+                                            "T"
+                                          ],
+                                          "fields": [
+                                            {
+                                              "column": "T",
+                                              "headers": [
+                                                {
+                                                  "cell": "T1",
+                                                  "value": "CC Index 3128B"
+                                                },
+                                                {
+                                                  "cell": "T2",
+                                                  "value": "元/吨"
+                                                }
+                                              ],
+                                              "series_id": "generic.9dafe9e4affab17c3d56",
+                                              "metric": "CC Index 3128B",
+                                              "unit": "元/吨"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "notice": "表头与公式引用来自保留的原文件及已保存公式；不执行公式，不推定业务含义、自然日或交易日，不因同名认定同源。"
+          }
+        }
+      ],
+      "total": 8,
+      "offset": 0,
+      "next_offset": null,
+      "truncated": false,
+      "match_mode": "all_terms",
+      "notice": "已找到符合关键词的指标；按原指标名称、单位及用户条件选择ID查询数值。"
+    },
+    {
+      "kind": "structured_source_inspection",
+      "status": "ok",
+      "dataset_id": "b3e746ccf6612d67b13e3cee",
+      "source_file": "棉花数据库(2).xlsx",
+      "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+      "hash_verified": true,
+      "sheets": [
+        "纱布利润"
+      ],
+      "coverage": {
+        "纱布利润": {
+          "parsed_ranges": [
+            "B3:AV2823"
+          ],
+          "excluded_regions": [
+            {
+              "sheet": "纱布利润",
+              "range": "outside_explicit_mapping",
+              "reason": "仅导入明确区块范围；独立小表使用自己的日期来源，区域外内容不参与查询。"
+            }
+          ]
+        }
+      },
+      "matches": [
+        {
+          "sheet": "纱布利润",
+          "cell": "A2823",
+          "value": "2023-09-21T00:00:00",
+          "raw_value": "2023-09-21T00:00:00",
+          "formula": null,
+          "cached_value": null,
+          "value_status": "original",
+          "matched_terms": [
+            "2023-09-21"
+          ],
+          "context_range": "A2822:D2823",
+          "context_cells": [
+            {
+              "sheet": "纱布利润",
+              "cell": "A2822",
+              "value": "2023-09-20T00:00:00",
+              "raw_value": "2023-09-20T00:00:00",
+              "formula": null,
+              "cached_value": null,
+              "value_status": "original"
+            },
+            {
+              "sheet": "纱布利润",
+              "cell": "B2822",
+              "value": 18235,
+              "raw_value": "=VLOOKUP(A2822,TTEB价格!A:D,2,0)",
+              "formula": "=VLOOKUP(A2822,TTEB价格!A:D,2,0)",
+              "cached_value": 18235,
+              "value_status": "original"
+            },
+            {
+              "sheet": "纱布利润",
+              "cell": "C2822",
+              "value": 18490,
+              "raw_value": "=B2802",
+              "formula": "=B2802",
+              "cached_value": 18490,
+              "value_status": "original"
+            },
+            {
+              "sheet": "纱布利润",
+              "cell": "D2822",
+              "value": 18170,
+              "raw_value": "=B2772",
+              "formula": "=B2772",
+              "cached_value": 18170,
+              "value_status": "original"
+            },
+            {
+              "sheet": "纱布利润",
+              "cell": "A2823",
+              "value": "2023-09-21T00:00:00",
+              "raw_value": "2023-09-21T00:00:00",
+              "formula": null,
+              "cached_value": null,
+              "value_status": "original"
+            },
+            {
+              "sheet": "纱布利润",
+              "cell": "B2823",
+              "value": 18195,
+              "raw_value": "=VLOOKUP(A2823,TTEB价格!A:D,2,0)",
+              "formula": "=VLOOKUP(A2823,TTEB价格!A:D,2,0)",
+              "cached_value": 18195,
+              "value_status": "original"
+            },
+            {
+              "sheet": "纱布利润",
+              "cell": "C2823",
+              "value": 18575,
+              "raw_value": "=B2803",
+              "formula": "=B2803",
+              "cached_value": 18575,
+              "value_status": "original"
+            },
+            {
+              "sheet": "纱布利润",
+              "cell": "D2823",
+              "value": 18170,
+              "raw_value": "=B2773",
+              "formula": "=B2773",
+              "cached_value": 18170,
+              "value_status": "original"
+            }
+          ]
+        }
+      ],
+      "ranges": [],
+      "calculations": [],
+      "truncated": false,
+      "truncation_reasons": [],
+      "notice": "原件只读证据；公式使用 Excel 保存的缓存值，不重新计算。parsed_ranges 仅代表已解析区域；单位、年度定义和多个表的优先级须依原件或文档核对，不自行推断。",
+      "scan": {
+        "cells_scanned": 135504,
+        "rows_scanned": 2823,
+        "sheets_scanned": [
+          "纱布利润"
+        ],
+        "complete": true,
+        "unscanned_sheets": [],
+        "incomplete_sheets": [],
+        "limits": {
+          "cells": 250000,
+          "rows": 50000,
+          "seconds": 8
+        },
+        "elapsed_seconds": 1.866
+      }
+    },
+    {
+      "kind": "structured_source_inspection",
+      "status": "ok",
+      "dataset_id": "b3e746ccf6612d67b13e3cee",
+      "source_file": "棉花数据库(2).xlsx",
+      "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+      "hash_verified": true,
+      "sheets": [
+        "纱布利润"
+      ],
+      "coverage": {
+        "纱布利润": {
+          "parsed_ranges": [
+            "B3:AV2823"
+          ],
+          "excluded_regions": [
+            {
+              "sheet": "纱布利润",
+              "range": "outside_explicit_mapping",
+              "reason": "仅导入明确区块范围；独立小表使用自己的日期来源，区域外内容不参与查询。"
+            }
+          ]
+        }
+      },
+      "matches": [],
+      "ranges": [
+        {
+          "sheet": "纱布利润",
+          "range": "B2823",
+          "cells": [
+            {
+              "sheet": "纱布利润",
+              "cell": "B2823",
+              "value": 18195,
+              "raw_value": "=VLOOKUP(A2823,TTEB价格!A:D,2,0)",
+              "formula": "=VLOOKUP(A2823,TTEB价格!A:D,2,0)",
+              "cached_value": 18195,
+              "value_status": "original"
+            }
+          ]
+        },
+        {
+          "sheet": "纱布利润",
+          "range": "C2823",
+          "cells": [
+            {
+              "sheet": "纱布利润",
+              "cell": "C2823",
+              "value": 18575,
+              "raw_value": "=B2803",
+              "formula": "=B2803",
+              "cached_value": 18575,
+              "value_status": "original"
+            }
+          ]
+        },
+        {
+          "sheet": "纱布利润",
+          "range": "E2823",
+          "cells": [
+            {
+              "sheet": "纱布利润",
+              "cell": "E2823",
+              "value": 18495,
+              "raw_value": "=B2823+300",
+              "formula": "=B2823+300",
+              "cached_value": 18495,
+              "value_status": "original"
+            }
+          ]
+        },
+        {
+          "sheet": "纱布利润",
+          "range": "F2823",
+          "cells": [
+            {
+              "sheet": "纱布利润",
+              "cell": "F2823",
+              "value": 18875,
+              "raw_value": "=E2803",
+              "formula": "=E2803",
+              "cached_value": 18875,
+              "value_status": "original"
+            }
+          ]
+        },
+        {
+          "sheet": "纱布利润",
+          "range": "T2823",
+          "cells": [
+            {
+              "sheet": "纱布利润",
+              "cell": "T2823",
+              "value": 18220,
+              "raw_value": "=VLOOKUP(A2823,国内外棉花现货价格指数!A:F,2,0)",
+              "formula": "=VLOOKUP(A2823,国内外棉花现货价格指数!A:F,2,0)",
+              "cached_value": 18220,
+              "value_status": "original"
+            }
+          ]
+        },
+        {
+          "sheet": "纱布利润",
+          "range": "U2823",
+          "cells": [
+            {
+              "sheet": "纱布利润",
+              "cell": "U2823",
+              "value": 18350,
+              "raw_value": "=T2803",
+              "formula": "=T2803",
+              "cached_value": 18350,
+              "value_status": "original"
+            }
+          ]
+        },
+        {
+          "sheet": "纱布利润",
+          "range": "W2823",
+          "cells": [
+            {
+              "sheet": "纱布利润",
+              "cell": "W2823",
+              "value": 18520,
+              "raw_value": "=T2823+300",
+              "formula": "=T2823+300",
+              "cached_value": 18520,
+              "value_status": "original"
+            }
+          ]
+        },
+        {
+          "sheet": "纱布利润",
+          "range": "X2823",
+          "cells": [
+            {
+              "sheet": "纱布利润",
+              "cell": "X2823",
+              "value": 18650,
+              "raw_value": "=W2803",
+              "formula": "=W2803",
+              "cached_value": 18650,
+              "value_status": "original"
+            }
+          ]
+        }
+      ],
+      "calculations": [],
+      "truncated": false,
+      "truncation_reasons": [],
+      "notice": "原件只读证据；公式使用 Excel 保存的缓存值，不重新计算。parsed_ranges 仅代表已解析区域；单位、年度定义和多个表的优先级须依原件或文档核对，不自行推断。",
+      "scan": {
+        "cells_scanned": 0,
+        "rows_scanned": 0,
+        "sheets_scanned": [],
+        "complete": null,
+        "unscanned_sheets": [],
+        "incomplete_sheets": [],
+        "limits": {
+          "cells": 250000,
+          "rows": 50000,
+          "seconds": 8
+        },
+        "elapsed_seconds": 6.997
+      }
+    }
+  ]
+}

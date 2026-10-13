@@ -44,6 +44,9 @@ func init() {
 // preferAnydocWhenAvailable is the type-level default override: when the
 // anydoc binding is linked and converts this file type, use it instead of
 // builtin or the markitdown fallback. Simple formats stay on the Go reader.
+// PowerPoint retains this selection for installations without DocReader, but
+// the registry routes it to the configured DocReader when connected so slide
+// numbers and cached OLE charts survive parsing.
 //
 // PDF is excluded. anydoc has no document model for it, so Convert force-
 // disables asset extraction, and AnydocReader only falls back to builtin

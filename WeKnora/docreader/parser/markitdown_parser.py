@@ -13,7 +13,6 @@ from docreader.parser.markdown_parser import MarkdownParser
 from docreader.parser.ppt_convert import normalize_ppt_bytes
 from docreader.parser.pptx_media import (
     attach_pptx_media_to_markdown,
-    markdown_needs_pptx_media_attach,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,7 +49,10 @@ class StdMarkitdownParser(BaseParser):
             ext = "." + ext
 
         with parser_worker_limit("markitdown", CONFIG.markitdown_max_workers):
-            result = self._convert_markitdown(content, ext, keep_data_uris=True)
+            # PPTX pictures are resolved from exact slide relationships below.
+            # Letting MarkItDown inline them first needlessly builds/copies large
+            # base64 strings, especially when a repeated logo appears per page.
+            result = self._convert_markitdown(content, ext, keep_data_uris=pptx_bytes is None)
             if result is None:
                 logger.warning(
                     "MarkItDown failed with embedded images for %s; retrying without data URIs",
@@ -58,10 +60,13 @@ class StdMarkitdownParser(BaseParser):
                 )
                 result = self._convert_markitdown(content, ext, keep_data_uris=False)
 
-        text = result.text_content
-        images: dict[str, str] = {}
-        if pptx_bytes is not None and markdown_needs_pptx_media_attach(text):
-            text, images = attach_pptx_media_to_markdown(text, pptx_bytes)
+            # Raster conversion belongs to the same heavy parser slot. Without
+            # this, concurrent uploads can launch separate LibreOffice batches
+            # after MarkItDown has released the configured worker semaphore.
+            text = result.text_content
+            images: dict[str, str] = {}
+            if pptx_bytes is not None:
+                text, images = attach_pptx_media_to_markdown(text, pptx_bytes)
         return Document(content=text, images=images)
 
     def _convert_markitdown(

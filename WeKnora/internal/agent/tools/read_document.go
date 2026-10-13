@@ -28,6 +28,7 @@ var readDocumentTool = BaseTool{
 	description: "Read a document from the knowledge bases in scope: its metadata plus chunks in document order.\n" +
 		"id is a dN document handle (reads a page of chunks starting at offset) or a cN chunk handle (reads that " +
 		"chunk; set context to include neighbouring chunks on each side).\n" +
+		"For a user-specified physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
 		"query finds passages inside the document: matching chunks come back with one chunk of context on each " +
 		"side. By default query is case-insensitive and split on whitespace: a chunk matches when it contains " +
 		"every word, in any order. Set regex=true to match query as one POSIX regular expression instead.\n" +
@@ -48,6 +49,11 @@ var readDocumentTool = BaseTool{
       "type": "integer",
       "description": "Position in reading order to start from (default 0); continue with next_offset",
       "minimum": 0
+    },
+    "page": {
+      "type": "integer",
+      "description": "Exact 1-based document page / PPT slide; requires explicit parsed page markers, never chunk offset",
+      "minimum": 1
     },
     "limit": {
       "type": "integer",
@@ -82,15 +88,22 @@ type ReadDocumentInput struct {
 	Query   string `json:"query,omitempty"`
 	Regex   bool   `json:"regex,omitempty"`
 	Context int    `json:"context,omitempty"`
+	Page    int    `json:"page,omitempty"`
 }
 
 // ReadDocumentTool reads document metadata and chunks by page, by chunk
 // handle, or by an in-document text search.
 type ReadDocumentTool struct {
 	BaseTool
-	knowledgeService interfaces.KnowledgeService
-	chunkService     interfaces.ChunkService
-	searchTargets    types.SearchTargets
+	knowledgeService   interfaces.KnowledgeService
+	chunkService       interfaces.ChunkService
+	searchTargets      types.SearchTargets
+	documentConstraint *RequestedDocumentConstraint
+}
+
+func (t *ReadDocumentTool) WithDocumentConstraint(constraint *RequestedDocumentConstraint) *ReadDocumentTool {
+	t.documentConstraint = constraint
+	return t
 }
 
 // NewReadDocumentTool creates a new read_document tool.
@@ -155,6 +168,30 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error()}, err
 	}
+	if documentIsRetired(knowledge) {
+		return &types.ToolResult{Success: false, Error: "指定文档已删除、正在删除或已归档，不能作为查询来源"}, nil
+	}
+	if constraint := t.documentConstraint; constraint != nil {
+		requested, err := constraint.resolve(ctx, t.knowledgeService, t.searchTargets)
+		if err != nil {
+			return &types.ToolResult{Success: false, Error: err.Error()}, nil
+		}
+		if requested.ID != knowledge.ID {
+			return &types.ToolResult{Success: false, Error: "当前问题指定了另一份报告，不能用本文件的同名图替代；请读取指定报告"}, nil
+		}
+		if constraint.Page > 0 {
+			if input.Page > 0 && input.Page != constraint.Page {
+				return &types.ToolResult{Success: false, Error: "当前问题指定了不同页码，不能用其他页替代"}, nil
+			}
+			input.Page = constraint.Page
+		}
+	}
+	if input.Page < 0 {
+		return &types.ToolResult{Success: false, Error: "page must be a positive physical page number"}, nil
+	}
+	if input.Page > 0 {
+		return t.readPhysicalPage(ctx, knowledge, input.Page, offset, limit)
+	}
 
 	var matchers []*regexp.Regexp
 	switch {
@@ -177,14 +214,19 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 
 	// A query always searches the owning document, even when id named a
 	// chunk: silently returning the single chunk would read as "no match".
+	var result *types.ToolResult
 	switch {
 	case len(matchers) > 0:
-		return t.readByQuery(ctx, knowledge, query, matchers)
+		result, err = t.readByQuery(ctx, knowledge, query, matchers)
 	case chunk != nil:
-		return t.readAroundChunk(ctx, knowledge, chunk, contextChunks)
+		result, err = t.readAroundChunk(ctx, knowledge, chunk, contextChunks)
 	default:
-		return t.readPage(ctx, knowledge, offset, limit)
+		result, err = t.readPage(ctx, knowledge, offset, limit)
 	}
+	if t.documentConstraint != nil && result != nil && result.Success && result.Data != nil {
+		result.Data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": knowledge.ID}
+	}
+	return result, err
 }
 
 // resolveTarget accepts either a document id or a chunk id. Documents are

@@ -103,7 +103,7 @@ def create_app(data_dir: str | Path | None = None):
         return await run_in_threadpool(resolver.execute,resolution_id,date)
 
     @mcp.tool()
-    def list_datasets() -> dict:
+    def list_datasets(question: str | None = None) -> dict:
         """列出已完成的Excel数据集、文件版本及支持/排除区域。同名文件默认选is_latest_for_source=true；用户指定历史版本时按指定版本。不把旧数据当实时行情。"""
         # Historical versions need identity metadata, not repeated full coverage
         # inventories. Keep the management API's full report unchanged.
@@ -115,7 +115,18 @@ def create_app(data_dir: str | Path | None = None):
                 item['pending_sheets']=source['pending_sheets']
                 item['coverage_notice']=source.get('coverage_notice','仅查询已导入范围。')
             datasets.append(item)
-        return {"datasets": datasets}
+        result={"datasets": datasets}
+        if question:
+            from .field_index import literal_fields
+            matches=[]
+            for dataset in [d for d in datasets if d['is_latest_for_source']][:8]:
+                for field in literal_fields(store.catalog(dataset['dataset_id']),question):
+                    matches.append({'dataset_id':dataset['dataset_id'],'source_file':dataset['source_file'],**{k:field.get(k) for k in ('series_id','sheet','metric','unit','dimensions','header_cells','source_context')}})
+            result['literal_fields']=matches[:64]
+            result['literal_field_count']=len(result['literal_fields'])
+            result['literal_fields_truncated']=len(matches)>64 or sum(d['is_latest_for_source'] for d in datasets)>8
+            result['literal_field_notice']='这些是当前问题实际提到的原表表头，仅供发现字段，不执行取数或判断语义。存在同名列时先对照真实表头与公式来源；不得把确有同名表头的价格字段改解释成库存天数，不能随意选择第一列。'
+        return result
 
     @mcp.tool()
     def list_charts(dataset_id: str, sheet: str | None = None, search: str = '', limit: int = 50, offset: int = 0) -> dict:
@@ -146,19 +157,26 @@ def create_app(data_dir: str | Path | None = None):
         return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
 
     @mcp.tool()
-    def query_series(series_id: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None) -> dict:
+    def query_series(series_id: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, source_question: str | None = None) -> dict:
         """确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
-        return store.query_series(store.select_dataset(dataset_id), series_id, start_date, end_date, operation, limit, period)
+        selected=store.select_dataset(dataset_id)
+        from .source_context import verify_selection
+        ambiguity=verify_selection(store,selected,[series_id],source_question)
+        return ambiguity or store.query_series(selected, series_id, start_date, end_date, operation, limit, period)
 
     @mcp.tool()
-    def convert_price(dataset_id: str, price_series_id: str, fx_series_id: str, date: str, target_unit: str = '元/吨') -> dict:
+    def convert_price(dataset_id: str, price_series_id: str, fx_series_id: str, date: str, target_unit: str = '元/吨', source_question: str | None = None) -> dict:
         """用同日原价格与美元兑人民币汇率确定性换算，避免模型心算。先list_series选两项准确ID，追问汇率优先同表。输入价格单位必须为美元或美分/磅、公斤、千克、吨；目标支持元/吨(默认)、元/磅、元/公斤、元/千克。date格式YYYY-MM-DD。返回数值、公式及价格/汇率双方原单元格。不同币种方向、未知单位、缺失数据拒绝；不包含税费与通关成本。"""
-        return store.convert_price(dataset_id,price_series_id,fx_series_id,date,target_unit)
+        from .source_context import verify_selection
+        ambiguity=verify_selection(store,dataset_id,[price_series_id,fx_series_id],source_question)
+        return ambiguity or store.convert_price(dataset_id,price_series_id,fx_series_id,date,target_unit)
 
     @mcp.tool()
-    def compare_series(dataset_id: str, left_series_id: str, right_series_id: str, date: str) -> dict:
+    def compare_series(dataset_id: str, left_series_id: str, right_series_id: str, date: str, source_question: str | None = None) -> dict:
         """同日两个同单位指标作差，严格按左减右。额外允许原表同一合约收盘/结算的原始数值比较，但单位未知必须明说。先从list_series取得准确ID，回答附双方原单元格。缺失不补造，其他单位未知/不一致拒绝。"""
-        return store.compare_series(dataset_id, left_series_id, right_series_id, date)
+        from .source_context import verify_selection
+        ambiguity=verify_selection(store,dataset_id,[left_series_id,right_series_id],source_question)
+        return ambiguity or store.compare_series(dataset_id, left_series_id, right_series_id, date)
 
     @mcp.tool()
     async def get_result_evidence(resolution_id: str) -> dict:
@@ -177,11 +195,15 @@ def create_app(data_dir: str | Path | None = None):
         return await run_in_threadpool(read)
 
     @mcp.tool()
-    async def analyze_table(series_ids: list[str], sql: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, limit: int = 200) -> dict:
+    async def analyze_table(series_ids: list[str], sql: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, limit: int = 200, source_question: str | None = None) -> dict:
         """只读通用分析SQL；先取得真实series_id并核验口径。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。隔离表data仅含指定字段/日期范围的全部记录（最多50000条），列series_id VARCHAR,date DATE,value DOUBLE,source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR；缺失value为NULL。SQL方言为DuckDB，支持SELECT/WITH、四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先使用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入而非向下取整，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时根据反馈修正，不让用户选字段。每个输入最多一个文件版本，不允许读取文件、联网、修改数据或多条语句。不要混加存量、累计值与当期流量。"""
         from .table_analysis import analyze_table as run_analysis
         try:
-            return await run_in_threadpool(run_analysis,store,store.select_dataset(dataset_id),series_ids,sql,start_date,end_date,limit)
+            selected=store.select_dataset(dataset_id)
+            from .source_context import verify_selection
+            ambiguity=await run_in_threadpool(verify_selection,store,selected,series_ids,source_question)
+            if ambiguity:return ambiguity
+            return await run_in_threadpool(run_analysis,store,selected,series_ids,sql,start_date,end_date,limit)
         except ValueError as exc:
             return {'kind':'structured_analysis','status':'error','error':str(exc),'retryable':True,'next_step':'修正SQL或输入范围；这是系统反馈，不是字段确认请求'}
 

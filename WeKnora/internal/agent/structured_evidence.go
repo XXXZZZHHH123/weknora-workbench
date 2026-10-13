@@ -12,6 +12,59 @@ import (
 
 var documentAnswerCitation = regexp.MustCompile(`<kb\b[^>]*\bchunk_id="([^"]+)"[^>]*>`)
 
+// Page-scoped visual interpretation is document evidence, not a computation
+// over an earlier spreadsheet. The marker comes only from an authorized tool
+// that fetched the requested document/page; a model citation cannot create it.
+// Any actual table result in this turn still requires numeric verification.
+func needsStructuredAnswerReviewForQuery(query string, steps []types.AgentStep, messages []chat.Message, answer string) bool {
+	if !hasStructuredEvidence(steps) && hasScopedVisualDocumentAnswer(query, steps, answer) {
+		return false
+	}
+	return needsStructuredAnswerReview(steps, messages, answer)
+}
+
+func hasScopedVisualDocumentAnswer(query string, steps []types.AgentStep, answer string) bool {
+	if !strings.Contains(query, "图") || !strings.Contains(query, "页") {
+		return false
+	}
+	cited := map[string]bool{}
+	for _, match := range documentAnswerCitation.FindAllStringSubmatch(answer, -1) {
+		cited[match[1]] = false
+	}
+	if len(cited) == 0 {
+		return false
+	}
+	for _, step := range steps {
+		for _, call := range step.ToolCalls {
+			chunks := fetchedDocumentChunks(call)
+			if len(chunks) == 0 {
+				continue
+			}
+			encoded, _ := json.Marshal(call.Result.Data["document_scope"])
+			var scope struct {
+				Matched     bool   `json:"matched"`
+				KnowledgeID string `json:"knowledge_id"`
+				Page        int    `json:"page"`
+				Visual      bool   `json:"has_visual_evidence"`
+			}
+			if json.Unmarshal(encoded, &scope) != nil || !scope.Matched || !scope.Visual || scope.KnowledgeID == "" || scope.Page < 1 {
+				continue
+			}
+			for _, chunk := range chunks {
+				if _, ok := cited[chunk.ID]; ok && chunk.KnowledgeID == scope.KnowledgeID && strings.TrimSpace(chunk.Content) != "" {
+					cited[chunk.ID] = true
+				}
+			}
+		}
+	}
+	for _, matched := range cited {
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
 // Historical table results remain evidence for follow-up questions, but do not
 // turn a newly retrieved, cited document into a table answer. Current executed
 // table results always retain the numeric guard, including mixed-source turns.
@@ -36,21 +89,10 @@ func needsStructuredAnswerReview(steps []types.AgentStep, messages []chat.Messag
 			}
 			// Use the verified tool's actual fetched chunks, never assistant
 			// citations, document metadata, or historical tool output alone.
-			encoded, err := json.Marshal(call.Result.Data["chunks"])
-			if err != nil {
-				continue
-			}
-			var chunks []struct {
-				ID      string `json:"chunk_id"`
-				Content string `json:"content"`
-			}
-			if json.Unmarshal(encoded, &chunks) != nil {
-				continue
-			}
-			for _, chunk := range chunks {
+			for _, chunk := range fetchedDocumentChunks(call) {
 				if chunk.ID != "" && strings.TrimSpace(chunk.Content) != "" && cited[chunk.ID] {
 					fetchedCitation = true
-					for _, token := range proseNumber.FindAllString(chunk.Content, -1) {
+					for _, token := range proseNumber.FindAllString(documentNumericProse(chunk.Content), -1) {
 						if value, err := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(token, ",", ""), "−", "-"), 64); err == nil {
 							documentValues = append(documentValues, value)
 						}
@@ -142,6 +184,9 @@ const structuredAnswerReviewInstructions = `提交最终答案前核验刚才的
 func hasStructuredEvidence(steps []types.AgentStep) bool {
 	for _, step := range steps {
 		for _, call := range step.ToolCalls {
+			if call.Name == "read_document" || call.Name == "search_knowledge" {
+				continue // Document-embedded JSON is data, never executed table evidence.
+			}
 			if call.Result == nil || !call.Result.Success {
 				continue
 			}

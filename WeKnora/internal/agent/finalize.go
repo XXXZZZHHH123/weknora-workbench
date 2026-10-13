@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"time"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
@@ -46,69 +48,65 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	// Generate a single ID for this entire final answer stream
 	answerID := generateEventID("answer")
 	logger.Debugf(ctx, "[Agent][FinalAnswer] AnswerID: %s", answerID)
-	answerDoneEmitted := false
-
-	budget := e.clampCompletionBudgetToContext(e.tokenEstimator.EstimateMessages(messages))
-	llmResult, err := e.streamLLMToEventBus(
-		ctx,
-		messages,
-		&chat.ChatOptions{
-			Temperature:         e.config.Temperature,
-			MaxCompletionTokens: budget,
-			PromptCacheKey:      sessionID,
-			ToolChoice:          "none",
-		}, // Thinking disabled for final answer synthesis
-		func(chunk *types.StreamResponse, fullContent string) {
-			// Defensive filter: only emit answer content, skip thinking chunks
-			if chunk.ResponseType == types.ResponseTypeThinking {
-				return
-			}
-			if chunk.Content != "" {
-				logger.Debugf(ctx, "[Agent][FinalAnswer] Emitting answer chunk: %d chars", len(chunk.Content))
-				e.eventBus.Emit(ctx, event.Event{
-					ID:        answerID,
-					Type:      event.EventAgentFinalAnswer,
-					SessionID: sessionID,
-					Data: event.AgentFinalAnswerData{
-						Content: chunk.Content,
-						Done:    chunk.Done,
-					},
-				})
-				if chunk.Done {
-					answerDoneEmitted = true
+	fullAnswer := ""
+	truncated := false
+	// Synthesis is an exceptional final path (iteration exhaustion or API
+	// recovery). Buffer it until verified, so malformed/unsupported drafts do
+	// not become the visible terminal answer while a repair is still running.
+	for attempt := 0; attempt < 3; attempt++ {
+		budget := e.clampCompletionBudgetToContext(e.tokenEstimator.EstimateMessages(messages))
+		if budget > 4096 {
+			budget = 4096
+		}
+		disabled := false
+		llmResult, err := e.streamLLMToEventBus(ctx, messages, &chat.ChatOptions{
+			Temperature: e.config.Temperature, MaxCompletionTokens: budget,
+			PromptCacheKey: sessionID, ToolChoice: "none", Thinking: &disabled,
+			ReasoningEffort: chat.ReasoningEffort("off"), ThinkingBudgetTokens: 0,
+		}, nil)
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if llmResult.Usage != nil {
+			state.TurnUsage.Accumulate(*llmResult.Usage)
+		}
+		fullAnswer = agenttools.StripThinkBlocks(llmResult.Content)
+		truncated = isLengthFinishReason(llmResult.FinishReason)
+		invalid := strings.TrimSpace(fullAnswer) == "" || incompleteAnswer(query, fullAnswer, llmResult.ReasoningContent)
+		unsupported := []string{}
+		if !invalid && needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, fullAnswer) {
+			evidence := append([]chat.Message(nil), conversation...)
+			for _, step := range state.RoundSteps {
+				for _, call := range step.ToolCalls {
+					if call.Result != nil && call.Result.Success {
+						evidence = append(evidence, chat.Message{Role: "tool", Name: call.Name, Content: call.Result.Output})
+					}
 				}
 			}
-		},
-	)
-	if err != nil {
-		logger.Errorf(ctx, "[Agent][FinalAnswer] Final answer generation failed: %v", err)
-		common.PipelineError(ctx, "Agent", "final_answer_stream_failed", map[string]interface{}{
-			"session_id": sessionID,
-			"error":      err.Error(),
-		})
-		return err
+			if values := scopedCitedDocumentNumbers(fullAnswer, state.RoundSteps); len(values) > 0 {
+				raw, _ := json.Marshal(map[string]any{"cited_document_values": values})
+				evidence = append(evidence, chat.Message{Role: "tool", Content: string(raw)})
+			}
+			unsupported = ungroundedStructuredNumbers(fullAnswer, evidence, state.RoundSteps)
+		}
+		if !invalid && len(unsupported) == 0 {
+			break
+		}
+		if attempt == 2 {
+			fullAnswer = incompleteAnswerFallback
+			if len(unsupported) > 0 {
+				fullAnswer = "已有取数依据，但完整回答的部分数字未通过来源核验。此次暂不提供未经核验的统计结论，请查看来源或重试。"
+			}
+			truncated = false
+			break
+		}
+		messages = append(messages, chat.Message{Role: "system", Content: "内部运行时反馈：上次回答残缺或含未通过依据检查的数字。请依据已取得的真实来源，直接简短完整回答原问题；缺失证据应说明，不能从草稿补造数值。字段名称、规格代码和原公式须完整引用工具原文，不用简称，不省略公式参数或单元格行号；身份代码不能当成统计值。未核验数字：" + strings.Join(unsupported, "、")})
 	}
-
-	if !answerDoneEmitted {
-		e.eventBus.Emit(ctx, event.Event{
-			ID:        answerID,
-			Type:      event.EventAgentFinalAnswer,
-			SessionID: sessionID,
-			Data: event.AgentFinalAnswerData{
-				Content: "",
-				Done:    true,
-			},
-		})
-	}
-
-	// The synthesis call is often the largest of the turn — fold its usage
-	// into the turn aggregate like every ReAct round.
-	if llmResult.Usage != nil {
-		state.TurnUsage.Accumulate(*llmResult.Usage)
-	}
-
-	// Safety net: strip any residual <think> blocks that may have leaked through
-	fullAnswer := agenttools.StripThinkBlocks(llmResult.Content)
+	e.eventBus.Emit(ctx, event.Event{ID: answerID, Type: event.EventAgentFinalAnswer, SessionID: sessionID, Data: event.AgentFinalAnswerData{Content: fullAnswer, Done: false, Truncated: truncated}})
+	e.closeAnswerStream(ctx, sessionID, answerID, truncated)
 	logger.Infof(ctx, "[Agent][FinalAnswer] Final answer generated: %d characters", len(fullAnswer))
 	common.PipelineInfo(ctx, "Agent", "final_answer_done", map[string]interface{}{
 		"session_id": sessionID,

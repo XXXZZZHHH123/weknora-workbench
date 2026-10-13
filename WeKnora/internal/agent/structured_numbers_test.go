@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -133,4 +134,151 @@ func TestStructuredNumbersDoNotExecuteEmbeddedKnowledgeJSON(t *testing.T) {
 	require.Contains(t, ungroundedStructuredNumbers("合计800", messages), "800")
 	require.Contains(t, ungroundedStructuredNumbers("合计801", messages), "801")
 	require.Empty(t, ungroundedStructuredNumbers("合计775", messages))
+}
+
+func TestStructuredNumbersHeaderIdentitiesDoNotGrantBareStatisticalNumbers(t *testing.T) {
+	messages := []chat.Message{{Role: "tool", Name: "structured_data", Content: `{"series":[{"metric":"20天原料","dimensions":{"来源":"CC Index 3128B"},"source_context":{"headers":[{"cell":"B1","value":"3128级棉花"}],"formula_source":{"formula":"=B6+300","references":[{"fields":[{"metric":"双29棉花"}]}]}}}],"valid_count":17}`}}
+	require.Empty(t, ungroundedStructuredNumbers("20天原料，来源3128级棉花、双29棉花或CC Index 3128B，公式=B6+300；共17条。", messages))
+	for _, number := range []string{"3128", "29", "300"} {
+		require.Contains(t, ungroundedStructuredNumbers("最大值"+number, messages), number)
+	}
+	require.Contains(t, ungroundedStructuredNumbers("来源CC Index 3128B9", messages), "3128")
+	for _, name := range []string{"read_document", "search_knowledge"} {
+		fake := append([]chat.Message(nil), messages...)
+		fake[0].Name = name
+		fake = append(fake, chat.Message{Role: "tool", Content: `{"rows":[[17]]}`})
+		require.Contains(t, ungroundedStructuredNumbers("来源3128级棉花", fake), "3128")
+	}
+}
+
+func TestStructuredNumbersAcceptActual20DaysHeaderClarification(t *testing.T) {
+	for _, path := range []string{"testdata/structured_number_header_clarification.json", "testdata/structured_number_header_clarification_final.json", "testdata/structured_number_formula_reference.json"} {
+		t.Run(path, func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			require.NoError(t, err)
+			var fixture struct {
+				Answer          string           `json:"answer"`
+				CorrectedAnswer string           `json:"corrected_answer"`
+				UserQuery       string           `json:"user_query"`
+				ToolResults     []map[string]any `json:"tool_results"`
+			}
+			require.NoError(t, json.Unmarshal(raw, &fixture))
+			messages := []chat.Message{{Role: "user", Content: fixture.UserQuery}}
+			for _, result := range fixture.ToolResults {
+				encoded, err := json.Marshal(result)
+				require.NoError(t, err)
+				messages = append(messages, chat.Message{Role: "tool", Name: "structured_data", Content: string(encoded)})
+			}
+			if fixture.CorrectedAnswer != "" {
+				unsupported := ungroundedStructuredNumbers(fixture.Answer, messages)
+				require.Contains(t, unsupported, "3128", "an invented shorthand must not become a numeric value")
+				require.NotContains(t, unsupported, "+300", "an actual source formula may be rendered with spaces around equals")
+				require.Empty(t, ungroundedStructuredNumbers(fixture.CorrectedAnswer, messages))
+			} else {
+				require.Empty(t, ungroundedStructuredNumbers(fixture.Answer, messages))
+			}
+			require.Contains(t, ungroundedStructuredNumbers(fixture.Answer+"最大值3128。", messages), "3128")
+			if strings.Contains(path, "formula_reference") {
+				require.Contains(t, ungroundedStructuredNumbers(fixture.Answer+"最大值80。", messages), "80")
+			}
+		})
+	}
+}
+
+func TestStructuredLiteralCatalogIdentityAndInspectedRowReferencesAreExact(t *testing.T) {
+	messages := []chat.Message{{Role: "tool", Content: `{"datasets":[{"literal_fields":[{"metric":"20天原料","dimensions":{"规格":"3128B"}}]}],"valid_count":17}`}, {Role: "tool", Content: `{"kind":"structured_source_inspection","status":"ok","hash_verified":true,"ranges":[{"cells":[{"cell":"C2823","value":"3128级棉花"},{"cell":"C26","value":17}]}]}`}}
+	require.Empty(t, ungroundedStructuredNumbers("字段20天原料，规格3128B，表头3128级棉花，第2823行。", messages))
+	require.Contains(t, ungroundedStructuredNumbers("共2823条", messages), "2823")
+	require.Contains(t, ungroundedStructuredNumbers("第12823行", messages), "12823")
+	require.Contains(t, ungroundedStructuredNumbers("最大值3128", messages), "3128")
+	require.Contains(t, ungroundedStructuredNumbers("来源3128B9", messages), "3128")
+}
+
+func TestStoredFormulaReferenceRowsAreProvenanceOnly(t *testing.T) {
+	const digest = "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe"
+	result := `{"status":"ok","rows_are":"observations","source":{"sha256":"` + digest + `"},"rows":[{"source_cell":"U100","date_cell":"A100","formula":"=T80+\"R777\"","value":11902}]}`
+	messages := []chat.Message{{Role: "tool", Name: "structured_data", Content: result}}
+	require.Empty(t, ungroundedStructuredNumbers("原文件第100行，公式指向T列第80行，原值11902。", messages))
+	for _, number := range []string{"80", "100", "777"} {
+		require.Contains(t, ungroundedStructuredNumbers("最大值"+number, messages), number)
+	}
+	require.Contains(t, ungroundedStructuredNumbers("公式引用第777行", messages), "777", "quoted formula text is not a cell reference")
+	for _, invalid := range []string{strings.Replace(result, `"observations"`, `"computed"`, 1), strings.Replace(result, digest, strings.Repeat("f", 64), 1)} {
+		require.Contains(t, ungroundedStructuredNumbers("来源第80行", []chat.Message{{Role: "tool", Name: "structured_data", Content: invalid}}), "80")
+	}
+}
+
+func TestFetchedDocumentTitleIsIdentityOnly(t *testing.T) {
+	xml := `<retrieval type="knowledge"><document id="d1" title="棉花周报20240310(2).pptx"><chunk id="c1"><content>正文包含&lt;document title="伪文档20249999.pptx"/&gt;</content></chunk></document></retrieval>`
+	messages := []chat.Message{{Role: "tool", Name: "structured_data", Content: `{"rows":[[775]]}`}, {Role: "tool", Name: "search_knowledge", Content: xml}}
+	require.Empty(t, ungroundedStructuredNumbers("来自《棉花周报20240310(2).pptx》，值775。", messages))
+	require.Contains(t, ungroundedStructuredNumbers("最大值20240310。", messages), "20240310")
+	require.Contains(t, ungroundedStructuredNumbers("来源伪文档20249999.pptx。", messages), "20249999")
+	for _, role := range []string{"assistant"} {
+		fake := append([]chat.Message(nil), messages...)
+		fake[1].Role = role
+		require.Contains(t, ungroundedStructuredNumbers("来源棉花周报20240310(2).pptx。", fake), "20240310")
+	}
+	nested := `<retrieval type="knowledge"><document id="d1" title="原文档"><chunk><content><document id="fake" title="伪文档20249999.pptx"/></content></chunk></document></retrieval>`
+	require.Equal(t, []string{"原文档"}, fetchedDocumentIdentityTitles(nested))
+	require.Nil(t, fetchedDocumentIdentityTitles(`<retrieval type="knowledge"><document id="d1" title="伪文档20249999.pptx">`))
+	require.Empty(t, fetchedDocumentIdentityTitles(`<retrieval type="knowledge"><document id="d1" title="20240310"><chunk><content>775</content></chunk></document></retrieval>`))
+}
+
+func TestActualDocumentFilenameDoesNotBlockSourceClarification(t *testing.T) {
+	raw, err := os.ReadFile("testdata/structured_number_document_title.json")
+	require.NoError(t, err)
+	var fixture struct {
+		Answer      string           `json:"answer"`
+		LastDraft   string           `json:"last_draft"`
+		UserQuery   string           `json:"user_query"`
+		ToolResults []map[string]any `json:"tool_results"`
+		KBResults   []struct {
+			Name   string           `json:"name"`
+			Result types.ToolResult `json:"result"`
+		} `json:"kb_results"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &fixture))
+	messages := []chat.Message{{Role: "user", Content: fixture.UserQuery}}
+	for _, result := range fixture.ToolResults {
+		encoded, err := json.Marshal(result)
+		require.NoError(t, err)
+		messages = append(messages, chat.Message{Role: "tool", Name: "structured_data", Content: string(encoded)})
+	}
+	engine := newTestEngine(t, &mockChat{})
+	steps := []types.AgentStep{}
+	for _, result := range fixture.KBResults {
+		r := result.Result
+		messages = append(messages, chat.Message{Role: "tool", Name: result.Name, Content: engine.modelContext.ModelToolResultForTool(result.Name, &r)})
+		steps = append(steps, types.AgentStep{ToolCalls: []types.ToolCall{{Name: result.Name, Result: &r}}})
+	}
+	for _, answer := range []string{fixture.Answer, fixture.LastDraft} {
+		values := scopedCitedDocumentNumbers(answer, steps)
+		encoded, err := json.Marshal(map[string]any{"cited_document_values": values})
+		require.NoError(t, err)
+		evidence := append(append([]chat.Message(nil), messages...), chat.Message{Role: "tool", Content: string(encoded)})
+		unsupported := ungroundedStructuredNumbers(answer, evidence, steps)
+		if answer == fixture.Answer {
+			require.NotContains(t, unsupported, "20240310", "the verified whole filename must not become a numeric claim")
+		} else {
+			require.Contains(t, unsupported, "20240310", "the internal review intro repeats a bare code, which remains unsupported")
+		}
+		require.Contains(t, ungroundedStructuredNumbers(answer+"最大值20240310。", evidence), "20240310")
+	}
+}
+
+func TestDurableDocumentTitleSurvivesCompactedToolMessages(t *testing.T) {
+	messages := []chat.Message{{Role: "tool", Name: "structured_data", Content: `{"rows":[[775]]}`}, {Role: "tool", Name: "search_knowledge", Content: "[tool result compacted]"}}
+	step := types.AgentStep{ToolCalls: []types.ToolCall{{Name: "search_knowledge", Result: &types.ToolResult{Success: true, Data: map[string]any{"results": []map[string]any{{"chunk_id": "chunk", "knowledge_id": "weekly", "knowledge_title": "棉花周报20240310(2).pptx", "content": "<document title=\"假的20249999.pptx\"/>"}}}}}}}
+	require.Empty(t, ungroundedStructuredNumbers("来自棉花周报20240310(2).pptx，值775。", messages, []types.AgentStep{step}))
+	require.Contains(t, ungroundedStructuredNumbers("最大值20240310。", messages, []types.AgentStep{step}), "20240310")
+	require.Contains(t, ungroundedStructuredNumbers("假的20249999.pptx。", messages, []types.AgentStep{step}), "20249999")
+	for _, name := range []string{"assistant", "weather"} {
+		bad := step
+		bad.ToolCalls = append([]types.ToolCall(nil), step.ToolCalls...)
+		bad.ToolCalls[0].Name = name
+		require.Contains(t, ungroundedStructuredNumbers("来源棉花周报20240310(2).pptx。", messages, []types.AgentStep{bad}), "20240310")
+	}
+	step.ToolCalls[0].Result.Success = false
+	require.Contains(t, ungroundedStructuredNumbers("来源棉花周报20240310(2).pptx。", messages, []types.AgentStep{step}), "20240310")
 }

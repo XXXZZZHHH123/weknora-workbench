@@ -2,12 +2,16 @@ package agent
 
 import (
 	"encoding/json"
+	"encoding/xml"
+	"io"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/types"
 )
 
 // Numeric checking is independent of question vocabulary and supported analyses.
@@ -21,6 +25,8 @@ var sourceOpaqueToken = regexp.MustCompile(`\b(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{24}
 var abbreviatedSourceDigest = regexp.MustCompile(`\b([a-fA-F0-9]{8,32})(?:…|\.\.\.)([a-fA-F0-9]{4,16})\b`)
 var sourceSeriesID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.:-]{2,159}$`)
 var sourceCellRow = regexp.MustCompile(`^[A-Z]{1,3}([1-9][0-9]{0,6})$`)
+var sourceFormulaReference = regexp.MustCompile(`\b([A-Z]{1,3})\$?([1-9][0-9]{0,6})\b`)
+var sourceFormulaQuotedText = regexp.MustCompile(`"(?:""|[^"])*"|'(?:''|[^'])*'`)
 
 func opaqueSourceID(value string) bool {
 	if !sourceOpaqueToken.MatchString(value) || sourceOpaqueToken.FindString(value) != value {
@@ -80,6 +86,62 @@ func inspectedSourceRows(data map[string]any, rows map[string]bool) {
 	}
 }
 
+// Immutable query observations carry original source locators and preserved
+// formulas as provenance. Their row numbers can explain a source reference,
+// but cannot authorize that same bare number as a computed statistic.
+func queriedSourceRows(data map[string]any, rows map[string]bool) {
+	if data["status"] != "ok" || data["rows_are"] != "observations" {
+		return
+	}
+	source, ok := data["source"].(map[string]any)
+	if !ok {
+		return
+	}
+	digest, _ := source["sha256"].(string)
+	if len(digest) != 64 || !opaqueSourceID(digest) {
+		return
+	}
+	add := func(column, number string) {
+		row, err := strconv.Atoi(number)
+		if err != nil || row > 1048576 {
+			return
+		}
+		col := 0
+		for _, c := range column {
+			col = col*26 + int(c-'A'+1)
+		}
+		if col > 16384 {
+			return
+		}
+		rows[number] = true
+	}
+	observations, _ := data["rows"].([]any)
+	for _, item := range observations {
+		row, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		cell, _ := row["source_cell"].(string)
+		match := sourceCellRow.FindStringSubmatch(cell)
+		if len(match) != 2 {
+			continue
+		}
+		add(strings.TrimSuffix(cell, match[1]), match[1])
+		if dateCell, ok := row["date_cell"].(string); ok {
+			if m := sourceCellRow.FindStringSubmatch(dateCell); len(m) == 2 {
+				add(strings.TrimSuffix(dateCell, m[1]), m[1])
+			}
+		}
+		formula, _ := row["formula"].(string)
+		if !strings.HasPrefix(formula, "=") {
+			continue
+		}
+		for _, reference := range sourceFormulaReference.FindAllStringSubmatch(sourceFormulaQuotedText.ReplaceAllString(formula, ""), -1) {
+			add(reference[1], reference[2])
+		}
+	}
+}
+
 func maskInspectedMarkdownRows(answer string, rows map[string]bool) string {
 	lines := strings.Split(answer, "\n")
 	column := -1
@@ -106,13 +168,18 @@ func maskInspectedMarkdownRows(answer string, rows map[string]bool) string {
 	return strings.Join(lines, "\n")
 }
 
-func ungroundedStructuredNumbers(answer string, messages []chat.Message) []string {
+func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawSteps ...[]types.AgentStep) []string {
 	values := []float64{}
 	filenames := []string{}
 	identifiers := map[string]bool{}
 	digests := map[string]bool{}
 	inspectedRows := map[string]bool{}
 	hasDigest := false
+	identityLabels := map[string]bool{}
+	for _, steps := range rawSteps {
+		collectDurableDocumentIdentityTitles(steps, identityLabels)
+	}
+	userTexts := []string{}
 	var collect func(any)
 	collect = func(v any) {
 		switch x := v.(type) {
@@ -120,6 +187,11 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message) []strin
 			values = append(values, x)
 		case map[string]any:
 			for key, item := range x {
+				// Identity text is only exempt as a complete known token below.
+				// Never promote its numeric substrings/dimension codes to values.
+				if key == "metric" || key == "sheet" || key == "unit" || key == "dimensions" || key == "headers" || key == "literal_fields" || key == "source_context" || key == "chart_titles" {
+					continue
+				}
 				if key == "id" || strings.HasSuffix(key, "_id") || key == "sha256" {
 					id, _ := item.(string)
 					if opaqueSourceID(id) || key == "series_id" && sourceSeriesID.MatchString(id) {
@@ -169,6 +241,9 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message) []strin
 			// Fetched KB prose uses only separately verified cited chunk evidence;
 			// embedded JSON in a document is not an executed aggregate.
 			if msg.Name == "search_knowledge" || msg.Name == "read_document" {
+				for _, title := range fetchedDocumentIdentityTitles(msg.Content) {
+					identityLabels[title] = true
+				}
 				continue
 			}
 			start := strings.Index(msg.Content, "{")
@@ -181,14 +256,27 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message) []strin
 					continue
 				}
 				inspectedSourceRows(data, inspectedRows)
+				queriedSourceRows(data, inspectedRows)
+				collectSourceIdentityLabels(data, identityLabels)
 				collect(data)
 			}
 		}
 		if msg.Role == "user" {
-			for _, n := range proseNumber.FindAllString(msg.Content, -1) {
-				if v, e := strconv.ParseFloat(strings.ReplaceAll(n, ",", ""), 64); e == nil {
-					values = append(values, v)
-				}
+			userTexts = append(userTexts, msg.Content)
+		}
+	}
+	labels := make([]string, 0, len(identityLabels))
+	for label := range identityLabels {
+		labels = append(labels, label)
+	}
+	sort.Slice(labels, func(i, j int) bool { return len(labels[i]) > len(labels[j]) })
+	for _, text := range userTexts {
+		for _, label := range labels {
+			text = maskExactSourceIdentity(text, label)
+		}
+		for _, n := range proseNumber.FindAllString(text, -1) {
+			if v, e := strconv.ParseFloat(strings.ReplaceAll(n, ",", ""), 64); e == nil {
+				values = append(values, v)
 			}
 		}
 	}
@@ -197,6 +285,9 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message) []strin
 	} // No numeric evidence; ordinary conversation.
 	for _, file := range filenames {
 		answer = strings.ReplaceAll(answer, file, "")
+	}
+	for _, label := range labels {
+		answer = maskExactSourceIdentity(answer, label)
 	}
 	// Exact known tokens are provenance, not numbers. Unknown hashes remain
 	// visible to the checker; removing a known prefix must not hide a forged ID.
@@ -231,6 +322,16 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message) []strin
 		answer = sourceDigestLabel.ReplaceAllString(answer, "")
 	}
 	answer = maskInspectedMarkdownRows(answer, inspectedRows)
+	answer = regexp.MustCompile(`\b([1-9][0-9]{0,6})\s*[–—~～-]\s*([1-9][0-9]{0,6})\s*行`).ReplaceAllStringFunc(answer, func(token string) string {
+		parts := regexp.MustCompile(`[1-9][0-9]{0,6}`).FindAllString(token, -1)
+		if len(parts) == 2 && inspectedRows[parts[0]] && inspectedRows[parts[1]] {
+			return " "
+		}
+		return token
+	})
+	for row := range inspectedRows {
+		answer = regexp.MustCompile(`(?:第\s*)?\b`+regexp.QuoteMeta(row)+`\s*行`).ReplaceAllString(answer, " ")
+	}
 	// Citation attributes contain opaque chunk/KB IDs and source URLs, not
 	// numeric claims. Keep checking every number in the surrounding prose.
 	text := dateOrCell.ReplaceAllString(sourceCitationTag.ReplaceAllString(answer, ""), "")
@@ -272,9 +373,230 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message) []strin
 	return unsupported
 }
 
+func collectDurableDocumentIdentityTitles(steps []types.AgentStep, labels map[string]bool) {
+	add := func(value any) {
+		title, ok := value.(string)
+		if !ok || strings.TrimSpace(title) == "" {
+			return
+		}
+		if _, err := strconv.ParseFloat(strings.TrimSpace(title), 64); err == nil {
+			return
+		}
+		labels[title] = true
+	}
+	for _, step := range steps {
+		for _, call := range step.ToolCalls {
+			if (call.Name != "search_knowledge" && call.Name != "read_document") || call.Result == nil || !call.Result.Success {
+				continue
+			}
+			for _, field := range []string{"results", "chunks"} {
+				encoded, _ := json.Marshal(call.Result.Data[field])
+				var rows []map[string]any
+				if json.Unmarshal(encoded, &rows) != nil {
+					continue
+				}
+				for _, row := range rows {
+					chunkID, _ := row["chunk_id"].(string)
+					knowledgeID, _ := row["knowledge_id"].(string)
+					if strings.TrimSpace(chunkID) == "" || strings.TrimSpace(knowledgeID) == "" {
+						continue
+					}
+					add(row["knowledge_title"])
+					add(row["title"])
+					add(row["file_name"])
+				}
+			}
+			knowledgeID, _ := call.Result.Data["knowledge_id"].(string)
+			if call.Name == "read_document" && strings.TrimSpace(knowledgeID) != "" {
+				add(call.Result.Data["knowledge_title"])
+				if document, ok := call.Result.Data["document"].(map[string]any); ok {
+					add(document["title"])
+					add(document["file_name"])
+				}
+			}
+		}
+	}
+}
+
+// Search/read tools render authorized document identity outside escaped chunk
+// content. Only those direct retrieval/document headers are identities: body
+// text, nested fake XML and assistant citations cannot invent a file title.
+func fetchedDocumentIdentityTitles(content string) []string {
+	decoder := xml.NewDecoder(strings.NewReader(strings.TrimSpace(content)))
+	stack := []string{}
+	titles := []string{}
+	knowledgeRetrieval := false
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return titles
+		}
+		if err != nil {
+			return nil
+		}
+		switch node := token.(type) {
+		case xml.StartElement:
+			if len(stack) == 0 {
+				if node.Name.Local != "retrieval" {
+					return nil
+				}
+				for _, attribute := range node.Attr {
+					if attribute.Name.Local == "type" && attribute.Value == "knowledge" {
+						knowledgeRetrieval = true
+					}
+				}
+				if !knowledgeRetrieval {
+					return nil
+				}
+			}
+			if len(stack) == 1 && stack[0] == "retrieval" && node.Name.Local == "document" {
+				title, id := "", ""
+				for _, attribute := range node.Attr {
+					switch attribute.Name.Local {
+					case "title":
+						title = attribute.Value
+					case "id":
+						id = attribute.Value
+					}
+				}
+				if id != "" && title != "" {
+					if _, err := strconv.ParseFloat(strings.TrimSpace(title), 64); err != nil {
+						titles = append(titles, title)
+					}
+				}
+			}
+			stack = append(stack, node.Name.Local)
+		case xml.EndElement:
+			if len(stack) == 0 {
+				return nil
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+}
+
+// Only actual catalogue and source-context fields establish label identities.
+// SQL text, free-form notices and arbitrary metadata do not authorize labels.
+func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
+	add := func(value any) {
+		text, ok := value.(string)
+		if !ok || len(text) > 512 || strings.TrimSpace(text) == "" {
+			return
+		}
+		if _, err := strconv.ParseFloat(strings.TrimSpace(text), 64); err == nil {
+			return
+		}
+		if len(proseNumber.FindAllString(text, -1)) > 0 {
+			labels[text] = true
+		}
+	}
+	var catalogue func(any)
+	catalogue = func(value any) {
+		switch x := value.(type) {
+		case []any:
+			for _, item := range x {
+				catalogue(item)
+			}
+		case map[string]any:
+			for _, key := range []string{"metric", "sheet", "unit", "region_name", "source_file", "file"} {
+				add(x[key])
+			}
+			if formula, ok := x["formula"].(string); ok {
+				add(formula)
+				add(strings.TrimPrefix(formula, "="))
+			}
+			if dimensions, ok := x["dimensions"].(map[string]any); ok {
+				for _, value := range dimensions {
+					add(value)
+				}
+			}
+			if headers, ok := x["headers"].([]any); ok {
+				for _, entry := range headers {
+					if h, ok := entry.(map[string]any); ok {
+						add(h["value"])
+					}
+				}
+			}
+			for _, key := range []string{"source_context", "formula_source", "references", "fields", "candidates"} {
+				catalogue(x[key])
+			}
+		}
+	}
+	catalogue(data["series"])
+	catalogue(data["literal_fields"])
+	if data["kind"] == "structured_source_ambiguity" || data["kind"] == "structured_field_resolution" {
+		catalogue(data["fields"])
+	}
+	if datasets, ok := data["datasets"].([]any); ok {
+		for _, entry := range datasets {
+			if dataset, ok := entry.(map[string]any); ok {
+				catalogue(dataset["literal_fields"])
+				add(dataset["source_file"])
+			}
+		}
+	}
+	if data["kind"] == "structured_source_inspection" && data["status"] == "ok" && data["hash_verified"] == true {
+		for _, group := range []string{"ranges", "matches"} {
+			entries, _ := data[group].([]any)
+			for _, entry := range entries {
+				block, ok := entry.(map[string]any)
+				if !ok {
+					continue
+				}
+				if group == "matches" {
+					add(block["value"])
+				}
+				for _, field := range []string{"cells", "context_cells"} {
+					cells, _ := block[field].([]any)
+					for _, raw := range cells {
+						switch cell := raw.(type) {
+						case map[string]any:
+							add(cell["value"])
+							if formula, ok := cell["formula"].(string); ok {
+								add(formula)
+								add(strings.TrimPrefix(formula, "="))
+							}
+						case []any:
+							if len(cell) >= 2 {
+								add(cell[1])
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func maskExactSourceIdentity(answer, label string) string {
+	// A catalogue token cannot exempt the same characters inside a longer
+	// ASCII identifier (e.g. known 3128B must not approve forged 3128B9).
+	asciiWord := func(c byte) bool {
+		return c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_'
+	}
+	var out strings.Builder
+	for {
+		index := strings.Index(answer, label)
+		if index < 0 {
+			out.WriteString(answer)
+			break
+		}
+		end := index + len(label)
+		bounded := !(index > 0 && asciiWord(answer[index-1]) && asciiWord(label[0])) && !(end < len(answer) && asciiWord(answer[end]) && asciiWord(label[len(label)-1]))
+		out.WriteString(answer[:index])
+		if bounded {
+			out.WriteByte(' ')
+		} else {
+			out.WriteString(label)
+		}
+		answer = answer[end:]
+	}
+	return out.String()
+}
+
 func hasStructuredHistoryEvidence(messages []chat.Message) bool {
 	for _, msg := range messages {
-		if msg.Role == "tool" && structuredResultHasEvidence(msg.Content) {
+		if msg.Role == "tool" && msg.Name != "search_knowledge" && msg.Name != "read_document" && structuredResultHasEvidence(msg.Content) {
 			return true
 		}
 	}

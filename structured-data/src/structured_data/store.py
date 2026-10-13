@@ -61,7 +61,8 @@ class DataStore:
 
     def catalog(self, dataset_id, sheet=None, question=''):
         from .native_charts import catalog
-        return catalog(self, dataset_id, sheet, question)
+        from .source_context import enrich_catalog
+        return enrich_catalog(self, dataset_id, catalog(self, dataset_id, sheet, question))
 
     def list_charts(self, dataset_id, sheet=None, search='', limit=50, offset=0):
         self._limit(limit)

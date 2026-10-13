@@ -42,6 +42,7 @@ const (
 var sourceKeySpaces = map[string]sourceKeySpace{
 	"chunk_id": spaceChunk, "faq_id": spaceChunk, "chunk_ids": spaceChunk, "faq_ids": spaceChunk,
 	"knowledge_id": spaceDocument, "knowledge_ids": spaceDocument, "suspected_knowledge_ids": spaceDocument,
+	"document_ids":   spaceDocument,
 	"source_refs":    spaceDocumentRef,
 	"knowledge_base": spaceKnowledgeBase, "knowledge_base_id": spaceKnowledgeBase,
 	"knowledge_base_ids": spaceKnowledgeBase, "kb_id": spaceKnowledgeBase, "kb_ids": spaceKnowledgeBase,
@@ -77,7 +78,7 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 	"call_mcp_tool":                  {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
 	"read_file":                      {},
 	"search_knowledge": {
-		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}},
+		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}, "document_ids": {}},
 		sourceOutput: true,
 	},
 	// read_document takes one id that may name a document (dN) or a chunk

@@ -18,6 +18,10 @@ def literal_fields(catalog, question):
     """Recall explicit headers without interpreting intent or choosing a definition."""
     q=normalize(question)
     for sheet in sorted({s['sheet'] for s in catalog},key=len,reverse=True):
+        # A sheet such as 原料 can be part of the actual header 20天原料.
+        # Removing that substring would hide an explicit literal field.
+        if any(normalize(sheet) in normalize(s['metric']) for s in catalog):
+            continue
         q=q.replace(normalize(sheet),' ')
     matches=[s for s in catalog if len(normalize(s['metric']))>=3 and normalize(s['metric']) in q]
     # A longer named header may contain a different, shorter definition.
@@ -54,7 +58,7 @@ class FieldIndex:
                 con.execute('DELETE FROM fields')
                 for s in catalog:
                     metric=' '.join([s['metric'],*map(str,(s.get('dimensions') or {}).values()),*s.get('aliases',[])])
-                    context=json.dumps({k:s.get(k) for k in ('sheet','unit','chart_titles','chart_legends','source_metric')},ensure_ascii=False)
+                    context=json.dumps({k:s.get(k) for k in ('sheet','unit','chart_titles','chart_legends','source_metric','source_context')},ensure_ascii=False)
                     con.execute('INSERT INTO fields VALUES (?,?,?)',(s['series_id'],' '.join(tokens(metric)),' '.join(tokens(context))))
 
     def search(self, queries, prior_ids=(), context_sheet=None, limit=24):

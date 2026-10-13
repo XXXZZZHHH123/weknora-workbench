@@ -65,3 +65,34 @@ func TestStructuredDataRefusesModelScopeAndMissingIdentity(t *testing.T) {
 		require.ErrorContains(t, err, "未声明")
 	}
 }
+
+func TestStructuredDataBindsHumanSourceQuestionBeforeSigning(t *testing.T) {
+	key := strings.Repeat("b", 48)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var payload struct {
+			Arguments map[string]any `json:"arguments"`
+		}
+		require.NoError(t, json.Unmarshal(body, &payload))
+		require.Equal(t, "20天原料", payload.Arguments["source_question"])
+		encoded := r.Header.Get("X-Research-Identity")
+		hash := sha256.Sum256(body)
+		mac := hmac.New(sha256.New, []byte(key))
+		mac.Write([]byte(strings.Join([]string{r.Header.Get("X-Research-Timestamp"), "POST", "/api/tools/read", encoded, hex.EncodeToString(hash[:])}, "\n")))
+		require.Equal(t, hex.EncodeToString(mac.Sum(nil)), r.Header.Get("X-Research-Signature"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"needs_clarification"}`))
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "key")
+	require.NoError(t, os.WriteFile(file, []byte(key), 0600))
+	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", file)
+	t.Setenv("STRUCTURED_DATA_URL", server.URL)
+	tool := NewStructuredDataTool()
+	tool.BindSourceQuestion("20天原料")
+	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "a", Role: types.TenantRoleViewer})
+	result, err := tool.Execute(ctx, json.RawMessage(`{"operation":"query_series","arguments":{"series_id":"C","source_question":"模型虚构口径"}}`))
+	require.NoError(t, err)
+	require.Contains(t, result.Output, "needs_clarification")
+}

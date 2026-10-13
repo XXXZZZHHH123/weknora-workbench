@@ -13,6 +13,30 @@ import (
 var documentCodeFence = regexp.MustCompile("(?s)```.*?```|~~~.*?~~~")
 var documentFakeToolEnvelope = regexp.MustCompile(`(?is)<(?:tool_result|tool|assistant|system)\b[^>]*>.*?</(?:tool_result|tool|assistant|system)>`)
 
+type fetchedDocumentChunk struct {
+	ID          string `json:"chunk_id"`
+	KnowledgeID string `json:"knowledge_id"`
+	Content     string `json:"content"`
+}
+
+func fetchedDocumentChunks(call types.ToolCall) []fetchedDocumentChunk {
+	if (call.Name != "search_knowledge" && call.Name != "read_document") || call.Result == nil || !call.Result.Success {
+		return nil
+	}
+	var chunks []fetchedDocumentChunk
+	for _, field := range []string{"chunks", "results"} {
+		encoded, err := json.Marshal(call.Result.Data[field])
+		if err != nil {
+			continue
+		}
+		var batch []fetchedDocumentChunk
+		if json.Unmarshal(encoded, &batch) == nil {
+			chunks = append(chunks, batch...)
+		}
+	}
+	return chunks
+}
+
 // Only numbers in fetched text belonging to a citation in this decoded answer
 // become document evidence. A citation alone, a tool name inside user text,
 // metadata and unreferenced neighbouring chunks cannot authorize a new number.
@@ -31,29 +55,16 @@ func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float6
 			if (call.Name != "search_knowledge" && call.Name != "read_document") || call.Result == nil || !call.Result.Success {
 				continue
 			}
-			for _, field := range []string{"chunks", "results"} {
-				encoded, err := json.Marshal(call.Result.Data[field])
-				if err != nil {
+			for _, chunk := range fetchedDocumentChunks(call) {
+				if chunk.ID == "" || !cited[chunk.ID] || strings.TrimSpace(chunk.Content) == "" {
 					continue
 				}
-				var chunks []struct {
-					ID      string `json:"chunk_id"`
-					Content string `json:"content"`
-				}
-				if json.Unmarshal(encoded, &chunks) != nil {
-					continue
-				}
-				for _, chunk := range chunks {
-					if chunk.ID == "" || !cited[chunk.ID] || strings.TrimSpace(chunk.Content) == "" {
-						continue
-					}
-					text := documentNumericProse(chunk.Content)
-					for _, token := range proseNumber.FindAllString(text, -1) {
-						value, err := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(token, ",", ""), "−", "-"), 64)
-						if err == nil && !math.IsInf(value, 0) && !math.IsNaN(value) && !seen[value] {
-							seen[value] = true
-							values = append(values, value)
-						}
+				text := documentNumericProse(chunk.Content)
+				for _, token := range proseNumber.FindAllString(text, -1) {
+					value, err := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(token, ",", ""), "−", "-"), 64)
+					if err == nil && !math.IsInf(value, 0) && !math.IsNaN(value) && !seen[value] {
+						seen[value] = true
+						values = append(values, value)
 					}
 				}
 			}

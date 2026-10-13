@@ -92,6 +92,37 @@ func TestAnydocEngineFollowsBuildAvailability(t *testing.T) {
 	}
 }
 
+func TestLegacyAnydocPowerPointRuleRoutesToDocreaderEvenWithoutNativeBinding(t *testing.T) {
+	remote := &stubDocReader{result: &types.ReadResult{MarkdownContent: "# 第12页\nchart"}}
+	reader, err := NewReader(context.Background(), AnydocEngineName, ".PPTX", false, ReaderDeps{Remote: remote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.Read(context.Background(), &types.ReadRequest{
+		FileType: "pptx", FileName: "old-report.pptx", FileContent: []byte("pptx"), ParserEngine: AnydocEngineName,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if remote.got == nil || remote.got.ParserEngine != "markitdown" {
+		t.Fatalf("legacy anydoc rule bypassed chart parser: %+v", remote.got)
+	}
+}
+
+func TestAnydocNonPresentationAvailabilityIsNotOverriddenByRemote(t *testing.T) {
+	if anydoc.Available() {
+		t.Skip("this guard checks a build without native anydoc")
+	}
+	for _, remote := range []interfaces.DocReader{&stubDocReader{}, &disconnectedDocReader{}} {
+		if _, err := NewReader(context.Background(), AnydocEngineName, "docx", false, ReaderDeps{Remote: remote}); err == nil {
+			t.Fatal("non-PowerPoint anydoc rule silently changed parser")
+		}
+	}
+	if _, err := NewReader(context.Background(), AnydocEngineName, "pptx", false,
+		ReaderDeps{Remote: &disconnectedDocReader{}}); err == nil {
+		t.Fatal("disconnected PowerPoint remote bypassed native availability")
+	}
+}
+
 func TestListAllEnginesIncludesAnydoc(t *testing.T) {
 	for _, engine := range ListAllEngines(true, nil, nil) {
 		if engine.Name != AnydocEngineName {

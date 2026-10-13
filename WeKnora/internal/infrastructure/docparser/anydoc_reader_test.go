@@ -43,6 +43,64 @@ func TestNewAnydocReaderHonoursImageExtractionOverride(t *testing.T) {
 	}
 }
 
+func TestAnydocPowerPointUsesConfiguredPageAndChartParser(t *testing.T) {
+	for _, fileType := range []string{"pptx", ".PPTX", "ppt", "pptm", ""} {
+		t.Run(fileType, func(t *testing.T) {
+			fallback := &stubDocReader{result: &types.ReadResult{
+				MarkdownContent: "<!-- Slide number: 12 -->\n# 第12页\n![chart](images/chart.png)",
+				ImageRefs:       []types.ImageRef{{OriginalRef: "images/chart.png", ImageData: []byte("png")}},
+			}}
+			req := &types.ReadRequest{FileType: fileType, FileName: "report.pptx", FileContent: []byte("pptx"),
+				ParserEngine: AnydocEngineName, RequestID: "retain-request", Title: "retain-title"}
+			result, err := NewAnydocReader(nil, fallback).Read(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fallback.got == nil || fallback.got.ParserEngine != "markitdown" {
+				t.Fatalf("PowerPoint did not use markitdown: %+v", fallback.got)
+			}
+			if req.ParserEngine != AnydocEngineName || fallback.got.RequestID != req.RequestID ||
+				fallback.got.Title != req.Title || string(fallback.got.FileContent) != "pptx" {
+				t.Fatal("routing changed original request or lost its source/context")
+			}
+			if result.Metadata["requested_parser"] != AnydocEngineName || result.Metadata["parser"] != "markitdown" ||
+				len(result.ImageRefs) != 1 || !strings.Contains(result.MarkdownContent, "第12页") {
+				t.Fatalf("routing lost provenance/images: %+v", result)
+			}
+		})
+	}
+}
+
+func TestAnydocPowerPointParserFailureDoesNotBecomeNativeTextSuccess(t *testing.T) {
+	for _, fallback := range []*stubDocReader{{err: errors.New("chart service failed")}, {}} {
+		_, err := NewAnydocReader(nil, fallback).Read(context.Background(), &types.ReadRequest{
+			FileType: "pptx", FileName: "report.pptx", FileContent: []byte("pptx"),
+		})
+		if err == nil || !strings.Contains(err.Error(), "PowerPoint page/chart") {
+			t.Fatalf("configured PowerPoint parser failure not surfaced: %v", err)
+		}
+	}
+}
+
+func TestAnydocNonPresentationDoesNotChangeParserWhenRemoteExists(t *testing.T) {
+	fallback := &stubDocReader{result: &types.ReadResult{MarkdownContent: "should not be used"}}
+	_, err := NewAnydocReader(nil, fallback).Read(context.Background(), &types.ReadRequest{
+		FileType: "docx", FileName: "report.docx", FileContent: []byte("invalid native document"),
+	})
+	if err == nil || fallback.got != nil {
+		t.Fatalf("non-PowerPoint type changed parser: err=%v fallback=%+v", err, fallback.got)
+	}
+}
+
+func TestAnydocPowerPointDisconnectedRemoteRetainsNativeBehavior(t *testing.T) {
+	_, err := NewAnydocReader(nil, &disconnectedDocReader{}).Read(context.Background(), &types.ReadRequest{
+		FileType: "pptx", FileName: "report.pptx", FileContent: []byte("invalid native document"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "anydoc conversion failed") {
+		t.Fatalf("disconnected remote did not retain native path: %v", err)
+	}
+}
+
 func TestImageRefsFromAssetsMatchInPlaceMarkdownPaths(t *testing.T) {
 	refs := imageRefsFromAssets([]anydoc.Asset{
 		{Name: "image-1.png", MediaType: "image/png", Data: []byte("first")},

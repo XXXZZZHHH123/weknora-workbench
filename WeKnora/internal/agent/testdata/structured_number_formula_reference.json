@@ -1,0 +1,179 @@
+{
+  "answer": "**2016年4月7日「CC Index 3128B」对应的「20天原料」= 11902 元/吨**\n\n| 项目 | 内容 |\n|---|---|\n| 文件/工作表 | 棉花数据库(2).xlsx → 纱布利润 |\n| 取值列 | U 列「20天原料」（表头 U1、U2；单位：元/吨） |\n| 日期行 | 2016-04-07（日期格 A100） |\n| 原单元格 | 纱布利润!U100，缓存值 11902 |\n| 原表公式 | `=T80` |\n\n说明：\n- 同一天 T 列「CC Index 3128B」（表头 T1、T2；单位：元/吨）的值为 11695 元/吨（T100）。\n- U100 的原表公式为 `=T80`，即该行的「20天原料」取自 T 列第 80 行的值，与同一行的 11695 不是同一个数。\n- 数值来自原文件保存的公式缓存，本次未重新计算 Excel 公式。",
+  "user_query": "按CC Index 3128B那一列，2016年4月7日的20天原料是多少？",
+  "tool_results": [
+    {
+      "dataset_id": "b3e746ccf6612d67b13e3cee",
+      "status": "ok",
+      "series": {
+        "series_id": "generic.e91f85c864e754066c1b",
+        "sheet": "纱布利润",
+        "metric": "20天原料",
+        "dimensions": {
+          "原表列": "U",
+          "block": "mapped_1"
+        },
+        "unit": "元/吨",
+        "unit_status": "explicit",
+        "header_cells": [
+          "U1",
+          "U2"
+        ],
+        "date_mode": "date",
+        "region_name": "区块1",
+        "block_index": 0,
+        "description": "纱布利润 / 20天原料；时间标签取A列；单位：元/吨",
+        "record_count": 2821,
+        "valid_count": 1948,
+        "first_date": "2016-01-01",
+        "last_date": "2023-09-21",
+        "first_valid_date": "2016-01-24",
+        "last_valid_date": "2023-09-21"
+      },
+      "filters": {
+        "series_id": "generic.e91f85c864e754066c1b",
+        "start_date": "2016-04-07",
+        "end_date": "2016-04-07",
+        "operation": "rows",
+        "period": null,
+        "value_filters": [],
+        "last_n": null,
+        "top_n": null,
+        "order": "desc"
+      },
+      "scope_record_count": 1,
+      "record_count": 1,
+      "valid_count": 1,
+      "missing_count": 0,
+      "actual_first_date": "2016-04-07",
+      "actual_last_date": "2016-04-07",
+      "valid_first_date": "2016-04-07",
+      "valid_last_date": "2016-04-07",
+      "aggregate": null,
+      "rows": [
+        {
+          "date": "2016-04-07",
+          "period": null,
+          "period_cell": null,
+          "metric_cell": null,
+          "value": 11902.0,
+          "source_cell": "U100",
+          "value_status": "valid",
+          "formula": "=T80",
+          "date_cell": "A100",
+          "raw_value": "11902",
+          "category_cell": null
+        }
+      ],
+      "extremum_rows": null,
+      "extremum_count": null,
+      "rows_are": "observations",
+      "truncated": false,
+      "source_semantics": {
+        "date_representation": "date",
+        "statistical_calendar": null,
+        "aggregation_rule": null,
+        "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"
+      },
+      "source": {
+        "file": "棉花数据库(2).xlsx",
+        "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+        "sheet": "纱布利润",
+        "header_cells": [
+          "U1",
+          "U2"
+        ]
+      },
+      "warnings": [
+        "公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式。",
+        "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+      ]
+    },
+    {
+      "dataset_id": "b3e746ccf6612d67b13e3cee",
+      "status": "ok",
+      "series": {
+        "series_id": "generic.9dafe9e4affab17c3d56",
+        "sheet": "纱布利润",
+        "metric": "CC Index 3128B",
+        "dimensions": {
+          "block": "mapped_1"
+        },
+        "unit": "元/吨",
+        "unit_status": "explicit",
+        "header_cells": [
+          "T1",
+          "T2"
+        ],
+        "date_mode": "date",
+        "region_name": "区块1",
+        "block_index": 0,
+        "description": "纱布利润 / CC Index 3128B；时间标签取A列；单位：元/吨",
+        "record_count": 2821,
+        "valid_count": 1962,
+        "first_date": "2016-01-01",
+        "last_date": "2023-09-21",
+        "first_valid_date": "2016-01-04",
+        "last_valid_date": "2023-09-21"
+      },
+      "filters": {
+        "series_id": "generic.9dafe9e4affab17c3d56",
+        "start_date": "2016-04-07",
+        "end_date": "2016-04-07",
+        "operation": "rows",
+        "period": null,
+        "value_filters": [],
+        "last_n": null,
+        "top_n": null,
+        "order": "desc"
+      },
+      "scope_record_count": 1,
+      "record_count": 1,
+      "valid_count": 1,
+      "missing_count": 0,
+      "actual_first_date": "2016-04-07",
+      "actual_last_date": "2016-04-07",
+      "valid_first_date": "2016-04-07",
+      "valid_last_date": "2016-04-07",
+      "aggregate": null,
+      "rows": [
+        {
+          "date": "2016-04-07",
+          "period": null,
+          "period_cell": null,
+          "metric_cell": null,
+          "value": 11695.0,
+          "source_cell": "T100",
+          "value_status": "valid",
+          "formula": null,
+          "date_cell": "A100",
+          "raw_value": "11695",
+          "category_cell": null
+        }
+      ],
+      "extremum_rows": null,
+      "extremum_count": null,
+      "rows_are": "observations",
+      "truncated": false,
+      "source_semantics": {
+        "date_representation": "date",
+        "statistical_calendar": null,
+        "aggregation_rule": null,
+        "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"
+      },
+      "source": {
+        "file": "棉花数据库(2).xlsx",
+        "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+        "sheet": "纱布利润",
+        "header_cells": [
+          "T1",
+          "T2"
+        ]
+      },
+      "warnings": [
+        "公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式。",
+        "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+      ]
+    }
+  ]
+}

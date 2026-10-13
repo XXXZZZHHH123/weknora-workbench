@@ -36,6 +36,7 @@ const langfuseQueryPreview = 2000
 // cross-turn buffer.
 type AgentEngine struct {
 	structuredReviewMode bool // bounded source review must not restart open-ended reasoning
+	answerReviewPending  bool // durable executed evidence requires approval before answer emission
 	config               *types.AgentConfig
 	toolRegistry         *agenttools.ToolRegistry
 	chatModel            chat.Chat
@@ -313,6 +314,7 @@ func (e *AgentEngine) Execute(
 	imageURLs ...[]string,
 ) (*types.AgentState, error) {
 	e.structuredReviewMode = false
+	e.answerReviewPending = false
 	logger.Infof(ctx, "[Agent] Starting execution: session=%s, message=%s, query_len=%d, context_msgs=%d",
 		sessionID, messageID, len(query), len(llmContext))
 	ctx = withFieldConfirmationTurn(ctx, query, llmContext)
@@ -500,6 +502,7 @@ func (e *AgentEngine) withinIterationBudget(round int) bool {
 // spinning without ever finishing: empty answers, the same answer repeated,
 // and rounds cut off at the completion-token cap.
 type loopGuards struct {
+	incompleteAnswerRetries   int
 	structuredAnswerReviewed  bool
 	structuredEvidenceRepairs int
 	structuredReviewEvidence  []chat.Message
@@ -808,6 +811,7 @@ func (e *AgentEngine) runReActIteration(
 
 	// 1. Think: Call LLM with function calling (includes retry + graceful degradation)
 	e.lastSentMsgCount = len(*messagesPtr)
+	e.answerReviewPending = hasStructuredEvidence(state.RoundSteps) || hasStructuredHistoryEvidence(*messagesPtr)
 	resp, err := e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID)
 	if err != nil {
 		retErr = err
@@ -952,10 +956,32 @@ func (e *AgentEngine) runReActIteration(
 		return iterOutcomeBreak, nil
 	}
 
+	// A normal stop is not proof that the provider delivered an answer. The
+	// initial stream prefix is buffered so these fragments never become a
+	// completed answer in the UI. Repair in the same evidence context, with
+	// reasoning switched off for this turn only; never change model settings.
+	if len(response.ToolCalls) == 0 && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) && incompleteAnswer(query, response.Content, response.ReasoningContent) {
+		state.RoundSteps = append(state.RoundSteps, step)
+		guards.incompleteAnswerRetries++
+		if guards.incompleteAnswerRetries <= 2 {
+			e.structuredReviewMode = true
+			guards.sawPlainRound = false
+			guards.consecutiveSameContent = 0
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: "内部运行时反馈：上一轮只有推理或残缺字符，没有完成回答。请依据本轮真实工具结果，直接用简短中文完整回答原问题的各项要求并引用原来源。不要继续长篇推理，不要把草稿当成事实；证据缺失时明确说明缺哪项，不得编造数值。"})
+			return iterOutcomeContinue, nil
+		}
+		fallback := *response
+		fallback.Content = incompleteAnswerFallback
+		fallback.AnswerStreamed = false
+		fallback.AnswerEventID = ""
+		e.finishStalledTurn(ctx, state, sessionID, &fallback, false)
+		return iterOutcomeBreak, nil
+	}
+
 	// A successful data tool only proves execution. Give the reasoning model
 	// a bounded audit turn before committing numeric claims. The audit can use
 	// more tools; it is not a classifier or a list of supported user intents.
-	if len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && needsStructuredAnswerReview(state.RoundSteps, *messagesPtr, response.Content) {
+	if len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) {
 		guards.structuredAnswerReviewed = true
 		e.structuredReviewMode = true
 		guards.structuredReviewEvidence = append([]chat.Message(nil), (*messagesPtr)...)
@@ -967,7 +993,7 @@ func (e *AgentEngine) runReActIteration(
 		state.RoundSteps = append(state.RoundSteps, step)
 		return iterOutcomeNext, nil
 	}
-	if len(response.ToolCalls) == 0 && response.Content != "" && (needsStructuredAnswerReview(state.RoundSteps, *messagesPtr, response.Content) || needsStructuredAnswerReview(state.RoundSteps, guards.structuredReviewEvidence, response.Content)) {
+	if len(response.ToolCalls) == 0 && response.Content != "" && (needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || needsStructuredAnswerReviewForQuery(query, state.RoundSteps, guards.structuredReviewEvidence, response.Content)) {
 		evidenceMessages := append([]chat.Message(nil), guards.structuredReviewEvidence...)
 		for _, msg := range *messagesPtr {
 			// The review envelope is runtime data, not a new human claim. Its
@@ -989,10 +1015,10 @@ func (e *AgentEngine) runReActIteration(
 			raw, _ := json.Marshal(map[string]any{"cited_document_values": values})
 			evidenceMessages = append(evidenceMessages, chat.Message{Role: "tool", Content: string(raw)})
 		}
-		unsupported := ungroundedStructuredNumbers(response.Content, evidenceMessages)
+		unsupported := ungroundedStructuredNumbers(response.Content, evidenceMessages, state.RoundSteps)
 		if len(unsupported) > 0 && guards.structuredEvidenceRepairs < 2 {
 			guards.structuredEvidenceRepairs++
-			*messagesPtr = append(*messagesPtr, chat.Message{Role: "assistant", Content: response.Content}, chat.Message{Role: "system", Content: "内部运行时反馈；最终仍须回答用户原始问题。数值依据检查：草稿中以下数字尚未匹配真实程序结果（可能为未经计算的补充数字或错误舍入）：" + strings.Join(unsupported, "、") + "。请调用计算工具取得依据或删去未核验的补充数字，不能凭记忆补数。"})
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "assistant", Content: response.Content}, chat.Message{Role: "system", Content: "内部运行时反馈；最终仍须回答用户原始问题。数值依据检查：草稿中以下数字尚未匹配真实程序结果（可能为未经计算的补充数字或错误舍入）：" + strings.Join(unsupported, "、") + "。若数字属于字段名称、规格代码或公式，请完整引用工具提供的原表表头、维度和公式，不使用未返回的简称，不省略公式参数或单元格行号；这些身份代码不能写成统计值。不要为口径说明擅自执行被要求澄清的字段。其余补充统计数字须调用计算工具取得依据或删去，不能凭记忆补数。"})
 			state.RoundSteps = append(state.RoundSteps, step)
 			return iterOutcomeNext, nil
 		}

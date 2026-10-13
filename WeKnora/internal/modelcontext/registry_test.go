@@ -524,6 +524,10 @@ func TestRegistryDecodesReadDocumentIDAgainstBothHandleTables(t *testing.T) {
 			`{"query":"b1","knowledge_base_ids":["b1"]}`, `{"query":"b1","knowledge_base_ids":["kb-real"]}`,
 		},
 		{
+			"search one document page", "search_knowledge",
+			`{"query":"d1 c1","document_ids":["d1"],"page":12}`, `{"query":"d1 c1","document_ids":["doc-real"],"page":12}`,
+		},
+		{
 			"list documents KB", "list_documents",
 			`{"knowledge_base_id":"b1","keyword":"b1"}`, `{"knowledge_base_id":"kb-real","keyword":"b1"}`,
 		},

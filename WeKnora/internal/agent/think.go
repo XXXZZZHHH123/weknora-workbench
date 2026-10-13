@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/agent/compaction"
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
@@ -30,6 +32,57 @@ type streamLLMResult struct {
 	Usage              *types.TokenUsage
 	FinishReason       string // actual finish_reason from LLM (captured from last stream chunk)
 	StreamError        string // error message from stream (e.g., timeout), kept separate from Content
+}
+
+const incompleteAnswerFallback = "模型未能生成完整回答，已重试两次。请重试；若问题指定了报告或页码，可同时选中该文件。此次未返回可核验的结论。"
+
+// Providers can report stop after spending the whole completion on reasoning
+// and emit only a bullet or the first character of the answer. Do not mistake
+// those fragments for a completed answer. Short factual replies remain valid.
+func incompleteAnswer(query, content, reasoning string) bool {
+	text := strings.TrimSpace(content)
+	if text == "" {
+		return len(reasoning) >= 256
+	}
+	meaningful := 0
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			meaningful++
+		}
+	}
+	if meaningful == 0 {
+		return !explicitShortAnswer(query)
+	}
+	if meaningful != 1 || len(reasoning) < 256 || explicitShortAnswer(query) {
+		return false
+	}
+	// A bare number and conventional yes/no replies can be the complete
+	// answer even when the model performed substantial reasoning first.
+	for _, r := range text {
+		if unicode.IsNumber(r) || strings.ContainsRune("是否好无对错能有", r) {
+			return false
+		}
+	}
+	return true
+}
+
+func explicitShortAnswer(query string) bool {
+	q := strings.ToLower(query)
+	for _, phrase := range []string{"只回答一个字", "只回复一个字", "只用一个字", "一个词", "单个字符", "one word", "one character", "single character"} {
+		if strings.Contains(q, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func latestUserQuestion(messages []chat.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
 }
 
 // streamLLMToEventBus streams LLM response through EventBus (generic method)
@@ -300,6 +353,8 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	splitter := agenttools.NewThinkStreamSplitter()
 	thinkingOpen := false
 	answerStreamed := false
+	var answerPrefix strings.Builder
+	deferAnswerReview := e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages)
 
 	emitThought := func(content string, done bool) {
 		if content == "" && !done {
@@ -326,7 +381,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			thinkingOpen = false
 		}
 	}
-	emitAnswer := func(content string) {
+	emitAnswerText := func(content string) {
 		if content == "" {
 			return
 		}
@@ -352,6 +407,22 @@ func (e *AgentEngine) streamThinkingToEventBus(
 				Done:    false,
 			},
 		})
+	}
+	// Delay only the first few characters; normal answers still stream. A
+	// fragment that ends here is validated before anything reaches the UI.
+	emitAnswer := func(content string) {
+		if deferAnswerReview {
+			return
+		}
+		if answerStreamed {
+			emitAnswerText(content)
+			return
+		}
+		answerPrefix.WriteString(content)
+		if utf8.RuneCountInString(strings.TrimSpace(answerPrefix.String())) >= 8 && !incompleteAnswer(latestUserQuestion(messages), answerPrefix.String(), "") {
+			emitAnswerText(answerPrefix.String())
+			answerPrefix.Reset()
+		}
 	}
 
 	llmResult, err := e.streamLLMToEventBus(
@@ -473,6 +544,9 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	finishReason := llmResult.FinishReason
 	if finishReason == "" {
 		finishReason = "stop"
+	}
+	if !deferAnswerReview && answerPrefix.Len() > 0 && (len(llmResult.ToolCalls) > 0 || !incompleteAnswer(latestUserQuestion(messages), fullContent, llmResult.ReasoningContent)) {
+		emitAnswerText(answerPrefix.String())
 	}
 
 	resp := &types.ChatResponse{

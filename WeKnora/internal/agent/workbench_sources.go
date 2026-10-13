@@ -23,10 +23,28 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 	if caller.TenantID == 0 || caller.UserID == "" {
 		return messages
 	}
+	// Bind every later knowledge tool call to the report/page named in this
+	// turn. A failed or ambiguous lookup stays constrained rather than falling
+	// through to a similarly titled chart from another report.
+	constraint := agenttools.NewRequestedDocumentConstraint(query)
+	if tool, err := e.toolRegistry.GetTool(agenttools.ToolSearchKnowledge); err == nil {
+		if search, ok := tool.(*agenttools.SearchKnowledgeTool); ok {
+			search.WithDocumentConstraint(constraint)
+		}
+	}
+	if tool, err := e.toolRegistry.GetTool(agenttools.ToolReadDocument); err == nil {
+		if read, ok := tool.(*agenttools.ReadDocumentTool); ok {
+			read.WithDocumentConstraint(constraint)
+		}
+	}
 	requests := []types.LLMToolCall{}
-	if _, err := e.toolRegistry.GetTool(agenttools.ToolStructuredData); err == nil {
+	if tool, err := e.toolRegistry.GetTool(agenttools.ToolStructuredData); err == nil {
+		if base, ok := tool.(*agenttools.StructuredDataTool); ok {
+			base.BindSourceQuestion(query)
+		}
+		catalogArgs, _ := json.Marshal(map[string]any{"operation": "list_datasets", "arguments": map[string]string{"question": query}})
 		requests = append(requests,
-			types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: `{"operation":"list_datasets","arguments":{}}`}},
+			types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(catalogArgs)}},
 			types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: `{"operation":"describe_tools","arguments":{"operations":["list_series","query_series","analyze_table","inspect_source","get_result_evidence"]}}`}},
 		)
 	}

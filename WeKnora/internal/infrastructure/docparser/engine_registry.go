@@ -69,6 +69,13 @@ func lookupEngine(name string) (EngineRegistration, bool) {
 func NewReader(
 	ctx context.Context, engine, fileType string, isURL bool, deps ReaderDeps,
 ) (interfaces.DocReader, error) {
+	// Legacy/default anydoc rules must not bypass PowerPoint's page-scoped
+	// cached-chart extraction when DocReader is configured. This also works in
+	// builds without the native binding. Other anydoc formats keep their native
+	// availability/error behavior; without DocReader PowerPoint stays native.
+	if engine == AnydocEngineName && !isURL && isPowerPointFormat(fileType) && docReaderConnected(deps.Remote) {
+		return NewAnydocReader(deps.Overrides, deps.Remote), nil
+	}
 	if registration, ok := lookupEngine(engine); ok {
 		return registration.NewReader(ctx, deps)
 	}

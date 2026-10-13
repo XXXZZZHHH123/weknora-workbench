@@ -66,6 +66,17 @@ var searchKnowledgeTool = BaseTool{
       "items": { "type": "string" },
       "maxItems": 10
     },
+    "document_ids": {
+      "type": "array",
+      "description": "Optional authorized dN document handles to search only the named report; other reports are never substituted",
+      "items": { "type": "string" },
+      "maxItems": 10
+    },
+    "page": {
+      "type": "integer",
+      "description": "Exact 1-based physical page / PPT slide within one selected document; requires parsed page markers",
+      "minimum": 1
+    },
     "limit": {
       "type": "integer",
       "description": "Maximum chunks to return (default 10, max 30)",
@@ -83,6 +94,8 @@ type SearchKnowledgeInput struct {
 	Mode             string   `json:"mode,omitempty"`
 	KnowledgeBaseIDs []string `json:"knowledge_base_ids,omitempty"`
 	Limit            int      `json:"limit,omitempty"`
+	DocumentIDs      []string `json:"document_ids,omitempty"`
+	Page             int      `json:"page,omitempty"`
 }
 
 // searchResultWithMeta wraps search result with metadata about which query matched it
@@ -107,7 +120,13 @@ type SearchKnowledgeTool struct {
 	// patternFilter, when set, keeps only results whose text matches it.
 	// It is not exposed to the model; the MCP grep_chunks endpoint uses it
 	// to keep grep semantics on top of index-backed retrieval.
-	patternFilter *regexp.Regexp
+	patternFilter      *regexp.Regexp
+	documentConstraint *RequestedDocumentConstraint
+}
+
+func (t *SearchKnowledgeTool) WithDocumentConstraint(constraint *RequestedDocumentConstraint) *SearchKnowledgeTool {
+	t.documentConstraint = constraint
+	return t
 }
 
 // WithPatternFilter restricts results to chunks whose text matches re. The
@@ -202,6 +221,40 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 			Error:   "no knowledge base is in scope for this search",
 		}, fmt.Errorf("no search targets available")
 	}
+	if len(input.DocumentIDs) > 10 || input.Page < 0 {
+		return &types.ToolResult{Success: false, Error: "document_ids accepts at most 10 documents; page must be positive"}, nil
+	}
+	if constraint := t.documentConstraint; constraint != nil {
+		requested, err := constraint.resolve(ctx, t.knowledgeService, t.searchTargets)
+		if err != nil {
+			return &types.ToolResult{Success: false, Error: err.Error()}, nil
+		}
+		for _, id := range input.DocumentIDs {
+			if id != requested.ID {
+				return &types.ToolResult{Success: false, Error: "当前问题指定了另一份报告，不能用其他报告的同名图替代"}, nil
+			}
+		}
+		input.DocumentIDs = []string{requested.ID}
+		if constraint.Page > 0 {
+			if input.Page > 0 && input.Page != constraint.Page {
+				return &types.ToolResult{Success: false, Error: "当前问题指定了不同页码，不能用其他页替代"}, nil
+			}
+			input.Page = constraint.Page
+		}
+	}
+	if len(input.DocumentIDs) > 0 {
+		searchTargets, err = restrictDocumentTargets(ctx, searchTargets, t.knowledgeService, input.DocumentIDs)
+		if err != nil {
+			return &types.ToolResult{Success: false, Error: err.Error()}, err
+		}
+	}
+	if input.Page > 0 {
+		if len(input.DocumentIDs) != 1 {
+			return &types.ToolResult{Success: false, Error: "精确页码读取需要指定唯一 document_ids；不能在多个报告之间混用页码"}, nil
+		}
+		args, _ := json.Marshal(ReadDocumentInput{ID: input.DocumentIDs[0], Page: input.Page, Limit: limit})
+		return NewReadDocumentTool(t.knowledgeService, t.chunkService, searchTargets).WithDocumentConstraint(t.documentConstraint).Execute(ctx, args)
+	}
 
 	kbIDs := searchTargets.GetAllKnowledgeBaseIDs()
 	kbList, err := t.knowledgeBaseService.GetKnowledgeBasesByIDsOnly(ctx, kbIDs)
@@ -230,6 +283,21 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 
 	allResults := t.concurrentSearchByTargets(ctx, query, mode, kbModes, searchTargets, kbList,
 		topK, vectorThreshold, keywordThreshold, kbTypeMap)
+	// Enforce the document boundary even if an index provider ignores its
+	// KnowledgeIDs filter. Never let a foreign same-name chart reach reranking.
+	if len(input.DocumentIDs) > 0 {
+		wanted := make(map[string]bool, len(input.DocumentIDs))
+		for _, id := range input.DocumentIDs {
+			wanted[id] = true
+		}
+		filtered := allResults[:0]
+		for _, row := range allResults {
+			if wanted[row.KnowledgeID] {
+				filtered = append(filtered, row)
+			}
+		}
+		allResults = filtered
+	}
 
 	deduplicated := t.deduplicateResults(allResults)
 
@@ -293,6 +361,12 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 	}
 
 	result := t.formatOutput(ctx, final, kbIDs, query, mode)
+	if len(input.DocumentIDs) > 0 {
+		result.Data["document_ids"] = input.DocumentIDs
+		if len(final) > 0 && len(input.DocumentIDs) == 1 {
+			result.Data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": input.DocumentIDs[0]}
+		}
+	}
 	annotateModeFallback(result.Data, mode, kbModes)
 	if rerankRejected > 0 {
 		result.Data["rerank_rejected"] = rerankRejected
