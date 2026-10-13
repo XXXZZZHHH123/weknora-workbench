@@ -16,6 +16,7 @@ main{max-width:1660px}
 .sheet-tab strong{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sheet-state{width:6px;height:6px;background:#73a386;border-radius:50%;flex:none}
 .sheet-state.pending{background:#c8a053}
+.sheet-state.quiet{background:#a4afaa}
 #allSheets{background:transparent;color:#637d6b;font-size:12px;white-space:nowrap;padding:6px 8px;margin-bottom:3px;flex:none}
 .sheet-menu{position:absolute;top:100%;right:0;width:300px;max-height:400px;background:#fff;box-shadow:0 8px 24px #16333120;border:1px solid #dce5df;border-radius:8px;padding:12px;z-index:12;overflow:auto}
 .sheet-menu[hidden]{display:none}

@@ -19,7 +19,16 @@
   const cellPoint = s => {const m=/^([A-Z]{1,3})([1-9][0-9]*)$/.exec(s||'');return m?{row:+m[2],col:colIndex(m[1])}:null;};
   const colorVars = i => {const p=palette[i%palette.length];return `--block-color:${p[0]};--block-soft:${p[1]};--block-tint:${p[2]};--block-selected:${p[3]}`;};
   const clean = mapping => {const m=copy(mapping);m.blocks.forEach(b=>delete b._review_id);return m;};
-  const blockSignature = b => JSON.stringify(clean({blocks:[b]}).blocks[0]);
+  const publishedStatuses = new Set(['trusted_existing','auto_ready','template_ready','confirmed']);
+  const isPublished = s => publishedStatuses.has(s?.status);
+  function canonical(value) {
+    if(Array.isArray(value))return value.map(canonical);
+    if(!value||typeof value!=='object')return value;
+    return Object.fromEntries(Object.keys(value).sort()
+      .filter(k=>!k.startsWith('_review')&&k!=='header_expectations')
+      .map(k=>[k,canonical(value[k])]));
+  }
+  const blockSignature = b => JSON.stringify(canonical({...b,columns:(b.columns||[]).map(c=>({...c,dimensions:c.dimensions||{}}))}));
   const draftKey = () => currentImport&&currentSheet ? ['sheet-review:v1',activeTenant||'local',currentImport.import_id,currentSheet.name,currentSheet.fingerprint].map(encodeURIComponent).join(':') : null;
   const idFor = () => 'b-'+(globalThis.crypto?.randomUUID?.()||Date.now().toString(36)+'-'+Math.random().toString(36).slice(2));
   function isChartOnly(s) {
@@ -40,11 +49,14 @@
   }
   function ensureBlocks(m) {
     const seen=new Set();
-    m.blocks.forEach(b=>{
+    m.blocks.forEach((b,i)=>{
       if(!b._review_id||seen.has(b._review_id))b._review_id=idFor();seen.add(b._review_id);
       const sig=blockSignature(b),prior=ui.states[b._review_id];
       if(!prior)ui.states[b._review_id]={enabled:true,checked:false,signature:sig};
       else if(prior.signature!==sig){prior.checked=false;prior.signature=sig;}
+      const original=currentSheet?.mapping?.blocks?.[i],state=ui.states[b._review_id];
+      state.published=isPublished(currentSheet)&&!!original&&sig===blockSignature(original)&&!state.rangePending;
+      if(state.published&&currentSheet.status==='confirmed')state.checked=true;
     });
     Object.keys(ui.states).forEach(id=>{if(!seen.has(id))delete ui.states[id];});
     if(!seen.has(ui.selected))ui.selected=m.blocks[0]?._review_id||null;
@@ -95,6 +107,7 @@
   };
   setMapping = function(m) {
     ui.sampleController?.abort();ui.sample=null;ui.selection=null;ui.drag=null;
+    Object.values(ui.states).forEach(state=>{state.rangePending=false;});
     ui.mapping=ensureBlocks(copy(m));$('mappingEditor').value=JSON.stringify(ui.mapping,null,2);
     renderMappingForm(ui.mapping);invalidateCheck();saveDraft();renderLegend();renderGrid();updateConfirmState();
   };
@@ -103,14 +116,18 @@
     const version=++reviewVersion,controller=new AbortController();ui.sheetController=controller;
     const r=await timedApi('/api/imports/'+encodeURIComponent(id)+'?summary_only=true',{},controller);
     if(version!==reviewVersion)return;currentImport=r;currentSheet=null;ui.mapping=null;ui.states={};
-    const sheets=r.sheets||[],ready=sheets.filter(s=>['trusted_existing','auto_ready','template_ready','confirmed'].includes(s.status)).length;
-    $('importSummary').textContent=`${r.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可使用 · ${sheets.filter(s=>s.status==='needs_review').length} 张待确认`;
+    const sheets=r.sheets||[];updateImportSummary();
     if(!sheets.some(s=>sheetVisible(s,'')))ui.filter='all';renderSheetList();
     $('sheetDetail').innerHTML='<p class="grid-loading">选择工作表，查看原表与对应区块。</p>';
     const first=sheets.findIndex(s=>sheetVisible(s,''));if(sheets.length)await selectSheet(first<0?0:first);
   };
+  function updateImportSummary() {
+    const sheets=currentImport?.sheets||[],ready=sheets.filter(isPublished).length;
+    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可使用 · ${sheets.filter(s=>s.status==='needs_review').length} 张待确认`;
+  }
+  function tabState(s){return isPublished(s)?'ready':s.status==='needs_review'?'pending':'quiet';}
   function renderSheetList() {
-    $('sheetList').innerHTML=(currentImport?.sheets||[]).map((s,i)=>({s,i})).filter(({s})=>sheetVisible(s,'')).map(({s,i})=>`<button class="sheet-tab" data-sheet-index="${i}" aria-pressed="${s.name===currentSheet?.name}" title="${esc(s.name+' · '+sheetMeta(s))}"><i class="sheet-state ${s.status==='needs_review'?'pending':''}" aria-hidden="true"></i><strong>${esc(s.name)}</strong><small class="sr-only">${esc(sheetMeta(s))}</small></button>`).join('')||'<p class="muted" style="font-size:12px">没有匹配的工作表。</p>';
+    $('sheetList').innerHTML=(currentImport?.sheets||[]).map((s,i)=>({s,i})).filter(({s})=>sheetVisible(s,'')||(ui.filter==='pending'&&s.name===currentSheet?.name&&isPublished(s))).map(({s,i})=>`<button class="sheet-tab" data-sheet-index="${i}" aria-pressed="${s.name===currentSheet?.name}" title="${esc(s.name+' · '+sheetMeta(s))}"><i class="sheet-state ${tabState(s)}" aria-hidden="true"></i><strong>${esc(s.name)}</strong><small class="sr-only">${esc(sheetMeta(s))}</small></button>`).join('')||'<p class="muted" style="font-size:12px">没有匹配的工作表。</p>';
     document.querySelectorAll('[data-sheet-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.sheetFilter===ui.filter)));
     renderSheetMenu();
   }
@@ -126,7 +143,7 @@
     currentSheet=null;mappingConfirmed=false;mappingBusy=false;ui.checkSignature=null;
     $('sheetDetail').innerHTML='<p class="grid-loading">正在读取当前工作表…</p>';
     const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller);
-    if(version!==reviewVersion)return;currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);
+    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);
     if(isChartOnly(sheet)){showPreview('charts');return;}
     showPreview('table');await loadWindow(1,1);
   };
@@ -145,7 +162,7 @@
     const chartCount = s.charts?.chart_count || 0;
     const switcher = chartCount && !chartOnly ? `<div class="view-switch"><button type="button" data-preview-mode="table" aria-pressed="true">数据表</button><button type="button" data-preview-mode="charts" aria-pressed="false">图表 ${chartCount}</button></div>` : '';
     const strip=ui.editable?`<div class="block-strip"><div id="blockLegend" class="block-chips"></div><button id="addMappingBlock" class="text-button" type="button">+ 添加区块</button><button id="undoMapping" class="text-button" type="button">↶ 撤销</button></div>`:'<div id="blockLegend" hidden></div>';
-    const inspector=ui.editable?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对</strong><small>点击来源，对照左侧原表</small></div><div id="mappingForm"></div><div class="editor-footer"><label><input id="ackBlock" type="checkbox">我已核对这个区块</label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div></aside>`:'<div id="mappingForm" hidden></div>';
+    const inspector=ui.editable?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对</strong><small>点击来源，对照左侧原表</small></div><div id="mappingForm"></div><div class="editor-footer"><label><input id="ackBlock" type="checkbox"><span id="ackBlockLabel">我已核对这个区块</span></label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div></aside>`:'<div id="mappingForm" hidden></div>';
     const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong><span>单击定位 · 拖动框选 · Shift 扩展 · Esc 取消</span></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
     const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 辅助生成建议</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'已恢复这张表的本地草稿。完整检查需要重新执行。':'调整会自动保存在当前浏览器；切换工作表后可继续核对。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'这张表只有图，不需要确认单元格导入。源表导入后，曲线才会关联到已导入的单元格。':s.status==='trusted_existing'?'本表沿用已核验的专用解析规则，通用区块编辑不覆盖该规则。':'此工作表没有需要确认的数据区块。'}</p>`;
     $('sheetDetail').innerHTML=`<div class="review-workspace">${strip}<div class="review-panes${ui.editable?'':' readonly'}">${source}${inspector}</div>${footer}${s.reasons?.length?`<details class="review-explanation"><summary>识别说明</summary><ul>${reasonsList(s.reasons)}</ul></details>`:''}<textarea id="mappingEditor" class="hidden">${esc(JSON.stringify(ui.mapping))}</textarea></div>`;
@@ -201,14 +218,14 @@
   }
   function renderLegend() {
     const host=$('blockLegend');if(!host)return;
-    host.innerHTML=(ui.mapping?.blocks||[]).map((b,i)=>{const id=esc(b._review_id),state=ui.states[b._review_id],on=state?.enabled;return `<div class="block-chip${on?'':' disabled-block'}" style="${colorVars(i)}" title="${esc((b.name||'区块 '+(i+1))+' · '+rangeLabel(b))}"><button type="button" data-select-block="${id}" aria-pressed="${b._review_id===ui.selected}"><i class="color-square" aria-hidden="true"></i>区块 ${i+1}${state?.checked&&on?'<span class="block-checked" aria-label="已核对">✓</span>':''}</button><button type="button" class="edit-block" data-edit-block="${id}">编辑</button></div>`;}).join('');
+    host.innerHTML=(ui.mapping?.blocks||[]).map((b,i)=>{const id=esc(b._review_id),state=ui.states[b._review_id],on=state?.enabled;return `<div class="block-chip${on?'':' disabled-block'}" style="${colorVars(i)}" title="${esc((b.name||'区块 '+(i+1))+' · '+rangeLabel(b))}"><button type="button" data-select-block="${id}" aria-pressed="${b._review_id===ui.selected}"><i class="color-square" aria-hidden="true"></i>区块 ${i+1}${(state?.published||state?.checked)&&on?'<span class="block-checked" aria-label="已导入或已核对">✓</span>':''}</button><button type="button" class="edit-block" data-edit-block="${id}">编辑</button></div>`;}).join('');
     if($('undoMapping'))$('undoMapping').disabled=mappingBusy||!ui.history.length;
   }
   function updateCardStates() {
     (ui.mapping?.blocks||[]).forEach((b,i)=>{
       const panel=[...document.querySelectorAll('[data-block-id]')].find(p=>p.dataset.blockId===b._review_id);if(!panel)return;
       const s=ui.states[b._review_id],badge=panel.querySelector('.card-state');
-      if(badge){badge.className='card-state'+(s.enabled?(s.checked?' checked':''):' excluded');badge.textContent=s.enabled?(s.checked?'✓ 已核对':'待核对'):'不导入';}
+      if(badge){badge.className='card-state'+(s.enabled?(s.published||s.checked?' checked':''):' excluded');badge.textContent=s.enabled?(s.published?'✓ 已导入':s.checked?'✓ 已核对':'待核对'):'不导入';}
       const title=panel.querySelector('.card-title span');if(title)title.textContent=b.name||'区块 '+(i+1);
       const range=panel.querySelector('.card-range');if(range)range.textContent=rangeLabel(b);
       const facts=panel.querySelector('.block-facts');if(facts)facts.innerHTML=blockFacts(b);
@@ -216,7 +233,8 @@
       const input=panel.querySelector('[data-range-input]');if(input&&!input.dataset.pendingRange&&document.activeElement!==input)input.value=dataRangeLabel(b);
     });
     const b=selectedBlock(),state=b&&ui.states[b._review_id];
-    if($('ackBlock')){$('ackBlock').checked=!!state?.checked;$('ackBlock').disabled=mappingBusy||!state?.enabled;}
+    if($('ackBlock')){$('ackBlock').checked=!!(state?.published||state?.checked);$('ackBlock').disabled=mappingBusy||!state?.enabled||!!state?.published;}
+    if($('ackBlockLabel'))$('ackBlockLabel').textContent=state?.published?'已导入，修改后需重新核对':'我已核对这个区块';
     if($('excludeCurrentBlock')){$('excludeCurrentBlock').disabled=mappingBusy||!b;$('excludeCurrentBlock').textContent=state?.enabled?'这块不导入':'恢复导入';}
     updateFieldSources();
   }
@@ -413,7 +431,7 @@
     $('mappingForm').oninput=e=>{
       if(e.target.hasAttribute('data-range-input')){
         ui.sampleController?.abort();ui.sample=null;
-        const panel=e.target.closest('[data-block-id]'),state=ui.states[panel.dataset.blockId],b=ui.mapping.blocks[+panel.dataset.block];state.checked=false;
+        const panel=e.target.closest('[data-block-id]'),state=ui.states[panel.dataset.blockId],b=ui.mapping.blocks[+panel.dataset.block];state.checked=false;state.rangePending=e.target.value.toUpperCase().trim()!==dataRangeLabel(b);state.published=false;
         if(e.target.value.toUpperCase().trim()!==dataRangeLabel(b))e.target.dataset.pendingRange='true';else delete e.target.dataset.pendingRange;
         invalidateCheck('范围输入尚未应用，请先应用范围，再核对这个区块。');saveDraft();updateCardStates();renderLegend();updateConfirmState();return;
       }
@@ -474,9 +492,10 @@
   };
   updateConfirmState = function() {
     const included=enabledBlocks(),checkValid=ui.checkSignature===JSON.stringify(submittedMapping());mappingConfirmed=checkValid;
-    const pending=included.filter(b=>!ui.states[b._review_id]?.checked).length;
-    if($('confirmMapping')){$('confirmMapping').disabled=mappingBusy||!included.length||!!pending;$('confirmMapping').title=!included.length?'请至少保留一个要导入的区块。':pending?`还有 ${pending} 个区块需要核对字段。`:'';}
-    if($('confirmHint'))$('confirmHint').innerHTML=included.length?`${pending?`还有 ${pending} 个区块待核对`:`${included.length} 个区块已核对`}<small>${mappingBusy?'正在检查和处理，请等待…':'导入前检查全部选定数据，通过后写入新版本。'}</small>`:`没有要导入的区块<small>恢复一个区块后才能确认这张表。</small>`;
+    const pending=included.filter(b=>!ui.states[b._review_id]?.checked&&!ui.states[b._review_id]?.published).length;
+    const alreadyPublished=isPublished(currentSheet)&&included.length===(currentSheet.mapping?.blocks?.length||0)&&included.length===(ui.mapping?.blocks?.length||0)&&included.every(b=>ui.states[b._review_id]?.published);
+    if($('confirmMapping')){$('confirmMapping').disabled=mappingBusy||!included.length||!!pending||alreadyPublished;$('confirmMapping').title=alreadyPublished?'本表已导入；修改映射后才需要重新核对和导入。':!included.length?'请至少保留一个要导入的区块。':pending?`还有 ${pending} 个区块需要核对字段。`:'';}
+    if($('confirmHint'))$('confirmHint').innerHTML=alreadyPublished?'本表已导入，可直接查询<small>修改映射后，请重新核对并导入。</small>':included.length?`${pending?`还有 ${pending} 个区块待核对`:`${included.length} 个区块已核对`}<small>${mappingBusy?'正在检查和处理，请等待…':'导入前检查全部选定数据，通过后写入新版本。'}</small>`:`没有要导入的区块<small>恢复一个区块后才能确认这张表。</small>`;
     if($('undoMapping'))$('undoMapping').disabled=mappingBusy||!ui.history.length;
   };
   setMappingBusy = function(busy) {
@@ -511,7 +530,7 @@
   confirmMapping = async function() {
     readMapping();
     const included=enabledBlocks(),excluded=(ui.mapping?.blocks||[]).filter(b=>!ui.states[b._review_id]?.enabled);
-    if(included.some(b=>!ui.states[b._review_id]?.checked))throw Error('请先逐块核对字段，再检查并导入这张表。');
+    if(included.some(b=>!ui.states[b._review_id]?.checked&&!ui.states[b._review_id]?.published))throw Error('请先逐块核对字段，再检查并导入这张表。');
     $('confirmList').innerHTML=included.map(b=>`<p>导入 ${esc(b.name||'区块')} · ${esc(rangeLabel(b))}</p>`).join('')+(excluded.length?`<p>不导入：${esc(excluded.map(b=>b.name||'区块').join('、'))}</p>`:'');
     const dialog=$('confirmDialog');if(!dialog.open)dialog.showModal();
   };
