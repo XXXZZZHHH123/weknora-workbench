@@ -48,7 +48,6 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                 if key.startswith('_review'):
                     del block[key]
     used=set()
-    meanings=set()
     for b in blocks:
         if not isinstance(b,dict):raise ValueError('区块必须是对象')
         if b.get('layout')=='matrix':
@@ -108,10 +107,6 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
             dims=c.get('dimensions',{})
             if not isinstance(dims,dict) or any(not isinstance(k,str) or not isinstance(v,(str,int,float,bool)) for k,v in dims.items()):
                 raise ValueError('dimensions 必须是简单键值对象')
-            meaning=(c['metric'],json.dumps(dims,ensure_ascii=False,sort_keys=True), b.get('name',''), b.get('category_column',''))
-            if meaning in meanings:
-                raise ValueError('同一工作表多个指标列的名称和维度完全相同，请添加年度、品种或字段维度后确认')
-            meanings.add(meaning)
             c['dimensions']=dims
             expected=[f"{c['column']}{r}" for r in headers]
             cells=c.get('header_cells',expected)
@@ -123,6 +118,8 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                 _column(mo.group(1),sheet_scan['columns'])
                 if int(mo.group(2)) not in headers:raise ValueError('表头来源位置不在声明的表头行内')
             c['header_cells']=cells
+    from .mapping_identity import distinguish_source_columns
+    distinguish_source_columns(m)
     return m
 
 

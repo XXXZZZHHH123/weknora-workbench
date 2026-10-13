@@ -518,7 +518,7 @@
       if(version!==reviewVersion)return;
       const result=job.id?await scopedJob(job.id,version,s=>{if(version===reviewVersion)$('mappingFeedback').textContent=s;}):job;
       if(version!==reviewVersion||signature!==JSON.stringify(submittedMapping()))return;
-      ui.checkSignature=signature;mappingConfirmed=true;$('mappingFeedback').textContent=`全部选定数据检查通过：${result.series_count} 个指标、${result.observation_count} 条记录。完整检查结果可展开查看。`;$('mappingPreview').innerHTML=blockPreviewHTML(result);saveDraft();
+      ui.checkSignature=signature;mappingConfirmed=true;$('mappingFeedback').textContent=`全部选定数据检查通过：${result.series_count} 个指标、${result.observation_count} 条记录。${result.notice||''}完整检查结果可展开查看。`;$('mappingPreview').innerHTML=blockPreviewHTML(result);saveDraft();
     }finally{if(version===reviewVersion)setMappingBusy(false);}
   };
   suggestMapping = async function(confirmed) {

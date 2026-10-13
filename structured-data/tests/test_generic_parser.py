@@ -137,10 +137,12 @@ def test_sparse_group_titles_inherit_inside_date_block_only(tmp_path):
     assert len(parse_mapped_workbook(p,[m])['observations'])==8
 
 
-def test_same_metric_requires_explicit_dimensions(tmp_path):
+def test_same_source_metric_retains_column_identity_or_explicit_business_dimensions(tmp_path):
     p=book(tmp_path,[['日期','产量','产量'],[datetime(2023,1,1),1,2],[datetime(2023,1,2),3,4]])
     s=candidate(p);m=s['mapping'];assert s['status']=='needs_review'
-    with pytest.raises(ValueError,match='维度'):validate_mapping(m,s)
+    normalized=validate_mapping(m,s)
+    assert [c['dimensions'] for c in normalized['blocks'][0]['columns']]==[{'原表列':'B'},{'原表列':'C'}]
+    assert all('年度' not in c['dimensions'] for c in normalized['blocks'][0]['columns'])
     m['blocks'][0]['columns'][0]['dimensions']={'年度':'2022/23'}
     m['blocks'][0]['columns'][1]['dimensions']={'年度':'2023/24'}
     assert len(validate_mapping(m,s)['blocks'][0]['columns'])==2

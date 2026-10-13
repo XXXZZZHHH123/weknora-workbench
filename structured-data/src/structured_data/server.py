@@ -408,8 +408,8 @@ def create_app(data_dir: str | Path | None = None):
         return save_model(store.root,await request.json())
 
     @app.get("/api/datasets")
-    def datasets():
-        datasets = store.list_datasets(include_samples=True)
+    def datasets(include_samples: bool = False):
+        datasets = store.list_datasets(include_samples=include_samples)
         samples = [d for d in datasets if d["dataset_kind"] == "sample"]
         return {"datasets": [d for d in datasets if d["dataset_kind"] == "business"],
                 **({"samples": samples} if samples else {})}
@@ -498,8 +498,8 @@ def create_app(data_dir: str | Path | None = None):
             return jobs[job_id]
 
     @app.get("/api/imports")
-    def imports():
-        records = manager.list(include_samples=True)
+    def imports(include_samples: bool = False):
+        records = manager.list(include_samples=include_samples)
         samples = [d for d in records if d["dataset_kind"] == "sample"]
         return {"imports": [d for d in records if d["dataset_kind"] == "business"],
                 **({"samples": samples} if samples else {})}

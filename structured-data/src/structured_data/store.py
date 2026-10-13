@@ -85,7 +85,7 @@ class DataStore:
             kind = dataset_kind(doc)
             if kind == 'sample' and not include_samples:
                 continue
-            items.append({'dataset_kind': kind, **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}})
+            items.append({'dataset_kind': kind, 'changed_sheets': doc.get('changed_sheets', []), **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}})
         for item in items:
             coverage = self.manifest(item["dataset_id"]).get("coverage", [])
             item["pending_sheets"] = [s["name"] for s in coverage if s["status"] in {"needs_review", "unsupported", "empty"}]
@@ -99,7 +99,8 @@ class DataStore:
             key = item["source_file"]
             item["is_latest_for_source"] = key not in seen
             seen.add(key)
-        return items
+        from .dataset_history import describe_history
+        return describe_history(items)
 
     def import_file(self, path: str | Path) -> dict:
         from .profiles.cotton import parse_workbook
