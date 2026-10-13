@@ -3723,6 +3723,7 @@ export default {
       otherYear: '{year}/{month}/{day} {time}',
     },
     preparingAnswer: '回答を準備しています…',
+    answerProgress: {"sources": "情報源を検索中", "data": "データを照会中", "generation": "回答を生成中", "verification": "情報源を確認中", "processing": "リクエストを処理中", "waiting": "送信済み、処理を待っています", "elapsed": "経過 {seconds} 秒"},
     connectingModelAndGeneratingAnswer: 'モデルに接続して回答を生成しています…',
     modelStillResponding: 'モデルの応答に通常より時間がかかっています。お待ちください…',
     deepThoughtCompleted: '深い思考が完了しました',

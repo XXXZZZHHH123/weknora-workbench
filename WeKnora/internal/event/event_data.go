@@ -152,6 +152,11 @@ type AgentCompleteData struct {
 // These are used for real-time streaming feedback to clients
 
 // AgentThoughtData represents agent thought streaming data
+type AgentProgressData struct {
+	Stage     string `json:"stage"`
+	Iteration int    `json:"iteration"`
+}
+
 type AgentThoughtData struct {
 	Content   string `json:"content"`
 	Iteration int    `json:"iteration"`
@@ -162,6 +167,7 @@ type AgentThoughtData struct {
 type AgentToolCallData struct {
 	ToolCallID string         `json:"tool_call_id"` // Tool call ID for tracking
 	ToolName   string         `json:"tool_name"`
+	Operation  string         `json:"operation,omitempty"` // Native wrapper operation, separate from inner aggregation args.
 	Arguments  map[string]any `json:"arguments,omitempty"`
 	Iteration  int            `json:"iteration"`
 	Hint       string         `json:"hint,omitempty"` // Human-readable tool hint, e.g. `web_search("query")`

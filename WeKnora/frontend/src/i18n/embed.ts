@@ -113,6 +113,7 @@ const messages = {
         "otherYear": "{year}年{month}月{day}日 {time}"
       },
       "preparingAnswer": "正在准备回答…",
+      answerProgress: {"sources": "正在检索来源", "data": "正在查询数据", "generation": "正在生成答案", "verification": "正在核验来源", "processing": "正在处理请求", "waiting": "请求已发出，等待处理", "elapsed": "已用时 {seconds} 秒"},
       "connectingModelAndGeneratingAnswer": "正在连接模型并生成回答…",
       "modelStillResponding": "模型响应较慢，仍在等待…",
       "deepThoughtCompleted": "已深度思考",
@@ -698,6 +699,7 @@ const messages = {
         "otherYear": "{year}/{month}/{day} {time}"
       },
       "preparingAnswer": "回答を準備しています…",
+      answerProgress: {"sources": "情報源を検索中", "data": "データを照会中", "generation": "回答を生成中", "verification": "情報源を確認中", "processing": "リクエストを処理中", "waiting": "送信済み、処理を待っています", "elapsed": "経過 {seconds} 秒"},
       "connectingModelAndGeneratingAnswer": "モデルに接続して回答を生成しています…",
       "modelStillResponding": "モデルの応答に時間がかかっています。引き続きお待ちください…",
       "deepThoughtCompleted": "深い思考が完了しました",
@@ -1284,6 +1286,7 @@ const messages = {
         "otherYear": "{month}/{day}/{year} {time}"
       },
       "preparingAnswer": "Preparing an answer…",
+      answerProgress: {"sources": "Searching sources", "data": "Querying data", "generation": "Generating answer", "verification": "Verifying sources", "processing": "Processing request", "waiting": "Request sent; waiting for processing", "elapsed": "Elapsed {seconds}s"},
       "connectingModelAndGeneratingAnswer": "Connecting to the model and generating an answer…",
       "modelStillResponding": "The model is taking longer than usual, still waiting…",
       "deepThoughtCompleted": "Deep thinking completed",
@@ -1832,6 +1835,7 @@ const koEmbedPublish = {
       otherYear: '{year}년 {month}월 {day}일 {time}',
     },
     preparingAnswer: '답변을 준비하고 있습니다…',
+    answerProgress: {"sources": "자료를 검색하고 있습니다", "data": "데이터를 조회하고 있습니다", "generation": "답변을 생성하고 있습니다", "verification": "출처를 확인하고 있습니다", "processing": "요청을 처리하고 있습니다", "waiting": "요청 전송 완료, 처리 대기 중", "elapsed": "경과 {seconds}초"},
     connectingModelAndGeneratingAnswer: '모델에 연결하여 답변을 생성하고 있습니다…',
     modelStillResponding: '모델 응답이 평소보다 오래 걸리고 있습니다. 계속 기다리는 중…',
     referencesTitle: '{count}개의 관련 내용 참조',
@@ -1971,6 +1975,7 @@ const ruEmbedPublish = {
       otherYear: '{day}.{month}.{year} {time}',
     },
     preparingAnswer: 'Подготовка ответа…',
+    answerProgress: {"sources": "Поиск источников", "data": "Запрос данных", "generation": "Подготовка ответа", "verification": "Проверка источников", "processing": "Обработка запроса", "waiting": "Запрос отправлен, ожидание обработки", "elapsed": "Прошло {seconds} с"},
     connectingModelAndGeneratingAnswer: 'Подключение к модели и создание ответа…',
     modelStillResponding: 'Модель отвечает дольше обычного, продолжаем ждать…',
     referencesTitle: 'Использовано {count} связанного материала',

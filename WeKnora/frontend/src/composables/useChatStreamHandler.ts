@@ -599,6 +599,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     if (
       loading.value &&
       (data.response_type === 'thinking' ||
+        data.response_type === 'progress' ||
         data.response_type === 'answer' ||
         data.response_type === 'tool_call' ||
         data.response_type === 'tool_approval_required')
@@ -611,6 +612,15 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     const dataPayload = data.data as ChatMessage | undefined
 
     switch (responseType) {
+      case 'progress': {
+        const stage = dataPayload?.stage
+        if (stage !== 'sources' && stage !== 'generation' && stage !== 'verification') break
+        if (!message.agentEventStream) message.agentEventStream = []
+        ;(message.agentEventStream as ChatMessage[]).push({
+          type: 'progress', stage, iteration: dataPayload?.iteration, timestamp: Date.now(),
+        })
+        break
+      }
       case 'thinking': {
         const eventId = dataPayload?.event_id as string | undefined
         log('[Thinking Event]', {
@@ -768,6 +778,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
           const stream = message.agentEventStream as ChatMessage[]
           const incomingToolName = dataPayload.tool_name as string | undefined
           const incomingArguments = dataPayload.arguments
+          const incomingOperation = typeof dataPayload.operation === 'string' ? dataPayload.operation : undefined
           const toolCallId =
             (dataPayload.tool_call_id as string) ||
             (incomingToolName ? `${incomingToolName}_${Date.now()}` : null)
@@ -792,6 +803,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
             const resolvedMcpTarget =
               toolCallEvent.tool_name === 'call_mcp_tool' && incomingToolName?.startsWith('mcp_')
             if (incomingToolName) toolCallEvent.tool_name = incomingToolName
+            if (incomingOperation) toolCallEvent.operation = incomingOperation
             if (incomingArguments) {
               if (resolvedMcpTarget) {
                 // The executor now supplies the target's arguments; discard
@@ -809,6 +821,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
               type: 'tool_call',
               tool_call_id: toolCallId,
               tool_name: incomingToolName,
+              operation: incomingOperation,
               arguments: incomingArguments,
               timestamp: Date.now(),
               pending: true,
@@ -1175,6 +1188,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     }
 
     const isAgentOnlyResponse =
+      data.response_type === 'progress' ||
       data.response_type === 'thinking' ||
       data.response_type === 'tool_call' ||
       data.response_type === 'tool_result' ||

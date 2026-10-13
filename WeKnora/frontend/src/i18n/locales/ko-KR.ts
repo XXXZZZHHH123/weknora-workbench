@@ -3734,6 +3734,7 @@ export default {
       otherYear: '{year}년 {month}월 {day}일 {time}',
     },
     preparingAnswer: '답변을 준비하고 있습니다…',
+    answerProgress: {"sources": "자료를 검색하고 있습니다", "data": "데이터를 조회하고 있습니다", "generation": "답변을 생성하고 있습니다", "verification": "출처를 확인하고 있습니다", "processing": "요청을 처리하고 있습니다", "waiting": "요청 전송 완료, 처리 대기 중", "elapsed": "경과 {seconds}초"},
     connectingModelAndGeneratingAnswer: '모델에 연결하여 답변을 생성하고 있습니다…',
     modelStillResponding: '모델 응답이 평소보다 오래 걸리고 있습니다. 계속 기다리는 중…',
     deepThoughtCompleted: '심층 분석 완료',

@@ -106,6 +106,14 @@ func (s *sessionService) AgentQA(
 		if modelInfo, err := s.modelService.GetModelByID(ctx, effectiveModelID); err == nil && modelInfo != nil {
 			agentModelSupportsVision = modelInfo.Parameters.SupportsVision
 			modelContextWindow = modelInfo.Parameters.ContextWindow
+			agentConfig.ReviewReasoningEffort = reviewReasoningEffort(modelInfo)
+			// A request to turn reasoning off cannot be honored by always-on
+			// models. Use their least supported graded level instead of silently
+			// dropping the request and inheriting the vendor's expensive default.
+			if agentConfig.ReviewReasoningEffort != "off" &&
+				(agentConfig.ReasoningEffort == "off" || (agentConfig.ReasoningEffort == "" && agentConfig.Thinking != nil && !*agentConfig.Thinking)) {
+				agentConfig.ReasoningEffort = agentConfig.ReviewReasoningEffort
+			}
 		}
 	}
 	agentConfig.ChatModelSupportsVision = agentModelSupportsVision
@@ -317,6 +325,21 @@ func (s *sessionService) AgentQA(
 	}
 	// Return empty - events will be handled by Handler via EventBus subscription
 	return nil
+}
+
+func reviewReasoningEffort(model *types.Model) string {
+	if model == nil {
+		return "off"
+	}
+	resolved, err := chat.Resolve(chat.ConfigFromModel(model, "", ""))
+	if err != nil || resolved.ThinkingLevels.Supports(chat.ReasoningEffort("off")) {
+		return "off"
+	}
+	level := resolved.ThinkingLevels.Clamp(chat.ReasoningEffort("minimal"))
+	if level.Graded() {
+		return string(level)
+	}
+	return "off"
 }
 
 // buildAgentConfig creates a runtime AgentConfig from the QARequest's custom agent configuration,

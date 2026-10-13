@@ -3734,6 +3734,7 @@ export default {
       otherYear: '{day}.{month}.{year} {time}',
     },
     preparingAnswer: 'Подготовка ответа…',
+    answerProgress: {"sources": "Поиск источников", "data": "Запрос данных", "generation": "Подготовка ответа", "verification": "Проверка источников", "processing": "Обработка запроса", "waiting": "Запрос отправлен, ожидание обработки", "elapsed": "Прошло {seconds} с"},
     connectingModelAndGeneratingAnswer: 'Подключение к модели и создание ответа…',
     modelStillResponding: 'Модель отвечает дольше обычного, продолжаем ждать…',
     deepThoughtCompleted: 'Глубокий анализ завершён',

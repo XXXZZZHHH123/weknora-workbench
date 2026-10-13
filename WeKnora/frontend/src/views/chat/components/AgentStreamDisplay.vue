@@ -1921,7 +1921,7 @@ const getThinkingSummary = (event: any): string => {
 
 // Helper: build the full result list with plan_task_change injections and thinking merging
 const buildFullEventList = (stream: any[]) => {
-  const validStream = stream.filter((e: any) => e && typeof e === 'object' && e.type);
+  const validStream = stream.filter((e: any) => e && typeof e === 'object' && e.type && e.type !== 'progress');
   let lastTask: string | null = null;
   const result: any[] = [];
 

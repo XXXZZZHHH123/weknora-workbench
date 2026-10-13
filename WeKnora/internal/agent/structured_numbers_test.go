@@ -61,6 +61,19 @@ func TestIndependentReviewPreservesUserAndToolFactsButNotAssistantRationalizatio
 	require.Contains(t, review[1].Content, "unverified_draft")
 }
 
+func TestIndependentReviewDuplicateResultsDoNotEvictDistinctSourceEvidence(t *testing.T) {
+	first := `{"source":"first-required-period","padding":"` + strings.Repeat("x", 21000) + `"}`
+	repeated := `{"source":"last-required-period","padding":"` + strings.Repeat("y", 20000) + `"}`
+	messages := []chat.Message{{Role: "system", Content: "Source checks"}, {Role: "tool", Content: first},
+		{Role: "tool", Content: repeated}, {Role: "tool", Content: repeated}}
+	review := independentStructuredReview(messages, "compare both periods", "draft")
+	var envelope struct {
+		Evidence []string `json:"source_tool_results"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(review[1].Content), &envelope))
+	require.Equal(t, []string{first, repeated}, envelope.Evidence)
+}
+
 // This is the exact final model draft from the local cotton regression, with
 // only its executed aggregate results and the 48 raw source cells retained.
 // A correct statistic must not be discarded because its SHA or row labels are

@@ -1,7 +1,8 @@
 <template>
   <div class="embed-bot-msg" :class="{ 'is-embedded': embeddedMode }">
+    <AnswerProgress :session="session" />
     <div v-if="session?.isRagMode" class="rag-answer-stack">
-      <RagPipelineProgress :session="session" embedded-mode />
+      <RagPipelineProgress :session="session" embedded-mode status-handled />
       <AgentStreamDisplay v-if="session?.isAgentMode" :session="session" :session-id="sessionId" :user-query="userQuery"
         rag-mode :embedded-mode="embeddedMode" :embed-channel-id="embedChannelId" :embed-token="embedToken"
         :embed-session-sig="embedSessionSig" :embed-visitor-id="embedVisitorId" />
@@ -40,6 +41,7 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onMounted, onUpdated, ref, watch } from 'vue'
+import AnswerProgress from '@/views/chat/components/AnswerProgress.vue'
 import 'katex/dist/katex.min.css'
 import {
   sanitizeMarkdownHTML,

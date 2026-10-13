@@ -500,6 +500,10 @@ func (e *AgentEngine) runToolCall(
 
 	// Emit tool hint for UI progress display
 	toolHint := formatToolHint(executionName, executionArgs)
+	operation := ""
+	if tc.Function.Name == agenttools.ToolStructuredData {
+		operation, _ = args["operation"].(string)
+	}
 	e.eventBus.Emit(ctx, event.Event{
 		ID:        tc.ID + "-tool-hint",
 		Type:      event.EventAgentToolCall,
@@ -507,6 +511,7 @@ func (e *AgentEngine) runToolCall(
 		Data: event.AgentToolCallData{
 			ToolCallID: tc.ID,
 			ToolName:   executionName,
+			Operation:  operation,
 			Arguments:  agenttools.SanitizeSandboxFileCallArgs(executionName, executionArgs),
 			Iteration:  iteration,
 			Hint:       toolHint,

@@ -1,6 +1,7 @@
 <template>
     <div class="bot_msg" :class="{ 'is-embedded': embeddedMode }">
         <div style="display: flex;flex-direction: column; gap:8px">
+            <AnswerProgress :session="session" />
             <!-- 显示@的知识库和文件（非 Agent 模式下显示） -->
             <div v-if="!session.isAgentMode && mentionedItems && mentionedItems.length > 0" class="mentioned_items">
                 <span v-for="item in mentionedItems" :key="item.id" class="mentioned_tag" :class="[
@@ -15,7 +16,7 @@
                 </span>
             </div>
             <div v-if="session.isRagMode" class="rag-answer-stack">
-                <RagPipelineProgress :session="session" :embedded-mode="embeddedMode" />
+                <RagPipelineProgress :session="session" :embedded-mode="embeddedMode" status-handled />
                 <AgentStreamDisplay v-if="session.isAgentMode" :session="session" :session-id="sessionId"
                     :user-query="userQuery" :rag-mode="true" :follow-up-loading="followUpLoading"
                     :embedded-mode="embeddedMode"
@@ -145,6 +146,7 @@ import docInfo from './docInfo.vue';
 import deepThink from './deepThink.vue';
 import AgentStreamDisplay from './AgentStreamDisplay.vue';
 import RagPipelineProgress from './RagPipelineProgress.vue';
+import AnswerProgress from './AnswerProgress.vue';
 import ChatRequestInfoButton from '@/components/ChatRequestInfoButton.vue';
 import ChatCitationFloat from '@/components/ChatCitationFloat.vue';
 import picturePreview from '@/components/picture-preview.vue';

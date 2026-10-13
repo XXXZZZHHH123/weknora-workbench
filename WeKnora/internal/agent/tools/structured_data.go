@@ -30,6 +30,7 @@ type StructuredDataTool struct {
 	sourceQuestion string
 	key            []byte
 	client         *http.Client
+	readCache      structuredReadCache
 }
 
 func NewStructuredDataTool() *StructuredDataTool {
@@ -43,7 +44,9 @@ func NewStructuredDataTool() *StructuredDataTool {
 }
 
 // BindSourceQuestion records the real human request for this per-turn tool.
-func (t *StructuredDataTool) BindSourceQuestion(question string) { t.sourceQuestion = question }
+func (t *StructuredDataTool) BindSourceQuestion(question string) {
+	t.bindStructuredSourceQuestion(question)
+}
 
 func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
 	caller := types.CallerFromContext(ctx)
@@ -81,14 +84,27 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 			return nil, fmt.Errorf("结构化表格参数不接受身份、凭据或服务配置")
 		}
 	}
-	if t.sourceQuestion != "" && (operation == "query_series" || operation == "analyze_table" || operation == "compare_series" || operation == "convert_price") {
-		question, _ := json.Marshal(t.sourceQuestion)
+	sourceQuestion, cacheGeneration := t.structuredSourceQuestion()
+	if sourceQuestion != "" && (operation == "query_series" || operation == "analyze_table" || operation == "compare_series" || operation == "convert_price") {
+		question, _ := json.Marshal(sourceQuestion)
 		arguments["source_question"] = question
 		args, err = json.Marshal(map[string]any{"operation": operation, "arguments": arguments})
 		if err != nil {
 			return nil, fmt.Errorf("结构化来源口径参数无效")
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	lease, cached, err := t.beginStructuredReadCache(ctx, caller, operation, arguments, sourceQuestion, cacheGeneration)
+	if err != nil {
+		return nil, err
+	}
+	if cached != nil {
+		return cached, nil
+	}
+	var cacheResult *types.ToolResult
+	defer func() { t.finishStructuredReadCache(lease, cacheResult) }()
 	identity := map[string]any{"user_id": caller.UserID, "tenant_id": caller.TenantID,
 		"role": string(caller.Role), "email": "", "display_name": caller.UserID}
 	if user, ok := ctx.Value(types.UserContextKey).(*types.User); ok && user.ID == caller.UserID {
@@ -152,5 +168,6 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		return &types.ToolResult{Success: false, Output: string(body), Data: data, Error: detail}, nil
 	}
-	return &types.ToolResult{Success: true, Output: string(body), Data: data}, nil
+	cacheResult = &types.ToolResult{Success: true, Output: string(body), Data: data}
+	return cacheResult, nil
 }

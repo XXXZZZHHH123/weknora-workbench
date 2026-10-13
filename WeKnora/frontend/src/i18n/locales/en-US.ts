@@ -3723,6 +3723,7 @@ export default {
       otherYear: '{month}/{day}/{year} {time}',
     },
     preparingAnswer: 'Preparing an answer…',
+    answerProgress: {"sources": "Searching sources", "data": "Querying data", "generation": "Generating answer", "verification": "Verifying sources", "processing": "Processing request", "waiting": "Request sent; waiting for processing", "elapsed": "Elapsed {seconds}s"},
     connectingModelAndGeneratingAnswer: 'Connecting to the model and generating an answer…',
     modelStillResponding: 'The model is taking longer than usual, still waiting…',
     deepThoughtCompleted: 'Deep thinking completed',

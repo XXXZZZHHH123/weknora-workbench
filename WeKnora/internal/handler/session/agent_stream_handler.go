@@ -139,6 +139,7 @@ func NewAgentStreamHandler(
 func (h *AgentStreamHandler) Subscribe() {
 	// Subscribe to all agent streaming events on the dedicated EventBus
 	h.eventBus.On(event.EventAgentThought, h.handleThought)
+	h.eventBus.On(event.EventAgentProgress, h.handleProgress)
 	h.eventBus.On(event.EventAgentToolCall, h.handleToolCall)
 	h.eventBus.On(event.EventAgentToolResult, h.handleToolResult)
 	h.eventBus.On(event.EventAgentCommandOutput, h.handleCommandOutput)
@@ -155,6 +156,22 @@ func (h *AgentStreamHandler) Subscribe() {
 	h.eventBus.On(event.EventToolApprovalResolved, h.handleToolApprovalResolved)
 	h.eventBus.On(event.EventMCPOAuthRequired, h.handleMCPOAuthRequired)
 	h.eventBus.On(event.EventMCPOAuthResolved, h.handleMCPOAuthResolved)
+}
+
+func (h *AgentStreamHandler) handleProgress(ctx context.Context, evt event.Event) error {
+	data, ok := evt.Data.(event.AgentProgressData)
+	if !ok {
+		return nil
+	}
+	switch data.Stage {
+	case "sources", "generation", "verification":
+	default:
+		return nil
+	}
+	return h.streamManager.AppendEvent(h.ctx, h.sessionID, h.assistantMessageID, interfaces.StreamEvent{
+		ID: evt.ID, Type: "progress", Done: true, Timestamp: time.Now(),
+		Data: map[string]interface{}{"stage": data.Stage, "iteration": data.Iteration},
+	})
 }
 
 // handleThought handles agent thought events
@@ -237,6 +254,9 @@ func (h *AgentStreamHandler) handleToolCall(ctx context.Context, evt event.Event
 		"tool_name":    data.ToolName,
 		"arguments":    agenttools.SanitizeSandboxFileCallArgs(data.ToolName, data.Arguments),
 		"tool_call_id": data.ToolCallID,
+	}
+	if data.Operation != "" {
+		metadata["operation"] = data.Operation
 	}
 
 	// Append event to stream

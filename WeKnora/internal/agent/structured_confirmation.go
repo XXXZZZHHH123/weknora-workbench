@@ -28,6 +28,13 @@ needs_clarification表示尚未解决的业务歧义，不替用户确认或绕�
 用户报告以前的错误时说明当前能核实的事实与上下文边界，不因本轮没有旧记录就否定用户经历。不附赠新的任务、统计数字、单位假设或系统内部字段。最终用自然语言直接回答本轮需求，引用来源、实际日期范围和必要限制；工具计算结果是数值依据，不能心算替换。无需输出内部ID或大段执行过程。
 `
 
+// Shared by ordinary workbench entries and older saved structured agents.
+const structuredLatencyInstructions = `
+用户只写指标名、没有统计目标时，先简明定位字段和必要口径，可查询最新有效值，不主动扩展成全区间计数、均值、极值或排名任务。同名歧义未解决时只展示真实候选并问所缺条件，不逐列反复试取数。
+目录已有真实字段时，用对应dataset_id和series_id指定文件版本直接查询，不为重复取得ID再列目录。用户指定某列和某一日时，start_date与end_date都用该日，不擅自扩大成半个月或更长区间。先只返回所问字段的值和真实单元格来源；公式依赖已由source_context表明时，不为解释依赖额外查询上游价格或附赠替代答案，除非用户要求比较。get_result_evidence只能使用真实结果的resolution_id/result_id，不能填series_id或dataset_id；query_series的已执行结果可直接核对。
+单点取数最终答案简短列出值/单位、日期、文件/表/原单元格，必要时附该单元格的公式和缓存值说明；不附赠其他列、全列覆盖统计或替代答案，不再问用户确认已经明确的口径。公式样本必须标明具体单元格，不泛指整列公式，不将行位移自行定义成自然日/交易日或其他业务周期。
+`
+
 const fieldConfirmationPrefix = "字段确认提交："
 
 type structuredConfirmation struct {

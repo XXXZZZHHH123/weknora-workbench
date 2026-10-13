@@ -156,15 +156,17 @@ func independentStructuredReview(messages []chat.Message, query, draft string) [
 	}
 	users := []string{}
 	evidence := []string{}
+	seenEvidence := map[string]bool{}
 	budget := 48000
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
 		if msg.Role == "user" && len(users) < 8 {
 			users = append([]string{msg.Content}, users...)
 		}
-		if msg.Role == "tool" && len(msg.Content) <= budget {
+		if msg.Role == "tool" && !seenEvidence[msg.Content] && len(msg.Content) <= budget {
 			evidence = append([]string{msg.Content}, evidence...)
 			budget -= len(msg.Content)
+			seenEvidence[msg.Content] = true
 		}
 	}
 	input, _ := json.Marshal(map[string]any{
@@ -179,6 +181,7 @@ func independentStructuredReview(messages []chat.Message, query, draft string) [
 }
 
 const structuredAnswerReviewInstructions = `提交最终答案前核验刚才的草稿。对照本轮原始请求和真实工具结果逐项检查：对象/字段/合约、时间与分组定义、公式与分母、窗口顺序、实际覆盖、缺失和单位。若用SQL，检查表达式是否真正实现需求，不把执行成功当成口径正确。核对用户要求的全部输出，不擅自增加用户未要求的筛选、排除、完整性阈值或其他口径；覆盖不足应说明，不能自动删去本来符合条件的记录或结果组。
+真实执行结果已保留参数、范围、单位及原来源时，直接用这些证据核对；不为复核流程再次执行相同参数的成功查询。只有缺少确定证据或需要修正口径时才补充查询。不扩展用户未请求的统计任务，对字段歧义只简明展示真实候选，不试图绕过歧义取数。
 比较关系与排名也必须有程序依据：候选答案写了“最高/最低/最多/排名”等结论时，用排序或极值查询取得全部符合原请求的组中的真正结果，不凭候选文本或视觉比较继承结论，不添加完整组过滤。所有统计数值、比例与计数必须出自程序结果；未计算的补充数字删去或用工具计算。原件的inspect_source/sums也是程序依据，核对原件年度小表是否与已解析月度加总存在多个口径，冲突需展示和澄清。原件搜索scan.complete=false或truncated=true时，不能宣称年度标签不存在；已定位sheet后需指定该sheet重试。没有证据的年度起止不得改用行业常规或自拟日期窗口回答。未注明单位不能擅自按常见行业单位理解，跨字段数值吻合也不能证明单位一致。字段频率不能证明可加性、流量性质或行业年度。没有来源依据的业务判断删去；不要附加未请求的替代口径、推测原因或反向比较。解释已有结果同样需要这项核验。输入覆盖范围与最终计算使用范围分开。若发现语义或计算问题，继续调用工具纠正，再回答；无需让用户确认系统错误。结果可靠则直接给出简明最终答案，不复述核验过程。`
 
 func hasStructuredEvidence(steps []types.AgentStep) bool {

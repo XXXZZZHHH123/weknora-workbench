@@ -313,6 +313,7 @@ func (e *AgentEngine) Execute(
 	llmContext []chat.Message,
 	imageURLs ...[]string,
 ) (*types.AgentState, error) {
+	executionStart := time.Now()
 	e.structuredReviewMode = false
 	e.answerReviewPending = false
 	logger.Infof(ctx, "[Agent] Starting execution: session=%s, message=%s, query_len=%d, context_msgs=%d",
@@ -379,8 +380,11 @@ func (e *AgentEngine) Execute(
 	// Build system prompt using progressive RAG prompt
 	// If skills are enabled, include skills metadata (Level 1 - Progressive Disclosure)
 	systemPrompt := e.buildSystemPrompt(ctx)
-	if e.toolRegistry.HasStructuredDataTools() && !e.config.WorkbenchDefault {
-		systemPrompt += structuredFieldTurnInstructions
+	if e.toolRegistry.HasStructuredDataTools() {
+		if !e.config.WorkbenchDefault {
+			systemPrompt += structuredFieldTurnInstructions
+		}
+		systemPrompt += structuredLatencyInstructions
 	}
 	logger.Debugf(ctx, "[Agent] SystemPrompt: %d chars", len(systemPrompt))
 
@@ -396,7 +400,24 @@ func (e *AgentEngine) Execute(
 	}
 
 	if !strings.HasPrefix(query, fieldConfirmationPrefix) {
+		if e.config.WorkbenchDefault {
+			e.emitProgress(ctx, "sources", -1, sessionID)
+		}
 		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID)
+	}
+	// Only an otherwise context-free literal field request is eligible. Follow-up
+	// selections, attachments and calculations must still use normal reasoning.
+	if len(llmContext) == 0 && len(imgs) == 0 && len(e.selectedDocs) == 0 &&
+		len(e.pinnedMCPServices) == 0 && len(e.pinnedSkills) == 0 && e.questionOrigin == nil && e.memoryPrompt == "" {
+		if answer := literalSourceClarification(query, state.RoundSteps); answer != "" &&
+			!e.hasPendingClarificationSteer(ctx, sessionID, messageID) && ctx.Err() == nil {
+			state.FinalAnswer, state.IsComplete = answer, true
+			e.eventBus.Emit(ctx, event.Event{ID: generateEventID("answer"), Type: event.EventAgentFinalAnswer, SessionID: sessionID,
+				Data: event.AgentFinalAnswerData{Content: answer, Done: true}})
+			e.emitCompletionEvent(ctx, state, sessionID, messageID, executionStart)
+			finishAgentSpan(agentSpan, state, nil)
+			return state, nil
+		}
 	}
 
 	// Get tool definitions for function calling
@@ -810,6 +831,11 @@ func (e *AgentEngine) runReActIteration(
 	})
 
 	// 1. Think: Call LLM with function calling (includes retry + graceful degradation)
+	stage := "generation"
+	if e.structuredReviewMode {
+		stage = "verification"
+	}
+	e.emitProgress(ctx, stage, state.CurrentRound, sessionID)
 	e.lastSentMsgCount = len(*messagesPtr)
 	e.answerReviewPending = hasStructuredEvidence(state.RoundSteps) || hasStructuredHistoryEvidence(*messagesPtr)
 	resp, err := e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID)

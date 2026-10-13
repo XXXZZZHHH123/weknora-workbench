@@ -326,6 +326,9 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		disabled := false
 		opts.Thinking = &disabled
 		opts.ReasoningEffort = chat.ReasoningEffort("off")
+		if e.config.ReviewReasoningEffort != "" {
+			opts.ReasoningEffort = chat.ReasoningEffort(e.config.ReviewReasoningEffort)
+		}
 		opts.ThinkingBudgetTokens = 0
 		if opts.MaxCompletionTokens > 4096 {
 			opts.MaxCompletionTokens = 4096

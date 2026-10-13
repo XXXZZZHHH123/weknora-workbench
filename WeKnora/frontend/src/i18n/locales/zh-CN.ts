@@ -3736,6 +3736,7 @@ export default {
       otherYear: '{year}年{month}月{day}日 {time}',
     },
     preparingAnswer: '正在准备回答…',
+    answerProgress: {"sources": "正在检索来源", "data": "正在查询数据", "generation": "正在生成答案", "verification": "正在核验来源", "processing": "正在处理请求", "waiting": "请求已发出，等待处理", "elapsed": "已用时 {seconds} 秒"},
     connectingModelAndGeneratingAnswer: '正在连接模型并生成回答…',
     modelStillResponding: '模型响应较慢，仍在等待…',
     deepThoughtCompleted: '已深度思考',

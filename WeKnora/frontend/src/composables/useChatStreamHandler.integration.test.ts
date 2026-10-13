@@ -104,6 +104,26 @@ function setup(t: TestContext, mode: 'ordinary' | 'quick-timeline' | 'agent') {
   }
 }
 
+for (const mode of ['quick-timeline', 'agent'] as const) {
+  test(`${mode}: real progress events update phases without completing or displaying draft answer`, async t => {
+    const h = setup(t, mode)
+    h.send('progress', 'do not display this draft', false, { stage: 'verification', iteration: 2 })
+    assert.equal(h.message.agentEventStream.at(-1).type, 'progress')
+    assert.equal(h.message.agentEventStream.at(-1).stage, 'verification')
+    assert.equal(h.message.content, '')
+    assert.equal(h.message.is_completed, false)
+    assert.equal(h.isReplying.value, true)
+    assert.equal(h.loading.value, false)
+    h.send('tool_call', '', false, { tool_call_id: 'query', tool_name: 'structured_data', operation: 'query_series', arguments: { series_id: 'real-series', operation: 'rows' } })
+    assert.equal(h.message.agentEventStream.at(-1).operation, 'query_series')
+    assert.equal(h.message.agentEventStream.at(-1).arguments.operation, 'rows')
+    h.send('tool_call', '', false, { tool_call_id: 'query', tool_name: 'structured_data', operation: 'inspect_source', arguments: { sheet: '纱布利润' } })
+    assert.equal(h.message.agentEventStream.at(-1).operation, 'inspect_source')
+    h.send('complete')
+    assert.equal(h.message.is_completed, true)
+  })
+}
+
 for (const mode of ['ordinary', 'quick-timeline', 'agent'] as const) {
   test(`${mode}: answer.done → persistence → complete retries the image exactly once`, async t => {
     const h = setup(t, mode)

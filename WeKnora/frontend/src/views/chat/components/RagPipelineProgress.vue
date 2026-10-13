@@ -281,6 +281,7 @@ const props = defineProps<{
   // Set by hosts that already render their own timeline (the agent stream) and
   // only need the memory row from here.
   memoryOnly?: boolean
+  statusHandled?: boolean
 }>()
 
 const { t } = useI18n()
@@ -409,7 +410,7 @@ const waitKind = computed(() => getRagPipelineWaitKind({
   hasCompletedRetrievalStep: hasCompletedRetrievalStep.value,
 }))
 
-const showWaitStep = computed(() => waitView.value.kind !== 'none')
+const showWaitStep = computed(() => !props.statusHandled && waitView.value.kind !== 'none')
 
 const waitStepStalled = computed(() => waitView.value.stalled)
 
@@ -443,6 +444,7 @@ const showDoneRow = computed(() => {
 })
 
 const showPrePipelineWait = computed(() => {
+  if (props.statusHandled) return false
   if (hasAnswer.value || props.session?.is_completed || steps.value.length > 0 || hasThinking.value) {
     return false
   }

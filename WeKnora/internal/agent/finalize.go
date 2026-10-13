@@ -54,15 +54,20 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	// recovery). Buffer it until verified, so malformed/unsupported drafts do
 	// not become the visible terminal answer while a repair is still running.
 	for attempt := 0; attempt < 3; attempt++ {
+		e.emitProgress(ctx, "generation", state.CurrentRound, sessionID)
 		budget := e.clampCompletionBudgetToContext(e.tokenEstimator.EstimateMessages(messages))
 		if budget > 4096 {
 			budget = 4096
 		}
 		disabled := false
+		reasoning := chat.ReasoningEffort("off")
+		if e.config.ReviewReasoningEffort != "" {
+			reasoning = chat.ReasoningEffort(e.config.ReviewReasoningEffort)
+		}
 		llmResult, err := e.streamLLMToEventBus(ctx, messages, &chat.ChatOptions{
 			Temperature: e.config.Temperature, MaxCompletionTokens: budget,
 			PromptCacheKey: sessionID, ToolChoice: "none", Thinking: &disabled,
-			ReasoningEffort: chat.ReasoningEffort("off"), ThinkingBudgetTokens: 0,
+			ReasoningEffort: reasoning, ThinkingBudgetTokens: 0,
 		}, nil)
 		if err != nil {
 			return err
