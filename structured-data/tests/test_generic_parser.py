@@ -189,3 +189,16 @@ def test_invalid_date_locates_date_and_populated_value_cells(tmp_path):
     with pytest.raises(ReviewValidationError) as caught:
         parse_mapped_workbook(p,[mapping],scan=scan)
     assert caught.value.review_target=={'sheet':sheet['name'],'block_index':0,'field':'date_column','cells':['A3','B3']}
+
+
+def test_verified_metadata_and_source_zero_fill_warning_survive_generic_import(tmp_path):
+    p=book(tmp_path,[['日期','价格'],[datetime(2023,1,1),'=WSD("TEST","close","2023-01-01","ShowBlank==0")'],[datetime(2023,1,2),10]])
+    sheet=candidate(p)
+    mapping=deepcopy(sheet['mapping'])
+    mapping['blocks'][0]['columns'][0]['dimensions']={'contract':'合同甲','block':'close'}
+    result=parse_mapped_workbook(p,[mapping])
+    assert result['series'][0]['dimensions']['block']=='close'
+    assert result['series'][0]['dimensions']['contract']=='合同甲'
+    assert any(issue['code']=='source_zero_fill' and issue['cell']=='B2' for issue in result['issues'])
+    assert result['observations'][0]['formula']=='=WSD("TEST","close","2023-01-01","ShowBlank==0")'
+    assert result['observations'][0]['value'] is None

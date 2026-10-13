@@ -144,3 +144,97 @@ def test_large_legacy_issue_array_can_be_replayed_without_loading_whole_file(tmp
     path.write_text('[{"sheet":"原表"}', encoding='utf-8')
     with pytest.raises(ValueError, match='Incomplete'):
         list(read_json_array(path))
+
+
+def reviewed_source(tmp_path, monkeypatch):
+    from structured_data.profiles import reviewed
+    path=tmp_path/'verified.xlsx'
+    wb=Workbook();ws=wb.active;ws.title='核验记录'
+    ws.append(['日期','收盘','结算']);ws.append([datetime(2023,1,1),10,20]);ws.append([datetime(2023,1,2),11,21])
+    ws=wb.create_sheet('保留记录');ws.append(['日期','数量']);ws.append([datetime(2023,1,1),30]);ws.append([datetime(2023,1,2),31]);wb.save(path)
+    rules=tmp_path/'rules';(rules/'reviewed_mappings').mkdir(parents=True)
+    monkeypatch.setattr(reviewed,'__file__',str(rules/'profiles'/'reviewed.py'))
+    digest=hashlib.sha256(path.read_bytes()).hexdigest()
+    mapping={'sha256':digest,'rule_version':'reviewed-fixture-v1','sheets':[
+        {'name':'核验记录','start_row':2,'max_col':3,'header_expectations':{'A1':'日期','B1':'收盘','C1':'结算'},'specs':[
+            [2,1,'fixture.close','收盘',{'contract':'合同甲','block':'close'},None,['B1']],
+            [3,1,'fixture.settle','结算',{'contract':'合同甲','block':'settle'},None,['C1']]]},
+        {'name':'保留记录','start_row':2,'max_col':2,'header_expectations':{'A1':'日期','B1':'数量'},'specs':[
+            [2,1,'fixture.other','数量',{},'件',['B1']]]}]}
+    (rules/'reviewed_mappings'/(digest+'.json')).write_text(json.dumps(mapping))
+    manager=ImportManager(tmp_path/'data');result=manager.ingest(path)
+    return manager,path,result
+
+
+def test_edit_verified_sheet_replaces_only_approved_sheet_and_preserves_history(tmp_path, monkeypatch):
+    from copy import deepcopy
+    manager,source,first=reviewed_source(tmp_path,monkeypatch)
+    original=first['dataset_id'];old_bytes=source.read_bytes()
+    assert manager.sheet(first['import_id'],'核验记录')['status']=='trusted_existing'
+    retained=manager.store.query_series(original,'fixture.other')['rows']
+    seed=manager.sheet(first['import_id'],'核验记录')['mapping']
+    mapping=deepcopy(seed);mapping['blocks'][0]['columns']=mapping['blocks'][0]['columns'][:1]
+    mapping['blocks'][0]['columns'][0]['metric']='调整后的收盘'
+    mapping['blocks'][0]['data_end_row']=2
+    preview=manager.preview(first['import_id'],mapping)
+    assert preview['series_count']==1 and preview['observation_count']==1
+    assert preview['series'][0]['dimensions']['contract']=='合同甲'
+    assert preview['series'][0]['dimensions']['block']=='close'
+    assert preview['sample'][0]['source_cell']=='B2' and preview['sample'][0]['date_cell']=='A2'
+    assert manager.get(first['import_id'])['dataset_id']==original
+    result=manager.confirm(first['import_id'],mapping,save_template=False);new=result['dataset_id']
+    assert new!=original
+    assert manager.store.manifest(new)['changed_sheets']==['核验记录']
+    assert manager.store.manifest(new)['observation_count']==3
+    assert manager.sheet(first['import_id'],'核验记录')['status']=='confirmed'
+    new_series=manager.store.list_series(new,sheet='核验记录')['series']
+    assert [s['metric'] for s in new_series]==['调整后的收盘']
+    assert manager.store.query_series(new,new_series[0]['series_id'])['rows'][0]['value']==10
+    assert manager.store.query_series(new,'fixture.other')['rows']==retained
+    assert manager.store.query_series(original,'fixture.close')['record_count']==2
+    assert (manager.store._path(new)/'source.xlsx').read_bytes()==old_bytes
+    assert manager.source_path(manager.get(first['import_id'])).read_bytes()==old_bytes
+    assert manager.ingest(source)['dataset_id']==new
+    assert manager.confirm(first['import_id'],mapping,save_template=False)['dataset_id']==new
+    assert manager.store.manifest(new)['series_count']==2
+
+
+def test_failed_verified_edit_preserves_saved_mapping_and_snapshot(tmp_path, monkeypatch):
+    from structured_data import generic_parser
+    from copy import deepcopy
+    manager,source,first=reviewed_source(tmp_path,monkeypatch)
+    before=manager.get(first['import_id']);source_bytes=source.read_bytes()
+    mapping=deepcopy(manager.sheet(first['import_id'],'核验记录')['mapping'])
+    mapping['blocks'][0]['header_rows']=[]
+    with pytest.raises(ValueError,match='表头行为空'):
+        manager.confirm(first['import_id'],mapping)
+    assert manager.get(first['import_id'])==before
+    valid=manager.sheet(first['import_id'],'核验记录')['mapping']
+    parser=generic_parser.parse_mapped_workbook;calls=0
+    def fail_write(*args,**kwargs):
+        nonlocal calls
+        calls+=1
+        if calls==2:raise ValueError('模拟写入失败')
+        return parser(*args,**kwargs)
+    monkeypatch.setattr(generic_parser,'parse_mapped_workbook',fail_write)
+    with pytest.raises(ValueError,match='模拟写入失败'):
+        manager.confirm(first['import_id'],valid)
+    assert manager.get(first['import_id'])==before
+    assert len(manager.store.list_datasets())==1
+    assert source.read_bytes()==source_bytes
+
+
+def test_verified_override_is_not_reverted_when_rebuilding_without_base(tmp_path, monkeypatch):
+    manager,source,first=reviewed_source(tmp_path,monkeypatch)
+    mapping=manager.sheet(first['import_id'],'核验记录')['mapping']
+    mapping['blocks'][0]['columns']=mapping['blocks'][0]['columns'][:1]
+    mapping['blocks'][0]['data_end_row']=2
+    mapping['blocks'][0]['columns'][0]['metric']='用户映射'
+    result=manager.confirm(first['import_id'],mapping,save_template=False)
+    doc=manager.get(first['import_id']);doc['dataset_id']=None
+    manager._publish(doc)
+    dataset=doc['dataset_id']
+    assert [s['metric'] for s in manager.store.list_series(dataset,sheet='核验记录')['series']]==['用户映射']
+    assert manager.store.manifest(dataset)['observation_count']==3
+    assert next(s for s in doc['sheets'] if s['name']=='核验记录')['status']=='confirmed'
+    assert manager.store.query_series(dataset,'fixture.other')['record_count']==2

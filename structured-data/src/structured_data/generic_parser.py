@@ -214,13 +214,13 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                     value=_date(refvalues.get(b['date_cell']),'custom' if b.get('date_format') else 'date',vw.epoch,b.get('date_format'))
                     if not value:raise ReviewValidationError(f'{name}!{b["date_cell"]} 不是完整日期，不能作为整个小表的日期', sheet=name, block_index=bi, field='date_cell', cells=[b['date_cell']])
                     anchor_dates[bi]=value
-            seen={};series_map={};last_dates={};block_counts=Counter()
+            seen={};series_map={};last_dates={};block_counts=Counter();zero_fill_reported=False
             def add_series(bi,b,c,category,category_cell):
                 key=(bi,c['column'],category)
                 if key not in series_map:
                     stable=f"{name}|{bi}|{c['column']}|{c['metric']}"+(f'|{category}' if category is not None else '')
                     sid='generic.'+sha256(stable.encode()).hexdigest()[:20]
-                    dims=dict(c['dimensions']);dims['block']=f'mapped_{bi+1}'
+                    dims=dict(c['dimensions']);dims.setdefault('block',f'mapped_{bi+1}')
                     if b.get('name'):dims['data_region']=b['name']
                     if category is not None:
                         catname=b.get('category_name','类别')
@@ -278,7 +278,11 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                         seen[sid].add(record_key)
                         if cc:item['category_provenance'][coord]=category_cell
                         value=None
-                        if formula:formula_count+=1
+                        if formula:
+                            formula_count+=1
+                            if 'ShowBlank==0' in formula and not zero_fill_reported:
+                                result['issues'].append({'sheet':name,'cell':coord,'severity':'warning','code':'source_zero_fill','message':'源工作簿 Wind 查询使用 ShowBlank==0，已有零值可能包含上游缺失填充，无法逆向判别。'})
+                                zero_fill_reported=True
                         if raw is None:status='formula_no_cache' if formula else 'blank'
                         elif cell.data_type=='e':status='excel_error'
                         elif isinstance(raw,(int,float)) and not isinstance(raw,bool) and isfinite(raw):status='valid';value=raw

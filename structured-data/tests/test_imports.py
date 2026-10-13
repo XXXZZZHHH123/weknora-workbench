@@ -103,7 +103,7 @@ def test_pending_scope_never_falls_back_to_other_table(tmp_path):
     assert result['pending_sheets'][0]['name']=='USDA棉花平衡表-全球'
 
 
-def test_verified_sheet_inspector_uses_actual_fingerprint_bound_mapping(tmp_path, monkeypatch):
+def test_verified_sheet_edit_seed_uses_actual_fingerprint_bound_mapping(tmp_path, monkeypatch):
     from structured_data.profiles import reviewed
     import hashlib
     root=tmp_path/'data'
@@ -125,7 +125,7 @@ def test_verified_sheet_inspector_uses_actual_fingerprint_bound_mapping(tmp_path
         'specs':[[2,1,'verified.price','已保存字段',{'来源':'实际核验规则'},'元',['B1']]]}]}
     (config_dir/'reviewed_mappings'/(digest+'.json')).write_text(json.dumps(rule))
     display=manager.sheet(imported['import_id'],'简单表')['mapping']
-    assert display['view_only'] is True
+    assert not display.get('view_only')
     assert display['blocks'][0]['columns'][0]['metric']=='已保存字段'
     assert display['blocks'][0]['columns'][0]['series_id']=='verified.price'
     assert display['blocks'][0]['columns'][0]['header_cells']==['B1']

@@ -206,8 +206,8 @@ def parse_workbook(path: Path | str, *, observations=None, issues=None, mapping=
     return result
 
 
-def review_display_mapping(configured, sheet_scan):
-    """Project the verified mapping into a read-only source inspector, never ingest it."""
+def reviewed_sheet_mapping(configured, sheet_scan):
+    """Project verified source metadata into an editable, explicitly checked mapping."""
     import re
     groups = {}
     headers = configured['header_expectations']
@@ -220,4 +220,4 @@ def review_display_mapping(configured, sheet_scan):
         group['columns'].append({'column': get_column_letter(col), 'metric': metric,
             'series_id': sid, 'dimensions': dimensions, 'unit': unit, 'header_cells': cells})
     return {'sheet': sheet_scan['name'], 'fingerprint': sheet_scan['fingerprint'],
-            'blocks': list(groups.values()), 'view_only': True}
+            'blocks': list(groups.values())}

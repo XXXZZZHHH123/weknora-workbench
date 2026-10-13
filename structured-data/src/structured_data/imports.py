@@ -62,11 +62,11 @@ class ImportManager:
         for sheet in doc['sheets']:
             if sheet['name'] == name:
                 if sheet['status'] == 'trusted_existing':
-                    from .profiles.reviewed import reviewed_mapping, review_display_mapping
+                    from .profiles.reviewed import reviewed_mapping, reviewed_sheet_mapping
                     reviewed = reviewed_mapping(self.source_path(doc))
                     configured = next((s for s in (reviewed or {}).get('sheets', []) if s['name'] == name), None)
-                    # Display only the actual fingerprint-bound mapping, never the scanner guess.
-                    sheet['mapping'] = review_display_mapping(configured, sheet) if configured else {'sheet': name, 'fingerprint': sheet['fingerprint'], 'blocks': [], 'view_only': True}
+                    # Seed edits from actual verified metadata, never from the scanner guess.
+                    sheet['mapping'] = reviewed_sheet_mapping(configured, sheet) if configured else {'sheet': name, 'fingerprint': sheet['fingerprint'], 'blocks': []}
                 return sheet
         raise ValueError('工作表不存在。')
 
@@ -192,6 +192,13 @@ class ImportManager:
                     if base_sheets[sheet['name']].get('mapping'):
                         sheet['mapping'] = base_sheets[sheet['name']]['mapping']
         legacy = reviewed_mapping(path)
+        if legacy:
+            # Explicit user/template mappings supersede initial verified defaults.
+            # Other verified tables keep their saved records and original rules.
+            overrides = {s['name'] for s in doc['sheets'] if s['status'] in {'confirmed', 'template_ready'}}
+            if changed_sheet:
+                overrides.add(changed_sheet)
+            legacy = {**legacy, 'sheets': [s for s in legacy['sheets'] if s['name'] not in overrides]}
         legacy_names = {s['name'] for s in legacy['sheets']} if legacy else set()
         has_legacy = bool(legacy_names) and legacy_names.issubset({s['name'] for s in doc['sheets']})
         reuse_legacy = has_legacy and legacy_names.issubset(base_sheets)
@@ -209,7 +216,7 @@ class ImportManager:
             if has_legacy and not reuse_legacy:
                 with self._records() as (observations, issues):
                     try:
-                        parsed = parse_workbook(path, observations=observations, issues=issues)
+                        parsed = parse_workbook(path, mapping=legacy, observations=observations, issues=issues)
                     except ValueError as exc:
                         for sheet in doc['sheets']:
                             if sheet['name'] in legacy_names:
@@ -250,8 +257,6 @@ class ImportManager:
         from .generic_parser import parse_mapped_workbook, validate_mapping
         doc = self.get(import_id)
         sheet = self.sheet(import_id, mapping.get('sheet'))
-        if sheet['status'] == 'trusted_existing':
-            raise ValueError('现有专用规则已验证；请使用其他工作表测试通用映射。')
         mapping = validate_mapping(mapping, sheet)
         with self._records() as (observations, issues):
             parsed = parse_mapped_workbook(self.source_path(doc), [mapping], scan=doc,

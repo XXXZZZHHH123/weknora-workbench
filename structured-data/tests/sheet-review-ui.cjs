@@ -18,7 +18,7 @@ const mapping = {sheet:'数据汇总',fingerprint:'fixture-small',blocks:[
 const small={name:'数据汇总',rows:15,columns:8,status:'needs_review',layout:'mixed_regions',fingerprint:'fixture-small',mapping,regions:[],reasons:['发现三个独立区块，请核对。']};
 const large={name:'大数据表',rows:500000,columns:100,status:'needs_review',layout:'single_header',fingerprint:'fixture-large',mapping:{sheet:'大数据表',fingerprint:'fixture-large',blocks:[{name:'大表记录',date_mode:'date',date_column:'A',header_rows:[1],data_start_row:2,data_end_row:null,columns:[{column:'B',metric:'测试数值',unit:null,header_cells:['B1']}]}]},regions:[],reasons:[]};
 const chartOnly={name:'库存图',rows:1,columns:1,status:'needs_review',layout:'chart_or_image',fingerprint:'fixture-chart',mapping:{sheet:'库存图',fingerprint:'fixture-chart',blocks:[]},charts:{chart_count:2,image_count:1},regions:[],reasons:[]};
-const trusted={...small,name:'已核验规则表',status:'trusted_existing',mapping:{...mapping,sheet:'已核验规则表',view_only:true,blocks:[mapping.blocks[0]]}};
+const trusted={...small,name:'已核验规则表',status:'trusted_existing',mapping:{...mapping,sheet:'已核验规则表',blocks:[mapping.blocks[0]]}};
 const sheets=()=>[{...small,status:published?'confirmed':'needs_review'},large,chartOnly,trusted];
 const col=n=>{let s='';for(;n;n=Math.floor((n-1)/26))s=String.fromCharCode(65+(n-1)%26)+s;return s;};
 function view(sheet,sr,sc,nr,nc){
@@ -252,15 +252,15 @@ const server=http.createServer(async(req,res)=>{
     await page.locator('.sheet-tab[data-sheet-index="3"]').click();
     await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='已核验规则表');
     assert.equal(await page.locator('#blockEditor').isVisible(),true,'Verified rules still show their actual fields and sources');
-    assert.match(await page.locator('.editor-heading').innerText(),/只读/);
+    assert.match(await page.locator('.editor-heading').innerText(),/可调整/);
     assert.equal(await page.locator('.source-head .badge').innerText(),'已可查询');
     assert.equal(await page.locator('#previewBlockSample').innerText(),'查看记录');
     await page.locator('.sheet-processing-details>summary').click();
-    assert.match(await page.locator('.sheet-processing-details').innerText(),/规则复用.*只读/);
+    assert.match(await page.locator('.sheet-processing-details').innerText(),/规则复用.*可调整/);
     assert.match(await page.locator('.source-click-hint').innerText(),/左侧原表.*高亮/);
-    assert.equal(await page.locator('.mapping-block.selected [data-column-field="metric"]').first().isDisabled(),true);
-    assert.equal(await page.locator('#confirmMapping').count(),0,'A read-only inspector cannot publish scanner guesses');
-    assert.equal(await page.locator('#addMappingBlock').count(),0);
+    assert.equal(await page.locator('.mapping-block.selected [data-column-field="metric"]').first().isEnabled(),true);
+    assert.equal(await page.locator('#confirmMapping').isDisabled(),true,'Unchanged verified mappings do not need republishing');
+    assert.equal(await page.locator('#addMappingBlock').isEnabled(),true);
     const origins=await page.locator('.mapping-block.selected .field-origin').first().evaluate(el=>{const r=el.getBoundingClientRect();return {width:r.width,parent:el.closest('td').colSpan};});
     assert.equal(origins.parent,4,'Sources span the complete row below field inputs');
     await page.locator('.mapping-block.selected [data-source-cell="C3"]').click();
@@ -271,6 +271,18 @@ const server=http.createServer(async(req,res)=>{
     assert.equal(await page.locator('#resultPanel').isVisible(),true,'Read-only sheets also retain inline records after source navigation');
     assert.equal(await page.locator('dialog[open]').count(),0);
     await page.locator('#closeResults').click();
+    await page.locator('.mapping-block.selected [data-column-field="metric"]').first().fill('调整后的指标');
+    await page.locator('.mapping-block.selected [data-range-input]').fill('C4:D7');
+    await page.locator('.mapping-block.selected [data-map-action="apply-range"]').click();
+    assert.equal(await page.locator('#ackBlock').isChecked(),false);
+    assert.equal(await page.locator('#previewBlockSample').innerText(),'预览几条记录');
+    await page.locator('#previewBlockSample').click();await page.locator('#samplePreview .sample-records').waitFor();
+    assert.equal(requests.filter(r=>r.path.endsWith('/sample-preview')).at(-1).data.mapping.sheet,'已核验规则表');
+    await page.locator('#ackBlock').check();
+    assert.equal(await page.locator('#confirmMapping').isEnabled(),true);
+    await page.locator('#confirmMapping').click();
+    assert.match(await page.locator('#confirmList').innerText(),/A3:D7/);
+    await page.locator('#confirmBack').click();
     published=false;
     const host=await browser.newPage({viewport:{width:1500,height:1000}});
     await host.route('**/*',route=>new Promise((resolve,reject)=>{
