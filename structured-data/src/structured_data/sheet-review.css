@@ -20,7 +20,6 @@ main{max-width:1660px}
 #allSheets{background:transparent;color:#637d6b;font-size:12px;white-space:nowrap;padding:6px 8px;margin-bottom:3px;flex:none}
 .sheet-menu{position:absolute;top:100%;right:0;width:300px;max-height:400px;background:#fff;box-shadow:0 8px 24px #16333120;border:1px solid #dce5df;border-radius:8px;padding:12px;z-index:12;overflow:auto}
 .sheet-menu[hidden]{display:none}
-.sheet-menu input{width:100%;font-size:13px;padding:8px;margin-bottom:8px;min-width:0}
 .sheet-menu button{display:flex;justify-content:space-between;gap:8px;width:100%;background:transparent;color:#3b5d45;padding:8px;font-size:12px;text-align:left}
 .sheet-menu button:hover{background:#edf5ef}
 .sheet-menu small{font-size:10px;color:#84998b}
@@ -124,7 +123,6 @@ main{max-width:1660px}
 .block-facts>div{display:flex;justify-content:space-between;gap:7px;margin:4px 0}
 .block-facts>div>span{color:#94a598}
 .block-facts strong{font-weight:400;text-align:right}
-.block-sample{margin-top:10px;border-top:1px solid #e6eee7}
 .block-sample-content{font-size:11px;line-height:1.7;color:#81998a}
 #blockEditor .sample-records th,#blockEditor .sample-records td{width:auto;font-size:10px;padding:6px 3px;word-break:break-word}
 .sample-records small{display:block;color:#8ea091}
@@ -163,7 +161,13 @@ dialog p{font-size:13px;line-height:1.7;margin:0 0 10px}
 #confirmList{max-height:260px;overflow:auto;margin-bottom:10px}
 #confirmList small{display:block;color:#89a18f;font-size:11px}
 .review-focused{position:fixed!important;inset:10px;z-index:30;margin:0!important;max-width:none;overflow:auto;box-shadow:0 0 0 30px #16333170}
-.review-focused .review-panes{height:calc(100dvh - 365px);min-height:240px;max-height:none}
+.review-focused{display:flex;flex-direction:column}
+.review-focused>.row,.review-focused>.sheet-tabbar,.review-focused>h2{flex:none}
+.review-focused #sheetDetail{display:flex;flex-direction:column;flex:1;min-height:0}
+.review-focused .review-workspace{display:flex;flex-direction:column;flex:1;min-height:0}
+.review-focused .review-panes{height:auto;flex:1;min-height:240px;max-height:none}
+.review-focused .block-strip,.review-focused .review-footer{flex:none}
+.review-focused .review-footer{position:static}
 .review-focused>p,.review-focused #importSummary,.review-focused .review-explanation,.review-focused #draftNotice{display:none}
 .review-focused>h2{font-size:18px;margin-bottom:12px}
 .review-focused .sheet-tabbar{margin-top:10px}
@@ -179,3 +183,18 @@ dialog p{font-size:13px;line-height:1.7;margin:0 0 10px}
 .result-catalog{max-height:260px;overflow:auto}.result-selected{background:#edf4ff}
 .import-results-dialog table{font-size:12px}.import-results-dialog th{white-space:nowrap;position:sticky;top:0;z-index:1}.import-results-dialog h4{margin:16px 0 8px}
 .source-head #storedResults{padding:6px 9px;font-size:12px;white-space:nowrap}
+
+.sheet-controls{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:9px}
+.sheet-controls .sheet-filters{margin:0}
+.sheet-search-row{position:relative;display:flex;align-items:center;gap:10px}
+.sheet-search-row .sheet-menu{top:100%;margin-top:5px}
+.sheet-search-row label{font-size:12px;color:#637d6b;min-width:0;display:block}
+.sheet-search-row input{width:300px;max-width:70%;min-width:0;font-size:13px;padding:8px 10px}
+.editor-heading #previewBlockSample{font-size:11px;padding:6px 8px;white-space:nowrap}
+#samplePreview{flex:none;max-height:240px;overflow:auto;padding:10px 13px;border-bottom:1px solid #dce5df;background:#f4f8fc;color:#465d73}
+#samplePreview[hidden]{display:none}
+#samplePreview .sample-records{margin-top:6px}
+.review-feedback.error{border:1px solid #f2c6c6;border-radius:6px;background:#fff4f4;padding:10px 13px;margin:8px 13px;color:#a22e2e;font-size:13px}
+.review-feedback.error small{display:block;color:#805454;margin-top:5px}
+
+#samplePreview .sample-records th:last-child,#samplePreview .sample-records td:last-child{width:48px;white-space:nowrap;word-break:normal}

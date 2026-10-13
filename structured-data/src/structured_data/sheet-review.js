@@ -9,10 +9,12 @@
     ['#967dc6','#f3eefe','#967dc622','#967dc63a'],
     ['#64a897','#ebf7f2','#64a89722','#64a8973a']
   ];
-  const ui = { mapping:null, states:{}, selected:null, view:null, filter:'pending',
+  const ui = { mapping:null, states:{}, selected:null, view:null, filter:'all',
     request:0, controller:null, sheetController:null, jobController:null,
     checkSignature:null, mode:null, drag:null, selection:null, anchor:null, history:[],
     sample:null, sampleController:null, resultController:null, resultRequest:0, focusCell:null, restore:false, editable:false, previewMode:'table' };
+  function clearSample(){ui.sampleController?.abort();ui.sample=null;if($('samplePreview')){$('samplePreview').hidden=true;$('samplePreview').textContent='';}if($('previewBlockSample'))$('previewBlockSample').setAttribute('aria-expanded','false');}
+  mappingError = function(e){const el=$('mappingFeedback');if(!el){note(e.message);return;}el.className='review-feedback error';el.innerHTML=`<strong>本次处理未完成</strong><div>${esc(e.message)}</div><small>请按提示修改右侧字段或范围后重试。原文件和当前已导入版本仍然保留。</small>`;el.setAttribute('role','alert');el.scrollIntoView({block:'nearest'});};
   const copy = v => JSON.parse(JSON.stringify(v));
   const colName = n => { let s='';for(;n>0;n=Math.floor((n-1)/26))s=String.fromCharCode(65+(n-1)%26)+s;return s; };
   const colIndex = s => /^[A-Z]{1,3}$/.test(s||'') ? [...s].reduce((n,c)=>n*26+c.charCodeAt(0)-64,0) : 0;
@@ -104,12 +106,12 @@
     if($('mappingFeedback')){$('mappingFeedback').className='review-feedback';$('mappingFeedback').textContent=message;}
   }
   invalidateMapping = function() {
-    ui.sampleController?.abort();ui.sample=null;
+    clearSample();
     try {currentMapping();saveDraft();updateCardStates();renderLegend();renderGrid();}catch{}
     invalidateCheck();updateConfirmState();
   };
   setMapping = function(m) {
-    ui.sampleController?.abort();ui.sample=null;ui.selection=null;ui.drag=null;
+    clearSample();ui.selection=null;ui.drag=null;
     Object.values(ui.states).forEach(state=>{state.rangePending=false;});
     ui.mapping=ensureBlocks(copy(m));$('mappingEditor').value=JSON.stringify(ui.mapping,null,2);
     renderMappingForm(ui.mapping);invalidateCheck();saveDraft();renderLegend();renderGrid();updateConfirmState();
@@ -167,9 +169,9 @@
     const chartCount = s.charts?.chart_count || 0;
     const switcher = chartCount && !chartOnly ? `<div class="view-switch"><button type="button" data-preview-mode="table" aria-pressed="true">数据表</button><button type="button" data-preview-mode="charts" aria-pressed="false">图表 ${chartCount}</button></div>` : '';
     const strip=ui.editable?`<div class="block-strip"><div id="blockLegend" class="block-chips"></div><button id="addMappingBlock" class="text-button" type="button">+ 添加区块</button><button id="undoMapping" class="text-button" type="button">↶ 撤销</button></div>`:'<div id="blockLegend" hidden></div>';
-    const inspector=ui.editable?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对</strong><small>点击来源，对照左侧原表</small></div><div id="mappingForm"></div><div class="editor-footer"><label><input id="ackBlock" type="checkbox"><span id="ackBlockLabel">我已核对这个区块</span></label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div></aside>`:'<div id="mappingForm" hidden></div>';
+    const inspector=ui.editable?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对</strong><button id="previewBlockSample" class="secondary" type="button" aria-expanded="false" aria-controls="samplePreview">预览几条记录</button></div><div id="samplePreview" class="block-sample-content" role="status" hidden></div><div id="mappingForm"></div><div class="editor-footer"><label><input id="ackBlock" type="checkbox"><span id="ackBlockLabel">我已核对这个区块</span></label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div></aside>`:'<div id="mappingForm" hidden></div>';
     const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${currentImport?.dataset_id?'<button id="storedResults" class="secondary" type="button">查看已导入数据</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong><span>单击定位 · 拖动框选 · Shift 扩展 · Esc 取消</span></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
-    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="previewMapping" class="secondary" type="button">检查并预览</button><button id="suggestMapping" class="secondary" type="button">AI 辅助生成建议</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'已恢复这张表的本地草稿。完整检查需要重新执行。':'调整会自动保存在当前浏览器；切换工作表后可继续核对。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'这张表只有图，不需要确认单元格导入。源表导入后，曲线才会关联到已导入的单元格。':s.status==='trusted_existing'?'本表沿用已核验的专用解析规则，通用区块编辑不覆盖该规则。':'此工作表没有需要确认的数据区块。'}</p>`;
+    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 辅助生成建议</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'已恢复这张表的本地草稿。完整检查需要重新执行。':'调整会自动保存在当前浏览器；切换工作表后可继续核对。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'这张表只有图，不需要确认单元格导入。源表导入后，曲线才会关联到已导入的单元格。':s.status==='trusted_existing'?'本表沿用已核验的专用解析规则，通用区块编辑不覆盖该规则。':'此工作表没有需要确认的数据区块。'}</p>`;
     $('sheetDetail').innerHTML=`<div class="review-workspace">${strip}<div class="review-panes${ui.editable?'':' readonly'}">${source}${inspector}</div>${footer}<dialog id="resultDialog" class="import-results-dialog"><div class="result-heading"><h3 id="resultTitle"></h3><button id="closeResults" class="secondary" type="button">关闭</button></div><div id="resultContent"></div></dialog>${s.reasons?.length?`<details class="review-explanation"><summary>识别说明</summary><ul>${reasonsList(s.reasons)}</ul></details>`:''}<textarea id="mappingEditor" class="hidden">${esc(JSON.stringify(ui.mapping))}</textarea></div>`;
     $('mappingEditor').value = JSON.stringify(ui.mapping, null, 2);
     renderMappingForm(ui.mapping); renderLegend(); bindReviewEvents(); updateConfirmState();
@@ -197,7 +199,7 @@
           const remove=row.querySelector('[data-map-action="remove-column"]');if(remove){remove.textContent='×';remove.title='移除此数值列';remove.setAttribute('aria-label',`移除第 ${ci+1} 个数值列`);}
         });
       }
-      body.insertAdjacentHTML('beforeend',`<div class="block-facts">${blockFacts(b)}</div><div class="block-sample"><div class="fields-heading">原文件样本<button type="button" class="secondary" data-map-action="sample-block" data-block="${i}">预览几条记录</button></div><div class="block-sample-content" role="status">样本只用于核对；导入前仍检查全部选定数据。</div></div>`);
+      body.insertAdjacentHTML('beforeend',`<div class="block-facts">${blockFacts(b)}</div>`);
       body.querySelector('[data-map-action="remove-block"]')?.remove();
       panel.open=b._review_id===ui.selected;panel.classList.toggle('selected',panel.open);
       if(!ui.editable)body.querySelectorAll('input,select,button').forEach(el=>el.disabled=true);
@@ -240,12 +242,13 @@
     const b=selectedBlock(),state=b&&ui.states[b._review_id];
     if($('ackBlock')){$('ackBlock').checked=!!(state?.published||state?.checked);$('ackBlock').disabled=mappingBusy||!state?.enabled||!!state?.published;}
     if($('ackBlockLabel'))$('ackBlockLabel').textContent=state?.published?'已导入，修改后需重新核对':'我已核对这个区块';
+    if($('previewBlockSample'))$('previewBlockSample').disabled=mappingBusy||!state?.enabled;
     if($('excludeCurrentBlock')){$('excludeCurrentBlock').disabled=mappingBusy||!b;$('excludeCurrentBlock').textContent=state?.enabled?'这块不导入':'恢复导入';}
     updateFieldSources();
   }
   function selectedBlock(){return ui.mapping?.blocks.find(b=>b._review_id===ui.selected);}
   async function chooseBlock(id,locate=false) {
-    ui.sampleController?.abort();ui.sample=null;ui.selected=id;ui.mode=null;ui.drag=null;ui.selection=null;if($('blockEditor'))$('blockEditor').hidden=false;renderLegend();
+    clearSample();ui.selected=id;ui.mode=null;ui.drag=null;ui.selection=null;if($('blockEditor'))$('blockEditor').hidden=false;renderLegend();
     document.querySelectorAll('[data-block-id]').forEach(panel=>{const on=panel.dataset.blockId===id;panel.open=on;panel.classList.toggle('selected',on);});
     const b=selectedBlock();if(b&&locate){const e=extent(b),r=ui.view?.range;if(!r||e.start<r.start_row||e.start>r.end_row||e.left<r.start_col||e.left>r.end_col)await loadWindow(e.start,e.left);}
     renderGrid();updateCardStates();updateConfirmState();saveDraft();
@@ -259,7 +262,6 @@
         const sample=ui.view?.cells.find(cell=>cell.row===b.data_start_row&&cell.column===colIndex(c.column));
         if(raw)raw.textContent=sample?'原值：'+String(sample.display??sample.value??'空白'):'首行数据在当前窗口外';
       });
-      const host=panel.querySelector('.block-sample-content');if(host&&!ui.sample)host.textContent='样本只用于核对；导入前仍检查全部选定数据。';
     });
   }
   async function locateSource(cell) {
@@ -317,7 +319,7 @@
     const b=currentMapping().blocks[index];if(!b)return;
     ui.sampleController?.abort();const controller=new AbortController();ui.sampleController=controller;
     const id=b._review_id,signature=blockSignature(b),version=reviewVersion;
-    const panel=[...document.querySelectorAll('[data-block-id]')].find(p=>p.dataset.blockId===id),host=panel?.querySelector('.block-sample-content');if(!host)return;
+    const panel=[...document.querySelectorAll('[data-block-id]')].find(p=>p.dataset.blockId===id),host=$('samplePreview');if(!host)return;host.hidden=false;$('previewBlockSample').setAttribute('aria-expanded','true');
     if(panel.querySelector('[data-range-input]').value.toUpperCase().trim()!==dataRangeLabel(b)){host.textContent='请先应用输入的范围，再预览这个区块的样本。';return;}
     host.textContent='正在读取这个区块的少量原文件样本…';
     try {
@@ -325,8 +327,8 @@
       const result=await timedApi(`/api/imports/${encodeURIComponent(currentImport.import_id)}/sample-preview`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping})},controller);
       if(controller.signal.aborted||version!==reviewVersion||id!==ui.selected||signature!==blockSignature(selectedBlock()))return;
       const block=result.blocks?.[0]||{},catalog=Object.fromEntries((block.series||[]).map(s=>[s.series_id,s]));
-      ui.sample={id,signature};host.innerHTML=`<table class="sample-records"><thead><tr><th>时间 / 类别</th><th>字段／维度</th><th>数值</th><th>来源</th></tr></thead><tbody>${(block.sample||[]).slice(0,12).map(row=>`<tr><td>${esc(row.date||row.period||'无时间')}${row.category?'<small>'+esc(row.category)+'</small>':''}</td><td>${esc(catalog[row.series_id]?.metric||'对应指标')}<small>${esc(dimensionsText(catalog[row.series_id]?.dimensions)||'原列 '+(row.source_cell||'').replace(/[0-9]+$/,''))}</small></td><td>${row.value==null?'缺失':esc(row.value)}</td><td><button type="button" class="field-source" data-source-cell="${esc(row.source_cell)}">${esc(row.source_cell)}</button></td></tr>`).join('')}</tbody></table><small>${esc(result.notice||'仅展示少量样本，完整检查通过后才能导入。')}</small>`;
-    } catch(e){if(!controller.signal.aborted&&version===reviewVersion&&id===ui.selected)host.textContent=e.message;}
+      ui.sample={id,signature};host.innerHTML=`<strong>${esc(b.name||'当前区块')} · 原文件样本</strong>`+`<table class="sample-records"><thead><tr><th>时间 / 类别</th><th>字段／维度</th><th>数值</th><th>来源</th></tr></thead><tbody>${(block.sample||[]).slice(0,12).map(row=>`<tr><td>${esc(row.date||row.period||'无时间')}${row.category?'<small>'+esc(row.category)+'</small>':''}</td><td>${esc(catalog[row.series_id]?.metric||'对应指标')}<small>${esc(dimensionsText(catalog[row.series_id]?.dimensions)||'原列 '+(row.source_cell||'').replace(/[0-9]+$/,''))}</small></td><td>${row.value==null?'缺失':esc(row.value)}<small>${esc(catalog[row.series_id]?.unit||'原表未注明单位')}</small></td><td><button type="button" class="field-source" data-source-cell="${esc(row.source_cell)}">${esc(row.source_cell)}</button></td></tr>`).join('')}</tbody></table><small>${esc(result.notice||'仅展示少量样本，完整检查通过后才能导入。')}</small>`;
+    } catch(e){if(!controller.signal.aborted&&version===reviewVersion&&id===ui.selected){host.textContent=e.message;mappingError(e);}}
   }
   async function loadWindow(startRow,startCol) {
     if(!currentSheet||!currentImport)return;ui.controller?.abort();const controller=new AbortController();ui.controller=controller;
@@ -462,6 +464,8 @@
     $('closeResults').onclick=()=>$('resultDialog').close();
     $('resultDialog').onclose=()=>{ui.resultController?.abort();ui.resultRequest++;};
     if($('storedResults'))$('storedResults').onclick=()=>showStoredResults().catch(mappingError);
+    if($('previewBlockSample'))$('previewBlockSample').onclick=()=>{if(!$('samplePreview').hidden){clearSample();return;}previewBlock(ui.mapping.blocks.findIndex(b=>b._review_id===ui.selected)).catch(mappingError);};
+    if($('samplePreview'))$('samplePreview').onclick=e=>{const source=e.target.closest('[data-source-cell]');if(source)locateSource(source.dataset.sourceCell).catch(mappingError);};
     const grid=$('sheetGrid');
     if($('blockLegend'))$('blockLegend').onclick=e=>{const edit=e.target.closest('[data-edit-block]'),pick=edit||e.target.closest('[data-select-block]');if(pick)chooseBlock(edit?edit.dataset.editBlock:pick.dataset.selectBlock,true).then(()=>{if(edit)document.querySelector('.mapping-block.selected [data-column-field="metric"],.mapping-block.selected [data-column-field="period"]')?.focus();}).catch(mappingError);};
     $('mappingForm').onclick=e=>{
@@ -472,7 +476,7 @@
         const m=currentMapping(),index=+button.dataset.block,b=m.blocks[index],action=button.dataset.mapAction;
         if(action==='apply-range'){applyRange(index,parseRange(button.closest('.mapping-block').querySelector('[data-range-input]').value));return;}
         if(action==='draw-range'){startDraw('resize',b._review_id);return;}
-        if(action==='sample-block'){previewBlock(index).catch(mappingError);return;}
+
         rememberMapping();
         if(action==='remove-column')b.columns.splice(+button.dataset.column,1);
         if(action==='add-column')b.columns.push({column:'',metric:'',unit:null,header_cells:[]});
@@ -483,7 +487,7 @@
     $('mappingForm').onfocusin=e=>{if(e.target.matches('input,select'))rememberMapping();};
     $('mappingForm').oninput=e=>{
       if(e.target.hasAttribute('data-range-input')){
-        ui.sampleController?.abort();ui.sample=null;
+        clearSample();
         const panel=e.target.closest('[data-block-id]'),state=ui.states[panel.dataset.blockId],b=ui.mapping.blocks[+panel.dataset.block];state.checked=false;state.rangePending=e.target.value.toUpperCase().trim()!==dataRangeLabel(b);state.published=false;
         if(e.target.value.toUpperCase().trim()!==dataRangeLabel(b))e.target.dataset.pendingRange='true';else delete e.target.dataset.pendingRange;
         invalidateCheck('范围输入尚未应用，请先应用范围，再核对这个区块。');saveDraft();updateCardStates();renderLegend();updateConfirmState();return;
@@ -491,12 +495,12 @@
       if(e.target.tagName==='INPUT')try{syncFormMapping();}catch(err){mappingError(err);}
     };
     $('mappingForm').onchange=e=>{if(e.target.hasAttribute('data-range-input'))return;try{syncFormMapping();if(e.target.dataset.field==='layout')renderMappingForm(currentMapping());else updateDateSourceControls();}catch(err){mappingError(err);}};
-    if(ui.editable){$('mappingEditor').oninput=()=>{invalidateCheck();try{ui.mapping=ensureBlocks(JSON.parse($('mappingEditor').value));renderMappingForm(ui.mapping);saveDraft();renderLegend();renderGrid();}catch{$('mappingFeedback').textContent='高级设置尚不是完整有效的 JSON。';}updateConfirmState();};if($('addMappingBlock'))$('addMappingBlock').onclick=()=>startDraw('add');if($('previewMapping'))$('previewMapping').onclick=()=>previewMapping(true).catch(mappingError);if($('confirmMapping'))$('confirmMapping').onclick=()=>confirmMapping().catch(mappingError);if($('suggestMapping'))$('suggestMapping').onclick=()=>suggestMapping(false).catch(mappingError);}
+    if(ui.editable){$('mappingEditor').oninput=()=>{invalidateCheck();try{ui.mapping=ensureBlocks(JSON.parse($('mappingEditor').value));renderMappingForm(ui.mapping);saveDraft();renderLegend();renderGrid();}catch{$('mappingFeedback').textContent='高级设置尚不是完整有效的 JSON。';}updateConfirmState();};if($('addMappingBlock'))$('addMappingBlock').onclick=()=>startDraw('add');if($('confirmMapping'))$('confirmMapping').onclick=()=>confirmMapping().catch(mappingError);if($('suggestMapping'))$('suggestMapping').onclick=()=>suggestMapping(false).catch(mappingError);}
     if($('ackBlock'))$('ackBlock').onchange=()=>{
       const b=currentMapping().blocks.find(b=>b._review_id===ui.selected);if(!b)return;
       const rangeInput=document.querySelector('.mapping-block.selected [data-range-input]');
       if($('ackBlock').checked&&rangeInput.value.toUpperCase().trim()!==dataRangeLabel(b)){$('ackBlock').checked=false;mappingError(Error('请先应用输入的范围，再核对这个区块。'));return;}
-      if($('ackBlock').checked&&b.layout!=='matrix'&&b.columns.some(c=>!String(c.metric||'').trim())){$('ackBlock').checked=false;mappingError(Error('请先填写每个数值字段的指标名称。'));return;}
+      if($('ackBlock').checked&&b.layout!=='matrix'&&b.columns.some(c=>!String(c.metric||'').trim())){$('ackBlock').checked=false;mappingError(Error(`工作表「${currentSheet.name}」· ${b.name||'当前区块'}：${b.columns.filter(c=>!String(c.metric||'').trim()).map(c=>c.column||'未指定').join('、')} 列的指标名称为空。请对照原表填写右侧“指标名称”，再勾选已核对。`));return;}
       rememberMapping();ui.states[b._review_id].checked=$('ackBlock').checked;saveDraft();updateCardStates();renderLegend();updateConfirmState();
     };
     if($('excludeCurrentBlock'))$('excludeCurrentBlock').onclick=toggleIncluded;
@@ -552,8 +556,8 @@
     if($('undoMapping'))$('undoMapping').disabled=mappingBusy||!ui.history.length;
   };
   setMappingBusy = function(busy) {
-    mappingBusy=busy;document.querySelectorAll('#mappingForm input,#mappingForm select,#mappingForm button,#addMappingBlock,#mappingEditor,#saveTemplate,#suggestMapping,#confirmMapping,#confirmGo,#aiContinue,#previewMapping,#ackBlock,#excludeCurrentBlock,#undoMapping,#applySelection,#newBlockSelection,#cancelSelection').forEach(el=>{el.disabled=busy;});
-    for(const id of ['suggestMapping','confirmMapping','confirmGo','aiContinue','previewMapping'])if($(id))$(id).setAttribute('aria-busy',String(busy));updateCardStates();updateConfirmState();
+    mappingBusy=busy;document.querySelectorAll('#mappingForm input,#mappingForm select,#mappingForm button,#addMappingBlock,#mappingEditor,#saveTemplate,#suggestMapping,#confirmMapping,#confirmGo,#aiContinue,#previewBlockSample,#ackBlock,#excludeCurrentBlock,#undoMapping,#applySelection,#newBlockSelection,#cancelSelection').forEach(el=>{el.disabled=busy;});
+    for(const id of ['suggestMapping','confirmMapping','confirmGo','aiContinue','previewBlockSample'])if($(id))$(id).setAttribute('aria-busy',String(busy));updateCardStates();updateConfirmState();
   };
   async function scopedJob(id,version,onProgress) {
     const controller=new AbortController();ui.jobController=controller;
@@ -609,16 +613,19 @@
   $('aiContinue').onclick=()=>suggestMapping(true).catch(mappingError);
   $('confirmBack').onclick=()=>$('confirmDialog').close();
   $('confirmGo').onclick=()=>runConfirm();
-  $('sheetSearch').oninput=renderSheetMenu;
+  function openSheetMenu(){renderSheetMenu();$('sheetMenu').hidden=false;$('allSheets').setAttribute('aria-expanded','true');}
+  $('sheetSearch').oninput=openSheetMenu;
+  $('sheetSearch').onfocus=openSheetMenu;
+  $('sheetSearch').onkeydown=e=>{if(e.key==='Enter'){const first=$('sheetMenuList').querySelector('[data-sheet-index]');if(first){e.preventDefault();first.click();}}};
   if($('allSheets'))$('allSheets').onclick=()=>{const menu=$('sheetMenu');menu.hidden=!menu.hidden;$('allSheets').setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden){renderSheetMenu();$('sheetSearch').focus();}};
-  if($('sheetMenuList'))$('sheetMenuList').onclick=e=>{const b=e.target.closest('[data-sheet-index]');if(!b)return;$('sheetMenu').hidden=true;$('allSheets').setAttribute('aria-expanded','false');selectSheet(+b.dataset.sheetIndex).catch(noteError);};
+  if($('sheetMenuList'))$('sheetMenuList').onclick=e=>{const b=e.target.closest('[data-sheet-index]');if(!b)return;$('sheetMenu').hidden=true;$('allSheets').setAttribute('aria-expanded','false');$('sheetSearch').value='';selectSheet(+b.dataset.sheetIndex).catch(noteError);};
   document.querySelectorAll('[data-sheet-filter]').forEach(b=>b.onclick=()=>{ui.filter=b.dataset.sheetFilter;renderSheetList();});
   $('sheetList').onclick=e=>{const b=e.target.closest('[data-sheet-index]');if(b)selectSheet(+b.dataset.sheetIndex).catch(noteError);};
   function closeSheetMenu() {
     if($('sheetMenu'))$('sheetMenu').hidden=true;
     if($('allSheets'))$('allSheets').setAttribute('aria-expanded','false');
   }
-  document.addEventListener('pointerdown',e=>{if(!e.target.closest('#sheetMenu,#allSheets'))closeSheetMenu();});
+  document.addEventListener('pointerdown',e=>{if(!e.target.closest('#sheetMenu,#allSheets,#sheetSearch'))closeSheetMenu();});
   document.addEventListener('keydown',e=>{
     if(e.key==='Escape'){
       if(document.querySelector('dialog[open]'))return;

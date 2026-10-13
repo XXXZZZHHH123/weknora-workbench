@@ -146,3 +146,33 @@ def test_same_source_metric_retains_column_identity_or_explicit_business_dimensi
     m['blocks'][0]['columns'][0]['dimensions']={'年度':'2022/23'}
     m['blocks'][0]['columns'][1]['dimensions']={'年度':'2023/24'}
     assert len(validate_mapping(m,s)['blocks'][0]['columns'])==2
+
+
+@pytest.mark.parametrize('change,expected', [
+    ({'header_rows': []}, ('表头行为空', '填写原表的表头行号')),
+    ({'header_rows': [2]}, ('数据从第 2 行开始', '数据起始行移到表头之后')),
+    ({'data_end_row': 99}, ('99', '第 2 至 3 行', '修改结束行')),
+])
+def test_review_errors_identify_block_and_repair(tmp_path, change, expected):
+    p=book(tmp_path,[['日期','价格'],[datetime(2023,1,1),1],[datetime(2023,1,2),2]])
+    sheet=candidate(p)
+    mapping=deepcopy(sheet['mapping'])
+    mapping['blocks'][0].update(name='日度记录', **change)
+    with pytest.raises(ValueError) as caught:
+        validate_mapping(mapping,sheet)
+    message=str(caught.value)
+    assert f'工作表「{sheet["name"]}」' in message
+    assert '区块 1（日度记录）' in message
+    for text in expected:
+        assert text in message
+
+
+def test_empty_metric_identifies_real_column(tmp_path):
+    p=book(tmp_path,[['日期','价格'],[datetime(2023,1,1),1],[datetime(2023,1,2),2]])
+    sheet=candidate(p)
+    mapping=deepcopy(sheet['mapping'])
+    mapping['blocks'][0]['columns'][0]['metric']=''
+    with pytest.raises(ValueError) as caught:
+        validate_mapping(mapping,sheet)
+    assert 'B 列的指标名称不能为空' in str(caught.value)
+    assert '对照左侧原表表头' in str(caught.value)

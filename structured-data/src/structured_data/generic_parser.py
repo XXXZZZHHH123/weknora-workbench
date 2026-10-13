@@ -48,80 +48,86 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                 if key.startswith('_review'):
                     del block[key]
     used=set()
-    for b in blocks:
-        if not isinstance(b,dict):raise ValueError('区块必须是对象')
-        if b.get('layout')=='matrix':
-            from .matrix import validate_matrix
-            validate_matrix(b,sheet_scan)
-            for c in b['columns']:
-                ci=_column(c['column'],sheet_scan['columns']);start=b['data_start_row'];end=b['data_end_row']
-                if any(ci==x[0] and start<=x[2] and end>=x[1] for x in used):raise ValueError('矩阵与其他区块范围重叠')
-                used.add((ci,start,end))
-            continue
-        shared=b.get('date_mode')=='shared_cell'
-        undated=b.get('date_mode')=='none'
-        dc=None if shared or undated else _column(b.get('date_column'),sheet_scan['columns'])
-        if shared:
-            cell=b.get('date_cell','')
-            match=re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)',cell)
-            if not match or int(match.group(2))>sheet_scan['rows']:raise ValueError('共用日期必须填写原表内的日期单元格，例如 AG15')
-            _column(match.group(1),sheet_scan['columns'])
-            if b.get('data_end_row') is None:raise ValueError('共用日期区块必须明确结束行，不能延伸到整页末尾')
-        if b.get('category_column'):
-            _column(b['category_column'],sheet_scan['columns'])
-            if not isinstance(b.get('category_name','类别'),str) or not b.get('category_name','类别').strip():raise ValueError('类别名称不能为空')
-        if b.get('date_mode') not in ('date','excel_serial','shared_cell','custom','none','period'):
-            raise ValueError('请选择日期、自定义日期格式、期间标签或无时间字段；年度用期间标签，不转换成某一天')
-        if b.get('date_mode')=='custom' or shared and b.get('date_format'):_format_pattern(b.get('date_format',''))
-        if b.get('date_mode') in ('none','period') and b.get('data_end_row') is None:raise ValueError('无日期或期间标签表必须明确结束行')
-        start=b.get('data_start_row');end=b.get('data_end_row')
-        if type(start) is not int or not 1<=start<=sheet_scan['rows']:
-            raise ValueError('数据起始行超出范围')
-        if end is not None and (type(end) is not int or not start<=end<=sheet_scan['rows']):
-            raise ValueError('数据结束行超出范围')
-        headers=b.get('header_rows',[])
-        if not isinstance(headers,list) or not headers or any(type(r) is not int or not 1<=r<start for r in headers):
-            raise ValueError('表头行必须在数据起始行之前')
-        expectations=b.get('header_expectations',{})
-        if not isinstance(expectations,dict):raise ValueError('表头核对信息必须是对象')
-        for cell,expected in expectations.items():
-            match=re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)',cell) if isinstance(cell,str) else None
-            if not match or int(match.group(2)) not in headers or not isinstance(expected,str):raise ValueError('表头核对信息必须指向声明的表头行')
-            _column(match.group(1),sheet_scan['columns'])
-        columns=b.get('columns')
-        if not isinstance(columns,list) or not columns:raise ValueError('区块没有指标列')
-        for c in columns:
-            if not isinstance(c,dict):raise ValueError('指标列必须是对象')
-            ci=_column(c.get('column'),sheet_scan['columns'])
-            if b.get('category_column')==c.get('column'):raise ValueError('类别列不能同时作为数值指标列')
-            if ci==dc:raise ValueError('指标列不能与日期列相同')
-            key=(ci,start,end or sheet_scan['rows'])
-            if any(ci==prior[0] and start<=prior[2] and key[2]>=prior[1] for prior in used):
-                raise ValueError('同一指标列的数据范围重复或重叠')
-            used.add(key)
-            metric=c.get('metric')
-            if not isinstance(metric,str) or not metric.strip():raise ValueError('指标名称不能为空')
-            c['metric']=metric.strip()
-            if c.get('unit') is not None and (not isinstance(c['unit'],str) or not c['unit'].strip()):
-                raise ValueError('单位必须为空或非空字符串')
-            dims=c.get('dimensions',{})
-            if not isinstance(dims,dict) or any(not isinstance(k,str) or not isinstance(v,(str,int,float,bool)) for k,v in dims.items()):
-                raise ValueError('dimensions 必须是简单键值对象')
-            c['dimensions']=dims
-            expected=[f"{c['column']}{r}" for r in headers]
-            cells=c.get('header_cells',expected)
-            if not isinstance(cells,list) or any(not isinstance(cell,str) or not re.fullmatch('[A-Z]{1,3}[1-9][0-9]*',cell) for cell in cells):
-                raise ValueError('表头来源位置格式无效')
-            # A submitted rule cannot invent provenance outside its declared header.
-            for cell in cells:
-                mo=re.fullmatch('([A-Z]+)([0-9]+)',cell)
-                _column(mo.group(1),sheet_scan['columns'])
-                if int(mo.group(2)) not in headers:raise ValueError('表头来源位置不在声明的表头行内')
-            c['header_cells']=cells
-            if c.get('exchange_rate') is not None:
-                from .catalog_search import currency_pair
-                if currency_pair(c) is None:
-                    raise ValueError('汇率元数据须含不同的三字母 base_currency/quote_currency 和真实表头 evidence_cells')
+    for bi, b in enumerate(blocks):
+        try:
+            if not isinstance(b,dict):raise ValueError('区块必须是对象')
+            if b.get('layout')=='matrix':
+                from .matrix import validate_matrix
+                validate_matrix(b,sheet_scan)
+                for c in b['columns']:
+                    ci=_column(c['column'],sheet_scan['columns']);start=b['data_start_row'];end=b['data_end_row']
+                    if any(ci==x[0] and start<=x[2] and end>=x[1] for x in used):raise ValueError('矩阵与其他区块范围重叠')
+                    used.add((ci,start,end))
+                continue
+            shared=b.get('date_mode')=='shared_cell'
+            undated=b.get('date_mode')=='none'
+            dc=None if shared or undated else _column(b.get('date_column'),sheet_scan['columns'])
+            if shared:
+                cell=b.get('date_cell','')
+                match=re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)',cell)
+                if not match or int(match.group(2))>sheet_scan['rows']:raise ValueError('共用日期必须填写原表内的日期单元格，例如 AG15')
+                _column(match.group(1),sheet_scan['columns'])
+                if b.get('data_end_row') is None:raise ValueError('共用日期区块必须明确结束行，不能延伸到整页末尾')
+            if b.get('category_column'):
+                _column(b['category_column'],sheet_scan['columns'])
+                if not isinstance(b.get('category_name','类别'),str) or not b.get('category_name','类别').strip():raise ValueError('类别名称不能为空')
+            if b.get('date_mode') not in ('date','excel_serial','shared_cell','custom','none','period'):
+                raise ValueError('请选择日期、自定义日期格式、期间标签或无时间字段；年度用期间标签，不转换成某一天')
+            if b.get('date_mode')=='custom' or shared and b.get('date_format'):_format_pattern(b.get('date_format',''))
+            if b.get('date_mode') in ('none','period') and b.get('data_end_row') is None:raise ValueError('无日期或期间标签表必须明确结束行')
+            start=b.get('data_start_row');end=b.get('data_end_row')
+            if type(start) is not int or not 1<=start<=sheet_scan['rows']:
+                raise ValueError(f'数据起始行超出范围：当前填写 {start!r}，本表共 {sheet_scan["rows"]} 行。请在“修改时间与类别来源”中填写有效起始行。')
+            if end is not None and (type(end) is not int or not start<=end<=sheet_scan['rows']):
+                raise ValueError(f'数据结束行超出范围：当前填写 {end!r}，应在第 {start} 至 {sheet_scan["rows"]} 行之间。请修改结束行或重新框选数据范围。')
+            headers=b.get('header_rows',[])
+            if not isinstance(headers,list) or not headers:
+                raise ValueError('表头行为空：还没有指定指标名称所在的行。请展开“修改时间与类别来源”，填写原表的表头行号；不要填写数据行。')
+            if any(type(r) is not int or not 1<=r<start for r in headers):
+                raise ValueError(f'表头行必须在数据起始行之前：当前表头 {headers!r}，数据从第 {start} 行开始。请将表头设为原表指标名称所在行，或将数据起始行移到表头之后。')
+            expectations=b.get('header_expectations',{})
+            if not isinstance(expectations,dict):raise ValueError('表头核对信息必须是对象')
+            for cell,expected in expectations.items():
+                match=re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)',cell) if isinstance(cell,str) else None
+                if not match or int(match.group(2)) not in headers or not isinstance(expected,str):raise ValueError('表头核对信息必须指向声明的表头行')
+                _column(match.group(1),sheet_scan['columns'])
+            columns=b.get('columns')
+            if not isinstance(columns,list) or not columns:raise ValueError('区块没有指标列：尚未选择要保存的数值列。请添加数值列，或将不需要导入的区块设为“这块不导入”。')
+            for c in columns:
+                if not isinstance(c,dict):raise ValueError('指标列必须是对象')
+                ci=_column(c.get('column'),sheet_scan['columns'])
+                if b.get('category_column')==c.get('column'):raise ValueError('类别列不能同时作为数值指标列')
+                if ci==dc:raise ValueError(f'{c.get("column")} 列被同时选为日期和数值指标。请在“修改时间与类别来源”中指定真正的日期列，或从指标中移除日期列。')
+                key=(ci,start,end or sheet_scan['rows'])
+                if any(ci==prior[0] and start<=prior[2] and key[2]>=prior[1] for prior in used):
+                    raise ValueError(f'{c.get("column")} 列第 {start}–{end or sheet_scan["rows"]} 行与另一区块重复或重叠。同一单元格不能重复导入，请调整两个区块的范围，或关闭多余区块。')
+                used.add(key)
+                metric=c.get('metric')
+                if not isinstance(metric,str) or not metric.strip():raise ValueError(f'{c.get("column")} 列的指标名称不能为空。请对照左侧原表表头，在右侧“指标名称”中填写名称；原表没有名称时请先确认该列含义。')
+                c['metric']=metric.strip()
+                if c.get('unit') is not None and (not isinstance(c['unit'],str) or not c['unit'].strip()):
+                    raise ValueError(f'{c.get("column")} 列的单位填写无效。请按原表填写单位；原表没有注明时留空，不要只填写空格。')
+                dims=c.get('dimensions',{})
+                if not isinstance(dims,dict) or any(not isinstance(k,str) or not isinstance(v,(str,int,float,bool)) for k,v in dims.items()):
+                    raise ValueError('dimensions 必须是简单键值对象')
+                c['dimensions']=dims
+                expected=[f"{c['column']}{r}" for r in headers]
+                cells=c.get('header_cells',expected)
+                if not isinstance(cells,list) or any(not isinstance(cell,str) or not re.fullmatch('[A-Z]{1,3}[1-9][0-9]*',cell) for cell in cells):
+                    raise ValueError('表头来源位置格式无效')
+                # A submitted rule cannot invent provenance outside its declared header.
+                for cell in cells:
+                    mo=re.fullmatch('([A-Z]+)([0-9]+)',cell)
+                    _column(mo.group(1),sheet_scan['columns'])
+                    if int(mo.group(2)) not in headers:raise ValueError(f'表头来源 {cell} 不在已声明的表头行 {headers!r} 内。请在“修改时间与类别来源”中核对表头行号，或修正该指标的表头来源单元格。')
+                c['header_cells']=cells
+                if c.get('exchange_rate') is not None:
+                    from .catalog_search import currency_pair
+                    if currency_pair(c) is None:
+                        raise ValueError('汇率元数据须含不同的三字母 base_currency/quote_currency 和真实表头 evidence_cells')
+        except ValueError as exc:
+            label = b.get('name') if isinstance(b, dict) else None
+            raise ValueError(f"工作表「{sheet_scan['name']}」· 区块 {bi+1}{'（'+str(label)+'）' if label else ''}：{exc}") from exc
     from .mapping_identity import distinguish_source_columns
     distinguish_source_columns(m)
     return m
@@ -202,7 +208,7 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
             anchor_dates={}
             for bi,b in rowblocks:
                 for cell,expected in b.get('header_expectations',{}).items():
-                    if str(refvalues.get(cell))!=expected:raise ValueError(f'{name}!{cell} 区块表头已变化，模板不能直接复用，请重新确认')
+                    if str(refvalues.get(cell))!=expected:raise ValueError(f'{name}!{cell} 区块表头已变化：原规则为 {expected!r}，原文件实际为 {refvalues.get(cell)!r}。模板不能直接复用，请重新识别或核对该单元格后更新映射。')
                 if b['date_mode']=='shared_cell':
                     value=_date(refvalues.get(b['date_cell']),'custom' if b.get('date_format') else 'date',vw.epoch,b.get('date_format'))
                     if not value:raise ValueError(f'{name}!{b["date_cell"]} 不是完整日期，不能作为整个小表的日期')
@@ -286,7 +292,7 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                 result['issues'].append({'sheet':name,'cell':firsts[code],'severity':'warning','code':code,'count':count,'message':f'{label} 共{count}处，保留来源；不填零、不重算。'})
             if formula_count:result['issues'].append({'sheet':name,'cell':None,'severity':'warning','code':'cached_formula_values','message':f'{formula_count}个公式使用原文件缓存，未重算。'})
             for bi,b in rowblocks:
-                if not block_counts[bi]:raise ValueError(f'{name} 区块{bi+1}没有任何可导入记录')
+                if not block_counts[bi]:raise ValueError(f'{name} 区块{bi+1}没有任何可导入记录。请用“预览几条记录”检查所选范围是否包含有效数据；目录、空白或说明区块可设为“这块不导入”。')
             ranges=[]
             for b in m['blocks']:
                 cols=[column_index_from_string(c['column']) for c in b['columns']]

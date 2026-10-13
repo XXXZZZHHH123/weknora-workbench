@@ -56,7 +56,7 @@ def validate_matrix(b, sheet):
     if type(start) is not int or type(end) is not int or not 1<=start<=end<=sheet['rows']:
         raise ValueError('矩阵须填写明确且有效的数据起止行')
     headers=b.get('header_rows',[])
-    if not headers or any(type(r) is not int or not 1<=r<start for r in headers):raise ValueError('矩阵表头行必须在数据之前')
+    if not headers or any(type(r) is not int or not 1<=r<start for r in headers):raise ValueError(f'矩阵表头行必须在数据之前：当前表头 {headers!r}，数据从第 {start} 行开始。请填写原表期间或版本标签所在行，且放在数据起始行之前。')
     if not isinstance(b.get('columns'),list) or not b['columns']:raise ValueError('矩阵至少需要一列期间或版本')
     seen=set();cols=set()
     for c in b['columns']:

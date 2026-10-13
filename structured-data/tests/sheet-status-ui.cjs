@@ -27,6 +27,7 @@ const pending={...imported,name:'待核对表',status:'needs_review',mapping:{..
   assert.equal(await page.locator('.sheet-tab[aria-pressed="true"] .sheet-state.pending').count(),1);
   await page.locator('#allSheets').click();await page.locator('#sheetMenuList [data-sheet-index="1"]').click();
   await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='已导入表'&&document.querySelector('#ackBlock')?.disabled);
+  await page.locator('[data-sheet-filter="pending"]').click();
   assert.equal(await page.locator('[data-sheet-filter="pending"]').getAttribute('aria-pressed'),'true');
   assert.equal(await page.locator('.sheet-tab[aria-pressed="true"] .sheet-state.ready').count(),1,'The selected imported sheet remains visible and green under the pending filter');
   assert.equal(await page.locator('.sheet-tab .sheet-state.pending').count(),1,'Other pending sheets remain yellow');
