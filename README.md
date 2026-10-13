@@ -79,6 +79,33 @@ Docker 项目名 `weknora-eval`、`weknora-structured` 保留以复用现有数�
 
 网页：`http://127.0.0.1:18080`；集成工作台：`http://127.0.0.1:18080/platform/structured-data`。
 
+### Linux / WSL 原生本地运行
+
+本工作区已安装 `.build/tools/` 中的 Go、Node 和 SQLite 头文件、根目录 `.venv` 及前端依赖。使用 SQLite 和 systemd 用户服务运行时，从根目录执行：
+
+```sh
+uv pip install --python .venv/bin/python -r commodity-research/requirements.txt -e ./commodity-research
+bash scripts/build-local.sh
+bash scripts/stop-local.sh
+bash scripts/start-local.sh
+```
+
+构建脚本每次强制检查前端类型并重新编译后端和前端；两者构建成功后替换运行产物，旧产物保存在 `.build/backups/`。当前构建的提交号、时间和校验值记录在 `.build/build-info.json`。仅执行 `start-local.sh` 会复用已有产物，已运行的服务也会继续运行；源码修改后使用上述构建、停止和启动顺序。
+
+若要排除旧编译缓存的影响，先停止项目服务，再执行全量重建：
+
+```sh
+bash scripts/stop-local.sh
+bash scripts/build-local.sh --clean
+bash scripts/start-local.sh
+```
+
+`--clean` 使用空的 Go 缓存并强制重新编译全部依赖，前端重新检查类型和生成生产包；成功后保留新的缓存，旧缓存随旧产物一起备份。脚本用文件锁防止多个终端同时构建。停止项目服务可以降低构建时的总内存占用，无需关闭 WSL。
+
+构建通过 systemd 用户 scope 限制资源：内存软阈值 3.5 GiB、硬上限 4 GiB、swap 上限 1 GiB、CPU 配额 2 核；Go 编译并发为 1，Node 堆上限为 3 GiB。达到硬上限时构建任务可能失败，已有运行产物仍保留。
+
+本地环境配置在 `.private/local.env`，账号在 `.private/accounts.json`，WeKnora 数据库在 `.private/weknora/`，结构化数据在 `structured-data/data/`；运行日志在 `logs/`。启动脚本同时运行商品研究服务，其空间数据库保存在 `.private/commodity-research/`，内部服务签名密钥保存在 `.private/research-service-token`。研究服务使用 18083 端口，经 18080 的 `/research/` 代理访问；表格服务使用 18082 端口，经 `/structured/` 代理访问。本地预览不启动自动取数调度。修改 Python 后停止并重新启动即可加载当前源码。网页地址与上方相同，资料中心入口为 `http://127.0.0.1:18080/platform/materials`。
+
 ## CI/CD 与服务器部署
 
 GitHub Actions 在 PR 和 main 更新时执行检查；main 检查通过后构建 linux/amd64 镜像并发布部署包。Go 依赖保存在可复用的 Docker 层，编译缓存单独跨构建保存；依赖清单不变时无需每次重新下载整套 Go 模块。

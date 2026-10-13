@@ -51,6 +51,8 @@ const DEV_PROXY_TARGET =
   process.env.VITE_DEV_PROXY_TARGET ||
   process.env.FRONTEND_BACKEND_URL ||
   'http://localhost:8080'
+const STRUCTURED_PROXY_TARGET =
+  process.env.VITE_STRUCTURED_PROXY_TARGET || 'http://127.0.0.1:18082'
 
 function resolveVueOfficePptxEntry(): string {
   try {
@@ -139,6 +141,13 @@ export default defineConfig({
         timeout: 300_000,
         proxyTimeout: 300_000,
       },
+      '/structured/': {
+        target: STRUCTURED_PROXY_TARGET,
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/structured/, ''),
+        timeout: 300_000,
+        proxyTimeout: 300_000,
+      },
       '/mcp/': {
         target: DEV_PROXY_TARGET,
         changeOrigin: true,
@@ -177,6 +186,13 @@ export default defineConfig({
         target: process.env.VITE_RESEARCH_PROXY_TARGET || 'http://127.0.0.1:8765',
         changeOrigin: false,
         rewrite: (path) => path.replace(/^\/research/, ''),
+        timeout: 300_000,
+        proxyTimeout: 300_000,
+      },
+      '/structured/': {
+        target: STRUCTURED_PROXY_TARGET,
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/structured/, ''),
         timeout: 300_000,
         proxyTimeout: 300_000,
       },

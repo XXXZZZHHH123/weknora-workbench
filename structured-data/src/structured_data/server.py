@@ -14,7 +14,7 @@ import inspect
 from typing import get_type_hints
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -24,6 +24,7 @@ from starlette.concurrency import run_in_threadpool
 from .store import DataStore, dump
 from .imports import ImportManager
 from .workspaces import WorkspaceRegistry, Identity, current_identity
+from .review_worker import run_review_task
 
 MAX_UPLOAD = 100 * 1024 * 1024
 
@@ -74,6 +75,7 @@ def create_app(data_dir: str | Path | None = None):
     jobs: dict[str, dict] = {}
     job_lock = threading.Lock()
     import_lock = registry.proxy('import_lock')
+    sheet_view_lock = threading.BoundedSemaphore(1)
     hosts = ["127.0.0.1:*", "localhost:*", "structured-data:*", "cotton-data:*", "host.docker.internal:*"]
     origins = ["http://127.0.0.1:*", "http://localhost:*"]
     if public_authority:
@@ -295,7 +297,7 @@ def create_app(data_dir: str | Path | None = None):
         if host not in {"127.0.0.1", "localhost", "structured-data", "cotton-data", "host.docker.internal", "testserver"} and not (public_authority and authority == public_authority):
             return JSONResponse({"detail": "Host not allowed"}, status_code=403)
         path = request.url.path
-        if path in {"/", "/health", "/login", "/api/ui-config"}:
+        if path in {"/", "/health", "/login", "/api/ui-config", "/sheet-review.js", "/sheet-review.css"}:
             return await call_next(request)
         identity = None
         signed = path in {'/api/tools/read', '/api/research/export'} or path.startswith('/api/research/source/')
@@ -345,6 +347,14 @@ def create_app(data_dir: str | Path | None = None):
     @app.get("/")
     def index():
         return FileResponse(Path(__file__).with_name("index.html"))
+
+    @app.get("/sheet-review.js")
+    def sheet_review_script():
+        return FileResponse(Path(__file__).with_name("sheet-review.js"), media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/sheet-review.css")
+    def sheet_review_styles():
+        return FileResponse(Path(__file__).with_name("sheet-review.css"), media_type="text/css", headers={"Cache-Control": "no-cache"})
 
     @app.get("/health")
     def health():
@@ -433,7 +443,7 @@ def create_app(data_dir: str | Path | None = None):
 
     def run_import(job_id: str, path: Path):
         try:
-            result = manager.ingest(path)
+            result = run_review_task(registry.directory(), "import", path=path)
             with job_lock:
                 jobs[job_id].update(status='completed', result=result)
         except Exception as exc:
@@ -485,13 +495,58 @@ def create_app(data_dir: str | Path | None = None):
         return {"imports": manager.list()}
 
     @app.get("/api/imports/{import_id}")
-    def import_review(import_id: str):
+    def import_review(import_id: str, summary_only: bool = False):
         doc = manager.get(import_id)
-        return {k: v for k, v in doc.items() if k != "source_path"}
+        result = {k: v for k, v in doc.items() if k != "source_path"}
+        if summary_only:
+            fields = {"name", "rows", "columns", "status", "layout", "fingerprint", "reasons", "template_status"}
+            briefs = []
+            for sheet in doc["sheets"]:
+                item = {k: v for k, v in sheet.items() if k in fields}
+                item["block_count"] = len((sheet.get("mapping") or {}).get("blocks") or [])
+                charts = sheet.get("charts") or {}
+                item["chart_count"] = charts.get("chart_count") or 0
+                item["image_count"] = charts.get("image_count") or 0
+                briefs.append(item)
+            result["sheets"] = briefs
+        return result
 
     @app.get("/api/imports/{import_id}/sheet")
     def sheet_review(import_id: str, name: str):
         return manager.sheet(import_id, name)
+
+    @app.get("/api/imports/{import_id}/sheet-view")
+    async def sheet_view(
+        import_id: str, name: str,
+        start_row: int = Query(1, ge=1, le=1048576),
+        start_col: int = Query(1, ge=1, le=16384),
+        row_count: int = Query(60, ge=1, le=160),
+        col_count: int = Query(24, ge=1, le=64),
+    ):
+        from .sheet_view import read_sheet_view
+        manager.sheet(import_id, name)
+        if not sheet_view_lock.acquire(blocking=False):
+            raise HTTPException(409, "正在读取原表，请稍后再查看其他区域。")
+        try:
+            doc = manager.get(import_id)
+            return await run_in_threadpool(
+                read_sheet_view, manager.source_path(doc), name,
+                start_row, start_col, row_count, col_count,
+            )
+        finally:
+            sheet_view_lock.release()
+
+    @app.post("/api/imports/{import_id}/sample-preview")
+    async def sample_preview(import_id: str, body: MappingRequest):
+        from .review_samples import preview_mapping_samples
+        sheet = manager.sheet(import_id, body.mapping.get("sheet"))
+        if not sheet_view_lock.acquire(blocking=False):
+            raise HTTPException(409, "正在读取原表，请稍后再查看样本。")
+        try:
+            doc = manager.get(import_id)
+            return await run_in_threadpool(preview_mapping_samples, manager.source_path(doc), sheet, body.mapping)
+        finally:
+            sheet_view_lock.release()
 
     @app.post('/api/imports/{import_id}/rescan')
     async def rescan(import_id: str):
@@ -500,17 +555,41 @@ def create_app(data_dir: str | Path | None = None):
             raise HTTPException(409,'已有导入或确认任务，请等待完成。')
         try:
             doc=manager.get(import_id)
-            return await run_in_threadpool(manager.ingest,manager.source_path(doc))
+            return await run_in_threadpool(run_review_task, registry.directory(), "import", path=manager.source_path(doc))
         finally:
             import_lock.release()
 
     @app.post("/api/imports/{import_id}/preview")
-    async def preview(import_id: str, body: MappingRequest):
-        return await run_in_threadpool(manager.preview, import_id, body.mapping)
+    async def preview(import_id: str, body: MappingRequest, background: bool = False):
+        manager.sheet(import_id, body.mapping.get("sheet"))
+        if not import_lock.acquire(blocking=False):
+            raise HTTPException(409, "已有导入或完整检查任务，请等待完成。")
+        if background:
+            job_id = uuid.uuid4().hex
+            with job_lock:
+                jobs[job_id] = {"id": job_id, "tenant_id": current_identity.get().tenant_id, "status": "processing", "stage": "检查选定区块的全部数据"}
+            context = contextvars.copy_context()
+            threading.Thread(target=context.run, args=(run_preview, job_id, import_id, body), daemon=True).start()
+            return {"id": job_id, "status": "processing"}
+        try:
+            return await run_in_threadpool(run_review_task, registry.directory(), "preview", import_id=import_id, mapping=body.mapping)
+        finally:
+            import_lock.release()
+
+    def run_preview(job_id, import_id, body):
+        try:
+            result = run_review_task(registry.directory(), "preview", import_id=import_id, mapping=body.mapping)
+            with job_lock:
+                jobs[job_id].update(status="completed", result=result)
+        except Exception as exc:
+            with job_lock:
+                jobs[job_id].update(status="failed", error=str(exc))
+        finally:
+            import_lock.release()
 
     def run_confirm(job_id, import_id, body):
         try:
-            result = manager.confirm(import_id, body.mapping, body.save_template)
+            result = run_review_task(registry.directory(), "confirm", import_id=import_id, mapping=body.mapping, save_template=body.save_template)
             with job_lock:
                 jobs[job_id].update(status='completed', result=result)
         except Exception as exc:
