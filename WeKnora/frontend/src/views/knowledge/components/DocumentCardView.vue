@@ -9,6 +9,7 @@ import DocumentActionMenu from './DocumentActionMenu.vue';
 import FolderPickerMenu, { type FolderOption } from './FolderPickerMenu.vue';
 import KnowledgeProcessingTimeline from '@/components/knowledge-processing-timeline.vue';
 import { shownStall } from '@/utils/knowledgeProcessingStall';
+import { excelSourceExtension, isExcelSource } from '../excelSource';
 
 interface KnowledgeCard {
   id: string;
@@ -65,7 +66,7 @@ const emit = defineEmits<{
   (e: 'open', item: KnowledgeCard): void;
   (e: 'toggle-checkbox', id: string, checked: boolean, ctx?: { e?: Event }): void;
   (e: 'menu-visible-change', visible: boolean, item: KnowledgeCard): void;
-  (e: 'action', action: 'download' | 'edit' | 'view-trace' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'batch-manage' | 'delete', item: KnowledgeCard): void;
+  (e: 'action', action: 'download' | 'edit' | 'view-trace' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'batch-manage' | 'delete' | 'structured-parse', item: KnowledgeCard): void;
   (e: 'tags-changed', payload?: { deletedTagId?: string }): void;
   (e: 'open-folder', path: string): void;
   (e: 'move-to-folder', item: KnowledgeCard, folderPath: string): void;
@@ -343,6 +344,10 @@ const handleAction = (action: 'download' | 'edit' | 'view-trace' | 'reparse' | '
           </div>
           <button type="button" class="card-content-title" :title="item.file_name"
             @click.stop="onCardClick(item)">{{ item.file_name }}</button>
+          <t-button v-if="canMutateKnowledge && isExcelSource(item)" variant="text" size="small"
+            :disabled="excelSourceExtension(item) !== 'xlsx'"
+            :title="excelSourceExtension(item) === 'xls' ? t('knowledgeBase.structuredXlsNotice') : t('knowledgeBase.excelSourceHint')"
+            @click.stop="emit('action', 'structured-parse', item)">{{ t('knowledgeBase.structuredParse') }}</t-button>
           <div v-if="(canEdit || canDownload) && batchMode" class="card-nav-check" @click.stop>
             <t-checkbox
               class="card-select-checkbox"
@@ -508,6 +513,10 @@ const handleAction = (action: 'download' | 'edit' | 'view-trace' | 'reparse' | '
           >
             <t-icon name="chart-line" />
           </button>
+        </div>
+        <div v-else-if="item.parse_status === 'stored'" class="card-analyze">
+          <t-icon name="file" class="card-analyze-loading" />
+          <span class="card-analyze-txt">{{ t('knowledgeBase.statusStored') }}</span>
         </div>
         <div v-else-if="item.parse_status === 'failed'" class="card-analyze failure card-analyze-trace">
           <t-icon name="close-circle" class="card-analyze-loading failure"></t-icon>

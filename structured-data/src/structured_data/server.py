@@ -40,6 +40,11 @@ class SuggestRequest(BaseModel):
     sheet: str
 
 
+class NativeImportRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    source_knowledge_id: str = Field(min_length=1, max_length=128, pattern=r'^[A-Za-z0-9][A-Za-z0-9_-]*$')
+
+
 def create_app(data_dir: str | Path | None = None):
     public_origin = os.environ.get("STRUCTURED_PUBLIC_ORIGIN", "").rstrip("/")
     public_authority = ""
@@ -401,6 +406,7 @@ def create_app(data_dir: str | Path | None = None):
                 origin = request.headers.get("origin", "")
                 if origin != expected_origin(request):
                     return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
+            request.state.verified_authorization = authorization
         marker = current_identity.set(identity)
         try:
             return await call_next(request)
@@ -515,9 +521,12 @@ def create_app(data_dir: str | Path | None = None):
     def query(dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, offset: int = 0):
         return store.query_series(store.select_dataset(dataset_id), series_id, start_date, end_date, operation, limit, period, offset=offset)
 
-    def run_import(job_id: str, path: Path):
+    def run_import(job_id: str, path: Path, native_source=None):
         try:
             result = run_review_task(registry.directory(), "import", path=path)
+            if native_source:
+                manager.bind_native_source(result['import_id'], native_source)
+                result['source_knowledge_id'] = native_source['source_knowledge_id']
             with job_lock:
                 jobs[job_id].update(status='completed', result=result)
         except Exception as exc:
@@ -527,6 +536,51 @@ def create_app(data_dir: str | Path | None = None):
             path.unlink(missing_ok=True)
             path.parent.rmdir()
             import_lock.release()
+
+    @app.post('/api/import-knowledge')
+    async def import_knowledge(body: NativeImportRequest, request: Request):
+        from .native_import import download_source, load_source
+        identity = current_identity.get()
+        authorization = request.state.verified_authorization
+        native = await load_source(body.source_knowledge_id, authorization, identity, MAX_UPLOAD)
+        existing = await run_in_threadpool(manager.find_native_source, native)
+        if existing:
+            return {'status': 'completed', 'reused': True, 'source_knowledge_id': body.source_knowledge_id,
+                    'result': {**existing, 'source_knowledge_id': body.source_knowledge_id}}
+        with job_lock:
+            for job in jobs.values():
+                if (job.get('tenant_id') == identity.tenant_id
+                        and job.get('knowledge_base_id') == identity.knowledge_base_id
+                        and job.get('native_source') == native and job['status'] == 'processing'):
+                    return {'id': job['id'], 'status': 'processing', 'reused': True,
+                            'source_knowledge_id': body.source_knowledge_id}
+        if not import_lock.acquire(blocking=False):
+            raise HTTPException(409, '已有导入任务，请等待完成。')
+        job_id = uuid.uuid4().hex
+        uploads = store.root / 'uploads' / job_id
+        path = uploads / native['file_name']
+        try:
+            uploads.mkdir(parents=True)
+            with job_lock:
+                jobs[job_id] = {'id': job_id, 'tenant_id': identity.tenant_id,
+                    'knowledge_base_id': identity.knowledge_base_id, 'status': 'processing',
+                    'source_knowledge_id': body.source_knowledge_id, 'native_source': native,
+                    'stage': '读取并校验当前知识库原件'}
+            await download_source(native, path, authorization, identity, MAX_UPLOAD)
+            with job_lock:
+                jobs[job_id]['stage'] = '扫描本知识库原件并导入结构明确的表，不调用模型'
+            context = contextvars.copy_context()
+            threading.Thread(target=context.run, args=(run_import, job_id, path, native), daemon=True).start()
+        except Exception as exc:
+            with job_lock:
+                if job_id in jobs:
+                    jobs[job_id].update(status='failed', error=getattr(exc, 'detail', '原件读取失败，请稍后重试。'))
+            path.unlink(missing_ok=True)
+            if uploads.is_dir():
+                uploads.rmdir()
+            import_lock.release()
+            raise
+        return {'id': job_id, 'status': 'processing', 'source_knowledge_id': body.source_knowledge_id}
 
     @app.post("/api/import")
     async def upload(file: UploadFile):

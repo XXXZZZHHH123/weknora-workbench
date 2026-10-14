@@ -2,14 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildWorkspaceNavigation } from './workspaceNavigation.ts'
 
-test('global lists show real resources and send knowledge bases and workbenches to their preview', () => {
+test('global lists open knowledge bases directly and keep workbench preview', () => {
   const result = buildWorkspaceNavigation(
     [{ id: 'project-a', name: '项目 A' }],
     [{ id: 'kb-a', name: '知识库 A' }],
     [{ id: 'wb-a', name: '工作台 A' }],
   )
   assert.equal(result.projects[0].path, '/platform/projects/project-a')
-  assert.equal(result.knowledgeBases[0].path, '/platform/knowledge-bases/kb-a/preview')
+  assert.equal(result.knowledgeBases[0].path, '/platform/knowledge-bases/kb-a')
   assert.equal(result.workbenches[0].path, '/platform/research-workbenches/wb-a/preview')
 })
 
@@ -39,6 +39,6 @@ test('duplicate and empty identifiers are removed without hiding differently nam
 test('resource identifiers cannot inject extra path segments or query arguments', () => {
   const id = 'a/b?redirect=elsewhere#anchor'
   const result = buildWorkspaceNavigation([], [{ id, name: '<script>title</script>' }], [])
-  assert.equal(result.knowledgeBases[0].path, `/platform/knowledge-bases/${encodeURIComponent(id)}/preview`)
+  assert.equal(result.knowledgeBases[0].path, `/platform/knowledge-bases/${encodeURIComponent(id)}`)
   assert.equal(result.knowledgeBases[0].title, '<script>title</script>')
 })

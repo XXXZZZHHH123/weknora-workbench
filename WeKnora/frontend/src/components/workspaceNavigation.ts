@@ -30,7 +30,7 @@ export function buildWorkspaceNavigation(
 ) {
   return {
     projects: resourceLeaves(projects, '/platform/projects'),
-    knowledgeBases: resourceLeaves(knowledgeBases, '/platform/knowledge-bases', true),
+    knowledgeBases: resourceLeaves(knowledgeBases, '/platform/knowledge-bases'),
     workbenches: resourceLeaves(workbenches, '/platform/research-workbenches', true),
   }
 }

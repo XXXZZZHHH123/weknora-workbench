@@ -50,12 +50,12 @@ import DocumentListView from './components/DocumentListView.vue';
 import DocumentCardView from './components/DocumentCardView.vue';
 import DocumentBatchBar from './components/DocumentBatchBar.vue';
 import KbUploadSourceDropdown from './components/KbUploadSourceDropdown.vue';
+import { isExcelFilename, isExcelSource, sameNativeUploadScope, structuredSourceLocation } from './excelSource';
 import KbFolderTree from './components/KbFolderTree.vue';
 import BatchTagDialog from './components/BatchTagDialog.vue';
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess';
 import { useUploadConfirmStore, type UploadConfirmResult } from '@/stores/uploadConfirm';
 import { useUploadTasksStore } from '@/stores/uploadTasks';
-import { offerIntake } from '@/views/materials/intake';
 import WikiBrowser from './wiki/WikiBrowser.vue';
 import { getWikiStats } from '@/api/wiki';
 import {
@@ -202,7 +202,8 @@ const supportedFileTypes = computed<Set<string>>(() => {
     for (const ft of r.file_types) ruleMap.set(ft, r.engine)
   }
 
-  const available = new Set<string>()
+  // Excel originals need storage, not a configured DocReader engine.
+  const available = new Set<string>(['xlsx', 'xls'])
   const availableEngineNames = new Set(
     engines.filter(e => e.Available !== false).map(e => e.Name)
   )
@@ -646,6 +647,7 @@ const fileTypeOptions = computed(() => [
 const selectedParseStatus = ref('');
 const parseStatusOptions = computed(() => [
   { label: t('knowledgeBase.allParseStatuses'), value: '' },
+  { label: t('knowledgeBase.statusStored'), value: 'stored' },
   { label: t('knowledgeBase.parseStatusPending'), value: 'pending' },
   { label: t('knowledgeBase.parseStatusProcessing'), value: 'processing' },
   { label: t('knowledgeBase.parseStatusCompleted'), value: 'completed' },
@@ -1726,6 +1728,13 @@ const handleUploadConfirmResult = async (result: UploadConfirmResult) => {
   const urls = result.urls || [];
   const processConfig = result.processConfig;
   const tagIds = result.tagIds || [];
+  if (!canEdit.value) return;
+  if (urls.length) {
+    MessagePlugin.warning(t('knowledgeBase.nativeFileSourcesOnly'));
+    return;
+  }
+  // The confirmation dialog can add files after it opens; use the final batch.
+  if (files.some(file => !isExcelFilename(file.name)) && !ensureDocumentKbReady()) return;
 
   if (files.length > 0) {
     enqueueUploads(files, {
@@ -1735,14 +1744,19 @@ const handleUploadConfirmResult = async (result: UploadConfirmResult) => {
     });
   }
 
-  for (const url of urls) {
-    await executeUrlImport(url, processConfig, tagIds);
-  }
 };
 
 const openUploadConfirmDialog = async (files: File[], urls: string[] = []) => {
   if (!kbInfo.value) return;
   if (files.length === 0 && urls.length === 0) return;
+  const captureScope = () => ({ userId: String(authStore.user?.id || ''),
+    tenantId: String(authStore.effectiveTenantId || ''),
+    knowledgeBaseId: String(router.currentRoute.value.params.kbId || '') });
+  const originalScope = { ...captureScope(), knowledgeBaseId: kbId.value };
+  if (!sameNativeUploadScope(originalScope, captureScope())) {
+    MessagePlugin.warning(t('knowledgeBase.uploadScopeChanged'));
+    return;
+  }
   try {
     const result = await uploadConfirmStore.open({
       mode: 'file',
@@ -1752,11 +1766,16 @@ const openUploadConfirmDialog = async (files: File[], urls: string[] = []) => {
       urls,
       acceptFileTypes: acceptFileTypes.value,
       supportedFileTypes: [...supportedFileTypes.value],
+      allowURL: false,
       // Pre-fill the destination with the folder being browsed; the dialog shows
       // it and lets the user pick another folder (or the root) before confirming.
       targetFolder: selectedFolderPath.value,
       folderOptions: folderOptions.value,
     });
+    if (!sameNativeUploadScope(originalScope, captureScope())) {
+      MessagePlugin.warning(t('knowledgeBase.uploadScopeChanged'));
+      return;
+    }
     await handleUploadConfirmResult(result);
   } catch {
     // cancelled
@@ -1766,17 +1785,8 @@ const openUploadConfirmDialog = async (files: File[], urls: string[] = []) => {
 const handleUploadSourceFiles = (files: File[]) => {
   if (!canEdit.value) return;
   if (files.length === 0) return;
-  openMaterials('upload', files);
-};
-
-const openMaterials = (mode = 'upload', files: File[] = [], incomingUrl = '') => {
-  if (!canEdit.value || !kbId.value) return;
-  offerIntake({ userId: authStore.user?.id || '', tenantId: String(authStore.effectiveTenantId || '') }, files,
-    { kbId: kbId.value, folder: selectedFolderPath.value, tagIds: [...selectedTagIds.value], url: incomingUrl });
-  router.push({ path: '/platform/materials', query: {
-    kb_id: kbId.value, add: '1', mode: mode === 'importURL' ? 'url' : mode === 'uploadFolder' ? 'folder' : 'file',
-    ...(selectedFolderPath.value ? { folder: selectedFolderPath.value } : {}),
-  } });
+  if (files.some(file => !isExcelFilename(file.name)) && !ensureDocumentKbReady()) return;
+  void openUploadConfirmDialog(files);
 };
 
 const handleUploadSourceUrl = (url: string) => {
@@ -2190,13 +2200,24 @@ const downloadKnowledge = async (item: KnowledgeCard) => {
   }
 };
 
+const openStructuredSource = (item: KnowledgeCard) => {
+  if (!canMutateKnowledge.value || !isExcelSource(item)) return;
+  const location = structuredSourceLocation(kbId.value, item);
+  if (!location) {
+    MessagePlugin.warning(t('knowledgeBase.structuredXlsNotice'));
+    return;
+  }
+  void router.push(location);
+};
+
 // Bridge card-view actions back to existing per-card handlers.
 const handleCardAction = (
-  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage',
+  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage' | 'structured-parse',
   item: KnowledgeCard,
 ) => {
   const idx = (cardList.value || []).findIndex((i: KnowledgeCard) => i.id === item.id);
   if (action === 'download') return downloadKnowledge(item);
+  if (action === 'structured-parse') return openStructuredSource(item);
   if (action === 'edit') return handleManualEdit(idx, item);
   if (action === 'reparse') {
     if (isParseInFlight(item.parse_status)) return onReparseMenuClick(idx, item);
@@ -2211,11 +2232,12 @@ const handleCardAction = (
 
 // Bridge list-view actions back to existing per-card handlers.
 const handleListAction = (
-  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage',
+  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage' | 'structured-parse',
   item: KnowledgeCard,
 ) => {
   const idx = (cardList.value || []).findIndex((i: KnowledgeCard) => i.id === item.id);
   if (action === 'download') return downloadKnowledge(item);
+  if (action === 'structured-parse') return openStructuredSource(item);
   if (action === 'edit') return handleManualEdit(idx, item);
   if (action === 'reparse') return confirmRebuildKnowledge(idx, item);
   if (action === 'cancel-parse') return confirmCancelParseKnowledge(item);
@@ -2501,8 +2523,8 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
                     </t-tooltip>
                   </div>
                   <div v-if="canEdit" class="doc-filter-actions">
-                    <KbUploadSourceDropdown ref="uploadSourceRef" unified @intake="openMaterials" :accept-file-types="acceptFileTypes"
-                      :supported-file-types="[...supportedFileTypes]" include-manual trigger-icon="add" :trigger-label="t('knowledgeBase.addDocument')"
+                    <KbUploadSourceDropdown ref="uploadSourceRef" unified :accept-file-types="acceptFileTypes"
+                      :supported-file-types="[...supportedFileTypes]" trigger-icon="add" :trigger-label="t('knowledgeBase.addDocument')"
                       trigger-class="content-bar-icon-btn" data-guide="kb-detail-add-doc"
                       :tooltip="t('knowledgeBase.addDocument')" placement="bottom-right" @files="handleUploadSourceFiles"
                       @url="handleUploadSourceUrl" @manual="handleManualCreate" />

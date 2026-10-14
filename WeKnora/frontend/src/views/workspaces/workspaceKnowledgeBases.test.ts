@@ -13,10 +13,10 @@ test('verified shared knowledge bases can be preselected to create a workbench',
   assert.equal(validateWorkbenchSource('shared', libraries.map(kb => kb.id)), '')
 })
 
-test('global knowledge-base navigation includes shared previews at the same resource level', () => {
+test('global knowledge-base navigation opens verified shared resources directly', () => {
   const libraries = workspaceKnowledgeBases([], [shared], '1:user', '1:user')
   assert.deepEqual(buildWorkspaceNavigation([], libraries, []).knowledgeBases, [
-    { id: 'shared', title: '共享资料', path: '/platform/knowledge-bases/shared/preview' },
+    { id: 'shared', title: '共享资料', path: '/platform/knowledge-bases/shared' },
   ])
 })
 

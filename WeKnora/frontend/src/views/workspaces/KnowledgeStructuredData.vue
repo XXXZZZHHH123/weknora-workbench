@@ -13,7 +13,8 @@ const route = useRoute(), router = useRouter(), auth = useAuthStore()
 const kbId = computed(() => String(route.params.kbId || ''))
 const tenant = computed(() => auth.selectedTenantId ?? auth.tenant?.id)
 const scope = computed(() => `${workspaceIdentity(tenant.value, auth.user?.id)}:${kbId.value}`)
-const mode = computed(() => ['import', 'query', 'source'].includes(String(route.query.mode)) ? String(route.query.mode) : 'import')
+const mode = computed(() => route.query.mode === 'query' ? 'query' : 'import')
+const sourceKnowledgeId = computed(() => route.query.view !== 'model-settings' && typeof route.query.source_knowledge_id === 'string' ? route.query.source_knowledge_id : '')
 const library = ref<any>(null), frame = ref<HTMLIFrameElement>(), frameGeneration = ref(0), loading = ref(false), error = ref('')
 const macro = ref(false), macroSources = ref<MacroSource[]>([]), macroError = ref('')
 const src = computed(() => `/structured/?session=${frameGeneration.value}${route.query.view === 'model-settings' ? '&view=model-settings' : ''}`)
@@ -40,7 +41,7 @@ async function load() {
 function sendView() { frame.value?.contentWindow?.postMessage({ type: 'structured-view', mode: mode.value }, window.location.origin) }
 function sendAuth() {
   if (!library.value || !auth.token || !tenant.value) return
-  frame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: tenant.value, knowledgeBaseId: kbId.value }, window.location.origin)
+  frame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: tenant.value, knowledgeBaseId: kbId.value, sourceKnowledgeId: sourceKnowledgeId.value }, window.location.origin)
   sendView()
 }
 function receive(event: MessageEvent) {
@@ -54,7 +55,11 @@ function receive(event: MessageEvent) {
 }
 watch(scope, load, { immediate: true })
 watch(() => auth.token, sendAuth)
+watch(sourceKnowledgeId, sendAuth)
 watch(mode, sendView)
+watch(() => route.query.mode, (value) => {
+  if (value === 'source') router.replace({ path: route.path, query: { ...route.query, mode: 'query' }, hash: route.hash })
+}, { immediate: true })
 onMounted(() => window.addEventListener('message', receive))
 onBeforeUnmount(() => { generation++; window.removeEventListener('message', receive) })
 </script>
@@ -66,7 +71,7 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('message', rece
         <h1>结构化数据库</h1>
         <div class="knowledge-structured-context">
           <span class="knowledge-structured-library" :title="library?.name || '知识库'">{{ library?.name || '知识库' }}</span>
-          <span class="knowledge-structured-mode">{{ route.query.view === 'model-settings' ? '字段模型设置' : mode === 'query' ? '数据查询' : mode === 'source' ? '原表查看' : 'Excel 导入' }}</span>
+          <span class="knowledge-structured-mode">{{ route.query.view === 'model-settings' ? '字段模型设置' : mode === 'query' ? '数据查询' : 'Excel 导入' }}</span>
         </div>
       </div>
       <nav class="knowledge-structured-actions" aria-label="结构化数据库操作">

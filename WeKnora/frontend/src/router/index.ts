@@ -140,13 +140,18 @@ const router = createRouter({
         {
           path: 'knowledge-bases/:kbId/preview',
           name: 'knowledgeBasePreview',
-          component: () => import('../views/workspaces/KnowledgeBasePreview.vue'),
+          redirect: (to) => ({ name: 'knowledgeBaseDetail', params: { kbId: to.params.kbId }, query: to.query, hash: to.hash }),
           meta: { requiresInit: true, requiresAuth: true }
         },
         {
           path: "materials",
           name: "materialsCenter",
-          component: () => import("../views/materials/MaterialsCenter.vue"),
+          redirect: (to) => {
+            const { kb_id, add, mode, ...query } = to.query
+            return typeof kb_id === 'string' && kb_id
+              ? { name: 'knowledgeBaseDetail', params: { kbId: kb_id }, query, hash: to.hash }
+              : { name: 'knowledgeBaseList', query, hash: to.hash }
+          },
           meta: { requiresInit: true, requiresAuth: true }
         },
         {

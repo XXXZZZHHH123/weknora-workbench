@@ -7,6 +7,7 @@ import DocumentFileIcon from './DocumentFileIcon.vue';
 import DocumentActionMenu from './DocumentActionMenu.vue';
 import FolderPickerMenu, { type FolderOption } from './FolderPickerMenu.vue';
 import { shownStall } from '@/utils/knowledgeProcessingStall';
+import { excelSourceExtension, isExcelSource } from '../excelSource';
 
 interface Tag {
   id: string;
@@ -64,7 +65,7 @@ const emit = defineEmits<{
   (e: 'open', item: KnowledgeItem): void;
   (e: 'toggle-row', id: string, checked: boolean, shiftKey: boolean): void;
   (e: 'toggle-all', checked: boolean): void;
-  (e: 'action', action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage', item: KnowledgeItem): void;
+  (e: 'action', action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage' | 'structured-parse', item: KnowledgeItem): void;
   (e: 'probe-trace', item: KnowledgeItem): void;
   (e: 'tags-changed', payload?: { deletedTagId?: string }): void;
   (e: 'open-folder', path: string): void;
@@ -162,6 +163,9 @@ const computeStatus = (item: KnowledgeItem): StatusInfo => {
   }
   if (item.parse_status === 'draft') {
     return { label: t('knowledgeBase.statusDraft'), theme: 'warning' };
+  }
+  if (item.parse_status === 'stored') {
+    return { label: t('knowledgeBase.statusStored'), theme: 'default', icon: 'file' };
   }
   // Legacy completed+summary_pending path: kept as a defensive fallback
   // for rows that bypassed finalizing (no enrichment configured, or
@@ -346,6 +350,10 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
         </div>
 
         <div class="cell cell-actions" role="cell" v-if="canEdit" @click.stop>
+          <t-button v-if="canMutateKnowledge && isExcelSource(item)" variant="text" size="small"
+            :disabled="excelSourceExtension(item) !== 'xlsx'"
+            :title="excelSourceExtension(item) === 'xls' ? t('knowledgeBase.structuredXlsNotice') : t('knowledgeBase.excelSourceHint')"
+            @click.stop="emit('action', 'structured-parse', item)">{{ t('knowledgeBase.structuredParse') }}</t-button>
           <t-popup :visible="moreOpen === item.id" placement="bottom-right" trigger="click" destroy-on-close overlay-class-name="card-more"
             :on-visible-change="(v: boolean) => onMoreVisible(item.id, v)">
             <button class="row-more-btn" :class="{ active: moreOpen === item.id }" type="button"
@@ -479,7 +487,7 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
 .doc-list-header,
 .doc-list-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) minmax(180px, 24%) 100px 28px;
+  grid-template-columns: 24px minmax(0, 1fr) minmax(180px, 24%) 120px 120px;
   align-items: center;
   column-gap: 12px;
   padding: 0 8px;
@@ -571,6 +579,7 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
 
 .cell-actions {
   justify-content: flex-end;
+  gap: 4px;
 }
 
 /* TDesign 勾选框：去掉空白 label、与表格行对齐 */
@@ -796,7 +805,7 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
 }
 @container doc-card-area (max-width: 720px) {
   .doc-list-header, .doc-list-row {
-    grid-template-columns: 24px minmax(0, 1fr) 100px 28px;
+    grid-template-columns: 24px minmax(0, 1fr) 120px 120px;
     column-gap: 8px;
   }
   .doc-list-header .cell-tags { display: none; }

@@ -64,7 +64,7 @@ async function main() {
     const wait=async expression=>{for(let count=0;count<200;count++){if(await js(expression))return;await pause(50);}throw Error('Timed out: '+expression);};
     const verify=async(name,expression)=>{assert.equal(await js(expression),true,name);checks.push(name);};
     const screenshot=async name=>{if(!process.env.STRUCTURED_UI_SCREENSHOTS)return;fs.mkdirSync(process.env.STRUCTURED_UI_SCREENSHOTS,{recursive:true});const image=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(process.env.STRUCTURED_UI_SCREENSHOTS,name+'.png'),Buffer.from(image.data,'base64'));};
-    const doc="document.getElementById('frame').contentDocument";
+    const doc="document.getElementById('frame')?.contentDocument";
     const ready=`${doc}?.querySelector('.sheet-grid td') && ${doc}.querySelector('[data-column-field="unit"]')`;
     await call('Runtime.enable');await call('Page.enable');await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
     await call('Page.navigate',{url:origin+'/harness?kb=kb-a'});await wait(ready);
@@ -75,8 +75,10 @@ async function main() {
     await verify('Query keeps original review DOM and hides import',`(()=>{const d=${doc};return window.reviewNode===d.getElementById('sheetDetail')&&d.defaultView.getComputedStyle(d.getElementById('importReview')).display==='none'&&d.defaultView.getComputedStyle(d.getElementById('queryPreview')).display!=='none'})()`);
     await screenshot('02_结构化查询');
     await js("window.view('source')");await pause(100);
-    await verify('Source restores same original grid and unsaved field state',`(()=>{const d=${doc};return window.reviewNode===d.getElementById('sheetDetail')&&d.querySelector('[data-column-field="unit"]').value==='Draft A'&&d.defaultView.getComputedStyle(d.getElementById('importReview')).display!=='none'})()`);
-    await screenshot('03_结构化原表_保留编辑');
+    await verify('Removed source view leaves query open and keeps its hidden draft',`(()=>{const d=${doc};return !d.body.classList.contains('view-source')&&window.reviewNode===d.getElementById('sheetDetail')&&d.querySelector('[data-column-field="unit"]').value==='Draft A'&&d.defaultView.getComputedStyle(d.getElementById('importReview')).display==='none'})()`);
+    await js("window.view('import')");await pause(100);
+    await verify('Returning to import restores the same original grid and unsaved field state',`(()=>{const d=${doc};return window.reviewNode===d.getElementById('sheetDetail')&&d.querySelector('[data-column-field="unit"]').value==='Draft A'&&d.defaultView.getComputedStyle(d.getElementById('importReview')).display!=='none'})()`);
+    await screenshot('03_结构化导入_保留编辑');
     await js("window.auth('kb-a','fixture-renewed')");await pause(100);
     await verify('Token refresh retains field state and DOM',`window.reviewNode===${doc}.getElementById('sheetDetail')&&${doc}.querySelector('[data-column-field="unit"]').value==='Draft A'`);
     await js("window.auth('kb-b')");await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value===''`);

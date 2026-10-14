@@ -19,6 +19,7 @@
                     <KbUploadSourceDropdown
                       :accept-file-types="acceptFileTypes"
                       :supported-file-types="supportedFileTypes"
+                      :unified="!allowURL"
                       :tooltip="t('uploadConfirm.continueAdd')"
                       placement="bottom-left"
                       @files="appendFiles"
@@ -124,7 +125,7 @@
 
             <aside class="settings-sidebar">
               <div class="settings-sidebar-header">
-                <h2 class="settings-sidebar-title">{{ t('uploadConfirm.parseConfig') }}</h2>
+                <h2 class="settings-sidebar-title">{{ sourceOnlyBatch ? t('knowledgeBase.sourceOnlyConfig') : t('uploadConfirm.parseConfig') }}</h2>
               </div>
               <nav class="settings-nav" :aria-label="t('uploadConfirm.configNav')">
                 <button
@@ -158,6 +159,7 @@
 
             <div class="config-panel">
               <div class="content-wrapper upload-confirm-content">
+                  <t-alert v-if="hasExcelSources" theme="info" :message="t('knowledgeBase.excelSourceHint')" />
                   <div v-show="activeSection === 'tags'" class="section">
                     <div class="section-content">
                       <div class="section-header">
@@ -581,6 +583,7 @@ import { useEditorResourcesStore } from '@/stores/editorResources'
 import { useUIStore } from '@/stores/ui'
 import { formatFileSize, getFileIcon } from '@/utils/files'
 import { getUploadFileKey } from '../utils/uploadSources'
+import { isExcelFilename } from '../excelSource'
 import { listKnowledgeTags } from '@/api/knowledge-base'
 import KbUploadSourceDropdown from './KbUploadSourceDropdown.vue'
 import FolderPickerMenu, { type FolderOption } from './FolderPickerMenu.vue'
@@ -647,6 +650,7 @@ const props = withDefaults(defineProps<{
   tagId?: string
   acceptFileTypes?: string
   supportedFileTypes?: string[]
+  allowURL?: boolean
   /** Folder the batch will be uploaded into; '' means the knowledge base root. */
   targetFolder?: string
   /** Existing folders offered as upload destinations. */
@@ -660,6 +664,7 @@ const props = withDefaults(defineProps<{
   reparsePreview: null,
   acceptFileTypes: '',
   supportedFileTypes: () => [],
+  allowURL: true,
   targetFolder: '',
   folderOptions: () => [],
 })
@@ -799,16 +804,21 @@ function inferMediaExtsFromMarkdown(content: string): string[] {
 
 const manualCharCount = computed(() => props.manualPreview?.content?.length ?? 0)
 const batchItemCount = computed(() => localFiles.value.length + localUrls.value.length)
+const hasExcelSources = computed(() => props.mode === 'file' && localFiles.value.some(file => isExcelFilename(file.name)))
+const sourceOnlyBatch = computed(() => hasExcelSources.value && localUrls.value.length === 0
+  && localFiles.value.every(file => isExcelFilename(file.name)))
 
 const dialogTitle = computed(() => {
   if (props.mode === 'manual') return t('uploadConfirm.titleManual')
   if (props.mode === 'reparse') return t('uploadConfirm.titleReparse')
+  if (sourceOnlyBatch.value) return t('knowledgeBase.sourceOnlyConfig')
   return t('uploadConfirm.title')
 })
 
 const confirmButtonText = computed(() => {
   if (props.mode === 'manual') return t('uploadConfirm.confirmManual')
   if (props.mode === 'reparse') return t('uploadConfirm.confirmReparse')
+  if (sourceOnlyBatch.value) return t('knowledgeBase.confirmStoreOriginal')
   return t('uploadConfirm.confirm')
 })
 
@@ -943,6 +953,7 @@ const navItems = computed(() => {
   if (props.mode !== 'reparse') {
     push('tags', 'tag', t('uploadConfirm.tabTags'))
   }
+  if (sourceOnlyBatch.value) return items
   push('parser', 'file-search', t('settings.parserEngine'))
   push('chunking', 'file-copy', t('knowledgeEditor.sidebar.chunking'))
   push(
@@ -1049,6 +1060,7 @@ function getSectionNavStatus(
 
 const canConfirm = computed(() => {
   if (props.mode === 'file' && batchItemCount.value === 0) return false
+  if (sourceOnlyBatch.value) return true
   if (props.mode === 'manual' && !props.manualPreview?.content?.trim()) return false
   if (hasImages.value) {
     if (!uiState.value.multimodalConfig.enabled || !uiState.value.multimodalConfig.vllmModelId) {
@@ -1067,6 +1079,7 @@ const canConfirm = computed(() => {
 })
 
 function getDefaultSection(): ConfigSectionKey {
+  if (sourceOnlyBatch.value) return 'tags'
   if (props.mode === 'reparse') return 'parser'
   if (issueSectionKeys.value.has('multimodal')) return 'multimodal'
   if (issueSectionKeys.value.has('asr')) return 'asr'
@@ -1342,6 +1355,10 @@ watch(isGraphSectionAvailable, (available) => {
   }
 })
 
+watch(sourceOnlyBatch, (originalsOnly) => {
+  if (originalsOnly) activeSection.value = 'tags'
+})
+
 const appendFiles = (incoming: File[]) => {
   const existingKeys = new Set(localFiles.value.map(getUploadFileKey))
   const toAdd: File[] = []
@@ -1366,6 +1383,10 @@ const appendFiles = (incoming: File[]) => {
 }
 
 const appendUrl = (url: string) => {
+  if (!props.allowURL) {
+    MessagePlugin.warning(t('knowledgeBase.nativeFileSourcesOnly'))
+    return
+  }
   if (localUrls.value.includes(url)) {
     MessagePlugin.warning(t('uploadConfirm.urlDuplicate'))
     return
@@ -1408,6 +1429,11 @@ const handleNodeExtractUpdate = (config: UploadUIState['nodeExtractConfig']) => 
 }
 
 const validateBeforeConfirm = (): boolean => {
+  if (!props.allowURL && localUrls.value.length) {
+    MessagePlugin.warning(t('knowledgeBase.nativeFileSourcesOnly'))
+    return false
+  }
+  if (sourceOnlyBatch.value) return true
   if (hasImages.value) {
     if (!uiState.value.multimodalConfig.enabled || !uiState.value.multimodalConfig.vllmModelId) {
       MessagePlugin.warning(t('uploadConfirm.vlmModelRequired'))
@@ -1448,7 +1474,7 @@ const handleConfirm = () => {
   }
   if (!validateBeforeConfirm()) return
 
-  const processConfig = buildProcessOverrides()
+  const processConfig = sourceOnlyBatch.value ? {} : buildProcessOverrides()
   if (props.mode === 'manual' && props.manualPreview) {
     emit('confirm', {
       processConfig,

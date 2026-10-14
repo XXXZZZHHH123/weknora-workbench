@@ -45,6 +45,7 @@ export interface OpenUploadConfirmOptions {
   reparse?: UploadConfirmReparseSource
   acceptFileTypes?: string
   supportedFileTypes?: string[]
+  allowURL?: boolean
   /** Folder pre-selected from the sidebar tree; '' means the root. */
   targetFolder?: string
   /** Existing folders the dialog can offer as upload destinations. */
@@ -63,6 +64,7 @@ export const useUploadConfirmStore = defineStore('uploadConfirm', {
     reparse: null as UploadConfirmReparseSource | null,
     acceptFileTypes: '',
     supportedFileTypes: [] as string[],
+    allowURL: true,
     targetFolder: '',
     folderOptions: [] as Array<{ path: string; name: string; depth: number }>,
     pendingResolve: null as ((value: UploadConfirmResult) => void) | null,
@@ -84,6 +86,7 @@ export const useUploadConfirmStore = defineStore('uploadConfirm', {
         this.reparse = options.reparse || null
         this.acceptFileTypes = options.acceptFileTypes || ''
         this.supportedFileTypes = options.supportedFileTypes ? [...options.supportedFileTypes] : []
+        this.allowURL = options.allowURL !== false
         this.targetFolder = options.targetFolder || ''
         this.folderOptions = options.folderOptions ? [...options.folderOptions] : []
         this.pendingResolve = resolve
@@ -112,6 +115,7 @@ export const useUploadConfirmStore = defineStore('uploadConfirm', {
       this.reparse = null
       this.acceptFileTypes = ''
       this.supportedFileTypes = []
+      this.allowURL = true
       this.targetFolder = ''
       this.folderOptions = []
       this.pendingResolve = null
