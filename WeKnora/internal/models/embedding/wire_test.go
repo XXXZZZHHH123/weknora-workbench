@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/types"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"github.com/stretchr/testify/assert"
@@ -460,6 +461,123 @@ func TestEmbeddingWireFormatPerVendor(t *testing.T) {
 			assert.Equal(t, tc.wantQuery, first.query)
 			assert.Equal(t, tc.wantAuth[1], first.header.Get(tc.wantAuth[0]))
 			assert.Equal(t, tc.wantBody, first.body)
+		})
+	}
+}
+
+// The local upload configuration used an explicitly generic provider and
+// 2048 dimensions for this snapshot. Fixing only one field still leaves the
+// request unusable; keep both rejected cases beside the working native path.
+func TestAliyunSnapshotEmbeddingConfiguration(t *testing.T) {
+	const model = "tongyi-embedding-vision-plus-2026-03-06"
+	const nativePath = "/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding"
+	const supportedWidth = 1152
+
+	for _, tc := range []struct {
+		name       string
+		provider   string
+		dimensions int
+		wantStatus int
+		wantPath   string
+	}{
+		{
+			name: "repaired row embeds through the native snapshot API", provider: "aliyun", dimensions: supportedWidth,
+			wantPath: nativePath,
+		},
+		{
+			name: "explicit generic retains OpenAI compatibility", provider: "generic", dimensions: 2048,
+			wantStatus: http.StatusNotFound, wantPath: "/compatible-mode/v1/embeddings",
+		},
+		{
+			name: "provider correction alone leaves an invalid width", provider: "aliyun", dimensions: 2048,
+			wantStatus: http.StatusBadRequest, wantPath: nativePath,
+		},
+		{
+			name: "width correction alone leaves the wrong protocol", provider: "generic", dimensions: supportedWidth,
+			wantStatus: http.StatusNotFound, wantPath: "/compatible-mode/v1/embeddings",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			allowLoopback(t)
+			var mu sync.Mutex
+			var requests []recorded
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				mu.Lock()
+				requests = append(requests, recorded{path: r.URL.Path, header: r.Header.Clone(), body: body})
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path != nativePath {
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = fmt.Fprint(w, `{"error":{"code":"model_not_supported","message":"snapshot does not support OpenAI compatibility mode"}}`)
+					return
+				}
+				parameters, _ := body["parameters"].(map[string]any)
+				if parameters["dimension"] != float64(supportedWidth) {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = fmt.Fprint(w, `{"code":"InvalidParameter","message":"unsupported embedding width"}`)
+					return
+				}
+				input, _ := body["input"].(map[string]any)
+				contents, ok := input["contents"].([]any)
+				if !ok || body["model"] != model || r.Header.Get("Authorization") != "Bearer fixture-key" {
+					http.Error(w, "invalid native embedding request", http.StatusBadRequest)
+					return
+				}
+				var vectors []map[string]any
+				for i := len(contents) - 1; i >= 0; i-- {
+					text, _ := contents[i].(map[string]any)["text"].(string)
+					vector := make([]float32, supportedWidth)
+					vector[0] = float32(utf8.RuneCountInString(text))
+					vectors = append(vectors, map[string]any{"index": i, "embedding": vector, "type": "text"})
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"output": map[string]any{"embeddings": vectors}})
+			}))
+			t.Cleanup(server.Close)
+
+			row := &types.Model{
+				ID: "snapshot-fixture", Name: model, Type: types.ModelTypeEmbedding, Source: types.ModelSourceRemote,
+				Parameters: types.ModelParameters{
+					Provider: tc.provider, BaseURL: server.URL + "/compatible-mode/v1", APIKey: "fixture-key",
+					EmbeddingParameters: types.EmbeddingParameters{
+						Dimension: tc.dimensions, SupportsDimensionOverride: true,
+					},
+				},
+			}
+			embedder, err := NewEmbedder(ConfigFromModel(row, "", ""), nil, nil)
+			require.NoError(t, err)
+			inputs := []string{"first source passage", "第二段真实来源文本"}
+			vectors, err := embedder.BatchEmbed(context.Background(), inputs)
+			if tc.wantStatus != 0 {
+				var upstreamErr *api.HTTPError
+				require.ErrorAs(t, err, &upstreamErr)
+				assert.Equal(t, tc.wantStatus, upstreamErr.StatusCode)
+				assert.Nil(t, vectors)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, vectors, len(inputs))
+				assert.Equal(t, supportedWidth, embedder.GetDimensions())
+				for i, text := range inputs {
+					require.Len(t, vectors[i], supportedWidth)
+					assert.Equal(t, float32(utf8.RuneCountInString(text)), vectors[i][0], "response index must preserve source order")
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, requests, 1, "a rejected configuration must not trigger transport retries")
+			assert.Equal(t, tc.wantPath, requests[0].path)
+			assert.Equal(t, model, requests[0].body["model"])
+			if tc.provider == "generic" {
+				assert.Equal(t, float64(tc.dimensions), requests[0].body["dimensions"])
+				assert.Equal(t, strs(inputs), requests[0].body["input"])
+			} else {
+				assert.Equal(t, map[string]any{"dimension": float64(tc.dimensions)}, requests[0].body["parameters"])
+				assert.NotContains(t, requests[0].body, "dimensions")
+			}
 		})
 	}
 }

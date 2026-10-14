@@ -118,6 +118,10 @@ PYTHONPATH=WeKnora WeKnora/docreader/.venv/bin/python -m unittest discover -s We
 
 离线解析回归在随机回环端口运行真实 DocReader，验证 Markdown、含表格的 DOCX 和原生文本 PDF 的普通及流式 gRPC 请求，包含鉴权失败和错误文件后的恢复，不调用模型或外部 OCR。
 
+上传接口返回成功表示原文件已接收，文档仍须完成解析及知识库启用的索引才能显示为完成。若 DocReader 已连接但文件仍失败，先查看文件记录的 `error_message` 和 `logs/backend.log`，区分解析错误与向量接口错误，不要直接修改完成状态或关闭索引掩盖问题。
+
+阿里云多模态向量模型需要选择“阿里云 DashScope”厂商；明确选择“通用”会保留 OpenAI 兼容协议，不能自动替代厂商原生接口。向量维度也须按具体模型配置，例如 `tongyi-embedding-vision-plus-2026-03-06` 支持 64、128、256、512、1024、1152 维，不支持 2048 维，参见[阿里云多模态向量 API 文档](https://help.aliyun.com/zh/model-studio/multimodal-embedding-api-reference)。通过现有模型设置修改厂商和维度会保留模型 ID 及凭据，后续请求即时读取新配置，无需重启。已有成功索引若使用不同模型或维度，须先备份并按正常重解析流程重建，不能直接混用旧向量。重试真实文件前应核对向量模型及摘要、问题生成模型的免费额度；接收、解析文件成功并不代表这些后续模型调用免费。
+
 ## CI/CD 与服务器部署
 
 GitHub Actions 在 PR 和 main 更新时执行检查；main 检查通过后构建 linux/amd64 镜像并发布部署包。Go 依赖保存在可复用的 Docker 层，编译缓存单独跨构建保存；依赖清单不变时无需每次重新下载整套 Go 模块。
