@@ -2321,19 +2321,19 @@ const processConfigLines = computed<string[]>(() => {
 
 .kp-attempt-active {
   background: var(--td-brand-color);
-  color: var(--td-text-color-anti);
+  color: var(--app-on-brand, var(--td-text-color-anti));
   border-color: var(--td-brand-color);
 }
 
 .kp-attempt-active:hover {
   background: var(--td-brand-color);
-  color: var(--td-text-color-anti);
+  color: var(--app-on-brand, var(--td-text-color-anti));
   border-color: var(--td-brand-color);
 }
 
 .kp-attempt-active .kp-attempt-glyph,
 .kp-attempt-active:hover .kp-attempt-glyph {
-  color: var(--td-text-color-anti) !important;
+  color: var(--app-on-brand, var(--td-text-color-anti)) !important;
 }
 
 .kp-attempt-num {
@@ -3390,12 +3390,12 @@ const processConfigLines = computed<string[]>(() => {
 
 .kp-section-action:hover {
   background: var(--td-brand-color);
-  color: var(--td-text-color-anti);
+  color: var(--app-on-brand, var(--td-text-color-anti));
   border-color: var(--td-brand-color);
 }
 
 .kp-section-action:hover :deep(.t-icon) {
-  color: var(--td-text-color-anti);
+  color: var(--app-on-brand, var(--td-text-color-anti));
 }
 
 /* KV grid — TDesign description list aesthetic. White card on the gray

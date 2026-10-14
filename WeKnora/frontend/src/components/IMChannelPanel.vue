@@ -1194,7 +1194,7 @@ onUnmounted(() => {
 
 .im-step.active .im-step-num {
   background: var(--td-brand-color);
-  color: #fff;
+  color: var(--app-on-brand, var(--td-text-color-anti));
   border-color: var(--td-brand-color);
 }
 

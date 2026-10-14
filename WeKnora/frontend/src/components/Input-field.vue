@@ -3487,7 +3487,7 @@ const getImgSrc = (url: string) => {
   padding: 0 3px;
   border-radius: 7px;
   background: var(--td-brand-color);
-  color: var(--td-text-color-anti);
+  color: var(--app-on-brand, var(--td-text-color-anti));
   font-size: var(--app-text-2xs);
   font-weight: 600;
   line-height: 1;
@@ -3533,7 +3533,7 @@ const getImgSrc = (url: string) => {
     top: -2px;
     right: -2px;
     background: var(--td-brand-color);
-    color: #fff;
+    color: var(--app-on-brand, var(--td-text-color-anti));
     font-size: var(--app-text-2xs);
     width: 14px;
     height: 14px;
@@ -3572,7 +3572,7 @@ const getImgSrc = (url: string) => {
     top: -2px;
     right: -2px;
     background: var(--td-brand-color);
-    color: #fff;
+    color: var(--app-on-brand, var(--td-text-color-anti));
     font-size: var(--app-text-2xs);
     width: 14px;
     height: 14px;
@@ -3779,7 +3779,7 @@ const getImgSrc = (url: string) => {
 
 .stop-btn, .send-btn {
   background-color: var(--td-brand-color);
-  color: #fff;
+  color: var(--app-on-brand, var(--td-text-color-anti));
 
   &:hover:not(.disabled) {
     background-color: var(--td-brand-color-active);
