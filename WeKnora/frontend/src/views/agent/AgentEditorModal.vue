@@ -6496,7 +6496,7 @@ const handleSave = async () => {
 
   // FAQ KB
   &.faq-icon {
-    background: rgba(0, 82, 217, 0.1);
+    background: var(--td-brand-color-light);
     color: var(--td-brand-color);
   }
 }

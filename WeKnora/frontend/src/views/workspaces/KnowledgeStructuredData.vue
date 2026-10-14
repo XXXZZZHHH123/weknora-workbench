@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useTheme } from '@/composables/useTheme'
 import { getKnowledgeBaseById } from '@/api/knowledge-base'
 import { getDefaultKnowledgeBase } from '@/api/workspaces'
 import { createMaterialClient } from '@/views/materials/client'
@@ -10,6 +11,7 @@ import { workspaceErrorMessage, workspaceIdentity } from './workspaceForm'
 
 type MacroSource = { series_id: string; name: string; source: string; frequency: string; unit: string; status: string; registered: boolean }
 const route = useRoute(), router = useRouter(), auth = useAuthStore()
+const { effectiveTheme } = useTheme()
 const kbId = computed(() => String(route.params.kbId || ''))
 const tenant = computed(() => auth.selectedTenantId ?? auth.tenant?.id)
 const scope = computed(() => `${workspaceIdentity(tenant.value, auth.user?.id)}:${kbId.value}`)
@@ -39,6 +41,7 @@ async function load() {
   finally { if (own === generation) loading.value = false }
 }
 function sendView() { frame.value?.contentWindow?.postMessage({ type: 'structured-view', mode: mode.value }, window.location.origin) }
+function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function sendAuth() {
   if (!library.value || !auth.token || !tenant.value) return
   frame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: tenant.value, knowledgeBaseId: kbId.value, sourceKnowledgeId: sourceKnowledgeId.value }, window.location.origin)
@@ -46,6 +49,7 @@ function sendAuth() {
 }
 function receive(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
+  if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'structured-ready') sendAuth()
   if (event.data?.type === 'structured-navigate') {
     if (event.data.view === 'conversation') router.push(`/platform/knowledge-bases/${kbId.value}/creatChat`)
@@ -57,6 +61,7 @@ watch(scope, load, { immediate: true })
 watch(() => auth.token, sendAuth)
 watch(sourceKnowledgeId, sendAuth)
 watch(mode, sendView)
+watch(effectiveTheme, sendTheme)
 watch(() => route.query.mode, (value) => {
   if (value === 'source') router.replace({ path: route.path, query: { ...route.query, mode: 'query' }, hash: route.hash })
 }, { immediate: true })
@@ -92,8 +97,8 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('message', rece
 
 <style scoped>
 .knowledge-structured-workspace {
-  --structured-accent: #167d72;
-  --structured-accent-soft: color-mix(in srgb, var(--structured-accent) 8%, var(--app-card-bg));
+  --structured-accent: var(--td-brand-color);
+  --structured-accent-soft: var(--td-brand-color-light);
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -183,9 +188,6 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('message', rece
   outline-offset: 2px;
 }
 .knowledge-structured-actions :deep(.t-button) {
-  --td-brand-color: var(--structured-accent);
-  --td-brand-color-hover: var(--structured-accent);
-  --td-brand-color-light: var(--structured-accent-soft);
   margin-left: var(--app-space-2);
   height: 32px;
   border-radius: var(--app-radius-sm);

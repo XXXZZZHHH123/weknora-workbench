@@ -16,15 +16,48 @@ async function researchFetch(input, options = {}) {
 // 页面交互：主题、口径穿透弹层、快速录入抽屉、提示条、合约表与期限结构联动。
 // 页面切换走服务端路由，不在前端做 SPA。
 
-(function () {
-  const saved = localStorage.getItem("tin-theme");
-  const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-  if (saved === "dark" || (saved === null && prefersDark)) document.documentElement.classList.add("dark");
+const researchTheme = (function () {
+  const embedded = window.parent !== window;
+  const media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  let parentControlled = false;
+  function savedTheme() {
+    try { const value = localStorage.getItem("tin-theme"); return value === "light" || value === "dark" ? value : null; }
+    catch { return null; }
+  }
+  function apply(mode) {
+    document.documentElement.classList.toggle("dark", mode === "dark");
+    document.documentElement.setAttribute("theme-mode", mode);
+    document.documentElement.style.colorScheme = mode;
+  }
+  function fromParent(mode) {
+    if (mode !== "light" && mode !== "dark") return;
+    parentControlled = true; apply(mode);
+  }
+  if (embedded) {
+    try { fromParent(window.parent.document.documentElement.getAttribute("theme-mode")); }
+    catch { /* Cross-origin embedding cannot read the parent's preferences. */ }
+    window.addEventListener("message", event => {
+      if (event.origin === location.origin && event.source === window.parent && event.data?.type === "workspace-theme") fromParent(event.data.mode);
+    });
+  }
+  if (!parentControlled) apply(savedTheme() || (media?.matches ? "dark" : "light"));
+  media?.addEventListener("change", event => {
+    if (!parentControlled && !savedTheme()) apply(event.matches ? "dark" : "light");
+  });
+  if (embedded) window.parent.postMessage({ type: "workspace-theme-ready" }, location.origin);
+  return { toggle() {
+    const mode = document.documentElement.classList.contains("dark") ? "light" : "dark";
+    if (embedded && parentControlled) {
+      window.parent.postMessage({ type: "workspace-theme-request", mode }, location.origin);
+      return;
+    }
+    try { localStorage.setItem("tin-theme", mode); } catch { /* Theme changes remain available without storage. */ }
+    apply(mode);
+  } };
 })();
 
 function toggleTheme() {
-  const dark = document.documentElement.classList.toggle("dark");
-  localStorage.setItem("tin-theme", dark ? "dark" : "light");
+  researchTheme.toggle();
 }
 
 function togglePopover(id) {

@@ -20,6 +20,7 @@ function fixture() {
   const scope = effectScope()
   const view: any = scope.run(() => runInNewContext(code, {
     computed, nextTick, ref, watch, useAuthStore: () => auth, useRoute: () => route,
+    useTheme: () => ({ effectiveTheme: ref('light'), setTheme() {} }),
     onMounted() {}, onBeforeUnmount: (fn: () => void) => unmounts.push(fn),
     window: { location: { origin: 'https://test.local' }, removeEventListener() {} },
     getResearchWorkbench: (id: string) => new Promise(resolve => requests.push({ id, tenant: header, resolve })),

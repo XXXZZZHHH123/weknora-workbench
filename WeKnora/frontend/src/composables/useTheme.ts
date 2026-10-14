@@ -17,6 +17,7 @@ function loadTheme(): ThemeMode {
 
 // Shared reactive state across all consumers
 const currentTheme = ref<ThemeMode>(loadTheme())
+const effectiveTheme = ref<'light' | 'dark'>(currentTheme.value === 'dark' ? 'dark' : 'light')
 
 let lastEffective: 'light' | 'dark' | null = null
 
@@ -24,9 +25,9 @@ function getSystemTheme(): 'light' | 'dark' {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
-/** Wails：与原生窗口底色 / 系统深浅色一致，减轻 Ctrl+R 整窗白闪（浅色与 --td-bg-color-page #eee 对齐） */
+/** 原生窗口与页面使用同一个画布令牌，避免主题切换后出现第二套底色。 */
 function syncWailsNativeChrome(effective: 'light' | 'dark') {
-  const bg = effective === 'dark' ? '#181818' : '#eeeeee'
+  const bg = 'var(--td-bg-color-page)'
   document.documentElement.style.background = bg
   document.documentElement.style.minHeight = '100%'
   document.documentElement.style.colorScheme = effective === 'dark' ? 'dark' : 'light'
@@ -50,11 +51,12 @@ function syncWailsNativeChrome(effective: 'light' | 'dark') {
   try {
     if (effective === 'dark') {
       w.WindowSetDarkTheme?.()
-      w.WindowSetBackgroundColour(24, 24, 24, 255)
     } else {
       w.WindowSetLightTheme?.()
-      w.WindowSetBackgroundColour(238, 238, 238, 255)
     }
+    const color = getComputedStyle(document.documentElement).backgroundColor
+    const channels = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color)
+    if (channels) w.WindowSetBackgroundColour(Number(channels[1]), Number(channels[2]), Number(channels[3]), 255)
   } catch {
     /* 非桌面壳或未注入 runtime */
   }
@@ -62,6 +64,7 @@ function syncWailsNativeChrome(effective: 'light' | 'dark') {
 
 function applyTheme(mode: ThemeMode) {
   const effective = mode === 'system' ? getSystemTheme() : mode
+  effectiveTheme.value = effective
   if (lastEffective === effective) return
   lastEffective = effective
   document.documentElement.setAttribute('theme-mode', effective)
@@ -77,7 +80,7 @@ export function useTheme() {
     return true
   }
 
-  return { currentTheme, setTheme }
+  return { currentTheme, effectiveTheme, setTheme }
 }
 
 /** Call once in main.ts to initialise theme and listen for OS changes. */

@@ -3253,7 +3253,7 @@ const getImgSrc = (url: string) => {
 }
 
 .mention-chip--faq .mention-chip__icon-wrap {
-  color: var(--weknora-faq-color, #0052d9);
+  color: var(--weknora-faq-color, var(--td-brand-color));
 }
 
 .mention-chip--file {

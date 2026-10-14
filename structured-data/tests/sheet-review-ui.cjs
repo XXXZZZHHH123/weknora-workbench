@@ -159,6 +159,27 @@ const server=http.createServer(async(req,res)=>{
     const chipTops=await page.locator('.block-chip').evaluateAll(els=>els.map(el=>Math.round(el.getBoundingClientRect().top)));
     assert.equal(chipTops.length,3);assert.equal(new Set(chipTops).size,1,'Blocks sit on one horizontal row');
     assert.equal(await page.locator('[data-cell-row="3"][data-cell-col="3"]').evaluate(el=>el.style.getPropertyValue('--source-fg')),'#B91C1C');
+    const sourceFormat=await page.locator('[data-cell-row="3"][data-cell-col="3"]').evaluate(el=>({style:el.getAttribute('style'),background:getComputedStyle(el).backgroundColor,color:getComputedStyle(el).color,fontWeight:getComputedStyle(el).fontWeight,textAlign:getComputedStyle(el).textAlign}));
+    const reviewWidth=await page.locator('.review-panes').evaluate(el=>el.getBoundingClientRect().width);
+    await page.emulateMedia({colorScheme:'dark'});
+    await page.waitForFunction(()=>document.documentElement.getAttribute('theme-mode')==='dark');
+    const labelContrast=await page.locator('#blockEditor label').first().evaluate(el=>{
+      const luminance=color=>{const channels=color.match(/[\d.]+/g).slice(0,3).map(v=>Number(v)/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4);return channels[0]*.2126+channels[1]*.7152+channels[2]*.0722};
+      const text=luminance(getComputedStyle(el).color),background=luminance(getComputedStyle(document.getElementById('blockEditor')).backgroundColor);
+      return (Math.max(text,background)+.05)/(Math.min(text,background)+.05);
+    });
+    assert(labelContrast>=4.5,'Dark chrome keeps labels on the original white review canvas readable');
+    await page.locator('.review-footer .footer-actions button:not(.secondary)').first().hover();
+    const hoverContrast=await page.locator('.review-footer .footer-actions button:not(.secondary)').first().evaluate(el=>{
+      const luminance=color=>{const channels=color.match(/[\d.]+/g).slice(0,3).map(v=>Number(v)/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4);return channels[0]*.2126+channels[1]*.7152+channels[2]*.0722};
+      const text=luminance(getComputedStyle(el).color),background=luminance(getComputedStyle(el).backgroundColor);
+      return (Math.max(text,background)+.05)/(Math.min(text,background)+.05);
+    });
+    assert(hoverContrast>=4.5,'Primary hover on the white review canvas keeps readable button text');
+    assert.deepEqual(await page.locator('[data-cell-row="3"][data-cell-col="3"]').evaluate(el=>({style:el.getAttribute('style'),background:getComputedStyle(el).backgroundColor,color:getComputedStyle(el).color,fontWeight:getComputedStyle(el).fontWeight,textAlign:getComputedStyle(el).textAlign})),sourceFormat,'Dark chrome preserves the original workbook cell colors and font format');
+    assert.equal(await page.locator('.review-panes').evaluate(el=>el.getBoundingClientRect().width),reviewWidth,'Theme changes preserve the review pane geometry');
+    await page.emulateMedia({colorScheme:'light'});
+    await page.waitForFunction(()=>document.documentElement.getAttribute('theme-mode')==='light');
     assert.equal(await page.locator('.sheet-grid td[colspan="8"]').count(),1);
     await page.locator('#suggestMapping').click();await page.locator('#aiDialog').waitFor({state:'visible'});
     assert.match(await page.locator('#aiDialogText').innerText(),/不会发送/);

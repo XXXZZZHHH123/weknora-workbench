@@ -27,10 +27,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { useTheme } from '@/composables/useTheme'
 import { useRoute } from 'vue-router'
 import { getResearchWorkbench, type ResearchWorkbench } from '@/api/workspaces'
 import ResearchChatPanel from './ResearchChatPanel.vue'
 const auth = useAuthStore()
+const { effectiveTheme, setTheme } = useTheme()
 const route = useRoute()
 const frame = ref<HTMLIFrameElement>()
 const generation = ref(0)
@@ -76,11 +78,18 @@ function sendAuth() {
     type: 'research-auth', token: auth.token, tenantId: tenantId.value,
   }, window.location.origin)
 }
+function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function receive(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
+  if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
+  if (event.data?.type === 'workspace-theme-request') {
+    if (event.data.mode === 'light' || event.data.mode === 'dark') setTheme(event.data.mode)
+    return
+  }
   if (event.data?.type === 'research-ready') sendAuth()
   if (event.data?.type === 'research-auth-expired') restartSession()
 }
+watch(effectiveTheme, sendTheme)
 // Replace both surfaces on identity changes; old workspace content must disappear.
 watch(() => [auth.token, tenantId.value, auth.user?.id, workbenchId.value], (scope, previous) => {
   restartSession()
