@@ -6,12 +6,13 @@ main{max-width:1660px}
 .sheet-filters{display:flex;gap:6px;margin:0 0 9px}
 .sheet-filters button{font-size:12px;padding:5px 9px;background:transparent;color:#73877b}
 .sheet-filters button[aria-pressed=true]{color:var(--primary,#24477f);background:var(--soft,#eef3fc)}
-.sheet-tabs-row{display:flex;align-items:end;gap:8px;padding:6px 8px 0;background:#edf2ee;border:1px solid #dce5df;border-bottom:0;border-radius:9px 9px 0 0}
+.sheet-tabs-row{display:flex;align-items:end;gap:8px;padding:6px 8px 0;background:var(--surface-soft);border:1px solid var(--line);border-bottom:0;border-radius:9px 9px 0 0}
 .sheet-tabs{display:flex;gap:3px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:thin;scrollbar-color:#cbd7cf transparent}
 .sheet-tabs::-webkit-scrollbar{height:4px}
 .sheet-tabs::-webkit-scrollbar-thumb{background:#cbd7cf;border-radius:4px}
-.sheet-tab{display:flex;align-items:center;gap:8px;flex:0 0 auto;min-width:115px;max-width:200px;height:36px;text-align:left;padding:6px 12px;background:#e7ede8;color:#687c6d;border:1px solid transparent;border-bottom:0;border-radius:7px 7px 0 0;position:relative}
-.sheet-tab[aria-pressed=true]{background:#fff;border-color:#dce5df;color:#234c3a}
+.sheet-tab{display:flex;align-items:center;gap:8px;flex:0 0 auto;min-width:115px;max-width:200px;height:36px;text-align:left;padding:6px 12px;background:var(--surface-soft);color:var(--muted);border:1px solid transparent;border-bottom:0;border-radius:7px 7px 0 0;position:relative}
+.sheet-tab[aria-pressed=true]{background:var(--paper);border-color:var(--line);color:var(--text)}
+.sheet-tab:hover,.sheet-tab:active,.sheet-filters button:hover{background:var(--soft);color:var(--text);border-color:var(--line-strong)}
 .sheet-tab[aria-pressed=true]:before{content:'';position:absolute;height:2px;background:var(--primary,#24477f);left:10px;right:10px;top:0}
 .sheet-tab strong{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sheet-state{width:6px;height:6px;background:#73a386;border-radius:50%;flex:none}

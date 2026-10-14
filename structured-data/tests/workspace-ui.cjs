@@ -125,6 +125,24 @@ async function main(){
   const input=async(selector,value)=>exec(`const el=d.querySelector(${JSON.stringify(selector)});el.value=${JSON.stringify(value)};el.dispatchEvent(new w.Event('input',{bubbles:true}));el.dispatchEvent(new w.Event('change',{bubbles:true}))`);
   const screenshot=async name=>{if(!keepArtifacts)return;fs.mkdirSync(path.join(output,'screenshots'),{recursive:true});const shot=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(output,'screenshots',name+'.png'),Buffer.from(shot.data,'base64'));};
   const resize=async width=>{await call('Emulation.setDeviceMetricsOverride',{width,height:980,deviceScaleFactor:1,mobile:false});await pause(150);};
+  const verifySheetHighlight=async theme=>{
+    const original=await exec("return d.querySelector('.sheet-tab').getAttribute('aria-pressed')");
+    const point=await js(`(()=>{const f=document.getElementById('frame'),outer=f.getBoundingClientRect(),r=f.contentDocument.querySelector('.sheet-tab').getBoundingClientRect();return {x:outer.left+r.left+r.width/2,y:outer.top+r.top+r.height/2}})()`);
+    for(const selected of [false,true]){
+      await exec(`d.querySelector('.sheet-tab').setAttribute('aria-pressed',${JSON.stringify(String(selected))})`);
+      await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:point.x,y:point.y});
+      await verify(`${theme}: ${selected?'selected':'unselected'} sheet hover uses a subtle highlight and readable text`,`(()=>{
+        const tab=d.querySelector('.sheet-tab'),style=w.getComputedStyle(tab),probe=d.createElement('span');
+        probe.style.backgroundColor='var(--soft)';tab.parentElement.append(probe);const highlight=w.getComputedStyle(probe).backgroundColor;probe.remove();
+        const luminance=color=>color.match(/[\\d.]+/g).slice(0,3).map(Number).map(value=>{const v=value/255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4}).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
+        const foreground=luminance(style.color),background=luminance(style.backgroundColor),contrast=(Math.max(foreground,background)+.05)/(Math.min(foreground,background)+.05);
+        return tab.matches(':hover') && style.backgroundColor===highlight && contrast>=4.5;
+      })()`);
+    }
+    await exec(`d.querySelector('.sheet-tab').setAttribute('aria-pressed',${JSON.stringify(original)})`);
+    await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:0,y:0});
+    await verify(`${theme}: selected sheet retains a surface background and accent underline`,`(()=>{const tab=d.querySelector('.sheet-tab'),probe=d.createElement('span');probe.style.backgroundColor='var(--paper)';tab.parentElement.append(probe);const paper=w.getComputedStyle(probe).backgroundColor;probe.remove();return w.getComputedStyle(tab).backgroundColor===paper && w.getComputedStyle(tab,'::before').height==='2px'})()`);
+  };
   const visible=id=>`d.getElementById('${id}') && w.getComputedStyle(d.getElementById('${id}')).display!=='none' && d.getElementById('${id}').getBoundingClientRect().height>0`;
   await call('Runtime.enable');await call('Page.enable');await call('Network.enable');await resize(1600);await call('Page.navigate',{url:origin+'/harness'});
   await wait("d.querySelector('.sheet-grid td') && d.querySelector('#dataset option') && d.querySelector('#seriesRows button')");
@@ -145,12 +163,14 @@ async function main(){
   await verify('Native file selection updates the real filename and accessible status',"d.getElementById('file').files[0].name==='隔离上传.xlsx' && d.getElementById('selectedFileName').title==='隔离上传.xlsx' && d.getElementById('selectedFileName').getAttribute('role')==='status'");
   await js("window.auth('kb-a','fixture-renewed')");await pause(50);await verify('Token refresh keeps the pending file in the same KB',"d.getElementById('file').files[0]?.name==='隔离上传.xlsx' && d.getElementById('selectedFileName').textContent==='隔离上传.xlsx'");await js("window.auth('kb-a')");
   await exec("window.reviewNode=d.getElementById('sheetDetail');const unit=d.querySelector('[data-column-field=unit]');unit.value='KB A 草稿';unit.dispatchEvent(new w.Event('input',{bubbles:true}))");
+  await verifySheetHighlight('Light');
   const themeRequests=requests.length;
   await exec("window.themeSnapshot={origin:w.performance.timeOrigin,import:d.getElementById('importSelect').value,node:d.getElementById('sheetDetail'),cells:[...d.querySelectorAll('.sheet-grid td')].map(el=>[el.textContent,el.getAttribute('style')])}");
   await js("document.getElementById('frame').contentWindow.postMessage({type:'workspace-theme',mode:'dark'},location.origin)");
   await wait("d.documentElement.getAttribute('theme-mode')==='dark'");
   await pause(180);
   await verify('Dark query and import controls use the shared cool brand and readable filled-button text',"w.getComputedStyle(d.getElementById('queryWorkspace')).getPropertyValue('--primary').trim().toLowerCase()==='#69c7dc' && w.getComputedStyle(d.getElementById('upload')).backgroundColor==='rgb(105, 199, 220)' && w.getComputedStyle(d.getElementById('upload')).color==='rgb(18, 39, 53)'");
+  await verifySheetHighlight('Dark');
   await verify('Changing theme keeps the original source cells, review node, selected import and unsaved draft',"window.themeSnapshot.origin===w.performance.timeOrigin && window.themeSnapshot.import===d.getElementById('importSelect').value && window.themeSnapshot.node===d.getElementById('sheetDetail') && JSON.stringify(window.themeSnapshot.cells)===JSON.stringify([...d.querySelectorAll('.sheet-grid td')].map(el=>[el.textContent,el.getAttribute('style')])) && d.querySelector('[data-column-field=unit]').value==='KB A 草稿'");
   assert.equal(requests.length,themeRequests);checks.push('Theme messages do not reload data, query sources or start another import');
   await js("document.getElementById('frame').contentWindow.postMessage({type:'workspace-theme',mode:'light'},location.origin)");
