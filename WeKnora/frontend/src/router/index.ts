@@ -102,6 +102,48 @@ const router = createRouter({
       meta: { requiresInit: true, requiresAuth: true },
       children: [
         {
+          path: 'projects',
+          name: 'assistantProjects',
+          component: () => import('../views/workspaces/AssistantProjects.vue'),
+          meta: { requiresInit: true, requiresAuth: true }
+        },
+        {
+          path: 'projects/:projectId',
+          name: 'assistantProjectPreview',
+          component: () => import('../views/workspaces/AssistantProjects.vue'),
+          meta: { requiresInit: true, requiresAuth: true }
+        },
+        {
+          path: 'research-workbenches',
+          name: 'researchWorkbenchList',
+          component: () => import('../views/workspaces/ResearchWorkbenches.vue'),
+          meta: { requiresInit: true, requiresAuth: true }
+        },
+        {
+          path: 'research-workbenches/new',
+          name: 'researchWorkbenchCreate',
+          component: () => import('../views/workspaces/ResearchWorkbenches.vue'),
+          meta: { requiresInit: true, requiresAuth: true }
+        },
+        {
+          path: 'research-workbenches/:workbenchId/preview',
+          name: 'researchWorkbenchPreview',
+          component: () => import('../views/workspaces/ResearchWorkbenches.vue'),
+          meta: { requiresInit: true, requiresAuth: true }
+        },
+        {
+          path: 'research-workbenches/:workbenchId',
+          name: 'researchWorkbenchDetail',
+          component: () => import('../views/research/index.vue'),
+          meta: { requiresInit: true, requiresAuth: true, standaloneWorkbench: true }
+        },
+        {
+          path: 'knowledge-bases/:kbId/preview',
+          name: 'knowledgeBasePreview',
+          component: () => import('../views/workspaces/KnowledgeBasePreview.vue'),
+          meta: { requiresInit: true, requiresAuth: true }
+        },
+        {
           path: "materials",
           name: "materialsCenter",
           component: () => import("../views/materials/MaterialsCenter.vue"),
@@ -139,7 +181,13 @@ const router = createRouter({
           path: "knowledge-bases/:kbId",
           name: "knowledgeBaseDetail",
           component: () => import("../views/knowledge/KnowledgeBase.vue"),
-          meta: { requiresInit: true, requiresAuth: true }
+          meta: { requiresInit: true, requiresAuth: true, knowledgeWorkspace: true }
+        },
+        {
+          path: 'knowledge-bases/:kbId/structured-data',
+          name: 'knowledgeStructuredData',
+          component: () => import('../views/workspaces/KnowledgeStructuredData.vue'),
+          meta: { requiresInit: true, requiresAuth: true, knowledgeWorkspace: true }
         },
         {
           path: "knowledge-search",
@@ -197,7 +245,13 @@ const router = createRouter({
           path: "knowledge-bases/:kbId/creatChat",
           name: "kbCreatChat",
           component: () => import("../views/creatChat/creatChat.vue"),
-          meta: { requiresInit: true, requiresAuth: true }
+          meta: { requiresInit: true, requiresAuth: true, knowledgeWorkspace: true }
+        },
+        {
+          path: "knowledge-bases/:kbId/chat/:chatid",
+          name: "kbChat",
+          component: () => import("../views/chat/index.vue"),
+          meta: { requiresInit: true, requiresAuth: true, knowledgeWorkspace: true }
         },
         {
           path: "chat/:chatid",

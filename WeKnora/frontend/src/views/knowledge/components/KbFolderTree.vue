@@ -1,6 +1,6 @@
 <template>
-  <aside class="kb-folder-tree" :class="{ 'is-collapsed': collapsed }">
-    <div class="kb-folder-tree__header">
+  <aside class="kb-folder-tree" :class="{ 'is-collapsed': collapsed, 'is-navigation': navigation }">
+    <div v-if="!navigation" class="kb-folder-tree__header">
       <template v-if="!collapsed">
         <span class="kb-folder-tree__title">{{ t('knowledgeBase.folderTree.title') }}</span>
         <span v-if="tree && !loading" class="kb-folder-tree__total"
@@ -121,6 +121,10 @@
                       <t-icon name="edit" class="menu-icon" />
                       <span>{{ t('knowledgeBase.folderTree.rename') }}</span>
                     </div>
+                    <div v-if="allowDelete" class="popup-menu-item" @click="menuOpenPath = null; emit('delete', row.path)">
+                      <t-icon name="delete" class="menu-icon" />
+                      <span>删除空文件夹</span>
+                    </div>
                   </div>
                 </template>
               </t-popup>
@@ -153,16 +157,21 @@ const props = withDefaults(defineProps<{
   loading?: boolean
   collapsed?: boolean
   canEdit?: boolean
+  navigation?: boolean
+  allowDelete?: boolean
 }>(), {
   loading: false,
   collapsed: false,
   canEdit: false,
+  navigation: false,
+  allowDelete: false,
 })
 
 const emit = defineEmits<{
   select: [path: string]
   'update:collapsed': [collapsed: boolean]
   rename: [payload: { from: string; to: string }]
+  delete: [path: string]
 }>()
 
 const { t } = useI18n()
@@ -263,6 +272,13 @@ watch(
   margin-right: 16px;
   border-right: 1px solid var(--td-component-stroke);
   box-sizing: border-box;
+
+  &.is-navigation {
+    width: 100%;
+    padding-right: 0;
+    margin-right: 0;
+    border-right: 0;
+  }
 
   &.is-collapsed {
     width: auto;

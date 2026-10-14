@@ -1,8 +1,10 @@
 <template>
-    <div class="main" ref="dropzone" :style="{ '--sidebar-width': `${uiStore.sidebarDisplayWidth}px` }">
-        <Menu></Menu>
+    <div class="main" :class="{ 'main--standalone-workbench': route.meta.standaloneWorkbench }" ref="dropzone"
+        :style="{ '--sidebar-width': `${route.meta.standaloneWorkbench ? 0 : uiStore.sidebarDisplayWidth}px` }">
+        <KnowledgeWorkspaceMenu v-if="route.meta.knowledgeWorkspace" />
+        <Menu v-else-if="!route.meta.standaloneWorkbench"></Menu>
         <div v-if="isRouterAlive" class="platform-route-outlet">
-            <RouterView />
+            <RouterView :key="knowledgeViewKey" />
         </div>
         <div class="upload-mask" v-show="ismask">
             <UploadMask></UploadMask>
@@ -22,7 +24,8 @@
 </template>
 <script setup lang="ts">
 import Menu from '@/components/menu.vue'
-import { ref, onMounted, onUnmounted, nextTick, provide, watch } from 'vue';
+import KnowledgeWorkspaceMenu from '@/views/workspaces/KnowledgeWorkspaceMenu.vue'
+import { computed, ref, onMounted, onUnmounted, nextTick, provide, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router'
 import UploadMask from '@/components/upload-mask.vue'
 import Settings from '@/views/settings/Settings.vue'
@@ -33,6 +36,7 @@ import NewUserGuide from '@/components/NewUserGuide.vue'
 import { useCommandPaletteStore } from '@/stores/commandPalette'
 import { useChatResourcesStore } from '@/stores/chatResources'
 import { useUIStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { useI18n } from 'vue-i18n'
 import { collectDroppedFiles } from './collectDroppedFiles'
@@ -41,6 +45,10 @@ const route = useRoute();
 const router = useRouter();
 const commandPaletteStore = useCommandPaletteStore();
 const uiStore = useUIStore();
+const authStore = useAuthStore();
+const knowledgeViewKey = computed(() => route.meta.knowledgeWorkspace
+  ? `${authStore.selectedTenantId ?? authStore.tenant?.id}:${authStore.user?.id}:${String(route.params.kbId || '')}`
+  : undefined);
 let ismask = ref(false)
 const { t } = useI18n();
 
@@ -221,6 +229,10 @@ onUnmounted(() => {
     min-height: 0;
     /* 统一整页背景，让左侧菜单与右侧内容区视觉连贯 */
     background: var(--td-bg-color-page);
+}
+
+.main--standalone-workbench {
+    min-width: 0;
 }
 
 /* 右侧路由区：占满剩余宽度与整列高度，并把 min-height:0 传给子页面以便内部 flex 滚动 */

@@ -20,9 +20,10 @@ type ResourceKey = 'knowledgeBases' | 'agents' | 'models' | 'webSearchProviders'
 
 export type ListCreatorFilter = 'all' | 'mine' | 'others'
 
-function isKbModelReady(kb: any): boolean {
-  if (!kb.summary_model_id || kb.summary_model_id === '') return false
+export function isKbModelReady(kb: any): boolean {
   const strategy = kb.indexing_strategy
+  if (strategy?.disabled === true && !strategy.vector_enabled && !strategy.keyword_enabled && !strategy.wiki_enabled && !strategy.graph_enabled) return true
+  if (!kb.summary_model_id || kb.summary_model_id === '') return false
   const needsEmbedding = !strategy || strategy.vector_enabled || strategy.keyword_enabled
   if (needsEmbedding && (!kb.embedding_model_id || kb.embedding_model_id === '')) return false
   return true
@@ -52,8 +53,10 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
 
   const agentKbCache = new Map<string, { at: number; data: any[] }>()
   const agentKbInflight = new Map<string, Promise<any[]>>()
+  const agentKbRequests = new Map<string, symbol>()
   const kbDetailCache = new Map<string, { at: number; data: any }>()
   const kbDetailInflight = new Map<string, Promise<any | null>>()
+  const kbDetailRequests = new Map<string, symbol>()
 
   const validKnowledgeBases = computed(() => rawKnowledgeBases.value.filter(isKbModelReady))
   const chatModels = computed(() => allModels.value.filter((m) => m.type === 'KnowledgeQA'))
@@ -124,11 +127,12 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
       try {
         const res: any = await listKnowledgeBases()
         const data = res?.data && Array.isArray(res.data) ? res.data : []
+        if (gen !== kbAllGen) return []
         rawKnowledgeBases.value = data
         loadedAt.value.knowledgeBases = Date.now()
         const orgStore = useOrganizationStore()
         await orgStore.fetchSharedKnowledgeBases({ force })
-        return data
+        return gen === kbAllGen ? data : []
       } finally {
         if (kbAllGen === gen) kbAllInflight = null
       }
@@ -280,7 +284,8 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
     }
     const existing = agentKbInflight.get(cacheKey)
     if (existing) return existing
-
+    const request = Symbol(cacheKey)
+    agentKbRequests.set(cacheKey, request)
     const p = (async () => {
       try {
         const res: any = await listKnowledgeBases({
@@ -288,10 +293,14 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
           agent_source_tenant_id: sourceTenantId,
         })
         const list = res?.data && Array.isArray(res.data) ? res.data : []
+        if (agentKbRequests.get(cacheKey) !== request) return []
         agentKbCache.set(cacheKey, { at: Date.now(), data: list })
         return list
       } finally {
-        agentKbInflight.delete(cacheKey)
+        if (agentKbRequests.get(cacheKey) === request) {
+          agentKbInflight.delete(cacheKey)
+          agentKbRequests.delete(cacheKey)
+        }
       }
     })()
     agentKbInflight.set(cacheKey, p)
@@ -307,11 +316,13 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
     }
     const existing = kbDetailInflight.get(kbId)
     if (existing) return existing
-
+    const request = Symbol(kbId)
+    kbDetailRequests.set(kbId, request)
     const p = (async () => {
       try {
         const res: any = await getKnowledgeBaseById(kbId)
         const data = res?.data ?? null
+        if (kbDetailRequests.get(kbId) !== request) return null
         if (data) {
           kbDetailCache.set(kbId, { at: Date.now(), data })
         }
@@ -319,7 +330,10 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
       } catch {
         return null
       } finally {
-        kbDetailInflight.delete(kbId)
+        if (kbDetailRequests.get(kbId) === request) {
+          kbDetailInflight.delete(kbId)
+          kbDetailRequests.delete(kbId)
+        }
       }
     })()
     kbDetailInflight.set(kbId, p)
@@ -330,9 +344,11 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
     if (kbId) {
       kbDetailCache.delete(kbId)
       kbDetailInflight.delete(kbId)
+      kbDetailRequests.delete(kbId)
     } else {
       kbDetailCache.clear()
       kbDetailInflight.clear()
+      kbDetailRequests.clear()
     }
   }
 
@@ -349,6 +365,8 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
       // 同时丢弃所有 inflight 句柄，否则失效后仍在飞行的请求会把旧数据写回缓存。
       inflight.clear()
       agentKbInflight.clear()
+      agentKbRequests.clear()
+      kbAllGen++
       kbAllInflight = null
       agentsLoadedLocale = ''
       bumpAgentsGeneration()
@@ -363,6 +381,8 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
     if (keys.includes('knowledgeBases')) {
       agentKbCache.clear()
       agentKbInflight.clear()
+      agentKbRequests.clear()
+      kbAllGen++
       kbAllInflight = null
       invalidateKnowledgeBaseDetail()
     }

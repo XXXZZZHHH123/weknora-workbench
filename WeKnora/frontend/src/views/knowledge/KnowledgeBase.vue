@@ -15,6 +15,8 @@ import { permissionCanEditKB, permissionCanManageKB } from '@/utils/kbPermission
 import { useChatResourcesStore } from '@/stores/chatResources';
 import { useEditorResourcesStore } from '@/stores/editorResources';
 import KnowledgeBaseEditorModal from './KnowledgeBaseEditorModal.vue';
+import KnowledgeWorkbenchLink from '@/views/workspaces/KnowledgeWorkbenchLink.vue';
+import { KNOWLEDGE_DIRECTORY_EVENT, knowledgeDirectorySelection } from '@/views/workspaces/knowledgeDirectory';
 const uiStore = useUIStore();
 const orgStore = useOrganizationStore();
 const authStore = useAuthStore();
@@ -760,7 +762,9 @@ const folderTree = ref<KnowledgeFolderTree | null>(null);
 const folderTreeLoading = ref(false);
 // The folder being browsed; ROOT_FOLDER_PATH ('') is the knowledge base top
 // level, a real node of the tree rather than a separate mode.
-const selectedFolderPath = ref<string>(ROOT_FOLDER_PATH);
+const selectedFolderPath = ref<string>(knowledgeDirectorySelection(route.query).path);
+const allFolderPreview = computed(() => knowledgeDirectorySelection(route.query).all);
+const localDirectoryNavigation = computed(() => route.meta.knowledgeWorkspace === true);
 const folderTreeCollapsed = ref(readStoredFlag(FOLDER_TREE_COLLAPSED_KEY));
 const hasFolders = computed(() => (folderTree.value?.folders?.length ?? 0) > 0);
 // The folder column only earns its space once the knowledge base actually has
@@ -779,7 +783,17 @@ const isFiltering = computed(() =>
   }),
 );
 // A row's folder is worth showing only when the list can span folders.
-const showDocumentFolderPath = computed(() => hasFolders.value && isFiltering.value);
+const showDocumentFolderPath = computed(() => hasFolders.value && (isFiltering.value || allFolderPreview.value));
+const visibleChildFolders = computed(() => {
+  const result: KnowledgeFolderTree['folders'] = [];
+  const walk = (nodes: KnowledgeFolderTree['folders']) => nodes.forEach(node => {
+    if (allFolderPreview.value || node.path.split('/').slice(0, -1).join('/') === selectedFolderPath.value) result.push(node);
+    walk(node.children || []);
+  });
+  walk(folderTree.value?.folders || []);
+  const keyword = docSearchKeyword.value.trim().toLocaleLowerCase();
+  return keyword ? result.filter(node => node.path.toLocaleLowerCase().includes(keyword)) : result;
+});
 const folderBreadcrumbs = computed(() => buildFolderBreadcrumbs(selectedFolderPath.value));
 
 const filterParams = computed(() => {
@@ -793,7 +807,7 @@ const filterParams = computed(() => {
     start_time: start ? `${start} 00:00:00` : undefined,
     end_time: end ? `${end} 23:59:59` : undefined,
     ...getDocumentSortParams(selectedDocumentSort.value),
-    folder_path: selectedFolderPath.value,
+    folder_path: allFolderPreview.value ? undefined : selectedFolderPath.value,
     // Filtering searches descendants; browsing shows this folder's documents.
     folder_recursive: isFiltering.value,
   };
@@ -877,8 +891,12 @@ const loadFolderTree = async (kbIdValue: string) => {
 };
 
 const handleFolderSelect = (path: string) => {
-  if (selectedFolderPath.value === path) return;
-  selectedFolderPath.value = path;
+  if (selectedFolderPath.value === path && !allFolderPreview.value) return;
+  const query = { ...route.query };
+  delete query.directory;
+  if (path) query.folder = path;
+  else delete query.folder;
+  void router.replace({ query });
 };
 
 // ── Re-filing documents and renaming folders ──
@@ -920,19 +938,13 @@ const handleFolderRename = async ({ from, to }: { from: string; to: string }) =>
     return;
   }
   try {
-    const res: any = await renameKnowledgeFolder(kbId.value, from, to);
-    const movedCount = res?.data?.moved_count ?? 0;
-    if (movedCount === 0) {
-      MessagePlugin.warning(t('knowledgeBase.folderTree.renameFailed'));
-      await loadFolderTree(kbId.value);
-      return;
-    }
+    await renameKnowledgeFolder(kbId.value, from, to);
     MessagePlugin.success(t('knowledgeBase.folderTree.renameSuccess'));
     // Follow the folder to its new path so the user stays where they were.
     if (selectedFolderPath.value === from) {
-      selectedFolderPath.value = to;
+      handleFolderSelect(to);
     } else if (selectedFolderPath.value.startsWith(`${from}/`)) {
-      selectedFolderPath.value = to + selectedFolderPath.value.slice(from.length);
+      handleFolderSelect(to + selectedFolderPath.value.slice(from.length));
     }
     resetPage();
     await loadKnowledgeFiles(kbId.value);
@@ -1128,7 +1140,7 @@ watch(() => kbId.value, (newKbId, oldKbId) => {
     tagPage.value = 1;
     uiStore.clearSelectedTagIds();
     folderTree.value = null;
-    selectedFolderPath.value = ROOT_FOLDER_PATH;
+    selectedFolderPath.value = knowledgeDirectorySelection(route.query).path;
   }
   loadKnowledgeBaseInfo(newKbId);
 }, { immediate: true });
@@ -1185,12 +1197,23 @@ watch([selectedParseStatus, selectedSource, updatedTimeRange], () => {
 
 // 切换目录只改变列表范围，行为与其他筛选一致。浏览态与筛选态之间的切换由各筛选项
 // 自身的 watcher 触发刷新，这里不重复请求。
-watch(selectedFolderPath, () => {
+watch(() => [route.query.folder, route.query.directory], () => {
+  selectedFolderPath.value = knowledgeDirectorySelection(route.query).path;
+});
+
+watch([selectedFolderPath, allFolderPreview], () => {
   if (!kbId.value || isFAQ.value) return;
   clearSelection();
   resetPage();
   loadKnowledgeFiles(kbId.value);
 });
+
+const handleDirectoryChanged = (event: Event) => {
+  if ((event as CustomEvent).detail?.kbId !== kbId.value || isFAQ.value) return;
+  void loadFolderTree(kbId.value);
+  resetPage();
+  void loadKnowledgeFiles(kbId.value);
+};
 
 // 监听文件上传事件
 const handleFileUploaded = (event: CustomEvent) => {
@@ -1308,6 +1331,7 @@ onMounted(() => {
   window.addEventListener('openURLImportDialog', handleOpenURLImportDialog as EventListener);
   window.addEventListener('weknora:knowledge-file-drop', handleKnowledgeFileDrop as EventListener);
   window.addEventListener('weknora:open-knowledge', handleOpenKnowledgeEvent as EventListener);
+  window.addEventListener(KNOWLEDGE_DIRECTORY_EVENT, handleDirectoryChanged);
 });
 
 onUnmounted(() => {
@@ -1315,6 +1339,7 @@ onUnmounted(() => {
   window.removeEventListener('openURLImportDialog', handleOpenURLImportDialog as EventListener);
   window.removeEventListener('weknora:knowledge-file-drop', handleKnowledgeFileDrop as EventListener);
   window.removeEventListener('weknora:open-knowledge', handleOpenKnowledgeEvent as EventListener);
+  window.removeEventListener(KNOWLEDGE_DIRECTORY_EVENT, handleDirectoryChanged);
   stopMovePoll();
   if (timeout !== null) {
     clearTimeout(timeout);
@@ -2294,6 +2319,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
             </h2>
             <!-- 标题行右侧的动作锚点：聚拢"信息"和"设置"两个圆形按钮。 -->
             <div class="kb-title-actions">
+              <KnowledgeWorkbenchLink v-if="kbId" :kb-id="kbId" />
               <KBInfoPopover v-if="kbInfo && !authStore.isLiteMode" :kb-info="kbInfo"
                 :supported-file-types="[...supportedFileTypes]" />
               <t-tooltip v-if="canManage" :content="$t('knowledgeBase.settings')" placement="top">
@@ -2329,7 +2355,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
 
       <template v-if="activeKbTab === 'documents' || !isWiki">
         <div class="knowledge-main">
-          <KbFolderTree v-if="showFolderTree && !folderTreeCollapsed" :tree="folderTree" :selected-path="selectedFolderPath"
+          <KbFolderTree v-if="showFolderTree && !folderTreeCollapsed && !localDirectoryNavigation" :tree="folderTree" :selected-path="selectedFolderPath"
             :loading="folderTreeLoading" :can-edit="canEdit" :root-label="kbInfo?.name"
             @select="handleFolderSelect" @update:collapsed="handleFolderTreeCollapsedChange"
             @rename="handleFolderRename" />
@@ -2337,7 +2363,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
             <div class="doc-card-area">
               <div class="doc-filter-bar">
                 <nav class="doc-folder-path" :aria-label="$t('knowledgeBase.folderTree.title')">
-                  <button v-if="showFolderTree && folderTreeCollapsed" type="button" class="doc-folder-path__tree-toggle"
+                  <button v-if="showFolderTree && folderTreeCollapsed && !localDirectoryNavigation" type="button" class="doc-folder-path__tree-toggle"
                     :aria-expanded="false" :title="$t('knowledgeBase.folderTree.expand')"
                     :aria-label="$t('knowledgeBase.folderTree.expand')"
                     @click="handleFolderTreeCollapsedChange(false)">
@@ -2482,6 +2508,14 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
                       @url="handleUploadSourceUrl" @manual="handleManualCreate" />
                   </div>
                 </div>
+              </div>
+              <div v-if="visibleChildFolders.length" class="doc-child-folders" aria-label="子文件夹">
+                <button v-for="folder in visibleChildFolders" :key="folder.path" type="button" class="doc-child-folder"
+                  :title="folder.path" @click="handleFolderSelect(folder.path)">
+                  <t-icon name="folder" size="18px" />
+                  <span><strong>{{ folder.name }}</strong><small>{{ allFolderPreview ? folder.path : `${folder.total_count} 个条目` }}</small></span>
+                  <t-icon name="chevron-right" size="14px" />
+                </button>
               </div>
               <div class="doc-scroll-container"
                 :class="{
@@ -2736,6 +2770,37 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
   container-type: inline-size;
   container-name: doc-card-area;
 }
+
+.doc-child-folders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 40px 12px;
+  max-height: 180px;
+  overflow: auto;
+  flex: none;
+}
+
+.doc-child-folder {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 180px;
+  max-width: 320px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border-color);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-card-bg);
+  color: var(--td-text-color-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.doc-child-folder:hover { background: var(--td-bg-color-container-hover); }
+.doc-child-folder span { flex: 1; min-width: 0; }
+.doc-child-folder strong { display: block; font-size: var(--app-text-md); font-weight: 500; overflow-wrap: anywhere; }
+.doc-child-folder small { display: block; margin-top: 4px; font-size: var(--app-text-xs); color: var(--app-text-secondary); overflow-wrap: anywhere; }
+.doc-child-folder:focus-visible { outline: 2px solid var(--td-brand-color); outline-offset: 1px; }
 
 // One navigation row; filters open in a single anchored panel.
 .doc-filter-bar {

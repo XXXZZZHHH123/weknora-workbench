@@ -162,7 +162,12 @@
                             <t-icon name="chevron-down" size="18px" />
                         </div>
                     </transition>
-                    <InputField ref="inputFieldRef" :auto-focus="focusComposerOnMount" :compact="!embeddedMode"
+                    <fieldset v-if="scopedSession" class="scoped-composer" :disabled="composerLocked">
+                        <EmbedInputField ref="inputFieldRef" :is-replying="isReplying"
+                            @send-msg="(query) => sendMsg(query, scopedModelId)"
+                            @stop-generation="handleScopedStop" />
+                    </fieldset>
+                    <InputField v-else ref="inputFieldRef" :auto-focus="focusComposerOnMount" :compact="!embeddedMode"
                         @send-msg="(query, modelId, mentionedItems, imageFiles, attachmentFiles, options) => sendMsg(query, modelId, mentionedItems, imageFiles, attachmentFiles, options)"
                         @steer-msg="(query, mentionedItems, delivery) => handleSteerMsg(query, mentionedItems, delivery)"
                         @promote-steer="handlePromoteSteer"
@@ -182,10 +187,10 @@
             </div>
         </div>
     </div>
-    <KnowledgeBaseEditorModal :visible="uiStore.showKBEditorModal" :mode="uiStore.kbEditorMode"
+    <KnowledgeBaseEditorModal v-if="!scopedSession" :visible="uiStore.showKBEditorModal" :mode="uiStore.kbEditorMode"
         :kb-id="uiStore.currentKBId || undefined" :initial-type="uiStore.kbEditorType"
         @update:visible="(val) => val ? null : uiStore.closeKBEditor()" @success="handleKBEditorSuccess" />
-    <ChatReferencesDrawer />
+    <ChatReferencesDrawer :embedded-mode="scopedSession" />
     <ChatAttachmentPreviewDrawer />
     <SandboxSidePanel v-if="!embeddedMode" :session-id="session_id"
         :agent-id="useSettingsStoreInstance.selectedAgentId"
@@ -196,13 +201,15 @@
 </template>
 <script setup>
 import { makeSteerClientId } from '@/utils/steerId';
+import { conversationPath } from '@/views/workspaces/knowledgeChatNavigation';
 import { storeToRefs } from 'pinia';
 import { ref, onMounted, onBeforeMount, onUnmounted, nextTick, watch, reactive, computed } from 'vue';
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router';
 import InputField from '../../components/Input-field.vue';
+import EmbedInputField from '../../components/EmbedInputField.vue';
 import botmsg from './components/botmsg.vue';
 import usermsg from './components/usermsg.vue';
-import { getMessageList, getSession, forkSession, rewindSession } from "@/api/chat/index";
+import { getMessageList, getSession, forkSession, rewindSession, stopSession } from "@/api/chat/index";
 import { resolveForkAffordance } from './forkPoint';
 import { rewindSkipMessage } from './rewindNotice';
 import { rewindPrefillText, rewindBlockedByOutgoingWork, canReplaceRewindTranscript, shouldApplyRewindLocally, rewindHistoryHasMore, keepMessagesThroughRewindPoint, rewindableMessageIds, rewindHttpConflictCode, rewindConflictI18nKey } from './rewindView';
@@ -261,7 +268,11 @@ const props = defineProps({
     agentId: { type: String, default: '' },
     kbIds: { type: Array, default: () => [] },
     embeddedMode: { type: Boolean, default: false },
+    scopedSession: { type: Boolean, default: false },
+    scopedModelId: { type: String, default: '' },
+    agentSourceTenantId: { type: String, default: '' },
 });
+const emit = defineEmits(['replying-change']);
 
 const usemenuStore = useMenuStore();
 const useSettingsStoreInstance = useSettingsStore();
@@ -356,7 +367,8 @@ let forkInFlight = false
 const rewindInFlight = ref(false)
 const rewindLockSessionId = ref('')
 const composerLocked = computed(() =>
-    rewindInFlight.value && String(session_id.value || '') === rewindLockSessionId.value
+    (props.scopedSession && !props.scopedModelId) ||
+    (rewindInFlight.value && String(session_id.value || '') === rewindLockSessionId.value)
 )
 
 function stashForkLanding(sessionId, text) {
@@ -434,7 +446,7 @@ async function handleFork(messageId) {
             updated_at: now,
         })
 
-        await router.push(`/platform/chat/${data.session_id}`)
+        await router.push(conversationPath(data.session_id, route.params.kbId))
     } catch (err) {
         if (err?.status === 409 || err?.$httpStatus === 409) {
             MessagePlugin.warning('请等本轮回答结束后再分叉')
@@ -553,6 +565,7 @@ const sessionArtifactsCollecting = computed(() =>
 );
 const steerQueue = ref([]);
 const isReplying = ref(false);
+watch(isReplying, (replying) => emit('replying-change', replying));
 const currentAssistantMessageId = ref(''); // 当前正在生成的 assistant message ID
 // True only while attaching to an in-flight *IM-originated* reply via continue-stream.
 // Such replies are generated on the IM side and never stream through this server, so
@@ -806,6 +819,7 @@ const getUserQuery = (index) => {
 };
 
 watch([() => route.params], async (newvalue) => {
+    if (props.scopedSession) return;
     isFirstEnter.value = true;
     if (newvalue[0].chatid) {
         if (!firstQuery.value) {
@@ -1097,6 +1111,23 @@ const handleStopFailed = () => {
     loading.value = true;
 };
 
+const handleScopedStop = async () => {
+    if (!session_id.value || !currentAssistantMessageId.value) {
+        MessagePlugin.warning(t('input.messages.messageMissing'));
+        return;
+    }
+    const sid = session_id.value;
+    const messageId = currentAssistantMessageId.value;
+    handleStopGeneration();
+    try {
+        await stopSession(sid, messageId);
+        handleStopConfirmed();
+    } catch {
+        handleStopFailed();
+        MessagePlugin.error(t('input.messages.stopFailed'));
+    }
+};
+
 const dropSteerQueueItem = (steerId) => {
     if (!steerId) return;
     const idx = steerQueue.value.findIndex((item) => item.steer_id === steerId);
@@ -1383,6 +1414,7 @@ const attachSteerFollowUp = async (completedAssistantId) => {
 
 const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = [], attachmentFiles = [], options = {}) => {
     if (composerLocked.value) return
+    if (props.scopedSession) modelId = props.scopedModelId;
     const reasoningEffort = props.embeddedMode ? undefined : (useSettingsStoreInstance.reasoningEffortOverride || undefined);
     stopStream();
     prepareForNewOutgoingMessage();
@@ -1391,7 +1423,7 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     loading.value = true;
     const selectedAgentId = props.embeddedMode ? props.agentId : (useSettingsStoreInstance.selectedAgentId || '');
     const selectedAgentSourceTenantId = props.embeddedMode
-        ? undefined
+        ? (props.agentSourceTenantId || undefined)
         : (useSettingsStoreInstance.selectedAgentSourceTenantId || undefined);
 
     // Images are unified with the attachment pipeline: on the authenticated web
@@ -1676,6 +1708,8 @@ const handleSessionMutation = (event) => {
 };
 
 onBeforeMount(async () => {
+    // A workspace panel owns its session and scope, independent of the full-page draft.
+    if (props.scopedSession) return;
     // 若从智能体列表点击共享智能体进入，URL 带 agent_id 与 source_tenant_id，同步到 store
     const agentIdFromQuery = props.agentId || (route.query.agent_id && String(route.query.agent_id));
     const sourceTenantIdFromQuery = route.query.source_tenant_id && String(route.query.source_tenant_id);
@@ -1702,7 +1736,7 @@ onMounted(async () => {
     loading.value = false;
     isReplying.value = false;
 
-    if (firstQuery.value) {
+    if (!props.scopedSession && firstQuery.value) {
         scrollLock.value = true;
         historyLoading.value = false;
         if (firstModelId.value) {
@@ -1738,6 +1772,7 @@ const clearData = () => {
     isImRecovering.value = false;
 }
 onUnmounted(() => {
+    if (props.scopedSession) stopStream();
     if (!props.embeddedMode) sessionActivity.detach(activitySessionId.value);
     activitySessionId.value = '';
     window.removeEventListener(SESSION_MUTATION_EVENT, handleSessionMutation);
@@ -1746,10 +1781,11 @@ onUnmounted(() => {
 onBeforeRouteLeave((to, from, next) => {
     clearData()
     // 离开聊天会话 → 还原"用户全局默认"，避免旧会话的请求态泄漏到新建对话。
-    useSettingsStoreInstance.restoreDefaultsIfSnapshotted();
+    if (!props.scopedSession) useSettingsStoreInstance.restoreDefaultsIfSnapshotted();
     next()
 })
 onBeforeRouteUpdate((to, from, next) => {
+    if (props.scopedSession) { next(); return; }
     clearData()
     // 仅"会话 → 会话"会落到这里；跨会话覆盖的还原放到 route.params 的 watch 里，
     // 因为新会话的 getSession 也在那边触发，便于保证 restore→snapshot→apply 顺序。
@@ -1757,6 +1793,7 @@ onBeforeRouteUpdate((to, from, next) => {
 })
 </script>
 <style lang="less" scoped>
+.scoped-composer { margin: 0; padding: 0; border: 0; min-width: 0; width: 100%; }
 .chat {
     // 水平方向不留 padding，让滚动条贴到内容区最右缘；
     // 消息列与输入列各自用 --chat-content-inset 做左右对称的留白（窄屏时才可见）。

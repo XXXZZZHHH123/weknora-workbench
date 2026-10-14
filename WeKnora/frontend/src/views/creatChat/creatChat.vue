@@ -88,6 +88,7 @@ import { MessagePlugin } from 'tdesign-vue-next';
 import { useI18n } from 'vue-i18n';
 import KnowledgeBaseEditorModal from '@/views/knowledge/KnowledgeBaseEditorModal.vue';
 import { useKnowledgeBaseCreationNavigation } from '@/hooks/useKnowledgeBaseCreationNavigation';
+import { conversationPath } from '@/views/workspaces/knowledgeChatNavigation';
 
 const router = useRouter();
 const route = useRoute();
@@ -96,7 +97,7 @@ const settingsStore = useSettingsStore();
 onBeforeRouteLeave((to) => {
     // The first send carries the draft into its new session; abandoning the
     // composer must not make this a default for the next conversation.
-    if (!to.path.startsWith('/platform/chat/') || !usemenuStore.isFirstSession) {
+    if (!['chat', 'kbChat'].includes(String(to.name)) || !usemenuStore.isFirstSession) {
         settingsStore.reasoningEffortOverride = '';
     }
 });
@@ -271,7 +272,7 @@ const navigateToSession = async (sessionId: string, value: string, modelId: stri
     usemenuStore.updataMenuChildren(obj);
     usemenuStore.changeIsFirstSession(true);
     usemenuStore.changeFirstQuery(value, mentionedItems, modelId, imageFiles, attachmentFiles, options.questionOrigin ?? null);
-    router.push(`/platform/chat/${sessionId}`);
+    router.push(conversationPath(sessionId, route.params.kbId));
 }
 
 const handleKBEditorSuccess = (kbId: string) => {
