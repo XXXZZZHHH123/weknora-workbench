@@ -1,5 +1,6 @@
 """Publish immutable snapshots by copying unchanged tables and streaming changes."""
 import csv
+from contextlib import closing
 import datetime as dt
 import hashlib
 import json
@@ -33,7 +34,10 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None, repla
         series, sheets, excluded = [], [], []
         if base:
             base_path = store._path(base_id)
-            shutil.copyfile(base_path / 'data.duckdb', work / 'data.duckdb')
+            # A legacy snapshot may still have committed indexed data in its
+            # WAL. Copy only after recovery, while the source read lock is held.
+            with store._connect(base_id):
+                shutil.copyfile(base_path / 'data.duckdb', work / 'data.duckdb')
             prior_series = json.loads((base_path / 'series.json').read_text())
             series = [s for s in prior_series if s['sheet'] not in replaced]
             sheets = [s for s in base['sheets'] if s['name'] not in replaced]
@@ -51,7 +55,7 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None, repla
                 for item in read_json_array(base_path / 'issues.json'):
                     if item.get('sheet') not in replaced:
                         add_issue(item)
-            with duckdb.connect(str(work / 'data.duckdb')) as con:
+            with closing(duckdb.connect(str(work / 'data.duckdb'))) as con:
                 con.execute('CREATE TABLE IF NOT EXISTS observations(' + SCHEMA + ')')
                 if base:
                     removed = [s['series_id'] for s in prior_series if s['sheet'] in replaced]
@@ -94,6 +98,7 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None, repla
                                     'FROM observations GROUP BY series_id').fetchall()
                 periods = dict(con.execute('SELECT series_id,list(DISTINCT period ORDER BY period) '
                                            'FROM observations WHERE period IS NOT NULL GROUP BY series_id').fetchall())
+                con.execute('CHECKPOINT')
         summaries = {r[0]: dict(record_count=r[1], valid_count=r[2], first_date=r[3], last_date=r[4],
                                first_valid_date=r[5], last_valid_date=r[6]) for r in stats}
         series = [{**s, **summaries.get(s['series_id'], {}),
