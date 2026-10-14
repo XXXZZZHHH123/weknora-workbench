@@ -69,7 +69,7 @@ async function main(){
   else if(route==='/api/imports')body={imports:[{import_id:ids.import,source_file:'同一合成原件.xlsx',updated_at:'2025-01-05T00:00:00Z'}]};
   else if(route.endsWith('/sheet-view'))body={sheet_name:fixtureSheet.name,total_rows:4,total_cols:2,range:{start_row:1,end_row:4,start_col:1,end_col:2,row_count:4,col_count:2},cells:[{row:1,column:1,cell:'A1',value:'日期',display:'日期'},{row:1,column:2,cell:'B1',value:'合成指标一',display:'合成指标一'},...dates.flatMap((date,i)=>[{row:i+2,column:1,cell:`A${i+2}`,value:date,display:date},{row:i+2,column:2,cell:`B${i+2}`,value:values[i],display:String(values[i])}])],styles:{},merges:[],column_widths:{},row_heights:{},warnings:[]};
   else if(route.endsWith('/sheet'))body=fixtureSheet;
-  else if(route.endsWith('/report')){const dataset=route.split('/')[3],item=catalogue(scope).find(item=>item.dataset_id===dataset);await pause(250);body={manifest:{...item,series_count:3,valid_count:9,observation_count:9,issue_count:1,sha256:'synthetic-source-fingerprint',excluded_regions:[]},issues:[{sheet:fixtureSheet.name,cell:'B5',message:'夹具范围外原值不参与查询'}]};}
+  else if(route.endsWith('/report')){const dataset=route.split('/')[3],item=catalogue(scope).find(item=>item.dataset_id===dataset);await pause(250);body={manifest:{...item,series_count:12417,valid_count:608180,observation_count:1048771,issue_count:72945,sha256:'synthetic-source-fingerprint',excluded_regions:[]},issues:[{sheet:fixtureSheet.name,cell:'B5',message:'夹具范围外原值不参与查询'}]};}
   else if(route.endsWith('/series')){const dataset=route.split('/')[3],search=url.searchParams.get('search')||'';const rows=series(dataset,scope).filter(row=>!search||`${row.metric} ${row.sheet}`.includes(search));body={series:rows,total:rows.length,truncated:false};}
   else if(route.endsWith('/charts'))body={charts:[],sheets:[],total:0,next_offset:null};
   else if(route==='/api/query'){
@@ -154,7 +154,17 @@ async function main(){
    await verify(`Query layout at ${width} px has no document horizontal overflow`,"d.documentElement.scrollWidth<=d.documentElement.clientWidth+1");
    await screenshot(`04_查询_${width}`);
   }
-  await resize(1600);
+  await resize(600);await js("document.getElementById('frame').style.cssText='width:340px;height:100%;margin-left:260px;border:0'");await pause(150);await exec("w.scrollTo(0,0)");
+  await verify('Narrow embedded query keeps all large statistics fully readable without overlap',`(()=>{
+   if(w.innerWidth!==340)return false;
+   const numbers=[...d.querySelectorAll('#stats b')],expected=['12417','608,180','1,048,771','72,945'];
+   if(numbers.length!==4||numbers.some((number,index)=>number.textContent!==expected[index]))return false;
+   const ranges=numbers.map(number=>{const range=d.createRange();range.selectNodeContents(number);return range.getBoundingClientRect()});
+   if(ranges.some((rect,index)=>{const cell=numbers[index].parentElement.getBoundingClientRect();return rect.width<=0||rect.left<cell.left-1||rect.right>cell.right+1||rect.bottom>cell.bottom+1}))return false;
+   return ranges.every((rect,index)=>ranges.slice(index+1).every(other=>rect.right<=other.left||other.right<=rect.left||rect.bottom<=other.top||other.bottom<=rect.top));
+  })()`);
+  await verify('Narrow embedded query does not overflow its 340 px frame',"d.documentElement.scrollWidth<=d.documentElement.clientWidth+1");await screenshot('04b_查询_600外框_340内容');
+  await js("document.getElementById('frame').style.cssText=''");await resize(1600);
   await input('#start','2026-01-01');await input('#end','2026-01-02');await input('#operation','rows');await click('#query');await wait("d.getElementById('answer').textContent.includes('没有匹配')");checks.push('A valid date range with no rows is explicit');
   await input('#start','2026-02-01');await input('#end','2026-01-01');await click('#query');await wait("d.getElementById('notice').textContent.includes('开始日期不能晚于')");await verify('Failed query does not leave a previous result or source file displayed',"!d.getElementById('answer').textContent.includes('查询完成') && !d.getElementById('answer').textContent.includes('kb-a_合成样本甲.xlsx')");checks.push('Query errors remain visible without JavaScript failure');
   await input('#search','合成期间');await click('#find');await wait("d.querySelectorAll('#seriesRows button').length===1 && d.getElementById('seriesRows').textContent.includes('期间')");await click('#seriesRows [data-index="0"]');
