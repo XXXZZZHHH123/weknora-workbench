@@ -2665,6 +2665,7 @@ export default {
     hintUploading: '上传完成前请不要关闭或刷新页面',
     hintParsing: '文件已全部上传，解析在后台继续，可以放心离开此页面',
     legend: {
+      stored: '原件已保存',
       ready: '可检索',
       active: '处理中',
       waiting: '等待中',

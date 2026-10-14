@@ -2663,6 +2663,7 @@ export default {
     hintUploading: '업로드가 끝날 때까지 페이지를 닫거나 새로고침하지 마세요',
     hintParsing: '모든 파일이 업로드되었습니다. 파싱은 백그라운드에서 계속되므로 이 페이지를 떠나도 됩니다',
     legend: {
+      stored: '원본 저장됨',
       ready: '검색 가능',
       active: '처리 중',
       waiting: '대기 중',

@@ -107,7 +107,7 @@ bash scripts/start-local.sh
 
 本地环境配置在 `.private/local.env`，账号在 `.private/accounts.json`，WeKnora 数据库在 `.private/weknora/`，结构化数据在 `structured-data/data/`；运行日志在 `logs/`。启动脚本先用独立的 `WeKnora/docreader/.venv` 运行 DocReader，在 `127.0.0.1:50051` 完成 gRPC 健康与鉴权解析器检查后再启动后端；后端使用相同地址及鉴权配置。DocReader 默认本地令牌保存在 `.private/docreader-service-token`，若 `.private/local.env` 设置了 `GRPC_AUTH_TOKEN`，两端会共同使用该配置。缺少解析依赖或 DocReader 检查失败会终止启动，日志在 `logs/docreader.log`。TXT 等简单文本沿用 Go 的内置解析器，DOCX、PDF 等文档通过 DocReader 解析；扫描 PDF 的 OCR 仍需单独配置。
 
-启动脚本同时运行商品研究服务，其空间数据库保存在 `.private/commodity-research/`，内部服务签名密钥保存在 `.private/research-service-token`。研究服务使用 18083 端口，经 18080 的 `/research/` 代理访问；表格服务使用 18082 端口，经 `/structured/` 代理访问。本地预览不启动自动取数调度。修改 Python 后停止并重新启动即可加载当前源码。网页地址与上方相同，资料中心入口为 `http://127.0.0.1:18080/platform/materials`。
+启动脚本同时运行商品研究服务，其空间数据库保存在 `.private/commodity-research/`，内部服务签名密钥保存在 `.private/research-service-token`。研究服务使用 18083 端口，经 18080 的 `/research/` 代理访问；表格服务使用 18082 端口，经 `/structured/` 代理访问。本地预览不启动自动取数调度。修改 Python 后停止并重新启动即可加载当前源码。网页地址与上方相同，知识库入口为 `http://127.0.0.1:18080/platform/knowledge-bases`；进入具体知识库后可直接添加文档并选择文件或文件夹。
 
 本地服务与离线解析回归：
 

@@ -91,4 +91,4 @@ start_service commodity-research http://127.0.0.1:18083/healthz
 start_service frontend http://127.0.0.1:18080/
 echo "WeKnora：http://127.0.0.1:18080"
 echo "表格工作台：http://127.0.0.1:18080/platform/structured-data"
-echo "资料中心：http://127.0.0.1:18080/platform/materials"
+echo "知识库：http://127.0.0.1:18080/platform/knowledge-bases"

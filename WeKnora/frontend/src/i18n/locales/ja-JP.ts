@@ -4970,6 +4970,7 @@ export default {
     hintUploading: 'アップロードが完了するまでページを閉じたり再読み込みしたりしないでください',
     hintParsing: 'すべてのファイルをアップロードしました。解析はバックグラウンドで続くため、このページを離れても問題ありません',
     legend: {
+      stored: '原本保存済み',
       ready: '検索可能',
       active: '処理中',
       waiting: '待機中',

@@ -4970,6 +4970,7 @@ export default {
     hintUploading: 'Keep this page open until the upload finishes',
     hintParsing: 'All files are uploaded. Parsing continues in the background, so you can leave this page',
     legend: {
+      stored: 'Originals saved',
       ready: 'Searchable',
       active: 'In progress',
       waiting: 'Queued',
