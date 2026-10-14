@@ -15,6 +15,14 @@ helper=(docker run --rm -i --network none --read-only --cap-drop ALL --security-
   --user "$(id -u):$(id -g)" --mount "type=bind,source=$stage,target=/state"
   --entrypoint python "$image")
 
+# Network tools use short leases; a status query never wakes an idle proxy.
+case "$action" in
+  check|nodes|select|latency|activate)
+    if [[ "${WEKNORA_PROXY_SESSION:-}" != 1 ]]; then
+      exec bash "$script_dir/proxy-session.sh" bash "$0" "$@"
+    fi ;;
+esac
+
 install_binary() {
   local version=v1.19.32 expected=ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20
   if [[ -f "$stage/runtime/mihomo.binary.sha256" ]]; then
@@ -49,7 +57,7 @@ start_proxy() {
     if netstat -lnt | awk '$4 ~ /:(17891|17991)$/ {found=1} END {exit !found}'; then
       echo 'Proxy port 17891 or controller port 17991 is occupied.' >&2; return 1
     fi
-    docker run -d --name "$container" --label weknora.egress-proxy=true --restart unless-stopped \
+    docker run -d --name "$container" --label weknora.egress-proxy=true --restart on-failure:3 \
       --network host --read-only --cap-drop ALL --security-opt no-new-privileges \
       --user "$(id -u):$(id -g)" --memory 384m --cpus 1 --pids-limit 128 \
       --log-opt max-size=2m --log-opt max-file=2 \
@@ -68,12 +76,41 @@ start_proxy() {
   echo 'Proxy did not become ready; deployment settings have not changed.' >&2; return 1
 }
 
+ensure_started() {
+  if [[ "$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null || true)" == running ]]; then
+    curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 5 http://127.0.0.1:17991/version >/dev/null
+  else
+    start_proxy
+  fi
+}
+
 check_proxy() {
-  local github ghcr
-  github="$(curl --noproxy '' --proxy "$proxy" -sS --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' https://api.github.com)" || return 1
+  local github ghcr token auth headers body limited=false github_bad=false
+  auth="$(mktemp "$stage/.github-auth.XXXXXX")"
+  headers="$auth.headers"
+  body="$auth.json"
+  if [[ -s "$HOME/weknora-workbench/shared/github-token" ]]; then
+    token="$(cat "$HOME/weknora-workbench/shared/github-token")"
+    [[ "$token" =~ ^[a-zA-Z0-9_]+$ ]] || { rm "$auth"; echo 'Invalid server GitHub token format.' >&2; return 1; }
+    printf 'header = "Authorization: Bearer %s"\n' "$token" > "$auth"
+    unset token
+  fi
+  github="$(curl --noproxy '' --proxy "$proxy" --config "$auth" -sS --connect-timeout 10 --max-time 30 -D "$headers" -o "$body" -w '%{http_code}' https://api.github.com)" || { rm -f "$auth" "$headers" "$body"; return 1; }
+  rm "$auth"
+  if [[ "$github" == 403 || "$github" == 429 ]]; then
+    if grep -iq '^x-ratelimit-remaining: 0' "$headers" || jq -e '.message // "" | ascii_downcase | contains("rate limit")' "$body" >/dev/null 2>&1; then
+      limited=true
+      echo 'GitHub is reachable, but its API rate limit is exhausted; this is not a proxy disconnection.' >&2
+    fi
+  fi
+  rm "$headers" "$body"
   ghcr="$(curl --noproxy '' --proxy "$proxy" -sS --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' https://ghcr.io/v2/)" || return 1
   echo "GitHub API: HTTP $github; GHCR: HTTP $ghcr (401 is the normal registry authentication challenge)."
-  [[ "$github" == 200 && "$ghcr" == 401 ]] || { echo 'GitHub/GHCR check failed; deployment settings have not changed.' >&2; return 1; }
+  if [[ "$github" != 200 && "$limited" != true ]]; then
+    github_bad=true
+    echo "GitHub request failed: HTTP $github; verify authentication or access restrictions." >&2
+  fi
+  [[ "$ghcr" == 401 ]] || { echo 'GHCR check failed; deployment settings have not changed.' >&2; return 1; }
   # CentOS 7 curl/NSS can fail TLS handshakes which work with modern TLS clients.
   # Use the existing Python/OpenSSL runtime without changing any host TLS packages.
   docker run --rm --network host --read-only --cap-drop ALL --security-opt no-new-privileges \
@@ -91,6 +128,7 @@ for name,url,expected in targets:
     print(f"{name}: HTTP {status}",flush=True)
     if status != expected: print("Access needs further verification; this does not confirm a logged-in Codex session.",flush=True)
 ' "$proxy"
+  [[ "$github_bad" == false && "$limited" == false ]]
 }
 
 activate_deploy() {
@@ -118,7 +156,7 @@ case "$action" in
     start_proxy
     activate_deploy
     ;;
-  start) start_proxy ;;
+  start|ensure-started) ensure_started ;;
   check) check_proxy ;;
   select)
     node="${2:?usage: linux-proxy.sh select NODE_NAME}"
@@ -133,7 +171,7 @@ case "$action" in
     fi
     echo "Proxy status: $state"
     if [[ "$state" != running ]]; then
-      echo 'Stopped: run linux-proxy.sh start before Codex or deployment downloads.'; exit 0
+      echo 'Stopped: update.sh / with-proxy.sh automatically start it when needed.'; exit 0
     fi
     group="$(curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 5 http://127.0.0.1:17991/proxies/PROXY | jq -er .now)"
     if [[ "$group" == AUTO ]]; then
@@ -146,9 +184,29 @@ case "$action" in
   nodes)
     curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 5 \
       http://127.0.0.1:17991/proxies/PROXY | jq '{selected: .now, nodes: .all}' ;;
+  latency)
+    echo 'Measuring HTTPS delay to the connectivity test endpoint; this does not measure download bandwidth.'
+    node_list="$(mktemp "$stage/.nodes.XXXXXX")"
+    delays="$(mktemp "$stage/.delays.XXXXXX")"
+    if ! curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 5 \
+      -o "$node_list" http://127.0.0.1:17991/proxies/PROXY || \
+      ! curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 45 \
+      --get --data-urlencode url=https://www.gstatic.com/generate_204 --data-urlencode timeout=5000 \
+      -o "$delays" http://127.0.0.1:17991/group/PROXY/delay; then
+      rm "$node_list" "$delays"; exit 1
+    fi
+    # The controller omits failed nodes; include them explicitly as timeouts.
+    jq -r --slurpfile group "$node_list" '. as $delays | $group[0].all |
+      map({key:., value:($delays[.] // 0)}) |
+      sort_by(if .value > 0 then .value else 999999 end)[] |
+      if .value > 0 then "\(.value) ms\t\(.key)" else "timeout\t\(.key)" end' "$delays"
+    rm "$node_list" "$delays" ;;
   stop)
+    exec 9>"$stage/lifecycle.lock"; flock 9
+    exec 8>"$stage/sessions.lock"
+    flock -xn 8 || { echo 'Proxy is in use by Codex/deployment; wait for callers to finish.' >&2; exit 1; }
     docker stop "$container"
-    echo 'Proxy stopped; Linux deployment proxy settings were preserved. Start it before Codex or deployment downloads.' ;;
+    echo 'Proxy stopped; configuration was preserved. update.sh / with-proxy.sh start it when needed.' ;;
   restore-deploy)
     shared=/home/codexuser/weknora-workbench/shared
     [[ -s "$stage/deployment.before.json" ]] || { echo 'No deployment backup exists.' >&2; exit 1; }
@@ -158,5 +216,5 @@ case "$action" in
     mv "$shared/poller.json.tmp" "$shared/poller.json"
     rm "$stage/deployment.before.json"
     echo 'Previous deployment proxy settings restored; application containers were not changed.' ;;
-  *) echo 'usage: linux-proxy.sh {install|configure|start|check|activate|status|nodes|select NODE|restore-deploy|stop}' >&2; exit 2 ;;
+  *) echo 'usage: linux-proxy.sh {install|configure|start|check|activate|status|nodes|latency|select NODE|restore-deploy|stop}' >&2; exit 2 ;;
 esac

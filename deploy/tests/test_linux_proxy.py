@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import tempfile
 import unittest
 
@@ -14,6 +15,75 @@ spec.loader.exec_module(config)
 
 
 class LinuxProxyTests(unittest.TestCase):
+    def check_with_mock_http(self, directory, github_code, authenticated=False):
+        root=Path(directory)
+        mock=root/'mockbin';mock.mkdir()
+        docker=mock/'docker'
+        docker.write_text('#!/bin/sh\n[ "$1" != inspect ] || echo isolated-image\n')
+        docker.chmod(0o700)
+        curl=mock/'curl'
+        curl.write_text('''#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+a=sys.argv[1:]
+if a[-1]=='https://api.github.com':
+ auth=Path(a[a.index('--config')+1]).read_text()
+ Path(os.environ['HOME'],'auth-used').write_text(str('Bearer isolated_test_token' in auth))
+ if 'isolated_test_token' in ' '.join(a): sys.exit(99)
+ code=os.environ['TEST_GITHUB_CODE']
+ Path(a[a.index('-D')+1]).write_text('X-RateLimit-Remaining: 0\\n' if code=='403' else '')
+ Path(a[a.index('-o')+1]).write_text(json.dumps({'message':'API rate limit exceeded'} if code=='403' else {}))
+ print(code,end='')
+else: print('401',end='')
+''')
+        curl.chmod(0o700)
+        if authenticated:
+            token=root/'weknora-workbench/shared/github-token';token.parent.mkdir(parents=True)
+            token.write_text('isolated_test_token\n')
+        env=dict(os.environ,HOME=directory,PATH=str(mock)+':'+os.environ['PATH'],
+                 WEKNORA_PROXY_SESSION='1',TEST_GITHUB_CODE=str(github_code))
+        return subprocess.run(['bash',str(SCRIPTS/'linux-proxy.sh'),'check'],env=env,capture_output=True,text=True)
+
+    def test_github_rate_limit_is_reported_without_skipping_ghcr_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result=self.check_with_mock_http(directory,403)
+            self.assertEqual(result.returncode,1,result.stderr)
+            self.assertIn('not a proxy disconnection',result.stderr)
+            self.assertIn('GHCR: HTTP 401',result.stdout)
+
+    def test_check_uses_private_token_without_exposing_it_in_arguments_or_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result=self.check_with_mock_http(directory,200,authenticated=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual((Path(directory)/'auth-used').read_text(),'True')
+            self.assertNotIn('isolated_test_token',result.stdout+result.stderr)
+            self.assertFalse(list((Path(directory)/'.local/share/weknora-proxy').glob('.github-auth.*')))
+
+    def test_invalid_authentication_remains_a_failed_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result=self.check_with_mock_http(directory,401,authenticated=True)
+            self.assertEqual(result.returncode,1,result.stderr)
+            self.assertIn('verify authentication',result.stderr)
+
+    def test_latency_includes_failed_nodes_and_sorts_successful_nodes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mock=Path(directory)/'mockbin';mock.mkdir()
+            for name,body in {
+                'docker':'#!/bin/sh\necho isolated-image\n',
+                'curl':'''#!/usr/bin/env python3
+import json,sys
+from pathlib import Path
+a=sys.argv[1:]
+result={'all':['slow','failed','fast']} if a[-1].endswith('/proxies/PROXY') else {'slow':200,'fast':50}
+Path(a[a.index('-o')+1]).write_text(json.dumps(result))
+''',
+            }.items():
+                path=mock/name;path.write_text(body);path.chmod(0o700)
+            env=dict(os.environ,HOME=directory,PATH=str(mock)+':'+os.environ['PATH'],WEKNORA_PROXY_SESSION='1')
+            result=subprocess.run(['bash',str(SCRIPTS/'linux-proxy.sh'),'latency'],env=env,capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout.splitlines()[1:],['50 ms\tfast','200 ms\tslow','timeout\tfailed'])
+
     def run_proxy_with_mock_docker(self, directory, action, state):
         root=Path(directory)
         mock=root/'mockbin'; mock.mkdir()
@@ -30,6 +100,16 @@ case "$1" in
 esac
 ''')
         docker.chmod(0o700)
+        if not shutil.which('flock'):
+            lock=mock/'flock'
+            lock.write_text('''#!/usr/bin/env python3
+import fcntl,sys
+flags=fcntl.LOCK_SH if '-s' in sys.argv else fcntl.LOCK_EX
+if any('n' in a for a in sys.argv[1:-1]): flags |= fcntl.LOCK_NB
+try: fcntl.flock(int(sys.argv[-1]),flags)
+except BlockingIOError: sys.exit(1)
+''')
+            lock.chmod(0o700)
         env=dict(os.environ,HOME=directory,PATH=str(mock)+':'+os.environ['PATH'],TEST_PROXY_STATE=state)
         return subprocess.run(['bash',str(SCRIPTS/'linux-proxy.sh'),action],env=env,capture_output=True,text=True)
 

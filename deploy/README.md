@@ -38,7 +38,7 @@ exit
 bash /home/codexuser/weknora-workbench/bin/update.sh
 ```
 
-该命令只检查一次最新已发布版本。已是最新版则提示退出；有新版本则准备镜像、备份 PostgreSQL、部署并检查健康状态。服务器没有每两分钟检查的任务。排除上一次部署失败原因后，显式重试：
+该命令只检查一次最新已发布版本。使用 Linux 独立代理时自动启动代理，结束后自动关闭；多个部署/Codex 调用同时运行时，等最后一个调用及其连接结束才关闭。已是最新版则提示退出；有新版本则准备镜像、备份 PostgreSQL、部署并检查健康状态。服务器没有每两分钟检查的任务。排除上一次部署失败原因后，显式重试：
 
 ```sh
 bash /home/codexuser/weknora-workbench/bin/update.sh --retry-failed
@@ -135,7 +135,7 @@ test -f "$previous_release/deploy.sh" && bash "$previous_release/deploy.sh" \
 
 代理使用一个独立的 `weknora-egress-proxy` 容器，复用服务器已有结构化服务镜像作为基础环境，挂载经过 SHA256 校验的 Mihomo v1.19.32 compatible 二进制。容器以普通用户运行、文件系统只读、没有 Linux capabilities，未授予 NET_ADMIN；host 网络模式避免增加 Docker 网桥或端口转发规则。TUN、透明代理和 DNS 监听均关闭，不修改默认路由、系统 DNS、Docker daemon、全局环境变量或其他应用配置。内核已在 CentOS 7 / Linux 3.10 上实测启动，回环代理 HTTPS 请求通过；安装前后 IPv4/IPv6 路由配置、系统 DNS 和原有健康应用容器没有变化。
 
-首次安装把 `linux-proxy.sh`、`linux-proxy-config.py`、`with-proxy.sh` 放在 `~/weknora-workbench/setup/`。安装脚本使用 GitHub 官方 Release 并校验固定 SHA256；服务器不能直连下载时，可以在 Mac 下载并校验后一次性传送二进制及校验文件到 `~/.local/share/weknora-proxy/runtime/`。这只是安装文件传输，后续代理运行不依赖 Mac。
+首次安装把 `linux-proxy.sh`、`linux-proxy-config.py`、`proxy-session.sh`、`with-proxy.sh` 放在 `~/weknora-workbench/setup/`，bootstrap 也会把这四个文件安装到 `bin/`。安装脚本使用 GitHub 官方 Release 并校验固定 SHA256；服务器不能直连下载时，可以在 Mac 下载并校验后一次性传送二进制及校验文件到 `~/.local/share/weknora-proxy/runtime/`。这只是安装文件传输，后续代理运行不依赖 Mac。
 
 ```sh
 # 已安装二进制时会验证本地校验文件并直接退出，不重复下载
@@ -144,7 +144,7 @@ bash ~/weknora-workbench/setup/linux-proxy.sh install
 bash ~/weknora-workbench/setup/linux-proxy.sh configure
 ```
 
-`configure` 保存私有配置到 `~/.local/share/weknora-proxy/config/config.json`（目录 700、文件 600），校验后启动独立容器；只有 GitHub API 返回 200、GHCR 返回正常认证挑战 401，才把部署脚本的下载代理改成 17891 并继续使用 regctl。不会重新部署或重启应用。容器随 Docker 自动启动；本项目日常 `wb stop` 不会停止这个独立代理。
+`configure` 保存私有配置到 `~/.local/share/weknora-proxy/config/config.json`（目录 700、文件 600），校验后启动独立容器；只有 GitHub API 返回 200、GHCR 返回正常认证挑战 401，才把部署脚本的下载代理改成 17891 并继续使用 regctl。不会重新部署或重启应用。本项目日常 `wb stop` 不会停止这个独立代理。
 
 ```sh
 # 查看运行状态、当前实际节点及运行期累计字节数
@@ -153,19 +153,27 @@ bash ~/weknora-workbench/setup/linux-proxy.sh status
 bash ~/weknora-workbench/setup/linux-proxy.sh nodes
 # 测试 GitHub/GHCR/OpenAI 网络连接，不发送模型请求
 bash ~/weknora-workbench/setup/linux-proxy.sh check
+# 测量全部节点 HTTPS 延迟，按毫秒从低到高排列
+bash ~/weknora-workbench/setup/linux-proxy.sh latency
 # 需要时按 nodes 给出的真实名称选节点
 bash ~/weknora-workbench/setup/linux-proxy.sh select '替换为实际节点名称'
 # 网络验证通过后，允许更新脚本使用 Linux 代理
 bash ~/weknora-workbench/setup/linux-proxy.sh activate
 ```
 
+`check`、`nodes`、`latency`、`select`、`activate` 自动启动代理，并在调用结束且没有其他调用时关闭；`status` 仅查看状态。测速使用 HTTPS 连通性测试地址，`timeout` 表示未在 5 秒内完成；低延迟不保证 OpenAI 可用，切换后仍需 `check`。`select 'AUTO'` 恢复自动选择低延迟节点。
+
+GitHub 匿名 API 请求按出口 IP 共享每小时 60 次额度，`403` 加 `X-RateLimit-Remaining: 0` 表示额度耗尽，不是代理断线。检查脚本使用服务器已有 `shared/github-token`，令牌不进入命令参数或输出；如果仍遇到额度耗尽，会继续检查其他站点并明确报告限流。无效令牌或其他 403 仍视为检查失败。[GitHub 官方额度说明](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)。
+
 OpenAI API 无凭据返回 401 仅证明该 HTTPS 请求可达，不证明 Codex 已登录或模型会话可用。CentOS 7 的 curl 7.29/NSS 对 OpenAI 可能出现 TLS EOF，检查脚本使用已有 Python 3.12/OpenSSL 运行时验证，保持宿主机 TLS 包不变。若现代客户端仍返回 403/连接失败，需核对节点对目标服务的访问。本机已安装并验证官方 Codex CLI 0.162.1 的 Linux x86_64 musl 二进制，避免依赖旧 glibc；安装包来自官方 GitHub Release，并核对其 SHA256。2026-10-14 验收：GitHub API 200、GHCR 401、完整私有 Redis 镜像下载成功、OpenAI API 401、登录发现接口 200、Codex 后端 GET 返回 405；服务器已有 ChatGPT 登录状态，在隔离的只读临时目录运行最小 Codex 请求返回 `OK`。没有读取或修改项目文件。
 
 按进程使用代理，变量只传递给指定命令及其子进程，普通 SSH 会话和其他应用的环境不改变：
 
 ```sh
-# 一次安装入口脚本
-install -m 700 ~/weknora-workbench/setup/with-proxy.sh ~/weknora-workbench/bin/with-proxy.sh
+# 首次安装；当前服务器已经完成
+for script in linux-proxy.sh linux-proxy-config.py proxy-session.sh with-proxy.sh; do
+  install -m 700 ~/weknora-workbench/setup/"$script" ~/weknora-workbench/bin/"$script"
+done
 # 普通 curl 不受影响；显式运行的这个 curl 使用代理
 bash ~/weknora-workbench/bin/with-proxy.sh curl -I https://github.com
 # 新环境没有登录状态时才需要登录；当前服务器已经登录并验证
@@ -176,18 +184,20 @@ bash ~/weknora-workbench/bin/with-proxy.sh codex
 
 直接 `docker pull` 的联网主体是 daemon，不能依靠这个进程包装脚本改变其网络；本项目继续用 regctl 下载后导入镜像，保留现有 Docker daemon 设置。代理故障时只影响显式使用它的工具；此处没有为其他应用启用代理。
 
-Docker 已设置开机启动，代理容器采用 `unless-stopped`：正常重启服务器后自动启动，无需再次导入订阅或运行 configure；如果此前手动 stop，服务器重启后仍保持关闭，需手动 start。[Docker 官方重启策略](https://docs.docker.com/engine/containers/start-containers-automatically/)。
+代理现在按需运行：`update.sh` 或 `with-proxy.sh codex` 自动开启，命令结束、出错或中断后释放使用权，最后一个调用退出且连接结束后自动关闭。文件锁协调同时运行的调用；一个本地守护进程只检查使用权及回环连接，处理包装进程被强制结束的情况，不查询 GitHub、订阅或远程发布。现有长期连接也会阻止自动关闭。直接运行 `codex` 不经过自动开关入口。
+
+Docker 已设置开机启动，代理容器改为 `on-failure:3`，仅在运行期间异常退出时重试；服务器重启后代理保持关闭，下一次部署或 Codex 调用自动启动，无需再次导入订阅。GitHub Actions 仍只发布版本，服务器保持手动部署。[Docker 官方重启策略](https://docs.docker.com/engine/containers/start-containers-automatically/)。
 
 日常临时关闭/开启，保留 Linux 代理的配置和节点选择：
 
 ```sh
 bash ~/weknora-workbench/setup/linux-proxy.sh stop
-# 需要使用 Codex 或下载更新时重新开启
+# 只有需要在包装脚本外使用代理时才手动开启
 bash ~/weknora-workbench/setup/linux-proxy.sh start
 bash ~/weknora-workbench/setup/linux-proxy.sh check
 ```
 
-代理只接收显式使用它的命令，不会把其他应用的普通流量转过去。开启但闲置时仍有少量节点健康检查（配置间隔 600 秒）和订阅刷新（86400 秒）；流量紧张或长期不用可以 stop。开启服务通常远小于下载镜像所需流量；精确计费以订阅服务商统计为准，status 输出是运行期计数，重启可能清零。代理关闭期间，Codex 和部署下载可能连接失败，但已部署应用继续运行。无需为了临时关闭而执行 restore-deploy。
+代理只接收显式使用它的命令，不会把其他应用的普通流量转过去。运行期间仍有少量节点健康检查（配置间隔 600 秒）和订阅刷新（86400 秒），自动关闭后不产生这些流量。status 输出是运行期计数，重启可能清零；精确计费以订阅服务商统计为准。已有部署继续运行。`stop` 遇到仍在运行的包装命令会拒绝，避免中断 Codex 或部署。无需为了临时关闭而执行 restore-deploy。
 
 只有彻底撤销 Linux 代理的部署配置时才运行下面的恢复命令：
 
