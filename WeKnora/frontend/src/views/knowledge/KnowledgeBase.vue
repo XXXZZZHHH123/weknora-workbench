@@ -16,7 +16,8 @@ import { useChatResourcesStore } from '@/stores/chatResources';
 import { useEditorResourcesStore } from '@/stores/editorResources';
 import KnowledgeBaseEditorModal from './KnowledgeBaseEditorModal.vue';
 import KnowledgeWorkbenchLink from '@/views/workspaces/KnowledgeWorkbenchLink.vue';
-import { KNOWLEDGE_DIRECTORY_EVENT, knowledgeDirectorySelection } from '@/views/workspaces/knowledgeDirectory';
+import { KNOWLEDGE_DIRECTORY_EVENT, knowledgeDirectorySelection, newKnowledgeFolderPath } from '@/views/workspaces/knowledgeDirectory';
+import { workspaceErrorMessage } from '@/views/workspaces/workspaceForm';
 const uiStore = useUIStore();
 const orgStore = useOrganizationStore();
 const authStore = useAuthStore();
@@ -37,6 +38,7 @@ import {
   getKnowledgeSpans,
   getKnowledgeDetails,
   listKnowledgeFolders,
+  createKnowledgeFolder,
   moveKnowledgeToFolder,
   renameKnowledgeFolder,
   downKnowledgeDetails,
@@ -918,29 +920,87 @@ const folderOptions = computed(() => {
   return result;
 });
 
-const moveKnowledgeIntoFolder = async (ids: string[], folderPath: string) => {
-  if (!kbId.value || ids.length === 0) return;
+const createFolderOpen = ref(false);
+const createFolderName = ref('');
+const createFolderParent = ref('');
+const createFolderError = ref('');
+const createFolderBusy = ref(false);
+const createFolderScope = ref<ReturnType<typeof captureKnowledgeScope> | null>(null);
+const captureKnowledgeScope = () => ({
+  userId: String(authStore.user?.id || ''),
+  tenantId: String(authStore.effectiveTenantId || ''),
+  knowledgeBaseId: String(router.currentRoute.value.params.kbId || ''),
+});
+
+const openCreateFolder = () => {
+  if (!canEdit.value || !kbId.value) return;
+  const scope = captureKnowledgeScope();
+  if (scope.knowledgeBaseId !== kbId.value) return;
+  createFolderScope.value = scope;
+  createFolderParent.value = selectedFolderPath.value;
+  createFolderName.value = '';
+  createFolderError.value = '';
+  createFolderOpen.value = true;
+};
+
+const submitCreateFolder = async () => {
+  if (createFolderBusy.value || !createFolderOpen.value || !canEdit.value || !createFolderScope.value) return;
+  const originalScope = createFolderScope.value;
+  if (!sameNativeUploadScope(originalScope, captureKnowledgeScope())) {
+    createFolderOpen.value = false;
+    MessagePlugin.warning(t('knowledgeBase.uploadScopeChanged'));
+    return;
+  }
+  const input = newKnowledgeFolderPath(createFolderParent.value, createFolderName.value, folderOptions.value.map(folder => folder.path));
+  createFolderError.value = input.error;
+  if (input.error) return;
+  createFolderBusy.value = true;
   try {
-    await moveKnowledgeToFolder(kbId.value, ids, folderPath);
+    await createKnowledgeFolder(originalScope.knowledgeBaseId, input.path);
+    if (!sameNativeUploadScope(originalScope, captureKnowledgeScope())) return;
+    createFolderOpen.value = false;
+    window.dispatchEvent(new CustomEvent(KNOWLEDGE_DIRECTORY_EVENT, { detail: { kbId: originalScope.knowledgeBaseId } }));
+    MessagePlugin.success(t('knowledgeBase.folderTree.createSuccess'));
+  } catch (error) {
+    if (sameNativeUploadScope(originalScope, captureKnowledgeScope())) createFolderError.value = workspaceErrorMessage(error);
+  } finally {
+    if (sameNativeUploadScope(originalScope, captureKnowledgeScope())) createFolderBusy.value = false;
+  }
+};
+
+watch(() => [kbId.value, authStore.user?.id, authStore.effectiveTenantId], () => {
+  createFolderOpen.value = false;
+  createFolderBusy.value = false;
+  createFolderScope.value = null;
+});
+
+const moveKnowledgeIntoFolder = async (ids: string[], folderPath: string) => {
+  if (!canEdit.value || !kbId.value || ids.length === 0) return;
+  const originalScope = captureKnowledgeScope();
+  if (originalScope.knowledgeBaseId !== kbId.value || !sameNativeUploadScope(originalScope, originalScope)) return;
+  try {
+    await moveKnowledgeToFolder(originalScope.knowledgeBaseId, ids, folderPath);
+    if (!sameNativeUploadScope(originalScope, captureKnowledgeScope())) return;
     MessagePlugin.success(t('knowledgeBase.moveToFolder.success', { count: ids.length }));
     clearSelection();
     batchMode.value = false;
-    resetPage();
-    await loadKnowledgeFiles(kbId.value);
-    await loadFolderTree(kbId.value);
+    window.dispatchEvent(new CustomEvent(KNOWLEDGE_DIRECTORY_EVENT, { detail: { kbId: originalScope.knowledgeBaseId } }));
   } catch (error: any) {
-    MessagePlugin.error(error?.message || t('knowledgeBase.moveToFolder.failed'));
+    if (sameNativeUploadScope(originalScope, captureKnowledgeScope())) MessagePlugin.error(error?.message || t('knowledgeBase.moveToFolder.failed'));
   }
 };
 
 const handleFolderRename = async ({ from, to }: { from: string; to: string }) => {
-  if (!kbId.value || !to || from === to) return;
+  if (!canEdit.value || !kbId.value || !to || from === to) return;
   if (!canMoveFolderTo(from, to)) {
     MessagePlugin.warning(t('knowledgeBase.folderTree.renameInvalid'));
     return;
   }
+  const originalScope = captureKnowledgeScope();
+  if (originalScope.knowledgeBaseId !== kbId.value || !sameNativeUploadScope(originalScope, originalScope)) return;
   try {
-    await renameKnowledgeFolder(kbId.value, from, to);
+    await renameKnowledgeFolder(originalScope.knowledgeBaseId, from, to);
+    if (!sameNativeUploadScope(originalScope, captureKnowledgeScope())) return;
     MessagePlugin.success(t('knowledgeBase.folderTree.renameSuccess'));
     // Follow the folder to its new path so the user stays where they were.
     if (selectedFolderPath.value === from) {
@@ -948,11 +1008,9 @@ const handleFolderRename = async ({ from, to }: { from: string; to: string }) =>
     } else if (selectedFolderPath.value.startsWith(`${from}/`)) {
       handleFolderSelect(to + selectedFolderPath.value.slice(from.length));
     }
-    resetPage();
-    await loadKnowledgeFiles(kbId.value);
-    await loadFolderTree(kbId.value);
+    window.dispatchEvent(new CustomEvent(KNOWLEDGE_DIRECTORY_EVENT, { detail: { kbId: originalScope.knowledgeBaseId } }));
   } catch (error: any) {
-    MessagePlugin.error(error?.message || t('knowledgeBase.folderTree.renameFailed'));
+    if (sameNativeUploadScope(originalScope, captureKnowledgeScope())) MessagePlugin.error(error?.message || t('knowledgeBase.folderTree.renameFailed'));
   }
 };
 
@@ -1050,9 +1108,11 @@ const loadKnowledgeBaseInfo = async (targetKbId: string, force = false) => {
     return;
   }
   kbLoading.value = true;
+  const originalScope = captureKnowledgeScope();
+  const isCurrent = () => isCurrentKb(targetKbId) && sameNativeUploadScope(originalScope, captureKnowledgeScope());
   try {
     const data = await chatResources.fetchKnowledgeBaseById(targetKbId, force);
-    if (!isCurrentKb(targetKbId)) return;
+    if (!isCurrent()) return;
 
     kbInfo.value = data;
     selectedTagIds.value = [];
@@ -1070,14 +1130,14 @@ const loadKnowledgeBaseInfo = async (targetKbId: string, force = false) => {
     }
     loadTags(targetKbId, true);
   } catch (error) {
-    if (!isCurrentKb(targetKbId)) return;
+    if (!isCurrent()) return;
 
     console.error('Failed to load knowledge base info:', error);
     kbInfo.value = null;
     cardList.value = [];
     total.value = 0;
   } finally {
-    if (isCurrentKb(targetKbId)) {
+    if (isCurrent()) {
       kbLoading.value = false;
     }
   }
@@ -1123,16 +1183,19 @@ watch(activeKbTab, (tab) => {
   router.replace({ query })
 })
 
-watch(() => kbId.value, (newKbId, oldKbId) => {
+watch(() => [kbId.value, authStore.user?.id, authStore.effectiveTenantId] as const, ([newKbId, userId, tenantId], previous) => {
+  const [oldKbId, oldUserId, oldTenantId] = previous || [];
+  const identityChanged = userId !== oldUserId || tenantId !== oldTenantId;
   if (!newKbId) {
     kbInfo.value = null;
     cardList.value = [];
     total.value = 0;
     return;
   }
-  if (newKbId === oldKbId && kbInfo.value) return;
+  if (newKbId === oldKbId && !identityChanged && kbInfo.value) return;
 
-  if (newKbId !== oldKbId) {
+  if (newKbId !== oldKbId || identityChanged) {
+    kbInfo.value = null;
     clearTraceAvailabilityCache();
     cardList.value = [];
     total.value = 0;
@@ -1144,7 +1207,7 @@ watch(() => kbId.value, (newKbId, oldKbId) => {
     folderTree.value = null;
     selectedFolderPath.value = knowledgeDirectorySelection(route.query).path;
   }
-  loadKnowledgeBaseInfo(newKbId);
+  loadKnowledgeBaseInfo(newKbId, identityChanged);
 }, { immediate: true });
 
 watch(selectedTagIds, (newVal, oldVal) => {
@@ -1268,16 +1331,25 @@ const handleKnowledgeFileDrop = (event: CustomEvent) => {
 // the same and cardList may already be populated, so relying solely on the
 // cardList watcher misses the trigger.
 const pendingKnowledgeId = ref<string | null>(
-  (route.query.knowledge_id as string) || null
+  typeof route.query.knowledge_id === 'string' ? route.query.knowledge_id : null
 );
 
 let autoOpenRequest = 0;
+
+watch(() => [kbId.value, authStore.user?.id, authStore.effectiveTenantId], () => {
+  autoOpenRequest++;
+  pendingKnowledgeId.value = typeof route.query.knowledge_id === 'string' ? route.query.knowledge_id : null;
+  isCardDetails.value = false;
+  if (uiStore.manualEditorVisible) uiStore.closeManualEditor();
+});
 
 const tryAutoOpenDocument = async () => {
   if (!pendingKnowledgeId.value) return;
   const targetId = pendingKnowledgeId.value;
   pendingKnowledgeId.value = null;
   const request = ++autoOpenRequest;
+  const originalScope = captureKnowledgeScope();
+  if (originalScope.knowledgeBaseId !== kbId.value) return;
   const card = cardList.value.find((c: KnowledgeCard) => c.id === targetId);
 
   // The current card list only contains the folder being browsed. A document
@@ -1288,19 +1360,19 @@ const tryAutoOpenDocument = async () => {
   try {
     const response: any = await getKnowledgeDetails(targetId);
     if (request !== autoOpenRequest) return;
+    if (!sameNativeUploadScope(originalScope, captureKnowledgeScope())) return;
     const detail = response?.data || response;
-    if (detail && typeof detail === 'object') {
-      target = { ...target, ...detail, id: targetId } as KnowledgeCard;
-      selectedFolderPath.value = detail.folder_path || ROOT_FOLDER_PATH;
-    }
+    if (!detail || detail.id !== targetId || detail.knowledge_base_id !== originalScope.knowledgeBaseId) return;
+    target = { ...target, ...detail, id: targetId } as KnowledgeCard;
+    selectedFolderPath.value = detail.folder_path || ROOT_FOLDER_PATH;
   } catch (error) {
-    // Keep the previous ID-only fallback: getCardDetails will surface the
-    // normal detail loading error, while links to root-level files still work.
     console.error('Failed to resolve referenced document folder', error);
+    return;
   }
 
   if (request !== autoOpenRequest) return;
   await nextTick();
+  if (request !== autoOpenRequest || !sameNativeUploadScope(originalScope, captureKnowledgeScope())) return;
   openCardDetails(target);
 };
 
@@ -1337,6 +1409,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  autoOpenRequest++;
   window.removeEventListener('knowledgeFileUploaded', handleFileUploaded as EventListener);
   window.removeEventListener('openURLImportDialog', handleOpenURLImportDialog as EventListener);
   window.removeEventListener('weknora:knowledge-file-drop', handleKnowledgeFileDrop as EventListener);
@@ -1611,11 +1684,9 @@ const stopMovePoll = () => {
   }
 };
 
-const manualEditorSuccess = ({ kbId: savedKbId }: { kbId: string; knowledgeId: string; status: 'draft' | 'publish' }) => {
-  if (savedKbId === kbId.value && !isFAQ.value) {
-    resetPage(); // Reset page counter when reloading files after manual edit
-    loadKnowledgeFiles(savedKbId);
-    void loadFolderTree(savedKbId);
+const manualEditorSuccess = ({ kbId: savedKbId }: { kbId: string; knowledgeId: string; status: 'draft' | 'publish' }, originalScope: ReturnType<typeof captureKnowledgeScope>) => {
+  if (savedKbId === originalScope.knowledgeBaseId && sameNativeUploadScope(originalScope, captureKnowledgeScope()) && !isFAQ.value) {
+    window.dispatchEvent(new CustomEvent(KNOWLEDGE_DIRECTORY_EVENT, { detail: { kbId: savedKbId } }));
   }
 };
 
@@ -1719,7 +1790,7 @@ const executeUrlImport = async (
   }
 };
 
-const handleUploadConfirmResult = async (result: UploadConfirmResult) => {
+const handleUploadConfirmResult = async (result: UploadConfirmResult, allowURL = false, isScopeCurrent = () => true) => {
   if (result.mode === 'manual') {
     return;
   }
@@ -1728,13 +1799,13 @@ const handleUploadConfirmResult = async (result: UploadConfirmResult) => {
   const urls = result.urls || [];
   const processConfig = result.processConfig;
   const tagIds = result.tagIds || [];
-  if (!canEdit.value) return;
-  if (urls.length) {
+  if (!canEdit.value || !isScopeCurrent()) return;
+  if (urls.length && !allowURL) {
     MessagePlugin.warning(t('knowledgeBase.nativeFileSourcesOnly'));
     return;
   }
   // The confirmation dialog can add files after it opens; use the final batch.
-  if (files.some(file => !isExcelFilename(file.name)) && !ensureDocumentKbReady()) return;
+  if ((urls.length > 0 || files.some(file => !isExcelFilename(file.name))) && !ensureDocumentKbReady()) return;
 
   if (files.length > 0) {
     enqueueUploads(files, {
@@ -1744,6 +1815,10 @@ const handleUploadConfirmResult = async (result: UploadConfirmResult) => {
     });
   }
 
+  for (const url of urls) {
+    if (!isScopeCurrent()) return;
+    await executeUrlImport(url, processConfig, tagIds);
+  }
 };
 
 const openUploadConfirmDialog = async (files: File[], urls: string[] = []) => {
@@ -1753,6 +1828,7 @@ const openUploadConfirmDialog = async (files: File[], urls: string[] = []) => {
     tenantId: String(authStore.effectiveTenantId || ''),
     knowledgeBaseId: String(router.currentRoute.value.params.kbId || '') });
   const originalScope = { ...captureScope(), knowledgeBaseId: kbId.value };
+  const allowURL = urls.length > 0;
   if (!sameNativeUploadScope(originalScope, captureScope())) {
     MessagePlugin.warning(t('knowledgeBase.uploadScopeChanged'));
     return;
@@ -1766,7 +1842,7 @@ const openUploadConfirmDialog = async (files: File[], urls: string[] = []) => {
       urls,
       acceptFileTypes: acceptFileTypes.value,
       supportedFileTypes: [...supportedFileTypes.value],
-      allowURL: false,
+      allowURL,
       // Pre-fill the destination with the folder being browsed; the dialog shows
       // it and lets the user pick another folder (or the root) before confirming.
       targetFolder: selectedFolderPath.value,
@@ -1776,7 +1852,7 @@ const openUploadConfirmDialog = async (files: File[], urls: string[] = []) => {
       MessagePlugin.warning(t('knowledgeBase.uploadScopeChanged'));
       return;
     }
-    await handleUploadConfirmResult(result);
+    await handleUploadConfirmResult(result, allowURL, () => sameNativeUploadScope(originalScope, captureScope()));
   } catch {
     // cancelled
   }
@@ -1790,17 +1866,18 @@ const handleUploadSourceFiles = (files: File[]) => {
 };
 
 const handleUploadSourceUrl = (url: string) => {
-  if (!ensureDocumentKbReady()) return;
+  if (!canEdit.value || !ensureDocumentKbReady()) return;
   openUploadConfirmDialog([], [url]);
 };
 
 const handleManualCreate = () => {
-  if (!ensureDocumentKbReady()) return;
+  if (!canEdit.value || !ensureDocumentKbReady()) return;
+  const originalScope = captureKnowledgeScope();
   uiStore.openManualEditor({
     mode: 'create',
     kbId: kbId.value,
     status: 'draft',
-    onSuccess: manualEditorSuccess,
+    onSuccess: result => manualEditorSuccess(result, originalScope),
   });
 };
 
@@ -1828,7 +1905,8 @@ const handleKnowledgeDropdownSelect = (data: { value: string }) => {
 };
 
 const handleManualEdit = (index: number, item: KnowledgeCard) => {
-  if (isFAQ.value) return;
+  if (!canEdit.value || isFAQ.value || item.knowledge_base_id && item.knowledge_base_id !== kbId.value) return;
+  const originalScope = captureKnowledgeScope();
   if (cardList.value[index]) {
     cardList.value[index].isMore = false;
   }
@@ -1836,7 +1914,7 @@ const handleManualEdit = (index: number, item: KnowledgeCard) => {
     mode: 'edit',
     kbId: item.knowledge_base_id || kbId.value,
     knowledgeId: item.id,
-    onSuccess: manualEditorSuccess,
+    onSuccess: result => manualEditorSuccess(result, originalScope),
   });
 };
 
@@ -2062,7 +2140,7 @@ const openKnowledgeItem = (item: KnowledgeCard) => {
 
 // Stop observing a previous KB when navigating, including away and back.
 let deleteGeneration = 0;
-watch(kbId, () => {
+watch(() => [kbId.value, authStore.user?.id, authStore.effectiveTenantId], () => {
   deleteGeneration++;
   batchDeleting.value = false;
 });
@@ -2075,8 +2153,9 @@ const deleteKnowledgeDocuments = async (
 ) => {
   if (batchDeleting.value || batchReparsing.value || batchDownloading.value || ids.length === 0) return;
   const targetKbId = kbId.value;
+  const originalScope = captureKnowledgeScope();
   const generation = ++deleteGeneration;
-  const isActive = () => generation === deleteGeneration && isCurrentKb(targetKbId);
+  const isActive = () => generation === deleteGeneration && isCurrentKb(targetKbId) && sameNativeUploadScope(originalScope, captureKnowledgeScope());
   batchDeleting.value = true;
   let submitted = false;
   try {
@@ -2122,11 +2201,9 @@ const deleteKnowledgeDocuments = async (
     if (isActive()) {
       batchDeleting.value = false;
       if (submitted) {
-        resetPage();
-        await loadKnowledgeFiles(targetKbId);
+        window.dispatchEvent(new CustomEvent(KNOWLEDGE_DIRECTORY_EVENT, { detail: { kbId: targetKbId } }));
         if (isActive()) {
           void loadTags(targetKbId, true);
-          void loadFolderTree(targetKbId);
         }
       }
     }
@@ -2523,8 +2600,13 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
                     </t-tooltip>
                   </div>
                   <div v-if="canEdit" class="doc-filter-actions">
-                    <KbUploadSourceDropdown ref="uploadSourceRef" unified :accept-file-types="acceptFileTypes"
-                      :supported-file-types="[...supportedFileTypes]" trigger-icon="add" :trigger-label="t('knowledgeBase.addDocument')"
+                    <t-button variant="text" theme="default" size="small" data-guide="kb-detail-new-folder"
+                      :aria-label="t('knowledgeBase.folderTree.create')" @click="openCreateFolder">
+                      <template #icon><t-icon name="folder-add" size="18px" /></template>
+                      {{ t('knowledgeBase.folderTree.create') }}
+                    </t-button>
+                    <KbUploadSourceDropdown ref="uploadSourceRef" :accept-file-types="acceptFileTypes"
+                      :supported-file-types="[...supportedFileTypes]" include-manual trigger-icon="add" :trigger-label="t('knowledgeBase.addDocument')"
                       trigger-class="content-bar-icon-btn" data-guide="kb-detail-add-doc"
                       :tooltip="t('knowledgeBase.addDocument')" placement="bottom-right" @files="handleUploadSourceFiles"
                       @url="handleUploadSourceUrl" @manual="handleManualCreate" />
@@ -2669,6 +2751,15 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
 
   <ContextualGuide tour="kbDetail" :when="showKbDetailContextualGuide" />
 
+  <t-dialog v-model:visible="createFolderOpen" :header="t('knowledgeBase.folderTree.create')"
+    :confirm-btn="{ content: t('knowledgeBase.moveToFolder.newFolderCreate'), loading: createFolderBusy }" :cancel-btn="{ content: t('common.cancel') }"
+    :close-on-overlay-click="!createFolderBusy" :close-btn="!createFolderBusy" width="440px" @confirm="submitCreateFolder">
+    <p class="create-folder-location">{{ t('knowledgeBase.folderTree.createLocation', { path: `${kbInfo?.name || ''} / ${createFolderParent || t('knowledgeBase.folderTree.rootRow')}` }) }}</p>
+    <t-input v-model="createFolderName" :aria-label="t('knowledgeBase.folderTree.createName')"
+      :placeholder="t('knowledgeBase.folderTree.createName')" :disabled="createFolderBusy" autofocus @enter="submitCreateFolder" />
+    <t-alert v-if="createFolderError" theme="error" :message="createFolderError" class="create-folder-error" />
+  </t-dialog>
+
   <!-- 批量打标签弹窗 -->
   <BatchTagDialog @tags-changed="onTagCatalogChanged" :visible="batchTagDialogVisible"
     :count="selectedIds.size" :kb-id="kbId"
@@ -2687,6 +2778,12 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
 
 </style>
 <style scoped lang="less">
+.create-folder-location {
+  color: var(--td-text-color-secondary);
+  overflow-wrap: anywhere;
+}
+.create-folder-error { margin-top: 12px; }
+
 .knowledge-layout {
   display: flex;
   flex-direction: column;

@@ -6780,6 +6780,10 @@ export default {
     tagUpdateSuccess: '标签已更新',
     tagEditDialogHeading: '编辑标签',
     folderTree: {
+      create: '新建文件夹',
+      createName: '文件夹名称',
+      createLocation: '位置：{path}',
+      createSuccess: '文件夹已创建',
       totalDocuments: '共 {count} 个文档',
       countHint: '当前目录 {direct} 个文档，含子目录共 {total} 个',
       filteredCount: '匹配 {count} 个文档',

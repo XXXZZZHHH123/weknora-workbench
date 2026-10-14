@@ -588,6 +588,10 @@ export default {
     },
     tagEditDialogHeading: 'タグを編集',
     folderTree: {
+      create: '新しいフォルダ',
+      createName: 'フォルダ名',
+      createLocation: '場所：{path}',
+      createSuccess: 'フォルダを作成しました',
       totalDocuments: '全 {count} 件',
       countHint: 'このフォルダ内 {direct} 件、サブフォルダを含めて {total} 件',
       filteredCount: '{count} 件一致',

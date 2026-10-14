@@ -6778,6 +6778,10 @@ export default {
     tagUpdateSuccess: 'Тег успешно обновлен',
     tagEditDialogHeading: 'Редактировать теги',
     folderTree: {
+      create: 'Новая папка',
+      createName: 'Название папки',
+      createLocation: 'Расположение: {path}',
+      createSuccess: 'Папка создана',
       totalDocuments: 'Всего документов: {count}',
       countHint: 'В этой папке: {direct}, с подпапками: {total}',
       filteredCount: 'Найдено документов: {count}',

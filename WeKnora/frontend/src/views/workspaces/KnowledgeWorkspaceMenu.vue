@@ -5,7 +5,7 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useUIStore } from '@/stores/ui'
 import { useOrganizationStore } from '@/stores/organization'
-import { getKnowledgeBaseById, listKnowledgeFolders, createKnowledgeFolder, deleteKnowledgeFolder, renameKnowledgeFolder, type KnowledgeFolderTree } from '@/api/knowledge-base'
+import { getKnowledgeBaseById, listKnowledgeFiles, listKnowledgeFolders, createKnowledgeFolder, deleteKnowledgeFolder, renameKnowledgeFolder, type KnowledgeFolderTree } from '@/api/knowledge-base'
 import { permissionCanEditKB } from '@/utils/kbPermission'
 import BrandWordmark from '@/components/BrandWordmark.vue'
 import UserMenu from '@/components/UserMenu.vue'
@@ -13,8 +13,8 @@ import WorkspaceNavigationNode from '@/components/WorkspaceNavigationNode.vue'
 import PanelResizeHandle from '@/components/PanelResizeHandle.vue'
 import { SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MAX_WIDTH } from '@/utils/sidebarWidth'
 import KbFolderTree from '@/views/knowledge/components/KbFolderTree.vue'
-import { canMoveFolderTo } from '@/views/knowledge/folderTree'
-import { KNOWLEDGE_DIRECTORY_EVENT, knowledgeDirectorySelection, newKnowledgeFolderPath } from './knowledgeDirectory'
+import { canMoveFolderTo, folderPathExists } from '@/views/knowledge/folderTree'
+import { KNOWLEDGE_DIRECTORY_EVENT, KNOWLEDGE_DIRECTORY_PAGE_SIZE, knowledgeDirectorySelection, newKnowledgeFolderPath, knowledgeDirectoryFileLocation, validateKnowledgeDirectoryPage, type KnowledgeDirectoryFile, type KnowledgeDirectoryFilePage } from './knowledgeDirectory'
 import { workspaceErrorMessage, workspaceIdentity } from './workspaceForm'
 
 const route = useRoute(), router = useRouter(), auth = useAuthStore(), ui = useUIStore(), org = useOrganizationStore()
@@ -33,16 +33,64 @@ const canEdit = computed(() => {
 })
 const folderOpen = ref(false), folderName = ref(''), folderError = ref(''), folderBusy = ref(false), folderParent = ref('')
 const deletePath = ref<string | null>(null)
+const filePages = ref<Record<string, KnowledgeDirectoryFilePage>>({})
+let filesGeneration = 0, filesActive = 0
+let filesController = new AbortController(), loadedIdentity = ''
+const filesQueue: Array<{ path: string; generation: number }> = []
 let generation = 0, resizeStart = 0
 async function load() {
   const own = ++generation
+  const actor = identity.value, id = kbId.value
+  filesController.abort(); filesController = new AbortController(); loadedIdentity = ''
+  filesGeneration++; filesActive = 0; filesQueue.length = 0; filePages.value = {}
   tree.value = null; library.value = null; error.value = ''; loading.value = true
   try {
-    const [detail, folders] = await Promise.all([getKnowledgeBaseById(kbId.value), listKnowledgeFolders(kbId.value)])
-    if (own !== generation) return
-    library.value = detail.data || detail; tree.value = folders.data
-  } catch (e) { if (own === generation) error.value = workspaceErrorMessage(e) }
-  finally { if (own === generation) loading.value = false }
+    const [detail, folders] = await Promise.all([getKnowledgeBaseById(id), listKnowledgeFolders(id)])
+    if (own !== generation || actor !== identity.value) return
+    library.value = detail.data || detail; tree.value = folders.data; loadedIdentity = actor
+  } catch (e) { if (own === generation && actor === identity.value) error.value = workspaceErrorMessage(e) }
+  finally { if (own === generation && actor === identity.value) loading.value = false }
+}
+function loadFiles(path: string, more = false) {
+  const previous = Object.hasOwn(filePages.value, path) ? filePages.value[path] : undefined
+  if (!tree.value || !library.value || loadedIdentity !== identity.value || !folderPathExists(tree.value.folders, path) || previous?.loading) return
+  if (!more && previous?.page && !previous.error) return
+  filePages.value = { ...filePages.value, [path]: { files: previous?.files || [], page: previous?.page || 0,
+    total: previous?.total || 0, loading: true, error: '' } }
+  filesQueue.push({ path, generation: filesGeneration })
+  drainFiles()
+}
+function drainFiles() {
+  while (filesActive < 2 && filesQueue.length) {
+    const work = filesQueue.shift()!
+    if (work.generation !== filesGeneration) continue
+    filesActive++; void requestFiles(work)
+  }
+}
+async function requestFiles(work: { path: string; generation: number }) {
+  const own = identity.value, id = kbId.value, previous = filePages.value[work.path]!
+  const page = previous.page + 1
+  try {
+    const response = await listKnowledgeFiles(id, { page, page_size: KNOWLEDGE_DIRECTORY_PAGE_SIZE,
+      folder_path: work.path, sort_by: 'file_name', sort_order: 'asc' }, { signal: filesController.signal })
+    if (own !== identity.value || work.generation !== filesGeneration) return
+    const data = validateKnowledgeDirectoryPage(response, id, work.path)
+    const files = new Map(previous.files.map(file => [file.id, file]))
+    data.files.forEach(file => files.set(file.id, file))
+    filePages.value = { ...filePages.value, [work.path]: { files: [...files.values()], page,
+      total: data.total, loading: false, error: '' } }
+  } catch (e) {
+    if (own === identity.value && work.generation === filesGeneration) {
+      filePages.value = { ...filePages.value, [work.path]: { ...previous, loading: false, error: workspaceErrorMessage(e) } }
+    }
+  } finally {
+    if (work.generation === filesGeneration) { filesActive--; drainFiles() }
+  }
+}
+function selectFile(file: KnowledgeDirectoryFile) {
+  if (loadedIdentity !== identity.value || !filePages.value[file.folder_path]?.files.some(current => current.id === file.id)) return
+  const target = knowledgeDirectoryFileLocation(kbId.value, file)
+  if (target) void router.push(target)
 }
 watch(identity, () => { folderOpen.value = false; deletePath.value = null; folderBusy.value = false; void load() }, { immediate: true })
 function selectFolder(path: string) {
@@ -107,6 +155,8 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   generation++
+  filesGeneration++; filesQueue.length = 0
+  filesController.abort(); loadedIdentity = ''
   window.removeEventListener(KNOWLEDGE_DIRECTORY_EVENT, refresh)
   window.removeEventListener('knowledgeFileUploaded', refresh)
 })
@@ -126,7 +176,7 @@ onBeforeUnmount(() => {
         <template #actions><button v-if="canEdit && !ui.sidebarCollapsed" class="knowledge-workspace-menu__icon" aria-label="新建文件夹" @click="openNewFolder"><t-icon name="folder-add" size="16px" /></button></template>
         <WorkspaceNavigationNode title="全库预览" icon="view-list" :depth="1" :active="isDirectory && selected.all" @navigate="allFiles" />
         <p v-if="error" role="alert" class="knowledge-workspace-menu__error">{{ error }}<button class="knowledge-workspace-menu__back" @click="load">重试目录</button></p>
-        <KbFolderTree v-else :key="identity" :tree="tree" :selected-path="selected.path" :loading="loading" :can-edit="canEdit" root-label="库根目录" navigation allow-delete @select="selectFolder" @rename="renameFolder" @delete="(path: string) => { folderError = ''; deletePath = path }" />
+        <KbFolderTree v-else :key="identity" :tree="tree" :selected-path="selected.path" :selected-file-id="typeof route.query.knowledge_id === 'string' ? route.query.knowledge_id : ''" :loading="loading" :can-edit="canEdit" :file-pages="filePages" show-files root-label="库根目录" navigation allow-delete @select="selectFolder" @select-file="selectFile" @load-files="loadFiles" @rename="renameFolder" @delete="(path: string) => { folderError = ''; deletePath = path }" />
       </WorkspaceNavigationNode>
     </nav>
     <UserMenu />

@@ -588,6 +588,10 @@ export default {
     tagUpdateSuccess: 'Tag updated successfully',
     tagEditDialogHeading: 'Edit tags',
     folderTree: {
+      create: 'New folder',
+      createName: 'Folder name',
+      createLocation: 'Location: {path}',
+      createSuccess: 'Folder created',
       totalDocuments: '{count} documents total',
       countHint: '{direct} documents in this folder; {total} including subfolders',
       filteredCount: '{count} matching documents',

@@ -1,6 +1,42 @@
 import { MAX_FOLDER_DEPTH, MAX_FOLDER_PATH_LENGTH, MAX_FOLDER_SEGMENT_LENGTH, normalizeFolderPath } from '../knowledge/folderTree'
 
 export const KNOWLEDGE_DIRECTORY_EVENT = 'weknora:knowledge-directory-change'
+export const KNOWLEDGE_DIRECTORY_PAGE_SIZE = 50
+
+export interface KnowledgeDirectoryFile {
+  id: string
+  knowledge_base_id: string
+  folder_path: string
+  file_name?: string
+  title?: string
+  file_type?: string
+  type?: string
+}
+
+export interface KnowledgeDirectoryFilePage {
+  files: KnowledgeDirectoryFile[]
+  page: number
+  total: number
+  loading: boolean
+  error: string
+}
+
+export function validateKnowledgeDirectoryPage(response: any, kbId: string, path: string): { files: KnowledgeDirectoryFile[]; total: number } {
+  if (!response || !Array.isArray(response.data) || !Number.isSafeInteger(response.total) || response.total < 0) {
+    throw new Error('目录文件响应无效，请重试。')
+  }
+  if (response.data.length > KNOWLEDGE_DIRECTORY_PAGE_SIZE || response.data.some((file: any) => !file || typeof file.id !== 'string' || !file.id
+      || file.knowledge_base_id !== kbId || file.folder_path !== path)) {
+    throw new Error('目录文件范围不一致，请刷新目录后重试。')
+  }
+  return { files: response.data, total: response.total }
+}
+
+export function knowledgeDirectoryFileLocation(kbId: string, file: KnowledgeDirectoryFile) {
+  if (!kbId || file.knowledge_base_id !== kbId || !file.id || typeof file.folder_path !== 'string') return null
+  return { path: `/platform/knowledge-bases/${encodeURIComponent(kbId)}`,
+    query: { ...(file.folder_path ? { folder: file.folder_path } : {}), knowledge_id: file.id } }
+}
 
 export function knowledgeDirectorySelection(query: Record<string, unknown>) {
   const all = query.directory === 'all'

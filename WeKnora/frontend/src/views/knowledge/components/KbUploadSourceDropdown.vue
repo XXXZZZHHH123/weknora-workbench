@@ -99,7 +99,6 @@ const emit = defineEmits<{
   files: [files: File[]]
   url: [url: string]
   manual: []
-  intake: [mode: string]
 }>()
 
 const { t } = useI18n()
@@ -227,7 +226,7 @@ const handleUrlDialogCancel = () => {
 }
 
 const openUrlDialog = () => {
-  if (props.unified) { emit('intake', 'importURL'); return }
+  if (props.unified) return
   urlInputValue.value = ''
   urlDialogVisible.value = true
 }

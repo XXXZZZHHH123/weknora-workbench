@@ -325,8 +325,8 @@ export interface ListKnowledgeFilesParams {
   folder_recursive?: boolean;
 }
 
-export function listKnowledgeFiles(kbId: string, params: ListKnowledgeFilesParams) {
-  return get(`/api/v1/knowledge-bases/${kbId}/knowledge?${buildListKnowledgeFilesQuery(params)}`);
+export function listKnowledgeFiles(kbId: string, params: ListKnowledgeFilesParams, options?: { signal?: AbortSignal }) {
+  return get(`/api/v1/knowledge-bases/${kbId}/knowledge?${buildListKnowledgeFilesQuery(params)}`, options);
 }
 
 /** One node of the knowledge base folder tree. */

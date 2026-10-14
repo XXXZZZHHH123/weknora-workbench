@@ -1,4 +1,5 @@
 import type { KnowledgeFolderNode, KnowledgeFolderTree } from '@/api/knowledge-base/index'
+import type { KnowledgeDirectoryFile, KnowledgeDirectoryFilePage } from '../workspaces/knowledgeDirectory'
 
 /**
  * Pure helpers behind the knowledge base folder sidebar.
@@ -37,6 +38,48 @@ export type FolderRow = {
   /** Documents in this folder plus every descendant folder. */
   totalCount: number
   hasChildren: boolean
+}
+
+export type DirectoryRow = FolderRow | {
+  kind: 'file'
+  path: string
+  name: string
+  depth: number
+  file: KnowledgeDirectoryFile
+} | {
+  kind: 'file-status'
+  path: string
+  depth: number
+  page?: KnowledgeDirectoryFilePage
+}
+
+/** Add direct file leaves only beneath expanded folders; closed subtrees remain unrequested. */
+export function buildDirectoryRows(tree: KnowledgeFolderTree | null, expanded: Set<string>, pages: Record<string, KnowledgeDirectoryFilePage>): DirectoryRow[] {
+  const rows: DirectoryRow[] = []
+  const appendFiles = (path: string, depth: number, count: number) => {
+    if (!expanded.has(path)) return
+    const page = Object.hasOwn(pages, path) ? pages[path] : undefined
+    page?.files.forEach(file => rows.push({ kind: 'file', path, depth, file, name: file.file_name || file.title || '未命名文档' }))
+    if (count > 0 && (!page || page.loading || page.error || page.files.length < page.total)) rows.push({ kind: 'file-status', path, depth, page })
+  }
+  const walk = (nodes: KnowledgeFolderNode[], depth: number) => nodes.forEach(node => {
+    rows.push({ kind: 'folder', path: node.path, name: node.name, depth, documentCount: node.document_count, totalCount: node.total_count,
+      hasChildren: !!node.children?.length || node.document_count > 0 })
+    if (expanded.has(node.path)) {
+      walk(node.children || [], depth + 1)
+      appendFiles(node.path, depth + 1, node.document_count)
+    }
+  })
+  const folders = tree?.folders || []
+  const root: FolderRow = { kind: 'root', path: ROOT_FOLDER_PATH, name: '', depth: 0,
+    documentCount: tree?.root_document_count || 0, totalCount: tree?.total_document_count || 0,
+    hasChildren: folders.length > 0 || (tree?.root_document_count || 0) > 0 }
+  rows.push(root)
+  if (expanded.has(ROOT_FOLDER_PATH)) {
+    walk(folders, 1)
+    appendFiles(ROOT_FOLDER_PATH, 1, root.documentCount)
+  }
+  return rows
 }
 
 /**

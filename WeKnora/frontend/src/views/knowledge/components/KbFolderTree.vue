@@ -37,10 +37,11 @@
         </div>
       </template>
       <template v-else>
+        <template v-for="row in rows" :key="row.kind === 'file' ? `file:${row.file.id}` : `${row.kind}:${row.path}`">
         <div
-          v-for="row in rows"
-          :key="row.path || '__root__'"
+          v-if="row.kind === 'root' || row.kind === 'folder'"
           class="kb-folder-row"
+          :data-folder-path="row.path"
           :class="{
             active: selectedPath === row.path,
             'is-root': row.kind === 'root',
@@ -132,6 +133,20 @@
             </span>
           </template>
         </div>
+        <button v-else-if="row.kind === 'file'" type="button" class="kb-folder-row kb-folder-file"
+          :class="{ active: selectedFileId === row.file.id }" :style="{ '--kb-folder-depth': row.depth }"
+          :data-knowledge-id="row.file.id" :data-folder-path="row.path" :title="row.name"
+          @click="emit('select-file', row.file)">
+          <span class="kb-folder-row__toggle-placeholder" aria-hidden="true" />
+          <t-icon name="file" class="kb-folder-row__icon" />
+          <span class="kb-folder-row__label">{{ row.name }}</span>
+        </button>
+        <div v-else-if="row.kind === 'file-status'" class="kb-folder-files-status" :style="{ '--kb-folder-depth': row.depth }" :data-folder-path="row.path" aria-live="polite">
+          <span v-if="!row.page || row.page.loading">正在加载文件…</span>
+          <template v-else-if="row.page.error"><span>{{ row.page.error }}</span><button type="button" class="kb-folder-files-retry" @click="emit('load-files', row.path, true)">重试</button></template>
+          <button v-else type="button" class="kb-folder-files-more" @click="emit('load-files', row.path, true)">加载更多文件</button>
+        </div>
+        </template>
       </template>
     </div>
   </aside>
@@ -141,7 +156,9 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { KnowledgeFolderTree } from '@/api/knowledge-base/index'
+import type { KnowledgeDirectoryFile, KnowledgeDirectoryFilePage } from '../../workspaces/knowledgeDirectory'
 import {
+  buildDirectoryRows,
   buildFolderRows,
   folderAncestorPaths,
   joinFolderPath,
@@ -159,12 +176,18 @@ const props = withDefaults(defineProps<{
   canEdit?: boolean
   navigation?: boolean
   allowDelete?: boolean
+  showFiles?: boolean
+  selectedFileId?: string
+  filePages?: Record<string, KnowledgeDirectoryFilePage>
 }>(), {
   loading: false,
   collapsed: false,
   canEdit: false,
   navigation: false,
   allowDelete: false,
+  showFiles: false,
+  selectedFileId: '',
+  filePages: () => ({}),
 })
 
 const emit = defineEmits<{
@@ -172,6 +195,8 @@ const emit = defineEmits<{
   'update:collapsed': [collapsed: boolean]
   rename: [payload: { from: string; to: string }]
   delete: [path: string]
+  'select-file': [file: KnowledgeDirectoryFile]
+  'load-files': [path: string, more?: boolean]
 }>()
 
 const { t } = useI18n()
@@ -185,7 +210,7 @@ const menuOpenPath = ref<string | null>(null)
 const renameValue = ref('')
 const renameInputRef = ref<HTMLInputElement | HTMLInputElement[] | null>(null)
 
-const rows = computed(() => buildFolderRows(props.tree, expanded.value))
+const rows = computed(() => props.showFiles ? buildDirectoryRows(props.tree, expanded.value, props.filePages) : buildFolderRows(props.tree, expanded.value))
 
 const isExpanded = (path: string) => expanded.value.has(path)
 
@@ -251,6 +276,7 @@ watch(
 watch(
   () => props.tree,
   (tree) => {
+    if (props.navigation && props.showFiles) return
     if (!tree?.folders?.length || expanded.value.size > 1) return
     const next = new Set(expanded.value)
     tree.folders.forEach((folder) => next.add(folder.path))
@@ -258,6 +284,14 @@ watch(
   },
   { immediate: true },
 )
+
+watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as const, () => {
+  if (!props.showFiles || !props.tree) return
+  const visible = buildDirectoryRows(props.tree, expanded.value, props.filePages)
+  visible.forEach(row => {
+    if (row.kind === 'file-status' && !row.page) emit('load-files', row.path)
+  })
+}, { immediate: true })
 </script>
 
 <style scoped lang="less">
@@ -441,6 +475,17 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.kb-folder-file { border: 0; font-size: var(--app-text-sm); }
+.kb-folder-files-status {
+  padding: 4px 8px 8px calc(24px + var(--kb-folder-depth, 0) * var(--kb-folder-indent));
+  font-size: var(--app-text-xs);
+  line-height: 1.5;
+  color: var(--td-text-color-secondary);
+  overflow-wrap: anywhere;
+  button { padding: 2px 0; border: 0; background: transparent; color: var(--td-brand-color); font: inherit; cursor: pointer; }
+  span + button { display: block; }
 }
 
 .kb-folder-row__trailing {

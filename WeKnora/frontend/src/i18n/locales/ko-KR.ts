@@ -6778,6 +6778,10 @@ export default {
     tagUpdateSuccess: '태그 업데이트 성공',
     tagEditDialogHeading: '태그 편집',
     folderTree: {
+      create: '새 폴더',
+      createName: '폴더 이름',
+      createLocation: '위치: {path}',
+      createSuccess: '폴더가 생성되었습니다',
       totalDocuments: '전체 문서 {count}개',
       countHint: '현재 폴더 문서 {direct}개, 하위 폴더 포함 {total}개',
       filteredCount: '일치하는 문서 {count}개',
