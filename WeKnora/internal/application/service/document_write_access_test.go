@@ -189,6 +189,7 @@ func newDocumentWriteFixture(t *testing.T) *documentWriteFixture {
 		t,
 		db.AutoMigrate(
 			&types.Knowledge{},
+			&types.KnowledgeFolder{},
 			&types.Chunk{},
 			&types.KnowledgeTag{},
 			&types.KnowledgeTagRelation{},

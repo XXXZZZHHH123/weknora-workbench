@@ -775,6 +775,15 @@ func (kb *KnowledgeBase) EnsureDefaults() {
 	if kb.IndexingStrategy.IsZero() {
 		kb.IndexingStrategy = DefaultIndexingStrategy()
 	}
+	if kb.IndexingStrategy.Disabled {
+		if kb.IndexingStrategy.HasAnyIndexing() || (kb.ExtractConfig != nil && kb.ExtractConfig.Enabled) {
+			// Existing editors need no new control: selecting a pipeline explicitly
+			// resumes normal indexing and clears the initialization-only opt-out.
+			kb.IndexingStrategy.Disabled = false
+		} else {
+			return
+		}
+	}
 	// Sync legacy ExtractConfig.Enabled → IndexingStrategy.GraphEnabled
 	if kb.ExtractConfig != nil && kb.ExtractConfig.Enabled && !kb.IndexingStrategy.GraphEnabled {
 		kb.IndexingStrategy.GraphEnabled = true

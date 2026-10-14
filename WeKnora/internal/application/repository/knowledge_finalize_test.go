@@ -70,6 +70,7 @@ func setupKnowledgeTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
 	require.NoError(t, db.Exec(knowledgesTestDDL).Error)
+	require.NoError(t, db.AutoMigrate(&types.KnowledgeFolder{}))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return db
 }

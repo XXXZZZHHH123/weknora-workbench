@@ -17,6 +17,11 @@ import (
 // 000063 knowledge multi-tags, 000093 browser authorization, 000103 message
 // artifacts.
 var versionedSQLiteTables = []string{
+	"assistant_projects",
+	"assistant_project_sessions",
+	"research_workbenches",
+	"knowledge_folders",
+	"default_knowledge_base_bindings",
 	"memory_extraction_sessions",
 	"task_pending_ops",
 	"task_dead_letters",
@@ -67,7 +72,7 @@ var versionedSQLiteColumns = map[string][]string{
 	}, // 000028
 }
 
-const expectedSQLiteMigrationVersion = 31
+const expectedSQLiteMigrationVersion = 34
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)

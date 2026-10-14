@@ -548,10 +548,19 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(ctx context.Context,
 		}
 		// Update indexing strategy — syncs to ExtractConfig for backward compat
 		if config.IndexingStrategy != nil {
-			if !config.IndexingStrategy.HasAnyIndexing() {
-				return nil, errors.New("at least one indexing strategy must be enabled")
+			strategy := *config.IndexingStrategy
+			if !strategy.HasAnyIndexing() {
+				if !kb.IndexingStrategy.Disabled {
+					return nil, errors.New("at least one indexing strategy must be enabled")
+				}
+				// Existing settings forms do not know the explicit opt-out field.
+				// Preserve it on unchanged source-only containers, never add it to
+				// an ordinary KB through an all-false settings request.
+				strategy.Disabled = true
+			} else {
+				strategy.Disabled = false
 			}
-			kb.IndexingStrategy = *config.IndexingStrategy
+			kb.IndexingStrategy = strategy
 			// Ensure WikiConfig exists when wiki indexing is enabled so that
 			// wiki-specific tunables (synthesis model, granularity, …) have a home.
 			if kb.WikiConfig == nil && config.IndexingStrategy.WikiEnabled {

@@ -79,6 +79,7 @@ type RouterParams struct {
 	TagHandler                   *handler.TagHandler
 	CustomAgentHandler           *handler.CustomAgentHandler
 	UserFavoriteHandler          *handler.UserResourceFavoriteHandler
+	WorkspaceHandler             *handler.WorkspaceHandler
 	SkillHandler                 *handler.SkillHandler
 	OrganizationHandler          *handler.OrganizationHandler
 	IMHandler                    *handler.IMHandler
@@ -316,6 +317,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterStorageBackendRoutes(v1, params.StorageBackendHandler, rbacGuards)
 		RegisterCustomAgentRoutes(v1, params.CustomAgentHandler, rbacGuards)
 		RegisterUserFavoriteRoutes(v1, params.UserFavoriteHandler, rbacGuards)
+		RegisterWorkspaceRoutes(v1, params.WorkspaceHandler, rbacGuards)
 		RegisterSkillRoutes(v1, params.SkillHandler, rbacGuards)
 		RegisterOrganizationRoutes(v1, params.OrganizationHandler, rbacGuards)
 		RegisterIMChannelRoutes(v1, params.IMHandler, rbacGuards)

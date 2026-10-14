@@ -233,6 +233,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewAuditLogService))
 	must(container.Provide(service.NewAuditLogRetentionRunner))
 	must(container.Provide(service.NewKnowledgeBaseService))
+	must(container.Provide(service.NewWorkspaceService))
 	must(container.Provide(service.NewOrganizationService))
 	must(container.Provide(service.NewKBShareService)) // KBShareService must be registered before KnowledgeService and KnowledgeTagService
 	must(container.Provide(service.NewAgentShareService))
@@ -571,6 +572,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(handler.NewStorageBackendHandler))
 	must(container.Provide(handler.NewCustomAgentHandler))
 	must(container.Provide(handler.NewUserResourceFavoriteHandler))
+	must(container.Provide(handler.NewWorkspaceHandler))
 	must(container.Provide(func(
 		s *service.TenantSkillService, agents interfaces.AgentShareService,
 	) *handler.SkillHandler {
