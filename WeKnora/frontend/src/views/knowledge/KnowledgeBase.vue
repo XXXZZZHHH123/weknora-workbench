@@ -2938,12 +2938,21 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
     border-radius: var(--app-radius-md);
     font-size: var(--app-text-md);
   }
+  .doc-filter-actions {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    flex: none;
+    gap: 8px;
+    white-space: nowrap;
+    :deep([data-guide="kb-detail-new-folder"]) { height: 32px; }
+  }
   .doc-filter-actions :deep(.content-bar-icon-btn) {
     height: 32px;
     padding: 0 12px;
     border-radius: var(--app-radius-md);
     background: var(--td-brand-color);
-    color: var(--td-text-color-anti);
+    color: var(--app-on-brand, var(--td-text-color-anti));
     &:hover { background: var(--td-brand-color-hover); }
   }
 }
@@ -3154,7 +3163,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
 .doc-list-skeleton-row { padding: 16px 40px; }
 @container doc-card-area (max-width: 780px) {
   .doc-filter-bar { flex-wrap: wrap; gap: 12px; }
-  .doc-filter-bar__trailing { width: 100%; }
+  .doc-filter-bar__trailing { width: 100%; flex-wrap: wrap; }
   .doc-filter-bar .doc-search-input { flex: 1; width: auto; }
 }
 
