@@ -69,6 +69,11 @@ func isDataTableFileType(ext string) bool {
 	return ok
 }
 
+func isExcelFileType(ext string) bool {
+	ext = normalizeFileExtension(ext)
+	return ext == "xlsx" || ext == "xls"
+}
+
 // validateImportFileType applies the extension constraints shared by every
 // file import path and reports a user-facing reason when one is violated.
 func validateImportFileType(fileType string) error {

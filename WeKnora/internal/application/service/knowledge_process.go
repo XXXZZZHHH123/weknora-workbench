@@ -2625,6 +2625,13 @@ func (s *knowledgeService) ReparseKnowledge(
 		logger.Errorf(ctx, "Failed to load knowledge: %v", err)
 		return nil, err
 	}
+	fileType := existing.FileType
+	if fileType == "" {
+		fileType = getFileType(existing.FileName)
+	}
+	if existing.Type == "file" && isExcelFileType(fileType) {
+		return nil, werrors.NewBadRequestError("Excel 文件请通过结构化数据库进行结构化解析")
+	}
 
 	tenantID := existing.TenantID
 

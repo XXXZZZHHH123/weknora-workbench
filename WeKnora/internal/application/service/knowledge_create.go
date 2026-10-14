@@ -178,6 +178,10 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 		EmbeddingModelID: kb.EmbeddingModelID,
 		Metadata:         metadataJSON,
 	}
+	if isExcelFileType(knowledge.FileType) {
+		knowledge.ParseStatus = types.ParseStatusStored
+		knowledge.SummaryStatus = types.SummaryStatusNone
+	}
 
 	if processOverrides != nil {
 		if err := knowledge.SetProcessOverrides(processOverrides); err != nil {
@@ -209,6 +213,16 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 	if err := s.setAndAttachKnowledgeTags(ctx, tenantID, kbID, knowledge, tagIDs); err != nil {
 		logger.Errorf(ctx, "Failed to set knowledge tags, knowledge ID: %s, error: %v", knowledge.ID, err)
 		return nil, err
+	}
+	// Excel stays as an original source until the user confirms its worksheets
+	// in the structured database; document and table-summary tasks spend models.
+	if knowledge.ParseStatus == types.ParseStatusStored {
+		recordKBActivity(ctx, s.audit, knowledge.TenantID, kbID, types.AuditActionKnowledgeCreated,
+			"knowledge", knowledge.ID, types.AuditOutcomeAccepted, map[string]any{
+				"title": knowledge.Title, "source_type": "file", "file_type": knowledge.FileType,
+				"processing_status": knowledge.ParseStatus, "trigger": kbActivityTrigger(ctx),
+			})
+		return knowledge, nil
 	}
 
 	// Enqueue document processing task to Asynq
