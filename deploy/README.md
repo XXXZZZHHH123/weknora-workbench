@@ -147,11 +147,13 @@ bash ~/weknora-workbench/setup/linux-proxy.sh configure
 `configure` 保存私有配置到 `~/.local/share/weknora-proxy/config/config.json`（目录 700、文件 600），校验后启动独立容器；只有 GitHub API 返回 200、GHCR 返回正常认证挑战 401，才把部署脚本的下载代理改成 17891 并继续使用 regctl。不会重新部署或重启应用。容器随 Docker 自动启动；本项目日常 `wb stop` 不会停止这个独立代理。
 
 ```sh
-# 查看代理状态和可选节点名称；不会输出订阅链接或节点密码
+# 查看运行状态、当前实际节点及运行期累计字节数
 bash ~/weknora-workbench/setup/linux-proxy.sh status
+# 列出可选节点名称；不会输出订阅链接或节点密码
+bash ~/weknora-workbench/setup/linux-proxy.sh nodes
 # 测试 GitHub/GHCR/OpenAI 网络连接，不发送模型请求
 bash ~/weknora-workbench/setup/linux-proxy.sh check
-# 默认自动选择；需要时按 status 给出的真实名称选节点
+# 需要时按 nodes 给出的真实名称选节点
 bash ~/weknora-workbench/setup/linux-proxy.sh select '替换为实际节点名称'
 # 网络验证通过后，允许更新脚本使用 Linux 代理
 bash ~/weknora-workbench/setup/linux-proxy.sh activate
@@ -172,7 +174,22 @@ bash ~/weknora-workbench/bin/with-proxy.sh codex login --device-auth
 bash ~/weknora-workbench/bin/with-proxy.sh codex
 ```
 
-直接 `docker pull` 的联网主体是 daemon，不能依靠这个进程包装脚本改变其网络；本项目继续用 regctl 下载后导入镜像，保留现有 Docker daemon 设置。代理故障时只影响显式使用它的工具；此处没有为其他应用启用代理。撤销时先恢复原部署代理配置，再停止独立代理容器：
+直接 `docker pull` 的联网主体是 daemon，不能依靠这个进程包装脚本改变其网络；本项目继续用 regctl 下载后导入镜像，保留现有 Docker daemon 设置。代理故障时只影响显式使用它的工具；此处没有为其他应用启用代理。
+
+Docker 已设置开机启动，代理容器采用 `unless-stopped`：正常重启服务器后自动启动，无需再次导入订阅或运行 configure；如果此前手动 stop，服务器重启后仍保持关闭，需手动 start。[Docker 官方重启策略](https://docs.docker.com/engine/containers/start-containers-automatically/)。
+
+日常临时关闭/开启，保留 Linux 代理的配置和节点选择：
+
+```sh
+bash ~/weknora-workbench/setup/linux-proxy.sh stop
+# 需要使用 Codex 或下载更新时重新开启
+bash ~/weknora-workbench/setup/linux-proxy.sh start
+bash ~/weknora-workbench/setup/linux-proxy.sh check
+```
+
+代理只接收显式使用它的命令，不会把其他应用的普通流量转过去。开启但闲置时仍有少量节点健康检查（配置间隔 600 秒）和订阅刷新（86400 秒）；流量紧张或长期不用可以 stop。开启服务通常远小于下载镜像所需流量；精确计费以订阅服务商统计为准，status 输出是运行期计数，重启可能清零。代理关闭期间，Codex 和部署下载可能连接失败，但已部署应用继续运行。无需为了临时关闭而执行 restore-deploy。
+
+只有彻底撤销 Linux 代理的部署配置时才运行下面的恢复命令：
 
 ```sh
 bash ~/weknora-workbench/setup/linux-proxy.sh restore-deploy

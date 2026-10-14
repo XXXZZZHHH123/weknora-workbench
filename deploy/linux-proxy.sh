@@ -128,14 +128,27 @@ case "$action" in
     echo 'Node selected; run check to verify access.' ;;
   activate) activate_deploy ;;
   status)
-    docker ps -a --filter name="^/$container$" --format '{{.Names}} {{.Status}}'
-    if [[ -s "$stage/config/control.curl" ]]; then
-      curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 5 \
-        http://127.0.0.1:17991/proxies/PROXY | jq '{selected: .now, nodes: .all}'
-    fi ;;
+    if ! state="$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null)"; then
+      echo 'Proxy container has not been created.'; exit 0
+    fi
+    echo "Proxy status: $state"
+    if [[ "$state" != running ]]; then
+      echo 'Stopped: run linux-proxy.sh start before Codex or deployment downloads.'; exit 0
+    fi
+    group="$(curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 5 http://127.0.0.1:17991/proxies/PROXY | jq -er .now)"
+    if [[ "$group" == AUTO ]]; then
+      group="$(curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 5 http://127.0.0.1:17991/proxies/AUTO | jq -er .now)"
+    fi
+    printf 'Current node: %s\n' "$group"
+    curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 5 \
+      http://127.0.0.1:17991/connections | jq '{upload_total_bytes: .uploadTotal, download_total_bytes: .downloadTotal}'
+    echo 'Counters are runtime statistics, not the subscription billing statement.' ;;
+  nodes)
+    curl --noproxy '*' --config "$stage/config/control.curl" -fsS --max-time 5 \
+      http://127.0.0.1:17991/proxies/PROXY | jq '{selected: .now, nodes: .all}' ;;
   stop)
-    [[ -e "$stage/deployment.before.json" ]] && { echo 'Restore deployment proxy settings before stopping: linux-proxy.sh restore-deploy' >&2; exit 1; }
-    docker stop "$container" ;;
+    docker stop "$container"
+    echo 'Proxy stopped; Linux deployment proxy settings were preserved. Start it before Codex or deployment downloads.' ;;
   restore-deploy)
     shared=/home/codexuser/weknora-workbench/shared
     [[ -s "$stage/deployment.before.json" ]] || { echo 'No deployment backup exists.' >&2; exit 1; }
@@ -145,5 +158,5 @@ case "$action" in
     mv "$shared/poller.json.tmp" "$shared/poller.json"
     rm "$stage/deployment.before.json"
     echo 'Previous deployment proxy settings restored; application containers were not changed.' ;;
-  *) echo 'usage: linux-proxy.sh {install|configure|start|check|activate|status|select NODE|restore-deploy|stop}' >&2; exit 2 ;;
+  *) echo 'usage: linux-proxy.sh {install|configure|start|check|activate|status|nodes|select NODE|restore-deploy|stop}' >&2; exit 2 ;;
 esac
