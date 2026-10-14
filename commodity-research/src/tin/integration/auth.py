@@ -93,12 +93,15 @@ def _same_origin(request):
         return False
 
 
-def bootstrap_html(source=None):
+def bootstrap_html(source=None, indicator=None):
     prefix = json.dumps(research_prefix())
     import re
     target = research_prefix() + '/'
     if isinstance(source,str) and re.fullmatch('[a-f0-9]{64}',source):
         target = research_prefix() + '/files?source=' + source
+    elif isinstance(indicator, str) and indicator and len(indicator) <= 128 and not any(ord(c) < 32 for c in indicator):
+        from urllib.parse import quote
+        target = research_prefix() + '/sn/indicators/' + quote(indicator, safe='')
     return HTMLResponse('''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>商品研究</title>
 <p id="status">正在连接研究工作台…</p><script>
 const prefix = PREFIX;
@@ -140,14 +143,14 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
         if path == "/healthz":
             return JSONResponse({"status": "ok", "mode": "weknora"})
         if path == "/auth/bootstrap" and request.method == "GET":
-            return bootstrap_html(request.query_params.get('source'))
+            return bootstrap_html(request.query_params.get('source'), request.query_params.get('indicator'))
         if path.startswith("/static/") and request.method == "GET":
             return await call_next(request)
         try:
             if path == "/api/tools/read":
                 from tin.integration.service_auth import verify_service_request
                 identity = await verify_service_request(request)
-            elif path.startswith("/api/library") and request.headers.get("authorization", "").startswith("Bearer "):
+            elif (path.startswith("/api/library") or (path == "/api/sn/indicators/catalog" and request.method == "GET")) and request.headers.get("authorization", "").startswith("Bearer "):
                 if request.method not in {"GET", "HEAD", "OPTIONS"} and not _same_origin(request):
                     raise HTTPException(403, "请求来源不匹配")
                 identity = await verify_bearer(request.headers["authorization"][7:], request.headers.get("x-tenant-id"))

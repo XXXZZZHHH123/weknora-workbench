@@ -520,6 +520,15 @@ def indicator_usage(series_id: str):
         return diagram_api.usage(s, series_id, V)
 
 
+@app.get("/api/sn/indicators/catalog")
+def indicator_catalog(scope: str = "all"):
+    if scope not in {"all", "macro"}:
+        raise HTTPException(400, "无效指标目录范围")
+    with SessionLocal() as session:
+        rows = indicator_data.catalog(session)
+        return {"indicators": [row for row in rows if scope == "all" or row["macro"]]}
+
+
 @app.get("/sn/diagram")
 def diagram_page(request: Request, template: int | None = None):
     with SessionLocal() as s:

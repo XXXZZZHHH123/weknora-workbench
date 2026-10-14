@@ -59,6 +59,21 @@ def test_sensitive_pages_api_and_download_require_identity(embedded):
     assert not (tmp / "workspaces").exists()
 
 
+def test_macro_catalog_accepts_verified_bearer_without_research_cookie(embedded):
+    client, _, tmp = embedded
+    path = '/research/api/sn/indicators/catalog?scope=macro'
+    assert client.get(path).status_code == 401
+    headers = {'Authorization': 'Bearer viewer', 'X-Tenant-ID': '102', 'X-Research-User': 'viewer-id'}
+    response = client.get(path, headers=headers)
+    assert response.status_code == 200, response.text
+    assert all(row['macro'] for row in response.json()['indicators'])
+    assert client.cookies.get(auth.COOKIE) is None
+    assert client.get(path, headers={**headers, 'X-Tenant-ID': '101'}).status_code == 403
+    assert client.get(path, headers={**headers, 'X-Research-User': 'alice-id'}).status_code == 403
+    assert client.get('/research/api/sn/strategies', headers=headers).status_code == 401
+    assert not (tmp / 'workspaces' / '101').exists()
+
+
 def test_exchange_origin_membership_cookie_and_revocation(embedded):
     client, identities, tmp = embedded
     assert client.post("/research/auth/session", headers={"Authorization": "Bearer alice"}).status_code == 403

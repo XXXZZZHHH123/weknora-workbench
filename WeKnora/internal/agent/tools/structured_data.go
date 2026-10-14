@@ -27,18 +27,21 @@ const ToolStructuredData = "structured_data"
 // or a shared agent's execution tenant. No operation writes research state.
 type StructuredDataTool struct {
 	BaseTool
-	endpoint       string
-	sourceQuestion string
-	key            []byte
-	client         *http.Client
-	readCache      structuredReadCache
+	endpoint        string
+	sourceQuestion  string
+	key             []byte
+	client          *http.Client
+	readCache       structuredReadCache
+	knowledgeScopes []structuredKnowledgeScope
+	scopeConfigured bool
+	scopeError      error
 }
 
 func NewStructuredDataTool() *StructuredDataTool {
 	key, _ := os.ReadFile(os.Getenv("COMMODITY_RESEARCH_TOKEN_FILE"))
 	return &StructuredDataTool{BaseTool: NewBaseTool(ToolStructuredData,
-		"只读查询当前空间Excel、字段、序列和原单元格证据。按需describe_tools获取目标操作schema；发现字段后查询或用analyze_table运行完整只读SQL计算；inspect_source检查原件未解析区域、年度标签和单元格，并可用sums做原值求和。resolve_fields处理语义歧义，confirm_fields须真实用户选择。不会上传、删除或修改原表。",
-		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation","arguments"],"properties":{"operation":{"type":"string","enum":["describe_tools","inspect_source","list_datasets","list_series","list_charts","query_series","compare_series","convert_price","resolve_fields","confirm_fields","execute_field_plan","get_result_evidence","analyze_table"]},"arguments":{"type":"object","description":"先describe_tools {operations:[目标操作]}获取参数schema；其余参数沿用操作schema，不接受账号、空间、URL或凭据"}}}`)),
+		"只读查询本轮授权范围的Excel、字段、序列和原单元格证据。单知识库自动限定，多知识库先读取返回的真实知识库目录，再根据完整问题和上下文用knowledge_base_id选择来源。按需describe_tools获取目标操作schema；发现字段后查询或用analyze_table运行完整只读SQL计算；inspect_source检查原件未解析区域、年度标签和单元格，并可用sums做原值求和。resolve_fields处理语义歧义，confirm_fields须真实用户选择。不会上传、删除或修改原表。",
+		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation","arguments"],"properties":{"knowledge_base_id":{"type":"string","description":"可选的真实知识库ID，必须在本轮已授权的知识库目录中；单库时默认使用该库，多库时先读取返回目录再根据完整问题选择"},"operation":{"type":"string","enum":["describe_tools","inspect_source","list_datasets","list_series","list_charts","query_series","compare_series","convert_price","resolve_fields","confirm_fields","execute_field_plan","get_result_evidence","analyze_table"]},"arguments":{"type":"object","description":"先describe_tools {operations:[目标操作]}获取参数schema；其余参数沿用操作schema，不接受账号、空间、URL或凭据"}}}`)),
 		endpoint: strings.TrimRight(os.Getenv("STRUCTURED_DATA_URL"), "/"),
 		key:      bytes.TrimSpace(key), client: &http.Client{Timeout: 30 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
@@ -85,7 +88,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		return nil, fmt.Errorf("结构化表格参数格式无效")
 	}
 	for field := range input {
-		if field != "operation" && field != "arguments" {
+		if field != "operation" && field != "arguments" && field != "knowledge_base_id" {
 			return nil, fmt.Errorf("结构化表格不接受账号、空间或未声明的参数")
 		}
 	}
@@ -98,24 +101,35 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	if !allowed[operation] {
 		return nil, fmt.Errorf("结构化表格不支持此操作")
 	}
-	for _, field := range []string{"tenant_id", "user_id", "role", "token", "api_key", "url", "endpoint", "data_dir"} {
+	for _, field := range []string{"tenant_id", "user_id", "role", "token", "api_key", "url", "endpoint", "data_dir", "knowledge_base_id", "knowledge_base_tenant_id", "knowledge_base_can_write"} {
 		if _, exists := arguments[field]; exists {
 			return nil, fmt.Errorf("结构化表格参数不接受身份、凭据或服务配置")
 		}
+	}
+	scope, directory, err := t.resolveStructuredKnowledgeScope(input["knowledge_base_id"])
+	if err != nil {
+		return nil, err
+	}
+	if err = t.authorizeStructuredAPIKeyScope(ctx, scope, directory != nil); err != nil {
+		return nil, err
+	}
+	if directory != nil {
+		return directory, nil
 	}
 	sourceQuestion, cacheGeneration := t.structuredSourceQuestion()
 	if sourceQuestion != "" && (operation == "query_series" || operation == "analyze_table" || operation == "compare_series" || operation == "convert_price" || operation == "resolve_fields") {
 		question, _ := json.Marshal(sourceQuestion)
 		arguments["source_question"] = question
-		args, err = json.Marshal(map[string]any{"operation": operation, "arguments": arguments})
-		if err != nil {
-			return nil, fmt.Errorf("结构化来源口径参数无效")
-		}
+	}
+	// Scope is a signed identity field, never a service operation parameter.
+	args, err = json.Marshal(map[string]any{"operation": operation, "arguments": arguments})
+	if err != nil {
+		return nil, fmt.Errorf("结构化来源口径参数无效")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	lease, cached, err := t.beginStructuredReadCache(ctx, caller, operation, arguments, sourceQuestion, cacheGeneration)
+	lease, cached, err := t.beginStructuredReadCache(ctx, caller, scope, operation, arguments, sourceQuestion, cacheGeneration)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +140,10 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	defer func() { t.finishStructuredReadCache(lease, cacheResult) }()
 	identity := map[string]any{"user_id": caller.UserID, "tenant_id": caller.TenantID,
 		"role": string(caller.Role), "email": "", "display_name": caller.UserID}
+	if scope.KnowledgeBaseID != "" {
+		identity["knowledge_base_id"] = scope.KnowledgeBaseID
+		identity["knowledge_base_tenant_id"] = scope.TenantID
+	}
 	if user, ok := ctx.Value(types.UserContextKey).(*types.User); ok && user.ID == caller.UserID {
 		identity["email"], identity["display_name"] = user.Email, user.Username
 	}

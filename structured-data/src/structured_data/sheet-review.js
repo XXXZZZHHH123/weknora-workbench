@@ -58,7 +58,7 @@
     delete normalized._review_id;delete normalized.header_expectations;
     return JSON.stringify(canonical(normalized));
   }
-  const draftKey = () => currentImport&&currentSheet ? ['sheet-review:v1',activeTenant||'local',currentImport.import_id,currentSheet.name,currentSheet.fingerprint].map(encodeURIComponent).join(':') : null;
+  const draftKey = () => currentImport&&currentSheet ? ['sheet-review:v1',activeTenant||'local',...(activeKnowledgeBase?['knowledge-base',activeKnowledgeBase]:[]),currentImport.import_id,currentSheet.name,currentSheet.fingerprint].map(encodeURIComponent).join(':') : null;
   const idFor = () => 'b-'+(globalThis.crypto?.randomUUID?.()||Date.now().toString(36)+'-'+Math.random().toString(36).slice(2));
   function isChartOnly(s) {
     const blocks = s.block_count ?? s.mapping?.blocks?.length ?? 0;

@@ -111,9 +111,12 @@ uv pip install --python .venv/bin/python -e '.[test]'
 .venv/bin/python -m pytest -q
 COTTON_ACCEPTANCE=1 .venv/bin/python -m pytest tests/test_acceptance.py -q
 .venv/bin/python tests/test_acceptance.py
+SHEET_REVIEW_BROWSER=/path/to/chromium node tests/knowledge-scope-ui.cjs
 ```
 
 仅在准备好进行少量真实模型调用时运行 scripts/test_live_chat.py；每次使用新的输出目录，不覆盖旧证据。导入和上述工具测试不调用模型。
+
+知识库结构化页面通过父窗 `structured-auth` 的 `knowledgeBaseId` 发送 `X-Knowledge-Base-ID`，每次请求向 WeKnora 核验访问权限。数据、原件、导入记录和编辑草稿按知识库隔离；共享知识库使用其所属空间的存储。未携带知识库编号的旧表格分析与资料中心继续使用原空间目录，既有 Excel 不自动迁移或分配到某个知识库。浏览器验收使用 Node 24、本地 Chromium 和隔离 HTTP 夹具，验证视图切换保留原表编辑状态、跨库草稿隔离及旧键兼容，不使用真实账号或模型。
 
 ## 后续开发顺序
 

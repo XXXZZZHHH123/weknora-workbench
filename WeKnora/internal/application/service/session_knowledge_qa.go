@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/application/access"
 	chatpipeline "github.com/Tencent/WeKnora/internal/application/service/chat_pipeline"
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/event"
@@ -469,6 +471,9 @@ func (s *sessionService) buildSearchTargets(
 ) (types.SearchTargets, error) {
 	caller := types.CallerFromContext(ctx)
 	var targets types.SearchTargets
+	if len(knowledgeBaseIDs) == 0 && len(knowledgeIDs) == 0 && len(tagScopes) == 0 {
+		return targets, nil
+	}
 	tagIDsByKB := mergeTagScopesByKB(tagScopes)
 
 	// Build a map from KB ID to TenantID for all KBs we need to process
@@ -477,11 +482,41 @@ func (s *sessionService) buildSearchTargets(
 	// Track which KBs are fully searched
 	fullKBSet := make(map[string]bool)
 
-	// First pass: batch-fetch KBs, then resolve tenant per ID (tenant scope already set by caller)
-	permissions := kbReadPermissions(ctx, s.kbShareService)
+	// A selected file also needs a live parent KB. Its stored tenant alone
+	// cannot authorize or resurrect a deleted structured-store namespace.
+	var knowledgeList []*types.Knowledge
+	if len(knowledgeIDs) > 0 {
+		ids := uniqueNonEmptyStrings(knowledgeIDs)
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("selected documents are unavailable")
+		}
+		var err error
+		knowledgeList, err = s.knowledgeService.GetKnowledgeBatchWithSharedAccess(ctx, tenantID, ids)
+		if err != nil {
+			return nil, fmt.Errorf("fetch selected documents: %w", err)
+		}
+		found := make(map[string]bool, len(knowledgeList))
+		for _, knowledge := range knowledgeList {
+			if knowledge != nil && knowledge.ID != "" && knowledge.KnowledgeBaseID != "" &&
+				knowledge.TenantID != 0 && !knowledge.DeletedAt.Valid {
+				found[knowledge.ID] = true
+			}
+		}
+		for _, id := range ids {
+			if !found[id] {
+				return nil, fmt.Errorf("selected document is unavailable or unreadable: %s", id)
+			}
+		}
+	}
+
 	kbIDsToFetch := append([]string(nil), knowledgeBaseIDs...)
 	for kbID := range tagIDsByKB {
 		kbIDsToFetch = append(kbIDsToFetch, kbID)
+	}
+	for _, knowledge := range knowledgeList {
+		if knowledge != nil {
+			kbIDsToFetch = append(kbIDsToFetch, knowledge.KnowledgeBaseID)
+		}
 	}
 	kbIDsToFetch = uniqueNonEmptyStrings(kbIDsToFetch)
 
@@ -489,7 +524,7 @@ func (s *sessionService) buildSearchTargets(
 	if len(kbIDsToFetch) > 0 {
 		kbs, kbFetchErr := s.knowledgeBaseService.GetKnowledgeBasesByIDsOnly(ctx, kbIDsToFetch)
 		if kbFetchErr != nil {
-			logger.Warnf(ctx, "Failed to fetch knowledge bases for search targets: %v", kbFetchErr)
+			return nil, fmt.Errorf("fetch selected knowledge bases: %w", kbFetchErr)
 		}
 		for _, kb := range kbs {
 			if kb != nil {
@@ -497,25 +532,33 @@ func (s *sessionService) buildSearchTargets(
 			}
 		}
 	}
-	resolveKBTenant := func(kbID string) uint64 {
-		if kbTenantMap[kbID] != 0 {
-			return kbTenantMap[kbID]
-		}
+	var shares access.KBShareLookup = s.kbShareService
+	if caller.UserID == "" {
+		shares = nil
+	}
+	for _, kbID := range kbIDsToFetch {
 		kb := kbByID[kbID]
-		kbTenantMap[kbID] = caller.TenantID
-		if kb != nil {
-			kbTenantMap[kbID] = 0
-			if allowed, err := permissions.Check(kbID, kb.TenantID, types.OrgRoleViewer); err == nil && allowed {
-				kbTenantMap[kbID] = kb.TenantID
-			}
+		if kb == nil || kb.ID != kbID || kb.TenantID == 0 || kb.DeletedAt.Valid {
+			return nil, fmt.Errorf("selected knowledge base is unavailable: %s", kbID)
 		}
-		return kbTenantMap[kbID]
+		if access.HasKBGrant(ctx, kb.ID, kb.TenantID, types.OrgRoleViewer) {
+			kbTenantMap[kbID] = kb.TenantID
+			continue
+		}
+		resolved, err := access.ResolveKB(ctx, access.KBRequest{Caller: caller}, kb, types.OrgRoleViewer, shares, nil)
+		if errors.Is(err, access.ErrForbidden) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("authorize selected knowledge base: %w", err)
+		}
+		kbTenantMap[kbID] = resolved.EffectiveTenantID
 	}
 
 	if len(knowledgeBaseIDs) > 0 {
 		for _, kbID := range knowledgeBaseIDs {
 			fullKBSet[kbID] = true
-			kbTenant := resolveKBTenant(kbID)
+			kbTenant := kbTenantMap[kbID]
 			if kbTenant == 0 {
 				continue
 			}
@@ -534,21 +577,21 @@ func (s *sessionService) buildSearchTargets(
 
 	// Process individual knowledge IDs (include shared KB files the user has access to)
 	if len(knowledgeIDs) > 0 {
-		knowledgeList, err := s.knowledgeService.GetKnowledgeBatchWithSharedAccess(ctx, tenantID, knowledgeIDs)
-		if err != nil {
-			logger.Warnf(ctx, "Failed to get knowledge batch for search targets: %v", err)
-			return targets, nil // Return what we have, don't fail
-		}
-
 		// Group knowledge IDs by their KB, excluding those already covered by full KB search
-		// Also track KB tenant IDs from knowledge items
+		selected := make(map[string]bool, len(knowledgeIDs))
+		for _, id := range knowledgeIDs {
+			selected[id] = true
+		}
 		for _, k := range knowledgeList {
-			if k == nil || k.KnowledgeBaseID == "" {
+			if k == nil || !selected[k.ID] {
 				continue
 			}
-			// Track KB -> TenantID mapping from knowledge items
+			kb := kbByID[k.KnowledgeBaseID]
+			if kb == nil || k.TenantID != kb.TenantID || k.DeletedAt.Valid {
+				return nil, fmt.Errorf("selected document has an invalid knowledge-base binding: %s", k.ID)
+			}
 			if kbTenantMap[k.KnowledgeBaseID] == 0 {
-				kbTenantMap[k.KnowledgeBaseID] = k.TenantID
+				continue
 			}
 			// Skip if this KB is already fully searched without a tag scope.
 			if fullKBSet[k.KnowledgeBaseID] && len(tagIDsByKB[k.KnowledgeBaseID]) == 0 {
@@ -563,9 +606,6 @@ func (s *sessionService) buildSearchTargets(
 				continue
 			}
 			kbTenant := kbTenantMap[kbID]
-			if kbTenant == 0 {
-				kbTenant = tenantID // fallback
-			}
 			targets = append(targets, &types.SearchTarget{
 				Type:                    types.SearchTargetTypeKnowledge,
 				KnowledgeBaseID:         kbID,
@@ -580,17 +620,14 @@ func (s *sessionService) buildSearchTargets(
 		if kbID == "" || len(tagIDs) == 0 {
 			continue
 		}
-		kbTenant := resolveKBTenant(kbID)
+		kbTenant := kbTenantMap[kbID]
 		if kbTenant == 0 {
 			continue
 		}
 		kb := kbByID[kbID]
 		explicitKnowledgeIDs := uniqueNonEmptyStrings(kbToKnowledgeIDs[kbID])
 
-		useDocumentTagResolution := kb == nil || kb.Type != types.KnowledgeBaseTypeFAQ
-		if kb == nil {
-			logger.Warnf(ctx, "Knowledge base metadata missing for tag scope, kb_id=%s, using document tag resolution", kbID)
-		}
+		useDocumentTagResolution := kb.Type != types.KnowledgeBaseTypeFAQ
 		if useDocumentTagResolution {
 			tagKnowledgeIDs, err := s.knowledgeService.ListKnowledgeIDsByTagIDs(ctx, kbTenant, kbID, tagIDs)
 			if err != nil {
@@ -628,6 +665,9 @@ func (s *sessionService) buildSearchTargets(
 			target.DisableRecallThresholds = true
 		}
 		targets = append(targets, target)
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("selected source scope contains no readable targets")
 	}
 
 	logger.Infof(ctx, "Built %d search targets: %d full KB, %d partial/tag KB, kbTenantMap=%v",

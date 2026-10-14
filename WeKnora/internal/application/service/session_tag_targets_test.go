@@ -246,7 +246,7 @@ func TestBuildSearchTargets_FullKBWithTagScopeSkipsFullKBTarget(t *testing.T) {
 	assert.NotEqual(t, types.SearchTargetTypeKnowledgeBase, targets[0].Type)
 }
 
-func TestBuildSearchTargets_DocumentTagScopeWithMissingKBMetadata(t *testing.T) {
+func TestBuildSearchTargets_DocumentTagScopeRejectsMissingKBMetadata(t *testing.T) {
 	svc := &sessionService{
 		knowledgeBaseService: &tagTargetKnowledgeBaseService{kbs: map[string]*types.KnowledgeBase{}},
 		knowledgeService: &tagTargetKnowledgeService{
@@ -269,11 +269,8 @@ func TestBuildSearchTargets_DocumentTagScopeWithMissingKBMetadata(t *testing.T) 
 		[]types.TagScope{{KnowledgeBaseID: "doc-kb", TagIDs: []string{"tag-a"}}},
 	)
 
-	require.NoError(t, err)
-	require.Len(t, targets, 1)
-	assert.Equal(t, types.SearchTargetTypeKnowledge, targets[0].Type)
-	assert.ElementsMatch(t, []string{"doc-1", "doc-3"}, targets[0].KnowledgeIDs)
-	assert.True(t, targets[0].DisableRecallThresholds)
+	require.Error(t, err)
+	assert.Empty(t, targets, "missing native KB metadata must not authorize residual files")
 }
 
 func TestMergeResolvedTagKnowledgeIDs_OnlyIncludesTagScopedTargets(t *testing.T) {

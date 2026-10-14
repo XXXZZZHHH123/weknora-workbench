@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -12,7 +13,7 @@ import uuid
 import contextvars
 import inspect
 from typing import get_type_hints
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -23,7 +24,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .store import DataStore, dump
 from .imports import ImportManager
-from .workspaces import WorkspaceRegistry, Identity, current_identity
+from .workspaces import WorkspaceRegistry, Identity, current_identity, valid_knowledge_base_id
 from .review_worker import run_review_task
 from .review_errors import error_location
 
@@ -313,6 +314,36 @@ def create_app(data_dir: str | Path | None = None):
         except (ValueError, TypeError, KeyError):
             raise HTTPException(403, '没有已核验的空间成员权限') from None
 
+    async def verify_knowledge_base(identity, authorization, knowledge_base_id):
+        if not valid_knowledge_base_id(knowledge_base_id):
+            raise HTTPException(400, '知识库编号无效')
+        import httpx
+        base = os.environ.get('WEKNORA_API_URL', 'http://127.0.0.1:18081')
+        try:
+            async with httpx.AsyncClient(trust_env=False, timeout=10, follow_redirects=False) as client:
+                response = await client.get(base + '/api/v1/knowledge-bases/' + quote(knowledge_base_id, safe=''),
+                    headers={'Authorization': authorization, 'X-Tenant-ID': str(identity.tenant_id)})
+        except httpx.HTTPError:
+            raise HTTPException(503, '无法核验知识库权限，请稍后重试。') from None
+        if response.status_code != 200:
+            raise HTTPException(403, '没有当前知识库的访问权限')
+        try:
+            document = response.json()
+            data = document.get('data', document)
+            owner = data.get('tenant_id')
+            permission = data.get('my_permission')
+            if (document.get('success') is False or data.get('id') != knowledge_base_id
+                    or type(owner) is not int or owner <= 0
+                    or (owner != identity.tenant_id and permission not in {'viewer', 'editor', 'admin'})):
+                raise ValueError('invalid knowledge-base grant')
+            writable = permission in {'editor', 'admin'} if permission else (
+                owner == identity.tenant_id and (identity.role in {'owner', 'admin'}
+                    or data.get('creator_id') == identity.user_id))
+            return replace(identity, knowledge_base_id=knowledge_base_id,
+                           knowledge_base_tenant_id=owner, knowledge_base_can_write=writable)
+        except (ValueError, TypeError, AttributeError):
+            raise HTTPException(403, '知识库权限信息无效') from None
+
     @app.middleware("http")
     async def protect(request: Request, call_next):
         authority = request.headers.get("host", "")
@@ -331,6 +362,8 @@ def create_app(data_dir: str | Path | None = None):
             except HTTPException as exc:
                 return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
         elif path.startswith("/mcp"):
+            if request.headers.get('x-knowledge-base-id'):
+                return JSONResponse({'detail': '旧 MCP 连接未绑定知识库，请使用已核验的结构化查询入口'}, status_code=403)
             auth = request.headers.get("authorization", "")
             if not secrets.compare_digest(auth, "Bearer " + token):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
@@ -355,6 +388,13 @@ def create_app(data_dir: str | Path | None = None):
                 requested = request.headers.get('x-tenant-id')
                 if requested and requested != str(identity.tenant_id):
                     return JSONResponse({'detail':'当前空间已改变，请重新打开工作台'}, status_code=403)
+                authorization = session['authorization']
+            knowledge_base_id = request.headers.get('x-knowledge-base-id')
+            if knowledge_base_id is not None:
+                try:
+                    identity = await verify_knowledge_base(identity, authorization, knowledge_base_id)
+                except HTTPException as exc:
+                    return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
             if request.method not in {"GET", "HEAD"}:
                 if not identity.can_write and not path.endswith('/preview'):
                     return JSONResponse({'detail':'当前空间角色只有读取权限'}, status_code=403)
@@ -503,7 +543,7 @@ def create_app(data_dir: str | Path | None = None):
                         raise HTTPException(413, "文件超过100MB。")
                     f.write(chunk)
             with job_lock:
-                jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, "status": "processing", "stage": "扫描全部工作表并导入结构明确的表，不调用模型"}
+                jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, 'knowledge_base_id':current_identity.get().knowledge_base_id, "status": "processing", "stage": "扫描全部工作表并导入结构明确的表，不调用模型"}
             context = contextvars.copy_context()
             threading.Thread(target=context.run, args=(run_import, job_id, path), daemon=True).start()
         except Exception:
@@ -516,7 +556,8 @@ def create_app(data_dir: str | Path | None = None):
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str):
         with job_lock:
-            if job_id not in jobs or jobs[job_id].get('tenant_id') != current_identity.get().tenant_id:
+            if (job_id not in jobs or jobs[job_id].get('tenant_id') != current_identity.get().tenant_id
+                    or jobs[job_id].get('knowledge_base_id', '') != current_identity.get().knowledge_base_id):
                 raise HTTPException(404, "任务不存在；服务重启后请查看数据集列表确认导入结果。")
             return jobs[job_id]
 
@@ -600,7 +641,7 @@ def create_app(data_dir: str | Path | None = None):
         if background:
             job_id = uuid.uuid4().hex
             with job_lock:
-                jobs[job_id] = {"id": job_id, "tenant_id": current_identity.get().tenant_id, "status": "processing", "stage": "检查选定区块的全部数据"}
+                jobs[job_id] = {"id": job_id, "tenant_id": current_identity.get().tenant_id, "knowledge_base_id": current_identity.get().knowledge_base_id, "status": "processing", "stage": "检查选定区块的全部数据"}
             context = contextvars.copy_context()
             threading.Thread(target=context.run, args=(run_preview, job_id, import_id, body), daemon=True).start()
             return {"id": job_id, "status": "processing"}
@@ -638,7 +679,7 @@ def create_app(data_dir: str | Path | None = None):
             raise HTTPException(409, "已有导入或确认任务，请等待完成。")
         job_id = uuid.uuid4().hex
         with job_lock:
-            jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, "status": "processing", "stage": "校验当前工作表并增量保存，复用其他已导入工作表"}
+            jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, 'knowledge_base_id':current_identity.get().knowledge_base_id, "status": "processing", "stage": "校验当前工作表并增量保存，复用其他已导入工作表"}
         context = contextvars.copy_context()
         threading.Thread(target=context.run, args=(run_confirm, job_id, import_id, body), daemon=True).start()
         return {"id": job_id, "status": "processing"}
