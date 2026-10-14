@@ -21,9 +21,17 @@ export COMMODITY_RESEARCH_URL=http://127.0.0.1:18083
 export STRUCTURED_DATA_URL=http://127.0.0.1:18082
 export COMMODITY_RESEARCH_TOKEN_FILE="$project_root/.private/research-service-token"
 export STRUCTURED_SERVICE_TOKEN_FILE="$COMMODITY_RESEARCH_TOKEN_FILE"
+export DOCREADER_ADDR=127.0.0.1:50051 DOCREADER_TRANSPORT=grpc
+export DOCREADER_GRPC_HOST=127.0.0.1 DOCREADER_GRPC_PORT=50051
+export GRPC_AUTH_TOKEN="${GRPC_AUTH_TOKEN:-$(<"$project_root/.private/docreader-service-token")}"
 export NO_PROXY=127.0.0.1,localhost
-unset REDIS_ADDR DOCREADER_ADDR
+unset REDIS_ADDR
 case "${1:-}" in
+  docreader)
+    export PYTHONPATH="$project_root/WeKnora${PYTHONPATH:+:$PYTHONPATH}"
+    cd "$project_root/WeKnora"
+    exec "$project_root/WeKnora/docreader/.venv/bin/python" -m docreader.main >>"$project_root/logs/docreader.log" 2>&1
+    ;;
   backend)
     cd "$project_root/WeKnora"
     exec "$project_root/.build/weknora-local" >>"$project_root/logs/backend.log" 2>&1
@@ -45,5 +53,5 @@ case "${1:-}" in
     cd "$project_root/WeKnora/frontend"
     exec node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 18080 --strictPort >>"$project_root/logs/frontend.log" 2>&1
     ;;
-  *) echo "请指定 backend、structured-data、commodity-research 或 frontend。" >&2; exit 1 ;;
+  *) echo "请指定 docreader、backend、structured-data、commodity-research 或 frontend。" >&2; exit 1 ;;
 esac

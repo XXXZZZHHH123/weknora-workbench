@@ -85,6 +85,7 @@ Docker 项目名 `weknora-eval`、`weknora-structured` 保留以复用现有数�
 
 ```sh
 uv pip install --python .venv/bin/python -r commodity-research/requirements.txt -e ./commodity-research
+uv sync --project WeKnora/docreader --locked --no-dev --python python3
 bash scripts/build-local.sh
 bash scripts/stop-local.sh
 bash scripts/start-local.sh
@@ -104,7 +105,18 @@ bash scripts/start-local.sh
 
 构建通过 systemd 用户 scope 限制资源：内存软阈值 3.5 GiB、硬上限 4 GiB、swap 上限 1 GiB、CPU 配额 2 核；Go 编译并发为 1，Node 堆上限为 3 GiB。达到硬上限时构建任务可能失败，已有运行产物仍保留。
 
-本地环境配置在 `.private/local.env`，账号在 `.private/accounts.json`，WeKnora 数据库在 `.private/weknora/`，结构化数据在 `structured-data/data/`；运行日志在 `logs/`。启动脚本同时运行商品研究服务，其空间数据库保存在 `.private/commodity-research/`，内部服务签名密钥保存在 `.private/research-service-token`。研究服务使用 18083 端口，经 18080 的 `/research/` 代理访问；表格服务使用 18082 端口，经 `/structured/` 代理访问。本地预览不启动自动取数调度。修改 Python 后停止并重新启动即可加载当前源码。网页地址与上方相同，资料中心入口为 `http://127.0.0.1:18080/platform/materials`。
+本地环境配置在 `.private/local.env`，账号在 `.private/accounts.json`，WeKnora 数据库在 `.private/weknora/`，结构化数据在 `structured-data/data/`；运行日志在 `logs/`。启动脚本先用独立的 `WeKnora/docreader/.venv` 运行 DocReader，在 `127.0.0.1:50051` 完成 gRPC 健康与鉴权解析器检查后再启动后端；后端使用相同地址及鉴权配置。DocReader 默认本地令牌保存在 `.private/docreader-service-token`，若 `.private/local.env` 设置了 `GRPC_AUTH_TOKEN`，两端会共同使用该配置。缺少解析依赖或 DocReader 检查失败会终止启动，日志在 `logs/docreader.log`。TXT 等简单文本沿用 Go 的内置解析器，DOCX、PDF 等文档通过 DocReader 解析；扫描 PDF 的 OCR 仍需单独配置。
+
+启动脚本同时运行商品研究服务，其空间数据库保存在 `.private/commodity-research/`，内部服务签名密钥保存在 `.private/research-service-token`。研究服务使用 18083 端口，经 18080 的 `/research/` 代理访问；表格服务使用 18082 端口，经 `/structured/` 代理访问。本地预览不启动自动取数调度。修改 Python 后停止并重新启动即可加载当前源码。网页地址与上方相同，资料中心入口为 `http://127.0.0.1:18080/platform/materials`。
+
+本地服务与离线解析回归：
+
+```sh
+.venv/bin/python -m unittest discover -s scripts/tests -p 'test_local_services.py' -v
+PYTHONPATH=WeKnora WeKnora/docreader/.venv/bin/python -m unittest discover -s WeKnora/docreader/tests -p 'test_runtime_integration.py' -v
+```
+
+离线解析回归在随机回环端口运行真实 DocReader，验证 Markdown、含表格的 DOCX 和原生文本 PDF 的普通及流式 gRPC 请求，包含鉴权失败和错误文件后的恢复，不调用模型或外部 OCR。
 
 ## CI/CD 与服务器部署
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
-for name in frontend commodity-research structured-data backend; do
+for name in frontend commodity-research structured-data backend docreader; do
   unit="weknora-workbench-$name"
   if systemctl --user is-active --quiet "$unit"; then
     systemctl --user stop "$unit"

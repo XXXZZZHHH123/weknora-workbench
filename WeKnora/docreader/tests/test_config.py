@@ -6,6 +6,14 @@ from docreader import config
 
 
 class DocReaderConfigTest(unittest.TestCase):
+    def test_grpc_host_default_preserves_existing_listen_address(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(config.load_config().grpc_host, "[::]")
+
+    def test_grpc_host_can_be_restricted_to_loopback(self):
+        with patch.dict(os.environ, {"DOCREADER_GRPC_HOST": "127.0.0.1"}, clear=True):
+            self.assertEqual(config.load_config().grpc_host, "127.0.0.1")
+
     def test_parser_concurrency_defaults_are_conservative(self):
         with patch.dict(os.environ, {}, clear=True):
             cfg = config.load_config()

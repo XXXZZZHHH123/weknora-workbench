@@ -50,6 +50,7 @@ class DocReaderConfig:
     # gRPC
     grpc_max_workers: int
     grpc_max_file_size_mb: int
+    grpc_host: str
     grpc_port: int
 
     # Parser
@@ -84,6 +85,7 @@ def load_config() -> DocReaderConfig:
         * 1024
         * 1024
     )
+    grpc_host = _get_str(["DOCREADER_GRPC_HOST"], "[::]")
     grpc_port = _get_int(["DOCREADER_GRPC_PORT", "PORT"], 50051)
     docx_max_pages = _get_int(["DOCREADER_DOCX_MAX_PAGES"], 0)
     markitdown_max_workers = _get_int(["DOCREADER_MARKITDOWN_MAX_WORKERS"], 1)
@@ -131,6 +133,7 @@ def load_config() -> DocReaderConfig:
     return DocReaderConfig(
         grpc_max_workers=grpc_max_workers,
         grpc_max_file_size_mb=grpc_max_file_size_mb,
+        grpc_host=grpc_host,
         grpc_port=grpc_port,
         docx_max_pages=docx_max_pages,
         markitdown_max_workers=markitdown_max_workers,
@@ -160,6 +163,7 @@ def dump_config(mask_secrets: bool = True) -> Dict[str, Any]:
         "DOCREADER_GRPC_MAX_WORKERS": cfg.grpc_max_workers,
         "DOCREADER_GRPC_MAX_FILE_SIZE_MB": cfg.grpc_max_file_size_mb,
         "DOCREADER_GRPC_PORT": cfg.grpc_port,
+        "DOCREADER_GRPC_HOST": cfg.grpc_host,
         "DOCREADER_DOCX_MAX_PAGES": cfg.docx_max_pages,
         "DOCREADER_MARKITDOWN_MAX_WORKERS": cfg.markitdown_max_workers,
         "DOCREADER_ODL_MAX_WORKERS": cfg.odl_max_workers,
