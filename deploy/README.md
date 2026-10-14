@@ -129,7 +129,61 @@ test -f "$previous_release/deploy.sh" && bash "$previous_release/deploy.sh" \
 
 确认回退后的服务正常后，移除 `shared/PAUSED`。下一次运行 `update.sh` 仍会部署 GitHub 最新版本，所以原问题未修复时不要再次运行更新命令。
 
-### 下载需要代理时：在 Mac 建立转发
+### Linux 独立代理（替代 Mac 转发）
+
+服务器可以独立运行 Mihomo，导入现有 Clash/Mihomo HTTPS 订阅。固定入口是 `http://127.0.0.1:17891`，控制器仅监听 `127.0.0.1:17991` 并使用随机访问密钥。订阅只提供节点，订阅中的系统/TUN/DNS 设置不作为运行配置导入。
+
+代理使用一个独立的 `weknora-egress-proxy` 容器，复用服务器已有结构化服务镜像作为基础环境，挂载经过 SHA256 校验的 Mihomo v1.19.32 compatible 二进制。容器以普通用户运行、文件系统只读、没有 Linux capabilities，未授予 NET_ADMIN；host 网络模式避免增加 Docker 网桥或端口转发规则。TUN、透明代理和 DNS 监听均关闭，不修改默认路由、系统 DNS、Docker daemon、全局环境变量或其他应用配置。内核已在 CentOS 7 / Linux 3.10 上实测启动，回环代理 HTTPS 请求通过；安装前后 IPv4/IPv6 路由配置、系统 DNS 和原有健康应用容器没有变化。
+
+首次安装把 `linux-proxy.sh`、`linux-proxy-config.py`、`with-proxy.sh` 放在 `~/weknora-workbench/setup/`。安装脚本使用 GitHub 官方 Release 并校验固定 SHA256；服务器不能直连下载时，可以在 Mac 下载并校验后一次性传送二进制及校验文件到 `~/.local/share/weknora-proxy/runtime/`。这只是安装文件传输，后续代理运行不依赖 Mac。
+
+```sh
+# 已安装二进制时会验证本地校验文件并直接退出，不重复下载
+bash ~/weknora-workbench/setup/linux-proxy.sh install
+# 在服务器 codexuser 的交互终端隐藏输入订阅，链接不进入命令参数或历史
+bash ~/weknora-workbench/setup/linux-proxy.sh configure
+```
+
+`configure` 保存私有配置到 `~/.local/share/weknora-proxy/config/config.json`（目录 700、文件 600），校验后启动独立容器；只有 GitHub API 返回 200、GHCR 返回正常认证挑战 401，才把部署脚本的下载代理改成 17891 并继续使用 regctl。不会重新部署或重启应用。容器随 Docker 自动启动；本项目日常 `wb stop` 不会停止这个独立代理。
+
+```sh
+# 查看代理状态和可选节点名称；不会输出订阅链接或节点密码
+bash ~/weknora-workbench/setup/linux-proxy.sh status
+# 测试 GitHub/GHCR/OpenAI 网络连接，不发送模型请求
+bash ~/weknora-workbench/setup/linux-proxy.sh check
+# 默认自动选择；需要时按 status 给出的真实名称选节点
+bash ~/weknora-workbench/setup/linux-proxy.sh select '替换为实际节点名称'
+# 网络验证通过后，允许更新脚本使用 Linux 代理
+bash ~/weknora-workbench/setup/linux-proxy.sh activate
+```
+
+OpenAI API 无凭据返回 401 仅证明该 HTTPS 请求可达，不证明 Codex 已登录或模型会话可用。CentOS 7 的 curl 7.29/NSS 对 OpenAI 可能出现 TLS EOF，检查脚本使用已有 Python 3.12/OpenSSL 运行时验证，保持宿主机 TLS 包不变。若现代客户端仍返回 403/连接失败，需核对节点对目标服务的访问。本机已安装并验证官方 Codex CLI 0.162.1 的 Linux x86_64 musl 二进制，避免依赖旧 glibc；安装包来自官方 GitHub Release，并核对其 SHA256。2026-10-14 验收：GitHub API 200、GHCR 401、完整私有 Redis 镜像下载成功、OpenAI API 401、登录发现接口 200、Codex 后端 GET 返回 405；服务器已有 ChatGPT 登录状态，在隔离的只读临时目录运行最小 Codex 请求返回 `OK`。没有读取或修改项目文件。
+
+按进程使用代理，变量只传递给指定命令及其子进程，普通 SSH 会话和其他应用的环境不改变：
+
+```sh
+# 一次安装入口脚本
+install -m 700 ~/weknora-workbench/setup/with-proxy.sh ~/weknora-workbench/bin/with-proxy.sh
+# 普通 curl 不受影响；显式运行的这个 curl 使用代理
+bash ~/weknora-workbench/bin/with-proxy.sh curl -I https://github.com
+# 新环境没有登录状态时才需要登录；当前服务器已经登录并验证
+bash ~/weknora-workbench/bin/with-proxy.sh codex login --device-auth
+# 当前服务器直接运行
+bash ~/weknora-workbench/bin/with-proxy.sh codex
+```
+
+直接 `docker pull` 的联网主体是 daemon，不能依靠这个进程包装脚本改变其网络；本项目继续用 regctl 下载后导入镜像，保留现有 Docker daemon 设置。代理故障时只影响显式使用它的工具；此处没有为其他应用启用代理。撤销时先恢复原部署代理配置，再停止独立代理容器：
+
+```sh
+bash ~/weknora-workbench/setup/linux-proxy.sh restore-deploy
+bash ~/weknora-workbench/setup/linux-proxy.sh stop
+```
+
+恢复的旧配置可能仍指向 Mac 转发端口；因此这是撤销新配置，不代表旧代理隧道自动恢复。订阅、节点缓存、控制器密钥都只保存在服务器私有目录，不提交到 Git。
+
+实现依据：[Mihomo 代理端口](https://wiki.metacubex.one/config/inbound/port/)、[节点订阅集合](https://wiki.metacubex.one/config/proxy-providers/)、[TUN 对路由及防火墙的影响](https://wiki.metacubex.one/config/inbound/tun/)、[官方发布包](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.32)。Codex 登录步骤依据 [OpenAI 官方无界面设备登录说明](https://learn.chatgpt.com/docs/auth#login-on-headless-devices)。
+
+### 旧方式：在 Mac 建立转发（保留作为备用）
 
 当前配置使用服务器 `127.0.0.1:17890` 作为下载代理，并转发到 Mac 的 `127.0.0.1:1082`。如果代理隧道已在线，不需重复建立。若离线，先启动 Mac 上监听 1082 的代理软件，再在一个独立的 Mac 终端运行并保持连接：
 
