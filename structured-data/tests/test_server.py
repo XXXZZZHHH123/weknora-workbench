@@ -6,6 +6,19 @@ from structured_data.server import create_app
 from test_store import snapshot
 
 
+def test_workspace_assets_load_before_login_without_opening_data(tmp_path):
+    with TestClient(create_app(tmp_path)) as client:
+        page = client.get('/')
+        assert './workspace.css' in page.text
+        stylesheet = client.get('/workspace.css')
+        assert stylesheet.status_code == 200
+        assert stylesheet.headers['content-type'].startswith('text/css')
+        assert stylesheet.headers['cache-control'] == 'no-cache'
+        assert '.series-choice' in stylesheet.text
+        assert client.get('/workspace.css', headers={'Host': 'malicious.invalid'}).status_code == 403
+        assert client.get('/api/datasets').status_code == 401
+
+
 def test_authentication_and_mcp_read_only_surface(tmp_path):
     app = create_app(tmp_path)
     token = (tmp_path / "service-token").read_text()

@@ -139,6 +139,8 @@ python3 -m venv .venv
 
 后端调用回归：在 `WeKnora` 中执行 `go test ./internal/agent/tools ./internal/agent -run TestMCP -count=1`。部分测试依赖原始验收文件或运行中的服务，需要单独配置。
 
+结构化导入与查询浏览器回归从仓库根目录执行 `node structured-data/tests/workspace-ui.cjs`，需要 Node.js 22+ 和本机 Chromium。默认从 Playwright 浏览器缓存查找 Chromium，也可用 `SHEET_REVIEW_BROWSER` 指定已有可执行文件；无需新增 npm 依赖。测试运行真实页面脚本与隔离 HTTP 夹具，验证文件选择、查询及原单元格证据、旧结果清理、知识库隔离和窄屏交互，不调用云模型。默认临时文件会清理；设置 `STRUCTURED_UI_ARTIFACTS` 可保留结果和截图。
+
 本仓库不包含公司工作簿、数据库快照、模型密钥、账号、聊天记录、运行报告与截图。部分历史文档中的本地验收链接不会在本仓库提供；真实数据验收 JSON 也不提交，缺失时对应测试跳过。历史测试证据保存在本机 `.local-backups/legacy-evaluation-20261009.tar.gz`。
 
 ## 仓库体积与备份

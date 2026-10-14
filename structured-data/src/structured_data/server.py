@@ -351,7 +351,7 @@ def create_app(data_dir: str | Path | None = None):
         if host not in {"127.0.0.1", "localhost", "structured-data", "cotton-data", "host.docker.internal", "testserver"} and not (public_authority and authority == public_authority):
             return JSONResponse({"detail": "Host not allowed"}, status_code=403)
         path = request.url.path
-        if path in {"/", "/health", "/login", "/api/ui-config", "/sheet-review.js", "/sheet-review.css"}:
+        if path in {"/", "/health", "/login", "/api/ui-config", "/sheet-review.js", "/sheet-review.css", "/workspace.css"}:
             return await call_next(request)
         identity = None
         signed = path in {'/api/tools/read', '/api/research/export'} or path.startswith('/api/research/source/')
@@ -418,6 +418,10 @@ def create_app(data_dir: str | Path | None = None):
     @app.get("/sheet-review.css")
     def sheet_review_styles():
         return FileResponse(Path(__file__).with_name("sheet-review.css"), media_type="text/css", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/workspace.css")
+    def workspace_styles():
+        return FileResponse(Path(__file__).with_name("workspace.css"), media_type="text/css", headers={"Cache-Control": "no-cache"})
 
     @app.get("/health")
     def health():
