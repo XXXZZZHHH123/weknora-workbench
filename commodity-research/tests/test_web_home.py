@@ -94,7 +94,7 @@ def test_home_stays_up_when_there_is_no_brief_today(loaded, monkeypatch):
 
 
 def test_home_survives_an_empty_database(session, monkeypatch):
-    """全新库里一个交易日都没有。/sn 该 503，首屏不该——那等于把人关在门外。"""
+    """全新库里一个交易日都没有，首屏也应保留研究和数据更新入口。"""
     page = client(session, monkeypatch).get("/")
 
     assert page.status_code == 200
