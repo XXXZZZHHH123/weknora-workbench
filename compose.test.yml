@@ -14,6 +14,7 @@ services:
       COMMODITY_RESEARCH_URL: http://commodity-research:8765
       STRUCTURED_DATA_URL: http://structured-data:18082
       COMMODITY_RESEARCH_TOKEN_FILE: /run/secrets/research-token
+      LOG_FORMAT: ""
       BATCH_EMBED_SIZE: "2"
       MAX_FILE_SIZE_MB: "100"
     ports: !override
@@ -26,6 +27,8 @@ services:
       MAX_FILE_SIZE_MB: "100"
       DOCREADER_GRPC_MAX_FILE_SIZE_MB: "100"
   postgres:
+    # Preserve the existing local database engine; production pins separately.
+    image: paradedb/paradedb:v0.22.6-pg17
     container_name: weknora-eval-postgres
   redis:
     container_name: weknora-eval-redis

@@ -3,6 +3,10 @@
 !deploy/
 !deploy/Dockerfile.frontend
 !deploy/Dockerfile.runtime
+!deploy/Dockerfile.documents
+!skills/
+!skills/document-export/
+!skills/document-export/**
 !WeKnora/
 !WeKnora/frontend/
 !WeKnora/frontend/**

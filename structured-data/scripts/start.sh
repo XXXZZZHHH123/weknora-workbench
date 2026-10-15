@@ -16,7 +16,11 @@ fi
   exit 1
 }
 # Keep project names stable: they own the existing database volumes and network.
-docker compose -p weknora-eval --project-directory "$workbench_dir/WeKnora" -f "$workbench_dir/WeKnora/docker-compose.yml" -f "$workbench_dir/compose.test.yml" up -d --no-build --pull never
+compose_args=(-f "$workbench_dir/WeKnora/docker-compose.yml" -f "$workbench_dir/compose.test.yml")
+if [[ "${WORKBENCH_DOCUMENTS_ENABLED:-false}" == true || -f "$workbench_dir/.private/document-runtime.enabled" ]]; then
+  compose_args+=(-f "$workbench_dir/compose.documents.yml")
+fi
+docker compose -p weknora-eval --project-directory "$workbench_dir/WeKnora" "${compose_args[@]}" up -d --no-build --pull never
 docker compose -p weknora-structured -f "$project_dir/compose.yml" up -d --no-build --pull never
 docker compose -p weknora-research -f "$workbench_dir/commodity-research/compose.yml" up -d --no-build --pull never
 for ((attempt=1; attempt<=40; attempt++)); do

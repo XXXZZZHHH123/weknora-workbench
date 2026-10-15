@@ -1,0 +1,33 @@
+# Explicit opt-in for local Docker. Never mount the socket in a skill container.
+# The trusted app uses the official adapter to manage isolated session containers.
+services:
+  app:
+    environment:
+      WEKNORA_SANDBOX_DOCKER_ENABLED: "true"
+      DOCKER_HOST: unix:///run/document-docker/docker.sock
+    volumes:
+      - document-docker-socket:/run/document-docker
+    depends_on:
+      document-docker-api:
+        condition: service_healthy
+  # Docker Desktop exposes its mount as GID 0. Relay to a private Unix socket
+  # with a non-root GID, which the official app entrypoint can grant access to.
+  # No TCP listener, no host chmod, and no daemon socket in model sandboxes.
+  document-docker-api:
+    image: weknora-document-sandbox:local
+    command: ["socat", "UNIX-LISTEN:/relay/docker.sock,fork,unlink-early,mode=0660,user=1000,group=1000", "UNIX-CONNECT:/var/run/docker.sock"]
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    mem_limit: 64m
+    pids_limit: 64
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - document-docker-socket:/relay
+    healthcheck:
+      test: ["CMD", "test", "-S", "/relay/docker.sock"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+volumes:
+  document-docker-socket:

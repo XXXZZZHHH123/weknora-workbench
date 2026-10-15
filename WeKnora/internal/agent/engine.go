@@ -82,10 +82,11 @@ type AgentEngine struct {
 	modelContext    *modelcontext.Registry // single request-local boundary for every model handle
 	// steerSink, when set, lets users append messages into the running turn.
 	// Drained at every round boundary; nil disables mid-run injection.
-	steerSink         types.SteerSink
-	allowSteerOverrun bool // one extra ReAct round after a loop-end inject past MaxIterations
-	steerOverruns     int  // how many times this turn has already used the extra round
-	workspaceLayout   sandbox.WorkspaceLayout
+	steerSink          types.SteerSink
+	allowSteerOverrun  bool // one extra ReAct round after a loop-end inject past MaxIterations
+	steerOverruns      int  // how many times this turn has already used the extra round
+	workspaceLayout    sandbox.WorkspaceLayout
+	artifactFileSource agenttools.SandboxFileSource
 }
 
 // maxSteerOverruns caps loop-end injects past MaxIterations. One extra round
@@ -1004,6 +1005,9 @@ func (e *AgentEngine) runReActIteration(
 	// initial stream prefix is buffered so these fragments never become a
 	// completed answer in the UI. Repair in the same evidence context, with
 	// reasoning switched off for this turn only; never change model settings.
+	if len(response.ToolCalls) == 0 && hasWorkspaceExecution(state) {
+		e.recordArtifactInventory(ctx, state, messagesPtr, sessionID)
+	}
 	needsAnswerRepair := false
 	if len(response.ToolCalls) == 0 && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
 		var completenessErr error
@@ -1075,7 +1079,7 @@ func (e *AgentEngine) runReActIteration(
 		unsupported := ungroundedStructuredNumbers(response.Content, evidenceMessages, state.RoundSteps)
 		if len(unsupported) > 0 && guards.structuredEvidenceRepairs < 2 {
 			guards.structuredEvidenceRepairs++
-			*messagesPtr = append(*messagesPtr, chat.Message{Role: "assistant", Content: response.Content}, chat.Message{Role: "system", Content: "内部运行时反馈；最终仍须回答用户原始问题。数值依据检查：草稿中以下数字尚未匹配真实程序结果（可能为未经计算的补充数字或错误舍入）：" + strings.Join(unsupported, "、") + "。若数字属于字段名称、规格代码或公式，请完整引用工具提供的原表表头、维度和公式，不使用未返回的简称，不省略公式参数或单元格行号；这些身份代码不能写成统计值。不要为口径说明擅自执行被要求澄清的字段。其余补充统计数字须调用计算工具取得依据或删去，不能凭记忆补数。"})
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "assistant", Content: response.Content}, chat.Message{Role: "system", Content: "内部运行时反馈；最终须完成本轮最新请求，历史提问仅作为上下文，不要改答已完成的旧问题。数值依据检查：草稿中以下数字尚未匹配真实程序结果（可能为未经计算的补充数字或错误舍入）：" + strings.Join(unsupported, "、") + "。若数字属于字段名称、规格代码或公式，请完整引用工具提供的原表表头、维度和公式，不使用未返回的简称，不省略公式参数或单元格行号；这些身份代码不能写成统计值。不要为口径说明擅自执行被要求澄清的字段。其余补充统计数字须调用计算工具取得依据或删去，不能凭记忆补数。"})
 			state.RoundSteps = append(state.RoundSteps, step)
 			return iterOutcomeNext, nil
 		}

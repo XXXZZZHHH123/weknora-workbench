@@ -1285,7 +1285,7 @@
       </div>
 
       <!-- 技能：脚本跑在所选沙箱里，可用列表也来自这份配置 -->
-      <div v-show="currentSection === 'skills' && isAgentMode" class="section">
+      <div v-show="currentSection === 'skills' && supportsSkills" class="section">
         <div class="section-header">
           <h2>{{ $t('agent.editor.skillsConfig') }}</h2>
           <p class="section-description">{{ hostOnly ? $t('agent.editor.hostSkillsConfigDesc') : $t('agent.editor.skillsConfigDesc') }}</p>
@@ -2812,6 +2812,8 @@ const navItems = computed(() => {
   if (isAgentMode.value) {
     items.push({ key: 'tools', icon: 'tools', label: t('agent.editor.toolsConfig') });
     items.push({ key: 'mcp', icon: 'server', label: t('agentEditor.mcp.label') });
+  }
+  if (supportsSkills.value) {
     items.push({ key: 'skills', icon: SKILL_ICON, label: t('agent.editor.skillsConfig') });
   }
   // 发布（仅编辑模式）
@@ -3008,6 +3010,9 @@ const agentMode = computed({
 });
 
 const isAgentMode = computed(() => agentMode.value === 'smart-reasoning');
+// The workbench runs the built-in quick entry through the shared tool loop.
+// Keep its administrator-selected skills configurable without changing modes.
+const supportsSkills = computed(() => isAgentMode.value || editorAgent.value?.id === 'builtin-quick-answer');
 
 const effectiveDefaultMaxCompletionTokens = computed(() =>
   defaultMaxCompletionTokensFor(agentMode.value, formData.value.config.sandbox_config_id),

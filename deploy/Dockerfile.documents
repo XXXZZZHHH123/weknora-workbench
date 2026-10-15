@@ -1,0 +1,13 @@
+# Official session sandbox contract; use as a named workspace Docker config.
+ARG BASE_IMAGE=wechatopenai/weknora-sandbox:v0.8.3
+FROM ${BASE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-writer fonts-noto-cjk poppler-utils socat \
+    && rm -rf /var/lib/apt/lists/*
+COPY skills/document-export/requirements.txt /tmp/document-requirements.txt
+RUN pip download --dest /opt/weknora/document-wheels -r /tmp/document-requirements.txt \
+    && pip install --no-index --find-links /opt/weknora/document-wheels -r /tmp/document-requirements.txt \
+    && rm /tmp/document-requirements.txt
+ENV PIP_NO_INDEX=1 PIP_FIND_LINKS=/opt/weknora/document-wheels \
+    UV_NO_INDEX=1 UV_FIND_LINKS=/opt/weknora/document-wheels

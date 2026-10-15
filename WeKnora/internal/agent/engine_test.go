@@ -919,9 +919,7 @@ func TestFinalSynthesisRepairsFragmentsBeforeEmitting(t *testing.T) {
 					answer = "红线代表2401合约年度。"
 				}
 				model.responses = append(model.responses, mockResponse{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeThinking, Content: strings.Repeat("reasoning", 100)}, {ResponseType: types.ResponseTypeAnswer, Content: answer, Done: true, FinishReason: "stop"}}})
-				if answer == "周" {
-					model.responses = append(model.responses, completenessVerdict(false))
-				}
+				model.responses = append(model.responses, completenessVerdict(answer != "周"))
 			}
 			engine := newTestEngine(t, model)
 			state := &types.AgentState{}
@@ -936,7 +934,7 @@ func TestFinalSynthesisRepairsFragmentsBeforeEmitting(t *testing.T) {
 			require.Equal(t, state.FinalAnswer, emitted)
 			if recover {
 				require.Equal(t, "红线代表2401合约年度。", state.FinalAnswer)
-				require.Len(t, model.calls, 3)
+				require.Len(t, model.calls, 4)
 			} else {
 				require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
 				require.Len(t, model.calls, 6)
@@ -953,13 +951,15 @@ func TestFinalSynthesisRepairsFragmentsBeforeEmitting(t *testing.T) {
 func TestFinalSynthesisCannotInventCurrentStructuredNumbers(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "合计999万吨。", Done: true, FinishReason: "stop"}}},
+		completenessVerdict(true),
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "合计775万吨。", Done: true, FinishReason: "stop"}}},
+		completenessVerdict(true),
 	}}
 	engine := newTestEngine(t, model)
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{{Name: "structured_data", Result: &types.ToolResult{Success: true, Output: `{"kind":"structured_analysis","status":"ok","rows":[[775]]}`}}}}}}
 	require.NoError(t, engine.streamFinalAnswerToEventBus(context.Background(), "产量加进口合计多少？", state, "sess", emptyMessages()))
 	require.Equal(t, "合计775万吨。", state.FinalAnswer)
-	require.Len(t, model.calls, 2)
+	require.Len(t, model.calls, 4)
 }
 
 // ---------------------------------------------------------------------------
@@ -1216,6 +1216,7 @@ func TestStreamFinalAnswerToEventBus_EmitsDoneWhenProviderEndsWithEmptyChunk(t *
 				{ResponseType: types.ResponseTypeAnswer, Content: "final answer", Done: false},
 				{ResponseType: types.ResponseTypeAnswer, Done: true, FinishReason: "stop"},
 			}},
+			completenessVerdict(true),
 		},
 	}
 

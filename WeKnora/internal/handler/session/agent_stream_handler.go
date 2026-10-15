@@ -822,6 +822,9 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 						"artifact collect failed session=%s message=%s: %v",
 						h.sessionID, h.assistantMessageID, err,
 					)
+					// The turn has ended, but delivery did not succeed. Preserve
+					// successful attachments and distinguish them from missing files.
+					h.assistantMessage.Content = "**文件交付未完成：部分生成文件未能保存为可下载附件。请以实际附件列表为准，稍后重试。**\n\n" + h.assistantMessage.Content
 				}
 			}
 

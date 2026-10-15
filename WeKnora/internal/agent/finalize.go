@@ -22,6 +22,9 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	sessionID string,
 	conversation []chat.Message,
 ) error {
+	if hasWorkspaceExecution(state) {
+		e.recordArtifactInventory(ctx, state, &conversation, sessionID)
+	}
 	totalToolCalls := countTotalToolCalls(state.RoundSteps)
 	logger.Infof(ctx, "[Agent][FinalAnswer] Synthesizing from %d steps, %d tool calls",
 		len(state.RoundSteps), totalToolCalls)
@@ -80,7 +83,13 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		fullAnswer = agenttools.StripThinkBlocks(llmResult.Content)
 		truncated = isLengthFinishReason(llmResult.FinishReason)
-		invalid, completenessErr := e.answerNeedsRepair(ctx, query, fullAnswer, llmResult.ReasoningContent, state, conversation)
+		// A provider can ignore tool_choice=none. Never accept its pre-tool
+		// progress text as the final answer, or silently drop requested calls.
+		invalid := llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
+		var completenessErr error
+		if !invalid {
+			invalid, completenessErr = e.evaluateAnswerCompleteness(ctx, query, fullAnswer, state, conversation)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

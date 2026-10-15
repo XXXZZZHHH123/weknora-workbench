@@ -2,12 +2,14 @@ package session
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/application/service"
 	"github.com/Tencent/WeKnora/internal/event"
+	"github.com/Tencent/WeKnora/internal/sandbox"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/require"
@@ -24,6 +26,31 @@ func (s *completionEventRecorder) AppendEvent(_ context.Context, _, _ string, e 
 }
 
 type completionHistory struct{ previous []types.MessageArtifact }
+
+type unavailableArtifactSource struct{}
+
+func (unavailableArtifactSource) ListSessionFiles(context.Context, string, string) ([]sandbox.RemoteDirEntry, error) {
+	return nil, errors.New("sandbox filesystem unavailable")
+}
+
+func (unavailableArtifactSource) ReadSessionFile(context.Context, string, string) ([]byte, error) {
+	return nil, errors.New("sandbox filesystem unavailable")
+}
+
+func TestCompletionDisclosesFailedArtifactDelivery(t *testing.T) {
+	stream := &completionEventRecorder{}
+	message := &types.Message{ID: "m", Content: "文件已生成。"}
+	handler := NewAgentStreamHandler(context.Background(), "s", "m", "req", 1, time.Time{},
+		message, stream, nil,
+		service.NewArtifactCollector(unavailableArtifactSource{}, &fakeArtifactFileService{}, nil, nil,
+			service.ArtifactCollectorConfig{OutputDir: "/workspace/output"}), nil, nil)
+	require.NoError(t, handler.handleComplete(context.Background(), event.Event{Data: event.AgentCompleteData{MessageID: "m"}}))
+	require.NoError(t, handler.publishCompletion(context.Background()))
+	require.Contains(t, message.Content, "文件交付未完成")
+	require.Empty(t, message.Artifacts)
+	last := stream.events[len(stream.events)-1]
+	require.Contains(t, last.Data["final_content"], "文件交付未完成")
+}
 
 func (s completionHistory) KnownArtifacts(context.Context, string) ([]types.MessageArtifact, error) {
 	return s.previous, nil

@@ -5,11 +5,13 @@ import (
 	"encoding/xml"
 	"io"
 	"math"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -178,6 +180,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 	identityLabels := map[string]bool{}
 	for _, steps := range rawSteps {
 		collectDurableDocumentIdentityTitles(steps, identityLabels)
+		collectArtifactIdentityTitles(steps, identityLabels)
 	}
 	userTexts := []string{}
 	var collect func(any)
@@ -414,6 +417,35 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 		}
 	}
 	return unsupported
+}
+
+// Only the authorized filesystem inventory can prove an output identity. Do
+// not parse a model's proposed path or arbitrary shell/document JSON as proof.
+// Mask exact names/paths only; numbers in surrounding analysis stay checked.
+func collectArtifactIdentityTitles(steps []types.AgentStep, labels map[string]bool) {
+	for _, step := range steps {
+		for _, call := range step.ToolCalls {
+			if call.Name != agenttools.ToolListSandboxFiles || call.Result == nil || !call.Result.Success || call.Result.Data == nil {
+				continue
+			}
+			raw, _ := json.Marshal(call.Result.Data)
+			var inventory struct {
+				Kind  string `json:"kind"`
+				Files []struct {
+					Path string `json:"path"`
+					Name string `json:"name"`
+				} `json:"files"`
+			}
+			if json.Unmarshal(raw, &inventory) != nil || inventory.Kind != "sandbox_file_inventory" {
+				continue
+			}
+			for _, file := range inventory.Files {
+				if path.IsAbs(file.Path) && path.Base(file.Path) == file.Name && file.Name != "" {
+					labels[file.Path], labels[file.Name] = true, true
+				}
+			}
+		}
+	}
 }
 
 func collectDurableDocumentIdentityTitles(steps []types.AgentStep, labels map[string]bool) {

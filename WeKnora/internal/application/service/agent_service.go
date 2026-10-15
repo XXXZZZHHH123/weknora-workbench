@@ -261,6 +261,11 @@ func (s *agentService) CreateAgentEngine(
 		systemPromptTemplate,
 	)
 	engine.SetAppConfig(s.cfg)
+	if workbenchUsesSandbox(config) {
+		if manager, err := s.resolveWorkspaceSandbox(ctx, sessionID, config); err == nil && manager != nil {
+			engine.SetArtifactFileSource(sessionSandboxFileStore(manager))
+		}
+	}
 	pinnedMCP := s.resolvePinnedMCPServiceInfos(ctx, config)
 	s.attachPinnedMCPToolNames(toolRegistry, pinnedMCP)
 	engine.SetPinnedMentions(

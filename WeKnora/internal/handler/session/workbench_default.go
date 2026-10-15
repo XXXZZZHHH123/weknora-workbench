@@ -51,8 +51,8 @@ func workbenchDefaultAgent(original *types.CustomAgent, tenantID uint64) *types.
 	result.Config.ContextTemplateID = ""
 	result.Config.KBSelectionMode = "all"
 	result.Config.RetrieveKBOnlyWhenMentioned = false
-	// Smart reasoning retains its existing tools, skills and sandbox. Quick
-	// answer had no such execution surface, so its adaptation remains narrow.
+	// Keep the administrator's skill/sandbox selection for every entry. The
+	// workbench uses a tool loop even when the visible entry is quick answer.
 	quick := original == nil || original.ID == types.BuiltinQuickAnswerID
 	if quick {
 		result.Config.AllowedTools = nil
@@ -71,9 +71,6 @@ func workbenchDefaultAgent(original *types.CustomAgent, tenantID uint64) *types.
 	if quick {
 		result.Config.MCPSelectionMode = "none"
 		result.Config.MCPServices = nil
-		result.Config.SkillsSelectionMode = "none"
-		result.Config.SelectedSkills = nil
-		result.Config.SandboxConfigID = ""
 	}
 	if result.Config.MaxIterations >= 0 && result.Config.MaxIterations < 20 {
 		result.Config.MaxIterations = 20

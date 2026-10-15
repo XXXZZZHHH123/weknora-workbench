@@ -711,6 +711,26 @@ func TestArtifactCollector_ListErrorDegrades(t *testing.T) {
 	}
 }
 
+func TestArtifactCollector_LiveDeliveryReportsListFailure(t *testing.T) {
+	c := newTestCollector(&fakeSandboxSource{listErr: stderrors.New("envd timeout")}, &fakeStore{}, &fakeFileService{}, 1<<20)
+	got, err := c.CollectWithNotify(context.Background(), "sess-1", "msg-1", 42, "/workspace/output", nil)
+	if err == nil || len(got) != 0 {
+		t.Fatalf("live delivery must report an inaccessible output tree, got files=%d err=%v", len(got), err)
+	}
+}
+
+func TestArtifactCollector_LiveDeliveryReportsPersistenceFailure(t *testing.T) {
+	source := &fakeSandboxSource{
+		entries:  map[string][]sandbox.RemoteDirEntry{"sess-1": {{Name: "report.docx", Path: "/workspace/output/report.docx", Type: sandbox.RemoteEntryFile, Size: 7, ModTime: time.Now()}}},
+		contents: map[string][]byte{"/workspace/output/report.docx": []byte("content")},
+	}
+	c := newTestCollector(source, &fakeStore{}, &fakeFileService{saveErr: stderrors.New("storage unavailable")}, 1<<20)
+	got, err := c.CollectWithNotify(context.Background(), "sess-1", "msg-1", 42, "/workspace/output", nil)
+	if err == nil || len(got) != 0 {
+		t.Fatalf("live delivery must report failed uploads, got files=%d err=%v", len(got), err)
+	}
+}
+
 func TestArtifactCollector_UploadFailureIsPerFile(t *testing.T) {
 	// A single failed upload must NOT abort the whole batch — the other
 	// files should still be persisted, matching the best-effort contract.

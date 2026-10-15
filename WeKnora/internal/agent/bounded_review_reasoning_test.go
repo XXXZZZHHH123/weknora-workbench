@@ -11,6 +11,7 @@ import (
 
 func TestBoundedSynthesisAndRepairUseMinimumSupportedReasoning(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "根据已取得证据回答。", Done: true, FinishReason: "stop"}}}}}
+	model.responses = append(model.responses, completenessVerdict(true))
 	e := newTestEngine(t, model)
 	e.config.ReviewReasoningEffort = "minimal"
 	require.NoError(t, e.streamFinalAnswerToEventBus(context.Background(), "问题", &types.AgentState{}, "s", emptyMessages()))

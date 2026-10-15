@@ -12,8 +12,8 @@
 //     turns; deletion would break that ("不清空输出目录").
 //   - Never lazy-create a sandbox: the collector reads from an already-live
 //     sandbox and returns an empty slice when none exists.
-//   - Best-effort: individual errors are logged and skipped, never returned,
-//     so a stray unreadable file cannot block the assistant reply.
+//   - Best-effort: individual failures never discard successfully saved files.
+//     Live collection reports failures so the reply can disclose incomplete delivery.
 //   - De-duplication by (SourcePath, ModTime), with a content-hash check
 //     when mtime changed: git checkout refreshes mtime on unchanged bytes
 //     and must not re-attach; a same-size in-place rewrite must.
@@ -23,6 +23,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -284,10 +286,8 @@ func newBoundedConfig(cfg ArtifactCollectorConfig) ArtifactCollectorConfig {
 // backend disabled), Collect returns nil, nil — the caller is expected to
 // treat both cases as "nothing to attach" and NOT set message.Artifacts.
 //
-// Errors returned by Collect are limited to internal invariants (nil
-// dependencies). Per-file errors (unreadable, too-large, upload failure)
-// are logged and skipped so a single misbehaving artifact never breaks the
-// turn.
+// Collect preserves the best-effort background API. Live callers should use
+// CollectWithNotify, which also reports unreadable, oversized or unsaved files.
 func (c *ArtifactCollector) Collect(
 	ctx context.Context,
 	sessionID string,
@@ -295,7 +295,10 @@ func (c *ArtifactCollector) Collect(
 	tenantID uint64,
 	outputDir string,
 ) (types.MessageArtifacts, error) {
-	return c.collect(ctx, sessionID, messageID, tenantID, outputDir, nil)
+	// Preserve the legacy best-effort API for background callers. The live
+	// delivery path uses CollectWithNotify to surface partial/failed delivery.
+	artifacts, _ := c.collect(ctx, sessionID, messageID, tenantID, outputDir, nil)
+	return artifacts, nil
 }
 
 // CollectWithNotify is Collect plus a progress hook fired after files have
@@ -368,7 +371,7 @@ func (c *ArtifactCollector) collect(
 	if err != nil {
 		logger.Warnf(ctx, "[ArtifactCollector] list sandbox files failed: session=%s dir=%s err=%v",
 			sessionID, outputDir, err)
-		return nil, nil
+		return nil, fmt.Errorf("list generated files: %w", err)
 	}
 	if len(entries) == 0 {
 		// The most common cause of "download button never appears" is
@@ -394,7 +397,8 @@ func (c *ArtifactCollector) collect(
 	// "about to persist" and spin the toolbar on an empty attach.
 	var uploads []pendingArtifactUpload
 	for _, entry := range entries {
-		data, hash, ok := c.readNewContent(ctx, source, sessionID, entry, known)
+		data, hash, ok, readErr := c.readNewContent(ctx, source, sessionID, entry, known)
+		err = errors.Join(err, readErr)
 		if !ok {
 			continue
 		}
@@ -411,6 +415,7 @@ func (c *ArtifactCollector) collect(
 	for _, item := range uploads {
 		art, ok := c.persistBytes(ctx, sessionID, messageID, tenantID, item.entry, item.data, item.hash)
 		if !ok {
+			err = errors.Join(err, fmt.Errorf("persist generated file %s", item.entry.Name))
 			continue
 		}
 		artifacts = append(artifacts, art)
@@ -418,7 +423,7 @@ func (c *ArtifactCollector) collect(
 	}
 	logger.Infof(ctx, "[ArtifactCollector] done session=%s listed=%d attached=%d",
 		sessionID, len(entries), len(artifacts))
-	return artifacts, nil
+	return artifacts, err
 }
 
 // loadKnownSet returns the artifacts already recorded against the session.
@@ -472,20 +477,21 @@ func (c *ArtifactCollector) readNewContent(
 	sessionID string,
 	entry sandbox.RemoteDirEntry,
 	known *artifactKnownSet,
-) ([]byte, string, bool) {
+) ([]byte, string, bool, error) {
 	if !c.acceptEntry(entry, known) {
 		if entry.Type == sandbox.RemoteEntryFile && entry.Size > c.config.MaxFileBytes {
 			logger.Warnf(ctx, "[ArtifactCollector] skip oversize artifact: session=%s path=%s size=%d limit=%d",
 				sessionID, entry.Path, entry.Size, c.config.MaxFileBytes)
+			return nil, "", false, fmt.Errorf("generated file exceeds size limit: %s", entry.Name)
 		}
-		return nil, "", false
+		return nil, "", false, nil
 	}
 
 	data, err := source.ReadSessionFile(ctx, sessionID, entry.Path)
 	if err != nil {
 		logger.Warnf(ctx, "[ArtifactCollector] read artifact failed: session=%s path=%s err=%v",
 			sessionID, entry.Path, err)
-		return nil, "", false
+		return nil, "", false, fmt.Errorf("read generated file %s: %w", entry.Name, err)
 	}
 	hash := artifactContentHash(data)
 	if c.knownSameContent(ctx, known, entry.Path, hash) {
@@ -498,14 +504,14 @@ func (c *ArtifactCollector) readNewContent(
 					sessionID, entry.Path, err)
 			}
 		}
-		return nil, "", false
+		return nil, "", false, nil
 	}
 	if int64(len(data)) > c.config.MaxFileBytes {
 		logger.Warnf(ctx, "[ArtifactCollector] skip oversize artifact after read: session=%s path=%s size=%d limit=%d",
 			sessionID, entry.Path, len(data), c.config.MaxFileBytes)
-		return nil, "", false
+		return nil, "", false, fmt.Errorf("generated file exceeds size limit: %s", entry.Name)
 	}
-	return data, hash, true
+	return data, hash, true, nil
 }
 
 func (c *ArtifactCollector) persistBytes(

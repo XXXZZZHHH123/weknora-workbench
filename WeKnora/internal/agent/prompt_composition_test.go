@@ -96,8 +96,9 @@ func TestRuntimeDirectoryEscapesAndBoundsUntrustedContent(t *testing.T) {
 
 func TestFinalSynthesisKeepsConversationRolesImagesAndSteering(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{
-		{ResponseType: types.ResponseTypeAnswer, Content: "completed", Done: true},
+		{ResponseType: types.ResponseTypeAnswer, Content: "completed", Done: true, FinishReason: "stop"},
 	}}}}
+	model.responses = append(model.responses, completenessVerdict(true))
 	engine := newTestEngine(t, model)
 	messages := []chat.Message{
 		{Role: "system", Content: "runtime policy"},
@@ -115,7 +116,7 @@ func TestFinalSynthesisKeepsConversationRolesImagesAndSteering(t *testing.T) {
 	require.NoError(t, engine.streamFinalAnswerToEventBus(
 		t.Context(), "original task", &types.AgentState{}, "sess", messages,
 	))
-	require.Len(t, model.calls, 1)
+	require.Len(t, model.calls, 2)
 	got := model.calls[0]
 	require.Len(t, got, len(messages)+1)
 	require.Equal(t, original, got[:len(messages)],

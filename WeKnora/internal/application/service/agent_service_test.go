@@ -51,6 +51,14 @@ func (*fakeAgentChatModel) Chat(context.Context, []chat.Message, *chat.ChatOptio
 func (m *fakeAgentChatModel) ChatStream(
 	_ context.Context, messages []chat.Message, opts *chat.ChatOptions,
 ) (<-chan types.StreamResponse, error) {
+	// Completion review is a separate no-tools model call. Keep the primary
+	// engine's offered capabilities available for the registration assertions.
+	if opts != nil && opts.ToolChoice == "none" {
+		ch := make(chan types.StreamResponse, 1)
+		ch <- types.StreamResponse{ResponseType: types.ResponseTypeAnswer, Content: `{"complete":true}`, Done: true, FinishReason: "stop"}
+		close(ch)
+		return ch, nil
+	}
 	m.lastToolNames = nil
 	m.lastToolDescriptions = map[string]string{}
 	m.lastSystemPrompt = ""
