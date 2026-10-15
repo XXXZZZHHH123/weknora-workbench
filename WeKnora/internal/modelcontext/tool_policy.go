@@ -74,9 +74,17 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 	"structured_analyze_table":       {opaqueOutput: true},
 	"structured_inspect_source":      {opaqueOutput: true},
 	"structured_get_result_evidence": {opaqueOutput: true},
-	"discover_mcp_tools":             {opaqueOutput: true, mcpRoutingKey: "server_id", mcpDirectoryOutput: true},
-	"call_mcp_tool":                  {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
-	"read_file":                      {},
+	"calculate_source_values": {
+		sourceIDKeys: map[string]struct{}{"chunk_id": {}},
+		sourceOutput: true,
+	},
+	"calculate_document_table": {
+		sourceIDKeys: map[string]struct{}{"chunk_id": {}},
+		sourceOutput: true,
+	},
+	"discover_mcp_tools": {opaqueOutput: true, mcpRoutingKey: "server_id", mcpDirectoryOutput: true},
+	"call_mcp_tool":      {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
+	"read_file":          {},
 	"search_knowledge": {
 		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}, "document_ids": {}, "knowledge_id": {}},
 		sourceOutput: true,

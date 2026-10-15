@@ -71,6 +71,7 @@ func TestWorkbenchQAUsesFullContextToSubmitAndVerifySourcePlan(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, ToolCalls: []types.LLMToolCall{{ID: "model-read-plan", Function: types.FunctionCall{Name: agenttools.ToolReadDocument, Arguments: args}}}, Done: true, FinishReason: "tool_calls"}}},
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: `所选资料该页的图例是类型甲和类型乙。<ref id="c1" />`, Done: true, FinishReason: "stop"}}},
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: `所选资料该页的图例是类型甲和类型乙。<ref id="c1" />`, Done: true, FinishReason: "stop"}}},
 	}}
 	engine := newTestEngine(t, model)
 	engine.toolRegistry = registry
@@ -81,7 +82,7 @@ func TestWorkbenchQAUsesFullContextToSubmitAndVerifySourcePlan(t *testing.T) {
 	state, err := engine.Execute(ctx, "session", "message", question, history)
 	require.NoError(t, err)
 	require.True(t, state.IsComplete)
-	require.Len(t, model.calls, 2)
+	require.Len(t, model.calls, 3, "the fetched document gets one semantic source review after the draft")
 	first := model.calls[0]
 	foundQuestion, foundContext, foundMetadata := false, false, false
 	for _, message := range first {
@@ -97,6 +98,12 @@ func TestWorkbenchQAUsesFullContextToSubmitAndVerifySourcePlan(t *testing.T) {
 	require.True(t, foundMetadata)
 	require.Contains(t, state.FinalAnswer, "类型甲和类型乙")
 	require.Contains(t, state.FinalAnswer, `chunk_id="actual-page-chunk"`)
+	require.Len(t, model.calls[2], 2)
+	require.Contains(t, model.calls[2][0].Content, "独立复核上下文")
+	require.Contains(t, model.calls[2][1].Content, "实际该页的图例")
+	require.NotContains(t, model.calls[2][1].Content, "目录匹配正文不可")
+	require.True(t, hasCurrentDocumentEvidence(state.RoundSteps))
+	require.False(t, hasStructuredEvidence(state.RoundSteps), "document review must not manufacture table evidence")
 	foundPlan := false
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {

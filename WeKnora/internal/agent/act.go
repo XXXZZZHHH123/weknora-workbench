@@ -305,7 +305,7 @@ func (e *AgentEngine) executeToolCallsParallel(
 
 	for i, tc := range response.ToolCalls {
 		i, tc := i, tc // capture loop vars
-		if !agenttools.CanRunConcurrently(tc.Function.Name) {
+		if !agenttools.CanRunToolCallConcurrently(tc.Function.Name, tc.Function.Arguments) {
 			// Drain preceding reads before a mutation, and finish the mutation
 			// before starting later reads. Preserve model order across barriers.
 			_ = g.Wait()

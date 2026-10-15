@@ -12,11 +12,18 @@ import (
 
 var documentCodeFence = regexp.MustCompile("(?s)```.*?```|~~~.*?~~~")
 var documentFakeToolEnvelope = regexp.MustCompile(`(?is)<(?:tool_result|tool|assistant|system)\b[^>]*>.*?</(?:tool_result|tool|assistant|system)>`)
+var documentMarkdownLink = regexp.MustCompile(`!?\[([^\]\n]*)\]\([^\)\n]+\)`)
+var documentSourceURL = regexp.MustCompile(`(?i)\b(?:https?://|resource://)[^\s<>"']+`)
 
 type fetchedDocumentChunk struct {
 	ID          string `json:"chunk_id"`
 	KnowledgeID string `json:"knowledge_id"`
 	Content     string `json:"content"`
+	Images      []struct {
+		URL     string `json:"url"`
+		Caption string `json:"caption"`
+		OCRText string `json:"ocr_text"`
+	} `json:"images"`
 }
 
 func fetchedDocumentChunks(call types.ToolCall) []fetchedDocumentChunk {
@@ -31,6 +38,19 @@ func fetchedDocumentChunks(call types.ToolCall) []fetchedDocumentChunk {
 		}
 		var batch []fetchedDocumentChunk
 		if json.Unmarshal(encoded, &batch) == nil {
+			for index := range batch {
+				// The modelcontext renderer shows these image captions and OCR
+				// passages alongside the parent chunk body. Keep exactly those
+				// fetched passages attached to the same citation for verification;
+				// image URLs, unrelated metadata and images without a rendered URL
+				// must not become numerical evidence.
+				for _, image := range batch[index].Images {
+					if image.URL == "" {
+						continue
+					}
+					batch[index].Content += "\n" + image.Caption + "\n" + image.OCRText
+				}
+			}
 			chunks = append(chunks, batch...)
 		}
 	}
@@ -77,6 +97,12 @@ func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float6
 // envelopes do not become numeric execution evidence. Business prose outside
 // those blocks is read as prose; no embedded command or object is executed.
 func documentNumericProse(content string) string {
+	return dateOrCell.ReplaceAllString(documentSourceProse(content), "")
+}
+
+// Source-table execution must retain original date labels and coordinates for
+// provenance. Exclude instruction/code envelopes without erasing source cells.
+func documentSourceProse(content string) string {
 	text := documentFakeToolEnvelope.ReplaceAllString(documentCodeFence.ReplaceAllString(content, ""), "")
 	var result strings.Builder
 	for index := 0; index < len(text); {
@@ -94,5 +120,10 @@ func documentNumericProse(content string) string {
 	}
 	text = sourceCitationTag.ReplaceAllString(result.String(), "")
 	text = sourceOpaqueToken.ReplaceAllString(text, "")
-	return dateOrCell.ReplaceAllString(text, "")
+	// Link destinations identify sources; digits inside a resource handle,
+	// filename or URL do not establish a business observation. Keep visible
+	// link labels because captions can contain actual printed values.
+	text = documentMarkdownLink.ReplaceAllString(text, "$1")
+	text = documentSourceURL.ReplaceAllString(text, "")
+	return text
 }

@@ -23,5 +23,8 @@ export function answerProgressStage(events: StreamEvent[] = []): AnswerStage {
     if (event.type === 'answer' && event.content && !event.superseded) return 'generation'
   }
   if (events.some(event => event.type === 'thinking')) return 'generation'
+  // Reconnection can restore completed tool steps without transient phase
+  // events. Actual work already happened; do not regress to request waiting.
+  if (events.some(event => event.type === 'tool_call')) return 'processing'
   return 'waiting'
 }

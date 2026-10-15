@@ -28,3 +28,8 @@ test('base structured tool uses real wrapper operation with inner execution argu
     }]), expected)
   }
 })
+
+test('restored completed tool steps do not regress to request waiting', () => {
+  assert.equal(answerProgressStage([{ type: 'tool_call', tool_name: 'read_document', pending: false, result: { success: true } }]), 'processing')
+  assert.equal(answerProgressStage([{ type: 'tool_call', tool_name: 'structured_query_series', pending: false, result: { success: false } }]), 'processing')
+})

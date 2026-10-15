@@ -255,7 +255,29 @@ class DataStore:
         notice = {'partial_candidates':'这些是部分关键词匹配的候选指标，不代表全部条件匹配。比较多个指标时按各指标分别选精确ID。',
                   'alias_candidates':'别名仅用于发现候选，不证明业务口径等价；按原指标、货币方向和来源核对。context_sheet仅优先排序，不自动认定候选。'}
         return {"dataset_id": dataset_id, "series": selected, "total": len(matches), "offset": offset, "next_offset": offset+limit if len(matches)>offset+limit else None, "truncated": len(matches) > offset+limit,
+                "catalog_summary": self._catalog_summary(matches, sheet, search, mode),
                 "match_mode": mode, "notice": notice.get(mode,"已找到符合关键词的指标；按原指标名称、单位及用户条件选择ID查询数值。" if matches else "目录搜索无结果不等于工作簿没有数据，可使用单个关键词或留空查看目录。")}
+
+    @staticmethod
+    def _catalog_summary(matches, sheet, search, mode):
+        # Literal, deterministic catalogue facts. No domain classification or
+        # choice of which groups answer the question happens in this layer.
+        groups = {}
+        for item in matches:
+            key = (item['sheet'], item['metric'])
+            groups.setdefault(key, set()).add(item['series_id'])
+        ordered = sorted(groups.items())
+        return {
+            "kind": "catalog_group_counts",
+            "scope": {"sheet": sheet, "search": search, "match_mode": mode},
+            "series_count": len({item['series_id'] for item in matches}),
+            "group_by": ["sheet", "metric"],
+            "group_count": len(groups),
+            "groups": [{"sheet": key[0], "metric": key[1], "series_count": len(ids)}
+                       for key, ids in ordered[:100]],
+            "groups_truncated": len(groups) > 100,
+            "notice": "按本次全部匹配目录（分页前）的工作表和原指标名精确分组计数。仅计数目录，不判断哪些指标属于用户所问的业务类别，不代表观测值统计。部分匹配或别名候选不能当作全部业务范围。",
+        }
 
     def source_overlap(self, dataset_id, left_id, right_id):
         """Whole-history date/value agreement, supplementary identity evidence.

@@ -33,6 +33,7 @@ func TestDocumentAnswerAfterHistoricalTableDoesNotInheritTableNumericReview(t *t
 	model := &mockChat{responses: []mockResponse{
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, ToolCalls: []types.LLMToolCall{{ID: "read", Type: "function", Function: types.FunctionCall{Name: "read_document", Arguments: `{"id":"doc-phrase"}`}}}, Done: true, FinishReason: "tool_calls"}}},
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: answer, Done: true, FinishReason: "stop"}}},
+		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: answer, Done: true, FinishReason: "stop"}}},
 	}}
 	e := newTestEngine(t, model)
 	e.toolRegistry = agenttools.NewToolRegistry()
@@ -47,7 +48,17 @@ func TestDocumentAnswerAfterHistoricalTableDoesNotInheritTableNumericReview(t *t
 	require.True(t, state.IsComplete)
 	require.Contains(t, state.FinalAnswer, "原件蓝桥 8427")
 	require.Contains(t, state.FinalAnswer, `chunk_id="chunk-phrase"`)
-	require.Len(t, model.calls, 2, "an unrelated historical table must not trigger extra audit/repair rounds")
+	require.Len(t, model.calls, 3, "the current document gets semantic review without inheriting table numeric repair")
+	require.Len(t, model.calls[2], 2)
+	require.Contains(t, model.calls[2][0].Content, "独立复核上下文")
+	var review struct {
+		Unmatched []string `json:"runtime_unmatched_numbers"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(model.calls[2][1].Content), &review))
+	require.NotContains(t, review.Unmatched, "8427", "the fetched document body remains provenance independently of the historical table")
+	require.True(t, hasCurrentDocumentEvidence(state.RoundSteps))
+	require.False(t, hasStructuredEvidence(state.RoundSteps))
+	require.False(t, needsStructuredAnswerReviewForQuery("刚上传文档的唯一识别短语是什么？请引用文件。", state.RoundSteps, history, state.FinalAnswer))
 }
 
 func TestDocumentMetadataAndCitationDoNotApproveUnsupportedProseNumbers(t *testing.T) {

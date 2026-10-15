@@ -1,0 +1,56 @@
+{
+  "notice": "Isolated regression fixture from the failing 2026-10-15 dialogue. Original report slide 4 images independently inspected; this tests citation-bound OCR availability, not statewide OCR transcription accuracy. No production question matching.",
+  "original_question": "美国2024年各州棉花种植面积及其与上年相比的百分比变化是怎样的？",
+  "source_sha256": "474657c4da4fe77f5c82998638f96e67f10f830b08c21fe327ee624d9c11524c",
+  "steps": [
+    {
+      "tool_calls": [
+        {
+          "name": "read_document",
+          "result": {
+            "success": true,
+            "data": {
+              "chunks": [
+                {
+                  "chunk_id": "f462354e-5916-4f36-adf9-8a9772c6735a",
+                  "knowledge_id": "f9513848-81d8-4944-927c-41ed066efa28",
+                  "content": "**策略**\n\n- **郑棉单边：观察后续下游的好转力度与可持续性，若需求端的边际好转能对棉纱流动性问题有所缓解，则郑棉短期内预计将震荡偏强，顶部仍在163-164一线**\n- **美棉单边：意向种植面积增加预期落空，美棉低库存与弱需求的局面短期内难以改变，盘面预计仍将维持在90-95美分区间**\n- **内外价差：美棉种植面积增幅不及预期后当前内外价差预计仍将维持**\n\n![微信图片_20170323173030](resource://RvjbKQUCXTAnEXnXIOLNfw)\n\n- **USDA3月美棉意向种植面积报告：全美意向种植面积10673千英亩，同比增加4.3%；得州意向种植面积5540千英亩，同比减少0.7%；全美面积增幅不及预期且得州种植面积不增反减**\n\n![](resource://mq5huGvH_EG25UNnJfTHag)\n\n",
+                  "images": [
+                    {
+                      "url": "resource://mq5huGvH_EG25UNnJfTHag",
+                      "caption": "该表格展示了美国各州及全国在2022年、2023年和2024年（注：2024年为预测值）的种植面积（单位：千英亩），并列出了2024年相对于2023年的百分比变化。其中，德克萨斯州2024年种植面积为5,540.0千英亩，为全美最高；全国总面积2024年预计为10,673.0千英亩，较2023年增长4%。",
+                      "ocr_text": "| Type and State | Area planted |  |  | Percent of previous year |\n| --- | --- | --- | --- | --- |\n|  | 2022 | 2023 | 2024¹ |  |\n| **All** |  |  |  |  |\n| Alabama | 435.0 | 380.0 | 430.0 | 113 |\n| Arizona | 102.0 | 92.0 | 115.0 | 125 |\n| Arkansas | 640.0 | 510.0 | 540.0 | 106 |\n| California | 134.0 | 99.0 | 160.0 | 162 |\n| Florida | 106.0 | 89.0 | 90.0 | 101 |\n| Georgia | 1,290.0 | 1,110.0 | 1,100.0 | 99 |\n| Kansas | 163.0 | 112.0 | 110.0 | 98 |\n| Louisiana | 195.0 | 120.0 | 140.0 | 117 |\n| Mississippi | 530.0 | 400.0 | 500.0 | 125 |\n| Missouri | 360.0 | 335.0 | 390.0 | 116 |\n| New Mexico | 85.0 | 48.0 | 48.0 | 100 |\n| North Carolina | 470.0 | 380.0 | 390.0 | 103 |\n| Oklahoma | 660.0 | 420.0 | 500.0 | 119 |\n| South Carolina | 270.0 | 210.0 | 240.0 | 114 |\n| Tennessee | 335.0 | 265.0 | 300.0 | 113 |\n| Texas | 7,883.0 | 5,579.0 | 5,540.0 | 99 |\n| Virginia | 91.0 | 81.0 | 80.0 | 99 |\n| United States | 13,749.0 | 10,230.0 | 10,673.0 | 104 |"
+                    }
+                  ]
+                },
+                {
+                  "chunk_id": "e2dc7799-e58c-4392-aa86-a0c0bd6d28e5",
+                  "knowledge_id": "f9513848-81d8-4944-927c-41ed066efa28",
+                  "content": "![](resource://mq5huGvH_EG25UNnJfTHag)\n\n![](resource://-7rvsHhznwHUtxJqp2tRhQ)\n\n产量预估\n\n- 全美除得州外弃耕率历年变化不大（1-10%），取近15年平均值4.6%，得州今年目前来看天气情况较好，根据历年得州天气偏正常年份弃耕情况取弃耕率为23.6%，同时根据历年单产均值并结合单产与弃耕率关系修正，分别预估今年得州与除得州外地区单产，计算得到：\n- 24/25年度美棉产量：335万吨（+27.4%），其中得州产量122万吨（+96.8%），除得州外地区产量213万吨（+5.9%）\n- 该产量预估值为历年产量偏中性值\n- 此前USDA2月展望论坛预估：面积同比增加7.5%，产量增加29%（348万吨）\n\n![](resource://KIFf0kwIo1lFRQ4IcoxUeQ)",
+                  "images": [
+                    {
+                      "url": "resource://KIFf0kwIo1lFRQ4IcoxUeQ",
+                      "caption": "该图表展示了2009/10至2024/25年度美国棉花产量及相关数据。蓝色柱状图表示美国总产量（单位：万吨），橙色柱状图表示得州棉花产量；红色折线表示得州产量占美国总产量的比重（右侧纵轴，百分比）；黄色折线表示得州种植面积占美国总种植面积的比重（右侧纵轴，百分比）。整体显示得州在美棉生产中占据主导地位，其产量和种植面积占比长期高于40%和50%，但近年（如23/24、24/25）产量占比有所下降。",
+                      "ocr_text": "单位：万吨\n\n# 美国棉花产量\n\n|  | 美棉总产量 | 得州棉花产量 | 得州产量占比 | 得州种植面积占比 |\n|---|---|---|---|---|\n| 09/10 | ~270 | ~105 | ~32% | ~55% |\n| 10/11 | ~400 | ~175 | ~38% | ~43% |\n| 11/12 | ~340 | ~80 | ~21% | ~42% |\n| 12/13 | ~380 | ~115 | ~26% | ~45% |\n| 13/14 | ~280 | ~95 | ~28% | ~47% |\n| 14/15 | ~360 | ~145 | ~32% | ~48% |\n| 15/16 | ~280 | ~130 | ~38% | ~48% |\n| 16/17 | ~380 | ~185 | ~42% | ~48% |\n| 17/18 | ~460 | ~215 | ~40% | ~47% |\n| 18/19 | ~400 | ~160 | ~34% | ~47% |\n| 19/20 | ~430 | ~150 | ~30% | ~45% |\n| 20/21 | ~320 | ~115 | ~28% | ~48% |\n| 21/22 | ~390 | ~175 | ~40% | ~49% |\n| 22/23 | ~320 | ~75 | ~20% | ~47% |\n| 23/24 | ~265 | ~60 | ~20% | ~46% |\n| 24/25 | ~340 | ~125 | ~30% | ~44% |\n\n$$\n\\text{得州产量占比} = \\frac{\\text{得州棉花产量}}{\\text{美棉总产量}} \\times 100\\%\n$$\n\n$$\n\\text{得州种植面积占比} = \\frac{\\text{得州棉花种植面积}}{\\text{美国棉花种植总面积}} \\times 100\\%\n$$"
+                    },
+                    {
+                      "url": "resource://-7rvsHhznwHUtxJqp2tRhQ",
+                      "caption": "该图展示了2024年美国各州棉花种植面积（单位：千英亩）及与上年相比的百分比变化。地图以不同颜色区分变化趋势：深蓝至浅蓝表示种植面积上升（幅度从≥10%到上升0.1–4.9%），灰色为无变化，粉红/棕红色表示下降（0.1–5%）。具体数值标注在各州内，如德克萨斯州5,540千英亩（-0.7%），加州160千英亩（+61.6%），全国总计10,673.0千英亩（+4.3%）。图例说明了颜色对应的变化区间及“NC”代表无变化。",
+                      "ocr_text": "# 2024 All Cotton Planted Acreage\n## Thousand Acres and Percent Change from Previous Year\n\n| State | Acreage (Thousand) | Percent Change |\n|-------|--------------------|----------------|\n| California | 160 | 61.6 |\n| Arizona | 115 | 25.0 |\n| Texas | 5,540 | -0.7 |\n| Oklahoma | 500 | 19.0 |\n| Missouri | 390 | 16.4 |\n| Arkansas | 540 | 5.9 |\n| Tennessee | 300 | 13.2 |\n| Mississippi | 500 | 25.0 |\n| Alabama | 430 | 13.2 |\n| Louisiana | 140 | 16.7 |\n| Georgia | 1,100 | -0.9 |\n| South Carolina | 240 | 14.3 |\n| North Carolina | 48 | NC |\n| Virginia | 80 | -1.2 |\n| Maryland | 390 | 2.6 |\n| Florida | 90 | 1.1 |\n\nUnited States: 10,673.0 | 4.3\n\n**Legend:**\n- Dark blue: Up ≥10\n- Medium blue: Up 5–9.9\n- Light blue: Up 0.1–4.9\n- Gray: No Change\n- Light red: Down 0.1–5\n- NC = No Change"
+                    }
+                  ]
+                }
+              ],
+              "document_scope": {
+                "matched": true,
+                "knowledge_id": "f9513848-81d8-4944-927c-41ed066efa28",
+                "plan_validated": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "draft": "2024年意向种植面积，单位千英亩：Alabama 430.0，Arizona 115.0，Arkansas 540.0，California 160.0，Florida 90.0，Georgia 1,100.0，Kansas 110.0，Louisiana 140.0，Mississippi 500.0，Missouri 390.0，New Mexico 48.0，North Carolina 390.0，Oklahoma 500.0，South Carolina 240.0，Tennessee 300.0，Texas 5,540.0，Virginia 80.0，全国10,673.0。<kb chunk_id=\"f462354e-5916-4f36-adf9-8a9772c6735a\"/>\n图示全国同比4.3%、Texas同比−0.7%、California同比61.6%。<kb chunk_id=\"e2dc7799-e58c-4392-aa86-a0c0bd6d28e5\"/>"
+}

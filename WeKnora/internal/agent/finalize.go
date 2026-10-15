@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -67,11 +66,20 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		if e.config.ReviewReasoningEffort != "" {
 			reasoning = chat.ReasoningEffort(e.config.ReviewReasoningEffort)
 		}
-		llmResult, err := e.streamLLMToEventBus(ctx, messages, &chat.ChatOptions{
+		opts := &chat.ChatOptions{
 			Temperature: e.config.Temperature, MaxCompletionTokens: budget,
 			PromptCacheKey: sessionID, ToolChoice: "none", Thinking: &disabled,
 			ReasoningEffort: reasoning, ThinkingBudgetTokens: 0,
-		}, nil)
+		}
+		if e.structuredReviewMode {
+			// Iteration exhaustion and API recovery retain the same explicit
+			// delivery contract as ordinary review rounds. Otherwise escaped
+			// citations would be decoded inside still-serialized JSON, or the
+			// answer envelope itself could become the terminal user response.
+			opts.Temperature = 0
+			opts.Format = reviewedAnswerSchema
+		}
+		llmResult, err := e.streamLLMToEventBus(ctx, messages, opts, nil)
 		if err != nil {
 			return err
 		}
@@ -82,10 +90,14 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			state.TurnUsage.Accumulate(*llmResult.Usage)
 		}
 		fullAnswer = agenttools.StripThinkBlocks(llmResult.Content)
+		if isReviewedAnswerFormat(opts.Format) {
+			fullAnswer = agenttools.StripThinkBlocks(decodeReviewedAnswer(llmResult.Content))
+			fullAnswer = e.modelContext.DecodeOutputText(fullAnswer)
+		}
 		truncated = isLengthFinishReason(llmResult.FinishReason)
 		// A provider can ignore tool_choice=none. Never accept its pre-tool
 		// progress text as the final answer, or silently drop requested calls.
-		invalid := llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
+		invalid := strings.TrimSpace(fullAnswer) == "" || llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
 		var completenessErr error
 		if !invalid {
 			invalid, completenessErr = e.evaluateAnswerCompleteness(ctx, query, fullAnswer, state, conversation)
@@ -99,18 +111,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		unsupported := []string{}
 		if !invalid && needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, fullAnswer) {
-			evidence := append([]chat.Message(nil), conversation...)
-			for _, step := range state.RoundSteps {
-				for _, call := range step.ToolCalls {
-					if call.Result != nil && call.Result.Success {
-						evidence = append(evidence, chat.Message{Role: "tool", Name: call.Name, Content: call.Result.Output})
-					}
-				}
-			}
-			if values := scopedCitedDocumentNumbers(fullAnswer, state.RoundSteps); len(values) > 0 {
-				raw, _ := json.Marshal(map[string]any{"cited_document_values": values})
-				evidence = append(evidence, chat.Message{Role: "tool", Content: string(raw)})
-			}
+			evidence := answerNumericEvidence(fullAnswer, state.RoundSteps, conversation)
 			unsupported = ungroundedStructuredNumbers(fullAnswer, evidence, state.RoundSteps)
 		}
 		if !invalid && len(unsupported) == 0 {

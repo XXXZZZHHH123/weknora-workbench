@@ -214,6 +214,11 @@ func (e *AgentEngine) streamLLMToEventBus(
 	firstChunkTime := time.Time{}
 	answerDecoder := e.modelContext.StreamDecoder()
 	thinkingDecoder := e.modelContext.StreamDecoder()
+	// Source tags inside JSON strings contain escaped quotes (or Unicode
+	// escapes). Decode the explicit answer value after JSON parsing, rather
+	// than stripping escaped tags or injecting unescaped canonical tags into
+	// the still-serialized envelope. Tool arguments are decoded as usual.
+	bufferReviewedAnswer := opts != nil && isReviewedAnswerFormat(opts.Format)
 
 	for chunk := range stream {
 		lastChunkAt.Store(time.Now().UnixNano())
@@ -244,7 +249,7 @@ func (e *AgentEngine) streamLLMToEventBus(
 			if chunk.Done {
 				chunk.Content += thinkingDecoder.Flush()
 			}
-		} else {
+		} else if !bufferReviewedAnswer {
 			chunk.Content = answerDecoder.Feed(chunk.Content)
 			if chunk.Done {
 				chunk.Content += answerDecoder.Flush()
@@ -285,7 +290,10 @@ func (e *AgentEngine) streamLLMToEventBus(
 			emitFunc(&chunk, result.Content)
 		}
 	}
-	answerTail := answerDecoder.Flush()
+	answerTail := ""
+	if !bufferReviewedAnswer {
+		answerTail = answerDecoder.Flush()
+	}
 	thinkingTail := thinkingDecoder.Flush()
 	result.Content += answerTail
 	result.ReasoningContent += thinkingTail
@@ -417,6 +425,8 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	}
 	if e.structuredReviewMode {
 		disabled := false
+		opts.Temperature = 0
+		opts.Format = reviewedAnswerSchema
 		opts.Thinking = &disabled
 		opts.ReasoningEffort = chat.ReasoningEffort("off")
 		if e.config.ReviewReasoningEffort != "" {
@@ -598,6 +608,15 @@ func (e *AgentEngine) streamThinkingToEventBus(
 				}
 				return
 			}
+			// A review response is a buffered protocol envelope, not plain
+			// prose. Even inline tags inside its JSON string must wait for the
+			// terminal parser; tool-call progress above remains live.
+			if isReviewedAnswerFormat(opts.Format) {
+				if chunk.Done {
+					closeThinking()
+				}
+				return
+			}
 
 			// Plain content channel. Streamed live to the answer area
 			// (optimistically rendered as the final answer). If the round turns
@@ -646,6 +665,14 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		iteration+1, len(llmResult.Content), len(llmResult.ToolCalls), emittedEventTypes)
 
 	fullContent := agenttools.StripThinkBlocks(llmResult.Content)
+	if e.structuredReviewMode && len(llmResult.ToolCalls) == 0 {
+		fullContent = agenttools.StripThinkBlocks(decodeReviewedAnswer(llmResult.Content))
+		fullContent = e.modelContext.DecodeOutputText(fullContent)
+	} else if e.structuredReviewMode {
+		// The model asked for more evidence. Its answer envelope is still a
+		// draft, while the actual tool calls and their provenance remain intact.
+		fullContent = ""
+	}
 	llmResult.ReasoningContent += inlineReasoning.String()
 
 	// Use actual finish_reason from LLM stream instead of hardcoding "stop".

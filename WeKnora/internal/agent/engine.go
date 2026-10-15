@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -395,6 +394,11 @@ func (e *AgentEngine) Execute(
 		// newest turn always carries the latest known scale and the loader
 		// never has to look past its first page for one.
 		TurnUsage: types.TokenUsage{ContextTokenScale: e.config.ContextTokenScale},
+	}
+
+	if e.config.WorkbenchDefault && e.toolRegistry != nil {
+		e.toolRegistry.RegisterTool(newSourceCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
+		e.toolRegistry.RegisterTool(newDocumentTableCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
 	}
 
 	// Build system prompt using progressive RAG prompt
@@ -1009,7 +1013,12 @@ func (e *AgentEngine) runReActIteration(
 		e.recordArtifactInventory(ctx, state, messagesPtr, sessionID)
 	}
 	needsAnswerRepair := false
-	if len(response.ToolCalls) == 0 && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
+	pendingSourceReview := len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && (needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps))
+	// The independent source review replaces this draft and checks task
+	// completeness too. Judge the resulting candidate once, rather than
+	// paying for a separate completeness model call on a discarded draft.
+	// Protocol fragments still take their normal repair path immediately.
+	if len(response.ToolCalls) == 0 && (!pendingSourceReview || suspectAnswerFragment(response.Content, response.ReasoningContent)) && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
 		var completenessErr error
 		needsAnswerRepair, completenessErr = e.answerNeedsRepair(ctx, query, response.Content, response.ReasoningContent, state, *messagesPtr)
 		if ctx.Err() != nil {
@@ -1042,11 +1051,16 @@ func (e *AgentEngine) runReActIteration(
 	// A successful data tool only proves execution. Give the reasoning model
 	// a bounded audit turn before committing numeric claims. The audit can use
 	// more tools; it is not a classifier or a list of supported user intents.
-	if len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) {
+	if pendingSourceReview {
 		guards.structuredAnswerReviewed = true
 		e.structuredReviewMode = true
 		guards.structuredReviewEvidence = append([]chat.Message(nil), (*messagesPtr)...)
-		*messagesPtr = independentStructuredReview(*messagesPtr, query, response.Content)
+		unsupported := []string{}
+		if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) {
+			unsupported = ungroundedStructuredNumbers(response.Content, answerNumericEvidence(response.Content, state.RoundSteps, *messagesPtr), state.RoundSteps)
+		}
+		common.PipelineInfo(ctx, "Agent", "source_review_start", map[string]interface{}{"iteration": state.CurrentRound, "unmatched_numbers": unsupported})
+		*messagesPtr = independentStructuredReview(*messagesPtr, query, response.Content, unsupported)
 		guards.structuredReviewInput = (*messagesPtr)[1].Content
 		e.contextRewrites++
 		e.lastUsage = types.TokenUsage{}
@@ -1063,20 +1077,9 @@ func (e *AgentEngine) runReActIteration(
 				evidenceMessages = append(evidenceMessages, msg)
 			}
 		}
-		// Validate against durable raw results as well as the model's compacted
-		// context. Context encoding/trimming must not erase numeric provenance.
-		for _, priorStep := range state.RoundSteps {
-			for _, call := range priorStep.ToolCalls {
-				if call.Result != nil && call.Result.Success {
-					evidenceMessages = append(evidenceMessages, chat.Message{Role: "tool", Name: call.Name, Content: call.Result.Output})
-				}
-			}
-		}
-		if values := scopedCitedDocumentNumbers(response.Content, state.RoundSteps); len(values) > 0 {
-			raw, _ := json.Marshal(map[string]any{"cited_document_values": values})
-			evidenceMessages = append(evidenceMessages, chat.Message{Role: "tool", Content: string(raw)})
-		}
+		evidenceMessages = answerNumericEvidence(response.Content, state.RoundSteps, evidenceMessages)
 		unsupported := ungroundedStructuredNumbers(response.Content, evidenceMessages, state.RoundSteps)
+		common.PipelineInfo(ctx, "Agent", "numeric_verification", map[string]interface{}{"iteration": state.CurrentRound, "unmatched_numbers": unsupported, "repair_attempts": guards.structuredEvidenceRepairs})
 		if len(unsupported) > 0 && guards.structuredEvidenceRepairs < 2 {
 			guards.structuredEvidenceRepairs++
 			*messagesPtr = append(*messagesPtr, chat.Message{Role: "assistant", Content: response.Content}, chat.Message{Role: "system", Content: "内部运行时反馈；最终须完成本轮最新请求，历史提问仅作为上下文，不要改答已完成的旧问题。数值依据检查：草稿中以下数字尚未匹配真实程序结果（可能为未经计算的补充数字或错误舍入）：" + strings.Join(unsupported, "、") + "。若数字属于字段名称、规格代码或公式，请完整引用工具提供的原表表头、维度和公式，不使用未返回的简称，不省略公式参数或单元格行号；这些身份代码不能写成统计值。不要为口径说明擅自执行被要求澄清的字段。其余补充统计数字须调用计算工具取得依据或删去，不能凭记忆补数。"})

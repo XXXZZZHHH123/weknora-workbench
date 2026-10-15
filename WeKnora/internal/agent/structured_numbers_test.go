@@ -68,10 +68,14 @@ func TestIndependentReviewDuplicateResultsDoNotEvictDistinctSourceEvidence(t *te
 		{Role: "tool", Content: repeated}, {Role: "tool", Content: repeated}}
 	review := independentStructuredReview(messages, "compare both periods", "draft")
 	var envelope struct {
-		Evidence []string `json:"source_tool_results"`
+		Evidence []reviewToolEvidence `json:"source_tool_results"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(review[1].Content), &envelope))
-	require.Equal(t, []string{first, repeated}, envelope.Evidence)
+	require.Len(t, envelope.Evidence, 2)
+	for i, expected := range []string{first, repeated} {
+		require.True(t, envelope.Evidence[i].ViewComplete)
+		require.JSONEq(t, expected, string(mustJSON(t, envelope.Evidence[i].Content)))
+	}
 }
 
 // This is the exact final model draft from the local cotton regression, with

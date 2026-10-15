@@ -130,3 +130,33 @@ def test_catalog_recovers_multi_indicator_search_without_changing_query_filters(
     assert {s["series_id"] for s in catalog["series"]} == {"price", "stock"}
     with pytest.raises(ValueError):
         store.query_series(id, "价格 库存")
+
+
+def test_catalog_group_counts_use_whole_matching_scope_before_pagination(snapshot):
+    store, _, parsed = snapshot
+    parsed = copy.deepcopy(parsed)
+    parsed['sha256'] = 'd' * 64
+    parsed['series'].append(dict(parsed['series'][0], series_id='price_other', dimensions={'contract': 'Z9'}))
+    parsed['observations'].append(dict(parsed['observations'][0], series_id='price_other'))
+    dataset = store.publish(parsed)['dataset_id']
+    first = store.list_series(dataset, limit=1)
+    summary = first['catalog_summary']
+    assert first['truncated'] and summary['series_count'] == 3
+    assert summary['group_count'] == 2 and not summary['groups_truncated']
+    assert summary['group_by'] == ['sheet', 'metric']
+    counts = {row['metric']: row['series_count'] for row in summary['groups']}
+    assert counts == {'价格': 2, '库存': 1}
+    assert store.list_series(dataset, offset=2)['catalog_summary'] == summary
+    matched = store.list_series(dataset, search='价格', sheet='test')['catalog_summary']
+    assert matched['series_count'] == 2 and matched['group_count'] == 1
+    assert matched['scope'] == {'sheet': 'test', 'search': '价格', 'match_mode': 'all_terms'}
+    partial = store.list_series(dataset, search='价格 库存')['catalog_summary']
+    assert partial['scope']['match_mode'] == 'partial_candidates'
+
+
+def test_catalog_group_summary_explicitly_bounds_groups():
+    rows = [dict(series_id=str(i), sheet='source', metric=f'field_{i}') for i in range(103)]
+    summary = DataStore._catalog_summary(rows, None, '', 'all_terms')
+    assert summary['group_count'] == 103 and summary['groups_truncated']
+    assert len(summary['groups']) == 100
+    assert summary['series_count'] == 103

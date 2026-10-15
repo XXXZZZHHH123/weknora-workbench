@@ -172,6 +172,7 @@ func maskInspectedMarkdownRows(answer string, rows map[string]bool) string {
 
 func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawSteps ...[]types.AgentStep) []string {
 	values := []float64{}
+	percentageValues := []float64{}
 	filenames := []string{}
 	identifiers := map[string]bool{}
 	digests := map[string]bool{}
@@ -188,7 +189,17 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 		switch x := v.(type) {
 		case float64:
 			values = append(values, x)
+			percentageValues = append(percentageValues, x, x*100)
 		case map[string]any:
+			if x["kind"] == "source_calculation" && x["status"] == "ok" {
+				// This protocol carries explicit unit algebra. An unknown or
+				// dimensional quantity cannot gain a percentage simply because
+				// the model omits its unit or writes a percent sign afterward.
+				actual, percentages := sourceCalculationNumericEvidence(x)
+				values = append(values, actual...)
+				percentageValues = append(percentageValues, percentages...)
+				return
+			}
 			for key, item := range x {
 				// Identity text is only exempt as a complete known token below.
 				// Never promote its numeric substrings/dimension codes to values.
@@ -223,6 +234,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 				for _, part := range strings.Split(x, "-") {
 					if v, e := strconv.ParseFloat(part, 64); e == nil {
 						values = append(values, v)
+						percentageValues = append(percentageValues, v, v*100)
 					}
 				}
 			}
@@ -230,6 +242,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			// catalogue IDs and natural-language model explanations are not numbers.
 			if n, err := strconv.ParseFloat(x, 64); err == nil {
 				values = append(values, n)
+				percentageValues = append(percentageValues, n, n*100)
 			}
 			if strings.HasPrefix(strings.TrimSpace(x), "{") {
 				var d map[string]any
@@ -251,7 +264,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 				}
 				operation, _ := executed.Args["operation"].(string)
 				switch executed.Name {
-				case "structured_list_series", "structured_query_series", "structured_analyze_table", "structured_inspect_source", "structured_get_result_evidence":
+				case "structured_list_series", "structured_query_series", "structured_analyze_table", "structured_inspect_source", "structured_get_result_evidence", "calculate_source_values", "calculate_document_table":
 				case "structured_data":
 					switch operation {
 					case "list_datasets", "list_series", "query_series", "analyze_table", "inspect_source", "compare_series", "convert_price", "get_result_evidence", "execute_field_plan":
@@ -272,12 +285,18 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 				} else if json.Unmarshal([]byte(executed.Result.Output), &data) != nil {
 					continue
 				}
+				// A source-binding clarification can carry real, authorized field
+				// identities without authorizing a calculation. Retain those exact
+				// labels for describing the candidates; do not promote any numeric
+				// payload from an unresolved/error result into computed evidence.
+				if data["status"] != "error" {
+					collectSourceIdentityLabels(data, identityLabels)
+				}
 				if status, _ := data["status"].(string); status != "" && status != "ok" && status != "no_data" {
 					continue
 				}
 				inspectedSourceRows(data, inspectedRows)
 				queriedSourceRows(data, inspectedRows)
-				collectSourceIdentityLabels(data, identityLabels)
 				collect(data)
 			}
 		}
@@ -301,9 +320,12 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 				if data["status"] == "error" {
 					continue
 				}
+				collectSourceIdentityLabels(data, identityLabels)
+				if status, _ := data["status"].(string); status != "" && status != "ok" && status != "no_data" && status != "resolved" {
+					continue
+				}
 				inspectedSourceRows(data, inspectedRows)
 				queriedSourceRows(data, inspectedRows)
-				collectSourceIdentityLabels(data, identityLabels)
 				collect(data)
 			}
 		}
@@ -323,6 +345,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 		for _, n := range proseNumber.FindAllString(text, -1) {
 			if v, e := strconv.ParseFloat(strings.ReplaceAll(n, ",", ""), 64); e == nil {
 				values = append(values, v)
+				percentageValues = append(percentageValues, v, v*100)
 			}
 		}
 	}
@@ -405,8 +428,12 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 		// Accept ordinary display rounding, including percent/absolute-delta format.
 		tolerance := 0.500001 * math.Pow10(-precision)
 		supported := false
-		for _, v := range values {
-			if math.Abs(math.Abs(number)-math.Abs(v)) <= tolerance || (percent && math.Abs(math.Abs(number)-math.Abs(v*100)) <= tolerance) {
+		candidates := values
+		if percent {
+			candidates = percentageValues
+		}
+		for _, v := range candidates {
+			if math.Abs(math.Abs(number)-math.Abs(v)) <= tolerance {
 				supported = true
 				break
 			}
@@ -417,6 +444,69 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 		}
 	}
 	return unsupported
+}
+
+// Source-bound calculation results explicitly distinguish displayed percent
+// values, dimensionless ratios, other dimensions and unknown units. Only the
+// first two can support a percent claim. Input quotes and other metadata are
+// provenance, not additional executed numerical results.
+func sourceCalculationNumericEvidence(data map[string]any) ([]float64, []float64) {
+	values, percentages := []float64{}, []float64{}
+	add := func(raw any, unit, status string) {
+		var value float64
+		switch typed := raw.(type) {
+		case float64:
+			value = typed
+		case string:
+			parsed, err := strconv.ParseFloat(typed, 64)
+			if err != nil {
+				return
+			}
+			value = parsed
+		default:
+			return
+		}
+		if math.IsInf(value, 0) || math.IsNaN(value) {
+			return
+		}
+		values = append(values, value)
+		if status == "known" && unit == "%" {
+			percentages = append(percentages, value)
+		} else if status == "dimensionless" && unit == "" {
+			percentages = append(percentages, value*100)
+		}
+	}
+	// These are explicit program-counted execution coverage, not arbitrary
+	// row indices or numbers mentioned in provenance text. Counts authorize
+	// their original values only, never a percentage conversion.
+	for _, key := range []string{"selected_row_count", "calculated_row_count"} {
+		add(data[key], "", "unknown")
+	}
+	calculations, _ := data["calculations"].([]any)
+	for _, raw := range calculations {
+		quantity, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		unit, _ := quantity["unit"].(string)
+		status, _ := quantity["unit_status"].(string)
+		add(quantity["value"], unit, status)
+		add(quantity["exact_value"], unit, status)
+		inputs, _ := quantity["inputs"].(map[string]any)
+		for _, rawInput := range inputs {
+			input, ok := rawInput.(map[string]any)
+			if !ok {
+				continue
+			}
+			unit, _ := input["unit"].(string)
+			status := "unknown"
+			if unit != "" {
+				status = "known"
+			}
+			add(input["value"], unit, status)
+		}
+	}
+	return values, percentages
 }
 
 // Only the authorized filesystem inventory can prove an output identity. Do
@@ -576,6 +666,9 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 			for _, key := range []string{"metric", "sheet", "unit", "region_name", "source_file", "file"} {
 				add(x[key])
 			}
+			if id, ok := x["series_id"].(string); ok && sourceSeriesID.MatchString(id) {
+				add(id)
+			}
 			if formula, ok := x["formula"].(string); ok {
 				add(formula)
 				add(strings.TrimPrefix(formula, "="))
@@ -599,7 +692,7 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 	}
 	catalogue(data["series"])
 	catalogue(data["literal_fields"])
-	if data["kind"] == "structured_source_ambiguity" || data["kind"] == "structured_field_resolution" {
+	if data["kind"] == "structured_source_ambiguity" || data["kind"] == "structured_field_resolution" || data["kind"] == "structured_source_binding" {
 		catalogue(data["fields"])
 	}
 	if datasets, ok := data["datasets"].([]any); ok {

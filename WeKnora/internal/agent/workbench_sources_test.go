@@ -110,7 +110,7 @@ func TestWorkbenchSourceDiscoveryPrefetchesOriginalQuestionWithinExistingKnowled
 	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "verified", Role: types.TenantRoleViewer})
 	state, err := engine.Execute(ctx, "session", "message", question, nil)
 	require.NoError(t, err)
-	require.Equal(t, before, registry.ListTools(), "knowledge discovery cannot register unrelated providers")
+	require.ElementsMatch(t, append(before, sourceCalculationToolName, documentTableCalculationToolName), registry.ListTools(), "knowledge discovery adds only source-bound arithmetic and cannot register unrelated providers")
 	require.Zero(t, unrelated.calls, "prefetch searches sources; it does not read unrequested documents")
 	require.Len(t, service.lookups, 1)
 	require.ElementsMatch(t, []string{"granted-base", "granted-doc-scope"}, service.lookups[0])
