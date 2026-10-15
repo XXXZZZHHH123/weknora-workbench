@@ -160,3 +160,21 @@ def test_catalog_group_summary_explicitly_bounds_groups():
     assert summary['group_count'] == 103 and summary['groups_truncated']
     assert len(summary['groups']) == 100
     assert summary['series_count'] == 103
+
+
+@pytest.mark.parametrize('search', ['', '价格 库存', 'not-present'])
+def test_catalog_notice_preserves_scope_without_requiring_observation_queries(snapshot, search):
+    store, dataset, _ = snapshot
+    result = store.list_series(dataset, search=search, sheet='test', limit=1)
+    assert '查询数值' not in result['notice']
+    assert '不是业务观测值' in result['notice']
+    assert '完整问题' in result['notice']
+    assert 'next_offset' in result['notice']
+    assert result['catalog_summary']['scope']['sheet'] == 'test'
+    assert result['catalog_summary']['scope']['search'] == search
+    assert result['catalog_summary']['series_count'] == result['total']
+    assert all(row['sheet'] == 'test' for row in result['series'])
+    assert all('value' not in row for row in result['series'])
+    assert '结构列举' in result['catalog_summary']['notice']
+    if result['match_mode'] == 'partial_candidates':
+        assert '仅作召回证据' in result['notice']

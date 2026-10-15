@@ -119,6 +119,38 @@ func TestDocumentTableMissingValuesAndZeroDenominatorsRemainExplicit(t *testing.
 	failed := result.Data["failed_rows"].([]any)[0].(map[string]any)
 	require.Equal(t, "| Missing | | 3 |", failed["source_row"])
 	require.Equal(t, "", failed["selected_cells"].(map[string]any)["b"].(map[string]any)["source_value"], "review can distinguish actual blank source cells without another read or guessing a value")
+	zero := result.Data["failed_rows"].([]any)[1].(map[string]any)
+	require.Contains(t, zero["error"], "不能除以零", "formula preflight cannot replace the actual source denominator check")
+}
+
+func TestDocumentTableInvalidSharedFormulaFailsOnceBeforeRowExecution(t *testing.T) {
+	for _, expression := range []string{"a/b*100", "a/c-1", "a+b", "a/b;run()"} {
+		plan := tableCalculationPlan()
+		plan["expression"] = expression
+		result := runTableCalculation(t, tableCalculationFixture(genericSourceTable), plan)
+		require.False(t, result.Success)
+		require.Contains(t, result.Error, "本次未逐行执行")
+		require.NotContains(t, result.Output, "source_row", "a shared invalid formula must not repeat every row as an independent failure")
+		require.NotContains(t, result.Output, "calculations")
+	}
+}
+
+func TestDocumentTablePreflightDoesNotSubstituteDummyValuesForSourceArithmetic(t *testing.T) {
+	plan := tableCalculationPlan()
+	// A dummy-value execution would see a-a=0 and incorrectly reject this
+	// valid expression. Only the actual source values can decide division.
+	plan["expression"] = "a/(a-b)"
+	plan["result_unit"] = ""
+	result := runTableCalculation(t, tableCalculationFixture(genericSourceTable), plan)
+	require.True(t, result.Success, result.Error)
+	rows := result.Data["calculations"].([]any)
+	require.Equal(t, "6", rows[0].(map[string]any)["exact_value"])
+	require.Equal(t, "-3", rows[1].(map[string]any)["exact_value"])
+	plan["expression"] = "a/(b-b)"
+	result = runTableCalculation(t, tableCalculationFixture(genericSourceTable), plan)
+	require.False(t, result.Success)
+	require.Contains(t, result.Error, "不能除以零")
+	require.NotContains(t, result.Error, "本次未逐行执行")
 }
 
 func TestDocumentTablePreservesMalformedNumbersInsteadOfInventingValues(t *testing.T) {

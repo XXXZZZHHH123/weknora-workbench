@@ -69,9 +69,11 @@ func TestGroundingUsesRegistryInsteadOfConfiguration(t *testing.T) {
 			false,
 			[]string{
 				"Available knowledge tools: search_knowledge, read_document",
-				"search them before answering a question about a topic, even one that reads like general knowledge",
+				"Interpret the full request and conversation",
+				"requested claims need it and current materials are insufficient",
+				"Binding a knowledge base does not itself require another lookup",
 			},
-			[]string{"wiki_search", "web_search is available"},
+			[]string{"wiki_search", "web_search is available", "search them before answering"},
 		},
 		{
 			"wiki",
@@ -110,6 +112,20 @@ func TestGroundingUsesRegistryInsteadOfConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGroundingDistinguishesDirectoryHintsFromActualStructureEvidence(t *testing.T) {
+	prompt := formatGroundingGuidance([]string{tools.ToolSearchKnowledge, tools.ToolReadDocument})
+	require.Contains(t, prompt, "User-provided content and sufficient tool results already obtained for the current task can be used directly")
+	require.Contains(t, prompt, "do not search merely to satisfy a workflow")
+	require.Contains(t, prompt, "document titles, and summaries are navigation hints, not proof of detailed document claims")
+	require.Contains(t, prompt, "source-bound field catalogues and program-returned grouping counts can support field-structure claims")
+	require.Contains(t, prompt, "within their reported coverage")
+	require.Contains(t, prompt, "do not establish observation statistics or decide business categories")
+	require.Contains(t, prompt, "full request and conversation to decide whether the user means their documents or a general explanation")
+	require.Contains(t, prompt, "source restrictions and explicit selections")
+	require.Contains(t, prompt, "cannot prove a base lacks the answer")
+	require.Contains(t, prompt, "Stop searching once evidence is sufficient")
 }
 
 func TestPinnedGenerationSkillKeepsResearchAndKnowledgeScope(t *testing.T) {

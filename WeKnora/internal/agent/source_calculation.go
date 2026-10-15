@@ -18,6 +18,8 @@ import (
 
 const sourceCalculationToolName = "calculate_source_values"
 
+const sourceTableCalculationBindingRecovery = "若实际证据是已读Markdown/OCR表格，且本轮已提供calculate_document_table，可改用其operation=inspect核对真实表格索引与单位上下文，再按真实行列提交批量计算，避免逐行重复扩写长quote。来源、单位及表达式仍须通过同样校验，不要猜测或原样重试。"
+
 var sourceCalculationDecimal = regexp.MustCompile(`^[+-]?[0-9]+(?:\.[0-9]+)?$`)
 var sourceCalculationVariable = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,31}$`)
 
@@ -68,12 +70,14 @@ func newSourceCalculationInputError(reason, variable, chunkID, message string, s
 
 func newSourceCalculationTool(steps func() []types.AgentStep) *sourceCalculationTool {
 	return &sourceCalculationTool{BaseTool: agenttools.NewBaseTool(sourceCalculationToolName,
-		`只读执行模型提出的来源四则计算，不读取额外文件、不联网、不执行代码。
+		`只读执行模型提出的来源四则计算，适用于零散原文标量或少量跨段计算，不读取额外文件、不联网、不执行代码。
+真实Markdown/OCR表格需要取值或多行计算时，优先analyze_document_tables按服务器完整问题和实际表一次规划执行；也可用calculate_document_table检查明确的手动计划。不要逐行抄成大量calculations、inputs或source_quotes。
 参数：calculations为计算数组；每项有expression、inputs、result_unit。expression仅写inputs的变量名和四则括号，例如a/b-1；原始观测数字必须放inputs中对应变量的value，不能把观测数字代进expression。仅数学常数0和1可直接写入表达式。result_unit="%"已自动缩放为百分比，表达式不要再乘100。
 每个变量必须绑定实际已读chunk_id、原文十进制value及原单位unit。quote必须是实际原文的完整连续子串，保留空格、换行、标点和表格分隔符。非空unit必须出现在同一quote内；若单位在表头或图注，应复制从该表头到数据行的连续原文，不得借别的字段单位。未知单位用空字符串，只能返回单位未知的原值运算，不能输出%。源显式%会归一化，其他单位仅按原文精确维度验证，加减须相同单位，乘除可抵消。
-source_quotes是可选共享引用目录，省略或空对象均可。批量共用同一表格时，在source_quotes只声明一次原文，输入通过quote_ref复用其键名，且chunk_id必须一致；单独计算也可直接提供quote。每个输入只提供quote或quote_ref其中一个，不能同时提供。只声明实际使用的共享引用，最多32段、每段8192字节；整批最多32项且总参数256KiB。
-若同时提供calculate_document_table，对原报告表格逐行计算优先使用其inspect/calculate按真实表格和列索引执行，避免逐行重复抄写观测值。业务口径、列选择与公式始终由模型依据完整问题和真实表头决定。`,
-		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["calculations"],"properties":{"source_quotes":{"type":"object","description":"Optional shared source text. Omit or use {} when every input provides inline quote. Reuse one declared quote_ref for repeated rows instead of declaring one quote per variable.","minProperties":0,"maxProperties":32,"additionalProperties":{"type":"object","additionalProperties":false,"required":["chunk_id","quote"],"properties":{"chunk_id":{"type":"string","description":"Actual chunk reference returned by a successful current-turn document read; do not invent it.","minLength":1},"quote":{"type":"string","description":"Exact contiguous original text including the value and its unit header/context. Preserve original spacing, line breaks and table separators.","minLength":1,"maxLength":8192}}}},"calculations":{"type":"array","description":"Each item computes one source-bound expression. Use variable names from inputs; never paste source values as free expression literals.","minItems":1,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["expression","inputs","result_unit"],"properties":{"expression":{"type":"string","description":"Only inputs variable names, arithmetic + - * /, parentheses and constants 0/1. result_unit=% applies percentage scaling automatically; do not multiply by 100.","examples":["a+b","a/b","a/b-1"],"minLength":1,"maxLength":1024},"result_unit":{"type":"string","description":"Empty for raw quantity output; % only for verified dimensionless results. Unknown input units cannot produce %. Scaling is automatic.","enum":["","%"]},"inputs":{"type":"object","description":"Keys are the variable names used by expression, for example a and b. Each variable binds one real source number and its actual unit.","minProperties":1,"maxProperties":32,"additionalProperties":{"type":"object","additionalProperties":false,"required":["value","chunk_id","unit"],"oneOf":[{"required":["quote"]},{"required":["quote_ref"]}],"properties":{"value":{"type":"string","description":"Exact observed number as a decimal string, taken from the bound quote. Put observations here, not in expression.","minLength":1,"maxLength":128},"chunk_id":{"type":"string","description":"Actual chunk reference returned by a successful current-turn document read; do not invent it.","minLength":1},"quote":{"type":"string","description":"Exact contiguous original text including the value and its unit header/context. Preserve original spacing, line breaks and table separators.","minLength":1,"maxLength":8192},"quote_ref":{"type":"string","description":"Key declared in top-level source_quotes; source chunk must equal input.chunk_id. Use instead of inline quote, never together.","minLength":1,"maxLength":32},"unit":{"type":"string","description":"Exact source unit appearing in this bound quote. If only in a header/caption, include that original context in quote. Empty means unknown, not dimensionless; cannot generate %.","maxLength":128}}}}}}}}}`)), steps: steps}
+inputs变量名、source_quotes键名和quote_ref均为1至32个ASCII字符的技术标识，只能以字母或下划线开头，后续使用字母、数字或下划线；不要用带空格的自然语言标签作键名，原文业务标签保留在quote中。
+source_quotes是可选共享引用目录，省略或空对象均可。零散计算共用同一原文片段时，只声明一次精确原文，输入通过quote_ref复用其键名，且chunk_id必须一致；也可直接提供quote。每个输入只提供quote或quote_ref其中一个，不能同时提供。只声明实际使用的共享引用，最多32段、每段8192字节；整批最多32项且总参数256KiB。
+业务口径、来源、行列选择与公式始终由模型依据完整问题和真实表头决定；以上工具分工不改变已有来源、单位和计算校验。`,
+		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["calculations"],"properties":{"source_quotes":{"type":"object","description":"Optional shared text for scalar or a few cross-passage calculations. Omit or use {} when every input provides inline quote. For real Markdown/OCR table rows sharing a formula, first inspect then calculate with calculate_document_table; do not transcribe each row here. Keys are technical ASCII identifiers, never natural-language labels containing spaces.","minProperties":0,"maxProperties":32,"propertyNames":{"type":"string","pattern":"^[A-Za-z_][A-Za-z0-9_]{0,31}$","minLength":1,"maxLength":32},"additionalProperties":{"type":"object","additionalProperties":false,"required":["chunk_id","quote"],"properties":{"chunk_id":{"type":"string","description":"Actual chunk reference returned by a successful current-turn document read; do not invent it.","minLength":1},"quote":{"type":"string","description":"Exact contiguous original text including the value and its unit header/context. Preserve original spacing, line breaks and table separators.","minLength":1,"maxLength":8192}}}},"calculations":{"type":"array","description":"Each item computes a source-bound scalar expression or a small cross-passage calculation. For multi-row formulas in a real Markdown/OCR table use calculate_document_table inspect then calculate instead of repeating rows, inputs and quotes. Use variable names from inputs; never paste source values as free expression literals.","minItems":1,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["expression","inputs","result_unit"],"properties":{"expression":{"type":"string","description":"Only inputs variable names, arithmetic + - * /, parentheses and constants 0/1. result_unit=% applies percentage scaling automatically; do not multiply by 100.","examples":["a+b","a/b","a/b-1"],"minLength":1,"maxLength":1024},"result_unit":{"type":"string","description":"Empty for raw quantity output; % only for verified dimensionless results. Unknown input units cannot produce %. Scaling is automatic.","enum":["","%"]},"inputs":{"type":"object","description":"Keys are technical ASCII identifiers used by expression, for example a and b, not natural-language source labels or names containing spaces. Each variable binds one real source number and its actual unit.","minProperties":1,"maxProperties":32,"propertyNames":{"type":"string","pattern":"^[A-Za-z_][A-Za-z0-9_]{0,31}$","minLength":1,"maxLength":32},"additionalProperties":{"type":"object","additionalProperties":false,"required":["value","chunk_id","unit"],"oneOf":[{"required":["quote"]},{"required":["quote_ref"]}],"properties":{"value":{"type":"string","description":"Exact observed number as a decimal string, taken from the bound quote. Put observations here, not in expression.","minLength":1,"maxLength":128},"chunk_id":{"type":"string","description":"Actual chunk reference returned by a successful current-turn document read; do not invent it.","minLength":1},"quote":{"type":"string","description":"Exact contiguous original text including the value and its unit header/context. Preserve original spacing, line breaks and table separators.","minLength":1,"maxLength":8192},"quote_ref":{"type":"string","description":"Technical ASCII identifier declared as a top-level source_quotes key, not a natural-language label or name containing spaces; source chunk must equal input.chunk_id. Use instead of inline quote, never together.","minLength":1,"maxLength":32,"pattern":"^[A-Za-z_][A-Za-z0-9_]{0,31}$"},"unit":{"type":"string","description":"Exact source unit appearing in this bound quote. If only in a header/caption, include that original context in quote. Empty means unknown, not dimensionless; cannot generate %.","maxLength":128}}}}}}}}}`)), steps: steps}
 }
 
 func (tool *sourceCalculationTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
@@ -143,7 +147,7 @@ func (tool *sourceCalculationTool) Execute(ctx context.Context, raw json.RawMess
 					return fail(newSourceCalculationInputError("unknown_quote_ref", name, input.ChunkID, fmt.Sprintf("变量%s的quote_ref未在本次source_quotes声明；请使用真实已声明引用", name), nil))
 				}
 				if input.ChunkID != shared.ChunkID {
-					return fail(newSourceCalculationInputError("quote_ref_chunk_mismatch", name, input.ChunkID, fmt.Sprintf("变量%s的chunk_id与共享quote_ref的来源分块不一致，不能跨分块借用引用", name), nil))
+					return fail(newSourceCalculationInputError("quote_ref_chunk_mismatch", name, input.ChunkID, fmt.Sprintf("变量%s的chunk_id与共享quote_ref的来源分块不一致，不能跨分块借用引用。%s", name, sourceTableCalculationBindingRecovery), nil))
 				}
 				input.Quote = shared.Quote
 				usedQuotes[input.QuoteRef] = shared
@@ -200,7 +204,7 @@ func executeSourceCalculation(plan sourceCalculationPlan, chunks map[string][]fe
 			return nil, newSourceCalculationInputError("unknown_chunk", name, input.ChunkID, fmt.Sprintf("变量%s的chunk_id不是本轮成功读取的实际分块；请先读取真实来源并使用返回的引用ID", name), nil)
 		}
 		var source *fetchedDocumentChunk
-		failure := newSourceCalculationInputError("quote_mismatch", name, input.ChunkID, fmt.Sprintf("变量%s的quote不是该分块的精确原文子串；请从实际来源复制完整引用，保留原空格、换行、标点和表格分隔符", name), &candidates[0])
+		failure := newSourceCalculationInputError("quote_mismatch", name, input.ChunkID, fmt.Sprintf("变量%s的quote不是该分块的精确原文子串；请从实际来源复制完整引用，保留原空格、换行、标点和表格分隔符。%s", name, sourceTableCalculationBindingRecovery), &candidates[0])
 		for candidateIndex := range candidates {
 			candidate := &candidates[candidateIndex]
 			cleanQuote := documentNumericProse(input.Quote)
@@ -217,7 +221,7 @@ func executeSourceCalculation(plan sourceCalculationPlan, chunks map[string][]fe
 				continue
 			}
 			if input.Unit != "" && !strings.Contains(cleanQuote, input.Unit) {
-				failure = newSourceCalculationInputError("unit_not_in_quote", name, input.ChunkID, fmt.Sprintf("变量%s的unit未出现在同一绑定quote中。若单位位于表头或图注，可quote从该单位表头到该行的真实完整连续原文；不要借其他字段的单位，不要猜单位，也不要原样重试", name), candidate)
+				failure = newSourceCalculationInputError("unit_not_in_quote", name, input.ChunkID, fmt.Sprintf("变量%s的unit未出现在同一绑定quote中。%s零散原值的quote仍须包含单位与该值的真实完整连续原文，不要借其他字段的单位。", name, sourceTableCalculationBindingRecovery), candidate)
 				continue
 			}
 			source = candidate
@@ -251,6 +255,39 @@ func executeSourceCalculation(plan sourceCalculationPlan, chunks map[string][]fe
 
 // This evaluator receives already source-bound quantities. It does not select
 // sources, normalize business definitions or execute arbitrary code.
+// Formula grammar, bound variables and unit algebra are shared by every row.
+// Check them once before a table execution, without substituting source values
+// or deciding whether an individual record is missing or has a zero divisor.
+func validateSourceExpressionPlan(expression string, units map[string]string, resultUnit string) error {
+	if len(expression) == 0 || len(expression) > 1024 || len(units) < 1 || len(units) > 32 || (resultUnit != "" && resultUnit != "%") {
+		return fmt.Errorf("表达式、变量数量或输出单位无效")
+	}
+	variables := map[string]sourceQuantity{}
+	for name, unit := range units {
+		if !sourceCalculationVariable.MatchString(name) {
+			return fmt.Errorf("来源变量名称无效")
+		}
+		quantity := sourceQuantity{value: big.NewRat(1, 1), units: map[string]int{}, unknown: unit == ""}
+		if unit != "" && unit != "%" {
+			quantity.units[unit] = 1
+		}
+		variables[name] = quantity
+	}
+	parser := sourceExpressionParser{text: expression, variables: variables, used: map[string]bool{}, planOnly: true}
+	quantity, err := parser.expression(0)
+	parser.skipSpace()
+	if err != nil {
+		return err
+	}
+	if parser.offset != len(parser.text) || len(parser.used) != len(variables) || len(parser.used) == 0 {
+		return fmt.Errorf("表达式含未支持内容或未使用的输入；仅允许已绑定变量和四则运算")
+	}
+	if resultUnit == "%" && (quantity.unknown || len(quantity.units) > 0) {
+		return fmt.Errorf("百分比结果需要已核验单位抵消为无量纲；未知或剩余单位不能转为%%")
+	}
+	return nil
+}
+
 func evaluateSourceExpression(expression string, variables map[string]sourceQuantity, resultUnit string) (map[string]any, error) {
 	if len(expression) == 0 || len(expression) > 1024 || len(variables) < 1 || len(variables) > 32 || (resultUnit != "" && resultUnit != "%") {
 		return nil, fmt.Errorf("表达式、变量数量或输出单位无效")
@@ -275,7 +312,7 @@ func evaluateSourceExpression(expression string, variables map[string]sourceQuan
 	}
 	if resultUnit == "%" {
 		if quantity.unknown || len(quantity.units) > 0 {
-			return nil, fmt.Errorf("百分比结果需要已核验单位抵消为无量纲；未知或剩余单位不能转为%%")
+			return nil, fmt.Errorf("百分比结果需要已核验单位抵消为无量纲；未知或剩余单位不能转为%%。%s", sourceTableCalculationBindingRecovery)
 		}
 		quantity.value = new(big.Rat).Mul(quantity.value, big.NewRat(100, 1))
 		unit, unitStatus = "%", "known"
@@ -344,6 +381,7 @@ type sourceExpressionParser struct {
 	steps     int
 	variables map[string]sourceQuantity
 	used      map[string]bool
+	planOnly  bool // Validate grammar and unit algebra without evaluating source values.
 }
 
 func (parser *sourceExpressionParser) skipSpace() {
@@ -450,11 +488,6 @@ func (parser *sourceExpressionParser) combine(left, right sourceQuantity, operat
 		if sourceUnitExpression(left.units) != sourceUnitExpression(right.units) {
 			return sourceQuantity{}, fmt.Errorf("加减运算两侧单位不一致；不能推定单位换算")
 		}
-		if operation == '+' {
-			result.value.Add(left.value, right.value)
-		} else {
-			result.value.Sub(left.value, right.value)
-		}
 	} else {
 		for unit, exponent := range right.units {
 			if operation == '/' {
@@ -465,14 +498,23 @@ func (parser *sourceExpressionParser) combine(left, right sourceQuantity, operat
 				delete(result.units, unit)
 			}
 		}
-		if operation == '*' {
-			result.value.Mul(left.value, right.value)
-		} else {
-			if right.value.Sign() == 0 {
-				return sourceQuantity{}, fmt.Errorf("不能除以零")
-			}
-			result.value.Quo(left.value, right.value)
+	}
+	if parser.planOnly {
+		result.value.SetInt64(1)
+		return result, nil
+	}
+	switch operation {
+	case '+':
+		result.value.Add(left.value, right.value)
+	case '-':
+		result.value.Sub(left.value, right.value)
+	case '*':
+		result.value.Mul(left.value, right.value)
+	case '/':
+		if right.value.Sign() == 0 {
+			return sourceQuantity{}, fmt.Errorf("不能除以零")
 		}
+		result.value.Quo(left.value, right.value)
 	}
 	if result.value.Num().BitLen() > 2048 || result.value.Denom().BitLen() > 2048 {
 		return sourceQuantity{}, fmt.Errorf("计算精度或数值大小超过限制")

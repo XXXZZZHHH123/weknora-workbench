@@ -203,6 +203,13 @@ func (tool *documentTableCalculationTool) Execute(ctx context.Context, raw json.
 			return fail(fmt.Sprintf("变量%s的单位不在该表实际unit_context中；请核对原文单位，不要猜测或原样重试", name))
 		}
 	}
+	units := map[string]string{}
+	for name, binding := range request.Columns {
+		units[name] = binding.Unit
+	}
+	if err := validateSourceExpressionPlan(request.Expression, units, request.ResultUnit); err != nil {
+		return fail("表达式或单位计划无效：" + err.Error() + "；result_unit=%已自动缩放，不在表达式中另乘100。先修正同一公式，本次未逐行执行。")
+	}
 	results := []any{}
 	failures := []any{}
 	for index := *request.RowStart; index <= *request.RowEnd; index++ {

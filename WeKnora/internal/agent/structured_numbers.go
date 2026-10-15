@@ -179,9 +179,46 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 	inspectedRows := map[string]bool{}
 	hasDigest := false
 	identityLabels := map[string]bool{}
+	// Capability schemas describe valid arguments; their numeric limits are
+	// never executed observations. Preserve the actual call identity even when
+	// replayed tool messages omit Name, without classifying arbitrary payloads.
+	nonEvidenceToolCalls := map[string]bool{}
+	toolNames := map[string]string{}
+	canonicalTableAnalyses := map[string]types.ToolCall{}
+	markNonEvidence := func(id, name, operation string) {
+		if id != "" {
+			if _, exists := toolNames[id]; !exists {
+				toolNames[id] = name
+			}
+		}
+		if id != "" && (name == expandTaskToolsName || name == "structured_data" && operation == "describe_tools") {
+			nonEvidenceToolCalls[id] = true
+		}
+	}
 	for _, steps := range rawSteps {
 		collectDurableDocumentIdentityTitles(steps, identityLabels)
 		collectArtifactIdentityTitles(steps, identityLabels)
+		for _, step := range steps {
+			for _, call := range step.ToolCalls {
+				operation, _ := call.Args["operation"].(string)
+				markNonEvidence(call.ID, call.Name, operation)
+				if call.ID != "" && call.Name == documentTableAnalysisToolName {
+					canonicalTableAnalyses[call.ID] = call
+				}
+			}
+		}
+	}
+	for _, message := range messages {
+		if message.Role != "assistant" {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			var arguments struct {
+				Operation string `json:"operation"`
+			}
+			_ = json.Unmarshal([]byte(call.Function.Arguments), &arguments)
+			markNonEvidence(call.ID, call.Function.Name, arguments.Operation)
+		}
 	}
 	userTexts := []string{}
 	var collect func(any)
@@ -191,6 +228,11 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			values = append(values, x)
 			percentageValues = append(percentageValues, x, x*100)
 		case map[string]any:
+			if x["kind"] == "task_tool_capabilities" || x["kind"] == "document_table_analysis" {
+				// Analysis wrappers are interpreted only at an actual executor
+				// boundary below. Never recurse into plans, schemas or advice.
+				return
+			}
 			if x["kind"] == "source_calculation" && x["status"] == "ok" {
 				// This protocol carries explicit unit algebra. An unknown or
 				// dimensional quantity cannot gain a percentage simply because
@@ -259,6 +301,12 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 	for _, steps := range rawSteps {
 		for _, call := range steps {
 			for _, executed := range call.ToolCalls {
+				if executed.Name == documentTableAnalysisToolName {
+					for _, result := range executedDocumentTableResults(executed) {
+						collect(result)
+					}
+					continue
+				}
 				if executed.Result == nil || !executed.Result.Success {
 					continue
 				}
@@ -303,9 +351,24 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 	}
 	for _, msg := range messages {
 		if msg.Role == "tool" {
+			name := msg.Name
+			if name == "" {
+				name = toolNames[msg.ToolCallID]
+			}
+			if name == expandTaskToolsName || nonEvidenceToolCalls[msg.ToolCallID] {
+				continue
+			}
+			if name == documentTableAnalysisToolName {
+				if canonical, exists := canonicalTableAnalyses[msg.ToolCallID]; exists {
+					for _, result := range executedDocumentTableResults(canonical) {
+						collect(result)
+					}
+					continue // Display text cannot override actual execution Data/status.
+				}
+			}
 			// Fetched KB prose uses only separately verified cited chunk evidence;
 			// embedded JSON in a document is not an executed aggregate.
-			if msg.Name == "search_knowledge" || msg.Name == "read_document" {
+			if name == "search_knowledge" || name == "read_document" {
 				for _, title := range fetchedDocumentIdentityTitles(msg.Content) {
 					identityLabels[title] = true
 				}
@@ -317,6 +380,12 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			}
 			var data map[string]any
 			if json.NewDecoder(strings.NewReader(msg.Content[start:])).Decode(&data) == nil {
+				if name == documentTableAnalysisToolName || data["kind"] == "document_table_analysis" {
+					for _, result := range documentTableAnalysisExecutions(name, data) {
+						collect(result)
+					}
+					continue
+				}
 				if data["status"] == "error" {
 					continue
 				}
@@ -444,6 +513,54 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 		}
 	}
 	return unsupported
+}
+
+// Return only canonical results of real document-table executions. The
+// planner's wrapper is not itself a calculation, and unsuccessful/needs-source
+// advice cannot authorize numeric facts. Partial wrappers retain only their
+// actual successful children; their coverage still remains partial.
+func executedDocumentTableResults(call types.ToolCall) []map[string]any {
+	if call.Result == nil || (call.Name != documentTableCalculationToolName && call.Name != documentTableAnalysisToolName) {
+		return nil
+	}
+	var data map[string]any
+	if call.Result.Data != nil {
+		encoded, err := json.Marshal(call.Result.Data)
+		if err != nil || json.Unmarshal(encoded, &data) != nil {
+			return nil
+		}
+	} else if json.Unmarshal([]byte(call.Result.Output), &data) != nil {
+		return nil
+	}
+	if call.Name == documentTableCalculationToolName {
+		if call.Result.Success && data["kind"] == "source_calculation" && data["status"] == "ok" {
+			return []map[string]any{data}
+		}
+		return nil
+	}
+	if !call.Result.Success && data["status"] != "partial" {
+		return nil
+	}
+	return documentTableAnalysisExecutions(call.Name, data)
+}
+
+func documentTableAnalysisExecutions(toolName string, data map[string]any) []map[string]any {
+	if toolName != documentTableAnalysisToolName || data["kind"] != "document_table_analysis" || (data["status"] != "ok" && data["status"] != "partial") {
+		return nil
+	}
+	results := []map[string]any{}
+	executions, _ := data["executions"].([]any)
+	for _, raw := range executions {
+		execution, ok := raw.(map[string]any)
+		if !ok || execution["success"] != true || execution["tool_name"] != documentTableCalculationToolName {
+			continue
+		}
+		result, ok := execution["result"].(map[string]any)
+		if ok && result["kind"] == "source_calculation" && result["status"] == "ok" {
+			results = append(results, result)
+		}
+	}
+	return results
 }
 
 // Source-bound calculation results explicitly distinguish displayed percent
@@ -763,8 +880,39 @@ func maskExactSourceIdentity(answer, label string) string {
 }
 
 func hasStructuredHistoryEvidence(messages []chat.Message) bool {
+	names := map[string]string{}
 	for _, msg := range messages {
-		if msg.Role == "tool" && msg.Name != "search_knowledge" && msg.Name != "read_document" && structuredResultHasEvidence(msg.Content) {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			if call.ID != "" {
+				names[call.ID] = call.Function.Name
+			}
+		}
+	}
+	for _, msg := range messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		name := msg.Name
+		if name == "" {
+			name = names[msg.ToolCallID]
+		}
+		if name == "search_knowledge" || name == "read_document" {
+			continue
+		}
+		start := strings.Index(msg.Content, "{")
+		if start >= 0 {
+			var data map[string]any
+			if json.NewDecoder(strings.NewReader(msg.Content[start:])).Decode(&data) == nil && (name == documentTableAnalysisToolName || data["kind"] == "document_table_analysis") {
+				if len(documentTableAnalysisExecutions(name, data)) > 0 {
+					return true
+				}
+				continue // A plan/wrapper cannot prove its own execution or tool identity.
+			}
+		}
+		if structuredResultHasEvidence(msg.Content) {
 			return true
 		}
 	}

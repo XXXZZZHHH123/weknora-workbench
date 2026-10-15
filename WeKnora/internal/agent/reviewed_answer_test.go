@@ -62,6 +62,43 @@ func TestReviewedAnswerRejectsIncompleteAndMultipleJSONWithoutInventingContent(t
 	require.Equal(t, "Ordinary provider prose.", decodeReviewedAnswer("Ordinary provider prose."))
 }
 
+func TestReviewedAnswerRejectsMixedProseAndDeliveryEnvelope(t *testing.T) {
+	for _, content := range []string{
+		"Draft prose.\n" + `{"answer":"Final answer."}`,
+		"```json\n" + `{"answer":"Final answer."}` + "\n```",
+		"Draft prose.\n" + "{\"answer\":\"First line\nSecond line\"}",
+		`Preface {"answer":"one"} trailing prose.`,
+		`Preface {"answer":"unfinished`,
+		`Preface {"answer":null}`,
+		`Preface {"answer":"one","private_reasoning":"hidden"}`,
+	} {
+		require.Empty(t, decodeReviewedAnswer(content), "mixed protocol must be repaired, never guessed or leaked")
+		model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{
+			{ResponseType: types.ResponseTypeAnswer, Content: content[:len(content)/2]},
+			{ResponseType: types.ResponseTypeAnswer, Content: content[len(content)/2:], Done: true, FinishReason: "stop"},
+		}}}}
+		engine := newTestEngine(t, model)
+		engine.structuredReviewMode = true
+		var emitted strings.Builder
+		engine.eventBus.On(event.EventAgentFinalAnswer, func(_ context.Context, value event.Event) error {
+			if data, ok := value.Data.(event.AgentFinalAnswerData); ok {
+				emitted.WriteString(data.Content)
+			}
+			return nil
+		})
+		response, err := engine.streamThinkingToEventBus(context.Background(), emptyMessages(), nil, 0, "s")
+		require.NoError(t, err)
+		require.Empty(t, response.Content)
+		require.Empty(t, emitted.String())
+	}
+	// Real code examples inside a correctly framed answer remain unchanged.
+	example := `Use {"answer":"example"} as the example payload.`
+	encoded, err := json.Marshal(map[string]string{"answer": example})
+	require.NoError(t, err)
+	require.Equal(t, example, decodeReviewedAnswer(string(encoded)))
+	require.Equal(t, "Ordinary {prose} remains supported.", decodeReviewedAnswer("Ordinary {prose} remains supported."))
+}
+
 func TestReviewedAnswerDecodesJSONBeforeSourceAndResourceHandles(t *testing.T) {
 	const image = "resource://AbCdEfGhIjKlMnOpQrStUv"
 	const citation = `<kb doc="Report &#34;quoted&#34;" chunk_id="actual-chunk" kb_id="actual-kb" />`
@@ -128,5 +165,27 @@ func TestReviewedAnswerToolRequestsRetainArgumentDecodingAndNoDraftDelivery(t *t
 			require.Empty(t, response.ToolCalls[0].UnresolvedHandles)
 		}
 		require.False(t, response.AnswerStreamed)
+	}
+}
+
+func TestWorkbenchSourcePlanningSamplingIsLocalToReviewedDrafts(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		workbench, pending bool
+		want               float64
+	}{
+		{"source planning", true, true, 0}, {"unsourced conversation", true, false, 0.25}, {"custom agent", false, true, 0.25},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{{Content: "Candidate", Done: true, FinishReason: "stop"}}}}}
+			engine := newTestEngine(t, model)
+			engine.config.WorkbenchDefault = tc.workbench
+			engine.answerReviewPending = tc.pending
+			engine.config.Temperature = 0.25
+			_, err := engine.streamThinkingToEventBus(t.Context(), emptyMessages(), nil, 0, "s")
+			require.NoError(t, err)
+			require.Equal(t, tc.want, model.opts[0].Temperature)
+			require.Equal(t, 0.25, engine.config.Temperature)
+		})
 	}
 }

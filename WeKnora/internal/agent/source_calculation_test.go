@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -88,7 +89,12 @@ func TestSourceCalculationUnknownUnitsRemainUnknownAndCannotProducePercent(t *te
 	require.Equal(t, "2", result["value"])
 	require.Equal(t, "unknown", result["unit_status"])
 	plan.ResultUnit = "%"
-	require.False(t, runSourceCalculationTest(t, tool, plan).Success)
+	failed := runSourceCalculationTest(t, tool, plan)
+	require.False(t, failed.Success)
+	require.Contains(t, failed.Error, "未知或剩余单位不能转为%")
+	require.Contains(t, failed.Error, "calculate_document_table")
+	require.Contains(t, failed.Error, "operation=inspect")
+	require.NotContains(t, failed.Data, "calculations", "recovery advice must not provide unverified results")
 	plan.Expression, plan.Inputs = "a/a", map[string]sourceCalculationInput{"a": plan.Inputs["a"]}
 	require.False(t, runSourceCalculationTest(t, tool, plan).Success, "unknown units cannot gain permission from algebraic cancellation")
 }
@@ -127,7 +133,12 @@ func TestSourceCalculationRejectsCodeFreeNumbersZeroDivisionAndUnitMismatch(t *t
 		if expression == "a/b" {
 			plan.ResultUnit = "%"
 		}
-		require.False(t, runSourceCalculationTest(t, tool, plan).Success)
+		failed := runSourceCalculationTest(t, tool, plan)
+		require.False(t, failed.Success)
+		if expression == "a/b" {
+			require.Contains(t, failed.Error, "calculate_document_table")
+			require.Contains(t, failed.Error, "真实行列提交批量计算")
+		}
 	}
 	require.False(t, runSourceCalculationTest(t, tool, sourceCalculationPlan{Expression: "a/z", Inputs: map[string]sourceCalculationInput{
 		"a": calculationSourceInput("12", "First 12 kg", "kg"), "z": calculationSourceInput("0", "zero 0 kg", "kg"),
@@ -172,6 +183,9 @@ func TestSourceCalculationReportsSpecificBindingFailureAndActualSourceExcerpt(t 
 	require.Equal(t, false, result.Data["source_excerpt_truncated"])
 	require.Contains(t, result.Error, "真实完整连续原文")
 	require.Contains(t, result.Error, "不要借其他字段的单位")
+	require.Contains(t, result.Error, "calculate_document_table")
+	require.Contains(t, result.Error, "operation=inspect")
+	require.Contains(t, result.Error, "避免逐行重复扩写长quote")
 	require.Contains(t, result.Data["notice"], "不能再乘100")
 	require.NotContains(t, result.Data, "calculations", "diagnostics must never look like successful arithmetic")
 	require.False(t, hasStructuredEvidence([]types.AgentStep{{ToolCalls: []types.ToolCall{{Name: sourceCalculationToolName, Result: result}}}}))
@@ -252,6 +266,11 @@ func TestSourceCalculationSharedQuoteRejectsForgedReferenceCrossChunkAndUnusedEv
 			require.NoError(t, err)
 			require.False(t, result.Success)
 			require.Equal(t, tc.reason, result.Data["reason_code"])
+			if tc.reason == "quote_ref_chunk_mismatch" || tc.reason == "quote_mismatch" {
+				require.Contains(t, result.Error, "calculate_document_table")
+				require.Contains(t, result.Error, "operation=inspect")
+				require.Contains(t, result.Error, "避免逐行重复扩写长quote")
+			}
 			require.NotContains(t, result.Data, "source_quotes")
 			require.NotContains(t, result.Data, "calculations")
 		})
@@ -303,4 +322,51 @@ func TestSourceCalculationSchemaExplainsVariableBindingsAndAutomaticScaling(t *t
 	input := calculation["inputs"].(map[string]any)["additionalProperties"].(map[string]any)["properties"].(map[string]any)
 	require.Contains(t, input["unit"].(map[string]any)["description"], "not dimensionless")
 	require.Contains(t, tool.Description(), "calculate_document_table")
+	require.Contains(t, tool.Description(), "零散原文标量或少量跨段计算")
+	require.Contains(t, tool.Description(), "优先analyze_document_tables")
+	require.Contains(t, tool.Description(), "不要逐行抄成大量calculations、inputs或source_quotes")
+	require.Contains(t, properties["calculations"].(map[string]any)["description"], "inspect then calculate")
+	require.Contains(t, properties["source_quotes"].(map[string]any)["description"], "do not transcribe each row here")
+	require.Equal(t, float64(32), properties["calculations"].(map[string]any)["maxItems"], "tool guidance must preserve compatible batch execution")
+}
+
+func TestSourceCalculationSchemaIdentifierConstraintsMatchRuntime(t *testing.T) {
+	tool := sourceCalculationFixture("Mass 12 kg")
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(tool.Parameters(), &schema))
+	properties := schema["properties"].(map[string]any)
+	quotes := properties["source_quotes"].(map[string]any)
+	calculation := properties["calculations"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	inputs := calculation["inputs"].(map[string]any)
+	inputProperties := inputs["additionalProperties"].(map[string]any)["properties"].(map[string]any)
+	for _, constraint := range []map[string]any{
+		quotes["propertyNames"].(map[string]any), inputs["propertyNames"].(map[string]any), inputProperties["quote_ref"].(map[string]any),
+	} {
+		require.Equal(t, "string", constraint["type"])
+		require.Equal(t, sourceCalculationVariable.String(), constraint["pattern"])
+		require.Equal(t, float64(1), constraint["minLength"])
+		require.Equal(t, float64(32), constraint["maxLength"])
+		pattern, err := regexp.Compile(constraint["pattern"].(string))
+		require.NoError(t, err)
+		for _, name := range []string{"a", "source_2", "_q", strings.Repeat("v", 32)} {
+			require.True(t, pattern.MatchString(name), name)
+		}
+		for _, name := range []string{"", "label with spaces", "source-name", "2source", "原文标签", strings.Repeat("v", 33)} {
+			require.False(t, pattern.MatchString(name), name)
+		}
+	}
+	for _, name := range []string{"a", "source_2", "_q", strings.Repeat("v", 32), "label with spaces", "source-name", "2source", "原文标签", strings.Repeat("v", 33)} {
+		t.Run(name, func(t *testing.T) {
+			want := sourceCalculationVariable.MatchString(name)
+			variableResult := runSourceCalculationTest(t, tool, sourceCalculationPlan{Expression: name, Inputs: map[string]sourceCalculationInput{name: calculationSourceInput("12", "Mass 12 kg", "kg")}})
+			require.Equal(t, want, variableResult.Success, variableResult.Error)
+			request := map[string]any{
+				"calculations":  []sourceCalculationPlan{{Expression: "a", Inputs: map[string]sourceCalculationInput{"a": {Value: "12", ChunkID: "actual-chunk", QuoteRef: name, Unit: "kg"}}}},
+				"source_quotes": map[string]sourceCalculationQuote{name: {ChunkID: "actual-chunk", Quote: "Mass 12 kg"}},
+			}
+			quoteResult, err := tool.Execute(context.Background(), mustJSON(t, request))
+			require.NoError(t, err)
+			require.Equal(t, want, quoteResult.Success, quoteResult.Error)
+		})
+	}
 }

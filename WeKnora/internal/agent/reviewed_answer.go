@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var reviewedAnswerSchema = json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string","description":"Only the complete final user-facing answer in the requested language, with actual source citations and necessary limitations. No private reasoning, working draft or promises of future work."}},"required":["answer"],"additionalProperties":false}`)
+var reviewedAnswerSchema = json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string","description":"Only the requested final results in the requested language, with actual source citations and minimal necessary scope or limitations. Omit unrequested commentary, causal analysis or additional statistics. Preserve the meaning and identity of the actual source fields. No private reasoning, working draft or promises of future work."}},"required":["answer"],"additionalProperties":false}`)
 
 // Only this buffered answer protocol changes text decoding order. Other JSON
 // modes and ordinary tool-call arguments keep their existing streaming path.
@@ -24,8 +24,12 @@ func decodeReviewedAnswer(content string) string {
 		return ""
 	}
 	if trimmed[0] != '{' && trimmed[0] != '[' {
-		// Legacy providers may ignore JSON mode and deliver ordinary prose.
-		// Object/array-shaped protocol failures never become visible answers.
+		// Legacy prose remains supported, but a provider that mixes prose and
+		// an explicit answer envelope has failed the delivery contract. Never
+		// expose that envelope or pick one of the two competing answers.
+		if containsReviewedAnswerEnvelope(trimmed) {
+			return ""
+		}
 		return content
 	}
 	decoder := json.NewDecoder(strings.NewReader(escapeJSONLiteralControls(trimmed)))
@@ -49,6 +53,29 @@ func decodeReviewedAnswer(content string) string {
 		return ""
 	}
 	return *answer
+}
+
+// This only recognizes the explicit delivery protocol, never question or
+// answer semantics. It is used to reject mixed framing, not extract a guessed
+// answer. Correct JSON answer strings may themselves contain example JSON.
+func containsReviewedAnswerEnvelope(content string) bool {
+	for offset := 0; offset < len(content); {
+		index := strings.IndexByte(content[offset:], '{')
+		if index < 0 {
+			return false
+		}
+		offset += index
+		decoder := json.NewDecoder(strings.NewReader(content[offset:]))
+		opening, err := decoder.Token()
+		if err == nil && opening == json.Delim('{') {
+			key, keyErr := decoder.Token()
+			if keyErr == nil && key == "answer" {
+				return true // Also reject a truncated or malformed envelope.
+			}
+		}
+		offset++
+	}
+	return false
 }
 
 // Some compatible providers emit literal LF/CR/TAB bytes inside a JSON string

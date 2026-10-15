@@ -36,29 +36,33 @@ const langfuseQueryPreview = 2000
 // engine therefore does not maintain its own cache, system-prompt store, or
 // cross-turn buffer.
 type AgentEngine struct {
-	structuredReviewMode bool // bounded source review must not restart open-ended reasoning
-	answerReviewPending  bool // durable executed evidence requires approval before answer emission
-	config               *types.AgentConfig
-	toolRegistry         *agenttools.ToolRegistry
-	chatModel            chat.Chat
-	eventBus             *event.EventBus
-	knowledgeBasesInfo   []*KnowledgeBaseInfo    // Detailed knowledge base information for prompt
-	selectedDocs         []*SelectedDocumentInfo // User-selected documents (via @ mention)
-	pinnedMCPServices    []*PinnedMCPServiceInfo // User @mentioned MCP services for this turn
-	pinnedSkills         []*PinnedSkillInfo      // User @mentioned skills for this turn
-	questionOrigin       *QuestionOriginInfo     // Source of a picked suggested question, if any
-	sessionID            string                  // Session ID for logging and event emission
-	systemPromptTemplate string                  // System prompt template (optional, uses default if empty)
-	memoryPrompt         string                  // Long-term memory envelope appended to the system prompt
-	skillsManager        *skills.Manager         // Skills manager for Progressive Disclosure (optional)
-	appConfig            *appconfig.Config       // Application config for prompt template resolution (optional)
-	imageDescriber       ImageDescriberFunc      // VLM function for describing images in tool results (optional)
-	imageDescribeSlots   chan struct{}           // Bounds VLM calls across parallel tool calls
-	tokenEstimator       *agenttoken.Estimator   // Token estimator for context window management, calibrated
-	rawEstimator         *agenttoken.Estimator   // Same tokenizer at scale 1, for measuring the calibration
-	compactor            *compaction.Compactor   // Summarizes older history to fit the context window (nil = disabled)
-	lastUsage            types.TokenUsage        // Token usage from the most recent LLM call
-	lastSentMsgCount     int                     // Number of messages sent in the most recent LLM call
+	structuredReviewMode   bool   // bounded source review must not restart open-ended reasoning
+	answerReviewFeedback   string // bounded semantic review advice, never source evidence
+	answerReviewPending    bool   // durable executed evidence requires approval before answer emission
+	taskProjection         *taskToolProjection
+	taskPlanContext        string
+	documentAnalysisSteers []string // persisted human corrections only; never review envelopes
+	config                 *types.AgentConfig
+	toolRegistry           *agenttools.ToolRegistry
+	chatModel              chat.Chat
+	eventBus               *event.EventBus
+	knowledgeBasesInfo     []*KnowledgeBaseInfo    // Detailed knowledge base information for prompt
+	selectedDocs           []*SelectedDocumentInfo // User-selected documents (via @ mention)
+	pinnedMCPServices      []*PinnedMCPServiceInfo // User @mentioned MCP services for this turn
+	pinnedSkills           []*PinnedSkillInfo      // User @mentioned skills for this turn
+	questionOrigin         *QuestionOriginInfo     // Source of a picked suggested question, if any
+	sessionID              string                  // Session ID for logging and event emission
+	systemPromptTemplate   string                  // System prompt template (optional, uses default if empty)
+	memoryPrompt           string                  // Long-term memory envelope appended to the system prompt
+	skillsManager          *skills.Manager         // Skills manager for Progressive Disclosure (optional)
+	appConfig              *appconfig.Config       // Application config for prompt template resolution (optional)
+	imageDescriber         ImageDescriberFunc      // VLM function for describing images in tool results (optional)
+	imageDescribeSlots     chan struct{}           // Bounds VLM calls across parallel tool calls
+	tokenEstimator         *agenttoken.Estimator   // Token estimator for context window management, calibrated
+	rawEstimator           *agenttoken.Estimator   // Same tokenizer at scale 1, for measuring the calibration
+	compactor              *compaction.Compactor   // Summarizes older history to fit the context window (nil = disabled)
+	lastUsage              types.TokenUsage        // Token usage from the most recent LLM call
+	lastSentMsgCount       int                     // Number of messages sent in the most recent LLM call
 	// overflowRecovered records that this turn already spent its one
 	// compact-and-retry on a context overflow. A second attempt would mean
 	// history size was never the problem, and looping on it burns the round
@@ -399,7 +403,9 @@ func (e *AgentEngine) Execute(
 	if e.config.WorkbenchDefault && e.toolRegistry != nil {
 		e.toolRegistry.RegisterTool(newSourceCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
 		e.toolRegistry.RegisterTool(newDocumentTableCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
+		e.registerDocumentTableAnalysis(state, query, sessionID, llmContext)
 	}
+	e.prepareTaskPlanning()
 
 	// Build system prompt using progressive RAG prompt
 	// If skills are enabled, include skills metadata (Level 1 - Progressive Disclosure)
@@ -409,6 +415,9 @@ func (e *AgentEngine) Execute(
 			systemPrompt += structuredFieldTurnInstructions
 		}
 		systemPrompt += structuredLatencyInstructions
+	}
+	if e.config.WorkbenchDefault {
+		systemPrompt += "\n" + workbenchTaskScopeInstructions
 	}
 	logger.Debugf(ctx, "[Agent] SystemPrompt: %d chars", len(systemPrompt))
 
@@ -428,6 +437,7 @@ func (e *AgentEngine) Execute(
 			e.emitProgress(ctx, "sources", -1, sessionID)
 		}
 		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID)
+		messages = e.planWorkbenchTask(ctx, state, query, messages, sessionID)
 	}
 
 	// Get tool definitions for function calling
@@ -585,6 +595,7 @@ func (e *AgentEngine) finishStalledTurn(
 	truncated bool,
 	query string,
 	conversation []chat.Message,
+	runtimeFallback ...bool,
 ) {
 	// Text that arrived alongside tool calls is a preamble — "let me look that
 	// up" — from a round that meant to keep working. Presenting it as the final
@@ -594,7 +605,7 @@ func (e *AgentEngine) finishStalledTurn(
 	if len(response.ToolCalls) > 0 {
 		answer = ""
 	}
-	if strings.TrimSpace(answer) != "" && (utf8.RuneCountInString(strings.TrimSpace(answer)) <= 4 || suspectAnswerFragment(answer, response.ReasoningContent)) {
+	if !(len(runtimeFallback) > 0 && runtimeFallback[0]) && strings.TrimSpace(answer) != "" && (e.needsSourceConsistencyCheck(state) || utf8.RuneCountInString(strings.TrimSpace(answer)) <= 4 || suspectAnswerFragment(answer, response.ReasoningContent)) {
 		invalid, checkErr := e.evaluateAnswerCompleteness(ctx, query, answer, state, conversation)
 		if ctx.Err() != nil {
 			return
@@ -840,7 +851,10 @@ func (e *AgentEngine) runReActIteration(
 	// text stays inside the protected tail) and before lastSentMsgCount is
 	// updated (the injected text counts as new delta tokens for the next
 	// call), so the very next LLM call sees the user's addition.
-	e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
+	if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
+		e.clearTaskToolProjection(messagesPtr)
+		tools = e.buildToolsForLLM()
+	}
 
 	logger.Infof(ctx, "[Agent][Round-%d/%s] Starting: %d messages, %d tools, est_tokens=%d",
 		round, e.maxIterationsDisplay(), len(*messagesPtr), len(tools), currentTokens)
@@ -860,7 +874,7 @@ func (e *AgentEngine) runReActIteration(
 	}
 	e.emitProgress(ctx, stage, state.CurrentRound, sessionID)
 	e.lastSentMsgCount = len(*messagesPtr)
-	e.answerReviewPending = hasStructuredEvidence(state.RoundSteps) || hasStructuredHistoryEvidence(*messagesPtr)
+	e.answerReviewPending = hasStructuredEvidence(state.RoundSteps) || hasCurrentDocumentEvidence(state.RoundSteps) || hasStructuredHistoryEvidence(*messagesPtr)
 	resp, err := e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID)
 	if err != nil {
 		retErr = err
@@ -1037,14 +1051,14 @@ func (e *AgentEngine) runReActIteration(
 			e.structuredReviewMode = true
 			guards.sawPlainRound = false
 			guards.consecutiveSameContent = 0
-			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: "内部运行时反馈：上一轮答复的完整性未能确认。请依据本轮真实工具结果，按用户要求的语言和格式完成原问题；用户要求短答或特定字符时保持该格式。不要继续长篇推理，不要把草稿当成事实；证据缺失时明确说明缺哪项，不得编造数值。"})
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: "内部运行时反馈：上一轮答复的完整性未能确认。请依据本轮真实工具结果，按用户要求的语言和格式完成原问题；用户要求短答或特定字符时保持该格式。不要继续长篇推理，不要把草稿当成事实；证据缺失时明确说明缺哪项，不得编造数值。" + e.answerRepairAdvice()})
 			return iterOutcomeContinue, nil
 		}
 		fallback := *response
 		fallback.Content = incompleteAnswerFallback
 		fallback.AnswerStreamed = false
 		fallback.AnswerEventID = ""
-		e.finishStalledTurn(ctx, state, sessionID, &fallback, false, query, *messagesPtr)
+		e.finishStalledTurn(ctx, state, sessionID, &fallback, false, query, *messagesPtr, true)
 		return iterOutcomeBreak, nil
 	}
 
@@ -1082,7 +1096,7 @@ func (e *AgentEngine) runReActIteration(
 		common.PipelineInfo(ctx, "Agent", "numeric_verification", map[string]interface{}{"iteration": state.CurrentRound, "unmatched_numbers": unsupported, "repair_attempts": guards.structuredEvidenceRepairs})
 		if len(unsupported) > 0 && guards.structuredEvidenceRepairs < 2 {
 			guards.structuredEvidenceRepairs++
-			*messagesPtr = append(*messagesPtr, chat.Message{Role: "assistant", Content: response.Content}, chat.Message{Role: "system", Content: "内部运行时反馈；最终须完成本轮最新请求，历史提问仅作为上下文，不要改答已完成的旧问题。数值依据检查：草稿中以下数字尚未匹配真实程序结果（可能为未经计算的补充数字或错误舍入）：" + strings.Join(unsupported, "、") + "。若数字属于字段名称、规格代码或公式，请完整引用工具提供的原表表头、维度和公式，不使用未返回的简称，不省略公式参数或单元格行号；这些身份代码不能写成统计值。不要为口径说明擅自执行被要求澄清的字段。其余补充统计数字须调用计算工具取得依据或删去，不能凭记忆补数。"})
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "assistant", Content: response.Content}, chat.Message{Role: "system", Content: "内部运行时反馈；最终须完成本轮最新请求，历史提问仅作为上下文，不要改答已完成的旧问题。数值依据检查：草稿中以下数字尚未匹配真实程序结果（可能为未经计算的补充数字或错误舍入）：" + strings.Join(unsupported, "、") + "。先只保留用户明确所需结果、必要口径与真实来源；非必要的附加数字直接删除，不为保留它们扩展查询。若数字属于字段名称、规格代码或公式，请完整引用工具提供的原表表头、维度和公式，不使用未返回的简称，不省略公式参数或单元格行号；这些身份代码不能写成统计值。不要为口径说明擅自执行被要求澄清的字段。其余补充统计数字须调用计算工具取得依据或删去，不能凭记忆补数。"})
 			state.RoundSteps = append(state.RoundSteps, step)
 			return iterOutcomeNext, nil
 		}
@@ -1158,6 +1172,9 @@ func (e *AgentEngine) runReActIteration(
 					ReasoningMetadata:  response.ReasoningMetadata,
 				})
 				injected := e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
+				if injected > 0 {
+					e.clearTaskToolProjection(messagesPtr)
+				}
 				if injected > 0 {
 					verdict.step.IntermediateAnswer = true
 					state.RoundSteps = append(state.RoundSteps, verdict.step)

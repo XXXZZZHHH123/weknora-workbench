@@ -70,6 +70,38 @@ type RequestedDocumentConstraint struct {
 }
 
 func NewDocumentScopeState() *RequestedDocumentConstraint { return &RequestedDocumentConstraint{} }
+
+// IsCurrentDocumentRead checks a previously executed read against the current
+// binding. Reusing a read must not bypass a later document/page restriction.
+// Registries without a document binder keep their existing legacy behavior.
+func IsCurrentDocumentRead(registry *ToolRegistry, result *types.ToolResult) bool {
+	if registry == nil || result == nil || !result.Success {
+		return false
+	}
+	tool, err := registry.GetTool(ToolBindDocumentScope)
+	if err != nil {
+		return true
+	}
+	binder, ok := tool.(*bindDocumentScopeTool)
+	if !ok || binder.state == nil {
+		return false
+	}
+	encoded, err := json.Marshal(result.Data["document_scope"])
+	if err != nil {
+		return false
+	}
+	var scope struct {
+		Matched     bool   `json:"matched"`
+		KnowledgeID string `json:"knowledge_id"`
+		Page        int    `json:"page"`
+	}
+	if json.Unmarshal(encoded, &scope) != nil || !scope.Matched {
+		return false
+	}
+	selected, err := binder.state.selection(scope.KnowledgeID)
+	return err == nil && (selected.Page == 0 || selected.Page == scope.Page)
+}
+
 func (r *RequestedDocumentConstraint) selection(id string) (DocumentSourceSelection, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
