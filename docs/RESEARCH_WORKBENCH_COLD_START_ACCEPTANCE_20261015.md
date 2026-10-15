@@ -1,5 +1,7 @@
 # 研究工作台模板与冷启动验收（2026-10-15）
 
+> 历史验收记录：本文对应第一版独立主界面，页面方案已由用户反馈后的修订替代。当前版本复用原研究界面的模板和交互，并将数据请求限定在独立工作台范围；不再采用本文所述“没有 iframe”的实现。当前覆盖范围与证据见 [工作台修正验收](WORKBENCH_CORRECTIONS_ACCEPTANCE_20261015.md)。下文保留第一版实测结果，不视为当前版本的复验结果。
+
 本次基于 main `3fc5835`，开发分支为 `feature/research-workbench-templates`。实现说明见 [RESEARCH_WORKBENCH_TEMPLATES.md](RESEARCH_WORKBENCH_TEMPLATES.md)。以下业务样例、数量与文件夹名称仅为隔离验收记录，不是生产分支的品种规则、字段映射或答案。
 
 ## 真实冷启动结果
