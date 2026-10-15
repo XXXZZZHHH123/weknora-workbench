@@ -59,7 +59,7 @@ async function main(){
   const scope=req.headers['x-knowledge-base-id']||'';
   const chunks=[];for await(const chunk of req)chunks.push(chunk);const payload=Buffer.concat(chunks);
   requests.push({method:req.method,path:url.pathname,query:Object.fromEntries(url.searchParams),scope,tenant:req.headers['x-tenant-id']||'',authorized:req.headers.authorization==='Bearer fixture-token',size:payload.length});
-  if(nativeStall==='source-refresh-timeout'&&route==='/api/datasets'||nativeStall==='source-sheet-timeout'&&route.endsWith('/sheet'))await pause(800);
+  if(nativeStall==='initial-refresh-renew'&&route==='/api/datasets'||nativeStall==='source-refresh-timeout'&&route==='/api/datasets'||nativeStall==='source-sheet-timeout'&&route.endsWith('/sheet'))await pause(800);
   let body={},type='application/json',status=200;
   if(route==='/harness'){
    const review=url.searchParams.get('review')==='1',legacy=url.searchParams.get('legacy')==='1',settings=url.searchParams.get('settings')==='1',nativeSource=url.searchParams.get('source')||'';
@@ -72,7 +72,7 @@ async function main(){
   else if(route==='/api/model-settings'&&req.method==='GET')body={model:'fixture-free-model',base_url:'https://example.invalid/v1',has_api_key:false};
   else if(route==='/api/imports')body={imports:[{import_id:ids.import,source_file:'同一合成原件.xlsx',updated_at:'2025-01-05T00:00:00Z'},...[...nativeImports.values()].filter(row=>row.scope===scope)]};
   else if(route.endsWith('/sheet-view'))body={sheet_name:fixtureSheet.name,total_rows:4,total_cols:2,range:{start_row:1,end_row:4,start_col:1,end_col:2,row_count:4,col_count:2},cells:[{row:1,column:1,cell:'A1',value:'日期',display:'日期'},{row:1,column:2,cell:'B1',value:'合成指标一',display:'合成指标一'},...dates.flatMap((date,i)=>[{row:i+2,column:1,cell:`A${i+2}`,value:date,display:date},{row:i+2,column:2,cell:`B${i+2}`,value:values[i],display:String(values[i])}])],styles:{},merges:[],column_widths:{},row_heights:{},warnings:[]};
-  else if(route.endsWith('/sheet'))body=fixtureSheet;
+  else if(route.endsWith('/sheet'))body={...fixtureSheet,status:route.includes('6'.repeat(24))?'confirmed':fixtureSheet.status};
   else if(route.endsWith('/report')){const dataset=route.split('/')[3],item=catalogue(scope).find(item=>item.dataset_id===dataset);await pause(250);body={manifest:{...item,series_count:12417,valid_count:608180,observation_count:1048771,issue_count:72945,sha256:'synthetic-source-fingerprint',excluded_regions:[]},issues:[{sheet:fixtureSheet.name,cell:'B5',message:'夹具范围外原值不参与查询'}]};}
   else if(route.endsWith('/series')){const dataset=route.split('/')[3],search=url.searchParams.get('search')||'';const rows=series(dataset,scope).filter(row=>!search||`${row.metric} ${row.sheet}`.includes(search));body={series:rows,total:rows.length,truncated:false};}
   else if(route.endsWith('/charts'))body={charts:[],sheets:[],total:0,next_offset:null};
@@ -95,9 +95,9 @@ async function main(){
    else if(sourceId==='source-expired'&&nativeAttempts.get(sourceId)===1){status=401;body={detail:'隔离夹具：登录已过期，请重新登录'};}
    else if(sourceId==='source-denied'||sourceId==='source-retry'&&nativeAttempts.get(sourceId)===1){status=403;body={detail:'隔离夹具：当前知识库原件无读取权限'};}
    else{
-    const importId=sourceId==='source-new'?'5'.repeat(24):sourceId==='source-stale'?'6'.repeat(24):'4'.repeat(24);
+    const importId=sourceId==='source-recovered'?'6'.repeat(24):sourceId==='source-new'?'5'.repeat(24):sourceId==='source-stale'?'6'.repeat(24):'4'.repeat(24);
     const row={import_id:importId,source_file:sourceId==='source-stale'?'迟到原件.xlsx':sourceId==='source-new'?'新知识库原件.xlsx':'知识库内原件.xlsx',updated_at:'2025-01-06T00:00:00Z',scope};nativeImports.set(importId,row);
-    const result={import_id:importId,dataset_id:ids.secondary,source_knowledge_id:sourceId};
+    const result={import_id:importId,dataset_id:ids.secondary,source_knowledge_id:sourceId,recovered_legacy:sourceId==='source-recovered'};
     if(sourceId==='source-new'||sourceId==='source-poll-timeout'){const id=sourceId==='source-new'?'native-job':'native-poll-timeout';jobs.set(id,{count:0,nativeResult:result});body={id,status:'processing',source_knowledge_id:sourceId};}
     else{if(sourceId==='source-stale')await pause(650);body={status:'completed',reused:true,result,source_knowledge_id:sourceId==='source-mismatch'?'another-source':sourceId};}
    }
@@ -108,7 +108,7 @@ async function main(){
    const job=jobs.get(route.split('/').at(-1));if(!job){status=404;body={detail:'Unknown synthetic job'}}else if(job.count++===0)body={status:'processing',stage:'正在处理隔离上传'};
    else if(job.failed)body={status:'failed',error:'夹具模拟：文件结构无法读取'};
    else body={status:'completed',result:job.nativeResult||{import_id:ids.import,dataset_id:ids.primary,elapsed_seconds:1.2,reused:false}};
-  }else if(route.startsWith('/api/imports/')){const id=route.split('/')[3],row=nativeImports.get(id);body={import_id:id,source_file:row?.source_file||'同一合成原件.xlsx',sheets:[fixtureSheet]};}
+  }else if(route.startsWith('/api/imports/')){const id=route.split('/')[3],row=nativeImports.get(id);body={import_id:id,source_file:row?.source_file||'同一合成原件.xlsx',sheets:[{...fixtureSheet,status:route.includes('6'.repeat(24))?'confirmed':fixtureSheet.status}]};}
   else {status=404;body={detail:'Unsupported isolated route'};}
   res.writeHead(status,{'Content-Type':type});res.end(typeof body==='string'?body:JSON.stringify(body));
  });
@@ -149,7 +149,30 @@ async function main(){
   };
   const visible=id=>`d.getElementById('${id}') && w.getComputedStyle(d.getElementById('${id}')).display!=='none' && d.getElementById('${id}').getBoundingClientRect().height>0`;
   await call('Runtime.enable');await call('Page.enable');await call('Network.enable');await resize(1600);await call('Page.navigate',{url:origin+'/harness'});
-  await wait("d.querySelector('.sheet-grid td') && d.querySelector('#dataset option') && d.querySelector('#seriesRows button')");
+  await wait("d.querySelector('.sheet-grid td') && d.querySelector('#dataset option')");
+  assert(!requests.some(r=>r.path.endsWith('/report')||r.path.endsWith('/series')||r.path.endsWith('/charts')));
+  checks.push('Import renders saved review without waiting for report, series or native charts');
+  if(process.argv.includes('--loading-regression')) {
+   await verify('Saved review is visible on the first visit',"Boolean(d.querySelector('.sheet-grid td'))");
+   await js("window.savedGrid=document.getElementById('frame').contentDocument.getElementById('sheetDetail');window.view('query')");
+   await wait("d.querySelector('#seriesRows button') && d.querySelector('#scope [data-download]')");
+   checks.push('Query resources load on demand without recreating the review');
+   await js("window.view('import')");
+   await verify('Returning from query preserves the existing grid',"window.savedGrid===d.getElementById('sheetDetail') && w.getComputedStyle(d.getElementById('importReview')).display!=='none'");
+   await js("window.auth('kb-a','fixture-token','source-recovered')");
+   await wait("d.getElementById('importSelect').value==='666666666666666666666666' && !d.getElementById('upload').disabled");
+   await verify('Restored reviews render automatically without leaving the page',"d.querySelector('.sheet-tab').textContent.includes('合成工作表') && d.getElementById('importSummary').textContent.includes('1 张已可查询') && d.getElementById('jobState').textContent.includes('已恢复')");
+   const before=requests.filter(r=>r.path==='/structured/api/datasets').length;
+   nativeStall='initial-refresh-renew';
+   await call('Page.navigate',{url:origin+'/harness'});
+   for(let attempt=0;attempt<200&&requests.filter(r=>r.path==='/structured/api/datasets').length===before;attempt++)await pause(10);
+   await js("window.auth('kb-a','fixture-renewed')");
+   await wait("d.querySelector('.sheet-grid td') && d.getElementById('importSelect').value");
+   checks.push('Token renewal during the initial request retries initialization without a page switch');
+   nativeStall='';
+   assert.deepEqual(errors,[]);checks.push('No JavaScript errors');
+   console.log(JSON.stringify({passed:checks.length,checks}));return;
+  }
   await verify('Import mode exposes upload and original review',`${visible('directUpload')} && ${visible('importReview')}`);
   const selectorBounds=await exec("const element=d.getElementById('importSelect'),rect=element.getBoundingClientRect(),style=w.getComputedStyle(element);return {width:rect.width,height:rect.height,fontSize:style.fontSize,padding:style.padding,toolbar:element.parentElement.parentElement.className}");if(keepArtifacts)fs.writeFileSync(path.join(output,'current-file-bounds.json'),JSON.stringify(selectorBounds,null,2));
   await verify('Current file selector stays compact without stretching across the review',"d.getElementById('importSelect').getBoundingClientRect().width<=360 && d.getElementById('importSelect').getBoundingClientRect().height<=38 && d.getElementById('importSelect').getBoundingClientRect().width>=160");
@@ -184,7 +207,7 @@ async function main(){
   await call('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   await verify('Reduced motion removes import and query control transitions',"w.getComputedStyle(d.getElementById('upload')).transitionDuration==='0s' && w.getComputedStyle(d.getElementById('query')).transitionDuration==='0s'");
   await call('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
-  await js("window.view('query')");await pause(100);
+  await js("window.view('query')");await wait("d.querySelector('#seriesRows button') && d.querySelector('#scope [data-download]')");
   await verify('Query mode keeps original review DOM and edit state hidden',"window.reviewNode===d.getElementById('sheetDetail') && w.getComputedStyle(d.getElementById('importReview')).display==='none' && d.querySelector('[data-column-field=unit]').value==='KB A 草稿'");
   await verify('Query awaits a chosen metric',"d.getElementById('query').disabled && d.getElementById('selectedSeries').value===''");
   await verify('Compact import has no standalone bordered upload card',"(()=>{const style=w.getComputedStyle(d.getElementById('directUpload'));return style.borderTopWidth==='0px' && style.borderLeftWidth==='0px' && style.borderRadius==='0px' && style.backgroundColor==='rgba(0, 0, 0, 0)'})()");

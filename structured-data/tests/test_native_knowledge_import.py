@@ -262,3 +262,41 @@ def test_deployment_sized_native_original_is_accepted_without_relaxing_the_limit
         asyncio.run(load_source('source-a', 'Bearer owner', identity, 100 * 1024 * 1024))
     assert rejected.value.status_code == 413
     assert not any(path.endswith('/download') for path, _ in state['calls'])
+
+
+def test_native_open_recovers_same_tenant_legacy_review_without_rescanning(native, monkeypatch):
+    from structured_data.imports import ImportManager
+    client, app, state, root = native
+    legacy = ImportManager(app.state.workspaces.directory(10000))
+    original = root / 'fixture-original.xlsx'
+    original.write_bytes(state['contents'])
+    seed = legacy.ingest(original)
+    mapping = legacy.sheet(seed['import_id'], 'records')['mapping']
+    saved = legacy.confirm(seed['import_id'], mapping, True)
+    before = (legacy.directory / saved['import_id'] / 'review.json').read_bytes()
+    # Reproduce the regression: a new KB-local automatic scan already exists.
+    target = ImportManager(root / 'knowledge-bases' / 'kb-a')
+    automatic = target.ingest(original)
+    native_source = {key: state['document'][key] for key in
+                     ('file_name', 'file_size', 'file_hash', 'knowledge_base_id', 'tenant_id')}
+    native_source['source_knowledge_id'] = 'source-a'
+    target.bind_native_source(automatic['import_id'], native_source)
+
+    def never_scan(*args, **kwargs):
+        raise AssertionError('An unchanged reviewed original must not be rescanned')
+    monkeypatch.setattr('structured_data.server.run_review_task', never_scan)
+    started = begin(client)
+    assert started.status_code == 200, started.text
+    job = finish(client, started.json()['id'])
+    assert job['result']['recovered_legacy'] is True
+    assert job['result']['dataset_id'] == saved['dataset_id']
+    restored = client.get('/api/imports/' + saved['import_id'], headers=headers()).json()
+    assert restored['sheets'][0]['status'] == 'confirmed'
+    assert restored['sheets'][0]['mapping'] == legacy.sheet(saved['import_id'], 'records')['mapping']
+    assert (legacy.directory / saved['import_id'] / 'review.json').read_bytes() == before
+    assert client.get('/api/imports/' + saved['import_id'], headers=headers('kb-b')).status_code in {400, 404}
+    downloads = sum(path.endswith('/download') for path, _ in state['calls'])
+    reopened = begin(client).json()
+    assert reopened['status'] == 'completed'
+    assert reopened['result']['dataset_id'] == saved['dataset_id']
+    assert sum(path.endswith('/download') for path, _ in state['calls']) == downloads

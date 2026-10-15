@@ -76,7 +76,9 @@ function clearQuerySelection(message='设置查询范围后，结果与原单元
  queryRequest+=1;$('selectedSeries').value='';$('selectedMetricTitle').textContent='选择一个指标开始查询';$('selectedDescription').textContent='';$('selectedMetricSource').textContent='';$('selectedMetadata').classList.add('hidden');$('selectedMetadata').open=false;$('queryFilters').classList.add('hidden');$('query').disabled=true;$('query').setAttribute('aria-busy','false');$('queryStatus').textContent='';$('answer').innerHTML='';$('queryEmpty').classList.remove('hidden');$('queryEmpty').querySelector('p').textContent=message;
  for(const id of ['start','end','period'])$(id).value='';
 }
-function setKnowledgeView(mode){if(!['import','query'].includes(mode))return;document.body.classList.add('knowledge-view');for(const name of ['import','query'])document.body.classList.toggle('view-'+name,name===mode)}
+let queryDatasetLoaded='',queryDatasetLoading=null;
+function setKnowledgeView(mode){if(!['import','query'].includes(mode))return;document.body.classList.add('knowledge-view');for(const name of ['import','query'])document.body.classList.toggle('view-'+name,name===mode);if(mode==='query'&&authReceived)ensureQueryDataset().catch(error=>note(error.message))}
+async function ensureQueryDataset(isCurrent=()=>true,requestApi=api){const id=$('dataset').value,epoch=authEpoch;if(!id||queryDatasetLoaded===id)return;if(queryDatasetLoading?.id===id&&queryDatasetLoading.epoch===epoch)return queryDatasetLoading.promise;const pending={id,epoch};pending.promise=selectDataset(()=>isCurrent()&&epoch===authEpoch,requestApi).then(()=>{if(isCurrent()&&epoch===authEpoch&&id===$('dataset').value)queryDatasetLoaded=id}).finally(()=>{if(queryDatasetLoading===pending)queryDatasetLoading=null});queryDatasetLoading=pending;return pending.promise;}
 async function api(path,options={},requestContext=null){
  const requestEpoch=authEpoch,controller=requestContext?new AbortController():null,abort=()=>controller?.abort(),signals=controller?[options.signal,requestContext.signal].filter(Boolean):[];
  for(const signal of signals){if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true})}
@@ -84,6 +86,7 @@ async function api(path,options={},requestContext=null){
  try{const response=await fetch(base+path,{...options,signal:controller?.signal||options.signal,headers:authHeaders(options.headers)});let body;try{body=await response.json()}catch(error){if(error.name==='AbortError')throw error;throw Error('服务返回异常，请稍后再试')}if(requestEpoch!==authEpoch)throw Error('账号或空间已切换，请重新操作');if(!response.ok){if(response.status===401){$('workspace').classList.add('hidden');if(!embedded)$('loginPanel').classList.remove('hidden')}const error=Error(typeof body.detail==='string'?body.detail:JSON.stringify(body.detail||'请求失败'));error.reviewTarget=body.review_target;throw error}return body}
  finally{if(timer)clearTimeout(timer);for(const signal of signals)signal.removeEventListener('abort',abort)}
 }
+function refreshCurrentScope(){const epoch=authEpoch,own=nativeSourceRequest,isCurrent=()=>epoch===authEpoch&&own===nativeSourceRequest;return refresh(isCurrent).catch(error=>{if(isCurrent())note(error.message)})}
 async function refresh(isCurrent=()=>true,preferredImport,preferredDataset,requestApi=api){
  if(viewParams.get('view')==='model-settings'){await showModelSettings();return}
  if(reviewOnly){$('loginPanel').classList.add('hidden');$('modelSettings').classList.add('hidden');$('workspace').classList.remove('hidden');if(!pinnedImport){note('请从资料中心选择需要核对的扫描记录。');return}await refreshImports(pinnedImport,isCurrent,requestApi);return}
@@ -95,9 +98,10 @@ async function refresh(isCurrent=()=>true,preferredImport,preferredDataset,reque
  $('sampleList').innerHTML=versionRows(sampleCatalog,'验收样例');
  if(prior&&[...datasetCatalog,...sampleCatalog].some(d=>d.dataset_id===prior))ensureDatasetOption(prior);
  else if(prior){$('dataset').value='';note('当前空间没有指定的文件版本，请重新选择。')}
- if($('dataset').value)await selectDataset(isCurrent,requestApi);else{$('stats').innerHTML='';const empty=current.length?'请选择当前空间的业务文件。':activeKnowledgeBase?'本知识库还没有已完成的数据集，请在导入栏目上传 Excel。':'还没有已完成的业务数据集，请从资料中心添加表格。';$('scope').textContent=empty;$('report').innerHTML='';$('seriesRows').innerHTML='';$('seriesCount').textContent='暂无指标';clearQuerySelection(empty);$('versionNotice').textContent=''}
  if(isCurrent())await refreshImports(preferredImport,isCurrent,requestApi);
+ if($('dataset').value){if(!activeKnowledgeBase||document.body.classList.contains('view-query'))await ensureQueryDataset(isCurrent,requestApi)}else{$('stats').innerHTML='';const empty=current.length?'请选择当前空间的业务文件。':activeKnowledgeBase?'本知识库还没有已完成的数据集，请在导入栏目上传 Excel。':'还没有已完成的业务数据集，请从资料中心添加表格。';$('scope').textContent=empty;$('report').innerHTML='';$('seriesRows').innerHTML='';$('seriesCount').textContent='暂无指标';clearQuerySelection(empty);$('versionNotice').textContent=''}
 }
+
 
 function versionTime(value){const d=new Date(value);return esc(Number.isNaN(d.getTime())?value||'':d.toLocaleString('zh-CN',{hour12:false}));}
 function renderImportHistory(file){
@@ -299,7 +303,7 @@ async function openKnowledgeSource(sourceId){
   if(!result?.import_id||result.source_knowledge_id&&result.source_knowledge_id!==sourceId)throw Error('当前原件没有有效的工作表扫描记录，请重试。');
   await refresh(isCurrent,result.import_id,result.dataset_id,requestApi);if(!isCurrent())return;
   if($('importSelect').value!==result.import_id)throw Error('当前知识库未找到这份原件的扫描记录，请刷新后重试。');
-  $('jobState').textContent=(currentImport?.source_file||'当前原件')+' · '+(response.reused?'已打开已有的工作表识别记录。':'扫描完成，请在下方核对工作表与字段。');
+  $('jobState').textContent=(currentImport?.source_file||'当前原件')+' · '+(result.recovered_legacy?'已恢复原空间的核对记录与历史数据。':response.reused?'已打开已有的工作表识别记录。':'扫描完成，请在下方核对工作表与字段。');
  }catch(error){if(isCurrent()){const message=error.name==='AbortError'?'读取原件超时，请重试。':error.message;$('jobState').textContent=message;if(!currentSheet)$('sheetDetail').innerHTML='<p class="error" role="alert">原件准备未完成：'+esc(message)+'</p>';if($('workspace').classList.contains('hidden'))note(message);$('retrySourceImport').classList.remove('hidden')}}
  finally{if(isCurrent()){nativeSourceController=null;nativeSourceBusy=false;$('upload').disabled=false}}
 }
@@ -332,15 +336,15 @@ window.addEventListener('DOMContentLoaded',()=>{if(embedded){
   const sameScope=authReceived&&bearer&&nextToken&&nextTenant===activeTenant&&nextKnowledgeBase===activeKnowledgeBase;
   const previousSource=requestedSourceKnowledge,sourceWasBusy=nativeSourceBusy,sourceNeedsRetry=!$('retrySourceImport').classList.contains('hidden');
   authReceived=true;authEpoch+=1;bearer=nextToken;activeTenant=nextTenant;activeKnowledgeBase=nextKnowledgeBase;
-  if(sameScope){if(nextSource!==previousSource||sourceWasBusy||nextSource&&sourceNeedsRetry){clearKnowledgeSource();if(nextSource)openKnowledgeSource(nextSource);else{const own=nativeSourceRequest;refresh(()=>own===nativeSourceRequest).catch(err=>note(err.message))}}return}
+  if(sameScope){if(nextSource!==previousSource||sourceWasBusy||nextSource&&sourceNeedsRetry){clearKnowledgeSource();if(nextSource)openKnowledgeSource(nextSource);else refreshCurrentScope()}else if(!currentSheet&&viewParams.get('view')!=='model-settings')refreshCurrentScope();return}
   clearKnowledgeSource();
-  clearQuerySelection();seriesRequest+=1;$('find').disabled=false;reviewVersion+=1;currentImport=null;currentSheet=null;mappingConfirmed=false;mappingBusy=false;currentSeries=[];datasetCatalog=[];sampleCatalog=[];
+  queryDatasetLoaded='';queryDatasetLoading=null;clearQuerySelection();seriesRequest+=1;$('find').disabled=false;reviewVersion+=1;currentImport=null;currentSheet=null;mappingConfirmed=false;mappingBusy=false;currentSeries=[];datasetCatalog=[];sampleCatalog=[];
   for(const id of ['dataset','importSelect','sheetList','sheetDetail','stats','scope','report','seriesRows','answer','chartList','chartSummary','historyList','sampleList','sampleImportList','versionNotice','jobState','importSummary','seriesCount','selectedDescription','modelStatus'])$(id).innerHTML='';
   for(const id of ['selectedSeries','start','end','period','search','sheetSearch','chartSearch','file','modelName','modelBase','modelKey'])$(id).value='';
   updateUploadFile();$('chartSheet').innerHTML='<option value="">全部图表页</option>';
   if(!activeKnowledgeBase)document.body.classList.remove('knowledge-view','view-import','view-query','view-source');
   $('workspace').classList.add('hidden');$('modelSettings').classList.add('hidden');note('');
-  if(bearer){if(nextSource)openKnowledgeSource(nextSource);else{const own=nativeSourceRequest;refresh(()=>own===nativeSourceRequest).catch(err=>note(err.message))}}else note('请先在研究工作台登录。');
+  if(bearer){if(nextSource)openKnowledgeSource(nextSource);else refreshCurrentScope()}else note('请先在研究工作台登录。');
  });
  parent.postMessage({type:'structured-ready'},location.origin);
 }else refresh().catch(e=>{if(!e.message.includes('登录'))note(e.message)});});

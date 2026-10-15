@@ -521,9 +521,21 @@ def create_app(data_dir: str | Path | None = None):
     def query(dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, offset: int = 0):
         return store.query_series(store.select_dataset(dataset_id), series_id, start_date, end_date, operation, limit, period, offset=offset)
 
-    def run_import(job_id: str, path: Path, native_source=None):
+    def run_import(job_id: str, path: Path, native_source=None, legacy=None):
         try:
-            result = run_review_task(registry.directory(), "import", path=path)
+            result = None
+            if legacy:
+                from .legacy_import import recover
+                if not legacy['import_lock'].acquire(blocking=False):
+                    raise ValueError('原空间正在处理表格，请稍后重试恢复；不会重新扫描或覆盖。')
+                try:
+                    with job_lock:
+                        jobs[job_id]['stage'] = '校验并恢复已核对记录和历史数据，不重新扫描'
+                    result = recover(manager, legacy['manager'], native_source, path)
+                finally:
+                    legacy['import_lock'].release()
+            if result is None:
+                result = run_review_task(registry.directory(), "import", path=path)
             if native_source:
                 manager.bind_native_source(result['import_id'], native_source)
                 result['source_knowledge_id'] = native_source['source_knowledge_id']
@@ -544,7 +556,22 @@ def create_app(data_dir: str | Path | None = None):
         authorization = request.state.verified_authorization
         native = await load_source(body.source_knowledge_id, authorization, identity, MAX_UPLOAD)
         existing = await run_in_threadpool(manager.find_native_source, native)
-        if existing:
+        legacy = None
+        # Only the verified native source's own tenant may recover its legacy
+        # workspace. Shared KB access never grants access to that owner's root.
+        if identity.knowledge_base_id and identity.tenant_id == identity.knowledge_base_tenant_id:
+            from dataclasses import replace
+            from .legacy_import import candidate
+            marker = current_identity.set(replace(identity, knowledge_base_id='', knowledge_base_tenant_id=None))
+            try:
+                legacy_objects = registry.objects()
+            finally:
+                current_identity.reset(marker)
+            current = manager.get(existing['import_id']) if existing else None
+            old = await run_in_threadpool(candidate, legacy_objects['manager'], native, current)
+            if old:
+                legacy = legacy_objects
+        if existing and not legacy:
             return {'status': 'completed', 'reused': True, 'source_knowledge_id': body.source_knowledge_id,
                     'result': {**existing, 'source_knowledge_id': body.source_knowledge_id}}
         with job_lock:
@@ -570,7 +597,7 @@ def create_app(data_dir: str | Path | None = None):
             with job_lock:
                 jobs[job_id]['stage'] = '扫描本知识库原件并导入结构明确的表，不调用模型'
             context = contextvars.copy_context()
-            threading.Thread(target=context.run, args=(run_import, job_id, path, native), daemon=True).start()
+            threading.Thread(target=context.run, args=(run_import, job_id, path, native, legacy), daemon=True).start()
         except Exception as exc:
             with job_lock:
                 if job_id in jobs:

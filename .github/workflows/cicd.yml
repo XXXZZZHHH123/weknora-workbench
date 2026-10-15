@@ -95,6 +95,11 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run type-check
       - run: npm test -- 'src/**/*.test.ts'
+      - name: Verify structured loading and knowledge base isolation
+        run: |
+          export SHEET_REVIEW_BROWSER="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          node ../../structured-data/tests/workspace-ui.cjs --loading-regression
+          node ../../structured-data/tests/knowledge-scope-ui.cjs
 
   go:
     runs-on: ubuntu-24.04
