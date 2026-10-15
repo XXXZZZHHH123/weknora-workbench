@@ -49,6 +49,7 @@
         <p class="text-xs text-[var(--text-muted)] mt-0.5">生成时间：{{ selected.generated_at or '—' }}</p>
       </div>
       <div class="flex gap-2 text-xs">
+        {% with export_kind='snapshot', export_id=selected.date %}{% include '_brief_export.html' %}{% endwith %}
         <a href="{{ research_prefix() }}/sn?date={{ selected.date }}" class="px-2.5 py-1 font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">前往当日看板</a>
         <a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}.json" class="px-2.5 py-1 font-semibold rounded border border-[var(--line)] hover:bg-[var(--surface-soft)]">下载 JSON</a>
       </div>

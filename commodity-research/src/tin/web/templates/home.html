@@ -114,6 +114,7 @@
         {% if brief.generated_at %}<div>生成于 {{ brief.generated_at }}</div>{% endif %}
         {% if brief.model %}<div class="tabular">{{ brief.model }}</div>{% endif %}
         {% if brief.reviewed_by %}<div>{{ brief.reviewed_by }} 于 {{ brief.reviewed_at }} 处理</div>{% endif %}
+        <div class="mt-1.5">{% with export_kind='brief', export_id=brief.id %}{% include '_brief_export.html' %}{% endwith %}</div>
       </div>
     </div>
 

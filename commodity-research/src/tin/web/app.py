@@ -178,6 +178,8 @@ from tin.web.workbench_artifacts import router as workbench_artifacts_router
 app.include_router(workbench_artifacts_router)
 from tin.web.workbench_sources import router as workbench_sources_router
 app.include_router(workbench_sources_router)
+from tin.web.brief_export import router as brief_export_router
+app.include_router(brief_export_router)
 
 
 @app.on_event('startup')
