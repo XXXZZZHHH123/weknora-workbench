@@ -15,9 +15,10 @@ import (
 // Released workbench databases used SQLite 32-34 for workspace tables before
 // upstream assigned 32-33 to image projection and source positions. Renumbering
 // SQL files alone cannot run the upstream migrations those databases skipped.
+// Some affected databases already advanced to 35-40 before this repair shipped.
 // Keep their version ledger intact and restore the missing schema atomically.
 func reconcileSQLiteWorkbenchLineage(ctx context.Context, dsn string, opts MigrationOptions, version uint) error {
-	if version < 32 || version > 34 {
+	if version < 32 || version > 40 {
 		return nil
 	}
 	path := opts.SQLiteDBPath
@@ -47,6 +48,34 @@ func reconcileSQLiteWorkbenchLineage(ctx context.Context, dsn string, opts Migra
 	if tables == 0 {
 		return nil
 	}
+	var positions, projectionObjects int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('chunks') WHERE name='source_locators'`).Scan(&positions); err != nil {
+		return err
+	}
+	if version == 32 && positions != 0 {
+		return fmt.Errorf("unrecognized workbench migration lineage: source positions precede their pending migration")
+	}
+	if positions != 0 {
+		var compatible int
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('chunks')
+   WHERE name='source_locators' AND upper(type)='TEXT' AND "notnull"=0 AND pk=0`).Scan(&compatible)
+		if err != nil {
+			return err
+		}
+		if compatible != 1 {
+			return fmt.Errorf("unrecognized workbench migration lineage: incompatible chunks.source_locators")
+		}
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE name IN
+  ('chunk_images','idx_chunk_images_listing','idx_chunk_images_copies','trg_chunk_images_insert',
+   'trg_chunk_images_patch','trg_chunk_images_update','trg_chunk_images_delete')`).Scan(&projectionObjects); err != nil {
+		return err
+	}
+	// Healthy upgraded databases must not repeat the full image backfill on
+	// every startup. The original 32-34 lineage checks still apply unchanged.
+	if version > 34 && positions != 0 && projectionObjects == 7 {
+		return nil
+	}
 	if err = validateSQLiteWorkbenchLineage(ctx, tx, version); err != nil {
 		return err
 	}
@@ -57,17 +86,9 @@ func reconcileSQLiteWorkbenchLineage(ctx context.Context, dsn string, opts Migra
 	if _, err = tx.ExecContext(ctx, string(imageSQL)); err != nil {
 		return fmt.Errorf("restore skipped SQLite image migration: %w", err)
 	}
-	var positions int
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('chunks') WHERE name='source_locators'`).Scan(&positions)
-	if err != nil {
-		return err
-	}
 	// Version 32 still has upstream 33 pending; let the normal migrator add
 	// that column once rather than replaying ALTER TABLE after this repair.
 	if version == 32 {
-		if positions != 0 {
-			return fmt.Errorf("unrecognized workbench migration lineage: source positions precede their pending migration")
-		}
 		return tx.Commit()
 	}
 	if positions == 0 {
@@ -77,16 +98,6 @@ func reconcileSQLiteWorkbenchLineage(ctx context.Context, dsn string, opts Migra
 		}
 		if _, err = tx.ExecContext(ctx, string(sourceSQL)); err != nil {
 			return fmt.Errorf("restore skipped SQLite source migration: %w", err)
-		}
-	} else {
-		var compatible int
-		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('chunks')
-   WHERE name='source_locators' AND upper(type)='TEXT' AND "notnull"=0 AND pk=0`).Scan(&compatible)
-		if err != nil {
-			return err
-		}
-		if compatible != 1 {
-			return fmt.Errorf("unrecognized workbench migration lineage: incompatible chunks.source_locators")
 		}
 	}
 	return tx.Commit()
