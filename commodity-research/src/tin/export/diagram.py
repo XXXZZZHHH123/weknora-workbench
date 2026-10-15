@@ -403,6 +403,8 @@ def ensure_default(session: Session, variety: str) -> dict:
     existing = list_templates(session, variety)
     if existing:
         return existing[0]
+    if session.info.get("workbench_id"):
+        return save_template(session, variety, {"name": "研究结构", "layout": {"nodes": [], "edges": []}, "is_default": True})
     import json
 
     from tin.config import ROOT
@@ -565,7 +567,7 @@ def crosscheck(session: Session, variety: str, through: date, periods: int = 6) 
     差异本身不是错误：两家口径不同很正常。这个功能要回答的是「差多少、是不是一直这么差、
     最近有没有突然变化」——突然变化才是信号。
     """
-    checks = _crosscheck_specs(variety)
+    checks = [] if session.info.get("workbench_id") else _crosscheck_specs(variety)
     if not checks:
         return []
 

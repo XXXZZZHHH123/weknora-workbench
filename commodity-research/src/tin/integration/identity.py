@@ -26,6 +26,13 @@ current_identity: ContextVar[Identity | None] = ContextVar("research_identity", 
 
 
 def research_prefix():
+    prefix = research_static_prefix()
+    from tin.integration.workbench_scope import current_workbench
+    scope = current_workbench.get()
+    return prefix + "/workbenches/" + scope.workbench_id if scope else prefix
+
+
+def research_static_prefix():
     from tin.config import settings
     return settings.public_prefix.rstrip("/") if settings.weknora_api_url else ""
 
@@ -36,6 +43,11 @@ def research_url(path):
         return path
     if prefix and (path == prefix or path.startswith(prefix + "/")):
         return path
+    static = research_static_prefix()
+    if prefix != static and static and path.startswith(static + "/"):
+        path = path[len(static):]
+        if path.startswith("/workbenches/"):
+            raise PermissionError("Cannot navigate into another workbench scope")
     return prefix + path
 
 

@@ -11,13 +11,13 @@
 
 <header class="research-hero">
   <div class="research-hero-copy">
-    <div class="research-eyebrow">商品研究 <span>/</span> 锡 · SN</div>
+    <div class="research-eyebrow">商品研究 <span>/</span> {{ research_workbench().metadata.name if research_workbench() else '锡 · SN' }}</div>
     <h1>今日研究工作台</h1>
     <p>{{ researcher.display_name }} 的个人研究 · 跟进待办、核对市场变化，复核今日简报。</p>
     <div class="research-hero-meta">
       {% if d %}<span class="research-date-chip">{% if request.query_params.get('date') %}历史日期{% else %}行情截至{% endif %} <b class="tabular">{{ d }}</b></span>{% else %}<span class="research-date-chip">尚无行情数据</span>{% endif %}
       <a href="{{ research_prefix() }}/sn{% if d %}?date={{ d }}{% endif %}">查看市场总览 <span aria-hidden="true">↗</span></a>
-      {% if research_prefix() %}<a href="/platform/materials" target="_top">打开资料中心 <span aria-hidden="true">↗</span></a>{% endif %}
+      {% if research_workbench() %}<a href="/platform/knowledge-bases/{{ research_workbench().knowledge_base_id }}" target="_top">打开知识库 <span aria-hidden="true">↗</span></a>{% elif research_prefix() %}<a href="/platform/materials" target="_top">打开资料中心 <span aria-hidden="true">↗</span></a>{% endif %}
     </div>
   </div>
   <div class="research-hero-stats">

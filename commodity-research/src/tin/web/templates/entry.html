@@ -1,16 +1,17 @@
 {% extends "base.html" %}
-{% block title %}人工录入通道 · 锡 SN{% endblock %}
+{% block title %}人工录入通道 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block main %}
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
   <div>
     <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">MANUAL DATA INGESTION &amp; AUDIT</div>
     <h1 class="text-2xl font-black tracking-tight">人工录入通道与操作留痕</h1>
-    <p class="text-xs text-[var(--text-muted)] mt-1">SMM / Mysteel / LME 等订阅与授权数据只能在此录入 ｜ 历史不可改写 ｜ 提交后自动重算派生值</p>
+    <p class="text-xs text-[var(--text-muted)] mt-1">{{ '为本工作台已确认指标补充观测与凭证 ｜ 历史不可改写' if research_workbench() else 'SMM / Mysteel / LME 等订阅与授权数据只能在此录入 ｜ 历史不可改写 ｜ 提交后自动重算派生值' }}</p>
   </div>
   <div class="flex items-center gap-2 shrink-0">
+    {% if research_workbench() %}<button type="button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">从知识库导入</button>{% else %}
     <a href="{{ research_prefix() }}/api/sn/import/template" class="px-3 py-1.5 text-xs font-semibold rounded border border-[var(--line)] hover:bg-[var(--surface-soft)]">下载导入模板</a>
-    <button onclick="openImportDrawer()" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">批量导入 Excel</button>
+    <button onclick="openImportDrawer()" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">批量导入 Excel</button>{% endif %}
   </div>
 </div>
 
@@ -43,7 +44,7 @@
         <label class="block font-semibold mb-1">录入人</label>
         <input type="text" name="entered_by" required class="w-full px-3 py-2 rounded-md" {% if research_identity() %}value="{{ research_identity().display_name }}" readonly{% endif %}>
       </div>
-      <button type="submit" class="w-full py-2.5 rounded-md bg-[var(--primary)] text-white font-bold hover:bg-[var(--primary-hover)] shadow-sm">提交并触发重新计算</button>
+      <button type="submit" class="w-full py-2.5 rounded-md bg-[var(--primary)] text-white font-bold hover:bg-[var(--primary-hover)] shadow-sm">{{ '提交观测值' if research_workbench() else '提交并触发重新计算' }}</button>
       <p class="text-[11px] text-[var(--text-muted)]">录入后 source 标记为「人工」，页面上带人工标签并显示录入人与时间。</p>
     </form>
   </div>

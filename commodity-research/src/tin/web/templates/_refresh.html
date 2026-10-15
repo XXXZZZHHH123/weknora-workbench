@@ -1,3 +1,8 @@
+{% if research_workbench() %}
+<section class="research-panel refresh-card" aria-label="资料准备">
+  <div class="refresh-card-heading"><div><h2>资料准备</h2><p class="text-xs text-[var(--text-muted)] mt-1">仅使用绑定知识库的资料；确认字段、单位和来源后进入研究。</p></div><div class="flex gap-2"><button type="button" class="research-button secondary" onclick="parent.postMessage({type:'research-open-sources'},location.origin)">资料与来源</button><button type="button" class="research-button secondary" onclick="parent.postMessage({type:'research-open-guide'},location.origin)">新手引导</button></div></div>
+</section>
+{% else %}
 <section id="research-refresh" data-rendered-date="{{ d or '' }}" class="research-panel refresh-card">
   <div class="refresh-card-heading">
     <div><h2>数据更新</h2><p class="text-xs text-[var(--text-muted)] mt-1">自动收集官方数据、校验并入库，同时更新派生指标与个人信号。</p></div>
@@ -26,4 +31,6 @@
   </div>
   <p class="refresh-footnote">自动更新共享指标与个人信号，保留研究判断和已审核简报。“尚未发布”时沿用已有数据；简报生成需另行发起。</p>
 </section>
-<script src="{{ research_prefix() }}/static/refresh.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/refresh.js?v={{ static_version() }}"></script>
+
+{% endif %}

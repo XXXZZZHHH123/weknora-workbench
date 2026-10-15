@@ -116,6 +116,11 @@ function syncDrawerUnit() {
   const asOf = document.getElementById("drawer-as-of");
   if (!select || !unit) return;
   const opt = select.selectedOptions[0];
+  if (!opt) {
+    unit.innerText = "";
+    if (asOf && !asOf.dataset.touched) asOf.value = "";
+    return;
+  }
   unit.innerText = opt.dataset.unit || "";
   // 数据时点默认填该指标的常规发布时刻，提醒填的是数据代表时点而非录入时刻
   if (asOf && opt.dataset.asOf && !asOf.dataset.touched) asOf.value = opt.dataset.asOf;

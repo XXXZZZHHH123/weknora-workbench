@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}每日快照与归档 · 锡 SN{% endblock %}
+{% block title %}每日快照与归档 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block main %}
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">

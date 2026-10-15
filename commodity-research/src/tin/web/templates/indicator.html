@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ detail.name }} · 锡 SN{% endblock %}
+{% block title %}{{ detail.name }} · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block main %}
 
 {% set d = detail %}
@@ -164,7 +164,7 @@
 <script>
   window.IND = {{ d | tojson }};
 </script>
-<script src="{{ research_prefix() }}/static/diagram.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/diagram.js?v={{ static_version() }}"></script>
 <script>
   (function () {
     const d = window.IND;

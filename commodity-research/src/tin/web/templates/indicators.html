@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}指标 · 锡 SN{% endblock %}
+{% block title %}指标 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="{{ research_prefix() }}/static/indicators.css?v={{ static_version() }}">
-<script defer src="{{ research_prefix() }}/static/indicators.js?v={{ static_version() }}"></script>
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/indicators.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/indicators.js?v={{ static_version() }}"></script>
 {% endblock %}
 {% block main %}
 <div id="indicator-workspace" data-date="{{ d or '' }}" class="indicator-workspace">

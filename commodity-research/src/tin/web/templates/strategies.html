@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}策略 · 锡研究工作台{% endblock %}
+{% block title %}策略 · {{ research_workbench().metadata.name if research_workbench() else '锡研究工作台' }}{% endblock %}
 {% block main %}
-<link rel="stylesheet" href="{{ research_prefix() }}/static/strategy.css?v={{ static_version() }}">
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/strategy.css?v={{ static_version() }}">
 <section class="strategy-head">
   <div><p class="eyebrow">RESEARCH → DECISION → REVIEW</p><h1>交易策略</h1>
     <p>把产业判断转成可证伪的入场、目标与止损；发布后记录真实成交，不把行情触价当作盈利。</p></div>
@@ -13,7 +13,7 @@
       {% for key,label in [('all','全部'),('draft','草稿'),('watching','等待入场'),('open','跟踪中'),('closed','已退出'),('cancelled','已作废')] %}
       <a class="{{ 'selected' if selected_status == key else '' }}" href="{{ research_prefix() }}/sn/strategies?status={{ key }}">{{ label }}</a>{% endfor %}
     </div>
-    <button class="button-primary" id="generate-strategies">基于研究生成草稿</button></div>
+    <button class="button-primary" id="generate-strategies" {% if research_workbench() %}disabled title="先准备本工作台来源并确认可用模型额度"{% endif %}>基于研究生成草稿</button></div>
     <div id="strategy-notice" class="strategy-notice" role="status"></div>
     <div class="strategy-list">
     {% for s in strategies %}
@@ -33,5 +33,5 @@
     <div class="strategy-caution">AI 生成失败或证据不足时会明确列出缺口，不会凑出买卖价位。</div>
   </aside>
 </section>
-<script src="{{ research_prefix() }}/static/strategy.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/strategy.js?v={{ static_version() }}"></script>
 {% endblock %}

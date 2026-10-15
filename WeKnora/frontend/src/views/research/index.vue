@@ -13,14 +13,16 @@
         aria-controls="research-chat-panel" @click="openChat">问答助手</t-button>
     </div>
     <div class="research-body">
-      <IsolatedResearchWorkbench v-if="canShowResearch && isIsolated && workbench" :key="scopeGeneration" ref="isolatedView" :workbench="workbench" @open-chat="openChat" @update-workbench="workbench = $event" />
-      <iframe v-else-if="canShowResearch" :key="generation" ref="frame" :src="bootstrapUrl"
+      <div class="research-canvas">
+      <IsolatedResearchWorkbench v-if="canShowResearch && isIsolated && workbench" :key="scopeGeneration" ref="isolatedView" :workbench="workbench" @open-chat="openChat" @navigate="navigateResearch" @refresh="restartSession" @update-workbench="applyWorkbenchUpdate" />
+      <iframe v-if="canShowResearch" :key="generation" ref="frame" :src="bootstrapUrl"
         title="商品研究工作台" @load="sendAuth" />
       <div v-else-if="workbenchLoading" class="research-empty" role="status">正在打开研究工作台…</div>
       <div v-else-if="workbenchError" class="research-empty" role="alert">
         <p>{{ workbenchError }}</p><t-button variant="outline" @click="loadWorkbench">重试</t-button>
       </div>
       <div v-else class="research-empty">请先选择空间。</div>
+      </div>
       <ResearchChatPanel v-if="chatMounted && canShowResearch" :key="scopeGeneration" :visible="chatVisible"
         :kb-id="workbench?.knowledge_base_id || ''" :kb-name="workbench?.knowledge_base_name || ''"
         :workbench-name="workbench?.name || '研究工作台'" :isolated="isIsolated" :workbench-id="workbenchId" @close="chatVisible = false" />
@@ -49,16 +51,40 @@ const workbenchLoading = ref(false)
 const workbenchError = ref('')
 const chatMounted = ref(false)
 const chatVisible = ref(false)
+const researchView = ref('home')
 let requestGeneration = 0
 const isIsolated = computed(() => workbench.value?.workspace_mode === 'isolated')
 const canShowResearch = computed(() => Boolean(auth.token && tenantId.value && (!workbenchId.value || workbench.value)))
 const bootstrapUrl = computed(() => {
+  if (isIsolated.value && workbenchId.value) {
+    return `/research/auth/bootstrap?session=${generation.value}&workbench_id=${encodeURIComponent(workbenchId.value)}&view=${researchView.value}`
+  }
   const source=typeof route.query.source==='string' && /^[a-f0-9]{64}$/.test(route.query.source) ? route.query.source : ''
   const indicator = typeof route.query.indicator === 'string' ? route.query.indicator : ''
   return `/research/auth/bootstrap?session=${generation.value}${source ? '&source='+source : indicator ? '&indicator='+encodeURIComponent(indicator) : ''}`
 })
 function restartSession() { generation.value += 1 }
 function openChat() { chatMounted.value = true; chatVisible.value = true }
+function navigateResearch(view: string) {
+  if (!isIsolated.value || !['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(view)) return
+  researchView.value = view
+  restartSession()
+}
+function applyWorkbenchUpdate(updated: ResearchWorkbench) {
+  const current = workbench.value
+  if (!current || updated?.id !== current.id || updated.id !== workbenchId.value
+      || updated.knowledge_base_id !== current.knowledge_base_id || updated.workspace_mode !== 'isolated') {
+    requestGeneration++
+    scopeGeneration.value++
+    workbench.value = null
+    workbenchLoading.value = false
+    workbenchError.value = '工作台范围信息不完整或已改变，请重新打开。'
+    chatMounted.value = false
+    chatVisible.value = false
+    return
+  }
+  workbench.value = updated
+}
 async function loadWorkbench() {
   const current = ++requestGeneration
   workbench.value = null
@@ -69,7 +95,8 @@ async function loadWorkbench() {
   try {
     const result = await getResearchWorkbench(workbenchId.value)
     if (current !== requestGeneration) return
-    if (!result.success || !result.data?.knowledge_base_id) throw new Error('工作台或绑定知识库不可用。')
+    if (!result.success || !result.data?.knowledge_base_id || result.data.id !== workbenchId.value) throw new Error('工作台或绑定知识库不可用。')
+    if (!['legacy', 'isolated'].includes(result.data.workspace_mode || '')) throw new Error('工作台范围信息不完整，请更新服务后重试。')
     workbench.value = result.data
   } catch (error) {
     if (current !== requestGeneration) return
@@ -79,15 +106,17 @@ async function loadWorkbench() {
   }
 }
 function sendAuth() {
-  if (!auth.token || !tenantId.value || isIsolated.value) return
+  if (!auth.token || !tenantId.value || !canShowResearch.value) return
   frame.value?.contentWindow?.postMessage({
     type: 'research-auth', token: auth.token, tenantId: tenantId.value,
+    ...(isIsolated.value ? { workbenchId: workbenchId.value } : {}),
   }, window.location.origin)
 }
 function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function receive(event: MessageEvent) {
-  if (isIsolated.value) return
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
+  if (isIsolated.value && event.data?.type === 'research-open-sources') { isolatedView.value?.openSources(); return }
+  if (isIsolated.value && event.data?.type === 'research-open-guide') { isolatedView.value?.openGuide(); return }
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'workspace-theme-request') {
     if (event.data.mode === 'light' || event.data.mode === 'dark') setTheme(event.data.mode)
@@ -104,6 +133,7 @@ watch(() => [auth.token, tenantId.value, auth.user?.id, workbenchId.value], (sco
   if (!identityChanged) return
   chatMounted.value = false
   chatVisible.value = false
+  researchView.value = 'home'
   scopeGeneration.value++
   requestGeneration++
   workbench.value = null
@@ -124,7 +154,8 @@ onBeforeUnmount(() => { requestGeneration++; scopeGeneration.value++; window.rem
 .research-toolbar .research-materials{margin-left:auto}
 .research-back{display:inline-flex;gap:4px;align-items:center}
 .research-body{position:relative;display:flex;flex:1;min-height:0;min-width:0;overflow:hidden}
+.research-canvas{position:relative;display:flex;flex:1;min-width:0;min-height:0}
 .research-empty{padding:24px;flex:1}iframe{width:100%;flex:1;min-width:0;min-height:0;border:0}
-.research-workspace--isolated .research-toolbar{gap:12px;padding:10px 18px}.research-workspace--isolated .research-toolbar strong{font-size:14px;max-width:300px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.research-workspace--isolated .research-toolbar>span{font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.research-workspace--isolated .research-toolbar{gap:12px;padding:10px 18px}.research-workspace--isolated .research-toolbar strong{font-size:var(--app-text-base);max-width:300px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.research-workspace--isolated .research-toolbar>span{font-size:var(--app-text-sm);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:900px){.research-toolbar{gap:12px;padding:12px 16px}}
 </style>

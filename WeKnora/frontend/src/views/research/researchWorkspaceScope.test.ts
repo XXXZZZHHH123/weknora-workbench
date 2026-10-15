@@ -7,7 +7,10 @@ import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
 
 const source = readFileSync(new URL('./index.vue', import.meta.url), 'utf8')
 const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0]!.replace(/^import .*$/gm, '')
-const code = ts.transpileModule(`${script}\n;({ workbench, canShowResearch, chatMounted, chatVisible, frame, generation, scopeGeneration, receive })`, {
+const updateBinding = source.match(/@update-workbench="([^"]+)"/)![1]!
+// Vue unwraps setup refs in template assignments; preserve that behavior in the setup harness.
+const updateEvent = updateBinding.includes('$event') ? updateBinding.replace('workbench =', 'workbench.value =') : `${updateBinding}($event)`
+const code = ts.transpileModule(`${script}\n;const applyUpdateEvent = ($event) => { ${updateEvent} };({ workbench, workbenchError, canShowResearch, chatMounted, chatVisible, frame, isolatedView, bootstrapUrl, generation, scopeGeneration, receive, applyUpdateEvent })`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
 
@@ -33,7 +36,7 @@ test('identity changes clear the old workspace synchronously and wait for its pe
   try {
     assert.equal(f.requests.length, 0)
     await nextTick()
-    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a' } })
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'legacy' } })
     await new Promise(setImmediate)
     assert.equal(f.view.canShowResearch.value, true)
     f.view.chatMounted.value = true
@@ -55,9 +58,9 @@ test('a late workbench response cannot replace the active knowledge-base binding
     await nextTick()
     f.route.params.workbenchId = 'workbench-b'
     await nextTick()
-    f.requests[1]!.resolve({ success: true, data: { id: 'workbench-b', knowledge_base_id: 'kb-b' } })
+    f.requests[1]!.resolve({ success: true, data: { id: 'workbench-b', knowledge_base_id: 'kb-b', workspace_mode: 'legacy' } })
     await new Promise(setImmediate)
-    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a' } })
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'legacy' } })
     await new Promise(setImmediate)
     assert.equal(f.view.workbench.value.knowledge_base_id, 'kb-b')
   } finally { f.close() }
@@ -66,6 +69,9 @@ test('a late workbench response cannot replace the active knowledge-base binding
 test('research frame reauthentication keeps the open conversation and validates message origin', async () => {
   const f = fixture()
   try {
+    await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'legacy' } })
+    await new Promise(setImmediate)
     const authMessages: unknown[] = []
     f.view.frame.value = { contentWindow: { postMessage: (...args: unknown[]) => authMessages.push(args) } }
     const message = { origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-ready' } }
@@ -110,7 +116,7 @@ test('refreshing a token for the same identity leaves the conversation mounted',
   } finally { f.close() }
 })
 
-test('an isolated workbench never authenticates or handles the tenant-wide legacy research frame', async () => {
+test('an isolated workbench uses the original frame through its own scope and reauthenticates within it', async () => {
   const f = fixture()
   try {
     await nextTick()
@@ -119,10 +125,93 @@ test('an isolated workbench never authenticates or handles the tenant-wide legac
     const messages: unknown[] = []
     f.view.frame.value = { contentWindow: { postMessage: (...args: unknown[]) => messages.push(args) } }
     const before = f.view.generation.value
+    assert.equal(new URL(f.view.bootstrapUrl.value, 'https://test.local').searchParams.get('workbench_id'), 'workbench-a')
     f.view.receive({ origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-ready' } })
     f.view.receive({ origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-auth-expired' } })
-    assert.equal(messages.length, 0)
-    assert.equal(f.view.generation.value, before)
+    assert.equal(messages.length, 1)
+    assert.equal((messages[0] as any[])[0].workbenchId, 'workbench-a')
+    assert.equal(f.view.generation.value, before + 1)
+    assert.equal(new URL(f.view.bootstrapUrl.value, 'https://test.local').searchParams.get('workbench_id'), 'workbench-a')
     assert.equal(f.view.canShowResearch.value, true)
+  } finally { f.close() }
+})
+
+test('missing scope metadata cannot silently open the tenant-wide workbench', async () => {
+  const f = fixture()
+  try {
+    await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a' } })
+    await new Promise(setImmediate)
+    assert.equal(f.view.canShowResearch.value, false)
+    assert.ok(f.view.workbenchError.value)
+  } finally { f.close() }
+})
+
+test('another workbench response cannot authorize the selected frame', async () => {
+  const f = fixture()
+  try {
+    await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-b', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } })
+    await new Promise(setImmediate)
+    assert.equal(f.view.canShowResearch.value, false)
+  } finally { f.close() }
+})
+
+test('source preparation messages require the active isolated frame and same origin', async () => {
+  const f = fixture()
+  try {
+    await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } })
+    await new Promise(setImmediate)
+    let sources = 0, guides = 0
+    f.view.isolatedView.value = { openSources() { sources++ }, openGuide() { guides++ } }
+    f.view.frame.value = { contentWindow: { postMessage() {} } }
+    const message = { origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-open-sources' } }
+    f.view.receive({ ...message, origin: 'https://other.test' })
+    f.view.receive({ ...message, source: {} })
+    assert.equal(sources, 0)
+    f.view.receive(message)
+    f.view.receive({ ...message, data: { type: 'research-open-guide' } })
+    assert.equal(sources, 1)
+    assert.equal(guides, 1)
+  } finally { f.close() }
+})
+
+test('onboarding update events cannot turn an isolated frame into legacy or replace its binding', async () => {
+  for (const update of [
+    { id: 'workbench-a', knowledge_base_id: 'kb-a' },
+    { id: 'workbench-b', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' },
+    { id: 'workbench-a', knowledge_base_id: 'kb-b', workspace_mode: 'isolated' },
+    { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'legacy' },
+  ]) {
+    const f = fixture()
+    try {
+      await nextTick()
+      f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } })
+      await new Promise(setImmediate)
+      f.view.chatMounted.value = true
+      f.view.chatVisible.value = true
+      f.view.applyUpdateEvent({ ...update, onboarding: { status: 'dismissed' } })
+      assert.equal(f.view.canShowResearch.value, false)
+      assert.equal(f.view.chatMounted.value, false)
+      assert.ok(f.view.workbenchError.value)
+      const messages: unknown[] = []
+      f.view.frame.value = { contentWindow: { postMessage: (...args: unknown[]) => messages.push(args) } }
+      f.view.receive({ origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-ready' } })
+      assert.equal(messages.length, 0)
+    } finally { f.close() }
+  }
+})
+
+test('a verified onboarding update keeps the original workbench scope', async () => {
+  const f = fixture()
+  try {
+    await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } })
+    await new Promise(setImmediate)
+    f.view.applyUpdateEvent({ id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated', onboarding: { status: 'dismissed' } })
+    assert.equal(f.view.workbench.value.onboarding.status, 'dismissed')
+    assert.equal(f.view.canShowResearch.value, true)
+    assert.equal(new URL(f.view.bootstrapUrl.value, 'https://test.local').searchParams.get('workbench_id'), 'workbench-a')
   } finally { f.close() }
 })

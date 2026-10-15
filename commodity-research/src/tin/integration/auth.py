@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from tin.config import settings
-from tin.integration.identity import Identity, current_identity, research_prefix
+from tin.integration.identity import Identity, current_identity, research_prefix, research_static_prefix
 
 COOKIE = "research_session"
 
@@ -93,13 +93,20 @@ def _same_origin(request):
         return False
 
 
-def bootstrap_html(source=None, indicator=None):
+def bootstrap_html(source=None, indicator=None, workbench_id=None, view=None):
     prefix = json.dumps(research_prefix())
     import re
-    target = research_prefix() + '/'
-    if isinstance(source,str) and re.fullmatch('[a-f0-9]{64}',source):
+    target = research_static_prefix() + '/'
+    if workbench_id is not None:
+        from tin.integration.workbench_scope import canonical_workbench_id
+        canonical_workbench_id(workbench_id)
+        views = {'home': '/', 'diagram': '/sn/diagram', 'indicators': '/sn/indicators', 'judgment': '/sn/judgment', 'strategies': '/sn/strategies', 'reports': '/sn/reports'}
+        if view is not None and view not in views:
+            raise HTTPException(400, '研究工作台视图无效')
+        target = research_static_prefix() + '/workbenches/' + workbench_id + views.get(view, '/')
+    if workbench_id is None and isinstance(source,str) and re.fullmatch('[a-f0-9]{64}',source):
         target = research_prefix() + '/files?source=' + source
-    elif isinstance(indicator, str) and indicator and len(indicator) <= 128 and not any(ord(c) < 32 for c in indicator):
+    elif workbench_id is None and isinstance(indicator, str) and indicator and len(indicator) <= 128 and not any(ord(c) < 32 for c in indicator):
         from urllib.parse import quote
         target = research_prefix() + '/sn/indicators/' + quote(indicator, safe='')
     return HTMLResponse('''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>商品研究</title>
@@ -108,6 +115,8 @@ const prefix = PREFIX;
 let connecting = false;
 window.addEventListener('message', async event => {
   if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'research-auth' || connecting) return;
+  const expectedWorkbench = WORKBENCH;
+  if (expectedWorkbench !== null && event.data.workbenchId !== expectedWorkbench) return;
   const {token} = event.data;
   const tenant = event.data.tenantId ?? event.data.tenant_id;
   if (typeof token !== 'string' || !tenant) return;
@@ -120,14 +129,14 @@ window.addEventListener('message', async event => {
   } catch (error) { document.getElementById('status').textContent = error.message; connecting = false; }
 });
 parent.postMessage({type:'research-ready'}, location.origin);
-</script></html>'''.replace('PREFIX', prefix).replace('TARGET', json.dumps(target)), headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+</script></html>'''.replace('PREFIX', prefix).replace('TARGET', json.dumps(target)).replace('WORKBENCH', json.dumps(workbench_id)), headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
 class ResearchAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if not settings.weknora_api_url:
             return await call_next(request)
-        prefix = research_prefix()
+        prefix = research_static_prefix()
         # Supports direct service requests in tests as well as prefix-stripping proxies.
         path = request.scope["path"]
         if prefix and (path == prefix or path.startswith(prefix + "/")):
@@ -143,14 +152,25 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
         if path == "/healthz":
             return JSONResponse({"status": "ok", "mode": "weknora"})
         if path == "/auth/bootstrap" and request.method == "GET":
-            return bootstrap_html(request.query_params.get('source'), request.query_params.get('indicator'))
+            try:
+                return bootstrap_html(request.query_params.get('source'), request.query_params.get('indicator'), request.query_params.get('workbench_id'), request.query_params.get('view'))
+            except HTTPException as exc:
+                return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
         if path.startswith("/static/") and request.method == "GET":
             return await call_next(request)
         try:
+            from tin.integration.workbench_paths import parse_workbench_path, allowed_workbench_route, source_preparation_required
+            try:
+                scoped_path = parse_workbench_path(path)
+            except ValueError:
+                raise HTTPException(404, "研究工作台路径无效") from None
+            route_path = scoped_path[1] if scoped_path else path
+            authorization = request.headers.get("authorization", "")
             if path == "/api/tools/read":
                 from tin.integration.service_auth import verify_service_request
                 identity = await verify_service_request(request)
             elif (path.startswith("/api/library") or path.startswith("/api/workbenches/")
+                  or scoped_path is not None
                   or (path == "/api/sn/indicators/catalog" and request.method == "GET")) and request.headers.get("authorization", "").startswith("Bearer "):
                 if request.method not in {"GET", "HEAD", "OPTIONS"} and not _same_origin(request):
                     raise HTTPException(403, "请求来源不匹配")
@@ -192,6 +212,7 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                         raise HTTPException(401, "登录身份已改变")
                     session.identity, session.verified = refreshed, time.time()
                 identity = session.identity
+                authorization = "Bearer " + session.token
                 # Browser headers cannot select a different database or spoof identity.
                 requested = request.headers.get("x-tenant-id")
                 expected_tenant = request.query_params.get("_research_tenant")
@@ -202,10 +223,26 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                     raise HTTPException(403, "当前页面的账号或空间已改变，请重新打开商品研究")
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
                     read_posts = {"/api/sn/diagram/values", "/api/sn/diagram/markdown/dump"}
-                    if not identity.can_write and path not in read_posts and not path.startswith("/api/library"):
+                    if not identity.can_write and route_path not in read_posts and not path.startswith("/api/library"):
                         raise HTTPException(403, "当前空间角色只有读取权限")
                     if not _same_origin(request):
                         raise HTTPException(403, "请求来源不匹配")
+            scope_marker = None
+            if scoped_path is not None:
+                from tin.integration.workbench_scope import resolve_workbench, current_workbench
+                scope = await resolve_workbench(identity, scoped_path[0], authorization)
+                if not allowed_workbench_route(route_path, request.method):
+                    raise HTTPException(404, "此入口不属于当前研究工作台")
+                if source_preparation_required(route_path):
+                    raise HTTPException(409, "请在绑定知识库准备资料，并从本工作台的资料与来源入口核对后导入")
+                if request.method not in {"GET", "HEAD", "OPTIONS"}:
+                    if not identity.can_write and route_path not in {"/api/sn/diagram/values", "/api/sn/diagram/markdown/dump"}:
+                        raise HTTPException(403, "当前空间角色只有读取权限")
+                    if not _same_origin(request):
+                        raise HTTPException(403, "请求来源不匹配")
+                scope_marker = current_workbench.set(scope)
+                request.scope["path"] = prefix + route_path
+                request.scope["raw_path"] = (prefix + route_path).encode()
             request.state.research_identity = identity
             marker = current_identity.set(identity)
             try:
@@ -214,6 +251,8 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                 return response
             finally:
                 current_identity.reset(marker)
+                if scope_marker is not None:
+                    current_workbench.reset(scope_marker)
         except HTTPException as exc:
             if exc.status_code == 401 and "text/html" in request.headers.get("accept", ""):
                 from html import escape

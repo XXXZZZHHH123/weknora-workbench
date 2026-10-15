@@ -63,9 +63,19 @@ async def go_request(scope: WorkbenchScope, path: str, *, params=None):
 
 
 async def verified_workbench(request: Request, workbench_id: str):
-    canonical_workbench_id(workbench_id)
     identity = current_identity.get()
     authorization = request.headers.get("authorization", "")
+    scope = await resolve_workbench(identity, workbench_id, authorization)
+    marker = current_workbench.set(scope)
+    try:
+        yield scope
+    finally:
+        current_workbench.reset(marker)
+
+
+async def resolve_workbench(identity, workbench_id, authorization):
+    """Browser and API entry points share the same fresh server-side verification."""
+    canonical_workbench_id(workbench_id)
     if identity is None or not authorization.startswith("Bearer "):
         raise HTTPException(401, "请先登录主平台")
     scope = WorkbenchScope(identity, workbench_id, "", 0, {}, authorization)
@@ -87,11 +97,7 @@ async def verified_workbench(request: Request, workbench_id: str):
                 and kb.get("my_permission") not in {"viewer", "editor", "admin"})):
         raise HTTPException(403, "知识库授权范围不匹配")
     scope = WorkbenchScope(identity, workbench_id, kb_id, kb["tenant_id"], metadata, authorization)
-    marker = current_workbench.set(scope)
-    try:
-        yield scope
-    finally:
-        current_workbench.reset(marker)
+    return scope
 
 
 def isolated_database_path(tenant_id: int, workbench_id: str):
@@ -135,7 +141,20 @@ def isolated_session_factory(tenant_id: int, workbench_id: str):
 
 @contextmanager
 def workbench_session(scope: WorkbenchScope):
-    with isolated_session_factory(scope.identity.tenant_id, scope.workbench_id)() as session:
+    with open_workbench_session(scope) as session:
+        marker = current_workbench.set(scope)
+        try:
+            yield session
+        finally:
+            current_workbench.reset(marker)
+
+
+def open_workbench_session(scope: WorkbenchScope, **kwargs):
+    identity = current_identity.get()
+    if identity is not None and (identity.tenant_id != scope.identity.tenant_id or identity.user_id != scope.identity.user_id):
+        raise PermissionError("Workbench identity does not match the verified caller")
+    session = isolated_session_factory(scope.identity.tenant_id, scope.workbench_id)(**kwargs)
+    try:
         expected = (scope.knowledge_base_id, scope.knowledge_base_tenant_id)
         session.execute(text("INSERT INTO isolated_scope "
                              "(workbench_id,knowledge_base_id,knowledge_base_tenant_id) VALUES (:id,:kb,:tenant) "
@@ -149,11 +168,10 @@ def workbench_session(scope: WorkbenchScope):
         session.info.update(scope.identity.session_info(), workbench_id=scope.workbench_id,
                             knowledge_base_id=scope.knowledge_base_id,
                             knowledge_base_tenant_id=scope.knowledge_base_tenant_id)
-        marker = current_workbench.set(scope)
-        try:
-            yield session
-        finally:
-            current_workbench.reset(marker)
+        return session
+    except BaseException:
+        session.close()
+        raise
 
 
 def service_scope(identity: Identity):

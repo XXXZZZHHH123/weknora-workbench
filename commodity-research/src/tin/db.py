@@ -121,6 +121,10 @@ def tenant_session_factory(tenant_id: int):
 
 
 def SessionLocal(**kwargs):
+    from tin.integration.workbench_scope import current_workbench, open_workbench_session
+    scope = current_workbench.get()
+    if scope is not None:
+        return open_workbench_session(scope, **kwargs)
     if not settings.weknora_api_url:
         return _legacy_sessions(**kwargs)
     from tin.integration.identity import current_identity

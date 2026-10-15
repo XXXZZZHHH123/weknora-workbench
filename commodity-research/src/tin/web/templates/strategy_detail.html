@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}{{ strategy.title }} · 锡研究工作台{% endblock %}
+{% block title %}{{ strategy.title }} · {{ research_workbench().metadata.name if research_workbench() else '锡研究工作台' }}{% endblock %}
 {% block main %}
-<link rel="stylesheet" href="{{ research_prefix() }}/static/strategy.css?v={{ static_version() }}">
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/strategy.css?v={{ static_version() }}">
 <a class="back-link" href="{{ research_prefix() }}/sn/strategies">← 返回策略列表</a>
 <section class="strategy-detail-head"><div><div class="strategy-card-top"><span class="status-chip status-{{ strategy.status }}">{{ status_labels[strategy.status] }}</span><span>{{ kind_labels[strategy.kind] }} · {{ mode_labels[strategy.mode] }}</span></div>
   <h1>{{ strategy.title }}</h1><p>{{ strategy.plan.thesis }}</p></div>
@@ -31,5 +31,5 @@
 </div><aside class="strategy-aside"><p class="eyebrow">策略生命周期</p><div class="event-list">{% for event in strategy.events %}<div class="event"><b>{{ {'created':'建立草稿','published':'发布等待入场','opened':'登记开仓','closed':'登记平仓','cancelled':'作废'}.get(event.type, event.type) }}</b><time>{{ event.at[:16].replace('T',' ') }} UTC</time><p>{{ event.reason }}</p></div>{% endfor %}</div>
   <p class="strategy-caution">风险预算 {{ strategy.plan.risk_budget }} 元是研究员填写的计划参数，不是系统保证的最大亏损。策略不是个性化投资建议。</p></aside></div>
 <script>window.STRATEGY_ID={{ strategy.id }};window.STRATEGY_STATUS={{ strategy.status|tojson }};</script>
-<script src="{{ research_prefix() }}/static/strategy.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/strategy.js?v={{ static_version() }}"></script>
 {% endblock %}

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_card.html" import trend %}
-{% block title %}宏观与跨资产 · 锡 SN{% endblock %}
+{% block title %}宏观与跨资产 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block main %}
 
 <div id="macro-top" class="macro-top-anchor pb-4 border-b border-[var(--line-strong)]">

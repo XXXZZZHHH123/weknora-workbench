@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}动态产业图 · 锡 SN{% endblock %}
+{% block title %}动态产业图 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block main %}
 
 
@@ -9,7 +9,7 @@
     <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">INDUSTRY CHAIN · LIVE</div>
     <h1 class="text-2xl font-black tracking-tight">动态产业图</h1>
     <p class="text-xs text-[var(--text-muted)] mt-1">
-      结构来自《锡产业基础研究框架》，每个环节的数值从事实层现取 ——
+      {% if research_workbench() %}结构由当前工作台独立建立，每个环节仅绑定已确认来源 ——{% else %}结构来自《锡产业基础研究框架》，每个环节的数值从事实层现取 ——{% endif %}
       <span class="text-[var(--amber)]">没数的环节显示「尚无数据」，不会拿旧值充数</span>
     </p>
   </div>
@@ -235,15 +235,23 @@
           <tr><td class="py-1"><code># 标题</code></td><td class="py-1">整张图的名称（只认第一个）</td></tr>
           <tr><td class="py-1"><code>## 供给端</code></td><td class="py-1">一级分组框</td></tr>
           <tr><td class="py-1"><code>### 矿端</code></td><td class="py-1">子分组，井号越多层级越深</td></tr>
-          <tr><td class="py-1"><code>- 国产锡精矿</code></td><td class="py-1">节点</td></tr>
-          <tr><td class="py-1 pl-4"><code>&nbsp;&nbsp;- 缅甸矿</code></td><td class="py-1">缩进＝包含关系，自动连线</td></tr>
+          <tr><td class="py-1"><code>- {{ '来源指标' if research_workbench() else '国产锡精矿' }}</code></td><td class="py-1">节点</td></tr>
+          <tr><td class="py-1 pl-4"><code>&nbsp;&nbsp;- {{ '子项' if research_workbench() else '缅甸矿' }}</code></td><td class="py-1">缩进＝包含关系，自动连线</td></tr>
           <tr><td class="py-1"><code>[占比 32%]</code></td><td class="py-1">静态标注（调研系数，<b>不入事实层</b>）</td></tr>
-          <tr><td class="py-1"><code>&lt;!-- bind: MYSTEEL.X --&gt;</code></td><td class="py-1">绑定指标；派生指标写公式 ID</td></tr>
+          <tr><td class="py-1"><code>&lt;!-- bind: {{ '真实指标编号' if research_workbench() else 'MYSTEEL.X' }} --&gt;</code></td><td class="py-1">绑定指标；派生指标写公式 ID</td></tr>
           <tr><td class="py-1"><code>矿端 -&gt; 冶炼 -&gt; 平衡</code></td><td class="py-1"><b>流向连线</b>，独占一行，可连分组也可连节点</td></tr>
           <tr><td class="py-1"><code>&lt;!-- agg: sum --&gt;</code></td><td class="py-1">写在分组标题后：对直接子节点求和（<code>share</code>＝占比）</td></tr>
         </tbody>
       </table>
-      <pre class="p-2.5 rounded bg-[var(--surface)] border border-[var(--line)] font-mono text-[10.5px] leading-relaxed overflow-x-auto"># 锡产业结构
+      <pre class="p-2.5 rounded bg-[var(--surface)] border border-[var(--line)] font-mono text-[10.5px] leading-relaxed overflow-x-auto">{% if research_workbench() %}# 研究结构
+
+## 来源分组
+- 来源指标 &lt;!-- bind: 真实指标编号 --&gt;
+  - 子项
+
+## 下一环节
+
+来源分组 -&gt; 下一环节{% else %}# 锡产业结构
 
 ## 供给端
 ### 矿端 &lt;!-- agg: sum --&gt;
@@ -256,7 +264,7 @@
 
 ## 流向
 
-矿端 -&gt; 冶炼与锭</pre>
+矿端 -&gt; 冶炼与锭{% endif %}</pre>
       <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
         <b>分组之间的连线只能显式写。</b>缩进只表达"包含"，表达不了"矿端的货流向冶炼"——
         那是两个平级分组之间的关系。<br>
@@ -283,5 +291,5 @@
   window.DG_TEMPLATE = {{ template | tojson }};
   window.DG_DATE = {{ (d or '') | tojson }};
 </script>
-<script src="{{ research_prefix() }}/static/diagram.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/diagram.js?v={{ static_version() }}"></script>
 {% endblock %}

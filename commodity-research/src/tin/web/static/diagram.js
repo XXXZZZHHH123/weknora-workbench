@@ -99,7 +99,7 @@ async function dgLoad() {
   dg.values = Object.fromEntries(data.nodes.map((n) => [n.node_id, n]));
   dg.judgment = data.judgment || {};
   const asOf = document.getElementById("dg-asof");
-  if (asOf) asOf.textContent = `数据截至 ${data.as_of}`;
+  if (asOf) asOf.textContent = data.as_of == null ? "尚无已确认观测" : `数据截至 ${data.as_of}`;
   dgRender();
   dgSyncCompareBtn();
 }

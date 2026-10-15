@@ -37,7 +37,7 @@ def catalog(session: Session) -> list[dict]:
             "fetch_mode", "status", "vendor_code", "is_proxy", "note")}
         rows[ind.series_id]["registered"] = True
     # 尚未采集的宏观序列也能被找到和自选，读页面不隐式登记或采集数据。
-    for spec in FRED_SERIES:
+    for spec in (() if session.info.get("workbench_id") else FRED_SERIES):
         row = rows.setdefault(spec.series_id, {
             "series_id": spec.series_id, "caliber": {}, "status": "尚未采集",
             "vendor_code": spec.fred_id, "is_proxy": False, "note": "",
@@ -54,7 +54,7 @@ def catalog(session: Session) -> list[dict]:
 
 
 def history(session: Session, series_id: str, through: date, limit: int = 900) -> dict | None:
-    macro = macro_history(session, series_id, through, limit)
+    macro = None if session.info.get("workbench_id") else macro_history(session, series_id, through, limit)
     if macro is not None:
         return macro
     ind = session.get(Indicator, series_id)

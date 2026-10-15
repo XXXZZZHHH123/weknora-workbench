@@ -63,6 +63,9 @@ def is_adjacent(session: Session, earlier: date, later: date) -> bool | None:
 
 
 def latest_trade_date(session: Session) -> date | None:
+    if session.info.get("workbench_id"):
+        timestamp = session.scalar(select(func.max(Observation.as_of)).where(Observation.status == "正常"))
+        return timestamp.astimezone(SHANGHAI).date() if timestamp else None
     v = session.scalar(select(func.max(TradingDay.trade_date)))
     return date.fromisoformat(v) if v else None
 

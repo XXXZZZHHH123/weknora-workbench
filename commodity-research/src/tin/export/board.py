@@ -130,6 +130,10 @@ def previous_derived(session: Session, variety: str, d: date, formula_id: str) -
 
 
 def core_cards(session: Session, variety: str, d: date) -> list[Card]:
+    if session.info.get("workbench_id"):
+        rows = session.scalars(select(Indicator).where(Indicator.status == "可用")
+                               .order_by(Indicator.category, Indicator.name, Indicator.series_id).limit(12))
+        return [_obs_card(session, row.series_id, row.name, row.series_id, d) for row in rows]
     derived = latest_derived(session, variety, d)
     main = _obs_card(session, "main", "主力合约结算价", f"SHFE.{variety}.main.settle", d)
     warrant = _obs_card(session, "warrant", "上期所注册仓单", f"SHFE.{variety}.warrant", d)
@@ -258,7 +262,7 @@ def macro_groups(session: Session, d: date) -> list[dict]:
 
 
 def macro_featured(session: Session, d: date) -> list[dict]:
-    return macro_cards(session, d, FEATURED_SERIES)
+    return [] if session.info.get("workbench_id") else macro_cards(session, d, FEATURED_SERIES)
 
 
 def source_catalog() -> dict:
@@ -330,7 +334,7 @@ def _auto_gap_reason(session: Session, series_id: str, d: date) -> str:
 def gaps(session: Session, variety: str, d: date) -> list[dict]:
     out = []
     for ind in session.scalars(select(Indicator).where(Indicator.status == "可用",
-                                                       Indicator.variety.in_([variety, "COMMON"]))):
+                                                       (True if session.info.get("workbench_id") else Indicator.variety.in_([variety, "COMMON"])))):
         if PER_CONTRACT.match(ind.series_id):
             continue
         exp = expected_date(ind, d)
@@ -379,7 +383,7 @@ def signal_block(session: Session, variety: str, d: date) -> list[dict]:
 def snapshot(session: Session, variety: str, d: date) -> dict:
     """04 §1.9 的每日 JSON 快照结构。"""
     obs = []
-    for ind in session.scalars(select(Indicator).where(Indicator.variety.in_([variety, "COMMON"]))):
+    for ind in session.scalars(select(Indicator).where((True if session.info.get("workbench_id") else Indicator.variety.in_([variety, "COMMON"])))):
         o = latest_obs(session, ind.series_id, day_end(d))
         if o is None or (PER_CONTRACT.match(ind.series_id) and o.as_of.astimezone(SHANGHAI).date() != d):
             continue
@@ -456,6 +460,8 @@ def ticker(session: Session, variety: str, d: date) -> list[dict]:
             continue
         items.append({"label": c.label.split("（")[0], "value": _fmt(c.value, c.unit), "unit": c.unit,
                       "change": c.change, "change_pct": c.change_pct})
+    if session.info.get("workbench_id"):
+        return items
     vix = _obs_card(session, "vix", "VIX", "MACRO.VIX", d)
     if vix.status == "ok":
         items.append({"label": "VIX", "value": _fmt(vix.value, vix.unit), "unit": "",
