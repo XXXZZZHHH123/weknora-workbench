@@ -174,7 +174,7 @@
                         @stop-confirmed="handleStopConfirmed"
                         @stop-failed="handleStopFailed" :isReplying="isReplying" :composer-locked="composerLocked" :sessionId="session_id"
                         :assistantMessageId="currentAssistantMessageId" :embeddedMode="embeddedMode"
-                        :knowledge-scope="scopedSession ? { kbId: kbIds.length === 1 ? kbIds[0] : '', modelId: scopedModelId } : undefined"
+                        :knowledge-scope="scopedSession ? { kbId: kbIds.length === 1 ? kbIds[0] : '', kbName: scopedKbName, modelId: scopedModelId } : undefined"
                         :queuedSteers="steerQueue.filter(item => item.delivery === 'after')" :canSteer="isAgentStreamSession() && !scopedSession"></InputField>
                 </div>
             </div>
@@ -268,6 +268,7 @@ const props = defineProps({
     embeddedMode: { type: Boolean, default: false },
     scopedSession: { type: Boolean, default: false },
     scopedModelId: { type: String, default: '' },
+    scopedKbName: { type: String, default: '' },
     agentSourceTenantId: { type: String, default: '' },
 });
 const emit = defineEmits(['replying-change']);
@@ -432,7 +433,8 @@ async function handleFork(messageId) {
 
         const now = new Date().toISOString()
         const sourceTitle = currentSession.value?.title || t('menu.newSession')
-        usemenuStore.updataMenuChildren({
+        const forkDetail = await getSession(data.session_id);
+        if (forkDetail?.data?.has_user_message) usemenuStore.updataMenuChildren({
             id: data.session_id,
             path: `chat/${data.session_id}`,
             title: `${sourceTitle}（分支）`,
@@ -1013,6 +1015,7 @@ const {
         }
     },
     onAgentQuery: (data, existingMessage) => {
+        notifySessionMutation({ sessionId: String(session_id.value), historyChanged: true });
         pendingStreamDebug.value = buildStreamDebugPayload();
         if (existingMessage) attachStreamDebugToMessage(existingMessage);
     },
@@ -1567,8 +1570,9 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     const suggestionAttribution = props.scopedSession ? null : pendingSuggestionAttribution;
     pendingSuggestionAttribution = null;
     pendingSuggestionKnowledgeBaseIds = [];
-    await startStream({
-        session_id: session_id.value,
+    const outgoingSessionId = String(session_id.value);
+    try { await startStream({
+        session_id: outgoingSessionId,
         knowledge_base_ids: kbIds,
         knowledge_ids: knowledgeIds,
         agent_enabled: agentEnabled,
@@ -1590,7 +1594,9 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
         question_origin: options?.questionOrigin,
         method: 'POST',
         url: endpoint,
-    });
+    }); } finally {
+        notifySessionMutation({ sessionId: outgoingSessionId, historyChanged: true });
+    }
 }
 
 // Quietly recover an in-flight IM reply we couldn't attach to (it's generated on

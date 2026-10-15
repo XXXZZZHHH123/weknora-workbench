@@ -78,6 +78,8 @@ type ContextConfig struct {
 type Session struct {
 	// ID
 	ID string `json:"id"          gorm:"type:varchar(36);primaryKey"`
+	// HasUserMessage is populated on detail reads, without a schema column.
+	HasUserMessage *bool `json:"has_user_message,omitempty" gorm:"->;-:migration"`
 	// Title
 	Title string `json:"title"`
 	// Description

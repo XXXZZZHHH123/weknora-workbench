@@ -59,6 +59,9 @@ func workspaceFixture(t *testing.T) (*WorkspaceService, *workspaceKBFixture, *wo
 	if err := db.Exec("CREATE TABLE sessions (id VARCHAR(36) PRIMARY KEY, tenant_id INTEGER, user_id VARCHAR(512), title TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)").Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AutoMigrate(&types.Message{}); err != nil {
+		t.Fatal(err)
+	}
 	// Exercise the shipped migration, including FK and uniqueness constraints.
 	migration, err := os.ReadFile("../../../migrations/sqlite/000038_workspace_navigation.up.sql")
 	if err != nil {
@@ -108,6 +111,9 @@ func TestWorkspaceProjectsOwnershipAndSessions(t *testing.T) {
 		if err := s.db.Exec("INSERT INTO sessions(id,tenant_id,user_id,title,created_at,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", row.id, row.tenant, row.user, row.id).Error; err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := s.db.Create(&types.Message{SessionID: "s1", Role: "user", Content: "project fixture question"}).Error; err != nil {
+		t.Fatal(err)
 	}
 	for _, id := range []string{"s2", "s3", "missing"} {
 		workspaceStatus(t, s.AssignSession(alice, p.ID, id, false), 404)

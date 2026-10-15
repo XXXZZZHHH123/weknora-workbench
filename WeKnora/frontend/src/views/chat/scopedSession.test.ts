@@ -60,6 +60,7 @@ test('panel submission keeps the complete question and sends its selected model,
     activitySessionId: { value: '' }, session_id: { value: 'panel-session' },
     isReplying: { value: false }, loading: { value: false }, userHasScrolledUp: { value: false },
     messagesList: [], pendingSuggestionKnowledgeBaseIds: [], pendingSuggestionAttribution: null,
+    notifySessionMutation() {},
     startStream: async (payload: unknown) => { sent = payload },
   }
   const send = runInNewContext(`${between('const sendMsg = async', '// Quietly recover')}\nsendMsg`, context)
@@ -118,6 +119,7 @@ test('scoped source protection also holds when a host omits the embedded layout 
     activitySessionId: { value: '' }, session_id: { value: 'panel-session' },
     isReplying: { value: false }, loading: { value: false }, userHasScrolledUp: { value: false },
     messagesList: [], pendingSuggestionKnowledgeBaseIds: ['foreign-suggestion-kb'], pendingSuggestionAttribution: { question_id: 'foreign-question' },
+    notifySessionMutation() {},
     startStream: async (payload: unknown) => { sent = payload },
   }
   const send = runInNewContext(`${between('const sendMsg = async', '// Quietly recover')}\nsendMsg`, context)

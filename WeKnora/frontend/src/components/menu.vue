@@ -824,20 +824,26 @@ const sessionExistsInBuckets = (sessionId: string) =>
     Object.values(sessionBuckets.value).some((bucket) => bucket.items.some((row) => row.id === sessionId));
 
 const pendingSessionLookups = new Map<string, Promise<void>>();
+const sessionHistoryEpochs = new Map<string, number>();
 const sessionLookupIdentity = () => [authStore.token, authStore.user?.id, authStore.selectedTenantId ?? authStore.tenant?.id].join(':');
 
 /** Other entry points can create sessions before the global composer has populated menuStore. */
-const ensureSessionInSidebar = async (sessionId: string): Promise<void> => {
+const ensureSessionInSidebar = async (sessionId: string, refreshAfterPending = false): Promise<void> => {
     if (!sessionId || sessionExistsInBuckets(sessionId)) return;
     const existing = pendingSessionLookups.get(sessionId);
-    if (existing) return existing;
+    if (existing) {
+        await existing;
+        if (refreshAfterPending) await ensureSessionInSidebar(sessionId);
+        return;
+    }
     const token = bucketRequestToken;
     const identity = sessionLookupIdentity();
+    const historyEpoch = sessionHistoryEpochs.get(sessionId) || 0;
     const task = (async () => {
         const chatMenu = (menuArr.value as unknown as MenuItem[]).find((item) => item.path === 'creatChat');
         const cached = (chatMenu?.children as Record<string, unknown>[] | undefined)?.map(menuChildToSessionRow) ?? [];
         const row = await lookupSidebarSession(sessionId, cached, getSession);
-        if (!row || token !== bucketRequestToken || identity !== sessionLookupIdentity()) return;
+        if (!row || token !== bucketRequestToken || identity !== sessionLookupIdentity() || historyEpoch !== (sessionHistoryEpochs.get(sessionId) || 0)) return;
         // Channels retain their own source-filtered pagination and access rules.
         if (originGroupKey(resolveSessionOrigin(row)) !== DEFAULT_SESSION_BUCKET_KEY) return;
         const web = sessionBuckets.value.web;
@@ -1078,17 +1084,22 @@ const loadSessionOriginMeta = async () => {
 const handleSessionMutation = (event: Event) => {
     const detail = (event as CustomEvent<SessionMutationDetail>).detail;
     if (!detail?.sessionId) return;
-    if (detail.removed || detail.messagesCleared) sessionActivity.dismiss(detail.sessionId);
+    if (detail.removed || detail.messagesCleared) {
+        sessionHistoryEpochs.set(detail.sessionId, (sessionHistoryEpochs.get(detail.sessionId) || 0) + 1);
+        pendingSessionLookups.delete(detail.sessionId);
+        sessionActivity.dismiss(detail.sessionId);
+    }
     if (detail.patch) {
         updateSessionInBuckets(detail.sessionId, {
             ...detail.patch,
             ...(detail.patch.title ? { isNoTitle: false } : {}),
         });
     }
-    if (detail.removed) {
+    if (detail.historyChanged) void ensureSessionInSidebar(detail.sessionId, true).catch(error => console.warn('[History] Could not refresh conversation', error));
+    if (detail.removed || detail.messagesCleared) {
         sessionBuckets.value = removeSessionFromBuckets(sessionBuckets.value, detail.sessionId);
         syncMenuStoreFromBuckets();
-        if (detail.sessionId === route.params.chatid) {
+        if (detail.removed && detail.sessionId === route.params.chatid) {
             router.push('/platform/creatChat');
         }
     }
@@ -1145,6 +1156,7 @@ onUnmounted(() => {
     knowledgeBaseRequestGeneration++;
     bucketRequestToken++;
     pendingSessionLookups.clear();
+    sessionHistoryEpochs.clear();
 });
 
 watch([() => route.name, () => route.params], (newvalue, oldvalue) => {
@@ -1156,8 +1168,8 @@ watch([() => route.name, () => route.params], (newvalue, oldvalue) => {
         currentSecondpath.value = "";
     }
 
-    // 创建新会话时 creatChat 会先 updataMenuChildren，再跳转 chat/:id。
-    // 侧栏实际渲染 sessionBuckets，需按 buckets 判断是否缺失，不能把 menuStore 当真相来源。
+    // Navigation may open a draft. A detail lookup only admits sessions with
+    // persisted user messages; the first server acknowledgement retries it.
     const newChatId = (newvalue[1] as any)?.chatid as string | undefined;
     if (nameStr === 'chat' && newChatId) {
         void syncActiveBucketFromChat(newChatId);
@@ -1181,6 +1193,7 @@ watch(() => [authStore.token, authStore.user?.id, authStore.selectedTenantId ?? 
     workbenches.value = [];
     if (sharedKnowledgeBaseIdentity.value !== knowledgeBaseIdentity.value) sharedKnowledgeBaseIdentity.value = '';
     pendingSessionLookups.clear();
+    sessionHistoryEpochs.clear();
     if (authStore.token) {
         void refreshWorkspaceLists();
         void refreshKnowledgeBases();

@@ -31,4 +31,5 @@ test('the real first-session callback carries the draft and navigates inside its
   assert.deepEqual(calls.find(call => call[0] === 'route'), ['route', '/platform/knowledge-bases/library/chat/session'])
   assert.equal(calls.find(call => call[0] === 'draft')?.[1], 'unsent fixture draft')
   assert.equal(calls.find(call => call[0] === 'draft')?.[3], 'selected-model')
+  assert.equal(calls.find(call => call[0] === 'menu'), undefined, 'a prepared draft is not persisted history')
 })

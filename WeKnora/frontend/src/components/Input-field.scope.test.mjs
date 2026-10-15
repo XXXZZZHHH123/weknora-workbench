@@ -6,7 +6,7 @@ import ts from 'typescript'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import * as Vue from 'vue'
 
-const source = readFileSync(new URL('./Input-field.vue', import.meta.url), 'utf8')
+const source = readFileSync(process.env.SCOPED_INPUT_SOURCE || new URL('./Input-field.vue', import.meta.url), 'utf8')
 const descriptor = parse(source).descriptor
 const compiled = compileScript(descriptor, { id: 'scope-test', inlineTemplate: true })
 const code = ts.transpileModule(compiled.content.replaceAll('import.meta.url', "'file:///Input-field.vue'"), {
@@ -177,7 +177,7 @@ test('real @ and model actions stay local and send only documents from the bound
     assert.equal(c.sent.length, 1)
     assert.equal(c.sent[0][0], '完整问题保持不变。')
     assert.equal(c.sent[0][1], 'free-b')
-    assert.deepEqual(JSON.parse(JSON.stringify(c.sent[0][2])), [{ id: 'bound-file', name: 'Real source', type: 'file', kb_id: 'bound-kb', kb_name: 'Bound KB' }])
+    assert.deepEqual(JSON.parse(JSON.stringify(c.sent[0][2])), [{ id: 'bound-kb', name: 'Bound KB', type: 'kb', kb_type: 'document' }, { id: 'bound-file', name: 'Real source', type: 'file', kb_id: 'bound-kb', kb_name: 'Bound KB' }])
     assert.deepEqual(Array.from(c.sent[0][3]), []); assert.deepEqual(Array.from(c.sent[0][4]), [])
     assert.deepEqual(c.effects, []); assert.deepEqual(c.storageWrites, [])
     assert.equal(JSON.stringify(c.settings), before)
@@ -218,7 +218,7 @@ test('injected popup events cannot select an external KB or an unlisted file wit
     c.find('send-btn').props.onClick()
     await c.flush()
     assert.equal(c.sent.length, 1)
-    assert.deepEqual(Array.from(c.sent[0][2]), [])
+    assert.deepEqual(JSON.parse(JSON.stringify(c.sent[0][2])), [{ id: 'bound-kb', name: 'Bound KB', type: 'kb', kb_type: 'document' }])
     assert.deepEqual(c.effects, [])
   } finally { c.app.unmount() }
 })
@@ -237,6 +237,10 @@ test('changing the bound KB clears selection and ignores the previous KB respons
     finish({ data: [{ id: 'old-file', title: 'Previous source', knowledge_base_id: 'bound-kb' }], total: 1 })
     await c.flush()
     assert.equal(c.find('mention-old-file'), undefined)
+    await c.enter('新知识库问题')
+    c.find('send-btn').props.onClick()
+    await c.flush()
+    assert.deepEqual(JSON.parse(JSON.stringify(c.sent[0][2])), [{ id: 'another-kb', name: 'Another KB', type: 'kb', kb_type: 'document' }])
     assert.equal(c.all().find(n => n.type === 'textarea').props.value, '')
     assert.deepEqual(c.effects, [])
   } finally { c.app.unmount() }
@@ -279,4 +283,39 @@ test('scoped stop reports API failure and never invents an assistant ID', async 
       assert.deepEqual(c.sent, [])
     } finally { c.app.unmount() }
   }
+})
+
+
+test('the research composer starts with its bound KB chip and preserves it after sending', async () => {
+  const c = mountComposer()
+  try {
+    await c.flush()
+    assert.ok(c.all().some(n => String(n.props.class || '').includes('mention-chip') && n.children.some(child => child.text.includes('Bound KB'))))
+    await c.enter('完整问题')
+    c.find('send-btn').props.onClick()
+    await c.flush()
+    assert.deepEqual(JSON.parse(JSON.stringify(c.sent[0][2])), [{ id: 'bound-kb', name: 'Bound KB', type: 'kb', kb_type: 'document' }])
+    assert.ok(c.find('mention-chip--kb'), 'sending must keep the current KB visible')
+  } finally { c.app.unmount() }
+})
+
+test('the default KB chip can be removed locally while scope changes restore only the new KB', async () => {
+  const c = mountComposer()
+  const before = JSON.stringify(c.settings)
+  try {
+    await c.flush()
+    c.find('mention-chip__remove').props.onClick({ stopPropagation() {} })
+    await c.flush()
+    assert.equal(c.find('mention-chip--kb'), undefined)
+    await c.enter('当前工作台问题')
+    c.find('send-btn').props.onClick()
+    await c.flush()
+    assert.deepEqual(Array.from(c.sent[0][2]), [])
+    c.props.knowledgeScope = { kbId: 'another-kb', kbName: 'Another KB' }
+    await c.flush()
+    assert.ok(c.find('mention-chip--kb'))
+    assert.equal(JSON.stringify(c.settings), before)
+    assert.deepEqual(c.effects, [])
+    assert.deepEqual(c.storageWrites, [])
+  } finally { c.app.unmount() }
 })

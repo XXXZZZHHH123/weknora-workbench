@@ -55,6 +55,9 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	if err := db.Exec(string(templatesMigration)).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AutoMigrate(&types.Message{}); err != nil {
+		t.Fatal(err)
+	}
 	h := NewWorkspaceHandler(service.NewWorkspaceService(db, &workspaceHandlerKBs{}, nil))
 	r := gin.New()
 	r.Use(middleware.ErrorHandler())

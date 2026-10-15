@@ -1333,7 +1333,10 @@ const loadScopedMentionItems = async (q: string, resetIndex: boolean, append: bo
     if (!append && (!kb || kb.id !== scope.kbId)) throw new Error('知识库范围校验失败');
     const filePayload = fileResponse?.data;
     const files: any[] = Array.isArray(filePayload) ? filePayload : (Array.isArray(filePayload?.data) ? filePayload.data : []);
-    if (!append) scopedKbName.value = kb.name;
+    if (!append) {
+      scopedKbName.value = kb.name;
+      scopedMentionItems.value = scopedMentionItems.value.map(item => item.type === 'kb' && item.id === scope.kbId ? { ...item, name: kb.name, kbType: kb.type === 'faq' ? 'faq' : 'document' } : item);
+    }
     const kbName = scopedKbName.value || scope.kbName || scope.kbId;
     const items: MentionItem[] = files
       .filter(file => (!file.knowledge_base_id && !file.kb_id) || (file.knowledge_base_id ?? file.kb_id) === scope.kbId)
@@ -1367,8 +1370,9 @@ const loadScopedMentionItems = async (q: string, resetIndex: boolean, append: bo
 
 watch(() => props.knowledgeScope?.kbId, () => {
   ++mentionLoadSeq;
-  scopedMentionItems.value = [];
-  scopedKbName.value = '';
+  const scope = props.knowledgeScope;
+  scopedMentionItems.value = scope?.kbId ? [{ id: scope.kbId, name: scope.kbName || scope.kbId, type: 'kb', kbType: 'document' }] : [];
+  scopedKbName.value = scope?.kbName || '';
   mentionItems.value = [];
   mentionGroupCounts.value = {};
   mentionLoading.value = false;
@@ -1376,7 +1380,7 @@ watch(() => props.knowledgeScope?.kbId, () => {
   mentionOffset.value = 0;
   showMention.value = false;
   query.value = '';
-});
+}, { immediate: true });
 
 const loadMentionItems = async (q: string, resetIndex = true, append = false) => {
   if (props.knowledgeScope) {

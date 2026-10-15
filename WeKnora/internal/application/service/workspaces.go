@@ -209,7 +209,7 @@ func (s *WorkspaceService) DeleteProject(ctx context.Context, id string) error {
 }
 
 func (s *WorkspaceService) sessionQuery(ctx context.Context, caller types.Caller, id string) *gorm.DB {
-	return s.db.WithContext(ctx).Model(&types.Session{}).Joins("JOIN assistant_project_sessions aps ON aps.session_id = sessions.id AND aps.tenant_id = sessions.tenant_id AND aps.user_id = sessions.user_id").Where("aps.project_id = ? AND sessions.tenant_id = ? AND sessions.user_id = ?", id, caller.TenantID, caller.UserID)
+	return s.db.WithContext(ctx).Model(&types.Session{}).Joins("JOIN assistant_project_sessions aps ON aps.session_id = sessions.id AND aps.tenant_id = sessions.tenant_id AND aps.user_id = sessions.user_id").Where("aps.project_id = ? AND sessions.tenant_id = ? AND sessions.user_id = ?", id, caller.TenantID, caller.UserID).Where("EXISTS (SELECT 1 FROM messages history_message WHERE history_message.session_id = sessions.id AND history_message.role = ? AND history_message.deleted_at IS NULL)", "user")
 }
 
 func (s *WorkspaceService) ProjectSessions(ctx context.Context, id string, page, size int) ([]*types.Session, int64, error) {

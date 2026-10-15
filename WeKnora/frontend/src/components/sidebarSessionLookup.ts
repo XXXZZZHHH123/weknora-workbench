@@ -11,5 +11,5 @@ export async function lookupSidebarSession(
   const local = cached.find((row) => row.id === sessionId)
   if (local) return local
   const response = await fetchSession(sessionId)
-  return response.success !== false && response.data?.id === sessionId ? response.data : null
+  return response.success !== false && response.data?.id === sessionId && response.data.has_user_message === true ? response.data : null
 }

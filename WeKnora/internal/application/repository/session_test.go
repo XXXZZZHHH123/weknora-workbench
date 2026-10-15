@@ -17,7 +17,7 @@ func newSessionRepositoryForTest(t *testing.T) (interfaces.SessionRepository, *g
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&types.Session{}))
+	require.NoError(t, db.AutoMigrate(&types.Session{}, &types.Message{}))
 
 	return NewSessionRepository(db), db
 }
@@ -34,6 +34,7 @@ func createSessionForTest(t *testing.T, db *gorm.DB, tenantID uint64, userID str
 		session.Title = "legacy tenant session"
 	}
 	require.NoError(t, db.Create(session).Error)
+	require.NoError(t, db.Create(&types.Message{SessionID: session.ID, Role: "user", Content: "fixture question"}).Error)
 
 	return session
 }

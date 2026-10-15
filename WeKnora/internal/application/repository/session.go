@@ -17,6 +17,10 @@ type sessionRepository struct {
 	db *gorm.DB
 }
 
+// A titled, pinned or project-bound draft is still not chat history. Keep this
+// predicate shared by all list/count paths; direct draft reads stay available.
+const persistedUserMessage = "EXISTS (SELECT 1 FROM messages history_message WHERE history_message.session_id = sessions.id AND history_message.role = 'user' AND history_message.deleted_at IS NULL)"
+
 func applySessionUserScope(db *gorm.DB, userID string) *gorm.DB {
 	if userID == "" {
 		return db
@@ -45,7 +49,7 @@ func (r *sessionRepository) Create(ctx context.Context, session *types.Session) 
 func (r *sessionRepository) Get(ctx context.Context, tenantID uint64, userID string, id string) (*types.Session, error) {
 	var session types.Session
 	err := applySessionUserScope(
-		r.db.WithContext(ctx).Where("tenant_id = ? AND id = ?", tenantID, id),
+		r.db.WithContext(ctx).Select("sessions.*, "+persistedUserMessage+" AS has_user_message").Where("tenant_id = ? AND id = ?", tenantID, id),
 		userID,
 	).First(&session).Error
 	if err != nil {
@@ -81,6 +85,7 @@ func webSessionPredicateArgs() []any {
 func (r *sessionRepository) GetByID(ctx context.Context, tenantID uint64, id string) (*types.Session, error) {
 	var session types.Session
 	err := r.db.WithContext(ctx).
+		Select("sessions.*, "+persistedUserMessage+" AS has_user_message").
 		Where("tenant_id = ? AND id = ?", tenantID, id).
 		First(&session).Error
 	if err != nil {
@@ -115,7 +120,7 @@ func (r *sessionRepository) GetIMPlatform(
 func (r *sessionRepository) GetByTenantID(ctx context.Context, tenantID uint64, userID string) ([]*types.Session, error) {
 	var sessions []*types.Session
 	err := applySessionUserScope(
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID),
+		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).Where(persistedUserMessage),
 		userID,
 	).Order("updated_at DESC").Find(&sessions).Error
 	if err != nil {
@@ -133,7 +138,7 @@ func (r *sessionRepository) GetPagedByTenantID(
 
 	// First query the total count
 	baseQ := applySessionUserScope(
-		r.db.WithContext(ctx).Model(&types.Session{}).Where("tenant_id = ?", tenantID),
+		r.db.WithContext(ctx).Model(&types.Session{}).Where("tenant_id = ?", tenantID).Where(persistedUserMessage),
 		userID,
 	)
 	err := baseQ.Count(&total).Error
@@ -143,7 +148,7 @@ func (r *sessionRepository) GetPagedByTenantID(
 
 	// Then query the paginated data
 	err = applySessionUserScope(
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID),
+		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).Where(persistedUserMessage),
 		userID,
 	).
 		Order("updated_at DESC").
@@ -179,7 +184,8 @@ func (r *sessionRepository) QueryPaged(
 
 	// Base filter shared by count and list queries.
 	applyBase := func(db *gorm.DB) *gorm.DB {
-		db = db.Where("s.tenant_id = ? AND s.deleted_at IS NULL", q.TenantID)
+		db = db.Where("s.tenant_id = ? AND s.deleted_at IS NULL", q.TenantID).
+			Where(strings.ReplaceAll(persistedUserMessage, "sessions.id", "s.id"))
 		if q.UserID != "" {
 			db = db.Where("(s.user_id = ? OR s.user_id IS NULL OR s.user_id = '')", q.UserID)
 		}

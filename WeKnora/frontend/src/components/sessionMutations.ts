@@ -18,6 +18,7 @@ export interface SessionMutationDetail {
   sessionId: string
   patch?: SessionMutationPatch
   messagesCleared?: boolean
+  historyChanged?: boolean
   removed?: boolean
 }
 

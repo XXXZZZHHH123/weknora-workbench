@@ -3705,18 +3705,6 @@ async function startFixSession(prompt: string) {
     const res = await createSessions({})
     if (res && (res as any).data && (res as any).data.id) {
       const sessionId = (res as any).data.id
-      const now = new Date().toISOString()
-
-      menuStore.updataMenuChildren({
-        title: t('knowledgeEditor.wikiBrowser.fixAssistantTitle'),
-        path: `chat/${sessionId}`,
-        id: sessionId,
-        isMore: false,
-        isNoTitle: true,
-        created_at: now,
-        updated_at: now
-      })
-
       menuStore.changeIsFirstSession(true)
       menuStore.changeFirstQuery(prompt, [], '', [])
 
