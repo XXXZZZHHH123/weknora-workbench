@@ -7,6 +7,7 @@ const { chromium } = require('playwright');
 const root = path.join(__dirname, '..', 'src', 'structured_data');
 const requests = [];
 let published = false;
+let publishedMapping = null;
 let sampleDelay = 0;
 let storedDelay = 0;
 let failFullCheck = false;
@@ -19,7 +20,7 @@ const small={name:'数据汇总',rows:15,columns:8,status:'needs_review',layout:
 const large={name:'大数据表',rows:500000,columns:100,status:'needs_review',layout:'single_header',fingerprint:'fixture-large',mapping:{sheet:'大数据表',fingerprint:'fixture-large',blocks:[{name:'大表记录',date_mode:'date',date_column:'A',header_rows:[1],data_start_row:2,data_end_row:null,columns:[{column:'B',metric:'测试数值',unit:null,header_cells:['B1']}]}]},regions:[],reasons:[]};
 const chartOnly={name:'库存图',rows:1,columns:1,status:'needs_review',layout:'chart_or_image',fingerprint:'fixture-chart',mapping:{sheet:'库存图',fingerprint:'fixture-chart',blocks:[]},charts:{chart_count:2,image_count:1},regions:[],reasons:[]};
 const trusted={...small,name:'已核验规则表',status:'trusted_existing',mapping:{...mapping,sheet:'已核验规则表',blocks:[mapping.blocks[0]]}};
-const sheets=()=>[{...small,status:published?'confirmed':'needs_review'},large,chartOnly,trusted];
+const sheets=()=>[{...small,status:published?'confirmed':'needs_review',mapping:published?(publishedMapping||mapping):mapping},large,chartOnly,trusted];
 const col=n=>{let s='';for(;n;n=Math.floor((n-1)/26))s=String.fromCharCode(65+(n-1)%26)+s;return s;};
 function view(sheet,sr,sc,nr,nc){
   const rows=sheet.rows,cols=sheet.columns,er=Math.min(rows,sr+nr-1),ec=Math.min(cols,sc+nc-1),cells=[];
@@ -49,7 +50,7 @@ const server=http.createServer(async(req,res)=>{
   else if(url.pathname==='/api/query'){if(storedDelay)await new Promise(resolve=>setTimeout(resolve,storedDelay));const c=url.searchParams.get('series_id').replace('saved-',''),offset=+url.searchParams.get('offset');result={series:{metric:'20天原料',dimensions:{原表列:c},unit:'元/吨'},record_count:26,valid_count:26,rows:[{date:'2026-09-04',value:12055+offset,raw_value:12055+offset,source_cell:c+(4+offset),date_cell:'A'+(4+offset),value_status:'valid'}]};}
   else if(url.pathname.endsWith('/preview'))result={id:'fixture-check',status:'processing'};
   else if(url.pathname==='/api/jobs/fixture-check')result=failFullCheck?{id:'fixture-check',status:'failed',error:'模拟完整检查失败',review_target:{sheet:small.name,block_index:0,field:'date_column',cells:['A4','C4']}}:{id:'fixture-check',status:'completed',result:{series_count:3,observation_count:20,mapping:{...mapping,blocks:[{...mapping.blocks[0],columns:[{column:'C',metric:'20天原料',unit:'元/吨',dimensions:{原表列:'C'}},{column:'F',metric:'20天原料',unit:'元/吨',dimensions:{原表列:'F'}}]}]},blocks:[{name:'销售明细',series_count:2,observation_count:10,series:[],sample:[],issues:[]}],sample:[],issues:[]}};
-  else if(url.pathname.endsWith('/confirm')){published=true;result={id:'fixture-publish',status:'processing'};}
+  else if(url.pathname.endsWith('/confirm')){published=true;publishedMapping=structuredClone(data.mapping);result={id:'fixture-publish',status:'processing'};}
   else if(url.pathname==='/api/jobs/fixture-publish')result={status:'completed',result:{}};
   else if(url.pathname.startsWith('/api/imports/'))result={import_id:'123456789012345678901234',source_file:'销售数据.xlsx',dataset_id:'saved-fixture',sheets:sheets()};
   else {const file=url.pathname==='/'?'index.html':url.pathname.slice(1);if(!['index.html','sheet-review.js','sheet-review.css','workspace.css'].includes(file)){res.writeHead(404);res.end();return;}res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(path.join(root,file)));return;}
@@ -260,7 +261,32 @@ const server=http.createServer(async(req,res)=>{
     assert.equal(requests.filter(r=>r.path.endsWith('/preview')).length,previewsBefore+2,'Each failed or successful import attempt runs its own full check');
     const preview=requests.find(r=>r.path.endsWith('/preview'));assert.equal(preview.params.background,'true');assert.equal(preview.data.mapping.blocks.length,1);assert(!preview.data.mapping.blocks[0]._review_id);
     const confirm=requests.find(r=>r.path.endsWith('/confirm'));assert.equal(confirm.data.mapping.blocks.length,1);
-    await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='数据汇总');
+    await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='数据汇总'&&document.querySelector('.mapping-block.selected .card-state')?.textContent.includes('已可查询'));
+    assert.equal(await page.locator('[data-select-block]').count(),3,'Publishing selected blocks must preserve excluded blocks for the next import');
+    assert.equal(await page.locator('#confirmMapping').isDisabled(),true,'An unchanged published selection cannot be imported again');
+    await page.locator('[data-select-block]').nth(1).click();
+    assert.equal(await page.locator('#excludeCurrentBlock').innerText(),'恢复导入');
+    await page.locator('#excludeCurrentBlock').click();
+    assert.equal(await page.locator('#ackBlock').isEnabled(),true,'The next block stays editable after a successful import');
+    await page.locator('#ackBlock').check();
+    await page.locator('#confirmMapping').click();
+    assert.equal(await page.locator('#confirmGo').isEnabled(),true,'The persistent confirmation dialog resets its busy state after publishing');
+    await page.locator('#confirmGo').click();
+    await page.waitForFunction(()=>[...document.querySelectorAll('.card-state')].filter(el=>el.textContent.includes('已可查询')).length===2);
+    assert.equal(requests.filter(r=>r.path.endsWith('/confirm')).length,2,'A second block can be imported without reloading or rescanning');
+    assert.equal(requests.filter(r=>r.path.endsWith('/confirm')).at(-1).data.mapping.blocks.length,2,'Importing the next block retains the first published block');
+    assert.deepEqual(requests.filter(r=>r.path.endsWith('/confirm')).at(-1).data.mapping.blocks[0],confirm.data.mapping.blocks[0],'The first block keeps its verified mapping');
+    await page.reload();
+    await page.waitForFunction(()=>[...document.querySelectorAll('.card-state')].filter(el=>el.textContent.includes('已可查询')).length===2);
+    assert.equal(await page.locator('[data-select-block]').count(),3,'A browser reload retains the remaining excluded block');
+    await page.locator('[data-select-block]').nth(2).click();
+    await page.locator('#excludeCurrentBlock').click();await page.locator('#ackBlock').check();
+    await page.locator('#confirmMapping').click();await page.locator('#confirmGo').click();
+    await page.waitForFunction(()=>[...document.querySelectorAll('.card-state')].filter(el=>el.textContent.includes('已可查询')).length===3&&document.querySelector('#confirmMapping')?.disabled);
+    assert.equal(requests.filter(r=>r.path.endsWith('/confirm')).at(-1).data.mapping.blocks.length,3,'A third consecutive import preserves all confirmed blocks');
+    await page.evaluate(()=>{const editor=document.getElementById('mappingEditor'),value=JSON.parse(editor.value);value.blocks.reverse();editor.value=JSON.stringify(value);editor.dispatchEvent(new Event('input',{bubbles:true}));});
+    assert.equal(await page.locator('.card-state.checked').count(),3,'Reordering a draft matches published block content rather than array positions');
+    assert.equal(await page.locator('#confirmMapping').isDisabled(),true,'Reordered unchanged blocks are already published');
     await page.locator('[data-sheet-filter="charts"]').click();await page.locator('.sheet-tab').first().click();
     await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='库存图'&&document.querySelector('#chartPane')&&!document.querySelector('#chartPane').hidden);
     assert.equal(await page.locator('#tablePane').isHidden(),true);

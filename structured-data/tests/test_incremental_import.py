@@ -1,5 +1,6 @@
 import hashlib
 import json
+from copy import deepcopy
 from datetime import datetime
 
 import pytest
@@ -91,6 +92,46 @@ def test_changed_mapping_replaces_rows_instead_of_appending_and_failure_is_atomi
     assert manager.get(first['import_id'])['dataset_id'] == third['dataset_id']
     assert len(manager.store.list_datasets()) == before
     assert not list(manager.store.datasets.glob('.import-*'))
+
+
+def test_consecutive_block_confirmation_preserves_earlier_values_and_versions(tmp_path):
+    """The editor submits all selected blocks, including already confirmed ones."""
+    path = tmp_path / 'three-independent-blocks.xlsx'
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = '业务记录'
+    sheet.append(['日期', '计数甲', '计数乙', '计数丙'])
+    sheet.append([datetime(2024, 2, 1), 0, 21, 31])
+    sheet.append([datetime(2024, 2, 2), 12, 22, 32])
+    workbook.save(path)
+    manager = ImportManager(tmp_path / 'data')
+    scanned = manager.ingest(path, use_reviewed_mappings=False)
+    candidate = manager.sheet(scanned['import_id'], sheet.title)['mapping']
+    base = candidate['blocks'][0]
+    assert len(base['columns']) == 3
+    blocks = [{**deepcopy(base), 'name': f'区块 {index + 1}', 'columns': [deepcopy(column)]}
+              for index, column in enumerate(base['columns'])]
+    versions = []
+    for size in (1, 2, 3):
+        mapping = {**candidate, 'blocks': deepcopy(blocks[:size])}
+        result = manager.confirm(scanned['import_id'], mapping, save_template=False)
+        dataset = result['dataset_id']
+        versions.append(dataset)
+        catalog = manager.store.list_series(dataset)['series']
+        assert len(catalog) == size
+        assert manager.store.manifest(dataset)['observation_count'] == size * 2
+        values = {entry['metric']: manager.store.query_series(dataset, entry['series_id'])['rows']
+                  for entry in catalog}
+        assert [row['value'] for row in values['计数甲']] == [0, 12]
+        assert [row['source_cell'] for row in values['计数甲']] == ['B2', 'B3']
+        if size > 1:
+            assert [row['value'] for row in values['计数乙']] == [21, 22]
+            assert [row['source_cell'] for row in values['计数乙']] == ['C2', 'C3']
+    assert len(set(versions)) == 3
+    assert [manager.store.manifest(dataset)['observation_count'] for dataset in versions] == [2, 4, 6]
+    final_mapping = manager.sheet(scanned['import_id'], sheet.title)['mapping']
+    assert len(final_mapping['blocks']) == 3
+    assert manager.confirm(scanned['import_id'], final_mapping, save_template=False)['dataset_id'] == versions[-1]
 
 
 def test_stale_review_pointer_preserves_newer_published_tables(tmp_path):

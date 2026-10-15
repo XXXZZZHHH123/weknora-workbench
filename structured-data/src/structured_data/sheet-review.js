@@ -78,13 +78,13 @@
   }
   function ensureBlocks(m) {
     const seen=new Set();
-    m.blocks.forEach((b,i)=>{
+    m.blocks.forEach(b=>{
       if(!b._review_id||seen.has(b._review_id))b._review_id=idFor();seen.add(b._review_id);
       const sig=blockSignature(b),prior=ui.states[b._review_id];
       if(!prior)ui.states[b._review_id]={enabled:true,checked:false,signature:sig};
       else if(prior.signature!==sig){prior.checked=false;prior.signature=sig;}
-      const original=currentSheet?.mapping?.blocks?.[i],state=ui.states[b._review_id];
-      state.published=isPublished(currentSheet)&&!!original&&sig===blockSignature(original)&&!state.rangePending;
+      const state=ui.states[b._review_id];
+      state.published=isPublished(currentSheet)&&(currentSheet.mapping?.blocks||[]).some(original=>sig===blockSignature(original))&&!state.rangePending;
       if(state.published&&currentSheet.status==='confirmed')state.checked=true;
     });
     Object.keys(ui.states).forEach(id=>{if(!seen.has(id))delete ui.states[id];});
@@ -173,7 +173,7 @@
     currentSheet=null;mappingConfirmed=false;mappingBusy=false;ui.checkSignature=null;
     $('sheetDetail').innerHTML='<p class="grid-loading">正在读取当前工作表…</p>';
     const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller,30000,requestApi);
-    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);
+    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
     if(isChartOnly(sheet)){showPreview('charts');return;}
     showPreview('table');await loadWindow(1,1,requestApi);
   };
@@ -579,7 +579,7 @@
   updateConfirmState = function() {
     const included=enabledBlocks(),checkValid=ui.checkSignature===JSON.stringify(submittedMapping());mappingConfirmed=checkValid;
     const pending=included.filter(b=>!ui.states[b._review_id]?.checked&&!ui.states[b._review_id]?.published).length;
-    const alreadyPublished=isPublished(currentSheet)&&included.length===(currentSheet.mapping?.blocks?.length||0)&&included.length===(ui.mapping?.blocks?.length||0)&&included.every(b=>ui.states[b._review_id]?.published);
+    const alreadyPublished=isPublished(currentSheet)&&included.length===(currentSheet.mapping?.blocks?.length||0)&&included.every(b=>ui.states[b._review_id]?.published);
     if($('confirmMapping')){$('confirmMapping').disabled=mappingBusy||!included.length||!!pending||alreadyPublished;$('confirmMapping').title=alreadyPublished?'本表已可查询；修改映射后才需要重新核对和导入。':!included.length?'请至少保留一个要导入的区块。':pending?`还有 ${pending} 个区块需要核对字段。`:'';}
     if($('confirmHint'))$('confirmHint').innerHTML=alreadyPublished?'本表已可查询<small>修改映射后，请重新核对并导入。</small>':included.length?`${pending?`还有 ${pending} 个区块待核对`:`${included.length} 个区块已核对`}<small>${mappingBusy?'正在检查和处理，请等待…':'导入前检查全部选定数据，通过后写入新版本。'}</small>`:`没有要导入的区块<small>恢复一个区块后才能确认这张表。</small>`;
     if($('undoMapping'))$('undoMapping').disabled=mappingBusy||!ui.history.length;
@@ -621,13 +621,19 @@
     const dialog=$('confirmDialog');if(!dialog.open)dialog.showModal();
   };
   async function publishMapping() {
-    const mapping=readMapping(),blockIds=enabledBlocks().map(b=>b._review_id),version=reviewVersion,scopeEpoch=authEpoch,importId=currentImport.import_id,sheetName=currentSheet.name,key=draftKey();
+    const mapping=readMapping(),blockIds=enabledBlocks().map(b=>b._review_id),version=reviewVersion,scopeEpoch=authEpoch,importId=currentImport.import_id,sheetName=currentSheet.name;
+    // Keep the full editor plan: only enabled blocks are sent to the parser,
+    // but excluded blocks must remain available for the next confirmation.
+    saveDraft();
     setMappingBusy(true);$('mappingFeedback').textContent='正在生成数据集新版本…';
     try {
       const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping,save_template:!!$('saveTemplate')?.checked})});if(version!==reviewVersion)return;
       const result=await scopedJob(job.id,version,s=>{if(version===reviewVersion&&$('mappingFeedback'))$('mappingFeedback').textContent=s;});if(version!==reviewVersion)return;
-      try{localStorage.removeItem(key);}catch{}ui.editable=false;note(`「${sheetName}」的选定区块已导入新版本。`);
-      await refresh();if($('importSelect').value!==importId)await refreshImports(importId);
+      ui.editable=false;note(`「${sheetName}」的选定区块已导入新版本。`);
+      const isCurrent=()=>scopeEpoch===authEpoch;
+      await refresh(isCurrent,importId,result?.dataset_id);if(!isCurrent())return;
+      if(currentImport?.import_id===importId&&currentSheet?.name!==sheetName){const index=currentImport.sheets.findIndex(s=>s.name===sheetName);if(index>=0)await selectSheet(index);}
+      if(!isCurrent())return;
       if(result?.dataset_id&&!reviewOnly){$('dataset').value=result.dataset_id;await selectDataset();}
       notifyImportUpdated(importId,result?.dataset_id,'confirmed',scopeEpoch);
     }catch(e){e.reviewBlockIds=blockIds;throw e;}finally{if(version===reviewVersion)setMappingBusy(false);}
