@@ -2822,6 +2822,18 @@ func (s *knowledgeService) reparseKnowledge(
 	if existing.Type == "file" && isExcelFileType(fileType) {
 		return nil, werrors.NewBadRequestError("Excel 文件请通过结构化数据库进行结构化解析")
 	}
+	storedOverrides, storedErr := existing.ProcessOverrides()
+	if storedErr != nil {
+		return nil, storedErr
+	}
+	if storedOverrides != nil && storedOverrides.SourceOnly {
+		if processOverrides == nil {
+			return nil, werrors.NewBadRequestError("该文件仅保存原件，请明确选择解析配置后再解析")
+		}
+		if _, err := resolveFileImportProcessConfig(ctx, kb, fileType, processOverrides, nil); err != nil {
+			return nil, err
+		}
+	}
 
 	tenantID := existing.TenantID
 

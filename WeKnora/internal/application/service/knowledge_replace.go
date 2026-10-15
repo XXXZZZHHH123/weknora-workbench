@@ -94,6 +94,9 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	if overrides != nil && overrides.SourceOnly {
+		return nil, werrors.NewBadRequestError("仅保存原件的文件请重新上传；替换文件不支持仅保存原件模式")
+	}
 	if _, err := resolveFileImportProcessConfig(ctx, kb, fileType, overrides, nil); err != nil {
 		return nil, err
 	}

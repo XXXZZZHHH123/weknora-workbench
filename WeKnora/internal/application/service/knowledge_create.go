@@ -71,7 +71,7 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 	// gates the same extension set, but this path must keep returning
 	// ErrInvalidFileType rather than the shared gate's localized message.
 	logger.Infof(ctx, "Checking file type: %s", fileName)
-	if !isValidFileType(fileName) {
+	if !isValidFileType(fileName) && !(processOverrides != nil && processOverrides.SourceOnly && normalizeFileExtension(getFileType(fileName)) == "zip") {
 		logger.Error(ctx, "Invalid file type")
 		return nil, ErrInvalidFileType
 	}
@@ -183,7 +183,7 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 		EmbeddingModelID: kb.EmbeddingModelID,
 		Metadata:         metadataJSON,
 	}
-	if isExcelFileType(knowledge.FileType) {
+	if isExcelFileType(knowledge.FileType) || eff.SourceOnly {
 		knowledge.ParseStatus = types.ParseStatusStored
 		knowledge.SummaryStatus = types.SummaryStatusNone
 	}
@@ -219,8 +219,8 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 		logger.Errorf(ctx, "Failed to set knowledge tags, knowledge ID: %s, error: %v", knowledge.ID, err)
 		return nil, err
 	}
-	// Excel stays as an original source until the user confirms its worksheets
-	// in the structured database; document and table-summary tasks spend models.
+	// Excel and explicit original-only uploads do not enter any parsing,
+	// image recognition, vectorization or summary task.
 	if knowledge.ParseStatus == types.ParseStatusStored {
 		recordKBActivity(ctx, s.audit, knowledge.TenantID, kbID, types.AuditActionKnowledgeCreated,
 			"knowledge", knowledge.ID, types.AuditOutcomeAccepted, map[string]any{
@@ -324,6 +324,9 @@ func (s *knowledgeService) CreateKnowledgeFromURL(ctx context.Context,
 	kbID string, rawURL string, fileName string, fileType string, enableMultimodel *bool, title string, tagIDs []string, channel string,
 	processOverrides *types.KnowledgeProcessOverrides,
 ) (*types.Knowledge, error) {
+	if processOverrides != nil && processOverrides.SourceOnly {
+		return nil, werrors.NewBadRequestError("仅保存原件模式只支持文件上传，不支持网页或文件URL导入")
+	}
 	logger.Info(ctx, "Start creating knowledge from URL")
 	logger.Infof(ctx, "Knowledge base ID: %s, URL: %s", kbID, rawURL)
 
@@ -537,6 +540,9 @@ func (s *knowledgeService) createKnowledgeFromFileURL(
 	channel string,
 	processOverrides *types.KnowledgeProcessOverrides,
 ) (*types.Knowledge, error) {
+	if processOverrides != nil && processOverrides.SourceOnly {
+		return nil, werrors.NewBadRequestError("仅保存原件模式只支持文件上传，不支持文件URL导入")
+	}
 	logger.Info(ctx, "Start creating knowledge from file URL")
 	logger.Infof(ctx, "Knowledge base ID: %s, file URL: %s", kbID, fileURL)
 

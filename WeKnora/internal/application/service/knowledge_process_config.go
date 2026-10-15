@@ -55,6 +55,7 @@ func ResolveProcessConfig(kb *types.KnowledgeBase, overrides *types.KnowledgePro
 	if overrides == nil {
 		return eff
 	}
+	eff.SourceOnly = overrides.SourceOnly
 	if overrides.SummaryEnabled != nil {
 		eff.SummaryEnabled = *overrides.SummaryEnabled
 	}
@@ -151,8 +152,13 @@ func resolveFileImportProcessConfig(
 	processOverrides *types.KnowledgeProcessOverrides,
 	enableMultimodel *bool,
 ) (types.EffectiveProcessConfig, error) {
-	if err := validateImportFileType(fileType); err != nil {
-		return types.EffectiveProcessConfig{}, err
+	sourceOnly := processOverrides != nil && processOverrides.SourceOnly
+	// Archives are stored as opaque bytes only; they are never extracted or
+	// handed to the document parser by this upload mode.
+	if !(sourceOnly && normalizeFileExtension(fileType) == "zip") {
+		if err := validateImportFileType(fileType); err != nil {
+			return types.EffectiveProcessConfig{}, err
+		}
 	}
 
 	eff := ResolveProcessConfig(kb, processOverrides)
@@ -160,6 +166,12 @@ func resolveFileImportProcessConfig(
 		eff.EnableMultimodel = *enableMultimodel
 	}
 
+	if sourceOnly {
+		if err := types.ValidateEffectiveProcessPromptInstructions(eff); err != nil {
+			return eff, werrors.NewBadRequestError(err.Error())
+		}
+		return eff, nil
+	}
 	if processOverrides != nil {
 		if err := ValidateProcessOverrides(ctx, kb, processOverrides, []string{fileType}); err != nil {
 			return eff, err
@@ -180,6 +192,9 @@ func ValidateProcessOverrides(
 ) error {
 	if overrides == nil {
 		return nil
+	}
+	if overrides.SourceOnly {
+		return werrors.NewBadRequestError("仅保存原件模式只支持文件上传，不用于正文解析或重新解析")
 	}
 
 	hasImage := false
