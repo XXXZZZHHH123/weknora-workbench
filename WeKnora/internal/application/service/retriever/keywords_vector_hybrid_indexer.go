@@ -2,7 +2,9 @@ package retriever
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -10,10 +12,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
 	"github.com/Tencent/WeKnora/internal/models/utils"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -75,12 +79,12 @@ func (v *KeywordsVectorHybridRetrieveEngineService) Index(ctx context.Context,
 	if slices.Contains(retrieverTypes, types.VectorRetrieverType) {
 		embedding, err := embedder.Embed(ctx, sanitizeForEmbedding(ctx, indexInfo.Content))
 		if err != nil {
-			return err
+			return &IndexingError{Phase: IndexingPhaseEmbedding, Err: err}
 		}
 		embeddingMap[indexInfo.SourceID] = embedding
 	}
 	params["embedding"] = embeddingMap
-	return v.indexRepository.Save(ctx, indexInfo, params)
+	return indexWriteError(v.indexRepository.Save(ctx, indexInfo, params))
 }
 
 // BatchIndex creates embeddings for multiple content items and saves them to the repository
@@ -99,7 +103,7 @@ func (v *KeywordsVectorHybridRetrieveEngineService) BatchIndex(ctx context.Conte
 		}
 		embeddings, err := batchEmbedWithBackoff(ctx, embedder, contentList)
 		if err != nil {
-			return err
+			return &IndexingError{Phase: IndexingPhaseEmbedding, Err: err}
 		}
 
 		batchSize := 40
@@ -110,24 +114,24 @@ func (v *KeywordsVectorHybridRetrieveEngineService) BatchIndex(ctx context.Conte
 		const maxConcurrency = 5
 		if len(chunks) <= maxConcurrency {
 			// For small number of batches, use simple concurrency
-			return v.concurrentBatchSave(ctx, chunks, embeddings, batchSize)
+			return indexWriteError(v.concurrentBatchSave(ctx, chunks, embeddings, batchSize))
 		}
 
 		// For large number of batches, use bounded concurrency
-		return v.boundedConcurrentBatchSave(ctx, chunks, embeddings, batchSize, maxConcurrency)
+		return indexWriteError(v.boundedConcurrentBatchSave(ctx, chunks, embeddings, batchSize, maxConcurrency))
 	}
 
 	// For non-vector retrieval, use concurrent batch saving as well
 	chunks := utils.ChunkSlice(indexInfoList, 10)
 	const maxConcurrency = 5
 	if len(chunks) <= maxConcurrency {
-		return v.concurrentBatchSaveNoEmbedding(ctx, chunks)
+		return indexWriteError(v.concurrentBatchSaveNoEmbedding(ctx, chunks))
 	}
-	return v.boundedConcurrentBatchSaveNoEmbedding(ctx, chunks, maxConcurrency)
+	return indexWriteError(v.boundedConcurrentBatchSaveNoEmbedding(ctx, chunks, maxConcurrency))
 }
 
 // batchEmbedWithBackoff calls BatchEmbedWithPool with exponential backoff on
-// transient failures (200 / 400 / 800 / 1600 / 3200 ms). It returns the last
+// transient failures (200 / 400 / 800 / 1600 ms). It returns the last
 // embedding result on success or the last error if every attempt failed.
 func batchEmbedWithBackoff(ctx context.Context, embedder embedding.Embedder, contentList []string) ([][]float32, error) {
 	delay := embedRetryBaseDelay
@@ -141,6 +145,9 @@ func batchEmbedWithBackoff(ctx context.Context, embedder embedding.Embedder, con
 			return embeddings, nil
 		}
 		logger.Errorf(ctx, "BatchEmbedWithPool attempt %d/%d failed: %v", attempt+1, embedRetryAttempts, err)
+		if permanentEmbeddingFailure(err) {
+			return nil, err
+		}
 		if attempt+1 < embedRetryAttempts {
 			select {
 			case <-time.After(delay):
@@ -151,6 +158,26 @@ func batchEmbedWithBackoff(ctx context.Context, embedder embedding.Embedder, con
 		}
 	}
 	return embeddings, err
+}
+
+func permanentEmbeddingFailure(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, secutils.ErrSSRFHostNotWhitelisted) || errors.Is(err, secutils.ErrSSRFRedirectBlocked) {
+		return true
+	}
+	var httpErr *api.HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	if httpErr.StatusCode < 400 || httpErr.StatusCode >= 500 {
+		return false
+	}
+	switch httpErr.StatusCode {
+	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests:
+		return false
+	default:
+		return true
+	}
 }
 
 // sanitizeForEmbedding caps content length at safetyMaxChars characters so
