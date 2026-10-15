@@ -88,7 +88,7 @@ test('one composer action switches between stop and send', () => {
 test('mid-run send is limited to agent sessions', () => {
   const chatView = readFileSync(
     new URL('../views/chat/index.vue', import.meta.url), 'utf8')
-  assert.match(chatView, /:canSteer="isAgentStreamSession\(\)"/)
+  assert.match(chatView, /:canSteer="isAgentStreamSession\(\) && !scopedSession"/)
 
   const fnStart = inputField.indexOf('const createSession = async')
   const fn = inputField.slice(fnStart, fnStart + 1600)

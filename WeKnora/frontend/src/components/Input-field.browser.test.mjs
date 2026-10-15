@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 
 const inputField = readFileSync(new URL('./Input-field.vue', import.meta.url), 'utf8')
 const chatPage = readFileSync(new URL('../views/chat/index.vue', import.meta.url), 'utf8')
@@ -35,8 +36,14 @@ test('a selected browser source keeps brand color on hover', () => {
 })
 
 test('a chat turn does not request the local browser while the extension is known offline', () => {
-  assert.match(
-    chatPage,
-    /local_browser_enabled:\s*!props\.embeddedMode && agentEnabled && useSettingsStoreInstance\.isLocalBrowserEnabled && !useBrowserConnectionStore\(\)\.knownOffline/,
-  )
+  const send = chatPage.slice(chatPage.indexOf('const sendMsg = async'), chatPage.indexOf('// Quietly recover'))
+  const scope = send.match(/const useHostScope = ([^;]+);/)[1]
+  const enabled = send.match(/local_browser_enabled: ([^,\n]+),/)[1]
+  for (const embeddedMode of [false, true]) for (const scopedSession of [false, true]) for (const knownOffline of [false, true]) {
+    const value = runInNewContext(`const useHostScope = ${scope}; ${enabled}`, {
+      props: { embeddedMode, scopedSession }, agentEnabled: true,
+      useSettingsStoreInstance: { isLocalBrowserEnabled: true }, useBrowserConnectionStore: () => ({ knownOffline }),
+    })
+    assert.equal(value, !embeddedMode && !scopedSession && !knownOffline)
+  }
 })

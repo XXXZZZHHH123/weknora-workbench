@@ -63,7 +63,7 @@ test('panel submission keeps the complete question and sends its selected model,
     startStream: async (payload: unknown) => { sent = payload },
   }
   const send = runInNewContext(`${between('const sendMsg = async', '// Quietly recover')}\nsendMsg`, context)
-  await send(question, 'global-model')
+  await send(question, 'panel-model')
   assert.equal(sent.query, question)
   assert.equal(sent.summary_model_id, 'panel-model')
   assert.equal(sent.session_id, 'panel-session')
@@ -74,15 +74,60 @@ test('panel submission keeps the complete question and sends its selected model,
   assert.equal(sent.url, '/api/v1/agent-chat')
 })
 
-test('a scoped composer without a selected model stays locked', () => {
+test('the inline scoped model picker remains usable before a model is selected', () => {
   const code = between('const composerLocked = computed(', 'function stashForkLanding')
   const props = { scopedSession: true, scopedModelId: '' }
   const value = () => runInNewContext(`${code}\ncomposerLocked`, {
     props, computed: (fn: () => boolean) => fn(), rewindInFlight: { value: false },
   })
-  assert.equal(value(), true)
+  assert.equal(value(), false)
   props.scopedModelId = 'explicit-model'
   assert.equal(value(), false)
+})
+
+test('scoped submission rejects injected external sources and uploads before changing the conversation', async () => {
+  for (const [mentions, images, attachments] of [
+    [[{ id: 'foreign-kb', type: 'kb' }], [], []],
+    [[{ id: 'foreign-file', type: 'file', kb_id: 'foreign-kb' }], [], []],
+    [[{ id: 'unverified-file', type: 'file' }], [], []],
+    [[{ id: 'foreign-tool', type: 'mcp' }], [], []],
+    [[], [{}], []], [[], [], [{ documentId: 'foreign-attachment' }]],
+  ]) {
+    const effects: string[] = []
+    const context = {
+      props: { scopedSession: true, embeddedMode: true, kbIds: ['authorized-kb'] },
+      composerLocked: { value: false }, MessagePlugin: { warning: () => effects.push('refused') },
+      stopStream: () => { throw new Error('invalid selection reached the active conversation') },
+      t: (key: string) => key,
+    }
+    const send = runInNewContext(`${between('const sendMsg = async', '// Quietly recover')}\nsendMsg`, context)
+    await send('完整问题', 'panel-model', mentions, images, attachments)
+    assert.deepEqual(effects, ['refused'])
+  }
+})
+
+test('scoped source protection also holds when a host omits the embedded layout flag', async () => {
+  let sent: any
+  const context = {
+    props: { scopedSession: true, embeddedMode: false, kbIds: ['authorized-kb'], agentId: 'builtin-quick-answer' },
+    composerLocked: { value: false }, useSettingsStoreInstance: {
+      selectedAgentId: 'foreign-agent', isAgentStreamMode: true, isWebSearchEnabled: true,
+      settings: { selectedKnowledgeBases: ['foreign-kb'], selectedFiles: ['foreign-file'] },
+    },
+    stopStream() {}, prepareForNewOutgoingMessage() {}, scrollToBottom() {},
+    activitySessionId: { value: '' }, session_id: { value: 'panel-session' },
+    isReplying: { value: false }, loading: { value: false }, userHasScrolledUp: { value: false },
+    messagesList: [], pendingSuggestionKnowledgeBaseIds: ['foreign-suggestion-kb'], pendingSuggestionAttribution: { question_id: 'foreign-question' },
+    startStream: async (payload: unknown) => { sent = payload },
+  }
+  const send = runInNewContext(`${between('const sendMsg = async', '// Quietly recover')}\nsendMsg`, context)
+  await send('完整问题', 'panel-model', [{ id: 'bound-file', name: 'Real source', type: 'file', kb_id: 'authorized-kb' }])
+  assert.deepEqual(Array.from(sent.knowledge_base_ids), ['authorized-kb'])
+  assert.deepEqual(Array.from(sent.knowledge_ids), ['bound-file'])
+  assert.equal(sent.agent_id, 'builtin-quick-answer')
+  assert.equal(sent.web_search_enabled, false)
+  assert.equal(sent.local_browser_enabled, false)
+  assert.equal(sent.suggestion_attribution, undefined)
 })
 
 test('changing research subpages keeps the panel stream and full-page defaults intact', () => {
@@ -95,35 +140,4 @@ test('changing research subpages keeps the panel stream and full-page defaults i
   })
   callback({}, {}, () => { nextCalled = true })
   assert.equal(nextCalled, true)
-})
-
-test('scoped stop cancels the authenticated session and reports server failure', async () => {
-  for (const fail of [false, true]) {
-    const effects: string[] = []
-    const stop = runInNewContext(`${between('const handleScopedStop =', 'const dropSteerQueueItem =')}\nhandleScopedStop`, {
-      session_id: { value: 'panel-session' }, currentAssistantMessageId: { value: 'reply-id' },
-      handleStopGeneration: () => effects.push('local-stop'),
-      handleStopConfirmed: () => effects.push('confirmed'),
-      handleStopFailed: () => effects.push('failed'),
-      stopSession: async (sid: string, mid: string) => {
-        assert.equal(sid, 'panel-session'); assert.equal(mid, 'reply-id')
-        effects.push('server-stop')
-        if (fail) throw new Error('server unavailable')
-      },
-      MessagePlugin: { error: () => effects.push('error') }, t: (key: string) => key,
-    })
-    await stop()
-    assert.deepEqual(effects, fail ? ['local-stop', 'server-stop', 'failed', 'error'] : ['local-stop', 'server-stop', 'confirmed'])
-  }
-})
-
-test('scoped stop waits for a real assistant ID before stopping', async () => {
-  const effects: string[] = []
-  const stop = runInNewContext(`${between('const handleScopedStop =', 'const dropSteerQueueItem =')}\nhandleScopedStop`, {
-    session_id: { value: 'panel-session' }, currentAssistantMessageId: { value: '' },
-    MessagePlugin: { warning: () => effects.push('missing-id') }, t: (key: string) => key,
-    stopSession: () => { throw new Error('cannot stop a fabricated message') },
-  })
-  await stop()
-  assert.deepEqual(effects, ['missing-id'])
 })

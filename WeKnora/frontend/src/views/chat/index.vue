@@ -164,12 +164,7 @@
                             <t-icon name="chevron-down" size="18px" />
                         </div>
                     </transition>
-                    <fieldset v-if="scopedSession" class="scoped-composer" :disabled="composerLocked">
-                        <EmbedInputField ref="inputFieldRef" :is-replying="isReplying"
-                            @send-msg="(query) => sendMsg(query, scopedModelId)"
-                            @stop-generation="handleScopedStop" />
-                    </fieldset>
-                    <InputField v-else ref="inputFieldRef" :auto-focus="focusComposerOnMount" :compact="!embeddedMode"
+                    <InputField ref="inputFieldRef" :auto-focus="focusComposerOnMount" :compact="!embeddedMode"
                         @send-msg="(query, modelId, mentionedItems, imageFiles, attachmentFiles, options) => sendMsg(query, modelId, mentionedItems, imageFiles, attachmentFiles, options)"
                         @steer-msg="(query, mentionedItems, delivery) => handleSteerMsg(query, mentionedItems, delivery)"
                         @promote-steer="handlePromoteSteer"
@@ -179,7 +174,8 @@
                         @stop-confirmed="handleStopConfirmed"
                         @stop-failed="handleStopFailed" :isReplying="isReplying" :composer-locked="composerLocked" :sessionId="session_id"
                         :assistantMessageId="currentAssistantMessageId" :embeddedMode="embeddedMode"
-                        :queuedSteers="steerQueue.filter(item => item.delivery === 'after')" :canSteer="isAgentStreamSession()"></InputField>
+                        :knowledge-scope="scopedSession ? { kbId: kbIds.length === 1 ? kbIds[0] : '', modelId: scopedModelId } : undefined"
+                        :queuedSteers="steerQueue.filter(item => item.delivery === 'after')" :canSteer="isAgentStreamSession() && !scopedSession"></InputField>
                 </div>
             </div>
             <div v-if="!embeddedMode" class="chat_overlays">
@@ -209,10 +205,9 @@ import { storeToRefs } from 'pinia';
 import { ref, onMounted, onBeforeMount, onUnmounted, nextTick, watch, reactive, computed } from 'vue';
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router';
 import InputField from '../../components/Input-field.vue';
-import EmbedInputField from '../../components/EmbedInputField.vue';
 import botmsg from './components/botmsg.vue';
 import usermsg from './components/usermsg.vue';
-import { getMessageList, getSession, forkSession, rewindSession, stopSession } from "@/api/chat/index";
+import { getMessageList, getSession, forkSession, rewindSession } from "@/api/chat/index";
 import { resolveForkAffordance } from './forkPoint';
 import { rewindSkipMessage } from './rewindNotice';
 import { rewindPrefillText, rewindBlockedByOutgoingWork, canReplaceRewindTranscript, shouldApplyRewindLocally, rewindHistoryHasMore, keepMessagesThroughRewindPoint, rewindableMessageIds, rewindHttpConflictCode, rewindConflictI18nKey } from './rewindView';
@@ -370,7 +365,6 @@ let forkInFlight = false
 const rewindInFlight = ref(false)
 const rewindLockSessionId = ref('')
 const composerLocked = computed(() =>
-    (props.scopedSession && !props.scopedModelId) ||
     (rewindInFlight.value && String(session_id.value || '') === rewindLockSessionId.value)
 )
 
@@ -1117,23 +1111,6 @@ const handleStopFailed = () => {
     loading.value = true;
 };
 
-const handleScopedStop = async () => {
-    if (!session_id.value || !currentAssistantMessageId.value) {
-        MessagePlugin.warning(t('input.messages.messageMissing'));
-        return;
-    }
-    const sid = session_id.value;
-    const messageId = currentAssistantMessageId.value;
-    handleStopGeneration();
-    try {
-        await stopSession(sid, messageId);
-        handleStopConfirmed();
-    } catch {
-        handleStopFailed();
-        MessagePlugin.error(t('input.messages.stopFailed'));
-    }
-};
-
 const dropSteerQueueItem = (steerId) => {
     if (!steerId) return;
     const idx = steerQueue.value.findIndex((item) => item.steer_id === steerId);
@@ -1420,15 +1397,24 @@ const attachSteerFollowUp = async (completedAssistantId) => {
 
 const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = [], attachmentFiles = [], options = {}) => {
     if (composerLocked.value) return
-    if (props.scopedSession) modelId = props.scopedModelId;
-    const reasoningEffort = props.embeddedMode ? undefined : (useSettingsStoreInstance.reasoningEffortOverride || undefined);
+    const useHostScope = props.embeddedMode || props.scopedSession;
+    if (props.scopedSession) {
+        const kbId = props.kbIds.length === 1 ? props.kbIds[0] : '';
+        const validSource = (item) => item?.id && (item.type === 'kb' ? item.id === kbId
+            : (item.type === 'file' || item.type === 'tag') && item.kb_id === kbId);
+        if (!kbId || !modelId || imageFiles.length || attachmentFiles.length || !mentionedItems.every(validSource)) {
+            MessagePlugin.warning('资料范围已变化，请重新选择当前知识库中的资料。');
+            return;
+        }
+    }
+    const reasoningEffort = useHostScope ? undefined : (useSettingsStoreInstance.reasoningEffortOverride || undefined);
     stopStream();
     prepareForNewOutgoingMessage();
     activitySessionId.value = String(session_id.value);
     isReplying.value = true;
     loading.value = true;
-    const selectedAgentId = props.embeddedMode ? props.agentId : (useSettingsStoreInstance.selectedAgentId || '');
-    const selectedAgentSourceTenantId = props.embeddedMode
+    const selectedAgentId = useHostScope ? props.agentId : (useSettingsStoreInstance.selectedAgentId || '');
+    const selectedAgentSourceTenantId = useHostScope
         ? (props.agentSourceTenantId || undefined)
         : (useSettingsStoreInstance.selectedAgentSourceTenantId || undefined);
 
@@ -1452,7 +1438,7 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
                 return;
             }
             userImages.push({ url: dataURI });
-            if (props.embeddedMode) {
+            if (useHostScope) {
                 imageAttachments.push({ data: dataURI });
                 continue;
             }
@@ -1472,7 +1458,7 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     // navigates here, move those local files through the same asynchronous
     // upload/parse flow before starting the first stream.
     const localAttachments = (attachmentFiles || []).filter(attachment => !attachment.documentId);
-    if (!props.embeddedMode && localAttachments.length > 0) {
+    if (!useHostScope && localAttachments.length > 0) {
         try {
             // Only upload to obtain a document ID; parsing continues in the
             // background and is awaited by the backend (shown on the timeline).
@@ -1504,7 +1490,7 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     attachmentIds.push(...imageAttachmentIds);
     // Embedded public routes do not expose the authenticated session upload API;
     // keep their existing inline payload for compatibility.
-    const legacyAttachmentFiles = props.embeddedMode
+    const legacyAttachmentFiles = useHostScope
         ? (attachmentFiles || []).filter(attachment => !attachment.documentId)
         : [];
     let attachmentUploads = [];
@@ -1543,20 +1529,20 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     scrollToBottom(true);
 
     // Get agent mode status from settings store (prefer selectedAgentId for builtins)
-    const agentEnabled = props.embeddedMode
+    const agentEnabled = useHostScope
         ? (props.agentId && props.agentId !== 'builtin-quick-answer')
         : useSettingsStoreInstance.isAgentStreamMode;
 
     // Get web search status from settings store
-    const webSearchEnabled = props.embeddedMode ? false : useSettingsStoreInstance.isWebSearchEnabled;
+    const webSearchEnabled = useHostScope ? false : useSettingsStoreInstance.isWebSearchEnabled;
 
     // Get knowledge_base_ids from settings store (selected by user via KnowledgeBaseSelector)
     // Merge @mentioned KB/file IDs so retrieval uses the same targets user @mentioned (including shared KBs)
-    const sidebarKbIds = props.embeddedMode ? props.kbIds : (useSettingsStoreInstance.settings.selectedKnowledgeBases || []);
-    const sidebarFileIds = props.embeddedMode ? [] : (useSettingsStoreInstance.settings.selectedFiles || []);
+    const sidebarKbIds = useHostScope ? props.kbIds : (useSettingsStoreInstance.settings.selectedKnowledgeBases || []);
+    const sidebarFileIds = useHostScope ? [] : (useSettingsStoreInstance.settings.selectedFiles || []);
     const kbIdSet = new Set(sidebarKbIds);
     const fileIdSet = new Set(sidebarFileIds);
-    for (const kbId of pendingSuggestionKnowledgeBaseIds) {
+    for (const kbId of props.scopedSession ? [] : pendingSuggestionKnowledgeBaseIds) {
         if (kbId) kbIdSet.add(kbId);
     }
     for (const item of mentionedItems || []) {
@@ -1578,7 +1564,7 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     const requestMcpServiceIds = agentEnabled ? mcpServiceIds : [];
     const requestSkillNames = agentEnabled ? skillNames : [];
 
-    const suggestionAttribution = pendingSuggestionAttribution;
+    const suggestionAttribution = props.scopedSession ? null : pendingSuggestionAttribution;
     pendingSuggestionAttribution = null;
     pendingSuggestionKnowledgeBaseIds = [];
     await startStream({
@@ -1589,7 +1575,7 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
         agent_id: selectedAgentId,
         agent_source_tenant_id: selectedAgentSourceTenantId,
         web_search_enabled: webSearchEnabled,
-        local_browser_enabled: !props.embeddedMode && agentEnabled && useSettingsStoreInstance.isLocalBrowserEnabled && !useBrowserConnectionStore().knownOffline,
+        local_browser_enabled: !useHostScope && agentEnabled && useSettingsStoreInstance.isLocalBrowserEnabled && !useBrowserConnectionStore().knownOffline,
         summary_model_id: modelId,
         reasoning_effort: reasoningEffort,
         mcp_service_ids: requestMcpServiceIds,
@@ -1799,7 +1785,6 @@ onBeforeRouteUpdate((to, from, next) => {
 })
 </script>
 <style lang="less" scoped>
-.scoped-composer { margin: 0; padding: 0; border: 0; min-width: 0; width: 100%; }
 .chat {
     // 水平方向不留 padding，让滚动条贴到内容区最右缘；
     // 消息列与输入列各自用 --chat-content-inset 做左右对称的留白（窄屏时才可见）。
