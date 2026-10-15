@@ -124,7 +124,9 @@ jobs:
         with:
           go-version-file: WeKnora/go.mod
           cache-dependency-path: WeKnora/go.sum
-      - run: go test ./internal/agent/tools ./internal/agent -run 'TestMCP|TestCastParams|TestStructured|TestNative|TestWorkbench|TestIndependentReview|TestReviewDraft|TestCommodityResearch|TestEveryBuiltIn|TestAvailableToolDefinitions' -count=1
+      - run: go test ./internal/agent/tools ./internal/agent -run 'TestDocumentReadReuse|TestMCP|TestCastParams|TestStructured|TestNative|TestWorkbench|TestIndependentReview|TestReviewDraft|TestCommodityResearch|TestEveryBuiltIn|TestAvailableToolDefinitions' -count=1
+      - name: Verify document calculations and final answer contracts
+        run: go test ./internal/agent -run 'Test(TaskPlan|TaskCapability|SchemaOnlyToolCalls|SchemaCallExclusion|SourceConsistency|FinalSynthesisRepairsSemantic|CurrentDocument|SourceReview|FetchedDocument|DirectoryGroup|SourceCalculation|DocumentTable|FinalReview|ReviewedAnswer|Review|UnresolvedSourceBinding|ExactCatalogue)' -count=1
       - run: go test ./internal/handler/session ./internal/modelcontext ./internal/database -count=1
       - run: go test ./internal/handler -run TestUpdateModel -count=1
       - run: go test ./internal/application/service -run 'TestAgentConfig|TestDefaultWorkbench|TestWorkbench|TestBuildAssistantHistoryMessages|TestBuildTurnBodyMessages|TestMCPProxyHistory|TestRegisterToolsCommodityResearch' -count=1

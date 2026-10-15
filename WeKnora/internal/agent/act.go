@@ -169,6 +169,7 @@ var toolDisplayNames = map[string]string{
 	agenttools.ToolTodoWrite:                 "制定计划",
 	agenttools.ToolSearchKnowledge:           "检索知识库",
 	agenttools.ToolReadDocument:              "阅读文档",
+	documentTableAnalysisToolName:            "分析文档表格",
 	agenttools.ToolListDocuments:             "浏览文档列表",
 	agenttools.ToolQueryKnowledgeGraph:       "查询知识图谱",
 	agenttools.LegacyToolGrepChunks:          "关键词搜索",
@@ -305,7 +306,7 @@ func (e *AgentEngine) executeToolCallsParallel(
 
 	for i, tc := range response.ToolCalls {
 		i, tc := i, tc // capture loop vars
-		if !agenttools.CanRunConcurrently(tc.Function.Name) {
+		if !agenttools.CanRunToolCallConcurrently(tc.Function.Name, tc.Function.Arguments) {
 			// Drain preceding reads before a mutation, and finish the mutation
 			// before starting later reads. Preserve model order across barriers.
 			_ = g.Wait()

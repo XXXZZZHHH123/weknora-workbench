@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -67,11 +66,20 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		if e.config.ReviewReasoningEffort != "" {
 			reasoning = chat.ReasoningEffort(e.config.ReviewReasoningEffort)
 		}
-		llmResult, err := e.streamLLMToEventBus(ctx, messages, &chat.ChatOptions{
+		opts := &chat.ChatOptions{
 			Temperature: e.config.Temperature, MaxCompletionTokens: budget,
 			PromptCacheKey: sessionID, ToolChoice: "none", Thinking: &disabled,
 			ReasoningEffort: reasoning, ThinkingBudgetTokens: 0,
-		}, nil)
+		}
+		if e.structuredReviewMode {
+			// Iteration exhaustion and API recovery retain the same explicit
+			// delivery contract as ordinary review rounds. Otherwise escaped
+			// citations would be decoded inside still-serialized JSON, or the
+			// answer envelope itself could become the terminal user response.
+			opts.Temperature = 0
+			opts.Format = reviewedAnswerSchema
+		}
+		llmResult, err := e.streamLLMToEventBus(ctx, messages, opts, nil)
 		if err != nil {
 			return err
 		}
@@ -82,10 +90,15 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			state.TurnUsage.Accumulate(*llmResult.Usage)
 		}
 		fullAnswer = agenttools.StripThinkBlocks(llmResult.Content)
+		if isReviewedAnswerFormat(opts.Format) {
+			fullAnswer = agenttools.StripThinkBlocks(decodeReviewedAnswer(llmResult.Content))
+			fullAnswer = e.modelContext.DecodeOutputText(fullAnswer)
+		}
 		truncated = isLengthFinishReason(llmResult.FinishReason)
 		// A provider can ignore tool_choice=none. Never accept its pre-tool
 		// progress text as the final answer, or silently drop requested calls.
-		invalid := llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
+		invalid := strings.TrimSpace(fullAnswer) == "" || llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
+		e.answerReviewFeedback = ""
 		var completenessErr error
 		if !invalid {
 			invalid, completenessErr = e.evaluateAnswerCompleteness(ctx, query, fullAnswer, state, conversation)
@@ -99,18 +112,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		unsupported := []string{}
 		if !invalid && needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, fullAnswer) {
-			evidence := append([]chat.Message(nil), conversation...)
-			for _, step := range state.RoundSteps {
-				for _, call := range step.ToolCalls {
-					if call.Result != nil && call.Result.Success {
-						evidence = append(evidence, chat.Message{Role: "tool", Name: call.Name, Content: call.Result.Output})
-					}
-				}
-			}
-			if values := scopedCitedDocumentNumbers(fullAnswer, state.RoundSteps); len(values) > 0 {
-				raw, _ := json.Marshal(map[string]any{"cited_document_values": values})
-				evidence = append(evidence, chat.Message{Role: "tool", Content: string(raw)})
-			}
+			evidence := answerNumericEvidence(fullAnswer, state.RoundSteps, conversation)
 			unsupported = ungroundedStructuredNumbers(fullAnswer, evidence, state.RoundSteps)
 		}
 		if !invalid && len(unsupported) == 0 {
@@ -124,7 +126,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			truncated = false
 			break
 		}
-		messages = append(messages, chat.Message{Role: "system", Content: "内部运行时反馈：上次回答残缺或含未通过依据检查的数字。请依据已取得的真实来源，直接简短完整回答原问题；缺失证据应说明，不能从草稿补造数值。字段名称、规格代码和原公式须完整引用工具原文，不用简称，不省略公式参数或单元格行号；身份代码不能当成统计值。未核验数字：" + strings.Join(unsupported, "、")})
+		messages = append(messages, chat.Message{Role: "system", Content: "内部运行时反馈：上次回答残缺或含未通过依据检查的数字。请依据已取得的真实来源，直接简短完整回答原问题；非必要的附加数字直接删除，不为保留它们扩展查询。缺失证据应说明，不能从草稿补造数值。字段名称、规格代码和原公式须完整引用工具原文，不用简称，不省略公式参数或单元格行号；身份代码不能当成统计值。未核验数字：" + strings.Join(unsupported, "、") + e.answerRepairAdvice()})
 	}
 	e.eventBus.Emit(ctx, event.Event{ID: answerID, Type: event.EventAgentFinalAnswer, SessionID: sessionID, Data: event.AgentFinalAnswerData{Content: fullAnswer, Done: false, Truncated: truncated}})
 	e.closeAnswerStream(ctx, sessionID, answerID, truncated)

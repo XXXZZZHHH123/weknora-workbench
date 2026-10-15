@@ -21,8 +21,10 @@ func formatGroundingGuidance(names []string) string {
 		"sources before drafting unsupported content.\n")
 	b.WriteString("- Follow the user's current source restrictions and explicit selections. Otherwise " +
 		"choose relevant bound knowledge bases or connected sources. A selected source does not exclude " +
-		"complementary sources unless the user says so. Directory entries, titles, and summaries are " +
-		"navigation hints, not proof of detailed claims.\n")
+		"complementary sources unless the user says so. File directory entries, document titles, and " +
+		"summaries are navigation hints, not proof of detailed document claims. Actual source-bound field " +
+		"catalogues and program-returned grouping counts can support field-structure claims within their " +
+		"reported coverage; they do not establish observation statistics or decide business categories.\n")
 	b.WriteString("- Skills describe how to perform work. Reading a generator's instructions or " +
 		"successfully running its script does not verify the subject matter. Gather needed factual " +
 		"evidence before supplying content to a generator; no extra lookup is needed if the supplied " +
@@ -43,13 +45,15 @@ func formatGroundingGuidance(names []string) string {
 	}
 	if len(kbTools) > 0 {
 		b.WriteString("- Available knowledge tools: " + strings.Join(kbTools, ", ") +
-			". Consult the current runtime_context scope and capabilities. When knowledge bases are " +
-			"bound, search them before answering a question about a topic, even one that reads like " +
-			"general knowledge: the user may mean what their documents say, and directory profiles " +
-			"and recent titles show only a sample, so they cannot prove a base lacks the answer. " +
-			"With an explicit source selection, KB retrieval is complementary, not a prerequisite. " +
-			"Directory entries are routing hints, not retrieved evidence; do not exhaust unrelated " +
-			"bases. Choose an available search or reader appropriate to the scope.\n")
+			". Consult the current runtime_context scope and capabilities. Interpret the full request " +
+			"and conversation to decide whether the user means their documents or a general explanation. " +
+			"Retrieve relevant document evidence when the requested claims need it and current materials " +
+			"are insufficient. Binding a knowledge base does not itself require another lookup or " +
+			"cross-source confirmation of sufficient evidence. Reuse actual results already obtained for " +
+			"this task. Directory profiles and recent titles show only a sample and cannot prove a base " +
+			"lacks the answer. With an explicit source selection, KB retrieval is complementary, not a prerequisite. " +
+			"Respect explicit source selections and do not exhaust unrelated bases. " +
+			"Choose an available search or reader appropriate to the missing evidence and scope.\n")
 	}
 	if slices.Contains(names, tools.ToolWebSearch) {
 		b.WriteString("- web_search is available: use it when relevant local evidence is missing, " +
@@ -74,8 +78,8 @@ func formatGroundingGuidance(names []string) string {
 		"found nothing only when a search tool actually ran for this task. Ask for missing material " +
 		"only when needed to complete the task accurately.\n")
 	b.WriteString("- Direct conversation, creative writing, and translation or formatting of supplied " +
-		"content do not require research unless you add factual claims. Without bound knowledge bases, " +
-		"stable general explanations need no lookup unless the task depends on specific source " +
+		"content do not require research unless you add factual claims. Stable general explanations " +
+		"need no lookup unless the user's intent or the task depends on specific source " +
 		"content or uncertain details. If the user explicitly limits sources or requests no research, " +
 		"respect that and identify material uncertainty. Stop searching once evidence is sufficient.\n")
 	b.WriteString("- Check both content support and artifact execution before reporting completion. " +

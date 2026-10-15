@@ -890,7 +890,7 @@ func mcpCatalogDescriptionLen(ts []chat.Tool) int {
 
 // buildToolsForLLM builds the tools list for LLM function calling
 func (e *AgentEngine) buildToolsForLLM() []chat.Tool {
-	functionDefs := e.toolRegistry.GetModelFunctionDefinitions()
+	functionDefs := e.projectTaskTools(e.toolRegistry.GetModelFunctionDefinitions())
 	tools := make([]chat.Tool, 0, len(functionDefs))
 	for _, def := range functionDefs {
 		tools = append(tools, chat.Tool{

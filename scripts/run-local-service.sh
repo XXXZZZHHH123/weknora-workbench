@@ -11,7 +11,7 @@ export RETRIEVE_DRIVER=sqlite STORAGE_TYPE=local
 export LOCAL_STORAGE_BASE_DIR="$project_root/.private/weknora/files"
 export STREAM_MANAGER_TYPE=memory GIN_MODE=release LOG_LEVEL=info
 export SERVER_HOST=127.0.0.1 SERVER_PORT=18081 MAX_FILE_SIZE_MB=100
-export SSRF_WHITELIST_EXTRA=127.0.0.1,localhost
+export SSRF_WHITELIST_EXTRA="${SSRF_WHITELIST_EXTRA:+$SSRF_WHITELIST_EXTRA,}127.0.0.1,localhost"
 export WEKNORA_SANDBOX_MODE=disabled NEO4J_ENABLE=false
 export WEKNORA_API_URL=http://127.0.0.1:18081
 export VITE_DEV_PROXY_TARGET=http://127.0.0.1:18081
@@ -24,7 +24,9 @@ export STRUCTURED_SERVICE_TOKEN_FILE="$COMMODITY_RESEARCH_TOKEN_FILE"
 export DOCREADER_ADDR=127.0.0.1:50051 DOCREADER_TRANSPORT=grpc
 export DOCREADER_GRPC_HOST=127.0.0.1 DOCREADER_GRPC_PORT=50051
 export GRPC_AUTH_TOKEN="${GRPC_AUTH_TOKEN:-$(<"$project_root/.private/docreader-service-token")}"
-export NO_PROXY=127.0.0.1,localhost
+# Go and Python clients prefer different spellings; keep both operator lists.
+export NO_PROXY="${NO_PROXY:+$NO_PROXY,}${no_proxy:+$no_proxy,}127.0.0.1,localhost,::1"
+export no_proxy="$NO_PROXY"
 unset REDIS_ADDR
 case "${1:-}" in
   docreader)

@@ -763,12 +763,9 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 			); err != nil {
 				logger.Errorf(ctx, "Delete index failed: %v", err)
 			}
-			// Map vector store / embedding rate-limit errors to a
-			// stable code so the UI can offer "retry later" hints.
-			code := werrors.ErrCodeVectorStoreWriteFailed
-			if isLikelyRateLimitError(err) {
-				code = werrors.ErrCodeEmbeddingRateLimit
-			}
+			// The retriever knows whether the provider or the store failed;
+			// their messages (including "quota") do not identify that phase.
+			code := batchIndexFailureCode(err)
 			s.failStage(ctx, knowledge.ID, types.StageEmbedding,
 				code, "batch index failed", err)
 			if willRetry {
