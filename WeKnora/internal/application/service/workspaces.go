@@ -34,6 +34,8 @@ type WorkspaceInput struct {
 	Description     *string `json:"description"`
 	KnowledgeBaseID *string `json:"knowledge_base_id"`
 	IdempotencyKey  string  `json:"idempotency_key"`
+	TemplateID      *string `json:"template_id"`
+	TemplateVersion *int    `json:"template_version"`
 }
 
 func workspaceCaller(ctx context.Context) (types.Caller, error) {
@@ -137,6 +139,9 @@ func (s *WorkspaceService) GetProject(ctx context.Context, id string) (*types.As
 }
 
 func (s *WorkspaceService) CreateProject(ctx context.Context, input WorkspaceInput) (*types.AssistantProject, error) {
+	if input.TemplateID != nil || input.TemplateVersion != nil {
+		return nil, apperrors.NewBadRequestError("项目不接受研究模板参数")
+	}
 	caller, err := workspaceCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -158,6 +163,9 @@ func (s *WorkspaceService) CreateProject(ctx context.Context, input WorkspaceInp
 }
 
 func (s *WorkspaceService) UpdateProject(ctx context.Context, id string, input WorkspaceInput) (*types.AssistantProject, error) {
+	if input.TemplateID != nil || input.TemplateVersion != nil {
+		return nil, apperrors.NewBadRequestError("项目不接受研究模板参数")
+	}
 	if err := validateWorkspaceInput(input, false); err != nil {
 		return nil, err
 	}
@@ -268,7 +276,11 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 			continue
 		}
 		row.KnowledgeBaseName = kb.Name
+		row.ScopeTenantID = row.TenantID
 		visible = append(visible, row)
+	}
+	if err := s.loadWorkbenchOnboarding(ctx, visible); err != nil {
+		return nil, err
 	}
 	return visible, nil
 }
@@ -294,11 +306,19 @@ func (s *WorkspaceService) workbench(ctx context.Context, db *gorm.DB, id string
 		return nil, apperrors.NewForbiddenError("仅创建者或空间管理员可修改工作台")
 	}
 	row.KnowledgeBaseName = kb.Name
+	row.ScopeTenantID = row.TenantID
 	return &row, nil
 }
 
 func (s *WorkspaceService) GetWorkbench(ctx context.Context, id string) (*types.ResearchWorkbench, error) {
-	return s.workbench(ctx, s.db, id, false)
+	row, err := s.workbench(ctx, s.db, id, false)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.loadWorkbenchOnboarding(ctx, []*types.ResearchWorkbench{row}); err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceInput) (*types.ResearchWorkbench, error) {
@@ -322,11 +342,16 @@ func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceI
 	if err != nil {
 		return nil, err
 	}
-	row := &types.ResearchWorkbench{ID: uuid.NewString(), TenantID: caller.TenantID, UserID: caller.UserID, Name: *input.Name, KnowledgeBaseID: kb.ID, KnowledgeBaseName: kb.Name, IdempotencyKey: input.IdempotencyKey}
+	templateID, templateVersion, err := workbenchTemplate(input)
+	if err != nil {
+		return nil, err
+	}
+	row := &types.ResearchWorkbench{ID: uuid.NewString(), TenantID: caller.TenantID, UserID: caller.UserID, Name: *input.Name, KnowledgeBaseID: kb.ID, KnowledgeBaseName: kb.Name, IdempotencyKey: input.IdempotencyKey,
+		WorkspaceMode: types.ResearchWorkbenchModeIsolated, TemplateID: templateID, TemplateVersion: templateVersion}
 	if input.Description != nil {
 		row.Description = *input.Description
 	}
-	raw, _ := json.Marshal([]string{row.Name, row.Description, row.KnowledgeBaseID})
+	raw, _ := json.Marshal([]any{row.Name, row.Description, row.KnowledgeBaseID, row.WorkspaceMode, row.TemplateID, row.TemplateVersion})
 	hash := sha256.Sum256(raw)
 	row.RequestHash = hex.EncodeToString(hash[:])
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -341,7 +366,7 @@ func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceI
 		if err := tx.Unscoped().Where("tenant_id = ? AND user_id = ? AND idempotency_key = ?", caller.TenantID, caller.UserID, input.IdempotencyKey).First(&existing).Error; err != nil {
 			return err
 		}
-		if existing.DeletedAt.Valid || existing.RequestHash != row.RequestHash {
+		if existing.DeletedAt.Valid || (existing.RequestHash != row.RequestHash && !legacyWorkbenchRetry(existing, input, row)) {
 			return apperrors.NewConflictError("该创建请求标识已用于其他内容，请重新发起创建")
 		}
 		row = &existing
@@ -355,6 +380,9 @@ func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceI
 }
 
 func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input WorkspaceInput) (*types.ResearchWorkbench, error) {
+	if input.TemplateID != nil || input.TemplateVersion != nil {
+		return nil, apperrors.NewBadRequestError("工作台模板和版本在创建时固定，不能通过编辑修改")
+	}
 	if err := validateWorkspaceInput(input, false); err != nil {
 		return nil, err
 	}
@@ -375,6 +403,9 @@ func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input
 			row.Description = *input.Description
 		}
 		if input.KnowledgeBaseID != nil {
+			if row.WorkspaceMode == types.ResearchWorkbenchModeIsolated && row.KnowledgeBaseID != *input.KnowledgeBaseID {
+				return apperrors.NewConflictError("独立工作台不能更换主知识库，请基于目标知识库新建工作台")
+			}
 			row.KnowledgeBaseID = *input.KnowledgeBaseID
 		}
 		return tx.Save(row).Error

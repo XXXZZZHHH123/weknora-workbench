@@ -20,6 +20,7 @@ var versionedSQLiteTables = []string{
 	"assistant_projects",
 	"assistant_project_sessions",
 	"research_workbenches",
+	"research_workbench_onboarding",
 	"knowledge_folders",
 	"default_knowledge_base_bindings",
 	"memory_extraction_sessions",
@@ -46,6 +47,7 @@ var versionedSQLiteTables = []string{
 // versionedSQLiteColumns maps each existing table to the columns that the
 // versioned migrations add and the SQLite baseline was missing.
 var versionedSQLiteColumns = map[string][]string{
+	"research_workbenches":  {"workspace_mode", "template_id", "template_version"},
 	"model_catalog_configs": {"version", "overlay", "history", "updated_by", "updated_at"},        // 000037
 	"memory_subjects":       {"extraction_state"},                                                 // 000094
 	"memory_items":          {"replaces_id"},                                                      // 000094
@@ -58,6 +60,7 @@ var versionedSQLiteColumns = map[string][]string{
 		"parent_session_id", "forked_from_message_id", "fork_bootstrap", // 000097
 		"sandbox_config_tenant_id", // 000027
 		"host_workspace_dir",       // 000029
+		"research_workbench_id",    // 000041
 	},
 	"tenant_invitations": {"token", "accepted_count"},        // 000054
 	"embed_channels":     {"allow_memory"},                   // 000060
@@ -76,7 +79,7 @@ var versionedSQLiteColumns = map[string][]string{
 	}, // 000028
 }
 
-const expectedSQLiteMigrationVersion = 40
+const expectedSQLiteMigrationVersion = 41
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)

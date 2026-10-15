@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/google/uuid"
 )
 
 const ToolCommodityResearch = "commodity_research"
@@ -46,6 +47,13 @@ func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessag
 	if caller.TenantID == 0 || caller.UserID == "" || !caller.Role.IsValid() {
 		return nil, fmt.Errorf("商品研究读取需要已核验的用户和空间")
 	}
+	scope, scoped := types.ResearchWorkbenchScopeFromContext(ctx)
+	if scoped {
+		if _, err := uuid.Parse(scope.ID); err != nil || scope.TenantID != caller.TenantID ||
+			scope.UserID != caller.UserID || scope.KnowledgeBaseID == "" || scope.KnowledgeBaseTenantID == 0 {
+			return nil, fmt.Errorf("研究工作台作用域无效，拒绝回退到空间数据")
+		}
+	}
 	if len(t.key) < 32 || t.endpoint == "" {
 		return nil, fmt.Errorf("商品研究服务尚未配置")
 	}
@@ -65,6 +73,11 @@ func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessag
 	}
 	identity := map[string]any{"user_id": caller.UserID, "tenant_id": caller.TenantID,
 		"role": string(caller.Role), "email": "", "display_name": caller.UserID}
+	if scoped {
+		identity["workbench_id"] = scope.ID
+		identity["knowledge_base_id"] = scope.KnowledgeBaseID
+		identity["knowledge_base_tenant_id"] = scope.KnowledgeBaseTenantID
+	}
 	if user, ok := ctx.Value(types.UserContextKey).(*types.User); ok && user.ID == caller.UserID {
 		identity["email"], identity["display_name"] = user.Email, user.Username
 	}

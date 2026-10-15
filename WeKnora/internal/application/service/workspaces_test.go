@@ -67,6 +67,13 @@ func workspaceFixture(t *testing.T) (*WorkspaceService, *workspaceKBFixture, *wo
 	if err := db.Exec(string(migration)).Error; err != nil {
 		t.Fatal(err)
 	}
+	templatesMigration, err := os.ReadFile("../../../migrations/sqlite/000041_research_workbench_templates.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(string(templatesMigration)).Error; err != nil {
+		t.Fatal(err)
+	}
 	kbs := &workspaceKBFixture{rows: map[string]*types.KnowledgeBase{"own": {ID: "own", TenantID: 1, Name: "Library"}, "foreign": {ID: "foreign", TenantID: 2}, "shared": {ID: "shared", TenantID: 2}}}
 	shares := &workspaceShareFixture{}
 	return NewWorkspaceService(db, kbs, shares), kbs, shares

@@ -126,3 +126,26 @@ func (h *WorkspaceHandler) UpdateWorkbench(c *gin.Context) {
 func (h *WorkspaceHandler) DeleteWorkbench(c *gin.Context) {
 	workspaceReply(c, nil, h.service.DeleteWorkbench(c.Request.Context(), c.Param("id")))
 }
+
+func (h *WorkspaceHandler) ListWorkbenchTemplates(c *gin.Context) {
+	rows, err := h.service.ListWorkbenchTemplates(c.Request.Context())
+	workspaceReply(c, rows, err)
+}
+
+func (h *WorkspaceHandler) UpdateWorkbenchOnboarding(c *gin.Context) {
+	var input service.WorkbenchOnboardingInput
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		_ = c.Error(apperrors.NewBadRequestError("引导参数无效"))
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		_ = c.Error(apperrors.NewBadRequestError("引导参数无效"))
+		return
+	}
+	row, err := h.service.UpdateWorkbenchOnboarding(c.Request.Context(), c.Param("id"), input)
+	workspaceReply(c, row, err)
+}

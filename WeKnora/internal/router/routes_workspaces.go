@@ -24,8 +24,10 @@ func RegisterWorkspaceRoutes(r *gin.RouterGroup, h *handler.WorkspaceHandler, g 
 	projects.DELETE("/:id/sessions/:session_id", h.RemoveSession)
 	workbenches := r.Group("/workspaces/research", g.Viewer())
 	workbenches.GET("", h.ListWorkbenches)
+	workbenches.GET("/templates", h.ListWorkbenchTemplates)
 	workbenches.GET("/:id", h.GetWorkbench)
 	workbenches.POST("", g.Contributor(), h.CreateWorkbench)
 	workbenches.PUT("/:id", g.Contributor(), h.UpdateWorkbench)
+	workbenches.PUT("/:id/onboarding", h.UpdateWorkbenchOnboarding)
 	workbenches.DELETE("/:id", g.Contributor(), h.DeleteWorkbench)
 }
