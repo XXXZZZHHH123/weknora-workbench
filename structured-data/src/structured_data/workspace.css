@@ -8,6 +8,8 @@
 #directUpload :is(input,select),#queryWorkspace :is(input,select){border-color:var(--line);border-radius:var(--control-radius);color:var(--text);min-width:0;font-size:13px;background:var(--paper)}
 #directUpload button,#queryWorkspace button:not(.series-choice){background:var(--primary);border-radius:var(--control-radius);font-size:13px;font-weight:500}
 #directUpload button:hover,#queryWorkspace button:not(.series-choice):hover{background:var(--navy)}
+#directUpload button.secondary{background:var(--paper);color:var(--primary);border-color:var(--line-strong)}
+#directUpload button.secondary:hover{background:var(--soft)}
 #queryWorkspace button.secondary{background:var(--paper);border-color:var(--line);color:var(--muted)}
 #queryWorkspace button.secondary:hover{background:var(--surface-soft);border-color:var(--line-strong)}
 #workspaceIntro{grid-template-columns:1fr;margin-bottom:20px}
@@ -115,6 +117,7 @@ body.native-source #directUpload .import-actions{display:none}
 #directUpload :is(input,select):hover,#queryWorkspace :is(input,select):hover{border-color:var(--line-strong)}
 #directUpload :is(input,select):focus,#queryWorkspace :is(input,select):focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--focus)}
 #directUpload button:active:not(:disabled),#queryWorkspace button:not(.series-choice):not(.secondary):active:not(:disabled){background:var(--primary-active)}
+#directUpload button.secondary:active:not(:disabled){background:var(--soft)}
 #queryWorkspace button.secondary:active:not(:disabled){background:var(--soft)}
 #directUpload :is(input,select),#queryWorkspace :is(input,select){transition:border-color var(--motion-fast) var(--ease-out),background-color var(--motion-fast) var(--ease-out)}
 #importReview,body.review-only #importReview{--primary:#126D82;--primary-hover:#0F5D70;--primary-active:#0C4D5D;--on-primary:#fff;--navy:var(--primary-hover);--focus:color-mix(in srgb,var(--primary) 20%,transparent);--soft:#E9F3F6;--paper:#fff;--surface-soft:#F8FAFC;--text:#203447;--muted:#607286;--line:#D9E3EC;--line-strong:#BDCADA;--warning:#8a602b;--warning-soft:#fff3df;--error:#a32b26;--control-radius:6px;background:var(--paper);color:var(--text);color-scheme:light}

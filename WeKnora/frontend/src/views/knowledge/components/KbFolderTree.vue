@@ -297,6 +297,7 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
 <style scoped lang="less">
 .kb-folder-tree {
   --kb-folder-indent: 14px;
+  --kb-folder-base-indent: 4px;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -308,6 +309,7 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   box-sizing: border-box;
 
   &.is-navigation {
+    --kb-folder-base-indent: calc(4px + var(--kb-folder-indent));
     width: 100%;
     padding-right: 0;
     margin-right: 0;
@@ -402,7 +404,7 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   width: 100%;
   height: 32px;
   margin-bottom: 2px;
-  padding: 0 4px 0 calc(4px + var(--kb-folder-depth, 0) * var(--kb-folder-indent));
+  padding: 0 4px 0 calc(var(--kb-folder-base-indent) + var(--kb-folder-depth, 0) * var(--kb-folder-indent));
   border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--td-text-color-primary);
@@ -479,7 +481,7 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
 
 .kb-folder-file { border: 0; font-size: var(--app-text-sm); }
 .kb-folder-files-status {
-  padding: 4px 8px 8px calc(24px + var(--kb-folder-depth, 0) * var(--kb-folder-indent));
+  padding: 4px 8px 8px calc(var(--kb-folder-base-indent) + 20px + var(--kb-folder-depth, 0) * var(--kb-folder-indent));
   font-size: var(--app-text-xs);
   line-height: 1.5;
   color: var(--td-text-color-secondary);

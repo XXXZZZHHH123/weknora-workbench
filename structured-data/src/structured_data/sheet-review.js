@@ -116,9 +116,9 @@
     const item=ui.history.pop();ui.states=item.states;ui.selected=item.selected;setMapping(item.mapping);
     $('mappingFeedback').textContent='已撤销上一次映射修改。';
   }
-  async function timedApi(path,options={},controller=new AbortController(),ms=30000) {
+  async function timedApi(path,options={},controller=new AbortController(),ms=30000,requestApi=api) {
     const timer=setTimeout(()=>controller.abort(),ms);
-    try{return await api(path,{...options,signal:controller.signal});}
+    try{return await requestApi(path,{...options,signal:controller.signal});}
     catch(e){if(e.name==='AbortError')throw Error('请求已取消或超时，请重试。');throw e;}
     finally{clearTimeout(timer);}
   }
@@ -141,15 +141,15 @@
     ui.mapping=ensureBlocks(copy(m));$('mappingEditor').value=JSON.stringify(ui.mapping,null,2);
     renderMappingForm(ui.mapping);invalidateCheck();saveDraft();renderLegend();renderGrid();updateConfirmState();
   };
-  selectImport = async function() {
+  selectImport = async function(isCurrent=()=>true,requestApi=api) {
     saveDraft();stopViewRequests();const id=$('importSelect').value;if(!id)return;
     const version=++reviewVersion,controller=new AbortController();ui.sheetController=controller;
-    const r=await timedApi('/api/imports/'+encodeURIComponent(id)+'?summary_only=true',{},controller);
-    if(version!==reviewVersion)return;currentImport=r;currentSheet=null;ui.mapping=null;ui.states={};
+    const r=await timedApi('/api/imports/'+encodeURIComponent(id)+'?summary_only=true',{},controller,30000,requestApi);
+    if(version!==reviewVersion||!isCurrent())return;currentImport=r;currentSheet=null;ui.mapping=null;ui.states={};
     const sheets=r.sheets||[];updateImportSummary();
     if(!sheets.some(s=>sheetVisible(s,'')))ui.filter='all';renderSheetList();
     $('sheetDetail').innerHTML='<p class="grid-loading">选择工作表，查看原表与对应区块。</p>';
-    const first=sheets.findIndex(s=>sheetVisible(s,''));if(sheets.length)await selectSheet(first<0?0:first);
+    const first=sheets.findIndex(s=>sheetVisible(s,''));if(sheets.length)await selectSheet(first<0?0:first,requestApi);
   };
   function updateImportSummary() {
     const sheets=currentImport?.sheets||[],ready=sheets.filter(isPublished).length;
@@ -167,15 +167,15 @@
     host.innerHTML=(currentImport?.sheets||[]).map((s,i)=>({s,i})).filter(({s})=>!needle||s.name.toLowerCase().includes(needle)).map(({s,i})=>`<button data-sheet-index="${i}" title="${esc(sheetMeta(s))}">${esc(s.name)}<small>${esc(statusLabels[s.status]||s.status)}</small></button>`).join('')||'<p class="muted">没有匹配的工作表。</p>';
     if($('allSheets'))$('allSheets').textContent=`全部 ${currentImport?.sheets?.length||0} 张⌄`;
   }
-  selectSheet = async function(index) {
+  selectSheet = async function(index,requestApi=api) {
     if(!currentImport)return;const s=currentImport.sheets[index];if(!s)return;
     saveDraft();stopViewRequests();const version=++reviewVersion,importId=currentImport.import_id,controller=new AbortController();ui.sheetController=controller;
     currentSheet=null;mappingConfirmed=false;mappingBusy=false;ui.checkSignature=null;
     $('sheetDetail').innerHTML='<p class="grid-loading">正在读取当前工作表…</p>';
-    const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller);
+    const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller,30000,requestApi);
     if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);
     if(isChartOnly(sheet)){showPreview('charts');return;}
-    showPreview('table');await loadWindow(1,1);
+    showPreview('table');await loadWindow(1,1,requestApi);
   };
   renderSheet = function(s) {
     const chartOnly = isChartOnly(s);
@@ -359,7 +359,7 @@
       ui.sample={id,signature};host.innerHTML=`<strong>${esc(b.name||'当前区块')} · 原文件样本</strong>`+`<table class="sample-records"><thead><tr><th>时间 / 类别</th><th>字段／维度</th><th>数值</th><th>来源</th></tr></thead><tbody>${(block.sample||[]).slice(0,12).map(row=>`<tr><td>${esc(row.date||row.period||'无时间')}${row.category?'<small>'+esc(row.category)+'</small>':''}</td><td>${esc(catalog[row.series_id]?.metric||'对应指标')}<small>${esc(dimensionsText(catalog[row.series_id]?.dimensions)||'原列 '+(row.source_cell||'').replace(/[0-9]+$/,''))}</small></td><td>${row.value==null?'缺失':esc(row.value)}<small>${esc(catalog[row.series_id]?.unit||'原表未注明单位')}</small></td><td><button type="button" class="field-source" data-source-cell="${esc(row.source_cell)}">${esc(row.source_cell)}</button></td></tr>`).join('')}</tbody></table><small>${esc(result.notice||'仅展示少量样本，完整检查通过后才能导入。')}</small>`;
     } catch(e){if(!controller.signal.aborted&&version===reviewVersion&&id===ui.selected){host.textContent=e.message;e.reviewBlockId=id;mappingError(e);}}
   }
-  async function loadWindow(startRow,startCol) {
+  async function loadWindow(startRow,startCol,requestApi=api) {
     if(!currentSheet||!currentImport)return;ui.controller?.abort();const controller=new AbortController();ui.controller=controller;
     const request=++ui.request,version=reviewVersion,sheet=currentSheet,importId=currentImport.import_id;
     const small=sheet.rows<=160&&sheet.columns<=64;
@@ -368,7 +368,7 @@
     $('viewSummary').textContent='正在读取当前范围…';
     const params=new URLSearchParams({name:sheet.name,start_row:sr,start_col:sc,row_count:rowCount,col_count:colCount});
     try {
-      const view=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet-view?${params}`,{},controller,30000);
+      const view=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet-view?${params}`,{},controller,30000,requestApi);
       if(request!==ui.request||version!==reviewVersion)return;
       if(!view.range||!Array.isArray(view.cells)||view.range.row_count>160||view.range.col_count>64||view.range.row_count*view.range.col_count>10240)throw Error('原表视图范围超出安全上限，请重新加载。');
       ui.view=view;renderGrid();$('viewSummary').textContent=`${small?'整张小表':'当前分段'} · ${colName(view.range.start_col)}${view.range.start_row}:${colName(view.range.end_col)}${view.range.end_row} / 共 ${view.total_rows} 行 × ${view.total_cols} 列`;

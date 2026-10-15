@@ -99,6 +99,20 @@ class ImagePlanTests(unittest.TestCase):
         self.commit()
         self.assertEqual([row['service'] for row in self.rows() if not row['reuse_image']], ['frontend'])
 
+    def test_native_excel_size_limit_is_consistent_across_deployed_services(self):
+        import re
+        compose = (ROOT / 'compose.yml').read_text().split('\nvolumes:')[0]
+        limits = {}
+        for service in ('frontend', 'app', 'structured-data', 'docreader'):
+            block = re.search(r'^  ' + service + r':\n(.*?)(?=^  [a-z-]+:|\Z)', compose, re.MULTILINE | re.DOTALL)
+            self.assertIsNotNone(block, service + ' must be present in the deployment')
+            setting = re.search(r'^      MAX_FILE_SIZE_MB: "(\d+)"$', block.group(1), re.MULTILINE)
+            self.assertIsNotNone(setting, service + ' must set the native original size limit explicitly')
+            limits[service] = int(setting.group(1))
+        self.assertEqual(limits, dict.fromkeys(limits, 100))
+        local_compose = (ROOT.parent / 'structured-data' / 'compose.yml').read_text()
+        self.assertIn('      MAX_FILE_SIZE_MB: "100"', local_compose)
+
     def test_docreader_parser_changes_rebuild_parser_image(self):
         self.write('WeKnora/docreader/parser/pptx_media.py', 'new page-bound parsing')
         self.commit()

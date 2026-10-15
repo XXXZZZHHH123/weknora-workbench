@@ -1,15 +1,19 @@
 """Native originals enter the existing local importer through real scope checks."""
+import asyncio
 import hashlib
 from io import BytesIO
 import threading
 import time
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 import httpx
 from openpyxl import Workbook
 import pytest
 
 from structured_data.server import create_app
+from structured_data.native_import import load_source, native_limit
 
 
 def workbook():
@@ -238,3 +242,23 @@ def test_a_corrupted_bound_original_is_rejected_instead_of_reused(native):
     assert response.status_code == 400, response.text
     assert '校验' in response.json()['detail']
     assert sum(path.endswith('/download') for path, _ in state['calls']) == downloads
+
+
+@pytest.mark.parametrize('native_mb,expected_mb', [('100', 100), ('50', 50), ('200', 100), ('0', 50), ('invalid', 50)])
+def test_native_limit_preserves_both_service_and_upstream_limits(monkeypatch, native_mb, expected_mb):
+    monkeypatch.setenv('MAX_FILE_SIZE_MB', native_mb)
+    assert native_limit(100 * 1024 * 1024) == expected_mb * 1024 * 1024
+
+
+def test_deployment_sized_native_original_is_accepted_without_relaxing_the_limit(native, monkeypatch):
+    _, _, state, _ = native
+    monkeypatch.setenv('MAX_FILE_SIZE_MB', '100')
+    identity = SimpleNamespace(tenant_id=10000, knowledge_base_tenant_id=10000, knowledge_base_id='kb-a')
+    state['document']['file_size'] = 75 * 1024 * 1024
+    source = asyncio.run(load_source('source-a', 'Bearer owner', identity, 100 * 1024 * 1024))
+    assert source['file_size'] == 75 * 1024 * 1024
+    monkeypatch.setenv('MAX_FILE_SIZE_MB', '50')
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(load_source('source-a', 'Bearer owner', identity, 100 * 1024 * 1024))
+    assert rejected.value.status_code == 413
+    assert not any(path.endswith('/download') for path, _ in state['calls'])
