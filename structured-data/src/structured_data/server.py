@@ -160,7 +160,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def list_series(dataset_id: str | None = None, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None) -> dict:
-        """字面查指标ID、单位、日期范围。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。用户用别称、概念或连续追问时优先resolve_fields语义识别，不靠手写同义词。search空格分词AND。sheet严格过滤；context_sheet仅优先排序。catalog_summary按分页前实际匹配目录的sheet/metric精确分组计数，不判断业务类别；groups_truncated表示分组展示也有截断。partial_candidates须核对口径；truncated用next_offset分页。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
+        """读取字段目录中的真实ID、原表头、维度、单位和日期覆盖，不读取业务观测值。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。模型依据完整问题、上下文和实际目录决定是否需要读取记录或计算；列举字段结构不要求额外查询时序。search空格分词AND，仅作字面召回；别名与partial_candidates也仅为候选，不决定业务口径。sheet严格过滤；context_sheet仅优先排序。catalog_summary按分页前实际匹配目录的sheet/metric精确分组计数，可作为实际字段结构列举的来源，不判断业务类别；groups_truncated表示分组展示也有截断。truncated与next_offset说明字段分页，不能将当前页当作全目录。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
         return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
 
     @mcp.tool()

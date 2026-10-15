@@ -252,11 +252,12 @@ class DataStore:
                 item['search_aliases']=aliases[s['series_id']]
                 item['match_reason']='通过指标别名找到候选；须核对货币方向、原始口径和单位。'
             selected.append(item)
-        notice = {'partial_candidates':'这些是部分关键词匹配的候选指标，不代表全部条件匹配。比较多个指标时按各指标分别选精确ID。',
+        notice = {'partial_candidates':'这些是部分关键词匹配的候选指标，仅作召回证据，不代表全部条件匹配或已确定业务口径。',
                   'alias_candidates':'别名仅用于发现候选，不证明业务口径等价；按原指标、货币方向和来源核对。context_sheet仅优先排序，不自动认定候选。'}
         return {"dataset_id": dataset_id, "series": selected, "total": len(matches), "offset": offset, "next_offset": offset+limit if len(matches)>offset+limit else None, "truncated": len(matches) > offset+limit,
                 "catalog_summary": self._catalog_summary(matches, sheet, search, mode),
-                "match_mode": mode, "notice": notice.get(mode,"已找到符合关键词的指标；按原指标名称、单位及用户条件选择ID查询数值。" if matches else "目录搜索无结果不等于工作簿没有数据，可使用单个关键词或留空查看目录。")}
+                "match_mode": mode, "notice": notice.get(mode,"已返回当前搜索与工作表范围内的字段目录。" if matches else "目录搜索无结果不等于工作簿没有数据，可使用单个关键词或留空查看目录。") +
+                "total为分页前匹配字段数，truncated与next_offset说明字段分页；catalog_summary另列实际分组及其展示覆盖。这是目录事实，不是业务观测值。模型依据完整问题、上下文和来源决定是否需要读取记录或计算，不因取得目录而必须继续取数。"}
 
     @staticmethod
     def _catalog_summary(matches, sheet, search, mode):
@@ -276,7 +277,7 @@ class DataStore:
             "groups": [{"sheet": key[0], "metric": key[1], "series_count": len(ids)}
                        for key, ids in ordered[:100]],
             "groups_truncated": len(groups) > 100,
-            "notice": "按本次全部匹配目录（分页前）的工作表和原指标名精确分组计数。仅计数目录，不判断哪些指标属于用户所问的业务类别，不代表观测值统计。部分匹配或别名候选不能当作全部业务范围。",
+            "notice": "按本次全部匹配目录（分页前）的工作表和原指标名精确分组计数，可作为实际字段结构列举的来源。仅计数目录，不判断哪些指标属于用户所问的业务类别，不代表观测值统计。部分匹配或别名候选不能当作全部业务范围。",
         }
 
     def source_overlap(self, dataset_id, left_id, right_id):

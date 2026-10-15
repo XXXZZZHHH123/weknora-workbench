@@ -360,6 +360,7 @@ func (s *sessionService) buildAgentConfig(
 	customAgent := req.CustomAgent
 	agentConfig := &types.AgentConfig{
 		WorkbenchDefault:              customAgent.WorkbenchDefault,
+		TaskPlanningEnabled:           customAgent.WorkbenchDefault,
 		ThinkingBudgetTokens:          customAgent.Config.ThinkingBudgetTokens,
 		MCPToolExposureMode:           customAgent.Config.MCPToolExposureMode,
 		MaxIterations:                 customAgent.Config.MaxIterations,

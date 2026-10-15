@@ -101,7 +101,11 @@ func (m *permissiveCompletenessMalformedReviewChat) ChatStream(_ context.Context
 }
 
 func TestFinalReviewSynthesisRejectsEmptyOrInvalidProtocolBeforePermissiveCompleteness(t *testing.T) {
-	for _, payload := range []string{`{"answer":"unfinished`, `{"answer":""}`, `{"answer":"   "}`} {
+	for _, payload := range []string{
+		`{"answer":"unfinished`, `{"answer":""}`, `{"answer":"   "}`,
+		`Draft prose. {"answer":"Complete-looking duplicate."}`,
+		`Draft prose. {"answer":"unfinished`,
+	} {
 		t.Run(payload, func(t *testing.T) {
 			model := &permissiveCompletenessMalformedReviewChat{payload: payload}
 			engine := newTestEngine(t, model)

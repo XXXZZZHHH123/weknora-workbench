@@ -103,6 +103,7 @@ const UnlimitedMaxIterations = -1
 // This includes all configuration parameters for agent execution
 type AgentConfig struct {
 	WorkbenchDefault     bool `json:"-"`                                // scoped ordinary-chat runtime, never a user configurable agent preset
+	TaskPlanningEnabled  bool `json:"-"`                                // internal, per-request tool projection; never changes authorization
 	ThinkingBudgetTokens int  `json:"thinking_budget_tokens,omitempty"` // optional per-call reasoning budget; 0 uses vendor default
 	// MaxIterations caps ReAct rounds. Zero is unset (filled with a default);
 	// a negative value is unlimited — the loop runs until the model stops,
