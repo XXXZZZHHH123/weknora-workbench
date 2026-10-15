@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildWorkspaceNavigation } from './workspaceNavigation.ts'
 
-test('global lists open knowledge bases directly and keep workbench preview', () => {
+test('global resource leaves open knowledge bases and workbenches directly', () => {
   const result = buildWorkspaceNavigation(
     [{ id: 'project-a', name: '项目 A' }],
     [{ id: 'kb-a', name: '知识库 A' }],
@@ -10,7 +10,7 @@ test('global lists open knowledge bases directly and keep workbench preview', ()
   )
   assert.equal(result.projects[0].path, '/platform/projects/project-a')
   assert.equal(result.knowledgeBases[0].path, '/platform/knowledge-bases/kb-a')
-  assert.equal(result.workbenches[0].path, '/platform/research-workbenches/wb-a/preview')
+  assert.equal(result.workbenches[0].path, '/platform/research-workbenches/wb-a')
 })
 
 test('nested API fields do not add deeper global navigation or filter unconfigured knowledge bases', () => {

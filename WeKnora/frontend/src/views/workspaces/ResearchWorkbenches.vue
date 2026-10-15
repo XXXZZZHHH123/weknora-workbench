@@ -5,7 +5,11 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatResourcesStore } from '@/stores/chatResources'
 import { useOrganizationStore } from '@/stores/organization'
 import KnowledgeBaseEditorModal from '@/views/knowledge/KnowledgeBaseEditorModal.vue'
-import { createResearchWorkbench, getResearchWorkbench, listResearchWorkbenches, type ResearchWorkbench } from '@/api/workspaces'
+import ResourceListToolbar from '@/components/ResourceListToolbar.vue'
+import ResourceSortControl from '@/components/ResourceSortControl.vue'
+import EmptyState from '@/components/EmptyState.vue'
+import { DEFAULT_RESOURCE_SORT, sortResourceItems, type ResourceSortValue } from '@/utils/resourceSorting'
+import { createResearchWorkbench, listResearchWorkbenches, type ResearchWorkbench } from '@/api/workspaces'
 import { validateWorkbenchSource, validateWorkspaceName, workspaceErrorMessage as message, workspaceIdentity } from './workspaceForm'
 import { workspaceKnowledgeBases } from './workspaceKnowledgeBases'
 import { createRandomUUID } from '@/utils/uuid'
@@ -14,33 +18,37 @@ import './workspaces.css'
 
 const route = useRoute(), router = useRouter(), auth = useAuthStore(), resources = useChatResourcesStore(), organizations = useOrganizationStore()
 const identity = computed(() => workspaceIdentity(auth.selectedTenantId ?? auth.tenant?.id, auth.user?.id))
-const id = computed(() => String(route.params.workbenchId || ''))
 const creating = computed(() => route.name === 'researchWorkbenchCreate')
-const items = ref<ResearchWorkbench[]>([]), current = ref<ResearchWorkbench | null>(null), loading = ref(false), busy = ref(false), error = ref('')
+const items = ref<ResearchWorkbench[]>([]), loading = ref(false), busy = ref(false), error = ref('')
+const keyword = ref(''), selectedResourceSort = ref<ResourceSortValue>(DEFAULT_RESOURCE_SORT)
 const templateId = ref<WorkbenchTemplateId>('industrial')
 const kbId = ref(''), name = ref(''), description = ref(''), kbEditorOpen = ref(false)
 const sharedKnowledgeBaseIdentity = ref('')
 const libraries = computed(() => workspaceKnowledgeBases(resources.rawKnowledgeBases, organizations.sharedKnowledgeBases, identity.value, sharedKnowledgeBaseIdentity.value))
-const selectedLibrary = computed(() => libraries.value.find(k => k.id === kbId.value))
-const currentLibrary = computed(() => libraries.value.find(k => k.id === current.value?.knowledge_base_id))
+function sourceName(workbench: ResearchWorkbench) { return libraries.value.find(k => k.id === workbench.knowledge_base_id)?.name || workbench.knowledge_base_name || '知识库' }
+const visibleItems = computed(() => {
+  const query = keyword.value.trim().toLocaleLowerCase()
+  const filtered = query ? items.value.filter(workbench => [workbench.name, workbench.description, sourceName(workbench)].some(value => value?.toLocaleLowerCase().includes(query))) : items.value
+  return sortResourceItems(filtered, selectedResourceSort.value, { getName: item => item.name, getCreatedAt: item => item.created_at, getUpdatedAt: item => item.updated_at })
+})
 const existing = computed(() => items.value.filter(w => w.knowledge_base_id === kbId.value))
 let generation = 0, creationKey = createRandomUUID()
 function changed() { window.dispatchEvent(new CustomEvent('weknora:workspaces-changed')) }
 async function load() {
   const own = ++generation, capturedIdentity = identity.value
-  items.value = []; current.value = null; loading.value = true; error.value = ''
+  items.value = []; loading.value = true; error.value = ''
   try {
-    const [res, detail] = await Promise.all([listResearchWorkbenches(), id.value ? getResearchWorkbench(id.value) : Promise.resolve(null), resources.ensureKnowledgeBases()])
+    const [res] = await Promise.all([listResearchWorkbenches(), resources.ensureKnowledgeBases()])
     if (own !== generation) return
     await organizations.fetchSharedKnowledgeBases({ force: sharedKnowledgeBaseIdentity.value !== capturedIdentity })
     if (own !== generation || capturedIdentity !== identity.value) return
     sharedKnowledgeBaseIdentity.value = capturedIdentity
-    items.value = res.data; current.value = detail?.data || null
+    items.value = res.data
     if (creating.value && typeof route.query.kb_id === 'string' && libraries.value.some(k => k.id === route.query.kb_id)) kbId.value = route.query.kb_id
   } catch (e) { if (own === generation) error.value = message(e) }
   finally { if (own === generation) loading.value = false }
 }
-watch([identity, id, creating, () => route.query.kb_id], () => { if (sharedKnowledgeBaseIdentity.value !== identity.value) sharedKnowledgeBaseIdentity.value = ''; templateId.value = 'industrial'; kbId.value = ''; name.value = ''; description.value = ''; busy.value = false; kbEditorOpen.value = false; creationKey = createRandomUUID(); void load() }, { immediate: true })
+watch([identity, creating, () => route.query.kb_id], () => { if (sharedKnowledgeBaseIdentity.value !== identity.value) sharedKnowledgeBaseIdentity.value = ''; templateId.value = 'industrial'; kbId.value = ''; name.value = ''; description.value = ''; keyword.value = ''; busy.value = false; kbEditorOpen.value = false; creationKey = createRandomUUID(); void load() }, { immediate: true })
 watch([kbId, name, description, templateId], () => { if (!busy.value) creationKey = createRandomUUID() })
 onBeforeUnmount(() => { generation++ })
 watch(kbId, (value, previous) => {
@@ -72,9 +80,10 @@ async function knowledgeCreated(newId: string) {
 </script>
 
 <template>
-  <div class="workspace-management research-management"><main class="workspace-management__content">
-    <header class="workspace-management__header"><div><h2>{{ creating ? '新建研究工作台' : current?.name || '研究工作台' }}</h2><p>{{ creating ? '选择知识库和起步模板，稍后在工作台内准备资料。' : current?.description || '每个新工作台都有独立的资料范围和研究成果。' }}</p></div><div class="workspace-management__actions"><t-button v-if="creating || id" size="small" variant="outline" @click="router.push('/platform/research-workbenches')">全部工作台</t-button><t-button v-else size="small" @click="router.push('/platform/research-workbenches/new')">新建工作台</t-button></div></header>
+  <div class="research-management" :class="creating ? 'workspace-management' : 'research-list-container'"><main :class="creating ? 'workspace-management__content' : 'research-list-content'">
+    <header class="header" :class="{ 'workspace-management__header': creating }"><div class="header-title"><div class="title-row"><h2><t-icon v-if="!creating" name="chart-bar" size="24px" />{{ creating ? '新建研究工作台' : '研究工作台' }}</h2><div class="header-actions"><t-button v-if="creating" size="small" variant="outline" @click="router.push('/platform/research-workbenches')">全部工作台</t-button><template v-else><ResourceSortControl v-model="selectedResourceSort" /><t-button size="small" theme="default" variant="text" class="header-action-btn" @click="router.push('/platform/research-workbenches/new')"><template #icon><t-icon name="chart-add" size="16px" /></template>新建工作台</t-button></template></div></div><p class="header-subtitle">{{ creating ? '选择知识库和起步模板，稍后在工作台内准备资料。' : '基于知识库组织资料与研究，点击工作台即可进入。' }}</p></div></header>
     <t-alert v-if="error" theme="error" :message="error" class="workspace-management__error" />
+    <ResourceListToolbar v-if="!creating" model-value="all" v-model:query="keyword" hide-scopes />
     <div v-if="loading" class="workspace-management__empty"><t-loading text="正在加载工作台" /></div>
     <form v-else-if="creating" class="research-create" @submit.prevent="create">
       <div v-if="!items.length" class="research-create__first"><t-icon name="info-circle" />第一次创建？先选知识库，创建后按“导入资料 → 核对来源 → 开始研究”继续。</div>
@@ -90,15 +99,97 @@ async function knowledgeCreated(newId: string) {
         <div class="workspace-management__actions research-create__footer"><t-button size="small" variant="outline" :disabled="busy" @click="router.push(typeof route.query.kb_id === 'string' ? `/platform/knowledge-bases/${route.query.kb_id}` : '/platform/research-workbenches')">取消</t-button><t-button size="small" type="submit" :loading="busy" :disabled="!kbId || loading">创建工作台</t-button></div>
       </section>
     </form>
-    <section v-else-if="current" class="workspace-management__panel"><h3>工作台预览</h3><div class="workspace-management__confirm"><p>依托知识库：{{ currentLibrary?.name || current.knowledge_base_id }}</p><p v-if="current.workspace_mode === 'isolated'">{{ templateById(current.template_id || 'blank').name }} · 独立研究范围。进入后可继续资料准备和首次引导。</p><p v-else>原有研究工作台沿用原研究模式，主知识库用于资料导航与问答。</p></div><div class="workspace-management__actions"><t-button size="small" @click="router.push(`/platform/research-workbenches/${current.id}`)">进入工作台</t-button><t-button size="small" variant="outline" @click="router.push(`/platform/knowledge-bases/${current.knowledge_base_id}`)">转到知识库</t-button></div></section>
-    <div v-else-if="items.length" class="workspace-management__grid"><article v-for="workbench in items" :key="workbench.id" class="workspace-management__card"><h3>{{ workbench.name }}</h3><p>{{ workbench.description || (workbench.workspace_mode === 'isolated' ? templateById(workbench.template_id || 'blank').name : '原有研究工作台') }}</p><p>知识库：{{ libraries.find(k => k.id === workbench.knowledge_base_id)?.name || workbench.knowledge_base_id }}</p><div class="workspace-management__actions"><t-button size="small" variant="outline" @click="router.push(`/platform/research-workbenches/${workbench.id}/preview`)">一级预览</t-button><t-button size="small" @click="router.push(`/platform/research-workbenches/${workbench.id}`)">进入工作台</t-button></div></article></div>
-    <div v-else-if="!error" class="workspace-management__empty"><p>还没有研究工作台。选择知识库和起步模板，创建后有三步引导帮助准备资料。</p><t-button size="small" @click="router.push('/platform/research-workbenches/new')">新建工作台</t-button></div>
+    <div v-else-if="!creating" class="research-list-main">
+      <div v-if="visibleItems.length" class="workbench-card-wrap"><article v-for="workbench in visibleItems" :key="workbench.id" class="workbench-card" role="link" tabindex="0" :aria-label="`进入${workbench.name}`" @click="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)" @keydown.enter.self.prevent="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)" @keydown.space.self.prevent="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)">
+        <div class="card-header"><span class="workbench-avatar"><t-icon name="chart-bar" size="18px" /></span><span class="card-title" :title="workbench.name">{{ workbench.name }}</span><t-icon class="workbench-open" name="chevron-right" size="16px" /></div>
+        <div class="card-content"><div class="card-description" :class="{ 'is-empty': !workbench.description }">{{ workbench.description || '暂无说明' }}</div></div>
+        <div class="card-bottom"><button type="button" class="workbench-source" :title="`转到知识库：${sourceName(workbench)}`" @click.stop="router.push(`/platform/knowledge-bases/${encodeURIComponent(workbench.knowledge_base_id)}`)" @keydown.stop><t-icon name="folder" size="14px" /><span>{{ sourceName(workbench) }}</span></button><span class="workbench-template">{{ workbench.workspace_mode === 'isolated' ? templateById(workbench.template_id || 'blank').name : '研究工作台' }}</span></div>
+      </article></div>
+      <EmptyState v-else-if="!error && keyword.trim()" icon="search" title="没有匹配的工作台"><t-button size="small" variant="outline" @click="keyword = ''">清除搜索</t-button></EmptyState>
+      <EmptyState v-else-if="!error" icon="chart-bar" title="还没有研究工作台" description="选择知识库和起步模板，创建后按引导准备资料。"><t-button size="small" @click="router.push('/platform/research-workbenches/new')">新建工作台</t-button></EmptyState>
+    </div>
     <t-button v-if="error" size="small" variant="outline" @click="load">重新加载</t-button>
   </main><KnowledgeBaseEditorModal v-model:visible="kbEditorOpen" mode="create" @success="knowledgeCreated" /></div>
 </template>
 
 <style scoped>
-.research-create,.research-create *{box-sizing:border-box}.research-management h2{font-size:18px;margin-bottom:4px}.research-management .workspace-management__header{margin-bottom:16px}.research-management .workspace-management__header p{font-size:12px}.research-create{max-width:560px;margin:0 auto}.research-create__panel{padding:18px}.research-create__first{display:flex;align-items:flex-start;gap:7px;font-size:12px;line-height:1.7;color:var(--app-text-secondary);padding:9px 0 12px}.research-create__first .t-icon{flex:none;margin-top:3px;color:var(--td-brand-color)}.research-create__field{display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:12px}.research-create__field>label,.research-create__field>span{width:76px;flex:none}.research-create__field small{font-size:11px;color:var(--app-text-secondary)}.research-create__field input,.research-create__field select{height:32px;min-width:0;flex:1;padding:0 9px;color:var(--app-text-primary);background:var(--app-card-bg);border:1px solid var(--app-border-color);border-radius:6px;font:inherit}.research-create__field input:focus-visible,.research-create__field select:focus-visible{outline:2px solid var(--td-brand-color);outline-offset:2px}.research-create__control{display:flex;flex:1;min-width:0;gap:5px}.research-create__existing{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:11px;color:var(--app-text-secondary);margin-bottom:12px}.research-create__existing .t-button{font-size:11px;height:25px}.research-create__label{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;margin:16px 0 8px}.research-create__label small{font-size:10px;color:var(--app-text-secondary)}.research-template{display:flex;align-items:center;gap:10px;min-height:60px;padding:9px 11px;margin-bottom:7px;border:1px solid var(--app-border-color);border-radius:6px;cursor:pointer;transition:background .15s,border-color .15s}.research-template:hover{background:var(--app-bg)}.research-template.is-selected{background:var(--td-brand-color-light);border-color:var(--td-brand-color)}.research-template input{accent-color:var(--td-brand-color);width:14px;height:14px;margin:0;flex:none}.research-template strong{display:block;font-size:13px;font-weight:500}.research-template small{display:block;font-size:11px;color:var(--app-text-secondary);margin-top:2px}.research-create__modules{display:flex;gap:5px;flex-wrap:wrap;margin:10px 0 14px}.research-create__modules span{border:1px solid var(--app-border-color);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--app-text-secondary)}.research-create .research-create__note{font-size:11px;line-height:1.65;margin:0;color:var(--app-text-secondary)}.research-create__footer{justify-content:flex-end;margin-top:14px;padding-top:12px;border-top:1px solid var(--app-border-color)}
-@media(max-width:600px){.research-management{padding:16px 12px}.research-create__panel{padding:13px}.research-create__label{flex-wrap:wrap;gap:3px}.research-create__label small{font-size:10px}.research-create__field>label,.research-create__field>span{width:65px}.research-template{padding:8px}.research-template small{font-size:10px}}
+.research-create,.research-create *{box-sizing:border-box}.research-management h2{font-size:var(--app-text-2xl);margin-bottom:4px}.research-management .workspace-management__header{margin-bottom:16px}.research-management .workspace-management__header p{font-size:var(--app-text-sm)}.research-create{max-width:560px;margin:0 auto}.research-create__panel{padding:18px}.research-create__first{display:flex;align-items:flex-start;gap:7px;font-size:var(--app-text-sm);line-height:1.7;color:var(--app-text-secondary);padding:9px 0 12px}.research-create__first .t-icon{flex:none;margin-top:3px;color:var(--td-brand-color)}.research-create__field{display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:var(--app-text-sm)}.research-create__field>label,.research-create__field>span{width:76px;flex:none}.research-create__field small{font-size:var(--app-text-xs);color:var(--app-text-secondary)}.research-create__field input,.research-create__field select{height:32px;min-width:0;flex:1;padding:0 9px;color:var(--app-text-primary);background:var(--app-card-bg);border:1px solid var(--app-border-color);border-radius:var(--app-radius-sm);font:inherit}.research-create__field input:focus-visible,.research-create__field select:focus-visible{outline:2px solid var(--td-brand-color);outline-offset:2px}.research-create__control{display:flex;flex:1;min-width:0;gap:5px}.research-create__existing{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:var(--app-text-xs);color:var(--app-text-secondary);margin-bottom:12px}.research-create__existing .t-button{font-size:var(--app-text-xs);height:25px}.research-create__label{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:var(--app-text-sm);margin:16px 0 8px}.research-create__label small{font-size:var(--app-text-2xs);color:var(--app-text-secondary)}.research-template{display:flex;align-items:center;gap:10px;min-height:60px;padding:9px 11px;margin-bottom:7px;border:1px solid var(--app-border-color);border-radius:var(--app-radius-sm);cursor:pointer;transition:background var(--app-motion-fast),border-color var(--app-motion-fast)}.research-template:hover{background:var(--app-bg)}.research-template.is-selected{background:var(--td-brand-color-light);border-color:var(--td-brand-color)}.research-template input{accent-color:var(--td-brand-color);width:14px;height:14px;margin:0;flex:none}.research-template strong{display:block;font-size:var(--app-text-md);font-weight:500}.research-template small{display:block;font-size:var(--app-text-xs);color:var(--app-text-secondary);margin-top:2px}.research-create__modules{display:flex;gap:5px;flex-wrap:wrap;margin:10px 0 14px}.research-create__modules span{border:1px solid var(--app-border-color);border-radius:var(--app-radius-xs);padding:1px 6px;font-size:var(--app-text-xs);color:var(--app-text-secondary)}.research-create .research-create__note{font-size:var(--app-text-xs);line-height:1.65;margin:0;color:var(--app-text-secondary)}.research-create__footer{justify-content:flex-end;margin-top:14px;padding-top:12px;border-top:1px solid var(--app-border-color)}
+@media(max-width:600px){.workspace-management.research-management{padding:16px 12px}.research-create__panel{padding:13px}.research-create__label{flex-wrap:wrap;gap:3px}.research-create__label small{font-size:var(--app-text-2xs)}.research-create__field>label,.research-create__field>span{width:65px}.research-template{padding:8px}.research-template small{font-size:var(--app-text-2xs)}}
 @media(prefers-reduced-motion:reduce){.research-template{transition:none}}
+</style>
+
+<style scoped lang="less">
+@import (reference) '@/components/css/resource-card.less';
+
+.research-list-container {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  color: var(--td-text-color-primary);
+  .resource-list-header();
+
+  .header { display: flex; align-items: center; }
+  .header-title { display: flex; flex-direction: column; }
+  .title-row { display: flex; align-items: center; }
+  .header h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 auto 0 0;
+    font-size: var(--app-text-4xl);
+    font-weight: 600;
+    line-height: 32px;
+  }
+  .header-actions { display: flex; align-items: center; gap: 8px; }
+  .header-subtitle { margin: 0; line-height: 20px; }
+  .workspace-management__empty { border: 0; background: transparent; }
+}
+.research-list-content { .resource-list-content(); }
+.research-list-main { .resource-list-main(); }
+.workbench-card-wrap { .resource-card-grid(); }
+.workbench-card {
+  .resource-card();
+  .card-header { padding-right: 0; }
+}
+.workbench-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--app-radius-sm);
+  color: var(--td-brand-color);
+  background: var(--td-brand-color-light);
+}
+.workbench-open { flex: none; color: var(--td-text-color-placeholder); }
+.workbench-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 65%;
+  padding: 2px 0;
+  border: 0;
+  border-radius: var(--app-radius-xs);
+  color: var(--td-text-color-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--app-text-sm);
+  cursor: pointer;
+  .t-icon { flex: none; color: var(--td-brand-color); }
+  span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  &:hover { color: var(--td-brand-color); }
+  &:focus-visible { outline: 2px solid var(--td-brand-color); outline-offset: 2px; }
+}
+.workbench-template { color: var(--td-text-color-placeholder); font-size: var(--app-text-xs); }
+.workspace-management.research-management {
+  .header-title { width: 100%; }
+  .title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+}
+@media (max-width: 600px) {
+  .research-list-container .header-actions { flex-wrap: wrap; gap: 5px; }
+}
 </style>
