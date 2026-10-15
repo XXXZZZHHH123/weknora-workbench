@@ -65,7 +65,7 @@ def _current_native_import(source, records, scope):
         return None
     matching = []
     for record in records:
-        if not isinstance(record, dict) or record.get('use_reviewed_mappings') is not False:
+        if not isinstance(record, dict):
             continue
         bindings = record.get('native_source_bindings') or []
         if any(isinstance(binding, dict) and binding.get('source_knowledge_id') == source['id']
@@ -84,14 +84,14 @@ def _current_datasets(sources, records, catalog, scope):
             imports[record['import_id']] = record
     current, history = [], []
     for dataset in catalog:
-        if not isinstance(dataset, dict) or dataset.get('use_reviewed_mappings', False) is not False:
+        if not isinstance(dataset, dict):
             continue
         record = next((row for row in imports.values() if row['dataset_id'] == dataset.get('dataset_id')
                        and dataset.get('import_id', row['import_id']) == row['import_id']), None)
         if record is not None:
-            current.append({**dataset, 'import_id': record['import_id'], 'use_reviewed_mappings': False})
-        elif dataset.get('import_id') in imports and dataset.get('use_reviewed_mappings', False) is False:
-            history.append({**dataset, 'use_reviewed_mappings': False})
+            current.append({**dataset, 'import_id': record['import_id']})
+        elif dataset.get('import_id') in imports:
+            history.append(dataset)
     return current, history
 
 
@@ -120,7 +120,8 @@ async def source_inventory(scope: WorkbenchScope, page=1, page_size=100):
         roles = {row.config["knowledge_id"]: row.config["source_role"] for row in
                  session.scalars(select(SourceMapping).where(SourceMapping.id.startswith("role-"))).all() if row.config.get("knowledge_id")
                  and row.config.get("source_role")}
-    current, history = _current_datasets(sources, source_imports, datasets['datasets'], scope)
+        current = session.info['knowledge_facts_datasets']
+    _, history = _current_datasets(sources, source_imports, datasets['datasets'], scope)
     return {"knowledge_base_id": scope.knowledge_base_id,
             "sources": [{**{k: v for k, v in row.items() if k in allowed},
                          "source_role": roles.get(row["id"], "unassigned")} for row in sources],
@@ -157,10 +158,10 @@ def source_review_progress(inventory, scope):
             pending_sources += 1; unknown_sources += 1
             continue
         pending = sum(value for key, value in summary.items()
-                      if key not in {'confirmed', 'template_ready', 'auto_ready', 'empty'}
+                      if key not in {'confirmed', 'empty'}
                       and type(value) is int and value > 0)
         pending_sheets += pending
-        if pending or source.get('source_role') == 'unassigned':
+        if pending:
             pending_sources += 1
     return {'excel_pending': pending_sources, 'pending_sheet_count': pending_sheets,
             'unknown_source_count': unknown_sources, 'observation_source_count': len(eligible),
@@ -173,8 +174,8 @@ async def overview(scope: WorkbenchScope = Depends(verified_workbench)):
     inventory = await source_inventory(scope, page_size=200)
     with workbench_session(scope) as session:
         counts = fact_counts(session)
-        from tin.web.workbench_artifacts import artifact_counts
-        research_counts = artifact_counts(session, scope)
+        from tin.integration.read_api import research_result_counts
+        research_counts = research_result_counts(session, scope)
     sources = inventory["sources"]
     excel = [s for s in sources if str(s.get("file_type", "")).lower().lstrip(".") in {"xlsx", "xls", "xlsm", "csv", "tsv"}]
     ready_docs = sum(s.get("parse_status") == "completed" for s in sources if s not in excel)
@@ -213,22 +214,13 @@ async def source_series(dataset_id: str, offset: int = Query(0, ge=0), limit: in
                   scope: WorkbenchScope = Depends(verified_workbench)):
     if not dataset_id or len(dataset_id) > 128:
         raise HTTPException(400, "数据集编号无效")
-    catalog = await run_in_threadpool(_structured_catalog, "list_datasets", {})
-    records = await _structured_user(scope, 'GET', '/api/imports')
-    native_sources = await _all_native_sources(scope)
-    if (not isinstance(catalog, dict) or not isinstance(catalog.get('datasets'), list)
-            or not isinstance(records, dict) or not isinstance(records.get('imports'), list)):
-        raise HTTPException(503, "当前来源核对信息不完整")
-    current, history = _current_datasets(native_sources, records['imports'], catalog['datasets'], scope)
-    if (not any(row.get('dataset_id') == dataset_id for row in current + history)
-            or not any(row.get('dataset_id') == dataset_id and row.get('use_reviewed_mappings') is False
-                       for row in catalog['datasets'])):
-        raise HTTPException(409, "该版本缺少本知识库当前原件的独立核对证据，请重新扫描核对")
-    result = await run_in_threadpool(_structured_catalog, "list_series",
-                                    {"dataset_id": dataset_id, "offset": offset, "limit": limit})
-    if not isinstance(result, dict) or result.get("dataset_id") != dataset_id or not isinstance(result.get("series"), list):
-        raise HTTPException(409, "结构化字段与请求版本不一致")
-    return result
+    with workbench_session(scope) as session:
+        rows = [spec for spec in session.info['knowledge_facts_catalog'].values() if spec['dataset_id'] == dataset_id]
+    if not rows:
+        raise HTTPException(409, '该版本没有本知识库当前已确认字段，请在知识库核对结构化数据')
+    return {'dataset_id': dataset_id, 'series': rows[offset:offset + limit], 'total': len(rows),
+            'offset': offset, 'next_offset': offset + limit if offset + limit < len(rows) else None,
+            'truncated': offset + limit < len(rows)}
 
 
 class PreviewInput(BaseModel):
@@ -300,9 +292,7 @@ def _preview(scope, body, native_sources):
 
 @router.post("/imports/preview")
 async def preview(body: PreviewInput, scope: WorkbenchScope = Depends(verified_workbench)):
-    _write(scope)
-    native_sources = await _all_native_sources(scope)
-    return await run_in_threadpool(_preview, scope, body, native_sources)
+    raise HTTPException(409, '请在知识库结构化页面核对字段，研究台直接读取已确认数据')
 
 
 def _batch_snapshot(session, scope, batch_id):
@@ -393,9 +383,7 @@ def _confirm(scope, body, native_sources):
 @router.post("/imports/confirm")
 @router.post("/indicators")
 async def confirm(body: ConfirmInput, scope: WorkbenchScope = Depends(verified_workbench)):
-    _write(scope)
-    native_sources = await _all_native_sources(scope)
-    return await run_in_threadpool(_confirm, scope, body, native_sources)
+    raise HTTPException(409, '事实只在知识库结构化页面维护，研究台不再单独导入观测')
 
 
 class PreviewBatch(BaseModel):
@@ -410,29 +398,12 @@ class ConfirmBatch(BaseModel):
 
 @router.post("/imports/preview-batch")
 async def preview_batch(body: PreviewBatch, scope: WorkbenchScope = Depends(verified_workbench)):
-    _write(scope)
-    native_sources = await _all_native_sources(scope)
-    rows = []
-    for item in body.items:
-        try:
-            rows.append({"status": "ready", "preview": await run_in_threadpool(_preview, scope, item, native_sources)})
-        except HTTPException as exc:
-            rows.append({"status": "failed", "dataset_id": item.dataset_id,
-                         "series_id": item.series_id, "detail": exc.detail})
-    return {"items": rows}
+    raise HTTPException(409, '请在知识库结构化页面核对字段，研究台直接读取已确认数据')
 
 
 @router.post("/imports/confirm-batch")
 async def confirm_batch(body: ConfirmBatch, scope: WorkbenchScope = Depends(verified_workbench)):
-    _write(scope)
-    native_sources = await _all_native_sources(scope)
-    rows = []
-    for item in body.items:
-        try:
-            rows.append({"status": "committed", **await run_in_threadpool(_confirm, scope, item, native_sources)})
-        except HTTPException as exc:
-            rows.append({"status": "failed", "batch_id": item.batch_id, "detail": exc.detail})
-    return {"items": rows}
+    raise HTTPException(409, '事实只在知识库结构化页面维护，研究台不再单独导入观测')
 
 
 @router.get("/indicators")
@@ -446,6 +417,11 @@ def indicators(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=20
 
 
 def observation_payload(session, row, workbench_id):
+    if session.info.get('knowledge_facts'):
+        from tin.integration.kb_facts import canonical_observation_sources
+        return {'observation_id': row.id, 'value': row.value, 'as_of': row.as_of,
+                'revision': row.revision, 'caliber': row.caliber_snapshot,
+                'sources': canonical_observation_sources(session, row.id)}
     evidence = session.scalars(select(ObservationSource).where(ObservationSource.observation_id == row.id)).all()
     return {"observation_id": row.id, "value": row.value, "as_of": row.as_of,
             "revision": row.revision, "caliber": row.caliber_snapshot,

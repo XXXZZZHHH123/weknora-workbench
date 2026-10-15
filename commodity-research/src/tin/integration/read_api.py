@@ -1,5 +1,5 @@
 """Bounded research reads. The caller and workspace are never model arguments."""
-from datetime import date as Date
+from datetime import date as Date, timezone
 from enum import Enum
 
 from fastapi import APIRouter, HTTPException
@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, func, and_
 
 from tin.compute.engine import latest_trade_date, day_end, latest_obs
-from tin.config import SHANGHAI
+from tin.config import SHANGHAI, settings
 from tin.db import SessionLocal
 from tin.export import board, indicators
 from tin.integration.identity import current_identity, research_url
@@ -175,11 +175,70 @@ def research_read(body: ReadRequest):
     if identity is None:
         raise HTTPException(401, "缺少已核验研究身份")
     if identity.workbench_id:
-        from tin.integration.workbench_scope import service_scope, workbench_session
-        with workbench_session(service_scope(identity)) as session:
+        from tin.integration.workbench_scope import current_workbench, workbench_session
+        scope = current_workbench.get()
+        if scope is None or scope.workbench_id != identity.workbench_id:
+            raise HTTPException(403, '缺少当前已核验工作台范围')
+        with workbench_session(scope) as session:
             return read_isolated_research(session, body, identity.workbench_id)
+    if settings.weknora_api_url:
+        raise HTTPException(409, '请先选择绑定知识库的研究工作台')
     with SessionLocal() as session:
         return read_research(session, body)
+
+
+def original_result_query(session, module):
+    """Use the same personally owned models as the original research pages."""
+    from tin.models import Strategy
+    model, stamp = {'judgments': (Judgment, Judgment.created_at),
+                    'briefs': (DailyBrief, DailyBrief.generated_at),
+                    'strategies': (Strategy, Strategy.created_at)}[module]
+    return model, stamp, scope_query(session, select(model), model)
+
+
+def research_result_counts(session, scope):
+    from tin.models import DiagramTemplate
+    from tin.web.workbench_artifacts import artifact_counts
+    counts = artifact_counts(session, scope)
+    for module in ('judgments', 'briefs', 'strategies'):
+        _, _, query = original_result_query(session, module)
+        counts[module] += session.scalar(select(func.count()).select_from(query.subquery()))
+    # Viewing a new workspace creates an empty default canvas, not a research result.
+    counts['structure'] += sum(bool(layout.get('nodes') or layout.get('edges')) for layout in
+        session.scalars(select(DiagramTemplate.layout)) if isinstance(layout, dict))
+    return counts
+
+
+def research_result_records(session, scope, module, limit, offset):
+    """Merge actual page results and generic notes, keeping source and draft status."""
+    from tin.web.workbench_artifacts import artifact_query, serialize_artifact
+    from tin.models.workbench import WorkbenchArtifact
+    model, stamp, query = original_result_query(session, module)
+    generic = artifact_query(scope, module)
+    total = (session.scalar(select(func.count()).select_from(query.subquery()))
+             + session.scalar(select(func.count()).select_from(generic.subquery())))
+    end = offset + limit
+    records = [{**serialize_artifact(row), 'origin': 'workbench_record'} for row in
+        session.scalars(generic.order_by(WorkbenchArtifact.updated_at.desc(), WorkbenchArtifact.id.desc()).limit(end))]
+    for row in session.scalars(query.order_by(stamp.desc(), model.id.desc()).limit(end)):
+        if module == 'judgments':
+            payload = to_payload(row).model_dump(mode='json')
+        elif module == 'briefs':
+            payload = {key: getattr(row, key) for key in ('variety', 'trade_date', 'tone', 'tone_note',
+                'range_low', 'range_high', 'range_series_id', 'stance', 'summary', 'claims', 'unverified',
+                'reviewed_at', 'reviewed_by')}
+        else:
+            payload = serialize_strategy(session, row)
+        created = row.generated_at if module == 'briefs' else row.created_at
+        records.append({'id': row.id, 'module': module, 'origin': 'research_ui',
+                        'status': row.status, 'created_at': created, 'updated_at': created,
+                        'payload': payload})
+    def order(item):
+        timestamp = item['updated_at']
+        return (timestamp.replace(tzinfo=timezone.utc).timestamp() if timestamp.tzinfo is None else timestamp.timestamp(),
+                item['origin'], item['id'])
+    records.sort(key=order, reverse=True)
+    return {'items': records[offset:end], 'total': total, 'offset': offset, 'truncated': end < total}
 
 
 def read_isolated_research(session, body: ReadRequest, workbench_id: str):
@@ -187,7 +246,7 @@ def read_isolated_research(session, body: ReadRequest, workbench_id: str):
     from tin.web.workbenches import fact_counts, indicator_payload, observation_payload, observation_rows
     base = {"operation": body.operation.value, "workbench_id": workbench_id,
             "knowledge_base_id": session.info["knowledge_base_id"], "requested_date": body.date,
-            "notice": "只读取当前独立工作台已确认的事实与本人研究；不代表实时行情。"}
+            "notice": "直接读取绑定知识库当前已确认结构化事实与本台研究成果；原表日期不声明发布时间，不代表实时行情。"}
     if body.operation == Operation.indicators:
         rows = session.scalars(select(Indicator).order_by(Indicator.series_id)).all()
         if body.search:
@@ -222,12 +281,11 @@ def read_isolated_research(session, body: ReadRequest, workbench_id: str):
             'next_offset': body.offset + len(rows) if body.offset + len(rows) < total else None}
     if body.operation in {Operation.judgment, Operation.brief, Operation.strategies}:
         from tin.integration.workbench_scope import current_workbench
-        from tin.web.workbench_artifacts import list_owned_artifacts
         module = {Operation.judgment: "judgments", Operation.brief: "briefs", Operation.strategies: "strategies"}[body.operation]
-        data = list_owned_artifacts(session, current_workbench.get(), module, body.limit, body.offset)
+        data = research_result_records(session, current_workbench.get(), module, body.limit, body.offset)
         return {**base, "data": data, "temporal_scope": "current_manual_records",
                 "requested_date_applied": False,
-                "notice": "当前本人手工研究记录含草稿和已确认状态，按最新版本列出；请求日期未用于筛选，"
-                          "不代表该日历史版本、当时可知信息或交易判断回放。"}
+                "notice": "当前本人研究记录含草稿及原页面真实状态，按保存时间列出；请求日期未用于筛选，"
+                          "不代表该日历史版本、当时可知信息或交易判断回放。记录内历史引用不充当当前知识库事实。"}
     return {**base, "signals": [], "total": 0,
             "gap": "本工作台尚无已配置并计算的条件监测结果"}

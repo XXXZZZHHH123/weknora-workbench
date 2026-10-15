@@ -114,12 +114,16 @@ def test_snapshot_has_contract_fields(loaded):
 
 
 def test_fk_is_enforced_at_database_level(session):
-    """证伪绑定指标的最后一道防线：即便绕过服务层直接写引用表，数据库也拒绝未登记指标。"""
+    """当前来源 ID 在服务层核验；成果归属外键仍由数据库强制。"""
     from tin.jobs.seed import seed_judgment
+    from tin.judgments.service import JudgmentError, save_version, to_payload
     from tin.models import JudgmentSeriesRef
     j = seed_judgment(session)
     session.add(JudgmentSeriesRef(judgment_id=j.id, ref_type="falsifier", ref_id="ok", series_id="MACRO.VIX"))
     session.flush()
-    session.add(JudgmentSeriesRef(judgment_id=j.id, ref_type="falsifier", ref_id="x", series_id="NOT.REGISTERED"))
+    invalid = to_payload(j).model_copy(update={'whitelist': ['NOT.REGISTERED']})
+    with pytest.raises(JudgmentError, match='未登记'):
+        save_version(session, invalid, actor='fixture')
+    session.add(JudgmentSeriesRef(judgment_id=j.id + 9999, ref_type="falsifier", ref_id="x", series_id="MACRO.VIX"))
     with pytest.raises(IntegrityError, match="FOREIGN KEY"):
         session.flush()

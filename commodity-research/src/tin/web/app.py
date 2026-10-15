@@ -479,6 +479,9 @@ async def judgment_import(file: UploadFile | None = None, text: str = Form(""), 
 @app.get("/sn/entry")
 def entry_form(request: Request, series_id: str | None = None, err: str | None = None):
     with SessionLocal() as s:
+        if s.info.get('knowledge_facts'):
+            return templates.TemplateResponse(request, 'knowledge_entry.html', _shell(
+                s, 'entry', latest_trade_date(s)))
         return templates.TemplateResponse(request, "entry.html", _shell(
             s, "entry", latest_trade_date(s), indicators=_manual_indicators(s), selected=series_id, err=err,
             audit=audit_entries(s), now=datetime.now(SHANGHAI).strftime("%Y-%m-%dT%H:%M")))

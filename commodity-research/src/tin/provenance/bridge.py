@@ -21,7 +21,7 @@ from tin.schemas.caliber import Caliber
 from tin.schemas.observation import ObservationIn
 
 
-def structured_request(method, path, body=None):
+def structured_request(method, path, body=None, *, return_error_response=False):
     identity = current_identity.get()
     if identity is None:
         raise PermissionError("结构化桥接需要已核验账号和空间")
@@ -51,7 +51,7 @@ def structured_request(method, path, body=None):
         headers={"Content-Type": "application/json", "X-Research-Timestamp": stamp,
                  "X-Research-Identity": encoded, "X-Research-Signature": signature},
         follow_redirects=False, trust_env=False, timeout=120)
-    if response.status_code != 200:
+    if response.status_code != 200 and not return_error_response:
         raise ValueError(f"结构化服务读取失败（HTTP {response.status_code}）")
     return response
 

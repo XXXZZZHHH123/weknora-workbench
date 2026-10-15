@@ -45,9 +45,15 @@ async def verify_service_request(request):
         data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
         required = {"user_id", "email", "display_name", "tenant_id", "role"}
         scoped = {"workbench_id", "knowledge_base_id", "knowledge_base_tenant_id"}
-        if not isinstance(data, dict) or set(data) not in (required, required | scoped):
+        if not isinstance(data, dict) or set(data) not in (required, required | scoped | {'authorization_sha256'}):
             raise ValueError("invalid identity")
         if scoped <= set(data):
+            authorization = request.headers.get('x-research-authorization', '')
+            if (not authorization.startswith('Bearer ') or len(authorization) > 16391
+                    or not isinstance(data.get('authorization_sha256'), str)
+                    or not hmac.compare_digest(data.pop('authorization_sha256'), hashlib.sha256(authorization.encode()).hexdigest())):
+                raise ValueError('Unsigned or missing current platform authorization')
+            data['authorization'] = authorization
             from uuid import UUID
             workbench = UUID(data["workbench_id"])
             knowledge_base = UUID(data["knowledge_base_id"])

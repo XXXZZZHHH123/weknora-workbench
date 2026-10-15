@@ -112,10 +112,11 @@ def tenant_session_factory(tenant_id: int):
                 connection.commit()
             factory = sessionmaker(tenant_engine, expire_on_commit=False)
             # Workspace-wide indicator definitions; no personal default judgment.
-            from tin.jobs.seed import seed_indicators
-            with factory() as session:
-                seed_indicators(session)
-                session.commit()
+            if not settings.weknora_api_url:
+                from tin.jobs.seed import seed_indicators
+                with factory() as session:
+                    seed_indicators(session)
+                    session.commit()
             _tenant_factories[key] = factory
             return factory
 
@@ -127,24 +128,8 @@ def SessionLocal(**kwargs):
         return open_workbench_session(scope, **kwargs)
     if not settings.weknora_api_url:
         return _legacy_sessions(**kwargs)
-    from tin.integration.identity import current_identity
-    identity = current_identity.get()
-    if identity is None:
-        raise PermissionError("Verified WeKnora identity is required")
-    session = tenant_session_factory(identity.tenant_id)(**kwargs)
-    session.info.update(identity.session_info())
-    from tin.ownership import current_researcher
-    from tin.models import Researcher
-    from sqlalchemy import select
-    try:
-        existing = session.scalar(select(Researcher.id).where(Researcher.weknora_user_id == identity.user_id))
-        if existing is None:
-            current_researcher(session)
-            session.commit()
-    except Exception:
-        session.close()
-        raise
-    return session
+    from fastapi import HTTPException
+    raise HTTPException(409, '请先选择绑定知识库的研究工作台，未读取旧工作台事实')
 
 
 # Compatibility for standalone schema checks and callers inspecting sessionmaker.kw.
@@ -158,6 +143,8 @@ def SystemSession(tenant_id: int):
     Callers must obtain the workspace from verified HTTP context or the local
     registry of existing databases. This factory is never exposed as an endpoint.
     """
+    if settings.weknora_api_url:
+        raise PermissionError('集成平台事实只能在知识库维护，不能运行旧研究台事实刷新')
     session = tenant_session_factory(tenant_id)()
     session.info.update(tenant_id=tenant_id, system_refresh=True, system_actor="自动刷新")
     return session

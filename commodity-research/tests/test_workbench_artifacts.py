@@ -3,6 +3,7 @@ from dataclasses import replace
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
+import httpx
 import pytest
 
 from tin.config import settings
@@ -17,6 +18,10 @@ SECOND = "0b3eb224-d10c-49f4-bca1-295a5349e7c2"
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, 'weknora_api_url', 'http://native.test')
+    monkeypatch.setattr(settings, 'structured_data_url', 'http://structured-data:19082')
+    service_key = tmp_path / 'service-key'; service_key.write_bytes(b'a' * 48)
+    monkeypatch.setattr(settings, 'service_token_file', service_key)
     app = FastAPI()
     app.include_router(router)
 
@@ -34,6 +39,15 @@ def client(tmp_path, monkeypatch):
 
     app.dependency_overrides[verified_workbench] = scope
     monkeypatch.setattr("tin.web.workbench_artifacts.go_request", native)
+    def fact_request(method, address, **kwargs):
+        if address == 'http://native.test/api/v1/knowledge-bases/library-a/knowledge':
+            return httpx.Response(200, json={'success': True, 'data': [], 'total': 0},
+                                  request=httpx.Request(method, address))
+        assert address == 'http://structured-data:19082/api/research/facts'
+        return httpx.Response(200, json={'knowledge_base_id': 'library-a', 'knowledge_base_tenant_id': 7,
+            'version': 'a' * 64, 'datasets': [], 'indicators': [], 'rows': [], 'total': 0,
+            'offset': 0, 'next_offset': None, 'truncated': False}, request=httpx.Request(method, address))
+    monkeypatch.setattr(httpx, 'request', fact_request)
     with TestClient(app) as result:
         yield result
 

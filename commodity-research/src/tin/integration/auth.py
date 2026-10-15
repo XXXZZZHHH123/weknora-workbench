@@ -7,7 +7,7 @@ import base64
 import json
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 from fastapi import HTTPException, Request
@@ -54,7 +54,7 @@ async def verify_bearer(token: str, requested_tenant: str | int | None = None) -
             raise HTTPException(403, "无效空间") from None
         headers["X-Tenant-ID"] = str(tenant_id)
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False) as client:
             response = await client.get(settings.weknora_api_url.rstrip("/") + "/api/v1/auth/me", headers=headers)
         if response.status_code in (401, 403):
             raise HTTPException(response.status_code, "登录已失效或没有空间权限")
@@ -228,12 +228,29 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                     if not _same_origin(request):
                         raise HTTPException(403, "请求来源不匹配")
             scope_marker = None
+            if path == '/api/tools/read':
+                if not identity.workbench_id or not identity.authorization:
+                    raise HTTPException(409, '请先选择绑定知识库的研究工作台，未读取旧工作台事实')
+                fresh = await verify_bearer(identity.authorization[7:], identity.tenant_id)
+                if fresh.user_id != identity.user_id:
+                    raise HTTPException(403, '研究服务签名账号与当前登录不一致')
+                from tin.integration.workbench_scope import resolve_workbench, current_workbench
+                scope = await resolve_workbench(fresh, identity.workbench_id, identity.authorization)
+                if (scope.knowledge_base_id != identity.knowledge_base_id
+                        or scope.knowledge_base_tenant_id != identity.knowledge_base_tenant_id):
+                    raise HTTPException(403, '工作台知识库绑定已改变')
+                identity = replace(fresh, workbench_id=identity.workbench_id,
+                    knowledge_base_id=scope.knowledge_base_id,
+                    knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
+                    authorization=identity.authorization)
+                scope = replace(scope, identity=identity)
+                scope_marker = current_workbench.set(scope)
             if scoped_path is not None:
                 from tin.integration.workbench_scope import resolve_workbench, current_workbench
                 scope = await resolve_workbench(identity, scoped_path[0], authorization)
                 if not allowed_workbench_route(route_path, request.method):
                     raise HTTPException(404, "此入口不属于当前研究工作台")
-                if source_preparation_required(route_path):
+                if source_preparation_required(route_path) or (route_path == '/sn/entry' and request.method == 'POST'):
                     raise HTTPException(409, "请在绑定知识库准备资料，并从本工作台的资料与来源入口核对后导入")
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
                     if not identity.can_write and route_path not in {"/api/sn/diagram/values", "/api/sn/diagram/markdown/dump"}:
@@ -243,6 +260,12 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                 scope_marker = current_workbench.set(scope)
                 request.scope["path"] = prefix + route_path
                 request.scope["raw_path"] = (prefix + route_path).encode()
+            elif path != '/api/tools/read' and not path.startswith('/api/workbenches/'):
+                raise HTTPException(409, '请先选择绑定知识库的研究工作台，未读取旧工作台事实')
+            if path.startswith('/api/workbenches/') and request.method == 'POST':
+                suffix = path.split('/', 4)[-1]
+                if suffix.startswith('imports/') or suffix == 'indicators':
+                    raise HTTPException(409, '事实只在知识库结构化页面维护，研究台不再单独导入观测')
             request.state.research_identity = identity
             marker = current_identity.set(identity)
             try:

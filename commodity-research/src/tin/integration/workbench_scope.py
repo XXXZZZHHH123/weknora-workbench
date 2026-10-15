@@ -1,7 +1,7 @@
 """Server-verified, seed-free storage for an explicitly isolated workbench."""
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
@@ -10,6 +10,7 @@ import httpx
 from fastapi import HTTPException, Request
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
+from sqlalchemy.pool import NullPool
 
 from tin.config import settings
 from tin.db import _tenant_lock, make_engine
@@ -23,7 +24,7 @@ class WorkbenchScope:
     knowledge_base_id: str
     knowledge_base_tenant_id: int
     metadata: dict
-    authorization: str = ""
+    authorization: str = field(default='', repr=False, compare=False)
 
 
 current_workbench: ContextVar[WorkbenchScope | None] = ContextVar("isolated_workbench", default=None)
@@ -85,8 +86,8 @@ async def resolve_workbench(identity, workbench_id, authorization):
             or type(metadata.get("scope_tenant_id")) is not int
             or metadata["scope_tenant_id"] != identity.tenant_id):
         raise HTTPException(403, "研究工作台与当前空间不匹配")
-    if metadata.get("workspace_mode") != "isolated":
-        raise HTTPException(409, "此入口仅支持独立研究工作台，请使用原工作台入口")
+    if metadata.get("workspace_mode") not in {"isolated", "legacy"}:
+        raise HTTPException(409, "研究工作台来源模式无效，未使用历史事实")
     kb_id = metadata.get("knowledge_base_id")
     if not isinstance(kb_id, str) or not kb_id or len(kb_id) > 128:
         raise HTTPException(403, "工作台没有有效的知识库绑定")
@@ -113,6 +114,10 @@ def isolated_database_path(tenant_id: int, workbench_id: str):
 
 def isolated_session_factory(tenant_id: int, workbench_id: str):
     path = isolated_database_path(tenant_id, workbench_id)
+    return result_session_factory(path)
+
+
+def result_session_factory(path):
     with _tenant_lock:
         key = str(path)
         if key in _factories:
@@ -124,36 +129,53 @@ def isolated_session_factory(tenant_id: int, workbench_id: str):
         from tin.config import ROOT
         with path.with_suffix(".init.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            if path.exists():
+                from tin.schema_check import backup, migration_gap
+                check_engine = make_engine(f'sqlite:///{path}')
+                try:
+                    if migration_gap(check_engine):
+                        backup(check_engine, settings.migrate_backups)
+                finally:
+                    check_engine.dispose()
             config = Config()
             config.set_main_option("script_location", str(ROOT / "alembic"))
             config.set_main_option("sqlalchemy.url", f"sqlite:///{path}")
             command.upgrade(config, "head")
             path.chmod(0o600)
-            engine = make_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+            engine = make_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False}, poolclass=NullPool)
             with engine.begin() as connection:
                 connection.exec_driver_sql("PRAGMA journal_mode=WAL")
             factory = sessionmaker(engine, expire_on_commit=False)
-            # No seed, legacy session factory, personal default, or tenant DB is
-            # consulted: this database is empty until a confirmed source writes.
+            # This engine persists research results only. Existing fact tables
+            # remain an archive and are masked by request-local read-only views.
             _factories[key] = factory
             return factory
 
 
 @contextmanager
 def workbench_session(scope: WorkbenchScope):
-    with open_workbench_session(scope) as session:
-        marker = current_workbench.set(scope)
-        try:
+    marker = current_workbench.set(scope)
+    identity_marker = current_identity.set(scope.identity) if current_identity.get() is None else None
+    try:
+        with open_workbench_session(scope) as session:
             yield session
-        finally:
-            current_workbench.reset(marker)
+    finally:
+        current_workbench.reset(marker)
+        if identity_marker is not None:
+            current_identity.reset(identity_marker)
 
 
 def open_workbench_session(scope: WorkbenchScope, **kwargs):
     identity = current_identity.get()
     if identity is not None and (identity.tenant_id != scope.identity.tenant_id or identity.user_id != scope.identity.user_id):
         raise PermissionError("Workbench identity does not match the verified caller")
-    session = isolated_session_factory(scope.identity.tenant_id, scope.workbench_id)(**kwargs)
+    legacy = scope.metadata.get('workspace_mode') == 'legacy'
+    if legacy:
+        from tin.db import tenant_database_path
+        factory = result_session_factory(tenant_database_path(scope.identity.tenant_id))
+    else:
+        factory = isolated_session_factory(scope.identity.tenant_id, scope.workbench_id)
+    session = factory()
     try:
         expected = (scope.knowledge_base_id, scope.knowledge_base_tenant_id)
         session.execute(text("INSERT INTO isolated_scope "
@@ -165,9 +187,13 @@ def open_workbench_session(scope: WorkbenchScope, **kwargs):
         if tuple(existing) != expected:
             raise HTTPException(409, "工作台主知识库已改变，需重新建立独立来源范围，未提供旧来源数据")
         session.commit()
+        session.close()
+        from tin.integration.kb_facts import projected_session
+        session = projected_session(factory.kw['bind'], scope, **kwargs)
         session.info.update(scope.identity.session_info(), workbench_id=scope.workbench_id,
                             knowledge_base_id=scope.knowledge_base_id,
-                            knowledge_base_tenant_id=scope.knowledge_base_tenant_id)
+                            knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
+                            source_storage_legacy=legacy)
         return session
     except BaseException:
         session.close()
@@ -180,4 +206,4 @@ def service_scope(identity: Identity):
     canonical_workbench_id(identity.workbench_id)
     return WorkbenchScope(identity, identity.workbench_id, identity.knowledge_base_id,
                           identity.knowledge_base_tenant_id, {"id": identity.workbench_id,
-                          "knowledge_base_id": identity.knowledge_base_id, "workspace_mode": "isolated"})
+                          "knowledge_base_id": identity.knowledge_base_id, "workspace_mode": "isolated"}, identity.authorization)

@@ -37,6 +37,9 @@ def entry(**changes):
 def original_client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "weknora_api_url", "http://go.test")
+    monkeypatch.setattr(settings, 'structured_data_url', 'http://structured-data:19082')
+    service_key = tmp_path / 'service-key'; service_key.write_bytes(b'e' * 48)
+    monkeypatch.setattr(settings, 'service_token_file', service_key)
     state = {"raw":b"first immutable original\x00\xff", "status":200, "moved":False,
              "deleted":False, "wrong_hash":False, "downloads":[], "scope":None, "metadata":{}, "stream":False}
     app = FastAPI()
@@ -90,6 +93,15 @@ def original_client(tmp_path, monkeypatch):
     monkeypatch.setattr("tin.web.workbench_artifacts.go_request", native)
     monkeypatch.setattr("tin.web.workbench_artifact_evidence.go_request", native)
     monkeypatch.setattr(httpx, "AsyncClient", client)
+    def fact_request(method, address, **kwargs):
+        if address == 'http://go.test/api/v1/knowledge-bases/library-a/knowledge':
+            return httpx.Response(200, json={'success': True, 'data': [], 'total': 0},
+                                  request=httpx.Request(method, address))
+        assert address == 'http://structured-data:19082/api/research/facts'
+        return httpx.Response(200, json={'knowledge_base_id': 'library-a', 'knowledge_base_tenant_id': 7,
+            'version': 'e' * 64, 'datasets': [], 'indicators': [], 'rows': [], 'total': 0,
+            'offset': 0, 'next_offset': None, 'truncated': False}, request=httpx.Request(method, address))
+    monkeypatch.setattr(httpx, 'request', fact_request)
     with TestClient(app) as result:
         yield result, state, tmp_path
 

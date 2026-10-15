@@ -61,16 +61,11 @@ def test_sensitive_pages_api_and_download_require_identity(embedded):
 
 @pytest.mark.parametrize('token,tenant,readonly', [('alice', 101, False), ('viewer', 102, True)])
 def test_empty_overview_keeps_workspace_prefix_and_member_role(embedded, token, tenant, readonly):
-    client, _, _ = embedded
+    client, _, tmp = embedded
     assert login(client, token, tenant).status_code == 200
     response = client.get('/research/sn')
-    assert response.status_code == 200
-    assert 'id="market-empty"' in response.text
-    assert 'href="/research/files"' in response.text
-    assert 'href="/research/sn/indicators"' in response.text
-    assert 'src="/research/static/refresh.js' in response.text
-    control = response.text.split('id="refresh-now"', 1)[1].split('>', 1)[0]
-    assert ('disabled' in control) is readonly
+    assert response.status_code == 409 and '工作台' in response.text
+    assert not (tmp / 'workspaces').exists()
     if readonly:
         assert client.post('/research/api/sn/refresh/run', headers={'Origin': 'http://testserver'}).status_code == 403
 
@@ -81,13 +76,12 @@ def test_macro_catalog_accepts_verified_bearer_without_research_cookie(embedded)
     assert client.get(path).status_code == 401
     headers = {'Authorization': 'Bearer viewer', 'X-Tenant-ID': '102', 'X-Research-User': 'viewer-id'}
     response = client.get(path, headers=headers)
-    assert response.status_code == 200, response.text
-    assert all(row['macro'] for row in response.json()['indicators'])
+    assert response.status_code == 409 and '工作台' in response.text
     assert client.cookies.get(auth.COOKIE) is None
     assert client.get(path, headers={**headers, 'X-Tenant-ID': '101'}).status_code == 403
     assert client.get(path, headers={**headers, 'X-Research-User': 'alice-id'}).status_code == 403
     assert client.get('/research/api/sn/strategies', headers=headers).status_code == 401
-    assert not (tmp / 'workspaces' / '101').exists()
+    assert not (tmp / 'workspaces').exists()
 
 
 def test_exchange_origin_membership_cookie_and_revocation(embedded):
@@ -111,38 +105,23 @@ def test_exchange_origin_membership_cookie_and_revocation(embedded):
 def test_tenant_database_prefix_actor_and_new_user_no_legacy_seed(embedded):
     client, identities, tmp = embedded
     assert login(client).status_code == 200
-    response = client.get("/research/")
-    assert response.status_code == 200, response.text
-    assert 'href="/research/sn/judgment"' in response.text
-    assert 'src="/research/static/app.js' in response.text
-    assert 'action="/research/sn/entry?_research_tenant=101' in response.text
-    assert 'window.RESEARCH_PREFIX = "/research"' in response.text
-    assert client.get("/research/sn/macro", follow_redirects=False).headers["location"].startswith("/research/sn/indicators?")
-    marker = current_identity.set(identities["alice"])
+    response = client.get('/research/')
+    assert response.status_code == 409 and '工作台' in response.text
+    marker = current_identity.set(identities['alice'])
     try:
-        with SessionLocal() as session:
-            assert session.info["weknora_user_id"] == "alice-id"
-            assert session.scalar(select(Judgment)) is None
-            assert session.scalar(select(Researcher).where(Researcher.username == "me")) is None
+        with pytest.raises(HTTPException) as error:
+            SessionLocal()
+        assert error.value.status_code == 409
     finally:
         current_identity.reset(marker)
-    assert tenant_database_path(101).exists()
-    assert not (tmp / "tin.db").exists()
-    # Submitted entered_by cannot forge the audit identity. The shared metric itself
-    # is a workspace fact, so contributors can write it without claiming others.
-    from datetime import datetime
-    from tin.config import SHANGHAI
-    response = client.post("/research/sn/entry", data={"series_id": "SMM.SN.spot.1", "value": "200000",
-        "as_of": datetime.now(SHANGHAI).strftime("%Y-%m-%dT%H:%M"), "entered_by": "forged",
-        "note": "test", "return_to": "/research/sn/entry"}, headers={"Origin": "http://testserver"}, follow_redirects=False)
-    assert response.status_code == 303, response.text
-    assert response.headers["location"].startswith("/research/sn/entry")
-    marker = current_identity.set(identities["alice"])
-    try:
-        with SessionLocal() as session:
-            assert session.scalar(select(AuditLog).where(AuditLog.action == "人工录入")).actor == "alice-id"
-    finally:
-        current_identity.reset(marker)
+    assert not tenant_database_path(101).exists()
+    assert not (tmp / 'tin.db').exists()
+    response = client.post('/research/sn/entry', data={
+        'series_id': 'old-unbound-field', 'value': '200000', 'as_of': '2026-01-01T12:00',
+        'entered_by': 'forged', 'note': 'Attempted unbound write'},
+        headers={'Origin': 'http://testserver'}, follow_redirects=False)
+    assert response.status_code == 409
+    assert not (tmp / 'workspaces').exists()
 
 
 def test_viewer_and_cookie_csrf_cannot_mutate(embedded):
@@ -198,65 +177,43 @@ def test_static_mount_resolves_public_and_proxy_stripped_paths(embedded, upstrea
 
 
 def test_prefixed_page_does_not_duplicate_root_in_form_or_navigation(embedded):
-    client, _, _ = embedded
+    client, _, tmp = embedded
     assert login(client).status_code == 200
-    html = client.get("/research/").text
-    assert "/research/research" not in html
-    assert 'href="/research/static/app.css' in html
-    assert 'src="/research/static/app.js' in html
-    assert 'value="/research/' in html
+    for path in ('/research/', '/research/research/sn', '/research/sn'):
+        response = client.get(path)
+        assert response.status_code == 409
+        assert '/research/research' not in response.text
+    assert client.get('/research/static/app.css').status_code == 200
+    assert client.get('/research/static/app.js').status_code == 200
+    assert not (tmp / 'workspaces').exists()
 
 
 
 def test_primary_navigation_uses_unified_materials_center_and_keeps_legacy_routes(embedded):
-    client, _, _ = embedded
+    client, _, tmp = embedded
     assert login(client).status_code == 200
-    response = client.get('/research/')
-    assert response.status_code == 200
-    nav = response.text.split('<nav', 1)[1].split('</nav>', 1)[0]
-    assert 'href="/platform/materials" target="_top"' in nav
-    assert 'href="/research/files"' not in nav
-    assert 'href="/research/materials"' not in nav
-    assert client.get('/research/files').status_code == 200
-    assert client.get('/research/materials').status_code == 200
+    for path in ('/research/', '/research/files', '/research/materials'):
+        response = client.get(path)
+        assert response.status_code == 409 and '工作台' in response.text
+        assert '/platform/materials' not in response.text
+    assert not (tmp / 'workspaces').exists()
 
 
 def test_old_source_urls_hide_duplicate_ingest_and_keep_exact_source_inspection(embedded):
-    from lxml import html
-    from tin.provenance.service import preserve_blob, snapshot_workbook
-    client, identities, _ = embedded
+    client, identities, tmp = embedded
     assert login(client).status_code == 200
-    raw = b'date,value\n2026-09-18,100\n'
+    source = 'a' * 64
+    for path in ('/research/files?source=' + source, '/research/materials?source=' + source,
+                 '/research/api/sources/' + source, '/research/api/sources/' + source + '/download'):
+        response = client.get(path)
+        assert response.status_code == 409 and '工作台' in response.text
     marker = current_identity.set(identities['alice'])
     try:
-        with SessionLocal() as session:
-            artifact = preserve_blob(session, raw, 'source.csv', kind='automatic')
-            snapshot_workbook(session, artifact)
-            session.commit()
-            source = artifact.id
+        with pytest.raises(HTTPException):
+            SessionLocal()
     finally:
         current_identity.reset(marker)
-    page = client.get('/research/files', params={'source': source})
-    assert page.status_code == 200
-    doc = html.fromstring(page.text)
-    for block in ('legacy-source-upload', 'legacy-source-bridge', 'import-preview'):
-        assert 'workbench-ingest-hidden' in doc.get_element_by_id(block).get('class', '')
-    for node in ('upload-form', 'file-input', 'load-datasets', 'bridge-target', 'commit-upload'):
-        assert doc.get_element_by_id(node) is not None
-    assert doc.get_element_by_id('source-inspector') is not None
-    assert doc.xpath(f'//a[@href="/platform/materials?source={source}" and @target="_top"]')
-    result = client.get(f'/research/api/sources/{source}')
-    assert result.status_code == 200
-    assert any(cell['address'] == 'B2' and str(cell['value']) == '100' for cell in result.json()['cells'])
-    downloaded = client.get(f'/research/api/sources/{source}/download')
-    assert downloaded.status_code == 200 and downloaded.content == raw
-    assert downloaded.headers['x-source-sha256'] == source
-    material_page = client.get('/research/materials', params={'source': source})
-    assert material_page.status_code == 200
-    material_doc = html.fromstring(material_page.text)
-    for block in ('legacy-materials-binding', 'legacy-materials-upload', 'legacy-materials-status'):
-        assert 'workbench-ingest-hidden' in material_doc.get_element_by_id(block).get('class', '')
-    assert material_doc.xpath(f'//a[@href="/platform/materials?source={source}" and @target="_top"]')
+    assert not (tmp / 'workspaces').exists()
 
 
 def test_standalone_source_upload_dom_remains_available(session, monkeypatch):

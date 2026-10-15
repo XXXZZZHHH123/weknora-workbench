@@ -111,27 +111,22 @@ def test_viewer_and_csrf_are_still_enforced_for_original_writes(isolated):
 
 
 def test_confirmed_native_source_appears_in_original_cards_and_history(isolated, monkeypatch):
-    from tests.test_isolated_workbenches import preview, confirmation, endpoint
+    from tests.test_isolated_workbenches import confirm_kb_source
     client, headers, state, tmp = isolated
-    batch = preview(client, headers)
-    confirmed = client.post(endpoint(suffix='imports/confirm'), headers=headers, json=confirmation(batch))
-    assert confirmed.status_code == 200, confirmed.text
-    series = confirmed.json()['indicator']['series_id']
+    series = confirm_kb_source(state)
     login(client, headers)
     no_legacy(monkeypatch)
     for suffix in ('/', '/sn', '/sn/indicators', '/sn/indicators/' + series):
         response = client.get(page(suffix))
         assert response.status_code == 200, (suffix, response.text)
         assert 'Quantity' in response.text
-        assert 'SHFE.SN' not in response.text
-        assert 'MACRO.VIX' not in response.text
-    history = client.get(page('/api/sn/series/' + series + '/history'))
-    assert history.status_code == 200, history.text
-    assert history.json()['points'] == [{'date':'2026-01-01','value':7.5}]
-    assert client.get(page('/api/sn/series/' + series + '/history', OTHER)).status_code == 404
-    catalog = client.get(page('/api/sn/indicators/catalog')).json()['indicators']
-    assert [row['series_id'] for row in catalog] == [series]
-    assert client.get(page('/api/sn/indicators/catalog', OTHER)).json()['indicators'] == []
+        assert 'SHFE.SN' not in response.text and 'MACRO.VIX' not in response.text
+    for workbench in (WB, OTHER):
+        history = client.get(page('/api/sn/series/' + series + '/history', workbench))
+        assert history.status_code == 200, history.text
+        assert history.json()['points'] == [{'date': '2026-01-01', 'value': 7.5}]
+        catalog = client.get(page('/api/sn/indicators/catalog', workbench)).json()['indicators']
+        assert [row['series_id'] for row in catalog] == [series]
     assert not (tmp / 'workspaces').exists()
 
 
@@ -191,25 +186,22 @@ def test_original_judgment_form_saves_only_current_scope_and_keeps_versions(isol
 
 
 def test_source_indicator_manual_edit_and_report_export_use_original_scope(isolated, monkeypatch):
-    from tests.test_isolated_workbenches import preview, confirmation, endpoint
+    from tests.test_isolated_workbenches import confirm_kb_source
     client, headers, state, tmp = isolated
-    result = client.post(endpoint(suffix='imports/confirm'), headers=headers, json=confirmation(preview(client, headers)))
-    assert result.status_code == 200
-    series = result.json()['indicator']['series_id']
+    series = confirm_kb_source(state, [{'date': '2026-01-02', 'value': 8.5, 'value_status': 'valid',
+                                     'source_cell': 'B3', 'date_cell': 'A3'}])
     login(client, headers)
     no_legacy(monkeypatch)
     entry = client.post(page('/sn/entry'), headers={'Origin':'http://testserver'}, data={
-        'series_id':series,'value':'8.5','as_of':'2026-01-02T15:00','entered_by':'forged',
-        'note':'Explicit source correction.','return_to':'/sn/entry'}, follow_redirects=False)
-    assert entry.status_code == 303, entry.text
-    assert entry.headers['location'].startswith(page('/sn/entry'))
+        'series_id':series,'value':'99','as_of':'2026-01-02T15:00','entered_by':'forged',
+        'note':'Attempted separate research copy.','return_to':'/sn/entry'}, follow_redirects=False)
+    assert entry.status_code == 409 and '知识库' in entry.text
     reports = client.get(page('/sn/reports'))
-    assert reports.status_code == 200
-    assert '2026-01-02' in reports.text
-    snapshot = client.get(page('/sn/reports/2026-01-02.json'))
-    assert snapshot.status_code == 200, snapshot.text
-    assert any(row['series_id'] == series and row['value'] == 8.5 for row in snapshot.json()['observations'])
-    assert client.get(page('/sn/reports/2026-01-02.json', OTHER)).status_code == 404
+    assert reports.status_code == 200 and '2026-01-02' in reports.text
+    for workbench in (WB, OTHER):
+        snapshot = client.get(page('/sn/reports/2026-01-02.json', workbench))
+        assert snapshot.status_code == 200, snapshot.text
+        assert any(row['series_id'] == series and row['value'] == 8.5 for row in snapshot.json()['observations'])
     exported = client.post(page('/api/sn/export/excel'), headers={'Origin':'http://testserver'}, json={
         'actor':'forged','columns':[{'field':series,'kind':'observation','label':'Quantity'}], 'date_range':'recent_30_trade_days'})
     assert exported.status_code == 200, exported.text
@@ -268,10 +260,7 @@ def test_empty_workbench_guidance_and_quick_entry_lead_to_scoped_sources(isolate
         assert "research-open-sources" in quick['onclick']
         assert 'disabled' not in quick
         assert 'px-3 py-1.5' in quick['class']
-        selection = next(attrs for tag, attrs in elements if tag == 'select' and attrs.get('id') == 'drawer-series')
-        assert 'required' in selection
-        submit = next(attrs for tag, attrs in elements if tag == 'button' and attrs.get('type') == 'submit')
-        assert 'disabled' in submit
+        assert not any(attrs.get('id') == 'drawer-form' for tag, attrs in elements)
     error = client.get(page('/api/sn/snapshot'))
     assert error.status_code == 404
     assert '资料与来源' in error.json()['detail']
@@ -285,42 +274,37 @@ def test_empty_viewer_cannot_use_quick_entry_to_write(isolated):
     elements = _html_elements(response.text)
     quick = next(attrs for tag, attrs in elements if tag == 'button' and attrs.get('id') == 'quick-entry')
     assert 'disabled' in quick
-    submit = next(attrs for tag, attrs in elements if tag == 'button' and attrs.get('type') == 'submit')
-    assert 'disabled' in submit
+    assert not any(attrs.get('id') == 'drawer-form' for tag, attrs in elements)
 
 
 def test_confirmed_manual_indicator_keeps_original_quick_entry_form(isolated):
-    from tests.test_isolated_workbenches import preview, confirmation, endpoint
+    from tests.test_isolated_workbenches import confirm_kb_source
     client, headers, state, tmp = isolated
-    result = client.post(endpoint(suffix='imports/confirm'), headers=headers, json=confirmation(preview(client, headers)))
-    assert result.status_code == 200
+    confirm_kb_source(state)
     login(client, headers)
     response = client.get(page())
     elements = _html_elements(response.text)
     quick = next(attrs for tag, attrs in elements if tag == 'button' and attrs.get('id') == 'quick-entry')
-    assert quick['onclick'] == "toggleDrawer('quick-drawer', true)"
+    assert 'research-open-sources' in quick['onclick']
     assert 'disabled' not in quick
-    submit = next(attrs for tag, attrs in elements if tag == 'button' and attrs.get('type') == 'submit')
-    assert 'disabled' not in submit
+    assert not any(attrs.get('id') == 'drawer-form' for tag, attrs in elements)
+    entry = client.get(page('/sn/entry'))
+    assert entry.status_code == 200 and '知识库数据维护' in entry.text
+    assert 'name="value"' not in entry.text
 
 
 @pytest.mark.parametrize('configured', [False, True])
 @pytest.mark.parametrize('method', ['get','post'])
 def test_empty_diagram_values_keep_actual_missing_states_and_nullable_cutoff(isolated, monkeypatch, configured, method):
-    from tin.integration.workbench_scope import isolated_session_factory
-    from tin.models import Indicator
+    from tests.test_isolated_workbenches import confirm_kb_source
     client, headers, state, tmp = isolated
     login(client, headers)
     no_legacy(monkeypatch)
     nodes = []
     if configured:
-        with isolated_session_factory(17, WB)() as session:
-            session.add(Indicator(series_id='fixture-measurement',name='Configured real field',variety='',
-                category='Source fields',caliber={},unit='吨',frequency='日',source='fixture',
-                fetch_mode='manual',owner='writer',note='Fixture registration with no observations.'))
-            session.commit()
+        series = confirm_kb_source(state, [])
         nodes = [{'id':'unbound','label':'Awaiting selection','binding':{'kind':'none'}},
-                 {'id':'registered','label':'Configured real field','binding':{'kind':'series','series_id':'fixture-measurement'}},
+                 {'id':'registered','label':'Configured real field','binding':{'kind':'series','series_id':series}},
                  {'id':'missing','label':'Unknown registration','binding':{'kind':'series','series_id':'not-in-this-workbench'}},
                  {'id':'derived','label':'Not calculated','binding':{'kind':'derived','formula_id':'BASIS'}}]
     layout = {'nodes':nodes,'edges':[]}
@@ -332,8 +316,7 @@ def test_empty_diagram_values_keep_actual_missing_states_and_nullable_cutoff(iso
                 else client.post(page('/api/sn/diagram/values'), headers={'Origin':'http://testserver'}, json={'layout':layout,'date':None}))
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body['as_of'] is None
-    assert body['judgment'] == {}
+    assert body['as_of'] is None and body['judgment'] == {}
     assert len(body['nodes']) == len(nodes)
     if method == 'get':
         assert body['template_id'] == template
@@ -347,11 +330,9 @@ def test_empty_diagram_values_keep_actual_missing_states_and_nullable_cutoff(iso
 
 @pytest.mark.parametrize('method', ['get','post'])
 def test_diagram_values_after_confirmation_resolve_only_current_workbench(isolated, monkeypatch, method):
-    from tests.test_isolated_workbenches import preview, confirmation, endpoint
+    from tests.test_isolated_workbenches import confirm_kb_source
     client, headers, state, tmp = isolated
-    result = client.post(endpoint(suffix='imports/confirm'), headers=headers, json=confirmation(preview(client, headers)))
-    assert result.status_code == 200
-    series = result.json()['indicator']['series_id']
+    series = confirm_kb_source(state)
     login(client, headers)
     no_legacy(monkeypatch)
     layout={'nodes':[{'id':'measurement','label':'Actual field','binding':{'kind':'series','series_id':series}}],'edges':[]}
@@ -360,40 +341,31 @@ def test_diagram_values_after_confirmation_resolve_only_current_workbench(isolat
                               json={'name':'Source verification fixture','layout':layout})
         assert created.status_code == 200
         template = created.json()['saved']['id']
-        response = (client.get(page(f'/api/sn/diagram/values?template_id={template}',workbench)) if method == 'get'
-                    else client.post(page('/api/sn/diagram/values',workbench), headers={'Origin':'http://testserver'}, json={'layout':layout}))
+        response = (client.get(page(f'/api/sn/diagram/values?template_id={template}', workbench)) if method == 'get'
+                    else client.post(page('/api/sn/diagram/values', workbench), headers={'Origin':'http://testserver'}, json={'layout':layout}))
         assert response.status_code == 200, response.text
-        body=response.json()
-        if workbench == WB:
-            assert body['as_of'] == '2026-01-01'
-            assert body['nodes'][0]['value'] == 7.5
-            assert body['nodes'][0]['as_of'] == '2026-01-01'
-        else:
-            assert body['as_of'] is None
-            assert body['nodes'][0]['state'] == 'retired'
-            assert body['nodes'][0]['value'] is None
-    assert client.get(page('/sn/reports/2026-01-01.json', OTHER)).status_code == 404
+        assert response.json()['as_of'] == '2026-01-01'
+        assert response.json()['nodes'][0]['state'] == 'ok'
+        assert response.json()['nodes'][0]['value'] == 7.5
 
 
 def test_empty_legacy_diagram_values_keep_existing_503_behavior(isolated):
-    client, headers, state, tmp = isolated
+    client, headers, _, tmp = isolated
     login(client, headers)
-    assert client.get('/research/sn/diagram').status_code == 200
-    assert client.get('/research/api/sn/diagram/values').status_code == 503
-    assert client.post('/research/api/sn/diagram/values', headers={'Origin':'http://testserver'},
-                       json={'layout':{'nodes':[],'edges':[]}}).status_code == 503
+    response = client.get('/research/api/sn/diagram/values')
+    assert response.status_code == 409 and '工作台' in response.text
+    assert not (tmp / 'workspaces').exists()
 
 
 def test_diagram_cutoff_before_real_observations_is_missing_not_a_source_date(isolated):
-    from tests.test_isolated_workbenches import preview, confirmation, endpoint
+    from tests.test_isolated_workbenches import confirm_kb_source
     client, headers, state, tmp = isolated
-    result = client.post(endpoint(suffix='imports/confirm'), headers=headers, json=confirmation(preview(client, headers)))
-    assert result.status_code == 200
-    series = result.json()['indicator']['series_id']
+    series = confirm_kb_source(state)
     login(client, headers)
-    response = client.post(page('/api/sn/diagram/values'), headers={'Origin':'http://testserver'}, json={
-        'date':'2025-12-31','layout':{'nodes':[{'id':'actual','binding':{'kind':'series','series_id':series}}],'edges':[]}})
-    assert response.status_code == 200
+    layout = {'nodes':[{'id':'measurement','label':'Quantity','binding':{'kind':'series','series_id':series}}],'edges':[]}
+    response = client.post(page('/api/sn/diagram/values'), headers={'Origin':'http://testserver'},
+                           json={'date':'2025-12-31','layout':layout})
+    assert response.status_code == 200, response.text
     assert response.json()['as_of'] is None
     assert response.json()['nodes'][0]['state'] == 'no_data'
     assert response.json()['nodes'][0]['value'] is None

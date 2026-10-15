@@ -1,5 +1,5 @@
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -12,6 +12,7 @@ class Identity:
     workbench_id: str = ""
     knowledge_base_id: str = ""
     knowledge_base_tenant_id: int = 0
+    authorization: str = field(default='', repr=False, compare=False)
 
     @property
     def can_write(self):

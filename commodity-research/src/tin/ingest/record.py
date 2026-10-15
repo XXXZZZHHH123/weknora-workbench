@@ -15,6 +15,8 @@ class RecordError(ValueError):
 
 
 def ensure_indicator(session: Session, spec: IndicatorSpec) -> None:
+    if session.info.get('knowledge_facts'):
+        raise RecordError('指标只在绑定知识库维护，研究台事实为只读视图')
     if session.get(Indicator, spec.series_id) is None:
         session.add(Indicator(
             series_id=spec.series_id, name=spec.name, variety=spec.variety, category=spec.category,
@@ -51,6 +53,8 @@ def record(session: Session, obs: ObservationIn, *, fetched_at: datetime | None 
 
     传入 `cache`（见 `latest_index`）时用它代替逐条查询，校验与判重逻辑完全一致。
     """
+    if session.info.get('knowledge_facts'):
+        raise RecordError('观测只在绑定知识库维护，研究台不能保存事实副本')
     indicator = session.get(Indicator, obs.series_id)
     if indicator is None:
         raise RecordError(f"指标未登记：{obs.series_id}")

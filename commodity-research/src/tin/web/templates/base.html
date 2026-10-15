@@ -65,7 +65,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
     {% endif %}
     <button id="quick-entry" type="button" {% if research_identity() and not research_identity().can_write %}disabled{% endif %} onclick="{% if research_workbench() and not manual_indicators %}parent.postMessage({type:'research-open-sources'},location.origin){% else %}toggleDrawer('quick-drawer', true){% endif %}" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-md shadow-sm transition-colors">
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-      <span class="hidden sm:inline">快速录入</span>
+      <span class="hidden sm:inline">{{ '维护数据' if research_workbench() else '快速录入' }}</span>
     </button>
     <button type="button" onclick="toggleTheme()" class="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-soft)]" title="切换暗色/浅色" aria-label="切换深色或浅色主题">
       <svg class="icon-dark w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
@@ -102,6 +102,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 {% block drawer %}{% endblock %}
 
 <div id="drawer-backdrop" onclick="closeDrawers()" class="hidden fixed inset-0 z-40 bg-black/30 transition-opacity"></div>
+{% if not research_workbench() %}
 <aside id="quick-drawer" data-drawer class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-md bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col justify-between translate-x-full transition-transform duration-300 ease-in-out">
   <form id="drawer-form" method="post" action="{{ research_form_url('/sn/entry') }}" class="flex flex-col h-full">
     <div class="flex items-center justify-between pb-4 border-b border-[var(--line)]">
@@ -151,6 +152,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
     </div>
   </form>
 </aside>
+{% endif %}
 
 <div id="series-chart-modal" class="series-chart-modal hidden fixed inset-0" role="dialog"
      aria-modal="true" aria-hidden="true" aria-labelledby="series-chart-title">

@@ -55,14 +55,15 @@ class Judgment(Base):
 
 
 class JudgmentSeriesRef(Base):
-    """判断对指标的每一处引用。判断本体存 JSON 快照，外键够不着，由这张表让数据库强制“只能引用已登记指标”。"""
+    """判断的字段引用；保存前核验当前知识库真实 ID，判断外键保护成果归属。"""
 
     __tablename__ = "judgment_series_refs"
 
     judgment_id: Mapped[int] = mapped_column(ForeignKey("judgments.id", ondelete="CASCADE"), primary_key=True)
     ref_type: Mapped[str] = mapped_column(String(16), primary_key=True)  # whitelist/marginal_focus/threshold/falsifier
     ref_id: Mapped[str] = mapped_column(String(80), primary_key=True)
-    series_id: Mapped[str] = mapped_column(ForeignKey("indicators.series_id"), index=True)
+    # Current KB references are validated by save_version, outside this result DB.
+    series_id: Mapped[str] = mapped_column(String(80), index=True)
 
 
 class Signal(Base):
