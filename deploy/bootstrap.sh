@@ -29,5 +29,8 @@ if [[ ! -e "$root/shared/poller.json" ]]; then
 fi
 install -m 700 "$script_dir/poll.sh" "$root/bin/poll.sh"
 install -m 700 "$script_dir/update.sh" "$root/bin/update.sh"
+for script in proxy-session.sh linux-proxy.sh linux-proxy-config.py with-proxy.sh; do
+  install -m 700 "$script_dir/$script" "$root/bin/$script"
+done
 echo "Prepared $root; existing configuration was preserved."
 echo "Review shared/.env, authenticate Docker to GHCR if needed, then run bash $root/bin/update.sh. No scheduled updates are installed."

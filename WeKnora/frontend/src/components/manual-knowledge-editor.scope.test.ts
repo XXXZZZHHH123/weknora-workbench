@@ -87,6 +87,14 @@ function deferred() {
 const tick = () => new Promise(resolve => setImmediate(resolve))
 function readSession(editing = false, preset = 'kb-a') {
   const list = deferred(), metadata = deferred(), messages: string[] = []
+  const sharedKnowledgeBases: any[] = []
+  const chatResources = {
+    rawKnowledgeBases: [] as any[],
+    ensureKnowledgeBases: async () => {
+      const response: any = await list.promise
+      chatResources.rawKnowledgeBases = response?.data || []
+    },
+  }
   const form = { kbId: '', title: '', content: '', status: 'draft' }
   const auth = { user: { id: 'actor-a' }, effectiveTenantId: 10000 }
   const route = { params: { kbId: preset } }
@@ -97,14 +105,14 @@ function readSession(editing = false, preset = 'kb-a') {
     knowledgeId: knowledge, currentKnowledgeId: ref(editing ? 'file-a' : null), kbOptions: options, initialLoaded: loaded,
     kbLoading: ref(false), contentLoading: ref(false), lastUpdatedAt: ref(''), manualTagIds: ref([]), selectionRange: { start: 0, end: 0 },
     t: (key: string) => key, markPristine: () => {},
-    listKnowledgeBases: () => list.promise, organizationStore: { fetchSharedKnowledgeBases: async () => [] },
+    chatResources, organizationStore: { sharedKnowledgeBases },
     getKnowledgeDetails: () => metadata.promise, MessagePlugin: { error: (value: string) => messages.push(value) },
     console: { error: () => {}, warn: () => {} },
   }
   const sandbox = vm.createContext(context)
   const setup = source.includes('let editorGeneration =') ? code('let editorGeneration =', '// ---------- view mode') : ''
   vm.runInContext(setup + code('const resolveManualKnowledgeStatus =', 'const uiStore =') + code('const loadKnowledgeBases =', 'const validateForm ='), sandbox)
-  return { sandbox, form, auth, route, ui, visible, options, knowledge, loaded, list, metadata, messages, context }
+  return { sandbox, form, auth, route, ui, visible, options, knowledge, loaded, list, metadata, messages, context, sharedKnowledgeBases }
 }
 const listResponse = { data: [{ id: 'kb-a', name: 'Library A', type: 'document' }, { id: 'kb-b', name: 'Library B', type: 'document' }] }
 function editResponse(id = 'file-a', kb = 'kb-a') {
@@ -149,6 +157,22 @@ test('loading native editor options does not overwrite a destination chosen by t
   await initializing
   assert.equal(current.form.kbId, 'kb-b')
   assert.equal(current.options.value.length, 2)
+})
+
+test('the cached native picker includes writable shared document libraries without duplicate or read-only choices', async () => {
+  const current = readSession(false, '')
+  current.sharedKnowledgeBases.push(
+    { permission: 'editor', knowledge_base: { id: 'shared-editor', name: 'Shared editor', type: 'document' } },
+    { permission: 'admin', knowledge_base: { id: 'shared-admin', name: 'Shared admin' } },
+    { permission: 'viewer', knowledge_base: { id: 'shared-viewer', name: 'Read only', type: 'document' } },
+    { permission: 'editor', knowledge_base: { id: 'shared-faq', name: 'FAQ', type: 'faq' } },
+    { permission: 'admin', knowledge_base: { id: 'kb-a', name: 'Duplicate', type: 'document' } },
+  )
+  const initializing = vm.runInContext('initialize()', current.sandbox)
+  current.list.resolve({ data: [...listResponse.data, { id: 'own-faq', name: 'Own FAQ', type: 'faq' }] })
+  await initializing
+  assert.deepEqual(Array.from(current.options.value, item => item.value), ['kb-a', 'kb-b', 'shared-editor', 'shared-admin'])
+  assert.equal(current.form.kbId, 'kb-a')
 })
 
 for (const change of ['actor', 'tenant', 'route', 'closed', 'new-session']) {

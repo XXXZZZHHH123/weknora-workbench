@@ -229,23 +229,41 @@ def _slide_parts(archive: zipfile.ZipFile) -> list[str]:
     return slides
 
 
-def _slide_pictures(archive: zipfile.ZipFile, part: str) -> list[tuple[str, str]]:
+def _slide_pictures(archive: zipfile.ZipFile, part: str) -> list[tuple[str, str, str]]:
     root = ET.fromstring(_read_member(archive, part, _MAX_XML_BYTES))
     relationships = _relationships(archive, part)
     pictures = []
     seen = set()
-    # Descendants include group pictures and p:oleObj/p:pic cached previews.
-    for picture in root.findall(".//p:pic", _NS):
-        props = picture.find("p:nvPicPr/p:cNvPr", _NS)
-        label = (props.get("descr") or props.get("name") or "图像") if props is not None else "图像"
-        for blip in picture.findall(".//a:blip", _NS):
-            rid = blip.get("{" + _NS["r"] + "}embed", "")
-            target = relationships.get(rid, "")
-            key = (props.get("id", "") if props is not None else label, rid)
-            if key in seen:
-                continue  # Choice/Fallback can repeat the same cached picture.
-            seen.add(key)
-            pictures.append((label, target if target.startswith("ppt/media/") else ""))
+    def position(shape):
+        transform = shape.find("p:spPr/a:xfrm", _NS)
+        if transform is None:
+            transform = shape.find("p:grpSpPr/a:xfrm", _NS)
+        if transform is None:
+            transform = shape.find("p:xfrm", _NS)
+        offset = transform.find("a:off", _NS) if transform is not None else None
+        return (int(offset.get("y", "0")), int(offset.get("x", "0"))) if offset is not None else (0, 0)
+
+    def visit(container):
+        # Match MarkItDown's positional order, including nested groups; resolve
+        # each placement by its own relationship, never a shared name or ZIP order.
+        for shape in sorted(container, key=position):
+            if shape.tag == "{" + _NS["p"] + "}pic":
+                props = shape.find("p:nvPicPr/p:cNvPr", _NS)
+                name = props.get("name", "") if props is not None else ""
+                label = (props.get("descr") or name or "图像") if props is not None else "图像"
+                placeholder = re.sub(r"\W", "", name) + ".jpg" if name else ""
+                blip = shape.find("p:blipFill/a:blip", _NS)
+                rid = blip.get("{" + _NS["r"] + "}embed", "") if blip is not None else ""
+                target = relationships.get(rid, "")
+                key = (props.get("id", "") if props is not None else label, rid)
+                if key in seen:
+                    continue  # Choice/Fallback can repeat the same cached picture.
+                seen.add(key)
+                pictures.append((label, target if target.startswith("ppt/media/") else "", placeholder))
+            else:
+                # Includes OLE cached previews, without opening the workbook or links.
+                visit(shape)
+    visit(root)
     return pictures
 
 
@@ -419,7 +437,7 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes) -> Tuple[str
     """
     markers = list(_SLIDE_MARKER.finditer(markdown))
     images: Dict[str, str] = {}
-    sections = []
+    sections = [markdown[:markers[0].start()]] if markers and markers[0].start() else []
     cache: dict[str, str | None] = {}
     deadline = time.monotonic() + _MEDIA_BUDGET_SECONDS
     with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as archive:
@@ -428,7 +446,7 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes) -> Tuple[str
             raise ValueError("PPTX page markers missing or inconsistent; refusing to assign images to guessed pages")
         pictures_by_page = [_slide_pictures(archive, part) for part in parts]
         vector_targets = list(dict.fromkeys(target for pictures in pictures_by_page
-                                           for _, target in pictures
+                                           for _, target, _ in pictures
                                            if posixpath.splitext(target)[1].lower() in {".emf", ".wmf"}))
         vector_images = _rasterize_vector_batches(archive, vector_targets, deadline)
         for index, (marker, part) in enumerate(zip(markers, parts), 1):
@@ -442,7 +460,7 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes) -> Tuple[str
             if note_marker:
                 body = body[:note_marker.start()].strip()
             page = [f"<!-- Slide number: {index} -->\n# 第{index}页", body]
-            for label, target in pictures_by_page[index - 1]:
+            for label, target, placeholder in pictures_by_page[index - 1]:
                 label = re.sub(r"[\r\n\[\]]", " ", label).strip()
                 source_labels = []
                 geometry = None
@@ -475,7 +493,7 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes) -> Tuple[str
                 if ref:
                     page.append(f"![第{index}页 · {label}]({ref})\n\n来源：第{index}页 · {target}（原文件中的图像或缓存预览，未刷新外部链接）。")
                 else:
-                    page.append(f"第{index}页图像“{label}”未能解析；请查看原文件，不能据此判断图例或数值。")
+                    page.append(f"![{label}]({placeholder})\n\n第{index}页图像“{label}”未能解析；请查看原文件，不能据此判断图例或数值。")
                 if source_labels:
                     # Escape Markdown syntax from untrusted source text; retain
                     # exact strings (especially chart titles) for retrieval.

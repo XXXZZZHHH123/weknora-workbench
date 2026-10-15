@@ -359,6 +359,25 @@ sys.exit(subprocess.call(['/usr/bin/sed']+args))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / 'current').resolve(), self.root / 'releases' / TAG)
 
+    def test_linux_proxy_update_enters_session_and_preserves_poll_result(self):
+        result=self.run_script('bootstrap.sh','owner/repo')
+        self.assertEqual(result.returncode,0,result.stderr)
+        (self.shared/'poller.json').write_text(json.dumps({'repository':'owner/repo','proxy':'http://127.0.0.1:17891'}))
+        session=self.root/'bin/proxy-session.sh'
+        session.write_text('#!/bin/sh\nprintf session > "$MOCK_ROOT/session-used"\n"$@"\n')
+        (self.shared/'PAUSED').touch()
+        result=subprocess.run(['bash',str(self.root/'bin/update.sh')],env=self.env,capture_output=True,text=True)
+        self.assertEqual(result.returncode,1,result.stderr)
+        self.assertTrue((self.root/'session-used').exists())
+        self.assertIn('paused',(self.shared/'deploy.log').read_text())
+        (self.shared/'PAUSED').unlink()
+        self.release()
+        (self.root/'current').symlink_to(self.root/'releases'/TAG)
+        self.bundle()
+        result=subprocess.run(['bash',str(self.root/'bin/update.sh')],env=self.env,capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('Already running the latest release',result.stdout)
+
     def test_corrupt_bundle_cannot_run_deployment(self):
         self.bundle()
         (self.root / 'bundle.tar.gz').write_bytes(b'corrupt')

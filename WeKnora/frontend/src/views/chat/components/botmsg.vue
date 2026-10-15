@@ -62,14 +62,18 @@
                 </t-tooltip>
                 <t-popconfirm
                     v-if="canRewind"
-                    :content="t('chat.rewind.confirmBody')"
-                    :confirm-btn="{ content: t('chat.rewind.confirmButton'), theme: 'danger' }"
-                    :cancel-btn="{ content: t('chat.rewind.cancelButton') }"
+                    :confirm-btn="{ content: t('chat.rewind.confirmButton'), theme: 'danger', size: 'small' }"
+                    :cancel-btn="{ content: t('chat.rewind.cancelButton'), size: 'small' }"
                     theme="warning"
                     placement="top"
-                    overlay-class-name="chat-rewind-popconfirm"
+                    :show-arrow="false"
+                    overlay-class-name="wk-popover chat-rewind-popconfirm"
                     @confirm="emitRewind"
                 >
+                    <template #content>
+                        <div class="chat-rewind-confirm__title">{{ t('chat.rewind.confirmTitle') }}</div>
+                        <div class="chat-rewind-confirm__body">{{ t('chat.rewind.confirmBody') }}</div>
+                    </template>
                     <t-tooltip :content="rewindTooltip">
                         <t-button size="small" variant="outline" shape="round" @click.stop>
                             <t-icon name="rollback" />
@@ -248,11 +252,13 @@ const props = defineProps({
         default: false
     }
 });
-
+// The popover evaluates sessionId during setup, so it must follow defineProps.
 const { float: citationFloat, rebind: rebindCitations, cancelClose: cancelCitationClose, scheduleClose: scheduleCitationClose } = useChatCitationPopover(parentMd, {
     getKnowledgeReferences: () => props.session?.knowledge_references,
     sessionId: () => props.sessionId,
 });
+
+
 
 const canFork = computed(() => props.canFork === true && !props.embeddedMode)
 const canRewind = computed(() => props.canRewind === true && !props.embeddedMode)

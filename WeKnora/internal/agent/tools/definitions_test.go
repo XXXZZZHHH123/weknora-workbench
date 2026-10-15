@@ -128,3 +128,27 @@ func TestDocumentReadersDoNotWidenTheDerivedKBFilter(t *testing.T) {
 		t.Fatal("a reader-only tool set still derives its own filter")
 	}
 }
+
+// The editor now renders the backend catalog, so custom workspace data tools
+// must stay selectable without requiring an unrelated vector knowledge base.
+func TestAvailableWorkbenchToolsSurviveDynamicCatalog(t *testing.T) {
+	catalog := BuildAgentToolCatalog()
+	for _, name := range []string{ToolStructuredData, ToolCommodityResearch} {
+		found := false
+		for _, tool := range catalog.Tools {
+			if tool.Name != name {
+				continue
+			}
+			found = true
+			if tool.Group != ToolGroupData || tool.Label == "" || tool.Description == "" {
+				t.Errorf("workspace tool %s has incomplete editor metadata: %+v", name, tool)
+			}
+			if len(tool.Requirement.AnyOf) != 0 || len(tool.Requirement.AllOf) != 0 {
+				t.Errorf("workspace tool %s must not require a vector/wiki knowledge base", name)
+			}
+		}
+		if !found {
+			t.Errorf("workspace tool %s is missing from the editor catalog", name)
+		}
+	}
+}

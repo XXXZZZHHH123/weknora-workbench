@@ -60,7 +60,7 @@ func workspaceFixture(t *testing.T) (*WorkspaceService, *workspaceKBFixture, *wo
 		t.Fatal(err)
 	}
 	// Exercise the shipped migration, including FK and uniqueness constraints.
-	migration, err := os.ReadFile("../../../migrations/sqlite/000032_workspace_navigation.up.sql")
+	migration, err := os.ReadFile("../../../migrations/sqlite/000038_workspace_navigation.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

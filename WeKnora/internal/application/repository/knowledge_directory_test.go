@@ -14,7 +14,7 @@ import (
 func TestKnowledgeDirectoriesPersistAndIsolate(t *testing.T) {
 	db := setupKnowledgeTestDB(t)
 	require.NoError(t, db.Migrator().DropTable(&types.KnowledgeFolder{}))
-	sql, err := os.ReadFile("../../../migrations/sqlite/000033_knowledge_directories.up.sql")
+	sql, err := os.ReadFile("../../../migrations/sqlite/000039_knowledge_directories.up.sql")
 	require.NoError(t, err)
 	require.NoError(t, db.Exec(string(sql)).Error)
 	repo := NewKnowledgeRepository(db)

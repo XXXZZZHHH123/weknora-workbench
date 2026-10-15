@@ -17,9 +17,10 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function fixture() {
+function fixture(options: { sharedFailure?: boolean } = {}) {
   const requests: ReturnType<typeof deferred<{ data: any[] }>>[] = []
   const detailRequests: ReturnType<typeof deferred<{ data: any }>>[] = []
+  const modelRequests: ReturnType<typeof deferred<any[]>>[] = []
   let sharedCalls = 0
   const exports: any = {}
   runInNewContext(compiled, {
@@ -34,37 +35,47 @@ function fixture() {
         requests.push(request)
         return request.promise
       } }
-      if (name === '@/stores/organization') return { useOrganizationStore: () => ({ fetchSharedKnowledgeBases: async () => { sharedCalls++ } }) }
+      if (name === '@/stores/organization') return { useOrganizationStore: () => ({ fetchSharedKnowledgeBases: async () => {
+        sharedCalls++
+        if (options.sharedFailure) throw new Error('shared catalog unavailable')
+      } }) }
+      if (name === '@/api/model') return { listModels: () => {
+        const request = deferred<any[]>()
+        modelRequests.push(request)
+        return request.promise
+      } }
       if (name === '@/utils/request') return { getCurrentLanguage: () => 'zh-CN' }
       if (name.startsWith('@/api/')) return {}
       return require(name)
     },
   })
-  return { store: exports.useChatResourcesStore(createPinia()), requests, detailRequests, sharedCalls: () => sharedCalls }
+  return { store: exports.useChatResourcesStore(createPinia()), requests, detailRequests, modelRequests, sharedCalls: () => sharedCalls }
 }
 
-test('a knowledge-base response after tenant invalidation cannot repopulate the list or fresh cache', async () => {
+test('a knowledge-base response after tenant invalidation cannot repopulate the list or loaded snapshot', async () => {
   const f = fixture()
   const pending = f.store.fetchKnowledgeBasesForList()
   f.store.invalidate()
   f.requests[0].resolve({ data: [{ id: 'previous-tenant-library', name: '旧库' }] })
   assert.equal((await pending).length, 0)
   assert.equal(f.store.rawKnowledgeBases.length, 0)
-  assert.equal(f.store.isFresh('knowledgeBases'), false)
-  assert.equal(f.sharedCalls(), 0)
+  assert.equal(f.store.isLoaded('knowledgeBases'), false)
+  assert.equal(f.sharedCalls(), 1, 'main refreshes the shared catalog alongside the own list')
   f.store.$dispose()
 })
 
-test('newer forced knowledge-base list wins when the older request finishes last', async () => {
+test('forced knowledge-base refresh waits for a post-write request before completing', async () => {
   const f = fixture()
   const previous = f.store.fetchKnowledgeBasesForList()
   const current = f.store.fetchKnowledgeBasesForList(undefined, true)
-  f.requests[1].resolve({ data: [{ id: 'current-library', name: '新库' }] })
-  await current
+  assert.equal(f.requests.length, 1, 'main queues a forced refresh after the current request')
   f.requests[0].resolve({ data: [{ id: 'outdated-library', name: '旧库' }] })
   await previous
+  assert.equal(f.requests.length, 2)
+  f.requests[1].resolve({ data: [{ id: 'current-library', name: '新库' }] })
+  assert.equal((await current)[0].id, 'current-library')
   assert.equal(f.store.rawKnowledgeBases[0].id, 'current-library')
-  assert.equal(f.sharedCalls(), 1)
+  assert.equal(f.sharedCalls(), 2)
   f.store.$dispose()
 })
 
@@ -84,17 +95,20 @@ test('knowledge-base-only invalidation also retires pending list requests', asyn
   f.store.$dispose()
 })
 
-test('normal concurrent readers share one real list request and reuse its cache', async () => {
+test('concurrent readers share one request and later ensure fetches a new snapshot without a TTL', async () => {
   const f = fixture()
   const one = f.store.ensureKnowledgeBases()
   const two = f.store.fetchKnowledgeBasesForList()
   assert.equal(f.requests.length, 1)
   f.requests[0].resolve({ data: [{ id: 'empty-library', name: '尚未配置模型的库' }] })
   await Promise.all([one, two])
-  await f.store.ensureKnowledgeBases()
-  assert.equal(f.requests.length, 1)
   assert.equal(f.store.rawKnowledgeBases.length, 1)
   assert.equal(f.store.validKnowledgeBases.length, 0)
+  const refresh = f.store.ensureKnowledgeBases()
+  assert.equal(f.requests.length, 2, 'subsequent reads use the main no-TTL contract')
+  f.requests[1].resolve({ data: [{ id: 'updated-library' }] })
+  await refresh
+  assert.equal(f.store.rawKnowledgeBases[0].id, 'updated-library')
   f.store.$dispose()
 })
 
@@ -151,5 +165,47 @@ test('an agent knowledge-base request invalidated during an identity switch cann
   assert.equal(f.requests.length, 2)
   f.requests[1].resolve({ data: [{ id: 'current-library' }] })
   assert.equal((await current)[0].id, 'current-library')
+  f.store.$dispose()
+})
+
+
+test('a shared catalog failure does not discard the successful own knowledge-base list', async () => {
+  const f = fixture({ sharedFailure: true })
+  const pending = f.store.fetchKnowledgeBasesForList()
+  f.requests[0].resolve({ data: [{ id: 'own-library' }] })
+  assert.equal((await pending)[0].id, 'own-library')
+  assert.equal(f.store.rawKnowledgeBases[0].id, 'own-library')
+  assert.equal(f.store.isLoaded('knowledgeBases'), true)
+  f.store.$dispose()
+})
+
+test('filtered creator lists also suppress responses from a retired identity', async () => {
+  const f = fixture()
+  const pending = f.store.fetchKnowledgeBasesForList({ creator: 'mine' })
+  f.store.invalidate()
+  f.requests[0].resolve({ data: [{ id: 'previous-owner-library' }] })
+  assert.equal((await pending).length, 0)
+  f.store.$dispose()
+})
+
+test('replacing models keeps the current snapshot when a previous read finishes afterwards', async () => {
+  const f = fixture()
+  const pending = f.store.ensureModels()
+  f.store.replaceModels([{ id: 'saved-model', type: 'KnowledgeQA' }])
+  f.modelRequests[0].resolve([{ id: 'old-model', type: 'KnowledgeQA' }])
+  await pending
+  assert.equal(f.store.allModels[0].id, 'saved-model')
+  assert.equal(f.store.isLoaded('models'), true)
+  f.store.$dispose()
+})
+
+test('identity invalidation retires model snapshots as well as knowledge-base snapshots', async () => {
+  const f = fixture()
+  const pending = f.store.ensureModels()
+  f.store.invalidate()
+  f.modelRequests[0].resolve([{ id: 'previous-tenant-model', type: 'KnowledgeQA' }])
+  await pending
+  assert.equal(f.store.allModels.length, 0)
+  assert.equal(f.store.isLoaded('models'), false)
   f.store.$dispose()
 })

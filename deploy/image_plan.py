@@ -21,7 +21,8 @@ PATHS = {
                            'commodity-research/alembic.ini', 'commodity-research/Dockerfile',
                            'commodity-research/.dockerignore', 'commodity-research/deploy/container/entrypoint.sh',
                            'commodity-research/deploy/container/backup.py'],
-    'docreader': ['deploy/Dockerfile.runtime'],
+    'docreader': ['WeKnora/docreader', 'WeKnora/docker/Dockerfile.docreader',
+                  'WeKnora/packages', 'WeKnora/.dockerignore'],
     'postgres': ['deploy/Dockerfile.runtime'],
     'redis': ['deploy/Dockerfile.runtime'],
 }

@@ -5,7 +5,6 @@ import { marked } from 'marked'
 import { DialogPlugin, MessagePlugin } from 'tdesign-vue-next'
 import { useUIStore } from '@/stores/ui'
 import {
-  listKnowledgeBases,
   getKnowledgeDetails,
   getKnowledgeBaseById,
   createManualKnowledge,
@@ -13,6 +12,7 @@ import {
 } from '@/api/knowledge-base'
 import { useUploadConfirmStore } from '@/stores/uploadConfirm'
 import { useOrganizationStore } from '@/stores/organization'
+import { useChatResourcesStore } from '@/stores/chatResources'
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess'
 import { sanitizeHTML, safeMarkdownToHTML, hydrateProtectedFileImages } from '@/utils/security'
 import { continueListOnEnter, countContent, indentOnTab } from '@/utils/markdownEditing'
@@ -61,6 +61,7 @@ const uploadConfirmStore = useUploadConfirmStore()
 const organizationStore = useOrganizationStore()
 const authStore = useAuthStore()
 const route = useRoute()
+const chatResources = useChatResourcesStore()
 const { t } = useI18n()
 
 const visible = computed({
@@ -612,15 +613,14 @@ const loadKnowledgeBases = async (session = editorSessionScope()) => {
   const originalKbId = form.kbId
   kbLoading.value = true
   try {
-    const [ownRes, sharedKbs] = await Promise.all([
-      listKnowledgeBases() as Promise<any>,
-      organizationStore.fetchSharedKnowledgeBases().catch(() => []),
-    ])
+    // ensureKnowledgeBases 同时刷新自己的与共享的知识库快照。
+    await chatResources.ensureKnowledgeBases()
     if (!editorSessionCurrent(session)) return
+    const sharedKbs = organizationStore.sharedKnowledgeBases
 
     const isDocumentKb = (type?: string) => !type || type === 'document'
 
-    const ownKbs = Array.isArray(ownRes?.data) ? ownRes.data : []
+    const ownKbs = chatResources.rawKnowledgeBases
     const list: KnowledgeBaseOption[] = ownKbs
       .filter((item: any) => isDocumentKb(item.type))
       .map((item: any) => ({ label: item.name, value: item.id }))

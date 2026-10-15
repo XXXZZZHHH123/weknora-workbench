@@ -168,8 +168,8 @@ func TestAbnormalShortAnswerDoesNotStreamBeforeSemanticVerification(t *testing.T
 	recorder := &truncationRecorder{}
 	recorder.attach(engine.eventBus)
 	response, err := engine.streamThinkingToEventBus(context.Background(), emptyMessages(), nil, 0, "session")
-	require.NoError(t, err)
-	require.False(t, response.AnswerStreamed)
+	require.ErrorContains(t, err, types.StreamEndedEarlyError)
+	require.Nil(t, response)
 	require.Empty(t, recorder.snapshot())
 }
 
