@@ -108,6 +108,19 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                 c['metric']=metric.strip()
                 if c.get('unit') is not None and (not isinstance(c['unit'],str) or not c['unit'].strip()):
                     raise ReviewValidationError(f'{c.get("column")} 列的单位填写无效。请按原表填写单位；原表没有注明时留空，不要只填写空格。', field='unit', column=c.get('column'))
+                if c.get('frequency') is not None or c.get('frequency_cells') is not None:
+                    frequency, locations = c.get('frequency'), c.get('frequency_cells')
+                    if not isinstance(frequency, str) or not frequency.strip() or len(frequency) > 32:
+                        raise ReviewValidationError('频率须填写原表中明确的元数据文字，不按日期间隔推定。', field='frequency', column=c.get('column'))
+                    if not isinstance(locations, list) or not 1 <= len(locations) <= 16:
+                        raise ReviewValidationError('频率须保留至少一个真实元数据单元格。', field='frequency_cells', column=c.get('column'))
+                    for location in locations:
+                        match = re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)', location) if isinstance(location, str) else None
+                        if not match or not 1 <= int(match.group(2)) < start:
+                            raise ReviewValidationError('频率来源必须位于数据起始行之前的原表元数据中。', field='frequency_cells', cells=locations)
+                        _column(match.group(1), sheet_scan['columns'], field='frequency_cells')
+                    c['frequency'] = frequency.strip()
+                    c['frequency_cells'] = list(dict.fromkeys(locations))
                 dims=c.get('dimensions',{})
                 if not isinstance(dims,dict) or any(not isinstance(k,str) or not isinstance(v,(str,int,float,bool)) for k,v in dims.items()):
                     raise ValueError('dimensions 必须是简单键值对象')
@@ -166,7 +179,8 @@ def _date(value, mode, epoch, date_format=None):
 def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issues=None):
     """Parse bounded regions with row dates or a source-cell date shared by categories."""
     path=Path(path).expanduser().resolve()
-    current=scan_workbook(path)
+    use_reviewed_mappings = scan.get('use_reviewed_mappings', True) if scan is not None else True
+    current=scan_workbook(path, use_reviewed_mappings=use_reviewed_mappings)
     if scan is not None and scan.get('sha256')!=current['sha256']:
         raise ValueError('源文件已变化，请重新扫描后导入')
     byname={s['name']:s for s in current['sheets']}
@@ -187,7 +201,7 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
         for m in checked:
             name=m['sheet'];ws=vw[name];fs=fw[name]
             from .regions import reviewed_regions, validate_region_mapping
-            profile=reviewed_regions(path,ws)
+            profile=reviewed_regions(path,ws) if use_reviewed_mappings else None
             validate_region_mapping(m,profile)
             counts=Counter();firsts={};formula_count=0;obs_start=len(result['observations']);series_start=len(result['series'])
             rowblocks=[(bi,b) for bi,b in enumerate(m['blocks']) if b.get('layout')!='matrix']
@@ -201,6 +215,7 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                        [column_index_from_string(b[k]) for bi,b in rowblocks for k in ('date_column','category_column') if b.get(k) and (k!='date_column' or b['date_mode'] not in ('shared_cell','none'))]+[1])
             # Read declared header/date anchors once; templates verify local headers too.
             refs={cell for bi,b in rowblocks for c in b['columns'] for cell in c['header_cells']}
+            refs.update(cell for bi,b in rowblocks for c in b['columns'] for cell in c.get('frequency_cells', []))
             refs.update(b['date_cell'] for bi,b in rowblocks if b['date_mode']=='shared_cell')
             refs.update(cell for bi,b in rowblocks for cell in b.get('header_expectations',{}))
             maxref=max([int(re.search(r'[0-9]+',x).group()) for x in refs] or [1])
@@ -208,6 +223,12 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
             refvalues={f'{get_column_letter(ci)}{rn}':cell.value for rn,row in enumerate(ws.iter_rows(max_row=maxref,max_col=refwidth),1) for ci,cell in enumerate(row,1) if f'{get_column_letter(ci)}{rn}' in refs}
             anchor_dates={}
             for bi,b in rowblocks:
+                for column in b['columns']:
+                    for cell in column.get('frequency_cells', []):
+                        value = refvalues.get(cell)
+                        if value is None or str(value).strip() != column['frequency']:
+                            raise ReviewValidationError(f'{name}!{cell} 的实际频率元数据与映射不一致，请核对原文。',
+                                sheet=name, block_index=bi, field='frequency_cells', cells=[cell])
                 for cell,expected in b.get('header_expectations',{}).items():
                     if str(refvalues.get(cell))!=expected:raise ReviewValidationError(f'{name}!{cell} 区块表头已变化：原规则为 {expected!r}，原文件实际为 {refvalues.get(cell)!r}。模板不能直接复用，请重新识别或核对该单元格后更新映射。', sheet=name, block_index=bi, field='header_rows', cells=[cell])
                 if b['date_mode']=='shared_cell':
@@ -233,6 +254,8 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                         'region_name':b.get('name',f'区块{bi+1}'),'block_index':bi,
                         'description':f"{name} / {c['metric']}；{date_note}；"+('单位：'+c['unit'] if c.get('unit') else '单位待确认')}
                     if c.get('exchange_rate'):item['exchange_rate']=deepcopy(c['exchange_rate'])
+                    if c.get('frequency'):
+                        item.update(frequency=c['frequency'], frequency_cells=list(c['frequency_cells']))
                     if category is not None:item['category_provenance']={}
                     series_map[key]=item;seen[sid]=set();result['series'].append(item)
                 return series_map[key]

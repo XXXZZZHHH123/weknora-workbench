@@ -4,7 +4,7 @@ import re
 
 _FIELDS = {'header_rows', 'data_start_row', 'data_end_row', 'date_column', 'date_cell',
            'category_column', 'category_name', 'metric', 'unit', 'column', 'period',
-           'row_label_column', 'columns', 'date_mode', 'date_format', 'header_cells'}
+           'row_label_column', 'columns', 'date_mode', 'date_format', 'header_cells', 'frequency', 'frequency_cells'}
 
 
 def clean_target(target):

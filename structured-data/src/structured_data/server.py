@@ -43,6 +43,7 @@ class SuggestRequest(BaseModel):
 class NativeImportRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     source_knowledge_id: str = Field(min_length=1, max_length=128, pattern=r'^[A-Za-z0-9][A-Za-z0-9_-]*$')
+    restore_reviewed_state: bool = Field(default=True, strict=True)
 
 
 def create_app(data_dir: str | Path | None = None):
@@ -116,10 +117,12 @@ def create_app(data_dir: str | Path | None = None):
         # inventories. Keep the management API's full report unchanged.
         datasets=[]
         for source in store.list_datasets():
-            item={k:source[k] for k in ('dataset_id','source_file','imported_at','is_latest_for_source','series_count')}
+            item={k:source[k] for k in ('dataset_id','source_file','sha256','imported_at',
+                'is_latest_for_source','series_count','import_id','use_reviewed_mappings','parent_dataset_id')}
             if source['is_latest_for_source']:
                 item['sheets']=[s['name'] for s in source['sheets']]
                 item['pending_sheets']=source['pending_sheets']
+                item['empty_sheets']=source['empty_sheets']
                 item['coverage_notice']=source.get('coverage_notice','仅查询已导入范围。')
             datasets.append(item)
         result={"datasets": datasets}
@@ -521,7 +524,7 @@ def create_app(data_dir: str | Path | None = None):
     def query(dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, offset: int = 0):
         return store.query_series(store.select_dataset(dataset_id), series_id, start_date, end_date, operation, limit, period, offset=offset)
 
-    def run_import(job_id: str, path: Path, native_source=None, legacy=None):
+    def run_import(job_id: str, path: Path, native_source=None, legacy=None, use_reviewed_mappings=True):
         try:
             result = None
             if legacy:
@@ -535,7 +538,8 @@ def create_app(data_dir: str | Path | None = None):
                 finally:
                     legacy['import_lock'].release()
             if result is None:
-                result = run_review_task(registry.directory(), "import", path=path)
+                result = run_review_task(registry.directory(), "import", path=path,
+                                         use_reviewed_mappings=use_reviewed_mappings)
             if native_source:
                 manager.bind_native_source(result['import_id'], native_source)
                 result['source_knowledge_id'] = native_source['source_knowledge_id']
@@ -555,11 +559,12 @@ def create_app(data_dir: str | Path | None = None):
         identity = current_identity.get()
         authorization = request.state.verified_authorization
         native = await load_source(body.source_knowledge_id, authorization, identity, MAX_UPLOAD)
-        existing = await run_in_threadpool(manager.find_native_source, native)
+        existing = await run_in_threadpool(manager.find_native_source, native,
+                                           use_reviewed_mappings=body.restore_reviewed_state)
         legacy = None
         # Only the verified native source's own tenant may recover its legacy
         # workspace. Shared KB access never grants access to that owner's root.
-        if identity.knowledge_base_id and identity.tenant_id == identity.knowledge_base_tenant_id:
+        if body.restore_reviewed_state and identity.knowledge_base_id and identity.tenant_id == identity.knowledge_base_tenant_id:
             from dataclasses import replace
             from .legacy_import import candidate
             marker = current_identity.set(replace(identity, knowledge_base_id='', knowledge_base_tenant_id=None))
@@ -578,6 +583,7 @@ def create_app(data_dir: str | Path | None = None):
             for job in jobs.values():
                 if (job.get('tenant_id') == identity.tenant_id
                         and job.get('knowledge_base_id') == identity.knowledge_base_id
+                        and job.get('restore_reviewed_state', True) == body.restore_reviewed_state
                         and job.get('native_source') == native and job['status'] == 'processing'):
                     return {'id': job['id'], 'status': 'processing', 'reused': True,
                             'source_knowledge_id': body.source_knowledge_id}
@@ -592,12 +598,14 @@ def create_app(data_dir: str | Path | None = None):
                 jobs[job_id] = {'id': job_id, 'tenant_id': identity.tenant_id,
                     'knowledge_base_id': identity.knowledge_base_id, 'status': 'processing',
                     'source_knowledge_id': body.source_knowledge_id, 'native_source': native,
+                    'restore_reviewed_state': body.restore_reviewed_state,
                     'stage': '读取并校验当前知识库原件'}
             await download_source(native, path, authorization, identity, MAX_UPLOAD)
             with job_lock:
                 jobs[job_id]['stage'] = '扫描本知识库原件并导入结构明确的表，不调用模型'
             context = contextvars.copy_context()
-            threading.Thread(target=context.run, args=(run_import, job_id, path, native, legacy), daemon=True).start()
+            threading.Thread(target=context.run, args=(run_import, job_id, path, native, legacy,
+                                                       body.restore_reviewed_state), daemon=True).start()
         except Exception as exc:
             with job_lock:
                 if job_id in jobs:
@@ -714,7 +722,8 @@ def create_app(data_dir: str | Path | None = None):
             raise HTTPException(409,'已有导入或确认任务，请等待完成。')
         try:
             doc=manager.get(import_id)
-            return await run_in_threadpool(run_review_task, registry.directory(), "import", path=manager.source_path(doc))
+            return await run_in_threadpool(run_review_task, registry.directory(), "import", path=manager.source_path(doc),
+                                            use_reviewed_mappings=doc.get('use_reviewed_mappings', True))
         finally:
             import_lock.release()
 

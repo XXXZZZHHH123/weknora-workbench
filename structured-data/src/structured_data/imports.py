@@ -52,7 +52,9 @@ class ImportManager:
     def list(self, *, include_samples=False):
         from .dataset_kind import dataset_kind
         records = [json.loads(p.read_text()) for p in self.directory.glob('*/review.json')]
-        return sorted([{'dataset_kind': dataset_kind(d, self.root), **{k: d.get(k) for k in
+        return sorted([{'dataset_kind': dataset_kind(d, self.root),
+                        'use_reviewed_mappings': d.get('use_reviewed_mappings', True),
+                        'native_source_bindings': d.get('native_source_bindings', []), **{k: d.get(k) for k in
                        ('import_id', 'source_file', 'updated_at', 'dataset_id', 'summary')}}
                        for d in records if include_samples or dataset_kind(d, self.root) != 'sample'],
                       key=lambda d: d['updated_at'], reverse=True)
@@ -61,6 +63,8 @@ class ImportManager:
         doc = self.get(import_id)
         for sheet in doc['sheets']:
             if sheet['name'] == name:
+                if sheet['status'] == 'trusted_existing' and not doc.get('use_reviewed_mappings', True):
+                    raise ValueError('本次原件须重新核对，不能使用既有专用映射。')
                 if sheet['status'] == 'trusted_existing':
                     from .profiles.reviewed import reviewed_mapping, reviewed_sheet_mapping
                     reviewed = reviewed_mapping(self.source_path(doc))
@@ -86,12 +90,14 @@ class ImportManager:
                 self._save(doc)
             return self._result(doc, reused=True)
 
-    def find_native_source(self, source):
+    def find_native_source(self, source, *, use_reviewed_mappings=True):
         with self.lock:
             for record in self.directory.glob('*/review.json'):
                 if not re.fullmatch(r'[0-9a-f]{24}', record.parent.name):
                     continue
                 doc = json.loads(record.read_text())
+                if doc.get('use_reviewed_mappings', True) != use_reviewed_mappings:
+                    continue
                 if source not in doc.get('native_source_bindings', []):
                     continue
                 original = self.source_path(doc)
@@ -112,11 +118,14 @@ class ImportManager:
         doc['updated_at'] = now()
         atomic_json(self.directory / doc['import_id'] / 'review.json', doc)
 
-    def ingest(self, path):
+    def ingest(self, path, *, use_reviewed_mappings=True):
         from .scanner import scan_workbook
         with self.lock:
-            scan = scan_workbook(path)
-            import_id = hashlib.sha256((scan['sha256'] + ':' + scan['rule_version']).encode()).hexdigest()[:24]
+            scan = scan_workbook(path, use_reviewed_mappings=use_reviewed_mappings)
+            identity = scan['sha256'] + ':' + scan['rule_version']
+            if not use_reviewed_mappings:
+                identity += ':fresh-original-v1'
+            import_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
             folder = self.directory / import_id
             if (folder / 'review.json').exists():
                 doc = self.get(import_id)
@@ -140,7 +149,8 @@ class ImportManager:
             doc = {**scan, 'import_id': import_id, 'source_file': Path(path).name,
                    'dataset_id': None, 'publish_status':'pending', 'updated_at': now()}
             for sheet in doc['sheets']:
-                template_file = self.templates / (self.template_key(sheet) + '.json')
+                prefix = '' if use_reviewed_mappings else 'fresh-'
+                template_file = self.templates / (prefix + self.template_key(sheet) + '.json')
                 if template_file.exists():
                     template = json.loads(template_file.read_text())
                     # Sheet names can be semantic dimensions, so require them as well as layout.
@@ -152,7 +162,8 @@ class ImportManager:
                         sheet['template_status'] = 'source_changed'
                         sheet['status'] = 'needs_review'
                         sheet['reasons'].append('独立小表的源文件已改变，请重新核对区块范围、日期来源和类别。')
-                elif any(t['sheet'] == sheet['name'] for t in self.list_templates()):
+                elif any(t['sheet'] == sheet['name'] and t.get('use_reviewed_mappings', True) == use_reviewed_mappings
+                         for t in self.list_templates()):
                     sheet['template_status'] = 'layout_changed'
                     sheet['status'] = 'needs_review'
                     sheet['reasons'].append('已保存模板与本次表头指纹不同，必须重新确认。')
@@ -200,7 +211,10 @@ class ImportManager:
         base = self.store.manifest(base_id) if base_id else None
         # Older pilot tools sometimes published a newer snapshot without moving
         # review.json. Preserve that snapshot's other tables when confirming one.
-        if base:
+        if base and not doc.get('use_reviewed_mappings', True):
+            if base.get('use_reviewed_mappings', True) or base.get('import_id') != doc['import_id']:
+                raise ValueError('本次原件没有同一核对范围的快照，未复用其他解析结果。')
+        if base and doc.get('use_reviewed_mappings', True):
             for item in self.store.list_datasets(include_samples=True):
                 if item['sha256'] != doc['sha256']:
                     continue
@@ -218,7 +232,7 @@ class ImportManager:
                     sheet.update({k: prior[k] for k in ('status', 'reasons')})
                     if base_sheets[sheet['name']].get('mapping'):
                         sheet['mapping'] = base_sheets[sheet['name']]['mapping']
-        legacy = reviewed_mapping(path)
+        legacy = reviewed_mapping(path) if doc.get('use_reviewed_mappings', True) else None
         if legacy:
             # Explicit user/template mappings supersede initial verified defaults.
             # Other verified tables keep their saved records and original rules.
@@ -236,6 +250,7 @@ class ImportManager:
                     self._mapping_signature(base_sheets[s['name']].get('mapping')))]
         replaced = [s['name'] for s in changed]
         metadata = {'coverage': [], 'import_id': doc['import_id'],
+                    'use_reviewed_mappings':doc.get('use_reviewed_mappings', True),
                     'charts': {'status': 'inventory_only', 'visual_content_parsed': False,
                                'sheets': [{'name': s['name'], **s['charts']} for s in doc['sheets']]}}
 
@@ -354,9 +369,11 @@ class ImportManager:
             if sheet['status'] != 'confirmed':
                 raise ValueError('确认未通过全量校验，原版本保持有效。')
             if save_template:
-                atomic_json(self.templates / (self.template_key(sheet) + '.json'),
+                prefix = '' if doc.get('use_reviewed_mappings', True) else 'fresh-'
+                atomic_json(self.templates / (prefix + self.template_key(sheet) + '.json'),
                             {'fingerprint':sheet['fingerprint'],'sheet':sheet['name'],
                              'mapping':sheet['mapping'],'created_at':now(), 'scope':'matching_sheet_and_header_fingerprint',
+                             'use_reviewed_mappings':doc.get('use_reviewed_mappings', True),
                              'source_sha256':doc['sha256'] if sheet.get('region_profile') or any(b['date_mode'] in ('shared_cell','none','period') for b in sheet['mapping']['blocks']) else None})
                 sheet['template_status'] = 'saved'
             self._save(doc)

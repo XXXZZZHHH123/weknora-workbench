@@ -126,10 +126,15 @@ class DataStore:
             kind = dataset_kind(doc, self.root)
             if kind == 'sample' and not include_samples:
                 continue
-            items.append({'dataset_kind': kind, 'changed_sheets': doc.get('changed_sheets', []), **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}})
+            items.append({'dataset_kind': kind, 'changed_sheets': doc.get('changed_sheets', []),
+                          'import_id': doc.get('import_id'),
+                          'use_reviewed_mappings': doc.get('use_reviewed_mappings', True),
+                          'parent_dataset_id': doc.get('parent_dataset_id'),
+                          **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}})
         for item in items:
             coverage = self.manifest(item["dataset_id"]).get("coverage", [])
-            item["pending_sheets"] = [s["name"] for s in coverage if s["status"] in {"needs_review", "unsupported", "empty"}]
+            item["pending_sheets"] = [s["name"] for s in coverage if s["status"] in {"needs_review", "unsupported"}]
+            item["empty_sheets"] = [s["name"] for s in coverage if s["status"] == "empty"]
             item["sheets"] = [{k:s[k] for k in ("name","observations","series_count","parsed_range") if k in s} for s in item["sheets"]]
             item["excluded_regions"] = [s for s in item["excluded_regions"] if s.get("range") != "entire_sheet"]
             if coverage:

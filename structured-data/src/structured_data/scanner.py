@@ -70,8 +70,10 @@ def _drawings(path):
     return result
 
 
-def scan_workbook(path, sample_rows=40):
+def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True):
     """Read bounded top-row samples of every sheet; report partial coverage honestly."""
+    if type(use_reviewed_mappings) is not bool:
+        raise ValueError('原件核对模式必须明确为布尔值。')
     path = Path(path).expanduser().resolve()
     if not 10 <= sample_rows <= 200:
         raise ValueError('sample_rows must be between 10 and 200')
@@ -206,9 +208,11 @@ def scan_workbook(path, sample_rows=40):
     finally:
         wb.close()
     # Only an identical reviewed original may supply migrated region metadata.
-    from .profiles.reviewed import reviewed_mapping
-    from .regions import reviewed_regions, apply_profile
-    configuration = reviewed_mapping(path)
+    configuration = None
+    if use_reviewed_mappings:
+        from .profiles.reviewed import reviewed_mapping
+        from .regions import reviewed_regions, apply_profile
+        configuration = reviewed_mapping(path)
     if configuration and configuration.get('region_profiles'):
         book = load_workbook(path, read_only=True, data_only=True, keep_links=False)
         try:
@@ -220,6 +224,7 @@ def scan_workbook(path, sample_rows=40):
         finally:
             book.close()
     return {'rule_version':RULE_VERSION,'source_file':str(path),'sha256':digest.hexdigest(),
+        'use_reviewed_mappings':use_reviewed_mappings,
         'sheets':sheets,'summary':dict(Counter(s['status'] for s in sheets)), 'sheet_count':len(sheets),
         'scope':'top_rows_only','sample_rows':sample_rows}
 
