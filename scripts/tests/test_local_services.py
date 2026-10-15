@@ -62,7 +62,7 @@ if name == 'python':
         for command in ("systemctl", "systemd-run", "curl", "seq", "sleep"):
             self.executable(self.bin / command, recorder)
         self.executable(self.root / "WeKnora/docreader/.venv/bin/python", recorder)
-        self.executable(self.root / ".build/weknora-local", "#!%s\nimport json,os\nprint(json.dumps({'address':os.environ.get('DOCREADER_ADDR'), 'transport':os.environ.get('DOCREADER_TRANSPORT'), 'token_present':bool(os.environ.get('GRPC_AUTH_TOKEN'))}))\n" % sys.executable)
+        self.executable(self.root / ".build/weknora-local", "#!%s\nimport json,os\nprint(json.dumps({'address':os.environ.get('DOCREADER_ADDR'), 'transport':os.environ.get('DOCREADER_TRANSPORT'), 'token_present':bool(os.environ.get('GRPC_AUTH_TOKEN')), 'ssrf_extra':os.environ.get('SSRF_WHITELIST_EXTRA'), 'no_proxy':os.environ.get('NO_PROXY'), 'lower_no_proxy':os.environ.get('no_proxy')}))\n" % sys.executable)
         self.env = {**os.environ, "PATH": str(self.bin) + ":" + os.environ["PATH"], "LOCAL_SERVICE_CALLS": str(self.calls)}
 
     def executable(self, path, content):
@@ -117,6 +117,27 @@ if name == 'python':
         self.assertEqual(output["args"], ["-m", "docreader.main"])
         self.assertEqual(output["host"], "127.0.0.1")
         self.assertTrue(output["token_present"])
+
+    def test_local_overrides_keep_operator_egress_and_proxy_bypass(self):
+        with (self.root / ".private/local.env").open("a") as output:
+            output.write("SSRF_WHITELIST_EXTRA=trusted-api.invalid\nNO_PROXY=platform.invalid\nno_proxy=parser.invalid\n")
+        result = self.run_script("run-local-service.sh", "backend")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads((self.root / "logs/backend.log").read_text())
+        self.assertEqual(set(output["ssrf_extra"].split(",")), {"trusted-api.invalid", "127.0.0.1", "localhost"})
+        expected = {"platform.invalid", "parser.invalid", "127.0.0.1", "localhost", "::1"}
+        self.assertEqual(set(output["no_proxy"].split(",")), expected)
+        self.assertEqual(output["no_proxy"], output["lower_no_proxy"])
+
+    def test_inherited_proxy_bypass_is_preserved_without_local_overrides(self):
+        result = self.run_script("run-local-service.sh", "backend", SSRF_WHITELIST_EXTRA="inherited.invalid",
+                                 NO_PROXY="upper.invalid", no_proxy="lower.invalid")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads((self.root / "logs/backend.log").read_text())
+        self.assertIn("inherited.invalid", output["ssrf_extra"].split(","))
+        self.assertIn("upper.invalid", output["no_proxy"].split(","))
+        self.assertIn("lower.invalid", output["no_proxy"].split(","))
+        self.assertEqual(output["no_proxy"], output["lower_no_proxy"])
 
     def test_stops_docreader_after_backend_and_removes_stale_pid(self):
         run = self.root / ".build/run"
