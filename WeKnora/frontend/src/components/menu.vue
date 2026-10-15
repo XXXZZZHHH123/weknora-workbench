@@ -173,7 +173,7 @@
                 <div v-if="knowledgeBasesLoading && !navigation.knowledgeBases.length" class="workspace-nav-status"><t-loading size="small" /></div>
                 <button v-else-if="knowledgeBasesError" class="workspace-nav-retry" @click="refreshKnowledgeBases">知识库加载失败，点击重试</button>
                 <div v-else-if="!navigation.knowledgeBases.length" class="workspace-nav-status">暂无知识库</div>
-                <WorkspaceNavigationNode v-for="item in navigation.knowledgeBases" :key="item.id" :title="item.title"
+                <WorkspaceNavigationNode v-for="item in navigation.knowledgeBases" :key="item.id" :title="item.title" icon="folder"
                     :depth="1" :active="route.params.kbId === item.id" @navigate="router.push(item.path)" />
             </WorkspaceNavigationNode>
             <WorkspaceNavigationNode title="研究工作台" icon="chart-bar" guide="nav-commodity-research"
@@ -183,7 +183,7 @@
                 <div v-if="workspaceLoading && !navigation.workbenches.length" class="workspace-nav-status"><t-loading size="small" /></div>
                 <button v-else-if="workspaceErrors.workbenches" class="workspace-nav-retry" @click="refreshWorkspaceLists">工作台加载失败，点击重试</button>
                 <div v-else-if="!navigation.workbenches.length" class="workspace-nav-status">暂无研究工作台</div>
-                <WorkspaceNavigationNode v-for="item in navigation.workbenches" :key="item.id" :title="item.title"
+                <WorkspaceNavigationNode v-for="item in navigation.workbenches" :key="item.id" :title="item.title" icon="chart-bar"
                     :depth="1" :active="route.params.workbenchId === item.id" @navigate="router.push(item.path)" />
             </WorkspaceNavigationNode>
         </nav>

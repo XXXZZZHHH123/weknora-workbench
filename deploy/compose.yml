@@ -63,6 +63,7 @@ services:
     restart: unless-stopped
     environment:
       WEKNORA_API_URL: http://app:8080
+      MAX_FILE_SIZE_MB: "100"
       STRUCTURED_TENANT_ID: ${STRUCTURED_TENANT_ID:?set the actual tenant ID}
       STRUCTURED_PUBLIC_ORIGIN: ${STRUCTURED_PUBLIC_ORIGIN:-}
       STRUCTURED_DATA_DIR: /data

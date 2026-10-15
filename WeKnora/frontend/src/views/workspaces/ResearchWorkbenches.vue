@@ -8,6 +8,7 @@ import KnowledgeBaseEditorModal from '@/views/knowledge/KnowledgeBaseEditorModal
 import { createResearchWorkbench, getResearchWorkbench, listResearchWorkbenches, type ResearchWorkbench } from '@/api/workspaces'
 import { validateWorkbenchSource, validateWorkspaceName, workspaceErrorMessage as message, workspaceIdentity } from './workspaceForm'
 import { workspaceKnowledgeBases } from './workspaceKnowledgeBases'
+import { createRandomUUID } from '@/utils/uuid'
 import './workspaces.css'
 
 const route = useRoute(), router = useRouter(), auth = useAuthStore(), resources = useChatResourcesStore(), organizations = useOrganizationStore()
@@ -21,7 +22,7 @@ const libraries = computed(() => workspaceKnowledgeBases(resources.rawKnowledgeB
 const selectedLibrary = computed(() => libraries.value.find(k => k.id === kbId.value))
 const currentLibrary = computed(() => libraries.value.find(k => k.id === current.value?.knowledge_base_id))
 const existing = computed(() => items.value.filter(w => w.knowledge_base_id === kbId.value))
-let generation = 0, creationKey = crypto.randomUUID()
+let generation = 0, creationKey = createRandomUUID()
 function changed() { window.dispatchEvent(new CustomEvent('weknora:workspaces-changed')) }
 async function load() {
   const own = ++generation, capturedIdentity = identity.value
@@ -37,8 +38,8 @@ async function load() {
   } catch (e) { if (own === generation) error.value = message(e) }
   finally { if (own === generation) loading.value = false }
 }
-watch([identity, id, creating, () => route.query.kb_id], () => { if (sharedKnowledgeBaseIdentity.value !== identity.value) sharedKnowledgeBaseIdentity.value = ''; step.value = 1; kbId.value = ''; name.value = ''; description.value = ''; busy.value = false; kbEditorOpen.value = false; creationKey = crypto.randomUUID(); void load() }, { immediate: true })
-watch([kbId, name, description], () => { if (!busy.value) creationKey = crypto.randomUUID() })
+watch([identity, id, creating, () => route.query.kb_id], () => { if (sharedKnowledgeBaseIdentity.value !== identity.value) sharedKnowledgeBaseIdentity.value = ''; step.value = 1; kbId.value = ''; name.value = ''; description.value = ''; busy.value = false; kbEditorOpen.value = false; creationKey = createRandomUUID(); void load() }, { immediate: true })
+watch([kbId, name, description], () => { if (!busy.value) creationKey = createRandomUUID() })
 onBeforeUnmount(() => { generation++ })
 function next() {
   error.value = validateWorkbenchSource(kbId.value, libraries.value.map(k => k.id))

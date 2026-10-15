@@ -24,7 +24,7 @@ const fixtureSheet = {
   }]}
 };
 const requests = [], checks = [], errors = [], networkFailures = [], fileChoosers = [];
-let uploadCount=0;
+let uploadCount=0,nativeStall='';
 const jobs = new Map();
 const nativeImports = new Map();
 const nativeAttempts = new Map();
@@ -59,6 +59,7 @@ async function main(){
   const scope=req.headers['x-knowledge-base-id']||'';
   const chunks=[];for await(const chunk of req)chunks.push(chunk);const payload=Buffer.concat(chunks);
   requests.push({method:req.method,path:url.pathname,query:Object.fromEntries(url.searchParams),scope,tenant:req.headers['x-tenant-id']||'',authorized:req.headers.authorization==='Bearer fixture-token',size:payload.length});
+  if(nativeStall==='source-refresh-timeout'&&route==='/api/datasets'||nativeStall==='source-sheet-timeout'&&route.endsWith('/sheet'))await pause(800);
   let body={},type='application/json',status=200;
   if(route==='/harness'){
    const review=url.searchParams.get('review')==='1',legacy=url.searchParams.get('legacy')==='1',settings=url.searchParams.get('settings')==='1',nativeSource=url.searchParams.get('source')||'';
@@ -88,19 +89,22 @@ async function main(){
     body={status:rows.length?'ok':'no_data',aggregate,valid_count:rows.length,record_count:rows.length,source:{file:catalogue(scope).find(item=>item.dataset_id===dataset).source_file,sheet:fixtureSheet.name},series:selected,rows,rows_are:'all',truncated:false,warnings:[]};
    }
   }else if(route==='/api/import-knowledge'&&req.method==='POST'){
-   const sourceId=JSON.parse(payload).source_knowledge_id;requests.at(-1).sourceKnowledgeId=sourceId;nativeAttempts.set(sourceId,(nativeAttempts.get(sourceId)||0)+1);
-   if(sourceId==='source-expired'&&nativeAttempts.get(sourceId)===1){status=401;body={detail:'隔离夹具：登录已过期，请重新登录'};}
+   const sourceId=JSON.parse(payload).source_knowledge_id;nativeStall=sourceId;requests.at(-1).sourceKnowledgeId=sourceId;nativeAttempts.set(sourceId,(nativeAttempts.get(sourceId)||0)+1);
+   if(sourceId==='source-oversize'){status=413;body={detail:'原件超过允许的文件大小。'};}
+   else if(sourceId==='source-timeout'){await pause(300);body={detail:'The fixture request should have been aborted'};}
+   else if(sourceId==='source-expired'&&nativeAttempts.get(sourceId)===1){status=401;body={detail:'隔离夹具：登录已过期，请重新登录'};}
    else if(sourceId==='source-denied'||sourceId==='source-retry'&&nativeAttempts.get(sourceId)===1){status=403;body={detail:'隔离夹具：当前知识库原件无读取权限'};}
    else{
     const importId=sourceId==='source-new'?'5'.repeat(24):sourceId==='source-stale'?'6'.repeat(24):'4'.repeat(24);
     const row={import_id:importId,source_file:sourceId==='source-stale'?'迟到原件.xlsx':sourceId==='source-new'?'新知识库原件.xlsx':'知识库内原件.xlsx',updated_at:'2025-01-06T00:00:00Z',scope};nativeImports.set(importId,row);
     const result={import_id:importId,dataset_id:ids.secondary,source_knowledge_id:sourceId};
-    if(sourceId==='source-new'){const id='native-job';jobs.set(id,{count:0,nativeResult:result});body={id,status:'processing',source_knowledge_id:sourceId};}
+    if(sourceId==='source-new'||sourceId==='source-poll-timeout'){const id=sourceId==='source-new'?'native-job':'native-poll-timeout';jobs.set(id,{count:0,nativeResult:result});body={id,status:'processing',source_knowledge_id:sourceId};}
     else{if(sourceId==='source-stale')await pause(650);body={status:'completed',reused:true,result,source_knowledge_id:sourceId==='source-mismatch'?'another-source':sourceId};}
    }
   }else if(route==='/api/import'&&req.method==='POST'){
    uploadCount++;const id=`fixture-job-${uploadCount}`;jobs.set(id,{count:0,failed:uploadCount===2});body={id};
   }else if(route.startsWith('/api/jobs/')){
+   if(route.endsWith('/native-poll-timeout'))await pause(800);
    const job=jobs.get(route.split('/').at(-1));if(!job){status=404;body={detail:'Unknown synthetic job'}}else if(job.count++===0)body={status:'processing',stage:'正在处理隔离上传'};
    else if(job.failed)body={status:'failed',error:'夹具模拟：文件结构无法读取'};
    else body={status:'completed',result:job.nativeResult||{import_id:ids.import,dataset_id:ids.primary,elapsed_seconds:1.2,reused:false}};
@@ -262,6 +266,32 @@ async function main(){
   await js("window.auth('kb-a','fixture-token','source-stale')");await pause(100);await js("window.auth('kb-b')");await wait("d.querySelector('#dataset option')?.textContent.includes('kb-b') && !d.getElementById('upload').disabled");await pause(800);
   await verify('Changing KB cancels late native UI updates and hides the prior source failure action',"d.querySelector('#dataset option').textContent.includes('kb-b') && !d.getElementById('importSelect').textContent.includes('知识库内原件.xlsx') && d.getElementById('retrySourceImport').classList.contains('hidden')");
   await js("window.auth('kb-b','fixture-token','source-denied')");await wait("d.getElementById('jobState').textContent.includes('无读取权限') && !d.getElementById('upload').disabled");await verify('Native source permission errors stay visible with an explicit retry action',`${visible('retrySourceImport')} && !d.getElementById('jobState').textContent.includes('就绪')`);
+  await verify('Failed source preparation replaces the loading placeholder with its actual error',"d.querySelector('#sheetDetail [role=alert]').textContent.includes('无读取权限') && !d.getElementById('sheetDetail').textContent.includes('正在准备')");
+  await js("window.auth('kb-b','fixture-token','source-oversize')");await wait("d.getElementById('jobState').textContent.includes('超过允许') && !d.getElementById('upload').disabled");
+  for(const theme of ['light','dark']){
+   await exec(`d.documentElement.setAttribute('theme-mode',${JSON.stringify(theme)})`);
+   await verify(`${theme}: retry original button keeps readable text after an oversized-file failure`,`(()=>{
+    const button=d.getElementById('retrySourceImport'),style=w.getComputedStyle(button);
+    const luminance=color=>color.match(/[\\d.]+/g).slice(0,3).map(Number).map(value=>{const v=value/255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4}).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
+    const foreground=luminance(style.color),background=luminance(style.backgroundColor);
+    return button.getBoundingClientRect().height>0 && (Math.max(foreground,background)+.05)/(Math.min(foreground,background)+.05)>=4.5 && d.querySelector('#sheetDetail [role=alert]').textContent.includes('超过允许');
+   })()`);
+  }
+  await exec("d.documentElement.setAttribute('theme-mode','light');w.originalTimeout=w.setTimeout;w.setTimeout=(fn,ms,...args)=>w.originalTimeout(fn,ms===120000?50:ms,...args)");
+  await pause(220);await screenshot('12_原件读取失败_重试按钮');
+  await js("window.auth('kb-b','fixture-token','source-timeout')");await wait("d.getElementById('jobState').textContent.includes('超时') && !d.getElementById('upload').disabled");
+  await verify('A stalled native download times out into an actionable error instead of an endless spinner',`${visible('retrySourceImport')} && d.querySelector('#sheetDetail [role=alert]').textContent.includes('超时')`);
+  await exec("w.setTimeout=(fn,ms,...args)=>w.originalTimeout(fn,ms===120000?50:ms===30000?350:ms,...args)");
+  for(const sourceId of ['source-poll-timeout','source-refresh-timeout','source-sheet-timeout']){
+   await js(`window.auth('kb-b','fixture-token',${JSON.stringify(sourceId)})`);await wait("d.getElementById('jobState').textContent.includes('超时') && !d.getElementById('upload').disabled");
+   await verify(`${sourceId}: every native preparation request has its own recoverable timeout`,`${visible('retrySourceImport')} && d.querySelector('#sheetDetail [role=alert]').textContent.includes('超时') && !d.getElementById('sheetDetail').textContent.includes('正在读取')`);
+  }
+  await js("window.auth('kb-b','fixture-token','source-new')");await wait("d.getElementById('importSelect').value==='555555555555555555555555' && !d.getElementById('upload').disabled");checks.push('Long-running scan polling can outlast the initial download request budget');
+  await exec("w.setTimeout=w.originalTimeout;delete w.originalTimeout");
+  await call('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await js("window.auth('kb-b','fixture-token','source-offline')");await wait("!d.getElementById('retrySourceImport').classList.contains('hidden') && !d.getElementById('upload').disabled");
+  await verify('A disconnected network releases source loading and presents a retry action',"d.querySelector('#sheetDetail [role=alert]')!==null && !d.getElementById('sheetDetail').textContent.includes('正在准备')");
+  await call('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});await click('#retrySourceImport');await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");checks.push('Retry succeeds for the same native source after the network reconnects');
   await js("window.auth('kb-b','fixture-token','source-retry')");await wait("d.getElementById('jobState').textContent.includes('无读取权限') && !d.getElementById('upload').disabled");await click('#retrySourceImport');await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");checks.push('Retry loads the same authorized source after its temporary failure resolves');
   await js("window.auth('kb-b','fixture-token','source-mismatch')");await wait("d.getElementById('jobState').textContent.includes('原件标识与当前选择不一致') && !d.getElementById('upload').disabled");await verify('Mismatched source identity is rejected without opening another scan',"d.getElementById('importSelect').value==='' && d.getElementById('retrySourceImport').classList.contains('hidden')===false");
   await js("window.auth('kb-b','fixture-token','source-expired')");await wait("d.getElementById('notice').textContent.includes('登录已过期') && !d.getElementById('upload').disabled");await verify('Expired credentials show their real error while keeping the protected workspace hidden',"d.getElementById('workspace').classList.contains('hidden') && d.getElementById('importSelect').value===''");
@@ -269,7 +299,7 @@ async function main(){
   const settingsStart=requests.length,settingsBridgeRequests=requests.filter(r=>r.path.endsWith('/import-knowledge')).length;await call('Page.navigate',{url:origin+'/harness?settings=1&source=source-reused'});await wait("d.getElementById('modelName').value==='fixture-free-model' && w.getComputedStyle(d.getElementById('modelSettings')).display!=='none'");await pause(150);
   await verify('Model settings stays separate when the parent passes a native source ID',`${visible('modelSettings')} && !(${visible('workspace')}) && d.getElementById('modelBase').value==='https://example.invalid/v1' && !d.body.classList.contains('native-source')`);assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')).length,settingsBridgeRequests);assert(requests.slice(settingsStart).some(r=>r.path.endsWith('/api/model-settings')&&r.method==='GET'&&r.scope==='kb-a'));checks.push('Native settings visit reads only its configuration and never starts an import');await screenshot('11_原件_字段模型设置');
   await click('#modelBack');await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");await verify('Returning from settings keeps native source context and reuses its prior scan',"d.body.classList.contains('native-source') && d.getElementById('importSelect').selectedOptions[0].textContent.includes('知识库内原件.xlsx') && d.getElementById('jobState').textContent.includes('已有的工作表识别记录')");assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')).length,settingsBridgeRequests+1);
-  assert(!requests.some(r=>r.path.includes('/suggest')||r.path.includes('/resolve_fields')||r.path.includes('/model-settings')&&r.method!=='GET'));checks.push('No model execution or configuration writes were called');assert.deepEqual(errors,[]);checks.push('No JavaScript runtime errors');assert.deepEqual(networkFailures,[]);checks.push('No external or failed network requests');
+  assert(!requests.some(r=>r.path.includes('/suggest')||r.path.includes('/resolve_fields')||r.path.includes('/model-settings')&&r.method!=='GET'));checks.push('No model execution or configuration writes were called');assert.deepEqual(errors,[]);checks.push('No JavaScript runtime errors');assert.deepEqual(networkFailures.filter(error=>!['net::ERR_ABORTED','net::ERR_INTERNET_DISCONNECTED'].includes(error)),[]);checks.push('Only intentionally cancelled requests and the simulated offline request failed');
   if(keepArtifacts)fs.writeFileSync(path.join(output,'browser-acceptance.json'),JSON.stringify({passed:checks.length,checks,screenshots:keepArtifacts?fs.readdirSync(path.join(output,'screenshots')):[],real_model_calls:0,real_business_writes:0,fixture_upload_requests:uploadCount,requests},null,2));
   console.log(JSON.stringify({passed:checks.length,checks,real_model_calls:0,real_business_writes:0}));
  }finally{

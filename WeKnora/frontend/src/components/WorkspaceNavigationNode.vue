@@ -5,6 +5,7 @@
         <button type="button" class="workspace-nav-node__link" :title="title" :data-guide="guide"
           :aria-label="title" :aria-current="active ? 'page' : undefined" @click="emit('navigate')">
           <t-icon v-if="icon" :name="icon" :size="depth === 0 ? '18px' : '15px'" class="workspace-nav-node__icon" />
+          <span v-else class="workspace-nav-node__icon-placeholder" :style="{ width: depth === 0 ? '18px' : '15px' }" aria-hidden="true" />
           <span v-if="!collapsed" class="workspace-nav-node__title">{{ title }}</span>
         </button>
       </t-tooltip>
@@ -65,6 +66,7 @@ const emit = defineEmits<{ (e: 'navigate'): void; (e: 'toggle'): void }>()
   cursor: pointer;
 }
 .workspace-nav-node__icon { flex-shrink: 0; color: var(--td-text-color-secondary); }
+.workspace-nav-node__icon-placeholder { flex-shrink: 0; }
 .is-active .workspace-nav-node__icon { color: inherit; }
 .workspace-nav-node__title {
   overflow: hidden;
