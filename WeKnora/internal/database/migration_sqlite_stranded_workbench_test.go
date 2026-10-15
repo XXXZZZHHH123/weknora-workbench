@@ -119,13 +119,16 @@ func TestSQLiteStrandedWorkbenchRepairRollsBack(t *testing.T) {
 
 func TestSQLiteHealthyWorkbenchSkipsRepairBackfill(t *testing.T) {
 	root := sqliteRepoRoot(t)
-	chdirAndRestore(t, root)
-	path := filepath.Join(t.TempDir(), "healthy.db")
-	opts := MigrationOptions{SQLiteDBPath: path}
-	require.NoError(t, RunMigrationsWithOptions("sqlite3://unused", opts))
-	healthyRoot := copySQLiteMigrationsThrough(t, root, 40)
-	imageMigration := filepath.Join(healthyRoot, "migrations", "sqlite", "000032_chunk_images.up.sql")
-	require.NoError(t, os.WriteFile(imageMigration, []byte("SELECT healthy_database_must_not_replay_backfill();"), 0600))
-	chdirAndRestore(t, healthyRoot)
-	require.NoError(t, RunMigrationsWithOptions("sqlite3://unused", opts))
+	for _, version := range []int{40, expectedSQLiteMigrationVersion} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			healthyRoot := copySQLiteMigrationsThrough(t, root, version)
+			chdirAndRestore(t, healthyRoot)
+			path := filepath.Join(t.TempDir(), "healthy.db")
+			opts := MigrationOptions{SQLiteDBPath: path}
+			require.NoError(t, RunMigrationsWithOptions("sqlite3://unused", opts))
+			imageMigration := filepath.Join(healthyRoot, "migrations", "sqlite", "000032_chunk_images.up.sql")
+			require.NoError(t, os.WriteFile(imageMigration, []byte("SELECT healthy_database_must_not_replay_backfill();"), 0600))
+			require.NoError(t, RunMigrationsWithOptions("sqlite3://unused", opts))
+		})
+	}
 }
