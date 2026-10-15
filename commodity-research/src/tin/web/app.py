@@ -180,6 +180,8 @@ from tin.web.workbench_sources import router as workbench_sources_router
 app.include_router(workbench_sources_router)
 from tin.web.brief_export import router as brief_export_router
 app.include_router(brief_export_router)
+from tin.web.diagram_generation import router as diagram_generation_router
+app.include_router(diagram_generation_router)
 
 
 @app.on_event('startup')
@@ -667,6 +669,13 @@ def diagram_from_markdown(body: dict = Body(...)):
     except diagram_md.MarkdownError as e:
         raise HTTPException(400, str(e)) from None
     with SessionLocal() as s:
+        if 'fact_version' in body:
+            if body['fact_version'] != s.info.get('knowledge_facts_version'):
+                raise HTTPException(409,'知识库来源已改变，请重新生成或核对产业图配置')
+            from tin.web.diagram_generation import validate_draft
+            validate_draft(body.get('markdown'),[{'id':spec['series_id'],
+                'name':spec.get('metric') or spec.get('name'),'unit':spec.get('unit')}
+                for spec in s.info.get('knowledge_facts_catalog',{}).values()])
         # `into` 表示改写这一张，而不是新建。研究员在文本里改结构比拖方框快，
         # 但改完只能「导入为新布局」的话，每改一次就多一张图，改的还不是手里这张。
         into = body.get("into")
