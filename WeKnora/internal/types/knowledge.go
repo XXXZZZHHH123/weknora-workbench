@@ -42,6 +42,9 @@ const (
 
 // Knowledge parse status constants
 const (
+	// ParseStatusStored indicates an Excel source is saved for explicit
+	// structured parsing and has not entered the document/model pipeline.
+	ParseStatusStored = "stored"
 	// ParseStatusPending indicates the knowledge is waiting to be processed
 	ParseStatusPending = "pending"
 	// ParseStatusProcessing indicates the knowledge is being processed

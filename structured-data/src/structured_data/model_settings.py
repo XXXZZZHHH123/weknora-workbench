@@ -10,6 +10,9 @@ def read_model(root=None):
     root=Path(root or os.environ.get('STRUCTURED_DATA_DIR',os.environ.get('COTTON_DATA_DIR','data')))
     path=root/'model-settings.json'
     if not path.is_file():
+        # A KB may reuse its owner's configured model, never another tenant's pilot secret.
+        if root.parent.name == 'knowledge-bases':
+            return read_model(root.parent.parent)
         # New spaces must configure their own provider. A global legacy pilot
         # secret must never become an editable credential in another space.
         if root.parent.name=='workspaces' and root.name.isdecimal():

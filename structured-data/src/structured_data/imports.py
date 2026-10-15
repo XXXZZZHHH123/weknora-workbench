@@ -76,6 +76,33 @@ class ImportManager:
     def source_path(self, doc):
         return self.directory / doc['import_id'] / doc['source_file']
 
+    def bind_native_source(self, import_id, source):
+        with self.lock:
+            doc = self.get(import_id)
+            bindings = list(doc.get('native_source_bindings', []))
+            if source not in bindings:
+                bindings.append(dict(source))
+                doc['native_source_bindings'] = bindings
+                self._save(doc)
+            return self._result(doc, reused=True)
+
+    def find_native_source(self, source):
+        with self.lock:
+            for record in self.directory.glob('*/review.json'):
+                if not re.fullmatch(r'[0-9a-f]{24}', record.parent.name):
+                    continue
+                doc = json.loads(record.read_text())
+                if source not in doc.get('native_source_bindings', []):
+                    continue
+                original = self.source_path(doc)
+                if not original.is_file() or original.stat().st_size != source['file_size']:
+                    raise ValueError('既有结构化原件丢失或已改变，请核对已导入文件。')
+                with original.open('rb') as stream:
+                    if hashlib.file_digest(stream, 'md5').hexdigest() != source['file_hash']:
+                        raise ValueError('既有结构化原件校验失败，请核对已导入文件。')
+                return self._result(doc, reused=True)
+        return None
+
     @staticmethod
     def template_key(sheet):
         return hashlib.sha256((sheet['name'] + ':' + sheet['fingerprint']).encode()).hexdigest()

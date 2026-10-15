@@ -725,8 +725,7 @@ func (s *knowledgeService) MoveKnowledgeToFolder(ctx context.Context,
 }
 
 // RenameKnowledgeFolder moves a folder and its whole subtree to a new path.
-// Renaming onto an existing folder merges them, which is the same outcome the
-// user would get by moving the documents one by one.
+// Existing destinations are rejected to avoid silently merging user directories.
 func (s *knowledgeService) RenameKnowledgeFolder(ctx context.Context,
 	kbID string, from string, to string,
 ) (int64, error) {

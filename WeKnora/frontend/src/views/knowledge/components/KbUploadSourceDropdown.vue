@@ -99,7 +99,6 @@ const emit = defineEmits<{
   files: [files: File[]]
   url: [url: string]
   manual: []
-  intake: [mode: string]
 }>()
 
 const { t } = useI18n()
@@ -122,7 +121,7 @@ const sourceIconProps = { size: '18px', strokeWidth: 1.7, class: 'kb-source-icon
 const dropdownOptions = computed(() => {
   const options = [
     {
-      content: t('upload.uploadDocument'),
+      content: t('knowledgeBase.uploadFiles'),
       value: 'upload',
       prefixIcon: () => h(FileAddIcon, sourceIconProps),
     },
@@ -131,13 +130,13 @@ const dropdownOptions = computed(() => {
       value: 'uploadFolder',
       prefixIcon: () => h(FolderAddIcon, sourceIconProps),
     },
-    {
-      content: t('knowledgeBase.importURL'),
-      value: 'importURL',
-      prefixIcon: () => h(LinkIcon, sourceIconProps),
-    },
   ]
-  if (props.includeManual) {
+  if (!props.unified) options.push({
+    content: t('knowledgeBase.importURL'),
+    value: 'importURL',
+    prefixIcon: () => h(LinkIcon, sourceIconProps),
+  })
+  if (!props.unified && props.includeManual) {
     options.push({
       content: t('upload.onlineEdit'),
       value: 'manualCreate',
@@ -148,10 +147,6 @@ const dropdownOptions = computed(() => {
 })
 
 const handleActionSelect = (data: { value: string }) => {
-  if (props.unified && data.value !== 'manualCreate') {
-    emit('intake', data.value)
-    return
-  }
   switch (data.value) {
     case 'upload':
       fileInputRef.value?.click()
@@ -231,7 +226,7 @@ const handleUrlDialogCancel = () => {
 }
 
 const openUrlDialog = () => {
-  if (props.unified) { emit('intake', 'importURL'); return }
+  if (props.unified) return
   urlInputValue.value = ''
   urlDialogVisible.value = true
 }

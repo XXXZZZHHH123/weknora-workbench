@@ -80,16 +80,16 @@ func TestRenameKnowledgeFolderPath(t *testing.T) {
 	assert.Equal(t, "docsets", folderPathOf(t, db, sibling))
 	assert.Equal(t, "", folderPathOf(t, db, root))
 
-	// Renaming a nested folder onto an existing one merges them.
+	// Existing folders are not silently merged; all source rows stay in place.
 	_, err = repo.RenameKnowledgeFolderPath(ctx, tenantID, kbID, "handbook/spec", "docsets")
-	require.NoError(t, err)
-	assert.Equal(t, "docsets", folderPathOf(t, db, spec))
-	assert.Equal(t, "docsets/v2", folderPathOf(t, db, deep))
+	require.Error(t, err)
+	assert.Equal(t, "handbook/spec", folderPathOf(t, db, spec))
+	assert.Equal(t, "handbook/spec/v2", folderPathOf(t, db, deep))
 	assert.Equal(t, "docsets", folderPathOf(t, db, sibling))
 
-	// An unknown folder is a no-op rather than an error.
+	// A missing folder must not be reported as a successful empty-folder rename.
 	affected, err = repo.RenameKnowledgeFolderPath(ctx, tenantID, kbID, "missing", "whatever")
-	require.NoError(t, err)
+	require.Error(t, err)
 	assert.Equal(t, int64(0), affected)
 
 	_, err = repo.RenameKnowledgeFolderPath(ctx, tenantID, kbID, "", "whatever")

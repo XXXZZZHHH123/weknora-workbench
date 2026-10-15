@@ -14,9 +14,10 @@ type ResourceKey = 'knowledgeBases' | 'agents' | 'models' | 'webSearchProviders'
 
 export type ListCreatorFilter = 'all' | 'mine' | 'others'
 
-function isKbModelReady(kb: any): boolean {
-  if (!kb.summary_model_id || kb.summary_model_id === '') return false
+export function isKbModelReady(kb: any): boolean {
   const strategy = kb.indexing_strategy
+  if (strategy?.disabled === true && !strategy.vector_enabled && !strategy.keyword_enabled && !strategy.wiki_enabled && !strategy.graph_enabled) return true
+  if (!kb.summary_model_id || kb.summary_model_id === '') return false
   const needsEmbedding = !strategy || strategy.vector_enabled || strategy.keyword_enabled
   if (needsEmbedding && (!kb.embedding_model_id || kb.embedding_model_id === '')) return false
   return true
@@ -36,6 +37,8 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
   const allModels = ref<ModelConfig[]>([])
   const webSearchProviders = ref<WebSearchProviderEntity[]>([])
   const sandboxConfigs = ref<SandboxConfigRecord[]>([])
+  // A response started for a retired identity must not be returned to its caller either.
+  let knowledgeBasesRevision = 0
 
   const validKnowledgeBases = computed(() => rawKnowledgeBases.value.filter(isKbModelReady))
   const chatModels = computed(() => allModels.value.filter((m) => m.type === 'KnowledgeQA'))
@@ -135,7 +138,7 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
       agent_source_tenant_id: sourceTenantId === 'current' ? undefined : sourceTenantId,
     })
     return res?.data && Array.isArray(res.data) ? (res.data as any[]) : []
-  })
+  }, { staleValue: () => [] })
   const kbDetailCache = createKeyedSnapshotCache(async (kbId: string) => {
     try {
       const res: any = await getKnowledgeBaseById(kbId)
@@ -143,7 +146,7 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
     } catch {
       return null
     }
-  })
+  }, { staleValue: () => null })
 
   /** 是否已有快照（区别于「是否新鲜」：本 store 不再有新鲜度窗口）。 */
   function isLoaded(key: ResourceKey): boolean {
@@ -161,15 +164,17 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
     force = false,
   ): Promise<any[]> {
     const creator = params?.creator ?? 'all'
+    const revision = knowledgeBasesRevision
     // 带 creator 过滤的列表是列表页专用、不进快照，直接透传请求。
     // 写操作后的强刷同时把全量快照刷一遍，否则对话输入栏会看到已删除的知识库。
     if (creator !== 'all') {
       if (force) void ensureKnowledgeBases(true).catch(() => {})
       const res: any = await listKnowledgeBases({ creator })
+      if (revision !== knowledgeBasesRevision) return []
       return res?.data && Array.isArray(res.data) ? res.data : []
     }
     await ensureKnowledgeBases(force)
-    return rawKnowledgeBases.value
+    return revision === knowledgeBasesRevision ? rawKnowledgeBases.value : []
   }
 
   // 共享资源是附带刷新：它的接口挂了不能连坐自己的列表，否则调用方的 catch
@@ -278,6 +283,7 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
 
   function invalidate(...keys: ResourceKey[]) {
     if (keys.length === 0) {
+      knowledgeBasesRevision++
       ;(Object.keys(resources) as ResourceKey[]).forEach((k) => resources[k].invalidate())
       rawKnowledgeBases.value = []
       agents.value = []
@@ -293,6 +299,7 @@ export const useChatResourcesStore = defineStore('chatResources', () => {
     }
     keys.forEach((k) => resources[k].invalidate())
     if (keys.includes('knowledgeBases')) {
+      knowledgeBasesRevision++
       agentKbCache.invalidate()
       invalidateKnowledgeBaseDetail()
     }

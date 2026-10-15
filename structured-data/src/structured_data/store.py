@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import csv
+from contextlib import closing, contextmanager
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -13,6 +15,44 @@ import tempfile
 import time
 
 import duckdb
+
+
+@contextmanager
+def database_lock(path, *, exclusive=False, blocking=True):
+    # Keep the lock file: removing it can give waiting processes different
+    # inodes and allow recovery to race an already open read-only connection.
+    with Path(str(path) + ".lock").open("a+b") as stream:
+        if os.name == "nt":
+            import msvcrt
+            stream.seek(0)
+            if not stream.read(1):
+                stream.write(b"\0")
+                stream.flush()
+            stream.seek(0)
+            try:
+                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                if not blocking and exc.errno in {errno.EACCES, errno.EAGAIN}:
+                    yield False
+                    return
+                raise
+            try:
+                yield True
+            finally:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            try:
+                fcntl.flock(stream.fileno(), operation | (0 if blocking else fcntl.LOCK_NB))
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def json_default(value):
@@ -127,7 +167,7 @@ class DataStore:
                 writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(observations)
-            with duckdb.connect(str(work / "data.duckdb")) as con:
+            with closing(duckdb.connect(str(work / "data.duckdb"))) as con:
                 con.execute("CREATE TABLE observations(series_id VARCHAR NOT NULL, date DATE, value DOUBLE, source_cell VARCHAR NOT NULL, formula VARCHAR, value_status VARCHAR NOT NULL, date_cell VARCHAR, raw_value VARCHAR, period VARCHAR, period_cell VARCHAR, metric_cell VARCHAR)")
                 con.execute("""INSERT INTO observations SELECT * FROM read_csv(?, header=true, delim=',', quote='"', escape='"', nullstr='', columns={'series_id':'VARCHAR','date':'DATE','value':'DOUBLE','source_cell':'VARCHAR','formula':'VARCHAR','value_status':'VARCHAR','date_cell':'VARCHAR','raw_value':'VARCHAR','period':'VARCHAR','period_cell':'VARCHAR','metric_cell':'VARCHAR'})""", [str(csv_path)])
                 duplicates = con.execute("SELECT series_id, coalesce(cast(date AS VARCHAR), period, source_cell), count(*) FROM observations GROUP BY 1,2 HAVING count(*)>1 LIMIT 5").fetchall()
@@ -135,6 +175,7 @@ class DataStore:
                     raise ValueError(f"发现重复日期和指标，快照未发布：{duplicates}")
                 con.execute("CREATE INDEX observation_lookup ON observations(series_id,date)")
                 stats = con.execute("SELECT series_id,count(*),count(value),min(date),max(date),min(date) FILTER(WHERE value IS NOT NULL),max(date) FILTER(WHERE value IS NOT NULL) FROM observations GROUP BY series_id").fetchall()
+                con.execute("CHECKPOINT")
             csv_path.unlink()
             summaries = {r[0]: {"record_count": r[1], "valid_count": r[2], "first_date": r[3], "last_date": r[4], "first_valid_date": r[5], "last_valid_date": r[6]} for r in stats}
             period_values={}
@@ -282,8 +323,28 @@ class DataStore:
             raise ValueError("日期必须为 YYYY-MM-DD。")
         return dt.date.fromisoformat(value)
 
+    @contextmanager
     def _connect(self, dataset_id):
-        return duckdb.connect(str(self._path(dataset_id) / "data.duckdb"), read_only=True, config={"enable_external_access": "false", "threads": "2", "memory_limit": "256MB"})
+        path = self._path(dataset_id) / "data.duckdb"
+        wal = Path(str(path) + ".wal")
+        config = {"enable_external_access": "false", "threads": "2", "memory_limit": "256MB"}
+        while True:
+            with database_lock(path):
+                if not wal.exists():
+                    with closing(duckdb.connect(str(path), read_only=True, config=config)) as con:
+                        yield con
+                    return
+            # Indexed WAL replay can need to write ART blocks to the main file.
+            # Recover once with all readers excluded, then reopen strictly
+            # read-only; propagate recovery errors without discarding the WAL.
+            # A competing recovery may already have completed. Do not queue
+            # behind readers of its clean snapshot; recheck under a shared lock.
+            with database_lock(path, exclusive=True, blocking=False) as acquired:
+                if acquired and wal.exists():
+                    with closing(duckdb.connect(str(path), config=config)) as recovery:
+                        recovery.execute("CHECKPOINT")
+            if not acquired:
+                time.sleep(0.01)
 
     def monthly_coverage(self, dataset_id, series_id, start_date, end_date):
         """Check full calendar months only for actual one-record-per-month series.

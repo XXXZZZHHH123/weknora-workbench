@@ -48,6 +48,16 @@ test('needsParsePolling keeps watching until the row leaves finalizing', () => {
   assert.equal(needsParsePolling(item({ transfer: 'duplicate', knowledgeId: 'k' })), false)
 })
 
+test('a stored original finishes uploading without pretending a parse is running', () => {
+  const original = item({ name: 'source.xlsx', transfer: 'uploaded', knowledgeId: 'native-source', parseStatus: 'stored' })
+  assert.equal(itemPhase(original), 'ready')
+  assert.equal(needsParsePolling(original), false)
+  const summary = summarizeItems([original])
+  assert.equal(summary.stage, 'done')
+  assert.equal(summary.parsing, 0)
+  assert.equal(summary.ready, 1)
+})
+
 test('summarizeItems reports the uploading stage while anything is queued or in flight', () => {
   const summary = summarizeItems([
     item({ transfer: 'uploaded', parseStatus: 'completed' }),

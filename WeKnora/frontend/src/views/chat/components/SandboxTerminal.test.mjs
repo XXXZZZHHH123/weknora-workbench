@@ -10,8 +10,11 @@ const promptUrl = new URL('../../../../../docker/sandbox-pty-prompt.sh', import.
 const prompt = readFileSync(promptUrl, 'utf8')
 const promptPath = fileURLToPath(promptUrl)
 
-test('xterm ANSI colors remain green and blue independently of the blue workbench brand', () => {
-  assert.match(theme, /--td-brand-color-4: #24477f/)
+test('xterm ANSI colors remain green and blue independently of the workbench brand', () => {
+  const brand = /--td-brand-color-4:\s*(#[\da-f]{6})/i.exec(theme)?.[1]?.toLowerCase()
+  assert.ok(brand, 'the workbench should define its own brand color')
+  assert.notEqual(brand, '#07c05f')
+  assert.notEqual(brand, '#729fcf')
   assert.match(terminal, /brightGreen: '#07c05f'/)
   assert.match(terminal, /brightBlue: '#729fcf'/)
   assert.doesNotMatch(terminal, /brightBlue: '#07c05f'/)

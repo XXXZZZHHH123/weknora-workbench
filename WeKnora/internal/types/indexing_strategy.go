@@ -9,6 +9,9 @@ import (
 // Each boolean flag independently enables/disables a processing pipeline.
 // When a document is uploaded, only the enabled pipelines will run.
 type IndexingStrategy struct {
+	// Disabled is an explicit opt-out for source containers without indexing.
+	// It distinguishes a deliberate all-false configuration from a legacy zero value.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 	// VectorEnabled enables semantic vector embedding and search
 	VectorEnabled bool `yaml:"vector_enabled" json:"vector_enabled"`
 	// KeywordEnabled enables keyword-based (BM25) search
@@ -48,7 +51,7 @@ func (s IndexingStrategy) HasAnyIndexing() bool {
 
 // IsZero returns true if the strategy has no pipelines enabled (zero value).
 func (s IndexingStrategy) IsZero() bool {
-	return !s.VectorEnabled && !s.KeywordEnabled && !s.WikiEnabled && !s.GraphEnabled
+	return !s.Disabled && !s.VectorEnabled && !s.KeywordEnabled && !s.WikiEnabled && !s.GraphEnabled
 }
 
 // Value implements the driver.Valuer interface for GORM serialization.

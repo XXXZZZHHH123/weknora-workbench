@@ -66,7 +66,7 @@ func (t *StructuredDataTool) structuredSourceQuestion() (string, uint64) {
 	return t.sourceQuestion, c.generation
 }
 
-func (t *StructuredDataTool) structuredReadCacheKey(ctx context.Context, caller types.Caller, operation string,
+func (t *StructuredDataTool) structuredReadCacheKey(ctx context.Context, caller types.Caller, scope structuredKnowledgeScope, operation string,
 	arguments map[string]json.RawMessage, question string, generation uint64,
 ) (string, bool) {
 	switch operation {
@@ -99,7 +99,8 @@ func (t *StructuredDataTool) structuredReadCacheKey(ctx context.Context, caller 
 	// callers still never share entries and BindSourceQuestion clears every turn.
 	encoded, err := json.Marshal(map[string]any{
 		"user_id": caller.UserID, "tenant_id": caller.TenantID, "role": caller.Role,
-		"turn": turn, "generation": generation, "source_question": question,
+		"knowledge_scope": scope,
+		"turn":            turn, "generation": generation, "source_question": question,
 		"operation": operation, "arguments": canonical,
 	})
 	if err != nil {
@@ -109,10 +110,10 @@ func (t *StructuredDataTool) structuredReadCacheKey(ctx context.Context, caller 
 	return hex.EncodeToString(hash[:]), true
 }
 
-func (t *StructuredDataTool) beginStructuredReadCache(ctx context.Context, caller types.Caller, operation string,
+func (t *StructuredDataTool) beginStructuredReadCache(ctx context.Context, caller types.Caller, scope structuredKnowledgeScope, operation string,
 	arguments map[string]json.RawMessage, question string, generation uint64,
 ) (structuredReadCacheLease, *types.ToolResult, error) {
-	key, allowed := t.structuredReadCacheKey(ctx, caller, operation, arguments, question, generation)
+	key, allowed := t.structuredReadCacheKey(ctx, caller, scope, operation, arguments, question, generation)
 	if !allowed {
 		return structuredReadCacheLease{}, nil, nil
 	}

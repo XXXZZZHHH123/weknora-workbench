@@ -1234,7 +1234,7 @@ func (s *agentService) registerTools(
 		case tools.ToolThinking:
 			toolToRegister = tools.NewSequentialThinkingTool()
 		case tools.ToolStructuredData:
-			toolToRegister = tools.NewStructuredDataTool()
+			toolToRegister = tools.NewStructuredDataTool().WithSearchTargets(config.SearchTargets)
 		case tools.ToolCommodityResearch:
 			toolToRegister = tools.NewCommodityResearchTool()
 		case tools.ToolTodoWrite:

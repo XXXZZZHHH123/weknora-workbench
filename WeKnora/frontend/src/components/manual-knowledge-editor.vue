@@ -17,6 +17,8 @@ import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess'
 import { sanitizeHTML, safeMarkdownToHTML, hydrateProtectedFileImages } from '@/utils/security'
 import { continueListOnEnter, countContent, indentOnTab } from '@/utils/markdownEditing'
 import { useI18n } from 'vue-i18n'
+import { useAuthStore } from '@/stores/auth'
+import { useRoute } from 'vue-router'
 
 interface KnowledgeBaseOption {
   label: string
@@ -57,6 +59,8 @@ const resolveManualKnowledgeStatus = (
 const uiStore = useUIStore()
 const uploadConfirmStore = useUploadConfirmStore()
 const organizationStore = useOrganizationStore()
+const authStore = useAuthStore()
+const route = useRoute()
 const chatResources = useChatResourcesStore()
 const { t } = useI18n()
 
@@ -88,6 +92,14 @@ const contentLoading = ref(false)
 const saving = ref(false)
 const savingAction = ref<ManualStatus>('draft')
 const lastUpdatedAt = ref<string>('')
+let editorGeneration = 0
+const editorScope = () => JSON.stringify([editorGeneration, authStore.user?.id || '', authStore.effectiveTenantId || '', route.params.kbId || '', form.kbId])
+const editorSessionScope = () => JSON.stringify([editorGeneration, authStore.user?.id || '', authStore.effectiveTenantId || '', route.params.kbId || '', mode.value, knowledgeId.value || '', uiStore.manualEditorKBId || ''])
+const editorSessionCurrent = (session: string) => visible.value && session === editorSessionScope()
+watch(() => [authStore.user?.id, authStore.effectiveTenantId, route.params.kbId], () => {
+  editorGeneration++
+  if (visible.value) uiStore.closeManualEditor()
+}, { flush: 'sync' })
 
 // ---------- view mode ----------
 type ViewMode = 'edit' | 'split' | 'preview'
@@ -596,11 +608,14 @@ const lastUpdatedText = computed(() =>
   lastUpdatedAt.value ? t('manualEditor.status.lastUpdated', { time: lastUpdatedAt.value }) : '',
 )
 
-const loadKnowledgeBases = async () => {
+const loadKnowledgeBases = async (session = editorSessionScope()) => {
+  if (!editorSessionCurrent(session)) return
+  const originalKbId = form.kbId
   kbLoading.value = true
   try {
     // ensureKnowledgeBases 同时刷新自己的与共享的知识库快照。
     await chatResources.ensureKnowledgeBases()
+    if (!editorSessionCurrent(session)) return
     const sharedKbs = organizationStore.sharedKnowledgeBases
 
     const isDocumentKb = (type?: string) => !type || type === 'document'
@@ -624,7 +639,7 @@ const loadKnowledgeBases = async () => {
 
     kbOptions.value = list
 
-    if (mode.value === 'create') {
+    if (mode.value === 'create' && form.kbId === originalKbId) {
       const presetKbId = uiStore.manualEditorKBId
       if (presetKbId) {
         const exists = list.find((item) => item.value === presetKbId)
@@ -640,10 +655,11 @@ const loadKnowledgeBases = async () => {
       }
     }
   } catch (error) {
+    if (!editorSessionCurrent(session)) return
     console.error('[ManualEditor] Failed to load knowledge base list:', error)
     kbOptions.value = []
   } finally {
-    kbLoading.value = false
+    if (editorSessionCurrent(session)) kbLoading.value = false
   }
 }
 
@@ -672,17 +688,20 @@ const parseManualMetadata = (
   return null
 }
 
-const loadKnowledgeContent = async () => {
-  if (!currentKnowledgeId.value) {
-    return
+const loadKnowledgeContent = async (session = editorSessionScope()) => {
+  const targetId = currentKnowledgeId.value
+  const expectedKbId = uiStore.manualEditorKBId || ''
+  if (!targetId || !editorSessionCurrent(session)) {
+    return false
   }
   contentLoading.value = true
   try {
-    const res: any = await getKnowledgeDetails(currentKnowledgeId.value)
+    const res: any = await getKnowledgeDetails(targetId)
+    if (!editorSessionCurrent(session) || currentKnowledgeId.value !== targetId) return false
     const data: KnowledgeDetailResponse | undefined = res?.data
-    if (!data) {
+    if (!data || data.id !== targetId || !data.knowledge_base_id || (expectedKbId && data.knowledge_base_id !== expectedKbId)) {
       MessagePlugin.error(t('manualEditor.error.fetchDetailFailed'))
-      return
+      return false
     }
 
     form.kbId = data.knowledge_base_id || form.kbId
@@ -705,11 +724,14 @@ const loadKnowledgeContent = async () => {
         value: form.kbId,
       })
     }
+    return true
   } catch (error) {
+    if (!editorSessionCurrent(session)) return false
     console.error('[ManualEditor] Failed to load manual knowledge:', error)
     MessagePlugin.error(t('manualEditor.error.fetchDetailFailed'))
+    return false
   } finally {
-    contentLoading.value = false
+    if (editorSessionCurrent(session)) contentLoading.value = false
   }
 }
 
@@ -733,17 +755,17 @@ const generateDefaultTitle = () => {
   return `${t('manualEditor.defaultTitlePrefix')}-${new Date().toLocaleString()}`
 }
 
-const initialize = async () => {
+const initialize = async (session = editorSessionScope()) => {
+  if (!editorSessionCurrent(session)) return
   resetForm()
-  await loadKnowledgeBases()
+  await loadKnowledgeBases(session)
+  if (!editorSessionCurrent(session)) return
 
   if (mode.value === 'edit') {
-    await loadKnowledgeContent()
+    if (!await loadKnowledgeContent(session)) return
+    if (!editorSessionCurrent(session)) return
   } else {
-    const presetKbId = uiStore.manualEditorKBId
-    if (presetKbId) {
-      form.kbId = presetKbId
-    } else if (!form.kbId && kbOptions.value.length) {
+    if (!form.kbId && kbOptions.value.length) {
       form.kbId = kbOptions.value[0].value
     }
     form.title = form.title || generateDefaultTitle()
@@ -780,6 +802,10 @@ const handleSave = async (targetStatus: ManualStatus) => {
   }
   saving.value = true
   savingAction.value = targetStatus
+  const generation = editorGeneration
+  const scope = editorScope()
+  const scopeCurrent = () => visible.value && scope === editorScope()
+  const targetKbId = form.kbId
   try {
     const payload: {
       title: string
@@ -797,13 +823,14 @@ const handleSave = async (targetStatus: ManualStatus) => {
     if (targetStatus === 'publish') {
       let kbInfo: any
       try {
-        const kbRes: any = await getKnowledgeBaseById(form.kbId)
+        const kbRes: any = await getKnowledgeBaseById(targetKbId)
+        if (!scopeCurrent()) return
         kbInfo = kbRes?.data
       } catch {
-        MessagePlugin.error(t('manualEditor.error.fetchDetailFailed'))
+        if (scopeCurrent()) MessagePlugin.error(t('manualEditor.error.fetchDetailFailed'))
         return
       }
-      if (!kbInfo) {
+      if (!kbInfo || kbInfo.id !== targetKbId) {
         MessagePlugin.error(t('manualEditor.error.fetchDetailFailed'))
         return
       }
@@ -812,13 +839,14 @@ const handleSave = async (targetStatus: ManualStatus) => {
           mode: 'manual',
           kbInfo,
           manual: {
-            kbId: form.kbId,
+            kbId: targetKbId,
             knowledgeId: currentKnowledgeId.value || undefined,
             title: payload.title,
             content: payload.content,
             tagIds: [...manualTagIds.value],
           },
         })
+        if (!scopeCurrent()) return
         payload.process_config = confirmResult.processConfig
         manualTagIds.value = [...(confirmResult.tagIds || [])]
         payload.tag_ids = [...manualTagIds.value]
@@ -827,18 +855,20 @@ const handleSave = async (targetStatus: ManualStatus) => {
       }
     }
 
+    if (!scopeCurrent()) return
     let response: any
     let knowledgeID = currentKnowledgeId.value
-    let kbId = form.kbId
+    let kbId = targetKbId
 
     if (mode.value === 'edit' && currentKnowledgeId.value) {
       response = await updateManualKnowledge(currentKnowledgeId.value, payload)
+      if (!scopeCurrent()) return
     } else {
-      response = await createManualKnowledge(form.kbId, payload)
+      response = await createManualKnowledge(targetKbId, payload)
+      if (!scopeCurrent()) return
       knowledgeID = response?.data?.id || knowledgeID
       currentKnowledgeId.value = knowledgeID || null
       uiStore.manualEditorKnowledgeId = currentKnowledgeId.value
-      kbId = form.kbId
     }
 
     if (response?.success) {
@@ -861,10 +891,11 @@ const handleSave = async (targetStatus: ManualStatus) => {
       MessagePlugin.error(message)
     }
   } catch (error: any) {
+    if (!scopeCurrent()) return
     const message = error?.error?.message || error?.message || t('manualEditor.error.saveFailed')
     MessagePlugin.error(message)
   } finally {
-    saving.value = false
+    if (generation === editorGeneration) saving.value = false
   }
 }
 
@@ -898,18 +929,28 @@ const handleClose = () => {
 }
 
 watch(visible, async (val) => {
+  editorGeneration++
   if (val) {
+    const session = editorSessionScope()
     await nextTick()
-    await initialize()
+    if (!editorSessionCurrent(session)) return
+    await initialize(session)
+    if (!editorSessionCurrent(session)) return
     await nextTick()
+    if (!editorSessionCurrent(session)) return
     const length = form.content ? form.content.length : 0
     setSelectionRange(length, length)
   } else {
+    saving.value = false
+    kbLoading.value = false
+    contentLoading.value = false
+    kbOptions.value = []
     resetForm()
   }
-})
+}, { flush: 'sync' })
 
 onBeforeUnmount(() => {
+  editorGeneration++
   editorAreaObserver?.disconnect()
   editorAreaObserver = null
 })

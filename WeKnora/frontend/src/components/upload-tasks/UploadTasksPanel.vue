@@ -36,7 +36,10 @@ watch(visible, shown => {
 const issueCount = computed(() => summary.value.failed + summary.value.duplicate + summary.value.cancelled)
 const isUploading = computed(() => summary.value.stage === 'uploading')
 const pendingTransfers = computed(() => summary.value.waiting + summary.value.uploading)
-const parseSettled = computed(() => summary.value.uploaded - summary.value.parsing)
+const storedOriginalCount = computed(() => items.value.filter(item =>
+  itemPhase(item) === 'ready' && item.parseStatus === 'stored').length)
+const parseTotal = computed(() => summary.value.uploaded - storedOriginalCount.value)
+const parseSettled = computed(() => parseTotal.value - summary.value.parsing)
 
 watch(issueCount, count => {
   if (count === 0) filter.value = 'all'
@@ -100,7 +103,7 @@ const headline = computed(() => {
     return t('uploadTasks.titleUploading', { done: s.transferSettled, total: s.transferTotal })
   }
   if (s.stage === 'parsing') {
-    return t('uploadTasks.titleParsing', { done: parseSettled.value, total: s.uploaded })
+    return t('uploadTasks.titleParsing', { done: parseSettled.value, total: parseTotal.value })
   }
   if (s.ready === 0 && s.failed + s.duplicate === 0) return t('uploadTasks.titleCancelled')
   if (issueCount.value === 0) return t('uploadTasks.titleDone')
@@ -122,7 +125,7 @@ const badge = computed<{ tone: BadgeTone; icon: string; ring: number | null }>((
     return { tone: 'brand', icon: 'arrow-up', ring: s.totalBytes > 0 ? s.loadedBytes / s.totalBytes : 0 }
   }
   if (s.stage === 'parsing') {
-    return { tone: 'brand', icon: 'file-search', ring: s.uploaded > 0 ? parseSettled.value / s.uploaded : 0 }
+    return { tone: 'brand', icon: 'file-search', ring: parseTotal.value > 0 ? parseSettled.value / parseTotal.value : 0 }
   }
   if (s.ready === 0 && s.failed + s.duplicate === 0) return { tone: 'neutral', icon: 'close', ring: null }
   if (issueCount.value > 0) return { tone: 'warning', icon: 'error', ring: null }
@@ -141,7 +144,8 @@ const overallPercent = computed(() => {
 const legend = computed(() => {
   const s = summary.value
   return [
-    { key: 'ready', label: t('uploadTasks.legend.ready'), count: s.ready },
+    { key: 'stored', label: t('uploadTasks.legend.stored'), count: storedOriginalCount.value },
+    { key: 'ready', label: t('uploadTasks.legend.ready'), count: s.ready - storedOriginalCount.value },
     { key: 'active', label: t('uploadTasks.legend.active'), count: s.uploading + s.parsing },
     { key: 'waiting', label: t('uploadTasks.legend.waiting'), count: s.waiting },
     { key: 'failed', label: t('uploadTasks.legend.failed'), count: s.failed },
@@ -556,7 +560,8 @@ onBeforeUnmount(() => {
     font-weight: 600;
   }
 
-  .is-ready i {
+  .is-ready i,
+  .is-stored i {
     background: var(--td-brand-color);
   }
 

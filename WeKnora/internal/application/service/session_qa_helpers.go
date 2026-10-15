@@ -80,6 +80,9 @@ func (s *sessionService) resolveKnowledgeBases(
 	if err != nil {
 		return nil, nil, err
 	}
+	if hasExplicitMention && len(kbIDs) == 0 && len(knowledgeIDs) == 0 && len(req.TagScopes) == 0 {
+		return nil, nil, fmt.Errorf("selected source scope is unavailable or unreadable")
+	}
 	return kbIDs, knowledgeIDs, nil
 }
 

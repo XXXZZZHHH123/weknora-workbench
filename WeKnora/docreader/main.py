@@ -316,11 +316,12 @@ def main():
         logger.error("Refusing to start: %s", e)
         sys.exit(1)
 
+    listen_address = f"{CONFIG.grpc_host}:{CONFIG.grpc_port}"
     if tls_credentials:
-        server.add_secure_port(f"[::]:{CONFIG.grpc_port}", tls_credentials)
+        server.add_secure_port(listen_address, tls_credentials)
         logger.info("Server starting on port %d with TLS", CONFIG.grpc_port)
     else:
-        server.add_insecure_port(f"[::]:{CONFIG.grpc_port}")
+        server.add_insecure_port(listen_address)
         logger.warning(
             "Server starting on port %d WITHOUT TLS (insecure mode)", CONFIG.grpc_port
         )

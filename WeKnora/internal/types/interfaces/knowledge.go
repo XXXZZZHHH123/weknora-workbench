@@ -88,6 +88,8 @@ type KnowledgeService interface {
 	// folder_path of every knowledge entry in a knowledge base, with per-folder
 	// document counts. It powers the document sidebar tree.
 	ListKnowledgeFolderTree(ctx context.Context, kbID string) (*types.KnowledgeFolderTree, error)
+	CreateKnowledgeFolder(ctx context.Context, kbID, path string) (*types.KnowledgeFolder, error)
+	DeleteKnowledgeFolder(ctx context.Context, kbID, path string) error
 	// MoveKnowledgeToFolder re-files knowledge entries under the given folder
 	// path (empty means the knowledge base top level). Folders are derived from
 	// the stored paths, so a path that does not exist yet is created implicitly.
@@ -284,6 +286,8 @@ type KnowledgeRepository interface {
 		tenantID uint64,
 		kbID string,
 	) ([]*types.KnowledgeFolderCount, error)
+	CreateKnowledgeFolder(ctx context.Context, tenantID uint64, kbID, path string) (*types.KnowledgeFolder, error)
+	DeleteKnowledgeFolder(ctx context.Context, tenantID uint64, kbID, path string) error
 	// UpdateKnowledgeFolderPath files the given entries under folderPath.
 	UpdateKnowledgeFolderPath(
 		ctx context.Context,
@@ -293,7 +297,7 @@ type KnowledgeRepository interface {
 		folderPath string,
 	) (int64, error)
 	// RenameKnowledgeFolderPath rewrites folder_path for a folder and all of its
-	// descendants. Renaming onto an existing path merges the folders.
+	// descendants. An existing destination must not be merged implicitly.
 	RenameKnowledgeFolderPath(
 		ctx context.Context,
 		tenantID uint64,

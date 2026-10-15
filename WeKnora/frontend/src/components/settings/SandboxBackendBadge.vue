@@ -42,8 +42,8 @@ const badgeStyle = computed((): Record<string, string> => (
   justify-content: center;
   flex-shrink: 0;
   border-radius: 9px;
-  background: rgba(0, 82, 217, 0.1);
-  color: #0052d9;
+  background: var(--td-brand-color-light);
+  color: var(--td-brand-color);
 }
 
 .sandbox-badge--md {

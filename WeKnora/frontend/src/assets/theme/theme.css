@@ -4,20 +4,21 @@
         --brand-main: var(--td-brand-color-4);
         --td-brand-color-light: var(--td-brand-color-1);
         --td-brand-color-focus: color-mix(in srgb, var(--td-brand-color) 20%, transparent);
-        --td-brand-color-disabled: #b8c9e3;
+        --td-brand-color-disabled: #adc6cf;
         --td-brand-color-hover: var(--td-brand-color-3);
         --td-brand-color: var(--td-brand-color-4);
         --td-brand-color-active:var(--td-brand-color-5);
-        --td-brand-color-1: #eef3fc;
-        --td-brand-color-2: #dbe7fb;
-        --td-brand-color-3: #345ca4;
-        --td-brand-color-4: #24477f;
-        --td-brand-color-5: #19365f;
-        --td-brand-color-6: #143058;
-        --td-brand-color-7: #102747;
-        --td-brand-color-8: #0c213d;
-        --td-brand-color-9: #091b33;
-         --td-brand-color-10: #061629;
+        --td-brand-color-1: #e9f3f6;
+        --td-brand-color-2: #cde5eb;
+        --td-brand-color-3: #0f5d70;
+        --td-brand-color-4: #126d82;
+        --td-brand-color-5: #0c4d5d;
+        --td-brand-color-6: #093e4b;
+        --td-brand-color-7: #072f39;
+        --td-brand-color-8: #05242c;
+        --td-brand-color-9: #041d23;
+        --td-brand-color-10: #03161b;
+        --app-on-brand: #ffffff;
         --td-warning-color-1: #fef3e6;
     --td-warning-color-2: #f9e0c7;
     --td-warning-color-3: #f7c797;
@@ -66,25 +67,25 @@
     --td-success-color-active: var(--td-success-color-6);
     --td-success-color-disabled: var(--td-success-color-3);
     --td-success-color-light: var(--td-success-color-1);
-     --td-gray-color-1: #f3f3f3;
-    --td-gray-color-2: #eee;
-    --td-gray-color-3: #e7e7e7;
-    --td-gray-color-4: #dcdcdc;
-    --td-gray-color-5: #c5c5c5;
-    --td-gray-color-6: #a6a6a6;
-    --td-gray-color-7: #8b8b8b;
-    --td-gray-color-8: #777;
-    --td-gray-color-9: #5e5e5e;
-    --td-gray-color-10: #4b4b4b;
-    --td-gray-color-11: #383838;
-    --td-gray-color-12: #2c2c2c;
-    --td-gray-color-13: #242424;
-    --td-gray-color-14: #181818;
+     --td-gray-color-1: #f1f5f8;
+    --td-gray-color-2: #edf2f6;
+    --td-gray-color-3: #d9e3ec;
+    --td-gray-color-4: #cad7e2;
+    --td-gray-color-5: #a9b9c7;
+    --td-gray-color-6: #8b9bac;
+    --td-gray-color-7: #76889a;
+    --td-gray-color-8: #62768a;
+    --td-gray-color-9: #4f6478;
+    --td-gray-color-10: #3e5266;
+    --td-gray-color-11: #32465a;
+    --td-gray-color-12: #273a4c;
+    --td-gray-color-13: #1d2e3f;
+    --td-gray-color-14: #13202d;
     --td-bg-color-container: #fff;
     --td-bg-color-container-select: #fff;
-    --td-bg-color-page: #f3f5f9;
-    --td-bg-color-sidebar: #ffffff;
-    --td-bg-color-settings-modal: #f5f7fa;
+    --td-bg-color-page: #f4f7fa;
+    --td-bg-color-sidebar: #f8fafc;
+    --td-bg-color-settings-modal: #f8fafc;
     --td-bg-color-container-hover: var(--td-gray-color-1);
     --td-bg-color-container-active: var(--td-gray-color-3);
     --td-bg-color-secondarycontainer: var(--td-gray-color-1);
@@ -100,8 +101,8 @@
     --td-font-white-2: rgba(255, 255, 255, 0.55);
     --td-font-white-3: rgba(255, 255, 255, 0.35);
     --td-font-white-4: rgba(255, 255, 255, 0.22);
-    --td-font-gray-1: #18263d;
-    --td-font-gray-2: #627087;
+     --td-font-gray-1: #203447;
+    --td-font-gray-2: #607286;
     --td-font-gray-3: rgba(0, 0, 0, 0.4);
     --td-font-gray-4: rgba(0, 0, 0, 0.26);
     --td-text-color-primary: var(--td-font-gray-1);
@@ -185,20 +186,21 @@
     --brand-main: var(--td-brand-color-6);
     --td-brand-color-light: var(--td-brand-color-1);
     --td-brand-color-focus: color-mix(in srgb, var(--td-brand-color) 28%, transparent);
-    --td-brand-color-disabled: #354c6a;
+    --td-brand-color-disabled: #33545f;
     --td-brand-color-hover: var(--td-brand-color-5);
     --td-brand-color: var(--td-brand-color-6);
     --td-brand-color-active:var(--td-brand-color-7);
-    --td-brand-color-1: #7ca7e220;
-    --td-brand-color-2: #162844;
-    --td-brand-color-3: #234575;
-    --td-brand-color-4: #365c95;
-    --td-brand-color-5: #6494d1;
-    --td-brand-color-6: #7ca7e2;
-    --td-brand-color-7: #9ebdec;
-    --td-brand-color-8: #bfd2f3;
-    --td-brand-color-9: #d8e5fa;
-    --td-brand-color-10: #edf3fd;
+    --td-brand-color-1: #203c4a;
+    --td-brand-color-2: #2b4a59;
+    --td-brand-color-3: #376b7d;
+    --td-brand-color-4: #4ca8c0;
+    --td-brand-color-5: #85d9eb;
+    --td-brand-color-6: #69c7dc;
+    --td-brand-color-7: #a2e4f0;
+    --td-brand-color-8: #bcecf4;
+    --td-brand-color-9: #d5f3f8;
+    --td-brand-color-10: #effbfd;
+    --app-on-brand: #122735;
     --td-warning-color-1: #4f2a1d;
 --td-warning-color-2: #582f21;
 --td-warning-color-3: #733c23;
@@ -226,24 +228,24 @@
 --td-success-color-7: #46bf96;
 --td-success-color-8: #80d2b6;
 --td-success-color-9: #b4e1d3;
---td-success-color-10: #deede8; --td-gray-color-1: #f3f3f3;
---td-gray-color-2: #eee;
---td-gray-color-3: #e7e7e7;
---td-gray-color-4: #dcdcdc;
---td-gray-color-5: #c5c5c5;
---td-gray-color-6: #a6a6a6;
---td-gray-color-7: #8b8b8b;
---td-gray-color-8: #777;
---td-gray-color-9: #5e5e5e;
---td-gray-color-10: #4b4b4b;
---td-gray-color-11: #383838;
---td-gray-color-12: #2c2c2c;
---td-gray-color-13: #242424;
---td-gray-color-14: #181818;
---td-bg-color-page: #111b2b;
---td-bg-color-sidebar: #152033;
---td-bg-color-settings-modal: #152033;
---td-bg-color-container: #1b293d;
+--td-success-color-10: #deede8; --td-gray-color-1: #f1f5f8;
+--td-gray-color-2: #e6edf3;
+--td-gray-color-3: #d6e0ea;
+--td-gray-color-4: #c3d1de;
+--td-gray-color-5: #a7b8c8;
+--td-gray-color-6: #8ba2b7;
+--td-gray-color-7: #7691a9;
+--td-gray-color-8: #65839d;
+--td-gray-color-9: #547088;
+--td-gray-color-10: #425d72;
+--td-gray-color-11: #324a5e;
+--td-gray-color-12: #1e3142;
+--td-gray-color-13: #162534;
+--td-gray-color-14: #111c28;
+--td-bg-color-page: #111c28;
+--td-bg-color-sidebar: #13202d;
+--td-bg-color-settings-modal: #13202d;
+--td-bg-color-container: #162534;
 --td-bg-color-container-hover: var(--td-gray-color-12);
 --td-bg-color-container-active: var(--td-gray-color-10);
 --td-bg-color-container-select: var(--td-gray-color-9);
@@ -255,12 +257,12 @@
 --td-bg-color-component-active: var(--td-gray-color-9);
 --td-bg-color-component-disabled: var(--td-gray-color-12);
 --td-component-stroke: var(--td-gray-color-11);
---td-component-border: var(--td-gray-color-9); --td-font-white-1: rgba(255, 255, 255, 0.9);
---td-font-white-2: rgba(255, 255, 255, 0.55);
+--td-component-border: var(--td-gray-color-10); --td-font-white-1: #e7eff7;
+--td-font-white-2: #a7b8c8;
 --td-font-white-3: rgba(255, 255, 255, 0.35);
 --td-font-white-4: rgba(255, 255, 255, 0.22);
---td-font-gray-1: rgba(255, 255, 255, 0.9);
---td-font-gray-2: rgba(255, 255, 255, 0.55);
+--td-font-gray-1: #e7eff7;
+--td-font-gray-2: #a7b8c8;
 --td-font-gray-3: rgba(255, 255, 255, 0.35);
 --td-font-gray-4: rgba(255, 255, 255, 0.22);
 --td-text-color-primary: var(--td-font-white-1);
@@ -302,7 +304,7 @@
 /* 全局 t-radio-button outline 选中态：填充品牌色（主色底白字） */
 .t-radio-group .t-radio-button {
     border-color: var(--td-component-stroke);
-    transition: all 0.2s ease;
+    transition: background-color var(--app-motion-fast) ease, border-color var(--app-motion-fast) ease, color var(--app-motion-fast) ease;
 }
 .t-radio-group .t-radio-button:hover:not(.t-is-disabled) {
     border-color: var(--td-brand-color);
@@ -313,14 +315,14 @@
 .t-radio-group .t-radio-button.t-is-checked > span {
     background: var(--td-brand-color);
     border-color: var(--td-brand-color);
-    color: var(--td-text-color-anti);
+    color: var(--app-on-brand);
 }
 .t-radio-group .t-radio-button.t-is-checked:hover:not(.t-is-disabled),
 .t-radio-group .t-radio-button.t-is-checked:hover:not(.t-is-disabled) .t-radio-button__label,
 .t-radio-group .t-radio-button.t-is-checked:hover:not(.t-is-disabled) > span {
     background: var(--td-brand-color-active);
     border-color: var(--td-brand-color-active);
-    color: var(--td-text-color-anti);
+    color: var(--app-on-brand);
 }
 .t-radio-group .t-radio-button.t-is-disabled {
     background: var(--td-bg-color-component-disabled);
@@ -436,9 +438,9 @@ select:-webkit-autofill {
     --app-card-bg: var(--td-bg-color-container);
     --app-border-color: var(--td-component-stroke);
     --app-text-secondary: var(--td-text-color-secondary);
-    --app-brand-navy: #18345b;
-    --app-brand-on-navy: #f7faff;
-    --app-paper-shadow: 0 8px 32px rgba(24, 52, 91, .06);
+    --app-brand-navy: var(--td-brand-color);
+    --app-brand-on-navy: var(--app-on-brand);
+    --app-paper-shadow: 0 4px 18px rgb(22 53 70 / 6%);
 
     /* 对话标题与右侧面板共用同一条头部分割线。 */
     --app-chat-header-height: 40px;
@@ -477,7 +479,7 @@ select:-webkit-autofill {
     /* 动效时长 */
     --app-motion-instant: 120ms;
     --app-motion-fast: 150ms;
-    --app-motion-base: 200ms;
+    --app-motion-base: 180ms;
     --app-motion-slow: 300ms;
 
     /* 层级：页面内 sticky < 下拉 < 全屏弹窗壳 < TDesign 抽屉/弹窗(2500) < 弹层 < 通知 */
@@ -487,4 +489,18 @@ select:-webkit-autofill {
     --z-drawer: 2500;
     --z-popover: 3000;
     --z-toast: 5000;
+}
+
+:root:root, :root:root[theme-mode] {
+    --td-radius-default: 8px;
+    --td-radius-medium: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --app-motion-instant: 0ms;
+        --app-motion-fast: 0ms;
+        --app-motion-base: 0ms;
+        --app-motion-slow: 0ms;
+    }
 }

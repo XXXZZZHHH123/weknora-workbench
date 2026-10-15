@@ -8,11 +8,15 @@
 import {computed,onMounted,onBeforeUnmount,ref,watch} from 'vue'
 import {useRoute,useRouter} from 'vue-router'
 import {useAuthStore} from '@/stores/auth'
+import {useTheme} from '@/composables/useTheme'
 const auth=useAuthStore(),route=useRoute(),router=useRouter(),frame=ref<HTMLIFrameElement>(),generation=ref(0)
+const {effectiveTheme}=useTheme()
 const src=computed(()=>'/structured/?session='+generation.value+(route.query.view==='model-settings'?'&view=model-settings':'')+(typeof route.query.dataset==='string'?'&dataset='+encodeURIComponent(route.query.dataset):''))
 function sendAuth(){frame.value?.contentWindow?.postMessage({type:'structured-auth',token:auth.token,tenant:auth.selectedTenantId??auth.tenant?.id},window.location.origin)}
+function sendTheme(){frame.value?.contentWindow?.postMessage({type:'workspace-theme',mode:effectiveTheme.value},window.location.origin)}
 function receive(e:MessageEvent){
   if(e.origin!==window.location.origin||e.source!==frame.value?.contentWindow)return
+  if(e.data?.type==='workspace-theme-ready'){sendTheme();return}
   if(e.data?.type==='structured-ready')sendAuth()
   if(e.data?.type==='structured-navigate') {
     if(e.data.view==='materials')router.push({path:'/platform/materials',query:{add:'1'}})
@@ -21,6 +25,7 @@ function receive(e:MessageEvent){
   }
 }
 watch(()=>[auth.token,auth.selectedTenantId,auth.tenant?.id,auth.user?.id],()=>{generation.value+=1},{flush:'sync'})
+watch(effectiveTheme,sendTheme)
 onMounted(()=>window.addEventListener('message',receive))
 onBeforeUnmount(()=>window.removeEventListener('message',receive))
 </script>

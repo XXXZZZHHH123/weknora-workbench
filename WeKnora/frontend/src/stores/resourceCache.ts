@@ -63,7 +63,10 @@ export function createCachedResource<T>(
  * 这类数据不随每次 ensure 重新拉取：拿到过就一直用，直到显式失效。
  * 调用方在循环里逐条 ensure（如 @ 提及列表补 count），不能每次都打接口。
  */
-export function createKeyedSnapshotCache<T>(load: (key: string) => Promise<T>) {
+export function createKeyedSnapshotCache<T>(
+  load: (key: string) => Promise<T>,
+  options: { staleValue?: () => T } = {},
+) {
   const snapshots = new Map<string, T>()
   const inflight = new Map<string, { promise: Promise<T>; revision: number }>()
   // 每个 key 一个代际；invalidate / force 都会推进它。请求返回时代际已变，
@@ -88,7 +91,9 @@ export function createKeyedSnapshotCache<T>(load: (key: string) => Promise<T>) {
           const stillCurrent = (revisions.get(key) ?? 0) === revision
           // 加载失败以 null 表示时不落快照，下次读取会重试。
           if (stillCurrent && value != null) snapshots.set(key, value)
-          return value
+          // Scoped consumers must not render a retired identity's response even
+          // when it is correctly excluded from the shared snapshot.
+          return !stillCurrent && options.staleValue ? options.staleValue() : value
         } finally {
           if (inflight.get(key)?.revision === revision) inflight.delete(key)
         }

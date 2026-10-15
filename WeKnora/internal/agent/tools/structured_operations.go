@@ -51,6 +51,24 @@ func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]a
 		if err != nil || len(raw) > 64*1024 {
 			continue
 		}
+		if base.scopeConfigured {
+			if _, exists := properties["knowledge_base_id"]; exists {
+				continue
+			}
+			// Copy the server schema before adding the client-only selector;
+			// discovery metadata and the service operation contract stay intact.
+			var scopedSchema map[string]any
+			if json.Unmarshal(raw, &scopedSchema) != nil {
+				continue
+			}
+			scopedSchema["properties"].(map[string]any)["knowledge_base_id"] = map[string]any{
+				"type": "string", "description": "可选的本轮已授权知识库ID；单库默认，多库必须从返回的真实目录选择",
+			}
+			raw, err = json.Marshal(scopedSchema)
+			if err != nil || len(raw) > 64*1024 {
+				continue
+			}
+		}
 		description, _ := entry["description"].(string)
 		if len(description) > 4096 {
 			description = description[:4096]
@@ -80,13 +98,21 @@ func (t *structuredReadOperationTool) Execute(ctx context.Context, args json.Raw
 		return nil, fmt.Errorf("结构化表格参数需要符合工具schema的对象")
 	}
 	for key := range input {
+		if key == "knowledge_base_id" && t.base.scopeConfigured {
+			continue
+		}
 		if !t.argumentKeys[key] {
 			return nil, fmt.Errorf("结构化表格不接受未声明参数 %q", key)
 		}
 	}
 	// query_series has its own aggregation argument named operation. It stays
 	// inside arguments; the signed HTTP operation is always bound by this tool.
-	wrapped, err := json.Marshal(map[string]any{"operation": t.operation, "arguments": input})
+	envelope := map[string]any{"operation": t.operation, "arguments": input}
+	if selected, exists := input["knowledge_base_id"]; exists && t.base.scopeConfigured {
+		delete(input, "knowledge_base_id")
+		envelope["knowledge_base_id"] = selected
+	}
+	wrapped, err := json.Marshal(envelope)
 	if err != nil {
 		return nil, fmt.Errorf("结构化表格参数格式无效")
 	}

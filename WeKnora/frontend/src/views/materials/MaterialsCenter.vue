@@ -4,12 +4,14 @@ import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { FileAddIcon, FolderOpenIcon, FileExcelIcon, FileIcon, SearchIcon, DownloadIcon, RefreshIcon, LinkIcon, ChevronRightIcon } from 'tdesign-icons-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { useTheme } from '@/composables/useTheme'
 import { useUploadConfirmStore } from '@/stores/uploadConfirm'
 import { createKnowledgeFromURL, getKnowledgeBaseById } from '@/api/knowledge-base'
 import { createMaterialClient, type LibraryAsset, type LibraryOperation, type MaterialScope } from './client'
 import { fileKind, isTable, isStructuredFile, purposeNames, readableSize, stateName, takeIntake } from './intake'
 
 const auth = useAuthStore(), route = useRoute(), router = useRouter(), confirmStore = useUploadConfirmStore()
+const { effectiveTheme } = useTheme()
 const scope = (): MaterialScope => ({ token: auth.token, userId: auth.user?.id || '', tenantId: String(auth.effectiveTenantId || '') })
 const identity = () => ({ userId: scope().userId, tenantId: scope().tenantId })
 let client = createMaterialClient(scope(), scope), generation = 0, listingRequest = 0, legacyRequest = 0, detailRequest = 0, timer: ReturnType<typeof setTimeout> | undefined, searchTimer: ReturnType<typeof setTimeout> | undefined
@@ -242,6 +244,7 @@ async function commitMapping() {
 }
 function openReview(op: LibraryOperation) { reviewImport.value = op.remote_ids?.import_id || op.result?.import_id || ''; reviewOpen.value = true }
 function authReview() { reviewFrame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: auth.effectiveTenantId }, window.location.origin) }
+function sendTheme() { if (reviewOpen.value) reviewFrame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 async function closeReview() { reviewOpen.value = false; if (selected.value) await openDetail(selected.value, false); await refresh() }
 async function page(next: boolean) { offset.value = next ? nextOffset.value || offset.value : Math.max(0, offset.value - 25); await refresh() }
 async function reset() {
@@ -266,8 +269,10 @@ watch(() => route.fullPath, reset)
 watch(sourceFilter, () => { offset.value = 0; void refresh() })
 watch(kindFilter, () => { offset.value = 0; void refresh() })
 watch(search, () => { if (searchTimer) clearTimeout(searchTimer); searchTimer = setTimeout(() => { offset.value = 0; void refresh() }, 300) })
+watch(effectiveTheme, sendTheme)
 function receiveReview(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== reviewFrame.value?.contentWindow || !reviewOpen.value) return
+  if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'structured-ready') authReview()
   if (event.data?.type === 'structured-import-updated' && String(event.data.tenant_id) === scope().tenantId && selected.value) void openDetail(selected.value, false).catch(notify)
   if (event.data?.type === 'structured-navigate' && event.data.view === 'model-settings') router.push({ path: '/platform/structured-data', query: { view: 'model-settings' } })

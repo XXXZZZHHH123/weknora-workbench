@@ -480,8 +480,8 @@ export interface ListKnowledgeFilesParams {
   folder_recursive?: boolean;
 }
 
-export function listKnowledgeFiles(kbId: string, params: ListKnowledgeFilesParams) {
-  return get(`/api/v1/knowledge-bases/${kbId}/knowledge?${buildListKnowledgeFilesQuery(params)}`);
+export function listKnowledgeFiles(kbId: string, params: ListKnowledgeFilesParams, options?: { signal?: AbortSignal }) {
+  return get(`/api/v1/knowledge-bases/${kbId}/knowledge?${buildListKnowledgeFilesQuery(params)}`, options);
 }
 
 /** One node of the knowledge base folder tree. */
@@ -507,6 +507,14 @@ export interface KnowledgeFolderTree {
 
 export function listKnowledgeFolders(kbId: string) {
   return get(`/api/v1/knowledge-bases/${kbId}/knowledge/folders`);
+}
+
+export function createKnowledgeFolder(kbId: string, path: string) {
+  return post(`/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/knowledge/folders`, { path });
+}
+
+export function deleteKnowledgeFolder(kbId: string, path: string) {
+  return del(`/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/knowledge/folders?${new URLSearchParams({ path })}`);
 }
 
 /**

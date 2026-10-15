@@ -5,7 +5,7 @@
   const base = (window.RESEARCH_PREFIX || '') + '/api/sn/refresh';
   let state, timer, editing = false, observedRun = null, reloading = false;
   const prefix = window.RESEARCH_PREFIX || '';
-  const defaultHome = (location.pathname === prefix + '/' || location.pathname === prefix) && !new URLSearchParams(location.search).has('date');
+  const defaultBoard = [prefix, prefix + '/', prefix + '/sn'].includes(location.pathname) && !new URLSearchParams(location.search).has('date');
   const stamp = value => value ? new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai', hour12:false}) : '暂无';
   const text = (id, value) => { byId(id).textContent = value; };
   async function request(path, options = {}) {
@@ -20,7 +20,7 @@
     const completedBetweenPolls = state && !data.active && data.last_attempt?.id !== state.last_attempt?.id && ['success', 'partial'].includes(data.last_attempt?.status);
     const newerTradeDate = !data.active && ['success', 'partial'].includes(data.last_attempt?.status) && data.latest_trade_date && data.latest_trade_date !== panel.dataset.renderedDate;
     state = data;
-    if (defaultHome && !reloading && (finishedObserved || completedBetweenPolls || newerTradeDate)) {
+    if (defaultBoard && !reloading && (finishedObserved || completedBetweenPolls || newerTradeDate)) {
       // The SSR board uses the data available when the page was rendered. Polling
       // only refreshes this status panel; reload once after new facts are ready.
       // A user-selected historical date is never changed by background updates.

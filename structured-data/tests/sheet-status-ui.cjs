@@ -14,7 +14,7 @@ const pending={...imported,name:'待核对表',status:'needs_review',mapping:{..
   await page.route('**/*',async route=>{
    const u=new URL(route.request().url());let data={},type='application/json';
    if(u.pathname==='/') {data=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
-   else if(['/sheet-review.js','/sheet-review.css'].includes(u.pathname)){data=fs.readFileSync(path.join(source,u.pathname.slice(1)),'utf8');type=u.pathname.endsWith('.js')?'application/javascript':'text/css';}
+   else if(['/sheet-review.js','/sheet-review.css','/workspace.css'].includes(u.pathname)){data=fs.readFileSync(path.join(source,u.pathname.slice(1)),'utf8');type=u.pathname.endsWith('.js')?'application/javascript':'text/css';}
    else if(u.pathname==='/api/ui-config')data={title:'表格分析',workspace_label:'中哲物产',weknora_url:'http://fixture.test'};
    else if(u.pathname==='/api/datasets')data={datasets:[]};
    else if(u.pathname==='/api/imports')data={imports:[{import_id:'a'.repeat(24),source_file:'业务.xlsx'}]};

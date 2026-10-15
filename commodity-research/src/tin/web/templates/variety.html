@@ -11,6 +11,7 @@
     </h1>
     <p class="text-xs text-[var(--text-muted)] mt-1">行情、研判与宏观驱动同一截点 · 口径不一致不出数 · 派生指标可逐层穿透</p>
   </div>
+  {% if d %}
   <div class="flex items-center gap-6 text-right shrink-0">
     <div>
       <div class="text-xl font-bold tabular">{{ cards | selectattr('status', 'equalto', 'ok') | list | length }}<span class="text-xs font-normal text-[var(--text-muted)]"> / {{ cards | length }}</span></div>
@@ -23,7 +24,21 @@
     </div>
     <button onclick="openExportDrawer()" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shadow-sm whitespace-nowrap">自定义导出 Excel</button>
   </div>
+  {% endif %}
 </div>
+
+{% if not d %}
+<section id="market-empty" role="status" class="research-panel p-5 space-y-3">
+  <h2 class="text-base font-bold">当前空间尚无行情数据</h2>
+  <p class="text-sm text-[var(--text-muted)]">尚未采集到交易日行情，市场数据与图表将在行情入库后显示。可以在下方「数据更新」中立即更新，或导入行情来源文件。</p>
+  <div class="flex flex-wrap gap-3 text-sm">
+    <a href="{{ research_url('/files') }}" class="text-[var(--primary)] hover:underline">导入行情文件</a>
+    <a href="{{ research_url('/sn/indicators') }}" class="text-[var(--primary)] hover:underline">查看指标与来源</a>
+  </div>
+</section>
+{% endif %}
+
+{% include '_refresh.html' %}
 
 {% set j = judgment %}
 {% if j is none %}
@@ -31,7 +46,7 @@
   <div>
     <div class="text-[10px] font-bold tracking-wider text-[var(--primary)] uppercase">RESEARCH VIEW</div>
     <h2 class="text-base font-bold mt-1">尚未登记锡的研究判断</h2>
-    <p class="text-xs text-[var(--text-muted)] mt-1">事实区照常显示；登记判断后，阈值与证伪条件将每日自动比对。</p>
+    <p class="text-xs text-[var(--text-muted)] mt-1">{% if d %}事实区照常显示；{% endif %}登记判断并更新行情后，阈值与证伪条件将每日自动比对。</p>
   </div>
   <a href="{{ research_prefix() }}/sn/judgment" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">登记判断 &rarr;</a>
 </section>
@@ -89,6 +104,7 @@
 </section>
 {% endif %}
 
+{% if d %}
 <section class="space-y-3">
   <div class="flex items-center justify-between gap-3 flex-wrap">
     <div class="flex items-center gap-2">
@@ -237,9 +253,11 @@
 </section>
 
 <p class="text-[11px] text-[var(--text-muted)]">agent 读取：<a class="text-[var(--primary)] hover:underline" href="{{ research_prefix() }}/api/sn/snapshot?date={{ d }}">/api/sn/snapshot?date={{ d }}</a></p>
+{% endif %}
 {% endblock %}
 
 {% block drawer %}
+{% if d %}
 <aside id="export-drawer" data-drawer class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-xl bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
   <div class="flex items-center justify-between pb-3 border-b border-[var(--line)]">
     <div>
@@ -315,4 +333,5 @@
     <button id="export-run" type="button" onclick="exportRun()" class="px-5 py-2 rounded-md bg-[var(--primary)] text-white text-xs font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-40">导出 Excel (.xlsx)</button>
   </div>
 </aside>
+{% endif %}
 {% endblock %}

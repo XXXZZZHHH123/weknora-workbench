@@ -210,7 +210,7 @@ def _board_date(s, q: str | None) -> date:
         return date.fromisoformat(matched)
     d = latest_trade_date(s)
     if d is None:
-        raise HTTPException(503, "尚无行情数据：请先运行 python -m tin.jobs daily")
+        raise HTTPException(503, "尚无行情数据：请在工作台的「数据更新」中立即更新，或导入行情来源文件。")
     return d
 
 
@@ -253,10 +253,9 @@ def _shell(s, nav: str, d: date | None = None, **extra) -> dict:
 
 
 def _home_date(s, q: str | None) -> date | None:
-    """首屏的日期比 `/sn` 宽容：没有行情数据也得出得来。
+    """页面默认日期允许为空；显式历史日期仍按交易日历验证。
 
-    `/sn` 是数据看板，没数据就该 503；首屏是「今天我该干什么」，待办与简报跟行情在不在
-    没关系。整页 503 等于把人关在门外，而北极星恰恰是「我每天真的会打开它」。
+    首屏和总览在尚未采集行情时也应保留导航、研究判断与数据更新入口。
     """
     if q:
         return _board_date(s, q)
@@ -392,12 +391,16 @@ def healthz():
 @app.get("/sn")
 def variety_page(request: Request, date: str | None = None, err: str | None = None):
     with SessionLocal() as s:
-        d = _board_date(s, date)
+        d = _home_date(s, date)
         today = datetime.now(SHANGHAI).date()
         return templates.TemplateResponse(request, "variety.html", _shell(
-            s, "variety", d, cards=core_cards(s, V, d), judgment=judgment_block(s, V, today),
-            radar=threshold_radar(s, V, d), gaps=gaps(s, V, d), curve=contract_curve(s, V, d),
-            macro=macro_featured(s, d), liquidity_min=settings.liquidity_min_volume, err=err))
+            s, "variety", d, cards=core_cards(s, V, d) if d is not None else [],
+            judgment=judgment_block(s, V, today),
+            radar=threshold_radar(s, V, d) if d is not None else [],
+            gaps=gaps(s, V, d) if d is not None else [],
+            curve=contract_curve(s, V, d) if d is not None else None,
+            macro=macro_featured(s, d) if d is not None else [],
+            liquidity_min=settings.liquidity_min_volume, err=err))
 
 
 @app.get("/sn/macro")
@@ -518,6 +521,15 @@ def indicator_page(request: Request, series_id: str):
 def indicator_usage(series_id: str):
     with SessionLocal() as s:
         return diagram_api.usage(s, series_id, V)
+
+
+@app.get("/api/sn/indicators/catalog")
+def indicator_catalog(scope: str = "all"):
+    if scope not in {"all", "macro"}:
+        raise HTTPException(400, "无效指标目录范围")
+    with SessionLocal() as session:
+        rows = indicator_data.catalog(session)
+        return {"indicators": [row for row in rows if scope == "all" or row["macro"]]}
 
 
 @app.get("/sn/diagram")

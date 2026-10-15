@@ -190,6 +190,12 @@ func RunMigrationsWithOptions(dsn string, opts MigrationOptions) error {
 		}
 	}
 
+	if migrationsPath == "file://migrations/sqlite" {
+		if err := reconcileSQLiteWorkbenchLineage(ctx, dsn, opts, oldVersion); err != nil {
+			return captureMigrationFailure(m, fmt.Errorf("failed to reconcile workbench migration lineage: %w", err))
+		}
+	}
+
 	// Run all pending migrations
 	logger.Infof(ctx, "Running pending migrations...")
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {

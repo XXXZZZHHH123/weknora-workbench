@@ -56,6 +56,46 @@ def test_shell_exposes_calendar_bounds(loaded):
     assert ctx["max_date"] == "2026-09-18"
 
 
+def test_overview_without_market_data_keeps_navigation_and_update_controls(session, monkeypatch):
+    monkeypatch.setattr("tin.web.app.SessionLocal", lambda: session)
+    response = TestClient(app).get("/sn")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert 'id="market-empty"' in response.text
+    assert 'id="refresh-now"' in response.text
+    assert 'href="/files"' in response.text
+    assert 'href="/sn/judgment"' in response.text
+    assert 'id="export-drawer"' not in response.text
+    assert "全部指标在预期更新时间内" not in response.text
+    assert "date=None" not in response.text
+    assert "python -m tin.jobs daily" not in response.text
+
+
+def test_overview_renders_real_market_data_after_first_import(loaded, monkeypatch):
+    monkeypatch.setattr("tin.web.app.SessionLocal", lambda: loaded)
+    response = TestClient(app).get("/sn?date=2026-09-19")
+    assert response.status_code == 200
+    assert 'id="market-empty"' not in response.text
+    assert 'value="2026-09-18"' in response.text
+    assert "主力合约结算价" in response.text
+    assert "405,360" in response.text
+    assert 'id="export-drawer"' in response.text
+
+
+def test_snapshot_still_reports_missing_market_data(session, monkeypatch):
+    monkeypatch.setattr("tin.web.app.SessionLocal", lambda: session)
+    response = TestClient(app).get("/api/sn/snapshot")
+    assert response.status_code == 503
+    assert "尚无行情数据" in response.json()["detail"]
+    assert "python -m tin.jobs daily" not in response.json()["detail"]
+
+
+@pytest.mark.parametrize("value,status", [("bad-date", 400), ("2026-01-01", 404)])
+def test_overview_preserves_explicit_date_validation(loaded, monkeypatch, value, status):
+    monkeypatch.setattr("tin.web.app.SessionLocal", lambda: loaded)
+    assert TestClient(app).get("/sn", params={"date": value}).status_code == status
+
+
 def test_series_history_api_returns_scaled_points_through_board_date(loaded, monkeypatch):
     spec = SERIES_BY_ID["FRED.DGS10"]
     store(loaded, parse_series(

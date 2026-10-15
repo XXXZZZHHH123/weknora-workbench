@@ -154,3 +154,51 @@ test('keyed snapshot: a force read overlapping an in-flight read wins regardless
   pending[3].resolve('kb2-fresh')
   assert.equal(await reloaded, 'kb2-fresh')
 })
+
+
+test('keyed scoped snapshots can suppress retired values without changing the default contract', async () => {
+  const calls: Array<ReturnType<typeof deferred<string[]>>> = []
+  const cache = createKeyedSnapshotCache(
+    () => {
+      const d = deferred<string[]>()
+      calls.push(d)
+      return d.promise
+    },
+    { staleValue: () => [] },
+  )
+  const previous = cache.ensure('same-id')
+  cache.invalidate()
+  const current = cache.ensure('same-id')
+  calls[0].resolve(['previous-tenant'])
+  assert.deepEqual(await previous, [])
+  const reused = cache.ensure('same-id')
+  assert.equal(calls.length, 2, 'retired cleanup must retain the new in-flight handle')
+  calls[1].resolve(['current-tenant'])
+  assert.deepEqual(await current, ['current-tenant'])
+  assert.deepEqual(await reused, ['current-tenant'])
+  assert.deepEqual(await cache.ensure('same-id'), ['current-tenant'])
+})
+
+test('keyed scoped snapshots retire forced responses and support null detail fallbacks', async () => {
+  const calls: Array<ReturnType<typeof deferred<{ id: string }>>> = []
+  const cache = createKeyedSnapshotCache<{ id: string } | null>(
+    () => {
+      const d = deferred<{ id: string }>()
+      calls.push(d)
+      return d.promise
+    },
+    { staleValue: () => null },
+  )
+  const previous = cache.ensure('library')
+  const current = cache.ensure('library', true)
+  calls[1].resolve({ id: 'saved' })
+  assert.deepEqual(await current, { id: 'saved' })
+  calls[0].resolve({ id: 'retired' })
+  assert.equal(await previous, null)
+  assert.deepEqual(await cache.ensure('library'), { id: 'saved' })
+  cache.invalidate('library')
+  const retired = cache.ensure('library')
+  cache.invalidate('library')
+  calls[2].resolve({ id: 'old-identity' })
+  assert.equal(await retired, null)
+})

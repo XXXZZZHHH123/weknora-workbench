@@ -247,7 +247,7 @@ def brief_gap(session: Session, researcher, d: date | None) -> str:
     if researcher is None:
         return "尚未初始化研究员档案：先跑一次 python -m tin.jobs init，简报才有归属。"
     if d is None:
-        return "库里还没有任何交易日数据：先跑 python -m tin.jobs daily 取一次数。"
+        return "库里还没有任何交易日数据：请在「数据更新」中立即更新，或导入行情来源文件。"
     # 最近一次组装调用。不在 SQL 里按日期切片：created_at 是 UTC，按上海日切片要绕一圈，
     # 而「最后一次跑成什么样」本来就是最近一条说了算。
     last = None if session.info.get("weknora_user_id") else session.scalars(

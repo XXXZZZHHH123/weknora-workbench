@@ -796,7 +796,7 @@ const scrollToRow = (index: number) => {
 }
 
 .mention-row.active .mention-row__icon.faq-icon {
-  color: var(--weknora-faq-color, #0052d9);
+  color: var(--weknora-faq-color, var(--td-brand-color));
 }
 
 .mention-row__name {
@@ -948,9 +948,9 @@ const scrollToRow = (index: number) => {
   color: var(--td-brand-color);
 }
 .mention-detail-content .detail-type-badge.faq {
-  border-color: rgba(0, 82, 217, 0.16);
-  background: rgba(0, 82, 217, 0.08);
-  color: var(--weknora-faq-color, #0052d9);
+  border-color: color-mix(in srgb, var(--weknora-faq-color, var(--td-brand-color)) 16%, transparent);
+  background: color-mix(in srgb, var(--weknora-faq-color, var(--td-brand-color)) 8%, transparent);
+  color: var(--weknora-faq-color, var(--td-brand-color));
 }
 .mention-detail-content .detail-desc {
   margin: 0 0 8px;

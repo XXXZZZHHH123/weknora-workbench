@@ -1,17 +1,26 @@
-/* 商品研究与主工作台共用 navy / blue 视觉语言；涨跌颜色保留市场惯例。 */
+/* 主平台、结构化数据与研究台共用冷青灰；涨跌颜色保留市场惯例。 */
 :root {
-  --bg: #f3f5f9;
+  --bg: #F4F7FA;
   --surface: #ffffff;
-  --surface-soft: #f8fafc;
-  --line: #e3e9f1;
-  --line-strong: #cbd5e2;
-  --text: #18345b;
-  --text-muted: #66758c;
-  --primary: #24477f;
-  --primary-soft: #edf3fc;
-  --primary-hover: #1b3866;
-  --blue: #236192;
-  --blue-soft: #ebf3f9;
+  --surface-soft: #F8FAFC;
+  --line: #D9E3EC;
+  --line-strong: #BDCADA;
+  --text: #203447;
+  --text-muted: #607286;
+  --primary: #126D82;
+  --primary-soft: #E9F3F6;
+  --primary-hover: #0F5D70;
+  --primary-active: #0C4D5D;
+  --on-primary: #fff;
+  --blue: var(--primary);
+  --blue-soft: var(--primary-soft);
+  --focus: color-mix(in srgb, var(--primary) 20%, transparent);
+  --control-radius: 8px;
+  --motion-fast: 140ms;
+  --motion-base: 180ms;
+  --ease-out: cubic-bezier(.2,.8,.2,1);
+  --success: #187454;
+  --success-soft: #eef8f1;
   --amber: #b45309;
   --amber-soft: #fef3c7;
   --alert: #b91c1c;
@@ -23,18 +32,20 @@
 }
 
 .dark {
-  --bg: #101827;
-  --surface: #172338;
-  --surface-soft: #1d2b42;
-  --line: #293a52;
-  --line-strong: #40536f;
-  --text: #edf3fb;
-  --text-muted: #98a9c2;
-  --primary: #7ba8ef;
-  --primary-soft: #213d65;
-  --primary-hover: #98bcf6;
-  --blue: #5d9fe3;
-  --blue-soft: #14273b;
+  --bg: #111C28;
+  --surface: #162534;
+  --surface-soft: #13202D;
+  --line: #324A5E;
+  --line-strong: #4B657A;
+  --text: #E7EFF7;
+  --text-muted: #A7B8C8;
+  --primary: #69C7DC;
+  --primary-soft: #203C4A;
+  --primary-hover: #85D9EB;
+  --primary-active: #A2E4F0;
+  --on-primary: #122735;
+  --success: #91d7b5;
+  --success-soft: #193b33;
   --amber: #f59e0b;
   --amber-soft: #38270b;
   --alert: #f87171;
@@ -138,7 +149,7 @@ input:focus, select:focus, textarea:focus {
 }
 .macro-filter-link.active {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--primary) 22%, transparent);
 }
 .macro-top-anchor { scroll-margin-top: 4.75rem; }
@@ -227,7 +238,6 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 .series-chart-modal { z-index: 70; }
 .series-chart-backdrop {
   background: rgba(4, 12, 8, 0.48);
-  backdrop-filter: blur(5px);
   cursor: default;
 }
 .series-chart-surface {
@@ -236,9 +246,8 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
   max-height: calc(100vh - 2rem);
   border: 1px solid color-mix(in srgb, var(--line-strong) 82%, transparent);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--surface) 91%, transparent);
+  background: var(--surface);
   box-shadow: 0 24px 70px rgba(5, 14, 9, 0.26);
-  backdrop-filter: blur(18px) saturate(125%);
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -302,9 +311,8 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
   padding: 0.55rem 0.7rem;
   border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  background: var(--surface);
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(10px);
   pointer-events: none;
 }
 .series-chart-stats > div {
@@ -368,7 +376,7 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 .research-nav { position: sticky; top: 0; z-index: 30; padding: 0 28px; background: var(--surface); border-bottom: 1px solid var(--line); box-shadow: 0 2px 8px rgba(19,39,70,.025); }
 .research-nav-main { display: flex; justify-content: space-between; align-items: center; min-height: 66px; gap: 20px; }
 .research-brand { display: flex; align-items: center; gap: 11px; text-decoration: none; flex-shrink: 0; }
-.research-product-mark { display: grid; place-items: center; width: 37px; height: 37px; border-radius: 10px; background: #18345b; color: #fff; font-size: 13px; font-weight: 700; letter-spacing: .08em; }
+.research-product-mark { display: grid; place-items: center; width: 37px; height: 37px; border-radius: 10px; background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 700; letter-spacing: .08em; }
 .research-brand strong { display: block; font-size: 15px; font-weight: 650; line-height: 1.35; }
 .research-brand small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 11px; letter-spacing: .07em; }
 .research-nav-tools { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
@@ -407,7 +415,7 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 #home-todos > div > a:hover { background: color-mix(in srgb,var(--primary) 15%,var(--surface)); }
 #brief-missing { padding: 22px; border-style: solid; background: var(--surface); }
 .research-button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 7px 13px; gap: 7px; border-radius: 7px; font-size: 12px; font-weight: 600; line-height: 1.5; border: 1px solid transparent; text-decoration: none; cursor: pointer; transition: background 150ms, border-color 150ms; }
-.research-button.primary { color: #fff; background: var(--primary); border-color: var(--primary); }
+.research-button.primary { color: var(--on-primary); background: var(--primary); border-color: var(--primary); }
 .research-button.primary:hover { background: var(--primary-hover); }
 .research-button.secondary { color: var(--text); background: var(--surface); border-color: var(--line-strong); }
 .research-button.secondary:hover { background: var(--surface-soft); border-color: var(--primary); }
@@ -442,7 +450,7 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 .legacy-source-banner { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 20px; border: 1px solid var(--line); background: var(--surface); border-radius: 10px; }
 .legacy-source-banner p { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
 .research-main .btn-primary, .research-main .btn-secondary { display: inline-flex; align-items: center; padding: 7px 13px; border: 1px solid var(--line-strong); border-radius: 7px; font-size: 12px; font-weight: 600; background: var(--surface); cursor: pointer; }
-.research-main .btn-primary { color: #fff; background: var(--primary); border-color: var(--primary); }
+.research-main .btn-primary { color: var(--on-primary); background: var(--primary); border-color: var(--primary); }
 .research-main .btn-secondary:hover { border-color: var(--primary); }
 .research-main > .space-y-5 > section { border-color: var(--line); background: var(--surface); border-radius: 12px; padding: 22px; }
 .research-body .macro-filter-bar { top: 118px; }
@@ -485,3 +493,25 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 
 /* Old URLs retain their DOM/API compatibility; Workbench uses the single native center. */
 .workbench-ingest-hidden { display: none !important; }
+
+/* Short color changes give feedback without animating geometry or blurred surfaces. */
+.research-body :is(button,input,select,textarea,.research-button,.nav-btn,.macro-filter-link) {
+  transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+.research-body :is(input[type="text"],input[type="search"],input[type="email"],input[type="password"],input[type="number"],select,textarea) {
+  border-radius: var(--control-radius);
+}
+.research-body :is(input,select,textarea):hover:not(:disabled) { border-color: var(--line-strong); }
+.research-body :is(input,select,textarea):focus-visible { border-color: var(--primary); box-shadow: 0 0 0 3px var(--focus); }
+.research-body :is(button,a)[class~="bg-[var(--primary)]"] { color: var(--on-primary); }
+#toast { color: var(--on-primary); }
+.research-body :is(button,a)[class~="bg-[var(--primary)]"]:active:not(:disabled),
+.research-button.primary:active:not(:disabled), .research-main .btn-primary:active:not(:disabled) { background: var(--primary-active); }
+.research-body button:disabled { cursor: not-allowed; }
+.research-body button[aria-busy="true"] { cursor: progress; }
+.date-picker-label:focus-within { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .research-body :is(button,a,summary,input,select,textarea,[data-drawer],.macro-trend-card,.macro-expand-icon,.chev,.strategy-card) { transition: none !important; }
+  .research-body :is(.strategy-card:hover,.macro-trend-card.is-interactive:hover,.macro-trend-card.is-interactive:focus-within) { transform: none; }
+}

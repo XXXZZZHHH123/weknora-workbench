@@ -58,6 +58,9 @@ export function itemPhase(item: UploadItem): ItemPhase {
       return 'cancelled'
   }
   switch (item.parseStatus) {
+    // stored is a successful original-file upload awaiting explicit structured
+    // parsing; there is no background parse to keep the panel open for.
+    case 'stored':
     // finalizing means the document is already searchable; summary / question /
     // graph enrichment keeps running in the background.
     case 'finalizing':

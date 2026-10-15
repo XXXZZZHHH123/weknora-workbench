@@ -7,10 +7,11 @@ import test from 'node:test'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import { createRenderer, h } from 'vue'
+import { isExcelFilename } from '../excelSource.ts'
 
 const require = createRequire(import.meta.url)
 const filename = fileURLToPath(new URL('./UploadConfirmDialog.vue', import.meta.url))
-const { descriptor } = parse(readFileSync(filename, 'utf8'), { filename })
+const { descriptor } = parse(readFileSync(process.env.UPLOAD_CONFIRM_TEST_SOURCE || filename, 'utf8'), { filename })
 const script = compileScript(descriptor, { id: 'upload-image-vector-test' }).content
   .replace('__expose();', '')
   .replace('return __returned__', '__expose(__returned__); return __returned__')
@@ -18,8 +19,9 @@ const compiled = ts.transpileModule(script, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText
 
-function fixture(kbInfo: any) {
+function fixture(kbInfo: any, extraProps: Record<string, any> = {}) {
   const exports: any = {}
+  const confirmations: any[] = [], warnings: string[] = []
   runInNewContext(compiled, {
     exports, console,
     require(name: string) {
@@ -29,6 +31,8 @@ function fixture(kbInfo: any) {
       if (name === '@/stores/editorResources') return { useEditorResourcesStore: () => ({}) }
       if (name === '@/stores/ui') return { useUIStore: () => ({}) }
       if (name === '@/api/knowledge-base') return { mergeImageActions: () => ({ ocr: { on: [], on_unobserved: true } }) }
+      if (name === '../excelSource') return { isExcelFilename }
+      if (name === 'tdesign-vue-next') return { MessagePlugin: { warning: (message: string) => warnings.push(message) } }
       return { default: {} }
     },
   })
@@ -39,10 +43,13 @@ function fixture(kbInfo: any) {
     parentNode: () => null, nextSibling: () => null,
   })
   let vm: any
-  const app = renderer.createApp({ setup: () => () => h(exports.default, { visible: false, kbInfo, ref: (value: any) => { vm = value } }) })
+  const app = renderer.createApp({ setup: () => () => h(exports.default, {
+    visible: false, kbInfo, ...extraProps,
+    onConfirm: (payload: any) => confirmations.push(payload), ref: (value: any) => { vm = value },
+  }) })
   app.mount({})
   vm.initFromKbInfo(kbInfo)
-  return { vm, dispose: () => app.unmount() }
+  return { vm, confirmations, warnings, dispose: () => app.unmount() }
 }
 
 for (const enabled of [false, true]) {
@@ -86,5 +93,40 @@ test('image capability warning uses the KB embedding model and tolerates shared 
     assert.equal(f.vm.embeddingTakesImages, false)
     f.vm.allModels = [{ id: 'embedding', capabilities: { input: ['text', 'image'] } }]
     assert.equal(f.vm.embeddingTakesImages, true)
+  } finally { f.dispose() }
+})
+
+test('an Excel-only upload keeps the original without image or parser processing overrides', () => {
+  const f = fixture({ image_processing_config: { image_vector_enabled: true } })
+  try {
+    f.vm.localFiles = [{ name: 'original.XLSX' }, { name: 'legacy.xls' }]
+    assert.equal(f.vm.hasExcelSources, true)
+    assert.equal(f.vm.sourceOnlyBatch, true)
+    f.vm.handleConfirm()
+    assert.equal(f.confirmations.length, 1)
+    assert.deepEqual(JSON.parse(JSON.stringify(f.confirmations[0].processConfig)), {})
+    assert.deepEqual(f.warnings, [])
+  } finally { f.dispose() }
+})
+
+test('a mixed Excel and text batch retains the main image processing options for the normal upload pipeline', () => {
+  const f = fixture({ image_processing_config: { image_vector_enabled: true } })
+  try {
+    f.vm.localFiles = [{ name: 'original.xlsx' }, { name: 'notes.txt' }]
+    assert.equal(f.vm.hasExcelSources, true)
+    assert.equal(f.vm.sourceOnlyBatch, false)
+    f.vm.handleConfirm()
+    assert.equal(f.confirmations.length, 1)
+    assert.equal(f.confirmations[0].processConfig.image_vector_enabled, true)
+  } finally { f.dispose() }
+})
+
+test('the native file-only confirmation rejects a URL without submitting the upload', () => {
+  const f = fixture({}, { allowURL: false })
+  try {
+    f.vm.localUrls = ['https://example.invalid/import']
+    f.vm.handleConfirm()
+    assert.equal(f.confirmations.length, 0)
+    assert.deepEqual(f.warnings, ['knowledgeBase.nativeFileSourcesOnly'])
   } finally { f.dispose() }
 })

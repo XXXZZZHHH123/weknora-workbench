@@ -8,6 +8,8 @@
 
 确认工作表时只解析新增或修改的表，未修改的工作表复用已有数据库；记录和质量问题通过磁盘流写入。保留原文件、公式缓存、单元格来源与不可变历史快照。默认显示当前业务文件，历史记录按新增工作表或映射变化展示，验收样例在业务界面隐藏；相同文件、相同映射复用已有版本，普通对话的默认结构化目录不包含开发验收样例。同名指标按原表列区分，不合并数据；AI 辅助沿用模型的思考设置并保留全部原列，见 [导入恢复说明](../docs/WORKSHEET_IMPORT_RECOVERY.md)。验证结果及边界见 [增量导入记录](../docs/INCREMENTAL_EXCEL_IMPORT.md)。
 
+快照发布前执行 DuckDB `CHECKPOINT` 并关闭写连接。既有快照若因任务中断留下索引 WAL，查询和增量复制会先在数据集独占文件锁内正常恢复并完成检查点，再重新打开只读连接；不手动删除 WAL。当前 Linux/WSL 环境的正常查询保持共享锁、只读权限和禁用外部文件访问，知识库授权及原件、映射、历史版本不变。存储恢复回归可运行 `python -m pytest tests/test_duckdb_recovery.py -q`，测试只使用隔离文件和本地子进程，不调用模型。
+
 ## 最新入口（2026-10-11）
 
 聊天现在由主模型理解本轮需求并自主组织步骤：解释已有结果时可直接回答；需要数据时按需检索真实字段、查询记录，或用 `analyze_table` 在隔离输入上执行只读 SQL。`resolve_fields` 保留为可选的语义绑定和常见查询工具，不再是每轮必经入口；拿到一个查询结果也不会立即结束整个回答。程序负责执行、权限、来源与数值检查，不按问题关键词决定意图。最终正文与原表计算依据分别展示，追问来源、日期和算法不会被上一轮结果卡片替换。
@@ -111,9 +113,14 @@ uv pip install --python .venv/bin/python -e '.[test]'
 .venv/bin/python -m pytest -q
 COTTON_ACCEPTANCE=1 .venv/bin/python -m pytest tests/test_acceptance.py -q
 .venv/bin/python tests/test_acceptance.py
+SHEET_REVIEW_BROWSER=/path/to/chromium node tests/knowledge-scope-ui.cjs
 ```
 
 仅在准备好进行少量真实模型调用时运行 scripts/test_live_chat.py；每次使用新的输出目录，不覆盖旧证据。导入和上述工具测试不调用模型。
+
+知识库结构化页面通过父窗 `structured-auth` 的 `knowledgeBaseId` 发送 `X-Knowledge-Base-ID`，每次请求向 WeKnora 核验访问权限。数据、原件、导入记录和编辑草稿按知识库隔离；共享知识库使用其所属空间的存储。未携带知识库编号的旧表格分析继续使用原空间目录，既有 Excel 不自动迁移或分配到某个知识库。知识库预览与资料中心的旧页面链接兼容跳转到知识库文件管理，没有库编号时进入知识库列表。浏览器验收使用 Node 24、本地 Chromium 和隔离 HTTP 夹具，验证视图切换保留原表编辑状态、跨库草稿隔离及旧键兼容，不使用真实账号或模型。
+
+知识库的文件、文件夹上传会先保存 Excel 原件（`.xlsx`、`.xls`），显示“原件已保存”，不进入文档解析或模型队列。点击 `.xlsx` 的“结构化解析”后，`POST /api/import-knowledge` 接收 `{"source_knowledge_id":"原件真实编号"}`，沿用当前 Bearer 或已核验登录会话、空间和知识库写权限，从配置的 `WEKNORA_API_URL` 读取受权元数据和下载接口；校验同库、文件大小及 MD5，复用本地扫描与工作表确认流程。源编号和指纹持久绑定，相同原件的进行中任务、已完成导入均复用；原件校验失败会拒绝复用。上限同时受结构化服务 100 MB 和原生 `MAX_FILE_SIZE_MB` 限制，`.xls` 需先另存为 `.xlsx`，CSV 和非 Excel 保持既有文档解析流程。旧 URL、连接器接口不在此原件保存流程内。桥接隔离回归可运行 `python -m pytest tests/test_native_knowledge_import.py -q`，不调用真实模型。
 
 ## 后续开发顺序
 

@@ -59,6 +59,37 @@ def test_sensitive_pages_api_and_download_require_identity(embedded):
     assert not (tmp / "workspaces").exists()
 
 
+@pytest.mark.parametrize('token,tenant,readonly', [('alice', 101, False), ('viewer', 102, True)])
+def test_empty_overview_keeps_workspace_prefix_and_member_role(embedded, token, tenant, readonly):
+    client, _, _ = embedded
+    assert login(client, token, tenant).status_code == 200
+    response = client.get('/research/sn')
+    assert response.status_code == 200
+    assert 'id="market-empty"' in response.text
+    assert 'href="/research/files"' in response.text
+    assert 'href="/research/sn/indicators"' in response.text
+    assert 'src="/research/static/refresh.js' in response.text
+    control = response.text.split('id="refresh-now"', 1)[1].split('>', 1)[0]
+    assert ('disabled' in control) is readonly
+    if readonly:
+        assert client.post('/research/api/sn/refresh/run', headers={'Origin': 'http://testserver'}).status_code == 403
+
+
+def test_macro_catalog_accepts_verified_bearer_without_research_cookie(embedded):
+    client, _, tmp = embedded
+    path = '/research/api/sn/indicators/catalog?scope=macro'
+    assert client.get(path).status_code == 401
+    headers = {'Authorization': 'Bearer viewer', 'X-Tenant-ID': '102', 'X-Research-User': 'viewer-id'}
+    response = client.get(path, headers=headers)
+    assert response.status_code == 200, response.text
+    assert all(row['macro'] for row in response.json()['indicators'])
+    assert client.cookies.get(auth.COOKIE) is None
+    assert client.get(path, headers={**headers, 'X-Tenant-ID': '101'}).status_code == 403
+    assert client.get(path, headers={**headers, 'X-Research-User': 'alice-id'}).status_code == 403
+    assert client.get('/research/api/sn/strategies', headers=headers).status_code == 401
+    assert not (tmp / 'workspaces' / '101').exists()
+
+
 def test_exchange_origin_membership_cookie_and_revocation(embedded):
     client, identities, tmp = embedded
     assert client.post("/research/auth/session", headers={"Authorization": "Bearer alice"}).status_code == 403

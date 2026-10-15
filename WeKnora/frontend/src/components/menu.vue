@@ -56,8 +56,8 @@
             :value="uiStore.sidebarDisplayWidth" :min="SIDEBAR_COLLAPSED_WIDTH" :max="SIDEBAR_MAX_WIDTH"
             @start="startSidebarResize" @resize="resizeSidebar" @end="uiStore.sidebarResizing = false" />
 
-        <!-- 上半部分：新对话吸顶 + 知识库/智能体/共享空间/历史会话随滚动一起滚走 -->
-        <div class="menu_top" ref="scrollContainer" @scroll="handleScroll">
+        <!-- 全局导航只在所属资源下展开一级预览。 -->
+        <nav class="menu_top" aria-label="工作区导航">
             <!-- 全局搜索入口：点击打开命令面板（⌘K）。展开态移至顶部 logo_row 的图标按钮；
                  折叠态在此处保留为图标项 + 深色 tooltip。 -->
             <div class="menu_box menu_box--cmdk" v-if="uiStore.sidebarCollapsed">
@@ -77,111 +77,116 @@
                     </div>
                 </t-tooltip>
             </div>
-            <div class="menu_box" :class="{ 'menu_box--sticky': item.children && !uiStore.sidebarCollapsed }"
-                v-for="(item, index) in topMenuItems" :key="index">
-                <t-tooltip :content="item.title" placement="right" :disabled="!uiStore.sidebarCollapsed">
-                    <div @click="handleMenuClick(item.path)" @mouseenter="mouseenteMenu(item.path)"
-                        @mouseleave="mouseleaveMenu(item.path)" :data-guide="`nav-${item.path}`"
-                        :class="['menu_item', item.childrenPath && item.childrenPath == currentpath ? 'menu_item_c_active' : isMenuItemActive(item.path) ? 'menu_item_active' : '']">
-                        <div class="menu_item-box">
-                            <div class="menu_icon">
-                                <t-icon class="icon" :name="menuIconName(item.path)" size="18px" />
-                            </div>
-                            <template v-if="!uiStore.sidebarCollapsed">
-                                <span class="menu_title" :title="item.title">{{ item.title }}</span>
-                                <span v-if="item.path === 'organizations' && orgStore.totalPendingJoinRequestCount > 0"
-                                    class="menu-pending-badge"
-                                    :title="t('organization.settings.pendingJoinRequestsBadge')">{{
-                                        orgStore.totalPendingJoinRequestCount }}</span>
-                                <span v-if="item.path === 'toolbox' && toolboxPreview.length" class="menu-toolbox-stack"
-                                    :title="toolboxPreview.map((tool) => tool.key === 'browserconnection' && browserStackStatus
-                                        ? `${t(tool.title)} (${t(`localBrowser.${browserStackStatus}`)})` : t(tool.title)).join(' · ')">
-                                    <span v-for="tool in toolboxPreview" :key="tool.key" class="menu-toolbox-stack__item">
-                                        <template v-if="tool.key === 'browserconnection'">
-                                            <BrowserIcon width="12" height="12" />
-                                            <i v-if="browserStackStatus" class="menu-toolbox-stack__status"
-                                                :class="`is-${browserStackStatus}`" aria-hidden="true" />
-                                        </template>
-                                        <t-icon v-else :name="tool.icon" size="12px" />
-                                    </span>
-                                </span>
-                            </template>
+            <WorkspaceNavigationNode title="问答助手" icon="chat" guide="nav-creatChat"
+                :collapsed="uiStore.sidebarCollapsed" :active="isAssistantActive" expandable
+                :expanded="expandedSections.assistant" @navigate="router.push('/platform/creatChat')"
+                @toggle="toggleSection('assistant')">
+                <WorkspaceNavigationNode title="项目" icon="folder" :depth="1" expandable
+                    :expanded="expandedSections.projects" :active="route.name === 'assistantProjects'"
+                    @navigate="router.push('/platform/projects')" @toggle="toggleSection('projects')">
+                    <div v-if="workspaceLoading && !navigation.projects.length" class="workspace-nav-status"><t-loading size="small" /></div>
+                    <button v-else-if="workspaceErrors.projects" class="workspace-nav-retry" @click="refreshWorkspaceLists">项目加载失败，点击重试</button>
+                    <div v-else-if="!navigation.projects.length" class="workspace-nav-status">暂无项目</div>
+                    <WorkspaceNavigationNode v-for="item in navigation.projects" :key="item.id" :title="item.title"
+                        :depth="2" :active="route.params.projectId === item.id" @navigate="router.push(item.path)" />
+                </WorkspaceNavigationNode>
+                <WorkspaceNavigationNode title="历史对话" icon="history" :depth="1" expandable
+                    :expanded="expandedSections.history" @navigate="toggleSection('history')" @toggle="toggleSection('history')">
+                    <!-- 历史会话：按来源筛选后统一按日期分组展示 -->
+                    <div class="submenu workspace-history" ref="scrollContainer" @scroll="handleScroll">
+                        <button v-if="sessionLookupFailedId" class="workspace-nav-retry" @click="syncActiveBucketFromChat(sessionLookupFailedId)">当前对话未载入列表，点击重试</button>
+                        <!-- Stable, always-mounted source filter: reserving its row here
+                             (instead of embedding it in the first date group, which
+                             appears/disappears while a bucket loads) prevents the
+                             top-right control from jumping when switching session type. -->
+                        <div v-if="showSessionSourceFilter && !batchMode" class="session-list-scope-header">
+                            <SessionSourceFilter inline :emphasized="sessionScopeFilterPinned" :sources="sessionSourceOptions"
+                                :current="activeSessionBucketKey" @select="switchSessionBucket" />
                         </div>
-                    </div>
-                </t-tooltip>
-            </div>
-
-            <!-- 历史会话：按来源筛选后统一按日期分组展示 -->
-            <div class="submenu" v-if="!uiStore.sidebarCollapsed">
-                <!-- Stable, always-mounted source filter: reserving its row here
-                     (instead of embedding it in the first date group, which
-                     appears/disappears while a bucket loads) prevents the
-                     top-right control from jumping when switching session type. -->
-                <div v-if="showSessionSourceFilter && !batchMode" class="session-list-scope-header">
-                    <SessionSourceFilter inline :emphasized="sessionScopeFilterPinned" :sources="sessionSourceOptions"
-                        :current="activeSessionBucketKey" @select="switchSessionBucket" />
-                </div>
-                <template v-if="sessionListBooting && !hasAnySession">
-                    <div v-for="n in 4" :key="'skel-' + n" class="submenu_item_p session-chat-row">
-                        <div class="session-list-row session-list-row--flat">
-                            <t-skeleton animation="gradient" class="session-list-row__body"
-                                :row-col="[{ width: '100%', height: '14px' }]" />
-                        </div>
-                    </div>
-                </template>
-
-                <div v-else class="session-filtered-list">
-                    <template
-                        v-if="activeBucket?.loading && !activeBucket.loaded && filteredGroupedSessions.length === 0">
-                        <div v-for="n in 4" :key="'bucket-skel-' + n" class="submenu_item_p session-chat-row">
-                            <div class="session-list-row session-list-row--flat">
-                                <t-skeleton animation="gradient" class="session-list-row__body"
-                                    :row-col="[{ width: '100%', height: '14px' }]" />
-                            </div>
-                        </div>
-                    </template>
-                    <template v-else-if="activeBucket?.loaded && filteredGroupedSessions.length === 0">
-                        <div class="submenu_empty">{{ t('menu.noSessions') }}</div>
-                    </template>
-                    <template v-else>
-                        <template v-for="group in filteredGroupedSessions" :key="group.key">
-                            <div v-if="group.label" class="timeline_header session-list-row session-list-row--flat">
-                                <span class="session-list-row__body">
-                                    <span class="timeline_header-label">{{ group.label }}</span>
-                                </span>
-                            </div>
-                            <div v-for="subitem in group.items" :key="subitem.id"
-                                class="submenu_item_p session-chat-row" :data-session-id="subitem.id" :class="{
-                                    'session-chat-row--active': !batchMode && subitem.path === currentSecondpath,
-                                    'session-chat-row--selected': batchMode && batchSelectedIds.includes(subitem.id),
-                                    'session-chat-row--revealed': revealedSessionId === subitem.id,
-                                }">
+                        <template v-if="sessionListBooting && !hasAnySession">
+                            <div v-for="n in 4" :key="'skel-' + n" class="submenu_item_p session-chat-row">
                                 <div class="session-list-row session-list-row--flat">
-                                    <div class="session-list-row__body">
-                                        <SessionSidebarRow :item="subitem" :batch-mode="batchMode"
-                                            :running="Boolean(sessionActivityEntries[subitem.id])"
-                                            :unread="Boolean(sessionUnread[subitem.id])"
-                                            :active-path="currentSecondpath" :selected-ids="batchSelectedIds"
-                                            :menu-options="buildSessionMenuOptions(subitem)"
-                                            @navigate="gotopage(subitem.path)"
-                                            @toggle-select="toggleBatchSelect(subitem.id)"
-                                            @menu-click="handleSessionMenuClick($event, subitem)"
-                                            @rename-submit="renameSessionTitle(subitem, $event.title)"
-                                            @hover-in="mouseenteBotDownr(subitem.id)" @hover-out="mouseleaveBotDown" />
-                                    </div>
+                                    <t-skeleton animation="gradient" class="session-list-row__body"
+                                        :row-col="[{ width: '100%', height: '14px' }]" />
                                 </div>
                             </div>
                         </template>
-                        <div v-if="activeBucket?.loading && filteredGroupedSessions.length > 0"
-                            class="session-list-loading session-list-row session-list-row--flat">
-                            <span class="session-list-row__body">
-                                <t-loading size="small" />
-                            </span>
+
+                        <div v-else class="session-filtered-list">
+                            <template
+                                v-if="activeBucket?.loading && !activeBucket.loaded && filteredGroupedSessions.length === 0">
+                                <div v-for="n in 4" :key="'bucket-skel-' + n" class="submenu_item_p session-chat-row">
+                                    <div class="session-list-row session-list-row--flat">
+                                        <t-skeleton animation="gradient" class="session-list-row__body"
+                                            :row-col="[{ width: '100%', height: '14px' }]" />
+                                    </div>
+                                </div>
+                            </template>
+                            <template v-else-if="activeBucket?.loaded && filteredGroupedSessions.length === 0">
+                                <div class="submenu_empty">{{ t('menu.noSessions') }}</div>
+                            </template>
+                            <template v-else>
+                                <template v-for="group in filteredGroupedSessions" :key="group.key">
+                                    <div v-if="group.label" class="timeline_header session-list-row session-list-row--flat">
+                                        <span class="session-list-row__body">
+                                            <span class="timeline_header-label">{{ group.label }}</span>
+                                        </span>
+                                    </div>
+                                    <div v-for="subitem in group.items" :key="subitem.id"
+                                        class="submenu_item_p session-chat-row" data-nav-depth="2" :data-session-id="subitem.id" :class="{
+                                            'session-chat-row--active': !batchMode && subitem.path === currentSecondpath,
+                                            'session-chat-row--selected': batchMode && batchSelectedIds.includes(subitem.id),
+                                            'session-chat-row--revealed': revealedSessionId === subitem.id,
+                                        }">
+                                        <div class="session-list-row session-list-row--flat">
+                                            <div class="session-list-row__body">
+                                                <SessionSidebarRow :item="subitem" :batch-mode="batchMode"
+                                                    :running="Boolean(sessionActivityEntries[subitem.id])"
+                                                    :unread="Boolean(sessionUnread[subitem.id])"
+                                                    :active-path="currentSecondpath" :selected-ids="batchSelectedIds"
+                                                    :menu-options="buildSessionMenuOptions(subitem)"
+                                                    @navigate="gotopage(subitem.path)"
+                                                    @toggle-select="toggleBatchSelect(subitem.id)"
+                                                    @menu-click="handleSessionMenuClick($event, subitem)"
+                                                    @rename-submit="renameSessionTitle(subitem, $event.title)"
+                                                    @hover-in="mouseenteBotDownr(subitem.id)" @hover-out="mouseleaveBotDown" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                                <div v-if="activeBucket?.loading && filteredGroupedSessions.length > 0"
+                                    class="session-list-loading session-list-row session-list-row--flat">
+                                    <span class="session-list-row__body">
+                                        <t-loading size="small" />
+                                    </span>
+                                </div>
+                            </template>
                         </div>
-                    </template>
-                </div>
-            </div>
-        </div>
+                    </div>
+                </WorkspaceNavigationNode>
+            </WorkspaceNavigationNode>
+            <WorkspaceNavigationNode title="知识库" icon="folder" guide="nav-knowledge-bases"
+                :collapsed="uiStore.sidebarCollapsed" :active="isKnowledgeBaseActive" expandable
+                :expanded="expandedSections.knowledgeBases" @navigate="router.push('/platform/knowledge-bases')"
+                @toggle="toggleSection('knowledgeBases')">
+                <template #actions><DefaultKnowledgeBaseInit v-if="!uiStore.sidebarCollapsed" @identified="identifyDefaultKnowledgeBase" /></template>
+                <div v-if="knowledgeBasesLoading && !navigation.knowledgeBases.length" class="workspace-nav-status"><t-loading size="small" /></div>
+                <button v-else-if="knowledgeBasesError" class="workspace-nav-retry" @click="refreshKnowledgeBases">知识库加载失败，点击重试</button>
+                <div v-else-if="!navigation.knowledgeBases.length" class="workspace-nav-status">暂无知识库</div>
+                <WorkspaceNavigationNode v-for="item in navigation.knowledgeBases" :key="item.id" :title="item.title"
+                    :depth="1" :active="route.params.kbId === item.id" @navigate="router.push(item.path)" />
+            </WorkspaceNavigationNode>
+            <WorkspaceNavigationNode title="研究工作台" icon="chart-bar" guide="nav-commodity-research"
+                :collapsed="uiStore.sidebarCollapsed" :active="isWorkbenchActive" expandable
+                :expanded="expandedSections.workbenches" @navigate="router.push('/platform/research-workbenches')"
+                @toggle="toggleSection('workbenches')">
+                <div v-if="workspaceLoading && !navigation.workbenches.length" class="workspace-nav-status"><t-loading size="small" /></div>
+                <button v-else-if="workspaceErrors.workbenches" class="workspace-nav-retry" @click="refreshWorkspaceLists">工作台加载失败，点击重试</button>
+                <div v-else-if="!navigation.workbenches.length" class="workspace-nav-status">暂无研究工作台</div>
+                <WorkspaceNavigationNode v-for="item in navigation.workbenches" :key="item.id" :title="item.title"
+                    :depth="1" :active="route.params.workbenchId === item.id" @navigate="router.push(item.path)" />
+            </WorkspaceNavigationNode>
+        </nav>
 
         <!-- 批量管理底部操作条：固定在侧栏底部、用户头像上方 -->
         <div v-if="batchMode && !uiStore.sidebarCollapsed" class="batch-inline-footer">
@@ -212,12 +217,19 @@
 
 <script setup lang="ts">
 import { storeToRefs } from 'pinia';
+import DefaultKnowledgeBaseInit from '@/views/workspaces/DefaultKnowledgeBaseInit.vue';
 import { onMounted, onUnmounted, watch, computed, ref, h, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { getSessionsList, batchDelSessions, deleteAllSessions, getSession } from "@/api/chat/index";
 import { useChatResourcesStore } from '@/stores/chatResources';
 import { listAllIMChannels } from '@/api/agent/index';
 import SessionSidebarRow from './SessionSidebarRow.vue';
+import WorkspaceNavigationNode from './WorkspaceNavigationNode.vue';
+import { buildWorkspaceNavigation } from './workspaceNavigation';
+import { workspaceKnowledgeBases } from '@/views/workspaces/workspaceKnowledgeBases';
+import { workspaceIdentity } from '@/views/workspaces/workspaceForm';
+import { lookupSidebarSession } from './sidebarSessionLookup';
+import { listAssistantProjects, listResearchWorkbenches, type AssistantProject, type ResearchWorkbench } from '@/api/workspaces';
 import PanelResizeHandle from './PanelResizeHandle.vue';
 import { SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from '@/utils/sidebarWidth';
 import {
@@ -311,6 +323,7 @@ const usemenuStore = useMenuStore();
 const sessionActivity = useSessionActivityStore();
 const { entries: sessionActivityEntries, unread: sessionUnread } = storeToRefs(sessionActivity);
 let sessionActivityTimer: ReturnType<typeof setInterval> | undefined;
+let sidebarDisposed = false;
 const authStore = useAuthStore();
 const deploymentCapabilities = useDeploymentCapabilitiesStore();
 const toolboxPreview = computed(() => TOOLBOX_ITEMS.filter((item) => canAccessToolboxSection(item.key, {
@@ -345,6 +358,7 @@ const sessionBuckets = ref<Record<string, SidebarSessionBucket>>({});
 const bucketOrder = ref<string[]>([]);
 let bucketRequestToken = 0;
 const sessionListBooting = ref(false);
+const sessionLookupFailedId = ref('');
 const currentSecondpath = ref('');
 const scrollContainer = ref<HTMLElement | null>(null);
 const imPlatforms = ref<string[]>([]);
@@ -378,7 +392,7 @@ const hasAnySession = computed(() =>
     Object.values(sessionBuckets.value).some((bucket) => bucket.items.length > 0),
 );
 type MenuItem = { title: string; icon: string; path: string; childrenPath?: string; children?: any[] };
-const { menuArr, visibleMenuArr } = storeToRefs(usemenuStore);
+const { menuArr } = storeToRefs(usemenuStore);
 let activeSubmenu = ref<string>('');
 const isLiteEdition = ref(false);
 
@@ -434,54 +448,65 @@ const isInAgentList = computed<boolean>(() => route.name === 'agentList');
 // 是否在组织列表页面
 const isInOrganizationList = computed<boolean>(() => route.name === 'organizationList');
 
-// 统一的菜单项激活状态判断
-const isMenuItemActive = (itemPath: string): boolean => {
-    const currentRoute = route.name;
+const expandedSections = ref({ assistant: true, projects: true, history: true, knowledgeBases: true, workbenches: true });
+type NavigationSection = keyof typeof expandedSections.value;
+const projects = ref<AssistantProject[]>([]);
+const workbenches = ref<ResearchWorkbench[]>([]);
+const workspaceLoading = ref(false);
+const workspaceErrors = ref({ projects: false, workbenches: false });
+const knowledgeBasesLoading = ref(false);
+const knowledgeBasesError = ref(false);
+let workspaceRequestGeneration = 0;
+let knowledgeBaseRequestGeneration = 0;
+const defaultMacroKnowledgeBaseId = ref('');
+const sharedKnowledgeBaseIdentity = ref('');
+const knowledgeBaseIdentity = computed(() => workspaceIdentity(authStore.selectedTenantId ?? authStore.tenant?.id, authStore.user?.id));
+const navigation = computed(() => buildWorkspaceNavigation(projects.value,
+    workspaceKnowledgeBases(chatResources.rawKnowledgeBases, orgStore.sharedKnowledgeBases, knowledgeBaseIdentity.value, sharedKnowledgeBaseIdentity.value)
+        .map(kb => ({ ...kb, name: kb.id === defaultMacroKnowledgeBaseId.value ? `${kb.name} · Default` : kb.name })), workbenches.value));
+function identifyDefaultKnowledgeBase(id: string) {
+    defaultMacroKnowledgeBaseId.value = id;
+    if (id) void refreshKnowledgeBases();
+}
+const isAssistantActive = computed(() => ['globalCreatChat', 'chat', 'assistantProjects', 'assistantProjectPreview'].includes(String(route.name)));
+const isKnowledgeBaseActive = computed(() => String(route.name).startsWith('knowledgeBase') || route.name === 'kbCreatChat');
+const isWorkbenchActive = computed(() => String(route.name).startsWith('researchWorkbench') || route.name === 'commodityResearch');
 
-    switch (itemPath) {
-        case 'materials':
-            return currentRoute === 'materialsCenter';
-        case 'structured-data':
-            return currentRoute === 'structuredData';
-        case 'commodity-research':
-            return currentRoute === 'commodityResearch';
-        case 'knowledge-bases':
-            return currentRoute === 'knowledgeBaseList' ||
-                currentRoute === 'knowledgeBaseDetail' ||
-                currentRoute === 'knowledgeBaseSettings';
-        case 'agents':
-            return currentRoute === 'agentList';
-        case 'toolbox':
-            return currentRoute === 'toolbox';
-        case 'artifacts':
-            return currentRoute === 'artifactLibrary';
-        case 'organizations':
-            return currentRoute === 'organizationList';
-        case 'creatChat':
-            return currentRoute === 'kbCreatChat' || currentRoute === 'globalCreatChat';
-        case 'settings':
-            return currentRoute === 'settings';
-        default:
-            return itemPath === currentpath.value;
+async function refreshWorkspaceLists() {
+    const generation = ++workspaceRequestGeneration;
+    workspaceLoading.value = true;
+    workspaceErrors.value = { projects: false, workbenches: false };
+    const results = await Promise.allSettled([listAssistantProjects(), listResearchWorkbenches()]);
+    if (generation !== workspaceRequestGeneration) return;
+    projects.value = results[0].status === 'fulfilled' ? results[0].value.data ?? [] : [];
+    workbenches.value = results[1].status === 'fulfilled' ? results[1].value.data ?? [] : [];
+    workspaceErrors.value = { projects: results[0].status === 'rejected', workbenches: results[1].status === 'rejected' };
+    workspaceLoading.value = false;
+}
+
+async function refreshKnowledgeBases() {
+    const generation = ++knowledgeBaseRequestGeneration;
+    const identity = knowledgeBaseIdentity.value;
+    knowledgeBasesLoading.value = true;
+    knowledgeBasesError.value = false;
+    try {
+        await chatResources.ensureKnowledgeBases();
+        if (generation !== knowledgeBaseRequestGeneration || identity !== knowledgeBaseIdentity.value) return;
+        await orgStore.fetchSharedKnowledgeBases({ force: sharedKnowledgeBaseIdentity.value !== identity });
+        if (generation === knowledgeBaseRequestGeneration && identity === knowledgeBaseIdentity.value) sharedKnowledgeBaseIdentity.value = identity;
+    } catch {
+        if (generation === knowledgeBaseRequestGeneration) knowledgeBasesError.value = true;
+    } finally {
+        if (generation === knowledgeBaseRequestGeneration) knowledgeBasesLoading.value = false;
     }
-};
+}
 
-// 分离上下两部分菜单（使用 visibleMenuArr 以便 lite 模式过滤 logout）
-const TOP_MENU_PATHS = new Set(['creatChat', 'materials', 'knowledge-bases', 'structured-data', 'commodity-research', 'artifacts', 'agents', 'toolbox', 'organizations']);
-
-const menuIconName = (path: string) => ({
-    creatChat: 'chat', materials: 'file-add', 'knowledge-bases': 'folder',
-    'structured-data': 'table', 'commodity-research': 'chart-bar', artifacts: 'file',
-    agents: 'user', toolbox: 'tools', organizations: 'usergroup', settings: 'setting', logout: 'logout',
-} as Record<string, string>)[path] || 'folder';
-
-const topMenuItems = computed<MenuItem[]>(() => {
-    return (visibleMenuArr.value as unknown as MenuItem[]).filter((item: MenuItem) => TOP_MENU_PATHS.has(item.path));
-});
-
-const bottomMenuItems = computed<MenuItem[]>(() => {
-    return (visibleMenuArr.value as unknown as MenuItem[]).filter((item: MenuItem) => !TOP_MENU_PATHS.has(item.path));
-});
+function toggleSection(section: NavigationSection) {
+    expandedSections.value[section] = !expandedSections.value[section];
+    if ((section === 'assistant' || section === 'history') && expandedSections.value[section]) {
+        void ensureBucketFillsViewport(activeSessionBucketKey.value);
+    }
+}
 
 // 当前知识库信息
 const currentKbName = ref<string>('')
@@ -562,6 +587,7 @@ const refreshSessionListScrollability = async () => {
 
 /** 列表未撑满滚动区时自动续页（按当前可见 DOM 测量，避免折叠导致误判） */
 const ensureBucketFillsViewport = async (key: string) => {
+    if (uiStore.sidebarCollapsed || !expandedSections.value.assistant || !expandedSections.value.history) return;
     const MAX_ITERATIONS = 20;
     for (let i = 0; i < MAX_ITERATIONS; i++) {
         await nextTick();
@@ -797,23 +823,39 @@ const menuChildToSessionRow = (item: Record<string, unknown>): SessionForGroupin
 const sessionExistsInBuckets = (sessionId: string) =>
     Object.values(sessionBuckets.value).some((bucket) => bucket.items.some((row) => row.id === sessionId));
 
-/** 创建会话后 menuStore 已乐观写入，但列表实际渲染自 sessionBuckets，需补齐。 */
-const ensureSessionInSidebar = (sessionId: string) => {
+const pendingSessionLookups = new Map<string, Promise<void>>();
+const sessionLookupIdentity = () => [authStore.token, authStore.user?.id, authStore.selectedTenantId ?? authStore.tenant?.id].join(':');
+
+/** Other entry points can create sessions before the global composer has populated menuStore. */
+const ensureSessionInSidebar = async (sessionId: string): Promise<void> => {
     if (!sessionId || sessionExistsInBuckets(sessionId)) return;
-
-    const web = sessionBuckets.value.web;
-    if (!web) return;
-
-    const chatMenu = (menuArr.value as unknown as MenuItem[]).find((item) => item.path === 'creatChat');
-    const fromStore = (chatMenu?.children as Record<string, unknown>[] | undefined)
-        ?.find((item) => item.id === sessionId);
-    if (!fromStore) return;
-
-    sessionBuckets.value = {
-        ...sessionBuckets.value,
-        web: prependSessionToWebBucket(web, menuChildToSessionRow(fromStore)),
-    };
-    total.value = flattenBucketItems(sessionBuckets.value, bucketOrder.value).length;
+    const existing = pendingSessionLookups.get(sessionId);
+    if (existing) return existing;
+    const token = bucketRequestToken;
+    const identity = sessionLookupIdentity();
+    const task = (async () => {
+        const chatMenu = (menuArr.value as unknown as MenuItem[]).find((item) => item.path === 'creatChat');
+        const cached = (chatMenu?.children as Record<string, unknown>[] | undefined)?.map(menuChildToSessionRow) ?? [];
+        const row = await lookupSidebarSession(sessionId, cached, getSession);
+        if (!row || token !== bucketRequestToken || identity !== sessionLookupIdentity()) return;
+        // Channels retain their own source-filtered pagination and access rules.
+        if (originGroupKey(resolveSessionOrigin(row)) !== DEFAULT_SESSION_BUCKET_KEY) return;
+        const web = sessionBuckets.value.web;
+        if (!web) return;
+        const nextWeb = prependSessionToWebBucket(web, mapSessionRow(row));
+        if (!cached.some((item) => item.id === sessionId)) {
+            // A detail lookup may return an older, unpaged chat already counted by the server.
+            nextWeb.total = Math.max(web.total, nextWeb.items.length);
+        }
+        sessionBuckets.value = {
+            ...sessionBuckets.value,
+            web: nextWeb,
+        };
+        syncMenuStoreFromBuckets();
+    })();
+    pendingSessionLookups.set(sessionId, task);
+    try { await task; }
+    finally { if (pendingSessionLookups.get(sessionId) === task) pendingSessionLookups.delete(sessionId); }
 };
 
 const rebuildBucketDefinitions = () => buildBucketDefinitions(
@@ -898,6 +940,14 @@ const switchSessionBucket = async (key: string) => {
 
 const syncActiveBucketFromChat = async (sessionId: string | undefined) => {
     if (!sessionId) return;
+
+    try { await ensureSessionInSidebar(sessionId); }
+    catch {
+        if (route.params.chatid === sessionId) sessionLookupFailedId.value = sessionId;
+        return;
+    }
+    if (route.params.chatid !== sessionId) return;
+    sessionLookupFailedId.value = '';
 
     let bucketKey = findSessionBucketKey(sessionBuckets.value, sessionId);
     if (!bucketKey) {
@@ -1055,6 +1105,9 @@ onMounted(async () => {
     }
 
     window.addEventListener(SESSION_MUTATION_EVENT, handleSessionMutation);
+    window.addEventListener('weknora:workspaces-changed', refreshWorkspaceLists);
+    void refreshWorkspaceLists();
+    void refreshKnowledgeBases();
 
     isLiteEdition.value = authStore.isLiteMode
     editorResources.ensureSystemInfo().then(() => {
@@ -1065,12 +1118,14 @@ onMounted(async () => {
     }).catch(() => { })
 
     await loadCurrentKbInfo((route.params as any)?.kbId as string)
+    if (sidebarDisposed) return;
 
     await loadSessionOriginMeta();
+    if (sidebarDisposed) return;
     await getMessageList();
+    if (sidebarDisposed) return;
     const initialChatId = route.params.chatid as string | undefined;
     if (initialChatId) {
-        ensureSessionInSidebar(initialChatId);
         await syncActiveBucketFromChat(initialChatId);
     }
     // 若组织列表未加载则拉取一次，用于侧栏「待审批」角标
@@ -1080,10 +1135,16 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+    sidebarDisposed = true;
     clearInterval(sessionActivityTimer);
     clearTimeout(forkRevealTimer);
     sessionActivity.clear();
     window.removeEventListener(SESSION_MUTATION_EVENT, handleSessionMutation);
+    window.removeEventListener('weknora:workspaces-changed', refreshWorkspaceLists);
+    workspaceRequestGeneration++;
+    knowledgeBaseRequestGeneration++;
+    bucketRequestToken++;
+    pendingSessionLookups.clear();
 });
 
 watch([() => route.name, () => route.params], (newvalue, oldvalue) => {
@@ -1099,7 +1160,6 @@ watch([() => route.name, () => route.params], (newvalue, oldvalue) => {
     // 侧栏实际渲染 sessionBuckets，需按 buckets 判断是否缺失，不能把 menuStore 当真相来源。
     const newChatId = (newvalue[1] as any)?.chatid as string | undefined;
     if (nameStr === 'chat' && newChatId) {
-        ensureSessionInSidebar(newChatId);
         void syncActiveBucketFromChat(newChatId);
     }
 
@@ -1110,28 +1170,27 @@ watch([() => route.name, () => route.params], (newvalue, oldvalue) => {
         loadCurrentKbInfo((newvalue[1] as any)?.kbId as string);
     }
 });
-const handleMenuClick = async (path: string) => {
-    if (path === 'knowledge-bases') {
-        // 知识库菜单项：如果在知识库内部，跳转到当前知识库文件页；否则跳转到知识库列表
-        const kbId = await getCurrentKbId()
-        if (kbId) {
-            router.push(`/platform/knowledge-bases/${kbId}`)
-        } else {
-            router.push('/platform/knowledge-bases')
-        }
-    } else if (path === 'agents') {
-        router.push('/platform/agents')
-    } else if (path === 'organizations') {
-        // 组织菜单项：跳转到组织列表
-        router.push('/platform/organizations')
-    } else if (path === 'settings') {
-        // 设置菜单项：打开设置弹窗并跳转路由
-        uiStore.openSettings()
-        router.push('/platform/settings')
-    } else {
-        gotopage(path)
+watch(() => route.fullPath, () => {
+    if (route.path.startsWith('/platform/projects') || route.path.startsWith('/platform/research-workbenches')) {
+        void refreshWorkspaceLists();
     }
-}
+    if (route.path.startsWith('/platform/knowledge-bases')) void refreshKnowledgeBases();
+});
+watch(() => [authStore.token, authStore.user?.id, authStore.selectedTenantId ?? authStore.tenant?.id], () => {
+    projects.value = [];
+    workbenches.value = [];
+    if (sharedKnowledgeBaseIdentity.value !== knowledgeBaseIdentity.value) sharedKnowledgeBaseIdentity.value = '';
+    pendingSessionLookups.clear();
+    if (authStore.token) {
+        void refreshWorkspaceLists();
+        void refreshKnowledgeBases();
+    } else {
+        workspaceRequestGeneration++;
+        knowledgeBaseRequestGeneration++;
+        workspaceLoading.value = false;
+        knowledgeBasesLoading.value = false;
+    }
+});
 
 // 处理退出登录确认
 const handleLogout = () => {
@@ -1475,6 +1534,30 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         white-space: nowrap;
         max-width: 120px;
         flex: 1;
+    }
+
+    .workspace-history {
+        max-height: min(36vh, 320px);
+        overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: var(--td-scrollbar-color) transparent;
+        .session-list-row--flat { padding-left: 42px; }
+        :deep(.submenu_item) { font-size: var(--app-text-sm); }
+        .submenu_empty { padding: 10px 14px 10px 42px; text-align: left; }
+    }
+
+    .workspace-nav-status, .workspace-nav-retry {
+        padding: 6px 14px 6px 42px;
+        font-size: var(--app-text-sm);
+        color: var(--td-text-color-placeholder);
+    }
+    .workspace-nav-retry {
+        display: block;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
+        color: var(--td-brand-color);
     }
 
     .submenu {
