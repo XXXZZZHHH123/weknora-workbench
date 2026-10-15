@@ -6,6 +6,7 @@ export interface WorkbenchSource {
 export interface WorkbenchDataset { dataset_id?: string; id?: string; filename?: string; file_name?: string; name?: string; [key: string]: unknown }
 export interface WorkbenchIndicator { series_id: string; name: string; unit?: string; frequency?: string; caliber?: Record<string, unknown>; [key: string]: unknown }
 export interface WorkbenchOverview {
+  source_inventory?: { knowledge_base_id: string; sources: WorkbenchSource[]; total?: number }
   workbench: { id: string; knowledge_base_id: string; workspace_mode: string }
   counts: { sources: number; documents_ready: number; excel_pending: number; indicators: number; observations: number }
   readiness: { status: 'empty' | 'preparing' | 'partially_ready' | 'ready'; tasks: Array<{ id: string; status: string; count?: number }> }

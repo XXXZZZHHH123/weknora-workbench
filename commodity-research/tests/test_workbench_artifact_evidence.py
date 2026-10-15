@@ -1,5 +1,6 @@
 """Actual immutable file storage and revision history; only external Go HTTP is mocked."""
 import hashlib
+import json
 from pathlib import Path
 
 from alembic import command
@@ -98,6 +99,9 @@ def original_client(tmp_path, monkeypatch):
             return httpx.Response(200, json={'success': True, 'data': [], 'total': 0},
                                   request=httpx.Request(method, address))
         assert address == 'http://structured-data:19082/api/research/facts'
+        if json.loads(kwargs['content']).get('metadata_only'):
+            return httpx.Response(200,json={'knowledge_base_id':'library-a','knowledge_base_tenant_id':7,
+                'version':'e'*64,'metadata_only':True},request=httpx.Request(method,address))
         return httpx.Response(200, json={'knowledge_base_id': 'library-a', 'knowledge_base_tenant_id': 7,
             'version': 'e' * 64, 'datasets': [], 'indicators': [], 'rows': [], 'total': 0,
             'offset': 0, 'next_offset': None, 'truncated': False}, request=httpx.Request(method, address))

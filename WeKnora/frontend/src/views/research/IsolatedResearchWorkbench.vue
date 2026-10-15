@@ -10,7 +10,7 @@ import KbUploadSourceDropdown from '@/views/knowledge/components/KbUploadSourceD
 import { buildUploadFileName } from '@/views/knowledge/folderTree'
 import { workspaceErrorMessage } from '@/views/workspaces/workspaceForm'
 
-const props = defineProps<{ workbench: ResearchWorkbench }>()
+const props = defineProps<{ workbench: ResearchWorkbench; guideSuppressed?: boolean }>()
 const emit = defineEmits<{ 'open-chat': []; 'update-workbench': [workbench: ResearchWorkbench]; navigate: [view: string]; refresh: [] }>()
 const auth = useAuthStore(), uploads = useUploadTasksStore(), router = useRouter()
 const uploadTypes = ['pdf','txt','md','docx','doc','pptx','ppt','epub','xmind','html','htm','mhtml','jpg','jpeg','png','csv','xlsx','xls','mp3','wav','m4a','flac','ogg','zip']
@@ -23,7 +23,7 @@ const sourceContent = ref<{text?: string; sha256?: string; supported?: boolean; 
 const sourceContentOpen = ref(false), sourceContentLoading = ref(false)
 const selectedSource = ref<WorkbenchSource | null>(null), pendingFiles = ref<File[]>([])
 const isIsolated = computed(() => props.workbench.workspace_mode === 'isolated')
-const guideVisible = computed(() => isIsolated.value && (!props.workbench.onboarding || props.workbench.onboarding.status === 'active'))
+const guideVisible = computed(() => !props.guideSuppressed && isIsolated.value && (!props.workbench.onboarding || props.workbench.onboarding.status === 'active'))
 const taskNames = { sources: '添加资料', review: '核对来源', research: '开始研究' }
 let generation = 0, scopeEpoch = 0, sourceSelection = 0
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -42,10 +42,8 @@ async function load() {
   try {
     if (!validBinding()) throw new Error('请先登录并重新打开当前工作台。')
     const api = client()
-    const [summary, sourceList] = await Promise.all([
-      api.get<WorkbenchOverview>('/overview'),
-      api.get<{ knowledge_base_id: string; sources: WorkbenchSource[]; total?: number }>('/sources?page=1&page_size=100'),
-    ])
+    const summary = await api.get<WorkbenchOverview>('/overview')
+    const sourceList = summary.source_inventory || await api.get<{ knowledge_base_id: string; sources: WorkbenchSource[]; total?: number }>('/sources?page=1&page_size=100')
     if (own !== generation) return
     const binding = summary.workbench
     const counts = summary.counts
@@ -57,6 +55,7 @@ async function load() {
       throw new Error('工作台与资料范围不匹配，已停止显示。')
     }
     overview.value = summary; sources.value = sourceList.sources; sourceTotal.value = sourceList.total ?? sources.value.length
+    sourcePage.value = Math.max(1,Math.ceil(sources.value.length/100))
   } catch (e) { if (own === generation) error.value = workspaceErrorMessage(e) }
   finally { if (own === generation) loading.value = false }
 }

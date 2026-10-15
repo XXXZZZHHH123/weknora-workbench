@@ -13,7 +13,7 @@ def _hash(value):
 
 
 def _parameters(body):
-    if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version'}:
+    if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only'}:
         raise ValueError('只接受当前原件、分页和快照版本参数')
     sources,offset,limit=body.get('sources'),body.get('offset',0),body.get('limit',10000)
     if not isinstance(sources,list) or len(sources)>128:
@@ -21,6 +21,8 @@ def _parameters(body):
     if type(offset) is not int or offset<0 or type(limit) is not int or not 1<=limit<=10000:
         raise ValueError('事实分页参数无效')
     version=body.get('version')
+    if type(body.get('metadata_only',False)) is not bool:
+        raise ValueError('版本核验参数无效')
     if version is not None and (not isinstance(version,str) or not re.fullmatch('[a-f0-9]{64}',version)):
         raise ValueError('事实快照版本无效')
     normalized=[];seen=set()
@@ -110,6 +112,12 @@ def read_facts(store,manager,body):
                    'sources':sources,'datasets':datasets,'indicators':indicators})
     if requested is not None and requested!=version:
         raise HTTPException(409,'知识库结构化版本已改变，请重新读取完整事实；未混合新旧快照')
+    if body.get('metadata_only'):
+        # Exactly the same current original, confirmation and catalog checks as
+        # a full read; no DuckDB row scan or page serialization is necessary.
+        return {'knowledge_base_id':identity.knowledge_base_id,
+                'knowledge_base_tenant_id':identity.knowledge_base_tenant_id,
+                'version':version,'metadata_only':True}
     rows=[];total=0
     for info,mapping in bindings:
         if not mapping:

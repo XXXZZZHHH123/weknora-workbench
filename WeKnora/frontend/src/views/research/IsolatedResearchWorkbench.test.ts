@@ -219,3 +219,38 @@ test('pagination rejects a foreign continuation and can retry the same source pa
 test('leaving before the scheduled load performs no orphaned API request', async () => {
   const f = fixture(); f.close(); await ready(); assert.deepEqual(f.calls, [])
 })
+
+test('the overview inventory avoids a second load and continues after its 200 rows', async () => {
+  const rows = Array.from({length:200},(_,index) => ({...textFile,id:`source-${index}`}))
+  const f = fixture(path => {
+    if (path.endsWith('/overview')) return Response.json({
+      workbench:{id:'fresh-workbench',knowledge_base_id:'fresh-kb',workspace_mode:'isolated'},
+      counts:{sources:201,indicators:0,observations:0},readiness:{status:'preparing',tasks:[]},
+      source_inventory:{knowledge_base_id:'fresh-kb',sources:rows,total:201},modules:[],
+    })
+    if (path.includes('/sources?page=3&page_size=100')) return Response.json({
+      knowledge_base_id:'fresh-kb',sources:[{...textFile,id:'last-source'}],total:201,
+    })
+    return undefined
+  })
+  try {
+    await ready()
+    assert.equal(f.calls.length,1)
+    assert.equal(f.view.sourcePage.value,2)
+    await f.view.moreSources()
+    assert.equal(f.view.sources.value.length,201)
+    assert.equal(f.view.sources.value[200].id,'last-source')
+  } finally { f.close() }
+})
+
+test('onboarding hides beneath active native drawers and returns when available', async () => {
+  const f = fixture()
+  try {
+    await ready()
+    assert.equal(f.view.guideVisible.value,true)
+    ;(f.props as any).guideSuppressed = true
+    assert.equal(f.view.guideVisible.value,false)
+    ;(f.props as any).guideSuppressed = false
+    assert.equal(f.view.guideVisible.value,true)
+  } finally { f.close() }
+})

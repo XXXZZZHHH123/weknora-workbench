@@ -75,10 +75,13 @@ def canonical(monkeypatch, tmp_path):
             body = json.loads(request.content)
             encoded = request.headers['x-research-identity']
             caller = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
-            assert set(body) <= {'sources', 'offset', 'limit', 'version'}
+            assert set(body) <= {'sources', 'offset', 'limit', 'version', 'metadata_only'}
             active = state['ready'] and any(item == {'knowledge_id': 'source-one', 'file_hash': 'b' * 32}
                                           for item in body['sources'])
-            version = hashlib.sha256(json.dumps([active, state['value']], sort_keys=True).encode()).hexdigest()
+            version = hashlib.sha256(json.dumps([active, state['value'], state['paginate'], state['version_change']], sort_keys=True).encode()).hexdigest()
+            if body.get('metadata_only'):
+                return httpx.Response(200,json={'knowledge_base_id':caller['knowledge_base_id'],
+                    'knowledge_base_tenant_id':17,'version':version,'metadata_only':True})
             state['pages'] += 1
             if state['version_change'] and body.get('offset', 0):
                 return httpx.Response(409, json={'detail': 'version changed'})
@@ -182,6 +185,49 @@ def test_current_source_update_delete_confirmation_withdrawal_and_failure_never_
     assert client.get(api(), headers=headers).status_code == 403
 
 
+def test_warm_projection_skips_row_transfer_but_checks_current_inventory_and_version(canonical):
+    client,headers,state,_=canonical
+    assert client.get(api(),headers=headers).json()['total']==1
+    pages=state['pages'];calls=len(state['calls'])
+    assert client.get(api(),headers=headers).json()['total']==1
+    assert state['pages']==pages
+    current=state['calls'][calls:]
+    assert ('GET','/api/v1/knowledge-bases/'+KB+'/knowledge') in current
+    assert ('POST','/api/research/facts') in current
+    state['down']=True
+    assert client.get(api(),headers=headers).status_code==503
+    state['down']=False
+    # A failed verification invalidates the physical connection, including TEMP
+    # state; recovery must reload rather than reuse an unverified snapshot.
+    assert client.get(api(),headers=headers).json()['total']==1
+    assert state['pages']==pages+1
+
+
+def test_exported_documents_do_not_consume_structured_original_limit(canonical):
+    client,headers,state,_=canonical
+    state['sources'] += [{'id':'report-'+str(index),'knowledge_base_id':KB,
+        'file_type':'md','file_hash':'e'*32,'parse_status':'completed'} for index in range(150)]
+    result=client.get(api(),headers=headers)
+    assert result.status_code==200,result.text
+    assert result.json()['total']==1
+
+
+def test_projection_expiry_and_memory_budget_force_rebuild(canonical,monkeypatch):
+    from tin.integration import kb_facts
+    client,headers,state,_=canonical
+    monkeypatch.setattr(kb_facts,'PROJECTION_SECONDS',0)
+    assert client.get(api(),headers=headers).status_code==200
+    pages=state['pages']
+    assert client.get(api(),headers=headers).status_code==200
+    assert state['pages']==pages+1
+    monkeypatch.setattr(kb_facts,'PROJECTION_SECONDS',60)
+    monkeypatch.setattr(kb_facts,'MAX_RETAINED_BYTES',0)
+    assert client.get(api(),headers=headers).status_code==200
+    pages=state['pages']
+    assert client.get(api(),headers=headers).status_code==200
+    assert state['pages']==pages+1
+
+
 def test_research_cannot_register_or_manually_write_another_fact_copy(canonical):
     client, headers, state, _ = canonical
     assert client.post('/research/auth/session', headers=headers).status_code == 200
@@ -212,6 +258,7 @@ def test_projection_is_read_only_even_for_direct_sql_and_does_not_read_main(cano
             assert session.scalar(select(Observation.value)) == 17.5
             for statement in ('INSERT INTO observations (id) VALUES (91)',
                               'UPDATE indicators SET name=\'overwritten\'',
+                              'DELETE FROM temp._kb_evidence',
                               'SELECT * FROM main.observations'):
                 with pytest.raises(DatabaseError):
                     session.execute(text(statement))

@@ -90,12 +90,14 @@ function toggleDrawer(drawerId, open) {
   // 抽屉打开时锁住主体滚动，避免出现双滚动条
   document.body.classList.toggle("overflow-hidden", anyOpen);
   document.body.classList.toggle("drawer-open", anyOpen);
+  if (window.parent && window.parent !== window) window.parent.postMessage({type:'research-drawer-state',open:anyOpen},window.location.origin);
   if (open && drawerId === "quick-drawer") {
     setTimeout(() => document.getElementById("drawer-value").focus(), 320);
   }
 }
 
 function closeDrawers() {
+  if (window.parent && window.parent !== window) window.parent.postMessage({type:'research-drawer-state',open:false},window.location.origin);
   document.querySelectorAll("[data-drawer]").forEach((d) => d.classList.add("translate-x-full"));
   document.getElementById("drawer-backdrop").classList.add("hidden");
   document.body.classList.remove("overflow-hidden");

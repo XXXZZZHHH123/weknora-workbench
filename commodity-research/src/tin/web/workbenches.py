@@ -116,11 +116,14 @@ async def source_inventory(scope: WorkbenchScope, page=1, page_size=100):
             source_imports = records['imports']
         except HTTPException as exc:
             review_error = str(exc.detail)
-    with workbench_session(scope) as session:
-        roles = {row.config["knowledge_id"]: row.config["source_role"] for row in
-                 session.scalars(select(SourceMapping).where(SourceMapping.id.startswith("role-"))).all() if row.config.get("knowledge_id")
-                 and row.config.get("source_role")}
-        current = session.info['knowledge_facts_datasets']
+    def local_inventory():
+        with workbench_session(scope) as session:
+            roles = {row.config["knowledge_id"]: row.config["source_role"] for row in
+                     session.scalars(select(SourceMapping).where(SourceMapping.id.startswith("role-"))).all() if row.config.get("knowledge_id")
+                     and row.config.get("source_role")}
+            from tin.integration.read_api import research_result_counts
+            return roles,session.info['knowledge_facts_datasets'],fact_counts(session),research_result_counts(session,scope)
+    roles,current,counts,research_counts = await run_in_threadpool(local_inventory)
     _, history = _current_datasets(sources, source_imports, datasets['datasets'], scope)
     return {"knowledge_base_id": scope.knowledge_base_id,
             "sources": [{**{k: v for k, v in row.items() if k in allowed},
@@ -128,7 +131,7 @@ async def source_inventory(scope: WorkbenchScope, page=1, page_size=100):
             "datasets": current, "dataset_versions": history, "total": result["total"], "page": page,
             "page_size": page_size, "has_more": result["total"] > page * page_size,
             "structured_error": structured_error, "source_imports": source_imports,
-            "review_error": review_error}
+            "review_error": review_error,"fact_counts":counts,"research_counts":research_counts}
 
 
 def indicator_payload(row):
@@ -172,10 +175,8 @@ def source_review_progress(inventory, scope):
 @router.get("/overview")
 async def overview(scope: WorkbenchScope = Depends(verified_workbench)):
     inventory = await source_inventory(scope, page_size=200)
-    with workbench_session(scope) as session:
-        counts = fact_counts(session)
-        from tin.integration.read_api import research_result_counts
-        research_counts = research_result_counts(session, scope)
+    counts = dict(inventory['fact_counts'])
+    research_counts = inventory['research_counts']
     sources = inventory["sources"]
     excel = [s for s in sources if str(s.get("file_type", "")).lower().lstrip(".") in {"xlsx", "xls", "xlsm", "csv", "tsv"}]
     ready_docs = sum(s.get("parse_status") == "completed" for s in sources if s not in excel)
@@ -198,7 +199,7 @@ async def overview(scope: WorkbenchScope = Depends(verified_workbench)):
                          "reason": None if counts["indicators"] else "先确认并绑定本工作台的真实来源字段"},
                         {"id": "documents", "status": "ready" if ready_docs else "pending",
                          "reason": None if ready_docs else "等待本知识库文档解析"}],
-            "research_counts": research_counts, "structured_error": inventory["structured_error"],
+            "research_counts": research_counts,"source_inventory":inventory, "structured_error": inventory["structured_error"],
             "review_error": inventory['review_error'],
             "model": {"calls_enabled": False, "free_quota_confirmed": False}}
 

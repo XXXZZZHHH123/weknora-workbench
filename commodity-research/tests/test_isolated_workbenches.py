@@ -97,6 +97,8 @@ def isolated(monkeypatch, tmp_path):
                 indicators = state['canonical_indicators'] if active else []
                 rows = state['canonical_rows'] if active else []
                 version = hashlib.sha256(json.dumps([indicators, rows], sort_keys=True).encode()).hexdigest()
+                if body.get('metadata_only'):
+                    return httpx.Response(200,json={'knowledge_base_id':KB,'knowledge_base_tenant_id':23,'version':version,'metadata_only':True})
                 offset, limit = body.get('offset', 0), body.get('limit', 10000)
                 selected = rows[offset:offset + limit]
                 next_offset = offset + len(selected) if offset + len(selected) < len(rows) else None

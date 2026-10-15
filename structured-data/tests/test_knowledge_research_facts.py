@@ -149,3 +149,25 @@ def test_service_auth_signature_is_required_for_facts(facts):
     assert client.post(PATH,json=body).status_code==401
     parameters=signed(body);parameters['headers']['X-Research-Signature']='0'*64
     assert client.post(PATH,**parameters).status_code==401
+
+
+def test_metadata_probe_uses_full_version_checks_without_scanning_rows(facts,monkeypatch):
+    client,store,parsed,path,review,body=facts
+    full=client.post(PATH,**signed(body)).json()
+    def forbidden(*args,**kwargs):
+        raise AssertionError('version-only probe scanned observations')
+    monkeypatch.setattr(DataStore,'_connect',forbidden)
+    probe=client.post(PATH,**signed({**body,'metadata_only':True}))
+    assert probe.status_code==200,probe.text
+    assert probe.json()=={'knowledge_base_id':'library-a','knowledge_base_tenant_id':9,
+        'version':full['version'],'metadata_only':True}
+    review['sheets'][0]['status']='needs_review';path.write_text(json.dumps(review))
+    assert client.post(PATH,**signed({**body,'metadata_only':True})).json()['version']!=full['version']
+    original=store._path(review['dataset_id'])/'source.xlsx';original.write_bytes(b'tampered')
+    assert client.post(PATH,**signed({**body,'metadata_only':True})).status_code==409
+
+
+@pytest.mark.parametrize('invalid',[1,None,'true',{},[]])
+def test_metadata_probe_type_is_strict(facts,invalid):
+    client,_,_,_,_,body=facts
+    assert client.post(PATH,**signed({**body,'metadata_only':invalid})).status_code==400
