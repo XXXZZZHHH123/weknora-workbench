@@ -297,7 +297,7 @@ async function openKnowledgeSource(sourceId){
  $('sheetDetail').innerHTML='<p class="grid-loading">正在准备当前知识库的 Excel 原件…</p>';
  try{
   const requestApi=(path,options={})=>api(path,options,{signal:controller.signal,timeoutMs:30000});
-  const response=await api('/api/import-knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_knowledge_id:sourceId})},{signal:controller.signal,timeoutMs:120000});if(!isCurrent())return;
+  const response=await api('/api/import-knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_knowledge_id:sourceId,restore_reviewed_state:false})},{signal:controller.signal,timeoutMs:120000});if(!isCurrent())return;
   if(response.source_knowledge_id!==sourceId)throw Error('原件标识与当前选择不一致，请重新打开文件。');
   const result=response.status==='completed'?response.result:await waitJob(response.id,stage=>{if(isCurrent())$('jobState').textContent=stage},isCurrent,requestApi);if(!isCurrent())return;
   if(!result?.import_id||result.source_knowledge_id&&result.source_knowledge_id!==sourceId)throw Error('当前原件没有有效的工作表扫描记录，请重试。');

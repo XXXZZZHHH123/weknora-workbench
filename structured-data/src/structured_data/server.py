@@ -267,6 +267,15 @@ def create_app(data_dir: str | Path | None = None):
             return await fn(**arguments)
         return await run_in_threadpool(lambda: fn(**arguments))
 
+    @app.post('/api/research/facts')
+    async def research_facts(request: Request):
+        from .research_facts import read_facts
+        body = await request.json()
+        def read_current():
+            with manager.lock:
+                return read_facts(store, manager, body)
+        return await run_in_threadpool(read_current)
+
     @app.post('/api/research/export')
     async def research_export(request: Request):
         body = await request.json()
@@ -362,7 +371,7 @@ def create_app(data_dir: str | Path | None = None):
         if path in {"/", "/health", "/login", "/api/ui-config", "/sheet-review.js", "/sheet-review.css", "/workspace.css"}:
             return await call_next(request)
         identity = None
-        signed = path in {'/api/tools/read', '/api/research/export'} or path.startswith('/api/research/source/')
+        signed = path in {'/api/tools/read', '/api/research/export', '/api/research/facts'} or path.startswith('/api/research/source/')
         if signed:
             from .service_auth import verify_service
             try:
