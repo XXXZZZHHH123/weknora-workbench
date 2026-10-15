@@ -22,7 +22,7 @@ func (h *Handler) resolveResearchWorkbenchScope(ctx context.Context, session *ty
 	}
 	caller := types.CallerFromContext(ctx)
 	row, err := h.researchWorkbenches.GetWorkbench(ctx, session.ResearchWorkbenchID)
-	if err != nil || row == nil || row.ID != session.ResearchWorkbenchID || row.WorkspaceMode != "isolated" ||
+	if err != nil || row == nil || row.ID != session.ResearchWorkbenchID || (row.WorkspaceMode != "isolated" && row.WorkspaceMode != "legacy") ||
 		row.TenantID != session.TenantID || row.TenantID != caller.TenantID || caller.UserID == "" {
 		return scope, errors.NewNotFoundError("研究工作台不存在或无权访问")
 	}
@@ -102,6 +102,6 @@ func isolatedResearchAgent(original *types.CustomAgent, scope types.ResearchWork
 	agent.Config.MCPSelectionMode, agent.Config.SkillsSelectionMode = "none", "none"
 	agent.Config.MCPServices, agent.Config.SelectedSkills = nil, nil
 	agent.Config.SandboxConfigID = ""
-	agent.Config.SystemPrompt += "\n本轮已由服务器固定到一个独立研究工作台：研究工具只读取该台已登记资料与当前账号成果，结构化和正文来源仅限绑定知识库。空白模块或缺失成果如实说明，不读取其他工作台或空间旧成果补齐。"
+	agent.Config.SystemPrompt += "\n本轮已由服务器固定到一个研究工作台：指标和观测只来自绑定知识库当前已确认的结构化来源，研究工具提供本台与当前账号的研究成果。空白、未导入、失效或缺失来源如实说明，不读取其他工作台或历史研究库数值补齐。"
 	return agent
 }

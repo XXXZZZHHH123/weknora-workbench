@@ -60,6 +60,18 @@ func TestBoundResearchSessionRechecksAccessAndPinsSourcesEveryTurn(t *testing.T)
 	require.Error(t, err)
 }
 
+func TestLegacyWorkbenchSessionAlsoBindsKnowledgeBase(t *testing.T) {
+	h, workbenches, ctx, session := researchScopeFixture()
+	workbenches.row.WorkspaceMode = "legacy"
+	request := &CreateKnowledgeQARequest{}
+	scoped, err := h.bindResearchQuestionScope(ctx, session, request)
+	require.NoError(t, err)
+	require.Equal(t, []string{"library-a"}, request.KnowledgeBaseIDs)
+	value, ok := types.ResearchWorkbenchScopeFromContext(scoped)
+	require.True(t, ok)
+	require.Equal(t, session.ResearchWorkbenchID, value.ID)
+}
+
 func TestBoundResearchSessionRejectsScopeWidening(t *testing.T) {
 	h, workbenches, ctx, session := researchScopeFixture()
 	for _, request := range []*CreateKnowledgeQARequest{
@@ -71,7 +83,7 @@ func TestBoundResearchSessionRejectsScopeWidening(t *testing.T) {
 		_, err := h.bindResearchQuestionScope(ctx, session, request)
 		require.Error(t, err)
 	}
-	workbenches.row.WorkspaceMode = "legacy"
+	workbenches.row.WorkspaceMode = "unknown"
 	_, err := h.resolveResearchWorkbenchScope(ctx, session)
 	require.Error(t, err)
 	workbenches.row.WorkspaceMode = "isolated"

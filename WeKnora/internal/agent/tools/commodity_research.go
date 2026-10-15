@@ -77,6 +77,12 @@ func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessag
 		identity["workbench_id"] = scope.ID
 		identity["knowledge_base_id"] = scope.KnowledgeBaseID
 		identity["knowledge_base_tenant_id"] = scope.KnowledgeBaseTenantID
+		authorization := types.ResearchAuthorizationFromContext(ctx)
+		if authorization == "" {
+			return nil, fmt.Errorf("研究事实读取需要当前登录核验，不能回退历史研究库")
+		}
+		authorizationHash := sha256.Sum256([]byte(authorization))
+		identity["authorization_sha256"] = hex.EncodeToString(authorizationHash[:])
 	}
 	if user, ok := ctx.Value(types.UserContextKey).(*types.User); ok && user.ID == caller.UserID {
 		identity["email"], identity["display_name"] = user.Email, user.Username
@@ -96,6 +102,9 @@ func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessag
 	req.Header.Set("X-Research-Identity", encoded)
 	req.Header.Set("X-Research-Timestamp", stamp)
 	req.Header.Set("X-Research-Signature", hex.EncodeToString(mac.Sum(nil)))
+	if scoped {
+		req.Header.Set("X-Research-Authorization", types.ResearchAuthorizationFromContext(ctx))
+	}
 	response, err := t.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("商品研究服务连接失败")

@@ -58,6 +58,7 @@ var contextCloneAcrossDetach = map[ContextKey]bool{
 	SessionTenantIDContextKey:        true,
 	SandboxTenantIDContextKey:        true,
 	ResearchWorkbenchScopeContextKey: true,
+	ResearchAuthorizationContextKey:  true,
 
 	// Embed callers: the anonymous visitor id isolates embed OAuth, so losing
 	// it would merge visitors together.

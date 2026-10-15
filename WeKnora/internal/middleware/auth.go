@@ -150,6 +150,7 @@ func Auth(
 			user, jwtTenantID, err := userService.ValidateToken(c.Request.Context(), token)
 			if err == nil && user != nil {
 				if authenticateJWTUser(c, tenantService, memberService, cfg, user, jwtTenantID) {
+					c.Request = c.Request.WithContext(types.WithResearchAuthorization(c.Request.Context(), "Bearer "+token))
 					c.Next()
 				}
 				return
