@@ -1,17 +1,20 @@
 <template>
-  <div class="research-workspace">
-    <div class="research-toolbar">
+  <div class="research-workspace" :class="{ 'research-workspace--isolated': isIsolated }">
+    <div v-if="!workbenchId || workbench" class="research-toolbar">
       <router-link v-if="workbenchId" class="research-back" to="/platform/research-workbenches" aria-label="返回研究工作台列表">
         <t-icon name="chevron-left" />研究工作台
       </router-link>
-      <strong>商品研究</strong><span>当前空间的研究数据与个人判断</span>
-      <router-link class="research-materials" to="/platform/materials?purpose=research&add=1">添加研究资料</router-link>
+      <strong>{{ isIsolated ? workbench?.name : '商品研究' }}</strong><span>{{ isIsolated ? (workbench?.knowledge_base_name || '绑定知识库') : '当前空间的研究数据与个人判断' }}</span>
+      <t-button v-if="isIsolated" class="research-materials" variant="text" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
+      <t-button v-if="isIsolated" variant="text" size="small" @click="isolatedView?.openGuide()" aria-label="重新打开新手引导">新手引导</t-button>
+      <router-link v-else class="research-materials" to="/platform/materials?purpose=research&add=1">添加研究资料</router-link>
       <router-link v-if="workbench?.knowledge_base_id" :to="`/platform/knowledge-bases/${workbench.knowledge_base_id}`">转到知识库</router-link>
       <t-button variant="outline" size="small" :disabled="!canShowResearch" :aria-expanded="chatVisible"
         aria-controls="research-chat-panel" @click="openChat">问答助手</t-button>
     </div>
     <div class="research-body">
-      <iframe v-if="canShowResearch" :key="generation" ref="frame" :src="bootstrapUrl"
+      <IsolatedResearchWorkbench v-if="canShowResearch && isIsolated && workbench" :key="scopeGeneration" ref="isolatedView" :workbench="workbench" @open-chat="openChat" @update-workbench="workbench = $event" />
+      <iframe v-else-if="canShowResearch" :key="generation" ref="frame" :src="bootstrapUrl"
         title="商品研究工作台" @load="sendAuth" />
       <div v-else-if="workbenchLoading" class="research-empty" role="status">正在打开研究工作台…</div>
       <div v-else-if="workbenchError" class="research-empty" role="alert">
@@ -20,7 +23,7 @@
       <div v-else class="research-empty">请先选择空间。</div>
       <ResearchChatPanel v-if="chatMounted && canShowResearch" :key="scopeGeneration" :visible="chatVisible"
         :kb-id="workbench?.knowledge_base_id || ''" :kb-name="workbench?.knowledge_base_name || ''"
-        :workbench-name="workbench?.name || '研究工作台'" @close="chatVisible = false" />
+        :workbench-name="workbench?.name || '研究工作台'" :isolated="isIsolated" :workbench-id="workbenchId" @close="chatVisible = false" />
     </div>
   </div>
 </template>
@@ -31,10 +34,12 @@ import { useTheme } from '@/composables/useTheme'
 import { useRoute } from 'vue-router'
 import { getResearchWorkbench, type ResearchWorkbench } from '@/api/workspaces'
 import ResearchChatPanel from './ResearchChatPanel.vue'
+import IsolatedResearchWorkbench from './IsolatedResearchWorkbench.vue'
 const auth = useAuthStore()
 const { effectiveTheme, setTheme } = useTheme()
 const route = useRoute()
 const frame = ref<HTMLIFrameElement>()
+const isolatedView = ref<InstanceType<typeof IsolatedResearchWorkbench>>()
 const generation = ref(0)
 const scopeGeneration = ref(0)
 const tenantId = computed(() => auth.selectedTenantId ?? auth.tenant?.id)
@@ -45,6 +50,7 @@ const workbenchError = ref('')
 const chatMounted = ref(false)
 const chatVisible = ref(false)
 let requestGeneration = 0
+const isIsolated = computed(() => workbench.value?.workspace_mode === 'isolated')
 const canShowResearch = computed(() => Boolean(auth.token && tenantId.value && (!workbenchId.value || workbench.value)))
 const bootstrapUrl = computed(() => {
   const source=typeof route.query.source==='string' && /^[a-f0-9]{64}$/.test(route.query.source) ? route.query.source : ''
@@ -73,13 +79,14 @@ async function loadWorkbench() {
   }
 }
 function sendAuth() {
-  if (!auth.token || !tenantId.value) return
+  if (!auth.token || !tenantId.value || isIsolated.value) return
   frame.value?.contentWindow?.postMessage({
     type: 'research-auth', token: auth.token, tenantId: tenantId.value,
   }, window.location.origin)
 }
 function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function receive(event: MessageEvent) {
+  if (isIsolated.value) return
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'workspace-theme-request') {
@@ -118,5 +125,6 @@ onBeforeUnmount(() => { requestGeneration++; scopeGeneration.value++; window.rem
 .research-back{display:inline-flex;gap:4px;align-items:center}
 .research-body{position:relative;display:flex;flex:1;min-height:0;min-width:0;overflow:hidden}
 .research-empty{padding:24px;flex:1}iframe{width:100%;flex:1;min-width:0;min-height:0;border:0}
+.research-workspace--isolated .research-toolbar{gap:12px;padding:10px 18px}.research-workspace--isolated .research-toolbar strong{font-size:14px;max-width:300px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.research-workspace--isolated .research-toolbar>span{font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:900px){.research-toolbar{gap:12px;padding:12px 16px}}
 </style>

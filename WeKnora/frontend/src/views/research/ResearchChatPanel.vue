@@ -9,7 +9,7 @@
     </div>
     <div class="research-chat-panel__context">
       <p>知识库：{{ kbName || kbId || '未绑定' }}</p>
-      <p>{{ kbId ? '问答使用当前绑定知识库；' : '' }}研究数据与个人成果沿用当前空间。</p>
+      <p>{{ isolated ? '问答使用本台资料和绑定知识库，保留真实来源。' : (kbId ? '问答使用当前绑定知识库；' : '') + '研究数据与个人成果沿用当前空间。' }}</p>
       <label class="research-chat-panel__model">
         <span>模型</span>
         <ModelSelector model-type="KnowledgeQA" v-model:selected-model-id="modelId"
@@ -29,7 +29,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ChatView from '@/views/chat/index.vue'
 import ModelSelector from '@/components/ModelSelector.vue'
 import { createSessions } from '@/api/chat'
@@ -38,21 +38,23 @@ import { useSettingsStore } from '@/stores/settings'
 import { useUIStore } from '@/stores/ui'
 import { createResearchChatSession } from './researchChatSession'
 
-const props = defineProps<{ visible: boolean; kbId: string; kbName: string; workbenchName: string }>()
+const props = withDefaults(defineProps<{ visible: boolean; kbId: string; kbName: string; workbenchName: string; isolated?: boolean; workbenchId?: string }>(), { isolated: false, workbenchId: '' })
 defineEmits<{ close: [] }>()
 const settings = useSettingsStore()
 const menu = useMenuStore()
 const ui = useUIStore()
 const modelId = ref(settings.conversationModels.selectedChatModelId || settings.conversationModels.summaryModelId || '')
-const agentId = settings.selectedAgentId
-const agentSourceTenantId = settings.selectedAgentSourceTenantId || undefined
+const agentId = computed(() => props.isolated ? 'builtin-quick-answer' : settings.selectedAgentId)
+const agentSourceTenantId = computed(() => props.isolated ? undefined : settings.selectedAgentSourceTenantId || undefined)
 const replying = ref(false)
 let disposed = false
 
 const chat = createResearchChatSession(async () => {
   const title = `${props.workbenchName || '研究工作台'} · 问答`
+  if (props.isolated && (!props.workbenchId || !props.kbId)) throw new Error('请重新打开当前工作台后重试。')
   const response = await createSessions({
     title,
+    ...(props.isolated ? { research_workbench_id: props.workbenchId } : {}),
     agent_config: {
       enabled: settings.isAgentStreamMode,
       max_iterations: settings.agentConfig.maxIterations,

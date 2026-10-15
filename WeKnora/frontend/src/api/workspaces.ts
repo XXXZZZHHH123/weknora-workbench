@@ -10,12 +10,29 @@ export interface AssistantProject {
   updated_at?: string
 }
 
+export type ResearchWorkbenchTemplateId = 'industrial' | 'data-tracking' | 'topic' | 'blank'
+export interface ResearchWorkbenchOnboarding {
+  status: 'active' | 'dismissed' | 'skipped' | 'completed'
+  tasks: { sources: boolean; review: boolean; research: boolean }
+}
+export interface ResearchWorkbenchTemplate {
+  id: ResearchWorkbenchTemplateId
+  name: string
+  version: number
+  modules: string[]
+}
+
 export interface ResearchWorkbench {
   id: string
   name: string
   description?: string
   knowledge_base_id: string
   knowledge_base_name?: string
+  scope_tenant_id: number
+  workspace_mode: 'legacy' | 'isolated'
+  template_id: ResearchWorkbenchTemplateId | ''
+  template_version: number
+  onboarding: ResearchWorkbenchOnboarding
   created_at?: string
   updated_at?: string
 }
@@ -32,6 +49,11 @@ export interface ProjectSession {
 type Envelope<T> = { success: boolean; data: T }
 type ProjectInput = { name: string; description?: string; knowledge_base_id?: string }
 type WorkbenchInput = { name: string; description?: string; knowledge_base_id: string }
+type WorkbenchCreateInput = WorkbenchInput & { template_id?: ResearchWorkbenchTemplateId; template_version?: number; idempotency_key: string }
+export type ResearchWorkbenchOnboardingInput = {
+  status?: ResearchWorkbenchOnboarding['status']
+  tasks?: Partial<ResearchWorkbenchOnboarding['tasks']>
+}
 const base = '/api/v1/workspaces'
 const id = encodeURIComponent
 
@@ -79,7 +101,7 @@ export function listResearchWorkbenches(params?: { knowledge_base_id?: string })
 export function getResearchWorkbench(workbenchId: string): Promise<Envelope<ResearchWorkbench>> {
   return get(`${base}/research/${id(workbenchId)}`)
 }
-export function createResearchWorkbench(data: WorkbenchInput & { idempotency_key: string }): Promise<Envelope<ResearchWorkbench>> {
+export function createResearchWorkbench(data: WorkbenchCreateInput): Promise<Envelope<ResearchWorkbench>> {
   return post(`${base}/research`, data)
 }
 export function updateResearchWorkbench(workbenchId: string, data: Partial<WorkbenchInput>): Promise<Envelope<ResearchWorkbench>> {
@@ -87,4 +109,11 @@ export function updateResearchWorkbench(workbenchId: string, data: Partial<Workb
 }
 export function deleteResearchWorkbench(workbenchId: string) {
   return del(`${base}/research/${id(workbenchId)}`)
+}
+
+export function listResearchWorkbenchTemplates(): Promise<Envelope<ResearchWorkbenchTemplate[]>> {
+  return get(`${base}/research/templates`)
+}
+export function updateResearchWorkbenchOnboarding(workbenchId: string, data: ResearchWorkbenchOnboardingInput): Promise<Envelope<ResearchWorkbench>> {
+  return put(`${base}/research/${id(workbenchId)}/onboarding`, data)
 }

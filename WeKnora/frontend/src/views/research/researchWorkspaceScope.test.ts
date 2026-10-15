@@ -109,3 +109,20 @@ test('refreshing a token for the same identity leaves the conversation mounted',
     assert.equal(f.requests.length, 1)
   } finally { f.close() }
 })
+
+test('an isolated workbench never authenticates or handles the tenant-wide legacy research frame', async () => {
+  const f = fixture()
+  try {
+    await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } })
+    await new Promise(setImmediate)
+    const messages: unknown[] = []
+    f.view.frame.value = { contentWindow: { postMessage: (...args: unknown[]) => messages.push(args) } }
+    const before = f.view.generation.value
+    f.view.receive({ origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-ready' } })
+    f.view.receive({ origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-auth-expired' } })
+    assert.equal(messages.length, 0)
+    assert.equal(f.view.generation.value, before)
+    assert.equal(f.view.canShowResearch.value, true)
+  } finally { f.close() }
+})
