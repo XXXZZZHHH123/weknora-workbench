@@ -32,6 +32,27 @@ jobs:
       - run: python -m pip install -e './structured-data[test]'
       - run: python -m pytest structured-data/tests -q
 
+  docreader:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install uv
+      - name: Verify report pages, image sources and spreadsheet repairs
+        env:
+          PYTHONPATH: ${{ github.workspace }}/WeKnora
+        run: >-
+          uv run --locked --project WeKnora/docreader --with pytest==9.1.1
+          python -m pytest -q
+          WeKnora/docreader/tests/test_pptx_media.py
+          WeKnora/docreader/tests/test_pptx_chart_geometry.py
+          WeKnora/docreader/tests/test_ppt_convert.py
+          WeKnora/docreader/tests/test_source_locator.py
+          WeKnora/docreader/tests/test_parser_concurrency.py
+          WeKnora/docreader/tests/test_xlsx_styles_repair.py
+
   commodity-research:
     runs-on: ubuntu-24.04
     defaults:
@@ -88,7 +109,7 @@ jobs:
           go-version-file: WeKnora/go.mod
           cache-dependency-path: WeKnora/go.sum
       - run: go test ./internal/agent/tools ./internal/agent -run 'TestMCP|TestCastParams|TestStructured|TestNative|TestWorkbench|TestIndependentReview|TestReviewDraft|TestCommodityResearch|TestEveryBuiltIn|TestAvailableToolDefinitions' -count=1
-      - run: go test ./internal/handler/session ./internal/modelcontext -count=1
+      - run: go test ./internal/handler/session ./internal/modelcontext ./internal/database -count=1
       - run: go test ./internal/handler -run TestUpdateModel -count=1
       - run: go test ./internal/application/service -run 'TestAgentConfig|TestDefaultWorkbench|TestWorkbench|TestBuildAssistantHistoryMessages|TestBuildTurnBodyMessages|TestMCPProxyHistory|TestRegisterToolsCommodityResearch' -count=1
 
@@ -114,7 +135,7 @@ jobs:
           docker compose --env-file "$DEPLOY_SHARED_DIR/.env" -f deploy/compose.yml config --quiet
 
   image-plan:
-    needs: [python, commodity-research, frontend, go, deployment-checks]
+    needs: [python, docreader, commodity-research, frontend, go, deployment-checks]
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}

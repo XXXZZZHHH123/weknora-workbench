@@ -4,7 +4,7 @@
 
 PR 运行检查和镜像构建，不推送镜像、不发布部署版本。发布权限使用流水线自带的 GITHUB_TOKEN，服务器只保存专用的读取令牌，不需要开放公网 SSH。
 
-首次构建 Go/Rust/BrowserSkill 和下载原生依赖会较慢。上游 docreader、PostgreSQL、Redis 使用明确的版本标签，在 GitHub 上重新发布到本项目 GHCR 下，使服务器无需访问 Docker Hub。这里只启动 PostgreSQL 检索、本地文件存储和结构化工作台；需要额外检索引擎或 SearXNG 时应扩展配置。原本的本机 Compose 和数据卷不受影响。
+首次构建 Go/Rust/BrowserSkill 和下载原生依赖会较慢。docreader 按本仓库源码构建，以包含页码和图表来源处理。PostgreSQL、Redis 使用明确的版本标签，在 GitHub 上重新发布到本项目 GHCR 下，使服务器无需访问 Docker Hub。这里只启动 PostgreSQL 检索、本地文件存储和结构化工作台；需要额外检索引擎或 SearXNG 时应扩展配置。原本的本机 Compose 和数据卷不受影响。
 
 ## 日常指令清单（当前已配置服务器）
 

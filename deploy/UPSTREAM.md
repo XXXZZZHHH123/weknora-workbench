@@ -2,7 +2,7 @@
 
 本项目使用源码快照维护 `WeKnora/`，不是普通 fork 或 submodule。更新器以 `.upstream/weknora.json` 中的提交为原始上游，以本项目 `WeKnora/` 为定制版本，以最新正式版为新版上游，调用 Git 三方合并。独立的 `structured-data/`、根部署配置、模型密钥和数据不会被上游目录覆盖。
 
-当前初始上游是正式版 v0.8.2。GitHub 工作流 `WeKnora upstream update PR` 每天北京时间 10:20 检查，也支持手动运行；GitHub 调度可能延迟。只处理非草稿、非预发布版本。旧版本不会倒灌；不同分支的版本会标记 diverged，留待人工迁移。
+当前上游为正式版 v0.8.3（`3e22822c1d2397be730c458c7539d0eb8c113a24`），具体版本以 `.upstream/weknora.json` 为准。GitHub 工作流 `WeKnora upstream update PR` 每天北京时间 10:20 检查，也支持手动运行；GitHub 调度可能延迟。只处理非草稿、非预发布版本。旧版本不会倒灌；不同分支的版本会标记 diverged，留待人工迁移。
 
 有更新时创建 `codex/upstream-weknora-版本-提交` 分支和 PR，然后主动触发该分支的 CI（workflow_dispatch），确保默认 GITHUB_TOKEN 创建 PR 时也能运行检查。分支 CI 不推送生产镜像、不发布生产版本；确认 PR 并合并 main 后，才执行现有生产 CI/CD。更新器不调用审批或合并 API。
 
@@ -38,6 +38,8 @@ git push
 ```
 
 finalize 只更新上游元数据，不自动提交；仍有冲突标记时会拒绝。检查通过并确认业务兼容性后，把草稿改为可审查 PR，再手动合并。
+
+本次 v0.8.3 的冲突处理、兼容边界和验证结果见 [集成记录](../docs/UPSTREAM_V083_INTEGRATION.md)。
 
 ## 审查范围
 

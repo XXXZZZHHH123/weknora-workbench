@@ -21,7 +21,8 @@ class ImagePlanTests(unittest.TestCase):
         self.git('config', 'user.email', 'test@example.invalid')
         self.git('config', 'user.name', 'Test')
         for name in ('WeKnora/main.go', 'WeKnora/frontend/index.ts',
-                     'WeKnora/docker/Dockerfile.app', 'deploy/Dockerfile.frontend',
+                     'WeKnora/docker/Dockerfile.app', 'WeKnora/docker/Dockerfile.docreader',
+                     'WeKnora/docreader/parser/pptx_media.py', 'deploy/Dockerfile.frontend',
                      'deploy/Dockerfile.runtime', 'structured-data/pyproject.toml',
                      'structured-data/Dockerfile', 'structured-data/src/server.py',
                      'structured-data/deploy/structured-proxy.conf',
@@ -97,6 +98,11 @@ class ImagePlanTests(unittest.TestCase):
         self.write('WeKnora/frontend/index.ts', 'changed')
         self.commit()
         self.assertEqual([row['service'] for row in self.rows() if not row['reuse_image']], ['frontend'])
+
+    def test_docreader_parser_changes_rebuild_parser_image(self):
+        self.write('WeKnora/docreader/parser/pptx_media.py', 'new page-bound parsing')
+        self.commit()
+        self.assertEqual([row['service'] for row in self.rows() if not row['reuse_image']], ['app', 'docreader'])
 
     def test_base_image_version_change_rebuilds_only_that_dependency(self):
         self.recipes = [dict(row) for row in self.recipes]
