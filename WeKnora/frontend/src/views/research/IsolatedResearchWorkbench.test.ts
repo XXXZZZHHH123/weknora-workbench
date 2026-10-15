@@ -5,208 +5,217 @@ import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
 import { createIsolatedResearchClient } from '../../api/isolatedResearch'
-import { isolatedWorkbenchScope, templateById, workbenchModuleNames } from './workbenchTemplates'
-import { observationChart, reusableTemplate, structureBody, structureDetails, structureTree } from './workbenchArtifacts'
 
 const source = readFileSync(new URL('./IsolatedResearchWorkbench.vue', import.meta.url), 'utf8')
 const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0]!.replace(/^import .*$/gm, '')
-const code = ts.transpileModule(`${script}\n;({ overview, sources, module, guideVisible, drawer, pendingFiles, recordTitle, recordBody, recordSources, recordConfirmed, records, guide, selectModule, selectFiles, enqueueFiles, editRecord, saveRecord, saveSourceRole, sourceStatus, isWorkbook, openSources, openImport, activeImport, chooseSheet, mapping, openDataset, activeDataset, datasetSeries, showObservations, observationPanels, allRecords, client, load })`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
+const code = ts.transpileModule(`${script}\n;({ overview, sources, sourceTotal, sourcePage, guideVisible, drawer, drawerError, error, pendingFiles, guide, selectFiles, enqueueFiles, sourceStatus, isWorkbook, openSources, openGuide, openReview, openKnowledgeBase, openStructured, showSource, selectedSource, sourceContent, sourceContentLoading, saveVisualOriginals, moreSources, filesChanged, load })`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+}).outputText
 const tick = () => new Promise(setImmediate)
-function fixture(extra?: (path:string,options?:RequestInit)=>Response | Promise<Response> | undefined) {
-  const props = reactive({ workbench: { id: 'fresh-workbench', knowledge_base_id: 'fresh-kb', workspace_mode: 'isolated', template_id: 'industrial', name: 'Test-only workspace', onboarding: { status: 'active', tasks: { sources: false, review: false, research: false } } } })
+const ready = async () => { await nextTick(); await tick() }
+const plain = (value: unknown) => JSON.parse(JSON.stringify(value))
+type Extra = (path: string, options?: RequestInit) => Response | Promise<Response> | undefined
+function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated') {
+  const props = reactive({ workbench: { id: 'fresh-workbench', knowledge_base_id: 'fresh-kb', workspace_mode: mode, template_id: 'industrial', name: 'Test-only workspace', onboarding: { status: 'active', tasks: { sources: false, review: false, research: false } } } })
   const auth = reactive({ token: 'test-token', selectedTenantId: 'test-tenant', user: { id: 'test-user' } })
-  const calls: Array<{url: string; method: string; body?: any}> = [], guides: any[] = [], batches: any[] = [], emits: any[] = [], cleanups: Array<() => void> = []
-  const stored = new Map<string,string>()
+  const calls: Array<{ url: string; method: string; headers: Headers }> = [], guides: any[] = [], batches: any[] = [], emits: any[] = [], routes: any[] = []
+  const cleanups: Array<() => void> = []
   const network = async (url: RequestInfo | URL, options?: RequestInit) => {
-    const path = String(url), body = options?.body ? JSON.parse(String(options.body)) : undefined
-    calls.push({url:path,method:options?.method||'GET',body})
-    const customized=extra?.(path,options);if(customized)return customized
-    if (path.endsWith('/overview')) return Response.json({ workbench: { id: props.workbench.id, knowledge_base_id: props.workbench.knowledge_base_id, workspace_mode:'isolated' }, counts: { sources:0, documents_ready:0, excel_pending:0, indicators:0, observations:0 }, readiness:{status:'empty',tasks:[]},modules:[] })
-    if (path.includes('/sources?')) return Response.json({ knowledge_base_id:props.workbench.knowledge_base_id,sources:[],datasets:[],total:0 })
-    if (path.endsWith('/source-imports')) return Response.json({imports:[]})
-    if (path.endsWith('/indicators')) return Response.json({indicators:[]})
-    if (options?.method === 'POST') return Response.json({id:'new-record',...body,revision:1})
-    return Response.json({items:[]})
+    const path = String(url)
+    calls.push({ url: path, method: options?.method || 'GET', headers: new Headers(options?.headers) })
+    const customized = extra?.(path, options); if (customized) return customized
+    if (path.endsWith('/overview')) return Response.json({ workbench: { id: props.workbench.id, knowledge_base_id: props.workbench.knowledge_base_id, workspace_mode: props.workbench.workspace_mode }, counts: { sources: 0, documents_ready: 0, excel_pending: 0, indicators: 0, observations: 0 }, readiness: { status: 'empty', tasks: [] }, modules: [] })
+    if (path.includes('/sources?')) return Response.json({ knowledge_base_id: props.workbench.knowledge_base_id, sources: [], total: 0 })
+    if (path.endsWith('/content')) return Response.json({ text: 'Real fixture source', supported: true })
+    throw new Error(`unexpected preparation request: ${options?.method || 'GET'} ${path}`)
   }
   const scope = effectScope()
   const view: any = scope.run(() => runInNewContext(code, {
-    computed, nextTick, ref, watch, defineProps:()=>props, defineEmits:()=>((...args:any[])=>emits.push(args)), defineExpose() {},
-    useAuthStore:()=>auth,useUploadTasksStore:()=>({enqueue:(input:any)=>batches.push(input)}),
-    createIsolatedResearchClient:(captured:any,current:any)=>createIsolatedResearchClient(captured,current,network),
-    updateResearchWorkbenchOnboarding:async (id:string,input:any)=>{guides.push({id,input});return {data:{...props.workbench,onboarding:{...props.workbench.onboarding,...input,tasks:{...props.workbench.onboarding.tasks,...input.tasks}}}}},
-    MessagePlugin:{info(){},success(){}}, workspaceErrorMessage:(error:any)=>error?.message || 'failed',
-    isolatedWorkbenchScope,templateById,workbenchModuleNames,observationChart,reusableTemplate,structureBody,structureDetails,structureTree,
-    buildUploadFileName:(file:any)=>file.webkitRelativePath||undefined,
-    window:{addEventListener(){},removeEventListener(){}},localStorage:{getItem:(key:string)=>stored.get(key)||null,setItem:(key:string,value:string)=>stored.set(key,value)},
-    setTimeout,clearTimeout,URL,Blob,JSON,Date,
-    onMounted(){},onBeforeUnmount:(fn:()=>void)=>cleanups.push(fn),
+    computed, nextTick, ref, watch, defineProps: () => props, defineEmits: () => ((...args: any[]) => emits.push(args)), defineExpose() {},
+    useRouter: () => ({ push: (location: unknown) => { routes.push(location); return Promise.resolve() } }),
+    useAuthStore: () => auth, useUploadTasksStore: () => ({ enqueue: (input: any) => batches.push(input) }),
+    createIsolatedResearchClient: (captured: any, current: any) => createIsolatedResearchClient(captured, current, network),
+    updateResearchWorkbenchOnboarding: async (id: string, input: any) => { guides.push({ id, input }); return { data: { ...props.workbench, onboarding: { ...props.workbench.onboarding, ...input, tasks: { ...props.workbench.onboarding.tasks, ...input.tasks } } } } },
+    MessagePlugin: { info() {} }, workspaceErrorMessage: (error: any) => error?.message || 'failed', buildUploadFileName: (file: any) => file.webkitRelativePath || undefined,
+    window: { addEventListener() {}, removeEventListener() {} }, setTimeout, clearTimeout,
+    onMounted() {}, onBeforeUnmount: (fn: () => void) => cleanups.push(fn),
   }))
-  return { props, auth, view, calls, guides, batches, emits, close(){cleanups.forEach(fn=>fn());scope.stop()} }
+  return { props, auth, view, calls, guides, batches, emits, routes, close() { cleanups.forEach(fn => fn()); scope.stop() } }
+}
+const workbook = { id: 'real-source', file_name: 'Fixture original.xlsx', parse_status: 'stored', knowledge_base_id: 'fresh-kb', folder_path: 'Original folder' }
+const textFile = { id: 'real-text', file_name: 'Source note.txt', parse_status: 'completed', knowledge_base_id: 'fresh-kb' }
+const ownSources: Extra = path => path.includes('/sources?') ? Response.json({ knowledge_base_id: 'fresh-kb', sources: [workbook, textFile], total: 2 }) : undefined
+
+for (const mode of ['isolated', 'legacy'] as const) {
+  test(`${mode} reads only scoped inventory and never confirms a second copy of KB research facts`, async () => {
+    const f = fixture(ownSources, mode)
+    try {
+      await ready()
+      assert.equal(f.view.guideVisible.value, mode === 'isolated')
+      assert.equal(f.view.sources.value.length, 2)
+      assert.equal(f.calls.length, 2)
+      assert.ok(f.calls.every(call => call.url.startsWith('/research/api/workbenches/fresh-workbench/') && call.method === 'GET'))
+      assert.ok(f.calls.every(call => call.headers.get('X-Knowledge-Base-ID') === 'fresh-kb'))
+      f.view.openStructured(f.view.sources.value[0]); f.view.openReview(); await f.view.load()
+      assert.ok(f.calls.every(call => call.method === 'GET'))
+      assert.equal(f.calls.some(call => /\/(imports|source-imports|indicators)(\/|\?|$)/.test(call.url)), false)
+      assert.deepEqual(plain(f.routes), [
+        { path: '/platform/knowledge-bases/fresh-kb/structured-data', query: { mode: 'import', source_knowledge_id: 'real-source' } },
+        { path: '/platform/knowledge-bases/fresh-kb/structured-data', query: { mode: 'import' } },
+      ])
+    } finally { f.close() }
+  })
 }
 
-test('a newly created workbench stays truly empty and requests only its own evidence', async () => {
-  const f=fixture()
+test('isolated guide persists personal progress without claiming data readiness', async () => {
+  const f = fixture()
   try {
-    await nextTick();await tick()
-    assert.equal(f.view.guideVisible.value,true)
-    assert.equal(f.view.overview.value.counts.indicators,0)
-    assert.equal(f.view.sources.value.length,0)
-    assert.ok(f.calls.length>=4)
-    assert.ok(f.calls.every(call=>call.url.startsWith('/research/api/workbenches/fresh-workbench/')))
-    assert.ok(f.calls.every(call=>call.method==='GET'))
-  } finally {f.close()}
+    await ready(); await f.view.guide('dismissed')
+    assert.equal(f.guides[0].id, 'fresh-workbench')
+    Object.assign(f.props.workbench, f.emits[0][1]); assert.equal(f.view.guideVisible.value, false)
+    f.view.openGuide(); await tick()
+    Object.assign(f.props.workbench, f.emits[1][1]); assert.equal(f.view.guideVisible.value, true)
+    assert.equal(f.view.overview.value.counts.indicators, 0)
+  } finally { f.close() }
 })
 
-test('dismissing and restoring the guide persists personal state without claiming business readiness', async () => {
-  const f=fixture()
+test('legacy guide and upload never call unsupported onboarding APIs', async () => {
+  const f = fixture(ownSources, 'legacy')
   try {
-    await nextTick();await tick()
-    await f.view.guide('dismissed')
-    assert.equal(f.guides[0].id,'fresh-workbench')
-    assert.equal(f.guides[0].input.status,'dismissed')
-    Object.assign(f.props.workbench,f.emits[0][1])
-    assert.equal(f.view.guideVisible.value,false)
-    await f.view.guide('active')
-    Object.assign(f.props.workbench,f.emits[1][1])
-    assert.equal(f.view.guideVisible.value,true)
-    assert.equal(f.view.overview.value.readiness.status,'empty')
-    assert.equal(f.view.overview.value.counts.indicators,0)
-  } finally {f.close()}
+    await ready(); f.view.openGuide()
+    assert.equal(f.view.drawer.value, 'sources'); assert.equal(f.view.guideVisible.value, false)
+    await f.view.guide('active', 'review')
+    f.view.selectFiles([{ name: 'Original.xlsx', size: 10 }]); f.view.enqueueFiles()
+    assert.equal(f.batches.length, 1); assert.deepEqual(f.guides, []); assert.deepEqual(f.emits, [])
+  } finally { f.close() }
 })
 
-test('file confirmation preserves relative paths and binds the real knowledge base without creating research results', async () => {
-  const f=fixture()
+test('native upload preserves folder paths, KB binding and non-Excel parsing', async () => {
+  const f = fixture()
   try {
-    await nextTick();await tick()
-    f.view.selectFiles([{name:'fixture.xlsx',size:10,webkitRelativePath:'fixture-folder/fixture.xlsx'}])
-    assert.equal(f.batches.length,0)
-    f.view.enqueueFiles()
-    assert.equal(f.batches.length,1)
-    assert.equal(f.batches[0].kbId,'fresh-kb')
-    assert.equal(f.batches[0].uploads[0].fileName,'fixture-folder/fixture.xlsx')
-    assert.equal(f.view.pendingFiles.value.length,0)
-    assert.equal(f.view.overview.value.counts.indicators,0)
-  } finally {f.close()}
+    await ready()
+    f.view.selectFiles([{ name: 'fixture.txt' }, { name: 'fixture.xlsx', webkitRelativePath: 'folder/fixture.xlsx' }, { name: 'fixture.png' }, { name: 'fixture.zip' }])
+    assert.equal(f.batches.length, 0); f.view.enqueueFiles()
+    assert.equal(f.batches.length, 2)
+    const ordinary = f.batches.find(batch => !batch.processConfig), originals = f.batches.find(batch => batch.processConfig?.source_only)
+    assert.deepEqual(Array.from(ordinary.uploads, (item: any) => item.file.name), ['fixture.txt', 'fixture.xlsx'])
+    assert.equal(ordinary.uploads[1].fileName, 'folder/fixture.xlsx')
+    assert.deepEqual(Array.from(originals.uploads, (item: any) => item.file.name), ['fixture.png', 'fixture.zip'])
+    assert.ok(f.batches.every(batch => batch.kbId === 'fresh-kb'))
+    assert.equal(f.view.pendingFiles.value.length, 0)
+    await tick()
+    f.view.saveVisualOriginals.value = false
+    f.view.selectFiles([{ name: 'native.png' }, { name: 'native.docx' }]); f.view.enqueueFiles()
+    assert.equal(f.batches.at(-1).processConfig, undefined)
+    assert.ok(f.calls.every(call => call.method === 'GET'))
+  } finally { f.close() }
 })
 
-test('creating a draft does not silently cite the last opened source and records the research task separately', async () => {
-  const f=fixture()
+test('stored originals do not falsely claim parsed or confirmed facts', () => {
+  const f = fixture()
   try {
-    await nextTick();await tick()
-    f.view.selectModule('notes');await tick()
-    f.view.editRecord()
-    f.view.recordTitle.value='test-only note';f.view.recordBody.value='user supplied content'
-    await f.view.saveRecord()
-    const request=f.calls.find(call=>call.method==='POST'&&call.url.endsWith('/notes'))!
-    assert.ok(request)
-    assert.deepEqual(request.body.source_ids,[])
-    assert.equal(request.body.status,'draft')
-    assert.equal(request.body.confirmed,false)
-    assert.equal(f.guides.at(-1).input.tasks.research,true)
-  } finally {f.close()}
+    assert.equal(f.view.sourceStatus(workbook), '原件已保存')
+    assert.equal(f.view.sourceStatus({ file_name: 'fixture.png', parse_status: 'stored' }), '原件已保存')
+    assert.equal(f.view.sourceStatus(textFile), '文档已解析')
+    assert.equal(f.view.isWorkbook({ file_name: 'fixture.png' }), false); assert.equal(f.view.isWorkbook(workbook), true)
+  } finally { f.close() }
 })
 
-test('identity changes clear file selections and old workbench content before another request', async () => {
-  const f=fixture()
+test('review and workbook actions route to one KB confirmation entry with the real source ID', async () => {
+  const f = fixture(ownSources)
   try {
-    await nextTick();await tick()
-    f.view.selectFiles([{name:'private-fixture.xlsx'}])
-    f.auth.user.id='other-test-user'
-    assert.equal(f.view.overview.value,null)
-    assert.equal(f.view.sources.value.length,0)
-    assert.equal(f.view.pendingFiles.value.length,0)
-    assert.equal(f.view.drawer.value,null)
-  } finally {f.close()}
+    await ready(); f.view.openStructured(workbook); f.view.openReview(); f.view.openKnowledgeBase()
+    assert.deepEqual(plain(f.routes), [
+      { path: '/platform/knowledge-bases/fresh-kb/structured-data', query: { mode: 'import', source_knowledge_id: workbook.id } },
+      { path: '/platform/knowledge-bases/fresh-kb/structured-data', query: { mode: 'import' } },
+      '/platform/knowledge-bases/fresh-kb',
+    ])
+    assert.ok(f.calls.every(call => call.method === 'GET')); assert.deepEqual(f.guides, [])
+  } finally { f.close() }
 })
 
-test('image and archive originals use source_only while ordinary text and Excel keep native behavior', async () => {
-  const f=fixture()
+test('external or unlisted sources cannot navigate or request content', async () => {
+  const f = fixture(ownSources)
   try {
-    await nextTick();await tick()
-    f.view.selectFiles([{name:'fixture.txt'},{name:'fixture.xlsx'},{name:'fixture.png'},{name:'fixture.zip'}])
-    f.view.enqueueFiles()
-    assert.equal(f.batches.length,2)
-    const ordinary=f.batches.find(batch=>!batch.processConfig)
-    const originals=f.batches.find(batch=>batch.processConfig?.source_only)
-    assert.deepEqual(Array.from(ordinary.uploads,(item:any)=>item.file.name),['fixture.txt','fixture.xlsx'])
-    assert.deepEqual(Array.from(originals.uploads,(item:any)=>item.file.name),['fixture.png','fixture.zip'])
-    assert.equal(originals.kbId,'fresh-kb')
-  } finally {f.close()}
+    await ready(); const before = f.calls.length
+    f.view.openStructured({ ...workbook, id: 'external-source', knowledge_base_id: 'external-kb' })
+    await f.view.showSource({ ...workbook, id: 'external-source', knowledge_base_id: 'external-kb' })
+    f.view.openStructured(textFile)
+    assert.deepEqual(f.routes, []); assert.equal(f.calls.length, before); assert.ok(f.view.drawerError.value)
+  } finally { f.close() }
 })
 
-test('native stored originals show format-specific readiness instead of treating images as Excel', async () => {
-  const f=fixture()
+test('scoped inventory is authoritative when rows omit redundant KB metadata', async () => {
+  const f = fixture(path => path.includes('/sources?') ? Response.json({ knowledge_base_id: 'fresh-kb', sources: [{ id: workbook.id, file_name: workbook.file_name }], total: 1 }) : undefined)
   try {
-    assert.equal(f.view.sourceStatus({file_name:'fixture.xlsx',parse_status:'stored'}),'待结构化解析')
-    assert.equal(f.view.sourceStatus({file_name:'fixture.png',parse_status:'stored'}),'原件已保存')
-    assert.equal(f.view.sourceStatus({file_name:'fixture.zip',parse_status:'stored'}),'原件已保存')
-    assert.equal(f.view.isWorkbook({file_name:'fixture.png'}),false)
-    assert.equal(f.view.isWorkbook({file_name:'fixture.xlsx'}),true)
-  } finally {f.close()}
+    await ready(); f.view.openStructured(f.view.sources.value[0])
+    assert.equal(f.routes[0].query.source_knowledge_id, workbook.id)
+    assert.equal(f.routes[0].path, '/platform/knowledge-bases/fresh-kb/structured-data')
+  } finally { f.close() }
 })
 
-test('a new-record click event cannot be interpreted as an existing record to PATCH', async () => {
-  const f=fixture()
-  try {
-    await nextTick();await tick()
-    f.view.selectModule('notes');await tick()
-    f.view.editRecord({type:'click',target:{}})
-    f.view.recordTitle.value='test-only click-created note'
-    await f.view.saveRecord()
-    assert.ok(f.calls.some(call=>call.method==='POST'&&call.url.endsWith('/notes')))
-    assert.equal(f.calls.some(call=>call.method==='PATCH'),false)
-  } finally {f.close()}
+test('a conflicting inventory or mode never becomes visible', async () => {
+  for (const changed of ['container-kb', 'row-kb', 'mode']) {
+    const f = fixture(path => {
+      if (changed === 'mode' && path.endsWith('/overview')) return Response.json({ workbench: { id: 'fresh-workbench', knowledge_base_id: 'fresh-kb', workspace_mode: 'legacy' } })
+      if (path.includes('/sources?')) return Response.json({ knowledge_base_id: changed === 'container-kb' ? 'external-kb' : 'fresh-kb', sources: [{ ...workbook, knowledge_base_id: changed === 'row-kb' ? 'external-kb' : 'fresh-kb' }], total: 1 })
+    })
+    try { await ready(); assert.equal(f.view.sources.value.length, 0); assert.equal(f.view.overview.value, null); assert.ok(f.view.error.value) }
+    finally { f.close() }
+  }
 })
 
+test('source preview ignores late content from a previously selected file', async () => {
+  let first!: (response: Response) => void
+  const f = fixture(path => path.endsWith('/sources/real-source/content') ? new Promise(resolve => { first = resolve }) : ownSources(path))
+  try {
+    await ready(); const a = f.view.showSource(workbook); await f.view.showSource(textFile)
+    first(Response.json({ text: 'Obsolete selected content', supported: true })); await a
+    assert.equal(f.view.selectedSource.value.id, textFile.id)
+    assert.equal(f.view.sourceContent.value.text, 'Real fixture source'); assert.equal(f.view.sourceContentLoading.value, false)
+  } finally { f.close() }
+})
 
-test('rapid import, sheet and dataset selection ignores late responses within the same workbench',async()=>{
-  let importA!:(value:Response)=>void,sheetA!:(value:Response)=>void,datasetA!:(value:Response)=>void
-  const f=fixture(path=>{
-    if(path.endsWith('/source-imports/import-a'))return new Promise(resolve=>{importA=resolve})
-    if(path.endsWith('/source-imports/import-b'))return Response.json({import_id:'import-b',sheets:[]})
-    if(path.endsWith('/sheet?name=sheet-a'))return new Promise(resolve=>{sheetA=resolve})
-    if(path.endsWith('/sheet?name=sheet-b'))return Response.json({mapping:{sheet:'sheet-b',blocks:[]}})
-    if(path.includes('/datasets/dataset-a/'))return new Promise(resolve=>{datasetA=resolve})
-    if(path.includes('/datasets/dataset-b/'))return Response.json({series:[{series_id:'field-b'}],total:1,next_offset:null})
+test('identity changes synchronously clear files, content and late source responses', async () => {
+  let first!: (response: Response) => void
+  const f = fixture(path => path.endsWith('/sources/real-source/content') ? new Promise(resolve => { first = resolve }) : ownSources(path))
+  try {
+    await ready(); const preview = f.view.showSource(workbook)
+    f.view.selectFiles([{ name: 'private-fixture.xlsx' }]); f.auth.user.id = 'other-test-user'
+    assert.equal(f.view.overview.value, null); assert.equal(f.view.sources.value.length, 0)
+    assert.equal(f.view.pendingFiles.value.length, 0); assert.equal(f.view.drawer.value, null)
+    first(Response.json({ text: 'Previous account content', supported: true })); await preview
+    assert.equal(f.view.sourceContent.value, null)
+  } finally { f.close() }
+})
+
+test('refresh displays canonical KB counts without writing a research confirmation', async () => {
+  let confirmed = false
+  const f = fixture(path => {
+    if (path.endsWith('/overview')) return Response.json({ workbench: { id: 'fresh-workbench', knowledge_base_id: 'fresh-kb', workspace_mode: 'isolated' }, counts: { sources: 1, documents_ready: 0, excel_pending: confirmed ? 0 : 1, indicators: confirmed ? 3 : 0, observations: confirmed ? 9 : 0 }, readiness: { status: confirmed ? 'ready' : 'preparing', tasks: [] }, modules: [] })
+    return ownSources(path)
   })
-  try{
-    await nextTick();await tick()
-    const first=f.view.openImport('import-a');await f.view.openImport('import-b');importA(Response.json({import_id:'import-a',sheets:[]}));await first
-    assert.equal(f.view.activeImport.value.import_id,'import-b')
-    const oldSheet=f.view.chooseSheet('sheet-a');await f.view.chooseSheet('sheet-b');sheetA(Response.json({mapping:{sheet:'sheet-a',blocks:[]}}));await oldSheet
-    assert.equal(f.view.mapping.value.sheet,'sheet-b')
-    const oldDataset=f.view.openDataset({dataset_id:'dataset-a'});await f.view.openDataset({dataset_id:'dataset-b'});datasetA(Response.json({series:[{series_id:'field-a'}],total:1,next_offset:null}));await oldDataset
-    assert.equal(f.view.activeDataset.value,'dataset-b')
-    assert.equal(f.view.datasetSeries.value[0].series_id,'field-b')
-  }finally{f.close()}
+  try {
+    await ready(); assert.equal(f.view.overview.value.counts.observations, 0)
+    f.view.openStructured(workbook); confirmed = true; await f.view.load()
+    assert.equal(f.view.overview.value.counts.indicators, 3); assert.equal(f.view.overview.value.counts.observations, 9)
+    assert.ok(f.calls.every(call => call.method === 'GET'))
+  } finally { f.close() }
 })
 
-test('late trend pages cannot replace the selected indicator, while compare keeps two requested series',async()=>{
-  const deferred=new Map<string,(response:Response)=>void>()
-  const f=fixture(path=>{if(path.includes('/observations?'))return new Promise(resolve=>deferred.set(path.includes('/field-a/')?'field-a':'field-b',resolve))})
-  const response=(id:string)=>Response.json({indicator:{series_id:id,name:id,unit:'test-unit'},observations:[],total:0,next_offset:null})
-  try{
-    await nextTick();await tick();f.view.selectModule('data')
-    const a=f.view.showObservations({series_id:'field-a'}),b=f.view.showObservations({series_id:'field-b'})
-    deferred.get('field-b')!(response('field-b'));await b;deferred.get('field-a')!(response('field-a'));await a
-    assert.deepEqual(Array.from(f.view.observationPanels.value,(panel:any)=>panel.indicator.series_id),['field-b'])
-    f.view.selectModule('compare')
-    const compareA=f.view.showObservations({series_id:'field-a'}),compareB=f.view.showObservations({series_id:'field-b'})
-    deferred.get('field-b')!(response('field-b'));await compareB;deferred.get('field-a')!(response('field-a'));await compareA
-    assert.deepEqual(Array.from(f.view.observationPanels.value,(panel:any)=>panel.indicator.series_id),['field-a','field-b'])
-  }finally{f.close()}
+test('pagination rejects a foreign continuation and can retry the same source page', async () => {
+  let rejectPage = true
+  const f = fixture(path => path.includes('/sources?') ? Response.json(path.includes('page=2') ? { knowledge_base_id: rejectPage ? 'external-kb' : 'fresh-kb', sources: [{ ...textFile, id: 'next-source' }], total: 2 } : { knowledge_base_id: 'fresh-kb', sources: [workbook], total: 2 }) : undefined)
+  try {
+    await ready(); await f.view.moreSources()
+    assert.deepEqual(Array.from(f.view.sources.value, (item: any) => item.id), [workbook.id])
+    assert.equal(f.view.sourcePage.value, 1); assert.ok(f.view.drawerError.value)
+    rejectPage = false; await f.view.moreSources()
+    assert.deepEqual(Array.from(f.view.sources.value, (item: any) => item.id), [workbook.id, 'next-source'])
+    assert.equal(f.view.sourcePage.value, 2)
+  } finally { f.close() }
 })
 
-test('export pagination includes records beyond the first response and rejects incomplete fragments',async()=>{
-  const f=fixture(path=>{
-    if(path.includes('/notes?offset=0'))return Response.json({items:[{id:'one'},{id:'two'}],total:3,truncated:true})
-    if(path.includes('/notes?offset=2'))return Response.json({items:[{id:'three'}],total:3,truncated:false})
-    if(path.includes('/briefs?'))return Response.json({items:[],total:3,truncated:true})
-  })
-  try{
-    await nextTick();await tick()
-    const all=await f.view.allRecords(f.view.client(),'/notes','items')
-    assert.deepEqual(Array.from(all,(item:any)=>item.id),['one','two','three'])
-    await assert.rejects(f.view.allRecords(f.view.client(),'/briefs','items'),/未完整/)
-  }finally{f.close()}
+test('leaving before the scheduled load performs no orphaned API request', async () => {
+  const f = fixture(); f.close(); await ready(); assert.deepEqual(f.calls, [])
 })

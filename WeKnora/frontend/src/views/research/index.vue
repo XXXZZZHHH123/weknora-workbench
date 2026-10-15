@@ -1,27 +1,29 @@
 <template>
-  <div class="research-workspace" :class="{ 'research-workspace--isolated': isIsolated }">
-    <div v-if="!workbenchId || workbench" class="research-toolbar">
+  <div class="research-workspace" :class="{ 'research-workspace--isolated': Boolean(workbench) }">
+    <div v-if="workbench" class="research-toolbar">
       <router-link v-if="workbenchId" class="research-back" to="/platform/research-workbenches" aria-label="返回研究工作台列表">
         <t-icon name="chevron-left" />研究工作台
       </router-link>
-      <strong>{{ isIsolated ? workbench?.name : '商品研究' }}</strong><span>{{ isIsolated ? (workbench?.knowledge_base_name || '绑定知识库') : '当前空间的研究数据与个人判断' }}</span>
-      <t-button v-if="isIsolated" class="research-materials" variant="text" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
+      <strong>{{ workbench.name }}</strong><span>{{ workbench.knowledge_base_name || '绑定知识库' }}</span>
+      <t-button class="research-materials" variant="text" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
       <t-button v-if="isIsolated" variant="text" size="small" @click="isolatedView?.openGuide()" aria-label="重新打开新手引导">新手引导</t-button>
-      <router-link v-else class="research-materials" to="/platform/materials?purpose=research&add=1">添加研究资料</router-link>
       <router-link v-if="workbench?.knowledge_base_id" :to="`/platform/knowledge-bases/${workbench.knowledge_base_id}`">转到知识库</router-link>
       <t-button variant="outline" size="small" :disabled="!canShowResearch" :aria-expanded="chatVisible"
         aria-controls="research-chat-panel" @click="openChat">问答助手</t-button>
     </div>
     <div class="research-body">
       <div class="research-canvas">
-      <IsolatedResearchWorkbench v-if="canShowResearch && isIsolated && workbench" :key="scopeGeneration" ref="isolatedView" :workbench="workbench" @open-chat="openChat" @navigate="navigateResearch" @refresh="restartSession" @update-workbench="applyWorkbenchUpdate" />
+      <IsolatedResearchWorkbench v-if="canShowResearch && workbench" :key="scopeGeneration" ref="isolatedView" :workbench="workbench" @open-chat="openChat" @navigate="navigateResearch" @refresh="restartSession" @update-workbench="applyWorkbenchUpdate" />
       <iframe v-if="canShowResearch" :key="generation" ref="frame" :src="bootstrapUrl"
         title="商品研究工作台" @load="sendAuth" />
       <div v-else-if="workbenchLoading" class="research-empty" role="status">正在打开研究工作台…</div>
       <div v-else-if="workbenchError" class="research-empty" role="alert">
         <p>{{ workbenchError }}</p><t-button variant="outline" @click="loadWorkbench">重试</t-button>
       </div>
-      <div v-else class="research-empty">请先选择空间。</div>
+      <div v-else class="research-empty">
+        <p>{{ auth.token && tenantId ? '请先选择一个研究工作台，使用它绑定的知识库。' : '请先登录并选择空间。' }}</p>
+        <router-link v-if="auth.token && tenantId" to="/platform/research-workbenches">选择研究工作台</router-link>
+      </div>
       </div>
       <ResearchChatPanel v-if="chatMounted && canShowResearch" :key="scopeGeneration" :visible="chatVisible"
         :kb-id="workbench?.knowledge_base_id || ''" :kb-name="workbench?.knowledge_base_name || ''"
@@ -54,26 +56,23 @@ const chatVisible = ref(false)
 const researchView = ref('home')
 let requestGeneration = 0
 const isIsolated = computed(() => workbench.value?.workspace_mode === 'isolated')
-const canShowResearch = computed(() => Boolean(auth.token && tenantId.value && (!workbenchId.value || workbench.value)))
+const canShowResearch = computed(() => Boolean(auth.token && tenantId.value && workbenchId.value && workbench.value))
 const bootstrapUrl = computed(() => {
-  if (isIsolated.value && workbenchId.value) {
-    return `/research/auth/bootstrap?session=${generation.value}&workbench_id=${encodeURIComponent(workbenchId.value)}&view=${researchView.value}`
-  }
-  const source=typeof route.query.source==='string' && /^[a-f0-9]{64}$/.test(route.query.source) ? route.query.source : ''
-  const indicator = typeof route.query.indicator === 'string' ? route.query.indicator : ''
-  return `/research/auth/bootstrap?session=${generation.value}${source ? '&source='+source : indicator ? '&indicator='+encodeURIComponent(indicator) : ''}`
+  if (!canShowResearch.value) return ''
+  return `/research/auth/bootstrap?session=${generation.value}&workbench_id=${encodeURIComponent(workbenchId.value)}&view=${researchView.value}`
 })
 function restartSession() { generation.value += 1 }
 function openChat() { chatMounted.value = true; chatVisible.value = true }
 function navigateResearch(view: string) {
-  if (!isIsolated.value || !['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(view)) return
+  if (!canShowResearch.value || !['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(view)) return
   researchView.value = view
   restartSession()
 }
 function applyWorkbenchUpdate(updated: ResearchWorkbench) {
   const current = workbench.value
   if (!current || updated?.id !== current.id || updated.id !== workbenchId.value
-      || updated.knowledge_base_id !== current.knowledge_base_id || updated.workspace_mode !== 'isolated') {
+      || updated.knowledge_base_id !== current.knowledge_base_id || !['legacy', 'isolated'].includes(current.workspace_mode)
+      || updated.workspace_mode !== current.workspace_mode) {
     requestGeneration++
     scopeGeneration.value++
     workbench.value = null
@@ -109,14 +108,14 @@ function sendAuth() {
   if (!auth.token || !tenantId.value || !canShowResearch.value) return
   frame.value?.contentWindow?.postMessage({
     type: 'research-auth', token: auth.token, tenantId: tenantId.value,
-    ...(isIsolated.value ? { workbenchId: workbenchId.value } : {}),
+    workbenchId: workbenchId.value,
   }, window.location.origin)
 }
 function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function receive(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
-  if (isIsolated.value && event.data?.type === 'research-open-sources') { isolatedView.value?.openSources(); return }
-  if (isIsolated.value && event.data?.type === 'research-open-guide') { isolatedView.value?.openGuide(); return }
+  if (canShowResearch.value && event.data?.type === 'research-open-sources') { isolatedView.value?.openSources(); return }
+  if (canShowResearch.value && event.data?.type === 'research-open-guide') { isolatedView.value?.openGuide(); return }
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'workspace-theme-request') {
     if (event.data.mode === 'light' || event.data.mode === 'dark') setTheme(event.data.mode)

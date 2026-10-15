@@ -215,3 +215,39 @@ test('a verified onboarding update keeps the original workbench scope', async ()
     assert.equal(new URL(f.view.bootstrapUrl.value, 'https://test.local').searchParams.get('workbench_id'), 'workbench-a')
   } finally { f.close() }
 })
+
+test('legacy frames authenticate with their workbench ID and can open the same source preparation', async () => {
+  const f = fixture()
+  try {
+    await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'legacy' } })
+    await new Promise(setImmediate)
+    assert.equal(new URL(f.view.bootstrapUrl.value, 'https://test.local').searchParams.get('workbench_id'), 'workbench-a')
+    let sources = 0
+    const messages: any[] = []
+    f.view.isolatedView.value = { openSources() { sources++ } }
+    f.view.frame.value = { contentWindow: { postMessage: (...args: unknown[]) => messages.push(args) } }
+    const event = { origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-ready' } }
+    f.view.receive(event)
+    assert.equal(messages[0][0].workbenchId, 'workbench-a')
+    f.view.receive({ ...event, data: { type: 'research-open-sources' } })
+    assert.equal(sources, 1)
+    f.view.applyUpdateEvent({ id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'legacy', name: 'Updated name' })
+    assert.equal(f.view.canShowResearch.value, true)
+    assert.equal(f.view.workbench.value.name, 'Updated name')
+  } finally { f.close() }
+})
+
+test('an integration route without a workbench never opens tenant-wide research facts', async () => {
+  const f = fixture()
+  try {
+    f.route.params.workbenchId = ''
+    await nextTick()
+    assert.equal(f.view.canShowResearch.value, false)
+    assert.equal(f.view.bootstrapUrl.value, '')
+    const messages: unknown[] = []
+    f.view.frame.value = { contentWindow: { postMessage: (...args: unknown[]) => messages.push(args) } }
+    f.view.receive({ origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-ready' } })
+    assert.deepEqual(messages, [])
+  } finally { f.close() }
+})
