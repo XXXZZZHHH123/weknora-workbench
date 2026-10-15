@@ -9,6 +9,9 @@ class Identity:
     display_name: str
     tenant_id: int
     role: str
+    workbench_id: str = ""
+    knowledge_base_id: str = ""
+    knowledge_base_tenant_id: int = 0
 
     @property
     def can_write(self):

@@ -171,7 +171,63 @@ def read_research(session, body: ReadRequest):
 
 @router.post("/api/tools/read")
 def research_read(body: ReadRequest):
-    if current_identity.get() is None:
+    identity = current_identity.get()
+    if identity is None:
         raise HTTPException(401, "缺少已核验研究身份")
+    if identity.workbench_id:
+        from tin.integration.workbench_scope import service_scope, workbench_session
+        with workbench_session(service_scope(identity)) as session:
+            return read_isolated_research(session, body, identity.workbench_id)
     with SessionLocal() as session:
         return read_research(session, body)
+
+
+def read_isolated_research(session, body: ReadRequest, workbench_id: str):
+    """Actual scoped facts for model tools; never initializes legacy research."""
+    from tin.web.workbenches import fact_counts, indicator_payload, observation_payload, observation_rows
+    base = {"operation": body.operation.value, "workbench_id": workbench_id,
+            "knowledge_base_id": session.info["knowledge_base_id"], "requested_date": body.date,
+            "notice": "只读取当前独立工作台已确认的事实与本人研究；不代表实时行情。"}
+    if body.operation == Operation.indicators:
+        rows = session.scalars(select(Indicator).order_by(Indicator.series_id)).all()
+        if body.search:
+            rows = [row for row in rows if body.search.casefold() in
+                    " ".join((row.name, row.series_id, row.source)).casefold()]
+        return {**base, "indicators": [indicator_payload(r) for r in rows[body.offset:body.offset + body.limit]],
+                "total": len(rows), "offset": body.offset, "truncated": len(rows) > body.offset + body.limit}
+    if body.operation == Operation.series:
+        if not body.series_id:
+            raise HTTPException(400, "读取序列必须先提供本工作台真实指标 ID")
+        return {**base, "data": observation_rows(session, body.series_id, workbench_id,
+                    offset=body.offset, limit=body.limit, through=body.date)}
+    if body.operation == Operation.summary:
+        versions = select(Observation.series_id, Observation.as_of,
+                          func.max(Observation.revision).label('revision')).where(Observation.status == '正常')
+        all_revisions = select(func.count()).select_from(Observation)
+        if body.date:
+            versions = versions.where(Observation.as_of < day_end(body.date))
+            all_revisions = all_revisions.where(Observation.as_of < day_end(body.date))
+        versions = versions.group_by(Observation.series_id, Observation.as_of).subquery()
+        total = session.scalar(select(func.count()).select_from(versions))
+        query = select(Observation).join(versions, and_(Observation.series_id == versions.c.series_id,
+            Observation.as_of == versions.c.as_of, Observation.revision == versions.c.revision)).where(
+                Observation.status == '正常').order_by(Observation.as_of.desc(), Observation.series_id)
+        rows = session.scalars(query.offset(body.offset).limit(body.limit)).all()
+        counts = {**fact_counts(session), 'observations': total, 'current_observations': total,
+                  'all_observation_revisions': session.scalar(all_revisions)}
+        return {**base, "counts": counts, "observations": [
+            {"series_id": row.series_id, **observation_payload(session, row, workbench_id)} for row in rows],
+            'total': total, "offset": body.offset, "limit": body.limit,
+            'truncated': body.offset + len(rows) < total,
+            'next_offset': body.offset + len(rows) if body.offset + len(rows) < total else None}
+    if body.operation in {Operation.judgment, Operation.brief, Operation.strategies}:
+        from tin.integration.workbench_scope import current_workbench
+        from tin.web.workbench_artifacts import list_owned_artifacts
+        module = {Operation.judgment: "judgments", Operation.brief: "briefs", Operation.strategies: "strategies"}[body.operation]
+        data = list_owned_artifacts(session, current_workbench.get(), module, body.limit, body.offset)
+        return {**base, "data": data, "temporal_scope": "current_manual_records",
+                "requested_date_applied": False,
+                "notice": "当前本人手工研究记录含草稿和已确认状态，按最新版本列出；请求日期未用于筛选，"
+                          "不代表该日历史版本、当时可知信息或交易判断回放。"}
+    return {**base, "signals": [], "total": 0,
+            "gap": "本工作台尚无已配置并计算的条件监测结果"}

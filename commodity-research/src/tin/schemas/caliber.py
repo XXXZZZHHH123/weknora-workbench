@@ -13,7 +13,7 @@ from tin.caliber.dictionary import (
 
 
 class Caliber(BaseModel):
-    """一个数字的度量前提。time_type 必填；其余维度按指标适用填写，取值受口径字典约束。"""
+    """一个数字的度量前提；原表日期不声明发布时间或当时可知性。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

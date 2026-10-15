@@ -150,10 +150,13 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
             if path == "/api/tools/read":
                 from tin.integration.service_auth import verify_service_request
                 identity = await verify_service_request(request)
-            elif (path.startswith("/api/library") or (path == "/api/sn/indicators/catalog" and request.method == "GET")) and request.headers.get("authorization", "").startswith("Bearer "):
+            elif (path.startswith("/api/library") or path.startswith("/api/workbenches/")
+                  or (path == "/api/sn/indicators/catalog" and request.method == "GET")) and request.headers.get("authorization", "").startswith("Bearer "):
                 if request.method not in {"GET", "HEAD", "OPTIONS"} and not _same_origin(request):
                     raise HTTPException(403, "请求来源不匹配")
                 identity = await verify_bearer(request.headers["authorization"][7:], request.headers.get("x-tenant-id"))
+                if path.startswith("/api/workbenches/") and request.method not in {"GET", "HEAD", "OPTIONS"} and not identity.can_write:
+                    raise HTTPException(403, "当前空间角色只有读取权限")
                 expected_user = request.headers.get("x-research-user")
                 if expected_user and expected_user != identity.user_id:
                     raise HTTPException(403, "当前页面的账号已改变，请重新打开资料中心")

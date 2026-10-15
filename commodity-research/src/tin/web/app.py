@@ -163,11 +163,17 @@ from tin.web.materials import router as materials_router
 from tin.web.refresh import router as refresh_router
 from tin.web.library import router as library_router
 from tin.provenance.router import router as sources_router
+from tin.web.workbenches import router as workbench_router
 app.include_router(research_read_router)
 app.include_router(materials_router)
 app.include_router(refresh_router)
 app.include_router(library_router)
 app.include_router(sources_router)
+app.include_router(workbench_router)
+from tin.web.workbench_artifacts import router as workbench_artifacts_router
+app.include_router(workbench_artifacts_router)
+from tin.web.workbench_sources import router as workbench_sources_router
+app.include_router(workbench_sources_router)
 
 
 @app.on_event('startup')

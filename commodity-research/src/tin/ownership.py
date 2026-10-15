@@ -102,6 +102,10 @@ def scoped_directory(base, *, session: Session | None = None, personal: bool = F
     if isinstance(tenant, bool) or not isinstance(tenant, int) or tenant <= 0:
         raise PermissionError("Invalid workspace identity")
     path = Path(base) / "workspaces" / str(tenant)
+    workbench = info.get("workbench_id")
+    if workbench:
+        from tin.integration.workbench_scope import canonical_workbench_id
+        path = path / "workbenches" / canonical_workbench_id(workbench)
     if personal:
         if not user:
             raise PermissionError("Verified user identity is required")
