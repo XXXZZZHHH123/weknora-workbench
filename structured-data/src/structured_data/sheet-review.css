@@ -10,7 +10,7 @@ main{max-width:1660px}
 .sheet-tabs{display:flex;gap:3px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:thin;scrollbar-color:#cbd7cf transparent}
 .sheet-tabs::-webkit-scrollbar{height:4px}
 .sheet-tabs::-webkit-scrollbar-thumb{background:#cbd7cf;border-radius:4px}
-.sheet-tab{display:flex;align-items:center;gap:8px;flex:0 0 auto;min-width:115px;max-width:200px;height:36px;text-align:left;padding:6px 12px;background:var(--surface-soft);color:var(--muted);border:1px solid transparent;border-bottom:0;border-radius:7px 7px 0 0;position:relative}
+.sheet-tab{display:flex;align-items:center;gap:8px;flex:0 0 auto;min-width:115px;max-width:200px;height:36px;text-align:left;padding:6px 12px;background:color-mix(in srgb,var(--line) 25%,var(--surface-soft));color:var(--muted);border:1px solid transparent;border-bottom:0;border-radius:7px 7px 0 0;position:relative;box-shadow:0 1px 2px rgb(32 52 71 / 10%),inset 0 1px 0 rgb(255 255 255 / 60%)}
 .sheet-tab[aria-pressed=true]{background:var(--paper);border-color:var(--line);color:var(--text)}
 .sheet-tab:hover,.sheet-tab:active,.sheet-filters button:hover{background:var(--soft);color:var(--text);border-color:var(--line-strong)}
 .sheet-tab[aria-pressed=true]:before{content:'';position:absolute;height:2px;background:var(--primary,#24477f);left:10px;right:10px;top:0}
