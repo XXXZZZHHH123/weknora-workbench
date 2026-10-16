@@ -136,9 +136,15 @@ func TestBatchEmbeddingDoesNotRetryPermanentHTTPFailures(t *testing.T) {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
 			cause := &api.HTTPError{StatusCode: code, Body: "rejected"}
 			embedder := &failingPhaseEmbedder{err: fmt.Errorf("upstream: %w", cause)}
-			_, err := batchEmbedWithBackoff(context.Background(), embedder, []string{"source"})
+			repo := &failingPhaseRepository{}
+			service := &KeywordsVectorHybridRetrieveEngineService{indexRepository: repo}
+			err := service.BatchIndex(context.Background(), embedder, phaseIndexRows(1), []types.RetrieverType{types.VectorRetrieverType})
 			require.ErrorIs(t, err, cause)
 			require.Equal(t, 1, embedder.calls)
+			require.Zero(t, repo.calls.Load())
+			var phaseErr *IndexingError
+			require.ErrorAs(t, err, &phaseErr)
+			require.Equal(t, IndexingPhaseEmbedding, phaseErr.Phase)
 		})
 	}
 }
@@ -150,36 +156,33 @@ func TestBatchEmbeddingStopsOnCancellationAndSSRFRejection(t *testing.T) {
 	} {
 		t.Run(cause.Error(), func(t *testing.T) {
 			embedder := &failingPhaseEmbedder{err: fmt.Errorf("request blocked: %w", cause)}
-			_, err := batchEmbedWithBackoff(context.Background(), embedder, []string{"source"})
+			repo := &failingPhaseRepository{}
+			service := &KeywordsVectorHybridRetrieveEngineService{indexRepository: repo}
+			err := service.BatchIndex(context.Background(), embedder, phaseIndexRows(1), []types.RetrieverType{types.VectorRetrieverType})
 			require.ErrorIs(t, err, cause)
 			require.Equal(t, 1, embedder.calls)
+			require.Zero(t, repo.calls.Load())
 		})
 	}
 }
 
-type recoveringPhaseEmbedder struct {
-	failingPhaseEmbedder
-}
-
-func (e *recoveringPhaseEmbedder) BatchEmbedWithPool(ctx context.Context, model embedding.Embedder, texts []string) ([][]float32, error) {
-	if e.calls > 0 {
-		e.err = nil
-	}
-	return e.failingPhaseEmbedder.BatchEmbedWithPool(ctx, model, texts)
-}
-
-func TestBatchEmbeddingStillRetriesTransientFailures(t *testing.T) {
+func TestBatchEmbeddingLeavesTransientRetriesToProtocolLayer(t *testing.T) {
 	for _, cause := range []error{
 		&api.HTTPError{StatusCode: http.StatusTooManyRequests, Body: "slow down"},
 		&api.HTTPError{StatusCode: http.StatusServiceUnavailable, Body: "unavailable"},
 		&api.TransportError{Op: "send request", Err: errors.New("connection reset")},
 	} {
 		t.Run(cause.Error(), func(t *testing.T) {
-			embedder := &recoveringPhaseEmbedder{failingPhaseEmbedder: failingPhaseEmbedder{err: cause}}
-			vectors, err := batchEmbedWithBackoff(context.Background(), embedder, []string{"source"})
-			require.NoError(t, err)
-			require.Equal(t, [][]float32{{1}}, vectors)
-			require.Equal(t, 2, embedder.calls)
+			embedder := &failingPhaseEmbedder{err: cause}
+			repo := &failingPhaseRepository{}
+			service := &KeywordsVectorHybridRetrieveEngineService{indexRepository: repo}
+			err := service.BatchIndex(context.Background(), embedder, phaseIndexRows(1), []types.RetrieverType{types.VectorRetrieverType})
+			require.ErrorIs(t, err, cause)
+			require.Equal(t, 1, embedder.calls, "protocol requests own retries; never replay a whole embedding pool")
+			require.Zero(t, repo.calls.Load())
+			var phaseErr *IndexingError
+			require.ErrorAs(t, err, &phaseErr)
+			require.Equal(t, IndexingPhaseEmbedding, phaseErr.Phase)
 		})
 	}
 }
