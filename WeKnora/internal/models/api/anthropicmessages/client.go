@@ -108,7 +108,7 @@ func (c *Client) Chat(ctx context.Context, messages []api.Message, opts *api.Opt
 		// Claude's own models all accept images, but this protocol is also
 		// the compatibility surface of vendors whose text-only models do
 		// not, and the other three clients already degrade this way.
-		if api.IsMultimodalNotSupportedError(err) {
+		if (opts == nil || !opts.DisableImageFallback) && api.IsMultimodalNotSupportedError(err) {
 			logger.Warnf(ctx, "[LLM Request] Model %s does not support multimodal, retrying without images",
 				c.cfg.Endpoint.Model)
 			resp, err = c.send(ctx, api.StripImagesFromMessages(messages), opts, false)
@@ -143,7 +143,7 @@ func (c *Client) ChatStream(
 	ctx, cancel := api.WithLLMTimeout(ctx, api.DefaultStreamTimeout)
 	resp, err := c.send(ctx, messages, opts, true)
 	if err != nil {
-		if api.IsMultimodalNotSupportedError(err) {
+		if (opts == nil || !opts.DisableImageFallback) && api.IsMultimodalNotSupportedError(err) {
 			logger.Warnf(ctx, "[LLM Stream] Model %s does not support multimodal, retrying without images",
 				c.cfg.Endpoint.Model)
 			resp, err = c.send(ctx, api.StripImagesFromMessages(messages), opts, true)

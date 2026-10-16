@@ -5,19 +5,24 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 	"unicode"
 
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
+	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
+	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"github.com/gin-gonic/gin"
 	_ "golang.org/x/image/webp"
 )
@@ -129,16 +134,26 @@ func WorkspaceDiagramGenerator(workspaces *WorkspaceHandler, models *ModelHandle
 		}
 		client, err := models.service.GetChatModel(ctx, input.ModelID)
 		if err != nil || client == nil {
-			_ = c.Error(apperrors.NewServiceUnavailableError("模型初始化失败，请检查模型配置"))
+			class, status := workspaceDiagramCallError(err)
+			workspaceDiagramFailure(c, "model_initialization", class, status)
 			return
 		}
 		message := chat.Message{Role: "user", Content: input.Prompt}
 		if input.Image != "" {
 			message.Images = []string{input.Image}
 		}
-		response, err := client.Chat(ctx, []chat.Message{{Role: "system", Content: workspaceDiagramSystem}, message}, &chat.ChatOptions{MaxTokens: workspaceDiagramTokens})
-		if err != nil || response == nil || strings.TrimSpace(response.Content) == "" || len(response.Content) > 2*1024*1024 || len(response.ToolCalls) > 0 {
-			_ = c.Error(apperrors.NewServiceUnavailableError("模型未生成有效配置，请调整资料后重试"))
+		response, err := client.Chat(ctx, []chat.Message{{Role: "system", Content: workspaceDiagramSystem}, message}, &chat.ChatOptions{MaxTokens: workspaceDiagramTokens, DisableImageFallback: input.Image != ""})
+		if err != nil {
+			class, status := workspaceDiagramCallError(err)
+			workspaceDiagramFailure(c, "completion", class, status)
+			return
+		}
+		if response == nil || strings.TrimSpace(response.Content) == "" {
+			workspaceDiagramFailure(c, "response_validation", "empty_response", 0)
+			return
+		}
+		if len(response.Content) > 2*1024*1024 || len(response.ToolCalls) > 0 {
+			workspaceDiagramFailure(c, "response_validation", "invalid_response", 0)
 			return
 		}
 		current, err := workspaces.service.GetWorkbench(ctx, c.Param("id"))
@@ -152,4 +167,38 @@ func WorkspaceDiagramGenerator(workspaces *WorkspaceHandler, models *ModelHandle
 		}
 		workspaceReply(c, gin.H{"content": response.Content, "model_id": model.ID}, nil)
 	}
+}
+
+// Classify typed errors only. Provider bodies and arbitrary error strings may
+// contain credentials, URLs or prompts and must never become public diagnostics.
+func workspaceDiagramCallError(err error) (string, int) {
+	var upstream *api.HTTPError
+	if errors.As(err, &upstream) && upstream != nil && upstream.StatusCode >= 400 && upstream.StatusCode <= 599 {
+		return "provider_http_error", upstream.StatusCode
+	}
+	var network net.Error
+	switch {
+	case errors.Is(err, secutils.ErrSSRFHostNotWhitelisted), errors.Is(err, secutils.ErrSSRFRedirectBlocked):
+		return "outbound_blocked", 0
+	case errors.Is(err, context.Canceled):
+		return "request_cancelled", 0
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &network) && network.Timeout():
+		return "request_timeout", 0
+	}
+	var transport *api.TransportError
+	if errors.As(err, &transport) && transport != nil {
+		return "transport_error", 0
+	}
+	return "client_error", 0
+}
+
+func workspaceDiagramFailure(c *gin.Context, phase, class string, providerStatus int) {
+	// Only application-owned enums and the validated status are logged. Our 503
+	// describes this endpoint; it does not claim the provider returned HTTP 503.
+	logger.Warnf(c.Request.Context(), "[DiagramGenerationFailure] phase=%s error_class=%s provider_http_status=%d", phase, class, providerStatus)
+	details := gin.H{"phase": phase, "error_class": class}
+	if providerStatus != 0 {
+		details["provider_http_status"] = providerStatus
+	}
+	_ = c.Error(apperrors.NewServiceUnavailableError("模型未生成有效配置，请调整资料后重试").WithDetails(details))
 }

@@ -69,9 +69,50 @@ def strict_json(content):
     try:
         if not isinstance(content,str) or len(content.encode('utf-8'))>128*1024:
             raise ValueError('oversized output')
+        content=content.strip(' \t\r\n')
+        if content.startswith('```'):
+            opening,newline,body=content.partition('\n')
+            if not newline or opening.strip(' \t\r').lower() not in {'```','```json'}:
+                raise ValueError('invalid JSON fence')
+            content,newline,closing=body.rpartition('\n')
+            if not newline or closing.strip(' \t\r')!='```':
+                raise ValueError('incomplete JSON fence')
         return json.loads(content,object_pairs_hook=pairs,parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     except (ValueError,UnicodeError,TypeError,RecursionError):
         raise HTTPException(422,'模型没有返回完整有效的配置，请调整资料后重试') from None
+
+
+def native_failure_message(error,status):
+    """Translate our finite native contract, never provider error text."""
+    if status!=503 or not isinstance(error,dict) or error.get('code')!=1008:
+        return None
+    details=error.get('details')
+    if (not isinstance(details,dict) or not {'phase','error_class'}<=details.keys()
+            or not details.keys()<={'phase','error_class','provider_http_status'}):
+        return None
+    phase,kind=details['phase'],details['error_class']
+    if not isinstance(phase,str) or not isinstance(kind,str):
+        return None
+    messages={
+        'request_timeout':'连接模型服务超时，请检查网络或代理设置',
+        'transport_error':'无法连接模型服务，请检查网络或代理设置',
+        'outbound_blocked':'模型服务地址未通过出站安全校验，请检查服务端白名单',
+        'request_cancelled':'模型生成请求已取消',
+        'client_error':'模型服务响应处理失败，请检查模型配置',
+        'empty_response':'模型返回了空内容，请调整资料后重试',
+        'invalid_response':'模型未返回有效文本配置，请调整资料后重试',
+    }
+    response_error=kind in {'empty_response','invalid_response'}
+    if phase not in ({'response_validation'} if response_error else {'completion','model_initialization'}):
+        return None
+    if kind=='provider_http_error':
+        provider_status=details.get('provider_http_status')
+        if type(provider_status) is not int or not 400<=provider_status<=599:
+            return None
+        return f'模型服务返回 HTTP {provider_status}，请检查模型服务配置、访问权限或可用额度'
+    if 'provider_http_status' in details:
+        return None
+    return messages.get(kind)
 
 
 async def completion(scope,model_id,prompt,image=None):
@@ -97,6 +138,7 @@ async def completion(scope,model_id,prompt,image=None):
                 detail = error.get('message') if isinstance(error,dict) else None
                 if isinstance(detail,str) and detail in NATIVE_GENERATION_MESSAGES:
                     message = detail
+                message = native_failure_message(error,response.status_code) or message
             except (ValueError,AttributeError):
                 pass
             raise HTTPException(response.status_code,message)

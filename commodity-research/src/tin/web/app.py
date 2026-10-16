@@ -435,10 +435,10 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
 
 @app.get("/sn/macro")
 def macro_page(request: Request, date: str | None = None):
-    params = {"scope": "macro"}
+    target = research_url("/sn/indicators")
     if date:
-        params["date"] = date
-    return RedirectResponse(research_url("/sn/indicators?") + urlencode(params), status_code=307)
+        target += "?" + urlencode({"date": date})
+    return RedirectResponse(target, status_code=307)
 
 
 @app.get("/sn/judgment")

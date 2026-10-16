@@ -80,15 +80,11 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
         ('judgment', '研究判断', '/sn/judgment'), ('strategies', '策略', '/sn/strategies'),
         ('diagram', '产业图', '/sn/diagram'), ('reports', '日报', '/sn/reports'), ('entry', '人工录入', '/sn/entry')] %}
       <a href="{{ research_url(href) }}{% if key in ('home', 'variety', 'indicators') and d %}?date={{ d }}{% endif %}"
-         class="nav-btn {{ 'active' if nav == key and not (key == 'indicators' and request.query_params.get('scope') == 'macro') }}" {% if nav == key and not (key == 'indicators' and request.query_params.get('scope') == 'macro') %}aria-current="page"{% endif %}>{{ label }}</a>
+         class="nav-btn {{ 'active' if nav == key }}" {% if nav == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
-      {% if research_workbench() and research_workbench().metadata.default_knowledge_base %}
-      <a href="{{ research_url('/sn/macro') }}{% if d %}?date={{ d }}{% endif %}" class="nav-btn {{ 'active' if nav == 'indicators' and request.query_params.get('scope') == 'macro' }}" {% if nav == 'indicators' and request.query_params.get('scope') == 'macro' %}aria-current="page"{% endif %}>宏观数据</a>
-      {% endif %}
     </div>
     {% if research_workbench() %}
     <a href="/platform/knowledge-bases/{{ research_workbench().knowledge_base_id }}" target="_top" class="research-materials-link">绑定知识库</a>
-    {% if research_workbench().metadata.default_knowledge_base %}<a href="/platform/knowledge-bases/{{ research_workbench().metadata.default_knowledge_base.knowledge_base_id }}" target="_top" class="research-materials-link">宏观知识库</a>{% endif %}
     {% elif research_prefix() %}
     <a href="/platform/materials" target="_top" class="research-materials-link">
       <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5.5h6l2 2h8v12H4z"/><path d="M8 12h8M8 15h5"/></svg>

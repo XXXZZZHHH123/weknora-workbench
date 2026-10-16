@@ -6,22 +6,29 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/application/service"
 	"github.com/Tencent/WeKnora/internal/middleware"
+	"github.com/Tencent/WeKnora/internal/models/api"
+	"github.com/Tencent/WeKnora/internal/models/api/openaicompletions"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -31,6 +38,7 @@ type workspaceDiagramModels struct {
 	interfaces.ModelService
 	model                    *types.Model
 	client                   *workspaceDiagramChat
+	protocolClient           chat.Chat
 	getError, initError      error
 	lookups, initializations int
 }
@@ -41,6 +49,9 @@ func (m *workspaceDiagramModels) GetModelByID(_ context.Context, _ string) (*typ
 }
 func (m *workspaceDiagramModels) GetChatModel(_ context.Context, _ string) (chat.Chat, error) {
 	m.initializations++
+	if m.protocolClient != nil {
+		return m.protocolClient, m.initError
+	}
 	return m.client, m.initError
 }
 
@@ -167,6 +178,7 @@ func TestWorkspaceDiagramGeneratesDraftUsingConfiguredProductionModel(t *testing
 	require.Equal(t, "system", f.models.client.messages[0].Role)
 	require.Equal(t, "完整资料与真实目录。\n保持指定配置协议和未绑定项。", f.models.client.messages[1].Content)
 	require.Equal(t, 8192, f.models.client.options.MaxTokens)
+	require.False(t, f.models.client.options.DisableImageFallback, "text-only generation leaves the existing option default")
 	require.WithinDuration(t, before.Add(120*time.Second), f.models.client.deadline, time.Second)
 	var count int64
 	require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Count(&count).Error)
@@ -264,6 +276,32 @@ func TestWorkspaceDiagramVisionAndBuiltinModelsUseNormalChat(t *testing.T) {
 	response := f.request(diagramBody(t, image))
 	require.Equal(t, 200, response.Code, response.Body.String())
 	require.Equal(t, []string{image}, f.models.client.messages[1].Images)
+	require.True(t, f.models.client.options.DisableImageFallback, "image evidence must not be silently removed")
+}
+
+func TestWorkspaceDiagramImageRejectionMakesOneProviderRequest(t *testing.T) {
+	t.Setenv("SSRF_WHITELIST", "127.0.0.1")
+	t.Setenv("SSRF_WHITELIST_EXTRA", "")
+	secutils.ResetSSRFWhitelistForTest()
+	t.Cleanup(secutils.ResetSSRFWhitelistForTest)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"image not supported"}}`))
+	}))
+	defer server.Close()
+	f := newWorkspaceDiagramFixture(t)
+	f.models.model.Parameters.SupportsVision = true
+	f.models.protocolClient = openaicompletions.New(openaicompletions.Config{Endpoint: api.Endpoint{
+		URL: server.URL, Model: "synthetic", Client: server.Client(),
+	}, Settings: api.DefaultOpenAICompletions()})
+	response := f.request(diagramBody(t, diagramPNG(t)))
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.EqualValues(t, 1, requests.Load(), "never generate a draft after discarding the image")
+	require.Contains(t, response.Body.String(), `"provider_http_status":400`)
+	require.NotContains(t, response.Body.String(), `"content"`)
 }
 
 func TestWorkspaceDiagramFailuresAndChangedScopeNeverReturnDraft(t *testing.T) {
@@ -298,6 +336,70 @@ func TestWorkspaceDiagramFailuresAndChangedScopeNeverReturnDraft(t *testing.T) {
 			require.Equal(t, status, response.Code, response.Body.String())
 			require.NotContains(t, response.Body.String(), "provider-secret-marker")
 			require.NotContains(t, response.Body.String(), "Generated configuration")
+		})
+	}
+}
+
+func TestWorkspaceDiagramFailureDetailsPreserveSafeCause(t *testing.T) {
+	const secret = "PRIVATE_BODY token=private-key https://user:password@secret.invalid/?key=private-key prompt=PRIVATE_PROMPT"
+	cases := []struct {
+		name, class, phase string
+		err                error
+		status             int
+		empty              bool
+	}{
+		{"provider400", "provider_http_error", "completion", &api.HTTPError{StatusCode: 400, Body: secret}, 400, false},
+		{"provider401", "provider_http_error", "completion", &api.HTTPError{StatusCode: 401, Body: secret}, 401, false},
+		{"provider403", "provider_http_error", "completion", &api.HTTPError{StatusCode: 403, Body: secret}, 403, false},
+		{"provider429", "provider_http_error", "completion", &api.HTTPError{StatusCode: 429, Body: secret}, 429, false},
+		{"wrapped-provider503", "provider_http_error", "completion", fmt.Errorf("wrapped: %w", &api.HTTPError{StatusCode: 503, Body: secret}), 503, false},
+		{"invalid-status", "client_error", "completion", &api.HTTPError{StatusCode: 999, Body: secret}, 0, false},
+		{"transport-timeout", "request_timeout", "completion", &api.TransportError{Op: secret, Err: context.DeadlineExceeded}, 0, false},
+		{"dns-timeout", "request_timeout", "completion", &api.TransportError{Op: secret, Err: &net.DNSError{IsTimeout: true, Name: secret, Err: secret}}, 0, false},
+		{"transport-error", "transport_error", "completion", &api.TransportError{Op: secret, Err: errors.New(secret)}, 0, false},
+		{"cancelled", "request_cancelled", "completion", fmt.Errorf("%s: %w", secret, context.Canceled), 0, false},
+		{"ssrf-host", "outbound_blocked", "completion", fmt.Errorf("%w: %s", secutils.ErrSSRFHostNotWhitelisted, secret), 0, false},
+		{"ssrf-redirect", "outbound_blocked", "completion", fmt.Errorf("%w: %s", secutils.ErrSSRFRedirectBlocked, secret), 0, false},
+		{"client-error", "client_error", "completion", errors.New(secret), 0, false},
+		{"empty-response", "empty_response", "response_validation", nil, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWorkspaceDiagramFixture(t)
+			f.models.client.err = tc.err
+			if tc.empty {
+				f.models.client.response = &types.ChatResponse{Content: " \n\t"}
+			}
+			var logs bytes.Buffer
+			localLogger := logrus.New()
+			localLogger.SetOutput(&logs)
+			ctx := context.WithValue(context.Background(), types.LoggerContextKey, logrus.NewEntry(localLogger))
+			request := httptest.NewRequest(http.MethodPost, "/research/"+f.workbenchID+"/diagram/generate", strings.NewReader(diagramBody(t, ""))).WithContext(ctx)
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			f.router.ServeHTTP(response, request)
+			require.Equal(t, http.StatusServiceUnavailable, response.Code)
+			var body struct {
+				Error struct {
+					Code    int `json:"code"`
+					Details struct {
+						Phase              string `json:"phase"`
+						ErrorClass         string `json:"error_class"`
+						ProviderHTTPStatus int    `json:"provider_http_status"`
+					} `json:"details"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			require.Equal(t, 1008, body.Error.Code, "503 is the native service status, not a guessed provider status")
+			require.Equal(t, tc.class, body.Error.Details.ErrorClass)
+			require.Equal(t, tc.phase, body.Error.Details.Phase)
+			require.Equal(t, tc.status, body.Error.Details.ProviderHTTPStatus)
+			require.Contains(t, logs.String(), "error_class="+tc.class)
+			for _, value := range []string{"PRIVATE_BODY", "private-key", "secret.invalid", "password", "PRIVATE_PROMPT", "Generated configuration"} {
+				require.NotContains(t, response.Body.String(), value)
+				require.NotContains(t, logs.String(), value)
+			}
+			require.Equal(t, 1, f.models.client.calls)
 		})
 	}
 }

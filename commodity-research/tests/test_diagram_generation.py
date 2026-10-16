@@ -107,11 +107,40 @@ def test_large_catalog_recall_is_model_planned_then_model_decides_bindings(gener
     assert result.json()['bindings'][0]['series_id']==fields[299]['id']
 
 
-@pytest.mark.parametrize('content',['{} trailing','{"markdown":"a","markdown":"b"}','{"value":NaN}','```json\n{}\n```'])
+@pytest.mark.parametrize('content',['{} trailing','{"markdown":"a","markdown":"b"}','{"value":NaN}'])
 def test_model_response_is_strict_whole_json(content):
     from fastapi import HTTPException
     with pytest.raises(HTTPException):
         generation.strict_json(content)
+
+
+@pytest.mark.parametrize('value',[{'queries':['Material','Output']},{'markdown':'# Process\n## Group\n- Node\u2028Text'}])
+@pytest.mark.parametrize('wrapper',['{}','```json\n{}\n```','```\n{}\n```',' \t\r\n```json\r\n{}\r\n```\r\n\t '])
+def test_model_response_accepts_one_complete_json_fence(value,wrapper):
+    content=wrapper.format(json.dumps(value,ensure_ascii=False))
+    assert generation.strict_json(content)==value
+
+
+@pytest.mark.parametrize('content',[
+    'Before\n```json\n{}\n```','```json\n{}\n```\nAfter',
+    '```json\n{}\n```\n```json\n{}\n```','```python\n{}\n```',
+    '```json extra\n{}\n```','```json\n{}','```json\n{}\n``',
+    '```json\n{"queries":[],"queries":["Other"]}\n```',
+    '```\n{"value":NaN}\n```','```json\n{"value":Infinity}\n```',
+    '```json\n{} trailing\n```','```json\n{}\n{}\n```',
+    '\u00a0{}','\u2028{}','```jſon\n{}\n```',
+    '\u00a0```json\n{}\n```','```json\n{}\n```\u00a0',
+])
+def test_model_response_fences_keep_strict_full_document_validation(content):
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException):
+        generation.strict_json(content)
+
+
+def test_model_response_fences_do_not_bypass_original_size_limit():
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException):
+        generation.strict_json('```json\n'+json.dumps({'markdown':'x'*(128*1024)})+'\n```')
 
 
 def test_generator_uses_original_diagram_page_and_compact_composer(generator):
@@ -168,3 +197,65 @@ def test_unrecognized_native_error_payload_does_not_leak_configuration(monkeypat
     with pytest.raises(HTTPException) as caught:
         asyncio.run(generation.completion(scope, 'model', 'draft'))
     assert caught.value.detail == '生成参数无效，请核对模型、资料格式或重新打开当前工作台'
+
+
+@pytest.mark.parametrize('provider_status',[400,401,403,429,503])
+def test_native_generation_preserves_actual_provider_status_without_raw_body(monkeypatch,provider_status):
+    from fastapi import HTTPException
+    original = httpx.AsyncClient
+    monkeypatch.setattr(generation.settings,'weknora_api_url','http://native.fixture')
+    payload={'error':{'code':1008,'message':'PRIVATE_BODY token=private-key',
+        'details':{'phase':'completion','error_class':'provider_http_error','provider_http_status':provider_status}}}
+    transport=httpx.MockTransport(lambda request:httpx.Response(503,json=payload))
+    monkeypatch.setattr(generation.httpx,'AsyncClient',lambda **kwargs:original(transport=transport,**kwargs))
+    scope=SimpleNamespace(workbench_id='workbench',knowledge_base_id='library',authorization='Bearer fixture',identity=SimpleNamespace(tenant_id=1))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(generation.completion(scope,'model','draft'))
+    assert caught.value.status_code==503
+    assert f'模型服务返回 HTTP {provider_status}' in caught.value.detail
+    assert 'PRIVATE_BODY' not in caught.value.detail and 'private-key' not in caught.value.detail
+
+
+@pytest.mark.parametrize(('error_class','expected'),[
+    ('request_timeout','模型服务超时'),('transport_error','无法连接模型服务'),
+    ('outbound_blocked','出站安全校验'),('request_cancelled','已取消'),
+    ('empty_response','空内容'),('invalid_response','有效文本配置'),('client_error','响应处理失败')])
+def test_native_generation_safe_error_categories_reach_research_ui(monkeypatch,error_class,expected):
+    from fastapi import HTTPException
+    original=httpx.AsyncClient
+    monkeypatch.setattr(generation.settings,'weknora_api_url','http://native.fixture')
+    payload={'error':{'code':1008,'message':'PRIVATE_BODY',
+        'details':{'phase':'response_validation' if error_class in {'empty_response','invalid_response'} else 'completion','error_class':error_class}}}
+    transport=httpx.MockTransport(lambda request:httpx.Response(503,json=payload))
+    monkeypatch.setattr(generation.httpx,'AsyncClient',lambda **kwargs:original(transport=transport,**kwargs))
+    scope=SimpleNamespace(workbench_id='workbench',knowledge_base_id='library',authorization='Bearer fixture',identity=SimpleNamespace(tenant_id=1))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(generation.completion(scope,'model','draft'))
+    assert caught.value.status_code==503 and expected in caught.value.detail
+    assert 'PRIVATE_BODY' not in caught.value.detail
+
+
+@pytest.mark.parametrize('details',[
+    None,[],{'phase':'completion','error_class':'PRIVATE_BODY'},
+    {'phase':'PRIVATE_BODY','error_class':'provider_http_error','provider_http_status':400},
+    {'phase':'completion','error_class':['provider_http_error'],'provider_http_status':400},
+    {'phase':'completion','error_class':'provider_http_error','provider_http_status':'400'},
+    {'phase':'completion','error_class':'provider_http_error','provider_http_status':True},
+    {'phase':'completion','error_class':'provider_http_error','provider_http_status':999},
+    {'phase':'completion','error_class':'provider_http_error','provider_http_status':400,'body':'PRIVATE_BODY'},
+    {'phase':'completion','error_class':'request_timeout','provider_http_status':503},
+    {'phase':'response_validation','error_class':'provider_http_error','provider_http_status':400},
+    {'phase':'completion','error_class':'empty_response'},
+])
+def test_native_failure_details_reject_untrusted_values_without_leaking(monkeypatch,details):
+    from fastapi import HTTPException
+    original=httpx.AsyncClient
+    monkeypatch.setattr(generation.settings,'weknora_api_url','http://native.fixture')
+    payload={'error':{'code':1008,'message':'PRIVATE_BODY https://secret.invalid?key=private-key','details':details}}
+    transport=httpx.MockTransport(lambda request:httpx.Response(503,json=payload))
+    monkeypatch.setattr(generation.httpx,'AsyncClient',lambda **kwargs:original(transport=transport,**kwargs))
+    scope=SimpleNamespace(workbench_id='workbench',knowledge_base_id='library',authorization='Bearer fixture',identity=SimpleNamespace(tenant_id=1))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(generation.completion(scope,'model','draft'))
+    assert caught.value.status_code==503
+    assert caught.value.detail=='模型服务暂时不可用，现有产业图保持原样'
