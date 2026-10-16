@@ -2,6 +2,7 @@ package retriever
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -36,6 +37,28 @@ func (e *capturingEmbedder) BatchEmbedWithPool(
 
 type saveOnlyRepository struct {
 	interfaces.RetrieveEngineRepository
+}
+
+type failedPoolEmbedder struct {
+	embedding.Embedder
+	calls int
+	err   error
+}
+
+func (e *failedPoolEmbedder) BatchEmbedWithPool(context.Context, embedding.Embedder, []string) ([][]float32, error) {
+	e.calls++
+	return nil, e.err
+}
+
+func TestBatchIndexDoesNotReplayFailedEmbeddingPool(t *testing.T) {
+	want := errors.New("embedding request retries exhausted")
+	embedder := &failedPoolEmbedder{err: want}
+	service := &KeywordsVectorHybridRetrieveEngineService{indexRepository: &saveOnlyRepository{}}
+	err := service.BatchIndex(context.Background(), embedder, []*types.IndexInfo{{Content: "text", SourceID: "source"}},
+		[]types.RetrieverType{types.VectorRetrieverType})
+	if !errors.Is(err, want) || embedder.calls != 1 {
+		t.Fatalf("BatchIndex replayed the pool: calls=%d error=%v", embedder.calls, err)
+	}
 }
 
 func (r *saveOnlyRepository) Save(ctx context.Context, indexInfo *types.IndexInfo, params map[string]any) error {

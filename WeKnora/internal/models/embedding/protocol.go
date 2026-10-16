@@ -42,6 +42,10 @@ func newRemoteEmbedder(config Config, pooler EmbedderPooler) (Embedder, error) {
 	if err := validateEmbeddingBaseURL(resolved.BaseURL); err != nil {
 		return nil, err
 	}
+	requestPolicy, err := newEmbeddingRequestPolicy()
+	if err != nil {
+		return nil, err
+	}
 
 	vendor := resolved.Vendor
 	endpoint, err := resolved.Endpoint(types.ModelTypeEmbedding, modelruntime.Connection{
@@ -106,6 +110,8 @@ func newRemoteEmbedder(config Config, pooler EmbedderPooler) (Embedder, error) {
 		modelName:      config.ModelName,
 		modelID:        config.ModelID,
 		dimensions:     config.Dimensions,
+		requestFlow:    embeddingFlow(config.ModelID + "\x00" + resolved.BaseURL + "\x00" + config.ModelName),
+		requestPolicy:  requestPolicy,
 		EmbedderPooler: pooler,
 	}, nil
 }
@@ -117,11 +123,13 @@ func newRemoteEmbedder(config Config, pooler EmbedderPooler) (Embedder, error) {
 type protocolEmbedder struct {
 	inner api.Embedder
 	// images is nil unless the model and the endpoint both take images.
-	images     api.ImageEmbedder
-	settings   api.EmbeddingsSettings
-	modelName  string
-	modelID    string
-	dimensions int
+	images        api.ImageEmbedder
+	settings      api.EmbeddingsSettings
+	modelName     string
+	modelID       string
+	dimensions    int
+	requestFlow   *embeddingRequestFlow
+	requestPolicy embeddingRequestPolicy
 	EmbedderPooler
 }
 
@@ -155,7 +163,9 @@ func (e *protocolEmbedder) BatchEmbed(ctx context.Context, texts []string) ([][]
 	// here would multiply past both, and a one-text-per-request vendor would
 	// turn every pool chunk into a burst.
 	for _, batch := range batches {
-		vectors, err := e.inner.Embed(ctx, batch.Items, kind)
+		vectors, err := e.requestFlow.run(ctx, e.modelID, e.requestPolicy, func() ([][]float32, error) {
+			return e.inner.Embed(ctx, batch.Items, kind)
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -200,7 +210,9 @@ func (e *protocolEmbedder) BatchEmbedImages(ctx context.Context, images []Image)
 	// Serial for the same reason as BatchEmbed.
 	for start := 0; start < len(images); start += limit {
 		batch := images[start:min(start+limit, len(images))]
-		vectors, err := e.images.EmbedImages(ctx, batch, kind)
+		vectors, err := e.requestFlow.run(ctx, e.modelID, e.requestPolicy, func() ([][]float32, error) {
+			return e.images.EmbedImages(ctx, batch, kind)
+		})
 		if err != nil {
 			return nil, err
 		}

@@ -34,8 +34,27 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 		batchSizeStr = "5"
 	}
 	batchSize, err := strconv.Atoi(batchSizeStr)
-	if err != nil {
+	if err != nil || batchSize <= 0 {
+		return nil, fmt.Errorf("BATCH_EMBED_SIZE must be a positive integer")
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if len(texts) == 0 {
+		return [][]float32{}, nil
+	}
+	if e.pool == nil {
+		return nil, fmt.Errorf("embedding worker pool is not configured")
+	}
+	batchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	setError := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
 	}
 	textEmbeddings := utils.MapSlice(texts, func(text string) *textEmbedding {
 		return &textEmbedding{text: text}
@@ -46,27 +65,19 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 		return func() {
 			defer wg.Done()
 			// If an error has already occurred, don't continue processing
-			if firstErr != nil {
+			if batchCtx.Err() != nil {
 				return
 			}
 			// Embed text
-			embedding, err := model.BatchEmbed(ctx, utils.MapSlice(texts, func(text *textEmbedding) string {
+			embedding, err := model.BatchEmbed(batchCtx, utils.MapSlice(texts, func(text *textEmbedding) string {
 				return text.text
 			}))
 			if err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
+				setError(err)
 				return
 			}
 			if len(embedding) != len(texts) {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("embedding model returned %d embeddings for %d inputs", len(embedding), len(texts))
-				}
-				mu.Unlock()
+				setError(fmt.Errorf("embedding model returned %d embeddings for %d inputs", len(embedding), len(texts)))
 				return
 			}
 			mu.Lock()
@@ -82,10 +93,15 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 
 	// Submit all tasks to the goroutine pool
 	for _, texts := range utils.ChunkSlice(textEmbeddings, batchSize) {
+		if batchCtx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 		err := e.pool.Submit(processChunk(texts))
 		if err != nil {
-			return nil, err
+			wg.Done()
+			setError(err)
+			break
 		}
 	}
 
@@ -95,6 +111,9 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 	// Check if any errors occurred
 	if firstErr != nil {
 		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	results := utils.MapSlice(textEmbeddings, func(text *textEmbedding) []float32 {
