@@ -3316,9 +3316,9 @@ const getImgSrc = (url: string) => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 12px 16px 0;
-  background: var(--td-bg-color-container);
+  gap: 4px;
+  padding: 6px 14px 0;
+  background: transparent;
   border-radius: 11px 11px 0 0;
   /* 与 .rich-input-container 内缘上边圆角一致（12px - 1px 边框） */
 }
@@ -3333,8 +3333,8 @@ const getImgSrc = (url: string) => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  min-height: 26px;
-  padding: 3px 7px 3px 6px;
+  min-height: 24px;
+  padding: 2px 7px 2px 6px;
   border-radius: var(--td-radius-medium);
   box-sizing: border-box;
   font-size: var(--app-text-sm);
@@ -3533,6 +3533,10 @@ const getImgSrc = (url: string) => {
 
   .rich-input-container :deep(.t-textarea__inner) {
     padding: 12px 14px;
+  }
+
+  .rich-input-container:has(.selected-tags-inline) :deep(.t-textarea__inner) {
+    padding-top: 6px;
   }
 
   .control-bar {

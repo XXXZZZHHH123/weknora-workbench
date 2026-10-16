@@ -1996,11 +1996,12 @@ onBeforeRouteUpdate((to, from, next) => {
     right: var(--chat-scrollbar-gutter, 0px);
     z-index: 12;
     padding: 16px 0 max(8px, env(safe-area-inset-bottom));
-    background: var(--td-bg-color-container);
+    background: var(--td-bg-color-page);
 }
 
 .is-embedded .chat_composer {
     padding: 0;
+    background: var(--td-bg-color-container);
 }
 
 .chat_overlays {
