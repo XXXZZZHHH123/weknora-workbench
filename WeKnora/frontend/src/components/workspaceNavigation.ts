@@ -9,7 +9,7 @@ export interface WorkspaceNavigationLeaf {
   path: string
 }
 
-function resourceLeaves(resources: readonly NamedResource[], basePath: string, preview = false): WorkspaceNavigationLeaf[] {
+function resourceLeaves(resources: readonly NamedResource[], basePath: string): WorkspaceNavigationLeaf[] {
   const seen = new Set<string>()
   return resources.filter((resource) => {
     if (!resource.id || seen.has(resource.id)) return false
@@ -18,7 +18,7 @@ function resourceLeaves(resources: readonly NamedResource[], basePath: string, p
   }).map((resource) => ({
     id: resource.id,
     title: resource.name,
-    path: `${basePath}/${encodeURIComponent(resource.id)}${preview ? '/preview' : ''}`,
+    path: `${basePath}/${encodeURIComponent(resource.id)}`,
   }))
 }
 
@@ -31,6 +31,6 @@ export function buildWorkspaceNavigation(
   return {
     projects: resourceLeaves(projects, '/platform/projects'),
     knowledgeBases: resourceLeaves(knowledgeBases, '/platform/knowledge-bases'),
-    workbenches: resourceLeaves(workbenches, '/platform/research-workbenches', true),
+    workbenches: resourceLeaves(workbenches, '/platform/research-workbenches'),
   }
 }

@@ -106,6 +106,8 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None, repla
         # A signature describes actual approved mappings, not timestamps or UI state.
         signature = {'sheets': sorted(sheets, key=lambda s: s['name']), 'coverage': metadata['coverage'],
                      'parser_revision': 'incremental-stream-v1'}
+        if metadata.get('use_reviewed_mappings') is False:
+            signature['use_reviewed_mappings'] = False
         rule = 'workbook-review-v2:' + hashlib.sha256(json.dumps(signature, ensure_ascii=False,
                                                               sort_keys=True, default=str).encode()).hexdigest()[:16]
         dataset_id = hashlib.sha256((sha256 + ':' + rule).encode()).hexdigest()[:24]

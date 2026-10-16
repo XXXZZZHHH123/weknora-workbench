@@ -161,6 +161,8 @@ def test_every_inline_handler_resolves_to_a_real_function():
     attrs: list[tuple[str, str]] = []
     for tpl in sorted((web.HERE / "templates").glob("*.html")):
         text = tpl.read_text(encoding="utf-8")
+        # Jinja conditions are evaluated on the server, not JavaScript handlers.
+        text = re.sub(r'\{%.*?%\}|\{\{.*?\}\}', '', text, flags=re.S)
         sources.extend(re.findall(r"<script\b[^>]*>(.*?)</script>", text, re.S))
         attrs += [(tpl.name, v) for v in re.findall(r'\son\w+="([^"]*)"', text)]
     # 模板里 `${...}` 内嵌的字符串同样会被浏览器当成处理器执行

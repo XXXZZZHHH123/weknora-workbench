@@ -77,7 +77,7 @@ func TestDefaultKnowledgeBaseExplicitIdempotentInitialization(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, selected, view.KnowledgeBaseID)
 	require.Equal(t, "macro", view.Kind)
-	require.Equal(t, "tenant_research", view.SourceScope)
+	require.Equal(t, "knowledge_base", view.SourceScope)
 	var kb types.KnowledgeBase
 	require.NoError(t, s.db.First(&kb, "id = ?", selected).Error)
 	kb.EnsureDefaults()

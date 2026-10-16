@@ -94,7 +94,7 @@ func newSessionServiceForHostDeleteTest(
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&types.Session{}))
+	require.NoError(t, db.AutoMigrate(&types.Session{}, &types.Message{}))
 	return &sessionService{
 		sessionRepo:        repository.NewSessionRepository(db),
 		messageRepo:        deleteForkMessageRepo{},

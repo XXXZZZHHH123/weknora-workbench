@@ -63,6 +63,7 @@ func setupLikeEscapeTestDB(t *testing.T) *gorm.DB {
 		&types.KnowledgeTag{},
 		&types.Chunk{},
 		&types.Session{},
+		&types.Message{},
 		&types.Tenant{},
 		&types.TenantMember{},
 	))
@@ -262,6 +263,11 @@ func TestSessionQueryPagedKeywordTreatsLikeWildcardsLiterally(t *testing.T) {
 	require.NoError(t, db.Create(&types.Session{
 		TenantID: tenantID, UserID: userID, Title: "DeployXPlan v1",
 	}).Error)
+
+	require.NoError(t, db.Create(&types.Message{SessionID: literal.ID, Role: "user", Content: "keyword fixture question"}).Error)
+	var other types.Session
+	require.NoError(t, db.Where("title = ?", "DeployXPlan v1").First(&other).Error)
+	require.NoError(t, db.Create(&types.Message{SessionID: other.ID, Role: "user", Content: "decoy fixture question"}).Error)
 
 	rows, total, err := repo.QueryPaged(ctx, &types.SessionListQuery{
 		TenantID: tenantID, UserID: userID, Keyword: "Deploy_Plan", Page: 1, PageSize: 20,

@@ -97,6 +97,36 @@ def begin(client, **kwargs):
                        headers=kwargs.pop("headers", headers()), **kwargs)
 
 
+def test_fresh_workbench_import_never_consults_legacy_review(native, monkeypatch):
+    from structured_data.imports import ImportManager
+    import structured_data.server as server
+    client, _, _, _ = native
+    def forbidden(*args, **kwargs):
+        raise AssertionError("A fresh workbench must not consult an existing workspace review")
+    monkeypatch.setattr("structured_data.legacy_import.candidate", forbidden)
+    monkeypatch.setattr("structured_data.profiles.reviewed.reviewed_mapping", forbidden)
+    original_task = server.run_review_task
+    def direct_task(root, action, **kwargs):
+        if action != "import":
+            return original_task(root, action, **kwargs)
+        manager = ImportManager(root)
+        if kwargs.get("use_reviewed_mappings", True):
+            return manager.ingest(kwargs["path"])
+        return manager.ingest(kwargs["path"], use_reviewed_mappings=False)
+    monkeypatch.setattr(server, "run_review_task", direct_task)
+    response = client.post("/api/import-knowledge", json={"source_knowledge_id": "source-a",
+        "restore_reviewed_state": False}, headers=headers())
+    assert response.status_code == 200, response.text
+    result = finish(client, response.json()["id"])["result"]
+    assert result.get("recovered_legacy") is not True
+    assert result["source_knowledge_id"] == "source-a"
+    review = client.get("/api/imports/" + result["import_id"], headers=headers()).json()
+    assert review["use_reviewed_mappings"] is False
+    repeated = client.post("/api/import-knowledge", json={"source_knowledge_id": "source-a",
+        "restore_reviewed_state": False}, headers=headers()).json()
+    assert repeated["status"] == "completed" and repeated["result"]["import_id"] == result["import_id"]
+
+
 def test_native_original_import_preserves_real_source_and_reuses_after_restart(native):
     client, _, state, root = native
     started = begin(client)

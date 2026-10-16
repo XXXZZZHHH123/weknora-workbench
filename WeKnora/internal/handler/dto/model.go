@@ -316,6 +316,20 @@ func NewModelResponse(ctx context.Context, m *types.Model) *ModelResponse {
 			ModelType: m.Type, Extra: m.Parameters.ExtraConfig, Override: m.Parameters.Spec,
 		}); err == nil && m.Source == types.ModelSourceRemote {
 			c := resolved.Capabilities()
+			legacyVision := m.Parameters.SupportsVision && (m.Parameters.Spec == nil || len(m.Parameters.Spec.Input) == 0)
+			if (m.Type == types.ModelTypeKnowledgeQA || m.Type == types.ModelTypeVLLM) &&
+				(legacyVision || modelruntime.ChatAcceptsImages(modelruntime.Ref{
+					Provider: m.Parameters.Provider, Model: m.Name, BaseURL: m.Parameters.BaseURL,
+					ModelType: m.Type, Extra: m.Parameters.ExtraConfig, Override: m.Parameters.Spec,
+				})) {
+				found := false
+				for _, input := range c.Input {
+					found = found || input == "image"
+				}
+				if !found {
+					c.Input = append(c.Input, "image")
+				}
+			}
 			caps = &c
 		}
 	}

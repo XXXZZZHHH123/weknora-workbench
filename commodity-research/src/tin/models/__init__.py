@@ -9,6 +9,7 @@ from tin.models.system import AuditLog, DiagramTemplate, ExportTemplate, ImportP
 from tin.models.provenance import SourceArtifact, SourceBatch, SourceMapping, ObservationSource
 from tin.models.refresh import RefreshSettings, RefreshRun
 from tin.models.library import LibraryOperation
+from tin.models.workbench import WorkbenchArtifact
 
 __all__ = [
     "AuditLog", "BriefRevision", "DailyBrief", "Derived", "DiagramTemplate", "ExportTemplate",

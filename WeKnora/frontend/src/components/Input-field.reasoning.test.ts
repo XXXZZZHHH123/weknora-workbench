@@ -22,7 +22,7 @@ function fixture() {
   const scope = effectScope()
   const output: any = {}
   scope.run(() => runInNewContext(compiled + '\nObject.assign(output, { reasoningLevels, displayedReasoningLevel, selectReasoningLevel });', {
-    computed, ref, watch, supportedLevels, levelLabelKey, levelFromLegacy, clampLevel, currentAgentConfig, availableModels, selectedModelId, settingsStore, output, t: (key: string) => key,
+    computed, ref, watch, supportedLevels, levelLabelKey, levelFromLegacy, clampLevel, currentAgentConfig, availableModels, selectedModelId, settingsStore, output, props: {}, t: (key: string) => key,
   }))
   return { availableModels, selectedModelId, settingsStore, currentAgentConfig, ...output, close: () => scope.stop() }
 }

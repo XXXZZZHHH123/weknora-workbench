@@ -90,12 +90,14 @@ function toggleDrawer(drawerId, open) {
   // 抽屉打开时锁住主体滚动，避免出现双滚动条
   document.body.classList.toggle("overflow-hidden", anyOpen);
   document.body.classList.toggle("drawer-open", anyOpen);
+  if (window.parent && window.parent !== window) window.parent.postMessage({type:'research-drawer-state',open:anyOpen},window.location.origin);
   if (open && drawerId === "quick-drawer") {
     setTimeout(() => document.getElementById("drawer-value").focus(), 320);
   }
 }
 
 function closeDrawers() {
+  if (window.parent && window.parent !== window) window.parent.postMessage({type:'research-drawer-state',open:false},window.location.origin);
   document.querySelectorAll("[data-drawer]").forEach((d) => d.classList.add("translate-x-full"));
   document.getElementById("drawer-backdrop").classList.add("hidden");
   document.body.classList.remove("overflow-hidden");
@@ -116,6 +118,11 @@ function syncDrawerUnit() {
   const asOf = document.getElementById("drawer-as-of");
   if (!select || !unit) return;
   const opt = select.selectedOptions[0];
+  if (!opt) {
+    unit.innerText = "";
+    if (asOf && !asOf.dataset.touched) asOf.value = "";
+    return;
+  }
   unit.innerText = opt.dataset.unit || "";
   // 数据时点默认填该指标的常规发布时刻，提醒填的是数据代表时点而非录入时刻
   if (asOf && opt.dataset.asOf && !asOf.dataset.touched) asOf.value = opt.dataset.asOf;

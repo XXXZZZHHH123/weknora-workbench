@@ -67,12 +67,12 @@ func (v *KeywordsVectorHybridRetrieveEngineService) Index(ctx context.Context,
 	if slices.Contains(retrieverTypes, types.VectorRetrieverType) {
 		embedding, err := embedder.Embed(ctx, sanitizeForEmbedding(ctx, indexInfo.Content))
 		if err != nil {
-			return err
+			return &IndexingError{Phase: IndexingPhaseEmbedding, Err: err}
 		}
 		embeddingMap[indexInfo.SourceID] = embedding
 	}
 	params["embedding"] = embeddingMap
-	return v.indexRepository.Save(ctx, indexInfo, params)
+	return indexWriteError(v.indexRepository.Save(ctx, indexInfo, params))
 }
 
 // BatchIndex creates embeddings for multiple content items and saves them to the repository
@@ -94,7 +94,7 @@ func (v *KeywordsVectorHybridRetrieveEngineService) BatchIndex(ctx context.Conte
 		// amplify the traffic that triggered the provider's rate limit.
 		embeddings, err := embedder.BatchEmbedWithPool(ctx, embedder, contentList)
 		if err != nil {
-			return err
+			return &IndexingError{Phase: IndexingPhaseEmbedding, Err: err}
 		}
 
 		batchSize := 40
@@ -105,20 +105,20 @@ func (v *KeywordsVectorHybridRetrieveEngineService) BatchIndex(ctx context.Conte
 		const maxConcurrency = 5
 		if len(chunks) <= maxConcurrency {
 			// For small number of batches, use simple concurrency
-			return v.concurrentBatchSave(ctx, chunks, embeddings, batchSize)
+			return indexWriteError(v.concurrentBatchSave(ctx, chunks, embeddings, batchSize))
 		}
 
 		// For large number of batches, use bounded concurrency
-		return v.boundedConcurrentBatchSave(ctx, chunks, embeddings, batchSize, maxConcurrency)
+		return indexWriteError(v.boundedConcurrentBatchSave(ctx, chunks, embeddings, batchSize, maxConcurrency))
 	}
 
 	// For non-vector retrieval, use concurrent batch saving as well
 	chunks := utils.ChunkSlice(indexInfoList, 10)
 	const maxConcurrency = 5
 	if len(chunks) <= maxConcurrency {
-		return v.concurrentBatchSaveNoEmbedding(ctx, chunks)
+		return indexWriteError(v.concurrentBatchSaveNoEmbedding(ctx, chunks))
 	}
-	return v.boundedConcurrentBatchSaveNoEmbedding(ctx, chunks, maxConcurrency)
+	return indexWriteError(v.boundedConcurrentBatchSaveNoEmbedding(ctx, chunks, maxConcurrency))
 }
 
 // sanitizeForEmbedding caps content length at safetyMaxChars characters so

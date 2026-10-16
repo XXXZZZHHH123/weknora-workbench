@@ -45,11 +45,26 @@ func newTestSessionService(t *testing.T) (*sessionService, *gorm.DB) {
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&types.Session{}))
+	require.NoError(t, db.AutoMigrate(&types.Session{}, &types.Message{}))
 
 	return &sessionService{
 		sessionRepo: repository.NewSessionRepository(db),
 	}, db
+}
+
+// These scope/list fixtures represent conversations; draft coverage lives in
+// session_history_test.go and deliberately creates sessions without messages.
+func seedSessionHistoryFixture(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var sessions []types.Session
+	require.NoError(t, db.Find(&sessions).Error)
+	for _, session := range sessions {
+		var count int64
+		require.NoError(t, db.Model(&types.Message{}).Where("session_id = ? AND role = ?", session.ID, "user").Count(&count).Error)
+		if count == 0 {
+			require.NoError(t, db.Create(&types.Message{SessionID: session.ID, Role: "user", Content: "scope fixture question"}).Error)
+		}
+	}
 }
 
 func TestGetSessionIsScopedToCurrentUser(t *testing.T) {
@@ -277,6 +292,7 @@ func TestListSessionsAPISourceRequiresAdminAndReturnsAllKeys(t *testing.T) {
 
 	// A non-admin (viewer) web user is rejected.
 	viewerCtx := testSessionScopeContext(1, "alice")
+	seedSessionHistoryFixture(t, db)
 	_, err := svc.ListSessions(viewerCtx, &types.SessionListQuery{Source: types.SessionSourceAPI})
 	require.Error(t, err)
 	var appErr *apperrors.AppError
@@ -285,6 +301,7 @@ func TestListSessionsAPISourceRequiresAdminAndReturnsAllKeys(t *testing.T) {
 
 	// An admin sees every API-key session in the tenant, not just their own.
 	adminCtx := context.WithValue(testSessionScopeContext(1, "alice"), types.TenantRoleContextKey, types.TenantRoleAdmin)
+	seedSessionHistoryFixture(t, db)
 	result, err := svc.ListSessions(adminCtx, &types.SessionListQuery{Source: types.SessionSourceAPI})
 	require.NoError(t, err)
 	require.EqualValues(t, 3, result.Total)
@@ -322,6 +339,7 @@ func TestListSessionsIMSourceRequiresAdmin(t *testing.T) {
 	}).Error)
 
 	viewerCtx := testSessionScopeContext(1, "alice")
+	seedSessionHistoryFixture(t, db)
 	_, err := svc.ListSessions(viewerCtx, &types.SessionListQuery{Source: "feishu"})
 	require.Error(t, err)
 	var appErr *apperrors.AppError
@@ -329,6 +347,7 @@ func TestListSessionsIMSourceRequiresAdmin(t *testing.T) {
 	require.Equal(t, apperrors.ErrForbidden, appErr.Code)
 
 	adminCtx := context.WithValue(testSessionScopeContext(1, "alice"), types.TenantRoleContextKey, types.TenantRoleAdmin)
+	seedSessionHistoryFixture(t, db)
 	result, err := svc.ListSessions(adminCtx, &types.SessionListQuery{Source: "feishu"})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, result.Total)
@@ -347,6 +366,7 @@ func TestListSessionsEmbedSourceRequiresAdmin(t *testing.T) {
 	require.NoError(t, db.Create(embed).Error)
 
 	viewerCtx := testSessionScopeContext(1, "alice")
+	seedSessionHistoryFixture(t, db)
 	_, err := svc.ListSessions(viewerCtx, &types.SessionListQuery{Source: "embed:ch-1"})
 	require.Error(t, err)
 	var appErr *apperrors.AppError
@@ -354,6 +374,7 @@ func TestListSessionsEmbedSourceRequiresAdmin(t *testing.T) {
 	require.Equal(t, apperrors.ErrForbidden, appErr.Code)
 
 	adminCtx := context.WithValue(testSessionScopeContext(1, "alice"), types.TenantRoleContextKey, types.TenantRoleAdmin)
+	seedSessionHistoryFixture(t, db)
 	result, err := svc.ListSessions(adminCtx, &types.SessionListQuery{Source: "embed:ch-1"})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, result.Total)

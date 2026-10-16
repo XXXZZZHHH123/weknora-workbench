@@ -196,7 +196,7 @@ def _review_child(request, result_path, memory_bytes, timeout_seconds):
             result = manager.confirm(request["import_id"], request["mapping"],
                                      request["save_template"])
         else:
-            result = manager.ingest(request["path"])
+            result = manager.ingest(request["path"], use_reviewed_mappings=request.get("use_reviewed_mappings", True))
         _write_result(result_path, {"ok": True, "result": result})
     except MemoryError:
         _write_result(result_path, {"ok": False, "error": "任务超过内存限制，原有版本仍可使用。"})
@@ -259,7 +259,7 @@ def _cleanup_temporary_snapshots(root, previous):
 
 def run_review_task(root, action, *, import_id=None, mapping=None,
                     save_template=True, path=None, timeout=None,
-                    memory_limit_mb=None):
+                    memory_limit_mb=None, use_reviewed_mappings=True):
     """Return a bounded task result or raise ValueError with a safe Chinese notice.
 
     Defaults: STRUCTURED_REVIEW_MEMORY_MB=768 and
@@ -269,6 +269,8 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
     """
     if action not in {"import", "preview", "confirm"}:
         raise ValueError("不支持的工作表任务。")
+    if type(use_reviewed_mappings) is not bool:
+        raise ValueError("原件核对模式必须明确为布尔值。")
     try:
         if timeout is None:
             timeout = float(os.environ.get("STRUCTURED_REVIEW_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
@@ -283,6 +285,7 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
     root = Path(root).resolve()
     request = {"root": str(root), "action": action, "import_id": import_id,
                "mapping": mapping, "save_template": bool(save_template),
+               "use_reviewed_mappings":use_reviewed_mappings,
                "path": str(Path(path).resolve()) if path is not None else None}
     if action == "import" and not request["path"]:
         raise ValueError("导入任务缺少源文件。")

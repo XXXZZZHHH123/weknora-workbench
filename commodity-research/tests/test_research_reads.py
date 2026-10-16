@@ -132,9 +132,9 @@ def test_signed_reads_isolate_workspaces_and_reject_tampering(tmp_path, monkeypa
     body = b'{"operation":"indicators","limit":1}'
     with TestClient(app) as client:
         response = client.post("/api/tools/read", content=body, headers=signed_headers(body, key, identity))
-        assert response.status_code == 200
-        assert response.json()["total"] > 0
-        assert (tmp_path / "data/workspaces/7/tin.db").exists()
+        assert response.status_code == 409
+        assert '工作台' in response.text
+        assert not (tmp_path / "data/workspaces/7/tin.db").exists()
         headers = signed_headers(body, key, identity)
         forged = dict(identity, tenant_id=8)
         headers["X-Research-Identity"] = base64.urlsafe_b64encode(json.dumps(forged).encode()).decode().rstrip("=")

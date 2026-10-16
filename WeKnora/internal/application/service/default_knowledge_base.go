@@ -45,7 +45,7 @@ func defaultKnowledgeBaseView(kb *types.KnowledgeBase) *DefaultKnowledgeBaseView
 	if kb == nil || kb.DeletedAt.Valid {
 		return nil
 	}
-	return &DefaultKnowledgeBaseView{Kind: macroKnowledgeBaseKind, KnowledgeBaseID: kb.ID, Name: kb.Name, SourceScope: "tenant_research"}
+	return &DefaultKnowledgeBaseView{Kind: macroKnowledgeBaseKind, KnowledgeBaseID: kb.ID, Name: kb.Name, SourceScope: "knowledge_base"}
 }
 
 func (s *WorkspaceService) GetDefaultKnowledgeBase(ctx context.Context) (*DefaultKnowledgeBaseView, error) {
@@ -98,7 +98,7 @@ func (s *WorkspaceService) InitializeDefaultKnowledgeBase(ctx context.Context) (
 	}
 	native := &types.KnowledgeBase{
 		ID: binding.KnowledgeBaseID, Name: "宏观数据", Type: types.KnowledgeBaseTypeDocument,
-		Description:              "Default 宏观知识库。宏观来源与数值沿用当前空间研究服务，未复制为文档或表格文件。",
+		Description:              "Default 宏观知识库。当前空间所有研究工作台共享此知识库已确认的结构化数据；来源与观测统一在本知识库维护。",
 		IndexingStrategy:         types.IndexingStrategy{Disabled: true},
 		ProfileConfig:            &types.KnowledgeBaseProfileConfig{Enabled: false},
 		AutoTagConfig:            &types.AutoTagConfig{Enabled: false},

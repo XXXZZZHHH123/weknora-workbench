@@ -54,9 +54,11 @@ var contextCloneAcrossDetach = map[ContextKey]bool{
 	// would silently re-key every binding onto the borrowed tenant, because
 	// setupSSEStream builds its async context through CloneContext, and
 	// abandon a paused MicroVM that keeps billing.
-	SessionIDContextKey:       true,
-	SessionTenantIDContextKey: true,
-	SandboxTenantIDContextKey: true,
+	SessionIDContextKey:              true,
+	SessionTenantIDContextKey:        true,
+	SandboxTenantIDContextKey:        true,
+	ResearchWorkbenchScopeContextKey: true,
+	ResearchAuthorizationContextKey:  true,
 
 	// Embed callers: the anonymous visitor id isolates embed OAuth, so losing
 	// it would merge visitors together.

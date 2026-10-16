@@ -78,6 +78,8 @@ type ContextConfig struct {
 type Session struct {
 	// ID
 	ID string `json:"id"          gorm:"type:varchar(36);primaryKey"`
+	// HasUserMessage is populated on detail reads, without a schema column.
+	HasUserMessage *bool `json:"has_user_message,omitempty" gorm:"->;-:migration"`
 	// Title
 	Title string `json:"title"`
 	// Description
@@ -87,6 +89,8 @@ type Session struct {
 	// UserID is the owner scope for this session. WeKnora user UUIDs, API
 	// external-user principals, and embed visitor principals all use this column.
 	UserID string `json:"user_id,omitempty" gorm:"type:varchar(512);index"`
+	// ResearchWorkbenchID fixes the isolated research scope for the session.
+	ResearchWorkbenchID string `json:"research_workbench_id,omitempty" gorm:"type:varchar(36);not null;default:'';index"`
 	// IsPinned indicates whether the session is pinned in the list.
 	IsPinned bool `json:"is_pinned" gorm:"default:false"`
 	// PinnedAt records when the session was pinned; nil when not pinned.

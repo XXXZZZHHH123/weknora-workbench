@@ -104,6 +104,16 @@ func appendWorkbenchTool(names []string, name string) []string {
 }
 
 func (h *Handler) prepareWorkbenchDefault(reqCtx *qaRequestContext, request *CreateKnowledgeQARequest) {
+	if reqCtx != nil && reqCtx.session != nil && reqCtx.session.ResearchWorkbenchID != "" {
+		if scope, ok := types.ResearchWorkbenchScopeFromContext(reqCtx.ctx); ok {
+			original := reqCtx.customAgent
+			if original == nil && h.customAgentService != nil {
+				original, _ = h.customAgentService.GetAgentByID(reqCtx.ctx, types.BuiltinQuickAnswerID)
+			}
+			reqCtx.customAgent = isolatedResearchAgent(original, scope)
+		}
+		return
+	}
 	if reqCtx == nil || reqCtx.session == nil || request.AgentSourceTenantID != 0 || reqCtx.sharedAgentReadOnly ||
 		(reqCtx.effectiveTenantID != 0 && reqCtx.effectiveTenantID != reqCtx.session.TenantID) {
 		return

@@ -40,5 +40,5 @@ onBeforeUnmount(() => { generation++ })
 
 <template>
   <t-tooltip v-if="!initialized && auth.hasRole('contributor')" :content="error || '初始化 Default 宏观知识库'" placement="right"><t-button variant="text" theme="default" size="small" :disabled="!known && !error" aria-label="初始化 Default 宏观知识库" @click="error && !known ? load() : confirming = true"><template #icon><t-icon name="earth" size="16px" /></template></t-button></t-tooltip>
-  <t-dialog v-model:visible="confirming" header="初始化宏观知识库" :confirm-btn="{ content: '创建 Default 知识库', loading: busy }" @confirm="initialize"><p>建立当前空间的内置宏观知识库，绑定已有宏观来源。现有同名知识库和研究数据会保留；不会自动采集数据或调用模型。</p><t-alert v-if="error" theme="error" :message="error" /></t-dialog>
+  <t-dialog v-model:visible="confirming" header="初始化宏观知识库" :confirm-btn="{ content: '创建 Default 知识库', loading: busy }" @confirm="initialize"><p>建立当前空间的宏观知识库，作为各研究工作台的默认共用来源。请在本库导入并确认数据；创建知识库不会自动采集数据或调用模型。</p><t-alert v-if="error" theme="error" :message="error" /></t-dialog>
 </template>

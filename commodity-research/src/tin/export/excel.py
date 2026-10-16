@@ -58,7 +58,7 @@ def field_catalog(session: Session, variety: str) -> list[dict]:
     buckets: dict[str, list[dict]] = {}
     per_contract = re.compile(r"^SHFE\.[A-Z]+\.\d{4}\.")
     for ind in session.scalars(select(Indicator)
-                               .where(Indicator.status == "可用", Indicator.variety.in_([variety, "COMMON"]))
+                               .where(Indicator.status == "可用", (True if session.info.get("workbench_id") else Indicator.variety.in_([variety, "COMMON"])))
                                .order_by(Indicator.category, Indicator.series_id)):
         if per_contract.match(ind.series_id):
             continue  # 逐合约行情按月换约，不适合放进长时序宽表
@@ -71,7 +71,8 @@ def field_catalog(session: Session, variety: str) -> list[dict]:
     groups += [{"name": name, "fields": buckets[name]} for name in sorted(buckets, key=category_rank)]
     groups.append({"name": "派生指标", "bind_only": True, "fields": [
         {"field": spec.formula_id, "label": spec.name, "kind": "derived",
-         "unit": spec.unit, "note": spec.expression} for spec in REGISTRY.values()]})
+         "unit": spec.unit, "note": spec.expression} for spec in REGISTRY.values() if not session.info.get("workbench_id")
+        or session.scalar(select(Derived.id).where(Derived.formula_id == spec.formula_id).limit(1)) is not None]})
     groups.append({"name": "研判", "bind_only": True, "fields": [
         {"field": "judgment_tone", "label": "当日基调（含版本与过期）", "kind": "judgment", "unit": "",
          "note": "取该交易日当时生效的判断版本，并附过期天数"},
@@ -83,8 +84,12 @@ def field_catalog(session: Session, variety: str) -> list[dict]:
 # ---------- 取数 ----------
 
 def _trade_dates(session: Session, date_range: str, start: str | None, end: str | None) -> list[date]:
-    rows = [date.fromisoformat(d) for d in session.scalars(
-        select(TradingDay.trade_date).order_by(TradingDay.trade_date))]
+    if session.info.get("workbench_id"):
+        rows = sorted({value.astimezone(SHANGHAI).date() for value in session.scalars(
+            select(Observation.as_of).where(Observation.status == "正常"))})
+    else:
+        rows = [date.fromisoformat(d) for d in session.scalars(
+            select(TradingDay.trade_date).order_by(TradingDay.trade_date))]
     if date_range == "custom" and start and end:
         lo, hi = date.fromisoformat(start), date.fromisoformat(end)
         return [d for d in rows if lo <= d <= hi]
@@ -319,7 +324,7 @@ def build_import_template(session: Session, variety: str) -> bytes:
     """导入模板：表头写成「指标名 [series_id]」，让回传文件精确对齐，绕开名称模糊匹配。"""
     rows = session.scalars(
         select(Indicator).where(Indicator.fetch_mode == "manual", Indicator.status == "可用",
-                                Indicator.variety.in_([variety, "COMMON"]))
+                                (True if session.info.get("workbench_id") else Indicator.variety.in_([variety, "COMMON"])))
         .order_by(Indicator.category, Indicator.series_id)).all()
 
     wb = Workbook()

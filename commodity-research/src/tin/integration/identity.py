@@ -1,5 +1,5 @@
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -9,6 +9,10 @@ class Identity:
     display_name: str
     tenant_id: int
     role: str
+    workbench_id: str = ""
+    knowledge_base_id: str = ""
+    knowledge_base_tenant_id: int = 0
+    authorization: str = field(default='', repr=False, compare=False)
 
     @property
     def can_write(self):
@@ -23,6 +27,13 @@ current_identity: ContextVar[Identity | None] = ContextVar("research_identity", 
 
 
 def research_prefix():
+    prefix = research_static_prefix()
+    from tin.integration.workbench_scope import current_workbench
+    scope = current_workbench.get()
+    return prefix + "/workbenches/" + scope.workbench_id if scope else prefix
+
+
+def research_static_prefix():
     from tin.config import settings
     return settings.public_prefix.rstrip("/") if settings.weknora_api_url else ""
 
@@ -33,6 +44,11 @@ def research_url(path):
         return path
     if prefix and (path == prefix or path.startswith(prefix + "/")):
         return path
+    static = research_static_prefix()
+    if prefix != static and static and path.startswith(static + "/"):
+        path = path[len(static):]
+        if path.startswith("/workbenches/"):
+            raise PermissionError("Cannot navigate into another workbench scope")
     return prefix + path
 
 

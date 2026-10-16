@@ -62,6 +62,8 @@ export interface ExtractConfigOverride {
 }
 
 export interface KnowledgeProcessOverrides {
+  // Original-only mode is supported by native file uploads; it does not parse or index.
+  source_only?: boolean
   summary_enabled?: boolean
   parser_engine_rules?: ParserEngineRule[]
   chunking_config?: ChunkingConfigOverride

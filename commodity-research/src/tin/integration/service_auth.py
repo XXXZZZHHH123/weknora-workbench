@@ -43,8 +43,24 @@ async def verify_service_request(request):
         if not hmac.compare_digest(expected, request.headers.get("x-research-signature", "")):
             raise ValueError("invalid signature")
         data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
-        if set(data) != {"user_id", "email", "display_name", "tenant_id", "role"}:
+        required = {"user_id", "email", "display_name", "tenant_id", "role"}
+        scoped = {"workbench_id", "knowledge_base_id", "knowledge_base_tenant_id"}
+        if not isinstance(data, dict) or set(data) not in (required, required | scoped | {'authorization_sha256'}):
             raise ValueError("invalid identity")
+        if scoped <= set(data):
+            authorization = request.headers.get('x-research-authorization', '')
+            if (not authorization.startswith('Bearer ') or len(authorization) > 16391
+                    or not isinstance(data.get('authorization_sha256'), str)
+                    or not hmac.compare_digest(data.pop('authorization_sha256'), hashlib.sha256(authorization.encode()).hexdigest())):
+                raise ValueError('Unsigned or missing current platform authorization')
+            data['authorization'] = authorization
+            from uuid import UUID
+            workbench = UUID(data["workbench_id"])
+            knowledge_base = UUID(data["knowledge_base_id"])
+            if (str(workbench) != data["workbench_id"] or workbench.int == 0
+                    or str(knowledge_base) != data["knowledge_base_id"] or knowledge_base.int == 0
+                    or type(data["knowledge_base_tenant_id"]) is not int or data["knowledge_base_tenant_id"] <= 0):
+                raise ValueError("invalid workbench scope")
         if (not isinstance(data["tenant_id"], int) or isinstance(data["tenant_id"], bool)
                 or data["tenant_id"] <= 0 or not isinstance(data["user_id"], str)
                 or not data["user_id"].strip() or len(data["user_id"]) > 128
@@ -52,5 +68,5 @@ async def verify_service_request(request):
                 or any(not isinstance(data[k], str) for k in ("email", "display_name"))):
             raise ValueError("invalid identity")
         return Identity(**data)
-    except (ValueError, KeyError, OSError, TypeError):
+    except (ValueError, KeyError, OSError, TypeError, AttributeError):
         raise HTTPException(401, "研究读取请求未通过服务身份校验") from None

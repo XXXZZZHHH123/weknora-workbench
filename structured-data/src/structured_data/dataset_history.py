@@ -1,8 +1,10 @@
 """Explain changes in queryable coverage, independently of snapshot identifiers."""
-def describe_history(items):
+def describe_history(items, *, source_keys=None):
     previous = {}
     for item in sorted(items, key=lambda d: d['imported_at']):
-        prior = previous.get(item['source_file'])
+        keys = source_keys.get(item['dataset_id'], (('filename', item['source_file']),)) if source_keys is not None else (('filename', item['source_file']),)
+        candidates = [previous[key] for key in keys if key in previous]
+        prior = max(candidates, key=lambda row: row['imported_at']) if candidates else None
         names = {s['name'] for s in item['sheets']}
         if prior is None:
             event = {'kind': 'first_parse', 'summary': f'首次解析，可查询 {len(names)} 张工作表', 'sheets': []}
@@ -18,5 +20,6 @@ def describe_history(items):
             else:
                 event = {'kind': 'mapping_update', 'summary': '更新解析规则或字段，工作表范围未增加', 'sheets': []}
         item['import_event'] = event
-        previous[item['source_file']] = item
+        for key in keys:
+            previous[key] = item
     return items

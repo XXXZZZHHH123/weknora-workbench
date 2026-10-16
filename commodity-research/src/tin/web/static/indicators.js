@@ -7,7 +7,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const names = new Map(rows.map((r) => [r.dataset.seriesId, r.dataset.name]));
   const normalize = (s) => String(s).normalize("NFKC").toLocaleLowerCase();
   const searchText = new Map(rows.map((r) => [r, normalize(r.dataset.search)]));
-  const storageKey = "tin.indicators.favorites.v1";
+  const context = window.RESEARCH_CONTEXT;
+  const storageKey = context?.workbench
+    ? `tin.indicators.favorites.v1:${context.tenant}:${context.user}:${context.workbench}`
+    : "tin.indicators.favorites.v1";
   let favorites = [];
   const selected = new Set();
   let previewController;

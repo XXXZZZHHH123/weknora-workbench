@@ -99,7 +99,7 @@ async function dgLoad() {
   dg.values = Object.fromEntries(data.nodes.map((n) => [n.node_id, n]));
   dg.judgment = data.judgment || {};
   const asOf = document.getElementById("dg-asof");
-  if (asOf) asOf.textContent = `数据截至 ${data.as_of}`;
+  if (asOf) asOf.textContent = data.as_of == null ? "尚无已确认观测" : `数据截至 ${data.as_of}`;
   dgRender();
   dgSyncCompareBtn();
 }
@@ -1196,6 +1196,8 @@ function dgRenameActive() {
 /* ---------- Markdown 导入导出 ---------- */
 
 async function dgOpenMarkdown() {
+  const operation = window.dgCancelGeneration?.();
+  dg.generatedVersion = null;
   // 导的是**画布此刻的样子**，不是库里存的那一份。
   // 按 template_id 从库里导，画布上刚改的结构不在里面——在图上加了个节点，
   // 打开 Markdown 却看不到它，两条编辑通道就接不上了。
@@ -1205,12 +1207,20 @@ async function dgOpenMarkdown() {
                            layout: { nodes: dg.layout.nodes, edges: dg.layout.edges } }),
   });
   const data = res.ok ? await res.json() : { markdown: "" };
+  if (window.dgGenerationIsCurrent && !window.dgGenerationIsCurrent(operation)) return false;
   document.getElementById("dg-md-text").value = data.markdown || "";
   document.getElementById("dg-md-name").value = "";
   document.getElementById("dg-md-msg").textContent = dg.dirty
     ? "下面是画布当前的结构（含尚未保存的改动）。"
     : "";
   toggleDrawer("dg-md-drawer", true);
+  await window.dgLoadGenerator?.();
+  return true;
+}
+
+function dgCloseMarkdown() {
+  window.dgCancelGeneration?.();
+  toggleDrawer('dg-md-drawer',false);
 }
 
 async function dgImportMarkdown(into) {
@@ -1224,6 +1234,7 @@ async function dgImportMarkdown(into) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ markdown: document.getElementById("dg-md-text").value,
                            name: into ? "" : document.getElementById("dg-md-name").value,
+                           ...(dg.generatedVersion ? {fact_version:dg.generatedVersion} : {}),
                            into: into ? dg.layout.__id : null }),
   });
   const data = await res.json();

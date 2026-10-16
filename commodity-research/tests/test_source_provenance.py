@@ -161,6 +161,30 @@ def test_history_without_original_stays_without_evidence(session):
     assert observation_sources(session,row.id)==[]
 
 
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_bridge_prefetch_keeps_all_cells_missing_state_and_duplicate_values(session, monkeypatch, prefetch):
+    blob = workbook({"S": [["date", "value"], ["2026-09-18", 100], ["2026-09-19", 101],
+                           ["2026-09-20", "#N/A"], ["2026-09-18", 100]]})
+    data = frozen_export(blob)
+    data["rows"] = [
+        {"date": "2026-09-18", "value": 100, "source_cell": "B2", "date_cell": "A2", "value_status": "valid"},
+        {"date": "2026-09-19", "value": 101, "source_cell": "B3", "date_cell": "A3", "value_status": "valid"},
+        {"date": "2026-09-20", "value": None, "source_cell": "B4", "date_cell": "A4", "value_status": "error"},
+        {"date": "2026-09-18", "value": 100, "source_cell": "B5", "date_cell": "A5", "value_status": "valid"}]
+    data["total"] = 4
+    fake_bridge(monkeypatch, data, blob)
+    first = bridge.preview_bridge(session, "version-a", "external-price")
+    result = bridge.apply_bridge(session, first["batch_id"], MAPPING, prefetch=prefetch)
+    assert result["written"] == 2 and result["evidence_rows"] == 3 and len(result["skipped"]) == 1
+    rows = session.scalars(select(Observation).order_by(Observation.as_of)).all()
+    assert [r.value for r in rows] == [100, 101]
+    evidence = session.scalars(select(ObservationSource)).all()
+    assert {r.locator["value_cell"] for r in evidence} == {"B2", "B3", "B5"}
+    assert len({r.observation_id for r in evidence}) == 2
+    again = bridge.apply_bridge(session, first["batch_id"], MAPPING, prefetch=prefetch)
+    assert again["written"] == 0 and again["already_imported"]
+
+
 def test_bridge_snapshot_tampering_is_rejected_without_writes(session,monkeypatch):
     blob=workbook({"S":[["date","value"],["2026-09-18",100]]})
     fake_bridge(monkeypatch,frozen_export(blob),blob)

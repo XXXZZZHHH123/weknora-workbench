@@ -244,6 +244,8 @@ def brief_gap(session: Session, researcher, d: date | None) -> str:
     §7 的风险应对写得很清楚：外部 API 断连时降级为「只做确定性信号，不出简报」，
     而不是出一份差的。所以这里只解释，不兜底生成——生成是 B1 的活。
     """
+    if d is None and session.info.get("workbench_id"):
+        return "当前工作台尚无已确认观测：请在「资料与来源」准备并确认本知识库资料，再继续研究。"
     if researcher is None:
         return "尚未初始化研究员档案：先跑一次 python -m tin.jobs init，简报才有归属。"
     if d is None:

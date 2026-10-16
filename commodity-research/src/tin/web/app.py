@@ -42,7 +42,7 @@ from tin.ingest.record import RecordError, record
 from tin.jobs.seed import seed_researcher
 from tin.judgments.importer import import_text
 from tin.judgments.service import JudgmentError, current, save_version, to_payload
-from tin.models import AuditLog, DailyBrief, Indicator, Judgment, TradingDay
+from tin.models import AuditLog, DailyBrief, Indicator, Judgment, Observation, TradingDay
 from tin.schemas.brief import STANCES
 from tin.schemas.caliber import Caliber
 from tin.schemas.judgment import TONES
@@ -149,6 +149,10 @@ async def _guard_schema(request: Request, call_next):
 
 app.add_middleware(ResearchAuthMiddleware)
 
+from tin.integration.identity import research_static_prefix
+from tin.integration.workbench_scope import current_workbench
+templates.env.globals["research_static_prefix"] = research_static_prefix
+templates.env.globals["research_workbench"] = current_workbench.get
 templates.env.globals["research_prefix"] = research_prefix
 templates.env.globals["research_url"] = research_url
 templates.env.globals["research_form_url"] = research_form_url
@@ -163,11 +167,21 @@ from tin.web.materials import router as materials_router
 from tin.web.refresh import router as refresh_router
 from tin.web.library import router as library_router
 from tin.provenance.router import router as sources_router
+from tin.web.workbenches import router as workbench_router
 app.include_router(research_read_router)
 app.include_router(materials_router)
 app.include_router(refresh_router)
 app.include_router(library_router)
 app.include_router(sources_router)
+app.include_router(workbench_router)
+from tin.web.workbench_artifacts import router as workbench_artifacts_router
+app.include_router(workbench_artifacts_router)
+from tin.web.workbench_sources import router as workbench_sources_router
+app.include_router(workbench_sources_router)
+from tin.web.brief_export import router as brief_export_router
+app.include_router(brief_export_router)
+from tin.web.diagram_generation import router as diagram_generation_router
+app.include_router(diagram_generation_router)
 
 
 @app.on_event('startup')
@@ -194,6 +208,17 @@ def _redirect(path: str, **params) -> RedirectResponse:
 
 
 def _board_date(s, q: str | None) -> date:
+    if s.info.get("workbench_id"):
+        try:
+            requested = date.fromisoformat(q) if q else latest_trade_date(s)
+        except (ValueError, TypeError):
+            raise HTTPException(400, "日期格式应为 YYYY-MM-DD") from None
+        if requested is None:
+            raise HTTPException(404, "当前工作台尚无已确认观测，请在「资料与来源」准备并确认本知识库资料")
+        from tin.compute.engine import day_end
+        if s.scalar(select(Observation.id).where(Observation.status == "正常", Observation.as_of < day_end(requested)).limit(1)) is None:
+            raise HTTPException(404, "当前工作台在所选日期之前尚无已确认观测，请在「资料与来源」准备并确认本知识库资料")
+        return requested
     if q:
         try:
             requested = date.fromisoformat(q)
@@ -215,6 +240,11 @@ def _board_date(s, q: str | None) -> date:
 
 
 def _neighbour_dates(s, d: date) -> tuple[str | None, str | None]:
+    if s.info.get("workbench_id"):
+        days = sorted({value.astimezone(SHANGHAI).date().isoformat() for value in s.scalars(
+            select(Observation.as_of).where(Observation.status == "正常"))})
+        return (next((day for day in reversed(days) if day < d.isoformat()), None),
+                next((day for day in days if day > d.isoformat()), None))
     prev = s.scalar(select(TradingDay.trade_date).where(TradingDay.trade_date < d.isoformat())
                     .order_by(TradingDay.trade_date.desc()).limit(1))
     nxt = s.scalar(select(TradingDay.trade_date).where(TradingDay.trade_date > d.isoformat())
@@ -453,6 +483,9 @@ async def judgment_import(file: UploadFile | None = None, text: str = Form(""), 
 @app.get("/sn/entry")
 def entry_form(request: Request, series_id: str | None = None, err: str | None = None):
     with SessionLocal() as s:
+        if s.info.get('knowledge_facts'):
+            return templates.TemplateResponse(request, 'knowledge_entry.html', _shell(
+                s, 'entry', latest_trade_date(s)))
         return templates.TemplateResponse(request, "entry.html", _shell(
             s, "entry", latest_trade_date(s), indicators=_manual_indicators(s), selected=series_id, err=err,
             audit=audit_entries(s), now=datetime.now(SHANGHAI).strftime("%Y-%m-%dT%H:%M")))
@@ -479,8 +512,10 @@ def entry_submit(series_id: str = Form(...), value: float = Form(...), as_of: st
         s.commit()
         d = latest_trade_date(s)
         if d is not None:
-            compute_day(s, d)
-        text = f"已录入 {ind.name} = {value:g}，派生指标已重算" if row else "与已有值相同，未重复写入"
+            if not s.info.get("workbench_id"):
+                compute_day(s, d)
+        completion = "，已保存本工作台观测" if s.info.get("workbench_id") else "，派生指标已重算"
+        text = f"已录入 {ind.name} = {value:g}{completion}" if row else "与已有值相同，未重复写入"
         base, _, query = return_to.partition("?")
         params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
         return _redirect(base, msg=text, **params)
@@ -496,7 +531,7 @@ def indicators_page(request: Request, date: str | None = None):
         checks = diagram_api.crosscheck(s, V, day) if day else []
         return templates.TemplateResponse(request, "indicators.html", _shell(
             s, "indicators", day, rows=rows, groups=groups, dimensions=DIMENSIONS, checks=checks,
-            sources=source_catalog()))
+            sources={"rows": [], "counts": {}} if s.info.get("workbench_id") else source_catalog()))
 
 
 @app.get("/sn/indicators/{series_id}")
@@ -547,6 +582,23 @@ def diagram_page(request: Request, template: int | None = None):
             templates_all=rows))
 
 
+def _diagram_query_date(session, requested):
+    if not session.info.get("workbench_id"):
+        day = _board_date(session, requested)
+        return day, day.isoformat()
+    try:
+        day = date.fromisoformat(requested) if requested else latest_trade_date(session)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "日期格式应为 YYYY-MM-DD") from None
+    # The lookup cutoff keeps missing nodes usable; it is never returned as a
+    # source date when this workbench has no confirmed observations by that day.
+    day = day or datetime.now(SHANGHAI).date()
+    from tin.compute.engine import day_end
+    observed = session.scalar(select(Observation.id).where(
+        Observation.status == "正常", Observation.as_of < day_end(day)).limit(1))
+    return day, day.isoformat() if observed is not None else None
+
+
 @app.get("/api/sn/diagram/values")
 def diagram_values(template_id: int | None = None, date: str | None = None):
     with SessionLocal() as s:
@@ -554,8 +606,8 @@ def diagram_values(template_id: int | None = None, date: str | None = None):
         tpl = next((t for t in rows if t["id"] == template_id), None) or (rows[0] if rows else None)
         if tpl is None:
             raise HTTPException(404, "还没有任何布局")
-        day = _board_date(s, date)
-        return {"template_id": tpl["id"], "as_of": day.isoformat(),
+        day, as_of = _diagram_query_date(s, date)
+        return {"template_id": tpl["id"], "as_of": as_of,
                 "judgment": diagram_api.judgment_roles(s, V)[1],
                 "nodes": diagram_api.resolve(s, tpl["layout"], day)}
 
@@ -569,9 +621,9 @@ def diagram_values_live(body: dict = Body(...)):
     """
     layout = body.get("layout") or {}
     with SessionLocal() as s:
-        day = _board_date(s, body.get("date"))
+        day, as_of = _diagram_query_date(s, body.get("date"))
         roles_meta = diagram_api.judgment_roles(s, V)[1]
-        return {"as_of": day.isoformat(), "judgment": roles_meta,
+        return {"as_of": as_of, "judgment": roles_meta,
                 "nodes": diagram_api.resolve(s, layout, day)}
 
 
@@ -617,6 +669,13 @@ def diagram_from_markdown(body: dict = Body(...)):
     except diagram_md.MarkdownError as e:
         raise HTTPException(400, str(e)) from None
     with SessionLocal() as s:
+        if 'fact_version' in body:
+            if body['fact_version'] != s.info.get('knowledge_facts_version'):
+                raise HTTPException(409,'知识库来源已改变，请重新生成或核对产业图配置')
+            from tin.web.diagram_generation import validate_draft
+            validate_draft(body.get('markdown'),[{'id':spec['series_id'],
+                'name':spec.get('metric') or spec.get('name'),'unit':spec.get('unit')}
+                for spec in s.info.get('knowledge_facts_catalog',{}).values()])
         # `into` 表示改写这一张，而不是新建。研究员在文本里改结构比拖方框快，
         # 但改完只能「导入为新布局」的话，每改一次就多一张图，改的还不是手里这张。
         into = body.get("into")
@@ -672,22 +731,31 @@ def diagram_delete(template_id: int):
 
 @app.get("/sn/reports")
 def reports_page(request: Request, date: str | None = None):
+    from tin.web.report_view import present_snapshot
     with SessionLocal() as s:
+        available_days = ([value.isoformat() for value in sorted({value.astimezone(SHANGHAI).date()
+                          for value in s.scalars(select(Observation.as_of).where(Observation.status == "正常"))}, reverse=True)[:40]]
+                          if s.info.get("workbench_id") else s.scalars(select(TradingDay.trade_date).order_by(TradingDay.trade_date.desc()).limit(40)))
         files = ([{"date": day, "weekday": "一二三四五六日"[__import__("datetime").date.fromisoformat(day).weekday()],
                    "tone": None, "main": None, "gaps": None, "generated_at": None}
-                  for day in s.scalars(select(TradingDay.trade_date).order_by(TradingDay.trade_date.desc()).limit(40))]
+                  for day in available_days]
                  if settings.weknora_api_url else archive_days(s, V))
         selected = next((f for f in files if f["date"] == date), files[0] if files else {"date": None})
-        preview = ""
+        preview, report, names = "", None, {}
         if selected.get("date"):
             path = settings.exports_dir / V / f"{selected['date']}.json"
             if settings.weknora_api_url:
-                preview = json.dumps(snapshot(s, V, __import__("datetime").date.fromisoformat(selected["date"])), ensure_ascii=False, indent=2)
+                report = snapshot(s, V, __import__("datetime").date.fromisoformat(selected["date"]))
+                names = dict(s.execute(select(Indicator.series_id, Indicator.name)).all())
             elif path.exists():
-                snap = json.loads(path.read_text(encoding="utf-8"))
-                preview = json.dumps(snap, ensure_ascii=False, indent=2)
+                report = json.loads(path.read_text(encoding="utf-8"))
+            if report is not None:
+                preview = json.dumps(report, ensure_ascii=False, indent=2)
         return templates.TemplateResponse(request, "reports.html", _shell(
-            s, "reports", latest_trade_date(s), files=files, selected=selected, preview=preview))
+            s, "reports", latest_trade_date(s), files=files, selected=selected, preview=preview,
+            report=present_snapshot(report, names) if report is not None else None,
+            report_generated_at=(report or {}).get('generated_at'),
+            live_report=bool(settings.weknora_api_url)))
 
 
 @app.get("/sn/reports/{day}.json")

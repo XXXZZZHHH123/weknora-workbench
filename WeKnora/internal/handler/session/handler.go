@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	stderrors "errors"
 	"net/http"
 
@@ -19,6 +20,10 @@ import (
 
 // Handler handles all HTTP requests related to conversation sessions
 type Handler struct {
+	researchWorkbenches interface {
+		GetWorkbench(context.Context, string) (*types.ResearchWorkbench, error)
+	}
+	knowledgeService     interfaces.KnowledgeService
 	browserSkill         *browserskill.Manager
 	messageService       interfaces.MessageService // Service for managing messages
 	suggestionService    interfaces.MessageSuggestionService
@@ -108,8 +113,11 @@ func NewHandler(
 	forkService *service.SessionForkService,
 	rewindService *service.SessionRewindService,
 	approvedProjectDirs HostProjectDirsLoader,
+	researchWorkbenches *service.WorkspaceService,
+	knowledgeService interfaces.KnowledgeService,
 ) *Handler {
 	h := &Handler{
+		knowledgeService:      knowledgeService,
 		browserSkill:          browserSkill,
 		sessionService:        sessionService,
 		messageService:        messageService,
@@ -144,6 +152,9 @@ func NewHandler(
 			imageResolver,
 			modelService,
 		),
+	}
+	if researchWorkbenches != nil {
+		h.researchWorkbenches = researchWorkbenches
 	}
 	if forkService != nil {
 		h.forkService = forkService
@@ -201,10 +212,17 @@ func (h *Handler) CreateSession(c *gin.Context) {
 
 	// Create session object with base properties
 	createdSession := &types.Session{
-		TenantID:         tenantID.(uint64),
-		Title:            request.Title,
-		Description:      types.SanitizeClientSessionDescription(request.Description, ""),
-		HostWorkspaceDir: hostDir,
+		TenantID:            tenantID.(uint64),
+		Title:               request.Title,
+		Description:         types.SanitizeClientSessionDescription(request.Description, ""),
+		HostWorkspaceDir:    hostDir,
+		ResearchWorkbenchID: request.ResearchWorkbenchID,
+	}
+	if request.ResearchWorkbenchID != "" {
+		if _, err := h.resolveResearchWorkbenchScope(ctx, createdSession); err != nil {
+			_ = c.Error(err)
+			return
+		}
 	}
 	// Attach the calling user as the session owner when available.
 	// API-key callers scope sessions per external user when configured;

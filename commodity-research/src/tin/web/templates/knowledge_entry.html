@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}数据维护 · {{ research_workbench().metadata.name }}{% endblock %}
+{% block main %}
+<div class="flex items-center justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
+  <div>
+    <h1 class="text-xl font-bold">知识库数据维护</h1>
+    <p class="text-xs text-[var(--text-muted)] mt-2">指标与观测统一读取绑定知识库已确认的结构化数据，同一知识库的工作台共享更新。</p>
+  </div>
+  <button type="button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">准备资料</button>
+</div>
+<p class="text-sm text-[var(--text-muted)] mt-5">上传、工作表识别和字段确认均在知识库完成；图谱、判断与简报保留在当前研究工作台。</p>
+<a href="/platform/knowledge-bases/{{ research_workbench().knowledge_base_id }}" target="_top" class="text-sm text-[var(--primary)]">转到绑定知识库</a>
+{% endblock %}

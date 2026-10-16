@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% from "_card.html" import card, trend %}
-{% block title %}锡 SN · 研究总览{% endblock %}
+{% block title %}{{ research_workbench().metadata.name if research_workbench() else '锡 SN' }} · 研究总览{% endblock %}
 {% block main %}
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
   <div>
-    <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">COMMODITY RESEARCH · SN</div>
-    <h1 class="text-2xl font-black tracking-tight flex items-center gap-3 flex-wrap">锡研究总览
+    <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">COMMODITY RESEARCH{% if not research_workbench() %} · SN{% endif %}</div>
+    <h1 class="text-2xl font-black tracking-tight flex items-center gap-3 flex-wrap">{{ research_workbench().metadata.name ~ ' · 研究总览' if research_workbench() else '锡研究总览' }}
       <span class="text-xs font-normal px-2 py-0.5 rounded bg-[var(--surface-soft)] text-[var(--text-muted)] border border-[var(--line)]">收盘截点 15:00</span>
     </h1>
     <p class="text-xs text-[var(--text-muted)] mt-1">行情、研判与宏观驱动同一截点 · 口径不一致不出数 · 派生指标可逐层穿透</p>
@@ -29,10 +29,10 @@
 
 {% if not d %}
 <section id="market-empty" role="status" class="research-panel p-5 space-y-3">
-  <h2 class="text-base font-bold">当前空间尚无行情数据</h2>
-  <p class="text-sm text-[var(--text-muted)]">尚未采集到交易日行情，市场数据与图表将在行情入库后显示。可以在下方「数据更新」中立即更新，或导入行情来源文件。</p>
+  <h2 class="text-base font-bold">{{ '当前工作台尚无已确认观测' if research_workbench() else '当前空间尚无行情数据' }}</h2>
+  <p class="text-sm text-[var(--text-muted)]">{% if research_workbench() %}请在「资料与来源」准备并确认本知识库资料，核对真实字段、单位和来源后，市场数据与图表将在这里显示。{% else %}尚未采集到交易日行情，市场数据与图表将在行情入库后显示。可以在下方「数据更新」中立即更新，或导入行情来源文件。{% endif %}</p>
   <div class="flex flex-wrap gap-3 text-sm">
-    <a href="{{ research_url('/files') }}" class="text-[var(--primary)] hover:underline">导入行情文件</a>
+    {% if research_workbench() %}<button type="button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)" class="text-[var(--primary)] hover:underline">准备资料</button>{% else %}<a href="{{ research_url('/files') }}" class="text-[var(--primary)] hover:underline">导入行情文件</a>{% endif %}
     <a href="{{ research_url('/sn/indicators') }}" class="text-[var(--primary)] hover:underline">查看指标与来源</a>
   </div>
 </section>
@@ -45,7 +45,7 @@
 <section class="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-sm flex items-center justify-between gap-4">
   <div>
     <div class="text-[10px] font-bold tracking-wider text-[var(--primary)] uppercase">RESEARCH VIEW</div>
-    <h2 class="text-base font-bold mt-1">尚未登记锡的研究判断</h2>
+    <h2 class="text-base font-bold mt-1">尚未登记{{ '' if research_workbench() else '锡的' }}研究判断</h2>
     <p class="text-xs text-[var(--text-muted)] mt-1">{% if d %}事实区照常显示；{% endif %}登记判断并更新行情后，阈值与证伪条件将每日自动比对。</p>
   </div>
   <a href="{{ research_prefix() }}/sn/judgment" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">登记判断 &rarr;</a>
@@ -123,7 +123,7 @@
   <div class="flex items-center justify-between gap-3 flex-wrap">
     <div class="flex items-center gap-2">
       <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">02</span>
-      <h2 class="text-sm font-bold">沪锡期限结构</h2>
+      <h2 class="text-sm font-bold">{{ '合约期限结构' if research_workbench() else '沪锡期限结构' }}</h2>
       {% if curve.shape %}<span class="text-xs px-2 py-0.5 rounded bg-[var(--primary-soft)] text-[var(--primary)] font-medium">活跃段 {{ curve.shape }}</span>
       {% else %}<span class="text-xs text-[var(--text-muted)]">活跃合约不足，暂不判定结构</span>{% endif %}
     </div>

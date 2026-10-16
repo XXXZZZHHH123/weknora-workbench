@@ -237,6 +237,10 @@ func (h *Handler) parseQARequest(c *gin.Context, logPrefix string) (*qaRequestCo
 		logger.Errorf(ctx, "Failed to get session, session ID: %s, error: %v", sessionID, err)
 		return nil, nil, errors.NewNotFoundError("Session not found")
 	}
+	ctx, err = h.bindResearchQuestionScope(ctx, session, &request)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Get custom agent if agent_id is provided. Backend resolves shared agent from share relation (no client-provided tenant).
 	customAgent, effectiveTenantID, sharedAgentReadOnly := h.resolveAgent(ctx, c, request.AgentID, request.AgentSourceTenantID)
@@ -2051,6 +2055,11 @@ func (h *Handler) completeAssistantMessage(
 	// Asynchronously index the Q&A pair into the chat history knowledge base for vector search.
 	// Use WithoutCancel so the goroutine survives after the HTTP request context is done.
 	bgCtx := context.WithoutCancel(ctx)
+	if _, isolated := types.ResearchWorkbenchScopeFromContext(bgCtx); isolated {
+		// Persist the session transcript above, but never publish its research
+		// into the tenant-wide chat-history index or cross-session memory.
+		return nil
+	}
 	if indexCtx, ok := h.sessionTenantInfoContext(bgCtx); ok {
 		go h.messageService.IndexMessageToKB(
 			indexCtx, userQuery, assistantMessage.Content, assistantMessage.ID, assistantMessage.SessionID)

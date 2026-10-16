@@ -1251,16 +1251,6 @@ async function handleUseSharedAgentInChat(shared: SharedAgentInfo) {
     const res = await createSessions({})
     if (res?.data?.id) {
       const sessionId = res.data.id
-      const now = new Date().toISOString()
-      menuStore.updataMenuChildren({
-        title: t('createChat.newSessionTitle'),
-        path: `chat/${sessionId}`,
-        id: sessionId,
-        isMore: false,
-        isNoTitle: true,
-        created_at: now,
-        updated_at: now
-      })
       menuStore.changeIsFirstSession(false)
       router.push({
         path: `/platform/chat/${sessionId}`,

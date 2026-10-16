@@ -21,7 +21,7 @@ from tin.schemas.caliber import Caliber
 from tin.schemas.observation import ObservationIn
 
 
-def structured_request(method, path, body=None):
+def structured_request(method, path, body=None, *, return_error_response=False):
     identity = current_identity.get()
     if identity is None:
         raise PermissionError("结构化桥接需要已核验账号和空间")
@@ -33,8 +33,16 @@ def structured_request(method, path, body=None):
     key = Path(settings.service_token_file).read_bytes().strip()
     if len(key) < 32:
         raise ValueError("结构化桥接服务密钥未配置")
-    encoded = base64.urlsafe_b64encode(json.dumps({"user_id": identity.user_id, "email": identity.email,
-        "display_name": identity.display_name, "tenant_id": identity.tenant_id, "role": identity.role},
+    caller = {"user_id": identity.user_id, "email": identity.email,
+        "display_name": identity.display_name, "tenant_id": identity.tenant_id, "role": identity.role}
+    from tin.integration.workbench_scope import current_workbench
+    scope = current_workbench.get()
+    if scope is not None:
+        if scope.identity.user_id != identity.user_id or scope.identity.tenant_id != identity.tenant_id:
+            raise PermissionError("结构化桥接与工作台身份不匹配")
+        caller.update(knowledge_base_id=scope.knowledge_base_id,
+                      knowledge_base_tenant_id=scope.knowledge_base_tenant_id)
+    encoded = base64.urlsafe_b64encode(json.dumps(caller,
         separators=(",", ":")).encode()).decode().rstrip("=")
     stamp = str(int(time.time()))
     message = "\n".join((stamp, method, path, encoded, hashlib.sha256(content).hexdigest()))
@@ -43,7 +51,7 @@ def structured_request(method, path, body=None):
         headers={"Content-Type": "application/json", "X-Research-Timestamp": stamp,
                  "X-Research-Identity": encoded, "X-Research-Signature": signature},
         follow_redirects=False, trust_env=False, timeout=120)
-    if response.status_code != 200:
+    if response.status_code != 200 and not return_error_response:
         raise ValueError(f"结构化服务读取失败（HTTP {response.status_code}）")
     return response
 
@@ -74,14 +82,40 @@ def full_export(dataset_id, series_id):
     return {"manifest": manifest, "series": series, "rows": rows, "total": total}
 
 
-def preview_bridge(session, dataset_id, series_id):
-    exported = full_export(dataset_id, series_id)
+def native_source_bindings(scope, original, native_sources):
+    fingerprints = {hashlib.md5(original).hexdigest(), hashlib.sha256(original).hexdigest()}
+    return [{"knowledge_id": source['id'], "knowledge_base_id": scope.knowledge_base_id,
+             "file_hash": source['file_hash']} for source in (native_sources or [])
+            if isinstance(source, dict) and source.get('id')
+            and source.get('knowledge_base_id') == scope.knowledge_base_id
+            and source.get('parse_status') not in {'deleting', 'deleted'}
+            and source.get('file_hash') in fingerprints]
+
+
+def preview_bridge(session, dataset_id, series_id, *, exported=None, native_sources=None):
+    exported = full_export(dataset_id, series_id) if exported is None else exported
     manifest, spec = exported["manifest"], exported["series"]
-    original = structured_request("GET", "/api/research/source/"+quote(dataset_id, safe="")).content
+    existing = session.get(SourceArtifact, manifest.get("sha256"))
+    original = (verified_artifact_bytes(session, existing) if existing is not None else
+                structured_request("GET", "/api/research/source/"+quote(dataset_id, safe="")).content)
     if hashlib.sha256(original).hexdigest() != manifest.get("sha256"):
         raise ValueError("结构化快照原件哈希不匹配，拒绝桥接")
+    from tin.integration.workbench_scope import current_workbench
+    scope = current_workbench.get()
+    metadata = {"dataset_id": dataset_id, "manifest": manifest}
+    if scope is not None:
+        bindings = native_source_bindings(scope, original, native_sources)
+        if not bindings:
+            raise ValueError("冻结原件未匹配本知识库当前真实来源，请先从本知识库重新扫描核对")
+        metadata['native_source_bindings'] = bindings
     artifact = preserve_blob(session, original, manifest["source_file"], kind="structured",
-                             metadata={"dataset_id": dataset_id, "manifest": manifest})
+                             metadata=metadata)
+    if scope is not None:
+        existing_bindings = list(artifact.details.get('native_source_bindings', []))
+        for binding in bindings:
+            if binding not in existing_bindings:
+                existing_bindings.append(binding)
+        artifact.details = {**artifact.details, 'native_source_bindings': existing_bindings}
     snapshot_workbook(session, artifact)
     snapshot = preserve_blob(session, json.dumps(exported, ensure_ascii=False, default=str).encode(),
         f"{dataset_id}-{series_id}.json", kind="structured_snapshot", metadata={"original_artifact_id": artifact.id})
@@ -103,7 +137,7 @@ def preview_bridge(session, dataset_id, series_id):
             "sample_rows": exported["rows"][:10], "sample_is_full_export": False}
 
 
-def apply_bridge(session, batch_id, mapping=None, *, allow_conflicts=False):
+def apply_bridge(session, batch_id, mapping=None, *, allow_conflicts=False, prefetch=False):
     batch = session.get(SourceBatch, batch_id)
     if batch is None or batch.kind != "bridge":
         raise ValueError("桥接批次不存在")
@@ -133,6 +167,12 @@ def apply_bridge(session, batch_id, mapping=None, *, allow_conflicts=False):
         raise ValueError("声明的原单位与冻结字段元信息不符")
     artifact = session.get(SourceArtifact, batch.artifact_id)
     verified_artifact_bytes(session, artifact)
+    cache = evidence_ids = None
+    if prefetch:
+        from tin.ingest.record import latest_index
+        cache = latest_index(session, [ind.series_id])
+        evidence_ids = set(session.scalars(select(ObservationSource.id).join(Observation,
+            ObservationSource.observation_id == Observation.id).where(Observation.series_id == ind.series_id)))
     pending, conflicts, skipped = [], [], []
     from tin.ingest.excel_importer import parse_as_of
     for raw in data["rows"]:
@@ -152,8 +192,9 @@ def apply_bridge(session, batch_id, mapping=None, *, allow_conflicts=False):
         except (ValueError, TypeError):
             skipped.append({"source_cell": raw.get("source_cell"), "reason": "原值/日期无法转换"})
             continue
-        prior = session.scalar(select(Observation).where(Observation.series_id == ind.series_id,
-            Observation.as_of == when).order_by(Observation.revision.desc()).limit(1))
+        prior = (cache.get((ind.series_id, when)) if cache is not None else
+                 session.scalar(select(Observation).where(Observation.series_id == ind.series_id,
+                    Observation.as_of == when).order_by(Observation.revision.desc()).limit(1)))
         if prior is not None and prior.value != value:
             same_lineage = profile is not None and profile.config == config and any(
                 e.transformation.get("format_fingerprint") == batch.mapping["fingerprint"]
@@ -188,12 +229,13 @@ def apply_bridge(session, batch_id, mapping=None, *, allow_conflicts=False):
                      "series_id": batch.mapping["external_series_id"], "sheet": data["series"].get("sheet"),
                      "value_cell": raw.get("source_cell"), "date_cell": raw.get("date_cell"),
                      "header_cells": data["series"].get("header_cells"), "raw_value": raw.get("raw_value"),
+                     "frequency": data["series"].get("frequency"), "frequency_cells": data["series"].get("frequency_cells"),
                      "formula": raw.get("formula"), "value_status": raw.get("value_status"),
                      "date": raw.get("date"), "period": raw.get("period")},
             mapping_version=f"bridge-v1:{profile.version}:"+stable_hash({"dataset": batch.mapping["dataset_id"],
                 "snapshot": batch.mapping["external_snapshot_id"], "caliber": config["caliber"]})[:32], transformation={"mapping": config,
                 "time_filled": filled, "format_fingerprint": batch.mapping["fingerprint"],
-                "snapshot_sha256": batch.mapping["external_snapshot_id"]})
+                "snapshot_sha256": batch.mapping["external_snapshot_id"]}, cache=cache, evidence_ids=evidence_ids)
         written += added; evidence += 1
     batch.result = {"status": "committed", "written": written, "evidence_rows": evidence,
                     "skipped": skipped, "conflicts": conflicts, "mapping_version": profile.version}

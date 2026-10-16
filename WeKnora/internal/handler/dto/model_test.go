@@ -375,3 +375,21 @@ func TestNewModelResponseReportsEmbeddingInputModalities(t *testing.T) {
 		})
 	}
 }
+
+func TestNewModelResponseReportsLegacyGenericChatImagesWithoutMutatingSettings(t *testing.T) {
+	model := &types.Model{
+		ID: "legacy-chat", Name: "qwen3.7-flash-2026-07-15", Type: types.ModelTypeKnowledgeQA, Source: types.ModelSourceRemote,
+		Parameters: types.ModelParameters{Provider: "generic", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+	}
+	viewer := context.WithValue(context.Background(), types.TenantRoleContextKey, types.TenantRoleViewer)
+	response := NewModelResponse(viewer, model)
+	require.NotNil(t, response.Capabilities)
+	assert.Contains(t, response.Capabilities.Input, "image")
+	assert.False(t, response.Parameters.SupportsVision, "saved fields remain distinct from resolved capabilities")
+	assert.Empty(t, response.Parameters.BaseURL, "viewer redaction remains effective")
+	assert.Equal(t, "generic", model.Parameters.Provider)
+	assert.False(t, model.Parameters.SupportsVision)
+	model.Parameters.Spec = &types.ModelSpecOverride{Input: []string{"text"}}
+	model.Parameters.SupportsVision = true
+	assert.NotContains(t, NewModelResponse(viewer, model).Capabilities.Input, "image")
+}

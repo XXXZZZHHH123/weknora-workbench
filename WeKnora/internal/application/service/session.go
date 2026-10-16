@@ -470,6 +470,8 @@ func (s *sessionService) UpdateSession(ctx context.Context, session *types.Sessi
 		return err
 	}
 	if existing != nil {
+		// A conversation's evidence boundary stays fixed when its title changes.
+		session.ResearchWorkbenchID = existing.ResearchWorkbenchID
 		session.Description = types.SanitizeClientSessionDescription(
 			session.Description, existing.Description)
 	}

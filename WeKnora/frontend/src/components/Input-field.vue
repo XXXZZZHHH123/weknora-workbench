@@ -10,7 +10,7 @@ import { useBrowserConnectionStore } from '@/stores/browserConnection';
 import { useUIStore } from '@/stores/ui';
 import BrowserIcon from '@/components/icons/BrowserIcon.vue';
 import { useMenuStore } from '@/stores/menu';
-import { listKnowledgeBases, searchKnowledge, batchQueryKnowledge, listKnowledgeTags } from '@/api/knowledge-base';
+import { listKnowledgeBases, searchKnowledge, batchQueryKnowledge, listKnowledgeTags, listKnowledgeFiles, getKnowledgeBaseById } from '@/api/knowledge-base';
 import { listMCPServices, type MCPService } from '@/api/mcp-service';
 import { stopSession } from '@/api/chat';
 import type { SteerQueueItem } from '@/api/chat/steer';
@@ -76,6 +76,63 @@ const {
 } = storeToRefs(chatResources);
 const { t, locale } = useI18n();
 
+const props = defineProps({
+  compact: {
+    type: Boolean,
+    default: false
+  },
+  autoFocus: {
+    type: Boolean,
+    default: false
+  },
+  isReplying: {
+    type: Boolean,
+    required: false
+  },
+  composerLocked: {
+    type: Boolean,
+    default: false
+  },
+  sessionId: {
+    type: String,
+    required: false
+  },
+  assistantMessageId: {
+    type: String,
+    required: false
+  },
+  embeddedMode: {
+    type: Boolean,
+    default: false
+  },
+  // Authenticated research panels reuse this composer while keeping every
+  // selection local. An absent scope retains the normal/public-embed contract.
+  knowledgeScope: {
+    type: Object as PropType<{ kbId: string; kbName?: string; modelId?: string }>,
+    required: false
+  },
+  queuedSteers: {
+    type: Array as PropType<SteerQueueItem[]>,
+    default: () => []
+  },
+  // Only agent turns have a loop that can take a mid-run message. In a
+  // quick-answer session the composer keeps its old behaviour: Stop is the
+  // only action while a reply is streaming.
+  canSteer: {
+    type: Boolean,
+    default: false
+  }
+});
+const scopedMentionItems = ref<MentionItem[]>([]);
+const scopedKbName = ref('');
+const scopedModelId = ref(props.knowledgeScope?.modelId || settingsStore.conversationModels.selectedChatModelId || '');
+const isScopedMention = (item: MentionItem) => {
+  const kbId = props.knowledgeScope?.kbId;
+  if (!kbId || !item.id) return false;
+  return item.type === 'kb' ? item.id === kbId
+    : (item.type === 'file' || item.type === 'tag') && item.kbId === kbId;
+};
+
 let query = ref("");
 const showKbSelector = ref(false);
 
@@ -98,7 +155,7 @@ const isImageFile = (file: File) => {
 };
 
 const handleDroppedFiles = (files: File[]) => {
-  if (!files.length) return;
+  if (props.knowledgeScope || !files.length) return;
 
   const imageFiles = files.filter(isImageFile);
   const attachmentFiles = files.filter(file => !isImageFile(file));
@@ -165,7 +222,7 @@ const agentModeButtonRef = ref<HTMLElement>();
 const agentModeDropdownStyle = ref<Record<string, string>>({});
 
 const selectedAgentId = computed({
-  get: () => settingsStore.selectedAgentId || BUILTIN_QUICK_ANSWER_ID,
+  get: () => props.knowledgeScope ? BUILTIN_QUICK_ANSWER_ID : settingsStore.selectedAgentId || BUILTIN_QUICK_ANSWER_ID,
   set: (val: string) => settingsStore.selectAgent(val)
 });
 const selectedAgent = computed(() => {
@@ -173,7 +230,7 @@ const selectedAgent = computed(() => {
   // Builtin agents (e.g. builtin-smart-reasoning) use the same constant ID across
   // tenants, so falling back to agents.value first would incorrectly return the
   // current tenant's own builtin instead of the shared one.
-  const sourceTenantId = settingsStore.selectedAgentSourceTenantId;
+  const sourceTenantId = props.knowledgeScope ? undefined : settingsStore.selectedAgentSourceTenantId;
   if (sourceTenantId && orgStore.sharedAgents?.length) {
     const shared = orgStore.sharedAgents.find(
       s => s.agent.id === selectedAgentId.value && String(s.source_tenant_id) === sourceTenantId
@@ -190,7 +247,8 @@ const selectedAgent = computed(() => {
   } as CustomAgent;
 });
 const selectedSharedAgent = computed(() => {
-  const sourceTenantId = settingsStore.selectedAgentSourceTenantId;
+  if (props.knowledgeScope) return undefined;
+  const sourceTenantId = props.knowledgeScope ? undefined : settingsStore.selectedAgentSourceTenantId;
   if (!sourceTenantId) return undefined;
   return orgStore.sharedAgents?.find(
     s => s.agent.id === selectedAgentId.value && String(s.source_tenant_id) === sourceTenantId
@@ -205,9 +263,10 @@ const isCustomAgent = computed(() => {
 
 // 判断是否有智能体配置（包括内置智能体）
 const hasAgentConfig = computed(() => {
+  if (props.knowledgeScope) return false;
   const agent = selectedAgent.value;
   // 共享智能体的 config 来自源空间，直接使用 agent.config，避免被本空间同 ID 的 builtin 覆盖
-  const sourceTenantId = settingsStore.selectedAgentSourceTenantId;
+  const sourceTenantId = props.knowledgeScope ? undefined : settingsStore.selectedAgentSourceTenantId;
   if (agent?.is_builtin && !sourceTenantId) {
     const builtinAgent = agents.value.find(a => a.id === agent.id);
     return !!builtinAgent?.config;
@@ -221,7 +280,7 @@ const currentAgentConfig = computed(() => {
   // For shared agents, agent.config already carries the source tenant's settings.
   // Re-looking it up by ID in the local agents.value would clobber it with the
   // current tenant's own builtin config (same constant ID for builtins).
-  const sourceTenantId = settingsStore.selectedAgentSourceTenantId;
+  const sourceTenantId = props.knowledgeScope ? undefined : settingsStore.selectedAgentSourceTenantId;
   if (agent?.is_builtin && !sourceTenantId) {
     const builtinAgent = agents.value.find(a => a.id === agent.id);
     return builtinAgent?.config || {};
@@ -247,7 +306,7 @@ const sharedAgentKbList = ref<Array<{ id: string; name: string; type?: string; k
 // 当智能体改变时，模型、可@知识库列表均跟随新智能体配置；网络搜索由用户主动开启
 // 知识库：用新智能体配置的列表替换当前选中，使已选与可@列表一致（含共享智能体）
 watch([selectedAgentId, agentKnowledgeBases, agentKBSelectionMode], ([newAgentId, newAgentKbs, newKbMode], [oldAgentId]) => {
-  if (settingsStore._isApplyingSessionState) return;
+  if (props.knowledgeScope || settingsStore._isApplyingSessionState) return;
   if (newAgentId !== oldAgentId && oldAgentId !== undefined) {
     if (newKbMode === 'none') {
       settingsStore.selectKnowledgeBases([]);
@@ -268,7 +327,7 @@ watch([selectedAgentId, agentKnowledgeBases, agentKBSelectionMode], ([newAgentId
 
 // 共享智能体时预取该智能体知识库列表，使已选标签在未打开 @ 时也能显示共享空间角标
 watch([selectedAgentId, () => settingsStore.selectedAgentSourceTenantId], async ([agentId, sourceTenantId]) => {
-  if (sourceTenantId && agentId) {
+  if (!props.knowledgeScope && sourceTenantId && agentId) {
     try {
       const list = await chatResources.ensureAgentKnowledgeBases(agentId, sourceTenantId);
       sharedAgentKbList.value = list.map((kb: any) => ({
@@ -312,6 +371,7 @@ const isKnowledgeBaseDisabledByAgent = computed(() => {
   return agentKBSelectionMode.value === 'none';
 });
 const isMentionDisabled = computed(() => {
+  if (props.knowledgeScope) return !props.knowledgeScope.kbId;
   if (settingsStore.isAgentStreamMode && isKnowledgeBaseDisabledByAgent.value) {
     return agentMCPSelectionMode.value === 'none' && agentSkillsSelectionMode.value === 'none';
   }
@@ -379,7 +439,7 @@ const isSkillAllowedByAgent = (skillName: string) => {
 
 // 切换智能体时清理不允许的 MCP / Skill @mention
 watch([selectedAgentId, agentMCPSelectionMode, agentSkillsSelectionMode], ([newAgentId], [oldAgentId]) => {
-  if (settingsStore._isApplyingSessionState) return;
+  if (props.knowledgeScope || settingsStore._isApplyingSessionState) return;
   if (newAgentId === oldAgentId || oldAgentId === undefined) return;
 
   const mcpMode = agentMCPSelectionMode.value;
@@ -502,7 +562,7 @@ const MENTION_PAGE_SIZE = 20;
 
 // 共享智能体时用于标识「共享空间」的展示名（组织名或共享者），供 @ 列表与已选标签显示角标
 const sharedAgentOrgName = computed(() => {
-  const sourceTenantId = settingsStore.selectedAgentSourceTenantId;
+  const sourceTenantId = props.knowledgeScope ? undefined : settingsStore.selectedAgentSourceTenantId;
   const agentId = selectedAgentId.value;
   if (!sourceTenantId || !agentId || !orgStore.sharedAgents?.length) return '';
   const shared = orgStore.sharedAgents.find(
@@ -511,52 +571,10 @@ const sharedAgentOrgName = computed(() => {
   return shared?.org_name || shared?.shared_by_username || '';
 });
 
-const props = defineProps({
-  compact: {
-    type: Boolean,
-    default: false
-  },
-  autoFocus: {
-    type: Boolean,
-    default: false
-  },
-  isReplying: {
-    type: Boolean,
-    required: false
-  },
-  composerLocked: {
-    type: Boolean,
-    default: false
-  },
-  sessionId: {
-    type: String,
-    required: false
-  },
-  assistantMessageId: {
-    type: String,
-    required: false
-  },
-  embeddedMode: {
-    type: Boolean,
-    default: false
-  },
-  queuedSteers: {
-    type: Array as PropType<SteerQueueItem[]>,
-    default: () => []
-  },
-  // Only agent turns have a loop that can take a mid-run message. In a
-  // quick-answer session the composer keeps its old behaviour: Stop is the
-  // only action while a reply is streaming.
-  canSteer: {
-    type: Boolean,
-    default: false
-  }
-});
-
-const isAgentEnabled = computed(() => settingsStore.isAgentEnabled);
-const isWebSearchEnabled = computed(() => settingsStore.isWebSearchEnabled);
-const selectedKbIds = computed(() => settingsStore.settings.selectedKnowledgeBases || []);
-const selectedFileIds = computed(() => settingsStore.settings.selectedFiles || []);
+const isAgentEnabled = computed(() => !props.knowledgeScope && settingsStore.isAgentEnabled);
+const isWebSearchEnabled = computed(() => !props.knowledgeScope && settingsStore.isWebSearchEnabled);
+const selectedKbIds = computed(() => props.knowledgeScope ? [] : settingsStore.settings.selectedKnowledgeBases || []);
+const selectedFileIds = computed(() => props.knowledgeScope ? [] : settingsStore.settings.selectedFiles || []);
 const selectedTags = computed(() => settingsStore.settings.selectedTags || []);
 const selectedMCPServiceIds = computed(() => settingsStore.settings.selectedMCPServices || []);
 const selectedSkillNames = computed(() => settingsStore.settings.selectedSkills || []);
@@ -639,6 +657,7 @@ const selectedMCPItems = computed<MentionItem[]>(() => {
 // 合并所有选中项（用于输入框内显示）
 // 现在智能体配置的知识库也在 store 中，统一从 selectedKbs 获取
 const allSelectedItems = computed(() => {
+  if (props.knowledgeScope) return scopedMentionItems.value;
   // 获取智能体预配置的知识库 IDs（用于标记和排序）
   const agentKbIds = agentKnowledgeBases.value;
 
@@ -691,6 +710,10 @@ const allSelectedItems = computed(() => {
 
 // 移除选中项（智能体配置的项也可以移除）
 const removeSelectedItem = (item: MentionItem) => {
+  if (props.knowledgeScope) {
+    scopedMentionItems.value = scopedMentionItems.value.filter(selected => !(selected.id === item.id && selected.type === item.type && selected.kbId === item.kbId));
+    return;
+  }
   if (item.type === 'kb') {
     settingsStore.removeKnowledgeBase(item.id);
   } else if (item.type === 'file') {
@@ -721,8 +744,11 @@ const getMentionChipClass = (item: MentionItem) => {
 
 // 使用 computed 从 store 读取，并通过 setter 同步回 store
 const selectedModelId = computed({
-  get: () => settingsStore.conversationModels.selectedChatModelId || '',
-  set: (val: string) => settingsStore.updateConversationModels({ selectedChatModelId: val })
+  get: () => props.knowledgeScope ? scopedModelId.value : settingsStore.conversationModels.selectedChatModelId || '',
+  set: (val: string) => {
+    if (props.knowledgeScope) scopedModelId.value = val;
+    else settingsStore.updateConversationModels({ selectedChatModelId: val });
+  }
 });
 const modelsLoading = ref(false);
 const showModelSelector = ref(false);
@@ -818,7 +844,7 @@ const loadFiles = async () => {
 // ids match none of its preset, and the backend drops such a mention outright.
 // So the list follows the selected agent and is refetched when it changes.
 const currentAgentScope = computed(() => {
-  const sourceTenantId = settingsStore.selectedAgentSourceTenantId;
+  const sourceTenantId = props.knowledgeScope ? undefined : settingsStore.selectedAgentSourceTenantId;
   if (!sourceTenantId || !selectedAgentId.value) return undefined;
   return { agentId: selectedAgentId.value, sourceTenantId };
 });
@@ -1015,6 +1041,14 @@ const loadChatModels = async (force = false) => {
 };
 
 const ensureModelSelection = () => {
+  if (props.knowledgeScope) {
+    // Only models actually exposed by this account may be selected. Merely
+    // loading or choosing one here never persists into the full-page composer.
+    if (!availableModels.value.some(model => model.id === selectedModelId.value)) {
+      selectedModelId.value = availableModels.value[0]?.id || '';
+    }
+    return;
+  }
   if (selectedModelId.value) {
     return;
   }
@@ -1036,6 +1070,7 @@ const ensureModelSelection = () => {
 watch(
   [selectedAgentId, () => settingsStore.selectedAgentSourceTenantId, agentModelId],
   ([, sourceTenantId, newModelId]) => {
+    if (props.knowledgeScope) return;
     if (!newModelId || newModelId.trim() === '') return;
 
     const lastPick = readLastChatModelID();
@@ -1083,6 +1118,12 @@ const handleModelChange = (value: string | number | Array<string | number> | und
     return;
   }
 
+  if (props.knowledgeScope) {
+    if (availableModels.value.some(model => model.id === val)) selectedModelId.value = val;
+    showModelSelector.value = false;
+    return;
+  }
+
   // The chat-level model picker now persists per-user-per-browser via
   // localStorage instead of writing to the tenant-shared KV. This is what
   // "remember my last pick" should always have meant — the previous PUT
@@ -1119,7 +1160,7 @@ const selectReasoningLevel = (level: ReasoningLevel) => {
 watch([selectedModel, reasoningLevels, () => settingsStore.reasoningEffortOverride, () => settingsStore._isApplyingSessionState], () => {
   // Wait for model resources during session restoration. Once known, an
   // unsupported override returns to inheritance instead of inventing a level.
-  if (!settingsStore._isApplyingSessionState && selectedModel.value && settingsStore.reasoningEffortOverride
+  if (!props.knowledgeScope && !settingsStore._isApplyingSessionState && selectedModel.value && settingsStore.reasoningEffortOverride
     && !reasoningLevels.value.includes(settingsStore.reasoningEffortOverride)) {
     settingsStore.reasoningEffortOverride = '';
   }
@@ -1274,7 +1315,78 @@ const updateModelDropdownPosition = () => {
 let lastMentionQuery = '';
 // 关键词变化时旧请求可能晚于新请求返回；只采纳最新一次加载的结果
 let mentionLoadSeq = 0;
+const loadScopedMentionItems = async (q: string, resetIndex: boolean, append: boolean) => {
+  const scope = props.knowledgeScope;
+  if (!scope?.kbId) return;
+  const seq = append ? mentionLoadSeq : ++mentionLoadSeq;
+  const isStale = () => seq !== mentionLoadSeq || props.knowledgeScope?.kbId !== scope.kbId;
+  const offset = append ? mentionOffset.value : 0;
+  mentionLoading.value = true;
+  try {
+    const [detail, fileResponse, tagResponse]: any[] = await Promise.all([
+      append ? undefined : getKnowledgeBaseById(scope.kbId),
+      listKnowledgeFiles(scope.kbId, { page: Math.floor(offset / MENTION_PAGE_SIZE) + 1, page_size: MENTION_PAGE_SIZE, keyword: q.trim() || undefined, sort_by: 'updated_at', sort_order: 'desc' }),
+      append ? undefined : listKnowledgeTags(scope.kbId, { page: 1, page_size: MENTION_PAGE_SIZE, keyword: q.trim() || undefined }),
+    ]);
+    if (isStale()) return;
+    const kb = detail?.data ?? detail;
+    if (!append && (!kb || kb.id !== scope.kbId)) throw new Error('知识库范围校验失败');
+    const filePayload = fileResponse?.data;
+    const files: any[] = Array.isArray(filePayload) ? filePayload : (Array.isArray(filePayload?.data) ? filePayload.data : []);
+    if (!append) {
+      scopedKbName.value = kb.name;
+      scopedMentionItems.value = scopedMentionItems.value.map(item => item.type === 'kb' && item.id === scope.kbId ? { ...item, name: kb.name, kbType: kb.type === 'faq' ? 'faq' : 'document' } : item);
+    }
+    const kbName = scopedKbName.value || scope.kbName || scope.kbId;
+    const items: MentionItem[] = files
+      .filter(file => (!file.knowledge_base_id && !file.kb_id) || (file.knowledge_base_id ?? file.kb_id) === scope.kbId)
+      .map(file => ({ id: file.id, name: file.title || file.file_name, type: 'file', kbId: scope.kbId, kbName }));
+    const total = Number(fileResponse?.total ?? filePayload?.total ?? files.length);
+    mentionOffset.value = offset + files.length;
+    mentionHasMore.value = offset + files.length < total;
+    if (append) mentionItems.value = [...mentionItems.value, ...items];
+    else {
+      const tagPayload = tagResponse?.data ?? tagResponse;
+      const tags: any[] = Array.isArray(tagPayload?.data) ? tagPayload.data : (Array.isArray(tagPayload) ? tagPayload : []);
+      const kbItems: MentionItem[] = !q || kbName.toLowerCase().includes(q.toLowerCase())
+        ? [{ id: scope.kbId, name: kbName, type: 'kb', kbType: kb.type === 'faq' ? 'faq' : 'document', count: kb.knowledge_count }] : [];
+      const tagItems: MentionItem[] = tags.map(tag => ({ id: tag.id, name: tag.name, type: 'tag', kbId: scope.kbId, kbName }));
+      mentionItems.value = [...kbItems, ...tagItems, ...items];
+      mentionGroupCounts.value = { kb: kbItems.length, tag: tagItems.length, file: total };
+    }
+    if (resetIndex || q !== lastMentionQuery) mentionActiveIndex.value = 0;
+    lastMentionQuery = q;
+  } catch (error) {
+    if (isStale()) return;
+    // Failed refreshes must not leave stale selectable items visible.
+    mentionItems.value = [];
+    mentionGroupCounts.value = {};
+    mentionHasMore.value = false;
+    MessagePlugin.warning('无法加载当前知识库资料，请重试。');
+  } finally {
+    if (!isStale()) mentionLoading.value = false;
+  }
+};
+
+watch(() => props.knowledgeScope?.kbId, () => {
+  ++mentionLoadSeq;
+  const scope = props.knowledgeScope;
+  scopedMentionItems.value = scope?.kbId ? [{ id: scope.kbId, name: scope.kbName || scope.kbId, type: 'kb', kbType: 'document' }] : [];
+  scopedKbName.value = scope?.kbName || '';
+  mentionItems.value = [];
+  mentionGroupCounts.value = {};
+  mentionLoading.value = false;
+  mentionHasMore.value = false;
+  mentionOffset.value = 0;
+  showMention.value = false;
+  query.value = '';
+}, { immediate: true });
+
 const loadMentionItems = async (q: string, resetIndex = true, append = false) => {
+  if (props.knowledgeScope) {
+    await loadScopedMentionItems(q, resetIndex, append);
+    return;
+  }
   console.log('[Mention] loadMentionItems called with query:', q, 'append:', append);
 
   const seq = append ? mentionLoadSeq : ++mentionLoadSeq;
@@ -1786,7 +1898,12 @@ const triggerMention = () => {
 };
 
 const onMentionSelect = (item: any) => {
-  if (item.type === 'kb') {
+  if (props.knowledgeScope) {
+    // A stale popup or injected child event must not add an unlisted source.
+    const available = mentionItems.value.find(candidate => candidate.id === item.id && candidate.type === item.type && candidate.kbId === item.kbId);
+    if (!available || !isScopedMention(available)) return;
+    if (!scopedMentionItems.value.some(selected => selected.id === available.id && selected.type === available.type && selected.kbId === available.kbId)) scopedMentionItems.value.push({ ...available });
+  } else if (item.type === 'kb') {
     settingsStore.addKnowledgeBase(item.id);
   } else if (item.type === 'file') {
     settingsStore.addFile(item.id);
@@ -1912,45 +2029,49 @@ let scrollHandler: (() => void) | null = null;
 onMounted(() => {
   if (props.autoFocus) void focusInput();
   // Embed 渠道由宿主注入 agent/KB，勿拉取需 JWT 的平台资源
-  if (props.embeddedMode) return;
+  if (props.embeddedMode && !props.knowledgeScope) return;
 
-  browserConnection.watchStatus();
+  if (props.knowledgeScope) {
+    void loadChatModels();
+  } else {
+    browserConnection.watchStatus();
 
-  // 并行拉取；若 platform 已预取且缓存未过期则直接复用
-  initChatModelSelection();
-  void Promise.all([
-    loadKnowledgeBases(),
-    loadWebSearchConfig(),
-    loadChatModels(),
-    loadAgents(),
-    loadMCPServices(),
-  ]);
-  window.addEventListener(CHAT_FILE_DROP_EVENT, handleChatFileDrop as EventListener);
+    // 并行拉取；若 platform 已预取且缓存未过期则直接复用
+    initChatModelSelection();
+    void Promise.all([
+      loadKnowledgeBases(),
+      loadWebSearchConfig(),
+      loadChatModels(),
+      loadAgents(),
+      loadMCPServices(),
+    ]);
+    window.addEventListener(CHAT_FILE_DROP_EVENT, handleChatFileDrop as EventListener);
 
-  // 从持久化恢复 fileId -> kbId，刷新后共享知识库文件可带 kb_id 拉取（仅保留当前仍选中的文件）
-  const persisted = settingsStore.settings.selectedFileKbMap;
-  const ids = settingsStore.settings.selectedFiles || [];
-  if (persisted && typeof persisted === 'object' && ids.length > 0) {
-    const next: Record<string, string> = {};
-    ids.forEach((id: string) => {
-      if (persisted[id]) next[id] = persisted[id];
-    });
-    fileIdToKbId.value = next;
-  }
+    // 从持久化恢复 fileId -> kbId，刷新后共享知识库文件可带 kb_id 拉取（仅保留当前仍选中的文件）
+    const persisted = settingsStore.settings.selectedFileKbMap;
+    const ids = settingsStore.settings.selectedFiles || [];
+    if (persisted && typeof persisted === 'object' && ids.length > 0) {
+      const next: Record<string, string> = {};
+      ids.forEach((id: string) => {
+        if (persisted[id]) next[id] = persisted[id];
+      });
+      fileIdToKbId.value = next;
+    }
 
-  // 如果从知识库内部进入，自动选中该知识库
-  const kbId = (route.params as any)?.kbId as string;
-  if (kbId && !selectedKbIds.value.includes(kbId)) {
-    settingsStore.addKnowledgeBase(kbId);
-  }
+    // 如果从知识库内部进入，自动选中该知识库
+    const kbId = (route.params as any)?.kbId as string;
+    if (kbId && !selectedKbIds.value.includes(kbId)) {
+      settingsStore.addKnowledgeBase(kbId);
+    }
 
-  const prefill = menuStore.consumePrefillQuery();
-  if (prefill) {
-    query.value = prefill;
-    nextTick(() => {
-      const textarea = getTextareaEl();
-      if (textarea) textarea.focus();
-    });
+    const prefill = menuStore.consumePrefillQuery();
+    if (prefill) {
+      query.value = prefill;
+      nextTick(() => {
+        const textarea = getTextareaEl();
+        if (textarea) textarea.focus();
+      });
+    }
   }
 
   // 监听点击外部关闭下拉菜单
@@ -1987,7 +2108,7 @@ onBeforeUnmount(() => {
 });
 
 onUnmounted(() => {
-  if (!props.embeddedMode) browserConnection.unwatchStatus();
+  if (!props.embeddedMode && !props.knowledgeScope) browserConnection.unwatchStatus();
   window.removeEventListener(CHAT_FILE_DROP_EVENT, handleChatFileDrop as EventListener);
   document.removeEventListener('click', closeAgentModeSelector);
   document.removeEventListener('click', closeModelSelector);
@@ -2003,6 +2124,7 @@ onUnmounted(() => {
 
 // 监听路由变化
 watch(() => route.params.kbId, (newKbId) => {
+  if (props.knowledgeScope) return;
   if (newKbId && typeof newKbId === 'string' && !selectedKbIds.value.includes(newKbId)) {
     settingsStore.addKnowledgeBase(newKbId);
   }
@@ -2097,6 +2219,27 @@ const createSession = async (
   const failedAttachment = uploadedAttachments.value.find(item => item.status === 'failed');
   if (failedAttachment) {
     MessagePlugin.error(failedAttachment.error || t('chat.attachmentParseFailed'));
+    return;
+  }
+
+  if (props.knowledgeScope) {
+    if (!props.knowledgeScope.kbId || !props.sessionId || uploadedImages.value.length || uploadedAttachments.value.length
+      || !allSelectedItems.value.every(isScopedMention)) {
+      MessagePlugin.warning('资料范围已变化，请重新选择当前知识库中的资料。');
+      return;
+    }
+    if (!chatResources.isLoaded('models')) await loadChatModels();
+    if (!selectedModelId.value || !availableModels.value.some(model => model.id === selectedModelId.value)) {
+      MessagePlugin.warning(t('input.noModel'));
+      return;
+    }
+    const mentionedItems: MentionRequestItem[] = allSelectedItems.value.map(item => ({
+      id: item.id, name: item.name, type: item.type,
+      ...(item.type === 'kb' ? { kb_type: item.kbType || 'document' } : { kb_id: item.kbId, kb_name: item.kbName }),
+    }));
+    emit('send-msg', val, selectedModelId.value, mentionedItems, [], [], options);
+    clearvalue();
+    void focusInput();
     return;
   }
 
@@ -2694,6 +2837,7 @@ const handleStop = async () => {
 }
 
 onBeforeRouteUpdate((to, from, next) => {
+  if (props.knowledgeScope) { next(); return; }
   clearvalue()
   clearPendingUploads()
   next()
@@ -2757,7 +2901,7 @@ defineExpose({
       </div>
 
       <!-- 附件列表区域 (由 AttachmentUpload 组件渲染) -->
-      <AttachmentUpload ref="attachmentUploadRef" :max-files="5"
+      <AttachmentUpload v-if="!knowledgeScope" ref="attachmentUploadRef" :max-files="5"
         :session-id="sessionId" :agent-id="selectedAgentId"
         :agent-source-tenant-id="settingsStore.selectedAgentSourceTenantId ?? undefined"
         @update:files="uploadedAttachments = $event" />
@@ -2792,9 +2936,9 @@ defineExpose({
       <!-- 控制栏按文档流排列，换行时自动撑开容器 -->
       <div class="control-bar" :class="{ 'is-embedded': embeddedMode }">
         <!-- 左侧控制按钮 -->
-        <div class="control-left" v-if="!embeddedMode">
+        <div class="control-left" v-if="!embeddedMode || knowledgeScope">
           <!-- Agent 模式切换按钮 -->
-          <div ref="agentModeButtonRef" class="control-btn agent-mode-btn" :class="{
+          <div v-if="!knowledgeScope" ref="agentModeButtonRef" class="control-btn agent-mode-btn" :class="{
             'is-normal': !isCustomAgent && !isAgentEnabled,
             'is-agent': !isCustomAgent && isAgentEnabled,
             'is-custom': isCustomAgent
@@ -2809,11 +2953,11 @@ defineExpose({
           </div>
 
           <!-- Agent 选择器下拉菜单 -->
-          <AgentSelector :visible="showAgentModeSelector" :anchorEl="agentModeButtonRef"
+          <AgentSelector v-if="!knowledgeScope" :visible="showAgentModeSelector" :anchorEl="agentModeButtonRef"
             :currentAgentId="selectedAgentId" :agents="enabledAgents" :all-models="allModels"
             @close="closeAgentModeSelector" @select="handleSelectAgent" @not-ready="handleAgentNotReady" />
 
-          <t-tooltip v-if="settingsStore.isAgentStreamMode" placement="top" theme="light"
+          <t-tooltip v-if="!knowledgeScope && settingsStore.isAgentStreamMode" placement="top" theme="light"
             :popupProps="{ overlayClassName: 'input-field-tooltip' }">
             <template #content>
               <div v-if="!browserConnection.knownOffline" class="browser-source-tooltip">
@@ -2839,7 +2983,7 @@ defineExpose({
           </t-tooltip>
 
           <!-- WebSearch 开关按钮（智能体未启用时不显示） -->
-          <t-tooltip v-if="showWebSearchButton" placement="top" theme="light"
+          <t-tooltip v-if="!knowledgeScope && showWebSearchButton" placement="top" theme="light"
             :popupProps="{ overlayClassName: 'input-field-tooltip' }">
             <template #content>
               <span v-if="isWebSearchConfigured">{{ isWebSearchEnabled ? $t('input.webSearch.toggleOff') :
@@ -2867,7 +3011,7 @@ defineExpose({
           </t-tooltip>
 
           <!-- 图片上传按钮（智能体未启用时不显示） -->
-          <t-tooltip v-if="showImageUploadButton" placement="top" theme="light"
+          <t-tooltip v-if="!knowledgeScope && showImageUploadButton" placement="top" theme="light"
             :popupProps="{ overlayClassName: 'input-field-tooltip' }">
             <template #content>
               <span>{{ $t('chat.imageUploadTooltip') }}</span>
@@ -2886,7 +3030,7 @@ defineExpose({
           </t-tooltip>
 
           <!-- 附件上传按钮 -->
-          <t-tooltip placement="top" theme="light" :popupProps="{ overlayClassName: 'input-field-tooltip' }">
+          <t-tooltip v-if="!knowledgeScope" placement="top" theme="light" :popupProps="{ overlayClassName: 'input-field-tooltip' }">
             <template #content>
               <span>{{ uploadedAttachments.length > 0 ? $t('chat.attachmentWithCount', {
                 count: uploadedAttachments.length
@@ -2953,7 +3097,7 @@ defineExpose({
               </div>
             </div>
           </t-tooltip>
-          <t-popup v-if="reasoningLevels.length > 0" v-model:visible="showReasoningSelector"
+          <t-popup v-if="!knowledgeScope && reasoningLevels.length > 0" v-model:visible="showReasoningSelector"
             trigger="click" placement="top-right" :disabled="composerLocked"
             :overlay-inner-style="{ padding: '4px', borderRadius: 'var(--app-radius-lg)' }"
             @visible-change="handleReasoningVisibleChange">
@@ -3048,7 +3192,7 @@ defineExpose({
 
     <!-- 知识库选择下拉（使用 Teleport 传送到 body，避免父容器定位影响） -->
     <Teleport to="body">
-      <KnowledgeBaseSelector v-model:visible="showKbSelector" :anchorEl="atButtonRef" @close="showKbSelector = false" />
+      <KnowledgeBaseSelector v-if="!knowledgeScope" v-model:visible="showKbSelector" :anchorEl="atButtonRef" @close="showKbSelector = false" />
     </Teleport>
   </div>
 </template>
@@ -3172,9 +3316,9 @@ const getImgSrc = (url: string) => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 12px 16px 0;
-  background: var(--td-bg-color-container);
+  gap: 4px;
+  padding: 6px 14px 0;
+  background: transparent;
   border-radius: 11px 11px 0 0;
   /* 与 .rich-input-container 内缘上边圆角一致（12px - 1px 边框） */
 }
@@ -3189,8 +3333,8 @@ const getImgSrc = (url: string) => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  min-height: 26px;
-  padding: 3px 7px 3px 6px;
+  min-height: 24px;
+  padding: 2px 7px 2px 6px;
   border-radius: var(--td-radius-medium);
   box-sizing: border-box;
   font-size: var(--app-text-sm);
@@ -3389,6 +3533,10 @@ const getImgSrc = (url: string) => {
 
   .rich-input-container :deep(.t-textarea__inner) {
     padding: 12px 14px;
+  }
+
+  .rich-input-container:has(.selected-tags-inline) :deep(.t-textarea__inner) {
+    padding-top: 6px;
   }
 
   .control-bar {

@@ -2,6 +2,8 @@ package types
 
 // KnowledgeProcessOverrides stores per-upload parse config overrides in knowledge metadata.
 type KnowledgeProcessOverrides struct {
+	// SourceOnly stores original bytes through native file upload without parsing.
+	SourceOnly bool `json:"source_only,omitempty"`
 	// SummaryEnabled defaults to true when omitted for backward compatibility.
 	SummaryEnabled           *bool                     `json:"summary_enabled,omitempty"`
 	ParserEngineRules        []ParserEngineRule        `json:"parser_engine_rules,omitempty"`
@@ -31,6 +33,7 @@ type KnowledgeProcessOverrides struct {
 
 // EffectiveProcessConfig is the merged view used by the parse pipeline.
 type EffectiveProcessConfig struct {
+	SourceOnly               bool
 	SummaryEnabled           bool
 	ChunkingConfig           ChunkingConfig
 	EnableMultimodel         bool

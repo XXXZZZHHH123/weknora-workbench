@@ -1,28 +1,29 @@
 {% extends "base.html" %}
-{% block title %}每日快照与归档 · 锡 SN{% endblock %}
+{% block title %}每日快照与归档 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
+{% block head %}<style>.report-table th,.report-table td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}.report-table th{font-weight:600}.report-value{font-variant-numeric:tabular-nums;white-space:nowrap}.report-table tbody tr:last-child td{border-bottom:0}</style>{% endblock %}
 {% block main %}
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
   <div>
     <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">ARCHIVE &amp; SNAPSHOT REPLAY</div>
     <h1 class="text-2xl font-black tracking-tight">每日快照与复盘归档</h1>
-    <p class="text-xs text-[var(--text-muted)] mt-1">按交易日冻结数据、口径、研判与缺口状态 ｜ 供 agent 读取与事后复盘</p>
+    <p class="text-xs text-[var(--text-muted)] mt-1">{{ "依据当前已确认数据回放；并非历史冻结归档，研究判断为当前版本" if live_report else "历史冻结归档：保留生成时的数据、口径、研判与缺口状态" }}</p>
   </div>
   <div class="text-right shrink-0">
     <div class="text-xl font-bold tabular">{{ files | length }}</div>
-    <div class="text-[11px] text-[var(--text-muted)]">份归档</div>
+    <div class="text-[11px] text-[var(--text-muted)]">{{ "个数据日期" if live_report else "份归档" }}</div>
   </div>
 </div>
 
 {% if not files %}
 <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-6 text-sm text-[var(--text-muted)]">
-  尚无归档。运行 <code class="px-1.5 py-0.5 rounded bg-[var(--surface-soft)] tabular">python -m tin.jobs daily</code> 生成当日快照。
+  {{ "尚无可回放数据，请先在绑定知识库完成结构化导入。" if live_report else "尚无历史归档。" }}
 </div>
 {% else %}
 <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
   <div class="lg:col-span-4 rounded-lg border border-[var(--line)] bg-[var(--surface)] overflow-hidden shadow-sm">
     <div class="p-3 bg-[var(--surface-soft)] border-b border-[var(--line)] flex justify-between items-center text-xs">
-      <span class="font-bold">归档交易日</span><span class="text-[var(--text-muted)]">共 {{ files | length }} 份</span>
+      <span class="font-bold">{{ "可回放日期" if live_report else "归档交易日" }}</span><span class="text-[var(--text-muted)]">共 {{ files | length }} {{ "日" if live_report else "份" }}</span>
     </div>
     <div class="divide-y divide-[var(--line)] max-h-[520px] overflow-y-auto">
       {% for f in files %}
@@ -31,11 +32,11 @@
         <div class="flex justify-between items-center gap-2 text-xs">
           <span class="font-bold tabular">{{ f.date }}（周{{ f.weekday }}）</span>
           {% if f.date == selected.date %}<span class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-[var(--primary)] text-white">当前查看</span>
-          {% else %}<span class="text-[10px] text-[var(--text-muted)]">已冻结</span>{% endif %}
+          {% else %}<span class="text-[10px] text-[var(--text-muted)]">{{ "数据回放" if live_report else "已冻结" }}</span>{% endif %}
         </div>
         <div class="flex justify-between gap-2 text-[11px] text-[var(--text-muted)] mt-1">
           <span class="truncate">{{ f.tone or '未登记判断' }} ｜ 主力 {{ f.main or '—' }}</span>
-          <span class="shrink-0 {{ 'text-[var(--amber)] font-semibold' if f.gaps else 'text-[var(--primary)]' }}">{{ f.gaps }} 缺口</span>
+          <span class="shrink-0 {{ 'text-[var(--amber)] font-semibold' if f.gaps else 'text-[var(--primary)]' }}">{{ (f.gaps ~ ' 缺口') if f.gaps is not none else '查看当日数据' }}</span>
         </div>
       </a>
       {% endfor %}
@@ -45,16 +46,55 @@
   <div class="lg:col-span-8 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-5 shadow-sm space-y-4">
     <div class="flex justify-between items-center gap-3 pb-3 border-b border-[var(--line)] flex-wrap">
       <div>
-        <h3 class="text-base font-bold">{{ selected.date }} 锡研究快照</h3>
-        <p class="text-xs text-[var(--text-muted)] mt-0.5">生成时间：{{ selected.generated_at or '—' }}</p>
+        <h3 class="text-base font-bold">{{ selected.date }} {{ research_workbench().metadata.name if research_workbench() else "研究" }}快照</h3>
+        <p class="text-xs text-[var(--text-muted)] mt-0.5">{{ '本次回放时间' if live_report else '归档生成时间' }}：{{ report_generated_at or selected.generated_at or '—' }}</p>
       </div>
       <div class="flex gap-2 text-xs">
+        {% with export_kind='snapshot', export_id=selected.date %}{% include '_brief_export.html' %}{% endwith %}
         <a href="{{ research_prefix() }}/sn?date={{ selected.date }}" class="px-2.5 py-1 font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">前往当日看板</a>
         <a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}.json" class="px-2.5 py-1 font-semibold rounded border border-[var(--line)] hover:bg-[var(--surface-soft)]">下载 JSON</a>
       </div>
     </div>
-    <pre class="p-3 rounded-lg bg-[var(--surface-soft)] border border-[var(--line)] tabular text-[11px] overflow-x-auto leading-relaxed max-h-[420px] overflow-y-auto">{{ preview }}</pre>
-    <p class="text-[11px] text-[var(--text-muted)]">快照是当日冻结的事实与研判，事后不重算；派生值被阻断时 value 为 null 并附原因。</p>
+    {% if report %}
+    <div id="report-readable" class="space-y-4 text-xs">
+      <div class="flex flex-wrap gap-x-5 gap-y-1 text-[var(--text-muted)]">
+        <span>指标 <strong class="text-[var(--text)]">{{ report.counts.observations }}</strong></span>
+        <span>派生计算 {{ report.counts.derived }}</span><span>信号 {{ report.counts.signals }}</span><span>缺口 {{ report.counts.gaps }}</span>
+      </div>
+      <section>
+        <h4 class="font-bold mb-1">研究判断</h4>
+        {% if report.judgment %}
+        <p>{{ report.judgment.tone or '未填写基调' }} · {{ report.judgment.status or '未登记状态' }} · 版本 {{ report.judgment.version }}</p>
+        {% if report.judgment.tone_note %}<p class="mt-1 whitespace-pre-wrap">{{ report.judgment.tone_note }}</p>{% endif %}
+        {% if report.judgment.contradiction %}<p class="mt-1 whitespace-pre-wrap">主要矛盾：{{ report.judgment.contradiction }}</p>{% endif %}
+        <p class="mt-1 text-[var(--text-muted)]">作者：{{ report.judgment.author or '未登记' }} · 复核期限：{{ report.judgment.review_due or '未登记' }}</p>
+        {% else %}<p class="text-[var(--text-muted)]">未登记研究判断；此处仅展示已记录事实，不自动编写结论。</p>{% endif %}
+      </section>
+      <section>
+        <h4 class="font-bold mb-2">截至所选日期的最新指标</h4>
+        {% if report.observations %}
+        <div class="overflow-auto max-h-[420px] rounded border border-[var(--line)]">
+          <table class="w-full text-left report-table">
+            <thead class="bg-[var(--surface-soft)] text-[var(--text-muted)]"><tr><th>指标</th><th>数值</th><th>单位</th><th>数据时点</th><th>来源与口径</th></tr></thead>
+            <tbody>{% for row in report.observations %}<tr>
+              <td>{{ row.name }}</td>
+              <td class="report-value">{{ row.value if row.value is not none else '暂无值' }}</td><td>{{ row.unit or '未注明' }}</td>
+              <td class="tabular whitespace-nowrap">{{ row.as_of or '未注明' }}</td>
+              <td>{{ row.source or '未注明' }}<details><summary class="cursor-pointer text-[var(--primary)]">来源详情</summary><div class="break-all text-[var(--text-muted)]">{{ row.series_id }}</div>{% if row.caliber %}<dl>{% for key, value in row.caliber.items() %}<dt class="mt-1 text-[var(--text-muted)]">{{ key }}</dt><dd class="break-words">{{ value }}</dd>{% endfor %}</dl>{% endif %}</details></td>
+            </tr>{% endfor %}</tbody>
+          </table>
+        </div>
+        {% else %}<p class="text-[var(--text-muted)]">截至该日尚无已记录指标。</p>{% endif %}
+      </section>
+      {% if report.derived %}<section><h4 class="font-bold mb-2">派生计算</h4><div class="overflow-x-auto"><table class="w-full text-left report-table"><thead><tr><th>计算项</th><th>数值</th><th>状态与原因</th></tr></thead><tbody>{% for row in report.derived %}<tr><td>{{ row.formula_id }}</td><td>{{ row.value if row.value is not none else '未计算' }}</td><td>{{ row.status }}{% if row.note %} · {{ row.note }}{% endif %}</td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
+      {% if report.signals %}<section><h4 class="font-bold mb-2">已记录信号</h4><ul class="space-y-1">{% for row in report.signals %}<li>{{ row.rule_id }} · {{ row.state }}{% if row.current_value is not none %} · 当前值 {{ row.current_value }}{% endif %}{% if row.gap_note %} · {{ row.gap_note }}{% endif %}</li>{% endfor %}</ul></section>{% endif %}
+      {% if report.gaps %}<section><h4 class="font-bold mb-2">数据缺口</h4><ul class="space-y-1">{% for row in report.gaps %}<li>{{ row.name or row.series_id }}：{{ row.reason }} · 最近数据 {{ row.last_as_of or '暂无' }} · 预期日期 {{ row.expected_by or '未注明' }}</li>{% endfor %}</ul></section>{% endif %}
+    </div>
+    {% endif %}
+    <details class="text-xs border-t border-[var(--line)] pt-3"><summary class="cursor-pointer text-[var(--text-muted)]">原始 JSON · 来源、输入与完整记录</summary>
+      <pre class="mt-2 p-3 rounded bg-[var(--surface-soft)] tabular text-[11px] overflow-x-auto leading-relaxed max-h-[420px] overflow-y-auto">{{ preview }}</pre>
+    </details>
+    <p class="text-[11px] text-[var(--text-muted)]">{{ "回放使用当前已确认来源；以后修订原表或判断，回放结果也可能更新。需要留存请导出到知识库。" if live_report else "本页读取生成时保存的历史快照，不重算原记录。" }} 缺失或被阻断的计算保留空值和原因，不补零。</p>
   </div>
 </div>
 {% endif %}

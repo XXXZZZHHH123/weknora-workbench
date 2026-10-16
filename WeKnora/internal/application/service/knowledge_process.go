@@ -763,12 +763,9 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 			); err != nil {
 				logger.Errorf(ctx, "Delete index failed: %v", err)
 			}
-			// Map vector store / embedding rate-limit errors to a
-			// stable code so the UI can offer "retry later" hints.
-			code := werrors.ErrCodeVectorStoreWriteFailed
-			if isLikelyRateLimitError(err) {
-				code = werrors.ErrCodeEmbeddingRateLimit
-			}
+			// The retriever knows whether the provider or the store failed;
+			// their messages (including "quota") do not identify that phase.
+			code := batchIndexFailureCode(err)
 			s.failStage(ctx, knowledge.ID, types.StageEmbedding,
 				code, "batch index failed", err)
 			if willRetry {
@@ -2821,6 +2818,18 @@ func (s *knowledgeService) reparseKnowledge(
 	}
 	if existing.Type == "file" && isExcelFileType(fileType) {
 		return nil, werrors.NewBadRequestError("Excel 文件请通过结构化数据库进行结构化解析")
+	}
+	storedOverrides, storedErr := existing.ProcessOverrides()
+	if storedErr != nil {
+		return nil, storedErr
+	}
+	if storedOverrides != nil && storedOverrides.SourceOnly {
+		if processOverrides == nil {
+			return nil, werrors.NewBadRequestError("该文件仅保存原件，请明确选择解析配置后再解析")
+		}
+		if _, err := resolveFileImportProcessConfig(ctx, kb, fileType, processOverrides, nil); err != nil {
+			return nil, err
+		}
 	}
 
 	tenantID := existing.TenantID

@@ -3,8 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 
+	"github.com/Tencent/WeKnora/internal/application/service/retriever"
+	werrors "github.com/Tencent/WeKnora/internal/errors"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
@@ -50,6 +55,12 @@ func (e *failingIndexEngine) DeleteByKnowledgeIDList(context.Context, []string, 
 func runProcessChunksWithFailingIndex(
 	ctx context.Context, t *testing.T,
 ) (*indexRetryKnowledgeRepo, *indexRetryChunkRepo, *failingIndexEngine, error) {
+	return runProcessChunksWithIndexCause(ctx, t, errors.New("embedding endpoint unavailable"), nil)
+}
+
+func runProcessChunksWithIndexCause(
+	ctx context.Context, t *testing.T, cause error, tracker SpanTracker,
+) (*indexRetryKnowledgeRepo, *indexRetryChunkRepo, *failingIndexEngine, error) {
 	t.Helper()
 	knowledge := &types.Knowledge{
 		ID:              "knowledge-1",
@@ -59,7 +70,7 @@ func runProcessChunksWithFailingIndex(
 	}
 	repo := &indexRetryKnowledgeRepo{parentChildKnowledgeRepo: parentChildKnowledgeRepo{knowledge: knowledge}}
 	chunks := &indexRetryChunkRepo{}
-	engine := &failingIndexEngine{err: errors.New("embedding endpoint unavailable")}
+	engine := &failingIndexEngine{err: cause}
 	tenant := &types.Tenant{
 		ID: 1,
 		RetrieverEngines: types.RetrieverEngines{Engines: []types.RetrieverEngineParams{{
@@ -76,6 +87,7 @@ func runProcessChunksWithFailingIndex(
 		graphEngine:    parentChildGraphRepo{},
 		tenantRepo:     parentChildTenantRepo{},
 		task:           parentChildTaskEnqueuer{},
+		spanTracker:    tracker,
 	}
 	kb := &types.KnowledgeBase{
 		ID:               "kb-1",
@@ -118,4 +130,40 @@ func TestProcessChunksFailsKnowledgeOnLastBatchIndexAttempt(t *testing.T) {
 	require.Equal(t, "embedding endpoint unavailable", last.ErrorMessage)
 	require.Equal(t, 2, chunks.deletes)
 	require.Equal(t, 2, engine.indexDeletes)
+}
+
+func TestProcessChunksRecordsTheActualIndexFailurePhase(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		phase retriever.IndexingPhase
+		cause error
+		code  string
+	}{
+		{"provider auth", retriever.IndexingPhaseEmbedding, &api.HTTPError{StatusCode: http.StatusUnauthorized, Body: "credential rejected"}, werrors.ErrCodeEmbeddingProviderFail},
+		{"provider invalid dimension", retriever.IndexingPhaseEmbedding, &api.HTTPError{StatusCode: http.StatusBadRequest, Body: "invalid dimension"}, werrors.ErrCodeEmbeddingProviderFail},
+		{"provider rate limit", retriever.IndexingPhaseEmbedding, &api.HTTPError{StatusCode: http.StatusTooManyRequests, Body: "slow down"}, werrors.ErrCodeEmbeddingRateLimit},
+		{"provider transport", retriever.IndexingPhaseEmbedding, &api.TransportError{Op: "send request", Err: errors.New("connection reset")}, werrors.ErrCodeEmbeddingProviderFail},
+		{"provider text mentioning quota and 429", retriever.IndexingPhaseEmbedding, &api.HTTPError{StatusCode: http.StatusBadRequest, Body: "quota configuration refers to code 429"}, werrors.ErrCodeEmbeddingProviderFail},
+		{"store quota", retriever.IndexingPhaseStoreWrite, errors.New("storage quota exhausted"), werrors.ErrCodeVectorStoreWriteFailed},
+		{"store HTTP rate limit", retriever.IndexingPhaseStoreWrite, &api.HTTPError{StatusCode: http.StatusTooManyRequests, Body: "vector backend limit"}, werrors.ErrCodeVectorStoreWriteFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker, db := setupSpanTrackerTest(t)
+			ctx := types.WithTaskRetryMetadata(context.Background(), 3, 3)
+			_, attempt, err := tracker.OpenAttempt(ctx, "knowledge-1", "")
+			require.NoError(t, err)
+			ctx = withAttempt(ctx, attempt)
+			cause := fmt.Errorf("composite index: %w", &retriever.IndexingError{Phase: tc.phase, Err: tc.cause})
+			repo, chunks, engine, err := runProcessChunksWithIndexCause(ctx, t, cause, tracker)
+			require.NoError(t, err)
+			require.Equal(t, types.ParseStatusFailed, repo.updates[len(repo.updates)-1].ParseStatus)
+			require.Equal(t, cause.Error(), repo.updates[len(repo.updates)-1].ErrorMessage)
+			require.Equal(t, 2, chunks.deletes)
+			require.Equal(t, 2, engine.indexDeletes)
+			var span types.KnowledgeProcessingSpan
+			require.NoError(t, db.Where("knowledge_id = ? AND attempt = ? AND name = ?", "knowledge-1", attempt, types.StageEmbedding).First(&span).Error)
+			require.Equal(t, tc.code, span.ErrorCode)
+			require.Contains(t, span.ErrorDetail, tc.cause.Error(), "operators retain the underlying provider or store error")
+		})
+	}
 }

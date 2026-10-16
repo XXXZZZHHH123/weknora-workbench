@@ -2935,7 +2935,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 0 40px 12px;
+  padding: 12px 40px 12px;
   max-height: 180px;
   overflow: auto;
   flex: none;

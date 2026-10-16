@@ -266,6 +266,7 @@ func (s *SessionForkService) Fork(
 		// pin that resolves nowhere the moment the source ran a shared agent.
 		SandboxConfigTenantID: source.SandboxConfigTenantID,
 		HostWorkspaceDir:      source.HostWorkspaceDir,
+		ResearchWorkbenchID:   source.ResearchWorkbenchID,
 		ParentSessionID:       source.ID,
 		ForkedFromMessageID:   forkPoint.ID,
 		ForkBootstrap:         bootstrap,

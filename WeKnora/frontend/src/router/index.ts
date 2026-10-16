@@ -125,7 +125,7 @@ const router = createRouter({
         {
           path: 'research-workbenches/:workbenchId/preview',
           name: 'researchWorkbenchPreview',
-          component: () => import('../views/workspaces/ResearchWorkbenches.vue'),
+          redirect: (to) => ({ name: 'researchWorkbenchDetail', params: { workbenchId: to.params.workbenchId }, query: to.query, hash: to.hash }),
           meta: { requiresInit: true, requiresAuth: true }
         },
         {

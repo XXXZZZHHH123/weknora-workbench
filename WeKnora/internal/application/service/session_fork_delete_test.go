@@ -33,7 +33,7 @@ func newSessionServiceForForkDeleteTest(t *testing.T) (*sessionService, *gorm.DB
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&types.Session{}, &types.ForkSnapshotLease{}))
+	require.NoError(t, db.AutoMigrate(&types.Session{}, &types.Message{}, &types.ForkSnapshotLease{}))
 	snapshots := &fakeForkSessionSnapshotDeleter{}
 	svc := &sessionService{
 		sessionRepo:        repository.NewSessionRepository(db),

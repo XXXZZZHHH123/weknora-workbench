@@ -99,8 +99,10 @@ button:focus-visible:not(:disabled):not([aria-disabled="true"]):not(.t-is-disabl
     box-shadow var(--app-motion-fast) ease;
 }
 
+// The chat composer already highlights its outer surface with :focus-within.
+// A second textarea halo divides its source chips, editor and controls.
 .t-input--focused:not(.t-is-disabled):not(.t-is-readonly):not(.t-is-error):not(.t-is-warning):not(.t-is-success),
-.t-textarea__inner:focus:not(:disabled):not([readonly]):not(.t-is-disabled):not(.t-is-error):not(.t-is-warning):not(.t-is-success) {
+.t-textarea__inner:focus:not(:disabled):not([readonly]):not(.t-is-disabled):not(.t-is-error):not(.t-is-warning):not(.t-is-success):not(:where(.answers-input *)) {
   border-color: var(--td-brand-color);
   box-shadow: 0 0 0 2px var(--td-brand-color-focus);
 }

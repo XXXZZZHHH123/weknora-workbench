@@ -185,6 +185,9 @@ def record_with_evidence(session, obs, *, artifact, locator, batch_id=None,
 
 
 def observation_sources(session, observation_id):
+    if session.info.get('knowledge_facts'):
+        from tin.integration.kb_facts import canonical_observation_sources
+        return canonical_observation_sources(session, observation_id)
     rows = session.scalars(select(ObservationSource).where(
         ObservationSource.observation_id == observation_id).order_by(ObservationSource.created_at)).all()
     from tin.integration.identity import research_url

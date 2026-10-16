@@ -53,6 +53,7 @@ class ImportCode(StrEnum):
 
 
 class TimeType(StrEnum):
+    原表日期 = "原表日期"
     交易时点 = "交易时点"
     发布时点 = "发布时点"
     抓取时点 = "抓取时点"
