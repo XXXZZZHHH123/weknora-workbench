@@ -645,7 +645,11 @@ def diagram_to_markdown(template_id: int | None = None):
         tpl = next((t for t in rows if t["id"] == template_id), None) or (rows[0] if rows else None)
         if tpl is None:
             raise HTTPException(404, "还没有任何布局")
-        return {"name": tpl["name"], "markdown": diagram_md.dump(tpl["layout"], tpl["name"])}
+        try:
+            markdown = diagram_md.dump(tpl["layout"], tpl["name"])
+        except diagram_md.MarkdownError as e:
+            raise HTTPException(400, str(e)) from None
+        return {"name": tpl["name"], "markdown": markdown}
 
 
 @app.post("/api/sn/diagram/markdown/dump")
@@ -658,7 +662,11 @@ def diagram_dump_markdown(body: dict = Body(...)):
     """
     layout = body.get("layout") or {}
     name = str(body.get("name") or "产业结构").strip()
-    return {"name": name, "markdown": diagram_md.dump(layout, name)}
+    try:
+        markdown = diagram_md.dump(layout, name)
+    except diagram_md.MarkdownError as e:
+        raise HTTPException(400, str(e)) from None
+    return {"name": name, "markdown": markdown}
 
 
 @app.post("/api/sn/diagram/markdown")
