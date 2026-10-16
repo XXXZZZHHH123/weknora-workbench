@@ -15,12 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/application/service"
 	"github.com/Tencent/WeKnora/internal/middleware"
 	"github.com/Tencent/WeKnora/internal/models/api"
+	"github.com/Tencent/WeKnora/internal/models/api/openaicompletions"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
@@ -36,6 +38,7 @@ type workspaceDiagramModels struct {
 	interfaces.ModelService
 	model                    *types.Model
 	client                   *workspaceDiagramChat
+	protocolClient           chat.Chat
 	getError, initError      error
 	lookups, initializations int
 }
@@ -46,6 +49,9 @@ func (m *workspaceDiagramModels) GetModelByID(_ context.Context, _ string) (*typ
 }
 func (m *workspaceDiagramModels) GetChatModel(_ context.Context, _ string) (chat.Chat, error) {
 	m.initializations++
+	if m.protocolClient != nil {
+		return m.protocolClient, m.initError
+	}
 	return m.client, m.initError
 }
 
@@ -172,6 +178,7 @@ func TestWorkspaceDiagramGeneratesDraftUsingConfiguredProductionModel(t *testing
 	require.Equal(t, "system", f.models.client.messages[0].Role)
 	require.Equal(t, "完整资料与真实目录。\n保持指定配置协议和未绑定项。", f.models.client.messages[1].Content)
 	require.Equal(t, 8192, f.models.client.options.MaxTokens)
+	require.False(t, f.models.client.options.DisableImageFallback, "text-only generation leaves the existing option default")
 	require.WithinDuration(t, before.Add(120*time.Second), f.models.client.deadline, time.Second)
 	var count int64
 	require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Count(&count).Error)
@@ -269,6 +276,32 @@ func TestWorkspaceDiagramVisionAndBuiltinModelsUseNormalChat(t *testing.T) {
 	response := f.request(diagramBody(t, image))
 	require.Equal(t, 200, response.Code, response.Body.String())
 	require.Equal(t, []string{image}, f.models.client.messages[1].Images)
+	require.True(t, f.models.client.options.DisableImageFallback, "image evidence must not be silently removed")
+}
+
+func TestWorkspaceDiagramImageRejectionMakesOneProviderRequest(t *testing.T) {
+	t.Setenv("SSRF_WHITELIST", "127.0.0.1")
+	t.Setenv("SSRF_WHITELIST_EXTRA", "")
+	secutils.ResetSSRFWhitelistForTest()
+	t.Cleanup(secutils.ResetSSRFWhitelistForTest)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"image not supported"}}`))
+	}))
+	defer server.Close()
+	f := newWorkspaceDiagramFixture(t)
+	f.models.model.Parameters.SupportsVision = true
+	f.models.protocolClient = openaicompletions.New(openaicompletions.Config{Endpoint: api.Endpoint{
+		URL: server.URL, Model: "synthetic", Client: server.Client(),
+	}, Settings: api.DefaultOpenAICompletions()})
+	response := f.request(diagramBody(t, diagramPNG(t)))
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.EqualValues(t, 1, requests.Load(), "never generate a draft after discarding the image")
+	require.Contains(t, response.Body.String(), `"provider_http_status":400`)
+	require.NotContains(t, response.Body.String(), `"content"`)
 }
 
 func TestWorkspaceDiagramFailuresAndChangedScopeNeverReturnDraft(t *testing.T) {

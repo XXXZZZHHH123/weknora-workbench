@@ -142,7 +142,7 @@ func WorkspaceDiagramGenerator(workspaces *WorkspaceHandler, models *ModelHandle
 		if input.Image != "" {
 			message.Images = []string{input.Image}
 		}
-		response, err := client.Chat(ctx, []chat.Message{{Role: "system", Content: workspaceDiagramSystem}, message}, &chat.ChatOptions{MaxTokens: workspaceDiagramTokens})
+		response, err := client.Chat(ctx, []chat.Message{{Role: "system", Content: workspaceDiagramSystem}, message}, &chat.ChatOptions{MaxTokens: workspaceDiagramTokens, DisableImageFallback: input.Image != ""})
 		if err != nil {
 			class, status := workspaceDiagramCallError(err)
 			workspaceDiagramFailure(c, "completion", class, status)

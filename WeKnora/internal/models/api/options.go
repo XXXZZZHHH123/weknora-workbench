@@ -66,6 +66,10 @@ type Options struct {
 	ToolChoice        string          `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"` // 是否允许并行工具调用（默认 nil 表示由模型决定）
 	Format            json.RawMessage `json:"format,omitempty"`              // 响应格式定义
+	// DisableImageFallback requires image evidence to survive the request. A
+	// multimodal rejection is returned instead of retrying without images.
+	// The zero value preserves the existing chat fallback; this is not sent.
+	DisableImageFallback bool `json:"-"`
 	// PromptCacheKey is the provider routing key (OpenAI prompt_cache_key).
 	// Empty falls back to the session ID on the call context.
 	PromptCacheKey string `json:"-"`
