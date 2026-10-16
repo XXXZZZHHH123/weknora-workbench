@@ -16,6 +16,19 @@ from tin.web.workbench_sources import source_content
 
 router = APIRouter(prefix='/api/sn/diagram/generation')
 CATALOG_LIMIT = 256
+# Only application-authored messages cross this boundary. Provider failures may
+# contain credentials, URLs or request bodies and are never echoed verbatim.
+NATIVE_GENERATION_MESSAGES = frozenset({
+    '所选模型不支持图片，请选择视觉对话模型或提供文字资料',
+    '请选择已启用的对话模型', '模型不存在或不可使用',
+    '工作台绑定知识库已变化，请重新打开生成助手',
+    '工作台绑定知识库已变化，请重新生成',
+    '请选择模型、知识库并提供有效资料，图片须为不超过 5 MiB 的 PNG、JPEG、WebP 或 GIF',
+    '生成参数无效或图片过大', '生成参数无效',
+    '需要登录用户和空间编辑权限', '请先登录并选择空间',
+    '产业图生成服务尚未配置', '模型初始化失败，请检查模型配置',
+    '模型未生成有效配置，请调整资料后重试',
+})
 
 
 class GenerateRequest(BaseModel):
@@ -41,7 +54,8 @@ def catalog_snapshot():
             {'id':spec['series_id'],'name':spec.get('metric') or spec.get('name'),
              'unit':spec.get('unit'),'frequency':spec.get('frequency'),
              'sheet':spec.get('sheet'),'dimensions':spec.get('dimensions'),
-             'source_file':spec.get('source_file')} for spec in session.info['knowledge_facts_catalog'].values()]
+             'source_file':spec.get('source_file'), 'knowledge_base_id':spec.get('knowledge_base_id'),
+             'source_kind':spec.get('source_kind')} for spec in session.info['knowledge_facts_catalog'].values()]
 
 
 def strict_json(content):
@@ -67,8 +81,25 @@ async def completion(scope,model_id,prompt,image=None):
                 +quote(scope.workbench_id,safe='')+'/diagram/generate',
                 headers={'Authorization':scope.authorization,'X-Tenant-ID':str(scope.identity.tenant_id)},
                 json={'model_id':model_id,'knowledge_base_id':scope.knowledge_base_id,'prompt':prompt,'image':image or ''})
-        if response.status_code in {400,401,403,404,409,413,422,429}:
-            raise HTTPException(response.status_code,'生成未完成，请检查模型能力、额度、资料大小或知识库权限')
+        if response.status_code in {400,401,403,404,409,413,422,429,503}:
+            message = {
+                400:'生成参数无效，请核对模型、资料格式或重新打开当前工作台',
+                401:'登录已失效，请重新登录后生成', 403:'没有当前知识库或模型的使用权限',
+                404:'当前模型、工作台或知识库已不存在，请刷新后重试',
+                409:'工作台或知识库来源已变化，请刷新后重新生成',
+                413:'生成资料过大，请缩小图片或文字范围',
+                422:'生成配置无效，请核对资料与模型能力',
+                429:'模型请求受限，请检查可用额度或稍后重试',
+                503:'模型服务暂时不可用，现有产业图保持原样',
+            }[response.status_code]
+            try:
+                error = response.json().get('error',{})
+                detail = error.get('message') if isinstance(error,dict) else None
+                if isinstance(detail,str) and detail in NATIVE_GENERATION_MESSAGES:
+                    message = detail
+            except (ValueError,AttributeError):
+                pass
+            raise HTTPException(response.status_code,message)
         response.raise_for_status()
         document = response.json()
         data = document.get('data') if isinstance(document,dict) else None
@@ -106,6 +137,18 @@ def validate_draft(markdown,catalog):
     return layout,bindings
 
 
+def model_accepts_images(row):
+    parameters = row.get('parameters') or {}
+    override = parameters.get('spec') or {}
+    declared = override.get('input') if isinstance(override,dict) else None
+    if isinstance(declared,list) and declared:
+        return 'image' in declared
+    capabilities = row.get('capabilities')
+    if isinstance(capabilities,dict) and isinstance(capabilities.get('input'),list):
+        return 'image' in capabilities['input']
+    return bool(parameters.get('supports_vision'))
+
+
 @router.get('/models')
 async def models():
     scope = scope_for_generation()
@@ -113,8 +156,7 @@ async def models():
     if not isinstance(doc.get('data'),list):
         raise HTTPException(503,'模型目录暂时不可用')
     return {'models':[{'id':row['id'],'name':row.get('display_name') or row.get('name') or row['id'],
-                       'supports_vision':bool((row.get('parameters') or {}).get('supports_vision')
-                           or 'image' in ((row.get('capabilities') or {}).get('input') or []))}
+                       'supports_vision':model_accepts_images(row)}
                       for row in doc['data'] if isinstance(row,dict) and row.get('id')
                       and row.get('type')=='KnowledgeQA' and row.get('status')=='active']}
 
@@ -128,7 +170,8 @@ async def sources():
     if not isinstance(rows,list) or type(doc.get('total')) is not int or doc['total']!=len(rows):
         raise HTTPException(503,'当前原件列表不完整，请从知识库选择或直接添加图片')
     allowed = {'txt','md','markdown','json','xml','csv','tsv','png','jpg','jpeg','webp','gif'}
-    return {'sources':[{'id':row['id'],'name':row.get('file_name') or row.get('title') or row['id']}
+    return {'sources':[{'id':row['id'],'name':row.get('file_name') or row.get('title') or row['id'],
+                       'kind':'image' if str(row.get('file_type','')).lower().lstrip('.') in {'png','jpg','jpeg','webp','gif'} else 'text'}
                        for row in rows if isinstance(row,dict) and row.get('id')
                        and row.get('knowledge_base_id')==scope.knowledge_base_id
                        and str(row.get('file_type','')).lower().lstrip('.') in allowed]}

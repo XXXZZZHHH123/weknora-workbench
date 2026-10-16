@@ -49,7 +49,15 @@ def catalog(session: Session) -> list[dict]:
         row.update(name=spec.name, unit=spec.display_unit or spec.unit,
                    source=spec.provider, frequency=spec.frequency)
     for row in rows.values():
-        row["macro"] = row["category"] in MACRO_GROUPS
+        if session.info.get('knowledge_facts'):
+            source = session.info['knowledge_facts_catalog'].get(row['series_id'], {})
+            row['macro'] = source.get('source_kind') == 'macro'
+            row['knowledge_base_id'] = source.get('knowledge_base_id')
+            row['source_kind'] = source.get('source_kind')
+            if row['macro']:
+                row['category'] = '宏观数据'
+        else:
+            row["macro"] = row["category"] in MACRO_GROUPS
     return sorted(rows.values(), key=lambda r: (*category_rank(r["category"]), r["series_id"]))
 
 

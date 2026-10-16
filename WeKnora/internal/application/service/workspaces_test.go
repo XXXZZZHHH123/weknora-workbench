@@ -70,6 +70,13 @@ func workspaceFixture(t *testing.T) (*WorkspaceService, *workspaceKBFixture, *wo
 	if err := db.Exec(string(migration)).Error; err != nil {
 		t.Fatal(err)
 	}
+	defaultMigration, err := os.ReadFile("../../../migrations/sqlite/000040_default_knowledge_base.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(string(defaultMigration)).Error; err != nil {
+		t.Fatal(err)
+	}
 	templatesMigration, err := os.ReadFile("../../../migrations/sqlite/000041_research_workbench_templates.up.sql")
 	if err != nil {
 		t.Fatal(err)

@@ -441,14 +441,24 @@ func consumeModelDebugChatStream(stream <-chan types.StreamResponse) (*modelDebu
 
 // Model metadata and the legacy vision switch both allow image chat tests.
 func modelDebugChatAcceptsImages(model *types.Model) bool {
+	if model.Parameters.Spec != nil && len(model.Parameters.Spec.Input) > 0 {
+		for _, input := range model.Parameters.Spec.Input {
+			if input == "image" {
+				return true
+			}
+		}
+		return false
+	}
 	if model.Parameters.SupportsVision {
 		return true
 	}
 	if model.Source == types.ModelSourceLocal {
 		return false
 	}
-	resolved, err := chat.Resolve(chat.ConfigFromModel(model, "", ""))
-	return err == nil && resolved.Spec.AcceptsImages()
+	return modelruntime.ChatAcceptsImages(modelruntime.Ref{
+		Provider: model.Parameters.Provider, Model: model.Name, BaseURL: model.Parameters.BaseURL,
+		ModelType: model.Type, Extra: model.Parameters.ExtraConfig, Override: model.Parameters.Spec,
+	})
 }
 
 // DebugModel executes a saved model through the same service constructors used

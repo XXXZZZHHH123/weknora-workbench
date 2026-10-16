@@ -1214,6 +1214,7 @@ async function dgOpenMarkdown() {
     ? "下面是画布当前的结构（含尚未保存的改动）。"
     : "";
   toggleDrawer("dg-md-drawer", true);
+  await window.dgLoadGenerator?.();
   return true;
 }
 

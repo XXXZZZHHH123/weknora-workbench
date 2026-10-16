@@ -14,14 +14,12 @@ async function dgGeneratorRequest(path, options) {
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '生成未完成，请核对输入和模型配置');
   return data;
 }
-async function dgOpenGenerator() {
-  if (await dgOpenMarkdown() === false) return;
+async function dgLoadGenerator() {
   const own = dgGeneratorEpoch;
   dgGeneratorController = new AbortController();
   const signal = dgGeneratorController.signal;
   const panel = document.getElementById('dg-generator');
   if (!panel) return;
-  panel.hidden = false;
   const status = document.getElementById('dg-ai-status');
   try {
     const [models, sources] = await Promise.all([dgGeneratorRequest('/models',{signal}),dgGeneratorRequest('/sources',{signal})]);
@@ -30,20 +28,44 @@ async function dgOpenGenerator() {
     picker.replaceChildren();
     models.models.forEach(model => {
       const option = new Option(model.name + (model.supports_vision ? ' · 视觉' : ''),model.id);
+      option.dataset.vision = String(model.supports_vision === true);
       picker.add(option);
     });
     if ([...picker.options].some(option => option.value === selected)) picker.value = selected;
-    const sourcePicker = document.getElementById('dg-ai-source');
+    const sourcePicker = document.getElementById('dg-ai-source'), selectedSource = sourcePicker.value;
     sourcePicker.replaceChildren(new Option('知识库原件',''));
-    sources.sources.forEach(source => sourcePicker.add(new Option(source.name,source.id)));
-    if (!models.models.length) status.textContent = '请先配置一个可用的问答模型。';
+    sources.sources.forEach(source => {
+      const option = new Option(source.name,source.id);option.dataset.kind = source.kind || 'text';sourcePicker.add(option);
+    });
+    if ([...sourcePicker.options].some(option => option.value === selectedSource)) sourcePicker.value = selectedSource;
+    status.textContent = models.models.length ? '从图片、知识库原件或说明生成配置；核对下方 Markdown 后导入。' : '请先配置一个可用的问答模型。';
+    dgUpdateGenerationCapability();
   } catch (error) { if (own === dgGeneratorEpoch) status.textContent = error.message; }
+}
+function dgUpdateGenerationCapability() {
+  const model = document.getElementById('dg-ai-model'), source = document.getElementById('dg-ai-source');
+  const hasImage = !!dgGeneratorImage || source.selectedOptions[0]?.dataset.kind === 'image';
+  const unsupported = hasImage && model.selectedOptions[0]?.dataset.vision !== 'true';
+  document.getElementById('dg-ai-run').disabled = !model.value || unsupported;
+  if (unsupported) document.getElementById('dg-ai-status').textContent = '当前模型不支持图片，请选择带“视觉”标识的模型，或改用文字原件与结构说明。';
+  return !unsupported;
+}
+function dgGenerationInputChanged(input) {
+  dgCancelGeneration();
+  if (input?.id === 'dg-ai-source' && input.selectedOptions[0]?.dataset.kind === 'image' && dgGeneratorImage) {
+    dgGeneratorImage = null;
+    document.getElementById('dg-ai-image').value = '';
+    document.getElementById('dg-ai-attachment').hidden = true;
+  }
+  document.getElementById('dg-ai-status').textContent = '从图片、知识库原件或说明生成配置；核对下方 Markdown 后导入。';
+  dgUpdateGenerationCapability();
 }
 function dgClearImage() {
   dgCancelGeneration();
   dgGeneratorImage = null;
   document.getElementById('dg-ai-image').value = '';
   document.getElementById('dg-ai-attachment').hidden = true;
+  dgGenerationInputChanged();
 }
 async function dgChooseImage(input) {
   const file = input.files[0];
@@ -62,6 +84,7 @@ async function dgChooseImage(input) {
     document.querySelector('#dg-ai-attachment span').textContent = file.name;
     document.getElementById('dg-ai-attachment').hidden = false;
     document.getElementById('dg-ai-source').value = '';
+    dgUpdateGenerationCapability();
   } catch { status.textContent = '图片读取失败，请重新选择。'; }
 }
 async function dgGenerate() {
@@ -69,6 +92,7 @@ async function dgGenerate() {
   if (button.disabled) return;
   const model = document.getElementById('dg-ai-model').value;
   if (!model) { status.textContent = '请先选择生成模型。';return; }
+  if (!dgUpdateGenerationCapability()) return;
   const own = ++dgGeneratorEpoch;
   dgGeneratorController?.abort();dgGeneratorController = new AbortController();
   const initialMarkdown = document.getElementById('dg-md-text').value;

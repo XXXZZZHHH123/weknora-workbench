@@ -9,6 +9,8 @@ import threading
 import time as clock
 from functools import lru_cache
 from collections import OrderedDict
+from contextlib import ExitStack
+from dataclasses import replace
 from urllib.parse import quote
 
 import httpx
@@ -115,8 +117,13 @@ def current_sources(scope):
 def current_version(scope, sources):
     from tin.provenance.bridge import structured_request
     try:
-        response = structured_request('POST','/api/research/facts',
-            {'sources':sources,'metadata_only':True},return_error_response=True)
+        from tin.integration.workbench_scope import current_workbench
+        marker = current_workbench.set(scope)
+        try:
+            response = structured_request('POST','/api/research/facts',
+                {'sources':sources,'metadata_only':True},return_error_response=True)
+        finally:
+            current_workbench.reset(marker)
         if response.status_code in {401,403,404,409}:
             raise HTTPException(response.status_code,'当前知识库结构化来源或授权已改变，请重新核对')
         response.raise_for_status()
@@ -142,7 +149,12 @@ def fact_pages(scope, sources=None, pinned_version=None):
         if version is not None:
             body['version'] = version
         try:
-            response = structured_request('POST', '/api/research/facts', body, return_error_response=True)
+            from tin.integration.workbench_scope import current_workbench
+            marker = current_workbench.set(scope)
+            try:
+                response = structured_request('POST', '/api/research/facts', body, return_error_response=True)
+            finally:
+                current_workbench.reset(marker)
             if response.status_code == 409:
                 raise HTTPException(409, '知识库结构化版本在读取期间改变或已失效，请重新核对')
             if response.status_code in {401, 403, 404}:
@@ -355,26 +367,33 @@ def _clear_projection(connection):
         if objects.get(name) in {'view', 'table'}:
             connection.exec_driver_sql('DROP ' + objects[name].upper() + ' temp."' + name + '"')
     connection.commit()
-    if any(row[1] == 'kb_cache' for row in connection.exec_driver_sql('PRAGMA database_list')):
-        connection.exec_driver_sql('DETACH DATABASE kb_cache')
+    for _, alias, _ in connection.exec_driver_sql('PRAGMA database_list').fetchall():
+        if re.fullmatch(r'kb_cache(?:_[0-9]+)?', alias):
+            connection.exec_driver_sql('DETACH DATABASE "' + alias + '"')
     connection.commit()
     connection.info.pop('_kb_projection', None)
 
 
-def _attach_projection(connection, path):
+def _attach_projection(connection, paths):
     from tin.integration.fact_cache import readonly_uri
-    connection.exec_driver_sql('ATTACH DATABASE ? AS kb_cache', (readonly_uri(path),))
-    connection.exec_driver_sql('PRAGMA kb_cache.cache_size=-8192')
+    aliases = []
+    for index, path in enumerate(paths):
+        alias = 'kb_cache' if index == 0 else 'kb_cache_' + str(index)
+        aliases.append(alias)
+        connection.exec_driver_sql('ATTACH DATABASE ? AS "' + alias + '"', (readonly_uri(path),))
+        connection.exec_driver_sql('PRAGMA "' + alias + '".cache_size=-8192')
     for table in FACT_TABLES:
-        connection.exec_driver_sql('CREATE TEMP VIEW "' + table + '" AS SELECT * FROM kb_cache."_kb_' + table + '"')
-    connection.exec_driver_sql('CREATE TEMP VIEW _kb_evidence AS SELECT * FROM kb_cache._kb_evidence')
+        connection.exec_driver_sql('CREATE TEMP VIEW "' + table + '" AS ' + ' UNION ALL '.join(
+            'SELECT * FROM "' + alias + '"."_kb_' + table + '"' for alias in aliases))
+    connection.exec_driver_sql('CREATE TEMP VIEW _kb_evidence AS ' + ' UNION ALL '.join(
+        'SELECT * FROM "' + alias + '"._kb_evidence' for alias in aliases))
     connection.commit()
 
     def protect(action, first, second, database, trigger):
         if action == sqlite3.SQLITE_READ and database == 'main' and first in FACT_TABLES:
             return sqlite3.SQLITE_DENY
         if action in {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE} and (
-                database == 'kb_cache' or first in FACT_TABLES or str(first).startswith('_kb_')):
+                database in aliases or first in FACT_TABLES or str(first).startswith('_kb_')):
             return sqlite3.SQLITE_DENY
         if action in {sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH, sqlite3.SQLITE_PRAGMA,
                 sqlite3.SQLITE_CREATE_INDEX, sqlite3.SQLITE_CREATE_TABLE, sqlite3.SQLITE_CREATE_VIEW,
@@ -395,10 +414,7 @@ def projected_session(engine, scope, **kwargs):
     connection = _projection_engine(engine).connect()
     try:
         _clear_projection(connection)
-        sources = current_sources(scope)
-        version = current_version(scope, sources)
-
-        def verify():
+        def verify_workbench():
             try:
                 response = httpx.request('GET', settings.weknora_api_url.rstrip('/') +
                     '/api/v1/workspaces/research/' + quote(scope.workbench_id, safe=''),
@@ -414,22 +430,87 @@ def projected_session(engine, scope, **kwargs):
                         or type(current.get('scope_tenant_id')) is not int
                         or current['scope_tenant_id'] != scope.identity.tenant_id
                         or current.get('knowledge_base_id') != scope.knowledge_base_id
-                        or current.get('workspace_mode') != scope.metadata.get('workspace_mode')):
+                        or current.get('workspace_mode') != scope.metadata.get('workspace_mode')
+                        or current.get('default_knowledge_base') != scope.metadata.get('default_knowledge_base')):
                     raise HTTPException(409, '研究工作台来源在准备期间改变，请重新进入')
             except (httpx.HTTPError, ValueError, TypeError, AttributeError):
                 raise HTTPException(503, '暂时无法重新核验研究工作台，未返回缓存事实') from None
-            fresh = current_sources(scope)
-            if fresh != sources or current_version(scope, fresh) != version:
-                raise HTTPException(409, '知识库来源在准备期间改变，请刷新重试')
+        default = scope.metadata.get('default_knowledge_base') or {}
+        primary_kind = 'macro' if default.get('knowledge_base_id') == scope.knowledge_base_id else 'primary'
+        scoped_sources = [(scope, primary_kind)] + [(replace(scope,
+            knowledge_base_id=item['knowledge_base_id'], knowledge_base_tenant_id=item['tenant_id'],
+            additional_knowledge_bases=()), item['kind']) for item in scope.additional_knowledge_bases]
+        paths, parts, final_checks, preparation_checks = [], [], [], []
+        with ExitStack() as leases:
+            for source_scope, kind in scoped_sources:
+                sources = current_sources(source_scope)
+                version = current_version(source_scope, sources)
 
-        with get_projection(connection, scope, sources, version,
-                {'_kb_' + name for name in FACT_TABLES}, install_projection, verify) as (path, info):
-            _attach_projection(connection, path)
+                def verify(source_scope=source_scope, sources=sources, version=version):
+                    preparation_checks.append(True)
+                    verify_workbench()
+                    # Native KB detail checks permissions even when no files exist.
+                    if source_scope.knowledge_base_id != scope.knowledge_base_id:
+                        try:
+                            response = httpx.request('GET', settings.weknora_api_url.rstrip('/') +
+                                '/api/v1/knowledge-bases/' + quote(source_scope.knowledge_base_id, safe=''),
+                                headers={'Authorization': scope.authorization, 'X-Tenant-ID': str(scope.identity.tenant_id)},
+                                trust_env=False, follow_redirects=False, timeout=15)
+                            if response.status_code in {401, 403, 404}:
+                                raise HTTPException(response.status_code, '默认知识库授权在准备期间改变')
+                            response.raise_for_status()
+                            document = response.json()
+                            kb = document.get('data') if isinstance(document, dict) else None
+                            if (not isinstance(document, dict) or document.get('success') is not True or not isinstance(kb, dict)
+                                    or kb.get('id') != source_scope.knowledge_base_id
+                                    or type(kb.get('tenant_id')) is not int
+                                    or kb['tenant_id'] != source_scope.knowledge_base_tenant_id):
+                                raise HTTPException(403, '默认知识库来源范围在准备期间改变')
+                        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                            raise HTTPException(503, '默认知识库授权暂时无法核验，未返回缓存事实') from None
+                    fresh = current_sources(source_scope)
+                    if fresh != sources or current_version(source_scope, fresh) != version:
+                        raise HTTPException(409, '知识库来源在准备期间改变，请刷新重试')
+
+                path, part = leases.enter_context(get_projection(connection, source_scope, sources, version,
+                    {'_kb_' + name for name in FACT_TABLES}, install_projection, verify))
+                paths.append(path)
+                parts.append((source_scope, kind, part))
+                final_checks.append(verify)
+            if len(parts) > 1 and preparation_checks:
+                # A new secondary cache can take time to build. Never combine
+                # it with primary facts whose authorization or version changed
+                # while that build was in progress.
+                for check in final_checks:
+                    check()
+            # No large tables are copied per request. Independent source caches
+            # stay pinned until their read-only SQLite attachments are complete.
+            connection.connection.driver_connection.set_authorizer(None)
+            _attach_projection(connection, paths)
+        catalog, datasets, versions = {}, [], []
+        for source_scope, kind, part in parts:
+            for identifier, spec in part['knowledge_facts_catalog'].items():
+                if identifier in catalog:
+                    raise HTTPException(503, '不同知识库的字段身份发生冲突，未返回混合事实')
+                catalog[identifier] = {**spec, 'knowledge_base_id': source_scope.knowledge_base_id,
+                    'knowledge_base_tenant_id': source_scope.knowledge_base_tenant_id, 'source_kind': kind,
+                    'source_version': part['knowledge_facts_version']}
+            datasets.extend({**dataset, 'knowledge_base_id': source_scope.knowledge_base_id, 'source_kind': kind}
+                            for dataset in part['knowledge_facts_datasets'])
+            versions.append([source_scope.knowledge_base_tenant_id, source_scope.knowledge_base_id,
+                             part['knowledge_facts_version']])
+        combined_version = parts[0][2]['knowledge_facts_version'] if len(parts) == 1 else hashlib.sha256(
+            json.dumps(versions, separators=(',', ':')).encode()).hexdigest()
+        info = {'knowledge_facts': True, 'knowledge_facts_version': combined_version,
+                'knowledge_facts_catalog': catalog, 'knowledge_facts_datasets': datasets}
         connection.info['_kb_projection'] = {'expires': clock.monotonic() + PROJECTION_SECONDS}
         session = KnowledgeFactSession(bind=connection, expire_on_commit=False, **kwargs)
         session.info.update(info, _knowledge_connection=connection,
                             knowledge_base_id=scope.knowledge_base_id,
-                            knowledge_base_tenant_id=scope.knowledge_base_tenant_id)
+                            knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
+                            knowledge_base_sources=[{'knowledge_base_id': item.knowledge_base_id,
+                                'knowledge_base_tenant_id': item.knowledge_base_tenant_id, 'source_kind': kind,
+                                'version': part['knowledge_facts_version']} for item, kind, part in parts])
         return session
     except BaseException:
         connection.invalidate()
@@ -448,10 +529,10 @@ def canonical_observation_sources(session, observation_id):
     spec = session.info['knowledge_facts_catalog'].get(row[0])
     if spec is None:
         raise HTTPException(503,'观测证据与知识库字段身份不一致')
-    locator = {'knowledge_id':spec['source_knowledge_id'],'knowledge_base_id':session.info['knowledge_base_id'],
+    locator = {'knowledge_id':spec['source_knowledge_id'],'knowledge_base_id':spec.get('knowledge_base_id', session.info['knowledge_base_id']),
         'dataset_id':spec['dataset_id'],'series_id':spec['source_series_id'],'sheet':spec.get('sheet'),
         'value_cell':row[1],'date_cell':row[2],'raw_value':json.loads(row[3]),'formula':row[4],
-        'date':row[5],'version':session.info['knowledge_facts_version'],
+        'date':row[5],'version':spec.get('source_version', session.info['knowledge_facts_version']),
         'source_sha256':spec.get('source_sha256'),'filename':spec.get('source_file'),
         'header_cells':spec.get('header_cells'),'frequency':spec.get('frequency'),
         'date_mode':spec.get('date_mode'),'dimensions':spec.get('dimensions')}

@@ -61,7 +61,7 @@ export interface DefaultKnowledgeBaseBinding {
   kind: 'macro'
   knowledge_base_id: string
   name: string
-  source_scope: 'tenant_research'
+  source_scope: 'knowledge_base'
 }
 
 export function getDefaultKnowledgeBase(): Promise<Envelope<DefaultKnowledgeBaseBinding | null>> {

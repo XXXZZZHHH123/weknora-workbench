@@ -1,5 +1,8 @@
 import json
+import asyncio
+from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from tests.test_knowledge_facts import canonical,FIRST,KB,SERIES,page
@@ -117,4 +120,51 @@ def test_generator_uses_original_diagram_page_and_compact_composer(generator):
     result=client.get(page(suffix='/sn/diagram'),headers=headers)
     assert result.status_code==200,result.text
     assert 'dg-canvas' in result.text and 'dg-md-text' in result.text
-    assert '生成助手' in result.text and 'rows="2"' in result.text
+    assert 'md管理' in result.text and 'rows="2"' in result.text
+    assert 'id="dg-generate-btn"' not in result.text
+    assert 'id="dg-generator" hidden' not in result.text
+
+
+def test_native_model_capability_error_is_visible_instead_of_generic_quota_failure(monkeypatch):
+    from fastapi import HTTPException
+    original = httpx.AsyncClient
+    monkeypatch.setattr(generation.settings, 'weknora_api_url', 'http://native.fixture')
+    message = '所选模型不支持图片，请选择视觉对话模型或提供文字资料'
+    transport = httpx.MockTransport(lambda request: httpx.Response(400, json={'error': {'code': 1000, 'message': message}}))
+    monkeypatch.setattr(generation.httpx, 'AsyncClient', lambda **kwargs: original(transport=transport, **kwargs))
+    scope = SimpleNamespace(workbench_id='workbench', knowledge_base_id='library', authorization='Bearer fixture', identity=SimpleNamespace(tenant_id=1))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(generation.completion(scope, 'model', 'draft'))
+    assert caught.value.status_code == 400
+    assert caught.value.detail == message
+
+
+def test_model_listing_respects_explicit_input_and_resolved_capabilities_before_legacy_flag(generator, monkeypatch):
+    client,headers,_,_,_=generator
+    entries = [
+        {'id':'explicit-text','parameters':{'supports_vision':True,'spec':{'input':['text']}},'capabilities':{'input':['text']}},
+        {'id':'explicit-image','parameters':{'supports_vision':False,'spec':{'input':['text','image']}},'capabilities':{'input':['text','image']}},
+        {'id':'redacted-text','parameters':{'supports_vision':True},'capabilities':{'input':['text']}},
+        {'id':'resolved-image','parameters':{'supports_vision':False},'capabilities':{'input':['text','image']}},
+        {'id':'local-legacy','parameters':{'supports_vision':True}},
+    ]
+    async def models(*args,**kwargs):
+        return {'success':True,'data':[{**row,'type':'KnowledgeQA','status':'active'} for row in entries]}
+    monkeypatch.setattr(generation,'go_request',models)
+    response=client.get(endpoint('/models'),headers=headers)
+    assert response.status_code==200,response.text
+    assert {row['id']:row['supports_vision'] for row in response.json()['models']} == {
+        'explicit-text':False,'explicit-image':True,'redacted-text':False,'resolved-image':True,'local-legacy':True}
+
+
+@pytest.mark.parametrize('message', ['Token sk-private', '<script>secret</script>', 'x' * 2000, {'message': 'nested'}])
+def test_unrecognized_native_error_payload_does_not_leak_configuration(monkeypatch, message):
+    from fastapi import HTTPException
+    original = httpx.AsyncClient
+    monkeypatch.setattr(generation.settings, 'weknora_api_url', 'http://native.fixture')
+    transport = httpx.MockTransport(lambda request: httpx.Response(400, json={'error': {'message': message}}))
+    monkeypatch.setattr(generation.httpx, 'AsyncClient', lambda **kwargs: original(transport=transport, **kwargs))
+    scope = SimpleNamespace(workbench_id='workbench', knowledge_base_id='library', authorization='Bearer fixture', identity=SimpleNamespace(tenant_id=1))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(generation.completion(scope, 'model', 'draft'))
+    assert caught.value.detail == '生成参数无效，请核对模型、资料格式或重新打开当前工作台'

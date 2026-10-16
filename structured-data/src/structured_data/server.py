@@ -523,6 +523,16 @@ def create_app(data_dir: str | Path | None = None):
     def series(dataset_id: str, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None):
         return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
 
+    @app.get("/api/series")
+    def all_series(search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None):
+        from .global_catalog import list_series
+        return list_series(store, search, limit, offset, sheet)
+
+    @app.get("/api/charts")
+    def all_charts(sheet: str | None = None, search: str = '', limit: int = 50, offset: int = 0):
+        from .global_catalog import list_charts
+        return list_charts(store, sheet, search, limit, offset)
+
     @app.get("/api/datasets/{dataset_id}/charts")
     def charts(dataset_id: str, sheet: str | None = None, search: str = '', limit: int = 50, offset: int = 0):
         return store.list_charts(dataset_id, sheet, search, limit, offset)

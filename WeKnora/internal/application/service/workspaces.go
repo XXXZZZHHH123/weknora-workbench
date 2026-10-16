@@ -315,6 +315,21 @@ func (s *WorkspaceService) GetWorkbench(ctx context.Context, id string) (*types.
 	if err != nil {
 		return nil, err
 	}
+	caller, err := workspaceCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	_, defaultKB, err := s.defaultKnowledgeBase(ctx, caller)
+	if err != nil {
+		return nil, err
+	}
+	if defaultKB != nil && !defaultKB.DeletedAt.Valid {
+		if _, err = s.readableKB(ctx, defaultKB.ID); err != nil {
+			return nil, err
+		}
+		row.DefaultKnowledgeBase = &types.ResearchWorkbenchSource{KnowledgeBaseID: defaultKB.ID,
+			TenantID: defaultKB.TenantID, Kind: macroKnowledgeBaseKind, Name: defaultKB.Name}
+	}
 	if err = s.loadWorkbenchOnboarding(ctx, []*types.ResearchWorkbench{row}); err != nil {
 		return nil, err
 	}

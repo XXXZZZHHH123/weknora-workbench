@@ -25,8 +25,8 @@ const sample = {...current,dataset_id:'c'.repeat(24),source_file:'中哲_范围�
    await route.fulfill({contentType:type,body:typeof data==='string'?data:JSON.stringify(data)});
   });
   await page.goto('http://fixture.test/');await page.locator('#stats b').first().waitFor();
-  assert.equal(await page.locator('#dataset option').count(),1);
-  assert.equal(await page.locator('#dataset').inputValue(),current.dataset_id);
+  assert.equal(await page.locator('#dataset option').count(),2);
+  assert.equal(await page.locator('#dataset').inputValue(),'__all__');
   assert.equal(await page.locator('#datasetHistory').evaluate(el=>el.open),false);
   assert.equal(await page.locator('#sampleDatasets').isHidden(),true);
   assert.equal(await page.locator('#sampleImports').isHidden(),true);
@@ -45,9 +45,9 @@ const sample = {...current,dataset_id:'c'.repeat(24),source_file:'中哲_范围�
   await page.waitForFunction(id=>document.querySelector('#scope [data-download]')?.dataset.download===id,sample.dataset_id);
   assert.equal(await page.locator('#scope [data-download]').getAttribute('data-download'),sample.dataset_id);
   await page.reload();await page.locator('#stats b').first().waitFor();
-  assert.equal(await page.locator('#dataset option').count(),1);
-  assert.equal(await page.locator('#dataset').inputValue(),current.dataset_id);
+  assert.equal(await page.locator('#dataset option').count(),2);
+  assert.equal(await page.locator('#dataset').inputValue(),'__all__');
   assert.deepEqual(errors,[]);
-  console.log('Dataset versions UI passed: current default, folded history, separate samples, explicit source links.');
+  console.log('Dataset versions UI passed: all-files default, folded history, separate samples, explicit source links.');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

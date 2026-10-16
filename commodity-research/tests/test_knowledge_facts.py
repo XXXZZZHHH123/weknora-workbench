@@ -58,17 +58,23 @@ def canonical(monkeypatch, tmp_path):
                 identifier = path.rsplit('/', 1)[1]
                 if identifier not in {FIRST, SECOND, LEGACY}:
                     return httpx.Response(404, json={'success': False})
-                return httpx.Response(200, json={'success': True, 'data': {
+                metadata = {
                     'id': identifier, 'name': 'Research', 'scope_tenant_id': 17,
                     'knowledge_base_id': OTHER_KB if identifier == SECOND and state['second_other_kb'] else KB,
-                    'workspace_mode': 'legacy' if identifier == LEGACY else 'isolated'}})
+                    'workspace_mode': 'legacy' if identifier == LEGACY else 'isolated'}
+                if state.get('default_macro'):
+                    metadata['default_knowledge_base'] = state['default_macro']
+                return httpx.Response(200, json={'success': True, 'data': metadata})
             if path in {'/api/v1/knowledge-bases/' + KB, '/api/v1/knowledge-bases/' + OTHER_KB}:
-                return httpx.Response(403 if state['revoked'] else 200, json={'success': True,
+                denied = state['revoked'] or (state.get('macro_revoked') and path.endswith(OTHER_KB))
+                return httpx.Response(403 if denied else 200, json={'success': True,
                     'data': {'id': path.rsplit('/', 1)[1], 'tenant_id': 17, 'creator_id': 'researcher'}})
             if path == '/api/v1/knowledge-bases/' + KB + '/knowledge':
                 return httpx.Response(200, json={'success': True, 'data': state['sources'], 'total': len(state['sources'])})
             if path == '/api/v1/knowledge-bases/' + OTHER_KB + '/knowledge':
-                return httpx.Response(200, json={'success': True, 'data': [], 'total': 0})
+                rows = [{'id': 'macro-source', 'knowledge_base_id': OTHER_KB, 'tenant_id': 17,
+                         'file_hash': 'c' * 32, 'file_name': 'macro-source.xlsx', 'file_type': 'xlsx'}] if state.get('default_macro') else []
+                return httpx.Response(200, json={'success': True, 'data': rows, 'total': len(rows)})
         if request.url.host == 'structured-data' and path == '/api/research/facts':
             if state['down']:
                 return httpx.Response(503, json={'detail': 'unavailable'})
@@ -76,6 +82,24 @@ def canonical(monkeypatch, tmp_path):
             encoded = request.headers['x-research-identity']
             caller = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
             assert set(body) <= {'sources', 'offset', 'limit', 'version', 'metadata_only', 'encoding'}
+            if caller['knowledge_base_id'] == OTHER_KB and state.get('default_macro'):
+                assert body['sources'] == [{'knowledge_id': 'macro-source', 'file_hash': 'c' * 32}]
+                version = hashlib.sha256(json.dumps(state.get('macro_value', 41.25)).encode()).hexdigest()
+                if body.get('version') and body['version'] != version:
+                    return httpx.Response(409, json={'detail': 'macro changed'})
+                envelope = {'knowledge_base_id': OTHER_KB, 'knowledge_base_tenant_id': 17, 'version': version}
+                if body.get('metadata_only'):
+                    return httpx.Response(200, json={**envelope, 'metadata_only': True})
+                state['macro_pages'] = state.get('macro_pages', 0) + 1
+                macro_spec = {**spec, 'series_id': 'kb-' + 'c' * 48, 'source_knowledge_id': 'macro-source',
+                              'dataset_id': 'f' * 24, 'metric': 'Macro quantity', 'source_file': 'macro-source.xlsx'}
+                return httpx.Response(200, json={**envelope, 'datasets': [{'dataset_id': 'f' * 24,
+                    'source_knowledge_id': 'macro-source', 'source_file': 'macro-source.xlsx'}],
+                    'indicators': [macro_spec], 'rows': [{'series_id': macro_spec['series_id'],
+                    'source_series_id': 'raw-column', 'source_knowledge_id': 'macro-source', 'dataset_id': 'f' * 24,
+                    'date': '2026-01-02', 'value': state.get('macro_value', 41.25), 'value_status': 'valid',
+                    'source_cell': 'B2', 'date_cell': 'A2', 'raw_value': state.get('macro_value', 41.25)}],
+                    'total': 1, 'offset': 0, 'next_offset': None, 'truncated': False})
             active = state['ready'] and any(item == {'knowledge_id': 'source-one', 'file_hash': 'b' * 32}
                                           for item in body['sources'])
             version = hashlib.sha256(json.dumps([active, state['value'], state['paginate'], state['version_change']], sort_keys=True).encode()).hexdigest()

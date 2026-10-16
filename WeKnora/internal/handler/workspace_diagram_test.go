@@ -105,7 +105,7 @@ func newWorkspaceDiagramFixture(t *testing.T) *workspaceDiagramFixture {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sql.Close() })
 	require.NoError(t, db.Exec("CREATE TABLE sessions(id TEXT PRIMARY KEY, tenant_id INTEGER, user_id TEXT)").Error)
-	for _, path := range []string{"../../migrations/sqlite/000038_workspace_navigation.up.sql", "../../migrations/sqlite/000041_research_workbench_templates.up.sql"} {
+	for _, path := range []string{"../../migrations/sqlite/000038_workspace_navigation.up.sql", "../../migrations/sqlite/000040_default_knowledge_base.up.sql", "../../migrations/sqlite/000041_research_workbench_templates.up.sql"} {
 		migration, err := os.ReadFile(path)
 		require.NoError(t, err)
 		require.NoError(t, db.Exec(string(migration)).Error)
@@ -171,6 +171,24 @@ func TestWorkspaceDiagramGeneratesDraftUsingConfiguredProductionModel(t *testing
 	var count int64
 	require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Count(&count).Error)
 	require.EqualValues(t, 1, count, "generation must not create or replace workbenches")
+}
+
+func TestWorkspaceDiagramRecognizesLegacyGenericCatalogVision(t *testing.T) {
+	f := newWorkspaceDiagramFixture(t)
+	f.models.model.Source = types.ModelSourceRemote
+	f.models.model.Name = "qwen3.7-flash-2026-07-15"
+	f.models.model.Parameters = types.ModelParameters{Provider: "generic", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"}
+	response := f.request(diagramBody(t, diagramPNG(t)))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, 1, f.models.client.calls)
+	require.Len(t, f.models.client.messages[1].Images, 1)
+	require.False(t, f.models.model.Parameters.SupportsVision, "capability lookup must not mutate stored legacy settings")
+
+	f.models.model.Parameters.Spec = &types.ModelSpecOverride{Input: []string{"text"}}
+	f.models.model.Parameters.SupportsVision = true
+	response = f.request(diagramBody(t, diagramPNG(t)))
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	require.Equal(t, 1, f.models.client.calls, "explicit text-only input prevents a provider request")
 }
 
 func TestWorkspaceDiagramChecksIdentityModelAndBindingBeforeInference(t *testing.T) {

@@ -731,6 +731,7 @@ def diagram_delete(template_id: int):
 
 @app.get("/sn/reports")
 def reports_page(request: Request, date: str | None = None):
+    from tin.web.report_view import present_snapshot
     with SessionLocal() as s:
         available_days = ([value.isoformat() for value in sorted({value.astimezone(SHANGHAI).date()
                           for value in s.scalars(select(Observation.as_of).where(Observation.status == "正常"))}, reverse=True)[:40]]
@@ -740,16 +741,21 @@ def reports_page(request: Request, date: str | None = None):
                   for day in available_days]
                  if settings.weknora_api_url else archive_days(s, V))
         selected = next((f for f in files if f["date"] == date), files[0] if files else {"date": None})
-        preview = ""
+        preview, report, names = "", None, {}
         if selected.get("date"):
             path = settings.exports_dir / V / f"{selected['date']}.json"
             if settings.weknora_api_url:
-                preview = json.dumps(snapshot(s, V, __import__("datetime").date.fromisoformat(selected["date"])), ensure_ascii=False, indent=2)
+                report = snapshot(s, V, __import__("datetime").date.fromisoformat(selected["date"]))
+                names = dict(s.execute(select(Indicator.series_id, Indicator.name)).all())
             elif path.exists():
-                snap = json.loads(path.read_text(encoding="utf-8"))
-                preview = json.dumps(snap, ensure_ascii=False, indent=2)
+                report = json.loads(path.read_text(encoding="utf-8"))
+            if report is not None:
+                preview = json.dumps(report, ensure_ascii=False, indent=2)
         return templates.TemplateResponse(request, "reports.html", _shell(
-            s, "reports", latest_trade_date(s), files=files, selected=selected, preview=preview))
+            s, "reports", latest_trade_date(s), files=files, selected=selected, preview=preview,
+            report=present_snapshot(report, names) if report is not None else None,
+            report_generated_at=(report or {}).get('generated_at'),
+            live_report=bool(settings.weknora_api_url)))
 
 
 @app.get("/sn/reports/{day}.json")

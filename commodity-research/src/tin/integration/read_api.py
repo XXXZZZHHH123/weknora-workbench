@@ -246,13 +246,17 @@ def read_isolated_research(session, body: ReadRequest, workbench_id: str):
     from tin.web.workbenches import fact_counts, indicator_payload, observation_payload, observation_rows
     base = {"operation": body.operation.value, "workbench_id": workbench_id,
             "knowledge_base_id": session.info["knowledge_base_id"], "requested_date": body.date,
-            "notice": "直接读取绑定知识库当前已确认结构化事实与本台研究成果；原表日期不声明发布时间，不代表实时行情。"}
+            "knowledge_base_sources": session.info.get('knowledge_base_sources', []),
+            "notice": "直接读取主绑定知识库及当前授权的默认宏观知识库已确认结构化事实与本台研究成果；原表日期不声明发布时间，不代表实时行情。"}
     if body.operation == Operation.indicators:
         rows = session.scalars(select(Indicator).order_by(Indicator.series_id)).all()
         if body.search:
             rows = [row for row in rows if body.search.casefold() in
                     " ".join((row.name, row.series_id, row.source)).casefold()]
-        return {**base, "indicators": [indicator_payload(r) for r in rows[body.offset:body.offset + body.limit]],
+        catalog = session.info.get('knowledge_facts_catalog', {})
+        return {**base, "indicators": [{**indicator_payload(r), **{key: catalog.get(r.series_id, {}).get(key)
+                    for key in ('knowledge_base_id', 'knowledge_base_tenant_id', 'source_kind', 'source_version')}}
+                    for r in rows[body.offset:body.offset + body.limit]],
                 "total": len(rows), "offset": body.offset, "truncated": len(rows) > body.offset + body.limit}
     if body.operation == Operation.series:
         if not body.series_id:

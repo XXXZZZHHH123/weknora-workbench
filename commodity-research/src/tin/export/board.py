@@ -344,7 +344,10 @@ def gaps(session: Session, variety: str, d: date) -> list[dict]:
         last = o.as_of.astimezone(SHANGHAI).date() if o else None
         if last is not None and last >= exp:
             continue
-        reason = "人工录入未更新" if ind.fetch_mode == "manual" else _auto_gap_reason(session, ind.series_id, d)
+        if ind.fetch_mode == 'readonly':
+            reason = '截至所选日期，知识库暂无满足更新频率的已确认观测；请核对来源数据'
+        else:
+            reason = "人工录入未更新" if ind.fetch_mode == "manual" else _auto_gap_reason(session, ind.series_id, d)
         out.append({"series_id": ind.series_id, "name": ind.name, "fetch_mode": ind.fetch_mode,
                     "expected_by": exp.isoformat(), "last_as_of": last.isoformat() if last else None,
                     "reason": reason if o else f"{reason}（尚无任何数据）"})

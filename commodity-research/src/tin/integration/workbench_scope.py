@@ -25,6 +25,7 @@ class WorkbenchScope:
     knowledge_base_tenant_id: int
     metadata: dict
     authorization: str = field(default='', repr=False, compare=False)
+    additional_knowledge_bases: tuple[dict, ...] = ()
 
 
 current_workbench: ContextVar[WorkbenchScope | None] = ContextVar("isolated_workbench", default=None)
@@ -97,7 +98,25 @@ async def resolve_workbench(identity, workbench_id, authorization):
             or kb["tenant_id"] <= 0 or (kb["tenant_id"] != identity.tenant_id
                 and kb.get("my_permission") not in {"viewer", "editor", "admin"})):
         raise HTTPException(403, "知识库授权范围不匹配")
-    scope = WorkbenchScope(identity, workbench_id, kb_id, kb["tenant_id"], metadata, authorization)
+    additional = ()
+    default = metadata.get('default_knowledge_base')
+    if default is not None:
+        if (not isinstance(default, dict) or default.get('kind') != 'macro'
+                or type(default.get('tenant_id')) is not int or default['tenant_id'] != identity.tenant_id
+                or not isinstance(default.get('knowledge_base_id'), str)
+                or not default['knowledge_base_id'] or len(default['knowledge_base_id']) > 128):
+            raise HTTPException(403, '工作台默认知识库范围无效')
+        default_id = default['knowledge_base_id']
+        if default_id != kb_id:
+            default_doc = await go_request(scope, '/api/v1/knowledge-bases/' + quote(default_id, safe=''))
+            default_kb = default_doc.get('data')
+            if (not isinstance(default_kb, dict) or default_kb.get('id') != default_id
+                    or type(default_kb.get('tenant_id')) is not int
+                    or default_kb['tenant_id'] != identity.tenant_id):
+                raise HTTPException(403, '默认知识库授权范围不匹配')
+            additional = ({'knowledge_base_id': default_id, 'tenant_id': default_kb['tenant_id'],
+                           'kind': 'macro', 'name': default_kb.get('name') or default.get('name') or ''},)
+    scope = WorkbenchScope(identity, workbench_id, kb_id, kb["tenant_id"], metadata, authorization, additional)
     return scope
 
 

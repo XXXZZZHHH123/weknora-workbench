@@ -140,13 +140,69 @@ class DataStore:
             if coverage:
                 item["coverage_notice"] = "pending_sheets仅说明这些工作表尚未确认或不支持，不代表同名主题在已导入指标中不存在。未指定工作表时核验真实目录字段，可按需用resolve_fields语义识别；明确指定未导入表时不可换表。已导入sheet也仅覆盖parsed_range。"
         items.sort(key=lambda d: d["imported_at"], reverse=True)
+        source_keys, reviews = {}, {}
         seen = set()
         for item in items:
-            key = item["source_file"]
-            item["is_latest_for_source"] = key not in seen
-            seen.add(key)
+            keys = self._history_source_keys(item, reviews)
+            source_keys[item['dataset_id']] = keys
+            # One immutable snapshot may serve several identical native files.
+            # A later version of one original must not hide the others.
+            item["is_latest_for_source"] = bool(set(keys) - seen)
+            seen.update(keys)
         from .dataset_history import describe_history
-        return describe_history(items)
+        return describe_history(items, source_keys=source_keys)
+
+    def _history_source_keys(self, item, reviews):
+        """Use persisted verified native IDs only inside their own KB directory.
+
+        The authenticated import path already verified the original bytes and
+        recorded the binding. A matching immutable manifest/review pair lets us
+        distinguish same-name originals without rehashing large Excel files on
+        every catalogue request. This is version grouping, never an ACL grant.
+        """
+        from .workspaces import current_identity, valid_knowledge_base_id
+        legacy = (('filename', item['source_file']),)
+        kb_id = self.root.name
+        if self.root.parent.name != 'knowledge-bases' or not valid_knowledge_base_id(kb_id):
+            return legacy
+        identity = current_identity.get()
+        if identity is not None and identity.knowledge_base_id != kb_id:
+            return legacy
+        import_id = item.get('import_id')
+        if not isinstance(import_id, str) or not re.fullmatch(r'[0-9a-f]{24}', import_id):
+            return legacy
+        if import_id not in reviews:
+            folder = self.root / 'imports' / import_id
+            path = folder / 'review.json'
+            try:
+                if (folder.parent.is_symlink() or folder.is_symlink() or path.is_symlink()
+                        or not path.resolve().is_relative_to(self.root.resolve())):
+                    reviews[import_id] = None
+                else:
+                    reviews[import_id] = json.loads(path.read_text())
+            except (OSError, ValueError):
+                reviews[import_id] = None
+        review = reviews[import_id]
+        if (not isinstance(review, dict) or review.get('import_id') != import_id
+                or review.get('sha256') != item['sha256']
+                or review.get('source_file') != item['source_file']
+                or not isinstance(review.get('native_source_bindings'), list)):
+            return legacy
+        keys = set()
+        for binding in review['native_source_bindings']:
+            if (not isinstance(binding, dict) or binding.get('knowledge_base_id') != kb_id
+                    or not valid_knowledge_base_id(binding.get('source_knowledge_id'))
+                    or type(binding.get('tenant_id')) is not int or binding['tenant_id'] <= 0
+                    or (identity is not None and binding['tenant_id'] != identity.knowledge_base_tenant_id)
+                    or not isinstance(binding.get('file_name'), str) or not binding['file_name']
+                    or Path(binding['file_name'].replace('\\', '/')).name != binding['file_name']
+                    or any(ord(char) < 32 for char in binding['file_name'])
+                    or type(binding.get('file_size')) is not int or binding['file_size'] <= 0
+                    or not isinstance(binding.get('file_hash'), str)
+                    or not re.fullmatch(r'[0-9a-fA-F]{32}', binding['file_hash'])):
+                continue
+            keys.add(('native', binding['tenant_id'], kb_id, binding['source_knowledge_id']))
+        return tuple(sorted(keys)) if keys else legacy
 
     def import_file(self, path: str | Path) -> dict:
         from .profiles.reviewed import parse_workbook

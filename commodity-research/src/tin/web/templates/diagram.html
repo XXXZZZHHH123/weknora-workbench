@@ -25,11 +25,7 @@
     {# 上方工具栏只放"这张图本身"的事：换布局、结构文本、进出编辑。
        看图时才用的判断视角 / 趋势对比挪到画布右上角——它们是看图的选项，不是编辑动作。 #}
     <button type="button" onclick="dgOpenMarkdown()" id="dg-md-btn"
-      class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">Markdown</button>
-    {% if research_workbench() and research_identity().can_write %}
-    <button type="button" onclick="dgOpenGenerator()" id="dg-generate-btn"
-      class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">生成助手</button>
-    {% endif %}
+      class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">md管理</button>
     <button type="button" onclick="dgToggleEdit()" id="dg-edit-btn"
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">编辑布局</button>
     {# 保存只在编辑态出现：看图时摆在那里既点不动也提示不了什么 #}
@@ -223,7 +219,7 @@
   class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-2xl bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
   <div class="flex items-start justify-between gap-4 pb-3 border-b border-[var(--line)]">
     <div>
-      <h2 class="text-lg font-bold">Markdown 结构</h2>
+      <h2 class="text-lg font-bold">md管理</h2>
       <p class="text-[11px] text-[var(--text-muted)] mt-0.5">导出再导入无损 ——
         结构、层级、绑定、静态标注、流向、分组公式都写得回去。</p>
     </div>
@@ -277,11 +273,11 @@
     </div>
   </details>
   {% if research_workbench() and research_identity().can_write %}
-  <section id="dg-generator" hidden class="mt-2 p-2 rounded-md border border-[var(--line)] text-xs">
+  <section id="dg-generator" aria-label="从资料生成 Markdown" class="mt-2 p-2 rounded-md border border-[var(--line)] text-xs">
     <div class="flex items-center gap-2 flex-wrap">
-      <select id="dg-ai-model" aria-label="生成模型" class="px-2 py-1 rounded-md max-w-[220px]"></select>
+      <select id="dg-ai-model" aria-label="生成模型" onchange="dgGenerationInputChanged()" class="px-2 py-1 rounded-md max-w-[220px]"></select>
       <label class="cursor-pointer text-[var(--primary)]">添加图片<input id="dg-ai-image" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onchange="dgChooseImage(this)"></label>
-      <select id="dg-ai-source" aria-label="知识库原件" class="px-2 py-1 rounded-md max-w-[180px]"><option value="">知识库原件</option></select>
+      <select id="dg-ai-source" aria-label="知识库原件" onchange="dgGenerationInputChanged(this)" class="px-2 py-1 rounded-md max-w-[180px]"><option value="">知识库原件</option></select>
       <button type="button" id="dg-ai-run" onclick="dgGenerate()" class="ml-auto px-2.5 py-1 rounded-md bg-[var(--primary)] text-white disabled:opacity-40">生成配置</button>
     </div>
     <div id="dg-ai-attachment" class="text-[11px] text-[var(--text-muted)] mt-1" hidden><span></span> <button type="button" onclick="dgClearImage()" aria-label="移除图片">×</button></div>
