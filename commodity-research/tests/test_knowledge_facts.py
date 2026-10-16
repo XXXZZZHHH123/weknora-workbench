@@ -75,7 +75,7 @@ def canonical(monkeypatch, tmp_path):
             body = json.loads(request.content)
             encoded = request.headers['x-research-identity']
             caller = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
-            assert set(body) <= {'sources', 'offset', 'limit', 'version', 'metadata_only'}
+            assert set(body) <= {'sources', 'offset', 'limit', 'version', 'metadata_only', 'encoding'}
             active = state['ready'] and any(item == {'knowledge_id': 'source-one', 'file_hash': 'b' * 32}
                                           for item in body['sources'])
             version = hashlib.sha256(json.dumps([active, state['value'], state['paginate'], state['version_change']], sort_keys=True).encode()).hexdigest()
@@ -197,10 +197,10 @@ def test_warm_projection_skips_row_transfer_but_checks_current_inventory_and_ver
     state['down']=True
     assert client.get(api(),headers=headers).status_code==503
     state['down']=False
-    # A failed verification invalidates the physical connection, including TEMP
-    # state; recovery must reload rather than reuse an unverified snapshot.
+    # No cached values are served during failure. Once upstream has freshly
+    # verified the same version, its immutable read model can be reused.
     assert client.get(api(),headers=headers).json()['total']==1
-    assert state['pages']==pages+1
+    assert state['pages']==pages
 
 
 def test_exported_documents_do_not_consume_structured_original_limit(canonical):
@@ -212,20 +212,20 @@ def test_exported_documents_do_not_consume_structured_original_limit(canonical):
     assert result.json()['total']==1
 
 
-def test_projection_expiry_and_memory_budget_force_rebuild(canonical,monkeypatch):
-    from tin.integration import kb_facts
+def test_connection_expiry_and_metadata_eviction_reuse_verified_disk_projection(canonical,monkeypatch):
+    from tin.integration import kb_facts, fact_cache
     client,headers,state,_=canonical
     monkeypatch.setattr(kb_facts,'PROJECTION_SECONDS',0)
     assert client.get(api(),headers=headers).status_code==200
     pages=state['pages']
     assert client.get(api(),headers=headers).status_code==200
-    assert state['pages']==pages+1
-    monkeypatch.setattr(kb_facts,'PROJECTION_SECONDS',60)
-    monkeypatch.setattr(kb_facts,'MAX_RETAINED_BYTES',0)
+    assert state['pages']==pages
+    with fact_cache._lock:
+        fact_cache._verified.clear()
     assert client.get(api(),headers=headers).status_code==200
     pages=state['pages']
     assert client.get(api(),headers=headers).status_code==200
-    assert state['pages']==pages+1
+    assert state['pages']==pages
 
 
 def test_research_cannot_register_or_manually_write_another_fact_copy(canonical):

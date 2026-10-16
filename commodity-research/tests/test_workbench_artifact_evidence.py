@@ -51,11 +51,15 @@ def original_client(tmp_path, monkeypatch):
         actor = request.headers.get("x-actor", "first")
         value = WorkbenchScope(Identity(actor, "fixture@example.test", "Fixture", 7,
             request.headers.get("x-role", "owner")), workbench_id, "library-a", 7,
-            {"id":workbench_id}, "Bearer " + actor)
+            {"id":workbench_id, "workspace_mode":"isolated"}, "Bearer " + actor)
         state["scope"] = value
         return value
 
-    async def native(scope, path, **kwargs):
+    def native_document(path):
+        if path in {'/api/v1/workspaces/research/' + WB, '/api/v1/workspaces/research/' + OTHER}:
+            return {"success":True, "data":{"id":path.rsplit("/", 1)[-1],
+                    "scope_tenant_id":7, "knowledge_base_id":"library-a", "workspace_mode":"isolated"}}
+        assert path.startswith('/api/v1/knowledge/')
         identifier = path.rsplit("/", 1)[-1]
         if identifier == "missing":
             raise HTTPException(404, "not found")
@@ -69,6 +73,9 @@ def original_client(tmp_path, monkeypatch):
         if state["wrong_hash"]:
             doc["file_hash"] = "0" * 32
         return {"success":True, "data":doc}
+
+    async def native(scope, path, **kwargs):
+        return native_document(path)
 
     def transport(request):
         assert request.url.host == "go.test"
@@ -95,6 +102,12 @@ def original_client(tmp_path, monkeypatch):
     monkeypatch.setattr("tin.web.workbench_artifact_evidence.go_request", native)
     monkeypatch.setattr(httpx, "AsyncClient", client)
     def fact_request(method, address, **kwargs):
+        if address in {'http://go.test/api/v1/workspaces/research/' + WB,
+                       'http://go.test/api/v1/workspaces/research/' + OTHER}:
+            assert method == 'GET'
+            assert kwargs['headers'] == {'Authorization': state['scope'].authorization, 'X-Tenant-ID': '7'}
+            return httpx.Response(200, json=native_document(address.removeprefix('http://go.test')),
+                                  request=httpx.Request(method, address))
         if address == 'http://go.test/api/v1/knowledge-bases/library-a/knowledge':
             return httpx.Response(200, json={'success': True, 'data': [], 'total': 0},
                                   request=httpx.Request(method, address))

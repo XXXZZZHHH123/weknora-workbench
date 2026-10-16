@@ -29,18 +29,31 @@ def client(tmp_path, monkeypatch):
     def scope(request: Request, workbench_id: str):
         identity = Identity(request.headers.get("x-actor", "first"), "fixture@example.test", "Fixture", 7,
                             request.headers.get("x-role", "owner"))
-        return WorkbenchScope(identity, workbench_id, "library-a", 7, {"id": workbench_id}, "Bearer fixture")
+        return WorkbenchScope(identity, workbench_id, "library-a", 7, {"id": workbench_id, "workspace_mode": "isolated"}, "Bearer fixture")
 
-    async def native(scope, path, **kwargs):
+    def native_document(path):
+        if path in {'/api/v1/workspaces/research/' + FIRST, '/api/v1/workspaces/research/' + SECOND}:
+            return {"success": True, "data": {"id": path.rsplit("/", 1)[-1],
+                    "scope_tenant_id": 7, "knowledge_base_id": "library-a", "workspace_mode": "isolated"}}
+        assert path.startswith('/api/v1/knowledge/')
         identifier = path.rsplit("/", 1)[-1]
         if identifier == "missing":
             raise HTTPException(404, "not found")
         return {"success": True, "data": {"id": identifier,
                 "knowledge_base_id": "library-b" if identifier == "foreign" else "library-a"}}
 
+    async def native(scope, path, **kwargs):
+        return native_document(path)
+
     app.dependency_overrides[verified_workbench] = scope
     monkeypatch.setattr("tin.web.workbench_artifacts.go_request", native)
     def fact_request(method, address, **kwargs):
+        if address in {'http://native.test/api/v1/workspaces/research/' + FIRST,
+                       'http://native.test/api/v1/workspaces/research/' + SECOND}:
+            assert method == 'GET'
+            assert kwargs['headers'] == {'Authorization': 'Bearer fixture', 'X-Tenant-ID': '7'}
+            return httpx.Response(200, json=native_document(address.removeprefix('http://native.test')),
+                                  request=httpx.Request(method, address))
         if address == 'http://native.test/api/v1/knowledge-bases/library-a/knowledge':
             return httpx.Response(200, json={'success': True, 'data': [], 'total': 0},
                                   request=httpx.Request(method, address))

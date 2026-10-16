@@ -7,13 +7,19 @@ from fastapi import HTTPException
 
 from .workspaces import current_identity, valid_knowledge_base_id
 
+RESEARCH_ROWS_ENCODING='research-rows-v1'
+RESEARCH_ROW_COLUMNS=('series_id','date','value','source_cell','formula','value_status','date_cell','raw_value')
+# These are the existing research projection's technical row requirements,
+# independent of question, business meaning, metric name, unit or source.
+_RESEARCH_ROW_FILTER="value_status IN ('valid','ok','正常') AND value IS NOT NULL AND date IS NOT NULL"
+
 
 def _hash(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
 
 
 def _parameters(body):
-    if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only'}:
+    if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only','encoding'}:
         raise ValueError('只接受当前原件、分页和快照版本参数')
     sources,offset,limit=body.get('sources'),body.get('offset',0),body.get('limit',10000)
     if not isinstance(sources,list) or len(sources)>128:
@@ -23,6 +29,8 @@ def _parameters(body):
     version=body.get('version')
     if type(body.get('metadata_only',False)) is not bool:
         raise ValueError('版本核验参数无效')
+    if 'encoding' in body and (body['encoding']!=RESEARCH_ROWS_ENCODING or body.get('metadata_only')):
+        raise ValueError('事实传输编码无效；版本核验不接受行编码')
     if version is not None and (not isinstance(version,str) or not re.fullmatch('[a-f0-9]{64}',version)):
         raise ValueError('事实快照版本无效')
     normalized=[];seen=set()
@@ -37,11 +45,30 @@ def _parameters(body):
     return sorted(normalized,key=lambda item:item['knowledge_id']),offset,limit,version
 
 
+def _page_series(identifiers,counts,offset,limit):
+    """Narrow the stable series/date/cell ordering to the requested page.
+
+    Counts come from this read-only snapshot, never the catalog's summaries.
+    Only whole series before/after the page are omitted; ordering and offsets
+    inside the selected range remain the same as a full-table sorted page.
+    """
+    selected=[];seen=0;start=None
+    for identifier in identifiers:
+        count=counts.get(identifier,0)
+        if count and seen<offset+limit and offset<seen+count:
+            if start is None:
+                start=seen
+            selected.append(identifier)
+        seen+=count
+    return selected,offset-(start or 0)
+
+
 def read_facts(store,manager,body):
     identity=current_identity.get()
     if identity is None or not identity.knowledge_base_id:
         raise ValueError('研究指标必须绑定已授权知识库，不能读取空间旧事实')
     sources,offset,limit,requested=_parameters(body)
+    compact=body.get('encoding')==RESEARCH_ROWS_ENCODING
     records=manager.list()
     selected=[]
     for source in sources:
@@ -72,8 +99,9 @@ def read_facts(store,manager,body):
                 manifest=store.manifest(dataset)
                 original=store._path(dataset)/'source.xlsx'
                 raw=original.read_bytes()
-                hashes={hashlib.md5(raw).hexdigest(),hashlib.sha256(raw).hexdigest()}
-                if manifest.get('sha256')!=hashlib.sha256(raw).hexdigest():
+                sha256=hashlib.sha256(raw).hexdigest()
+                hashes={hashlib.md5(raw).hexdigest(),sha256}
+                if manifest.get('sha256')!=sha256:
                     raise ValueError('原件哈希不符')
                 catalog=json.loads((store._path(dataset)/'series.json').read_text())
                 if (not isinstance(catalog,list) or any(not isinstance(field,dict)
@@ -118,30 +146,66 @@ def read_facts(store,manager,body):
         return {'knowledge_base_id':identity.knowledge_base_id,
                 'knowledge_base_tenant_id':identity.knowledge_base_tenant_id,
                 'version':version,'metadata_only':True}
-    rows=[];total=0
+    rows=[];total=0;raw_total=0
     for info,mapping in bindings:
+        if compact:
+            info['raw_observation_count']=0
         if not mapping:
             continue
         with store._connect(info['dataset_id']) as connection:
             identifiers=sorted(mapping)
             where=' WHERE series_id IN ('+','.join('?' for _ in identifiers)+')'
-            count=connection.execute('SELECT count(*) FROM observations'+where,identifiers).fetchone()[0]
-            if count<0 or total+count>2_000_000:
+            if compact:
+                grouped=connection.execute('SELECT series_id,count(*),count(*) FILTER (WHERE '+_RESEARCH_ROW_FILTER+'),'
+                    'count(*) FILTER (WHERE value IS NOT NULL AND NOT isfinite(value))'
+                    ' FROM observations'+where+' GROUP BY series_id',identifiers).fetchall()
+                raw_count=sum(group[1] for group in grouped)
+                counts={group[0]:group[2] for group in grouped}
+                # The legacy strict JSON response also rejects NaN/Infinity,
+                # even on missing-date or invalid-status rows. Do not silently
+                # hide these corrupt facts through the compact row predicate.
+                if any(group[3] for group in grouped):
+                    raise HTTPException(503,'当前知识库结构化观测含非有限数值，未返回部分事实')
+                info['raw_observation_count']=raw_count
+            else:
+                counts=dict(connection.execute('SELECT series_id,count(*) FROM observations'+where+' GROUP BY series_id',identifiers).fetchall())
+                raw_count=sum(counts.values())
+            count=sum(counts.values())
+            raw_total+=raw_count
+            if raw_count<0 or raw_total>2_000_000:
                 raise HTTPException(413,'当前知识库超过200万条观测，未返回部分事实')
-            if offset<total+count and len(rows)<limit:
+            if count and offset<total+count and len(rows)<limit:
                 local_offset=max(0,offset-total)
-                cursor=connection.execute('SELECT * FROM observations'+where+' ORDER BY series_id,date NULLS LAST,source_cell LIMIT ? OFFSET ?',
-                                          [*identifiers,limit-len(rows),local_offset])
+                # A large OFFSET used to sort all confirmed series again on
+                # every page. Real per-series counts let us sort just the
+                # intersecting series without caching facts or weakening the
+                # original/confirmation/version checks above.
+                page_identifiers,local_offset=_page_series(identifiers,counts,local_offset,limit-len(rows))
+                where=' WHERE series_id IN ('+','.join('?' for _ in page_identifiers)+')'
+                if compact:
+                    where+=' AND '+_RESEARCH_ROW_FILTER
+                columns=','.join(RESEARCH_ROW_COLUMNS) if compact else '*'
+                cursor=connection.execute('SELECT '+columns+' FROM observations'+where+' ORDER BY series_id,date NULLS LAST,source_cell LIMIT ? OFFSET ?',
+                                          [*page_identifiers,limit-len(rows),local_offset])
                 names=[column[0] for column in cursor.description]
                 for values in cursor.fetchall():
+                    if compact:
+                        source_series=values[0]
+                        if source_series not in mapping:
+                            raise HTTPException(409,'观测与当前真实字段目录不一致，未返回部分事实')
+                        rows.append([mapping[source_series],*values[1:]])
+                        continue
                     row=dict(zip(names,values));source_series=row['series_id']
                     if source_series not in mapping:
                         raise HTTPException(409,'观测与当前真实字段目录不一致，未返回部分事实')
                     rows.append({**row,'series_id':mapping[source_series],'source_series_id':source_series,
                         'source_knowledge_id':info['source_knowledge_id'],'dataset_id':info['dataset_id']})
             total+=count
-    return {'knowledge_base_id':identity.knowledge_base_id,
+    document={'knowledge_base_id':identity.knowledge_base_id,
             'knowledge_base_tenant_id':identity.knowledge_base_tenant_id,'version':version,
             'datasets':datasets,'indicators':indicators,'rows':rows,'total':total,'offset':offset,
             'next_offset':offset+len(rows) if offset+len(rows)<total else None,'truncated':offset+len(rows)<total,
             'notice':'仅绑定知识库当前已发布的结构化数据；日期为原表日期/统计期，非推定发布时间。'}
+    if compact:
+        document.update(encoding=RESEARCH_ROWS_ENCODING,row_columns=list(RESEARCH_ROW_COLUMNS))
+    return document

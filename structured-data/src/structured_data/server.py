@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import replace
+import datetime as dt
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,7 @@ from typing import get_type_hints
 from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi.encoders import decimal_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -29,6 +32,22 @@ from .review_worker import run_review_task
 from .review_errors import error_location
 
 MAX_UPLOAD = 100 * 1024 * 1024
+
+
+class _ResearchFactsJSONResponse(JSONResponse):
+    """Encode the already-validated facts document once in its worker thread."""
+    @staticmethod
+    def _default(value):
+        if isinstance(value,dt.date):
+            return value.isoformat()
+        if isinstance(value,Decimal):
+            # Match FastAPI's existing integral/fractional Decimal behavior.
+            return decimal_encoder(value)
+        raise TypeError(f'Object of type {type(value).__name__} is not JSON serializable')
+
+    def render(self,content):
+        return json.dumps(content,ensure_ascii=False,allow_nan=False,indent=None,
+                          separators=(',',':'),default=self._default).encode('utf-8')
 
 
 class MappingRequest(BaseModel):
@@ -273,7 +292,8 @@ def create_app(data_dir: str | Path | None = None):
         body = await request.json()
         def read_current():
             with manager.lock:
-                return read_facts(store, manager, body)
+                document=read_facts(store, manager, body)
+            return _ResearchFactsJSONResponse(document)
         return await run_in_threadpool(read_current)
 
     @app.post('/api/research/export')
