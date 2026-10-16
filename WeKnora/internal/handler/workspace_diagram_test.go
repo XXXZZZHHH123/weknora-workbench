@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,10 +20,13 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/application/service"
 	"github.com/Tencent/WeKnora/internal/middleware"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -298,6 +303,70 @@ func TestWorkspaceDiagramFailuresAndChangedScopeNeverReturnDraft(t *testing.T) {
 			require.Equal(t, status, response.Code, response.Body.String())
 			require.NotContains(t, response.Body.String(), "provider-secret-marker")
 			require.NotContains(t, response.Body.String(), "Generated configuration")
+		})
+	}
+}
+
+func TestWorkspaceDiagramFailureDetailsPreserveSafeCause(t *testing.T) {
+	const secret = "PRIVATE_BODY token=private-key https://user:password@secret.invalid/?key=private-key prompt=PRIVATE_PROMPT"
+	cases := []struct {
+		name, class, phase string
+		err                error
+		status             int
+		empty              bool
+	}{
+		{"provider400", "provider_http_error", "completion", &api.HTTPError{StatusCode: 400, Body: secret}, 400, false},
+		{"provider401", "provider_http_error", "completion", &api.HTTPError{StatusCode: 401, Body: secret}, 401, false},
+		{"provider403", "provider_http_error", "completion", &api.HTTPError{StatusCode: 403, Body: secret}, 403, false},
+		{"provider429", "provider_http_error", "completion", &api.HTTPError{StatusCode: 429, Body: secret}, 429, false},
+		{"wrapped-provider503", "provider_http_error", "completion", fmt.Errorf("wrapped: %w", &api.HTTPError{StatusCode: 503, Body: secret}), 503, false},
+		{"invalid-status", "client_error", "completion", &api.HTTPError{StatusCode: 999, Body: secret}, 0, false},
+		{"transport-timeout", "request_timeout", "completion", &api.TransportError{Op: secret, Err: context.DeadlineExceeded}, 0, false},
+		{"dns-timeout", "request_timeout", "completion", &api.TransportError{Op: secret, Err: &net.DNSError{IsTimeout: true, Name: secret, Err: secret}}, 0, false},
+		{"transport-error", "transport_error", "completion", &api.TransportError{Op: secret, Err: errors.New(secret)}, 0, false},
+		{"cancelled", "request_cancelled", "completion", fmt.Errorf("%s: %w", secret, context.Canceled), 0, false},
+		{"ssrf-host", "outbound_blocked", "completion", fmt.Errorf("%w: %s", secutils.ErrSSRFHostNotWhitelisted, secret), 0, false},
+		{"ssrf-redirect", "outbound_blocked", "completion", fmt.Errorf("%w: %s", secutils.ErrSSRFRedirectBlocked, secret), 0, false},
+		{"client-error", "client_error", "completion", errors.New(secret), 0, false},
+		{"empty-response", "empty_response", "response_validation", nil, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWorkspaceDiagramFixture(t)
+			f.models.client.err = tc.err
+			if tc.empty {
+				f.models.client.response = &types.ChatResponse{Content: " \n\t"}
+			}
+			var logs bytes.Buffer
+			localLogger := logrus.New()
+			localLogger.SetOutput(&logs)
+			ctx := context.WithValue(context.Background(), types.LoggerContextKey, logrus.NewEntry(localLogger))
+			request := httptest.NewRequest(http.MethodPost, "/research/"+f.workbenchID+"/diagram/generate", strings.NewReader(diagramBody(t, ""))).WithContext(ctx)
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			f.router.ServeHTTP(response, request)
+			require.Equal(t, http.StatusServiceUnavailable, response.Code)
+			var body struct {
+				Error struct {
+					Code    int `json:"code"`
+					Details struct {
+						Phase              string `json:"phase"`
+						ErrorClass         string `json:"error_class"`
+						ProviderHTTPStatus int    `json:"provider_http_status"`
+					} `json:"details"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			require.Equal(t, 1008, body.Error.Code, "503 is the native service status, not a guessed provider status")
+			require.Equal(t, tc.class, body.Error.Details.ErrorClass)
+			require.Equal(t, tc.phase, body.Error.Details.Phase)
+			require.Equal(t, tc.status, body.Error.Details.ProviderHTTPStatus)
+			require.Contains(t, logs.String(), "error_class="+tc.class)
+			for _, value := range []string{"PRIVATE_BODY", "private-key", "secret.invalid", "password", "PRIVATE_PROMPT", "Generated configuration"} {
+				require.NotContains(t, response.Body.String(), value)
+				require.NotContains(t, logs.String(), value)
+			}
+			require.Equal(t, 1, f.models.client.calls)
 		})
 	}
 }

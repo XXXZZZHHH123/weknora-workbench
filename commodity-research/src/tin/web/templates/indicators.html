@@ -93,6 +93,9 @@
     <details id="indicator-sources" class="indicator-group"><summary>数据源台账 <span class="indicator-muted">接入方式与覆盖范围</span></summary>
       <div class="indicator-table-scroll"><table class="indicator-table"><thead><tr><th>数据源</th><th>层级</th><th>覆盖范围</th><th>访问方式</th><th>状态</th></tr></thead><tbody>
         {% for s in sources.rows %}<tr><td>{{ s.name }}</td><td>{{ s.level }}</td><td>{{ s.scope }}</td><td>{{ s.access }}</td><td>{{ s.status }}</td></tr>{% endfor %}
+        {% if research_workbench() and research_workbench().metadata.default_knowledge_base %}
+        <tr><td><a href="/platform/knowledge-bases/{{ research_workbench().metadata.default_knowledge_base.knowledge_base_id }}" target="_top">宏观知识库</a></td><td>知识库</td><td>宏观指标</td><td>结构化数据</td><td>已绑定</td></tr>
+        {% endif %}
       </tbody></table></div>
     </details>
     <details id="indicator-dictionary" class="indicator-group"><summary>口径字典 <span class="indicator-muted">{{ dimensions | length }} 个维度</span></summary>

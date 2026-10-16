@@ -34,10 +34,10 @@ def series(session, sid="TEST.OUTPUT", *, values=(100, 120), days=(16, 18), unit
     session.commit()
 
 
-def test_macro_link_keeps_date_and_opens_macro_filter(client):
+def test_old_macro_link_keeps_date_and_opens_combined_indicators(client):
     response = client.get("/sn/macro?date=2026-09-18", follow_redirects=False)
     assert response.status_code == 307
-    assert response.headers["location"] == "/sn/indicators?scope=macro&date=2026-09-18"
+    assert response.headers["location"] == "/sn/indicators?date=2026-09-18"
 
 
 def test_catalog_is_complete_grouped_open_and_secondary_panels_collapsed(client, loaded):
