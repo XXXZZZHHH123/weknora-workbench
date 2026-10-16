@@ -107,11 +107,40 @@ def test_large_catalog_recall_is_model_planned_then_model_decides_bindings(gener
     assert result.json()['bindings'][0]['series_id']==fields[299]['id']
 
 
-@pytest.mark.parametrize('content',['{} trailing','{"markdown":"a","markdown":"b"}','{"value":NaN}','```json\n{}\n```'])
+@pytest.mark.parametrize('content',['{} trailing','{"markdown":"a","markdown":"b"}','{"value":NaN}'])
 def test_model_response_is_strict_whole_json(content):
     from fastapi import HTTPException
     with pytest.raises(HTTPException):
         generation.strict_json(content)
+
+
+@pytest.mark.parametrize('value',[{'queries':['Material','Output']},{'markdown':'# Process\n## Group\n- Node\u2028Text'}])
+@pytest.mark.parametrize('wrapper',['{}','```json\n{}\n```','```\n{}\n```',' \t\r\n```json\r\n{}\r\n```\r\n\t '])
+def test_model_response_accepts_one_complete_json_fence(value,wrapper):
+    content=wrapper.format(json.dumps(value,ensure_ascii=False))
+    assert generation.strict_json(content)==value
+
+
+@pytest.mark.parametrize('content',[
+    'Before\n```json\n{}\n```','```json\n{}\n```\nAfter',
+    '```json\n{}\n```\n```json\n{}\n```','```python\n{}\n```',
+    '```json extra\n{}\n```','```json\n{}','```json\n{}\n``',
+    '```json\n{"queries":[],"queries":["Other"]}\n```',
+    '```\n{"value":NaN}\n```','```json\n{"value":Infinity}\n```',
+    '```json\n{} trailing\n```','```json\n{}\n{}\n```',
+    '\u00a0{}','\u2028{}','```jſon\n{}\n```',
+    '\u00a0```json\n{}\n```','```json\n{}\n```\u00a0',
+])
+def test_model_response_fences_keep_strict_full_document_validation(content):
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException):
+        generation.strict_json(content)
+
+
+def test_model_response_fences_do_not_bypass_original_size_limit():
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException):
+        generation.strict_json('```json\n'+json.dumps({'markdown':'x'*(128*1024)})+'\n```')
 
 
 def test_generator_uses_original_diagram_page_and_compact_composer(generator):

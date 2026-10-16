@@ -69,6 +69,14 @@ def strict_json(content):
     try:
         if not isinstance(content,str) or len(content.encode('utf-8'))>128*1024:
             raise ValueError('oversized output')
+        content=content.strip(' \t\r\n')
+        if content.startswith('```'):
+            opening,newline,body=content.partition('\n')
+            if not newline or opening.strip(' \t\r').lower() not in {'```','```json'}:
+                raise ValueError('invalid JSON fence')
+            content,newline,closing=body.rpartition('\n')
+            if not newline or closing.strip(' \t\r')!='```':
+                raise ValueError('incomplete JSON fence')
         return json.loads(content,object_pairs_hook=pairs,parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     except (ValueError,UnicodeError,TypeError,RecursionError):
         raise HTTPException(422,'模型没有返回完整有效的配置，请调整资料后重试') from None
