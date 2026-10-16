@@ -88,12 +88,12 @@ onMounted(() => { if (!props.hideScopes) orgStore.fetchOrganizations() })
 // 与右侧 32px 的下拉框、搜索框同高：3px 内边距 × 2 + 26px 按钮
 .category-tabs {
   .artifact-filter-tabs();
-  button { display: inline-flex; align-items: center; height: 26px; padding: 0 12px; }
+  button { display: inline-flex; align-items: center; min-height: 28px; padding: 0 12px; white-space: nowrap; }
 }
 .scope-count { margin-left: 5px; font-size: var(--app-text-xs); font-variant-numeric: tabular-nums; }
 .space-filter,
 .search-input {
-  :deep(.t-input) { border-radius: var(--app-radius-sm); }
+  :deep(.t-input) { border-radius: var(--app-radius-md); background: var(--cds-surface-2, var(--td-bg-color-container)); }
 }
 .space-filter { width: 180px; }
 .space-filter-icon-active { color: var(--td-brand-color); }
@@ -101,5 +101,8 @@ onMounted(() => { if (!props.hideScopes) orgStore.fetchOrganizations() })
 @media (max-width: 720px) {
   .search-input { width: 100%; }
   .space-filter { max-width: 100%; }
+  .scope-filters { width: 100%; gap: 8px; }
+  .category-tabs { max-width: 100%; }
+  .category-tabs button { min-height: 32px; padding: 0 10px; }
 }
 </style>

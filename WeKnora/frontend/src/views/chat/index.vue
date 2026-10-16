@@ -160,7 +160,9 @@
             <div ref="composerElement" class="chat_composer">
                 <div class="input-container" :class="{ 'is-embedded': embeddedMode }">
                     <transition name="scroll-btn-fade">
-                        <div v-show="userHasScrolledUp" class="scroll-to-bottom-btn" @click="onClickScrollToBottom">
+                        <div v-show="userHasScrolledUp" class="scroll-to-bottom-btn" role="button" tabindex="0"
+                          :aria-label="$t('chat.scrollToBottom')" @keydown.enter.prevent="onClickScrollToBottom"
+                          @keydown.space.prevent="onClickScrollToBottom" @click="onClickScrollToBottom">
                             <t-icon name="chevron-down" size="18px" />
                         </div>
                     </transition>
@@ -1807,7 +1809,7 @@ onBeforeRouteUpdate((to, from, next) => {
     flex-direction: column;
     align-items: center;
     max-width: 100%;
-    min-width: 400px;
+    min-width: 0;
 
     &.is-embedded {
         max-width: 100%;
@@ -1902,7 +1904,7 @@ onBeforeRouteUpdate((to, from, next) => {
     padding: 0 12px 0 var(--chat-content-inset, 20px);
     box-sizing: border-box;
     border-bottom: 1px solid var(--td-component-stroke);
-    background: var(--td-bg-color-container);
+    background: var(--cds-surface-1);
 }
 
 .sandbox-header-toggle {
@@ -1995,13 +1997,13 @@ onBeforeRouteUpdate((to, from, next) => {
     left: 0;
     right: var(--chat-scrollbar-gutter, 0px);
     z-index: 12;
-    padding: 16px 0 max(8px, env(safe-area-inset-bottom));
-    background: var(--td-bg-color-page);
+    padding: 14px 0 max(8px, env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--cds-surface-0) 94%, transparent);
 }
 
 .is-embedded .chat_composer {
     padding: 0;
-    background: var(--td-bg-color-container);
+    background: var(--cds-surface-2);
 }
 
 .chat_overlays {
@@ -2178,8 +2180,33 @@ onBeforeRouteUpdate((to, from, next) => {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    .msg-skeleton-list,
+    .suggested-questions-inner {
+        animation: none;
+    }
+
     .chat-global-wait__spinner {
         animation: none;
+    }
+}
+
+@media (max-width: 560px) {
+    .chat {
+        --chat-content-inset: 12px;
+    }
+
+    .chat_composer {
+        padding-top: 8px;
+    }
+
+    .input-container:not(.is-embedded) {
+        padding-right: 12px;
+        padding-left: 12px;
+    }
+
+    .chat-topbar {
+        padding-right: 10px;
+        padding-left: 12px;
     }
 }
 

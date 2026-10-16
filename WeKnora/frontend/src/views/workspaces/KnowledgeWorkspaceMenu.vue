@@ -164,18 +164,18 @@ onBeforeUnmount(() => {
 
 <template>
   <aside class="knowledge-workspace-menu" :class="{ 'is-collapsed': ui.sidebarCollapsed }" aria-label="知识库工作区导航">
-    <div class="knowledge-workspace-menu__brand"><button v-if="!ui.sidebarCollapsed" class="knowledge-workspace-menu__plain" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><BrandWordmark compact /></button><button class="knowledge-workspace-menu__icon" :aria-label="ui.sidebarCollapsed ? '展开侧栏' : '收起侧栏'" @click="ui.toggleSidebar"><t-icon :name="ui.sidebarCollapsed ? 'chevron-right-double' : 'chevron-left-double'" /></button></div>
-    <div v-if="!ui.sidebarCollapsed" class="knowledge-workspace-menu__context"><button class="knowledge-workspace-menu__back" @click="router.push('/platform/knowledge-bases')">‹ 全部知识库</button><strong>{{ library?.name || '知识库' }}</strong></div>
-    <button v-else class="knowledge-workspace-menu__icon" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><t-icon name="arrow-left" /></button>
+    <div class="knowledge-workspace-menu__brand"><button v-if="!ui.sidebarCollapsed" type="button" class="knowledge-workspace-menu__plain" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><BrandWordmark compact /></button><button type="button" class="knowledge-workspace-menu__icon" :aria-label="ui.sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :aria-expanded="!ui.sidebarCollapsed" @click="ui.toggleSidebar"><t-icon :name="ui.sidebarCollapsed ? 'chevron-right-double' : 'chevron-left-double'" /></button></div>
+    <div v-if="!ui.sidebarCollapsed" class="knowledge-workspace-menu__context"><button type="button" class="knowledge-workspace-menu__back" @click="router.push('/platform/knowledge-bases')">‹ 全部知识库</button><strong :title="library?.name || '知识库'">{{ library?.name || '知识库' }}</strong></div>
+    <button v-else type="button" class="knowledge-workspace-menu__icon" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><t-icon name="arrow-left" /></button>
     <nav class="knowledge-workspace-menu__navigation">
       <WorkspaceNavigationNode title="问答助手" icon="chat" :collapsed="ui.sidebarCollapsed" :active="route.name === 'kbCreatChat' || route.name === 'kbChat'" @navigate="router.push(`/platform/knowledge-bases/${kbId}/creatChat`)" />
       <WorkspaceNavigationNode title="结构化数据库" icon="table" :collapsed="ui.sidebarCollapsed" :active="route.name === 'knowledgeStructuredData'" expandable :expanded="structuredOpen" @toggle="structuredOpen = !structuredOpen" @navigate="router.push(`/platform/knowledge-bases/${kbId}/structured-data`)">
         <WorkspaceNavigationNode v-for="[mode, title, icon] in [['import','Excel 导入','file-import'],['query','数据查询','search']]" :key="mode" :title="title!" :icon="icon" :depth="1" :active="route.name === 'knowledgeStructuredData' && (route.query.mode === mode || mode === 'import' && !route.query.mode)" @navigate="router.push({ path: `/platform/knowledge-bases/${kbId}/structured-data`, query: { mode } })" />
       </WorkspaceNavigationNode>
       <WorkspaceNavigationNode title="目录" icon="folder" :collapsed="ui.sidebarCollapsed" :active="isDirectory" expandable :expanded="directoryOpen" @toggle="directoryOpen = !directoryOpen" @navigate="selectFolder('')">
-        <template #actions><button v-if="canEdit && !ui.sidebarCollapsed" class="knowledge-workspace-menu__icon" aria-label="新建文件夹" @click="openNewFolder"><t-icon name="folder-add" size="16px" /></button></template>
+        <template #actions><button v-if="canEdit && !ui.sidebarCollapsed" type="button" class="knowledge-workspace-menu__icon" aria-label="新建文件夹" @click="openNewFolder"><t-icon name="folder-add" size="16px" /></button></template>
         <WorkspaceNavigationNode title="全库预览" icon="view-list" :depth="1" :active="isDirectory && selected.all" @navigate="allFiles" />
-        <p v-if="error" role="alert" class="knowledge-workspace-menu__error">{{ error }}<button class="knowledge-workspace-menu__back" @click="load">重试目录</button></p>
+        <p v-if="error" role="alert" class="knowledge-workspace-menu__error">{{ error }}<button type="button" class="knowledge-workspace-menu__back" @click="load">重试目录</button></p>
         <KbFolderTree v-else :key="identity" :tree="tree" :selected-path="selected.path" :selected-file-id="typeof route.query.knowledge_id === 'string' ? route.query.knowledge_id : ''" :loading="loading" :can-edit="canEdit" :file-pages="filePages" show-files root-label="库根目录" navigation allow-delete @select="selectFolder" @select-file="selectFile" @load-files="loadFiles" @rename="renameFolder" @delete="(path: string) => { folderError = ''; deletePath = path }" />
       </WorkspaceNavigationNode>
     </nav>
@@ -186,17 +186,28 @@ onBeforeUnmount(() => {
   </aside>
 </template>
 
-<style scoped>
-.knowledge-workspace-menu{position:relative;display:flex;flex-direction:column;flex:none;width:var(--sidebar-width,260px);height:100%;min-height:0;box-sizing:border-box;padding:var(--app-space-3) var(--app-space-2) var(--app-space-2);background:var(--td-bg-color-sidebar);border-right:1px solid var(--app-border-color)}
-.knowledge-workspace-menu__brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 6px 18px}
-.knowledge-workspace-menu__plain{border:0;background:transparent;padding:0;cursor:pointer;min-width:0}
-.knowledge-workspace-menu__icon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:26px;height:28px;color:var(--td-text-color-secondary);background:transparent;border:0;border-radius:var(--app-radius-xs);cursor:pointer}
-.knowledge-workspace-menu__icon:hover{background:var(--td-bg-color-container-hover)}
-.knowledge-workspace-menu__context{display:flex;flex-direction:column;gap:10px;margin:0 14px 20px;overflow-wrap:anywhere;font-size:var(--app-text-base)}
-.knowledge-workspace-menu__back{border:0;background:transparent;padding:0;text-align:left;color:var(--td-brand-color);font-size:var(--app-text-sm);cursor:pointer}
-.knowledge-workspace-menu__navigation{flex:1;min-height:0;overflow:auto;padding-bottom:18px}
+<style scoped lang="less">
+.knowledge-workspace-menu {
+  --nav-surface: var(--cds-surface-1, var(--td-bg-color-sidebar));
+  --nav-hover: var(--cds-surface-2, var(--td-bg-color-container-hover));
+  --nav-accent: var(--cds-clay, var(--td-brand-color));
+  position: relative; display: flex; flex-direction: column; flex: none;
+  width: var(--sidebar-width, 260px); height: 100%; min-height: 0;
+  box-sizing: border-box; padding: 12px 8px 8px; background: var(--nav-surface);
+  border-right: 1px solid var(--cds-border, var(--app-border-color));
+}
+.knowledge-workspace-menu__brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 6px 14px}
+.knowledge-workspace-menu__plain{min-height:32px;border:0;background:transparent;padding:0;cursor:pointer;min-width:0}
+.knowledge-workspace-menu__icon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;color:var(--cds-text-secondary, var(--td-text-color-secondary));background:transparent;border:0;border-radius:var(--cds-radius-control);cursor:pointer;transition:background-color var(--cds-duration-fast) var(--cds-ease-out),color var(--cds-duration-fast) var(--cds-ease-out)}
+.knowledge-workspace-menu__icon:hover{background:var(--nav-hover);color:var(--cds-text-primary, var(--td-text-color-primary))}
+.knowledge-workspace-menu__icon:focus-visible,.knowledge-workspace-menu__plain:focus-visible,.knowledge-workspace-menu__back:focus-visible{outline:2px solid var(--nav-accent);outline-offset:2px}
+.knowledge-workspace-menu__context{display:flex;flex-direction:column;gap:10px;margin:0 12px 16px;min-width:0;font-size:var(--app-text-base)}
+.knowledge-workspace-menu__context strong{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--cds-text-primary, var(--td-text-color-primary))}
+.knowledge-workspace-menu__back{min-height:32px;border:0;background:transparent;padding:0;text-align:left;color:var(--nav-accent);font-size:var(--app-text-sm);cursor:pointer}
+.knowledge-workspace-menu__navigation{flex:1;min-height:0;overflow:auto;padding-bottom:18px;scrollbar-width:thin}
 .knowledge-workspace-menu__error{padding:12px;font-size:var(--app-text-sm);line-height:1.6;color:var(--td-error-color);overflow-wrap:anywhere}
 .knowledge-workspace-menu__error button{display:block;margin-top:8px}
 .knowledge-workspace-menu.is-collapsed{width:var(--sidebar-width,60px);padding:8px 3px 6px}
 .knowledge-workspace-menu.is-collapsed .knowledge-workspace-menu__brand{justify-content:center;margin:0 0 12px}
+@media(max-width:720px){.knowledge-workspace-menu:not(.is-collapsed){position:absolute;top:0;bottom:0;left:0;z-index:20;width:min(var(--sidebar-width,260px),82vw);min-width:0;box-shadow:12px 0 28px color-mix(in srgb,var(--cds-text-primary) 12%,transparent)}}
 </style>

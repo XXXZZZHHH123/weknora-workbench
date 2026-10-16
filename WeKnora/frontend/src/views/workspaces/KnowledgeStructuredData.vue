@@ -187,7 +187,7 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('message', rece
   min-height: 360px;
   border: 0;
 }
-:global(:root[theme-mode="dark"]) .knowledge-structured-workspace { --structured-accent: #61c6b9; }
+:global(:root[theme-mode="dark"]) .knowledge-structured-workspace { --structured-accent: var(--td-brand-color); }
 @media (max-width: 900px) {
   .knowledge-structured-toolbar { gap: var(--app-space-2); padding: var(--app-space-3) var(--app-space-4); }
   .knowledge-structured-actions { justify-content: flex-start; }

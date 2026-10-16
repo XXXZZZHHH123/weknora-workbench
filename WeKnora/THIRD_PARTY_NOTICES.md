@@ -77,3 +77,15 @@ through Go's configured `GOPROXY` and module cache, verifies their SHA-256 hashe
 and includes them in the destination bundle. Offline packaging requires those
 module archives to be present in the Go module cache beforehand. To verify a
 packaged source directory, run `scripts/check-license-bundle.sh PATH/TO/licenses/sources`.
+
+## Open Claude UI
+
+- Source: [Caho1/open-claude-ui](https://github.com/Caho1/open-claude-ui),
+  reference commit `02d021fceaf2a907f9e63a8125621bdda1b85d60`.
+- Attribution: Copyright (c) 2026 Caho1.
+- License: MIT, reproduced in
+  [`licenses/Open-Claude-UI-MIT.txt`](licenses/Open-Claude-UI-MIT.txt).
+- CDS color, surface, motion and interaction design references are adapted to
+  WeKnora's existing Vue/TDesign components and iframe workspaces. No React
+  runtime, model backend, proprietary font, audio, or Anthropic binary assets
+  are included from that project.

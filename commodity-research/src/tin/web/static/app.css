@@ -1,16 +1,16 @@
-/* 主平台、结构化数据与研究台共用冷青灰；涨跌颜色保留市场惯例。 */
+/* CDS 暖中性表面与陶土强调色；涨跌及告警颜色保留市场与状态语义。 */
 :root {
-  --bg: #F4F7FA;
+  --bg: #F5F3F0;
   --surface: #ffffff;
-  --surface-soft: #F8FAFC;
-  --line: #D9E3EC;
-  --line-strong: #BDCADA;
-  --text: #203447;
-  --text-muted: #607286;
-  --primary: #126D82;
-  --primary-soft: #E9F3F6;
-  --primary-hover: #0F5D70;
-  --primary-active: #0C4D5D;
+  --surface-soft: #FAF9F7;
+  --line: #E9E4DF;
+  --line-strong: #D8D0C9;
+  --text: #211D1A;
+  --text-muted: #6C635D;
+  --primary: #A84427;
+  --primary-soft: #F8EEE9;
+  --primary-hover: #92391F;
+  --primary-active: #7D301B;
   --on-primary: #fff;
   --blue: var(--primary);
   --blue-soft: var(--primary-soft);
@@ -32,18 +32,18 @@
 }
 
 .dark {
-  --bg: #111C28;
-  --surface: #162534;
-  --surface-soft: #13202D;
-  --line: #324A5E;
-  --line-strong: #4B657A;
-  --text: #E7EFF7;
-  --text-muted: #A7B8C8;
-  --primary: #69C7DC;
-  --primary-soft: #203C4A;
-  --primary-hover: #85D9EB;
-  --primary-active: #A2E4F0;
-  --on-primary: #122735;
+  --bg: #171513;
+  --surface: #24201D;
+  --surface-soft: #1D1A18;
+  --line: #39322D;
+  --line-strong: #514740;
+  --text: #F4EFEB;
+  --text-muted: #AA9E95;
+  --primary: #E7A087;
+  --primary-soft: #38251F;
+  --primary-hover: #EFB39E;
+  --primary-active: #F4C2B1;
+  --on-primary: #261713;
   --success: #91d7b5;
   --success-soft: #193b33;
   --amber: #f59e0b;

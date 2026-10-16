@@ -1,0 +1,69 @@
+/*
+ * CDS-inspired interaction polish adapted from Caho1/open-claude-ui (MIT):
+ * https://github.com/Caho1/open-claude-ui
+ * Motion is limited to color, shadow and a small pressed-state response.
+ */
+:root:root {
+  --cds-ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --cds-ease-decelerate: cubic-bezier(0.165, 0.84, 0.44, 1);
+  --cds-press-duration: 100ms;
+  --cds-surface-transition: var(--cds-duration-normal) var(--cds-ease-out-expo);
+}
+
+/* TDesign popup surfaces use the CDS double ring and elevated neutral shadow. */
+.t-popup__content {
+  border-radius: var(--td-radius-large);
+  box-shadow: var(--cds-shadow-popover);
+}
+
+/* Keep keyboard focus visible and consistent; do not recolor status controls. */
+:where(button, a, input, textarea, select, [role="button"], [role="menuitem"], [tabindex]):focus-visible:not([disabled]):not([aria-disabled="true"]):not(.t-is-disabled):not(.t-is-error):not(.t-is-warning):not(.t-is-success):not(.t-input__inner):not(.t-textarea__inner):not(.t-select__input) {
+  outline: 2px solid var(--td-brand-color);
+  outline-offset: 2px;
+}
+
+/* Restrained press feedback on ordinary primary/neutral buttons only. */
+.t-button--variant-base.t-button--theme-primary:active:not(.t-is-disabled):not(.t-is-loading),
+.t-button--variant-base.t-button--theme-default:active:not(.t-is-disabled):not(.t-is-loading) {
+  filter: brightness(0.96);
+  transition: filter var(--cds-press-duration) ease-out;
+}
+
+/* Opt-in utilities for surfaces that already expose an interaction affordance. */
+.cds-panel-surface {
+  background: var(--cds-surface-2);
+  border: 1px solid var(--cds-border);
+  border-radius: var(--td-radius-large);
+  box-shadow: var(--cds-shadow-sm);
+  transition: border-color var(--cds-surface-transition), box-shadow var(--cds-surface-transition);
+}
+
+.cds-panel-surface:where(:hover, :focus-within) {
+  border-color: var(--cds-border-strong);
+  box-shadow: var(--cds-shadow-md);
+}
+
+.cds-composer-surface {
+  background: var(--cds-surface-2);
+  border: 1px solid var(--cds-border);
+  border-radius: var(--td-radius-extraLarge);
+  box-shadow: var(--cds-shadow-sm);
+  transition: border-color var(--cds-surface-transition), box-shadow var(--cds-surface-transition);
+}
+
+.cds-composer-surface:focus-within {
+  border-color: var(--td-brand-color);
+  box-shadow: var(--cds-focus-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:root {
+    --cds-press-duration: 0ms;
+    --cds-duration-normal: 0ms;
+  }
+
+  .t-button--variant-base.t-button--theme-primary:active:not(.t-is-disabled):not(.t-is-loading),
+  .t-button--variant-base.t-button--theme-default:active:not(.t-is-disabled):not(.t-is-loading) {
+    transition: none;
+  }
+}

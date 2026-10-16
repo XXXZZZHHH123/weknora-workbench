@@ -3916,6 +3916,7 @@ export default {
     }
   },
   chat: {
+    scrollToBottom: '回到最新消息',
     memoryUsedCount: '本次使用了 {count} 条记忆',
     memoryForget: '删除这条记忆',
     memoryForgotten: '已删除这条记忆',

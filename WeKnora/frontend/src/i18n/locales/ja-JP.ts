@@ -4023,6 +4023,7 @@ export default {
     }
   },
   chat: {
+    scrollToBottom: '最新のメッセージへ移動',
     memoryUsedCount: '{count}件のメモリを使用',
     memoryForget: 'このメモリを削除',
     memoryForgotten: 'メモリを削除しました',

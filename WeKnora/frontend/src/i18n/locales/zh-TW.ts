@@ -3916,6 +3916,7 @@ export default {
     }
   },
   chat: {
+    scrollToBottom: '返回最新訊息',
     answerProgress: { sources: "正在檢索來源", data: "正在查詢資料", generation: "正在生成答案", verification: "正在核驗來源", processing: "正在處理請求", waiting: "請求已發出，等待處理", elapsed: "已用時 {seconds} 秒" },
 
     memoryUsedCount: '本次使用了 {count} 條記憶',

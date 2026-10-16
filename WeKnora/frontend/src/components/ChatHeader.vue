@@ -280,7 +280,7 @@ async function submitDeleteSession(): Promise<void> {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  max-width: min(360px, calc(100% - 36px));
+  max-width: min(420px, calc(100% - 36px));
   min-width: 0;
   box-sizing: border-box;
 }
@@ -294,14 +294,14 @@ async function submitDeleteSession(): Promise<void> {
 
 .chat-header__edit-input {
   width: 100%;
-  height: 28px;
+  height: 32px;
   padding: 0 8px;
   border: 1px solid var(--td-brand-color);
   border-radius: 5px;
   color: var(--td-text-color-primary);
   background: var(--td-bg-color-container);
   font-size: var(--app-text-base);
-  line-height: 26px;
+  line-height: 30px;
   outline: none;
   box-sizing: border-box;
   box-shadow: 0 0 0 2px var(--td-brand-color-light);
@@ -318,7 +318,7 @@ async function submitDeleteSession(): Promise<void> {
   min-width: 0;
   margin: 0;
   padding: 0;
-  color: var(--td-text-color-secondary);
+  color: var(--cds-text-primary, var(--td-text-color-primary));
   font-size: var(--app-text-base);
   font-weight: 500;
   line-height: 20px;
@@ -356,11 +356,11 @@ async function submitDeleteSession(): Promise<void> {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--cds-radius-control);
   color: var(--td-text-color-placeholder);
   background: transparent;
   cursor: pointer;
@@ -382,6 +382,21 @@ async function submitDeleteSession(): Promise<void> {
 
   &.is-loading {
     cursor: wait;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--cds-clay, var(--td-brand-color));
+    outline-offset: 2px;
+  }
+}
+
+@media (max-width: 520px) {
+  .chat-header {
+    max-width: min(300px, calc(100% - 24px));
+  }
+
+  .chat-header__workspace {
+    max-width: 92px;
   }
 }
 
@@ -429,14 +444,14 @@ async function submitDeleteSession(): Promise<void> {
 
 .chat-header-confirm__btn {
   min-width: 60px;
-  height: 30px;
+  height: 32px;
   padding: 0 12px;
   border: 0.5px solid var(--td-component-stroke);
   border-radius: var(--app-radius-sm);
   color: var(--td-text-color-primary);
   background: var(--td-bg-color-container);
   font-size: var(--app-text-base);
-  line-height: 28px;
+  line-height: 30px;
   cursor: pointer;
   transition: background-color var(--app-motion-fast) ease, color var(--app-motion-fast) ease, border-color var(--app-motion-fast) ease;
 

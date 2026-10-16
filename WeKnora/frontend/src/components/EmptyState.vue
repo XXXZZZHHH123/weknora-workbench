@@ -41,7 +41,8 @@ withDefaults(
   align-items: center;
   justify-content: center;
   text-align: center;
-  padding: 56px 20px;
+  padding: 64px 24px;
+  min-width: 0;
 
   &--compact {
     padding: 32px 16px;
@@ -55,10 +56,10 @@ withDefaults(
   width: 64px;
   height: 64px;
   margin-bottom: 16px;
-  border-radius: 50%;
-  background: var(--td-bg-color-secondarycontainer);
-  color: var(--td-text-color-placeholder);
-  font-size: 30px;
+  border-radius: var(--cds-radius-composer);
+  background: var(--cds-clay-light, var(--td-brand-color-light));
+  color: var(--td-brand-color);
+  font-size: var(--app-text-headline);
 
   img {
     width: 40px;
@@ -75,9 +76,10 @@ withDefaults(
 
 .wk-empty-state__title {
   color: var(--td-text-color-primary);
-  font-size: var(--app-text-lg);
+  font-size: var(--app-text-xl);
   font-weight: 600;
-  line-height: 22px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .wk-empty-state__desc {
@@ -85,11 +87,14 @@ withDefaults(
   max-width: 360px;
   color: var(--td-text-color-secondary);
   font-size: var(--app-text-md);
-  line-height: 20px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
 }
 
 .wk-empty-state__actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
   gap: 12px;
   margin-top: 20px;

@@ -1,13 +1,13 @@
 .chat-resource-chip-surface() {
-  background: var(--td-bg-color-secondarycontainer);
-  border: 1px solid var(--td-component-stroke);
-  color: var(--td-text-color-primary);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--td-bg-color-container) 72%, transparent);
+  background: var(--cds-surface-1, var(--td-bg-color-secondarycontainer));
+  border: 1px solid var(--cds-border, var(--td-component-stroke));
+  color: var(--cds-text-primary, var(--td-text-color-primary));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--cds-surface-2, var(--td-bg-color-container)) 72%, transparent);
 }
 
 .chat-resource-chip-hover() {
-  background: var(--td-bg-color-secondarycontainer-hover);
-  border-color: var(--td-component-border);
+  background: var(--cds-surface-2, var(--td-bg-color-secondarycontainer-hover));
+  border-color: var(--cds-border-strong, var(--td-component-border));
 }
 
 .chat-mentioned-items(@justify: flex-start) {

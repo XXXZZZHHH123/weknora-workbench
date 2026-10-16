@@ -9,7 +9,10 @@
             'active': currentSection === item.key,
             'has-submenu': item.children && item.children.length > 0,
             'expanded': expandedMenus.includes(item.key)
-          }]" @click="handleNavClick(item)">
+          }]" role="button" tabindex="0" :aria-current="currentSection === item.key ? 'page' : undefined"
+            :aria-expanded="item.children?.length ? expandedMenus.includes(item.key) : undefined"
+            @keydown.enter.prevent="handleNavClick(item)" @keydown.space.prevent="handleNavClick(item)"
+            @click="handleNavClick(item)">
             <!-- 网络搜索使用自定义 SVG 图标 -->
             <svg v-if="item.key === 'websearch'" width="17" height="17" viewBox="0 0 18 18" fill="none"
               xmlns="http://www.w3.org/2000/svg" class="nav-icon">
@@ -51,6 +54,9 @@
             <div v-if="item.children && expandedMenus.includes(item.key)" class="submenu">
               <div v-for="(child, childIndex) in item.children" :key="childIndex"
                 :class="['submenu-item', { 'active': currentSubSection === child.key }]"
+                role="button" tabindex="0" :aria-current="currentSubSection === child.key ? 'page' : undefined"
+                @keydown.enter.stop.prevent="handleSubMenuClick(item.key, child.key)"
+                @keydown.space.stop.prevent="handleSubMenuClick(item.key, child.key)"
                 @click.stop="handleSubMenuClick(item.key, child.key)">
                 <span class="submenu-label">{{ child.label }}</span>
               </div>
@@ -612,9 +618,10 @@ onMounted(() => {
 })
 
 watch(currentSection, () => {
-  if (document.activeElement instanceof HTMLElement) {
-    document.activeElement.blur()
-  }
+  // Dismiss a previous field's editor without blurring keyboard navigation.
+  const active = document.activeElement
+  if (active instanceof HTMLElement && active.closest('.settings-content')
+      && active.matches('input, textarea, [contenteditable="true"]')) active.blur()
 })
 
 onUnmounted(() => {
@@ -706,6 +713,10 @@ onUnmounted(() => {
   box-sizing: border-box;
   padding: 40px 48px;
 
+  @media (max-width: 640px) {
+    padding: 48px 16px 24px;
+  }
+
   /* 表格页面缩小内边距，为多列内容留出空间。 */
   &--wide {
     padding: 32px 36px 40px;
@@ -735,7 +746,7 @@ onUnmounted(() => {
 }
 
 .section {
-  animation: fadeIn 0.3s ease;
+  animation: fadeIn var(--app-motion-base) ease;
 }
 
 @keyframes fadeIn {
@@ -778,5 +789,13 @@ onUnmounted(() => {
     max-width: 360px;
     line-height: 1.6;
   }
+}
+@media (max-width: 640px) {
+  .content-wrapper--wide, .content-wrapper--full { padding: 48px 16px 24px; }
+  .submenu { display: flex; flex: none; gap: 4px; margin: 0; }
+  .submenu-item { display: flex; align-items: center; min-height: 32px; margin: 0; padding: 8px; white-space: nowrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .section { animation: none; }
 }
 </style>

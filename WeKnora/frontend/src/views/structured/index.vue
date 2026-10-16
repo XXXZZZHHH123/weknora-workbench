@@ -31,6 +31,8 @@ onBeforeUnmount(()=>window.removeEventListener('message',receive))
 </script>
 <style scoped>
 .structured-workspace{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;background:var(--app-bg)}
-.structured-toolbar{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;background:var(--app-card-bg);border-bottom:1px solid var(--app-border-color)}
-.structured-toolbar>div{display:flex;align-items:center;gap:20px}.structured-toolbar span{font-size:var(--app-text-md);color:var(--app-text-secondary)}.structured-toolbar a{color:var(--td-brand-color);font-size:var(--app-text-md);text-decoration:none}iframe{width:100%;flex:1;min-height:0;border:0}
+.structured-toolbar{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;padding:16px 24px;background:var(--app-card-bg);border-bottom:1px solid var(--app-border-color)}
+.structured-toolbar>div{display:flex;align-items:center;gap:16px;min-width:0;flex-wrap:wrap}.structured-toolbar strong{font-weight:600;letter-spacing:-.015em}.structured-toolbar .toolbar-actions{gap:8px}.structured-toolbar a{padding:7px 10px;border-radius: var(--app-radius-md);transition:background-color var(--app-motion-fast) ease}.structured-toolbar a:hover{background:var(--td-brand-color-light)}.structured-toolbar span{font-size:var(--app-text-md);color:var(--app-text-secondary)}.structured-toolbar a{color:var(--td-brand-color);font-size:var(--app-text-md);text-decoration:none}iframe{width:100%;flex:1;min-height:0;border:0}
+@media(max-width:600px){.structured-toolbar{padding:12px 16px}.structured-toolbar>div{gap:8px}.structured-toolbar span{width:100%;line-height:1.6}.toolbar-actions{width:100%}}
+@media(prefers-reduced-motion:reduce){.structured-toolbar a{transition:none}}
 </style>

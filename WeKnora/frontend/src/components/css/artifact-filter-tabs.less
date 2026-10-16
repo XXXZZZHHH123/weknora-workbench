@@ -3,13 +3,13 @@
   flex-wrap: wrap;
   gap: 2px;
   padding: 3px;
-  border-radius: var(--app-radius-md);
+  border-radius: var(--app-radius-lg);
   background: var(--td-bg-color-secondarycontainer);
 
   button {
     padding: 5px 12px;
     border: 0;
-    border-radius: var(--app-radius-sm);
+    border-radius: var(--cds-radius-thumb);
     background: transparent;
     color: var(--td-text-color-secondary);
     font: inherit;
@@ -24,8 +24,8 @@
     &[aria-selected='true'],
     &[aria-pressed='true'] {
       background: var(--td-bg-color-container);
-      color: var(--td-brand-color);
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      color: var(--td-text-color-primary);
+      box-shadow: var(--cds-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.08));
     }
 
     &:focus-visible {

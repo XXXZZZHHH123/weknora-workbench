@@ -312,6 +312,7 @@ const handleFontSizeChange = (val: FontSizeKey) => {
 
 .font-preview {
   width: 280px;
+  max-width: 100%;
   padding: 8px 12px;
   border: 1px solid var(--td-component-stroke);
   border-radius: var(--td-radius-medium);
