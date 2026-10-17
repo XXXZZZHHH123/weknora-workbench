@@ -13,11 +13,18 @@ def endpoint(suffix=''):
     return page(FIRST,'/api/sn/diagram/generation'+suffix)
 
 
+def model_graph(series_id=SERIES):
+    return {'title':'Process','groups':[{'id':'g','label':'Materials','parent_id':None}],
+            'nodes':[{'id':'feed','label':'Feed','group_id':'g','series_id':series_id},
+                     {'id':'output','label':'Output','group_id':'g','series_id':None}],
+            'edges':[{'from':'feed','to':'output'}]}
+
+
 @pytest.fixture
 def generator(canonical,monkeypatch):
     client,headers,state,root=canonical
     model_calls=[]
-    response={'markdown':'# Process\n## Materials\n- Feed <!-- bind: '+SERIES+' -->\n  - Output'}
+    response=model_graph()
     async def complete(scope,model_id,prompt,image=None):
         assert scope.knowledge_base_id==KB
         model_calls.append({'model':model_id,'prompt':prompt,'image':image})
@@ -43,23 +50,23 @@ def test_generated_markdown_binds_only_actual_kb_ids_and_does_not_save_before_co
     assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==200
 
 
-@pytest.mark.parametrize('markdown',[
-    '# Invalid\n## Group\n- Label <!-- bind: foreign-id -->',
-    '# Invalid\n## Group <!-- agg: sum -->\n- Label',
-    '# Invalid\n## Group\n- Label <!-- bind: UNKNOWN_FORMULA -->',
-    '', 'unstructured text'])
-def test_generated_invalid_or_foreign_bindings_never_save(generator,markdown):
+@pytest.mark.parametrize('change',[
+    lambda d:d['nodes'][0].update(series_id='foreign-id'),
+    lambda d:d['groups'][0].update(agg='sum'),
+    lambda d:d['nodes'][0].update(series_id='UNKNOWN_FORMULA'),
+    lambda d:d.update(nodes=[]), lambda d:d.update(title='')])
+def test_generated_invalid_or_foreign_bindings_never_save(generator,change):
     client,headers,_,response,_=generator
-    response['markdown']=markdown
+    change(response)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Structure'})
     assert result.status_code==422,result.text
 
 
-def test_unknown_json_fields_and_non_string_markdown_are_rejected(generator):
+def test_unknown_json_fields_and_non_list_nodes_are_rejected(generator):
     client,headers,_,response,_=generator
     response['extra']='unexpected'
     assert client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Structure'}).status_code==422
-    del response['extra'];response['markdown']={'value':'bad'}
+    del response['extra'];response['nodes']={'value':'bad'}
     assert client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Structure'}).status_code==422
 
 
@@ -96,7 +103,7 @@ def test_large_catalog_recall_is_model_planned_then_model_decides_bindings(gener
     client,headers,_,_,calls=generator
     fields=[{'id':'kb-'+format(i,'048x'),'name':'Field '+str(i),'unit':'kg','frequency':'日'} for i in range(300)]
     monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
-    responses=[{'queries':['Field 299']},{'markdown':'# Process\n## Group\n- Node <!-- bind: '+fields[299]['id']+' -->'}]
+    responses=[{'queries':['Field 299']},model_graph(fields[299]['id'])]
     async def complete(*args,**kwargs):
         calls.append(args)
         return responses.pop(0)
@@ -105,6 +112,56 @@ def test_large_catalog_recall_is_model_planned_then_model_decides_bindings(gener
     assert result.status_code==200,result.text
     assert len(calls)==2 and result.json()['candidate_count']==1
     assert result.json()['bindings'][0]['series_id']==fields[299]['id']
+
+
+def test_generation_keeps_duplicate_names_and_explicit_flow_through_apply_and_export(generator):
+    client,headers,_,response,_=generator
+    response['groups'][0]['label']='Product'
+    for node in response['nodes']:
+        node['label']='Product'
+    response['edges'].append({'from':'output','to':'feed'})
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Repeated labels with an explicit cycle'})
+    assert result.status_code==200,result.text
+    body=result.json()
+    applied=client.post(page(suffix='/api/sn/diagram/markdown'),headers=headers,json={
+        'markdown':body['markdown'],'fact_version':body['version']})
+    assert applied.status_code==200,applied.text
+    exported=client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers)
+    assert exported.status_code==200,exported.text
+    from tin.export import diagram_md
+    restored=diagram_md.parse(exported.json()['markdown'])
+    assert {(edge['from'],edge['to']) for edge in restored['edges']}=={('feed','output'),('output','feed')}
+    assert {node['id']:node.get('parent') for node in restored['nodes']}=={'g':None,'feed':'g','output':'g'}
+
+
+def test_invalid_explicit_id_export_is_a_client_error_instead_of_server_failure(generator):
+    client,headers,_,_,_=generator
+    result=client.post(page(suffix='/api/sn/diagram/markdown/dump'),headers=headers,json={
+        'layout':{'nodes':[{'id':'bad id','reference_id':'bad id','kind':'group','label':'Group','parent':None}],
+                  'edges':[]}})
+    assert result.status_code==400,result.text
+
+
+def test_generated_graph_still_allows_existing_canvas_edits_before_export(generator):
+    client,headers,_,response,_=generator
+    response['groups'][0]['label']='Same'
+    for node in response['nodes']:
+        node['label']='Same'
+    generated=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'A graph with repeated names'})
+    assert generated.status_code==200,generated.text
+    from tin.export import diagram_md
+    layout=diagram_md.parse(generated.json()['markdown'])
+    group=next(node for node in layout['nodes'] if node.get('kind')=='group')
+    group['binding']={'kind':'agg','op':'sum','members':['output']}
+    layout['nodes'].append({'id':'added','label':'Independent','parent':None,'x':0,'y':0,'w':140,'h':66,
+                            'binding':{'kind':'none'},'statics':[]})
+    exported=client.post(page(suffix='/api/sn/diagram/markdown/dump'),headers=headers,json={'layout':{
+        'nodes':layout['nodes'],'edges':layout['edges']}})
+    assert exported.status_code==200,exported.text
+    restored=diagram_md.parse(exported.json()['markdown'])
+    nodes={node['id']:node for node in restored['nodes']}
+    assert nodes['g']['binding']['members']==['output']
+    assert nodes['added']['parent'] is None
 
 
 @pytest.mark.parametrize('content',['{} trailing','{"markdown":"a","markdown":"b"}','{"value":NaN}'])

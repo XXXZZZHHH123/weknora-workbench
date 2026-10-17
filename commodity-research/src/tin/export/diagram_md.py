@@ -18,6 +18,8 @@
 - `[键 值]` → 静态标注（调研系数，不入事实层）
 - `<!-- bind: X -->` → 绑定的 series_id / formula_id；**导出时写回，所以导出再导入无损**
 - `A -> B -> C` 独占一行 → 流向连线，可以连分组也可以连节点
+- `<!-- id: token -->` 为分组/节点声明显式身份；`@token -> @token` 可精确连接同名对象
+- `<!-- parent: none -->` 明确保留不属于任何分组的节点；ID模式聚合成员用 `@token` 引用
 - `<!-- agg: sum -->` → 分组对自己的直接子节点求和 / 占比（见 §5 的口径守卫）
 
 **分组之间的连线只能显式写。** 缩进只表达"包含"，表达不了"矿端的货流向冶炼"——
@@ -37,6 +39,11 @@ ITEM = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 HEAD = re.compile(r"^(#{1,4})\s+(.+?)\s*$")
 # 流向：`矿端 -> 冶炼与锭 -> 平衡`。独占一行，不是列表项也不是标题。
 FLOW_SEP = re.compile(r"\s*(?:->|→|=>)\s*")
+ID_TOKEN = re.compile(r"[A-Za-z0-9_.一-鿿-]{1,128}\Z")
+ID_TAG = re.compile(r"<!--\s*id:\s*(.*?)\s*-->")
+ID_START = re.compile(r"<!--\s*id:")
+PARENT_TAG = re.compile(r"<!--\s*parent:\s*(.*?)\s*-->")
+PARENT_START = re.compile(r"<!--\s*parent:")
 
 # 画布坐标：一列分组、组内节点按缩进分列
 COL_W, ROW_H, PAD = 164, 80, 22
@@ -45,6 +52,38 @@ NODE_W, NODE_H = 140, 66
 
 class MarkdownError(ValueError):
     pass
+
+
+def _id_lines(text):
+    """Reserve declarations before auto-slugging, regardless of their order."""
+    lines, reserved = [], set()
+    title_seen = False
+    for raw in text.splitlines():
+        head, item = HEAD.match(raw), ITEM.match(raw)
+        root_node = bool(PARENT_START.search(raw))
+        if root_node:
+            if (not item or len(PARENT_START.findall(raw)) != 1
+                    or PARENT_TAG.findall(raw) != ["none"]):
+                raise MarkdownError("无父分组标记只能在节点上写一次 parent: none")
+            raw = PARENT_TAG.sub("", raw)
+        tags = ID_TAG.findall(raw)
+        identifier = None
+        if ID_START.search(raw):
+            if len(tags) != 1 or not ID_TOKEN.fullmatch(tags[0]) or not (head or item):
+                raise MarkdownError("显式 id 必须是单个不含空白的有效标识，长度不超过128")
+            identifier = tags[0]
+            if identifier in reserved:
+                raise MarkdownError("显式 id 不能重复")
+            if head and len(head.group(1)) == 1 and not title_seen:
+                raise MarkdownError("图标题不能声明节点 id")
+            reserved.add(identifier)
+            raw = ID_TAG.sub("", raw)
+            if not (HEAD.match(raw) or ITEM.match(raw)):
+                raise MarkdownError("显式 id 声明缺少分组或节点名称")
+        if head and len(head.group(1)) == 1:
+            title_seen = True
+        lines.append((raw, identifier, root_node))
+    return lines, reserved
 
 
 def _slug(text: str, used: set[str], prefix: str) -> str:
@@ -71,12 +110,14 @@ def parse(text: str) -> dict:
     常识一致，研究员不用学新语法。
     """
     groups: list[dict] = []
+    root_items: list[dict] = []
     current: dict | None = None
     title = None
-    used: set[str] = set()
+    lines, reserved = _id_lines(text)
+    used: set[str] = set(reserved)
     flows: list[tuple[str, list[str]]] = []   # (原行, 名称序列)
 
-    for raw in text.splitlines():
+    for raw, identifier, root_node in lines:
         if not raw.strip():
             continue
         if (m := HEAD.match(raw)):
@@ -87,18 +128,22 @@ def parse(text: str) -> dict:
                 title = label
                 continue
             current = {"label": label, "level": level, "items": [],
+                       "reference_id": identifier,
                        "agg": agg.group(1) if agg else None,
                        "agg_members": ([m.strip() for m in (agg.group(2) or "").split("、" if "、" in (agg.group(2) or "") else ",") if m.strip()]
                                        if agg and agg.group(2) else None)}
             groups.append(current)
             continue
         if not ITEM.match(raw) and FLOW_SEP.search(raw):
-            parts = [p.strip() for p in FLOW_SEP.split(raw.strip()) if p.strip()]
+            parts = [p.strip() for p in FLOW_SEP.split(raw.strip())]
+            if any(p.startswith("@") for p in parts) and any(not p for p in parts):
+                raise MarkdownError("显式 id 流向不能缺少端点")
+            parts = [p for p in parts if p]
             if len(parts) >= 2:
                 flows.append((raw.strip(), parts))
                 continue
         if (m := ITEM.match(raw)):
-            if current is None:  # 没有分组标题时给一个默认组，不因为格式不标准就整份拒收
+            if current is None and not root_node:  # 没有分组标题时给一个默认组
                 current = {"label": "未分组", "level": 2, "items": []}
                 groups.append(current)
             indent, body = len(m.group(1).expandtabs(4)), m.group(2)
@@ -108,10 +153,13 @@ def parse(text: str) -> dict:
             label = STATIC.sub("", body).strip()
             if not label:
                 raise MarkdownError(f"这一行没有节点名称：{raw.strip()}")
-            current["items"].append({"indent": indent, "label": label,
-                                     "bind": bind.group(1) if bind else None, "statics": statics})
+            target = root_items if root_node else current["items"]
+            target.append({"indent": indent, "label": label, "reference_id": identifier,
+                           "bind": bind.group(1) if bind else None, "statics": statics})
             continue
 
+    if root_items:
+        groups.append({"label": "", "level": 2, "items": root_items, "ungrouped": True})
     if not any(g["items"] for g in groups):
         raise MarkdownError("没有解析出任何节点：每个环节写成一个列表项（`- 名称`），"
                             "用 `## 分组名` 分段")
@@ -123,14 +171,17 @@ def parse(text: str) -> dict:
     ancestors: dict[int, str] = {}
     pending: list[dict] = []  # 只有标题没有列表项的分组（纯容器）
     for g in groups:
-        gid = _slug(g["label"], used, "group")
+        ungrouped = g.get("ungrouped", False)
+        gid = None if ungrouped else (g.get("reference_id") or _slug(g["label"], used, "group"))
         g["gid"] = gid
         parent = ancestors.get(g["level"] - 1)
         g["parent"] = parent
-        ancestors[g["level"]] = gid
-        for deeper in [k for k in ancestors if k > g["level"]]:
-            ancestors.pop(deeper)
+        if not ungrouped:
+            ancestors[g["level"]] = gid
+            for deeper in [k for k in ancestors if k > g["level"]]:
+                ancestors.pop(deeper)
         if not g["items"]:
+            g["empty_x"] = x
             pending.append(g)
             continue
         # 组内按缩进分列，同缩进的往下排
@@ -146,7 +197,7 @@ def parse(text: str) -> dict:
             floor = row_of.get(stack.get(col - 1, ""), 0) if col else 0
             row = max(rows.get(col, 0), floor)
             rows[col] = row + 1
-            nid = _slug(item["label"], used, "node")
+            nid = item.get("reference_id") or _slug(item["label"], used, "node")
             binding = {"kind": "none"}
             if item["bind"]:
                 binding = ({"kind": "derived", "formula_id": item["bind"]}
@@ -155,6 +206,8 @@ def parse(text: str) -> dict:
             node = {"id": nid, "label": item["label"], "parent": gid,
                     "x": x + col * COL_W, "y": PAD + 46 + row * ROW_H,
                     "w": NODE_W, "h": NODE_H, "binding": binding, "statics": item["statics"]}
+            if item.get("reference_id") or ungrouped:
+                node["reference_id"] = nid
             nodes.append(node)
             group_nodes.append(node)
             stack[col] = nid
@@ -163,11 +216,13 @@ def parse(text: str) -> dict:
                 edges.append({"from": stack[col - 1], "to": nid})
         width = (max(level_of.values()) + 1) * COL_W + PAD
         height = max(rows.values()) * ROW_H + 60
-        nodes.insert(len(nodes) - len(group_nodes),
-                     {"id": gid, "kind": "group", "label": g["label"], "parent": g["parent"],
-                      "x": x - 14, "y": PAD, "w": width, "h": height,
-                      "binding": (_agg_binding(g) if g.get("agg")
-                                  else {"kind": "none"}), "statics": []})
+        if not ungrouped:
+            nodes.insert(len(nodes) - len(group_nodes),
+                         {"id": gid, "kind": "group", "label": g["label"], "parent": g["parent"],
+                          "x": x - 14, "y": PAD, "w": width, "h": height,
+                          "binding": (_agg_binding(g) if g.get("agg")
+                                      else {"kind": "none"}), "statics": [],
+                          **({"reference_id": gid} if g.get("reference_id") else {})})
         x += width + PAD
 
     # 纯容器组（只有标题、下面全是子组）包住它的子组
@@ -175,6 +230,14 @@ def parse(text: str) -> dict:
     for g in reversed(pending):
         kids = [b for b in boxes.values() if b.get("parent") == g["gid"]]
         if not kids:
+            if not g.get("reference_id"):
+                continue
+            box = {"id": g["gid"], "kind": "group", "label": g["label"], "parent": g["parent"],
+                   "x": g["empty_x"], "y": PAD, "w": COL_W + PAD, "h": 60,
+                   "binding": (_agg_binding(g) if g.get("agg") else {"kind": "none"}),
+                   "statics": [], "reference_id": g["gid"]}
+            nodes.insert(0, box)
+            boxes[g["gid"]] = box
             continue
         box = {"id": g["gid"], "kind": "group", "label": g["label"], "parent": g["parent"],
                "x": min(k["x"] for k in kids) - 14,
@@ -182,11 +245,18 @@ def parse(text: str) -> dict:
                "w": max(k["x"] + k["w"] for k in kids) - min(k["x"] for k in kids) + 28,
                "h": max(k["y"] + k["h"] for k in kids) - min(k["y"] for k in kids) + 48,
                "binding": (_agg_binding(g) if g.get("agg")
-                           else {"kind": "none"}), "statics": []}
+                           else {"kind": "none"}), "statics": [],
+               **({"reference_id": g["gid"]} if g.get("reference_id") else {})}
         nodes.insert(0, box)
         boxes[g["gid"]] = box
 
-    # agg 的参与项在大纲里写的是名字，落到布局里要换成 id
+    # Legacy 名称语法保持原行为；ID模式的成员只能明确落到本组直接子节点。
+    by_id = {n["id"]: n for n in nodes}
+    id_references = set()
+    id_mode = bool(reserved or root_items
+                   or any(p.startswith("@") for _, parts in flows for p in parts)
+                   or any(str(m).startswith("@") for n in nodes
+                          for m in (n.get("binding") or {}).get("members", [])))
     label_to_id: dict[str, str] = {}
     for n in nodes:
         label_to_id.setdefault(n["label"], n["id"])
@@ -195,7 +265,23 @@ def parse(text: str) -> dict:
         if b.get("kind") == "agg" and b.get("members"):
             resolved, missing = [], []
             for nm in b["members"]:
-                (resolved.append(label_to_id[nm]) if nm in label_to_id else missing.append(nm))
+                if id_mode:
+                    if nm.startswith("@"):
+                        identifier = nm[1:]
+                        member = by_id.get(identifier)
+                        if (not ID_TOKEN.fullmatch(identifier) or member is None
+                                or member.get("parent") != n["id"] or member.get("kind") == "group"):
+                            raise MarkdownError("聚合成员必须引用本分组直接子节点的有效 id")
+                        id_references.update((n["id"], identifier))
+                    else:
+                        matches = [m["id"] for m in nodes if m.get("parent") == n["id"]
+                                   and m.get("kind") != "group" and m["label"] == nm]
+                        if len(matches) != 1:
+                            raise MarkdownError("聚合成员名称不存在或重名，请改用 @id")
+                        identifier = matches[0]
+                    resolved.append(identifier)
+                else:
+                    (resolved.append(label_to_id[nm]) if nm in label_to_id else missing.append(nm))
             if missing:
                 raise MarkdownError(
                     f"「{n['label']}」的合计里有找不到的节点：{'、'.join(missing)}\n"
@@ -209,7 +295,16 @@ def parse(text: str) -> dict:
         by_label.setdefault(n["label"], []).append(n["id"])
     seen_edges = {(e["from"], e["to"]) for e in edges}
     for raw, names in flows:
-        hit = [by_label.get(nm, []) for nm in names]
+        hit = []
+        for name in names:
+            if name.startswith("@"):
+                identifier = name[1:]
+                if not ID_TOKEN.fullmatch(identifier) or identifier not in by_id:
+                    raise MarkdownError("流向引用了未知或无效的显式 id")
+                id_references.add(identifier)
+                hit.append([identifier])
+            else:
+                hit.append(by_label.get(name, []))
         if not any(hit):
             continue      # 一个名字都对不上，多半是正文里恰好有个箭头，放过
         missing = [nm for nm, ids in zip(names, hit) if not ids]
@@ -228,11 +323,18 @@ def parse(text: str) -> dict:
                 seen_edges.add((a, b))
                 edges.append({"from": a, "to": b})
 
-    return {"name": title or "导入的结构图", "nodes": nodes, "edges": edges}
+    result = {"name": title or "导入的结构图", "nodes": nodes, "edges": edges}
+    if id_mode:
+        result["reference_mode"] = "id"
+        for identifier in id_references:
+            by_id[identifier]["reference_id"] = identifier
+    return result
 
 
 def dump(layout: dict, name: str = "产业结构") -> str:
     """布局 → Markdown。绑定写成注释，所以导出再导入无损。"""
+    if layout.get("reference_mode") == "id" or any(n.get("reference_id") for n in layout.get("nodes", [])):
+        return _dump_ids(layout, name)
     nodes = layout.get("nodes", [])
     groups = [n for n in nodes if n.get("kind") == "group"]
     edges = layout.get("edges") or []
@@ -321,6 +423,70 @@ def dump(layout: dict, name: str = "产业结构") -> str:
         for chain in _chains(extra):
             lines.append(" -> ".join(label_of[i] for i in chain))
         lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _dump_ids(layout, name):
+    """ID mode writes containment and flow independently, including cycles."""
+    nodes = layout.get("nodes", [])
+    by_id = {}
+    for node in nodes:
+        identifier = node.get("id")
+        if (not isinstance(identifier, str) or not ID_TOKEN.fullmatch(identifier)
+                or identifier in by_id or node.get("reference_id", identifier) != identifier):
+            raise MarkdownError("ID模式要求唯一有效且一致的节点 id")
+        by_id[identifier] = node
+    groups = {i: n for i, n in by_id.items() if n.get("kind") == "group"}
+    for node in nodes:
+        parent = node.get("parent")
+        if parent is not None and parent not in groups:
+            raise MarkdownError("ID模式的父分组不存在")
+        binding = node.get("binding") or {}
+        if binding.get("kind") == "agg" and binding.get("members"):
+            for identifier in binding["members"]:
+                member = by_id.get(identifier)
+                if (member is None or member.get("kind") == "group"
+                        or member.get("parent") != node["id"]):
+                    raise MarkdownError("聚合成员必须引用本分组的直接子节点")
+    lines, written = [f"# {name}", ""], set()
+
+    def emit_node(node):
+        statics = "".join(f" [{s['label']} {s['value']}]" for s in node.get("statics", []))
+        binding = node.get("binding") or {}
+        reference = binding.get("series_id") or binding.get("formula_id")
+        bind = f" <!-- bind: {reference} -->" if reference else ""
+        parent = " <!-- parent: none -->" if node.get("parent") is None else ""
+        lines.append(f"- {node['label']}{statics}{bind} <!-- id: {node['id']} -->{parent}")
+
+    for node in nodes:
+        if node.get("kind") != "group" and node.get("parent") is None:
+            emit_node(node)
+    lines.append("")
+
+    def emit_group(group, depth):
+        identifier = group["id"]
+        if identifier in written or depth > 2:
+            raise MarkdownError("ID模式分组不能成环且最多支持三级分组")
+        written.add(identifier)
+        lines.append(f"{'#' * (depth + 2)} {group['label']}{_agg_tag(group, {i: '@' + i for i in by_id})} <!-- id: {identifier} -->")
+        for node in nodes:
+            if node.get("kind") == "group" or node.get("parent") != identifier:
+                continue
+            emit_node(node)
+        lines.append("")
+        for child in groups.values():
+            if child.get("parent") == identifier:
+                emit_group(child, depth + 1)
+
+    for group in groups.values():
+        if group.get("parent") is None:
+            emit_group(group, 0)
+    if len(written) != len(groups):
+        raise MarkdownError("ID模式分组不能成环")
+    for edge in layout.get("edges") or []:
+        if edge.get("from") not in by_id or edge.get("to") not in by_id:
+            raise MarkdownError("ID模式流向引用了未知 id")
+        lines.append(f"@{edge['from']} -> @{edge['to']}")
     return "\n".join(lines).rstrip() + "\n"
 
 
