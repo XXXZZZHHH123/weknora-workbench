@@ -2942,7 +2942,9 @@ defineExpose({
             'is-normal': !isCustomAgent && !isAgentEnabled,
             'is-agent': !isCustomAgent && isAgentEnabled,
             'is-custom': isCustomAgent
-          }" @click.stop="toggleAgentModeSelector">
+          }" role="button" tabindex="0" aria-haspopup="true" :aria-expanded="showAgentModeSelector"
+            @keydown.enter.prevent="toggleAgentModeSelector" @keydown.space.prevent="toggleAgentModeSelector"
+            @click.stop="toggleAgentModeSelector">
             <span class="agent-mode-text">
               {{ selectedAgent.name || (isAgentEnabled ? $t('input.agentMode') : $t('input.normalMode')) }}
             </span>
@@ -2996,7 +2998,10 @@ defineExpose({
             <div class="control-btn websearch-btn" :class="{
               'active': isWebSearchEnabled && isWebSearchConfigured,
               'disabled': !isWebSearchConfigured
-            }" @click.stop="toggleWebSearch">
+            }" role="button" :tabindex="isWebSearchConfigured ? 0 : -1" :aria-disabled="!isWebSearchConfigured"
+              :aria-label="$t(isWebSearchEnabled && isWebSearchConfigured ? 'input.webSearch.toggleOff' : 'input.webSearch.toggleOn')"
+              :aria-pressed="isWebSearchEnabled && isWebSearchConfigured"
+              @keydown.enter.prevent="toggleWebSearch" @keydown.space.prevent="toggleWebSearch" @click.stop="toggleWebSearch">
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"
                 class="control-icon websearch-icon" :class="{ 'active': isWebSearchEnabled && isWebSearchConfigured }">
                 <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.2" fill="none" />
@@ -3037,6 +3042,9 @@ defineExpose({
               }) : $t('chat.attachmentUploadTooltip') }}</span>
             </template>
             <div class="control-btn attachment-upload-btn" :class="{ 'active': uploadedAttachments.length > 0 }"
+              role="button" tabindex="0" :aria-label="$t('chat.attachmentUploadTooltip')"
+              @keydown.enter.prevent="attachmentUploadRef?.triggerFileSelect()"
+              @keydown.space.prevent="attachmentUploadRef?.triggerFileSelect()"
               @click.stop="attachmentUploadRef?.triggerFileSelect()">
               <!-- 回形针图标 -->
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -3065,7 +3073,10 @@ defineExpose({
             <div ref="atButtonRef" class="control-btn kb-btn" data-guide="chat-kb-mention" :class="{
               'active': allSelectedItems.length > 0,
               'disabled': isMentionDisabled
-            }" @click.stop @mousedown.prevent="triggerMention">
+            }" role="button" :tabindex="isMentionDisabled ? -1 : 0" :aria-disabled="isMentionDisabled"
+              :aria-label="$t('input.knowledgeBase')" aria-haspopup="true" :aria-expanded="showMention"
+              @keydown.enter.prevent="triggerMention" @keydown.space.prevent="triggerMention"
+              @click.stop @mousedown.prevent="triggerMention">
               <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
                 class="control-icon at-icon">
                 <circle cx="10" cy="10" r="3.5" stroke="currentColor" stroke-width="1.8" />
@@ -3080,7 +3091,11 @@ defineExpose({
           <t-tooltip :content="isModelLockedByAgent ? $t('input.modelLockedByAgent') : ''"
             :disabled="!isModelLockedByAgent">
             <div class="model-display" :class="{ 'agent-controlled': isModelLockedByAgent }">
-              <div ref="modelButtonRef" class="model-selector-trigger" @click.stop="toggleModelSelector">
+              <div ref="modelButtonRef" class="model-selector-trigger" role="button" tabindex="0"
+                :aria-label="selectedModelDisplayName" :title="selectedModelDisplayName"
+                aria-haspopup="true" :aria-expanded="showModelSelector" :aria-disabled="isModelLockedByAgent"
+                @keydown.enter.prevent="toggleModelSelector" @keydown.space.prevent="toggleModelSelector"
+                @click.stop="toggleModelSelector">
                 <span class="model-selector-name">
                   {{ selectedModelDisplayName }}
                 </span>
@@ -3301,13 +3316,15 @@ const getImgSrc = (url: string) => {
   position: relative;
   width: 100%;
   max-width: 960px;
-  background: var(--td-bg-color-container);
-  border-radius: var(--app-radius-xl);
-  border: 1px solid var(--td-component-stroke);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04), 0 8px 16px -4px rgba(0, 0, 0, 0.06);
+  background: var(--cds-surface-2);
+  border-radius: var(--cds-radius-composer);
+  border: 1px solid var(--cds-border);
+  box-shadow: var(--cds-shadow-sm);
+  transition: border-color var(--cds-duration-fast) var(--cds-ease-out), box-shadow var(--cds-duration-fast) var(--cds-ease-out);
 
   &:focus-within {
-    border-color: var(--td-brand-color);
+    border-color: var(--cds-clay);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--cds-clay) 14%, transparent);
   }
 }
 
@@ -3319,7 +3336,7 @@ const getImgSrc = (url: string) => {
   gap: 4px;
   padding: 6px 14px 0;
   background: transparent;
-  border-radius: 11px 11px 0 0;
+  border-radius: calc(var(--cds-radius-composer) - 1px) calc(var(--cds-radius-composer) - 1px) 0 0;
   /* 与 .rich-input-container 内缘上边圆角一致（12px - 1px 边框） */
 }
 
@@ -3522,6 +3539,7 @@ const getImgSrc = (url: string) => {
   z-index: 10;
   pointer-events: auto;
   padding-top: 8px;
+  min-width: 0;
 
   &.is-embedded {
     justify-content: flex-end;
@@ -3931,6 +3949,7 @@ const getImgSrc = (url: string) => {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .stop-btn, .send-btn {
@@ -4045,13 +4064,20 @@ const getImgSrc = (url: string) => {
   padding: 0 8px;
   height: 28px;
   box-sizing: border-box;
-  border: 0;
-  border-radius: var(--app-radius-sm);
-  transition: background var(--app-motion-instant), border-color var(--app-motion-instant);
+  border: 1px solid var(--cds-border);
+  border-radius: var(--cds-radius-control);
+  background: var(--cds-surface-1, transparent);
+  transition: background var(--cds-duration-fast) var(--cds-ease-out), border-color var(--cds-duration-fast) var(--cds-ease-out), color var(--cds-duration-fast) var(--cds-ease-out);
   cursor: pointer;
 
   &:hover {
-    background: var(--td-bg-color-secondarycontainer-hover);
+    background: var(--cds-surface-2);
+    border-color: var(--cds-border-strong);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--cds-clay);
+    outline-offset: 2px;
   }
 
   &.disabled {
@@ -4062,6 +4088,10 @@ const getImgSrc = (url: string) => {
       background: var(--td-bg-color-secondarycontainer);
     }
   }
+}
+
+.model-selector-trigger.reasoning-effort-trigger {
+  background: transparent;
 }
 
 .model-selector-name {
@@ -4397,6 +4427,81 @@ const getImgSrc = (url: string) => {
   &:hover {
     color: var(--td-brand-color-active);
     text-decoration: underline;
+  }
+}
+
+@media (max-width: 560px) {
+  .answers-input {
+    padding-right: 12px;
+    padding-left: 12px;
+    box-sizing: border-box;
+  }
+
+  .rich-input-container {
+    border-radius: var(--cds-radius-panel);
+  }
+
+  .control-bar {
+    gap: 6px;
+    margin-right: 8px;
+    margin-left: 8px;
+  }
+
+  .control-left {
+    flex: 1 1 100%;
+    gap: 2px;
+    padding-right: 36px;
+    box-sizing: border-box;
+  }
+
+  .control-left .control-btn {
+    padding-right: 7px;
+    padding-left: 7px;
+    box-sizing: border-box;
+  }
+
+  .control-left .control-btn:not(.agent-mode-btn) {
+    width: 32px;
+    height: 32px;
+    padding: 6px;
+  }
+
+  .control-right {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    gap: 6px;
+    margin-left: auto;
+    align-self: flex-end;
+  }
+
+  .model-display {
+    margin-left: 0;
+  }
+
+  .model-selector-trigger {
+    max-width: min(42vw, 180px);
+  }
+
+  .model-selector-trigger:not(.reasoning-effort-trigger) {
+    max-width: clamp(100px, 35vw, 180px);
+  }
+
+  .model-selector-trigger .model-selector-name,
+  .model-selector-trigger .model-option-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rich-input-container,
+  .control-btn,
+  .mention-chip,
+  .mention-chip__remove {
+    transition: none;
   }
 }
 </style>

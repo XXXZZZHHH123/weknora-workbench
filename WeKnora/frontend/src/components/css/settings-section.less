@@ -46,12 +46,20 @@
   &:last-child {
     border-bottom: none;
   }
+
+  @container settings-content (max-width: 560px) {
+    flex-direction: column;
+    gap: 12px;
+  }
 }
 
 .setting-info() {
   flex: 1;
   min-width: 0;
   max-width: 65%;
+  overflow-wrap: anywhere;
+
+  @container settings-content (max-width: 560px) { max-width: 100%; }
 
   label,
   .setting-label {
@@ -79,6 +87,14 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+
+  > * { max-width: 100%; }
+
+  @container settings-content (max-width: 560px) {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+  }
 }
 
 // 改即存设置项的行内反馈（替代 toast）

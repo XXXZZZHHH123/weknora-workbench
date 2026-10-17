@@ -1,0 +1,251 @@
+/*
+ * CDS-inspired semantic theme tokens for WeKnora.
+ * Adapted from Caho1/open-claude-ui (MIT):
+ * https://github.com/Caho1/open-claude-ui
+ * This layer keeps WeKnora's selected font stacks and semantic status colors.
+ */
+:root:root,
+:root:root[theme-mode="light"] {
+  /* Four warm-neutral planes: canvas, navigation, content, floating surface. */
+  --cds-surface-0: #f5f3f0;
+  --cds-surface-1: #faf9f7;
+  --cds-surface-2: #fffefd;
+  --cds-surface-3: #ffffff;
+  --cds-surface-popover: #ffffff;
+
+  /* Deep clay keeps white labels readable on primary buttons. */
+  --cds-clay: #a84427;
+  --cds-clay-hover: #92391f;
+  --cds-clay-active: #7d301b;
+  --cds-clay-light: #f8eee9;
+
+  --cds-text-primary: #211d1a;
+  --cds-text-secondary: #514943;
+  --cds-text-muted: #6c635d;
+  --cds-border: rgb(49 39 32 / 10%);
+  --cds-border-strong: rgb(49 39 32 / 19%);
+  --cds-fill-ghost-hover: rgb(49 39 32 / 5%);
+  --cds-fill-ghost-selected: rgb(49 39 32 / 9%);
+
+  --cds-shadow-sm: 0 1px 2px rgb(38 29 23 / 4%), 0 2px 8px rgb(38 29 23 / 6%);
+  --cds-shadow-md: 0 2px 4px rgb(38 29 23 / 4%), 0 6px 16px rgb(38 29 23 / 8%);
+  --cds-shadow-lg: 0 4px 8px rgb(38 29 23 / 5%), 0 12px 28px -2px rgb(38 29 23 / 12%);
+  --cds-ring-inner: 0px;
+  --cds-ring-outer: 1px;
+  --cds-ring-color: var(--cds-border);
+  --cds-shadow-popover: inset 0 0 0 var(--cds-ring-inner) var(--cds-ring-color),
+    0 0 0 var(--cds-ring-outer) var(--cds-ring-color),
+    0 8px 24px rgb(38 29 23 / 12%), 0 2px 6px rgb(38 29 23 / 7%);
+  --cds-focus-shadow: inset 0 0 0 1px var(--cds-surface-2),
+    0 0 0 2px var(--cds-clay), 0 0 0 4px rgb(168 68 39 / 18%);
+
+  /* Existing app aliases now resolve through the semantic palette. */
+  --td-brand-color-1: #f8eee9;
+  --td-brand-color-2: #f1d9ce;
+  --td-brand-color-3: #d98a6e;
+  --td-brand-color-4: var(--cds-clay);
+  --td-brand-color-5: var(--cds-clay-hover);
+  --td-brand-color-6: var(--cds-clay-active);
+  --td-brand-color-7: #692817;
+  --td-brand-color-8: #542012;
+  --td-brand-color-9: #40180d;
+  --td-brand-color-10: #2b1008;
+  --td-brand-color: var(--cds-clay);
+  --td-brand-color-hover: var(--cds-clay-hover);
+  --td-brand-color-active: var(--cds-clay-active);
+  --td-brand-color-light: var(--cds-clay-light);
+  --td-brand-color-focus: rgb(168 68 39 / 19%);
+  --td-brand-color-disabled: #c8a79a;
+  --app-on-brand: #ffffff;
+
+  --td-bg-color-page: var(--cds-surface-0);
+  --td-bg-color-sidebar: var(--cds-surface-1);
+  --td-bg-color-settings-modal: var(--cds-surface-1);
+  --td-bg-color-container: var(--cds-surface-2);
+  --td-bg-color-container-select: var(--cds-surface-2);
+  --td-bg-color-container-hover: #f2efeb;
+  --td-bg-color-container-active: #ebe6e1;
+  --td-bg-color-secondarycontainer: #f4f1ed;
+  --td-bg-color-secondarycontainer-hover: #eeeae5;
+  --td-bg-color-secondarycontainer-active: #e7e1db;
+  --td-bg-color-component: #e9e4de;
+  --td-bg-color-component-hover: #ddd6cf;
+  --td-bg-color-component-active: #d1c8c0;
+  /* Disabled surfaces remain distinct from hover and selected surfaces. */
+  --td-bg-color-component-disabled: #f1eeeb;
+  --td-component-stroke: #e9e4df;
+  --td-component-border: #d8d0c9;
+
+  /* Neutral scale feeds component states without changing status colors. */
+  --td-gray-color-1: #f7f5f2;
+  --td-gray-color-2: #f1eeea;
+  --td-gray-color-3: #e9e4df;
+  --td-gray-color-4: #ded7d0;
+  --td-gray-color-5: #cfc6bd;
+  --td-gray-color-6: #b7aca2;
+  --td-gray-color-7: #9c9086;
+  --td-gray-color-8: #81756c;
+  --td-gray-color-9: #6c6058;
+  --td-gray-color-10: #594e47;
+  --td-gray-color-11: #483e38;
+  --td-gray-color-12: #382f2a;
+  --td-gray-color-13: #2b2420;
+  --td-gray-color-14: #211b18;
+
+  --td-font-gray-1: var(--cds-text-primary);
+  --td-font-gray-2: var(--cds-text-secondary);
+  --td-font-gray-3: var(--cds-text-muted);
+  --td-text-color-primary: var(--cds-text-primary);
+  --td-text-color-secondary: var(--cds-text-secondary);
+  --td-text-color-placeholder: var(--cds-text-muted);
+  --td-text-color-brand: var(--cds-clay);
+  --td-text-color-link: var(--cds-clay);
+
+  --td-radius-small: 4px;
+  --td-radius-default: 8px;
+  --td-radius-medium: 10px;
+  --td-radius-large: 12px;
+  --td-radius-extraLarge: 16px;
+  --app-radius-xs: 4px;
+  --app-radius-sm: 6px;
+  --app-radius-md: 8px;
+  --app-radius-lg: 10px;
+  --app-radius-xl: 12px;
+
+  --td-shadow-1: var(--cds-shadow-sm);
+  --td-shadow-2: var(--cds-shadow-md);
+  --td-shadow-3: var(--cds-shadow-lg);
+
+  --app-bg: var(--cds-surface-0);
+  --app-card-bg: var(--cds-surface-2);
+  --app-border-color: var(--cds-border);
+  --app-text-secondary: var(--cds-text-secondary);
+  --app-brand-navy: var(--cds-clay);
+  --app-brand-on-navy: var(--app-on-brand);
+  --app-paper-shadow: var(--cds-shadow-sm);
+  --app-selection-bg: #f2efeb;
+  --app-selection-text: var(--cds-text-primary);
+  --app-selection-border: color-mix(in srgb, var(--cds-clay) 32%, var(--cds-border));
+  --app-focus-border: var(--cds-clay);
+}
+
+:root:root[theme-mode="dark"] {
+  --cds-surface-0: #171513;
+  --cds-surface-1: #1d1a18;
+  --cds-surface-2: #24201d;
+  --cds-surface-3: #2b2622;
+  --cds-surface-popover: #2b2622;
+
+  --cds-clay: #e7a087;
+  --cds-clay-hover: #efb39e;
+  --cds-clay-active: #f4c2b1;
+  --cds-clay-light: rgb(231 160 135 / 14%);
+  --cds-text-primary: #f4efeb;
+  --cds-text-secondary: #c8bdb5;
+  --cds-text-muted: #aa9e95;
+  --cds-border: rgb(244 239 235 / 10%);
+  --cds-border-strong: rgb(244 239 235 / 19%);
+  --cds-fill-ghost-hover: rgb(244 239 235 / 5%);
+  --cds-fill-ghost-selected: rgb(244 239 235 / 9%);
+
+  --cds-shadow-sm: 0 1px 2px rgb(0 0 0 / 25%), 0 2px 8px rgb(0 0 0 / 28%);
+  --cds-shadow-md: 0 2px 4px rgb(0 0 0 / 28%), 0 6px 16px rgb(0 0 0 / 36%);
+  --cds-shadow-lg: 0 4px 8px rgb(0 0 0 / 35%), 0 16px 36px -2px rgb(0 0 0 / 48%);
+  --cds-ring-inner: 1px;
+  --cds-ring-outer: 0px;
+  --cds-ring-color: rgb(255 255 255 / 11%);
+  --cds-shadow-popover: inset 0 0 0 1px var(--cds-ring-color),
+    0 8px 28px rgb(0 0 0 / 58%), 0 2px 8px rgb(0 0 0 / 42%);
+  --cds-focus-shadow: inset 0 0 0 1px var(--cds-surface-2),
+    0 0 0 2px var(--cds-clay), 0 0 0 4px rgb(231 160 135 / 25%);
+
+  --td-brand-color-1: #38251f;
+  --td-brand-color-2: #503126;
+  --td-brand-color-3: #794633;
+  --td-brand-color-4: #ad654b;
+  --td-brand-color-5: #d48a6d;
+  --td-brand-color-6: var(--cds-clay);
+  --td-brand-color-7: var(--cds-clay-hover);
+  --td-brand-color-8: var(--cds-clay-active);
+  --td-brand-color-9: #f7d4c7;
+  --td-brand-color-10: #fbebe5;
+  --td-brand-color: var(--cds-clay);
+  --td-brand-color-hover: var(--cds-clay-hover);
+  --td-brand-color-active: var(--cds-clay-active);
+  --td-brand-color-light: var(--cds-clay-light);
+  --td-brand-color-focus: rgb(231 160 135 / 25%);
+  --td-brand-color-disabled: #704d40;
+  --app-on-brand: #261713;
+
+  --td-bg-color-page: var(--cds-surface-0);
+  --td-bg-color-sidebar: var(--cds-surface-1);
+  --td-bg-color-settings-modal: var(--cds-surface-1);
+  --td-bg-color-container: var(--cds-surface-2);
+  --td-bg-color-container-select: #332d28;
+  --td-bg-color-container-hover: #302a26;
+  --td-bg-color-container-active: #39322d;
+  --td-bg-color-secondarycontainer: #201d1a;
+  --td-bg-color-secondarycontainer-hover: #292420;
+  --td-bg-color-secondarycontainer-active: #332d28;
+  --td-bg-color-component: #39322d;
+  --td-bg-color-component-hover: #453c36;
+  --td-bg-color-component-active: #514740;
+  --td-bg-color-component-disabled: #292420;
+  --td-component-stroke: #39322d;
+  --td-component-border: #514740;
+
+  --td-gray-color-1: #f4efeb;
+  --td-gray-color-2: #e5dcd5;
+  --td-gray-color-3: #d2c6bd;
+  --td-gray-color-4: #bdafa5;
+  --td-gray-color-5: #a7978c;
+  --td-gray-color-6: #918176;
+  --td-gray-color-7: #7b6c62;
+  --td-gray-color-8: #675950;
+  --td-gray-color-9: #554941;
+  --td-gray-color-10: #453b35;
+  --td-gray-color-11: #382f2a;
+  --td-gray-color-12: #2b2521;
+  --td-gray-color-13: #211c19;
+  --td-gray-color-14: #171412;
+
+  --td-font-gray-1: var(--cds-text-primary);
+  --td-font-gray-2: var(--cds-text-secondary);
+  --td-font-gray-3: var(--cds-text-muted);
+  --td-text-color-primary: var(--cds-text-primary);
+  --td-text-color-secondary: var(--cds-text-secondary);
+  --td-text-color-placeholder: var(--cds-text-muted);
+  --td-text-color-brand: var(--cds-clay);
+  --td-text-color-link: var(--cds-clay);
+
+  --td-shadow-1: var(--cds-shadow-sm);
+  --td-shadow-2: var(--cds-shadow-md);
+  --td-shadow-3: var(--cds-shadow-lg);
+  --app-bg: var(--cds-surface-0);
+  --app-card-bg: var(--cds-surface-2);
+  --app-border-color: var(--cds-border);
+  --app-text-secondary: var(--cds-text-secondary);
+  --app-brand-navy: var(--cds-clay);
+  --app-brand-on-navy: var(--app-on-brand);
+  --app-paper-shadow: var(--cds-shadow-sm);
+  --app-selection-bg: #302a26;
+  --app-selection-text: var(--cds-text-primary);
+  --app-selection-border: color-mix(in srgb, var(--cds-clay) 42%, var(--cds-border));
+  --app-focus-border: var(--cds-clay);
+}
+
+/* Shared geometry and response timing; consumers use the same vocabulary. */
+:root:root {
+  --cds-radius-thumb: 7px;
+  --cds-radius-control: 8px;
+  --cds-radius-panel: 12px;
+  --cds-radius-dialog: 16px;
+  --cds-radius-composer: 20px;
+  --app-text-headline: 28px;
+  --cds-duration-fast: 120ms;
+  --cds-duration-normal: 180ms;
+  --cds-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:root { --cds-duration-fast: 0ms; --cds-duration-normal: 0ms; }
+}

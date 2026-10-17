@@ -312,6 +312,9 @@ async function openProjectDir() {
     justify-content: center;
     align-items: center;
     // position: relative;
+    min-width: 0;
+    padding: 24px 16px;
+    box-sizing: border-box;
 }
 
 .dialogue-answers {
@@ -321,6 +324,7 @@ async function openProjectDir() {
     width: 100%;
     max-width: 960px;
     gap: 24px;
+    min-width: 0;
 
     :deep(.answers-input) {
         position: static;
@@ -334,6 +338,7 @@ async function openProjectDir() {
     align-items: stretch;
     gap: 8px;
     width: 100%;
+    min-width: 0;
 }
 
 .project-dir-bar {
@@ -484,6 +489,33 @@ async function openProjectDir() {
 
     &.sq-card-visible:active {
         transform: scale(0.98);
+    }
+}
+
+@media (max-width: 560px) {
+    .dialogue-wrap {
+        padding: 16px 12px;
+    }
+
+    .dialogue-answers {
+        gap: 16px;
+    }
+
+    .dialogue-title {
+        font-size: var(--app-text-3xl);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sq-slide-fade-enter-active,
+    .sq-slide-fade-leave-active,
+    .suggested-question-card {
+        transition: none;
+    }
+
+    .suggested-question-card,
+    .suggested-question-card.sq-card-visible {
+        transform: none;
     }
 }
 </style>

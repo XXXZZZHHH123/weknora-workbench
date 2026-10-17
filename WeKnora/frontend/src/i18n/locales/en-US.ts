@@ -4023,6 +4023,7 @@ export default {
     }
   },
   chat: {
+    scrollToBottom: 'Jump to latest message',
     memoryUsedCount: 'Used {count} memories',
     memoryForget: 'Delete this memory',
     memoryForgotten: 'Memory deleted',

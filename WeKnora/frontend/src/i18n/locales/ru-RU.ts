@@ -3914,6 +3914,7 @@ export default {
     }
   },
   chat: {
+    scrollToBottom: 'К последнему сообщению',
     memoryUsedCount: 'Использовано записей памяти: {count}',
     memoryForget: 'Удалить эту запись',
     memoryForgotten: 'Запись удалена',

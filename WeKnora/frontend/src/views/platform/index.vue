@@ -228,7 +228,7 @@ onUnmounted(() => {
     min-width: 600px;
     min-height: 0;
     /* 统一整页背景，让左侧菜单与右侧内容区视觉连贯 */
-    background: var(--td-bg-color-page);
+    background: var(--cds-surface-0, var(--td-bg-color-page));
 }
 
 .main--standalone-workbench {
@@ -243,10 +243,11 @@ onUnmounted(() => {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    &:focus { outline: none; }
 }
 
 .upload-mask {
-    background-color: rgba(255, 255, 255, 0.8);
+    background-color: color-mix(in srgb, var(--cds-surface-0, var(--td-bg-color-page)) 82%, transparent);
     position: fixed;
     width: 100%;
     height: 100%;
@@ -254,6 +255,18 @@ onUnmounted(() => {
     display: flex;
     justify-content: center;
     align-items: center;
+}
+
+@media (max-width: 720px) {
+    .main:not(.main--standalone-workbench) {
+        min-width: 0;
+        position: relative;
+    }
+
+    .main:has(> .aside_box:not(.aside_box--collapsed)) > .platform-route-outlet,
+    .main:has(> .knowledge-workspace-menu:not(.is-collapsed)) > .platform-route-outlet {
+        margin-left: 48px;
+    }
 }
 
 img {

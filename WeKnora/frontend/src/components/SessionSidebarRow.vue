@@ -221,6 +221,35 @@ const confirmDangerAction = (): void => {
 
 <style scoped lang="less">
 .submenu_item {
+  border-radius: var(--cds-radius-control);
+  transition: background-color var(--cds-duration-fast) var(--cds-ease-out), color var(--cds-duration-fast) var(--cds-ease-out);
+}
+
+.submenu_item:hover,
+.submenu_item:focus-within,
+.submenu_item--menu-open {
+  background: var(--cds-surface-2, var(--td-bg-color-container-hover));
+}
+
+.submenu_item_active {
+  color: var(--cds-clay, var(--td-brand-color));
+  background: var(--cds-clay-light, var(--td-brand-color-light));
+  background: color-mix(in srgb, var(--cds-clay, var(--td-brand-color)) 8%, var(--cds-surface-1, var(--td-bg-color-sidebar)));
+  box-shadow: inset 2px 0 0 var(--cds-clay, var(--td-brand-color));
+}
+
+.submenu_item_active:hover,
+.submenu_item_active:focus-within,
+.submenu_item_active.submenu_item--menu-open {
+  background: color-mix(in srgb, var(--cds-clay, var(--td-brand-color)) 8%, var(--cds-surface-1, var(--td-bg-color-sidebar)));
+}
+
+.submenu_item:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--cds-clay, var(--td-brand-color)) 72%, transparent);
+  outline-offset: -2px;
+}
+
+.submenu_item {
   position: relative;
 }
 
@@ -267,11 +296,11 @@ const confirmDangerAction = (): void => {
 }
 
 // A status badge (running / unread / fork) and the "more" button share one
-// 24px slot, so hovering swaps them in place instead of reflowing the title.
+// touch-sized slot, so hovering swaps them in place instead of reflowing the title.
 .session-row-menu-wrap--badge {
-  flex-basis: 24px;
-  width: 24px;
-  height: 24px;
+  flex-basis: 32px;
+  width: 32px;
+  height: 32px;
   opacity: 1;
   pointer-events: auto;
 
@@ -296,8 +325,8 @@ const confirmDangerAction = (): void => {
 .submenu_item:focus-within,
 .submenu_item--menu-open {
   .session-row-menu-wrap {
-    flex-basis: 24px;
-    width: 24px;
+    flex-basis: 32px;
+    width: 32px;
     opacity: 1;
     pointer-events: auto;
   }
@@ -319,8 +348,8 @@ const confirmDangerAction = (): void => {
 
 @media (hover: none) {
   .session-row-menu-wrap {
-    flex-basis: 24px;
-    width: 24px;
+    flex-basis: 32px;
+    width: 32px;
     opacity: 1;
     pointer-events: auto;
   }
@@ -338,7 +367,7 @@ const confirmDangerAction = (): void => {
   .session-row-badge:not(.session-fork-indicator) {
     position: static;
     flex: 0 0 16px;
-    height: 24px;
+    height: 32px;
   }
 }
 
@@ -349,14 +378,14 @@ const confirmDangerAction = (): void => {
 
 .session-title-edit__input {
   width: 100%;
-  height: 26px;
+  height: 32px;
   padding: 0 8px;
   border: 1px solid var(--td-brand-color);
   border-radius: 5px;
   color: var(--td-text-color-primary);
   background: var(--td-bg-color-container);
   font-size: var(--app-text-base);
-  line-height: 24px;
+  line-height: 30px;
   outline: none;
   box-shadow: 0 0 0 2px var(--td-brand-color-light);
 }
@@ -365,11 +394,11 @@ const confirmDangerAction = (): void => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--cds-radius-control);
   color: inherit;
   background: transparent;
   cursor: pointer;
@@ -377,6 +406,11 @@ const confirmDangerAction = (): void => {
 
   &:hover {
     background: var(--td-bg-color-container-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--cds-clay, var(--td-brand-color));
+    outline-offset: 1px;
   }
 }
 
@@ -459,7 +493,7 @@ const confirmDangerAction = (): void => {
 
 .session-action-confirm__btn {
   min-width: 60px;
-  height: 30px;
+  height: 32px;
   padding: 0 12px;
   border: 0.5px solid var(--td-component-stroke);
   border-radius: var(--app-radius-sm);

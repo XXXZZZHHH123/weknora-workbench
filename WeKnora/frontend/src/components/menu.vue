@@ -13,12 +13,12 @@
                             <span class="cmdk-tip-keys">{{ cmdModKeyLabel }}K</span>
                         </span>
                     </template>
-                    <div class="header-icon-btn" @click="commandPaletteStore.openPalette('')"
+                    <div class="header-icon-btn" role="button" tabindex="0" @keydown.enter.prevent="commandPaletteStore.openPalette('')" @keydown.space.prevent="commandPaletteStore.openPalette('')" @click="commandPaletteStore.openPalette('')"
                         :aria-label="t('menu.search')">
                         <img class="header-icon-img" :src="getImgSrc('search.svg')" alt="">
                     </div>
                 </t-tooltip>
-                <div class="sidebar-toggle" @click="uiStore.toggleSidebar" :title="t('menu.collapseSidebar')">
+                <div class="sidebar-toggle" role="button" tabindex="0" @keydown.enter.prevent="uiStore.toggleSidebar" @keydown.space.prevent="uiStore.toggleSidebar" @click="uiStore.toggleSidebar" :title="t('menu.collapseSidebar')">
                     <svg viewBox="0 0 20 20" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <rect x="1.5" y="1.5" width="17" height="17" rx="3" stroke="currentColor" stroke-width="1.5" />
                         <line x1="7.5" y1="1.5" x2="7.5" y2="18.5" stroke="currentColor" stroke-width="1.5" />
@@ -30,7 +30,7 @@
         </div>
         <!-- 折叠时：展开按钮 -->
         <t-tooltip v-else :content="t('menu.expandSidebar')" placement="right">
-            <div class="menu_item sidebar-toggle-item" @click="uiStore.toggleSidebar">
+            <div class="menu_item sidebar-toggle-item" role="button" tabindex="0" @keydown.enter.prevent="uiStore.toggleSidebar" @keydown.space.prevent="uiStore.toggleSidebar" @click="uiStore.toggleSidebar" :aria-label="t('menu.expandSidebar')">
                 <div class="menu_item-box">
                     <div class="menu_icon">
                         <svg class="icon icon--toggle" viewBox="0 0 20 20" width="16" height="16" fill="none"
@@ -1276,6 +1276,12 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
 </script>
 <style lang="less" scoped>
 .aside_box {
+    --nav-surface: var(--cds-surface-1, var(--td-bg-color-sidebar));
+    --nav-hover: var(--cds-surface-2, var(--td-bg-color-container-hover));
+    --nav-text: var(--cds-text-primary, var(--td-text-color-primary));
+    --nav-muted: var(--cds-text-secondary, var(--td-text-color-secondary));
+    --nav-border: var(--cds-border, var(--td-component-stroke));
+    --nav-accent: var(--cds-clay, var(--td-brand-color));
     // 侧栏水平栅格：图标列与文案列统一对齐（Logo / 菜单 / 会话分组 / 会话行）
     --sidebar-inset-x: 10px;
     --sidebar-icon-size: 18px;
@@ -1286,8 +1292,8 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     min-width: 0;
     width: var(--sidebar-width, 260px);
     flex-shrink: 0;
-    padding: var(--app-space-3) var(--app-space-2) var(--app-space-2);
-    background: var(--td-bg-color-sidebar);
+    padding: 12px 8px 8px;
+    background: var(--nav-surface);
     box-sizing: border-box;
     /* Avoid 100vh because <html> carries a `zoom` multiplier for font-size
        control; 100vh is evaluated against the unscaled viewport and then
@@ -1297,9 +1303,8 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     overflow: visible;
     display: flex;
     flex-direction: column;
-    border-right: 1px solid var(--td-component-stroke);
-    box-shadow: 1px 0 0 rgba(0, 0, 0, 0.02);
-    transition: width 0.25s ease, min-width 0.25s ease;
+    border-right: 1px solid var(--nav-border);
+    transition: width var(--cds-duration-normal) var(--cds-ease-out), min-width var(--cds-duration-normal) var(--cds-ease-out);
     position: relative;
 
     // macOS Wails 桌面：红绿灯位于 HiddenInset 标题栏区域，需让出顶部空间
@@ -1358,7 +1363,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 68px;
+        height: 58px;
         flex-shrink: 0;
         padding: 0 2px 0 var(--sidebar-inset-x);
     }
@@ -1367,19 +1372,26 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 28px;
-        height: 28px;
+        width: 32px;
+        height: 32px;
         flex-shrink: 0;
         cursor: pointer;
-        color: var(--td-text-color-secondary);
+        color: var(--nav-muted);
         border-radius: var(--app-radius-xs);
         transition: background-color var(--app-motion-base) ease;
         box-sizing: border-box;
 
         &:hover {
-            background: var(--td-bg-color-container-hover);
-            color: var(--td-text-color-primary);
+            background: var(--nav-hover);
+            color: var(--nav-text);
         }
+    }
+
+    .header-icon-btn:focus-visible,
+    .sidebar-toggle:focus-visible,
+    .sidebar-toggle-item:focus-visible {
+        outline: 2px solid var(--nav-accent);
+        outline-offset: 2px;
     }
 
     .logo_box {
@@ -1455,7 +1467,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
             position: sticky;
             top: 0;
             z-index: 2;
-            background: var(--td-bg-color-sidebar);
+            background: var(--nav-surface);
         }
     }
 
@@ -1465,12 +1477,24 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     }
 
     .menu_item_active {
-        border-radius: var(--app-radius-xs);
-        background: var(--td-brand-color-light) !important;
+        position: relative;
+        border-radius: var(--cds-radius-control);
+        background: var(--cds-clay-light, var(--td-brand-color-light)) !important;
+        background: color-mix(in srgb, var(--nav-accent) 9%, var(--nav-surface)) !important;
+
+        &::before {
+            content: '';
+            position: absolute;
+            left: 4px;
+            top: 8px;
+            bottom: 8px;
+            width: 2px;
+            background: var(--nav-accent);
+        }
 
         .menu_icon,
         .menu_title {
-            color: var(--td-brand-color) !important;
+            color: var(--nav-accent) !important;
         }
     }
 
@@ -1487,12 +1511,12 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 34px;
+        height: 36px;
         padding: 6px 8px 6px var(--sidebar-inset-x);
         box-sizing: border-box;
         margin-bottom: 1px;
-        border-radius: var(--app-radius-xs);
-        transition: background-color var(--app-motion-base) ease;
+        border-radius: var(--cds-radius-control);
+        transition: background-color var(--cds-duration-fast) var(--cds-ease-out);
 
         .menu_item-box {
             display: flex;
@@ -1500,12 +1524,12 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         }
 
         &:hover {
-            border-radius: var(--app-radius-xs);
-            background: var(--td-bg-color-container-hover);
+            border-radius: var(--cds-radius-control);
+            background: var(--nav-hover);
 
             .menu_icon,
             .menu_title {
-                color: var(--td-text-color-primary);
+                color: var(--nav-text);
             }
         }
     }
@@ -1855,8 +1879,8 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     flex-shrink: 0;
     cursor: pointer;
     border-radius: var(--app-radius-sm);
@@ -1872,6 +1896,19 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         width: 18px;
         height: 18px;
         display: block;
+    }
+}
+
+@media (max-width: 720px) {
+    .aside_box:not(.aside_box--collapsed) {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        z-index: 20;
+        width: min(var(--sidebar-width, 260px), 82vw);
+        min-width: 0;
+        box-shadow: 12px 0 28px color-mix(in srgb, var(--cds-text-primary) 12%, transparent);
     }
 }
 

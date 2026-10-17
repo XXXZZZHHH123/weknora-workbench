@@ -3,7 +3,8 @@
     <Transition name="settings-modal-shell">
       <div v-if="visible" class="settings-modal-shell settings-overlay" :class="overlayClass" :style="{ zIndex }"
         @click.self="emit('close')">
-        <div class="settings-modal">
+        <div ref="dialogElement" class="settings-modal" role="dialog" aria-modal="true" :aria-label="title"
+          tabindex="-1">
           <div v-if="loading" class="editor-initializing" role="status" :aria-label="$t('common.loading')">
             <t-loading size="medium" :text="$t('common.loading')" />
           </div>
@@ -26,6 +27,9 @@
                     <div class="nav-group-title">{{ group.label }}</div>
                     <div v-for="item in group.items" :key="item.key" :class="['nav-item', { active: modelValue === item.key }]"
                       :data-guide="navItemGuidePrefix ? `${navItemGuidePrefix}-${item.key}` : undefined"
+                      role="button" tabindex="0" :aria-current="modelValue === item.key ? 'page' : undefined"
+                      @keydown.enter.prevent="emit('update:modelValue', item.key)"
+                      @keydown.space.prevent="emit('update:modelValue', item.key)"
                       @click="emit('update:modelValue', item.key)">
                       <slot name="nav-icon" :item="item" :active="modelValue === item.key">
                         <t-icon :name="item.icon" class="nav-icon" />
@@ -57,6 +61,8 @@
 </template>
 
 <script setup lang="ts">
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+
 /**
  * 全屏"设置类"弹窗壳：遮罩 + 1080×780 面板 + 左侧分组导航 + 右侧内容 + 可选底栏。
  * 被 Settings / AgentEditorModal / OrganizationSettingsModal / KnowledgeBaseEditorModal 共用，
@@ -83,7 +89,7 @@ export interface SettingsModalNavGroup {
   items: SettingsModalNavItem[]
 }
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     visible: boolean
     title: string
@@ -112,6 +118,102 @@ const emit = defineEmits<{
   (e: 'close'): void
 }>()
 
+const dialogElement = ref<HTMLElement | null>(null)
+let returnFocus: HTMLElement | null = null
+let lastFocusWithin: HTMLElement | null = null
+let focusCaptured = false
+let focusGeneration = 0
+let deactivating = false
+
+function isVisible(element: HTMLElement) {
+  const rect = element.getBoundingClientRect()
+  return rect.width > 0 && rect.height > 0 && getComputedStyle(element).visibility !== 'hidden'
+}
+
+function isTopDialog() {
+  if (!props.visible || deactivating) return false
+  const layers = Array.from(document.querySelectorAll<HTMLElement>('.settings-modal-shell'))
+    .filter(element => isVisible(element) && !element.classList.contains('settings-modal-shell-leave-active'))
+  layers.sort((a, b) => Number(getComputedStyle(a).zIndex || 0) - Number(getComputedStyle(b).zIndex || 0))
+  return layers[layers.length - 1] === dialogElement.value?.closest('.settings-modal-shell')
+}
+
+function externalOverlays() {
+  return Array.from(document.querySelectorAll<HTMLElement>(
+    '.t-popup, .t-dialog__ctx, .t-drawer--open, [role="dialog"][aria-modal="true"]',
+  )).filter(element => !element.closest('.settings-modal-shell') && isVisible(element))
+}
+
+function focusableElements() {
+  return Array.from(dialogElement.value?.querySelectorAll<HTMLElement>(
+    'button, a[href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])',
+  ) || []).filter(element => !element.matches(':disabled, [aria-disabled="true"]')
+    && !element.closest('[inert]') && element.tabIndex >= 0
+    && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden')
+}
+
+// Only the uppermost shell owns focus. TDesign portals retain their own
+// keyboard handling; focus is contained again when a portal is left.
+function handleDialogKeydown(event: KeyboardEvent) {
+  if (!isTopDialog() || event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+  if (externalOverlays().length) return
+  // Escape remains owned by useModalShell so each consumer's custom popup
+  // guards and unsaved-change confirmation keep their existing behavior.
+  if (event.key !== 'Tab') return
+  const elements = focusableElements()
+  const first = elements[0], last = elements[elements.length - 1]
+  if (!first) { event.preventDefault(); dialogElement.value?.focus(); return }
+  const active = document.activeElement
+  if (event.shiftKey && (active === first || active === dialogElement.value)) {
+    event.preventDefault(); last?.focus()
+  } else if (!event.shiftKey && (active === last || active === dialogElement.value)) {
+    event.preventDefault(); first.focus()
+  }
+}
+
+function containFocus(event: FocusEvent) {
+  if (!isTopDialog() || !(event.target instanceof HTMLElement)) return
+  if (dialogElement.value?.contains(event.target)) { lastFocusWithin = event.target; return }
+  if (externalOverlays().some(element => element.contains(event.target as Node))) return
+  const target = lastFocusWithin?.isConnected && isVisible(lastFocusWithin) ? lastFocusWithin : dialogElement.value
+  target?.focus({ preventScroll: true })
+}
+
+function restoreFocus() {
+  if (!focusCaptured) return
+  focusCaptured = false
+  const active = document.activeElement
+  const shouldRestore = active === document.body || active === dialogElement.value || dialogElement.value?.contains(active)
+  if (shouldRestore) {
+    if (returnFocus?.isConnected && returnFocus !== document.body) returnFocus.focus({ preventScroll: true })
+    else void nextTick(() => {
+      if (document.activeElement !== document.body) return
+      const main = document.querySelector<HTMLElement>('.platform-route-outlet')
+      if (main) { main.setAttribute('tabindex', '-1'); main.focus({ preventScroll: true }) }
+    })
+  }
+  returnFocus = null
+  lastFocusWithin = null
+}
+
+watch(() => props.visible, async (visible, _previous, onCleanup) => {
+  const own = ++focusGeneration
+  if (!visible) { restoreFocus(); return }
+  focusCaptured = true
+  returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  document.addEventListener('keydown', handleDialogKeydown)
+  document.addEventListener('focusin', containFocus)
+  onCleanup(() => {
+    document.removeEventListener('keydown', handleDialogKeydown)
+    document.removeEventListener('focusin', containFocus)
+  })
+  await nextTick()
+  if (own === focusGeneration && isTopDialog()
+    && !externalOverlays().some(element => element.matches('[aria-modal="true"]')))
+    dialogElement.value?.focus({ preventScroll: true })
+}, { immediate: true })
+onBeforeUnmount(() => { focusGeneration++; deactivating = true; restoreFocus() })
+
 function showBadge(item: SettingsModalNavItem): boolean {
   if (item.badge == null || item.badge === '') return false
   if (typeof item.badge === 'number' && item.badge <= 0) return !!item.showZeroBadge
@@ -123,7 +225,7 @@ function showBadge(item: SettingsModalNavItem): boolean {
 .settings-modal-shell.settings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgb(23 19 16 / 38%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -141,12 +243,15 @@ function showBadge(item: SettingsModalNavItem): boolean {
     max-width: 1080px;
     height: 780px;
     max-height: calc(100vh - 40px);
+    max-height: calc(100dvh - 40px);
     background: var(--td-bg-color-container);
-    border-radius: var(--app-radius-xl);
-    box-shadow: var(--td-shadow-3);
+    border-radius: var(--cds-radius-dialog);
+    box-shadow: var(--cds-shadow-popover, var(--td-shadow-3));
     overflow: hidden;
     display: flex;
     flex-direction: column;
+
+    &:focus { outline: none; }
   }
 
   .editor-initializing {
@@ -294,6 +399,8 @@ function showBadge(item: SettingsModalNavItem): boolean {
 
   .nav-label {
     flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .nav-badge {
@@ -314,6 +421,7 @@ function showBadge(item: SettingsModalNavItem): boolean {
   }
 
   .settings-content {
+    container: settings-content / inline-size;
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -391,6 +499,38 @@ function showBadge(item: SettingsModalNavItem): boolean {
     display: flex;
     gap: 12px;
     flex-shrink: 0;
+  }
+
+  @media (max-width: 640px) {
+    .settings-container { flex-direction: column; }
+    .settings-sidebar { width: 100%; border-right: 0; border-bottom: 1px solid var(--td-component-stroke); }
+    .sidebar-header { padding: 16px 48px 12px 16px; border-bottom: 0; }
+    .settings-nav {
+      display: flex;
+      align-items: center;
+      flex: none;
+      gap: 4px;
+      padding: 0 12px 10px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      overscroll-behavior-x: contain;
+    }
+    .nav-item { flex: none; min-height: 32px; padding: 8px 10px; margin: 0; font-size: var(--app-text-md); white-space: nowrap; }
+    .nav-label { overflow-wrap: normal; }
+    .nav-group-title { display: none; }
+    .nav-icon { margin-right: 6px; }
+    .settings-footer { padding: 12px 16px; flex-wrap: wrap; }
+    .settings-footer-actions { flex-wrap: wrap; }
+    .close-btn { top: 8px; right: 8px; }
+  }
+
+  @media (max-width: 420px) {
+    &.settings-overlay { padding: 8px; }
+    .settings-modal { height: calc(100dvh - 16px); max-height: calc(100dvh - 16px); border-radius: var(--app-radius-xl); }
+    .settings-sidebar { width: 100%; }
+    .sidebar-title { font-size: var(--app-text-lg); }
+    .nav-item { padding: 8px 6px; }
+    .nav-label { line-height: 1.5; }
   }
 }
 

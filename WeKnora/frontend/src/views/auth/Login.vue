@@ -3,7 +3,8 @@
     <div class="header-logo"><BrandWordmark /></div>
     <div class="header-links">
       <div class="language-switch">
-        <button @click="toggleLanguageMenu" class="header-link" :title="currentLangOption?.label">
+        <button type="button" @click="toggleLanguageMenu" class="header-link" :title="currentLangOption?.label"
+          aria-haspopup="true" :aria-expanded="showLanguageMenu">
           <span class="lang-flag-icon">{{ currentLangOption?.flag }}</span>
           <span class="link-text">{{ currentLangOption?.shortLabel }}</span>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
@@ -15,7 +16,9 @@
         <!-- Language Dropdown -->
         <div v-if="showLanguageMenu" class="language-dropdown">
           <div v-for="lang in languageOptions" :key="lang.value" @click="selectLanguage(lang.value)"
-            class="language-option" :class="{ active: currentLanguage === lang.value }">
+            class="language-option" :class="{ active: currentLanguage === lang.value }" role="button" tabindex="0"
+            :aria-pressed="currentLanguage === lang.value"
+            @keydown.enter.prevent="selectLanguage(lang.value)" @keydown.space.prevent="selectLanguage(lang.value)">
             <span class="lang-flag">{{ lang.flag }}</span>
             <span class="lang-label">{{ lang.label }}</span>
             <span v-if="currentLanguage === lang.value" class="check-icon">✓</span>
@@ -647,10 +650,10 @@ onMounted(async () => {
 .check-icon { margin-left: auto; }
 .showcase-content { max-width: 560px; }
 .showcase-eyebrow { color: var(--td-brand-color); font-size: var(--app-text-sm); font-weight: 600; letter-spacing: .2em; margin: 0 0 var(--app-space-4); }
-.showcase-title { font-size: var(--app-text-display); line-height: 1.4; font-weight: 650; letter-spacing: .02em; color: var(--td-text-color-primary); margin: 0 0 var(--app-space-5); }
+.showcase-title { font-family: var(--app-font-family); font-size: clamp(32px, 3vw, 46px); line-height: 1.4; font-weight: 650; letter-spacing: -.025em; color: var(--td-text-color-primary); margin: 0 0 var(--app-space-5); }
 .showcase-description { font-size: var(--app-text-lg); color: var(--td-text-color-secondary); line-height: 1.9; margin: 0 0 var(--app-space-8); }
 .research-capabilities { display: grid; gap: var(--app-space-3); }
-.research-capability { display: flex; align-items: center; gap: var(--app-space-4); padding: var(--app-space-4) var(--app-space-5); border: 1px solid var(--td-component-stroke); border-radius: var(--app-radius-lg); background: var(--td-bg-color-container); }
+.research-capability { display: flex; align-items: center; gap: var(--app-space-4); padding: var(--app-space-4) var(--app-space-5); border: 1px solid var(--td-component-stroke); border-radius: var(--app-radius-xl); background: transparent; }
 .research-capability > .t-icon { color: var(--td-brand-color); font-size: var(--app-text-4xl); }
 .research-capability > div { display: flex; flex-direction: column; gap: var(--app-space-1); }
 .research-capability strong { font-size: var(--app-text-base); font-weight: 600; color: var(--td-text-color-primary); }
@@ -658,7 +661,7 @@ onMounted(async () => {
 .showcase-note { color: var(--td-text-color-placeholder); font-size: var(--app-text-sm); margin: var(--app-space-5) 0 0; }
 .form-section { width: 100%; }
 .form-panel { width: 100%; max-width: 440px; margin-left: auto; }
-.form-card { padding: var(--app-space-8); border: 1px solid var(--td-component-stroke); border-radius: var(--app-radius-xl); background: var(--td-bg-color-container); box-shadow: var(--app-paper-shadow); }
+.form-card { padding: var(--app-space-8); border: 1px solid var(--td-component-stroke); border-radius: var(--cds-radius-dialog); background: var(--cds-surface-3, var(--td-bg-color-container)); box-shadow: var(--cds-shadow-md, var(--app-paper-shadow)); }
 .form-header { margin-bottom: var(--app-space-6); }
 .form-title { color: var(--td-text-color-primary); font-size: var(--app-text-4xl); font-weight: 600; margin: 0 0 var(--app-space-2); }
 .form-welcome, .form-subtitle { color: var(--td-text-color-secondary); font-size: var(--app-text-md); margin: 0; line-height: 1.7; }

@@ -3914,6 +3914,7 @@ export default {
     }
   },
   chat: {
+    scrollToBottom: '최신 메시지로 이동',
     memoryUsedCount: '기억 {count}개를 참고했습니다',
     memoryForget: '이 기억 삭제',
     memoryForgotten: '기억을 삭제했습니다',

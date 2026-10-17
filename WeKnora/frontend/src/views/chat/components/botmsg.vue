@@ -624,6 +624,17 @@ onBeforeUnmount(() => {
     min-width: 0;
     max-width: 100%;
     box-sizing: border-box;
+    overflow-wrap: anywhere;
+}
+
+.markdown-content {
+    min-width: 0;
+
+    :deep(img),
+    :deep(video),
+    :deep(svg) {
+        max-width: 100%;
+    }
 }
 
 .botanswer_laoding_gif {
