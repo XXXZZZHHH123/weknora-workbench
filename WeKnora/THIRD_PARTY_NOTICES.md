@@ -89,3 +89,10 @@ packaged source directory, run `scripts/check-license-bundle.sh PATH/TO/licenses
   WeKnora's existing Vue/TDesign components and iframe workspaces. No React
   runtime, model backend, proprietary font, audio, or Anthropic binary assets
   are included from that project.
+
+## Noto Serif SC (brand wordmark subset)
+
+- Copyright: Copyright 2017-2024 Adobe; Noto Serif SC is distributed under the SIL Open Font License 1.1.
+- Source: [Google Fonts Noto Serif SC](https://github.com/google/fonts/tree/main/ofl/notoserifsc); the self-hosted WOFF2 is a four-glyph, weight-600 subset obtained from the [Google Fonts CSS API](https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600&text=%E4%B8%AD%E5%93%B2%E7%89%A9%E4%BA%A7&display=swap).
+- Full license: [`frontend/src/assets/fonts/OFL.txt`](frontend/src/assets/fonts/OFL.txt).
+- Asset source and SHA-256: [`frontend/src/assets/fonts/README.md`](frontend/src/assets/fonts/README.md).
