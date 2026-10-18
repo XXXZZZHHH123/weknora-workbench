@@ -236,6 +236,12 @@
 
 /* Shared geometry and response timing; consumers use the same vocabulary. */
 :root:root {
+  /* Keep interface/code preferences user-selectable; reserve a system serif
+     stack for long-form reading such as assistant answer Markdown. */
+  --cds-font-interface: var(--app-font-family);
+  --cds-font-reading: Georgia, "Times New Roman", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", "DejaVu Serif", "Liberation Serif", serif;
+  --cds-font-code: var(--app-font-family-mono);
+
   --cds-radius-thumb: 7px;
   --cds-radius-control: 8px;
   --cds-radius-panel: 12px;

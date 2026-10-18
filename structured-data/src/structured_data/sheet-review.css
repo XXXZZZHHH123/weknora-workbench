@@ -77,7 +77,7 @@ main{max-width:1660px}
 .range-selection-actions{position:absolute;left:50%;bottom:42px;transform:translateX(-50%);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px;max-width:95%;padding:9px;background:#fff;border:1px solid #bbd4c4;box-shadow:0 4px 15px #16333120;border-radius:7px;z-index:8;font-size:12px;white-space:nowrap}
 .range-selection-actions[hidden]{display:none}
 .range-selection-actions button{font-size:11px;padding:6px 8px}
-.range-selection-actions b{font:12px ui-monospace,monospace}
+.range-selection-actions b{font:12px var(--app-font-family-mono)}
 .block-editor{border-left:1px solid #dce5df;background:#fbfcfb;display:flex;flex-direction:column;min-width:0;min-height:0;padding:0;overflow:hidden}
 .editor-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:15px 13px;border-bottom:1px solid #e4ebe6;background:white;font-size:13px;flex:none}
 .editor-heading small{font-size:10px;color:#8a9d8e}
@@ -91,11 +91,11 @@ main{max-width:1660px}
 .card-state{font-size:10px;padding:2px 5px;border-radius:4px;background:#fff3df;color:#997c48;white-space:nowrap}
 .card-state.checked{background:#e7f3eb;color:#468465}
 .card-state.excluded{background:#edf0ed;color:#8b998e}
-.card-range{font-size:10px;color:#93a496;margin:3px 0 11px;font-family:ui-monospace,monospace}
+.card-range{font-size:10px;color:#93a496;margin:3px 0 11px;font-family:var(--app-font-family-mono)}
 .block-body{padding:0}
 .range-editor{margin:0 0 10px}
 .range-editor .row{gap:6px;flex-wrap:nowrap;align-items:center}
-.range-editor input{min-width:0;flex:1;width:110px;font-size:12px;padding:6px 8px;font-family:ui-monospace,monospace}
+.range-editor input{min-width:0;flex:1;width:110px;font-size:12px;padding:6px 8px;font-family:var(--app-font-family-mono)}
 .range-editor button{font-size:11px;flex:none;padding:6px 7px}
 .range-editor small{display:block;color:#8d9f91;font-size:10px;line-height:1.6;margin:5px 0}
 .block-settings{border:1px solid #e0e9e2;border-radius:5px;background:white;font-size:11px;margin:0 0 12px;padding:0}

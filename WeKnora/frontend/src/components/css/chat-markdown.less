@@ -11,6 +11,7 @@
 // Tuned against ChatGPT markdown test doc: 16px body, 24px line-height on paragraphs,
 // stepped headings, dotted links, light tables, pill inline code, kbd chips.
 .chat-markdown-typography() {
+  font-family: var(--cds-font-reading, Georgia, "Times New Roman", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif);
   font-size: var(--app-text-xl);
   color: var(--td-text-color-primary);
   line-height: 1.625;
@@ -54,6 +55,11 @@
   // Inline citations share the paragraph line box with body text.
   :deep(p:has(.citation)) {
     line-height: 1.625;
+  }
+
+  // Citation pills stay compact UI labels rather than inheriting the reading face.
+  :deep(.citation) {
+    font-family: var(--cds-font-interface, var(--app-font-family));
   }
 
   :deep(p:has(.citation) + p:has(> img:only-child)),
@@ -102,7 +108,7 @@
   :deep(kbd) {
     display: inline-block;
     padding: 0.15em 0.45em;
-    font-family: var(--app-font-family-mono);
+    font-family: var(--cds-font-code, var(--app-font-family-mono));
     font-size: 0.8125em;
     font-weight: 500;
     line-height: 1.4;
@@ -117,12 +123,13 @@
     background: color-mix(in srgb, var(--td-text-color-primary) 8%, transparent);
     padding: 0.15em 0.3em;
     border-radius: var(--app-radius-xs);
-    font-family: var(--app-font-family-mono);
+    font-family: var(--cds-font-code, var(--app-font-family-mono));
     font-size: 0.875em;
     font-weight: 500;
   }
 
   :deep(pre:not(.chat-code-block__pre):not(.chat-mermaid-block__canvas)) {
+    font-family: var(--cds-font-code, var(--app-font-family-mono));
     background: var(--td-bg-color-secondarycontainer);
     padding: 14px 16px;
     border: 1px solid var(--td-component-stroke);
@@ -158,6 +165,7 @@
     padding: 6px 10px 6px 12px;
     background: var(--td-bg-color-secondarycontainer);
     border-bottom: 1px solid var(--td-component-stroke);
+    font-family: var(--cds-font-interface, var(--app-font-family));
   }
 
   :deep(.chat-code-block__lang) {
@@ -210,6 +218,7 @@
     border-radius: 0;
     background: color-mix(in srgb, var(--td-bg-color-secondarycontainer) 88%, var(--td-bg-color-container));
     overflow-x: auto;
+    font-family: var(--cds-font-code, var(--app-font-family-mono));
     font-size: var(--app-text-md);
     line-height: 1.55;
 
@@ -526,6 +535,7 @@
     border-collapse: separate;
     border-spacing: 0;
     display: table;
+    font-family: var(--cds-font-interface, var(--app-font-family));
     font-size: var(--app-text-base);
     line-height: 1.55;
     width: max-content;
