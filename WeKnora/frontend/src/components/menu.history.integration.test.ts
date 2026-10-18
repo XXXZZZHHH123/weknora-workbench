@@ -9,13 +9,13 @@ const template = source.slice(source.indexOf('<template>') + '<template>'.length
 const ast = parse(template)
 function historyNode(nodes: any[]): any {
   for (const node of nodes) {
-    if (node.tag === 'WorkspaceNavigationNode' && node.props?.some((prop: any) => prop.name === 'title' && prop.value?.content === '历史对话')) return node
+    if (node.tag === 'section' && node.props?.some((prop: any) => prop.name === 'class' && prop.value?.content === 'sidebar-recents')) return node
     const child = historyNode(node.children || [])
     if (child) return child
   }
 }
 const history = historyNode(ast.children)
-assert.ok(history, 'the existing history branch remains under the assistant navigation')
+assert.ok(history, 'recent sessions render in their own section below the primary navigation')
 const render = new Function('Vue', compile(history.loc.source, { mode: 'function', prefixIdentifiers: true }).code)(Vue)
 
 function fixture(booting: boolean) {
@@ -27,7 +27,7 @@ function fixture(booting: boolean) {
   })
   const items = [{ id: 'unread-session', path: '/chat/unread' }, { id: 'read-session', path: '/chat/read' }]
   const context = {
-    expandedSections: { history: true }, toggleSection() {}, handleScroll() {}, scrollContainer: Vue.ref(null),
+    uiStore: { sidebarCollapsed: false }, handleScroll() {}, scrollContainer: Vue.ref(null),
     sessionLookupFailedId: '', showSessionSourceFilter: false, batchMode: false,
     sessionListBooting: booting, hasAnySession: !booting,
     activeBucket: { loading: false, loaded: !booting },
@@ -60,7 +60,7 @@ test('history booting renders four placeholders without reading an unavailable s
   } finally { current.dispose() }
 })
 
-test('loaded history rows retain the unread status from main within the assistant tree', () => {
+test('loaded recent rows retain each session unread status', () => {
   const current = fixture(false)
   try {
     assert.deepEqual(current.rows, [{ id: 'unread-session', unread: true }, { id: 'read-session', unread: false }])

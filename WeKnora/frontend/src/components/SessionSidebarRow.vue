@@ -235,7 +235,6 @@ const confirmDangerAction = (): void => {
   color: var(--cds-clay, var(--td-brand-color));
   background: var(--cds-clay-light, var(--td-brand-color-light));
   background: color-mix(in srgb, var(--cds-clay, var(--td-brand-color)) 8%, var(--cds-surface-1, var(--td-bg-color-sidebar)));
-  box-shadow: inset 2px 0 0 var(--cds-clay, var(--td-brand-color));
 }
 
 .submenu_item_active:hover,
