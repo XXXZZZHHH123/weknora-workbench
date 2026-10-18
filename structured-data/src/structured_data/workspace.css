@@ -84,7 +84,7 @@ body.native-source #directUpload .import-actions{display:none}
 #selectedMetadata summary{color:var(--muted);font-size:11px}
 #selectedMetadata p{font-size:12px;overflow-wrap:anywhere}
 #selectedMetadata label{font-size:11px;max-width:500px}
-#selectedSeries{font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;background:var(--surface-soft)}
+#selectedSeries{font-family:var(--app-font-family-mono);font-size:11px;background:var(--surface-soft)}
 #queryFilters{gap:10px;align-items:end;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:18px 0;margin-top:21px;flex-wrap:wrap}
 #queryFilters label{font-size:11px;gap:7px;min-width:128px;flex:1 1 128px;color:var(--muted)}
 #queryFilters :is(input,select){width:100%;padding:9px 10px;min-height:37px}
