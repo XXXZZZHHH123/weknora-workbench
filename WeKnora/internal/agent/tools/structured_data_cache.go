@@ -40,14 +40,16 @@ type structuredReadCacheEntry struct {
 	originCallID  string
 	originTime    time.Time
 	originElapsed int64
+	failureReused bool
 }
 
 type structuredReadCacheLease struct {
-	key          string
-	generation   uint64
-	done         chan struct{}
-	originCallID string
-	started      time.Time
+	key                 string
+	generation          uint64
+	done                chan struct{}
+	originCallID        string
+	started             time.Time
+	cacheBindingFailure bool
 }
 
 func (t *StructuredDataTool) bindStructuredSourceQuestion(question string) {
@@ -137,8 +139,8 @@ func (t *StructuredDataTool) beginStructuredReadCache(ctx context.Context, calle
 			case <-ctx.Done():
 				return structuredReadCacheLease{}, nil, ctx.Err()
 			case <-done:
-				// Only success is reusable. If the first request failed, retry as
-				// a real request instead of caching/propagating its transient error.
+				// Completed reads and explicit turn-local binding failures can
+				// be reused. Other errors release the waiter for a real request.
 				continue
 			}
 		}
@@ -157,7 +159,8 @@ func (t *StructuredDataTool) beginStructuredReadCache(ctx context.Context, calle
 			callID = meta.ToolCallID
 		}
 		return structuredReadCacheLease{key: key, generation: generation, done: done,
-			originCallID: callID, started: time.Now()}, nil, nil
+			originCallID: callID, started: time.Now(),
+			cacheBindingFailure: structuredBindingFailureTurn(ctx, operation)}, nil, nil
 	}
 }
 
@@ -178,7 +181,40 @@ func cloneStructuredCacheHit(entry structuredReadCacheEntry) *types.ToolResult {
 		"origin_tool_call_id":  entry.originCallID,
 		"original_executed_at": entry.originTime.UTC().Format(time.RFC3339Nano),
 	}
+	if entry.failureReused {
+		// This is a record of an earlier failed attempt, never new data or a
+		// successful source. Surface provenance in Output too: model context may
+		// receive only the textual tool result.
+		metadata := result.Data["_execution_cache"].(map[string]any)
+		metadata["failure_reused"], metadata["reexecuted"] = true, false
+		result.Data["retryable"] = false // Only this exact failed request in this user turn.
+		result.Data["execution_notice"] = "同一轮中该来源绑定请求已失败，本次未重新执行，也未取得新数据；请使用已有反馈选择其他可行步骤。"
+		encoded, err := json.Marshal(result.Data)
+		if err != nil {
+			return nil
+		}
+		result.Output = string(encoded)
+	}
 	return &result
+}
+
+// Binding failures are suppressed only with an explicit user-turn identity.
+// The cache's existing key also includes caller, resolved KB scope, complete
+// arguments and the bound source conversation; rebind invalidates generation.
+func structuredBindingFailureTurn(ctx context.Context, operation string) bool {
+	switch operation {
+	case "query_series", "analyze_table", "compare_series", "convert_price":
+	default:
+		return false
+	}
+	meta, ok := ToolExecFromContext(ctx)
+	return ok && meta.SessionID != "" && meta.AssistantMessageID != "" && meta.ToolCallID != ""
+}
+
+func reusableStructuredBindingFailure(result *types.ToolResult) bool {
+	return result != nil && !result.Success && result.Error != "" &&
+		result.Data["kind"] == "structured_source_binding" &&
+		result.Data["status"] == "error" && result.Data["code"] == "source_binding_unavailable"
 }
 
 func (t *StructuredDataTool) finishStructuredReadCache(lease structuredReadCacheLease, result *types.ToolResult) {
@@ -193,11 +229,12 @@ func (t *StructuredDataTool) finishStructuredReadCache(lease structuredReadCache
 		return
 	}
 	delete(c.inflight, lease.key)
-	if result == nil || !result.Success || result.Error != "" {
+	failureReused := lease.cacheBindingFailure && reusableStructuredBindingFailure(result)
+	if !failureReused && (result == nil || !result.Success || result.Error != "") {
 		return
 	}
 	status, _ := result.Data["status"].(string)
-	if status != "" && status != "ok" && status != "no_data" {
+	if !failureReused && status != "" && status != "ok" && status != "no_data" {
 		return // Clarification is not a completed numeric query.
 	}
 	if _, exists := result.Data["_execution_cache"]; exists {
@@ -228,7 +265,8 @@ func (t *StructuredDataTool) finishStructuredReadCache(lease structuredReadCache
 		c.entries = make(map[string]structuredReadCacheEntry)
 	}
 	c.entries[lease.key] = structuredReadCacheEntry{encoded: encoded, outputFiles: files, size: size,
-		originCallID: lease.originCallID, originTime: lease.started, originElapsed: time.Since(lease.started).Milliseconds()}
+		originCallID: lease.originCallID, originTime: lease.started, originElapsed: time.Since(lease.started).Milliseconds(),
+		failureReused: failureReused}
 	c.order = append(c.order, lease.key)
 	c.bytes += size
 }

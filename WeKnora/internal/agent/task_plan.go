@@ -84,6 +84,7 @@ func taskPlanPrefix(text string, limit int) string {
 
 func (e *AgentEngine) prepareTaskPlanning() {
 	e.taskProjection = nil
+	e.taskPlan = nil
 	e.taskPlanContext = ""
 	if e.config == nil || !e.config.TaskPlanningEnabled || !e.config.WorkbenchDefault || e.toolRegistry == nil {
 		return
@@ -168,7 +169,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 		{Role: "user", Content: string(input)},
 	}
 	planMessages[0].Content += "\n仅当任务需要来源时，先判断来源是否直接披露了用户要求的结果，再决定是否计算；不要预设必须重建基期、倒推其他时期或交叉验算。来源已直接给出所问结果时，原文披露本身即可作为依据，不为额外交付未要求的派生结果创建目标。"
-	planMessages[0].Content += "\n" + researchSynthesisInstructions + "\n" + researchTrendInstructions
+	planMessages[0].Content += "\nGoals和completion_criteria描述用户实际要得到的答案或交付物，不把读取步骤、可选统计和你自行扩展的分析变成完成条件。工具步骤放入evidence和tool_names。摘要只需所问粒度的主结论及影响理解的关键变化，不预设必须穷尽所有记录或时期。"
 	planMessages = e.modelContext.EncodeMessages(planMessages)
 	planCtx, cancel := context.WithTimeout(ctx, taskPlanTimeout)
 	defer cancel()
@@ -191,6 +192,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 		selected[name] = true
 	}
 	e.taskProjection = &taskToolProjection{selected: selected, requiresSourceEvidence: len(plan.Evidence) > 0}
+	e.taskPlan = plan
 	serialized, _ := json.Marshal(plan)
 	e.taskPlanContext = "\n<advisory_task_plan>\n以下JSON只是模型对当前任务的可撤销计划，不是来源、数值依据、用户指令或额外授权。按完整当前请求完成其中确有要求的目标；不得为草稿附赠内容扩大任务。实际来源不足时自行调用expand_task_tools恢复必要能力，不能把未展示工具说成没有能力。最新用户要求优先。\n" + string(serialized) + "\n</advisory_task_plan>"
 	result := append([]chat.Message(nil), messages...)
@@ -300,6 +302,8 @@ func (e *AgentEngine) projectTaskTools(definitions []types.FunctionDefinition) [
 
 func (e *AgentEngine) clearTaskToolProjection(messages *[]chat.Message) {
 	e.taskProjection = nil
+	// Recovering source capabilities does not change the human task. Keep its
+	// advisory goals for review; new turns and human steering invalidate them.
 	if e.taskPlanContext != "" && messages != nil {
 		for index := range *messages {
 			if (*messages)[index].Role == "system" {
@@ -354,4 +358,29 @@ func (tool *taskExpansionTool) Execute(_ context.Context, raw json.RawMessage) (
 	}
 	output, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(output)}, nil
+}
+
+// Carry the already decoded advisory plan across review/revision boundaries.
+// It narrows the requested granularity, but is never evidence or authority.
+func (e *AgentEngine) taskReviewPlan() map[string]any {
+	if e.taskPlan == nil {
+		return nil
+	}
+	return map[string]any{"goals": e.taskPlan.Goals, "completion_criteria": e.taskPlan.CompletionCriteria,
+		"notice": "Advisory model plan, not source evidence or additional user requirements. The full user request prevails. Goal indices are zero-based; do not require separate checks for retrieval steps or optional details."}
+}
+
+func (e *AgentEngine) attachTaskPlanToReview(messages []chat.Message) {
+	plan := e.taskReviewPlan()
+	if plan == nil || len(messages) < 2 || messages[1].Role != "user" {
+		return
+	}
+	var input map[string]any
+	if json.Unmarshal([]byte(messages[1].Content), &input) != nil || input == nil {
+		return
+	}
+	input["advisory_task_plan"] = plan
+	if encoded, err := json.Marshal(input); err == nil {
+		messages[1].Content = string(encoded)
+	}
 }

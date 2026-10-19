@@ -46,6 +46,7 @@ type AgentEngine struct {
 	reviewConversationReady          bool           // distinguishes an initialized empty turn context from a pre-turn fallback
 	taskProjection                   *taskToolProjection
 	taskPlanContext                  string
+	taskPlan                         *taskEvidencePlan
 	documentAnalysisSteers           []string // persisted human corrections only; never review envelopes
 	config                           *types.AgentConfig
 	toolRegistry                     *agenttools.ToolRegistry
@@ -915,6 +916,7 @@ func (e *AgentEngine) runReActIteration(
 	// call), so the very next LLM call sees the user's addition.
 	if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
 		e.clearTaskToolProjection(messagesPtr)
+		e.taskPlan = nil // The user supplied new requirements.
 		tools = e.buildToolsForLLM()
 	}
 
@@ -1213,6 +1215,7 @@ func (e *AgentEngine) runReActIteration(
 				injected := e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
 				if injected > 0 {
 					e.clearTaskToolProjection(messagesPtr)
+					e.taskPlan = nil // The user supplied new requirements.
 				}
 				if injected > 0 {
 					verdict.step.IntermediateAnswer = true
@@ -1447,6 +1450,7 @@ func (e *AgentEngine) beginCandidateRevision(ctx context.Context, state *types.A
 		}
 		e.turnReview.ReadEvidence = nil
 	}
+	e.attachTaskPlanToReview(*messagesPtr)
 	guards.structuredReviewInput = (*messagesPtr)[1].Content
 	e.contextRewrites++
 	e.lastUsage = types.TokenUsage{}
