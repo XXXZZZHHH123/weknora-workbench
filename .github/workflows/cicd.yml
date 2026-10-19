@@ -106,6 +106,19 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run type-check
       - run: npm test -- 'src/**/*.test.ts'
+      - name: Build production frontend for preview
+        env:
+          VITE_FRONTEND_COMMIT: ${{ github.sha }}
+          NODE_OPTIONS: --max-old-space-size=3072 --max-semi-space-size=8
+          GOMAXPROCS: '1'
+        run: npm run build
+      - name: Upload the exact frontend build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frontend-dist-${{ github.sha }}
+          path: WeKnora/frontend/dist
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify structured loading and knowledge base isolation
         run: |
           export SHEET_REVIEW_BROWSER="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
@@ -141,6 +154,8 @@ jobs:
           bash -n start.sh structured-data/scripts/start.sh structured-data/scripts/build_frontend.sh commodity-research/deploy/container/entrypoint.sh
           shellcheck deploy/*.sh start.sh structured-data/scripts/start.sh structured-data/scripts/build_frontend.sh commodity-research/deploy/container/entrypoint.sh
           python3 -m unittest discover -s deploy/tests -v
+          bash -n scripts/build-local.sh
+          python3 -m unittest discover -s scripts/tests -p test_build_memory_guard.py -v
       - name: Validate Compose without real credentials
         env:
           IMAGE_PREFIX: ghcr.io/example/workbench
