@@ -69,8 +69,11 @@ import { getChunkByIdOnly, getKnowledgeDetails } from '@/api/knowledge-base/inde
 import { isKnownPreviewableFile } from '@/utils/filePreview'
 import type { ReferenceSourceTarget } from '@/utils/referenceSources'
 import {
+  hasVerifiedParentChunkContext,
   locatorPages,
+  findInText,
   parseSourceLocators,
+  resolveParentContextSlideLocator,
   selectLocatorsForSentence,
   selectQuoteForSentence,
   sourceQuoteText,
@@ -95,7 +98,7 @@ const { t } = useI18n()
 const router = useRouter()
 
 type Mode = 'loading' | 'file' | 'web' | 'none'
-type Status = 'idle' | 'locating' | 'found' | 'page' | 'block' | 'ambiguous' | 'stale' | 'missing' | 'partial'
+type Status = 'idle' | 'locating' | 'found' | 'page' | 'block' | 'ambiguous' | 'stale' | 'missing' | 'partial' | 'parent-context'
 
 const mode = ref<Mode>('loading')
 const toolbarSlot = ref<HTMLElement | null>(null)
@@ -109,6 +112,7 @@ const sourceHash = ref('')
 const edited = ref(false)
 const imageDigest = ref<string>()
 const imageContext = ref<SourceLocateRequest['imageContext']>()
+const parentContext = ref(false)
 let locateToken = 0
 const meta = reactive({ fileName: '', fileType: '', knowledgeSource: '', knowledgeType: '', title: '' })
 let loadVersion = 0
@@ -138,6 +142,8 @@ const statusText = computed(() => {
       return t('chat.referenceSourceExact')
     case 'partial':
       return t('chat.referenceSourcePartial')
+    case 'parent-context':
+      return t('chat.referenceSourceParentContext', { page: locatedPage.value })
     case 'block':
       return t('chat.referenceSourceBlock')
     case 'ambiguous':
@@ -190,6 +196,7 @@ async function loadChunk(version: number) {
   edited.value = false
   imageContext.value = undefined
   imageDigest.value = undefined
+  parentContext.value = false
   chunkType.value = props.target.chunkType || ''
   // Document-only cards have no passage to look up or highlight.
   if (!props.target.chunkId) return
@@ -203,7 +210,7 @@ async function loadChunk(version: number) {
     // The current chunk overrides snapshots embedded in historical answers.
     // In particular, an edit must invalidate even previously cached locators.
     const current = res?.data
-    if (!current || current.knowledge_id !== props.target.knowledgeId) {
+    if (!current || current.id !== props.target.chunkId || current.knowledge_id !== props.target.knowledgeId) {
       edited.value = true
       locators.value = []
       return
@@ -235,20 +242,38 @@ async function loadChunk(version: number) {
         }
       }
     }
-    // Legacy expanded contexts were cited under a child ID. Only recover a
-    // verbatim quotation in its verified parent, never search the whole file
-    // for a merely similar answer or silently select a neighbouring chunk.
+    // Child excerpts can be located precisely in a verified parent when the
+    // answer contains a verbatim quotation. Otherwise use only a uniquely
+    // mapped slide as parent context, and never imply a child text match.
     if (!edited.value && chunk?.chunk_type === 'text' && chunk.parent_chunk_id &&
-        !quotedSourceExcerpt(chunkContent.value, props.target.anchorText || '')) {
+        !locators.value.length) {
       const parent: any = await getChunkByIdOnly(chunk.parent_chunk_id)
       if (version !== loadVersion) return
       const p = parent?.data
-      if (p?.knowledge_id === props.target.knowledgeId && p.chunk_type === 'parent_text' && !p.content_revision &&
-          quotedSourceExcerpt(p.content || '', props.target.anchorText || '')) {
-        const parentLocators = parseSourceLocators(p.source_locators)
-        if (parentLocators.length && parentLocators.every(l => l.mapping === 'exact' && l.source_hash)) {
+      const verifiedParent = hasVerifiedParentChunkContext(
+        chunk, p || {}, props.target.chunkId, props.target.knowledgeId, sourceHash.value,
+      )
+      if (verifiedParent) {
+        const rawParentLocators = Array.isArray(p.source_locators) ? p.source_locators : []
+        const parentLocators = parseSourceLocators(rawParentLocators)
+        const completeParentLocators = parentLocators.length > 0 && parentLocators.length === rawParentLocators.length &&
+          parentLocators.every(l => l.mapping === 'exact' && l.source_hash?.toLowerCase() === sourceHash.value.toLowerCase())
+        const anchor = props.target.anchorText || ''
+        const parentExcerpt = quotedSourceExcerpt(p.content || '', anchor)
+        const quotedLocators = completeParentLocators ? parentLocators.filter(l =>
+          !!l.quote && !!parentExcerpt && !!findInText(l.quote, parentExcerpt))
+          : []
+        if (parentExcerpt && quotedLocators.length) {
           chunkContent.value = p.content
-          locators.value = parentLocators
+          locators.value = selectLocatorsForSentence(quotedLocators, anchor)
+        } else {
+          const contextLocators = resolveParentContextSlideLocator(
+            chunk, p, props.target.chunkId, props.target.knowledgeId, sourceHash.value,
+          )
+          if (contextLocators.length) {
+            locators.value = contextLocators
+            parentContext.value = true
+          }
         }
       }
     }
@@ -283,7 +308,7 @@ function buildLocate(): SourceLocateRequest {
   const quotes = chunkContent.value ? selectQuoteForSentence(chunkContent.value, anchor) : []
   const scope = sourceQuoteText(chunkContent.value || props.target.content || '')
   const unavailable = edited.value || locators.value.some((loc) => loc.source_hash && sourceHash.value && loc.source_hash !== sourceHash.value)
-  return { locators: unavailable ? [] : selected, quotes: unavailable ? [] : quotes, token: ++locateToken, sentence: anchor, sourceMarkdown: unavailable ? undefined : chunkContent.value, imageDigest: unavailable ? undefined : imageDigest.value, imageContext: unavailable ? undefined : imageContext.value, scope: unavailable ? '' : scope, unavailable }
+  return { locators: unavailable ? [] : selected, quotes: unavailable ? [] : quotes, token: ++locateToken, sentence: anchor, sourceMarkdown: unavailable ? undefined : chunkContent.value, imageDigest: unavailable ? undefined : imageDigest.value, imageContext: unavailable ? undefined : imageContext.value, scope: unavailable ? '' : scope, unavailable, parentContext: !unavailable && parentContext.value }
 }
 
 async function load() {
@@ -320,7 +345,8 @@ function relocate() {
 function onLocated(result: { found: boolean; precise: boolean; page?: number; granularity?: string; reason?: string }) {
   if (locate.value?.unavailable) { status.value = 'stale'; return }
   locatedPage.value = result.page || locatorPages(locate.value?.locators || [])[0] || 0
-  if (result.reason === 'ambiguous') status.value = 'ambiguous'
+  if (locate.value?.parentContext && result.found && locatedPage.value) status.value = 'parent-context'
+  else if (result.reason === 'ambiguous') status.value = 'ambiguous'
   else if (result.reason === 'partial' && result.found) status.value = 'partial'
   else if (result.reason) status.value = 'missing'
   else if (!result.found) status.value = 'missing'

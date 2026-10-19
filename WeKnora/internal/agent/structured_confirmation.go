@@ -33,7 +33,15 @@ const structuredLatencyInstructions = `
 由完整请求决定是否需要观测值、统计或仅解释字段。解释字段和目录时使用已有真实表头与必要口径，不因工具可取数就添加最新值、计数、均值、极值或排名任务。同名歧义未解决时只展示真实候选并问所缺条件，不逐列反复试取数。
 用户所问确需观测值或统计、且目录已有真实字段时，用对应dataset_id和series_id指定文件版本直接查询，不为重复取得ID再列目录。用户指定某列和某一日时，start_date与end_date都用该日，不擅自扩大成半个月或更长区间。先只返回所问字段的值和真实单元格来源；公式依赖已由source_context表明时，不为解释依赖额外查询上游价格或附赠替代答案，除非用户要求比较。get_result_evidence只能使用真实结果的resolution_id/result_id，不能填series_id或dataset_id；query_series的已执行结果可直接核对。
 单点取数最终答案简短列出值/单位、日期、文件/表/原单元格，必要时附该单元格的公式和缓存值说明；不附赠其他列、全列覆盖统计或替代答案，不再问用户确认已经明确的口径。公式样本必须标明具体单元格，不泛指整列公式，不将行位移自行定义成自然日/交易日或其他业务周期。
-`
+` + "\n" + structuredAvailabilityInstructions
+
+// A semantic contract shared by generation, revision and review. The model
+// interprets actual tool states; no query text selects a fixed reply or route.
+const structuredAvailabilityInstructions = `数据状态须根据当前来源和真实工具返回分别判断：字段映射、原文件读取、以及本次查询是否取得所需值是独立状态。
+若真实结果已确认所问范围尚未完成字段映射或尚未纳入当前结构化数据集，直接提示用户需先完成该范围的字段映射；其余有依据的子问题仍正常回答。不为这个状态反复取数、强制读取原件来绕过映射，也不改用相近字段代答。只有用户明确要求检查原件或映射本身时才继续该项原件检查。说明准确的文件/表/字段范围，不把未映射说成原文件读取失败、数据不存在或本次已查询但没有值。
+未映射判断必须有实际映射状态或完整对应范围的导入/字段清单依据；部分目录、搜索零命中和单独unit_status=needs_review不能证明整个表或字段未映射。单位待确认只说明单位状态，不能泛化成整表不能用；真实pending条目须与所问来源身份对应；pending_sheets可能包含未确认或不支持项，须依据实际status/reasons区分，unsupported不应改称只需完成映射。
+仅在真实读取尝试失败时说明原文件读取失败及实际原因；读取成功但本次未取得所需值时，只说明已读取的范围与尚未取得的内容，不推断原件无数据。已有成功原值不被后续失败抹去。
+审核应接受有上述真实状态依据、清楚提示待映射并回答其他可答部分的限制性答复，不因工具目录存在inspect_source就强迫collect_evidence。映射状态可用实际成功目录返回作为basis=limitation、kind=source的证据；状态只证明当前映射范围，不证明观测值或原件缺失。审核仍须纠正虚构映射状态、错来源、未读数值及把三种状态混为一谈的表述。`
 
 const fieldConfirmationPrefix = "字段确认提交："
 

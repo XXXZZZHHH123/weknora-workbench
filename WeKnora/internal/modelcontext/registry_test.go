@@ -555,6 +555,78 @@ func TestRegistryDecodesReadDocumentIDAgainstBothHandleTables(t *testing.T) {
 	require.Equal(t, []string{"d9"}, unknown[0].UnresolvedHandles)
 }
 
+func TestStructuredToolKnowledgeBaseAliasesAreRootScopedAndReplaySafe(t *testing.T) {
+	registry := NewRegistry(true)
+	registry.RegisterKnowledgeBase("kb-authorized")
+
+	call := types.LLMToolCall{Function: types.FunctionCall{
+		Name:      "structured_query_series",
+		Arguments: `{"knowledge_base_id":"b1","operation":"sum","arguments":{"knowledge_base_id":"b1","filter":{"knowledge_base_id":"b1"},"sql":"SELECT 'b1'"}}`,
+	}}
+	calls := []types.LLMToolCall{call}
+	registry.DecodeToolCalls(calls)
+	require.JSONEq(t,
+		`{"knowledge_base_id":"kb-authorized","operation":"sum","arguments":{"knowledge_base_id":"b1","filter":{"knowledge_base_id":"b1"},"sql":"SELECT 'b1'"}}`,
+		calls[0].Function.Arguments,
+	)
+	require.Empty(t, calls[0].UnresolvedHandles)
+	require.Equal(t, ArgumentResolutionResolved, calls[0].ArgumentResolution)
+
+	unknown := []types.LLMToolCall{{Function: types.FunctionCall{
+		Name:      "structured_query_series",
+		Arguments: `{"knowledge_base_id":"b99","arguments":{"knowledge_base_id":"b1"}}`,
+	}}}
+	registry.DecodeToolCalls(unknown)
+	require.JSONEq(t, `{"knowledge_base_id":"b99","arguments":{"knowledge_base_id":"b1"}}`, unknown[0].Function.Arguments)
+	require.Equal(t, []string{"b99"}, unknown[0].UnresolvedHandles)
+	require.Equal(t, ArgumentResolutionUnresolved, unknown[0].ArgumentResolution)
+
+	// Every built-in structured tool that exposes a KB selector owns it at the
+	// root argument envelope. Nested operation payloads remain opaque.
+	for _, name := range []string{
+		"structured_data", "structured_list_series", "structured_query_series",
+		"structured_analyze_table", "structured_inspect_source", "structured_get_result_evidence",
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := []types.LLMToolCall{{Function: types.FunctionCall{
+				Name: name, Arguments: `{"knowledge_base_id":"b1","data":{"knowledge_base_id":"b1"}}`,
+			}}}
+			registry.DecodeToolCalls(candidate)
+			var got map[string]any
+			require.NoError(t, json.Unmarshal([]byte(candidate[0].Function.Arguments), &got))
+			require.Equal(t, "kb-authorized", got["knowledge_base_id"])
+			require.Equal(t, "b1", got["data"].(map[string]any)["knowledge_base_id"])
+		})
+	}
+
+	// Encoding replayed assistant calls compacts only the real root selector;
+	// decoding that replay restores it without touching nested payload fields.
+	original := `{"knowledge_base_id":"kb-authorized","operation":"sum","arguments":{"knowledge_base_id":"literal","sql":"SELECT 'kb-authorized'"}}`
+	replayRegistry := NewRegistry(true)
+	encoded := replayRegistry.EncodeMessages([]chat.Message{{Role: "assistant", ToolCalls: []chat.ToolCall{{Function: chat.FunctionCall{
+		Name: "structured_query_series", Arguments: original,
+	}}}}})
+	require.Len(t, encoded, 1)
+	require.JSONEq(t, `{"knowledge_base_id":"b1","operation":"sum","arguments":{"knowledge_base_id":"literal","sql":"SELECT 'kb-authorized'"}}`, encoded[0].ToolCalls[0].Function.Arguments)
+	replayed := []types.LLMToolCall{{Function: types.FunctionCall{Name: "structured_query_series", Arguments: encoded[0].ToolCalls[0].Function.Arguments}}}
+	replayRegistry.DecodeToolCalls(replayed)
+	require.JSONEq(t, original, replayed[0].Function.Arguments)
+}
+
+func TestStructuredToolResultsAndDynamicMCPRemainOpaque(t *testing.T) {
+	registry := NewRegistry(true)
+	raw := `{"knowledge_base_id":"kb-real","payload":{"knowledge_base_id":"b1"},"sql":"SELECT 'b1'"}`
+	for _, name := range []string{"structured_data", "structured_query_series"} {
+		require.Equal(t, raw, registry.ModelToolResultForTool(name, &types.ToolResult{Success: true, Output: raw}))
+	}
+	for _, name := range []string{"call_mcp_tool", "external_structured_tool"} {
+		calls := []types.LLMToolCall{{Function: types.FunctionCall{Name: name, Arguments: raw}}}
+		registry.DecodeToolCalls(calls)
+		require.Equal(t, raw, calls[0].Function.Arguments)
+		require.Empty(t, calls[0].UnresolvedHandles)
+	}
+}
+
 func TestModelOutputRendersReadDocumentHeaderAndNavigation(t *testing.T) {
 	registry := NewRegistry(true)
 	paged := registry.ModelToolResultForTool("read_document", &types.ToolResult{Success: true, Data: map[string]any{

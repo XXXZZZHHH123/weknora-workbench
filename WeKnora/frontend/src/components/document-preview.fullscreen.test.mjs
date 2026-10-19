@@ -11,10 +11,19 @@ const start = source.indexOf('function toggleFullscreen()')
 const end = source.indexOf('function ensureBlobType(', start)
 assert.ok(start >= 0 && end > start)
 const fullscreenSource = ts.transpile(source.slice(start, end))
+const teardownStart = source.lastIndexOf('onUnmounted(() =>')
+const teardownEnd = source.indexOf('\n});', teardownStart) + 4
+assert.ok(teardownStart >= 0 && teardownEnd > teardownStart)
+const teardownSource = ts.transpile(source.slice(teardownStart, teardownEnd))
+const cleanupStart = source.indexOf('function cleanup() {')
+const cleanupEnd = source.indexOf('\n}\n', cleanupStart) + 3
+assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart)
+assert.match(source.slice(cleanupStart, cleanupEnd), /clearPptxPageMedia\(\)/)
 
 function setup(t, native = true) {
   const scope = effectScope()
-  const mounted = [], unmounted = [], listeners = new Map()
+  const mounted = [], unmounted = [], listeners = new Map(), pptxWatchStops = [], mediaClearReasons = []
+  const mediaRequest = new AbortController()
   const events = {
     addEventListener(name, fn, capture) { listeners.set(name, { fn, capture }) },
     removeEventListener(name, fn) {
@@ -35,16 +44,27 @@ function setup(t, native = true) {
     document.fullscreenElement = null
     listeners.get('fullscreenchange')?.fn()
   }
-  const state = scope.run(() => vm.runInNewContext(`${fullscreenSource}; ({
-    enterPreviewFullscreen, exitPreviewFullscreen, toggleFullscreen, onFullscreenEscape,
-  })`, {
+  const runtime = {
     props, isFullscreen, previewRoot: ref(root), document, window: events, watch,
     onMounted: fn => mounted.push(fn), onUnmounted: fn => unmounted.push(fn),
-  }))
+    stopPptxRenderWatch: () => pptxWatchStops.push('stopped'),
+    clearPptxPageMedia: () => {
+      mediaClearReasons.push(props.active ? 'active' : 'inactive')
+      mediaRequest.abort()
+    },
+    cleanup: () => {
+      mediaClearReasons.push('unmount-cleanup')
+      runtime.clearPptxPageMedia()
+    },
+  }
+  const state = scope.run(() => vm.runInNewContext(`${fullscreenSource}; ({
+    enterPreviewFullscreen, exitPreviewFullscreen, toggleFullscreen, onFullscreenEscape,
+  })`, runtime))
+  scope.run(() => vm.runInNewContext(teardownSource, runtime))
   mounted.forEach(fn => fn())
   const dispose = () => { unmounted.splice(0).forEach(fn => fn()); scope.stop() }
   t.after(dispose)
-  return { ...state, props, root, document, isFullscreen, listeners, dispose }
+  return { ...state, props, root, document, isFullscreen, listeners, pptxWatchStops, mediaClearReasons, mediaRequest, dispose }
 }
 
 test('native fullscreen synchronizes browser Escape and button exit without changing body scroll', async t => {
@@ -95,6 +115,9 @@ test('a denied native request falls back and deactivation exits fullscreen', asy
   await nextTick()
   assert.equal(ctx.isFullscreen.value, false)
   assert.equal(ctx.document.body.style.overflow, 'clip')
+  assert.deepEqual(ctx.pptxWatchStops, ['stopped'])
+  assert.deepEqual(ctx.mediaClearReasons, ['inactive'])
+  assert.equal(ctx.mediaRequest.signal.aborted, true)
 })
 
 test('native fullscreen is exited when the preview is hidden', async t => {
@@ -104,6 +127,17 @@ test('native fullscreen is exited when the preview is hidden', async t => {
   await nextTick()
   assert.equal(ctx.document.fullscreenElement, null)
   assert.equal(ctx.isFullscreen.value, false)
+  assert.deepEqual(ctx.pptxWatchStops, ['stopped'])
+  assert.deepEqual(ctx.mediaClearReasons, ['inactive'])
+  assert.equal(ctx.mediaRequest.signal.aborted, true)
+})
+
+test('unmount cleanup cancels a pending page-media request', async t => {
+  const ctx = setup(t)
+  assert.equal(ctx.mediaRequest.signal.aborted, false)
+  ctx.dispose()
+  assert.equal(ctx.mediaRequest.signal.aborted, true)
+  assert.deepEqual(ctx.mediaClearReasons, ['unmount-cleanup', 'active'])
 })
 
 test('teardown restores fallback styles and unregisters both listeners', async t => {

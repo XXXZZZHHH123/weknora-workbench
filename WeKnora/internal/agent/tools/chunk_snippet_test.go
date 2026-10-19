@@ -123,3 +123,12 @@ func TestSearchQueryTokensSkipsStopwords(t *testing.T) {
 		}
 	}
 }
+
+func TestChunkDataPreservesReportedSourceLocators(t *testing.T) {
+	chunk := &types.Chunk{ID: "observed-chunk", KnowledgeID: "observed-document", Content: "Source passage", SourceLocators: types.SourceLocators{{Type: types.SourceLocatorPDF, Page: 9, Mapping: "exact", Partial: true, SourceHash: "recorded-hash"}}}
+	data := chunkDataMap(1, chunk)
+	locators, ok := data["source_locators"].(types.SourceLocators)
+	if !ok || len(locators) != 1 || locators[0].Page != 9 || !locators[0].Partial || locators[0].SourceHash != "recorded-hash" {
+		t.Fatalf("reported source mapping lost: %#v", data)
+	}
+}

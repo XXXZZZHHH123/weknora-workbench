@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -161,4 +162,29 @@ func (s *knowledgeBaseService) ReadChunkImage(ctx context.Context, result *types
 	}
 	return s.imageReader().readStored(ctx, kb.TenantID, func() *types.KnowledgeBase { return kb }, imageURL,
 		maxRerankImageBytes)
+}
+
+// ReadDocumentImage reads a derived original of an already authorized document.
+// An image URL in Markdown is only navigation: the catalog must independently
+// bind the bytes to this exact document, including for same-tenant knowledge bases.
+func (s *knowledgeBaseService) ReadDocumentImage(ctx context.Context, knowledge *types.Knowledge, reference string) ([]byte, error) {
+	if knowledge == nil || knowledge.ID == "" || s.resourceCatalog == nil {
+		return nil, errors.New("document image resource service unavailable")
+	}
+	if _, ok := types.ParseResourcePath(reference); !ok {
+		return nil, errors.New("document image must be a registered resource")
+	}
+	references, err := s.resourceCatalog.ListReferencesByOwner(ctx, types.ResourceOwnerKnowledge, knowledge.ID)
+	if err != nil || !slices.Contains(references, reference) {
+		return nil, errors.New("image is not bound to the selected document")
+	}
+	resource, err := s.resourceCatalog.Resolve(ctx, reference)
+	if err != nil || resource == nil || resource.TenantID != knowledge.TenantID || resource.State != types.ResourceStateActive {
+		return nil, errors.New("image resource is not active in the document tenant")
+	}
+	kb, err := s.repo.GetKnowledgeBaseByID(ctx, knowledge.KnowledgeBaseID)
+	if err != nil || kb == nil || kb.TenantID != knowledge.TenantID {
+		return nil, errors.New("document image knowledge base scope mismatch")
+	}
+	return s.imageReader().readStored(ctx, kb.TenantID, func() *types.KnowledgeBase { return kb }, reference, maxRerankImageBytes)
 }

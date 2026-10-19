@@ -219,9 +219,9 @@ func TestToolImagePromptFollowsRequestedDetailAndFocus(t *testing.T) {
 	require.Equal(t, toolImageBriefPrompt, prompts[0])
 	require.True(t, strings.HasPrefix(prompts[1], toolImageFullPrompt))
 	require.Contains(t, prompts[1], "looking for: the Q3 revenue")
-	require.Len(t, []rune(toolImagePrompt("", strings.Repeat("x", 1000))),
-		len([]rune(toolImageBriefPrompt))+len("\nThe assistant is looking for: ")+toolImageFocusRunes+
-			len("\nAddress that first, saying plainly if the image does not show it."))
+	bounded := toolImagePrompt("", strings.Repeat("x", 1000))
+	require.Contains(t, bounded, "looking for: "+strings.Repeat("x", toolImageFocusRunes)+"\n")
+	require.NotContains(t, bounded, strings.Repeat("x", toolImageFocusRunes+1))
 }
 
 func TestAttachmentImagesReachVisionOrVLMWithoutPersistingBytes(t *testing.T) {

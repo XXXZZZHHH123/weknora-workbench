@@ -147,6 +147,15 @@ def _iter_image_refs(images: dict):
         )
 
 
+def _read_error_metadata(error):
+    from docreader.parser.source_media_png import SOURCE_MEDIA_PNG_ENGINE, SourceMediaSelectorError
+
+    if isinstance(error, SourceMediaSelectorError):
+        return {"evidence_version": SOURCE_MEDIA_PNG_ENGINE,
+                "source_media_error_code": "invalid_selector"}
+    return {}
+
+
 class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
     def __init__(self):
         super().__init__()
@@ -160,6 +169,34 @@ class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
         cfg = request.config
         parser_engine = cfg.parser_engine if cfg else ""
         engine_overrides = dict(cfg.parser_engine_overrides) if cfg else {}
+
+        # Render one relation-bound original vector media item from stored
+        # presentation bytes. This special engine never follows URL requests
+        # and never routes the whole deck through the document parser.
+        from docreader.parser.source_media_png import (
+            SOURCE_MEDIA_PNG_ENGINE,
+            read_source_media_png,
+        )
+
+        if parser_engine == SOURCE_MEDIA_PNG_ENGINE:
+            if request.url:
+                raise ValueError("Source media PNG rendering requires stored file bytes")
+            file_type = request.file_type or os.path.splitext(request.file_name)[1][1:]
+            result = read_source_media_png(
+                request.file_content,
+                file_type,
+                engine_overrides,
+            )
+            return result, request.file_name
+
+        # Internal extraction protocol. It reads only an explicit, validated
+        # figure; it does not ingest the deck or interpret a user question.
+        from docreader.parser.pptx_figure import FIGURE_GEOMETRY_ENGINE, read_original_figure
+        if parser_engine == FIGURE_GEOMETRY_ENGINE:
+            if request.url:
+                raise ValueError("Original figure evidence requires stored file bytes")
+            return read_original_figure(request.file_content, request.file_type,
+                                        engine_overrides), request.file_name
 
         if request.url:
             logger.info("Read(URL): url=%s", request.url)
@@ -223,7 +260,7 @@ class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
                 error_msg = f"Error reading document: {e}"
                 logger.error(error_msg)
                 logger.info("Traceback: %s", traceback.format_exc())
-                return ReadResponse(error=str(e))
+                return ReadResponse(error=str(e), metadata=_read_error_metadata(e))
 
     def ReadStream(self, request: ReadRequest, context):
         """Streaming read: yields one meta frame, then one frame per image.
@@ -241,7 +278,7 @@ class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
             except Exception as e:
                 logger.error("Error reading document: %s", e)
                 logger.info("Traceback: %s", traceback.format_exc())
-                yield ReadStreamResponse(meta=ReadStreamMeta(error=str(e)))
+                yield ReadStreamResponse(meta=ReadStreamMeta(error=str(e), metadata=_read_error_metadata(e)))
                 return
 
             if not result or not result.content:

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -747,17 +748,17 @@ func (s *wikiIngestService) ProcessWikiIngest(ctx context.Context, t *asynq.Task
 			)
 			// Serialize same-slug read-modify-write across concurrent batches
 			// (standard mode). runs fn directly in Lite mode.
-			acquired, lockErr := s.withSlugLock(reduceCtx, payload.KnowledgeBaseID, slug, func() error {
+			acquired, lockErr := s.withSlugLock(reduceCtx, payload.KnowledgeBaseID, slug, func(slugCtx context.Context) error {
 				// errgroup does not recover panics; see mapOneDocumentRecovered.
 				defer func() {
 					if r := recover(); r != nil {
-						logger.Errorf(reduceCtx, "wiki ingest: reduce panicked for slug %s: %v\n%s",
+						logger.Errorf(slugCtx, "wiki ingest: reduce panicked for slug %s: %v\n%s",
 							slug, r, debug.Stack())
 						reduceErr = fmt.Errorf("wiki reduce panicked for slug %s: %v", slug, r)
 					}
 				}()
 				changed, affectedType, additionFailed, updateDeferred, reduceErr = s.reduceSlugUpdates(
-					reduceCtx, chatModel, payload.KnowledgeBaseID, slug, updates, payload.TenantID, batchCtx, kidToWikiSpan)
+					slugCtx, chatModel, payload.KnowledgeBaseID, slug, updates, payload.TenantID, batchCtx, kidToWikiSpan)
 				return reduceErr
 			})
 			if lockErr != nil {
@@ -1863,6 +1864,403 @@ func resolveSlugUpdateLanguage(ctx context.Context, updates []SlugUpdate) string
 	return types.LanguageNameFromContext(ctx)
 }
 
+const (
+	// Retract review must see complete evidence. These bounds cause an explicit
+	// retry/dead-letter when a dossier cannot fit; source text is never silently
+	// clipped and then represented as complete.
+	wikiRetractSourceMaxChars  = maxContentForWiki
+	wikiRetractDossierMaxChars = maxContentForWiki
+)
+
+type wikiRetractSourceEvidence struct {
+	SourceID      string                         `json:"source_id"`
+	Title         string                         `json:"title"`
+	EvidenceScope string                         `json:"evidence_scope"`
+	ChunkIDs      []string                       `json:"chunk_ids"`
+	Content       string                         `json:"content"`
+	Projection    *wikiRetractEvidenceProjection `json:"projection,omitempty"`
+	Snapshot      []wikiRetractChunkDigest       `json:"-"`
+}
+
+type wikiRetractEvidenceProjection struct {
+	ScanComplete        bool                           `json:"listed_windows_reviewed"`
+	Notice              string                         `json:"notice"`
+	ReviewedWindows     int                            `json:"reviewed_window_count"`
+	SelectedSourceSpans int                            `json:"selected_source_span_count"`
+	ReceiptSHA256       string                         `json:"receipt_sha256"`
+	Receipts            []wikiRetractProjectionReceipt `json:"-"`
+	Quotes              []wikiRetractProjectionQuote   `json:"-"`
+}
+
+type wikiRetractReviewIssue struct {
+	Kind      string   `json:"kind"`
+	SourceIDs []string `json:"source_ids"`
+	Feedback  string   `json:"feedback"`
+}
+
+type wikiRetractReview struct {
+	SchemaVersion     int                      `json:"schema_version"`
+	Complete          bool                     `json:"complete"`
+	ReviewedSourceIDs []string                 `json:"reviewed_source_ids"`
+	Issues            []wikiRetractReviewIssue `json:"issues"`
+}
+
+// loadWikiRetractSourceEvidence resolves every surviving source_ref against
+// the live knowledge row, then reads the exact page-cited chunks. If a source
+// has no page-cited chunks, it falls back to that document's full text body.
+// Tenant/KB/knowledge ownership and bounded completeness are checked before
+// any model call.
+func (s *wikiIngestService) loadWikiRetractSourceEvidence(
+	ctx context.Context,
+	kbID string,
+	tenantID uint64,
+	page *types.WikiPage,
+	retractKIDs map[string]bool,
+) ([]wikiRetractSourceEvidence, []string, error) {
+	return s.loadWikiRetractSourceEvidenceWithModel(ctx, nil, kbID, tenantID, page, retractKIDs)
+}
+
+func (s *wikiIngestService) loadWikiRetractSourceEvidenceWithModel(
+	ctx context.Context, chatModel chat.Chat, kbID string, tenantID uint64,
+	page *types.WikiPage, retractKIDs map[string]bool,
+) ([]wikiRetractSourceEvidence, []string, error) {
+	if page == nil || s.knowledgeSvc == nil || s.chunkRepo == nil {
+		return nil, nil, errors.New("wiki retract: live source reader is unavailable")
+	}
+	if ctxTenant, ok := types.TenantIDFromContext(ctx); !ok || ctxTenant != tenantID {
+		return nil, nil, errors.New("wiki retract: tenant context does not match task scope")
+	}
+	pageChunkRefs := make(map[string]struct{}, len(page.ChunkRefs))
+	for _, id := range page.ChunkRefs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, nil, errors.New("wiki retract: page contains an empty chunk reference")
+		}
+		pageChunkRefs[id] = struct{}{}
+	}
+
+	var sourceIDs []string
+	seenSources := make(map[string]struct{}, len(page.SourceRefs))
+	for _, ref := range page.SourceRefs {
+		kid := types.WikiSourceKnowledgeID(ref)
+		if kid == "" {
+			return nil, nil, fmt.Errorf("wiki retract: invalid surviving source reference %q", ref)
+		}
+		if retractKIDs[kid] {
+			continue
+		}
+		if _, seen := seenSources[kid]; seen {
+			continue
+		}
+		seenSources[kid] = struct{}{}
+		sourceIDs = append(sourceIDs, kid)
+	}
+	sort.Strings(sourceIDs)
+	if len(sourceIDs) == 0 {
+		return nil, nil, errors.New("wiki retract: page has no surviving source refs to verify")
+	}
+
+	coveredPageChunks := make(map[string]struct{}, len(pageChunkRefs))
+	evidence := make([]wikiRetractSourceEvidence, 0, len(sourceIDs))
+	totalChars := 0
+	projectionSources := []wikiRetractProjectionSource{}
+	for _, kid := range sourceIDs {
+		kn, err := s.knowledgeSvc.GetKnowledgeByIDOnly(ctx, kid)
+		if err != nil {
+			return nil, nil, fmt.Errorf("wiki retract: resolve surviving source %s: %w", kid, err)
+		}
+		if kn == nil || kn.ID != kid || kn.TenantID != tenantID || kn.KnowledgeBaseID != kbID {
+			return nil, nil, fmt.Errorf("wiki retract: surviving source %s is outside the task tenant or knowledge base", kid)
+		}
+		if !wikiRetractSourceReadable(kn) {
+			return nil, nil, fmt.Errorf("wiki retract: surviving source %s is not in a readable state", kid)
+		}
+		chunks, err := s.chunkRepo.ListChunksByKnowledgeID(ctx, tenantID, kid)
+		if err != nil {
+			return nil, nil, fmt.Errorf("wiki retract: read chunks for surviving source %s: %w", kid, err)
+		}
+		byID := make(map[string]*types.Chunk, len(chunks))
+		for _, chunk := range chunks {
+			if chunk == nil || chunk.ID == "" || chunk.Content == "" {
+				continue
+			}
+			if chunk.TenantID != tenantID || chunk.KnowledgeID != kid || chunk.KnowledgeBaseID != kbID {
+				return nil, nil, fmt.Errorf("wiki retract: chunk %s does not belong to surviving source %s in this tenant and knowledge base", chunk.ID, kid)
+			}
+			if chunk.ChunkType != "" && chunk.ChunkType != types.ChunkTypeText {
+				continue
+			}
+			if _, duplicate := byID[chunk.ID]; duplicate {
+				return nil, nil, fmt.Errorf("wiki retract: duplicate chunk id %s for source %s", chunk.ID, kid)
+			}
+			byID[chunk.ID] = chunk
+		}
+		if len(byID) == 0 {
+			return nil, nil, fmt.Errorf("wiki retract: surviving source %s has no readable text chunks", kid)
+		}
+
+		var selected []*types.Chunk
+		for id := range pageChunkRefs {
+			if chunk, ok := byID[id]; ok {
+				selected = append(selected, chunk)
+				coveredPageChunks[id] = struct{}{}
+			}
+		}
+		sort.Slice(selected, func(i, j int) bool {
+			if selected[i].ChunkIndex != selected[j].ChunkIndex {
+				return selected[i].ChunkIndex < selected[j].ChunkIndex
+			}
+			return selected[i].ID < selected[j].ID
+		})
+		scope := "page_chunk_refs"
+		if len(selected) == 0 {
+			scope = "full_document_fallback"
+			selected = make([]*types.Chunk, 0, len(byID))
+			for _, chunk := range byID {
+				selected = append(selected, chunk)
+			}
+			sort.Slice(selected, func(i, j int) bool {
+				if selected[i].ChunkIndex != selected[j].ChunkIndex {
+					return selected[i].ChunkIndex < selected[j].ChunkIndex
+				}
+				return selected[i].ID < selected[j].ID
+			})
+		}
+
+		body := reconstructEnrichedContent(ctx, s.chunkRepo, tenantID, selected)
+		runes := utf8.RuneCountInString(body)
+		if runes == 0 {
+			return nil, nil, fmt.Errorf("wiki retract: source %s evidence has %d characters; limit is %d and no truncation is allowed", kid, runes, wikiRetractSourceMaxChars)
+		}
+		totalChars += runes
+		chunkIDs := make([]string, 0, len(selected))
+		projectionSource := wikiRetractProjectionSource{ID: kid, Title: kn.Title}
+		if projectionSource.Title == "" {
+			projectionSource.Title = kn.FileName
+		}
+		if projectionSource.Title == "" {
+			projectionSource.Title = kid
+		}
+		snapshot := []wikiRetractChunkDigest{}
+		for _, chunk := range selected {
+			chunkIDs = append(chunkIDs, chunk.ID)
+			content := reconstructEnrichedContent(ctx, s.chunkRepo, tenantID, []*types.Chunk{chunk})
+			digest := wikiRetractTextDigest(content)
+			projectionSource.Chunks = append(projectionSource.Chunks, wikiRetractProjectionChunk{ID: chunk.ID, Index: chunk.ChunkIndex, SourceID: kid, Content: content, ContentSHA: digest})
+			snapshot = append(snapshot, wikiRetractChunkDigest{SourceID: kid, ChunkID: chunk.ID, Index: chunk.ChunkIndex, RuneLen: utf8.RuneCountInString(content), SHA256: digest})
+		}
+		projectionSources = append(projectionSources, projectionSource)
+		evidence = append(evidence, wikiRetractSourceEvidence{
+			SourceID: kid, Title: projectionSource.Title, EvidenceScope: scope, ChunkIDs: chunkIDs, Content: body, Snapshot: snapshot,
+		})
+	}
+	if len(coveredPageChunks) != len(pageChunkRefs) {
+		return nil, nil, errors.New("wiki retract: one or more page chunk_refs are not owned by a verified surviving source")
+	}
+	if totalChars > wikiRetractDossierMaxChars {
+		if chatModel == nil {
+			return nil, nil, fmt.Errorf("wiki retract: source evidence exceeds %d characters and no truncation is allowed without a verified projection", wikiRetractDossierMaxChars)
+		}
+		projection, projectionErr := projectWikiRetractSourceEvidence(ctx, chatModel, wikiRetractProjectionRequest{
+			PageSlug: page.Slug, PageTitle: page.Title, PageSummary: page.Summary, PageBody: page.Content, Sources: projectionSources,
+			ValidateSnapshot: func(checkCtx context.Context, digests []wikiRetractChunkDigest) error {
+				if !wikiRetractDigestsMatchEvidence(digests, evidence) {
+					return errors.New("wiki retract: projection snapshot identity mismatch")
+				}
+				return s.validateWikiRetractEvidenceSnapshot(checkCtx, kbID, tenantID, evidence)
+			},
+		})
+		if projectionErr != nil {
+			return nil, nil, projectionErr
+		}
+		if !projection.Scope.ScanComplete {
+			return nil, nil, errors.New("wiki retract: source window review is incomplete")
+		}
+		for i := range evidence {
+			entry := &evidence[i]
+			view := &wikiRetractEvidenceProjection{ScanComplete: true, Notice: "Only the source chunks listed by this entry's evidence_scope were scanned. Every listed window was processed; the excerpts are model-selected exact quotations, not a complete copy or proof of semantic absence. Stored image annotations remain extracted observations, not proof of pixel access."}
+			for _, receipt := range projection.Receipts {
+				if receipt.SourceID == entry.SourceID {
+					view.Receipts = append(view.Receipts, receipt)
+				}
+			}
+			var excerpts strings.Builder
+			seenSpans := map[string]bool{}
+			for _, quote := range projection.Quotes {
+				if quote.SourceID == entry.SourceID {
+					view.Quotes = append(view.Quotes, quote)
+					key := fmt.Sprintf("%s:%d:%d", quote.ChunkID, quote.StartRune, quote.EndRune)
+					if !seenSpans[key] {
+						fmt.Fprintf(&excerpts, "[chunk %s, Unicode range %d:%d]\n%s\n\n", quote.ChunkID, quote.StartRune, quote.EndRune, quote.SourceQuote)
+						seenSpans[key] = true
+					}
+				}
+			}
+			view.ReviewedWindows = len(view.Receipts)
+			view.SelectedSourceSpans = len(seenSpans)
+			receiptsJSON, _ := json.Marshal(view.Receipts)
+			view.ReceiptSHA256 = wikiRetractTextDigest(string(receiptsJSON))
+			entry.Content = excerpts.String()
+			entry.Projection = view
+		}
+		encoded, encodeErr := json.Marshal(evidence)
+		if encodeErr != nil || utf8.RuneCount(encoded) > wikiRetractDossierMaxChars {
+			return nil, nil, errors.New("wiki retract: verified quotation dossier exceeds the bounded review budget")
+		}
+	}
+	return evidence, sourceIDs, nil
+}
+
+func validateWikiRetractReview(raw string, expectedLiveIDs, deletedIDs []string) (string, bool, error) {
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(raw)))
+	decoder.DisallowUnknownFields()
+	var review wikiRetractReview
+	if err := decoder.Decode(&review); err != nil {
+		return "", false, fmt.Errorf("wiki retract review: decode response: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return "", false, errors.New("wiki retract review: response contains more than one JSON value")
+		}
+		return "", false, fmt.Errorf("wiki retract review: trailing response data: %w", err)
+	}
+	if review.SchemaVersion != 1 {
+		return "", false, fmt.Errorf("wiki retract review: unsupported schema_version %d", review.SchemaVersion)
+	}
+	want := make(map[string]struct{}, len(expectedLiveIDs))
+	for _, id := range expectedLiveIDs {
+		want[id] = struct{}{}
+	}
+	got := make(map[string]struct{}, len(review.ReviewedSourceIDs))
+	for _, id := range review.ReviewedSourceIDs {
+		if _, ok := want[id]; !ok {
+			return "", false, fmt.Errorf("wiki retract review: reviewed unknown or non-surviving source id %q", id)
+		}
+		if _, duplicate := got[id]; duplicate {
+			return "", false, fmt.Errorf("wiki retract review: duplicate reviewed source id %q", id)
+		}
+		got[id] = struct{}{}
+	}
+	if len(got) != len(want) {
+		return "", false, errors.New("wiki retract review: reviewed source ids do not cover every surviving source")
+	}
+	allowedIssueIDs := make(map[string]struct{}, len(want)+len(deletedIDs))
+	for id := range want {
+		allowedIssueIDs[id] = struct{}{}
+	}
+	for _, id := range deletedIDs {
+		allowedIssueIDs[id] = struct{}{}
+	}
+	if len(review.Issues) > 64 {
+		return "", false, errors.New("wiki retract review: too many issues")
+	}
+	feedbackChars := 0
+	for _, issue := range review.Issues {
+		switch issue.Kind {
+		case "unsupported", "lost_supported", "audit_note", "scope_gap":
+		default:
+			return "", false, fmt.Errorf("wiki retract review: invalid issue kind %q", issue.Kind)
+		}
+		if strings.TrimSpace(issue.Feedback) == "" {
+			return "", false, errors.New("wiki retract review: issue feedback is empty")
+		}
+		feedbackChars += utf8.RuneCountInString(issue.Feedback)
+		if utf8.RuneCountInString(issue.Feedback) > 1200 {
+			return "", false, errors.New("wiki retract review: issue feedback exceeds 1200 characters")
+		}
+		seenIssueIDs := make(map[string]struct{}, len(issue.SourceIDs))
+		for _, id := range issue.SourceIDs {
+			if _, ok := allowedIssueIDs[id]; !ok {
+				return "", false, fmt.Errorf("wiki retract review: issue references unknown source id %q", id)
+			}
+			if _, duplicate := seenIssueIDs[id]; duplicate {
+				return "", false, fmt.Errorf("wiki retract review: issue repeats source id %q", id)
+			}
+			seenIssueIDs[id] = struct{}{}
+		}
+	}
+	if feedbackChars > 8000 {
+		return "", false, errors.New("wiki retract review: total feedback exceeds 8000 characters")
+	}
+	if review.Complete && len(review.Issues) != 0 {
+		return "", false, errors.New("wiki retract review: complete=true requires an empty issues array")
+	}
+	if review.Complete {
+		return "", true, nil
+	}
+	if len(review.Issues) == 0 {
+		return "", false, errors.New("wiki retract review: incomplete response has no actionable findings")
+	}
+	feedback, err := json.Marshal(review.Issues)
+	if err != nil {
+		return "", false, fmt.Errorf("wiki retract review: encode bounded feedback: %w", err)
+	}
+	return string(feedback), false, nil
+}
+
+func wikiRetractReviewNaturalStop(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "stop", "end_turn", "stop_sequence":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *wikiIngestService) reviewWikiPageRetraction(
+	ctx context.Context,
+	chatModel chat.Chat,
+	slug, title, pageType string,
+	previousSummary, previousContent, candidateSummary, candidateContent, deletedContext string,
+	deletedIDs []string,
+	survivingSources []wikiRetractSourceEvidence,
+	survivingIDs []string,
+) (string, error) {
+	input := struct {
+		Page                 map[string]string           `json:"page"`
+		RemovedSourceIDs     []string                    `json:"removed_source_ids"`
+		RemovedSourceContext string                      `json:"removed_source_context"`
+		Previous             map[string]string           `json:"previous"`
+		Candidate            map[string]string           `json:"candidate"`
+		SurvivingSources     []wikiRetractSourceEvidence `json:"surviving_sources"`
+	}{
+		Page:             map[string]string{"slug": slug, "title": title, "type": pageType},
+		RemovedSourceIDs: deletedIDs, RemovedSourceContext: deletedContext,
+		Previous:         map[string]string{"summary": previousSummary, "content": previousContent},
+		Candidate:        map[string]string{"summary": candidateSummary, "content": candidateContent},
+		SurvivingSources: survivingSources,
+	}
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return "", fmt.Errorf("wiki retract review: encode input: %w", err)
+	}
+	reviewResult, err := s.generateWithTemplateResult(ctx, chatModel, agent.WikiPageRetractReviewPrompt, map[string]string{
+		"ReviewInputJSON": string(inputJSON),
+		"ReviewSchema":    agent.WikiPageRetractReviewSchema,
+	})
+	if err != nil {
+		return "", fmt.Errorf("wiki retract review: model call failed for %s: %w", slug, err)
+	}
+	if !wikiRetractReviewNaturalStop(reviewResult.FinishReason) {
+		return "", fmt.Errorf("wiki retract review: non-final model response for %s (finish_reason=%q)", slug, reviewResult.FinishReason)
+	}
+	if reviewResult.ToolCallCount != 0 {
+		return "", fmt.Errorf("wiki retract review: model returned tool calls for %s", slug)
+	}
+	if strings.TrimSpace(reviewResult.Content) == "" {
+		return "", fmt.Errorf("wiki retract review: empty model response for %s", slug)
+	}
+	feedback, passed, err := validateWikiRetractReview(reviewResult.Content, survivingIDs, deletedIDs)
+	if err != nil {
+		return "", err
+	}
+	if passed {
+		return "", nil
+	}
+	return feedback, nil
+}
+
 // reduceSlugUpdates returns:
 //   - changed:          whether the wiki page was created or updated
 //   - affectedType:     "ingest" or "retract" — drives downstream bookkeeping
@@ -2019,6 +2417,9 @@ func (s *wikiIngestService) reduceSlugUpdates(
 		}
 	}
 
+	if summaryUpdate != nil && len(retracts) > 0 {
+		return false, affectedType, false, false, errors.New("wiki retract: summary replacement and source retraction collided on one page; refusing unreviewed write")
+	}
 	if summaryUpdate != nil {
 		page.Title = summaryUpdate.DocTitle + " - Summary"
 		page.Content = summaryUpdate.SummaryBody
@@ -2052,43 +2453,62 @@ func (s *wikiIngestService) reduceSlugUpdates(
 	var newContentBuilder strings.Builder
 	var sharedSourceContexts strings.Builder
 	var docTitles []string
+	var survivingSourceEvidence []wikiRetractSourceEvidence
+	var survivingSourceIDs []string
+	var deletedSourceIDs []string
 
 	language := resolveSlugUpdateLanguage(ctx, updates)
 
 	if len(retracts) > 0 {
+		deletedDocuments := make([]struct {
+			SourceID string `json:"source_id"`
+			Title    string `json:"title"`
+			Content  string `json:"content"`
+		}, 0, len(retracts))
 		for _, r := range retracts {
-			fmt.Fprintf(&deletedContent, "<document>\n<title>%s</title>\n<content>\n%s\n</content>\n</document>\n\n", r.DocTitle, r.RetractDocContent)
+			deletedDocuments = append(deletedDocuments, struct {
+				SourceID string `json:"source_id"`
+				Title    string `json:"title"`
+				Content  string `json:"content"`
+			}{SourceID: r.KnowledgeID, Title: r.DocTitle, Content: r.RetractDocContent})
 		}
+		deletedJSON, deletedErr := json.Marshal(deletedDocuments)
+		if deletedErr != nil {
+			return false, affectedType, false, false, fmt.Errorf("wiki retract: encode removed-source context: %w", deletedErr)
+		}
+		deletedContent.Write(deletedJSON)
 
 		retractKIDs := make(map[string]bool)
 		for _, r := range retracts {
-			retractKIDs[r.KnowledgeID] = true
-		}
-
-		for _, ref := range page.SourceRefs {
-			refKnowledgeID, refTitle := types.ParseWikiSourceRef(ref)
-			if refKnowledgeID == "" {
-				continue
-			}
-			if refTitle == "" {
-				// Legacy bare refs carry no title; the ID is the only label
-				// available for the retract prompt.
-				refTitle = refKnowledgeID
-			}
-
-			if retractKIDs[refKnowledgeID] {
-				continue
-			}
-
-			if content := batchCtx.SummaryContentByKnowledgeID(ctx, refKnowledgeID); content != "" {
-				fmt.Fprintf(&remainingSourcesContent, "<document>\n<title>%s</title>\n<content>\n%s\n</content>\n</document>\n\n", refTitle, content)
-			} else {
-				fmt.Fprintf(&remainingSourcesContent, "<document>\n<title>%s</title>\n<content>\n(summary not available)\n</content>\n</document>\n\n", refTitle)
+			if r.KnowledgeID != "" {
+				retractKIDs[r.KnowledgeID] = true
 			}
 		}
-		if remainingSourcesContent.Len() == 0 {
-			remainingSourcesContent.WriteString("(no remaining sources)")
+		for kid := range retractKIDs {
+			deletedSourceIDs = append(deletedSourceIDs, kid)
 		}
+		sort.Strings(deletedSourceIDs)
+		var evidenceErr error
+		evidencePage := *page
+		evidencePage.SourceRefs = append(types.StringArray(nil), page.SourceRefs...)
+		evidencePage.ChunkRefs = mergeChunkRefs(append(types.StringArray(nil), page.ChunkRefs...), additions)
+		for _, add := range additions {
+			ref := add.SourceRef
+			if ref == "" {
+				ref = add.KnowledgeID
+			}
+			evidencePage.SourceRefs = appendUnique(evidencePage.SourceRefs, ref)
+		}
+		survivingSourceEvidence, survivingSourceIDs, evidenceErr = s.loadWikiRetractSourceEvidenceWithModel(
+			ctx, chatModel, kbID, tenantID, &evidencePage, retractKIDs)
+		if evidenceErr != nil {
+			return false, affectedType, false, false, evidenceErr
+		}
+		evidenceJSON, marshalErr := json.Marshal(survivingSourceEvidence)
+		if marshalErr != nil {
+			return false, affectedType, false, false, fmt.Errorf("wiki retract: encode verified source evidence: %w", marshalErr)
+		}
+		remainingSourcesContent.Write(evidenceJSON)
 
 		newRefs := types.StringArray{}
 		for _, ref := range page.SourceRefs {
@@ -2226,30 +2646,77 @@ func (s *wikiIngestService) reduceSlugUpdates(
 		pageAliases := strings.Join(page.Aliases, ", ")
 
 		var updatedContent string
-		updatedContent, err = s.generateWithTemplate(ctx, chatModel, agent.WikiPageModifyUserPrompt, map[string]string{
-			"HasAdditions":            hasAdditionsStr,
-			"HasRetractions":          hasRetractionsStr,
-			"PageSlug":                slug,
-			"PageTitle":               pageTitle,
-			"PageType":                pageType,
-			"PageAliases":             pageAliases,
-			"ExistingContent":         existingContent,
-			"SharedSourceContexts":    sharedSourceContexts.String(),
-			"NewContent":              newContentBuilder.String(),
-			"DeletedContent":          deletedContent.String(),
-			"RemainingSourcesContent": remainingSourcesContent.String(),
-			"AvailableSlugs":          relatedSlugs.String(),
-			"Language":                language,
-			"CustomInstructions":      batchCtx.ContentInstructions,
-			"InstructionScope":        "wiki_content",
-		})
+		editorData := map[string]string{
+			"HasAdditions":             hasAdditionsStr,
+			"HasRetractions":           hasRetractionsStr,
+			"RetractionReviewFeedback": "",
+			"PageSlug":                 slug,
+			"PageTitle":                pageTitle,
+			"PageType":                 pageType,
+			"PageAliases":              pageAliases,
+			"ExistingContent":          existingContent,
+			"SharedSourceContexts":     sharedSourceContexts.String(),
+			"NewContent":               newContentBuilder.String(),
+			"DeletedContent":           deletedContent.String(),
+			"RemainingSourcesContent":  remainingSourcesContent.String(),
+			"AvailableSlugs":           relatedSlugs.String(),
+			"Language":                 language,
+			"CustomInstructions":       batchCtx.ContentInstructions,
+			"InstructionScope":         "wiki_content",
+		}
 
-		if err == nil && updatedContent != "" {
-			// Translate request-local handles (ref-N) the model copied from the
-			// encoded context back to their real slugs BEFORE the content is
-			// parsed/stored, so out_links reflect real pages again.
+		for rewriteAttempt := 0; ; rewriteAttempt++ {
+			updatedContent, err = s.generateWithTemplate(ctx, chatModel, agent.WikiPageModifyUserPrompt, editorData)
+			if err != nil {
+				if len(retracts) > 0 {
+					return false, affectedType, false, false, fmt.Errorf("wiki retract: page rewrite failed for %s: %w", slug, err)
+				}
+				break
+			}
+			if strings.TrimSpace(updatedContent) == "" {
+				if len(retracts) > 0 {
+					return false, affectedType, false, false, fmt.Errorf("wiki retract: page rewrite returned empty content for %s", slug)
+				}
+				break
+			}
+
+			// Translate request-local handles before review and persistence.
 			updatedContent = slugHandles.decodeContent(updatedContent)
 			updatedSummary, updatedBody := splitSummaryLine(updatedContent)
+			if len(retracts) > 0 {
+				if strings.TrimSpace(updatedSummary) == "" {
+					return false, affectedType, false, false, fmt.Errorf("wiki retract: page rewrite omitted its required SUMMARY line for %s", slug)
+				}
+				if strings.TrimSpace(updatedBody) == "" {
+					return false, affectedType, false, false, fmt.Errorf("wiki retract: page rewrite returned an empty body for %s", slug)
+				}
+				feedback, reviewErr := s.reviewWikiPageRetraction(
+					ctx, chatModel, slug, pageTitle, pageType,
+					page.Summary, page.Content, updatedSummary, updatedBody,
+					deletedContent.String(), deletedSourceIDs,
+					survivingSourceEvidence, survivingSourceIDs,
+				)
+				if reviewErr != nil {
+					return false, affectedType, false, false, reviewErr
+				}
+				if feedback != "" {
+					if rewriteAttempt >= 1 {
+						return false, affectedType, false, false, fmt.Errorf("wiki retract: review still found unresolved issues for %s: %s", slug, feedback)
+					}
+					editorData["RetractionReviewFeedback"] = feedback
+					// Keep the immutable original page in ExistingContent. Give the
+					// editor its rejected proposal separately as escaped JSON data,
+					// using this request's same slug-handle table.
+					rejectedCandidate := slugHandles.encodeContent(updatedContent, known)
+					rejectedCandidateJSON, marshalErr := json.Marshal(rejectedCandidate)
+					if marshalErr != nil {
+						return false, affectedType, false, false, fmt.Errorf("wiki retract: encode rejected candidate for %s: %w", slug, marshalErr)
+					}
+					editorData["RetractionRejectedCandidate"] = string(rejectedCandidateJSON)
+					continue
+				}
+			}
+
 			if updatedBody != "" {
 				page.Content = updatedBody
 			} else {
@@ -2258,8 +2725,17 @@ func (s *wikiIngestService) reduceSlugUpdates(
 			if updatedSummary != "" {
 				page.Summary = updatedSummary
 			}
+			if len(retracts) > 0 {
+				// Clear only the source IDs covered by this reviewed rewrite. If
+				// the ensuing page write fails, the persisted marker remains and
+				// readers continue to treat the old body as unverified.
+				types.ClearWikiRetractionSources(page, deletedSourceIDs)
+			}
 			changed = true
-		} else if err != nil {
+			break
+		}
+
+		if err != nil && len(retracts) == 0 {
 			logger.Warnf(ctx, "wiki ingest: update/retract failed for slug %s: %v", slug, err)
 			// Flag addition failures so the batch can sanitize stale
 			// [[slug]] references in the doc's summary page and keep the
@@ -2288,6 +2764,25 @@ func (s *wikiIngestService) reduceSlugUpdates(
 	}
 
 	if changed {
+		if len(retracts) > 0 {
+			if snapshotErr := s.validateWikiRetractEvidenceSnapshot(ctx, kbID, tenantID, survivingSourceEvidence); snapshotErr != nil {
+				return false, affectedType, additionFailed, false, snapshotErr
+			}
+		}
+		latestLiveUpdates, liveCheckErr := s.filterLiveUpdates(ctx, kbID, updates)
+		if liveCheckErr != nil {
+			return false, affectedType, additionFailed, false, liveCheckErr
+		}
+		if len(latestLiveUpdates) != len(updates) {
+			return false, affectedType, additionFailed, false,
+				fmt.Errorf("wiki reduce: source liveness changed during page rewrite for %s; refusing stale candidate", slug)
+		}
+		for i := range updates {
+			if latestLiveUpdates[i].KnowledgeID != updates[i].KnowledgeID || latestLiveUpdates[i].Type != updates[i].Type {
+				return false, affectedType, additionFailed, false,
+					fmt.Errorf("wiki reduce: source set changed during page rewrite for %s; refusing stale candidate", slug)
+			}
+		}
 		// Refresh chunk refs in-place on the page so they persist alongside
 		// the rest of the row. Retract-only updates (no additions) preserve
 		// the existing refs; addition rounds append the newly-cited chunks
@@ -2303,6 +2798,7 @@ func (s *wikiIngestService) reduceSlugUpdates(
 			writeCtx := ctx
 			if len(retracts) > 0 {
 				writeCtx = types.WithWikiShrinkAllowed(ctx)
+				writeCtx = types.WithWikiRetractionMetadataMutation(writeCtx)
 			}
 			// UpdatePage refuses a machine rewrite that drops too many table
 			// rows still on the page and says so with

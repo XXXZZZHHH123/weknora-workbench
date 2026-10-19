@@ -18,14 +18,15 @@ const citedMarkdown = '| Model | Flagged as AI | Judged human |\n| --- | --- | -
 const refs = [{ id: 'chunk-1', knowledge_id: 'manual-doc', knowledge_title: 'Model card', knowledge_source: 'manual', chunk_type: 'text', content: citedMarkdown }]
 const target = resolveReferenceSource(refs, { chunkId: 'chunk-1', anchorText: '本次版本被标记的次数不到上一版本的一半。', openSource: true })!
 
-async function fixture(options: { details?: Record<string, unknown>; chunk?: Record<string, unknown>; target?: ReferenceSourceTarget } = {}) {
+async function fixture(options: { details?: Record<string, unknown>; chunk?: Record<string, unknown>; parent?: Record<string, unknown>; target?: ReferenceSourceTarget } = {}) {
   const props = reactive({ target: options.target || target, active: true })
   const requests: string[] = [], events: string[] = []
-  let preview: any, mounts = 0
+  let preview: any, mounts = 0, emitLocated: ((result: any) => void) | undefined
   const exports: any = {}
   const Preview = defineComponent({
+    emits: ['located'],
     props: { knowledgeId: String, fileType: String, fileName: String, locate: Object, sourceMode: Boolean, active: Boolean, toolbarTarget: Object, fillHeight: Boolean },
-    setup(p) { preview = p; mounts++; return () => h('preview') },
+    setup(p, context) { preview = p; emitLocated = result => context.emit('located', result); mounts++; return () => h('preview') },
   })
   runInNewContext(compiled, { exports, console, require(name: string) {
     if (name === 'vue') return require('vue')
@@ -34,11 +35,16 @@ async function fixture(options: { details?: Record<string, unknown>; chunk?: Rec
     if (name === '@/api/knowledge-base/index') return {
       getKnowledgeDetails: async (id: string) => {
         requests.push(`details:${id}`)
-        return { data: { type: 'manual', source: 'manual', file_type: 'manual', file_name: 'Model card.md', file_path: '', ...options.details } }
+        return { data: { type: 'manual', source: 'manual', file_type: 'manual', file_name: 'Model card.md', file_path: '', file_hash: 'a'.repeat(64), ...options.details } }
       },
       getChunkByIdOnly: async (id: string) => {
         requests.push(`chunk:${id}`)
-        return { data: { knowledge_id: props.target.knowledgeId, chunk_type: 'text', content_revision: 0, content: id === 'chunk-2' ? 'The second cited paragraph.' : citedMarkdown, source_locators: null, ...options.chunk } }
+        const isTargetChunk = id === props.target.chunkId
+        const override = isTargetChunk ? options.chunk : id === options.chunk?.parent_chunk_id ? options.parent : undefined
+        const defaults = isTargetChunk
+          ? { knowledge_id: props.target.knowledgeId, chunk_type: 'text', content_revision: 0, content: id === 'chunk-2' ? 'The second cited paragraph.' : citedMarkdown, source_locators: null }
+          : { knowledge_id: props.target.knowledgeId, chunk_type: 'parent_text', content_revision: 0, content: '', source_locators: [], parent_chunk_id: '' }
+        return { data: { ...defaults, ...override, id } }
       },
     }
     if (name === '@/components/document-preview.vue') return Preview
@@ -46,19 +52,21 @@ async function fixture(options: { details?: Record<string, unknown>; chunk?: Rec
     if (name.startsWith('@/utils/')) return require(`../utils/${name.slice('@/utils/'.length)}.ts`)
     throw new Error(`Unexpected import: ${name}`)
   } })
-  type Host = { parent?: Host; children: Host[] }
+  type Host = { tag?: string; props?: Record<string, unknown>; text?: string; parent?: Host; children: Host[] }
   const node = (): Host => ({ children: [] })
   const renderer = createRenderer<Host, Host>({
-    createElement: node, createText: node, createComment: node,
+    createElement: tag => ({ ...node(), tag }), createText: text => ({ ...node(), text }), createComment: text => ({ ...node(), text }),
     insert(child, parent) { child.parent = parent; parent.children.push(child) },
     remove(child) { const siblings = child.parent?.children; if (siblings) siblings.splice(siblings.indexOf(child), 1) },
-    setElementText() {}, setText() {}, patchProp() {}, parentNode: el => el.parent || null, nextSibling: () => null,
+    setElementText(el, text) { el.text = text; el.children = [] }, setText(el, text) { el.text = text },
+    patchProp(el, key, _previous, value) { el.props ||= {}; el.props[key] = value }, parentNode: el => el.parent || null, nextSibling: () => null,
   })
+  const root = node()
   const app = renderer.createApp({ setup: () => () => h(exports.default, { ...props, onUnavailable: () => events.push('unavailable') }) })
   for (const name of ['t-button', 't-icon', 't-loading']) app.component(name, { render: () => null })
-  app.mount(node())
+  app.mount(root)
   await flush()
-  return { props, requests, events, preview: () => preview, mounts: () => mounts, dispose: () => app.unmount() }
+  return { props, requests, events, preview: () => preview, mounts: () => mounts, emitLocated: (result: any) => emitLocated?.(result), root, dispose: () => app.unmount() }
 }
 
 test('manual citation opens Markdown with raw chunk evidence even without source locators', async t => {
@@ -118,4 +126,50 @@ test('FAQ still falls back to the source list even with manual source metadata',
 test('uploaded files keep their original preview format', async t => {
   const f = await fixture({ details: { type: 'file', source: 'upload', file_type: 'pdf', file_name: 'Report.pdf' }, target: { ...target, knowledgeSource: 'upload' } }); t.after(f.dispose)
   assert.equal(f.preview().fileType, 'pdf')
+})
+
+test('verified same-source parent slide opens as an explicit partial parent-context location', async t => {
+  const sourceHash = 'd'.repeat(64)
+  const childContent = 'A coastal monitoring report records an unusual current shift near the eastern marker.'
+  const f = await fixture({
+    details: { type: 'file', source: 'upload', file_type: 'pptx', file_name: 'Marine status.pptx', file_hash: sourceHash },
+    target: { ...target, knowledgeId: 'marine-report', knowledgeBaseId: 'kb-1', knowledgeSource: 'upload', chunkId: 'child-1', anchorText: 'The response notes a changed current near the eastern marker.' },
+    chunk: { parent_chunk_id: 'parent-1', content: childContent },
+    parent: {
+      content: `Summary. ${childContent} Additional notes.`,
+      source_locators: [{ type: 'slide', mapping: 'exact', partial: true, slide: 3, quote: 'Mapped parent-only heading', source_hash: sourceHash }],
+    },
+  }); t.after(f.dispose)
+
+  const request = f.preview().locate
+  assert.equal(request.unavailable, false)
+  assert.equal(request.parentContext, true)
+  assert.equal(request.sourceMarkdown, childContent, 'keep the cited child scope instead of borrowing parent prose')
+  assert.deepEqual(request.locators, [{ type: 'slide', mapping: 'exact', partial: true, slide: 3, source_hash: sourceHash }])
+  f.emitLocated({ found: true, precise: true, page: 3, granularity: 'text' })
+  await flush()
+  const all = (root: any): any[] => [root, ...(root.children || []).flatMap(all)]
+  const status = all(f.root).find(node => node.tag === 'p' && String(node.props?.class || '').includes('is-parent-context'))
+  assert.ok(status, 'the source view must communicate that this is only parent context')
+  assert.match(String(status.text || ''), /referenceSourceParentContext/)
+})
+
+test('a verbatim answer quotation still inherits its matching exact parent locator', async t => {
+  const sourceHash = 'e'.repeat(64)
+  const excerpt = 'A coastal station recorded a sudden current shift near the eastern marker.'
+  const childContent = `Field note: ${excerpt}`
+  const f = await fixture({
+    details: { type: 'file', source: 'upload', file_type: 'pptx', file_name: 'Coastal bulletin.pptx', file_hash: sourceHash },
+    target: { ...target, knowledgeId: 'coastal-report', knowledgeBaseId: 'kb-2', knowledgeSource: 'upload', chunkId: 'child-2', anchorText: `The report states “${excerpt}”` },
+    chunk: { parent_chunk_id: 'parent-2', content: childContent },
+    parent: {
+      content: `Summary. ${childContent} Additional notes.`,
+      source_locators: [{ type: 'slide', mapping: 'exact', partial: false, slide: 2, quote: excerpt, source_hash: sourceHash }],
+    },
+  }); t.after(f.dispose)
+
+  const request = f.preview().locate
+  assert.equal(request.parentContext, false)
+  assert.equal(request.sourceMarkdown, `Summary. ${childContent} Additional notes.`)
+  assert.deepEqual(request.locators, [{ type: 'slide', mapping: 'exact', partial: false, slide: 2, quote: excerpt, source_hash: sourceHash }])
 })

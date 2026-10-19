@@ -1230,22 +1230,22 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
 <style lang="less" scoped>
 .aside_box {
     --nav-surface: var(--cds-surface-1, var(--td-bg-color-sidebar));
-    --nav-hover: var(--cds-surface-2, var(--td-bg-color-container-hover));
+    --nav-hover: var(--td-bg-color-container-hover);
     --nav-text: var(--cds-text-primary, var(--td-text-color-primary));
     --nav-muted: var(--cds-text-secondary, var(--td-text-color-secondary));
     --nav-border: var(--cds-border, var(--td-component-stroke));
     --nav-accent: var(--cds-clay, var(--td-brand-color));
     // 侧栏水平栅格：图标列与文案列统一对齐（Logo / 菜单 / 会话分组 / 会话行）
     --sidebar-inset-x: 10px;
-    --sidebar-icon-size: 18px;
+    --sidebar-icon-size: 16px;
     --sidebar-channel-icon: 14px;
-    --sidebar-icon-gap: 8px;
+    --sidebar-icon-gap: 10px;
     --sidebar-text-inset: calc(var(--sidebar-inset-x) + var(--sidebar-icon-size) + var(--sidebar-icon-gap)); // 36px
 
     min-width: 0;
     width: var(--sidebar-width, 260px);
     flex-shrink: 0;
-    padding: 12px 8px 8px;
+    padding: 8px;
     background: var(--nav-surface);
     box-sizing: border-box;
     /* Avoid 100vh because <html> carries a `zoom` multiplier for font-size
@@ -1316,7 +1316,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 58px;
+        height: var(--app-sidebar-brand-height);
         flex-shrink: 0;
         padding: 0 2px 0 var(--sidebar-inset-x);
     }
@@ -1407,12 +1407,12 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     .sidebar-search {
         display: flex;
         align-items: center;
-        gap: 9px;
-        min-height: 36px;
+        gap: 8px;
+        min-height: var(--app-sidebar-search-height);
         flex-shrink: 0;
-        margin: 8px 4px 10px;
-        padding: 6px 10px;
-        border: 1px solid var(--td-component-border);
+        margin: 6px 4px 6px;
+        padding: 4px 10px;
+        border: 1px solid var(--td-component-stroke);
         border-radius: 9px;
         background: var(--td-bg-color-container);
         box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
@@ -1442,9 +1442,10 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         overflow: visible;
         margin: 0;
         padding: 0;
-        gap: 2px;
+        gap: 0;
         :deep(.workspace-nav-node__row) {
-            min-height: 36px;
+            min-height: var(--app-sidebar-row-height);
+            color: var(--td-text-color-secondary);
             padding-left: var(--sidebar-inset-x);
             border-radius: 8px;
         }
@@ -1452,18 +1453,14 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
             background: var(--td-bg-color-container-hover);
             color: var(--td-text-color-primary);
         }
-        :deep(.workspace-nav-node__link) { gap: 10px; padding: 7px 0; }
+        :deep(.workspace-nav-node__row:hover) { color: var(--td-text-color-primary); }
+        :deep(.workspace-nav-node__link) { gap: 10px; padding: var(--app-sidebar-link-padding-y) 0; }
         :deep(.workspace-nav-node__title) { font-weight: 400; font-size: var(--app-text-base); }
-        :deep(.workspace-nav-node__icon) { color: var(--td-text-color-secondary); }
+        :deep(.workspace-nav-node__icon) { width: var(--sidebar-icon-size); height: var(--sidebar-icon-size); color: var(--td-text-color-secondary); }
         .sidebar-new :deep(.workspace-nav-node__icon) {
-            width: 22px;
-            height: 22px;
-            margin-left: -2px;
-            margin-right: -2px;
-            border-radius: 50%;
-            background: var(--td-bg-color-component);
-            padding: 2px;
-            box-sizing: border-box;
+            width: var(--sidebar-icon-size);
+            height: var(--sidebar-icon-size);
+            background: transparent;
         }
     }
     .sidebar-recents {
@@ -1471,21 +1468,21 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         flex-direction: column;
         flex: 1;
         min-height: 0;
-        margin-top: 22px;
+        margin-top: 20px;
         overflow: hidden;
         &__header {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 8px;
-            min-height: 28px;
+            min-height: 24px;
             padding: 0 var(--sidebar-inset-x) 4px;
             flex-shrink: 0;
             h2 { margin: 0; font-size: var(--app-text-sm); line-height: 20px; font-weight: 400; color: var(--td-text-color-placeholder); }
         }
     }
     &.aside_box--collapsed {
-        .sidebar-primary-nav :deep(.workspace-nav-node__row) { width: 32px; margin: 0 auto 3px; padding: 0; }
+        .sidebar-primary-nav :deep(.workspace-nav-node__row) { min-height: 32px; width: 32px; margin: 0 auto 3px; padding: 0; }
         .sidebar-primary-nav :deep(.workspace-nav-node__link) { justify-content: center; }
     }
 
@@ -1550,7 +1547,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 36px;
+        height: var(--app-sidebar-row-height);
         padding: 6px 8px 6px var(--sidebar-inset-x);
         box-sizing: border-box;
         margin-bottom: 1px;
@@ -1749,7 +1746,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         }
 
         &.session-chat-row .session-list-row {
-            height: 34px;
+            height: var(--app-sidebar-row-height);
             padding-right: 4px;
             border-radius: var(--app-radius-sm);
             transition: background var(--app-motion-fast) ease, color var(--app-motion-fast) ease;
@@ -1790,7 +1787,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         cursor: pointer;
         display: flex;
         align-items: center;
-        color: var(--td-text-color-primary);
+        color: var(--td-text-color-secondary);
         font-weight: 400;
         font-size: var(--app-text-base);
         line-height: 20px;
@@ -1825,7 +1822,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         .menu-more {
             display: inline-block;
             font-weight: bold;
-            color: var(--td-brand-color);
+            color: var(--td-text-color-secondary);
         }
 
         .submenu_title--batch {
@@ -2067,10 +2064,10 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     .aside_box:not(.aside_box--collapsed) {
         padding-top: 8px;
         .logo_row { height: 44px; }
-        .sidebar-search { min-height: 32px; margin-top: 4px; margin-bottom: 6px; }
+        .sidebar-search { min-height: var(--app-sidebar-search-height); margin-top: 4px; margin-bottom: 6px; }
         .sidebar-primary-nav {
-            :deep(.workspace-nav-node__row) { min-height: 32px; }
-            :deep(.workspace-nav-node__link) { padding: 5px 0; }
+            :deep(.workspace-nav-node__row) { min-height: var(--app-sidebar-row-height); }
+            :deep(.workspace-nav-node__link) { padding: var(--app-sidebar-link-padding-y) 0; }
         }
         .sidebar-recents { margin-top: 12px; }
         .sidebar-recents__header { min-height: 24px; padding-bottom: 2px; }

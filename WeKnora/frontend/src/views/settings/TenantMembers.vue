@@ -1974,7 +1974,7 @@ watch(
   border: 1px solid var(--td-component-stroke);
   border-radius: var(--app-radius-sm);
   background: var(--td-bg-color-page);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--app-font-family-mono);
   font-size: var(--app-text-sm);
   color: var(--td-text-color-primary);
   outline: none;

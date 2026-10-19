@@ -1479,7 +1479,7 @@ const toggleEnabled = async (ch: EmbedChannel, enabled: boolean) => {
   &__pre {
     margin: 0;
     padding: 10px 12px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--app-font-family-mono);
     font-size: var(--app-text-sm);
     line-height: 1.5;
     white-space: pre-wrap;

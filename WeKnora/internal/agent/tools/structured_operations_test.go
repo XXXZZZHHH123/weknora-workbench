@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
@@ -159,4 +160,28 @@ func TestStructuredValidationAndServerErrorsRemainFailedEvidence(t *testing.T) {
 	})
 	_, err := base.Execute(ctx, json.RawMessage(`{"operation":"query_series","arguments":{}}`))
 	require.ErrorContains(t, err, "超过限制")
+}
+
+func TestStructuredRequestTimeoutIsExplicitWithoutTransportDetails(t *testing.T) {
+	release := make(chan struct{})
+	tool := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	})
+	// nativeReadTestTool registered server.Close first. Testing cleanup runs
+	// in LIFO order, so release the handler before Close waits on active work.
+	t.Cleanup(func() { close(release) })
+	tool.client.Timeout = 20 * time.Millisecond
+	ctx := types.WithCaller(context.Background(), types.Caller{
+		TenantID: 7, UserID: "actual-user", Role: types.TenantRoleViewer,
+	})
+
+	_, err := tool.Execute(ctx, json.RawMessage(`{"operation":"list_datasets","arguments":{}}`))
+	require.Error(t, err)
+	require.ErrorContains(t, err, "结构化表格请求超时")
+	require.ErrorContains(t, err, "未取得完整结果，不能据此判断来源不存在")
+	require.NotContains(t, err.Error(), "127.0.0.1")
+	require.NotContains(t, err.Error(), "Client.Timeout")
 }

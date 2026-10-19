@@ -124,6 +124,7 @@ type SearchKnowledgeTool struct {
 	knowledgeBaseService interfaces.KnowledgeBaseService
 	knowledgeService     interfaces.KnowledgeService
 	chunkService         interfaces.ChunkService
+	wikiPageService      interfaces.WikiPageService
 	searchTargets        types.SearchTargets // Pre-computed unified search targets
 	rerankModel          rerank.Reranker
 	config               *config.Config // Global config for fallback values
@@ -135,6 +136,14 @@ type SearchKnowledgeTool struct {
 	// contextImages attaches the images of results found by an image's own
 	// vector, for a model that can see them; see WithContextImages.
 	contextImages bool
+}
+
+// WithWikiPageService enables status checks for legacy/synchronized Wiki chunks
+// that can still appear in the general chunk index. A pending or failed
+// retraction must never expose the cached chunk body through search_knowledge.
+func (t *SearchKnowledgeTool) WithWikiPageService(service interfaces.WikiPageService) *SearchKnowledgeTool {
+	t.wikiPageService = service
+	return t
 }
 
 func (t *SearchKnowledgeTool) WithDocumentConstraint(constraint *RequestedDocumentConstraint) *SearchKnowledgeTool {
@@ -294,7 +303,10 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 			return &types.ToolResult{Success: false, Error: "精确页码读取需要指定唯一 document_ids；不能在多个报告之间混用页码"}, nil
 		}
 		args, _ := json.Marshal(ReadDocumentInput{ID: input.DocumentIDs[0], Page: input.Page, Limit: limit})
-		return NewReadDocumentTool(t.knowledgeService, t.chunkService, searchTargets).WithDocumentConstraint(t.documentConstraint).Execute(ctx, args)
+		return NewReadDocumentTool(t.knowledgeService, t.chunkService, searchTargets).
+			WithDocumentConstraint(t.documentConstraint).
+			WithWikiPageService(t.wikiPageService).
+			Execute(ctx, args)
 	}
 
 	kbIDs := searchTargets.GetAllKnowledgeBaseIDs()
@@ -398,8 +410,13 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 		// caption hit stays and takes the image along.
 		final = t.deduplicateResults(append(final, keptOutside...))
 	}
+	final, withheldWikiChunks := t.filterWikiSearchResults(ctx, final)
 	if t.documentConstraint != nil && len(t.documentConstraint.selectedIDs()) == 0 && len(final) > 0 {
-		return t.documentCandidates(ctx, final, query), nil
+		candidates := t.documentCandidates(ctx, final, query)
+		if withheldWikiChunks > 0 {
+			candidates.Data["withheld_retracted_or_unverified_wiki_chunks"] = withheldWikiChunks
+		}
+		return candidates, nil
 	}
 
 	// Enrich image info for search results (lazy-loaded from child image chunks)
@@ -418,6 +435,9 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 	}
 
 	result, omitted := t.formatWithinBudget(ctx, final, kbIDs, query, mode)
+	if withheldWikiChunks > 0 {
+		result.Data["withheld_retracted_or_unverified_wiki_chunks"] = withheldWikiChunks
+	}
 	if omitted > 0 {
 		result.Data["omitted_for_budget"] = omitted
 	}
@@ -435,10 +455,34 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 	if rerankRejected > 0 {
 		result.Data["rerank_rejected"] = rerankRejected
 	}
-	if len(final) == 0 {
+	if len(final) == 0 && withheldWikiChunks > 0 {
+		result.Output = fmt.Sprintf("Withheld %d Wiki page chunk(s) because their current retraction status could not be verified or review is pending; consult current source documents.", withheldWikiChunks)
+	} else if len(final) == 0 {
 		result.Output = emptySearchStatement(query, result.Data, len(kbIDs))
 	}
 	return result, nil
+}
+
+func (t *SearchKnowledgeTool) filterWikiSearchResults(ctx context.Context, results []*searchResultWithMeta) ([]*searchResultWithMeta, int) {
+	visible := make([]*searchResultWithMeta, 0, len(results))
+	withheld := 0
+	for _, result := range results {
+		if result == nil || result.SearchResult == nil {
+			continue
+		}
+		if result.ChunkType != string(types.ChunkTypeWikiPage) && !strings.HasPrefix(result.ID, "wp-") {
+			visible = append(visible, result)
+			continue
+		}
+		page, verified := t.resolveWikiSearchPage(ctx, result)
+		state := types.ReadWikiRetractionState(page)
+		if !verified || len(state.PendingSourceIDs) > 0 || len(state.FailedSourceIDs) > 0 {
+			withheld++
+			continue
+		}
+		visible = append(visible, result)
+	}
+	return visible, withheld
 }
 
 // splitKeptOutsideTopK separates the results kept outside the rerank top-k
@@ -1107,6 +1151,7 @@ func (t *SearchKnowledgeTool) formatOutput(
 	query string,
 	mode string,
 ) *types.ToolResult {
+	results, withheldWikiChunks := t.filterWikiSearchResults(ctx, results)
 	data := map[string]interface{}{
 		"knowledge_base_ids": kbsToSearch,
 		"query":              query,
@@ -1116,7 +1161,17 @@ func (t *SearchKnowledgeTool) formatOutput(
 		"count":              0,
 		"display_type":       "search_results",
 	}
+	if withheldWikiChunks > 0 {
+		data["withheld_retracted_or_unverified_wiki_chunks"] = withheldWikiChunks
+	}
 	if len(results) == 0 {
+		if withheldWikiChunks > 0 {
+			return &types.ToolResult{
+				Success: true,
+				Output:  fmt.Sprintf("Withheld %d Wiki page chunk(s) because their current retraction status could not be verified or review is pending; consult current source documents.", withheldWikiChunks),
+				Data:    data,
+			}
+		}
 		return &types.ToolResult{
 			Success: true,
 			Output: fmt.Sprintf("No matching chunks for %q (mode=%s) in %d knowledge base(s).",
@@ -1221,15 +1276,42 @@ func (t *SearchKnowledgeTool) formatOutput(
 		} else {
 			row["chunk_id"] = result.ID
 			row["chunk_index"] = result.ChunkIndex
+			// SearchResult.Content is the complete indexed chunk body (not the
+			// match snippet). Make that exact source span explicit so later
+			// citation review can reconcile it with read_document(offset=0).
+			row["content_offset"] = 0
+			row["content_offset_space"] = "chunk_unicode_runes"
+			row["content_complete"] = true
 		}
 		formattedResults = append(formattedResults, row)
 	}
 	ob.WriteString("</search_results>")
+	if withheldWikiChunks > 0 {
+		fmt.Fprintf(&ob, "\n<withheld_retracted_or_unverified_wiki_chunks count=\"%d\">Wiki evidence was withheld pending verification; consult current source documents. This is not evidence that the requested information is absent.</withheld_retracted_or_unverified_wiki_chunks>", withheldWikiChunks)
+	}
 
 	data["results"] = formattedResults
 	data["count"] = len(formattedResults)
 	data["kb_counts"] = kbCounts
 	return &types.ToolResult{Success: true, Output: ob.String(), Data: data}
+}
+
+func (t *SearchKnowledgeTool) resolveWikiSearchPage(ctx context.Context, result *searchResultWithMeta) (*types.WikiPage, bool) {
+	if t.wikiPageService == nil || result == nil || result.SearchResult == nil {
+		return nil, false
+	}
+	const wikiChunkPrefix = "wp-"
+	if !strings.HasPrefix(result.ID, wikiChunkPrefix) || len(result.ID) == len(wikiChunkPrefix) {
+		return nil, false
+	}
+	page, err := t.wikiPageService.GetPageByID(ctx, strings.TrimPrefix(result.ID, wikiChunkPrefix))
+	if err != nil || page == nil || page.ID != strings.TrimPrefix(result.ID, wikiChunkPrefix) || page.KnowledgeBaseID != result.KnowledgeBaseID {
+		return nil, false
+	}
+	if tenantID := t.searchTargets.GetTenantIDForKB(result.KnowledgeBaseID); tenantID != 0 && page.TenantID != tenantID {
+		return nil, false
+	}
+	return page, true
 }
 
 // getEnrichedPassage merges the raw chunk content with image captions / OCR

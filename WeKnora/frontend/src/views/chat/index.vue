@@ -1903,8 +1903,8 @@ onBeforeRouteUpdate((to, from, next) => {
     min-width: 0;
     padding: 0 12px 0 var(--chat-content-inset, 20px);
     box-sizing: border-box;
-    border-bottom: 1px solid var(--td-component-stroke);
-    background: var(--cds-surface-1);
+    border-bottom: 0;
+    background: var(--td-bg-color-page);
 }
 
 .sandbox-header-toggle {

@@ -24,6 +24,7 @@ function followWorkspaceTypography() {
     const parentRoot = window.parent.document.documentElement;
     const sync = () => {
       const style = window.getComputedStyle(parentRoot);
+      if (style.getPropertyValue('--app-font-family').trim()) document.documentElement.classList?.add('workspace-embedded');
       for (const name of ['--app-font-family', '--app-font-family-mono']) {
         const value = style.getPropertyValue(name).trim();
         if (value) document.documentElement.style.setProperty(name, value);

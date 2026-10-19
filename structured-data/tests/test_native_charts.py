@@ -6,7 +6,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from structured_data.native_charts import reference, extract
+from structured_data.native_charts import VERSION, reference, extract
 from structured_data.store import DataStore
 from structured_data.field_resolver import FieldResolver
 
@@ -18,7 +18,13 @@ def chart_store(tmp_path):
     main = ns+'spreadsheetml/2006/main'; office = ns+'officeDocument/2006/relationships'
     chart = ns+'drawingml/2006/chart'; drawing = ns+'drawingml/2006/spreadsheetDrawing'
     def relationships(items):
-        return '<Relationships xmlns="'+ns+'package/2006/relationships">'+''.join(f'<Relationship Id="{key}" Target="{target}"/>' for key,target in items)+'</Relationships>'
+        def relationship_type(target):
+            if 'worksheets/' in target: suffix = 'worksheet'
+            elif 'drawings/' in target: suffix = 'drawing'
+            elif 'charts/' in target: suffix = 'chart'
+            else: suffix = 'worksheet'
+            return office + '/' + suffix
+        return '<Relationships xmlns="'+ns+'package/2006/relationships">'+''.join(f'<Relationship Id="{key}" Type="{relationship_type(target)}" Target="{target}"/>' for key,target in items)+'</Relationships>'
     # The first curve deliberately uses a 2017 X axis for 2023 source values.
     curves = [('2023',"'源 表'!$B$2:$B$3"),('2022',"'源 表'!$B$4:$B$4"),
               ('未导入','待确认!B2:B4'),('外部','[else.xlsx]数据!B2:B4'),('命名范围','Sales')]
@@ -38,6 +44,7 @@ def chart_store(tmp_path):
                     for row,day,value in [(2,'2023-09-07',10),(3,'2023-09-08',20),(4,'2024-01-01',99),(5,'2025-01-01',1234)]]
     store=DataStore(tmp_path/'data')
     ds=store.publish(dict(source_file=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest(),rule_version='test',series=series,observations=observations,sheets=[],excluded_regions=[],issues=[]))['dataset_id']
+    store.chart_index(ds)
     return store,ds,path
 
 
@@ -55,6 +62,54 @@ def test_real_objects_preserve_literal_legends_and_actual_dates(chart_store):
     assert [c['status'] for c in chart['curves']]==['linked','linked','pending_source','unsupported','unsupported']
     assert chart['status']=='partial'
     assert store.chart_index(ds)==idx
+
+
+def test_dual_axis_binding_is_preserved_as_xml_evidence(chart_store, tmp_path):
+    _, _, original_path = chart_store
+    from structured_data.source_inspection import _chart_evidence
+
+    ns = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+    main = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    office = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    drawing = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+    chart_xml = f'''<c:chartSpace xmlns:c="{ns}" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <c:chart><c:plotArea>
+        <c:lineChart><c:axId val="10"/><c:axId val="20"/><c:ser><c:tx><c:v>Revenue</c:v></c:tx><c:cat><c:strRef><c:f>Data!A2:A3</c:f></c:strRef></c:cat><c:val><c:numRef><c:f>Data!B2:B3</c:f></c:numRef></c:val></c:ser></c:lineChart>
+        <c:lineChart><c:axId val="10"/><c:axId val="30"/><c:ser><c:tx><c:v>Volume</c:v></c:tx><c:cat><c:strRef><c:f>Data!A2:A3</c:f></c:strRef></c:cat><c:val><c:numRef><c:f>Data!C2:C3</c:f></c:numRef></c:val></c:ser></c:lineChart>
+        <c:catAx><c:axId val="10"/><c:title><c:tx><c:rich><a:p><a:r><a:t>Period</a:t></a:r></a:p></c:rich></c:tx></c:title><c:crossAx val="20"/></c:catAx>
+        <c:valAx><c:axId val="20"/><c:title><c:tx><c:rich><a:p><a:r><a:t>USD</a:t></a:r></a:p></c:rich></c:tx></c:title><c:crossAx val="10"/></c:valAx>
+        <c:valAx><c:axId val="30"/><c:title><c:tx><c:rich><a:p><a:r><a:t>Units</a:t></a:r></a:p></c:rich></c:tx></c:title><c:crossAx val="10"/><c:dispUnits><c:builtInUnit val="thousands"/></c:dispUnits></c:valAx>
+      </c:plotArea></c:chart></c:chartSpace>'''
+    source_path = tmp_path / 'dual-axis.xlsx'
+    with ZipFile(original_path) as source_zip, ZipFile(source_path, 'w') as target_zip:
+        for name in source_zip.namelist():
+            if name == 'xl/charts/chart1.xml':
+                target_zip.writestr(name, chart_xml)
+            else:
+                target_zip.writestr(name, source_zip.read(name))
+
+    charts = extract(source_path)
+    (tmp_path / f'{VERSION}.json').write_text(json.dumps({
+        'version': VERSION, 'dataset_id': tmp_path.name,
+        'chart_count': len(charts), 'charts': charts,
+    }), encoding='utf-8')
+    chart = charts[0]
+    assert chart['axis_titles'] == ['Period', 'USD', 'Units']
+    assert [(axis['id'], axis['type'], axis['title']) for axis in chart['axes']] == [
+        ('10', 'catAx', 'Period'), ('20', 'valAx', 'USD'), ('30', 'valAx', 'Units')]
+    assert chart['axes'][2]['display_units'] == {'built_in': 'thousands', 'custom': None}
+    assert [curve['axis_ids'] for curve in chart['curves']] == [['10', '20'], ['10', '30']]
+
+    source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    evidence, _, _ = _chart_evidence(source_path, 'Data', [('B2:B3', (2, 2, 2, 3))], str(source_path), source_sha)
+    assert len(evidence) == 1
+    assert evidence[0]['curve_label'] == 'Revenue'
+    assert evidence[0]['axis_ids'] == ['10', '20']
+    assert evidence[0]['axes'][1]['title'] == 'USD'
+    # The volume curve remains tied to the separate axis and range.
+    volume, _, _ = _chart_evidence(source_path, 'Data', [('C2:C3', (3, 2, 3, 3))], str(source_path), source_sha)
+    assert volume[0]['curve_label'] == 'Volume'
+    assert volume[0]['axis_ids'] == ['10', '30']
 
 
 def test_query_uses_source_not_cache_and_never_leaks_outside_chart(chart_store):
@@ -105,6 +160,7 @@ def test_each_curve_has_independent_range(chart_store,monkeypatch):
         for c,label in zip(charts[0]['curves'],['1901','2001']):c['label']=label
         return charts
     monkeypatch.setattr(native_charts,'extract',contract_charts)
+    (store._path(ds) / f'{native_charts.VERSION}.json').unlink()
     idx=store.chart_index(ds);curves=idx['charts'][0]['curves']
     assert all(c['status']=='linked' for c in curves)
     assert curves[0]['series_id']!=curves[1]['series_id']

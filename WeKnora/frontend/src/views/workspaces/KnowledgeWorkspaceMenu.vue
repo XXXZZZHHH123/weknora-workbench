@@ -202,7 +202,7 @@ onBeforeUnmount(() => {
   height: 100%;
   min-height: 0;
   box-sizing: border-box;
-  padding: 12px 8px 8px;
+  padding: 8px;
   border-right: 1px solid var(--cds-border, var(--app-border-color));
   background: var(--nav-surface);
   color: var(--nav-text);
@@ -213,7 +213,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 58px;
+  min-height: var(--app-sidebar-brand-height);
   margin: 0 2px 0 10px;
 }
 
@@ -261,9 +261,9 @@ onBeforeUnmount(() => {
 .knowledge-workspace-menu__context {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
-  margin: 0 12px 14px;
+  margin: 0 12px 10px;
   font-size: var(--app-text-base);
 }
 
@@ -303,8 +303,8 @@ onBeforeUnmount(() => {
 // Match the global sidebar's compact, neutral navigation while keeping the
 // knowledge-base-specific hierarchy and expandable rows intact.
 .knowledge-workspace-menu__navigation :deep(.workspace-nav-node__row) {
-  min-height: 36px;
-  margin-bottom: 2px;
+  min-height: var(--app-sidebar-row-height);
+  margin-bottom: 1px;
   padding-left: calc(10px + var(--nav-depth) * 14px);
   padding-right: 6px;
   border-radius: var(--cds-radius-control, var(--app-radius-sm));
@@ -328,8 +328,8 @@ onBeforeUnmount(() => {
 
 .knowledge-workspace-menu__navigation :deep(.workspace-nav-node__link) {
   gap: 10px;
-  padding-top: 7px;
-  padding-bottom: 7px;
+  padding-top: var(--app-sidebar-link-padding-y);
+  padding-bottom: var(--app-sidebar-link-padding-y);
 }
 
 .knowledge-workspace-menu__navigation :deep(.workspace-nav-node__title) {
@@ -339,6 +339,8 @@ onBeforeUnmount(() => {
 }
 
 .knowledge-workspace-menu__navigation :deep(.workspace-nav-node__icon) {
+  width: 16px;
+  height: 16px;
   color: var(--nav-text-secondary);
 }
 
@@ -357,7 +359,7 @@ onBeforeUnmount(() => {
 }
 
 .knowledge-workspace-menu__navigation :deep([data-nav-depth="1"] > .workspace-nav-node__row) {
-  min-height: 32px;
+  min-height: var(--app-sidebar-row-height);
   margin-bottom: 1px;
 }
 
@@ -376,11 +378,11 @@ onBeforeUnmount(() => {
 }
 
 .knowledge-workspace-menu__navigation :deep(.kb-folder-row) {
-  min-height: 32px;
+  min-height: var(--app-sidebar-row-height);
   height: auto;
-  margin-bottom: 2px;
-  padding-top: 2px;
-  padding-bottom: 2px;
+  margin-bottom: 1px;
+  padding-top: 0;
+  padding-bottom: 0;
   border-radius: var(--cds-radius-control, var(--app-radius-sm));
   color: var(--nav-text-secondary);
   font-size: var(--app-text-base);
@@ -410,13 +412,13 @@ onBeforeUnmount(() => {
 }
 
 .knowledge-workspace-menu__navigation :deep(.kb-folder-row__more) {
-  width: 32px;
-  height: 32px;
+  width: var(--app-sidebar-row-height);
+  height: var(--app-sidebar-row-height);
   border-radius: var(--cds-radius-control, var(--app-radius-sm));
 }
 
 .knowledge-workspace-menu__navigation :deep(.kb-folder-row__trailing) {
-  height: 32px;
+  height: var(--app-sidebar-row-height);
 }
 
 .knowledge-workspace-menu__error {
@@ -461,5 +463,10 @@ onBeforeUnmount(() => {
     min-width: 0;
     box-shadow: 12px 0 28px color-mix(in srgb, var(--nav-text) 12%, transparent);
   }
+}
+
+.knowledge-workspace-menu__navigation .knowledge-workspace-menu__icon {
+  width: var(--app-sidebar-row-height);
+  height: var(--app-sidebar-row-height);
 }
 </style>

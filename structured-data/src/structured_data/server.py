@@ -6,6 +6,7 @@ from dataclasses import replace
 import datetime as dt
 from decimal import Decimal
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -32,6 +33,7 @@ from .review_worker import run_review_task
 from .review_errors import error_location
 
 MAX_UPLOAD = 100 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 
 class _ResearchFactsJSONResponse(JSONResponse):
@@ -134,22 +136,58 @@ def create_app(data_dir: str | Path | None = None):
         """列出已完成的Excel数据集、文件版本及支持/排除区域。同名文件默认选is_latest_for_source=true；用户指定历史版本时按指定版本。不把旧数据当实时行情。"""
         # Historical versions need identity metadata, not repeated full coverage
         # inventories. Keep the management API's full report unchanged.
+        directory_started = time.perf_counter()
+        logger.info('structured list_datasets directory_start question_supplied=%s', bool(question))
         datasets=[]
-        for source in store.list_datasets():
+        try:
+            sources = store.list_datasets()
+        except Exception as exc:
+            logger.warning('structured list_datasets directory_failed elapsed_ms=%d error_type=%s',
+                           round((time.perf_counter()-directory_started)*1000), type(exc).__name__)
+            raise
+        for source in sources:
             item={k:source[k] for k in ('dataset_id','source_file','sha256','imported_at',
                 'is_latest_for_source','series_count','import_id','use_reviewed_mappings','parent_dataset_id')}
             if source['is_latest_for_source']:
                 item['sheets']=[s['name'] for s in source['sheets']]
                 item['pending_sheets']=source['pending_sheets']
+                item['pending_sheet_states']=source.get('pending_sheet_states', [])
                 item['empty_sheets']=source['empty_sheets']
                 item['coverage_notice']=source.get('coverage_notice','仅查询已导入范围。')
             datasets.append(item)
+        latest_count = sum(1 for item in datasets if item['is_latest_for_source'])
+        logger.info('structured list_datasets directory_complete elapsed_ms=%d datasets=%d latest=%d',
+                    round((time.perf_counter()-directory_started)*1000), len(datasets), latest_count)
         result={"datasets": datasets}
         if question:
             from .field_index import literal_fields
             matches=[]
-            for dataset in [d for d in datasets if d['is_latest_for_source']][:8]:
-                for field in literal_fields(store.catalog(dataset['dataset_id']),question):
+            for position, dataset in enumerate([d for d in datasets if d['is_latest_for_source']][:8], 1):
+                catalog_started = time.perf_counter()
+                logger.info('structured list_datasets catalog_start position=%d dataset_id=%s',
+                            position, dataset['dataset_id'])
+                try:
+                    catalog = store.catalog(dataset['dataset_id'])
+                except Exception as exc:
+                    logger.warning('structured list_datasets catalog_failed position=%d dataset_id=%s elapsed_ms=%d error_type=%s',
+                                   position, dataset['dataset_id'],
+                                   round((time.perf_counter()-catalog_started)*1000), type(exc).__name__)
+                    raise
+                logger.info('structured list_datasets catalog_complete position=%d dataset_id=%s elapsed_ms=%d fields=%d',
+                            position, dataset['dataset_id'],
+                            round((time.perf_counter()-catalog_started)*1000), len(catalog))
+                literal_started = time.perf_counter()
+                try:
+                    fields = literal_fields(catalog,question)
+                except Exception as exc:
+                    logger.warning('structured list_datasets literal_recall_failed position=%d dataset_id=%s elapsed_ms=%d error_type=%s',
+                                   position, dataset['dataset_id'],
+                                   round((time.perf_counter()-literal_started)*1000), type(exc).__name__)
+                    raise
+                logger.info('structured list_datasets literal_recall position=%d dataset_id=%s elapsed_ms=%d matches=%d',
+                            position, dataset['dataset_id'],
+                            round((time.perf_counter()-literal_started)*1000), len(fields))
+                for field in fields:
                     matches.append({'dataset_id':dataset['dataset_id'],'source_file':dataset['source_file'],**{k:field.get(k) for k in ('series_id','sheet','metric','unit','dimensions','header_cells','source_context')}})
             result['literal_fields']=matches[:64]
             result['literal_field_count']=len(result['literal_fields'])
@@ -167,11 +205,33 @@ def create_app(data_dir: str | Path | None = None):
                        ranges: list[str] | None = None, sums: list[list[str]] | None = None,
                        max_matches: int = 10, max_cells: int = 200,
                        padding_rows: int = 2, padding_cols: int = 2) -> dict:
-        """只读核验保留的原 Excel，包括 parsed_range 外区域。dataset_id 必须来自真实目录，文件 SHA256 必须与该版本一致。searches 是原值/公式的字面匹配（最多8词），可跨全部列；未指定 sheet 时按原工作簿顺序扫描，预算可能耗在其他表，目标表根本未扫描。已定位字段后必须指定该字段的真实 sheet 定向检索。跨多表搜索截断时看 scan.unscanned_sheets/incomplete_sheets、truncated 和 next_step；matches=[] 不等于没有数据，继续目标表检索。ranges 支持 A1、$绝对坐标、大小写及同工作表前缀；给出 sheet，或每个引用都带同一真实工作表前缀，最多8段、总格数不超过 max_cells(1..400)，返回每格原值、坐标及公式缓存。sums 最多8组、每组1..16个A1引用（单格或有限矩形范围，如 C74:C85、D74:D85），展开后每组至少2格；组内重叠坐标拒绝，组间重复按实际输出格数计入 max_cells。同样允许同表前缀与 $，不接受公式、整列、跨表或外部文件，由 Decimal 求和并返回全部展开原单元格；缺失/错误/无缓存不补零。max_matches 1..30；邻域 padding_rows 0..3、padding_cols 0..4。只检视原件，不重解析、不重新计算公式、不猜单位或年度；年度小表可能与月度汇总/不同定义冲突，必须核对并展示，不能自行选优先表。"""
-        from .source_inspection import inspect_source as run_inspection
+        """只读核验原 Excel 的单元格、公式及相交原生图表的标题、轴标题和系列引用，追查字段目录未覆盖的来源证据；包括 parsed_range 外区域。dataset_id 必须来自真实目录，文件 SHA256 必须与该版本一致。searches 是原值/公式的字面匹配（最多8词），可跨全部列；未指定 sheet 时按原工作簿顺序扫描，预算可能耗在其他表，目标表根本未扫描。已定位字段后必须指定该字段的真实 sheet 定向检索。跨多表搜索截断时看 scan.unscanned_sheets/incomplete_sheets、truncated 和 next_step；matches=[] 不等于没有数据，继续目标表检索。ranges 支持 A1、$绝对坐标、大小写及同工作表前缀；给出 sheet，或每个引用都带同一真实工作表前缀，最多8段、总格数不超过 max_cells(1..400)，返回每格原值、坐标及公式缓存。sums 最多8组、每组1..16个A1引用（单格或有限矩形范围，如 C74:C85、D74:D85），展开后每组至少2格；组内重叠坐标拒绝，组间重复按实际输出格数计入 max_cells。同样允许同表前缀与 $，不接受公式、整列、跨表或外部文件，由 Decimal 求和并返回全部展开原单元格；缺失/错误/无缓存不补零。max_matches 1..30；邻域 padding_rows 0..3、padding_cols 0..4。只检视原件，不重解析、不重新计算公式、不猜单位或年度；年度小表可能与月度汇总/不同定义冲突，必须核对并展示，不能自行选优先表。提供 ranges 时另返回最多20条与这些单元格相交的原生图表文本引用（标题、轴标题、曲线标签与原始范围）；chart_references_truncated 标明超限遗漏。图表返回的是原始文本及真实引用，不自动确认字段单位；模型须结合系列范围、轴对应、表头、公式和完整上下文判断适用性，不把其他系列或另一轴的单位套用。目录单位缺省不代表原件没有单位证据。"""
+        from .source_inspection import (
+            SourceEvidenceReadBudgetExceeded,
+            SourceInspectionReadError,
+            SourceVerificationError,
+            inspect_source as run_inspection,
+        )
         try:
             return run_inspection(store, dataset_id, sheet, searches, ranges, sums,
                                   max_matches, max_cells, padding_rows, padding_cols)
+        except SourceEvidenceReadBudgetExceeded as exc:
+            return {'kind': 'structured_source_inspection', 'status': 'error',
+                    'error': 'source_read_budget_exceeded', 'phase': exc.phase,
+                    'scope': exc.scope, 'retryable': True,
+                    'next_step': '原件处理预算已用尽，未返回部分结果；减少并行读取、缩小范围或改为定向读取后重试。此状态不表示原表没有证据。'}
+        except SourceInspectionReadError as exc:
+            logger.exception('Structured source inspection failed during %s (cause type %s)',
+                             exc.phase, exc.exception_type)
+            return {'kind': 'structured_source_inspection', 'status': 'error',
+                    'error': 'source_read_failed', 'phase': exc.phase,
+                    'exception_type': exc.exception_type, 'retryable': False,
+                    'next_step': '原件读取未能完成，未返回来源内容；可核对版本后重试。这不表示原表没有证据。'}
+        except SourceVerificationError as exc:
+            return {'kind': 'structured_source_inspection', 'status': 'error',
+                    'error': str(exc), 'phase': exc.phase,
+                    'exception_type': exc.exception_type, 'retryable': False,
+                    'next_step': '原件完整性无法核验；重新导入可信原件并获取真实版本目录，不使用本次数据作答。'}
         except ValueError as exc:
             error = str(exc)
             damaged_original = any(marker in error for marker in ('SHA256', '原 Excel 发生变化', '没有保留原 Excel'))
@@ -179,6 +239,12 @@ def create_app(data_dir: str | Path | None = None):
                     'retryable': not damaged_original,
                     'next_step': '原件完整性无法核验；重新导入可信原件并获取真实版本目录，不使用本次数据作答'
                     if damaged_original else '缩小读取范围或修正参数；数据集编号必须重新从当前空间的版本目录取得。这是系统反馈，不是原表没有数据。'}
+        except Exception as exc:
+            logger.exception('Unexpected structured source inspection failure')
+            return {'kind': 'structured_source_inspection', 'status': 'error',
+                    'error': 'source_read_failed', 'phase': 'inspection',
+                    'exception_type': type(exc).__name__, 'retryable': False,
+                    'next_step': '原件读取未能完成，未返回来源内容；可核对版本后重试。这不表示原表没有证据。'}
 
     @mcp.tool()
     def list_series(dataset_id: str | None = None, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None) -> dict:

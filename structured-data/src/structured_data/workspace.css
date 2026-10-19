@@ -1,5 +1,14 @@
-/* CDS warm-neutral palette; the source-format canvas and sheet-review layout keep their original presentation. */
-:root{--primary:#A84427;--primary-hover:#92391F;--primary-active:#7D301B;--on-primary:#fff;--soft:#F8EEE9;--canvas:#F5F3F0;--paper:#fff;--surface-soft:#FAF9F7;--text:#211D1A;--muted:#6C635D;--line:#E9E4DF;--line-strong:#D8D0C9;--navy:var(--primary-hover);--warning:#8a602b;--warning-soft:#fff3df;--error:#a32b26;--control-radius:8px;--focus:color-mix(in srgb,var(--primary) 20%,transparent);--motion-fast:140ms;--motion-base:180ms;--ease-out:cubic-bezier(.2,.8,.2,1)}
+/* Inter is bundled locally under the SIL Open Font License. */
+@font-face {
+  font-family: Inter;
+  src: url('/fonts/InterVariable.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+/* CDS light-neutral palette; the source-format canvas and sheet-review layout keep their original presentation. */
+:root{--primary:#A84427;--primary-hover:#92391F;--primary-active:#7D301B;--on-primary:#fff;--soft:#F8EEE9;--canvas:#FCFCFB;--paper:#fff;--surface-soft:#FBFBF9;--text:#1F1E1D;--muted:#73726C;--line:#E6E5E2;--line-strong:#D4D3CE;--navy:var(--primary-hover);--warning:#8a602b;--warning-soft:#fff3df;--error:#a32b26;--control-radius:8px;--focus:color-mix(in srgb,var(--primary) 20%,transparent);--motion-fast:140ms;--motion-base:180ms;--ease-out:cubic-bezier(.2,.8,.2,1)}
 :root[theme-mode="dark"]{color-scheme:dark;--primary:#E7A087;--primary-hover:#EFB39E;--primary-active:#F4C2B1;--on-primary:#261713;--soft:#38251F;--canvas:#171513;--paper:#24201D;--surface-soft:#1D1A18;--text:#F4EFEB;--muted:#AA9E95;--line:#39322D;--line-strong:#514740;--warning:#deb871;--warning-soft:#3e3222;--error:#f49c96}
 .visually-hidden{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 #directUpload,#queryWorkspace{color:var(--text)}
@@ -120,5 +129,5 @@ body.native-source #directUpload .import-actions{display:none}
 #directUpload button.secondary:active:not(:disabled){background:var(--soft)}
 #queryWorkspace button.secondary:active:not(:disabled){background:var(--soft)}
 #directUpload :is(input,select),#queryWorkspace :is(input,select){transition:border-color var(--motion-fast) var(--ease-out),background-color var(--motion-fast) var(--ease-out)}
-#importReview,body.review-only #importReview{--primary:#A84427;--primary-hover:#92391F;--primary-active:#7D301B;--on-primary:#fff;--navy:var(--primary-hover);--focus:color-mix(in srgb,var(--primary) 20%,transparent);--soft:#F8EEE9;--paper:#fff;--surface-soft:#FAF9F7;--text:#211D1A;--muted:#6C635D;--line:#E9E4DF;--line-strong:#D8D0C9;--warning:#8a602b;--warning-soft:#fff3df;--error:#a32b26;--control-radius:6px;background:var(--paper);color:var(--text);color-scheme:light}
+#importReview,body.review-only #importReview{--primary:#A84427;--primary-hover:#92391F;--primary-active:#7D301B;--on-primary:#fff;--navy:var(--primary-hover);--focus:color-mix(in srgb,var(--primary) 20%,transparent);--soft:#F8EEE9;--paper:#fff;--surface-soft:#FBFBF9;--text:#1F1E1D;--muted:#73726C;--line:#E6E5E2;--line-strong:#D4D3CE;--warning:#8a602b;--warning-soft:#fff3df;--error:#a32b26;--control-radius:6px;background:var(--paper);color:var(--text);color-scheme:light}
 @media(prefers-reduced-motion:reduce){#directUpload :is(button,input,select),#queryWorkspace :is(button,input,select){transition:none}}

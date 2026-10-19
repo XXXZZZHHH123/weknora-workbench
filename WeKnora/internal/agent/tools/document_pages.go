@@ -37,8 +37,17 @@ func pageText(content string, current, requested int) (string, int) {
 		if current == requested {
 			selected.WriteString(content[start:marker[0]])
 		}
-		current = pageNumberInMarker(documentPageMarker.FindStringSubmatch(content[marker[0]:marker[1]]))
-		start = marker[0]
+		markerText := content[marker[0]:marker[1]]
+		current = pageNumberInMarker(documentPageMarker.FindStringSubmatch(markerText))
+		// Canonical HTML slide/page comments are parser boundary metadata and
+		// must not create a marker-only pseudo-row. Markdown headings also carry
+		// page numbers, but their remaining text is a real source title, so keep
+		// the full heading in the selected page body.
+		if strings.HasPrefix(strings.TrimSpace(markerText), "<!--") {
+			start = marker[1]
+		} else {
+			start = marker[0]
+		}
 	}
 	if current == requested {
 		selected.WriteString(content[start:])
@@ -91,7 +100,7 @@ func pageImages(info, content string, page int, clipped bool) string {
 	return string(encoded)
 }
 
-func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *types.Knowledge, requested, offset, limit int) (*types.ToolResult, error) {
+func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *types.Knowledge, requested, offset, limit int, segment *chunkContentSegment) (*types.ToolResult, error) {
 	var selected []*types.Chunk
 	var total int64
 	current := 0
@@ -124,6 +133,45 @@ func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *type
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("指定文档第 %d 页未找到可读取的页码标记或内容。需要补齐该文档的页码解析；不能把第 %d 个分块当作第 %d 页，也不能引用其他报告的同名图。", requested, requested, requested), Data: map[string]interface{}{"knowledge_id": knowledge.ID, "requested_page": requested}}, nil
 	}
 	pageTotal := len(selected)
+	if segment != nil {
+		var target *types.Chunk
+		for _, c := range selected {
+			if c.ID == segment.chunkID {
+				target = c
+				break
+			}
+		}
+		if target == nil {
+			return &types.ToolResult{Success: false, Error: "the selected chunk does not contain content on the requested physical page"}, nil
+		}
+		row, err := sliceChunkContent(ctx, target, segment.offset, segment.limit)
+		if err != nil {
+			return &types.ToolResult{Success: false, Error: err.Error()}, nil
+		}
+		row.role = "requested_page"
+		selected = []*types.Chunk{row.chunk}
+		rows := []readChunkRow{row}
+		data := t.buildData(knowledge, total, rows)
+		data["page"] = requested
+		data["page_chunks"] = pageTotal
+		data["offset"] = offset
+		data["offset_space"] = "physical_page_chunks"
+		data["page_complete"] = row.contentComplete && row.contentOffset == 0 && pageTotal == 1 && offset == 0
+		data["content_offset"] = row.contentOffset
+		data["content_complete"] = row.contentComplete
+		if !row.contentComplete {
+			data["next_content_offset"] = row.nextContentOffset
+		}
+		data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": knowledge.ID, "page": requested, "plan_validated": t.documentConstraint != nil}
+		data["chunks"].([]map[string]interface{})[0]["page"] = requested
+		data["chunks"].([]map[string]interface{})[0]["content_offset"] = row.contentOffset
+		data["chunks"].([]map[string]interface{})[0]["content_complete"] = row.contentComplete
+		data["chunks"].([]map[string]interface{})[0]["content_offset_space"] = "physical_page_chunk_unicode_runes"
+		if !row.contentComplete {
+			data["chunks"].([]map[string]interface{})[0]["next_content_offset"] = row.nextContentOffset
+		}
+		return &types.ToolResult{Success: true, Output: t.buildOutput(knowledge, total, rows, ""), Data: data}, nil
+	}
 	if offset >= pageTotal {
 		return &types.ToolResult{Success: false, Error: "offset is outside the requested physical page", Data: map[string]interface{}{"page": requested, "page_chunks": pageTotal}}, nil
 	}
@@ -140,13 +188,22 @@ func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *type
 			visual = true
 		}
 	}
+	rows = boundChunkRowsContent(ctx, rows)
 	data := t.buildData(knowledge, total, rows)
 	data["page"] = requested
 	data["page_chunks"] = pageTotal
 	data["offset"] = offset
-	data["page_complete"] = offset == 0 && len(selected) == pageTotal
+	pageComplete := offset == 0 && len(rows) == pageTotal
+	for _, row := range rows {
+		if !row.contentComplete && row.nextContentOffset > 0 {
+			pageComplete = false
+		}
+	}
+	data["page_complete"] = pageComplete
+	data["offset_space"] = "physical_page_chunks"
+	annotateContentPagination(data, rows)
 	data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": knowledge.ID, "page": requested, "has_visual_evidence": visual, "plan_validated": t.documentConstraint != nil}
-	if next := offset + len(selected); next < pageTotal {
+	if next := offset + len(rows); next < pageTotal {
 		data["next_offset"] = next
 		data["truncated"] = true
 	}

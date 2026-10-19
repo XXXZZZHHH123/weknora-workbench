@@ -159,7 +159,7 @@ func TestStalledShortAnswerInvalidVerdictIsRuntimeFailure(t *testing.T) {
 	state := &types.AgentState{}
 	engine.finishStalledTurn(context.Background(), state, "session", &types.ChatResponse{Content: "6", FinishReason: "incomplete"}, true, "Return the requested symbol.", nil)
 	require.True(t, state.IsComplete)
-	require.Equal(t, truncatedAnswerFallback, state.FinalAnswer)
+	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
 }
 
 func TestAbnormalShortAnswerDoesNotStreamBeforeSemanticVerification(t *testing.T) {

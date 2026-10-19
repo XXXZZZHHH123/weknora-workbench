@@ -14,6 +14,7 @@ function fixture(surface: keyof typeof surfaces, options: { standalone?: boolean
   const end = source.indexOf('followWorkspaceTypography();', start)
   assert.ok(start >= 0 && end > start)
   const values = new Map([['--app-font-family', '"Chosen Interface", sans-serif'], ['--app-font-family-mono', '"Chosen Code", monospace'], ['--app-font-family-reading', 'must-not-copy'], ['zoom', '1.1']])
+  const classes = new Set<string>()
   const applied = new Map<string, string>(), events: Record<string, () => void> = {}
   let changed = () => {}, observing = false
   const parentRoot = {}
@@ -22,19 +23,20 @@ function fixture(surface: keyof typeof surfaces, options: { standalone?: boolean
     addEventListener: (name: string, callback: () => void) => { events[name] = callback } }
   if (options.standalone) window.parent = window
   runInNewContext(source.slice(start, end) + 'followWorkspaceTypography();', {
-    window, document: { documentElement: { style: { setProperty: (key: string, value: string) => applied.set(key, value) } } },
+    window, document: { documentElement: { classList: { add: (name: string) => classes.add(name) }, style: { setProperty: (key: string, value: string) => applied.set(key, value) } } },
     MutationObserver: class {
       constructor(callback: () => void) { changed = () => { if (observing) callback() } }
       observe(target: unknown, config: { attributeFilter: string[] }) { assert.equal(target, parentRoot); assert.equal(config.attributeFilter.join(','), 'style'); observing = true }
       disconnect() { observing = false }
     },
   })
-  return { values, applied, events, changed: () => changed(), observing: () => observing }
+  return { values, applied, classes, events, changed: () => changed(), observing: () => observing }
 }
 
 for (const surface of Object.keys(surfaces) as Array<keyof typeof surfaces>) {
   test(`${surface}: inherits only selected interface/code fonts and follows later changes`, () => {
     const f = fixture(surface)
+    assert.equal(f.classes.has('workspace-embedded'), surface === 'research', 'Only recognized embedded research pages use the compact shell')
     assert.deepEqual([...f.applied.keys()], ['--app-font-family', '--app-font-family-mono'])
     assert.equal(f.applied.get('--app-font-family'), '"Chosen Interface", sans-serif')
     f.values.set('--app-font-family', '"Next Interface", sans-serif')
@@ -58,5 +60,7 @@ for (const surface of Object.keys(surfaces) as Array<keyof typeof surfaces>) {
   test(`${surface}: standalone and inaccessible parents retain local defaults`, () => {
     assert.equal(fixture(surface, { standalone: true }).applied.size, 0)
     assert.equal(fixture(surface, { crossOrigin: true }).applied.size, 0)
+    assert.equal(fixture(surface, { standalone: true }).classes.size, 0)
+    assert.equal(fixture(surface, { crossOrigin: true }).classes.size, 0)
   })
 }

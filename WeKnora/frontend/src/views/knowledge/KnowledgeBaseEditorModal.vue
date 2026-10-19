@@ -1939,7 +1939,7 @@ watch(() => chatResources.allModels, (list) => {
 }
 // 原始属性名缩小并加括号，便于与处理轨迹里的字段对上，又不干扰阅读
 .image-attr-name {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--app-font-family-mono);
   font-size: var(--app-text-xs);
   color: var(--td-text-color-placeholder);
 
@@ -1971,7 +1971,7 @@ watch(() => chatResources.allModels, (list) => {
   display: contents;
 
   code {
-    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-family: var(--app-font-family-mono);
     color: var(--td-text-color-primary);
 
     // 冒号紧跟取值，不留空隙：none: 没有文字
@@ -2001,7 +2001,7 @@ watch(() => chatResources.allModels, (list) => {
 .image-attr-condition-raw {
   display: block;
   margin-top: 1px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--app-font-family-mono);
   font-size: var(--app-text-xs);
   color: var(--td-text-color-placeholder);
 }

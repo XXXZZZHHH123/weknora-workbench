@@ -39,6 +39,7 @@ def test_literal_chart_labels_do_not_override_verified_source_dates(chart_store,
         for curve,label in zip(charts[0]['curves'],labels):curve['label']=label
         return charts
     monkeypatch.setattr(native_charts,'extract',renamed)
+    (store._path(dataset) / f'{native_charts.VERSION}.json').unlink()
     curves=store.chart_index(dataset)['charts'][0]['curves']
     assert [c['label'] for c in curves]==labels
     assert all(c['status']=='linked' for c in curves)

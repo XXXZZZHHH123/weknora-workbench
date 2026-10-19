@@ -41,7 +41,9 @@ func (t *countingTool) Execute(context.Context, json.RawMessage) (*types.ToolRes
 // ---------------------------------------------------------------------------
 
 type mockResponse struct {
-	chunks []types.StreamResponse
+	chunks             []types.StreamResponse
+	acceptSourceReview bool
+	sourceReviewUsage  *types.TokenUsage
 }
 
 type mockChat struct {
@@ -63,6 +65,13 @@ func (m *mockChat) ChatStream(
 		return nil, fmt.Errorf("unexpected ChatStream call #%d (only %d responses prepared)", m.callCount, len(m.responses))
 	}
 	resp := m.responses[m.callCount]
+	if resp.acceptSourceReview {
+		verdict, err := acceptedSourceReviewFixture(messages)
+		if err != nil {
+			return nil, err
+		}
+		resp.chunks = []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: verdict, Usage: resp.sourceReviewUsage, Done: true, FinishReason: "stop"}}
+	}
 	m.calls = append(m.calls, append([]chat.Message(nil), messages...))
 	m.opts = append(m.opts, opts)
 	m.callCount++
@@ -891,7 +900,7 @@ func TestFragmentRepairIsBoundedAndFallsBackClearly(t *testing.T) {
 	_, err := engine.executeLoop(context.Background(), state, "请解释该周报图表", emptyMessages(), nil, "sess", "msg")
 	require.NoError(t, err)
 	require.Len(t, model.calls, 6)
-	require.Contains(t, state.FinalAnswer, "模型未能生成完整回答")
+	require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
 	require.Equal(t, state.FinalAnswer, emitted)
 	require.NotEqual(t, "-", state.FinalAnswer)
 }
@@ -951,7 +960,6 @@ func TestFinalSynthesisRepairsFragmentsBeforeEmitting(t *testing.T) {
 func TestFinalSynthesisCannotInventCurrentStructuredNumbers(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "合计999万吨。", Done: true, FinishReason: "stop"}}},
-		completenessVerdict(true),
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "合计775万吨。", Done: true, FinishReason: "stop"}}},
 		completenessVerdict(true),
 	}}
@@ -959,7 +967,7 @@ func TestFinalSynthesisCannotInventCurrentStructuredNumbers(t *testing.T) {
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{{Name: "structured_data", Result: &types.ToolResult{Success: true, Output: `{"kind":"structured_analysis","status":"ok","rows":[[775]]}`}}}}}}
 	require.NoError(t, engine.streamFinalAnswerToEventBus(context.Background(), "产量加进口合计多少？", state, "sess", emptyMessages()))
 	require.Equal(t, "合计775万吨。", state.FinalAnswer)
-	require.Len(t, model.calls, 4)
+	require.Len(t, model.calls, 3)
 }
 
 // ---------------------------------------------------------------------------

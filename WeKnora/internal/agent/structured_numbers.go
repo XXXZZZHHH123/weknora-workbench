@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -20,7 +21,11 @@ import (
 // It verifies traceability, not the semantic appropriateness of a statistic.
 var evidenceDate = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 var proseNumber = regexp.MustCompile(`[-+−]?\d+(?:,\d{3})*(?:\.\d+)?`)
-var dateOrCell = regexp.MustCompile(`\b\d{1,2}[-/]\d{1,2}\b|\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?|\d{2,4}年(?:\d{1,2}月(?:\d{1,2}日)?)?|\d{1,2}月(?:\d{1,2}日)?|\b[A-Z]{1,3}\d+\b|(?m)^\s*(?:[#>*-]|\*\*)*\s*\d+[.)）、]`)
+
+// Longest complete forms precede partial forms so an invalid complete date is
+// consumed once and cannot later lose its month/day to a shorter match.
+var calendarDateLiteral = regexp.MustCompile(`\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{2,4}年\d{1,2}月\d{1,2}日?|\d{4}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}|\d{2,4}年(?:\d{1,2}月)?|\d{1,2}月(?:\d{1,2}日?)?`)
+var cellOrListMarker = regexp.MustCompile(`\b[A-Z]{1,3}\d+\b|(?m)^\s*(?:[#>*-]|\*\*)*\s*\d+[.)）、]`)
 var sourceCitationTag = regexp.MustCompile(`<(?:kb|web)\b[^>]*>`)
 var sourceDigestLabel = regexp.MustCompile(`(?i)\bSHA-?256\b`)
 var sourceOpaqueToken = regexp.MustCompile(`\b(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{24}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})\b`)
@@ -168,6 +173,88 @@ func maskInspectedMarkdownRows(answer string, rows map[string]bool) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// This is lexical date recognition, not proof of a date's source provenance.
+// Keep rejected matches intact; no sentinels or second partial-date pass.
+func maskValidatedCalendarDates(text string) string {
+	masked := []byte(text)
+	for _, span := range calendarDateLiteral.FindAllStringIndex(text, -1) {
+		if standaloneDateToken(text, span[0], span[1]) && validCalendarLiteral(text[span[0]:span[1]]) {
+			for i := span[0]; i < span[1]; i++ {
+				masked[i] = ' '
+			}
+		}
+	}
+	return string(masked)
+}
+
+func standaloneDateToken(text string, start, end int) bool {
+	identifier := func(b byte) bool {
+		return b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '_'
+	}
+	if start > 0 && (identifier(text[start-1]) || strings.ContainsRune("./-", rune(text[start-1]))) {
+		return false
+	}
+	if end < len(text) {
+		if identifier(text[end]) {
+			return false
+		}
+		if strings.ContainsRune("./-", rune(text[end])) && end+1 < len(text) && identifier(text[end+1]) {
+			return false
+		}
+	}
+	return true
+}
+
+func validCalendarLiteral(value string) bool {
+	chinese := strings.ContainsAny(value, "年月")
+	hasYear := strings.Contains(value, "年")
+	parts := strings.FieldsFunc(value, func(r rune) bool { return strings.ContainsRune("年月日-/.", r) })
+	if !chinese {
+		var separator rune
+		for _, r := range value {
+			if strings.ContainsRune("-/.", r) {
+				if separator != 0 && separator != r {
+					return false
+				}
+				separator = r
+			}
+		}
+		hasYear = len(parts) > 0 && len(parts[0]) == 4
+	}
+	numbers := make([]int, len(parts))
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return false
+		}
+		numbers[i] = n
+	}
+	// A leap-year reference preserves the existing yearless February 29 form.
+	year, month, day := 2000, 1, 1
+	switch {
+	case hasYear && len(numbers) >= 1 && len(numbers) <= 3:
+		year = numbers[0]
+		if len(numbers) > 1 {
+			month = numbers[1]
+		}
+		if len(numbers) > 2 {
+			day = numbers[2]
+		}
+	case !hasYear && len(numbers) >= 1 && len(numbers) <= 2:
+		month = numbers[0]
+		if len(numbers) > 1 {
+			day = numbers[1]
+		}
+	default:
+		return false
+	}
+	if year < 1 || month < 1 || month > 12 || day < 1 || day > 31 {
+		return false
+	}
+	date := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	return date.Year() == year && int(date.Month()) == month && date.Day() == day
 }
 
 func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawSteps ...[]types.AgentStep) []string {
@@ -398,7 +485,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 				collect(data)
 			}
 		}
-		if msg.Role == "user" {
+		if msg.Role == "user" && msg.Kind != chat.MessageKindReviewEvidence {
 			userTexts = append(userTexts, msg.Content)
 		}
 	}
@@ -472,7 +559,9 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 	}
 	// Citation attributes contain opaque chunk/KB IDs and source URLs, not
 	// numeric claims. Keep checking every number in the surrounding prose.
-	text := dateOrCell.ReplaceAllString(sourceCitationTag.ReplaceAllString(answer, ""), "")
+	text := sourceCitationTag.ReplaceAllString(answer, "")
+	text = maskValidatedCalendarDates(text)
+	text = cellOrListMarker.ReplaceAllString(text, "")
 	unsupported := []string{}
 	seen := map[string]bool{}
 	for _, id := range sourceOpaqueToken.FindAllString(text, -1) {

@@ -213,6 +213,9 @@ type ChatResponse struct {
 	ToolCalls          []LLMToolCall    `json:"tool_calls,omitempty"`
 	FinishReason       string           `json:"finish_reason,omitempty"`
 	Usage              TokenUsage       `json:"usage"`
+	// AuxiliaryUsage accounts for bounded protocol-repair calls. It is kept
+	// separate so prompt calibration uses only the primary call's context size.
+	AuxiliaryUsage TokenUsage `json:"-"`
 
 	// AnswerStreamed reports whether the user-facing answer text was already
 	// streamed live to the final-answer UI area during this round (i.e. the

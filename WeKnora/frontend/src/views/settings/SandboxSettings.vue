@@ -709,7 +709,7 @@ onMounted(async () => {
 }
 
 .sandbox-card__url {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--app-font-family-mono);
   font-size: var(--app-text-xs);
   line-height: 1.4;
   color: var(--td-text-color-placeholder);

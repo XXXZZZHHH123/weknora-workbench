@@ -97,7 +97,7 @@ func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float6
 // envelopes do not become numeric execution evidence. Business prose outside
 // those blocks is read as prose; no embedded command or object is executed.
 func documentNumericProse(content string) string {
-	return dateOrCell.ReplaceAllString(documentSourceProse(content), "")
+	return cellOrListMarker.ReplaceAllString(maskValidatedCalendarDates(documentSourceProse(content)), "")
 }
 
 // Source-table execution must retain original date labels and coordinates for

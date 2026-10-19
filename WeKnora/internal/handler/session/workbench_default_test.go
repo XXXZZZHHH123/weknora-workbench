@@ -22,6 +22,14 @@ func TestWorkbenchDefaultEntersToolLoopWithoutEnablingExternalMCP(t *testing.T) 
 	require.Contains(t, active.Config.AllowedTools, tools.ToolStructuredData)
 	require.Contains(t, active.Config.AllowedTools, tools.ToolCommodityResearch)
 	require.Contains(t, active.Config.AllowedTools, tools.ToolSearchKnowledge)
+	require.Contains(t, active.Config.AllowedTools, tools.ToolWikiSearch)
+	require.Contains(t, active.Config.AllowedTools, tools.ToolWikiReadPage)
+	for _, writeTool := range []string{
+		tools.ToolWikiWritePage, tools.ToolWikiReplaceText, tools.ToolWikiRenamePage,
+		tools.ToolWikiDeletePage, tools.ToolWikiFlagIssue, tools.ToolWikiUpdateIssue,
+	} {
+		require.NotContains(t, active.Config.AllowedTools, writeTool)
+	}
 	require.NotContains(t, active.Config.AllowedTools, tools.ToolCallMCPTool)
 	require.Equal(t, types.AgentModeQuickAnswer, original.Config.AgentMode)
 	require.Equal(t, "none", original.Config.KBSelectionMode)
@@ -34,6 +42,11 @@ func TestWorkbenchDefaultPreservesCustomQuickAnswerAndUnconfiguredInstall(t *tes
 	t.Setenv("STRUCTURED_DATA_URL", "http://structured:18082")
 	custom := &types.CustomAgent{ID: "custom-quick", Config: types.CustomAgentConfig{AgentMode: types.AgentModeQuickAnswer}}
 	require.Same(t, custom, workbenchDefaultAgent(custom, 7))
+	withConfiguredTools := &types.CustomAgent{ID: "custom-quick", Config: types.CustomAgentConfig{
+		AgentMode: types.AgentModeQuickAnswer, AllowedTools: []string{"thinking"},
+	}}
+	require.Same(t, withConfiguredTools, workbenchDefaultAgent(withConfiguredTools, 7))
+	require.Equal(t, []string{"thinking"}, withConfiguredTools.Config.AllowedTools)
 	require.True(t, workbenchDefaultAgent(nil, 7).IsAgentMode())
 }
 
@@ -86,12 +99,17 @@ func TestWorkbenchThreeEntriesShareScopedDataToolsWhileKeepingModelSettings(t *t
 			require.Equal(t, "chosen-sandbox", active.Config.SandboxConfigID)
 			require.Equal(t, "selected", active.Config.SkillsSelectionMode)
 			require.Equal(t, []string{"chosen-skill"}, active.Config.SelectedSkills)
-			if id != types.BuiltinQuickAnswerID {
+			if id == "managed-renamed-agent" {
+				require.NotContains(t, active.Config.AllowedTools, tools.ToolWikiSearch)
+				require.NotContains(t, active.Config.AllowedTools, tools.ToolWikiReadPage)
 				require.Equal(t, []string{"managed", "unrelated"}, active.Config.MCPServices)
 				require.Equal(t, "selected", active.Config.MCPSelectionMode)
 				require.Equal(t, "chosen-sandbox", active.Config.SandboxConfigID)
 				require.Equal(t, []string{"chosen-skill"}, active.Config.SelectedSkills)
 				require.Contains(t, active.Config.AllowedTools, "web_search")
+			} else {
+				require.Contains(t, active.Config.AllowedTools, tools.ToolWikiSearch)
+				require.Contains(t, active.Config.AllowedTools, tools.ToolWikiReadPage)
 			}
 			*active.Config.Thinking = false
 			active.Config.IntentPrompts["lookup"] = "changed"

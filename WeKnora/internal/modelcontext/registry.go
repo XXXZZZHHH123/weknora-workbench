@@ -90,7 +90,7 @@ func (r *Registry) EncodeMessages(messages []chat.Message) []chat.Message {
 			messages[i].Content = r.encodeToolPrivateResult(messages[i].Name, messages[i].Content)
 		}
 	}
-	messages = r.sources.EncodeMessagesWithPolicies(messages, sourceArgumentAllowed, sourceOutputAllowed)
+	messages = r.sources.EncodeMessagesWithPathPolicies(messages, sourceArgumentPathAllowed, sourceOutputAllowed)
 	for i := range messages {
 		if len(messages[i].ToolCalls) == 0 {
 			continue
@@ -116,7 +116,7 @@ func (r *Registry) DecodeToolCalls(toolCalls []types.LLMToolCall) {
 	normalizeWebFetchItems(toolCalls)
 	normalizeMCPCallArguments(toolCalls)
 	r.resources.DecodeToolCalls(toolCalls)
-	r.sources.DecodeToolCallsWithPolicy(toolCalls, sourceArgumentAllowed)
+	r.sources.DecodeToolCallsWithPathPolicy(toolCalls, sourceArgumentPathAllowed)
 	for i := range toolCalls {
 		r.decodeToolPolicies(&toolCalls[i])
 		decodedMCP, unresolvedMCP := r.decodeMCPArguments(toolCalls[i].Function.Name, toolCalls[i].Function.Arguments)
@@ -124,8 +124,8 @@ func (r *Registry) DecodeToolCalls(toolCalls []types.LLMToolCall) {
 		resolved := toolCalls[i].Function.Arguments
 		unresolved := append(
 			r.resources.OrphanHandles(resolved),
-			r.sources.UnresolvedToolHandlesWithPolicy(
-				toolCalls[i].Function.Name, resolved, sourceArgumentAllowed,
+			r.sources.UnresolvedToolHandlesWithPathPolicy(
+				toolCalls[i].Function.Name, resolved, sourceArgumentPathAllowed,
 			)...,
 		)
 		unresolved = append(unresolved, r.unresolvedPrivateToolHandles(toolCalls[i].Function.Name, resolved)...)
@@ -263,6 +263,19 @@ func (r *Registry) ChunkHandle(id string) string {
 		return ""
 	}
 	return r.sources.ChunkHandle(id)
+}
+
+// CitableChunkHandle only exposes a handle backed by a successful source
+// result in this request. Navigation/history registration is not evidence.
+func (r *Registry) CitableChunkHandle(id string) string {
+	if r == nil || r.sources == nil {
+		return ""
+	}
+	handle := r.sources.ChunkHandle(id)
+	if _, ok := r.sources.citable.Load(handle); !ok {
+		return ""
+	}
+	return handle
 }
 
 // CompactKnownText replaces only previously registered durable source IDs.

@@ -4142,6 +4142,7 @@ export default {
     referenceSourceLocating: '引用箇所を特定しています…',
     referenceSourceExact: "原文の該当箇所を特定しました",
     referenceSourcePartial: "確認できた原文を強調表示しています。引用の一部は未照合です",
+    referenceSourceParentContext: '確認済みの親段落がある{page}ページを表示しています。引用文自体は特定されていません',
     referenceSourceBlock: "原文の領域を表示しています。文字の完全一致は未確認です",
     referenceSourceAmbiguous: "一致する箇所が複数あり、特定できません",
     referenceSourceStale: "原文または内容が更新され、引用箇所を特定できません",
