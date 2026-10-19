@@ -355,7 +355,7 @@ func TestStructuredQueryRowCompanionEnforcesExactUTF8ByteBudgetAndPointers(t *te
 	require.False(t, view["projection_complete"].(bool))
 	entry := entries[0]
 	require.Less(t, entry.RetainedRowCount, entry.SourceRowCount)
-	require.Equal(t, []structuredQueryRowOmission{{JSONPointer: "/data/rows", StartIndex: entry.RetainedRowCount, EndIndexExclusive: len(rows), NextRowOffset: entry.RetainedRowCount}}, entry.OmittedRowRanges)
+	require.Equal(t, []structuredQueryRowOmission{{JSONPointer: "/data/rows", StartIndex: entry.RetainedRowCount, EndIndexExclusive: len(rows), NextStartIndex: entry.RetainedRowCount}}, entry.OmittedRowRanges)
 	require.Equal(t, "/data/rows", entry.SourceJSONPointer)
 }
 

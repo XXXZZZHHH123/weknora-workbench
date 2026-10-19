@@ -21,7 +21,7 @@ type structuredQueryRowOmission struct {
 	JSONPointer       string `json:"json_pointer"`
 	StartIndex        int    `json:"start_index"`
 	EndIndexExclusive int    `json:"end_index_exclusive"`
-	NextRowOffset     int    `json:"next_row_offset"`
+	NextStartIndex    int    `json:"next_start_index"`
 }
 
 type structuredQueryRowCompanionEntry struct {
@@ -481,5 +481,5 @@ func rowOmissionRanges(pointer string, start, end int) []structuredQueryRowOmiss
 	if start >= end {
 		return nil
 	}
-	return []structuredQueryRowOmission{{JSONPointer: pointer, StartIndex: start, EndIndexExclusive: end, NextRowOffset: start}}
+	return []structuredQueryRowOmission{{JSONPointer: pointer, StartIndex: start, EndIndexExclusive: end, NextStartIndex: start}}
 }

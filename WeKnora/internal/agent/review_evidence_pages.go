@@ -25,6 +25,8 @@ type reviewJSONReadArgs struct {
 	MaxChars   int    `json:"max_chars"`
 	Limit      int    `json:"limit"`
 	Query      string `json:"query"`
+	StartIndex *int   `json:"start_index"`
+	MaxItems   int    `json:"max_items"`
 }
 
 type reviewJSONReadSegment struct {

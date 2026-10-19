@@ -982,6 +982,10 @@ func reviewWitnessVisibleInTranscript(reader *reviewEvidenceReader, witness revi
 				}
 			}
 		}
+		if response["status"] == "ok" && response["evidence_id"] == witness.EvidenceID && response["offset_space"] == "array_index" &&
+			reviewWitnessVisibleInArrayItems(reader, witness, response["items"]) {
+			return true
+		}
 		for _, raw := range reviewAsSlice(response["matches"]) {
 			match := reviewAsMap(raw)
 			if match == nil || match["evidence_id"] != witness.EvidenceID || match["json_pointer"] != witness.JSONPointer {
@@ -995,6 +999,36 @@ func reviewWitnessVisibleInTranscript(reader *reviewEvidenceReader, witness revi
 	// A child fully contained in verified pages is visible even when unrelated
 	// siblings were not read. Exact paths, source bytes and read budgets still apply.
 	return reviewWitnessVisibleInJSONPages(reader, witness)
+}
+
+// reviewWitnessVisibleInArrayItems accepts only complete elements returned by
+// an element-indexed read whose pointer and value still equal the immutable
+// source record. An element never vouches for a sibling at another index.
+func reviewWitnessVisibleInArrayItems(reader *reviewEvidenceReader, witness reviewSourceWitness, items any) bool {
+	record, ok := reviewRecordByID(reader, witness.EvidenceID)
+	if !ok {
+		return false
+	}
+	for _, raw := range reviewAsSlice(items) {
+		item := reviewAsMap(raw)
+		pointer, _ := item["json_pointer"].(string)
+		value, hasValue := item["value"]
+		if item == nil || pointer == "" || !hasValue {
+			continue
+		}
+		local, descendant := relativeReviewJSONPointer(pointer, witness.JSONPointer)
+		if !descendant {
+			continue
+		}
+		source, err := reviewPointerValue(record.Value, pointer)
+		if err != nil || !reviewJSONValuesEqual(source, value) {
+			continue
+		}
+		if child, err := reviewPointerValue(value, local); err == nil && reviewQuoteMatchesValue(child, witness.Quote) {
+			return true
+		}
+	}
+	return false
 }
 
 func reviewIntegerEqual(value any, expected int) bool { return reviewInt(value) == expected }
