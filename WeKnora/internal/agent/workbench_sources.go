@@ -16,7 +16,7 @@ import (
 // metadata, never an inferred answer or an unrestricted database connection.
 // The normal execution boundary records the actual call and its failure too;
 // an unavailable source must not look like an empty catalogue.
-func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types.AgentState, messages []chat.Message, query, sessionID, messageID string) []chat.Message {
+func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types.AgentState, messages []chat.Message, query, sessionID, messageID string, planned ...map[string]bool) []chat.Message {
 	if !e.config.WorkbenchDefault || e.toolRegistry == nil {
 		return messages
 	}
@@ -27,24 +27,31 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 	// The real QA model plans sources from the complete conversation and
 	// authorized metadata; code validates the explicit plan before content reads.
 	agenttools.PrepareDocumentScope(e.toolRegistry)
+	selection := map[string]bool(nil)
+	if len(planned) > 0 {
+		selection = planned[0]
+	}
 	requests := []types.LLMToolCall{}
 	if tool, err := e.toolRegistry.GetTool(agenttools.ToolStructuredData); err == nil {
 		if base, ok := tool.(*agenttools.StructuredDataTool); ok {
 			base.BindSourceConversation(query, messages)
 		}
-		catalogArgs, _ := json.Marshal(map[string]any{"operation": "list_datasets", "arguments": map[string]string{"question": query}})
-		requests = append(requests,
-			types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(catalogArgs)}},
-			types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: `{"operation":"describe_tools","arguments":{"operations":["list_series","query_series","analyze_table","inspect_source","get_result_evidence"]}}`}},
-		)
+		if shouldPrefetchStructuredSources(selection) {
+			catalogArgs, _ := json.Marshal(map[string]any{"operation": "list_datasets", "arguments": map[string]string{"question": query}})
+			requests = append(requests,
+				types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(catalogArgs)}},
+				types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: `{"operation":"describe_tools","arguments":{"operations":["list_series","query_series","analyze_table","inspect_source","get_result_evidence"]}}`}},
+			)
+		}
 	}
-	if _, err := e.toolRegistry.GetTool(agenttools.ToolSearchKnowledge); err == nil {
+	if _, err := e.toolRegistry.GetTool(agenttools.ToolSearchKnowledge); err == nil && shouldPrefetchKnowledgeSources(selection) {
 		args, _ := json.Marshal(map[string]string{"query": query})
 		requests = append(requests, types.LLMToolCall{ID: fmt.Sprintf("source-knowledge-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolSearchKnowledge, Arguments: string(args)}})
 	}
 	if len(requests) == 0 {
 		return messages
 	}
+	e.emitProgress(ctx, "sources", -1, sessionID)
 	step := types.AgentStep{Iteration: -1, Timestamp: time.Now()}
 	response := &types.ChatResponse{ToolCalls: requests}
 	// These calls only discover authorized sources and schema; their independent
@@ -70,6 +77,28 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 	}
 	state.RoundSteps = append(state.RoundSteps, step)
 	return e.appendToolResults(messages, compactWorkbenchDiscovery(step, query, registered))
+}
+
+func shouldPrefetchKnowledgeSources(selected map[string]bool) bool {
+	if selected == nil {
+		return true
+	}
+	return selected[agenttools.ToolSearchKnowledge]
+}
+
+func shouldPrefetchStructuredSources(selected map[string]bool) bool {
+	if selected == nil {
+		return true
+	}
+	if selected[agenttools.ToolStructuredData] {
+		return true
+	}
+	for name := range selected {
+		if strings.HasPrefix(name, "structured_") {
+			return true
+		}
+	}
+	return false
 }
 
 // Keep the actual authorized calls and their complete evidence in RoundSteps.

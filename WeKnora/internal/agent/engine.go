@@ -455,11 +455,8 @@ func (e *AgentEngine) Execute(
 	}
 
 	if !strings.HasPrefix(query, fieldConfirmationPrefix) {
-		if e.config.WorkbenchDefault {
-			e.emitProgress(ctx, "sources", -1, sessionID)
-		}
-		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID)
 		messages = e.planWorkbenchTask(ctx, state, query, messages, sessionID)
+		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID, e.plannedSourceDiscoverySelection())
 	}
 
 	// Get tool definitions for function calling

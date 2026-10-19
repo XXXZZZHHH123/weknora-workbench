@@ -54,7 +54,7 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 	inputData["source_catalog_companion"] = catalogEvidence
 	rowEvidenceIncomplete := rowEvidence != nil && rowEvidence["projection_complete"] != true
 	documentEvidenceIncomplete := documentEvidence != nil && documentEvidence["projection_complete"] != true
-	imageObservations, imageScope := documentImageConsistencySummaries(state)
+	imageObservations, imageScope := documentImageConsistencySummariesWithSources(state, sourceMessages)
 	hasImageObservations = len(imageObservations) > 0
 	inputData["document_image_observations"] = imageObservations
 	inputData["document_image_observation_scope"] = imageScope

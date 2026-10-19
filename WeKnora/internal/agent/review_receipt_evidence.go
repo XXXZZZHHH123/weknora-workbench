@@ -75,11 +75,12 @@ func (w *reviewSourceWitness) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	_, quotePresent := fields["quote"]
 	if value.RowRef != nil {
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(data, &fields); err != nil {
-			return err
-		}
 		for _, forbidden := range []string{"evidence_id", "json_pointer", "quote", "source_pointer_ref"} {
 			if _, exists := fields[forbidden]; exists {
 				return fmt.Errorf("row_ref cannot be combined with %s", forbidden)
@@ -87,6 +88,13 @@ func (w *reviewSourceWitness) UnmarshalJSON(data []byte) error {
 		}
 		if value.RowRef.EntryIndex < 0 || value.RowRef.RowIndex < 0 || value.RowRef.Column == "" {
 			return fmt.Errorf("row_ref requires non-negative entry_index and row_index and a column name")
+		}
+		*w = reviewSourceWitness(value)
+		return nil
+	}
+	if !quotePresent {
+		if value.Kind != "source" || value.EvidenceID == "" || value.JSONPointer == "" || value.SourcePointerRef != nil {
+			return fmt.Errorf("omitting quote requires kind=source, evidence_id and an explicit json_pointer")
 		}
 		*w = reviewSourceWitness(value)
 		return nil
@@ -99,6 +107,9 @@ func (w *reviewSourceWitness) UnmarshalJSON(data []byte) error {
 	}
 	switch v := scalar.(type) {
 	case string:
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("witness quote cannot be empty or whitespace-only")
+		}
 		value.Quote = v
 	case json.Number:
 		value.Quote = v.String()
@@ -134,8 +145,15 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 	} else if witness.EvidenceID == "" {
 		return fmt.Errorf("witness requires an evidence identity and exact quote")
 	}
-	if witness.EvidenceID == "" || witness.Quote == "" || len(witness.JSONPointer) > 1024 {
-		return fmt.Errorf("witness requires an evidence identity, pointer and exact quote")
+	quoteOmitted := witness.Quote == ""
+	if witness.EvidenceID == "" || len(witness.JSONPointer) > 1024 {
+		return fmt.Errorf("witness requires an evidence identity and valid pointer")
+	}
+	if !quoteOmitted && strings.TrimSpace(witness.Quote) == "" {
+		return fmt.Errorf("witness quote cannot be whitespace-only")
+	}
+	if quoteOmitted && (witness.Kind != "source" || witness.JSONPointer == "" || citationLocator) {
+		return fmt.Errorf("omitting quote requires source evidence with an explicit json_pointer")
 	}
 	if witness.Kind != "source" && witness.Kind != "execution" {
 		return fmt.Errorf("witness kind must be source or execution")
@@ -169,6 +187,27 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 	value, err := reviewWitnessRawValue(record, witness)
 	if err != nil {
 		return err
+	}
+	if quoteOmitted {
+		quote, scalar := reviewScalarWitnessQuote(value)
+		if scalar {
+			witness.Quote = quote
+		} else {
+			switch value.(type) {
+			case map[string]any, []any:
+				encoded, encodeErr := json.Marshal(value)
+				if encodeErr != nil || len(encoded) > reviewReceiptContainerQuoteLimit {
+					return fmt.Errorf("omitting quote for a container requires a compact source value within %d bytes", reviewReceiptContainerQuoteLimit)
+				}
+				// The locator is already bound to this immutable source result and
+				// exact pointer. Derive only the complete canonical value; the common
+				// raw-value and visibility checks below still require all of it to
+				// have been exposed.
+				witness.Quote = string(encoded)
+			default:
+				return fmt.Errorf("omitting quote is allowed only for a scalar or a compact container at the exact source pointer")
+			}
+		}
 	}
 	if !reviewQuoteMatchesValue(value, witness.Quote) {
 		// A model may name the inspected cell/row object instead of its scalar
@@ -279,7 +318,7 @@ func resolveStructuredRowWitness(input map[string]any, reader *reviewEvidenceRea
 	}
 	quote, ok := reviewScalarWitnessQuote(value)
 	if !ok {
-		return reviewSourceWitness{}, fmt.Errorf("row_ref must identify a displayed string, number or boolean cell")
+		return reviewSourceWitness{}, fmt.Errorf("row_ref must identify a displayed string, number, boolean or present null cell")
 	}
 	return reviewSourceWitness{EvidenceID: evidenceID, JSONPointer: pointer, Quote: quote, Kind: "source"}, nil
 }
@@ -297,6 +336,8 @@ func uniqueReviewColumnIndex(columns []any, name string) (int, int) {
 
 func reviewScalarWitnessQuote(value any) (string, bool) {
 	switch typed := value.(type) {
+	case nil:
+		return "null", true
 	case string:
 		return typed, typed != ""
 	case json.Number:

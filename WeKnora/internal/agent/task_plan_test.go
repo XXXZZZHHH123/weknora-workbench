@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +114,7 @@ func TestTaskPlanInvalidUnavailableOrIncompletePlansFallBackToFullTools(t *testi
 		{Content: `{"goals":["incomplete"`},
 		{Content: strings.Replace(validTaskPlan(t, "read_document"), `"tool_names":["read_document"]`, `"tool_names":null`, 1)},
 		{Content: strings.Replace(validTaskPlan(t, "read_document"), `"tool_names":["read_document"],`, ``, 1)},
+		{Content: strings.Replace(validTaskPlan(t, "read_document"), `"evidence":["Actual source field metadata."]`, `"evidence":null`, 1)},
 		{Content: validTaskPlan(t, "unauthorized_tool")},
 		{Content: strings.Replace(validTaskPlan(t, "read_document"), `"source_choices":[0]`, `"source_choices":[9]`, 1)},
 		{Content: validTaskPlan(t, "read_document"), FinishReason: "length"},
@@ -145,6 +148,104 @@ func TestTaskPlanExplicitEmptyToolChoiceRetainsSourceAndExpansionProtocols(t *te
 	require.NotNil(t, engine.taskProjection, "an explicit empty choice is a valid model plan")
 	require.ElementsMatch(t, []string{"structured_list_series", "bind_document_scope", "read_document", documentTableCalculationToolName, documentTableAnalysisToolName, expandTaskToolsName}, listToolNames(engine.buildToolsForLLM()))
 	require.Contains(t, planned[0].Content, "advisory_task_plan")
+}
+
+func TestEvidencePlanDiscoversBothAuthorizedSourceDirectories(t *testing.T) {
+	operations := make(chan string, 2)
+	registry := nativeStructuredRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		var input map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
+		operation, _ := input["operation"].(string)
+		operations <- operation
+		_, _ = io.WriteString(w, `{}`)
+	})
+	knowledge := newCountingTool(agenttools.ToolSearchKnowledge)
+	registry.RegisterTool(knowledge)
+	reader := newCountingTool(agenttools.ToolReadDocument)
+	registry.RegisterTool(reader)
+	plan, err := json.Marshal(taskEvidencePlan{
+		Goals:              []string{"Answer the request from a real source."},
+		Evidence:           []string{"The relevant source material."},
+		ToolNames:          []string{"read_document"},
+		CompletionCriteria: []string{"Answer from a verified source."},
+	})
+	require.NoError(t, err)
+	model := &taskPlannerChat{
+		plan: &types.ChatResponse{Content: string(plan), FinishReason: "stop"},
+		mockChat: mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{{
+			ResponseType: types.ResponseTypeAnswer, Content: "依据来源回答。", Done: true, FinishReason: "stop",
+		}}}}},
+	}
+	engine := newTestEngine(t, model)
+	engine.toolRegistry = registry
+	engine.config.WorkbenchDefault = true
+	engine.config.TaskPlanningEnabled = true
+	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "verified", Role: types.TenantRoleViewer})
+	state, err := engine.Execute(ctx, "session", "message", "请依据实际来源回答。", nil)
+	require.NoError(t, err)
+	require.Equal(t, "依据来源回答。", state.FinalAnswer)
+	require.NotNil(t, engine.taskProjection, "the plan must have decoded successfully")
+	require.True(t, engine.taskProjection.requiresSourceEvidence)
+	require.True(t, engine.taskProjection.selected[agenttools.ToolReadDocument], "the actual valid plan selected document reading")
+	require.Nil(t, engine.plannedSourceDiscoverySelection(), "a source-backed plan must request conservative discovery")
+	require.Equal(t, 1, knowledge.calls, "document-only tool selection must not hide knowledge source discovery")
+	observedOperations := make([]string, 0, 2)
+	for range 2 {
+		select {
+		case operation := <-operations:
+			observedOperations = append(observedOperations, operation)
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for structured source discovery operations")
+		}
+	}
+	require.ElementsMatch(t, []string{"list_datasets", "describe_tools"}, observedOperations, "a source-backed plan must also discover the structured-data directory")
+	require.Len(t, model.requests, 1, "reuse the existing single task-planning call")
+}
+
+func TestTaskPlanAllowsNoExternalEvidenceAndDiscoveryUsesThatChoice(t *testing.T) {
+	operations := 0
+	registry := nativeStructuredRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		operations++
+		_, _ = io.WriteString(w, `{}`)
+	})
+	plan, err := json.Marshal(taskEvidencePlan{
+		Goals:              []string{"Explain the requested concepts."},
+		Evidence:           []string{},
+		ToolNames:          []string{},
+		CompletionCriteria: []string{"Answer the requested comparison clearly."},
+	})
+	require.NoError(t, err)
+	model := &taskPlannerChat{
+		plan:     &types.ChatResponse{Content: string(plan), FinishReason: "stop"},
+		mockChat: mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "概念解释。", Done: true, FinishReason: "stop"}}}}},
+	}
+	engine := newTestEngine(t, model)
+	engine.toolRegistry = registry
+	engine.config.WorkbenchDefault = true
+	engine.config.TaskPlanningEnabled = true
+	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "verified", Role: types.TenantRoleViewer})
+	state, err := engine.Execute(ctx, "session", "message", "解释仓单和持仓的概念差异。", nil)
+	require.NoError(t, err)
+	require.Equal(t, "概念解释。", state.FinalAnswer)
+	require.Zero(t, operations, "a valid model plan with no external evidence skips eager catalog/schema discovery")
+	require.NotNil(t, engine.taskProjection)
+	require.NotNil(t, engine.plannedSourceDiscoverySelection(), "explicit no-evidence plan returns an empty selection and skips both directories")
+	require.Empty(t, engine.plannedSourceDiscoverySelection())
+	require.Len(t, model.requests, 1, "reuse the existing single task-planning call")
+	var input map[string]any
+	require.NoError(t, json.Unmarshal([]byte(model.requests[0][1].Content), &input))
+	require.Empty(t, input["discovery_results"], "planning happens before discovery")
+	require.Len(t, model.calls, 1, "normal reasoning still runs after the advisory plan")
+}
+
+func TestPlannedSourceDiscoverySelectionAndLegacyFallback(t *testing.T) {
+	require.True(t, shouldPrefetchKnowledgeSources(nil), "unavailable planning keeps conservative legacy discovery")
+	require.True(t, shouldPrefetchStructuredSources(nil))
+	require.False(t, shouldPrefetchKnowledgeSources(map[string]bool{}), "an explicit empty model plan skips eager retrieval")
+	require.False(t, shouldPrefetchStructuredSources(map[string]bool{}))
+	require.True(t, shouldPrefetchKnowledgeSources(map[string]bool{agenttools.ToolSearchKnowledge: true}))
+	require.True(t, shouldPrefetchStructuredSources(map[string]bool{"structured_query_series": true}))
+	require.False(t, shouldPrefetchStructuredSources(map[string]bool{agenttools.ToolReadDocument: true}), "document protocols remain available without running unrelated data catalog calls")
 }
 
 func TestTaskPlanAndExpansionReuseMCPPresentationHandlesWithoutChangingRegistry(t *testing.T) {
