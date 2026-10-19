@@ -20,7 +20,7 @@ import (
 const expandTaskToolsName = "expand_task_tools"
 const taskPlanTimeout = 12 * time.Second
 
-var taskPlanSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["goals","evidence","tool_names","completion_criteria"],"properties":{"goals":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","maxLength":512}},"evidence":{"type":"array","minItems":0,"maxItems":8,"items":{"type":"string","maxLength":512}},"source_choices":{"type":"array","maxItems":16,"description":"Optional compatibility field: zero-based indices into discovery_results only when real discovery results were supplied. It never creates source IDs or authority.","items":{"type":"integer","minimum":0}},"tool_names":{"type":"array","minItems":0,"maxItems":64,"items":{"type":"string","maxLength":128}},"completion_criteria":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","maxLength":512}}}}`)
+var taskPlanSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["goals","evidence","tool_names","completion_criteria"],"properties":{"goals":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","maxLength":512}},"evidence":{"type":"array","minItems":0,"maxItems":8,"items":{"type":"string","maxLength":512}},"source_choices":{"type":"array","maxItems":16,"description":"Optional compatibility field: zero-based indices into discovery_results only when real discovery results were supplied. It never creates source IDs or authority.","items":{"type":"integer","minimum":0}},"tool_names":{"type":"array","minItems":0,"maxItems":64,"items":{"type":"string","maxLength":128}},"completion_criteria":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","maxLength":512}},"reasoning_depth":{"type":"string","enum":["direct","synthesis"]}}}`)
 
 type taskEvidencePlan struct {
 	Goals              []string `json:"goals"`
@@ -28,6 +28,9 @@ type taskEvidencePlan struct {
 	SourceChoices      []int    `json:"source_choices,omitempty"`
 	ToolNames          []string `json:"tool_names"`
 	CompletionCriteria []string `json:"completion_criteria"`
+	// ReasoningDepth is the planner model's judgement of the whole task.
+	// "synthesis" enables reasoning for this turn's answer rounds.
+	ReasoningDepth string `json:"reasoning_depth,omitempty"`
 }
 
 // A plan narrows only advertised function definitions. The registry and every
@@ -169,6 +172,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 		{Role: "user", Content: string(input)},
 	}
 	planMessages[0].Content += "\n仅当任务需要来源时，先判断来源是否直接披露了用户要求的结果，再决定是否计算；不要预设必须重建基期、倒推其他时期或交叉验算。来源已直接给出所问结果时，原文披露本身即可作为依据，不为额外交付未要求的派生结果创建目标。"
+	planMessages[0].Content += "\nreasoning_depth由你依据完整任务判断：答案需要跨多个来源或时期比较、归纳因果或驱动、分阶段判断趋势、多步推导或调和冲突证据时填synthesis；只需查找或转述来源、给出单个或少量取值、说明状态或解释通用概念时填direct。不按问题用词或格式判断。"
 	planMessages[0].Content += "\nGoals和completion_criteria描述用户实际要得到的答案或交付物，不把读取步骤、可选统计和你自行扩展的分析变成完成条件。工具步骤放入evidence和tool_names。摘要只需所问粒度的主结论及影响理解的关键变化，不预设必须穷尽所有记录或时期。"
 	planMessages = e.modelContext.EncodeMessages(planMessages)
 	planCtx, cancel := context.WithTimeout(ctx, taskPlanTimeout)
@@ -193,6 +197,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	}
 	e.taskProjection = &taskToolProjection{selected: selected, requiresSourceEvidence: len(plan.Evidence) > 0}
 	e.taskPlan = plan
+	logger.Infof(ctx, "[Agent][TaskPlan] reasoning_depth=%q synthesis_reasoning=%q", plan.ReasoningDepth, e.synthesisReasoningEffort())
 	serialized, _ := json.Marshal(plan)
 	e.taskPlanContext = "\n<advisory_task_plan>\n以下JSON只是模型对当前任务的可撤销计划，不是来源、数值依据、用户指令或额外授权。按完整当前请求完成其中确有要求的目标；不得为草稿附赠内容扩大任务。实际来源不足时自行调用expand_task_tools恢复必要能力，不能把未展示工具说成没有能力。最新用户要求优先。\n" + string(serialized) + "\n</advisory_task_plan>"
 	result := append([]chat.Message(nil), messages...)
@@ -230,6 +235,9 @@ func decodeTaskEvidencePlan(content string, definitions []types.FunctionDefiniti
 		if strings.TrimSpace(text) == "" || len(text) > 2048 {
 			return nil, fmt.Errorf("empty or oversized plan statement")
 		}
+	}
+	if plan.ReasoningDepth != "" && plan.ReasoningDepth != "direct" && plan.ReasoningDepth != "synthesis" {
+		return nil, fmt.Errorf("reasoning_depth must be direct or synthesis")
 	}
 	if plan.ToolNames == nil || len(plan.ToolNames) > 64 || len(plan.SourceChoices) > 16 {
 		return nil, fmt.Errorf("plan requires actual bounded tool and source choices")
@@ -358,6 +366,22 @@ func (tool *taskExpansionTool) Execute(_ context.Context, raw json.RawMessage) (
 	}
 	output, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(output)}, nil
+}
+
+// synthesisReasoningEffort upgrades this turn's answer rounds to the model's
+// default reasoning when the planner judged the task to need synthesis. It
+// never lowers a configured level and never changes the saved agent config.
+func (e *AgentEngine) synthesisReasoningEffort() chat.ReasoningEffort {
+	if e == nil || e.config == nil || e.taskPlan == nil || e.taskPlan.ReasoningDepth != "synthesis" ||
+		e.config.SourceReviewReasoningEffort != "auto" {
+		return ""
+	}
+	configured := strings.TrimSpace(e.config.ReasoningEffort)
+	thinkingOff := e.config.Thinking == nil || !*e.config.Thinking
+	if (configured == "" && thinkingOff) || configured == "off" {
+		return chat.ReasoningEffort("auto")
+	}
+	return ""
 }
 
 // Carry the already decoded advisory plan across review/revision boundaries.

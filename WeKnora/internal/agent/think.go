@@ -955,6 +955,12 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	// These rounds only plan further tools or propose a draft for mandatory
 	// independent source review. Use deterministic sampling for that technical
 	// work without mutating the saved agent or unsourced conversational calls.
+	synthesisReasoning := e.synthesisReasoningEffort()
+	if synthesisReasoning != "" {
+		enabled := true
+		opts.Thinking = &enabled
+		opts.ReasoningEffort = synthesisReasoning
+	}
 	if e.config.WorkbenchDefault && e.answerReviewPending {
 		opts.Temperature = 0
 	}
@@ -968,8 +974,15 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			opts.ReasoningEffort = chat.ReasoningEffort(e.config.ReviewReasoningEffort)
 		}
 		opts.ThinkingBudgetTokens = 0
-		if opts.MaxCompletionTokens > 4096 {
-			opts.MaxCompletionTokens = 4096
+		revisionCap := 4096
+		if synthesisReasoning != "" {
+			// A synthesis revision must reason about the reviewer's objections;
+			// reasoning tokens share the completion budget.
+			opts.ReasoningEffort = synthesisReasoning
+			revisionCap += 10240
+		}
+		if opts.MaxCompletionTokens > revisionCap {
+			opts.MaxCompletionTokens = revisionCap
 		}
 	}
 	logger.Debugf(ctx, "[Agent][Thinking] Iteration-%d: temp=%.2f, tools=%d, thinking=%v, max_tokens=%d, source_review=%v",
