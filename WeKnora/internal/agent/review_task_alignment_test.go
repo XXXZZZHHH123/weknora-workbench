@@ -10,22 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPlannedReceiptCannotSubstituteNarrowSourceFactForCandidate(t *testing.T) {
+func TestTaskAwareReviewDoesNotRequireMarkdownTranscription(t *testing.T) {
 	snapshot, witness := acceptedReceiptSnapshotFixture(t)
-	snapshot.taskPlan = &taskEvidencePlan{Goals: []string{"Compare the geographic scope of the surveys."}}
-	answer := "Both surveys cover every region."
-	check := reviewClaimCheck{Claim: "The survey covers the eastern region only", GoalIndices: []int{0}, Basis: "inference",
-		Assessment: "The observed source is regional.", Evidence: []reviewSourceWitness{witness}}
-	require.ErrorContains(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{check}, snapshot), "actual candidate excerpt")
-	// The supported summary need not repeat every source detail or audit every
-	// retrieval step. The runtime binds text/scope; meaning remains a model task.
-	answer = "The first survey covers the eastern region only; the second scope is unknown."
-	check.Claim = "The first survey covers the eastern region only"
-	require.NoError(t, validateReviewReceipt(answer, "Comparison preserves the known scope and limitation", []reviewClaimCheck{check}, snapshot))
-	check.GoalIndices = []int{1}
-	require.ErrorContains(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{check}, snapshot), "goal index")
-	check.GoalIndices = nil
-	require.ErrorContains(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{check}, snapshot), "associate")
+	snapshot.input["advisory_task_plan"] = map[string]any{"goals": []string{"Describe the survey scope."}}
+	answer := "| Survey | Scope |\n|---|---|\n| First | **Eastern region only** |"
+	check := reviewClaimCheck{Claim: "The first survey covers the eastern region only.", Basis: "source",
+		Assessment: "The observed source identifies the survey scope.", Evidence: []reviewSourceWitness{witness}}
+	require.NoError(t, validateReviewReceipt(answer, "The scope and its limitation are preserved.", []reviewClaimCheck{check}, snapshot))
+	check.Evidence[0].EvidenceID = "unseen-source"
+	require.Error(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{check}, snapshot), "format tolerance must not waive source identity")
 }
 
 func TestTaskPlanSurvivesReviewAndRevisionButNotNextTurn(t *testing.T) {
@@ -51,9 +44,9 @@ func TestTaskPlanSurvivesReviewAndRevisionButNotNextTurn(t *testing.T) {
 
 func TestPlanAssociationsDoNotRequireExhaustiveGoalOrRowAudit(t *testing.T) {
 	snapshot, witness := acceptedReceiptSnapshotFixture(t)
-	snapshot.taskPlan = &taskEvidencePlan{Goals: []string{"Read the survey.", "Describe its scope."}}
+	snapshot.input["advisory_task_plan"] = map[string]any{"goals": []string{"Read the survey.", "Describe its scope."}}
 	answer := "Only the eastern region is covered."
-	checks := []reviewClaimCheck{{Claim: answer, GoalIndices: []int{1}, Basis: "source", Assessment: "Scope is explicit.", Evidence: []reviewSourceWitness{witness}}}
+	checks := []reviewClaimCheck{{Claim: answer, Basis: "source", Assessment: "Scope is explicit.", Evidence: []reviewSourceWitness{witness}}}
 	require.NoError(t, validateReviewReceipt(answer, "The requested scope is answered without enumerating rows", checks, snapshot))
 	presentation := reviewClaimCheck{Claim: "The prose is readable.", Basis: "presentation", Assessment: "Formatting does not change the conclusion."}
 	require.NoError(t, validateReviewReceipt(answer, "Reviewed", append(checks, presentation), snapshot))

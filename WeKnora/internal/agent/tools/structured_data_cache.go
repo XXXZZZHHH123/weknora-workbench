@@ -189,6 +189,7 @@ func cloneStructuredCacheHit(entry structuredReadCacheEntry) *types.ToolResult {
 		metadata["failure_reused"], metadata["reexecuted"] = true, false
 		result.Data["retryable"] = false // Only this exact failed request in this user turn.
 		result.Data["execution_notice"] = "同一轮中该来源绑定请求已失败，本次未重新执行，也未取得新数据；请使用已有反馈选择其他可行步骤。"
+		result.Data["next_step"] = "本轮不要重复提交相同请求。根据完整问题和已有授权工具选择其他可行证据途径，例如核验原始来源；仍须确认真实字段身份、范围与口径，不能把未确认的候选值当作结果。确无可行途径时交付已有依据的部分，并说明本次未取到值，不推断原件无数据或字段未映射。"
 		encoded, err := json.Marshal(result.Data)
 		if err != nil {
 			return nil

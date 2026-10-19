@@ -367,7 +367,7 @@ func (e *AgentEngine) taskReviewPlan() map[string]any {
 		return nil
 	}
 	return map[string]any{"goals": e.taskPlan.Goals, "completion_criteria": e.taskPlan.CompletionCriteria,
-		"notice": "Advisory model plan, not source evidence or additional user requirements. The full user request prevails. Goal indices are zero-based; do not require separate checks for retrieval steps or optional details."}
+		"notice": "Advisory model plan, not source evidence or additional user requirements. The full user request prevails. Do not require separate checks for retrieval steps or optional details."}
 }
 
 func (e *AgentEngine) attachTaskPlanToReview(messages []chat.Message) {

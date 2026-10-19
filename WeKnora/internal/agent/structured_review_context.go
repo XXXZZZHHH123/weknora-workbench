@@ -12,13 +12,14 @@ import (
 )
 
 type reviewToolEvidence struct {
-	EvidenceID    string   `json:"evidence_id,omitempty"`
-	Tool          string   `json:"tool"`
-	ToolCallID    string   `json:"tool_call_id,omitempty"`
-	Content       any      `json:"content"`
-	OriginalBytes int      `json:"original_bytes"`
-	ViewComplete  bool     `json:"view_complete"`
-	OmittedPaths  []string `json:"omitted_paths,omitempty"`
+	EvidenceID       string               `json:"evidence_id,omitempty"`
+	Tool             string               `json:"tool"`
+	ToolCallID       string               `json:"tool_call_id,omitempty"`
+	Content          any                  `json:"content"`
+	OriginalBytes    int                  `json:"original_bytes"`
+	ViewComplete     bool                 `json:"view_complete"`
+	OmittedPaths     []string             `json:"omitted_paths,omitempty"`
+	ExecutionWitness *reviewSourceWitness `json:"execution_witness,omitempty"`
 }
 
 type reviewEvidenceScope struct {
@@ -82,8 +83,10 @@ func boundedReviewEvidence(messages []chat.Message, budget int) ([]reviewToolEvi
 			if decoder.Decode(&value) != nil || decoder.Decode(new(any)) != io.EOF {
 				value = msg.Content
 			}
-			complete = append(complete, reviewToolEvidence{EvidenceID: reviewEvidenceID(msg), Tool: msg.Name, ToolCallID: msg.ToolCallID,
-				Content: value, OriginalBytes: len(msg.Content), ViewComplete: true})
+			entry := reviewToolEvidence{EvidenceID: reviewEvidenceID(msg), Tool: msg.Name, ToolCallID: msg.ToolCallID,
+				Content: value, OriginalBytes: len(msg.Content), ViewComplete: true}
+			entry.ExecutionWitness = visibleReviewExecutionWitness(entry, value)
+			complete = append(complete, entry)
 		}
 		encoded, _ := json.Marshal(complete)
 		if len(encoded) <= budget {
@@ -103,15 +106,18 @@ func boundedReviewEvidence(messages []chat.Message, budget int) ([]reviewToolEvi
 			value = msg.Content
 		}
 		entry.Content = value
+		entry.ExecutionWitness = visibleReviewExecutionWitness(entry, value)
 		encoded, _ := json.Marshal(entry)
 		if len(encoded) > share {
 			entry.Content = nil
+			entry.ExecutionWitness = nil
 			entry.ViewComplete = false
 			overhead, _ := json.Marshal(entry)
 			// Reserve room for omission paths in addition to the JSON fragment.
 			limit := max(0, share-len(overhead)-min(1024, share/4))
 			for {
 				entry.Content, entry.OmittedPaths = projectReviewValue(value, limit, "", 0)
+				entry.ExecutionWitness = visibleReviewExecutionWitness(entry, value)
 				if len(entry.OmittedPaths) == 0 {
 					entry.OmittedPaths = []string{""}
 				}
@@ -133,6 +139,27 @@ func boundedReviewEvidence(messages []chat.Message, budget int) ([]reviewToolEvi
 		remaining -= len(encoded) + 1
 	}
 	return evidence, scope
+}
+
+// visibleReviewExecutionWitness supplies an existing receipt locator for the
+// status already shown beside this result. It is not another evidence view:
+// receipt validation still resolves the immutable ID and visible Content.
+// Never lift failed data into source facts or restore a hidden error here.
+func visibleReviewExecutionWitness(entry reviewToolEvidence, original any) *reviewSourceWitness {
+	actual, actualOK := original.(map[string]any)
+	shown, shownOK := entry.Content.(map[string]any)
+	if !actualOK || !shownOK || actual["success"] != false || shown["success"] != false || entry.EvidenceID == "" {
+		return nil
+	}
+	record := reviewEvidenceRecord{ID: entry.EvidenceID, Tool: entry.Tool, ToolCallID: entry.ToolCallID, Value: original}
+	if !reviewReceiptEligibleResult(record) {
+		return nil
+	}
+	witness := &reviewSourceWitness{EvidenceID: entry.EvidenceID, JSONPointer: "/success", Quote: "false", Kind: "execution"}
+	if rawError, ok := actual["error"].(string); ok && strings.TrimSpace(rawError) != "" && shown["error"] == rawError {
+		witness.JSONPointer, witness.Quote = "/error", rawError
+	}
+	return witness
 }
 
 // Paths are JSON Pointers into the original result. Retained values are exact

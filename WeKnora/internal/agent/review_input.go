@@ -30,7 +30,6 @@ type sourceReviewSnapshot struct {
 	reader        *reviewEvidenceReader
 	sourceRecords *reviewEvidenceReader
 	hasImages     bool
-	taskPlan      *taskEvidencePlan
 }
 
 func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content string, state *types.AgentState, messages []chat.Message) *sourceReviewSnapshot {
@@ -132,7 +131,7 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 		"packet_budget_target_bytes":     packetScope["budget_target_bytes"],
 		"packet_within_target":           packetScope["within_target"],
 	})
-	return &sourceReviewSnapshot{input: inputData, reader: evidenceReader, sourceRecords: sourceRecords, hasImages: hasImageObservations, taskPlan: e.taskPlan}
+	return &sourceReviewSnapshot{input: inputData, reader: evidenceReader, sourceRecords: sourceRecords, hasImages: hasImageObservations}
 }
 
 func sourceReviewCitationBudgetForBase(input map[string]any) int {
