@@ -3336,6 +3336,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
 
   .document-breadcrumb {
     display: flex;
+    font-family: var(--cds-font-interface, var(--app-font-family));
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;

@@ -278,6 +278,7 @@ async function submitDeleteSession(): Promise<void> {
 <style scoped lang="less">
 .chat-header {
   display: inline-flex;
+  font-family: var(--cds-font-interface, var(--app-font-family));
   align-items: center;
   gap: 2px;
   max-width: min(420px, calc(100% - 36px));
