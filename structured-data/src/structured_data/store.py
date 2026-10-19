@@ -65,6 +65,19 @@ def dump(path: Path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=json_default), encoding="utf-8")
 
 
+def _unimported_sheet_states(coverage, imported_sheets):
+    """Coverage sheets present in the original but absent from this version.
+
+    Imported sheet names and coverage states come from the saved manifest; no
+    question text participates. pending/empty sheets keep their own fields.
+    """
+    imported = {sheet.get("name") for sheet in imported_sheets if isinstance(sheet, dict)}
+    return [{"name": s["name"], "status": s["status"], "reasons": s.get("reasons", []),
+             "imported_in_this_version": False}
+            for s in coverage
+            if s.get("name") not in imported and s.get("status") not in {"needs_review", "unsupported", "empty"}]
+
+
 class DataStore:
     def __init__(self, root: Path | str):
         self.root = Path(root)
@@ -139,6 +152,9 @@ class DataStore:
                 for s in coverage if s["status"] in {"needs_review", "unsupported"}
             ]
             item["empty_sheets"] = [s["name"] for s in coverage if s["status"] == "empty"]
+            unimported = _unimported_sheet_states(coverage, item["sheets"])
+            if unimported:
+                item["unimported_sheet_states"] = unimported
             item["sheets"] = [{k:s[k] for k in ("name","observations","series_count","parsed_range") if k in s} for s in item["sheets"]]
             item["excluded_regions"] = [s for s in item["excluded_regions"] if s.get("range") != "entire_sheet"]
             if coverage:
@@ -279,9 +295,16 @@ class DataStore:
             series = [s for s in series if s['sheet']==sheet or s.get('chart_sheet')==sheet]
             pending = [s for s in pending if s['name']==sheet]
             if not series:
+                manifest = self.manifest(dataset_id)
+                unimported = [state for state in _unimported_sheet_states(coverage, manifest.get("sheets", [])) if state["name"] == sheet]
+                if unimported and not pending:
+                    return {"dataset_id":dataset_id,"series":[],"total":0,"offset":offset,"next_offset":None,
+                            "truncated":False,"match_mode":"unimported_sheet","pending_sheets":[],"unimported_sheet_states":unimported,
+                            "notice":"原件包含该工作表，但本数据集版本没有导入其字段；这不表示原件无数据。可用inspect_source指定该sheet定向读取原单元格、表头与单位作为来源证据，不能替换为其他工作表的同名指标。"}
                 return {"dataset_id":dataset_id,"series":[],"total":0,"offset":offset,"next_offset":None,
                         "truncated":False,"match_mode":"pending_scope" if pending else "sheet_not_found",
-                        "pending_sheets":pending,"notice":"指定工作表没有已导入指标；不能替换为其他工作表。"}
+                        "pending_sheets":pending,"notice":"指定工作表没有已导入指标；不能替换为其他工作表。"
+                        + ("可用inspect_source指定该sheet读取原单元格作为来源证据。" if pending else "")}
         terms = normalize(search).split()
         aliases = {s['series_id']:aliases_for(s) for s in series}
         direct = [s for s in series if all(t in search_text(s) for t in terms)]
@@ -483,7 +506,9 @@ class DataStore:
             if type(limit)!=int or not 1<=limit<=20000:raise ValueError('分析最多读取20000条原表记录')
         else:self._limit(limit)
         if operation not in {"rows", "latest", "mean", "sum", "min", "max", "count", "top"}:
-            raise ValueError("不支持的操作。")
+            raise ValueError("query_series 的 arguments.operation 是统计方式，只支持 rows/latest/mean/sum/min/max/count/top；收到 "
+                             + json.dumps(str(operation)[:40], ensure_ascii=False)
+                             + "。工具名由外层 operation 指定，不放入 arguments；本次未查询数值。")
         if order not in ('asc','desc'):raise ValueError('排序方向无效')
         for n in (last_n,top_n):
             if n is not None and (type(n)!=int or not 1<=n<=200):raise ValueError('窗口或排序条数必须为1至200')

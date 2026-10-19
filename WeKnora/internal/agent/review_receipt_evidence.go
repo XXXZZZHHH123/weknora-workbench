@@ -432,20 +432,29 @@ func resolveCitationBodyWitness(input map[string]any, reader *reviewEvidenceRead
 	items := reviewAsSlice(view["items"])
 	var item map[string]any
 	itemMatches := 0
+	displayedRefs := make([]string, 0, 12)
 	for _, rawItem := range items {
 		candidate := reviewAsMap(rawItem)
 		candidateRef, validRef := exactReviewIndex(candidate["source_pointer_ref"])
+		if validRef && len(displayedRefs) < 12 {
+			displayedRefs = append(displayedRefs, strconv.Itoa(candidateRef))
+		}
 		if validRef && candidateRef == ref {
 			item = candidate
 			itemMatches++
 		}
 	}
 	if itemMatches != 1 {
-		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref does not uniquely identify a displayed citation body")
+		// Name the actual displayed refs so a protocol retry can correct the
+		// locator instead of repeating it; this is identity metadata only.
+		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref %d does not uniquely identify a displayed citation body; displayed body source_pointer_ref values: [%s]", ref, strings.Join(displayedRefs, ","))
 	}
 	content, contentOK := item["content"].(string)
-	if item["content_included"] != true || !contentOK || content == "" || !strings.Contains(content, witness.Quote) {
-		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref does not identify currently displayed body text")
+	if item["content_included"] != true || !contentOK || content == "" {
+		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref %d body text is not displayed in this view; read the omitted source path instead", ref)
+	}
+	if !strings.Contains(content, witness.Quote) {
+		return reviewSourceWitness{}, fmt.Errorf("quote is not an exact contiguous substring of the body displayed at source_pointer_ref %d; copy one short span verbatim without ellipses, omissions or joined cells, and use separate witnesses for separate spans", ref)
 	}
 	pointers := reviewAsSlice(view["source_pointers"])
 	if ref >= len(pointers) {

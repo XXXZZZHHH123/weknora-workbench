@@ -44,7 +44,7 @@ const answerReviewAttempts = 3
 const sourceReviewFeedbackLimit = 240
 
 var answerCompletenessSchema = json.RawMessage(`{"type":"object","properties":{"complete":{"type":"boolean"}},"required":["complete"],"additionalProperties":false}`)
-var sourceConsistencySchema = json.RawMessage(`{"type":"object","properties":{"complete":{"type":"boolean","description":"True only when the entire candidate is accepted unchanged with an overall assessment and supported critical audit."},"assessment":{"type":"string","maxLength":1200},"feedback":{"type":"string","maxLength":240},"next_action":{"type":"string","enum":["revise_answer","collect_evidence"]},"audit":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"claim":{"type":"string"},"basis":{"type":"string","enum":["source","inference","limitation","presentation"]},"assessment":{"type":"string"},"evidence":{"type":"array","items":{"type":"object","properties":{"source_pointer_ref":{"type":"integer","minimum":0},"evidence_id":{"type":"string"},"json_pointer":{"type":"string"},"quote":{"type":["string","number","boolean"],"minLength":1},"kind":{"type":"string","enum":["source","execution"]},"row_ref":{"type":"object","properties":{"entry_index":{"type":"integer","minimum":0},"row_index":{"type":"integer","minimum":0},"column":{"type":"string","minLength":1}},"required":["entry_index","row_index","column"],"additionalProperties":false}},"required":["kind"],"additionalProperties":false,"anyOf":[{"required":["evidence_id","quote"],"not":{"anyOf":[{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}},{"required":["source_pointer_ref","quote"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["row_ref"]},{"required":["evidence_id"]},{"required":["json_pointer"]}]}},{"required":["row_ref"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["quote"]},{"required":["evidence_id"]},{"required":["json_pointer"]},{"required":["source_pointer_ref"]}]}},{"required":["evidence_id","json_pointer"],"properties":{"kind":{"const":"source"},"evidence_id":{"minLength":1},"json_pointer":{"minLength":1}},"not":{"anyOf":[{"required":["quote"]},{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}}]}}},"required":["claim","basis","assessment","evidence"],"additionalProperties":false}}},"required":["complete"],"additionalProperties":false}`)
+var sourceConsistencySchema = json.RawMessage(`{"type":"object","properties":{"complete":{"type":"boolean","description":"True only when the entire candidate is accepted unchanged with an overall assessment and supported critical audit."},"assessment":{"type":"string","maxLength":1200},"feedback":{"type":"string","maxLength":240},"next_action":{"type":"string","enum":["revise_answer","collect_evidence"]},"audit":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"claim":{"type":"string"},"candidate_statement":{"type":"string","minLength":1,"maxLength":600},"candidate_fidelity":{"type":"string","enum":["as_written","narrowed","contradicted"]},"basis":{"type":"string","enum":["source","inference","limitation","presentation"]},"assessment":{"type":"string"},"evidence":{"type":"array","items":{"type":"object","properties":{"source_pointer_ref":{"type":"integer","minimum":0},"evidence_id":{"type":"string"},"json_pointer":{"type":"string"},"quote":{"type":["string","number","boolean"],"minLength":1},"kind":{"type":"string","enum":["source","execution"]},"row_ref":{"type":"object","properties":{"entry_index":{"type":"integer","minimum":0},"row_index":{"type":"integer","minimum":0},"column":{"type":"string","minLength":1}},"required":["entry_index","row_index","column"],"additionalProperties":false}},"required":["kind"],"additionalProperties":false,"anyOf":[{"required":["evidence_id","quote"],"not":{"anyOf":[{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}},{"required":["source_pointer_ref","quote"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["row_ref"]},{"required":["evidence_id"]},{"required":["json_pointer"]}]}},{"required":["row_ref"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["quote"]},{"required":["evidence_id"]},{"required":["json_pointer"]},{"required":["source_pointer_ref"]}]}},{"required":["evidence_id","json_pointer"],"properties":{"kind":{"const":"source"},"evidence_id":{"minLength":1},"json_pointer":{"minLength":1}},"not":{"anyOf":[{"required":["quote"]},{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}}]}}},"required":["claim","candidate_statement","candidate_fidelity","basis","assessment","evidence"],"additionalProperties":false}}},"required":["complete"],"additionalProperties":false}`)
 
 // This is only a protocol-shape suspicion gate. It never interprets the
 // question or decides whether a short reply satisfies the requested format.
@@ -317,6 +317,24 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		}
 		if !*verdict.Complete {
 			e.answerReviewFeedback = strings.TrimSpace(*sourceVerdict.Feedback)
+		}
+	}
+	if checkSources && *verdict.Complete {
+		feedback, narrowed, err := reviewFidelityRevision(sourceVerdict.Audit)
+		if err != nil {
+			return true, err
+		}
+		if narrowed {
+			// The reviewer verified a different proposition than the candidate
+			// delivers. Route its own supported claim to the existing revision
+			// path; the revised answer is reviewed again before delivery.
+			e.answerReviewFeedback = feedback
+			e.answerReviewAction = reviewReviseAnswer
+			common.PipelineInfo(ctx, "Agent", "source_review_verdict", map[string]interface{}{
+				"complete": false, "next_action": reviewReviseAnswer, "feedback": feedback,
+				"audit_checks": len(sourceVerdict.Audit), "audit_required": true, "fidelity_revision": true,
+			})
+			return true, nil
 		}
 	}
 	if checkSources && *verdict.Complete {

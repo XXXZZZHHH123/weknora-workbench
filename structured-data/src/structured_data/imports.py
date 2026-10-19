@@ -450,8 +450,8 @@ class ImportManager:
                   '输出只是建议，必须由用户确认，不允许自行声称已导入。')
         body = {'model': cfg['model'], 'temperature': 0, 'max_tokens': 8192,
                 'messages': [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': bounded}]}
-        if isinstance(cfg.get('enable_thinking'), bool):
-            body['enable_thinking'] = cfg['enable_thinking']
+        from .model_settings import thinking_fields
+        body.update(thinking_fields(cfg, cfg.get('enable_thinking')))
         try:
             with httpx.Client(timeout=60, trust_env=False) as client:
                 response = client.post(cfg['base_url'].rstrip('/') + '/chat/completions',

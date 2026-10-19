@@ -348,8 +348,14 @@ def _binding_key(store, dataset, request, model_fn):
 _binding_reuse = SourceBindingReuse()
 
 
-def verify_selection(store, dataset, series_ids, question, model_fn=None):
-    """Validate requested IDs against a model plan over all real siblings."""
+def verify_selection(store, dataset, series_ids, question, model_fn=None, source_binding=None):
+    """Validate requested IDs against a model plan over all real siblings.
+
+    source_binding is the calling model's own explicit plan for each touched
+    duplicate group. It is validated with the same rules as an independent
+    review (whole real group considered, real selected IDs, a reason), so a
+    plan the model already made is executed without a second model call.
+    """
     import httpx
     catalog = store.catalog(dataset)
     requested = set(series_ids)
@@ -364,6 +370,19 @@ def verify_selection(store, dataset, series_ids, question, model_fn=None):
                 'error': '同名来源核验缺少完整原问题；本次未查询数值', 'next_step': '提交完整原问题，让来源模型根据实际来源证据生成绑定计划'}
     evidence = [[{k: source.get(k) for k in ('series_id', 'sheet', 'metric', 'unit', 'dimensions', 'header_cells', 'source_context', 'exchange_rate')}
                  for source in group] for group in groups]
+    required = requested & {source['series_id'] for group in groups for source in group}
+    if source_binding is not None:
+        try:
+            plan = {'decision': 'resolved', 'bindings': source_binding}
+            _validate_source_review(plan, groups)
+            chosen = {sid for binding in source_binding for sid in binding['selected_ids']}
+            if not required.issubset(chosen):
+                raise ValueError('source_binding.selected_ids 未包含本次请求的同名来源 ID；程序不会替模型改选来源')
+        except (ValueError, TypeError, KeyError) as error:
+            return {'kind': 'structured_source_binding', 'status': 'plan_mismatch', 'retryable': True,
+                    'code': 'source_binding_invalid', 'error': str(error), 'fields': evidence,
+                    'notice': '提交的来源绑定计划未通过校验；未查询数值。依据完整问题和 fields 中的实际同名来源修正计划，不自动替换字段。'}
+        return None
     model_identity = model_fn
     if model_fn is None:
         from .field_resolver import ask_model
@@ -371,7 +390,6 @@ def verify_selection(store, dataset, series_ids, question, model_fn=None):
     request = {'_source_binding': True, 'question': question, 'dataset_id': dataset,
                'requested_series_ids': list(series_ids), 'source_groups': evidence,
                '_source_binding_deadline': time.monotonic() + 20}
-    required = requested & {source['series_id'] for group in groups for source in group}
 
     def accepted(review):
         chosen = {sid for binding in review['bindings'] for sid in binding['selected_ids']}
@@ -406,7 +424,8 @@ def verify_selection(store, dataset, series_ids, question, model_fn=None):
         return {'kind': 'structured_source_binding', 'status': 'error', 'retryable': True,
                 'code': 'source_binding_unavailable',
                 'error': str(error) if isinstance(error, ValueError) else '来源模型请求失败或超时，本次未查询数值',
-                'next_step': '来源模型未形成通过校验的计划；修复模型或计划后重试，不能跳过来源保护取数'}
+                'fields': evidence,
+                'next_step': '独立来源核验未形成计划，本次未查询数值。可依据完整问题和 fields 中全部实际同名来源，在同一操作中提交 source_binding=[{considered_ids:本组全部ID,selected_ids:所需ID,reason:选择依据}]；程序按相同规则校验后执行。口径确实无法确定时向用户澄清，不能跳过来源保护取数。'}
     if accepted(review):
         return None
     return {'kind': 'structured_source_binding', 'status': 'needs_clarification' if review['decision'] == 'clarify' else 'plan_mismatch',

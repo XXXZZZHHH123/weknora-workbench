@@ -24,6 +24,40 @@ def read_model(root=None):
     return cfg
 
 
+# Mirrors the Go provider registry (internal/models/providers ThinkingFormat).
+# This is wire-protocol selection by configured endpoint, never by question.
+_THINKING_TYPE_HOSTS = ('volces.com', 'deepseek.com', 'moonshot.ai', 'moonshot.cn', 'bigmodel.cn',
+                        'minimax.cn', 'minimax.io', 'xiaomimimo.com', 'lkeap.cloud.tencent.com')
+_THINKING_FORMATS = ('thinking-type', 'enable-thinking', 'none')
+
+
+def thinking_format(cfg):
+    explicit = cfg.get('thinking_format')
+    if explicit in _THINKING_FORMATS:
+        return explicit
+    host = (urlsplit(str(cfg.get('base_url') or '')).hostname or '').lower()
+    if any(host == suffix or host.endswith('.' + suffix) for suffix in _THINKING_TYPE_HOSTS):
+        return 'thinking-type'
+    return 'enable-thinking'
+
+
+def thinking_fields(cfg, enabled):
+    """Request fields that actually toggle reasoning for this endpoint.
+
+    Some vendors silently ignore an unknown enable_thinking flag and keep
+    reasoning, which made bounded verification calls slow without any error.
+    enabled=None keeps the provider default.
+    """
+    if not isinstance(enabled, bool):
+        return {}
+    form = thinking_format(cfg)
+    if form == 'thinking-type':
+        return {'thinking': {'type': 'enabled' if enabled else 'disabled'}}
+    if form == 'enable-thinking':
+        return {'enable_thinking': enabled}
+    return {}
+
+
 def public_model(root):
     cfg=read_model(root)
     return {k:cfg.get(k,'') for k in ('model','base_url')} | {'has_api_key':bool(cfg.get('api_key')),'protocol':'OpenAI-compatible'}
