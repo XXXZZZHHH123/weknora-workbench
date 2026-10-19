@@ -9,9 +9,12 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 <script src="{{ research_static_prefix() }}/static/tailwind.min.js?v={{ static_version() }}"></script>
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/app.css?v={{ static_version() }}">
 <script src="{{ research_static_prefix() }}/static/app.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/navigation.js?v={{ static_version() }}"></script>
 {% block head %}{% endblock %}
 </head>
 <body class="research-body min-h-screen transition-colors duration-200">
+<div id="research-navigation-progress" class="research-navigation-progress" aria-hidden="true" hidden></div>
+<div id="research-navigation-status" class="research-navigation-status" role="status" aria-live="polite" hidden></div>
 
 {% if ticker %}
 <div class="ticker-strip hidden md:flex items-center justify-between px-6 py-1 bg-[var(--surface-soft)] border-b border-[var(--line)] text-[11px] text-[var(--text-muted)]">

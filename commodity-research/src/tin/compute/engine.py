@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from tin.compute import formulas
 from tin.compute.guards import Point
 from tin.config import SHANGHAI, settings
-from tin.models import Derived, Observation, TradingDay
+from tin.models import Derived, Indicator, Observation, TradingDay
 
 CONTRACT_SETTLE = re.compile(r"^SHFE\.(?P<v>[A-Z]+)\.(?P<m>\d{4})\.settle$")
 
@@ -62,9 +62,24 @@ def is_adjacent(session: Session, earlier: date, later: date) -> bool | None:
     return b.year == a.year + 1 and b.year_seq == 1
 
 
+def observation_boundary(session: Session, *, before: datetime | None = None,
+                         at_or_after: datetime | None = None, latest: bool = True) -> datetime | None:
+    # Fact caches are indexed by series and time. Seek one boundary per actual
+    # field instead of scanning every observation in the combined source view.
+    point = select(Observation.as_of).where(Observation.series_id == Indicator.series_id,
+                                            Observation.status == "正常")
+    if before is not None:
+        point = point.where(Observation.as_of < before)
+    if at_or_after is not None:
+        point = point.where(Observation.as_of >= at_or_after)
+    point = point.order_by(Observation.as_of.desc() if latest else Observation.as_of).limit(1)
+    aggregate = func.max if latest else func.min
+    return session.scalar(select(aggregate(point.scalar_subquery())).select_from(Indicator))
+
+
 def latest_trade_date(session: Session) -> date | None:
     if session.info.get("workbench_id"):
-        timestamp = session.scalar(select(func.max(Observation.as_of)).where(Observation.status == "正常"))
+        timestamp = observation_boundary(session)
         return timestamp.astimezone(SHANGHAI).date() if timestamp else None
     v = session.scalar(select(func.max(TradingDay.trade_date)))
     return date.fromisoformat(v) if v else None

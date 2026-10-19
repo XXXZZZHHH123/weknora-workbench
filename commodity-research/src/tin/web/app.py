@@ -15,7 +15,7 @@ from sqlalchemy import select, text
 
 from tin.brief import store as brief_store
 from tin.caliber.dictionary import DIMENSIONS
-from tin.compute.engine import compute_day, latest_trade_date
+from tin.compute.engine import compute_day, latest_trade_date, observation_boundary
 from tin.config import SHANGHAI, settings
 from tin.db import SessionLocal
 from tin import schema_check
@@ -241,10 +241,11 @@ def _board_date(s, q: str | None) -> date:
 
 def _neighbour_dates(s, d: date) -> tuple[str | None, str | None]:
     if s.info.get("workbench_id"):
-        days = sorted({value.astimezone(SHANGHAI).date().isoformat() for value in s.scalars(
-            select(Observation.as_of).where(Observation.status == "正常"))})
-        return (next((day for day in reversed(days) if day < d.isoformat()), None),
-                next((day for day in days if day > d.isoformat()), None))
+        from tin.compute.engine import day_end
+        previous = observation_boundary(s, before=datetime.combine(d, time.min, SHANGHAI))
+        following = observation_boundary(s, at_or_after=day_end(d), latest=False)
+        return tuple(value.astimezone(SHANGHAI).date().isoformat() if value else None
+                     for value in (previous, following))
     prev = s.scalar(select(TradingDay.trade_date).where(TradingDay.trade_date < d.isoformat())
                     .order_by(TradingDay.trade_date.desc()).limit(1))
     nxt = s.scalar(select(TradingDay.trade_date).where(TradingDay.trade_date > d.isoformat())
