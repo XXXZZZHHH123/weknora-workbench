@@ -1,3 +1,5 @@
+import { fetchWithAuthRetry } from '../utils/authFetch'
+
 export interface IsolatedResearchIdentity { token: string; tenantId: string; userId: string; workbenchId: string; knowledgeBaseId: string }
 export interface WorkbenchSource {
   id: string; file_name: string; file_type?: string; parse_status?: string; folder_path?: string
@@ -17,7 +19,7 @@ export function createIsolatedResearchClient(captured: IsolatedResearchIdentity,
   const own = { ...captured }
   function assertIdentity() {
     const active = current()
-    if (!own.token || !own.workbenchId || !own.knowledgeBaseId || (Object.keys(own) as Array<keyof IsolatedResearchIdentity>).some(key => active[key] !== own[key])) {
+    if (!active.token || !own.token || !own.workbenchId || !own.knowledgeBaseId || (Object.keys(own) as Array<keyof IsolatedResearchIdentity>).filter(key => key !== 'token').some(key => active[key] !== own[key])) {
       throw new Error('账号、空间或工作台已切换，请重新操作。')
     }
   }
@@ -29,7 +31,7 @@ export function createIsolatedResearchClient(captured: IsolatedResearchIdentity,
     headers.set('X-Tenant-ID', own.tenantId)
     headers.set('X-Research-User', own.userId)
     headers.set('X-Knowledge-Base-ID', own.knowledgeBaseId)
-    const response = await fetcher(`/research/api/workbenches/${encodeURIComponent(own.workbenchId)}${path}`, { ...options, credentials: 'same-origin', headers })
+    const response = await fetchWithAuthRetry(`/research/api/workbenches/${encodeURIComponent(own.workbenchId)}${path}`, { ...options, credentials: 'same-origin', headers }, { token: current().token, fetcher, isCurrent: () => { try { assertIdentity(); return true } catch { return false } } })
     assertIdentity()
     const result = await response.json().catch(() => ({}))
     assertIdentity()
