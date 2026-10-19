@@ -225,6 +225,10 @@ func reviewFieldPriority(key string, value any) int {
 	switch key {
 	case "coverage", "scan", "document_scope", "pagination", "requested_range", "columns":
 		return -1
+	case "observation_coverage", "value_changes":
+		// Retain scalar identity/scope before computed summaries, and summaries
+		// before potentially long segment arrays and explanatory text.
+		return 1
 	}
 	switch item := value.(type) {
 	case map[string]any, []any:

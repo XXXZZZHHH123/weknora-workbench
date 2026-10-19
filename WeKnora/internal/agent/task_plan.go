@@ -167,6 +167,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 		{Role: "user", Content: string(input)},
 	}
 	planMessages[0].Content += "\n先读取来源是否直接披露了用户要求的结果，再判断是否需要计算；不要预设必须重建基期、倒推其他时期或交叉验算。来源已直接给出所问结果时，原文披露本身即可作为依据，不为额外交付未要求的派生结果创建目标。"
+	planMessages[0].Content += "\n" + researchSynthesisInstructions + "\n" + researchTrendInstructions
 	planMessages = e.modelContext.EncodeMessages(planMessages)
 	planCtx, cancel := context.WithTimeout(ctx, taskPlanTimeout)
 	defer cancel()
