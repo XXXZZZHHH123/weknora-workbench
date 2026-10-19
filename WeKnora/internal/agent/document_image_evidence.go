@@ -115,8 +115,8 @@ func documentImageConsistencySummariesWithSources(state *types.AgentState, sourc
 							pointers["original_geometry_evidence"] = pointer
 							view["source_json_pointers"] = pointers
 							view["geometry_source_path_guide"] = map[string]string{
-								"source_samples": "Use /geometry/series/<i>/source_samples/<j>/<field>; this is the bounded source projection of the actual samples array.",
-								"key_points":     "Use /geometry/series/<i>/key_points/<j>/<field> exactly as shown. Calibrated x positions are already represented by axis_position fields in this source projection.",
+								"source_samples": "Use " + pointer + "/geometry/series/<i>/source_samples/<j>/<field>; this is the complete source path template for the bounded projection of actual samples.",
+								"key_points":     "Use " + pointer + "/geometry/series/<i>/key_points/<j>/<field>; this is the complete source path template. Calibrated x positions use axis_position fields in this source projection.",
 							}
 						}
 					}

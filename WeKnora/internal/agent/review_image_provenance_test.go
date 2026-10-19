@@ -104,6 +104,17 @@ func TestDocumentImageProjectionUsesExactGeometryRootAndLeafPaths(t *testing.T) 
 	secondContent := reviewAsMap(views[1].Content)
 	secondPointers := reviewAsMap(secondContent["source_json_pointers"])
 	require.Equal(t, "/data/image_geometry_evidence/1/evidence", secondPointers["original_geometry_evidence"])
+	// Follow the actual model-facing path guide, including the immutable root.
+	// A relative /geometry example used to contradict the reader's required path.
+	for _, imageView := range views {
+		guide := reviewAsMap(reviewAsMap(imageView.Content)["geometry_source_path_guide"])
+		for _, kind := range []string{"source_samples", "key_points"} {
+			pathTemplate := strings.TrimSuffix(strings.Fields(guide[kind].(string))[1], ";")
+			path := strings.NewReplacer("<i>", "0", "<j>", "0", "<field>", "approximate_value").Replace(pathTemplate)
+			require.NoError(t, reviewWitnessVisible(map[string]any{"document_image_observations": []reviewToolEvidence{imageView}}, reader,
+				reviewSourceWitness{EvidenceID: imageView.EvidenceID, JSONPointer: path, Kind: "source"}), "the displayed guide must resolve this image's actual visible value")
+		}
+	}
 	input := map[string]any{"document_image_observations": views}
 	witness := func(pointer, quote string) reviewSourceWitness {
 		return reviewSourceWitness{EvidenceID: rawID, JSONPointer: pointer, Quote: quote, Kind: "source"}
