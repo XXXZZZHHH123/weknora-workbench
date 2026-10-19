@@ -46,3 +46,10 @@ func TestSynthesisReasoningUpgradesOnlyOffAndCapableModels(t *testing.T) {
 	}
 	require.Equal(t, chat.ReasoningEffort(""), (&AgentEngine{config: &types.AgentConfig{SourceReviewReasoningEffort: "auto"}}).synthesisReasoningEffort(), "no plan this turn")
 }
+
+func TestSynthesisAnswerRoundReservesReasoningHeadroom(t *testing.T) {
+	e := &AgentEngine{config: &types.AgentConfig{MaxCompletionTokens: 4096, MaxContextTokens: 200000}}
+	require.Equal(t, 4096+synthesisReasoningHeadroom, e.clampCompletionBudgetToContextWithHeadroom(1000, synthesisReasoningHeadroom))
+	e.config.MaxContextTokens = 20000
+	require.LessOrEqual(t, e.clampCompletionBudgetToContextWithHeadroom(15000, synthesisReasoningHeadroom), 20000-15000, "still bounded by the remaining context window")
+}

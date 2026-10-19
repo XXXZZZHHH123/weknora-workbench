@@ -212,8 +212,11 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 	if e.config != nil && e.config.ReviewReasoningEffort != "" {
 		reasoning = chat.ReasoningEffort(e.config.ReviewReasoningEffort)
 	}
+	// The planner's whole-task judgement governs both sides: only synthesis
+	// tasks pay for a reasoning critic; direct lookups keep the fast critic.
 	sourceReasoning := checkSources && !useImageReviewer && e.config != nil &&
-		e.config.SourceReviewReasoningEffort != "" && e.config.SourceReviewReasoningEffort != "off"
+		e.config.SourceReviewReasoningEffort != "" && e.config.SourceReviewReasoningEffort != "off" &&
+		e.taskPlan != nil && e.taskPlan.ReasoningDepth == "synthesis"
 	if sourceReasoning {
 		reasoning = chat.ReasoningEffort(e.config.SourceReviewReasoningEffort)
 	}
@@ -960,6 +963,9 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		enabled := true
 		opts.Thinking = &enabled
 		opts.ReasoningEffort = synthesisReasoning
+		// Reasoning tokens share max_completion_tokens with the answer; without
+		// headroom a long synthesis ends at finish=length with an empty answer.
+		opts.MaxCompletionTokens = e.clampCompletionBudgetToContextWithHeadroom(e.tokenEstimator.EstimateMessages(messages), synthesisReasoningHeadroom)
 	}
 	if e.config.WorkbenchDefault && e.answerReviewPending {
 		opts.Temperature = 0
@@ -979,7 +985,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			// A synthesis revision must reason about the reviewer's objections;
 			// reasoning tokens share the completion budget.
 			opts.ReasoningEffort = synthesisReasoning
-			revisionCap += 10240
+			revisionCap += synthesisReasoningHeadroom
 		}
 		if opts.MaxCompletionTokens > revisionCap {
 			opts.MaxCompletionTokens = revisionCap
