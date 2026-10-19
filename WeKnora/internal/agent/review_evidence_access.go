@@ -327,6 +327,17 @@ func (e *AgentEngine) streamReviewWithEvidence(ctx context.Context, model chat.C
 		if err != nil || ctx.Err() != nil || result == nil || result.StreamError != "" {
 			return result, err
 		}
+		if len(result.ToolCalls) == 0 && len(opts.Tools) > 0 {
+			// Some reasoning modes emit the reader request as JSON text instead
+			// of a tool call. Only an exact, strictly decoded reader request is
+			// executed; it reads already obtained evidence and nothing else.
+			if arguments, ok := reviewEvidenceArgumentsFromText(result.Content); ok {
+				result.ToolCalls = []types.LLMToolCall{{ID: fmt.Sprintf("review-text-read-%d", len(seenCallIDs)+1), Type: "function",
+					Function: types.FunctionCall{Name: reviewEvidenceToolName, Arguments: arguments}}}
+				result.FinishReason = "tool_calls"
+				result.Content = ""
+			}
+		}
 		if len(result.ToolCalls) == 0 {
 			if reader != nil && reader.reads == 0 && !reader.inspectionReminderSent && reviewRequestsAdditionalEvidence(result.Content) {
 				// A model-requested collection may be caused by this review's
@@ -366,6 +377,36 @@ func (e *AgentEngine) streamReviewWithEvidence(ctx context.Context, model chat.C
 			common.PipelineInfo(ctx, "Agent", "source_review_evidence_read", map[string]interface{}{"attempt": reader.reads, "status": output["status"], "evidence_id": output["evidence_id"], "remaining_characters": reader.remaining})
 		}
 	}
+}
+
+// reviewEvidenceArgumentsFromText recognizes a reader request written as the
+// whole response text. Any other field, a verdict, or extra text is rejected.
+func reviewEvidenceArgumentsFromText(content string) (string, bool) {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "{") || len(trimmed) > 4096 {
+		return "", false
+	}
+	var args struct {
+		Operation  string `json:"operation"`
+		EvidenceID string `json:"evidence_id"`
+		Pointer    string `json:"json_pointer"`
+		Offset     int    `json:"offset"`
+		MaxChars   int    `json:"max_chars"`
+		Limit      int    `json:"limit"`
+		Query      string `json:"query"`
+		StartIndex *int   `json:"start_index"`
+		MaxItems   int    `json:"max_items"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&args) != nil || decoder.Decode(new(any)) != io.EOF {
+		return "", false
+	}
+	switch args.Operation {
+	case "list", "read", "search":
+		return trimmed, true
+	}
+	return "", false
 }
 
 func reviewRequestsAdditionalEvidence(content string) bool {
