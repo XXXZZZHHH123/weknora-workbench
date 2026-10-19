@@ -59,3 +59,17 @@ def test_invalid_query_operation_explains_parameter_meaning(duplicate_source):
         store.query_series(dataset, 'B', operation='query_series')
     message = str(error.value)
     assert 'rows/latest' in message and 'query_series' in message and '未查询数值' in message
+
+
+def test_search_without_sheet_recalls_unimported_original_sheet(duplicate_source):
+    store, dataset = duplicate_source
+    _with_coverage(store, dataset, COVERAGE)
+    result = store.list_series(dataset, '下游负荷 指标')
+    assert result['match_mode'] == 'pending_scope' and result['series'] == []
+    assert [s['name'] for s in result['pending_sheets']] == ['下游负荷']
+    assert result['pending_sheets'][0]['imported_in_this_version'] is False
+    assert 'inspect_source' in result['notice'] and '不代表原表缺数据' in result['notice']
+    # A needs_review sheet keeps its own state and gains no imported marker.
+    review = store.list_series(dataset, '复杂表 指标')
+    assert review['pending_sheets'][0]['status'] == 'needs_review'
+    assert 'imported_in_this_version' not in review['pending_sheets'][0]

@@ -314,17 +314,21 @@ class DataStore:
             # A missing source/table must not turn into a different commodity scope.
             corpus = json.dumps(series, ensure_ascii=False).lower()
             missing_terms = [t for t in terms if len(t) >= 2 and t not in corpus]
-            scored_pending = [(sum(t in s["name"].lower() for t in terms), s) for s in pending
+            # Literal sheet-name hits only recall candidates. Sheets present in
+            # the original but not imported in this version are candidates too.
+            unimported_pool = _unimported_sheet_states(coverage, self.manifest(dataset_id).get("sheets", []))
+            scored_pending = [(sum(t in s["name"].lower() for t in terms), s) for s in pending + unimported_pool
                               if any(t in s["name"].lower() for t in missing_terms)
                               or s["name"].lower() in search.lower()]
             if scored_pending:
                 best = max(score for score, _ in scored_pending)
-                relevant = [{"name":s["name"], "status":s["status"], "reasons":s.get("reasons", [])}
+                relevant = [{"name":s["name"], "status":s["status"], "reasons":s.get("reasons", []),
+                             **({"imported_in_this_version": False} if "imported_in_this_version" in s else {})}
                             for score, s in scored_pending if score == best]
                 return {"dataset_id":dataset_id, "series":[], "total":0, "offset":offset,
                         "next_offset":None, "truncated":False, "match_mode":"pending_scope",
                         "pending_sheets":relevant[:20],
-                        "notice":"查询涉及的工作表尚未确认映射，目前不能查询；这不代表原表缺数据。不可用其他工作表、国家或指标替代。请在结构化工作台核对并确认该表。"}
+                        "notice":"查询涉及的工作表在本版本字段目录中尚未导入或尚未确认映射，不能用字段查询；这不代表原表缺数据。可用inspect_source指定该sheet定向读取原单元格、表头与单位作为来源证据；不可用其他工作表、国家或指标替代。如需长期按字段查询，在结构化工作台核对并导入该表。"}
             scored = [(sum(t in json.dumps(s, ensure_ascii=False).lower() for t in terms), s) for s in series]
             best = max((score for score, _ in scored), default=0)
             if best:
