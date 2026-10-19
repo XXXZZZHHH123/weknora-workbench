@@ -97,6 +97,63 @@ class BuildMemoryGuardTests(unittest.TestCase):
         ideal = guard.calculate(6144, 5600, {})
         self.assertEqual((ideal.memory, ideal.heap), (3584, 2816))
 
+    def test_explicit_three_gib_profile_does_not_change_defaults(self):
+        env = {'WEKNORA_BUILD_PROFILE': 'large-frontend-once',
+               'WEKNORA_BUILD_MEMORY_MB': '3840', 'WEKNORA_BUILD_NODE_HEAP_MB': '3072'}
+        raised = guard.calculate(5897, 5000, env)
+        self.assertEqual((raised.memory, raised.heap, raised.swap, raised.reserve),
+                         (3840, 3072, 128, 1024))
+        self.assertEqual((guard.calculate(5897, 5000, {}).memory,
+                          guard.calculate(5897, 5000, {}).heap), (3584, 2816))
+        for total, settings in [(4096, env), (5897, {'WEKNORA_BUILD_PROFILE': 'unknown'}),
+                                (5897, {**env, 'WEKNORA_BUILD_MEMORY_MB': '3841'}),
+                                (5897, {**env, 'WEKNORA_BUILD_NODE_HEAP_MB': '3073'}),
+                                (5897, {**env, 'WEKNORA_BUILD_MEMORY_MB': '3712'})]:
+            with self.subTest(total=total, settings=settings), self.assertRaises(guard.GuardError):
+                guard.calculate(total, 5000, settings)
+
+    def test_three_gib_profile_requires_real_scope_and_full_native_overhead(self):
+        env = {'WEKNORA_BUILD_PROFILE': 'large-frontend-once',
+               'WEKNORA_BUILD_MEMORY_MB': '3840', 'WEKNORA_BUILD_NODE_HEAP_MB': '3072'}
+        self.budget = guard.calculate(5897, 5000, env)
+        for name, value in self.actual_limits().items():
+            (self.scope / name).write_text(str(value))
+        with patch.object(guard, 'meminfo', return_value=(5897, 5000)):
+            self.assertEqual(self.verify(**env), self.budget)
+            with self.assertRaises(guard.GuardError):
+                self.verify()
+            (self.parent / 'memory.max').write_text(str(3712 * guard.MIB))
+            with self.assertRaises(guard.GuardError):
+                self.verify(**env)
+            (self.parent / 'memory.max').write_text(str(3840 * guard.MIB))
+            self.assertEqual(self.verify(**env), self.budget)
+
+    def test_three_gib_profile_keeps_live_guest_and_windows_reserves(self):
+        env = {'WEKNORA_BUILD_PROFILE': 'large-frontend-once',
+               'WEKNORA_BUILD_MEMORY_MB': '3840', 'WEKNORA_BUILD_NODE_HEAP_MB': '3072'}
+        self.budget = guard.calculate(5897, 5000, env)
+        for name, value in self.actual_limits().items():
+            (self.scope / name).write_text(str(value))
+        guest_minimum = 3840 + 1024
+        host_minimum = 3840 + guard.HOST_RESERVE_MB
+        with patch.object(guard, 'is_wsl', return_value=True), \
+                patch.object(guard, 'meminfo', return_value=(5897, guest_minimum)):
+            with patch.object(guard, 'windows_available', return_value=host_minimum):
+                self.assertEqual(self.verify(**env), self.budget)
+            with patch.object(guard, 'windows_available', return_value=host_minimum - 1):
+                with self.assertRaises(guard.GuardError):
+                    self.verify(**env)
+        with patch.object(guard, 'meminfo', return_value=(5897, guest_minimum - 1)):
+            with self.assertRaises(guard.GuardError):
+                self.verify(**env)
+        with patch.object(guard, 'is_wsl', return_value=True), \
+                patch.object(guard, 'meminfo', return_value=(5897, 5000)):
+            with patch.object(guard, 'windows_available', return_value=host_minimum + guard.HOST_GROWTH_OVERHEAD_MB):
+                self.assertEqual(guard.plan(env).heap, 3072)
+            with patch.object(guard, 'windows_available', return_value=host_minimum + guard.HOST_GROWTH_OVERHEAD_MB - 1):
+                with self.assertRaises(guard.GuardError):
+                    guard.plan(env)
+
     def test_forged_large_budget_fields_never_replace_real_guest_or_finite_limits(self):
         original = guard.calculate(5897, 4800, {})
         self.budget = original
