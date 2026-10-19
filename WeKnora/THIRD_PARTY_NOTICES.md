@@ -85,7 +85,7 @@ packaged source directory, run `scripts/check-license-bundle.sh PATH/TO/licenses
 - Attribution: Copyright (c) 2026 Caho1.
 - License: MIT, reproduced in
   [`licenses/Open-Claude-UI-MIT.txt`](licenses/Open-Claude-UI-MIT.txt).
-- CDS color, surface, motion and interaction design references are adapted to
+- CDS typography, color, surface, motion and interaction design references are adapted to
   WeKnora's existing Vue/TDesign components and iframe workspaces. No React
   runtime, model backend, proprietary font, audio, or Anthropic binary assets
   are included from that project.

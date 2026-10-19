@@ -216,7 +216,7 @@ mermaid.initialize({
   startOnLoad: false,
   theme: 'default',
   securityLevel: 'strict',
-  fontFamily: 'PingFang SC, Microsoft YaHei, sans-serif',
+  fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--app-font-family').trim() || 'ui-sans-serif, system-ui, sans-serif',
   flowchart: {
     useMaxWidth: true,
     htmlLabels: true,
