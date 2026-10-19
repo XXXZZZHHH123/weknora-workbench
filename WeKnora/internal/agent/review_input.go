@@ -20,6 +20,9 @@ const (
 	sourceReviewCatalogBudget          = 2 * 1024
 	sourceReviewToolDirectoryBudget    = 2 * 1024
 	sourceReviewCitationBudget         = 48 * 1024
+	// The reasoning critic for synthesis tasks gets a wider view of the same
+	// immutable results (still bounded; omissions remain explicit).
+	sourceReviewSynthesisScale = 3
 )
 
 // All modality adapters derive from one current-turn result snapshot. The
@@ -41,14 +44,28 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 	sourceMessages := e.sourceConsistencyMessages(state, messages)
 	sourceRecords := newReviewEvidenceReader(sourceMessages)
 	hasImageObservations := false
-	evidence, scope := boundedReviewEvidence(sourceMessages, sourceReviewToolResultsBudget)
+	// Synthesis tasks are reviewed by the reasoning critic, which must check
+	// claims against long read documents; widen its projection. Direct lookups
+	// keep the compact packet.
+	scale := 1
+	rawSourceBytes := 0
+	for _, message := range sourceMessages {
+		rawSourceBytes += len(message.Content)
+	}
+	synthesis := e.taskPlan != nil && e.taskPlan.ReasoningDepth == "synthesis" && e.config != nil && e.config.SourceReviewReasoningEffort == "auto"
+	// Widen also when the actual results cannot fit the compact packet, so a
+	// critic is not asked to approve claims whose source text it never saw.
+	if synthesis || rawSourceBytes > sourceReviewSharedProjectionBudget {
+		scale = sourceReviewSynthesisScale
+	}
+	evidence, scope := boundedReviewEvidence(sourceMessages, sourceReviewToolResultsBudget*scale)
 	inputData["source_tool_results"] = evidence
 	inputData["evidence_scope"] = scope
 	rowEvidence := structuredQueryRowReviewEvidence(state, sourceMessages, structuredQueryRowReviewBudget)
 	if rowEvidence != nil {
 		inputData["structured_query_row_companion"] = rowEvidence
 	}
-	documentEvidence := documentRetrievalCompanionWithBudget(sourceMessages, sourceReviewDocumentBudget)
+	documentEvidence := documentRetrievalCompanionWithBudget(sourceMessages, sourceReviewDocumentBudget*scale)
 	if documentEvidence != nil {
 		inputData["document_retrieval_companion"] = documentEvidence
 		inputData["document_retrieval_companion_notice"] = documentRetrievalCompanionInstructions
@@ -66,8 +83,8 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 	inputData["document_table_execution_scope"] = tableExecutionScope
 	inputData["available_tool_directory"] = compactSourceReviewToolDirectory(e.sourceReviewToolDirectory(), sourceReviewToolDirectoryBudget)
 	inputData["evidence_notice"] = "This bounded view contains only this turn's real tool results and runtime access metadata. view_complete does not prove the original source is complete. Respect original truncation, pagination, coverage, and omitted_paths. A missing projected field is unknown, not absent. Plans, schemas, directory candidates, assistant prose and failed calls are not source facts."
-	citationBudget := sourceReviewCitationBudgetForBase(inputData)
-	citationEvidence := citedSourceEvidenceFromMessagesWithBudget(sourceMessages, content, citationBudget, true, sourceReviewCitationBudget)
+	citationBudget := sourceReviewCitationBudgetForBaseScaled(inputData, scale)
+	citationEvidence := citedSourceEvidenceFromMessagesWithBudget(sourceMessages, content, citationBudget, true, sourceReviewCitationBudget*scale)
 	inputData["citation_source_evidence"] = citationEvidence
 	if !scope.ViewComplete || citationEvidence["view_complete"] != true || catalogEvidence["view_complete"] != true || rowEvidenceIncomplete || documentEvidenceIncomplete || !imageScope.ViewComplete || !tableExecutionScope.ViewComplete {
 		evidenceReader = sourceRecords
@@ -83,7 +100,7 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 		inputData["citation_binding_view"] = bindingEvidence
 	}
 	packetScope := map[string]any{
-		"budget_target_bytes": sourceReviewSharedProjectionBudget,
+		"budget_target_bytes": sourceReviewSharedProjectionBudget * scale,
 		"within_target":       true,
 		"serialized_bytes":    0,
 		"note":                "The target applies to this serialized source packet. Image and table adapters retain their existing independent bounds; exceeding the target does not trim their mappings or imply evidence completeness.",
@@ -97,7 +114,7 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 			break
 		}
 		packetScope["serialized_bytes"] = size
-		packetScope["within_target"] = size <= sourceReviewSharedProjectionBudget
+		packetScope["within_target"] = size <= sourceReviewSharedProjectionBudget*scale
 	}
 	// Record projection state without source text, identities or draft
 	// excerpts, so an evidence omission can be distinguished from a model
@@ -135,11 +152,15 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 }
 
 func sourceReviewCitationBudgetForBase(input map[string]any) int {
-	available := sourceReviewSharedProjectionBudget - sourceReviewProjectionSize(input) - sourceReviewBindingBudget - 512
+	return sourceReviewCitationBudgetForBaseScaled(input, 1)
+}
+
+func sourceReviewCitationBudgetForBaseScaled(input map[string]any, scale int) int {
+	available := sourceReviewSharedProjectionBudget*scale - sourceReviewProjectionSize(input) - sourceReviewBindingBudget - 512
 	if available < citationReviewMinimumBudget {
 		return citationReviewMinimumBudget
 	}
-	return min(sourceReviewCitationBudget, available)
+	return min(sourceReviewCitationBudget*scale, available)
 }
 
 func compactSourceReviewToolDirectory(directory map[string]any, budget int) map[string]any {
