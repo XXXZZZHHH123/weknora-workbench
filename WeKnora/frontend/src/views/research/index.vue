@@ -5,11 +5,10 @@
         <t-icon name="chevron-left" />研究工作台
       </router-link>
       <strong>{{ workbench.name }}</strong><span>{{ workbench.knowledge_base_name || '绑定知识库' }}</span>
-      <t-button class="research-materials" variant="text" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
-      <t-button v-if="isIsolated" variant="text" size="small" @click="openGuide" aria-label="重新打开新手引导">新手引导</t-button>
-      <router-link v-if="workbench?.knowledge_base_id" :to="`/platform/knowledge-bases/${workbench.knowledge_base_id}`">转到知识库</router-link>
+      <t-button class="research-materials" data-guide="research-sources" variant="text" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
+      <router-link v-if="workbench?.knowledge_base_id" data-guide="research-kb" :to="`/platform/knowledge-bases/${workbench.knowledge_base_id}`">转到知识库</router-link>
       <t-button variant="outline" size="small" :disabled="!canShowResearch" :aria-expanded="chatVisible"
-        aria-controls="research-chat-panel" @click="openChat">问答助手</t-button>
+        aria-controls="research-chat-panel" data-guide="research-chat" @click="openChat">问答助手</t-button>
     </div>
     <div class="research-body">
       <div class="research-canvas">

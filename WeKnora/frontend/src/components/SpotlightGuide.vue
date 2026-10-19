@@ -14,7 +14,7 @@
         <div v-if="hole" class="guide__ring" :style="ringStyle" aria-hidden="true" />
 
         <div ref="cardRef" class="guide__card" :class="{ 'guide__card--center': !hole }" :style="cardStyle">
-          <button type="button" class="guide__close" :aria-label="t(`${labelsPrefix}.skip`)" @click="dismiss">
+          <button type="button" class="guide__close" :disabled="busy" :aria-label="t(`${labelsPrefix}.skip`)" @click="dismiss">
             <t-icon name="close" size="18px" />
           </button>
 
@@ -27,18 +27,19 @@
           </p>
           <h3 class="guide__title">{{ stepTitle }}</h3>
           <p class="guide__desc">{{ stepDesc }}</p>
+          <slot name="notice" />
           <p v-if="step.interact" class="guide__interact-hint">{{ t(`${labelsPrefix}.interactHint`) }}</p>
 
           <div class="guide__actions">
-            <button type="button" class="guide__skip" @click="dismiss">{{ t(`${labelsPrefix}.skip`) }}</button>
+            <button type="button" class="guide__skip" :disabled="busy" @click="dismiss">{{ t(`${labelsPrefix}.skip`) }}</button>
             <div v-if="!step.interact" class="guide__actions-main">
-              <t-button v-if="index > 0" size="small" variant="outline" @click="prev">
+              <t-button v-if="index > 0" size="small" variant="outline" :disabled="busy" @click="prev">
                 {{ t(`${labelsPrefix}.prev`) }}
               </t-button>
-              <t-button v-if="!isLast" size="small" theme="primary" @click="next">
+              <t-button v-if="!isLast" size="small" theme="primary" :disabled="busy" @click="next">
                 {{ t(`${labelsPrefix}.next`) }}
               </t-button>
-              <t-button v-else size="small" theme="primary" @click="finish">
+              <t-button v-else size="small" theme="primary" :disabled="busy" @click="finish">
                 {{ t(`${labelsPrefix}.done`) }}
               </t-button>
             </div>
@@ -66,15 +67,19 @@ const props = withDefaults(
     active: boolean
     steps: SpotlightGuideStep[]
     /** i18n 前缀，步骤文案为 `${stepI18nPrefix}.${key}.title|desc` */
-    stepI18nPrefix: string
+    stepI18nPrefix?: string
     /** skip/prev/next/done/stepOf 所在前缀，默认 newUserGuide */
     labelsPrefix?: string
     /** 每步 before 执行后的等待毫秒数 */
     beforeDelayMs?: number
+    busy?: boolean
+    closeOnFinish?: boolean
   }>(),
   {
     labelsPrefix: 'newUserGuide',
     beforeDelayMs: 280,
+    busy: false,
+    closeOnFinish: true,
   },
 )
 
@@ -151,8 +156,8 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 const step = computed(() => props.steps[index.value] ?? props.steps[0])
 const isLast = computed(() => index.value === props.steps.length - 1)
-const stepTitle = computed(() => t(`${props.stepI18nPrefix}.${step.value.key}.title`))
-const stepDesc = computed(() => t(`${props.stepI18nPrefix}.${step.value.key}.desc`))
+const stepTitle = computed(() => step.value.title ?? (props.stepI18nPrefix ? t(`${props.stepI18nPrefix}.${step.value.key}.title`) : ''))
+const stepDesc = computed(() => step.value.description ?? (props.stepI18nPrefix ? t(`${props.stepI18nPrefix}.${step.value.key}.desc`) : ''))
 
 const hole = computed(() => {
   const el = targetEl.value
@@ -325,8 +330,8 @@ const goTo = async (i: number) => {
   rootRef.value?.focus()
 }
 
-const next = () => goTo(index.value + 1)
-const prev = () => goTo(index.value - 1)
+const next = () => { if (!props.busy) void goTo(index.value + 1) }
+const prev = () => { if (!props.busy) void goTo(index.value - 1) }
 
 const close = () => {
   if (retryTimer) {
@@ -339,11 +344,13 @@ const close = () => {
 }
 
 const finish = () => {
+  if (props.busy) return
   emit('finish')
-  close()
+  if (props.closeOnFinish) close()
 }
 
 const dismiss = () => {
+  if (props.busy) return
   emit('dismiss')
   finish()
 }

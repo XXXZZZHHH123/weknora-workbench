@@ -9,6 +9,8 @@ import { createIsolatedResearchClient, type IsolatedResearchIdentity, type Workb
 import KbUploadSourceDropdown from '@/views/knowledge/components/KbUploadSourceDropdown.vue'
 import { buildUploadFileName } from '@/views/knowledge/folderTree'
 import { workspaceErrorMessage } from '@/views/workspaces/workspaceForm'
+import ResearchWorkbenchGuide from './ResearchWorkbenchGuide.vue'
+import { buildResearchOnboardingSteps } from './researchOnboarding'
 
 const props = defineProps<{ workbench: ResearchWorkbench; guideSuppressed?: boolean }>()
 const emit = defineEmits<{ 'open-chat': []; 'update-workbench': [workbench: ResearchWorkbench]; navigate: [view: string]; refresh: [] }>()
@@ -18,12 +20,18 @@ const saveVisualOriginals = ref(true)
 const overview = ref<WorkbenchOverview | null>(null), sources = ref<WorkbenchSource[]>([])
 const sourceTotal = ref(0), sourcePage = ref(1)
 const loading = ref(false), busy = ref(false), error = ref(''), drawerError = ref('')
+const guideSaving = ref(false), guideError = ref('')
 const drawer = ref<'sources' | 'evidence' | 'upload' | null>(null)
 const sourceContent = ref<{text?: string; sha256?: string; supported?: boolean; notice?: string; image_data_url?: string} | null>(null)
 const sourceContentOpen = ref(false), sourceContentLoading = ref(false)
 const selectedSource = ref<WorkbenchSource | null>(null), pendingFiles = ref<File[]>([])
 const isIsolated = computed(() => props.workbench.workspace_mode === 'isolated')
-const guideVisible = computed(() => !props.guideSuppressed && isIsolated.value && (!props.workbench.onboarding || props.workbench.onboarding.status === 'active'))
+const guideRun = ref(0)
+const guideVisible = computed(() => !props.guideSuppressed && isIsolated.value && !loading.value && Boolean(overview.value)
+  && (drawer.value === null || drawer.value === 'sources')
+  && (!props.workbench.onboarding || props.workbench.onboarding.status === 'active'))
+const guideSteps = computed(() => overview.value ? buildResearchOnboardingSteps(
+  props.workbench.knowledge_base_name || '', overview.value, drawer.value === 'sources' ? 'sources' : 'home') : [])
 const taskNames = { sources: '添加资料', review: '核对来源', research: '开始研究' }
 let generation = 0, scopeEpoch = 0, sourceSelection = 0
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -49,7 +57,7 @@ async function load() {
     const counts = summary.counts
     if (!binding || binding.id !== props.workbench.id || binding.knowledge_base_id !== props.workbench.knowledge_base_id
       || binding.workspace_mode !== props.workbench.workspace_mode || sourceList.knowledge_base_id !== props.workbench.knowledge_base_id
-      || !counts || ![counts.sources, counts.indicators, counts.observations].every(value => Number.isSafeInteger(value) && value >= 0)
+      || !counts || ![counts.sources, counts.documents_ready, counts.excel_pending, counts.indicators, counts.observations].every(value => Number.isSafeInteger(value) && value >= 0)
       || !Array.isArray(summary.readiness?.tasks) || !Array.isArray(sourceList.sources)
       || sourceList.sources.some(source => typeof source.id !== 'string' || !source.id || source.knowledge_base_id && source.knowledge_base_id !== props.workbench.knowledge_base_id)) {
       throw new Error('工作台与资料范围不匹配，已停止显示。')
@@ -62,16 +70,21 @@ async function load() {
 async function guide(status: 'active' | 'dismissed' | 'skipped' | 'completed', task?: keyof typeof taskNames) {
   // Legacy workbenches share source preparation, but their metadata endpoint
   // does not support the isolated onboarding state machine.
-  if (!isIsolated.value || busy.value || !validBinding()) return
-  const own = generation, ownerEpoch = scopeEpoch; busy.value = true; error.value = ''
+  if (!isIsolated.value || guideSaving.value || !validBinding()) return
+  const owner = identity(), ownerEpoch = scopeEpoch
+  const stillOwner = () => {
+    const current = identity()
+    return ownerEpoch === scopeEpoch && (Object.keys(owner) as Array<keyof IsolatedResearchIdentity>).every(key => owner[key] === current[key])
+  }
+  guideSaving.value = true; guideError.value = ''
   try {
     const result = await updateResearchWorkbenchOnboarding(props.workbench.id, { status, ...(task ? { tasks: { [task]: true } } : {}) })
-    if (own === generation) emit('update-workbench', result.data)
-  } catch (e) { if (own === generation) error.value = workspaceErrorMessage(e) }
-  finally { if (ownerEpoch === scopeEpoch) busy.value = false }
+    if (stillOwner()) emit('update-workbench', result.data)
+  } catch (e) { if (stillOwner()) guideError.value = workspaceErrorMessage(e) }
+  finally { if (stillOwner()) guideSaving.value = false }
 }
 function openSources() { clearPreview(); drawer.value = 'sources'; drawerError.value = '' }
-function openGuide() { if (isIsolated.value) void guide('active'); else openSources() }
+function openGuide() { if (isIsolated.value) { guideRun.value++; void guide('active') } else openSources() }
 function openKnowledgeBase() {
   if (validBinding()) void router.push(`/platform/knowledge-bases/${encodeURIComponent(props.workbench.knowledge_base_id)}`)
 }
@@ -137,7 +150,7 @@ watch(scopeKey, () => {
   scopeEpoch++; generation++; clearPreview()
   if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = undefined }
   overview.value = null; sources.value = []; sourceTotal.value = 0; sourcePage.value = 1
-  loading.value = false; busy.value = false; error.value = ''; drawerError.value = ''; drawer.value = null; pendingFiles.value = []
+  loading.value = false; busy.value = false; guideSaving.value = false; guideError.value = ''; error.value = ''; drawerError.value = ''; drawer.value = null; pendingFiles.value = []
   const own = generation
   void nextTick(() => { if (own === generation) void load() })
 }, { immediate: true, flush: 'sync' })
@@ -148,24 +161,12 @@ defineExpose({ openSources, openGuide })
 
 <template>
   <div class="workbench-preparation" data-testid="workbench-preparation">
-    <section v-if="guideVisible" class="isolated-guide" aria-label="首次研究引导">
-      <div class="isolated-guide__header">
-        <strong>开始研究</strong>
-        <t-button size="small" variant="text" :disabled="busy" @click="guide('dismissed')">稍后继续</t-button>
-        <t-button size="small" variant="text" :disabled="busy" @click="guide('skipped')">跳过</t-button>
-      </div>
-      <div class="isolated-guide__tasks">
-        <div v-for="(label,id,index) in taskNames" :key="id" class="isolated-guide__task">
-          <span class="isolated-guide__number">{{ overview?.readiness.tasks.find(task => task.id === id)?.status === 'ready' ? '✓' : index + 1 }}</span>
-          <div>
-            <strong>{{ label }}</strong>
-            <small>{{ id === 'sources' ? '保留原件与文件夹层级' : id === 'review' ? '在知识库确认结构与口径' : '整理结构与自己的判断' }}</small>
-            <t-button size="small" variant="text" @click="id === 'sources' ? openSources() : id === 'review' ? openReview() : emit('navigate', 'diagram')">{{ id === 'sources' ? '添加 / 查看' : id === 'review' ? '前往核对' : '开始整理' }}</t-button>
-          </div>
-        </div>
-      </div>
-    </section>
-    <t-alert v-if="error && (guideVisible || drawer)" theme="error" :message="error" class="isolated-error" />
+    <ResearchWorkbenchGuide v-if="guideVisible" :key="`${guideRun}:${drawer || 'home'}`" :steps="guideSteps" :saving="guideSaving" :save-error="guideError"
+      @finish="guide('completed')" @dismiss="guide('skipped')" />
+    <div v-if="error || (guideError && !guideVisible)" class="isolated-error" role="alert">
+      <t-alert theme="error" :message="error || guideError" />
+      <t-button size="small" variant="text" :loading="loading" @click="load">重试加载</t-button>
+    </div>
     <aside v-if="drawer" class="isolated-drawer" aria-label="资料与研究侧栏">
       <header>
         <h2>{{ drawer === 'evidence' ? '来源预览' : drawer === 'upload' ? '确认添加资料' : '资料与来源' }}</h2>
@@ -175,9 +176,9 @@ defineExpose({ openSources, openGuide })
         <t-alert v-if="drawerError" theme="error" :message="drawerError" />
         <template v-if="drawer === 'sources'">
           <div class="isolated-actions">
-            <KbUploadSourceDropdown unified :supported-file-types="uploadTypes" trigger-label="添加资料" @files="selectFiles" />
+            <span data-guide="research-upload"><KbUploadSourceDropdown unified :supported-file-types="uploadTypes" trigger-label="添加资料" @files="selectFiles" /></span>
             <t-button size="small" variant="text" :loading="loading" @click="load">刷新来源</t-button>
-            <t-button size="small" variant="text" @click="openKnowledgeBase">知识库管理</t-button>
+            <t-button size="small" variant="text" data-guide="research-kb-manage" @click="openKnowledgeBase">知识库管理</t-button>
           </div>
           <p class="isolated-hint">原件保存在绑定知识库。Excel 在知识库确认结构后，指标即可在工作台使用。</p>
           <p v-if="overview" class="isolated-hint">{{ overview.counts.sources }} 份原件 · {{ overview.counts.indicators }} 个指标 · {{ overview.counts.observations }} 条观测</p>
@@ -185,8 +186,8 @@ defineExpose({ openSources, openGuide })
           <div v-else-if="!sources.length && !error" class="isolated-note">尚无原件，可以先添加文件或文件夹。</div>
           <div v-for="source in sources" :key="source.id" class="isolated-review-row">
             <div><strong>{{ sourceLabel(source) }}</strong><small>{{ sourceStatus(source) }}</small></div>
-            <t-button v-if="isWorkbook(source)" size="small" variant="text" @click="openStructured(source)">结构化解析</t-button>
-            <t-button size="small" variant="text" @click="showSource(source)">预览</t-button>
+            <t-button v-if="isWorkbook(source)" size="small" variant="text" data-guide="research-structured" @click="openStructured(source)">结构化解析</t-button>
+            <t-button size="small" variant="text" data-guide="research-source-preview" @click="showSource(source)">预览</t-button>
           </div>
           <div v-if="sourceTotal" class="isolated-actions isolated-pagination">
             <span>已加载 {{ sources.length }} / {{ sourceTotal }} 份原件</span>
@@ -253,5 +254,5 @@ defineExpose({ openSources, openGuide })
 .workbench-preparation .isolated-guide__task small{display:block;grid-row:2;font-size:var(--app-text-2xs)}
 .workbench-preparation .isolated-guide__task .t-button{grid-column:2;grid-row:1 / 3;font-size:var(--app-text-xs);height:27px}
 .workbench-preparation .isolated-drawer{pointer-events:auto;z-index:2}
-.workbench-preparation>.isolated-error{position:absolute;right:16px;bottom:230px;max-width:360px;pointer-events:auto}
+.workbench-preparation>.isolated-error{position:absolute;right:16px;bottom:16px;max-width:360px;pointer-events:auto;display:flex;align-items:center;gap:6px}
 </style>

@@ -2,6 +2,8 @@ export type GuidePlacement = 'right' | 'left' | 'bottom' | 'top'
 
 export interface SpotlightGuideStep {
   key: string
+  title?: string
+  description?: string
   /** 高亮目标的 CSS 选择器；缺省表示居中卡片 */
   target?: string
   placement?: GuidePlacement
