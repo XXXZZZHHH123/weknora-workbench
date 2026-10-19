@@ -1,3 +1,7 @@
+:where(body, button, input, textarea, select) {
+    font-family: var(--cds-font-interface);
+}
+
 :root:root,:root:root[theme-mode="light"]{
         --app-font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
         --app-font-family-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
