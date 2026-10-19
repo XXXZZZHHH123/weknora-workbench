@@ -772,6 +772,15 @@ func reviewWitnessVisibleInRowCompanion(value any, witness reviewSourceWitness) 
 		}
 		local := strings.TrimPrefix(witness.JSONPointer, base)
 		parts := strings.Split(strings.TrimPrefix(local, "/"), "/")
+		if len(parts) == 1 {
+			// A whole row is exposed only when the companion displays every
+			// field of that exact row; the reconstruction must equal the quote
+			// derived from the immutable source row.
+			if row, ok := reviewCompanionDisplayedRow(entry, parts[0]); ok && reviewQuoteMatchesValue(row, witness.Quote) {
+				return true
+			}
+			continue
+		}
 		if len(parts) < 2 {
 			continue
 		}
@@ -818,6 +827,43 @@ func reviewWitnessVisibleInRowCompanion(value any, witness reviewSourceWitness) 
 		}
 	}
 	return false
+}
+
+// reviewCompanionDisplayedRow reconstructs one displayed row in its original
+// JSON shape. Positional rows are constant_fields plus columns/value pairs;
+// object and matrix rows are already the unchanged source rows.
+func reviewCompanionDisplayedRow(entry map[string]any, index string) (any, bool) {
+	rowIndex, err := strconv.Atoi(index)
+	if err != nil || rowIndex < 0 || strconv.Itoa(rowIndex) != index {
+		return nil, false
+	}
+	rows := reviewAsSlice(entry["rows"])
+	if rowIndex >= len(rows) {
+		return nil, false
+	}
+	switch entry["row_encoding"] {
+	case "objects", "matrix":
+		return rows[rowIndex], true
+	case "positional":
+		columns := reviewAsSlice(entry["columns"])
+		values := reviewAsSlice(rows[rowIndex])
+		if len(values) != len(columns) {
+			return nil, false
+		}
+		object := map[string]any{}
+		for key, value := range reviewAsMap(entry["constant_fields"]) {
+			object[key] = value
+		}
+		for i, column := range columns {
+			name, ok := column.(string)
+			if !ok {
+				return nil, false
+			}
+			object[name] = values[i]
+		}
+		return object, true
+	}
+	return nil, false
 }
 
 func reviewDecodePointerSegment(encoded string) (string, bool) {
