@@ -136,7 +136,8 @@ async def _guard_schema(request: Request, call_next):
     补不完，每加一张表就多一个坑。这里只检查一次迁移版本，对不上就**所有页面**
     统一给出该敲的命令。
     """
-    if not settings.weknora_api_url and not request.url.path.startswith("/static"):
+    public_font = request.method in {"GET", "HEAD"} and request.url.path.startswith("/fonts/")
+    if not settings.weknora_api_url and not request.url.path.startswith("/static") and not public_font:
         gap = schema_check.migration_gap(schema_check.engine_of(SessionLocal))
         if gap:
             if _migrate_error:
