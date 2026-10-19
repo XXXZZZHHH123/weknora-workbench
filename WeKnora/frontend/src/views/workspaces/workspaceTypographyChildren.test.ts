@@ -13,7 +13,16 @@ function fixture(surface: keyof typeof surfaces, options: { standalone?: boolean
   const start = source.indexOf('function followWorkspaceTypography()')
   const end = source.indexOf('followWorkspaceTypography();', start)
   assert.ok(start >= 0 && end > start)
-  const values = new Map([['--app-font-family', '"Chosen Interface", sans-serif'], ['--app-font-family-mono', '"Chosen Code", monospace'], ['--app-font-family-reading', 'must-not-copy'], ['zoom', '1.1']])
+  const values = new Map([
+    ['--app-font-family', '"Chosen Interface", sans-serif'],
+    ['--app-font-family-mono', '"Chosen Code", monospace'],
+    ['--cds-font-display', '"Chosen Display", serif'],
+    ['--cds-font-reading', '"Chosen Reading", serif'],
+    ['--cds-font-code', '"Chosen Code Role", monospace'],
+    ['--cds-font-interface', 'must-retain-local-alias'],
+    ['--app-font-family-reading', 'must-not-copy'],
+    ['zoom', '1.1'],
+  ])
   const classes = new Set<string>()
   const applied = new Map<string, string>(), events: Record<string, () => void> = {}
   let changed = () => {}, observing = false
@@ -34,16 +43,24 @@ function fixture(surface: keyof typeof surfaces, options: { standalone?: boolean
 }
 
 for (const surface of Object.keys(surfaces) as Array<keyof typeof surfaces>) {
-  test(`${surface}: inherits only selected interface/code fonts and follows later changes`, () => {
+  test(`${surface}: inherits the selected font roles and follows later changes`, () => {
     const f = fixture(surface)
     assert.equal(f.classes.has('workspace-embedded'), surface === 'research', 'Only recognized embedded research pages use the compact shell')
-    assert.deepEqual([...f.applied.keys()], ['--app-font-family', '--app-font-family-mono'])
+    assert.deepEqual([...f.applied.keys()], ['--app-font-family', '--app-font-family-mono', '--cds-font-display', '--cds-font-reading', '--cds-font-code'])
     assert.equal(f.applied.get('--app-font-family'), '"Chosen Interface", sans-serif')
     f.values.set('--app-font-family', '"Next Interface", sans-serif')
     f.values.set('--app-font-family-mono', '"Next Code", monospace')
+    f.values.set('--cds-font-display', '"Next Display", serif')
+    f.values.set('--cds-font-reading', '"Next Reading", serif')
+    f.values.set('--cds-font-code', '"Next Code Role", monospace')
     f.changed()
     assert.equal(f.applied.get('--app-font-family'), '"Next Interface", sans-serif')
     assert.equal(f.applied.get('--app-font-family-mono'), '"Next Code", monospace')
+    assert.equal(f.applied.get('--cds-font-display'), '"Next Display", serif')
+    assert.equal(f.applied.get('--cds-font-reading'), '"Next Reading", serif')
+    assert.equal(f.applied.get('--cds-font-code'), '"Next Code Role", monospace')
+    assert.equal(f.applied.has('--cds-font-interface'), false, 'Keep the local interface alias attached to the selected UI font')
+    assert.equal(f.applied.has('--app-font-family-reading'), false)
     assert.equal(f.applied.has('zoom'), false, 'The parent already scales the iframe; never apply zoom twice')
   })
 

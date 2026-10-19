@@ -131,7 +131,7 @@
       {% endif %}
 
       {% if brief.summary %}
-      <p id="brief-summary" class="text-sm leading-relaxed text-[var(--text)]">{{ brief.summary }}</p>
+      <p id="brief-summary" class="research-prose text-sm leading-relaxed text-[var(--text)]">{{ brief.summary }}</p>
       {% endif %}
 
       {% if brief.claims %}
@@ -141,7 +141,7 @@
         {% set ci = loop.index0 %}
         <div class="pl-3 border-l-2 rounded-r-lg bg-[var(--surface-soft)]/50 p-2.5
           {{ 'border-[var(--primary)]/70' if c.side == 'bull' else 'border-[var(--alert)]/70' if c.side == 'bear' else 'border-[var(--line-strong)]' }}">
-          <p class="text-xs leading-relaxed text-[var(--text)]">{{ c.text }}</p>
+          <p class="research-prose text-xs leading-relaxed text-[var(--text)]">{{ c.text }}</p>
           <div class="mt-1.5 flex items-center gap-1.5 flex-wrap">
             {% for e in c.evidence %}
             {% set eid = "ev-" ~ ci ~ "-" ~ loop.index0 %}
@@ -178,7 +178,7 @@
         <div class="text-[11px] font-semibold text-[var(--alert)]">未通过证据校验 · 已降级，不作为结论依据</div>
         {% for u in brief.unverified %}
         <div data-unverified class="unverified pl-3 border-l-2 border-dashed border-[var(--text-muted)] rounded-r-lg p-2.5 bg-[var(--surface-soft)]/40">
-          <p class="text-xs leading-relaxed line-through decoration-[var(--text-muted)]/60">{{ u.claim }}</p>
+          <p class="research-prose text-xs leading-relaxed line-through decoration-[var(--text-muted)]/60">{{ u.claim }}</p>
           <div class="mt-1 text-[10px] text-[var(--alert)]">未通过证据校验：{{ u.reasons | join('；') }}</div>
           {% if u.evidence %}
           <div class="mt-1 text-[10px] text-[var(--text-muted)] tabular">

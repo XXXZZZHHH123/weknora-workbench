@@ -99,7 +99,7 @@
   <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
     <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
       <div class="text-[11px] font-bold text-[var(--primary)] mb-1">多方依据</div>
-      <p class="text-sm">{{ j.contradiction.bull.claim }}</p>
+      <p class="research-prose text-sm">{{ j.contradiction.bull.claim }}</p>
       <ul class="mt-2 space-y-1 text-[11px] text-[var(--text-muted)]">
         {% for e in j.contradiction.bull.evidence %}
         <li>· {{ e.desc }}{% if e.series_id %}<span class="text-[var(--primary)]">（{{ names.get(e.series_id, e.series_id) }}）</span>{% elif e.source %}（{{ e.source }}）{% endif %}
@@ -109,7 +109,7 @@
     </div>
     <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
       <div class="text-[11px] font-bold text-[var(--alert)] mb-1">空方依据</div>
-      <p class="text-sm">{{ j.contradiction.bear.claim }}</p>
+      <p class="research-prose text-sm">{{ j.contradiction.bear.claim }}</p>
       <ul class="mt-2 space-y-1 text-[11px] text-[var(--text-muted)]">
         {% for e in j.contradiction.bear.evidence %}
         <li>· {{ e.desc }}{% if e.series_id %}<span class="text-[var(--primary)]">（{{ names.get(e.series_id, e.series_id) }}）</span>{% elif e.source %}（{{ e.source }}）{% endif %}</li>
@@ -117,7 +117,7 @@
       </ul>
     </div>
   </div>
-  {% if research_workbench() and j.contradiction.text %}<details class="text-xs text-[var(--text-muted)]"><summary>导入的主逻辑原文（待核对多空论点与证据）</summary><p class="mt-2 whitespace-pre-wrap">{{ j.contradiction.text }}</p></details>{% endif %}
+  {% if research_workbench() and j.contradiction.text %}<details class="text-xs text-[var(--text-muted)]"><summary>导入的主逻辑原文（待核对多空论点与证据）</summary><p class="research-prose mt-2 whitespace-pre-wrap">{{ j.contradiction.text }}</p></details>{% endif %}
   {% if j.contradiction.window %}
   <p class="text-[11px] text-[var(--text-muted)]">验证窗口：{{ j.contradiction.window['from'] }} 至 {{ j.contradiction.window.to }} · {{ j.contradiction.window.note }}</p>
   {% endif %}
@@ -198,12 +198,12 @@
     </div>
     <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
       <h3 class="font-bold text-[var(--primary)] mb-2">基调附注</h3>
-      <div>{{ j.tone_note or '—' }}</div>
+      <div class="research-prose">{{ j.tone_note or '—' }}</div>
     </div>
   </div>
   <details class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm text-xs">
     <summary class="cursor-pointer font-bold text-[var(--primary)]">调研信息差原文</summary>
-    <pre class="mt-2 whitespace-pre-wrap font-sans text-[var(--text-muted)]">{{ j.survey_notes }}</pre>
+    <pre class="research-prose mt-2 whitespace-pre-wrap font-sans text-[var(--text-muted)]">{{ j.survey_notes }}</pre>
   </details>
 </section>
 {% endif %}

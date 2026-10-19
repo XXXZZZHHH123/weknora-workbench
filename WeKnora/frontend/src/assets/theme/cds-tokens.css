@@ -1,17 +1,9 @@
-/* Inter is bundled locally under the SIL Open Font License. */
-@font-face {
-  font-family: Inter;
-  src: url('/fonts/InterVariable.woff2') format('woff2');
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-}
-
 /*
  * CDS-inspired semantic theme tokens for WeKnora.
  * Adapted from Caho1/open-claude-ui (MIT):
  * https://github.com/Caho1/open-claude-ui
- * Typography follows the reference's system sans/serif/monospace roles.
+ * Typography follows the reference's sans/serif/monospace roles; local CJK
+ * font assets make those roles consistent across host operating systems.
  */
 :root:root,
 :root:root[theme-mode="light"] {

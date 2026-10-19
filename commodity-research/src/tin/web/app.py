@@ -57,6 +57,10 @@ HERE = Path(__file__).parent
 log = logging.getLogger("uvicorn.error")   # 借 uvicorn 的 logger：自建的默认没有 handler，写了也看不见
 app = FastAPI(title="大宗商品研究工作台")
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
+# A standalone document needs its own font registrations as well as the iframe.
+FONT_ASSETS = HERE.resolve().parents[3] / "WeKnora/frontend/public/fonts"
+if FONT_ASSETS.is_dir():
+    app.mount("/fonts", StaticFiles(directory=FONT_ASSETS), name="fonts")
 templates = Jinja2Templates(directory=HERE / "templates")
 
 V = settings.variety

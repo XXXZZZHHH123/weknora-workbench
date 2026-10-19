@@ -2,13 +2,17 @@
     font-family: var(--cds-font-interface);
 }
 
+:where(h1, h2, h3, h4, h5, h6) {
+    font-family: var(--cds-font-display);
+}
+
 :root:root,:root:root[theme-mode="light"]{
-        --app-font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+        --app-font-family: Inter, "WeKnora Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
         --app-font-family-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        /* Shared by the app and standalone chat widget; no font downloads. */
+        /* Every document registers the same self-hosted fonts, including CJK. */
         --cds-font-interface: var(--app-font-family);
-        --cds-font-display: ui-serif, "New York", Georgia, Cambria, 'WeKnora Noto Serif SC', "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", SimSun, serif;
-        --cds-font-reading: ui-serif, "New York", Georgia, Cambria, "Times New Roman", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", SimSun, "DejaVu Serif", "Liberation Serif", serif;
+        --cds-font-display: Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
+        --cds-font-reading: Georgia, "WeKnora Noto Serif Reading SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
         --cds-font-code: var(--app-font-family-mono);
         --brand-main: var(--td-brand-color-4);
         --td-brand-color-light: var(--td-brand-color-1);

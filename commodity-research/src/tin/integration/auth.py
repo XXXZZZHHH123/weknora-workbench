@@ -158,6 +158,8 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
         if path.startswith("/static/") and request.method == "GET":
             return await call_next(request)
+        if path.startswith("/fonts/") and request.method in {"GET", "HEAD"}:
+            return await call_next(request)
         try:
             from tin.integration.workbench_paths import parse_workbench_path, allowed_workbench_route, source_preparation_required
             try:

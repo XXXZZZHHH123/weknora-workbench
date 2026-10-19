@@ -65,8 +65,8 @@
         <h4 class="font-bold mb-1">研究判断</h4>
         {% if report.judgment %}
         <p>{{ report.judgment.tone or '未填写基调' }} · {{ report.judgment.status or '未登记状态' }} · 版本 {{ report.judgment.version }}</p>
-        {% if report.judgment.tone_note %}<p class="mt-1 whitespace-pre-wrap">{{ report.judgment.tone_note }}</p>{% endif %}
-        {% if report.judgment.contradiction %}<p class="mt-1 whitespace-pre-wrap">主要矛盾：{{ report.judgment.contradiction }}</p>{% endif %}
+        {% if report.judgment.tone_note %}<p class="research-prose mt-1 whitespace-pre-wrap">{{ report.judgment.tone_note }}</p>{% endif %}
+        {% if report.judgment.contradiction %}<p class="research-prose mt-1 whitespace-pre-wrap">主要矛盾：{{ report.judgment.contradiction }}</p>{% endif %}
         <p class="mt-1 text-[var(--text-muted)]">作者：{{ report.judgment.author or '未登记' }} · 复核期限：{{ report.judgment.review_due or '未登记' }}</p>
         {% else %}<p class="text-[var(--text-muted)]">未登记研究判断；此处仅展示已记录事实，不自动编写结论。</p>{% endif %}
       </section>
