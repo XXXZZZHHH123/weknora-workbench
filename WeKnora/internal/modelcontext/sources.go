@@ -210,17 +210,26 @@ func (r *sourceRegistry) ChunkHandle(id string) string {
 // (sourceArgumentAllowed); a nil policy allows every key and exists only for
 // package-internal replay paths that predate per-tool contracts.
 type toolArgumentPolicy func(toolName, key string) bool
+type toolArgumentPathPolicy func(toolName string, path []string) bool
 
 // DecodeToolCallsWithPolicy restores handles only for fields explicitly owned
 // by the named tool. This prevents dynamic tools with coincidentally named
 // fields from inheriting built-in source semantics.
 func (r *sourceRegistry) DecodeToolCallsWithPolicy(toolCalls []types.LLMToolCall, policy toolArgumentPolicy) {
+	r.DecodeToolCallsWithPathPolicy(toolCalls, func(toolName string, path []string) bool {
+		return len(path) > 0 && (policy == nil || policy(toolName, path[len(path)-1]))
+	})
+}
+
+// DecodeToolCallsWithPathPolicy restores handles only at JSON paths owned by
+// the named tool. The path is relative to the root arguments object.
+func (r *sourceRegistry) DecodeToolCallsWithPathPolicy(toolCalls []types.LLMToolCall, policy toolArgumentPathPolicy) {
 	for i := range toolCalls {
 		toolName := toolCalls[i].Function.Name
 		toolCalls[i].Function.Arguments = r.decodeJSONWithPolicy(
 			toolCalls[i].Function.Arguments,
 			false,
-			func(key string) bool { return policy == nil || policy(toolName, key) },
+			func(path []string) bool { return policy == nil || policy(toolName, path) },
 		)
 	}
 }
@@ -231,6 +240,15 @@ func (r *sourceRegistry) UnresolvedToolHandlesWithPolicy(
 	toolName, raw string,
 	policy toolArgumentPolicy,
 ) []string {
+	return r.UnresolvedToolHandlesWithPathPolicy(toolName, raw, func(_ string, path []string) bool {
+		return len(path) > 0 && (policy == nil || policy(toolName, path[len(path)-1]))
+	})
+}
+
+func (r *sourceRegistry) UnresolvedToolHandlesWithPathPolicy(
+	toolName, raw string,
+	policy toolArgumentPathPolicy,
+) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
@@ -239,16 +257,39 @@ func (r *sourceRegistry) UnresolvedToolHandlesWithPolicy(
 		return nil
 	}
 	seen := make(map[string]struct{})
-	r.collectUnresolvedToolHandles(
-		"", value, seen,
-		func(key string) bool { return policy == nil || policy(toolName, key) },
-	)
+	r.collectUnresolvedToolHandlesPath(nil, value, seen, func(path []string) bool { return policy == nil || policy(toolName, path) })
 	result := make([]string, 0, len(seen))
 	for handle := range seen {
 		result = append(result, handle)
 	}
 	sort.Strings(result)
 	return result
+}
+
+func (r *sourceRegistry) collectUnresolvedToolHandlesPath(path []string, value interface{}, seen map[string]struct{}, allowed func([]string) bool) {
+	switch typed := value.(type) {
+	case string:
+		if len(path) == 0 {
+			return
+		}
+		key := strings.ToLower(path[len(path)-1])
+		if _, ok := sourceKeySpaces[key]; !ok || !allowed(path) {
+			return
+		}
+		handle := strings.TrimSpace(typed)
+		if shortSourceHandleRE.MatchString(handle) && (r == nil || r.durableForHandle(handle) == "") {
+			seen[handle] = struct{}{}
+		}
+	case []interface{}:
+		for _, item := range typed {
+			r.collectUnresolvedToolHandlesPath(path, item, seen, allowed)
+		}
+	case map[string]interface{}:
+		for childKey, item := range typed {
+			childPath := append(append([]string(nil), path...), childKey)
+			r.collectUnresolvedToolHandlesPath(childPath, item, seen, allowed)
+		}
+	}
 }
 
 func (r *sourceRegistry) collectUnresolvedToolHandles(
@@ -286,6 +327,16 @@ func (r *sourceRegistry) EncodeMessagesWithPolicies(
 	argumentPolicy toolArgumentPolicy,
 	resultPolicy func(toolName string) bool,
 ) []chat.Message {
+	return r.EncodeMessagesWithPathPolicies(messages, func(toolName string, path []string) bool {
+		return len(path) > 0 && (argumentPolicy == nil || argumentPolicy(toolName, path[len(path)-1]))
+	}, resultPolicy)
+}
+
+func (r *sourceRegistry) EncodeMessagesWithPathPolicies(
+	messages []chat.Message,
+	argumentPolicy toolArgumentPathPolicy,
+	resultPolicy func(toolName string) bool,
+) []chat.Message {
 	if r == nil || len(messages) == 0 {
 		return messages
 	}
@@ -316,7 +367,7 @@ func (r *sourceRegistry) EncodeMessagesWithPolicies(
 				toolName := out[i].ToolCalls[j].Function.Name
 				r.registerToolArguments(
 					out[i].ToolCalls[j].Function.Arguments,
-					func(key string) bool { return argumentPolicy == nil || argumentPolicy(toolName, key) },
+					func(path []string) bool { return argumentPolicy == nil || argumentPolicy(toolName, path) },
 				)
 			}
 		}
@@ -331,7 +382,7 @@ func (r *sourceRegistry) EncodeMessagesWithPolicies(
 			out[i].ToolCalls[j].Function.Arguments = r.decodeJSONWithPolicy(
 				out[i].ToolCalls[j].Function.Arguments,
 				true,
-				func(key string) bool { return argumentPolicy == nil || argumentPolicy(toolName, key) },
+				func(path []string) bool { return argumentPolicy == nil || argumentPolicy(toolName, path) },
 			)
 		}
 	}
@@ -433,7 +484,7 @@ func rewriteQuotedText(text string, rewrite func(string) string) string {
 	return out.String()
 }
 
-func (r *sourceRegistry) registerToolArguments(raw string, allowed func(string) bool) {
+func (r *sourceRegistry) registerToolArguments(raw string, allowed func([]string) bool) {
 	if r == nil || strings.TrimSpace(raw) == "" {
 		return
 	}
@@ -441,22 +492,23 @@ func (r *sourceRegistry) registerToolArguments(raw string, allowed func(string) 
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
 		return
 	}
-	r.registerToolArgumentValue("", value, allowed)
+	r.registerToolArgumentValue(nil, value, allowed)
 }
 
-func (r *sourceRegistry) registerToolArgumentValue(key string, value interface{}, allowed func(string) bool) {
+func (r *sourceRegistry) registerToolArgumentValue(path []string, value interface{}, allowed func([]string) bool) {
 	switch typed := value.(type) {
 	case string:
-		if allowed(strings.ToLower(key)) {
-			r.registerSourceIDByKey(key, typed, false)
+		if len(path) > 0 && allowed(path) {
+			r.registerSourceIDByKey(path[len(path)-1], typed, false)
 		}
 	case []interface{}:
 		for _, item := range typed {
-			r.registerToolArgumentValue(key, item, allowed)
+			r.registerToolArgumentValue(path, item, allowed)
 		}
 	case map[string]interface{}:
 		for childKey, item := range typed {
-			r.registerToolArgumentValue(childKey, item, allowed)
+			childPath := append(append([]string(nil), path...), childKey)
+			r.registerToolArgumentValue(childPath, item, allowed)
 		}
 	}
 }
@@ -497,7 +549,7 @@ func (r *sourceRegistry) registerSourceIDByKey(key, value string, evidence bool)
 	}
 }
 
-func (r *sourceRegistry) decodeJSONWithPolicy(raw string, encode bool, allowed func(string) bool) string {
+func (r *sourceRegistry) decodeJSONWithPolicy(raw string, encode bool, allowed func([]string) bool) string {
 	if r == nil || strings.TrimSpace(raw) == "" {
 		return raw
 	}
@@ -505,7 +557,7 @@ func (r *sourceRegistry) decodeJSONWithPolicy(raw string, encode bool, allowed f
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
 		return raw
 	}
-	value = r.walkJSON("", value, encode, allowed)
+	value = r.walkJSON(nil, value, encode, allowed)
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return raw
@@ -513,12 +565,13 @@ func (r *sourceRegistry) decodeJSONWithPolicy(raw string, encode bool, allowed f
 	return string(encoded)
 }
 
-func (r *sourceRegistry) walkJSON(key string, value interface{}, encode bool, allowed func(string) bool) interface{} {
+func (r *sourceRegistry) walkJSON(path []string, value interface{}, encode bool, allowed func([]string) bool) interface{} {
 	switch typed := value.(type) {
 	case string:
-		if !allowed(strings.ToLower(key)) {
+		if len(path) == 0 || !allowed(path) {
 			return typed
 		}
+		key := strings.ToLower(path[len(path)-1])
 		if encode {
 			// Encode matches on exact real identifiers (UUIDs/URLs), which do
 			// not collide with prose, so it stays key-agnostic.
@@ -541,11 +594,12 @@ func (r *sourceRegistry) walkJSON(key string, value interface{}, encode bool, al
 		return typed
 	case []interface{}:
 		for i := range typed {
-			typed[i] = r.walkJSON(key, typed[i], encode, allowed)
+			typed[i] = r.walkJSON(path, typed[i], encode, allowed)
 		}
 	case map[string]interface{}:
 		for childKey, item := range typed {
-			typed[childKey] = r.walkJSON(childKey, item, encode, allowed)
+			childPath := append(append([]string(nil), path...), childKey)
+			typed[childKey] = r.walkJSON(childPath, item, encode, allowed)
 		}
 	}
 	return value

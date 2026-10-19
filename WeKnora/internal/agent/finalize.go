@@ -21,6 +21,9 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	sessionID string,
 	conversation []chat.Message,
 ) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if hasWorkspaceExecution(state) {
 		e.recordArtifactInventory(ctx, state, &conversation, sessionID)
 	}
@@ -38,6 +41,12 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	// messages. Tool output must retain its role and call ID; never promote it
 	// into user instructions during error recovery or iteration-limit synthesis.
 	messages := append([]chat.Message(nil), conversation...)
+	if e.structuredReviewMode {
+		// Exceptional final synthesis uses the same reviewed-answer protocol as
+		// ordinary review rounds. Keep the trusted schema instruction visible to
+		// providers that treat Format as JSON-object mode rather than enforcement.
+		messages = withReviewedAnswerDeliveryInstruction(messages)
+	}
 	messages = append(messages, chat.Message{
 		Role: "user",
 		Content: "Tool execution has ended for this run. Respond to the current task, including " +
@@ -47,10 +56,8 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			"unperformed action succeeded.",
 	})
 
-	// Generate a single ID for this entire final answer stream
-	answerID := generateEventID("answer")
-	logger.Debugf(ctx, "[Agent][FinalAnswer] AnswerID: %s", answerID)
 	fullAnswer := ""
+	outcome := "failed"
 	truncated := false
 	// Synthesis is an exceptional final path (iteration exhaustion or API
 	// recovery). Buffer it until verified, so malformed/unsupported drafts do
@@ -98,27 +105,27 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		// A provider can ignore tool_choice=none. Never accept its pre-tool
 		// progress text as the final answer, or silently drop requested calls.
 		invalid := strings.TrimSpace(fullAnswer) == "" || llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
-		e.answerReviewFeedback = ""
-		var completenessErr error
-		if !invalid {
-			invalid, completenessErr = e.evaluateAnswerCompleteness(ctx, query, fullAnswer, state, conversation)
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if completenessErr != nil {
-			logger.Warnf(ctx, "[Agent][FinalAnswer] Completeness check failed: %v", completenessErr)
-			invalid = true
-		}
 		unsupported := []string{}
-		if !invalid && needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, fullAnswer) {
-			evidence := answerNumericEvidence(fullAnswer, state.RoundSteps, conversation)
-			unsupported = ungroundedStructuredNumbers(fullAnswer, evidence, state.RoundSteps)
+		if !invalid {
+			decision := e.checkCandidate(ctx, query, fullAnswer, llmResult.ReasoningContent, state, conversation, true)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if decision.Err != nil {
+				logger.Warnf(ctx, "[Agent][FinalAnswer] Candidate check failed: %v", decision.Err)
+				fullAnswer = answerReviewUnavailableFallback
+				truncated = false
+				break
+			}
+			unsupported = decision.Unsupported
+			invalid = decision.Disposition != candidateAccepted
 		}
-		if !invalid && len(unsupported) == 0 {
+		if !invalid {
+			outcome = "answer"
 			break
 		}
-		if attempt == 2 {
+
+		if attempt == 2 || !e.spendCandidateRepair() {
 			fullAnswer = incompleteAnswerFallback
 			if len(unsupported) > 0 {
 				fullAnswer = "已有取数依据，但完整回答的部分数字未通过来源核验。此次暂不提供未经核验的统计结论，请查看来源或重试。"
@@ -126,16 +133,16 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			truncated = false
 			break
 		}
+		// Keep the actual rejected candidate alongside feedback for targeted repair.
+		messages = append(messages, chat.Message{Role: "assistant", Content: fullAnswer})
 		messages = append(messages, chat.Message{Role: "system", Content: "内部运行时反馈：上次回答残缺或含未通过依据检查的数字。请依据已取得的真实来源，直接简短完整回答原问题；非必要的附加数字直接删除，不为保留它们扩展查询。缺失证据应说明，不能从草稿补造数值。字段名称、规格代码和原公式须完整引用工具原文，不用简称，不省略公式参数或单元格行号；身份代码不能当成统计值。未核验数字：" + strings.Join(unsupported, "、") + e.answerRepairAdvice()})
 	}
-	e.eventBus.Emit(ctx, event.Event{ID: answerID, Type: event.EventAgentFinalAnswer, SessionID: sessionID, Data: event.AgentFinalAnswerData{Content: fullAnswer, Done: false, Truncated: truncated}})
-	e.closeAnswerStream(ctx, sessionID, answerID, truncated)
+	e.commitTerminalResult(ctx, state, sessionID, fullAnswer, "", outcome, truncated)
 	logger.Infof(ctx, "[Agent][FinalAnswer] Final answer generated: %d characters", len(fullAnswer))
 	common.PipelineInfo(ctx, "Agent", "final_answer_done", map[string]interface{}{
 		"session_id": sessionID,
 		"answer_len": len(fullAnswer),
 	})
-	state.FinalAnswer = fullAnswer
 	return nil
 }
 
@@ -152,11 +159,14 @@ func (e *AgentEngine) handleMaxIterations(
 
 	// Stream final answer generation through EventBus
 	if err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, messages); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		logger.Errorf(ctx, "Failed to synthesize final answer: %v", err)
 		common.PipelineError(ctx, "Agent", "final_answer_failed", map[string]interface{}{
 			"error": err.Error(),
 		})
-		state.FinalAnswer = "Sorry, I was unable to generate a complete answer."
+		e.commitTerminalResult(ctx, state, sessionID, "Sorry, I was unable to generate a complete answer.", "", "failed", false)
 	}
 	state.IsComplete = true
 }

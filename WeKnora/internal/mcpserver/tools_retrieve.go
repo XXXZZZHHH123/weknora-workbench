@@ -177,7 +177,7 @@ func (s *Server) runSearchKnowledgeWithFilter(
 ) (*mcp.CallToolResult, error) {
 	tool := tools.NewSearchKnowledgeTool(
 		s.kbService, s.knowledgeService, s.chunkService, searchTargetsFor(kbs), nil, s.cfg,
-	)
+	).WithWikiPageService(s.wikiService)
 	if pattern != nil {
 		tool.WithPatternFilter(pattern)
 	}
@@ -364,7 +364,7 @@ func (s *Server) handleReadDocument(ctx context.Context, req mcp.CallToolRequest
 	}
 	tool := tools.NewReadDocumentTool(
 		s.knowledgeService, s.chunkService, searchTargetsFor([]*types.KnowledgeBase{kb}),
-	)
+	).WithWikiPageService(s.wikiService)
 	callArgs := map[string]any{
 		"id":     k.ID,
 		"limit":  limit,

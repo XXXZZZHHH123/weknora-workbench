@@ -98,10 +98,20 @@ func TestWorkbenchQAUsesFullContextToSubmitAndVerifySourcePlan(t *testing.T) {
 	require.True(t, foundMetadata)
 	require.Contains(t, state.FinalAnswer, "类型甲和类型乙")
 	require.Contains(t, state.FinalAnswer, `chunk_id="actual-page-chunk"`)
-	require.Len(t, model.calls[2], 2)
-	require.Contains(t, model.calls[2][0].Content, "独立复核上下文")
-	require.Contains(t, model.calls[2][1].Content, "实际该页的图例")
-	require.NotContains(t, model.calls[2][1].Content, "目录匹配正文不可")
+	_, reviewMessages, reviewUser, reviewInput := uniqueJSONUserInput(t, model.calls, "unverified_draft")
+	var reviewSystem strings.Builder
+	for _, message := range reviewMessages {
+		if message.Role == "system" {
+			reviewSystem.WriteString(message.Content)
+			reviewSystem.WriteByte('\n')
+		}
+	}
+	require.Contains(t, reviewSystem.String(), "独立复核上下文")
+	require.Contains(t, reviewUser.Content, "实际该页的图例")
+	require.NotContains(t, reviewUser.Content, "目录匹配正文不可")
+	var draft string
+	require.NoError(t, json.Unmarshal(reviewInput["unverified_draft"], &draft))
+	require.Contains(t, draft, "类型甲和类型乙")
 	require.True(t, hasCurrentDocumentEvidence(state.RoundSteps))
 	require.False(t, hasStructuredEvidence(state.RoundSteps), "document review must not manufacture table evidence")
 	foundPlan := false

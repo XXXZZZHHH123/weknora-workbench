@@ -31,6 +31,8 @@ var wikiLinkRegex = regexp.MustCompile(`\[\[([^\]]+)\]\]`)
 // to readers and must not leak into generated Markdown.
 var wikiInlineChunkCitationRegex = regexp.MustCompile(`[ \t]*\[c\d{3,}(?:\s*[,;]\s*c\d{3,})*\]`)
 
+var ErrWikiPageStaleSnapshot = errors.New("wiki page update uses a stale snapshot")
+
 func stripWikiInlineChunkCitations(content string) string {
 	return wikiInlineChunkCitationRegex.ReplaceAllString(content, "")
 }
@@ -41,6 +43,51 @@ func stripWikiPageInlineChunkCitations(page *types.WikiPage) {
 	}
 	page.Content = stripWikiInlineChunkCitations(page.Content)
 	page.Summary = stripWikiInlineChunkCitations(page.Summary)
+}
+
+// checkWikiPageSnapshot rejects a read-modify-write based on a superseded
+// visible or metadata snapshot. Legacy callers that omit UpdatedAt remain
+// compatible, but normal service reads always carry it and are conflict-checked.
+func checkWikiPageSnapshot(incoming, current *types.WikiPage) error {
+	if incoming == nil || current == nil || incoming.UpdatedAt.IsZero() || current.UpdatedAt.IsZero() {
+		return nil
+	}
+	if normalizeWikiPageTime(incoming.UpdatedAt) != normalizeWikiPageTime(current.UpdatedAt) {
+		return fmt.Errorf("%w: slug %s changed at %s (snapshot %s); reload and retry",
+			ErrWikiPageStaleSnapshot, current.Slug,
+			current.UpdatedAt.UTC().Format(time.RFC3339Nano), incoming.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	}
+	return nil
+}
+
+// PostgreSQL timestamps are stored at microsecond precision. Normalize every
+// comparison and write to that same precision so a freshly returned row does
+// not conflict with itself due to sub-microsecond Go nanoseconds.
+func normalizeWikiPageTime(value time.Time) time.Time {
+	if value.IsZero() {
+		return value
+	}
+	return value.UTC().Truncate(time.Microsecond)
+}
+
+func nextWikiPageTime(previous time.Time) time.Time {
+	now := normalizeWikiPageTime(time.Now())
+	previous = normalizeWikiPageTime(previous)
+	if !previous.IsZero() && !now.After(previous) {
+		return previous.Add(time.Microsecond)
+	}
+	return now
+}
+
+func (s *wikiPageService) updateWikiLinkMetadata(ctx context.Context, page *types.WikiPage) error {
+	if updater, ok := s.repo.(interface {
+		UpdateLinkMetadata(context.Context, *types.WikiPage) error
+	}); ok {
+		return updater.UpdateLinkMetadata(ctx, page)
+	}
+	// Compatibility for repository fakes and alternate implementations. The
+	// production repository uses the selective link-only update above.
+	return s.repo.UpdateMeta(ctx, page)
 }
 
 // wikiPageService implements the WikiPageService interface
@@ -102,7 +149,7 @@ func (s *wikiPageService) CreatePage(ctx context.Context, page *types.WikiPage) 
 	}
 	normalizeWikiHierarchy(page)
 
-	now := time.Now()
+	now := normalizeWikiPageTime(time.Now())
 	page.CreatedAt = now
 	page.UpdatedAt = now
 
@@ -127,9 +174,31 @@ func (s *wikiPageService) CreatePage(ctx context.Context, page *types.WikiPage) 
 // nothing, etc.) still persist through `UpdateMeta` but leave `version`
 // untouched so consumers can treat a bump as a real edit signal.
 func (s *wikiPageService) UpdatePage(ctx context.Context, page *types.WikiPage) (*types.WikiPage, error) {
+	if page == nil {
+		return nil, errors.New("wiki page update: page is required")
+	}
+	var updated *types.WikiPage
+	acquired, err := withWikiSlugLock(ctx, s.redisClient, page.KnowledgeBaseID, page.Slug, func(lockCtx context.Context) error {
+		var updateErr error
+		updated, updateErr = s.updatePageLocked(lockCtx, page)
+		return updateErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !acquired {
+		return nil, fmt.Errorf("wiki page update deferred: slug %s is locked", page.Slug)
+	}
+	return updated, nil
+}
+
+func (s *wikiPageService) updatePageLocked(ctx context.Context, page *types.WikiPage) (*types.WikiPage, error) {
 	existing, err := s.repo.GetBySlug(ctx, page.KnowledgeBaseID, page.Slug)
 	if err != nil {
 		return nil, fmt.Errorf("get existing page: %w", err)
+	}
+	if err := checkWikiPageSnapshot(page, existing); err != nil {
+		return nil, err
 	}
 	stripWikiPageInlineChunkCitations(page)
 
@@ -241,12 +310,16 @@ func (s *wikiPageService) UpdatePage(ctx context.Context, page *types.WikiPage) 
 	existing.Aliases = append(types.StringArray(nil), page.Aliases...)
 	existing.SourceRefs = page.SourceRefs
 	existing.ChunkRefs = page.ChunkRefs
-	existing.PageMetadata = page.PageMetadata
+	if types.WikiRetractionMetadataMutationAllowed(ctx) {
+		existing.PageMetadata = page.PageMetadata
+	} else {
+		existing.PageMetadata = types.PreserveWikiRetractionState(page.PageMetadata, existing.PageMetadata)
+	}
 	existing.ParentSlug = page.ParentSlug
 	existing.FolderID = page.FolderID
 	existing.SortOrder = page.SortOrder
 	existing.Status = page.Status
-	existing.UpdatedAt = time.Now()
+	existing.UpdatedAt = nextWikiPageTime(existing.UpdatedAt)
 
 	// CategoryPath is a derived cache of FolderID — recompute it from the
 	// folder chain rather than trusting whatever the caller sent.
@@ -292,9 +365,31 @@ func (s *wikiPageService) UpdatePage(ctx context.Context, page *types.WikiPage) 
 
 // UpdatePageMeta updates only metadata (status, source_refs) without version bump or link re-parse.
 func (s *wikiPageService) UpdatePageMeta(ctx context.Context, page *types.WikiPage) error {
-	normalizeWikiHierarchy(page)
-	page.UpdatedAt = time.Now()
-	return s.repo.UpdateMeta(ctx, page)
+	if page == nil {
+		return errors.New("wiki page metadata update: page is required")
+	}
+	acquired, err := withWikiSlugLock(ctx, s.redisClient, page.KnowledgeBaseID, page.Slug, func(lockCtx context.Context) error {
+		current, getErr := s.repo.GetBySlug(lockCtx, page.KnowledgeBaseID, page.Slug)
+		if getErr != nil {
+			return getErr
+		}
+		if err := checkWikiPageSnapshot(page, current); err != nil {
+			return err
+		}
+		if !types.WikiRetractionMetadataMutationAllowed(lockCtx) {
+			page.PageMetadata = types.PreserveWikiRetractionState(page.PageMetadata, current.PageMetadata)
+		}
+		normalizeWikiHierarchy(page)
+		page.UpdatedAt = nextWikiPageTime(current.UpdatedAt)
+		return s.repo.UpdateMeta(lockCtx, page)
+	})
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return fmt.Errorf("wiki page metadata update deferred: slug %s is locked", page.Slug)
+	}
+	return nil
 }
 
 // UpdateAutoLinkedContent persists content produced by machine-only link
@@ -303,16 +398,35 @@ func (s *wikiPageService) UpdatePageMeta(ctx context.Context, page *types.WikiPa
 // in-link references on target pages are refreshed so link navigation stays
 // consistent — only the user-facing revision counter is preserved.
 func (s *wikiPageService) UpdateAutoLinkedContent(ctx context.Context, page *types.WikiPage) error {
+	if page == nil {
+		return errors.New("wiki auto-link update: page is required")
+	}
+	acquired, err := withWikiSlugLock(ctx, s.redisClient, page.KnowledgeBaseID, page.Slug, func(lockCtx context.Context) error {
+		return s.updateAutoLinkedContentLocked(lockCtx, page)
+	})
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return fmt.Errorf("wiki auto-link update deferred: slug %s is locked", page.Slug)
+	}
+	return nil
+}
+
+func (s *wikiPageService) updateAutoLinkedContentLocked(ctx context.Context, page *types.WikiPage) error {
 	existing, err := s.repo.GetBySlug(ctx, page.KnowledgeBaseID, page.Slug)
 	if err != nil {
 		return fmt.Errorf("get existing page: %w", err)
+	}
+	if err := checkWikiPageSnapshot(page, existing); err != nil {
+		return err
 	}
 
 	oldOutLinks := existing.OutLinks
 
 	existing.Content = stripWikiInlineChunkCitations(page.Content)
 	existing.OutLinks = s.parseOutLinks(existing.Content)
-	existing.UpdatedAt = time.Now()
+	existing.UpdatedAt = nextWikiPageTime(existing.UpdatedAt)
 
 	if err := s.repo.UpdateAutoLinkedContent(ctx, existing); err != nil {
 		return fmt.Errorf("update auto-linked content: %w", err)
@@ -490,6 +604,19 @@ func (s *wikiPageService) ListPages(ctx context.Context, req *types.WikiPageList
 
 // DeletePage soft-deletes a wiki page
 func (s *wikiPageService) DeletePage(ctx context.Context, kbID string, slug string) error {
+	acquired, err := withWikiSlugLock(ctx, s.redisClient, kbID, slug, func(lockCtx context.Context) error {
+		return s.deletePageLocked(lockCtx, kbID, slug)
+	})
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return fmt.Errorf("wiki page deletion deferred: slug %s is locked", slug)
+	}
+	return nil
+}
+
+func (s *wikiPageService) deletePageLocked(ctx context.Context, kbID string, slug string) error {
 	page, err := s.repo.GetBySlug(ctx, kbID, slug)
 	if err != nil {
 		return err
@@ -605,6 +732,15 @@ func (s *wikiPageService) GetIndexView(
 		}
 		for i := range entries {
 			normalizeWikiIndexEntryHierarchy(&entries[i], pt)
+			state := types.ReadWikiRetractionState(&types.WikiPage{PageMetadata: entries[i].PageMetadata})
+			entries[i].PageMetadata = nil
+			if len(state.FailedSourceIDs) > 0 {
+				entries[i].EvidenceState = "retraction_failed"
+				entries[i].Summary = ""
+			} else if len(state.PendingSourceIDs) > 0 {
+				entries[i].EvidenceState = "retraction_pending"
+				entries[i].Summary = ""
+			}
 		}
 		next := ""
 		// Only emit a cursor when a full page was returned AND more rows
@@ -1135,8 +1271,8 @@ func (s *wikiPageService) RebuildLinks(ctx context.Context, kbID string) error {
 	// link graph.
 	var failures []error
 	for _, p := range pages {
-		p.UpdatedAt = time.Now()
-		if err := s.repo.UpdateMeta(ctx, p); err != nil {
+		p.UpdatedAt = nextWikiPageTime(p.UpdatedAt)
+		if err := s.updateWikiLinkMetadata(ctx, p); err != nil {
 			logger.Warnf(ctx, "wiki: failed to update links for page %s: %v", p.Slug, err)
 			failures = append(failures, fmt.Errorf("%s: %w", p.Slug, err))
 		}
@@ -1541,8 +1677,8 @@ func (s *wikiPageService) updateInLinks(ctx context.Context, kbID string, source
 		}
 		if !containsString(targetPage.InLinks, sourceSlug) {
 			targetPage.InLinks = append(targetPage.InLinks, sourceSlug)
-			targetPage.UpdatedAt = time.Now()
-			if err := s.repo.UpdateMeta(ctx, targetPage); err != nil {
+			targetPage.UpdatedAt = nextWikiPageTime(targetPage.UpdatedAt)
+			if err := s.updateWikiLinkMetadata(ctx, targetPage); err != nil {
 				logger.Warnf(ctx, "wiki: failed to update in_links for %s: %v", targetSlug, err)
 			}
 		}
@@ -1559,8 +1695,8 @@ func (s *wikiPageService) removeInLinks(ctx context.Context, kbID string, source
 		newInLinks := removeString(targetPage.InLinks, sourceSlug)
 		if len(newInLinks) != len(targetPage.InLinks) {
 			targetPage.InLinks = newInLinks
-			targetPage.UpdatedAt = time.Now()
-			if err := s.repo.UpdateMeta(ctx, targetPage); err != nil {
+			targetPage.UpdatedAt = nextWikiPageTime(targetPage.UpdatedAt)
+			if err := s.updateWikiLinkMetadata(ctx, targetPage); err != nil {
 				logger.Warnf(ctx, "wiki: failed to update in_links for %s: %v", targetSlug, err)
 			}
 		}
@@ -1947,9 +2083,8 @@ func (s *wikiPageService) MovePage(
 	if err := s.applyFolderToPage(ctx, page); err != nil {
 		return nil, err
 	}
-	page.UpdatedAt = time.Now()
 	normalizeWikiHierarchy(page)
-	if err := s.repo.UpdateMeta(ctx, page); err != nil {
+	if err := s.UpdatePageMeta(ctx, page); err != nil {
 		return nil, fmt.Errorf("move wiki page: %w", err)
 	}
 	return page, nil
@@ -2067,9 +2202,8 @@ func (s *wikiPageService) recomputePagesForFolders(ctx context.Context, kbID str
 		if err := s.applyFolderToPage(ctx, page); err != nil {
 			return err
 		}
-		page.UpdatedAt = time.Now()
 		normalizeWikiHierarchy(page)
-		if err := s.repo.UpdateMeta(ctx, page); err != nil {
+		if err := s.UpdatePageMeta(ctx, page); err != nil {
 			logger.Warnf(ctx, "wiki: recompute folder path for page %s failed: %v", page.Slug, err)
 		}
 	}

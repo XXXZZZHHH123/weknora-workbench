@@ -77,7 +77,9 @@ func renderIndexOverviewForAgent(resp *types.WikiIndexResponse) string {
 			if display == "" {
 				display = item.Slug
 			}
-			if item.Summary != "" {
+			if item.EvidenceState != "" {
+				fmt.Fprintf(&sb, "[[%s|%s]] — source retraction %s; consult current source documents before using page facts\n", item.Slug, display, item.EvidenceState)
+			} else if item.Summary != "" {
 				fmt.Fprintf(&sb, "[[%s|%s]] — %s\n", item.Slug, display, item.Summary)
 			} else {
 				fmt.Fprintf(&sb, "[[%s|%s]]\n", item.Slug, display)
@@ -216,26 +218,44 @@ func isStructuralPage(page *types.WikiPage) bool {
 	return page.PageType == types.WikiPageTypeIndex
 }
 
-// registerLinkedSlugs records the KB that owns this page for every slug the
-// page links to (outbound) or is linked from (inbound). Wiki links are
-// KB-local — a `[[slug]]` inside page X in KB A always refers to another
-// page in KB A — so sharing the KB mapping with neighbours is safe and lets
-// the frontend resolve a slug the model echoed from a page body (e.g. an
-// `index` page's table of contents) without an extra round trip.
+// registerKBForSlug stores each non-empty KB owner at most once per slug.
+func registerKBForSlug(foundKBs map[string][]string, slug, kbID string) {
+	if slug == "" || kbID == "" {
+		return
+	}
+	for _, existing := range foundKBs[slug] {
+		if existing == kbID {
+			return
+		}
+	}
+	foundKBs[slug] = append(foundKBs[slug], kbID)
+}
+
+func hasMultipleDistinctKBs(kbIDs []string) bool {
+	seen := make(map[string]struct{}, len(kbIDs))
+	for _, kbID := range kbIDs {
+		if kbID == "" {
+			continue
+		}
+		if _, ok := seen[kbID]; ok {
+			continue
+		}
+		seen[kbID] = struct{}{}
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// registerLinkedSlugs records the owning KB for every slug linked by this page.
+// Wiki links are KB-local, so this enables neighbour routing without guessing.
 func registerLinkedSlugs(foundKBs map[string][]string, page *types.WikiPage, kbID string) {
 	if page == nil || kbID == "" {
 		return
 	}
 	add := func(slug string) {
-		if slug == "" {
-			return
-		}
-		for _, existing := range foundKBs[slug] {
-			if existing == kbID {
-				return
-			}
-		}
-		foundKBs[slug] = append(foundKBs[slug], kbID)
+		registerKBForSlug(foundKBs, slug, kbID)
 	}
 	for _, s := range page.OutLinks {
 		add(s)
@@ -325,20 +345,75 @@ const (
 // pendingWikiPage is a resolved page whose neighbour summaries, sources and
 // body have been gathered but whose rendered size is not yet decided.
 type pendingWikiPage struct {
-	page     *types.WikiPage
-	kbID     string
-	outLinks []string
-	inLinks  []string
-	sources  []string
-	body     string
+	page          *types.WikiPage
+	kbID          string
+	outLinks      []string
+	inLinks       []string
+	sources       []string
+	body          string
+	evidenceState string
+}
+
+type wikiPageIdentity struct {
+	KBID          string `json:"kb_id"`
+	Slug          string `json:"slug"`
+	BodyStatus    string `json:"body_status,omitempty"`
+	EvidenceState string `json:"evidence_state,omitempty"`
+}
+
+type wikiPageRenderDetails struct {
+	Output             string
+	TruncatedSlugs     []string
+	OmittedSlugs       []string
+	ReturnedPages      []wikiPageIdentity
+	ReturnedPageBodies []wikiPageBodyEvidence
+	BodyTruncatedPages []wikiPageIdentity
+	BodyOmittedPages   []wikiPageIdentity
+	OmittedPages       []wikiPageIdentity
+}
+
+// wikiPageBodyEvidence records only original page text actually included in
+// the rendered response. It is built from the same body slice passed to render
+// and carries the page's KB-local identity and completeness state.
+type wikiPageBodyEvidence struct {
+	KBID            string `json:"kb_id"`
+	Slug            string `json:"slug"`
+	Content         string `json:"content"`
+	ContentComplete bool   `json:"content_complete"`
+	ContentStatus   string `json:"content_status"`
+}
+
+func appendRenderedPageBody(details *wikiPageRenderDetails, page pendingWikiPage, body, status string, complete bool) {
+	if page.evidenceState != "" || status == "omitted" || body == "" {
+		return
+	}
+	details.ReturnedPageBodies = append(details.ReturnedPageBodies, wikiPageBodyEvidence{
+		KBID: page.kbID, Slug: page.page.Slug, Content: body,
+		ContentComplete: complete, ContentStatus: status,
+	})
+}
+
+func identityOfPendingPage(page pendingWikiPage) wikiPageIdentity {
+	identity := wikiPageIdentity{KBID: page.kbID, Slug: page.page.Slug}
+	if page.evidenceState != "" {
+		identity.BodyStatus = "withheld"
+		identity.EvidenceState = page.evidenceState
+	}
+	return identity
 }
 
 func (p pendingWikiPage) render(body string) string {
+	summary := p.page.Summary
+	if p.evidenceState != "" {
+		summary = ""
+		body = wikiRetractionNotice(p.evidenceState)
+	}
 	return fmt.Sprintf(`<wiki_page>
 <metadata>
 <knowledge_base_id>%s</knowledge_base_id>
 <link>[[%s|%s]]</link>
 <type>%s</type>
+<evidence_state>%s</evidence_state>
 <aliases>%s</aliases>
 </metadata>
 <relationships>
@@ -357,13 +432,32 @@ func (p pendingWikiPage) render(body string) string {
 </wiki_page>`,
 		p.kbID,
 		p.page.Slug, p.page.Title, p.page.PageType,
+		p.evidenceState,
 		strings.Join(p.page.Aliases, ", "),
 		strings.Join(p.outLinks, ", "),
 		strings.Join(p.inLinks, ", "),
 		strings.Join(p.sources, "\n"),
-		p.page.Summary,
+		summary,
 		body,
 	)
+}
+
+func wikiRetractionNotice(state string) string {
+	if state == "retraction_failed" {
+		return "Page content is withheld because source retraction review failed. Consult the current source documents; do not use the stored page body as evidence."
+	}
+	return "Page content is withheld while source retraction review is pending. Consult the current source documents; do not use the stored page body as evidence."
+}
+
+func wikiRetractionEvidenceState(page *types.WikiPage) string {
+	state := types.ReadWikiRetractionState(page)
+	if len(state.FailedSourceIDs) > 0 {
+		return "retraction_failed"
+	}
+	if len(state.PendingSourceIDs) > 0 {
+		return "retraction_pending"
+	}
+	return ""
 }
 
 // renderWikiPagesWithinBudget renders a batch of pages so that the result fits
@@ -374,8 +468,14 @@ func (p pendingWikiPage) render(body string) string {
 // It returns the joined output plus the slugs whose body was trimmed and the
 // slugs that were not rendered at all.
 func renderWikiPagesWithinBudget(pages []pendingWikiPage, budget int) (string, []string, []string) {
+	details := renderWikiPagesWithDetails(pages, budget)
+	return details.Output, details.TruncatedSlugs, details.OmittedSlugs
+}
+
+func renderWikiPagesWithDetails(pages []pendingWikiPage, budget int) wikiPageRenderDetails {
+	var details wikiPageRenderDetails
 	if len(pages) == 0 {
-		return "", nil, nil
+		return details
 	}
 
 	const separator = "\n\n"
@@ -395,7 +495,16 @@ func renderWikiPagesWithinBudget(pages []pendingWikiPage, budget int) (string, [
 
 	usable := budget - wikiBudgetReserve
 	if usable <= 0 || total <= usable {
-		return strings.Join(rendered, separator), nil, nil
+		details.Output = strings.Join(rendered, separator)
+		for _, page := range pages {
+			identity := identityOfPendingPage(page)
+			if identity.BodyStatus == "" {
+				identity.BodyStatus = "complete"
+			}
+			details.ReturnedPages = append(details.ReturnedPages, identity)
+			appendRenderedPageBody(&details, page, page.body, "complete", true)
+		}
+		return details
 	}
 
 	fixedCost := func(keep int) int {
@@ -410,27 +519,46 @@ func renderWikiPagesWithinBudget(pages []pendingWikiPage, budget int) (string, [
 	for keep > 1 && fixedCost(keep)+keep*wikiMinPageBody > usable {
 		keep--
 	}
-	var omitted []string
 	for _, p := range pages[keep:] {
-		omitted = append(omitted, p.page.Slug)
+		details.OmittedSlugs = append(details.OmittedSlugs, p.page.Slug)
+		details.OmittedPages = append(details.OmittedPages, identityOfPendingPage(p))
 	}
 
 	caps := splitBudgetFairly(usable-fixedCost(keep), bodySizes[:keep])
 	outputs := make([]string, keep)
-	var truncated []string
 	for i := 0; i < keep; i++ {
+		identity := identityOfPendingPage(pages[i])
 		if caps[i] >= bodySizes[i] {
 			outputs[i] = rendered[i]
+			if identity.BodyStatus == "" {
+				identity.BodyStatus = "complete"
+			}
+			details.ReturnedPages = append(details.ReturnedPages, identity)
+			appendRenderedPageBody(&details, pages[i], pages[i].body, "complete", true)
 			continue
 		}
 		body := "(body omitted: output budget exhausted)"
 		if caps[i] > 0 {
 			body = TruncateToolOutput(pages[i].body, caps[i])
+			if pages[i].evidenceState == "" {
+				identity.BodyStatus = "truncated"
+				details.BodyTruncatedPages = append(details.BodyTruncatedPages, identity)
+				appendRenderedPageBody(&details, pages[i], body, "truncated", false)
+			}
+		} else {
+			if pages[i].evidenceState == "" {
+				identity.BodyStatus = "omitted"
+				details.BodyOmittedPages = append(details.BodyOmittedPages, identity)
+			}
 		}
 		outputs[i] = pages[i].render(body)
-		truncated = append(truncated, pages[i].page.Slug)
+		details.ReturnedPages = append(details.ReturnedPages, identity)
+		if pages[i].evidenceState == "" {
+			details.TruncatedSlugs = append(details.TruncatedSlugs, pages[i].page.Slug)
+		}
 	}
-	return strings.Join(outputs, separator), truncated, omitted
+	details.Output = strings.Join(outputs, separator)
+	return details
 }
 
 type wikiReadPageTool struct {
@@ -493,12 +621,12 @@ func (t *wikiReadPageTool) Execute(ctx context.Context, args json.RawMessage) (*
 		return &types.ToolResult{Success: false, Error: "Invalid parameters: " + err.Error()}, nil
 	}
 
-	var slugsToFetch []string
-	slugsToFetch = append(slugsToFetch, parseStringOrArray(params.Slugs)...)
-	slugsToFetch = append(slugsToFetch, parseStringOrArray(params.Slug)...)
+	var requestedSlugs []string
+	requestedSlugs = append(requestedSlugs, parseStringOrArray(params.Slugs)...)
+	requestedSlugs = append(requestedSlugs, parseStringOrArray(params.Slug)...)
 	// A slug repeated inside `slugs`, or echoed in both `slug` and `slugs`,
 	// would otherwise be rendered twice and spend budget a distinct page needs.
-	slugsToFetch = dedupNonEmptyStrings(slugsToFetch)
+	slugsToFetch := dedupNonEmptyStrings(requestedSlugs)
 
 	if len(slugsToFetch) == 0 {
 		return &types.ToolResult{Success: false, Error: "Missing 'slugs' parameter"}, nil
@@ -530,13 +658,31 @@ func (t *wikiReadPageTool) Execute(ctx context.Context, args json.RawMessage) (*
 			seen := t.seenLinks[key]
 			t.mu.Unlock()
 			if seen {
-				// We already injected the summary for this link in this session (within the same KB)
+				// Re-check page state even when its summary was already exposed:
+				// a later source retraction must supersede that earlier evidence.
+				linkPage, err := t.wikiService.GetPageBySlug(ctx, kbID, s)
+				if err == nil && linkPage != nil {
+					if state := wikiRetractionEvidenceState(linkPage); state != "" {
+						descs = append(descs, fmt.Sprintf("[[%s]] (source retraction %s; consult current source documents)", s, state))
+						continue
+					}
+				}
+				// We already injected the summary for this link in this session (within the same KB).
 				descs = append(descs, fmt.Sprintf("[[%s]] (summary omitted, already seen)", s))
 				continue
 			}
 
 			linkPage, err := t.wikiService.GetPageBySlug(ctx, kbID, s)
-			if err != nil || linkPage == nil || linkPage.Summary == "" {
+			if err != nil || linkPage == nil {
+				descs = append(descs, fmt.Sprintf("[[%s]]", s))
+				continue
+			}
+			state := wikiRetractionEvidenceState(linkPage)
+			if state != "" {
+				descs = append(descs, fmt.Sprintf("[[%s]] (source retraction %s; consult current source documents)", s, state))
+				continue
+			}
+			if linkPage.Summary == "" {
 				descs = append(descs, fmt.Sprintf("[[%s]]", s))
 				continue
 			}
@@ -557,11 +703,15 @@ func (t *wikiReadPageTool) Execute(ctx context.Context, args json.RawMessage) (*
 	// so the output budget can be shared across the whole batch.
 	resolvePage := func(page *types.WikiPage, kbID string) pendingWikiPage {
 		resolved := pendingWikiPage{
-			page:     page,
-			kbID:     kbID,
-			outLinks: formatLinks(page.OutLinks, kbID),
-			inLinks:  formatLinks(page.InLinks, kbID),
-			body:     page.Content,
+			page:          page,
+			kbID:          kbID,
+			outLinks:      formatLinks(page.OutLinks, kbID),
+			inLinks:       formatLinks(page.InLinks, kbID),
+			body:          page.Content,
+			evidenceState: wikiRetractionEvidenceState(page),
+		}
+		if resolved.evidenceState != "" {
+			resolved.body = wikiRetractionNotice(resolved.evidenceState)
 		}
 
 		for _, ref := range page.SourceRefs {
@@ -664,7 +814,7 @@ func (t *wikiReadPageTool) Execute(ctx context.Context, args json.RawMessage) (*
 					kbID string
 				}{page, actualKBID})
 				t.routes.rememberPage(page, actualKBID)
-				foundKBs[slug] = append(foundKBs[slug], actualKBID)
+				registerKBForSlug(foundKBs, slug, actualKBID)
 				// Also register the page's neighbours so that when the model
 				// echoes a link like `[[summary/xyz]]` from this page's body,
 				// the frontend can resolve it to the same KB without guessing.
@@ -700,7 +850,8 @@ func (t *wikiReadPageTool) Execute(ctx context.Context, args json.RawMessage) (*
 		return &types.ToolResult{Success: false, Error: strings.Join(errs, "; ")}, nil
 	}
 
-	finalOutput, truncatedSlugs, omittedSlugs := renderWikiPagesWithinBudget(pending, OutputBudget(ctx))
+	rendered := renderWikiPagesWithDetails(pending, OutputBudget(ctx))
+	finalOutput, truncatedSlugs, omittedSlugs := rendered.Output, rendered.TruncatedSlugs, rendered.OmittedSlugs
 	if len(omittedSlugs) > 0 {
 		finalOutput += fmt.Sprintf(
 			"\n\n<omitted_pages reason=\"output budget exceeded\">\n%s\n</omitted_pages>"+
@@ -717,7 +868,7 @@ func (t *wikiReadPageTool) Execute(ctx context.Context, args json.RawMessage) (*
 	// resolved to more than one KB.
 	ambiguous := make(map[string][]string)
 	for slug, kbs := range foundKBs {
-		if len(kbs) > 1 {
+		if hasMultipleDistinctKBs(kbs) {
 			ambiguous[slug] = kbs
 		}
 	}
@@ -726,10 +877,19 @@ func (t *wikiReadPageTool) Execute(ctx context.Context, args json.RawMessage) (*
 		Success: true,
 		Output:  finalOutput,
 		Data: map[string]interface{}{
-			"found_kbs":       foundKBs,
-			"ambiguous_slugs": ambiguous,
-			"truncated_slugs": truncatedSlugs,
-			"omitted_slugs":   omittedSlugs,
+			"found_kbs":            foundKBs,
+			"ambiguous_slugs":      ambiguous,
+			"truncated_slugs":      truncatedSlugs,
+			"omitted_slugs":        omittedSlugs,
+			"requested_slugs":      requestedSlugs,
+			"resolved_page_count":  len(pending),
+			"rendered_page_count":  len(rendered.ReturnedPages),
+			"returned_pages":       rendered.ReturnedPages,
+			"returned_page_bodies": rendered.ReturnedPageBodies,
+			"body_truncated_pages": rendered.BodyTruncatedPages,
+			"body_omitted_pages":   rendered.BodyOmittedPages,
+			"omitted_pages":        rendered.OmittedPages,
+			"found_kbs_scope":      "Routing metadata includes actual hits and linked neighbours; it is not a count of resolved or rendered pages.",
 		},
 	}, nil
 }
@@ -744,6 +904,19 @@ type wikiSearchTool struct {
 	routes           *WikiRouteResolver
 	seenSlugs        map[string]bool
 	mu               sync.Mutex
+}
+
+type wikiSearchResultEvidence struct {
+	Query          string `json:"query"`
+	KBID           string `json:"kb_id"`
+	Slug           string `json:"slug"`
+	Title          string `json:"title"`
+	PageType       string `json:"type"`
+	Summary        string `json:"summary"`
+	SummaryStatus  string `json:"summary_status"`
+	MatchSnippet   string `json:"match_snippet"`
+	EvidenceState  string `json:"evidence_state,omitempty"`
+	EvidenceNotice string `json:"evidence_notice,omitempty"`
 }
 
 func NewWikiSearchTool(
@@ -860,6 +1033,7 @@ func (t *wikiSearchTool) Execute(ctx context.Context, args json.RawMessage) (*ty
 
 	var allOutputs []string
 	var searchErrors []string
+	var actualSearchResults []wikiSearchResultEvidence
 	successfulSearchCalls := 0
 	// Per-slug list of KB IDs that produced a match. Multiple KBs may share a
 	// slug when the agent has several wiki KBs in scope, so we keep the full list.
@@ -927,7 +1101,7 @@ func (t *wikiSearchTool) Execute(ctx context.Context, args json.RawMessage) (*ty
 				kept++
 				allHits = append(allHits, searchHit{page: p, kbID: actualKBID})
 				t.routes.rememberPage(p, actualKBID)
-				foundKBs[p.Slug] = append(foundKBs[p.Slug], actualKBID)
+				registerKBForSlug(foundKBs, p.Slug, actualKBID)
 				// Register neighbour slugs so links surfaced from this
 				// page's body can be routed to the same KB by the frontend.
 				registerLinkedSlugs(foundKBs, p, actualKBID)
@@ -967,13 +1141,43 @@ func (t *wikiSearchTool) Execute(ctx context.Context, args json.RawMessage) (*ty
 				aliasesTag = fmt.Sprintf("\n<aliases>%s</aliases>", strings.Join(p.Aliases, ", "))
 			}
 
+			state := wikiRetractionEvidenceState(p)
 			summary := p.Summary
 			if seen {
 				summary = "(summary omitted, already seen in previous search)"
 			}
+			if state != "" {
+				summary = ""
+			}
+			evidenceState := ""
+			evidenceNotice := ""
+			if state != "" {
+				evidenceNotice = wikiRetractionNotice(state)
+				evidenceState = fmt.Sprintf("\n<evidence_state>%s</evidence_state>\n<evidence_notice>%s</evidence_notice>", state, evidenceNotice)
+			}
+			snippetTag = ""
+			visibleSnippet := ""
+			if state == "" && snippet != "" {
+				snippetTag = fmt.Sprintf("\n<match_snippet>%s</match_snippet>", snippet)
+				visibleSnippet = snippet
+			}
+			summaryStatus := "shown"
+			switch {
+			case state != "":
+				summaryStatus = "withdrawn"
+			case seen:
+				summaryStatus = "already_seen_omitted"
+			case summary == "":
+				summaryStatus = "empty"
+			}
+			actualSearchResults = append(actualSearchResults, wikiSearchResultEvidence{
+				Query: query, KBID: h.kbID, Slug: p.Slug, Title: p.Title, PageType: p.PageType,
+				Summary: summary, SummaryStatus: summaryStatus, MatchSnippet: visibleSnippet,
+				EvidenceState: state, EvidenceNotice: evidenceNotice,
+			})
 			fmt.Fprintf(&sb,
-				"<page>\n<knowledge_base_id>%s</knowledge_base_id>\n<link>[[%s|%s]]</link>\n<type>%s</type>%s\n<summary>%s</summary>%s\n</page>\n",
-				h.kbID, p.Slug, p.Title, p.PageType, aliasesTag, summary, snippetTag,
+				"<page>\n<knowledge_base_id>%s</knowledge_base_id>\n<link>[[%s|%s]]</link>\n<type>%s</type>%s%s\n<summary>%s</summary>%s\n</page>\n",
+				h.kbID, p.Slug, p.Title, p.PageType, aliasesTag, evidenceState, summary, snippetTag,
 			)
 		}
 		sb.WriteString("</search_results>")
@@ -991,7 +1195,9 @@ func (t *wikiSearchTool) Execute(ctx context.Context, args json.RawMessage) (*ty
 		Success: true,
 		Output:  output,
 		Data: map[string]interface{}{
-			"found_kbs": foundKBs,
+			"found_kbs":             foundKBs,
+			"found_kbs_scope":       "Routing metadata includes actual search hits and linked neighbours; it is not a search-result list.",
+			"actual_search_results": actualSearchResults,
 		},
 	}, nil
 }

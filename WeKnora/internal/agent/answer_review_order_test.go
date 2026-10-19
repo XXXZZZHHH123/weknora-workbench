@@ -2,12 +2,79 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
+
+// uniqueJSONUserInput selects a request by its actual message role and strict
+// JSON payload shape, rather than assuming a fixed message index.
+func uniqueJSONUserInput(t *testing.T, calls [][]chat.Message, requiredField string) (int, []chat.Message, chat.Message, map[string]json.RawMessage) {
+	t.Helper()
+	selectedIndex := -1
+	var selectedMessages []chat.Message
+	var selectedUser chat.Message
+	var selectedPayload map[string]json.RawMessage
+	selected := 0
+	for callIndex, messages := range calls {
+		userCount := 0
+		var matchedUser chat.Message
+		var matchedPayload map[string]json.RawMessage
+		matched := false
+		rolesValid := true
+		for _, message := range messages {
+			switch message.Role {
+			case "system":
+			case "user":
+				userCount++
+				var payload map[string]json.RawMessage
+				decoder := json.NewDecoder(strings.NewReader(message.Content))
+				if err := decoder.Decode(&payload); err != nil || payload == nil {
+					continue
+				}
+				if err := decoder.Decode(new(any)); err != io.EOF {
+					continue
+				}
+				if _, exists := payload[requiredField]; exists {
+					matched = true
+					matchedUser = message
+					matchedPayload = payload
+				}
+			default:
+				rolesValid = false
+			}
+		}
+		if !matched {
+			continue
+		}
+		require.True(t, rolesValid, "an independent review request must not contain assistant or tool transcript rows")
+		require.Equal(t, 1, userCount, "an independent review request has exactly one JSON user input")
+		require.NotEmpty(t, matchedPayload[requiredField])
+		var stringValue string
+		require.NoError(t, json.Unmarshal(matchedPayload[requiredField], &stringValue), "the selected review field is a JSON string")
+		selected++
+		selectedIndex = callIndex
+		selectedMessages, selectedUser, selectedPayload = messages, matchedUser, matchedPayload
+	}
+	require.Equal(t, 1, selected, "expected exactly one request with the selected strict JSON field")
+	if requiredField == "unverified_draft" {
+		system := strings.Builder{}
+		for _, message := range selectedMessages {
+			if message.Role == "system" {
+				system.WriteString(message.Content)
+				system.WriteByte('\n')
+			}
+		}
+		require.Contains(t, system.String(), reviewedAnswerDeliveryMarker)
+		require.Contains(t, system.String(), string(reviewedAnswerSchema), "the trusted delivery schema is present in system context")
+	}
+	return selectedIndex, selectedMessages, selectedUser, selectedPayload
+}
 
 func TestSourceReviewGetsNumericFeedbackBeforeCompletenessChecksFinalCandidate(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{
@@ -23,9 +90,15 @@ func TestSourceReviewGetsNumericFeedbackBeforeCompletenessChecksFinalCandidate(t
 	require.NoError(t, err)
 	require.Equal(t, "实际结果是30，单位依原表。", state.FinalAnswer)
 	require.Len(t, model.calls, 3, "review the source draft, then check completeness of the delivered candidate only")
-	require.Contains(t, model.calls[1][1].Content, `"runtime_unmatched_numbers":["999"]`)
-	require.Contains(t, model.calls[1][1].Content, `"unverified_draft"`)
-	require.Contains(t, model.calls[2][1].Content, `"candidate_answer":"实际结果是30，单位依原表。"`)
+	_, _, _, reviewInput := uniqueJSONUserInput(t, model.calls, "unverified_draft")
+	var unmatched []string
+	require.NoError(t, json.Unmarshal(reviewInput["runtime_unmatched_numbers"], &unmatched))
+	require.Contains(t, unmatched, "999")
+	_, _, completenessUser, completenessInput := uniqueJSONUserInput(t, model.calls, "candidate_answer")
+	var candidate string
+	require.NoError(t, json.Unmarshal(completenessInput["candidate_answer"], &candidate))
+	require.Equal(t, "实际结果是30，单位依原表。", candidate)
+	require.Contains(t, completenessUser.Content, candidate)
 }
 
 func TestFetchedDocumentAnswerGetsIndependentSourceReviewWithoutTableEvidence(t *testing.T) {
@@ -42,8 +115,9 @@ func TestFetchedDocumentAnswerGetsIndependentSourceReviewWithoutTableEvidence(t 
 	require.NoError(t, err)
 	require.Equal(t, "原报告记载30。", state.FinalAnswer)
 	require.Len(t, model.calls, 2)
-	require.Contains(t, model.calls[1][1].Content, "source-chunk")
-	require.Contains(t, model.calls[1][1].Content, "unverified_draft")
+	_, _, user, payload := uniqueJSONUserInput(t, model.calls, "unverified_draft")
+	require.Contains(t, user.Content, "source-chunk")
+	require.NotEmpty(t, payload["unverified_draft"])
 }
 
 func TestDirectoryGroupCountsTriggerReviewButNotErrorOrArbitraryMetadata(t *testing.T) {

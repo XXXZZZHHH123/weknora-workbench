@@ -28,6 +28,68 @@ export type SourceLocator = {
   quote?: string
 }
 
+export type ParentChunkEvidence = {
+  id?: unknown
+  knowledge_id?: unknown
+  chunk_type?: unknown
+  content_revision?: unknown
+  parent_chunk_id?: unknown
+  content?: unknown
+  source_locators?: unknown
+}
+
+/**
+ * Validate that a current, unedited child is wholly and uniquely contained in
+ * its unedited root parent for the same source revision. This does not imply
+ * that any parent locator is an exact locator for the child's text.
+ */
+export function hasVerifiedParentChunkContext(
+  child: ParentChunkEvidence,
+  parent: ParentChunkEvidence,
+  expectedChildId: string,
+  expectedKnowledgeId: string,
+  currentSourceHash: string,
+): boolean {
+  const sourceHash = String(currentSourceHash || '').toLowerCase()
+  if (!/^(?:[a-f0-9]{32}|[a-f0-9]{64})$/.test(sourceHash) || !expectedChildId || !expectedKnowledgeId) return false
+  if (child.id !== expectedChildId || child.knowledge_id !== expectedKnowledgeId || child.chunk_type !== 'text' || child.content_revision !== 0) return false
+  if (!child.parent_chunk_id || parent.id !== child.parent_chunk_id || parent.knowledge_id !== expectedKnowledgeId ||
+      parent.chunk_type !== 'parent_text' || parent.content_revision !== 0 ||
+      (parent.parent_chunk_id !== '' && parent.parent_chunk_id !== null)) return false
+
+  const childText = sourceQuoteText(String(child.content || ''))
+  const parentText = sourceQuoteText(String(parent.content || ''))
+  if (normalizeForMatch(childText).length < 8) return false
+  return findTextMatches(parentText, childText).length === 1
+}
+
+/**
+ * A verified parent may provide only a coarse physical-slide context when
+ * every exact locator is bound to the current source and all identify one
+ * slide. Parent quotes are intentionally removed: they are not child quotes.
+ */
+export function resolveParentContextSlideLocator(
+  child: ParentChunkEvidence,
+  parent: ParentChunkEvidence,
+  expectedChildId: string,
+  expectedKnowledgeId: string,
+  currentSourceHash: string,
+): SourceLocator[] {
+  const sourceHash = String(currentSourceHash || '').toLowerCase()
+  if (!hasVerifiedParentChunkContext(child, parent, expectedChildId, expectedKnowledgeId, sourceHash)) return []
+  if (!/^(?:[a-f0-9]{32}|[a-f0-9]{64})$/.test(sourceHash) || !Array.isArray(parent.source_locators) || !parent.source_locators.length) return []
+  const locators = parseSourceLocators(parent.source_locators)
+  if (locators.length !== parent.source_locators.length || !locators.every(locator =>
+    locator.type === 'slide' && locator.mapping === 'exact' && Number.isSafeInteger(locator.slide) &&
+    (locator.slide || 0) > 0 && typeof locator.source_hash === 'string' && locator.source_hash.toLowerCase() === sourceHash,
+  )) return []
+  const slides = new Set(locators.map(locator => locator.slide))
+  if (slides.size !== 1) return []
+
+  const { quote: _parentQuote, ...locator } = locators[0]!
+  return [{ ...locator, partial: true }]
+}
+
 /** What the preview should reveal: structural targets plus text to match. */
 export type SourceLocateRequest = {
   /** Locators to reveal, most relevant first. */
@@ -43,6 +105,8 @@ export type SourceLocateRequest = {
   /** Original Markdown, before stripping markup; code may contain literal tags. */
   sourceMarkdown?: string
   unavailable?: boolean
+  /** This page comes from verified parent context, not a child text match. */
+  parentContext?: boolean
   /** Neighboring source paragraphs bracketing one embedded OCR image. */
   imageContext?: { before: string; after: string }
   imageDigest?: string

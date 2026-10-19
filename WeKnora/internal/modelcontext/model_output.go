@@ -54,7 +54,13 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 		}
 		return annotateSearchNotes(r.annotateModeFallbacks(output, result.Data), result.Data)
 	case "knowledge_chunks_list":
-		return r.modelKnowledgeChunksOutput(result.Data, result.Output)
+		output := r.modelKnowledgeChunksOutput(result.Data, result.Output)
+		if scope, ok := result.Data["query_scope"].(map[string]any); ok {
+			if encoded, err := json.Marshal(scope); err == nil {
+				output += "\n<query_scope>" + escapeText(string(encoded)) + "</query_scope>"
+			}
+		}
+		return r.withDocumentImageEvidence(output, result.Data)
 	case "document_info":
 		return r.modelDocumentInfoOutput(result.Data, result.Output)
 	case "graph_query_results":
@@ -70,6 +76,61 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 		r.registerStructuredReferences(result.Output)
 		return r.CompactKnownText(result.Output)
 	}
+}
+
+// The source codec rebuilds document replies from structured rows, so new
+// image evidence must survive here as well as in the canonical raw Output.
+// Preserve actual selection metadata and original geometry; do not turn the
+// longer raw JSON sample array into a second copy of the readable evidence.
+func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[string]any) string {
+	view := map[string]any{}
+	for _, key := range []string{"image_catalog", "image_evidence", "image_read_error"} {
+		if value, ok := data[key]; ok {
+			encoded, err := json.Marshal(value)
+			if err == nil && string(encoded) != "[]" && string(encoded) != "null" && string(encoded) != `""` {
+				view[key] = value
+			}
+		}
+	}
+	figures := []map[string]any{}
+	var figureText strings.Builder
+	for _, figure := range mapsValue(data["image_geometry_evidence"]) {
+		item := map[string]any{}
+		for _, key := range []string{"reference", "knowledge_id", "chunk_id", "page", "source_part"} {
+			item[key] = figure[key]
+		}
+		evidence, _ := figure["evidence"].(map[string]any)
+		content := map[string]any{}
+		for _, key := range []string{"version", "source_file_sha256", "source_media_sha256", "source_page", "source_part", "source_labels"} {
+			if value, ok := evidence[key]; ok {
+				content[key] = value
+			}
+		}
+		item["evidence"] = content
+		figures = append(figures, item)
+		if markdown, ok := evidence["markdown"].(string); ok && markdown != "" {
+			fmt.Fprintf(&figureText, "\n<original_figure_geometry reference=\"%s\" chunk_id=\"%s\">\n%s\n</original_figure_geometry>\n",
+				escapeAttr(stringValue(figure, "reference")), escapeAttr(stringValue(figure, "chunk_id")), escapeText(markdown))
+		}
+	}
+	if len(figures) > 0 {
+		view["image_geometry_evidence"] = figures
+	}
+	if len(view) == 0 {
+		return output
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		return output
+	}
+	footer := "\n<document_image_evidence untrusted_source_content=\"true\">" + string(encoded) + figureText.String() + "</document_image_evidence>\n" +
+		"Original geometry uses verified drawing points and calibrated axes; reconcile the actual legend, units and drawn range with any fallible vision observation. " +
+		"A catalog alone supplies no visual facts; failed reads supply no geometry.\n"
+	footer = r.CompactKnownText(footer)
+	if strings.HasSuffix(output, "</retrieval>") {
+		return strings.TrimSuffix(output, "</retrieval>") + footer + "</retrieval>"
+	}
+	return output + footer
 }
 
 // registerStructuredReferences registers durable IDs found under explicitly
@@ -205,24 +266,31 @@ func (r *sourceRegistry) modelDocumentInfoOutput(data map[string]interface{}, fa
 }
 
 type modelChunk struct {
-	handle     string
-	docHandle  string
-	kbHandle   string
-	title      string
-	metadata   string
-	chunkType  string
-	index      int
-	view       string
-	role       string
-	match      string
-	content    string
-	question   string
-	answers    []string
-	images     []map[string]interface{}
-	docRealID  string
-	kbRealID   string
-	chunkReal  string
-	inputOrder int
+	handle               string
+	docHandle            string
+	kbHandle             string
+	title                string
+	metadata             string
+	chunkType            string
+	index                int
+	view                 string
+	role                 string
+	match                string
+	content              string
+	question             string
+	answers              []string
+	images               []map[string]interface{}
+	docRealID            string
+	kbRealID             string
+	chunkReal            string
+	inputOrder           int
+	contentOffset        int
+	nextContentOffset    int
+	contentComplete      bool
+	contentStatusPresent bool
+	contentOffsetSpace   string
+	page                 int
+	sourceLocators       []map[string]interface{}
 }
 
 func (r *sourceRegistry) modelKnowledgeOutput(mode string, rows []map[string]interface{}, fallback string) string {
@@ -231,6 +299,11 @@ func (r *sourceRegistry) modelKnowledgeOutput(mode string, rows []map[string]int
 		return r.CompactKnownText(fallback)
 	}
 	return renderKnowledgeChunks(mode, chunks, nil)
+}
+
+func hasAnyKey(values map[string]interface{}, key string) bool {
+	_, ok := values[key]
+	return ok
 }
 
 // modelChunksFromRows registers every row's handles and converts it into the
@@ -262,27 +335,220 @@ func (r *sourceRegistry) modelChunksFromRows(mode string, rows []map[string]inte
 			ChunkType:       chunkType,
 		})
 		chunks = append(chunks, modelChunk{
-			handle:     chunkHandle,
-			docHandle:  r.RegisterDocument(knowledgeID),
-			kbHandle:   r.RegisterKnowledgeBase(kbID),
-			title:      title,
-			metadata:   stringValue(row, "knowledge_metadata"),
-			chunkType:  chunkType,
-			index:      chunkIndex,
-			view:       viewForRow(row, mode),
-			role:       stringValue(row, "role"),
-			match:      firstNonEmpty(stringValue(row, "match_snippet"), stringValue(row, "matched_content")),
-			content:    stringValue(row, "content"),
-			question:   firstNonEmpty(stringValue(row, "faq_question"), stringValue(row, "faq_standard_question")),
-			answers:    stringSliceValue(row["faq_answers"]),
-			images:     mapsValue(row["images"]),
-			docRealID:  knowledgeID,
-			kbRealID:   kbID,
-			chunkReal:  chunkID,
-			inputOrder: idx,
+			handle:               chunkHandle,
+			docHandle:            r.RegisterDocument(knowledgeID),
+			kbHandle:             r.RegisterKnowledgeBase(kbID),
+			title:                title,
+			metadata:             stringValue(row, "knowledge_metadata"),
+			chunkType:            chunkType,
+			index:                chunkIndex,
+			view:                 viewForRow(row, mode),
+			role:                 stringValue(row, "role"),
+			match:                firstNonEmpty(stringValue(row, "match_snippet"), stringValue(row, "matched_content")),
+			content:              stringValue(row, "content"),
+			contentOffset:        intValue(row, "content_offset"),
+			nextContentOffset:    intValue(row, "next_content_offset"),
+			contentComplete:      boolValue(row, "content_complete"),
+			contentStatusPresent: hasAnyKey(row, "content_complete"),
+			contentOffsetSpace:   firstNonEmpty(stringValue(row, "content_offset_space"), "chunk_unicode_runes"),
+			page:                 intValue(row, "page"),
+			question:             firstNonEmpty(stringValue(row, "faq_question"), stringValue(row, "faq_standard_question")),
+			answers:              stringSliceValue(row["faq_answers"]),
+			images:               mapsValue(row["images"]),
+			sourceLocators:       sourceLocatorMaps(row["source_locators"]),
+			docRealID:            knowledgeID,
+			kbRealID:             kbID,
+			chunkReal:            chunkID,
+			inputOrder:           idx,
 		})
 	}
 	return chunks
+}
+
+const (
+	modelSourceLocatorSummaryMaxBytes = 2048
+	modelSourceLocatorSummaryMaxItems = 8
+	modelSourceLocatorFieldMaxBytes   = 128
+	modelSourceLocatorWrapperReserve  = 192
+	modelSourceLocatorNoticeReserve   = 144
+)
+
+type sourceLocatorSummary struct {
+	total   int
+	shown   int
+	omitted int
+	items   []map[string]interface{}
+}
+
+type sourceLocatorProjection struct {
+	summaries       map[int]sourceLocatorSummary
+	omittedLocators int
+	omittedChunks   int
+}
+
+// sourceLocatorMaps accepts typed parser results and JSON-shaped adapter values
+// without exposing arbitrary row fields to the model.
+func sourceLocatorMaps(value interface{}) []map[string]interface{} {
+	if value == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var locators []map[string]interface{}
+	if err := json.Unmarshal(encoded, &locators); err != nil {
+		return nil
+	}
+	return locators
+}
+
+// boundedSourceLocatorSummaries preserves source-position metadata only. It
+// omits quote/body text and caps the actual rendered summary plus metadata
+// overhead to a small fixed budget.
+func boundedSourceLocatorSummaries(chunks []modelChunk) sourceLocatorProjection {
+	projection := sourceLocatorProjection{summaries: map[int]sourceLocatorSummary{}}
+	remainingBytes := modelSourceLocatorSummaryMaxBytes - modelSourceLocatorNoticeReserve
+	remainingItems := modelSourceLocatorSummaryMaxItems
+	for _, chunk := range chunks {
+		locators := chunk.sourceLocators
+		if len(locators) == 0 {
+			continue
+		}
+		summary := sourceLocatorSummary{total: len(locators), items: []map[string]interface{}{}}
+		wrapperReserved := false
+		for _, raw := range locators {
+			projected := projectSourceLocator(raw)
+			item := renderSourceLocatorItem(projected)
+			if projected == nil || remainingItems <= 0 {
+				summary.omitted++
+				projection.omittedLocators++
+				continue
+			}
+			reserve := 0
+			if !wrapperReserved {
+				reserve = modelSourceLocatorWrapperReserve
+			}
+			if len(item)+reserve > remainingBytes {
+				summary.omitted++
+				projection.omittedLocators++
+				continue
+			}
+			summary.items = append(summary.items, projected)
+			summary.shown++
+			wrapperReserved = true
+			remainingItems--
+			remainingBytes -= len(item) + reserve
+		}
+		if summary.shown == 0 {
+			projection.omittedChunks++
+		}
+		projection.summaries[chunk.inputOrder] = summary
+	}
+	return projection
+}
+
+func projectSourceLocator(raw map[string]interface{}) map[string]interface{} {
+	if raw == nil {
+		return nil
+	}
+	fields := []string{"type", "mapping", "partial", "source_hash", "source_id", "page", "slide", "block", "sheet", "row_start", "row_end", "start", "end", "start_ms", "end_ms", "section", "title"}
+	out := map[string]interface{}{}
+	omittedFields := 0
+	for _, key := range fields {
+		value, ok := raw[key]
+		if !ok || value == nil {
+			continue
+		}
+		if text, ok := value.(string); ok && len(text) > modelSourceLocatorFieldMaxBytes {
+			omittedFields++
+			continue
+		}
+		switch value.(type) {
+		case string, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, json.Number:
+			out[key] = value
+		default:
+			omittedFields++
+		}
+	}
+	if omittedFields > 0 {
+		out["omitted_fields"] = omittedFields
+	}
+	if len(out) == 0 {
+		out["omitted_fields"] = len(raw)
+	}
+	return out
+}
+
+func renderSourceLocatorItem(locator map[string]interface{}) string {
+	if locator == nil {
+		return ""
+	}
+	keys := make([]string, 0, len(locator))
+	for key := range locator {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("        <locator")
+	for _, key := range keys {
+		fmt.Fprintf(&b, " %s=\"%s\"", key, escapeAttr(fmt.Sprint(locator[key])))
+	}
+	b.WriteString(" />\n")
+	return b.String()
+}
+
+func writeSourceLocatorSummary(b *strings.Builder, summary sourceLocatorSummary) {
+	if summary.total == 0 || summary.shown == 0 {
+		return
+	}
+	fmt.Fprintf(b, "      <source_locators total=\"%d\" shown=\"%d\" omitted=\"%d\" payload_budget_bytes=\"%d\">\n",
+		summary.total, summary.shown, summary.omitted, modelSourceLocatorSummaryMaxBytes)
+	for _, locator := range summary.items {
+		b.WriteString(renderSourceLocatorItem(locator))
+	}
+	b.WriteString("      </source_locators>\n")
+}
+
+func writeSourceLocatorOmission(b *strings.Builder, projection sourceLocatorProjection) {
+	if projection.omittedLocators == 0 {
+		return
+	}
+	fmt.Fprintf(b, "  <source_locator_omission omitted_locators=\"%d\" omitted_chunks=\"%d\" payload_budget_bytes=\"%d\" />\n",
+		projection.omittedLocators, projection.omittedChunks, modelSourceLocatorSummaryMaxBytes)
+}
+
+// renderPhysicalPageScope emits only an explicit page-level scope from
+// successful read_document Data. A bare page number or user request cannot
+// create page scope.
+func renderPhysicalPageScope(data map[string]interface{}) string {
+	complete, hasComplete := data["page_complete"].(bool)
+	offsetSpace, hasOffsetSpace := data["offset_space"].(string)
+	if !hasComplete && (!hasOffsetSpace || offsetSpace != "physical_page_chunks") {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<page_scope")
+	if hasComplete {
+		fmt.Fprintf(&b, " complete=\"%t\"", complete)
+	}
+	if hasOffsetSpace && offsetSpace != "" {
+		fmt.Fprintf(&b, " offset_space=\"%s\"", escapeAttr(offsetSpace))
+	}
+	if _, exists := data["offset"]; exists {
+		fmt.Fprintf(&b, " offset=\"%d\"", intValue(data, "offset"))
+	}
+	if _, exists := data["page_chunks"]; exists {
+		fmt.Fprintf(&b, " page_chunks=\"%d\"", intValue(data, "page_chunks"))
+	}
+	if page := intValue(data, "page"); page > 0 && offsetSpace == "physical_page_chunks" {
+		fmt.Fprintf(&b, " physical_page=\"%d\"", page)
+	}
+	if _, exists := data["next_offset"]; exists {
+		fmt.Fprintf(&b, " next_offset=\"%d\"", intValue(data, "next_offset"))
+	}
+	b.WriteString(" />")
+	return b.String()
 }
 
 // annotateModeFallbacks adds the requested mode and one <mode_fallback> per
@@ -396,6 +662,7 @@ func graphTruncationNote(data map[string]interface{}, shownRelations int) string
 // not read as an absence of evidence).
 func annotateSearchNotes(output string, data map[string]interface{}) string {
 	omitted := intValue(data, "omitted_for_budget")
+	withheldWiki := intValue(data, "withheld_retracted_or_unverified_wiki_chunks")
 	failures := stringSliceValue(data["partial_failures"])
 	// retrieval_candidates is the candidate pool of the first ranked-filter
 	// stage that dropped anything (rerank, merge or FILTER_TOP_K), not the
@@ -405,10 +672,13 @@ func annotateSearchNotes(output string, data map[string]interface{}) string {
 	shown := intValue(data, "retrieval_shown")
 	candidates := intValue(data, "retrieval_candidates")
 	truncated := shown > 0 && candidates > shown
-	if (omitted <= 0 && len(failures) == 0 && !truncated) || !strings.HasSuffix(output, "</retrieval>") {
+	if (omitted <= 0 && withheldWiki <= 0 && len(failures) == 0 && !truncated) || !strings.HasSuffix(output, "</retrieval>") {
 		return output
 	}
 	var b strings.Builder
+	if withheldWiki > 0 {
+		fmt.Fprintf(&b, "  <withheld_wiki count=\"%d\" reason=\"retraction_review\">Wiki page evidence was withheld because its current status could not be verified or review is pending. Consult current source documents; this does not prove the requested information is absent.</withheld_wiki>\n", withheldWiki)
+	}
 	if omitted > 0 {
 		fmt.Fprintf(&b, "  <omitted count=\"%d\" reason=\"output_budget\">Lower-ranked results were left out to "+
 			"fit the output size. Narrow the query or lower limit to see them.</omitted>\n", omitted)
@@ -488,6 +758,9 @@ func (r *sourceRegistry) modelKnowledgeChunksOutput(data map[string]interface{},
 		b.WriteString("<retrieval type=\"knowledge\" mode=\"deep_read\">\n")
 		fmt.Fprintf(&b, "  <document id=\"%s\" title=\"%s\">\n", escapeAttr(docHandle), escapeAttr(title))
 		writeDocumentInfo(&b, info)
+		if pageScope := renderPhysicalPageScope(data); pageScope != "" {
+			b.WriteString("    " + pageScope + "\n")
+		}
 		if query := stringValue(data, "query"); query != "" {
 			fmt.Fprintf(&b, "    <matches query=\"%s\" count=\"0\" />\n", escapeAttr(query))
 			b.WriteString("    <hint>No chunk contains every word of the query. Retry with fewer or different " +
@@ -513,7 +786,11 @@ func (r *sourceRegistry) modelKnowledgeChunksOutput(data map[string]interface{},
 		return output
 	}
 	var footer strings.Builder
+	footer.WriteString(renderPhysicalPageScope(data))
 	footer.WriteString(r.documentScopeFooter(data))
+	if omitted := intValue(data, "context_chunks_omitted_for_budget"); omitted > 0 {
+		fmt.Fprintf(&footer, "  <context_truncated omitted_chunks=\"%d\">Only the focus chunk and fitting neighbours are shown; do not treat omitted neighbours as read.</context_truncated>\n", omitted)
+	}
 	if query := stringValue(data, "query"); query != "" {
 		fmt.Fprintf(&footer, "  <matches query=\"%s\" count=\"%d\"", escapeAttr(query), intValue(data, "match_count"))
 		if boolValue(data, "truncated") {
@@ -640,6 +917,7 @@ func renderKnowledgeChunks(mode string, chunks []modelChunk, info map[string]int
 	}
 	sort.SliceStable(groups, func(i, j int) bool { return groups[i].order < groups[j].order })
 
+	locatorProjection := boundedSourceLocatorSummaries(chunks)
 	var b strings.Builder
 	fmt.Fprintf(&b, "<retrieval type=\"knowledge\" mode=\"%s\">\n", escapeAttr(mode))
 	for _, group := range groups {
@@ -681,6 +959,28 @@ func renderKnowledgeChunks(mode string, chunks []modelChunk, info map[string]int
 			if chunk.content != "" {
 				fmt.Fprintf(&b, "      <content>%s</content>\n", escapeText(chunk.content))
 			}
+			if chunk.contentStatusPresent {
+				fmt.Fprintf(&b, "      <content_status complete=\"%t\" offset_space=\"%s\" offset=\"%d\"",
+					chunk.contentComplete, escapeAttr(chunk.contentOffsetSpace), chunk.contentOffset)
+				if chunk.page > 0 {
+					fmt.Fprintf(&b, " physical_page=\"%d\"", chunk.page)
+				}
+				if !chunk.contentComplete {
+					fmt.Fprintf(&b, " next_content_offset=\"%d\"", chunk.nextContentOffset)
+				}
+				b.WriteString(" />\n")
+				if !chunk.contentComplete {
+					fmt.Fprintf(&b, "      <continuation>Read the same source chunk id=%s with content_offset=%d",
+						chunk.handle, chunk.nextContentOffset)
+					if chunk.page > 0 {
+						fmt.Fprintf(&b, " and page=%d", chunk.page)
+					}
+					b.WriteString(" to continue the original text; do not treat this excerpt as the complete chunk.</continuation>\n")
+				}
+			}
+			if summary, exists := locatorProjection.summaries[chunk.inputOrder]; exists {
+				writeSourceLocatorSummary(&b, summary)
+			}
 			for _, answer := range chunk.answers {
 				fmt.Fprintf(&b, "      <answer>%s</answer>\n", escapeText(answer))
 			}
@@ -699,6 +999,7 @@ func renderKnowledgeChunks(mode string, chunks []modelChunk, info map[string]int
 		}
 		b.WriteString("  </document>\n")
 	}
+	writeSourceLocatorOmission(&b, locatorProjection)
 	b.WriteString("</retrieval>")
 	return b.String()
 }

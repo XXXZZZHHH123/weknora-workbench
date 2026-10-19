@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/application/access"
+	"github.com/Tencent/WeKnora/internal/application/repository"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/assert"
@@ -220,11 +221,38 @@ func (r *moveWikiChunkRepo) ListAllChunksByKnowledgeID(context.Context, uint64, 
 
 type moveWikiMetaService struct {
 	interfaces.WikiPageService
+	pages   []*types.WikiPage
 	updated []*types.WikiPage
 }
 
+func cloneMoveWikiPage(page *types.WikiPage) *types.WikiPage {
+	if page == nil {
+		return nil
+	}
+	clone := *page
+	clone.SourceRefs = append(types.StringArray(nil), page.SourceRefs...)
+	clone.ChunkRefs = append(types.StringArray(nil), page.ChunkRefs...)
+	return &clone
+}
+
+func (s *moveWikiMetaService) GetPageBySlug(_ context.Context, kbID, slug string) (*types.WikiPage, error) {
+	for _, page := range s.pages {
+		if page != nil && page.Slug == slug && (page.KnowledgeBaseID == "" || page.KnowledgeBaseID == kbID) {
+			return cloneMoveWikiPage(page), nil
+		}
+	}
+	return nil, repository.ErrWikiPageNotFound
+}
+
 func (s *moveWikiMetaService) UpdatePageMeta(_ context.Context, page *types.WikiPage) error {
-	s.updated = append(s.updated, page)
+	updated := cloneMoveWikiPage(page)
+	s.updated = append(s.updated, updated)
+	for i, current := range s.pages {
+		if current != nil && current.Slug == page.Slug {
+			s.pages[i] = cloneMoveWikiPage(page)
+			break
+		}
+	}
 	return nil
 }
 
@@ -313,11 +341,12 @@ func TestMoveReparseWikiUsesDurableSourceRefsAfterChunksDeleted(t *testing.T) {
 	page := &types.WikiPage{
 		ID:              "page",
 		KnowledgeBaseID: "kb",
+		Slug:            "concept/shared",
 		SourceRefs:      types.StringArray{"doc", "other-doc"},
 		ChunkRefs:       types.StringArray{"chunk", "other-chunk"},
 	}
 	wiki := &moveWikiPageRepo{pages: []*types.WikiPage{page}}
-	meta := &moveWikiMetaService{}
+	meta := &moveWikiMetaService{pages: wiki.pages}
 	pending := &moveWikiPendingRepo{}
 	wiki.beforeList = func() {
 		saved, err := f.repo.GetKnowledgeByID(f.ctx, 7, "doc")
@@ -347,7 +376,7 @@ func TestMoveWikiRetractionIsDurableBeforeRemovingPageSources(t *testing.T) {
 	svc, wiki, pending, chunks := newMoveWikiService(t)
 	page := &types.WikiPage{ID: "page", Slug: "concept/source", SourceRefs: types.StringArray{"kn-1", "other"}}
 	wiki.pages = []*types.WikiPage{page}
-	meta := &moveWikiMetaService{}
+	meta := &moveWikiMetaService{pages: wiki.pages}
 	svc.wikiService = meta
 	pending.err = errors.New("enqueue unavailable")
 	err := svc.moveOneKnowledge(

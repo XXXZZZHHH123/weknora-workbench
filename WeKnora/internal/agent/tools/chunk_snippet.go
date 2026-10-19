@@ -323,6 +323,9 @@ func chunkDataMap(seq int, c *types.Chunk) map[string]interface{} {
 		"end_at":          c.EndAt,
 		"parent_chunk_id": c.ParentChunkID,
 	}
+	if len(c.SourceLocators) > 0 {
+		chunkData["source_locators"] = c.SourceLocators
+	}
 	appendFAQChunkData(chunkData, c)
 	normalizeFAQChunkDataMap(chunkData, c)
 	if images := chunkImageList(c.ImageInfo); len(images) > 0 {

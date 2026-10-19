@@ -39,6 +39,30 @@ func TestStructuredNumbersTreatShortCalendarDatesAsDates(t *testing.T) {
 	require.Equal(t, []string{"27"}, ungroundedStructuredNumbers("共27条，最高17,790。", messages))
 }
 
+func TestStructuredNumbersValidateFullCalendarDatesWithoutMaskingDecimalsOrVersions(t *testing.T) {
+	messages := []chat.Message{{Role: "tool", Content: `{"kind":"structured_analysis","rows":[[54.96,58.32]]}`}}
+	require.Empty(t, ungroundedStructuredNumbers("日期2024.3.31；数值54.96和58.32。", messages))
+	require.Empty(t, ungroundedStructuredNumbers("日期2024-3-31；数值54.96和58.32。", messages))
+	require.Empty(t, ungroundedStructuredNumbers("日期2024/3/31；数值54.96和58.32。", messages))
+	require.Empty(t, ungroundedStructuredNumbers("日期2024年3月31日；数值54.96和58.32。", messages))
+	require.Contains(t, ungroundedStructuredNumbers("数值54.97。", messages), "54.97", "ordinary decimal values remain checked")
+}
+
+func TestStructuredNumbersDoNotPartiallyMaskInvalidDatesOrVersionTokens(t *testing.T) {
+	messages := []chat.Message{{Role: "tool", Content: `{"kind":"structured_analysis","rows":[[54.96]]}`}}
+	for _, candidate := range []string{
+		"日期2023-2-29。", // valid month/day, but invalid in this year
+		"日期2023年2月29日。",
+		"日期2024.2.30。",
+		"版本v2024.3.31。",
+		"版本2024.3.31.2。",
+	} {
+		t.Run(candidate, func(t *testing.T) {
+			require.NotEmpty(t, ungroundedStructuredNumbers(candidate, messages), "invalid dates and version-shaped values must remain subject to numeric checking")
+		})
+	}
+}
+
 func TestStructuredEvidenceRequiresAnExecutedResultNotAClarificationOrError(t *testing.T) {
 	require.False(t, structuredResultHasEvidence(`{"kind":"structured_analysis","status":"error","error":"invalid SQL"}`))
 	require.False(t, structuredResultHasEvidence(`{"kind":"structured_field_resolution","status":"needs_clarification","fields":[]}`))
@@ -298,4 +322,11 @@ func TestDurableDocumentTitleSurvivesCompactedToolMessages(t *testing.T) {
 	}
 	step.ToolCalls[0].Result.Success = false
 	require.Contains(t, ungroundedStructuredNumbers("来源棉花周报20240310(2).pptx。", messages, []types.AgentStep{step}), "20240310")
+}
+
+func TestCalendarDateMaskPreservesInvalidAndVersionLiteralsExactly(t *testing.T) {
+	for _, value := range []string{"2024.2.30", "2023年2月29日", "2024-2/29", "v2024.3.31", "2024.3.31.2", "2024-3-31-2", "2024-13", "13月40日", "54.96", "\x010\x02"} {
+		require.Equal(t, value, maskValidatedCalendarDates(value))
+	}
+	require.Equal(t, strings.Repeat(" ", len("2024.3.31 2/3")), maskValidatedCalendarDates("2024.3.31 2/3"))
 }

@@ -4033,6 +4033,7 @@ export default {
     referenceSourceLocating: '인용 위치를 찾는 중…',
     referenceSourceExact: "원문 구절을 정확히 찾았습니다",
     referenceSourcePartial: "확인된 원문을 강조했습니다. 인용 일부는 아직 일치하지 않습니다",
+    referenceSourceParentContext: '검증된 상위 문단이 있는 {page}페이지를 열었습니다. 인용 문구 자체는 정확히 찾지 못했습니다',
     referenceSourceBlock: "원문 영역을 찾았습니다. 정확한 텍스트 일치는 확인되지 않았습니다",
     referenceSourceAmbiguous: "일치하는 구절이 여러 개여서 위치를 특정할 수 없습니다",
     referenceSourceStale: "원문 또는 내용이 변경되어 정확히 찾을 수 없습니다",

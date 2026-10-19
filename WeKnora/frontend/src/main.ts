@@ -7,6 +7,7 @@ import TDesign from "tdesign-vue-next";
 import "tdesign-vue-next/dist/tdesign.css";
 import "@/assets/theme/theme.css";
 import "@/assets/theme/cds-tokens.css";
+import "@/assets/theme/brand-font.css";
 import "@/assets/theme/cds-components.css";
 import "@/assets/theme/tdesign-overrides.less";
 import "@/assets/dropdown-menu.less";

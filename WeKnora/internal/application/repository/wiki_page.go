@@ -325,6 +325,27 @@ func (r *wikiPageRepository) UpdateMeta(ctx context.Context, page *types.WikiPag
 	return nil
 }
 
+// UpdateLinkMetadata changes only the denormalized graph columns. Keeping this
+// write separate prevents a link refresh based on an old page snapshot from
+// replacing provenance or the durable retraction marker.
+func (r *wikiPageRepository) UpdateLinkMetadata(ctx context.Context, page *types.WikiPage) error {
+	result := r.db.WithContext(ctx).
+		Model(page).
+		Where("id = ?", page.ID).
+		Updates(map[string]interface{}{
+			"in_links":   page.InLinks,
+			"out_links":  page.OutLinks,
+			"updated_at": page.UpdatedAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrWikiPageNotFound
+	}
+	return nil
+}
+
 // GetByID retrieves a wiki page by its unique ID
 func (r *wikiPageRepository) GetByID(ctx context.Context, id string) (*types.WikiPage, error) {
 	var page types.WikiPage
@@ -482,7 +503,7 @@ func (r *wikiPageRepository) ListByTypeLight(
 
 	var entries []types.WikiIndexEntry
 	if err := base.
-		Select("slug", "title", "summary", "parent_slug", "category_path", "wiki_path", "depth", "sort_order").
+		Select("slug", "title", "summary", "page_metadata", "parent_slug", "category_path", "wiki_path", "depth", "sort_order").
 		Order(r.wikiCategoryRankOrder()).
 		Order("wiki_path ASC").
 		Order("sort_order ASC").

@@ -3,6 +3,7 @@ package chatpipeline
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -21,13 +22,15 @@ const wikiBoostFactor = 1.3
 // This plugin runs in the CHUNK_RERANK phase, after initial retrieval and reranking.
 // It identifies chunks with ChunkType == "wiki_page" and multiplies their score.
 type PluginWikiBoost struct {
-	kbService interfaces.KnowledgeBaseService
+	kbService   interfaces.KnowledgeBaseService
+	wikiService interfaces.WikiPageService
 }
 
 // NewPluginWikiBoost creates and registers the wiki boost plugin
-func NewPluginWikiBoost(eventManager *EventManager, kbService interfaces.KnowledgeBaseService) *PluginWikiBoost {
+func NewPluginWikiBoost(eventManager *EventManager, kbService interfaces.KnowledgeBaseService, wikiService interfaces.WikiPageService) *PluginWikiBoost {
 	p := &PluginWikiBoost{
-		kbService: kbService,
+		kbService:   kbService,
+		wikiService: wikiService,
 	}
 	eventManager.Register(p)
 	return p
@@ -48,6 +51,17 @@ func (p *PluginWikiBoost) OnEvent(
 	// Run the normal reranking first
 	if err := next(); err != nil {
 		return err
+	}
+
+	// The legacy chat retriever can still surface a synchronized Wiki chunk
+	// directly, bypassing the Wiki tools. Strip marked or unresolvable Wiki
+	// chunks from every candidate slice before downstream context assembly.
+	var withheldSearch, withheldRerank, withheldMerge int
+	chatManage.SearchResult, withheldSearch = p.filterWikiChunks(ctx, chatManage.SearchResult, chatManage.SearchTargets)
+	chatManage.RerankResult, withheldRerank = p.filterWikiChunks(ctx, chatManage.RerankResult, chatManage.SearchTargets)
+	chatManage.MergeResult, withheldMerge = p.filterWikiChunks(ctx, chatManage.MergeResult, chatManage.SearchTargets)
+	if withheld := withheldSearch + withheldRerank + withheldMerge; withheld > 0 {
+		logger.Warnf(ctx, "WikiBoost: withheld %d retracted or unverified Wiki chunk candidates", withheld)
 	}
 
 	// Fast path: skip all work if there are no wiki_page chunks in the result set.
@@ -97,4 +111,48 @@ func (p *PluginWikiBoost) OnEvent(
 	}
 
 	return nil
+}
+
+func (p *PluginWikiBoost) filterWikiChunks(ctx context.Context, results []*types.SearchResult, targets types.SearchTargets) ([]*types.SearchResult, int) {
+	visible := make([]*types.SearchResult, 0, len(results))
+	withheld := 0
+	verifiedPages := make(map[string]bool)
+	for _, result := range results {
+		if result == nil {
+			continue
+		}
+		if result.ChunkType != string(types.ChunkTypeWikiPage) && !strings.HasPrefix(result.ID, "wp-") {
+			visible = append(visible, result)
+			continue
+		}
+		if p.wikiService == nil || !strings.HasPrefix(result.ID, "wp-") || len(result.ID) == len("wp-") {
+			withheld++
+			continue
+		}
+		pageID := strings.TrimPrefix(result.ID, "wp-")
+		cacheKey := pageID + "\x00" + result.KnowledgeBaseID
+		verified, checked := verifiedPages[cacheKey]
+		if !checked {
+			page, err := p.wikiService.GetPageByID(ctx, pageID)
+			state := types.ReadWikiRetractionState(page)
+			expectedTenant := uint64(0)
+			for _, target := range targets {
+				if target != nil && target.KnowledgeBaseID == result.KnowledgeBaseID {
+					expectedTenant = target.TenantID
+					break
+				}
+			}
+			verified = err == nil && page != nil && page.ID == pageID &&
+				page.KnowledgeBaseID == result.KnowledgeBaseID &&
+				(expectedTenant == 0 || page.TenantID == expectedTenant) &&
+				len(state.PendingSourceIDs) == 0 && len(state.FailedSourceIDs) == 0
+			verifiedPages[cacheKey] = verified
+		}
+		if !verified {
+			withheld++
+			continue
+		}
+		visible = append(visible, result)
+	}
+	return visible, withheld
 }

@@ -4,9 +4,11 @@ import assert from 'node:assert/strict'
 import {
   findInText,
   findNormalized,
+  hasVerifiedParentChunkContext,
   locatorPages,
   normalizeForMatch,
   parseSourceLocators,
+  resolveParentContextSlideLocator,
   selectLocatorsForSentence,
   selectQuoteForSentence,
   textFragmentUrl,
@@ -61,6 +63,66 @@ test('parseSourceLocators and locatorPages', () => {
   assert.equal(locs.length, 3)
   assert.deepEqual(locatorPages(locs), [3, 1])
   assert.deepEqual(parseSourceLocators('nope'), [])
+})
+
+test('parent context accepts matching MD5 and SHA-256 fingerprints and drops parent quote text', () => {
+  const child = {
+    id: 'child-1', knowledge_id: 'knowledge-1', chunk_type: 'text', content_revision: 0,
+    parent_chunk_id: 'parent-1', content: 'A marine field bulletin reports an unusual current shift near the eastern marker.',
+  }
+  for (const sourceHash of ['a'.repeat(32), 'b'.repeat(64)]) {
+    const parent = {
+      id: 'parent-1', knowledge_id: 'knowledge-1', chunk_type: 'parent_text', content_revision: 0,
+      parent_chunk_id: '', content: `Overview. ${child.content} Additional observation notes.`,
+      source_locators: [{ type: 'slide', mapping: 'exact', partial: true, slide: 3, quote: 'Parent-only mapped heading', source_hash: sourceHash }],
+    }
+
+    assert.equal(hasVerifiedParentChunkContext(child, parent, 'child-1', 'knowledge-1', sourceHash), true)
+    assert.deepEqual(resolveParentContextSlideLocator(child, parent, 'child-1', 'knowledge-1', sourceHash), [{
+      type: 'slide', mapping: 'exact', partial: true, slide: 3, source_hash: sourceHash,
+    }])
+  }
+})
+
+test('parent context rejects mismatched identity, edits, hash, incomplete chain and non-unique child text', () => {
+  const sourceHash = 'b'.repeat(64)
+  const child = {
+    id: 'child-1', knowledge_id: 'knowledge-1', chunk_type: 'text', content_revision: 0,
+    parent_chunk_id: 'parent-1', content: 'A coastal station recorded a sudden current change near the eastern marker.',
+  }
+  const parent = {
+    id: 'parent-1', knowledge_id: 'knowledge-1', chunk_type: 'parent_text', content_revision: 0,
+    parent_chunk_id: '', content: `Intro. ${child.content} Conclusion.`,
+    source_locators: [{ type: 'slide', mapping: 'exact', partial: true, slide: 4, quote: 'Mapped parent heading', source_hash: sourceHash }],
+  }
+  const valid = (c = child, p = parent, hash = sourceHash) => hasVerifiedParentChunkContext(c, p, 'child-1', 'knowledge-1', hash)
+
+  assert.equal(valid({ ...child, id: 'other-child' }), false)
+  assert.equal(valid({ ...child, knowledge_id: 'other-knowledge' }), false)
+  assert.equal(valid({ ...child, content_revision: 1 }), false)
+  assert.equal(valid(child, { ...parent, id: 'other-parent' }), false)
+  assert.equal(valid(child, { ...parent, knowledge_id: 'other-knowledge' }), false)
+  assert.equal(valid(child, { ...parent, content_revision: 1 }), false)
+  assert.equal(valid(child, { ...parent, parent_chunk_id: 'grandparent-1' }), false)
+  assert.equal(valid(child, { ...parent, content: `${parent.content} ${child.content}` }), false)
+  assert.equal(valid(child, parent, ''), false)
+  assert.equal(valid(child, parent, 'g'.repeat(32)), false)
+  assert.equal(valid(child, parent, 'a'.repeat(31)), false)
+  assert.equal(resolveParentContextSlideLocator(child, parent, 'child-1', 'knowledge-1', '').length, 0)
+  assert.equal(resolveParentContextSlideLocator(child, { ...parent, source_locators: [{
+    ...parent.source_locators[0], source_hash: undefined,
+  }] }, 'child-1', 'knowledge-1', sourceHash).length, 0, 'missing locator fingerprints are rejected')
+  assert.equal(resolveParentContextSlideLocator(child, { ...parent, source_locators: [{
+    ...parent.source_locators[0], source_hash: 'b'.repeat(32),
+  }] }, 'child-1', 'knowledge-1', sourceHash).length, 0, 'mixed fingerprint lengths are rejected')
+  assert.equal(resolveParentContextSlideLocator(child, { ...parent, source_locators: [{
+    ...parent.source_locators[0], source_hash: 'g'.repeat(64),
+  }] }, 'child-1', 'knowledge-1', sourceHash).length, 0, 'non-hex fingerprints are rejected')
+  assert.equal(resolveParentContextSlideLocator(child, { ...parent, source_locators: [{ ...parent.source_locators[0], source_hash: 'c'.repeat(64) }] }, 'child-1', 'knowledge-1', sourceHash).length, 0)
+  assert.equal(resolveParentContextSlideLocator(child, { ...parent, source_locators: [{ ...parent.source_locators[0], mapping: 'approximate' }] }, 'child-1', 'knowledge-1', sourceHash).length, 0)
+  assert.equal(resolveParentContextSlideLocator(child, { ...parent, source_locators: [
+    parent.source_locators[0], { ...parent.source_locators[0], slide: 5 },
+  ] }, 'child-1', 'knowledge-1', sourceHash).length, 0)
 })
 
 test('textFragmentUrl builds a scroll-to-text link', () => {

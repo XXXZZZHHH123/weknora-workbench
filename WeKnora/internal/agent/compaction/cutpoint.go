@@ -35,7 +35,7 @@ func isCutPointMessage(msg *chat.Message) bool {
 // summaries count: they stand in for everything before them, so the turn they
 // begin is complete on its own.
 func isTurnStartMessage(msg *chat.Message) bool {
-	return msg.Role == "user"
+	return msg.Role == "user" && msg.Kind != chat.MessageKindReviewEvidence
 }
 
 // historyStart is the first index compaction may touch. The system prompt is

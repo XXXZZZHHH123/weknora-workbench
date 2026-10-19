@@ -4035,6 +4035,7 @@ export default {
     referenceSourceLocating: '正在定位引用位置…',
     referenceSourceExact: "已精确定位原文片段",
     referenceSourcePartial: "已高亮核验通过的原文片段，部分引用内容尚未匹配",
+    referenceSourceParentContext: '已打开同源父段落所在第 {page} 页，引用文字尚未精确定位',
     referenceSourceBlock: "已定位到来源区域，尚未精确匹配文字",
     referenceSourceAmbiguous: "原文有多处相同内容，无法唯一定位",
     referenceSourceStale: "原文或内容已更新，当前引用无法精确定位",

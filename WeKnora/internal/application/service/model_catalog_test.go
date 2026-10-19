@@ -22,7 +22,7 @@ func catalogFixture(t *testing.T) (*ModelCatalogService, *repository.ModelCatalo
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "catalog.db")), &gorm.Config{})
 	require.NoError(t, err)
-	ddl, err := os.ReadFile("../../../migrations/sqlite/000031_model_catalog_config.up.sql")
+	ddl, err := os.ReadFile("../../../migrations/sqlite/000037_model_catalog_config.up.sql")
 	require.NoError(t, err)
 	require.NoError(t, db.Exec(string(ddl)).Error)
 	sqlDB, err := db.DB()

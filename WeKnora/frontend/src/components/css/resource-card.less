@@ -47,6 +47,7 @@
     flex: 1;
     min-width: 0;
     color: var(--td-text-color-primary);
+    font-family: var(--cds-font-display);
     font-size: var(--app-text-base);
     font-weight: 600;
     line-height: 20px;
@@ -191,12 +192,19 @@
 }
 .resource-list-header() {
   .header {
-    margin-bottom: 24px;
+    margin-bottom: 16px;
     padding-right: 0;
     flex-shrink: 0;
     .header-title { width: 100%; gap: 4px; }
     .title-row { flex-wrap: wrap; gap: 12px; }
-    h2 { margin-right: auto; font-size: var(--app-text-4xl); letter-spacing: -.025em; }
+    .header-title h2 {
+      margin-right: auto;
+      font-family: var(--cds-font-display);
+      font-size: var(--app-page-title-size);
+      font-weight: var(--app-page-title-weight);
+      line-height: var(--app-page-title-line-height);
+      letter-spacing: .04em;
+    }
     .header-subtitle { color: var(--td-text-color-secondary); font-size: var(--app-text-base); line-height: 1.7; }
     .header-action-btn {
       width: auto;

@@ -56,7 +56,7 @@ func TestDeleteWikiRemovesEveryChunkType(t *testing.T) {
 		ChunkRefs:  refs,
 	}
 	wiki := &moveWikiPageRepo{pages: []*types.WikiPage{page}}
-	meta := &moveWikiMetaService{}
+	meta := &moveWikiMetaService{pages: wiki.pages}
 	f.svc.wikiRepo = wiki
 	f.svc.wikiService = meta
 	f.svc.taskPendingRepo = &moveWikiPendingRepo{}

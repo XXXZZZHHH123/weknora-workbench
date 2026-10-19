@@ -34,6 +34,12 @@ func sourceConsistencyVerdict(text string) mockResponse {
 	return mockResponse{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: text, Done: true, FinishReason: "stop"}}}
 }
 
+// sourceAcceptedVerdict explicitly opts a flow fixture into the accepted
+// source-review protocol. Bare complete=true responses remain unmodified.
+func sourceAcceptedVerdict() mockResponse {
+	return mockResponse{acceptSourceReview: true}
+}
+
 func TestSourceConsistencyRequiresInternalWorkbenchModeAndActualCurrentEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name                        string
@@ -77,7 +83,8 @@ func TestSourceConsistencyUsesCompleteRequestAndRealSourceTierInExistingCall(t *
 	require.True(t, repair)
 	require.Len(t, m.calls, 1, "the existing completeness call also performs source consistency")
 	require.Equal(t, 90, state.TurnUsage.TotalTokens)
-	require.Equal(t, 512, m.opts[0].MaxCompletionTokens)
+	require.GreaterOrEqual(t, m.opts[0].MaxCompletionTokens, 2048)
+	require.LessOrEqual(t, m.opts[0].MaxCompletionTokens, 6144)
 	require.Equal(t, chat.ReasoningEffort("minimal"), m.opts[0].ReasoningEffort)
 	require.Equal(t, "none", m.opts[0].ToolChoice)
 	require.Empty(t, m.opts[0].Tools)
@@ -90,7 +97,7 @@ func TestSourceConsistencyUsesCompleteRequestAndRealSourceTierInExistingCall(t *
 	require.Contains(t, m.calls[0][1].Content, "覆盖面积")
 	require.Contains(t, m.calls[0][0].Content, "metric identity")
 	require.Contains(t, m.calls[0][0].Content, "OCR mapping/layout")
-	require.Contains(t, m.calls[0][0].Content, "Unsupported or unrequested")
+	require.Contains(t, m.calls[0][0].Content, "Unsupported extra conclusions require repair")
 	evidence, scope := e.sourceConsistencyEvidence(state, nil)
 	require.True(t, scope.ViewComplete)
 	access := evidence[0].Content.(map[string]any)["runtime_source_access"].(map[string]any)
@@ -155,16 +162,23 @@ func TestSourceConsistencyEvidenceIsBoundedAndReportsOmissions(t *testing.T) {
 	require.True(t, hasCurrentDocumentEvidence(state.RoundSteps), "projection never mutates durable source facts")
 }
 
-func TestSourceConsistencyVerdictKeepsLegacyContractAndRejectsMalformedProtocol(t *testing.T) {
+func TestSourceConsistencyVerdictRequiresReceiptAndRejectsMalformedProtocol(t *testing.T) {
 	for _, text := range []string{`{"complete":true}`, `{"complete":true,"feedback":""}`} {
 		m := &mockChat{responses: []mockResponse{sourceConsistencyVerdict(text)}}
 		e := sourceConsistencyEngine(t, m)
 		e.answerReviewFeedback = "obsolete feedback"
-		repair, err := e.answerNeedsRepair(t.Context(), "Explain the source indicator.", "该指标的名称和单位均按原文保留。", "", sourceConsistencyState())
-		require.NoError(t, err)
-		require.False(t, repair)
+		repair, err := e.evaluateAnswerCompletenessOnce(t.Context(), "Explain the source indicator.", "该指标的名称和单位均按原文保留。", sourceConsistencyState(), 0)
+		require.Error(t, err, "a bare acceptance cannot bypass the source audit receipt")
+		require.True(t, repair)
 		require.Empty(t, e.answerReviewFeedback)
+		require.Len(t, m.calls, 1)
 	}
+	m := &mockChat{responses: []mockResponse{sourceAcceptedVerdict()}}
+	e := sourceConsistencyEngine(t, m)
+	repair, err := e.answerNeedsRepair(t.Context(), "Explain the source indicator.", "该指标的名称和单位均按原文保留。", "", sourceConsistencyState())
+	require.NoError(t, err)
+	require.False(t, repair)
+	require.Len(t, m.calls, 1)
 	for _, text := range []string{`{}`, `{"complete":"true"}`, `{"complete":false,"feedback":3}`, `{"complete":true,"other":false}`, `{"complete":true} trailing`, `{"complete":false,"complete":true}`, `{"complete":true,"feedback":null}`} {
 		e := sourceConsistencyEngine(t, &mockChat{responses: []mockResponse{sourceConsistencyVerdict(text)}})
 		e.answerReviewFeedback = "obsolete feedback"
@@ -173,8 +187,8 @@ func TestSourceConsistencyVerdictKeepsLegacyContractAndRejectsMalformedProtocol(
 		require.True(t, repair)
 		require.Empty(t, e.answerReviewFeedback)
 	}
-	e := newTestEngine(t, &mockChat{responses: []mockResponse{sourceConsistencyVerdict(`{"complete":true,"feedback":"unexpected"}`)}})
-	repair, err := e.answerNeedsRepair(t.Context(), "Return one symbol.", "?", "", &types.AgentState{})
+	e = newTestEngine(t, &mockChat{responses: []mockResponse{sourceConsistencyVerdict(`{"complete":true,"feedback":"unexpected"}`)}})
+	repair, err = e.answerNeedsRepair(t.Context(), "Return one symbol.", "?", "", &types.AgentState{})
 	require.Error(t, err, "non-workbench completeness still has the complete-only strict contract")
 	require.True(t, repair)
 }
@@ -184,7 +198,7 @@ func TestFinalSynthesisRepairsSemanticSourceMismatchWithoutLeakingDraft(t *testi
 		sourceConsistencyVerdict("该指标代表产量，而且原图排版有冲突。"),
 		sourceConsistencyVerdict(`{"complete":false,"feedback":"保留覆盖面积的原始含义；删去未经原图核对的冲突结论。"}`),
 		sourceConsistencyVerdict("该指标代表覆盖面积，单位为公顷。"),
-		sourceConsistencyVerdict(`{"complete":true}`),
+		sourceAcceptedVerdict(),
 	}}
 	e := sourceConsistencyEngine(t, m)
 	recorder := &terminalAnswerRecorder{}
@@ -225,7 +239,7 @@ func TestSourceConsistencyNormalLoopRepairIncludesAdviceAndKeepsDraftPrivate(t *
 		sourceConsistencyVerdict(`{"answer":"该指标代表产量，原图排版冲突。"}`),
 		sourceConsistencyVerdict(`{"complete":false,"feedback":"按已读取正文保留面积含义；不要将OCR提取问题断言为原图冲突。"}`),
 		sourceConsistencyVerdict(`{"answer":"该指标代表覆盖面积，单位为公顷。"}`),
-		sourceConsistencyVerdict(`{"complete":true}`),
+		sourceAcceptedVerdict(),
 	}}
 	e := sourceConsistencyEngine(t, m)
 	recorder := &terminalAnswerRecorder{}
@@ -265,6 +279,51 @@ func TestSourceConsistencyFailureKeepsExistingBoundedRepairBudget(t *testing.T) 
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
 	require.Equal(t, incompleteAnswerFallback, visible)
+}
+
+func TestSourceConsistencyRepairsMisinterpretedExecutedCalculation(t *testing.T) {
+	const quote = "当前延迟42毫秒，较上期减少3毫秒。"
+	const citation = `<kb doc="latency.md" chunk_id="source-latency" kb_id="authorized-kb" />`
+	const candidate = "当前延迟42毫秒，较上期减少3毫秒；上期延迟39毫秒。" + citation
+	const corrected = quote + citation
+	model := &mockChat{responses: []mockResponse{
+		sourceConsistencyVerdict(candidate),
+		sourceConsistencyVerdict(`{"answer":` + strconv.Quote(candidate) + `}`),
+		// A contradictory accept-with-repair response must not release the
+		// candidate merely because its arithmetic values are genuine.
+		sourceConsistencyVerdict(`{"complete":true,"feedback":"计算表达式没有支持所声称的基期关系，且用户未要求该派生值；删去附加推算，保留原文披露。"}`),
+		sourceConsistencyVerdict(`{"complete":false,"feedback":"计算表达式没有支持所声称的基期关系，且用户未要求该派生值；删去附加推算，保留原文披露。"}`),
+		sourceConsistencyVerdict(`{"answer":` + strconv.Quote(corrected) + `}`),
+		sourceAcceptedVerdict(),
+	}}
+	e := sourceConsistencyEngine(t, model)
+	recorder := &terminalAnswerRecorder{}
+	recorder.attach(e.eventBus)
+	document := documentNumbersStep("read_document", true, "chunks", []map[string]any{{
+		"chunk_id": "source-latency", "knowledge_id": "authorized-doc", "content": quote,
+	}})
+	calculation := `{"kind":"source_calculation","status":"ok","calculations":[{"expression":"a - b","value":"39","unit":"毫秒","unit_status":"known","inputs":{"a":{"value":"42","unit":"毫秒","chunk_id":"source-latency","quote":"当前延迟42毫秒，较上期减少3毫秒。"},"b":{"value":"3","unit":"毫秒","chunk_id":"source-latency","quote":"当前延迟42毫秒，较上期减少3毫秒。"}}}]}`
+	state := &types.AgentState{RoundSteps: []types.AgentStep{document, {ToolCalls: []types.ToolCall{{
+		ID: "executed-calculation", Name: "calculate_source_values", Result: &types.ToolResult{Success: true, Output: calculation},
+	}}}}}
+	// The number is a real executor result; numeric membership alone cannot
+	// establish that the formula answers the requested business relationship.
+	require.Empty(t, ungroundedStructuredNumbers(candidate, answerNumericEvidence(candidate, state.RoundSteps), state.RoundSteps))
+	_, err := e.executeLoop(t.Context(), state, "只转述当前延迟和来源披露的变化。", emptyMessages(), nil, "session", "message")
+	require.NoError(t, err)
+	require.True(t, state.IsComplete)
+	require.Contains(t, state.FinalAnswer, quote)
+	require.NotContains(t, state.FinalAnswer, "39")
+	require.Len(t, model.calls, 6)
+	// The semantic reviewer sees both the actual expression and the source
+	// relationship. Its rejection must reach repair before terminal delivery.
+	require.Contains(t, model.calls[2][1].Content, "a - b")
+	require.Contains(t, model.calls[2][1].Content, quote)
+	require.Equal(t, model.calls[2][1].Content, model.calls[3][1].Content, "protocol retry keeps the same candidate and evidence")
+	require.Contains(t, model.calls[4][len(model.calls[4])-1].Content, "删去附加推算")
+	done, visible := recorder.snapshot()
+	require.Equal(t, 1, done)
+	require.NotContains(t, visible, "39")
 }
 
 func TestSourceConsistencyNormalLoopFailureDoesNotReauditRuntimeFallback(t *testing.T) {

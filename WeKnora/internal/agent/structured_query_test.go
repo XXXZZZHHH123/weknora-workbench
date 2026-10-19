@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
@@ -49,12 +50,20 @@ func TestDocumentAnswerAfterHistoricalTableDoesNotInheritTableNumericReview(t *t
 	require.Contains(t, state.FinalAnswer, "原件蓝桥 8427")
 	require.Contains(t, state.FinalAnswer, `chunk_id="chunk-phrase"`)
 	require.Len(t, model.calls, 3, "the current document gets semantic review without inheriting table numeric repair")
-	require.Len(t, model.calls[2], 2)
-	require.Contains(t, model.calls[2][0].Content, "独立复核上下文")
+	_, reviewMessages, reviewUser, reviewInput := uniqueJSONUserInput(t, model.calls, "unverified_draft")
+	var reviewSystem strings.Builder
+	for _, message := range reviewMessages {
+		if message.Role == "system" {
+			reviewSystem.WriteString(message.Content)
+			reviewSystem.WriteByte('\n')
+		}
+	}
+	require.Contains(t, reviewSystem.String(), "独立复核上下文")
+	require.Contains(t, reviewUser.Content, "原件蓝桥 8427")
 	var review struct {
 		Unmatched []string `json:"runtime_unmatched_numbers"`
 	}
-	require.NoError(t, json.Unmarshal([]byte(model.calls[2][1].Content), &review))
+	require.NoError(t, json.Unmarshal(reviewInput["runtime_unmatched_numbers"], &review.Unmatched))
 	require.NotContains(t, review.Unmatched, "8427", "the fetched document body remains provenance independently of the historical table")
 	require.True(t, hasCurrentDocumentEvidence(state.RoundSteps))
 	require.False(t, hasStructuredEvidence(state.RoundSteps))
@@ -127,11 +136,20 @@ func TestStructuredAgentCanExplainExistingEvidenceWithoutAQuery(t *testing.T) {
 	require.True(t, state.IsComplete)
 	require.Equal(t, "实际使用2020-01-31至2023-10-31的记录。", state.FinalAnswer)
 	require.Len(t, model.calls, 2)
-	require.Len(t, model.calls[1], 2)
-	require.Contains(t, model.calls[1][0].Content, "独立复核上下文")
-	require.NotNil(t, model.opts[1].Thinking)
-	require.False(t, *model.opts[1].Thinking)
-	require.Zero(t, model.opts[1].ThinkingBudgetTokens)
+	reviewCall, reviewMessages, reviewUser, reviewInput := uniqueJSONUserInput(t, model.calls, "unverified_draft")
+	var reviewSystem strings.Builder
+	for _, message := range reviewMessages {
+		if message.Role == "system" {
+			reviewSystem.WriteString(message.Content)
+			reviewSystem.WriteByte('\n')
+		}
+	}
+	require.Contains(t, reviewSystem.String(), "独立复核上下文")
+	require.Contains(t, reviewUser.Content, "unverified_draft")
+	require.NotEmpty(t, reviewInput["unverified_draft"])
+	require.NotNil(t, model.opts[reviewCall].Thinking)
+	require.False(t, *model.opts[reviewCall].Thinking)
+	require.Zero(t, model.opts[reviewCall].ThinkingBudgetTokens)
 	for _, step := range state.RoundSteps {
 		require.Empty(t, step.ToolCalls)
 	}

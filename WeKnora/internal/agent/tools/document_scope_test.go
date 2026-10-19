@@ -82,6 +82,49 @@ func TestReadDocumentPageContinuesAcrossChunks(t *testing.T) {
 	require.NotContains(t, res.Output, "下一页")
 }
 
+func TestReadDocumentPageDoesNotReturnTrailingBoundaryMarkerAsContent(t *testing.T) {
+	tool, repo := newReadDocumentFixture(3)
+	repo.ordered[0].Content = "<!-- Slide number: 3 -->\nPrevious page text.\n<!-- Slide number: 4 -->"
+	repo.ordered[1].Content = "Requested page text."
+	repo.ordered[2].Content = "<!-- Slide number: 5 -->\nNext page text."
+	repo.ordered[0].SourceLocators = types.SourceLocators{{Type: types.SourceLocatorSlide, Slide: 3, Mapping: "exact", Partial: true, Quote: "Previous page text."}}
+	repo.ordered[1].SourceLocators = types.SourceLocators{{Type: types.SourceLocatorSlide, Slide: 4, Mapping: "exact", Quote: "Requested page text."}}
+	repo.ordered[2].SourceLocators = types.SourceLocators{{Type: types.SourceLocatorSlide, Slide: 5, Mapping: "exact", Quote: "Next page text."}}
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"id":"doc-1","page":4,"limit":20}`))
+	require.NoError(t, err)
+	require.True(t, res.Success, res.Error)
+	require.Equal(t, []string{"chunk-1"}, chunkIDsFromData(t, res.Data))
+	require.Equal(t, 1, res.Data["page_chunks"])
+	require.Equal(t, true, res.Data["page_complete"])
+	require.NotContains(t, res.Output, "Slide number: 4")
+	require.NotContains(t, res.Output, "Previous page text.")
+	require.NotContains(t, res.Output, "Next page text.")
+	require.Contains(t, res.Output, "Requested page text.")
+
+	row := res.Data["chunks"].([]map[string]interface{})[0]
+	require.Equal(t, "chunk-1", row["chunk_id"])
+	require.Equal(t, 4, row["page"])
+	require.Equal(t, 4, row["source_locators"].(types.SourceLocators)[0].Slide)
+}
+
+func TestReadDocumentPageRetainsMarkdownHeadingTitle(t *testing.T) {
+	tool, repo := newReadDocumentFixture(3)
+	repo.ordered[0].Content = "<!-- Slide number: 1 -->\nEarlier page."
+	repo.ordered[1].Content = "# Page 2 Actual source title\nPage body."
+	repo.ordered[2].Content = "<!-- Slide number: 3 -->\nLater page."
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"id":"doc-1","page":2,"limit":20}`))
+	require.NoError(t, err)
+	require.True(t, res.Success, res.Error)
+	require.Equal(t, []string{"chunk-1"}, chunkIDsFromData(t, res.Data))
+	require.Contains(t, res.Output, "# Page 2 Actual source title")
+	require.Contains(t, res.Output, "Page body.")
+	require.NotContains(t, res.Output, "Earlier page.")
+	require.NotContains(t, res.Output, "Later page.")
+	require.Equal(t, true, res.Data["page_complete"])
+}
+
 func TestReadDocumentPageBudgetCanContinueToLateChartTableAndImage(t *testing.T) {
 	tool, repo := newReadDocumentFixture(4)
 	repo.ordered[0].Content = "<!-- Slide number: 11 -->\n上一页。"

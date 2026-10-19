@@ -57,6 +57,8 @@ func workbenchDefaultAgent(original *types.CustomAgent, tenantID uint64) *types.
 	// Keep the administrator's skill/sandbox selection for every entry. The
 	// workbench uses a tool loop even when the visible entry is quick answer.
 	quick := original == nil || original.ID == types.BuiltinQuickAnswerID
+	workbenchBuiltin := original == nil || (original.IsBuiltin &&
+		(original.ID == types.BuiltinQuickAnswerID || original.ID == types.BuiltinSmartReasoningID))
 	if quick {
 		result.Config.AllowedTools = nil
 	} else if len(result.Config.AllowedTools) == 0 {
@@ -64,6 +66,14 @@ func workbenchDefaultAgent(original *types.CustomAgent, tenantID uint64) *types.
 	}
 	for _, name := range []string{tools.ToolSearchKnowledge, tools.ToolReadDocument, tools.ToolListDocuments} {
 		result.Config.AllowedTools = appendWorkbenchTool(result.Config.AllowedTools, name)
+	}
+	if workbenchBuiltin {
+		// The Workbench's built-in entries can answer from a wiki-enabled KB
+		// using the existing read-only wiki surface. Runtime registration still
+		// filters these tools by CapWiki and the resolved knowledge scope.
+		for _, name := range []string{tools.ToolWikiSearch, tools.ToolWikiReadPage} {
+			result.Config.AllowedTools = appendWorkbenchTool(result.Config.AllowedTools, name)
+		}
 	}
 	if strings.TrimSpace(os.Getenv("COMMODITY_RESEARCH_URL")) != "" {
 		result.Config.AllowedTools = appendWorkbenchTool(result.Config.AllowedTools, tools.ToolCommodityResearch)

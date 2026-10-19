@@ -1,37 +1,28 @@
 <template>
   <div class="user-menu" :class="{ 'user-menu--collapsed': uiStore.sidebarCollapsed }" ref="menuRef">
     <!-- 用户按钮 -->
-    <div class="user-button" data-guide="user-menu" @click="toggleMenu">
-      <div class="user-avatar">
+    <button type="button" class="user-button" data-guide="user-menu"
+      :aria-expanded="menuVisible" aria-controls="user-menu-dropdown"
+      :aria-label="[userName, activeTenantName].filter(Boolean).join(' · ') || $t('common.defaultUser')"
+      @click="toggleMenu">
+      <span class="user-avatar">
         <img v-if="userAvatar" :src="userAvatar" :alt="$t('common.avatar')" />
         <span v-else class="avatar-placeholder">{{ userInitial }}</span>
-      </div>
+      </span>
       <template v-if="!uiStore.sidebarCollapsed">
-        <div class="user-info">
-          <!-- 多空间 / superuser：首行空间名，次行 username · 角色。单空间：昵称 + 邮箱。 -->
-          <template v-if="showTenantIdentityLine">
-            <div class="user-tenant-name" :title="activeTenantName">{{ activeTenantName }}</div>
-            <div class="user-tenant-meta">
-              <span v-if="userName && userName !== activeTenantName" class="user-tenant-meta-name">{{ userName }}</span>
-              <span v-if="(userName && userName !== activeTenantName) && currentRoleLabel"
-                class="user-tenant-meta-sep">·</span>
-              <t-icon v-if="currentRoleIcon" :name="currentRoleIcon" size="12px" class="user-tenant-meta-icon" />
-              <span v-if="currentRoleLabel" class="user-tenant-meta-role">{{ currentRoleLabel }}</span>
-            </div>
-          </template>
-          <template v-else>
-            <div class="user-name">{{ userName }}</div>
-            <div class="user-email">{{ userEmail }}</div>
-          </template>
-        </div>
+        <span class="user-info">
+          <span class="user-name" :title="showTenantIdentityLine && activeTenantName ? activeTenantName : userName">
+            {{ showTenantIdentityLine && activeTenantName ? activeTenantName : userName }}
+          </span>
+        </span>
         <t-icon :name="menuVisible ? 'chevron-up' : 'chevron-down'" class="dropdown-icon" />
       </template>
-    </div>
+    </button>
 
     <!-- 下拉菜单 -->
     <Transition name="dropdown">
-      <div v-if="menuVisible" class="user-dropdown" @click.stop>
-        <!-- 弹出菜单：账号（头像+昵称）／当前空间（名称+权限）；底部侧栏样式不改。 -->
+      <div v-if="menuVisible" id="user-menu-dropdown" class="user-dropdown" @click.stop>
+        <!-- 弹出菜单保留账号、邮箱、当前空间与权限。 -->
         <div v-if="userName" class="dropdown-user-header is-clickable" role="button" tabindex="0"
           @click="handleQuickNav('userprofile')" @keydown.enter.prevent="handleQuickNav('userprofile')"
           @keydown.space.prevent="handleQuickNav('userprofile')">
@@ -560,6 +551,8 @@ onUnmounted(() => {
 .user-menu {
   position: relative;
   width: 100%;
+  border-top: 1px solid var(--td-component-stroke);
+  padding-top: 8px;
 
   &--collapsed {
     .user-button {
@@ -569,7 +562,7 @@ onUnmounted(() => {
       margin: 0 auto;
       padding: 0;
       gap: 0;
-      border-radius: var(--app-radius-sm);
+      border-radius: 50%;
     }
 
     .user-dropdown {
@@ -585,33 +578,41 @@ onUnmounted(() => {
 .user-button {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 6px;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 7px 4px;
   border-radius: var(--app-radius-md);
+  border: 0;
   cursor: pointer;
-  transition: all var(--app-motion-base);
+  transition: background-color var(--app-motion-base), color var(--app-motion-base);
   background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+
+  &:focus-visible {
+    outline: 2px solid var(--td-brand-color);
+    outline-offset: 2px;
+  }
 
   &:hover {
     background: var(--td-bg-color-container-hover);
   }
-
-  &:active {
-    transform: scale(0.98);
-  }
 }
 
 .user-avatar {
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   overflow: hidden;
   flex-shrink: 0;
-  background: linear-gradient(135deg, var(--td-brand-color) 0%, var(--td-brand-color-active) 100%);
+  background: var(--td-bg-color-component);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: width var(--app-motion-base) ease, height var(--app-motion-base) ease;
+  transition: none;
 
   img {
     width: 100%;
@@ -620,9 +621,9 @@ onUnmounted(() => {
   }
 
   .avatar-placeholder {
-    color: var(--td-text-color-anti);
-    font-size: var(--app-text-sm);
-    font-weight: 600;
+    color: var(--td-text-color-primary);
+    font-size: var(--app-text-base);
+    font-weight: 500;
     line-height: 1;
   }
 }
@@ -631,26 +632,17 @@ onUnmounted(() => {
   flex: 1;
   min-width: 0;
   text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  justify-content: center;
+  display: block;
 
   .user-name {
+    display: block;
     font-size: var(--app-text-base);
     font-weight: 500;
     color: var(--td-text-color-primary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .user-email {
-    font-size: var(--app-text-sm);
-    color: var(--td-text-color-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.35;
   }
 
   .user-tenant-name {

@@ -241,6 +241,9 @@ func TestFormatOutputRowsCarryHandlesAndSnippets(t *testing.T) {
 	if row["chunk_id"] != "chunk-1" || row["knowledge_id"] != "doc-1" || row["chunk_index"] != 3 {
 		t.Fatalf("row identity = %+v", row)
 	}
+	if row["content_offset"] != 0 || row["content_offset_space"] != "chunk_unicode_runes" || row["content_complete"] != true {
+		t.Fatalf("search result must identify the complete indexed chunk span: %+v", row)
+	}
 	if snippet, _ := row["match_snippet"].(string); !strings.Contains(snippet, "psionic") {
 		t.Fatalf("snippet should surface the query term: %q", snippet)
 	}

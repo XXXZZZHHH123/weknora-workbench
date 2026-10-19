@@ -998,40 +998,11 @@ func (s *wikiIngestService) claimPendingList(ctx context.Context, kbID string, l
 // entity/concept slug; without this lock their GetPageBySlug→UpdatePage
 // cycles would race and lose one contribution.
 //
-// Redis mode only: in Lite mode a single process runs one batch per KB at a
-// time (liteLocks), so same-slug contention cannot occur and fn runs
-// directly. Returns (false, nil) if the lock could not be acquired within
-// wikiSlugLockWait — the caller then treats the slug like a best-effort
-// reduce miss (matching pre-existing reduce-failure handling). On a Redis
-// error we fail OPEN (run fn unlocked): a rare lost-update on a shared page
-// is tolerated by the finalize/dead-link passes, whereas silently dropping
-// the update is strictly worse.
-func (s *wikiIngestService) withSlugLock(ctx context.Context, kbID, slug string, fn func() error) (bool, error) {
-	if s.redisClient == nil {
-		return true, fn()
-	}
-	key := wikiSlugLockPrefix + kbID + ":" + slug
-	deadline := time.Now().Add(wikiSlugLockWait)
-	for {
-		ok, rerr := s.redisClient.SetNX(ctx, key, "1", wikiSlugLockTTL).Result()
-		if rerr != nil {
-			logger.Warnf(ctx, "wiki reduce: slug lock SetNX failed for %s: %v (running unlocked)", slug, rerr)
-			return true, fn()
-		}
-		if ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			return false, nil
-		}
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-time.After(wikiSlugLockPoll):
-		}
-	}
-	defer s.redisClient.Del(context.Background(), key)
-	return true, fn()
+// Redis leases are renewed and shared with source cleanup and page writes;
+// without Redis, a process-local lock provides the same callback contract.
+// A timeout or lease failure leaves the operation available for retry.
+func (s *wikiIngestService) withSlugLock(ctx context.Context, kbID, slug string, fn func(context.Context) error) (bool, error) {
+	return withWikiSlugLock(ctx, s.redisClient, kbID, slug, fn)
 }
 
 // wikiInflightReserveScript atomically enforces the per-KB in-flight cap.
@@ -1381,6 +1352,33 @@ func (s *wikiIngestService) requeueFailedOps(ctx context.Context, payload WikiIn
 			}); dlErr != nil {
 				logger.Warnf(ctx, "wiki ingest: failed to archive op %s to dead letters: %v", op.KnowledgeID, dlErr)
 				settleErrs = append(settleErrs, fmt.Errorf("archive dead letter id=%d: %w", op.dbID, dlErr))
+			}
+		}
+		if op.Op == WikiOpRetract {
+			for _, slug := range op.PageSlugs {
+				acquired, markerErr := withWikiSlugLock(ctx, s.redisClient, payload.KnowledgeBaseID, slug, func(lockCtx context.Context) error {
+					page, getErr := s.wikiService.GetPageBySlug(lockCtx, payload.KnowledgeBaseID, slug)
+					if errors.Is(getErr, apprepo.ErrWikiPageNotFound) {
+						return nil
+					}
+					if getErr != nil {
+						return getErr
+					}
+					if page == nil {
+						return fmt.Errorf("wiki retract: page %s lookup returned nil", slug)
+					}
+					if !types.FailPendingWikiRetractionSource(page, op.KnowledgeID) {
+						// A missing marker means the reviewed write already cleared
+						// this op, or this is a legacy task; do not mark a successful
+						// page failed merely because later settlement retried.
+						return nil
+					}
+					markerCtx := types.WithWikiRetractionMetadataMutation(lockCtx)
+					return s.wikiService.UpdatePageMeta(markerCtx, page)
+				})
+				if markerErr != nil || !acquired {
+					logger.Warnf(ctx, "wiki retract: could not persist failed evidence marker for %s: acquired=%t err=%v; existing pending marker remains fail-closed", slug, acquired, markerErr)
+				}
 			}
 		}
 		if err := s.pendingRepo.DeleteByIDs(ctx, []int64{op.dbID}); err != nil {
@@ -2671,8 +2669,10 @@ func (s *wikiIngestService) generateWithTemplate(ctx context.Context, chatModel 
 // reason. The stop reason used to be dropped on the floor, which is why a page
 // rewrite cut off at the completion budget was stored verbatim with no trace.
 type wikiTemplateResult struct {
-	Content      string
-	FinishReason string
+	Content       string
+	FinishReason  string
+	ToolCallCount int
+	Usage         types.TokenUsage
 }
 
 // errWikiPageRewriteTruncated is returned when the editor model stopped at the
@@ -2742,6 +2742,11 @@ func (s *wikiIngestService) generateWithTemplateResult(
 	}
 	thinking := false
 	opts := &chat.ChatOptions{Temperature: 0.3, Thinking: &thinking, MaxTokens: wikiLLMMaxTokens}
+	if promptTpl == agent.WikiPageRetractReviewPrompt {
+		// Keep the typed schema at the provider boundary as well as in the
+		// prompt. The strict application validator remains authoritative.
+		opts.Format = json.RawMessage(agent.WikiPageRetractReviewSchema)
+	}
 	prefixFingerprint := chat.PromptPrefixFingerprint(messages, opts)
 	warmupKey := ""
 	if promptTpl == agent.WikiPageModifyUserPrompt {
@@ -2821,9 +2826,11 @@ func (s *wikiIngestService) generateWithTemplateResult(
 		canContinue := promptTpl == agent.WikiPageModifyUserPrompt
 
 		var (
-			rewrite      strings.Builder
-			finishReason string
-			conversation = messages
+			rewrite       strings.Builder
+			finishReason  string
+			toolCallCount int
+			usage         types.TokenUsage
+			conversation  = messages
 		)
 		for round := 0; ; round++ {
 			response, callErr := call(conversation)
@@ -2831,6 +2838,8 @@ func (s *wikiIngestService) generateWithTemplateResult(
 				return wikiTemplateResult{}, callErr
 			}
 			finishReason = response.FinishReason
+			toolCallCount = len(response.ToolCalls)
+			usage.Accumulate(response.Usage)
 
 			// A continuation round that has nothing left to add ends the loop
 			// without appending its sentinel to the page.
@@ -2871,7 +2880,7 @@ func (s *wikiIngestService) generateWithTemplateResult(
 				errWikiPageRewriteTruncated, finishReason, wikiPageModifyMaxContinuations, len(content))
 		}
 
-		return wikiTemplateResult{Content: content, FinishReason: finishReason}, nil
+		return wikiTemplateResult{Content: content, FinishReason: finishReason, ToolCallCount: toolCallCount, Usage: usage}, nil
 	}
 
 	// Missing tenant context is unexpected for production Wiki work. Fail safe
@@ -2905,6 +2914,8 @@ func wikiPromptPurpose(promptTpl string) string {
 	switch promptTpl {
 	case agent.WikiPageModifyUserPrompt:
 		return "wiki_page_modify"
+	case agent.WikiPageRetractReviewPrompt:
+		return "wiki_page_retract_review"
 	case agent.WikiChunkCitationPrompt:
 		return "wiki_chunk_citation"
 	case agent.WikiCandidateSlugPrompt:

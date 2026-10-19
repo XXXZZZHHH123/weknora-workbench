@@ -950,7 +950,7 @@ onMounted(async () => {
 }
 
 .store-card__endpoint {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--app-font-family-mono);
   font-size: var(--app-text-xs);
   color: var(--td-text-color-placeholder);
   overflow: hidden;
@@ -1082,7 +1082,7 @@ onMounted(async () => {
 .readonly-value {
   color: var(--td-text-color-primary);
   font-size: var(--app-text-sm);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--app-font-family-mono);
   word-break: break-all;
 }
 

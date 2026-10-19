@@ -82,6 +82,9 @@ type MessageKind string
 // conversation history, so the role alone cannot identify it.
 const MessageKindCompactionSummary MessageKind = "compaction_summary"
 
+// MessageKindReviewEvidence carries runtime source excerpts, never human intent.
+const MessageKindReviewEvidence MessageKind = "review_evidence_handoff"
+
 // Message 表示聊天消息
 type Message struct {
 	Role         string               `json:"role"`                    // 角色：system, user, assistant, tool

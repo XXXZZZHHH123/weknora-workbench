@@ -110,6 +110,37 @@ class SheetViewTests(unittest.TestCase):
         self.assertEqual(style["fill"]["color"], {"rgb": "FFFFEEEE"})
         self.assertIs(style["alignment"]["wrap_text"], True)
 
+    def test_full_column_style_does_not_extend_used_dimension(self):
+        sheet = f'''<worksheet xmlns="{NS}"><dimension ref="A1:C4"/>
+          <cols><col min="1" max="16384" width="11.5"/></cols>
+          <sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>'''
+        fixture(self.path, sheet=sheet)
+
+        result = read_sheet_view(self.path, "待确认")
+        self.assertEqual(result["total_cols"], 3)
+        self.assertEqual(result["range"]["end_col"], 3)
+        self.assertFalse(result["has_more_cols"])
+        self.assertIsNone(result["next_col"])
+        self.assertEqual(result["column_widths"], {"1": 11.5, "2": 11.5, "3": 11.5})
+
+        next_window = read_sheet_view(self.path, "待确认", start_col=2, col_count=2)
+        self.assertEqual(next_window["column_widths"], {"2": 11.5, "3": 11.5})
+
+    def test_full_column_style_without_dimension_keeps_real_cell_and_merge_extent(self):
+        sheet = f'''<worksheet xmlns="{NS}">
+          <cols><col min="1" max="16384" width="9.25"/></cols>
+          <sheetData><row r="5"><c r="C5"><v>7</v></c></row></sheetData>
+          <mergeCells count="1"><mergeCell ref="D6:F6"/></mergeCells></worksheet>'''
+        fixture(self.path, sheet=sheet)
+
+        result = read_sheet_view(self.path, "待确认", start_row=5, start_col=3, row_count=2, col_count=4)
+        self.assertIsNone(result["dimension"])
+        self.assertEqual((result["total_rows"], result["total_cols"]), (6, 6))
+        self.assertEqual((result["range"]["end_row"], result["range"]["end_col"]), (6, 6))
+        self.assertFalse(result["has_more_cols"])
+        self.assertEqual(result["column_widths"], {"3": 9.25, "4": 9.25, "5": 9.25, "6": 9.25})
+        self.assertEqual(result["merges"], [{"start_row": 6, "end_row": 6, "start_col": 4, "end_col": 6}])
+
     def test_cross_window_merge_fetches_outside_anchor(self):
         result = read_sheet_view(self.path, "待确认", start_row=7, start_col=2, row_count=2, col_count=2)
         cells = {cell["cell"]: cell for cell in result["cells"]}

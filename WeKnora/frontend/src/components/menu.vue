@@ -1,23 +1,11 @@
 <template>
     <div class="aside_box" :class="{ 'aside_box--collapsed': uiStore.sidebarCollapsed, 'aside_box--resizing': uiStore.sidebarResizing }">
-        <!-- 展开时：Logo + 搜索/折叠按钮同行 -->
+        <!-- 品牌与折叠入口 -->
         <div class="logo_row" v-if="!uiStore.sidebarCollapsed">
             <button type="button" class="logo_box" @click="router.push('/platform/materials')" aria-label="中哲物产研究工作台，进入资料中心">
                 <BrandWordmark compact />
             </button>
             <div class="logo_actions">
-                <t-tooltip placement="bottom">
-                    <template #content>
-                        <span class="cmdk-tip">
-                            <span class="cmdk-tip-label">{{ t('menu.search') }}</span>
-                            <span class="cmdk-tip-keys">{{ cmdModKeyLabel }}K</span>
-                        </span>
-                    </template>
-                    <div class="header-icon-btn" role="button" tabindex="0" @keydown.enter.prevent="commandPaletteStore.openPalette('')" @keydown.space.prevent="commandPaletteStore.openPalette('')" @click="commandPaletteStore.openPalette('')"
-                        :aria-label="t('menu.search')">
-                        <img class="header-icon-img" :src="getImgSrc('search.svg')" alt="">
-                    </div>
-                </t-tooltip>
                 <div class="sidebar-toggle" role="button" tabindex="0" @keydown.enter.prevent="uiStore.toggleSidebar" @keydown.space.prevent="uiStore.toggleSidebar" @click="uiStore.toggleSidebar" :title="t('menu.collapseSidebar')">
                     <svg viewBox="0 0 20 20" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <rect x="1.5" y="1.5" width="17" height="17" rx="3" stroke="currentColor" stroke-width="1.5" />
@@ -56,137 +44,101 @@
             :value="uiStore.sidebarDisplayWidth" :min="SIDEBAR_COLLAPSED_WIDTH" :max="SIDEBAR_MAX_WIDTH"
             @start="startSidebarResize" @resize="resizeSidebar" @end="uiStore.sidebarResizing = false" />
 
-        <!-- 全局导航只在所属资源下展开一级预览。 -->
-        <nav class="menu_top" aria-label="工作区导航">
-            <!-- 全局搜索入口：点击打开命令面板（⌘K）。展开态移至顶部 logo_row 的图标按钮；
-                 折叠态在此处保留为图标项 + 深色 tooltip。 -->
-            <div class="menu_box menu_box--cmdk" v-if="uiStore.sidebarCollapsed">
-                <t-tooltip placement="right">
-                    <template #content>
-                        <span class="cmdk-tip">
-                            <span class="cmdk-tip-label">{{ t('menu.search') }}</span>
-                            <span class="cmdk-tip-keys">{{ cmdModKeyLabel }}K</span>
-                        </span>
-                    </template>
-                    <div class="menu_item menu_item--cmdk" @click="commandPaletteStore.openPalette('')">
-                        <div class="menu_item-box">
-                            <div class="menu_icon">
-                                <img class="icon" :src="getImgSrc('search.svg')" alt="">
-                            </div>
+        <button type="button" class="sidebar-search" :class="{ 'sidebar-search--collapsed': uiStore.sidebarCollapsed }"
+            :aria-label="t('menu.search')" :title="`${t('menu.search')} (${cmdModKeyLabel}K)`"
+            @click="commandPaletteStore.openPalette('')">
+            <t-icon name="search" size="18px" class="sidebar-search__icon" aria-hidden="true" />
+            <span v-if="!uiStore.sidebarCollapsed" class="sidebar-search__label">{{ t('menu.search') }}</span>
+            <kbd v-if="!uiStore.sidebarCollapsed">{{ cmdModKeyLabel }}K</kbd>
+        </button>
+
+        <nav class="menu_top sidebar-primary-nav" aria-label="工作区导航">
+            <WorkspaceNavigationNode title="New" icon="add" guide="nav-creatChat" class="sidebar-new"
+                :collapsed="uiStore.sidebarCollapsed" :active="route.name === 'globalCreatChat'"
+                @navigate="gotopage('creatChat')" />
+            <WorkspaceNavigationNode title="项目" icon="folder" :collapsed="uiStore.sidebarCollapsed"
+                :active="isProjectsActive" @navigate="router.push('/platform/projects')" />
+            <WorkspaceNavigationNode title="知识库" icon="book-open" guide="nav-knowledge-bases"
+                :collapsed="uiStore.sidebarCollapsed" :active="isKnowledgeBaseActive"
+                @navigate="router.push('/platform/knowledge-bases')">
+                <template #actions><DefaultKnowledgeBaseInit v-if="!uiStore.sidebarCollapsed" @identified="identifyDefaultKnowledgeBase" /></template>
+            </WorkspaceNavigationNode>
+            <WorkspaceNavigationNode title="研究工作台" icon="chart-bar" guide="nav-commodity-research"
+                :collapsed="uiStore.sidebarCollapsed" :active="isWorkbenchActive"
+                @navigate="router.push('/platform/research-workbenches')" />
+        </nav>
+
+        <section v-if="!uiStore.sidebarCollapsed" class="sidebar-recents" aria-labelledby="sidebar-recents-title">
+            <div class="sidebar-recents__header">
+                <h2 id="sidebar-recents-title">Recents</h2>
+                <div v-if="showSessionSourceFilter && !batchMode" class="session-list-scope-header">
+                    <SessionSourceFilter inline :emphasized="sessionScopeFilterPinned" :sources="sessionSourceOptions"
+                        :current="activeSessionBucketKey" @select="switchSessionBucket" />
+                </div>
+            </div>
+            <div class="submenu workspace-history" ref="scrollContainer" @scroll="handleScroll">
+                <button v-if="sessionLookupFailedId" class="workspace-nav-retry" @click="syncActiveBucketFromChat(sessionLookupFailedId)">当前对话未载入列表，点击重试</button>
+                <template v-if="sessionListBooting && !hasAnySession">
+                    <div v-for="n in 4" :key="'skel-' + n" class="submenu_item_p session-chat-row">
+                        <div class="session-list-row session-list-row--flat">
+                            <t-skeleton animation="gradient" class="session-list-row__body"
+                                :row-col="[{ width: '100%', height: '14px' }]" />
                         </div>
                     </div>
-                </t-tooltip>
-            </div>
-            <WorkspaceNavigationNode title="问答助手" icon="chat" guide="nav-creatChat"
-                :collapsed="uiStore.sidebarCollapsed" :active="isAssistantActive" expandable
-                :expanded="expandedSections.assistant" @navigate="router.push('/platform/creatChat')"
-                @toggle="toggleSection('assistant')">
-                <WorkspaceNavigationNode title="项目" icon="folder" :depth="1" expandable
-                    :expanded="expandedSections.projects" :active="route.name === 'assistantProjects'"
-                    @navigate="router.push('/platform/projects')" @toggle="toggleSection('projects')">
-                    <div v-if="workspaceLoading && !navigation.projects.length" class="workspace-nav-status"><t-loading size="small" /></div>
-                    <button v-else-if="workspaceErrors.projects" class="workspace-nav-retry" @click="refreshWorkspaceLists">项目加载失败，点击重试</button>
-                    <div v-else-if="!navigation.projects.length" class="workspace-nav-status">暂无项目</div>
-                    <WorkspaceNavigationNode v-for="item in navigation.projects" :key="item.id" :title="item.title"
-                        :depth="2" :active="route.params.projectId === item.id" @navigate="router.push(item.path)" />
-                </WorkspaceNavigationNode>
-                <WorkspaceNavigationNode title="历史对话" icon="history" :depth="1" expandable
-                    :expanded="expandedSections.history" @navigate="toggleSection('history')" @toggle="toggleSection('history')">
-                    <!-- 历史会话：按来源筛选后统一按日期分组展示 -->
-                    <div class="submenu workspace-history" ref="scrollContainer" @scroll="handleScroll">
-                        <button v-if="sessionLookupFailedId" class="workspace-nav-retry" @click="syncActiveBucketFromChat(sessionLookupFailedId)">当前对话未载入列表，点击重试</button>
-                        <!-- Stable, always-mounted source filter: reserving its row here
-                             (instead of embedding it in the first date group, which
-                             appears/disappears while a bucket loads) prevents the
-                             top-right control from jumping when switching session type. -->
-                        <div v-if="showSessionSourceFilter && !batchMode" class="session-list-scope-header">
-                            <SessionSourceFilter inline :emphasized="sessionScopeFilterPinned" :sources="sessionSourceOptions"
-                                :current="activeSessionBucketKey" @select="switchSessionBucket" />
+                </template>
+
+                <div v-else class="session-filtered-list">
+                    <template
+                        v-if="activeBucket?.loading && !activeBucket.loaded && filteredGroupedSessions.length === 0">
+                        <div v-for="n in 4" :key="'bucket-skel-' + n" class="submenu_item_p session-chat-row">
+                            <div class="session-list-row session-list-row--flat">
+                                <t-skeleton animation="gradient" class="session-list-row__body"
+                                    :row-col="[{ width: '100%', height: '14px' }]" />
+                            </div>
                         </div>
-                        <template v-if="sessionListBooting && !hasAnySession">
-                            <div v-for="n in 4" :key="'skel-' + n" class="submenu_item_p session-chat-row">
+                    </template>
+                    <template v-else-if="activeBucket?.loaded && filteredGroupedSessions.length === 0">
+                        <div class="submenu_empty">{{ t('menu.noSessions') }}</div>
+                    </template>
+                    <template v-else>
+                        <template v-for="group in filteredGroupedSessions" :key="group.key">
+                            <div v-if="group.key === 'pinned' && group.label" class="timeline_header session-list-row session-list-row--flat">
+                                <span class="session-list-row__body">
+                                    <span class="timeline_header-label">{{ group.label }}</span>
+                                </span>
+                            </div>
+                            <div v-for="subitem in group.items" :key="subitem.id"
+                                class="submenu_item_p session-chat-row" data-nav-depth="0" :data-session-id="subitem.id" :class="{
+                                    'session-chat-row--active': !batchMode && subitem.path === currentSecondpath,
+                                    'session-chat-row--selected': batchMode && batchSelectedIds.includes(subitem.id),
+                                    'session-chat-row--revealed': revealedSessionId === subitem.id,
+                                }">
                                 <div class="session-list-row session-list-row--flat">
-                                    <t-skeleton animation="gradient" class="session-list-row__body"
-                                        :row-col="[{ width: '100%', height: '14px' }]" />
+                                    <div class="session-list-row__body">
+                                        <SessionSidebarRow :item="subitem" :batch-mode="batchMode"
+                                            :running="Boolean(sessionActivityEntries[subitem.id])"
+                                            :unread="Boolean(sessionUnread[subitem.id])"
+                                            :active-path="currentSecondpath" :selected-ids="batchSelectedIds"
+                                            :menu-options="buildSessionMenuOptions(subitem)"
+                                            @navigate="gotopage(subitem.path)"
+                                            @toggle-select="toggleBatchSelect(subitem.id)"
+                                            @menu-click="handleSessionMenuClick($event, subitem)"
+                                            @rename-submit="renameSessionTitle(subitem, $event.title)"
+                                            @hover-in="mouseenteBotDownr(subitem.id)" @hover-out="mouseleaveBotDown" />
+                                    </div>
                                 </div>
                             </div>
                         </template>
-
-                        <div v-else class="session-filtered-list">
-                            <template
-                                v-if="activeBucket?.loading && !activeBucket.loaded && filteredGroupedSessions.length === 0">
-                                <div v-for="n in 4" :key="'bucket-skel-' + n" class="submenu_item_p session-chat-row">
-                                    <div class="session-list-row session-list-row--flat">
-                                        <t-skeleton animation="gradient" class="session-list-row__body"
-                                            :row-col="[{ width: '100%', height: '14px' }]" />
-                                    </div>
-                                </div>
-                            </template>
-                            <template v-else-if="activeBucket?.loaded && filteredGroupedSessions.length === 0">
-                                <div class="submenu_empty">{{ t('menu.noSessions') }}</div>
-                            </template>
-                            <template v-else>
-                                <template v-for="group in filteredGroupedSessions" :key="group.key">
-                                    <div v-if="group.label" class="timeline_header session-list-row session-list-row--flat">
-                                        <span class="session-list-row__body">
-                                            <span class="timeline_header-label">{{ group.label }}</span>
-                                        </span>
-                                    </div>
-                                    <div v-for="subitem in group.items" :key="subitem.id"
-                                        class="submenu_item_p session-chat-row" data-nav-depth="2" :data-session-id="subitem.id" :class="{
-                                            'session-chat-row--active': !batchMode && subitem.path === currentSecondpath,
-                                            'session-chat-row--selected': batchMode && batchSelectedIds.includes(subitem.id),
-                                            'session-chat-row--revealed': revealedSessionId === subitem.id,
-                                        }">
-                                        <div class="session-list-row session-list-row--flat">
-                                            <div class="session-list-row__body">
-                                                <SessionSidebarRow :item="subitem" :batch-mode="batchMode"
-                                                    :running="Boolean(sessionActivityEntries[subitem.id])"
-                                                    :unread="Boolean(sessionUnread[subitem.id])"
-                                                    :active-path="currentSecondpath" :selected-ids="batchSelectedIds"
-                                                    :menu-options="buildSessionMenuOptions(subitem)"
-                                                    @navigate="gotopage(subitem.path)"
-                                                    @toggle-select="toggleBatchSelect(subitem.id)"
-                                                    @menu-click="handleSessionMenuClick($event, subitem)"
-                                                    @rename-submit="renameSessionTitle(subitem, $event.title)"
-                                                    @hover-in="mouseenteBotDownr(subitem.id)" @hover-out="mouseleaveBotDown" />
-                                            </div>
-                                        </div>
-                                    </div>
-                                </template>
-                                <div v-if="activeBucket?.loading && filteredGroupedSessions.length > 0"
-                                    class="session-list-loading session-list-row session-list-row--flat">
-                                    <span class="session-list-row__body">
-                                        <t-loading size="small" />
-                                    </span>
-                                </div>
-                            </template>
+                        <div v-if="activeBucket?.loading && filteredGroupedSessions.length > 0"
+                            class="session-list-loading session-list-row session-list-row--flat">
+                            <span class="session-list-row__body">
+                                <t-loading size="small" />
+                            </span>
                         </div>
-                    </div>
-                </WorkspaceNavigationNode>
-            </WorkspaceNavigationNode>
-            <WorkspaceNavigationNode title="知识库" icon="folder" guide="nav-knowledge-bases"
-                :collapsed="uiStore.sidebarCollapsed" :active="isKnowledgeBaseActive" expandable
-                :expanded="expandedSections.knowledgeBases" @navigate="router.push('/platform/knowledge-bases')"
-                @toggle="toggleSection('knowledgeBases')">
-                <template #actions><DefaultKnowledgeBaseInit v-if="!uiStore.sidebarCollapsed" @identified="identifyDefaultKnowledgeBase" /></template>
-                <div v-if="knowledgeBasesLoading && !navigation.knowledgeBases.length" class="workspace-nav-status"><t-loading size="small" /></div>
-                <button v-else-if="knowledgeBasesError" class="workspace-nav-retry" @click="refreshKnowledgeBases">知识库加载失败，点击重试</button>
-                <div v-else-if="!navigation.knowledgeBases.length" class="workspace-nav-status">暂无知识库</div>
-                <WorkspaceNavigationNode v-for="item in navigation.knowledgeBases" :key="item.id" :title="item.title" icon="folder"
-                    :depth="1" :active="route.params.kbId === item.id" @navigate="router.push(item.path)" />
-            </WorkspaceNavigationNode>
-            <WorkspaceNavigationNode title="研究工作台" icon="chart-bar" guide="nav-commodity-research"
-                :collapsed="uiStore.sidebarCollapsed" :active="isWorkbenchActive" expandable
-                :expanded="expandedSections.workbenches" @navigate="router.push('/platform/research-workbenches')"
-                @toggle="toggleSection('workbenches')">
-                <div v-if="workspaceLoading && !navigation.workbenches.length" class="workspace-nav-status"><t-loading size="small" /></div>
-                <button v-else-if="workspaceErrors.workbenches" class="workspace-nav-retry" @click="refreshWorkspaceLists">工作台加载失败，点击重试</button>
-                <div v-else-if="!navigation.workbenches.length" class="workspace-nav-status">暂无研究工作台</div>
-                <WorkspaceNavigationNode v-for="item in navigation.workbenches" :key="item.id" :title="item.title" icon="chart-bar"
-                    :depth="1" :active="route.params.workbenchId === item.id" @navigate="router.push(item.path)" />
-            </WorkspaceNavigationNode>
-        </nav>
+                    </template>
+                </div>
+            </div>
+        </section>
 
         <!-- 批量管理底部操作条：固定在侧栏底部、用户头像上方 -->
         <div v-if="batchMode && !uiStore.sidebarCollapsed" class="batch-inline-footer">
@@ -448,8 +400,6 @@ const isInAgentList = computed<boolean>(() => route.name === 'agentList');
 // 是否在组织列表页面
 const isInOrganizationList = computed<boolean>(() => route.name === 'organizationList');
 
-const expandedSections = ref({ assistant: true, projects: true, history: true, knowledgeBases: true, workbenches: true });
-type NavigationSection = keyof typeof expandedSections.value;
 const projects = ref<AssistantProject[]>([]);
 const workbenches = ref<ResearchWorkbench[]>([]);
 const workspaceLoading = ref(false);
@@ -468,7 +418,7 @@ function identifyDefaultKnowledgeBase(id: string) {
     defaultMacroKnowledgeBaseId.value = id;
     if (id) void refreshKnowledgeBases();
 }
-const isAssistantActive = computed(() => ['globalCreatChat', 'chat', 'assistantProjects', 'assistantProjectPreview'].includes(String(route.name)));
+const isProjectsActive = computed(() => ['assistantProjects', 'assistantProjectPreview'].includes(String(route.name)));
 const isKnowledgeBaseActive = computed(() => String(route.name).startsWith('knowledgeBase') || route.name === 'kbCreatChat');
 const isWorkbenchActive = computed(() => String(route.name).startsWith('researchWorkbench') || route.name === 'commodityResearch');
 
@@ -498,13 +448,6 @@ async function refreshKnowledgeBases() {
         if (generation === knowledgeBaseRequestGeneration) knowledgeBasesError.value = true;
     } finally {
         if (generation === knowledgeBaseRequestGeneration) knowledgeBasesLoading.value = false;
-    }
-}
-
-function toggleSection(section: NavigationSection) {
-    expandedSections.value[section] = !expandedSections.value[section];
-    if ((section === 'assistant' || section === 'history') && expandedSections.value[section]) {
-        void ensureBucketFillsViewport(activeSessionBucketKey.value);
     }
 }
 
@@ -587,14 +530,14 @@ const refreshSessionListScrollability = async () => {
 
 /** 列表未撑满滚动区时自动续页（按当前可见 DOM 测量，避免折叠导致误判） */
 const ensureBucketFillsViewport = async (key: string) => {
-    if (uiStore.sidebarCollapsed || !expandedSections.value.assistant || !expandedSections.value.history) return;
+    if (uiStore.sidebarCollapsed) return;
     const MAX_ITERATIONS = 20;
     for (let i = 0; i < MAX_ITERATIONS; i++) {
         await nextTick();
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         const container = scrollContainer.value;
         const bucket = sessionBuckets.value[key];
-        if (!container || !bucket || !bucketHasMore(bucket) || bucket.loading) break;
+        if (!container || container.clientHeight === 0 || !bucket || !bucketHasMore(bucket) || bucket.loading) break;
 
         const hasOverflow = container.scrollHeight > container.clientHeight + 1;
         if (hasOverflow) break;
@@ -604,6 +547,16 @@ const ensureBucketFillsViewport = async (key: string) => {
         if ((sessionBuckets.value[key]?.items.length ?? 0) <= prevCount) break;
     }
 };
+
+// Refill the visible list when expanding the sidebar or increasing its height.
+watch(scrollContainer, (container, _previous, onCleanup) => {
+    if (!container) return;
+    const observer = new ResizeObserver(() => {
+        void ensureBucketFillsViewport(activeSessionBucketKey.value);
+    });
+    observer.observe(container);
+    onCleanup(() => observer.disconnect());
+}, { flush: 'post' });
 
 const mouseenteBotDownr = (val: string) => {
     activeSubmenu.value = val;
@@ -1277,22 +1230,22 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
 <style lang="less" scoped>
 .aside_box {
     --nav-surface: var(--cds-surface-1, var(--td-bg-color-sidebar));
-    --nav-hover: var(--cds-surface-2, var(--td-bg-color-container-hover));
+    --nav-hover: var(--td-bg-color-container-hover);
     --nav-text: var(--cds-text-primary, var(--td-text-color-primary));
     --nav-muted: var(--cds-text-secondary, var(--td-text-color-secondary));
     --nav-border: var(--cds-border, var(--td-component-stroke));
     --nav-accent: var(--cds-clay, var(--td-brand-color));
     // 侧栏水平栅格：图标列与文案列统一对齐（Logo / 菜单 / 会话分组 / 会话行）
     --sidebar-inset-x: 10px;
-    --sidebar-icon-size: 18px;
+    --sidebar-icon-size: 16px;
     --sidebar-channel-icon: 14px;
-    --sidebar-icon-gap: 8px;
+    --sidebar-icon-gap: 10px;
     --sidebar-text-inset: calc(var(--sidebar-inset-x) + var(--sidebar-icon-size) + var(--sidebar-icon-gap)); // 36px
 
     min-width: 0;
     width: var(--sidebar-width, 260px);
     flex-shrink: 0;
-    padding: 12px 8px 8px;
+    padding: 8px;
     background: var(--nav-surface);
     box-sizing: border-box;
     /* Avoid 100vh because <html> carries a `zoom` multiplier for font-size
@@ -1363,7 +1316,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 58px;
+        height: var(--app-sidebar-brand-height);
         flex-shrink: 0;
         padding: 0 2px 0 var(--sidebar-inset-x);
     }
@@ -1451,7 +1404,90 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         }
     }
 
+    .sidebar-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: var(--app-sidebar-search-height);
+        flex-shrink: 0;
+        margin: 6px 4px 6px;
+        padding: 4px 10px;
+        border: 1px solid var(--td-component-stroke);
+        border-radius: 9px;
+        background: var(--td-bg-color-container);
+        box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+        color: var(--td-text-color-placeholder);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        &__icon { flex-shrink: 0; color: inherit; }
+        &__label { flex: 1; font-size: var(--app-text-base); }
+        kbd { font: inherit; font-size: var(--app-text-2xs); opacity: .7; }
+        &:hover { border-color: var(--td-text-color-disabled); }
+        &:focus-visible { outline: 2px solid var(--nav-accent); outline-offset: 2px; }
+        &--collapsed {
+            justify-content: center;
+            width: 32px;
+            min-height: 32px;
+            padding: 0;
+            margin: 0 auto 6px;
+            border: 0;
+            background: transparent;
+            box-shadow: none;
+            &:hover { background: var(--nav-hover); }
+        }
+    }
+    .sidebar-primary-nav {
+        flex: 0 0 auto;
+        overflow: visible;
+        margin: 0;
+        padding: 0;
+        gap: 0;
+        :deep(.workspace-nav-node__row) {
+            min-height: var(--app-sidebar-row-height);
+            color: var(--td-text-color-secondary);
+            padding-left: var(--sidebar-inset-x);
+            border-radius: 8px;
+        }
+        :deep(.workspace-nav-node__row.is-active) {
+            background: var(--td-bg-color-container-hover);
+            color: var(--td-text-color-primary);
+        }
+        :deep(.workspace-nav-node__row:hover) { color: var(--td-text-color-primary); }
+        :deep(.workspace-nav-node__link) { gap: 10px; padding: var(--app-sidebar-link-padding-y) 0; }
+        :deep(.workspace-nav-node__title) { font-weight: 400; font-size: var(--app-text-base); }
+        :deep(.workspace-nav-node__icon) { width: var(--sidebar-icon-size); height: var(--sidebar-icon-size); color: var(--td-text-color-secondary); }
+        .sidebar-new :deep(.workspace-nav-node__icon) {
+            width: var(--sidebar-icon-size);
+            height: var(--sidebar-icon-size);
+            background: transparent;
+        }
+    }
+    .sidebar-recents {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        margin-top: 20px;
+        overflow: hidden;
+        &__header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            min-height: 24px;
+            padding: 0 var(--sidebar-inset-x) 4px;
+            flex-shrink: 0;
+            h2 { margin: 0; font-size: var(--app-text-sm); line-height: 20px; font-weight: 400; color: var(--td-text-color-placeholder); }
+        }
+    }
+    &.aside_box--collapsed {
+        .sidebar-primary-nav :deep(.workspace-nav-node__row) { min-height: 32px; width: 32px; margin: 0 auto 3px; padding: 0; }
+        .sidebar-primary-nav :deep(.workspace-nav-node__link) { justify-content: center; }
+    }
+
     .menu_bottom {
+        margin-top: auto;
         flex-shrink: 0;
         display: flex;
         flex-direction: column;
@@ -1511,7 +1547,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 36px;
+        height: var(--app-sidebar-row-height);
         padding: 6px 8px 6px var(--sidebar-inset-x);
         box-sizing: border-box;
         margin-bottom: 1px;
@@ -1574,13 +1610,15 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     }
 
     .workspace-history {
-        max-height: min(36vh, 320px);
+        flex: 1;
+        min-height: 0;
+        max-height: none;
         overflow-y: auto;
         scrollbar-width: thin;
         scrollbar-color: var(--td-scrollbar-color) transparent;
-        .session-list-row--flat { padding-left: 42px; }
-        :deep(.submenu_item) { font-size: var(--app-text-sm); }
-        .submenu_empty { padding: 10px 14px 10px 42px; text-align: left; }
+        .session-list-row--flat { padding-left: var(--sidebar-inset-x); }
+        :deep(.submenu_item) { font-size: var(--app-text-base); }
+        .submenu_empty { padding: 10px var(--sidebar-inset-x); text-align: left; }
     }
 
     .workspace-nav-status, .workspace-nav-retry {
@@ -1689,33 +1727,12 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         white-space: nowrap;
     }
 
-    // Stable filter control: always mounted and absolutely pinned to the list's
-    // top-right so it visually sits on the first row (e.g. beside "近30天") and
-    // never jumps when switching session type reloads a bucket. It overlays the
-    // empty right side of the first header row, so it needs no reserved height.
     .session-list-scope-header {
-        position: absolute;
-        top: 4px;
-        right: 8px;
-        z-index: 2;
         display: flex;
         justify-content: flex-end;
-        max-width: calc(100% - var(--sidebar-inset-x) - 8px);
-
-        :deep(.session-source-filter--inline) {
-            flex: 0 1 auto;
-            min-width: 0;
-            max-width: 100%;
-            opacity: 0;
-            transition: opacity var(--app-motion-fast) ease;
-        }
-    }
-
-    .submenu:hover .session-list-scope-header :deep(.session-source-filter--inline),
-    .session-list-scope-header:hover :deep(.session-source-filter--inline),
-    .session-list-scope-header:focus-within :deep(.session-source-filter--inline),
-    .session-list-scope-header :deep(.session-source-filter--inline.session-source-filter--emphasized) {
-        opacity: 1;
+        min-width: 0;
+        max-width: 60%;
+        :deep(.session-source-filter--inline) { min-width: 0; max-width: 100%; }
     }
 
     .submenu_item_p {
@@ -1729,7 +1746,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         }
 
         &.session-chat-row .session-list-row {
-            height: 34px;
+            height: var(--app-sidebar-row-height);
             padding-right: 4px;
             border-radius: var(--app-radius-sm);
             transition: background var(--app-motion-fast) ease, color var(--app-motion-fast) ease;
@@ -1752,7 +1769,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
             background: var(--td-bg-color-container-hover);
 
             :deep(.submenu_item) {
-                color: var(--td-brand-color);
+                color: var(--td-text-color-primary);
             }
 
             :deep(.menu-more) {
@@ -1770,7 +1787,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         cursor: pointer;
         display: flex;
         align-items: center;
-        color: var(--td-text-color-primary);
+        color: var(--td-text-color-secondary);
         font-weight: 400;
         font-size: var(--app-text-base);
         line-height: 20px;
@@ -1805,7 +1822,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         .menu-more {
             display: inline-block;
             font-weight: bold;
-            color: var(--td-brand-color);
+            color: var(--td-text-color-secondary);
         }
 
         .submenu_title--batch {
@@ -1905,7 +1922,7 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         top: 0;
         bottom: 0;
         left: 0;
-        z-index: 20;
+        z-index: 100; // Above the conversation composer (99), below dialogs.
         width: min(var(--sidebar-width, 260px), 82vw);
         min-width: 0;
         box-shadow: 12px 0 28px color-mix(in srgb, var(--cds-text-primary) 12%, transparent);
@@ -2040,6 +2057,20 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
 @media (prefers-reduced-motion: reduce) {
     .aside_box .submenu_item_p.session-chat-row--revealed {
         animation: none;
+    }
+}
+
+@media (max-height: 560px) {
+    .aside_box:not(.aside_box--collapsed) {
+        padding-top: 8px;
+        .logo_row { height: 44px; }
+        .sidebar-search { min-height: var(--app-sidebar-search-height); margin-top: 4px; margin-bottom: 6px; }
+        .sidebar-primary-nav {
+            :deep(.workspace-nav-node__row) { min-height: var(--app-sidebar-row-height); }
+            :deep(.workspace-nav-node__link) { padding: var(--app-sidebar-link-padding-y) 0; }
+        }
+        .sidebar-recents { margin-top: 12px; }
+        .sidebar-recents__header { min-height: 24px; padding-bottom: 2px; }
     }
 }
 </style>

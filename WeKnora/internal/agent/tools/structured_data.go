@@ -8,8 +8,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -162,8 +165,21 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	req.Header.Set("X-Research-Identity", encoded)
 	req.Header.Set("X-Research-Timestamp", stamp)
 	req.Header.Set("X-Research-Signature", hex.EncodeToString(mac.Sum(nil)))
+	requestStarted := time.Now()
 	response, err := t.client.Do(req)
 	if err != nil {
+		ctxErr := ctx.Err()
+		ctxCancelled := errors.Is(ctxErr, context.Canceled)
+		timedOut := errors.Is(err, context.DeadlineExceeded) || errors.Is(ctxErr, context.DeadlineExceeded)
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			timedOut = true
+		}
+		logger.Warnf(ctx, "[Tool][StructuredData] request failed operation=%s elapsed_ms=%d error_type=%T ctx_cancelled=%t timeout=%t",
+			operation, time.Since(requestStarted).Milliseconds(), err, ctxCancelled, timedOut)
+		if timedOut {
+			return nil, fmt.Errorf("结构化表格请求超时；未取得完整结果，不能据此判断来源不存在")
+		}
 		return nil, fmt.Errorf("结构化表格服务连接失败")
 	}
 	defer response.Body.Close()

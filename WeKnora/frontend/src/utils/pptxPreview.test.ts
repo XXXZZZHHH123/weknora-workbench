@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import JSZip from 'jszip'
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom'
-import { preparePptxPreview, isCompletePptxRender } from './pptxPreview'
+import { preparePptxPreview, isCompletePptxRender, hasCompletePptxSlideDOM, watchCompletePptxSlideDOM, bindPptxRendererCallbacks, isPptxSourceKeyCurrent, resolvePptxSlideLocator, resolvePptxLocatePage } from './pptxPreview'
+import { findInText } from './sourceLocator'
 
 Object.assign(globalThis, { DOMParser, XMLSerializer })
 const typesNs = 'http://schemas.openxmlformats.org/package/2006/content-types'
@@ -64,4 +65,133 @@ test('zero and partial render success events must be treated as failures', () =>
   }
   assert.equal(isCompletePptxRender({ slides: [{}, {}] }, 2), true)
   assert.equal(isCompletePptxRender({ slides: [] }, 0), false)
+})
+
+test('an exact partial slide locator can locate a page without claiming unmatched text', () => {
+  const locator = { type: 'slide', mapping: 'exact', partial: true, slide: 2, quote: 'A verified source sentence' }
+  assert.deepEqual(resolvePptxSlideLocator(locator, 4, false), {
+    page: 2, partial: true, precise: false, granularity: 'block',
+  })
+
+  const pageText = 'A verified source sentence appears once on this slide.'
+  const uniqueQuote = findInText(pageText, locator.quote) !== null
+  assert.deepEqual(resolvePptxSlideLocator(locator, 4, uniqueQuote), {
+    page: 2, partial: true, precise: true, granularity: 'text',
+  })
+
+  const duplicateQuote = findInText(`${pageText} A verified source sentence appears again.`, locator.quote) !== null
+  assert.deepEqual(resolvePptxSlideLocator(locator, 4, duplicateQuote), {
+    page: 2, partial: true, precise: false, granularity: 'block',
+  })
+})
+
+test('approximate, missing and out-of-range slide locators cannot select a physical page', () => {
+  const candidates = [
+    { type: 'slide', mapping: 'approximate', slide: 2, quote: 'A verified source sentence' },
+    { type: 'slide', mapping: 'exact', quote: 'A verified source sentence' },
+    { type: 'slide', mapping: 'exact', slide: 0, quote: 'A verified source sentence' },
+    { type: 'slide', mapping: 'exact', slide: -1, quote: 'A verified source sentence' },
+    { type: 'slide', mapping: 'exact', slide: 5, quote: 'A verified source sentence' },
+    { type: 'text', mapping: 'exact', slide: 2, quote: 'A verified source sentence' },
+  ]
+  for (const locator of candidates) {
+    assert.equal(resolvePptxSlideLocator(locator, 4, true), null, JSON.stringify(locator))
+  }
+  assert.equal(resolvePptxLocatePage(candidates, 4, true), 0)
+  assert.equal(resolvePptxLocatePage([{ type: 'slide', mapping: 'exact', partial: true, slide: 2 }], 4, false), 0,
+    'an unavailable source keeps its existing stale-evidence protection')
+  assert.equal(resolvePptxLocatePage([{ type: 'slide', mapping: 'exact', partial: true, slide: 2 }], 4, true), 2)
+})
+
+test('renderer callbacks retain their source key and stale instances cannot affect a new source', () => {
+  let currentSource = 'source-a'
+  const delivered: string[] = []
+  const callbacks = bindPptxRendererCallbacks('source-a', {
+    onRendered: key => { if (isPptxSourceKeyCurrent(key, currentSource, true)) delivered.push(`rendered:${key}`) },
+    onError: key => { if (isPptxSourceKeyCurrent(key, currentSource, true)) delivered.push(`error:${key}`) },
+  })
+
+  currentSource = 'source-b'
+  callbacks.onRendered({ slides: [] })
+  callbacks.onError(new Error('stale renderer'))
+  assert.equal(delivered.length, 0)
+
+  const currentCallbacks = bindPptxRendererCallbacks('source-b', {
+    onRendered: key => { if (isPptxSourceKeyCurrent(key, currentSource, true)) delivered.push(`rendered:${key}`) },
+    onError: key => { if (isPptxSourceKeyCurrent(key, currentSource, true)) delivered.push(`error:${key}`) },
+  })
+  currentCallbacks.onRendered({ slides: [] })
+  assert.deepEqual(delivered, ['rendered:source-b'])
+})
+
+test('requires every physical slide wrapper to be connected and laid out before locating', () => {
+  const slide = (connected: boolean, width: number, height: number) => ({
+    isConnected: connected,
+    getBoundingClientRect: () => ({ width, height }),
+  }) as HTMLElement
+  const root = (slides: HTMLElement[]) => ({
+    querySelectorAll: (selector: string) => selector === '.pptx-preview-slide-wrapper' ? slides : [],
+  }) as unknown as ParentNode
+
+  assert.equal(hasCompletePptxSlideDOM(root([slide(true, 960, 540), slide(true, 960, 540)]), 2), true)
+  assert.equal(hasCompletePptxSlideDOM(root([slide(true, 960, 540)]), 2), false)
+  assert.equal(hasCompletePptxSlideDOM(root([slide(true, 960, 540), slide(false, 960, 540)]), 2), false)
+  assert.equal(hasCompletePptxSlideDOM(root([slide(true, 960, 540), slide(true, 0, 0)]), 2), false)
+  assert.equal(hasCompletePptxSlideDOM(root([slide(true, 960, 540)]), 0), false)
+})
+
+function slideRoot(slides: HTMLElement[]) {
+  return {
+    querySelectorAll: (selector: string) => selector === '.pptx-preview-slide-wrapper' ? slides : [],
+  } as unknown as ParentNode
+}
+
+function makeSlide(connected = true, width = 960, height = 540) {
+  return {
+    isConnected: connected,
+    getBoundingClientRect: () => ({ width, height }),
+  } as HTMLElement
+}
+
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+test('waits for partial slide DOM to become fully laid out before locating', async () => {
+  const slides = [makeSlide()]
+  const events: string[] = []
+  watchCompletePptxSlideDOM(slideRoot(slides), 2, {
+    onReady: () => events.push('ready'),
+    onTimeout: () => events.push('timeout'),
+  }, { timeoutMs: 100, pollIntervalMs: 5 })
+  await delay(15)
+  slides.push(makeSlide())
+  await delay(15)
+  assert.deepEqual(events, ['ready'])
+})
+
+test('reports timeout for partial or unlaid-out slides', async () => {
+  const events: string[] = []
+  watchCompletePptxSlideDOM(slideRoot([makeSlide(), makeSlide(true, 0, 0)]), 2, {
+    onReady: () => events.push('ready'),
+    onTimeout: () => events.push('timeout'),
+  }, { timeoutMs: 20, pollIntervalMs: 5 })
+  await delay(35)
+  assert.deepEqual(events, ['timeout'])
+})
+
+test('cancels slide DOM watching without completing a stale locate', async () => {
+  const slides = [makeSlide()]
+  const events: string[] = []
+  let sourceKey = 'source-a'
+  const locate = (boundSourceKey: string) => {
+    if (isPptxSourceKeyCurrent(boundSourceKey, sourceKey, true)) events.push(`located:${boundSourceKey}`)
+  }
+  const cancel = watchCompletePptxSlideDOM(slideRoot(slides), 2, {
+    onReady: () => locate('source-a'),
+    onTimeout: () => events.push('timeout'),
+  }, { timeoutMs: 25, pollIntervalMs: 5 })
+  sourceKey = 'source-b'
+  cancel()
+  slides.push(makeSlide())
+  await delay(35)
+  assert.deepEqual(events, [])
 })

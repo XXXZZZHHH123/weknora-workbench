@@ -164,10 +164,10 @@ onBeforeUnmount(() => {
 
 <template>
   <aside class="knowledge-workspace-menu" :class="{ 'is-collapsed': ui.sidebarCollapsed }" aria-label="知识库工作区导航">
-    <div class="knowledge-workspace-menu__brand"><button v-if="!ui.sidebarCollapsed" type="button" class="knowledge-workspace-menu__plain" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><BrandWordmark compact /></button><button type="button" class="knowledge-workspace-menu__icon" :aria-label="ui.sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :aria-expanded="!ui.sidebarCollapsed" @click="ui.toggleSidebar"><t-icon :name="ui.sidebarCollapsed ? 'chevron-right-double' : 'chevron-left-double'" /></button></div>
+    <div class="knowledge-workspace-menu__brand"><button v-if="!ui.sidebarCollapsed" type="button" class="knowledge-workspace-menu__plain" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><BrandWordmark compact /></button><button type="button" class="knowledge-workspace-menu__icon" :aria-label="ui.sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :aria-expanded="!ui.sidebarCollapsed" @click="ui.toggleSidebar"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="17" height="17" rx="3" stroke="currentColor" stroke-width="1.5"/><line x1="7.5" y1="1.5" x2="7.5" y2="18.5" stroke="currentColor" stroke-width="1.5"/></svg></button></div>
     <div v-if="!ui.sidebarCollapsed" class="knowledge-workspace-menu__context"><button type="button" class="knowledge-workspace-menu__back" @click="router.push('/platform/knowledge-bases')">‹ 全部知识库</button><strong :title="library?.name || '知识库'">{{ library?.name || '知识库' }}</strong></div>
     <button v-else type="button" class="knowledge-workspace-menu__icon" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><t-icon name="arrow-left" /></button>
-    <nav class="knowledge-workspace-menu__navigation">
+    <nav id="knowledge-workspace-navigation" class="knowledge-workspace-menu__navigation" aria-label="知识库功能">
       <WorkspaceNavigationNode title="问答助手" icon="chat" :collapsed="ui.sidebarCollapsed" :active="route.name === 'kbCreatChat' || route.name === 'kbChat'" @navigate="router.push(`/platform/knowledge-bases/${kbId}/creatChat`)" />
       <WorkspaceNavigationNode title="结构化数据库" icon="table" :collapsed="ui.sidebarCollapsed" :active="route.name === 'knowledgeStructuredData'" expandable :expanded="structuredOpen" @toggle="structuredOpen = !structuredOpen" @navigate="router.push(`/platform/knowledge-bases/${kbId}/structured-data`)">
         <WorkspaceNavigationNode v-for="[mode, title, icon] in [['import','Excel 导入','file-import'],['query','数据查询','search']]" :key="mode" :title="title!" :icon="icon" :depth="1" :active="route.name === 'knowledgeStructuredData' && (route.query.mode === mode || mode === 'import' && !route.query.mode)" @navigate="router.push({ path: `/platform/knowledge-bases/${kbId}/structured-data`, query: { mode } })" />
@@ -189,25 +189,284 @@ onBeforeUnmount(() => {
 <style scoped lang="less">
 .knowledge-workspace-menu {
   --nav-surface: var(--cds-surface-1, var(--td-bg-color-sidebar));
-  --nav-hover: var(--cds-surface-2, var(--td-bg-color-container-hover));
+  --nav-hover: var(--td-bg-color-container-hover);
+  --nav-active: var(--td-bg-color-container-hover);
   --nav-accent: var(--cds-clay, var(--td-brand-color));
-  position: relative; display: flex; flex-direction: column; flex: none;
-  width: var(--sidebar-width, 260px); height: 100%; min-height: 0;
-  box-sizing: border-box; padding: 12px 8px 8px; background: var(--nav-surface);
+  --nav-text: var(--cds-text-primary, var(--td-text-color-primary));
+  --nav-text-secondary: var(--cds-text-secondary, var(--td-text-color-secondary));
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: var(--sidebar-width, 260px);
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 8px;
   border-right: 1px solid var(--cds-border, var(--app-border-color));
+  background: var(--nav-surface);
+  color: var(--nav-text);
 }
-.knowledge-workspace-menu__brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 6px 14px}
-.knowledge-workspace-menu__plain{min-height:32px;border:0;background:transparent;padding:0;cursor:pointer;min-width:0}
-.knowledge-workspace-menu__icon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;color:var(--cds-text-secondary, var(--td-text-color-secondary));background:transparent;border:0;border-radius:var(--cds-radius-control);cursor:pointer;transition:background-color var(--cds-duration-fast) var(--cds-ease-out),color var(--cds-duration-fast) var(--cds-ease-out)}
-.knowledge-workspace-menu__icon:hover{background:var(--nav-hover);color:var(--cds-text-primary, var(--td-text-color-primary))}
-.knowledge-workspace-menu__icon:focus-visible,.knowledge-workspace-menu__plain:focus-visible,.knowledge-workspace-menu__back:focus-visible{outline:2px solid var(--nav-accent);outline-offset:2px}
-.knowledge-workspace-menu__context{display:flex;flex-direction:column;gap:10px;margin:0 12px 16px;min-width:0;font-size:var(--app-text-base)}
-.knowledge-workspace-menu__context strong{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--cds-text-primary, var(--td-text-color-primary))}
-.knowledge-workspace-menu__back{min-height:32px;border:0;background:transparent;padding:0;text-align:left;color:var(--nav-accent);font-size:var(--app-text-sm);cursor:pointer}
-.knowledge-workspace-menu__navigation{flex:1;min-height:0;overflow:auto;padding-bottom:18px;scrollbar-width:thin}
-.knowledge-workspace-menu__error{padding:12px;font-size:var(--app-text-sm);line-height:1.6;color:var(--td-error-color);overflow-wrap:anywhere}
-.knowledge-workspace-menu__error button{display:block;margin-top:8px}
-.knowledge-workspace-menu.is-collapsed{width:var(--sidebar-width,60px);padding:8px 3px 6px}
-.knowledge-workspace-menu.is-collapsed .knowledge-workspace-menu__brand{justify-content:center;margin:0 0 12px}
-@media(max-width:720px){.knowledge-workspace-menu:not(.is-collapsed){position:absolute;top:0;bottom:0;left:0;z-index:20;width:min(var(--sidebar-width,260px),82vw);min-width:0;box-shadow:12px 0 28px color-mix(in srgb,var(--cds-text-primary) 12%,transparent)}}
+
+.knowledge-workspace-menu__brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: var(--app-sidebar-brand-height);
+  margin: 0 2px 0 10px;
+}
+
+.knowledge-workspace-menu__plain {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cds-radius-control, var(--app-radius-sm));
+  background: transparent;
+  cursor: pointer;
+}
+
+.knowledge-workspace-menu__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cds-radius-control, var(--app-radius-sm));
+  background: transparent;
+  color: var(--nav-text-secondary);
+  cursor: pointer;
+  transition: background-color var(--cds-duration-fast, var(--app-motion-fast)) var(--cds-ease-out, ease-out),
+    color var(--cds-duration-fast, var(--app-motion-fast)) var(--cds-ease-out, ease-out);
+}
+
+.knowledge-workspace-menu__icon:hover {
+  background: var(--nav-hover);
+  color: var(--nav-text);
+}
+
+.knowledge-workspace-menu__icon:focus-visible,
+.knowledge-workspace-menu__plain:focus-visible,
+.knowledge-workspace-menu__back:focus-visible {
+  outline: 2px solid var(--nav-accent);
+  outline-offset: 2px;
+}
+
+.knowledge-workspace-menu__context {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0 12px 10px;
+  font-size: var(--app-text-base);
+}
+
+.knowledge-workspace-menu__context strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--nav-text);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-workspace-menu__back {
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cds-radius-control, var(--app-radius-sm));
+  background: transparent;
+  color: var(--nav-text-secondary);
+  font-size: var(--app-text-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--cds-duration-fast, var(--app-motion-fast)) var(--cds-ease-out, ease-out);
+}
+
+.knowledge-workspace-menu__back:hover { color: var(--nav-text); }
+
+.knowledge-workspace-menu__navigation {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 18px;
+  scrollbar-width: thin;
+}
+
+// Match the global sidebar's compact, neutral navigation while keeping the
+// knowledge-base-specific hierarchy and expandable rows intact.
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__row) {
+  min-height: var(--app-sidebar-row-height);
+  margin-bottom: 1px;
+  padding-left: calc(10px + var(--nav-depth) * 14px);
+  padding-right: 6px;
+  border-radius: var(--cds-radius-control, var(--app-radius-sm));
+  color: var(--nav-text-secondary);
+  transition: background-color var(--cds-duration-fast, var(--app-motion-fast)) var(--cds-ease-out, ease-out),
+    color var(--cds-duration-fast, var(--app-motion-fast)) var(--cds-ease-out, ease-out);
+}
+
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__row:hover),
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__row:focus-within) {
+  background: var(--nav-hover);
+  color: var(--nav-text);
+}
+
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__row.is-active),
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__row.is-active:hover),
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__row.is-active:focus-within) {
+  background: var(--nav-active);
+  color: var(--nav-text);
+}
+
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__link) {
+  gap: 10px;
+  padding-top: var(--app-sidebar-link-padding-y);
+  padding-bottom: var(--app-sidebar-link-padding-y);
+}
+
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__title) {
+  color: inherit;
+  font-size: var(--app-text-base);
+  font-weight: 400;
+}
+
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__icon) {
+  width: 16px;
+  height: 16px;
+  color: var(--nav-text-secondary);
+}
+
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__row.is-active .workspace-nav-node__icon) {
+  color: var(--nav-text);
+}
+
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__toggle) {
+  border-radius: var(--cds-radius-control, var(--app-radius-sm));
+  color: var(--nav-text-secondary);
+}
+
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__link:focus-visible),
+.knowledge-workspace-menu__navigation :deep(.workspace-nav-node__toggle:focus-visible) {
+  outline-color: var(--nav-accent);
+}
+
+.knowledge-workspace-menu__navigation :deep([data-nav-depth="1"] > .workspace-nav-node__row) {
+  min-height: var(--app-sidebar-row-height);
+  margin-bottom: 1px;
+}
+
+.knowledge-workspace-menu__navigation :deep([data-nav-depth="1"] .workspace-nav-node__title) {
+  font-size: var(--app-text-base);
+  font-weight: 400;
+}
+
+.knowledge-workspace-menu__navigation :deep(.kb-folder-tree.is-navigation) {
+  --kb-folder-indent: 12px;
+  --kb-folder-base-indent: 20px;
+}
+
+.knowledge-workspace-menu__navigation :deep(.kb-folder-tree__body) {
+  padding-top: 4px;
+}
+
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row) {
+  min-height: var(--app-sidebar-row-height);
+  height: auto;
+  margin-bottom: 1px;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-radius: var(--cds-radius-control, var(--app-radius-sm));
+  color: var(--nav-text-secondary);
+  font-size: var(--app-text-base);
+}
+
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row:hover),
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row:focus-visible) {
+  background: var(--nav-hover);
+  color: var(--nav-text);
+}
+
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row.active),
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row.active:hover),
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row.active:focus-visible) {
+  background: var(--nav-active);
+  color: var(--nav-text);
+}
+
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row.active .kb-folder-row__label),
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row.active .kb-folder-row__icon) {
+  color: var(--nav-text);
+}
+
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row__icon),
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row__toggle) {
+  color: var(--nav-text-secondary);
+}
+
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row__more) {
+  width: var(--app-sidebar-row-height);
+  height: var(--app-sidebar-row-height);
+  border-radius: var(--cds-radius-control, var(--app-radius-sm));
+}
+
+.knowledge-workspace-menu__navigation :deep(.kb-folder-row__trailing) {
+  height: var(--app-sidebar-row-height);
+}
+
+.knowledge-workspace-menu__error {
+  padding: 12px;
+  color: var(--td-error-color);
+  font-size: var(--app-text-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-workspace-menu__error button {
+  display: block;
+  margin-top: 8px;
+}
+
+.knowledge-workspace-menu.is-collapsed {
+  width: var(--sidebar-width, 48px);
+  padding: 8px 3px 6px;
+}
+
+.knowledge-workspace-menu.is-collapsed .knowledge-workspace-menu__brand {
+  justify-content: center;
+  min-height: 32px;
+  margin: 0 0 6px;
+}
+
+@media (hover: none) {
+  .knowledge-workspace-menu__navigation :deep(.kb-folder-row.is-editable .kb-folder-row__more) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .knowledge-workspace-menu:not(.is-collapsed) {
+    position: absolute;
+    z-index: 100;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(var(--sidebar-width, 260px), 82vw);
+    min-width: 0;
+    box-shadow: 12px 0 28px color-mix(in srgb, var(--nav-text) 12%, transparent);
+  }
+}
+
+.knowledge-workspace-menu__navigation .knowledge-workspace-menu__icon {
+  width: var(--app-sidebar-row-height);
+  height: var(--app-sidebar-row-height);
+}
 </style>

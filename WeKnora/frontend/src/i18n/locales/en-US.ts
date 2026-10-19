@@ -4142,6 +4142,7 @@ export default {
     referenceSourceLocating: 'Locating the cited passage…',
     referenceSourceExact: "Located the source passage",
     referenceSourcePartial: "Verified source passages highlighted; part of the citation remains unmatched",
+    referenceSourceParentContext: 'Opened page {page} containing the verified parent passage; cited text is not precisely located',
     referenceSourceBlock: "Located the source region; exact text not confirmed",
     referenceSourceAmbiguous: "Multiple matching passages; the location is ambiguous",
     referenceSourceStale: "The source or content changed; this citation cannot be located precisely",
