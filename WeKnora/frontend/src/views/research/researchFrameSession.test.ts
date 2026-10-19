@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => null, removeItem() {} } })
+Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { pathname: '/research', href: '' } } })
 import { authenticateResearchFrame, researchFramePath } from './researchFrameSession'
 
 test('cookie exchanges finish in order across account changes; stale calls never mount', async () => {
@@ -33,7 +35,7 @@ test('a rejected exchange cannot block the next verified login', async () => {
   let calls = 0
   globalThis.fetch = async () => new Response('{}',{status:++calls === 1 ? 401 : 200})
   try {
-    await assert.rejects(authenticateResearchFrame('expired',1,() => true),/登录核验失败/)
+    await assert.rejects(authenticateResearchFrame('expired',1,() => true),/log in again/)
     assert.equal(await authenticateResearchFrame('current',2,() => true),true)
   } finally { globalThis.fetch = original }
 })

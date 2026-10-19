@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, onScopeDispose } from 'vue'
+import { subscribeAuthTokens } from '@/utils/authSession'
 import type { UserInfo, TenantInfo, KnowledgeBaseInfo } from '@/api/auth'
 import { userInfoFromApi } from '@/api/auth'
 import type { TenantInfo as TenantInfoFromAPI } from '@/api/tenant'
@@ -35,6 +36,10 @@ export const useAuthStore = defineStore('auth', () => {
   const tenant = ref<TenantInfo | null>(null)
   const token = ref<string>('')
   const refreshToken = ref<string>('')
+  onScopeDispose(subscribeAuthTokens(next => {
+    refreshToken.value = next.refreshToken
+    token.value = next.token
+  }))
   const knowledgeBases = ref<KnowledgeBaseInfo[]>([])
   const currentKnowledgeBase = ref<KnowledgeBaseInfo | null>(null)
   const selectedTenantId = ref<number | null>(null)

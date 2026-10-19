@@ -6,6 +6,8 @@
  * axios interceptor; both planes call {@link refreshAccessTokenShared}.
  */
 
+import { publishAuthTokens } from './authSession'
+
 const AUTH_STORAGE_KEYS = [
   'weknora_token',
   'weknora_refresh_token',
@@ -32,6 +34,7 @@ export type TokenRefreshResult = {
 
 export type RefreshAccessTokenOptions = {
   refresh?: (refreshToken: string) => Promise<TokenRefreshResult>
+  rejectedToken?: string
   messages?: {
     pleaseRelogin: string
     tokenRefreshFailed: string
@@ -98,14 +101,20 @@ async function defaultRefresh(refreshToken: string): Promise<TokenRefreshResult>
 /**
  * Refresh the access token, de-duplicated across all callers.
  *
- * Resolves with the new access token. On failure it has already cleared
- * credentials and redirected to /login.
+ * Resolves with the current access token. Invalid sessions redirect to login;
+ * temporary failures preserve credentials so the operation can be retried.
  */
 export async function refreshAccessTokenShared(
   options: RefreshAccessTokenOptions = {},
 ): Promise<string> {
   const messages = { ...defaultMessages, ...options.messages }
   const refresh = options.refresh ?? defaultRefresh
+  // A delayed 401 may belong to the token already replaced by another caller.
+  const currentToken = localStorage.getItem('weknora_token')
+  if (options.rejectedToken && currentToken && currentToken !== options.rejectedToken) {
+    publishAuthTokens({ token: currentToken, refreshToken: localStorage.getItem('weknora_refresh_token') || '' })
+    return currentToken
+  }
 
   if (isRefreshing) {
     return new Promise<string>((resolve, reject) => {
@@ -125,11 +134,14 @@ export async function refreshAccessTokenShared(
     throw noRefreshTokenError
   }
 
+  const sessionUser = localStorage.getItem('weknora_user')
+  const stillOwnsSession = () => localStorage.getItem('weknora_refresh_token') === storedRefreshToken && localStorage.getItem('weknora_user') === sessionUser
   try {
     const response = await refresh(storedRefreshToken)
+    if (!stillOwnsSession()) throw new Error('登录会话已改变，请重新操作')
 
     if (!response.success || !response.data?.token) {
-      throw new Error(response.message || messages.tokenRefreshFailed)
+      throw Object.assign(new Error(response.message || messages.tokenRefreshFailed), { invalidSession: true })
     }
 
     const { token, refreshToken: newRefreshToken } = response.data
@@ -137,12 +149,16 @@ export async function refreshAccessTokenShared(
     if (newRefreshToken) {
       localStorage.setItem('weknora_refresh_token', newRefreshToken)
     }
+    publishAuthTokens({ token, refreshToken: newRefreshToken || storedRefreshToken })
     processQueue(null, token)
     return token
   } catch (refreshError) {
-    clearAuthStorage()
+    const status = (refreshError as { status?: number })?.status
+    if (stillOwnsSession() && (status === 401 || status === 403 || (refreshError as { invalidSession?: boolean })?.invalidSession)) {
+      clearAuthStorage()
+      redirectToLogin()
+    }
     processQueue(refreshError, null)
-    redirectToLogin()
     throw refreshError
   } finally {
     isRefreshing = false

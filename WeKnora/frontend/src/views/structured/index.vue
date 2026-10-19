@@ -8,6 +8,7 @@
 import {computed,onMounted,onBeforeUnmount,ref,watch} from 'vue'
 import {useRoute,useRouter} from 'vue-router'
 import {useAuthStore} from '@/stores/auth'
+import { refreshStructuredFrame } from '@/utils/authFetch'
 import {useTheme} from '@/composables/useTheme'
 const auth=useAuthStore(),route=useRoute(),router=useRouter(),frame=ref<HTMLIFrameElement>(),generation=ref(0)
 const {effectiveTheme}=useTheme()
@@ -16,6 +17,7 @@ function sendAuth(){frame.value?.contentWindow?.postMessage({type:'structured-au
 function sendTheme(){frame.value?.contentWindow?.postMessage({type:'workspace-theme',mode:effectiveTheme.value},window.location.origin)}
 function receive(e:MessageEvent){
   if(e.origin!==window.location.origin||e.source!==frame.value?.contentWindow)return
+  if (e.data?.type === 'structured-refresh-auth') { void refreshStructuredFrame(e, () => frame.value?.contentWindow === e.source); return }
   if(e.data?.type==='workspace-theme-ready'){sendTheme();return}
   if(e.data?.type==='structured-ready')sendAuth()
   if(e.data?.type==='structured-navigate') {
@@ -24,7 +26,8 @@ function receive(e:MessageEvent){
     else router.push({path:'/platform/structured-data',query:e.data.view==='model-settings'?{view:'model-settings'}:{}})
   }
 }
-watch(()=>[auth.token,auth.selectedTenantId,auth.tenant?.id,auth.user?.id],()=>{generation.value+=1},{flush:'sync'})
+watch(()=>[Boolean(auth.token),auth.selectedTenantId,auth.tenant?.id,auth.user?.id],()=>{generation.value+=1},{flush:'sync'})
+watch(()=>auth.token,sendAuth)
 watch(effectiveTheme,sendTheme)
 onMounted(()=>window.addEventListener('message',receive))
 onBeforeUnmount(()=>window.removeEventListener('message',receive))

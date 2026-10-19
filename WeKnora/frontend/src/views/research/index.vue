@@ -150,11 +150,11 @@ function receive(event: MessageEvent) {
 watch(effectiveTheme, sendTheme)
 // Replace both surfaces on identity changes; old workspace content must disappear.
 watch(() => [auth.token, tenantId.value, auth.user?.id, workbenchId.value], (scope, previous) => {
+  const identityChanged = !previous || scope.slice(1).some((value, index) => value !== previous[index + 1]) || Boolean(scope[0]) !== Boolean(previous[0])
+  if (!identityChanged) { if (!workbenchLoading.value) void reauthenticateFrame(); return }
   restartSession()
   authGeneration++
   frameReady.value = false
-  const identityChanged = !previous || scope.slice(1).some((value, index) => value !== previous[index + 1]) || Boolean(scope[0]) !== Boolean(previous[0])
-  if (!identityChanged) { void prepareFrameSession().catch(error => { workbenchError.value = error.message }); return }
   chatMounted.value = false
   chatVisible.value = false
   researchView.value = 'home'

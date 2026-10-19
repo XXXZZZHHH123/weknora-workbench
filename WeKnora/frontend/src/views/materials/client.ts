@@ -1,3 +1,5 @@
+import { fetchWithAuthRetry } from '../../utils/authFetch'
+
 export type MaterialScope = { token: string; userId: string; tenantId: string }
 export type LibraryOperation = {
   id: string; asset_id: string; purpose: string; status: string; error?: string; result?: any;
@@ -14,7 +16,7 @@ export type LibraryAsset = {
 export function createMaterialClient(scope: MaterialScope, current: () => MaterialScope, fetcher: typeof fetch = fetch) {
   const assertScope = () => {
     const active = current()
-    if (active.userId !== scope.userId || active.tenantId !== scope.tenantId || active.token !== scope.token) throw new Error('账号或空间已切换，请重新操作。')
+    if (active.userId !== scope.userId || active.tenantId !== scope.tenantId || !active.token) throw new Error('账号或空间已切换，请重新操作。')
   }
   async function request(path: string, options: RequestInit = {}, blob = false) {
     assertScope()
@@ -23,7 +25,7 @@ export function createMaterialClient(scope: MaterialScope, current: () => Materi
     headers.set('Authorization', `Bearer ${scope.token}`)
     headers.set('X-Tenant-ID', scope.tenantId)
     headers.set('X-Research-User', scope.userId)
-    const response = await fetcher('/research' + path, { ...options, credentials: 'same-origin', headers })
+    const response = await fetchWithAuthRetry('/research' + path, { ...options, credentials: 'same-origin', headers }, { token: current().token, fetcher, isCurrent: () => { try { assertScope(); return true } catch { return false } } })
     assertScope()
     if (blob && response.ok) {
       const result = await response.blob()
