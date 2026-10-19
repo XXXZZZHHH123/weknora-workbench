@@ -34,6 +34,9 @@ type sourceReviewSnapshot struct {
 
 func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content string, state *types.AgentState, messages []chat.Message) *sourceReviewSnapshot {
 	inputData := map[string]any{}
+	if plan := e.taskReviewPlan(); plan != nil {
+		inputData["advisory_task_plan"] = plan
+	}
 	var evidenceReader *reviewEvidenceReader
 	sourceMessages := e.sourceConsistencyMessages(state, messages)
 	sourceRecords := newReviewEvidenceReader(sourceMessages)
@@ -54,7 +57,7 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 	inputData["source_catalog_companion"] = catalogEvidence
 	rowEvidenceIncomplete := rowEvidence != nil && rowEvidence["projection_complete"] != true
 	documentEvidenceIncomplete := documentEvidence != nil && documentEvidence["projection_complete"] != true
-	imageObservations, imageScope := documentImageConsistencySummaries(state)
+	imageObservations, imageScope := documentImageConsistencySummariesWithSources(state, sourceMessages)
 	hasImageObservations = len(imageObservations) > 0
 	inputData["document_image_observations"] = imageObservations
 	inputData["document_image_observation_scope"] = imageScope

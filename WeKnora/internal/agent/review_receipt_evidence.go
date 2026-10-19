@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -17,11 +18,49 @@ const (
 // reviewSourceWitness ties a quoted passage to one immutable current-turn
 // tool result and the exact JSON path that produced it.
 type reviewSourceWitness struct {
-	EvidenceID   string `json:"evidence_id,omitempty"`
-	JSONPointer  string `json:"json_pointer,omitempty"`
-	Quote        string `json:"quote"`
-	Kind         string `json:"kind"`
-	CitationItem *int   `json:"citation_item,omitempty"`
+	EvidenceID       string                  `json:"evidence_id,omitempty"`
+	JSONPointer      string                  `json:"json_pointer,omitempty"`
+	Quote            string                  `json:"quote,omitempty"`
+	Kind             string                  `json:"kind"`
+	SourcePointerRef *int                    `json:"source_pointer_ref,omitempty"`
+	RowRef           *reviewStructuredRowRef `json:"row_ref,omitempty"`
+}
+
+// reviewStructuredRowRef selects a cell already present in the bounded row
+// companion. It is only a locator; resolution still binds the cell to the
+// immutable tool result and runs the ordinary receipt visibility checks.
+type reviewStructuredRowRef struct {
+	EntryIndex int    `json:"entry_index"`
+	RowIndex   int    `json:"row_index"`
+	Column     string `json:"column"`
+}
+
+func (r *reviewStructuredRowRef) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for _, name := range []string{"entry_index", "row_index", "column"} {
+		raw, exists := fields[name]
+		if !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return fmt.Errorf("row_ref requires non-null %s", name)
+		}
+	}
+	for name := range fields {
+		if name != "entry_index" && name != "row_index" && name != "column" {
+			return fmt.Errorf("row_ref contains unsupported field %s", name)
+		}
+	}
+	if err := json.Unmarshal(fields["entry_index"], &r.EntryIndex); err != nil {
+		return fmt.Errorf("row_ref entry_index must be an integer: %w", err)
+	}
+	if err := json.Unmarshal(fields["row_index"], &r.RowIndex); err != nil {
+		return fmt.Errorf("row_ref row_index must be an integer: %w", err)
+	}
+	if err := json.Unmarshal(fields["column"], &r.Column); err != nil {
+		return fmt.Errorf("row_ref column must be a string: %w", err)
+	}
+	return nil
 }
 
 // Quote may be a literal JSON scalar. Preserve its spelling without converting
@@ -36,6 +75,30 @@ func (w *reviewSourceWitness) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	_, quotePresent := fields["quote"]
+	if value.RowRef != nil {
+		for _, forbidden := range []string{"evidence_id", "json_pointer", "quote", "source_pointer_ref"} {
+			if _, exists := fields[forbidden]; exists {
+				return fmt.Errorf("row_ref cannot be combined with %s", forbidden)
+			}
+		}
+		if value.RowRef.EntryIndex < 0 || value.RowRef.RowIndex < 0 || value.RowRef.Column == "" {
+			return fmt.Errorf("row_ref requires non-negative entry_index and row_index and a column name")
+		}
+		*w = reviewSourceWitness(value)
+		return nil
+	}
+	if !quotePresent {
+		if value.Kind != "source" || value.EvidenceID == "" || value.JSONPointer == "" || value.SourcePointerRef != nil {
+			return fmt.Errorf("omitting quote requires kind=source, evidence_id and an explicit json_pointer")
+		}
+		*w = reviewSourceWitness(value)
+		return nil
+	}
 	decoder := json.NewDecoder(strings.NewReader(string(wire.Quote)))
 	decoder.UseNumber()
 	var scalar any
@@ -44,6 +107,9 @@ func (w *reviewSourceWitness) UnmarshalJSON(data []byte) error {
 	}
 	switch v := scalar.(type) {
 	case string:
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("witness quote cannot be empty or whitespace-only")
+		}
 		value.Quote = v
 	case json.Number:
 		value.Quote = v.String()
@@ -59,7 +125,17 @@ func (w *reviewSourceWitness) UnmarshalJSON(data []byte) error {
 // reviewWitnessVisible verifies both provenance and exposure. It deliberately
 // does not assess whether the quote semantically supports a claim.
 func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, witness reviewSourceWitness) error {
-	citationLocator := witness.CitationItem != nil
+	if witness.RowRef != nil {
+		if witness.Kind != "source" {
+			return fmt.Errorf("row_ref is allowed only for source evidence")
+		}
+		resolved, err := resolveStructuredRowWitness(input, reader, witness)
+		if err != nil {
+			return err
+		}
+		witness = resolved
+	}
+	citationLocator := witness.SourcePointerRef != nil
 	if citationLocator {
 		resolved, err := resolveCitationBodyWitness(input, reader, witness)
 		if err != nil {
@@ -69,8 +145,15 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 	} else if witness.EvidenceID == "" {
 		return fmt.Errorf("witness requires an evidence identity and exact quote")
 	}
-	if witness.EvidenceID == "" || witness.Quote == "" || len(witness.JSONPointer) > 1024 {
-		return fmt.Errorf("witness requires an evidence identity, pointer and exact quote")
+	quoteOmitted := witness.Quote == ""
+	if witness.EvidenceID == "" || len(witness.JSONPointer) > 1024 {
+		return fmt.Errorf("witness requires an evidence identity and valid pointer")
+	}
+	if !quoteOmitted && strings.TrimSpace(witness.Quote) == "" {
+		return fmt.Errorf("witness quote cannot be whitespace-only")
+	}
+	if quoteOmitted && (witness.Kind != "source" || witness.JSONPointer == "" || citationLocator) {
+		return fmt.Errorf("omitting quote requires source evidence with an explicit json_pointer")
 	}
 	if witness.Kind != "source" && witness.Kind != "execution" {
 		return fmt.Errorf("witness kind must be source or execution")
@@ -104,6 +187,27 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 	value, err := reviewWitnessRawValue(record, witness)
 	if err != nil {
 		return err
+	}
+	if quoteOmitted {
+		quote, scalar := reviewScalarWitnessQuote(value)
+		if scalar {
+			witness.Quote = quote
+		} else {
+			switch value.(type) {
+			case map[string]any, []any:
+				encoded, encodeErr := json.Marshal(value)
+				if encodeErr != nil || len(encoded) > reviewReceiptContainerQuoteLimit {
+					return fmt.Errorf("omitting quote for a container requires a compact source value within %d bytes", reviewReceiptContainerQuoteLimit)
+				}
+				// The locator is already bound to this immutable source result and
+				// exact pointer. Derive only the complete canonical value; the common
+				// raw-value and visibility checks below still require all of it to
+				// have been exposed.
+				witness.Quote = string(encoded)
+			default:
+				return fmt.Errorf("omitting quote is allowed only for a scalar or a compact container at the exact source pointer")
+			}
+		}
 	}
 	if !reviewQuoteMatchesValue(value, witness.Quote) {
 		// A model may name the inspected cell/row object instead of its scalar
@@ -142,6 +246,107 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 		return nil
 	}
 	return fmt.Errorf("witness was not exposed: evidence_id=%s json_pointer=%s; inspect that exact path before approving", witness.EvidenceID, witness.JSONPointer)
+}
+
+func resolveStructuredRowWitness(input map[string]any, reader *reviewEvidenceReader, witness reviewSourceWitness) (reviewSourceWitness, error) {
+	if witness.RowRef == nil || witness.EvidenceID != "" || witness.JSONPointer != "" || witness.Quote != "" || witness.SourcePointerRef != nil {
+		return reviewSourceWitness{}, fmt.Errorf("row_ref must be the only evidence locator")
+	}
+	view := reviewAsMap(input["structured_query_row_companion"])
+	if view == nil {
+		return reviewSourceWitness{}, fmt.Errorf("row_ref requires a displayed structured query row companion")
+	}
+	entries := reviewAsSlice(view["entries"])
+	if witness.RowRef.EntryIndex >= len(entries) {
+		return reviewSourceWitness{}, fmt.Errorf("row_ref entry_index is outside the displayed companion")
+	}
+	entry := reviewAsMap(entries[witness.RowRef.EntryIndex])
+	if entry == nil {
+		return reviewSourceWitness{}, fmt.Errorf("row_ref does not identify a displayed row entry")
+	}
+	evidenceID, _ := entry["evidence_id"].(string)
+	base, _ := entry["source_json_pointer"].(string)
+	if evidenceID == "" || base == "" {
+		return reviewSourceWitness{}, fmt.Errorf("row_ref entry has no source identity or path")
+	}
+	rows := reviewAsSlice(entry["rows"])
+	if witness.RowRef.RowIndex >= len(rows) {
+		return reviewSourceWitness{}, fmt.Errorf("row_ref row_index is outside the displayed rows")
+	}
+	row := rows[witness.RowRef.RowIndex]
+	column := witness.RowRef.Column
+	encoding, _ := entry["row_encoding"].(string)
+	var value any
+	var pointer string
+	switch encoding {
+	case "matrix":
+		columns := reviewAsSlice(entry["columns"])
+		columnIndex, matches := uniqueReviewColumnIndex(columns, column)
+		rowValues := reviewAsSlice(row)
+		if matches != 1 || columnIndex >= len(rowValues) {
+			return reviewSourceWitness{}, fmt.Errorf("row_ref column is not a unique displayed matrix column")
+		}
+		value = rowValues[columnIndex]
+		pointer = fmt.Sprintf("%s/%d/%d", base, witness.RowRef.RowIndex, columnIndex)
+	case "objects":
+		rowObject := reviewAsMap(row)
+		var exists bool
+		value, exists = rowObject[column]
+		if rowObject == nil || !exists {
+			return reviewSourceWitness{}, fmt.Errorf("row_ref column is not present in the displayed object row")
+		}
+		pointer = fmt.Sprintf("%s/%d/%s", base, witness.RowRef.RowIndex, escapeReviewPointerSegment(column))
+	case "positional":
+		constants := reviewAsMap(entry["constant_fields"])
+		if constantValue, exists := constants[column]; exists {
+			if _, duplicate := uniqueReviewColumnIndex(reviewAsSlice(entry["columns"]), column); duplicate != 0 {
+				return reviewSourceWitness{}, fmt.Errorf("row_ref column is ambiguous between constant_fields and positional columns")
+			}
+			value = constantValue
+		} else {
+			columns := reviewAsSlice(entry["columns"])
+			columnIndex, matches := uniqueReviewColumnIndex(columns, column)
+			rowValues := reviewAsSlice(row)
+			if matches != 1 || columnIndex >= len(rowValues) {
+				return reviewSourceWitness{}, fmt.Errorf("row_ref column is not a unique displayed positional column")
+			}
+			value = rowValues[columnIndex]
+		}
+		pointer = fmt.Sprintf("%s/%d/%s", base, witness.RowRef.RowIndex, escapeReviewPointerSegment(column))
+	default:
+		return reviewSourceWitness{}, fmt.Errorf("row_ref uses an unsupported row encoding")
+	}
+	quote, ok := reviewScalarWitnessQuote(value)
+	if !ok {
+		return reviewSourceWitness{}, fmt.Errorf("row_ref must identify a displayed string, number, boolean or present null cell")
+	}
+	return reviewSourceWitness{EvidenceID: evidenceID, JSONPointer: pointer, Quote: quote, Kind: "source"}, nil
+}
+
+func uniqueReviewColumnIndex(columns []any, name string) (int, int) {
+	index, matches := -1, 0
+	for i, raw := range columns {
+		if column, ok := raw.(string); ok && column == name {
+			index = i
+			matches++
+		}
+	}
+	return index, matches
+}
+
+func reviewScalarWitnessQuote(value any) (string, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return "null", true
+	case string:
+		return typed, typed != ""
+	case json.Number:
+		return typed.String(), true
+	case bool:
+		return strconv.FormatBool(typed), true
+	default:
+		return "", false
+	}
 }
 
 // uniqueReviewScalarPointer locates a quote only among scalar leaves in the
@@ -209,15 +414,15 @@ func escapeReviewPointerSegment(segment string) string {
 	return strings.ReplaceAll(segment, "/", "~1")
 }
 
-// resolveCitationBodyWitness translates the compact locator through the
-// server-owned citation projection tables. The model names an item; internal
-// source-pointer and source-result indexes are resolved here.
+// resolveCitationBodyWitness translates the displayed source_pointer_ref
+// through the server-owned citation projection tables. It must identify one
+// main body item exactly; additional observations cannot stand in for it.
 func resolveCitationBodyWitness(input map[string]any, reader *reviewEvidenceReader, witness reviewSourceWitness) (reviewSourceWitness, error) {
 	if witness.Kind != "source" || witness.EvidenceID != "" || witness.JSONPointer != "" || witness.Quote == "" {
 		return reviewSourceWitness{}, fmt.Errorf("citation body locator requires source kind, quote, and no other locator")
 	}
-	itemIndex := *witness.CitationItem
-	if itemIndex < 0 {
+	ref := *witness.SourcePointerRef
+	if ref < 0 {
 		return reviewSourceWitness{}, fmt.Errorf("citation body locator is out of range")
 	}
 	view := reviewAsMap(input["citation_source_evidence"])
@@ -225,14 +430,22 @@ func resolveCitationBodyWitness(input map[string]any, reader *reviewEvidenceRead
 		return reviewSourceWitness{}, fmt.Errorf("citation body locator requires citation source evidence")
 	}
 	items := reviewAsSlice(view["items"])
-	if itemIndex >= len(items) {
-		return reviewSourceWitness{}, fmt.Errorf("citation item is out of range")
+	var item map[string]any
+	itemMatches := 0
+	for _, rawItem := range items {
+		candidate := reviewAsMap(rawItem)
+		candidateRef, validRef := exactReviewIndex(candidate["source_pointer_ref"])
+		if validRef && candidateRef == ref {
+			item = candidate
+			itemMatches++
+		}
 	}
-	item := reviewAsMap(items[itemIndex])
-	ref, validRef := exactReviewIndex(item["source_pointer_ref"])
+	if itemMatches != 1 {
+		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref does not uniquely identify a displayed citation body")
+	}
 	content, contentOK := item["content"].(string)
-	if !validRef || item["content_included"] != true || !contentOK || content == "" || !strings.Contains(content, witness.Quote) {
-		return reviewSourceWitness{}, fmt.Errorf("citation item does not identify currently displayed body text")
+	if item["content_included"] != true || !contentOK || content == "" || !strings.Contains(content, witness.Quote) {
+		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref does not identify currently displayed body text")
 	}
 	pointers := reviewAsSlice(view["source_pointers"])
 	if ref >= len(pointers) {
@@ -526,6 +739,24 @@ func reviewWitnessVisibleInRowCompanion(value any, witness reviewSourceWitness) 
 		if entry == nil || entry["evidence_id"] != witness.EvidenceID {
 			continue
 		}
+		// Row and metadata completeness are separate. A row projection may be
+		// truncated while a metadata value remains visible (or metadata may be
+		// partial while some exact values remain visible). Resolve the original
+		// /data pointer into the displayed metadata itself; never treat either
+		// completeness flag or an omission notice as source content.
+		if strings.HasPrefix(witness.JSONPointer, "/data/") {
+			local := strings.TrimPrefix(witness.JSONPointer, "/data")
+			firstSegment := strings.TrimPrefix(local, "/")
+			if slash := strings.IndexByte(firstSegment, '/'); slash >= 0 {
+				firstSegment = firstSegment[:slash]
+			}
+			decodedFirst, validFirst := reviewDecodePointerSegment(firstSegment)
+			if validFirst && decodedFirst != "rows" {
+				if pointed, err := reviewPointerValue(entry["metadata"], local); err == nil && reviewQuoteMatchesValue(pointed, witness.Quote) {
+					return true
+				}
+			}
+		}
 		base, _ := entry["source_json_pointer"].(string)
 		if base == "" || !strings.HasPrefix(witness.JSONPointer, base+"/") {
 			continue
@@ -570,7 +801,7 @@ func reviewWitnessVisibleInRowCompanion(value any, witness reviewSourceWitness) 
 			if reviewQuoteMatchesValue(values[columnIndex], witness.Quote) {
 				return true
 			}
-		} else if entry["row_encoding"] == "objects" {
+		} else if entry["row_encoding"] == "objects" || entry["row_encoding"] == "matrix" {
 			pointed, err := reviewPointerValue(row, "/"+strings.Join(parts[1:], "/"))
 			if err == nil && reviewQuoteMatchesValue(pointed, witness.Quote) {
 				return true

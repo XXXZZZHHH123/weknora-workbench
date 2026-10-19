@@ -219,7 +219,8 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		if detail == "" {
 			detail = "结构化表格服务返回查询错误；请按真实反馈修正参数"
 		}
-		return &types.ToolResult{Success: false, Output: string(body), Data: data, Error: detail}, nil
+		cacheResult = &types.ToolResult{Success: false, Output: string(body), Data: data, Error: detail}
+		return cacheResult, nil
 	}
 	cacheResult = &types.ToolResult{Success: true, Output: string(body), Data: data}
 	return cacheResult, nil

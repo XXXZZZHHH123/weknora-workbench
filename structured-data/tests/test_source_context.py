@@ -85,8 +85,10 @@ def test_direct_source_review_does_not_reuse_question_only_cache(duplicate_sourc
         chosen='C' if len(calls)==1 else 'G'
         return {'decision':'resolved','bindings':[{'considered_ids':['C','E','G','I'],'selected_ids':[chosen],'reason':'本次模型根据本轮实际上下文选择来源'}]}
     assert verify_selection(store,dataset,['C'],'还是这个字段',model) is None
-    assert verify_selection(store,dataset,['C'],'还是这个字段',model)['status']=='plan_mismatch'
-    assert len(calls)==2 and all(p['question']=='还是这个字段' for p in calls)
+    assert verify_selection(store,dataset,['C'],'还是这个字段',model) is None
+    assert len(calls)==1  # Exact successful binding is reusable, not question-only.
+    assert verify_selection(store,dataset,['C'],'改用另一来源，还是这个字段',model)['status']=='plan_mismatch'
+    assert len(calls)==2
     assert verify_selection(store,dataset,['C'],None,model)['status']=='error'
     def unavailable(p):raise ValueError('model timeout')
     failed=verify_selection(store,dataset,['C'],'滚动字段',unavailable)
@@ -177,3 +179,41 @@ def test_initial_catalog_recalls_all_literal_duplicate_headers(duplicate_source,
         assert all(f['source_context']['formula_source'] for f in result['literal_fields'])
         assert not result['literal_fields_truncated']
         assert 'rows' not in result
+
+
+def test_successful_binding_reuse_keeps_signed_scope_checks_and_queries_live(duplicate_source, monkeypatch):
+    from fastapi.testclient import TestClient
+    from structured_data.server import create_app
+    from test_scoped_service import signed
+    store, dataset = duplicate_source
+    model_calls, query_calls = [], []
+    def model(payload):
+        model_calls.append(payload)
+        return {'decision': 'resolved', 'bindings': [
+            {'considered_ids': ['C', 'E', 'G', 'I'], 'selected_ids': ['C'],
+             'reason': 'The complete question selects this actual formula source.'}]}
+    monkeypatch.setattr(FieldResolver, '__init__', lambda self, data: self.__dict__.update(store=data, model_fn=model))
+    original_query = DataStore.query_series
+    def query(self, *args, **kwargs):
+        query_calls.append(True)
+        return original_query(self, *args, **kwargs)
+    monkeypatch.setattr(DataStore, 'query_series', query)
+    key = b'success-binding-scope-key-1234567890'
+    path = store.root / 'read-key'
+    path.write_bytes(key)
+    monkeypatch.setenv('STRUCTURED_SERVICE_TOKEN_FILE', str(path))
+    monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
+    body = {'operation': 'query_series', 'arguments': {
+        'dataset_id': dataset, 'series_id': 'C', 'source_question': 'Complete source question'}}
+    with TestClient(create_app(store.root)) as client:
+        raw, headers = signed(key, body=body)
+        for _ in range(2):
+            result = client.post('/api/tools/read', content=raw, headers=headers)
+            assert result.status_code == 200
+            assert result.json()['rows'][0]['value'] == 100
+        assert len(model_calls) == 1
+        assert len(query_calls) == 2  # Only the semantic receipt is reused.
+        assert client.post('/api/tools/read', content=raw + b' ', headers=headers).status_code == 401
+        other_raw, other_headers = signed(key, body=body, tenant=10001)
+        assert client.post('/api/tools/read', content=other_raw, headers=other_headers).status_code == 400
+        assert len(model_calls) == 1 and len(query_calls) == 2

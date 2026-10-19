@@ -53,6 +53,24 @@ def test_query_reports_cached_formula_only_when_scope_contains_formula(snapshot)
     assert any('1 条公式记录' in warning and '缓存' in warning for warning in formula['warnings'])
 
 
+
+def test_valid_value_origins_do_not_promote_error_formulas_to_numeric_cache(snapshot):
+    store, dataset, parsed = snapshot
+    mixed = store.query_series(dataset, 'price', limit=1)
+    assert mixed['formula_count'] == 1
+    assert mixed['valid_formula_count'] == 0
+    assert mixed['valid_non_formula_count'] == 2
+    # Adding an actual formula cache changes only the valid formula count.
+    changed = copy.deepcopy(parsed)
+    changed['sha256'] = 'f' * 64
+    changed['observations'].append(dict(series_id='price', date='2023-09-24', value=30,
+        source_cell='B5', formula='=10+20', value_status='valid', date_cell='A5', raw_value=30))
+    ds = store.publish(changed)['dataset_id']
+    result = store.query_series(ds, 'price', operation='mean', limit=1)
+    assert (result['formula_count'], result['valid_formula_count'], result['valid_non_formula_count']) == (2, 1, 2)
+    assert result['aggregate'] == 20
+
+
 def test_extrema_bind_value_date_and_source_row(snapshot):
     store,ds,_=snapshot
     maximum=store.query_series(ds,'price',operation='max')

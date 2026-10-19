@@ -531,10 +531,15 @@ class DataStore:
             scope_count=con.execute(f'SELECT count(*) FROM observations WHERE {where}',params).fetchone()[0]
             for f in filters:
                 where+=' AND value '+operators[f['op']]+' ?';params.append(f['value'])
-            formula_count=con.execute(f"SELECT count(*) FROM observations WHERE {where} AND formula IS NOT NULL AND trim(formula) <> ''",params).fetchone()[0]
+            formula_count,valid_formula_count=con.execute(f"SELECT count(*),count(value) FROM observations WHERE {where} AND formula IS NOT NULL AND trim(formula) <> ''",params).fetchone()
             columns={r[1] for r in con.execute("PRAGMA table_info('observations')").fetchall()}
             extra=",period,period_cell,metric_cell" if 'period' in columns else ",NULL,NULL,NULL"
             count, valid, first, last, valid_first, valid_last = con.execute(f"SELECT count(*),count(value),min(date),max(date),min(date) FILTER(WHERE value IS NOT NULL),max(date) FILTER(WHERE value IS NOT NULL) FROM observations WHERE {where}", params).fetchone()
+            observation_coverage = None
+            if operation == 'rows':
+                from .observation_coverage import summarize_observation_coverage
+                observation_coverage = summarize_observation_coverage(
+                    con, table='observations', where=where, params=params)
             aggregate = None
             extremum_count = None
             if operation not in {"rows", "latest", "top"}:
@@ -575,7 +580,7 @@ class DataStore:
         if operation in {'min','max'}:
             warnings.append('极值日期只能使用extremum_rows中的date；actual_first_date/actual_last_date是查询范围边界，不是极值日期。并列极值均保留，超出limit时标记截断。')
         if formula_count:
-            warnings.append(f"查询范围内有 {formula_count} 条公式记录；公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式。")
+            warnings.append(f"查询范围内有 {formula_count} 条公式记录，其中 {valid_formula_count} 条有有效缓存数值；有效数值中另有 {valid-valid_formula_count} 条是非公式记录。仅公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式，不把普通数值称为公式缓存。")
         from .streaming import read_json_array
         for issue in read_json_array(self._path(dataset_id) / 'issues.json'):
             if issue.get('sheet') == series['sheet'] and issue.get('code') == 'source_zero_fill':
@@ -583,7 +588,9 @@ class DataStore:
                 break
         warnings.append("missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。")
         filters = {"series_id": series_id, "start_date": start_date, "end_date": end_date, "operation": operation, "period":period, 'value_filters':value_filters or [], 'last_n':last_n,'top_n':top_n,'order':order}
-        result = {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "formula_count":formula_count, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "valid_first_date":str(valid_first) if valid_first else None,"valid_last_date":str(valid_last) if valid_last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source_semantics":{"date_representation":series.get('date_mode','date'),"statistical_calendar":series.get('statistical_calendar'),"aggregation_rule":series.get('aggregation_rule'),"notice":"未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"}, "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
+        result = {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "formula_count":formula_count, "valid_formula_count":valid_formula_count, "valid_non_formula_count":valid-valid_formula_count, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "valid_first_date":str(valid_first) if valid_first else None,"valid_last_date":str(valid_last) if valid_last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source_semantics":{"date_representation":series.get('date_mode','date'),"statistical_calendar":series.get('statistical_calendar'),"aggregation_rule":series.get('aggregation_rule'),"notice":"未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"}, "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
+        if observation_coverage is not None:
+            result['observation_coverage'] = observation_coverage
         if valid and records and not series.get('unit'):
             from .source_inspection import inspect_query_source_context
             result['source_evidence'] = inspect_query_source_context(

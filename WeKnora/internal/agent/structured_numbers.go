@@ -897,6 +897,37 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 		}
 	}
 	catalogue(data["series"])
+	// Chart legends and titles are exact catalogue labels, not numeric
+	// measurements. Mask only the complete labels so values embedded in a
+	// known label do not become bare numeric claims.
+	chartLabel := func(value any) {
+		if label, ok := value.(string); ok {
+			add(label)
+			return
+		}
+		if labels, ok := value.([]any); ok {
+			for _, label := range labels {
+				add(label)
+			}
+		}
+	}
+	if series, ok := data["series"].([]any); ok {
+		for _, rawSeries := range series {
+			item, ok := rawSeries.(map[string]any)
+			if !ok {
+				continue
+			}
+			chartLabel(item["chart_legends"])
+			chartLabel(item["chart_titles"])
+			if curves, ok := item["chart_curve_sources"].([]any); ok {
+				for _, rawCurve := range curves {
+					if curve, ok := rawCurve.(map[string]any); ok {
+						add(curve["label"])
+					}
+				}
+			}
+		}
+	}
 	catalogue(data["literal_fields"])
 	if data["kind"] == "structured_source_ambiguity" || data["kind"] == "structured_field_resolution" || data["kind"] == "structured_source_binding" {
 		catalogue(data["fields"])

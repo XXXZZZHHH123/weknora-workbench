@@ -39,6 +39,7 @@ func TestBeginCandidateRevisionUsesLatestDraftAndRestoresOriginalPlusLiveTail(t 
 	firstCall := candidateRevisionDocumentCall("initial-read", "initial-chunk", "A generic source body.")
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{firstCall}}}}
 	engine := sourceConsistencyEngine(t, &mockChat{})
+	engine.taskPlan = &taskEvidencePlan{Goals: []string{"Summarize the source."}, CompletionCriteria: []string{"Answer the requested summary."}}
 	messages := []chat.Message{
 		{Role: "system", Content: "Use real current-turn evidence."},
 		{Role: "user", Content: query},
@@ -50,6 +51,8 @@ func TestBeginCandidateRevisionUsesLatestDraftAndRestoresOriginalPlusLiveTail(t 
 
 	engine.beginCandidateRevision(t.Context(), state, &messages, guards, query, firstDraft)
 	firstEnvelope := messages[1].Content
+	require.Contains(t, candidateRevisionInput(t, messages), "advisory_task_plan")
+	require.Equal(t, firstEnvelope, guards.structuredReviewInput)
 	require.Equal(t, firstDraft, candidateRevisionInput(t, messages)["unverified_draft"])
 
 	tailCall := candidateRevisionDocumentCall("tail-read", "tail-chunk", "A newly fetched generic source body.")
@@ -60,6 +63,8 @@ func TestBeginCandidateRevisionUsesLatestDraftAndRestoresOriginalPlusLiveTail(t 
 
 	engine.beginCandidateRevision(t.Context(), state, &messages, guards, query, latestDraft)
 	input := candidateRevisionInput(t, messages)
+	require.Contains(t, input, "advisory_task_plan")
+	require.Equal(t, messages[1].Content, guards.structuredReviewInput)
 	require.Equal(t, latestDraft, input["unverified_draft"], "the second review must audit the latest candidate")
 	require.NotContains(t, messages[1].Content, firstEnvelope, "the prior synthetic reviewer envelope must not nest in the next one")
 	require.NotContains(t, messages[1].Content, firstDraft, "the prior draft must not leak into the rebuilt review payload")

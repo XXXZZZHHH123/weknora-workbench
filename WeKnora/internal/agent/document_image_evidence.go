@@ -17,6 +17,10 @@ import (
 // potentially long multi-figure page. This projection never creates evidence
 // from assistant prose or from an image URL without returned source pixels.
 func documentImageConsistencySummaries(state *types.AgentState) ([]reviewToolEvidence, reviewEvidenceScope) {
+	return documentImageConsistencySummariesWithSources(state, nil)
+}
+
+func documentImageConsistencySummariesWithSources(state *types.AgentState, sourceMessages []chat.Message) ([]reviewToolEvidence, reviewEvidenceScope) {
 	messages := []chat.Message{}
 	if state == nil {
 		return boundedReviewEvidence(messages, 131072)
@@ -85,9 +89,35 @@ func documentImageConsistencySummaries(state *types.AgentState) ([]reviewToolEvi
 						"chunk_id": read.ChunkID, "page": read.Page, "label": image.Label, "source_context": string(context),
 						"sha256": read.SHA256, "evidence_version": read.Version, "original_pixels_verified": true,
 						"returned_image_index": *read.Index, "vision_observation": observation}
-					for _, figure := range data.Geometry {
-						if figure.Reference == read.Reference && figure.ChunkID == read.ChunkID && figure.KnowledgeID == read.KnowledgeID && figure.Page == read.Page {
-							view["original_geometry_evidence"] = compactOriginalFigureEvidence(figure.Evidence)
+					if observation != "" {
+						pointer := fmt.Sprintf("/data/image_descriptions/%d", *read.Index)
+						if rawID, ok := exactImageDescriptionSourceID(sourceMessages, call, pointer, observation); ok {
+							view["source_evidence_id"] = rawID
+							view["source_json_pointers"] = map[string]string{"vision_observation": pointer}
+						}
+					}
+					for geometryIndex, figure := range data.Geometry {
+						if figure.Reference != read.Reference || figure.ChunkID != read.ChunkID || figure.KnowledgeID != read.KnowledgeID || figure.Page != read.Page {
+							continue
+						}
+						compacted := compactOriginalFigureEvidence(figure.Evidence)
+						if compacted == nil {
+							continue
+						}
+						view["original_geometry_evidence"] = compacted
+						pointer := fmt.Sprintf("/data/image_geometry_evidence/%d/evidence", geometryIndex)
+						if rawID, ok := exactImageGeometrySourceID(sourceMessages, call, pointer, view, compacted); ok {
+							view["source_evidence_id"] = rawID
+							pointers, _ := view["source_json_pointers"].(map[string]string)
+							if pointers == nil {
+								pointers = map[string]string{}
+							}
+							pointers["original_geometry_evidence"] = pointer
+							view["source_json_pointers"] = pointers
+							view["geometry_source_path_guide"] = map[string]string{
+								"source_samples": "Use " + pointer + "/geometry/series/<i>/source_samples/<j>/<field>; this is the complete source path template for the bounded projection of actual samples.",
+								"key_points":     "Use " + pointer + "/geometry/series/<i>/key_points/<j>/<field>; this is the complete source path template. Calibrated x positions use axis_position fields in this source projection.",
+							}
 						}
 					}
 					if geometry, ok := view["original_geometry_evidence"].(map[string]any); ok && geometry != nil {
@@ -102,7 +132,75 @@ func documentImageConsistencySummaries(state *types.AgentState) ([]reviewToolEvi
 			}
 		}
 	}
-	return boundedReviewEvidence(messages, 131072)
+	views, scope := boundedReviewEvidence(messages, 131072)
+	for i := range views {
+		content := reviewAsMap(views[i].Content)
+		if content == nil {
+			continue
+		}
+		if rawID, ok := content["source_evidence_id"].(string); ok && rawID != "" {
+			// Replace the synthetic summary ID with the immutable source payload ID.
+			views[i].EvidenceID = rawID
+			for _, sourceMessage := range sourceMessages {
+				if sourceMessage.Role == "tool" && reviewEvidenceID(sourceMessage) == rawID {
+					views[i].OriginalBytes = len(sourceMessage.Content)
+					break
+				}
+			}
+			content["source_projection_note"] = "This is a bounded projection, not raw result content. evidence_id identifies the immutable source result; source_json_pointers locate exact values within it."
+		} else {
+			// A derived summary ID is never a valid source result locator.
+			views[i].EvidenceID = ""
+		}
+		delete(content, "source_evidence_id")
+		views[i].Content = content
+	}
+	return views, scope
+}
+
+func exactImageDescriptionSourceID(sourceMessages []chat.Message, call types.ToolCall, pointer, expected string) (string, bool) {
+	for _, message := range sourceMessages {
+		if message.Role != "tool" || message.Name != call.Name || message.ToolCallID != call.ID {
+			continue
+		}
+		var payload map[string]any
+		decoder := json.NewDecoder(strings.NewReader(message.Content))
+		decoder.UseNumber()
+		if decoder.Decode(&payload) != nil || payload["success"] != true {
+			continue
+		}
+		value, err := reviewPointerValue(payload, pointer)
+		text, isString := value.(string)
+		if err == nil && isString && text == expected {
+			return reviewEvidenceID(message), true
+		}
+	}
+	return "", false
+}
+
+func exactImageGeometrySourceID(sourceMessages []chat.Message, call types.ToolCall, pointer string, projectedImage map[string]any, projectedGeometry any) (string, bool) {
+	for _, message := range sourceMessages {
+		if message.Role != "tool" || message.Name != call.Name || message.ToolCallID != call.ID {
+			continue
+		}
+		var payload map[string]any
+		decoder := json.NewDecoder(strings.NewReader(message.Content))
+		decoder.UseNumber()
+		if decoder.Decode(&payload) != nil || payload["success"] != true {
+			continue
+		}
+		value, err := reviewPointerValue(payload, pointer)
+		if err != nil || !reviewJSONValuesEqual(value, projectedGeometry) {
+			continue
+		}
+		data, _ := reviewPointerValue(payload, "/data")
+		dataMap, _ := data.(map[string]any)
+		if !reviewImageProjectionBoundToSource(dataMap["image_evidence"], projectedImage, projectedImage) {
+			continue
+		}
+		return reviewEvidenceID(message), true
+	}
+	return "", false
 }
 
 // Preserve every trace returned by the validated source plan and its actual

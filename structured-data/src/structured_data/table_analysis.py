@@ -57,6 +57,11 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
         if data:
             # Column types are explicit even when an entire column is NULL.
             con.execute('INSERT INTO data SELECT r.series_id,r.date,r.value,r.source_cell,r.date_cell,r.period,r.value_status,r.metric,r.sheet,r.unit FROM UNNEST(?::STRUCT(series_id VARCHAR,date DATE,value DOUBLE,source_cell VARCHAR,date_cell VARCHAR,period VARCHAR,value_status VARCHAR,metric VARCHAR,sheet VARCHAR,unit VARCHAR)[]) t(r)',[data])
+        from .observation_coverage import summarize_observation_coverage
+        for sid in series_ids:
+            provenance[sid]['observation_coverage'] = summarize_observation_coverage(
+                con, table='data', where='series_id = ?', params=[sid])
+            provenance[sid]['observation_coverage_scope'] = 'loaded_analysis_inputs_before_user_sql'
         timer=threading.Timer(8,con.interrupt)
         timer.start()
         try:

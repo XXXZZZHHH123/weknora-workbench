@@ -46,6 +46,7 @@ type AgentEngine struct {
 	reviewConversationReady          bool           // distinguishes an initialized empty turn context from a pre-turn fallback
 	taskProjection                   *taskToolProjection
 	taskPlanContext                  string
+	taskPlan                         *taskEvidencePlan
 	documentAnalysisSteers           []string // persisted human corrections only; never review envelopes
 	config                           *types.AgentConfig
 	toolRegistry                     *agenttools.ToolRegistry
@@ -428,6 +429,9 @@ func (e *AgentEngine) Execute(
 	// Build system prompt using progressive RAG prompt
 	// If skills are enabled, include skills metadata (Level 1 - Progressive Disclosure)
 	systemPrompt := e.buildSystemPrompt(ctx)
+	if e.config.WorkbenchDefault {
+		systemPrompt += "\n" + researchSynthesisInstructions + "\n" + researchTrendInstructions + "\n" + researchDeliveryInstructions
+	}
 	if e.toolRegistry.HasStructuredDataTools() {
 		if !e.config.WorkbenchDefault {
 			systemPrompt += structuredFieldTurnInstructions
@@ -452,11 +456,8 @@ func (e *AgentEngine) Execute(
 	}
 
 	if !strings.HasPrefix(query, fieldConfirmationPrefix) {
-		if e.config.WorkbenchDefault {
-			e.emitProgress(ctx, "sources", -1, sessionID)
-		}
-		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID)
 		messages = e.planWorkbenchTask(ctx, state, query, messages, sessionID)
+		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID, e.plannedSourceDiscoverySelection())
 	}
 
 	// Get tool definitions for function calling
@@ -915,6 +916,7 @@ func (e *AgentEngine) runReActIteration(
 	// call), so the very next LLM call sees the user's addition.
 	if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
 		e.clearTaskToolProjection(messagesPtr)
+		e.taskPlan = nil // The user supplied new requirements.
 		tools = e.buildToolsForLLM()
 	}
 
@@ -1213,6 +1215,7 @@ func (e *AgentEngine) runReActIteration(
 				injected := e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
 				if injected > 0 {
 					e.clearTaskToolProjection(messagesPtr)
+					e.taskPlan = nil // The user supplied new requirements.
 				}
 				if injected > 0 {
 					verdict.step.IntermediateAnswer = true
@@ -1447,6 +1450,7 @@ func (e *AgentEngine) beginCandidateRevision(ctx context.Context, state *types.A
 		}
 		e.turnReview.ReadEvidence = nil
 	}
+	e.attachTaskPlanToReview(*messagesPtr)
 	guards.structuredReviewInput = (*messagesPtr)[1].Content
 	e.contextRewrites++
 	e.lastUsage = types.TokenUsage{}
