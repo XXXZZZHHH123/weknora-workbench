@@ -122,6 +122,78 @@ func (w *reviewSourceWitness) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// reviewTextPathsContaining lists bounded string paths of one successful
+// result whose exact text contains quote. Diagnostics only: the reviewer must
+// still choose and name the path; the runtime never rebinds a witness.
+func reviewTextPathsContaining(record reviewEvidenceRecord, quote string, limit int) []string {
+	payload, ok := record.Value.(map[string]any)
+	if !ok || payload["success"] != true || quote == "" {
+		return nil
+	}
+	paths := []string{}
+	nodes := 0
+	var walk func(any, string, int)
+	walk = func(value any, pointer string, depth int) {
+		if len(paths) >= limit || nodes >= reviewReceiptUniqueWitnessNodeLimit || depth > reviewReceiptUniqueWitnessDepthLimit || len(pointer) > 1024 {
+			return
+		}
+		nodes++
+		switch typed := value.(type) {
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				walk(typed[key], pointer+"/"+escapeReviewPointerSegment(key), depth+1)
+			}
+		case []any:
+			for index, child := range typed {
+				walk(child, pointer+"/"+strconv.Itoa(index), depth+1)
+			}
+		default:
+			if reviewQuoteMatchesValue(typed, quote) {
+				paths = append(paths, pointer)
+			}
+		}
+	}
+	walk(payload["data"], "/data", 0)
+	return paths
+}
+
+// reviewPointerHint names the actual keys under the deepest resolvable prefix
+// of a missing pointer so a protocol retry can correct it.
+func reviewPointerHint(root any, pointer string) string {
+	tokens, ok := reviewJSONPointerTokens(pointer)
+	if !ok {
+		return ""
+	}
+	value, prefix := root, ""
+	for _, token := range tokens {
+		next, err := reviewPointerValue(value, "/"+escapeReviewPointerSegment(token))
+		if err != nil {
+			break
+		}
+		value, prefix = next, prefix+"/"+escapeReviewPointerSegment(token)
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		if len(keys) > 12 {
+			keys = append(keys[:12], "…")
+		}
+		return fmt.Sprintf("; deepest existing path %q has keys [%s]", prefix, strings.Join(keys, ","))
+	case []any:
+		return fmt.Sprintf("; deepest existing path %q is an array of %d elements", prefix, len(typed))
+	}
+	return fmt.Sprintf("; deepest existing path %q is a scalar", prefix)
+}
+
 // reviewWitnessVisible verifies both provenance and exposure. It deliberately
 // does not assess whether the quote semantically supports a claim.
 func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, witness reviewSourceWitness) error {
@@ -179,7 +251,7 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 		case count == 0:
 			return fmt.Errorf("quote did not match a scalar in successful result data; provide an explicit json_pointer")
 		case count != 1:
-			return fmt.Errorf("quote matched multiple scalar paths in successful result data; provide an explicit json_pointer")
+			return fmt.Errorf("quote matched multiple scalar paths in successful result data; provide an explicit json_pointer for the path your claim is about; matching paths include [%s]", strings.Join(reviewTextPathsContaining(record, witness.Quote, 4), ","))
 		default:
 			witness.JSONPointer = pointer
 		}
@@ -197,7 +269,7 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 			case map[string]any, []any:
 				encoded, encodeErr := json.Marshal(value)
 				if encodeErr != nil || len(encoded) > reviewReceiptContainerQuoteLimit {
-					return fmt.Errorf("omitting quote for a container requires a compact source value within %d bytes", reviewReceiptContainerQuoteLimit)
+					return fmt.Errorf("omitting quote for a container requires a compact source value within %d bytes; this container is larger: quote a short exact substring of one of its text fields at that field's json_pointer%s", reviewReceiptContainerQuoteLimit, reviewPointerHint(value, ""))
 				}
 				// The locator is already bound to this immutable source result and
 				// exact pointer. Derive only the complete canonical value; the common
@@ -564,7 +636,7 @@ func reviewWitnessRawValue(record reviewEvidenceRecord, witness reviewSourceWitn
 	}
 	value, err := reviewPointerValue(record.Value, witness.JSONPointer)
 	if err != nil {
-		return nil, fmt.Errorf("witness pointer does not resolve: %w", err)
+		return nil, fmt.Errorf("witness pointer does not resolve: %w%s", err, reviewPointerHint(record.Value, witness.JSONPointer))
 	}
 	return value, nil
 }
