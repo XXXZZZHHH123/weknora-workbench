@@ -63,3 +63,141 @@ export function isCompletePptxRender(result: unknown, expectedSlides: number): b
   const slides = (result as { slides?: unknown[] } | null)?.slides
   return expectedSlides > 0 && Array.isArray(slides) && slides.length === expectedSlides
 }
+
+export type PptxSlideLocator = {
+  type?: string
+  mapping?: string
+  partial?: boolean
+  slide?: number
+  quote?: string
+}
+
+export type PptxSlideLocation = {
+  page: number
+  partial: boolean
+  precise: boolean
+  granularity: 'text' | 'block'
+}
+
+/**
+ * Resolve only a verified physical slide mapping. Partial means the source
+ * chunk covers only part of that slide; it still identifies the page, but
+ * must not be treated as a precise text match unless the page quote matched.
+ */
+export function resolvePptxSlideLocator(
+  locator: PptxSlideLocator,
+  slideCount: number,
+  uniqueQuoteMatched: boolean,
+): PptxSlideLocation | null {
+  const page = locator.slide
+  if (locator.type !== 'slide' || locator.mapping !== 'exact' ||
+      !Number.isSafeInteger(page) || (page || 0) < 1 || page! > slideCount || slideCount < 1) return null
+  const precise = !!locator.quote && uniqueQuoteMatched
+  return {
+    page: page!,
+    partial: !!locator.partial,
+    precise,
+    granularity: precise ? 'text' : 'block',
+  }
+}
+
+/** Stale or otherwise unavailable source evidence must never drive a preview. */
+export function resolvePptxLocatePage(
+  locators: PptxSlideLocator[],
+  slideCount: number,
+  sourceAvailable: boolean,
+): number {
+  if (!sourceAvailable) return 0
+  for (const locator of locators) {
+    const resolved = resolvePptxSlideLocator(locator, slideCount, false)
+    if (resolved) return resolved.page
+  }
+  return 0
+}
+
+export type PptxRendererCallbacks = {
+  onRendered: (result: unknown) => void
+  onError: (reason: unknown) => void
+}
+
+export function isPptxSourceKeyCurrent(sourceKey: string, currentSourceKey: string, active: boolean): boolean {
+  return active && !!sourceKey && sourceKey === currentSourceKey
+}
+
+/** Bind renderer events to the source key that created that renderer instance. */
+export function bindPptxRendererCallbacks(
+  sourceKey: string,
+  handlers: {
+    onRendered: (sourceKey: string, result: unknown) => void
+    onError: (sourceKey: string, reason: unknown) => void
+  },
+): PptxRendererCallbacks {
+  return {
+    onRendered: result => handlers.onRendered(sourceKey, result),
+    onError: reason => handlers.onError(sourceKey, reason),
+  }
+}
+
+/**
+ * A rendered PPTX DOM is ready for locating only when every physical slide has layout.
+ * This validates citation geometry, not image decoding or pixel completeness.
+ */
+export function hasCompletePptxSlideDOM(root: ParentNode | null | undefined, expectedSlides: number): boolean {
+  if (!root || expectedSlides <= 0) return false
+  const slides = Array.from(root.querySelectorAll<HTMLElement>('.pptx-preview-slide-wrapper'))
+  if (slides.length !== expectedSlides) return false
+  return slides.every((slide) => {
+    if (!slide.isConnected) return false
+    const rect = slide.getBoundingClientRect()
+    return rect.width > 0 && rect.height > 0
+  })
+}
+
+/** Observe actual slide structure/layout when vue-office's completion event is delayed or absent. */
+export function watchCompletePptxSlideDOM(
+  root: ParentNode,
+  expectedSlides: number,
+  callbacks: { onReady: () => void; onTimeout: () => void },
+  options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+): () => void {
+  let settled = false
+  let poll: ReturnType<typeof setTimeout> | null = null
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  let observer: MutationObserver | null = null
+  const clear = () => {
+    observer?.disconnect()
+    observer = null
+    if (poll !== null) clearTimeout(poll)
+    if (timeout !== null) clearTimeout(timeout)
+    poll = null
+    timeout = null
+  }
+  const settle = (ready: boolean) => {
+    if (settled) return
+    settled = true
+    clear()
+    if (ready) callbacks.onReady()
+    else callbacks.onTimeout()
+  }
+  const check = () => {
+    if (settled) return
+    if (hasCompletePptxSlideDOM(root, expectedSlides)) return settle(true)
+    if (poll !== null) return
+    poll = setTimeout(() => {
+      poll = null
+      check()
+    }, options.pollIntervalMs ?? 100)
+  }
+
+  if (typeof MutationObserver !== 'undefined') {
+    observer = new MutationObserver(check)
+    observer.observe(root as Node, { childList: true, subtree: true })
+  }
+  timeout = setTimeout(() => settle(hasCompletePptxSlideDOM(root, expectedSlides)), options.timeoutMs ?? 45_000)
+  queueMicrotask(check)
+  return () => {
+    if (settled) return
+    settled = true
+    clear()
+  }
+}

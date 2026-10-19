@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Tencent/WeKnora/internal/application/repository"
 	"github.com/Tencent/WeKnora/internal/application/service/retriever"
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -288,27 +289,60 @@ func (s *knowledgeService) cleanupWikiReferences(
 	}
 
 	var deletedSlugs []string
-	for _, page := range pages {
-		if page.PageType == types.WikiPageTypeIndex {
+	for _, listedPage := range pages {
+		if listedPage.PageType == types.WikiPageTypeIndex {
 			continue
 		}
-
-		remaining := removeSourceRef(page.SourceRefs, knowledgeID)
-
-		if len(remaining) == 0 {
-			if err := s.wikiService.DeletePage(ctx, kbID, page.Slug); err != nil {
-				logger.Warnf(ctx, "wiki cleanup: failed to delete page %s: %v", page.Slug, err)
-				cleanupErr = errors.Join(cleanupErr, err)
-			} else {
-				deletedSlugs = append(deletedSlugs, page.Slug)
+		pageDeleted := false
+		acquired, lockErr := withWikiSlugLock(ctx, s.redisClient, kbID, listedPage.Slug, func(lockCtx context.Context) error {
+			// The initial ListBySourceRef result can be stale while a reducer is
+			// generating. Always re-read under the same slug lock before changing
+			// provenance, so a completed reducer cannot reintroduce this source.
+			current, readErr := s.wikiService.GetPageBySlug(lockCtx, kbID, listedPage.Slug)
+			if errors.Is(readErr, repository.ErrWikiPageNotFound) {
+				return nil
 			}
-		} else {
-			page.SourceRefs = remaining
-			page.ChunkRefs = removeChunkRefs(page.ChunkRefs, sourceChunkRefs)
-			if err := s.wikiService.UpdatePageMeta(ctx, page); err != nil {
-				logger.Warnf(ctx, "wiki cleanup: failed to update source refs for page %s: %v", page.Slug, err)
-				cleanupErr = errors.Join(cleanupErr, err)
+			if readErr != nil {
+				return readErr
 			}
+			if current == nil {
+				return fmt.Errorf("wiki cleanup: page %s lookup returned nil", listedPage.Slug)
+			}
+			foundSource := false
+			for _, ref := range current.SourceRefs {
+				if types.WikiSourceKnowledgeID(ref) == knowledgeID {
+					foundSource = true
+					break
+				}
+			}
+			if !foundSource {
+				return nil
+			}
+			remaining := removeSourceRef(current.SourceRefs, knowledgeID)
+			if len(remaining) == 0 {
+				if err := s.wikiService.DeletePage(lockCtx, kbID, current.Slug); err != nil {
+					return err
+				}
+				pageDeleted = true
+				return nil
+			}
+
+			current.SourceRefs = remaining
+			current.ChunkRefs = removeChunkRefs(current.ChunkRefs, sourceChunkRefs)
+			types.SetWikiRetractionSource(current, knowledgeID, false)
+			markerCtx := types.WithWikiRetractionMetadataMutation(lockCtx)
+			return s.wikiService.UpdatePageMeta(markerCtx, current)
+		})
+		if lockErr != nil {
+			cleanupErr = errors.Join(cleanupErr, lockErr)
+			continue
+		}
+		if !acquired {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("wiki cleanup: slug %s stayed locked", listedPage.Slug))
+			continue
+		}
+		if pageDeleted {
+			deletedSlugs = append(deletedSlugs, listedPage.Slug)
 		}
 	}
 

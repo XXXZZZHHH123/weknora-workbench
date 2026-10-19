@@ -19,40 +19,59 @@ func isReviewedAnswerFormat(format json.RawMessage) bool {
 // an answer using business keywords. Older providers can ignore JSON mode;
 // their plain-text response retains the existing completeness/source checks.
 func decodeReviewedAnswer(content string) string {
+	answer, valid := decodeReviewedAnswerEnvelope(content)
+	if valid {
+		return answer
+	}
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return ""
 	}
-	if trimmed[0] != '{' && trimmed[0] != '[' {
-		// Legacy prose remains supported, but a provider that mixes prose and
-		// an explicit answer envelope has failed the delivery contract. Never
-		// expose that envelope or pick one of the two competing answers.
-		if containsReviewedAnswerEnvelope(trimmed) {
-			return ""
-		}
-		return content
+	if beginsJSONValue(trimmed) || containsReviewedAnswerEnvelope(trimmed) {
+		return ""
+	}
+	return content
+}
+
+// decodeReviewedAnswerEnvelope accepts only the explicit, complete delivery
+// envelope. It is intentionally separate from legacy prose compatibility so
+// a serialization repair can never treat prose as a successful JSON repair.
+func decodeReviewedAnswerEnvelope(content string) (string, bool) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return "", false
+	}
+	if trimmed[0] != '{' {
+		return "", false
 	}
 	decoder := json.NewDecoder(strings.NewReader(escapeJSONLiteralControls(trimmed)))
 	opening, err := decoder.Token()
 	if err != nil || opening != json.Delim('{') {
-		return ""
+		return "", false
 	}
 	key, err := decoder.Token()
 	if err != nil || key != "answer" {
-		return ""
+		return "", false
 	}
 	var answer *string
 	if decoder.Decode(&answer) != nil || answer == nil {
-		return ""
+		return "", false
 	}
 	closing, err := decoder.Token()
 	if err != nil || closing != json.Delim('}') {
-		return "" // Extra or duplicate fields do not satisfy this contract.
+		return "", false // Extra or duplicate fields do not satisfy this contract.
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return ""
+		return "", false
 	}
-	return *answer
+	return *answer, true
+}
+
+func beginsJSONValue(content string) bool {
+	if content == "" {
+		return false
+	}
+	return content[0] == '{' || content[0] == '['
 }
 
 // This only recognizes the explicit delivery protocol, never question or

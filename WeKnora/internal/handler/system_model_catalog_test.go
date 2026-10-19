@@ -28,7 +28,7 @@ func TestSystemModelCatalogPreviewAndPublish(t *testing.T) {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	ddl, err := os.ReadFile("../../migrations/sqlite/000031_model_catalog_config.up.sql")
+	ddl, err := os.ReadFile("../../migrations/sqlite/000037_model_catalog_config.up.sql")
 	require.NoError(t, err)
 	require.NoError(t, db.Exec(string(ddl)).Error)
 	h := &SystemHandler{modelCatalogSvc: service.NewModelCatalogService(repository.NewModelCatalogRepository(db), nil)}

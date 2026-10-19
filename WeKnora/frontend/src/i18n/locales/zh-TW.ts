@@ -4036,6 +4036,7 @@ export default {
     referenceSourceLocating: '正在定位引用位置…',
     referenceSourceExact: "已精確定位原文片段",
     referenceSourcePartial: "已標示核驗透過的原文片段，部分引用內容尚未比對",
+    referenceSourceParentContext: '已開啟同源父段落所在第 {page} 頁，引用文字尚未精確定位',
     referenceSourceBlock: "已定位到來源區域，尚未精確比對文字",
     referenceSourceAmbiguous: "原文有多處相同內容，無法唯一定位",
     referenceSourceStale: "原文或內容已更新，當前引用無法精確定位",

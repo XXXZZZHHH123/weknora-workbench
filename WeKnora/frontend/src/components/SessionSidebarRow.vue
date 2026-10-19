@@ -243,11 +243,6 @@ const confirmDangerAction = (): void => {
   background: color-mix(in srgb, var(--cds-clay, var(--td-brand-color)) 8%, var(--cds-surface-1, var(--td-bg-color-sidebar)));
 }
 
-.submenu_item:focus-within {
-  outline: 2px solid color-mix(in srgb, var(--cds-clay, var(--td-brand-color)) 72%, transparent);
-  outline-offset: -2px;
-}
-
 .submenu_item {
   position: relative;
 }
@@ -297,9 +292,9 @@ const confirmDangerAction = (): void => {
 // A status badge (running / unread / fork) and the "more" button share one
 // touch-sized slot, so hovering swaps them in place instead of reflowing the title.
 .session-row-menu-wrap--badge {
-  flex-basis: 32px;
-  width: 32px;
-  height: 32px;
+  flex-basis: var(--app-sidebar-row-height, 32px);
+  width: var(--app-sidebar-row-height, 32px);
+  height: var(--app-sidebar-row-height, 32px);
   opacity: 1;
   pointer-events: auto;
 
@@ -324,8 +319,8 @@ const confirmDangerAction = (): void => {
 .submenu_item:focus-within,
 .submenu_item--menu-open {
   .session-row-menu-wrap {
-    flex-basis: 32px;
-    width: 32px;
+    flex-basis: var(--app-sidebar-row-height, 32px);
+    width: var(--app-sidebar-row-height, 32px);
     opacity: 1;
     pointer-events: auto;
   }
@@ -347,8 +342,8 @@ const confirmDangerAction = (): void => {
 
 @media (hover: none) {
   .session-row-menu-wrap {
-    flex-basis: 32px;
-    width: 32px;
+    flex-basis: var(--app-sidebar-row-height, 32px);
+    width: var(--app-sidebar-row-height, 32px);
     opacity: 1;
     pointer-events: auto;
   }
@@ -366,7 +361,7 @@ const confirmDangerAction = (): void => {
   .session-row-badge:not(.session-fork-indicator) {
     position: static;
     flex: 0 0 16px;
-    height: 32px;
+    height: var(--app-sidebar-row-height, 32px);
   }
 }
 
@@ -377,14 +372,14 @@ const confirmDangerAction = (): void => {
 
 .session-title-edit__input {
   width: 100%;
-  height: 32px;
+  height: var(--app-sidebar-row-height, 32px);
   padding: 0 8px;
   border: 1px solid var(--td-brand-color);
   border-radius: 5px;
   color: var(--td-text-color-primary);
   background: var(--td-bg-color-container);
   font-size: var(--app-text-base);
-  line-height: 30px;
+  line-height: calc(var(--app-sidebar-row-height, 32px) - 2px);
   outline: none;
   box-shadow: 0 0 0 2px var(--td-brand-color-light);
 }
@@ -393,8 +388,8 @@ const confirmDangerAction = (): void => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: var(--app-sidebar-row-height, 32px);
+  height: var(--app-sidebar-row-height, 32px);
   padding: 0;
   border: 0;
   border-radius: var(--cds-radius-control);

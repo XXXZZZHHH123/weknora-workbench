@@ -26,6 +26,7 @@ func (e *AgentEngine) appendToolImages(
 		labels       []string
 		descriptions []string
 		first        int
+		native       map[int]bool
 	}
 	var visionImages, describeQueue, describePrompts []string
 	var blocks []imageBlock
@@ -48,7 +49,7 @@ func (e *AgentEngine) appendToolImages(
 			visionImages = append(visionImages, call.Result.Images...)
 			continue
 		}
-		entry := describedCall{id: call.ID, labels: toolImageLabels(call.Result)}
+		entry := describedCall{id: call.ID, labels: toolImageLabels(call.Result), native: nativeGeometryImageIndexes(call)}
 		switch {
 		case len(call.Result.ImageDescriptions) == len(call.Result.Images):
 			entry.descriptions = call.Result.ImageDescriptions
@@ -73,6 +74,9 @@ func (e *AgentEngine) appendToolImages(
 			seen := false
 			for i, label := range call.labels {
 				desc := descriptions[i]
+				if call.native[i] {
+					desc = "Verified original drawing coordinates for this exact image are supplied in document_image_evidence. Any separate vision observation is retained for audit/UI, not used as source measurements."
+				}
 				if desc == "" {
 					desc = "could not be described"
 				} else {
@@ -82,7 +86,7 @@ func (e *AgentEngine) appendToolImages(
 			}
 			note := toolImagesUnviewableNote
 			if seen {
-				note = "Tool image descriptions written by a separate vision model (untrusted page evidence):\n" +
+				note = "Tool image evidence status and any separate vision observations (untrusted page evidence):\n" +
 					strings.Join(lines, "\n") + "\n" + toolImageDescriptionCaution
 			}
 			messages = appendToolNote(messages, call.id, note)

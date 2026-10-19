@@ -3,6 +3,7 @@
 import { indexEmbeddedSourceImages } from '@/utils/sourceImage';
 import { ref, shallowRef, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from 'vue';
 import { previewKnowledgeFile } from '@/api/knowledge-base/index';
+import { previewKnowledgeMedia } from '@/api/knowledge-base/preview-media';
 import { previewTemporaryAttachment } from '@/api/chat/temporary-attachments';
 import { downloadArtifact } from '@/api/chat';
 import hljs from 'highlight.js';
@@ -10,7 +11,8 @@ import 'highlight.js/styles/github.css';
 import 'katex/dist/katex.min.css';
 import { useI18n } from 'vue-i18n';
 import { sanitizeHTML, sanitizeMarkdownHTML } from '@/utils/security';
-import { preparePptxPreview, isCompletePptxRender } from '@/utils/pptxPreview';
+import { preparePptxPreview, isCompletePptxRender, watchCompletePptxSlideDOM, bindPptxRendererCallbacks, isPptxSourceKeyCurrent, resolvePptxSlideLocator, resolvePptxLocatePage, type PptxRendererCallbacks } from '@/utils/pptxPreview';
+import { createPptxMediaRequestGate, listPptxVectorMediaForSlide, sha256Hex, type PptxMediaRequestLease, type PptxVectorMedia } from '@/utils/pptxMedia';
 import { findMarkdownSourceRange } from '@/utils/markdownSourceLocate';
 import { renderDocumentPreviewMarkdown } from '@/utils/documentPreviewMarkdown';
 import { buildHtmlPreview } from '@/utils/htmlPreview';
@@ -71,7 +73,7 @@ const props = defineProps<{
   locate?: SourceLocateRequest | null;
 }>();
 
-export type SourceLocateResult = { found: boolean; precise: boolean; granularity?: string; reason?: string };
+export type SourceLocateResult = { found: boolean; precise: boolean; granularity?: string; reason?: string; partial?: boolean; page?: number };
 
 const emit = defineEmits<{
   located: [result: SourceLocateResult];
@@ -94,12 +96,221 @@ let epubObjectUrls: string[] = [];
 let excelSheetNames: string[] = [];
 let previewExt = '';
 let pptxSlideCount = 0;
-function onPptxRendered(result: unknown) {
-  if (!isCompletePptxRender(result, pptxSlideCount)) {
-    error.value = t('preview.loadFailed');
+let pptxSourceSha256 = '';
+let pptxSourceHashError = '';
+const pptxRendererCallbacks = shallowRef<PptxRendererCallbacks | null>(null);
+const PPTX_RENDER_TIMEOUT_MS = 45_000;
+let cancelPptxRenderWatch: (() => void) | null = null;
+let pptxRenderSourceKey = '';
+let pptxRenderLocateToken: number | null = null;
+let pptxRenderReadySourceKey = '';
+let pptxRenderFailureSourceKey = '';
+let pptxRenderFailureReason = '';
+let pptxRenderSignal: 'pending' | 'complete' | 'incomplete' = 'pending';
+type PptxPageMediaView = PptxVectorMedia & { objectUrl?: string; generation: number; state: 'pending' | 'loading' | 'loaded' | 'displayed' | 'failed' };
+const pptxPageMedia = ref<PptxPageMediaView[]>([]);
+const pptxPageMediaState = ref<'idle' | 'discovering' | 'loading' | 'loaded' | 'partial' | 'failed' | 'none'>('idle');
+const pptxMediaRequestGate = createPptxMediaRequestGate();
+let pptxMediaRequestLease: PptxMediaRequestLease | null = null;
+let pptxMediaRequestKey = '';
+const pptxMediaObjectUrls = new Set<string>();
+
+function stopPptxRenderWatch() {
+  cancelPptxRenderWatch?.();
+  cancelPptxRenderWatch = null;
+  pptxRenderSourceKey = '';
+  pptxRenderLocateToken = null;
+}
+
+function exactPptxLocatePage(): number {
+  if (!props.sourceMode || !props.knowledgeId || !props.active) return 0;
+  return resolvePptxLocatePage(props.locate?.locators || [], pptxSlideCount, !props.locate?.unavailable);
+}
+
+function clearPptxPageMedia() {
+  pptxMediaRequestGate.cancel();
+  pptxMediaRequestLease = null;
+  for (const url of pptxMediaObjectUrls) URL.revokeObjectURL(url);
+  pptxMediaObjectUrls.clear();
+  pptxMediaRequestKey = '';
+  pptxPageMedia.value = [];
+  pptxPageMediaState.value = 'idle';
+}
+
+function currentPptxMediaRequest(lease: PptxMediaRequestLease, sourceKey: string, page: number, token: number, sourceSha256: string) {
+  return pptxMediaRequestGate.isCurrent(lease, `${sourceKey}|${page}|${token}|${sourceSha256}`) &&
+    props.active && props.sourceMode && props.knowledgeId && !props.locate?.unavailable &&
+    loadedForId === sourceKey && previewType.value === 'pptx' && exactPptxLocatePage() === page &&
+    (props.locate?.token ?? 0) === token && pptxSourceSha256 === sourceSha256;
+}
+
+async function validPngBlob(blob: Blob): Promise<boolean> {
+  if (blob.type && blob.type !== 'image/png') return false;
+  if (blob.size < 8) return false;
+  const signature = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
+  return [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => signature[index] === byte);
+}
+
+function updatePptxPageMediaState() {
+  if (!pptxPageMedia.value.length) return;
+  const rows = pptxPageMedia.value;
+  const failures = rows.filter((item) => item.state === 'failed').length;
+  const displayed = rows.filter((item) => item.state === 'displayed').length;
+  const pending = rows.some((item) => item.state === 'pending' || item.state === 'loading' || item.state === 'loaded');
+  if (pending) pptxPageMediaState.value = 'loading';
+  else if (failures && displayed) pptxPageMediaState.value = 'partial';
+  else if (failures) pptxPageMediaState.value = 'failed';
+  else pptxPageMediaState.value = 'loaded';
+}
+
+async function loadPptxPageMedia(force = false) {
+  const page = exactPptxLocatePage();
+  const sourceKey = loadedForId;
+  const token = props.locate?.token ?? 0;
+  if (!page || !sourceKey || previewType.value !== 'pptx' || !pptxData.value) {
+    clearPptxPageMedia();
     return;
   }
-  scheduleLocate();
+  const sourceSha256 = pptxSourceSha256;
+  if (!pptxSourceSha256) {
+    clearPptxPageMedia();
+    pptxPageMediaState.value = 'failed';
+    return;
+  }
+  const requestKey = `${sourceKey}|${page}|${token}|${sourceSha256}`;
+  if (!force && pptxMediaRequestKey === requestKey && pptxMediaRequestLease && pptxMediaRequestGate.isCurrent(pptxMediaRequestLease, requestKey)) return;
+
+  clearPptxPageMedia();
+  pptxMediaRequestKey = requestKey;
+  const lease = pptxMediaRequestGate.begin(requestKey);
+  pptxMediaRequestLease = lease;
+  const generation = lease.generation;
+  pptxPageMediaState.value = 'discovering';
+  try {
+    const media = await listPptxVectorMediaForSlide(pptxData.value, page);
+    if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
+    if (!media.length) {
+      pptxPageMediaState.value = 'none';
+      return;
+    }
+    pptxPageMedia.value = media.map((item) => ({ ...item, generation, state: 'pending' }));
+    pptxPageMediaState.value = 'loading';
+
+    let next = 0;
+    const worker = async () => {
+      while (next < pptxPageMedia.value.length && currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) {
+        const index = next++;
+        const item = pptxPageMedia.value[index]!;
+        item.state = 'loading';
+        try {
+          const blob = await previewKnowledgeMedia(props.knowledgeId!, page, item.part, sourceSha256, lease.controller.signal);
+          if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
+          if (!await validPngBlob(blob)) throw new Error('Invalid PNG response');
+          const objectUrl = URL.createObjectURL(blob);
+          pptxMediaObjectUrls.add(objectUrl);
+          item.objectUrl = objectUrl;
+          item.state = 'loaded';
+        } catch {
+          if (lease.controller.signal.aborted || !currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
+          item.state = 'failed';
+        }
+        updatePptxPageMediaState();
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
+    updatePptxPageMediaState();
+  } catch {
+    if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
+    pptxPageMediaState.value = 'failed';
+    pptxPageMedia.value = [];
+  }
+}
+
+function onPptxMediaImageLoad(part: string, generation: number) {
+  if (!pptxMediaRequestLease || !pptxMediaRequestGate.isCurrent(pptxMediaRequestLease, pptxMediaRequestKey) || generation !== pptxMediaRequestLease.generation) return;
+  const item = pptxPageMedia.value.find((candidate) => candidate.part === part);
+  if (!item || item.generation !== generation || item.state === 'failed') return;
+  item.state = 'displayed';
+  updatePptxPageMediaState();
+}
+
+function onPptxMediaImageError(part: string, generation: number) {
+  if (!pptxMediaRequestLease || !pptxMediaRequestGate.isCurrent(pptxMediaRequestLease, pptxMediaRequestKey) || generation !== pptxMediaRequestLease.generation) return;
+  const item = pptxPageMedia.value.find((candidate) => candidate.part === part);
+  if (!item || item.generation !== generation) return;
+  item.state = 'failed';
+  updatePptxPageMediaState();
+}
+
+function retryPptxPageMedia() {
+  if (pptxSourceHashError) return;
+  void loadPptxPageMedia(true);
+}
+
+function isCurrentPptxSource(sourceKey: string) {
+  return isPptxSourceKeyCurrent(sourceKey, loadedForId, props.active) && previewType.value === 'pptx';
+}
+
+function failPptxRender(sourceKey: string, reason: string, detail?: string, token = props.locate?.token ?? null) {
+  if (!isCurrentPptxSource(sourceKey)) return;
+  error.value = detail || t('preview.loadFailed');
+  stopPptxRenderWatch();
+  pptxRenderFailureSourceKey = sourceKey;
+  pptxRenderFailureReason = reason;
+  if (props.locate && props.locate.token === token) emit('located', { found: false, precise: false, reason });
+}
+
+function watchPptxRender(sourceKey: string) {
+  if (!sourceKey || !props.active || loadedForId !== sourceKey || previewType.value !== 'pptx') return;
+  if (pptxRenderReadySourceKey === sourceKey) {
+    if (props.locate) scheduleLocate();
+    return;
+  }
+  if (pptxRenderFailureSourceKey === sourceKey) {
+    if (props.locate) emit('located', { found: false, precise: false, reason: pptxRenderFailureReason || 'render_failed' });
+    return;
+  }
+  const token = props.locate?.token ?? null;
+  if (pptxRenderSourceKey !== sourceKey || pptxRenderLocateToken !== token) {
+    stopPptxRenderWatch();
+    pptxRenderSourceKey = sourceKey;
+    pptxRenderLocateToken = token;
+    pptxRenderSignal = 'pending';
+    const root = previewContent.value;
+    if (!root) {
+      pptxRenderSourceKey = '';
+      pptxRenderLocateToken = null;
+      return;
+    }
+    cancelPptxRenderWatch = watchCompletePptxSlideDOM(root, pptxSlideCount, {
+      onReady: () => {
+        if (!isCurrentPptxSource(sourceKey) || (props.locate?.token ?? null) !== token) return;
+        pptxRenderReadySourceKey = sourceKey;
+        stopPptxRenderWatch();
+        if (props.locate) scheduleLocate();
+      },
+      onTimeout: () => {
+        if (!isCurrentPptxSource(sourceKey) || (props.locate?.token ?? null) !== token) return;
+        const reason = pptxRenderSignal === 'incomplete' ? 'render_incomplete' : 'render_timeout';
+        failPptxRender(sourceKey, reason, undefined, token);
+      },
+    }, { timeoutMs: PPTX_RENDER_TIMEOUT_MS });
+  }
+}
+
+function onPptxRendered(sourceKey: string, result: unknown) {
+  if (!isCurrentPptxSource(sourceKey)) return;
+  watchPptxRender(sourceKey);
+  if (pptxRenderSourceKey === sourceKey) {
+    pptxRenderSignal = isCompletePptxRender(result, pptxSlideCount) ? 'complete' : 'incomplete';
+  }
+}
+
+function onPptxError(sourceKey: string, reason: unknown) {
+  if (!isCurrentPptxSource(sourceKey)) return;
+  const detail = (reason as { message?: unknown } | null)?.message;
+  failPptxRender(sourceKey, 'render_failed', typeof detail === 'string' && detail ? detail : undefined);
 }
 const docxContainer = ref<HTMLElement | null>(null);
 const imageNaturalWidth = ref(0);
@@ -220,7 +431,14 @@ function onFullscreenEscape(event: KeyboardEvent) {
 }
 
 watch(() => props.active, (active) => {
-  if (!active) void exitPreviewFullscreen();
+  if (!active) {
+    stopPptxRenderWatch();
+    clearPptxPageMedia();
+    void exitPreviewFullscreen();
+  } else if (loadedForId && previewType.value === 'pptx') {
+    watchPptxRender(loadedForId);
+    void loadPptxPageMedia();
+  }
 });
 
 onMounted(() => {
@@ -410,7 +628,13 @@ async function openMermaid() {
 async function loadPreview() {
   const sourceKey = getPreviewSourceKey();
   if (!sourceKey) return;
-  if (loadedForId === sourceKey) return;
+  if (loadedForId === sourceKey) {
+    if (previewType.value === 'pptx') {
+      watchPptxRender(sourceKey);
+      void loadPptxPageMedia();
+    }
+    return;
+  }
 
   cleanup();
   loading.value = true;
@@ -489,10 +713,27 @@ async function loadPreview() {
         break;
       }
       case 'pptx': {
-        const prepared = await preparePptxPreview(await blob.arrayBuffer());
+        const originalData = await blob.arrayBuffer();
+        let sourceSha256 = '';
+        let sourceHashError = '';
+        try {
+          sourceSha256 = await sha256Hex(originalData);
+        } catch {
+          sourceHashError = 'source_fingerprint_unavailable';
+        }
+        const prepared = await preparePptxPreview(originalData);
         if (getPreviewSourceKey() !== sourceKey || !props.active) return;
+        pptxSourceSha256 = sourceSha256;
+        pptxSourceHashError = sourceHashError;
         pptxSlideCount = prepared.slideCount;
+        pptxRendererCallbacks.value = bindPptxRendererCallbacks(sourceKey, {
+          onRendered: onPptxRendered,
+          onError: onPptxError,
+        });
         pptxData.value = prepared.data;
+        await nextTick();
+        watchPptxRender(sourceKey);
+        void loadPptxPageMedia();
         break;
       }
       case 'mermaid': {
@@ -500,7 +741,7 @@ async function loadPreview() {
         break;
       }
     }
-    // PPTX renders asynchronously and locates from its rendered event.
+    // PPTX location waits for the renderer event or the bounded slide-DOM fallback.
     if (kind !== 'pptx') scheduleLocate();
   } catch (err: any) {
     console.error('Document preview failed:', err);
@@ -511,6 +752,13 @@ async function loadPreview() {
 }
 
 function cleanup() {
+  stopPptxRenderWatch();
+  clearPptxPageMedia();
+  pptxRendererCallbacks.value = null;
+  pptxRenderReadySourceKey = '';
+  pptxRenderFailureSourceKey = '';
+  pptxRenderFailureReason = '';
+  pptxRenderSignal = 'pending';
   if (blobUrl.value) {
     URL.revokeObjectURL(blobUrl.value);
     blobUrl.value = '';
@@ -522,6 +770,8 @@ function cleanup() {
   mermaidSvg.value = '';
   htmlViewMode.value = 'render';
   pptxData.value = null;
+  pptxSourceSha256 = '';
+  pptxSourceHashError = '';
   pdfData.value = null;
   for (const url of epubObjectUrls) URL.revokeObjectURL(url);
   epubObjectUrls = [];
@@ -559,17 +809,30 @@ function clearLocateMarks() {
 let locateScheduled = false;
 function scheduleLocate() {
   if (!props.locate || locateScheduled) return;
+  const sourceKey = loadedForId;
+  const token = props.locate.token;
   locateScheduled = true;
   void nextTick(() => {
     locateScheduled = false;
+    if (!props.active || sourceKey !== loadedForId || token !== props.locate?.token) {
+      if (props.active && loadedForId && props.locate) scheduleLocate();
+      return;
+    }
     applyLocate();
   });
 }
 
 watch(
-  () => props.locate?.token,
+  () => [props.locate?.token, props.sourceMode],
   () => {
-    if (loadedForId && !loading.value) scheduleLocate();
+    if (loadedForId && !loading.value) {
+      if (previewType.value === 'pptx') {
+        watchPptxRender(loadedForId);
+        void loadPptxPageMedia();
+        return;
+      }
+      scheduleLocate();
+    }
   },
 );
 
@@ -680,19 +943,38 @@ function locatePptx(request: SourceLocateRequest): SourceLocateResult {
   const box = previewContent.value;
   if (!box) return NOT_FOUND;
   const slides = Array.from(box.querySelectorAll('.pptx-preview-slide-wrapper'));
-  const locators = request.locators.filter((l) => l.type === 'slide' && l.mapping === 'exact' && !l.partial && l.slide);
+  const locators = request.locators.filter((locator) => resolvePptxSlideLocator(locator, slides.length, false));
   if (!locators.length) return locateQuote(box, box, evidenceQuotes(request));
   const ranges: Range[] = [], regions: Element[] = [];
+  let partial = false;
+  let firstPage = 0;
   for (const loc of locators) {
-    const slide = slides[(loc.slide as number) - 1];
+    const page = resolvePptxSlideLocator(loc, slides.length, false)?.page;
+    if (!page) continue;
+    const slide = slides[page - 1];
     if (!slide) return NOT_FOUND;
+    const slideRect = slide.getBoundingClientRect();
+    if (!slide.isConnected || slideRect.width <= 0 || slideRect.height <= 0) {
+      return { ...NOT_FOUND, reason: 'slide_layout_unavailable' };
+    }
+    firstPage ||= page;
     const own = slide.querySelector('.slide-wrapper') || slide;
     const range = loc.quote ? findQuoteRange(own, [loc.quote]) : null;
-    if (range) ranges.push(range); else regions.push(slide);
+    const resolved = resolvePptxSlideLocator(loc, slides.length, !!range);
+    partial ||= !!resolved?.partial;
+    if (range && resolved?.precise) ranges.push(range); else regions.push(slide);
   }
   commitMarks(ranges, regions);
-  reveal(box, ranges[0] || regions[0]);
-  return { found: true, precise: !regions.length, granularity: regions.length ? 'block' : 'text' };
+  const target = ranges[0] || regions[0];
+  reveal(box, target);
+  return {
+    found: !!target,
+    precise: !regions.length && !!ranges.length,
+    granularity: regions.length ? 'block' : 'text',
+    ...(partial ? { partial: true } : {}),
+    ...(partial && !regions.length ? { reason: 'partial' } : {}),
+    ...(firstPage ? { page: firstPage } : {}),
+  };
 }
 
 /** Map sheet row numbers to table rows using the cell ids SheetJS emits. */
@@ -853,6 +1135,7 @@ watch(
 );
 
 onUnmounted(() => {
+  stopPptxRenderWatch();
   cleanup();
 });
 </script>
@@ -955,7 +1238,50 @@ onUnmounted(() => {
 
     <!-- PPTX -->
     <div v-else-if="previewType === 'pptx' && pptxData" ref="previewContent" tabindex="0" :aria-label="fileName" class="preview-pptx">
-      <vue-office-pptx :key="loadedForId" :src="pptxData" @rendered="onPptxRendered" @error="(e: any) => { error = e?.message || $t('preview.loadFailed'); }" />
+      <section
+        v-if="sourceMode && exactPptxLocatePage() && pptxPageMediaState !== 'idle' && pptxPageMediaState !== 'none'"
+        class="pptx-source-media"
+        aria-live="polite"
+        :aria-label="`第${exactPptxLocatePage()}页引用图像`"
+      >
+        <div class="pptx-source-media__heading">
+          <strong>第{{ exactPptxLocatePage() }}页引用图像</strong>
+          <span v-if="pptxSourceHashError">无法校验来源文件，暂不能显示原件图像。</span>
+          <span v-else-if="pptxPageMediaState === 'discovering'">正在读取此页的嵌入图像…</span>
+          <span v-else-if="pptxPageMediaState === 'loading'">正在载入原件图像…</span>
+          <span v-else-if="pptxPageMediaState === 'loaded'">已载入此页的原件图像</span>
+          <span v-else-if="pptxPageMediaState === 'partial'">部分原件图像载入失败</span>
+          <span v-else-if="pptxPageMediaState === 'failed'">原件图像读取失败</span>
+          <button
+            v-if="!pptxSourceHashError && (pptxPageMediaState === 'failed' || pptxPageMediaState === 'partial')"
+            type="button"
+            class="pptx-source-media__retry"
+            @click="retryPptxPageMedia"
+          >重试</button>
+        </div>
+        <p class="pptx-source-media__note">以下为该页从原文件读取的独立图像，不代表整页内容均已完整渲染。</p>
+        <div v-if="pptxPageMedia.length" class="pptx-source-media__items">
+          <figure v-for="media in pptxPageMedia" :key="`${media.generation}:${media.part}`" class="pptx-source-media__item">
+            <figcaption>
+              <span>第{{ exactPptxLocatePage() }}页 · 图{{ media.shapeIndexes.join('、') }}</span>
+              <details>
+                <summary>来源信息</summary>
+                <code>{{ fileName }} · {{ media.part }}</code>
+              </details>
+            </figcaption>
+            <img
+              v-if="media.objectUrl"
+              :src="media.objectUrl"
+              :alt="`第${exactPptxLocatePage()}页图${media.shapeIndexes.join('、')}原件图像`"
+              @load="onPptxMediaImageLoad(media.part, media.generation)"
+              @error="onPptxMediaImageError(media.part, media.generation)"
+            />
+            <span v-else-if="media.state === 'failed'" class="pptx-source-media__error">此图像读取失败，可重试或打开原文件。</span>
+            <span v-else class="pptx-source-media__pending">正在读取…</span>
+          </figure>
+        </div>
+      </section>
+      <vue-office-pptx :key="loadedForId" :src="pptxData" @rendered="pptxRendererCallbacks?.onRendered" @error="pptxRendererCallbacks?.onError" />
     </div>
 
     <!-- Excel -->
@@ -1366,6 +1692,87 @@ onUnmounted(() => {
   overflow: auto;
   background: @bg-subtle;
 
+  .pptx-source-media {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    max-height: 34vh;
+    overflow: auto;
+    padding: 10px 14px;
+    border-bottom: 1px solid @border-color;
+    background: @bg-subtle;
+  }
+
+  .pptx-source-media__heading {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    color: @text-primary;
+    font-size: var(--app-text-sm);
+  }
+
+  .pptx-source-media__heading > span,
+  .pptx-source-media__note,
+  .pptx-source-media__pending,
+  .pptx-source-media__error {
+    color: @text-secondary;
+    font-size: var(--app-text-xs);
+  }
+
+  .pptx-source-media__retry {
+    border: 0;
+    padding: 2px 8px;
+    border-radius: @border-radius;
+    color: @text-primary;
+    background: @accent-bg;
+    cursor: pointer;
+  }
+
+  .pptx-source-media__note { margin: 4px 0 8px; }
+
+  .pptx-source-media__items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .pptx-source-media__item {
+    display: grid;
+    justify-items: start;
+    gap: 6px;
+    min-width: 180px;
+    max-width: min(100%, 520px);
+    margin: 0;
+    padding: 8px;
+    border: 1px solid @border-color;
+    border-radius: @border-radius;
+    background: var(--td-bg-color-container);
+  }
+
+  .pptx-source-media__item figcaption {
+    display: grid;
+    gap: 3px;
+    font-size: var(--app-text-xs);
+    color: @text-secondary;
+  }
+
+  .pptx-source-media__item code {
+    overflow-wrap: anywhere;
+    color: @text-tertiary;
+  }
+
+  .pptx-source-media__item details summary {
+    cursor: pointer;
+  }
+
+  .pptx-source-media__item img {
+    display: block;
+    max-width: 100%;
+    max-height: 200px;
+    object-fit: contain;
+  }
+
   :deep(.pptx-preview-wrapper) {
     height: auto !important;
     overflow-y: visible !important;
@@ -1691,6 +2098,13 @@ mark.source-locate-mark {
 }
 
 .source-locate-block {
+  background-color: var(--app-source-highlight-soft-bg) !important;
+  box-shadow: inset 3px 0 var(--app-source-highlight-border);
+}
+
+/* Slides are injected imperatively by vue-office and do not carry this
+   component's scoped-style attribute. */
+.preview-pptx :deep(.source-locate-block) {
   background-color: var(--app-source-highlight-soft-bg) !important;
   box-shadow: inset 3px 0 var(--app-source-highlight-border);
 }

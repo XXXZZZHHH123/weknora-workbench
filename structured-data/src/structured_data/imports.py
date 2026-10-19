@@ -5,17 +5,20 @@ from collections import Counter, deque
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import shutil
 import threading
 import tempfile
+import time
 from contextlib import contextmanager
 
 from .store import DataStore, dump
 
 READY = {'auto_ready', 'template_ready', 'confirmed'}
+logger = logging.getLogger(__name__)
 
 
 def now():
@@ -176,8 +179,30 @@ class ImportManager:
 
     @staticmethod
     def _result(doc, reused=False):
-        return {'import_id': doc['import_id'], 'dataset_id': doc.get('dataset_id'),
-                'summary': doc['summary'], 'reused': reused}
+        result = {'import_id': doc['import_id'], 'dataset_id': doc.get('dataset_id'),
+                  'summary': doc['summary'], 'reused': reused}
+        preparation = doc.get('chart_catalog_preparation')
+        if isinstance(preparation, dict):
+            result['chart_catalog_preparation'] = dict(preparation)
+        return result
+
+    def _prepare_chart_catalog(self, dataset_id):
+        """Warm disposable chart metadata after publication without affecting it."""
+        started = time.perf_counter()
+        try:
+            self.store.chart_index(dataset_id)
+        except Exception as exc:
+            elapsed_ms = round((time.perf_counter() - started) * 1000)
+            result = {'status': 'failed', 'purpose': 'derived_catalog_only',
+                      'elapsed_ms': elapsed_ms, 'error_type': type(exc).__name__}
+            logger.warning('published_chart_catalog_preparation_failed dataset_id=%s elapsed_ms=%d error_type=%s',
+                           dataset_id, elapsed_ms, type(exc).__name__)
+            return result
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        logger.info('published_chart_catalog_preparation_ready dataset_id=%s elapsed_ms=%d',
+                    dataset_id, elapsed_ms)
+        return {'status': 'ready', 'purpose': 'derived_catalog_only',
+                'elapsed_ms': elapsed_ms}
 
     @contextmanager
     def _records(self):
@@ -294,6 +319,10 @@ class ImportManager:
                                base_id=base_id, replace_sheets=replaced)
         if result:
             doc['dataset_id'] = result['dataset_id']
+            # The immutable snapshot is already committed at this point. The
+            # chart index is a disposable projection: its failure is recorded
+            # but never rolls back or hides the published dataset.
+            doc['chart_catalog_preparation'] = self._prepare_chart_catalog(result['dataset_id'])
 
     def preview(self, import_id, mapping):
         from .generic_parser import parse_mapped_workbook, validate_mapping

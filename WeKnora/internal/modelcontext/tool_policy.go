@@ -51,15 +51,16 @@ var sourceKeySpaces = map[string]sourceKeySpace{
 }
 
 type toolHandlePolicy struct {
-	mcpRoutingKey       string // Only the bridge's top-level argument, never external arguments.
-	mcpDirectoryOutput  bool
-	opaqueOutput        bool // MCP bridge payloads use external identities and schemas.
-	sourceIDKeys        map[string]struct{}
-	sourceTextKeys      map[string]struct{}
-	sourceOutput        bool
-	decodedIssueIDKeys  map[string]struct{}
-	encodedIssueIDKeys  map[string]struct{}
-	encodeKnownIssueIDs bool
+	mcpRoutingKey        string // Only the bridge's top-level argument, never external arguments.
+	mcpDirectoryOutput   bool
+	opaqueOutput         bool // MCP bridge payloads use external identities and schemas.
+	sourceIDKeys         map[string]struct{}
+	rootOnlySourceIDKeys map[string]struct{}
+	sourceTextKeys       map[string]struct{}
+	sourceOutput         bool
+	decodedIssueIDKeys   map[string]struct{}
+	encodedIssueIDKeys   map[string]struct{}
+	encodeKnownIssueIDs  bool
 }
 
 // toolHandlePolicies is the complete allowlist for built-in tool fields whose
@@ -68,12 +69,12 @@ type toolHandlePolicy struct {
 // name with unrelated semantics and must remain opaque.
 var toolHandlePolicies = map[string]toolHandlePolicy{
 	"commodity_research":             {},
-	"structured_data":                {opaqueOutput: true},
-	"structured_list_series":         {opaqueOutput: true},
-	"structured_query_series":        {opaqueOutput: true},
-	"structured_analyze_table":       {opaqueOutput: true},
-	"structured_inspect_source":      {opaqueOutput: true},
-	"structured_get_result_evidence": {opaqueOutput: true},
+	"structured_data":                {opaqueOutput: true, rootOnlySourceIDKeys: map[string]struct{}{"knowledge_base_id": {}}},
+	"structured_list_series":         {opaqueOutput: true, rootOnlySourceIDKeys: map[string]struct{}{"knowledge_base_id": {}}},
+	"structured_query_series":        {opaqueOutput: true, rootOnlySourceIDKeys: map[string]struct{}{"knowledge_base_id": {}}},
+	"structured_analyze_table":       {opaqueOutput: true, rootOnlySourceIDKeys: map[string]struct{}{"knowledge_base_id": {}}},
+	"structured_inspect_source":      {opaqueOutput: true, rootOnlySourceIDKeys: map[string]struct{}{"knowledge_base_id": {}}},
+	"structured_get_result_evidence": {opaqueOutput: true, rootOnlySourceIDKeys: map[string]struct{}{"knowledge_base_id": {}}},
 	"calculate_source_values": {
 		sourceIDKeys: map[string]struct{}{"chunk_id": {}},
 		sourceOutput: true,
@@ -229,6 +230,28 @@ func sourceArgumentAllowed(toolName, key string) bool {
 	}
 	_, ok = policy.sourceIDKeys[strings.ToLower(key)]
 	return ok
+}
+
+// sourceArgumentPathAllowed applies the tool's source-key contract at the
+// declared JSON path. Existing policies remain key-based and recursive;
+// structured KB selectors are intentionally limited to the tool envelope.
+func sourceArgumentPathAllowed(toolName string, path []string) bool {
+	if len(path) == 0 {
+		return false
+	}
+	policy, ok := toolHandlePolicies[toolName]
+	if !ok {
+		return false
+	}
+	key := strings.ToLower(path[len(path)-1])
+	if _, ok := policy.sourceIDKeys[key]; ok {
+		return true
+	}
+	if len(path) == 1 {
+		_, ok = policy.rootOnlySourceIDKeys[key]
+		return ok
+	}
+	return false
 }
 
 func sourceOutputAllowed(toolName string) bool {

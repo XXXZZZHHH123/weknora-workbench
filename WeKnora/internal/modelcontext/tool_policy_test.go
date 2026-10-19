@@ -12,6 +12,11 @@ func TestEverySourceIDKeyHasARegistrationSpace(t *testing.T) {
 				t.Errorf("tool %s declares source key %q with no entry in sourceKeySpaces", tool, key)
 			}
 		}
+		for key := range policy.rootOnlySourceIDKeys {
+			if _, ok := sourceKeySpaces[key]; !ok {
+				t.Errorf("tool %s declares root-only source key %q with no entry in sourceKeySpaces", tool, key)
+			}
+		}
 		for key := range policy.sourceTextKeys {
 			if _, ok := sourceKeySpaces[key]; ok {
 				t.Errorf("tool %s declares %q as free text but sourceKeySpaces also claims it as an ID key", tool, key)

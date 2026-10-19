@@ -14,6 +14,9 @@ const (
 	ImageReadChartPrompt = "For charts and tables, associate every reported value with its category, " +
 		"series/legend and unit, using one labelled row per category. Distinguish axis tick labels from data values. " +
 		"Never infer these associations from text reading order; mark ambiguous labels or values as unclear. " +
+		"For plotted curves, read horizontal positions from the actual axis labels, not the report date. " +
+		"Before estimating a value, locate its neighboring vertical ticks and interpolate its visible position. " +
+		"Follow the requested trace left to right, preserving major troughs, peaks and rebounds, including shorter traces. " +
 		"Keep observed values separate from estimates or calculations. "
 	ImageReadFocusRunes = 300
 )
@@ -39,7 +42,8 @@ func ImageReadPrompt(detail, focus string) string {
 	}
 	if focus != "" {
 		prompt += "\nThe assistant is looking for: " + focus +
-			"\nAddress that first, saying plainly if the image does not show it."
+			"\nReport the visible evidence needed for that request; avoid transcribing unrelated series or adding external explanations. " +
+			"Say plainly when a mapping or value is unclear."
 	}
 	return prompt
 }

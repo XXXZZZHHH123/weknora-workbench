@@ -18,6 +18,23 @@ func mustJSON(t *testing.T, value any) []byte {
 	return encoded
 }
 
+func TestReviewRetainsUnevenCompleteResultsWhenTheirWholeEnvelopeFits(t *testing.T) {
+	large := map[string]any{"status": "ok", "source_text": strings.Repeat("actual source record ", 240)}
+	small := map[string]any{"status": "ok", "count": 1}
+	messages := []chat.Message{
+		{Role: "tool", Name: "source", ToolCallID: "large", Content: string(mustJSON(t, large))},
+		{Role: "tool", Name: "source", ToolCallID: "small", Content: string(mustJSON(t, small))},
+	}
+	const budget = 8192
+	require.Greater(t, len(messages[0].Content), budget/2, "exercise the old equal-share cutoff")
+	views, scope := boundedReviewEvidence(messages, budget)
+	require.True(t, scope.ViewComplete)
+	require.Len(t, views, 2)
+	require.True(t, views[0].ViewComplete)
+	require.Equal(t, large["source_text"], views[0].Content.(map[string]any)["source_text"])
+	require.LessOrEqual(t, len(mustJSON(t, views)), budget)
+}
+
 func TestReviewLargeSourceIsProjectedWithActualIdentityAndCoverage(t *testing.T) {
 	source := map[string]any{
 		"kind": "document_content", "knowledge_id": "d4", "chunk_id": "c12", "truncated": true,
@@ -84,12 +101,16 @@ func TestReviewEvidenceKeepsToolProvenanceAndDoesNotMergeDifferentToolIdentities
 		{Role: "tool", ToolCallID: "call-1", Content: body},
 		{Role: "tool", Name: "structured_analyze_table", ToolCallID: "call-2", Content: body},
 		{Role: "tool", Name: "structured_analyze_table", ToolCallID: "call-3", Content: body},
+		{Role: "tool", Name: "structured_analyze_table", ToolCallID: "call-3", Content: body},
 	}
 	results, scope := boundedReviewEvidence(messages, 48000)
-	require.Len(t, results, 2)
+	require.Len(t, results, 3)
 	require.Equal(t, "read_document", results[0].Tool)
 	require.Equal(t, "structured_analyze_table", results[1].Tool)
-	require.Equal(t, 2, scope.DistinctResults)
+	require.Equal(t, "call-2", results[1].ToolCallID)
+	require.Equal(t, "structured_analyze_table", results[2].Tool)
+	require.Equal(t, "call-3", results[2].ToolCallID)
+	require.Equal(t, 3, scope.DistinctResults)
 	require.True(t, scope.ViewComplete)
 }
 

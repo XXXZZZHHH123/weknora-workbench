@@ -43,6 +43,16 @@ def test_saved_rows_page_keeps_original_evidence_and_counts(snapshot):
         store.query_series(dataset, 'price', operation='sum', offset=1)
 
 
+def test_query_reports_cached_formula_only_when_scope_contains_formula(snapshot):
+    store, dataset, _ = snapshot
+    literal = store.query_series(dataset, 'price', '2023-09-21', '2023-09-21')
+    assert literal['formula_count'] == 0
+    assert not any('公式结果来自原文件保存的缓存' in warning for warning in literal['warnings'])
+    formula = store.query_series(dataset, 'price', '2023-09-22', '2023-09-22')
+    assert formula['formula_count'] == 1
+    assert any('1 条公式记录' in warning and '缓存' in warning for warning in formula['warnings'])
+
+
 def test_extrema_bind_value_date_and_source_row(snapshot):
     store,ds,_=snapshot
     maximum=store.query_series(ds,'price',operation='max')
@@ -152,6 +162,26 @@ def test_catalog_group_counts_use_whole_matching_scope_before_pagination(snapsho
     assert matched['scope'] == {'sheet': 'test', 'search': '价格', 'match_mode': 'all_terms'}
     partial = store.list_series(dataset, search='价格 库存')['catalog_summary']
     assert partial['scope']['match_mode'] == 'partial_candidates'
+
+
+def test_catalog_separates_imported_sheet_from_unreviewed_unit(snapshot):
+    store, _, parsed = snapshot
+    parsed = copy.deepcopy(parsed)
+    parsed['sha256'] = 'f' * 64
+    parsed['series'][0]['unit'] = None
+    parsed['series'][0]['unit_status'] = 'needs_review'
+    parsed['sheets'] = [dict(name='test', observations=4, series_count=2, parsed_range='A1:C4')]
+    dataset = store.publish(parsed)['dataset_id']
+    result = store.list_series(dataset, sheet='test')
+    price = next(row for row in result['series'] if row['series_id'] == 'price')
+    assert price['sheet_status'] == 'has_imported_series'
+    assert price['unit_status'] == 'needs_review'
+    assert '不表示工作表待导入' in result['notice']
+    queried = store.query_series(dataset, 'price', '2023-09-21', '2023-09-21')
+    assert queried['series']['unit'] is None
+    assert queried['rows'][0]['value'] == 10
+    assert not any('原表未明确单位' in warning for warning in queried['warnings'])
+    assert any('字段目录' in warning and '原件其他位置' in warning for warning in queried['warnings'])
 
 
 def test_catalog_group_summary_explicitly_bounds_groups():

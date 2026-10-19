@@ -113,6 +113,66 @@ def test_fresh_catalog_reports_import_identity_and_empty_sheet_without_a_repair_
     assert 'Layered' in item['pending_sheets']
 
 
+def test_catalog_keeps_pending_status_and_reasons_bound_to_each_dataset(tmp_path, monkeypatch):
+    path = original(tmp_path / 'source.xlsx')
+    prohibit_profiles(monkeypatch)
+    manager = ImportManager(tmp_path / 'data')
+    first = manager.ingest(path, use_reviewed_mappings=False)
+    original(path, changed=True)
+    second = manager.ingest(path, use_reviewed_mappings=False)
+    assert first['dataset_id'] != second['dataset_id']
+
+    expected = {
+        first['dataset_id']: {
+            'Measurements': ('needs_review', ['first snapshot review reason']),
+            'Layered': ('unsupported', ['first snapshot unsupported reason']),
+        },
+        second['dataset_id']: {
+            'Measurements': ('unsupported', ['second snapshot unsupported reason']),
+            'Layered': ('needs_review', ['second snapshot review reason']),
+        },
+    }
+    for dataset_id, states in expected.items():
+        manifest_path = manager.store._path(dataset_id) / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        for sheet in manifest['coverage']:
+            status, reasons = states[sheet['name']]
+            sheet['status'], sheet['reasons'] = status, reasons
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+
+    listed = {item['dataset_id']: item for item in manager.store.list_datasets()}
+    for dataset_id, states in expected.items():
+        item = listed[dataset_id]
+        expected_states = [
+            {'name': name, 'status': status, 'reasons': reasons}
+            for name, (status, reasons) in states.items()
+        ]
+        assert item['pending_sheet_states'] == expected_states
+        assert item['pending_sheets'] == [state['name'] for state in expected_states]
+        assert all(isinstance(name, str) for name in item['pending_sheets'])
+        assert 'pending_sheet_states' in item['coverage_notice']
+        assert 'unsupported不能表述为完成映射后即可使用' in item['coverage_notice']
+
+    assert listed[first['dataset_id']]['pending_sheet_states'][0]['status'] == 'needs_review'
+    assert listed[second['dataset_id']]['pending_sheet_states'][0]['status'] == 'unsupported'
+
+
+def test_catalog_tolerates_legacy_pending_coverage_without_reasons(tmp_path, monkeypatch):
+    path = original(tmp_path / 'source.xlsx')
+    prohibit_profiles(monkeypatch)
+    manager = ImportManager(tmp_path / 'data')
+    result = manager.ingest(path, use_reviewed_mappings=False)
+    manifest_path = manager.store._path(result['dataset_id']) / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    pending = next(sheet for sheet in manifest['coverage'] if sheet['name'] == 'Layered')
+    pending.pop('reasons', None)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+
+    item = next(item for item in manager.store.list_datasets() if item['dataset_id'] == result['dataset_id'])
+    assert {'name': 'Layered', 'status': 'needs_review', 'reasons': []} in item['pending_sheet_states']
+    assert 'Layered' in item['pending_sheets']
+
+
 def test_signed_tool_catalog_keeps_fresh_identity_for_current_and_historical_snapshots(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from structured_data.server import create_app
@@ -122,8 +182,6 @@ def test_signed_tool_catalog_keeps_fresh_identity_for_current_and_historical_sna
     manager = ImportManager(root)
     prohibit_profiles(monkeypatch)
     first = manager.ingest(path, use_reviewed_mappings=False)
-    final = manager.confirm(first['import_id'], manager.sheet(first['import_id'], 'Layered')['mapping'])
-    assert first['dataset_id'] != final['dataset_id']
     key = b'fresh-tool-contract-test-key-1234567890'
     key_path = tmp_path / 'read-key'
     key_path.write_bytes(key)
@@ -135,12 +193,31 @@ def test_signed_tool_catalog_keeps_fresh_identity_for_current_and_historical_sna
         response = client.post('/api/tools/read', content=raw, headers=headers)
         assert response.status_code == 200, response.text
         catalog = response.json()['datasets']
+        assert {item['dataset_id'] for item in catalog} == {first['dataset_id']}
+        first_item = catalog[0]
+        assert first_item['pending_sheets'] == [state['name'] for state in first_item['pending_sheet_states']]
+        coverage = manager.store.manifest(first['dataset_id'])['coverage']
+        expected_states = [
+            {'name': sheet['name'], 'status': sheet['status'], 'reasons': sheet['reasons']}
+            for sheet in coverage if sheet['status'] in {'needs_review', 'unsupported'}
+        ]
+        assert first_item['pending_sheet_states'] == expected_states
+        assert first_item['coverage_notice'] == manager.store.list_datasets()[0]['coverage_notice']
+
+        final = manager.confirm(first['import_id'], manager.sheet(first['import_id'], 'Layered')['mapping'])
+        assert first['dataset_id'] != final['dataset_id']
+        raw, headers = signed(key, body=body)
+        response = client.post('/api/tools/read', content=raw, headers=headers)
+        assert response.status_code == 200, response.text
+        catalog = response.json()['datasets']
         assert {item['dataset_id'] for item in catalog} == {first['dataset_id'], final['dataset_id']}
         assert all(item['use_reviewed_mappings'] is False for item in catalog)
         assert all(item['import_id'] == first['import_id'] for item in catalog)
         assert all(item['sha256'] == hashlib.sha256(path.read_bytes()).hexdigest() for item in catalog)
         latest = next(item for item in catalog if item['dataset_id'] == final['dataset_id'])
         assert latest['parent_dataset_id'] == first['dataset_id']
+        historical = next(item for item in catalog if item['dataset_id'] == first['dataset_id'])
+        assert 'pending_sheet_states' not in historical
 
 
 def test_spawn_worker_carries_fresh_mode_to_saved_review_and_confirmation(tmp_path):

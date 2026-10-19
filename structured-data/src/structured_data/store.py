@@ -134,11 +134,15 @@ class DataStore:
         for item in items:
             coverage = self.manifest(item["dataset_id"]).get("coverage", [])
             item["pending_sheets"] = [s["name"] for s in coverage if s["status"] in {"needs_review", "unsupported"}]
+            item["pending_sheet_states"] = [
+                {"name": s["name"], "status": s["status"], "reasons": s.get("reasons", [])}
+                for s in coverage if s["status"] in {"needs_review", "unsupported"}
+            ]
             item["empty_sheets"] = [s["name"] for s in coverage if s["status"] == "empty"]
             item["sheets"] = [{k:s[k] for k in ("name","observations","series_count","parsed_range") if k in s} for s in item["sheets"]]
             item["excluded_regions"] = [s for s in item["excluded_regions"] if s.get("range") != "entire_sheet"]
             if coverage:
-                item["coverage_notice"] = "pending_sheets仅说明这些工作表尚未确认或不支持，不代表同名主题在已导入指标中不存在。未指定工作表时核验真实目录字段，可按需用resolve_fields语义识别；明确指定未导入表时不可换表。已导入sheet也仅覆盖parsed_range。"
+                item["coverage_notice"] = "pending_sheets仅列工作表名称，不表示统一原因或都需要映射；请按同一数据集下pending_sheet_states的实际status和reasons分别判断，needs_review与unsupported不可混为一谈。unsupported不能表述为完成映射后即可使用。pending状态不证明原件无数据或整张表均未导入；同名工作表须按数据集身份分别判断。未指定工作表时核验真实目录字段，可按需用resolve_fields语义识别；明确指定未导入表时不可换表。已导入sheet也仅覆盖parsed_range。status、reasons和数据集身份供工具判断范围，最终回复无需复述内部键或ID。"
         items.sort(key=lambda d: d["imported_at"], reverse=True)
         source_keys, reviews = {}, {}
         seen = set()
@@ -309,6 +313,9 @@ class DataStore:
         selected=[]
         for s in matches[offset:offset+limit]:
             item=dict(s)
+            # A returned catalog row proves this source series was imported.
+            # Keep that fact separate from metadata review such as an unknown unit.
+            item['sheet_status'] = 'has_imported_series'
             if mode=='alias_candidates' and not all(t in search_text(s) for t in terms):
                 item['search_aliases']=aliases[s['series_id']]
                 item['match_reason']='通过指标别名找到候选；须核对货币方向、原始口径和单位。'
@@ -318,7 +325,7 @@ class DataStore:
         return {"dataset_id": dataset_id, "series": selected, "total": len(matches), "offset": offset, "next_offset": offset+limit if len(matches)>offset+limit else None, "truncated": len(matches) > offset+limit,
                 "catalog_summary": self._catalog_summary(matches, sheet, search, mode),
                 "match_mode": mode, "notice": notice.get(mode,"已返回当前搜索与工作表范围内的字段目录。" if matches else "目录搜索无结果不等于工作簿没有数据，可使用单个关键词或留空查看目录。") +
-                "total为分页前匹配字段数，truncated与next_offset说明字段分页；catalog_summary另列实际分组及其展示覆盖。这是目录事实，不是业务观测值。模型依据完整问题、上下文和来源决定是否需要读取记录或计算，不因取得目录而必须继续取数。"}
+                "total为分页前匹配字段数，truncated与next_offset说明字段分页；catalog_summary另列实际分组及其展示覆盖。这是目录事实，不是业务观测值。sheet_status=has_imported_series表示该目录项已有已导入记录；unit_status=needs_review表示字段单位元数据尚待核对，不表示原件其他位置没有单位证据，也不表示工作表待导入。pending_sheets另行描述未确认或不支持的工作表。模型依据完整问题、上下文和来源决定是否需要读取记录或计算，不因取得目录而必须继续取数。"}
 
     @staticmethod
     def _catalog_summary(matches, sheet, search, mode):
@@ -524,6 +531,7 @@ class DataStore:
             scope_count=con.execute(f'SELECT count(*) FROM observations WHERE {where}',params).fetchone()[0]
             for f in filters:
                 where+=' AND value '+operators[f['op']]+' ?';params.append(f['value'])
+            formula_count=con.execute(f"SELECT count(*) FROM observations WHERE {where} AND formula IS NOT NULL AND trim(formula) <> ''",params).fetchone()[0]
             columns={r[1] for r in con.execute("PRAGMA table_info('observations')").fetchall()}
             extra=",period,period_cell,metric_cell" if 'period' in columns else ",NULL,NULL,NULL"
             count, valid, first, last, valid_first, valid_last = con.execute(f"SELECT count(*),count(value),min(date),max(date),min(date) FILTER(WHERE value IS NOT NULL),max(date) FILTER(WHERE value IS NOT NULL) FROM observations WHERE {where}", params).fetchone()
@@ -557,7 +565,7 @@ class DataStore:
         if series.get('date_mode')=='shared_cell':
             warnings.append('此系列使用小表共用日期，类别见dimensions；总计与各分类是不同系列，不得重复加总。')
         if not series.get("unit"):
-            warnings.append("原表未明确单位，不应自行补充或换算单位。")
+            warnings.append("当前字段目录尚未确认单位，不表示原件其他位置没有单位证据；可检查实际表头、脚注或与该字段范围对应的图表，并判断适用范围。没有实际依据前不补充或换算单位。")
         if count > valid:
             warnings.append(f"范围内 {count-valid} 条记录没有有效数值；统计排除这些记录。")
         if not valid:
@@ -566,7 +574,8 @@ class DataStore:
             warnings.append("结果是观测值的算术加总；库存、价格等指标是否适合加总需结合业务含义。")
         if operation in {'min','max'}:
             warnings.append('极值日期只能使用extremum_rows中的date；actual_first_date/actual_last_date是查询范围边界，不是极值日期。并列极值均保留，超出limit时标记截断。')
-        warnings.append("公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式。")
+        if formula_count:
+            warnings.append(f"查询范围内有 {formula_count} 条公式记录；公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式。")
         from .streaming import read_json_array
         for issue in read_json_array(self._path(dataset_id) / 'issues.json'):
             if issue.get('sheet') == series['sheet'] and issue.get('code') == 'source_zero_fill':
@@ -574,7 +583,17 @@ class DataStore:
                 break
         warnings.append("missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。")
         filters = {"series_id": series_id, "start_date": start_date, "end_date": end_date, "operation": operation, "period":period, 'value_filters':value_filters or [], 'last_n':last_n,'top_n':top_n,'order':order}
-        return {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "valid_first_date":str(valid_first) if valid_first else None,"valid_last_date":str(valid_last) if valid_last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source_semantics":{"date_representation":series.get('date_mode','date'),"statistical_calendar":series.get('statistical_calendar'),"aggregation_rule":series.get('aggregation_rule'),"notice":"未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"}, "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
+        result = {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "formula_count":formula_count, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "valid_first_date":str(valid_first) if valid_first else None,"valid_last_date":str(valid_last) if valid_last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source_semantics":{"date_representation":series.get('date_mode','date'),"statistical_calendar":series.get('statistical_calendar'),"aggregation_rule":series.get('aggregation_rule'),"notice":"未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"}, "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
+        if valid and records and not series.get('unit'):
+            from .source_inspection import inspect_query_source_context
+            result['source_evidence'] = inspect_query_source_context(
+                self, dataset_id, series['sheet'], records, max_cells=8,
+                max_chart_references=8,
+                query_scope={'rows_are': result['rows_are'],
+                             'record_count': count,
+                             'truncated': result['truncated'],
+                             'filters': filters})
+        return result
 
     def compare_series(self, dataset_id: str, left_series_id: str, right_series_id: str, date: str, comparison_basis: str = 'same_explicit_unit') -> dict:
         if not self._date(date):

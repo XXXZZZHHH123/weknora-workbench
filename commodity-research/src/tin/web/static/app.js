@@ -16,6 +16,32 @@ async function researchFetch(input, options = {}) {
 // 页面交互：主题、口径穿透弹层、快速录入抽屉、提示条、合约表与期限结构联动。
 // 页面切换走服务端路由，不在前端做 SPA。
 
+// Keep same-origin embedded tools on the interface/code fonts selected in the shell.
+// Only these presentation properties cross the document boundary; auth/data stay independent.
+function followWorkspaceTypography() {
+  if (window.parent === window) return;
+  try {
+    const parentRoot = window.parent.document.documentElement;
+    const sync = () => {
+      const style = window.getComputedStyle(parentRoot);
+      if (style.getPropertyValue('--app-font-family').trim()) document.documentElement.classList?.add('workspace-embedded');
+      for (const name of ['--app-font-family', '--app-font-family-mono']) {
+        const value = style.getPropertyValue(name).trim();
+        if (value) document.documentElement.style.setProperty(name, value);
+      }
+    };
+    sync();
+    if (typeof MutationObserver !== 'undefined') {
+      const observer = new MutationObserver(sync);
+      const observe = () => { sync(); observer.observe(parentRoot, { attributes: true, attributeFilter: ['style'] }); };
+      observe();
+      window.addEventListener('pagehide', () => observer.disconnect());
+      window.addEventListener('pageshow', observe);
+    }
+  } catch { /* Standalone and cross-origin pages retain their local font defaults. */ }
+}
+followWorkspaceTypography();
+
 const researchTheme = (function () {
   const embedded = window.parent !== window;
   const media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;

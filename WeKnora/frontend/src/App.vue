@@ -306,6 +306,10 @@ html,
   color: var(--td-text-color-primary);
 }
 
+:where(button, input, select, textarea) {
+  font-family: inherit;
+}
+
 #app {
   /* 独立合成层，减轻 WebKit 全量重绘时整窗与内容的撕裂感（桌面 WebView 尤其明显） */
   isolation: isolate;

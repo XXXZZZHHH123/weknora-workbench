@@ -972,7 +972,7 @@ onMounted(loadAll)
 .env-hint {
   font-size: var(--app-text-sm);
   color: var(--td-text-color-placeholder);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--app-font-family-mono);
 }
 
 // ---- 文件类型 chip ----
@@ -992,7 +992,7 @@ onMounted(loadAll)
   color: var(--td-text-color-secondary);
   background: var(--td-bg-color-component);
   border-radius: var(--app-radius-xs);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--app-font-family-mono);
   letter-spacing: 0.02em;
 }
 

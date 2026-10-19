@@ -2839,7 +2839,7 @@ const handleCancel = () => {
     }
 
     code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-family: var(--app-font-family-mono);
       font-size: var(--app-text-sm);
     }
   }
@@ -2883,7 +2883,7 @@ const handleCancel = () => {
 
 .compat-textarea {
   :deep(textarea) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: var(--app-font-family-mono);
     font-size: var(--app-text-sm);
   }
 }

@@ -68,7 +68,11 @@ func (e *AgentEngine) drainSteerMessages(
 			// recovers. Unprocessed events stay pending for the next boundary.
 			break
 		}
-		*messagesPtr = append(*messagesPtr, chat.Message{Role: "user", Content: types.SteerMessageContent(content)})
+		persistedSteer := chat.Message{Role: "user", Content: types.SteerMessageContent(content)}
+		*messagesPtr = append(*messagesPtr, persistedSteer)
+		if e.reviewConversationReady {
+			e.reviewConversation = append(e.reviewConversation, persistedSteer)
+		}
 		e.documentAnalysisSteers = append(e.documentAnalysisSteers, content)
 		state.PendingSteerMessages = append(state.PendingSteerMessages, userMessageID)
 		_ = e.eventBus.Emit(ctx, event.Event{

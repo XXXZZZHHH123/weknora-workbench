@@ -1,5 +1,6 @@
 import hashlib
 import json
+import threading
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -7,8 +8,14 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 import pytest
 
+from structured_data import source_inspection
 from structured_data.server import create_app
-from structured_data.source_inspection import inspect_source
+from structured_data.chart_source_cache import SourceEvidenceReadBudgetExceeded
+from structured_data.source_inspection import (
+    SourceInspectionReadError,
+    inspect_query_source_context,
+    inspect_source,
+)
 from structured_data.store import DataStore, dump
 from test_scoped_service import signed
 
@@ -195,6 +202,86 @@ def test_output_budget_refuses_cutting_source_values(original, monkeypatch):
         inspect_source(store, dataset, sheet='月度', ranges=['B2:C2'])
 
 
+def test_query_source_context_classifies_budget_and_safe_read_failure(original, monkeypatch, caplog):
+    store, dataset, path = original
+    record = [{'source_cell': 'B2', 'value': 650}]
+    scan_budget = source_inspection.MAX_SCAN_SECONDS
+    monkeypatch.setattr('structured_data.source_inspection.MAX_SCAN_SECONDS', -1)
+    budget = inspect_query_source_context(store, dataset, '月度', record)
+    assert budget['status'] == 'unavailable' and budget['reason'] == 'source_read_budget_exceeded'
+    assert budget['phase'] == 'range_read'
+    assert budget['scope']['failed_source_scope'] == {'sheet': '月度', 'range': 'B2'}
+    assert 'cells' not in budget and '不表示' in budget['notice']
+    assert SourceEvidenceReadBudgetExceeded(phase='range_read').phase == 'range_read'
+
+    monkeypatch.setattr('structured_data.source_inspection.MAX_SCAN_SECONDS', scan_budget)
+    def fail_open(*args, **kwargs):
+        raise OSError(f'{path / "private-source.xlsx"}: private workbook detail')
+    monkeypatch.setattr('structured_data.source_inspection.load_workbook', fail_open)
+    failed = inspect_query_source_context(store, dataset, '月度', record)
+    assert failed['status'] == 'unavailable'
+    assert failed['reason'] == 'original_source_unavailable_or_verification_failed'
+    assert failed['phase'] == 'workbook_open' and failed['exception_type'] == 'OSError'
+    serialized = json.dumps(failed)
+    assert 'private-source.xlsx' not in serialized and 'private workbook detail' not in serialized
+    assert 'private workbook detail' in caplog.text
+
+
+def test_budget_failure_is_typed_and_supplementary_api_reports_range(original, monkeypatch):
+    store, dataset, _ = original
+    monkeypatch.setattr('structured_data.source_inspection.MAX_SCAN_SECONDS', -1)
+    with pytest.raises(SourceEvidenceReadBudgetExceeded) as caught:
+        inspect_source(store, dataset, sheet='月度', ranges=['B2:C2'])
+    assert caught.value.phase == 'range_read'
+    assert caught.value.scope == {'sheet': '月度', 'range': 'B2:C2'}
+
+    key = b'budget-inspection-key-with-enough-length'
+    key_path = store.root / 'key'
+    key_path.write_bytes(key)
+    monkeypatch.setenv('STRUCTURED_SERVICE_TOKEN_FILE', str(key_path))
+    monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
+    with TestClient(create_app(store.root)) as client:
+        raw, headers = signed(key, body={'operation': 'inspect_source', 'arguments': {
+            'dataset_id': dataset, 'sheet': '月度', 'ranges': ['B2:C2']}})
+        response = client.post('/api/tools/read', content=raw, headers=headers)
+    result = response.json()
+    assert response.status_code == 200
+    assert result['status'] == 'error' and result['error'] == 'source_read_budget_exceeded'
+    assert result['phase'] == 'range_read' and result['scope'] == {'sheet': '月度', 'range': 'B2:C2'}
+    assert result['retryable'] and '不表示原表没有证据' in result['next_step']
+    assert 'ranges' not in result and 'cells' not in result
+
+
+def test_source_read_failure_returns_limited_type_and_phase(original, monkeypatch, caplog):
+    store, dataset, path = original
+    key = b'format-inspection-key-with-enough-length'
+    key_path = store.root / 'key'
+    key_path.write_bytes(key)
+    monkeypatch.setenv('STRUCTURED_SERVICE_TOKEN_FILE', str(key_path))
+    monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
+
+    def fail_open(*args, **kwargs):
+        raise OSError(f'{path / "private-source.xlsx"}: private format detail')
+
+    monkeypatch.setattr('structured_data.source_inspection.load_workbook', fail_open)
+    with pytest.raises(SourceInspectionReadError) as caught:
+        inspect_source(store, dataset, sheet='月度', ranges=['B2'])
+    assert caught.value.phase == 'workbook_open' and caught.value.exception_type == 'OSError'
+
+    with TestClient(create_app(store.root)) as client:
+        raw, headers = signed(key, body={'operation': 'inspect_source', 'arguments': {
+            'dataset_id': dataset, 'sheet': '月度', 'ranges': ['B2']}})
+        response = client.post('/api/tools/read', content=raw, headers=headers)
+    result = response.json()
+    assert response.status_code == 200 and result['status'] == 'error'
+    assert result['error'] == 'source_read_failed'
+    assert result['phase'] == 'workbook_open' and result['exception_type'] == 'OSError'
+    assert not result['retryable']
+    serialized = json.dumps(result)
+    assert 'private-source.xlsx' not in serialized and 'private format detail' not in serialized
+    assert 'private format detail' in caplog.text
+
+
 def test_hash_change_rejected_and_other_store_cannot_access(original, tmp_path):
     store, dataset, path = original
     with pytest.raises(ValueError, match='不存在'):
@@ -282,3 +369,135 @@ def test_native_schema_and_signature_keep_workspace_boundaries(original, monkeyp
         damaged = call('inspect_source', args).json()
         assert damaged['status'] == 'error' and not damaged['retryable']
         assert 'SHA256' in damaged['error'] and '重新导入' in damaged['next_step']
+        assert damaged['phase'] == 'source_verification'
+        assert damaged['exception_type'] == 'SourceVerificationError'
+
+
+def test_read_admission_wait_is_typed_scoped_and_happens_after_argument_validation(original, monkeypatch):
+    store, dataset, _ = original
+
+    class DeniedSemaphore:
+        called = False
+
+        def acquire(self, timeout=None):
+            self.called = True
+            return False
+
+        def release(self):
+            pytest.fail('a semaphore slot that was not acquired must not be released')
+
+    denied = DeniedSemaphore()
+    monkeypatch.setattr(source_inspection, '_SOURCE_READ_SEMAPHORE', denied)
+    monkeypatch.setattr(source_inspection, 'MAX_READ_ADMISSION_WAIT_SECONDS', 0.01)
+    with pytest.raises(ValueError):
+        inspect_source(store, dataset, sheet='月度', ranges=['A0'])
+    assert not denied.called
+
+    def source_lookup_must_not_run(*args, **kwargs):
+        pytest.fail('admission timeout must happen before source lookup or workbook reads')
+
+    monkeypatch.setattr(store, '_path', source_lookup_must_not_run)
+    with pytest.raises(SourceEvidenceReadBudgetExceeded) as caught:
+        inspect_source(store, dataset, sheet='月度', ranges=['B2:C2'], sums=[['B2', 'C2']])
+    assert denied.called
+    assert caught.value.phase == 'read_admission'
+    assert caught.value.scope == {'sheet': '月度', 'ranges': ['B2:C2'],
+                                  'sum_ranges': [['B2', 'C2']], 'search_count': 0}
+
+
+def test_concurrent_source_reads_do_not_overlap_workbook_loads(original, monkeypatch):
+    store, dataset, _ = original
+    inner = threading.BoundedSemaphore(1)
+    state_lock = threading.Lock()
+    holders = 0
+    contended = threading.Event()
+
+    class ObservedSemaphore:
+        def acquire(self, timeout=None):
+            nonlocal holders
+            with state_lock:
+                if holders:
+                    contended.set()
+            acquired = inner.acquire(timeout=timeout)
+            if acquired:
+                with state_lock:
+                    holders += 1
+            return acquired
+
+        def release(self):
+            nonlocal holders
+            with state_lock:
+                holders -= 1
+            inner.release()
+
+    monkeypatch.setattr(source_inspection, '_SOURCE_READ_SEMAPHORE', ObservedSemaphore())
+    real_load = source_inspection.load_workbook
+    first_load_entered = threading.Event()
+    release_first_load = threading.Event()
+    load_lock = threading.Lock()
+    active_loads = 0
+    max_active_loads = 0
+    load_count = 0
+
+    def controlled_load(*args, **kwargs):
+        nonlocal active_loads, max_active_loads, load_count
+        with load_lock:
+            load_count += 1
+            this_load = load_count
+            active_loads += 1
+            max_active_loads = max(max_active_loads, active_loads)
+        try:
+            if this_load == 1:
+                first_load_entered.set()
+                assert release_first_load.wait(timeout=5)
+            return real_load(*args, **kwargs)
+        finally:
+            with load_lock:
+                active_loads -= 1
+
+    monkeypatch.setattr(source_inspection, 'load_workbook', controlled_load)
+    results, failures = [], []
+
+    def read_source():
+        try:
+            results.append(inspect_source(store, dataset, sheet='月度', ranges=['B2:C2']))
+        except Exception as exc:  # surfaced in the test thread below
+            failures.append(exc)
+
+    first = threading.Thread(target=read_source)
+    second = threading.Thread(target=read_source)
+    first.start()
+    assert first_load_entered.wait(timeout=5)
+    second.start()
+    try:
+        assert contended.wait(timeout=5)
+        with load_lock:
+            assert load_count == 1 and active_loads == max_active_loads == 1
+    finally:
+        release_first_load.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+    assert not first.is_alive() and not second.is_alive()
+    assert not failures
+    assert len(results) == 2 and max_active_loads == 1
+
+
+def test_source_read_exception_releases_admission_slot(original, monkeypatch):
+    store, dataset, _ = original
+    semaphore = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(source_inspection, '_SOURCE_READ_SEMAPHORE', semaphore)
+    real_load = source_inspection.load_workbook
+
+    def fail_open(*args, **kwargs):
+        raise OSError('temporary workbook read failure')
+
+    monkeypatch.setattr(source_inspection, 'load_workbook', fail_open)
+    with pytest.raises(SourceInspectionReadError) as caught:
+        inspect_source(store, dataset, sheet='月度', ranges=['B2'])
+    assert caught.value.phase == 'workbook_open'
+
+    monkeypatch.setattr(source_inspection, 'load_workbook', real_load)
+    result = inspect_source(store, dataset, sheet='月度', ranges=['B2'])
+    assert result['hash_verified'] and result['ranges'][0]['cells'][0]['value'] == 650
+    assert semaphore.acquire(blocking=False)
+    semaphore.release()

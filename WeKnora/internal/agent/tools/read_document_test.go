@@ -438,6 +438,83 @@ func TestReadDocumentByChunkHandleWithContext(t *testing.T) {
 	}
 }
 
+func TestReadDocumentChunkContentPaginationUsesUnicodeOffsets(t *testing.T) {
+	tool, repo := newReadDocumentFixture(3)
+	content := "春🌱café 森林数据"
+	repo.ordered[1].Content = content
+
+	first, err := tool.Execute(context.Background(), json.RawMessage(`{"id":"chunk-1","content_offset":0,"content_limit":4}`))
+	if err != nil || !first.Success {
+		t.Fatalf("first segment: result=%+v err=%v", first, err)
+	}
+	rows := first.Data["chunks"].([]map[string]interface{})
+	if got := rows[0]["content"]; got != string([]rune(content)[:4]) {
+		t.Fatalf("first Unicode segment = %q", got)
+	}
+	if rows[0]["content_complete"] != false || rows[0]["next_content_offset"] != 4 ||
+		first.Data["offset_space"] != "chunk_unicode_runes" {
+		t.Fatalf("missing continuation state: %#v", first.Data)
+	}
+
+	second, err := tool.Execute(context.Background(), json.RawMessage(`{"id":"chunk-1","content_offset":4,"content_limit":4}`))
+	if err != nil || !second.Success {
+		t.Fatalf("second segment: result=%+v err=%v", second, err)
+	}
+	secondRow := second.Data["chunks"].([]map[string]interface{})[0]
+	if got := secondRow["content"]; got != string([]rune(content)[4:8]) {
+		t.Fatalf("second Unicode segment = %q", got)
+	}
+	if secondRow["content_offset"] != 4 || secondRow["content_complete"] != false ||
+		secondRow["next_content_offset"] != 8 {
+		t.Fatalf("continuation did not advance: %#v", secondRow)
+	}
+
+	last, err := tool.Execute(context.Background(), json.RawMessage(`{"id":"chunk-1","content_offset":8,"content_limit":20}`))
+	if err != nil || !last.Success {
+		t.Fatalf("last segment: result=%+v err=%v", last, err)
+	}
+	lastRow := last.Data["chunks"].([]map[string]interface{})[0]
+	if got := lastRow["content"]; got != string([]rune(content)[8:]) {
+		t.Fatalf("last Unicode segment = %q", got)
+	}
+	if lastRow["content_complete"] != true {
+		t.Fatalf("last segment should be complete: %#v", lastRow)
+	}
+}
+
+func TestReadDocumentOversizedPhysicalPageChunkIsPartialAndResumable(t *testing.T) {
+	tool, repo := newReadDocumentFixture(2)
+	full := "# Page 1\n" + strings.Repeat("field study observations 🌾 ", 800)
+	repo.ordered[0].Content = full
+	ctx := WithOutputBudget(context.Background(), 5000)
+	first, err := tool.Execute(ctx, json.RawMessage(`{"id":"doc-1","page":1}`))
+	if err != nil || !first.Success {
+		t.Fatalf("page read: result=%+v err=%v", first, err)
+	}
+	row := first.Data["chunks"].([]map[string]interface{})[0]
+	if first.Data["page_complete"] != false || row["content_complete"] != false {
+		t.Fatalf("oversized source body was reported complete: %#v", first.Data)
+	}
+	next, ok := row["next_content_offset"].(int)
+	if !ok || next <= 0 {
+		t.Fatalf("missing advancing content cursor: %#v", row)
+	}
+	continuation, err := tool.Execute(ctx, json.RawMessage(fmt.Sprintf(
+		`{"id":"chunk-0","page":1,"content_offset":%d,"content_limit":12000}`, next)))
+	if err != nil || !continuation.Success {
+		t.Fatalf("page-scoped chunk continuation: result=%+v err=%v", continuation, err)
+	}
+	continued := continuation.Data["chunks"].([]map[string]interface{})[0]
+	if continued["content_offset"] != next || continued["content"] == row["content"] {
+		t.Fatalf("continuation repeated old text: first=%v continued=%v", row["content"], continued["content"])
+	}
+	last, err := tool.Execute(ctx, json.RawMessage(fmt.Sprintf(
+		`{"id":"chunk-0","page":1,"content_offset":%d}`, len([]rune(full))-10)))
+	if err != nil || !last.Success || last.Data["content_complete"] != true || last.Data["page_complete"] != false {
+		t.Fatalf("the final segment alone is not a complete page: result=%+v err=%v", last, err)
+	}
+}
+
 func TestReadDocumentByChunkHandleAloneIsSingleChunk(t *testing.T) {
 	tool, _ := newReadDocumentFixture(3)
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"id":"chunk-2"}`))

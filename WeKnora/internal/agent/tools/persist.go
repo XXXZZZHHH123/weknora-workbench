@@ -127,7 +127,7 @@ func SanitizeAgentStepsForStorage(steps []types.AgentStep) []types.AgentStep {
 				continue
 			}
 			result := *tc.Result
-			if tc.Name == "local_browser" || tc.Name == ToolSearchKnowledge || tc.Name == ToolReadFile {
+			if tc.Name == "local_browser" || tc.Name == ToolSearchKnowledge || tc.Name == ToolReadFile || tc.Name == ToolReadDocument {
 				// Screenshot bytes already live in Data for the result card;
 				// knowledge and file images are read again from storage.
 				result.Images = nil

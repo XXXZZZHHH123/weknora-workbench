@@ -12,6 +12,7 @@ import (
 )
 
 type reviewToolEvidence struct {
+	EvidenceID    string   `json:"evidence_id,omitempty"`
 	Tool          string   `json:"tool"`
 	ToolCallID    string   `json:"tool_call_id,omitempty"`
 	Content       any      `json:"content"`
@@ -47,7 +48,7 @@ func boundedReviewEvidence(messages []chat.Message, budget int) ([]reviewToolEvi
 		if msg.Name == "" {
 			msg.Name = names[msg.ToolCallID]
 		}
-		key := msg.Name + "\x00" + msg.Content
+		key := msg.Name + "\x00" + msg.ToolCallID + "\x00" + msg.Content
 		if seen[key] {
 			continue
 		}
@@ -64,11 +65,36 @@ func boundedReviewEvidence(messages []chat.Message, budget int) ([]reviewToolEvi
 		results = results[len(results)-maxResults:]
 	}
 	scope.IncludedResults = len(results)
+	// A large result must not lose source facts merely because a later small
+	// result received an equal reservation. If the complete envelope fits,
+	// retain it verbatim. Bound this preflight by raw input size so it cannot
+	// materialize an unbounded collection before the normal projection path.
+	rawBytes := 0
+	for _, msg := range results {
+		rawBytes += len(msg.Content)
+	}
+	if rawBytes <= budget {
+		complete := make([]reviewToolEvidence, 0, len(results))
+		for _, msg := range results {
+			var value any
+			decoder := json.NewDecoder(strings.NewReader(msg.Content))
+			decoder.UseNumber()
+			if decoder.Decode(&value) != nil || decoder.Decode(new(any)) != io.EOF {
+				value = msg.Content
+			}
+			complete = append(complete, reviewToolEvidence{EvidenceID: reviewEvidenceID(msg), Tool: msg.Name, ToolCallID: msg.ToolCallID,
+				Content: value, OriginalBytes: len(msg.Content), ViewComplete: true})
+		}
+		encoded, _ := json.Marshal(complete)
+		if len(encoded) <= budget {
+			return complete, scope
+		}
+	}
 	evidence := make([]reviewToolEvidence, 0, len(results))
 	remaining := budget - 2 // JSON array brackets.
 	for i, msg := range results {
 		share := max(0, remaining/(len(results)-i)-1)
-		entry := reviewToolEvidence{Tool: msg.Name, ToolCallID: msg.ToolCallID,
+		entry := reviewToolEvidence{EvidenceID: reviewEvidenceID(msg), Tool: msg.Name, ToolCallID: msg.ToolCallID,
 			OriginalBytes: len(msg.Content), ViewComplete: true}
 		var value any
 		decoder := json.NewDecoder(strings.NewReader(msg.Content))
@@ -87,7 +113,7 @@ func boundedReviewEvidence(messages []chat.Message, budget int) ([]reviewToolEvi
 			for {
 				entry.Content, entry.OmittedPaths = projectReviewValue(value, limit, "", 0)
 				if len(entry.OmittedPaths) == 0 {
-					entry.OmittedPaths = []string{"/"}
+					entry.OmittedPaths = []string{""}
 				}
 				encoded, _ = json.Marshal(entry)
 				if len(encoded) <= share || limit == 0 {
@@ -216,14 +242,12 @@ func appendReviewOmission(paths []string, path string) []string {
 		return append(paths, path)
 	}
 	if len(paths) == 24 {
-		return append(paths, "/ (additional omitted paths not listed)")
+		return append(paths, " (additional omitted paths not listed)")
 	}
 	return paths
 }
 
 func reviewPointer(path string) string {
-	if path == "" {
-		return "/"
-	}
+	// RFC 6901 uses the empty string for the root; "/" names an empty key.
 	return path
 }

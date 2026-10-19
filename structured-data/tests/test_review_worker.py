@@ -59,6 +59,89 @@ def test_spawn_import_preview_confirm_and_failed_confirm_preserves_snapshot(tmp_
     assert not list((root / "datasets").glob(".import-*"))
 
 
+def test_import_and_confirm_prepare_chart_index_before_worker_completes(tmp_path, monkeypatch):
+    from structured_data.native_charts import VERSION
+
+    root = tmp_path / "data"
+    source = make_source(root)
+    imported = review_worker.run_review_task(root, "import", path=source)
+    assert imported["chart_catalog_preparation"]["status"] == "ready"
+    assert imported["chart_catalog_preparation"]["purpose"] == "derived_catalog_only"
+
+    manager = ImportManager(root)
+    assert manager.get(imported["import_id"])["chart_catalog_preparation"]["status"] == "ready"
+    first_id = imported["dataset_id"]
+    assert (manager.store._path(first_id) / (VERSION + ".json")).is_file()
+    mapping = manager.sheet(imported["import_id"], "复杂表")["mapping"]
+    confirmed = review_worker.run_review_task(root, "confirm", import_id=imported["import_id"],
+                                              mapping=mapping, save_template=False)
+    second_id = confirmed["dataset_id"]
+    assert second_id != first_id
+    assert confirmed["chart_catalog_preparation"]["status"] == "ready"
+    assert (manager.store._path(second_id) / (VERSION + ".json")).is_file()
+
+    def unexpected_build(*args, **kwargs):
+        raise AssertionError("a completed import must already have its chart index")
+
+    monkeypatch.setattr("structured_data.native_charts.build", unexpected_build)
+    assert manager.store.chart_index(second_id)["dataset_id"] == second_id
+
+
+def test_publish_prepares_only_the_dataset_returned_by_each_publish(tmp_path, monkeypatch):
+    from structured_data.store import DataStore
+
+    root = tmp_path / "data"
+    source = make_source(root)
+    manager = ImportManager(root)
+    warmed = []
+    original = DataStore.chart_index
+
+    def track(store, dataset_id):
+        warmed.append(dataset_id)
+        return original(store, dataset_id)
+
+    monkeypatch.setattr(DataStore, "chart_index", track)
+    imported = manager.ingest(source)
+    assert warmed == [imported["dataset_id"]]
+
+    warmed.clear()
+    mapping = manager.sheet(imported["import_id"], "复杂表")["mapping"]
+    confirmed = manager.confirm(imported["import_id"], mapping, save_template=False)
+    assert confirmed["dataset_id"] != imported["dataset_id"]
+    assert warmed == [confirmed["dataset_id"]]
+
+
+def test_chart_catalog_warm_failure_does_not_rollback_published_versions(tmp_path, monkeypatch, caplog):
+    from structured_data.store import DataStore
+
+    root = tmp_path / "data"
+    source = make_source(root)
+    manager = ImportManager(root)
+    imported = manager.ingest(source)
+    old_id = imported["dataset_id"]
+    old_series = manager.store.list_series(old_id)["series"][0]["series_id"]
+    old_rows = manager.store.query_series(old_id, old_series)["rows"]
+
+    def fail_warm(store, dataset_id):
+        raise OSError("private path and source details must not escape")
+
+    monkeypatch.setattr(DataStore, "chart_index", fail_warm)
+    mapping = manager.sheet(imported["import_id"], "复杂表")["mapping"]
+    confirmed = manager.confirm(imported["import_id"], mapping, save_template=False)
+    new_id = confirmed["dataset_id"]
+
+    assert new_id != old_id
+    assert confirmed["chart_catalog_preparation"]["status"] == "failed"
+    assert confirmed["chart_catalog_preparation"]["error_type"] == "OSError"
+    assert "private path and source details" not in caplog.text
+    assert manager.get(imported["import_id"])["chart_catalog_preparation"]["status"] == "failed"
+    assert manager.store.query_series(old_id, old_series)["rows"] == old_rows
+    assert manager.store.manifest(new_id)["dataset_id"] == new_id
+    new_series = manager.store.list_series(new_id)["series"]
+    assert len(new_series) == 2
+    assert manager.store.query_series(new_id, new_series[-1]["series_id"])["rows"]
+
+
 def test_spawn_timeout_is_stopped_and_parent_can_continue(tmp_path):
     root = tmp_path / "data"
     source = make_source(root)

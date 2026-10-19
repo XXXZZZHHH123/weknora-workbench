@@ -43,6 +43,72 @@ func assertWellFormedPages(t *testing.T, output string, want int) {
 	assert.Equal(t, want, strings.Count(output, "</content>"), "content sections")
 }
 
+func renderedWikiPageContent(t *testing.T, output, slug string) string {
+	t.Helper()
+	pageLink := strings.Index(output, "[["+slug+"|")
+	require.NotEqual(t, -1, pageLink)
+	start := strings.Index(output[pageLink:], "<content>\n")
+	require.NotEqual(t, -1, start)
+	start += pageLink + len("<content>\n")
+	end := strings.Index(output[start:], "\n</content>")
+	require.NotEqual(t, -1, end)
+	return output[start : start+end]
+}
+
+func TestWikiReadPageDataContainsOnlyRenderedBodySlicesWithCompleteness(t *testing.T) {
+	complete := newTestWikiPage("kb-1", "concept/complete")
+	complete.Content = "The complete body is visible in the rendered page."
+	truncated := newBulkyWikiPage("kb-1", "concept/truncated", 8000)
+	service := &fakeWikiPageService{pages: map[string]*types.WikiPage{
+		wikiPageKey("kb-1", complete.Slug):  complete,
+		wikiPageKey("kb-1", truncated.Slug): truncated,
+	}}
+	tool := NewWikiReadPageTool(service, nil, NewWikiScopesFromKBIDs([]string{"kb-1"}), NewWikiRouteResolver())
+	result := readPageOutput(t, WithOutputBudget(context.Background(), 6000), tool, []string{complete.Slug, truncated.Slug})
+
+	bodies, ok := result.Data["returned_page_bodies"].([]wikiPageBodyEvidence)
+	require.True(t, ok)
+	require.Len(t, bodies, 2)
+	bySlug := map[string]wikiPageBodyEvidence{}
+	for _, body := range bodies {
+		bySlug[body.Slug] = body
+		require.Equal(t, "kb-1", body.KBID)
+		require.Equal(t, renderedWikiPageContent(t, result.Output, body.Slug), body.Content,
+			"Data body must match the exact source text shown inside that rendered page")
+	}
+	require.Equal(t, complete.Content, bySlug[complete.Slug].Content)
+	require.Equal(t, "complete", bySlug[complete.Slug].ContentStatus)
+	require.True(t, bySlug[complete.Slug].ContentComplete)
+	require.Equal(t, "truncated", bySlug[truncated.Slug].ContentStatus)
+	require.False(t, bySlug[truncated.Slug].ContentComplete)
+	require.NotEqual(t, truncated.Content, bySlug[truncated.Slug].Content)
+}
+
+func TestWikiReadPageDataDoesNotExposeOmittedPageBodies(t *testing.T) {
+	slugs := []string{"concept/one", "concept/two", "concept/three", "concept/four", "concept/five"}
+	pages := map[string]*types.WikiPage{}
+	for _, slug := range slugs {
+		pages[wikiPageKey("kb-1", slug)] = newBulkyWikiPage("kb-1", slug, 4000)
+	}
+	tool := NewWikiReadPageTool(&fakeWikiPageService{pages: pages}, nil, NewWikiScopesFromKBIDs([]string{"kb-1"}), NewWikiRouteResolver())
+	result := readPageOutput(t, WithOutputBudget(context.Background(), 2000), tool, slugs)
+
+	returned := result.Data["returned_pages"].([]wikiPageIdentity)
+	bodies := result.Data["returned_page_bodies"].([]wikiPageBodyEvidence)
+	omitted := result.Data["omitted_pages"].([]wikiPageIdentity)
+	require.NotEmpty(t, omitted)
+	for _, body := range bodies {
+		for _, page := range omitted {
+			require.NotEqual(t, page.Slug, body.Slug, "resolved but unrendered page text must not be added to structured evidence")
+		}
+		found := false
+		for _, page := range returned {
+			found = found || (page.KBID == body.KBID && page.Slug == body.Slug)
+		}
+		require.True(t, found, "every body evidence record must join to a page actually rendered")
+	}
+}
+
 // A batch read used to lose its middle pages: the pages were concatenated and
 // then cut to a head/tail window by the registry, so slugs 3..5 of a 5-slug
 // call disappeared without any signal to the model.

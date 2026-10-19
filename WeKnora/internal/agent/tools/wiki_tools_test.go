@@ -327,6 +327,219 @@ func TestWikiReadPageReturnsSameSlugFromAllScopesOnCacheMiss(t *testing.T) {
 		!strings.Contains(result.Output, "<knowledge_base_id>kb-2</knowledge_base_id>") {
 		t.Fatalf("expected pages from both scopes, got: %s", result.Output)
 	}
+	found := result.Data["found_kbs"].(map[string][]string)
+	if !reflect.DeepEqual(found[slug], []string{"kb-1", "kb-2"}) {
+		t.Fatalf("found_kbs[%q] = %v, want distinct KB collision", slug, found[slug])
+	}
+	ambiguous := result.Data["ambiguous_slugs"].(map[string][]string)
+	if !reflect.DeepEqual(ambiguous[slug], []string{"kb-1", "kb-2"}) {
+		t.Fatalf("ambiguous_slugs[%q] = %v, want both actual KB owners", slug, ambiguous[slug])
+	}
+	returned := result.Data["returned_pages"].([]wikiPageIdentity)
+	if !reflect.DeepEqual(returned, []wikiPageIdentity{{KBID: "kb-1", Slug: slug, BodyStatus: "complete"}, {KBID: "kb-2", Slug: slug, BodyStatus: "complete"}}) {
+		t.Fatalf("returned_pages = %+v, want actual rendered order with distinct KB identities", returned)
+	}
+	if result.Data["resolved_page_count"] != 2 || result.Data["rendered_page_count"] != 2 {
+		t.Fatalf("resolved/rendered counts = %v/%v, want 2/2", result.Data["resolved_page_count"], result.Data["rendered_page_count"])
+	}
+}
+
+func TestWikiReadPageNeighborThenActualHitDoesNotDuplicateKB(t *testing.T) {
+	neighborSlug := "concept/neighbor"
+	first := newTestWikiPage("kb-1", "concept/first")
+	first.OutLinks = []string{neighborSlug}
+	neighbor := newTestWikiPage("kb-1", neighborSlug)
+	service := &fakeWikiPageService{pages: map[string]*types.WikiPage{
+		wikiPageKey("kb-1", first.Slug):   first,
+		wikiPageKey("kb-1", neighborSlug): neighbor,
+	}}
+	tool := NewWikiReadPageTool(service, nil, NewWikiScopesFromKBIDs([]string{"kb-1"}), NewWikiRouteResolver())
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"slugs":["concept/first","concept/neighbor"]}`))
+	if err != nil || result == nil || !result.Success {
+		t.Fatalf("wiki_read_page failed: result=%+v err=%v", result, err)
+	}
+	found := result.Data["found_kbs"].(map[string][]string)
+	if !reflect.DeepEqual(found[neighborSlug], []string{"kb-1"}) {
+		t.Fatalf("found_kbs[%q] = %v, want one distinct KB", neighborSlug, found[neighborSlug])
+	}
+	if result.Data["resolved_page_count"] != 2 || result.Data["rendered_page_count"] != 2 || !strings.Contains(result.Data["found_kbs_scope"].(string), "not a count") {
+		t.Fatalf("read counts or found_kbs scope note are unclear: resolved=%v rendered=%v note=%q", result.Data["resolved_page_count"], result.Data["rendered_page_count"], result.Data["found_kbs_scope"])
+	}
+	ambiguous := result.Data["ambiguous_slugs"].(map[string][]string)
+	if _, exists := ambiguous[neighborSlug]; exists {
+		t.Fatalf("neighbor was falsely marked ambiguous: %v", ambiguous[neighborSlug])
+	}
+}
+
+func TestWikiReadPageMetadataPreservesRequestAndReportsDeduplicatedPages(t *testing.T) {
+	slug := "concept/repeated"
+	service := &fakeWikiPageService{pages: map[string]*types.WikiPage{
+		wikiPageKey("kb-1", slug): newTestWikiPage("kb-1", slug),
+	}}
+	tool := NewWikiReadPageTool(service, nil, NewWikiScopesFromKBIDs([]string{"kb-1"}), NewWikiRouteResolver())
+	args := json.RawMessage(`{"slugs":["concept/repeated","concept/repeated"],"slug":"concept/repeated"}`)
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil || result == nil || !result.Success {
+		t.Fatalf("wiki_read_page failed: result=%+v err=%v", result, err)
+	}
+	wantRequested := []string{slug, slug, slug}
+	if !reflect.DeepEqual(result.Data["requested_slugs"], wantRequested) {
+		t.Fatalf("requested_slugs = %v, want raw parsed request %v", result.Data["requested_slugs"], wantRequested)
+	}
+	if result.Data["resolved_page_count"] != 1 || result.Data["rendered_page_count"] != 1 {
+		t.Fatalf("duplicate request affected resolved/rendered counts: %v/%v", result.Data["resolved_page_count"], result.Data["rendered_page_count"])
+	}
+}
+
+func TestWikiSearchNeighborThenActualHitDoesNotDuplicateKB(t *testing.T) {
+	neighborSlug := "concept/neighbor"
+	first := newTestWikiPage("kb-1", "concept/first")
+	first.OutLinks = []string{neighborSlug}
+	neighbor := newTestWikiPage("kb-1", neighborSlug)
+	service := &fakeWikiPageService{searchResults: map[string][]*types.WikiPage{
+		"kb-1": {first, neighbor},
+	}}
+	tool := NewWikiSearchTool(service, nil, NewWikiScopesFromKBIDs([]string{"kb-1"}), NewWikiRouteResolver())
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"query":"concept"}`))
+	if err != nil || result == nil || !result.Success {
+		t.Fatalf("wiki_search failed: result=%+v err=%v", result, err)
+	}
+	found := result.Data["found_kbs"].(map[string][]string)
+	if !reflect.DeepEqual(found[neighborSlug], []string{"kb-1"}) {
+		t.Fatalf("found_kbs[%q] = %v, want one distinct KB", neighborSlug, found[neighborSlug])
+	}
+}
+
+func TestWikiReadPageMetadataReflectsBudgetedRendering(t *testing.T) {
+	slugs := []string{"concept/a", "concept/b", "concept/c"}
+	pages := make(map[string]*types.WikiPage, len(slugs))
+	for _, slug := range slugs {
+		page := newTestWikiPage("kb-1", slug)
+		page.Content = strings.Repeat("body ", 4000)
+		pages[wikiPageKey("kb-1", slug)] = page
+	}
+	service := &fakeWikiPageService{pages: pages}
+	tool := NewWikiReadPageTool(service, nil, NewWikiScopesFromKBIDs([]string{"kb-1"}), NewWikiRouteResolver())
+	ctx := WithOutputBudget(context.Background(), 1600)
+	args, err := json.Marshal(map[string]any{"slugs": slugs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := tool.Execute(ctx, args)
+	if err != nil || result == nil || !result.Success {
+		t.Fatalf("wiki_read_page failed: result=%+v err=%v", result, err)
+	}
+	returned := result.Data["returned_pages"].([]wikiPageIdentity)
+	omitted := result.Data["omitted_pages"].([]wikiPageIdentity)
+	truncated := result.Data["body_truncated_pages"].([]wikiPageIdentity)
+	if !reflect.DeepEqual(result.Data["requested_slugs"], slugs) || result.Data["resolved_page_count"] != len(slugs) {
+		t.Fatalf("request/resolved metadata = %v/%v", result.Data["requested_slugs"], result.Data["resolved_page_count"])
+	}
+	if result.Data["rendered_page_count"] != len(returned) || len(returned) == 0 || len(returned) >= len(slugs) {
+		t.Fatalf("rendered page metadata does not describe budgeted output: count=%v returned=%+v", result.Data["rendered_page_count"], returned)
+	}
+	if len(omitted)+len(returned) != len(slugs) || len(truncated) == 0 {
+		t.Fatalf("budget omission/truncation metadata incomplete: returned=%+v truncated=%+v omitted=%+v", returned, truncated, omitted)
+	}
+	for index, page := range returned {
+		if page.KBID != "kb-1" || page.Slug != slugs[index] || (page.BodyStatus != "truncated" && page.BodyStatus != "omitted") {
+			t.Fatalf("returned page identity/status[%d] = %+v", index, page)
+		}
+	}
+	for index, page := range omitted {
+		if page.KBID != "kb-1" || page.Slug != slugs[len(returned)+index] {
+			t.Fatalf("omitted page identity[%d] = %+v", index, page)
+		}
+	}
+}
+
+func TestWikiReadPageMetadataMarksBodyOmittedWhenNoBodyBudget(t *testing.T) {
+	slug := "concept/large"
+	page := newTestWikiPage("kb-1", slug)
+	page.Content = strings.Repeat("body ", 4000)
+	service := &fakeWikiPageService{pages: map[string]*types.WikiPage{wikiPageKey("kb-1", slug): page}}
+	tool := NewWikiReadPageTool(service, nil, NewWikiScopesFromKBIDs([]string{"kb-1"}), NewWikiRouteResolver())
+	result, err := tool.Execute(WithOutputBudget(context.Background(), 700), json.RawMessage(`{"slugs":["concept/large"]}`))
+	if err != nil || result == nil || !result.Success {
+		t.Fatalf("wiki_read_page failed: result=%+v err=%v", result, err)
+	}
+	returned := result.Data["returned_pages"].([]wikiPageIdentity)
+	bodyOmitted := result.Data["body_omitted_pages"].([]wikiPageIdentity)
+	if len(returned) != 1 || returned[0] != (wikiPageIdentity{KBID: "kb-1", Slug: slug, BodyStatus: "omitted"}) {
+		t.Fatalf("returned page body status = %+v, want explicitly omitted body", returned)
+	}
+	if !reflect.DeepEqual(bodyOmitted, []wikiPageIdentity{{KBID: "kb-1", Slug: slug, BodyStatus: "omitted"}}) {
+		t.Fatalf("body_omitted_pages = %+v", bodyOmitted)
+	}
+	if !strings.Contains(result.Output, "(body omitted: output budget exhausted)") {
+		t.Fatalf("expected actual omitted-body placeholder in output: %s", result.Output)
+	}
+}
+
+func TestWikiReadPageMetadataMarksRetractedBodyWithheld(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		state := "retraction_pending"
+		if failed {
+			state = "retraction_failed"
+		}
+		t.Run(state, func(t *testing.T) {
+			slug := "concept/retracted"
+			page := newTestWikiPage("kb-1", slug)
+			page.Summary = "PRIVATE_RETRACTION_SUMMARY"
+			page.Content = "PRIVATE_RETRACTION_BODY"
+			types.SetWikiRetractionSource(page, "removed-source", failed)
+			service := &fakeWikiPageService{pages: map[string]*types.WikiPage{wikiPageKey("kb-1", slug): page}}
+			tool := NewWikiReadPageTool(service, nil, NewWikiScopesFromKBIDs([]string{"kb-1"}), NewWikiRouteResolver())
+			result, err := tool.Execute(context.Background(), json.RawMessage(`{"slugs":["concept/retracted"]}`))
+			if err != nil || result == nil || !result.Success {
+				t.Fatalf("wiki_read_page failed: result=%+v err=%v", result, err)
+			}
+			returned := result.Data["returned_pages"].([]wikiPageIdentity)
+			if len(returned) != 1 || returned[0] != (wikiPageIdentity{KBID: "kb-1", Slug: slug, BodyStatus: "withheld", EvidenceState: state}) {
+				t.Fatalf("returned page evidence metadata = %+v", returned)
+			}
+			if !strings.Contains(result.Output, state) || !strings.Contains(strings.ToLower(result.Output), "consult the current source documents") {
+				t.Fatalf("missing retraction notice for %s: %s", state, result.Output)
+			}
+			if strings.Contains(result.Output, "PRIVATE_RETRACTION_SUMMARY") || strings.Contains(result.Output, "PRIVATE_RETRACTION_BODY") {
+				t.Fatalf("withheld source facts leaked: %s", result.Output)
+			}
+			if len(result.Data["body_truncated_pages"].([]wikiPageIdentity)) != 0 || len(result.Data["body_omitted_pages"].([]wikiPageIdentity)) != 0 {
+				t.Fatalf("withheld original body must not be marked budget-truncated/omitted: truncated=%v omitted=%v", result.Data["body_truncated_pages"], result.Data["body_omitted_pages"])
+			}
+		})
+	}
+}
+
+func TestWikiReadPageBudgetOmissionDisambiguatesSameSlugAcrossKBs(t *testing.T) {
+	slug := "concept/shared"
+	pageA := newTestWikiPage("kb-1", slug)
+	pageB := newTestWikiPage("kb-2", slug)
+	pageA.Content = strings.Repeat("a", 4000)
+	pageB.Content = strings.Repeat("b", 4000)
+	service := &fakeWikiPageService{pages: map[string]*types.WikiPage{
+		wikiPageKey("kb-1", slug): pageA,
+		wikiPageKey("kb-2", slug): pageB,
+	}}
+	tool := NewWikiReadPageTool(service, nil, NewWikiScopesFromKBIDs([]string{"kb-1", "kb-2"}), NewWikiRouteResolver())
+	result, err := tool.Execute(WithOutputBudget(context.Background(), 1200), json.RawMessage(`{"slugs":["concept/shared"]}`))
+	if err != nil || result == nil || !result.Success {
+		t.Fatalf("wiki_read_page failed: result=%+v err=%v", result, err)
+	}
+	returned := result.Data["returned_pages"].([]wikiPageIdentity)
+	omitted := result.Data["omitted_pages"].([]wikiPageIdentity)
+	if len(returned) != 1 || returned[0].KBID != "kb-1" || returned[0].Slug != slug {
+		t.Fatalf("returned page identity = %+v, want first actual page", returned)
+	}
+	if !reflect.DeepEqual(omitted, []wikiPageIdentity{{KBID: "kb-2", Slug: slug}}) {
+		t.Fatalf("omitted page identities = %+v, want second KB despite matching slug", omitted)
+	}
+	if result.Data["resolved_page_count"] != 2 || result.Data["rendered_page_count"] != 1 {
+		t.Fatalf("resolved/rendered counts = %v/%v, want 2/1", result.Data["resolved_page_count"], result.Data["rendered_page_count"])
+	}
+	if len(result.Data["ambiguous_slugs"].(map[string][]string)[slug]) != 2 {
+		t.Fatalf("cross-KB ambiguity was lost: %v", result.Data["ambiguous_slugs"])
+	}
 }
 
 func TestWikiSearchRejectsKnowledgeBaseOutsideScope(t *testing.T) {

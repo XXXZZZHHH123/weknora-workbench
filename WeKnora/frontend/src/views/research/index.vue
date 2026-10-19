@@ -173,15 +173,15 @@ onMounted(() => window.addEventListener('message', receive))
 onBeforeUnmount(() => { requestGeneration++; authGeneration++; scopeGeneration.value++; window.removeEventListener('message', receive) })
 </script>
 <style scoped>
-.research-workspace{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;background:var(--app-bg,#f4f7f5)}
-.research-toolbar{display:flex;gap:24px;align-items:center;padding:16px 24px;background:var(--app-card-bg,white);border-bottom:1px solid var(--app-border-color,#dce5df);flex-wrap:wrap}
-.research-toolbar span{font-size:var(--app-text-md);color:var(--app-text-secondary,#5b6b63)}
+.research-workspace{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;background:var(--app-bg);font-family:var(--app-font-family)}
+.research-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;min-height:44px;padding:6px 24px;box-sizing:border-box;background:var(--app-bg)}
+.research-toolbar strong{font-size:var(--app-text-base);font-weight:600;max-width:280px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.research-toolbar>span{font-size:var(--app-text-sm);color:var(--app-text-secondary);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .research-toolbar a{font-size:var(--app-text-md);color:var(--td-brand-color);text-decoration:none}
 .research-toolbar .research-materials{margin-left:auto}
-.research-back{display:inline-flex;gap:4px;align-items:center}
+.research-back{display:inline-flex;align-items:center;gap:4px}
 .research-body{position:relative;display:flex;flex:1;min-height:0;min-width:0;overflow:hidden}
 .research-canvas{position:relative;display:flex;flex:1;min-width:0;min-height:0}
 .research-empty{padding:24px;flex:1}iframe{width:100%;flex:1;min-width:0;min-height:0;border:0}
-.research-workspace--isolated .research-toolbar{gap:12px;padding:10px 18px}.research-workspace--isolated .research-toolbar strong{font-size:var(--app-text-base);max-width:300px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.research-workspace--isolated .research-toolbar>span{font-size:var(--app-text-sm);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media(max-width:900px){.research-toolbar{gap:12px;padding:12px 16px}}
+@media(max-width:720px){.research-toolbar{gap:6px;padding:6px 16px}.research-toolbar>span{display:none}.research-toolbar strong{max-width:calc(100vw - 150px)}.research-toolbar .research-materials{margin-left:0}}
 </style>

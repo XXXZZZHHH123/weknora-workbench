@@ -389,34 +389,14 @@ func (e *AgentEngine) analyzeResponse(
 			"content_len": len(response.Content),
 		})
 
-		answer := response.Content
-		if answer == "" {
-			answer = "Sorry, this request was blocked by the content safety policy. Please try rephrasing your question."
-		}
-
-		answerID := generateEventID("answer")
-		e.eventBus.Emit(ctx, event.Event{
-			ID:        answerID,
-			Type:      event.EventAgentFinalAnswer,
-			SessionID: sessionID,
-			Data: event.AgentFinalAnswerData{
-				Content: answer,
-				Done:    false,
-			},
-		})
-		e.eventBus.Emit(ctx, event.Event{
-			ID:        answerID,
-			Type:      event.EventAgentFinalAnswer,
-			SessionID: sessionID,
-			Data: event.AgentFinalAnswerData{
-				Content: "",
-				Done:    true,
-			},
-		})
+		// A filtered partial draft has not passed candidate checks.
+		answer := "Sorry, this request was blocked by the content safety policy. Please try rephrasing your question."
+		answerID := e.publishAnswer(ctx, sessionID, answer, "", false)
 
 		return responseVerdict{
 			isDone:      true,
 			finalAnswer: answer,
+			answerID:    answerID,
 			step:        step,
 		}
 	}
@@ -460,23 +440,12 @@ func (e *AgentEngine) analyzeResponse(
 		//       same event ID.
 		//   (b) Not streamed live (e.g. the content only surfaced in the
 		//       accumulated result) — emit the full content, then Done.
-		var answerID string
-		if response.AnswerStreamed && response.AnswerEventID != "" {
-			answerID = response.AnswerEventID
-		} else {
-			answerID = generateEventID("answer")
-			if response.Content != "" {
-				e.eventBus.Emit(ctx, event.Event{
-					ID:        answerID,
-					Type:      event.EventAgentFinalAnswer,
-					SessionID: sessionID,
-					Data: event.AgentFinalAnswerData{
-						Content: response.Content,
-						Done:    false,
-					},
-				})
-			}
+		existingID := ""
+		if response.AnswerStreamed {
+			existingID = response.AnswerEventID
 		}
+		answerID := e.publishAnswer(ctx, sessionID, response.Content, existingID, false)
+
 		// Do not emit Done:true here. The caller drains any loop-end inject
 		// first; a premature close makes the client think the turn is idle
 		// while the engine is about to continue.
@@ -532,20 +501,11 @@ func (e *AgentEngine) analyzeResponse(
 		// Same two delivery paths as Case 1: reuse the live stream when the
 		// text already went out, otherwise emit it once here. Done is left to
 		// the caller so a loop-end steer inject can still continue the turn.
-		answerID := response.AnswerEventID
-		if !response.AnswerStreamed || answerID == "" {
-			answerID = generateEventID("answer")
-			_ = e.eventBus.Emit(ctx, event.Event{
-				ID:        answerID,
-				Type:      event.EventAgentFinalAnswer,
-				SessionID: sessionID,
-				Data: event.AgentFinalAnswerData{
-					Content:   response.Content,
-					Done:      false,
-					Truncated: true,
-				},
-			})
+		existingID := ""
+		if response.AnswerStreamed {
+			existingID = response.AnswerEventID
 		}
+		answerID := e.publishAnswer(ctx, sessionID, response.Content, existingID, true)
 
 		step.Truncated = true
 		return responseVerdict{

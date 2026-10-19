@@ -24,7 +24,6 @@ from typing import Dict, List, Tuple
 from xml.etree import ElementTree as ET
 
 from docreader.parser.excel_convert import find_soffice
-from docreader.parser.pptx_chart_geometry import estimate_emf_line_chart
 
 logger = logging.getLogger(__name__)
 _MARKDOWN_IMAGE = re.compile(r"!\[(.*?)\]\(([^)]+)\)", re.DOTALL)
@@ -428,6 +427,52 @@ def _geometry_markdown(result: dict, page_number: int, target: str) -> str:
     return "\n".join(lines)
 
 
+def _trend_geometry_markdown(result: dict, page_number: int, target: str) -> str:
+    def escape(value):
+        return re.sub(r"([\\`*\[\]<>!#_|])", r"\\\1", str(value))
+
+    def point(value):
+        return f"{position(value)}，约{value['approximate_value']:g}（{value['estimate_low']:g}～{value['estimate_high']:g}）"
+
+    def position(value):
+        interval = value.get('x_axis_interval')
+        if interval:
+            band = {'first_third': '前1/3（靠左段）', 'middle_third': '中间1/3', 'last_third': '后1/3（靠右段）'}[interval['relative_band']]
+            return (f"【{escape(interval['left_label'])}】刻度起算区间的{band}，"
+                    f"区间进度{interval['fraction_between_labels']*100:g}%（下一边界是【{escape(interval['right_label'])}】，尚未抵达）")
+        return f"x={value['x_fraction']:g}（无相邻横轴标签）"
+
+    lines = [f"第{page_number}页原图曲线几何证据 · {target}：",
+             "由原EMF绘制点、图例颜色和线性纵轴校准；每条曲线保留自己的实际覆盖范围，包含较短曲线。",
+             "数值为图上估读，不是原Excel观测。位置明确绑定相邻横轴刻度，百分比仅在这两个刻度之间从左向右计量，不是整张图或全年的百分比。点尚未到达右刻度时，不能归到该右刻度之后的区间。由模型结合真实横轴标签理解时间，不从报告日期推定曲线末日。不同结束位置不可当作同日截面或排名。",
+             f"纵轴单位：{escape(result['unit'] or '原图未明确')}。横轴原文锚点：" +
+             " → ".join(escape(a['label']) for a in result['x_axis_anchors'])]
+    if result.get('series_selection'):
+        lines.append(f"模型选择的原图图例：{escape(', '.join(result['series_selection']))}；原图共{result['source_series_count']}条，未返回其他曲线的数据点，不能据此做全图比较。")
+    for item in result['series']:
+        roles = {'first': '首点', 'last': '末点', 'minimum': '最低点', 'maximum': '最高点'}
+        lines.append(f"图例 {escape(item['legend'])}的关键点（横轴从左到右）：" +
+                     ' → '.join('/'.join(roles[role] for role in value['roles']) + '：' + point(value)
+                                for value in item['key_points']))
+        lines.append('相邻关键点的纵轴净变动（并非期间内单调变化；单位同纵轴）：' +
+                     '；'.join('/'.join(roles[role] for role in value['from_roles']) + '→' +
+                              '/'.join(roles[role] for role in value['to_roles']) +
+                              f"：{value['approximate_change']:+g}（{value['estimate_low']:g}～{value['estimate_high']:g}），" +
+                              (f"该段横向跨度占本曲线绘制范围{value['horizontal_fraction_of_this_trace']*100:g}%，"
+                               if value['horizontal_fraction_of_this_trace'] is not None else "横向跨度比例未知，") +
+                              f"纵向净变动占本曲线值域{value['absolute_change_fraction_of_this_trace_value_range']*100:g}%"
+                              for value in item['key_point_changes']))
+        # Calibration/pen uncertainty is shared within a trace. State its
+        # conservative maximum once, rather than repeat three magnitudes and
+        # explanatory text at every sampled point in the searchable document.
+        margin = max(max(value['approximate_value'] - value['estimate_low'],
+                         value['estimate_high'] - value['approximate_value'])
+                     for value in item['samples'])
+        lines.append(f"图例 {escape(item['legend'])}（{item['color']}）的原图采样（真实横轴区间,约值；按绘制顺序、含全轨迹极值；各点估读误差不超过±{margin:g}）：" +
+                     "；".join(f"({position(value)},{value['approximate_value']:g})" for value in item['samples']))
+    return "\n".join(lines)
+
+
 def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes) -> Tuple[str, Dict[str, str]]:
     """Add page headings and pictures resolved by the owning slide relationships.
 
@@ -463,12 +508,11 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes) -> Tuple[str
             for label, target, placeholder in pictures_by_page[index - 1]:
                 label = re.sub(r"[\r\n\[\]]", " ", label).strip()
                 source_labels = []
-                geometry = None
-                if target.lower().endswith(".emf"):
+                is_emf = target.lower().endswith(".emf")
+                if is_emf:
                     try:
                         raw_emf = _read_member(archive, target, _MAX_MEDIA_BYTES)
                         source_labels = extract_emf_labels(raw_emf)
-                        geometry = estimate_emf_line_chart(raw_emf)
                     except (KeyError, ValueError):
                         pass
                 if target and target not in cache:
@@ -499,8 +543,8 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes) -> Tuple[str
                     # exact strings (especially chart titles) for retrieval.
                     labels_text = re.sub(r"([\\`*\[\]<>!#_])", r"\\\1", " | ".join(source_labels))
                     page.append(f"第{index}页原图文字 · {target}（缓存EMF文本记录，刻度和图例不是观察值）：\n{labels_text}")
-                if geometry:
-                    page.append(_geometry_markdown(geometry, index, target))
+                if is_emf:
+                    page.append("原图图例和坐标刻度是标识，不是观察值；需要数值时应按需读取授权原图。")
             if notes:
                 page.append(notes)
             sections.append("\n\n".join(item for item in page if item))

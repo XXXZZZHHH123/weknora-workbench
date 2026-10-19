@@ -20,6 +20,7 @@ Retrieved content uses request-local source handles: cN identifies a knowledge c
 
 const citationEnabledProtocolPrompt = `
 - Source citations are enabled for this answer. Cite a knowledge chunk with exactly <ref id="cN"/> and a web page with exactly <ref id="wN"/>.
+- Copy the complete handle, including its numeric index, verbatim from the supporting result. N in the syntax above is a schema placeholder, never a literal citation identifier.
 - Cite only cN/wN handles backed by tool results for the current task, and only when that source supports the adjacent
   claim. Never cite dN/bN.
 - Each cN covers only its own supplied text or image evidence, not every chunk of the same document.

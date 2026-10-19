@@ -292,7 +292,6 @@ class _Sheet:
             first, last = int(attrs.get("min", 0)), int(attrs.get("max", 0))
             if first < 1 or last < first or last > _MAX_COL:
                 raise ValueError("工作表列宽范围无效")
-            self.total_cols = max(self.total_cols, last)
             for col in range(max(first, self.window["start_col"]), min(last, self.window["end_col"]) + 1):
                 if "width" in attrs:
                     self.columns[str(col)] = _finite_float(attrs["width"])
@@ -698,7 +697,9 @@ def read_sheet_view(path, sheet_name, start_row=1, start_col=1, row_count=60, co
                     "next_col": window["end_col"] + 1 if window["end_col"] < total_cols else None,
                     "cells": sorted(sheet.cells, key=lambda cell: (cell["row"], cell["column"])),
                     "merges": sheet.merges, "styles": styles,
-                    "column_widths": sheet.columns, "row_heights": sheet.rows,
+                    "column_widths": {column: width for column, width in sheet.columns.items()
+                                       if int(column) <= total_cols},
+                    "row_heights": sheet.rows,
                     "default_row_height": sheet.default_row_height,
                     "default_column_width": sheet.default_column_width,
                     "date1904": workbook["date1904"],

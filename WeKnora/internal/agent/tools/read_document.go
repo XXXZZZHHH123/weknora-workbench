@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -13,14 +14,15 @@ import (
 )
 
 const (
-	readDocumentDefaultLimit = 20
-	readDocumentMaxLimit     = 100
-	readDocumentMaxContext   = 5
-	readDocumentMaxMatches   = 20
-	readDocumentScanPageSize = 100
-	// readDocumentChunkOverhead approximates the per-chunk tags and handles
-	// the model rendering adds around each chunk's content.
-	readDocumentChunkOverhead = 120
+	readDocumentDefaultLimit    = 20
+	readDocumentMaxLimit        = 100
+	readDocumentMaxContext      = 5
+	readDocumentMaxMatches      = 20
+	readDocumentScanPageSize    = 100
+	readDocumentMaxContentRunes = 12000
+	// readDocumentChunkOverhead reserves room for the model view's chunk tags,
+	// content-completeness state, and continuation guidance.
+	readDocumentChunkOverhead = 240
 )
 
 var readDocumentTool = BaseTool{
@@ -29,6 +31,10 @@ var readDocumentTool = BaseTool{
 		"id is a dN document handle (reads a page of chunks starting at offset) or a cN chunk handle (reads that " +
 		"chunk; set context to include neighbouring chunks on each side).\n" +
 		"For a user-specified physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
+		"The result includes an image_catalog of actual stored figures, even for older text-only imports. " +
+		"To inspect a figure, repeat the same authorized document/page read with images=[its exact reference], detail=full and focus describing the complete user request. " +
+		"Choose the figure from its actual source labels/context; text labels and image URLs alone do not reveal curves or their colors. " +
+		"Returned originals are delivered to a vision model or the configured separate image reader; report estimates and unclear overlaps honestly.\n" +
 		"query finds passages inside the document: matching chunks come back with one chunk of context on each " +
 		"side. By default query is case-insensitive and split on whitespace: a chunk matches when it contains " +
 		"every word, in any order. Set regex=true to match query as one POSIX regular expression instead. " +
@@ -36,7 +42,9 @@ var readDocumentTool = BaseTool{
 		"Page through long documents with offset and limit: offset counts chunks in reading order from 0 and is " +
 		"not a chunk index, so continue with the returned next_offset, and use id=cN with context to read around " +
 		"a specific chunk. A page holds fewer than limit chunks when they would exceed the output size budget; " +
-		"next_offset always points at the first chunk not yet returned. Reading a long document end to end " +
+		"next_offset always points at the first chunk not yet returned. If a returned chunk body is partial, " +
+		"continue with id=cN and content_offset=next_content_offset; content offsets count Unicode characters " +
+		"within that chunk. Reading a long document end to end " +
 		"costs many calls, so prefer query or search_knowledge to locate the relevant part first.",
 	schema: json.RawMessage(`{
   "type": "object",
@@ -50,6 +58,17 @@ var readDocumentTool = BaseTool{
       "type": "integer",
       "description": "Position in reading order to start from (default 0); continue with next_offset",
       "minimum": 0
+    },
+    "content_offset": {
+      "type": "integer",
+      "description": "Unicode-character offset within a real cN chunk's returned source text; on a physical-page read it is relative to that page-clipped text",
+      "minimum": 0
+    },
+    "content_limit": {
+      "type": "integer",
+      "description": "Maximum Unicode characters to read from a real cN chunk (default is bounded by output budget)",
+      "minimum": 1,
+      "maximum": 12000
     },
     "page": {
       "type": "integer",
@@ -75,6 +94,24 @@ var readDocumentTool = BaseTool{
       "description": "Neighbouring chunks to include on each side of a cN chunk (default 0, max 5)",
       "minimum": 0,
       "maximum": 5
+    },
+    "images": {
+      "type": "array",
+      "items": {"type": "string"},
+      "maxItems": 4,
+      "description": "Exact image references from this document/page's image_catalog; omit to list figures without reading their pixels"
+    },
+    "detail": {
+      "type": "string", "enum": ["brief", "full"],
+      "description": "Image inspection detail; defaults to full when images are selected"
+    },
+    "image_series": {
+      "type": "array", "items": {"type": "string"}, "maxItems": 32,
+      "description": "For supported vector charts, explicit curve LEGEND identifiers are required to read numeric geometry. Select the labels relevant to the full question; a chart title or metric name is not a legend. If omitted or invalid, use the returned actual legend options and retry. To inspect every curve explicitly select all actual options. Omit for non-chart images. Never supply guessed labels or expected values."
+    },
+    "focus": {
+      "type": "string",
+      "description": "The complete user question and required visual evidence; no expected answer or guessed values"
     }
   },
   "required": ["id"]
@@ -83,14 +120,20 @@ var readDocumentTool = BaseTool{
 
 // ReadDocumentInput defines the input parameters for read_document.
 type ReadDocumentInput struct {
-	ID          string             `json:"id"`
-	Offset      int                `json:"offset,omitempty"`
-	Limit       int                `json:"limit,omitempty"`
-	Query       string             `json:"query,omitempty"`
-	Regex       bool               `json:"regex,omitempty"`
-	Context     int                `json:"context,omitempty"`
-	Page        int                `json:"page,omitempty"`
-	SourceScope *DocumentScopePlan `json:"source_scope,omitempty"`
+	ID            string             `json:"id"`
+	Offset        int                `json:"offset,omitempty"`
+	ContentOffset int                `json:"content_offset,omitempty"`
+	ContentLimit  int                `json:"content_limit,omitempty"`
+	Limit         int                `json:"limit,omitempty"`
+	Query         string             `json:"query,omitempty"`
+	Regex         bool               `json:"regex,omitempty"`
+	Context       int                `json:"context,omitempty"`
+	Page          int                `json:"page,omitempty"`
+	SourceScope   *DocumentScopePlan `json:"source_scope,omitempty"`
+	Images        []string           `json:"images,omitempty"`
+	ImageSeries   []string           `json:"image_series,omitempty"`
+	Detail        string             `json:"detail,omitempty"`
+	Focus         string             `json:"focus,omitempty"`
 }
 
 // ReadDocumentTool reads document metadata and chunks by page, by chunk
@@ -101,10 +144,24 @@ type ReadDocumentTool struct {
 	chunkService       interfaces.ChunkService
 	searchTargets      types.SearchTargets
 	documentConstraint *RequestedDocumentConstraint
+	imageReader        DocumentImageReader
+	figureReader       DocumentFigureReader
+	wikiPageService    interfaces.WikiPageService
+}
+
+// WithImageReader wires the existing authorized document-image storage reader.
+func (t *ReadDocumentTool) WithImageReader(reader DocumentImageReader) *ReadDocumentTool {
+	t.imageReader = reader
+	return t
 }
 
 func (t *ReadDocumentTool) WithDocumentConstraint(constraint *RequestedDocumentConstraint) *ReadDocumentTool {
 	t.documentConstraint = constraint
+	return t
+}
+
+func (t *ReadDocumentTool) WithWikiPageService(service interfaces.WikiPageService) *ReadDocumentTool {
+	t.wikiPageService = service
 	return t
 }
 
@@ -125,9 +182,18 @@ func NewReadDocumentTool(
 // readChunkRow is one chunk in the rendered result together with its role
 // (page entry, search match, or context around a match).
 type readChunkRow struct {
-	chunk   *types.Chunk
-	role    string // "", "match", "context_before", "context_after", "focus"
-	snippet string
+	chunk             *types.Chunk
+	role              string // "", "match", "context_before", "context_after", "focus"
+	snippet           string
+	contentOffset     int
+	contentComplete   bool
+	nextContentOffset int
+}
+
+type chunkContentSegment struct {
+	chunkID string
+	offset  int
+	limit   int
 }
 
 // Execute resolves the id, then dispatches to page, chunk or query reading.
@@ -165,6 +231,9 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 		contextChunks = readDocumentMaxContext
 	}
 	query := strings.TrimSpace(input.Query)
+	if input.ContentOffset < 0 || input.ContentLimit < 0 {
+		return &types.ToolResult{Success: false, Error: "content_offset and content_limit must not be negative"}, nil
+	}
 
 	knowledge, chunk, err := t.resolveTarget(ctx, id)
 	if err != nil {
@@ -197,7 +266,22 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 		return &types.ToolResult{Success: false, Error: "page must be a positive physical page number"}, nil
 	}
 	if input.Page > 0 {
-		return t.readPhysicalPage(ctx, knowledge, input.Page, offset, limit)
+		var segment *chunkContentSegment
+		if input.ContentLimit > 0 || input.ContentOffset > 0 {
+			if chunk == nil {
+				return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (cN)"}, nil
+			}
+			segment = &chunkContentSegment{chunkID: chunk.ID, offset: input.ContentOffset, limit: input.ContentLimit}
+		}
+		result, err := t.readPhysicalPage(ctx, knowledge, input.Page, offset, limit, segment)
+		return t.finishImageRead(ctx, knowledge, input, result, err)
+	}
+	if input.ContentLimit > 0 || input.ContentOffset > 0 {
+		if chunk == nil {
+			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (cN)"}, nil
+		}
+		result, err := t.readChunkContent(ctx, knowledge, chunk, input.ContentOffset, input.ContentLimit)
+		return t.finishImageRead(ctx, knowledge, input, result, err)
 	}
 
 	var matchers []*regexp.Regexp
@@ -224,7 +308,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	var result *types.ToolResult
 	switch {
 	case len(matchers) > 0:
-		result, err = t.readByQuery(ctx, knowledge, query, matchers, offset)
+		result, err = t.readByQuery(ctx, knowledge, query, matchers, offset, input.Regex)
 	case chunk != nil:
 		result, err = t.readAroundChunk(ctx, knowledge, chunk, contextChunks)
 	default:
@@ -233,7 +317,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	if t.documentConstraint != nil && result != nil && result.Success && result.Data != nil {
 		result.Data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": knowledge.ID, "plan_validated": true}
 	}
-	return result, err
+	return t.finishImageRead(ctx, knowledge, input, result, err)
 }
 
 // resolveTarget accepts either a document id or a chunk id. Documents are
@@ -257,6 +341,23 @@ func (t *ReadDocumentTool) resolveTarget(ctx context.Context, id string) (*types
 	)
 	if authErr != nil {
 		return nil, nil, fmt.Errorf("chunk is not accessible: %w", authErr)
+	}
+	if authorizedChunk.ChunkType == types.ChunkTypeWikiPage || strings.HasPrefix(authorizedChunk.ID, "wp-") {
+		const wikiChunkPrefix = "wp-"
+		if t.wikiPageService == nil || !strings.HasPrefix(authorizedChunk.ID, wikiChunkPrefix) || len(authorizedChunk.ID) == len(wikiChunkPrefix) {
+			return nil, nil, errors.New("Wiki page chunks must be read through the Wiki page tools")
+		}
+		pageID := strings.TrimPrefix(authorizedChunk.ID, wikiChunkPrefix)
+		page, pageErr := t.wikiPageService.GetPageByID(ctx, pageID)
+		if pageErr != nil || page == nil || page.ID != pageID ||
+			page.KnowledgeBaseID != authorizedChunk.KnowledgeBaseID || page.TenantID != authorizedChunk.TenantID {
+			return nil, nil, errors.New("Wiki page chunk identity could not be verified; read the current Wiki page instead")
+		}
+		state := types.ReadWikiRetractionState(page)
+		if len(state.PendingSourceIDs) > 0 || len(state.FailedSourceIDs) > 0 {
+			return nil, nil, errors.New("Wiki page chunk is withheld while source retraction review is pending or failed; consult current source documents")
+		}
+		return nil, nil, errors.New("Wiki page chunks must be read through the Wiki page tools")
 	}
 	knowledge, err := t.knowledgeService.GetKnowledgeByIDOnly(ctx, authorizedChunk.KnowledgeID)
 	if err != nil || knowledge == nil {
@@ -374,10 +475,13 @@ func (t *ReadDocumentTool) readPage(
 	for _, c := range chunks {
 		rows = append(rows, readChunkRow{chunk: c})
 	}
+	rows = boundChunkRowsContent(ctx, rows)
 	data := t.buildData(knowledge, total, rows)
 	data["offset"] = offset
 	data["page_size"] = limit
 	data["page"] = offset/limit + 1
+	data["offset_space"] = "document_chunks"
+	annotateContentPagination(data, rows)
 	if next := offset + len(chunks); int64(next) < total && len(chunks) > 0 {
 		data["next_offset"] = next
 	}
@@ -429,10 +533,16 @@ func (t *ReadDocumentTool) readAroundChunk(
 		chunks = append(chunks, r.chunk)
 	}
 	enrichChunkImageInfo(ctx, t.chunkService.GetRepository(), t.tenantFor(knowledge), chunks)
+	rows = boundChunkRowsContent(ctx, rows)
+	rows, omittedContext := fitChunkRowsToBudget(ctx, rows, focus.ID)
 
 	data := t.buildData(knowledge, total, rows)
+	annotateContentPagination(data, rows)
 	data["single_chunk"] = len(rows) == 1
 	data["focus_chunk_id"] = focus.ID
+	if omittedContext > 0 {
+		data["context_chunks_omitted_for_budget"] = omittedContext
+	}
 	if q := faqStandardQuestion(focus); q != "" {
 		data["faq_id"] = focus.ID
 		data["faq_question"] = q
@@ -444,6 +554,129 @@ func (t *ReadDocumentTool) readAroundChunk(
 	}, nil
 }
 
+func maxChunkContentRunes(ctx context.Context) int {
+	return max(1, min(readDocumentMaxContentRunes, OutputBudget(ctx)*3/4-readDocumentChunkOverhead*2))
+}
+
+func sliceChunkContent(ctx context.Context, chunk *types.Chunk, offset, requestedLimit int) (readChunkRow, error) {
+	runes := []rune(chunk.Content)
+	if offset < 0 || offset > len(runes) {
+		return readChunkRow{}, fmt.Errorf("content_offset %d is outside chunk content length %d", offset, len(runes))
+	}
+	limit := requestedLimit
+	if limit <= 0 || limit > readDocumentMaxContentRunes {
+		limit = maxChunkContentRunes(ctx)
+	}
+	limit = min(limit, maxChunkContentRunes(ctx))
+	end := min(len(runes), offset+limit)
+	copy := *chunk
+	copy.Content = string(runes[offset:end])
+	row := readChunkRow{chunk: &copy, role: "focus", contentOffset: offset, contentComplete: end == len(runes)}
+	if !row.contentComplete {
+		row.nextContentOffset = end
+	}
+	return row, nil
+}
+
+// boundChunkRowsContent keeps one oversized source chunk readable and gives
+// the caller a stable cN + Unicode offset to retrieve its remaining source text.
+func boundChunkRowsContent(ctx context.Context, rows []readChunkRow) []readChunkRow {
+	limit := maxChunkContentRunes(ctx)
+	for i, row := range rows {
+		if row.chunk == nil || utf8.RuneCountInString(row.chunk.Content) <= limit {
+			continue
+		}
+		segment, err := sliceChunkContent(ctx, row.chunk, 0, limit)
+		if err != nil {
+			continue
+		}
+		segment.role = row.role
+		segment.snippet = row.snippet
+		rows[i] = segment
+	}
+	return rows
+}
+
+func fitChunkRowsToBudget(ctx context.Context, rows []readChunkRow, focusID string) ([]readChunkRow, int) {
+	budget := OutputBudget(ctx) * 4 / 5
+	used := 0
+	kept := make([]readChunkRow, 0, len(rows))
+	keep := make([]bool, len(rows))
+	focusIndex := -1
+	for i, row := range rows {
+		if row.chunk != nil && row.chunk.ID == focusID {
+			focusIndex = i
+			break
+		}
+	}
+	if focusIndex >= 0 {
+		row := rows[focusIndex]
+		used = utf8.RuneCountInString(row.chunk.Content) + readDocumentChunkOverhead
+		keep[focusIndex] = true
+	}
+	for i, row := range rows {
+		if i == focusIndex || row.chunk == nil {
+			continue
+		}
+		size := utf8.RuneCountInString(row.chunk.Content) + readDocumentChunkOverhead
+		if used+size > budget {
+			continue
+		}
+		used += size
+		keep[i] = true
+	}
+	for i, row := range rows {
+		if keep[i] {
+			kept = append(kept, row)
+		}
+	}
+	return kept, len(rows) - len(kept)
+}
+
+func annotateContentPagination(data map[string]interface{}, rows []readChunkRow) {
+	if _, ok := data["offset_space"]; !ok {
+		data["offset_space"] = "document_chunks"
+	}
+	_, pageScoped := data["page_chunks"]
+	for i, row := range rows {
+		chunks, _ := data["chunks"].([]map[string]interface{})
+		if i >= len(chunks) {
+			continue
+		}
+		chunks[i]["content_offset"] = row.contentOffset
+		chunks[i]["content_complete"] = row.contentComplete || (row.contentOffset == 0 && row.nextContentOffset == 0)
+		if pageScoped {
+			chunks[i]["content_offset_space"] = "physical_page_chunk_unicode_runes"
+		} else {
+			chunks[i]["content_offset_space"] = "chunk_unicode_runes"
+		}
+		if row.nextContentOffset > 0 {
+			chunks[i]["next_content_offset"] = row.nextContentOffset
+		}
+	}
+}
+
+func (t *ReadDocumentTool) readChunkContent(
+	ctx context.Context, knowledge *types.Knowledge, chunk *types.Chunk, offset, limit int,
+) (*types.ToolResult, error) {
+	row, err := sliceChunkContent(ctx, chunk, offset, limit)
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error()}, nil
+	}
+	enrichChunkImageInfo(ctx, t.chunkService.GetRepository(), t.tenantFor(knowledge), []*types.Chunk{row.chunk})
+	rows := []readChunkRow{row}
+	data := t.buildData(knowledge, t.countChunks(ctx, knowledge), rows)
+	data["single_chunk"] = true
+	data["offset_space"] = "chunk_unicode_runes"
+	annotateContentPagination(data, rows)
+	data["content_complete"] = row.contentComplete
+	data["content_offset"] = row.contentOffset
+	if !row.contentComplete {
+		data["next_content_offset"] = row.nextContentOffset
+	}
+	return &types.ToolResult{Success: true, Data: data, Output: t.buildOutput(knowledge, int64(data["total_chunks"].(int64)), rows, "")}, nil
+}
+
 // readByQuery scans the document in order from offset and returns chunks
 // matched by every matcher, with one chunk of context on each side, capped at
 // readDocumentMaxMatches and the output budget. A truncated result carries
@@ -451,7 +684,7 @@ func (t *ReadDocumentTool) readAroundChunk(
 // without it matches past the cap could only be reached by paging the whole
 // document.
 func (t *ReadDocumentTool) readByQuery(
-	ctx context.Context, knowledge *types.Knowledge, query string, matchers []*regexp.Regexp, offset int,
+	ctx context.Context, knowledge *types.Knowledge, query string, matchers []*regexp.Regexp, offset int, regexMode bool,
 ) (*types.ToolResult, error) {
 	var rows []readChunkRow
 	emitted := make(map[string]bool)
@@ -526,15 +759,28 @@ scan:
 	}
 
 	data := t.buildData(knowledge, total, rows)
+	rows = boundChunkRowsContent(ctx, rows)
+	data = t.buildData(knowledge, total, rows)
+	annotateContentPagination(data, rows)
 	data["query"] = query
+	mode := "literal_all_terms_in_one_chunk"
+	scope := map[string]any{"mode": mode, "offset": offset, "scan_complete": !truncated, "document_scan_complete": offset == 0 && !truncated,
+		"notice": "Matches describe this text query only, not semantic coverage of the topic. No match does not prove the document lacks the requested information; terms may be worded differently or occur in different chunks. Choose another query or read actual source ranges when needed."}
+	if regexMode {
+		scope["mode"] = "regular_expression_in_one_chunk"
+	} else {
+		scope["literal_terms"] = strings.Fields(query)
+	}
+	data["query_scope"] = scope
 	data["match_count"] = matchCount
 	data["truncated"] = truncated
 	if nextOffset >= 0 {
 		data["next_offset"] = nextOffset
 	}
+	scopeJSON, _ := json.Marshal(scope)
 	return &types.ToolResult{
 		Success: true,
-		Output:  t.buildOutput(knowledge, total, rows, query),
+		Output:  t.buildOutput(knowledge, total, rows, query) + "\n<query_scope>" + xmlEscape(string(scopeJSON)) + "</query_scope>",
 		Data:    data,
 	}, nil
 }

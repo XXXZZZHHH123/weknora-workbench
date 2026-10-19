@@ -207,6 +207,19 @@ def _primitives(data):
 
 def estimate_emf_line_chart(data: bytes) -> dict | None:
     """Return geometric evidence only if axis, legend and traces all verify."""
+    return _estimate_emf_chart(data, partial_traces=False)
+
+
+def estimate_emf_chart_trends(data: bytes) -> dict | None:
+    """Retain independently drawn trace ranges without asserting comparable ends.
+
+    Horizontal labels remain source text at their actual drawing positions;
+    interpreting calendar or business semantics belongs to the model.
+    """
+    return _estimate_emf_chart(data, partial_traces=True)
+
+
+def _estimate_emf_chart(data: bytes, *, partial_traces: bool) -> dict | None:
     primitives = _primitives(data)
     if not primitives:
         return None
@@ -218,7 +231,7 @@ def estimate_emf_line_chart(data: bytes) -> dict | None:
     candidates = []
     for line in lines:
         points = line["points"]
-        if len(points) < 8 or line["color"] in unsupported:
+        if len(points) < (3 if partial_traces else 8) or line["color"] in unsupported:
             continue
         if any(points[i][0] < points[i-1][0]-.5 for i in range(1, len(points))):
             continue
@@ -228,7 +241,7 @@ def estimate_emf_line_chart(data: bytes) -> dict | None:
     if len(candidates) < 2 or len(candidates) > 32:
         return None
     max_span = max(span for span, _ in candidates)
-    traces = [line for span, line in candidates if span >= max_span*.8]
+    traces = [line for span, line in candidates if partial_traces or span >= max_span*.8]
     if len(traces) != len(candidates) or len(traces) < 2 or len({line["color"] for line in traces}) != len(traces):
         return None
     left = min(line["points"][0][0] for line in traces)
@@ -292,6 +305,7 @@ def estimate_emf_line_chart(data: bytes) -> dict | None:
                     if re.fullmatch(r"[（(][^()（）]{1,20}[）)]", text["text"])}
     unit = next(iter(unit_strings)) if len(unit_strings) == 1 else ""
     legend_labels = {}
+    legend_positions = []
     for line in lines:
         pts = line["points"]
         if len(pts) != 2 or abs(pts[0][1]-pts[1][1]) > .5:
@@ -303,6 +317,7 @@ def estimate_emf_line_chart(data: bytes) -> dict | None:
         for text in texts:
             if 0 <= text["x"]-x1 <= width*.08 and abs(text["y"]-y-baseline) <= max(3, spacing*.1):
                 legend_labels.setdefault(line["color"], set()).add(text["text"])
+                legend_positions.append(y)
     # A new/short curve must not disappear from the denominator merely because
     # it has fewer than eight points or a shorter span than historical traces.
     if set(legend_labels) != {trace["color"] for trace in traces}:
@@ -310,7 +325,8 @@ def estimate_emf_line_chart(data: bytes) -> dict | None:
     series = []
     for trace in traces:
         points = trace["points"]
-        if points[-1][0] < plot_right-width*.05 or any(y < ys[0]-2 or y > ys[-1]+2 for _, y in points):
+        if (not partial_traces and points[-1][0] < plot_right-width*.05) or any(
+                y < ys[0]-2 or y > ys[-1]+2 or x < plot_left-2 or x > plot_right+2 for x, y in points):
             return None
         labels = legend_labels[trace["color"]]
         if len(labels) != 1:
@@ -325,8 +341,74 @@ def estimate_emf_line_chart(data: bytes) -> dict | None:
                        "approximate_endpoint": approx,
                        "estimate_low": approx-margin, "estimate_high": approx+margin,
                        "endpoint_x": round(points[-1][0], 3), "endpoint_y": round(points[-1][1], 3)})
+        if partial_traces:
+            def estimate(point):
+                value = round((slope*point[1]+intercept)/resolution)*resolution
+                return {"x_fraction": round((point[0]-plot_left)/width, 5),
+                        "approximate_value": value, "estimate_low": value-margin,
+                        "estimate_high": value+margin}
+            minimum = max(range(len(points)), key=lambda i: points[i][1])
+            maximum = min(range(len(points)), key=lambda i: points[i][1])
+            positions = {round(i*(len(points)-1)/23) for i in range(24)}
+            positions.update((0, len(points)-1, minimum, maximum))
+            series[-1].update(first=estimate(points[0]), last=estimate(points[-1]),
+                              minimum=estimate(points[minimum]), maximum=estimate(points[maximum]),
+                              samples=[estimate(points[i]) for i in sorted(positions)],
+                              actual_point_count=len(points))
     if len({item["legend"] for item in series}) != len(series):
         return None
+    if partial_traces:
+        upper_label_y = min(legend_positions)+baseline-spacing*.1
+        anchors = [{"label": text["text"],
+                    "x_fraction": round(((text["x"]+text["end"])/2-plot_left)/width, 5)}
+                   for text in texts if ys[-1]+3 < text["y"] < upper_label_y
+                   and plot_left-width*.05 <= (text["x"]+text["end"])/2 <= plot_right+width*.05]
+        anchors.sort(key=lambda x: x['x_fraction'])
+        distinct_anchor_positions = len({a['x_fraction'] for a in anchors}) == len(anchors)
+        # Bracket each drawing position by actual source labels. This is
+        # geometric interpolation, not calendar/commodity interpretation.
+        for trace in series:
+            for point in [trace[key] for key in ('first', 'last', 'minimum', 'maximum')] + trace['samples']:
+                for before, after in zip(anchors if distinct_anchor_positions else [], anchors[1:]):
+                    if before['x_fraction'] <= point['x_fraction'] <= after['x_fraction'] and after['x_fraction'] > before['x_fraction']:
+                        point['x_axis_interval'] = {'left_label': before['label'], 'right_label': after['label'],
+                            'fraction_between_labels': round((point['x_fraction'] - before['x_fraction']) /
+                                                              (after['x_fraction'] - before['x_fraction']), 4)}
+                        fraction = point['x_axis_interval']['fraction_between_labels']
+                        point['x_axis_interval']['relative_band'] = ('first_third' if fraction < 1/3 else
+                                                                    'middle_third' if fraction < 2/3 else 'last_third')
+                        break
+            # Present source extrema in drawing order, not role order. Changes
+            # are deterministic differences, without interpreting time labels
+            # or assigning a business trend to the selected trace.
+            key_points = []
+            for role in sorted(('first', 'last', 'minimum', 'maximum'), key=lambda key: trace[key]['x_fraction']):
+                point = trace[role]
+                if key_points and key_points[-1]['x_fraction'] == point['x_fraction'] and key_points[-1]['approximate_value'] == point['approximate_value']:
+                    key_points[-1]['roles'].append(role)
+                else:
+                    key_points.append(dict(point, roles=[role]))
+            trace['key_points'] = key_points
+            trace['key_point_changes'] = [
+                {'from_roles': before['roles'], 'to_roles': after['roles'],
+                 'approximate_change': after['approximate_value'] - before['approximate_value'],
+                 'estimate_low': after['estimate_low'] - before['estimate_high'],
+                 'estimate_high': after['estimate_high'] - before['estimate_low'],
+                 'x_span_fraction': round(after['x_fraction'] - before['x_fraction'], 5),
+                 'horizontal_fraction_of_this_trace': round((after['x_fraction'] - before['x_fraction']) /
+                     (trace['last']['x_fraction'] - trace['first']['x_fraction']), 4)
+                     if trace['last']['x_fraction'] > trace['first']['x_fraction'] else None,
+                 'absolute_change_fraction_of_this_trace_value_range': round(abs(after['approximate_value'] - before['approximate_value']) /
+                     (trace['maximum']['approximate_value'] - trace['minimum']['approximate_value']), 4)
+                     if trace['maximum']['approximate_value'] != trace['minimum']['approximate_value'] else 0}
+                for before, after in zip(key_points, key_points[1:])]
+        return {"method": "original_emf_trace_geometry_v1", "unit": unit,
+                "axis_tick_min": min(values), "axis_tick_max": max(values),
+                "axis_max_fit_residual": round(residual, 6), "x_axis_anchors": anchors,
+                "series_count": len(series), "series": series,
+                "comparison_basis": "Independent actual drawn trace ranges. Positions are fractions of the original plot, "
+                                    "not invented dates. Read time labels from x_axis_anchors. No same-date endpoint ranking. "
+                                    "Values are geometric estimates, not original Excel observations."}
     order = sorted(series, key=lambda item: item["approximate_endpoint"], reverse=True)
     for item in series:
         item["endpoint_rank"] = 1 + sum(other["approximate_endpoint"] > item["approximate_endpoint"] for other in order)

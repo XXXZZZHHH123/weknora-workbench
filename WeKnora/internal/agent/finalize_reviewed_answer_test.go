@@ -62,8 +62,7 @@ func TestFinalReviewSynthesisJSONCannotBypassCurrentNumericGuard(t *testing.T) {
 	model := &mockChat{}
 	for range 3 {
 		model.responses = append(model.responses,
-			mockResponse{chunks: []types.StreamResponse{{Content: `{"answer":"结果999。"}`, Done: true, FinishReason: "stop"}}},
-			completenessVerdict(true))
+			mockResponse{chunks: []types.StreamResponse{{Content: `{"answer":"结果999。"}`, Done: true, FinishReason: "stop"}}})
 	}
 	engine := newTestEngine(t, model)
 	engine.structuredReviewMode = true
@@ -76,7 +75,7 @@ func TestFinalReviewSynthesisJSONCannotBypassCurrentNumericGuard(t *testing.T) {
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
 	require.Equal(t, state.FinalAnswer, visible)
-	require.Len(t, model.calls, 6)
+	require.Len(t, model.calls, 3, "unsupported numbers are rejected before spending a semantic review call")
 }
 
 type permissiveCompletenessMalformedReviewChat struct {

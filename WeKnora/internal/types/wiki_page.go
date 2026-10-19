@@ -770,14 +770,16 @@ func (WikiPageIssue) TableName() string {
 // carried — the backend projects SELECT slug, title, summary so a 40k-
 // page KB does not pay for TEXT content transport on every index open.
 type WikiIndexEntry struct {
-	Slug         string      `json:"slug"`
-	Title        string      `json:"title"`
-	Summary      string      `json:"summary"`
-	ParentSlug   string      `json:"parent_slug,omitempty"`
-	CategoryPath StringArray `json:"category_path,omitempty"`
-	WikiPath     string      `json:"wiki_path,omitempty"`
-	Depth        int         `json:"depth,omitempty"`
-	SortOrder    int         `json:"sort_order,omitempty"`
+	Slug          string      `json:"slug"`
+	Title         string      `json:"title"`
+	Summary       string      `json:"summary"`
+	EvidenceState string      `json:"evidence_state,omitempty"`
+	PageMetadata  JSON        `json:"-" gorm:"column:page_metadata"`
+	ParentSlug    string      `json:"parent_slug,omitempty"`
+	CategoryPath  StringArray `json:"category_path,omitempty"`
+	WikiPath      string      `json:"wiki_path,omitempty"`
+	Depth         int         `json:"depth,omitempty"`
+	SortOrder     int         `json:"sort_order,omitempty"`
 }
 
 // WikiIndexGroup bundles the entries for one page_type into a page-sized

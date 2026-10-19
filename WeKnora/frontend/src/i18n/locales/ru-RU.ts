@@ -4033,6 +4033,7 @@ export default {
     referenceSourceLocating: 'Поиск цитируемого фрагмента…',
     referenceSourceExact: "Фрагмент источника найден",
     referenceSourcePartial: "Проверенные фрагменты выделены; часть цитаты не сопоставлена",
+    referenceSourceParentContext: 'Открыта страница {page} с проверенным родительским фрагментом; точное место цитаты не найдено',
     referenceSourceBlock: "Найдена область источника; точное совпадение текста не подтверждено",
     referenceSourceAmbiguous: "Найдено несколько совпадений; точное место неизвестно",
     referenceSourceStale: "Источник или содержимое изменены; точное место цитаты недоступно",

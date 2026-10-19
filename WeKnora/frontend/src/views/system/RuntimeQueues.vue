@@ -1831,7 +1831,7 @@ onUnmounted(() => {
     margin: 0;
     overflow: hidden;
     color: var(--td-text-color-secondary);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: var(--app-font-family-mono);
     font-size: var(--app-text-xs);
     line-height: 1.45;
     text-overflow: ellipsis;
@@ -1851,7 +1851,7 @@ onUnmounted(() => {
   padding: 8px 10px;
   border-radius: var(--app-radius-sm);
   color: var(--td-text-color-primary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--app-font-family-mono);
   font-size: var(--app-text-xs);
   line-height: 1.55;
   overflow-wrap: anywhere;

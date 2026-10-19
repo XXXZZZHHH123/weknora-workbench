@@ -1,3 +1,12 @@
+/* Inter is bundled locally under the SIL Open Font License. */
+@font-face {
+  font-family: Inter;
+  src: url('/fonts/InterVariable.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 /*
  * CDS-inspired semantic theme tokens for WeKnora.
  * Adapted from Caho1/open-claude-ui (MIT):
@@ -6,10 +15,10 @@
  */
 :root:root,
 :root:root[theme-mode="light"] {
-  /* Four warm-neutral planes: canvas, navigation, content, floating surface. */
-  --cds-surface-0: #f5f3f0;
-  --cds-surface-1: #faf9f7;
-  --cds-surface-2: #fffefd;
+  /* Four light-neutral planes: canvas, navigation, content, floating surface. */
+  --cds-surface-0: #fcfcfb;
+  --cds-surface-1: #fbfbf9;
+  --cds-surface-2: #ffffff;
   --cds-surface-3: #ffffff;
   --cds-surface-popover: #ffffff;
 
@@ -19,23 +28,23 @@
   --cds-clay-active: #7d301b;
   --cds-clay-light: #f8eee9;
 
-  --cds-text-primary: #211d1a;
-  --cds-text-secondary: #514943;
-  --cds-text-muted: #6c635d;
-  --cds-border: rgb(49 39 32 / 10%);
-  --cds-border-strong: rgb(49 39 32 / 19%);
-  --cds-fill-ghost-hover: rgb(49 39 32 / 5%);
-  --cds-fill-ghost-selected: rgb(49 39 32 / 9%);
+  --cds-text-primary: #1f1e1d;
+  --cds-text-secondary: #5e5d59;
+  --cds-text-muted: #73726c;
+  --cds-border: rgb(31 30 29 / 10%);
+  --cds-border-strong: rgb(31 30 29 / 19%);
+  --cds-fill-ghost-hover: rgb(31 30 29 / 5%);
+  --cds-fill-ghost-selected: rgb(31 30 29 / 9%);
 
-  --cds-shadow-sm: 0 1px 2px rgb(38 29 23 / 4%), 0 2px 8px rgb(38 29 23 / 6%);
-  --cds-shadow-md: 0 2px 4px rgb(38 29 23 / 4%), 0 6px 16px rgb(38 29 23 / 8%);
-  --cds-shadow-lg: 0 4px 8px rgb(38 29 23 / 5%), 0 12px 28px -2px rgb(38 29 23 / 12%);
+  --cds-shadow-sm: 0 1px 2px rgb(0 0 0 / 4%), 0 2px 8px rgb(0 0 0 / 6%);
+  --cds-shadow-md: 0 2px 4px rgb(0 0 0 / 4%), 0 6px 16px rgb(0 0 0 / 8%);
+  --cds-shadow-lg: 0 4px 8px rgb(0 0 0 / 5%), 0 12px 28px -2px rgb(0 0 0 / 12%);
   --cds-ring-inner: 0px;
   --cds-ring-outer: 1px;
   --cds-ring-color: var(--cds-border);
   --cds-shadow-popover: inset 0 0 0 var(--cds-ring-inner) var(--cds-ring-color),
     0 0 0 var(--cds-ring-outer) var(--cds-ring-color),
-    0 8px 24px rgb(38 29 23 / 12%), 0 2px 6px rgb(38 29 23 / 7%);
+    0 8px 24px rgb(0 0 0 / 12%), 0 2px 6px rgb(0 0 0 / 7%);
   --cds-focus-shadow: inset 0 0 0 1px var(--cds-surface-2),
     0 0 0 2px var(--cds-clay), 0 0 0 4px rgb(168 68 39 / 18%);
 
@@ -63,34 +72,34 @@
   --td-bg-color-settings-modal: var(--cds-surface-1);
   --td-bg-color-container: var(--cds-surface-2);
   --td-bg-color-container-select: var(--cds-surface-2);
-  --td-bg-color-container-hover: #f2efeb;
-  --td-bg-color-container-active: #ebe6e1;
-  --td-bg-color-secondarycontainer: #f4f1ed;
-  --td-bg-color-secondarycontainer-hover: #eeeae5;
-  --td-bg-color-secondarycontainer-active: #e7e1db;
-  --td-bg-color-component: #e9e4de;
-  --td-bg-color-component-hover: #ddd6cf;
-  --td-bg-color-component-active: #d1c8c0;
+  --td-bg-color-container-hover: #edece9;
+  --td-bg-color-container-active: #e5e4e0;
+  --td-bg-color-secondarycontainer: #f5f5f3;
+  --td-bg-color-secondarycontainer-hover: #eeedea;
+  --td-bg-color-secondarycontainer-active: #e6e5e1;
+  --td-bg-color-component: #eeedea;
+  --td-bg-color-component-hover: #e5e4e0;
+  --td-bg-color-component-active: #d7d6d0;
   /* Disabled surfaces remain distinct from hover and selected surfaces. */
-  --td-bg-color-component-disabled: #f1eeeb;
-  --td-component-stroke: #e9e4df;
-  --td-component-border: #d8d0c9;
+  --td-bg-color-component-disabled: #f2f2ef;
+  --td-component-stroke: #e6e5e2;
+  --td-component-border: #d4d3ce;
 
   /* Neutral scale feeds component states without changing status colors. */
-  --td-gray-color-1: #f7f5f2;
-  --td-gray-color-2: #f1eeea;
-  --td-gray-color-3: #e9e4df;
-  --td-gray-color-4: #ded7d0;
-  --td-gray-color-5: #cfc6bd;
-  --td-gray-color-6: #b7aca2;
-  --td-gray-color-7: #9c9086;
-  --td-gray-color-8: #81756c;
-  --td-gray-color-9: #6c6058;
-  --td-gray-color-10: #594e47;
-  --td-gray-color-11: #483e38;
-  --td-gray-color-12: #382f2a;
-  --td-gray-color-13: #2b2420;
-  --td-gray-color-14: #211b18;
+  --td-gray-color-1: #fafaf8;
+  --td-gray-color-2: #f3f3f0;
+  --td-gray-color-3: #e6e5e2;
+  --td-gray-color-4: #dcdcd6;
+  --td-gray-color-5: #cecec7;
+  --td-gray-color-6: #b4b4ac;
+  --td-gray-color-7: #96968d;
+  --td-gray-color-8: #7d7d74;
+  --td-gray-color-9: #6b6b62;
+  --td-gray-color-10: #595952;
+  --td-gray-color-11: #484841;
+  --td-gray-color-12: #383832;
+  --td-gray-color-13: #2a2a25;
+  --td-gray-color-14: #1f1e1d;
 
   --td-font-gray-1: var(--cds-text-primary);
   --td-font-gray-2: var(--cds-text-secondary);
@@ -123,7 +132,7 @@
   --app-brand-navy: var(--cds-clay);
   --app-brand-on-navy: var(--app-on-brand);
   --app-paper-shadow: var(--cds-shadow-sm);
-  --app-selection-bg: #f2efeb;
+  --app-selection-bg: #edece9;
   --app-selection-text: var(--cds-text-primary);
   --app-selection-border: color-mix(in srgb, var(--cds-clay) 32%, var(--cds-border));
   --app-focus-border: var(--cds-clay);
@@ -236,6 +245,21 @@
 
 /* Shared geometry and response timing; consumers use the same vocabulary. */
 :root:root {
+  --app-sidebar-row-height: 30px;
+  --app-sidebar-link-padding-y: 5px;
+  --app-sidebar-search-height: 30px;
+  --app-sidebar-brand-height: 48px;
+  --app-page-title-size: 20px;
+  --app-page-title-weight: 600;
+  --app-page-title-line-height: 28px;
+
+  /* Keep interface/code preferences user-selectable; reserve a system serif
+     stack for long-form reading such as assistant answer Markdown. */
+  --cds-font-interface: var(--app-font-family);
+  --cds-font-display: 'WeKnora Noto Serif SC', 'Noto Serif SC', serif;
+  --cds-font-reading: Georgia, "Times New Roman", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", "DejaVu Serif", "Liberation Serif", serif;
+  --cds-font-code: var(--app-font-family-mono);
+
   --cds-radius-thumb: 7px;
   --cds-radius-control: 8px;
   --cds-radius-panel: 12px;
@@ -248,4 +272,12 @@
 }
 @media (prefers-reduced-motion: reduce) {
   :root:root { --cds-duration-fast: 0ms; --cds-duration-normal: 0ms; }
+}
+
+@media (pointer: coarse) {
+  :root:root {
+    --app-sidebar-row-height: 36px;
+    --app-sidebar-link-padding-y: 8px;
+    --app-sidebar-search-height: 36px;
+  }
 }

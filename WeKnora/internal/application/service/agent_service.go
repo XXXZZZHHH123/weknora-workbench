@@ -282,6 +282,15 @@ func (s *agentService) CreateAgentEngine(
 				return vlmModel.Predict(ctx, [][]byte{imgBytes}, prompt)
 			}
 			engine.SetImageDescriber(describe)
+			// A text-only answer model cannot inspect source pixels during
+			// consistency review. Reuse the explicitly configured vision model
+			// through the full chat protocol, retaining finish reasons, usage,
+			// output schema and all existing source-verdict validation.
+			if info, err := s.modelService.GetModelByID(ctx, config.VLMModelID); err == nil && info != nil && info.Parameters.SupportsVision {
+				if reviewer, err := s.modelService.GetChatModel(ctx, config.VLMModelID); err == nil {
+					engine.SetDocumentImageReviewModel(reviewer, reviewReasoningEffort(info))
+				}
+			}
 			if attachmentReader != nil && !config.ChatModelSupportsVision {
 				tenantID, _ := types.SandboxTenantIDFromContext(ctx)
 				attachmentReader.Images = &attachment.ImageReader{
@@ -1252,9 +1261,21 @@ func (s *agentService) registerTools(
 				config.SearchTargets,
 				rerankModel,
 				s.cfg,
-			).WithContextImages(config.ChatModelSupportsVision)
+			).WithContextImages(config.ChatModelSupportsVision).WithWikiPageService(s.wikiPageService)
 		case tools.ToolReadDocument:
-			toolToRegister = tools.NewReadDocumentTool(s.knowledgeService, s.chunkService, config.SearchTargets)
+			reader := tools.NewReadDocumentTool(s.knowledgeService, s.chunkService, config.SearchTargets).
+				WithWikiPageService(s.wikiPageService)
+			if images, ok := s.knowledgeBaseService.(interface {
+				ReadDocumentImage(context.Context, *types.Knowledge, string) ([]byte, error)
+			}); ok {
+				reader.WithImageReader(images.ReadDocumentImage)
+			}
+			if figures, ok := s.knowledgeService.(interface {
+				ReadDocumentFigureEvidence(context.Context, *types.Knowledge, string, int, string, []string) (map[string]any, error)
+			}); ok {
+				reader.WithFigureReader(figures.ReadDocumentFigureEvidence)
+			}
+			toolToRegister = reader
 		case tools.ToolListDocuments:
 			toolToRegister = tools.NewListDocumentsTool(s.knowledgeService, config.SearchTargets)
 		case tools.ToolQueryKnowledgeGraph:

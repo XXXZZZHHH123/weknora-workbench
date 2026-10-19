@@ -1,7 +1,7 @@
 import struct
 import unittest
 
-from docreader.parser.pptx_chart_geometry import estimate_emf_line_chart
+from docreader.parser.pptx_chart_geometry import estimate_emf_line_chart, estimate_emf_chart_trends
 
 
 def record(kind, body=b""):
@@ -40,7 +40,7 @@ def text(value, x, y):
 
 
 def chart(*, nonlinear=False, ambiguous_legend=False, secondary_axis=False, unsupported=False,
-          legend_names=None, short_curve=False):
+          legend_names=None, short_curve=False, horizontal_labels=False, short_points=None):
     items = [record(22, struct.pack("<I", 24)), pen(1, 0x999999), select(1)]
     for y in (100, 200, 300):
         items.append(polyline([(100, y), (400, y)]))
@@ -62,8 +62,10 @@ def chart(*, nonlinear=False, ambiguous_legend=False, secondary_axis=False, unsu
         if unsupported and index == 2:
             items.append(record(85, struct.pack("<iiiiI", 100, 100, 400, 300, 0)))
     if short_curve:
-        items += [pen(4, 0x0000AA), select(4), polyline([(100, 190), (150, 180), (175, 180)]),
+        items += [pen(4, 0x0000AA), select(4), polyline(short_points or [(100, 190), (150, 180), (175, 180)]),
                   polyline([(100, 390), (130, 390)]), text("Gamma", 135, 396)]
+    if horizontal_labels:
+        items += [text("Start", 90, 326), text("Middle", 235, 326), text("End", 390, 326)]
     items.append(text("(kg)", 100, 80))
     items.append(record(14, struct.pack("<III", 0, 0, 20)))
     header = bytearray(88)
@@ -107,6 +109,41 @@ class TestPptxChartGeometry(unittest.TestCase):
 
     def test_short_current_curve_cannot_disappear_from_total_or_comparison(self):
         self.assertIsNone(estimate_emf_line_chart(chart(short_curve=True)))
+
+    def test_independent_trends_keep_short_trace_without_endpoint_ranking(self):
+        result = estimate_emf_chart_trends(chart(short_curve=True, horizontal_labels=True))
+        self.assertIsNotNone(result)
+        self.assertEqual(result['series_count'], 3)
+        curves = {item['legend']: item for item in result['series']}
+        short = curves['Gamma']
+        self.assertEqual(short['actual_point_count'], 3)
+        self.assertEqual(short['first']['x_fraction'], 0)
+        self.assertEqual(short['last']['x_fraction'], .25)
+        self.assertEqual(short['first']['approximate_value'], 55)
+        self.assertEqual(short['last']['approximate_value'], 60)
+        self.assertNotIn('endpoint_rank', short)
+        self.assertEqual([x['label'] for x in result['x_axis_anchors']], ['Start', 'Middle', 'End'])
+        self.assertIn('No same-date', result['comparison_basis'])
+
+    def test_trend_mode_keeps_axis_legend_and_unsupported_geometry_guards(self):
+        for option in ('nonlinear', 'ambiguous_legend', 'secondary_axis', 'unsupported'):
+            with self.subTest(option=option):
+                self.assertIsNone(estimate_emf_chart_trends(chart(**{option: True})))
+
+    def test_key_points_preserve_drawn_reversal_and_bounded_net_changes(self):
+        result = estimate_emf_chart_trends(chart(short_curve=True, horizontal_labels=True,
+            short_points=[(100, 190), (150, 280), (175, 180)]))
+        curve = next(row for row in result['series'] if row['legend'] == 'Gamma')
+        self.assertEqual([point['approximate_value'] for point in curve['key_points']], [55, 10, 60])
+        self.assertEqual(curve['key_points'][-1]['roles'], ['last', 'maximum'])
+        self.assertEqual(curve['last']['x_axis_interval']['relative_band'], 'middle_third')
+        self.assertEqual([change['approximate_change'] for change in curve['key_point_changes']], [-45, 50])
+        self.assertEqual(curve['key_point_changes'][-1]['absolute_change_fraction_of_this_trace_value_range'], 1)
+        self.assertAlmostEqual(curve['key_point_changes'][-1]['horizontal_fraction_of_this_trace'], 1/3, places=4)
+        for change in curve['key_point_changes']:
+            self.assertGreater(change['x_span_fraction'], 0)
+            self.assertLess(change['estimate_low'], change['approximate_change'])
+            self.assertGreater(change['estimate_high'], change['approximate_change'])
 
     def test_nonlinear_axis_is_not_approximated_as_linear(self):
         self.assertIsNone(estimate_emf_line_chart(chart(nonlinear=True)))

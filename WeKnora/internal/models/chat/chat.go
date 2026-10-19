@@ -42,6 +42,7 @@ type (
 // Re-exported constants of the request model.
 const (
 	MessageKindCompactionSummary = api.MessageKindCompactionSummary
+	MessageKindReviewEvidence    = api.MessageKindReviewEvidence
 	CacheRetentionNone           = api.CacheRetentionNone
 	CacheRetentionShort          = api.CacheRetentionShort
 	CacheRetentionLong           = api.CacheRetentionLong
