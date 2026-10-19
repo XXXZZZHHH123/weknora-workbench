@@ -1,4 +1,5 @@
 import importlib.util
+import dataclasses
 import os
 from pathlib import Path
 import shutil
@@ -61,6 +62,100 @@ class BuildMemoryGuardTests(unittest.TestCase):
                          (2560, 2304, 128, 1792, 768, 1024))
         low = guard.calculate(4096, 3072, {})
         self.assertEqual((low.memory, low.heap), (2048, 1408))
+
+    def test_larger_guest_can_fit_the_frontend_without_changing_four_gib_limits(self):
+        large = guard.calculate(5897, 4800, {})
+        self.assertEqual((large.memory, large.heap, large.swap, large.reserve),
+                         (3584, 2816, 128, 1024))
+        self.assertLessEqual(large.memory, large.total * 2 // 3)
+        self.assertLessEqual(large.memory, large.available - large.reserve)
+        for total in (3917, 4096):
+            with self.subTest(total=total):
+                legacy = guard.calculate(total, 3584, {})
+                self.assertEqual((legacy.memory, legacy.heap), (2560, 1792))
+
+    def test_larger_guest_still_uses_the_actual_available_memory(self):
+        constrained = guard.calculate(5897, 4352, {})
+        self.assertEqual((constrained.memory, constrained.heap), (3328, 2688))
+        small = guard.calculate(5897, 3328, {})
+        self.assertEqual((small.memory, small.heap), (2304, 1664))
+        selected = guard.calculate(5897, 4800, {'WEKNORA_BUILD_MEMORY_MB': '3456'})
+        self.assertEqual((selected.memory, selected.heap), (3456, 2816))
+
+    def test_larger_guest_does_not_allow_unbounded_memory_or_heap(self):
+        for env in ({'WEKNORA_BUILD_MEMORY_MB': '3585'},
+                    {'WEKNORA_BUILD_NODE_HEAP_MB': '2817'},
+                    {'NODE_OPTIONS': '--max-old-space-size=3072'}):
+            with self.subTest(env=env), self.assertRaises(guard.GuardError):
+                guard.calculate(5897, 5600, env)
+
+    def test_guest_profile_boundary_uses_real_total_and_keeps_the_two_thirds_cap(self):
+        at_boundary = guard.calculate(4096, 4096, {})
+        above_boundary = guard.calculate(4097, 4096, {})
+        self.assertEqual((at_boundary.memory, at_boundary.heap), (2560, 1792))
+        self.assertEqual((above_boundary.memory, above_boundary.heap), (4097 * 2 // 3, 2048))
+        ideal = guard.calculate(6144, 5600, {})
+        self.assertEqual((ideal.memory, ideal.heap), (3584, 2816))
+
+    def test_forged_large_budget_fields_never_replace_real_guest_or_finite_limits(self):
+        original = guard.calculate(5897, 4800, {})
+        self.budget = original
+        for name, value in self.actual_limits().items():
+            (self.scope / name).write_text(str(value))
+        for changes in ({'total': 8192}, {'memory': 3585}, {'heap': 2817},
+                        {'reserve': 1023}, {'host_reserve': 1535}, {'swap': 129}):
+            self.budget = dataclasses.replace(original, **changes)
+            with self.subTest(changes=changes), \
+                    patch.object(guard, 'meminfo', return_value=(5897, 5600)), self.assertRaises(guard.GuardError):
+                self.verify()
+
+    def test_larger_budget_requires_matching_actual_scope_and_live_memory(self):
+        large = guard.calculate(5897, 4800, {})
+        self.assertEqual(large.memory, 3584)
+        self.budget = large
+        with patch.object(guard, 'meminfo', return_value=(5897, 4800)):
+            # A larger serialized budget must not pass the old actual scope.
+            with self.assertRaises(guard.GuardError):
+                self.verify()
+            for name, value in self.actual_limits().items():
+                (self.scope / name).write_text(str(value))
+            self.assertEqual(self.verify(), large)
+            (self.parent / 'memory.max').write_text(str(2560 * guard.MIB))
+            with self.assertRaises(guard.GuardError):
+                self.verify()
+            (self.parent / 'memory.max').write_text('max')
+        with patch.object(guard, 'meminfo', return_value=(5897, large.memory + large.reserve - 1)):
+            with self.assertRaises(guard.GuardError):
+                self.verify()
+        with patch.object(guard, 'meminfo', return_value=(5897, large.memory + large.reserve)):
+            self.assertEqual(self.verify(), large)
+        with patch.object(guard, 'meminfo', return_value=(4096, 3584)):
+            with self.assertRaises(guard.GuardError):
+                self.verify()
+
+    def test_larger_budget_requires_the_full_windows_reserve(self):
+        large = guard.calculate(5897, 4800, {})
+        self.assertEqual(large.memory, 3584)
+        required = guard.HOST_RESERVE_MB + large.memory + guard.HOST_GROWTH_OVERHEAD_MB
+        with patch.object(guard, 'meminfo', return_value=(5897, 4800)), \
+                patch.object(guard, 'is_wsl', return_value=True):
+            with patch.object(guard, 'windows_available', return_value=required - 1):
+                with self.assertRaises(guard.GuardError):
+                    guard.plan({})
+            with patch.object(guard, 'windows_available', return_value=required):
+                self.assertEqual(guard.plan({}).memory, large.memory)
+        self.budget = large
+        for name, value in self.actual_limits().items():
+            (self.scope / name).write_text(str(value))
+        with patch.object(guard, 'meminfo', return_value=(5897, 4800)), \
+                patch.object(guard, 'is_wsl', return_value=True), \
+                patch.object(guard, 'windows_available', return_value=required - guard.HOST_GROWTH_OVERHEAD_MB - 1):
+            with self.assertRaises(guard.GuardError):
+                self.verify()
+        with patch.object(guard, 'meminfo', return_value=(5897, 4800)), \
+                patch.object(guard, 'is_wsl', return_value=True), \
+                patch.object(guard, 'windows_available', return_value=required - guard.HOST_GROWTH_OVERHEAD_MB):
+            self.assertEqual(self.verify(), large)
 
     def test_insufficient_guest_memory_and_raised_budgets_fail_closed(self):
         for total, available, env in [(4096, 3071, {}), (2048, 2048, {}),

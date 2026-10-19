@@ -11,6 +11,7 @@ import sys
 MIB = 1024 * 1024
 MIN_BUILD_MB = 2048
 MAX_BUILD_MB = 2560
+LARGE_BUILD_MB = 3584
 MAX_SWAP_MB = 128
 HOST_RESERVE_MB = 1536
 HOST_GROWTH_OVERHEAD_MB = 128
@@ -149,9 +150,21 @@ def go_limit(env, budget):
     return selected
 
 
+def memory_ceiling(total):
+    # Keep the original four-GiB boundary. Larger guests may fit the frontend,
+    # while live guest/host reserves and the actual cgroup still gate allocation.
+    cap = MAX_BUILD_MB if total <= 4096 else LARGE_BUILD_MB
+    return min(cap, total * 2 // 3)
+
+
+def heap_ceiling(total, memory):
+    cap = 1792 if total <= 4096 else 2816
+    return min(cap, (memory - 640) // 128 * 128)
+
+
 def calculate(total, available, env, host_available=-1, host_reserve=1536):
     reserve = integer(env, 'WEKNORA_BUILD_RESERVE_MB', 1024, 1024)
-    ceiling = min(MAX_BUILD_MB, total * 2 // 3, available - reserve)
+    ceiling = min(memory_ceiling(total), available - reserve)
     if ceiling < MIN_BUILD_MB:
         raise GuardError(f'WSL/Linux 当前可用 {available}MiB，保留 {reserve}MiB 后不足最低构建预算 {MIN_BUILD_MB}MiB；已停止，现有构建未替换。')
     memory = integer(env, 'WEKNORA_BUILD_MEMORY_MB', ceiling, MIN_BUILD_MB)
@@ -160,7 +173,7 @@ def calculate(total, available, env, host_available=-1, host_reserve=1536):
     swap = integer(env, 'WEKNORA_BUILD_SWAP_MB', MAX_SWAP_MB)
     if swap > MAX_SWAP_MB:
         raise GuardError('构建 swap 上限最多为 128MiB，避免长时间交换拖慢系统。')
-    heap = node_heap(env, min(1792, (memory - 640) // 128 * 128))
+    heap = node_heap(env, heap_ceiling(total, memory))
     return Budget(memory, memory * 9 // 10, swap, heap, go_limit(env, memory),
                   total, available, reserve, host_available, host_reserve)
 
@@ -208,11 +221,11 @@ def read_cgroup():
 
 
 def verify_limits(budget, limits):
-    if budget.memory < MIN_BUILD_MB or budget.memory > min(MAX_BUILD_MB, budget.total * 2 // 3):
+    if budget.memory < MIN_BUILD_MB or budget.memory > memory_ceiling(budget.total):
         raise GuardError('构建预算不符合内存保留策略。')
     if budget.reserve < 1024 or not 0 < budget.high <= budget.memory * 9 // 10 or not 0 <= budget.swap <= MAX_SWAP_MB:
         raise GuardError('构建限制参数无效。')
-    if not 512 <= budget.heap <= min(1792, (budget.memory - 640) // 128 * 128):
+    if not 512 <= budget.heap <= heap_ceiling(budget.total, budget.memory):
         raise GuardError('Node 堆上限不符合本次构建预算。')
     effective = {}
     for name, maximum in [('memory.max', budget.memory*MIB),
@@ -243,7 +256,7 @@ def verify(env, values):
     budget = Budget(*(int(x) for x in values))
     total, available = meminfo()
     if (total != budget.total or not 0 <= budget.available <= total or
-            budget.memory > min(MAX_BUILD_MB, total*2//3, budget.available-budget.reserve) or
+            budget.memory > min(memory_ceiling(total), budget.available-budget.reserve) or
             budget.host_reserve < HOST_RESERVE_MB or
             not 128 <= budget.go <= budget.memory - 640):
         raise GuardError('内部构建预算不符合本机内存策略。')
