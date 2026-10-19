@@ -162,6 +162,32 @@ func reviewTextPathsContaining(record reviewEvidenceRecord, quote string, limit 
 	return paths
 }
 
+// sameReviewItemRoot reports whether every path lies inside the same element
+// of the first array on its path (for example /data/chunks/1/...). Paths with
+// no array element are never treated as one item.
+func sameReviewItemRoot(paths []string) bool {
+	root := ""
+	for i, path := range paths {
+		tokens := strings.Split(strings.TrimPrefix(path, "/"), "/")
+		itemRoot := ""
+		for j, token := range tokens {
+			if _, err := strconv.Atoi(token); err == nil {
+				itemRoot = "/" + strings.Join(tokens[:j+1], "/")
+				break
+			}
+		}
+		if itemRoot == "" {
+			return false
+		}
+		if i == 0 {
+			root = itemRoot
+		} else if itemRoot != root {
+			return false
+		}
+	}
+	return root != ""
+}
+
 // reviewPointerHint names the actual keys under the deepest resolvable prefix
 // of a missing pointer so a protocol retry can correct it.
 func reviewPointerHint(root any, pointer string) string {
@@ -251,7 +277,14 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 		case count == 0:
 			return fmt.Errorf("quote did not match a scalar in successful result data; provide an explicit json_pointer")
 		case count != 1:
-			return fmt.Errorf("quote matched multiple scalar paths in successful result data; provide an explicit json_pointer for the path your claim is about; matching paths include [%s]", strings.Join(reviewTextPathsContaining(record, witness.Quote, 4), ","))
+			// The same text repeated in fields of ONE returned item (a chunk's
+			// body, snippet and locator) is not an ambiguity about which source
+			// the claim cites. Matches across different items still are.
+			paths := reviewTextPathsContaining(record, witness.Quote, 65)
+			if len(paths) < 2 || len(paths) > 64 || !sameReviewItemRoot(paths) {
+				return fmt.Errorf("quote matched multiple scalar paths in successful result data; provide an explicit json_pointer for the path your claim is about; matching paths include [%s]", strings.Join(paths[:min(4, len(paths))], ","))
+			}
+			witness.JSONPointer = paths[0]
 		default:
 			witness.JSONPointer = pointer
 		}
@@ -269,7 +302,7 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 			case map[string]any, []any:
 				encoded, encodeErr := json.Marshal(value)
 				if encodeErr != nil || len(encoded) > reviewReceiptContainerQuoteLimit {
-					return fmt.Errorf("omitting quote for a container requires a compact source value within %d bytes; this container is larger: quote a short exact substring of one of its text fields at that field's json_pointer%s", reviewReceiptContainerQuoteLimit, reviewPointerHint(value, ""))
+					return fmt.Errorf("omitting quote for a container requires a compact source value within %d bytes; this container is larger: quote a short exact substring of one of its text fields at that field's json_pointer%s", reviewReceiptContainerQuoteLimit, reviewPointerHint(record.Value, witness.JSONPointer))
 				}
 				// The locator is already bound to this immutable source result and
 				// exact pointer. Derive only the complete canonical value; the common

@@ -25,3 +25,18 @@ func TestMissingPointerDiagnosticNamesActualKeys(t *testing.T) {
 	require.ErrorContains(t, err, `"/data/pages/0"`)
 	require.ErrorContains(t, err, "[content,slug]")
 }
+
+func TestPointerlessQuoteRepeatedWithinOneItemBindsToThatItem(t *testing.T) {
+	text := "外销订单依旧维持小单"
+	record, reader, raw := receiptFixture(t, "chunk-call", `{"success":true,"data":{"chunks":[{"content":"其他内容"},{"content":"`+text+`。","match_snippet":"`+text+`","source_locators":[{"quote":"`+text+`"}]}]}}`)
+	input := receiptVisibleInput(record, raw)
+	require.NoError(t, reviewWitnessVisible(input, reader, reviewSourceWitness{EvidenceID: record.ID, Quote: text, Kind: "source"}))
+
+	// The same text in two different returned items stays ambiguous.
+	record, reader, raw = receiptFixture(t, "two-chunks", `{"success":true,"data":{"chunks":[{"content":"`+text+`"},{"content":"`+text+`"}]}}`)
+	input = receiptVisibleInput(record, raw)
+	require.ErrorContains(t, reviewWitnessVisible(input, reader, reviewSourceWitness{EvidenceID: record.ID, Quote: text, Kind: "source"}), "multiple scalar paths")
+	require.False(t, sameReviewItemRoot([]string{"/data/left", "/data/right"}))
+	require.False(t, sameReviewItemRoot([]string{"/data/chunks/2/content", "/data/image_catalog/0/source_context"}))
+	require.True(t, sameReviewItemRoot([]string{"/data/chunks/1/content", "/data/chunks/1/source_locators/0/quote"}))
+}
