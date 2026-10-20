@@ -125,6 +125,21 @@ class TestPptxChartGeometry(unittest.TestCase):
         self.assertEqual([x['label'] for x in result['x_axis_anchors']], ['Start', 'Middle', 'End'])
         self.assertIn('No same-date', result['comparison_basis'])
 
+    def test_points_outside_labelled_ticks_keep_geometric_distance_without_calendar_extrapolation(self):
+        result = estimate_emf_chart_trends(chart(horizontal_labels=True))
+        trace = result['series'][0]
+        for name, side, label in [('first', 'before_first', 'Start'), ('last', 'after_last', 'End')]:
+            edge = trace[name]['x_axis_edge']
+            self.assertEqual(edge['side'], side)
+            self.assertEqual(edge['edge_label'], label)
+            self.assertGreater(edge['distance_in_adjacent_tick_spacings'], 0)
+            self.assertLess(edge['distance_in_adjacent_tick_spacings'], .1)
+            self.assertFalse(edge['calendar_extrapolation_allowed'])
+        from docreader.parser.pptx_media import _trend_geometry_markdown
+        rendered = _trend_geometry_markdown(result, 1, 'ppt/media/synthetic.emf')
+        self.assertIn('最后已标注刻度【End】的右侧', rendered)
+        self.assertIn('外侧无已标注刻度，不外推日期', rendered)
+
     def test_trend_mode_keeps_axis_legend_and_unsupported_geometry_guards(self):
         for option in ('nonlinear', 'ambiguous_legend', 'secondary_axis', 'unsupported'):
             with self.subTest(option=option):

@@ -1275,6 +1275,11 @@ func (s *agentService) registerTools(
 			}); ok {
 				reader.WithFigureReader(figures.ReadDocumentFigureEvidence)
 			}
+			if originals, ok := s.knowledgeService.(interface {
+				ReadDocumentSourceImage(context.Context, *types.Knowledge, string, int, string) ([]byte, error)
+			}); ok {
+				reader.WithSourceImageReader(originals.ReadDocumentSourceImage)
+			}
 			toolToRegister = reader
 		case tools.ToolListDocuments:
 			toolToRegister = tools.NewListDocumentsTool(s.knowledgeService, config.SearchTargets)

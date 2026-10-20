@@ -440,15 +440,32 @@ def _trend_geometry_markdown(result: dict, page_number: int, target: str) -> str
             band = {'first_third': '前1/3（靠左段）', 'middle_third': '中间1/3', 'last_third': '后1/3（靠右段）'}[interval['relative_band']]
             return (f"【{escape(interval['left_label'])}】刻度起算区间的{band}，"
                     f"区间进度{interval['fraction_between_labels']*100:g}%（下一边界是【{escape(interval['right_label'])}】，尚未抵达）")
+        edge = value.get('x_axis_edge')
+        if edge:
+            label = '首个已标注' if edge['side'] == 'before_first' else '最后已标注'
+            direction = '左' if edge['side'] == 'before_first' else '右'
+            return (f"{label}刻度【{escape(edge['edge_label'])}】的{direction}侧，距该刻度约相邻刻度间距的"
+                    f"{edge['distance_in_adjacent_tick_spacings']*100:g}%（外侧无已标注刻度，不外推日期）")
         return f"x={value['x_fraction']:g}（无相邻横轴标签）"
 
     lines = [f"第{page_number}页原图曲线几何证据 · {target}：",
              "由原EMF绘制点、图例颜色和线性纵轴校准；每条曲线保留自己的实际覆盖范围，包含较短曲线。",
              "数值为图上估读，不是原Excel观测。位置明确绑定相邻横轴刻度，百分比仅在这两个刻度之间从左向右计量，不是整张图或全年的百分比。点尚未到达右刻度时，不能归到该右刻度之后的区间。由模型结合真实横轴标签理解时间，不从报告日期推定曲线末日。不同结束位置不可当作同日截面或排名。",
+             "图例标签不自动等于原文未定义的统计年度。只报告完整问题所需的图例、位置、数值、比较与必要口径，不附加未请求的阶段走势；缺少刻度时不补写具体日期。",
              f"纵轴单位：{escape(result['unit'] or '原图未明确')}。横轴原文锚点：" +
              " → ".join(escape(a['label']) for a in result['x_axis_anchors'])]
     if result.get('series_selection'):
         lines.append(f"模型选择的原图图例：{escape(', '.join(result['series_selection']))}；原图共{result['source_series_count']}条，未返回其他曲线的数据点，不能据此做全图比较。")
+    comparison = result.get('selected_endpoint_value_order')
+    if comparison:
+        lines.extend([
+            f"所选{comparison['selected_count']}条曲线各自绘制末点值的确定性排序（原图共{comparison['source_series_count']}条）：",
+            "只比较所选曲线各自的末点数值，末点横向位置不同也保留；不是同日或同期排名。位置措辞须与实际比较集合和数值顺序一致，不能用与单个极值的差距替代总体位置。误差范围重叠时使用可能序位范围。",
+            "| 原图图例 | 末点约值 | 估读范围 | 所选曲线中数值降序序位 | 考虑误差的可能序位 |",
+            "| --- | --- | --- | --- | --- |",
+        ])
+        for row in comparison['rows']:
+            lines.append(f"| {escape(row['legend'])} | {row['approximate_value']:g} | {row['estimate_low']:g}～{row['estimate_high']:g} | {row['descending_value_rank']} / {comparison['selected_count']} | {row['possible_rank_min']}～{row['possible_rank_max']} |")
     for item in result['series']:
         roles = {'first': '首点', 'last': '末点', 'minimum': '最低点', 'maximum': '最高点'}
         lines.append(f"图例 {escape(item['legend'])}的关键点（横轴从左到右）：" +
@@ -473,7 +490,7 @@ def _trend_geometry_markdown(result: dict, page_number: int, target: str) -> str
     return "\n".join(lines)
 
 
-def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes) -> Tuple[str, Dict[str, str]]:
+def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes, *, image_sources: list | None = None) -> Tuple[str, Dict[str, str]]:
     """Add page headings and pictures resolved by the owning slide relationships.
 
     Replace MarkItDown picture placeholders/data URIs per slide so no asset can
@@ -533,9 +550,27 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes) -> Tuple[str
                         cache[target] = ref
                     else:
                         cache[target] = None
+                # Exhausting the preview budget must not discard an original
+                # vector figure. Keep its exact bytes as an owned source asset;
+                # authorized question-time reads render only the selected part.
+                if target and cache.get(target) is None and target.lower().endswith((".emf", ".wmf")):
+                    try:
+                        raw_vector = _read_member(archive, target, _MAX_MEDIA_BYTES)
+                        ref = f"images/{uuid.uuid4()}{posixpath.splitext(target)[1].lower()}"
+                        images[ref] = base64.b64encode(raw_vector).decode()
+                        cache[target] = ref
+                    except (KeyError, ValueError):
+                        pass
                 ref = cache.get(target)
                 if ref:
+                    # Preserve the relationship independently of markdown chunk
+                    # boundaries. Selectors come from the owning slide's ZIP
+                    # relationships, never from the question or model output.
+                    if image_sources is not None:
+                        image_sources.append({"original_ref": ref, "page": index, "source_part": target})
                     page.append(f"![第{index}页 · {label}]({ref})\n\n来源：第{index}页 · {target}（原文件中的图像或缓存预览，未刷新外部链接）。")
+                    if ref.lower().endswith((".emf", ".wmf")):
+                        page.append("此原始矢量图尚未生成预览，可按需读取授权原图；图片链接不表示已经观察到图形内容。")
                 else:
                     page.append(f"![{label}]({placeholder})\n\n第{index}页图像“{label}”未能解析；请查看原文件，不能据此判断图例或数值。")
                 if source_labels:

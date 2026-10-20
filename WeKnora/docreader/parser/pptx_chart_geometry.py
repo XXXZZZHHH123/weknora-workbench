@@ -378,6 +378,19 @@ def _estimate_emf_chart(data: bytes, *, partial_traces: bool) -> dict | None:
                         point['x_axis_interval']['relative_band'] = ('first_third' if fraction < 1/3 else
                                                                     'middle_third' if fraction < 2/3 else 'last_third')
                         break
+                if distinct_anchor_positions and len(anchors) >= 2 and 'x_axis_interval' not in point:
+                    before_first = point['x_fraction'] < anchors[0]['x_fraction']
+                    after_last = point['x_fraction'] > anchors[-1]['x_fraction']
+                    if before_first or after_last:
+                        left, right = (anchors[0], anchors[1]) if before_first else (anchors[-2], anchors[-1])
+                        edge = left if before_first else right
+                        point['x_axis_edge'] = {
+                            'side': 'before_first' if before_first else 'after_last',
+                            'edge_label': edge['label'],
+                            'distance_in_adjacent_tick_spacings': round(abs(point['x_fraction'] - edge['x_fraction']) /
+                                                                      (right['x_fraction'] - left['x_fraction']), 4),
+                            'calendar_extrapolation_allowed': False,
+                        }
             # Present source extrema in drawing order, not role order. Changes
             # are deterministic differences, without interpreting time labels
             # or assigning a business trend to the selected trace.

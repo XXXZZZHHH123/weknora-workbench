@@ -18,10 +18,16 @@ import (
 // The callback verifies an explicit resource binding to this authorized document.
 // Markdown is untrusted navigation evidence, never permission to read arbitrary URLs.
 type DocumentImageReader func(context.Context, *types.Knowledge, string) ([]byte, error)
+type DocumentSourceImageReader func(context.Context, *types.Knowledge, string, int, string) ([]byte, error)
 type DocumentFigureReader func(context.Context, *types.Knowledge, string, int, string, []string) (map[string]any, error)
 
 func (t *ReadDocumentTool) WithFigureReader(reader DocumentFigureReader) *ReadDocumentTool {
 	t.figureReader = reader
+	return t
+}
+
+func (t *ReadDocumentTool) WithSourceImageReader(reader DocumentSourceImageReader) *ReadDocumentTool {
+	t.sourceImageReader = reader
 	return t
 }
 
@@ -31,6 +37,7 @@ var documentMarkdownImage = regexp.MustCompile(`!\[([^\]\r\n]*)\]\((resource://[
 
 // This is the parser's explicit source-locator wire format, never query text.
 var documentFigureSource = regexp.MustCompile(`(?m)^来源：第([1-9][0-9]*)页 · (ppt/media/[A-Za-z0-9_.-]+\.[eE][mM][fF])（`)
+var documentFigurePart = regexp.MustCompile(`(?i)^ppt/media/[A-Za-z0-9_.-]+\.(emf|wmf)$`)
 
 type documentImage struct {
 	Reference   string `json:"reference"`
@@ -42,7 +49,7 @@ type documentImage struct {
 	SourcePart  string `json:"source_part,omitempty"`
 }
 
-func documentImageCatalog(result *types.ToolResult, knowledgeID string) []documentImage {
+func documentImageCatalog(result *types.ToolResult, knowledgeID, sourceHash string) []documentImage {
 	rows, _ := result.Data["chunks"].([]map[string]interface{})
 	seen := map[string]bool{}
 	images := []documentImage{}
@@ -50,6 +57,9 @@ func documentImageCatalog(result *types.ToolResult, knowledgeID string) []docume
 	for _, row := range rows {
 		content, _ := row["content"].(string)
 		chunkID, _ := row["chunk_id"].(string)
+		var sources []types.DocumentImageSource
+		sourceJSON, _ := json.Marshal(row["image_sources"])
+		_ = json.Unmarshal(sourceJSON, &sources)
 		sourcePart, sourcePage := "", page
 		locators := documentFigureSource.FindAllStringSubmatch(content, -1)
 		if len(locators) == 1 && len(documentMarkdownImage.FindAllString(content, -1)) == 1 {
@@ -70,8 +80,37 @@ func documentImageCatalog(result *types.ToolResult, knowledgeID string) []docume
 			if len(context) > 1200 {
 				context = context[:1200]
 			}
-			images = append(images, documentImage{Reference: reference, KnowledgeID: knowledgeID,
-				ChunkID: chunkID, Page: sourcePage, Label: label, Context: string(context), SourcePart: sourcePart})
+			item := documentImage{Reference: reference, KnowledgeID: knowledgeID,
+				ChunkID: chunkID, Page: sourcePage, Label: label, Context: string(context), SourcePart: sourcePart}
+			if len(sources) > 0 {
+				// Structured parser relationships survive split locator lines and
+				// multiple images per chunk. Never fall back to prose for a stale
+				// or ambiguous structured relationship.
+				item.SourcePart = ""
+				var matched *types.DocumentImageSource
+				ambiguous := false
+				for i := range sources {
+					s := &sources[i]
+					if s.Reference != reference {
+						continue
+					}
+					if page > 0 && page != s.Page {
+						continue
+					}
+					if sourceHash == "" || s.SourceHash != sourceHash || s.Page < 1 {
+						ambiguous = true
+						continue
+					}
+					if matched != nil && (matched.Page != s.Page || matched.SourcePart != s.SourcePart) {
+						ambiguous = true
+					}
+					matched = s
+				}
+				if matched != nil && !ambiguous && documentFigurePart.MatchString(matched.SourcePart) {
+					item.SourcePart, item.Page = matched.SourcePart, matched.Page
+				}
+			}
+			images = append(images, item)
 		}
 		for _, match := range documentMarkdownImage.FindAllStringSubmatch(content, -1) {
 			add(match[2], match[1])
@@ -95,7 +134,7 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 	if err != nil || result == nil || !result.Success || result.Data == nil {
 		return result, err
 	}
-	catalog := documentImageCatalog(result, knowledge.ID)
+	catalog := documentImageCatalog(result, knowledge.ID, knowledge.FileHash)
 	result.Data["image_catalog"] = catalog
 	if len(catalog) > 0 {
 		encoded, _ := json.Marshal(catalog)
@@ -130,7 +169,7 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 			return &types.ToolResult{Success: false, Error: "所选图片不属于本次实际读取的文档/页/分块范围；请先读取对应范围的真实图片清单。"}, nil
 		}
 	}
-	if t.imageReader == nil {
+	if t.imageReader == nil && t.sourceImageReader == nil {
 		result.Data["image_read_error"] = "原图读取服务不可用"
 		result.Output += "\nOriginal image reader is unavailable; image labels alone cannot establish visual facts."
 		return result, nil
@@ -144,7 +183,15 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 	geometryEvidence := []map[string]any{}
 	totalBytes := 0
 	for _, item := range selected {
-		data, readErr := t.imageReader(ctx, knowledge, item.Reference)
+		var data []byte
+		var readErr error
+		if t.sourceImageReader != nil && item.SourcePart != "" {
+			data, readErr = t.sourceImageReader(ctx, knowledge, item.Reference, item.Page, item.SourcePart)
+		} else if t.imageReader != nil {
+			data, readErr = t.imageReader(ctx, knowledge, item.Reference)
+		} else {
+			readErr = fmt.Errorf("original image reader unavailable")
+		}
 		entry := map[string]interface{}{"reference": item.Reference, "knowledge_id": knowledge.ID,
 			"chunk_id": item.ChunkID, "page": item.Page, "version": documentImageEvidenceVersion, "read_success": false}
 		if readErr != nil {
