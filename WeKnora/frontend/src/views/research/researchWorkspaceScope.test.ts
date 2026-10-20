@@ -104,6 +104,8 @@ test('refreshing a token for the same identity leaves the conversation mounted',
   const f = fixture()
   try {
     await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'legacy' } })
+    await new Promise(setImmediate)
     f.view.chatMounted.value = true
     f.view.chatVisible.value = true
     const scopeGeneration = f.view.scopeGeneration.value
@@ -269,5 +271,22 @@ test('only the active scoped frame can suppress onboarding while its drawer is o
     assert.equal(f.view.nativeDrawerOpen.value,true)
     f.view.receive({...event, data:{type:'research-drawer-state',open:false}})
     assert.equal(f.view.nativeDrawerOpen.value,false)
+  } finally { f.close() }
+})
+
+
+test('token refresh during the first metadata load preserves the pending workspace', async () => {
+  const f = fixture()
+  try {
+    await nextTick()
+    const generation = f.view.generation.value
+    f.auth.token = 'refreshed-token'
+    await nextTick()
+    assert.equal(f.requests.length, 1)
+    assert.equal(f.view.generation.value, generation)
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'legacy' } })
+    await new Promise(setImmediate)
+    assert.equal(f.view.canShowResearch.value, true)
+    assert.equal(f.view.workbench.value.id, 'workbench-a')
   } finally { f.close() }
 })

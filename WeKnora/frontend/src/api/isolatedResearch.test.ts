@@ -21,8 +21,8 @@ test('isolated requests include the exact workbench, user, tenant and knowledge-
   assert.equal(calls[0]!.options!.credentials, 'same-origin')
 })
 
-test('a changed user, tenant, token, knowledge base or workbench rejects a delayed response', async () => {
-  for (const key of ['token', 'tenantId', 'userId', 'workbenchId', 'knowledgeBaseId'] as const) {
+test('a changed user, tenant, knowledge base or workbench rejects a delayed response', async () => {
+  for (const key of ['tenantId', 'userId', 'workbenchId', 'knowledgeBaseId'] as const) {
     let active = identity()
     let resolve!: (response: Response) => void
     const api = createIsolatedResearchClient(active, () => active, () => new Promise(done => { resolve = done }))
@@ -67,4 +67,25 @@ test('API denial preserves the server explanation instead of creating a false re
   const scope = identity()
   const api = createIsolatedResearchClient(scope, () => scope, async () => Response.json({ detail: '资料不属于当前知识库' }, { status: 403 }))
   await assert.rejects(api.get('/sources'), /资料不属于当前知识库/)
+})
+
+test('credential rotation keeps a client in the same resource scope and uses the latest token', async () => {
+  let active = identity(), release!: (value: Response) => void
+  const calls: string[] = []
+  const client = createIsolatedResearchClient(active, () => active, async (_, options) => {
+    calls.push(new Headers(options?.headers).get('Authorization')!)
+    if (calls.length === 1) return new Promise(resolve => { release = resolve })
+    return Response.json({ ok: true })
+  })
+  const pending = client.get('/overview')
+  active = { ...active, token: 'rotated' }; release(Response.json({ ok: true }))
+  assert.deepEqual(await pending, { ok: true }); await client.get('/overview')
+  assert.deepEqual(calls, ['Bearer isolated-test-token', 'Bearer rotated'])
+})
+
+test('logout rejects pending research responses even if the resource IDs remain the same', async () => {
+  let active = identity(), release!: (value: Response) => void
+  const client = createIsolatedResearchClient(active, () => active, async () => new Promise(resolve => { release = resolve }))
+  const pending = client.get('/overview'); active = { ...active, token: '' }; release(Response.json({ ok: true }))
+  await assert.rejects(pending, /已切换/)
 })

@@ -420,10 +420,7 @@ export async function refreshToken(refreshToken: string): Promise<{ success: boo
       message: response?.message || t('error.auth.refreshTokenFailed')
     }
   } catch (error: any) {
-    return {
-      success: false,
-      message: error.message || t('error.auth.refreshTokenFailed')
-    }
+    throw error
   }
 }
 
