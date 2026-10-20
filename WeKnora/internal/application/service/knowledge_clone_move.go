@@ -409,6 +409,7 @@ func (s *knowledgeService) CloneChunk(ctx context.Context, src, dst *types.Knowl
 		// chunks whose ![](url) reference points at a source object copied while
 		// processing an independent image_ocr/image_caption child chunk.
 		targetChunk.Content = rewriteContentImageURLs(targetChunk.Content, urlCache)
+		targetChunk.Metadata = cloneDocumentImageSourceMetadata(targetChunk.Metadata, urlCache)
 		if val, ok := srcTodst[targetChunk.PreChunkID]; ok {
 			targetChunk.PreChunkID = val
 		} else {

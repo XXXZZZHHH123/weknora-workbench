@@ -182,19 +182,22 @@ class TestPptxMedia(unittest.TestCase):
         with patch.object(media, "rasterize_media_bytes", return_value=None), \
                 patch.object(media, "_rasterize_vector_batches", return_value={}):
             text, images = media.attach_pptx_media_to_markdown(MARKDOWN, fixture())
-        self.assertEqual(images, {})
+        self.assertEqual({base64.b64decode(v) for v in images.values()}, {b"chart-a", b"chart-b"})
+        self.assertTrue(all(ref.endswith(".emf") for ref in images))
         self.assertIn("First text", text)
         self.assertIn("不能据此判断图例或数值", text)
-        self.assertNotIn("images/", text)
+        self.assertIn("此原始矢量图尚未生成预览", text)
+        self.assertNotIn("原图曲线几何证据", text)
 
     def test_exhausted_vector_budget_preserves_existing_raster_logo(self):
         with patch.object(media, "_MEDIA_BUDGET_SECONDS", -1), \
                 patch.object(media, "_rasterize_vector_batches", return_value={}), \
                 patch.object(media, "rasterize_media_bytes", return_value=b"logo-png") as raster:
             text, images = media.attach_pptx_media_to_markdown(MARKDOWN, fixture())
-        self.assertEqual(len(images), 1)
+        self.assertEqual(len(images), 3)
         self.assertIn("![第1页 · Company logo]", text)
-        self.assertIn("01-05 chart”未能解析", text)
+        self.assertIn("此原始矢量图尚未生成预览", text)
+        self.assertEqual({base64.b64decode(v) for ref,v in images.items() if ref.endswith('.emf')}, {b"chart-a",b"chart-b"})
         self.assertEqual(raster.call_args.args[:2], ("ppt/media/logo.png", b"logo"))
         self.assertEqual(raster.call_count, 1)
 

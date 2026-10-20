@@ -200,6 +200,7 @@ func (s *knowledgeService) processDocumentFromPassage(ctx context.Context,
 
 // ProcessChunksOptions contains options for processing chunks
 type ProcessChunksOptions struct {
+	DocumentImageSources     []types.DocumentImageSource
 	EnableQuestionGeneration bool
 	QuestionCount            int
 	EnableMultimodel         bool
@@ -548,6 +549,7 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 				EndAt:           pc.End,
 				ChunkType:       types.ChunkTypeParentText,
 				SourceLocators:  pc.SourceLocators,
+				Metadata:        documentImageSourceMetadata(pc.Content, options.DocumentImageSources),
 			}
 		}
 		// Set prev/next links for parent chunks
@@ -589,6 +591,7 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 			EndAt:           int(chunkData.End),
 			ChunkType:       types.ChunkTypeText,
 			SourceLocators:  chunkData.SourceLocators,
+			Metadata:        documentImageSourceMetadata(chunkData.Content, options.DocumentImageSources),
 		}
 
 		// Wire up ParentChunkID for child chunks
@@ -807,8 +810,9 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 	// Check if this document has extracted images that will be processed asynchronously
 	isImage := IsImageType(knowledge.FileType)
 	isVideo := IsVideoType(knowledge.FileType)
-	pendingMultimodal := isImage && options.EnableMultimodel && len(options.StoredImages) > 0
-	pendingPDFMultimodal := !isImage && !isVideo && options.EnableMultimodel && len(options.StoredImages) > 0
+	multimodalImages := rasterMultimodalImages(options.StoredImages)
+	pendingMultimodal := isImage && options.EnableMultimodel && len(multimodalImages) > 0
+	pendingPDFMultimodal := !isImage && !isVideo && options.EnableMultimodel && len(multimodalImages) > 0
 
 	if s.currentAttemptSuperseded(ctx, knowledge.ID) {
 		logger.Infof(ctx, "Parse attempt superseded, skipping completion: %s", knowledge.ID)
@@ -829,16 +833,16 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 	}
 
 	// Enqueue multimodal tasks for images (async, non-blocking)
-	if options.EnableMultimodel && len(options.StoredImages) > 0 {
+	if options.EnableMultimodel && len(multimodalImages) > 0 {
 		// Counts only, no policy claims: whether a given image is OCR'd is
 		// decided per image once its attributes are observed, so a boolean here
 		// would assert something the pipeline has not decided yet — and would
 		// drift from what actually happened.
 		s.beginStage(ctx, knowledge.ID, types.StageMultimodal, types.JSONMap{
-			"image_count": len(options.StoredImages),
+			"image_count": len(multimodalImages),
 		})
 		if err := s.enqueueImageMultimodalTasks(
-			ctx, knowledge, kb, options.StoredImages, chunks, options.Metadata,
+			ctx, knowledge, kb, multimodalImages, chunks, options.Metadata,
 		); err != nil {
 			// Nothing else moves the row out of "processing"; let asynq
 			// run the (idempotent) parse again, or dead-letter it.
@@ -4092,6 +4096,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 	chunkCfg := buildSplitterConfigFromChunking(eff.ChunkingConfig)
 
 	processOpts := ProcessChunksOptions{
+		DocumentImageSources:     resolvedDocumentImageSources(convertResult, storedImages, knowledge.FileHash),
 		EnableQuestionGeneration: payload.EnableQuestionGeneration,
 		QuestionCount:            payload.QuestionCount,
 		EnableMultimodel:         payload.EnableMultimodel,
@@ -4418,6 +4423,7 @@ func (s *knowledgeService) enqueueImageMultimodalTasks(
 	chunks []types.ParsedChunk,
 	metadata map[string]string,
 ) error {
+	images = rasterMultimodalImages(images)
 	if s.task == nil || len(images) == 0 {
 		return nil
 	}

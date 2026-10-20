@@ -145,6 +145,7 @@ type ReadDocumentTool struct {
 	searchTargets      types.SearchTargets
 	documentConstraint *RequestedDocumentConstraint
 	imageReader        DocumentImageReader
+	sourceImageReader  DocumentSourceImageReader
 	figureReader       DocumentFigureReader
 	wikiPageService    interfaces.WikiPageService
 }

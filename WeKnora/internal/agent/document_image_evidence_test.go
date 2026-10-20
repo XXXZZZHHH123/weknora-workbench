@@ -128,6 +128,7 @@ func TestOriginalGeometryFactViewsDoNotPromoteConflictingModelObservations(t *te
 		figure[key] = value
 	}
 	figure["evidence"] = map[string]any{"version": "source_figure_geometry_v1", "source_file_sha256": strings.Repeat("a", 64), "source_media_sha256": strings.Repeat("b", 64), "geometry": map[string]any{"method": "original_emf_trace_geometry_v1", "series": []map[string]any{{"legend": "Alpha", "last": map[string]any{"approximate_value": 25}}}}}
+	figure["evidence"].(map[string]any)["geometry"].(map[string]any)["selected_endpoint_value_order"] = map[string]any{"scope": "selected own endpoints only", "selected_count": 1, "rows": []map[string]any{{"legend": "Alpha", "descending_value_rank": 1}}}
 	result.Data["image_geometry_evidence"] = []map[string]any{figure}
 	engine := sourceConsistencyEngine(t, &mockChat{})
 	messages := engine.appendToolImages(t.Context(), []chat.Message{{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: "verified drawing data"}}, state.RoundSteps[0])
@@ -140,6 +141,8 @@ func TestOriginalGeometryFactViewsDoNotPromoteConflictingModelObservations(t *te
 	encoded, _ = json.Marshal(summaries)
 	require.NotContains(t, string(encoded), "MODEL_GUESS_OUTSIDE_ORIGINAL_COORDINATES")
 	require.Contains(t, string(encoded), "approximate_value")
+	require.Contains(t, string(encoded), "selected_endpoint_value_order")
+	require.Contains(t, string(encoded), "selected own endpoints only")
 	require.Equal(t, "MODEL_GUESS_OUTSIDE_ORIGINAL_COORDINATES", result.ImageDescriptions[0])
 	require.Equal(t, "MODEL_GUESS_OUTSIDE_ORIGINAL_COORDINATES", result.Data["image_descriptions"].([]string)[0], "audit/UI original must remain unchanged")
 	// A wrong pixel binding cannot suppress the only available observation.

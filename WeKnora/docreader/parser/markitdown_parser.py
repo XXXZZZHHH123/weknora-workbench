@@ -1,4 +1,5 @@
 import io
+import json
 import logging
 
 from markitdown import MarkItDown
@@ -82,9 +83,13 @@ class StdMarkitdownParser(BaseParser):
             # after MarkItDown has released the configured worker semaphore.
             text = result.text_content
             images: dict[str, str] = {}
+            image_sources: list[dict] = []
             if pptx_bytes is not None:
-                text, images = attach_pptx_media_to_markdown(text, pptx_bytes)
-        return Document(content=text, images=images)
+                text, images = attach_pptx_media_to_markdown(text, pptx_bytes, image_sources=image_sources)
+        metadata = {}
+        if image_sources:
+            metadata["pptx_image_sources_v1"] = json.dumps(image_sources, ensure_ascii=False)
+        return Document(content=text, images=images, metadata=metadata)
 
     def _convert_markitdown(
         self, content: bytes, ext: str | None, *, keep_data_uris: bool

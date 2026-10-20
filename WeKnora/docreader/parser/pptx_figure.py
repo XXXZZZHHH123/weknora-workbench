@@ -56,6 +56,26 @@ def read_original_figure(content: bytes, file_type: str, options: dict) -> Docum
         geometry['omitted_series'] = [row['legend'] for row in geometry['series'] if row['legend'] not in requested]
         geometry['series'] = [row for row in geometry['series'] if row['legend'] in requested]
         geometry['series_count'] = len(geometry['series'])
+    # Only the explicitly selected traces participate. This is deterministic
+    # ordering of drawn values, not a choice of business comparison scope or a
+    # same-date ranking. Keep overlap uncertainty and each trace's x position.
+    traces = geometry['series']
+    ordered = sorted(traces, key=lambda row: row['last']['approximate_value'], reverse=True)
+    geometry['selected_endpoint_value_order'] = {
+        'scope': 'Explicitly selected traces, each at its own last drawn point; not a same-date or same-period ranking.',
+        'selected_count': len(traces),
+        'source_series_count': geometry['source_series_count'],
+        'same_x_position': len({row['last']['x_fraction'] for row in traces}) == 1,
+        'rows': [{
+            'legend': row['legend'], 'color': row['color'],
+            'approximate_value': row['last']['approximate_value'],
+            'estimate_low': row['last']['estimate_low'], 'estimate_high': row['last']['estimate_high'],
+            'x_fraction': row['last']['x_fraction'],
+            'descending_value_rank': 1 + sum(other['last']['approximate_value'] > row['last']['approximate_value'] for other in traces),
+            'possible_rank_min': 1 + sum(other['last']['estimate_low'] > row['last']['estimate_high'] for other in traces if other is not row),
+            'possible_rank_max': 1 + sum(other['last']['estimate_high'] >= row['last']['estimate_low'] for other in traces if other is not row),
+        } for row in ordered],
+    }
     return Document(content=_trend_geometry_markdown(geometry, page, part), metadata={
         **metadata, "evidence_version": FIGURE_GEOMETRY_ENGINE,
         "geometry_json": json.dumps(geometry, ensure_ascii=False),

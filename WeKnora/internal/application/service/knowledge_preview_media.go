@@ -53,6 +53,10 @@ func validPreviewMediaPart(part string) bool {
 // RenderKnowledgePreviewMedia converts one authorized original PPTX media part
 // to PNG for preview. The result is never persisted or attached to the source.
 func (s *knowledgeService) RenderKnowledgePreviewMedia(ctx context.Context, knowledge *types.Knowledge, page int, part, expectedSourceSHA256 string) ([]byte, error) {
+	return s.renderKnowledgeSourceMedia(ctx, knowledge, page, part, expectedSourceSHA256, "")
+}
+
+func (s *knowledgeService) renderKnowledgeSourceMedia(ctx context.Context, knowledge *types.Knowledge, page int, part, expectedSourceSHA256, expectedMediaSHA256 string) ([]byte, error) {
 	if knowledge == nil || strings.ToLower(strings.TrimPrefix(knowledge.FileType, ".")) != "pptx" {
 		return nil, apperrors.NewBadRequestError("Source media preview requires a PPTX knowledge file")
 	}
@@ -134,6 +138,9 @@ func (s *knowledgeService) RenderKnowledgePreviewMedia(ctx context.Context, know
 		!previewMediaSHA256.MatchString(metadata["source_media_sha256"]) ||
 		!previewMediaSHA256.MatchString(metadata["rendered_png_sha256"]) {
 		return nil, errors.New("document reader media binding did not verify")
+	}
+	if expectedMediaSHA256 != "" && !strings.EqualFold(metadata["source_media_sha256"], expectedMediaSHA256) {
+		return nil, errors.New("stored vector does not match selected original media")
 	}
 	encoded := metadata["rendered_png_base64"]
 	if encoded == "" || len(encoded) > base64.StdEncoding.EncodedLen(previewMediaPNGLimit) {

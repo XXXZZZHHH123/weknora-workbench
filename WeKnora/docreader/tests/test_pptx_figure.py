@@ -29,6 +29,11 @@ class TestOriginalFigure(unittest.TestCase):
         self.assertEqual(geometry['series_count'], 3)
         self.assertNotIn('endpoint_rank', geometry['series'][-1])
         self.assertIn('Start', result.content)
+        comparison = geometry['selected_endpoint_value_order']
+        self.assertEqual([row['legend'] for row in comparison['rows']], ['Alpha', 'Gamma', 'Beta'])
+        self.assertEqual([row['descending_value_rank'] for row in comparison['rows']], [1, 2, 3])
+        self.assertFalse(comparison['same_x_position'])
+        self.assertIn('not a same-date', comparison['scope'])
 
     def test_other_page_unreferenced_part_external_and_traversal_fail_closed(self):
         source = original_deck()
@@ -52,6 +57,13 @@ class TestOriginalFigure(unittest.TestCase):
         self.assertEqual((interval['left_label'], interval['right_label']), ('Start', 'Middle'))
         self.assertTrue(0 < interval['fraction_between_labels'] < 1)
         self.assertIn('图例 Gamma', result.content)
+        comparison = geometry['selected_endpoint_value_order']
+        self.assertEqual(comparison['selected_count'], 1)
+        self.assertEqual(comparison['source_series_count'], 3)
+        self.assertEqual([row['legend'] for row in comparison['rows']], ['Gamma'])
+        self.assertEqual(comparison['rows'][0]['descending_value_rank'], 1)
+        self.assertEqual(comparison['rows'][0]['possible_rank_min'], 1)
+        self.assertEqual(comparison['rows'][0]['possible_rank_max'], 1)
 
     def test_unknown_or_malformed_model_legend_selection_is_not_substituted(self):
         result = read_original_figure(original_deck(), 'pptx', {'source_page':'1', 'source_part':'ppt/media/chart-a.emf', 'series_json':'["unknown"]'})

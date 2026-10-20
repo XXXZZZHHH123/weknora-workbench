@@ -98,6 +98,8 @@ func TestRenderKnowledgePreviewMediaBindsSourceAndAllowsReadableParseStates(t *t
 		require.Equal(t, "source_media_png_v1", reader.request.ParserEngine)
 		require.Equal(t, "3", reader.request.ParserEngineOverrides["source_page"])
 		require.Equal(t, "ppt/media/member.wmf", reader.request.ParserEngineOverrides["source_part"])
+		_, err = svc.renderKnowledgeSourceMedia(previewMediaContext(), knowledge, 3, "ppt/media/member.wmf", hex.EncodeToString(fileSHA[:]), strings.Repeat("0", 64))
+		require.ErrorContains(t, err, "stored vector does not match")
 	}
 }
 
