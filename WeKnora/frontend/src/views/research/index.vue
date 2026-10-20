@@ -183,7 +183,7 @@ onBeforeUnmount(() => { requestGeneration++; authGeneration++; scopeGeneration.v
 .research-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;min-height:44px;padding:6px 24px;box-sizing:border-box;background:var(--app-bg)}
 .research-toolbar strong{font-size:var(--app-text-base);font-weight:600;max-width:280px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .research-toolbar>span{font-size:var(--app-text-sm);color:var(--app-text-secondary);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.research-toolbar a{font-size:var(--app-text-md);color:var(--td-brand-color);text-decoration:none}
+.research-toolbar .research-back{font-size:var(--app-text-md);color:var(--td-brand-color);text-decoration:none}
 .research-toolbar-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
 
 .research-back{display:inline-flex;align-items:center;gap:4px}

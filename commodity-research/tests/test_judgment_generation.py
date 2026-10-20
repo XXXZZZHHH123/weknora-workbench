@@ -233,6 +233,37 @@ def test_actual_model_request_contains_a_machine_readable_numeric_rule_contract(
     assert 'JSON number' in prompt and 'unresolved' in prompt
 
 
+def test_actual_model_request_uses_the_exact_pricing_power_schema(generator):
+    import json
+    from tin.schemas.judgment import PricingPower
+
+    client, headers, _, _, calls = generator
+    result = generate(client, headers)
+    assert result.status_code == 200, result.text
+    assert len(calls) == 1 and rows() == []
+    prompt = calls[0]['prompt']
+    marker = '定价权对象的 JSON Schema：\n'
+    assert marker in prompt
+    schema, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
+    assert schema == PricingPower.model_json_schema()
+    category = schema['properties']['category']
+    assert any(item.get('type') == 'null' for item in category['anyOf'])
+    assert next(item['enum'] for item in category['anyOf'] if 'enum' in item) == [
+        '有LME外盘', '纯宏观', '无外盘']
+    assert 'category仅有LME' not in prompt
+    assert SERIES not in json.dumps(schema)
+
+
+@pytest.mark.parametrize('category', ['unsupported-category', True, {'category': 'unsupported-category'}])
+def test_pricing_power_schema_keeps_invalid_model_categories_rejected(generator, category):
+    client, headers, _, response, calls = generator
+    response['judgment']['pricing_power'] = {'category': category}
+    result = generate(client, headers)
+    assert result.status_code == 422, result.text
+    assert result.json()['detail'] == '研究逻辑字段或规则格式无效，请调整资料后重试'
+    assert len(calls) == 1 and rows() == [] and not generation.previews.items
+
+
 @pytest.mark.parametrize('value', ['12', True, None, {'minimum': 12}, 'missing'])
 def test_clearer_prompt_does_not_coerce_or_remove_invalid_model_thresholds(generator, value):
     client, headers, _, response, calls = generator
