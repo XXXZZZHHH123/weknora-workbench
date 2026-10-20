@@ -19,7 +19,7 @@
 </div>
 
 {% if j is none %}
-<div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-6 shadow-sm">
+<div id="judgment-empty" class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-6 shadow-sm">
   <h3 class="text-base font-bold">尚未登记判断</h3>
   <p class="text-xs text-[var(--text-muted)] mt-1">点击“管理研究逻辑”导入完整原文，由模型分析并匹配知识库指标，预览后保存草稿。</p>
 </div>
@@ -49,7 +49,7 @@
 </div>
 {% endif %}
 
-<section class="space-y-3">
+<section id="judgment-thresholds" class="space-y-3">
   <div class="flex items-center justify-between gap-3 flex-wrap">
     <h2 class="text-sm font-bold flex items-center gap-2">
       <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">01</span>

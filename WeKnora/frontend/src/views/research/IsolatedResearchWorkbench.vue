@@ -9,8 +9,6 @@ import { createIsolatedResearchClient, type IsolatedResearchIdentity, type Workb
 import KbUploadSourceDropdown from '@/views/knowledge/components/KbUploadSourceDropdown.vue'
 import { buildUploadFileName } from '@/views/knowledge/folderTree'
 import { workspaceErrorMessage } from '@/views/workspaces/workspaceForm'
-import ResearchWorkbenchGuide from './ResearchWorkbenchGuide.vue'
-import { buildResearchOnboardingSteps } from './researchOnboarding'
 
 const props = defineProps<{ workbench: ResearchWorkbench; guideSuppressed?: boolean }>()
 const emit = defineEmits<{ 'open-chat': []; 'update-workbench': [workbench: ResearchWorkbench]; navigate: [view: string]; refresh: [] }>()
@@ -22,16 +20,11 @@ const sourceTotal = ref(0), sourcePage = ref(1)
 const loading = ref(false), busy = ref(false), error = ref(''), drawerError = ref('')
 const guideSaving = ref(false), guideError = ref('')
 const drawer = ref<'sources' | 'evidence' | 'upload' | null>(null)
+const drawerOpen = computed(() => Boolean(drawer.value))
 const sourceContent = ref<{text?: string; sha256?: string; supported?: boolean; notice?: string; image_data_url?: string} | null>(null)
 const sourceContentOpen = ref(false), sourceContentLoading = ref(false)
 const selectedSource = ref<WorkbenchSource | null>(null), pendingFiles = ref<File[]>([])
 const isIsolated = computed(() => props.workbench.workspace_mode === 'isolated')
-const guideRun = ref(0)
-const guideVisible = computed(() => !props.guideSuppressed && isIsolated.value && !loading.value && Boolean(overview.value)
-  && (drawer.value === null || drawer.value === 'sources')
-  && (!props.workbench.onboarding || props.workbench.onboarding.status === 'active'))
-const guideSteps = computed(() => overview.value ? buildResearchOnboardingSteps(
-  props.workbench.knowledge_base_name || '', overview.value, drawer.value === 'sources' ? 'sources' : 'home') : [])
 const taskNames = { sources: '添加资料', review: '核对来源', research: '开始研究' }
 let generation = 0, scopeEpoch = 0, sourceSelection = 0
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -84,7 +77,6 @@ async function guide(status: 'active' | 'dismissed' | 'skipped' | 'completed', t
   finally { if (stillOwner()) guideSaving.value = false }
 }
 function openSources() { clearPreview(); drawer.value = 'sources'; drawerError.value = '' }
-function openGuide() { if (isIsolated.value) { guideRun.value++; void guide('active') } else openSources() }
 function openKnowledgeBase() {
   if (validBinding()) void router.push(`/platform/knowledge-bases/${encodeURIComponent(props.workbench.knowledge_base_id)}`)
 }
@@ -156,14 +148,12 @@ watch(scopeKey, () => {
 }, { immediate: true, flush: 'sync' })
 onMounted(() => window.addEventListener('knowledgeFileUploaded', filesChanged))
 onBeforeUnmount(() => { generation++; scopeEpoch++; sourceSelection++; if (refreshTimer) clearTimeout(refreshTimer); window.removeEventListener('knowledgeFileUploaded', filesChanged) })
-defineExpose({ openSources, openGuide })
+defineExpose({ openSources, drawerOpen })
 </script>
 
 <template>
   <div class="workbench-preparation" data-testid="workbench-preparation">
-    <ResearchWorkbenchGuide v-if="guideVisible" :key="`${guideRun}:${drawer || 'home'}`" :steps="guideSteps" :saving="guideSaving" :save-error="guideError"
-      @finish="guide('completed')" @dismiss="guide('skipped')" />
-    <div v-if="error || (guideError && !guideVisible)" class="isolated-error" role="alert">
+    <div v-if="error || guideError" class="isolated-error" role="alert">
       <t-alert theme="error" :message="error || guideError" />
       <t-button size="small" variant="text" :loading="loading" @click="load">重试加载</t-button>
     </div>

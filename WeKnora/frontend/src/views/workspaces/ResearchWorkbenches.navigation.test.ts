@@ -8,6 +8,7 @@ import * as vue from 'vue'
 import * as forms from './workspaceForm'
 import * as knowledgeBases from './workspaceKnowledgeBases'
 import * as templates from '../research/workbenchTemplates'
+import * as featureGuides from '../research/researchFeatureGuides'
 import * as sorting from '../../utils/resourceSorting'
 
 type Host = { type: string; props: Record<string, any>; children: Host[]; text: string; parent?: Host }
@@ -52,7 +53,7 @@ function fixture(options: { fail?: boolean; items?: typeof workbenches; creating
     './workspaceForm': forms, './workspaceKnowledgeBases': knowledgeBases, '@/views/research/workbenchTemplates': templates,
     '@/components/ResourceListToolbar.vue': { default: toolbar }, '@/components/ResourceSortControl.vue': { default: sortControl },
     '@/components/EmptyState.vue': { default: emptyState }, '@/utils/resourceSorting': sorting,
-    './workspaces.css': {},
+    './workspaces.css': {}, '@/views/research/researchFeatureGuides': featureGuides,
   }
   function load(code: string) {
     const exports: { default?: vue.Component } = {}

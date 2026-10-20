@@ -23,7 +23,7 @@ function fixture() {
   const unmounts: Array<() => void> = []
   const scope = effectScope()
   const view: any = scope.run(() => runInNewContext(code, {
-    computed, nextTick, ref, watch, useAuthStore: () => auth, useRoute: () => route,
+    computed, nextTick, ref, watch, useAuthStore: () => auth, useRoute: () => route, useRouter: () => ({ replace: async () => {} }),
     useTheme: () => ({ effectiveTheme: ref('light'), setTheme() {} }),
     onMounted() {}, onBeforeUnmount: (fn: () => void) => unmounts.push(fn),
     window: { location: { origin: 'https://test.local' }, removeEventListener() {} },
@@ -174,7 +174,7 @@ test('source preparation messages require the active isolated frame and same ori
     f.view.receive(message)
     f.view.receive({ ...message, data: { type: 'research-open-guide' } })
     assert.equal(sources, 1)
-    assert.equal(guides, 1)
+    assert.equal(guides, 0, 'The retired global guide message cannot reopen feature tours')
   } finally { f.close() }
 })
 

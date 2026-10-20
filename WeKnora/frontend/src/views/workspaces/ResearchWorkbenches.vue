@@ -15,6 +15,7 @@ import { validateWorkbenchSource, validateWorkspaceName, workspaceErrorMessage a
 import { workspaceKnowledgeBases } from './workspaceKnowledgeBases'
 import { createRandomUUID } from '@/utils/uuid'
 import { workbenchTemplates, workbenchModuleNames, templateById, type WorkbenchTemplateId } from '@/views/research/workbenchTemplates'
+import { registerResearchGuide } from '@/views/research/researchFeatureGuides'
 import './workspaces.css'
 
 const route = useRoute(), router = useRouter(), auth = useAuthStore(), resources = useChatResourcesStore(), organizations = useOrganizationStore()
@@ -60,11 +61,14 @@ async function create() {
   if (busy.value) return
   error.value = validateWorkbenchSource(kbId.value, libraries.value.map(k => k.id)) || validateWorkspaceName(name.value)
   if (error.value) return
-  const own = generation
+  const own = generation, ownerIdentity = identity.value
   busy.value = true
   try {
     const res = await createResearchWorkbench({ name: name.value.trim(), description: description.value.trim(), knowledge_base_id: kbId.value, template_id: templateId.value, template_version: 1, idempotency_key: creationKey })
-    if (own !== generation) return
+    if (own !== generation || ownerIdentity !== identity.value) return
+    try {
+      registerResearchGuide(window.localStorage, { tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '', workbenchId: res.data.id, knowledgeBaseId: res.data.knowledge_base_id }, res.data.workspace_mode)
+    } catch { /* Storage restrictions must not prevent opening a created workbench. */ }
     changed(); await router.push(`/platform/research-workbenches/${res.data.id}`)
   } catch (e) { if (own === generation) error.value = message(e) }
   finally { if (own === generation) busy.value = false }

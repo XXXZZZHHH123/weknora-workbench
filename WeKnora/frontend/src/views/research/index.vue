@@ -15,7 +15,7 @@
     </div>
     <div class="research-body">
       <div class="research-canvas">
-      <IsolatedResearchWorkbench v-if="canShowResearch && workbench" :key="scopeGeneration" ref="isolatedView" :workbench="workbench" :guide-suppressed="nativeDrawerOpen || !frameIsHome" @open-chat="openChat" @navigate="navigateResearch" @refresh="restartSession" @update-workbench="applyWorkbenchUpdate" />
+      <IsolatedResearchWorkbench v-if="canShowResearch && workbench" :key="scopeGeneration" ref="isolatedView" :workbench="workbench" @open-chat="openChat" @navigate="navigateResearch" @refresh="restartSession" @update-workbench="applyWorkbenchUpdate" />
       <iframe v-if="canShowResearch && frameReady" :key="generation" ref="frame" :src="frameUrl"
         title="商品研究工作台" @load="frameLoaded" />
       <div v-else-if="workbenchLoading" class="research-empty" role="status">正在打开研究工作台…</div>
@@ -26,6 +26,7 @@
         <p>{{ auth.token && tenantId ? '请先选择一个研究工作台，使用它绑定的知识库。' : '请先登录并选择空间。' }}</p>
         <router-link v-if="auth.token && tenantId" to="/platform/research-workbenches">选择研究工作台</router-link>
       </div>
+      <ResearchFeatureGuides v-if="canShowResearch && workbench" :workbench="workbench" :frame="frame" :frame-version="frameVersion" :suppressed="chatVisible || !frameReady || Boolean(isolatedView?.drawerOpen)" />
       </div>
       <ResearchChatPanel v-if="chatMounted && canShowResearch" :key="scopeGeneration" :visible="chatVisible"
         :kb-id="workbench?.knowledge_base_id || ''" :kb-name="workbench?.knowledge_base_name || ''"
@@ -43,6 +44,7 @@ import ResearchChatPanel from './ResearchChatPanel.vue'
 import IsolatedResearchWorkbench from './IsolatedResearchWorkbench.vue'
 import { authenticateResearchFrame, researchFramePath } from './researchFrameSession'
 import WorkbenchActions from '@/views/workspaces/WorkbenchActions.vue'
+import ResearchFeatureGuides from './ResearchFeatureGuides.vue'
 const auth = useAuthStore()
 const { effectiveTheme, setTheme } = useTheme()
 const route = useRoute()
@@ -50,6 +52,7 @@ const router = useRouter()
 const frame = ref<HTMLIFrameElement>()
 const isolatedView = ref<InstanceType<typeof IsolatedResearchWorkbench>>()
 const generation = ref(0)
+const frameVersion = ref(0)
 const scopeGeneration = ref(0)
 const tenantId = computed(() => auth.selectedTenantId ?? auth.tenant?.id)
 const workbenchId = computed(() => typeof route.params.workbenchId === 'string' ? route.params.workbenchId : '')
@@ -85,7 +88,6 @@ async function reauthenticateFrame() {
   catch (error) { workbenchError.value = error instanceof Error ? error.message : '研究工作台登录核验失败。' }
 }
 function openChat() { chatMounted.value = true; chatVisible.value = true }
-function openGuide() { navigateResearch('home'); isolatedView.value?.openGuide() }
 function navigateResearch(view: string) {
   if (!canShowResearch.value || !['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(view)) return
   researchView.value = view
@@ -132,6 +134,7 @@ async function loadWorkbench() {
 }
 function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function frameLoaded() {
+  frameVersion.value++
   nativeDrawerOpen.value = false
   try {
     const path = frame.value?.contentWindow?.location?.pathname
@@ -142,7 +145,6 @@ function frameLoaded() {
 function receive(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
   if (canShowResearch.value && event.data?.type === 'research-open-sources') { isolatedView.value?.openSources(); return }
-  if (canShowResearch.value && event.data?.type === 'research-open-guide') { openGuide(); return }
   if (canShowResearch.value && event.data?.type === 'research-drawer-state' && typeof event.data.open === 'boolean') { nativeDrawerOpen.value = event.data.open; return }
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'workspace-theme-request') {
