@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const http = require('node:http');
-const {spawn} = require('node:child_process');
 const {once} = require('node:events');
+const {launchBrowser, stopBrowser} = require('./browser-launcher.cjs');
 
 const keepArtifacts=Boolean(process.env.STRUCTURED_UI_ARTIFACTS);
 const output=keepArtifacts?path.resolve(process.env.STRUCTURED_UI_ARTIFACTS):fs.mkdtempSync(path.join(os.tmpdir(),'structured-workspace-artifacts-'));
@@ -114,10 +114,8 @@ async function main(){
  });
  try{
   server.listen(0,'127.0.0.1');await once(server,'listening');const origin=`http://127.0.0.1:${server.address().port}`;
-  chrome=spawn(browserPath(),['--headless=new','--no-sandbox','--disable-gpu','--disable-background-networking','--disable-dev-shm-usage','--no-first-run','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1','about:blank'],{stdio:['ignore','ignore','ignore']});
-  const activePort=path.join(profile,'DevToolsActivePort');for(let count=0;!fs.existsSync(activePort)&&count<200;count++)await pause(50);
-  const port=fs.readFileSync(activePort,'utf8').split('\n')[0],tabs=await fetch(`http://127.0.0.1:${port}/json`).then(r=>r.json());
-  socket=new WebSocket(tabs.find(tab=>tab.type==='page').webSocketDebuggerUrl);await once(socket,'open');let serial=0;const pending=new Map();
+  const launched=await launchBrowser({executablePath:browserPath(),profileDir:profile});chrome=launched.browser;
+  socket=new WebSocket(launched.page.webSocketDebuggerUrl);await once(socket,'open');let serial=0;const pending=new Map();
   socket.addEventListener('message',event=>{const message=JSON.parse(event.data);if(message.id&&pending.has(message.id)){pending.get(message.id)(message);pending.delete(message.id)}else if(message.method==='Runtime.exceptionThrown')errors.push(message.params.exceptionDetails.exception?.description||message.params.exceptionDetails.text);else if(message.method==='Network.loadingFailed')networkFailures.push(message.params.errorText);else if(message.method==='Page.fileChooserOpened')fileChoosers.push(message.params);});
   const call=async(method,params={})=>{const id=++serial,result=new Promise(resolve=>pending.set(id,resolve));socket.send(JSON.stringify({id,method,params}));const response=await result;if(response.error)throw Error(JSON.stringify(response.error));return response.result;};
   const js=async expression=>{const result=await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(result.exceptionDetails)throw Error(result.exceptionDetails.exception?.description||result.exceptionDetails.text);return result.result.value;};
@@ -328,8 +326,10 @@ async function main(){
   if(keepArtifacts)fs.writeFileSync(path.join(output,'browser-acceptance.json'),JSON.stringify({passed:checks.length,checks,screenshots:keepArtifacts?fs.readdirSync(path.join(output,'screenshots')):[],real_model_calls:0,real_business_writes:0,fixture_upload_requests:uploadCount,requests},null,2));
   console.log(JSON.stringify({passed:checks.length,checks,real_model_calls:0,real_business_writes:0}));
  }finally{
-  socket?.close();if(chrome&&chrome.exitCode===null){const stopped=once(chrome,'exit');chrome.kill('SIGTERM');await stopped;}
-  await new Promise(resolve=>server.close(resolve));fs.rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});if(!keepArtifacts)fs.rmSync(output,{recursive:true,force:true});
+  socket?.close();
+  try{await stopBrowser(chrome);}finally{
+   await new Promise(resolve=>server.close(resolve));fs.rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});if(!keepArtifacts)fs.rmSync(output,{recursive:true,force:true});
+  }
  }
 }
 main().catch(error=>{if(keepArtifacts)fs.writeFileSync(path.join(output,'browser-failure.json'),JSON.stringify({error:error.stack,completed:checks,errors,networkFailures,requests},null,2));console.error(error);process.exitCode=1});

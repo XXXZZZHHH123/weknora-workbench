@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
-const {spawn} = require('node:child_process');
 const {once} = require('node:events');
+const {launchBrowser, stopBrowser} = require('./browser-launcher.cjs');
 const source = process.env.STRUCTURED_UI_SOURCE || path.join(__dirname, '..', 'src', 'structured_data');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const importId = 'a'.repeat(24);
@@ -51,12 +51,8 @@ async function main() {
   try {
     server.listen(0,'127.0.0.1');await once(server,'listening');
     const origin = `http://127.0.0.1:${server.address().port}`;
-    chrome=spawn(browserPath(),['--headless=new','--no-sandbox','--disable-gpu','--disable-background-networking','--disable-dev-shm-usage','--no-first-run','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1','about:blank'],{stdio:['ignore','ignore','ignore']});
-    const activePort=path.join(profile,'DevToolsActivePort');
-    for(let count=0;!fs.existsSync(activePort)&&count<200;count++)await pause(50);
-    const port=fs.readFileSync(activePort,'utf8').split('\n')[0];
-    const tabs=await fetch(`http://127.0.0.1:${port}/json`).then(response=>response.json());
-    socket=new WebSocket(tabs.find(tab=>tab.type==='page').webSocketDebuggerUrl);await once(socket,'open');
+    const launched=await launchBrowser({executablePath:browserPath(),profileDir:profile});chrome=launched.browser;
+    socket=new WebSocket(launched.page.webSocketDebuggerUrl);await once(socket,'open');
     let serial=0;const pending=new Map();
     socket.addEventListener('message',event=>{const message=JSON.parse(event.data);if(message.id&&pending.has(message.id)){pending.get(message.id)(message);pending.delete(message.id);}else if(message.method==='Runtime.exceptionThrown')errors.push(message.params.exceptionDetails);});
     const call=async(method,params={})=>{const id=++serial;const result=new Promise(resolve=>pending.set(id,resolve));socket.send(JSON.stringify({id,method,params}));const response=await result;if(response.error)throw Error(JSON.stringify(response.error));return response.result;};
@@ -98,9 +94,10 @@ async function main() {
     console.log(JSON.stringify({passed:checks.length,checks}));
   } finally {
     socket?.close();
-    if(chrome&&chrome.exitCode===null){const stopped=once(chrome,'exit');chrome.kill('SIGTERM');await stopped;}
-    await new Promise(resolve=>server.close(resolve));
-    fs.rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+    try {await stopBrowser(chrome);} finally {
+      await new Promise(resolve=>server.close(resolve));
+      fs.rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+    }
   }
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

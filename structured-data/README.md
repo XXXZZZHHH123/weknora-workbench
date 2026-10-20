@@ -113,12 +113,16 @@ uv pip install --python .venv/bin/python -e '.[test]'
 .venv/bin/python -m pytest -q
 COTTON_ACCEPTANCE=1 .venv/bin/python -m pytest tests/test_acceptance.py -q
 .venv/bin/python tests/test_acceptance.py
+node --test tests/browser-launcher.test.cjs
+SHEET_REVIEW_BROWSER=/path/to/chromium node tests/workspace-ui.cjs --loading-regression
 SHEET_REVIEW_BROWSER=/path/to/chromium node tests/knowledge-scope-ui.cjs
 ```
 
 仅在准备好进行少量真实模型调用时运行 scripts/test_live_chat.py；每次使用新的输出目录，不覆盖旧证据。导入和上述工具测试不调用模型。
 
 知识库结构化页面通过父窗 `structured-auth` 的 `knowledgeBaseId` 发送 `X-Knowledge-Base-ID`，每次请求向 WeKnora 核验访问权限。数据、原件、导入记录和编辑草稿按知识库隔离；共享知识库使用其所属空间的存储。未携带知识库编号的旧表格分析继续使用原空间目录，既有 Excel 不自动迁移或分配到某个知识库。知识库预览与资料中心的旧页面链接兼容跳转到知识库文件管理，没有库编号时进入知识库列表。浏览器验收使用 Node 24、本地 Chromium 和隔离 HTTP 夹具，验证视图切换保留原表编辑状态、跨库草稿隔离及旧键兼容，不使用真实账号或模型。
+
+浏览器启动最多等待 60 秒，并确认调试端口、HTTP 发现接口及页面目标均就绪；启动退出或超时会报告进程退出码、信号和有限的错误输出。退出时先发送 SIGTERM，一秒后仍未退出则发送 SIGKILL；不会重跑或跳过页面断言。启动器回归使用本地子进程与 HTTP 夹具，无需安装浏览器。
 
 知识库的文件、文件夹上传会先保存 Excel 原件（`.xlsx`、`.xls`），显示“原件已保存”，不进入文档解析或模型队列。点击 `.xlsx` 的“结构化解析”后，`POST /api/import-knowledge` 接收 `{"source_knowledge_id":"原件真实编号"}`，沿用当前 Bearer 或已核验登录会话、空间和知识库写权限，从配置的 `WEKNORA_API_URL` 读取受权元数据和下载接口；校验同库、文件大小及 MD5，复用本地扫描与工作表确认流程。源编号和指纹持久绑定，相同原件的进行中任务、已完成导入均复用；原件校验失败会拒绝复用。上限同时受结构化服务 100 MB 和原生 `MAX_FILE_SIZE_MB` 限制，`.xls` 需先另存为 `.xlsx`，CSV 和非 Excel 保持既有文档解析流程。旧 URL、连接器接口不在此原件保存流程内。桥接隔离回归可运行 `python -m pytest tests/test_native_knowledge_import.py -q`，不调用真实模型。
 
