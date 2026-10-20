@@ -67,7 +67,9 @@ async function guide(status: 'active' | 'dismissed' | 'skipped' | 'completed', t
   const owner = identity(), ownerEpoch = scopeEpoch
   const stillOwner = () => {
     const current = identity()
-    return ownerEpoch === scopeEpoch && (Object.keys(owner) as Array<keyof IsolatedResearchIdentity>).every(key => owner[key] === current[key])
+    // Credential rotation preserves the owner; logout or any resource scope change does not.
+    return ownerEpoch === scopeEpoch && Boolean(current.token) &&
+      (Object.keys(owner) as Array<keyof IsolatedResearchIdentity>).filter(key => key !== 'token').every(key => owner[key] === current[key])
   }
   guideSaving.value = true; guideError.value = ''
   try {

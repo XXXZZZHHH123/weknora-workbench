@@ -335,7 +335,40 @@ test('failed guide saving remains retryable after a source refresh and can chang
   } finally { f.close() }
 })
 
-for (const changed of ['user','tenant','workbench','knowledge-base','token'] as const) {
+for (const outcome of ['success','failure'] as const) {
+  test(`guide ${outcome} survives a token rotation and releases its save lock`, async () => {
+    let resolveSave!: (value: unknown) => void, rejectSave!: (error: Error) => void
+    let attempts=0
+    const f=fixture(undefined,'isolated',async (_id,input) => {
+      if (++attempts===1) return new Promise((resolve,reject) => { resolveSave=resolve;rejectSave=reject })
+      return {data:{...f.props.workbench,onboarding:{...f.props.workbench.onboarding,...input}}}
+    })
+    try {
+      await ready()
+      const saving=f.view.guide('active','sources')
+      assert.equal(f.view.guideSaving.value,true)
+      f.auth.token='refreshed-token'
+      await ready()
+      assert.equal(f.guides.length,1)
+      assert.equal(f.view.guideSaving.value,true)
+      assert.equal(f.view.overview.value.workbench.id,'fresh-workbench')
+      if(outcome==='success')resolveSave({data:{...f.props.workbench,onboarding:{...f.props.workbench.onboarding,tasks:{...f.props.workbench.onboarding.tasks,sources:true}}}})
+      else rejectSave(new Error('Current scope save unavailable'))
+      await saving
+      assert.equal(f.view.guideSaving.value,false)
+      assert.equal(f.emits.length,outcome==='success'?1:0)
+      if(outcome==='success')assert.equal(f.emits[0][1].onboarding.tasks.sources,true)
+      assert.equal(f.view.guideError.value,outcome==='failure'?'Current scope save unavailable':'')
+      await f.view.guide('completed')
+      assert.equal(f.guides.length,2)
+      assert.equal(f.emits.at(-1)[1].onboarding.status,'completed')
+      assert.equal(f.view.guideSaving.value,false)
+      assert.equal(f.view.guideError.value,'')
+    } finally { f.close() }
+  })
+}
+
+for (const changed of ['user','tenant','workbench','knowledge-base','logout'] as const) {
   for (const outcome of ['success','failure'] as const) {
     test(`late guide ${outcome} cannot cross a changed ${changed} scope`, async () => {
       let resolveSave!: (value: unknown) => void, rejectSave!: (error: Error) => void
@@ -348,7 +381,7 @@ for (const changed of ['user','tenant','workbench','knowledge-base','token'] as 
         if(changed==='tenant')f.auth.selectedTenantId='another-tenant'
         if(changed==='workbench')f.props.workbench.id='another-workbench'
         if(changed==='knowledge-base')f.props.workbench.knowledge_base_id='another-library'
-        if(changed==='token')f.auth.token='refreshed-token'
+        if(changed==='logout')f.auth.token=''
         await ready()
         if(outcome==='success')resolveSave({data:{...original,onboarding:{...original.onboarding,status:'completed'}}})
         else rejectSave(new Error('Old scope failure'))
@@ -360,6 +393,32 @@ for (const changed of ['user','tenant','workbench','knowledge-base','token'] as 
     })
   }
 }
+
+test('returning to the same workbench cannot let an obsolete guide response release a newer save lock', async () => {
+  const requests: Array<(value: unknown) => void>=[]
+  const f=fixture(undefined,'isolated',() => new Promise(resolve => { requests.push(resolve) }))
+  try {
+    await ready()
+    const original=structuredClone(plain(f.props.workbench))
+    const obsolete=f.view.guide('completed')
+    f.props.workbench.id='another-workbench'
+    await ready()
+    f.props.workbench.id=original.id
+    await ready()
+    const current=f.view.guide('active','sources')
+    assert.equal(requests.length,2)
+    assert.equal(f.view.guideSaving.value,true)
+    requests[0]!({data:{...original,onboarding:{...original.onboarding,status:'completed'}}})
+    await obsolete
+    assert.equal(f.emits.length,0)
+    assert.equal(f.view.guideSaving.value,true)
+    requests[1]!({data:{...original,onboarding:{...original.onboarding,tasks:{...original.onboarding.tasks,sources:true}}}})
+    await current
+    assert.equal(f.emits.length,1)
+    assert.equal(f.emits[0][1].onboarding.tasks.sources,true)
+    assert.equal(f.view.guideSaving.value,false)
+  } finally { f.close() }
+})
 
 test('a guide request has its own duplicate-save lock', async () => {
   let resolveSave!: (value: unknown) => void
