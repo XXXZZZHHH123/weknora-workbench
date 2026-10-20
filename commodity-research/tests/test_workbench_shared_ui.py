@@ -157,32 +157,27 @@ def test_malformed_and_unrelated_scope_paths_are_rejected(isolated, tail):
     assert not (tmp / 'workspaces').exists()
 
 
-def test_original_judgment_form_saves_only_current_scope_and_keeps_versions(isolated, monkeypatch):
+def test_original_judgment_form_preserves_private_input_without_saving_versions(isolated, monkeypatch):
     client, headers, state, tmp = isolated
     login(client, headers)
     no_legacy(monkeypatch)
-    text = '## 主逻辑\nFirst workbench user-authored evidence.'
+    text = '## 主逻辑\nFirst workbench user-authored evidence. <script>unsafe()</script>'
     response = client.post(page('/sn/judgment/import'), headers={'Origin':'http://testserver'},
                            data={'text':text,'author':'forged'}, follow_redirects=False)
-    assert response.status_code == 303, response.text
-    assert response.headers['location'].startswith(page('/sn/judgment'))
-    response = client.get(page('/sn/judgment'))
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert 'First workbench user-authored evidence.' in response.text
-    assert 'writer' in response.text
+    assert '&lt;script&gt;unsafe()&lt;/script&gt;' in response.text
+    assert '<script>unsafe()</script>' not in response.text
+    assert '管理研究逻辑' in response.text and 'logic-input' in response.text
+    assert not response.headers.get('location'), 'Private source must not be put in a redirect URL'
     assert 'First workbench user-authored evidence.' not in client.get(page('/sn/judgment', OTHER)).text
     second = client.post(page('/sn/judgment/import'), headers={'Origin':'http://testserver'},
                          data={'text':'## 主逻辑\nRevised evidence.','author':'writer'}, follow_redirects=False)
-    assert second.status_code == 303
+    assert second.status_code == 200 and 'Revised evidence.' in second.text
     from tin.integration.workbench_scope import isolated_session_factory
     from tin.models import Judgment
     with isolated_session_factory(17, WB)() as session:
-        rows = session.scalars(select(Judgment).order_by(Judgment.version)).all()
-        assert len(rows) == 2
-        assert [row.status for row in rows] == ['草稿','草稿']
-        assert [row.author for row in rows] == ['writer','writer']
-        assert rows[0].source_note == text
-    assert not (tmp / 'workspaces').exists()
+        assert session.scalars(select(Judgment)).all() == [], 'Model preview and explicit confirmation are required'
 
 
 def test_source_indicator_manual_edit_and_report_export_use_original_scope(isolated, monkeypatch):

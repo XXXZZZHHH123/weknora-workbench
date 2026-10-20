@@ -46,7 +46,6 @@
             active: selectedPath === row.path,
             'is-root': row.kind === 'root',
             'is-editable': canEdit && row.kind === 'folder',
-            'is-menu-open': menuOpenPath === row.path,
           }"
           :style="{ '--kb-folder-depth': row.depth }"
           :title="row.kind === 'root' ? t('knowledgeBase.folderTree.rootRowTip') : row.path"
@@ -78,60 +77,19 @@
             class="kb-folder-row__icon"
           />
 
-          <input
-            v-if="isRenaming(row)"
-            ref="renameInputRef"
-            v-model="renameValue"
-            class="kb-folder-row__rename"
-            :placeholder="t('knowledgeBase.folderTree.renamePlaceholder')"
-            @click.stop
-            @keydown.enter="commitRename(row)"
-            @keydown.esc="cancelRename"
-            @blur="commitRename(row)"
-          />
-          <template v-else>
-            <span class="kb-folder-row__label">
-              {{ row.kind === 'root' ? (rootLabel || t('knowledgeBase.folderTree.rootRow')) : row.name }}
+          <span class="kb-folder-row__label">
+            {{ row.kind === 'root' ? (rootLabel || t('knowledgeBase.folderTree.rootRow')) : row.name }}
+          </span>
+          <span class="kb-folder-row__trailing">
+            <span class="kb-folder-row__count"
+              :title="t('knowledgeBase.folderTree.countHint', { direct: row.documentCount, total: row.totalCount })">
+              {{ row.documentCount }}
             </span>
-            <span class="kb-folder-row__trailing">
-              <span class="kb-folder-row__count"
-                :title="t('knowledgeBase.folderTree.countHint', { direct: row.documentCount, total: row.totalCount })">
-                {{ row.documentCount }}
-              </span>
-              <t-popup
-                v-if="canEdit && row.kind === 'folder'"
-                :visible="menuOpenPath === row.path"
-                trigger="click"
-                placement="bottom-right"
-                destroy-on-close
-                overlay-class-name="card-more-popup"
-                @visible-change="(visible: boolean) => onFolderMenuVisible(row.path, visible)"
-              >
-                <button
-                  type="button"
-                  class="kb-folder-row__more"
-                  :class="{ 'is-open': menuOpenPath === row.path }"
-                  :aria-label="t('knowledgeBase.columnActions')"
-                  @click.stop
-                >
-                  <t-icon name="more" />
-                </button>
-                <template #content>
-                  <div class="popup-menu kb-folder-row__menu" @click.stop>
-                    <div class="popup-menu-item" @click="onFolderMenuRename(row)">
-                      <t-icon name="edit" class="menu-icon" />
-                      <span>{{ t('knowledgeBase.folderTree.rename') }}</span>
-                    </div>
-                    <div v-if="allowDelete" class="popup-menu-item" @click="menuOpenPath = null; emit('delete', row.path)">
-                      <t-icon name="delete" class="menu-icon" />
-                      <span>删除空文件夹</span>
-                    </div>
-                  </div>
-                </template>
-              </t-popup>
-              <span v-else class="kb-folder-row__more-placeholder" aria-hidden="true"></span>
-            </span>
-          </template>
+            <KnowledgeFolderActions v-if="canEdit && row.kind === 'folder'" class="kb-folder-row__more"
+              :kb-id="kbId" :folder="{ path: row.path, name: row.name, total_count: row.totalCount }" :can-edit="canEdit" :allow-delete="allowDelete"
+              @renamed="emit('rename', $event)" @deleted="emit('delete', $event)" />
+            <span v-else class="kb-folder-row__more-placeholder" aria-hidden="true"></span>
+          </span>
         </div>
         <button v-else-if="row.kind === 'file'" type="button" class="kb-folder-row kb-folder-file"
           :class="{ active: selectedFileId === row.file.id }" :style="{ '--kb-folder-depth': row.depth }"
@@ -153,21 +111,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import KnowledgeFolderActions from './KnowledgeFolderActions.vue'
 import type { KnowledgeFolderTree } from '@/api/knowledge-base/index'
 import type { KnowledgeDirectoryFile, KnowledgeDirectoryFilePage } from '../../workspaces/knowledgeDirectory'
 import {
   buildDirectoryRows,
   buildFolderRows,
   folderAncestorPaths,
-  joinFolderPath,
   ROOT_FOLDER_PATH,
-  type FolderRow,
 } from '../folderTree'
 
 const props = withDefaults(defineProps<{
   tree: KnowledgeFolderTree | null
+  kbId?: string
   /** Selected folder path; the empty string is the knowledge base top level. */
   rootLabel?: string
   selectedPath: string
@@ -180,6 +138,7 @@ const props = withDefaults(defineProps<{
   selectedFileId?: string
   filePages?: Record<string, KnowledgeDirectoryFilePage>
 }>(), {
+  kbId: '',
   loading: false,
   collapsed: false,
   canEdit: false,
@@ -203,59 +162,15 @@ const { t } = useI18n()
 
 // The root starts expanded so the uploaded structure is visible without a click.
 const expanded = ref(new Set<string>([ROOT_FOLDER_PATH]))
-// null, not '', because '' is the root's own path: a falsy sentinel would put
-// the root row into rename mode permanently.
-const renamingPath = ref<string | null>(null)
-const menuOpenPath = ref<string | null>(null)
-const renameValue = ref('')
-const renameInputRef = ref<HTMLInputElement | HTMLInputElement[] | null>(null)
-
 const rows = computed(() => props.showFiles ? buildDirectoryRows(props.tree, expanded.value, props.filePages) : buildFolderRows(props.tree, expanded.value))
 
 const isExpanded = (path: string) => expanded.value.has(path)
-
-// The root has no name of its own to edit, and excluding it here means no
-// sentinel value can ever put it into rename mode.
-const isRenaming = (row: FolderRow) => row.kind === 'folder' && renamingPath.value === row.path
 
 const toggle = (path: string) => {
   const next = new Set(expanded.value)
   if (next.has(path)) next.delete(path)
   else next.add(path)
   expanded.value = next
-}
-
-const startRename = async (row: FolderRow) => {
-  renamingPath.value = row.path
-  renameValue.value = row.name
-  await nextTick()
-  const input = Array.isArray(renameInputRef.value) ? renameInputRef.value[0] : renameInputRef.value
-  input?.focus()
-  input?.select()
-}
-
-const onFolderMenuVisible = (path: string, visible: boolean) => {
-  menuOpenPath.value = visible ? path : null
-}
-
-const onFolderMenuRename = async (row: FolderRow) => {
-  menuOpenPath.value = null
-  await startRename(row)
-}
-
-const cancelRename = () => {
-  renamingPath.value = null
-  renameValue.value = ''
-}
-
-const commitRename = (row: FolderRow) => {
-  if (!isRenaming(row)) return
-  const name = renameValue.value.trim()
-  cancelRename()
-  // Only the last segment is edited here; the folder keeps its place in the tree.
-  if (!name || name === row.name) return
-  const parent = row.path.slice(0, Math.max(0, row.path.length - row.name.length - 1))
-  emit('rename', { from: row.path, to: joinFolderPath(parent, name) })
 }
 
 // Keep the selected folder reachable: expand the root and every folder above

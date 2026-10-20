@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // insertKnowledgeInFolder seeds a completed knowledge row stored in the given
@@ -16,6 +17,7 @@ import (
 func insertKnowledgeInFolder(t *testing.T, db *gorm.DB, tenantID uint64, kbID, folderPath, fileName string) string {
 	t.Helper()
 	id := uuid.New().String()
+	require.NoError(t, db.Clauses(clause.OnConflict{DoNothing: true}).Create(&types.KnowledgeBase{ID: kbID, TenantID: tenantID}).Error)
 	require.NoError(t, db.Exec(`
 		INSERT INTO knowledges (id, tenant_id, knowledge_base_id, type, title, source, parse_status, file_name, folder_path)
 		VALUES (?, ?, ?, 'file', ?, 'manual', 'completed', ?, ?)

@@ -36,6 +36,7 @@ type ResearchWorkbench struct {
 	Description          string                      `json:"description"`
 	KnowledgeBaseID      string                      `json:"knowledge_base_id" gorm:"type:varchar(36);index"`
 	KnowledgeBaseName    string                      `json:"knowledge_base_name,omitempty" gorm:"-"`
+	CanManage            bool                        `json:"can_manage" gorm:"-"`
 	DefaultKnowledgeBase *ResearchWorkbenchSource    `json:"default_knowledge_base,omitempty" gorm:"-"`
 	ScopeTenantID        uint64                      `json:"scope_tenant_id" gorm:"-"`
 	WorkspaceMode        string                      `json:"workspace_mode" gorm:"type:varchar(16);not null;default:legacy"`

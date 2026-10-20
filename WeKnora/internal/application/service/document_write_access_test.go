@@ -190,6 +190,8 @@ func newDocumentWriteFixture(t *testing.T) *documentWriteFixture {
 		db.AutoMigrate(
 			&types.Knowledge{},
 			&types.KnowledgeFolder{},
+			&types.TaskPendingOp{},
+			&types.KnowledgeBase{},
 			&types.Chunk{},
 			&types.KnowledgeTag{},
 			&types.KnowledgeTagRelation{},
@@ -201,6 +203,9 @@ func newDocumentWriteFixture(t *testing.T) *documentWriteFixture {
 	kbs := &documentKBLookup{values: map[string]*types.KnowledgeBase{
 		"kb": {ID: "kb", TenantID: 7}, "other": {ID: "other", TenantID: 7},
 	}}
+	for _, kb := range kbs.values {
+		require.NoError(t, db.Create(kb).Error)
+	}
 	for _, row := range []*types.Knowledge{
 		{
 			ID:              "doc",

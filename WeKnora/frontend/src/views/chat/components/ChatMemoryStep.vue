@@ -78,6 +78,10 @@ const memoryKindLabel = (kind: string) => {
 // Layout for the step variant comes from the host timeline's .tree-child rules,
 // which reach this component through its root element. Everything inside it has
 // to be styled here.
+.chat-memory-step {
+  font-family: var(--cds-font-interface, var(--app-font-family));
+}
+
 .memory-header {
   position: relative;
   display: flex;

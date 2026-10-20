@@ -121,6 +121,8 @@ func newWorkspaceDiagramFixture(t *testing.T) *workspaceDiagramFixture {
 		require.NoError(t, err)
 		require.NoError(t, db.Exec(string(migration)).Error)
 	}
+	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}))
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library"}).Error)
 	kbs := &workspaceDiagramKBs{allowed: true}
 	workspaces := service.NewWorkspaceService(db, kbs, nil)
 	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 1, UserID: "alice", Role: types.TenantRoleContributor})

@@ -49,26 +49,26 @@ function component(file: string, modules: Record<string, unknown>, window?: Even
   return exports.default!
 }
 
-const folderComponent = component('../knowledge/components/KbFolderTree.vue', { '../folderTree': folders })
+const folderComponent = component('../knowledge/components/KbFolderTree.vue', { '../folderTree': folders, './KnowledgeFolderActions.vue': { default: passthrough } })
 const tree: KnowledgeFolderTree = { root_document_count: 0, total_document_count: 1, folders: [{ path: '资料', name: '资料', document_count: 0, total_count: 1,
   children: [{ path: '资料/周报', name: '周报', document_count: 0, total_count: 1,
     children: [{ path: '资料/周报/2026', name: '2026', document_count: 1, total_count: 1 }] }] }] }
 const file = (id = 'real-document', folder = '资料/周报/2026', kb = 'kb-one') => ({ id, knowledge_base_id: kb, folder_path: folder, file_name: '日报.xlsx', file_type: 'xlsx', type: 'file' })
 const payload = (items: unknown[], total = items.length, page = 1) => ({ success: true, data: items, total, page, page_size: 50 })
 
-function fixture(options: { tree?: KnowledgeFolderTree; query?: Record<string, string>; files?: (id: string, params: any) => Promise<any>; permission?: string; admin?: boolean; creator?: string } = {}) {
+function fixture(options: { tree?: KnowledgeFolderTree; query?: Record<string, string>; files?: (id: string, params: any) => Promise<any>; folders?: () => Promise<any>; permission?: string; admin?: boolean; creator?: string } = {}) {
   const route = vue.reactive({ params: { kbId: 'kb-one' }, query: options.query || {}, name: 'knowledgeBaseDetail' })
   const auth = vue.reactive({ selectedTenantId: 1, tenant: { id: 1 }, user: { id: 'user-one' }, hasRole: () => !!options.admin })
   const org = vue.reactive({ sharedKnowledgeBases: [], getKBPermission: () => options.permission || null, canEditKB: () => permission.permissionCanEditKB(options.permission) })
-  const calls: Array<{ id: string; params: any; signal?: AbortSignal }> = [], navigations: any[] = [], events = new EventTarget()
+  const calls: Array<{ id: string; params: any; signal?: AbortSignal }> = [], navigations: any[] = [], libraryLoads: string[] = [], events = new EventTarget()
   const ui = vue.reactive({ sidebarCollapsed: false, sidebarDisplayWidth: 260, sidebarResizing: false, toggleSidebar() {}, resizeSidebar() {} })
   const menu = component('./KnowledgeWorkspaceMenu.vue', {
-    'vue-router': { useRoute: () => route, useRouter: () => ({ push: (target: any) => { navigations.push(target); return Promise.resolve() } }) },
+    'vue-router': { useRoute: () => route, useRouter: () => ({ push: (target: any) => { navigations.push(target); return Promise.resolve() }, replace: (target: any) => { navigations.push(target); return Promise.resolve() } }) },
     'tdesign-vue-next': { MessagePlugin: { success() {}, error() {} } },
     '@/stores/auth': { useAuthStore: () => auth }, '@/stores/ui': { useUIStore: () => ui }, '@/stores/organization': { useOrganizationStore: () => org },
     '@/api/knowledge-base': {
-      getKnowledgeBaseById: async (id: string) => ({ data: { id, name: '测试资料库', type: 'document', tenant_id: 1, creator_id: options.creator ?? 'user-one' } }),
-      listKnowledgeFolders: async () => ({ data: options.tree || tree }),
+      getKnowledgeBaseById: async (id: string) => { libraryLoads.push(id); return { data: { id, name: '测试资料库', type: 'document', tenant_id: 1, creator_id: options.creator ?? 'user-one' } } },
+      listKnowledgeFolders: async () => options.folders ? options.folders() : ({ data: options.tree || tree }),
       listKnowledgeFiles: async (id: string, params: any, request?: { signal?: AbortSignal }) => { calls.push({ id, params, signal: request?.signal }); return options.files ? options.files(id, params) : payload([file()]) },
       createKnowledgeFolder: async () => ({}), deleteKnowledgeFolder: async () => ({}), renameKnowledgeFolder: async () => ({}),
     },
@@ -86,7 +86,7 @@ function fixture(options: { tree?: KnowledgeFolderTree; query?: Record<string, s
   const folder = (path: string) => elements('kb-folder-row').find(el => el.props['data-folder-path'] === path)
   const click = async (el?: Host) => { assert.ok(el, 'missing clickable element'); el.props.onClick({ stopPropagation() {}, preventDefault() {} }); await flush() }
   const expand = async (path: string) => { const row = folder(path); assert.ok(row, `missing folder ${path}`); await click(all(row, el => hasClass(el, 'kb-folder-row__toggle'))[0]) }
-  return { root, calls, navigations, route, auth, events, elements, expand, click, close: () => app.unmount() }
+  return { root, calls, navigations, libraryLoads, route, auth, events, elements, expand, click, close: () => app.unmount() }
 }
 
 test('the navigation reaches real files under the lowest folder with one scoped page request', async t => {
@@ -203,6 +203,27 @@ test('matching directory mutations refresh leaves; other knowledge-base events d
   f.events.dispatchEvent(new CustomEvent(directory.KNOWLEDGE_DIRECTORY_EVENT, { detail: { kbId: 'kb-one' } })); await flush()
   assert.equal(f.calls.length, 2)
   assert.deepEqual(f.elements('kb-folder-file').map(el => el.props['data-knowledge-id']), ['file-2'])
+})
+
+test('matching KB rename refreshes sidebar metadata and delete leaves its scoped route', async t => {
+  const f = fixture(); t.after(f.close); await flush(); assert.equal(f.libraryLoads.length, 1)
+  f.events.dispatchEvent(new CustomEvent('weknora:knowledge-base-changed', { detail: { id: 'other-kb', deleted: true } })); await flush()
+  assert.equal(f.navigations.length, 0); assert.equal(f.libraryLoads.length, 1)
+  f.events.dispatchEvent(new CustomEvent('weknora:knowledge-base-changed', { detail: { id: 'kb-one', name: 'Changed', deleted: false } })); await flush()
+  assert.equal(f.libraryLoads.length, 2)
+  f.events.dispatchEvent(new CustomEvent('weknora:knowledge-base-changed', { detail: { id: 'kb-one', deleted: true } })); await flush()
+  assert.equal(f.navigations.at(-1), '/platform/knowledge-bases')
+})
+
+test('same-scope refresh keeps folder actions mounted while fresh partial-deletion counts load', async t => {
+  let calls = 0, complete!: (response: any) => void
+  const f = fixture({ folders: async () => ++calls === 1 ? { data: tree } : new Promise(resolve => { complete = resolve }) })
+  t.after(f.close); await flush()
+  const row = f.elements('kb-folder-row').find(el => el.props['data-folder-path'] === '资料'); assert.ok(row)
+  f.events.dispatchEvent(new CustomEvent(directory.KNOWLEDGE_DIRECTORY_EVENT, { detail: { kbId: 'kb-one' } })); await flush()
+  assert.equal(calls, 2); assert.equal(f.elements('kb-folder-row').find(el => el.props['data-folder-path'] === '资料'), row)
+  complete({ data: tree }); await flush()
+  assert.equal(f.elements('kb-folder-row').find(el => el.props['data-folder-path'] === '资料'), row)
 })
 
 for (const entry of [{ permission: 'viewer', admin: true, expected: false }, { permission: 'editor', admin: false, expected: true }, { creator: '', admin: false, expected: false }, { creator: '', admin: true, expected: true }]) {

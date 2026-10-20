@@ -1,17 +1,9 @@
-/* Inter is bundled locally under the SIL Open Font License. */
-@font-face {
-  font-family: Inter;
-  src: url('/fonts/InterVariable.woff2') format('woff2');
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-}
-
 /*
  * CDS-inspired semantic theme tokens for WeKnora.
  * Adapted from Caho1/open-claude-ui (MIT):
  * https://github.com/Caho1/open-claude-ui
- * This layer keeps WeKnora's selected font stacks and semantic status colors.
+ * Typography follows the reference's sans/serif/monospace roles; local CJK
+ * font assets make those roles consistent across host operating systems.
  */
 :root:root,
 :root:root[theme-mode="light"] {
@@ -252,13 +244,6 @@
   --app-page-title-size: 20px;
   --app-page-title-weight: 600;
   --app-page-title-line-height: 28px;
-
-  /* Keep interface/code preferences user-selectable; reserve a system serif
-     stack for long-form reading such as assistant answer Markdown. */
-  --cds-font-interface: var(--app-font-family);
-  --cds-font-display: 'WeKnora Noto Serif SC', 'Noto Serif SC', serif;
-  --cds-font-reading: Georgia, "Times New Roman", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", "DejaVu Serif", "Liberation Serif", serif;
-  --cds-font-code: var(--app-font-family-mono);
 
   --cds-radius-thumb: 7px;
   --cds-radius-control: 8px;

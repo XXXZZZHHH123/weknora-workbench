@@ -21,6 +21,7 @@ from urllib.parse import quote, urlsplit
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import decimal_encoder
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field, ConfigDict, create_model, ValidationError
@@ -320,6 +321,9 @@ def create_app(data_dir: str | Path | None = None):
             yield
 
     app = FastAPI(title="结构化数据工作台", lifespan=lifespan)
+    font_assets = Path(__file__).resolve().parents[3] / "WeKnora/frontend/public/fonts"
+    if font_assets.is_dir():
+        app.mount("/fonts", StaticFiles(directory=font_assets), name="fonts")
     app.state.store = store
     app.state.import_manager = manager
     app.state.mcp = mcp
@@ -455,6 +459,8 @@ def create_app(data_dir: str | Path | None = None):
             return JSONResponse({"detail": "Host not allowed"}, status_code=403)
         path = request.url.path
         if path in {"/", "/health", "/login", "/api/ui-config", "/sheet-review.js", "/sheet-review.css", "/workspace.css"}:
+            return await call_next(request)
+        if path.startswith("/fonts/") and request.method in {"GET", "HEAD"}:
             return await call_next(request)
         identity = None
         signed = path in {'/api/tools/read', '/api/research/export', '/api/research/facts'} or path.startswith('/api/research/source/')

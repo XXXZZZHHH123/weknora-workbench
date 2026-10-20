@@ -22,7 +22,7 @@ func TestKnowledgeDirectoriesPersistAndIsolate(t *testing.T) {
 	created, err := repo.CreateKnowledgeFolder(ctx, 1, "kb", "A/child")
 	require.NoError(t, err)
 	require.NotEmpty(t, created.ID)
-	_, err = repo.CreateKnowledgeFolder(ctx, 2, "kb", "other-tenant")
+	_, err = repo.CreateKnowledgeFolder(ctx, 2, "foreign-kb", "other-tenant")
 	require.NoError(t, err)
 	_, err = repo.CreateKnowledgeFolder(ctx, 1, "other-kb", "other-library")
 	require.NoError(t, err)

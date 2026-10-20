@@ -17,9 +17,16 @@ func folderNamespace(tx *gorm.DB, tenantID uint64, kbID string) error {
 	// Serialize directory namespace edits, including creation in an empty KB.
 	// SQLite needs its write lock before the first read to avoid upgrade races.
 	if tx.Dialector.Name() == "postgres" {
-		return tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", fmt.Sprintf("knowledge-folders:%d:%s", tenantID, kbID)).Error
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", fmt.Sprintf("knowledge-folders:%d:%s", tenantID, kbID)).Error; err != nil {
+			return err
+		}
+	} else if err := tx.Exec("UPDATE knowledge_folders SET path = path WHERE tenant_id = ? AND knowledge_base_id = ?", tenantID, kbID).Error; err != nil {
+		return err
 	}
-	return tx.Exec("UPDATE knowledge_folders SET path = path WHERE tenant_id = ? AND knowledge_base_id = ?", tenantID, kbID).Error
+	// A KB delete clears its pending operations. Rechecking the source while
+	// holding its row lock stops old writes from treating that as permission to
+	// recreate files/directories in a soft-deleted KB.
+	return lockDirectoryKnowledgeBase(tx, tenantID, kbID)
 }
 
 func directoryScope(tx *gorm.DB, tenantID uint64, kbID string) *gorm.DB {
@@ -71,6 +78,9 @@ func (r *knowledgeRepository) CreateKnowledgeFolder(ctx context.Context, tenantI
 		if err := folderNamespace(tx, tenantID, kbID); err != nil {
 			return err
 		}
+		if err := rejectFolderDeletion(tx, tenantID, kbID, []string{path}, false); err != nil {
+			return err
+		}
 		exists, err := folderExists(tx, tenantID, kbID, path)
 		if err != nil {
 			return err
@@ -92,6 +102,9 @@ func (r *knowledgeRepository) DeleteKnowledgeFolder(ctx context.Context, tenantI
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := folderNamespace(tx, tenantID, kbID); err != nil {
+			return err
+		}
+		if err := rejectFolderDeletion(tx, tenantID, kbID, []string{path}, true); err != nil {
 			return err
 		}
 		var documents, children int64
@@ -128,6 +141,9 @@ func (r *knowledgeRepository) renameKnowledgeDirectory(ctx context.Context, tena
 	var affected int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := folderNamespace(tx, tenantID, kbID); err != nil {
+			return err
+		}
+		if err := rejectFolderDeletion(tx, tenantID, kbID, []string{from, to}, true); err != nil {
 			return err
 		}
 		var folders []types.KnowledgeFolder

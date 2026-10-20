@@ -2,6 +2,7 @@
 // `.md-content`. Chat answer Markdown must use `chat-markdown.less` only.
 :deep(.md-content) {
     box-sizing: border-box !important;
+    font-family: var(--cds-font-reading);
 
     img {
         max-width: 444px;
@@ -32,7 +33,7 @@
         margin-top: 5px;
         font-weight: bold;
         color: var(--td-text-color-primary);
-        font-family: var(--app-font-family);
+        font-family: var(--cds-font-display);
         transition: all var(--app-motion-base) ease-out;
         font-size: var(--app-text-3xl);
     }
@@ -93,7 +94,11 @@
     table {
         font-size: var(--app-text-base);
         margin: 10px 0;
-        font-family: var(--app-font-family);
+        font-family: var(--cds-font-reading);
+    }
+
+    table {
+        font-family: var(--cds-font-interface);
     }
 
     h2 {

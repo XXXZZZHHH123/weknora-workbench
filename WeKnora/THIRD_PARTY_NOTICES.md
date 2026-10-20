@@ -85,7 +85,7 @@ packaged source directory, run `scripts/check-license-bundle.sh PATH/TO/licenses
 - Attribution: Copyright (c) 2026 Caho1.
 - License: MIT, reproduced in
   [`licenses/Open-Claude-UI-MIT.txt`](licenses/Open-Claude-UI-MIT.txt).
-- CDS color, surface, motion and interaction design references are adapted to
+- CDS typography, color, surface, motion and interaction design references are adapted to
   WeKnora's existing Vue/TDesign components and iframe workspaces. No React
   runtime, model backend, proprietary font, audio, or Anthropic binary assets
   are included from that project.
@@ -96,3 +96,10 @@ packaged source directory, run `scripts/check-license-bundle.sh PATH/TO/licenses
 - Source: [Google Fonts Noto Serif SC](https://github.com/google/fonts/tree/main/ofl/notoserifsc); the self-hosted WOFF2 is a four-glyph, weight-600 subset obtained from the [Google Fonts CSS API](https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600&text=%E4%B8%AD%E5%93%B2%E7%89%A9%E4%BA%A7&display=swap).
 - Full license: [`frontend/src/assets/fonts/OFL.txt`](frontend/src/assets/fonts/OFL.txt).
 - Asset source and SHA-256: [`frontend/src/assets/fonts/README.md`](frontend/src/assets/fonts/README.md).
+
+## Shared workspace typography
+
+- Inter is self-hosted in [`frontend/public/fonts`](frontend/public/fonts), with its SIL Open Font License in `Inter-LICENSE.txt`.
+- [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/notosanssc), copyright 2014–2021 Adobe, supplies variable-weight interface text; [Noto Serif SC](https://github.com/google/fonts/tree/main/ofl/notoserifsc), copyright 2017–2024 Adobe, supplies weight-600 titles and weight-400 reading text.
+- These Google Fonts assets use the SIL Open Font License 1.1. Complete upstream Unicode ranges are retained as locally hosted WOFF2 chunks, loaded only when required by visible text. There are no runtime Google Fonts requests.
+- Licenses, source URLs and asset hashes are included beside the files in `frontend/public/fonts/noto-sans-sc`, `noto-serif-sc` and `noto-serif-reading-sc`. All HTML entry points register them through `frontend/public/fonts/workspace-typography.css`.

@@ -8,12 +8,14 @@ import KnowledgeBaseEditorModal from '@/views/knowledge/KnowledgeBaseEditorModal
 import ResourceListToolbar from '@/components/ResourceListToolbar.vue'
 import ResourceSortControl from '@/components/ResourceSortControl.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import WorkbenchActions from './WorkbenchActions.vue'
 import { DEFAULT_RESOURCE_SORT, sortResourceItems, type ResourceSortValue } from '@/utils/resourceSorting'
 import { createResearchWorkbench, listResearchWorkbenches, type ResearchWorkbench } from '@/api/workspaces'
 import { validateWorkbenchSource, validateWorkspaceName, workspaceErrorMessage as message, workspaceIdentity } from './workspaceForm'
 import { workspaceKnowledgeBases } from './workspaceKnowledgeBases'
 import { createRandomUUID } from '@/utils/uuid'
 import { workbenchTemplates, workbenchModuleNames, templateById, type WorkbenchTemplateId } from '@/views/research/workbenchTemplates'
+import { registerResearchGuide } from '@/views/research/researchFeatureGuides'
 import './workspaces.css'
 
 const route = useRoute(), router = useRouter(), auth = useAuthStore(), resources = useChatResourcesStore(), organizations = useOrganizationStore()
@@ -59,11 +61,14 @@ async function create() {
   if (busy.value) return
   error.value = validateWorkbenchSource(kbId.value, libraries.value.map(k => k.id)) || validateWorkspaceName(name.value)
   if (error.value) return
-  const own = generation
+  const own = generation, ownerIdentity = identity.value
   busy.value = true
   try {
     const res = await createResearchWorkbench({ name: name.value.trim(), description: description.value.trim(), knowledge_base_id: kbId.value, template_id: templateId.value, template_version: 1, idempotency_key: creationKey })
-    if (own !== generation) return
+    if (own !== generation || ownerIdentity !== identity.value) return
+    try {
+      registerResearchGuide(window.localStorage, { tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '', workbenchId: res.data.id, knowledgeBaseId: res.data.knowledge_base_id }, res.data.workspace_mode)
+    } catch { /* Storage restrictions must not prevent opening a created workbench. */ }
     changed(); await router.push(`/platform/research-workbenches/${res.data.id}`)
   } catch (e) { if (own === generation) error.value = message(e) }
   finally { if (own === generation) busy.value = false }
@@ -81,7 +86,7 @@ async function knowledgeCreated(newId: string) {
 
 <template>
   <div class="research-management" :class="creating ? 'workspace-management' : 'research-list-container'"><main :class="creating ? 'workspace-management__content' : 'research-list-content'">
-    <header class="header" :class="{ 'workspace-management__header': creating }"><div class="header-title"><div class="title-row"><h2><t-icon v-if="!creating" name="chart-bar" size="24px" />{{ creating ? '新建研究工作台' : '研究工作台' }}</h2><div class="header-actions"><t-button v-if="creating" size="small" variant="outline" @click="router.push('/platform/research-workbenches')">全部工作台</t-button><template v-else><ResourceListToolbar class="research-list-search" model-value="all" v-model:query="keyword" hide-scopes /><ResourceSortControl v-model="selectedResourceSort" /><t-button size="small" theme="default" variant="text" class="header-action-btn" @click="router.push('/platform/research-workbenches/new')"><template #icon><t-icon name="chart-add" size="16px" /></template>新建工作台</t-button></template></div></div><p class="header-subtitle">{{ creating ? '选择知识库和起步模板，稍后在工作台内准备资料。' : '基于知识库组织资料与研究，点击工作台即可进入。' }}</p></div></header>
+    <header class="header" :class="{ 'workspace-management__header': creating }"><div class="header-title"><div class="title-row"><h2><t-icon v-if="!creating" name="chart-bar" size="24px" />{{ creating ? '新建研究工作台' : '研究工作台' }}</h2><div class="header-actions"><t-button v-if="creating" size="small" variant="outline" @click="router.push('/platform/research-workbenches')">全部工作台</t-button><template v-else><ResourceListToolbar class="research-list-search" model-value="all" v-model:query="keyword" hide-scopes /><ResourceSortControl v-model="selectedResourceSort" /><t-button size="small" theme="default" variant="outline" class="header-action-btn resource-action" @click="router.push('/platform/research-workbenches/new')"><template #icon><t-icon name="chart-add" size="16px" /></template>新建工作台</t-button></template></div></div><p class="header-subtitle">{{ creating ? '选择知识库和起步模板，稍后在工作台内准备资料。' : '基于知识库组织资料与研究，点击工作台即可进入。' }}</p></div></header>
     <t-alert v-if="error" theme="error" :message="error" class="workspace-management__error" />
     <div v-if="loading" class="workspace-management__empty"><t-loading text="正在加载工作台" /></div>
     <form v-else-if="creating" class="research-create" @submit.prevent="create">
@@ -100,12 +105,12 @@ async function knowledgeCreated(newId: string) {
     </form>
     <div v-else-if="!creating" class="research-list-main">
       <div v-if="visibleItems.length" class="workbench-card-wrap"><article v-for="workbench in visibleItems" :key="workbench.id" class="workbench-card" role="link" tabindex="0" :aria-label="`进入${workbench.name}`" @click="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)" @keydown.enter.self.prevent="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)" @keydown.space.self.prevent="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)">
-        <div class="card-header"><span class="workbench-avatar"><t-icon name="chart-bar" size="18px" /></span><span class="card-title" :title="workbench.name">{{ workbench.name }}</span><t-icon class="workbench-open" name="chevron-right" size="16px" /></div>
+        <div class="card-header"><span class="workbench-avatar"><t-icon name="chart-bar" size="18px" /></span><span class="card-title" :title="workbench.name">{{ workbench.name }}</span><WorkbenchActions :workbench="workbench" @renamed="updated => { items = items.map(item => item.id === updated.id ? updated : item) }" @deleted="id => { items = items.filter(item => item.id !== id) }" /><t-icon class="workbench-open" name="chevron-right" size="16px" /></div>
         <div class="card-content"><div class="card-description" :class="{ 'is-empty': !workbench.description }">{{ workbench.description || '暂无说明' }}</div></div>
         <div class="card-bottom"><button type="button" class="workbench-source" :title="`转到知识库：${sourceName(workbench)}`" @click.stop="router.push(`/platform/knowledge-bases/${encodeURIComponent(workbench.knowledge_base_id)}`)" @keydown.stop><t-icon name="folder" size="14px" /><span>{{ sourceName(workbench) }}</span></button><span class="workbench-template">{{ workbench.workspace_mode === 'isolated' ? templateById(workbench.template_id || 'blank').name : '研究工作台' }}</span></div>
       </article></div>
       <EmptyState v-else-if="!error && keyword.trim()" icon="search" title="没有匹配的工作台"><t-button size="small" variant="outline" @click="keyword = ''">清除搜索</t-button></EmptyState>
-      <EmptyState v-else-if="!error" icon="chart-bar" title="还没有研究工作台" description="选择知识库和起步模板，创建后按引导准备资料。"><t-button size="small" @click="router.push('/platform/research-workbenches/new')">新建工作台</t-button></EmptyState>
+      <EmptyState v-else-if="!error" icon="chart-bar" title="还没有研究工作台" description="选择知识库和起步模板，创建后按引导准备资料。"><t-button size="small" theme="default" variant="outline" class="resource-action" @click="router.push('/platform/research-workbenches/new')"><template #icon><t-icon name="chart-add" size="16px" /></template>新建工作台</t-button></EmptyState>
     </div>
     <t-button v-if="error" size="small" variant="outline" @click="load">重新加载</t-button>
   </main><KnowledgeBaseEditorModal v-model:visible="kbEditorOpen" mode="create" @success="knowledgeCreated" /></div>

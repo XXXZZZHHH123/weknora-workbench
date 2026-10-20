@@ -10,6 +10,9 @@ import (
 
 func TestTransferCheckpointReturnsStoredTimestampPrecision(t *testing.T) {
 	db := setupKnowledgeTestDB(t)
+	for _, kbID := range []string{"source", "target"} {
+		require.NoError(t, db.Create(&types.KnowledgeBase{ID: kbID, TenantID: 7}).Error)
+	}
 	// Emulate a database that stores fewer fractional digits than time.Now.
 	require.NoError(t, db.Exec(`CREATE TRIGGER truncate_checkpoint_time AFTER UPDATE ON knowledges
         BEGIN UPDATE knowledges SET updated_at = strftime('%Y-%m-%d %H:%M:%S', NEW.updated_at) || '+00:00'

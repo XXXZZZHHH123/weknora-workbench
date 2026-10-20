@@ -5,13 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}商品研究 · 中哲物产{% endblock %}</title>
 <script>window.RESEARCH_PREFIX = {{ research_prefix() | tojson }};
-window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': research_identity().user_id, 'workbench': research_workbench().workbench_id if research_workbench() else none} if research_identity() else none) | tojson }};</script>
+window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': research_identity().user_id, 'workbench': research_workbench().workbench_id if research_workbench() else none, 'knowledge_base': research_workbench().knowledge_base_id if research_workbench() else none} if research_identity() else none) | tojson }};</script>
 <script src="{{ research_static_prefix() }}/static/tailwind.min.js?v={{ static_version() }}"></script>
+<link rel="stylesheet" href="/fonts/workspace-typography.css?v=3">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/app.css?v={{ static_version() }}">
 <script src="{{ research_static_prefix() }}/static/app.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/navigation.js?v={{ static_version() }}"></script>
 {% block head %}{% endblock %}
 </head>
 <body class="research-body min-h-screen transition-colors duration-200">
+<div id="research-navigation-progress" class="research-navigation-progress" aria-hidden="true" hidden></div>
+<div id="research-navigation-status" class="research-navigation-status" role="status" aria-live="polite" hidden></div>
 
 {% if ticker %}
 <div class="ticker-strip hidden md:flex items-center justify-between px-6 py-1 bg-[var(--surface-soft)] border-b border-[var(--line)] text-[11px] text-[var(--text-muted)]">

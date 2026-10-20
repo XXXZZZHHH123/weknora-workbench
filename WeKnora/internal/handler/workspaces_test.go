@@ -65,6 +65,12 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	if err := db.AutoMigrate(&types.Message{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AutoMigrate(&types.KnowledgeBase{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library"}).Error; err != nil {
+		t.Fatal(err)
+	}
 	h := NewWorkspaceHandler(service.NewWorkspaceService(db, &workspaceHandlerKBs{}, nil))
 	r := gin.New()
 	r.Use(middleware.ErrorHandler())

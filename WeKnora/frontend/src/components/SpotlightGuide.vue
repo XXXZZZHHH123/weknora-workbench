@@ -14,7 +14,7 @@
         <div v-if="hole" class="guide__ring" :style="ringStyle" aria-hidden="true" />
 
         <div ref="cardRef" class="guide__card" :class="{ 'guide__card--center': !hole }" :style="cardStyle">
-          <button type="button" class="guide__close" :aria-label="t(`${labelsPrefix}.skip`)" @click="dismiss">
+          <button type="button" class="guide__close" :disabled="busy" :aria-label="t(`${labelsPrefix}.skip`)" @click="dismiss">
             <t-icon name="close" size="18px" />
           </button>
 
@@ -27,18 +27,19 @@
           </p>
           <h3 class="guide__title">{{ stepTitle }}</h3>
           <p class="guide__desc">{{ stepDesc }}</p>
+          <slot name="notice" />
           <p v-if="step.interact" class="guide__interact-hint">{{ t(`${labelsPrefix}.interactHint`) }}</p>
 
           <div class="guide__actions">
-            <button type="button" class="guide__skip" @click="dismiss">{{ t(`${labelsPrefix}.skip`) }}</button>
+            <button type="button" class="guide__skip" :disabled="busy" @click="dismiss">{{ t(`${labelsPrefix}.skip`) }}</button>
             <div v-if="!step.interact" class="guide__actions-main">
-              <t-button v-if="index > 0" size="small" variant="outline" @click="prev">
+              <t-button v-if="index > 0" size="small" variant="outline" :disabled="busy" @click="prev">
                 {{ t(`${labelsPrefix}.prev`) }}
               </t-button>
-              <t-button v-if="!isLast" size="small" theme="primary" @click="next">
+              <t-button v-if="!isLast" size="small" theme="primary" :disabled="busy" @click="next">
                 {{ t(`${labelsPrefix}.next`) }}
               </t-button>
-              <t-button v-else size="small" theme="primary" @click="finish">
+              <t-button v-else size="small" theme="primary" :disabled="busy" @click="finish">
                 {{ t(`${labelsPrefix}.done`) }}
               </t-button>
             </div>
@@ -53,6 +54,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { SpotlightGuideStep } from '@/types/spotlightGuide'
+import { spotlightDocument, spotlightRect } from './spotlightFrame'
 
 const CARD_WIDTH = 340
 const GAP = 16
@@ -66,15 +68,21 @@ const props = withDefaults(
     active: boolean
     steps: SpotlightGuideStep[]
     /** i18n 前缀，步骤文案为 `${stepI18nPrefix}.${key}.title|desc` */
-    stepI18nPrefix: string
+    stepI18nPrefix?: string
     /** skip/prev/next/done/stepOf 所在前缀，默认 newUserGuide */
     labelsPrefix?: string
     /** 每步 before 执行后的等待毫秒数 */
     beforeDelayMs?: number
+    busy?: boolean
+    closeOnFinish?: boolean
+    /** Same-origin frame validated by the embedding workflow. */
+    targetFrame?: HTMLIFrameElement
   }>(),
   {
     labelsPrefix: 'newUserGuide',
     beforeDelayMs: 280,
+    busy: false,
+    closeOnFinish: true,
   },
 )
 
@@ -100,13 +108,13 @@ const measureNeighborGap = (el: HTMLElement, r: DOMRect) => {
   let above = PAD
   const prev = el.previousElementSibling
   if (prev) {
-    above = Math.max(0, r.top - prev.getBoundingClientRect().bottom)
+    above = Math.max(0, r.top - (spotlightRect(prev as HTMLElement, props.targetFrame)?.bottom ?? r.top - PAD))
   }
 
   let below = PAD
   const next = el.nextElementSibling
   if (next) {
-    below = Math.max(0, next.getBoundingClientRect().top - r.bottom)
+    below = Math.max(0, (spotlightRect(next as HTMLElement, props.targetFrame)?.top ?? r.bottom + PAD) - r.bottom)
   } else {
     const mb = parseFloat(getComputedStyle(el).marginBottom) || 0
     below = Math.max(0, PAD - mb)
@@ -151,8 +159,8 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 const step = computed(() => props.steps[index.value] ?? props.steps[0])
 const isLast = computed(() => index.value === props.steps.length - 1)
-const stepTitle = computed(() => t(`${props.stepI18nPrefix}.${step.value.key}.title`))
-const stepDesc = computed(() => t(`${props.stepI18nPrefix}.${step.value.key}.desc`))
+const stepTitle = computed(() => step.value.title ?? (props.stepI18nPrefix ? t(`${props.stepI18nPrefix}.${step.value.key}.title`) : ''))
+const stepDesc = computed(() => step.value.description ?? (props.stepI18nPrefix ? t(`${props.stepI18nPrefix}.${step.value.key}.desc`) : ''))
 
 const hole = computed(() => {
   const el = targetEl.value
@@ -253,7 +261,7 @@ const cardStyle = computed(() => {
 const queryTarget = (selector?: string): HTMLElement | null => {
   if (!selector) return null
   for (const part of selector.split(',').map((s) => s.trim()).filter(Boolean)) {
-    const el = document.querySelector<HTMLElement>(part)
+    const el = spotlightDocument(props.targetFrame, document)?.querySelector<HTMLElement>(part)
     if (!el) continue
     const r = el.getBoundingClientRect()
     if (r.width > 2 && r.height > 2) return el
@@ -271,7 +279,7 @@ const measureCard = async () => {
   }
 }
 
-const locate = async (retry = 0) => {
+const locate = async (retry = 0, scrollToTarget = false) => {
   vw.value = window.innerWidth
   vh.value = window.innerHeight
 
@@ -287,7 +295,7 @@ const locate = async (retry = 0) => {
   if (!el) {
     if (retry < 12) {
       if (retryTimer) clearTimeout(retryTimer)
-      retryTimer = setTimeout(() => locate(retry + 1), 120)
+      retryTimer = setTimeout(() => locate(retry + 1, scrollToTarget), 120)
       return
     }
     if (cur.optional) {
@@ -300,9 +308,9 @@ const locate = async (retry = 0) => {
     return
   }
 
-  el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+  if (scrollToTarget) el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
   targetEl.value = el
-  targetRect.value = el.getBoundingClientRect()
+  targetRect.value = spotlightRect(el, props.targetFrame)
   await measureCard()
 }
 
@@ -320,13 +328,13 @@ const goTo = async (i: number) => {
   if (delay > 0) {
     await new Promise((r) => setTimeout(r, delay))
   }
-  await locate()
+  await locate(0, true)
   await nextTick()
   rootRef.value?.focus()
 }
 
-const next = () => goTo(index.value + 1)
-const prev = () => goTo(index.value - 1)
+const next = () => { if (!props.busy) void goTo(index.value + 1) }
+const prev = () => { if (!props.busy) void goTo(index.value - 1) }
 
 const close = () => {
   if (retryTimer) {
@@ -339,11 +347,13 @@ const close = () => {
 }
 
 const finish = () => {
+  if (props.busy) return
   emit('finish')
-  close()
+  if (props.closeOnFinish) close()
 }
 
 const dismiss = () => {
+  if (props.busy) return
   emit('dismiss')
   finish()
 }
@@ -374,16 +384,31 @@ watch(
   },
 )
 
+let observedFrameWindow: Window | null = null
+const stopFrameObservation = () => {
+  try {
+    observedFrameWindow?.removeEventListener('scroll', onViewportChange, true)
+    observedFrameWindow?.removeEventListener('resize', onViewportChange)
+  } catch { /* The frame may have left this origin while the guide was open. */ }
+  observedFrameWindow = null
+}
 onBeforeUnmount(() => {
+  stopFrameObservation()
   window.removeEventListener('resize', onViewportChange)
   window.removeEventListener('scroll', onViewportChange, true)
   if (retryTimer) clearTimeout(retryTimer)
 })
 
 watch(
-  () => props.active,
-  (val) => {
+  () => [props.active, props.targetFrame] as const,
+  ([val]) => {
+    stopFrameObservation()
     if (val) {
+      observedFrameWindow = props.targetFrame?.contentWindow ?? null
+      try {
+        observedFrameWindow?.addEventListener('scroll', onViewportChange, true)
+        observedFrameWindow?.addEventListener('resize', onViewportChange)
+      } catch { stopFrameObservation() }
       window.addEventListener('resize', onViewportChange)
       window.addEventListener('scroll', onViewportChange, true)
     } else {
@@ -453,6 +478,7 @@ defineExpose({ open, close })
 
 .guide__card {
   position: fixed;
+  box-sizing: border-box;
   z-index: 1;
   pointer-events: auto;
   display: flex;

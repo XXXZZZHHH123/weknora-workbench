@@ -39,6 +39,7 @@
               <span class="breadcrumb-current">{{ $t('knowledgeEditor.faq.title') }}</span>
             </h2>
             <div class="kb-title-actions">
+              <KnowledgeBaseActions v-if="kbInfo && (canEdit || canManage)" :knowledge-base="kbInfo" :can-rename="canEdit" :can-delete="canManage" @changed="handleKBActionChanged" />
               <KBInfoPopover
                 v-if="kbInfo && !authStore.isLiteMode"
                 :kb-info="kbInfo"
@@ -759,6 +760,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted, computed, nextTick, onUnmounted, h } from 'vue'
 import KnowledgeTagFilter from './KnowledgeTagFilter.vue'
+import KnowledgeBaseActions from './KnowledgeBaseActions.vue'
 import { MessagePlugin, Icon as TIcon } from 'tdesign-vue-next'
 import { useConfirmDelete } from '@/components/settings/useConfirmDelete'
 import type { FormRules, FormInstanceFunctions } from 'tdesign-vue-next'
@@ -991,6 +993,12 @@ const tagSelectOptions = computed(() =>
 
 const kbInfo = ref<any>(null)
 const knowledgeList = ref<Array<{ id: string; name: string; type?: string }>>([])
+const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: string }) => {
+  if (change.id !== props.kbId) return
+  if (change.deleted) { void router.replace('/platform/knowledge-bases'); return }
+  if (kbInfo.value && change.name) kbInfo.value.name = change.name
+  void loadKnowledgeList()
+}
 
 const loadKnowledgeInfo = async (kbId: string) => {
   if (!kbId) {

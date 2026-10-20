@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { listResearchWorkbenches, type ResearchWorkbench } from '@/api/workspaces'
@@ -24,7 +24,9 @@ async function load() {
   finally { if (own === generation) loading.value = false }
 }
 watch(scope, load, { immediate: true })
-onBeforeUnmount(() => { generation++ })
+const workspacesChanged = () => { void load() }
+onMounted(() => window.addEventListener('weknora:workspaces-changed', workspacesChanged))
+onBeforeUnmount(() => { generation++; window.removeEventListener('weknora:workspaces-changed', workspacesChanged) })
 function navigate() {
   if (!loaded.value) return
   if (!workbenches.value.length) router.push({ path: '/platform/research-workbenches/new', query: { kb_id: props.kbId } })
@@ -34,9 +36,9 @@ function navigate() {
 </script>
 
 <template>
-  <t-button v-if="error" variant="outline" size="small" :title="error" @click="load">重试工作台绑定</t-button>
-  <t-button v-else variant="outline" size="small" :loading="loading" :disabled="!loaded" data-testid="kb-workbench-link" @click="navigate">{{ workbenches.length ? '转到工作台' : '创建工作台' }}</t-button>
-  <t-dialog v-model:visible="choosing" header="选择工作台" :footer="false"><div v-for="workbench in workbenches" :key="workbench.id" class="knowledge-workbench-choice"><div><strong>{{ workbench.name }}</strong><p>{{ workbench.description }}</p></div><t-button @click="router.push(`/platform/research-workbenches/${workbench.id}`)">转到工作台</t-button></div></t-dialog>
+  <t-button v-if="error" variant="outline" theme="default" size="small" class="resource-action resource-action--compact" :title="error" @click="load">重试工作台绑定</t-button>
+  <t-button v-else variant="outline" theme="default" size="small" class="resource-action resource-action--compact" :loading="loading" :disabled="!loaded" data-testid="kb-workbench-link" @click="navigate">{{ workbenches.length ? '转到工作台' : '创建工作台' }}</t-button>
+  <t-dialog v-model:visible="choosing" header="选择工作台" :footer="false"><div v-for="workbench in workbenches" :key="workbench.id" class="knowledge-workbench-choice"><div><strong>{{ workbench.name }}</strong><p>{{ workbench.description }}</p></div><t-button theme="default" variant="outline" size="small" class="resource-action resource-action--compact" @click="router.push(`/platform/research-workbenches/${workbench.id}`)">转到工作台</t-button></div></t-dialog>
 </template>
 
 <style scoped>

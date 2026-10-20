@@ -1,8 +1,10 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>中哲物产 · 表格分析</title>
+<link rel="stylesheet" href="/fonts/workspace-typography.css?v=3">
 <style>
-:root { --app-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; --app-font-family-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-family: var(--app-font-family); font-size:14px; color:var(--text); background:var(--canvas); --radius:10px; }
-code,kbd,samp,pre{font-family:var(--app-font-family-mono)}
+:root { --app-font-family: "Workspace Numerals", Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif; --app-font-family-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; --cds-font-interface: var(--app-font-family); --cds-font-display: "Workspace Numerals", Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif; --cds-font-reading: "Workspace Numerals", Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif; --cds-font-code: var(--app-font-family-mono); font-family: var(--app-font-family); font-size:14px; color:var(--text); background:var(--canvas); --radius:10px; }
+code,kbd,samp,pre{font-family:var(--cds-font-code)}
+h1,h2,h3,h4,h5,h6{font-family:var(--cds-font-display)}
 *{box-sizing:border-box}body{margin:0}a{color:var(--primary);text-decoration:none}a:hover{text-decoration:underline}button,input,select,textarea{font:inherit}button,a,input,select,summary,textarea{outline-offset:3px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,textarea:focus-visible{outline:2px solid var(--primary)}
 header{background:var(--paper);border-bottom:1px solid var(--line);padding:24px max(24px,calc((100vw - 1200px)/2));display:flex;justify-content:space-between;align-items:center;gap:24px}header h1{margin:8px 0;font-size:24px;letter-spacing:.02em;font-weight:650}header small{color:var(--muted);font-size:12px;letter-spacing:.12em}.header-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.action-link{display:inline-flex;align-items:center;justify-content:center;background:var(--primary);color:var(--on-primary);padding:10px 16px;border-radius:var(--control-radius);font-size:13px}.action-link:hover{text-decoration:none;background:var(--navy)}
 main{max-width:1200px;margin:24px auto;padding:0 24px}section{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);padding:24px;margin-bottom:20px;min-width:0}h2{margin:0 0 12px;font-size:18px;font-weight:600}h3{margin:24px 0 12px;font-size:16px}h4{font-size:14px}p{line-height:1.8;margin:10px 0 16px}small,.muted{color:var(--muted)}small{font-size:12px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}label{display:flex;flex-direction:column;gap:7px;flex:1;min-width:140px;color:var(--text);font-size:13px}input,select,button{padding:10px 12px;border-radius:var(--control-radius);border:1px solid var(--line);max-width:100%}input,select,textarea{color:var(--text);background:var(--paper)}button{background:var(--primary);color:var(--on-primary);cursor:pointer;border:1px solid transparent;line-height:1.35}button:hover{background:var(--navy)}button:disabled{opacity:.55;cursor:not-allowed}button[aria-busy="true"]{cursor:progress}.secondary{background:var(--soft);color:var(--primary);border-color:var(--line-strong)}.secondary:hover{background:var(--soft)}
@@ -13,7 +15,7 @@ body.knowledge-view #workspaceIntro>.guide-card{display:none}body.knowledge-view
 @media(max-width:900px){.review-grid,body.review-only .review-grid{grid-template-columns:1fr}}@media(max-width:800px){.grid{grid-template-columns:1fr;gap:0}header{align-items:flex-start;flex-direction:column}main{padding:0 16px;margin:16px auto}section{padding:20px}.header-actions{gap:12px}.mapping-fields{grid-template-columns:1fr}}
 </style><link rel="stylesheet" href="./sheet-review.css"><link rel="stylesheet" href="./workspace.css">
 <script id="workspace-theme">
-// Keep same-origin embedded tools on the interface/code fonts selected in the shell.
+// Share the shell typography roles across same-origin documents.
 // Only these presentation properties cross the document boundary; auth/data stay independent.
 function followWorkspaceTypography() {
   if (window.parent === window) return;
@@ -21,7 +23,7 @@ function followWorkspaceTypography() {
     const parentRoot = window.parent.document.documentElement;
     const sync = () => {
       const style = window.getComputedStyle(parentRoot);
-      for (const name of ['--app-font-family', '--app-font-family-mono']) {
+      for (const name of ['--app-font-family', '--app-font-family-mono', '--cds-font-display', '--cds-font-reading', '--cds-font-code']) {
         const value = style.getPropertyValue(name).trim();
         if (value) document.documentElement.style.setProperty(name, value);
       }

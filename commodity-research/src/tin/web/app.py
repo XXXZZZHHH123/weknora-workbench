@@ -15,7 +15,7 @@ from sqlalchemy import select, text
 
 from tin.brief import store as brief_store
 from tin.caliber.dictionary import DIMENSIONS
-from tin.compute.engine import compute_day, latest_trade_date
+from tin.compute.engine import compute_day, latest_trade_date, observation_boundary
 from tin.config import SHANGHAI, settings
 from tin.db import SessionLocal
 from tin import schema_check
@@ -40,7 +40,6 @@ from tin.export import indicators as indicator_data
 from tin.ingest import excel_importer, import_jobs, vendor_terminal
 from tin.ingest.record import RecordError, record
 from tin.jobs.seed import seed_researcher
-from tin.judgments.importer import import_text
 from tin.judgments.service import JudgmentError, current, save_version, to_payload
 from tin.models import AuditLog, DailyBrief, Indicator, Judgment, Observation, TradingDay
 from tin.schemas.brief import STANCES
@@ -57,6 +56,10 @@ HERE = Path(__file__).parent
 log = logging.getLogger("uvicorn.error")   # 借 uvicorn 的 logger：自建的默认没有 handler，写了也看不见
 app = FastAPI(title="大宗商品研究工作台")
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
+# A standalone document needs its own font registrations as well as the iframe.
+FONT_ASSETS = HERE.resolve().parents[3] / "WeKnora/frontend/public/fonts"
+if FONT_ASSETS.is_dir():
+    app.mount("/fonts", StaticFiles(directory=FONT_ASSETS), name="fonts")
 templates = Jinja2Templates(directory=HERE / "templates")
 
 V = settings.variety
@@ -132,7 +135,8 @@ async def _guard_schema(request: Request, call_next):
     补不完，每加一张表就多一个坑。这里只检查一次迁移版本，对不上就**所有页面**
     统一给出该敲的命令。
     """
-    if not settings.weknora_api_url and not request.url.path.startswith("/static"):
+    public_font = request.method in {"GET", "HEAD"} and request.url.path.startswith("/fonts/")
+    if not settings.weknora_api_url and not request.url.path.startswith("/static") and not public_font:
         gap = schema_check.migration_gap(schema_check.engine_of(SessionLocal))
         if gap:
             if _migrate_error:
@@ -182,6 +186,11 @@ from tin.web.brief_export import router as brief_export_router
 app.include_router(brief_export_router)
 from tin.web.diagram_generation import router as diagram_generation_router
 app.include_router(diagram_generation_router)
+from tin.web.judgment_generation import router as judgment_generation_router
+app.include_router(judgment_generation_router)
+from tin.web.market import build_market_router, market_catalog as market_catalog_data
+app.include_router(build_market_router(lambda: SessionLocal(), templates,
+                                       lambda session, day: _home_date(session, day)))
 
 
 @app.on_event('startup')
@@ -241,10 +250,11 @@ def _board_date(s, q: str | None) -> date:
 
 def _neighbour_dates(s, d: date) -> tuple[str | None, str | None]:
     if s.info.get("workbench_id"):
-        days = sorted({value.astimezone(SHANGHAI).date().isoformat() for value in s.scalars(
-            select(Observation.as_of).where(Observation.status == "正常"))})
-        return (next((day for day in reversed(days) if day < d.isoformat()), None),
-                next((day for day in days if day > d.isoformat()), None))
+        from tin.compute.engine import day_end
+        previous = observation_boundary(s, before=datetime.combine(d, time.min, SHANGHAI))
+        following = observation_boundary(s, at_or_after=day_end(d), latest=False)
+        return tuple(value.astimezone(SHANGHAI).date().isoformat() if value else None
+                     for value in (previous, following))
     prev = s.scalar(select(TradingDay.trade_date).where(TradingDay.trade_date < d.isoformat())
                     .order_by(TradingDay.trade_date.desc()).limit(1))
     nxt = s.scalar(select(TradingDay.trade_date).where(TradingDay.trade_date > d.isoformat())
@@ -423,8 +433,10 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
     with SessionLocal() as s:
         d = _home_date(s, date)
         today = datetime.now(SHANGHAI).date()
+        cards = core_cards(s, V, d) if d is not None else []
         return templates.TemplateResponse(request, "variety.html", _shell(
-            s, "variety", d, cards=core_cards(s, V, d) if d is not None else [],
+            s, "variety", d, cards=cards,
+            market_catalog=market_catalog_data(s, cards, d) if s.info.get('workbench_id') else None,
             judgment=judgment_block(s, V, today),
             radar=threshold_radar(s, V, d) if d is not None else [],
             gaps=gaps(s, V, d) if d is not None else [],
@@ -443,41 +455,36 @@ def macro_page(request: Request, date: str | None = None):
 
 @app.get("/sn/judgment")
 def judgment_page(request: Request, err: str | None = None):
+    return _judgment_response(request, err=err)
+
+
+def _judgment_response(request: Request, *, err=None, logic_input=""):
     with SessionLocal() as s:
         d = latest_trade_date(s)
         today = datetime.now(SHANGHAI).date()
-        versions = s.scalars(scope_query(s, select(Judgment).where(Judgment.variety == V).order_by(Judgment.version.desc()), Judgment)).all()
+        versions = s.execute(scope_query(s, select(Judgment.version, Judgment.status, Judgment.author, Judgment.written_at, Judgment.review_due, Judgment.created_at).where(Judgment.variety == V).order_by(Judgment.version.desc()).limit(50), Judgment)).all()
         last_import = s.scalars(select(AuditLog).where(AuditLog.action == "判断导入", *([AuditLog.actor == verified_actor()] if current_identity.get() else []))
                                 .order_by(AuditLog.id.desc()).limit(1)).first()
         return templates.TemplateResponse(request, "judgment.html", _shell(
             s, "judgment", d, j=current(s, V), block=judgment_block(s, V, today), versions=versions,
             names={i.series_id: i.name for i in s.scalars(select(Indicator))},
             radar=threshold_radar(s, V, d) if d else [],
-            report=last_import.detail if last_import else None, err=err))
+            report=last_import.detail if last_import else None, err=err, logic_input=logic_input))
 
 
 @app.post("/sn/judgment/import")
-async def judgment_import(file: UploadFile | None = None, text: str = Form(""), author: str = Form(...)):
-    """上传接口：研究逻辑新版本（txt / md）→ 新草稿版本。"""
-    raw = (await file.read()).decode("utf-8") if file is not None and file.filename else text
-    if not raw.strip():
-        return _redirect("/sn/judgment", err="没有收到文本")
-    author = verified_actor(author)
-    with SessionLocal() as s:
-        latest = current(s, V)
-        codes = {i.vendor_code: i.series_id for i in s.scalars(select(Indicator)) if i.vendor_code}
-        try:
-            payload, rep = import_text(raw, variety=V, author=author.strip(),
-                                       base=to_payload(latest) if latest else None, vendor_codes=codes)
-            row = save_version(s, payload, actor=author.strip())
-        except (JudgmentError, ValidationError) as e:
-            return _redirect("/sn/judgment", err=e)
-        s.add(AuditLog(at=datetime.now(SHANGHAI), actor=author.strip(), action="判断导入",
-                       target_type="judgment", target_id=f"{V}v{row.version}",
-                       detail={"version": row.version, "mapped": rep.mapped, "carried": rep.carried,
-                               "unmatched": rep.unmatched}))
-        s.commit()
-        return _redirect("/sn/judgment", msg=f"已导入为草稿 v{row.version}")
+async def judgment_import(request: Request, file: UploadFile | None = None, text: str = Form(""), author: str = Form("")):
+    """Compatibility entry: preserve input in a safe modal, never silently save/parse it."""
+    from tin.judgments.analysis import SOURCE_BYTES
+    if current_identity.get() and not current_identity.get().can_write:
+        raise HTTPException(403, "当前角色不能导入研究逻辑")
+    try:
+        raw = (await file.read(SOURCE_BYTES + 1)).decode("utf-8") if file is not None and file.filename else text
+    except UnicodeDecodeError:
+        raise HTTPException(422, "请上传UTF-8编码的研究逻辑") from None
+    if len(raw.encode("utf-8")) > SOURCE_BYTES:
+        raise HTTPException(413, "研究逻辑原文超过48 KiB")
+    return _judgment_response(request, err="请在管理研究逻辑中选择模型分析，预览后确认保存。", logic_input=raw)
 
 
 @app.get("/sn/entry")

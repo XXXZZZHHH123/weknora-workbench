@@ -1,6 +1,6 @@
 <template>
     <div class="bot_msg" :class="{ 'is-embedded': embeddedMode }">
-        <div style="display: flex;flex-direction: column; gap:8px">
+        <div class="bot-message-context">
             <AnswerProgress :session="session" />
             <!-- 显示@的知识库和文件（非 Agent 模式下显示） -->
             <div v-if="!session.isAgentMode && mentionedItems && mentionedItems.length > 0" class="mentioned_items">
@@ -46,7 +46,7 @@
             <deepThink :deepSession="session" v-if="session.showThink && !session.isAgentMode"></deepThink>
         </div>
         <!-- 非 Agent 模式下才显示传统的 markdown 渲染 -->
-        <div ref="parentMd" v-if="!session.hideContent && !session.isAgentMode">
+        <div ref="parentMd" v-if="!session.hideContent && !session.isAgentMode" class="bot-message-answer">
             <!-- 直接渲染完整内容，避免切分导致的问题，样式与 thinking 一致 -->
             <!-- 只有当有实际内容时才显示包围框 -->
             <div class="content-wrapper" v-if="hasActualContent">
@@ -553,9 +553,19 @@ onBeforeUnmount(() => {
     gap: 0;
 }
 
+.bot-message-context {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    &:has(> *) + .bot-message-answer {
+        margin-top: 8px;
+    }
+}
+
 // 内容包装器 - 与 Agent 模式的 answer 样式一致
 .content-wrapper {
-    padding: 2px 0;
+    padding: 0;
 }
 
 .markdown-content {

@@ -31,6 +31,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { useSandboxTerminal, type SandboxTerminalStatus } from '@/composables/useSandboxTerminal';
 import { useTheme } from '@/composables/useTheme';
+import { useFont } from '@/composables/useFont';
 import { createPtyEchoPredictor } from '@/utils/ptyEchoPredictor';
 import {
     PTY_PROMPT_NUDGE_DELAY_MS,
@@ -54,6 +55,7 @@ const terminalHost = ref<HTMLElement | null>(null);
 // 不是响应式数据源，那样写出来的 computed 没有任何依赖，求值一次就永久缓存，
 // 下面的 watch 永远不会触发，终端配色会一直停在首次挂载时的样子。
 const { currentTheme } = useTheme();
+const { currentMono } = useFont();
 const systemPrefersDark = ref(prefersDarkQuery()?.matches === true);
 const isDarkTheme = computed(() =>
     currentTheme.value === 'system' ? systemPrefersDark.value : currentTheme.value === 'dark',
@@ -195,6 +197,10 @@ function focusTerminal() {
     xterm?.focus();
 }
 
+function terminalFontFamily() {
+    return getComputedStyle(document.documentElement).getPropertyValue('--app-font-family-mono').trim() || 'monospace';
+}
+
 function mountTerminal() {
     if (!terminalHost.value || xterm) return;
     xterm = new Terminal({
@@ -202,7 +208,7 @@ function mountTerminal() {
         cursorStyle: 'bar',
         cursorInactiveStyle: 'outline',
         fontSize: 13,
-        fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+        fontFamily: terminalFontFamily(),
         theme: xtermTheme(isDarkTheme.value),
         scrollback: 5000,
     });
@@ -266,6 +272,13 @@ onMounted(() => {
 
 watch(isDarkTheme, (dark) => {
     if (xterm) xterm.options.theme = xtermTheme(dark);
+});
+
+watch(currentMono, async () => {
+    await nextTick();
+    if (!xterm) return;
+    xterm.options.fontFamily = terminalFontFamily();
+    applyFit();
 });
 
 // ready 后挂载 xterm；离开非 ready 状态重置实例（重连 = 新 PTY）。

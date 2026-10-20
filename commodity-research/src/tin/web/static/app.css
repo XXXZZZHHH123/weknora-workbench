@@ -1,17 +1,12 @@
-/* Inter is bundled locally under the SIL Open Font License. */
-@font-face {
-  font-family: Inter;
-  src: url('/fonts/InterVariable.woff2') format('woff2');
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-}
-
 /* CDS 浅中性表面与陶土强调色；涨跌及告警颜色保留市场与状态语义。 */
 :root {
   --research-nav-height: 92px;
-  --app-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --app-font-family: "Workspace Numerals", Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
   --app-font-family-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --cds-font-interface: var(--app-font-family);
+  --cds-font-display: "Workspace Numerals", Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
+  --cds-font-reading: "Workspace Numerals", Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
+  --cds-font-code: var(--app-font-family-mono);
   --bg: #FCFCFB;
   --surface: #ffffff;
   --surface-soft: #FBFBF9;
@@ -79,7 +74,7 @@ body {
 
 .tabular {
   font-family: var(--app-font-family);
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: lining-nums tabular-nums;
 }
 
 /* 主题图标：不依赖 Tailwind 的 dark: 变体，避免额外配置 */
@@ -345,7 +340,7 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
   overflow: hidden;
   color: var(--text);
   font-size: 0.78rem;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: lining-nums tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -380,7 +375,8 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 
 /* Research workspace shell. The outer platform owns corporate branding. */
 .research-body { font-size: 14px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
-.research-body h1, .research-body h2, .research-body h3 { font-family: var(--app-font-family); font-weight: 600; letter-spacing: -0.025em; }
+.research-body h1, .research-body h2, .research-body h3 { font-family: var(--cds-font-display); font-weight: 600; letter-spacing: -0.025em; }
+.research-body :is(h4, h5, h6) { font-family: var(--cds-font-display); }
 .research-body button, .research-body a, .research-body summary { -webkit-tap-highlight-color: transparent; }
 .research-body button:disabled { cursor: not-allowed; opacity: .45; }
 .research-body :is(a,button,summary):focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
@@ -448,7 +444,7 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 .refresh-metrics > div { padding: 0 18px; border-left: 1px solid var(--line); }
 .refresh-metrics > div:first-child { padding-left: 0; border-left: 0; }
 .refresh-metrics small { display: block; font-size: 10px; color: var(--text-muted); margin-bottom: 5px; }
-.refresh-metrics strong { color: var(--text); font-size: 12px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.refresh-metrics strong { color: var(--text); font-size: 12px; font-weight: 550; font-variant-numeric: lining-nums tabular-nums; }
 .refresh-source-details summary { display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; cursor: pointer; list-style: none; padding: 3px 0 6px; }
 .refresh-source-details summary::-webkit-details-marker { display: none; }
 .refresh-source-details summary span { font-size: 11px; color: var(--text-muted); font-weight: 400; }
@@ -534,7 +530,7 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
    shadows must not stack along the viewport edge (seven panels on the diagram). */
 [data-drawer].translate-x-full { box-shadow: none; }
 .research-body code, .research-body kbd, .research-body samp,
-.research-body .font-mono { font-family: var(--app-font-family-mono); }
+.research-body .font-mono { font-family: var(--cds-font-code); }
 
 /* UI type scale matches the shell; code keeps its explicit monospace role. */
 .research-body .text-xs { font-size: 12px; }
@@ -543,6 +539,9 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 .research-body .text-xl { font-size: 20px; }
 .research-body .text-2xl { font-size: 24px; }
 .research-body .font-sans { font-family: var(--app-font-family); }
+.research-body .research-prose { font-family: var(--cds-font-reading); }
+.research-body :is(h1, h2, h3, h4, h5, h6) :is(small, .tabular),
+.research-body :is(button, input, select, textarea, summary, table) { font-family: var(--app-font-family); }
 /* The host already displays workspace identity and its knowledge-base link. */
 .workspace-embedded { --research-nav-height: 44px; }
 .research-brand { min-width: 0; flex-shrink: 1; }
@@ -565,10 +564,20 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
   .workspace-embedded .research-nav-bottom { order: 1; flex-basis: 100%; min-height: 40px; }
 }
 
-/* Page titles use the same medium interface role as the host resource pages. */
+/* Page titles share the host resource pages' title face. */
 .research-body :is(.research-hero h1, .indicator-page-heading h1, .strategy-head h1, .strategy-detail-head h1) {
-  font-family: var(--app-font-family);
+  font-family: var(--cds-font-display);
   font-size: 20px;
   font-weight: 500;
   line-height: 1.4;
 }
+
+/* Navigation uses the existing CDS surfaces; only transform/opacity animate. */
+.research-navigation-progress { position: fixed; inset: 0 0 auto; height: 2px; overflow: hidden; z-index: 80; pointer-events: none; background: var(--primary-soft); }
+.research-navigation-progress::after { content: ""; display: block; width: 35%; height: 100%; background: var(--primary); animation: research-navigation-travel 1.1s ease-in-out infinite; }
+.research-navigation-status { position: fixed; right: 20px; bottom: 20px; z-index: 80; max-width: calc(100vw - 40px); padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 2px 8px color-mix(in srgb, var(--text) 7%, transparent); color: var(--text-muted); font-size: 12px; pointer-events: none; }
+.research-navigation-progress[hidden], .research-navigation-status[hidden] { display: none; }
+.research-nav .nav-btn[data-research-loading] { color: var(--primary); background: var(--surface-soft); }
+@keyframes research-navigation-travel { from { transform: translateX(-100%); } to { transform: translateX(390%); } }
+@media (prefers-reduced-motion: reduce) { .research-navigation-progress::after { animation: none; width: 100%; opacity: .6; } }
+@media print { .research-navigation-progress, .research-navigation-status { display: none !important; } }

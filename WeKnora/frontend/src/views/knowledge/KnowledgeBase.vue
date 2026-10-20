@@ -40,7 +40,6 @@ import {
   listKnowledgeFolders,
   createKnowledgeFolder,
   moveKnowledgeToFolder,
-  renameKnowledgeFolder,
   downKnowledgeDetails,
   type KnowledgeFolderTree,
 } from "@/api/knowledge-base/index";
@@ -54,6 +53,8 @@ import DocumentBatchBar from './components/DocumentBatchBar.vue';
 import KbUploadSourceDropdown from './components/KbUploadSourceDropdown.vue';
 import { isExcelFilename, isExcelSource, sameNativeUploadScope, structuredSourceLocation } from './excelSource';
 import KbFolderTree from './components/KbFolderTree.vue';
+import KnowledgeBaseActions from './components/KnowledgeBaseActions.vue';
+import KnowledgeFolderActions from './components/KnowledgeFolderActions.vue';
 import BatchTagDialog from './components/BatchTagDialog.vue';
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess';
 import { useUploadConfirmStore, type UploadConfirmResult } from '@/stores/uploadConfirm';
@@ -71,7 +72,6 @@ import { listMoveTargets, moveKnowledge, getKnowledgeMoveProgress } from '@/api/
 import { resolveKnowledgeDownloadFileName } from './knowledgeDownloadFileName';
 import {
   buildUploadFileName,
-  canMoveFolderTo,
   folderBreadcrumbs as buildFolderBreadcrumbs,
   folderPathExists as folderExistsInTree,
   isFilteringDocuments,
@@ -385,6 +385,8 @@ const showKbDetailContextualGuide = computed(() => {
     && !isFAQ.value
     && canEdit.value
     && !docListLoading.value
+    && !folderTreeLoading.value
+    && folderTree.value?.total_document_count === 0
     && cardList.value.length === 0;
 });
 
@@ -1013,28 +1015,29 @@ const moveKnowledgeIntoFolder = async (ids: string[], folderPath: string) => {
   }
 };
 
-const handleFolderRename = async ({ from, to }: { from: string; to: string }) => {
-  if (!canEdit.value || !kbId.value || !to || from === to) return;
-  if (!canMoveFolderTo(from, to)) {
-    MessagePlugin.warning(t('knowledgeBase.folderTree.renameInvalid'));
-    return;
+const handleFolderRename = ({ from, to }: { from: string; to: string }) => {
+  if (selectedFolderPath.value === from || selectedFolderPath.value.startsWith(`${from}/`)) {
+    handleFolderSelect(to + selectedFolderPath.value.slice(from.length));
   }
-  const originalScope = captureKnowledgeScope();
-  if (originalScope.knowledgeBaseId !== kbId.value || !sameNativeUploadScope(originalScope, originalScope)) return;
-  try {
-    await renameKnowledgeFolder(originalScope.knowledgeBaseId, from, to);
-    if (!sameNativeUploadScope(originalScope, captureKnowledgeScope())) return;
-    MessagePlugin.success(t('knowledgeBase.folderTree.renameSuccess'));
-    // Follow the folder to its new path so the user stays where they were.
-    if (selectedFolderPath.value === from) {
-      handleFolderSelect(to);
-    } else if (selectedFolderPath.value.startsWith(`${from}/`)) {
-      handleFolderSelect(to + selectedFolderPath.value.slice(from.length));
-    }
-    window.dispatchEvent(new CustomEvent(KNOWLEDGE_DIRECTORY_EVENT, { detail: { kbId: originalScope.knowledgeBaseId } }));
-  } catch (error: any) {
-    if (sameNativeUploadScope(originalScope, captureKnowledgeScope())) MessagePlugin.error(error?.message || t('knowledgeBase.folderTree.renameFailed'));
+};
+const handleFolderDeleted = (path: string) => {
+  const inSubtree = (folder: string) => folder === path || folder.startsWith(`${path}/`);
+  const currentFolderDeleted = inSubtree(selectedFolderPath.value);
+  const openedFolder = cardList.value.find(item => item.id === details.id)?.folder_path;
+  const openedFileDeleted = typeof openedFolder === 'string' && inSubtree(openedFolder);
+  if (!currentFolderDeleted && !openedFileDeleted) return;
+  autoOpenRequest++;
+  pendingKnowledgeId.value = null;
+  isCardDetails.value = false;
+  const query = { ...route.query };
+  delete query.knowledge_id;
+  if (currentFolderDeleted) {
+    delete query.directory;
+    const parent = path.split('/').slice(0, -1).join('/');
+    if (parent) query.folder = parent;
+    else delete query.folder;
   }
+  void router.replace({ query });
 };
 
 const handleFolderTreeCollapsedChange = (value: boolean) => {
@@ -1298,6 +1301,8 @@ watch([selectedFolderPath, allFolderPreview], () => {
 
 const handleDirectoryChanged = (event: Event) => {
   if ((event as CustomEvent).detail?.kbId !== kbId.value || isFAQ.value) return;
+  const deletedPath = (event as CustomEvent).detail?.deletedPath;
+  if (typeof deletedPath === 'string' && deletedPath) handleFolderDeleted(deletedPath);
   void loadFolderTree(kbId.value);
   resetPage();
   void loadKnowledgeFiles(kbId.value);
@@ -2391,6 +2396,13 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
     loadKnowledgeBaseInfo(kbIdValue, true);
   }
 };
+
+const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: string }) => {
+  if (change.id !== kbId.value) return;
+  if (change.deleted) { void router.replace('/platform/knowledge-bases'); return; }
+  if (kbInfo.value && change.name) kbInfo.value.name = change.name;
+  void loadKnowledgeList();
+};
 </script>
 
 <template>
@@ -2440,6 +2452,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
             <!-- 标题行右侧的动作锚点：聚拢"信息"和"设置"两个圆形按钮。 -->
             <div class="kb-title-actions">
               <KnowledgeWorkbenchLink v-if="kbId" :kb-id="kbId" />
+              <KnowledgeBaseActions v-if="kbInfo && (canEdit || canManage)" :knowledge-base="kbInfo" :can-rename="canEdit" :can-delete="canManage" @changed="handleKBActionChanged" />
               <KBInfoPopover v-if="kbInfo && !authStore.isLiteMode" :kb-info="kbInfo"
                 :supported-file-types="[...supportedFileTypes]" />
               <t-tooltip v-if="canManage" :content="$t('knowledgeBase.settings')" placement="top">
@@ -2480,10 +2493,10 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
            carried over from a previous KB) falls back to documents. -->
       <template v-if="activeKbTab === 'documents' || (!isWiki && activeKbTab !== 'gallery')">
         <div class="knowledge-main">
-          <KbFolderTree v-if="showFolderTree && !folderTreeCollapsed && !localDirectoryNavigation" :tree="folderTree" :selected-path="selectedFolderPath"
+          <KbFolderTree v-if="showFolderTree && !folderTreeCollapsed && !localDirectoryNavigation" :kb-id="kbId" :tree="folderTree" :selected-path="selectedFolderPath"
             :loading="folderTreeLoading" :can-edit="canEdit" :root-label="kbInfo?.name"
             @select="handleFolderSelect" @update:collapsed="handleFolderTreeCollapsedChange"
-            @rename="handleFolderRename" />
+            @rename="handleFolderRename" allow-delete @delete="handleFolderDeleted" />
           <div class="tag-content">
             <div class="doc-card-area">
               <div class="doc-filter-bar">
@@ -2626,9 +2639,9 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
                     </t-tooltip>
                   </div>
                   <div v-if="canEdit" class="doc-filter-actions">
-                    <t-button variant="text" theme="default" size="small" data-guide="kb-detail-new-folder"
+                    <t-button variant="outline" theme="default" size="small" class="resource-action" data-guide="kb-detail-new-folder"
                       :aria-label="t('knowledgeBase.folderTree.create')" @click="openCreateFolder">
-                      <template #icon><t-icon name="folder-add" size="18px" /></template>
+                      <template #icon><t-icon name="folder-add" size="16px" /></template>
                       {{ t('knowledgeBase.folderTree.create') }}
                     </t-button>
                     <KbUploadSourceDropdown ref="uploadSourceRef" :accept-file-types="acceptFileTypes"
@@ -2640,12 +2653,13 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
                 </div>
               </div>
               <div v-if="visibleChildFolders.length" class="doc-child-folders" aria-label="子文件夹">
-                <button v-for="folder in visibleChildFolders" :key="folder.path" type="button" class="doc-child-folder"
-                  :title="folder.path" @click="handleFolderSelect(folder.path)">
+                <div v-for="folder in visibleChildFolders" :key="folder.path" role="button" tabindex="0" class="doc-child-folder"
+                  :title="folder.path" @keydown.enter.self.prevent="handleFolderSelect(folder.path)" @keydown.space.self.prevent="handleFolderSelect(folder.path)" @click="handleFolderSelect(folder.path)">
                   <t-icon name="folder" size="18px" />
                   <span><strong>{{ folder.name }}</strong><small>{{ allFolderPreview ? folder.path : `${folder.total_count} 个条目` }}</small></span>
+                  <KnowledgeFolderActions :kb-id="kbId" :folder="folder" :can-edit="canEdit" @renamed="handleFolderRename" @deleted="handleFolderDeleted" />
                   <t-icon name="chevron-right" size="14px" />
-                </button>
+                </div>
               </div>
               <div class="doc-scroll-container"
                 :class="{
@@ -2957,7 +2971,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
 }
 
 .doc-child-folder:hover { background: var(--td-bg-color-container-hover); }
-.doc-child-folder span { flex: 1; min-width: 0; }
+.doc-child-folder > span:not(.knowledge-folder-actions) { flex: 1; min-width: 0; }
 .doc-child-folder strong { display: block; font-size: var(--app-text-md); font-weight: 500; overflow-wrap: anywhere; }
 .doc-child-folder small { display: block; margin-top: 4px; font-size: var(--app-text-xs); color: var(--app-text-secondary); overflow-wrap: anywhere; }
 .doc-child-folder:focus-visible { outline: 2px solid var(--td-brand-color); outline-offset: 1px; }
@@ -2986,15 +3000,6 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
     flex: none;
     gap: 8px;
     white-space: nowrap;
-    :deep([data-guide="kb-detail-new-folder"]) { height: 32px; }
-  }
-  .doc-filter-actions :deep(.content-bar-icon-btn) {
-    height: 32px;
-    padding: 0 12px;
-    border-radius: var(--app-radius-md);
-    background: var(--td-brand-color);
-    color: var(--app-on-brand, var(--td-text-color-anti));
-    &:hover { background: var(--td-brand-color-hover); }
   }
 }
 .doc-folder-path {
@@ -3336,6 +3341,7 @@ const handleKBEditorSuccess = (kbIdValue: string) => {
 
   .document-breadcrumb {
     display: flex;
+    font-family: var(--cds-font-interface, var(--app-font-family));
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;

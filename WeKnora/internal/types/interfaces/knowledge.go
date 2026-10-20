@@ -89,7 +89,9 @@ type KnowledgeService interface {
 	// document counts. It powers the document sidebar tree.
 	ListKnowledgeFolderTree(ctx context.Context, kbID string) (*types.KnowledgeFolderTree, error)
 	CreateKnowledgeFolder(ctx context.Context, kbID, path string) (*types.KnowledgeFolder, error)
-	DeleteKnowledgeFolder(ctx context.Context, kbID, path string) error
+	// With recursive=true, delete documents through the normal cleanup pipeline
+	// before removing the subtree. Omitted/false preserves empty-only deletion.
+	DeleteKnowledgeFolder(ctx context.Context, kbID, path string, recursive ...bool) error
 	// MoveKnowledgeToFolder re-files knowledge entries under the given folder
 	// path (empty means the knowledge base top level). Folders are derived from
 	// the stored paths, so a path that does not exist yet is created implicitly.

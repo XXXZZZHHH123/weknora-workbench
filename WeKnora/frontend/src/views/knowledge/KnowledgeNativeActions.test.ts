@@ -163,12 +163,14 @@ async function folderMutation(action: 'move' | 'rename', change = '') {
   return { posts: JSON.parse(JSON.stringify(posts)), events, selected }
 }
 
-for (const action of ['move', 'rename'] as const) {
+// Folder rename now belongs to KnowledgeFolderActions.vue; its actual compiled
+// component tests cover success and stale actor/tenant/KB/permission results.
+for (const action of ['move'] as const) {
   test('native ' + action + ' refreshes both the directory sidebar and file list', async () => {
     const result = await folderMutation(action)
     assert.equal(result.events.length, 1)
     assert.equal(result.events[0].detail.kbId, 'kb-a')
-    if (action === 'rename') assert.deepEqual(result.selected, ['Renamed/Inner'])
+    assert.deepEqual(result.selected, [])
   })
   for (const change of ['actor', 'tenant', 'kb']) {
     test('a completed native ' + action + ' cannot refresh or navigate a changed ' + change, async () => {
@@ -179,6 +181,39 @@ for (const action of ['move', 'rename'] as const) {
     })
   }
 }
+
+test('an acknowledged folder rename follows the selected descendant without another mutation', async () => {
+  const result = await folderMutation('rename')
+  assert.deepEqual(result.selected, ['Renamed/Inner'])
+  assert.deepEqual(result.posts, [])
+  assert.deepEqual(result.events, [])
+})
+
+for (const entry of [
+  { selected: 'Parent/Old/Inner', deleted: 'Parent/Old', opened: '', expected: 'Parent' },
+  { selected: 'Old/Inner', deleted: 'Old', opened: '', expected: '' },
+  { selected: 'Sibling', deleted: 'Old', opened: 'Old/Inner', expected: 'Sibling' },
+]) {
+  test(`recursive deletion clears the deleted subtree reference and routes to ${entry.expected || 'root'}`, () => {
+    const navigations: any[] = []
+    const context = {
+      selectedFolderPath: ref(entry.selected), cardList: ref(entry.opened ? [{ id: 'open-file', folder_path: entry.opened }] : []), details: { id: 'open-file' },
+      autoOpenRequest: 0, pendingKnowledgeId: ref('open-file'), isCardDetails: ref(true),
+      route: { query: { folder: entry.selected, knowledge_id: 'open-file', q: 'keep-filter' } }, router: { replace: (value: any) => navigations.push(value) },
+    }
+    vm.runInNewContext(code(knowledge, 'const handleFolderDeleted =', 'const handleFolderTreeCollapsedChange =') + `\nhandleFolderDeleted(${JSON.stringify(entry.deleted)})`, context)
+    assert.equal(context.autoOpenRequest, 1); assert.equal(context.pendingKnowledgeId.value, null); assert.equal(context.isCardDetails.value, false)
+    const query = JSON.parse(JSON.stringify(navigations[0].query))
+    assert.deepEqual(query, { ...(entry.expected ? { folder: entry.expected } : {}), q: 'keep-filter' })
+  })
+}
+test('deleting a different folder preserves the current route and open file', () => {
+  const navigations: any[] = []
+  const context = { selectedFolderPath: ref('Sibling'), cardList: ref([{ id: 'open-file', folder_path: 'Sibling' }]), details: { id: 'open-file' },
+    autoOpenRequest: 0, pendingKnowledgeId: ref('open-file'), isCardDetails: ref(true), route: { query: {} }, router: { replace: (value: any) => navigations.push(value) } }
+  vm.runInNewContext(code(knowledge, 'const handleFolderDeleted =', 'const handleFolderTreeCollapsedChange =') + "\nhandleFolderDeleted('Old')", context)
+  assert.deepEqual(navigations, []); assert.equal(context.isCardDetails.value, true); assert.equal(context.autoOpenRequest, 0)
+})
 
 test('successful native editor writes refresh the real directory without replaying stale callbacks', () => {
   const events: any[] = []

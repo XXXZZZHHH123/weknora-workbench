@@ -513,8 +513,10 @@ export function createKnowledgeFolder(kbId: string, path: string) {
   return post(`/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/knowledge/folders`, { path });
 }
 
-export function deleteKnowledgeFolder(kbId: string, path: string) {
-  return del(`/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/knowledge/folders?${new URLSearchParams({ path })}`);
+export function deleteKnowledgeFolder(kbId: string, path: string, options?: { recursive?: boolean }) {
+  const query = new URLSearchParams({ path });
+  if (options?.recursive) query.set('recursive', 'true');
+  return del(`/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/knowledge/folders?${query}`, undefined, options?.recursive ? { timeout: 60000 } : undefined);
 }
 
 /**

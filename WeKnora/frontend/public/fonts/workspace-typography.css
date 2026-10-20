@@ -1,0 +1,18 @@
+/* Shared by the platform, embedded chat and independent data/research tools.
+ * All typefaces are self-hosted; OFL licenses live beside each font family.
+ */
+@import url('/fonts/source-serif-4/font.css');
+@import url('/fonts/noto-sans-sc/font.css');
+@import url('/fonts/noto-serif-sc/font.css');
+@import url('/fonts/noto-serif-reading-sc/font.css?v=2');
+@font-face {
+  font-family: Inter;
+  src: url('/fonts/InterVariable.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  font-variant-numeric: lining-nums tabular-nums;
+}

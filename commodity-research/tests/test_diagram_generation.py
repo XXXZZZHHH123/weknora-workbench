@@ -99,19 +99,313 @@ def test_images_are_bounded_data_not_external_fetches(generator,image):
     assert calls==[]
 
 
-def test_large_catalog_recall_is_model_planned_then_model_decides_bindings(generator,monkeypatch):
+def catalog_fields(count, padding=''):
+    return [{'id':'kb-'+format(i,'048x'),'name':'Gauge '+str(i),'unit':'kg','frequency':'日',
+             'sheet':'Measurements','dimensions':{'coverage':padding},'source_file':'readings.xlsx',
+             'knowledge_base_id':KB,'source_kind':'structured'} for i in range(count)]
+
+
+def prompt_fields(prompt):
+    encoded=prompt.rpartition('\n真实字段目录：')[2].partition('\n资料：')[0]
+    return json.loads(encoded)
+
+
+def catalog_bytes(fields):
+    return len(json.dumps(fields,ensure_ascii=False,separators=(',',':')).encode('utf-8'))
+
+
+def test_complete_catalog_over_256_fields_reaches_model_without_keyword_filter(generator,monkeypatch):
     client,headers,_,_,calls=generator
-    fields=[{'id':'kb-'+format(i,'048x'),'name':'Field '+str(i),'unit':'kg','frequency':'日'} for i in range(300)]
+    fields=catalog_fields(300)
     monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
-    responses=[{'queries':['Field 299']},model_graph(fields[299]['id'])]
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return model_graph(fields[-1]['id'])
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Study the bottleneck'})
+    assert result.status_code==200,result.text
+    assert len(calls)==1 and result.json()['candidate_count']==300
+    assert prompt_fields(calls[0][2])==fields
+    assert result.json()['bindings'][0]['series_id']==fields[-1]['id']
+    assert result.json()['candidates_truncated'] is False
+
+
+def test_catalog_selection_covers_all_byte_bounded_batches_with_full_input(generator,monkeypatch):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(5,'统计范围'*40)
+    budget=catalog_bytes(fields[:2])
+    monkeypatch.setattr(generation,'CATALOG_BYTES',budget,raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    responses=[{'series_ids':[]},{'series_ids':[fields[3]['id']]},
+               {'series_ids':[fields[4]['id']]},model_graph(fields[4]['id'])]
+    async def complete(scope,model,prompt,image=None):
+        calls.append({'prompt':prompt,'image':image})
+        return responses.pop(0)
+    monkeypatch.setattr(generation,'completion',complete)
+    image='data:image/png;base64,eA=='
+    instruction='Retain the whole research question, including reporting scope.'
+    result=client.post(endpoint(),headers=headers,json={
+        'model_id':'configured-model','instructions':instruction,'image':image})
+    assert result.status_code==200,result.text
+    assert len(calls)==4
+    batches=[prompt_fields(call['prompt']) for call in calls[:-1]]
+    assert [field for batch in batches for field in batch]==fields
+    assert [len(batch) for batch in batches]==[2,2,1]
+    assert all(catalog_bytes(batch)<=budget for batch in batches)
+    assert all(instruction in call['prompt'] and call['image']==image for call in calls)
+    assert prompt_fields(calls[-1]['prompt'])==[fields[3],fields[4]]
+    assert result.json()['candidate_count']==2 and result.json()['candidates_truncated'] is False
+    assert result.json()['bindings'][0]['series_id']==fields[4]['id']
+
+
+@pytest.mark.parametrize('selection',[
+    {'series_ids':['invented-id']},{'series_ids':None},{'series_ids':'not-a-list'},
+    {'series_ids':[1]},{'series_ids':[{}]},{'series_ids':[],'extra':'instruction'},
+    {'queries':['Gauge']},
+])
+def test_catalog_selection_rejects_invalid_plans_without_generating_or_saving(generator,monkeypatch,selection):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(3)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return selection
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==422,result.text
+    assert len(calls)==1
+    assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
+
+
+@pytest.mark.parametrize('empty',[False,True])
+def test_catalog_selection_accepts_explicit_id_array_including_empty(generator,monkeypatch,empty):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(2)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    selected=[] if empty else [fields[0]['id']]
+    responses=[selected,[],model_graph(None if empty else fields[0]['id'])]
     async def complete(*args,**kwargs):
         calls.append(args)
         return responses.pop(0)
     monkeypatch.setattr(generation,'completion',complete)
-    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'A complete process'})
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==200,result.text
-    assert len(calls)==2 and result.json()['candidate_count']==1
-    assert result.json()['bindings'][0]['series_id']==fields[299]['id']
+    assert len(calls)==3
+    assert result.json()['candidate_count']==len(selected)
+    assert [binding['series_id'] for binding in result.json()['bindings']]==selected
+    assert prompt_fields(calls[-1][2])==([] if empty else fields[:1])
+    assert result.json()['candidates_truncated'] is False
+
+
+@pytest.mark.parametrize('object_wrapper',[False,True])
+def test_repeated_real_ids_form_one_candidate_set_without_losing_distinct_choices(generator,monkeypatch,object_wrapper):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(3)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:2]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    identifiers=[fields[1]['id'],fields[0]['id'],fields[1]['id']]
+    selection={'series_ids':identifiers} if object_wrapper else identifiers
+    responses=[selection,[],model_graph(fields[1]['id'])]
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return responses.pop(0)
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==200,result.text
+    assert len(calls)==3 and result.json()['candidate_count']==2
+    assert prompt_fields(calls[-1][2])==fields[:2]
+    assert result.json()['bindings'][0]['series_id']==fields[1]['id']
+
+
+def test_raw_selection_limit_applies_before_deduplicating_real_ids(generator,monkeypatch):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(3)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:2]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return [fields[0]['id']]*25
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==422,result.text
+    assert len(calls)==1
+
+
+@pytest.mark.parametrize('kind',['unknown','other-batch','non-string','nested','field-name','over-limit'])
+def test_catalog_selection_array_keeps_all_id_and_capacity_guards(generator,monkeypatch,kind):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(26)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:25]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    invalid={
+        'unknown':['invented-id'],'other-batch':[fields[-1]['id']],
+        'non-string':[1],
+        'nested':[[fields[0]['id']]],'field-name':[fields[0]['name']],
+        'over-limit':[field['id'] for field in fields[:25]],
+    }[kind]
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return invalid
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==422,result.text
+    assert result.json()['detail']=='模型没有给出有效指标筛选结果'
+    assert len(calls)==1
+    assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
+
+
+def test_catalog_selection_rejects_real_id_from_other_batch(generator,monkeypatch):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(3)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return {'series_ids':[fields[-1]['id']]}
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==422,result.text
+    assert len(calls)==1
+
+
+@pytest.mark.parametrize('kind',['single-field','batch-count'])
+def test_catalog_capacity_is_preflighted_before_any_model_call(generator,monkeypatch,kind):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(5)
+    budget=catalog_bytes(fields[:1])-(1 if kind=='single-field' else 0)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',budget,raising=False)
+    monkeypatch.setattr(generation,'CATALOG_MAX_BATCHES',4,raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==413,result.text
+    assert calls==[]
+
+
+def test_selected_catalog_over_budget_is_rejected_instead_of_truncated(generator,monkeypatch):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(3)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    async def complete(scope,model,prompt,image=None):
+        calls.append(prompt)
+        return {'series_ids':[field['id'] for field in prompt_fields(prompt)]}
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==413,result.text
+    assert len(calls)==3
+
+
+def test_no_compatible_selection_is_explicitly_unbound_without_keyword_fallback(generator,monkeypatch):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(2)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    responses=[{'series_ids':[]},{'series_ids':[]},model_graph(None)]
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return responses.pop(0)
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==200,result.text
+    assert len(calls)==3 and result.json()['candidate_count']==0 and result.json()['bindings']==[]
+    assert '待补全' in result.json()['notice']
+
+
+def test_complete_catalog_byte_boundary_does_not_add_unnecessary_selection_call(generator,monkeypatch):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(2,'多字节')
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return model_graph(fields[1]['id'])
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==200,result.text
+    assert len(calls)==1 and prompt_fields(calls[0][2])==fields
+
+
+def test_catalog_selection_output_limit_is_rejected_without_taking_first_ids(generator,monkeypatch):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(66)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:65]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return {'series_ids':[field['id'] for field in fields[:65]]}
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==422,result.text
+    assert result.json()['detail']=='模型没有给出有效指标筛选结果'
+    assert len(calls)==1
+
+
+@pytest.mark.parametrize('selected_count',[24,25])
+def test_compact_catalog_selection_budget_accepts_24_and_rejects_25(generator,monkeypatch,selected_count):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(26)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:25]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    responses=[{'series_ids':[field['id'] for field in fields[:selected_count]]},
+               {'series_ids':[]},model_graph(fields[0]['id'])]
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        return responses.pop(0)
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research overview'})
+    if selected_count==24:
+        assert result.status_code==200,result.text
+        assert len(calls)==3 and result.json()['candidate_count']==24
+        assert prompt_fields(calls[-1][2])==fields[:24]
+        assert result.json()['bindings'][0]['series_id']==fields[0]['id']
+    else:
+        assert result.status_code==422,result.text
+        assert result.json()['detail']=='模型没有给出有效指标筛选结果'
+        assert len(calls)==1
+
+
+def test_explicit_detail_request_keeps_all_26_legal_nodes_without_truncation(generator):
+    client,headers,_,response,_=generator
+    response['nodes']=[{'id':'n'+str(i),'label':'Variable '+str(i),'group_id':'g',
+                        'series_id':SERIES if i==0 else None} for i in range(26)]
+    response['edges']=[{'from':'n'+str(i),'to':'n'+str(i+1)} for i in range(25)]
+    result=client.post(endpoint(),headers=headers,json={
+        'model_id':'configured-model','instructions':'Expand the complete 26 research variables with all supported details.'})
+    assert result.status_code==200,result.text
+    assert result.json()['nodes']==26
+    from tin.export import diagram_md
+    layout=diagram_md.parse(result.json()['markdown'])
+    assert {node['id'] for node in layout['nodes'] if node.get('kind')!='group'}=={'n'+str(i) for i in range(26)}
+    assert len(layout['edges'])==25
+
+
+def test_prompt_byte_limit_is_checked_before_model_call(generator,monkeypatch):
+    client,headers,_,_,calls=generator
+    monkeypatch.setattr(generation,'MODEL_PROMPT_BYTES',200,raising=False)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==413,result.text
+    assert calls==[]
+
+
+def test_source_change_during_catalog_selection_stops_before_final_generation(generator,monkeypatch):
+    client,headers,_,_,calls=generator
+    fields=catalog_fields(2)
+    version=['d'*64]
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda:(version[0],fields))
+    responses=[{'series_ids':[fields[0]['id']]},{'series_ids':[]},model_graph(fields[0]['id'])]
+    async def complete(*args,**kwargs):
+        calls.append(args)
+        if len(calls)==2:
+            version[0]='e'*64
+        return responses.pop(0)
+    monkeypatch.setattr(generation,'completion',complete)
+    result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
+    assert result.status_code==409,result.text
+    assert len(calls)==2
+    assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
 
 
 def test_generation_keeps_duplicate_names_and_explicit_flow_through_apply_and_export(generator):

@@ -8,14 +8,14 @@ import { createIsolatedResearchClient } from '../../api/isolatedResearch'
 
 const source = readFileSync(new URL('./IsolatedResearchWorkbench.vue', import.meta.url), 'utf8')
 const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0]!.replace(/^import .*$/gm, '')
-const code = ts.transpileModule(`${script}\n;({ overview, sources, sourceTotal, sourcePage, guideVisible, drawer, drawerError, error, pendingFiles, guide, selectFiles, enqueueFiles, sourceStatus, isWorkbook, openSources, openGuide, openReview, openKnowledgeBase, openStructured, showSource, selectedSource, sourceContent, sourceContentLoading, saveVisualOriginals, moreSources, filesChanged, load })`, {
+const code = ts.transpileModule(`${script}\n;({ overview, loading, busy, guideSaving, guideError, sources, sourceTotal, sourcePage, drawerOpen, drawer, drawerError, error, pendingFiles, guide, selectFiles, enqueueFiles, sourceStatus, isWorkbook, openSources, openReview, openKnowledgeBase, openStructured, showSource, selectedSource, sourceContent, sourceContentLoading, saveVisualOriginals, moreSources, filesChanged, load })`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
 const tick = () => new Promise(setImmediate)
 const ready = async () => { await nextTick(); await tick() }
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value))
 type Extra = (path: string, options?: RequestInit) => Response | Promise<Response> | undefined
-function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated') {
+function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated', save?: (id: string, input: any) => Promise<any>) {
   const props = reactive({ workbench: { id: 'fresh-workbench', knowledge_base_id: 'fresh-kb', workspace_mode: mode, template_id: 'industrial', name: 'Test-only workspace', onboarding: { status: 'active', tasks: { sources: false, review: false, research: false } } } })
   const auth = reactive({ token: 'test-token', selectedTenantId: 'test-tenant', user: { id: 'test-user' } })
   const calls: Array<{ url: string; method: string; headers: Headers }> = [], guides: any[] = [], batches: any[] = [], emits: any[] = [], routes: any[] = []
@@ -35,7 +35,7 @@ function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated') {
     useRouter: () => ({ push: (location: unknown) => { routes.push(location); return Promise.resolve() } }),
     useAuthStore: () => auth, useUploadTasksStore: () => ({ enqueue: (input: any) => batches.push(input) }),
     createIsolatedResearchClient: (captured: any, current: any) => createIsolatedResearchClient(captured, current, network),
-    updateResearchWorkbenchOnboarding: async (id: string, input: any) => { guides.push({ id, input }); return { data: { ...props.workbench, onboarding: { ...props.workbench.onboarding, ...input, tasks: { ...props.workbench.onboarding.tasks, ...input.tasks } } } } },
+    updateResearchWorkbenchOnboarding: async (id: string, input: any) => { guides.push({ id, input }); if (save) return save(id,input); return { data: { ...props.workbench, onboarding: { ...props.workbench.onboarding, ...input, tasks: { ...props.workbench.onboarding.tasks, ...input.tasks } } } } },
     MessagePlugin: { info() {} }, workspaceErrorMessage: (error: any) => error?.message || 'failed', buildUploadFileName: (file: any) => file.webkitRelativePath || undefined,
     window: { addEventListener() {}, removeEventListener() {} }, setTimeout, clearTimeout,
     onMounted() {}, onBeforeUnmount: (fn: () => void) => cleanups.push(fn),
@@ -51,7 +51,7 @@ for (const mode of ['isolated', 'legacy'] as const) {
     const f = fixture(ownSources, mode)
     try {
       await ready()
-      assert.equal(f.view.guideVisible.value, mode === 'isolated')
+      assert.equal(f.view.overview.value.workbench.workspace_mode, mode)
       assert.equal(f.view.sources.value.length, 2)
       assert.equal(f.calls.length, 2)
       assert.ok(f.calls.every(call => call.url.startsWith('/research/api/workbenches/fresh-workbench/') && call.method === 'GET'))
@@ -67,14 +67,14 @@ for (const mode of ['isolated', 'legacy'] as const) {
   })
 }
 
-test('isolated guide persists personal progress without claiming data readiness', async () => {
+test('personal preparation acknowledgements persist without claiming data readiness', async () => {
   const f = fixture()
   try {
     await ready(); await f.view.guide('dismissed')
     assert.equal(f.guides[0].id, 'fresh-workbench')
-    Object.assign(f.props.workbench, f.emits[0][1]); assert.equal(f.view.guideVisible.value, false)
-    f.view.openGuide(); await tick()
-    Object.assign(f.props.workbench, f.emits[1][1]); assert.equal(f.view.guideVisible.value, true)
+    Object.assign(f.props.workbench, f.emits[0][1]); assert.equal(f.props.workbench.onboarding.status, 'dismissed')
+    await f.view.guide('active'); await tick()
+    Object.assign(f.props.workbench, f.emits[1][1]); assert.equal(f.props.workbench.onboarding.status, 'active')
     assert.equal(f.view.overview.value.counts.indicators, 0)
   } finally { f.close() }
 })
@@ -82,8 +82,8 @@ test('isolated guide persists personal progress without claiming data readiness'
 test('legacy guide and upload never call unsupported onboarding APIs', async () => {
   const f = fixture(ownSources, 'legacy')
   try {
-    await ready(); f.view.openGuide()
-    assert.equal(f.view.drawer.value, 'sources'); assert.equal(f.view.guideVisible.value, false)
+    await ready(); f.view.openSources()
+    assert.equal(f.view.drawer.value, 'sources'); assert.equal(f.view.drawerOpen.value, true)
     await f.view.guide('active', 'review')
     f.view.selectFiles([{ name: 'Original.xlsx', size: 10 }]); f.view.enqueueFiles()
     assert.equal(f.batches.length, 1); assert.deepEqual(f.guides, []); assert.deepEqual(f.emits, [])
@@ -225,7 +225,7 @@ test('the overview inventory avoids a second load and continues after its 200 ro
   const f = fixture(path => {
     if (path.endsWith('/overview')) return Response.json({
       workbench:{id:'fresh-workbench',knowledge_base_id:'fresh-kb',workspace_mode:'isolated'},
-      counts:{sources:201,indicators:0,observations:0},readiness:{status:'preparing',tasks:[]},
+      counts:{sources:201,documents_ready:0,excel_pending:0,indicators:0,observations:0},readiness:{status:'preparing',tasks:[]},
       source_inventory:{knowledge_base_id:'fresh-kb',sources:rows,total:201},modules:[],
     })
     if (path.includes('/sources?page=3&page_size=100')) return Response.json({
@@ -243,14 +243,195 @@ test('the overview inventory avoids a second load and continues after its 200 ro
   } finally { f.close() }
 })
 
-test('onboarding hides beneath active native drawers and returns when available', async () => {
-  const f = fixture()
+test('source preparation waits for verified preparation progress', async () => {
+  let resolveOverview!: (response: Response) => void
+  const f = fixture(path => path.endsWith('/overview') ? new Promise<Response>(resolve => { resolveOverview = resolve }) : undefined)
   try {
     await ready()
-    assert.equal(f.view.guideVisible.value,true)
-    ;(f.props as any).guideSuppressed = true
-    assert.equal(f.view.guideVisible.value,false)
-    ;(f.props as any).guideSuppressed = false
-    assert.equal(f.view.guideVisible.value,true)
+    assert.equal(f.view.loading.value, true)
+    assert.equal(f.view.overview.value, null)
+    resolveOverview(Response.json({ workbench: { id: 'fresh-workbench', knowledge_base_id: 'fresh-kb', workspace_mode: 'isolated' }, counts: { sources: 0, documents_ready: 0, excel_pending: 0, indicators: 0, observations: 0 }, readiness: { status: 'empty', tasks: [] }, modules: [] }))
+    await ready()
+    assert.equal(f.view.overview.value.workbench.id, 'fresh-workbench')
+  } finally { f.close() }
+})
+
+test('failed preparation verification never starts onboarding with guessed progress', async () => {
+  const f = fixture(path => path.endsWith('/overview') ? Response.json({ detail: 'Scope unavailable' }, { status: 503 }) : undefined)
+  try {
+    await ready()
+    assert.equal(f.view.overview.value, null)
+    assert.equal(f.view.drawerOpen.value, false)
+    assert.match(f.view.error.value, /Scope unavailable/)
+  } finally { f.close() }
+})
+
+test('source preparation exposes every drawer to suppress unrelated feature guides', async () => {
+  const f = fixture(ownSources)
+  try {
+    await ready()
+    f.view.openSources()
+    assert.equal(f.view.drawerOpen.value, true)
+    f.view.selectFiles([{ name: 'fixture.txt' }])
+    assert.equal(f.view.drawerOpen.value, true)
+    await f.view.showSource(f.view.sources.value[1])
+    assert.equal(f.view.drawerOpen.value, true)
+    f.view.drawer.value = null
+    assert.equal(f.view.drawerOpen.value, false)
+  } finally { f.close() }
+})
+
+test('guide saving survives a concurrent scoped source refresh', async () => {
+  let resolveSave!: (value: unknown) => void
+  const f = fixture(undefined,'isolated',() => new Promise(resolve => { resolveSave=resolve }))
+  try {
+    await ready()
+    const saving=f.view.guide('completed')
+    await f.view.load()
+    resolveSave({data:{...f.props.workbench,onboarding:{...f.props.workbench.onboarding,status:'completed'}}})
+    await saving
+    assert.equal(f.emits.length,1)
+    assert.equal(f.emits[0][1].onboarding.status,'completed')
+    assert.deepEqual(plain(f.guides[0].input),{status:'completed'})
+    Object.assign(f.props.workbench,f.emits[0][1])
+    assert.equal(f.props.workbench.onboarding.status,'completed')
+  } finally { f.close() }
+})
+
+test('guide saving is independent of source preparation busy state', async () => {
+  const f=fixture()
+  try {
+    await ready()
+    f.view.busy.value=true
+    await f.view.guide('skipped')
+    assert.equal(f.guides.length,1)
+    assert.equal(f.emits[0][1].onboarding.status,'skipped')
+    assert.equal(f.view.busy.value,true)
+  } finally { f.close() }
+})
+
+test('failed guide saving remains retryable after a source refresh and can change the outcome', async () => {
+  let rejectSave!: (error: Error) => void
+  let attempts=0
+  const f=fixture(undefined,'isolated',async (_id,input) => {
+    if (++attempts===1) return new Promise((_resolve,reject) => { rejectSave=reject })
+    return {data:{...f.props.workbench,onboarding:{...f.props.workbench.onboarding,...input}}}
+  })
+  try {
+    await ready()
+    const saving=f.view.guide('skipped')
+    await f.view.load()
+    rejectSave(new Error('Save unavailable'))
+    await saving
+    assert.equal(f.view.guideSaving.value,false)
+    assert.equal(f.props.workbench.onboarding.status,'active')
+    assert.equal(f.view.guideError.value,'Save unavailable')
+    assert.equal(f.emits.length,0)
+    await f.view.guide('completed')
+    assert.deepEqual(f.guides.map(request => request.input.status),['skipped','completed'])
+    assert.equal(f.emits[0][1].onboarding.status,'completed')
+    assert.equal(f.view.guideError.value,'')
+    assert.equal(f.view.overview.value.counts.indicators,0)
+  } finally { f.close() }
+})
+
+for (const outcome of ['success','failure'] as const) {
+  test(`guide ${outcome} survives a token rotation and releases its save lock`, async () => {
+    let resolveSave!: (value: unknown) => void, rejectSave!: (error: Error) => void
+    let attempts=0
+    const f=fixture(undefined,'isolated',async (_id,input) => {
+      if (++attempts===1) return new Promise((resolve,reject) => { resolveSave=resolve;rejectSave=reject })
+      return {data:{...f.props.workbench,onboarding:{...f.props.workbench.onboarding,...input}}}
+    })
+    try {
+      await ready()
+      const saving=f.view.guide('active','sources')
+      assert.equal(f.view.guideSaving.value,true)
+      f.auth.token='refreshed-token'
+      await ready()
+      assert.equal(f.guides.length,1)
+      assert.equal(f.view.guideSaving.value,true)
+      assert.equal(f.view.overview.value.workbench.id,'fresh-workbench')
+      if(outcome==='success')resolveSave({data:{...f.props.workbench,onboarding:{...f.props.workbench.onboarding,tasks:{...f.props.workbench.onboarding.tasks,sources:true}}}})
+      else rejectSave(new Error('Current scope save unavailable'))
+      await saving
+      assert.equal(f.view.guideSaving.value,false)
+      assert.equal(f.emits.length,outcome==='success'?1:0)
+      if(outcome==='success')assert.equal(f.emits[0][1].onboarding.tasks.sources,true)
+      assert.equal(f.view.guideError.value,outcome==='failure'?'Current scope save unavailable':'')
+      await f.view.guide('completed')
+      assert.equal(f.guides.length,2)
+      assert.equal(f.emits.at(-1)[1].onboarding.status,'completed')
+      assert.equal(f.view.guideSaving.value,false)
+      assert.equal(f.view.guideError.value,'')
+    } finally { f.close() }
+  })
+}
+
+for (const changed of ['user','tenant','workbench','knowledge-base','logout'] as const) {
+  for (const outcome of ['success','failure'] as const) {
+    test(`late guide ${outcome} cannot cross a changed ${changed} scope`, async () => {
+      let resolveSave!: (value: unknown) => void, rejectSave!: (error: Error) => void
+      const f=fixture(undefined,'isolated',() => new Promise((resolve,reject) => { resolveSave=resolve;rejectSave=reject }))
+      try {
+        await ready()
+        const original=structuredClone(JSON.parse(JSON.stringify(f.props.workbench)))
+        const saving=f.view.guide('completed')
+        if(changed==='user')f.auth.user.id='another-user'
+        if(changed==='tenant')f.auth.selectedTenantId='another-tenant'
+        if(changed==='workbench')f.props.workbench.id='another-workbench'
+        if(changed==='knowledge-base')f.props.workbench.knowledge_base_id='another-library'
+        if(changed==='logout')f.auth.token=''
+        await ready()
+        if(outcome==='success')resolveSave({data:{...original,onboarding:{...original.onboarding,status:'completed'}}})
+        else rejectSave(new Error('Old scope failure'))
+        await saving
+        assert.equal(f.emits.length,0)
+        assert.equal(f.view.guideError.value,'')
+        assert.equal(f.view.guideSaving.value,false)
+      } finally { f.close() }
+    })
+  }
+}
+
+test('returning to the same workbench cannot let an obsolete guide response release a newer save lock', async () => {
+  const requests: Array<(value: unknown) => void>=[]
+  const f=fixture(undefined,'isolated',() => new Promise(resolve => { requests.push(resolve) }))
+  try {
+    await ready()
+    const original=structuredClone(plain(f.props.workbench))
+    const obsolete=f.view.guide('completed')
+    f.props.workbench.id='another-workbench'
+    await ready()
+    f.props.workbench.id=original.id
+    await ready()
+    const current=f.view.guide('active','sources')
+    assert.equal(requests.length,2)
+    assert.equal(f.view.guideSaving.value,true)
+    requests[0]!({data:{...original,onboarding:{...original.onboarding,status:'completed'}}})
+    await obsolete
+    assert.equal(f.emits.length,0)
+    assert.equal(f.view.guideSaving.value,true)
+    requests[1]!({data:{...original,onboarding:{...original.onboarding,tasks:{...original.onboarding.tasks,sources:true}}}})
+    await current
+    assert.equal(f.emits.length,1)
+    assert.equal(f.emits[0][1].onboarding.tasks.sources,true)
+    assert.equal(f.view.guideSaving.value,false)
+  } finally { f.close() }
+})
+
+test('a guide request has its own duplicate-save lock', async () => {
+  let resolveSave!: (value: unknown) => void
+  const f=fixture(undefined,'isolated',() => new Promise(resolve => { resolveSave=resolve }))
+  try {
+    await ready()
+    const saving=f.view.guide('completed')
+    await f.view.guide('skipped')
+    assert.equal(f.guides.length,1)
+    assert.equal(f.view.guideSaving.value,true)
+    resolveSave({data:{...f.props.workbench,onboarding:{...f.props.workbench.onboarding,status:'completed'}}})
+    await saving
+    assert.equal(f.view.guideSaving.value,false)
+    assert.equal(f.emits.length,1)
   } finally { f.close() }
 })

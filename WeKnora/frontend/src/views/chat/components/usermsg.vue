@@ -237,6 +237,7 @@ const closePreImg = () => {
 
 .user_msg_container {
     position: relative;
+    font-family: var(--cds-font-interface, var(--app-font-family));
     display: flex;
     flex-direction: column;
     align-items: flex-end;

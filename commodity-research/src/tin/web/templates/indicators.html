@@ -2,6 +2,7 @@
 {% block title %}指标 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block head %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/indicators.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/indicator-preferences.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/indicators.js?v={{ static_version() }}"></script>
 {% endblock %}
 {% block main %}

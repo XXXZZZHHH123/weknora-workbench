@@ -8,6 +8,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 type gitLabKnowledgeRepo struct {
@@ -18,8 +19,15 @@ func (r *gitLabKnowledgeRepo) GetKnowledgeTags(context.Context, []string) (map[s
 	return map[string][]*types.KnowledgeTag{}, nil
 }
 
+func prepareSourceCreationDirectories(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}, &types.KnowledgeFolder{}, &types.TaskPendingOp{}))
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-1", TenantID: 1}).Error)
+}
+
 func TestCreateKnowledgeFromFileGitLabPreservesSourcePaths(t *testing.T) {
 	db := setupKnowledgeSharedAccessDB(t)
+	prepareSourceCreationDirectories(t, db)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
@@ -80,6 +88,7 @@ func TestCreateKnowledgeFromFileGitLabPreservesSourcePaths(t *testing.T) {
 
 func TestCreateKnowledgeFromFileConfluencePreservesCopiedPages(t *testing.T) {
 	db := setupKnowledgeSharedAccessDB(t)
+	prepareSourceCreationDirectories(t, db)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -74,6 +75,9 @@ func (s *WorkspaceService) readableKB(ctx context.Context, id string) (*types.Kn
 		return nil, apperrors.NewBadRequestError("请选择知识库")
 	}
 	kb, err := s.kbs.GetKnowledgeBaseByIDOnly(ctx, id)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
 	if err != nil || kb == nil || kb.DeletedAt.Valid {
 		return nil, apperrors.NewNotFoundError("知识库不存在或无权访问")
 	}
@@ -277,6 +281,7 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 		}
 		row.KnowledgeBaseName = kb.Name
 		row.ScopeTenantID = row.TenantID
+		row.CanManage = canManageWorkbench(caller, row)
 		visible = append(visible, row)
 	}
 	if err := s.loadWorkbenchOnboarding(ctx, visible); err != nil {
@@ -285,10 +290,20 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 	return visible, nil
 }
 
+func canManageWorkbench(caller types.Caller, row *types.ResearchWorkbench) bool {
+	return row != nil && caller.Role.HasPermission(types.TenantRoleContributor) &&
+		(row.UserID == caller.UserID || caller.Role.HasPermission(types.TenantRoleAdmin))
+}
+
 func (s *WorkspaceService) workbench(ctx context.Context, db *gorm.DB, id string, edit bool) (*types.ResearchWorkbench, error) {
+	row, _, err := s.workbenchWithSource(ctx, db, id, edit)
+	return row, err
+}
+
+func (s *WorkspaceService) workbenchWithSource(ctx context.Context, db *gorm.DB, id string, edit bool) (*types.ResearchWorkbench, *types.KnowledgeBase, error) {
 	caller, err := workspaceCaller(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var row types.ResearchWorkbench
 	q := db.WithContext(ctx).Where("id = ? AND tenant_id = ?", id, caller.TenantID)
@@ -296,18 +311,19 @@ func (s *WorkspaceService) workbench(ctx context.Context, db *gorm.DB, id string
 		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
 	if err := q.First(&row).Error; err != nil {
-		return nil, workspaceDBError(err)
+		return nil, nil, workspaceDBError(err)
 	}
 	kb, err := s.readableKB(ctx, row.KnowledgeBaseID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if edit && (!caller.Role.HasPermission(types.TenantRoleContributor) || (row.UserID != caller.UserID && !caller.Role.HasPermission(types.TenantRoleAdmin))) {
-		return nil, apperrors.NewForbiddenError("仅创建者或空间管理员可修改工作台")
+	if edit && !canManageWorkbench(caller, &row) {
+		return nil, nil, apperrors.NewForbiddenError("仅创建者或空间管理员可修改工作台")
 	}
 	row.KnowledgeBaseName = kb.Name
 	row.ScopeTenantID = row.TenantID
-	return &row, nil
+	row.CanManage = canManageWorkbench(caller, &row)
+	return &row, kb, nil
 }
 
 func (s *WorkspaceService) GetWorkbench(ctx context.Context, id string) (*types.ResearchWorkbench, error) {
@@ -370,6 +386,17 @@ func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceI
 	hash := sha256.Sum256(raw)
 	row.RequestHash = hex.EncodeToString(hash[:])
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Coordinate with source deletion after the earlier access check. SQLite
+		// needs the writer reservation before reading to avoid lock upgrades.
+		if tx.Dialector.Name() == "sqlite" {
+			if err := tx.Exec("UPDATE knowledge_bases SET id = id WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL", kb.ID, kb.TenantID).Error; err != nil {
+				return err
+			}
+		}
+		var activeKB types.KnowledgeBase
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND tenant_id = ?", kb.ID, kb.TenantID).First(&activeKB).Error; err != nil {
+			return workspaceDBError(err)
+		}
 		result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "tenant_id"}, {Name: "user_id"}, {Name: "idempotency_key"}}, DoNothing: true}).Create(row)
 		if result.Error != nil {
 			return result.Error
@@ -394,6 +421,41 @@ func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceI
 	return s.GetWorkbench(ctx, row.ID)
 }
 
+// Keep service-backed authorization outside the transaction: SQLite may have
+// one connection, which the transaction already owns. Recheck live bindings and
+// source rows on that same connection before writing, in KB -> workbench order.
+func (s *WorkspaceService) mutateWorkbench(ctx context.Context, verified *types.ResearchWorkbench, sources []*types.KnowledgeBase, apply func(*gorm.DB, *types.ResearchWorkbench) error) error {
+	caller, err := workspaceCaller(ctx)
+	if err != nil {
+		return err
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].ID < sources[j].ID })
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, source := range sources {
+			if tx.Dialector.Name() == "sqlite" {
+				if err := tx.Exec("UPDATE knowledge_bases SET id = id WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL", source.ID, source.TenantID).Error; err != nil {
+					return err
+				}
+			}
+			var active types.KnowledgeBase
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND tenant_id = ?", source.ID, source.TenantID).First(&active).Error; err != nil {
+				return workspaceDBError(err)
+			}
+		}
+		var current types.ResearchWorkbench
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND tenant_id = ?", verified.ID, caller.TenantID).First(&current).Error; err != nil {
+			return workspaceDBError(err)
+		}
+		if !canManageWorkbench(caller, &current) {
+			return apperrors.NewForbiddenError("仅创建者或空间管理员可修改工作台")
+		}
+		if current.KnowledgeBaseID != verified.KnowledgeBaseID {
+			return apperrors.NewConflictError("工作台知识库绑定已变更，请刷新后重试")
+		}
+		return apply(tx, &current)
+	})
+}
+
 func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input WorkspaceInput) (*types.ResearchWorkbench, error) {
 	if input.TemplateID != nil || input.TemplateVersion != nil {
 		return nil, apperrors.NewBadRequestError("工作台模板和版本在创建时固定，不能通过编辑修改")
@@ -401,16 +463,23 @@ func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input
 	if err := validateWorkspaceInput(input, false); err != nil {
 		return nil, err
 	}
+	var target *types.KnowledgeBase
 	if input.KnowledgeBaseID != nil {
-		if _, err := s.readableKB(ctx, *input.KnowledgeBaseID); err != nil {
+		var err error
+		target, err = s.readableKB(ctx, *input.KnowledgeBaseID)
+		if err != nil {
 			return nil, err
 		}
 	}
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		row, err := s.workbench(ctx, tx, id, true)
-		if err != nil {
-			return err
-		}
+	verified, source, err := s.workbenchWithSource(ctx, s.db, id, true)
+	if err != nil {
+		return nil, err
+	}
+	sources := []*types.KnowledgeBase{source}
+	if target != nil && (target.ID != source.ID || target.TenantID != source.TenantID) {
+		sources = append(sources, target)
+	}
+	err = s.mutateWorkbench(ctx, verified, sources, func(tx *gorm.DB, row *types.ResearchWorkbench) error {
 		if input.Name != nil {
 			row.Name = *input.Name
 		}
@@ -432,11 +501,11 @@ func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input
 }
 
 func (s *WorkspaceService) DeleteWorkbench(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		row, err := s.workbench(ctx, tx, id, true)
-		if err != nil {
-			return err
-		}
+	verified, source, err := s.workbenchWithSource(ctx, s.db, id, true)
+	if err != nil {
+		return err
+	}
+	return s.mutateWorkbench(ctx, verified, []*types.KnowledgeBase{source}, func(tx *gorm.DB, row *types.ResearchWorkbench) error {
 		return tx.Delete(row).Error
 	})
 }

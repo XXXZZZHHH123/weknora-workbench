@@ -44,11 +44,19 @@ func (h *KnowledgeHandler) CreateKnowledgeFolder(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": row})
 }
 func (h *KnowledgeHandler) DeleteKnowledgeFolder(c *gin.Context) {
+	recursive := false
+	if raw, exists := c.GetQuery("recursive"); exists {
+		if raw != "true" && raw != "false" {
+			_ = c.Error(errors.NewBadRequestError("recursive 必须为 true 或 false"))
+			return
+		}
+		recursive = raw == "true"
+	}
 	kbID, ok := h.directoryWriteContext(c)
 	if !ok {
 		return
 	}
-	if err := h.kgService.DeleteKnowledgeFolder(c.Request.Context(), kbID, c.Query("path")); err != nil {
+	if err := h.kgService.DeleteKnowledgeFolder(c.Request.Context(), kbID, c.Query("path"), recursive); err != nil {
 		_ = c.Error(err)
 		return
 	}

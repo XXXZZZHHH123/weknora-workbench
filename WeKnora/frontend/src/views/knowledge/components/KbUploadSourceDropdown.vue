@@ -25,16 +25,16 @@
         @click="handleActionSelect"
       >
         <t-button
-          variant="text"
+          :variant="triggerLabel ? 'outline' : 'text'"
           theme="default"
-          :class="['kb-upload-source-trigger', triggerClass]"
+          :class="['kb-upload-source-trigger', triggerClass, { 'resource-action': Boolean(triggerLabel) }]"
           :data-guide="dataGuide || undefined"
           :aria-label="tooltipText"
           size="small"
         >
           <template #icon>
-            <component v-if="triggerIconComponent" :is="triggerIconComponent" size="18px" :stroke-width="1.7" class="kb-source-icon" />
-            <t-icon v-else :name="triggerIcon" size="18px" />
+            <component v-if="triggerIconComponent" :is="triggerIconComponent" :size="triggerLabel ? '16px' : '18px'" :stroke-width="1.7" class="kb-source-icon" />
+            <t-icon v-else :name="triggerIcon" :size="triggerLabel ? '16px' : '18px'" />
           </template>
           <span v-if="triggerLabel">{{ triggerLabel }}</span>
         </t-button>

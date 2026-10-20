@@ -264,6 +264,7 @@
       <ChatMemoryStep
         v-if="showMemoryRow"
         class="event-item"
+        :variant="showStreamingTimeline ? 'step' : 'root'"
         :memories="memoryItems"
         :expanded="memoryExpanded"
         :is-last="memoryIsLast"
@@ -3353,10 +3354,6 @@ const handleAddToKnowledge = (answerEvent: any) => {
         /* 加载时的占位背景色 */
       }
     }
-  }
-
-  .answer-toolbar {
-    margin-top: 10px;
   }
 }
 

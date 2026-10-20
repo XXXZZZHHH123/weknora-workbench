@@ -4,7 +4,7 @@
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/strategy.css?v={{ static_version() }}">
 <a class="back-link" href="{{ research_prefix() }}/sn/strategies">← 返回策略列表</a>
 <section class="strategy-detail-head"><div><div class="strategy-card-top"><span class="status-chip status-{{ strategy.status }}">{{ status_labels[strategy.status] }}</span><span>{{ kind_labels[strategy.kind] }} · {{ mode_labels[strategy.mode] }}</span></div>
-  <h1>{{ strategy.title }}</h1><p>{{ strategy.plan.thesis }}</p></div>
+  <h1>{{ strategy.title }}</h1><p class="research-prose">{{ strategy.plan.thesis }}</p></div>
   {% if strategy.status == 'draft' or strategy.status == 'watching' %}<div class="strategy-actions">
     {% if strategy.status == 'draft' %}<button class="button-primary" data-action="publish">审阅并发布</button>{% endif %}
     <button class="button-muted" data-action="cancel">作废</button></div>{% endif %}</section>
@@ -15,12 +15,12 @@
     <div class="price-grid"><div><label>入场区间</label><b>{{ strategy.plan.entry.low }} – {{ strategy.plan.entry.high }}</b><small>{{ strategy.plan.entry.reason }}</small></div>
       <div><label>目标区间</label><b>{{ strategy.plan.target.low }} – {{ strategy.plan.target.high }}</b><small>{{ strategy.plan.target.reason }}</small></div>
       <div><label>止损区间</label><b>{{ strategy.plan.stop.low }} – {{ strategy.plan.stop.high }}</b><small>{{ strategy.plan.stop.reason }}</small></div></div>
-    <p><b>入场条件：</b>{{ strategy.plan.entry_condition }}</p><p><b>失效条件：</b>{{ strategy.plan.invalidation }}</p>
+    <p class="research-prose"><b>入场条件：</b>{{ strategy.plan.entry_condition }}</p><p class="research-prose"><b>失效条件：</b>{{ strategy.plan.invalidation }}</p>
     <p><b>催化剂：</b>{{ strategy.plan.catalyst }} · <b>期限：</b>{{ strategy.plan.horizon_days }} 天 · <b>复核：</b>{{ strategy.plan.review_at[:16].replace('T',' ') }}</p>
-    <p><b>竞争性解释：</b>{{ strategy.plan.alternative_explanation }}</p>
+    <p class="research-prose"><b>竞争性解释：</b>{{ strategy.plan.alternative_explanation }}</p>
   </section>
-  <section class="detail-panel"><h2>研究依据</h2><p>{{ strategy.plan.market_expectation }}</p>
-    {% for evidence in strategy.plan.evidence %}<div class="evidence"><div>{{ evidence.statement }}</div><small>{{ evidence.series_id or '定性判断' }} · {{ evidence.value if evidence.value is not none else '' }} · {{ evidence.as_of[:16].replace('T',' ') }} · {{ evidence.source }}{% if evidence.observation_id %} · 观测 #{{ evidence.observation_id }}{% endif %}</small></div>{% endfor %}
+  <section class="detail-panel"><h2>研究依据</h2><p class="research-prose">{{ strategy.plan.market_expectation }}</p>
+    {% for evidence in strategy.plan.evidence %}<div class="evidence"><div class="research-prose">{{ evidence.statement }}</div><small>{{ evidence.series_id or '定性判断' }} · {{ evidence.value if evidence.value is not none else '' }} · {{ evidence.as_of[:16].replace('T',' ') }} · {{ evidence.source }}{% if evidence.observation_id %} · 观测 #{{ evidence.observation_id }}{% endif %}</small></div>{% endfor %}
   </section>
   {% if strategy.status in ('watching','open') %}<section class="detail-panel execution-panel"><h2>{{ '登记开仓成交' if strategy.status == 'watching' else '登记平仓成交' }}</h2><p>必须录入全部策略腿的真实成交；本页不会因为行情触价而自动成交。</p>
     <div class="fill-forms">{% for leg in strategy.plan.legs %}<label>{{ leg.contract }} 成交价<input type="number" step="any" data-fill-price="{{ leg.contract }}" placeholder="元/吨"></label><label>{{ leg.contract }} 手数<input type="number" min="1" step="1" data-fill-qty="{{ leg.contract }}" {% if strategy.status == 'open' %}value="{{ strategy.entry_fills[loop.index0].quantity }}" readonly{% endif %}></label><label>{{ leg.contract }} 成交时间<input type="datetime-local" data-fill-time="{{ leg.contract }}" value="{{ now_local }}"></label>{% endfor %}</div>

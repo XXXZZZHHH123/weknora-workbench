@@ -121,7 +121,6 @@ const MERMAID_CONFIG = {
   startOnLoad: false,
   theme: 'base' as const,
   securityLevel: 'strict' as const,
-  fontFamily: 'PingFang SC, Microsoft YaHei, sans-serif',
   flowchart: {
     useMaxWidth: true,
     htmlLabels: true,
@@ -189,6 +188,8 @@ export const ensureMermaidInitialized = () => {
       if (!mermaidInitialized) {
         mermaid.initialize({
           ...MERMAID_CONFIG,
+          // Exported SVGs must retain the font without the host CSS tokens.
+          fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--app-font-family').trim() || 'ui-sans-serif, system-ui, sans-serif',
           themeVariables: resolveMermaidThemeVariables(),
         } as Parameters<typeof mermaid.initialize>[0])
         mermaidInitialized = true

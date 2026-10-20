@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -23,14 +24,38 @@ func (r *knowledgeRepository) UpdateKnowledgeForTransfer(ctx context.Context, be
 	after.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond)
 	var storedUpdatedAt time.Time
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Starting a move and committing its destination participate in the
+		// same directory namespace as uploads/deletion. Sort both source/target
+		// IDs so two opposite transfers cannot acquire locks in reverse order.
+		bindingChanged := before.KnowledgeBaseID != after.KnowledgeBaseID
+		starting := before.ParseStatus == types.ParseStatusCompleted && after.ParseStatus == types.ParseStatusProcessing
+		if bindingChanged || starting {
+			kbIDs := []string{before.KnowledgeBaseID}
+			if bindingChanged {
+				kbIDs = append(kbIDs, after.KnowledgeBaseID)
+			}
+			sort.Strings(kbIDs)
+			for _, kbID := range kbIDs {
+				if err := folderNamespace(tx, before.TenantID, kbID); err != nil {
+					return err
+				}
+			}
+			// A move already in progress may drain out of its source directory;
+			// rejecting that completion would deadlock source cleanup with the
+			// existing moving-knowledge protection. It may never enter a reserved
+			// target, and a new move cannot start inside a reserved source.
+			if err := rejectFolderDeletion(tx, after.TenantID, after.KnowledgeBaseID, []string{after.FolderPath}, false); err != nil {
+				return err
+			}
+		}
 		result := tx.Model(&types.Knowledge{}).
 			Where("id = ? AND tenant_id = ? AND knowledge_base_id = ? AND parse_status = ? AND "+
-				"updated_at = ?",
+				"updated_at = ? AND folder_path = ?",
 				before.ID,
 				before.TenantID,
 				before.KnowledgeBaseID,
 				before.ParseStatus,
-				before.UpdatedAt).
+				before.UpdatedAt, before.FolderPath).
 			Updates(map[string]any{
 				"knowledge_base_id": after.KnowledgeBaseID, "parse_status": after.ParseStatus,
 				"metadata": after.Metadata, "storage_size": after.StorageSize, "updated_at": after.UpdatedAt,
