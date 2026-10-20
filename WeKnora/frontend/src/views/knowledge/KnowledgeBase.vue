@@ -385,6 +385,8 @@ const showKbDetailContextualGuide = computed(() => {
     && !isFAQ.value
     && canEdit.value
     && !docListLoading.value
+    && !folderTreeLoading.value
+    && folderTree.value?.total_document_count === 0
     && cardList.value.length === 0;
 });
 
