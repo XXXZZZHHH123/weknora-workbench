@@ -19,6 +19,6 @@ test('highlighting clips to the actual frame and rejects foreign or inaccessible
  const r=spotlightRect(element,frame)!
  assert.deepEqual([r.left,r.top,r.width,r.height],[100,80,80,30])
  assert.equal(spotlightRect(element,{...frame,contentDocument:{}} as any),null)
- assert.equal(spotlightDocument({get contentDocument(){throw Error('SecurityError')}} as HTMLIFrameElement,document),null)
+ assert.equal(spotlightDocument({get contentDocument(){throw Error('SecurityError')}} as unknown as HTMLIFrameElement,document),null)
  assert.equal(spotlightRect(element,{...frame,clientWidth:0} as HTMLIFrameElement),null)
 })
