@@ -208,3 +208,52 @@ def test_222k_catalog_uses_three_complete_selections_then_one_final_analysis(gen
     assert seen == [item['id'] for item in catalog]
     assert all(TEXT in prompt for prompt in calls)
     assert rows() == []
+
+
+def test_actual_model_request_contains_a_machine_readable_numeric_rule_contract(generator):
+    import json
+    client, headers, _, _, calls = generator
+    result = generate(client, headers)
+    assert result.status_code == 200, result.text
+    assert len(calls) == 1 and rows() == []
+    prompt = calls[0]['prompt']
+    marker = '阈值条目的 JSON Schema 类型示意：\n'
+    assert marker in prompt
+    schema, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
+    assert schema['type'] == 'object'
+    assert {'operator', 'series_id', 'value'} <= set(schema['required'])
+    assert schema['properties']['value']['oneOf'] == [
+        {'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}, 'minItems': 2, 'maxItems': 2}]
+    assert schema['if']['properties']['operator']['const'] == 'between'
+    assert schema['then']['properties']['value']['type'] == 'array'
+    assert schema['else']['properties']['value']['type'] == 'number'
+    # The type example is abstract: actual source, unit and IDs arrive only in
+    # the request's authorized catalog and source, not as schema defaults.
+    assert 'default' not in json.dumps(schema) and SERIES not in json.dumps(schema)
+    assert 'JSON number' in prompt and 'unresolved' in prompt
+
+
+@pytest.mark.parametrize('value', ['12', True, None, {'minimum': 12}, 'missing'])
+def test_clearer_prompt_does_not_coerce_or_remove_invalid_model_thresholds(generator, value):
+    client, headers, _, response, calls = generator
+    rule = response['judgment']['thresholds'][0]
+    if value == 'missing':
+        rule.pop('value')
+    else:
+        rule['value'] = value
+    result = generate(client, headers)
+    assert result.status_code == 422, result.text
+    assert len(calls) == 1 and rows() == [] and not generation.previews.items
+    assert '有限数字' in result.json()['detail']
+
+
+def test_explicit_numeric_interval_with_original_quote_remains_a_valid_preview(generator):
+    client, headers, _, response, calls = generator
+    quote = 'Use an interval between 12 and 13 吨 for observation.'
+    response['judgment']['thresholds'][0].update(operator='between', value=[12, 13])
+    response['rule_quotes']['watch'] = quote
+    result = client.post(endpoint('/generate'), headers=headers,
+        json={'model_id': 'synthetic-chat', 'text': TEXT + ' ' + quote, 'base_version': 0})
+    assert result.status_code == 200, result.text
+    assert len(calls) == 1 and rows() == []
+    assert result.json()['bindings'][0]['unit'] == '吨'
