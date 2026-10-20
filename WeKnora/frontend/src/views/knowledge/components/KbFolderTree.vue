@@ -77,21 +77,19 @@
             class="kb-folder-row__icon"
           />
 
-          <template>
-            <span class="kb-folder-row__label">
-              {{ row.kind === 'root' ? (rootLabel || t('knowledgeBase.folderTree.rootRow')) : row.name }}
+          <span class="kb-folder-row__label">
+            {{ row.kind === 'root' ? (rootLabel || t('knowledgeBase.folderTree.rootRow')) : row.name }}
+          </span>
+          <span class="kb-folder-row__trailing">
+            <span class="kb-folder-row__count"
+              :title="t('knowledgeBase.folderTree.countHint', { direct: row.documentCount, total: row.totalCount })">
+              {{ row.documentCount }}
             </span>
-            <span class="kb-folder-row__trailing">
-              <span class="kb-folder-row__count"
-                :title="t('knowledgeBase.folderTree.countHint', { direct: row.documentCount, total: row.totalCount })">
-                {{ row.documentCount }}
-              </span>
-              <KnowledgeFolderActions v-if="canEdit && row.kind === 'folder'" class="kb-folder-row__more"
-                :kb-id="kbId" :folder="{ path: row.path, name: row.name, total_count: row.totalCount }" :can-edit="canEdit" :allow-delete="allowDelete"
-                @renamed="emit('rename', $event)" @deleted="emit('delete', $event)" />
-              <span v-else class="kb-folder-row__more-placeholder" aria-hidden="true"></span>
-            </span>
-          </template>
+            <KnowledgeFolderActions v-if="canEdit && row.kind === 'folder'" class="kb-folder-row__more"
+              :kb-id="kbId" :folder="{ path: row.path, name: row.name, total_count: row.totalCount }" :can-edit="canEdit" :allow-delete="allowDelete"
+              @renamed="emit('rename', $event)" @deleted="emit('delete', $event)" />
+            <span v-else class="kb-folder-row__more-placeholder" aria-hidden="true"></span>
+          </span>
         </div>
         <button v-else-if="row.kind === 'file'" type="button" class="kb-folder-row kb-folder-file"
           :class="{ active: selectedFileId === row.file.id }" :style="{ '--kb-folder-depth': row.depth }"

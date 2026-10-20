@@ -7,6 +7,7 @@ import { compileScript, parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import * as directory from '../../workspaces/knowledgeDirectory'
 import * as forms from '../../workspaces/workspaceForm'
+import * as folderTree from '../folderTree'
 
 type Host = { type: string; props: Record<string, any>; children: Host[]; text: string; parent?: Host }
 const node = (type: string): Host => ({ type, props: {}, children: [], text: '' })
@@ -167,4 +168,34 @@ for (const kind of ['kb', 'folder'] as const) {
 test('KB delete confirmation describes only workbenches using this KB as the main library', async t => {
   const f = fixture('kb'); t.after(f.close); await f.click('删除'); assert.match(text(f.dialog()), /以此库为主知识库的工作台/); await f.confirm()
   assert.deepEqual(f.calls.filter(c => c.operation === 'delete-kb')[0]?.args, ['kb-a']); assert.deepEqual(plainValue(f.changes), [{ id: 'kb-a', deleted: true }])
+})
+
+
+test('compiled directory rows expose their labels, real counts and action buttons outside inert HTML templates', async t => {
+  const { descriptor } = parse(readFileSync(new URL('./KbFolderTree.vue', import.meta.url), 'utf8'))
+  const source = ts.transpileModule(compileScript(descriptor, { id: 'folder-tree', inlineTemplate: true }).content,
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
+  const action = vue.defineComponent({ props: ['folder'], setup: p => () => vue.h('button', { class: 'actual-folder-trigger' }, p.folder.name) })
+  const modules: Record<string, unknown> = { vue, 'vue-i18n': { useI18n: () => ({ t: (key: string) => key }) },
+    '../folderTree': folderTree, './KnowledgeFolderActions.vue': action }
+  const exports: { default?: vue.Component } = {}
+  runInNewContext(source, { exports, console, require(name: string) { assert.ok(name in modules, name); return modules[name] } })
+  const selected: string[] = [], root = node('root')
+  const app = renderer.createApp(exports.default!, { kbId: 'fixture-kb', rootLabel: 'Root label', selectedPath: '', canEdit: true,
+    tree: { root_document_count: 0, total_document_count: 7, folders: [{ path: 'Folder', name: 'Folder label', document_count: 7, total_count: 7, children: [] }] },
+    onSelect: (path: string) => selected.push(path) })
+  const plain = vue.defineComponent({ setup: (_p, { attrs, slots }) => () => vue.h('icon', attrs, slots.default?.()) })
+  app.component('t-icon', plain); app.component('t-skeleton', plain); app.component('t-tooltip', plain); app.mount(root); t.after(() => app.unmount()); await flush()
+  const rows = all(root, n => Object.hasOwn(n.props, 'data-folder-path') && n.props.role === 'button')
+  assert.equal(rows.length, 2)
+  const isRendered = (n: Host) => { for (let p: Host | undefined = n; p; p = p.parent) if (p.type === 'template') return false; return true }
+  const labels = all(root, n => String(n.props.class || '').includes('kb-folder-row__label'))
+  assert.equal(labels.length, 2)
+  assert.ok(labels.every(isRendered), 'Directory labels must not be hidden inside an HTMLTemplateElement')
+  assert.deepEqual(labels.map(text), ['Root label', 'Folder label'])
+  const counts = all(root, n => String(n.props.class || '') === 'kb-folder-row__count')
+  assert.ok(counts.every(isRendered)); assert.deepEqual(counts.map(text), ['0', '7'])
+  const triggers = all(root, n => String(n.props.class || '').includes('actual-folder-trigger'))
+  assert.equal(triggers.length, 1); assert.ok(triggers.every(isRendered))
+  rows[1].props.onClick({}); await flush(); assert.deepEqual(selected, ['Folder'])
 })

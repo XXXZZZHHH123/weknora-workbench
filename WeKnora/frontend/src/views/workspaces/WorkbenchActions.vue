@@ -9,20 +9,19 @@ const emit = defineEmits<{ renamed: [workbench: ResearchWorkbench]; deleted: [id
 const auth = useAuthStore()
 const canManage = computed(() => props.workbench.can_manage === true && auth.hasRole('contributor'))
 const scope = computed(() => JSON.stringify([workspaceIdentity(auth.selectedTenantId ?? auth.tenant?.id, auth.user?.id), auth.token, props.workbench.id]))
-const action = ref<'rename' | 'delete' | null>(null)
+const menuOpen = ref(false), action = ref<'rename' | 'delete' | null>(null)
 const name = ref(''), error = ref(''), busy = ref(false)
-const options = [{ content: '重命名', value: 'rename' }, { content: '删除', value: 'delete', theme: 'error' as const }]
 let generation = 0
 function close() {
   if (busy.value) return
   action.value = null; error.value = ''
 }
-function select(option: { value?: string | number }) {
-  if (busy.value || !canManage.value || !['rename', 'delete'].includes(String(option.value))) return
-  name.value = props.workbench.name; error.value = ''; action.value = option.value as 'rename' | 'delete'
+function select(kind: 'rename' | 'delete') {
+  if (busy.value || !canManage.value) return
+  menuOpen.value = false; name.value = props.workbench.name; error.value = ''; action.value = kind
 }
 watch([scope, canManage], () => {
-  generation++; action.value = null; name.value = ''; error.value = ''; busy.value = false
+  generation++; menuOpen.value = false; action.value = null; name.value = ''; error.value = ''; busy.value = false
 }, { flush: 'sync' })
 onBeforeUnmount(() => { generation++ })
 async function confirm() {
@@ -52,11 +51,17 @@ async function confirm() {
 
 <template>
   <div v-if="canManage" class="workbench-actions" @click.stop @keydown.stop>
-    <t-dropdown :options="options" trigger="click" placement="bottom-right" @click="select">
-      <button type="button" class="workbench-actions__trigger" :aria-label="`${workbench.name}的更多操作`" title="更多操作" aria-haspopup="menu">
+    <t-popup v-model:visible="menuOpen" trigger="click" placement="bottom-right" destroy-on-close overlay-class-name="card-more-popup">
+      <button type="button" class="workbench-actions__trigger" :aria-label="`${workbench.name}的更多操作`" title="更多操作" aria-haspopup="menu" :aria-expanded="menuOpen" @keydown.down.prevent="menuOpen = true" @keydown.esc="menuOpen = false">
         <t-icon name="more" size="16px" />
       </button>
-    </t-dropdown>
+      <template #content>
+        <div class="popup-menu workbench-actions__menu" role="menu" @click.stop @keydown.esc.stop="menuOpen = false">
+          <button type="button" role="menuitem" class="popup-menu-item" @click="select('rename')"><t-icon name="edit" class="menu-icon" /><span>重命名</span></button>
+          <button type="button" role="menuitem" class="popup-menu-item delete" @click="select('delete')"><t-icon name="delete" class="menu-icon" /><span>删除</span></button>
+        </div>
+      </template>
+    </t-popup>
     <t-dialog :visible="Boolean(action)" :header="action === 'rename' ? '重命名工作台' : '删除工作台'" width="400px"
       :confirm-btn="{ content: action === 'delete' ? '删除' : '保存', theme: action === 'delete' ? 'danger' : 'primary', loading: busy }"
       :cancel-btn="{ content: '取消', disabled: busy }" :close-btn="!busy" :close-on-overlay-click="!busy" :close-on-esc-keydown="!busy"
@@ -75,4 +80,7 @@ async function confirm() {
 .workbench-actions__trigger:focus-visible{outline:2px solid var(--td-brand-color);outline-offset:2px}
 .workbench-actions__note{margin:0;color:var(--td-text-color-secondary);line-height:1.6}
 .workbench-actions__error{margin-top:var(--app-space-3)}
+.workbench-actions__menu :deep(button.popup-menu-item){width:100%;border:0;background:transparent;text-align:left}
+.workbench-actions__menu :deep(button.popup-menu-item:hover){background:var(--td-bg-color-container-hover)}
+.workbench-actions__menu :deep(button.popup-menu-item.delete:hover){background:var(--td-error-color-1)}
 </style>
