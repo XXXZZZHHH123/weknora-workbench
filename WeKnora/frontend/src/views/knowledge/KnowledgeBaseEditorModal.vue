@@ -944,7 +944,7 @@ const initFormData = (type: 'document' | 'faq' = 'document') => {
     storageBackendId: '' as string,
     storageProvider: '' as string,
     multimodalConfig: {
-      enabled: false,
+      enabled: type !== 'faq',
       vllmModelId: '',
       descriptionLanguage: '',
       customInstructions: ''
@@ -1435,9 +1435,14 @@ const validateForm = (): boolean => {
   }
 
   // 验证多模态配置（如果启用）
-  if (formData.value.multimodalConfig.enabled && !formData.value.multimodalConfig.vllmModelId) {
-    MessagePlugin.warning(t('knowledgeEditor.messages.multimodalInvalid'))
+  if (editorMode.value !== 'create' && !isFAQ.value && formData.value.multimodalConfig.enabled && !formData.value.multimodalConfig.vllmModelId) {
     currentSection.value = 'multimodal'
+    const dialog = DialogPlugin.alert({
+      header: t('knowledgeEditor.multimodal.title'),
+      body: t('knowledgeEditor.messages.multimodalInvalid'),
+      confirmBtn: t('knowledgeEditor.messages.configureMultimodal'),
+      onConfirm: () => dialog.destroy(),
+    })
     return false
   }
 
@@ -1491,8 +1496,8 @@ const buildSubmitData = () => {
 
   // 添加多模态配置
   data.vlm_config = {
-    enabled: formData.value.multimodalConfig.enabled,
-    model_id: formData.value.multimodalConfig.enabled
+    enabled: (editorMode.value !== 'create' || !isFAQ.value) && formData.value.multimodalConfig.enabled,
+    model_id: (editorMode.value !== 'create' || !isFAQ.value) && formData.value.multimodalConfig.enabled
       ? (formData.value.multimodalConfig.vllmModelId || '')
       : '',
     description_language: formData.value.multimodalConfig.descriptionLanguage || '',
@@ -1615,6 +1620,31 @@ const buildSubmitData = () => {
 // 提交表单
 const handleSubmit = async () => {
   if (!validateForm()) {
+    return
+  }
+
+  // Missing vision setup is advisory: users may explicitly create a KB
+  // without image processing after acknowledging the search/answer impact.
+  if (editorMode.value === 'create' && !isFAQ.value && formData.value && (
+    !formData.value.multimodalConfig.enabled || !formData.value.multimodalConfig.vllmModelId
+  )) {
+    const dialog = DialogPlugin.confirm({
+      header: t('knowledgeEditor.multimodal.title'),
+      body: t('knowledgeEditor.messages.multimodalInvalid'),
+      confirmBtn: t('knowledgeEditor.messages.createWithoutMultimodal'),
+      cancelBtn: t('knowledgeEditor.messages.configureMultimodal'),
+      onConfirm: () => {
+        dialog.destroy()
+        if (!formData.value) return
+        formData.value.multimodalConfig.enabled = false
+        formData.value.multimodalConfig.vllmModelId = ''
+        doSubmit()
+      },
+      onCancel: () => {
+        dialog.destroy()
+        currentSection.value = 'multimodal'
+      },
+    })
     return
   }
 
