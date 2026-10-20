@@ -119,11 +119,13 @@ func TestSourceReviewExhaustionDoesNotRewriteOrReleaseCandidate(t *testing.T) {
 				require.NoError(t, err)
 			}
 			require.Len(t, model.calls, len(responses))
-			require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+			require.True(t, strings.HasPrefix(state.FinalAnswer, "尚未通过核验的正文。"))
+			require.Contains(t, state.FinalAnswer, "未能完成自动核验")
+			require.NotContains(t, state.FinalAnswer, "协议冲突", "protocol-conflicting feedback is not presented as review advice")
 			require.Empty(t, engine.answerReviewFeedback)
 			done, visible := recorder.snapshot()
 			require.Equal(t, 1, done)
-			require.Equal(t, answerReviewUnavailableFallback, visible)
+			require.Equal(t, state.FinalAnswer, visible)
 		})
 	}
 }

@@ -339,6 +339,16 @@ func (e *AgentEngine) streamReviewWithEvidence(ctx context.Context, model chat.C
 			}
 		}
 		if len(result.ToolCalls) == 0 {
+			if reader != nil && reader.reads == 0 && !reader.inspectionReminderSent && reviewRejectsCandidate(result.Content) && !reviewRequestsAdditionalEvidence(result.Content) {
+				// A rejection that has not looked at the omitted results may rest
+				// on evidence the reviewer never saw. Ask once to verify; the model
+				// still decides the final verdict.
+				reader.inspectionReminderSent = true
+				messages = append(messages,
+					chat.Message{Role: "assistant", Content: result.Content, ReasoningContent: result.ReasoningContent, ReasoningSignature: result.ReasoningSignature, ReasoningMetadata: result.ReasoningMetadata},
+					chat.Message{Role: "user", Content: "Your verdict rejects the candidate, but you have not inspected this review's omitted actual results. If the rejection says a value, page, identifier or passage is missing or different, first verify it with read_review_evidence search using a literal from the candidate, or read the relevant omitted path. Keep the rejection only if the obtained evidence really contradicts or lacks it; otherwise accept. Return the same strict verdict schema."})
+				continue
+			}
 			if reader != nil && reader.reads == 0 && !reader.inspectionReminderSent && reviewRequestsAdditionalEvidence(result.Content) {
 				// A model-requested collection may be caused by this review's
 				// projection rather than an actual retrieval gap. Give the reviewer
@@ -407,6 +417,25 @@ func reviewEvidenceArgumentsFromText(content string) (string, bool) {
 		return trimmed, true
 	}
 	return "", false
+}
+
+// reviewRejectsCandidate reports a strictly formed rejection verdict.
+func reviewRejectsCandidate(content string) bool {
+	normalized, err := normalizeReviewVerdictEnvelope(content)
+	if err != nil || validateSourceConsistencyVerdictKeys(normalized) != nil {
+		return false
+	}
+	var verdict struct {
+		Complete   *bool              `json:"complete"`
+		Assessment string             `json:"assessment,omitempty"`
+		Feedback   *string            `json:"feedback,omitempty"`
+		NextAction string             `json:"next_action,omitempty"`
+		Audit      []reviewClaimCheck `json:"audit,omitempty"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(normalized))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(&verdict) == nil && decoder.Decode(new(any)) == io.EOF &&
+		verdict.Complete != nil && !*verdict.Complete
 }
 
 func reviewRequestsAdditionalEvidence(content string) bool {

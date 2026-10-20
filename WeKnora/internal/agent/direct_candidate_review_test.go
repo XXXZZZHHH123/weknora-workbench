@@ -177,12 +177,14 @@ func TestExhaustedSourceCriticProtocolDoesNotLeakCandidate(t *testing.T) {
 	_, err := engine.executeLoop(t.Context(), state, query, []chat.Message{{Role: "user", Content: query}}, emptyTools(), "exhaustion-session", "exhaustion-message")
 	require.NoError(t, err)
 	require.True(t, state.IsComplete)
-	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+	// Delivery policy (2026-10-20): an unavailable reviewer no longer hides a
+	// numerically grounded candidate; it is delivered with an explicit notice.
+	require.True(t, strings.HasPrefix(state.FinalAnswer, candidate))
+	require.Contains(t, state.FinalAnswer, "未能完成自动核验")
 	require.Len(t, model.calls, 1+answerReviewAttempts)
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
-	require.Equal(t, answerReviewUnavailableFallback, visible)
-	require.NotContains(t, visible, candidate, "malformed reviewer protocol must fail closed")
+	require.Equal(t, state.FinalAnswer, visible)
 }
 
 func TestCustomModeRetainsLegacyIndependentSourceAudit(t *testing.T) {
