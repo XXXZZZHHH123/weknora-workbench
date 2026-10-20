@@ -63,8 +63,9 @@ const MONO_KEY = 'font_mono'
 const SIZE_KEY = 'font_size'
 
 export const SANS_STACKS: Record<FontKey, string> = {
+  // Keep the persisted "system" key, but use the shared workspace typeface.
   system:
-    'Inter, "WeKnora Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+    'Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif',
   // Mac
   pingfang:
     '"PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, sans-serif',

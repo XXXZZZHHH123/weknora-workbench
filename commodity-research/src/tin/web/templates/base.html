@@ -7,7 +7,7 @@
 <script>window.RESEARCH_PREFIX = {{ research_prefix() | tojson }};
 window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': research_identity().user_id, 'workbench': research_workbench().workbench_id if research_workbench() else none} if research_identity() else none) | tojson }};</script>
 <script src="{{ research_static_prefix() }}/static/tailwind.min.js?v={{ static_version() }}"></script>
-<link rel="stylesheet" href="/fonts/workspace-typography.css">
+<link rel="stylesheet" href="/fonts/workspace-typography.css?v=2">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/app.css?v={{ static_version() }}">
 <script src="{{ research_static_prefix() }}/static/app.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/navigation.js?v={{ static_version() }}"></script>

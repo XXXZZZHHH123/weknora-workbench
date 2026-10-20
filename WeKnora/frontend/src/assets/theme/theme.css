@@ -7,12 +7,12 @@
 }
 
 :root:root,:root:root[theme-mode="light"]{
-        --app-font-family: Inter, "WeKnora Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        --app-font-family: Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
         --app-font-family-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        /* Every document registers the same self-hosted fonts, including CJK. */
+        /* Interface, headings and reading share real 400/600 CJK faces. */
         --cds-font-interface: var(--app-font-family);
         --cds-font-display: Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
-        --cds-font-reading: Georgia, "WeKnora Noto Serif Reading SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
+        --cds-font-reading: Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
         --cds-font-code: var(--app-font-family-mono);
         --brand-main: var(--td-brand-color-4);
         --td-brand-color-light: var(--td-brand-color-1);

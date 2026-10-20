@@ -1,7 +1,7 @@
 {
   "css_source": "https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400&display=swap",
   "upstream_css_sha256": "9ed076278045a1b1df3807b2f1c83dd957a4dbc9cbe8729643f4c5d7c2ddef7a",
-  "family": "WeKnora Noto Serif Reading SC",
+  "family": "WeKnora Noto Serif SC",
   "weight": "400",
   "license_source": "https://raw.githubusercontent.com/google/fonts/main/ofl/notoserifsc/OFL.txt",
   "complete_upstream_unicode_ranges": true,
