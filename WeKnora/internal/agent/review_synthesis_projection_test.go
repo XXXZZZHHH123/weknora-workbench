@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSynthesisCriticGetsWiderProjectionSmallDirectKeepsCompact(t *testing.T) {
+func TestSynthesisCriticGetsWiderProjectionDirectKeepsCompact(t *testing.T) {
 	for _, tc := range []struct {
 		depth string
 		scale int

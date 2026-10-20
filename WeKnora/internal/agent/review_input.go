@@ -47,15 +47,10 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 	// Synthesis tasks are reviewed by the reasoning critic, which must check
 	// claims against long read documents; widen its projection. Direct lookups
 	// keep the compact packet.
+	// Measured on the 17-case regression: widening for direct lookups made the
+	// fast critic stricter without improving delivery; keep it for synthesis.
 	scale := 1
-	rawSourceBytes := 0
-	for _, message := range sourceMessages {
-		rawSourceBytes += len(message.Content)
-	}
-	synthesis := e.taskPlan != nil && e.taskPlan.ReasoningDepth == "synthesis" && e.config != nil && e.config.SourceReviewReasoningEffort == "auto"
-	// Widen also when the actual results cannot fit the compact packet, so a
-	// critic is not asked to approve claims whose source text it never saw.
-	if synthesis || rawSourceBytes > sourceReviewSharedProjectionBudget {
+	if e.taskPlan != nil && e.taskPlan.ReasoningDepth == "synthesis" && e.config != nil && e.config.SourceReviewReasoningEffort == "auto" {
 		scale = sourceReviewSynthesisScale
 	}
 	evidence, scope := boundedReviewEvidence(sourceMessages, sourceReviewToolResultsBudget*scale)
