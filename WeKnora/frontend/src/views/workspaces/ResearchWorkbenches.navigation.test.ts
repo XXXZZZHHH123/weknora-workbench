@@ -33,36 +33,46 @@ const toolbar = vue.defineComponent({ props: ['query'], emits: ['update:query'],
 const sortControl = vue.defineComponent({ props: ['modelValue'], emits: ['update:modelValue'], setup: (props, { emit }) => () => vue.h('select', { 'data-sort': true, value: props.modelValue, onChange: (value: string) => emit('update:modelValue', value) }) })
 const emptyState = vue.defineComponent({ props: ['title', 'description'], setup: (props, { slots }) => () => vue.h('section', {}, [props.title, props.description, slots.default?.()]) })
 const workbenches = [
-  { id: 'wb-a', name: '研究 A', description: '独立资料研究', knowledge_base_id: 'kb-a', workspace_mode: 'isolated', template_id: 'industrial', updated_at: '2026-01-01' },
-  { id: 'wb-b', name: '研究 B', description: '', knowledge_base_id: 'kb-b', workspace_mode: 'isolated', template_id: 'blank', updated_at: '2026-02-01' },
+  { can_manage: true, id: 'wb-a', name: '研究 A', description: '独立资料研究', knowledge_base_id: 'kb-a', workspace_mode: 'isolated', template_id: 'industrial', updated_at: '2026-01-01' },
+  { can_manage: true, id: 'wb-b', name: '研究 B', description: '', knowledge_base_id: 'kb-b', workspace_mode: 'isolated', template_id: 'blank', updated_at: '2026-02-01' },
 ]
 
-function fixture(options: { fail?: boolean; items?: typeof workbenches; creating?: boolean } = {}) {
+function fixture(options: { fail?: boolean; items?: typeof workbenches; creating?: boolean; contributor?: boolean; update?: (id: string, data: any) => Promise<any>; remove?: (id: string) => Promise<any> } = {}) {
   const route = vue.reactive({ params: {}, query: {}, name: options.creating ? 'researchWorkbenchCreate' : 'researchWorkbenchList' })
-  const auth = vue.reactive({ selectedTenantId: 1, tenant: { id: 1 }, user: { id: 'user-a' }, hasRole: () => true })
-  const navigations: any[] = []
+  const auth = vue.reactive({ selectedTenantId: 1, tenant: { id: 1 }, user: { id: 'user-a' }, contributor: options.contributor !== false, hasRole: (): boolean => auth.contributor })
+  const navigations: any[] = [], mutations: any[] = []
   const { descriptor } = parse(readFileSync(new URL('./ResearchWorkbenches.vue', import.meta.url), 'utf8'))
   const compiled = ts.transpileModule(compileScript(descriptor, { id: 'research-list-test', inlineTemplate: true }).content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   const modules: Record<string, any> = {
     'vue': vue, 'vue-router': { useRoute: () => route, useRouter: () => ({ push: (target: any) => { navigations.push(target); return Promise.resolve() } }) },
     '@/stores/auth': { useAuthStore: () => auth }, '@/stores/chatResources': { useChatResourcesStore: () => ({ rawKnowledgeBases: [{ id: 'kb-a', name: '资料 A' }, { id: 'kb-b', name: '资料 B' }], ensureKnowledgeBases: async () => {} }) },
     '@/stores/organization': { useOrganizationStore: () => ({ sharedKnowledgeBases: [], fetchSharedKnowledgeBases: async () => {} }) },
-    '@/api/workspaces': { listResearchWorkbenches: async () => { if (options.fail) throw new Error('列表不可用'); return { data: options.items || workbenches } }, getResearchWorkbench: async () => ({ data: null }) },
+    '@/api/workspaces': { listResearchWorkbenches: async () => { if (options.fail) throw new Error('列表不可用'); return { data: options.items || workbenches } }, getResearchWorkbench: async () => ({ data: null }), updateResearchWorkbench: async (id: string, data: any) => { mutations.push({ action: 'rename', id, data }); return options.update ? options.update(id, data) : { success: true, data: { ...workbenches.find(w => w.id === id), ...data } } }, deleteResearchWorkbench: async (id: string) => { mutations.push({ action: 'delete', id }); return options.remove ? options.remove(id) : { success: true } } },
     '@/views/knowledge/KnowledgeBaseEditorModal.vue': { default: passthrough }, '@/utils/uuid': { createRandomUUID: () => 'request-a' },
     './workspaceForm': forms, './workspaceKnowledgeBases': knowledgeBases, '@/views/research/workbenchTemplates': templates,
     '@/components/ResourceListToolbar.vue': { default: toolbar }, '@/components/ResourceSortControl.vue': { default: sortControl },
     '@/components/EmptyState.vue': { default: emptyState }, '@/utils/resourceSorting': sorting,
     './workspaces.css': {},
   }
-  const exports: { default?: vue.Component } = {}
-  runInNewContext(compiled, { exports, console, window: new EventTarget(), CustomEvent, require(name: string) {
-    const value = modules[name]; if (value === undefined) throw new Error(`Unexpected import: ${name}`)
-    return value && typeof value === 'object' && 'default' in value ? { __esModule: true, ...value } : value
-  } })
+  function load(code: string) {
+    const exports: { default?: vue.Component } = {}
+    runInNewContext(code, { exports, console, window: new EventTarget(), CustomEvent, require(name: string) {
+      const value = modules[name]; if (value === undefined) throw new Error(`Unexpected import: ${name}`)
+      return value && typeof value === 'object' && 'default' in value ? { __esModule: true, ...value } : value
+    } })
+    return exports.default!
+  }
+  const actions = parse(readFileSync(new URL('./WorkbenchActions.vue', import.meta.url), 'utf8')).descriptor
+  modules['./WorkbenchActions.vue'] = { default: load(ts.transpileModule(compileScript(actions, { id: 'research-actions-test', inlineTemplate: true }).content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText) }
+  const exports = { default: load(compiled) }
   const root = node('root'), app = renderer.createApp(exports.default!)
   for (const tag of ['t-icon', 't-alert', 't-loading', 't-tooltip']) app.component(tag, passthrough)
-  app.component('t-button', button); app.config.warnHandler = () => {}; app.mount(root)
-  return { root, navigations, cards: () => all(root, el => el.props.role === 'link'), find: (key: string) => all(root, el => !!el.props[key])[0]!, close: () => app.unmount() }
+  app.component('t-button', button)
+  app.component('t-dropdown', vue.defineComponent({ props: ['options'], emits: ['click'], setup: (props, { emit, slots }) => () => vue.h('menu', {}, [slots.default?.(), ...props.options.map((option: any) => vue.h('button', { 'data-action': option.value, onClick: () => emit('click', option) }, option.content))]) }))
+  app.component('t-input', vue.defineComponent({ props: ['modelValue'], emits: ['update:modelValue', 'enter'], setup: (props, { emit }) => () => vue.h('input', { 'data-rename-input': true, value: props.modelValue, onInput: (value: string) => emit('update:modelValue', value) }) }))
+  app.component('t-dialog', vue.defineComponent({ props: ['visible', 'header', 'confirmBtn'], emits: ['confirm', 'cancel'], setup: (props, { slots, emit }) => () => props.visible ? vue.h('dialog', { 'data-dialog': true }, [props.header, slots.default?.(), vue.h('button', { 'data-confirm': true, onClick: () => emit('confirm') }, props.confirmBtn.content), vue.h('button', { 'data-cancel': true, onClick: () => emit('cancel') }, '取消')]) : null }))
+  app.config.warnHandler = () => {}; app.mount(root)
+  return { root, navigations, mutations, auth, cards: () => all(root, el => el.props.role === 'link'), find: (key: string) => all(root, el => !!el.props[key])[0]!, close: () => app.unmount() }
 }
 
 test('the management card opens the workbench directly with pointer and keyboard', async t => {
@@ -86,7 +96,7 @@ test('the management card opens the workbench directly with pointer and keyboard
 test('the knowledge-base shortcut stays scoped and stops the card click', async t => {
   const f = fixture(); t.after(f.close); await flush()
   const card = f.cards().find(el => textOf(el).includes('研究 A'))!
-  const source = all(card, el => el.type === 'button')[0]!
+  const source = all(card, el => el.type === 'button' && el.props.class === 'workbench-source')[0]!
   let stopped = false
   source.props.onClick({ stopPropagation() { stopped = true } }); await flush()
   assert.equal(stopped, true)
@@ -144,4 +154,119 @@ test('legacy preview bookmarks redirect to the same workbench and preserve query
   assert.equal(result.name, 'researchWorkbenchDetail'); assert.equal(result.params.workbenchId, 'real-id')
   assert.equal(result.query.mode, 'data'); assert.equal(result.hash, '#section')
   assert.equal(preview.component, undefined)
+})
+
+test('owned research cards expose accessible rename and delete actions', async t => {
+  const f = fixture(); t.after(f.close); await flush()
+  const actions = all(f.root, el => el.type === 'button' && String(el.props['aria-label'] || '').includes('更多操作'))
+  assert.equal(actions.length, 2)
+})
+
+test('rename validates the name and updates the card without changing its source', async t => {
+  const f = fixture(); t.after(f.close); await flush()
+  const card = f.cards().find(el => textOf(el).includes('研究 A'))!
+  all(card, el => el.props['data-action'] === 'rename')[0]!.props.onClick(); await flush()
+  f.find('data-rename-input').props.onInput('   ')
+  f.find('data-confirm').props.onClick(); await flush()
+  assert.equal(f.mutations.length, 0)
+  f.find('data-rename-input').props.onInput('  新的研究名称  ')
+  f.find('data-confirm').props.onClick(); await flush()
+  assert.equal(f.mutations[0].action, 'rename'); assert.equal(f.mutations[0].id, 'wb-a')
+  assert.deepEqual(Object.keys(f.mutations[0].data), ['name']); assert.equal(f.mutations[0].data.name, '新的研究名称')
+  const updated = f.cards().find(el => textOf(el).includes('新的研究名称'))!
+  assert.ok(textOf(updated).includes('资料 A'))
+  assert.equal(f.navigations.length, 0)
+  assert.equal(f.find('data-dialog'), undefined)
+})
+
+test('delete requires confirmation and removes only the selected research card', async t => {
+  const f = fixture(); t.after(f.close); await flush()
+  const open = () => all(f.cards().find(el => textOf(el).includes('研究 A'))!, el => el.props['data-action'] === 'delete')[0]!.props.onClick()
+  open(); await flush()
+  assert.equal(f.mutations.length, 0)
+  assert.ok(textOf(f.find('data-dialog')).includes('知识库及其中资料会保留'))
+  f.find('data-cancel').props.onClick(); await flush()
+  assert.equal(f.cards().length, 2); assert.equal(f.mutations.length, 0)
+  open(); await flush(); f.find('data-confirm').props.onClick(); await flush()
+  assert.deepEqual(f.mutations, [{ action: 'delete', id: 'wb-a' }])
+  assert.equal(f.cards().length, 1); assert.ok(textOf(f.cards()[0]!).includes('研究 B'))
+  assert.equal(f.navigations.length, 0)
+})
+
+test('failed deletes keep the card and offer retry without a second confirmation request', async t => {
+  const f = fixture({ remove: async () => { throw new Error('没有删除权限') } }); t.after(f.close); await flush()
+  all(f.cards()[0]!, el => el.props['data-action'] === 'delete')[0]!.props.onClick(); await flush()
+  f.find('data-confirm').props.onClick(); await flush()
+  assert.equal(f.cards().length, 2); assert.ok(f.find('data-dialog'))
+  assert.ok(all(f.root, el => el.props.message === '没有删除权限').length)
+  assert.equal(f.mutations.length, 1)
+})
+
+test('tenant changes discard pending rename results and duplicate submits are ignored', async t => {
+  let finish!: (value: any) => void
+  const f = fixture({ update: () => new Promise(resolve => { finish = resolve }) }); t.after(f.close); await flush()
+  all(f.cards().find(el => textOf(el).includes('研究 A'))!, el => el.props['data-action'] === 'rename')[0]!.props.onClick(); await flush()
+  f.find('data-rename-input').props.onInput('旧空间的改名')
+  const confirm = f.find('data-confirm'); confirm.props.onClick(); confirm.props.onClick(); await flush()
+  assert.equal(f.mutations.length, 1)
+  f.auth.selectedTenantId = 2; await flush()
+  finish({ success: true, data: { ...workbenches[0], name: '旧空间的改名' } }); await flush()
+  assert.equal(textOf(f.root).includes('旧空间的改名'), false)
+  assert.equal(f.find('data-dialog'), undefined)
+})
+
+test('viewers can navigate research cards without mutation controls', async t => {
+  const f = fixture({ contributor: false }); t.after(f.close); await flush()
+  assert.equal(f.cards().length, 2)
+  assert.equal(all(f.root, el => el.props['data-action']).length, 0)
+  assert.equal(f.mutations.length, 0)
+})
+
+test('a non-successful delete response never removes the research card', async t => {
+  const f = fixture({ remove: async () => ({ success: false }) }); t.after(f.close); await flush()
+  all(f.cards()[0]!, el => el.props['data-action'] === 'delete')[0]!.props.onClick(); await flush()
+  f.find('data-confirm').props.onClick(); await flush()
+  assert.equal(f.cards().length, 2)
+  assert.ok(f.find('data-dialog'))
+  assert.ok(all(f.root, el => el.props.message === '未能删除工作台，请重试。').length)
+})
+
+test('leaving and returning to the same tenant invalidates the old pending action', async t => {
+  let finish!: (value: any) => void
+  const f = fixture({ update: () => new Promise(resolve => { finish = resolve }) }); t.after(f.close); await flush()
+  all(f.cards().find(el => textOf(el).includes('研究 A'))!, el => el.props['data-action'] === 'rename')[0]!.props.onClick(); await flush()
+  f.find('data-rename-input').props.onInput('离开前的改名')
+  f.find('data-confirm').props.onClick(); await flush()
+  f.auth.selectedTenantId = 2; f.auth.selectedTenantId = 1
+  await flush(); finish({ success: true, data: { ...workbenches[0], name: '离开前的改名' } }); await flush()
+  assert.equal(textOf(f.root).includes('离开前的改名'), false)
+})
+
+
+test('rename requires an explicit successful response before changing the card', async () => {
+  for (const success of [undefined, false, 'true']) {
+    const f = fixture({ update: async () => ({ success, data: { ...workbenches[0], name: '不能接受的改名' } }) })
+    try {
+      await flush()
+      all(f.cards().find(el => textOf(el).includes('研究 A'))!, el => el.props['data-action'] === 'rename')[0]!.props.onClick(); await flush()
+      f.find('data-rename-input').props.onInput('不能接受的改名')
+      f.find('data-confirm').props.onClick(); await flush()
+      assert.equal(f.cards().some(el => textOf(el).includes('不能接受的改名')), false, String(success))
+      assert.ok(f.find('data-dialog'))
+      assert.ok(all(f.root, el => el.props.message === '未能更新工作台，请重试。').length)
+    } finally { f.close() }
+  }
+})
+
+
+test('readable workbenches without server management permission have no mutation menu', async () => {
+  for (const can_manage of [false, undefined]) {
+    const f = fixture({ items: workbenches.map(item => ({ ...item, can_manage })) as typeof workbenches })
+    try {
+      await flush()
+      assert.equal(f.cards().length, 2)
+      assert.equal(all(f.root, el => el.props['data-action']).length, 0)
+      assert.equal(f.mutations.length, 0)
+    } finally { f.close() }
+  }
 })

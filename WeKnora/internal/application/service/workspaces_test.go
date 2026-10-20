@@ -85,6 +85,14 @@ func workspaceFixture(t *testing.T) (*WorkspaceService, *workspaceKBFixture, *wo
 		t.Fatal(err)
 	}
 	kbs := &workspaceKBFixture{rows: map[string]*types.KnowledgeBase{"own": {ID: "own", TenantID: 1, Name: "Library"}, "foreign": {ID: "foreign", TenantID: 2}, "shared": {ID: "shared", TenantID: 2}}}
+	if err := db.AutoMigrate(&types.KnowledgeBase{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, kb := range kbs.rows {
+		if err := db.Create(kb).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	shares := &workspaceShareFixture{}
 	return NewWorkspaceService(db, kbs, shares), kbs, shares
 }

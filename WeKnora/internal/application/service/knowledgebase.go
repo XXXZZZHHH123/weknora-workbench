@@ -822,7 +822,7 @@ func (s *knowledgeBaseService) DeleteKnowledgeBase(ctx context.Context, id strin
 	// Load the KB before soft-delete so we can snapshot its VectorStoreID
 	// into the async cleanup payload. GORM's soft-delete filter hides the
 	// row from subsequent reads, so this read must happen first.
-	kb, err := s.repo.GetKnowledgeBaseByID(ctx, id)
+	kb, err := s.repo.GetKnowledgeBaseByIDAndTenant(ctx, id, tenantID)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"knowledge_base_id": id,

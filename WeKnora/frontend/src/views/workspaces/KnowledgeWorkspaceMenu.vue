@@ -5,7 +5,7 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useUIStore } from '@/stores/ui'
 import { useOrganizationStore } from '@/stores/organization'
-import { getKnowledgeBaseById, listKnowledgeFiles, listKnowledgeFolders, createKnowledgeFolder, deleteKnowledgeFolder, renameKnowledgeFolder, type KnowledgeFolderTree } from '@/api/knowledge-base'
+import { getKnowledgeBaseById, listKnowledgeFiles, listKnowledgeFolders, createKnowledgeFolder, type KnowledgeFolderTree } from '@/api/knowledge-base'
 import { permissionCanEditKB } from '@/utils/kbPermission'
 import BrandWordmark from '@/components/BrandWordmark.vue'
 import UserMenu from '@/components/UserMenu.vue'
@@ -13,7 +13,7 @@ import WorkspaceNavigationNode from '@/components/WorkspaceNavigationNode.vue'
 import PanelResizeHandle from '@/components/PanelResizeHandle.vue'
 import { SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MAX_WIDTH } from '@/utils/sidebarWidth'
 import KbFolderTree from '@/views/knowledge/components/KbFolderTree.vue'
-import { canMoveFolderTo, folderPathExists } from '@/views/knowledge/folderTree'
+import { folderPathExists } from '@/views/knowledge/folderTree'
 import { KNOWLEDGE_DIRECTORY_EVENT, KNOWLEDGE_DIRECTORY_PAGE_SIZE, knowledgeDirectorySelection, newKnowledgeFolderPath, knowledgeDirectoryFileLocation, validateKnowledgeDirectoryPage, type KnowledgeDirectoryFile, type KnowledgeDirectoryFilePage } from './knowledgeDirectory'
 import { workspaceErrorMessage, workspaceIdentity } from './workspaceForm'
 
@@ -32,18 +32,19 @@ const canEdit = computed(() => {
   return ownTenant && (library.value.creator_id === auth.user?.id || auth.hasRole('admin'))
 })
 const folderOpen = ref(false), folderName = ref(''), folderError = ref(''), folderBusy = ref(false), folderParent = ref('')
-const deletePath = ref<string | null>(null)
 const filePages = ref<Record<string, KnowledgeDirectoryFilePage>>({})
 let filesGeneration = 0, filesActive = 0
 let filesController = new AbortController(), loadedIdentity = ''
 const filesQueue: Array<{ path: string; generation: number }> = []
 let generation = 0, resizeStart = 0
-async function load() {
+async function load(preserveTree = false) {
   const own = ++generation
   const actor = identity.value, id = kbId.value
-  filesController.abort(); filesController = new AbortController(); loadedIdentity = ''
+  const keepCurrentTree = preserveTree === true && loadedIdentity === actor
+  filesController.abort(); filesController = new AbortController()
   filesGeneration++; filesActive = 0; filesQueue.length = 0; filePages.value = {}
-  tree.value = null; library.value = null; error.value = ''; loading.value = true
+  if (!keepCurrentTree) { loadedIdentity = ''; tree.value = null; library.value = null }
+  error.value = ''; loading.value = true
   try {
     const [detail, folders] = await Promise.all([getKnowledgeBaseById(id), listKnowledgeFolders(id)])
     if (own !== generation || actor !== identity.value) return
@@ -92,14 +93,14 @@ function selectFile(file: KnowledgeDirectoryFile) {
   const target = knowledgeDirectoryFileLocation(kbId.value, file)
   if (target) void router.push(target)
 }
-watch(identity, () => { folderOpen.value = false; deletePath.value = null; folderBusy.value = false; void load() }, { immediate: true })
+watch(identity, () => { folderOpen.value = false; folderBusy.value = false; void load() }, { immediate: true })
 function selectFolder(path: string) {
   router.push({ path: `/platform/knowledge-bases/${kbId.value}`, query: path ? { folder: path } : {} })
 }
 function allFiles() { router.push({ path: `/platform/knowledge-bases/${kbId.value}`, query: { directory: 'all' } }) }
 function emitDirectoryChange(id: string) { window.dispatchEvent(new CustomEvent(KNOWLEDGE_DIRECTORY_EVENT, { detail: { kbId: id } })) }
 function refresh(event: Event) {
-  if ((event as CustomEvent).detail?.kbId === kbId.value) void load()
+  if ((event as CustomEvent).detail?.kbId === kbId.value) void load(true)
 }
 function allFolderPaths() {
   const paths: string[] = []
@@ -125,33 +126,23 @@ async function createFolder() {
   } catch (e) { if (own === identity.value) folderError.value = workspaceErrorMessage(e) }
   finally { if (own === identity.value) folderBusy.value = false }
 }
-async function renameFolder({ from, to }: { from: string; to: string }) {
-  if (!canEdit.value || !canMoveFolderTo(from, to)) return
-  const own = identity.value, id = kbId.value
-  try {
-    await renameKnowledgeFolder(id, from, to)
-    if (own !== identity.value) return
-    const current = selected.value.path
-    if (current === from || current.startsWith(`${from}/`)) selectFolder(to + current.slice(from.length))
-    emitDirectoryChange(id); MessagePlugin.success('文件夹名称已更新。')
-  } catch (e) { if (own === identity.value) MessagePlugin.error(workspaceErrorMessage(e)) }
+function renameFolder({ from, to }: { from: string; to: string }) {
+  const current = selected.value.path
+  if (current === from || current.startsWith(`${from}/`)) selectFolder(to + current.slice(from.length))
 }
-async function removeFolder() {
-  if (folderBusy.value || !canEdit.value || deletePath.value === null) return
-  const own = identity.value, id = kbId.value, path = deletePath.value
-  folderBusy.value = true; folderError.value = ''
-  try {
-    await deleteKnowledgeFolder(id, path)
-    if (own !== identity.value) return
-    deletePath.value = null
-    if (selected.value.path === path) selectFolder(path.split('/').slice(0, -1).join('/'))
-    emitDirectoryChange(id); MessagePlugin.success('空文件夹已删除。')
-  } catch (e) { if (own === identity.value) folderError.value = workspaceErrorMessage(e) }
-  finally { if (own === identity.value) folderBusy.value = false }
+function folderDeleted(path: string) {
+  if (selected.value.path === path || selected.value.path.startsWith(`${path}/`)) selectFolder(path.split('/').slice(0, -1).join('/'))
+}
+function knowledgeBaseChanged(event: Event) {
+  const change = (event as CustomEvent).detail
+  if (change?.id !== kbId.value) return
+  if (change.deleted) { void router.replace('/platform/knowledge-bases'); return }
+  void load()
 }
 onMounted(() => {
   window.addEventListener(KNOWLEDGE_DIRECTORY_EVENT, refresh)
   window.addEventListener('knowledgeFileUploaded', refresh)
+  window.addEventListener('weknora:knowledge-base-changed', knowledgeBaseChanged)
 })
 onBeforeUnmount(() => {
   generation++
@@ -159,6 +150,7 @@ onBeforeUnmount(() => {
   filesController.abort(); loadedIdentity = ''
   window.removeEventListener(KNOWLEDGE_DIRECTORY_EVENT, refresh)
   window.removeEventListener('knowledgeFileUploaded', refresh)
+  window.removeEventListener('weknora:knowledge-base-changed', knowledgeBaseChanged)
 })
 </script>
 
@@ -175,14 +167,13 @@ onBeforeUnmount(() => {
       <WorkspaceNavigationNode title="目录" icon="folder" :collapsed="ui.sidebarCollapsed" :active="isDirectory" expandable :expanded="directoryOpen" @toggle="directoryOpen = !directoryOpen" @navigate="selectFolder('')">
         <template #actions><button v-if="canEdit && !ui.sidebarCollapsed" type="button" class="knowledge-workspace-menu__icon" aria-label="新建文件夹" @click="openNewFolder"><t-icon name="folder-add" size="16px" /></button></template>
         <WorkspaceNavigationNode title="全库预览" icon="view-list" :depth="1" :active="isDirectory && selected.all" @navigate="allFiles" />
-        <p v-if="error" role="alert" class="knowledge-workspace-menu__error">{{ error }}<button type="button" class="knowledge-workspace-menu__back" @click="load">重试目录</button></p>
-        <KbFolderTree v-else :key="identity" :tree="tree" :selected-path="selected.path" :selected-file-id="typeof route.query.knowledge_id === 'string' ? route.query.knowledge_id : ''" :loading="loading" :can-edit="canEdit" :file-pages="filePages" show-files root-label="库根目录" navigation allow-delete @select="selectFolder" @select-file="selectFile" @load-files="loadFiles" @rename="renameFolder" @delete="(path: string) => { folderError = ''; deletePath = path }" />
+        <p v-if="error" role="alert" class="knowledge-workspace-menu__error">{{ error }}<button type="button" class="knowledge-workspace-menu__back" @click="load()">重试目录</button></p>
+        <KbFolderTree v-else :key="identity" :kb-id="kbId" :tree="tree" :selected-path="selected.path" :selected-file-id="typeof route.query.knowledge_id === 'string' ? route.query.knowledge_id : ''" :loading="loading" :can-edit="canEdit" :file-pages="filePages" show-files root-label="库根目录" navigation allow-delete @select="selectFolder" @select-file="selectFile" @load-files="loadFiles" @rename="renameFolder" @delete="folderDeleted" />
       </WorkspaceNavigationNode>
     </nav>
     <UserMenu />
     <PanelResizeHandle edge="right" label="调整侧栏宽度" :value="ui.sidebarDisplayWidth" :min="SIDEBAR_COLLAPSED_WIDTH" :max="SIDEBAR_MAX_WIDTH" @start="resizeStart = ui.sidebarDisplayWidth; ui.sidebarResizing = true" @resize="(delta: number) => ui.resizeSidebar(resizeStart + delta)" @end="ui.sidebarResizing = false" />
     <t-dialog v-model:visible="folderOpen" header="新建文件夹" :confirm-btn="{ content: '创建', loading: folderBusy }" :close-on-overlay-click="!folderBusy" @confirm="createFolder"><p>位置：{{ library?.name }} / {{ folderParent || '根目录' }}</p><t-input v-model="folderName" aria-label="文件夹名称" placeholder="文件夹名称" :disabled="folderBusy" @enter="createFolder" /><t-alert v-if="folderError" theme="error" :message="folderError" /></t-dialog>
-    <t-dialog :visible="deletePath !== null" header="删除空文件夹" :confirm-btn="{ content: '删除空目录', theme: 'danger', loading: folderBusy }" @update:visible="(visible: boolean) => { if (!visible) deletePath = null }" @confirm="removeFolder"><p>仅删除空目录：{{ deletePath }}。含文件或子目录时会拒绝删除。</p><t-alert v-if="folderError" theme="error" :message="folderError" /></t-dialog>
   </aside>
 </template>
 

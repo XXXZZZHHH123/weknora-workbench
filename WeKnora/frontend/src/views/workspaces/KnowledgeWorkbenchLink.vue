@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { listResearchWorkbenches, type ResearchWorkbench } from '@/api/workspaces'
@@ -24,7 +24,9 @@ async function load() {
   finally { if (own === generation) loading.value = false }
 }
 watch(scope, load, { immediate: true })
-onBeforeUnmount(() => { generation++ })
+const workspacesChanged = () => { void load() }
+onMounted(() => window.addEventListener('weknora:workspaces-changed', workspacesChanged))
+onBeforeUnmount(() => { generation++; window.removeEventListener('weknora:workspaces-changed', workspacesChanged) })
 function navigate() {
   if (!loaded.value) return
   if (!workbenches.value.length) router.push({ path: '/platform/research-workbenches/new', query: { kb_id: props.kbId } })

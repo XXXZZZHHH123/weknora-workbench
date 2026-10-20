@@ -23,6 +23,7 @@ export interface ResearchWorkbenchTemplate {
 }
 
 export interface ResearchWorkbench {
+  can_manage?: boolean
   id: string
   name: string
   description?: string
@@ -107,7 +108,7 @@ export function createResearchWorkbench(data: WorkbenchCreateInput): Promise<Env
 export function updateResearchWorkbench(workbenchId: string, data: Partial<WorkbenchInput>): Promise<Envelope<ResearchWorkbench>> {
   return put(`${base}/research/${id(workbenchId)}`, data)
 }
-export function deleteResearchWorkbench(workbenchId: string) {
+export function deleteResearchWorkbench(workbenchId: string): Promise<Envelope<null>> {
   return del(`${base}/research/${id(workbenchId)}`)
 }
 

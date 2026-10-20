@@ -56,8 +56,15 @@ func NewKnowledgeRepository(db *gorm.DB) interfaces.KnowledgeRepository {
 // CreateKnowledge creates knowledge
 func (r *knowledgeRepository) CreateKnowledge(ctx context.Context, knowledge *types.Knowledge) error {
 	knowledge.ErrorMessage = common.CleanInvalidUTF8(knowledge.ErrorMessage)
-	err := r.db.WithContext(ctx).Create(knowledge).Error
-	return err
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := folderNamespace(tx, knowledge.TenantID, knowledge.KnowledgeBaseID); err != nil {
+			return err
+		}
+		if err := rejectFolderDeletion(tx, knowledge.TenantID, knowledge.KnowledgeBaseID, []string{knowledge.FolderPath}, false); err != nil {
+			return err
+		}
+		return tx.Create(knowledge).Error
+	})
 }
 
 // GetKnowledgeByID gets knowledge
@@ -301,14 +308,26 @@ func (r *knowledgeRepository) UpdateKnowledgeFolderPath(
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	result := r.db.WithContext(ctx).
-		Model(&types.Knowledge{}).
-		Where("tenant_id = ? AND knowledge_base_id = ? AND id IN (?)", tenantID, kbID, ids).
-		Updates(map[string]interface{}{"folder_path": folderPath, "updated_at": time.Now()})
-	if result.Error != nil {
-		return 0, result.Error
-	}
-	return result.RowsAffected, nil
+	var affected int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := folderNamespace(tx, tenantID, kbID); err != nil {
+			return err
+		}
+		paths := []string{folderPath}
+		var sourcePaths []string
+		if err := directoryScope(tx.Model(&types.Knowledge{}), tenantID, kbID).Where("id IN ?", ids).Distinct("folder_path").Pluck("folder_path", &sourcePaths).Error; err != nil {
+			return err
+		}
+		paths = append(paths, sourcePaths...)
+		if err := rejectFolderDeletion(tx, tenantID, kbID, paths, false); err != nil {
+			return err
+		}
+		result := directoryScope(tx.Model(&types.Knowledge{}), tenantID, kbID).Where("id IN ?", ids).
+			Updates(map[string]interface{}{"folder_path": folderPath, "updated_at": time.Now()})
+		affected = result.RowsAffected
+		return result.Error
+	})
+	return affected, err
 }
 
 // RenameKnowledgeFolderPath atomically renames stored and document directories.

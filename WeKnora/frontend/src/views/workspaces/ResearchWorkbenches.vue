@@ -8,6 +8,7 @@ import KnowledgeBaseEditorModal from '@/views/knowledge/KnowledgeBaseEditorModal
 import ResourceListToolbar from '@/components/ResourceListToolbar.vue'
 import ResourceSortControl from '@/components/ResourceSortControl.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import WorkbenchActions from './WorkbenchActions.vue'
 import { DEFAULT_RESOURCE_SORT, sortResourceItems, type ResourceSortValue } from '@/utils/resourceSorting'
 import { createResearchWorkbench, listResearchWorkbenches, type ResearchWorkbench } from '@/api/workspaces'
 import { validateWorkbenchSource, validateWorkspaceName, workspaceErrorMessage as message, workspaceIdentity } from './workspaceForm'
@@ -100,7 +101,7 @@ async function knowledgeCreated(newId: string) {
     </form>
     <div v-else-if="!creating" class="research-list-main">
       <div v-if="visibleItems.length" class="workbench-card-wrap"><article v-for="workbench in visibleItems" :key="workbench.id" class="workbench-card" role="link" tabindex="0" :aria-label="`进入${workbench.name}`" @click="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)" @keydown.enter.self.prevent="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)" @keydown.space.self.prevent="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)">
-        <div class="card-header"><span class="workbench-avatar"><t-icon name="chart-bar" size="18px" /></span><span class="card-title" :title="workbench.name">{{ workbench.name }}</span><t-icon class="workbench-open" name="chevron-right" size="16px" /></div>
+        <div class="card-header"><span class="workbench-avatar"><t-icon name="chart-bar" size="18px" /></span><span class="card-title" :title="workbench.name">{{ workbench.name }}</span><WorkbenchActions :workbench="workbench" @renamed="updated => { items = items.map(item => item.id === updated.id ? updated : item) }" @deleted="id => { items = items.filter(item => item.id !== id) }" /><t-icon class="workbench-open" name="chevron-right" size="16px" /></div>
         <div class="card-content"><div class="card-description" :class="{ 'is-empty': !workbench.description }">{{ workbench.description || '暂无说明' }}</div></div>
         <div class="card-bottom"><button type="button" class="workbench-source" :title="`转到知识库：${sourceName(workbench)}`" @click.stop="router.push(`/platform/knowledge-bases/${encodeURIComponent(workbench.knowledge_base_id)}`)" @keydown.stop><t-icon name="folder" size="14px" /><span>{{ sourceName(workbench) }}</span></button><span class="workbench-template">{{ workbench.workspace_mode === 'isolated' ? templateById(workbench.template_id || 'blank').name : '研究工作台' }}</span></div>
       </article></div>

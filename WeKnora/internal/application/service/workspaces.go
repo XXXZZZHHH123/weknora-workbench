@@ -277,12 +277,18 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 		}
 		row.KnowledgeBaseName = kb.Name
 		row.ScopeTenantID = row.TenantID
+		row.CanManage = canManageWorkbench(caller, row)
 		visible = append(visible, row)
 	}
 	if err := s.loadWorkbenchOnboarding(ctx, visible); err != nil {
 		return nil, err
 	}
 	return visible, nil
+}
+
+func canManageWorkbench(caller types.Caller, row *types.ResearchWorkbench) bool {
+	return row != nil && caller.Role.HasPermission(types.TenantRoleContributor) &&
+		(row.UserID == caller.UserID || caller.Role.HasPermission(types.TenantRoleAdmin))
 }
 
 func (s *WorkspaceService) workbench(ctx context.Context, db *gorm.DB, id string, edit bool) (*types.ResearchWorkbench, error) {
@@ -302,11 +308,12 @@ func (s *WorkspaceService) workbench(ctx context.Context, db *gorm.DB, id string
 	if err != nil {
 		return nil, err
 	}
-	if edit && (!caller.Role.HasPermission(types.TenantRoleContributor) || (row.UserID != caller.UserID && !caller.Role.HasPermission(types.TenantRoleAdmin))) {
+	if edit && !canManageWorkbench(caller, &row) {
 		return nil, apperrors.NewForbiddenError("仅创建者或空间管理员可修改工作台")
 	}
 	row.KnowledgeBaseName = kb.Name
 	row.ScopeTenantID = row.TenantID
+	row.CanManage = canManageWorkbench(caller, &row)
 	return &row, nil
 }
 
@@ -370,6 +377,17 @@ func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceI
 	hash := sha256.Sum256(raw)
 	row.RequestHash = hex.EncodeToString(hash[:])
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Coordinate with source deletion after the earlier access check. SQLite
+		// needs the writer reservation before reading to avoid lock upgrades.
+		if tx.Dialector.Name() == "sqlite" {
+			if err := tx.Exec("UPDATE knowledge_bases SET id = id WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL", kb.ID, kb.TenantID).Error; err != nil {
+				return err
+			}
+		}
+		var activeKB types.KnowledgeBase
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND tenant_id = ?", kb.ID, kb.TenantID).First(&activeKB).Error; err != nil {
+			return workspaceDBError(err)
+		}
 		result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "tenant_id"}, {Name: "user_id"}, {Name: "idempotency_key"}}, DoNothing: true}).Create(row)
 		if result.Error != nil {
 			return result.Error

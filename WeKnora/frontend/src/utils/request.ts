@@ -285,6 +285,6 @@ export function patch<T = any>(url: string, data = {}, config?: any): Promise<Wi
   return instance.patch<T>(url, data, config) as unknown as Promise<WithStatus<T>>;
 }
 
-export function del<T = any>(url: string, data?: any): Promise<WithStatus<T>> {
-  return instance.delete<T>(url, { data }) as unknown as Promise<WithStatus<T>>;
+export function del<T = any>(url: string, data?: any, config?: any): Promise<WithStatus<T>> {
+  return instance.delete<T>(url, { ...config, data }) as unknown as Promise<WithStatus<T>>;
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrKnowledgeBaseNotFound = errors.New("knowledge base not found")
@@ -193,9 +194,37 @@ func (r *knowledgeBaseRepository) UpdateKnowledgeBaseGeneratedProfile(
 		}).Error
 }
 
-// DeleteKnowledgeBase deletes a knowledge base
+// DeleteKnowledgeBase hides the source and every direct workbench binding atomically.
 func (r *knowledgeBaseRepository) DeleteKnowledgeBase(ctx context.Context, id string) error {
-	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&types.KnowledgeBase{}).Error
+	tenantID, ok := types.TenantIDFromContext(ctx)
+	if !ok || tenantID == 0 {
+		return errors.New("tenant ID is required to delete a knowledge base")
+	}
+	if id == "" {
+		return errors.New("knowledge base ID cannot be empty")
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// SQLite ignores row locks; reserve its writer before the first read so
+		// concurrent creation cannot upgrade a stale read transaction later.
+		if tx.Dialector.Name() == "sqlite" {
+			if err := tx.Exec("UPDATE knowledge_bases SET id = id WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL", id, tenantID).Error; err != nil {
+				return err
+			}
+		}
+		var kb types.KnowledgeBase
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND tenant_id = ?", id, tenantID).First(&kb).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrKnowledgeBaseNotFound
+			}
+			return err
+		}
+		// Shared libraries can be primary sources for workbenches in other
+		// spaces. Match their real source ID, never just the workbench tenant.
+		if err := tx.Where("knowledge_base_id = ?", kb.ID).Delete(&types.ResearchWorkbench{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ? AND tenant_id = ?", kb.ID, tenantID).Delete(&types.KnowledgeBase{}).Error
+	})
 }
 
 // CountByVectorStoreID counts active knowledge bases that are bound to the

@@ -19,7 +19,8 @@ func TestCreateKnowledgeDefaultsCustomMetadataToEmptyObject(t *testing.T) {
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, db.AutoMigrate(&types.Knowledge{}))
+	require.NoError(t, db.AutoMigrate(&types.Knowledge{}, &types.KnowledgeBase{}, &types.KnowledgeFolder{}, &types.TaskPendingOp{}))
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb-1", TenantID: 1}).Error)
 
 	repo := NewKnowledgeRepository(db)
 	knowledge := &types.Knowledge{
