@@ -218,7 +218,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		e.config.SourceReviewReasoningEffort != "" && e.config.SourceReviewReasoningEffort != "off" &&
 		e.taskPlan != nil && e.taskPlan.ReasoningDepth == "synthesis"
 	if sourceReasoning {
-		reasoning = chat.ReasoningEffort(e.config.SourceReviewReasoningEffort)
+		reasoning = sourceCriticReasoning
 	}
 	if useImageReviewer {
 		reasoning = e.imageReviewReasoning

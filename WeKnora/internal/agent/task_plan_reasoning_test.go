@@ -30,8 +30,8 @@ func TestSynthesisReasoningUpgradesOnlyOffAndCapableModels(t *testing.T) {
 		thinking   *bool
 		want       chat.ReasoningEffort
 	}{
-		{"synthesis upgrades default off", "synthesis", "auto", "", nil, "auto"},
-		{"synthesis upgrades explicit off", "synthesis", "auto", "off", nil, "auto"},
+		{"synthesis upgrades default off", "synthesis", "auto", "", nil, synthesisGeneratorReasoning},
+		{"synthesis upgrades explicit off", "synthesis", "auto", "off", nil, synthesisGeneratorReasoning},
 		{"direct keeps off", "direct", "auto", "off", nil, ""},
 		{"no plan depth keeps off", "", "auto", "off", nil, ""},
 		{"model cannot reason", "synthesis", "off", "off", nil, ""},

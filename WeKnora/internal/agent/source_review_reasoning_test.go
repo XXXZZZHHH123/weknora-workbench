@@ -16,7 +16,7 @@ func TestSourceReviewUsesConfiguredReasoningAndBudget(t *testing.T) {
 	_, err := engine.answerNeedsRepair(t.Context(), "Report the observed result.", "The actual result is available.", "", sourceConsistencyState())
 	require.NoError(t, err)
 	require.Len(t, model.opts, 1)
-	require.Equal(t, chat.ReasoningEffort("auto"), model.opts[0].ReasoningEffort)
+	require.Equal(t, sourceCriticReasoning, model.opts[0].ReasoningEffort)
 	require.Greater(t, model.opts[0].MaxCompletionTokens, 6144, "reasoning tokens must not consume the verdict budget")
 }
 

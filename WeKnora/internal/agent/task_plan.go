@@ -368,6 +368,14 @@ func (tool *taskExpansionTool) Execute(_ context.Context, raw json.RawMessage) (
 	return &types.ToolResult{Success: true, Data: data, Output: string(output)}, nil
 }
 
+// Graded levels chosen from controlled replays of real reviews (2026-10-20):
+// the critic at "low" caught every known synthesis error at about half the
+// latency of the vendor default; the generator uses one step more.
+const (
+	synthesisGeneratorReasoning = chat.ReasoningEffort("medium")
+	sourceCriticReasoning       = chat.ReasoningEffort("low")
+)
+
 // synthesisReasoningEffort upgrades this turn's answer rounds to the model's
 // default reasoning when the planner judged the task to need synthesis. It
 // never lowers a configured level and never changes the saved agent config.
@@ -379,7 +387,7 @@ func (e *AgentEngine) synthesisReasoningEffort() chat.ReasoningEffort {
 	configured := strings.TrimSpace(e.config.ReasoningEffort)
 	thinkingOff := e.config.Thinking == nil || !*e.config.Thinking
 	if (configured == "" && thinkingOff) || configured == "off" {
-		return chat.ReasoningEffort("auto")
+		return synthesisGeneratorReasoning
 	}
 	return ""
 }
