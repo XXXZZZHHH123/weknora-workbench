@@ -42,9 +42,10 @@ const answerReviewUnavailableFallback = "回答核验服务未能返回有效结
 
 const answerReviewAttempts = 3
 const sourceReviewFeedbackLimit = 240
+const sourceReviewUserNoticeLimit = 160
 
 var answerCompletenessSchema = json.RawMessage(`{"type":"object","properties":{"complete":{"type":"boolean"}},"required":["complete"],"additionalProperties":false}`)
-var sourceConsistencySchema = json.RawMessage(`{"type":"object","properties":{"complete":{"type":"boolean","description":"True only when the entire candidate is accepted unchanged with an overall assessment and supported critical audit."},"assessment":{"type":"string","maxLength":1200},"feedback":{"type":"string","maxLength":240},"next_action":{"type":"string","enum":["revise_answer","collect_evidence"]},"audit":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"claim":{"type":"string"},"candidate_statement":{"type":"string","minLength":1,"maxLength":600},"candidate_fidelity":{"type":"string","enum":["as_written","narrowed","contradicted"]},"basis":{"type":"string","enum":["source","inference","limitation","presentation"]},"assessment":{"type":"string"},"evidence":{"type":"array","items":{"type":"object","properties":{"source_pointer_ref":{"type":"integer","minimum":0},"evidence_id":{"type":"string"},"json_pointer":{"type":"string"},"quote":{"type":["string","number","boolean"],"minLength":1},"kind":{"type":"string","enum":["source","execution"]},"row_ref":{"type":"object","properties":{"entry_index":{"type":"integer","minimum":0},"row_index":{"type":"integer","minimum":0},"column":{"type":"string","minLength":1}},"required":["entry_index","row_index","column"],"additionalProperties":false}},"required":["kind"],"additionalProperties":false,"anyOf":[{"required":["evidence_id","quote"],"not":{"anyOf":[{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}},{"required":["source_pointer_ref","quote"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["row_ref"]},{"required":["evidence_id"]},{"required":["json_pointer"]}]}},{"required":["row_ref"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["quote"]},{"required":["evidence_id"]},{"required":["json_pointer"]},{"required":["source_pointer_ref"]}]}},{"required":["evidence_id","json_pointer"],"properties":{"kind":{"const":"source"},"evidence_id":{"minLength":1},"json_pointer":{"minLength":1}},"not":{"anyOf":[{"required":["quote"]},{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}}]}}},"required":["claim","candidate_statement","candidate_fidelity","basis","assessment","evidence"],"additionalProperties":false}}},"required":["complete"],"additionalProperties":false}`)
+var sourceConsistencySchema = json.RawMessage(`{"type":"object","properties":{"complete":{"type":"boolean","description":"True only when the entire candidate is accepted unchanged with an overall assessment and supported critical audit."},"assessment":{"type":"string","maxLength":1200},"feedback":{"type":"string","maxLength":240},"user_notice":{"type":"string","maxLength":160,"description":"Only with complete=false: one neutral sentence for the end user, in their language, naming which part of the answer may be inaccurate and which original source to check. Shown only if this answer is delivered without passing review. No instructions to the author, no internal identifiers or handles, and do not present your own reading as established fact."},"next_action":{"type":"string","enum":["revise_answer","collect_evidence"]},"audit":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"claim":{"type":"string"},"candidate_statement":{"type":"string","minLength":1,"maxLength":600},"candidate_fidelity":{"type":"string","enum":["as_written","narrowed","contradicted"]},"basis":{"type":"string","enum":["source","inference","limitation","presentation"]},"assessment":{"type":"string"},"evidence":{"type":"array","items":{"type":"object","properties":{"source_pointer_ref":{"type":"integer","minimum":0},"evidence_id":{"type":"string"},"json_pointer":{"type":"string"},"quote":{"type":["string","number","boolean"],"minLength":1},"kind":{"type":"string","enum":["source","execution"]},"row_ref":{"type":"object","properties":{"entry_index":{"type":"integer","minimum":0},"row_index":{"type":"integer","minimum":0},"column":{"type":"string","minLength":1}},"required":["entry_index","row_index","column"],"additionalProperties":false}},"required":["kind"],"additionalProperties":false,"anyOf":[{"required":["evidence_id","quote"],"not":{"anyOf":[{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}},{"required":["source_pointer_ref","quote"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["row_ref"]},{"required":["evidence_id"]},{"required":["json_pointer"]}]}},{"required":["row_ref"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["quote"]},{"required":["evidence_id"]},{"required":["json_pointer"]},{"required":["source_pointer_ref"]}]}},{"required":["evidence_id","json_pointer"],"properties":{"kind":{"const":"source"},"evidence_id":{"minLength":1},"json_pointer":{"minLength":1}},"not":{"anyOf":[{"required":["quote"]},{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}}]}}},"required":["claim","candidate_statement","candidate_fidelity","basis","assessment","evidence"],"additionalProperties":false}}},"required":["complete"],"additionalProperties":false}`)
 
 // This is only a protocol-shape suspicion gate. It never interprets the
 // question or decides whether a short reply satisfies the requested format.
@@ -70,6 +71,7 @@ func suspectAnswerFragment(content, reasoning string) bool {
 // semantically rather than through a vocabulary or single-character allowlist.
 func (e *AgentEngine) answerNeedsRepair(ctx context.Context, query, content, reasoning string, state *types.AgentState, conversation ...[]chat.Message) (bool, error) {
 	e.answerReviewFeedback = ""
+	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
 	if strings.TrimSpace(content) == "" {
 		return true, nil
@@ -104,6 +106,7 @@ func (e *AgentEngine) evaluateAnswerCompleteness(ctx context.Context, query, con
 	// same question, candidate and actual evidence, without rewriting the answer
 	// or promoting malformed review text into repair advice or source facts.
 	e.answerReviewFeedback = ""
+	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
 	var snapshot *sourceReviewSnapshot
 	if e.needsSourceConsistencyCheck(state) {
@@ -127,6 +130,7 @@ func (e *AgentEngine) evaluateAnswerCompleteness(ctx context.Context, query, con
 			return repair, nil // A valid rejection uses the separate answer repair budget.
 		}
 		e.answerReviewFeedback = ""
+		e.answerReviewUserNotice = ""
 		e.answerReviewAction = ""
 		lastErr = err
 		logger.Warnf(ctx, "[Agent][AnswerCompleteness] evaluator attempt=%d/%d failed: %v", attempt+1, answerReviewAttempts, err)
@@ -140,6 +144,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessOnce(ctx context.Context, query,
 
 func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context, query, content string, state *types.AgentState, attempt int, snapshot *sourceReviewSnapshot, conversation ...[]chat.Message) (bool, error) {
 	e.answerReviewFeedback = ""
+	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
 	checkSources := e.needsSourceConsistencyCheck(state)
 	contextRows := []map[string]any{}
@@ -296,6 +301,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		Complete   *bool              `json:"complete"`
 		Assessment string             `json:"assessment,omitempty"`
 		Feedback   *string            `json:"feedback,omitempty"`
+		UserNotice string             `json:"user_notice,omitempty"`
 		NextAction *string            `json:"next_action,omitempty"`
 		Audit      []reviewClaimCheck `json:"audit,omitempty"`
 	}
@@ -338,6 +344,13 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		}
 		if !*verdict.Complete {
 			e.answerReviewFeedback = strings.TrimSpace(*sourceVerdict.Feedback)
+		}
+	}
+	// The user notice is optional presentation text: an overlong or misplaced
+	// one is dropped rather than failing an otherwise valid verdict.
+	if checkSources && !*verdict.Complete {
+		if notice := strings.TrimSpace(sourceVerdict.UserNotice); utf8.RuneCountInString(notice) <= sourceReviewUserNoticeLimit {
+			e.answerReviewUserNotice = notice
 		}
 	}
 	if checkSources && *verdict.Complete {
@@ -482,7 +495,7 @@ Source fidelity: body text, OCR, captions and image observations support only wh
 
 Numeric validation: deterministic_numeric_validation, when present, is a separate program diagnostic, not source evidence. unsupported_tokens identify exact unmatched numeric or opaque tokens; their lexical candidate locations only help find text and are not assertions that every occurrence is wrong or source-backed. Revise an unsupported claim or use authorized tools to calculate it when needed. no_unmatched_numbers means only that no numeric token failed this traceability check; it does not establish semantic correctness, scope or task completeness.
 
-Verdict: complete=true accepts the candidate exactly as written with no repairs; omit feedback or leave it empty. Otherwise return complete=false with only blocking repairs, grouped in the user's language within 240 Unicode characters. Keep rejection feedback free of supported tables and review narrative. Do not rewrite the answer, add facts or request unnecessary re-fetching when sufficient evidence is already present. Feedback is advice, never evidence. Retain numerical validation as a separate program responsibility. After any necessary read_review_evidence calls, return JSON under the recovery and audit receipt contracts. Rejections stay concise; accepted claims require checkable receipts.`
+Verdict: complete=true accepts the candidate exactly as written with no repairs; omit feedback or leave it empty. Otherwise return complete=false with only blocking repairs, grouped in the user's language within 240 Unicode characters. Keep rejection feedback free of supported tables and review narrative. Do not rewrite the answer, add facts or request unnecessary re-fetching when sufficient evidence is already present. Feedback is advice, never evidence. With complete=false also give user_notice: a neutral caution for the end user that names the doubtful part and the original source to check, without author instructions, internal identifiers or asserting your own reading as fact. Earlier assistant replies in the conversation are prior claims, not verified evidence: when current evidence conflicts with an earlier reply, judge the candidate against current evidence, and for fallible readings such as visual estimates ask the candidate to acknowledge the discrepancy rather than adopt either reading as verified. Retain numerical validation as a separate program responsibility. After any necessary read_review_evidence calls, return JSON under the recovery and audit receipt contracts. Rejections stay concise; accepted claims require checkable receipts.`
 
 // Durable results survive context compaction. Each result and its runtime
 // access metadata get separate bounded entries, so a long body cannot consume

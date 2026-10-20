@@ -45,9 +45,9 @@ type turnReviewState struct {
 	Query         string
 	Conversation  []chat.Message
 	// Latest non-empty candidate that passed deterministic numeric grounding
-	// but was not approved by the semantic reviewer, with its last advice.
-	UnverifiedCandidate string
-	UnverifiedFeedback  string
+	// but was not approved by the semantic reviewer, with its user caution.
+	UnverifiedCandidate  string
+	UnverifiedUserNotice string
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while
@@ -81,6 +81,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	e.turnReview.Query = query
 	e.turnReview.Conversation = append([]chat.Message(nil), conversation...)
 	e.answerReviewFeedback = ""
+	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
 	decision = candidateDecision{Disposition: candidateAccepted,
 		CandidateHash: candidateTextDigest(candidate),
@@ -179,25 +180,22 @@ func (e *AgentEngine) rememberUnverifiedCandidate(candidate string, decision can
 		candidate = decoded
 	}
 	e.turnReview.UnverifiedCandidate = candidate
-	e.turnReview.UnverifiedFeedback = strings.TrimSpace(e.answerReviewFeedback)
+	e.turnReview.UnverifiedUserNotice = strings.TrimSpace(e.answerReviewUserNotice)
 }
-
-const unverifiedDeliveryFeedbackLimit = 200
 
 // unverifiedDelivery is the delivery policy chosen by the user (2026-10-20):
 // when semantic review fails or keeps rejecting, deliver the latest
 // numerically grounded candidate with an explicit notice instead of nothing.
+// Reviewer repair advice is written for the author and may itself be wrong, so
+// it is never shown; only the reviewer's separate user-facing caution is.
 func (e *AgentEngine) unverifiedDelivery() (string, bool) {
 	candidate := strings.TrimSpace(e.turnReview.UnverifiedCandidate)
 	if candidate == "" {
 		return "", false
 	}
-	notice := "\n\n> 说明：本回答未能完成自动核验，数字已与取数结果核对，但结论表述请结合引用来源判断。"
-	if feedback := []rune(e.turnReview.UnverifiedFeedback); len(feedback) > 0 {
-		if len(feedback) > unverifiedDeliveryFeedbackLimit {
-			feedback = append(feedback[:unverifiedDeliveryFeedbackLimit-1], '…')
-		}
-		notice += "核验曾提出的疑问（本身也可能有误）：" + string(feedback)
+	notice := "\n\n> 提示：本回答未能完成自动核验，部分表述可能与原始资料有出入，请以引用的原文、原图或数据为准。"
+	if caution := strings.TrimSpace(e.turnReview.UnverifiedUserNotice); caution != "" {
+		notice = "\n\n> 提示：本回答未能完成自动核验。" + caution
 	}
 	return candidate + notice, true
 }
@@ -208,4 +206,3 @@ func (e *AgentEngine) taskReasoningDepth() string {
 	}
 	return e.taskPlan.ReasoningDepth
 }
-
