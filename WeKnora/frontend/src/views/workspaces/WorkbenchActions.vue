@@ -60,7 +60,7 @@ async function confirm() {
     <t-dialog :visible="Boolean(action)" :header="action === 'rename' ? '重命名工作台' : '删除工作台'" width="400px"
       :confirm-btn="{ content: action === 'delete' ? '删除' : '保存', theme: action === 'delete' ? 'danger' : 'primary', loading: busy }"
       :cancel-btn="{ content: '取消', disabled: busy }" :close-btn="!busy" :close-on-overlay-click="!busy" :close-on-esc-keydown="!busy"
-      @update:visible="value => { if (!value) close() }" @confirm="confirm" @cancel="close" @close="close">
+      @update:visible="(value: boolean) => { if (!value) close() }" @confirm="confirm" @cancel="close" @close="close">
       <t-input v-if="action === 'rename'" v-model="name" autofocus :maxlength="80" :disabled="busy" aria-label="工作台名称" @enter="confirm" />
       <p v-else class="workbench-actions__note">确定删除“{{ workbench.name }}”？绑定的知识库及其中资料会保留。</p>
       <t-alert v-if="error" theme="error" :message="error" class="workbench-actions__error" />

@@ -170,7 +170,7 @@ for (const action of ['move'] as const) {
     const result = await folderMutation(action)
     assert.equal(result.events.length, 1)
     assert.equal(result.events[0].detail.kbId, 'kb-a')
-    if (action === 'rename') assert.deepEqual(result.selected, ['Renamed/Inner'])
+    assert.deepEqual(result.selected, [])
   })
   for (const change of ['actor', 'tenant', 'kb']) {
     test('a completed native ' + action + ' cannot refresh or navigate a changed ' + change, async () => {
