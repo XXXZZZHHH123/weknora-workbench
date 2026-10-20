@@ -75,49 +75,79 @@ func validateReviewReceipt(answer, overallAssessment string, checks []reviewClai
 	if strings.TrimSpace(answer) == "" || strings.TrimSpace(overallAssessment) == "" || len(checks) == 0 || len(checks) > 16 || snapshot == nil {
 		return fmt.Errorf("accepted source review requires an overall assessment and bounded critical audit")
 	}
+	// Delivery policy (user decision 2026-10-20): the reviewer's verdict decides
+	// acceptance. Witness locators are audited and recorded, but an unlocated or
+	// mis-addressed quote no longer blocks a verdict the reviewer accepted.
+	// Structural protocol defects still fail so the reviewer retries.
 	diagnostics := reviewReceiptDiagnostics{}
-	validatedCriticalCheck := false
+	substantive := false
 	for entryIndex, check := range checks {
 		label := fmt.Sprintf("entry[%d]", entryIndex)
-		checkValid := true
 		if strings.TrimSpace(check.Claim) == "" || strings.TrimSpace(check.Assessment) == "" {
 			diagnostics.add(label, "audit requires a critical claim description and a substantive assessment")
-			checkValid = false
 		}
 		switch check.Basis {
 		case "source", "inference", "limitation":
-			if len(check.Evidence) == 0 {
-				diagnostics.add(label, "source, inference and limitation audits require inspected evidence")
-				checkValid = false
-			}
+			substantive = true
 		case "presentation":
 		default:
 			diagnostics.add(label, "unknown audit basis")
-			checkValid = false
-		}
-		observedSource := false
-		validatedWitness := false
-		for _, witness := range check.Evidence {
-			if err := reviewWitnessVisible(snapshot.input, snapshot.sourceRecords, witness); err != nil {
-				diagnostics.add(label, err.Error())
-				checkValid = false
-			} else {
-				validatedWitness = true
-				observedSource = observedSource || witness.Kind == "source"
-			}
-		}
-		if (check.Basis == "source" || check.Basis == "inference") && validatedWitness && !observedSource {
-			diagnostics.add(label, "execution-status witnesses cannot support source facts")
-			checkValid = false
-		}
-		if checkValid && check.Basis != "presentation" && validatedWitness {
-			validatedCriticalCheck = true
 		}
 	}
-	if !validatedCriticalCheck {
-		diagnostics.add("audit", "accepted source review requires at least one supported substantive critical check")
+	if !substantive {
+		diagnostics.add("audit", "accepted source review requires at least one substantive (source, inference or limitation) check")
 	}
 	return diagnostics.err()
+}
+
+// reviewReceiptWitnessSummary audits every witness without blocking delivery.
+// verified: passed the strict identity/path/visibility check; located: the
+// quote text exists in a successful current-turn result; unlocated: neither.
+func reviewReceiptWitnessSummary(checks []reviewClaimCheck, snapshot *sourceReviewSnapshot) map[string]any {
+	verified, located, unlocated := 0, 0, 0
+	diagnostics := reviewReceiptDiagnostics{}
+	if snapshot == nil {
+		return map[string]any{"witnesses": 0}
+	}
+	for entryIndex, check := range checks {
+		for _, witness := range check.Evidence {
+			err := reviewWitnessVisible(snapshot.input, snapshot.sourceRecords, witness)
+			switch {
+			case err == nil:
+				verified++
+			case reviewQuoteFoundInResults(snapshot.sourceRecords, witness.Quote):
+				located++
+				diagnostics.add(fmt.Sprintf("entry[%d]", entryIndex), err.Error())
+			default:
+				unlocated++
+				diagnostics.add(fmt.Sprintf("entry[%d]", entryIndex), err.Error())
+			}
+		}
+	}
+	summary := map[string]any{"witnesses": verified + located + unlocated, "verified": verified, "located_by_text": located, "unlocated": unlocated}
+	if err := diagnostics.err(); err != nil {
+		summary["diagnostics"] = err.Error()
+	}
+	return summary
+}
+
+// reviewQuoteFoundInResults reports whether quote occurs verbatim in any
+// successful current-turn result's data or Wiki output. Audit only.
+func reviewQuoteFoundInResults(reader *reviewEvidenceReader, quote string) bool {
+	if reader == nil || strings.TrimSpace(quote) == "" {
+		return false
+	}
+	for _, record := range reader.records {
+		if len(reviewTextPathsContaining(record, quote, 1)) > 0 {
+			return true
+		}
+		if payload, ok := record.Value.(map[string]any); ok && payload["success"] == true {
+			if output, isText := payload["output"].(string); isText && strings.Contains(output, quote) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type reviewReceiptDiagnostics struct {

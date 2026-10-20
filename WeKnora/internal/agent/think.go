@@ -365,6 +365,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		if err := validateReviewReceipt(content, sourceVerdict.Assessment, sourceVerdict.Audit, snapshot); err != nil {
 			return true, err
 		}
+		common.PipelineInfo(ctx, "Agent", "source_review_receipt", reviewReceiptWitnessSummary(sourceVerdict.Audit, snapshot))
 	}
 	if checkSources && !*verdict.Complete && sourceVerdict.NextAction != nil {
 		e.answerReviewAction = *sourceVerdict.NextAction
