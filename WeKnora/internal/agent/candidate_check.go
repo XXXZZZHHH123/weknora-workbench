@@ -123,6 +123,17 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		}
 		ctx = withNumericValidationFeedback(ctx, decision.NumericFeedback)
 	}
+	// Delivery policy (user decision 2026-10-20): direct lookups are delivered
+	// after deterministic numeric grounding, like a single-model answer with
+	// citations; the independent critic is reserved for synthesis tasks, where
+	// it caught real cross-source and trend errors. Without a planner judgement
+	// the critic still runs; fragments still get the completeness check.
+	if e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && !suspectAnswerFragment(candidate, reasoning) {
+		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{
+			"reason": "direct_task", "reasoning_depth": e.taskReasoningDepth(),
+		})
+		return
+	}
 	var repair bool
 	if forceReview {
 		repair, decision.Err = e.evaluateAnswerCompleteness(ctx, query, candidate, state, conversation)
@@ -190,3 +201,11 @@ func (e *AgentEngine) unverifiedDelivery() (string, bool) {
 	}
 	return candidate + notice, true
 }
+
+func (e *AgentEngine) taskReasoningDepth() string {
+	if e == nil || e.taskPlan == nil {
+		return ""
+	}
+	return e.taskPlan.ReasoningDepth
+}
+
