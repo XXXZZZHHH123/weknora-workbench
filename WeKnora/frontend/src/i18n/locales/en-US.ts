@@ -6423,6 +6423,35 @@ export default {
       searchingMixedWithQuery: 'Searching knowledge base and web: "{query}"',
       searchDone: 'Search complete'
     },
+    thinkingTimeline: {
+      thoughtForSeconds: 'Thought for {seconds}s',
+      thoughtForMinutes: 'Thought for {minutes}m {seconds}s',
+      reasoning: 'Reasoning',
+      steps: {
+        listDatasets: 'Browse datasets',
+        listSeries: 'Find table fields',
+        listCharts: 'Browse table charts',
+        querySeries: 'Query table data',
+        analyzeTable: 'Analyze table data',
+        inspectSource: 'Check source cells',
+        compareSeries: 'Compare two series',
+        convertPrice: 'Convert price',
+        resolveFields: 'Identify fields',
+        getResultEvidence: 'Read query evidence',
+        structuredFallback: 'Query table data',
+        readDocument: 'Read document',
+        readDocumentNamed: 'Read “{title}”',
+        listDocuments: 'Find documents',
+        bindDocumentScope: 'Set source scope',
+        wikiSearch: 'Search Wiki',
+        wikiReadPage: 'Read Wiki page',
+        analyzeDocumentTables: 'Analyze document tables',
+        calculate: 'Calculate values',
+        webSearch: 'Web search',
+        webFetch: 'Read web page',
+        generic: 'Run step'
+      }
+    },
     mcp: {
       discoverTools: "Discover MCP tools",
       listServers: "List MCP services",

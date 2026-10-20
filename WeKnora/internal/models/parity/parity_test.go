@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -36,14 +37,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMain whitelists the loopback host: several vendors ship a placeholder
-// default URL (self-hosted runtimes) or a templated one (Azure), which the
-// SSRF guard rejects before any request is built. Those cases are re-pointed
-// at 127.0.0.1 by reachableBaseURL.
+// Request-shape tests do not send requests to vendor endpoints. Preserve the
+// catalog URLs for endpoint/baseline assertions, but avoid external DNS during
+// NewRemoteChat construction. Only this test process trusts catalog hosts;
+// production SSRF policy and the separate utils security tests remain unchanged.
 func TestMain(m *testing.M) {
-	secutils.SetSSRFWhitelistFromRaw("127.0.0.1")
-	defer secutils.ResetSSRFWhitelistForTest()
-	os.Exit(m.Run())
+	hosts := []string{"127.0.0.1"}
+	for _, vendor := range modelruntime.List() {
+		for _, rawURL := range vendor.DefaultBaseURLs {
+			parsed, err := url.Parse(rawURL)
+			if err == nil && parsed.Hostname() != "" && !strings.ContainsAny(parsed.Hostname(), "{}_") {
+				hosts = append(hosts, parsed.Hostname())
+			}
+		}
+	}
+	secutils.SetSSRFWhitelistFromRaw(strings.Join(hosts, ","))
+	code := m.Run()
+	secutils.ResetSSRFWhitelistForTest()
+	os.Exit(code)
 }
 
 // reachableBaseURL replaces a placeholder or templated vendor URL with a

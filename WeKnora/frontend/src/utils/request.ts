@@ -180,6 +180,7 @@ instance.interceptors.response.use(
       originalRequest._retry = true;
       try {
         const token = await refreshAccessTokenShared({
+          rejectedToken: String(originalRequest.headers?.Authorization || '').replace(/^Bearer /, ''),
           messages: {
             pleaseRelogin: t('error.pleaseRelogin'),
             tokenRefreshFailed: t('error.tokenRefreshFailed'),
@@ -188,7 +189,7 @@ instance.interceptors.response.use(
         originalRequest.headers['Authorization'] = 'Bearer ' + token;
         return instance(originalRequest);
       } catch (refreshError) {
-        // refreshAccessTokenShared already cleared credentials and redirected.
+        // Invalid sessions are handled by the shared refresher; transient failures preserve credentials.
         return Promise.reject(refreshError);
       }
     }

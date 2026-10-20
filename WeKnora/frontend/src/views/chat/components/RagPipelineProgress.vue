@@ -111,7 +111,7 @@
               <div class="action-header" :class="{ 'no-results': !thinkingContent }" @click="toggleThinking">
                 <div class="action-title">
                   <t-icon class="action-title-icon" name="lightbulb" />
-                  <span class="action-name">{{ t('agent.think') }}</span>
+                  <span class="action-name">{{ t('agentStream.thinkingTimeline.reasoning') }}</span>
                 </div>
               </div>
               <div v-if="thinkingContent && thinkingExpanded" class="thinking-detail-content">
@@ -216,7 +216,7 @@
                 <div class="action-header" :class="{ 'no-results': !thinkingContent }" @click="toggleThinking">
                   <div class="action-title">
                     <t-icon class="action-title-icon" name="lightbulb" />
-                    <span class="action-name">{{ t('agent.think') }}</span>
+                    <span class="action-name">{{ t('agentStream.thinkingTimeline.reasoning') }}</span>
                   </div>
                 </div>
                 <div v-if="thinkingContent && thinkingExpanded" class="thinking-detail-content">
@@ -255,11 +255,15 @@ import { useChatMemoryRow } from '@/composables/useChatMemoryRow'
 import { getAgentToolIconName } from '@/utils/agent-tool-icons'
 import {
   getKnowledgeSearchSummaryHtml,
-  getRagPipelineStepTitle,
   getRetrievalSearchSource,
 } from '@/utils/agent-tool-display'
 import { getAttachmentParsingSummaryHtml } from '@/utils/attachmentParsingDisplay'
-import { RAG_RETRIEVAL_TOOL_NAMES, RAG_TIMELINE_TOOL_NAMES } from '@/utils/rag-pipeline-history'
+import { RAG_RETRIEVAL_TOOL_NAMES } from '@/utils/rag-pipeline-history'
+import {
+  formatThoughtDuration,
+  getThinkingTimelineStepTitle,
+  isThinkingTimelineStep,
+} from '@/utils/thinking-timeline'
 import { useChatReferencesDrawer } from '@/composables/useChatReferencesDrawer'
 import { buildReferenceSections } from '@/utils/referenceSources'
 import {
@@ -276,6 +280,7 @@ const props = defineProps<{
     knowledge_references?: Array<{ chunk_type?: string; knowledge_id?: string; knowledge_title?: string }>
     used_memories?: Array<{ id: string; kind: string; content: string }>
     is_completed?: boolean
+    agent_duration_ms?: number
   }
   embeddedMode?: boolean
   // Set by hosts that already render their own timeline (the agent stream) and
@@ -347,13 +352,9 @@ const steps = computed(() => {
   if (!stream?.length) return []
 
   return stream
-    .filter((event) => {
-      return (
-        event.type === 'tool_call' &&
-        typeof event.tool_name === 'string' &&
-        RAG_TIMELINE_TOOL_NAMES.has(event.tool_name)
-      )
-    })
+    // Every real source step is part of the visible thinking process (tables,
+    // documents, wiki, retrieval); runtime-internal steps stay hidden.
+    .filter((event) => event.type === 'tool_call' && isThinkingTimelineStep(event.tool_name, event.arguments))
     .map((event) => {
       const toolName = String(event.tool_name)
       const pending = event.pending === true
@@ -380,10 +381,10 @@ const steps = computed(() => {
         toolName,
         pending,
         iconName: getAgentToolIconName(toolName, searchSource),
-        title: getRagPipelineStepTitle(t, {
+        title: getThinkingTimelineStepTitle(t, {
           tool_name: toolName,
           pending,
-          success: event.success as boolean | undefined,
+          success: event.success,
           arguments: event.arguments,
           tool_data: toolData,
         }),
@@ -494,7 +495,23 @@ const liveStatusText = computed(() => {
   return ''
 })
 
+// A live turn only learns the server duration on reload; measure it here from
+// the moment this turn was first rendered until the answer/completion arrives.
+const liveStartedAt = props.session?.is_completed ? 0 : Date.now()
+const liveDurationMs = ref(0)
+watch(
+  () => hasAnswer.value || Boolean(props.session?.is_completed),
+  (done) => {
+    if (done && liveStartedAt && !liveDurationMs.value) liveDurationMs.value = Date.now() - liveStartedAt
+  },
+  { immediate: true },
+)
+
+// Claude-style summary: "Thought for 12s", expandable to the steps and the
+// model's reasoning. Falls back to the previous labels when no duration exists.
 const collapsedStatusText = computed(() => {
+  const thoughtFor = formatThoughtDuration(t, props.session?.agent_duration_ms || liveDurationMs.value)
+  if (thoughtFor) return thoughtFor
   if (steps.value.length === 0) {
     return hasThinking.value ? t('agentStream.toolStatus.thinkingDone') : ''
   }

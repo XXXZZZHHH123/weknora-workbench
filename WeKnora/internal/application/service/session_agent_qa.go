@@ -107,6 +107,7 @@ func (s *sessionService) AgentQA(
 			agentModelSupportsVision = modelInfo.Parameters.SupportsVision
 			modelContextWindow = modelInfo.Parameters.ContextWindow
 			agentConfig.ReviewReasoningEffort = reviewReasoningEffort(modelInfo)
+			agentConfig.SourceReviewReasoningEffort = sourceReviewReasoningEffort(modelInfo)
 			// A request to turn reasoning off cannot be honored by always-on
 			// models. Use their least supported graded level instead of silently
 			// dropping the request and inheriting the vendor's expensive default.
@@ -332,6 +333,20 @@ func (s *sessionService) AgentQA(
 	}
 	// Return empty - events will be handled by Handler via EventBus subscription
 	return nil
+}
+
+// sourceReviewReasoningEffort enables the vendor's default reasoning for the
+// source-consistency critic when the model can reason at all. It is a model
+// capability decision, independent of any question or answer content.
+func sourceReviewReasoningEffort(model *types.Model) string {
+	if model == nil {
+		return "off"
+	}
+	resolved, err := chat.Resolve(chat.ConfigFromModel(model, "", ""))
+	if err != nil || !resolved.Spec.Reasoning || !resolved.ThinkingLevels.Supports(chat.ReasoningEffort("auto")) {
+		return reviewReasoningEffort(model)
+	}
+	return "auto"
 }
 
 func reviewReasoningEffort(model *types.Model) string {

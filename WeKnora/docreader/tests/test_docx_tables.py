@@ -23,14 +23,22 @@ def _load_docx_parser():
     sys.modules.setdefault("docreader", docreader_pkg)
     parser_pkg = types.ModuleType("docreader.parser")
     parser_pkg.__path__ = [str(root / "docreader" / "parser")]
+    missing = object()
+    original_parser_pkg = sys.modules.get("docreader.parser", missing)
     sys.modules["docreader.parser"] = parser_pkg
 
-    spec = importlib.util.spec_from_file_location(
-        "docreader.parser.docx_parser", root / "docreader" / "parser" / "docx_parser.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["docreader.parser.docx_parser"] = module
-    spec.loader.exec_module(module)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "docreader.parser.docx_parser", root / "docreader" / "parser" / "docx_parser.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["docreader.parser.docx_parser"] = module
+        spec.loader.exec_module(module)
+    finally:
+        if original_parser_pkg is missing:
+            sys.modules.pop("docreader.parser", None)
+        else:
+            sys.modules["docreader.parser"] = original_parser_pkg
     return module
 
 

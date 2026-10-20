@@ -1,3 +1,4 @@
+import { subscribeAuthTokens } from './authSession'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
@@ -215,4 +216,31 @@ test('chat stream wires the shared retry and keeps the abort controller', () => 
   assert.match(source, /isStreamAuthError/)
   assert.match(source, /streamAbort/)
   assert.doesNotMatch(source, /forceReloginRedirect/)
+})
+
+test('refresh publishes both credentials after storage is updated', async () => {
+  const { store } = installBrowser(); store.weknora_refresh_token = 'rt-old'
+  const observed: string[] = []
+  const dispose = subscribeAuthTokens(next => { observed.push(next.token, next.refreshToken, store.weknora_token!) })
+  try { await refreshAccessTokenShared({ refresh: async () => ({ success: true, data: { token: 'new', refreshToken: 'rt-new' } }) }) }
+  finally { dispose() }
+  assert.deepEqual(observed, ['new', 'rt-new', 'new'])
+})
+test('late 401 uses already rotated access token without another refresh', async () => {
+  const { store } = installBrowser(); store.weknora_token = 'new'
+  const token = await refreshAccessTokenShared({ rejectedToken: 'old', refresh: async () => { throw Error('must not refresh') } })
+  assert.equal(token, 'new')
+})
+test('network failure keeps the session available for retry', async () => {
+  const { store, location } = installBrowser(); store.weknora_token = 'old'; store.weknora_refresh_token = 'rt'
+  await assert.rejects(refreshAccessTokenShared({ refresh: async () => { throw Error('offline') } }), /offline/)
+  assert.equal(store.weknora_refresh_token, 'rt'); assert.equal(location.href, 'http://localhost/chat')
+})
+test('a refresh finishing after another login cannot overwrite or clear it', async () => {
+  const { store, location } = installBrowser(); store.weknora_refresh_token = 'rt-old'; store.weknora_user = 'old-user'
+  await assert.rejects(refreshAccessTokenShared({ refresh: async () => {
+    store.weknora_refresh_token = 'rt-new'; store.weknora_token = 'new'; store.weknora_user = 'new-user'
+    return { success: true, data: { token: 'stale', refreshToken: 'stale-rt' } }
+  } }), /会话已改变/)
+  assert.equal(store.weknora_token, 'new'); assert.equal(store.weknora_refresh_token, 'rt-new'); assert.equal(location.href, 'http://localhost/chat')
 })

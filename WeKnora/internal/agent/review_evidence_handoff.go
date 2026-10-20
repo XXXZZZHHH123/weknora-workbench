@@ -77,6 +77,16 @@ func (e *AgentEngine) captureReviewEvidence(reader *reviewEvidenceReader) {
 		var item *reviewEvidenceHandoffItem
 		switch args.Operation {
 		case "read":
+			if response["offset_space"] == "array_index" {
+				items := reviewArrayReadHandoffItems(reader, response)
+				for index, candidate := range items {
+					if !appendBoundedReviewHandoff(handoff, candidate, &used) {
+						handoff.OmittedItems += len(items) - index
+						break
+					}
+				}
+				continue
+			}
 			item = reviewReadHandoffItem(reader, response)
 		case "search":
 			// A search result can contain several matches. Keep the exact response
@@ -206,6 +216,31 @@ func reviewReadHandoffItem(reader *reviewEvidenceReader, response map[string]any
 	item.ExactFragment, item.Quote, item.Offset = text, text, offset
 	item.FragmentComplete = item.FragmentComplete && offset == 0 && len(segment) == len(runes)
 	return item
+}
+
+// reviewArrayReadHandoffItems keeps each complete element of an
+// element-indexed read only after rebinding it to the same source path.
+func reviewArrayReadHandoffItems(reader *reviewEvidenceReader, response map[string]any) []reviewEvidenceHandoffItem {
+	id, _ := response["evidence_id"].(string)
+	record, payload, ok := reviewHandoffRecord(reader, id)
+	if !ok {
+		return nil
+	}
+	items := []reviewEvidenceHandoffItem{}
+	for _, raw := range reviewAsSlice(response["items"]) {
+		element := reviewAsMap(raw)
+		pointer, _ := element["json_pointer"].(string)
+		value, hasValue := element["value"]
+		if element == nil || !hasValue {
+			continue
+		}
+		source, found := reviewHandoffSourceValue(record, pointer)
+		if !found || !jsonValuesEqual(source, value) {
+			continue
+		}
+		items = append(items, reviewEvidenceHandoffItem{EvidenceID: id, Tool: record.Tool, ToolCallID: record.ToolCallID, JSONPointer: pointer, ExactFragment: value, FragmentComplete: true, OriginalBytes: record.Bytes, Coverage: reviewHandoffCoverage(payload)})
+	}
+	return items
 }
 
 func reviewSearchHandoffItems(reader *reviewEvidenceReader, response map[string]any) []reviewEvidenceHandoffItem {

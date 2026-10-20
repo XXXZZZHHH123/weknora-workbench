@@ -65,6 +65,7 @@ func TestStructuredQueryRowCompanionRetainsMoreThanOneHundredRows(t *testing.T) 
 	require.True(t, view["projection_complete"].(bool))
 	require.Len(t, entries, 1)
 	entry := entries[0]
+	require.Equal(t, 0, entry.EntryIndex)
 	require.Equal(t, reviewEvidenceID(message), entry.EvidenceID)
 	require.Equal(t, "/data/rows", entry.SourceJSONPointer)
 	require.Equal(t, 106, entry.SourceRowCount)
@@ -308,6 +309,8 @@ func TestStructuredQueryRowCompanionKeepsMultipleQueriesSeparate(t *testing.T) {
 	view := structuredQueryRowReviewEvidence(state, []chat.Message{messageA, messageB}, structuredQueryRowReviewBudget)
 	entries, _ := decodeStructuredQueryCompanion(t, view)
 	require.Len(t, entries, 2)
+	require.Equal(t, 0, entries[0].EntryIndex)
+	require.Equal(t, 1, entries[1].EntryIndex)
 	require.Equal(t, "dataset-a", entries[0].Metadata["dataset_id"])
 	require.Equal(t, "dataset-b", entries[1].Metadata["dataset_id"])
 	require.NotEqual(t, entries[0].EvidenceID, entries[1].EvidenceID)
@@ -328,9 +331,11 @@ func TestStructuredQueryRowCompanionDeduplicatesOnlyIdenticalObservations(t *tes
 	entries, _ := decodeStructuredQueryCompanion(t, view)
 	require.Len(t, entries, 2)
 	require.Equal(t, "query-a", entries[0].ToolCallID)
+	require.Equal(t, 0, entries[0].EntryIndex)
 	require.Equal(t, 1, entries[0].DuplicateObservations)
 	require.Equal(t, reviewEvidenceID(messageA), entries[0].EvidenceID)
 	require.Equal(t, "query-c", entries[1].ToolCallID)
+	require.Equal(t, 1, entries[1].EntryIndex)
 	require.Zero(t, entries[1].DuplicateObservations)
 }
 
@@ -350,7 +355,7 @@ func TestStructuredQueryRowCompanionEnforcesExactUTF8ByteBudgetAndPointers(t *te
 	require.False(t, view["projection_complete"].(bool))
 	entry := entries[0]
 	require.Less(t, entry.RetainedRowCount, entry.SourceRowCount)
-	require.Equal(t, []structuredQueryRowOmission{{JSONPointer: "/data/rows", StartIndex: entry.RetainedRowCount, EndIndexExclusive: len(rows), NextRowOffset: entry.RetainedRowCount}}, entry.OmittedRowRanges)
+	require.Equal(t, []structuredQueryRowOmission{{JSONPointer: "/data/rows", StartIndex: entry.RetainedRowCount, EndIndexExclusive: len(rows), NextStartIndex: entry.RetainedRowCount}}, entry.OmittedRowRanges)
 	require.Equal(t, "/data/rows", entry.SourceJSONPointer)
 }
 

@@ -29,7 +29,7 @@ const taskNames = { sources: '添加资料', review: '核对来源', research: '
 let generation = 0, scopeEpoch = 0, sourceSelection = 0
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 function identity(): IsolatedResearchIdentity { return { token: auth.token || '', tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '', workbenchId: props.workbench.id, knowledgeBaseId: props.workbench.knowledge_base_id } }
-const scopeKey = computed(() => Object.values(identity()).join(':'))
+const scopeKey = computed(() => { const { token, ...scope } = identity(); return `${Boolean(token)}:${Object.values(scope).join(':')}` })
 function client() { return createIsolatedResearchClient(identity(), identity) }
 function validBinding() {
   const own = identity()

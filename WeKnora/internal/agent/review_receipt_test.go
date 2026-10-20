@@ -38,15 +38,33 @@ func TestReviewReceiptRequiresOverallAssessmentAndSupportedCriticalCheck(t *test
 	for name, mutate := range map[string]func(*reviewClaimCheck){
 		"empty claim":        func(c *reviewClaimCheck) { c.Claim = " " },
 		"missing assessment": func(c *reviewClaimCheck) { c.Assessment = " " },
-		"missing evidence":   func(c *reviewClaimCheck) { c.Evidence = nil },
-		"invented quote":     func(c *reviewClaimCheck) { c.Evidence[0].Quote = "The survey covers every region." },
-		"unrelated result":   func(c *reviewClaimCheck) { c.Evidence[0].EvidenceID = "not-an-observed-result" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := critical
 			changed.Evidence = append([]reviewSourceWitness(nil), critical.Evidence...)
 			mutate(&changed)
 			require.Error(t, validateReviewReceipt(answer, "The answer is scoped.", []reviewClaimCheck{changed}, snapshot))
+		})
+	}
+	// Evidence locating is audited, not a delivery gate (user decision).
+	for name, tc := range map[string]struct {
+		mutate              func(*reviewClaimCheck)
+		verified, unlocated int
+	}{
+		"missing evidence": {func(c *reviewClaimCheck) { c.Evidence = nil }, 0, 0},
+		"invented quote":   {func(c *reviewClaimCheck) { c.Evidence[0].Quote = "The survey covers every region." }, 0, 1},
+		"unrelated result": {func(c *reviewClaimCheck) { c.Evidence[0].EvidenceID = "not-an-observed-result" }, 0, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := critical
+			changed.Evidence = append([]reviewSourceWitness(nil), critical.Evidence...)
+			tc.mutate(&changed)
+			require.NoError(t, validateReviewReceipt(answer, "The answer is scoped.", []reviewClaimCheck{changed}, snapshot))
+			summary := reviewReceiptWitnessSummary([]reviewClaimCheck{changed}, snapshot)
+			require.Equal(t, tc.verified, summary["verified"])
+			if name == "invented quote" {
+				require.Equal(t, tc.unlocated, summary["unlocated"], "invented text is recorded as unlocated")
+			}
 		})
 	}
 }
@@ -59,7 +77,8 @@ func TestCriticalCheckDescribesCandidateAcrossPresentationBoundaries(t *testing.
 	require.NoError(t, validateReviewReceipt(answer, "The whole candidate preserves the reported region and unit.", checks, snapshot))
 	// Describing the claim freely does not relax the independent source check.
 	checks[0].Evidence[0].Quote = "The survey covers all regions."
-	require.Error(t, validateReviewReceipt(answer, "Reviewed", checks, snapshot))
+	require.NoError(t, validateReviewReceipt(answer, "Reviewed", checks, snapshot))
+	require.Equal(t, 1, reviewReceiptWitnessSummary(checks, snapshot)["unlocated"], "an invented quote is recorded, not silently verified")
 }
 
 // Mapping metadata is evidence of a scoped limitation, not an observation value.
@@ -77,9 +96,12 @@ func TestMappingLimitationReceiptRequiresActualVisibleState(t *testing.T) {
 	check := reviewClaimCheck{Claim: "The requested sheet still needs field mapping.", Basis: "limitation", Assessment: "The returned catalog explicitly marks the requested scope as pending.", Evidence: []reviewSourceWitness{witness}}
 	answer := "Please finish mapping the fields in Measurements before querying them."
 	require.NoError(t, validateReviewReceipt(answer, "The answer reports the current mapping state only.", []reviewClaimCheck{check}, snapshot))
+	require.Equal(t, 1, reviewReceiptWitnessSummary([]reviewClaimCheck{check}, snapshot)["verified"])
 	check.Evidence[0].Quote = "source file could not be read"
-	require.Error(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{check}, snapshot))
+	require.NoError(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{check}, snapshot))
+	require.Equal(t, 1, reviewReceiptWitnessSummary([]reviewClaimCheck{check}, snapshot)["unlocated"])
 	check.Evidence[0] = witness
 	snapshot.input = map[string]any{}
-	require.Error(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{check}, snapshot), "unread catalog metadata cannot establish pending mapping")
+	require.Equal(t, 0, reviewReceiptWitnessSummary([]reviewClaimCheck{check}, snapshot)["verified"], "unread catalog metadata is not counted as verified")
+	require.Equal(t, 1, reviewReceiptWitnessSummary([]reviewClaimCheck{check}, snapshot)["located_by_text"])
 }

@@ -1754,6 +1754,35 @@ export default {
       searchingMixedWithQuery: '正在检索知识库和网络：「{query}」',
       searchDone: '检索完成'
     },
+    thinkingTimeline: {
+      thoughtForSeconds: '已思考 {seconds} 秒',
+      thoughtForMinutes: '已思考 {minutes} 分 {seconds} 秒',
+      reasoning: '思考过程',
+      steps: {
+        listDatasets: '查看数据集目录',
+        listSeries: '查找表格字段',
+        listCharts: '查看表格图表',
+        querySeries: '查询表格数据',
+        analyzeTable: '计算分析表格数据',
+        inspectSource: '核对原表单元格',
+        compareSeries: '对比两组数据',
+        convertPrice: '换算价格',
+        resolveFields: '识别所需字段',
+        getResultEvidence: '读取取数依据',
+        structuredFallback: '查询表格数据',
+        readDocument: '阅读文档',
+        readDocumentNamed: '阅读《{title}》',
+        listDocuments: '查找文档',
+        bindDocumentScope: '确定资料范围',
+        wikiSearch: '搜索 Wiki',
+        wikiReadPage: '读取 Wiki 页面',
+        analyzeDocumentTables: '分析文档表格',
+        calculate: '计算数值',
+        webSearch: '网络搜索',
+        webFetch: '读取网页',
+        generic: '执行步骤'
+      }
+    },
     attachmentParsing: {
       parsedSummary: '已解析 {count} 个附件',
       parsedWithSkipped: '已解析 {parsed} 个附件，{skipped} 个未完成已跳过',

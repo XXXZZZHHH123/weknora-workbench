@@ -248,7 +248,8 @@ func TestCollectEvidenceDoesNotRefreshCumulativeRevisionBudgetButRechecksNewSour
 	_, err := engine.executeLoop(t.Context(), state, query, messages, engine.buildToolsForLLM(), "research-session", "research-message")
 	require.NoError(t, err)
 	require.True(t, state.IsComplete)
-	require.Equal(t, incompleteAnswerFallback, state.FinalAnswer, "retrieval remains available after the shared semantic revision budget is spent, but cannot grant another rewrite")
+	require.Contains(t, state.FinalAnswer, "未能完成自动核验", "retrieval remains available after the shared semantic revision budget is spent; the last grounded candidate is delivered with a notice, not rewritten again")
+	require.Contains(t, state.FinalAnswer, "Remove the unnecessary aside", "the last review concern is disclosed with the delivery")
 	require.Equal(t, 1, reader.calls, "the model-selected new evidence must be read once")
 	require.Len(t, model.calls, 9, "candidate, revise, candidate, revise, candidate, collect, tool continuation, new candidate, exhausted revise")
 	for _, index := range []int{1, 3, 5, 8} {

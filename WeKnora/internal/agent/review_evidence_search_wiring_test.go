@@ -241,7 +241,10 @@ func TestReviewEvidenceCollectReminderIsSingleAndRequiresStrictCollectVerdict(t 
 	}{
 		{"accept", []mockResponse{reviewSearchWiringResponse(nil, `{"complete":true}`, 1, 1)}, true, 1, 0},
 		{"no_reader", []mockResponse{reviewSearchWiringResponse(nil, `{"complete":false,"next_action":"collect_evidence"}`, 1, 1)}, false, 1, 0},
-		{"revise", []mockResponse{reviewSearchWiringResponse(nil, `{"complete":false,"next_action":"revise_answer"}`, 1, 1)}, true, 1, 0},
+		{"revise_verifies_once", []mockResponse{
+			reviewSearchWiringResponse(nil, `{"complete":false,"next_action":"revise_answer"}`, 1, 1),
+			reviewSearchWiringResponse(nil, `{"complete":false,"next_action":"revise_answer"}`, 1, 1),
+		}, true, 2, 1},
 		{"invalid_verdict", []mockResponse{reviewSearchWiringResponse(nil, `{"complete":false,"next_action":"collect_evidence","extra":true}`, 1, 1)}, true, 1, 0},
 		{"one_collect_reminder_only", []mockResponse{
 			reviewSearchWiringResponse(nil, `{"complete":false,"next_action":"collect_evidence"}`, 1, 1),
@@ -264,7 +267,7 @@ func TestReviewEvidenceCollectReminderIsSingleAndRequiresStrictCollectVerdict(t 
 			reminders := 0
 			for _, call := range model.calls {
 				for _, message := range call {
-					if strings.Contains(message.Content, "Your verdict requests additional evidence") {
+					if strings.Contains(message.Content, "Your verdict requests additional evidence") || strings.Contains(message.Content, "Your verdict rejects the candidate") {
 						reminders++
 					}
 				}

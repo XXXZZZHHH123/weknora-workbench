@@ -82,10 +82,12 @@ func acceptedSourceReviewFixture(messages []chat.Message) (string, error) {
 		return "", fmt.Errorf("accepted source-review fixture found no exposed source or execution witness")
 	}
 	type fixtureAudit struct {
-		Claim      string                `json:"claim"`
-		Basis      string                `json:"basis"`
-		Assessment string                `json:"assessment"`
-		Evidence   []reviewSourceWitness `json:"evidence"`
+		Claim              string                `json:"claim"`
+		CandidateStatement string                `json:"candidate_statement"`
+		Fidelity           string                `json:"candidate_fidelity"`
+		Basis              string                `json:"basis"`
+		Assessment         string                `json:"assessment"`
+		Evidence           []reviewSourceWitness `json:"evidence"`
 	}
 	basis := "source"
 	assessment := "test fixture: preserve the prior mock's accepted verdict"
@@ -93,7 +95,7 @@ func acceptedSourceReviewFixture(messages []chat.Message) (string, error) {
 		basis = "limitation"
 		assessment = "test fixture limitation: witness records execution status only and makes no source-fact claim"
 	}
-	audit := []fixtureAudit{{Claim: claim, Basis: basis, Assessment: assessment, Evidence: []reviewSourceWitness{witness}}}
+	audit := []fixtureAudit{{Claim: claim, CandidateStatement: claim, Fidelity: reviewFidelityAsWritten, Basis: basis, Assessment: assessment, Evidence: []reviewSourceWitness{witness}}}
 	encoded, err := json.Marshal(map[string]any{"complete": true, "assessment": "Test fixture preserves the prior mock acceptance decision.", "audit": audit})
 	return string(encoded), err
 }

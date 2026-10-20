@@ -274,7 +274,7 @@ func independentStructuredReviewWithSourceBudgets(messages, conversation, catalo
 	}
 	if rowCompanion != nil {
 		inputData["structured_query_row_companion"] = rowCompanion
-		inputData["structured_query_row_companion_notice"] = "该字段只投影本轮成功结构化查询实际返回的行，并通过真实source_tool_results中的evidence_id与source_json_pointer绑定。row_encoding=positional时，row n由constant_fields加columns[i]:rows[n][i]还原；objects编码保留原对象。projection_complete只表示本次查询结果的所有返回行都已投影，不证明查询范围覆盖整个来源或原表；仍须核对查询filters、truncated和其他源范围元数据。省略行范围指向原工具结果。evidence_id/json_pointer是来源定位信息，不自行提供读取权限或reader；需要更多行时仅用已授权查询工具及真实结果中的数据集/系列ID继续读取，不把缺失视图当作内容不存在。"
+		inputData["structured_query_row_companion_notice"] = "该字段只投影本轮成功结构化查询实际返回的行，并通过真实source_tool_results中的evidence_id与source_json_pointer绑定。row_encoding=positional时，row n由constant_fields加columns[i]:rows[n][i]还原；objects编码保留原对象，matrix编码保留原SQL数组索引与columns列名。entry.projection_complete只表示行是否完整；metadata_projection_complete及metadata_omitted_pointers单独描述元数据省略，顶层projection_complete同时要求两者完整。任何视图完整都不证明查询范围覆盖整个来源或原表；仍须核对查询filters、truncated和其他源范围元数据。省略行范围指向原工具结果。evidence_id/json_pointer是来源定位信息，不自行提供读取权限或reader；需要更多行时仅用已授权查询工具及真实结果中的数据集/系列ID继续读取，不把缺失视图当作内容不存在。"
 	}
 	if documentCompanion != nil {
 		inputData["document_retrieval_companion"] = documentCompanion

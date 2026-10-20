@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { refreshStructuredFrame } from '@/utils/authFetch'
 import { useTheme } from '@/composables/useTheme'
 import { getKnowledgeBaseById } from '@/api/knowledge-base'
 import KnowledgeWorkbenchLink from './KnowledgeWorkbenchLink.vue'
@@ -36,6 +37,7 @@ function sendAuth() {
 }
 function receive(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
+  if (event.data?.type === 'structured-refresh-auth') { void refreshStructuredFrame(event, () => frame.value?.contentWindow === event.source); return }
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'structured-ready') sendAuth()
   if (event.data?.type === 'structured-navigate') {

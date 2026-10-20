@@ -253,25 +253,25 @@ def create_app(data_dir: str | Path | None = None):
         return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
 
     @mcp.tool()
-    def query_series(series_id: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, source_question: str | None = None) -> dict:
-        """确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
+    def query_series(series_id: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, source_question: str | None = None, source_binding: list[dict] | None = None) -> dict:
+        """source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
         selected=store.select_dataset(dataset_id)
         from .source_context import verify_selection
-        ambiguity=verify_selection(store,selected,[series_id],source_question,model_fn=resolver.model_fn)
+        ambiguity=verify_selection(store,selected,[series_id],source_question,model_fn=resolver.model_fn,source_binding=source_binding)
         return ambiguity or store.query_series(selected, series_id, start_date, end_date, operation, limit, period)
 
     @mcp.tool()
-    def convert_price(dataset_id: str, price_series_id: str, fx_series_id: str, date: str, target_unit: str = '元/吨', source_question: str | None = None, fx_operation: str = 'multiply') -> dict:
-        """由模型依据完整问题及显式币种方向元数据选择两项真实来源。程序对同日原始价格和汇率确定性计算，不猜标题或默认来源优先级。fx_operation=multiply|divide必须与来源base_currency/quote_currency及evidence_cells一致。先list_series取得真实ID。输入价格单位必须为美元或美分/磅、公斤、千克、吨；目标支持元/吨(默认)、元/磅、元/公斤、元/千克。date格式YYYY-MM-DD。返回数值、公式及价格/汇率双方原单元格。不同币种方向、未知单位、缺失数据拒绝；不包含税费与通关成本。"""
+    def convert_price(dataset_id: str, price_series_id: str, fx_series_id: str, date: str, target_unit: str = '元/吨', source_question: str | None = None, fx_operation: str = 'multiply', source_binding: list[dict] | None = None) -> dict:
+        """source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。由模型依据完整问题及显式币种方向元数据选择两项真实来源。程序对同日原始价格和汇率确定性计算，不猜标题或默认来源优先级。fx_operation=multiply|divide必须与来源base_currency/quote_currency及evidence_cells一致。先list_series取得真实ID。输入价格单位必须为美元或美分/磅、公斤、千克、吨；目标支持元/吨(默认)、元/磅、元/公斤、元/千克。date格式YYYY-MM-DD。返回数值、公式及价格/汇率双方原单元格。不同币种方向、未知单位、缺失数据拒绝；不包含税费与通关成本。"""
         from .source_context import verify_selection
-        ambiguity=verify_selection(store,dataset_id,[price_series_id,fx_series_id],source_question,model_fn=resolver.model_fn)
+        ambiguity=verify_selection(store,dataset_id,[price_series_id,fx_series_id],source_question,model_fn=resolver.model_fn,source_binding=source_binding)
         return ambiguity or store.convert_price(dataset_id,price_series_id,fx_series_id,date,target_unit,fx_operation)
 
     @mcp.tool()
-    def compare_series(dataset_id: str, left_series_id: str, right_series_id: str, date: str, source_question: str | None = None, comparison_basis: str = 'same_explicit_unit') -> dict:
-        """同日两个来源作差，严格按左减右。comparison_basis=same_explicit_unit默认需要两侧相同显式单位；raw_values是模型明确提交的原始数值比较计划，保留未知单位和来源，不授权单位换算或推定业务等价。先从list_series取得准确ID，回答附双方原单元格。缺失不补造，其他单位未知/不一致拒绝。"""
+    def compare_series(dataset_id: str, left_series_id: str, right_series_id: str, date: str, source_question: str | None = None, comparison_basis: str = 'same_explicit_unit', source_binding: list[dict] | None = None) -> dict:
+        """source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。同日两个来源作差，严格按左减右。comparison_basis=same_explicit_unit默认需要两侧相同显式单位；raw_values是模型明确提交的原始数值比较计划，保留未知单位和来源，不授权单位换算或推定业务等价。先从list_series取得准确ID，回答附双方原单元格。缺失不补造，其他单位未知/不一致拒绝。"""
         from .source_context import verify_selection
-        ambiguity=verify_selection(store,dataset_id,[left_series_id,right_series_id],source_question,model_fn=resolver.model_fn)
+        ambiguity=verify_selection(store,dataset_id,[left_series_id,right_series_id],source_question,model_fn=resolver.model_fn,source_binding=source_binding)
         return ambiguity or store.compare_series(dataset_id, left_series_id, right_series_id, date, comparison_basis)
 
     @mcp.tool()
@@ -291,13 +291,13 @@ def create_app(data_dir: str | Path | None = None):
         return await run_in_threadpool(read)
 
     @mcp.tool()
-    async def analyze_table(series_ids: list[str], sql: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, limit: int = 200, source_question: str | None = None) -> dict:
-        """只读通用分析SQL；先取得真实series_id并核验口径。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。隔离表data仅含指定字段/日期范围的全部记录（最多50000条），列series_id VARCHAR,date DATE,value DOUBLE,source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR；缺失value为NULL。SQL方言为DuckDB，支持SELECT/WITH、四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先使用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入而非向下取整，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时根据反馈修正，不让用户选字段。每个输入最多一个文件版本，不允许读取文件、联网、修改数据或多条语句。不要混加存量、累计值与当期流量。"""
+    async def analyze_table(series_ids: list[str], sql: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, limit: int = 200, source_question: str | None = None, source_binding: list[dict] | None = None) -> dict:
+        """source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。只读通用分析SQL；先取得真实series_id并核验口径。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。隔离表data仅含指定字段/日期范围的全部记录（最多50000条），列series_id VARCHAR,date DATE,value DOUBLE,source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR；缺失value为NULL。SQL方言为DuckDB，支持SELECT/WITH、四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先使用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入而非向下取整，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时根据反馈修正，不让用户选字段。每个输入最多一个文件版本，不允许读取文件、联网、修改数据或多条语句。不要混加存量、累计值与当期流量。"""
         from .table_analysis import analyze_table as run_analysis
         try:
             selected=store.select_dataset(dataset_id)
             from .source_context import verify_selection
-            ambiguity=await run_in_threadpool(verify_selection,store,selected,series_ids,source_question,model_fn=resolver.model_fn)
+            ambiguity=await run_in_threadpool(verify_selection,store,selected,series_ids,source_question,model_fn=resolver.model_fn,source_binding=source_binding)
             if ambiguity:return ambiguity
             return await run_in_threadpool(run_analysis,store,selected,series_ids,sql,start_date,end_date,limit)
         except ValueError as exc:

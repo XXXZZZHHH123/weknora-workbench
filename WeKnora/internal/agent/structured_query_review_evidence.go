@@ -11,32 +11,39 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
-const structuredQueryRowReviewBudget = 12 * 1024
+const (
+	structuredQueryRowReviewBudget              = 12 * 1024
+	structuredQueryRowMetadataBudgetFraction    = 3
+	structuredQueryMetadataOmissionPointerLimit = 24
+)
 
 type structuredQueryRowOmission struct {
 	JSONPointer       string `json:"json_pointer"`
 	StartIndex        int    `json:"start_index"`
 	EndIndexExclusive int    `json:"end_index_exclusive"`
-	NextRowOffset     int    `json:"next_row_offset"`
+	NextStartIndex    int    `json:"next_start_index"`
 }
 
 type structuredQueryRowCompanionEntry struct {
-	EvidenceID            string                       `json:"evidence_id"`
-	Tool                  string                       `json:"tool"`
-	ToolCallID            string                       `json:"tool_call_id,omitempty"`
-	DuplicateObservations int                          `json:"duplicate_observation_count,omitempty"`
-	SourceJSONPointer     string                       `json:"source_json_pointer"`
-	Metadata              map[string]any               `json:"metadata"`
-	RowEncoding           string                       `json:"row_encoding"`
-	ConstantFields        map[string]any               `json:"constant_fields,omitempty"`
-	Columns               []string                     `json:"columns"`
-	Rows                  any                          `json:"rows"`
-	SourceRowCount        int                          `json:"source_row_count"`
-	RetainedRowCount      int                          `json:"retained_row_count"`
-	ProjectionComplete    bool                         `json:"projection_complete"`
-	SourceTruncationKnown bool                         `json:"source_truncation_known"`
-	SourceResultTruncated any                          `json:"source_result_truncated,omitempty"`
-	OmittedRowRanges      []structuredQueryRowOmission `json:"omitted_row_ranges,omitempty"`
+	EntryIndex                 int                          `json:"entry_index"`
+	EvidenceID                 string                       `json:"evidence_id"`
+	Tool                       string                       `json:"tool"`
+	ToolCallID                 string                       `json:"tool_call_id,omitempty"`
+	DuplicateObservations      int                          `json:"duplicate_observation_count,omitempty"`
+	SourceJSONPointer          string                       `json:"source_json_pointer"`
+	Metadata                   map[string]any               `json:"metadata"`
+	MetadataProjectionComplete bool                         `json:"metadata_projection_complete"`
+	MetadataOmittedPointers    []string                     `json:"metadata_omitted_pointers,omitempty"`
+	RowEncoding                string                       `json:"row_encoding"`
+	ConstantFields             map[string]any               `json:"constant_fields,omitempty"`
+	Columns                    []string                     `json:"columns"`
+	Rows                       any                          `json:"rows"`
+	SourceRowCount             int                          `json:"source_row_count"`
+	RetainedRowCount           int                          `json:"retained_row_count"`
+	ProjectionComplete         bool                         `json:"projection_complete"`
+	SourceTruncationKnown      bool                         `json:"source_truncation_known"`
+	SourceResultTruncated      any                          `json:"source_result_truncated,omitempty"`
+	OmittedRowRanges           []structuredQueryRowOmission `json:"omitted_row_ranges,omitempty"`
 }
 
 type structuredQueryRowCompanion struct {
@@ -122,6 +129,7 @@ func structuredQueryRowReviewEvidence(state *types.AgentState, sourceMessages []
 			}
 			candidate, ok := newStructuredQueryRowCandidate(message, data, rows)
 			if ok {
+				candidate.entry.EntryIndex = len(candidates)
 				seen[duplicateKey] = len(candidates)
 				candidates = append(candidates, candidate)
 			}
@@ -130,6 +138,7 @@ func structuredQueryRowReviewEvidence(state *types.AgentState, sourceMessages []
 	if len(candidates) == 0 {
 		return nil
 	}
+	projectStructuredQueryMetadata(candidates, budget)
 
 	view := structuredQueryRowCompanion{BudgetBytes: budget, ProjectionComplete: true, SourceResultCount: len(candidates), IncludedResultCount: len(candidates), Entries: make([]structuredQueryRowCompanionEntry, len(candidates))}
 	for i := range candidates {
@@ -143,9 +152,20 @@ func structuredQueryRowReviewEvidence(state *types.AgentState, sourceMessages []
 	}
 	view.ProjectionComplete = allStructuredRowEntriesComplete(view.Entries)
 	if !structuredRowViewFits(view, budget) {
-		// Preserve a bounded explicit notice when non-row metadata alone is too
-		// large. The immutable full results and their review handles remain in
-		// source_tool_results and can still be read through the existing reader.
+		// Keep source identities and row handles even when the bounded metadata
+		// projection plus entry skeleton does not fit. The exact /data handle lets
+		// the existing reader restore metadata without dropping every row view.
+		for i := range candidates {
+			candidates[i].entry.Metadata = map[string]any{}
+			candidates[i].entry.MetadataProjectionComplete = false
+			candidates[i].entry.MetadataOmittedPointers = []string{"/data"}
+			view.Entries[i] = candidates[i].entry
+		}
+		view.ProjectionComplete = allStructuredRowEntriesComplete(view.Entries)
+	}
+	if !structuredRowViewFits(view, budget) {
+		// Only the minimal identities and exact supplement handles exceeded the
+		// independent budget, so preserve the bounded omission notice.
 		notice := map[string]any{
 			"budget_bytes": budget, "projection_complete": false,
 			"source_result_count": len(candidates), "included_result_count": 0,
@@ -242,7 +262,7 @@ func structuredRowViewFits(view structuredQueryRowCompanion, budget int) bool {
 
 func allStructuredRowEntriesComplete(entries []structuredQueryRowCompanionEntry) bool {
 	for _, entry := range entries {
-		if !entry.ProjectionComplete {
+		if !entry.ProjectionComplete || !entry.MetadataProjectionComplete {
 			return false
 		}
 	}
@@ -251,11 +271,11 @@ func allStructuredRowEntriesComplete(entries []structuredQueryRowCompanionEntry)
 
 func isStructuredQueryExecution(call types.ToolCall) bool {
 	switch call.ExecutionName() {
-	case "structured_query_series":
+	case "structured_query_series", "structured_analyze_table", "structured_get_result_evidence":
 		return true
 	case "structured_data":
 		operation, _ := call.ExecutionArgs()["operation"].(string)
-		return operation == "query_series"
+		return operation == "query_series" || operation == "analyze_table" || operation == "get_result_evidence"
 	default:
 		return false
 	}
@@ -288,9 +308,23 @@ func newStructuredQueryRowCandidate(message chat.Message, data map[string]any, r
 		}
 	}
 	truncated, truncationKnown := data["truncated"]
+	if data["kind"] == "structured_analysis" {
+		truncated, truncationKnown = data["output_truncated"]
+	}
 	columns, constantFields, homogeneous := structuredRowShape(rows)
 	encoding := "objects"
 	values := append([]any(nil), rows...)
+	if data["kind"] == "structured_analysis" {
+		// SQL results already have a column directory and positional rows. Keep
+		// the original array indexes so witnesses resolve to /data/rows/N/I.
+		var valid bool
+		columns, valid = structuredAnalysisColumns(data["columns"], rows)
+		if !valid {
+			return structuredQueryRowCandidate{}, false
+		}
+		encoding, homogeneous = "matrix", false
+		constantFields = nil
+	}
 	if homogeneous {
 		encoding = "positional"
 		values = make([]any, len(rows))
@@ -307,11 +341,84 @@ func newStructuredQueryRowCandidate(message chat.Message, data map[string]any, r
 		entry: structuredQueryRowCompanionEntry{
 			EvidenceID: reviewEvidenceID(message), Tool: message.Name, ToolCallID: message.ToolCallID,
 			SourceJSONPointer: "/data/rows", Metadata: metadata, RowEncoding: encoding,
-			ConstantFields: constantFields, Columns: columns, Rows: []any{}, SourceRowCount: len(rows),
+			MetadataProjectionComplete: true,
+			ConstantFields:             constantFields, Columns: columns, Rows: []any{}, SourceRowCount: len(rows),
 			SourceTruncationKnown: truncationKnown, SourceResultTruncated: truncated,
 		},
 		rows: rows, rowValues: values,
 	}, true
+}
+
+// projectStructuredQueryMetadata shares at most one third of the row-view
+// budget equally across results. Small metadata remains exact; larger values
+// use the existing deterministic structural projector and retain exact
+// top-level /data pointers for anything that was shortened or omitted.
+func projectStructuredQueryMetadata(candidates []structuredQueryRowCandidate, budget int) {
+	if len(candidates) == 0 {
+		return
+	}
+	metadataBudget := max(0, budget/structuredQueryRowMetadataBudgetFraction)
+	perResultBudget := metadataBudget / len(candidates)
+	for i := range candidates {
+		original := candidates[i].entry.Metadata
+		projectedValue, helperOmissions := projectReviewValue(original, perResultBudget, "/data", 0)
+		projected := reviewAsMap(projectedValue)
+		if projected == nil {
+			projected = map[string]any{}
+		}
+		omitted := structuredQueryMetadataOmittedPointers(original, projected, helperOmissions)
+		candidates[i].entry.Metadata = projected
+		candidates[i].entry.MetadataProjectionComplete = len(omitted) == 0
+		candidates[i].entry.MetadataOmittedPointers = omitted
+	}
+}
+
+func structuredQueryMetadataOmittedPointers(original, projected map[string]any, helperOmissions []string) []string {
+	if len(helperOmissions) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(original))
+	for key := range original {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	omitted := make([]string, 0)
+	for _, key := range keys {
+		projectedValue, exists := projected[key]
+		if exists && sameStructuredJSONValue(original[key], projectedValue) {
+			continue
+		}
+		omitted = append(omitted, "/data/"+escapeReviewPointerSegment(key))
+		if len(omitted) > structuredQueryMetadataOmissionPointerLimit {
+			return []string{"/data"}
+		}
+	}
+	if len(omitted) == 0 {
+		return []string{"/data"}
+	}
+	return omitted
+}
+
+func structuredAnalysisColumns(raw any, rows []any) ([]string, bool) {
+	columns, ok := raw.([]any)
+	if !ok || len(columns) == 0 {
+		return nil, false
+	}
+	names := make([]string, len(columns))
+	for i, column := range columns {
+		name, ok := column.(string)
+		if !ok {
+			return nil, false
+		}
+		names[i] = name
+	}
+	for _, rawRow := range rows {
+		row, ok := rawRow.([]any)
+		if !ok || len(row) != len(names) {
+			return nil, false
+		}
+	}
+	return names, true
 }
 
 func structuredRowShape(rows []any) ([]string, map[string]any, bool) {
@@ -374,5 +481,5 @@ func rowOmissionRanges(pointer string, start, end int) []structuredQueryRowOmiss
 	if start >= end {
 		return nil
 	}
-	return []structuredQueryRowOmission{{JSONPointer: pointer, StartIndex: start, EndIndexExclusive: end, NextRowOffset: start}}
+	return []structuredQueryRowOmission{{JSONPointer: pointer, StartIndex: start, EndIndexExclusive: end, NextStartIndex: start}}
 }

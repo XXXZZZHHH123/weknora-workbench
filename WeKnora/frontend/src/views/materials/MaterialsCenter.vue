@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { FileAddIcon, FolderOpenIcon, FileExcelIcon, FileIcon, SearchIcon, DownloadIcon, RefreshIcon, LinkIcon, ChevronRightIcon } from 'tdesign-icons-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { refreshStructuredFrame } from '@/utils/authFetch'
 import { useTheme } from '@/composables/useTheme'
 import { useUploadConfirmStore } from '@/stores/uploadConfirm'
 import { createKnowledgeFromURL, getKnowledgeBaseById } from '@/api/knowledge-base'
@@ -264,14 +265,16 @@ async function reset() {
     try { await openDetail({ id: route.query.source } as LibraryAsset) } catch (e) { notify(e) }
   }
 }
-watch(() => [auth.token, auth.effectiveTenantId, auth.user?.id], reset, { immediate: true, flush: 'sync' })
+watch(() => [Boolean(auth.token), auth.effectiveTenantId, auth.user?.id], reset, { immediate: true, flush: 'sync' })
 watch(() => route.fullPath, reset)
 watch(sourceFilter, () => { offset.value = 0; void refresh() })
 watch(kindFilter, () => { offset.value = 0; void refresh() })
 watch(search, () => { if (searchTimer) clearTimeout(searchTimer); searchTimer = setTimeout(() => { offset.value = 0; void refresh() }, 300) })
+watch(() => auth.token, authReview)
 watch(effectiveTheme, sendTheme)
 function receiveReview(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== reviewFrame.value?.contentWindow || !reviewOpen.value) return
+  if (event.data?.type === 'structured-refresh-auth') { void refreshStructuredFrame(event, () => reviewFrame.value?.contentWindow === event.source); return }
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'structured-ready') authReview()
   if (event.data?.type === 'structured-import-updated' && String(event.data.tenant_id) === scope().tenantId && selected.value) void openDetail(selected.value, false).catch(notify)

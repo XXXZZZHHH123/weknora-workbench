@@ -1752,6 +1752,35 @@ export default {
       searchingMixedWithQuery: 'Поиск в базе знаний и сети: «{query}»',
       searchDone: 'Поиск завершён'
     },
+    thinkingTimeline: {
+      thoughtForSeconds: 'Думал {seconds} с',
+      thoughtForMinutes: 'Думал {minutes} мин {seconds} с',
+      reasoning: 'Ход рассуждений',
+      steps: {
+        listDatasets: 'Просмотр наборов данных',
+        listSeries: 'Поиск полей таблицы',
+        listCharts: 'Просмотр диаграмм',
+        querySeries: 'Запрос данных таблицы',
+        analyzeTable: 'Анализ данных таблицы',
+        inspectSource: 'Проверка исходных ячеек',
+        compareSeries: 'Сравнение двух рядов',
+        convertPrice: 'Пересчёт цены',
+        resolveFields: 'Определение полей',
+        getResultEvidence: 'Чтение основания запроса',
+        structuredFallback: 'Запрос данных таблицы',
+        readDocument: 'Чтение документа',
+        readDocumentNamed: 'Чтение «{title}»',
+        listDocuments: 'Поиск документов',
+        bindDocumentScope: 'Выбор источников',
+        wikiSearch: 'Поиск в Wiki',
+        wikiReadPage: 'Чтение страницы Wiki',
+        analyzeDocumentTables: 'Анализ таблиц документа',
+        calculate: 'Расчёт значений',
+        webSearch: 'Веб-поиск',
+        webFetch: 'Чтение веб-страницы',
+        generic: 'Выполнение шага'
+      }
+    },
     attachmentParsing: {
       parsedSummary: 'Разобрано вложений: {count}',
       parsedWithSkipped: 'Разобрано вложений: {parsed}, пропущено (ещё обрабатываются): {skipped}',

@@ -4,6 +4,7 @@ This describes references. It never calculates formulas or assigns business
 semantics absent from the source. Existing immutable datasets are not rewritten.
 """
 from collections import defaultdict
+from copy import deepcopy
 from hashlib import file_digest, sha256
 import json
 from pathlib import Path
@@ -16,6 +17,8 @@ import zipfile
 
 from openpyxl.formula import Tokenizer
 from openpyxl.utils import get_column_letter, column_index_from_string
+
+from .source_binding_reuse import CallableIdentity, SourceBindingReuse
 
 VERSION = 'source-context-v1'
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
@@ -306,8 +309,53 @@ def protect_duplicate_bindings(proposal, catalog, question, confirmed_ids=()):
     return proposal
 
 
-def verify_selection(store, dataset, series_ids, question, model_fn=None):
-    """Validate requested IDs against a model plan over all real siblings."""
+def _validate_source_review(review, groups):
+    if not isinstance(review, dict) or review.get('decision') not in ('resolved', 'clarify'):
+        raise ValueError('来源模型未生成完整 binding 计划')
+    bindings = review.get('bindings')
+    if not isinstance(bindings, list) or len(bindings) != len(groups):
+        raise ValueError('来源计划必须核验全部实际同名来源组')
+    available = list(bindings)
+    for group in groups:
+        ids = {source['series_id'] for source in group}
+        matches = [b for b in available if isinstance(b, dict) and set(b.get('considered_ids', [])) == ids]
+        if len(matches) != 1:
+            raise ValueError('来源计划遗漏、重复或虚构了实际同名来源组')
+        _validate_binding(matches[0], group, allow_empty=review['decision']=='clarify')
+        available.remove(matches[0])
+    if review['decision'] == 'clarify' and (not isinstance(review.get('question'), str) or not review['question'].strip()):
+        raise ValueError('业务澄清必须由模型描述实际来源区别')
+
+
+def _binding_key(store, dataset, request, model_fn):
+    from .model_settings import read_model
+    from .workspaces import current_identity
+    identity = current_identity.get()
+    # Credentials are only included in a non-exported digest, never a key
+    # printed in logs. Rotating a credential must invalidate prior reuse.
+    config = read_model(store.root)
+    model_stamp = sha256(json.dumps(config, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    scope = None if identity is None else [identity.user_id, identity.tenant_id,
+                                          identity.knowledge_base_id, identity.knowledge_base_tenant_id]
+    payload = {"root": str(store.root.resolve()), "scope": scope,
+               "manifest": store.manifest(dataset), "model": model_stamp,
+               "prompt": SOURCE_BINDING_PROMPT,
+               "request": {k: v for k, v in request.items() if k != "_source_binding_deadline"}}
+    digest = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    return CallableIdentity(model_fn), digest
+
+
+_binding_reuse = SourceBindingReuse()
+
+
+def verify_selection(store, dataset, series_ids, question, model_fn=None, source_binding=None):
+    """Validate requested IDs against a model plan over all real siblings.
+
+    source_binding is the calling model's own explicit plan for each touched
+    duplicate group. It is validated with the same rules as an independent
+    review (whole real group considered, real selected IDs, a reason), so a
+    plan the model already made is executed without a second model call.
+    """
     import httpx
     catalog = store.catalog(dataset)
     requested = set(series_ids)
@@ -322,48 +370,63 @@ def verify_selection(store, dataset, series_ids, question, model_fn=None):
                 'error': '同名来源核验缺少完整原问题；本次未查询数值', 'next_step': '提交完整原问题，让来源模型根据实际来源证据生成绑定计划'}
     evidence = [[{k: source.get(k) for k in ('series_id', 'sheet', 'metric', 'unit', 'dimensions', 'header_cells', 'source_context', 'exchange_rate')}
                  for source in group] for group in groups]
-    review = None
+    required = requested & {source['series_id'] for group in groups for source in group}
+    if source_binding is not None:
+        try:
+            plan = {'decision': 'resolved', 'bindings': source_binding}
+            _validate_source_review(plan, groups)
+            chosen = {sid for binding in source_binding for sid in binding['selected_ids']}
+            if not required.issubset(chosen):
+                raise ValueError('source_binding.selected_ids 未包含本次请求的同名来源 ID；程序不会替模型改选来源')
+        except (ValueError, TypeError, KeyError) as error:
+            return {'kind': 'structured_source_binding', 'status': 'plan_mismatch', 'retryable': True,
+                    'code': 'source_binding_invalid', 'error': str(error), 'fields': evidence,
+                    'notice': '提交的来源绑定计划未通过校验；未查询数值。依据完整问题和 fields 中的实际同名来源修正计划，不自动替换字段。'}
+        return None
+    model_identity = model_fn
     if model_fn is None:
         from .field_resolver import ask_model
         model_fn = lambda payload: ask_model(payload, store.root)
     request = {'_source_binding': True, 'question': question, 'dataset_id': dataset,
                'requested_series_ids': list(series_ids), 'source_groups': evidence,
                '_source_binding_deadline': time.monotonic() + 20}
-    try:
+
+    def accepted(review):
+        chosen = {sid for binding in review['bindings'] for sid in binding['selected_ids']}
+        return review['decision'] == 'resolved' and required.issubset(chosen)
+
+    def compute():
+        review = None
         for attempt in range(2):
             if time.monotonic() >= request['_source_binding_deadline']:
                 raise ValueError('来源模型核验超出本次时间预算；未执行取数')
             if review is None:
                 review = model_fn(request)
             try:
-                if not isinstance(review, dict) or review.get('decision') not in ('resolved', 'clarify'):
-                    raise ValueError('来源模型未生成完整 binding 计划')
-                bindings = review.get('bindings')
-                if not isinstance(bindings, list) or len(bindings) != len(groups):
-                    raise ValueError('来源计划必须核验全部实际同名来源组')
-                available = list(bindings)
-                for group in groups:
-                    ids = {source['series_id'] for source in group}
-                    matches = [b for b in available if isinstance(b, dict) and set(b.get('considered_ids', [])) == ids]
-                    if len(matches) != 1:
-                        raise ValueError('来源计划遗漏、重复或虚构了实际同名来源组')
-                    _validate_binding(matches[0], group, allow_empty=review['decision']=='clarify')
-                    available.remove(matches[0])
-                if review['decision'] == 'clarify' and (not isinstance(review.get('question'), str) or not review['question'].strip()):
-                    raise ValueError('业务澄清必须由模型描述实际来源区别')
-                break
+                _validate_source_review(review, groups)
+                return review
             except (ValueError, TypeError) as error:
                 if attempt:
                     raise ValueError(str(error)) from None
                 request.update(invalid_proposal=review, repair_instruction=str(error))
                 review = None
+
+    try:
+        original_request = deepcopy(request)
+        key = _binding_key(store, dataset, original_request, model_identity)
+        def reusable(review):
+            return accepted(review) and key == _binding_key(store, dataset, original_request, model_identity)
+        review = _binding_reuse.run(key, compute, reusable, request['_source_binding_deadline'])
+        # Reuse cannot authorize a query: every caller rechecks the same group
+        # coverage and real selected IDs against its current catalogue.
+        _validate_source_review(review, groups)
     except (ValueError, httpx.HTTPError) as error:
         return {'kind': 'structured_source_binding', 'status': 'error', 'retryable': True,
+                'code': 'source_binding_unavailable',
                 'error': str(error) if isinstance(error, ValueError) else '来源模型请求失败或超时，本次未查询数值',
-                'next_step': '来源模型未形成通过校验的计划；修复模型或计划后重试，不能跳过来源保护取数'}
-    chosen = {sid for binding in review['bindings'] for sid in binding['selected_ids']}
-    required = requested & {source['series_id'] for group in groups for source in group}
-    if review['decision'] == 'resolved' and required.issubset(chosen):
+                'fields': evidence,
+                'next_step': '独立来源核验未形成计划，本次未查询数值。可依据完整问题和 fields 中全部实际同名来源，在同一操作中提交 source_binding=[{considered_ids:本组全部ID,selected_ids:所需ID,reason:选择依据}]；程序按相同规则校验后执行。口径确实无法确定时向用户澄清，不能跳过来源保护取数。'}
+    if accepted(review):
         return None
     return {'kind': 'structured_source_binding', 'status': 'needs_clarification' if review['decision'] == 'clarify' else 'plan_mismatch',
             'bindings': review['bindings'], 'fields': evidence,

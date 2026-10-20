@@ -37,6 +37,16 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		outcome = "failed"
 		truncated = false
 	}
+	// Review failure or exhausted revisions: deliver the latest numerically
+	// grounded candidate with a notice rather than a bare failure message.
+	if answer == answerReviewUnavailableFallback || answer == incompleteAnswerFallback || answer == stalledAnswerFallback {
+		if delivery, ok := e.unverifiedDelivery(); ok {
+			answer = delivery
+			existingID = ""
+			outcome = "unverified"
+			truncated = false
+		}
+	}
 	id := e.publishAnswer(ctx, sessionID, answer, existingID, truncated)
 	e.closeAnswerStream(ctx, sessionID, id, truncated)
 	state.FinalAnswer = answer

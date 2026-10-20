@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var reviewedAnswerSchema = json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string","description":"Only the requested final results in the requested language, with actual source citations and minimal necessary scope or limitations. Omit unrequested commentary, causal analysis or additional statistics. Preserve the meaning and identity of the actual source fields. No private reasoning, working draft or promises of future work."}},"required":["answer"],"additionalProperties":false}`)
+var reviewedAnswerSchema = json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string","description":"Only the requested final results in the requested language, with actual source citations and minimal necessary scope or limitations. Omit unrequested commentary, causal analysis or additional statistics. Preserve the meaning and identity of the actual source fields. Use natural prose, concise tables and normal text for amounts/units; reserve math notation for actual formulas. Use real source titles, no internal document handles, execution IDs or audit commentary in visible prose. Keep traceable citation attributes intact. No private reasoning, working draft or promises of future work."}},"required":["answer"],"additionalProperties":false}`)
 
 // Only this buffered answer protocol changes text decoding order. Other JSON
 // modes and ordinary tool-call arguments keep their existing streaming path.

@@ -108,11 +108,30 @@ function clearQuerySelection(message='设置查询范围后，结果与原单元
 let queryDatasetLoaded='',queryDatasetLoading=null,queryCatalogFingerprint='',queryCatalogRevision=0;
 function setKnowledgeView(mode){if(!['import','query'].includes(mode))return;document.body.classList.add('knowledge-view');for(const name of ['import','query'])document.body.classList.toggle('view-'+name,name===mode);if(mode==='query'&&authReceived)ensureQueryDataset().catch(error=>note(error.message))}
 async function ensureQueryDataset(isCurrent=()=>true,requestApi=api){const id=$('dataset').value,epoch=authEpoch,revision=queryCatalogRevision;if(!id||queryDatasetLoaded===id)return;if(queryDatasetLoading?.id===id&&queryDatasetLoading.epoch===epoch&&queryDatasetLoading.revision===revision)return queryDatasetLoading.promise;const pending={id,epoch,revision};pending.promise=selectDataset(()=>isCurrent()&&epoch===authEpoch&&revision===queryCatalogRevision,requestApi).then(()=>{if(isCurrent()&&epoch===authEpoch&&revision===queryCatalogRevision&&id===$('dataset').value)queryDatasetLoaded=id}).finally(()=>{if(queryDatasetLoading===pending)queryDatasetLoading=null});queryDatasetLoading=pending;return pending.promise;}
+let authRefreshPending=null,authRefreshSequence=0;
+function refreshEmbeddedAuth(rejectedToken=bearer){
+ if(authRefreshPending)return authRefreshPending.promise;
+ const requestId=String(++authRefreshSequence),epoch=authEpoch;
+ let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});
+ const timer=setTimeout(()=>{if(authRefreshPending?.requestId===requestId){authRefreshPending=null;reject(Error('登录刷新超时，请重试'))}},30000);
+ authRefreshPending={requestId,epoch,promise,resolve,reject,timer};
+ parent.postMessage({type:'structured-refresh-auth',requestId,token:rejectedToken},location.origin);
+ return promise;
+}
+async function authenticatedFetch(path,options={}){
+ const epoch=authEpoch;
+ let requestToken=bearer;
+ const run=()=>{requestToken=bearer;return fetch(base+path,{...options,headers:authHeaders(options.headers)})};
+ let response=await run();
+ if(epoch!==authEpoch||options.signal?.aborted)throw Error('账号或空间已切换，请重新操作');
+ if(response.status===401&&embedded){await refreshEmbeddedAuth(requestToken);if(epoch!==authEpoch||options.signal?.aborted)throw Error('账号或空间已切换，请重新操作');response=await run()}
+ return response;
+}
 async function api(path,options={},requestContext=null){
  const requestEpoch=authEpoch,controller=requestContext?new AbortController():null,abort=()=>controller?.abort(),signals=controller?[options.signal,requestContext.signal].filter(Boolean):[];
  for(const signal of signals){if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true})}
  const timer=controller?setTimeout(abort,requestContext.timeoutMs||30000):null;
- try{const response=await fetch(base+path,{...options,signal:controller?.signal||options.signal,headers:authHeaders(options.headers)});let body;try{body=await response.json()}catch(error){if(error.name==='AbortError')throw error;throw Error('服务返回异常，请稍后再试')}if(requestEpoch!==authEpoch)throw Error('账号或空间已切换，请重新操作');if(!response.ok){if(response.status===401){$('workspace').classList.add('hidden');if(!embedded)$('loginPanel').classList.remove('hidden')}const error=Error(typeof body.detail==='string'?body.detail:JSON.stringify(body.detail||'请求失败'));error.reviewTarget=body.review_target;throw error}return body}
+ try{const response=await authenticatedFetch(path,{...options,signal:controller?.signal||options.signal});let body;try{body=await response.json()}catch(error){if(error.name==='AbortError')throw error;throw Error('服务返回异常，请稍后再试')}if(requestEpoch!==authEpoch)throw Error('账号或空间已切换，请重新操作');if(!response.ok){if(response.status===401){$('workspace').classList.add('hidden');if(!embedded)$('loginPanel').classList.remove('hidden')}const error=Error(typeof body.detail==='string'?body.detail:JSON.stringify(body.detail||'请求失败'));error.reviewTarget=body.review_target;throw error}return body}
  finally{if(timer)clearTimeout(timer);for(const signal of signals)signal.removeEventListener('abort',abort)}
 }
 function refreshCurrentScope(){const epoch=authEpoch,own=nativeSourceRequest,isCurrent=()=>epoch===authEpoch&&own===nativeSourceRequest;return refresh(isCurrent).catch(error=>{if(isCurrent())note(error.message)})}
@@ -366,18 +385,27 @@ document.addEventListener('click',async e=>{
  const a=e.target.closest('a');if(!a)return;
  if(embedded&&a.matches('.materials-link,.conversation-link')){e.preventDefault();parent.postMessage({type:'structured-navigate',view:a.matches('.materials-link')?'materials':'conversation'},location.origin);return}
  if(a.matches('.model-settings-link,#modelBack')){e.preventDefault();const view=a.id==='modelBack'?'':'model-settings';if(embedded)parent.postMessage({type:'structured-navigate',view},location.origin);else location.search=view?'?view='+view:''}
- if(a.dataset.download){e.preventDefault();const downloadEpoch=authEpoch;try{const r=await fetch(base+'/api/datasets/'+encodeURIComponent(a.dataset.download)+'/source',{headers:authHeaders()});if(!r.ok)throw Error('下载失败，请检查登录状态');const blob=await r.blob();if(downloadEpoch!==authEpoch)throw Error('账号或空间已切换，请重新下载');const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='source.xlsx';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(err){note(err.message)}}
+ if(a.dataset.download){e.preventDefault();const downloadEpoch=authEpoch;try{const r=await authenticatedFetch('/api/datasets/'+encodeURIComponent(a.dataset.download)+'/source');if(!r.ok)throw Error('下载失败，请检查登录状态');const blob=await r.blob();if(downloadEpoch!==authEpoch)throw Error('账号或空间已切换，请重新下载');const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='source.xlsx';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(err){note(err.message)}}
 });
 window.addEventListener('DOMContentLoaded',()=>{if(embedded){
  window.addEventListener('message',e=>{
   if(e.origin!==location.origin||e.source!==parent)return;
+  if(e.data?.type==='structured-auth-refreshed'){
+   const pending=authRefreshPending;if(!pending||pending.requestId!==e.data.requestId)return;
+   clearTimeout(pending.timer);authRefreshPending=null;
+   if(pending.epoch!==authEpoch||!e.data.token||e.data.error)pending.reject(Error(e.data.error||'账号或空间已切换，请重新操作'));
+   else{bearer=e.data.token;pending.resolve()}
+   return;
+  }
   if(e.data?.type==='structured-view'){setKnowledgeView(e.data.mode);return}
   if(e.data?.type!=='structured-auth')return;
   const nextToken=e.data.token||'',nextTenant=String(e.data.tenant||''),nextKnowledgeBase=String(e.data.knowledgeBaseId||''),nextSource=typeof e.data.sourceKnowledgeId==='string'&&!reviewOnly&&viewParams.get('view')!=='model-settings'?e.data.sourceKnowledgeId:'';
   if(authReceived&&nextToken===bearer&&nextTenant===activeTenant&&nextKnowledgeBase===activeKnowledgeBase&&nextSource===requestedSourceKnowledge)return;
   const sameScope=authReceived&&bearer&&nextToken&&nextTenant===activeTenant&&nextKnowledgeBase===activeKnowledgeBase;
   const previousSource=requestedSourceKnowledge,sourceWasBusy=nativeSourceBusy,sourceNeedsRetry=!$('retrySourceImport').classList.contains('hidden');
-  authReceived=true;authEpoch+=1;bearer=nextToken;activeTenant=nextTenant;activeKnowledgeBase=nextKnowledgeBase;
+  const tokenRotation=sameScope&&nextSource===previousSource;
+  authReceived=true;if(!tokenRotation)authEpoch+=1;bearer=nextToken;activeTenant=nextTenant;activeKnowledgeBase=nextKnowledgeBase;
+  if(tokenRotation)return;
   if(sameScope){if(nextSource!==previousSource||sourceWasBusy||nextSource&&sourceNeedsRetry){clearKnowledgeSource();if(nextSource)openKnowledgeSource(nextSource);else refreshCurrentScope()}else if(!currentSheet&&viewParams.get('view')!=='model-settings')refreshCurrentScope();return}
   clearKnowledgeSource();
   queryDatasetLoaded='';queryDatasetLoading=null;queryCatalogFingerprint='';queryCatalogRevision+=1;clearQuerySelection();seriesRequest+=1;$('find').disabled=false;reviewVersion+=1;currentImport=null;currentSheet=null;mappingConfirmed=false;mappingBusy=false;currentSeries=[];datasetCatalog=[];sampleCatalog=[];

@@ -275,10 +275,11 @@ func TestSourceConsistencyFailureKeepsExistingBoundedRepairBudget(t *testing.T) 
 	state := sourceConsistencyState()
 	require.NoError(t, e.streamFinalAnswerToEventBus(t.Context(), "说明原文指标。", state, "session", emptyMessages()))
 	require.Len(t, m.calls, 6, "one existing final candidate plus at most two repairs, each with one combined check")
-	require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
+	require.True(t, strings.HasPrefix(state.FinalAnswer, "该指标代表产量，原图存在标签冲突。"), "the bounded budget is kept; the last grounded candidate is delivered with a notice")
+	require.Contains(t, state.FinalAnswer, "指标含义与已读取来源不一致")
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
-	require.Equal(t, incompleteAnswerFallback, visible)
+	require.Equal(t, state.FinalAnswer, visible)
 }
 
 func TestSourceConsistencyRepairsMisinterpretedExecutedCalculation(t *testing.T) {
@@ -338,11 +339,12 @@ func TestSourceConsistencyNormalLoopFailureDoesNotReauditRuntimeFallback(t *test
 	state := sourceConsistencyState()
 	_, err := e.executeLoop(t.Context(), state, "解释原文指标。", emptyMessages(), nil, "session", "message")
 	require.NoError(t, err)
-	require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
-	require.Len(t, m.calls, 7, "initial draft, three reviewed candidates and three combined verdicts; no audit of runtime failure notice")
+	require.True(t, strings.HasPrefix(state.FinalAnswer, "来源原文表示面积，但这里将其解释为产量。"))
+	require.Contains(t, state.FinalAnswer, "不要更换指标含义", "the unresolved review concern is shown to the user")
+	require.Len(t, m.calls, 7, "initial draft, three reviewed candidates and three combined verdicts; no audit of the delivered notice")
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
-	require.Equal(t, incompleteAnswerFallback, visible)
+	require.Equal(t, state.FinalAnswer, visible)
 }
 
 func documentTableSummaryFixture(t *testing.T, labels []string) *types.AgentState {
@@ -456,12 +458,13 @@ func TestSourceCheckerReceivesCompleteIndependentTableIdentitySummaryDespiteGene
 	for i := 0; i < 35; i++ {
 		state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{{ID: "schema-" + strconv.Itoa(i), Name: "structured_data", Result: &types.ToolResult{Success: true, Output: strings.Repeat("schema documentation ", 10000)}}}})
 	}
-	model := &mockChat{responses: []mockResponse{sourceConsistencyVerdict(`{"complete":false,"feedback":"计算行数已包括汇总行，不应再把汇总额外加到明细计数。"}`)}}
+	rejection := sourceConsistencyVerdict(`{"complete":false,"feedback":"计算行数已包括汇总行，不应再把汇总额外加到明细计数。"}`)
+	model := &mockChat{responses: []mockResponse{rejection, rejection}}
 	engine := sourceConsistencyEngine(t, model)
 	repair, err := engine.answerNeedsRepair(t.Context(), "说明实际记录范围。", "本表包含四条明细以及汇总。", "", state)
 	require.NoError(t, err)
 	require.True(t, repair)
-	require.Len(t, model.calls, 1)
+	require.Len(t, model.calls, 2, "a rejection without any evidence read is asked once to verify")
 	var input map[string]any
 	require.NoError(t, json.Unmarshal([]byte(model.calls[0][1].Content), &input))
 	scope := input["document_table_execution_scope"].(map[string]any)

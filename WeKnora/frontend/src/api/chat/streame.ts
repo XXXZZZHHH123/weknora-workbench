@@ -230,6 +230,7 @@ export function useStream() {
         isEmbed: Boolean(embedToken),
         isCurrent: () => myGeneration === streamGeneration && !streamAbort.signal.aborted,
         refreshAccessToken: () => refreshAccessTokenShared({
+          rejectedToken: token,
           messages: {
             pleaseRelogin: i18n.global.t('error.pleaseRelogin'),
             tokenRefreshFailed: i18n.global.t('error.tokenRefreshFailed'),
