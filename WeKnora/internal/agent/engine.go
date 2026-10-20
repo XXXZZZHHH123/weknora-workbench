@@ -41,6 +41,7 @@ type AgentEngine struct {
 	reviewedAnswerDeliveryRepairUsed bool           // at most one protocol-only serialization repair per turn
 	answerReviewFeedback             string         // bounded semantic review advice, never source evidence
 	answerReviewAction               string         // model-selected recovery disposition, never a source or tool command
+	answerReviewUserNotice           string         // reviewer-written caution for end users, shown only on unverified delivery
 	answerReviewPending              bool           // durable executed evidence requires approval before answer emission
 	reviewConversation               []chat.Message // actual conversation messages for semantic review, excluding synthetic runtime envelopes
 	reviewConversationReady          bool           // distinguishes an initialized empty turn context from a pre-turn fallback

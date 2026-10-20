@@ -429,6 +429,7 @@ func reviewRejectsCandidate(content string) bool {
 		Complete   *bool              `json:"complete"`
 		Assessment string             `json:"assessment,omitempty"`
 		Feedback   *string            `json:"feedback,omitempty"`
+		UserNotice string             `json:"user_notice,omitempty"`
 		NextAction string             `json:"next_action,omitempty"`
 		Audit      []reviewClaimCheck `json:"audit,omitempty"`
 	}
@@ -451,6 +452,7 @@ func reviewRequestsAdditionalEvidence(content string) bool {
 		Complete   *bool              `json:"complete"`
 		Assessment string             `json:"assessment,omitempty"`
 		Feedback   *string            `json:"feedback,omitempty"`
+		UserNotice string             `json:"user_notice,omitempty"`
 		NextAction string             `json:"next_action,omitempty"`
 		Audit      []reviewClaimCheck `json:"audit,omitempty"`
 	}
