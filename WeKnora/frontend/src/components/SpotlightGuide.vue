@@ -478,6 +478,7 @@ defineExpose({ open, close })
 
 .guide__card {
   position: fixed;
+  box-sizing: border-box;
   z-index: 1;
   pointer-events: auto;
   display: flex;

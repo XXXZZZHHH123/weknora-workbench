@@ -257,3 +257,46 @@ def test_explicit_numeric_interval_with_original_quote_remains_a_valid_preview(g
     assert result.status_code == 200, result.text
     assert len(calls) == 1 and rows() == []
     assert result.json()['bindings'][0]['unit'] == '吨'
+
+
+def test_selection_empty_example_keeps_one_object_shape_on_every_complete_batch(monkeypatch):
+    """The model-facing empty example passes the same strict selector as real output."""
+    import json
+    catalog = [{'id': 'real-' + str(index), 'unit': 'kg', 'name': '量' * 1400 + str(index)}
+               for index in range(53)]
+    observed = []
+
+    async def choose(scope, model, prompt):
+        marker = '空结果 JSON 示例：\n'
+        assert marker in prompt, 'The selection protocol must provide an unambiguous empty object example'
+        example, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
+        assert isinstance(example, dict) and set(example) == {'series_ids'}
+        assert example['series_ids'] == []
+        fields = json.loads(prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0])
+        observed.extend(field['id'] for field in fields)
+        assert TEXT in prompt
+        return example
+
+    monkeypatch.setattr(generation, 'completion', choose)
+    selected, partial = asyncio.run(generation.choose_catalog(None, 'm', catalog, TEXT))
+    assert partial and selected == []
+    assert observed == [row['id'] for row in catalog]
+
+
+@pytest.mark.parametrize('response', [
+    [], {'series_ids': [], 'extra': 'not part of protocol'}, {'series_ids': None},
+    {'series_ids': ['unknown-id']}, {'series_ids': [True]}, {'series_ids': ['real-0'] * 33},
+])
+def test_selection_protocol_keeps_strict_shape_source_and_raw_size_validation(monkeypatch, response):
+    from fastapi import HTTPException
+    catalog = [{'id': 'real-' + str(index), 'unit': 'kg', 'name': '量' * 1400 + str(index)}
+               for index in range(53)]
+
+    async def invalid(*_):
+        return copy.deepcopy(response)
+
+    monkeypatch.setattr(generation, 'completion', invalid)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(generation.choose_catalog(None, 'm', catalog, TEXT))
+    assert caught.value.status_code == 422
+    assert caught.value.detail == '模型未给出有效的真实指标选择'
