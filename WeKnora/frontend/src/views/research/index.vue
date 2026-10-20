@@ -6,9 +6,9 @@
       </router-link>
       <strong>{{ workbench.name }}</strong><span>{{ workbench.knowledge_base_name || '绑定知识库' }}</span>
       <div class="research-toolbar-actions">
-        <t-button class="research-toolbar-action" data-guide="research-sources" variant="text" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
-        <router-link v-if="workbench?.knowledge_base_id" class="research-toolbar-action" data-guide="research-kb" :to="`/platform/knowledge-bases/${workbench.knowledge_base_id}`">转到知识库</router-link>
-        <t-button class="research-toolbar-action" variant="outline" size="small" :disabled="!canShowResearch" :aria-expanded="chatVisible"
+        <t-button class="research-toolbar-action resource-action resource-action--compact" data-guide="research-sources" theme="default" variant="outline" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
+        <router-link v-if="workbench?.knowledge_base_id" class="research-toolbar-action resource-action resource-action--compact" data-guide="research-kb" :to="`/platform/knowledge-bases/${workbench.knowledge_base_id}`">转到知识库</router-link>
+        <t-button class="research-toolbar-action resource-action resource-action--compact" theme="default" variant="outline" size="small" :disabled="!canShowResearch" :aria-expanded="chatVisible"
           aria-controls="research-chat-panel" data-guide="research-chat" @click="openChat">问答助手</t-button>
         <WorkbenchActions :workbench="workbench" @renamed="applyWorkbenchUpdate" @deleted="router.replace('/platform/research-workbenches')" />
       </div>
@@ -183,7 +183,7 @@ onBeforeUnmount(() => { requestGeneration++; authGeneration++; scopeGeneration.v
 .research-toolbar>span{font-size:var(--app-text-sm);color:var(--app-text-secondary);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .research-toolbar a{font-size:var(--app-text-md);color:var(--td-brand-color);text-decoration:none}
 .research-toolbar-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
-.research-toolbar-actions .research-toolbar-action{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:28px;min-height:28px;padding:0 10px;font-family:var(--app-font-family);font-size:var(--app-text-md);line-height:20px;white-space:nowrap}
+
 .research-back{display:inline-flex;align-items:center;gap:4px}
 .research-body{position:relative;display:flex;flex:1;min-height:0;min-width:0;overflow:hidden}
 .research-canvas{position:relative;display:flex;flex:1;min-width:0;min-height:0}

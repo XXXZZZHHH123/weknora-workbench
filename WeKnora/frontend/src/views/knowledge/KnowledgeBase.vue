@@ -2637,9 +2637,9 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
                     </t-tooltip>
                   </div>
                   <div v-if="canEdit" class="doc-filter-actions">
-                    <t-button variant="text" theme="default" size="small" data-guide="kb-detail-new-folder"
+                    <t-button variant="outline" theme="default" size="small" class="resource-action" data-guide="kb-detail-new-folder"
                       :aria-label="t('knowledgeBase.folderTree.create')" @click="openCreateFolder">
-                      <template #icon><t-icon name="folder-add" size="18px" /></template>
+                      <template #icon><t-icon name="folder-add" size="16px" /></template>
                       {{ t('knowledgeBase.folderTree.create') }}
                     </t-button>
                     <KbUploadSourceDropdown ref="uploadSourceRef" :accept-file-types="acceptFileTypes"
@@ -2998,15 +2998,6 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
     flex: none;
     gap: 8px;
     white-space: nowrap;
-    :deep([data-guide="kb-detail-new-folder"]) { height: 32px; }
-  }
-  .doc-filter-actions :deep(.content-bar-icon-btn) {
-    height: 32px;
-    padding: 0 12px;
-    border-radius: var(--app-radius-md);
-    background: var(--td-brand-color);
-    color: var(--app-on-brand, var(--td-text-color-anti));
-    &:hover { background: var(--td-brand-color-hover); }
   }
 }
 .doc-folder-path {

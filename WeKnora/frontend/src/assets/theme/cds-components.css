@@ -67,3 +67,43 @@
     transition: none;
   }
 }
+
+/* Resource creation and cross-page actions share one compact neutral recipe.
+ * Opt in explicitly so destructive and primary submit actions keep their meaning. */
+:root .resource-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: auto;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 12px;
+  gap: 6px;
+  border: 1px solid var(--td-component-stroke);
+  border-radius: var(--app-radius-sm);
+  background: var(--td-bg-color-container);
+  color: var(--td-text-color-primary);
+  font-family: var(--cds-font-interface);
+  font-size: var(--app-text-md);
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+  text-decoration: none;
+  box-shadow: none;
+  cursor: pointer;
+  transition: background-color var(--app-motion-fast), border-color var(--app-motion-fast), color var(--app-motion-fast);
+}
+:root .resource-action--compact { height: 28px; min-height: 28px; padding: 0 10px; }
+:root .resource-action:hover:not(:disabled):not(.t-is-disabled):not(.t-is-loading) {
+  background: var(--td-bg-color-container-hover);
+  border-color: var(--td-text-color-placeholder);
+}
+:root .resource-action:disabled,
+:root .resource-action.t-is-disabled {
+  color: var(--td-text-color-disabled);
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root .resource-action { transition: none; }
+}

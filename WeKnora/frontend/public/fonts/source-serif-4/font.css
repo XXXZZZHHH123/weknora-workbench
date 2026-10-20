@@ -1,0 +1,9 @@
+/* Limit this face to digits so existing Chinese and Latin text keep their fonts. */
+@font-face {
+  font-family: 'Workspace Numerals';
+  src: url('/fonts/source-serif-4/SourceSerif4Variable-Roman.ttf.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+  unicode-range: U+0030-0039;
+}

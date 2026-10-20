@@ -11,7 +11,7 @@
             <div class="header-actions" style="--wails-draggable: no-drag">
               <ResourceSortControl v-model="selectedResourceSort" />
               <t-tooltip v-if="authStore.hasRole('contributor')" :content="$t('knowledgeList.create')" placement="bottom">
-                 <t-button variant="text" theme="default" size="small" class="header-action-btn"
+                 <t-button variant="outline" theme="default" size="small" class="header-action-btn resource-action"
                    data-guide="kb-list-create" style="--wails-draggable: no-drag" @click="handleCreateKnowledgeBase">
                    <template #icon><t-icon name="folder-add" size="16px" /></template>
                   {{ $t('knowledgeList.create') }}
@@ -577,9 +577,9 @@
         <EmptyState v-if="!keyword.trim() && spaceSelection === 'all' && filteredKnowledgeBases.length === 0 && !loading" :title="$t('knowledgeList.empty.title')"
           :description="$t('knowledgeList.empty.description')">
           <template #icon><ResourceIcon type="knowledge" :size="32" /></template>
-          <t-button v-if="authStore.hasRole('contributor')" theme="primary" class="kb-create-btn"
+          <t-button v-if="authStore.hasRole('contributor')" theme="default" variant="outline" size="small" class="kb-create-btn resource-action"
             data-guide="kb-list-create" @click="handleCreateKnowledgeBase">
-            <template #icon><t-icon name="folder-add" /></template>
+            <template #icon><t-icon name="folder-add" size="16px" /></template>
             {{ $t('knowledgeList.create') }}
           </t-button>
         </EmptyState>
@@ -597,9 +597,9 @@
         <EmptyState v-if="!keyword.trim() && spaceSelection === 'mine' && kbs.length === 0 && !loading" :title="$t('knowledgeList.empty.title')"
           :description="$t('knowledgeList.empty.description')">
           <template #icon><ResourceIcon type="knowledge" :size="32" /></template>
-          <t-button v-if="authStore.hasRole('contributor')" theme="primary" class="kb-create-btn"
+          <t-button v-if="authStore.hasRole('contributor')" theme="default" variant="outline" size="small" class="kb-create-btn resource-action"
             data-guide="kb-list-create" @click="handleCreateKnowledgeBase">
-            <template #icon><t-icon name="folder-add" /></template>
+            <template #icon><t-icon name="folder-add" size="16px" /></template>
             {{ $t('knowledgeList.create') }}
           </t-button>
         </EmptyState>
@@ -1568,34 +1568,6 @@ watch(keyword, () => { collapsedKbSections.value = new Set() })
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-}
-
-.header-action-btn {
-  padding: 0;
-  min-width: 28px;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--td-bg-color-secondarycontainer);
-  border: 1px solid var(--td-component-stroke);
-  border-radius: var(--app-radius-sm);
-  color: var(--td-text-color-secondary);
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--td-bg-color-container) 72%, transparent);
-  transition: background var(--app-motion-base), border-color var(--app-motion-base), color var(--app-motion-base);
-
-  &:hover {
-    background: var(--td-bg-color-secondarycontainer);
-    border-color: var(--td-component-stroke);
-    color: var(--td-text-color-primary);
-  }
-
-  :deep(.t-icon),
-  :deep(.btn-icon-wrapper) {
-    color: var(--td-brand-color);
-  }
 }
 
 // 来源组织（空间图标 + 空间名）

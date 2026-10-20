@@ -1,11 +1,11 @@
 /* CDS 浅中性表面与陶土强调色；涨跌及告警颜色保留市场与状态语义。 */
 :root {
   --research-nav-height: 92px;
-  --app-font-family: Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
+  --app-font-family: "Workspace Numerals", Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
   --app-font-family-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --cds-font-interface: var(--app-font-family);
-  --cds-font-display: Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
-  --cds-font-reading: Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
+  --cds-font-display: "Workspace Numerals", Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
+  --cds-font-reading: "Workspace Numerals", Georgia, "WeKnora Noto Serif SC", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", SimSun, serif;
   --cds-font-code: var(--app-font-family-mono);
   --bg: #FCFCFB;
   --surface: #ffffff;
@@ -74,7 +74,7 @@ body {
 
 .tabular {
   font-family: var(--app-font-family);
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: lining-nums tabular-nums;
 }
 
 /* 主题图标：不依赖 Tailwind 的 dark: 变体，避免额外配置 */
@@ -340,7 +340,7 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
   overflow: hidden;
   color: var(--text);
   font-size: 0.78rem;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: lining-nums tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -444,7 +444,7 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 .refresh-metrics > div { padding: 0 18px; border-left: 1px solid var(--line); }
 .refresh-metrics > div:first-child { padding-left: 0; border-left: 0; }
 .refresh-metrics small { display: block; font-size: 10px; color: var(--text-muted); margin-bottom: 5px; }
-.refresh-metrics strong { color: var(--text); font-size: 12px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.refresh-metrics strong { color: var(--text); font-size: 12px; font-weight: 550; font-variant-numeric: lining-nums tabular-nums; }
 .refresh-source-details summary { display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; cursor: pointer; list-style: none; padding: 3px 0 6px; }
 .refresh-source-details summary::-webkit-details-marker { display: none; }
 .refresh-source-details summary span { font-size: 11px; color: var(--text-muted); font-weight: 400; }

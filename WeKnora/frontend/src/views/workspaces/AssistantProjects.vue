@@ -126,7 +126,7 @@ async function archive() {
     <header v-if="projectId" class="workspace-management__header"><div><h2>{{ current?.name || '项目' }}</h2><p>{{ current?.description || '用项目组织相关对话，历史对话仍保留原会话。' }}</p></div><div class="workspace-management__actions">
       <t-button variant="outline" @click="router.push('/platform/projects')">全部项目</t-button><t-button variant="outline" :loading="busy" @click="showArchive">归档已有对话</t-button><t-button :loading="busy" :disabled="!current" @click="newConversation">新建项目对话</t-button><ProjectActions v-if="current" :project="current" :can-manage="canManage" @renamed="renamed" @deleted="deleted" />
     </div></header>
-    <header v-else class="header"><div class="header-title"><div class="title-row"><h2><t-icon name="folder" size="24px" />项目</h2><div class="header-actions"><ResourceListToolbar class="project-list-search" model-value="all" v-model:query="keyword" hide-scopes /><ResourceSortControl v-model="selectedResourceSort" /><t-button size="small" theme="default" variant="text" class="header-action-btn" @click="createOpen = true; error = ''"><template #icon><t-icon name="folder-add" size="16px" /></template>新建项目</t-button></div></div><p class="header-subtitle">用项目组织相关对话，历史对话仍保留原会话。</p></div></header>
+    <header v-else class="header"><div class="header-title"><div class="title-row"><h2><t-icon name="folder" size="24px" />项目</h2><div class="header-actions"><ResourceListToolbar class="project-list-search" model-value="all" v-model:query="keyword" hide-scopes /><ResourceSortControl v-model="selectedResourceSort" /><t-button size="small" theme="default" variant="outline" class="header-action-btn resource-action" @click="createOpen = true; error = ''"><template #icon><t-icon name="folder-add" size="16px" /></template>新建项目</t-button></div></div><p class="header-subtitle">用项目组织相关对话，历史对话仍保留原会话。</p></div></header>
     <t-alert v-if="error" theme="error" :message="error" class="workspace-management__error" />
     <div v-if="loading" class="workspace-management__empty"><t-loading text="正在加载项目" /></div>
     <template v-else-if="projectId && current">
@@ -143,7 +143,7 @@ async function archive() {
         <div class="card-bottom"><span class="project-session-count"><t-icon name="chat" size="14px" /><span>{{ project.session_count || 0 }} 条对话</span></span></div>
       </article></div>
       <EmptyState v-else-if="!error && keyword.trim()" icon="search" title="没有匹配的项目"><t-button size="small" variant="outline" @click="keyword = ''">清除搜索</t-button></EmptyState>
-      <EmptyState v-else-if="!error" icon="folder" title="还没有项目" description="新建项目，将相关对话归档在一起。"><t-button size="small" @click="createOpen = true">新建项目</t-button></EmptyState>
+      <EmptyState v-else-if="!error" icon="folder" title="还没有项目" description="新建项目，将相关对话归档在一起。"><t-button size="small" theme="default" variant="outline" class="resource-action" @click="createOpen = true"><template #icon><t-icon name="folder-add" size="16px" /></template>新建项目</t-button></EmptyState>
     </div>
     <t-button v-if="error" variant="outline" @click="load()">重新加载</t-button>
   </main>
