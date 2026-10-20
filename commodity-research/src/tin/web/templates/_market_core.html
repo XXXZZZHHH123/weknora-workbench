@@ -1,0 +1,21 @@
+<section id="market-core" class="space-y-3" aria-labelledby="market-core-title">
+  <div class="market-core-heading">
+    <div><h2 id="market-core-title">核心指标 <span id="market-core-count" class="market-core-muted">{{ cards | length }}</span></h2><p>来自当前知识库指标目录 · 选中后自动加入自选 · 可调整显示顺序</p></div>
+    <button id="market-core-open" type="button" class="market-core-button" aria-haspopup="dialog">选择与排序</button>
+  </div>
+  <p id="market-core-notice" class="market-core-notice" role="status" hidden></p>
+  <div id="market-core-grid" class="market-core-grid" aria-live="polite">{% include '_market_cards.html' %}</div>
+  <div id="market-core-empty" class="market-core-empty" {% if cards %}hidden{% endif %}>尚未选择核心指标。点击“选择与排序”从知识库目录添加。</div>
+  <div id="market-core-error" class="market-core-error" role="alert" hidden><span></span> <button id="market-core-retry" type="button" class="market-core-button">重试</button></div>
+</section>
+<script id="market-core-catalog" type="application/json">{{ market_catalog | tojson }}</script>
+<dialog id="market-core-dialog" class="market-core-dialog" aria-labelledby="market-core-dialog-title">
+  <h2 id="market-core-dialog-title">选择与排序核心指标</h2>
+  <p class="market-core-muted">最多 12 项，按右侧顺序显示。保存时自动加入指标页自选；移出核心会保留自选。选择保存在当前浏览器，按用户、空间与工作台隔离。</p>
+  <div class="market-core-columns">
+    <section><h3>知识库指标</h3><label><span class="sr-only">查找核心指标</span><input id="market-core-search" class="market-core-search" type="search" placeholder="搜索名称、来源或单位" autocomplete="off"></label><div id="market-core-choices" class="market-core-choices"></div><p id="market-core-no-results" class="market-core-muted" hidden>没有匹配的指标。</p></section>
+    <section><h3>显示顺序 <span id="market-core-draft-count" class="market-core-muted"></span></h3><ol id="market-core-selected" class="market-core-selected"></ol><p id="market-core-selected-empty" class="market-core-muted" hidden>从左侧勾选指标。</p></section>
+  </div>
+  <p id="market-core-dialog-error" class="market-core-error" role="alert" hidden></p>
+  <footer class="market-core-footer"><button id="market-core-cancel" type="button" class="market-core-button">取消</button><button id="market-core-save" type="button" class="market-core-button market-core-primary">保存</button></footer>
+</dialog>

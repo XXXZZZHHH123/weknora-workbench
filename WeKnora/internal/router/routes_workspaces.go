@@ -40,3 +40,11 @@ func RegisterWorkspaceDiagramRoutes(r *gin.RouterGroup, h *handler.WorkspaceHand
 	}
 	r.POST("/workspaces/research/:id/diagram/generate", g.Contributor(), handler.WorkspaceDiagramGenerator(h, models))
 }
+
+// Judgment analysis is a separate fixed purpose and remains web-user/contributor only.
+func RegisterWorkspaceJudgmentRoutes(r *gin.RouterGroup, h *handler.WorkspaceHandler, models *handler.ModelHandler, g *rbacGuards) {
+	if h == nil || models == nil {
+		return
+	}
+	r.POST("/workspaces/research/:id/judgment/generate", g.Contributor(), handler.WorkspaceJudgmentGenerator(h, models))
+}

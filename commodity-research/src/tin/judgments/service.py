@@ -21,10 +21,18 @@ def _refs(j: JudgmentIn) -> list[tuple[str, str, str]]:
     for side in ("bull", "bear"):
         refs += [("evidence", f"{side}{i}", e.series_id)
                  for i, e in enumerate(getattr(j.contradiction, side).evidence) if e.series_id]
+    refs += [("cost", f"cost{i}", item.series_id)
+             for i, item in enumerate(j.cost_line.items if j.cost_line else []) if item.series_id]
     return refs
 
 
-def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool = False) -> Judgment:
+def latest(session: Session, variety: str) -> Judgment | None:
+    return session.scalars(scope_query(session, select(Judgment).where(Judgment.variety == variety)
+                           .order_by(Judgment.version.desc()).limit(1), Judgment)).first()
+
+
+def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool = False,
+                 expected_base_version: int | None = None) -> Judgment:
     """每次保存都生成新版本（FR-1.5）。activate=True 时须通过全部硬校验，且旧的生效版本转为已归档。"""
     refs = _refs(j)
     wanted = {sid for _t, _i, sid in refs}
@@ -40,6 +48,8 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
     actor = verified_actor(session, actor)
     version = (session.scalar(scope_query(session, select(func.max(Judgment.version))
                                          .where(Judgment.variety == j.variety), Judgment)) or 0) + 1
+    if expected_base_version is not None and version - 1 != expected_base_version:
+        raise JudgmentError("研究逻辑已有新版本，请刷新后重新分析或比较")
     if activate:
         session.execute(scope_query(session, update(Judgment)
                         .where(Judgment.variety == j.variety, Judgment.status == "生效")

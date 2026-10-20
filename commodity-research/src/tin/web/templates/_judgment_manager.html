@@ -1,0 +1,34 @@
+<dialog id="judgment-manager" class="logic-dialog" aria-labelledby="logic-title" data-prefill="{{ 'true' if logic_input else 'false' }}">
+  <header class="logic-header"><div><h2 id="logic-title">管理研究逻辑</h2><p id="logic-version-label">查看当前逻辑，或分析新原文后保存草稿。</p></div><button type="button" data-logic-close aria-label="关闭研究逻辑管理">×</button></header>
+  <nav class="logic-tabs" aria-label="研究逻辑管理">
+    <button type="button" data-logic-tab="current" aria-selected="true">当前 MD</button>
+    <button type="button" data-logic-tab="analyze" aria-selected="false">导入与分析</button>
+    <button type="button" data-logic-tab="versions" aria-selected="false">版本比较</button>
+  </nav>
+  <div id="logic-status" class="logic-status" role="status" aria-live="polite"></div>
+  <section data-logic-panel="current" class="logic-panel">
+    <div class="logic-toolbar"><span id="logic-current-state">尚无研究逻辑</span><button type="button" id="logic-reuse">复用当前 MD</button><button type="button" id="logic-reuse-original">复用原文</button><button type="button" id="logic-download">下载 MD</button></div>
+    <pre id="logic-current-md" class="logic-code" tabindex="0">尚无研究逻辑。可在“导入与分析”添加原文。</pre>
+    <details><summary>保留的原始输入</summary><pre id="logic-original-source" class="logic-code"></pre></details>
+  </section>
+  <section data-logic-panel="analyze" class="logic-panel" hidden>
+    <div class="logic-toolbar"><label class="logic-file">选择 .md / .txt<input id="logic-file" type="file" accept=".txt,.md,text/plain,text/markdown"></label><span id="logic-file-name"></span><button type="button" id="logic-skeleton">插入通用骨架</button></div>
+    <label class="logic-editor-label" for="logic-input">研究逻辑原文 <span>完整分析，不沿用上一版本规则</span></label>
+    <textarea id="logic-input" rows="7" placeholder="选择文件，或粘贴主矛盾、数据锚、边际、成本与证伪条件。">{{ logic_input or '' }}</textarea>
+    <div class="logic-toolbar"><label for="logic-model">分析模型</label><select id="logic-model" aria-label="研究逻辑分析模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-generate" class="logic-primary">分析原文</button><span class="logic-hint">先预览，再确认保存；不会自动生效。</span></div>
+    <div id="logic-preview" hidden>
+      <div class="logic-toolbar"><strong>待确认草稿</strong><span id="logic-coverage"></span><button type="button" id="logic-apply" class="logic-primary">确认保存为新草稿</button></div>
+      <div id="logic-bindings" class="logic-bindings"></div>
+      <ul id="logic-unresolved" class="logic-unresolved"></ul>
+      <details><summary>结构字段变化</summary><div id="logic-field-diff" class="logic-field-diff"></div></details>
+      <details><summary>Markdown 行差异</summary><pre id="logic-generated-diff" class="logic-code"></pre></details>
+      <details><summary>完整新 MD</summary><pre id="logic-preview-md" class="logic-code"></pre></details>
+    </div>
+  </section>
+  <section data-logic-panel="versions" class="logic-panel" hidden>
+    <div class="logic-toolbar"><label for="logic-version">查看版本</label><select id="logic-version"></select><span id="logic-version-range"></span><label for="logic-version-number" class="sr-only">历史版号</label><input id="logic-version-number" type="number" min="1" placeholder="历史版号"><button type="button" id="logic-load-version">读取</button></div>
+    <p class="logic-hint">相对于当前展示版本比较；保存新草稿会保留历史记录。</p>
+    <pre id="logic-history-md" class="logic-code"></pre>
+    <details><summary>与当前展示版本的 MD 差异</summary><pre id="logic-history-diff" class="logic-code"></pre></details>
+  </section>
+</dialog>

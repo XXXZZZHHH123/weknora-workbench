@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}研究判断 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-manager.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/judgment-manager.js?v={{ static_version() }}"></script>
+{% endblock %}
 {% block main %}
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
@@ -11,13 +15,13 @@
     </h1>
     <p class="text-xs text-[var(--text-muted)] mt-1">九字段结构化研判 ｜ 阈值与证伪条件绑定已登记指标 ｜ 复核周期预警</p>
   </div>
-  <a href="#import" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shrink-0">导入新版研究逻辑</a>
+  <button type="button" data-open-logic class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shrink-0">管理研究逻辑</button>
 </div>
 
 {% if j is none %}
 <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-6 shadow-sm">
   <h3 class="text-base font-bold">尚未登记判断</h3>
-  <p class="text-xs text-[var(--text-muted)] mt-1">可在下方粘贴或上传现有研究逻辑文本，系统按段落标题预填字段。</p>
+  <p class="text-xs text-[var(--text-muted)] mt-1">点击“管理研究逻辑”导入完整原文，由模型分析并匹配知识库指标，预览后保存草稿。</p>
 </div>
 {% else %}
 
@@ -208,38 +212,13 @@
 </section>
 {% endif %}
 
-<section class="space-y-3" id="import">
-  <h2 class="text-sm font-bold flex items-center gap-2">
-    <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">05</span>
-    导入新版本研究逻辑
-  </h2>
-  {% if report %}
-  <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm text-xs space-y-1">
-    <h3 class="font-bold text-[var(--primary)]">最近一次导入 → v{{ report.version }}</h3>
-    {% for m in report.mapped %}<div class="text-[var(--text-muted)]">✓ {{ m }}</div>{% endfor %}
-    {% for c in report.carried %}<div class="text-[var(--amber)]">↻ {{ c }}</div>{% endfor %}
-    {% for u in report.unmatched %}<div class="text-[var(--text-muted)]">· {{ u }}</div>{% endfor %}
-  </div>
-  {% endif %}
-  <form method="post" action="{{ research_form_url('/sn/judgment/import') }}" enctype="multipart/form-data"
-        class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm space-y-3 text-xs max-w-2xl">
-    <label class="block"><span class="font-semibold">上传文件（.txt / .md，按「## 标题」分段）</span>
-      <input type="file" name="file" accept=".txt,.md,text/plain" class="mt-1 w-full px-3 py-2 rounded-md"></label>
-    <label class="block"><span class="font-semibold">或直接粘贴</span>
-      <textarea name="text" rows="5" class="mt-1 w-full px-3 py-2 rounded-md"></textarea></label>
-    <label class="block"><span class="font-semibold">作者</span>
-      <input type="text" name="author" required class="mt-1 w-full px-3 py-2 rounded-md" {% if research_identity() %}value="{{ research_identity().display_name }}" readonly{% endif %}></label>
-    <button type="submit" class="px-4 py-2 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)]">导入为新草稿</button>
-    <p class="text-[11px] text-[var(--text-muted)]">文字类字段按新文本更新；阈值、证伪条件、冲突优先级与多空证据沿用上一版，请对照核对。旧版本保留，不会被覆盖。</p>
-  </form>
-</section>
-
 {% if versions %}
 <section class="space-y-3">
   <h2 class="text-sm font-bold flex items-center gap-2">
     <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">06</span>
     版本记录
   </h2>
+  <p class="text-[11px] text-[var(--text-muted)]">显示最近50个版本；可在“管理研究逻辑”的版本比较中按版号查看更早记录。</p>
   <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] overflow-hidden shadow-sm overflow-x-auto">
     <table class="w-full text-left text-xs">
       <thead class="bg-[var(--surface-soft)] text-[11px] font-semibold text-[var(--text-muted)] border-b border-[var(--line)]">
@@ -258,4 +237,5 @@
   </div>
 </section>
 {% endif %}
+{% include "_judgment_manager.html" %}
 {% endblock %}

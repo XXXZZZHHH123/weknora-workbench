@@ -1,6 +1,13 @@
 {% extends "base.html" %}
 {% from "_card.html" import card, trend %}
 {% block title %}{{ research_workbench().metadata.name if research_workbench() else '锡 SN' }} · 研究总览{% endblock %}
+{% block head %}
+{% if research_workbench() %}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/market-overview.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/indicator-preferences.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/market-overview.js?v={{ static_version() }}"></script>
+{% endif %}
+{% endblock %}
 {% block main %}
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
@@ -14,7 +21,7 @@
   {% if d %}
   <div class="flex items-center gap-6 text-right shrink-0">
     <div>
-      <div class="text-xl font-bold tabular">{{ cards | selectattr('status', 'equalto', 'ok') | list | length }}<span class="text-xs font-normal text-[var(--text-muted)]"> / {{ cards | length }}</span></div>
+      <div class="text-xl font-bold tabular"><span{% if research_workbench() %} id="market-core-ready"{% endif %}>{{ cards | selectattr('status', 'equalto', 'ok') | list | length }}</span><span class="text-xs font-normal text-[var(--text-muted)]"> / <span{% if research_workbench() %} id="market-core-total"{% endif %}>{{ cards | length }}</span></span></div>
       <div class="text-[11px] text-[var(--text-muted)]">核心数据就绪</div>
     </div>
     <div class="h-8 w-px bg-[var(--line)]"></div>
@@ -104,7 +111,13 @@
 </section>
 {% endif %}
 
+{% if research_workbench() %}
+{% include '_market_core.html' %}
+{% include '_market_contract_guide.html' %}
+{% endif %}
+
 {% if d %}
+{% if not research_workbench() %}
 <section class="space-y-3">
   <div class="flex items-center justify-between gap-3 flex-wrap">
     <div class="flex items-center gap-2">
@@ -118,6 +131,7 @@
     {% for c in cards %}{{ card(c) }}{% endfor %}
   </div>
 </section>
+{% endif %}
 
 <section class="space-y-3">
   <div class="flex items-center justify-between gap-3 flex-wrap">

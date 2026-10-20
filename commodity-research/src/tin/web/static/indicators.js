@@ -8,9 +8,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const normalize = (s) => String(s).normalize("NFKC").toLocaleLowerCase();
   const searchText = new Map(rows.map((r) => [r, normalize(r.dataset.search)]));
   const context = window.RESEARCH_CONTEXT;
-  const storageKey = context?.workbench
-    ? `tin.indicators.favorites.v1:${context.tenant}:${context.user}:${context.workbench}`
-    : "tin.indicators.favorites.v1";
+  const storageKey = window.IndicatorPreferences.key(context);
   let favorites = [];
   const selected = new Set();
   let previewController;

@@ -1,0 +1,2 @@
+{% from '_card.html' import card %}
+{% for c in cards %}<div data-market-card-series="{{ c.series_id }}">{{ card(c) }}</div>{% endfor %}
