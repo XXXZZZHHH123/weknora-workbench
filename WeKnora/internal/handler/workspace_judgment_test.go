@@ -29,6 +29,8 @@ func TestWorkspaceJudgmentUsesFixedResearchSystemAndNormalConfiguredModel(t *tes
 	require.Equal(t, workspaceJudgmentSystem, f.models.client.messages[0].Content)
 	require.NotContains(t, f.models.client.messages[0].Content, "产业图")
 	require.Equal(t, workspaceDiagramTokens, f.models.client.options.MaxTokens)
+	require.NotNil(t, f.models.client.options.Thinking)
+	require.False(t, *f.models.client.options.Thinking)
 }
 
 func TestWorkspaceJudgmentRejectsPurposeOverridesImagesAndViewersBeforeInference(t *testing.T) {

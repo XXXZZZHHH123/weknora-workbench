@@ -165,7 +165,13 @@ func workspaceDraftGenerator(workspaces *WorkspaceHandler, models *ModelHandler,
 		if input.Image != "" {
 			message.Images = []string{input.Image}
 		}
-		response, err := client.Chat(ctx, []chat.Message{{Role: "system", Content: system}, message}, &chat.ChatOptions{MaxTokens: workspaceDiagramTokens, DisableImageFallback: input.Image != ""})
+		options := &chat.ChatOptions{MaxTokens: workspaceDiagramTokens, DisableImageFallback: input.Image != ""}
+		if !allowImages {
+			// Keep the bounded draft budget available for the requested JSON output.
+			thinking := false
+			options.Thinking = &thinking
+		}
+		response, err := client.Chat(ctx, []chat.Message{{Role: "system", Content: system}, message}, options)
 		if err != nil {
 			class, status := workspaceDiagramCallError(err)
 			workspaceDiagramFailure(c, "completion", class, status)
