@@ -1752,6 +1752,35 @@ export default {
       searchingMixedWithQuery: '지식베이스 및 웹 검색 중: 「{query}」',
       searchDone: '검색 완료'
     },
+    thinkingTimeline: {
+      thoughtForSeconds: '{seconds}초 동안 생각함',
+      thoughtForMinutes: '{minutes}분 {seconds}초 동안 생각함',
+      reasoning: '사고 과정',
+      steps: {
+        listDatasets: '데이터셋 목록 보기',
+        listSeries: '표 필드 찾기',
+        listCharts: '표 차트 보기',
+        querySeries: '표 데이터 조회',
+        analyzeTable: '표 데이터 분석',
+        inspectSource: '원본 셀 확인',
+        compareSeries: '두 계열 비교',
+        convertPrice: '가격 환산',
+        resolveFields: '필요한 필드 식별',
+        getResultEvidence: '조회 근거 확인',
+        structuredFallback: '표 데이터 조회',
+        readDocument: '문서 읽기',
+        readDocumentNamed: '「{title}」 읽기',
+        listDocuments: '문서 찾기',
+        bindDocumentScope: '자료 범위 확정',
+        wikiSearch: 'Wiki 검색',
+        wikiReadPage: 'Wiki 페이지 읽기',
+        analyzeDocumentTables: '문서 표 분석',
+        calculate: '수치 계산',
+        webSearch: '웹 검색',
+        webFetch: '웹 페이지 읽기',
+        generic: '단계 실행'
+      }
+    },
     attachmentParsing: {
       parsedSummary: '첨부 파일 {count}개 파싱 완료',
       parsedWithSkipped: '첨부 파일 {parsed}개 파싱 완료, {skipped}개 미완료로 건너뜀',

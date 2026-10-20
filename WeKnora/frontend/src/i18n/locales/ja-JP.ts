@@ -6423,6 +6423,35 @@ export default {
       searchingMixedWithQuery: 'ナレッジベースとWebを検索中:「{query}」',
       searchDone: '検索完了'
     },
+    thinkingTimeline: {
+      thoughtForSeconds: '{seconds} 秒間思考',
+      thoughtForMinutes: '{minutes} 分 {seconds} 秒間思考',
+      reasoning: '思考過程',
+      steps: {
+        listDatasets: 'データセットを確認',
+        listSeries: '表のフィールドを検索',
+        listCharts: '表のグラフを確認',
+        querySeries: '表データを照会',
+        analyzeTable: '表データを分析',
+        inspectSource: '元のセルを確認',
+        compareSeries: '2 つの系列を比較',
+        convertPrice: '価格を換算',
+        resolveFields: '必要なフィールドを特定',
+        getResultEvidence: '取得根拠を確認',
+        structuredFallback: '表データを照会',
+        readDocument: 'ドキュメントを読む',
+        readDocumentNamed: '「{title}」を読む',
+        listDocuments: 'ドキュメントを検索',
+        bindDocumentScope: '資料範囲を確定',
+        wikiSearch: 'Wiki を検索',
+        wikiReadPage: 'Wiki ページを読む',
+        analyzeDocumentTables: 'ドキュメントの表を分析',
+        calculate: '数値を計算',
+        webSearch: 'Web 検索',
+        webFetch: 'Web ページを読む',
+        generic: 'ステップを実行'
+      }
+    },
     mcp: {
       discoverTools: "MCP ツールを検出",
       listServers: "MCP サービス一覧",

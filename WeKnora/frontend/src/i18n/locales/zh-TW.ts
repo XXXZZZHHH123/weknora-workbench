@@ -1754,6 +1754,35 @@ export default {
       searchingMixedWithQuery: '正在檢索知識庫和網路：「{query}」',
       searchDone: '檢索完成'
     },
+    thinkingTimeline: {
+      thoughtForSeconds: '已思考 {seconds} 秒',
+      thoughtForMinutes: '已思考 {minutes} 分 {seconds} 秒',
+      reasoning: '思考過程',
+      steps: {
+        listDatasets: '查看資料集目錄',
+        listSeries: '查找表格欄位',
+        listCharts: '查看表格圖表',
+        querySeries: '查詢表格資料',
+        analyzeTable: '計算分析表格資料',
+        inspectSource: '核對原表儲存格',
+        compareSeries: '對比兩組資料',
+        convertPrice: '換算價格',
+        resolveFields: '識別所需欄位',
+        getResultEvidence: '讀取取數依據',
+        structuredFallback: '查詢表格資料',
+        readDocument: '閱讀文件',
+        readDocumentNamed: '閱讀《{title}》',
+        listDocuments: '查找文件',
+        bindDocumentScope: '確定資料範圍',
+        wikiSearch: '搜尋 Wiki',
+        wikiReadPage: '讀取 Wiki 頁面',
+        analyzeDocumentTables: '分析文件表格',
+        calculate: '計算數值',
+        webSearch: '網路搜尋',
+        webFetch: '讀取網頁',
+        generic: '執行步驟'
+      }
+    },
     attachmentParsing: {
       parsedSummary: '已解析 {count} 個附件',
       parsedWithSkipped: '已解析 {parsed} 個附件，{skipped} 個未完成已跳過',
