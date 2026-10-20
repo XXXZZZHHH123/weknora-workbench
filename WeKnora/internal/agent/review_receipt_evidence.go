@@ -122,6 +122,104 @@ func (w *reviewSourceWitness) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// reviewTextPathsContaining lists bounded string paths of one successful
+// result whose exact text contains quote. Diagnostics only: the reviewer must
+// still choose and name the path; the runtime never rebinds a witness.
+func reviewTextPathsContaining(record reviewEvidenceRecord, quote string, limit int) []string {
+	payload, ok := record.Value.(map[string]any)
+	if !ok || payload["success"] != true || quote == "" {
+		return nil
+	}
+	paths := []string{}
+	nodes := 0
+	var walk func(any, string, int)
+	walk = func(value any, pointer string, depth int) {
+		if len(paths) >= limit || nodes >= reviewReceiptUniqueWitnessNodeLimit || depth > reviewReceiptUniqueWitnessDepthLimit || len(pointer) > 1024 {
+			return
+		}
+		nodes++
+		switch typed := value.(type) {
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				walk(typed[key], pointer+"/"+escapeReviewPointerSegment(key), depth+1)
+			}
+		case []any:
+			for index, child := range typed {
+				walk(child, pointer+"/"+strconv.Itoa(index), depth+1)
+			}
+		default:
+			if reviewQuoteMatchesValue(typed, quote) {
+				paths = append(paths, pointer)
+			}
+		}
+	}
+	walk(payload["data"], "/data", 0)
+	return paths
+}
+
+// sameReviewItemRoot reports whether every path lies inside the same element
+// of the first array on its path (for example /data/chunks/1/...). Paths with
+// no array element are never treated as one item.
+func sameReviewItemRoot(paths []string) bool {
+	root := ""
+	for i, path := range paths {
+		tokens := strings.Split(strings.TrimPrefix(path, "/"), "/")
+		itemRoot := ""
+		for j, token := range tokens {
+			if _, err := strconv.Atoi(token); err == nil {
+				itemRoot = "/" + strings.Join(tokens[:j+1], "/")
+				break
+			}
+		}
+		if itemRoot == "" {
+			return false
+		}
+		if i == 0 {
+			root = itemRoot
+		} else if itemRoot != root {
+			return false
+		}
+	}
+	return root != ""
+}
+
+// reviewPointerHint names the actual keys under the deepest resolvable prefix
+// of a missing pointer so a protocol retry can correct it.
+func reviewPointerHint(root any, pointer string) string {
+	tokens, ok := reviewJSONPointerTokens(pointer)
+	if !ok {
+		return ""
+	}
+	value, prefix := root, ""
+	for _, token := range tokens {
+		next, err := reviewPointerValue(value, "/"+escapeReviewPointerSegment(token))
+		if err != nil {
+			break
+		}
+		value, prefix = next, prefix+"/"+escapeReviewPointerSegment(token)
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		if len(keys) > 12 {
+			keys = append(keys[:12], "…")
+		}
+		return fmt.Sprintf("; deepest existing path %q has keys [%s]", prefix, strings.Join(keys, ","))
+	case []any:
+		return fmt.Sprintf("; deepest existing path %q is an array of %d elements", prefix, len(typed))
+	}
+	return fmt.Sprintf("; deepest existing path %q is a scalar", prefix)
+}
+
 // reviewWitnessVisible verifies both provenance and exposure. It deliberately
 // does not assess whether the quote semantically supports a claim.
 func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, witness reviewSourceWitness) error {
@@ -179,7 +277,14 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 		case count == 0:
 			return fmt.Errorf("quote did not match a scalar in successful result data; provide an explicit json_pointer")
 		case count != 1:
-			return fmt.Errorf("quote matched multiple scalar paths in successful result data; provide an explicit json_pointer")
+			// The same text repeated in fields of ONE returned item (a chunk's
+			// body, snippet and locator) is not an ambiguity about which source
+			// the claim cites. Matches across different items still are.
+			paths := reviewTextPathsContaining(record, witness.Quote, 65)
+			if len(paths) < 2 || len(paths) > 64 || !sameReviewItemRoot(paths) {
+				return fmt.Errorf("quote matched multiple scalar paths in successful result data; provide an explicit json_pointer for the path your claim is about; matching paths include [%s]", strings.Join(paths[:min(4, len(paths))], ","))
+			}
+			witness.JSONPointer = paths[0]
 		default:
 			witness.JSONPointer = pointer
 		}
@@ -197,7 +302,7 @@ func reviewWitnessVisible(input map[string]any, reader *reviewEvidenceReader, wi
 			case map[string]any, []any:
 				encoded, encodeErr := json.Marshal(value)
 				if encodeErr != nil || len(encoded) > reviewReceiptContainerQuoteLimit {
-					return fmt.Errorf("omitting quote for a container requires a compact source value within %d bytes", reviewReceiptContainerQuoteLimit)
+					return fmt.Errorf("omitting quote for a container requires a compact source value within %d bytes; this container is larger: quote a short exact substring of one of its text fields at that field's json_pointer%s", reviewReceiptContainerQuoteLimit, reviewPointerHint(record.Value, witness.JSONPointer))
 				}
 				// The locator is already bound to this immutable source result and
 				// exact pointer. Derive only the complete canonical value; the common
@@ -432,20 +537,29 @@ func resolveCitationBodyWitness(input map[string]any, reader *reviewEvidenceRead
 	items := reviewAsSlice(view["items"])
 	var item map[string]any
 	itemMatches := 0
+	displayedRefs := make([]string, 0, 12)
 	for _, rawItem := range items {
 		candidate := reviewAsMap(rawItem)
 		candidateRef, validRef := exactReviewIndex(candidate["source_pointer_ref"])
+		if validRef && len(displayedRefs) < 12 {
+			displayedRefs = append(displayedRefs, strconv.Itoa(candidateRef))
+		}
 		if validRef && candidateRef == ref {
 			item = candidate
 			itemMatches++
 		}
 	}
 	if itemMatches != 1 {
-		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref does not uniquely identify a displayed citation body")
+		// Name the actual displayed refs so a protocol retry can correct the
+		// locator instead of repeating it; this is identity metadata only.
+		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref %d does not uniquely identify a displayed citation body; displayed body source_pointer_ref values: [%s]", ref, strings.Join(displayedRefs, ","))
 	}
 	content, contentOK := item["content"].(string)
-	if item["content_included"] != true || !contentOK || content == "" || !strings.Contains(content, witness.Quote) {
-		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref does not identify currently displayed body text")
+	if item["content_included"] != true || !contentOK || content == "" {
+		return reviewSourceWitness{}, fmt.Errorf("source_pointer_ref %d body text is not displayed in this view; read the omitted source path instead", ref)
+	}
+	if !strings.Contains(content, witness.Quote) {
+		return reviewSourceWitness{}, fmt.Errorf("quote is not an exact contiguous substring of the body displayed at source_pointer_ref %d; copy one short span verbatim without ellipses, omissions or joined cells, and use separate witnesses for separate spans", ref)
 	}
 	pointers := reviewAsSlice(view["source_pointers"])
 	if ref >= len(pointers) {
@@ -555,7 +669,7 @@ func reviewWitnessRawValue(record reviewEvidenceRecord, witness reviewSourceWitn
 	}
 	value, err := reviewPointerValue(record.Value, witness.JSONPointer)
 	if err != nil {
-		return nil, fmt.Errorf("witness pointer does not resolve: %w", err)
+		return nil, fmt.Errorf("witness pointer does not resolve: %w%s", err, reviewPointerHint(record.Value, witness.JSONPointer))
 	}
 	return value, nil
 }
@@ -763,6 +877,15 @@ func reviewWitnessVisibleInRowCompanion(value any, witness reviewSourceWitness) 
 		}
 		local := strings.TrimPrefix(witness.JSONPointer, base)
 		parts := strings.Split(strings.TrimPrefix(local, "/"), "/")
+		if len(parts) == 1 {
+			// A whole row is exposed only when the companion displays every
+			// field of that exact row; the reconstruction must equal the quote
+			// derived from the immutable source row.
+			if row, ok := reviewCompanionDisplayedRow(entry, parts[0]); ok && reviewQuoteMatchesValue(row, witness.Quote) {
+				return true
+			}
+			continue
+		}
 		if len(parts) < 2 {
 			continue
 		}
@@ -809,6 +932,43 @@ func reviewWitnessVisibleInRowCompanion(value any, witness reviewSourceWitness) 
 		}
 	}
 	return false
+}
+
+// reviewCompanionDisplayedRow reconstructs one displayed row in its original
+// JSON shape. Positional rows are constant_fields plus columns/value pairs;
+// object and matrix rows are already the unchanged source rows.
+func reviewCompanionDisplayedRow(entry map[string]any, index string) (any, bool) {
+	rowIndex, err := strconv.Atoi(index)
+	if err != nil || rowIndex < 0 || strconv.Itoa(rowIndex) != index {
+		return nil, false
+	}
+	rows := reviewAsSlice(entry["rows"])
+	if rowIndex >= len(rows) {
+		return nil, false
+	}
+	switch entry["row_encoding"] {
+	case "objects", "matrix":
+		return rows[rowIndex], true
+	case "positional":
+		columns := reviewAsSlice(entry["columns"])
+		values := reviewAsSlice(rows[rowIndex])
+		if len(values) != len(columns) {
+			return nil, false
+		}
+		object := map[string]any{}
+		for key, value := range reviewAsMap(entry["constant_fields"]) {
+			object[key] = value
+		}
+		for i, column := range columns {
+			name, ok := column.(string)
+			if !ok {
+				return nil, false
+			}
+			object[name] = values[i]
+		}
+		return object, true
+	}
+	return nil, false
 }
 
 func reviewDecodePointerSegment(encoded string) (string, bool) {
@@ -982,6 +1142,10 @@ func reviewWitnessVisibleInTranscript(reader *reviewEvidenceReader, witness revi
 				}
 			}
 		}
+		if response["status"] == "ok" && response["evidence_id"] == witness.EvidenceID && response["offset_space"] == "array_index" &&
+			reviewWitnessVisibleInArrayItems(reader, witness, response["items"]) {
+			return true
+		}
 		for _, raw := range reviewAsSlice(response["matches"]) {
 			match := reviewAsMap(raw)
 			if match == nil || match["evidence_id"] != witness.EvidenceID || match["json_pointer"] != witness.JSONPointer {
@@ -995,6 +1159,36 @@ func reviewWitnessVisibleInTranscript(reader *reviewEvidenceReader, witness revi
 	// A child fully contained in verified pages is visible even when unrelated
 	// siblings were not read. Exact paths, source bytes and read budgets still apply.
 	return reviewWitnessVisibleInJSONPages(reader, witness)
+}
+
+// reviewWitnessVisibleInArrayItems accepts only complete elements returned by
+// an element-indexed read whose pointer and value still equal the immutable
+// source record. An element never vouches for a sibling at another index.
+func reviewWitnessVisibleInArrayItems(reader *reviewEvidenceReader, witness reviewSourceWitness, items any) bool {
+	record, ok := reviewRecordByID(reader, witness.EvidenceID)
+	if !ok {
+		return false
+	}
+	for _, raw := range reviewAsSlice(items) {
+		item := reviewAsMap(raw)
+		pointer, _ := item["json_pointer"].(string)
+		value, hasValue := item["value"]
+		if item == nil || pointer == "" || !hasValue {
+			continue
+		}
+		local, descendant := relativeReviewJSONPointer(pointer, witness.JSONPointer)
+		if !descendant {
+			continue
+		}
+		source, err := reviewPointerValue(record.Value, pointer)
+		if err != nil || !reviewJSONValuesEqual(source, value) {
+			continue
+		}
+		if child, err := reviewPointerValue(value, local); err == nil && reviewQuoteMatchesValue(child, witness.Quote) {
+			return true
+		}
+	}
+	return false
 }
 
 func reviewIntegerEqual(value any, expected int) bool { return reviewInt(value) == expected }

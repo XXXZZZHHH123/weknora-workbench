@@ -93,7 +93,8 @@ func TestOmittedQuoteValidatesFullReceiptOnlyAfterExactPairedRead(t *testing.T) 
 
 	answer := "The report contains the private leaf."
 	assessment := "The candidate's source claim matches the displayed leaf."
-	require.ErrorContains(t, validateReviewReceipt(answer, assessment, []reviewClaimCheck{check}, snapshot), "was not exposed")
+	require.NoError(t, validateReviewReceipt(answer, assessment, []reviewClaimCheck{check}, snapshot), "an unexposed witness is audited, not blocking")
+	require.Contains(t, reviewReceiptWitnessSummary([]reviewClaimCheck{check}, snapshot)["diagnostics"], "was not exposed")
 
 	args, err := json.Marshal(map[string]any{
 		"operation": "read", "evidence_id": record.ID, "json_pointer": "/data/hidden", "max_chars": 1000,

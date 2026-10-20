@@ -19,11 +19,15 @@ func TestValidateReviewReceiptReportsIndependentEntryFailuresTogether(t *testing
 	err := validateReviewReceipt(answer, "Overall review", checks, snapshot)
 	require.Error(t, err)
 	message := err.Error()
-	require.Contains(t, message, "entry[0]")
 	require.Contains(t, message, "entry[1]")
-	require.Contains(t, message, "witness does not resolve to an immutable source result")
 	require.Contains(t, message, "unknown audit basis")
-	require.Equal(t, 2, strings.Count(message, "witness does not resolve"), "every witness is checked after an earlier witness fails")
+	require.NotContains(t, message, "witness", "unlocated witnesses are audited, not blocking")
+	summary := reviewReceiptWitnessSummary(checks, snapshot)
+	require.Equal(t, 1, summary["verified"])
+	diagnostic := summary["diagnostics"].(string)
+	require.Contains(t, diagnostic, "entry[0]")
+	require.Equal(t, 2, strings.Count(diagnostic, "witness does not resolve"), "every witness is audited after an earlier one fails")
+	message = diagnostic
 	require.NotContains(t, message, witness.Quote, "diagnostics must not disclose source text")
 }
 

@@ -110,7 +110,9 @@ test('rag pipeline auto-scrolls capped thinking detail while streaming', () => {
 })
 
 test('rag pipeline includes attachment prep steps on the timeline', () => {
-  assert.match(source, /RAG_TIMELINE_TOOL_NAMES/)
+  // Every real step (attachment prep included) passes isThinkingTimelineStep;
+  // its behaviour is covered in utils/thinking-timeline.test.ts.
+  assert.match(source, /isThinkingTimelineStep/)
   assert.match(source, /getAttachmentParsingSummaryHtml/)
   assert.match(source, /isAttachmentTool/)
 })

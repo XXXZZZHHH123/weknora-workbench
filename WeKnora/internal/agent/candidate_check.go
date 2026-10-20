@@ -44,6 +44,10 @@ type turnReviewState struct {
 	Committed     bool
 	Query         string
 	Conversation  []chat.Message
+	// Latest non-empty candidate that passed deterministic numeric grounding
+	// but was not approved by the semantic reviewer, with its last advice.
+	UnverifiedCandidate string
+	UnverifiedFeedback  string
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while
@@ -89,6 +93,11 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	defer func() {
 		e.turnReview.Checks++
 		e.turnReview.Last = decision
+		if e.needsSourceConsistencyCheck(state) && !suspectAnswerFragment(candidate, reasoning) {
+			// Only candidates judged by the source critic qualify; completeness
+			// checks of fragments or non-sourced replies never become deliveries.
+			e.rememberUnverifiedCandidate(candidate, decision)
+		}
 		common.PipelineInfo(ctx, "Agent", "candidate_check", map[string]interface{}{
 			"disposition": decision.Disposition, "candidate_hash": decision.CandidateHash,
 			"task_revision": decision.TaskHash, "evidence_revision": decision.EvidenceHash,
@@ -113,6 +122,17 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 			return
 		}
 		ctx = withNumericValidationFeedback(ctx, decision.NumericFeedback)
+	}
+	// Delivery policy (user decision 2026-10-20): direct lookups are delivered
+	// after deterministic numeric grounding, like a single-model answer with
+	// citations; the independent critic is reserved for synthesis tasks, where
+	// it caught real cross-source and trend errors. Without a planner judgement
+	// the critic still runs; fragments still get the completeness check.
+	if e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && !suspectAnswerFragment(candidate, reasoning) {
+		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{
+			"reason": "direct_task", "reasoning_depth": e.taskReasoningDepth(),
+		})
+		return
 	}
 	var repair bool
 	if forceReview {
@@ -142,3 +162,50 @@ func (e *AgentEngine) candidateApprovalCurrent(candidate string, state *types.Ag
 		}{e.turnReview.Query, e.semanticReviewConversation(e.turnReview.Conversation)}) &&
 		d.EvidenceHash == reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation))
 }
+
+// rememberUnverifiedCandidate keeps the newest candidate that reached semantic
+// review (so numeric grounding already passed) and was not approved. Numeric
+// failures and empty candidates are never kept.
+func (e *AgentEngine) rememberUnverifiedCandidate(candidate string, decision candidateDecision) {
+	if strings.TrimSpace(candidate) == "" || len(decision.Unsupported) > 0 {
+		return
+	}
+	switch decision.Disposition {
+	case candidateRevise, candidateNeedSource, candidateProtocolFailure:
+	default:
+		return
+	}
+	if decoded, ok := decodeReviewedAnswerEnvelope(candidate); ok && strings.TrimSpace(decoded) != "" {
+		candidate = decoded
+	}
+	e.turnReview.UnverifiedCandidate = candidate
+	e.turnReview.UnverifiedFeedback = strings.TrimSpace(e.answerReviewFeedback)
+}
+
+const unverifiedDeliveryFeedbackLimit = 200
+
+// unverifiedDelivery is the delivery policy chosen by the user (2026-10-20):
+// when semantic review fails or keeps rejecting, deliver the latest
+// numerically grounded candidate with an explicit notice instead of nothing.
+func (e *AgentEngine) unverifiedDelivery() (string, bool) {
+	candidate := strings.TrimSpace(e.turnReview.UnverifiedCandidate)
+	if candidate == "" {
+		return "", false
+	}
+	notice := "\n\n> 说明：本回答未能完成自动核验，数字已与取数结果核对，但结论表述请结合引用来源判断。"
+	if feedback := []rune(e.turnReview.UnverifiedFeedback); len(feedback) > 0 {
+		if len(feedback) > unverifiedDeliveryFeedbackLimit {
+			feedback = append(feedback[:unverifiedDeliveryFeedbackLimit-1], '…')
+		}
+		notice += "核验曾提出的疑问（本身也可能有误）：" + string(feedback)
+	}
+	return candidate + notice, true
+}
+
+func (e *AgentEngine) taskReasoningDepth() string {
+	if e == nil || e.taskPlan == nil {
+		return ""
+	}
+	return e.taskPlan.ReasoningDepth
+}
+

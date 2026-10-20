@@ -18,7 +18,8 @@ func TestTaskAwareReviewDoesNotRequireMarkdownTranscription(t *testing.T) {
 		Assessment: "The observed source identifies the survey scope.", Evidence: []reviewSourceWitness{witness}}
 	require.NoError(t, validateReviewReceipt(answer, "The scope and its limitation are preserved.", []reviewClaimCheck{check}, snapshot))
 	check.Evidence[0].EvidenceID = "unseen-source"
-	require.Error(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{check}, snapshot), "format tolerance must not waive source identity")
+	require.NoError(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{check}, snapshot))
+	require.Equal(t, 0, reviewReceiptWitnessSummary([]reviewClaimCheck{check}, snapshot)["verified"], "an unknown source identity is never counted as verified")
 }
 
 func TestTaskPlanSurvivesReviewAndRevisionButNotNextTurn(t *testing.T) {
@@ -52,5 +53,6 @@ func TestPlanAssociationsDoNotRequireExhaustiveGoalOrRowAudit(t *testing.T) {
 	require.NoError(t, validateReviewReceipt(answer, "Reviewed", append(checks, presentation), snapshot))
 	require.Error(t, validateReviewReceipt(answer, "Reviewed", []reviewClaimCheck{presentation}, snapshot))
 	checks[0].Evidence[0].EvidenceID = "unseen-source"
-	require.Error(t, validateReviewReceipt(answer, "Reviewed", checks, snapshot), "task alignment never bypasses source identity")
+	require.NoError(t, validateReviewReceipt(answer, "Reviewed", checks, snapshot))
+	require.Equal(t, 0, reviewReceiptWitnessSummary(checks, snapshot)["verified"], "task alignment never counts an unknown identity as verified")
 }

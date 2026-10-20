@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -15,10 +16,54 @@ const (
 type reviewProtocolIssueKey struct{}
 
 type reviewClaimCheck struct {
-	Claim      string                `json:"claim"`
-	Basis      string                `json:"basis"`
-	Assessment string                `json:"assessment"`
-	Evidence   []reviewSourceWitness `json:"evidence"`
+	Claim              string                `json:"claim"`
+	CandidateStatement string                `json:"candidate_statement,omitempty"`
+	Fidelity           string                `json:"candidate_fidelity,omitempty"`
+	Basis              string                `json:"basis"`
+	Assessment         string                `json:"assessment"`
+	Evidence           []reviewSourceWitness `json:"evidence"`
+}
+
+const (
+	reviewFidelityAsWritten    = "as_written"
+	reviewFidelityNarrowed     = "narrowed"
+	reviewFidelityContradicted = "contradicted"
+)
+
+const reviewFidelityFeedbackLimit = 900
+
+// reviewFidelityRevision decides from the reviewer's own declaration, not from
+// any wording comparison, whether an acceptance actually verified a different
+// (weaker, re-scoped or reversed) proposition than the candidate states. Such
+// an acceptance cannot deliver the unchanged candidate: the verified claim is
+// returned to the generator as revision advice and the revised text is reviewed
+// again. Missing declarations are a protocol defect, never an approval.
+func reviewFidelityRevision(checks []reviewClaimCheck) (string, bool, error) {
+	var notes []string
+	for index, check := range checks {
+		statement := strings.TrimSpace(check.CandidateStatement)
+		if statement == "" || utf8.RuneCountInString(statement) > 600 {
+			return "", false, fmt.Errorf("accepted source review audit[%d] requires candidate_statement with the candidate's own conclusion", index)
+		}
+		switch check.Fidelity {
+		case reviewFidelityAsWritten:
+			continue
+		case reviewFidelityNarrowed, reviewFidelityContradicted:
+			notes = append(notes, fmt.Sprintf("候选表述「%s」%s；证据只支持：「%s」。依据：%s", statement,
+				map[string]string{reviewFidelityNarrowed: "需按证据限缩或改写", reviewFidelityContradicted: "与证据相反"}[check.Fidelity],
+				strings.TrimSpace(check.Claim), strings.TrimSpace(check.Assessment)))
+		default:
+			return "", false, fmt.Errorf("accepted source review audit[%d] requires candidate_fidelity as_written, narrowed or contradicted", index)
+		}
+	}
+	if len(notes) == 0 {
+		return "", false, nil
+	}
+	feedback := []rune("审核认定以下结论不能按原文交付，请在最终答复中按证据改正对应标题与正文，不新增其它断言：" + strings.Join(notes, "；"))
+	if len(feedback) > reviewFidelityFeedbackLimit {
+		feedback = append(feedback[:reviewFidelityFeedbackLimit-1], '…')
+	}
+	return string(feedback), true, nil
 }
 
 // This checks identity/exposure only. The model reviews the whole answer and
@@ -30,49 +75,79 @@ func validateReviewReceipt(answer, overallAssessment string, checks []reviewClai
 	if strings.TrimSpace(answer) == "" || strings.TrimSpace(overallAssessment) == "" || len(checks) == 0 || len(checks) > 16 || snapshot == nil {
 		return fmt.Errorf("accepted source review requires an overall assessment and bounded critical audit")
 	}
+	// Delivery policy (user decision 2026-10-20): the reviewer's verdict decides
+	// acceptance. Witness locators are audited and recorded, but an unlocated or
+	// mis-addressed quote no longer blocks a verdict the reviewer accepted.
+	// Structural protocol defects still fail so the reviewer retries.
 	diagnostics := reviewReceiptDiagnostics{}
-	validatedCriticalCheck := false
+	substantive := false
 	for entryIndex, check := range checks {
 		label := fmt.Sprintf("entry[%d]", entryIndex)
-		checkValid := true
 		if strings.TrimSpace(check.Claim) == "" || strings.TrimSpace(check.Assessment) == "" {
 			diagnostics.add(label, "audit requires a critical claim description and a substantive assessment")
-			checkValid = false
 		}
 		switch check.Basis {
 		case "source", "inference", "limitation":
-			if len(check.Evidence) == 0 {
-				diagnostics.add(label, "source, inference and limitation audits require inspected evidence")
-				checkValid = false
-			}
+			substantive = true
 		case "presentation":
 		default:
 			diagnostics.add(label, "unknown audit basis")
-			checkValid = false
-		}
-		observedSource := false
-		validatedWitness := false
-		for _, witness := range check.Evidence {
-			if err := reviewWitnessVisible(snapshot.input, snapshot.sourceRecords, witness); err != nil {
-				diagnostics.add(label, err.Error())
-				checkValid = false
-			} else {
-				validatedWitness = true
-				observedSource = observedSource || witness.Kind == "source"
-			}
-		}
-		if (check.Basis == "source" || check.Basis == "inference") && validatedWitness && !observedSource {
-			diagnostics.add(label, "execution-status witnesses cannot support source facts")
-			checkValid = false
-		}
-		if checkValid && check.Basis != "presentation" && validatedWitness {
-			validatedCriticalCheck = true
 		}
 	}
-	if !validatedCriticalCheck {
-		diagnostics.add("audit", "accepted source review requires at least one supported substantive critical check")
+	if !substantive {
+		diagnostics.add("audit", "accepted source review requires at least one substantive (source, inference or limitation) check")
 	}
 	return diagnostics.err()
+}
+
+// reviewReceiptWitnessSummary audits every witness without blocking delivery.
+// verified: passed the strict identity/path/visibility check; located: the
+// quote text exists in a successful current-turn result; unlocated: neither.
+func reviewReceiptWitnessSummary(checks []reviewClaimCheck, snapshot *sourceReviewSnapshot) map[string]any {
+	verified, located, unlocated := 0, 0, 0
+	diagnostics := reviewReceiptDiagnostics{}
+	if snapshot == nil {
+		return map[string]any{"witnesses": 0}
+	}
+	for entryIndex, check := range checks {
+		for _, witness := range check.Evidence {
+			err := reviewWitnessVisible(snapshot.input, snapshot.sourceRecords, witness)
+			switch {
+			case err == nil:
+				verified++
+			case reviewQuoteFoundInResults(snapshot.sourceRecords, witness.Quote):
+				located++
+				diagnostics.add(fmt.Sprintf("entry[%d]", entryIndex), err.Error())
+			default:
+				unlocated++
+				diagnostics.add(fmt.Sprintf("entry[%d]", entryIndex), err.Error())
+			}
+		}
+	}
+	summary := map[string]any{"witnesses": verified + located + unlocated, "verified": verified, "located_by_text": located, "unlocated": unlocated}
+	if err := diagnostics.err(); err != nil {
+		summary["diagnostics"] = err.Error()
+	}
+	return summary
+}
+
+// reviewQuoteFoundInResults reports whether quote occurs verbatim in any
+// successful current-turn result's data or Wiki output. Audit only.
+func reviewQuoteFoundInResults(reader *reviewEvidenceReader, quote string) bool {
+	if reader == nil || strings.TrimSpace(quote) == "" {
+		return false
+	}
+	for _, record := range reader.records {
+		if len(reviewTextPathsContaining(record, quote, 1)) > 0 {
+			return true
+		}
+		if payload, ok := record.Value.(map[string]any); ok && payload["success"] == true {
+			if output, isText := payload["output"].(string); isText && strings.Contains(output, quote) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type reviewReceiptDiagnostics struct {
@@ -119,7 +194,7 @@ func (d reviewReceiptDiagnostics) err() error {
 }
 
 const sourceReviewReceiptInstructions = `Judge the whole candidate against the user's request before writing the receipt. Acceptance is judged at the granularity requested by the user: a summary need not enumerate every observation or period, but must preserve material reversals, scope and limitations. Acceptance means the exact candidate is supported, including its scope, interpretation and limitations; matching numbers or a valid source identity alone is not support. For each material claim, check what the cited observation actually establishes about that same object, period and relation. Do not combine unrelated claims under a shared witness. If an unsupported aside is unnecessary to answer the request, return revise_answer to remove it while retaining the supported main analysis; collect_evidence is for evidence needed to answer the request itself.
-For complete=true, give a short overall assessment and 1-3 checks of the conclusions that answer the user's task, rather than sampling easy source facts. Do not write a second answer, repeat the candidate, or enumerate every row, number or paragraph. Each entry contains claim, basis (source/inference/limitation/presentation), assessment explaining the evidence-to-claim relation, and evidence. Use advisory_task_plan to focus on the user's requested conclusions, without treating it as extra requirements. Inspect the candidate conclusion as written: do not turn a broad comparison into a narrower true source statement in the receipt. Explain whether the cited evidence supports the actual relation/inference, including contrary evidence. At least one substantive check needs a valid witness; presentation alone cannot establish acceptance. Do not rationalize a chosen verdict. For complete=false, omit assessment/audit and give only blocking feedback and next_action. Identify the current candidate wording and actual contradictory or missing evidence; feedback is not new source evidence. Omit feedback/next_action on acceptance.
+For complete=true, give a short overall assessment and 1-3 checks of the conclusions that answer the user's task, rather than sampling easy source facts. Do not write a second answer, repeat the candidate, or enumerate every row, number or paragraph. Each entry contains claim, basis (source/inference/limitation/presentation), assessment explaining the evidence-to-claim relation, and evidence. Use advisory_task_plan to focus on the user's requested conclusions, without treating it as extra requirements. Inspect the candidate conclusion as written: do not turn a broad comparison into a narrower true source statement in the receipt. Each entry also states candidate_statement, the candidate's own conclusion as written (including any heading that frames it, its scope, period, direction and causal role), and candidate_fidelity: as_written only when claim and assessment hold for that statement unchanged; narrowed when evidence supports only a weaker, qualified, re-scoped or differently framed version (for example the body concedes what the heading asserts, or factors with opposite effects or different stages are presented as a shared driver); contradicted when evidence opposes it. narrowed/contradicted means the candidate is not accepted unchanged: the runtime returns your supported claim to the generator as revision advice, so the delivered text matches what you verified. Do not mark as_written to avoid a revision. Explain whether the cited evidence supports the actual relation/inference, including contrary evidence. At least one substantive check needs a valid witness; presentation alone cannot establish acceptance. Do not rationalize a chosen verdict. For complete=false, omit assessment/audit and give only blocking feedback and next_action. Identify the current candidate wording and actual contradictory or missing evidence; feedback is not new source evidence. Omit feedback/next_action on acceptance.
 Choose one witness locator:
 - Body already displayed in citation_source_evidence.items: {source_pointer_ref: the exact source_pointer_ref shown on that body item, quote: exact short displayed substring, kind: source}. The server requires one matching main body item and resolves its immutable source identity and path. This value is not an item position; do not infer it from array order or use a pointer from additional_source_observations. No other locator fields.
 - A visible structured_query_row_companion cell: {row_ref: {entry_index: exact entry_index printed on that entry, row_index: zero-based visible row, column: exact column name}, kind: source}. No quote, evidence_id, json_pointer or source_pointer_ref. Copy entry_index and column from the displayed entry; do not infer them from another entry's fields. The server resolves the visible cell to its immutable source. Use this only for a visible scalar cell; hidden rows require reading evidence and using the raw locator instead.

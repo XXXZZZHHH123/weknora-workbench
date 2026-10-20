@@ -244,6 +244,19 @@ func (e *AgentEngine) clampCompletionBudgetToContext(currentTokens int) int {
 	return max(min(budget, available), 1)
 }
 
+// synthesisReasoningHeadroom is extra completion budget for answer rounds that
+// reason before writing; it is still bounded by the remaining context window.
+const synthesisReasoningHeadroom = 16384
+
+func (e *AgentEngine) clampCompletionBudgetToContextWithHeadroom(currentTokens, headroom int) int {
+	budget := e.getCompletionTokenBudget() + headroom
+	if e.config == nil || e.config.MaxContextTokens <= 0 {
+		return budget
+	}
+	available := e.config.MaxContextTokens - currentTokens - contextSafetyTokens
+	return max(min(budget, available), 1)
+}
+
 // generateEventID generates a unique event ID with type suffix for better traceability
 func generateEventID(suffix string) string {
 	return fmt.Sprintf("%s-%s", uuid.New().String()[:8], suffix)

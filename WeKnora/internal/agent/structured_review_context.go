@@ -256,6 +256,14 @@ func reviewFieldPriority(key string, value any) int {
 		// Retain scalar identity/scope before computed summaries, and summaries
 		// before potentially long segment arrays and explanatory text.
 		return 1
+	case "ranges", "matches":
+		// Requested original-cell reads and literal matches are the result's
+		// primary observations; they must not be crowded out by auxiliary
+		// containers that sort earlier alphabetically.
+		return 1
+	case "chart_references":
+		// Intersecting chart text is auxiliary context for requested cells.
+		return 3
 	}
 	switch item := value.(type) {
 	case map[string]any, []any:

@@ -199,8 +199,8 @@ def ask_model(payload, root=None):
         if source_deadline and time.monotonic()>=source_deadline:raise ValueError('来源模型核验超过时间预算，尚未取数')
         with httpx.Client(timeout=timeout,trust_env=False) as client:
             body={'model':cfg['model'],'temperature':0,'max_tokens':2000 if source_deadline else 3500 if attempt==0 else 6000,'messages':messages}
-            if source_deadline:body['enable_thinking']=False
-            elif isinstance(cfg.get('enable_thinking'),bool):body['enable_thinking']=cfg['enable_thinking']
+            from .model_settings import thinking_fields
+            body.update(thinking_fields(cfg,False if source_deadline else cfg.get('enable_thinking')))
             response=client.post(cfg['base_url'].rstrip('/')+'/chat/completions',headers={'Authorization':'Bearer '+key},json=body)
             if response.status_code>=400:
                 try:

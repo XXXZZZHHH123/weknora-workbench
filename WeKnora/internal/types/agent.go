@@ -162,8 +162,13 @@ type AgentConfig struct {
 	// off. Used for bounded source review and an explicitly non-thinking primary
 	// request; never lowers a user-selected graded reasoning level.
 	ReviewReasoningEffort string `json:"-"`
-	VLMModelID            string `json:"-"` // VLM model ID for tool images, resolved from CustomAgent config.
-	SandboxConfigID       string `json:"-"` // Workspace sandbox config ID for skill execution.
+	// SourceReviewReasoningEffort applies only to the source-consistency
+	// critic. A controlled replay showed that critic accepting semantic
+	// misreadings with reasoning off; it is "auto" only for reasoning-capable
+	// models and "off" otherwise.
+	SourceReviewReasoningEffort string `json:"-"`
+	VLMModelID                  string `json:"-"` // VLM model ID for tool images, resolved from CustomAgent config.
+	SandboxConfigID             string `json:"-"` // Workspace sandbox config ID for skill execution.
 	// TenantSkills are the skills installed into the selected sandbox config's
 	// snapshot image, already narrowed to the ones this run can actually
 	// invoke. Runtime only: it is derived per turn from the config the agent
