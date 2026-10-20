@@ -121,6 +121,7 @@ func TestSharedChunkReadPropagatesStorageFailure(t *testing.T) {
 func TestFAQCloneDoesNotInheritTransferState(t *testing.T) {
 	f := transferFixture(t, access.KBTransferClone)
 	kb := &types.KnowledgeBase{ID: "new-faq", TenantID: 7}
+	require.NoError(t, f.db.Create(kb).Error)
 	src := &types.Knowledge{
 		Metadata: types.JSON(`{"custom":{"value":3},"_knowledge_transfer":{"operation":"move","phase":"moving"}}`),
 	}
