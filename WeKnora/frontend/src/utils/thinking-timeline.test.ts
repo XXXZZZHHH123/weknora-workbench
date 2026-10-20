@@ -27,6 +27,10 @@ test('internal runtime steps are hidden, real source steps are shown', () => {
   assert.equal(isThinkingTimelineStep('structured_data', { operation: 'query_series' }), true)
   assert.equal(isThinkingTimelineStep('read_document', {}), true)
   assert.equal(isThinkingTimelineStep('bind_document_scope', {}), true)
+  // Quick-answer attachment preparation remains on the timeline.
+  assert.equal(isThinkingTimelineStep('attachment_parsing', {}), true)
+  assert.equal(isThinkingTimelineStep('image_analysis', {}), true)
+  assert.equal(isThinkingTimelineStep('knowledge_search', {}), true)
 })
 
 test('step titles are readable and protocol-based', () => {
