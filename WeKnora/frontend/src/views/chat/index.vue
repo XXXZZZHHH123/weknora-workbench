@@ -465,7 +465,7 @@ async function handleRewind(messageId) {
     if (rewindBlockedByOutgoingWork({
         isReplying: isReplying.value,
         isStreaming: isStreaming.value,
-        isRecovering: isImRecovering.value,
+        isRecovering: isStreamRecovering.value,
     })) return
     if (!messageId || !session_id.value) return
     const source = messagesList.find((m) => m.id === messageId || persistedAssistantId(m) === messageId)
@@ -568,31 +568,27 @@ const steerQueue = ref([]);
 const isReplying = ref(false);
 watch(isReplying, (replying) => emit('replying-change', replying));
 const currentAssistantMessageId = ref(''); // 当前正在生成的 assistant message ID
-// True only while attaching to an in-flight *IM-originated* reply via continue-stream.
-// Such replies are generated on the IM side and never stream through this server, so
-// continue-stream always fails even though the answer is coming — recover by polling
-// instead of erroring. Web/api replies are left on the original error path.
-const isAttachingImStream = ref(false);
+// History can outlive its SSE replay buffer, for web and IM replies alike.
+const isAttachingHistoryStream = ref(false);
 let recoverPollTimer = null;
-// True while polling to recover an in-flight IM reply we couldn't stream. Drives
-// the same "generating" typing indicator the normal reply path shows, so the wait
-// isn't a silent gap. IM-only: false everywhere else, so other flows are unchanged.
-const isImRecovering = ref(false);
+let recoverPollGeneration = 0;
+// Keep a visible generating state while checking the persisted reply.
+const isStreamRecovering = ref(false);
 const outgoingWorkBlocksRewind = computed(() => rewindBlockedByOutgoingWork({
     isReplying: isReplying.value,
     isStreaming: isStreaming.value,
-    isRecovering: isImRecovering.value,
+    isRecovering: isStreamRecovering.value,
 }))
 const scrollLock = ref(false);
 const isFirstEnter = ref(true);
 const loading = ref(false);
 const sessionActivity = useSessionActivityStore();
 const activitySessionId = ref('');
-watch([activitySessionId, isReplying, isImRecovering, currentAssistantMessageId], () => {
+watch([activitySessionId, isReplying, isStreamRecovering, currentAssistantMessageId], () => {
     if (props.embeddedMode || !activitySessionId.value) return;
     // SSE may stay connected after a stop/complete event. The sidebar tracks
     // generation, not the transport, just like the composer's Stop button.
-    sessionActivity.update(activitySessionId.value, isReplying.value || isImRecovering.value, currentAssistantMessageId.value);
+    sessionActivity.update(activitySessionId.value, isReplying.value || isStreamRecovering.value, currentAssistantMessageId.value);
 }, { flush: 'sync' });
 const historyLoading = ref(true);
 watch(activitySessionId, (id) => {
@@ -982,7 +978,7 @@ const {
         const lastMessage = findLastMessage(
             (message) => message.role === 'assistant' && !message.is_completed
         );
-        const locallyRunning = isReplying.value || isImRecovering.value;
+        const locallyRunning = isReplying.value || isStreamRecovering.value;
         // History reload can finish after sendMsg already marked this session
         // running. Do not clear that marker just because the snapshot's last
         // message still looks completed. A scanned incomplete assistant counts: a
@@ -999,21 +995,23 @@ const {
             const resumeId = persistedAssistantId(lastMessage);
             currentAssistantMessageId.value = resumeId;
             console.log('[Continue Stream] Set assistant message ID:', resumeId);
-            // Only IM-originated replies (channel === 'im') get the quiet poll-to-recover
-            // path: their answer is generated on the IM side and never streams through
-            // this server, so continue-stream always 404s even though the reply *is*
-            // coming. Web/api replies keep the original behaviour (a real failure to
-            // resume the stream still surfaces as an error) — we don't touch them.
-            isAttachingImStream.value = lastMessage.channel === 'im';
+            // A reconnect can lose its replay buffer while the worker is still
+            // finishing. Web replies need the same persistence recovery as IM.
+            isAttachingHistoryStream.value = true;
             await startStream({
                 session_id: session_id.value,
                 query: resumeId,
                 method: 'GET',
                 url: '/api/v1/sessions/continue-stream',
             });
-            // On success the stream resumed normally; on failure the error watcher
-            // already took over (quiet recovery for IM), so only clear the flag here.
-            if (!error.value) isAttachingImStream.value = false;
+            if (!error.value && isAttachingHistoryStream.value) {
+                isAttachingHistoryStream.value = false;
+                // A clean transport close without a terminal event also needs
+                // reconciliation; leaving the page clears the attach flag.
+                if (isReplying.value && currentAssistantMessageId.value === resumeId) {
+                    recoverIncompleteMessage();
+                }
+            }
         }
     },
     onAgentQuery: (data, existingMessage) => {
@@ -1048,7 +1046,7 @@ const {
 });
 
 const showGlobalTypingIndicator = computed(() =>
-    shouldShowGlobalTypingIndicator(messagesList, loading.value, isImRecovering.value),
+    shouldShowGlobalTypingIndicator(messagesList, loading.value, isStreamRecovering.value),
 );
 
 const getmsgList = (data, isScrollType = false, scrollHeight) => {
@@ -1098,11 +1096,13 @@ const getmsgList = (data, isScrollType = false, scrollHeight) => {
 // 处理停止生成事件 - 立即清除 loading 状态
 const handleStopGeneration = () => {
     console.log('[Stop Generation] Immediately clearing loading state');
+    recoverPollGeneration++;
+    isAttachingHistoryStream.value = false;
     stopStream();
     loading.value = false;
     isReplying.value = false;
     if (recoverPollTimer) { clearTimeout(recoverPollTimer); recoverPollTimer = null; }
-    isImRecovering.value = false;
+    isStreamRecovering.value = false;
     markInFlightAssistantStopped(currentAssistantMessageId.value);
 };
 
@@ -1601,45 +1601,50 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     }
 }
 
-// Quietly recover an in-flight IM reply we couldn't attach to (it's generated on
-// the IM side, so it never streamed through this server). Poll until it completes,
-// then reload the thread so it renders via the normal path. Bounded so an IM reply
-// that genuinely died (e.g. the bot crashed) doesn't spin forever — on timeout we
-// surface the original error so the failure isn't hidden.
+// Quietly recover an in-flight reply whose stream could not be resumed.
+// Read the persisted result; never resend the question or start a second run.
 const RECOVER_POLL_INTERVAL = 2500;
-const RECOVER_POLL_MAX_ATTEMPTS = 48; // ~2 min
+const RECOVER_POLL_MAX_ATTEMPTS = 48; // ~2 min, then surface a visible failure
 const recoverIncompleteMessage = () => {
     const targetSession = session_id.value;
     const targetMessageId = currentAssistantMessageId.value;
+    const generation = ++recoverPollGeneration;
+    const isCurrent = () => generation === recoverPollGeneration && session_id.value === targetSession;
     if (recoverPollTimer) { clearTimeout(recoverPollTimer); recoverPollTimer = null; }
-    if (!targetMessageId) { isReplying.value = false; isImRecovering.value = false; return; }
-    isImRecovering.value = true; // show the "generating" indicator while we poll
+    if (!targetMessageId) { isReplying.value = false; isStreamRecovering.value = false; return; }
+    isStreamRecovering.value = true;
     let attempts = 0;
     const poll = async () => {
+        if (!isCurrent()) return;
         recoverPollTimer = null;
-        if (session_id.value !== targetSession) { isReplying.value = false; isImRecovering.value = false; return; } // navigated away
         attempts++;
         try {
             const res = await getMessageList({ session_id: targetSession, limit: limit.value, created_at: '' });
+            // Cancellation must also guard requests already in flight when the
+            // user leaves, even when they later return to the same session.
+            if (!isCurrent()) return;
             const target = (res?.data || []).find((m) => m.id === targetMessageId);
             if (target && target.is_completed) {
-                created_at.value = '';
-                messagesList.splice(0);
-                getmsgList({ session_id: targetSession, limit: limit.value, created_at: '' });
                 isReplying.value = false;
-                isImRecovering.value = false;
+                isStreamRecovering.value = false;
                 currentAssistantMessageId.value = '';
+                created_at.value = res.data[0]?.created_at || '';
+                hasMoreHistory.value = res.data.length >= limit.value;
+                // Use this successful snapshot instead of clearing the thread
+                // and making another request that could fail and leave it blank.
+                messagesList.splice(0);
+                await handleMsgList(res.data);
                 return;
             }
         } catch (e) {
+            if (!isCurrent()) return;
             console.warn('[Continue Stream] recovery poll failed:', e);
         }
+        if (!isCurrent()) return;
         if (attempts >= RECOVER_POLL_MAX_ATTEMPTS) {
-            // The IM reply never completed — don't hide it; surface the standard
-            // stream-failure message (reuses the existing i18n key, no raw HTTP code).
             MessagePlugin.error(t('error.streamFailed'));
             isReplying.value = false;
-            isImRecovering.value = false;
+            isStreamRecovering.value = false;
             currentAssistantMessageId.value = '';
             return;
         }
@@ -1651,12 +1656,10 @@ const recoverIncompleteMessage = () => {
 // Watch for stream errors and show message
 watch(error, (newError) => {
     if (!newError) return;
-    // A failed attach to an in-flight IM reply isn't a real error — the answer is
-    // produced on the IM side and never streams here. Recover quietly by polling to
-    // completion instead of flashing a "stream failed" toast. Web/api replies fall
-    // through to the normal error toast below, unchanged.
-    if (isAttachingImStream.value) {
-        isAttachingImStream.value = false;
+    // Reconcile both web and IM history after a failed reconnect. Fresh
+    // outgoing requests retain the normal error path below.
+    if (isAttachingHistoryStream.value) {
+        isAttachingHistoryStream.value = false;
         recoverIncompleteMessage();
         return;
     }
@@ -1761,17 +1764,21 @@ onMounted(async () => {
     }
 })
 const clearData = () => {
+    recoverPollGeneration++;
+    isAttachingHistoryStream.value = false;
     if (!props.embeddedMode) sessionActivity.detach(activitySessionId.value);
     activitySessionId.value = '';
     stopStream();
     referencesDrawer.close();
     isReplying.value = false;
     fullContent.value = '';
-    // Stop any IM-reply recovery poll for the session we're leaving/switching.
+    // Stop recovery for the session we are leaving or switching.
     if (recoverPollTimer) { clearTimeout(recoverPollTimer); recoverPollTimer = null; }
-    isImRecovering.value = false;
+    isStreamRecovering.value = false;
 }
 onUnmounted(() => {
+    recoverPollGeneration++;
+    isAttachingHistoryStream.value = false;
     if (props.scopedSession) stopStream();
     if (!props.embeddedMode) sessionActivity.detach(activitySessionId.value);
     activitySessionId.value = '';

@@ -3,6 +3,34 @@ import { buildTextIndex, findTextRange } from './sourceLocatorDom'
 import { findInText, normalizeForMatch, quotedSourceExcerpt } from './sourceLocator'
 import { sourceOverlapLength } from './fragmentedSource'
 
+/** Table chunks repeat their header for readability. The original table has
+ * that header only once, before the earlier rows. Remove only this structural
+ * copy, and only when every remaining character matches one original region
+ * starting in a table with the very same header. Never rescue a missing body
+ * paragraph by matching an unrelated quotation elsewhere.
+ */
+function sourceRegion(root: Element, fragment: DocumentFragment): Range | null {
+  const full = findTextRange(root, buildTextIndex(fragment).text)
+  if (full) return full
+  const table = fragment.firstElementChild
+  if (table?.tagName !== 'TABLE') return null
+  const header = table.querySelector('thead')
+  if (!header || !table.querySelector('tbody tr')) return null
+  const headerText = normalizeForMatch(buildTextIndex(header).text)
+  if (!headerText) return null
+  header.remove()
+  const bodyText = buildTextIndex(fragment).text
+  if (normalizeForMatch(bodyText).length < 8) return null
+  const region = findTextRange(root, bodyText)
+  if (!region) return null
+  const start = region.startContainer.parentElement
+  const originalTable = start?.closest('table')
+  const originalHeader = originalTable?.querySelector('thead')
+  if (!start?.closest('tbody') || !originalHeader ||
+      normalizeForMatch(buildTextIndex(originalHeader).text) !== headerText) return null
+  return region
+}
+
 /** Match the same rendered text on both sides, including fenced/inline code.
  * Markdown syntax and fence languages are not visible source text. Rendering
  * into an inert template also preserves code containing HTML-like text.
@@ -13,7 +41,7 @@ export function findMarkdownSourceRange(root: Element, markdown: string, sentenc
   const source = buildTextIndex(template.content).text
   // Establish the complete source region before narrowing. A similar paragraph
   // elsewhere in the document cannot rescue a missing or ambiguous source.
-  const region = findTextRange(root, source)
+  const region = sourceRegion(root, template.content)
   if (!region) return null
   const excerpt = quotedSourceExcerpt(source, sentence) || sentence
   if (excerpt && findInText(source, excerpt)) {

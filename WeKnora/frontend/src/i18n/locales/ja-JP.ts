@@ -6392,6 +6392,10 @@ export default {
     search: {
       noResults: '一致するコンテンツが見つかりません',
       candidatesBelowThreshold: '{count}件の候補が一致しましたが、関連性が不十分なため回答には使用しませんでした',
+      candidateDocuments: "候補ファイルが{count}件見つかりました。出典を確認中",
+      confirmedDocuments: "出典ファイル{count}件を確認しました",
+      foundDocuments: "ファイルが{count}件見つかりました",
+      noCandidateDocuments: "利用可能な候補ファイルがありません",
       foundResultsFromFiles: '{files}件のファイルから{count}件の結果が見つかりました',
       foundResults: '{count}件の結果が見つかりました',
       foundMixedResults: '{count}件の結果が見つかりました（ドキュメント{docCount}件、Web検索結果{webCount}件）',

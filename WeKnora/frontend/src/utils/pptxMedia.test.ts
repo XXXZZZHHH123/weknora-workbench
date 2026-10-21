@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import JSZip from 'jszip'
-import { DOMParser } from '@xmldom/xmldom'
-import { createPptxMediaRequestGate, listPptxVectorMediaForSlide, sha256Hex } from './pptxMedia'
+import { DOMParser, XMLSerializer } from '@xmldom/xmldom'
+import { createPptxMediaRequestGate, listPptxVectorMediaForSlide, rasterizePptxSlidePreview, sha256Hex } from './pptxMedia'
 
-Object.assign(globalThis, { DOMParser })
+Object.assign(globalThis, { DOMParser, XMLSerializer })
 
 const P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
 const A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
@@ -17,6 +17,7 @@ function picture(name: string, rid: string, x: number) {
 
 async function makePptx() {
   const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>')
   zip.file('ppt/presentation.xml', `<p:presentation xmlns:p="${P}" xmlns:r="${R}"><p:sldIdLst><p:sldId id="1" r:id="displayFirst"/><p:sldId id="2" r:id="displaySecond"/></p:sldIdLst></p:presentation>`)
   zip.file('ppt/_rels/presentation.xml.rels', `<Relationships xmlns="${REL}"><Relationship Id="displayFirst" Target="slides/unusual-name.xml"/><Relationship Id="displaySecond" Target="slides/slide1.xml"/></Relationships>`)
   zip.file('ppt/slides/unusual-name.xml', `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}"><p:cSld><p:spTree>${picture('Crop Chart', 'chart', 1000)}${picture('Second Placement', 'chart', 2000)}${picture('Logo', 'png', 3000)}${picture('External', 'external', 4000)}</p:spTree></p:cSld></p:sld>`)
@@ -84,5 +85,44 @@ test('computes a SHA-256 fingerprint for the exact original byte buffer', async 
   const bytes = new TextEncoder().encode('source bytes')
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
   assert.equal(await sha256Hex(buffer), '4d4823794cbed3c4ee0bbc684c8f66e1dfd5afa6f078d494ce254ec5a4671753')
+})
+
+const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0]).buffer
+
+test('rasterizes only the selected physical slide and promotes an OLE snapshot in place', async () => {
+  const original = await makePptx()
+  const source = await JSZip.loadAsync(original)
+  const name = 'ppt/slides/unusual-name.xml'
+  const slide = await source.file(name)!.async('string')
+  const ole = `<p:graphicFrame><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole"><p:oleObj r:id="book">${picture('OLE snapshot', 'chart', 6000)}</p:oleObj></a:graphicData></a:graphic></p:graphicFrame>`
+  const unsupported = '<p:graphicFrame><a:graphic><a:graphicData><p:oleObj r:id="uncached"/></a:graphicData></a:graphic></p:graphicFrame>'
+  source.file(name, slide.replace('</p:spTree>', `${ole}${unsupported}</p:spTree>`))
+  source.file('ppt/embeddings/book.bin', 'Original embedded workbook')
+  const data = await source.generateAsync({ type: 'arraybuffer' })
+  const hash = await sha256Hex(data)
+  const result = await rasterizePptxSlidePreview(data, 1, [{ part: 'ppt/media/chart.emf', png }])
+  const changed = await JSZip.loadAsync(result)
+  const xml = new DOMParser().parseFromString(await changed.file(name)!.async('string'), 'application/xml')
+  const pics = Array.from(xml.getElementsByTagNameNS(P, 'pic'))
+  const promoted = pics.find(pic => pic.getElementsByTagNameNS(P, 'cNvPr')[0]?.getAttribute('name') === 'OLE snapshot')!
+  assert.equal(promoted.parentNode!.localName, 'spTree')
+  assert.equal(promoted.getElementsByTagNameNS(A, 'off')[0].getAttribute('x'), '6000')
+  assert.equal(xml.getElementsByTagNameNS(P, 'graphicFrame').length, 1, 'retain OLE objects without a verified cached image')
+  assert.equal(await changed.file('ppt/embeddings/book.bin')!.async('string'), 'Original embedded workbook')
+  assert.equal(await changed.file('ppt/slides/slide1.xml')!.async('string'), await source.file('ppt/slides/slide1.xml')!.async('string'))
+  const rels = await changed.file('ppt/slides/_rels/unusual-name.xml.rels')!.async('string')
+  assert.match(rels, /Target="\.\.\/media\/chart.emf.preview.png"/)
+  assert.match(rels, /Target="https:\/\/example.test\/external.wmf" TargetMode="External"/)
+  assert.match(await changed.file('[Content_Types].xml')!.async('string'), /ContentType="image\/png"/)
+  assert.deepEqual(await changed.file('ppt/media/chart.emf.preview.png')!.async('uint8array'), new Uint8Array(png))
+  assert.equal(await sha256Hex(data), hash, 'never mutate the downloaded source buffer')
+  assert.match(await source.file(name)!.async('string'), /p:graphicFrame/)
+})
+
+test('refuses a raster from another page, a duplicate part or a non-PNG response', async () => {
+  const data = await makePptx()
+  await assert.rejects(rasterizePptxSlidePreview(data, 1, [{ part: 'ppt/media/later.wmf', png }]), /not a unique vector/)
+  await assert.rejects(rasterizePptxSlidePreview(data, 1, [{ part: 'ppt/media/chart.emf', png }, { part: 'ppt/media/chart.emf', png }]), /not a unique vector/)
+  await assert.rejects(rasterizePptxSlidePreview(data, 1, [{ part: 'ppt/media/chart.emf', png: new ArrayBuffer(1) }]), /Invalid PNG/)
 })
 

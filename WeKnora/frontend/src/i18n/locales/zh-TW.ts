@@ -1804,6 +1804,10 @@ export default {
     search: {
       noResults: '未找到比對的內容',
       candidatesBelowThreshold: '命中 {count} 條候選，相關性不足，未用於回答',
+      candidateDocuments: "找到 {count} 份候選檔案，正在確認來源",
+      confirmedDocuments: "已確認 {count} 份來源檔案",
+      foundDocuments: "找到 {count} 份檔案",
+      noCandidateDocuments: "未找到可用的候選檔案",
       foundResultsFromFiles: '找到 {count} 個結果，來自 {files} 個檔案',
       foundResults: '找到 {count} 個結果',
       foundMixedResults: '找到 {count} 個結果（{docCount} 篇文件，{webCount} 條網頁）',

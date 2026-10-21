@@ -15,7 +15,7 @@ function fixture() {
   const sessionActivity = createSessionActivityState(entries, async () => [])
   const refs = {
     activitySessionId: ref('session-a'), isReplying: ref(false), isStreaming: ref(false),
-    isImRecovering: ref(false), currentAssistantMessageId: ref('reply-a'),
+    isStreamRecovering: ref(false), currentAssistantMessageId: ref('reply-a'),
   }
   const scope = effectScope()
   scope.run(() => runInNewContext(source.slice(start, end), { ...refs, sessionActivity, watch, props: { embeddedMode: false } }))
@@ -43,9 +43,9 @@ test('generation remains active during connection setup and IM recovery', () => 
     f.isReplying.value = true
     assert.ok(f.entries['session-a'], 'waiting for headers still counts as generating')
     f.isReplying.value = false
-    f.isImRecovering.value = true
+    f.isStreamRecovering.value = true
     assert.ok(f.entries['session-a'], 'IM polling counts as active without an SSE connection')
-    f.isImRecovering.value = false
+    f.isStreamRecovering.value = false
     assert.equal(f.entries['session-a'], undefined)
   } finally { f.close() }
 })
