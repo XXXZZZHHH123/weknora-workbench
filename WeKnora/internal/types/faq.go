@@ -94,16 +94,45 @@ func (c *Chunk) DocumentMetadata() (*DocumentChunkMetadata, error) {
 	return &meta, nil
 }
 
+// documentChunkMetadataKeys are the metadata keys owned by DocumentChunkMetadata.
+var documentChunkMetadataKeys = []string{"generated_questions", "generated_questions_revision"}
+
 // SetDocumentMetadata 设置 Chunk 的文档元数据
+// Only the generated-question keys are replaced. Other keys on the same chunk,
+// such as parser image-source bindings, belong to other writers and are kept;
+// metadata that is not a JSON object is replaced as before.
 func (c *Chunk) SetDocumentMetadata(meta *DocumentChunkMetadata) error {
 	if c == nil {
 		return nil
 	}
-	if meta == nil {
+	merged := map[string]json.RawMessage{}
+	if len(c.Metadata) > 0 && json.Unmarshal(c.Metadata, &merged) != nil {
+		merged = map[string]json.RawMessage{}
+	}
+	if merged == nil {
+		merged = map[string]json.RawMessage{}
+	}
+	for _, key := range documentChunkMetadataKeys {
+		delete(merged, key)
+	}
+	if meta != nil {
+		bytes, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		var owned map[string]json.RawMessage
+		if err := json.Unmarshal(bytes, &owned); err != nil {
+			return err
+		}
+		for key, value := range owned {
+			merged[key] = value
+		}
+	}
+	if len(merged) == 0 {
 		c.Metadata = nil
 		return nil
 	}
-	bytes, err := json.Marshal(meta)
+	bytes, err := json.Marshal(merged)
 	if err != nil {
 		return err
 	}
