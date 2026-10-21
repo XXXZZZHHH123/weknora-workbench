@@ -75,11 +75,16 @@ func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float6
 			if (call.Name != "search_knowledge" && call.Name != "read_document") || call.Result == nil || !call.Result.Success {
 				continue
 			}
+			texts := []string{}
 			for _, chunk := range fetchedDocumentChunks(call) {
 				if chunk.ID == "" || !cited[chunk.ID] || strings.TrimSpace(chunk.Content) == "" {
 					continue
 				}
-				text := documentNumericProse(chunk.Content)
+				texts = append(texts, chunk.Content)
+			}
+			texts = append(texts, citedImageObservations(call, cited)...)
+			for _, content := range texts {
+				text := documentNumericProse(content)
 				for _, token := range proseNumber.FindAllString(text, -1) {
 					value, err := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(token, ",", ""), "−", "-"), 64)
 					if err == nil && !math.IsInf(value, 0) && !math.IsNaN(value) && !seen[value] {
@@ -91,6 +96,55 @@ func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float6
 		}
 	}
 	return values
+}
+
+// citedImageObservations returns the runtime vision observations of original
+// images that this read_document call actually returned and bound to a cited
+// chunk. Such an observation is a fallible current-turn tool observation, so
+// it only makes its numbers traceable; the source critic still judges whether
+// the answer states them with the right precision. Images with verified drawing
+// geometry are excluded because their vision text is not used as measurement.
+func citedImageObservations(call types.ToolCall, cited map[string]bool) []string {
+	if call.Name != "read_document" || call.Result == nil || !call.Result.Success {
+		return nil
+	}
+	var data struct {
+		Descriptions []string `json:"image_descriptions"`
+		Geometry     []struct {
+			Reference string `json:"reference"`
+		} `json:"image_geometry_evidence"`
+		Reads []struct {
+			ChunkID   string `json:"chunk_id"`
+			Reference string `json:"reference"`
+			Success   bool   `json:"read_success"`
+			Index     *int   `json:"returned_image_index"`
+		} `json:"image_evidence"`
+	}
+	encoded, err := json.Marshal(call.Result.Data)
+	if err != nil || json.Unmarshal(encoded, &data) != nil {
+		return nil
+	}
+	// The live result carries descriptions aligned with its images; restored
+	// steps keep the same runtime-written list in the result data.
+	descriptions := call.Result.ImageDescriptions
+	if len(descriptions) == 0 {
+		descriptions = data.Descriptions
+	}
+	measured := map[string]bool{}
+	for _, figure := range data.Geometry {
+		measured[figure.Reference] = true
+	}
+	var observations []string
+	for _, read := range data.Reads {
+		if !read.Success || read.Index == nil || *read.Index < 0 || *read.Index >= len(descriptions) ||
+			read.ChunkID == "" || !cited[read.ChunkID] || read.Reference == "" || measured[read.Reference] {
+			continue
+		}
+		if observation := strings.TrimSpace(descriptions[*read.Index]); observation != "" {
+			observations = append(observations, observation)
+		}
+	}
+	return observations
 }
 
 // Documents remain data: embedded code, JSON "tool results" and agent-role
