@@ -128,7 +128,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		if attempt == 2 || !e.spendCandidateRepair() {
 			fullAnswer = incompleteAnswerFallback
 			if len(unsupported) > 0 {
-				fullAnswer = "已有取数依据，但完整回答的部分数字未通过来源核验。此次暂不提供未经核验的统计结论，请查看来源或重试。"
+				fullAnswer = finalNumericFailureFallback
 			}
 			truncated = false
 			break

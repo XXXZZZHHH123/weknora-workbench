@@ -1119,7 +1119,7 @@ func (e *AgentEngine) runReActIteration(
 				state.RoundSteps = append(state.RoundSteps, step)
 				return iterOutcomeNext, nil
 			}
-			response.Content = "已经取得原表依据，但完整回答的部分数字未通过来源核验，暂不提供未经核验的统计结论。请查看取数依据。"
+			response.Content = numericFailureFallback
 			response.AnswerStreamed = false
 			response.AnswerEventID = ""
 			pendingLegacySourceRewrite = false
