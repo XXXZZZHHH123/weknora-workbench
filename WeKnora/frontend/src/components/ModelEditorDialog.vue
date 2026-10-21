@@ -3,12 +3,12 @@
     :description="getModalDescription()" :icon="modelTypeIcon" :confirm-loading="saving" :cancel-disabled="saving"
     :confirm-text="$t('model.editor.saveAndClose')"
     :close-on-overlay-click="!saving" :close-on-esc-keydown="!saving"
-    :confirm-disabled="formData.provider === 'weknoracloud' && wkcCredentialState !== 'configured'"
+    :confirm-disabled="protocolReviewPending || formData.provider === 'weknoracloud' && wkcCredentialState !== 'configured'"
     @update:visible="(v: boolean) => dialogVisible = v" @confirm="handleConfirm" @cancel="handleCancel">
 
     <template v-if="formData.source === 'remote'" #footer-left>
       <t-button variant="outline" @click="checkRemoteAPI" :loading="checking"
-        :disabled="saving || !formData.modelName || (!formData.baseUrl && formData.provider !== 'weknoracloud') || (formData.provider === 'weknoracloud' && wkcCredentialState !== 'configured')">
+        :disabled="protocolReviewPending || saving || !formData.modelName || (!formData.baseUrl && formData.provider !== 'weknoracloud') || (formData.provider === 'weknoracloud' && wkcCredentialState !== 'configured')">
         <template #icon>
           <t-icon v-if="!checking && remoteChecked && remoteAvailable" name="check-circle-filled"
             class="status-icon available" />
@@ -23,6 +23,12 @@
     </template>
 
     <template #footer-extra>
+      <div v-if="protocolReviewPending" class="connection-result protocol-review" role="alert">
+        <strong>{{ $t('model.editor.protocolReview.title') }}</strong>
+        <p>{{ $t('model.editor.protocolReview.description') }}</p>
+        <t-button size="small" variant="outline" @click="resetProtocolOverrides">{{ $t('model.editor.protocolReview.reset') }}</t-button>
+        <t-button size="small" variant="text" @click="keepProtocolOverridesAndTest">{{ $t('model.editor.protocolReview.keep') }}</t-button>
+      </div>
       <div v-if="saveError" class="connection-result error" role="alert">
         <strong>{{ $t('modelSettings.toasts.saveFailed') }}</strong>
         <div class="connection-result__details" tabindex="0">{{ saveError }}</div>
@@ -37,7 +43,11 @@
               {{ $t('common.copy') }}
             </t-button>
           </div>
-          <div class="connection-result__details" tabindex="0">{{ remoteMessage }}</div>
+          <p class="connection-result__hint">{{ connectionFailureHint }}</p>
+          <details class="connection-result__raw">
+            <summary>{{ $t('model.editor.connectionDiagnostic.details') }}</summary>
+            <div class="connection-result__details" tabindex="0">{{ remoteMessage }}</div>
+          </details>
         </div>
       </div>
     </template>
@@ -401,8 +411,7 @@
           <!--
             接入诊断：由后端目录实时解析出的有效协议 / 思考格式 / 支持等级 /
             是否目录内 / 上下文窗口，只读。厂商、模型名、Base URL 变化后 400ms 防抖刷新。
-            仅对话 / VLM 有意义——Embedding、ReRank、ASR 既没有思考等级也没有
-            上下文窗口，展示出来只会让人以为这些值对它们生效。
+            Embedding 显示实际向量协议和请求格式；思考配置仅对话 / VLM 展示。
           -->
           <div v-if="showResolvedPanel" class="form-item">
             <div class="resolved-panel" aria-live="polite">
@@ -418,7 +427,15 @@
               </p>
               <dl v-else-if="resolved" class="resolved-panel__grid">
                 <dt>{{ $t('model.editor.resolved.protocol') }}</dt>
-                <dd><code>{{ resolved.api }}</code></dd>
+                <dd><code>{{ resolved.api }}</code>
+                  <span v-if="activeModelType === 'embedding'" class="catalog-badge">{{ $t(hasProtocolOverrides ? 'model.editor.protocolReview.manual' : 'model.editor.protocolReview.default') }}</span>
+                </dd>
+                <template v-if="resolved.embedding_connection">
+                  <dt>{{ $t('model.editor.protocolReview.requestFormat') }}</dt>
+                  <dd><code>{{ resolved.embedding_connection.effective.input_field }}</code></dd>
+                  <dt>{{ $t('model.editor.protocolReview.defaultProtocol') }}</dt>
+                  <dd><code>{{ resolved.embedding_connection.default.api }}</code></dd>
+                </template>
                 <dt>{{ $t('model.editor.resolved.catalog') }}</dt>
                 <dd>
                   <span class="catalog-badge" :class="{ 'catalog-badge--accent': resolved.cataloged }">
@@ -455,6 +472,8 @@
                   </template>
                 </template>
               </dl>
+              <p v-if="activeModelType === 'embedding'" class="form-desc">{{ $t('model.editor.protocolReview.previewHint') }}</p>
+              <t-button v-if="hasProtocolOverrides" size="small" variant="text" @click="resetProtocolOverrides">{{ $t('model.editor.protocolReview.reset') }}</t-button>
             </div>
           </div>
 
@@ -1034,11 +1053,11 @@ const resolveError = ref('')
 let resolveTimer: ReturnType<typeof setTimeout> | null = null
 let resolveRevision = 0
 
-/** 目录解析出的协议 / 思考等级 / 上下文窗口只对对话与 VLM 模型有意义。 */
+/** Thinking and context settings are only meaningful for chat / VLM. */
 const isChatLike = computed(() => activeModelType.value === 'chat' || activeModelType.value === 'vllm')
 
 const showResolvedPanel = computed(() =>
-  isChatLike.value
+  (isChatLike.value || activeModelType.value === 'embedding')
   && formData.value.source === 'remote'
   && !!formData.value.provider
   && formData.value.provider !== 'weknoracloud',
@@ -1049,8 +1068,7 @@ const resolvedThinkingLevels = computed(() => supportedLevels(resolved.value?.ca
 const runResolve = async () => {
   const revision = ++resolveRevision
   const provider = (formData.value.provider || '').trim()
-  // Embedding / ReRank / ASR never render the panel, so do not spend a
-  // request (and do not leave a stale chat result behind) for them.
+  // Preview only capabilities with a corresponding panel.
   if (!props.visible || !showResolvedPanel.value || !provider) {
     resolved.value = null
     resolving.value = false
@@ -1098,6 +1116,11 @@ const runResolve = async () => {
 }
 
 const scheduleResolve = () => {
+  // Invalidate in-flight previews immediately, including the debounce window.
+  ++resolveRevision
+  resolved.value = null
+  resolveFailed.value = false
+  resolveError.value = ''
   if (resolveTimer) clearTimeout(resolveTimer)
   resolveTimer = setTimeout(() => {
     resolveTimer = null
@@ -1327,6 +1350,59 @@ const formData = ref<ModelFormData>({
   appSecret: '',
 })
 
+// A compatibility override belongs to the connection for which it was entered.
+// Do not infer a gateway contract from a model name or discard a valid override.
+const protocolReviewPending = ref(false)
+const hasProtocolOverrides = computed(() => {
+  const raw = (formData.value.specCompat || '').trim()
+  let hasCompat = !!raw
+  if (raw && !specCompatError.value) hasCompat = Object.keys(JSON.parse(raw)).length > 0
+  return !!(formData.value.spec?.api || formData.value.extraConfig?.api || formData.value.thinkingControl || hasCompat)
+})
+const protocolIdentity = computed(() => JSON.stringify([
+  activeModelType.value, formData.value.source, formData.value.provider,
+  (formData.value.modelName || '').trim(), (formData.value.extraConfig?.remote_model_name || '').trim(),
+]))
+let reviewedProtocolIdentity = ''
+const keepProtocolOverrides = () => {
+  reviewedProtocolIdentity = protocolIdentity.value
+  protocolReviewPending.value = false
+}
+const keepProtocolOverridesAndTest = () => {
+  keepProtocolOverrides()
+  void checkRemoteAPI()
+}
+const resetProtocolOverrides = () => {
+  formData.value.specCompat = ''
+  const spec = { ...(formData.value.spec || {}) }
+  delete spec.api
+  delete spec.compat
+  formData.value.spec = Object.keys(spec).length ? spec : null
+  setExtraConfig('api', '')
+  formData.value.thinkingControl = ''
+  keepProtocolOverrides()
+}
+watch(
+  () => [props.visible, hydratingForm.value, protocolIdentity.value, hasProtocolOverrides.value],
+  () => {
+    if (!props.visible || hydratingForm.value) return
+    if (formData.value.source !== 'remote') {
+      protocolReviewPending.value = false
+      return
+    }
+    if (!hasProtocolOverrides.value) {
+      keepProtocolOverrides()
+      return
+    }
+    if (!reviewedProtocolIdentity) reviewedProtocolIdentity = protocolIdentity.value
+    protocolReviewPending.value = protocolIdentity.value !== reviewedProtocolIdentity
+  },
+  { flush: 'sync' },
+)
+
+const connectionDiagnostic = ref('unknown')
+const connectionFailureHint = computed(() => t('model.editor.connectionDiagnostic.' + connectionDiagnostic.value))
+
 const rules = computed(() => ({
   modelName: [
     { required: true, message: t('model.editor.validation.modelNameRequired') },
@@ -1376,7 +1452,14 @@ watch(
  formData.value.specCompat, JSON.stringify(formData.value.spec),
   ],
   () => {
-    if (!props.visible) return
+    if (!props.visible) {
+      ++resolveRevision
+      if (resolveTimer) clearTimeout(resolveTimer)
+      resolveTimer = null
+      resolved.value = null
+      resolving.value = false
+      return
+    }
     scheduleResolve()
   },
 )
@@ -1521,6 +1604,7 @@ watch(() => props.visible, (val) => {
             ? props.modelData.customHeaders.map(h => ({ key: h.key, value: h.value }))
             : [],
         }
+        keepProtocolOverrides()
         legacyThinkingControlLoaded.value = !!props.modelData.thinkingControl
       } else if (typeChanged || lastOpenedModelId.value !== null || !formData.value.id) {
         // 切换类型、上次是编辑某个模型，或第一次新增 → 重置成空白
@@ -1579,6 +1663,8 @@ watch(() => props.visible, () => {
 
 // 重置表单
 const resetForm = () => {
+  protocolReviewPending.value = false
+  reviewedProtocolIdentity = ''
   legacyThinkingControlLoaded.value = false
   formData.value = {
     id: generateId(),
@@ -1856,7 +1942,7 @@ const buildExtraConfig = (): Record<string, string> => {
 
 // 检查 Remote API 连接（根据模型类型调用不同的接口）
 const checkRemoteAPI = async () => {
-  if (checking.value || saving.value) return
+  if (checking.value || saving.value || protocolReviewPending.value) return
   if (!formData.value.modelName || (!formData.value.baseUrl && formData.value.provider !== 'weknoracloud')) {
     MessagePlugin.warning(t('model.editor.fillModelAndUrl'))
     return
@@ -1984,6 +2070,7 @@ const checkRemoteAPI = async () => {
     if (revision !== connectionRevision) return
     remoteChecked.value = true
     remoteAvailable.value = result.available || false
+    connectionDiagnostic.value = ['configuration', 'request_rejected', 'access_denied', 'not_found', 'rate_limited', 'upstream_unavailable', 'connection'].includes(result.diagnostic?.kind) ? result.diagnostic.kind : 'unknown'
     remoteMessage.value = result.available
       ? t('model.editor.connectionSuccess')
       : result.message || t('model.editor.connectionFailed')
@@ -1991,6 +2078,7 @@ const checkRemoteAPI = async () => {
     if (revision !== connectionRevision) return
     remoteChecked.value = true
     remoteAvailable.value = false
+    connectionDiagnostic.value = specCompatError.value ? 'configuration' : 'unknown'
     remoteMessage.value = error?.message || t('model.editor.connectionConfigError')
   } finally {
     if (revision === connectionRevision) checking.value = false
@@ -1999,7 +2087,7 @@ const checkRemoteAPI = async () => {
 
 // 确认保存
 const handleConfirm = async () => {
-  if (saving.value) return
+  if (saving.value || protocolReviewPending.value) return
   saving.value = true
   if (checking.value) invalidateConnectionTest()
   saveError.value = ''
@@ -2438,6 +2526,16 @@ const handleCancel = () => {
   font-size: var(--app-text-sm);
   line-height: 1.5;
 }
+
+.connection-result.protocol-review {
+  color: var(--td-warning-color);
+  background: var(--td-warning-color-light);
+  border: 1px solid var(--td-warning-color-focus);
+  p { margin: 6px 0; }
+}
+
+.connection-result__hint { margin: 6px 0; }
+.connection-result__raw summary { cursor: pointer; }
 
 .connection-result {
   margin-bottom: 8px;

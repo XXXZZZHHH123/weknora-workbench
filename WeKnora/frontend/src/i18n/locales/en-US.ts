@@ -5053,6 +5053,28 @@ export default {
         thinkingLevels: 'Selectable effort',
         noThinking: 'This model cannot think',
       },
+      protocolReview: {
+        title: "Model changed: review protocol overrides",
+        description: "Manual protocol settings are still present and may not suit this model. Restore defaults, or keep them and test the new configuration.",
+        reset: "Restore catalog defaults",
+        keep: "Keep overrides and retest",
+        manual: "Manual overrides",
+        default: "Catalog defaults",
+        requestFormat: "Text request field",
+        defaultProtocol: "Default protocol",
+        previewHint: "This previews the request format the application will use. Test the connection to check whether your gateway accepts it.",
+      },
+      connectionDiagnostic: {
+        details: "View original error",
+        configuration: "The configuration could not be resolved. Check the override JSON and required fields.",
+        request_rejected: "The service rejected the request parameters. Check the model name, protocol, request format and dimensions. See the original error for the specific cause.",
+        access_denied: "The service denied access. Check the API key, permissions and account status.",
+        not_found: "The resource was not found. Check the endpoint and model name.",
+        rate_limited: "The service rate limit was reached. Retry later or reduce the request rate.",
+        upstream_unavailable: "The model service is unavailable. Retry later and check its status.",
+        connection: "The connection to the model service could not be completed. Check the network, endpoint and service status.",
+        unknown: "The connection test failed. Check the model and connection settings and review the original error.",
+      },
       advanced: {
         toggle: 'Advanced',
         api: {

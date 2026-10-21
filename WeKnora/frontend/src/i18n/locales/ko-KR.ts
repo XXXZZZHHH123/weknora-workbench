@@ -3075,6 +3075,28 @@ export default {
         thinkingLevels: '선택 가능한 사고 강도',
         noThinking: '이 모델은 사고를 지원하지 않습니다',
       },
+      protocolReview: {
+        title: "모델이 변경되었습니다. 프로토콜 설정을 확인하세요",
+        description: "수동 설정이 남아 있습니다. 새 모델에 맞는지 확인하고 기본값으로 복원하거나 유지한 후 다시 테스트하세요.",
+        reset: "카탈로그 기본값 복원",
+        keep: "설정 유지 후 다시 테스트",
+        manual: "수동 설정",
+        default: "카탈로그 기본값",
+        requestFormat: "텍스트 요청 필드",
+        defaultProtocol: "기본 프로토콜",
+        previewHint: "앱이 사용할 요청 형식입니다. 게이트웨이 지원 여부는 연결 테스트로 확인하세요.",
+      },
+      connectionDiagnostic: {
+        details: "원본 오류 보기",
+        configuration: "설정을 해석할 수 없습니다. JSON과 필수 항목을 확인하세요.",
+        request_rejected: "서비스가 요청 매개변수를 거부했습니다. 모델 이름, 프로토콜, 요청 형식과 차원을 확인하세요. 구체적인 원인은 원본 오류를 참조하세요.",
+        access_denied: "접근이 거부되었습니다. API 키, 권한과 계정 상태를 확인하세요.",
+        not_found: "리소스를 찾을 수 없습니다. 주소와 모델 이름을 확인하세요.",
+        rate_limited: "요청 제한에 도달했습니다. 나중에 다시 시도하거나 빈도를 줄이세요.",
+        upstream_unavailable: "모델 서비스를 사용할 수 없습니다. 나중에 다시 시도하고 상태를 확인하세요.",
+        connection: "연결을 완료하지 못했습니다. 네트워크, 주소와 서비스 상태를 확인하세요.",
+        unknown: "연결 테스트에 실패했습니다. 모델과 연결 설정 및 원본 오류를 확인하세요.",
+      },
       advanced: {
         toggle: '고급',
         api: {
