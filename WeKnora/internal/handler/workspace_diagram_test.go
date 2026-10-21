@@ -122,6 +122,7 @@ func newWorkspaceDiagramFixture(t *testing.T) *workspaceDiagramFixture {
 		require.NoError(t, db.Exec(string(migration)).Error)
 	}
 	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}))
+	require.NoError(t, db.AutoMigrate(&types.ResearchWorkbench{}))
 	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library"}).Error)
 	kbs := &workspaceDiagramKBs{allowed: true}
 	workspaces := service.NewWorkspaceService(db, kbs, nil)
@@ -129,6 +130,8 @@ func newWorkspaceDiagramFixture(t *testing.T) *workspaceDiagramFixture {
 	name, kb := "Synthetic research", "kb"
 	workbench, err := workspaces.CreateWorkbench(ctx, service.WorkspaceInput{Name: &name, KnowledgeBaseID: &kb, IdempotencyKey: "test-create"})
 	require.NoError(t, err)
+	// Existing generation cases also cover compatibility with pre-ACL rows.
+	require.NoError(t, db.Model(workbench).Update("access_policy", nil).Error)
 	models := &workspaceDiagramModels{model: &types.Model{ID: "configured-chat", TenantID: 1, Type: types.ModelTypeKnowledgeQA, Status: types.ModelStatusActive, Source: types.ModelSourceLocal}, client: &workspaceDiagramChat{response: &types.ChatResponse{Content: "# Generated configuration\n"}}}
 	f := &workspaceDiagramFixture{models: models, service: workspaces, db: db, kbs: kbs, workbenchID: workbench.ID, user: "alice", tenant: 1, role: types.TenantRoleContributor}
 	r := gin.New()

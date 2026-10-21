@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from sqlalchemy import func, select, update
 
-from tin.integration.workbench_scope import WorkbenchScope, go_request, verified_workbench, workbench_session
+from tin.integration.workbench_scope import WorkbenchScope, go_request, verified_workbench, workbench_session, require_shared_write
 from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
 from tin.web.workbench_artifact_evidence import capture_sources, store_captures
 
@@ -74,9 +74,11 @@ def artifact_counts(session, scope):
             for module in ArtifactModule}
 
 
-async def validated_input(scope, body):
+async def validated_input(scope, body, *, shared=False):
     if not scope.identity.can_write:
         raise HTTPException(403, "当前空间角色只有读取权限")
+    if shared:
+        require_shared_write(scope)
     title, text = body.title.strip(), body.body.strip()
     if not title or not text:
         raise HTTPException(400, "请填写标题和研究内容")
@@ -106,7 +108,7 @@ def list_artifacts(module: ArtifactModule, scope: WorkbenchScope = Depends(verif
 
 @router.post("/{workbench_id}/{module}", status_code=201)
 async def create_artifact(module: ArtifactModule, body: ArtifactInput, scope: WorkbenchScope = Depends(verified_workbench)):
-    values, sources = await validated_input(scope, body)
+    values, sources = await validated_input(scope, body, shared=module == ArtifactModule.structure)
     captures = await capture_sources(scope, sources)
     now = datetime.now(timezone.utc)
     with workbench_session(scope) as session:
@@ -123,6 +125,8 @@ async def create_artifact(module: ArtifactModule, body: ArtifactInput, scope: Wo
 @router.patch("/{workbench_id}/{module}/{artifact_id}")
 async def update_artifact(module: ArtifactModule, artifact_id: str, body: ArtifactInput,
                           scope: WorkbenchScope = Depends(verified_workbench)):
+    if module == ArtifactModule.structure:
+        require_shared_write(scope)
     if body.revision is None:
         raise HTTPException(400, "请携带当前版本，避免覆盖其他修改")
     # Reject missing / private / already-stale records before downloading files.
@@ -132,7 +136,7 @@ async def update_artifact(module: ArtifactModule, artifact_id: str, body: Artifa
             raise HTTPException(404, "研究记录不存在或无权访问")
         if row.revision != body.revision:
             raise HTTPException(409, "研究记录已更新，请刷新后继续修改")
-    values, sources = await validated_input(scope, body)
+    values, sources = await validated_input(scope, body, shared=module == ArtifactModule.structure)
     captures = await capture_sources(scope, sources)
     with workbench_session(scope) as session:
         row = session.scalar(artifact_query(scope, module.value).where(WorkbenchArtifact.id == artifact_id))

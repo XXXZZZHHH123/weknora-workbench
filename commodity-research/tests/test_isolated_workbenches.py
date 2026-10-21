@@ -58,6 +58,16 @@ def isolated(monkeypatch, tmp_path):
                 return httpx.Response(200, json={"success": True, "data": {
                     "user": {"id": token, "email": token + "@test", "username": token},
                     "tenant": {"id": 17}, "memberships": [{"tenant_id": 17, "role": role}]}})
+            if request.url.path.startswith('/api/v1/workspaces/research/') and request.url.path.endswith('/source-scope'):
+                target = request.url.path.split('/')[-2]
+                if state['revoked_kb']:
+                    return httpx.Response(403, json={'success': False})
+                return httpx.Response(200, json={'success': True, 'data': {'id': target,
+                    'user_id': token, 'scope_tenant_id': 17, 'knowledge_base_id': state['knowledge_base_id'],
+                    'sources': [{'knowledge_base_id': state['knowledge_base_id'], 'tenant_id': 23,
+                        'kind': 'primary', 'delegated': False, 'permission': 'viewer', 'knowledge': [
+                            {'id': 'source-1', 'file_type': 'xlsx', 'parse_status': state['parse_status'],
+                             'file_hash': state['file_hash_override'] or hashlib.md5(blob).hexdigest()}]}]}})
             if request.url.path.startswith("/api/v1/workspaces/research/"):
                 target = request.url.path.rsplit("/", 1)[1]
                 if target not in {WB, OTHER, LEGACY}:
@@ -66,7 +76,7 @@ def isolated(monkeypatch, tmp_path):
                     "id": OTHER if state["go_bad_id"] else target, "name": "New workbench",
                     "scope_tenant_id": state["go_tenant"], "knowledge_base_id": state["knowledge_base_id"],
                     "workspace_mode": "legacy" if target == LEGACY else "isolated",
-                    "template_id": "data-tracking", "template_version": 1}})
+                    "template_id": "data-tracking", "template_version": 1, "can_edit": token != "viewer"}})
             if request.url.path == f"/api/v1/knowledge-bases/{KB}":
                 return httpx.Response(403 if state["revoked_kb"] else 200, json={"success": True,
                     "data": {"id": KB, "tenant_id": 23, "my_permission": "viewer"}})

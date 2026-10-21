@@ -48,12 +48,16 @@ func (r *suggestionKnowledgeRepo) ListIDsByTagIDs(
 type suggestionKBService struct {
 	interfaces.KnowledgeBaseService
 	kbs map[string]*types.KnowledgeBase
+	err error
 }
 
 func (s *suggestionKBService) GetKnowledgeBasesByIDsOnly(
 	_ context.Context,
 	ids []string,
 ) ([]*types.KnowledgeBase, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	result := make([]*types.KnowledgeBase, 0, len(ids))
 	for _, id := range ids {
 		if kb := s.kbs[id]; kb != nil {
@@ -61,6 +65,40 @@ func (s *suggestionKBService) GetKnowledgeBasesByIDsOnly(
 		}
 	}
 	return result, nil
+}
+
+func TestSuggestionKBScopesDenyWhenKnowledgeBaseLookupFails(t *testing.T) {
+	service := &customAgentService{kbService: &suggestionKBService{err: errors.New("temporary database failure")}}
+	for _, role := range []types.TenantRole{types.TenantRoleContributor, types.TenantRoleAdmin, types.TenantRoleOwner} {
+		caller := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "peer", Role: role})
+		scopes := service.groupKBIDsByEffectiveTenant(caller, []string{"private-library"})
+		require.Empty(t, scopes, "a failed authority lookup must never grant access based only on the space ID")
+	}
+}
+
+type suggestionPolicyShares struct {
+	*suggestionKBShareService
+	rows map[string]*types.KnowledgeBase
+}
+
+func (s *suggestionPolicyShares) LookupKnowledgeBaseAccess(_ context.Context, id string) (*types.KnowledgeBase, error) {
+	if kb := s.rows[id]; kb != nil {
+		return kb, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func TestSuggestionKBScopesResolveACLForPartialKnowledgeBaseRows(t *testing.T) {
+	private := &types.KnowledgeBase{ID: "private", TenantID: 7, CreatorID: "source-owner", AccessPolicy: types.NewResourceAccessPolicy()}
+	shared := &types.KnowledgeBase{ID: "shared", TenantID: 7, CreatorID: "source-owner", AccessPolicy: &types.ResourceAccessPolicy{SpacePermission: "viewer", Members: []types.ResourceMemberPermission{}}}
+	service := &customAgentService{
+		kbService: &suggestionKBService{kbs: map[string]*types.KnowledgeBase{
+			"private": {ID: "private", TenantID: 7}, "shared": {ID: "shared", TenantID: 7},
+		}},
+		kbShareService: &suggestionPolicyShares{suggestionKBShareService: &suggestionKBShareService{}, rows: map[string]*types.KnowledgeBase{"private": private, "shared": shared}},
+	}
+	caller := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "admin", Role: types.TenantRoleAdmin})
+	require.Equal(t, map[uint64][]string{7: {"shared"}}, service.groupKBIDsByEffectiveTenant(caller, []string{"private", "shared"}))
 }
 
 type suggestionKBShareService struct {

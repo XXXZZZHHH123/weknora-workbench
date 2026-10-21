@@ -55,7 +55,8 @@ def native(tmp_path, monkeypatch):
         if request.url.path.startswith("/api/v1/knowledge-bases/"):
             identifier = request.url.path.rsplit("/", 1)[-1]
             return httpx.Response(200, json={"success": True, "data": {
-                "id": identifier, "tenant_id": 10000, "creator_id": "user-a"}})
+                "id": identifier, "tenant_id": 10000, "creator_id": "user-a",
+                "my_permission": state.get('permission', 'admin' if role in {'owner', 'admin'} else 'editor')}})
         if request.url.path == "/api/v1/knowledge/source-a":
             if "metadata_payload" in state:
                 return httpx.Response(200, json=state["metadata_payload"])
@@ -90,6 +91,15 @@ def finish(client, job):
             return current
         time.sleep(.01)
     raise AssertionError("native original import did not finish")
+
+
+@pytest.mark.parametrize('role', ['owner', 'admin', 'contributor'])
+def test_resource_view_permission_does_not_inherit_space_write_or_old_creator(native, role):
+    client, _, state, _ = native
+    state['permission'] = 'viewer'
+    response = client.post('/api/import-knowledge', json={'source_knowledge_id': 'source-a'}, headers=headers(role=role))
+    assert response.status_code == 403, response.text
+    assert not any(path.endswith('/download') for path, _ in state['calls'])
 
 
 def begin(client, **kwargs):

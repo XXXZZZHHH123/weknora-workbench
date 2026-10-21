@@ -68,6 +68,9 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	if err := db.AutoMigrate(&types.KnowledgeBase{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AutoMigrate(&types.ResearchWorkbench{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library"}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +92,9 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	r.GET("/research/templates", h.ListWorkbenchTemplates)
 	r.GET("/research/:id", h.GetWorkbench)
 	r.PUT("/research/:id", h.UpdateWorkbench)
+	r.GET("/research/:id/permissions", h.GetWorkbenchPermissions)
+	r.PUT("/research/:id/permissions", h.UpdateWorkbenchPermissions)
+	r.POST("/research/:id/source-sharing/request", h.RequestWorkbenchSourceSharing)
 	r.PUT("/research/:id/onboarding", h.UpdateWorkbenchOnboarding)
 	request := func(method, path, body, user string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -163,6 +169,24 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 		t.Fatal(response.Code, response.Body.String())
 	}
 	path := "/research/" + research.Data.ID + "/onboarding"
+	permissionPath := "/research/" + research.Data.ID + "/permissions"
+	if response := request("GET", permissionPath, "", "bob"); response.Code != 404 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	for _, body := range []string{`null`, `{}`, `{"space_permission":"owner","members":[]}`, `{"space_permission":"none","members":[],"user_id":"bob"}`, `{"space_permission":"none","members":[]} {}`} {
+		if response := request("PUT", permissionPath, body, "alice"); response.Code != 400 {
+			t.Fatal(response.Code, response.Body.String())
+		}
+	}
+	if response := request("PUT", permissionPath, `{"space_permission":"viewer","members":[]}`, "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"owner_id":"alice"`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("GET", permissionPath, "", "bob"); response.Code != 403 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("POST", "/research/"+research.Data.ID+"/source-sharing/request", "", "bob"); response.Code != 403 {
+		t.Fatal(response.Code, response.Body.String())
+	}
 	if response := request("PUT", path, `{"status":"dismissed","tasks":{"sources":true}}`, "bob"); response.Code != 200 || !strings.Contains(response.Body.String(), `"status":"dismissed"`) {
 		t.Fatal(response.Code, response.Body.String())
 	}

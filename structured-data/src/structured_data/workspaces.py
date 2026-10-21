@@ -20,6 +20,7 @@ class Identity:
     knowledge_base_id: str = ""
     knowledge_base_tenant_id: int | None = None
     knowledge_base_can_write: bool = False
+    workbench_id: str = ''
 
     @property
     def can_write(self):

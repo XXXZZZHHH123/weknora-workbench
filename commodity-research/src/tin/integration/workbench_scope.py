@@ -26,6 +26,49 @@ class WorkbenchScope:
     metadata: dict
     authorization: str = field(default='', repr=False, compare=False)
     additional_knowledge_bases: tuple[dict, ...] = ()
+    source_delegations: tuple[str, ...] = ()
+
+    @property
+    def can_edit(self):
+        return self.identity.can_write and self.metadata.get('can_edit') is True
+
+
+def require_shared_write(scope=None):
+    scope = scope or current_workbench.get()
+    if scope is not None and not scope.can_edit:
+        raise HTTPException(403, '当前账号没有研究工作台编辑权限')
+
+
+def validated_source_scope(scope, document):
+    """The main platform grants a narrow projection, never a raw KB proxy."""
+    data = document.get('data') if isinstance(document, dict) else None
+    primary_id = scope.metadata.get('knowledge_base_id', scope.knowledge_base_id)
+    if (not isinstance(document, dict) or document.get('success') is not True
+            or not isinstance(data, dict) or data.get('id') != scope.workbench_id
+            or data.get('user_id') != scope.identity.user_id
+            or type(data.get('scope_tenant_id')) is not int
+            or data['scope_tenant_id'] != scope.identity.tenant_id
+            or data.get('knowledge_base_id') != primary_id
+            or not isinstance(data.get('sources'), list) or not 1 <= len(data['sources']) <= 2):
+        raise HTTPException(403, '研究工作台来源授权范围不匹配')
+    seen = set()
+    for source in data['sources']:
+        if (not isinstance(source, dict) or source.get('kind') not in {'primary', 'macro'}
+                or source.get('permission') not in {'viewer', 'editor', 'admin'}
+                or type(source.get('delegated')) is not bool
+                or not isinstance(source.get('knowledge_base_id'), str)
+                or not source['knowledge_base_id'] or len(source['knowledge_base_id']) > 128
+                or ((source['knowledge_base_id'] == primary_id) != (source.get('kind') == 'primary'))
+                or type(source.get('tenant_id')) is not int or source['tenant_id'] <= 0
+                or (source.get('kind') == 'macro' and (source['tenant_id'] != scope.identity.tenant_id
+                                                       or source.get('delegated') is not False))
+                or not isinstance(source.get('knowledge'), list)
+                or source['knowledge_base_id'] in seen):
+            raise HTTPException(403, '研究工作台来源授权信息无效')
+        seen.add(source['knowledge_base_id'])
+    if primary_id not in seen:
+        raise HTTPException(403, '工作台绑定知识库尚未允许共享研究数据')
+    return data
 
 
 current_workbench: ContextVar[WorkbenchScope | None] = ContextVar("isolated_workbench", default=None)
@@ -92,31 +135,14 @@ async def resolve_workbench(identity, workbench_id, authorization):
     kb_id = metadata.get("knowledge_base_id")
     if not isinstance(kb_id, str) or not kb_id or len(kb_id) > 128:
         raise HTTPException(403, "工作台没有有效的知识库绑定")
-    kb_doc = await go_request(scope, "/api/v1/knowledge-bases/" + quote(kb_id, safe=""))
-    kb = kb_doc.get("data")
-    if (not isinstance(kb, dict) or kb.get("id") != kb_id or type(kb.get("tenant_id")) is not int
-            or kb["tenant_id"] <= 0 or (kb["tenant_id"] != identity.tenant_id
-                and kb.get("my_permission") not in {"viewer", "editor", "admin"})):
-        raise HTTPException(403, "知识库授权范围不匹配")
-    additional = ()
-    default = metadata.get('default_knowledge_base')
-    if default is not None:
-        if (not isinstance(default, dict) or default.get('kind') != 'macro'
-                or type(default.get('tenant_id')) is not int or default['tenant_id'] != identity.tenant_id
-                or not isinstance(default.get('knowledge_base_id'), str)
-                or not default['knowledge_base_id'] or len(default['knowledge_base_id']) > 128):
-            raise HTTPException(403, '工作台默认知识库范围无效')
-        default_id = default['knowledge_base_id']
-        if default_id != kb_id:
-            default_doc = await go_request(scope, '/api/v1/knowledge-bases/' + quote(default_id, safe=''))
-            default_kb = default_doc.get('data')
-            if (not isinstance(default_kb, dict) or default_kb.get('id') != default_id
-                    or type(default_kb.get('tenant_id')) is not int
-                    or default_kb['tenant_id'] != identity.tenant_id):
-                raise HTTPException(403, '默认知识库授权范围不匹配')
-            additional = ({'knowledge_base_id': default_id, 'tenant_id': default_kb['tenant_id'],
-                           'kind': 'macro', 'name': default_kb.get('name') or default.get('name') or ''},)
-    scope = WorkbenchScope(identity, workbench_id, kb_id, kb["tenant_id"], metadata, authorization, additional)
+    scope = WorkbenchScope(identity, workbench_id, kb_id, 0, metadata, authorization)
+    source_doc = await go_request(scope, '/api/v1/workspaces/research/' + quote(workbench_id, safe='') + '/source-scope')
+    grant = validated_source_scope(scope, source_doc)
+    primary = next(source for source in grant['sources'] if source['knowledge_base_id'] == kb_id)
+    additional = tuple({'knowledge_base_id': source['knowledge_base_id'], 'tenant_id': source['tenant_id'],
+                        'kind': source['kind']} for source in grant['sources'] if source['knowledge_base_id'] != kb_id)
+    delegated = tuple(source['knowledge_base_id'] for source in grant['sources'] if source['delegated'])
+    scope = WorkbenchScope(identity, workbench_id, kb_id, primary['tenant_id'], metadata, authorization, additional, delegated)
     return scope
 
 

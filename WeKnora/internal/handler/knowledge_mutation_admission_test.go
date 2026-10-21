@@ -199,7 +199,7 @@ func TestMutationHandlersPreserveApplicationStatus(t *testing.T) {
 				}
 				failure := fmt.Errorf("operation: %w", app)
 				kg := &mutationAdmissionKnowledge{rows: []*types.Knowledge{admissionKnowledge(false)}, err: failure}
-				h := &KnowledgeHandler{kgService: kg}
+				h := &KnowledgeHandler{kgService: kg, kbService: admissionKB("user")}
 				chunks := &ChunkHandler{service: &mutationChunkService{err: failure}}
 				r := documentHandlerRouter()
 				method, path, body := http.MethodPut, "/doc", `{"title":"new"}`

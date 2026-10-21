@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/application/service"
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
+	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -125,6 +126,66 @@ func (h *WorkspaceHandler) UpdateWorkbench(c *gin.Context) {
 }
 func (h *WorkspaceHandler) DeleteWorkbench(c *gin.Context) {
 	workspaceReply(c, nil, h.service.DeleteWorkbench(c.Request.Context(), c.Param("id")))
+}
+
+func (h *WorkspaceHandler) GetWorkbenchPermissions(c *gin.Context) {
+	row, err := h.service.GetWorkbenchPermissions(c.Request.Context(), c.Param("id"))
+	workspaceReply(c, row, err)
+}
+
+func workspacePermissionInput(c *gin.Context, input any) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(input); err != nil {
+		_ = c.Error(apperrors.NewBadRequestError("权限参数无效"))
+		return false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		_ = c.Error(apperrors.NewBadRequestError("权限参数无效"))
+		return false
+	}
+	return true
+}
+
+func (h *WorkspaceHandler) UpdateWorkbenchPermissions(c *gin.Context) {
+	var policy *types.ResourceAccessPolicy
+	if !workspacePermissionInput(c, &policy) {
+		return
+	}
+	row, err := h.service.UpdateWorkbenchPermissions(c.Request.Context(), c.Param("id"), policy)
+	workspaceReply(c, row, err)
+}
+
+func (h *WorkspaceHandler) GetWorkbenchSourceScope(c *gin.Context) {
+	row, err := h.service.GetWorkbenchSourceScope(c.Request.Context(), c.Param("id"))
+	workspaceReply(c, row, err)
+}
+
+func (h *WorkspaceHandler) GetWorkbenchSourceSharing(c *gin.Context) {
+	row, err := h.service.GetWorkbenchSourceSharing(c.Request.Context(), c.Param("id"))
+	workspaceReply(c, row, err)
+}
+
+func (h *WorkspaceHandler) RequestWorkbenchSourceSharing(c *gin.Context) {
+	row, err := h.service.RequestWorkbenchSourceSharing(c.Request.Context(), c.Param("id"))
+	workspaceReply(c, row, err)
+}
+
+func (h *WorkspaceHandler) UpdateWorkbenchSourceSharing(c *gin.Context) {
+	var input struct {
+		Approved *bool `json:"approved"`
+	}
+	if !workspacePermissionInput(c, &input) {
+		return
+	}
+	if input.Approved == nil {
+		_ = c.Error(apperrors.NewBadRequestError("请选择是否授权研究数据共享"))
+		return
+	}
+	row, err := h.service.UpdateWorkbenchSourceSharing(c.Request.Context(), c.Param("id"), *input.Approved)
+	workspaceReply(c, row, err)
 }
 
 func (h *WorkspaceHandler) ListWorkbenchTemplates(c *gin.Context) {

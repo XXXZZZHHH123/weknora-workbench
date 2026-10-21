@@ -143,6 +143,12 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	defer func() { t.finishStructuredReadCache(lease, cacheResult) }()
 	identity := map[string]any{"user_id": caller.UserID, "tenant_id": caller.TenantID,
 		"role": string(caller.Role), "email": "", "display_name": caller.UserID}
+	if _, machine := types.TenantAPIKeyScopeFromContext(ctx); machine && scope.KnowledgeBaseID != "" {
+		identity["principal_type"] = "api_key"
+	} else if authorization := types.ResearchAuthorizationFromContext(ctx); authorization != "" {
+		authorizationHash := sha256.Sum256([]byte(authorization))
+		identity["authorization_sha256"] = hex.EncodeToString(authorizationHash[:])
+	}
 	if scope.KnowledgeBaseID != "" {
 		identity["knowledge_base_id"] = scope.KnowledgeBaseID
 		identity["knowledge_base_tenant_id"] = scope.TenantID
@@ -165,6 +171,9 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	req.Header.Set("X-Research-Identity", encoded)
 	req.Header.Set("X-Research-Timestamp", stamp)
 	req.Header.Set("X-Research-Signature", hex.EncodeToString(mac.Sum(nil)))
+	if authorization := types.ResearchAuthorizationFromContext(ctx); authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
 	requestStarted := time.Now()
 	response, err := t.client.Do(req)
 	if err != nil {

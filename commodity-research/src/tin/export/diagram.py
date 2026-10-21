@@ -353,6 +353,8 @@ def list_templates(session: Session, variety: str) -> list[dict]:
 
 
 def save_template(session: Session, variety: str, payload: dict) -> dict:
+    from tin.integration.workbench_scope import require_shared_write
+    require_shared_write()
     from tin.models import DiagramTemplate
 
     name = str(payload.get("name", "")).strip()
@@ -381,6 +383,8 @@ def save_template(session: Session, variety: str, payload: dict) -> dict:
 
 
 def delete_template(session: Session, variety: str, template_id: int) -> dict:
+    from tin.integration.workbench_scope import require_shared_write
+    require_shared_write()
     from tin.models import DiagramTemplate
 
     row = session.get(DiagramTemplate, template_id)
@@ -404,6 +408,10 @@ def ensure_default(session: Session, variety: str) -> dict:
     if existing:
         return existing[0]
     if session.info.get("workbench_id"):
+        from tin.integration.workbench_scope import current_workbench
+        scope = current_workbench.get()
+        if scope is not None and not scope.can_edit:
+            return {'id': None, 'name': '研究结构', 'layout': {'nodes': [], 'edges': []}, 'is_default': True}
         return save_template(session, variety, {"name": "研究结构", "layout": {"nodes": [], "edges": []}, "is_default": True})
     import json
 

@@ -73,6 +73,7 @@ func TestWorkspaceSingleConnectionMutationPermissions(t *testing.T) {
 				s, _, owner := singleConnectionWorkbenchFixture(t)
 				created, err := s.CreateWorkbench(owner, WorkspaceInput{Name: workspaceString("Original"), KnowledgeBaseID: workspaceString("own"), IdempotencyKey: "permissions"})
 				require.NoError(t, err)
+				require.NoError(t, s.db.Model(created).Update("access_policy", nil).Error)
 				ctx, cancel := context.WithTimeout(workspaceContext(actor.user, actor.tenant, actor.role), time.Second)
 				defer cancel()
 				err = workspaceMutation(s, ctx, created.ID, operation)
@@ -98,6 +99,7 @@ func TestWorkspaceSingleConnectionSharedKnowledgeBaseMutationsRespectRevocation(
 				shares.allowed = true
 				created, err := s.CreateWorkbench(owner, WorkspaceInput{Name: workspaceString("Original"), KnowledgeBaseID: workspaceString("shared"), IdempotencyKey: "shared-mutation"})
 				require.NoError(t, err)
+				require.NoError(t, s.db.Model(created).Update("access_policy", nil).Error)
 				shares.allowed = allowed
 				ctx, cancel := context.WithTimeout(owner, time.Second)
 				defer cancel()

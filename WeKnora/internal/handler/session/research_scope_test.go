@@ -23,10 +23,20 @@ func (f *researchScopeWorkbenches) GetWorkbench(context.Context, string) (*types
 
 type researchScopeKBs struct {
 	interfaces.KnowledgeBaseService
+	kb *types.KnowledgeBase
 }
 
-func (*researchScopeKBs) GetKnowledgeBaseByIDOnly(context.Context, string) (*types.KnowledgeBase, error) {
+func (f *researchScopeKBs) GetKnowledgeBaseByIDOnly(context.Context, string) (*types.KnowledgeBase, error) {
+	if f.kb != nil {
+		return f.kb, nil
+	}
 	return &types.KnowledgeBase{ID: "library-a", TenantID: 13}, nil
+}
+
+type researchScopeShares struct{ interfaces.KBShareService }
+
+func (*researchScopeShares) CheckTenantKBPermission(context.Context, string, uint64, types.TenantRole) (types.OrgMemberRole, bool, error) {
+	return types.OrgRoleViewer, true, nil
 }
 
 type researchScopeFiles struct{ interfaces.KnowledgeService }
@@ -38,7 +48,7 @@ func (*researchScopeFiles) GetKnowledgeByIDOnly(context.Context, string) (*types
 func researchScopeFixture() (*Handler, *researchScopeWorkbenches, context.Context, *types.Session) {
 	row := &types.ResearchWorkbench{ID: "67175bd2-32c2-42df-8ba6-d8c2e2f1fe67", TenantID: 7, KnowledgeBaseID: "library-a", WorkspaceMode: "isolated"}
 	workbenches := &researchScopeWorkbenches{row: row}
-	h := &Handler{researchWorkbenches: workbenches, knowledgebaseService: &researchScopeKBs{}, knowledgeService: &researchScopeFiles{}}
+	h := &Handler{researchWorkbenches: workbenches, knowledgebaseService: &researchScopeKBs{}, knowledgeService: &researchScopeFiles{}, kbShareService: &researchScopeShares{}}
 	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "user-a", Role: types.TenantRoleViewer})
 	return h, workbenches, ctx, &types.Session{TenantID: 7, ResearchWorkbenchID: row.ID}
 }
@@ -58,6 +68,17 @@ func TestBoundResearchSessionRechecksAccessAndPinsSourcesEveryTurn(t *testing.T)
 	workbenches.err = errors.New("grant revoked")
 	_, err := h.bindResearchQuestionScope(ctx, session, &CreateKnowledgeQARequest{})
 	require.Error(t, err)
+}
+
+func TestWorkbenchSharingDoesNotGrantFullTextKnowledgeBaseAccess(t *testing.T) {
+	h, _, ctx, session := researchScopeFixture()
+	kb := &types.KnowledgeBase{ID: "library-a", TenantID: 7, CreatorID: "source-owner", AccessPolicy: types.NewResourceAccessPolicy()}
+	h.knowledgebaseService = &researchScopeKBs{kb: kb}
+	_, err := h.bindResearchQuestionScope(ctx, session, &CreateKnowledgeQARequest{})
+	require.Error(t, err)
+	kb.AccessPolicy.Members = []types.ResourceMemberPermission{{UserID: "user-a", Permission: "viewer"}}
+	_, err = h.bindResearchQuestionScope(ctx, session, &CreateKnowledgeQARequest{})
+	require.NoError(t, err)
 }
 
 func TestLegacyWorkbenchSessionAlsoBindsKnowledgeBase(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/application/access"
 	"github.com/Tencent/WeKnora/internal/application/repository"
 	"github.com/Tencent/WeKnora/internal/application/service/retriever"
 	"github.com/Tencent/WeKnora/internal/config"
@@ -893,7 +894,27 @@ func (s *knowledgeService) GetKnowledgeBatch(ctx context.Context,
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	return s.repo.GetKnowledgeBatch(ctx, tenantID, ids)
+	rows, err := s.repo.GetKnowledgeBatch(ctx, tenantID, ids)
+	if err != nil {
+		return nil, err
+	}
+	caller := types.CallerFromContext(ctx)
+	_, machine := types.TenantAPIKeyScopeFromContext(ctx)
+	if _, ok := s.kbShareService.(access.KBPolicyLookup); ok && caller.TenantID != 0 && (caller.UserID != "" || machine) {
+		permissions := kbReadPermissions(ctx, s.kbShareService)
+		visible := make([]*types.Knowledge, 0, len(rows))
+		for _, row := range rows {
+			allowed, err := permissions.Check(row.KnowledgeBaseID, row.TenantID, types.OrgRoleViewer)
+			if err != nil {
+				return nil, err
+			}
+			if allowed {
+				visible = append(visible, row)
+			}
+		}
+		rows = visible
+	}
+	return rows, nil
 }
 
 // GetKnowledgeBatchWithSharedAccess retrieves knowledge by IDs, including items from shared KBs the user has access to.
@@ -1201,6 +1222,23 @@ func (s *knowledgeService) SearchKnowledge(ctx context.Context, keyword string, 
 func (s *knowledgeService) SearchKnowledgeForScopes(ctx context.Context, scopes []types.KnowledgeSearchScope, keyword string, offset, limit int, fileTypes []string) ([]*types.Knowledge, bool, int64, error) {
 	if len(scopes) == 0 {
 		return nil, false, 0, nil
+	}
+	if _, ok := s.kbShareService.(access.KBPolicyLookup); ok {
+		permissions := kbReadPermissions(ctx, s.kbShareService)
+		visible := make([]types.KnowledgeSearchScope, 0, len(scopes))
+		for _, scope := range scopes {
+			allowed, err := permissions.Check(scope.KBID, scope.TenantID, types.OrgRoleViewer)
+			if err != nil {
+				return nil, false, 0, err
+			}
+			if allowed {
+				visible = append(visible, scope)
+			}
+		}
+		scopes = visible
+		if len(scopes) == 0 {
+			return nil, false, 0, nil
+		}
 	}
 	return s.repo.SearchKnowledgeInScopes(ctx, scopes, keyword, offset, limit, fileTypes)
 }

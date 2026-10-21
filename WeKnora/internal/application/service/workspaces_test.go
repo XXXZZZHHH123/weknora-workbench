@@ -88,6 +88,9 @@ func workspaceFixture(t *testing.T) (*WorkspaceService, *workspaceKBFixture, *wo
 	if err := db.AutoMigrate(&types.KnowledgeBase{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AutoMigrate(&types.ResearchWorkbench{}, &types.TenantMember{}, &types.Knowledge{}); err != nil {
+		t.Fatal(err)
+	}
 	for _, kb := range kbs.rows {
 		if err := db.Create(kb).Error; err != nil {
 			t.Fatal(err)
@@ -195,6 +198,11 @@ func TestWorkspaceWorkbenchBindingAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This test retains the pre-ACL contract for migrated rows. New resources'
+	// private default and independent authorization have dedicated tests.
+	if err := s.db.Model(w).Update("access_policy", nil).Error; err != nil {
+		t.Fatal(err)
+	}
 	retry, err := s.CreateWorkbench(ctx, input)
 	if err != nil || retry.ID != w.ID {
 		t.Fatal(retry, err)
@@ -236,6 +244,9 @@ func TestWorkspaceWorkbenchBindingAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := s.db.Model(w3).Update("access_policy", nil).Error; err != nil {
+		t.Fatal(err)
+	}
 	shares.allowed = false
 	_, err = s.GetWorkbench(ctx, w3.ID)
 	workspaceStatus(t, err, 404)
@@ -250,7 +261,9 @@ func TestWorkspaceWorkbenchBindingAndIdempotency(t *testing.T) {
 	workspaceStatus(t, err, 409)
 	delete(kbs.rows, "own")
 	_, err = s.GetWorkbench(ctx, w2.ID)
-	workspaceStatus(t, err, 404)
+	if err != nil {
+		t.Fatal("an owner must still be able to manage a workbench with an unavailable source", err)
+	}
 }
 
 func TestWorkspaceConcurrentWorkbenchCreate(t *testing.T) {

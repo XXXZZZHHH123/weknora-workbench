@@ -220,6 +220,10 @@ func RegisterKnowledgeBaseRoutes(r *gin.RouterGroup, handler *handler.KnowledgeB
 	kbgrp := r.Group("/knowledge-bases")
 	kb := g.apiKeyGroup(kbgrp, apiKeyRetrieve(apiKeyFullAccess()))
 	kbManagement := kb.With(apiKeyManageKnowledgeBases(apiKeyFullAccess()))
+	// Resource ACL administration is a human-owner operation, not a tenant-wide
+	// Admin or API-key capability. The service validates the persisted owner.
+	kbgrp.GET("/:id/permissions", g.Viewer(), handler.GetKnowledgeBasePermissions)
+	kbgrp.PUT("/:id/permissions", g.Contributor(), handler.UpdateKnowledgeBasePermissions)
 	{
 		// 创建知识库 — JWT Contributor+；API key 需 manage_kbs 或 full-access。
 		kbManagement.POST("", g.Contributor(), handler.CreateKnowledgeBase)
@@ -235,11 +239,11 @@ func RegisterKnowledgeBaseRoutes(r *gin.RouterGroup, handler *handler.KnowledgeB
 		// handler 内再按 permission/所有者租户做最终判定 —— 尤其 DeleteKnowledgeBase
 		// 以调用者「自身」租户(c.Keys，未被 KBAccess 改写)校验 kb.TenantID，
 		// 把删除锁死为「所有者租户 + Admin」，共享 editor 无法删除源 KB。
-		kbManagement.PUT("/:id", g.OwnedKBOrAdmin(), g.KBAccessWrite("id"), handler.UpdateKnowledgeBase)
+		kbManagement.PUT("/:id", g.ManageKB(), g.KBAccessWrite("id"), handler.UpdateKnowledgeBase)
 		// 立即重新生成知识库 AI 描述 — 与更新知识库同档鉴权；同步执行一次小模型调用。
 		kbManagement.POST("/:id/profile/generate", g.OwnedKBOrAdmin(), g.KBAccessWrite("id"),
 			handler.GenerateKnowledgeBaseProfile)
-		kbManagement.DELETE("/:id", g.OwnedKBOrAdmin(), g.KBAccessWrite("id"), handler.DeleteKnowledgeBase)
+		kbManagement.DELETE("/:id", g.ManageKB(), g.KBAccessWrite("id"), handler.DeleteKnowledgeBase)
 		// 置顶/取消置顶知识库 — 创建者本人 OR Admin+ 且对 KB 有 write 权限
 		// Pin state is now per-(user, kb) (migration 000050). Anyone with
 		// at least Viewer-level read access to the KB — including users

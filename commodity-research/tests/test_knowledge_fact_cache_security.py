@@ -56,7 +56,7 @@ def test_disk_hit_still_rechecks_permission_version_withdrawal_and_outage(canoni
     assert state['pages']==pages
     calls=state['calls'][before:]
     assert ('GET','/api/v1/workspaces/research/'+FIRST) in calls
-    assert ('GET','/api/v1/knowledge-bases/'+KB) in calls
+    assert ('GET','/api/v1/workspaces/research/'+FIRST+'/source-scope') in calls
     assert ('GET','/api/v1/knowledge-bases/'+KB+'/knowledge') in calls
     assert ('POST','/api/research/facts') in calls
     state['revoked']=True

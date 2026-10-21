@@ -120,11 +120,28 @@ func NewKnowledgeHandler(
 // requireKBOwnershipOrAdmin enforces the same "KB creator OR Admin+" matrix
 // used by OwnedKBOrAdmin for routes whose KB id comes from the request body.
 func (h *KnowledgeHandler) requireKBOwnershipOrAdmin(c *gin.Context, kbID string) error {
+	if h.kbService == nil {
+		return errors.NewServiceUnavailableError("无法核验知识库权限")
+	}
+	kb, err := h.kbService.GetKnowledgeBaseByID(c.Request.Context(), kbID)
+	if err != nil {
+		if goerrors.Is(err, repository.ErrKnowledgeBaseNotFound) {
+			return errors.NewNotFoundError("knowledge base not found")
+		}
+		return errors.NewInternalServerError("cannot verify knowledge base ownership")
+	}
+	if kb != nil && kb.AccessPolicy != nil {
+		_, err := resolveHandlerKBAccessFor(c, kbID, h.kbService, h.kbShareService, h.agentShareService, types.OrgRoleEditor)
+		return err
+	}
+	if kb == nil || kb.TenantID != middleware.KBAccessRequest(c).Caller.TenantID {
+		return errors.NewNotFoundError("knowledge base not found")
+	}
 	evalErr := middleware.EvaluateOwnershipOrRole(
 		c.Request.Context(),
 		h.cfg,
 		types.TenantRoleAdmin,
-		func() (string, error) { return resolveKBCreatorByKBID(c, h.kbService, kbID) },
+		func() (string, error) { return kb.CreatorID, nil },
 	)
 	if evalErr == nil {
 		return nil
@@ -210,7 +227,13 @@ func (h *KnowledgeHandler) resolveKnowledgeAndValidateKBAccess(
 		}
 		return knowledge, grant.Context(ctx), nil
 	}
-	kb := &types.KnowledgeBase{ID: knowledge.KnowledgeBaseID, TenantID: knowledge.TenantID}
+	if h.kbService == nil {
+		return nil, ctx, errors.NewServiceUnavailableError("无法核验知识库权限")
+	}
+	kb, loadErr := h.kbService.GetKnowledgeBaseByID(ctx, knowledge.KnowledgeBaseID)
+	if loadErr != nil || kb == nil || kb.TenantID != knowledge.TenantID {
+		return nil, ctx, errors.NewNotFoundError("Knowledge base not found")
+	}
 	grant, err := access.ResolveKB(ctx, request, kb, requiredPermission, h.kbShareService, h.agentShareService)
 	if goerrors.Is(err, access.ErrForbidden) {
 		return nil, ctx, errors.NewForbiddenError("Permission denied to access this knowledge")

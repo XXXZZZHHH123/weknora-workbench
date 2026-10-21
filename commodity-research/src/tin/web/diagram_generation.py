@@ -11,7 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from tin.config import settings
 from tin.db import SessionLocal
 from tin.export import diagram_md
-from tin.integration.workbench_scope import current_workbench, go_request
+from tin.integration.workbench_scope import current_workbench, go_request, require_shared_write
 from tin.web.diagram_draft import compile_graph
 from tin.web.workbench_sources import source_content
 
@@ -47,8 +47,7 @@ def scope_for_generation():
     scope = current_workbench.get()
     if scope is None or not scope.authorization:
         raise HTTPException(409,'请从已绑定知识库的研究工作台打开产业图助手')
-    if not scope.identity.can_write:
-        raise HTTPException(403,'当前角色不能生成或修改产业图')
+    require_shared_write(scope)
     return scope
 
 

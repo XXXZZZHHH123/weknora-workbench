@@ -122,6 +122,10 @@ func TestWorkspaceOnboardingIsPersonalAndPersistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	row.AccessPolicy = &types.ResourceAccessPolicy{SpacePermission: "viewer", Members: []types.ResourceMemberPermission{}}
+	if err := s.db.Save(row).Error; err != nil {
+		t.Fatal(err)
+	}
 	var count int64
 	s.db.Model(&types.ResearchWorkbenchOnboardingRecord{}).Count(&count)
 	if count != 0 || row.Onboarding.Status != "active" || row.Onboarding.Tasks.Sources {
@@ -174,6 +178,9 @@ func TestWorkspaceOnboardingChecksRevokedAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	shares.allowed = false
+	if err := s.db.Model(row).Update("access_policy", nil).Error; err != nil {
+		t.Fatal(err)
+	}
 	_, err = s.UpdateWorkbenchOnboarding(ctx, row.ID, WorkbenchOnboardingInput{Status: workspaceString("dismissed")})
 	workspaceStatus(t, err, 404)
 	var count int64

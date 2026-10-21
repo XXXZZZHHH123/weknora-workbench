@@ -176,6 +176,14 @@ func newFileServeHandler(
 		if !ok {
 			return
 		}
+		if validator, ok := resourceCatalog.(interface {
+			AuthorizeResourceReference(context.Context, string) error
+		}); ok {
+			if err := validator.AuthorizeResourceReference(c.Request.Context(), filePath); err != nil {
+				c.JSON(http.StatusForbidden, gin.H{"error": "forbidden: resource access revoked"})
+				return
+			}
+		}
 
 		tenant, _ := c.Request.Context().Value(types.TenantInfoContextKey).(*types.Tenant)
 		if tenant == nil {
@@ -653,6 +661,14 @@ func servePresignedPreview(
 			filePath, ok := requireFilePathQuery(c)
 			if !ok {
 				return
+			}
+			if validator, ok := resourceCatalog.(interface {
+				AuthorizeResourceReference(context.Context, string) error
+			}); ok {
+				if err := validator.AuthorizeResourceReference(ctx, filePath); err != nil {
+					c.JSON(http.StatusForbidden, gin.H{"error": "forbidden: resource access revoked"})
+					return
+				}
 			}
 
 			tenant, _ := ctx.Value(types.TenantInfoContextKey).(*types.Tenant)

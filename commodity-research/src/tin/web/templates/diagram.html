@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}动态产业图 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block main %}
-
+{% set can_edit_diagram = not research_workbench() or research_workbench().can_edit %}
 
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
@@ -18,15 +18,15 @@
       {% for t in templates_all %}
       <option value="{{ t.id }}" {{ 'selected' if t.id == template.id }}>{{ t.name }}{{ '（默认）' if t.is_default }}</option>
       {% endfor %}
-      <option value="__new">＋ 新建空白布局…</option>
+      {% if can_edit_diagram %}<option value="__new">＋ 新建空白布局…</option>{% endif %}
     </select>
-    <button type="button" onclick="dgDeleteTemplate()" title="删除当前布局"
+    <button type="button" onclick="dgDeleteTemplate()" title="删除当前布局" {% if not can_edit_diagram %}disabled{% endif %}
       class="px-2 py-1.5 rounded-md border border-[var(--line)] text-[var(--text-muted)] hover:text-[var(--alert)] hover:bg-[var(--surface-soft)]">🗑</button>
     {# 上方工具栏只放"这张图本身"的事：换布局、结构文本、进出编辑。
        看图时才用的判断视角 / 趋势对比挪到画布右上角——它们是看图的选项，不是编辑动作。 #}
     <button type="button" onclick="dgOpenMarkdown()" id="dg-md-btn"
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">md管理</button>
-    <button type="button" onclick="dgToggleEdit()" id="dg-edit-btn"
+    <button type="button" onclick="dgToggleEdit()" id="dg-edit-btn" {% if not can_edit_diagram %}disabled title="当前账号只有工作台查看权限"{% endif %}
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">编辑布局</button>
     {# 保存只在编辑态出现：看图时摆在那里既点不动也提示不了什么 #}
     <button type="button" onclick="dgExitEdit()" id="dg-exit" class="hidden
@@ -272,7 +272,7 @@
         <b>流向里的名称必须写全</b>，对不上会报错并指出是哪一个，不会静默丢掉。</p>
     </div>
   </details>
-  {% if research_workbench() and research_identity().can_write %}
+  {% if research_workbench() and can_edit_diagram %}
   <section id="dg-generator" aria-label="从资料生成 Markdown" class="mt-2 p-2 rounded-md border border-[var(--line)] text-xs">
     <div class="flex items-center gap-2 flex-wrap">
       <select id="dg-ai-model" aria-label="生成模型" onchange="dgGenerationInputChanged()" class="px-2 py-1 rounded-md max-w-[220px]"></select>
@@ -294,9 +294,9 @@
            class="flex-1 px-2 py-1.5 rounded-md">
     <button type="button" onclick="dgCopyMarkdown()"
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制</button>
-    <button type="button" onclick="dgImportMarkdown(false)"
+    <button type="button" onclick="dgImportMarkdown(false)" {% if not can_edit_diagram %}disabled{% endif %}
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">导入为新布局</button>
-    <button type="button" onclick="dgImportMarkdown(true)"
+    <button type="button" onclick="dgImportMarkdown(true)" {% if not can_edit_diagram %}disabled{% endif %}
       class="px-3 py-1.5 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)]">应用到当前布局</button>
   </div>
   <div id="dg-md-msg" class="mt-1.5 text-[11px] text-[var(--amber)] min-h-[16px]"></div>

@@ -54,6 +54,24 @@ def canonical(monkeypatch, tmp_path):
                 return httpx.Response(200, json={'success': True, 'data': {'user': {
                     'id': 'viewer' if viewer else 'researcher', 'email': 'researcher@test', 'username': 'Researcher'},
                     'tenant': {'id': 17}, 'memberships': [{'tenant_id': 17, 'role': 'viewer' if viewer else 'owner'}]}})
+            if path.startswith('/api/v1/workspaces/research/') and path.endswith('/source-scope'):
+                identifier = path.split('/')[-2]
+                if identifier not in {FIRST, SECOND, LEGACY}:
+                    return httpx.Response(404, json={'success': False})
+                if state['revoked'] or state.get('macro_revoked') or state.get('source_consent_revoked'):
+                    return httpx.Response(403, json={'success': False})
+                bound = OTHER_KB if identifier == SECOND and state['second_other_kb'] else KB
+                sources = [{'knowledge_base_id': bound, 'tenant_id': 17, 'kind': 'primary',
+                    'delegated': state.get('source_delegated', False), 'permission': 'viewer',
+                    'knowledge': state['sources'] if bound == KB else []}]
+                if state.get('default_macro'):
+                    sources.append({'knowledge_base_id': OTHER_KB, 'tenant_id': state['default_macro']['tenant_id'],
+                        'kind': 'macro', 'delegated': False, 'permission': 'viewer', 'knowledge': [
+                            {'id': 'macro-source', 'file_hash': 'c' * 32, 'file_type': 'xlsx'}]})
+                viewer = request.headers.get('authorization') == 'Bearer source-viewer'
+                return httpx.Response(200, json={'success': True, 'data': {'id': identifier,
+                    'user_id': 'viewer' if viewer else 'researcher', 'scope_tenant_id': 17,
+                    'knowledge_base_id': bound, 'sources': sources}})
             if path.startswith('/api/v1/workspaces/research/'):
                 identifier = path.rsplit('/', 1)[1]
                 if identifier not in {FIRST, SECOND, LEGACY}:
@@ -61,15 +79,18 @@ def canonical(monkeypatch, tmp_path):
                 metadata = {
                     'id': identifier, 'name': 'Research', 'scope_tenant_id': 17,
                     'knowledge_base_id': OTHER_KB if identifier == SECOND and state['second_other_kb'] else KB,
-                    'workspace_mode': 'legacy' if identifier == LEGACY else 'isolated'}
+                    'workspace_mode': 'legacy' if identifier == LEGACY else 'isolated',
+                    'can_edit': state.get('wb_edit', True) and request.headers.get('authorization') != 'Bearer source-viewer'}
                 if state.get('default_macro'):
                     metadata['default_knowledge_base'] = state['default_macro']
                 return httpx.Response(200, json={'success': True, 'data': metadata})
             if path in {'/api/v1/knowledge-bases/' + KB, '/api/v1/knowledge-bases/' + OTHER_KB}:
-                denied = state['revoked'] or (state.get('macro_revoked') and path.endswith(OTHER_KB))
+                denied = state['revoked'] or state.get('source_delegated') or (state.get('macro_revoked') and path.endswith(OTHER_KB))
                 return httpx.Response(403 if denied else 200, json={'success': True,
-                    'data': {'id': path.rsplit('/', 1)[1], 'tenant_id': 17, 'creator_id': 'researcher'}})
+                    'data': {'id': path.rsplit('/', 1)[1], 'tenant_id': 17, 'creator_id': 'researcher', 'my_permission': 'editor'}})
             if path == '/api/v1/knowledge-bases/' + KB + '/knowledge':
+                if state.get('source_delegated'):
+                    return httpx.Response(403, json={'success': False})
                 return httpx.Response(200, json={'success': True, 'data': state['sources'], 'total': len(state['sources'])})
             if path == '/api/v1/knowledge-bases/' + OTHER_KB + '/knowledge':
                 rows = [{'id': 'macro-source', 'knowledge_base_id': OTHER_KB, 'tenant_id': 17,

@@ -360,6 +360,14 @@ def create_app(data_dir: str | Path | None = None):
     async def research_facts(request: Request):
         from .research_facts import read_facts
         body = await request.json()
+        manifest = getattr(request.state, 'research_source_manifest', None)
+        if manifest is not None:
+            from .research_facts import _parameters
+            sources, _, _, _ = _parameters(body)
+            permitted = {(row.get('id'), str(row.get('file_hash', '')).lower()) for row in manifest
+                         if isinstance(row, dict) and row.get('parse_status') not in {'deleting', 'deleted'}}
+            if any((row['knowledge_id'], row['file_hash']) not in permitted for row in sources):
+                raise HTTPException(403, '来源不在当前工作台已批准的研究数据范围内')
         def read_current():
             with manager.lock:
                 document=read_facts(store, manager, body)
@@ -441,11 +449,9 @@ def create_app(data_dir: str | Path | None = None):
             permission = data.get('my_permission')
             if (document.get('success') is False or data.get('id') != knowledge_base_id
                     or type(owner) is not int or owner <= 0
-                    or (owner != identity.tenant_id and permission not in {'viewer', 'editor', 'admin'})):
+                    or permission not in {'viewer', 'editor', 'admin'}):
                 raise ValueError('invalid knowledge-base grant')
-            writable = permission in {'editor', 'admin'} if permission else (
-                owner == identity.tenant_id and (identity.role in {'owner', 'admin'}
-                    or data.get('creator_id') == identity.user_id))
+            writable = permission in {'editor', 'admin'}
             return replace(identity, knowledge_base_id=knowledge_base_id,
                            knowledge_base_tenant_id=owner, knowledge_base_can_write=writable)
         except (ValueError, TypeError, AttributeError):

@@ -259,6 +259,10 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                         raise HTTPException(403, "当前空间角色只有读取权限")
                     if not _same_origin(request):
                         raise HTTPException(403, "请求来源不匹配")
+                    if route_path.startswith('/api/sn/diagram') and route_path not in {
+                            '/api/sn/diagram/values', '/api/sn/diagram/markdown/dump'}:
+                        from tin.integration.workbench_scope import require_shared_write
+                        require_shared_write(scope)
                 scope_marker = current_workbench.set(scope)
                 request.scope["path"] = prefix + route_path
                 request.scope["raw_path"] = (prefix + route_path).encode()

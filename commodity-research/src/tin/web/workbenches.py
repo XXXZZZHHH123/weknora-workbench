@@ -14,7 +14,7 @@ from sqlalchemy import and_, func, select
 from starlette.concurrency import run_in_threadpool
 
 from tin.config import SHANGHAI, settings
-from tin.integration.workbench_scope import WorkbenchScope, go_request, verified_workbench, workbench_session
+from tin.integration.workbench_scope import WorkbenchScope, go_request, verified_workbench, workbench_session, require_shared_write
 from tin.models import Indicator, Observation, ObservationSource, SourceArtifact, SourceBatch, SourceMapping
 from tin.provenance import bridge
 from tin.provenance.service import artifact_path, stable_hash, verified_artifact_bytes
@@ -26,6 +26,7 @@ router = APIRouter(prefix="/api/workbenches/{workbench_id}")
 def _write(scope):
     if not scope.identity.can_write:
         raise HTTPException(403, "当前空间角色只有读取权限")
+    require_shared_write(scope)
 
 
 def _structured_catalog(operation, arguments):
@@ -174,7 +175,19 @@ def source_review_progress(inventory, scope):
 
 @router.get("/overview")
 async def overview(scope: WorkbenchScope = Depends(verified_workbench)):
-    inventory = await source_inventory(scope, page_size=200)
+    delegated = scope.knowledge_base_id in scope.source_delegations
+    if delegated:
+        def derived_inventory():
+            from tin.integration.read_api import research_result_counts
+            with workbench_session(scope) as session:
+                return {'knowledge_base_id': scope.knowledge_base_id, 'sources': [], 'total': 0,
+                    'datasets': [], 'dataset_versions': [], 'source_imports': [], 'page': 1, 'page_size': 200,
+                    'has_more': False, 'structured_error': None, 'review_error': None,
+                    'fact_counts': fact_counts(session), 'research_counts': research_result_counts(session, scope),
+                    'derived_dataset_count': len(session.info['knowledge_facts_datasets'])}
+        inventory = await run_in_threadpool(derived_inventory)
+    else:
+        inventory = await source_inventory(scope, page_size=200)
     counts = dict(inventory['fact_counts'])
     research_counts = inventory['research_counts']
     sources = inventory["sources"]
@@ -182,7 +195,7 @@ async def overview(scope: WorkbenchScope = Depends(verified_workbench)):
     ready_docs = sum(s.get("parse_status") == "completed" for s in sources if s not in excel)
     review = source_review_progress(inventory, scope)
     counts.update(sources=inventory["total"], documents_ready=ready_docs,
-                  datasets=len(inventory["datasets"]), counts_partial=inventory["has_more"])
+                  datasets=inventory.get('derived_dataset_count', len(inventory["datasets"])), counts_partial=inventory["has_more"])
     counts.update(review)
     prepared = counts["indicators"] > 0 or ready_docs > 0 or any(research_counts.values())
     research_ready = any(research_counts.values())
@@ -194,7 +207,8 @@ async def overview(scope: WorkbenchScope = Depends(verified_workbench)):
               "optional": not counts['observation_source_count']},
              {"id": "research", "status": "ready" if research_ready else "pending", "optional": True}]
     status = "partially_ready" if prepared else ("preparing" if counts["sources"] else "empty")
-    return {"workbench": scope.metadata, "counts": counts, "readiness": {"status": status, "tasks": tasks},
+    return {"workbench": scope.metadata, "counts": counts, "source_access": 'derived' if delegated else 'direct',
+            "readiness": {"status": status, "tasks": tasks},
             "modules": [{"id": "data", "status": "ready" if counts["indicators"] else "pending",
                          "reason": None if counts["indicators"] else "先确认并绑定本工作台的真实来源字段"},
                         {"id": "documents", "status": "ready" if ready_docs else "pending",

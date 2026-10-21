@@ -23,6 +23,8 @@ func NewKnowledgeBaseRepository(db *gorm.DB) interfaces.KnowledgeBaseRepository 
 	return &knowledgeBaseRepository{db: db}
 }
 
+func (r *knowledgeBaseRepository) ResourceAccessDB() *gorm.DB { return r.db }
+
 // CreateKnowledgeBase creates a new knowledge base
 func (r *knowledgeBaseRepository) CreateKnowledgeBase(ctx context.Context, kb *types.KnowledgeBase) error {
 	return r.db.WithContext(ctx).Create(kb).Error
@@ -170,7 +172,7 @@ func (r *knowledgeBaseRepository) ListUserKBPinIDs(
 
 // UpdateKnowledgeBase updates a knowledge base
 func (r *knowledgeBaseRepository) UpdateKnowledgeBase(ctx context.Context, kb *types.KnowledgeBase) error {
-	return r.db.WithContext(ctx).Save(kb).Error
+	return r.db.WithContext(ctx).Omit("AccessPolicy").Save(kb).Error
 }
 
 // UpdateKnowledgeBaseGeneratedProfile writes the generated_profile column

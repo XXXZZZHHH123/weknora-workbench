@@ -43,6 +43,10 @@ type kbShareService struct {
 	audit     interfaces.AuditLogService
 }
 
+func (s *kbShareService) LookupKnowledgeBaseAccess(ctx context.Context, id string) (*types.KnowledgeBase, error) {
+	return s.kbRepo.GetKnowledgeBaseByID(ctx, id)
+}
+
 // NewKBShareService creates a new knowledge base share service
 func NewKBShareService(
 	shareRepo interfaces.KBShareRepository,

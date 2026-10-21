@@ -51,7 +51,7 @@ def original_client(tmp_path, monkeypatch):
         actor = request.headers.get("x-actor", "first")
         value = WorkbenchScope(Identity(actor, "fixture@example.test", "Fixture", 7,
             request.headers.get("x-role", "owner")), workbench_id, "library-a", 7,
-            {"id":workbench_id, "workspace_mode":"isolated"}, "Bearer " + actor)
+            {"id":workbench_id, "workspace_mode":"isolated", "can_edit": True}, "Bearer " + actor)
         state["scope"] = value
         return value
 

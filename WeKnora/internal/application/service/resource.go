@@ -268,6 +268,11 @@ func (s *resourceCatalog) CreateAccessGrant(ctx context.Context, reference strin
 	if err != nil {
 		return "", err
 	}
+	if caller := types.CallerFromContext(ctx); caller.TenantID != 0 && caller.TenantID == resource.TenantID {
+		if err := s.AuthorizeResourceReference(ctx, reference); err != nil {
+			return "", err
+		}
+	}
 	if ttl <= 0 {
 		ttl = defaultResourceGrantTTL
 	}

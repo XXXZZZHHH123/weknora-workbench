@@ -260,11 +260,6 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 	if err != nil {
 		return nil, err
 	}
-	if kbID != "" {
-		if _, err := s.readableKB(ctx, kbID); err != nil {
-			return nil, err
-		}
-	}
 	rows := make([]*types.ResearchWorkbench, 0)
 	visible := make([]*types.ResearchWorkbench, 0)
 	q := s.db.WithContext(ctx).Where("tenant_id = ?", caller.TenantID)
@@ -275,13 +270,12 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 		return nil, err
 	}
 	for _, row := range rows {
-		kb, err := s.readableKB(ctx, row.KnowledgeBaseID)
-		if err != nil {
+		if _, err := s.populateWorkbenchAccess(ctx, caller, row); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			continue
 		}
-		row.KnowledgeBaseName = kb.Name
-		row.ScopeTenantID = row.TenantID
-		row.CanManage = canManageWorkbench(caller, row)
 		visible = append(visible, row)
 	}
 	if err := s.loadWorkbenchOnboarding(ctx, visible); err != nil {
@@ -291,6 +285,9 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 }
 
 func canManageWorkbench(caller types.Caller, row *types.ResearchWorkbench) bool {
+	if row != nil && row.AccessPolicy != nil {
+		return caller.Role.HasPermission(types.TenantRoleContributor) && row.UserID == caller.UserID
+	}
 	return row != nil && caller.Role.HasPermission(types.TenantRoleContributor) &&
 		(row.UserID == caller.UserID || caller.Role.HasPermission(types.TenantRoleAdmin))
 }
@@ -313,16 +310,13 @@ func (s *WorkspaceService) workbenchWithSource(ctx context.Context, db *gorm.DB,
 	if err := q.First(&row).Error; err != nil {
 		return nil, nil, workspaceDBError(err)
 	}
-	kb, err := s.readableKB(ctx, row.KnowledgeBaseID)
+	kb, err := s.populateWorkbenchAccess(ctx, caller, &row)
 	if err != nil {
 		return nil, nil, err
 	}
 	if edit && !canManageWorkbench(caller, &row) {
-		return nil, nil, apperrors.NewForbiddenError("仅创建者或空间管理员可修改工作台")
+		return nil, nil, apperrors.NewForbiddenError("仅工作台主人可管理工作台")
 	}
-	row.KnowledgeBaseName = kb.Name
-	row.ScopeTenantID = row.TenantID
-	row.CanManage = canManageWorkbench(caller, &row)
 	return &row, kb, nil
 }
 
@@ -340,11 +334,12 @@ func (s *WorkspaceService) GetWorkbench(ctx context.Context, id string) (*types.
 		return nil, err
 	}
 	if defaultKB != nil && !defaultKB.DeletedAt.Valid {
-		if _, err = s.readableKB(ctx, defaultKB.ID); err != nil {
+		if _, err = s.readableKB(ctx, defaultKB.ID); err == nil {
+			row.DefaultKnowledgeBase = &types.ResearchWorkbenchSource{KnowledgeBaseID: defaultKB.ID,
+				TenantID: defaultKB.TenantID, Kind: macroKnowledgeBaseKind, Name: defaultKB.Name}
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
-		row.DefaultKnowledgeBase = &types.ResearchWorkbenchSource{KnowledgeBaseID: defaultKB.ID,
-			TenantID: defaultKB.TenantID, Kind: macroKnowledgeBaseKind, Name: defaultKB.Name}
 	}
 	if err = s.loadWorkbenchOnboarding(ctx, []*types.ResearchWorkbench{row}); err != nil {
 		return nil, err
@@ -378,7 +373,8 @@ func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceI
 		return nil, err
 	}
 	row := &types.ResearchWorkbench{ID: uuid.NewString(), TenantID: caller.TenantID, UserID: caller.UserID, Name: *input.Name, KnowledgeBaseID: kb.ID, KnowledgeBaseName: kb.Name, IdempotencyKey: input.IdempotencyKey,
-		WorkspaceMode: types.ResearchWorkbenchModeIsolated, TemplateID: templateID, TemplateVersion: templateVersion}
+		WorkspaceMode: types.ResearchWorkbenchModeIsolated, TemplateID: templateID, TemplateVersion: templateVersion,
+		AccessPolicy: types.NewResourceAccessPolicy()}
 	if input.Description != nil {
 		row.Description = *input.Description
 	}
@@ -447,7 +443,7 @@ func (s *WorkspaceService) mutateWorkbench(ctx context.Context, verified *types.
 			return workspaceDBError(err)
 		}
 		if !canManageWorkbench(caller, &current) {
-			return apperrors.NewForbiddenError("仅创建者或空间管理员可修改工作台")
+			return apperrors.NewForbiddenError("仅工作台主人可管理工作台")
 		}
 		if current.KnowledgeBaseID != verified.KnowledgeBaseID {
 			return apperrors.NewConflictError("工作台知识库绑定已变更，请刷新后重试")
@@ -475,8 +471,11 @@ func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input
 	if err != nil {
 		return nil, err
 	}
-	sources := []*types.KnowledgeBase{source}
-	if target != nil && (target.ID != source.ID || target.TenantID != source.TenantID) {
+	sources := []*types.KnowledgeBase{}
+	if source != nil {
+		sources = append(sources, source)
+	}
+	if target != nil && (source == nil || target.ID != source.ID || target.TenantID != source.TenantID) {
 		sources = append(sources, target)
 	}
 	err = s.mutateWorkbench(ctx, verified, sources, func(tx *gorm.DB, row *types.ResearchWorkbench) error {
@@ -489,6 +488,11 @@ func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input
 		if input.KnowledgeBaseID != nil {
 			if row.WorkspaceMode == types.ResearchWorkbenchModeIsolated && row.KnowledgeBaseID != *input.KnowledgeBaseID {
 				return apperrors.NewConflictError("独立工作台不能更换主知识库，请基于目标知识库新建工作台")
+			}
+			if row.KnowledgeBaseID != *input.KnowledgeBaseID {
+				row.SourceSharingApproved = false
+				row.SourceSharingApprovedBy = ""
+				row.SourceSharingRequested = false
 			}
 			row.KnowledgeBaseID = *input.KnowledgeBaseID
 		}
@@ -505,7 +509,11 @@ func (s *WorkspaceService) DeleteWorkbench(ctx context.Context, id string) error
 	if err != nil {
 		return err
 	}
-	return s.mutateWorkbench(ctx, verified, []*types.KnowledgeBase{source}, func(tx *gorm.DB, row *types.ResearchWorkbench) error {
+	sources := []*types.KnowledgeBase{}
+	if source != nil {
+		sources = append(sources, source)
+	}
+	return s.mutateWorkbench(ctx, verified, sources, func(tx *gorm.DB, row *types.ResearchWorkbench) error {
 		return tx.Delete(row).Error
 	})
 }
