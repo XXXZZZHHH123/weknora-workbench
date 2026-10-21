@@ -294,6 +294,41 @@ class BuildMemoryGuardTests(unittest.TestCase):
         (self.parent / 'memory.max').write_text(str(minimum))
         self.assertEqual(self.verify(), self.budget)
 
+    def test_cgroup_evidence_preserves_scope_and_ancestor_paths(self):
+        actual = guard.read_cgroup()
+        self.assertEqual(actual['_path'], str(self.scope))
+        self.assertEqual(actual['_ancestors'][0]['_path'], str(self.parent))
+
+    def test_insufficient_ancestor_memory_reports_limiting_file_and_required_budget(self):
+        self.budget = guard.calculate(5897, 5000, {})
+        for name, value in self.actual_limits().items():
+            (self.scope / name).write_text(str(value))
+        (self.parent / 'memory.max').write_text(str(2048 * guard.MIB))
+        with self.assertRaises(guard.GuardError) as caught:
+            guard.verify_limits(self.budget, guard.read_cgroup())
+        message = str(caught.exception)
+        for detail in (str(self.parent / 'memory.max'), '2048MiB', '3456MiB',
+                       '2816MiB', '640MiB'):
+            self.assertIn(detail, message)
+
+    def test_insufficient_scope_memory_reports_scope_file(self):
+        (self.scope / 'memory.max').write_text(str(2048 * guard.MIB))
+        with self.assertRaises(guard.GuardError) as caught:
+            self.verify()
+        message = str(caught.exception)
+        for detail in (str(self.scope / 'memory.max'), '2048MiB', '2432MiB'):
+            self.assertIn(detail, message)
+
+    def test_legacy_limit_evidence_without_paths_remains_supported(self):
+        limits = self.actual_limits()
+        guard.verify_limits(self.budget, limits)
+        limits['_ancestors'] = [{'memory.max': 2048 * guard.MIB}]
+        with self.assertRaises(guard.GuardError) as caught:
+            guard.verify_limits(self.budget, limits)
+        message = str(caught.exception)
+        for detail in ('memory.max', '2048MiB', '2432MiB'):
+            self.assertIn(detail, message)
+
     def test_zero_ancestor_high_and_malformed_ancestor_limits_are_rejected(self):
         (self.parent / 'memory.high').write_text('0')
         with self.assertRaises(guard.GuardError):
@@ -312,8 +347,9 @@ class BuildMemoryGuardTests(unittest.TestCase):
         actual = guard.read_cgroup()
         self.assertEqual(len(actual['_ancestors']), 2)
         self.assertEqual(actual['_ancestors'][0]['memory.max'], self.budget.memory * guard.MIB)
-        with self.assertRaises(guard.GuardError):
+        with self.assertRaises(guard.GuardError) as caught:
             self.verify()
+        self.assertIn(str(self.parent / 'memory.max'), str(caught.exception))
 
     def test_verified_scope_accepts_stricter_swap_and_all_ancestor_evidence(self):
         (self.parent / 'memory.swap.max').write_text('0')
@@ -401,6 +437,49 @@ class BuildMemoryShellBoundaryTests(unittest.TestCase):
             self.assertIn('缺少内存预算', result.stderr)
             self.assertFalse((root / 'scripts/unexpected-guard-call').exists())
             self.assertFalse((root / '.build').exists())
+
+
+class BuildMemoryFullPreflightTests(unittest.TestCase):
+    def run_check(self, verify_exit):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / 'scripts').mkdir()
+        (root / 'bin').mkdir()
+        shutil.copy(REPO / 'scripts/build-local.sh', root / 'scripts/build-local.sh')
+        trace = root / 'trace'
+        (root / 'scripts/build-memory-guard.py').write_text(
+            "import os,sys\nfrom pathlib import Path\n"
+            "with Path(os.environ['TEST_PREFLIGHT_TRACE']).open('a') as f: f.write(sys.argv[1]+'\\n')\n"
+            "if sys.argv[1]=='verify' and os.environ['TEST_VERIFY_EXIT']!='0':\n"
+            " print('祖先 cgroup 的有效内存上限不足以容纳本次构建预算',file=sys.stderr)\n"
+            " raise SystemExit(int(os.environ['TEST_VERIFY_EXIT']))\n"
+            "print('3584 3225 128 2816 768 5897 5022 1024 6246 1536')\n")
+        systemd = root / 'bin/systemd-run'
+        systemd.write_text("#!/usr/bin/bash\nset -eu\nprintf 'scope\\n' >> \"$TEST_PREFLIGHT_TRACE\"\n"
+                           "while [[ \"$1\" != /usr/bin/env ]]; do shift; done\nexec \"$@\"\n")
+        systemd.chmod(0o755)
+        env = {**os.environ, 'PATH': str(root / 'bin')+':'+os.environ['PATH'],
+               'TEST_PREFLIGHT_TRACE': str(trace), 'TEST_VERIFY_EXIT': str(verify_exit)}
+        env.pop('WEKNORA_BUILD_LIMITED', None)
+        env.pop('WEKNORA_BUILD_BUDGET', None)
+        result = subprocess.run(['/usr/bin/bash', str(root / 'scripts/build-local.sh'), '--check-memory'],
+                                env=env, capture_output=True, text=True, timeout=10)
+        return root, trace.read_text().splitlines(), result
+
+    def test_check_memory_enters_actual_scope_and_rejects_ancestor_limit(self):
+        root, trace, result = self.run_check(27)
+        self.assertEqual(result.returncode, 27, result.stdout+result.stderr)
+        self.assertEqual(trace, ['plan', 'scope', 'verify'])
+        self.assertNotIn('预检通过', result.stdout)
+        self.assertFalse((root / '.build').exists(), 'preflight must not create build staging')
+
+    def test_successful_check_memory_verifies_scope_without_starting_build(self):
+        root, trace, result = self.run_check(0)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertEqual(trace, ['plan', 'scope', 'verify'])
+        self.assertIn('预检通过', result.stdout)
+        self.assertFalse((root / '.build').exists())
 
 
 if __name__ == '__main__':

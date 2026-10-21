@@ -206,7 +206,7 @@ def read_cgroup():
     directory = (root / unified[0].lstrip('/')).resolve()
     if not directory.is_relative_to(root):
         raise GuardError('无法验证本进程的 cgroup 路径。')
-    limits = {}
+    limits = {'_path': str(directory)}
     def read_limit(path):
         value = path.read_text().strip()
         if value == 'max':
@@ -223,8 +223,9 @@ def read_cgroup():
                 break  # The unified root has no memory.max limit file.
             if not parent.is_relative_to(root):
                 raise ValueError('cgroup ancestor escaped the unified hierarchy')
-            ancestors.append({name: read_limit(parent / name)
-                              for name in ('memory.max', 'memory.high', 'memory.swap.max')})
+            ancestors.append({'_path': str(parent),
+                              **{name: read_limit(parent / name)
+                                 for name in ('memory.max', 'memory.high', 'memory.swap.max')}})
         limits['_ancestors'] = ancestors
     except (OSError, ValueError) as exc:
         raise GuardError('无法读取实际 cgroup 内存限制，已停止构建。') from exc
@@ -239,23 +240,30 @@ def verify_limits(budget, limits, env=None):
     if not 512 <= budget.heap <= heap_ceiling(budget.total, budget.memory, env):
         raise GuardError('Node 堆上限不符合本次构建预算。')
     effective = {}
+    effective_paths = {}
     for name, maximum in [('memory.max', budget.memory*MIB),
                           ('memory.high', budget.high*MIB),
                           ('memory.swap.max', budget.swap*MIB)]:
         actual = limits.get(name)
         if actual is None or actual < 0 or actual > maximum:
             raise GuardError(f'未检测到有效的 {name} 构建约束；环境标记不能代替实际 cgroup 限额，已停止。')
-        finite = [actual]
+        finite = [(actual, limits.get('_path'))]
         for ancestor in limits.get('_ancestors', []):
             value = ancestor.get(name)
             if value is not None:
                 if not isinstance(value, int) or value < 0:
                     raise GuardError('祖先 cgroup 内存限制无效，已停止。')
-                finite.append(value)
-        effective[name] = min(finite)
+                finite.append((value, ancestor.get('_path')))
+        effective[name], effective_paths[name] = min(finite, key=lambda item: item[0])
     _, _, overhead = profile_limits(budget.total, env or {})
-    if effective['memory.max'] < max(MIN_BUILD_MB, budget.heap + overhead) * MIB:
-        raise GuardError('祖先 cgroup 的有效内存上限不足以容纳本次构建预算，已停止。')
+    required = max(MIN_BUILD_MB, budget.heap + overhead)
+    if effective['memory.max'] < required * MIB:
+        path = effective_paths['memory.max']
+        source = str(Path(path) / 'memory.max') if path else '未知 cgroup 的 memory.max'
+        actual_mb = f"{effective['memory.max'] / MIB:.6f}".rstrip('0').rstrip('.')
+        raise GuardError(f'cgroup 的有效内存上限不足以容纳本次构建预算：{source} 实际 {actual_mb}MiB，'
+                         f'本次至少需要 {required}MiB（Node 堆 {budget.heap}MiB + 原生余量 {overhead}MiB，'
+                         f'最低构建预算 {MIN_BUILD_MB}MiB）；已停止。')
     if effective['memory.high'] <= 0:
         raise GuardError('有效 memory.high 为零，已停止构建。')
     if limits.get('memory.oom.group') != 1:
