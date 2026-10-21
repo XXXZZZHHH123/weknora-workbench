@@ -6392,6 +6392,10 @@ export default {
     search: {
       noResults: 'No matching content found',
       candidatesBelowThreshold: 'Matched {count} candidate(s), none relevant enough to use',
+      candidateDocuments: "Found {count} candidate file(s), confirming sources",
+      confirmedDocuments: "Confirmed {count} source file(s)",
+      foundDocuments: "Found {count} file(s)",
+      noCandidateDocuments: "No candidate files available",
       foundResultsFromFiles: 'Found {count} result(s) from {files} file(s)',
       foundResults: 'Found {count} result(s)',
       foundMixedResults: 'Found {count} result(s) ({docCount} documents, {webCount} web results)',

@@ -633,6 +633,7 @@
 </template>
 
 <script setup lang="ts">
+import { knowledgeSearchSummary } from '@/utils/knowledgeSearchSummary';
 import { readDocumentReferences } from '@/utils/readDocumentReferences';
 import { isAssistantTurnComplete } from '@/utils/steerStreamFork';
 import { ref, computed, watch, onMounted, onBeforeUnmount, onUpdated, nextTick } from 'vue';
@@ -2752,21 +2753,7 @@ function maskIconStyle(src: string, size = 18): Record<string, string> {
 
 // Get search results summary text (returns HTML with colored numbers)
 const getSearchResultsSummary = (event: any): string => {
-  if (!event || !event.tool_data) return '';
-
-  const toolData = event.tool_data;
-  const count = Number(toolData.results?.length ?? toolData.count ?? 0) || 0;
-  if (count === 0) return t('agentStream.search.noResults');
-
-  // Build summary text
-  let summary = '';
-  const kbCount = toolData.kb_counts ? Object.keys(toolData.kb_counts).length : 0;
-  if (kbCount > 0) {
-    summary = t('agentStream.search.foundResultsFromFiles', { count: `<strong>${count}</strong>`, files: `<strong>${kbCount}</strong>` });
-  } else {
-    summary = t('agentStream.search.foundResults', { count: `<strong>${count}</strong>` });
-  }
-  return summary;
+  return knowledgeSearchSummary(t, event?.tool_data);
 };
 
 // Get web search results summary text

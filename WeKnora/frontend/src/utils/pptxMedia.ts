@@ -125,9 +125,8 @@ function shapeBounds(pic: Element): PptxShapeBoundsEmu | null {
  * slide relationships, and each picture's own embedded relationship. It does
  * not infer content from filenames or scan unrelated package members.
  */
-export async function listPptxVectorMediaForSlide(data: ArrayBuffer, physicalPage: number): Promise<PptxVectorMedia[]> {
+async function readPhysicalSlide(zip: JSZip, physicalPage: number) {
   if (!Number.isInteger(physicalPage) || physicalPage < 1) throw new Error('Invalid physical slide number')
-  const zip = await JSZip.loadAsync(data)
   const presentationPart = zip.file('ppt/presentation.xml')
   if (!presentationPart) throw new Error('PPTX presentation part is missing')
   const presentation = parseXml(await presentationPart.async('string'))
@@ -140,6 +139,12 @@ export async function listPptxVectorMediaForSlide(data: ArrayBuffer, physicalPag
   const slideFile = zip.file(slidePart)
   if (!slideFile) throw new Error('Physical slide part is missing')
   const slide = parseXml(await slideFile.async('string'))
+  return { slide, slidePart }
+}
+
+export async function listPptxVectorMediaForSlide(data: ArrayBuffer, physicalPage: number): Promise<PptxVectorMedia[]> {
+  const zip = await JSZip.loadAsync(data)
+  const { slide, slidePart } = await readPhysicalSlide(zip, physicalPage)
   const slideRels = await relationshipTargets(zip, slidePart)
   const pictures = Array.from(slide.getElementsByTagNameNS(PRESENTATION_NS, 'pic'))
   const byPart = new Map<string, PptxVectorMedia>()
@@ -163,5 +168,78 @@ export async function listPptxVectorMediaForSlide(data: ArrayBuffer, physicalPag
   })
 
   return [...byPart.values()]
+}
+
+/** Replace only verified vector snapshots on one physical slide in a preview
+ * copy. An OLE fallback picture becomes a normal picture in the same tree
+ * position, preserving its own crop, transform and surrounding group. The
+ * original bytes, embedded workbook and other slides are never changed.
+ */
+export async function rasterizePptxSlidePreview(
+  data: ArrayBuffer,
+  physicalPage: number,
+  rasters: Array<{ part: string; png: ArrayBuffer }>,
+): Promise<ArrayBuffer> {
+  if (!rasters.length) return data
+  const zip = await JSZip.loadAsync(data)
+  const { slide, slidePart } = await readPhysicalSlide(zip, physicalPage)
+  const targets = await relationshipTargets(zip, slidePart)
+  const pictures = Array.from(slide.getElementsByTagNameNS(PRESENTATION_NS, 'pic'))
+  const referenced = new Set(pictures.flatMap(pic => {
+    const blip = pic.getElementsByTagNameNS(DRAWING_NS, 'blip')[0]
+    const part = blip && targets.get(relationId(blip, 'embed'))
+    return part && VECTOR_MEDIA.test(part) ? [part] : []
+  }))
+  const replacements = new Map<string, string>()
+  for (const { part, png } of rasters) {
+    if (!referenced.has(part) || replacements.has(part)) throw new Error('Raster is not a unique vector on this slide')
+    const signature = new Uint8Array(png, 0, Math.min(8, png.byteLength))
+    if (signature.length !== 8 || ![137, 80, 78, 71, 13, 10, 26, 10].every((b, i) => signature[i] === b)) throw new Error('Invalid PNG snapshot')
+    let rasterPart = `${part}.preview.png`
+    for (let suffix = 1; zip.file(rasterPart); suffix++) rasterPart = `${part}.preview-${suffix}.png`
+    zip.file(rasterPart, png)
+    replacements.set(part, rasterPart)
+  }
+  const relsPart = relationshipsPart(slidePart)
+  const rels = parseXml(await zip.file(relsPart)!.async('string'))
+  for (const rel of Array.from(rels.getElementsByTagNameNS(PACKAGE_REL_NS, 'Relationship'))) {
+    const oldPart = targets.get(rel.getAttribute('Id') || '')
+    const rasterPart = oldPart && replacements.get(oldPart)
+    if (rasterPart) {
+      const owner = slidePart.split('/').slice(0, -1)
+      const target = rasterPart.split('/')
+      while (owner.length && target.length && owner[0] === target[0]) { owner.shift(); target.shift() }
+      rel.setAttribute('Target', '../'.repeat(owner.length) + target.join('/'))
+    }
+  }
+  for (const frame of Array.from(slide.getElementsByTagNameNS(PRESENTATION_NS, 'graphicFrame'))) {
+    if (!frame.getElementsByTagNameNS(PRESENTATION_NS, 'oleObj').length) continue
+    const cached = Array.from(frame.getElementsByTagNameNS(PRESENTATION_NS, 'pic')).filter(pic => {
+      const blip = pic.getElementsByTagNameNS(DRAWING_NS, 'blip')[0]
+      const part = blip && targets.get(relationId(blip, 'embed'))
+      return part && replacements.has(part)
+    })
+    // Ambiguous or unpositioned OLE previews remain untouched, with the
+    // standalone source image still available to the reader.
+    if (cached.length !== 1 || !shapeBounds(cached[0]!)) continue
+    frame.parentNode!.replaceChild(cached[0]!.cloneNode(true), frame)
+  }
+  const typesFile = zip.file('[Content_Types].xml')
+  if (!typesFile) throw new Error('PPTX content types are missing')
+  const types = parseXml(await typesFile.async('string'))
+  const typesNs = 'http://schemas.openxmlformats.org/package/2006/content-types'
+  const pngType = Array.from(types.getElementsByTagNameNS(typesNs, 'Default')).find(e => e.getAttribute('Extension')?.toLowerCase() === 'png')
+  if (pngType && pngType.getAttribute('ContentType') !== 'image/png') throw new Error('Invalid PNG content type')
+  if (!pngType) {
+    const entry = types.createElementNS(typesNs, 'Default')
+    entry.setAttribute('Extension', 'png')
+    entry.setAttribute('ContentType', 'image/png')
+    types.documentElement.appendChild(entry)
+  }
+  const serializer = new XMLSerializer()
+  zip.file('[Content_Types].xml', serializer.serializeToString(types))
+  zip.file(relsPart, serializer.serializeToString(rels))
+  zip.file(slidePart, serializer.serializeToString(slide))
+  return zip.generateAsync({ type: 'arraybuffer' })
 }
 

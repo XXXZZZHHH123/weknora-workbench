@@ -456,6 +456,10 @@ const messages = {
       "search": {
         "noResults": "未找到匹配的内容",
         "candidatesBelowThreshold": "命中 {count} 条候选，相关性不足，未用于回答",
+        "candidateDocuments": "找到 {count} 份候选文件，正在确认来源",
+        "confirmedDocuments": "已确认 {count} 份来源文件",
+        "foundDocuments": "找到 {count} 份文件",
+        "noCandidateDocuments": "未找到可用的候选文件",
         "foundResultsFromFiles": "找到 {count} 个结果，来自 {files} 个文件",
         "foundResults": "找到 {count} 个结果",
         "foundMixedResults": "找到 {count} 个结果（{docCount} 篇文档，{webCount} 条网页）",
@@ -1042,6 +1046,10 @@ const messages = {
       "search": {
         "noResults": "未找到比對的內容",
         "candidatesBelowThreshold": "命中 {count} 條候選，相關性不足，未用於回答",
+        "candidateDocuments": "找到 {count} 份候選檔案，正在確認來源",
+        "confirmedDocuments": "已確認 {count} 份來源檔案",
+        "foundDocuments": "找到 {count} 份檔案",
+        "noCandidateDocuments": "未找到可用的候選檔案",
         "foundResultsFromFiles": "找到 {count} 個結果，來自 {files} 個檔案",
         "foundResults": "找到 {count} 個結果",
         "foundMixedResults": "找到 {count} 個結果（{docCount} 篇文件，{webCount} 條網頁）",
@@ -1629,6 +1637,10 @@ const messages = {
       "search": {
         "noResults": "一致する内容が見つかりません",
         "candidatesBelowThreshold": "{count}件の候補が該当しましたが、関連性が十分でないため使用していません",
+        "candidateDocuments": "候補ファイルが{count}件見つかりました。出典を確認中",
+        "confirmedDocuments": "出典ファイル{count}件を確認しました",
+        "foundDocuments": "ファイルが{count}件見つかりました",
+        "noCandidateDocuments": "利用可能な候補ファイルがありません",
         "foundResultsFromFiles": "{files}件のファイルから{count}件の結果が見つかりました",
         "foundResults": "{count}件の結果が見つかりました",
         "foundMixedResults": "{count}件の結果が見つかりました（ドキュメント{docCount}件、Web検索結果{webCount}件）",
@@ -2216,6 +2228,10 @@ const messages = {
       "search": {
         "noResults": "No matching content found",
         "candidatesBelowThreshold": "Matched {count} candidate(s), none relevant enough to use",
+        "candidateDocuments": "Found {count} candidate file(s), confirming sources",
+        "confirmedDocuments": "Confirmed {count} source file(s)",
+        "foundDocuments": "Found {count} file(s)",
+        "noCandidateDocuments": "No candidate files available",
         "foundResultsFromFiles": "Found {count} result(s) from {files} file(s)",
         "foundResults": "Found {count} result(s)",
         "foundMixedResults": "Found {count} result(s) ({docCount} documents, {webCount} web results)",
