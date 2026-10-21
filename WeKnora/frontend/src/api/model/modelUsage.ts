@@ -6,6 +6,7 @@ export const KNOWN_MODEL_USAGE_BINDINGS = [
   'image_processing_model',
   'vlm_model',
   'asr_model',
+  'image_generation_model',
   'wiki_synthesis_model',
   'auto_tag_model',
   'chat_model',

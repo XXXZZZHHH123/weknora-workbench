@@ -35,6 +35,41 @@ func writeMessageArtifacts(tx *gorm.DB, message *types.Message) error {
 	if message == nil || message.Artifacts == nil || message.ID == "" {
 		return nil
 	}
+	// API deliveries are already durable while an agent is still running. A
+	// stale stop/completion snapshot must not erase or renumber those files.
+	// Keep the existing sandbox-only replace behavior, but once a direct image
+	// delivery exists, merge its ordered list with newly collected artifacts.
+	var stored []types.MessageArtifactRecord
+	if err := tx.Where("message_id = ?", message.ID).Order("position ASC").Find(&stored).Error; err != nil {
+		return err
+	}
+	hasDirectImage := false
+	for _, row := range stored {
+		if strings.HasPrefix(row.SourcePath, "image-generation://") {
+			hasDirectImage = true
+			break
+		}
+	}
+	if hasDirectImage {
+		merged := make(types.MessageArtifacts, 0, len(stored)+len(message.Artifacts))
+		positions := make(map[string]int, len(stored))
+		for _, row := range stored {
+			positions[row.URL] = len(merged)
+			merged = append(merged, row.Artifact())
+		}
+		for _, incoming := range message.Artifacts {
+			if i, ok := positions[incoming.URL]; ok {
+				if merged[i].DeletedAt != nil {
+					incoming.DeletedAt = merged[i].DeletedAt
+				}
+				merged[i] = incoming
+			} else {
+				positions[incoming.URL] = len(merged)
+				merged = append(merged, incoming)
+			}
+		}
+		message.Artifacts = merged
+	}
 	deleted, err := deletedArtifactPositions(tx, message.ID)
 	if err != nil {
 		return err

@@ -26,6 +26,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
+	"github.com/Tencent/WeKnora/internal/models/imagegen"
 	"github.com/Tencent/WeKnora/internal/models/rerank"
 	"github.com/Tencent/WeKnora/internal/models/vlm"
 	"github.com/Tencent/WeKnora/internal/sandbox"
@@ -3481,4 +3482,8 @@ func (f *installFixture) currentInstallMessageID() string {
 		return ""
 	}
 	return row.InstallMessageID
+}
+
+func (s *installModelService) GetImageGenerationModel(context.Context, string) (imagegen.Generator, error) {
+	return nil, errors.New("image generation is not configured in this test")
 }

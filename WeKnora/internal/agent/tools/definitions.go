@@ -9,6 +9,7 @@ const (
 	// Capability-scoped MCP discovery and invocation; not tenant-selectable builtins.
 	ToolDiscoverMCPTools = "discover_mcp_tools"
 	ToolCallMCPTool      = "call_mcp_tool"
+	ToolGenerateImage    = "generate_image"
 	ToolThinking         = "thinking"
 	ToolTodoWrite        = "todo_write"
 	// Knowledge retrieval surface. search_knowledge covers semantic, keyword
@@ -104,6 +105,7 @@ type AvailableTool struct {
 // with registered tools in this package.
 func AvailableToolDefinitions() []AvailableTool {
 	return []AvailableTool{
+		{Name: ToolGenerateImage, Label: "生成图片", Description: "使用智能体绑定的生图模型生成并保存图片，可能产生模型调用费用", Group: ToolGroupBase, Danger: true},
 		{Name: ToolThinking, Label: "思考", Description: "动态和反思性的问题解决思考工具", Group: ToolGroupBase},
 		{Name: ToolTodoWrite, Label: "制定计划", Description: "创建结构化的研究计划", Group: ToolGroupBase},
 		{

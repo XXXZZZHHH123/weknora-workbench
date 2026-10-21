@@ -6,7 +6,7 @@
     :confirm-disabled="protocolReviewPending || formData.provider === 'weknoracloud' && wkcCredentialState !== 'configured'"
     @update:visible="(v: boolean) => dialogVisible = v" @confirm="handleConfirm" @cancel="handleCancel">
 
-    <template v-if="formData.source === 'remote'" #footer-left>
+    <template v-if="formData.source === 'remote' && activeModelType !== 'image-generation'" #footer-left>
       <t-button variant="outline" @click="checkRemoteAPI" :loading="checking"
         :disabled="protocolReviewPending || saving || !formData.modelName || (!formData.baseUrl && formData.provider !== 'weknoracloud') || (formData.provider === 'weknoracloud' && wkcCredentialState !== 'configured')">
         <template #icon>
@@ -34,7 +34,7 @@
         <div class="connection-result__details" tabindex="0">{{ saveError }}</div>
       </div>
       <div v-if="formData.source === 'remote'" class="connection-feedback" aria-live="polite">
-        <p class="connection-hint">{{ $t(isEdit ? 'model.editor.testDraftEditHint' : 'model.editor.testDraftHint') }}</p>
+        <p class="connection-hint">{{ activeModelType === 'image-generation' ? $t('imageGeneration.testHint') : $t(isEdit ? 'model.editor.testDraftEditHint' : 'model.editor.testDraftHint') }}</p>
         <p v-if="remoteStale" class="connection-hint">{{ $t('model.editor.testStale') }}</p>
         <div v-if="remoteChecked && !remoteAvailable" class="connection-result error">
           <div class="connection-result__header">
@@ -97,7 +97,7 @@
               <span class="source-option__label">{{ $t('model.editor.sourceRemote') }}</span>
             </button>
             <button
-              v-if="activeModelType !== 'rerank'"
+              v-if="activeModelType !== 'rerank' && activeModelType !== 'image-generation'"
               type="button"
               class="source-option"
               :class="{ 'is-active': formData.source === 'local', 'is-disabled': ollamaServiceStatus === false }"
@@ -484,6 +484,36 @@
         </section>
       </template>
 
+      <section v-if="activeModelType === 'image-generation'" class="setting-drawer__section">
+        <h4 class="setting-drawer__section-title">{{ $t('imageGeneration.parameters') }}</h4>
+        <p class="form-desc">{{ $t('imageGeneration.parametersHint') }}</p>
+        <div class="form-item">
+          <label class="form-label">{{ $t('imageGeneration.size') }}</label>
+          <t-input :model-value="formData.extraConfig.image_size || ''" placeholder="1024x1024"
+            @update:model-value="(v: string) => setExtraConfig('image_size', v)" />
+        </div>
+        <div class="form-item">
+          <label class="form-label">{{ $t('imageGeneration.quality') }}</label>
+          <t-input :model-value="formData.extraConfig.image_quality || ''" :placeholder="$t('imageGeneration.upstreamDefault')"
+            @update:model-value="(v: string) => setExtraConfig('image_quality', v)" />
+        </div>
+        <div class="form-item">
+          <label class="form-label">{{ $t('imageGeneration.responseFormat') }}</label>
+          <t-select :model-value="formData.extraConfig.image_response_format || ''" clearable
+            @update:model-value="(v: string) => setExtraConfig('image_response_format', v)">
+            <t-option value="" :label="$t('imageGeneration.upstreamDefault')" />
+            <t-option value="b64_json" label="b64_json" />
+            <t-option value="url" label="url" />
+          </t-select>
+        </div>
+        <div class="form-item">
+          <label class="form-label">{{ $t('imageGeneration.timeout') }}</label>
+          <t-input-number :model-value="Number(formData.extraConfig.image_timeout_seconds) || undefined" :min="30" :max="600" clearable
+            :placeholder="$t('imageGeneration.upstreamDefault')"
+            @update:model-value="(v: number | undefined) => setExtraConfig('image_timeout_seconds', v == null ? '' : String(v))" />
+        </div>
+      </section>
+
       <!-- Section 3 — 高级选项（仅在有内容时渲染，避免空 section 出现底部分隔线） -->
       <section v-if="['embedding', 'chat', 'vllm'].includes(activeModelType) || formData.source === 'remote'" class="setting-drawer__section">
         <h4 class="setting-drawer__section-title">{{ $t('model.editor.sectionAdvanced') }}</h4>
@@ -565,7 +595,7 @@
           高级：协议覆盖 / 远端模型名 / 目录 compat 覆盖，以及仅旧数据才显示的
           thinking_control 兼容选择。默认折叠，绝大多数用户无需触碰。
         -->
-        <template v-if="formData.source === 'remote' && formData.provider !== 'weknoracloud'">
+        <template v-if="formData.source === 'remote' && formData.provider !== 'weknoracloud' && activeModelType !== 'image-generation'">
           <button type="button" class="advanced-toggle" :aria-expanded="advancedOpen" @click="advancedOpen = !advancedOpen">
             <t-icon name="chevron-right" class="toggle-arrow" :class="{ open: advancedOpen }" />
             <span>{{ $t('model.editor.advanced.toggle') }}</span>
@@ -735,7 +765,7 @@ const LEGACY_THINKING_CONTROL_VALUES = ['none', 'enable_thinking', 'thinking_typ
 /** Keys of extra_config that are edited by dedicated controls, not the generic renderer. */
 const RESERVED_EXTRA_CONFIG_KEYS = new Set(['thinking_control'])
 
-type EditorModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr'
+type EditorModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr' | 'image-generation'
 
 interface Props {
   visible: boolean
@@ -771,6 +801,7 @@ const modelTypeChoices = computed(() => ([
   { value: 'rerank' as const, label: t('modelSettings.typeShort.rerank'), icon: 'filter-sort' },
   { value: 'vllm' as const, label: t('modelSettings.typeShort.vllm'), icon: 'image' },
   { value: 'asr' as const, label: t('modelSettings.typeShort.asr'), icon: 'sound' },
+  { value: 'image-generation' as const, label: t('imageGeneration.type'), icon: 'image' },
 ]))
 
 // 厂商列表完全来自后端目录（store 按模型类型缓存）；前端不再维护任何厂商表。
@@ -1180,6 +1211,7 @@ const modelTypeIcon = computed(() => {
     rerank: 'filter-sort',
     vllm: 'image',
     asr: 'sound',
+    'image-generation': 'image',
   }
   return map[activeModelType.value] || 'setting'
 })
@@ -1466,6 +1498,7 @@ watch(
 
 // 获取弹窗描述文字
 const getModalDescription = () => {
+  if (activeModelType.value === 'image-generation') return t('imageGeneration.modelDescription')
   const key = `model.editor.description.${activeModelType.value}` as const
   return t(key) || t('model.editor.description.default')
 }
@@ -1615,7 +1648,7 @@ watch(() => props.visible, (val) => {
       lastOpenedModelId.value = currentId
 
       // ReRank 模型强制使用 remote 来源（Ollama 不支持 ReRank）
-      if (activeModelType.value === 'rerank') {
+      if (activeModelType.value === 'rerank' || activeModelType.value === 'image-generation') {
         formData.value.source = 'remote'
       }
 
@@ -1942,7 +1975,7 @@ const buildExtraConfig = (): Record<string, string> => {
 
 // 检查 Remote API 连接（根据模型类型调用不同的接口）
 const checkRemoteAPI = async () => {
-  if (checking.value || saving.value || protocolReviewPending.value) return
+  if (checking.value || saving.value || protocolReviewPending.value || activeModelType.value === 'image-generation') return
   if (!formData.value.modelName || (!formData.value.baseUrl && formData.value.provider !== 'weknoracloud')) {
     MessagePlugin.warning(t('model.editor.fillModelAndUrl'))
     return

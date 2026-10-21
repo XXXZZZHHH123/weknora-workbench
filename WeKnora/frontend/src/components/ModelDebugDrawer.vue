@@ -275,7 +275,8 @@ const drawerVisible = computed({
   set: value => emit('update:visible', value),
 })
 
-type DebugModelType = ModelConfig['type']
+// Image generation is exercised through an agent so output is saved as a message artifact.
+type DebugModelType = Exclude<ModelConfig['type'], 'ImageGeneration'>
 
 const selectedModelType = ref<DebugModelType>('KnowledgeQA')
 const selectedModelId = ref('')

@@ -84,6 +84,8 @@ func modelTypeToFrontend(mt types.ModelType) string {
 		return "vllm"
 	case types.ModelTypeASR:
 		return "asr"
+	case types.ModelTypeImageGeneration:
+		return "image-generation"
 	default:
 		return string(mt)
 	}
@@ -189,7 +191,7 @@ func providerDTO(v *modelruntime.Provider, modelType types.ModelType, includeMod
 // @Tags         模型管理
 // @Accept       json
 // @Produce      json
-// @Param        model_type  query     string  false  "模型类型 (chat, embedding, rerank, vllm, asr)"
+// @Param        model_type  query     string  false  "模型类型 (chat, embedding, rerank, vllm, asr, image-generation)"
 // @Success      200         {object}  map[string]interface{}  "厂商列表"
 // @Security     Bearer
 // @Security     ApiKeyAuth

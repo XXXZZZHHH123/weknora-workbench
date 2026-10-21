@@ -312,6 +312,7 @@ func (h *Handler) setupStreamHandler(
 		assistantMessage, h.streamManager, eventBus, h.artifactCollector,
 		h.workspaceCheckpointer, h.sandboxIDLookup,
 	)
+	streamHandler.SetArtifactMessageReader(h.messageService)
 	streamHandler.Subscribe()
 	return streamHandler
 }

@@ -1926,6 +1926,14 @@ func (h *InitializationHandler) CheckRemoteModel(c *gin.Context) {
 		c.Error(errors.NewBadRequestError(err.Error()))
 		return
 	}
+	// This route checks chat connectivity. An image output model must never
+	// be sent through chat completion or trigger paid generation implicitly.
+	if req.ModelID != "" {
+		if stored, err := h.modelService.GetModelByID(ctx, req.ModelID); err == nil && stored != nil && stored.Type == types.ModelTypeImageGeneration {
+			_ = c.Error(errors.NewBadRequestError("Image generation models are tested by explicitly generating an image in an enabled agent; this endpoint only tests chat models"))
+			return
+		}
+	}
 	h.fillSecretsFromStoredModel(ctx, &req)
 
 	if req.ModelName == "" || req.BaseURL == "" {

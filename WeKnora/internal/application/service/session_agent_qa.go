@@ -377,6 +377,7 @@ func (s *sessionService) buildAgentConfig(
 		WorkbenchDefault:              customAgent.WorkbenchDefault,
 		TaskPlanningEnabled:           customAgent.WorkbenchDefault,
 		ThinkingBudgetTokens:          customAgent.Config.ThinkingBudgetTokens,
+		ImageGenerationModelID:        customAgent.Config.ImageGenerationModelID,
 		MCPToolExposureMode:           customAgent.Config.MCPToolExposureMode,
 		MaxIterations:                 customAgent.Config.MaxIterations,
 		Temperature:                   customAgent.Config.Temperature,

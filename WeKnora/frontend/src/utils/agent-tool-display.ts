@@ -181,6 +181,11 @@ export function getRagPipelineStepTitle(t: ComposerTranslation, event: RagPipeli
     getQueryText(event.arguments) ||
     getQueryText(event.tool_data)
 
+  if (toolName === 'generate_image') {
+    if (pending) return t('imageGeneration.generating')
+    return t(event.success === false ? 'imageGeneration.failed' : 'imageGeneration.completed')
+  }
+
   if (toolName === 'query_understand') {
     return pending
       ? t('agentStream.toolStatus.queryUnderstanding')

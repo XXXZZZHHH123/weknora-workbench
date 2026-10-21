@@ -80,10 +80,11 @@ func newOpenaiProvider() *Definition {
 		Auth:         AuthBearer,
 		URLPatterns:  []string{"api.openai.com"},
 		DefaultBaseURLs: map[types.ModelType]string{
-			types.ModelTypeKnowledgeQA: OpenaiBaseURL,
-			types.ModelTypeEmbedding:   OpenaiBaseURL,
-			types.ModelTypeVLLM:        OpenaiBaseURL,
-			types.ModelTypeASR:         OpenaiBaseURL,
+			types.ModelTypeKnowledgeQA:     OpenaiBaseURL,
+			types.ModelTypeEmbedding:       OpenaiBaseURL,
+			types.ModelTypeVLLM:            OpenaiBaseURL,
+			types.ModelTypeASR:             OpenaiBaseURL,
+			types.ModelTypeImageGeneration: OpenaiBaseURL,
 		},
 		// No rerank: OpenAI's API has no rerank endpoint — the reference
 		// index (https://developers.openai.com/api/llms.txt) does not mention
@@ -94,6 +95,7 @@ func newOpenaiProvider() *Definition {
 			types.ModelTypeEmbedding,
 			types.ModelTypeVLLM,
 			types.ModelTypeASR,
+			types.ModelTypeImageGeneration,
 		},
 		Compat: VendorCompat{
 			Transcriptions: api.TranscriptionsCompat{

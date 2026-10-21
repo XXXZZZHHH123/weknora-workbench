@@ -727,6 +727,19 @@
         </div>
 
         <div class="settings-group">
+          <div v-if="isAgentMode" class="setting-row">
+            <div class="setting-info">
+              <label>{{ $t('imageGeneration.agentModel') }}</label>
+              <p class="desc">{{ $t('imageGeneration.agentHint') }}</p>
+            </div>
+            <div class="setting-control">
+              <ModelSelector model-type="ImageGeneration" :selected-model-id="formData.config.image_generation_model_id"
+                :all-models="allModels" clearable
+                @update:selected-model-id="(val: string) => formData.config.image_generation_model_id = val"
+                @add-model="handleAddModel('image-generation')" :placeholder="$t('imageGeneration.selectModel')" />
+            </div>
+          </div>
+
           <!-- 图片上传 -->
           <div class="setting-row" data-guide="agent-create-multimodal">
             <div class="setting-info">
@@ -2492,6 +2505,7 @@ const storedToolNames = ref<string[]>([]);
 // 列表未被修改则保存时原样发送 null。
 const keepAllowedToolsUnset = ref(false);
 const toolTexts = computed<Record<string, ToolText>>(() => ({
+  generate_image: { label: t('imageGeneration.type'), description: t('imageGeneration.agentHint') },
   thinking: { label: t('agentEditor.tools.thinking'), description: t('agentEditor.tools.thinkingDesc') },
   todo_write: { label: t('agentEditor.tools.todoWrite'), description: t('agentEditor.tools.todoWriteDesc') },
   search_conversations: { label: t('agentEditor.tools.searchConversations'), description: t('agentEditor.tools.searchConversationsDesc') },
@@ -2896,6 +2910,7 @@ const defaultFormData = {
     system_prompt_id: '' as string,
     // 附件上传设置
     image_upload_enabled: false,
+    image_generation_model_id: '',
     vlm_model_id: '',
     image_storage_provider: '',
     // 附件图片理解 / 扫描件 OCR 开关（默认关闭，避免解析耗时增加）
@@ -5029,6 +5044,12 @@ const handleSave = async () => {
   }
 
   // 校验 VLM 模型（当图片上传启用时必填）
+  if (isAgentMode.value && formData.value.config.allowed_tools?.includes('generate_image') && !formData.value.config.image_generation_model_id) {
+    MessagePlugin.error(t('imageGeneration.modelRequired'));
+    currentSection.value = 'multimodal';
+    return;
+  }
+
   if (formData.value.config.image_upload_enabled && !formData.value.config.vlm_model_id) {
     MessagePlugin.error(t('agentEditor.imageUpload.vlmModelRequired'));
     currentSection.value = 'multimodal';

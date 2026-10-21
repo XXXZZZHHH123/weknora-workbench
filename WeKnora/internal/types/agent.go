@@ -168,6 +168,7 @@ type AgentConfig struct {
 	// models and "off" otherwise.
 	SourceReviewReasoningEffort string `json:"-"`
 	VLMModelID                  string `json:"-"` // VLM model ID for tool images, resolved from CustomAgent config.
+	ImageGenerationModelID      string `json:"-"` // Authorized image-output model; never supplied in tool arguments.
 	SandboxConfigID             string `json:"-"` // Workspace sandbox config ID for skill execution.
 	// TenantSkills are the skills installed into the selected sandbox config's
 	// snapshot image, already narrowed to the ones this run can actually

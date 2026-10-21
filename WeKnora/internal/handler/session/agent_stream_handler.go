@@ -50,6 +50,11 @@ type AgentStreamHandler struct {
 	// sandbox after the agent completes. Nil when the sandbox backend
 	// doesn't support artifact collection or WeKnora was built without it.
 	artifactCollector *service.ArtifactCollector
+	// Direct API image deliveries are persisted while the agent is running.
+	// Load their authoritative artifact order for live and completion metadata.
+	artifactMessageReader interface {
+		GetMessage(context.Context, string, string) (*types.Message, error)
+	}
 
 	// checkpointer commits the sandbox's /workspace at the end of the turn so
 	// session fork can roll a forked sandbox back to this exact message. Nil
@@ -279,6 +284,9 @@ func (h *AgentStreamHandler) handleToolResult(ctx context.Context, evt event.Eve
 	data, ok := evt.Data.(event.AgentToolResultData)
 	if !ok {
 		return nil
+	}
+	if data.ToolName == agenttools.ToolGenerateImage && data.Success {
+		h.refreshPersistedArtifacts(ctx)
 	}
 
 	h.mu.Lock()
@@ -735,6 +743,7 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 	if !ok {
 		return nil
 	}
+	h.refreshPersistedArtifacts(ctx)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()

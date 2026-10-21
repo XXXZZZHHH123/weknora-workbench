@@ -32,6 +32,7 @@ export type DisplayType =
     | 'edit_sandbox_file'
     | 'read_skill'
     | 'image_view'
+    | 'image_generation'
     | 'mcp_discovery'
     | 'mcp_call';
 

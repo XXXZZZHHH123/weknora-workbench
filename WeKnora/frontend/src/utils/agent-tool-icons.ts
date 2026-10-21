@@ -3,6 +3,7 @@ export function getAgentToolIconName(
   toolName: string,
   searchSource?: 'knowledge' | 'web' | 'mixed',
 ): string {
+  if (toolName === 'generate_image') return 'image'
   if (toolName === 'local_browser') return 'internet'
   if (toolName === 'thinking') {
     return 'ai-search'

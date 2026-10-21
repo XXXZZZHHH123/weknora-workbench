@@ -338,6 +338,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 		cleaner.RegisterWithName("BrowserSkill", func() error { manager.Close(); return nil })
 		return manager, nil
 	}))
+	must(container.Provide(service.NewImageGenerationService))
 	must(container.Provide(service.NewAgentService))
 
 	// Session service (depends on agent service)

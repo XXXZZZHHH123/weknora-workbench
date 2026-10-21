@@ -94,36 +94,37 @@ func knowledgeBaseScopesForPrompt(config *types.AgentConfig) ([]string, map[stri
 
 // agentService implements agent-related business logic
 type agentService struct {
-	browserSkill          *browserskill.Manager
-	userRepo              interfaces.UserRepository
-	graphRepo             interfaces.RetrieveGraphRepository
-	cfg                   *config.Config
-	modelService          interfaces.ModelService
-	mcpServiceService     interfaces.MCPServiceService
-	mcpManager            *mcp.MCPManager
-	eventBus              *event.EventBus
-	db                    *gorm.DB
-	webSearchService      interfaces.WebSearchService
-	knowledgeBaseService  interfaces.KnowledgeBaseService
-	knowledgeService      interfaces.KnowledgeService
-	fileService           interfaces.FileService
-	chunkService          interfaces.ChunkService
-	duckdb                *sql.DB
-	wikiPageService       interfaces.WikiPageService
-	tenantService         interfaces.TenantService
-	messageService        interfaces.MessageService
-	memoryService         interfaces.MemoryService
-	storageResolver       interfaces.StorageBackendResolver
-	toolApprovalGate      approval.MCPApproval
-	sandboxMgr            sandbox.Manager
-	sandboxResolver       sandbox.TenantSandboxResolver
-	sandboxPinner         *SessionSandboxPinner
-	sandboxPolicy         WorkspaceSandboxPolicy
-	hostSandbox           sandbox.Manager
-	hostDesktop           bool
-	hostSkillInstaller    sandbox.Manager
-	hostSkillsRoot        string
-	hostSkillVersionsRoot string
+	browserSkill           *browserskill.Manager
+	userRepo               interfaces.UserRepository
+	graphRepo              interfaces.RetrieveGraphRepository
+	cfg                    *config.Config
+	modelService           interfaces.ModelService
+	imageGenerationService interfaces.ImageGenerationService
+	mcpServiceService      interfaces.MCPServiceService
+	mcpManager             *mcp.MCPManager
+	eventBus               *event.EventBus
+	db                     *gorm.DB
+	webSearchService       interfaces.WebSearchService
+	knowledgeBaseService   interfaces.KnowledgeBaseService
+	knowledgeService       interfaces.KnowledgeService
+	fileService            interfaces.FileService
+	chunkService           interfaces.ChunkService
+	duckdb                 *sql.DB
+	wikiPageService        interfaces.WikiPageService
+	tenantService          interfaces.TenantService
+	messageService         interfaces.MessageService
+	memoryService          interfaces.MemoryService
+	storageResolver        interfaces.StorageBackendResolver
+	toolApprovalGate       approval.MCPApproval
+	sandboxMgr             sandbox.Manager
+	sandboxResolver        sandbox.TenantSandboxResolver
+	sandboxPinner          *SessionSandboxPinner
+	sandboxPolicy          WorkspaceSandboxPolicy
+	hostSandbox            sandbox.Manager
+	hostDesktop            bool
+	hostSkillInstaller     sandbox.Manager
+	hostSkillsRoot         string
+	hostSkillVersionsRoot  string
 }
 
 // NewAgentService creates a new agent service
@@ -154,35 +155,37 @@ func NewAgentService(
 	browserSkill *browserskill.Manager,
 	userRepo interfaces.UserRepository,
 	graphRepo interfaces.RetrieveGraphRepository,
+	imageGenerationService *ImageGenerationService,
 ) interfaces.AgentService {
 	svc := &agentService{
-		browserSkill:         browserSkill,
-		userRepo:             userRepo,
-		graphRepo:            graphRepo,
-		cfg:                  cfg,
-		modelService:         modelService,
-		knowledgeBaseService: knowledgeBaseService,
-		knowledgeService:     knowledgeService,
-		fileService:          fileService,
-		chunkService:         chunkService,
-		mcpServiceService:    mcpServiceService,
-		mcpManager:           mcpManager,
-		eventBus:             eventBus,
-		db:                   db,
-		webSearchService:     webSearchService,
-		duckdb:               duckdb,
-		wikiPageService:      wikiPageService,
-		tenantService:        tenantService,
-		messageService:       messageService,
-		memoryService:        memoryService,
-		storageResolver:      storageResolver,
-		toolApprovalGate:     toolApprovalGate,
-		sandboxMgr:           sandboxMgr,
-		sandboxResolver:      sandboxResolver,
-		sandboxPinner:        sandboxPinner,
-		sandboxPolicy:        sandboxPolicy,
-		hostSandbox:          hostSandbox.Manager,
-		hostDesktop:          hostSandbox.Desktop,
+		browserSkill:           browserSkill,
+		userRepo:               userRepo,
+		graphRepo:              graphRepo,
+		cfg:                    cfg,
+		modelService:           modelService,
+		imageGenerationService: imageGenerationService,
+		knowledgeBaseService:   knowledgeBaseService,
+		knowledgeService:       knowledgeService,
+		fileService:            fileService,
+		chunkService:           chunkService,
+		mcpServiceService:      mcpServiceService,
+		mcpManager:             mcpManager,
+		eventBus:               eventBus,
+		db:                     db,
+		webSearchService:       webSearchService,
+		duckdb:                 duckdb,
+		wikiPageService:        wikiPageService,
+		tenantService:          tenantService,
+		messageService:         messageService,
+		memoryService:          memoryService,
+		storageResolver:        storageResolver,
+		toolApprovalGate:       toolApprovalGate,
+		sandboxMgr:             sandboxMgr,
+		sandboxResolver:        sandboxResolver,
+		sandboxPinner:          sandboxPinner,
+		sandboxPolicy:          sandboxPolicy,
+		hostSandbox:            hostSandbox.Manager,
+		hostDesktop:            hostSandbox.Desktop,
 	}
 	if hostSandbox.SkillsAvailable() {
 		svc.hostSkillInstaller = hostSandbox.SkillInstaller
@@ -1303,6 +1306,18 @@ func (s *agentService) registerTools(
 			// read is resolved from the request context inside the service, so
 			// this tool needs no owner argument and none can be supplied.
 			toolToRegister = tools.NewSearchMemoryTool(s.memoryService)
+		case tools.ToolGenerateImage:
+			// A model binding grants no tool access by itself; this case is reached
+			// only through the explicit allowed_tools list. Shared agents cannot
+			// spend an owning workspace's image-model credentials.
+			if config.SharedAgentReadOnly || config.ImageGenerationModelID == "" || s.imageGenerationService == nil || s.modelService == nil {
+				continue
+			}
+			if _, err := s.modelService.GetImageGenerationModel(ctx, config.ImageGenerationModelID); err != nil {
+				logger.Warnf(ctx, "Image generation unavailable for configured model %s", config.ImageGenerationModelID)
+				continue
+			}
+			toolToRegister = tools.NewGenerateImageTool(s.imageGenerationService, config.ImageGenerationModelID)
 		case tools.ToolDatabaseQuery:
 			toolToRegister = tools.NewDatabaseQueryTool(s.db, config.SearchTargets)
 		case tools.ToolWebSearch:

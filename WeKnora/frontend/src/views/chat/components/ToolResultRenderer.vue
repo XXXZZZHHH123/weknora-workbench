@@ -73,6 +73,11 @@
       :data="toolData as ImageViewData"
     />
 
+    <ImageGenerationResult
+      v-else-if="displayType === 'image_generation'"
+      :data="toolData" :success="success" :output="output"
+    />
+
     <McpToolResult
       v-else-if="displayType === 'mcp_discovery' || displayType === 'mcp_call'"
       :discovery="displayType === 'mcp_discovery'" :data="toolData"
@@ -136,6 +141,7 @@ import WriteSandboxFileResult from './tool-results/WriteSandboxFileResult.vue';
 import ReadSkillResult from './tool-results/ReadSkillResult.vue';
 import McpToolResult from './tool-results/McpToolResult.vue';
 import ImageViewResult from './tool-results/ImageViewResult.vue';
+import ImageGenerationResult from './tool-results/ImageGenerationResult.vue';
 
 interface Props {
   success?: boolean;

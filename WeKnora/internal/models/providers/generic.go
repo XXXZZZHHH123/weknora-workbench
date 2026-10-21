@@ -63,6 +63,7 @@ func newGenericProvider() *Definition {
 			types.ModelTypeRerank,
 			types.ModelTypeVLLM,
 			types.ModelTypeASR,
+			types.ModelTypeImageGeneration,
 		},
 		ExtraFields: []ExtraField{{
 			Key:    models.ExtraScoreScale,

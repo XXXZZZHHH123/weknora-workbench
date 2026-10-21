@@ -711,6 +711,9 @@ func (h *ModelHandler) DebugModel(c *gin.Context) {
 		result, callErr := instance.Predict(ctx, [][]byte{fileBytes}, input)
 		observations["answer_characters"] = len([]rune(result))
 		writeModelDebugResult(c, started, requestPreview, result, callErr, observations)
+	case types.ModelTypeImageGeneration:
+		_ = c.Error(errors.NewBadRequestError("Use an enabled image-generation agent to generate and save an image; model debugging does not automatically submit paid image requests"))
+		return
 	case types.ModelTypeASR:
 		if len(fileBytes) == 0 {
 			c.Error(errors.NewBadRequestError("audio file is required"))
