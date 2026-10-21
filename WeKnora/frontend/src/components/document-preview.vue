@@ -12,7 +12,7 @@ import 'katex/dist/katex.min.css';
 import { useI18n } from 'vue-i18n';
 import { sanitizeHTML, sanitizeMarkdownHTML } from '@/utils/security';
 import { preparePptxPreview, isCompletePptxRender, watchCompletePptxSlideDOM, bindPptxRendererCallbacks, isPptxSourceKeyCurrent, resolvePptxSlideLocator, resolvePptxLocatePage, type PptxRendererCallbacks } from '@/utils/pptxPreview';
-import { createPptxMediaRequestGate, listPptxVectorMediaForSlide, sha256Hex, type PptxMediaRequestLease, type PptxVectorMedia } from '@/utils/pptxMedia';
+import { createPptxMediaRequestGate, listPptxVectorMediaForSlide, rasterizePptxSlidePreview, sha256Hex, type PptxMediaRequestLease, type PptxVectorMedia } from '@/utils/pptxMedia';
 import { findMarkdownSourceRange } from '@/utils/markdownSourceLocate';
 import { renderDocumentPreviewMarkdown } from '@/utils/documentPreviewMarkdown';
 import { buildHtmlPreview } from '@/utils/htmlPreview';
@@ -90,6 +90,10 @@ const excelHtml = ref('');
 const mermaidSvg = ref('');
 const htmlViewMode = ref<'render' | 'source'>('render');
 const pptxData = shallowRef<ArrayBuffer | null>(null);
+const pptxRenderedData = shallowRef<ArrayBuffer | null>(null);
+const pptxRendererKey = ref('');
+let pptxRenderGeneration = 0;
+const pptxInlineMediaFailed = ref(false);
 const pdfData = shallowRef<ArrayBuffer | null>(null);
 const epubHtml = ref('');
 let epubObjectUrls: string[] = [];
@@ -107,7 +111,7 @@ let pptxRenderReadySourceKey = '';
 let pptxRenderFailureSourceKey = '';
 let pptxRenderFailureReason = '';
 let pptxRenderSignal: 'pending' | 'complete' | 'incomplete' = 'pending';
-type PptxPageMediaView = PptxVectorMedia & { objectUrl?: string; generation: number; state: 'pending' | 'loading' | 'loaded' | 'displayed' | 'failed' };
+type PptxPageMediaView = PptxVectorMedia & { objectUrl?: string; png?: ArrayBuffer; generation: number; state: 'pending' | 'loading' | 'loaded' | 'displayed' | 'failed' };
 const pptxPageMedia = ref<PptxPageMediaView[]>([]);
 const pptxPageMediaState = ref<'idle' | 'discovering' | 'loading' | 'loaded' | 'partial' | 'failed' | 'none'>('idle');
 const pptxMediaRequestGate = createPptxMediaRequestGate();
@@ -135,6 +139,23 @@ function clearPptxPageMedia() {
   pptxMediaRequestKey = '';
   pptxPageMedia.value = [];
   pptxPageMediaState.value = 'idle';
+  pptxInlineMediaFailed.value = false;
+}
+
+async function setPptxRendererData(data: ArrayBuffer, sourceKey: string) {
+  stopPptxRenderWatch();
+  pptxRenderReadySourceKey = '';
+  pptxRenderFailureSourceKey = '';
+  pptxRenderFailureReason = '';
+  const renderKey = `${sourceKey}|${++pptxRenderGeneration}`;
+  pptxRendererKey.value = renderKey;
+  pptxRendererCallbacks.value = bindPptxRendererCallbacks(sourceKey, {
+    onRendered: (key, result) => { if (pptxRendererKey.value === renderKey) onPptxRendered(key, result); },
+    onError: (key, reason) => { if (pptxRendererKey.value === renderKey) onPptxError(key, reason); },
+  });
+  pptxRenderedData.value = data;
+  await nextTick();
+  if (pptxRendererKey.value === renderKey && isCurrentPptxSource(sourceKey)) watchPptxRender(sourceKey);
 }
 
 function currentPptxMediaRequest(lease: PptxMediaRequestLease, sourceKey: string, page: number, token: number, sourceSha256: string) {
@@ -206,9 +227,12 @@ async function loadPptxPageMedia(force = false) {
           const blob = await previewKnowledgeMedia(props.knowledgeId!, page, item.part, sourceSha256, lease.controller.signal);
           if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
           if (!await validPngBlob(blob)) throw new Error('Invalid PNG response');
+          const png = await blob.arrayBuffer();
+          if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
           const objectUrl = URL.createObjectURL(blob);
           pptxMediaObjectUrls.add(objectUrl);
           item.objectUrl = objectUrl;
+          item.png = png;
           item.state = 'loaded';
         } catch {
           if (lease.controller.signal.aborted || !currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
@@ -220,6 +244,17 @@ async function loadPptxPageMedia(force = false) {
     await Promise.all([worker(), worker()]);
     if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
     updatePptxPageMediaState();
+    const rasters = pptxPageMedia.value.filter(item => item.png).map(item => ({ part: item.part, png: item.png! }));
+    if (rasters.length) {
+      try {
+        const rendered = await rasterizePptxSlidePreview(pptxData.value!, page, rasters);
+        if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
+        await setPptxRendererData(rendered, sourceKey);
+      } catch {
+        if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
+        pptxInlineMediaFailed.value = true;
+      }
+    }
   } catch {
     if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
     pptxPageMediaState.value = 'failed';
@@ -726,13 +761,9 @@ async function loadPreview() {
         pptxSourceSha256 = sourceSha256;
         pptxSourceHashError = sourceHashError;
         pptxSlideCount = prepared.slideCount;
-        pptxRendererCallbacks.value = bindPptxRendererCallbacks(sourceKey, {
-          onRendered: onPptxRendered,
-          onError: onPptxError,
-        });
         pptxData.value = prepared.data;
-        await nextTick();
-        watchPptxRender(sourceKey);
+        await setPptxRendererData(prepared.data, sourceKey);
+        if (!isCurrentPptxSource(sourceKey)) return;
         void loadPptxPageMedia();
         break;
       }
@@ -770,6 +801,8 @@ function cleanup() {
   mermaidSvg.value = '';
   htmlViewMode.value = 'render';
   pptxData.value = null;
+  pptxRenderedData.value = null;
+  pptxRendererKey.value = '';
   pptxSourceSha256 = '';
   pptxSourceHashError = '';
   pdfData.value = null;
@@ -1238,13 +1271,14 @@ onUnmounted(() => {
 
     <!-- PPTX -->
     <div v-else-if="previewType === 'pptx' && pptxData" ref="previewContent" tabindex="0" :aria-label="fileName" class="preview-pptx">
-      <section
+      <details
         v-if="sourceMode && exactPptxLocatePage() && pptxPageMediaState !== 'idle' && pptxPageMediaState !== 'none'"
         class="pptx-source-media"
+        :open="pptxInlineMediaFailed || pptxPageMediaState === 'failed' || pptxPageMediaState === 'partial'"
         aria-live="polite"
         :aria-label="`第${exactPptxLocatePage()}页引用图像`"
       >
-        <div class="pptx-source-media__heading">
+        <summary class="pptx-source-media__heading">
           <strong>第{{ exactPptxLocatePage() }}页引用图像</strong>
           <span v-if="pptxSourceHashError">无法校验来源文件，暂不能显示原件图像。</span>
           <span v-else-if="pptxPageMediaState === 'discovering'">正在读取此页的嵌入图像…</span>
@@ -1258,7 +1292,7 @@ onUnmounted(() => {
             class="pptx-source-media__retry"
             @click="retryPptxPageMedia"
           >重试</button>
-        </div>
+        </summary>
         <p class="pptx-source-media__note">以下为该页从原文件读取的独立图像，不代表整页内容均已完整渲染。</p>
         <div v-if="pptxPageMedia.length" class="pptx-source-media__items">
           <figure v-for="media in pptxPageMedia" :key="`${media.generation}:${media.part}`" class="pptx-source-media__item">
@@ -1280,8 +1314,8 @@ onUnmounted(() => {
             <span v-else class="pptx-source-media__pending">正在读取…</span>
           </figure>
         </div>
-      </section>
-      <vue-office-pptx :key="loadedForId" :src="pptxData" @rendered="pptxRendererCallbacks?.onRendered" @error="pptxRendererCallbacks?.onError" />
+      </details>
+      <vue-office-pptx :key="pptxRendererKey" :src="pptxRenderedData" @rendered="pptxRendererCallbacks?.onRendered" @error="pptxRendererCallbacks?.onError" />
     </div>
 
     <!-- Excel -->

@@ -1802,6 +1802,10 @@ export default {
     search: {
       noResults: '일치하는 내용을 찾을 수 없습니다',
       candidatesBelowThreshold: '후보 {count}개를 찾았지만 관련성이 부족해 답변에 사용하지 않았습니다',
+      candidateDocuments: "후보 파일 {count}개를 찾았습니다. 출처 확인 중",
+      confirmedDocuments: "출처 파일 {count}개 확인됨",
+      foundDocuments: "파일 {count}개를 찾았습니다",
+      noCandidateDocuments: "사용 가능한 후보 파일이 없습니다",
       foundResultsFromFiles: '{files}개 파일에서 {count}개 결과 발견',
       foundResults: '{count}개 결과 발견',
       foundMixedResults: '{count}개 결과 발견 ({docCount}개 문서, {webCount}개 웹)',
