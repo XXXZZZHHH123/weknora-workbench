@@ -1,4 +1,5 @@
 import type { ComposerTranslation } from 'vue-i18n'
+import { knowledgeSearchSummary } from './knowledgeSearchSummary'
 
 export type RetrievalSearchSource = 'knowledge' | 'web' | 'mixed'
 
@@ -116,6 +117,10 @@ export function getKnowledgeSearchSummaryHtml(
   toolData: Record<string, unknown> | null | undefined,
 ): string {
   if (!toolData) return ''
+
+  if (toolData.display_type === 'document_info') return knowledgeSearchSummary(t, toolData)
+  if (!Array.isArray(toolData.results) && typeof toolData.count !== 'number'
+    && !(Number(toolData.candidate_count) > 0)) return ''
 
   const results = toolData.results
   const count = (Array.isArray(results) ? results.length : 0) || Number(toolData.count) || 0

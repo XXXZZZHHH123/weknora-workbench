@@ -82,6 +82,15 @@ test('getKnowledgeSearchSummaryHtml includes file count when present', () => {
   assert.match(html, /found <strong>2<\/strong> from <strong>2<\/strong> files/)
 })
 
+test('quick-answer source discovery reports candidates rather than an empty search', () => {
+  const html = getKnowledgeSearchSummaryHtml(t, {
+    display_type: 'document_info', requires_source_scope: true,
+    documents: [{ id: 'source-a' }, { id: 'source-b' }],
+  })
+  assert.equal(html, 'agentStream.search.candidateDocuments')
+  assert.equal(getKnowledgeSearchSummaryHtml(t, { notice: 'Still selecting sources' }), '')
+})
+
 // Candidates that all fell below the relevance threshold never reached the
 // answer, so the row must not read like a plain empty search: the difference
 // points at the threshold rather than at the knowledge base.

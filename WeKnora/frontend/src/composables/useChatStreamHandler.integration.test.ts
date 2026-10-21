@@ -36,6 +36,41 @@ vm.runInNewContext(compiled, {
 })
 const useChatStreamHandler = exports.useChatStreamHandler!
 
+for (const mode of ['quick', 'agent'] as const) {
+  for (const partial of [false, true]) {
+    test(`${mode}: resumed ${partial ? 'partial' : 'empty'} history keeps tool results and reasoning reactive`, async () => {
+      const messagesList = vue.reactive<Record<string, any>[]>([])
+      const handler = useChatStreamHandler({
+        messagesList, loading: vue.ref(true), isReplying: vue.ref(true),
+        currentAssistantMessageId: vue.ref('assistant'), fullContent: vue.ref(''),
+        isAgentStreamSession: () => mode === 'agent', scrollToBottom() {},
+        preserveIncompleteStreamReactive: true,
+      })
+      await handler.handleMsgList([{
+        id: 'assistant', request_id: 'request', role: 'assistant', content: '', is_completed: false,
+        agent_steps: partial ? [{ iteration: 1, reasoning_content: 'Earlier reasoning', tool_calls: [] }] : [],
+      }])
+      const message = messagesList[0]
+      const visible = vue.computed(() => (message.agentEventStream || []).map((event: any) =>
+        event.type === 'tool_call' ? `${event.tool_name}:${event.pending}:${event.tool_data?.documents?.length || 0}`
+          : `${event.type}:${event.content || ''}`).join('|'))
+      const before = visible.value
+      const send = (response_type: string, content = '', data: Record<string, unknown> = {}) =>
+        handler.processStreamChunk({ id: 'request', response_type, content, done: false, data })
+      send('tool_call', '', { tool_name: 'search_knowledge', tool_call_id: 'search-1', arguments: {} })
+      assert.notEqual(visible.value, before)
+      assert.match(visible.value, /search_knowledge:true:0/)
+      send('tool_result', '', { tool_name: 'search_knowledge', tool_call_id: 'search-1', success: true,
+        display_type: 'document_info', requires_source_scope: true, documents: [{ id: 'a' }, { id: 'b' }] })
+      assert.match(visible.value, /search_knowledge:false:2/)
+      send('thinking', 'Resumed reasoning', { event_id: 'reason-2' })
+      assert.match(visible.value, /thinking:Resumed reasoning/)
+      send('thinking', ' continues', { event_id: 'reason-2' })
+      assert.match(visible.value, /thinking:Resumed reasoning continues/)
+    })
+  }
+}
+
 function setup(t: TestContext, mode: 'ordinary' | 'quick-timeline' | 'agent') {
   const effects = vue.effectScope()
   const oldWindow = (globalThis as any).window
