@@ -87,6 +87,8 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 	"discover_mcp_tools":      {opaqueOutput: true, mcpRoutingKey: "server_id", mcpDirectoryOutput: true},
 	"call_mcp_tool":           {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
 	"read_file":               {},
+	// Generated assets use resource handles, never structured source evidence.
+	"generate_image": {},
 	"search_knowledge": {
 		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}, "document_ids": {}, "knowledge_id": {}},
 		sourceOutput: true,
