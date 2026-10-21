@@ -53,6 +53,7 @@ function fixture(options: { fail?: boolean; items?: typeof workbenches; creating
     './workspaceForm': forms, './workspaceKnowledgeBases': knowledgeBases, '@/views/research/workbenchTemplates': templates,
     '@/components/ResourceListToolbar.vue': { default: toolbar }, '@/components/ResourceSortControl.vue': { default: sortControl },
     '@/components/EmptyState.vue': { default: emptyState }, '@/utils/resourceSorting': sorting,
+    '@/components/ResourcePermissionDrawer.vue': { default: passthrough }, '@/api/resourcePermissions': { updateWorkbenchSourceSharing: async () => ({ success: true }) },
     './workspaces.css': {}, '@/views/research/researchFeatureGuides': featureGuides,
   }
   function load(code: string) {
@@ -277,6 +278,18 @@ test('readable workbenches without server management permission have no mutation
       assert.equal(f.mutations.length, 0)
     } finally { f.close() }
   }
+})
+
+test('legacy administrator can retain metadata management without resource permission management', async t => {
+  const f = fixture({ items: workbenches.map(item => ({ ...item, can_manage: true, can_manage_permissions: false })) as typeof workbenches })
+  t.after(f.close); await flush()
+  const trigger = all(f.cards()[0], el => el.type === 'button' && el.props['aria-haspopup'] === 'menu')[0]!
+  for (const handler of [trigger.props.onKeydown].flat()) handler({ key: 'ArrowDown', preventDefault() {} })
+  await flush()
+  const labels = all(f.root, el => el.props.role === 'menuitem').map(textOf)
+  assert.equal(labels.includes('成员与权限'), false)
+  assert.equal(labels.includes('重命名'), true)
+  assert.equal(labels.includes('删除'), true)
 })
 
 test('native workbench popup closes on Escape and before opening the confirmation dialog', async t => {

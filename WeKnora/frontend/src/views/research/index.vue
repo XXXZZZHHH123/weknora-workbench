@@ -6,16 +6,16 @@
       </router-link>
       <strong>{{ workbench.name }}</strong><span>{{ workbench.knowledge_base_name || '绑定知识库' }}</span>
       <div class="research-toolbar-actions">
-        <t-button class="research-toolbar-action resource-action resource-action--compact" data-guide="research-sources" theme="default" variant="outline" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
-        <router-link v-if="workbench?.knowledge_base_id" class="research-toolbar-action resource-action resource-action--compact" data-guide="research-kb" :to="`/platform/knowledge-bases/${workbench.knowledge_base_id}`">转到知识库</router-link>
-        <t-button class="research-toolbar-action resource-action resource-action--compact" theme="default" variant="outline" size="small" :disabled="!canShowResearch" :aria-expanded="chatVisible"
+        <t-button v-if="canReadSource" class="research-toolbar-action resource-action resource-action--compact" data-guide="research-sources" theme="default" variant="outline" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
+        <router-link v-if="workbench?.knowledge_base_id && canReadSource" class="research-toolbar-action resource-action resource-action--compact" data-guide="research-kb" :to="`/platform/knowledge-bases/${workbench.knowledge_base_id}`">转到知识库</router-link>
+        <t-button v-if="canReadSource" class="research-toolbar-action resource-action resource-action--compact" theme="default" variant="outline" size="small" :disabled="!canShowResearch" :aria-expanded="chatVisible"
           aria-controls="research-chat-panel" data-guide="research-chat" @click="openChat">问答助手</t-button>
         <WorkbenchActions :workbench="workbench" @renamed="applyWorkbenchUpdate" @deleted="router.replace('/platform/research-workbenches')" />
       </div>
     </div>
     <div class="research-body">
       <div class="research-canvas">
-      <IsolatedResearchWorkbench v-if="canShowResearch && workbench" :key="scopeGeneration" ref="isolatedView" :workbench="workbench" @open-chat="openChat" @navigate="navigateResearch" @refresh="restartSession" @update-workbench="applyWorkbenchUpdate" />
+      <IsolatedResearchWorkbench v-if="canShowResearch && workbench && canReadSource" :key="scopeGeneration" ref="isolatedView" :workbench="workbench" @open-chat="openChat" @navigate="navigateResearch" @refresh="restartSession" @update-workbench="applyWorkbenchUpdate" />
       <iframe v-if="canShowResearch && frameReady" :key="generation" ref="frame" :src="frameUrl"
         title="商品研究工作台" @load="frameLoaded" />
       <div v-else-if="workbenchLoading" class="research-empty" role="status">正在打开研究工作台…</div>
@@ -26,9 +26,9 @@
         <p>{{ auth.token && tenantId ? '请先选择一个研究工作台，使用它绑定的知识库。' : '请先登录并选择空间。' }}</p>
         <router-link v-if="auth.token && tenantId" to="/platform/research-workbenches">选择研究工作台</router-link>
       </div>
-      <ResearchFeatureGuides v-if="canShowResearch && workbench" :workbench="workbench" :frame="frame" :frame-version="frameVersion" :suppressed="chatVisible || !frameReady || Boolean(isolatedView?.drawerOpen)" />
+      <ResearchFeatureGuides v-if="canShowResearch && workbench && canReadSource" :workbench="workbench" :frame="frame" :frame-version="frameVersion" :suppressed="chatVisible || !frameReady || Boolean(isolatedView?.drawerOpen)" />
       </div>
-      <ResearchChatPanel v-if="chatMounted && canShowResearch" :key="scopeGeneration" :visible="chatVisible"
+      <ResearchChatPanel v-if="chatMounted && canShowResearch && canReadSource" :key="scopeGeneration" :visible="chatVisible"
         :kb-id="workbench?.knowledge_base_id || ''" :kb-name="workbench?.knowledge_base_name || ''"
         :workbench-name="workbench?.name || '研究工作台'" :isolated="isIsolated" :workbench-id="workbenchId" @close="chatVisible = false" />
     </div>
@@ -68,6 +68,7 @@ let requestGeneration = 0
 let authGeneration = 0
 const isIsolated = computed(() => workbench.value?.workspace_mode === 'isolated')
 const canShowResearch = computed(() => Boolean(auth.token && tenantId.value && workbenchId.value && workbench.value))
+const canReadSource = computed(() => workbench.value?.can_read_source !== false)
 const frameUrl = computed(() => {
   if (!canShowResearch.value) return ''
   return researchFramePath(workbenchId.value,researchView.value)
@@ -87,7 +88,7 @@ async function reauthenticateFrame() {
   try { await prepareFrameSession() }
   catch (error) { workbenchError.value = error instanceof Error ? error.message : '研究工作台登录核验失败。' }
 }
-function openChat() { chatMounted.value = true; chatVisible.value = true }
+function openChat() { if (canReadSource.value) { chatMounted.value = true; chatVisible.value = true } }
 function navigateResearch(view: string) {
   if (!canShowResearch.value || !['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(view)) return
   researchView.value = view

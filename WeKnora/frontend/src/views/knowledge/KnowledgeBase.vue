@@ -12,6 +12,7 @@ import { useUIStore } from '@/stores/ui';
 import { useOrganizationStore } from '@/stores/organization';
 import { useAuthStore } from '@/stores/auth';
 import { permissionCanEditKB, permissionCanManageKB } from '@/utils/kbPermission';
+import { canEditResource, canManageResource } from '@/utils/resourcePermissions';
 import { useChatResourcesStore } from '@/stores/chatResources';
 import { useEditorResourcesStore } from '@/stores/editorResources';
 import KnowledgeBaseEditorModal from './KnowledgeBaseEditorModal.vue';
@@ -329,6 +330,7 @@ const effectiveKBPermission = computed(() => orgStore.getKBPermission(kbId.value
 // hasRole('contributor') is intentionally NOT here — being a Contributor
 // in a tenant does not by itself grant edit on someone else's KB.
 const canEdit = computed(() => {
+  if (typeof kbInfo.value?.can_edit === 'boolean') return canEditResource(kbInfo.value);
   const permission = effectiveKBPermission.value;
   if (permission) return permissionCanEditKB(permission);
   if (isViaShare.value) return orgStore.canEditKB(kbId.value, false);
@@ -341,6 +343,7 @@ const canEdit = computed(() => {
 // shared KBs only an 'admin' share grant qualifies — editor/viewer (and
 // even being the creator viewed via share) never grant delete/settings.
 const canManage = computed(() => {
+  if (typeof kbInfo.value?.can_manage === 'boolean') return canManageResource(kbInfo.value);
   const permission = effectiveKBPermission.value;
   if (permission) return permissionCanManageKB(permission);
   if (isViaShare.value) return orgStore.canManageKB(kbId.value, false);
@@ -2452,7 +2455,7 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
             <!-- 标题行右侧的动作锚点：聚拢"信息"和"设置"两个圆形按钮。 -->
             <div class="kb-title-actions">
               <KnowledgeWorkbenchLink v-if="kbId" :kb-id="kbId" />
-              <KnowledgeBaseActions v-if="kbInfo && (canEdit || canManage)" :knowledge-base="kbInfo" :can-rename="canEdit" :can-delete="canManage" @changed="handleKBActionChanged" />
+              <KnowledgeBaseActions v-if="kbInfo && canManage" :knowledge-base="kbInfo" :can-rename="canManage" :can-delete="canManage" @changed="handleKBActionChanged" />
               <KBInfoPopover v-if="kbInfo && !authStore.isLiteMode" :kb-info="kbInfo"
                 :supported-file-types="[...supportedFileTypes]" />
               <t-tooltip v-if="canManage" :content="$t('knowledgeBase.settings')" placement="top">

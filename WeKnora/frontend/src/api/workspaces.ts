@@ -24,6 +24,14 @@ export interface ResearchWorkbenchTemplate {
 
 export interface ResearchWorkbench {
   can_manage?: boolean
+  can_manage_permissions?: boolean
+  can_edit?: boolean
+  can_manage_source?: boolean
+  can_read_source?: boolean
+  can_edit_source?: boolean
+  source_data_available?: boolean
+  source_sharing_approved?: boolean
+  creator_id?: string
   id: string
   name: string
   description?: string

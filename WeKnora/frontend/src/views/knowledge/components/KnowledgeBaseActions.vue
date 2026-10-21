@@ -6,16 +6,19 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatResourcesStore } from '@/stores/chatResources'
 import { useOrganizationStore } from '@/stores/organization'
 import { validateWorkspaceName, workspaceErrorMessage } from '@/views/workspaces/workspaceForm'
+import ResourcePermissionDrawer from '@/components/ResourcePermissionDrawer.vue'
 
-const props = defineProps<{ knowledgeBase: { id: string; name: string; tenant_id?: string | number }; canRename?: boolean; canDelete?: boolean }>()
+const props = defineProps<{ knowledgeBase: { id: string; name: string; tenant_id?: string | number; can_manage?: boolean; can_manage_permissions?: boolean }; canRename?: boolean; canDelete?: boolean }>()
 const emit = defineEmits<{ changed: [payload: { id: string; deleted: boolean; name?: string }] }>()
 const auth = useAuthStore(), resources = useChatResourcesStore(), organizations = useOrganizationStore()
 const menuOpen = ref(false), action = ref<'rename' | 'delete' | null>(null), name = ref(''), error = ref(''), busy = ref(false)
 const identity = computed(() => JSON.stringify([auth.selectedTenantId ?? auth.tenant?.id, auth.user?.id, auth.token, props.knowledgeBase.id]))
 const canDeleteHere = computed(() => props.canDelete && props.knowledgeBase.tenant_id != null && String(props.knowledgeBase.tenant_id) === String(auth.selectedTenantId ?? auth.tenant?.id))
+const permissionsOpen = ref(false)
+const canManagePermissions = computed(() => (props.knowledgeBase.can_manage_permissions ?? props.knowledgeBase.can_manage) === true && canDeleteHere.value)
 let epoch = 0
-function reset() { epoch++; menuOpen.value = false; action.value = null; error.value = ''; busy.value = false }
-watch(() => [identity.value, props.canRename, canDeleteHere.value], reset, { flush: 'sync' })
+function reset() { epoch++; menuOpen.value = false; action.value = null; permissionsOpen.value = false; error.value = ''; busy.value = false }
+watch(() => [identity.value, props.canRename, canDeleteHere.value, canManagePermissions.value], reset, { flush: 'sync' })
 onBeforeUnmount(reset)
 function open(kind: 'rename' | 'delete') {
   if (!props.knowledgeBase.id || !(kind === 'rename' ? props.canRename : canDeleteHere.value)) return
@@ -69,6 +72,7 @@ async function confirm() {
       <template #content>
         <div class="popup-menu knowledge-base-actions__menu" role="menu" @click.stop @keydown.esc.stop="menuOpen = false">
           <slot name="before" :close="() => menuOpen = false" />
+          <button v-if="canManagePermissions" type="button" role="menuitem" class="popup-menu-item" @click="menuOpen = false; permissionsOpen = true"><t-icon name="usergroup" class="menu-icon" /><span>成员与权限</span></button>
           <button v-if="canRename" type="button" role="menuitem" class="popup-menu-item" @click="open('rename')"><t-icon name="edit" class="menu-icon" /><span>重命名</span></button>
           <button v-if="canDeleteHere" type="button" role="menuitem" class="popup-menu-item delete" @click="open('delete')"><t-icon name="delete" class="menu-icon" /><span>删除</span></button>
         </div>
@@ -82,6 +86,7 @@ async function confirm() {
       <p v-else>删除“{{ knowledgeBase.name }}”及库内资料，并一并删除以此库为主知识库的工作台。不会删除仅通过宏观资料间接关联的其他工作台。此操作无法撤销。</p>
       <t-alert v-if="error" theme="error" :message="error" class="knowledge-base-actions__error" />
     </t-dialog>
+    <ResourcePermissionDrawer v-if="permissionsOpen" v-model:visible="permissionsOpen" kind="knowledge-base" :resource-id="knowledgeBase.id" :resource-name="knowledgeBase.name" />
   </span>
 </template>
 
