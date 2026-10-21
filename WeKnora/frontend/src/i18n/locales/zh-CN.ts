@@ -3073,6 +3073,28 @@ export default {
         thinkingLevels: '可选思考强度',
         noThinking: '该模型不支持思考',
       },
+      protocolReview: {
+        title: "模型已变更，请检查协议覆盖",
+        description: "当前仍保留手动填写的协议参数。它们可能不适用于新模型；请选择恢复默认，或确认继续使用后重新测试。",
+        reset: "恢复目录默认",
+        keep: "保留覆盖并重新测试",
+        manual: "手动覆盖",
+        default: "目录默认",
+        requestFormat: "文本请求字段",
+        defaultProtocol: "默认协议",
+        previewHint: "此处展示程序将使用的请求格式；第三方网关是否支持该格式，需测试连接确认。",
+      },
+      connectionDiagnostic: {
+        details: "查看原始错误",
+        configuration: "配置无法解析，请检查协议覆盖 JSON 和必填参数。",
+        request_rejected: "服务端拒绝了请求参数。请核对模型名称、接口协议、请求格式及维度等设置；具体原因见原始错误。",
+        access_denied: "服务端拒绝了访问。请检查 API Key、访问权限及账户状态。",
+        not_found: "服务端未找到对应资源。请检查接口地址和模型名称。",
+        rate_limited: "调用受到限流。请稍后重试或调整调用频率。",
+        upstream_unavailable: "模型服务暂时不可用。请稍后重试并检查服务状态。",
+        connection: "未能完成与模型服务的连接。请检查网络、接口地址及服务状态。",
+        unknown: "连接测试未通过。请核对当前模型和接入配置，并查看原始错误。",
+      },
       advanced: {
         toggle: '高级',
         api: {

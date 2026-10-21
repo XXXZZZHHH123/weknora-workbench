@@ -324,6 +324,23 @@ func (h *ModelHandler) ResolveModelCatalog(c *gin.Context) {
 		"model":        resolved.Spec,
 		"capabilities": caps,
 	}
+	if modelType == types.ModelTypeEmbedding {
+		// Resolve the default with the same connection and model identity, but
+		// without this row's overrides. A gateway's real contract is still only
+		// established by a connection test; the catalog is a configuration preview.
+		defaults, defaultErr := modelruntime.Resolve(modelruntime.Ref{
+			Provider: providerID, Model: modelName, BaseURL: baseURL, ModelType: modelType, Extra: extra,
+		})
+		if defaultErr != nil {
+			_ = c.Error(errors.NewBadRequestError(defaultErr.Error()))
+			return
+		}
+		data["api"] = resolved.EmbeddingAPI
+		data["embedding_connection"] = gin.H{
+			"effective": resolved.Embeddings.TextFormat(),
+			"default":   defaults.Embeddings.TextFormat(),
+		}
+	}
 	// base_url and the resolved endpoint are configuration, and with no
 	// base_url in the query they fall back to the vendor default — which a
 	// deployment overlay may have repointed at an internal gateway. Same

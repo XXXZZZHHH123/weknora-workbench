@@ -348,7 +348,7 @@ export function testEmbeddingModel(modelConfig: {
     supportsDimensionOverride?: boolean;
     provider?: string;
     modelId?: string;
-} & BaseModelTestPayload): Promise<{ available: boolean; message?: string; dimension?: number }> {
+} & BaseModelTestPayload): Promise<{ available: boolean; message?: string; dimension?: number; diagnostic?: { kind: string; http_status?: number } }> {
     return new Promise((resolve, reject) => {
         post('/api/v1/initialization/embedding/test', modelConfig)
             .then((response: any) => {
@@ -706,7 +706,14 @@ export interface ResolveModelCatalogParams {
 }
 
 // 目录解析结果。Mirrors handler.ResolveModelCatalog response data.
+export interface EmbeddingFormat {
+    api: string;
+    input_field: string;
+    output_field: string;
+}
+
 export interface ResolvedModelCatalog {
+    embedding_connection?: { effective: EmbeddingFormat; default: EmbeddingFormat };
     provider: string;
     api: string;
     // base_url and url are only returned to callers who may configure

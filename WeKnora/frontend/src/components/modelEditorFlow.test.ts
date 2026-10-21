@@ -25,7 +25,7 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-type Result = { available: boolean; message?: string; dimension?: number }
+type Result = { available: boolean; message?: string; dimension?: number; diagnostic?: { kind: string } }
 async function fixture(options: {
   type?: string
   initialType?: string
@@ -672,7 +672,7 @@ test('resolve panel is refreshed once per 400ms burst of edits and ignored while
   } finally { f.close() }
 })
 
-for (const type of ['embedding', 'rerank', 'asr']) {
+for (const type of ['rerank', 'asr']) {
   test(`${type}: the catalog diagnosis panel is hidden and never fetched`, async () => {
     const f = await fixture({ type, providers: catalogProviders })
     try {
@@ -1239,5 +1239,165 @@ test('opening the model editor refreshes its catalog candidates', async () => {
     f.props.visible = true
     await nextTick()
     assert.equal(f.catalogEvents[0], 'refresh')
+  } finally { f.close() }
+})
+
+
+for (const change of ['modelName', 'provider', 'remote_model_name']) {
+  test(`manual overrides need review after changing ${change}`, async () => {
+    const f = await fixture({ type: 'embedding' })
+    try {
+      f.vm.formData.specCompat = '{"api":"dashscope-embeddings","path":""}'
+      await nextTick()
+      await f.vm.checkRemoteAPI()
+      assert.equal(f.vm.remoteAvailable, true)
+      if (change === 'remote_model_name') f.vm.formData.extraConfig.remote_model_name = 'remote-alias-b'
+      else f.vm.formData[change] = 'new-identity'
+      await nextTick()
+      assert.equal(f.vm.protocolReviewPending, true)
+      assert.equal(f.vm.remoteChecked, false)
+      await f.vm.checkRemoteAPI()
+      await f.vm.handleConfirm()
+      assert.equal(f.requests.length, 1, 'unreviewed overrides must not be tested')
+      assert.equal(f.saves.length, 0, 'unreviewed overrides must not be saved')
+      f.vm.keepProtocolOverrides()
+      await f.vm.checkRemoteAPI()
+      assert.equal(f.requests.length, 2)
+      assert.equal(f.requests[1].spec.compat.api, 'dashscope-embeddings')
+      assert.equal(f.vm.remoteAvailable, true)
+    } finally { f.close() }
+  })
+}
+
+test('restore defaults removes protocol overrides but preserves endpoint, credentials, limits and headers', async () => {
+  const f = await fixture({ type: 'embedding' })
+  try {
+    Object.assign(f.vm.formData, {
+      spec: { api: 'openai-completions', context_window: 64000, input: ['text', 'image'] },
+      specCompat: '{"api":"dashscope-embeddings"}',
+      extraConfig: { api: 'openai-completions', region: 'custom-region' },
+      customHeaders: [{ key: 'X-Gateway', value: 'route' }],
+    })
+    await nextTick()
+    f.vm.formData.modelName = 'other-vector-model'
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, true)
+    f.vm.resetProtocolOverrides()
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, false)
+    await f.vm.checkRemoteAPI()
+    const request = JSON.parse(JSON.stringify(f.requests[0]))
+    assert.deepEqual(request.spec, { context_window: 64000, input: ['text', 'image'] })
+    assert.deepEqual(request.extraConfig, { region: 'custom-region' })
+    assert.equal(request.apiKey, 'draft-key')
+    assert.equal(request.baseUrl, 'https://example.com/v1')
+    assert.deepEqual(request.customHeaders, { 'X-Gateway': 'route' })
+  } finally { f.close() }
+})
+
+test('editing a saved model loads its overrides without requiring review until identity changes', async () => {
+  const f = await fixture({ type: 'embedding', edit: true })
+  try {
+    f.props.visible = false
+    await nextTick()
+    f.props.modelData = { ...f.props.modelData, modelName: 'saved-vector', spec: { compat: { api: 'dashscope-embeddings' } } }
+    f.props.visible = true
+    await nextTick()
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, false)
+    assert.equal(f.vm.formData.specCompat.includes('dashscope-embeddings'), true)
+    f.vm.formData.modelName = 'new-vector'
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, true)
+    f.vm.formData.modelName = 'saved-vector'
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, false)
+  } finally { f.close() }
+})
+
+test('changing identity without overrides needs no extra decision', async () => {
+  const f = await fixture({ type: 'embedding' })
+  try {
+    f.vm.formData.modelName = 'another-model'
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, false)
+    await f.vm.checkRemoteAPI()
+    assert.equal(f.requests.length, 1)
+  } finally { f.close() }
+})
+
+test('embedding preview uses the same draft override as the connection test', async () => {
+  const format = { api: 'dashscope-embeddings', input_field: 'input.contents[].text', output_field: 'output.embeddings[].embedding' }
+  const f = await fixture({ type: 'embedding', resolve: async p => ({ api: format.api, embedding_connection: { effective: format, default: { api: 'openai-embeddings' } }, remote_model: p.model }) })
+  try {
+    f.vm.formData.specCompat = '{"api":"dashscope-embeddings"}'
+    await nextTick()
+    await f.vm.runResolve()
+    assert.equal(f.vm.showResolvedPanel, true)
+    assert.equal(f.vm.resolved.embedding_connection.effective.input_field, 'input.contents[].text')
+    await f.vm.checkRemoteAPI()
+    assert.deepEqual(JSON.parse(JSON.stringify(f.resolves.at(-1).spec)), JSON.parse(JSON.stringify(f.requests[0].spec)))
+  } finally { f.close() }
+})
+
+test('a model change invalidates the old preview during the debounce window', async () => {
+  const pending = deferred<any>()
+  const f = await fixture({ type: 'embedding', resolve: () => pending.promise })
+  try {
+    const first = f.vm.runResolve()
+    f.vm.formData.modelName = 'later-model'
+    await nextTick()
+    pending.resolve({ api: 'stale', remote_model: 'old-model' })
+    await first
+    assert.equal(f.vm.resolved, null)
+  } finally { f.close() }
+})
+
+for (const kind of ['request_rejected', 'access_denied', 'rate_limited', 'upstream_unavailable', 'connection', 'configuration', 'unknown-vendor-code']) {
+  test(`connection error ${kind} has actionable guidance and retains the exact original error`, async () => {
+    const original = 'gateway rejected request; reference=fixture-id'
+    const f = await fixture({ type: 'embedding', check: async () => ({ available: false, message: original, diagnostic: { kind } }) })
+    try {
+      await f.vm.checkRemoteAPI()
+      assert.equal(f.vm.remoteMessage, original)
+      assert.equal(f.vm.connectionFailureHint, 'model.editor.connectionDiagnostic.' + (kind === 'unknown-vendor-code' ? 'unknown' : kind))
+    } finally { f.close() }
+  })
+}
+
+
+test('closing and reopening a retained new draft cannot bypass override review', async () => {
+  const f = await fixture({ type: 'embedding' })
+  try {
+    f.vm.formData.specCompat = '{"api":"dashscope-embeddings"}'
+    await nextTick()
+    f.vm.formData.modelName = 'different-alias'
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, true)
+    f.props.visible = false
+    await nextTick()
+    f.props.visible = true
+    await nextTick()
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, true)
+    assert.equal(f.vm.formData.modelName, 'different-alias')
+  } finally { f.close() }
+})
+
+
+test('remote protocol review never blocks a local model and returns when the remote identity changed', async () => {
+  const f = await fixture({ type: 'embedding' })
+  try {
+    f.vm.formData.specCompat = '{"api":"dashscope-embeddings"}'
+    await nextTick()
+    f.vm.formData.modelName = 'new-remote-model'
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, true)
+    f.vm.formData.source = 'local'
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, false)
+    f.vm.formData.source = 'remote'
+    await nextTick()
+    assert.equal(f.vm.protocolReviewPending, true)
   } finally { f.close() }
 })

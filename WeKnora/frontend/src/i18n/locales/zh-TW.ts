@@ -3073,6 +3073,28 @@ export default {
         thinkingLevels: '可選思考強度',
         noThinking: '該模型不支持思考',
       },
+      protocolReview: {
+        title: "模型已變更，請檢查協定覆寫",
+        description: "目前仍保留手動填寫的協定參數，可能不適用於新模型。請選擇恢復預設，或確認繼續使用後重新測試。",
+        reset: "恢復目錄預設",
+        keep: "保留覆寫並重新測試",
+        manual: "手動覆寫",
+        default: "目錄預設",
+        requestFormat: "文字請求欄位",
+        defaultProtocol: "預設協定",
+        previewHint: "此處顯示程式將使用的請求格式；第三方閘道是否支援，需測試連線確認。",
+      },
+      connectionDiagnostic: {
+        details: "檢視原始錯誤",
+        configuration: "無法解析設定，請檢查協定覆寫 JSON 和必要參數。",
+        request_rejected: "服務端拒絕了請求參數。請核對模型名稱、介面協定、請求格式及維度等設定；具體原因請見原始錯誤。",
+        access_denied: "服務端拒絕存取。請檢查 API Key、權限及帳戶狀態。",
+        not_found: "找不到資源。請檢查介面位址和模型名稱。",
+        rate_limited: "呼叫受到限流。請稍後重試或調整頻率。",
+        upstream_unavailable: "模型服務暫時無法使用，請稍後重試並檢查服務狀態。",
+        connection: "無法完成連線，請檢查網路、介面位址及服務狀態。",
+        unknown: "連線測試未通過。請核對模型和接入設定，並檢視原始錯誤。",
+      },
       advanced: {
         toggle: '進階',
         api: {

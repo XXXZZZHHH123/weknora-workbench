@@ -1996,23 +1996,6 @@ func (h *InitializationHandler) TestEmbeddingModel(c *gin.Context) {
 		}
 	}
 
-	// 阿里云多模态 Embedding 模型暂不支持
-	if strings.ToLower(req.Provider) == "aliyun" {
-		modelNameLower := strings.ToLower(req.ModelName)
-		if strings.Contains(modelNameLower, "vision") || strings.Contains(modelNameLower, "multimodal") {
-			logger.Infof(ctx, "Aliyun multimodal embedding model not supported: %s", req.ModelName)
-			c.JSON(http.StatusOK, gin.H{
-				"success": true,
-				"data": gin.H{
-					"available": false,
-					"message":   "阿里云多模态 Embedding 模型暂不支持，请使用纯文本 Embedding 模型（如 text-embedding-v4）",
-					"dimension": 0,
-				},
-			})
-			return
-		}
-	}
-
 	appID, appSecret, ok := h.resolveTenantWeKnoraCloudCreds(ctx)
 	if !ok {
 		logger.Error(ctx, "Tenant info not found")
@@ -2026,7 +2009,7 @@ func (h *InitializationHandler) TestEmbeddingModel(c *gin.Context) {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{"model": utils.SanitizeForLog(req.ModelName)})
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
-			"data":    gin.H{`available`: false, `message`: fmt.Sprintf("创建Embedder失败: %v", err), `dimension`: 0},
+			"data":    gin.H{`available`: false, `message`: fmt.Sprintf("创建Embedder失败: %v", err), `dimension`: 0, `diagnostic`: modelConnectionDiagnostic(err, true)},
 		})
 		return
 	}
@@ -2036,7 +2019,7 @@ func (h *InitializationHandler) TestEmbeddingModel(c *gin.Context) {
 		logger.Error(ctx, "Failed to call embedder", err)
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
-			"data":    gin.H{`available`: false, `message`: fmt.Sprintf("调用Embedding失败: %v", err), `dimension`: 0},
+			"data":    gin.H{`available`: false, `message`: fmt.Sprintf("调用Embedding失败: %v", err), `dimension`: 0, `diagnostic`: modelConnectionDiagnostic(err, false)},
 		})
 		return
 	}
