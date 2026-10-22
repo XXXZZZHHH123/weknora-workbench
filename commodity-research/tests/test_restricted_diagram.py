@@ -73,6 +73,139 @@ def test_existing_isolated_diagram_renders_complete_graph_without_manual_resave(
     assert state['pages'] == 0
 
 
+def test_restricted_diagram_lists_and_switches_all_workbench_layouts(canonical):
+    from tin.integration.workbench_scope import isolated_session_factory
+    from tin.models import DiagramTemplate
+    from lxml.html import fromstring
+    client, headers, state, _ = canonical
+    first_id = existing_diagram()
+    with isolated_session_factory(17, FIRST)() as session:
+        now = datetime.now(timezone.utc)
+        row = DiagramTemplate(variety='SN', name='Second authorized layout',
+            layout={'nodes': [{'id': 'second-only', 'label': 'Second layout node',
+                              'x': 20, 'y': 20, 'w': 160, 'h': 80}], 'edges': []},
+            is_default=False, created_at=now, updated_at=now)
+        session.add(row)
+        session.commit()
+        second_id = row.id
+    delegated(state, ('diagram',))
+    first = client.get(page(FIRST, '/sn/diagram'), headers=headers)
+    assert first.status_code == 200, first.text
+    options = fromstring(first.text).xpath('//select[@id="dg-template"]/option')
+    assert [(option.get('value'), option.text_content()) for option in options] == [
+        (str(first_id), 'Full authorized diagram（默认）'),
+        (str(second_id), 'Second authorized layout')]
+    assert 'Second layout node' not in first.text
+    shown = client.get(page(FIRST, f'/sn/diagram?template={second_id}'), headers=headers)
+    assert shown.status_code == 200, shown.text
+    assert embedded(shown, 'DG_TEMPLATE')['id'] == second_id
+    assert embedded(shown, 'DG_TEMPLATE')['layout']['nodes'][0]['id'] == 'second-only'
+    assert 'onclick="dgToggleEdit()"' not in shown.text
+    assert 'value="__new"' not in shown.text
+    assert not state.get('bounded_requests') and state['pages'] == 0
+    import os
+    from pathlib import Path
+    if output := os.environ.get('RESTRICTED_DIAGRAM_ARTIFACTS'):
+        folder = Path(output)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'diagram-first.html').write_text(first.text)
+        (folder / 'diagram-second.html').write_text(shown.text)
+
+
+@pytest.mark.parametrize('query', ['template=999', 'template=-1', 'template=abc',
+                                   'template=1&template=2', 'template=1&date=2000-01-01'])
+def test_restricted_diagram_rejects_invalid_or_unshared_layout_selection(canonical, query):
+    client, headers, state, _ = canonical
+    existing_diagram()
+    delegated(state, ('diagram',))
+    response = client.get(page(FIRST, '/sn/diagram?' + query), headers=headers)
+    assert response.status_code in {404, 422}, response.text
+    assert 'Measured component' not in response.text
+    assert not state.get('bounded_requests') and state['pages'] == 0
+
+
+def test_legacy_layout_collection_retains_each_saved_snapshot_without_tenant_fallback(canonical):
+    from tin.db import tenant_database_path
+    from tin.integration.workbench_scope import result_session_factory
+    from tin.models import DiagramTemplate
+    from tin.web.restricted_views import remember_diagram
+    client, headers, state, _ = canonical
+    state['force_legacy'] = True
+    with result_session_factory(tenant_database_path(17))() as session:
+        session.info.update(workbench_id=FIRST, weknora_user_id='researcher', source_storage_legacy=True)
+        now = datetime.now(timezone.utc)
+        rows = []
+        for index in range(3):
+            row = DiagramTemplate(variety='SN', name=f'Legacy layout {index}',
+                layout={'nodes': [{'id': f'legacy-{index}', 'label': f'Saved legacy structure {index}',
+                                  'x': 0, 'y': 0, 'w': 160, 'h': 80}], 'edges': []},
+                is_default=index == 0, created_at=now, updated_at=now)
+            session.add(row)
+            session.flush()
+            rows.append(row)
+            if index < 2:
+                remember_diagram(session, row)
+        identifiers = [row.id for row in rows]
+        # A different workbench can mutate tenant-shared rows. Its state must
+        # never replace the snapshot explicitly saved in FIRST's namespace.
+        rows[0].layout = {'nodes': [{'id': 'foreign', 'label': 'OTHER_WORKBENCH_PRIVATE_CHANGE'}], 'edges': []}
+        session.commit()
+    delegated(state, ('diagram',))
+    for index, identifier in enumerate(identifiers[:2]):
+        shown = client.get(page(FIRST, f'/sn/diagram?template={identifier}'), headers=headers)
+        assert shown.status_code == 200, shown.text
+        assert embedded(shown, 'DG_TEMPLATE')['layout']['nodes'][0]['label'] == f'Saved legacy structure {index}'
+        assert 'OTHER_WORKBENCH_PRIVATE_CHANGE' not in shown.text and 'Legacy layout 2' not in shown.text
+    assert client.get(page(FIRST, f'/sn/diagram?template={identifiers[2]}'), headers=headers).status_code == 404
+    other = client.get(page(SECOND, '/sn/diagram'), headers=headers)
+    assert 'Legacy layout' not in other.text and '尚未保存产业图' in other.text
+    assert not state.get('bounded_requests') and state['pages'] == 0
+
+
+def test_legacy_single_snapshot_is_compatible_and_deleted_layout_is_not_resurrected(canonical):
+    from tin.db import tenant_database_path
+    from tin.integration.workbench_scope import result_session_factory
+    from tin.models import DiagramTemplate, SourceMapping
+    client, headers, state, _ = canonical
+    state['force_legacy'] = True
+    identifier = existing_diagram(legacy=True)
+    with result_session_factory(tenant_database_path(17))() as session:
+        session.add(SourceMapping(id='workbench-diagram:' + FIRST,
+            config={'template_id': identifier, 'snapshot': {'name': 'Old saved layout', 'layout': layout()}},
+            confirmed_by='researcher', confirmed_at=datetime.now(timezone.utc)))
+        session.commit()
+    delegated(state, ('diagram',))
+    shown = client.get(page(FIRST, f'/sn/diagram?template={identifier}'), headers=headers)
+    assert shown.status_code == 200 and embedded(shown, 'DG_TEMPLATE')['name'] == 'Old saved layout'
+    with result_session_factory(tenant_database_path(17))() as session:
+        session.delete(session.get(DiagramTemplate, identifier))
+        session.commit()
+    assert client.get(page(FIRST, f'/sn/diagram?template={identifier}'), headers=headers).status_code == 404
+    assert not state.get('bounded_requests') and state['pages'] == 0
+
+
+def test_selecting_unbound_layout_does_not_load_another_layouts_metrics(canonical):
+    from tin.integration.workbench_scope import isolated_session_factory
+    from tin.models import DiagramTemplate, SourceMapping
+    client, headers, state, _ = canonical
+    existing_diagram()
+    with isolated_session_factory(17, FIRST)() as session:
+        now = datetime.now(timezone.utc)
+        row = DiagramTemplate(variety='SN', name='No measurements', layout={'nodes': [], 'edges': []},
+            is_default=False, created_at=now, updated_at=now)
+        session.add(row)
+        session.add(SourceMapping(id='workbench-series-origins:' + FIRST,
+            config={'origins': {SERIES: {'knowledge_base_id': KB, 'tenant_id': 17}}},
+            confirmed_by='researcher', confirmed_at=now))
+        session.commit()
+        identifier = row.id
+    delegated(state, ('diagram',))
+    shown = client.get(page(FIRST, f'/sn/diagram?template={identifier}'), headers=headers)
+    assert shown.status_code == 200, shown.text
+    assert not state.get('bounded_requests') and state['pages'] == 0
+    assert embedded(shown, 'DG_RESTRICTED_DATA')['nodes'] == []
+
+
 def test_legacy_authorization_can_publish_current_display_without_editing_graph(canonical):
     client, headers, state, _ = canonical
     state['force_legacy'] = True
@@ -92,6 +225,43 @@ def test_legacy_authorization_can_publish_current_display_without_editing_graph(
     assert state['pages'] == pages
     other = client.get(page(SECOND, '/sn/diagram'), headers=headers)
     assert 'Full authorized diagram' not in other.text and '尚未保存产业图' in other.text
+
+
+def test_explicit_legacy_publication_shares_the_original_pages_entire_layout_list(canonical):
+    from tin.db import tenant_database_path
+    from tin.integration.workbench_scope import result_session_factory
+    from tin.models import DiagramTemplate
+    from lxml.html import fromstring
+    client, headers, state, _ = canonical
+    state['force_legacy'] = True
+    first_id = existing_diagram(legacy=True)
+    with result_session_factory(tenant_database_path(17))() as session:
+        now = datetime.now(timezone.utc)
+        row = DiagramTemplate(variety='SN', name='Another original-page diagram',
+            layout={'nodes': [{'id': 'another', 'label': 'Another published structure',
+                              'x': 0, 'y': 0, 'w': 160, 'h': 80}], 'edges': []},
+            is_default=False, created_at=now, updated_at=now)
+        session.add(row)
+        session.commit()
+        second_id = row.id
+    original = client.get(page(FIRST, '/sn/diagram'), headers=headers)
+    assert original.status_code == 200, original.text
+    original_options = fromstring(original.text).xpath('//select[@id="dg-template"]/option[not(@value="__new")]/@value')
+    assert set(original_options) == {str(first_id), str(second_id)}
+    published = client.post(api(FIRST, 'diagram/publish'), headers=headers)
+    assert published.status_code == 200, published.text
+    assert published.json() == {'published': True, 'template_id': first_id}
+    pages = state['pages']
+    delegated(state, ('diagram',))
+    for identifier in (first_id, second_id):
+        shown = client.get(page(FIRST, f'/sn/diagram?template={identifier}'), headers=headers)
+        assert shown.status_code == 200, shown.text
+        options = fromstring(shown.text).xpath('//select[@id="dg-template"]/option/@value')
+        assert set(options) == set(original_options)
+        assert embedded(shown, 'DG_TEMPLATE')['id'] == identifier
+    other = client.get(page(SECOND, '/sn/diagram'), headers=headers)
+    assert 'Another published structure' not in other.text and '尚未保存产业图' in other.text
+    assert state['pages'] == pages
 
 
 @pytest.mark.parametrize('mode', ['viewer', 'wb_readonly', 'delegated'])
@@ -216,6 +386,28 @@ def test_publication_rechecks_workbench_edit_rights_before_commit(canonical, mon
     monkeypatch.setattr(httpx, 'request', revoke_during_preparation)
     response = client.post(api(FIRST, 'diagram/publish'), headers=headers)
     assert response.status_code == 403, response.text
+    with isolated_session_factory(17, FIRST)() as session:
+        assert session.get(SourceMapping, 'workbench-diagram:' + FIRST) is None
+
+
+def test_publication_rechecks_workbench_owner_before_commit(canonical, monkeypatch):
+    import httpx
+    from tin.integration.workbench_scope import isolated_session_factory
+    from tin.models import SourceMapping
+    client, headers, state, _ = canonical
+    existing_diagram()
+    fixture_request = httpx.request
+
+    def replace_owner_during_preparation(method, url, **kwargs):
+        response = fixture_request(method, url, **kwargs)
+        body = json.loads(kwargs.get('content') or b'{}')
+        if str(url).endswith('/api/research/facts') and 'offset' in body:
+            state['owner_id'] = 'another-owner'
+        return response
+
+    monkeypatch.setattr(httpx, 'request', replace_owner_during_preparation)
+    response = client.post(api(FIRST, 'diagram/publish'), headers=headers)
+    assert response.status_code == 409, response.text
     with isolated_session_factory(17, FIRST)() as session:
         assert session.get(SourceMapping, 'workbench-diagram:' + FIRST) is None
 

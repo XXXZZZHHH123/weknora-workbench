@@ -409,6 +409,9 @@ def delete_template(session: Session, variety: str, template_id: int) -> dict:
                                .order_by(DiagramTemplate.updated_at.desc()).limit(1)).first()
         if heir is not None:
             heir.is_default = True
+    if session.info.get('knowledge_facts') is True:
+        from tin.web.restricted_views import forget_diagram
+        forget_diagram(session, template_id)
     session.commit()
     return {"deleted": template_id, "templates": list_templates(session, variety)}
 

@@ -15,13 +15,14 @@
       <span class="text-[var(--amber)]">没数的环节显示「尚无数据」，不会拿旧值充数</span>
     </p>
   </div>
-  {% if not restricted_view %}<div class="flex items-center gap-1.5 shrink-0 text-xs">
-    <select id="dg-template" onchange="dgSwitch(this.value)" class="px-2 py-1.5 rounded-md">
+  <div class="flex items-center gap-1.5 shrink-0 text-xs">
+    <select id="dg-template" aria-label="选择产业图" onchange="dgSwitch(this.value)" class="px-2 py-1.5 rounded-md">
       {% for t in templates_all %}
       <option value="{{ t.id }}" {{ 'selected' if t.id == template.id }}>{{ t.name }}{{ '（默认）' if t.is_default }}</option>
       {% endfor %}
       {% if can_edit_diagram %}<option value="__new">＋ 新建空白布局…</option>{% endif %}
     </select>
+    {% if not restricted_view %}
     <button type="button" onclick="dgDeleteTemplate()" title="删除当前布局" {% if not can_edit_diagram %}disabled{% endif %}
       class="px-2 py-1.5 rounded-md border border-[var(--line)] text-[var(--text-muted)] hover:text-[var(--alert)] hover:bg-[var(--surface-soft)]">🗑</button>
     {# 上方工具栏只放"这张图本身"的事：换布局、结构文本、进出编辑。
@@ -35,7 +36,8 @@
       px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">退出编辑</button>
     <button type="button" onclick="dgSave()" id="dg-save" disabled class="hidden
       px-3 py-1.5 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-40">保存</button>
-  </div>{% endif %}
+    {% endif %}
+  </div>
 </div>
 
 <div class="flex items-center flex-wrap gap-3 py-2 text-[11px] text-[var(--text-muted)]">
@@ -113,12 +115,16 @@
   <div id="dg-blank" class="hidden absolute inset-0 flex items-center justify-center pointer-events-none">
     <div class="text-center max-w-sm pointer-events-auto">
       <div class="text-sm font-bold">这张布局还是空的</div>
+      {% if restricted_view %}
+      <p class="text-xs text-[var(--text-muted)] mt-1.5 leading-relaxed">主人保存节点和分组后，这里会展示完整产业图。也可以从上方切换其他布局。</p>
+      {% else %}
       <p class="text-xs text-[var(--text-muted)] mt-1.5 leading-relaxed">
         左上角 <b>＋ 分组</b> 圈出环节、<b>＋ 节点</b> 放具体指标；<br>
         拖节点进分组即归属，点方框绑定指标。</p>
       <p class="text-xs text-[var(--text-muted)] mt-2">
         已经有维护好的大纲？<button type="button" onclick="dgOpenMarkdown()"
           class="text-[var(--primary)] font-semibold underline">从 Markdown 导入</button>更快。</p>
+      {% endif %}
     </div>
   </div>
 

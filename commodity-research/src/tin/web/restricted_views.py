@@ -90,35 +90,71 @@ def core_config(session):
     return _ids((row.config or {}).get('series_ids', []), 12) if row else []
 
 
-def default_diagram(session):
+def shared_diagrams(session):
+    """All layouts in this workbench, never an unscoped legacy tenant list."""
+    selected = session.get(SourceMapping, mapping_key(session, DIAGRAM_KEY))
+    query = select(DiagramTemplate).where(DiagramTemplate.variety == settings.variety)
+    if not session.info.get('source_storage_legacy'):
+        # An isolated research DB belongs to exactly one verified workbench.
+        # Layouts are shared workbench configuration, not personal records.
+        return list(session.scalars(query.order_by(
+            DiagramTemplate.is_default.desc(), DiagramTemplate.updated_at.desc(), DiagramTemplate.id)))
+    snapshots = _diagram_snapshots(selected.config or {}) if selected else {}
+    if not snapshots:
+        # Legacy workbenches share a tenant DB. Only snapshots explicitly saved
+        # in this workbench's namespace establish its permitted structure.
+        return []
+    rows = session.scalars(query.where(DiagramTemplate.id.in_([int(key) for key in snapshots]))
+        .order_by(DiagramTemplate.is_default.desc(), DiagramTemplate.updated_at.desc(), DiagramTemplate.id))
+    return [SimpleNamespace(id=row.id, name=str(snapshots[str(row.id)].get('name') or ''),
+        layout=snapshots[str(row.id)]['layout'], is_default=row.is_default) for row in rows]
+
+
+def _diagram_snapshots(config):
+    snapshots = config.get('snapshots')
+    result = {str(int(key)): value for key, value in snapshots.items()
+        if isinstance(key, str) and len(key) <= 19 and key.isascii() and key.isdecimal() and 0 < int(key) <= 2**63 - 1
+        and isinstance(value, dict) and isinstance(value.get('layout'), dict)} if isinstance(snapshots, dict) else {}
+    identifier, snapshot = config.get('template_id'), config.get('snapshot')
+    if type(identifier) is int and 0 < identifier <= 2**63 - 1 and isinstance(snapshot, dict) and isinstance(snapshot.get('layout'), dict):
+        # Preserve the original single-layout format without a data migration.
+        result.setdefault(str(identifier), snapshot)
+    return result
+
+
+def default_diagram(session, rows=None):
+    rows = shared_diagrams(session) if rows is None else rows
     selected = session.get(SourceMapping, mapping_key(session, DIAGRAM_KEY))
     if selected:
         identifier = (selected.config or {}).get('template_id')
-        row = session.scalar(select(DiagramTemplate).where(DiagramTemplate.id == identifier,
-            DiagramTemplate.variety == settings.variety)) if type(identifier) is int else None
-        if row is None:
-            return None
-        if session.info.get('source_storage_legacy'):
-            # A legacy template row is mutable tenant-wide. Its ID alone does
-            # not isolate WB grants. Use the layout explicitly saved in this
-            # WB's namespace, so another WB editing the shared row cannot widen
-            # this WB's labels, statics, or fact bindings.
-            snapshot = selected.config.get('snapshot')
-            if not isinstance(snapshot, dict) or not isinstance(snapshot.get('layout'), dict):
-                return None
-            return SimpleNamespace(id=identifier, name=str(snapshot.get('name') or ''), layout=snapshot['layout'])
-        return row
-    if session.info.get('source_storage_legacy'):
-        # Multiple legacy workbenches share a tenant result DB. An unscoped
-        # default template cannot establish this WB's permitted bindings.
-        return None
-    return session.scalar(select(DiagramTemplate).where(DiagramTemplate.variety == settings.variety)
-        .order_by(DiagramTemplate.is_default.desc(), DiagramTemplate.updated_at.desc()).limit(1))
+        current = next((row for row in rows if row.id == identifier), None)
+        if current:
+            return current
+    return rows[0] if rows else None
 
 
 def remember_diagram(session, template):
-    _save_mapping(session, DIAGRAM_KEY, {'template_id': template.id,
-        'snapshot': {'name': template.name, 'layout': deepcopy(template.layout)}})
+    snapshot = {'name': template.name, 'layout': deepcopy(template.layout)}
+    config = {'template_id': template.id, 'snapshot': snapshot}
+    if session.info.get('source_storage_legacy'):
+        selected = session.get(SourceMapping, mapping_key(session, DIAGRAM_KEY))
+        snapshots = _diagram_snapshots(selected.config or {}) if selected else {}
+        snapshots[str(template.id)] = snapshot
+        config['snapshots'] = snapshots
+    _save_mapping(session, DIAGRAM_KEY, config)
+
+
+def forget_diagram(session, template_id):
+    selected = session.get(SourceMapping, mapping_key(session, DIAGRAM_KEY))
+    if selected is None:
+        return
+    snapshots = _diagram_snapshots(selected.config or {})
+    snapshots.pop(str(template_id), None)
+    identifier = selected.config.get('template_id')
+    if identifier == template_id:
+        identifier = next((int(key) for key in snapshots), None)
+    _save_mapping(session, DIAGRAM_KEY, {'template_id': identifier,
+        'snapshot': snapshots.get(str(identifier)), 'snapshots': snapshots})
 
 
 def _diagram_ids(layout):
@@ -136,9 +172,9 @@ def bound_series_ids(session, module):
     if module == 'market':
         return core_config(session)
     if module in {'diagram', 'indicators'}:
-        template = default_diagram(session)
-        diagram = _diagram_ids(template.layout or {}) if template else []
-        return list(dict.fromkeys((core_config(session) if module == 'indicators' else []) + diagram))
+        templates = shared_diagrams(session)
+        diagram = [identifier for template in templates for identifier in _diagram_ids(template.layout or {})]
+        return _ids(list(dict.fromkeys((core_config(session) if module == 'indicators' else []) + diagram)))
     return []
 
 
@@ -318,13 +354,17 @@ def _market_cards(identifiers, values):
                  badge='已授权') for identifier in identifiers if identifier in values]
 
 
-def page_data(scope, module):
+def page_data(scope, module, template_id=None):
     """Render owner-shared page contents without unrelated source snapshots."""
     if module == 'home':
         from tin.web.restricted_home import home_payload
         return home_payload(scope)
     with artifact_session(scope) as session:
-        template = default_diagram(session) if module == 'diagram' else None
+        templates = shared_diagrams(session) if module == 'diagram' else []
+        template = (next((row for row in templates if row.id == template_id), None)
+                    if template_id is not None else default_diagram(session, templates)) if module == 'diagram' else None
+        if module == 'diagram' and template_id is not None and template is None:
+            raise HTTPException(404, '没有这张已授权的产业图')
         identifiers = _diagram_ids(template.layout or {}) if template else (
             [] if module == 'diagram' else bound_series_ids(session, module))
         output = {'cards': [], 'diagram': None, 'entries': [],
@@ -357,7 +397,9 @@ def page_data(scope, module):
         if module == 'diagram' and template:
             layout = readonly_diagram_layout(template.layout or {})
             output['diagram'] = {'id': template.id, 'name': template.name,
-                                 'layout': layout, 'is_default': True}
+                                 'layout': layout, 'is_default': bool(template.is_default)}
+            output['diagrams'] = [{'id': row.id, 'name': row.name, 'is_default': bool(row.is_default)}
+                                   for row in templates]
             output['diagram_values'] = diagram_values(layout, values)
         if module in {'judgments', 'strategies', 'reports'} and not output['legacy_unassigned']:
             output['entries'], output['entries_truncated'] = shared_artifacts(
@@ -427,17 +469,18 @@ def diagram_values(layout, values):
 
 
 def publish_diagram(scope):
-    """A source-readable editor explicitly publishes the layout they can already see."""
+    """Explicitly publish the original page's full layout list in this WB scope."""
     from tin.integration.workbench_scope import require_shared_write, workbench_session
     require_shared_write(scope)
     if scope.restricted:
         raise HTTPException(403, '仅可读取来源的研究台编辑成员能发布产业图')
     with workbench_session(scope) as session:
-        template = default_diagram(session)
-        if template is None:
-            template = session.scalar(select(DiagramTemplate).where(DiagramTemplate.variety == settings.variety)
-                .order_by(DiagramTemplate.is_default.desc(), DiagramTemplate.updated_at.desc()).limit(1))
-        if template is None:
+        from tin.export.diagram import list_templates
+        # Use exactly the normal page's verified-source query. In legacy mode
+        # this is an explicit editor publication, never a visitor-side fallback
+        # to a tenant-wide list just because another WB has a diagram grant.
+        layouts = list_templates(session, settings.variety)
+        if not layouts:
             return {'published': False, 'template_id': None}
         # A cold projection may take time. Do not commit a new shared snapshot
         # using edit/source rights that were revoked during that preparation.
@@ -459,24 +502,42 @@ def publish_diagram(scope):
             if (current.get('knowledge_base_id') != scope.knowledge_base_id
                     or current.get('workspace_mode') != scope.metadata.get('workspace_mode')):
                 raise HTTPException(409, '研究台来源已改变，未发布旧产业图')
+            if not shared_owner_id(scope) or current.get('owner_id') != shared_owner_id(scope):
+                raise HTTPException(409, '研究台主人已改变或尚未核验，未发布旧产业图')
             if current.get('can_edit') is not True or current.get('can_read_source') is not True:
                 raise HTTPException(403, '产业图发布需要当前来源读取和研究台编辑权限')
         except (httpx.HTTPError, ValueError, TypeError, AttributeError):
             raise HTTPException(503, '暂时无法重新核验产业图发布权限，未保存快照') from None
-        remember_origins(session, _diagram_ids(template.layout or {}))
-        remember_diagram(session, template)
+        identifiers = list(dict.fromkeys(identifier for layout in layouts
+            for identifier in _diagram_ids(layout['layout'] or {})))
+        remember_origins(session, identifiers)
+        template = layouts[0]
+        snapshot = {'name': template['name'], 'layout': deepcopy(template['layout'])}
+        config = {'template_id': template['id'], 'snapshot': snapshot}
+        if session.info.get('source_storage_legacy'):
+            config['snapshots'] = {str(layout['id']): {'name': layout['name'],
+                'layout': deepcopy(layout['layout'])} for layout in layouts}
+        _save_mapping(session, DIAGRAM_KEY, config)
         session.commit()
-        return {'published': True, 'template_id': template.id}
+        return {'published': True, 'template_id': template['id']}
 
 
 async def restricted_response(request, scope, route_path):
     if request.method not in {'GET', 'HEAD'} or route_path not in PAGES:
         raise HTTPException(403, '受限视角不开放指标目录、任意取数、原文、导出和修改接口')
-    if set(request.query_params) - {'_research_tenant', '_research_user'}:
+    allowed = {'_research_tenant', '_research_user'} | ({'template'} if route_path == '/sn/diagram' else set())
+    if set(request.query_params) - allowed:
         raise HTTPException(422, '受限视角由服务端绑定确定指标和最新时点，不接受自选查询范围')
+    template_id = None
+    if 'template' in request.query_params:
+        values = request.query_params.getlist('template')
+        value = values[0]
+        if len(values) != 1 or not value.isascii() or not value.isdecimal() or len(value) > 19 or not 0 < int(value) <= 2**63 - 1:
+            raise HTTPException(422, '请选择一张已授权的产业图')
+        template_id = int(value)
     module, title = PAGES[route_path]
     authorized = scope.source_available and module in scope.view_modules
-    payload = await run_in_threadpool(page_data, scope, module) if authorized else {'cards': [], 'entries': [], 'diagram': None}
+    payload = await run_in_threadpool(page_data, scope, module, template_id) if authorized else {'cards': [], 'entries': [], 'diagram': None}
     from tin.web.app import templates
     context = {'nav': {'market': 'variety', 'judgments': 'judgment'}.get(module, module),
         'restricted_view': True, 'restricted_module': module, 'restricted_title': title,
@@ -485,7 +546,7 @@ async def restricted_response(request, scope, route_path):
     if authorized and module == 'home':
         return templates.TemplateResponse(request, 'readonly_home.html', context)
     if authorized and module == 'diagram' and payload.get('diagram'):
-        context.update(template=payload['diagram'], templates_all=[payload['diagram']],
+        context.update(template=payload['diagram'], templates_all=payload['diagrams'],
                        restricted_diagram_values=payload['diagram_values'])
         return templates.TemplateResponse(request, 'diagram.html', context)
     if authorized and module == 'indicators':
