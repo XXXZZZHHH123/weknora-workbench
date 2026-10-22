@@ -49,7 +49,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
       <span><strong>{{ research_workbench().metadata.name if research_workbench() else '锡研究工作台' }}</strong><small>商品研究</small></span>
     </a>
   <div class="research-nav-tools">
-    {% if d %}
+    {% if d and not restricted_view %}
     <form method="get" action="{{ research_form_url(request.url.path) }}" class="date-switcher hidden sm:inline-flex items-center rounded-lg border border-[var(--line)] bg-[var(--surface-soft)] p-0.5 text-xs text-[var(--text-muted)]">
       {% if research_identity() %}<input type="hidden" name="_research_tenant" value="{{ research_identity().tenant_id }}"><input type="hidden" name="_research_user" value="{{ research_identity().user_id }}">{% endif %}
       {% if prev_date %}<a href="?date={{ prev_date }}" class="px-2 py-1 hover:text-[var(--text)]" title="前一交易日">&larr;</a>
@@ -84,7 +84,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
         ('judgment', '研究判断', '/sn/judgment'), ('strategies', '策略', '/sn/strategies'),
         ('diagram', '产业图', '/sn/diagram'), ('reports', '日报', '/sn/reports'), ('entry', '人工录入', '/sn/entry')] %}
       {% set view_module = {'variety': 'market', 'judgment': 'judgments'}.get(key, key) %}
-      {% if not restricted_view or key == 'home' or view_module in research_workbench().view_modules %}<a href="{{ research_url(href) }}{% if key in ('home', 'variety', 'indicators') and d %}?date={{ d }}{% endif %}"
+      {% if not restricted_view or key == 'home' or view_module in research_workbench().view_modules %}<a href="{{ research_url(href) }}{% if key in ('home', 'variety', 'indicators') and d and not restricted_view %}?date={{ d }}{% endif %}"
          class="nav-btn {{ 'active' if nav == key }}" {% if nav == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endif %}
       {% endfor %}
@@ -102,6 +102,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 
 <main class="research-main max-w-7xl mx-auto px-6 py-6 space-y-6">
   {% if err %}<div class="px-4 py-3 rounded-lg bg-[var(--alert-soft)] text-[var(--alert)] text-sm">{{ err }}</div>{% endif %}
+  {% if restricted_view %}<div class="research-panel px-4 py-3 text-xs text-[var(--text-muted)]" role="status">受限视角 · 显示已授权页面内容及必要数值；指标全库、原始资料、任意查询和下载未开放。</div>{% endif %}
   {% block main %}{% endblock %}
 </main>
 
@@ -160,6 +161,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 </aside>
 {% endif %}
 
+{% if not restricted_view %}
 <div id="series-chart-modal" class="series-chart-modal hidden fixed inset-0" role="dialog"
      aria-modal="true" aria-hidden="true" aria-labelledby="series-chart-title">
   <button type="button" class="series-chart-backdrop absolute inset-0" data-chart-close
@@ -214,6 +216,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
     </div>
   </section>
 </div>
+{% endif %}
 
 <div id="toast" class="hidden fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg bg-[var(--primary)] text-white text-xs font-semibold shadow-xl flex items-center gap-2">
   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>

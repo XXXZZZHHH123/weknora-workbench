@@ -16,6 +16,11 @@ func (s *WorkspaceService) populateWorkbenchAccess(ctx context.Context, caller t
 	if row.AccessPolicy != nil && !types.ResourceCanRead(types.ResourcePermissionFor(row.AccessPolicy, row.UserID, caller)) {
 		return nil, apperrors.NewNotFoundError("工作台不存在或无权访问")
 	}
+	// Expose the persisted owner only after the caller has passed the
+	// workbench read check. Restricted downstream views use this identity to
+	// select the owner's explicitly shared records instead of the visitor's
+	// private records.
+	row.OwnerID = row.UserID
 	kb, err := s.kbs.GetKnowledgeBaseByIDOnly(ctx, row.KnowledgeBaseID)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return nil, err

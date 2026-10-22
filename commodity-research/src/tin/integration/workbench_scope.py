@@ -152,6 +152,9 @@ async def resolve_workbench(identity, workbench_id, authorization):
             or type(metadata.get("scope_tenant_id")) is not int
             or metadata["scope_tenant_id"] != identity.tenant_id):
         raise HTTPException(403, "研究工作台与当前空间不匹配")
+    owner_id = metadata.get('owner_id')
+    if owner_id is not None and (not isinstance(owner_id, str) or not owner_id.strip() or len(owner_id) > 128):
+        raise HTTPException(503, '研究台主人归属信息无效，未展示其他成员记录')
     if metadata.get("workspace_mode") not in {"isolated", "legacy"}:
         raise HTTPException(409, "研究工作台来源模式无效，未使用历史事实")
     kb_id = metadata.get("knowledge_base_id")

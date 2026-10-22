@@ -2,40 +2,46 @@
 {% block title %}指标 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block head %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/indicators.css?v={{ static_version() }}">
+{% if restricted_view %}
+<script defer src="{{ research_static_prefix() }}/static/readonly-indicators.js?v={{ static_version() }}"></script>
+{% else %}
 <script defer src="{{ research_static_prefix() }}/static/indicator-preferences.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/indicators.js?v={{ static_version() }}"></script>
+{% endif %}
 {% endblock %}
 {% block main %}
-<div id="indicator-workspace" data-date="{{ d or '' }}" class="indicator-workspace">
+{% if restricted_view and restricted_data.owner_unavailable %}{% set rows = [] %}{% set groups = [] %}{% endif %}
+<div id="indicator-workspace" data-date="{{ d or '' }}"{% if restricted_view %} data-readonly="true"{% endif %} class="indicator-workspace">
   <header id="indicator-top" class="indicator-page-heading">
     <div><div class="indicator-eyebrow">INDICATORS &amp; WATCHLIST</div><h1>指标</h1>
-      <p class="indicator-muted">宏观与产业指标，一处查找。将关心的指标加入自选，先看走势，再查口径。</p></div>
+      <p class="indicator-muted">{% if restricted_view %}本工作台已绑定指标及必要最新值；仅可筛选当前清单，不开放全库查询、历史和下载。{% else %}宏观与产业指标，一处查找。将关心的指标加入自选，先看走势，再查口径。{% endif %}</p></div>
     <a href="#indicator-catalog" class="indicator-button">浏览 {{ rows | length }} 项指标 ↓</a>
   </header>
-  <section aria-labelledby="indicator-favorites-title">
+  {% if restricted_view and restricted_data.owner_unavailable %}<p class="indicator-warning" role="status">工作台主人归属尚未核验，暂不展示分享内容。请主人重新保存共享配置后再试。</p>{% endif %}
+  {% if not restricted_view %}<section aria-labelledby="indicator-favorites-title">
     <div class="indicator-section-heading"><h2 id="indicator-favorites-title">我的自选 <span id="indicator-favorite-count" class="indicator-muted">0</span></h2>
       <span class="indicator-muted">保存在当前浏览器 · 最多 40 项</span></div>
     <p id="indicator-storage-note" class="indicator-warning" role="status" hidden></p>
     <div id="indicator-favorites" class="indicator-favorites" aria-live="polite"></div>
     <div id="indicator-favorites-empty" class="indicator-empty">还没有自选指标。点击指标名旁边的书签，这里就会显示最新值和走势小图。</div>
     <div id="indicator-favorites-error" class="indicator-warning" role="alert" hidden><span></span> <button type="button" id="indicator-favorites-retry" class="indicator-button">重试</button></div>
-  </section>
+  </section>{% endif %}
   <section id="indicator-catalog" aria-labelledby="indicator-catalog-title">
-    <div class="indicator-section-heading"><h2 id="indicator-catalog-title">指标清单</h2><span class="indicator-muted">勾选 2–4 项可比较走势 · 逐合约行情未列入</span></div>
+    <div class="indicator-section-heading"><h2 id="indicator-catalog-title">指标清单</h2><span class="indicator-muted">{% if restricted_view %}仅本台绑定集 · 按服务端授权时点展示{% else %}勾选 2–4 项可比较走势 · 逐合约行情未列入{% endif %}</span></div>
     <div class="indicator-sticky-stack">
       <div class="indicator-toolbar">
         <label class="indicator-search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16.5 20 20.5"/></svg>
           <span class="sr-only">查找指标</span>
-          <input id="indicator-search" type="search" placeholder="搜索名称、代码、来源或口径" autocomplete="off">
+          <input id="indicator-search" type="search" placeholder="{{ '筛选当前名称、代码或单位' if restricted_view else '搜索名称、代码、来源或口径' }}" autocomplete="off">
           <button id="indicator-search-clear-input" type="button" class="indicator-search-clear" hidden aria-label="清除搜索">×</button>
         </label>
-        <div class="indicator-scope" role="tablist" aria-label="指标范围">
+        {% if not restricted_view %}<div class="indicator-scope" role="tablist" aria-label="指标范围">
           <button type="button" data-scope="all" aria-pressed="true">全部</button>
           <button type="button" data-scope="macro" aria-pressed="false">宏观</button>
           <button type="button" data-scope="industry" aria-pressed="false">产业</button>
           <button type="button" data-scope="favorites" aria-pressed="false">自选 <span id="indicator-scope-favorite-count">0</span></button>
-        </div>
+        </div>{% endif %}
         <span id="indicator-result-count" class="indicator-muted" role="status">{{ rows | length }} 项</span>
         <button id="indicator-expand" type="button" class="indicator-text-button">展开</button>
         <button id="indicator-collapse" type="button" class="indicator-text-button">收起</button>
@@ -50,19 +56,30 @@
           </div>
         </div>
       </nav>
-      <div id="indicator-compare-bar" class="indicator-compare-bar" hidden>
+      {% if not restricted_view %}<div id="indicator-compare-bar" class="indicator-compare-bar" hidden>
         <span id="indicator-selection" aria-live="polite"></span>
         <button id="indicator-compare-open" type="button" class="indicator-button indicator-primary" disabled>比较走势</button>
         <button id="indicator-selection-clear" type="button" class="indicator-button">清空选择</button>
-      </div>
+      </div>{% endif %}
     </div>
     <div id="indicator-no-results" class="indicator-empty" hidden>没有匹配的指标。<button id="indicator-search-clear" type="button" class="indicator-button">清除筛选</button></div>
     {% for group in groups %}
     <details id="indicator-group-{{ loop.index }}" class="indicator-group indicator-anchor" data-indicator-group data-category="{{ group.name }}" open>
       <summary>{{ group.name }} <span data-group-count class="indicator-muted">{{ group.rows | length }}</span></summary>
       <div class="indicator-table-scroll"><table class="indicator-table">
-        <thead><tr><th class="indicator-action-cell">对比</th><th>指标 / 代码</th><th>单位</th><th>来源</th><th>频率 / 采集</th><th>查看</th></tr></thead>
+        {% if restricted_view %}
+        <thead><tr><th>指标 / 代码</th><th>单位</th><th>最新值</th><th>较上一观测</th><th>观测日期 / 频率</th></tr></thead>
+        {% else %}<thead><tr><th class="indicator-action-cell">对比</th><th>指标 / 代码</th><th>单位</th><th>来源</th><th>频率 / 采集</th><th>查看</th></tr></thead>{% endif %}
         <tbody>{% for r in group.rows %}
+          {% if restricted_view %}
+          <tr data-indicator-row data-series-id="{{ r.series_id }}" data-name="{{ r.name }}" data-search="{{ r.name }} {{ r.series_id }} {{ r.unit }}">
+            <td><div class="indicator-name-line"><b>{{ r.name }}</b></div><div class="indicator-code">{{ r.series_id }}</div></td>
+            <td>{{ r.unit or '—' }}</td>
+            <td class="tabular">{% if r.value is not none %}{{ r.value | num }}{% else %}<span class="indicator-muted">暂无有效值</span>{% endif %}</td>
+            <td class="tabular {% if r.change is not none and r.change > 0 %}text-[var(--up)]{% elif r.change is not none and r.change < 0 %}text-[var(--down)]{% endif %}">{% if r.change is not none %}{{ r.change | num(r.unit, true) }}{% if r.change_pct is not none %} <span>({{ r.change_pct | num('%', true) }}%)</span>{% endif %}{% else %}<span class="indicator-muted">—</span>{% endif %}</td>
+            <td>{{ r.as_of or '—' }}{% if r.frequency %} <span class="indicator-muted">· {{ r.frequency }}</span>{% endif %}</td>
+          </tr>
+          {% else %}
           <tr data-indicator-row data-series-id="{{ r.series_id }}" data-name="{{ r.name }}" data-macro="{{ 'true' if r.macro else 'false' }}"
               data-search="{{ r.name }} {{ r.series_id }} {{ r.vendor_code or '' }} {{ r.category }} {{ r.source }} {{ r.caliber.values() | map('string') | join(' ') }}">
             <td class="indicator-action-cell"><input type="checkbox" data-compare="{{ r.series_id }}" aria-label="对比 {{ r.name }}"></td>
@@ -73,12 +90,14 @@
             <td class="indicator-row-links"><button type="button" data-series-chart="{{ r.series_id }}" data-chart-date="{{ d or '' }}" aria-haspopup="dialog">走势</button>
               {% if r.registered %}<a href="{{ research_prefix() }}/sn/indicators/{{ r.series_id }}">详情</a>{% else %}<span class="indicator-muted">待采集</span>{% endif %}</td>
           </tr>
+          {% endif %}
         {% endfor %}</tbody>
       </table></div>
     </details>
     {% endfor %}
   </section>
-  <section class="indicator-explanations" aria-label="数据说明">
+  {% if restricted_view and not rows and not restricted_data.owner_unavailable %}<p class="indicator-empty">尚无已绑定的指标。主人配置核心指标或产业图绑定后，此处展示获授权的必要数值。</p>{% endif %}
+  {% if not restricted_view %}<section class="indicator-explanations" aria-label="数据说明">
     <div class="indicator-section-heading"><h2>数据说明</h2><span class="indicator-muted">需要核对时展开</span></div>
     <details id="indicator-checks" class="indicator-group">
       <summary>跨来源校验 <span class="indicator-muted">{{ checks | selectattr('state', 'equalto', 'ok') | list | length }} 项一致 · {{ checks | selectattr('state', 'equalto', 'stale') | list | length }} 项差异 · {{ checks | selectattr('state', 'equalto', 'no_data') | list | length }} 项无法比较</span></summary>
@@ -104,11 +123,11 @@
         {% for dim in dimensions %}<tr><td>{{ dim.label }}</td><td>{{ dim.enum | map(attribute='value') | join(' · ') }}</td><td>{{ dim.note }}</td></tr>{% endfor %}
       </tbody></table></div>
     </details>
-  </section>
+  </section>{% endif %}
 </div>
-<dialog id="indicator-compare-dialog" class="indicator-compare-dialog" aria-labelledby="indicator-compare-title">
+{% if not restricted_view %}<dialog id="indicator-compare-dialog" class="indicator-compare-dialog" aria-labelledby="indicator-compare-title">
   <header class="indicator-section-heading"><h2 id="indicator-compare-title">走势对比</h2><button id="indicator-compare-close" class="indicator-button" type="button">关闭</button></header>
   <p class="indicator-muted">共同起点 = 100，观察相对变化，不比较绝对值。仅对齐共同观测日，不填补空缺；最多读取各指标最近 2000 个观测。</p>
   <div id="indicator-compare-result" aria-live="polite"></div>
-</dialog>
+</dialog>{% endif %}
 {% endblock %}

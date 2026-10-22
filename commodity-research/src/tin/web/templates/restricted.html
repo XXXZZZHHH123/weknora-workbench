@@ -2,21 +2,22 @@
 {% block title %}{{ restricted_title }} · {{ research_workbench().metadata.name }}{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ research_static_prefix() }}/static/restricted.css?v={{ static_version() }}">{% endblock %}
 {% block main %}
-<div class="restricted-notice" role="status"><span aria-hidden="true">&#128274;</span><strong>受限视角</strong><span>仅展示主人已授权页面的必要内容；指标目录、原始资料、任意查询和下载未开放。</span></div>
 <header class="restricted-heading"><h1>{{ restricted_title }}</h1><span>{{ research_workbench().metadata.name }}</span></header>
 {% if not restricted_authorized %}
 <section class="restricted-empty"><strong>来源未授权</strong><p>你可以访问此研究台，当前页面尚未获准展示来源内容。请联系研究台主人配置页面，并由知识库主人批准来源共享。</p></section>
 {% else %}
 {% if restricted_module == 'home' %}
 <section class="restricted-empty"><strong>研究工作台</strong><p>通过上方导航查看已授权页面。每页仅按研究台保存的绑定读取必要数值，不加载整个指标库。</p></section>
-{% elif restricted_module in ('market', 'indicators') %}
+{% elif restricted_module == 'market' %}
+<section id="market-core" class="space-y-3"><h2 class="text-sm font-bold">核心指标</h2><div id="market-core-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">{% from '_card.html' import card with context %}{% for item in restricted_data.market_cards %}{{ card(item) }}{% else %}<p class="text-sm text-[var(--text-muted)]">尚未配置可展示的绑定指标。</p>{% endfor %}</div></section>
+{% elif restricted_module == 'indicators' %}
 {% if restricted_data.cards %}<section class="restricted-cards" aria-label="已绑定指标">
 {% for card in restricted_data.cards %}<article class="restricted-card"><h2>{{ card.name }}</h2><div class="restricted-value tabular">{{ card.value | num(card.unit) }} <small>{{ card.unit }}</small></div><p>{{ card.date or '暂无观测' }}{% if card.change is not none %}<span class="tabular">较上期 {{ card.change | num(card.unit, true) }}</span>{% endif %}</p></article>{% endfor %}
 </section>{% else %}<section class="restricted-empty"><strong>尚未配置可展示的绑定指标</strong><p>由具备来源和研究台编辑权限的成员保存核心指标或产业图绑定后，这里才会读取对应的必要数值。</p></section>{% endif %}
 {% elif restricted_module == 'diagram' %}
 <section class="restricted-empty"><strong>尚未保存产业图</strong><p>当前工作台还没有可展示的产业图。请由可读取来源的研究台编辑成员在成员与权限中保存产业图展示配置。</p></section>
 {% else %}
-{% if restricted_data.entries %}<section class="restricted-entries">{% for item in restricted_data.entries %}<article class="restricted-card"><header><h2>{{ item.title }}</h2><span>{{ item.status }} · {{ item.date }}</span></header>{% if item.text %}<p class="restricted-prose">{{ item.text }}</p>{% endif %}</article>{% endfor %}</section>{% else %}<section class="restricted-empty"><strong>暂无本人研究记录</strong><p>研究台可见权限不会公开其他成员的个人判断、策略或日报。历史快照、证据原文和批量数据未在受限视角开放。</p></section>{% endif %}
+{% if restricted_data.owner_unavailable %}<section class="restricted-empty"><strong>主人归属信息尚未同步</strong><p>当前后端尚未提供可核验的研究台主人信息，请更新后端后重新打开。未展示访问者或其他成员的个人内容。</p></section>{% elif restricted_data.legacy_unassigned %}<section class="restricted-empty"><strong>历史记录尚未归属到当前研究台</strong><p>旧记录保留在原空间研究库，尚无可靠的工作台归属；为避免混入其他研究台内容，本页暂不展示。请由主人核验并迁移到对应研究台。</p></section>{% elif restricted_data.entries %}<section class="restricted-entries">{% for item in restricted_data.entries %}<article class="restricted-card"><header><h2>{{ item.title }}</h2><span>{{ item.status }} · {{ item.date }}</span></header>{% if item.text %}<p class="restricted-prose">{{ item.text }}</p>{% endif %}</article>{% endfor %}</section>{% else %}<section class="restricted-empty"><strong>暂无本人研究记录</strong><p>研究台可见权限不会公开其他成员的个人判断、策略或日报。历史快照、证据原文和批量数据未在受限视角开放。</p></section>{% endif %}
 {% endif %}
 {% endif %}
 {% endblock %}

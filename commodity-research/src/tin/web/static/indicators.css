@@ -67,6 +67,8 @@ tbody tr:has(.indicator-bookmark[aria-pressed="true"]) { box-shadow: inset 3px 0
 .indicator-table tr:last-child td { border-bottom: 0; }
 .indicator-table tbody tr:hover { background: var(--surface-soft); }
 .indicator-table td:nth-child(2) { min-width: 210px; }
+.indicator-workspace[data-readonly="true"] .indicator-table td:nth-child(2) { min-width: 0; }
+.indicator-workspace[data-readonly="true"] .indicator-table td:first-child { min-width: 210px; }
 .indicator-action-cell { width: 48px; text-align: center; }
 .indicator-action-cell input { accent-color: var(--primary); width: 16px; height: 16px; cursor: pointer; }
 .indicator-code { font-size: 10px; color: var(--text-muted); margin-top: 3px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }

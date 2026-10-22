@@ -2,7 +2,7 @@
 {% block title %}研究判断 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block head %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-manager.css?v={{ static_version() }}">
-<script defer src="{{ research_static_prefix() }}/static/judgment-manager.js?v={{ static_version() }}"></script>
+{% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/judgment-manager.js?v={{ static_version() }}"></script>{% endif %}
 {% endblock %}
 {% block main %}
 
@@ -15,13 +15,13 @@
     </h1>
     <p class="text-xs text-[var(--text-muted)] mt-1">九字段结构化研判 ｜ 阈值与证伪条件绑定已登记指标 ｜ 复核周期预警</p>
   </div>
-  <button type="button" data-open-logic class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shrink-0">管理研究逻辑</button>
+  {% if not restricted_view %}<button type="button" data-open-logic class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shrink-0">管理研究逻辑</button>{% endif %}
 </div>
 
 {% if j is none %}
 <div id="judgment-empty" class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-6 shadow-sm">
   <h3 class="text-base font-bold">尚未登记判断</h3>
-  <p class="text-xs text-[var(--text-muted)] mt-1">点击“管理研究逻辑”导入完整原文，由模型分析并匹配知识库指标，预览后保存草稿。</p>
+  <p class="text-xs text-[var(--text-muted)] mt-1">{{ '主人尚未分享已保存研究逻辑；本页按授权展示主人内容，不展示其他成员的个人记录。' if restricted_view else '点击“管理研究逻辑”导入完整原文，由模型分析并匹配知识库指标，预览后保存草稿。' }}</p>
 </div>
 {% else %}
 
@@ -218,7 +218,7 @@
     <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">06</span>
     版本记录
   </h2>
-  <p class="text-[11px] text-[var(--text-muted)]">显示最近50个版本；可在“管理研究逻辑”的版本比较中按版号查看更早记录。</p>
+  <p class="text-[11px] text-[var(--text-muted)]">{% if restricted_view and restricted_data.versions_truncated %}已显示最近 50 个版本；更早记录仍保留，受限视角不开放任意历史查询。{% elif restricted_view %}展示主人已分享的版本记录。{% else %}显示最近50个版本；可在“管理研究逻辑”的版本比较中按版号查看更早记录。{% endif %}</p>
   <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] overflow-hidden shadow-sm overflow-x-auto">
     <table class="w-full text-left text-xs">
       <thead class="bg-[var(--surface-soft)] text-[11px] font-semibold text-[var(--text-muted)] border-b border-[var(--line)]">
@@ -237,5 +237,5 @@
   </div>
 </section>
 {% endif %}
-{% include "_judgment_manager.html" %}
+{% if restricted_view %}{% include "_restricted_entries.html" %}{% else %}{% include "_judgment_manager.html" %}{% endif %}
 {% endblock %}

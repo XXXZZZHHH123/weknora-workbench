@@ -255,7 +255,10 @@ def test_personal_records_stay_actor_scoped_and_never_return_cached_fact_payload
         response = client.get(page(FIRST, suffix), headers=headers)
         assert response.status_code == 200, response.text
         assert 'another-user' not in response.text
-        assert 'original thesis' not in response.text and 'original brief' not in response.text
+        if suffix == '/sn/judgment':
+            assert 'researcher original thesis' in response.text
+        if suffix == '/sn/reports':
+            assert 'researcher original brief' in response.text
         assert '17.5' not in response.text and 'source_snapshots' not in response.text
     assert not state.get('bounded_requests')
 

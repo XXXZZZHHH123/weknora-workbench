@@ -26,6 +26,7 @@ export interface ResearchWorkbenchTemplate {
 export interface ResearchWorkbench {
   is_pinned?: boolean
   pinned_at?: string | null
+  owner_id?: string
   can_manage?: boolean
   can_manage_permissions?: boolean
   can_edit?: boolean

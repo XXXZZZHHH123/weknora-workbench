@@ -34,6 +34,7 @@ type ResearchWorkbench struct {
 	ID                      string                           `json:"id" gorm:"type:varchar(36);primaryKey"`
 	TenantID                uint64                           `json:"-" gorm:"uniqueIndex:idx_research_create_key;index"`
 	UserID                  string                           `json:"-" gorm:"type:varchar(512);uniqueIndex:idx_research_create_key"`
+	OwnerID                 string                           `json:"owner_id" gorm:"-"`
 	Name                    string                           `json:"name" gorm:"type:varchar(128)"`
 	Description             string                           `json:"description"`
 	KnowledgeBaseID         string                           `json:"knowledge_base_id" gorm:"type:varchar(36);index"`

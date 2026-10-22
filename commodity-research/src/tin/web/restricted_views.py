@@ -19,8 +19,8 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.config import SHANGHAI, settings
 from tin.integration.workbench_scope import artifact_session, current_workbench
-from tin.models import DailyBrief, DiagramTemplate, Judgment, SourceMapping, Strategy
-from tin.ownership import scope_query
+from tin.models import DailyBrief, DiagramTemplate, Judgment, Researcher, SourceMapping, Strategy
+from tin.models.workbench import WorkbenchArtifact
 
 CORE_KEY = 'workbench-market-core'
 ORIGINS_KEY = 'workbench-series-origins'
@@ -284,40 +284,116 @@ def readonly_diagram_layout(layout):
     return {'nodes': nodes, 'edges': edges}
 
 
+def shared_owner_id(scope):
+    owner = scope.metadata.get('owner_id')
+    return owner if isinstance(owner, str) and owner.strip() and len(owner) <= 128 else None
+
+
+def shared_owner_query(scope, statement, model):
+    """Only the verified workbench owner's explicitly shared page records."""
+    owner = shared_owner_id(scope)
+    owner_rows = select(Researcher.id).where(Researcher.weknora_user_id == owner)
+    return statement.where(model.researcher_id.in_(owner_rows)) if owner else statement.where(False)
+
+
+def shared_artifacts(session, scope, module, *, with_truncation=False):
+    stored_module = 'briefs' if module == 'reports' else module
+    owner = shared_owner_id(scope)
+    if not owner:
+        return ([], False) if with_truncation else []
+    rows = list(session.scalars(select(WorkbenchArtifact).where(
+        WorkbenchArtifact.module == stored_module, WorkbenchArtifact.actor == owner)
+        .order_by(WorkbenchArtifact.updated_at.desc()).limit(51)))
+    items = [{'title': row.title, 'text': row.body, 'status': row.status,
+              'date': row.updated_at.date().isoformat()} for row in rows[:50]]
+    return (items, len(rows) > 50) if with_truncation else items
+
+
+def _market_cards(identifiers, values):
+    from tin.export.board import Card
+    return [Card(key=identifier, series_id=identifier, label=values[identifier]['name'],
+                 unit=values[identifier]['unit'], status='ok' if values[identifier]['value'] is not None else 'missing',
+                 value=values[identifier]['value'], as_of=values[identifier]['date'],
+                 change=values[identifier]['change'], change_pct=values[identifier]['change_pct'],
+                 badge='已授权') for identifier in identifiers if identifier in values]
+
+
 def page_data(scope, module):
-    """Page bindings and private artifacts are read without any fact projection."""
+    """Render owner-shared page contents without unrelated source snapshots."""
+    if module == 'home':
+        from tin.web.restricted_home import home_payload
+        return home_payload(scope)
     with artifact_session(scope) as session:
         template = default_diagram(session) if module == 'diagram' else None
         identifiers = _diagram_ids(template.layout or {}) if template else (
             [] if module == 'diagram' else bound_series_ids(session, module))
+        output = {'cards': [], 'diagram': None, 'entries': [],
+                  'legacy_unassigned': bool(session.info.get('source_storage_legacy')),
+                  'owner_unavailable': shared_owner_id(scope) is None}
+        core_ids = list(identifiers)
+        include_judgment = (module == 'judgments'
+                            or (module == 'market' and 'judgments' in scope.view_modules))
+        if include_judgment and not output['legacy_unassigned']:
+            from tin.export.board import judgment_record_block
+            query = shared_owner_query(scope, select(Judgment).where(Judgment.variety == settings.variety), Judgment)
+            row = session.scalar(query.order_by((Judgment.status == '生效').desc(), Judgment.version.desc()).limit(1))
+            threshold_ids = [t['series_id'] for t in (row.thresholds if row else [])
+                             if isinstance(t, dict) and isinstance(t.get('series_id'), str)
+                             and SERIES_ID.fullmatch(t['series_id'])]
+            identifiers = _ids(list(dict.fromkeys((core_ids if module == 'market' else []) + threshold_ids)))
+            versions = session.scalars(shared_owner_query(scope, select(Judgment).where(
+                Judgment.variety == settings.variety), Judgment)
+                .order_by(Judgment.version.desc()).limit(51)).all()
+            output.update(j=row, block=judgment_record_block(row, datetime.now(SHANGHAI).date()),
+                          versions=versions[:50], versions_truncated=len(versions) > 50)
+        if module == 'indicators' and output['owner_unavailable']:
+            identifiers = []
         values = necessary_values(session, scope, identifiers, module)
-        output = {'cards': [values[identifier] for identifier in identifiers if identifier in values],
-                  'diagram': None, 'entries': []}
-        if module == 'diagram':
-            if template:
-                layout = readonly_diagram_layout(template.layout or {})
-                output['diagram'] = {'id': template.id, 'name': template.name,
-                    'layout': layout, 'is_default': True}
-                output['diagram_values'] = diagram_values(layout, values)
-        if module in {'home', 'judgments', 'strategies', 'reports'} and not session.info.get('source_storage_legacy'):
-            # Personal result ownership remains independent from WB visibility.
-            # Saved snapshots, claims, source captures and generated signal
-            # payloads may contain unrelated facts and are deliberately absent.
+        output['cards'] = [values[identifier] for identifier in identifiers if identifier in values]
+        output['market_cards'] = _market_cards(core_ids if module == 'market' else identifiers, values)
+        if module == 'market':
+            from tin.export.board import threshold_radar_values
+            output['radar'] = threshold_radar_values(output.get('j'), values)
+        if module == 'diagram' and template:
+            layout = readonly_diagram_layout(template.layout or {})
+            output['diagram'] = {'id': template.id, 'name': template.name,
+                                 'layout': layout, 'is_default': True}
+            output['diagram_values'] = diagram_values(layout, values)
+        if module in {'judgments', 'strategies', 'reports'} and not output['legacy_unassigned']:
+            output['entries'], output['entries_truncated'] = shared_artifacts(
+                session, scope, module, with_truncation=True)
             if module == 'judgments':
-                rows = session.scalars(scope_query(session, select(Judgment).where(Judgment.variety == settings.variety), Judgment)
-                    .order_by(Judgment.version.desc()).limit(20))
-                output['entries'] = [{'title': f'研究逻辑 v{row.version}', 'status': row.status,
-                    'text': '', 'date': row.written_at.isoformat()} for row in rows]
+                from tin.export.board import threshold_radar_values
+                output['radar'] = threshold_radar_values(output['j'], values)
+                output['names'] = {identifier: item['name'] for identifier, item in values.items()}
             elif module == 'strategies':
-                rows = session.scalars(scope_query(session, select(Strategy).where(Strategy.variety == settings.variety), Strategy)
-                    .order_by(Strategy.created_at.desc()).limit(20))
-                output['entries'] = [{'title': row.title, 'status': row.status, 'text': '',
-                    'date': row.created_at.date().isoformat()} for row in rows]
+                rows = session.scalars(shared_owner_query(scope, select(Strategy).where(Strategy.variety == settings.variety), Strategy)
+                    .order_by(Strategy.created_at.desc()).limit(51)).all()
+                output['strategies_truncated'] = len(rows) > 50
+                # Templates only render named plan fields; source_context and
+                # captured evidence blobs are intentionally never serialized.
+                output['strategies'] = [{'id': row.id, 'title': row.title, 'status': row.status,
+                    'kind': row.kind, 'mode': row.mode,
+                    'plan': {key: deepcopy(row.plan.get(key)) for key in (
+                        'thesis', 'alternative_explanation', 'entry_condition', 'invalidation', 'catalyst',
+                        'horizon_days', 'review_at', 'as_of', 'legs', 'entry', 'target', 'stop',
+                        'market_expectation', 'risk_budget') if key in row.plan}}
+                    for row in rows[:50]]
             elif module == 'reports':
-                rows = session.scalars(scope_query(session, select(DailyBrief).where(DailyBrief.variety == settings.variety), DailyBrief)
-                    .order_by(DailyBrief.trade_date.desc()).limit(20))
-                output['entries'] = [{'title': row.trade_date + ' 日报', 'status': row.status,
-                    'text': '', 'date': row.trade_date} for row in rows]
+                rows = session.scalars(shared_owner_query(scope, select(DailyBrief).where(DailyBrief.variety == settings.variety), DailyBrief)
+                    .order_by(DailyBrief.trade_date.desc()).limit(41)).all()
+                output['briefs_truncated'] = len(rows) > 40
+                rows = rows[:40]
+                output['briefs'] = [{key: getattr(row, key) for key in (
+                    'trade_date', 'status', 'tone', 'tone_note', 'range_low', 'range_high',
+                    'stance', 'summary', 'generated_at')}
+                    for row in rows]
+                for brief, row in zip(output['briefs'], rows):
+                    brief['claims'] = [{key: item[key] for key in ('claim', 'series_id', 'value', 'as_of')
+                        if key in item and isinstance(item[key], (str, int, float, bool))}
+                        for item in row.claims if isinstance(item, dict)]
+                    brief['unverified'] = [{key: item[key] for key in ('claim', 'reason')
+                        if isinstance(item.get(key), str)} for item in row.unverified if isinstance(item, dict)]
         return output
 
 
@@ -406,8 +482,42 @@ async def restricted_response(request, scope, route_path):
         'restricted_view': True, 'restricted_module': module, 'restricted_title': title,
         'restricted_authorized': authorized, 'restricted_pages': PAGES, 'restricted_data': payload,
         'd': None, 'ticker': [], 'manual_indicators': [], 'err': None}
+    if authorized and module == 'home':
+        return templates.TemplateResponse(request, 'readonly_home.html', context)
     if authorized and module == 'diagram' and payload.get('diagram'):
         context.update(template=payload['diagram'], templates_all=[payload['diagram']],
                        restricted_diagram_values=payload['diagram_values'])
         return templates.TemplateResponse(request, 'diagram.html', context)
+    if authorized and module == 'indicators':
+        rows = [{'series_id': card.series_id, 'name': card.label, 'unit': card.unit,
+                 'frequency': values.get('frequency', ''), 'source': '已授权绑定',
+                 'category': '工作台绑定指标', 'macro': False, 'registered': False,
+                 'caliber': {}, 'status': '可用', 'fetch_mode': 'readonly', 'vendor_code': None,
+                 'is_proxy': False, 'value': card.value, 'as_of': card.as_of,
+                 'change': card.change, 'change_pct': card.change_pct}
+                for card, values in zip(payload.get('market_cards', []), payload.get('cards', []))]
+        context.update(rows=rows, groups=[{'name': '工作台绑定指标', 'rows': rows}],
+                       restricted_cards=rows, dimensions=[], checks=[], sources={'rows': [], 'counts': {}})
+        return templates.TemplateResponse(request, 'indicators.html', context)
+    if authorized and module == 'market':
+        dates = [card.as_of for card in payload.get('market_cards', []) if card.as_of]
+        context.update(cards=payload.get('market_cards', []), market_catalog=None, judgment=payload.get('block'),
+            radar=payload.get('radar', []), gaps=[], macro=[], liquidity_min=settings.liquidity_min_volume,
+            curve={'rows': [], 'shape': None}, d=max(dates, default=None))
+        return templates.TemplateResponse(request, 'variety.html', context)
+    if authorized and not payload.get('legacy_unassigned') and not payload.get('owner_unavailable'):
+        if module == 'judgments':
+            context.update(j=payload['j'], block=payload['block'], versions=payload['versions'],
+                           radar=payload['radar'], names=payload['names'], report=None, logic_input='')
+            return templates.TemplateResponse(request, 'judgment.html', context)
+        if module == 'strategies':
+            from tin.web.strategy import STATUS_LABELS, MODE_LABELS, KIND_LABELS
+            rows = payload.get('strategies', [])
+            context.update(strategies=rows, selected_status='all', status_labels=STATUS_LABELS,
+                mode_labels=MODE_LABELS, kind_labels=KIND_LABELS,
+                summary={'active': sum(row['status'] in {'watching', 'open'} for row in rows),
+                         'drafts': sum(row['status'] == 'draft' for row in rows)})
+            return templates.TemplateResponse(request, 'strategies.html', context)
+        if module == 'reports':
+            return templates.TemplateResponse(request, 'reports.html', context)
     return templates.TemplateResponse(request, 'restricted.html', context)

@@ -83,6 +83,7 @@ def canonical(monkeypatch, tmp_path):
                     return httpx.Response(404, json={'success': False})
                 metadata = {
                     'id': identifier, 'name': 'Research', 'scope_tenant_id': 17,
+                    **({} if state.get('owner_missing') else {'owner_id': state.get('owner_id', 'researcher')}),
                     'knowledge_base_id': OTHER_KB if identifier == SECOND and state['second_other_kb'] else KB,
                     'workspace_mode': 'legacy' if identifier == LEGACY or state.get('force_legacy') else 'isolated',
                     'can_read_source': not state.get('source_delegated', False),
