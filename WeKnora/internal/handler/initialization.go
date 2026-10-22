@@ -1941,6 +1941,12 @@ func (h *InitializationHandler) CheckRemoteModel(c *gin.Context) {
 		c.Error(errors.NewBadRequestError(err.Error()))
 		return
 	}
+	// Explicit image tests can carry draft credentials and image previews.
+	// Suppress both bodies before validating the type so rejected image-test
+	// requests receive the same logging protection as successful ones.
+	if req.ImageGenerationTest {
+		middleware.OmitBodyLogging(c)
+	}
 	if req.ModelType != "" || req.ImageGenerationTest {
 		kind, valid := models.ParseModelType(req.ModelType)
 		if !valid || (kind != types.ModelTypeKnowledgeQA && kind != types.ModelTypeImageGeneration) {

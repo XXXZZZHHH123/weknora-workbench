@@ -19,6 +19,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -207,4 +208,28 @@ func TestImageDraftCheckRejectsInvalidImageAndInvalidParameters(t *testing.T) {
 	require.Contains(t, result.Body.String(), `"available":false`)
 	require.Contains(t, result.Body.String(), `"kind":"configuration"`)
 	require.Equal(t, int32(1), calls.Load())
+}
+
+func TestImageDraftCheckWrongExplicitTypeOmitsCredentialsFromLogs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var logs bytes.Buffer
+	localLogger := logrus.New()
+	localLogger.SetOutput(&logs)
+	localLogger.SetFormatter(&logrus.JSONFormatter{})
+	router := gin.New()
+	router.ContextWithFallback = true
+	router.Use(middleware.Logger(), middleware.ErrorHandler())
+	router.POST("/api/v1/initialization/remote/check", (&InitializationHandler{}).CheckRemoteModel)
+	requestBody := `{"modelType":"ImageGenerationTypo","imageGenerationTest":true,"modelName":"draft-model","baseUrl":"https://images.example.test/v1","apiKey":"private-draft-key","customHeaders":{"X-Provider-Credential":"private-draft-header"}}`
+	ctx := context.WithValue(imageDraftContext(), types.LoggerContextKey, logrus.NewEntry(localLogger))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/initialization/remote/check", strings.NewReader(requestBody)).WithContext(ctx)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, logs.String(), `"status_code":400`)
+	require.NotContains(t, logs.String(), "private-draft-key")
+	require.NotContains(t, logs.String(), "private-draft-header")
+	require.NotContains(t, logs.String(), "request_body")
+	require.NotContains(t, logs.String(), "response_body")
 }
