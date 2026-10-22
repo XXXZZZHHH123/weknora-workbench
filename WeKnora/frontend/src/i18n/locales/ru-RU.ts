@@ -1,4 +1,5 @@
 export default {
+  chartRendering: {"type": "График данных", "rendering": "Построение графика", "completed": "График сохранён", "failed": "График не создан"},
   imageGeneration: {
       "bindingDisabled": "The tool is off. Chat cannot generate images.",
       "bindingReady": "Enabled. Chat can call this model to generate images.",

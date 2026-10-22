@@ -174,6 +174,9 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	planMessages[0].Content += "\n仅当任务需要来源时，先判断来源是否直接披露了用户要求的结果，再决定是否计算；不要预设必须重建基期、倒推其他时期或交叉验算。来源已直接给出所问结果时，原文披露本身即可作为依据，不为额外交付未要求的派生结果创建目标。"
 	planMessages[0].Content += "\nreasoning_depth由你依据完整任务判断：答案需要跨多个来源或时期比较、归纳因果或驱动、分阶段判断趋势、多步推导、调和冲突证据，或解读数值和图表结论的含义（例如由差值、比值或涨跌推出组成项关系、结构或市场含义，包括承接上一轮结果的追问）时填synthesis；只需查找或转述来源、给出单个或少量取值、说明状态或解释通用概念时填direct。不按问题用词或格式判断。"
 	planMessages[0].Content += "\nGoals和completion_criteria描述用户实际要得到的答案或交付物，不把读取步骤、可选统计和你自行扩展的分析变成完成条件。工具步骤放入evidence和tool_names。摘要只需所问粒度的主结论及影响理解的关键变化，不预设必须穷尽所有记录或时期。"
+	if e.chartWriter != nil {
+		planMessages[0].Content += "\n" + dataChartInstructions
+	}
 	planMessages = e.modelContext.EncodeMessages(planMessages)
 	planCtx, cancel := context.WithTimeout(ctx, taskPlanTimeout)
 	defer cancel()
@@ -285,7 +288,7 @@ func (e *AgentEngine) plannedSourceDiscoverySelection() map[string]bool {
 // lookup or select a business source; the model must still choose and bind it.
 func isTaskSourceProtocolTool(name string) bool {
 	switch name {
-	case expandTaskToolsName, agenttools.ToolSearchKnowledge, agenttools.ToolReadDocument, agenttools.ToolListDocuments,
+	case renderChartToolName, expandTaskToolsName, agenttools.ToolSearchKnowledge, agenttools.ToolReadDocument, agenttools.ToolListDocuments,
 		agenttools.ToolBindDocumentScope, agenttools.ToolStructuredData, documentTableCalculationToolName, documentTableAnalysisToolName,
 		"structured_list_series", "structured_query_series", "structured_analyze_table", "structured_inspect_source", "structured_get_result_evidence":
 		return true

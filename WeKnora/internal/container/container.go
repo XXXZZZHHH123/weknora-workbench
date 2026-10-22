@@ -339,6 +339,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 		return manager, nil
 	}))
 	must(container.Provide(service.NewImageGenerationService))
+	must(container.Provide(service.NewChartArtifactService))
 	must(container.Provide(service.NewAgentService))
 
 	// Session service (depends on agent service)

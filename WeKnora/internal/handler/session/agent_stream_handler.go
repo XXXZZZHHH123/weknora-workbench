@@ -285,7 +285,7 @@ func (h *AgentStreamHandler) handleToolResult(ctx context.Context, evt event.Eve
 	if !ok {
 		return nil
 	}
-	if data.ToolName == agenttools.ToolGenerateImage && data.Success {
+	if (data.ToolName == agenttools.ToolGenerateImage || data.ToolName == agenttools.ToolRenderChart) && data.Success {
 		h.refreshPersistedArtifacts(ctx)
 	}
 

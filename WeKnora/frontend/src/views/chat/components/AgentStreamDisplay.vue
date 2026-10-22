@@ -777,6 +777,7 @@ const TOOL_NAME_KEYS: Record<string, string> = {
   shell_exec: 'agentStream.tools.shellExec',
   local_browser: 'localBrowser.local',
   generate_image: 'imageGeneration.type',
+  render_chart: 'chartRendering.type',
   data_analysis: 'agentStream.tools.dataAnalysis',
   data_schema: 'agentStream.tools.dataSchema',
   database_query: 'agentStream.tools.databaseQuery',
@@ -2820,6 +2821,7 @@ const getSandboxToolDetail = (event: any): string => {
 
 // Get tool title - prefer summary over description, add query for search tools
 const getToolTitle = (event: any): string => {
+  if (event.tool_name === 'render_chart') return t(event.pending ? 'chartRendering.rendering' : event.success === false ? 'chartRendering.failed' : 'chartRendering.completed');
   if (event.tool_name === 'generate_image') return t(event.pending ? 'imageGeneration.generating' : event.success === false ? 'imageGeneration.failed' : 'imageGeneration.completed');
   if (event.tool_name === 'local_browser') return browserToolTitle(t, event);
   const mcpTitle = getMcpToolTitle(t, event)
@@ -2985,6 +2987,7 @@ const skillScriptCommandLabel = (event: any): string => {
 
 // Tool description
 const getToolDescription = (event: any): string => {
+  if (event.tool_name === 'render_chart') return t(event.pending ? 'chartRendering.rendering' : event.success === false ? 'chartRendering.failed' : 'chartRendering.completed');
   if (event.tool_name === 'generate_image') return t(event.pending ? 'imageGeneration.generating' : event.success === false ? 'imageGeneration.failed' : 'imageGeneration.completed');
   if (event.tool_name === 'generate_image') return t(event.pending ? 'imageGeneration.generating' : event.success === false ? 'imageGeneration.failed' : 'imageGeneration.completed');
   if (event.tool_name === 'local_browser') return browserToolTitle(t, event);

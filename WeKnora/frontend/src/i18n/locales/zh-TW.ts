@@ -1,4 +1,5 @@
 export default {
+  chartRendering: {"type": "資料繪圖", "rendering": "正在繪圖", "completed": "圖表已儲存", "failed": "繪圖未完成"},
   imageGeneration: {
       "bindingDisabled": "工具未启用，聊天无法生成图片。",
       "bindingReady": "已启用，聊天可调用此模型生成图片。",

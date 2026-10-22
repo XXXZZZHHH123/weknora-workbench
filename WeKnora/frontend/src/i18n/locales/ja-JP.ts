@@ -1,4 +1,5 @@
 export default {
+  chartRendering: {"type": "データグラフ", "rendering": "グラフを描画中", "completed": "グラフを保存しました", "failed": "グラフを作成できませんでした"},
   imageGeneration: {
       "bindingDisabled": "The tool is off. Chat cannot generate images.",
       "bindingReady": "Enabled. Chat can call this model to generate images.",

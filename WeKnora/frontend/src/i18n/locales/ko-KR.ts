@@ -1,4 +1,5 @@
 export default {
+  chartRendering: {"type": "데이터 차트", "rendering": "차트 그리는 중", "completed": "차트 저장됨", "failed": "차트 생성 미완료"},
   imageGeneration: {
       "bindingDisabled": "The tool is off. Chat cannot generate images.",
       "bindingReady": "Enabled. Chat can call this model to generate images.",

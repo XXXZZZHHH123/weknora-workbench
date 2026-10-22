@@ -10,6 +10,7 @@ const (
 	ToolDiscoverMCPTools = "discover_mcp_tools"
 	ToolCallMCPTool      = "call_mcp_tool"
 	ToolGenerateImage    = "generate_image"
+	ToolRenderChart      = "render_chart"
 	ToolThinking         = "thinking"
 	ToolTodoWrite        = "todo_write"
 	// Knowledge retrieval surface. search_knowledge covers semantic, keyword

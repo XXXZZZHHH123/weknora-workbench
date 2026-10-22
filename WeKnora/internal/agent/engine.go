@@ -13,6 +13,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/agent/skills"
 	agenttoken "github.com/Tencent/WeKnora/internal/agent/token"
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/chart"
 	"github.com/Tencent/WeKnora/internal/common"
 	appconfig "github.com/Tencent/WeKnora/internal/config"
 	"github.com/Tencent/WeKnora/internal/event"
@@ -100,6 +101,7 @@ type AgentEngine struct {
 	steerOverruns      int  // how many times this turn has already used the extra round
 	workspaceLayout    sandbox.WorkspaceLayout
 	artifactFileSource agenttools.SandboxFileSource
+	chartWriter        chart.Writer
 }
 
 // maxSteerOverruns caps loop-end injects past MaxIterations. One extra round
@@ -426,6 +428,9 @@ func (e *AgentEngine) Execute(
 		e.toolRegistry.RegisterTool(newSourceCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
 		e.toolRegistry.RegisterTool(newDocumentTableCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
 		e.registerDocumentTableAnalysis(state, query, sessionID, llmContext)
+		if e.chartWriter != nil {
+			e.toolRegistry.RegisterTool(newRenderChartTool(ctx, func() []types.AgentStep { return state.RoundSteps }, e.chartWriter, sessionID, messageID))
+		}
 	}
 	e.prepareTaskPlanning()
 
@@ -434,6 +439,9 @@ func (e *AgentEngine) Execute(
 	systemPrompt := e.buildSystemPrompt(ctx)
 	if e.config.WorkbenchDefault {
 		systemPrompt += "\n" + researchSynthesisInstructions + "\n" + researchTrendInstructions + "\n" + researchDeliveryInstructions
+		if e.chartWriter != nil {
+			systemPrompt += "\n" + dataChartInstructions
+		}
 	}
 	if e.toolRegistry.HasStructuredDataTools() {
 		if !e.config.WorkbenchDefault {

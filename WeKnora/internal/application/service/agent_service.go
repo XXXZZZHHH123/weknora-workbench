@@ -100,6 +100,7 @@ type agentService struct {
 	cfg                    *config.Config
 	modelService           interfaces.ModelService
 	imageGenerationService interfaces.ImageGenerationService
+	chartArtifacts         *ChartArtifactService
 	mcpServiceService      interfaces.MCPServiceService
 	mcpManager             *mcp.MCPManager
 	eventBus               *event.EventBus
@@ -156,6 +157,7 @@ func NewAgentService(
 	userRepo interfaces.UserRepository,
 	graphRepo interfaces.RetrieveGraphRepository,
 	imageGenerationService *ImageGenerationService,
+	chartArtifacts *ChartArtifactService,
 ) interfaces.AgentService {
 	svc := &agentService{
 		browserSkill:           browserSkill,
@@ -164,6 +166,7 @@ func NewAgentService(
 		cfg:                    cfg,
 		modelService:           modelService,
 		imageGenerationService: imageGenerationService,
+		chartArtifacts:         chartArtifacts,
 		knowledgeBaseService:   knowledgeBaseService,
 		knowledgeService:       knowledgeService,
 		fileService:            fileService,
@@ -264,6 +267,9 @@ func (s *agentService) CreateAgentEngine(
 		systemPromptTemplate,
 	)
 	engine.SetAppConfig(s.cfg)
+	if s.chartArtifacts != nil {
+		engine.SetChartWriter(s.chartArtifacts)
+	}
 	if workbenchUsesSandbox(config) {
 		if manager, err := s.resolveWorkspaceSandbox(ctx, sessionID, config); err == nil && manager != nil {
 			engine.SetArtifactFileSource(sessionSandboxFileStore(manager))
