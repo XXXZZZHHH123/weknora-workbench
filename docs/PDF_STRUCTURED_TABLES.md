@@ -29,7 +29,7 @@ PDF 正文仍按原有文档检索链路处理。数字表格可以另行进入�
 ```dotenv
 PDF_TABLE_PARSER_ENGINE=mineru_v1
 PDF_TABLE_PARSER_URL=http://isolated-mineru-worker:8000
-PDF_TABLE_PARSER_TIER=basic
+PDF_TABLE_PARSER_TIER=standard
 # 如自建服务要求鉴权，再由部署环境注入：
 PDF_TABLE_PARSER_API_KEY=
 ```

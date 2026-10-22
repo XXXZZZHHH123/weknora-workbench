@@ -30,8 +30,8 @@ DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024
 DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 DEFAULT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 600
-DEFAULT_MAX_POLLS = 40
-DEFAULT_POLL_INTERVAL_SECONDS = 2
+DEFAULT_MAX_POLLS = 100
+DEFAULT_POLL_INTERVAL_SECONDS = 10
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -259,7 +259,7 @@ async def _mineru_v1(content: bytes, filename: str, cfg: ParserConfig,
         safe_headers = {str(k): str(v) for k, v in headers.items()
                         if str(k).lower() not in {"authorization", "host", "cookie"}}
         await asyncio.to_thread(_request, cfg, method, target_url, content,
-                                {"Content-Type": "application/pdf", **safe_headers}, deadline=deadline)
+                                {"Content-Type": "application/pdf", **safe_headers, **api_headers}, deadline=deadline)
         completed = await asyncio.to_thread(_json_request, cfg, "POST",
                                              f"/v1/uploads/{quote(str(upload_id), safe='')}/complete",
                                              {"sha256sum": sha}, api_headers, deadline)
@@ -782,6 +782,8 @@ def _mark_ambiguous_cross_page(
 
 
 def _formula_objects(value: Any, page_idx: Any, bbox: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        value = {"latex": value}
     if not isinstance(value, (dict, list)):
         return []
     candidates = value if isinstance(value, list) else [value]
@@ -846,7 +848,7 @@ def _layout_annotation(value: Any, types: set[str]) -> str | None:
 
 def _formula(value: Mapping[str, Any], page: int | None, bbox: Any,
              width: Any = None, height: Any = None) -> dict[str, Any] | None:
-    latex = value.get("latex") or value.get("formula") or value.get("text") or value.get("block_content")
+    latex = value.get("latex") or value.get("formula") or value.get("text") or value.get("block_content") or value.get("content")
     if not isinstance(latex, str) or not latex.strip():
         return None
     box = _box(bbox, scale=(width, height) if width and height else None)

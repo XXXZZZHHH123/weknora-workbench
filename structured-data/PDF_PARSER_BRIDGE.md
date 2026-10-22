@@ -15,8 +15,8 @@ Configure one trusted self-hosted endpoint with:
 | `PDF_TABLE_PARSER_MAX_FILE_BYTES` | Input limit, capped at 100 MiB | 50 MiB |
 | `PDF_TABLE_PARSER_MAX_RESPONSE_BYTES` | JSON and retained raw artifact limit, capped at 64 MiB | 32 MiB |
 | `PDF_TABLE_PARSER_MAX_ARCHIVE_BYTES` | MinerU ZIP download and expanded-size limit, capped at 128 MiB | 64 MiB |
-| `PDF_TABLE_PARSER_MAX_POLLS` | MinerU job poll limit, capped at 100 | 40 |
-| `PDF_TABLE_PARSER_POLL_INTERVAL_SECONDS` | Poll interval, capped at 30 seconds | 2 |
+| `PDF_TABLE_PARSER_MAX_POLLS` | MinerU job poll limit, capped at 100 | 100 |
+| `PDF_TABLE_PARSER_POLL_INTERVAL_SECONDS` | Poll interval, capped at 30 seconds | 10 |
 
 The bridge disables redirects and environment HTTP proxies for parser requests. MinerU upload URLs must resolve to the configured endpoint's exact origin; it never fetches parser-returned artifact URLs. MinerU V1 artifacts are read in memory with archive entry count and expanded-size limits; the bridge does not extract archive paths onto disk. PaddleOCR-VL uses `/layout-parsing` with table merging disabled so page-local layout blocks remain attributable.
 

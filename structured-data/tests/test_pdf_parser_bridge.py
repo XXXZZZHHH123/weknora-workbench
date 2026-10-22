@@ -8,6 +8,11 @@ import pytest
 from structured_data import pdf_parser_bridge as bridge
 
 
+def test_default_poll_budget_covers_standard_job_deadline():
+    config = bridge.ParserConfig("mineru_v1", "http://127.0.0.1:8000", tier="standard")
+    assert (config.max_polls - 1) * config.poll_interval_seconds >= config.timeout_seconds
+
+
 def test_expand_html_table_preserves_merged_headers_and_true_blank_cells():
     html = (
         '<table><caption>Quarterly results</caption><tr><th rowspan="2">Region</th>'
@@ -81,6 +86,15 @@ def test_mineru_middle_table_body_list_keeps_html_cells():
     assert fragments[0]["rows"] == [[{"text": "one"}, {"text": ""}]]
 
 
+def test_mineru_middle_equation_string_retains_latex_and_page():
+    latex = r"\frac{a+b}{c+d}=R"
+    layout = {"schema": "docvortex.middle", "schema_version": "2.0",
+              "pages": [{"page_idx": 1, "blocks": [{"type": "equation",
+                  "bbox": [0.1, 0.2, 0.4, 0.3], "content": latex}]}]}
+    _, formulas = bridge._mineru_tables(layout)
+    assert formulas == [{"latex": latex, "page": 2, "bbox": [0.1, 0.2, 0.4, 0.3]}]
+
+
 def test_mineru_middle_table_selects_body_after_caption_and_keeps_caption():
     layout = {
         "schema": "docvortex.middle", "schema_version": "2.0",
@@ -128,6 +142,71 @@ def test_unknown_page_provenance_requires_review():
 def test_external_upload_url_is_rejected():
     with pytest.raises(bridge.PDFParserError, match="outside the configured service origin"):
         bridge._trusted_upload_url("http://mineru:8080", "https://files.example/upload")
+
+
+def test_authenticated_mineru_upload_keeps_server_owned_bearer(tmp_path):
+    """Exercise the real HTTP upload, including the protected binary PUT."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    import io
+    import zipfile
+
+    content = b"%PDF-1.7\nsynthetic fixture"
+    pdf = tmp_path / "fixture.pdf"
+    pdf.write_bytes(content)
+    archive = io.BytesIO()
+    layout = {"schema": "docvortex.middle", "schema_version": "2.0",
+        "pages": [{"page_idx": 0, "blocks": [{"type": "table",
+        "content": {"html": "<table><tr><td>42.50</td></tr></table>"}}]}]}
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("fixture_middle_json.json", json.dumps(layout))
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def handle_request(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            auth = self.headers.get("Authorization")
+            seen.append((self.command, self.path, auth, body))
+            if auth != "Bearer synthetic-server-key":
+                self.send_response(401)
+                self.end_headers()
+                return
+            responses = {
+                ("POST", "/v1/uploads"): {"status": "pending", "id": "upload-1",
+                    "upload_url": "/v1/uploads/upload-1/content", "upload_headers": {
+                        "Authorization": "Bearer untrusted-response-key", "Host": "untrusted.invalid"}},
+                ("POST", "/v1/uploads/upload-1/complete"): {"file": {"id": "input-1"}},
+                ("POST", "/v1/parse/jobs"): {"job_id": "job-1"},
+                ("GET", "/v1/parse/jobs/job-1"): {"status": "completed", "files": [{
+                    "status": "completed", "output_files": {"zip": {"file_id": "zip-1"}}}]},
+            }
+            payload = (archive.getvalue() if self.path == "/v1/files/zip-1/content"
+                       else json.dumps(responses.get((self.command, self.path), {})).encode())
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        do_POST = do_PUT = do_GET = handle_request
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        cfg = bridge.ParserConfig("mineru_v1", f"http://127.0.0.1:{server.server_port}",
+                                  api_key="synthetic-server-key", tier="standard")
+        result = asyncio.run(bridge.parse_pdf(pdf, config=cfg))
+        assert result["fragments"][0]["rows"] == [[{"text": "42.50"}]]
+        upload = next(r for r in seen if r[0] == "PUT")
+        assert upload[2:] == ("Bearer synthetic-server-key", content)
+        assert len(seen) == 6
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_unanchored_structured_table_is_not_normalized_as_exact_fragment():
