@@ -2,8 +2,10 @@ package chatpipeline
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -17,9 +19,11 @@ import (
 type stubMemoryService struct {
 	interfaces.MemoryService
 
-	recall     interfaces.MemoryRecall
-	lastQuery  string
-	recallCall int
+	recall          interfaces.MemoryRecall
+	lastQuery       string
+	recallCall      int
+	lastTurnRequest interfaces.MemoryRecallRequest
+	requestContext  interfaces.MemoryRecallRequest
 }
 
 func (s *stubMemoryService) Recall(_ context.Context, query string) interfaces.MemoryRecall {
@@ -28,12 +32,20 @@ func (s *stubMemoryService) Recall(_ context.Context, query string) interfaces.M
 	return s.recall
 }
 
+func (s *stubMemoryService) RecallForTurn(ctx context.Context, request interfaces.MemoryRecallRequest) interfaces.MemoryRecall {
+	s.recallCall++
+	s.lastQuery = request.Query
+	s.lastTurnRequest = request
+	s.requestContext, _ = interfaces.MemoryRecallRequestFromContext(ctx)
+	return s.recall
+}
+
 func (s *stubMemoryService) ScheduleExtraction(context.Context, string, string, string) {}
 
 func (s *stubMemoryService) Handle(context.Context, *asynq.Task) error { return nil }
 
 func newMemoryRecallPlugin(memoryService interfaces.MemoryService) *PluginMemoryRecall {
-	return NewPluginMemoryRecall(NewEventManager(), memoryService)
+	return NewPluginMemoryRecall(NewEventManager(), memoryService, nil)
 }
 
 // TestMemoryReachesTheMessagesSentToTheModel is the assertion that matters:
@@ -137,4 +149,103 @@ func TestMemoryRecallStageIsRegisteredInThePipeline(t *testing.T) {
 	// before, so assert the plugin declares the event the assembler adds.
 	plugin := newMemoryRecallPlugin(&stubMemoryService{})
 	require.Equal(t, []types.EventType{types.MEMORY_RECALL}, plugin.ActivationEvents())
+}
+
+type completeRecallHistory struct {
+	interfaces.MessageService
+	rows   []*types.Message
+	err    error
+	tenant uint64
+	owner  string
+	calls  int
+}
+
+func (s *completeRecallHistory) GetMessagesBySession(ctx context.Context, session string, page, size int) ([]*types.Message, error) {
+	s.calls++
+	s.tenant, _ = types.TenantIDFromContext(ctx)
+	s.owner = types.SessionOwnerIDFromContext(ctx)
+	if session != "current-session" {
+		return nil, errors.New("wrong session")
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	if page > 1 {
+		return nil, nil
+	}
+	return s.rows, nil
+}
+
+func TestMemoryRecallUsesCompleteSessionRatherThanHistoryTurnsTail(t *testing.T) {
+	memory := &stubMemoryService{}
+	history := &completeRecallHistory{rows: []*types.Message{
+		{ID: "old-u", SessionID: "current-session", RequestID: "old", Role: "user", Content: "The original topic outside HistoryTurns", CreatedAt: time.Unix(1, 0)},
+		{ID: "old-a", SessionID: "current-session", RequestID: "old", Role: "assistant", Content: "The original answer", IsCompleted: true, CreatedAt: time.Unix(2, 0)},
+		{ID: "recent-u", SessionID: "current-session", RequestID: "recent", Role: "user", Content: "A recent question", CreatedAt: time.Unix(3, 0)},
+		{ID: "recent-a", SessionID: "current-session", RequestID: "recent", Role: "assistant", Content: "A recent answer", IsCompleted: true, CreatedAt: time.Unix(4, 0)},
+		{ID: "current-assistant", SessionID: "current-session", Role: "assistant", CreatedAt: time.Unix(5, 0)},
+	}}
+	plugin := NewPluginMemoryRecall(NewEventManager(), memory, history)
+	cm := &types.ChatManage{PipelineRequest: types.PipelineRequest{SessionID: "current-session", Query: "Continue that topic", ChatModelID: "effective-chat-model", MaxRounds: 1}, PipelineState: types.PipelineState{History: []*types.History{{Query: "A recent question", Answer: "A recent answer"}}, RewriteQuery: "A rewriter cannot replace the actual user task"}, PipelineContext: types.PipelineContext{MessageID: "current-assistant"}}
+	ctx := context.WithValue(t.Context(), types.TenantIDContextKey, uint64(7))
+	ctx = context.WithValue(ctx, types.UserIDContextKey, "owner")
+	ctx = types.WithExecutionTenant(ctx, 99)
+	ctx = context.WithValue(ctx, types.SessionTenantIDContextKey, uint64(55))
+	require.Nil(t, plugin.OnEvent(ctx, types.MEMORY_RECALL, cm, func() *PluginError { return nil }))
+	require.Equal(t, cm.Query, memory.lastTurnRequest.Query)
+	require.Equal(t, cm.ChatModelID, memory.lastTurnRequest.ModelID)
+	require.Equal(t, cm.SessionID, memory.lastTurnRequest.SessionID)
+	require.False(t, memory.lastTurnRequest.ContextIncomplete)
+	require.Len(t, memory.lastTurnRequest.Conversation, 4)
+	require.Contains(t, fmtMemoryConversation(memory.lastTurnRequest), "original topic outside HistoryTurns")
+	require.Equal(t, memory.lastTurnRequest, memory.requestContext)
+	require.Equal(t, uint64(7), history.tenant)
+	require.Equal(t, "owner", history.owner)
+	require.Len(t, cm.History, 1, "memory context does not widen the answer's configured HistoryTurns")
+}
+
+func fmtMemoryConversation(request interfaces.MemoryRecallRequest) string {
+	var all strings.Builder
+	for _, message := range request.Conversation {
+		all.WriteString(message.Content)
+	}
+	return all.String()
+}
+
+func TestMemoryRecallHistoryFailureAndMultiTurnDisabledAreExplicit(t *testing.T) {
+	memory := &stubMemoryService{}
+	history := &completeRecallHistory{err: errors.New("not authorized")}
+	plugin := NewPluginMemoryRecall(NewEventManager(), memory, history)
+	cm := &types.ChatManage{PipelineRequest: types.PipelineRequest{SessionID: "current-session", Query: "Current question", ChatModelID: "model", MaxRounds: 1}, PipelineState: types.PipelineState{History: []*types.History{{Query: "window tail", Answer: "window answer"}}}}
+	ctx := context.WithValue(t.Context(), types.TenantIDContextKey, uint64(7))
+	ctx = context.WithValue(ctx, types.UserIDContextKey, "owner")
+	require.Nil(t, plugin.OnEvent(ctx, types.MEMORY_RECALL, cm, func() *PluginError { return nil }))
+	require.True(t, memory.lastTurnRequest.ContextIncomplete)
+	require.Len(t, memory.lastTurnRequest.Conversation, 2)
+	cm.MaxRounds = 0
+	history.calls = 0
+	require.Nil(t, plugin.OnEvent(ctx, types.MEMORY_RECALL, cm, func() *PluginError { return nil }))
+	require.False(t, memory.lastTurnRequest.ContextIncomplete)
+	require.Empty(t, memory.lastTurnRequest.Conversation)
+	require.Zero(t, history.calls, "disabled multi-turn must not load any historical messages")
+}
+
+func TestEmptyMemoryRecallClearsPreviousTurnAndEmitsEmptyList(t *testing.T) {
+	memory := &stubMemoryService{}
+	plugin := newMemoryRecallPlugin(memory)
+	bus := event.NewEventBus()
+	calls := 0
+	bus.On(event.EventMemoryRecalled, func(_ context.Context, evt event.Event) error {
+		calls++
+		recalled := evt.Data.(event.MemoryRecalledData).Memories.(types.UsedMemories)
+		require.NotNil(t, recalled, "the UI needs an explicit empty array to clear old chips")
+		require.Empty(t, recalled)
+		return nil
+	})
+	cm := &types.ChatManage{PipelineState: types.PipelineState{MemoryPrompt: "stale prior memory", UsedMemories: types.UsedMemories{{ID: "old", Content: "stale"}}}}
+	cm.EventBus = bus.AsEventBusInterface()
+	require.Nil(t, plugin.OnEvent(t.Context(), types.MEMORY_RECALL, cm, func() *PluginError { return nil }))
+	require.Empty(t, cm.MemoryPrompt)
+	require.Empty(t, cm.UsedMemories)
+	require.Equal(t, 1, calls)
 }

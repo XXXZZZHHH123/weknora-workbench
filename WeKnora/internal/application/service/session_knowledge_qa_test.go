@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
+	"github.com/Tencent/WeKnora/internal/models/imagegen"
 	"github.com/Tencent/WeKnora/internal/models/rerank"
 	"github.com/Tencent/WeKnora/internal/models/vlm"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -184,4 +186,8 @@ func TestHandleModelFallback_IncludesHistoryMessages(t *testing.T) {
 	assert.Equal(t, "WeKnora 是一个知识库问答系统。", chatModel.lastMessages[2].Content)
 	assert.Equal(t, "user", chatModel.lastMessages[3].Role)
 	assert.Contains(t, chatModel.lastMessages[3].Content, "现在还能继续讲吗？")
+}
+
+func (s *stubModelService) GetImageGenerationModel(context.Context, string) (imagegen.Generator, error) {
+	return nil, errors.New("image generation is not configured in this test")
 }

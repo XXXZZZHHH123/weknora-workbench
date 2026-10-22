@@ -197,6 +197,9 @@ type AgentReferencesData struct {
 // AgentReferencesData does: the event package stays free of a types import.
 type MemoryRecalledData struct {
 	Memories interface{} `json:"memories"`
+	// Merge adds memories read later in this turn (for example by a tool).
+	// The default replaces the initial recall, including an explicit empty list.
+	Merge bool `json:"merge,omitempty"`
 }
 
 // AgentFinalAnswerData represents final answer streaming data

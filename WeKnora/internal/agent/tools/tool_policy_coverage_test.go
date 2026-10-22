@@ -16,6 +16,7 @@ func TestEveryBuiltInToolDeclaresAModelHandlePolicy(t *testing.T) {
 	builtIns := []string{
 		ToolDiscoverMCPTools,
 		ToolCallMCPTool,
+		ToolGenerateImage,
 		ToolThinking,
 		ToolTodoWrite,
 		ToolSearchKnowledge,

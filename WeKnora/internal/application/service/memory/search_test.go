@@ -26,12 +26,12 @@ func TestSearchFindsWhatTheOpeningQuestionDidNotMatch(t *testing.T) {
 
 	// The turn opened with a database question, so that is what recall ranked
 	// against and the deployment memory is nowhere in the prompt.
-	recall := svc.Recall(ctx, "帮我看看数据库连接池的配置")
+	recall := recallForTest(svc, ctx, "帮我看看数据库连接池的配置")
 	require.Contains(t, recall.Prompt, "PostgreSQL")
 	require.NotContains(t, recall.Prompt, "蓝绿发布")
 
 	// Several iterations later the agent is looking at deployment instead.
-	result := svc.SearchMemory(ctx, "部署方式", 10)
+	result := searchForTest(svc, ctx, "部署方式", 10)
 	require.True(t, result.Available)
 	require.Len(t, result.Items, 1)
 	require.Equal(t, "部署走的是蓝绿发布", result.Items[0].Content)
@@ -53,10 +53,10 @@ func TestSearchReachesPastTheFiveItemTurnBudget(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	recall := svc.Recall(ctx, "网关配置")
+	recall := recallForTest(svc, ctx, "网关配置")
 	require.Len(t, recall.Items, types.MemoryRecallMaxItems)
 
-	result := svc.SearchMemory(ctx, "网关配置", 8)
+	result := searchForTest(svc, ctx, "网关配置", 8)
 	require.True(t, result.Available)
 	require.Len(t, result.Items, 8)
 }
@@ -74,7 +74,7 @@ func TestSearchCoversTheResidentKindsToo(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result := svc.SearchMemory(ctx, "代码注释", 10)
+	result := searchForTest(svc, ctx, "代码注释", 10)
 	require.True(t, result.Available)
 	require.Len(t, result.Items, 1)
 	require.Equal(t, types.MemoryKindPreference, result.Items[0].Kind)
@@ -96,7 +96,7 @@ func TestSearchDoesNotResurrectReplacedMemories(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result := svc.SearchMemory(ctx, "生产数据库", 10)
+	result := searchForTest(svc, ctx, "生产数据库", 10)
 	require.True(t, result.Available)
 	require.Len(t, result.Items, 1)
 	require.Contains(t, result.Items[0].Content, "PostgreSQL")
@@ -113,12 +113,12 @@ func TestSearchTellsDisabledApartFromEmpty(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	empty := svc.SearchMemory(ctx, "完全无关的题目", 10)
+	empty := searchForTest(svc, ctx, "完全无关的题目", 10)
 	require.True(t, empty.Available, "memory is on, this user simply has no match")
 	require.Empty(t, empty.Items)
 
 	disabled := false
-	off := svc.SearchMemory(types.ApplyAgentMemoryPreference(ctx, &disabled), "数据库", 10)
+	off := searchForTest(svc, types.ApplyAgentMemoryPreference(ctx, &disabled), "数据库", 10)
 	require.False(t, off.Available, "an agent opting out must not be able to search either")
 	require.Empty(t, off.Items)
 }
@@ -157,11 +157,11 @@ func TestMemoryAvailableAgreesWithSearch(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, svc.MemoryAvailable(ctx), svc.SearchMemory(ctx, "数据库", 10).Available)
+	require.Equal(t, svc.MemoryAvailable(ctx), searchForTest(svc, ctx, "数据库", 10).Available)
 
 	require.NoError(t, svc.SetEnabled(ctx, false))
-	require.Equal(t, svc.MemoryAvailable(ctx), svc.SearchMemory(ctx, "数据库", 10).Available)
-	require.False(t, svc.SearchMemory(ctx, "数据库", 10).Available)
+	require.Equal(t, svc.MemoryAvailable(ctx), searchForTest(svc, ctx, "数据库", 10).Available)
+	require.False(t, searchForTest(svc, ctx, "数据库", 10).Available)
 }
 
 func TestSearchWithoutPrincipalIsUnavailable(t *testing.T) {
@@ -169,7 +169,7 @@ func TestSearchWithoutPrincipalIsUnavailable(t *testing.T) {
 	tenantRepo.set(1, &types.MemoryConfig{Enabled: true})
 	ctx := t.Context()
 
-	result := svc.SearchMemory(ctx, "数据库", 10)
+	result := searchForTest(svc, ctx, "数据库", 10)
 	require.False(t, result.Available,
 		"a request with no principal has no memory space to search")
 }
@@ -187,7 +187,7 @@ func TestSearchClampsAnAbsurdLimit(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	result := svc.SearchMemory(ctx, "网关配置", 10_000)
+	result := searchForTest(svc, ctx, "网关配置", 10_000)
 	require.True(t, result.Available)
 	require.LessOrEqual(t, len(result.Items), types.MemorySearchMaxItems)
 }

@@ -7,12 +7,13 @@ import (
 )
 
 var frontendTypes = map[string]types.ModelType{
-	"chat":      types.ModelTypeKnowledgeQA,
-	"embedding": types.ModelTypeEmbedding,
-	"rerank":    types.ModelTypeRerank,
-	"vlm":       types.ModelTypeVLLM,
-	"vllm":      types.ModelTypeVLLM,
-	"asr":       types.ModelTypeASR,
+	"chat":             types.ModelTypeKnowledgeQA,
+	"embedding":        types.ModelTypeEmbedding,
+	"rerank":           types.ModelTypeRerank,
+	"vlm":              types.ModelTypeVLLM,
+	"vllm":             types.ModelTypeVLLM,
+	"asr":              types.ModelTypeASR,
+	"image-generation": types.ModelTypeImageGeneration,
 }
 
 // ParseModelType accepts both frontend ("chat") and backend ("KnowledgeQA")
@@ -23,7 +24,7 @@ func ParseModelType(s string) (types.ModelType, bool) {
 	}
 	switch types.ModelType(s) {
 	case types.ModelTypeKnowledgeQA, types.ModelTypeEmbedding, types.ModelTypeRerank,
-		types.ModelTypeVLLM, types.ModelTypeASR:
+		types.ModelTypeVLLM, types.ModelTypeASR, types.ModelTypeImageGeneration:
 		return types.ModelType(s), true
 	}
 	return "", false

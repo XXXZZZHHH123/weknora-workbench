@@ -36,17 +36,11 @@ func (s *Service) MemoryAvailable(ctx context.Context) bool {
 	return ok
 }
 
-// SearchMemory ranks this user's stored memories against an arbitrary query.
-//
-// Recall runs once per turn, against the question the user opened with, and
-// what it admits is capped hard: five situational items inside a 600-rune
-// budget. Two things fall outside that. An agent loop that has spent ten
-// iterations moving away from the opening question is now working on something
-// that shares no wording with what recall was ranked against; and a subject
-// with dozens of stored facts has most of them sitting below the cut with no
-// way to reach them. Neither is fixable by enlarging the per-turn budget,
-// because that budget is paid on every turn including the ones that need none
-// of it.
+// SearchMemory retrieves candidates for a tool subtask, then asks the current
+// turn's authorized chat model to select memories against the original user
+// request and full conversation. A search query never replaces that intent.
+// Missing turn context or an invalid model decision returns an available but
+// empty result; lexical/vector candidates cannot bypass final relevance.
 //
 // Only active items are searched. Superseded and archived memories stay out of
 // reach on purpose: a statement that a newer one replaced is precisely what
@@ -87,6 +81,12 @@ func (s *Service) SearchMemory(
 		return interfaces.MemorySearchResult{Available: true}
 	}
 
+	request, hasTurn := interfaces.MemoryRecallRequestFromContext(ctx)
+	if !hasTurn || request.ContextIncomplete || strings.TrimSpace(request.ModelID) == "" {
+		searchSpan.Finish(map[string]interface{}{"reason": "turn_context_unavailable"}, nil, nil)
+		return interfaces.MemorySearchResult{Available: true}
+	}
+
 	if limit <= 0 {
 		limit = types.MemorySearchDefaultItems
 	}
@@ -108,9 +108,18 @@ func (s *Service) SearchMemory(
 		Query:      query,
 		Candidates: candidates,
 		Kinds:      types.MemoryKinds,
-		MaxItems:   limit,
-		RuneBudget: types.MemorySearchRuneBudget,
+		MaxItems:   recallSituationalCandidateLimit,
+		RuneBudget: relevanceCandidateRuneBudget,
 	})
+
+	request.SearchQuery = query
+	matched = conversationalCandidates(request, candidates, matched, recallSituationalCandidateLimit)
+	selected, reason := s.selectRelevantMemories(searchCtx, scope, request, matched, limit)
+	if reason != "ok" {
+		searchSpan.Finish(map[string]interface{}{"reason": reason}, nil, nil)
+		return interfaces.MemorySearchResult{Available: true}
+	}
+	_, matched = renderRelevantMemories(selected, types.MemorySearchRuneBudget)
 
 	// A searched memory was read by the model just as surely as an injected
 	// one, so it counts as used. Without this the items only reachable through

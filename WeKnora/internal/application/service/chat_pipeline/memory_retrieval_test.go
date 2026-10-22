@@ -17,12 +17,14 @@ import (
 type stubRetrievalMemory struct {
 	stubMemoryService
 
-	retrieval interfaces.RetrievalContext
-	affinity  map[string]int
-	askedFor  []string
+	retrieval      interfaces.RetrievalContext
+	affinity       map[string]int
+	askedFor       []string
+	retrievalCalls int
 }
 
 func (s *stubRetrievalMemory) RetrievalContextFor(context.Context) interfaces.RetrievalContext {
+	s.retrievalCalls++
 	return s.retrieval
 }
 
@@ -52,21 +54,31 @@ func TestWhoIsAskingReachesTheQueryRewriter(t *testing.T) {
 
 	chatManage := &types.ChatManage{}
 	chatManage.Query = "分割怎么调参"
+	chatManage.MemoryPrompt = types.WrapMemoryForPrompt("本轮相关背景：在做医学影像的后端", "")
+	chatManage.UsedMemories = types.UsedMemories{{ID: "m1", Kind: types.MemoryKindProfile, Content: "在做医学影像的后端"}}
 
 	_, userPrompt := plugin.buildPrompts(t.Context(), chatManage, nil)
 
 	require.Contains(t, userPrompt, "在做医学影像的后端",
 		"the same question means different things to different people, and only "+
 			"the rewriter can act on that before retrieval runs")
-	require.Contains(t, userPrompt, "医学影像分割")
-	require.Contains(t, userPrompt, "分割模型调参手册")
+	require.NotContains(t, userPrompt, "医学影像分割", "unselected standing interests must not influence this turn")
+	require.NotContains(t, userPrompt, "分割模型调参手册", "unselected familiar documents must not influence this turn")
 	require.Contains(t, userPrompt, "分割怎么调参", "the question itself must survive")
 
-	// Conditioning the rewriter is not a recall. The background is fed in
-	// whole, relevant or not, so counting it as "memories this answer used"
-	// would report unrelated memories on every single turn. That list is
-	// MEMORY_RECALL's to build, from what the question actually matched.
-	require.Empty(t, chatManage.UsedMemories)
+	require.Len(t, chatManage.UsedMemories, 1, "the rewriter reuses the same selected and reported memories")
+	require.Zero(t, memoryService.retrievalCalls, "query understanding must not read raw standing background")
+}
+
+func TestQueryRewriterCannotInjectUnselectedStandingBackground(t *testing.T) {
+	memory := &stubRetrievalMemory{retrieval: interfaces.RetrievalContext{Background: "unselected biography", Interests: []string{"unselected interest"}, Documents: []string{"unselected document"}}}
+	plugin := &PluginQueryUnderstand{memoryService: memory, config: &config.Config{Conversation: &config.ConversationConfig{RewritePromptSystem: "Rewrite", RewritePromptUser: "{{query}}"}}}
+	cm := &types.ChatManage{PipelineRequest: types.PipelineRequest{Query: "A separate current task"}}
+	_, prompt := plugin.buildPrompts(t.Context(), cm, nil)
+	require.NotContains(t, prompt, "asker_background")
+	require.NotContains(t, prompt, "unselected")
+	require.Zero(t, memory.retrievalCalls)
+	require.Zero(t, memory.recallCall, "rewriting does not perform another memory selection")
 }
 
 func TestQueryRewriterIsUnchangedWithoutMemory(t *testing.T) {

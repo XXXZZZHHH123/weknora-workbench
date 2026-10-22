@@ -103,7 +103,7 @@ func (s *Service) storeItemEmbedding(
 		return
 	}
 	text := embeddableText(item, s.embedAliases(ctx, scope, item))
-	vector := s.embedText(ctx, modelID, text, embedWriteTimeout)
+	vector := s.embedText(types.WithExecutionTenant(ctx, scope.TenantID), modelID, text, embedWriteTimeout)
 	if len(vector) == 0 {
 		return
 	}
@@ -209,7 +209,7 @@ func (s *Service) vectorSearch(
 	if !ok {
 		return nil, "vector_disabled"
 	}
-	queryVector := s.embedText(types.WithEmbedQuery(ctx), modelID, query, embedTimeout)
+	queryVector := s.embedText(types.WithEmbedQuery(types.WithExecutionTenant(ctx, scope.TenantID)), modelID, query, embedTimeout)
 	if len(queryVector) == 0 {
 		return nil, "embed_failed"
 	}
@@ -274,7 +274,7 @@ func (s *Service) backfillEmbeddings(
 	filled := 0
 	for _, item := range items {
 		text := embeddableText(item, s.embedAliases(ctx, scope, item))
-		vector := s.embedText(ctx, modelID, text, embedWriteTimeout)
+		vector := s.embedText(types.WithExecutionTenant(ctx, scope.TenantID), modelID, text, embedWriteTimeout)
 		if len(vector) == 0 {
 			// The model just failed; the rest of this batch will fail too.
 			break

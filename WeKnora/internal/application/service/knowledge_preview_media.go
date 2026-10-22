@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"image/png"
 	"io"
+	"net/http"
 	"path"
 	"regexp"
 	"strconv"
@@ -116,17 +117,35 @@ func (s *knowledgeService) renderKnowledgeSourceMedia(ctx context.Context, knowl
 		return nil, errors.New("original source fingerprint unavailable")
 	}
 
-	readCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	// Allow the reader's bounded capacity wait (10s) and conversion (30s)
+	// separately, with transport overhead. A queued request retains its full
+	// conversion budget; caller cancellation still ends the RPC immediately.
+	readCtx, cancel := context.WithTimeout(ctx, 50*time.Second)
 	defer cancel()
 	result, err := s.documentReader.Read(readCtx, &types.ReadRequest{
 		FileContent: content, FileName: knowledge.FileName, FileType: "pptx", ParserEngine: "source_media_png_v1",
 		ParserEngineOverrides: map[string]string{"source_page": strconv.Itoa(page), "source_part": part},
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if readCtx.Err() == context.DeadlineExceeded {
+			return nil, previewMediaTimeoutError()
+		}
 		return nil, err
 	}
-	if result != nil && result.Error != "" && result.Metadata["evidence_version"] == "source_media_png_v1" && result.Metadata["source_media_error_code"] == "invalid_selector" {
-		return nil, apperrors.NewBadRequestError("Selected media does not belong to the requested source page")
+	if result != nil && result.Error != "" && result.Metadata["evidence_version"] == "source_media_png_v1" {
+		switch result.Metadata["source_media_error_code"] {
+		case "invalid_selector":
+			return nil, apperrors.NewBadRequestError("Selected media does not belong to the requested source page")
+		case "busy":
+			return nil, apperrors.NewServiceUnavailableError("Media preview capacity is busy; retry the page")
+		case "timeout":
+			return nil, previewMediaTimeoutError()
+		case "cancelled":
+			return nil, context.Canceled
+		}
 	}
 	if result == nil || result.Error != "" || strings.TrimSpace(result.MarkdownContent) == "" {
 		return nil, errors.New("document reader returned no rendered media")
@@ -167,4 +186,8 @@ func (s *knowledgeService) renderKnowledgeSourceMedia(ctx context.Context, knowl
 		return nil, errors.New("knowledge source changed or is no longer readable")
 	}
 	return pngBytes, nil
+}
+
+func previewMediaTimeoutError() *apperrors.AppError {
+	return &apperrors.AppError{Code: apperrors.ErrTimeout, HTTPCode: http.StatusGatewayTimeout, Message: "Source media conversion timed out"}
 }

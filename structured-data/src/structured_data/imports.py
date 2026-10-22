@@ -52,6 +52,44 @@ class ImportManager:
     def get(self, import_id):
         return json.loads((self.path(import_id) / 'review.json').read_text())
 
+    def publication_view(self, doc, *, verified_legacy_sheet=None):
+        """Describe saved query coverage without changing review or scan state.
+
+        A scanner's ready/confirmed status is not evidence that a snapshot
+        contains the sheet. These response-only fields must never be saved
+        back into review.json or used to approve a mapping.
+        """
+        manifest = None
+        dataset_id = doc.get('dataset_id')
+        if dataset_id:
+            try:
+                candidate = self.store.manifest(dataset_id)
+                if (isinstance(candidate, dict) and doc.get('sha256')
+                        and candidate.get('dataset_id') == dataset_id
+                        and candidate.get('import_id') == doc.get('import_id')
+                        and candidate.get('sha256') == doc['sha256']
+                        and candidate.get('source_file') == doc.get('source_file')):
+                    manifest = candidate
+            except (ValueError, OSError):
+                pass
+        published = {s['name']: s for s in (manifest or {}).get('sheets', []) if isinstance(s, dict) and s.get('name')}
+        sheets = []
+        for sheet in doc.get('sheets', []):
+            actual = published.get(sheet.get('name'))
+            mapping = actual.get('mapping') if actual is not None else None
+            # Older verified-profile snapshots lack a saved mapping. Only the
+            # detail endpoint's existing source-verified legacy reconstruction
+            # may fill it; never use an automatic scanner suggestion here.
+            if (actual is not None and mapping is None and verified_legacy_sheet is not None
+                    and sheet.get('name') == verified_legacy_sheet.get('name')
+                    and verified_legacy_sheet.get('status') == 'trusted_existing'):
+                mapping = verified_legacy_sheet.get('mapping')
+            sheets.append({**sheet, 'published_in_dataset': actual is not None,
+                           'published_dataset_id': dataset_id if actual is not None else None,
+                           'published_mapping': mapping,
+                           'published_fingerprint': actual.get('fingerprint') if actual is not None else None})
+        return {**doc, 'sheets': sheets}
+
     def list(self, *, include_samples=False):
         from .dataset_kind import dataset_kind
         records = [json.loads(p.read_text()) for p in self.directory.glob('*/review.json')]

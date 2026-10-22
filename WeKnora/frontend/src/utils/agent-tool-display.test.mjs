@@ -134,3 +134,9 @@ test('getRagPipelineStepTitle uses attachment parsing labels', () => {
     'agentStream.toolStatus.attachmentParsingDone',
   )
 })
+
+test('data charts have a distinct deterministic rendering status', () => {
+  assert.equal(getRagPipelineStepTitle(t, { tool_name: 'render_chart', pending: true }), 'chartRendering.rendering')
+  assert.equal(getRagPipelineStepTitle(t, { tool_name: 'render_chart', success: true }), 'chartRendering.completed')
+  assert.equal(getRagPipelineStepTitle(t, { tool_name: 'render_chart', success: false }), 'chartRendering.failed')
+})

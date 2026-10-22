@@ -27,6 +27,7 @@ from docreader.proto.docreader_pb2 import (
     ParserEngineInfo,
 )
 from docreader.source_wire import source_blocks_to_proto
+from docreader.parser.source_media_png import source_media_request_context
 from docreader.utils.request import init_logging_request_id, request_id_context
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
@@ -148,11 +149,14 @@ def _iter_image_refs(images: dict):
 
 
 def _read_error_metadata(error):
-    from docreader.parser.source_media_png import SOURCE_MEDIA_PNG_ENGINE, SourceMediaSelectorError
+    from docreader.parser.source_media_png import SOURCE_MEDIA_PNG_ENGINE, SourceMediaSelectorError, SourceMediaRenderError
 
     if isinstance(error, SourceMediaSelectorError):
         return {"evidence_version": SOURCE_MEDIA_PNG_ENGINE,
                 "source_media_error_code": "invalid_selector"}
+    if isinstance(error, SourceMediaRenderError):
+        return {"evidence_version": SOURCE_MEDIA_PNG_ENGINE,
+                "source_media_error_code": error.code}
     return {}
 
 
@@ -228,7 +232,7 @@ class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
         """Unified read: file mode (file_content set) or URL mode (url set)."""
         request_id = request.request_id or str(uuid.uuid4())
 
-        with request_id_context(request_id):
+        with request_id_context(request_id), source_media_request_context(context):
             try:
                 result, source_desc = self._parse_request(request)
 
@@ -271,7 +275,7 @@ class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
         """
         request_id = request.request_id or str(uuid.uuid4())
 
-        with request_id_context(request_id):
+        with request_id_context(request_id), source_media_request_context(context):
             _c = to_valid_utf8_text
             try:
                 result, source_desc = self._parse_request(request)

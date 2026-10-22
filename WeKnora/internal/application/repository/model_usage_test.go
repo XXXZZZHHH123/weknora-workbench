@@ -217,6 +217,7 @@ func TestListModelUsages_CustomAgent(t *testing.T) {
 			RerankModelID:          modelID,
 			VLMModelID:             modelID,
 			ASRModelID:             modelID,
+			ImageGenerationModelID: modelID,
 			QueryUnderstandModelID: modelID,
 			QuestionSuggestions: &types.QuestionSuggestionConfig{
 				FollowUps: types.FollowUpSuggestionConfig{ModelID: modelID},
@@ -257,6 +258,7 @@ func TestListModelUsages_CustomAgent(t *testing.T) {
 		types.ModelUsageBindingRerankModel,
 		types.ModelUsageBindingVLMModel,
 		types.ModelUsageBindingASRModel,
+		types.ModelUsageBindingImageGenerationModel,
 		types.ModelUsageBindingQueryUnderstandModel,
 		types.ModelUsageBindingFollowUpModel,
 	}, usages[1].Bindings)
@@ -285,4 +287,28 @@ func TestCustomAgentSandboxConfigReferences(t *testing.T) {
 	names, err := repo.ListNamesBySandboxConfigID(ctx, 1, configID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"analysis-agent"}, names)
+}
+
+func TestImageGenerationModelUsageScopesAndDeletionGuard(t *testing.T) {
+	ctx := context.Background()
+	db := setupModelUsageTestDB(t)
+	repo := NewCustomAgentRepository(db)
+	for _, tenant := range []uint64{1, 2} {
+		agent := &types.CustomAgent{ID: uuid.NewString(), Name: "Image agent", TenantID: tenant, Config: types.CustomAgentConfig{ImageGenerationModelID: "image-row"}}
+		require.NoError(t, repo.CreateAgent(ctx, agent))
+	}
+	count, err := repo.CountByModelID(ctx, 1, "image-row")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), count)
+	usage, err := repo.ListModelUsages(ctx, 1, "image-row")
+	require.NoError(t, err)
+	require.Len(t, usage, 1)
+	require.Equal(t, []types.ModelUsageBinding{types.ModelUsageBindingImageGenerationModel}, usage[0].Bindings)
+	require.NoError(t, repo.DeleteAgent(ctx, usage[0].ID, 1))
+	count, err = repo.CountByModelID(ctx, 1, "image-row")
+	require.NoError(t, err)
+	require.Zero(t, count)
+	count, err = repo.CountByModelID(ctx, 2, "image-row")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), count)
 }

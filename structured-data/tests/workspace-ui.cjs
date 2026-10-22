@@ -72,7 +72,7 @@ async function main(){
   else if(route==='/api/model-settings'&&req.method==='GET')body={model:'fixture-free-model',base_url:'https://example.invalid/v1',has_api_key:false};
   else if(route==='/api/imports')body={imports:[{import_id:ids.import,source_file:'同一合成原件.xlsx',updated_at:'2025-01-05T00:00:00Z'},...[...nativeImports.values()].filter(row=>row.scope===scope)]};
   else if(route.endsWith('/sheet-view'))body={sheet_name:fixtureSheet.name,total_rows:4,total_cols:2,range:{start_row:1,end_row:4,start_col:1,end_col:2,row_count:4,col_count:2},cells:[{row:1,column:1,cell:'A1',value:'日期',display:'日期'},{row:1,column:2,cell:'B1',value:'合成指标一',display:'合成指标一'},...dates.flatMap((date,i)=>[{row:i+2,column:1,cell:`A${i+2}`,value:date,display:date},{row:i+2,column:2,cell:`B${i+2}`,value:values[i],display:String(values[i])}])],styles:{},merges:[],column_widths:{},row_heights:{},warnings:[]};
-  else if(route.endsWith('/sheet'))body={...fixtureSheet,status:route.includes('6'.repeat(24))?'confirmed':fixtureSheet.status};
+  else if(route.endsWith('/sheet')){const restored=route.includes('6'.repeat(24));body={...fixtureSheet,status:restored?'confirmed':fixtureSheet.status,published_in_dataset:restored,published_dataset_id:restored?ids.secondary:null,published_mapping:restored?fixtureSheet.mapping:null,published_fingerprint:restored?fixtureSheet.fingerprint:null};}
   else if(route.endsWith('/report')){const dataset=route.split('/')[3],item=catalogue(scope).find(item=>item.dataset_id===dataset);await pause(250);body={manifest:{...item,series_count:12417,valid_count:608180,observation_count:1048771,issue_count:72945,sha256:'synthetic-source-fingerprint',excluded_regions:[]},issues:[{sheet:fixtureSheet.name,cell:'B5',message:'夹具范围外原值不参与查询'}]};}
   else if(route.endsWith('/series')){const dataset=route.split('/')[3],search=url.searchParams.get('search')||'';const candidates=route==='/api/series'?catalogue(scope).flatMap(item=>series(item.dataset_id,scope).map(row=>({...row,source_file:item.source_file}))):series(dataset,scope);const rows=candidates.filter(row=>!search||`${row.metric} ${row.sheet}`.includes(search));body={series:rows,total:rows.length,truncated:false};}
   else if(route.endsWith('/charts'))body={charts:[],sheets:[],total:0,next_offset:null};
@@ -108,7 +108,7 @@ async function main(){
    const job=jobs.get(route.split('/').at(-1));if(!job){status=404;body={detail:'Unknown synthetic job'}}else if(job.count++===0)body={status:'processing',stage:'正在处理隔离上传'};
    else if(job.failed)body={status:'failed',error:'夹具模拟：文件结构无法读取'};
    else body={status:'completed',result:job.nativeResult||{import_id:ids.import,dataset_id:ids.primary,elapsed_seconds:1.2,reused:false}};
-  }else if(route.startsWith('/api/imports/')){const id=route.split('/')[3],row=nativeImports.get(id);body={import_id:id,source_file:row?.source_file||'同一合成原件.xlsx',sheets:[{...fixtureSheet,status:route.includes('6'.repeat(24))?'confirmed':fixtureSheet.status}]};}
+  }else if(route.startsWith('/api/imports/')){const id=route.split('/')[3],row=nativeImports.get(id);body={import_id:id,source_file:row?.source_file||'同一合成原件.xlsx',sheets:[{...fixtureSheet,status:route.includes('6'.repeat(24))?'confirmed':fixtureSheet.status,published_in_dataset:route.includes('6'.repeat(24)),published_dataset_id:route.includes('6'.repeat(24))?ids.secondary:null}]};}
   else {status=404;body={detail:'Unsupported isolated route'};}
   res.writeHead(status,{'Content-Type':type});res.end(typeof body==='string'?body:JSON.stringify(body));
  });

@@ -469,7 +469,7 @@ func TestExpiredTaskLeavesTheContext(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	prompt := svc.Recall(ctx, "周报的事怎么样了").Prompt
+	prompt := recallForTest(svc, ctx, "周报的事怎么样了").Prompt
 	require.Contains(t, prompt, "这周要交的周报")
 	require.NotContains(t, prompt, "上周要交的周报",
 		"an expired task must stop being recalled")

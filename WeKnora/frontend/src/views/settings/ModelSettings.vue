@@ -353,7 +353,7 @@ const uiStore = useUIStore()
 const chatResources = useChatResourcesStore()
 const providersStore = useModelProvidersStore()
 const router = useRouter()
-type ModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr'
+type ModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr' | 'image-generation'
 type FilterType = 'all' | ModelType
 
 const showDialog = ref(false)
@@ -367,7 +367,7 @@ const loading = ref(true)
 const activeTypeFilter = ref<FilterType>('all')
 const modelQuery = ref('')
 
-const MODEL_TAB_TYPES: ModelType[] = ['chat', 'embedding', 'rerank', 'vllm', 'asr']
+const MODEL_TAB_TYPES: ModelType[] = ['chat', 'embedding', 'rerank', 'vllm', 'asr', 'image-generation']
 const KNOWLEDGE_BASE_EDITOR_HOST_ROUTES = new Set([
   'home',
   'knowledgeBaseList',
@@ -396,7 +396,8 @@ const backendTypeToModelType: Record<string, ModelType> = {
   Embedding: 'embedding',
   Rerank: 'rerank',
   VLLM: 'vllm',
-  ASR: 'asr'
+  ASR: 'asr',
+  ImageGeneration: 'image-generation'
 }
 
 // 将后端模型格式转换为旧的前端格式（附带 _modelType 便于渲染）
@@ -460,6 +461,7 @@ const typeIcon = (type: ModelType): string => {
     rerank: 'filter-sort',
     vllm: 'image',
     asr: 'sound',
+    'image-generation': 'image',
   }
   return map[type]
 }
@@ -470,7 +472,8 @@ const typeLabel = (type: ModelType) => {
     embedding: t('modelSettings.typeShort.embedding'),
     rerank: t('modelSettings.typeShort.rerank'),
     vllm: t('modelSettings.typeShort.vllm'),
-    asr: t('modelSettings.typeShort.asr')
+    asr: t('modelSettings.typeShort.asr'),
+    'image-generation': t('imageGeneration.type')
   }
   return map[type]
 }
@@ -536,7 +539,8 @@ const emptyHint = computed(() => {
     embedding: t('modelSettings.embedding.empty'),
     rerank: t('modelSettings.rerank.empty'),
     vllm: t('modelSettings.vllm.empty'),
-    asr: t('modelSettings.asr.empty')
+    asr: t('modelSettings.asr.empty'),
+    'image-generation': t('imageGeneration.empty')
   }
   return map[activeTypeFilter.value as ModelType]
 })
@@ -900,13 +904,14 @@ const copyModel = async (_type: ModelType, modelId: string) => {
 }
 
 // 获取后端模型类型
-function getModelType(type: ModelType): 'KnowledgeQA' | 'Embedding' | 'Rerank' | 'VLLM' | 'ASR' {
+function getModelType(type: ModelType): 'KnowledgeQA' | 'Embedding' | 'Rerank' | 'VLLM' | 'ASR' | 'ImageGeneration' {
   const typeMap = {
     chat: 'KnowledgeQA' as const,
     embedding: 'Embedding' as const,
     rerank: 'Rerank' as const,
     vllm: 'VLLM' as const,
-    asr: 'ASR' as const
+    asr: 'ASR' as const,
+    'image-generation': 'ImageGeneration' as const
   }
   return typeMap[type]
 }

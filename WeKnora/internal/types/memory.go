@@ -18,9 +18,8 @@ import (
 	"unicode"
 )
 
-// Memory kinds. profile and preference are stable traits that make up the
-// resident block injected on every turn; fact and task are situational and are
-// only pulled in when the current query matches them.
+// Memory kinds distinguish standing traits from situational facts and tasks.
+// Every kind still requires the current turn's model relevance decision.
 const (
 	MemoryKindProfile    = "profile"
 	MemoryKindPreference = "preference"
@@ -71,7 +70,7 @@ const (
 const (
 	MemoryBlockRuneBudget  = 900
 	MemoryRecallRuneBudget = 600
-	// MemoryRecallMaxItems bounds how many situational items one turn can pull
+	// MemoryRecallMaxItems bounds how many selected items one turn can pull
 	// in, independent of the rune budget.
 	MemoryRecallMaxItems = 5
 	// MemorySearchMaxItems and MemorySearchRuneBudget bound one on-demand
@@ -87,12 +86,8 @@ const (
 	// MemoryResidentInterestMaxItems bounds how many interests the resident
 	// block may carry.
 	//
-	// Interests are not filtered away by relevance — a question about the
-	// person ("what am I working on") shares no words with the interest's own
-	// text, so relevance would drop exactly the memories that answer it. But a
-	// long-running user accumulates dozens of them, and the resident block is
-	// not a place to list all of them, so the cap applies and relevance
-	// decides which ones survive it.
+	// This cap is retained for stored block rendering. Runtime recall treats
+	// interests as candidates and applies the same relevance gate as other kinds.
 	MemoryResidentInterestMaxItems = 5
 	// MemoryContentMaxRunes bounds a single stored memory. Memories are meant
 	// to be one sentence; anything longer is a summary that belongs in the
@@ -114,21 +109,15 @@ var MemoryKinds = []string{
 	MemoryKindInterest,
 }
 
-// ResidentMemoryKinds are the stable traits that make up the always-injected
-// block, as opposed to the situational kinds that are matched against a query.
-//
-// Interest belongs here despite being derived rather than stated: it is a
-// standing property of the person, and it is the answer to questions about the
-// person themselves ("what am I working on"), which share no words with the
-// interest's own text and so can never be reached by query matching.
+// ResidentMemoryKinds are standing traits gathered as recall candidates.
+// Their stored block is not an authorization to inject them on every turn.
 var ResidentMemoryKinds = []string{
 	MemoryKindProfile,
 	MemoryKindPreference,
 	MemoryKindInterest,
 }
 
-// IsResidentMemoryKind reports whether items of this kind belong in the
-// always-injected block rather than in query-matched recall.
+// IsResidentMemoryKind reports whether this kind is a standing-trait candidate.
 func IsResidentMemoryKind(kind string) bool {
 	for _, k := range ResidentMemoryKinds {
 		if k == kind {

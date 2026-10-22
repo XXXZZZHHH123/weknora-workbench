@@ -727,6 +727,32 @@
         </div>
 
         <div class="settings-group">
+          <div v-if="isAgentMode" class="setting-row">
+            <div class="setting-info">
+              <label>{{ $t('imageGeneration.agentModel') }}</label>
+              <p class="desc">{{ $t('imageGeneration.agentHint') }}</p>
+              <p class="desc-hint">{{ $t('imageGeneration.bindingHint') }}</p>
+            </div>
+            <div class="setting-control">
+              <ModelSelector model-type="ImageGeneration" :selected-model-id="formData.config.image_generation_model_id"
+                :all-models="allModels" clearable
+                @update:selected-model-id="selectImageGenerationModel"
+                @add-model="handleAddModel('image-generation')" :placeholder="$t('imageGeneration.selectModel')" />
+            </div>
+          </div>
+
+          <div v-if="isAgentMode" class="setting-row" data-image-generation-binding>
+            <div class="setting-info">
+              <label>{{ $t('imageGeneration.toolEnabled') }}</label>
+              <p class="desc">{{ $t(imageGenerationEnabled ? 'imageGeneration.bindingReady' : 'imageGeneration.bindingDisabled') }}</p>
+            </div>
+            <div class="setting-control">
+              <t-switch :value="imageGenerationEnabled"
+                :disabled="!formData.config.image_generation_model_id && !imageGenerationEnabled"
+                @update:value="(value: unknown) => setImageGenerationEnabled(value === true)" />
+            </div>
+          </div>
+
           <!-- 图片上传 -->
           <div class="setting-row" data-guide="agent-create-multimodal">
             <div class="setting-info">
@@ -1858,6 +1884,7 @@ import {
 } from '@/config/contextualGuides';
 import { useI18n } from 'vue-i18n';
 import { selectInitialModelId } from '@/utils/modelDefaults';
+import { imageGenerationTools } from '@/utils/imageGenerationBinding';
 import { hydrateAgentPromptRefs, serializeAgentPrompts } from '@/utils/agentPromptTemplates';
 import { copyWithToast } from '@/utils/clipboard';
 import { MessagePlugin } from 'tdesign-vue-next';
@@ -2492,6 +2519,7 @@ const storedToolNames = ref<string[]>([]);
 // 列表未被修改则保存时原样发送 null。
 const keepAllowedToolsUnset = ref(false);
 const toolTexts = computed<Record<string, ToolText>>(() => ({
+  generate_image: { label: t('imageGeneration.type'), description: t('imageGeneration.agentHint') },
   thinking: { label: t('agentEditor.tools.thinking'), description: t('agentEditor.tools.thinkingDesc') },
   todo_write: { label: t('agentEditor.tools.todoWrite'), description: t('agentEditor.tools.todoWriteDesc') },
   search_conversations: { label: t('agentEditor.tools.searchConversations'), description: t('agentEditor.tools.searchConversationsDesc') },
@@ -2615,6 +2643,23 @@ const missKindToReason = (kind: RequirementMissKind): string | undefined => {
 // 保存时的 allowed_tools：保持未设置的列表在未被修改时以 null 发送。
 const allowedToolsToSave = (): string[] | null =>
   allowedToolsForSave(formData.value.config.allowed_tools || [], keepAllowedToolsUnset.value);
+
+const imageGenerationEnabled = computed(() => formData.value.config.allowed_tools?.includes('generate_image') ?? false);
+
+function setImageGenerationEnabled(enabled: boolean) {
+  if (enabled && !formData.value.config.image_generation_model_id) return;
+  formData.value.config.allowed_tools = imageGenerationTools(
+    keepAllowedToolsUnset.value ? null : formData.value.config.allowed_tools,
+    enabled,
+    agentToolCatalog.value?.default_tools,
+  );
+  keepAllowedToolsUnset.value = false;
+}
+
+function selectImageGenerationModel(modelID: string) {
+  formData.value.config.image_generation_model_id = modelID;
+  setImageGenerationEnabled(Boolean(modelID));
+}
 
 // 能力不满足时只禁止新勾选；已勾选的工具保持可点击，以便取消勾选（并显示原因）。
 const availableTools = computed(() => {
@@ -2896,6 +2941,7 @@ const defaultFormData = {
     system_prompt_id: '' as string,
     // 附件上传设置
     image_upload_enabled: false,
+    image_generation_model_id: '',
     vlm_model_id: '',
     image_storage_provider: '',
     // 附件图片理解 / 扫描件 OCR 开关（默认关闭，避免解析耗时增加）
@@ -5029,6 +5075,12 @@ const handleSave = async () => {
   }
 
   // 校验 VLM 模型（当图片上传启用时必填）
+  if (isAgentMode.value && formData.value.config.allowed_tools?.includes('generate_image') && !formData.value.config.image_generation_model_id) {
+    MessagePlugin.error(t('imageGeneration.modelRequired'));
+    currentSection.value = 'multimodal';
+    return;
+  }
+
   if (formData.value.config.image_upload_enabled && !formData.value.config.vlm_model_id) {
     MessagePlugin.error(t('agentEditor.imageUpload.vlmModelRequired'));
     currentSection.value = 'multimodal';

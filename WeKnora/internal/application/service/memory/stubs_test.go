@@ -120,8 +120,14 @@ func (s *stubMessageRepo) ListMessagesBySessionAfterTime(
 type stubModelService struct {
 	interfaces.ModelService
 
-	mu       sync.Mutex
-	response string
+	relevanceResponse *string
+	relevanceChoose   func([]relevanceCandidate) []string
+	relevanceDelay    time.Duration
+	relevanceCalls    int
+	metadata          *types.Model
+	metadataErr       error
+	mu                sync.Mutex
+	response          string
 	// responseFor lets one stub answer two different prompts. Distillation and
 	// topic adjudication both go through this model, and a test that pins one
 	// must not accidentally pin the other.
@@ -140,10 +146,13 @@ type stubModelService struct {
 	// workspaceModels backs ListModels.
 	workspaceModels []*types.Model
 	// embedder backs GetEmbeddingModel.
-	embedder         *stubEmbedder
-	requestedModelID string
-	requestedEmbedID string
-	lastPrompt       string
+	embedder                *stubEmbedder
+	requestedModelID        string
+	requestedModelTenant    uint64
+	requestedMetadataTenant uint64
+	requestedEmbedTenant    uint64
+	requestedEmbedID        string
+	lastPrompt              string
 	// prompts records every transcript the model was asked about, so a test
 	// can assert that no message went unread across several runs.
 	prompts []string
@@ -152,6 +161,17 @@ type stubModelService struct {
 	failNext bool
 	// lastFormat records the response schema the caller asked for.
 	lastFormat json.RawMessage
+}
+
+func (s *stubModelService) GetModelByID(ctx context.Context, id string) (*types.Model, error) {
+	s.requestedMetadataTenant = types.MustTenantIDFromContext(ctx)
+	if s.metadataErr != nil {
+		return nil, s.metadataErr
+	}
+	if s.metadata != nil {
+		return s.metadata, nil
+	}
+	return &types.Model{ID: id, Type: types.ModelTypeKnowledgeQA, TenantID: types.MustTenantIDFromContext(ctx), Status: types.ModelStatusActive, Parameters: types.ModelParameters{ContextWindow: 131072}}, nil
 }
 
 // workspaceModels is what ListModels returns, so a test can reproduce a
@@ -163,20 +183,22 @@ func (s *stubModelService) ListModels(context.Context) ([]*types.Model, error) {
 }
 
 func (s *stubModelService) GetEmbeddingModel(
-	_ context.Context, modelID string,
+	ctx context.Context, modelID string,
 ) (embedding.Embedder, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requestedEmbedID = modelID
+	s.requestedEmbedTenant = types.MustTenantIDFromContext(ctx)
 	if s.embedder == nil {
 		return nil, errors.New("no embedding model configured")
 	}
 	return s.embedder, nil
 }
 
-func (s *stubModelService) GetChatModel(_ context.Context, modelID string) (chat.Chat, error) {
+func (s *stubModelService) GetChatModel(ctx context.Context, modelID string) (chat.Chat, error) {
 	s.mu.Lock()
 	s.requestedModelID = modelID
+	s.requestedModelTenant = types.MustTenantIDFromContext(ctx)
 	s.mu.Unlock()
 	return &stubChatModel{owner: s}, nil
 }
@@ -229,7 +251,7 @@ type stubChatModel struct {
 }
 
 func (m *stubChatModel) Chat(
-	_ context.Context, messages []chat.Message, opts *chat.ChatOptions,
+	ctx context.Context, messages []chat.Message, opts *chat.ChatOptions,
 ) (*types.ChatResponse, error) {
 	var prompt strings.Builder
 	for _, message := range messages {
@@ -254,6 +276,39 @@ func (m *stubChatModel) Chat(
 		return &types.ChatResponse{Content: "", FinishReason: "length"}, nil
 	}
 
+	if len(messages) > 0 && messages[0].Content == relevanceSystemPrompt {
+		m.owner.relevanceCalls++
+		if m.owner.relevanceDelay > 0 {
+			select {
+			case <-time.After(m.owner.relevanceDelay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if m.owner.relevanceResponse != nil {
+			return &types.ChatResponse{Content: *m.owner.relevanceResponse, FinishReason: m.owner.finishReason}, nil
+		}
+		var data struct {
+			Candidates  []relevanceCandidate `json:"candidates"`
+			MaxSelected int                  `json:"max_selected"`
+		}
+		if err := json.Unmarshal([]byte(messages[len(messages)-1].Content), &data); err != nil {
+			return nil, err
+		}
+		ids := []string{}
+		if m.owner.relevanceChoose != nil {
+			ids = m.owner.relevanceChoose(data.Candidates)
+		} else {
+			for _, candidate := range data.Candidates {
+				if len(ids) >= data.MaxSelected {
+					break
+				}
+				ids = append(ids, candidate.ID)
+			}
+		}
+		body, _ := json.Marshal(map[string]interface{}{"selected_ids": ids})
+		return &types.ChatResponse{Content: string(body), FinishReason: m.owner.finishReason}, nil
+	}
 	body := m.owner.response
 	for marker, canned := range m.owner.responseFor {
 		if strings.Contains(prompt.String(), marker) {

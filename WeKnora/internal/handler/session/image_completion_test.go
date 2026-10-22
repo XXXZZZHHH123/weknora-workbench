@@ -21,6 +21,10 @@ type imageCompletionMessages struct {
 	beforeSave func()
 }
 
+func (s *imageCompletionMessages) GetMessage(context.Context, string, string) (*types.Message, error) {
+	return s.saved, s.err
+}
+
 func (s *imageCompletionMessages) UpdateMessage(ctx context.Context, message *types.Message) error {
 	if err := ctx.Err(); err != nil {
 		return err

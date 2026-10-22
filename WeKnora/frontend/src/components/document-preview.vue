@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { indexEmbeddedSourceImages } from '@/utils/sourceImage';
 import { ref, shallowRef, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from 'vue';
-import { previewKnowledgeFile } from '@/api/knowledge-base/index';
+import { previewKnowledgeFile, getKnowledgeDetails } from '@/api/knowledge-base/index';
 import { previewKnowledgeMedia } from '@/api/knowledge-base/preview-media';
 import { previewTemporaryAttachment } from '@/api/chat/temporary-attachments';
 import { downloadArtifact } from '@/api/chat';
@@ -12,7 +12,11 @@ import 'katex/dist/katex.min.css';
 import { useI18n } from 'vue-i18n';
 import { sanitizeHTML, sanitizeMarkdownHTML } from '@/utils/security';
 import { preparePptxPreview, isCompletePptxRender, watchCompletePptxSlideDOM, bindPptxRendererCallbacks, isPptxSourceKeyCurrent, resolvePptxSlideLocator, resolvePptxLocatePage, type PptxRendererCallbacks } from '@/utils/pptxPreview';
-import { createPptxMediaRequestGate, listPptxVectorMediaForSlide, rasterizePptxSlidePreview, sha256Hex, type PptxMediaRequestLease, type PptxVectorMedia } from '@/utils/pptxMedia';
+import { preparePptxOlePreview, sha256Hex } from '@/utils/pptxMedia';
+import { useAuthStore } from '@/stores/auth';
+import { getPptxPreviewScope, pptxPreviewCache } from '@/utils/pptxPreviewCache';
+import { knowledgePptxSourceKey } from '@/utils/pptxPreviewSource';
+import { createPptxViewportMedia, type PptxPageMediaView } from '@/utils/pptxViewportMedia';
 import { findMarkdownSourceRange } from '@/utils/markdownSourceLocate';
 import { renderDocumentPreviewMarkdown } from '@/utils/documentPreviewMarkdown';
 import { buildHtmlPreview } from '@/utils/htmlPreview';
@@ -50,6 +54,7 @@ const VueOfficePptx = defineAsyncComponent(() => import('@vue-office/pptx'));
 const PdfSourceViewer = defineAsyncComponent(() => import('@/components/source-preview/PdfSourceViewer.vue'));
 
 const { t } = useI18n();
+const previewAuth = useAuthStore();
 
 const props = defineProps<{
   sourceBlob?: Blob;
@@ -80,6 +85,11 @@ const emit = defineEmits<{
 }>();
 
 const loading = ref(false);
+const pptxPermissionChecking = ref(false);
+let previewLoadVersion = 0;
+let previewSecurityScope = getPptxPreviewScope();
+let loadedPptxAuthority = '';
+let pptxMediaCacheContext: { scope: string; sourceKey: string } | undefined;
 const error = ref('');
 const previewType = ref<FilePreviewKind>('unsupported');
 const blobUrl = ref('');
@@ -111,13 +121,12 @@ let pptxRenderReadySourceKey = '';
 let pptxRenderFailureSourceKey = '';
 let pptxRenderFailureReason = '';
 let pptxRenderSignal: 'pending' | 'complete' | 'incomplete' = 'pending';
-type PptxPageMediaView = PptxVectorMedia & { objectUrl?: string; png?: ArrayBuffer; generation: number; state: 'pending' | 'loading' | 'loaded' | 'displayed' | 'failed' };
 const pptxPageMedia = ref<PptxPageMediaView[]>([]);
 const pptxPageMediaState = ref<'idle' | 'discovering' | 'loading' | 'loaded' | 'partial' | 'failed' | 'none'>('idle');
-const pptxMediaRequestGate = createPptxMediaRequestGate();
-let pptxMediaRequestLease: PptxMediaRequestLease | null = null;
-let pptxMediaRequestKey = '';
-const pptxMediaObjectUrls = new Set<string>();
+let pptxViewportMedia: ReturnType<typeof createPptxViewportMedia> | null = null;
+let pptxMediaSourceKey = '';
+let pptxMediaGeneration = 0;
+const pptxMediaPages = new Map<number, PptxPageMediaView[]>();
 
 function stopPptxRenderWatch() {
   cancelPptxRenderWatch?.();
@@ -132,11 +141,10 @@ function exactPptxLocatePage(): number {
 }
 
 function clearPptxPageMedia() {
-  pptxMediaRequestGate.cancel();
-  pptxMediaRequestLease = null;
-  for (const url of pptxMediaObjectUrls) URL.revokeObjectURL(url);
-  pptxMediaObjectUrls.clear();
-  pptxMediaRequestKey = '';
+  pptxViewportMedia?.stop();
+  pptxViewportMedia = null;
+  pptxMediaSourceKey = '';
+  pptxMediaPages.clear();
   pptxPageMedia.value = [];
   pptxPageMediaState.value = 'idle';
   pptxInlineMediaFailed.value = false;
@@ -158,23 +166,9 @@ async function setPptxRendererData(data: ArrayBuffer, sourceKey: string) {
   if (pptxRendererKey.value === renderKey && isCurrentPptxSource(sourceKey)) watchPptxRender(sourceKey);
 }
 
-function currentPptxMediaRequest(lease: PptxMediaRequestLease, sourceKey: string, page: number, token: number, sourceSha256: string) {
-  return pptxMediaRequestGate.isCurrent(lease, `${sourceKey}|${page}|${token}|${sourceSha256}`) &&
-    props.active && props.sourceMode && props.knowledgeId && !props.locate?.unavailable &&
-    loadedForId === sourceKey && previewType.value === 'pptx' && exactPptxLocatePage() === page &&
-    (props.locate?.token ?? 0) === token && pptxSourceSha256 === sourceSha256;
-}
-
-async function validPngBlob(blob: Blob): Promise<boolean> {
-  if (blob.type && blob.type !== 'image/png') return false;
-  if (blob.size < 8) return false;
-  const signature = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
-  return [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => signature[index] === byte);
-}
-
 function updatePptxPageMediaState() {
-  if (!pptxPageMedia.value.length) return;
   const rows = pptxPageMedia.value;
+  if (!rows.length) { pptxPageMediaState.value = 'none'; return; }
   const failures = rows.filter((item) => item.state === 'failed').length;
   const displayed = rows.filter((item) => item.state === 'displayed').length;
   const pending = rows.some((item) => item.state === 'pending' || item.state === 'loading' || item.state === 'loaded');
@@ -185,106 +179,65 @@ function updatePptxPageMediaState() {
 }
 
 async function loadPptxPageMedia(force = false) {
-  const page = exactPptxLocatePage();
   const sourceKey = loadedForId;
-  const token = props.locate?.token ?? 0;
-  if (!page || !sourceKey || previewType.value !== 'pptx' || !pptxData.value) {
+  if (!sourceKey || !props.active || pptxPermissionChecking.value || !props.knowledgeId ||
+      props.locate?.unavailable || previewType.value !== 'pptx' || !pptxData.value) {
     clearPptxPageMedia();
     return;
   }
-  const sourceSha256 = pptxSourceSha256;
   if (!pptxSourceSha256) {
     clearPptxPageMedia();
     pptxPageMediaState.value = 'failed';
     return;
   }
-  const requestKey = `${sourceKey}|${page}|${token}|${sourceSha256}`;
-  if (!force && pptxMediaRequestKey === requestKey && pptxMediaRequestLease && pptxMediaRequestGate.isCurrent(pptxMediaRequestLease, requestKey)) return;
-
-  clearPptxPageMedia();
-  pptxMediaRequestKey = requestKey;
-  const lease = pptxMediaRequestGate.begin(requestKey);
-  pptxMediaRequestLease = lease;
-  const generation = lease.generation;
-  pptxPageMediaState.value = 'discovering';
-  try {
-    const media = await listPptxVectorMediaForSlide(pptxData.value, page);
-    if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
-    if (!media.length) {
-      pptxPageMediaState.value = 'none';
-      return;
-    }
-    pptxPageMedia.value = media.map((item) => ({ ...item, generation, state: 'pending' }));
-    pptxPageMediaState.value = 'loading';
-
-    let next = 0;
-    const worker = async () => {
-      while (next < pptxPageMedia.value.length && currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) {
-        const index = next++;
-        const item = pptxPageMedia.value[index]!;
-        item.state = 'loading';
-        try {
-          const blob = await previewKnowledgeMedia(props.knowledgeId!, page, item.part, sourceSha256, lease.controller.signal);
-          if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
-          if (!await validPngBlob(blob)) throw new Error('Invalid PNG response');
-          const png = await blob.arrayBuffer();
-          if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
-          const objectUrl = URL.createObjectURL(blob);
-          pptxMediaObjectUrls.add(objectUrl);
-          item.objectUrl = objectUrl;
-          item.png = png;
-          item.state = 'loaded';
-        } catch {
-          if (lease.controller.signal.aborted || !currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
-          item.state = 'failed';
+  const mediaKey = `${sourceKey}|${pptxSourceSha256}`;
+  if (!pptxViewportMedia || pptxMediaSourceKey !== mediaKey) {
+    clearPptxPageMedia();
+    pptxMediaSourceKey = mediaKey;
+    const knowledgeId = props.knowledgeId;
+    const sourceSha256 = pptxSourceSha256;
+    const loader = createPptxViewportMedia({
+      cache: pptxMediaCacheContext,
+      data: pptxData.value, sourceSha256, generation: ++pptxMediaGeneration,
+      loadRaster: (page, part, signal) => previewKnowledgeMedia(knowledgeId, page, part, sourceSha256, signal),
+      onPage: (page, items) => {
+        if (pptxViewportMedia !== loader || !isCurrentPptxSource(sourceKey)) return;
+        pptxMediaPages.set(page, items);
+        if (page === exactPptxLocatePage()) {
+          pptxPageMedia.value = items;
+          updatePptxPageMediaState();
         }
-        updatePptxPageMediaState();
-      }
-    };
-    await Promise.all([worker(), worker()]);
-    if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
-    updatePptxPageMediaState();
-    const rasters = pptxPageMedia.value.filter(item => item.png).map(item => ({ part: item.part, png: item.png! }));
-    if (rasters.length) {
-      try {
-        const rendered = await rasterizePptxSlidePreview(pptxData.value!, page, rasters);
-        if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
-        await setPptxRendererData(rendered, sourceKey);
-      } catch {
-        if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
-        pptxInlineMediaFailed.value = true;
-      }
-    }
-  } catch {
-    if (!currentPptxMediaRequest(lease, sourceKey, page, token, sourceSha256)) return;
-    pptxPageMediaState.value = 'failed';
-    pptxPageMedia.value = [];
+      },
+      onPageError: (page) => {
+        if (pptxViewportMedia === loader && isCurrentPptxSource(sourceKey) && page === exactPptxLocatePage()) pptxPageMediaState.value = 'failed';
+      },
+    });
+    pptxViewportMedia = loader;
+    if (previewContent.value) loader.observe(previewContent.value);
+  }
+  const page = exactPptxLocatePage();
+  if (page) {
+    pptxPageMedia.value = pptxMediaPages.get(page) || [];
+    pptxPageMediaState.value = pptxMediaPages.has(page) ? 'none' : 'discovering';
+    if (pptxMediaPages.has(page)) updatePptxPageMediaState();
+    await pptxViewportMedia.loadPage(page, force);
   }
 }
 
 function onPptxMediaImageLoad(part: string, generation: number) {
-  if (!pptxMediaRequestLease || !pptxMediaRequestGate.isCurrent(pptxMediaRequestLease, pptxMediaRequestKey) || generation !== pptxMediaRequestLease.generation) return;
-  const item = pptxPageMedia.value.find((candidate) => candidate.part === part);
-  if (!item || item.generation !== generation || item.state === 'failed') return;
-  item.state = 'displayed';
-  updatePptxPageMediaState();
+  if (generation === pptxMediaGeneration) pptxViewportMedia?.markDisplayed(part);
 }
 
 function onPptxMediaImageError(part: string, generation: number) {
-  if (!pptxMediaRequestLease || !pptxMediaRequestGate.isCurrent(pptxMediaRequestLease, pptxMediaRequestKey) || generation !== pptxMediaRequestLease.generation) return;
-  const item = pptxPageMedia.value.find((candidate) => candidate.part === part);
-  if (!item || item.generation !== generation) return;
-  item.state = 'failed';
-  updatePptxPageMediaState();
+  if (generation === pptxMediaGeneration) pptxViewportMedia?.markFailed(part);
 }
 
 function retryPptxPageMedia() {
-  if (pptxSourceHashError) return;
-  void loadPptxPageMedia(true);
+  if (!pptxSourceHashError) void loadPptxPageMedia(true);
 }
 
 function isCurrentPptxSource(sourceKey: string) {
-  return isPptxSourceKeyCurrent(sourceKey, loadedForId, props.active) && previewType.value === 'pptx';
+  return !pptxPermissionChecking.value && isPptxSourceKeyCurrent(sourceKey, loadedForId, props.active) && previewType.value === 'pptx';
 }
 
 function failPptxRender(sourceKey: string, reason: string, detail?: string, token = props.locate?.token ?? null) {
@@ -467,14 +420,17 @@ function onFullscreenEscape(event: KeyboardEvent) {
 
 watch(() => props.active, (active) => {
   if (!active) {
+    previewLoadVersion++;
+    pptxPermissionChecking.value = false;
     stopPptxRenderWatch();
     clearPptxPageMedia();
     void exitPreviewFullscreen();
-  } else if (loadedForId && previewType.value === 'pptx') {
-    watchPptxRender(loadedForId);
-    void loadPptxPageMedia();
+  } else if (props.knowledgeId && resolvePreviewKind(resolveFilePreviewExt(props.fileName, props.fileType)) === 'pptx') {
+    // Block locator/renderer callbacks synchronously on a retained reopen;
+    // loadPreview releases the gate only after this open's metadata succeeds.
+    pptxPermissionChecking.value = true;
   }
-});
+}, { flush: 'sync' });
 
 onMounted(() => {
   document.addEventListener('fullscreenchange', syncFullscreen);
@@ -662,25 +618,55 @@ async function openMermaid() {
 
 async function loadPreview() {
   const sourceKey = getPreviewSourceKey();
-  if (!sourceKey) return;
-  if (loadedForId === sourceKey) {
-    if (previewType.value === 'pptx') {
-      watchPptxRender(sourceKey);
-      void loadPptxPageMedia();
-    }
-    return;
-  }
-
-  cleanup();
-  loading.value = true;
-  error.value = '';
-  htmlViewMode.value = allowsHtmlScriptPreview() ? 'render' : 'source';
-
+  if (!sourceKey || !props.active) return;
+  const version = ++previewLoadVersion;
+  const knowledgeId = props.sourceBlob ? '' : props.knowledgeId || '';
   let ft = resolveFilePreviewExt(props.fileName, props.fileType);
-  previewType.value = resolvePreviewKind(ft);
-
+  const knowledgePptx = !!knowledgeId && resolvePreviewKind(ft) === 'pptx';
+  const scope = knowledgePptx ? getPptxPreviewScope() : '';
+  const current = () => version === previewLoadVersion && props.active && getPreviewSourceKey() === sourceKey
+    && (!knowledgePptx || getPptxPreviewScope() === scope);
+  let cacheContext: { scope: string; sourceKey: string } | undefined;
+  let authority = '';
   try {
-    const rawBlob = await fetchPreviewBlob();
+    if (knowledgePptx) {
+      // Even a warm file must pass the actual current knowledge ACL on every
+      // open. Hide retained content while this small metadata request runs.
+      pptxPermissionChecking.value = true;
+      clearPptxPageMedia();
+      const response = await getKnowledgeDetails(knowledgeId);
+      if (!current()) return;
+      const metadata = response?.data;
+      if (!metadata || metadata.id !== knowledgeId || metadata.deleted_at) throw new Error(t('preview.loadFailed'));
+      pptxPermissionChecking.value = false;
+      const source = knowledgePptxSourceKey(knowledgeId, metadata);
+      authority = JSON.stringify([scope, source]);
+      if (scope && source) cacheContext = { scope, sourceKey: source };
+      if (cacheContext && loadedForId === sourceKey && loadedPptxAuthority === authority && pptxData.value && pptxSourceSha256) {
+        pptxMediaCacheContext = cacheContext;
+        pptxPermissionChecking.value = false;
+        await nextTick();
+        if (!current()) return;
+        watchPptxRender(sourceKey);
+        void loadPptxPageMedia();
+        return;
+      }
+    } else if (loadedForId === sourceKey) {
+      return;
+    }
+    if (!current()) return;
+    cleanup();
+    loading.value = true;
+    error.value = '';
+    htmlViewMode.value = allowsHtmlScriptPreview() ? 'render' : 'source';
+    previewType.value = resolvePreviewKind(ft);
+    const rawBlob = cacheContext
+      ? await pptxPreviewCache.getOrLoad<Blob>(scope, `original:${cacheContext.sourceKey}`, async () => {
+        const value = await previewKnowledgeFile(knowledgeId);
+        return { value, bytes: value.size };
+      })
+      : await fetchPreviewBlob();
+    if (!current()) return;
     let kind = resolvePreviewKind(ft);
     if (kind === 'unsupported') {
       const sample = new Uint8Array(await rawBlob.slice(0, FILE_PREVIEW_SNIFF_BYTES).arrayBuffer());
@@ -688,13 +674,9 @@ async function loadPreview() {
       kind = sniffed.kind;
       if (sniffed.ext) ft = sniffed.ext;
     }
+    if (!current()) return;
     previewType.value = kind;
-
-    if (kind === 'unsupported') {
-      loading.value = false;
-      return;
-    }
-
+    if (kind === 'unsupported') return;
     const blob = ensureBlobType(rawBlob, ft);
     loadedForId = sourceKey;
 
@@ -748,22 +730,28 @@ async function loadPreview() {
         break;
       }
       case 'pptx': {
-        const originalData = await blob.arrayBuffer();
-        let sourceSha256 = '';
-        let sourceHashError = '';
-        try {
-          sourceSha256 = await sha256Hex(originalData);
-        } catch {
-          sourceHashError = 'source_fingerprint_unavailable';
-        }
-        const prepared = await preparePptxPreview(originalData);
-        if (getPreviewSourceKey() !== sourceKey || !props.active) return;
-        pptxSourceSha256 = sourceSha256;
-        pptxSourceHashError = sourceHashError;
+        const prepare = async () => {
+          const originalData = await blob.arrayBuffer();
+          let sourceSha256 = '', sourceHashError = '';
+          try { sourceSha256 = await sha256Hex(originalData); }
+          catch { sourceHashError = 'source_fingerprint_unavailable'; }
+          const prepared = await preparePptxPreview(originalData);
+          const rendererData = knowledgeId ? await preparePptxOlePreview(prepared.data) : prepared.data;
+          const value = { data: prepared.data, rendererData, sourceSha256, sourceHashError, slideCount: prepared.slideCount };
+          return { value, bytes: prepared.data.byteLength + (rendererData === prepared.data ? 0 : rendererData.byteLength), cacheable: !sourceHashError };
+        };
+        const prepared = cacheContext
+          ? await pptxPreviewCache.getOrLoad(cacheContext.scope, `prepared:${cacheContext.sourceKey}`, prepare)
+          : (await prepare()).value;
+        if (!current()) return;
+        pptxSourceSha256 = prepared.sourceSha256;
+        pptxSourceHashError = prepared.sourceHashError;
         pptxSlideCount = prepared.slideCount;
         pptxData.value = prepared.data;
-        await setPptxRendererData(prepared.data, sourceKey);
-        if (!isCurrentPptxSource(sourceKey)) return;
+        loadedPptxAuthority = authority;
+        pptxMediaCacheContext = cacheContext;
+        await setPptxRendererData(prepared.rendererData, sourceKey);
+        if (!current()) return;
         void loadPptxPageMedia();
         break;
       }
@@ -775,14 +763,20 @@ async function loadPreview() {
     // PPTX location waits for the renderer event or the bounded slide-DOM fallback.
     if (kind !== 'pptx') scheduleLocate();
   } catch (err: any) {
-    console.error('Document preview failed:', err);
+    if (!current()) return;
+    cleanup();
     error.value = err?.message || t('preview.loadFailed');
   } finally {
-    loading.value = false;
+    if (version === previewLoadVersion) {
+      loading.value = false;
+      pptxPermissionChecking.value = false;
+    }
   }
 }
 
 function cleanup() {
+  loadedPptxAuthority = '';
+  pptxMediaCacheContext = undefined;
   stopPptxRenderWatch();
   clearPptxPageMedia();
   pptxRendererCallbacks.value = null;
@@ -1158,8 +1152,21 @@ function applyLocate() {
 }
 
 watch(
-  () => [props.active, props.knowledgeId, props.sessionId, props.attachmentId, props.messageId, props.artifactIndex, props.sourceBlob, props.fileName, props.fileType],
+  () => [props.active, props.knowledgeId, props.sessionId, props.attachmentId, props.messageId, props.artifactIndex, props.sourceBlob, props.fileName, props.fileType, previewAuth.token, previewAuth.selectedTenantId],
   ([active]) => {
+    const scope = getPptxPreviewScope();
+    if (scope !== previewSecurityScope) {
+      previewSecurityScope = scope;
+      // Rotate the shared cache's access generation even for a hidden viewer.
+      // read validates scope without canceling another viewer's new-scope task.
+      pptxPreviewCache.read(scope, '');
+      if (previewType.value === 'pptx') {
+        previewLoadVersion++;
+        cleanup();
+        loading.value = false;
+        error.value = '';
+      }
+    }
     if (active && getPreviewSourceKey()) {
       loadPreview();
     }
@@ -1168,13 +1175,14 @@ watch(
 );
 
 onUnmounted(() => {
+  previewLoadVersion++;
   stopPptxRenderWatch();
   cleanup();
 });
 </script>
 
 <template>
-  <div ref="previewRoot" tabindex="-1" :aria-label="fileName" class="document-preview" :class="{ 'is-fullscreen': isFullscreen, 'fill-height': fillHeight }">
+  <div ref="previewRoot" tabindex="-1" :aria-label="fileName" class="document-preview" :class="{ 'is-fullscreen': isFullscreen, 'fill-height': fillHeight, 'is-permission-checking': pptxPermissionChecking }">
     <!-- Toolbar -->
     <Teleport :to="toolbarTarget || 'body'" :disabled="isFullscreen || !toolbarTarget">
       <div class="preview-toolbar" :class="{ 'is-inline': toolbarTarget && !isFullscreen }" v-if="isFullscreen || (!loading && !error && previewType !== 'unsupported')">
@@ -1199,6 +1207,9 @@ onUnmounted(() => {
       </div>
     </Teleport>
 
+    <div v-if="pptxPermissionChecking" class="preview-permission-loading" aria-live="polite">
+      <t-loading size="small" /><span>{{ $t('preview.loading') }}</span>
+    </div>
     <!-- Loading -->
     <div v-if="loading" class="preview-loading">
       <t-loading size="medium" />
@@ -2162,4 +2173,10 @@ img.source-locate-block {
   outline: 1px solid var(--app-source-highlight-border);
   outline-offset: 2px;
 }
+</style>
+
+<style scoped>
+.preview-permission-loading { position: absolute; inset: 0; z-index: 2; display: flex; justify-content: center; align-items: center; gap: 8px; background: var(--td-bg-color-container); }
+.is-permission-checking .preview-pptx { visibility: hidden; }
+.preview-pptx :deep(img[data-pptx-media-state="pending"]), .preview-pptx :deep(img[data-pptx-media-state="loading"]) { background: var(--td-bg-color-secondarycontainer); }
 </style>

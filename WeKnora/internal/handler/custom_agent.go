@@ -37,6 +37,7 @@ type CustomAgentHandler struct {
 	userService interfaces.UserService
 	// sandboxConfigs validates an agent's sandbox backend selection. Optional —
 	// nil in partially-wired unit tests, where the selection is left unchecked.
+	modelService   interfaces.ModelService
 	sandboxConfigs sandboxConfigLookup
 	desktop        bool
 }
@@ -49,6 +50,7 @@ func NewCustomAgentHandler(
 	userService interfaces.UserService,
 	sandboxConfigs *service.TenantSandboxConfigService,
 	host service.HostSandboxManager,
+	modelService interfaces.ModelService,
 ) *CustomAgentHandler {
 	return &CustomAgentHandler{
 		service:        service,
@@ -56,6 +58,7 @@ func NewCustomAgentHandler(
 		disabledRepo:   disabledRepo,
 		userService:    userService,
 		sandboxConfigs: sandboxConfigs,
+		modelService:   modelService,
 		desktop:        host.Desktop,
 	}
 }
@@ -105,6 +108,10 @@ func (h *CustomAgentHandler) CreateAgent(c *gin.Context) {
 		return
 	}
 	if err := authorizeAgentKnowledgeScope(ctx, req.Config); err != nil {
+		c.Error(err)
+		return
+	}
+	if err := h.validateAgentImageGenerationModel(ctx, req.Config); err != nil {
 		c.Error(err)
 		return
 	}
@@ -384,6 +391,10 @@ func (h *CustomAgentHandler) UpdateAgent(c *gin.Context) {
 		return
 	}
 	if err := authorizeAgentKnowledgeScope(ctx, req.Config); err != nil {
+		c.Error(err)
+		return
+	}
+	if err := h.validateAgentImageGenerationModel(ctx, req.Config); err != nil {
 		c.Error(err)
 		return
 	}

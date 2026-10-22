@@ -20,7 +20,7 @@ const target = resolveReferenceSource(refs, { chunkId: 'chunk-1', anchorText: 'æ
 
 async function fixture(options: { details?: Record<string, unknown>; chunk?: Record<string, unknown>; parent?: Record<string, unknown>; target?: ReferenceSourceTarget } = {}) {
   const props = reactive({ target: options.target || target, active: true })
-  const requests: string[] = [], events: string[] = []
+  const requests: string[] = [], events: string[] = [], retained: boolean[] = []
   let preview: any, mounts = 0, emitLocated: ((result: any) => void) | undefined
   const exports: any = {}
   const Preview = defineComponent({
@@ -62,11 +62,11 @@ async function fixture(options: { details?: Record<string, unknown>; chunk?: Rec
     patchProp(el, key, _previous, value) { el.props ||= {}; el.props[key] = value }, parentNode: el => el.parent || null, nextSibling: () => null,
   })
   const root = node()
-  const app = renderer.createApp({ setup: () => () => h(exports.default, { ...props, onUnavailable: () => events.push('unavailable') }) })
+  const app = renderer.createApp({ setup: () => () => h(exports.default, { ...props, onUnavailable: () => events.push('unavailable'), onRetentionChange: (value: boolean) => retained.push(value) }) })
   for (const name of ['t-button', 't-icon', 't-loading']) app.component(name, { render: () => null })
   app.mount(root)
   await flush()
-  return { props, requests, events, preview: () => preview, mounts: () => mounts, emitLocated: (result: any) => emitLocated?.(result), root, dispose: () => app.unmount() }
+  return { props, requests, events, retained, preview: () => preview, mounts: () => mounts, emitLocated: (result: any) => emitLocated?.(result), root, dispose: () => app.unmount() }
 }
 
 test('manual citation opens Markdown with raw chunk evidence even without source locators', async t => {
@@ -172,4 +172,35 @@ test('a verbatim answer quotation still inherits its matching exact parent locat
   assert.equal(request.parentContext, false)
   assert.equal(request.sourceMarkdown, `Summary. ${childContent} Additional notes.`)
   assert.deepEqual(request.locators, [{ type: 'slide', mapping: 'exact', partial: false, slide: 2, quote: excerpt, source_hash: sourceHash }])
+})
+
+
+test('only a PPT can retain its current viewer across close and reopen without hidden source reads', async t => {
+  const f = await fixture({ details: { type: 'document', source: 'file', file_type: 'pptx', file_name: 'Synthetic deck.pptx', file_path: 'resource://synthetic-original' } }); t.after(f.dispose)
+  const preview = f.preview(), requests = f.requests.length
+  assert.equal(f.retained.at(-1), true); assert.equal(f.mounts(), 1)
+  f.props.active = false; await flush()
+  assert.equal(f.preview().active, false); assert.equal(f.requests.length, requests)
+  f.props.target = { ...target, chunkId: 'chunk-2', anchorText: 'Second quoted passage' }; await flush()
+  assert.equal(f.requests.length, requests, 'a hidden source never reads a changed citation')
+  f.props.active = true; await flush()
+  assert.equal(f.preview(), preview, 'reopen preserves the actual mounted preview instance')
+  assert.equal(f.mounts(), 1); assert.equal(f.preview().active, true)
+  assert.equal(f.requests.filter(r => r.startsWith('details:')).length, 2, 'reopen refreshes source locator metadata without remounting')
+  assert.equal(f.preview().locate.sourceMarkdown, 'The second cited paragraph.')
+})
+
+test('non-PPT sources never request retained viewer DOM', async t => {
+  const f = await fixture(); t.after(f.dispose)
+  assert.equal(f.retained.at(-1), false)
+})
+
+test('reopening retained PPT refreshes source hash and rejects old citation locators after a revision', async t => {
+  const details = { type: 'document', source: 'file', file_type: 'pptx', file_name: 'Synthetic deck.pptx', file_path: 'resource://synthetic-original', file_hash: 'a'.repeat(64) }
+  const f = await fixture({ details, chunk: { source_locators: [{ type: 'slide', slide: 2, mapping: 'exact', source_hash: 'a'.repeat(64) }] } }); t.after(f.dispose)
+  assert.equal(f.preview().locate.unavailable, false)
+  f.props.active = false; await flush(); details.file_hash = 'b'.repeat(64)
+  f.props.active = true; await flush()
+  assert.equal(f.mounts(), 1)
+  assert.equal(f.preview().locate.unavailable, true, 'old source hash never selects a precise page in a revised file')
 })

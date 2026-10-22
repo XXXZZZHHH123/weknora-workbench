@@ -60,13 +60,13 @@
 <script setup lang="ts">
 import { sourceImageDigest } from '@/utils/sourceImage'
 import { buildProtectedFileRequest, resolveProtectedFileAccess } from '@/utils/protectedFileAccess'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import DocumentPreview from '@/components/document-preview.vue'
 import ArtifactFileIcon from '@/views/chat/components/ArtifactFileIcon.vue'
 import { getChunkByIdOnly, getKnowledgeDetails } from '@/api/knowledge-base/index'
-import { isKnownPreviewableFile } from '@/utils/filePreview'
+import { isKnownPreviewableFile, resolveFilePreviewExt, resolvePreviewKind } from '@/utils/filePreview'
 import type { ReferenceSourceTarget } from '@/utils/referenceSources'
 import {
   hasVerifiedParentChunkContext,
@@ -92,6 +92,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** The cited document has no original file this view can show. */
   unavailable: []
+  /** Only the current PPT may keep its mounted DOM while the panel is closed. */
+  'retention-change': [retained: boolean, knowledgeId: string]
 }>()
 
 const { t } = useI18n()
@@ -168,13 +170,15 @@ function isWebUrl(value: string) {
   return /^https?:\/\//i.test(value || '')
 }
 
-async function loadMeta(version: number) {
+async function loadMeta(version: number, preserve = false) {
+  if (!preserve) {
   meta.fileName = props.target.fileName || ''
   meta.fileType = ''
   meta.knowledgeSource = props.target.knowledgeSource || ''
   meta.knowledgeType = ''
   meta.title = props.target.title || ''
   sourceHash.value = ''
+  }
   try {
     const res: any = await getKnowledgeDetails(props.target.knowledgeId)
     if (version !== loadVersion) return
@@ -311,7 +315,7 @@ function buildLocate(): SourceLocateRequest {
   return { locators: unavailable ? [] : selected, quotes: unavailable ? [] : quotes, token: ++locateToken, sentence: anchor, sourceMarkdown: unavailable ? undefined : chunkContent.value, imageDigest: unavailable ? undefined : imageDigest.value, imageContext: unavailable ? undefined : imageContext.value, scope: unavailable ? '' : scope, unavailable, parentContext: !unavailable && parentContext.value }
 }
 
-async function load() {
+async function load(refreshMetadata = false) {
   const version = ++loadVersion
   status.value = 'idle'
   locatedPage.value = 0
@@ -320,11 +324,12 @@ async function load() {
   // move the highlight, instead of downloading and rendering the file again.
   const sameFile = mode.value === 'file' && shownKnowledgeId === props.target.knowledgeId
   if (!sameFile) mode.value = 'loading'
-  await Promise.all([sameFile ? Promise.resolve() : loadMeta(version), loadChunk(version)])
+  await Promise.all([sameFile && !refreshMetadata ? Promise.resolve() : loadMeta(version, sameFile), loadChunk(version)])
   if (version !== loadVersion) return
   shownKnowledgeId = props.target.knowledgeId
   const next = resolveMode()
   mode.value = next
+  emit('retention-change', next === 'file' && resolvePreviewKind(resolveFilePreviewExt(meta.fileName || displayName.value, meta.fileType)) === 'pptx', props.target.knowledgeId)
   if (next === 'none') {
     emit('unavailable')
     return
@@ -360,9 +365,14 @@ function openWebSource() {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
+onBeforeUnmount(() => { loadVersion++ })
+
 watch(
-  () => [props.target.chunkId, props.target.knowledgeId, props.target.anchorText],
-  () => void load(),
+  () => [props.active, props.target.chunkId, props.target.knowledgeId, props.target.anchorText],
+  (next, previous) => {
+    if (props.active) void load(!previous?.[0])
+    else loadVersion++ // Retired metadata/chunk results cannot update hidden DOM.
+  },
   { immediate: true },
 )
 </script>

@@ -313,8 +313,25 @@ interface BaseModelTestPayload {
     appSecret?: string;
 }
 
-// 检查远程API模型
+/** One transient image returned only by an explicitly requested image model test. */
+export interface RemoteModelTestImage {
+    data_url: string;
+    width: number;
+    height: number;
+    mime_type: string;
+}
+
+export interface RemoteModelTestResult {
+    available: boolean;
+    message?: string;
+    image?: RemoteModelTestImage;
+    diagnostic?: { kind: string; http_status?: number };
+}
+
+// 检查远程API模型；生图只有显式提交 imageGenerationTest 才执行收费请求。
 export function checkRemoteModel(modelConfig: {
+    modelType?: 'KnowledgeQA' | 'VLLM' | 'ImageGeneration';
+    imageGenerationTest?: boolean;
     modelName: string;
     baseUrl: string;
     apiKey?: string;
@@ -322,12 +339,15 @@ export function checkRemoteModel(modelConfig: {
     // 编辑已存在模型时传 modelId，后端会自动从存储中带出 apiKey
     // （前端不再回显明文密钥，所以测试连接必须用这个回填路径）
     modelId?: string;
-} & BaseModelTestPayload): Promise<{
-    available: boolean;
-    message?: string;
-}> {
+} & BaseModelTestPayload): Promise<RemoteModelTestResult> {
+    // Image generation commonly exceeds the normal 30-second form API limit.
+    const configuredSeconds = Number(modelConfig.extraConfig?.image_timeout_seconds);
+    const imageTimeout = (Number.isFinite(configuredSeconds) && configuredSeconds > 0
+        ? Math.max(30, Math.min(600, configuredSeconds)) : 300) * 1000 + 15000;
+    const requestConfig = modelConfig.modelType === 'ImageGeneration' && modelConfig.imageGenerationTest === true
+        ? { timeout: imageTimeout } : undefined;
     return new Promise((resolve, reject) => {
-        post('/api/v1/initialization/remote/check', modelConfig)
+        post('/api/v1/initialization/remote/check', modelConfig, requestConfig)
             .then((response: any) => {
                 resolve(response.data || {});
             })

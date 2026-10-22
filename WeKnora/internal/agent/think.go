@@ -91,7 +91,7 @@ func hasWorkspaceExecution(state *types.AgentState) bool {
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {
 			switch call.Name {
-			case agenttools.ToolShellExec, agenttools.ToolWriteSandboxFile, agenttools.ToolEditSandboxFile:
+			case agenttools.ToolShellExec, agenttools.ToolWriteSandboxFile, agenttools.ToolEditSandboxFile, agenttools.ToolGenerateImage:
 				return true
 			}
 		}

@@ -45,6 +45,12 @@ func TestSynthesisReasoningUpgradesOnlyOffAndCapableModels(t *testing.T) {
 		})
 	}
 	require.Equal(t, chat.ReasoningEffort(""), (&AgentEngine{config: &types.AgentConfig{SourceReviewReasoningEffort: "auto"}}).synthesisReasoningEffort(), "no plan this turn")
+
+	quick := &AgentEngine{config: &types.AgentConfig{SourceReviewReasoningEffort: "auto", ReasoningEffort: "off", QuickAnswer: true},
+		taskPlan: &taskEvidencePlan{ReasoningDepth: "synthesis"}}
+	require.Equal(t, quickSynthesisGeneratorReasoning, quick.synthesisReasoningEffort(), "quick answer uses the lighter level")
+	quick.taskPlan.ReasoningDepth = "direct"
+	require.Equal(t, chat.ReasoningEffort(""), quick.synthesisReasoningEffort())
 }
 
 func TestSynthesisAnswerRoundReservesReasoningHeadroom(t *testing.T) {

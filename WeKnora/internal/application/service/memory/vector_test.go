@@ -56,7 +56,7 @@ func TestARewordedMemoryIsStillFound(t *testing.T) {
 	require.NoError(t, err)
 
 	// The question shares no characters with the stored wording.
-	recall := svc.Recall(ctx, "别铺垫那么多")
+	recall := recallForTest(svc, ctx, "别铺垫那么多")
 	require.NotEmpty(t, recall.Items,
 		"lexical matching cannot find this; that is the entire point of embedding")
 	require.Equal(t, "回答直接给结论", recall.Items[0].Content)
@@ -163,7 +163,7 @@ func TestRecallDegradesToLexicalWhenEmbeddingFails(t *testing.T) {
 
 	models.embedder.fail = true
 
-	recall := svc.Recall(ctx, "生产库怎么配")
+	recall := recallForTest(svc, ctx, "生产库怎么配")
 	require.NotEmpty(t, recall.Items,
 		"with the embedder down, lexical matching still has to work")
 	require.Equal(t, "生产库用 PostgreSQL 17", recall.Items[0].Content)
@@ -181,7 +181,7 @@ func TestRecallDoesNotWaitForeverOnTheEmbedder(t *testing.T) {
 	models.embedder.delay = embedTimeout * 3
 
 	started := time.Now()
-	recall := svc.Recall(ctx, "生产库怎么配")
+	recall := recallForTest(svc, ctx, "生产库怎么配")
 	elapsed := time.Since(started)
 
 	require.Less(t, elapsed, embedTimeout*2,
@@ -204,7 +204,7 @@ func TestVectorRecallCanBeTurnedOff(t *testing.T) {
 	require.NoError(t, err)
 
 	callsAfterWrite := models.embedder.calls
-	require.Empty(t, svc.Recall(ctx, "别铺垫那么多").Items,
+	require.Empty(t, recallForTest(svc, ctx, "别铺垫那么多").Items,
 		"with vector recall off this falls back to lexical, which cannot match this")
 	require.Equal(t, callsAfterWrite, models.embedder.calls,
 		"and no embedding call is made at all")
@@ -320,7 +320,7 @@ func TestUnrelatedMemoriesAreNotPulledInByVectorRecall(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	recall := svc.Recall(ctx, "别铺垫那么多")
+	recall := recallForTest(svc, ctx, "别铺垫那么多")
 	require.Len(t, recall.Items, 1,
 		"only the memory this question is about belongs in the prompt")
 	require.Equal(t, "回答直接给结论", recall.Items[0].Content)
@@ -341,7 +341,7 @@ func TestBlankEmbeddingModelDoesNotGrabTheFirstListedModel(t *testing.T) {
 	require.Equal(t, 0, models.embedder.calls,
 		"a workspace that has not pinned a model must not embed at all")
 
-	require.Empty(t, svc.Recall(ctx, "别铺垫那么多").Items,
+	require.Empty(t, recallForTest(svc, ctx, "别铺垫那么多").Items,
 		"without a pinned model, semantic recall must not silently pick one")
 	require.Equal(t, 0, models.embedder.calls)
 	require.Empty(t, models.requestedEmbedID)
@@ -362,7 +362,7 @@ func TestRecallUsesThePinnedModelNotTheFirstListed(t *testing.T) {
 	require.Equal(t, "embed-1", models.requestedEmbedID,
 		"the workspace pin, not whichever embedding model ListModels returned first")
 
-	recall := svc.Recall(ctx, "别铺垫那么多")
+	recall := recallForTest(svc, ctx, "别铺垫那么多")
 	require.NotEmpty(t, recall.Items)
 	require.Equal(t, "embed-1", models.requestedEmbedID)
 }
@@ -384,6 +384,6 @@ func TestRecallIgnoresVectorsFromAnotherModel(t *testing.T) {
 		Vector:  types.EncodeEmbedding([]float32{1, 0, 0}),
 	}))
 
-	require.Empty(t, svc.Recall(ctx, "别铺垫那么多").Items,
+	require.Empty(t, recallForTest(svc, ctx, "别铺垫那么多").Items,
 		"a vector from a different model must not be scored against this query")
 }
