@@ -580,13 +580,14 @@ async function loadPreview() {
   const knowledgeId = props.sourceBlob ? '' : props.knowledgeId || '';
   let ft = resolveFilePreviewExt(props.fileName, props.fileType);
   const knowledgePptx = !!knowledgeId && resolvePreviewKind(ft) === 'pptx';
+  const knowledgeExcel = !!knowledgeId && resolvePreviewKind(ft) === 'excel';
   const scope = getPptxPreviewScope();
   const current = () => version === previewLoadVersion && props.active && getPreviewSourceKey() === sourceKey
     && getPptxPreviewScope() === scope;
   let cacheContext: { scope: string; sourceKey: string } | undefined;
   let authority = '';
   try {
-    if (knowledgePptx) {
+    if (knowledgePptx || knowledgeExcel) {
       // Even a warm file must pass the actual current knowledge ACL on every
       // open. Hide retained content while this small metadata request runs.
       pptxPermissionChecking.value = true;
@@ -596,17 +597,19 @@ async function loadPreview() {
       const metadata = response?.data;
       if (!metadata || metadata.id !== knowledgeId || metadata.deleted_at) throw new Error(t('preview.loadFailed'));
       pptxPermissionChecking.value = false;
-      const source = knowledgePptxSourceKey(knowledgeId, metadata);
-      authority = JSON.stringify([scope, source]);
-      if (scope && source) cacheContext = { scope, sourceKey: source };
-      if (cacheContext && loadedForId === sourceKey && loadedPptxAuthority === authority && pptxData.value && pptxSourceSha256) {
-        pptxMediaCacheContext = cacheContext;
-        pptxPermissionChecking.value = false;
-        await nextTick();
-        if (!current()) return;
-        watchPptxRender(sourceKey);
-        void loadPptxPageMedia();
-        return;
+      if (knowledgePptx) {
+        const source = knowledgePptxSourceKey(knowledgeId, metadata);
+        authority = JSON.stringify([scope, source]);
+        if (scope && source) cacheContext = { scope, sourceKey: source };
+        if (cacheContext && loadedForId === sourceKey && loadedPptxAuthority === authority && pptxData.value && pptxSourceSha256) {
+          pptxMediaCacheContext = cacheContext;
+          pptxPermissionChecking.value = false;
+          await nextTick();
+          if (!current()) return;
+          watchPptxRender(sourceKey);
+          void loadPptxPageMedia();
+          return;
+        }
       }
     } else if (loadedForId === sourceKey) {
       return;

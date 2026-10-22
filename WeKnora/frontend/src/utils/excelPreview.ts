@@ -1,10 +1,14 @@
 import * as XLSX from 'xlsx';
+import JSZip from 'jszip';
+import { DOMParser, type Element as XmlElement } from '@xmldom/xmldom';
 
 // Preview is deliberately separate from structured import. It never evaluates
 // formulas, loads remote links or publishes data, and keeps only one sheet.
 export const EXCEL_PREVIEW_LIMITS = Object.freeze({
   fileBytes: 100 * 1024 * 1024,
   expandedBytes: 128 * 1024 * 1024,
+  archiveExpandedBytes: 1024 * 1024 * 1024,
+  metadataBytes: 8 * 1024 * 1024,
   entryBytes: 64 * 1024 * 1024,
   entries: 20_000,
   rows: 5_000,
@@ -22,10 +26,19 @@ export type ExcelPreviewPage = {
 };
 
 /** Inspect ZIP metadata before SheetJS inflates it. No archive extraction here. */
-type ZipMember = { start: number; compressed: number; expanded: number; method: number };
-function inspectExcelArchive(data: ArrayBuffer): ZipMember[] {
+type ZipMember = { name: string; start: number; compressed: number; expanded: number; method: number };
+function inspectExcelArchive(data: ArrayBuffer, expandedLimit = EXCEL_PREVIEW_LIMITS.expandedBytes): ZipMember[] {
   if (data.byteLength > EXCEL_PREVIEW_LIMITS.fileBytes) throw new Error('文件超过 100 MB，请下载原件查看。');
   const view = new DataView(data);
+  if (data.byteLength >= 8 && view.getUint32(0, true) === 0xe011cfd0 && view.getUint32(4, true) === 0xe11ab1a1) {
+    const version = data.byteLength >= 512 ? view.getUint16(26, true) : 0;
+    if (![3, 4].includes(version) || view.getUint16(28, true) !== 0xfffe
+        || view.getUint16(30, true) !== (version === 3 ? 9 : 12)
+        || view.getUint16(32, true) !== 6) throw new Error('旧版 Excel 复合文件头无效。');
+    return [];
+  }
+  if (data.byteLength >= 2 && view.getUint16(0, true) === 0x4b50
+      && (data.byteLength < 4 || view.getUint32(0, true) !== 0x04034b50)) throw new Error('Excel ZIP 文件头无效。');
   if (data.byteLength < 4 || view.getUint32(0, true) !== 0x04034b50) return [];
   let end = -1;
   for (let i = data.byteLength - 4; i >= Math.max(0, data.byteLength - 65_557); i--) {
@@ -39,7 +52,7 @@ function inspectExcelArchive(data: ArrayBuffer): ZipMember[] {
   const count = view.getUint16(end + 10, true);
   if (view.getUint16(end + 4, true) !== 0 || view.getUint16(end + 6, true) !== 0 || view.getUint16(end + 8, true) !== count) throw new Error('暂不支持分卷或无效的 Excel 压缩目录。');
   let offset = view.getUint32(end + 16, true), expanded = 0;
-  const directoryStart = offset, members: ZipMember[] = [];
+  const directoryStart = offset, members: ZipMember[] = [], names = new Set<string>();
   if (count === 0xffff || offset === 0xffffffff || count > EXCEL_PREVIEW_LIMITS.entries) throw new Error('文件结构过大，请下载原件查看。');
   const checkExtra = (start: number, length: number) => {
     const last = start + length;
@@ -54,10 +67,14 @@ function inspectExcelArchive(data: ArrayBuffer): ZipMember[] {
     if (offset + 46 > end || view.getUint32(offset, true) !== 0x02014b50) throw new Error('Excel 压缩目录无效。');
     const size = view.getUint32(offset + 24, true);
     expanded += size;
-    if (size > EXCEL_PREVIEW_LIMITS.entryBytes || expanded > EXCEL_PREVIEW_LIMITS.expandedBytes) throw new Error('文件展开后过大，已停止预览以保护浏览器。请下载原件查看。');
+    if (size > EXCEL_PREVIEW_LIMITS.entryBytes || expanded > expandedLimit) throw new Error('文件展开后过大，已停止预览以保护浏览器。请下载原件查看。');
     const compressed = view.getUint32(offset + 20, true), local = view.getUint32(offset + 42, true);
     const flags = view.getUint16(offset + 8, true), method = view.getUint16(offset + 10, true);
     const nameLength = view.getUint16(offset + 28, true), extraLength = view.getUint16(offset + 30, true);
+    if (offset + 46 + nameLength + extraLength + view.getUint16(offset + 32, true) > end) throw new Error('Excel 压缩目录无效。');
+    const name = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(data, offset + 46, nameLength));
+    if (!name || name.startsWith('/') || /[\\\x00-\x1f:]/.test(name) || name.split('/').some(part => part === '..' || part === '.') || names.has(name)) throw new Error('Excel 压缩成员路径无效或重复。');
+    names.add(name);
     checkExtra(offset + 46 + nameLength, extraLength);
     if (local + 30 > directoryStart || view.getUint32(local, true) !== 0x04034b50 || (flags & 0x2041) || ![0, 8].includes(method)) throw new Error('Excel 压缩文件头无效或不受支持。');
     const localFlags = view.getUint16(local + 6, true), localMethod = view.getUint16(local + 8, true);
@@ -65,13 +82,16 @@ function inspectExcelArchive(data: ArrayBuffer): ZipMember[] {
     const localName = view.getUint16(local + 26, true), localExtra = view.getUint16(local + 28, true);
     const start = local + 30 + localName + localExtra;
     checkExtra(local + 30 + localName, localExtra);
-    if (localFlags !== flags || localMethod !== method || start + compressed > directoryStart ||
+    if (localFlags !== flags || localMethod !== method || localName !== nameLength || start + compressed > directoryStart ||
       (localCompressed !== compressed && !((flags & 8) && localCompressed === 0)) ||
       (localExpanded !== size && !((flags & 8) && localExpanded === 0)) || (method === 0 && compressed !== size)) throw new Error('Excel 压缩文件头与目录不一致。');
-    members.push({ start, compressed, expanded: size, method });
+    for (let index = 0; index < nameLength; index++) {
+      if (view.getUint8(local + 30 + index) !== view.getUint8(offset + 46 + index)) throw new Error('Excel 压缩文件名与目录不一致。');
+    }
+    members.push({ name, start, compressed, expanded: size, method });
     offset += 46 + nameLength + extraLength + view.getUint16(offset + 32, true);
   }
-  if (offset > end) throw new Error('Excel 压缩目录无效。');
+  if (offset !== end || directoryStart + view.getUint32(end + 12, true) !== end) throw new Error('Excel 压缩目录无效。');
   return members;
 }
 
@@ -99,6 +119,268 @@ export async function validateExcelInflation(data: ArrayBuffer): Promise<void> {
 function decodeText(data: ArrayBuffer): string {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(data); }
   catch { return new TextDecoder('gbk').decode(data); }
+}
+
+type PreviewBudget = { left: number };
+async function readMember(data: ArrayBuffer, member: ZipMember, budget: PreviewBudget): Promise<Uint8Array> {
+  if (member.expanded > budget.left) throw new Error('当前工作表及公共信息展开后过大，请下载原件查看。');
+  if (member.method === 0) {
+    budget.left -= member.expanded;
+    return new Uint8Array(data, member.start, member.compressed);
+  }
+  const compressed = new Blob([new Uint8Array(data, member.start, member.compressed)]);
+  const reader = compressed.stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+  const result = new Uint8Array(member.expanded);
+  let expanded = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      expanded += chunk.value.byteLength;
+      if (expanded > member.expanded || expanded > budget.left) throw new Error('文件展开大小与声明不符，已停止预览。');
+      result.set(chunk.value, expanded - chunk.value.byteLength);
+    }
+    if (expanded !== member.expanded) throw new Error('Excel 压缩内容不完整。');
+    budget.left -= expanded;
+    return result;
+  } finally { await reader.cancel().catch(() => {}); }
+}
+
+function xmlText(bytes: Uint8Array): string {
+  let encoding = 'utf-8';
+  if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0)) encoding = 'utf-16le';
+  if ((bytes[0] === 0xfe && bytes[1] === 0xff) || (bytes[0] === 0 && bytes[1] === 0x3c)) encoding = 'utf-16be';
+  const xml = new TextDecoder(encoding, { fatal: true }).decode(bytes);
+  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error('Excel 元数据包含不支持的 XML 声明。');
+  return xml.replace(/\r\n?|\u0085|\u2028/g, '\n');
+}
+
+function xmlRoot(xml: string): XmlElement {
+  const root = new DOMParser({ onError() { throw new Error('Excel XML 元数据无效。'); } })
+    .parseFromString(xml, 'application/xml').documentElement;
+  if (!root) throw new Error('Excel XML 元数据为空。');
+  return root;
+}
+
+function directChildren(parent: XmlElement, name: string, namespace: string): XmlElement[] {
+  const children: XmlElement[] = [];
+  for (let node = parent.firstChild; node; node = node.nextSibling) {
+    if (node.nodeType !== 1) continue;
+    const element = node as XmlElement;
+    if (element.localName === name && element.namespaceURI === namespace) children.push(element);
+  }
+  if (children.length > EXCEL_PREVIEW_LIMITS.entries) throw new Error('Excel 元数据条目过多。');
+  return children;
+}
+
+const RELATIONSHIP_NAMESPACES = new Set([
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+  'http://purl.oclc.org/ooxml/officeDocument/relationships',
+]);
+const WORKBOOK_NAMESPACES = new Set([
+  'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+  'http://purl.oclc.org/ooxml/spreadsheetml/main',
+]);
+const PACKAGE_NAMESPACES = new Set([
+  'http://schemas.openxmlformats.org/package/2006/relationships',
+  'http://purl.oclc.org/ooxml/package/relationships',
+]);
+
+function sheetRelationshipId(item: XmlElement, xml: string, lines: number[]): string {
+  // xmldom normalizes duplicate expanded attribute names while creating the
+  // DOM. Check the original start tag too, so conflicting namespace aliases
+  // cannot disappear before the ID validation below.
+  const located = item as XmlElement & { lineNumber?: number; columnNumber?: number };
+  const start = (lines[(located.lineNumber || 0) - 1] ?? -1) + (located.columnNumber || 0) - 1;
+  if (start < 0 || xml[start] !== '<') throw new Error('Excel 工作表来源位置无效。');
+  let end = start + 1, quote = '';
+  for (; end < xml.length; end++) {
+    const character = xml[end]!;
+    if (quote) { if (character === quote) quote = ''; }
+    else if (character === '"' || character === "'") quote = character;
+    else if (character === '>') break;
+  }
+  let count = 0;
+  for (const match of xml.slice(start, end + 1).matchAll(/([A-Za-z_][\w.:-]*)\s*=\s*("[^"]*"|'[^']*')/g)) {
+    const parts = match[1]!.split(':');
+    if (parts.length === 2 && parts[1] === 'id' && RELATIONSHIP_NAMESPACES.has(item.lookupNamespaceURI(parts[0]!) || '')) count++;
+  }
+  if (count !== 1) throw new Error('Excel 工作表来源关系无效或矛盾。');
+  const ids = new Set<string>();
+  for (let index = 0; index < item.attributes.length; index++) {
+    const attribute = item.attributes.item(index)!;
+    if (attribute.localName === 'id' && RELATIONSHIP_NAMESPACES.has(attribute.namespaceURI || '')) ids.add(attribute.value);
+  }
+  if (ids.size !== 1) throw new Error('Excel 工作表来源关系无效或矛盾。');
+  return [...ids][0]!;
+}
+
+type PartRelationship = { type: string; target: string; external: boolean };
+function relationships(xml: string): Map<string, PartRelationship> {
+  const root = xmlRoot(xml);
+  if (root.localName !== 'Relationships' || !PACKAGE_NAMESPACES.has(root.namespaceURI || '')) throw new Error('Excel 来源关系命名空间无效。');
+  const result = new Map<string, PartRelationship>();
+  for (const item of directChildren(root, 'Relationship', root.namespaceURI!)) {
+    const id = item.getAttribute('Id'), type = item.getAttribute('Type'), target = item.getAttribute('Target');
+    const mode = item.getAttribute('TargetMode');
+    if (!id || !type || !target || result.has(id)) throw new Error('Excel 来源关系无效或重复。');
+    result.set(id, { type, target, external: !!mode && mode !== 'Internal' });
+  }
+  return result;
+}
+
+function resolvePart(base: string, relationship: PartRelationship, members: Map<string, ZipMember>): string {
+  if (relationship.external) throw new Error('Excel 工作表或公共信息不能使用外部来源关系。');
+  let decoded: string, decodedBase: string;
+  try { decoded = decodeURIComponent(relationship.target); decodedBase = decodeURIComponent(base); }
+  catch { throw new Error('Excel 来源路径编码无效。'); }
+  const normalize = (parent: string, target: string) => {
+    if (!target || /[\\\x00-\x1f:#?]/.test(target) || target.startsWith('//')) throw new Error('Excel 来源路径无效。');
+    const parts = target.startsWith('/') ? [] : parent.split('/').slice(0, -1);
+    for (const part of target.split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..') { if (!parts.length) throw new Error('Excel 来源路径超出文件范围。'); parts.pop(); }
+      else parts.push(part);
+    }
+    if (!parts.length) throw new Error('Excel 来源路径无效。');
+    return parts.join('/');
+  };
+  normalize(decodedBase, decoded);
+  const exact = normalize(base, relationship.target), alternative = normalize(base, decoded);
+  if (exact !== alternative && members.has(exact) && members.has(alternative)) throw new Error('Excel 来源路径存在编码歧义，未替换工作表。');
+  return members.has(exact) ? exact : alternative;
+}
+
+function relationshipPart(part: string): string {
+  const pieces = part.split('/'), name = pieces.pop()!;
+  return [...pieces, '_rels', name + '.rels'].join('/');
+}
+function escapedXml(value: string): string {
+  return value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[character]!);
+}
+
+/** The full ZIP stays compressed; SheetJS receives only one bounded sheet. */
+export class ExcelPreviewArchive {
+  sheetNames: string[] = [];
+  private members: Map<string, ZipMember>;
+  private sheets = new Map<string, { target: string; kind: string }>();
+  private publicParts = new Map<'sharedStrings' | 'styles', string>();
+  private publicBytes = new Map<string, Uint8Array>();
+  private date1904 = false;
+  private selectedSheet = '';
+  private selected: ExcelPreviewWorkbook | null = null;
+  private fallback: ExcelPreviewWorkbook | null = null;
+
+  private constructor(private data: ArrayBuffer, members: ZipMember[]) {
+    this.members = new Map(members.map(member => [member.name, member]));
+  }
+
+  static async open(data: ArrayBuffer, extension: string): Promise<ExcelPreviewArchive> {
+    const members = inspectExcelArchive(data, EXCEL_PREVIEW_LIMITS.archiveExpandedBytes);
+    const archive = new ExcelPreviewArchive(data, members);
+    if (extension.toLowerCase() === 'xlsx' && !members.length) throw new Error('XLSX 必须是有效的 Excel ZIP 工作簿。');
+    if (extension.toLowerCase() !== 'xlsx') {
+      await validateExcelInflation(data);
+      archive.fallback = new ExcelPreviewWorkbook(data, extension);
+      archive.sheetNames = archive.fallback.sheetNames;
+      return archive;
+    }
+    await archive.readMetadata();
+    return archive;
+  }
+
+  private member(name: string): ZipMember {
+    const member = this.members.get(name);
+    if (!member || name.endsWith('/')) throw new Error('Excel 工作表或公共来源不存在。');
+    return member;
+  }
+
+  private async readMetadata(): Promise<void> {
+    this.member('[Content_Types].xml');
+    const budget = { left: EXCEL_PREVIEW_LIMITS.metadataBytes };
+    const readXml = async (part: string) => xmlText(await readMember(this.data, this.member(part), budget));
+    const root = relationships(await readXml('_rels/.rels'));
+    const roots = [...root.values()].filter(item => item.type.endsWith('/officeDocument'));
+    if (roots.length !== 1) throw new Error('Excel 工作簿来源关系无效。');
+    const workbookPart = resolvePart('', roots[0]!, this.members);
+    const workbookXml = await readXml(workbookPart);
+    const workbook = xmlRoot(workbookXml), namespace = workbook.namespaceURI || '';
+    if (workbook.localName !== 'workbook' || !WORKBOOK_NAMESPACES.has(namespace)) throw new Error('Excel 工作簿 XML 命名空间无效。');
+    const containers = directChildren(workbook, 'sheets', namespace);
+    if (containers.length !== 1) throw new Error('Excel 工作表目录结构无效。');
+    const rels = relationships(await readXml(relationshipPart(workbookPart)));
+    const lines = [0];
+    for (let index = 0; index < workbookXml.length; index++) if (workbookXml[index] === '\n') lines.push(index + 1);
+    const names = new Set<string>();
+    for (const item of directChildren(containers[0]!, 'sheet', namespace)) {
+      const relation = rels.get(sheetRelationshipId(item, workbookXml, lines));
+      const name = item.getAttribute('name');
+      const kind = relation?.type.split('/').at(-1) || '';
+      if (!name || name.length > 1024 || names.has(name) || !relation
+          || !['worksheet', 'chartsheet', 'dialogsheet', 'macrosheet', 'intlMacrosheet'].includes(kind)) throw new Error('Excel 工作表关系无效。');
+      names.add(name);
+      if (kind !== 'worksheet') continue;
+      const target = resolvePart(workbookPart, relation, this.members);
+      this.member(target);
+      this.sheets.set(name, { target, kind });
+    }
+    this.sheetNames = [...this.sheets.keys()];
+    if (!this.sheetNames.length) throw new Error('没有可预览的数据工作表；图表或宏页面请下载原件查看。');
+    for (const kind of ['sharedStrings', 'styles'] as const) {
+      const candidates = [...rels.values()].filter(item => item.type.endsWith('/' + kind));
+      if (candidates.length > 1) throw new Error('Excel 公共来源关系重复。');
+      if (candidates[0]) {
+        const target = resolvePart(workbookPart, candidates[0], this.members);
+        this.member(target); this.publicParts.set(kind, target);
+      }
+    }
+    const properties = directChildren(workbook, 'workbookPr', namespace);
+    if (properties.length > 1) throw new Error('Excel 工作簿属性重复。');
+    const date1904 = properties[0]?.getAttribute('date1904');
+    this.date1904 = date1904 === '1' || date1904 === 'true';
+  }
+
+  async page(sheet: string, row = 0, column = 0): Promise<ExcelPreviewPage> {
+    if (this.fallback) return this.fallback.page(sheet, row, column);
+    if (!this.sheets.has(sheet)) throw new Error('工作表不存在。');
+    if (this.sheets.get(sheet)!.kind !== 'worksheet') throw new Error('该标签为图表或宏页面，请下载原件查看；其他工作表仍可预览。');
+    if (sheet !== this.selectedSheet) {
+      this.selected = null; this.selectedSheet = '';
+      const budget = { left: EXCEL_PREVIEW_LIMITS.expandedBytes };
+      const zip = new JSZip();
+      const relationNamespace = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+      const packageNamespace = 'http://schemas.openxmlformats.org/package/2006/relationships';
+      const contentNamespace = 'http://schemas.openxmlformats.org/package/2006/content-types';
+      const contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.';
+      const overrides = [
+        `<Override PartName="/xl/workbook.xml" ContentType="${contentType}sheet.main+xml"/>`,
+        `<Override PartName="/xl/worksheets/selected.xml" ContentType="${contentType}worksheet+xml"/>`,
+      ];
+      const links = ['<Relationship Id="selected" Type="' + relationNamespace + '/worksheet" Target="worksheets/selected.xml"/>'];
+      for (const [kind, target] of this.publicParts) {
+        let bytes = this.publicBytes.get(target);
+        if (bytes) {
+          if (bytes.byteLength > budget.left) throw new Error('当前工作表的公共信息过大，请下载原件查看。');
+          budget.left -= bytes.byteLength;
+        } else {
+          bytes = await readMember(this.data, this.member(target), budget);
+          this.publicBytes.set(target, bytes);
+        }
+        zip.file('xl/' + kind + '.xml', bytes);
+        overrides.push(`<Override PartName="/xl/${kind}.xml" ContentType="${contentType}${kind}+xml"/>`);
+        links.push(`<Relationship Id="${kind}" Type="${relationNamespace}/${kind}" Target="${kind}.xml"/>`);
+      }
+      zip.file('xl/worksheets/selected.xml', await readMember(this.data, this.member(this.sheets.get(sheet)!.target), budget));
+      zip.file('[Content_Types].xml', `<Types xmlns="${contentNamespace}"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${overrides.join('')}</Types>`);
+      zip.file('_rels/.rels', `<Relationships xmlns="${packageNamespace}"><Relationship Id="workbook" Type="${relationNamespace}/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
+      zip.file('xl/workbook.xml', `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${relationNamespace}"><workbookPr date1904="${this.date1904 ? 1 : 0}"/><sheets><sheet name="${escapedXml(sheet)}" sheetId="1" r:id="selected"/></sheets></workbook>`);
+      zip.file('xl/_rels/workbook.xml.rels', `<Relationships xmlns="${packageNamespace}">${links.join('')}</Relationships>`);
+      const bounded = await zip.generateAsync({ type: 'arraybuffer', compression: 'STORE' });
+      this.selected = new ExcelPreviewWorkbook(bounded, 'xlsx');
+      this.selectedSheet = sheet;
+    }
+    return this.selected!.page(sheet, row, column);
+  }
 }
 
 export class ExcelPreviewWorkbook {

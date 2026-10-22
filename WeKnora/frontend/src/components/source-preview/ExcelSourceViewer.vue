@@ -107,7 +107,14 @@ async function open() {
     sheetNames.value = names;
     await showPage(sheetNames.value[0] || '');
   } catch (failure) { if (own === generation) error.value = (failure as Error).message; }
-  finally { if (own === generation) { busy.value = false; void drainLocate(); } }
+  finally {
+    if (own === generation) {
+      // showPage may already have started a queued citation read. Only the
+      // initial metadata/error path still owns the loading state here.
+      if (!page.value) busy.value = false;
+      void drainLocate();
+    }
+  }
 }
 watch(() => [props.blob, props.extension], open, { immediate: true });
 watch(() => props.locate?.token, token => { queuedLocate = token ?? null; void drainLocate(); });
