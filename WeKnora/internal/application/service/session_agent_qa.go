@@ -109,6 +109,7 @@ func (s *sessionService) AgentQA(
 			modelContextWindow = modelInfo.Parameters.ContextWindow
 			agentConfig.ReviewReasoningEffort = reviewReasoningEffort(modelInfo)
 			agentConfig.SourceReviewReasoningEffort = sourceReviewReasoningEffort(modelInfo)
+			agentConfig.QuickAnswer = req.CustomAgent != nil && req.CustomAgent.ID == types.BuiltinQuickAnswerID
 			// A request to turn reasoning off cannot be honored by always-on
 			// models. Use their least supported graded level instead of silently
 			// dropping the request and inheriting the vendor's expensive default.

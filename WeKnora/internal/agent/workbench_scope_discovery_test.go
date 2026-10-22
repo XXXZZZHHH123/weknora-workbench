@@ -29,8 +29,13 @@ func TestWorkbenchMultiLibraryDiscoveryPreservesPendingScopeAndRegistersSchemas(
 			require.NotContains(t, identity, "knowledge_base_id")
 			_, _ = io.WriteString(w, `{"tools":[{"name":"list_series","description":"List the actual selected dataset fields","inputSchema":{"type":"object","properties":{"dataset_id":{"type":"string"}}}}]}`)
 		case "list_datasets":
-			require.Equal(t, "measurements", identity["knowledge_base_id"])
-			_, _ = io.WriteString(w, `{"datasets":[{"dataset_id":"real-dataset","source_file":"reviewed.xlsx"}]}`)
+			// Each authorized library is read under its own signed scope.
+			require.Contains(t, []any{"reports", "measurements"}, identity["knowledge_base_id"])
+			if identity["knowledge_base_id"] == "reports" {
+				_, _ = io.WriteString(w, `{"datasets":[]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"datasets":[{"dataset_id":"real-dataset","source_file":"reviewed.xlsx","is_latest_for_source":true}],"literal_fields":[{"dataset_id":"real-dataset","series_id":"generic.ts","sheet":"Series","metric":"source time series"}]}`)
 		default:
 			t.Errorf("unexpected operation %v", payload["operation"])
 		}
@@ -52,14 +57,17 @@ func TestWorkbenchMultiLibraryDiscoveryPreservesPendingScopeAndRegistersSchemas(
 	state := &types.AgentState{}
 	messages := engine.discoverWorkbenchSources(ctx, state, nil, "Draw the requested source time series", "session", "message")
 	require.Len(t, state.RoundSteps, 1)
-	require.Equal(t, int64(1), requests.Load(), "preflight may fetch only universal protocol schemas, never an arbitrary business library")
-	require.False(t, hasCurrentSourceMetadataEvidence(state.RoundSteps), "pending selection and schemas cannot establish any dataset catalogue, empty or otherwise")
+	// Schemas plus one question-scoped literal recall per authorized library;
+	// a library is never chosen for the model and no data rows are read.
+	require.Equal(t, int64(3), requests.Load())
+	require.False(t, hasCurrentSourceMetadataEvidence(state.RoundSteps), "pending selection and recall cannot establish a selected dataset catalogue, empty or otherwise")
 	combined := ""
 	for _, m := range messages {
 		combined += m.Content
 	}
 	require.Contains(t, combined, "scope_selection_required")
-	require.Contains(t, combined, "not_queried")
+	require.Contains(t, combined, "queried_with_question")
+	require.Contains(t, combined, "generic.ts", "a real field matching the question is visible before library selection")
 	require.Contains(t, combined, "Reviewed measurements")
 	require.Contains(t, combined, "Date-indexed workbook tables")
 	_, err = registry.GetTool("structured_list_series")
@@ -67,5 +75,4 @@ func TestWorkbenchMultiLibraryDiscoveryPreservesPendingScopeAndRegistersSchemas(
 	result, err := base.Execute(ctx, json.RawMessage(`{"operation":"list_datasets","knowledge_base_id":"measurements","arguments":{}}`))
 	require.NoError(t, err)
 	require.Contains(t, result.Output, "real-dataset")
-	require.Equal(t, int64(2), requests.Load())
 }

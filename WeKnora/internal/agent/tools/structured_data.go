@@ -118,6 +118,11 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		return nil, err
 	}
 	if directory != nil {
+		if operation == "list_datasets" {
+			if recalled := t.recallAcrossKnowledgeBases(ctx, arguments, directory); recalled != nil {
+				return recalled, nil
+			}
+		}
 		if operation != "describe_tools" {
 			return directory, nil
 		}

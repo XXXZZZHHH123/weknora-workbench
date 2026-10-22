@@ -376,7 +376,9 @@ func (tool *taskExpansionTool) Execute(_ context.Context, raw json.RawMessage) (
 // latency of the vendor default; the generator uses one step more.
 const (
 	synthesisGeneratorReasoning = chat.ReasoningEffort("medium")
-	sourceCriticReasoning       = chat.ReasoningEffort("low")
+	// The quick-answer entry trades some generator depth for latency.
+	quickSynthesisGeneratorReasoning = chat.ReasoningEffort("low")
+	sourceCriticReasoning            = chat.ReasoningEffort("low")
 )
 
 // synthesisReasoningEffort upgrades this turn's answer rounds to the model's
@@ -390,6 +392,9 @@ func (e *AgentEngine) synthesisReasoningEffort() chat.ReasoningEffort {
 	configured := strings.TrimSpace(e.config.ReasoningEffort)
 	thinkingOff := e.config.Thinking == nil || !*e.config.Thinking
 	if (configured == "" && thinkingOff) || configured == "off" {
+		if e.config.QuickAnswer {
+			return quickSynthesisGeneratorReasoning
+		}
 		return synthesisGeneratorReasoning
 	}
 	return ""

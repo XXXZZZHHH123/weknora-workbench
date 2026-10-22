@@ -167,9 +167,12 @@ type AgentConfig struct {
 	// misreadings with reasoning off; it is "auto" only for reasoning-capable
 	// models and "off" otherwise.
 	SourceReviewReasoningEffort string `json:"-"`
-	VLMModelID                  string `json:"-"` // VLM model ID for tool images, resolved from CustomAgent config.
-	ImageGenerationModelID      string `json:"-"` // Authorized image-output model; never supplied in tool arguments.
-	SandboxConfigID             string `json:"-"` // Workspace sandbox config ID for skill execution.
+	// QuickAnswer marks the built-in quick-answer entry. Synthesis turns there
+	// use a lighter generator reasoning level; review and validation are kept.
+	QuickAnswer            bool   `json:"-"`
+	VLMModelID             string `json:"-"` // VLM model ID for tool images, resolved from CustomAgent config.
+	ImageGenerationModelID string `json:"-"` // Authorized image-output model; never supplied in tool arguments.
+	SandboxConfigID        string `json:"-"` // Workspace sandbox config ID for skill execution.
 	// TenantSkills are the skills installed into the selected sandbox config's
 	// snapshot image, already narrowed to the ones this run can actually
 	// invoke. Runtime only: it is derived per turn from the config the agent
