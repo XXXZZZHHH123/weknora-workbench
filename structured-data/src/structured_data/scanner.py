@@ -70,10 +70,12 @@ def _drawings(path):
     return result
 
 
-def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True):
+def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True, progress=None):
     """Read bounded top-row samples of every sheet; report partial coverage honestly."""
     if type(use_reviewed_mappings) is not bool:
         raise ValueError('原件核对模式必须明确为布尔值。')
+    from .progress import report_progress
+    report_progress(progress, 'scan')
     path = Path(path).expanduser().resolve()
     if not 10 <= sample_rows <= 200:
         raise ValueError('sample_rows must be between 10 and 200')
@@ -85,7 +87,10 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True):
     wb = load_workbook(path, read_only=True, data_only=True, keep_links=False)
     sheets = []
     try:
-        for ws in wb:
+        total = len(wb.sheetnames)
+        if total:
+            report_progress(progress, 'scan', completed=0, total=total)
+        for sheet_index, ws in enumerate(wb):
             width = min(ws.max_column or 1, 512)
             cell_rows = list(ws.iter_rows(max_row=min(ws.max_row or 1, sample_rows), max_col=width))
             rows = [tuple(c.value for c in row) for row in cell_rows]
@@ -205,6 +210,7 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True):
             sheets.append({'name':ws.title,'rows':ws.max_row,'columns':ws.max_column,'status':status,
                 'layout':layout,'candidate_revision':candidate_revision,'regions':regions,'fingerprint':fingerprint,'preview':[[{'cell':f'{get_column_letter(ci)}{ri}', 'value':_json_value(v)} for ci,v in enumerate(r,1)] for ri,r in enumerate(rows[:8],1)],
                 'sample_rows':len(rows),'date_candidates':dates,'mapping':mapping,'reasons':reasons,'charts':visual})
+            report_progress(progress, 'scan', completed=sheet_index + 1, total=total)
     finally:
         wb.close()
     # Only an identical reviewed original may supply migrated region metadata.

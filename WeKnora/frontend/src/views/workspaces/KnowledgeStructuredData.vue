@@ -32,7 +32,7 @@ function sendView() { frame.value?.contentWindow?.postMessage({ type: 'structure
 function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function sendAuth() {
   if (!library.value || !auth.token || !tenant.value) return
-  frame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: tenant.value, knowledgeBaseId: kbId.value, sourceKnowledgeId: sourceKnowledgeId.value }, window.location.origin)
+  frame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: tenant.value, userId: auth.user?.id || '', knowledgeBaseId: kbId.value, sourceKnowledgeId: sourceKnowledgeId.value }, window.location.origin)
   sendView()
 }
 function receive(event: MessageEvent) {

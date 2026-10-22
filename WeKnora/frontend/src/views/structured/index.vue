@@ -13,7 +13,7 @@ import {useTheme} from '@/composables/useTheme'
 const auth=useAuthStore(),route=useRoute(),router=useRouter(),frame=ref<HTMLIFrameElement>(),generation=ref(0)
 const {effectiveTheme}=useTheme()
 const src=computed(()=>'/structured/?session='+generation.value+(route.query.view==='model-settings'?'&view=model-settings':'')+(typeof route.query.dataset==='string'?'&dataset='+encodeURIComponent(route.query.dataset):''))
-function sendAuth(){frame.value?.contentWindow?.postMessage({type:'structured-auth',token:auth.token,tenant:auth.selectedTenantId??auth.tenant?.id},window.location.origin)}
+function sendAuth(){frame.value?.contentWindow?.postMessage({type:'structured-auth',token:auth.token,tenant:auth.selectedTenantId??auth.tenant?.id,userId:auth.user?.id||''},window.location.origin)}
 function sendTheme(){frame.value?.contentWindow?.postMessage({type:'workspace-theme',mode:effectiveTheme.value},window.location.origin)}
 function receive(e:MessageEvent){
   if(e.origin!==window.location.origin||e.source!==frame.value?.contentWindow)return

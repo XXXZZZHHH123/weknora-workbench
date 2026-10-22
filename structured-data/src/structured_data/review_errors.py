@@ -4,7 +4,8 @@ import re
 
 _FIELDS = {'header_rows', 'data_start_row', 'data_end_row', 'date_column', 'date_cell',
            'category_column', 'category_name', 'metric', 'unit', 'column', 'period',
-           'row_label_column', 'columns', 'date_mode', 'date_format', 'header_cells', 'frequency', 'frequency_cells'}
+           'row_label_column', 'columns', 'date_mode', 'date_format', 'header_cells', 'frequency', 'frequency_cells',
+           'dimensions', 'row_rules', 'layout', 'name', 'header_expectations'}
 
 
 def clean_target(target):
@@ -34,4 +35,8 @@ class ReviewValidationError(ValueError):
 
 def error_location(exc):
     target = clean_target(getattr(exc, 'review_target', None))
-    return {'review_target': target} if target else {}
+    result = {'review_target': target} if target else {}
+    state = getattr(exc, 'review_state', None)
+    if isinstance(state, dict):
+        result['review_state'] = state
+    return result

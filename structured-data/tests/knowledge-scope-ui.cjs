@@ -32,9 +32,9 @@ async function main() {
     let body = {}, type = 'application/json';
     if(route==='/harness') {
       body = `<!doctype html><iframe id="frame" src="/structured/" style="width:100%;height:100vh;border:0"></iframe><script>
-        const frame=document.getElementById('frame');window.auth=(kb,token='fixture-token')=>frame.contentWindow.postMessage({type:'structured-auth',token,tenant:10000,knowledgeBaseId:kb},location.origin);
+        const frame=document.getElementById('frame');window.auth=(kb,token='fixture-token',userId='user-a')=>frame.contentWindow.postMessage({type:'structured-auth',token,tenant:10000,userId,knowledgeBaseId:kb},location.origin);
         window.view=mode=>frame.contentWindow.postMessage({type:'structured-view',mode},location.origin);
-        addEventListener('message',e=>{if(e.origin===location.origin&&e.source===frame.contentWindow&&e.data?.type==='structured-ready'){auth(new URLSearchParams(location.search).get('kb')||'');if(new URLSearchParams(location.search).get('kb'))view('import')}});
+        addEventListener('message',e=>{if(e.origin===location.origin&&e.source===frame.contentWindow&&e.data?.type==='structured-ready'){const q=new URLSearchParams(location.search);auth(q.get('kb')||'','fixture-token',q.get('no-user')==='1'?'':q.get('user')||'user-a');if(q.get('kb'))view('import')}});
         </script>`;
       type = 'text/html';
     } else if(route==='/') {body=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
@@ -75,17 +75,23 @@ async function main() {
     await js("window.view('import')");await pause(100);
     await verify('Returning to import restores the same original grid and unsaved field state',`(()=>{const d=${doc};return window.reviewNode===d.getElementById('sheetDetail')&&d.querySelector('[data-column-field="unit"]').value==='Draft A'&&d.defaultView.getComputedStyle(d.getElementById('importReview')).display!=='none'})()`);
     await screenshot('03_结构化导入_保留编辑');
-    await js("window.auth('kb-a','fixture-renewed')");await pause(100);
+    await js("window.auth('kb-a','fixture-renewed','user-a')");await pause(100);
     await verify('Token refresh retains field state and DOM',`window.reviewNode===${doc}.getElementById('sheetDetail')&&${doc}.querySelector('[data-column-field="unit"]').value==='Draft A'`);
-    await js("window.auth('kb-b')");await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value===''`);
+    await js("window.auth('kb-b','fixture-token','user-a')");await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value===''`);
     checks.push('Same Excel in another KB does not restore first KB draft');
-    await js(`(()=>{const el=${doc}.querySelector('[data-column-field="unit"]');el.value='Draft B';el.dispatchEvent(new Event('input',{bubbles:true}));window.auth('kb-a')})()`);await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value==='Draft A'`);
+    await js(`(()=>{const el=${doc}.querySelector('[data-column-field="unit"]');el.value='Draft B';el.dispatchEvent(new Event('input',{bubbles:true}));window.auth('kb-a','fixture-token','user-a')})()`);await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value==='Draft A'`);
     checks.push('Switch back restores only original KB draft');
-    await call('Page.navigate',{url:origin+'/harness?kb=kb-a'});await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value==='Draft A'`);checks.push('Reload restores the same KB draft');
-    await call('Page.navigate',{url:origin+'/harness'});await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value===''`);checks.push('Legacy workbook does not restore KB draft');
-    await js(`(()=>{const el=${doc}.querySelector('[data-column-field="unit"]');el.value='Legacy draft';el.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+    await js("window.auth('kb-a','fixture-user-b-token','user-b')");await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value===''`);checks.push('Another user in the same KB cannot restore the first user draft');
+    await js(`(()=>{const el=${doc}.querySelector('[data-column-field="unit"]');el.value='User B draft';el.dispatchEvent(new Event('input',{bubbles:true}));window.auth('kb-a','fixture-token','user-a')})()`);await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value==='Draft A'`);checks.push('Returning to the original user restores only that user draft');
+    await call('Page.navigate',{url:origin+'/harness?kb=kb-a&user=user-a'});await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value==='Draft A'`);checks.push('Reload restores the same user and KB draft');
     const legacy=['sheet-review:v1','10000',importId,sheet.name,sheet.fingerprint].map(encodeURIComponent).join(':');
-    await verify('Legacy storage key remains byte-for-byte compatible',`JSON.parse(localStorage.getItem(${JSON.stringify(legacy)})).mapping.blocks[0].columns[0].unit==='Legacy draft'`);
+    await js(`localStorage.setItem(${JSON.stringify(legacy)},JSON.stringify({mapping:{blocks:[{columns:[{unit:'unsafe legacy draft'}]}]}}))`);
+    await call('Page.navigate',{url:origin+'/harness?kb=kb-a&no-user=1'});await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value===''`);checks.push('Missing user identity does not restore a persistent draft');
+    await js(`(()=>{const el=${doc}.querySelector('[data-column-field="unit"]');el.value='Page-only draft';el.dispatchEvent(new Event('input',{bubbles:true}))})()`);await pause(100);
+    await verify('Missing user identity never writes a localStorage draft',`!Object.keys(localStorage).some(key=>localStorage.getItem(key)?.includes('Page-only draft'))`);
+    await call('Page.navigate',{url:origin+'/harness?kb=kb-a&no-user=1'});await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value===''`);checks.push('Page-only draft is discarded on reload without a user identity');
+    await js("window.auth('kb-a','fixture-token','user-a')");await wait(`${ready} && ${doc}.querySelector('[data-column-field="unit"]').value==='Draft A'`);
+    await verify('Unsafe legacy draft keys are removed after a trusted user identity arrives',`localStorage.getItem(${JSON.stringify(legacy)})===null`);
     const before=requests.length;
     await js(`(()=>{const frame=document.getElementById('frame');frame.contentWindow.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:frame.contentWindow,data:{type:'structured-auth',token:'bad',tenant:10001,knowledgeBaseId:'kb-spoof'}}));window.view('unrecognized')})()`);await pause(100);
     assert.equal(requests.length,before);checks.push('Non-parent auth and unknown modes ignored');

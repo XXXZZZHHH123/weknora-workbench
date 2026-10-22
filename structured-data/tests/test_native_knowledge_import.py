@@ -121,8 +121,9 @@ def test_fresh_workbench_import_never_consults_legacy_review(native, monkeypatch
             return original_task(root, action, **kwargs)
         manager = ImportManager(root)
         if kwargs.get("use_reviewed_mappings", True):
-            return manager.ingest(kwargs["path"])
-        return manager.ingest(kwargs["path"], use_reviewed_mappings=False)
+            return manager.ingest(kwargs["path"], native_source=kwargs.get("native_source"))
+        return manager.ingest(kwargs["path"], use_reviewed_mappings=False,
+                              native_source=kwargs.get("native_source"))
     monkeypatch.setattr(server, "run_review_task", direct_task)
     response = client.post("/api/import-knowledge", json={"source_knowledge_id": "source-a",
         "restore_reviewed_state": False}, headers=headers())

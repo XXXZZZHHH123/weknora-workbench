@@ -1,6 +1,7 @@
 """Historical reviews recover only for authenticated identical native originals."""
 import hashlib
 from pathlib import Path
+import shutil
 
 import pytest
 from openpyxl import Workbook
@@ -106,3 +107,83 @@ def test_reuploaded_identical_native_source_never_overwrites_scoped_human_edits(
     before = target.get(current['import_id'])
     assert recover(target, legacy, {**source, 'source_knowledge_id': 'reuploaded'}, path) is None
     assert target.get(current['import_id']) == before
+
+
+def test_recovery_stages_everything_before_guard_and_denial_publishes_nothing(migration):
+    path, legacy, target, source, saved = migration
+    before_review = target.get(saved['import_id'])
+    before_datasets = {item['dataset_id'] for item in target.store.list_datasets(include_samples=True)}
+    observed = []
+
+    def revoked():
+        staging = list(target.store.datasets.glob('.legacy-recover-*'))
+        assert len(staging) == 1
+        # The restored, human-confirmed snapshot is fully staged but has not
+        # appeared in the target catalog when authorization is rechecked.
+        assert any((entry / 'manifest.json').is_file() for entry in staging[0].iterdir()
+                   if entry.is_dir())
+        assert {item['dataset_id'] for item in target.store.list_datasets(include_samples=True)} == before_datasets
+        observed.append('guard')
+        raise ValueError('编辑权限已撤销，未恢复。')
+
+    with pytest.raises(ValueError, match='权限已撤销'):
+        recover(target, legacy, source, path, before_commit=revoked)
+    assert observed == ['guard']
+    assert target.get(saved['import_id']) == before_review
+    assert {item['dataset_id'] for item in target.store.list_datasets(include_samples=True)} == before_datasets
+    assert not list(target.store.datasets.glob('.legacy-recover-*'))
+
+
+def test_recovery_rechecks_before_review_and_rolls_back_created_snapshots(migration):
+    path, legacy, target, source, saved = migration
+    before_review = (target.directory / saved['import_id'] / 'review.json').read_bytes()
+    before_datasets = {item['dataset_id'] for item in target.store.list_datasets(include_samples=True)}
+    calls = []
+
+    def revoke_after_snapshot():
+        calls.append('checked')
+        if len(calls) == 2:
+            raise ValueError('编辑权限已撤销，未恢复。')
+
+    with pytest.raises(ValueError, match='权限已撤销'):
+        recover(target, legacy, source, path, before_commit=revoke_after_snapshot)
+    # One check guards the new snapshot rename and a fresh check guards the
+    # final review/source publication. The first rename is rolled back.
+    assert calls == ['checked', 'checked']
+    assert (target.directory / saved['import_id'] / 'review.json').read_bytes() == before_review
+    assert {item['dataset_id'] for item in target.store.list_datasets(include_samples=True)} == before_datasets
+
+
+def test_recovery_with_existing_snapshots_still_guards_final_review_write(migration):
+    path, legacy, target, source, saved = migration
+    for item in legacy.store.list_datasets(include_samples=True):
+        destination = target.store.datasets / item['dataset_id']
+        if not destination.exists():
+            shutil.copytree(legacy.store._path(item['dataset_id']), destination)
+    before_review = (target.directory / saved['import_id'] / 'review.json').read_bytes()
+    calls = []
+
+    def revoked():
+        calls.append('review-boundary')
+        raise ValueError('编辑权限已撤销，未恢复。')
+
+    with pytest.raises(ValueError, match='权限已撤销'):
+        recover(target, legacy, source, path, before_commit=revoked)
+    assert calls == ['review-boundary']
+    assert (target.directory / saved['import_id'] / 'review.json').read_bytes() == before_review
+
+
+def test_recovery_preserves_target_bindings_and_non_recovery_metadata(migration):
+    path, legacy, target, source, saved = migration
+    current = target.get(saved['import_id'])
+    other = {**source, 'source_knowledge_id': 'source-b', 'file_name': 'copy.xlsx'}
+    target.bind_native_source(saved['import_id'], other)
+    current = target.get(saved['import_id'])
+    current['target_only_metadata'] = {'kept': True}
+    target._save(current)
+
+    recover(target, legacy, source, path)
+    restored = target.get(saved['import_id'])
+    assert restored['native_source_bindings'] == [source, other]
+    assert restored['target_only_metadata'] == {'kept': True}
+    assert restored['sheets'] == legacy.get(saved['import_id'])['sheets']

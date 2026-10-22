@@ -12,16 +12,24 @@
   const ui = { mapping:null, states:{}, selected:null, view:null, filter:'all',
     request:0, controller:null, sheetController:null, jobController:null,
     checkSignature:null, mode:null, drag:null, selection:null, anchor:null, history:[],
-    sample:null, sampleController:null, resultController:null, resultRequest:0, focusCell:null, restore:false, editable:false, previewMode:'table' };
+    sample:null, sampleController:null, resultController:null, resultRequest:0, focusCell:null, restore:false, editable:false, previewMode:'table', activeAIJob:null };
+  const volatileDrafts = new Map();
   function clearSample(){ui.sampleController?.abort();ui.sample=null;if($('samplePreview')){$('samplePreview').hidden=true;$('samplePreview').textContent='';}if($('previewBlockSample'))$('previewBlockSample').setAttribute('aria-expanded','false');}
   function clearReviewError(){ui.errorRequest=(ui.errorRequest||0)+1;ui.errorCells=[];document.querySelectorAll('.review-invalid').forEach(el=>{el.classList.remove('review-invalid');el.removeAttribute('aria-invalid');});document.querySelectorAll('.review-error-cell').forEach(el=>el.classList.remove('review-error-cell'));}
   function targetedError(message,target){const error=Error(message);error.reviewTarget=target;return error;}
   mappingError = function(e){
     const el=$('mappingFeedback');if(!el){note(e.message);return;}
-    el.className='review-feedback error';el.innerHTML=`<strong>本次处理未完成</strong><div>${esc(e.message)}</div><small>请修改标红的位置后重试；无法确定位置的错误请按提示处理。原文件和当前已导入版本仍然保留。</small>`;el.setAttribute('role','alert');
-    clearReviewError();const target=e.reviewTarget;
+    endTaskProgress(el);
+    el.className='review-feedback error';el.setAttribute('aria-busy','false');el.innerHTML=`<strong>本次处理未完成</strong><div>${esc(e.message)}</div><small>请修改标红的位置后重试；无法确定位置的错误请按提示处理。原文件和当前已导入版本仍然保留。</small>`;el.setAttribute('role','alert');
+    clearReviewError();
+    if(e.reviewState?.blocks){
+      for(const item of e.reviewState.blocks){const blockId=e.reviewBlockIds?.[item.block_index]||enabledBlocks()[item.block_index]?._review_id,state=ui.states[blockId];if(!state)continue;state.checked=item.status==='confirmed';state.diagnostics=copy(item.diagnostics||[]);if(state.diagnostics.length)state.published=false;}
+      updateCardStates();renderLegend();
+    }
+    const target=e.reviewTarget;
     if(target&&target.sheet===currentSheet?.name){
       const block=e.reviewBlockIds?.[target.block_index]||(e.reviewBlockId)||(enabledBlocks()[target.block_index]?._review_id);
+      if(block&&ui.states[block]){ui.states[block].checked=false;ui.states[block].published=false;if(!ui.states[block].diagnostics?.length)ui.states[block].diagnostics=[{...target,message:e.message}];}
       const version=reviewVersion,errorRequest=ui.errorRequest;
       (async()=>{
         if(block)await chooseBlock(block);
@@ -46,7 +54,8 @@
   const colorVars = i => {const p=palette[i%palette.length];return `--block-color:${p[0]};--block-soft:${p[1]};--block-tint:${p[2]};--block-selected:${p[3]}`;};
   const clean = mapping => {const m=copy(mapping);m.blocks.forEach(b=>delete b._review_id);return m;};
   const publishedStatuses = new Set(['trusted_existing','auto_ready','template_ready','confirmed']);
-  const isPublished = s => publishedStatuses.has(s?.status);
+  const isPublished = s => s?.import_state ? s.import_state==='imported' : publishedStatuses.has(s?.status);
+  const isConfirmedSheet = s => !isChartOnly(s) && (s?.review_state ? s.review_state.status==='confirmed' : publishedStatuses.has(s?.status));
   function canonical(value) {
     if(Array.isArray(value))return value.map(canonical);
     if(!value||typeof value!=='object')return value;
@@ -58,7 +67,32 @@
     delete normalized._review_id;delete normalized.header_expectations;
     return JSON.stringify(canonical(normalized));
   }
-  const draftKey = () => currentImport&&currentSheet ? ['sheet-review:v1',activeTenant||'local',...(activeKnowledgeBase?['knowledge-base',activeKnowledgeBase]:[]),currentImport.import_id,currentSheet.name,currentSheet.fingerprint].map(encodeURIComponent).join(':') : null;
+  const mappingSignature = mapping => mapping ? JSON.stringify(canonical(clean(mapping))) : '';
+  const persistentDraftsEnabled = () => !!activeUserId;
+  const draftKeyFor = sheet => {
+    if(!currentImport||!sheet)return null;
+    const scope=['sheet-review:v2',persistentDraftsEnabled()?'user':'page',persistentDraftsEnabled()?activeUserId:String(authEpoch),activeTenant||'local',...(activeKnowledgeBase?['knowledge-base',activeKnowledgeBase]:[]),currentImport.import_id,sheet.name,sheet.fingerprint];
+    return scope.map(encodeURIComponent).join(':');
+  };
+  const draftKey = () => draftKeyFor(currentSheet);
+  function readDraftFor(sheet) {
+    const key=draftKeyFor(sheet);if(!key)return null;
+    try{return JSON.parse((persistentDraftsEnabled()?localStorage.getItem(key):volatileDrafts.get(key))||'null');}catch{return null;}
+  }
+  function removeDraftFor(sheet) {
+    const key=draftKeyFor(sheet);if(!key)return;
+    try{if(persistentDraftsEnabled())localStorage.removeItem(key);else volatileDrafts.delete(key);}catch{}
+  }
+  function writeDraftFor(sheet,draft) {
+    const key=draftKeyFor(sheet);if(!key)return false;
+    const text=JSON.stringify(draft);if(text.length>500000)throw Error('草稿过大');
+    if(persistentDraftsEnabled())localStorage.setItem(key,text);else volatileDrafts.set(key,text);
+    return true;
+  }
+  function purgeUnsafeDraftKeys() {
+    if(!persistentDraftsEnabled())return;
+    try{Object.keys(localStorage).filter(key=>key.startsWith('sheet-review%3Av1:')||key.startsWith('sheet-review:v1:')).forEach(key=>localStorage.removeItem(key));}catch{}
+  }
   const idFor = () => 'b-'+(globalThis.crypto?.randomUUID?.()||Date.now().toString(36)+'-'+Math.random().toString(36).slice(2));
   function isChartOnly(s) {
     const blocks = s.block_count ?? s.mapping?.blocks?.length ?? 0;
@@ -78,13 +112,17 @@
   }
   function ensureBlocks(m) {
     const seen=new Set();
-    m.blocks.forEach(b=>{
+    m.blocks.forEach((b,index)=>{
       if(!b._review_id||seen.has(b._review_id))b._review_id=idFor();seen.add(b._review_id);
       const sig=blockSignature(b),prior=ui.states[b._review_id];
       if(!prior)ui.states[b._review_id]={enabled:true,checked:false,signature:sig};
-      else if(prior.signature!==sig){prior.checked=false;prior.signature=sig;}
+      else if(prior.signature!==sig){prior.checked=false;prior.signature=sig;prior.diagnostics=[];prior.serverReviewed=false;}
       const state=ui.states[b._review_id];
-      state.published=isPublished(currentSheet)&&(currentSheet.mapping?.blocks||[]).some(original=>sig===blockSignature(original))&&!state.rangePending;
+      const original=currentSheet?.mapping?.blocks?.[index],review=currentSheet?.review_state?.blocks?.find(item=>item.block_index===index);
+      if(!state.serverReviewed&&original&&sig===blockSignature(original)&&review&&!state.rangePending){
+        state.checked=review.status==='confirmed';state.diagnostics=copy(review.diagnostics||[]);state.serverReviewed=true;
+      }
+      state.published=isPublished(currentSheet)&&(currentSheet.mapping?.blocks||[]).some(original=>sig===blockSignature(original))&&!state.rangePending&&!state.diagnostics?.length;
       if(state.published&&currentSheet.status==='confirmed')state.checked=true;
     });
     Object.keys(ui.states).forEach(id=>{if(!seen.has(id))delete ui.states[id];});
@@ -95,12 +133,13 @@
     if($('mappingEditor'))ui.mapping=ensureBlocks(JSON.parse($('mappingEditor').value));
     return ui.mapping;
   }
-  function saveDraft() {
+  function saveDraft(baseMapping=currentSheet?.mapping) {
     const key=draftKey();if(!key||!ui.mapping||!ui.editable)return;
     try {
-      const text=JSON.stringify({version:1,at:Date.now(),mapping:ui.mapping,states:ui.states,selected:ui.selected});
-      if(text.length>500000)throw Error('草稿过大');localStorage.setItem(key,text);
-      const keys=Object.keys(localStorage).filter(k=>k.startsWith('sheet-review%3Av1:')||k.startsWith('sheet-review:v1:'));
+      writeDraftFor(currentSheet,{version:2,at:Date.now(),base_signature:mappingSignature(baseMapping),mapping:ui.mapping,states:ui.states,selected:ui.selected});
+      if(!persistentDraftsEnabled())return;
+      const prefix=['sheet-review:v2','user',activeUserId].map(encodeURIComponent).join(':')+':';
+      const keys=Object.keys(localStorage).filter(k=>k.startsWith(prefix));
       if(keys.length>30)keys.map(k=>{try{return [k,JSON.parse(localStorage.getItem(k)).at||0]}catch{return [k,0]}}).sort((a,b)=>a[1]-b[1]).slice(0,keys.length-30).forEach(([k])=>localStorage.removeItem(k));
     } catch {if($('draftNotice'))$('draftNotice').textContent='浏览器无法保存草稿，请在离开前完成确认。';}
   }
@@ -128,7 +167,7 @@
     clearReviewError();
     ui.checkSignature=null;mappingConfirmed=false;
     if($('mappingPreview'))$('mappingPreview').innerHTML='';
-    if($('mappingFeedback')){$('mappingFeedback').className='review-feedback';$('mappingFeedback').textContent=message;}
+    if($('mappingFeedback')){$('mappingFeedback').className='review-feedback'+(mappingBusy?' review-progress':'');$('mappingFeedback').setAttribute('aria-busy',String(mappingBusy));$('mappingFeedback').textContent=message;}
   }
   invalidateMapping = function() {
     clearSample();
@@ -142,6 +181,7 @@
     renderMappingForm(ui.mapping);invalidateCheck();saveDraft();renderLegend();renderGrid();updateConfirmState();
   };
   selectImport = async function(isCurrent=()=>true,requestApi=api) {
+    if(!await prepareReviewChange('切换文件')){if(currentImport)$('importSelect').value=currentImport.import_id;return;}
     saveDraft();stopViewRequests();const id=$('importSelect').value;if(!id)return;
     const version=++reviewVersion,controller=new AbortController();ui.sheetController=controller;
     const r=await timedApi('/api/imports/'+encodeURIComponent(id)+'?summary_only=true',{},controller,30000,requestApi);
@@ -153,7 +193,28 @@
   };
   function updateImportSummary() {
     const sheets=currentImport?.sheets||[],ready=sheets.filter(isPublished).length;
-    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(s=>s.status==='needs_review').length} 张待核对`;
+    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(s=>s.status==='needs_review').length} 张待确认`;
+    updateBatchState();
+  }
+  function updateBatchState() {
+    const button=$('confirmAllSheets');if(!button)return;
+    const {sheets}=confirmedBatch();
+    button.disabled=mappingBusy||ui.batchBusy||!sheets.length;
+    button.textContent='导入所有已确认表'+(sheets.length?` (${sheets.length})`:'');
+    button.title=sheets.length?'仅导入已确认且尚未发布的工作表；待确认表保持不变。':'当前没有尚未导入的已确认工作表。';
+  }
+  function confirmedBatch() {
+    const sheets=[],mappings=[];
+    for(const sheet of currentImport?.sheets||[]){
+      const draft=readDraftFor(sheet),serverSignature=mappingSignature(sheet.mapping);
+      const mapping=draft?.mapping,states=draft?.states||{},blocks=Array.isArray(mapping?.blocks)&&mapping.blocks.length<=100?mapping.blocks.filter(b=>states[b._review_id]?.enabled):[];
+      const submitted=blocks?.length?clean({...mapping,blocks}):null;
+      const validDraft=draft?.version===2&&draft.base_signature===serverSignature&&mapping?.sheet===sheet.name&&mapping.fingerprint===sheet.fingerprint&&blocks?.length&&blocks.every(b=>{const state=states[b._review_id];return !state.rangePending&&!state.diagnostics?.length&&(state.checked||state.published);});
+      const changedFromPublished=!isPublished(sheet)||mappingSignature(submitted)!==serverSignature;
+      if(validDraft&&changedFromPublished){sheets.push(sheet);mappings.push(submitted);}
+      else if(isConfirmedSheet(sheet)&&!isPublished(sheet))sheets.push(sheet);
+    }
+    return {sheets,mappings};
   }
   function tabState(s){return isPublished(s)?'ready':s.status==='needs_review'?'pending':'quiet';}
   function renderSheetList() {
@@ -169,11 +230,12 @@
   }
   selectSheet = async function(index,requestApi=api) {
     if(!currentImport)return;const s=currentImport.sheets[index];if(!s)return;
+    if(currentSheet?.name!==s.name&&!await prepareReviewChange('切换工作表'))return;
     saveDraft();stopViewRequests();const version=++reviewVersion,importId=currentImport.import_id,controller=new AbortController();ui.sheetController=controller;
     currentSheet=null;mappingConfirmed=false;mappingBusy=false;ui.checkSignature=null;
     $('sheetDetail').innerHTML='<p class="grid-loading">正在读取当前工作表…</p>';
     const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller,30000,requestApi);
-    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
+    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
     if(isChartOnly(sheet)){showPreview('charts');return;}
     showPreview('table');await loadWindow(1,1,requestApi);
   };
@@ -183,8 +245,8 @@
     let seed = copy(s.mapping || {sheet:s.name,fingerprint:s.fingerprint,blocks:[]});
     ui.restore = false;
     if (ui.editable) try {
-      const d = JSON.parse(localStorage.getItem(draftKey()) || 'null');
-      if (d?.version === 1 && d.mapping?.sheet === s.name && d.mapping?.fingerprint === s.fingerprint && Array.isArray(d.mapping.blocks) && d.mapping.blocks.length <= 100) {
+      const d = readDraftFor(s);
+      if (d?.version === 2 && d.base_signature === mappingSignature(s.mapping) && d.mapping?.sheet === s.name && d.mapping?.fingerprint === s.fingerprint && Array.isArray(d.mapping.blocks) && d.mapping.blocks.length <= 100) {
         seed = d.mapping; ui.states = d.states || {}; ui.selected = d.selected; ui.restore = true;
       }
     } catch {}
@@ -197,7 +259,7 @@
     const strip=hasInspector?`<div class="block-strip"><div id="blockLegend" class="block-chips"></div>${ui.editable?'<button id="addMappingBlock" class="text-button" type="button">+ 添加区块</button><button id="undoMapping" class="text-button" type="button">↶ 撤销</button>':''}</div>`:'<div id="blockLegend" hidden></div>';
     const inspector=hasInspector?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对 <small class="editor-mode">${ui.editable?'可调整':'只读'}</small></strong><button id="previewBlockSample" class="secondary" type="button" aria-expanded="false" aria-controls="samplePreview">${isPublished(s)?'查看记录':'预览几条记录'}</button></div><p class="source-click-hint">点击下方来源坐标，可在左侧原表定位并高亮。</p><div id="samplePreview" class="block-sample-content" role="status" hidden></div><div id="mappingForm"></div><section id="resultPanel" class="stored-data-panel" hidden aria-label="已保存记录"><div class="result-heading"><h3 id="resultTitle"></h3><button id="closeResults" class="secondary" type="button">返回字段</button></div><div id="resultContent"></div></section>${ui.editable?'<div class="editor-footer"><label><input id="ackBlock" type="checkbox"><span id="ackBlockLabel">我已核对这个区块</span></label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div>':''}</aside>`:'<div id="mappingForm" hidden></div>';
     const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${currentImport?.dataset_id&&!chartOnly?'<button id="storedResults" class="secondary" type="button">查看记录</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><details class="sheet-processing-details"><summary>处理详情</summary><p>${esc(processingDetails[s.status]||'请核对识别说明。')}</p></details><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong><span>单击定位 · 拖动框选 · Shift 扩展 · Esc 取消</span></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
-    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 辅助生成建议</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'已恢复这张表的本地草稿。完整检查需要重新执行。':'调整会自动保存在当前浏览器；切换工作表后可继续核对。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'这张表只有图，不需要确认单元格导入。源表导入后，曲线才会关联到已导入的单元格。':s.status==='trusted_existing'?'已按核验规则导入；修改字段和范围后需重新核对并导入。':'此工作表没有需要确认的数据区块。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div>`;
+    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 一键辅助确认</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'已恢复这张表的本地草稿。完整检查需要重新执行。':'正常区块已确认；仅需处理标红区块。修改自动保存在当前浏览器。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'这张表只有图，不需要确认单元格导入。源表导入后，曲线才会关联到已导入的单元格。':s.status==='trusted_existing'?'已按核验规则导入；修改字段和范围后需重新核对并导入。':'此工作表没有需要确认的数据区块。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div>`;
     $('sheetDetail').innerHTML=`<div class="review-workspace">${strip}<div class="review-panes${hasInspector?'':' readonly'}">${source}${inspector}</div>${footer}${s.reasons?.length?`<details class="review-explanation"><summary>识别说明</summary><ul>${reasonsList(s.reasons)}</ul></details>`:''}<textarea id="mappingEditor" class="hidden">${esc(JSON.stringify(ui.mapping))}</textarea></div>`;
     $('mappingEditor').value = JSON.stringify(ui.mapping, null, 2);
     renderMappingForm(ui.mapping); renderLegend(); bindReviewEvents(); updateConfirmState();
@@ -209,6 +271,7 @@
       const b=m.blocks[i],state=ui.states[b._review_id];panel.dataset.blockId=b._review_id;panel.style.cssText=colorVars(i);
       const summary=panel.querySelector('summary');summary.innerHTML=`<span class="card-title"><i class="color-square"></i><span>${esc(b.name||'区块 '+(i+1))}</span></span><span class="card-state ${state?.enabled?(state.checked?'checked':''):'excluded'}">${state?.enabled?(state.checked?'✓ 已核对':'待核对'):'不导入'}</span>`;
       const body=document.createElement('div');body.className='block-body';
+      const diagnostics=document.createElement('div');diagnostics.className='block-diagnostics';diagnostics.setAttribute('role','status');body.append(diagnostics);
       const columns=panel.querySelector(':scope > .scroll');
       const settings=document.createElement('details');settings.className='block-settings';settings.innerHTML=`<summary>表头第 ${esc((b.header_rows||[]).join('、'))} 行 · 修改时间与类别来源</summary>`;
       [...panel.children].filter(el=>el!==summary&&el!==columns).forEach(el=>settings.append(el));
@@ -251,14 +314,16 @@
   }
   function renderLegend() {
     const host=$('blockLegend');if(!host)return;
-    host.innerHTML=(ui.mapping?.blocks||[]).map((b,i)=>{const id=esc(b._review_id),state=ui.states[b._review_id],on=state?.enabled;return `<div class="block-chip${on?'':' disabled-block'}" style="${colorVars(i)}" title="${esc((b.name||'区块 '+(i+1))+' · '+rangeLabel(b))}"><button type="button" data-select-block="${id}" aria-pressed="${b._review_id===ui.selected}"><i class="color-square" aria-hidden="true"></i>区块 ${i+1}${(state?.published||state?.checked)&&on?'<span class="block-checked" aria-label="已导入或已核对">✓</span>':''}</button><button type="button" class="edit-block" data-edit-block="${id}">${ui.editable?'编辑':'查看'}</button></div>`;}).join('');
+    host.innerHTML=(ui.mapping?.blocks||[]).map((b,i)=>{const id=esc(b._review_id),state=ui.states[b._review_id],on=state?.enabled,invalid=on&&state?.diagnostics?.length;return `<div class="block-chip${on?'':' disabled-block'}${invalid?' review-block-error':''}" style="${colorVars(i)}" title="${esc((b.name||'区块 '+(i+1))+' · '+rangeLabel(b)+(invalid?' · 待确认：'+state.diagnostics.map(item=>item.message).join('；'):''))}"><button type="button" data-select-block="${id}" aria-pressed="${b._review_id===ui.selected}"><i class="color-square" aria-hidden="true"></i>区块 ${i+1}${invalid?'<span class="block-error-mark" aria-label="待确认">!</span>':(state?.published||state?.checked)&&on?'<span class="block-checked" aria-label="已导入或已确认">✓</span>':''}</button><button type="button" class="edit-block" data-edit-block="${id}">${ui.editable?'编辑':'查看'}</button></div>`;}).join('');
     if($('undoMapping'))$('undoMapping').disabled=mappingBusy||!ui.history.length;
   }
   function updateCardStates() {
     (ui.mapping?.blocks||[]).forEach((b,i)=>{
       const panel=[...document.querySelectorAll('[data-block-id]')].find(p=>p.dataset.blockId===b._review_id);if(!panel)return;
       const s=ui.states[b._review_id],badge=panel.querySelector('.card-state');
-      if(badge){badge.className='card-state'+(s.enabled?(s.published||s.checked?' checked':''):' excluded');badge.textContent=s.enabled?(s.published?'✓ 已可查询':s.checked?'✓ 已核对':'待核对'):'不导入';}
+      if(badge){badge.className='card-state'+(s.enabled?(s.published||s.checked?' checked':s.diagnostics?.length?' invalid':''):' excluded');badge.textContent=s.enabled?(s.published?'✓ 已可查询':s.checked?'✓ 已确认':'待确认'):'不导入';}
+      panel.classList.toggle('review-block-error',!!(s.enabled&&s.diagnostics?.length));
+      const diagnostics=panel.querySelector('.block-diagnostics');if(diagnostics)diagnostics.innerHTML=s.enabled?(s.diagnostics||[]).map(item=>`<p>${esc(item.message||'请核对标红字段。')}${(item.cells||[]).filter(cellPoint).map(cell=>` <button type="button" class="field-source" data-source-cell="${esc(cell)}">${esc(cell)} ↗</button>`).join('')}</p>`).join(''):'';
       const title=panel.querySelector('.card-title span');if(title)title.textContent=b.name||'区块 '+(i+1);
       const range=panel.querySelector('.card-range');if(range)range.textContent=rangeLabel(b);
       const facts=panel.querySelector('.block-facts');if(facts)facts.innerHTML=blockFacts(b);
@@ -266,18 +331,33 @@
       const input=panel.querySelector('[data-range-input]');if(input&&!input.dataset.pendingRange&&document.activeElement!==input)input.value=dataRangeLabel(b);
     });
     const b=selectedBlock(),state=b&&ui.states[b._review_id];
+    const sheetBadge=document.querySelector('#sheetDetail .source-head .badge');if(sheetBadge){const failed=enabledBlocks().some(block=>ui.states[block._review_id]?.diagnostics?.length),status=failed?'needs_review':currentSheet.status;sheetBadge.classList.toggle('pending',status==='needs_review');sheetBadge.textContent=statusLabels[status]||status;}
     if($('ackBlock')){$('ackBlock').checked=!!(state?.published||state?.checked);$('ackBlock').disabled=mappingBusy||!state?.enabled||!!state?.published;}
     if($('ackBlockLabel'))$('ackBlockLabel').textContent=state?.published?'已可查询，修改后需重新核对':'我已核对这个区块';
     if($('previewBlockSample')){$('previewBlockSample').disabled=mappingBusy||(!ui.editable?!currentImport?.dataset_id:!state?.enabled);$('previewBlockSample').textContent=state?.published||!ui.editable?'查看记录':'预览几条记录';}
     if($('excludeCurrentBlock')){$('excludeCurrentBlock').disabled=mappingBusy||!b;$('excludeCurrentBlock').textContent=state?.enabled?'这块不导入':'恢复导入';}
     updateFieldSources();
+    paintDiagnosticFields();
+  }
+  function paintDiagnosticFields() {
+    document.querySelectorAll('#mappingForm .review-invalid').forEach(el=>{el.classList.remove('review-invalid');el.removeAttribute('aria-invalid');});
+    const b=selectedBlock(),state=b&&ui.states[b._review_id],panel=document.querySelector('#mappingForm .mapping-block.selected');
+    if(!panel||!state?.enabled)return;
+    for(const target of state.diagnostics||[]){
+      let control=null;
+      if(target.column){const row=[...panel.querySelectorAll('tr[data-column]')].find(row=>row.querySelector('[data-column-field="column"]')?.value===target.column);control=[...(row?.querySelectorAll('[data-column-field]')||[])].find(el=>el.dataset.columnField===target.field)||row;}
+      if(!control)control=[...panel.querySelectorAll('[data-field]')].find(el=>el.dataset.field===target.field);
+      if(!control)control=panel.querySelector('[data-range-input]');
+      if(control){control.classList.add('review-invalid');control.setAttribute('aria-invalid','true');control.closest('.block-settings')?.setAttribute('open','');}
+    }
   }
   function selectedBlock(){return ui.mapping?.blocks.find(b=>b._review_id===ui.selected);}
   async function chooseBlock(id,locate=false) {
-    clearSample();ui.selected=id;ui.mode=null;ui.drag=null;ui.selection=null;if($('blockEditor'))$('blockEditor').hidden=false;renderLegend();
+    clearSample();clearReviewError();ui.selected=id;ui.mode=null;ui.drag=null;ui.selection=null;if($('blockEditor'))$('blockEditor').hidden=false;renderLegend();
     document.querySelectorAll('[data-block-id]').forEach(panel=>{const on=panel.dataset.blockId===id;panel.open=on;panel.classList.toggle('selected',on);});
     const b=selectedBlock();if(b&&locate){const e=extent(b),r=ui.view?.range;if(!r||e.start<r.start_row||e.start>r.end_row||e.left<r.start_col||e.left>r.end_col)await loadWindow(e.start,e.left);}
     renderGrid();updateCardStates();updateConfirmState();saveDraft();
+    const cell=(ui.states[id]?.diagnostics||[]).flatMap(item=>item.cells||[]).find(cellPoint);if(cell)await locateSource(cell);
   }
   function updateFieldSources() {
     (ui.mapping?.blocks||[]).forEach(b=>{
@@ -388,6 +468,7 @@
   }
   function renderGrid() {
     if(!$('sheetGrid')||!ui.view)return;
+    const state=ui.states[ui.selected];if(state?.enabled&&state.diagnostics?.length)ui.errorCells=state.diagnostics.flatMap(item=>item.cells||[]).filter(cellPoint);
     const v=ui.view,r=v.range,cells=new Map(v.cells.map(c=>[`${c.row},${c.column}`,c])),blocks=ui.mapping?.blocks||[],selected=selectedBlock(),selIndex=blocks.indexOf(selected);
     const selectedExtent=selected?extent(selected):null,merges=(v.merges||[]).filter(m=>m.end_row>=r.start_row&&m.start_row<=r.end_row&&m.end_col>=r.start_col&&m.start_col<=r.end_col);
     const mergeStarts=new Map(),covered=new Set();
@@ -414,7 +495,7 @@
     }
     html+='</tbody></table>';const grid=$('sheetGrid'),scroll=[grid.scrollLeft,grid.scrollTop];grid.innerHTML=html;grid.scrollLeft=scroll[0];grid.scrollTop=scroll[1];grid.classList.toggle('selecting',Boolean(ui.mode||ui.drag));
     $('selectedCaption').textContent=selected?'当前选中：'+(selected.name||'区块 '+(selIndex+1))+' · '+rangeLabel(selected):'当前没有选定区块';
-    paintSelection();updateFieldSources();
+    paintSelection();updateFieldSources();paintDiagnosticFields();
   }
   function showPreview(mode) {
     ui.previewMode=mode==='charts'?'charts':'table';
@@ -527,6 +608,7 @@
     if(ui.editable){$('mappingEditor').oninput=()=>{invalidateCheck();try{ui.mapping=ensureBlocks(JSON.parse($('mappingEditor').value));renderMappingForm(ui.mapping);saveDraft();renderLegend();renderGrid();}catch{$('mappingFeedback').textContent='高级设置尚不是完整有效的 JSON。';}updateConfirmState();};if($('addMappingBlock'))$('addMappingBlock').onclick=()=>startDraw('add');if($('confirmMapping'))$('confirmMapping').onclick=()=>confirmMapping().catch(mappingError);if($('suggestMapping'))$('suggestMapping').onclick=()=>suggestMapping(false).catch(mappingError);}
     if($('ackBlock'))$('ackBlock').onchange=()=>{
       const b=currentMapping().blocks.find(b=>b._review_id===ui.selected);if(!b)return;
+      if($('ackBlock').checked&&ui.states[b._review_id]?.diagnostics?.length){$('ackBlock').checked=false;const issue=ui.states[b._review_id].diagnostics[0];mappingError(targetedError(issue.message,{...issue,sheet:currentSheet.name}));return;}
       const rangeInput=document.querySelector('.mapping-block.selected [data-range-input]');
       if($('ackBlock').checked&&rangeInput.value.toUpperCase().trim()!==dataRangeLabel(b)){$('ackBlock').checked=false;mappingError(Error('请先应用输入的范围，再核对这个区块。'));return;}
       if($('ackBlock').checked&&b.layout!=='matrix'&&b.columns.some(c=>!String(c.metric||'').trim())){$('ackBlock').checked=false;mappingError(targetedError(`工作表「${currentSheet.name}」· ${b.name||'当前区块'}：${b.columns.filter(c=>!String(c.metric||'').trim()).map(c=>c.column||'未指定').join('、')} 列的指标名称为空。请对照原表填写右侧“指标名称”，再勾选已核对。`,{sheet:currentSheet.name,block_index:enabledBlocks().findIndex(x=>x._review_id===b._review_id),field:'metric',column:b.columns.find(c=>!String(c.metric||'').trim()).column,cells:b.columns.find(c=>!String(c.metric||'').trim()).header_cells||[]}));return;}
@@ -583,14 +665,63 @@
     if($('confirmMapping')){$('confirmMapping').disabled=mappingBusy||!included.length||!!pending||alreadyPublished;$('confirmMapping').title=alreadyPublished?'本表已可查询；修改映射后才需要重新核对和导入。':!included.length?'请至少保留一个要导入的区块。':pending?`还有 ${pending} 个区块需要核对字段。`:'';}
     if($('confirmHint'))$('confirmHint').innerHTML=alreadyPublished?'本表已可查询<small>修改映射后，请重新核对并导入。</small>':included.length?`${pending?`还有 ${pending} 个区块待核对`:`${included.length} 个区块已核对`}<small>${mappingBusy?'正在检查和处理，请等待…':'导入前检查全部选定数据，通过后写入新版本。'}</small>`:`没有要导入的区块<small>恢复一个区块后才能确认这张表。</small>`;
     if($('undoMapping'))$('undoMapping').disabled=mappingBusy||!ui.history.length;
+    updateBatchState();
   };
   setMappingBusy = function(busy) {
+    if(!busy)endTaskProgress($('mappingFeedback'));
+    if($('mappingFeedback')){$('mappingFeedback').classList.toggle('review-progress',busy);$('mappingFeedback').setAttribute('aria-busy',String(busy));$('mappingFeedback').setAttribute('role','status');}
     mappingBusy=busy;document.querySelectorAll('#mappingForm input,#mappingForm select,#mappingForm button,#addMappingBlock,#mappingEditor,#saveTemplate,#suggestMapping,#confirmMapping,#confirmGo,#aiContinue,#previewBlockSample,#ackBlock,#excludeCurrentBlock,#undoMapping,#applySelection,#newBlockSelection,#cancelSelection').forEach(el=>{el.disabled=busy;});
-    for(const id of ['suggestMapping','confirmMapping','confirmGo','aiContinue','previewBlockSample'])if($(id))$(id).setAttribute('aria-busy',String(busy));updateCardStates();updateConfirmState();
+    for(const id of ['suggestMapping','confirmMapping','confirmGo','aiContinue','previewBlockSample'])if($(id))$(id).setAttribute('aria-busy',String(busy));updateCardStates();updateConfirmState();updateBatchState();
   };
+  function renderAIJob(text,state='running') {
+    const panel=$('aiJobPanel'),button=$('cancelAiJob');if(!panel)return;
+    panel.hidden=false;panel.classList.toggle('cancelling',state==='cancelling');panel.classList.toggle('done',state==='done');
+    $('aiJobText').textContent=text;button.hidden=state==='done';button.disabled=state==='cancelling';
+  }
+  function beginAIJob(id,context) {
+    const record={id,...context,cancelRequested:false,finished:false,cancelPromise:null};ui.activeAIJob=record;
+    renderAIJob('AI 正在辅助核对当前工作表；校验通过后会自动导入。可随时取消。');return record;
+  }
+  function finishAIJob(record,state,message) {
+    if(record.finished)return;record.finished=true;const ownsPanel=ui.activeAIJob===record;if(ownsPanel)ui.activeAIJob=null;
+    if(ownsPanel)renderAIJob(message,state==='running'?'running':'done');
+  }
+  async function cancelActiveAIJob(reason='用户取消',options={}) {
+    const record=ui.activeAIJob;if(!record||record.finished)return true;
+    record.cancelRequested=true;renderAIJob(`正在取消 AI 任务（${reason}）；取消确认前不会切换当前内容。`,'cancelling');
+    if(options.keepalive){
+      record.keepaliveCancellation=true;
+      if(record.id)fetch(base+'/api/jobs/'+encodeURIComponent(record.id)+'/cancel',{method:'POST',headers:record.authHeaders,keepalive:true}).catch(()=>{});
+      return true;
+    }
+    if(record.cancelPromise)return record.cancelPromise;
+    record.cancelPromise=(async()=>{
+      try{
+        // The server accepts cancellation before creation reaches it. Use the
+        // originating identity even if the parent is changing accounts.
+        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);
+        let response;
+        try{response=await fetch(base+'/api/jobs/'+encodeURIComponent(record.id)+'/cancel',{method:'POST',headers:record.authHeaders,signal:controller.signal});}
+        finally{clearTimeout(timer);}
+        if(!response.ok){const body=await response.json();throw Error(typeof body.detail==='string'?body.detail:'取消请求未获确认，请重试。');}
+        return true;
+      }catch(error){
+        record.cancelRequested=false;record.cancelPromise=null;
+        if(ui.activeAIJob===record)renderAIJob(`AI 已进入保存阶段，暂时不能取消：${error.message}`,'running');
+        return false;
+      }
+    })();
+    return record.cancelPromise;
+  }
+  async function prepareReviewChange(reason) {
+    if(!ui.activeAIJob)return true;
+    const accepted=await cancelActiveAIJob(reason);
+    if(!accepted){$('mappingFeedback').textContent='AI 已进入保存阶段，请等待本次导入完成后再切换。';return false;}
+    return true;
+  }
   async function scopedJob(id,version,onProgress) {
     const controller=new AbortController();ui.jobController=controller;
-    for(;;){if(version!==reviewVersion||controller.signal.aborted)throw Error('工作表已切换，旧任务结果不会应用。');const r=await timedApi('/api/jobs/'+encodeURIComponent(id),{},controller);if(['processing','queued','pending','running'].includes(r.status)){onProgress?.(r.stage||'正在检查全部选定数据…');await new Promise(resolve=>setTimeout(resolve,1000));continue;}if(r.status==='failed')throw targetedError(r.error||'处理失败',r.review_target);return r.result||r;}
+    for(;;){if(version!==reviewVersion||controller.signal.aborted)throw Error('工作表已切换，旧任务结果不会应用。');const r=await timedApi('/api/jobs/'+encodeURIComponent(id),{},controller);if(['processing','queued','pending','running'].includes(r.status)){const stage=r.stage||'正在检查全部选定数据…';if(version===reviewVersion&&mappingBusy)taskProgress($('mappingFeedback'),stage,r.progress);onProgress?.(progressLabel(stage,r.progress),r.progress);await new Promise(resolve=>setTimeout(resolve,1000));continue;}if(['failed','cancelled'].includes(r.status)){const error=targetedError(r.error||(r.status==='cancelled'?'任务已取消，当前草稿保留。':'处理失败'),r.review_target);error.reviewState=r.review_state;throw error;}return r.result||r;}
   }
   previewMapping = async function() {
     const mapping=readMapping(),blockIds=enabledBlocks().map(b=>b._review_id),signature=JSON.stringify(mapping),version=reviewVersion,importId=currentImport.import_id;setMappingBusy(true);invalidateCheck('正在检查全部选定数据；原表视图仅保留当前范围…');
@@ -606,17 +737,61 @@
     if(!confirmed){
       let cfg=null;try{cfg=await api('/api/model-settings');}catch{cfg=null;}
       const ready=!!(cfg&&cfg.has_api_key&&cfg.model);
-      $('aiDialogText').textContent=ready?`会把当前表的少量表头样本发给「${cfg.model}」。这会消耗 token。结果只改区块范围和指标名，不导入。`:'还没有可用的模型。请先到模型设置填写模型名称和密钥。这次不会发送请求。';
+      $('aiDialogText').textContent=ready?`会把当前表头和少量原始样本发给「${cfg.model}」，逐个辅助补齐待确认区块。校验通过后自动导入；缺少可靠依据的字段仍需确认，不生成或改写原始数值。模型调用可能消耗额度。`:'还没有可用的模型。请先到模型设置填写模型名称和密钥。这次不会发送请求。';
       $('aiContinue').hidden=!ready;const dialog=$('aiDialog');if(!dialog.open)dialog.showModal();return;
     }
     if($('aiDialog')?.open)$('aiDialog').close();
-    const version=reviewVersion;setMappingBusy(true);$('mappingFeedback').textContent='正在请求表头识别建议，结果需要人工确认…';
-    try{const r=await timedApi(`/api/imports/${encodeURIComponent(currentImport.import_id)}/suggest`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sheet:currentSheet.name})});if(version!==reviewVersion)return;if(r.mapping){mappingBusy=false;rememberMapping();ui.states={};setMapping(r.mapping);}$('mappingFeedback').textContent=(r.notice||'已生成建议。')+' 请核对区块范围和字段，再确认这张表。';}finally{if(version===reviewVersion)setMappingBusy(false);}
+    const version=reviewVersion,scopeEpoch=authEpoch,importId=currentImport.import_id,sheetName=currentSheet.name,mapping=currentMapping()?submittedMapping():undefined;
+    saveDraft();setMappingBusy(true);$('mappingFeedback').textContent='AI 正在逐个辅助核对待确认区块…';
+    const requestId=globalThis.crypto.randomUUID().replace(/-/g,'');
+    const activeJob=beginAIJob(requestId,{version,scopeEpoch,importId,sheetName,authHeaders:authHeaders()});
+    try{
+      const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/assist-confirm`,{method:'POST',headers:{'Content-Type':'application/json',...activeJob.authHeaders},body:JSON.stringify({sheet:sheetName,mapping,request_id:requestId})});
+      if(job.id&&job.id!==requestId)throw Error('AI 任务标识与当前请求不一致，请刷新后重试。');
+      if(version!==reviewVersion||scopeEpoch!==authEpoch)return;
+      const result=job.id?await scopedJob(job.id,version,stage=>{if(version===reviewVersion){$('mappingFeedback').textContent=stage;renderAIJob(stage,activeJob?.cancelRequested?'cancelling':'running');}}):job;
+      if(activeJob)finishAIJob(activeJob,'completed','AI 辅助核对已完成。');
+      if(version!==reviewVersion||scopeEpoch!==authEpoch)return;
+      if(result.mapping){applyAssistResult(result);saveDraft(result.imported?result.mapping:currentSheet.mapping);setMappingBusy(true);}
+      else removeDraftFor(currentSheet);
+      ui.editable=false;
+      await refreshReviewResult(importId,sheetName,result,scopeEpoch);
+      if(scopeEpoch!==authEpoch||currentSheet?.name!==sheetName)return;
+      $('mappingFeedback').textContent=result.notice||(isPublished(currentSheet)?'辅助确认完成，校验通过的工作表已自动导入。':'辅助核对完成；缺少可靠依据的区块仍标红，请补齐后导入。');
+    }catch(error){
+      if(activeJob?.cancelRequested||version!==reviewVersion||scopeEpoch!==authEpoch){
+        if(activeJob)finishAIJob(activeJob,'cancelled','AI 任务已取消；当前草稿保留，未继续自动导入。');
+        if(version===reviewVersion&&scopeEpoch===authEpoch)$('mappingFeedback').textContent='AI 任务已取消；当前草稿保留，未继续自动导入。';
+        return;
+      }
+      if(activeJob)finishAIJob(activeJob,'failed','AI 辅助核对未完成，请按错误提示处理。');
+      throw error;
+    }finally{if(activeJob&&!activeJob.finished)finishAIJob(activeJob,'failed','AI 辅助核对未完成，请按错误提示处理。');if(version===reviewVersion&&scopeEpoch===authEpoch&&currentImport?.import_id===importId&&currentSheet?.name===sheetName)setMappingBusy(false);}
   };
+  function applyAssistResult(result) {
+    const proposed=copy(result.mapping),prior=ui.mapping,included=enabledBlocks();
+    if(proposed.sheet!==currentSheet.name||proposed.fingerprint!==currentSheet.fingerprint||!Array.isArray(proposed.blocks))throw Error('辅助结果与当前工作表不一致，请刷新后重试。');
+    if(proposed.blocks.length===included.length){
+      const replacements=new Map(included.map((block,index)=>[block._review_id,index]));
+      proposed.blocks=prior.blocks.map(block=>{
+        const index=replacements.get(block._review_id);if(index==null)return block;
+        const replacement={...proposed.blocks[index],_review_id:block._review_id},review=result.review_state?.blocks?.find(item=>item.block_index===index);
+        ui.states[block._review_id]={enabled:true,checked:review?.status==='confirmed',signature:blockSignature(replacement),diagnostics:copy(review?.diagnostics||[]),serverReviewed:true};
+        return replacement;
+      });
+    }else{
+      if(prior.blocks.length!==included.length)throw Error('辅助结果改变了区块数量，原有排除区块已保留，请重新打开工作表核对。');
+      ui.states={};proposed.blocks.forEach((block,index)=>{block._review_id=idFor();const review=result.review_state?.blocks?.find(item=>item.block_index===index);ui.states[block._review_id]={enabled:true,checked:review?.status==='confirmed',signature:blockSignature(block),diagnostics:copy(review?.diagnostics||[]),serverReviewed:true};});
+    }
+    setMapping(proposed);
+  }
   confirmMapping = async function() {
     readMapping();
     const included=enabledBlocks(),excluded=(ui.mapping?.blocks||[]).filter(b=>!ui.states[b._review_id]?.enabled);
     if(included.some(b=>!ui.states[b._review_id]?.checked&&!ui.states[b._review_id]?.published))throw Error('请先逐块核对字段，再检查并导入这张表。');
+    ui.confirmMode='sheet';if($('confirmDialogTitle'))$('confirmDialogTitle').textContent='确认这张表';
+    if($('confirmWarning'))$('confirmWarning').textContent='先检查这张表的选定数据，通过后才写入。其他已导入数据直接复用；原文件、来源和历史版本保留，失败不替换当前版本。';
+    $('saveTemplate')?.closest('label')?.removeAttribute('hidden');
     $('confirmList').innerHTML=included.map(b=>`<p>导入 ${esc(b.name||'区块')} · ${esc(rangeLabel(b))}</p>`).join('')+(excluded.length?`<p>不导入：${esc(excluded.map(b=>b.name||'区块').join('、'))}</p>`:'');
     const dialog=$('confirmDialog');if(!dialog.open)dialog.showModal();
   };
@@ -629,6 +804,7 @@
     try {
       const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping,save_template:!!$('saveTemplate')?.checked})});if(version!==reviewVersion)return;
       const result=await scopedJob(job.id,version,s=>{if(version===reviewVersion&&$('mappingFeedback'))$('mappingFeedback').textContent=s;});if(version!==reviewVersion)return;
+      saveDraft(mapping);
       ui.editable=false;note(`「${sheetName}」的选定区块已导入新版本。`);
       const isCurrent=()=>scopeEpoch===authEpoch;
       await refresh(isCurrent,importId,result?.dataset_id);if(!isCurrent())return;
@@ -639,15 +815,61 @@
     }catch(e){e.reviewBlockIds=blockIds;throw e;}finally{if(version===reviewVersion)setMappingBusy(false);}
   }
   let confirmRunning=false;
+  async function refreshReviewResult(importId,sheetName,result,scopeEpoch) {
+    const isCurrent=()=>scopeEpoch===authEpoch;
+    await refresh(isCurrent,importId,result?.dataset_id);if(!isCurrent())return;
+    if(currentImport?.import_id===importId&&currentSheet?.name!==sheetName){const index=currentImport.sheets.findIndex(s=>s.name===sheetName);if(index>=0)await selectSheet(index);}
+    if(!isCurrent())return;
+    if(result?.dataset_id&&!reviewOnly){$('dataset').value=result.dataset_id;await selectDataset();}
+    notifyImportUpdated(importId,result?.dataset_id,result?.imported===false||result?.sheets_failed?.length?'needs_review':'confirmed',scopeEpoch);
+  }
+  function confirmAllSheets() {
+    if(mappingBusy||ui.batchBusy)return;
+    saveDraft();const {sheets,mappings}=confirmedBatch();if(!sheets.length)return;
+    ui.batchMappings=mappings;
+    ui.confirmMode='all';if($('confirmDialogTitle'))$('confirmDialogTitle').textContent='导入所有已确认表';
+    if($('confirmWarning'))$('confirmWarning').textContent='逐表校验并导入；单表失败不影响其他表，仍归为待确认。成功快照、原文件和历史版本保留，不清空已可查询的数据。';
+    $('saveTemplate')?.closest('label')?.setAttribute('hidden','');
+    $('confirmList').innerHTML=sheets.map(s=>`<p>导入 ${esc(s.name)}</p>`).join('')+'<p class="muted">仅处理已确认表；待确认区块和当前浏览器的未提交草稿保持不变。</p>';
+    if(!$('confirmDialog').open)$('confirmDialog').showModal();
+  }
+  async function publishAllSheets() {
+    const importId=currentImport.import_id,sheetName=currentSheet?.name,scopeEpoch=authEpoch,version=reviewVersion;
+    saveDraft();ui.batchBusy=true;setMappingBusy(true);$('mappingFeedback').textContent='正在导入所有已确认工作表…';
+    try{
+      const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/confirm-all`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mappings:ui.batchMappings||[],save_template:true})});
+      if(version!==reviewVersion)return;
+      const result=job.id?await scopedJob(job.id,version,stage=>{if(version===reviewVersion)$('mappingFeedback').textContent=stage;}):job;
+      if(scopeEpoch!==authEpoch||version!==reviewVersion)return;
+      for(const name of result.sheets_imported||[]){const sheet=currentImport.sheets.find(item=>item.name===name);if(sheet)removeDraftFor(sheet);}
+      applyBatchErrors(result);
+      ui.batchMappings=[];
+      ui.editable=false;await refreshReviewResult(importId,sheetName,result,scopeEpoch);
+      if(scopeEpoch===authEpoch&&$('mappingFeedback'))$('mappingFeedback').textContent=result.notice||'已完成确认表导入；失败表仍可逐块核对。';
+    }finally{ui.batchBusy=false;if(scopeEpoch===authEpoch&&currentImport?.import_id===importId)setMappingBusy(false);}
+  }
+  function applyBatchErrors(result) {
+    for(const failed of result.sheets_failed||[]){
+      const sheet=currentImport.sheets.find(item=>item.name===failed.sheet);if(!sheet)continue;
+      const draft=readDraftFor(sheet);
+      if(!Array.isArray(draft?.mapping?.blocks)||!draft.states)continue;
+      const blocks=draft.mapping.blocks.filter(block=>draft.states[block._review_id]?.enabled);
+      for(const item of failed.review_state?.blocks||[]){const block=blocks[item.block_index],state=block&&draft.states[block._review_id];if(state){state.checked=item.status==='confirmed';state.diagnostics=copy(item.diagnostics||[]);state.serverReviewed=true;if(state.diagnostics.length)state.published=false;}}
+      if(!failed.review_state&&failed.review_target){const target=failed.review_target,block=blocks[target.block_index],state=block&&draft.states[block._review_id];if(state){state.checked=false;state.published=false;state.diagnostics=[{...target,message:failed.message||'此区块检查失败，请核对。'}];}}
+      try{writeDraftFor(sheet,{...draft,at:Date.now()});}catch{}
+    }
+  }
   async function runConfirm() {
     if(confirmRunning||mappingBusy)return;confirmRunning=true;
-    try{if($('confirmDialog')?.open)$('confirmDialog').close();await previewMapping();if(ui.checkSignature!==JSON.stringify(submittedMapping()))return;await publishMapping();}
+    try{if($('confirmDialog')?.open)$('confirmDialog').close();if(ui.confirmMode==='all'){await publishAllSheets();return;}await previewMapping();if(ui.checkSignature!==JSON.stringify(submittedMapping()))return;await publishMapping();}
     catch(e){mappingError(e);}finally{confirmRunning=false;}
   }
   $('aiCancel').onclick=()=>$('aiDialog').close();
   $('aiContinue').onclick=()=>suggestMapping(true).catch(mappingError);
+  $('cancelAiJob').onclick=()=>cancelActiveAIJob('用户取消').then(accepted=>{if(accepted)$('mappingFeedback').textContent='已请求取消 AI 任务，正在等待当前模型请求返回。';});
   $('confirmBack').onclick=()=>$('confirmDialog').close();
   $('confirmGo').onclick=()=>runConfirm();
+  if($('confirmAllSheets'))$('confirmAllSheets').onclick=confirmAllSheets;
   function openSheetMenu(){renderSheetMenu();$('sheetMenu').hidden=false;$('allSheets').setAttribute('aria-expanded','true');}
   $('sheetSearch').oninput=openSheetMenu;
   $('sheetSearch').onfocus=openSheetMenu;
@@ -670,6 +892,14 @@
     }
     if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&!e.target.matches('input,textarea,select')){e.preventDefault();undoMapping();}
   });
+  window.sheetReviewBeforeAuthChange=async()=>{
+    saveDraft();const record=ui.activeAIJob;if(!record)return;
+    const accepted=await cancelActiveAIJob('切换账号或空间');
+    if(accepted)ui.jobController?.abort();
+    else finishAIJob(record,'detached','AI 已进入保存阶段；账号或空间已切换，请刷新原位置查看最终结果。');
+  };
+  window.sheetReviewAuthChanged=()=>{volatileDrafts.clear();purgeUnsafeDraftKeys();};
+  window.addEventListener('pagehide',()=>{if(ui.activeAIJob)cancelActiveAIJob('关闭页面',{keepalive:true});});
   function noteError(e){if($('viewWarning'))$('viewWarning').textContent=e.message;else note(e.message);}
   // Expose pure coordinate helpers for fixture-based UI validation.
   window.sheetReviewHelpers={colName,colIndex,cellPoint,hitBlock,parseRange,clean};

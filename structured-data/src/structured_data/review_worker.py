@@ -21,6 +21,7 @@ import tempfile
 import time
 
 from .review_errors import ReviewValidationError, error_location
+from .progress import progress_value, report_progress
 
 
 DEFAULT_MEMORY_MB = 768
@@ -181,7 +182,37 @@ def _write_result(path, payload):
     Path(path).write_bytes(encoded)
 
 
-def _review_child(request, result_path, memory_bytes, timeout_seconds):
+def _validated_native_source(source):
+    """Freeze only metadata already verified by the native-source gateway."""
+    if source is None:
+        return None
+    fields = {"source_knowledge_id", "file_name", "file_size", "file_hash",
+              "knowledge_base_id", "tenant_id"}
+    if not isinstance(source, dict) or set(source) != fields:
+        raise ValueError("原件绑定信息无效。")
+    source_id = source.get("source_knowledge_id")
+    knowledge_base_id = source.get("knowledge_base_id")
+    filename = source.get("file_name")
+    size = source.get("file_size")
+    fingerprint = source.get("file_hash")
+    tenant = source.get("tenant_id")
+    identifier = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+    if (not isinstance(source_id, str) or identifier.fullmatch(source_id) is None
+            or not isinstance(knowledge_base_id, str)
+            or identifier.fullmatch(knowledge_base_id) is None
+            or not isinstance(filename, str) or len(filename) > 255
+            or filename != Path(filename.replace("\\", "/")).name
+            or any(ord(char) < 32 for char in filename)
+            or not filename.lower().endswith(".xlsx")
+            or type(size) is not int or size <= 0 or size > 100 * 1024 * 1024
+            or not isinstance(fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{32}", fingerprint) is None
+            or type(tenant) is not int or tenant <= 0):
+        raise ValueError("原件绑定信息无效。")
+    return dict(source)
+
+
+def _review_child(request, result_path, memory_bytes, timeout_seconds, control=None):
     try:
         _apply_resource_limits(memory_bytes, timeout_seconds)
         _limit_duckdb(memory_bytes)
@@ -190,13 +221,35 @@ def _review_child(request, result_path, memory_bytes, timeout_seconds):
 
         manager = ImportManager(request["root"])
         action = request["action"]
+
+        def before_publish():
+            if control is None or not request.get('authorize_publish'):
+                return
+            control.send({"kind": "authorize_publish"})
+            reply = control.recv()
+            if not isinstance(reply, dict) or reply.get("ok") is not True:
+                message = reply.get("error") if isinstance(reply, dict) else None
+                raise ValueError(message or "发布前权限核验失败，原有版本仍可使用。")
+
+        def progress(value):
+            if control is not None and request.get('report_progress'):
+                control.send({'kind': 'progress', 'value': progress_value(value)})
+
         if action == "preview":
+            report_progress(progress, 'preview')
             result = _bounded_preview(manager.preview(request["import_id"], request["mapping"]))
         elif action == "confirm":
             result = manager.confirm(request["import_id"], request["mapping"],
-                                     request["save_template"])
+                                     request["save_template"], before_publish=before_publish,
+                                     progress=progress)
+        elif action == "review":
+            report_progress(progress, 'preview')
+            result = manager.review_mapping(request["import_id"], request["mapping"])
         else:
-            result = manager.ingest(request["path"], use_reviewed_mappings=request.get("use_reviewed_mappings", True))
+            result = manager.ingest(request["path"],
+                use_reviewed_mappings=request.get("use_reviewed_mappings", True),
+                before_publish=before_publish,
+                native_source=request.get("native_source"), progress=progress)
         _write_result(result_path, {"ok": True, "result": result})
     except MemoryError:
         _write_result(result_path, {"ok": False, "error": "任务超过内存限制，原有版本仍可使用。"})
@@ -206,6 +259,9 @@ def _review_child(request, result_path, memory_bytes, timeout_seconds):
         # Unexpected library errors may contain absolute paths or other private
         # runtime details; return a stable notice instead of raw exception text.
         _write_result(result_path, {"ok": False, "error": "工作表任务失败，原有版本仍可使用。请检查文件或缩小范围后重试。"})
+    finally:
+        if control is not None:
+            control.close()
 
 
 def _stop_process(process):
@@ -217,9 +273,51 @@ def _stop_process(process):
             process.join(timeout=1)
 
 
-def _monitor_worker(process, deadline, memory_bytes, rss_reader=None):
+def _monitor_worker(process, deadline, memory_bytes, rss_reader=None,
+                    control=None, publish_guard=None, progress_callback=None):
     rss_reader = rss_reader or _read_rss_bytes
-    while process.is_alive():
+    guard_used = False
+    while True:
+        # Drain bounded messages promptly, without making fast sheet scans wait
+        # for one watchdog interval per event. Guards still run exactly once.
+        for _ in range(128):
+            if control is None or not control.poll():
+                break
+            try:
+                message = control.recv()
+            except (EOFError, OSError):
+                # The child may finish with a normal structured error before it
+                # reaches the publication boundary. A closed control channel
+                # must not mask that result with BrokenPipeError.
+                control = None
+                break
+            if isinstance(message, dict) and message.get('kind') == 'progress':
+                if set(message) != {'kind', 'value'} or progress_callback is None:
+                    raise ValueError('工作表进度协议无效。')
+                progress_callback(progress_value(message['value']))
+                continue
+            if (message != {"kind": "authorize_publish"} or guard_used
+                    or publish_guard is None):
+                reply = {"ok": False, "error": "发布权限核验协议无效，原有版本仍可使用。"}
+            else:
+                guard_used = True
+                try:
+                    publish_guard()
+                except Exception as exc:
+                    detail = getattr(exc, "detail", None)
+                    message = str(detail if detail is not None else exc)[:500]
+                    reply = {"ok": False, "error": message or "发布前权限已失效，原有版本仍可使用。"}
+                else:
+                    reply = {"ok": True}
+            try:
+                control.send(reply)
+            except (BrokenPipeError, EOFError, OSError):
+                # Preserve the child's bounded result when it closes between
+                # the request and response; the result validation below will
+                # still reject an incomplete publication.
+                control = None
+        if not process.is_alive():
+            return
         if time.monotonic() >= deadline:
             _stop_process(process)
             raise ValueError("任务超过时间限制，已停止；原有版本仍可使用。")
@@ -259,7 +357,8 @@ def _cleanup_temporary_snapshots(root, previous):
 
 def run_review_task(root, action, *, import_id=None, mapping=None,
                     save_template=True, path=None, timeout=None,
-                    memory_limit_mb=None, use_reviewed_mappings=True):
+                    memory_limit_mb=None, use_reviewed_mappings=True,
+                    publish_guard=None, native_source=None, progress_callback=None):
     """Return a bounded task result or raise ValueError with a safe Chinese notice.
 
     Defaults: STRUCTURED_REVIEW_MEMORY_MB=768 and
@@ -267,10 +366,18 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
     budget is a termination threshold, not a zero-overshoot allocation promise.
     The caller must hold its cross-action import/confirmation lock throughout.
     """
-    if action not in {"import", "preview", "confirm"}:
+    if action not in {"import", "preview", "confirm", "review"}:
         raise ValueError("不支持的工作表任务。")
+    if publish_guard is not None and (action not in {"import", "confirm"}
+                                      or not callable(publish_guard)):
+        raise ValueError("发布权限核验配置无效。")
+    if progress_callback is not None and not callable(progress_callback):
+        raise ValueError('工作表进度回调配置无效。')
     if type(use_reviewed_mappings) is not bool:
         raise ValueError("原件核对模式必须明确为布尔值。")
+    if native_source is not None and action != "import":
+        raise ValueError("原件绑定只能随导入任务提交。")
+    native_source = _validated_native_source(native_source)
     try:
         if timeout is None:
             timeout = float(os.environ.get("STRUCTURED_REVIEW_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
@@ -286,10 +393,13 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
     request = {"root": str(root), "action": action, "import_id": import_id,
                "mapping": mapping, "save_template": bool(save_template),
                "use_reviewed_mappings":use_reviewed_mappings,
+               'report_progress': progress_callback is not None,
+               'authorize_publish': publish_guard is not None,
+               "native_source": native_source,
                "path": str(Path(path).resolve()) if path is not None else None}
     if action == "import" and not request["path"]:
         raise ValueError("导入任务缺少源文件。")
-    if action in {"preview", "confirm"} and (not import_id or not isinstance(mapping, dict)):
+    if action in {"preview", "confirm", "review"} and (not import_id or not isinstance(mapping, dict)):
         raise ValueError("工作表任务缺少导入记录或映射。")
     try:
         encoded = json.dumps(request, ensure_ascii=False, allow_nan=False).encode("utf-8")
@@ -302,17 +412,26 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
     root.mkdir(parents=True, exist_ok=True)
     previous = _temporary_snapshots(root)
     process = None
+    parent_control = child_control = None
     try:
         with tempfile.TemporaryDirectory(prefix=".review-task-", dir=root) as temporary:
             result_path = Path(temporary) / "result.json"
             context = multiprocessing.get_context("spawn")
+            if publish_guard is not None or progress_callback is not None:
+                parent_control, child_control = context.Pipe()
             process = context.Process(target=_review_child,
                                       args=(request, str(result_path),
-                                            memory_limit_mb * 1024 * 1024, timeout),
+                                            memory_limit_mb * 1024 * 1024, timeout,
+                                            child_control),
                                       daemon=True)
             deadline = time.monotonic() + timeout
             process.start()
-            _monitor_worker(process, deadline, memory_limit_mb * 1024 * 1024)
+            if child_control is not None:
+                child_control.close()
+                child_control = None
+            _monitor_worker(process, deadline, memory_limit_mb * 1024 * 1024,
+                            control=parent_control, publish_guard=publish_guard,
+                            progress_callback=progress_callback)
             if process.exitcode != 0 or not result_path.is_file():
                 raise ValueError("工作进程已停止，任务未能完成；原有版本仍可使用。")
             if result_path.stat().st_size > MAX_RESULT_BYTES:
@@ -322,9 +441,12 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
             except (OSError, ValueError):
                 raise ValueError("工作表任务没有返回完整结果，请重试。") from None
             if not isinstance(payload, dict) or not payload.get("ok"):
-                raise ReviewValidationError(payload.get("error", "工作表任务失败。")
+                failure = ReviewValidationError(payload.get("error", "工作表任务失败。")
                                  if isinstance(payload, dict) else "工作表任务结果无效。",
                                  target=payload.get("review_target") if isinstance(payload, dict) else None)
+                if isinstance(payload, dict) and isinstance(payload.get("review_state"), dict):
+                    failure.review_state = payload["review_state"]
+                raise failure
             result = payload.get("result")
             if not isinstance(result, dict) or "observations" in result:
                 raise ValueError("工作表任务结果无效。")
@@ -333,4 +455,8 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
         if process is not None:
             _stop_process(process)
             process.close()
+        if child_control is not None:
+            child_control.close()
+        if parent_control is not None:
+            parent_control.close()
         _cleanup_temporary_snapshots(root, previous)

@@ -21,7 +21,8 @@ SCHEMA = ('series_id VARCHAR NOT NULL, date DATE, value DOUBLE, source_cell VARC
           'period VARCHAR, period_cell VARCHAR, metric_cell VARCHAR')
 
 
-def publish_parts(store, source, sha256, parts, metadata, *, base_id=None, replace_sheets=()):
+def publish_parts(store, source, sha256, parts, metadata, *, base_id=None,
+                  replace_sheets=(), before_commit=None):
     """Parts are consumed individually; the last manifest is the publication boundary."""
     from .store import dump
 
@@ -91,6 +92,8 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None, repla
                     for item in parsed.get('issues', []):
                         add_issue(item)
                 if not series:
+                    if before_commit is not None:
+                        before_commit()
                     return None
                 con.execute('CREATE INDEX IF NOT EXISTS observation_lookup ON observations(series_id,date)')
                 stats = con.execute('SELECT series_id,count(*),count(value),min(date),max(date),'
@@ -113,6 +116,8 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None, repla
         dataset_id = hashlib.sha256((sha256 + ':' + rule).encode()).hexdigest()[:24]
         final = store.datasets / dataset_id
         if (final / 'manifest.json').exists():
+            if before_commit is not None:
+                before_commit()
             return {'dataset_id': dataset_id, 'reused': True, 'manifest': store.manifest(dataset_id)}
         dump(work / 'series.json', series)
         with issues_path.open(encoding='utf-8') as stream:
@@ -132,5 +137,11 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None, repla
                                          for s in metadata['coverage'] if s['status'] not in
                                          {'auto_ready', 'template_ready', 'confirmed', 'trusted_existing'}]
         dump(work / 'manifest.json', manifest)
+        # All expensive parsing, copying and index work is complete. Recheck
+        # authorization at the actual atomic publication boundary so a revoked
+        # caller cannot commit a snapshot merely because it was authorized
+        # before a large database finished staging.
+        if before_commit is not None:
+            before_commit()
         os.rename(work, final)
         return {'dataset_id': dataset_id, 'reused': False, 'manifest': manifest}

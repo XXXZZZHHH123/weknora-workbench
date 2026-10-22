@@ -32,6 +32,27 @@ main{max-width:1660px}
 .block-chip button{font-size:12px;padding:4px 7px;background:transparent;color:#46624e;border-radius:0;display:flex;align-items:center;gap:5px;white-space:nowrap}
 .block-chip .edit-block{font-size:11px;color:#6d8675;border-left:1px solid #e1e8e3;padding:4px 6px}
 .block-chip.disabled-block{opacity:.5}
+.block-chip.review-block-error{border-color:#ce5964;box-shadow:0 0 0 1px #ce596418}
+.block-chip.review-block-error:has([aria-pressed=true]){border-color:#bd4351;background:#fdf1f2}
+.block-error-mark{color:#b83b49;font-size:11px;font-weight:600}
+.block-diagnostics{font-size:11px;line-height:1.6;color:#aa3645;background:#fcf0f1;border:1px solid #e6b6bc;border-radius:5px;padding:7px 8px;margin:0 0 10px;overflow-wrap:anywhere}
+.block-diagnostics:empty{display:none}
+.block-diagnostics p{margin:0 0 4px}
+.block-diagnostics p:last-child{margin-bottom:0}
+.card-state.invalid{color:#aa3645;background:#fbe9ec}
+#mappingForm .mapping-block.review-block-error>.card-range{color:#aa3645}
+#mappingForm .mapping-block.review-block-error{outline:1px solid #e6b6bc;outline-offset:5px;border-radius:4px}
+#confirmAllSheets{white-space:nowrap}
+.ai-job-panel{display:flex;align-items:center;gap:9px;margin:10px 0;padding:9px 11px;border:1px solid color-mix(in srgb,var(--primary,#24477f) 28%,var(--line));border-radius:7px;background:color-mix(in srgb,var(--primary,#24477f) 6%,var(--paper));color:var(--text);font-size:12px}
+.ai-job-panel[hidden]{display:none}
+.ai-job-panel #aiJobText{flex:1;min-width:0;line-height:1.5}
+.ai-job-panel button{flex:none;padding:5px 8px;font-size:11px}
+.ai-job-spinner{width:12px;height:12px;flex:none;border:2px solid color-mix(in srgb,var(--primary,#24477f) 22%,transparent);border-top-color:var(--primary,#24477f);border-radius:50%;animation:ai-job-spin .8s linear infinite}
+.ai-job-panel.done .ai-job-spinner{display:none}
+.ai-job-panel.cancelling{border-color:#d4b66c;background:#fff8e8}
+@keyframes ai-job-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.ai-job-spinner{animation:none;border-top-color:currentColor}}
+.save-template[hidden]{display:none}
 .block-checked{font-size:10px;color:#398b61}
 .color-square{display:inline-block;width:8px;height:8px;background:var(--block-color);border-radius:2px;flex:none}
 .text-button{font-size:12px;padding:5px 8px;background:transparent;color:#64816b;white-space:nowrap}

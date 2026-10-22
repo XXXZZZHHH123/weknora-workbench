@@ -35,7 +35,7 @@ const server=http.createServer(async(req,res)=>{
     res.end(`<html><body><iframe id="reviewFrame" style="width:100%;height:900px;border:0" src="/?view=review&import_id=123456789012345678901234"></iframe><script>
       window.updates=[];window.addEventListener('message',e=>{
         if(e.origin!==location.origin||e.source!==document.getElementById('reviewFrame').contentWindow)return;
-        if(e.data.type==='structured-ready')e.source.postMessage({type:'structured-auth',token:'fixture',tenant:'10000'},location.origin);
+        if(e.data.type==='structured-ready')e.source.postMessage({type:'structured-auth',token:'fixture',tenant:'10000',userId:'fixture-user'},location.origin);
         if(e.data.type==='structured-import-updated')window.updates.push(e.data);
       });</script></body></html>`);return;
   }
@@ -276,14 +276,14 @@ const server=http.createServer(async(req,res)=>{
     assert.equal(requests.filter(r=>r.path.endsWith('/confirm')).length,2,'A second block can be imported without reloading or rescanning');
     assert.equal(requests.filter(r=>r.path.endsWith('/confirm')).at(-1).data.mapping.blocks.length,2,'Importing the next block retains the first published block');
     assert.deepEqual(requests.filter(r=>r.path.endsWith('/confirm')).at(-1).data.mapping.blocks[0],confirm.data.mapping.blocks[0],'The first block keeps its verified mapping');
-    await page.reload();
-    await page.waitForFunction(()=>[...document.querySelectorAll('.card-state')].filter(el=>el.textContent.includes('已可查询')).length===2);
-    assert.equal(await page.locator('[data-select-block]').count(),3,'A browser reload retains the remaining excluded block');
     await page.locator('[data-select-block]').nth(2).click();
     await page.locator('#excludeCurrentBlock').click();await page.locator('#ackBlock').check();
     await page.locator('#confirmMapping').click();await page.locator('#confirmGo').click();
     await page.waitForFunction(()=>[...document.querySelectorAll('.card-state')].filter(el=>el.textContent.includes('已可查询')).length===3&&document.querySelector('#confirmMapping')?.disabled);
     assert.equal(requests.filter(r=>r.path.endsWith('/confirm')).at(-1).data.mapping.blocks.length,3,'A third consecutive import preserves all confirmed blocks');
+    await page.reload();
+    await page.waitForFunction(()=>[...document.querySelectorAll('.card-state')].filter(el=>el.textContent.includes('已可查询')).length===3);
+    assert.equal(await page.locator('[data-select-block]').count(),3,'A browser reload uses the complete server-published mapping');
     await page.evaluate(()=>{const editor=document.getElementById('mappingEditor'),value=JSON.parse(editor.value);value.blocks.reverse();editor.value=JSON.stringify(value);editor.dispatchEvent(new Event('input',{bubbles:true}));});
     assert.equal(await page.locator('.card-state.checked').count(),3,'Reordering a draft matches published block content rather than array positions');
     assert.equal(await page.locator('#confirmMapping').isDisabled(),true,'Reordered unchanged blocks are already published');

@@ -44,9 +44,8 @@ const pending={...imported,name:'待核对表',status:'needs_review',mapping:{..
   await page.reload();await page.locator('.sheet-grid td').first().waitFor();
   await page.locator('#allSheets').click();await page.locator('#sheetMenuList [data-sheet-index="1"]').click();
   await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='已导入表');
-  assert.equal(await page.locator('.mapping-block.selected [data-column-field="unit"]').inputValue(),'万元');
-  assert.equal(await page.locator('#ackBlock').isChecked(),false,'An edited restored draft cannot inherit the published acknowledgement');
-  await page.locator('#ackBlock').check();assert.equal(await page.locator('#confirmMapping').isEnabled(),true);
+  assert.equal(await page.locator('.mapping-block.selected [data-column-field="unit"]').inputValue(),'元','A page without a verified user id must not persist its draft across reloads');
+  assert.equal(await page.locator('#ackBlock').isChecked(),true,'Reload without an identity returns to the published mapping');
   // A fresh browser session must reflect confirmed, automatic and template imports.
   for(const importedStatus of ['confirmed','template_ready','auto_ready']){
    status=importedStatus;await page.evaluate(()=>localStorage.clear());await page.reload();await page.locator('.sheet-grid td').first().waitFor();
@@ -77,6 +76,6 @@ const pending={...imported,name:'待核对表',status:'needs_review',mapping:{..
   assert.equal(await page.locator('.mapping-block.selected [data-range-input]').inputValue(),'B2:B3');
   assert.match(await page.locator('.mapping-block.selected .card-state').innerText(),/已可查询/,'An unapplied range input does not change the published mapping after reopening');
   assert.deepEqual(errors,[]);
-  console.log('PASS: imported tabs stay green, pending tabs stay yellow, fresh status replaces stale summary, saved blocks are imported, edited/restored drafts require review.');
+  console.log('PASS: imported tabs stay green, pending tabs stay yellow, fresh status replaces stale summary, and unidentified pages do not persist drafts.');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

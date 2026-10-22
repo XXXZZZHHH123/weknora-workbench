@@ -7,11 +7,11 @@ function frame() {
   let receive: (event: any) => void
   const parent = { postMessage() {} }, location = { origin: 'http://localhost' }
   const context: any = { parent, location, window: { addEventListener: (_: string, listener: any) => { receive = listener } },
-    authReceived: true, authEpoch: 5, bearer: 'old', activeTenant: '7', activeKnowledgeBase: 'kb', requestedSourceKnowledge: '',
+    authReceived: true, authEpoch: 5, authMessageSequence: 0, bearer: 'old', activeTenant: '7', activeKnowledgeBase: 'kb', activeUserId: '', requestedSourceKnowledge: '',
     reviewOnly: false, viewParams: new URLSearchParams(), nativeSourceBusy: false,
     $: () => ({ classList: { contains: () => true } }), authRefreshPending: null, clearTimeout, Error,
   }
-  const start = source.indexOf(" window.addEventListener('message',e=>{", source.indexOf("window.addEventListener('DOMContentLoaded'"))
+  const start = source.indexOf(" window.addEventListener('message',async e=>{", source.indexOf("window.addEventListener('DOMContentLoaded'"))
   const end = source.indexOf(" parent.postMessage({type:'structured-ready'}", start)
   runInNewContext(source.slice(start, end), context)
   return { context, send: (data: any, origin = location.origin, sender = parent) => receive!({ data, origin, source: sender }) }
