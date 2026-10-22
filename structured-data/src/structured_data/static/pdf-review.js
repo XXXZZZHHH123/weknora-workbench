@@ -196,7 +196,7 @@
       columns: Array.from({length: widths[0]}, (_, index) => ({
         name: `Column ${index + 1}`,
         type: 'text',
-        source_columns: Object.fromEntries(selected.map(fragment => [fragment.id, index]))
+        source_columns: Object.fromEntries(selected.map(fragment => [fragment.id, null]))
       })),
       excluded_rows: [],
       boundary_merges: []
@@ -226,6 +226,128 @@
     wrap.append(table);
     details.append(wrap);
     parent.append(details);
+  }
+
+  function renderManualPlanForm(editor, parent) {
+    const selected = fragments().filter(fragment => selectedFragments.has(fragment.id));
+    parent.replaceChildren();
+    if (!selected.length) {
+      parent.append(make('p', '先勾选原始片段，再生成手动核对表单。', 'muted'));
+      return;
+    }
+    const widths = selected.map(fragment => Math.max(0, ...(fragment.rows || []).map(row => row.length)));
+    if (widths.some(width => width !== widths[0]) || widths[0] < 1) {
+      parent.append(make('p', '所选片段列数不同，表单不会尝试推断列对齐。请分别选择兼容片段或使用高级 JSON 明确填写。', 'warning'));
+      return;
+    }
+    parent.append(make('p', '所有选择均由审核人填写。页面上下文只是未绑定的来源文本；表头、单位和跨页关系不会自动推断。', 'muted'));
+    for (const fragment of selected) {
+      const section = make('fieldset');
+      section.append(make('legend', `片段 ${fragment.id} · 第 ${fragment.page} 页`));
+      const headers = make('details');
+      headers.append(make('summary', '手动标记表头行（未勾选行保留为数据）'));
+      for (const [rowIndex, row] of (fragment.rows || []).entries()) {
+        const label = make('label', undefined, 'row');
+        const checkbox = make('input');
+        checkbox.type = 'checkbox';
+        checkbox.dataset.headerFragment = fragment.id;
+        checkbox.dataset.headerRow = String(rowIndex);
+        label.append(checkbox, make('span', `行 ${rowIndex} · ${row.map(cell => cell.text ?? '').join(' | ')}`));
+        const reason = make('input');
+        reason.type = 'text'; reason.placeholder = '标记为表头的原因';
+        reason.dataset.headerReasonFragment = fragment.id;
+        reason.dataset.headerReasonRow = String(rowIndex);
+        headers.append(label, reason);
+      }
+      const excluded = make('details');
+      excluded.append(make('summary', '手动排除原始行（需逐行填写原因；不排除空白行）'));
+      for (const [rowIndex, row] of (fragment.rows || []).entries()) {
+        const label = make('label', undefined, 'row');
+        const checkbox = make('input');
+        checkbox.type = 'checkbox';
+        checkbox.dataset.excludeFragment = fragment.id;
+        checkbox.dataset.excludeRow = String(rowIndex);
+        label.append(checkbox, make('span', `行 ${rowIndex} · ${row.map(cell => cell.text ?? '').join(' | ')}`));
+        const reason = make('input');
+        reason.type = 'text'; reason.placeholder = '排除此行的原因';
+        reason.dataset.excludeReasonFragment = fragment.id;
+        reason.dataset.excludeReasonRow = String(rowIndex);
+        excluded.append(label, reason);
+      }
+      section.append(headers, excluded);
+      parent.append(section);
+    }
+    const columnSet = make('fieldset');
+    columnSet.append(make('legend', '手动定义列名、类型与单位'));
+    for (let columnIndex = 0; columnIndex < widths[0]; columnIndex += 1) {
+      const row = make('div', undefined, 'row');
+      const name = make('input');
+      name.type = 'text'; name.value = `Column ${columnIndex + 1}`;
+      name.setAttribute('aria-label', `第 ${columnIndex} 列名称`);
+      name.dataset.columnName = String(columnIndex);
+      const type = make('select');
+      type.dataset.columnType = String(columnIndex);
+      type.setAttribute('aria-label', `第 ${columnIndex} 列类型`);
+      for (const [value, label] of [['', '请选择类型'], ['text', '文本'], ['decimal', '小数']]) {
+        const option = make('option', label); option.value = value; type.append(option);
+      }
+      const unit = make('input');
+      unit.type = 'text'; unit.placeholder = '单位（可留空）'; unit.dataset.columnUnit = String(columnIndex);
+      unit.setAttribute('aria-label', `第 ${columnIndex} 列单位`);
+      row.append(make('span', `逻辑列 ${columnIndex}`), name, type, unit);
+      for (const fragment of selected) {
+        const mapping = make('select');
+        mapping.dataset.sourceColumn = String(columnIndex);
+        mapping.dataset.sourceFragment = fragment.id;
+        mapping.setAttribute('aria-label', `${fragment.id} 的逻辑列 ${columnIndex} 来源`);
+        const prompt = make('option', `选择 ${fragment.id} 来源列`); prompt.value = ''; mapping.append(prompt);
+        for (let sourceIndex = 0; sourceIndex < widths[0]; sourceIndex += 1) {
+          const option = make('option', `第 ${sourceIndex} 列`); option.value = String(sourceIndex); mapping.append(option);
+        }
+        row.append(mapping);
+      }
+      columnSet.append(row);
+    }
+    parent.append(columnSet, action('应用人工填写到计划', () => {
+      try {
+        const plan = createManualPlan();
+        for (const fragment of selected) {
+          const headers = [];
+          for (const checkbox of parent.querySelectorAll(`[data-header-fragment="${CSS.escape(fragment.id)}"]`)) {
+            if (!checkbox.checked) continue;
+            const row = Number(checkbox.dataset.headerRow);
+            const reason = parent.querySelector(`[data-header-reason-fragment="${CSS.escape(fragment.id)}"][data-header-reason-row="${row}"]`)?.value.trim();
+            if (!reason) throw new Error(`片段 ${fragment.id} 的表头行 ${row} 需要原因。`);
+            headers.push({row, reason});
+          }
+          plan.header_rows[fragment.id] = headers;
+          for (const checkbox of parent.querySelectorAll(`[data-exclude-fragment="${CSS.escape(fragment.id)}"]`)) {
+            if (!checkbox.checked) continue;
+            const row = Number(checkbox.dataset.excludeRow);
+            const reason = parent.querySelector(`[data-exclude-reason-fragment="${CSS.escape(fragment.id)}"][data-exclude-reason-row="${row}"]`)?.value.trim();
+            if (!reason) throw new Error(`片段 ${fragment.id} 的排除行 ${row} 需要原因。`);
+            plan.excluded_rows.push({fragment_id: fragment.id, row, reason});
+          }
+        }
+        plan.columns = plan.columns.map((column, index) => {
+          const name = parent.querySelector(`[data-column-name="${index}"]`).value.trim();
+          if (!name) throw new Error(`原始列 ${index} 需要列名。`);
+          const type = parent.querySelector(`[data-column-type="${index}"]`).value;
+          if (!type) throw new Error(`逻辑列 ${index} 需要明确选择文本或小数类型。`);
+          const unit = parent.querySelector(`[data-column-unit="${index}"]`).value.trim();
+          const source_columns = Object.fromEntries(selected.map(fragment => {
+            const value = parent.querySelector(`[data-source-column="${index}"][data-source-fragment="${CSS.escape(fragment.id)}"]`)?.value;
+            if (value === undefined || value === '') throw new Error(`逻辑列 ${index} 需要明确选择片段 ${fragment.id} 的来源列。`);
+            return [fragment.id, Number(value)];
+          }));
+          return {...column, name, type, source_columns,
+            ...(unit ? {unit} : {})};
+        });
+        editor.value = JSON.stringify(plan, null, 2);
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        setStatus('人工填写已写入计划；请验证并预览，审核界面不会自动推断或排除来源行。');
+      } catch (error) { setStatus(error.message, true); }
+    }, true));
   }
 
   async function selectDraft(id) {
@@ -264,7 +386,9 @@
     const bundle = draft.bundle || {};
     const src = source(bundle);
     const parser = bundle.parser || {};
-    const provenance = make('p', `文件：${src.file_name || '未知'} · SHA256：${src.sha256 || '未知'} · 解析器：${parser.engine || '未知'} ${parser.version || ''} · 提取状态：未独立验证。`);
+    const parserProfile = parser.requested_tier
+      ? ` · 请求配置：${parser.requested_tier} / ${parser.requested_ocr_mode || 'auto'}` : '';
+    const provenance = make('p', `文件：${src.file_name || '未知'} · SHA256：${src.sha256 || '未知'} · 解析器：${parser.engine || '未知'} ${parser.version || ''}${parserProfile} · 提取状态：未独立验证。`);
     target.append(provenance);
     const sourceLink = make('a', '在新标签页查看原始 PDF');
     sourceLink.href = sourceUrl;
@@ -276,7 +400,6 @@
     viewer.title = `原始 PDF：${src.file_name || '文件'}`;
     viewer.loading = 'lazy';
     viewer.style.cssText = 'display:block;width:100%;height:420px;border:1px solid var(--line);border-radius:8px;margin-top:12px';
-    target.append(viewer);
     target.append(make('p', '原始 OCR/版面识别结果需要人工核对；同页相邻片段或列数相同不足以证明它们属于同一张续表。', 'warning'));
 
     const fragmentList = make('div');
@@ -296,7 +419,10 @@
       fragmentList.append(label);
       renderFragment(fragment, fragmentList);
     }
-    target.append(fragmentList);
+    const sourceAndTables = make('div');
+    sourceAndTables.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:16px;align-items:start;margin-top:12px';
+    sourceAndTables.append(viewer, fragmentList);
+    target.append(sourceAndTables);
     const formulas = bundle.formulas || [];
     if (formulas.length) {
       const formulaList = make('details');
@@ -304,7 +430,21 @@
       for (const formula of formulas) formulaList.append(make('p', `第 ${formula.page || '未知'} 页 · ${formula.latex || formula.text || JSON.stringify(formula)}`));
       target.append(formulaList);
     }
-    const planTitle = make('h3', '映射计划 JSON');
+    const context = bundle.page_context || [];
+    const contextDetails = make('details');
+    contextDetails.append(make('summary', `页面上下文（未绑定到表格） · ${context.length} 项`));
+    if (bundle.page_context_coverage === 'incomplete') contextDetails.append(make('p', `上下文提取不完整：${(bundle.page_context_warnings || []).join('；')}`, 'warning'));
+    contextDetails.append(make('p', '这些解析器文本保留原始页码、位置和区块类型，只作为候选证据。它们不自动成为任何表格的单位、标题或脚注。', 'muted'));
+    for (const item of context) contextDetails.append(make('p', `第 ${item.page ?? '未知'} 页 · ${item.block_type || '未知区块'} · ${item.text || item.text_parts?.join('') || ''}${item.bbox ? ` · 坐标 ${JSON.stringify(item.bbox)}` : ''}`));
+    if (context.length || bundle.page_context_coverage === 'incomplete') target.append(contextDetails);
+    if ((bundle.fragments || []).some(fragment => (fragment.rows || []).some(row => row.every(cell => !String(cell.text || '').trim())))) {
+      target.append(make('p', '检测到全空原始行。请对照 PDF 核对；这些行不会在审核界面中自动删除。', 'warning'));
+    }
+    if (formulas.length) target.append(make('p', '公式仅保留识别到的 LaTeX/文本，没有解析器置信度证明，也不会自动计算。', 'warning'));
+    const manualTitle = make('h3', '人工映射表单');
+    const manualForm = make('div');
+    const planDetails = make('details');
+    planDetails.append(make('summary', '高级映射 JSON'));
     const planHelp = make('p', 'header_rows 的 row 为片段内零起算行号；每列 source_columns 必须为每个片段填写原始零起算列号。表头移除需填写 {row, reason}。边界续接需显式填写 boundary_merges。', 'muted');
     const editor = make('textarea');
     editor.id = 'pdfPlanEditor';
@@ -313,13 +453,24 @@
     editor.setAttribute('aria-label', 'PDF 表格映射计划 JSON');
     editor.value = JSON.stringify({bundle_sha256: draft.bundle_sha256, fragment_ids: [], header_rows: {}, columns: [], excluded_rows: [], boundary_merges: []}, null, 2);
     editor.addEventListener('input', () => invalidatePreview());
-    target.append(planTitle, planHelp, editor);
+    planDetails.append(planHelp, editor);
+    target.append(manualTitle, manualForm, planDetails);
     const controls = make('div', undefined, 'row');
     controls.style.marginTop = '12px';
+    const reparseMode = make('select');
+    reparseMode.id = 'pdfReparseOcrMode';
+    reparseMode.setAttribute('aria-label', '复核 OCR 模式');
+    for (const [value, label] of [['auto', '自动选择 OCR'], ['ocr', '强制 OCR'], ['txt', '尝试文本模式']]) {
+      const option = make('option', label); option.value = value; reparseMode.append(option);
+    }
     controls.append(
+      reparseMode,
+      action('使用基础模型复核', () => reparseDraft('basic', reparseMode.value).catch(error => setStatus(error.message, true)), true),
+      action('使用标准模型复核', () => reparseDraft('standard', reparseMode.value).catch(error => setStatus(error.message, true)), true),
       action('生成手动计划模板', () => {
         try {
           editor.value = JSON.stringify(createManualPlan(), null, 2);
+          renderManualPlanForm(editor, manualForm);
           invalidatePreview('手动计划已创建，请填写表头、列名、单位与跨页关系，再预览。');
         } catch (error) { setStatus(error.message, true); }
       }, true),
@@ -327,6 +478,7 @@
       action('验证并预览', () => previewPlan().catch(error => setStatus(error.message, true)), true)
     );
     target.append(controls);
+    target.append(make('p', '复核使用当前服务端配置的 MinerU，生成新的独立草稿。不同模型的识别结果仍需逐格对照原 PDF；不会覆盖当前草稿、已发布表或自动发布。', 'warning'));
     const confirmation = make('div', undefined, 'mapping-block');
     confirmation.append(make('h3', '人工确认发布'));
     confirmation.append(make('p', '发布会创建可查询的表格版本。确认表示你已检查原 PDF、片段关系、表头、列与单位，不表示 OCR 或提取准确率已经验证。', 'warning'));
@@ -424,6 +576,28 @@
     await loadTables(savedEpoch, savedOperation);
   }
 
+  async function reparseDraft(tier, ocrMode) {
+    if (!draft) throw new Error('请先打开一个 PDF 草稿。');
+    if (!['basic', 'standard'].includes(tier) || !['auto', 'ocr', 'txt'].includes(ocrMode)) {
+      throw new Error('复核模型或识别模式无效。');
+    }
+    const savedEpoch = epoch;
+    const savedOperation = operation;
+    setStatus('正在校验原件快照并启动独立复核；不会替换或发布当前草稿。');
+    const result = await api(`/api/pdf/drafts/${encodeURIComponent(draft.draft_id)}/reparse`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tier, ocr_mode: ocrMode})
+    }, 120000);
+    if (!current(savedEpoch, savedOperation)) return;
+    if (result.status === 'completed' && result.draft_id) {
+      await selectDraft(result.draft_id);
+      return;
+    }
+    const jobId = result.id || result.job_id;
+    if (!jobId) throw new Error('复核请求没有返回任务或草稿编号。');
+    await pollJob(jobId, savedEpoch, savedOperation);
+  }
+
   async function loadTables(savedEpoch = epoch, savedOperation = operation) {
     const result = await api('/api/pdf/tables');
     if (!current(savedEpoch, savedOperation)) return;
@@ -495,7 +669,9 @@
       } else {
         throw new Error('PDF 原件请求没有返回任务或草稿编号。');
       }
-      if (isCurrentSourceScope()) setStatus('已打开知识库中的 PDF 草稿。请核对原件、解析片段和映射后再预览。');
+      if (isCurrentSourceScope()) setStatus(response.reused
+        ? '已复用经当前原件内容校验的同配置 PDF 草稿。请继续核对原件、解析片段和映射。'
+        : '已打开知识库中的 PDF 草稿。请核对原件、解析片段和映射后再预览。');
     } catch (error) {
       if (isCurrentSourceScope()) setStatus(error.message || '读取 PDF 原件失败。', true);
     } finally {

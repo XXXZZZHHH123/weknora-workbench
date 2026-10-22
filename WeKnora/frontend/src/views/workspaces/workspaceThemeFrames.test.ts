@@ -6,7 +6,6 @@ import ts from 'typescript'
 import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
 
 const surfaces = [
-  { name: 'knowledge structured', file: './KnowledgeStructuredData.vue', frame: 'frame', receiver: 'receive', generation: 'frameGeneration.value' },
   { name: 'legacy structured', file: '../structured/index.vue', frame: 'frame', receiver: 'receive', generation: 'generation.value' },
   { name: 'materials review', file: '../materials/MaterialsCenter.vue', frame: 'reviewFrame', receiver: 'receiveReview', generation: 'generation' },
   { name: 'research', file: '../research/index.vue', frame: 'frame', receiver: 'receive', generation: 'generation.value' },
@@ -66,7 +65,7 @@ for (const surface of surfaces) {
 }
 
 test('research theme requests change the parent preference only from the registered frame and with a valid mode', async t => {
-  const f = await fixture(surfaces[3]); t.after(f.close)
+  const f = await fixture(surfaces.find(surface => surface.name === 'research')!); t.after(f.close)
   const request = f.event({ type: 'workspace-theme-request', mode: 'dark' })
   f.view.receive({ ...request, origin: 'https://untrusted.example' }); f.view.receive({ ...request, source: {} })
   f.view.receive(f.event({ type: 'workspace-theme-request', mode: 'invalid' }))

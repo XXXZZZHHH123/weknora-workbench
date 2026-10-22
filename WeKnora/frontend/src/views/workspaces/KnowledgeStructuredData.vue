@@ -1,27 +1,24 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { refreshStructuredFrame } from '@/utils/authFetch'
-import { useTheme } from '@/composables/useTheme'
 import { getKnowledgeBaseById } from '@/api/knowledge-base'
 import KnowledgeWorkbenchLink from './KnowledgeWorkbenchLink.vue'
 import { workspaceErrorMessage, workspaceIdentity } from './workspaceForm'
+import KnowledgeStructuredFrame from '@/components/KnowledgeStructuredFrame.vue'
 
 const route = useRoute(), router = useRouter(), auth = useAuthStore()
-const { effectiveTheme } = useTheme()
 const kbId = computed(() => String(route.params.kbId || ''))
 const tenant = computed(() => auth.selectedTenantId ?? auth.tenant?.id)
 const scope = computed(() => `${workspaceIdentity(tenant.value, auth.user?.id)}:${kbId.value}`)
 const mode = computed(() => route.query.mode === 'query' ? 'query' : 'import')
 const sourceKnowledgeId = computed(() => route.query.view !== 'model-settings' && typeof route.query.source_knowledge_id === 'string' ? route.query.source_knowledge_id : '')
 const sourceFileType = computed(() => route.query.source_file_type === 'pdf' ? 'pdf' : 'xlsx')
-const library = ref<any>(null), frame = ref<HTMLIFrameElement>(), frameGeneration = ref(0), loading = ref(false), error = ref('')
-const src = computed(() => `/structured/?session=${frameGeneration.value}${route.query.view === 'model-settings' ? '&view=model-settings' : ''}`)
+const library = ref<any>(null), loading = ref(false), error = ref('')
 let generation = 0
 async function load() {
   const own = ++generation
-  library.value = null; error.value = ''; loading.value = true; frameGeneration.value++
+  library.value = null; error.value = ''; loading.value = true
   try {
     const detail = await getKnowledgeBaseById(kbId.value)
     if (own !== generation) return
@@ -29,34 +26,16 @@ async function load() {
   } catch (e) { if (own === generation) error.value = workspaceErrorMessage(e) }
   finally { if (own === generation) loading.value = false }
 }
-function sendView() { frame.value?.contentWindow?.postMessage({ type: 'structured-view', mode: mode.value }, window.location.origin) }
-function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
-function sendAuth() {
-  if (!library.value || !auth.token || !tenant.value) return
-  frame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: tenant.value, knowledgeBaseId: kbId.value, sourceKnowledgeId: sourceKnowledgeId.value, sourceFileType: sourceFileType.value }, window.location.origin)
-  sendView()
-}
-function receive(event: MessageEvent) {
-  if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
-  if (event.data?.type === 'structured-refresh-auth') { void refreshStructuredFrame(event, () => frame.value?.contentWindow === event.source); return }
-  if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
-  if (event.data?.type === 'structured-ready') sendAuth()
-  if (event.data?.type === 'structured-navigate') {
-    if (event.data.view === 'conversation') router.push(`/platform/knowledge-bases/${kbId.value}/creatChat`)
-    else if (event.data.view === 'materials') router.push({ path: route.path, query: { mode: 'import' } })
-    else router.push({ path: route.path, query: { ...route.query, view: event.data.view === 'model-settings' ? 'model-settings' : undefined } })
-  }
+function handleNavigate(view: string) {
+  if (view === 'conversation') router.push(`/platform/knowledge-bases/${kbId.value}/creatChat`)
+  else if (view === 'materials') router.push({ path: route.path, query: { mode: 'import' } })
+  else router.push({ path: route.path, query: { ...route.query, view: view === 'model-settings' ? 'model-settings' : undefined } })
 }
 watch(scope, load, { immediate: true })
-watch(() => auth.token, sendAuth)
-watch([sourceKnowledgeId, sourceFileType], sendAuth)
-watch(mode, sendView)
-watch(effectiveTheme, sendTheme)
 watch(() => route.query.mode, (value) => {
   if (value === 'source') router.replace({ path: route.path, query: { ...route.query, mode: 'query' }, hash: route.hash })
 }, { immediate: true })
-onMounted(() => window.addEventListener('message', receive))
-onBeforeUnmount(() => { generation++; window.removeEventListener('message', receive) })
+onBeforeUnmount(() => { generation++ })
 </script>
 
 <template>
@@ -80,7 +59,7 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('message', rece
     <div v-else-if="loading" class="knowledge-structured-status"><t-loading text="正在打开当前知识库" /></div>
     <template v-else-if="library">
 
-      <iframe :key="frameGeneration" ref="frame" :src="src" title="当前知识库结构化数据工作台" @load="sendAuth" />
+      <KnowledgeStructuredFrame :knowledge-base-id="kbId" :source-knowledge-id="sourceKnowledgeId" :source-file-type="sourceFileType" :mode="mode" :view="String(route.query.view || '')" @navigate="handleNavigate" />
     </template>
   </div>
 </template>

@@ -28,6 +28,9 @@ import zipfile
 SCHEMA_VERSION = "pdf_tables_v1"
 DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024
 DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+MAX_PAGE_CONTEXT_BLOCKS = 5000
+MAX_PAGE_CONTEXT_TEXT_BYTES = 16 * 1024
+MAX_PAGE_CONTEXT_TOTAL_TEXT_BYTES = 1024 * 1024
 DEFAULT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_POLLS = 100
@@ -171,12 +174,14 @@ def normalize_parser_response(engine: str, response: Mapping[str, Any],
         if layout is None:
             raise PDFParserError("MinerU V1 response is missing structured layout JSON")
         fragments, formulas = _mineru_tables(layout)
+        page_context, context_warnings = _mineru_page_context(layout)
         raw_artifact = {"structured": layout, "markdown": response.get("markdown", "")}
     elif canonical == "mineru_legacy":
         layout = response.get("content_list")
         if layout is None:
             raise PDFParserError("MinerU legacy response is missing structured content_list")
         fragments, formulas = _mineru_tables(layout)
+        page_context, context_warnings = _mineru_page_context(layout)
         raw_artifact = {"structured": layout, "markdown": response.get("md_content", ""),
                         "response_json": response}
     elif canonical == "paddleocr_vl":
@@ -185,6 +190,7 @@ def normalize_parser_response(engine: str, response: Mapping[str, Any],
         if not isinstance(pages, list) or not pages:
             raise PDFParserError("PaddleOCR-VL response is missing result.layoutParsingResults")
         fragments, formulas = _paddle_tables(pages)
+        page_context, context_warnings = _paddle_page_context(pages)
         raw_artifact = {"response_json": response}
     else:
         raise PDFParserError("unsupported parser engine")
@@ -207,8 +213,14 @@ def normalize_parser_response(engine: str, response: Mapping[str, Any],
         "parser": {"engine": _engine_name(canonical), "version": _parser_version(response)},
         "fragments": fragments,
         "formulas": formulas,
+        # Page-scoped parser text is candidate evidence only. It is deliberately
+        # not attached to nearby tables or classified as a unit/caption.
+        "page_context": page_context,
+        "page_context_coverage": "incomplete" if context_warnings else "complete",
         "raw": _json_safe_artifact(raw_artifact, max_artifact_bytes),
     }
+    if context_warnings:
+        bundle["page_context_warnings"] = context_warnings
     if ambiguities:
         bundle["ambiguities"] = ambiguities
         bundle["completeness"] = "unknown"
@@ -542,6 +554,183 @@ def _paddle_tables(pages: list[Any]) -> tuple[list[dict[str, Any]], list[dict[st
                 fragments.append(_fragment(page_index, bbox, grid, source_html,
                                           fragment_id=table.get("id") or f"paddle-{page_index}-table-{idx + 1}"))
     return fragments, formulas
+
+
+def _mineru_page_context(layout: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    """Retain page-scoped non-table text without assigning it to a table."""
+    if isinstance(layout, dict) and "layout" in layout:
+        layout = layout["layout"]
+    candidates: list[tuple[Any, ...]] = []
+    if isinstance(layout, dict) and layout.get("schema") == "docvortex.middle":
+        for page_doc in layout.get("pages", []):
+            if not isinstance(page_doc, dict):
+                continue
+            page_idx = page_doc.get("page_idx")
+            for block_index, block in enumerate(page_doc.get("blocks", [])):
+                if not isinstance(block, dict):
+                    continue
+                typ = str(block.get("type", "")).lower()
+                if typ in {"formula", "equation"}:
+                    continue
+                if typ == "table":
+                    # Keep parser-typed caption/footnote children as separately
+                    # anchored evidence; table-body HTML remains in the fragment.
+                    candidates.extend((page_idx, block_index, child.get("id"),
+                                       child.get("type"), child.get("bbox"),
+                                       child.get("content"), nested_path)
+                                      for nested_path, child in _nested_context_blocks(block.get("content")))
+                    continue
+                candidates.append((page_idx, block_index, block.get("id"), block.get("type"),
+                                   block.get("bbox"), block.get("content"), []))
+    elif isinstance(layout, list):
+        for block_index, block in enumerate(layout):
+            if not isinstance(block, dict) or str(block.get("type", "")).lower() in {
+                "table", "formula", "equation"
+            }:
+                continue
+            candidates.append((block.get("page_idx"), block_index, block.get("id"),
+                               block.get("type"), block.get("bbox"),
+                               block.get("content", block.get("text")), []))
+    return _build_page_context("mineru", candidates)
+
+
+def _paddle_page_context(pages: list[Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    candidates: list[tuple[Any, Any, Any, Any, Any, Any]] = []
+    for page_index, page in enumerate(pages, 1):
+        if not isinstance(page, dict):
+            continue
+        pruned = page.get("prunedResult")
+        if isinstance(pruned, str):
+            try:
+                pruned = json.loads(pruned)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(pruned, dict):
+            continue
+        width, height = pruned.get("width"), pruned.get("height")
+        for block_index, block in enumerate(pruned.get("parsing_res_list") or []):
+            if not isinstance(block, dict):
+                continue
+            label = str(block.get("block_label") or block.get("label") or "").lower()
+            if label in {"table", "formula", "equation"} or _contains_table(block.get("block_content")):
+                continue
+            candidates.append((page_index - 1, block_index,
+                               block.get("id", block.get("block_id")),
+                               block.get("block_label", block.get("label")),
+                               block.get("block_bbox", block.get("bbox")),
+                               block.get("block_content", block.get("text", block.get("content"))),
+                               (width, height) if width and height else None, []))
+    return _build_page_context("paddleocr_vl", candidates, paddle=True)
+
+
+def _build_page_context(engine: str, candidates: list[tuple[Any, ...]], *,
+                        paddle: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
+    context: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    total_text_bytes = 0
+    for candidate_index, candidate in enumerate(candidates):
+        if candidate_index >= MAX_PAGE_CONTEXT_BLOCKS:
+            warnings.append("page-context block limit reached; remaining source text remains in raw parser output")
+            break
+        if paddle:
+            page_idx, block_index, block_id, block_type, raw_bbox, raw_content, scale, nested_path = candidate
+        else:
+            page_idx, block_index, block_id, block_type, raw_bbox, raw_content, nested_path = candidate
+            scale = None
+        parts = _context_text_parts(raw_content)
+        if not parts:
+            continue
+        try:
+            text_bytes = sum(len(part.encode("utf-8")) for part in parts)
+        except UnicodeEncodeError:
+            warnings.append("page-context block with invalid unicode omitted; raw parser output retained")
+            continue
+        if text_bytes > MAX_PAGE_CONTEXT_TEXT_BYTES:
+            warnings.append("oversized page-context block omitted; raw parser output retained")
+            continue
+        if total_text_bytes + text_bytes > MAX_PAGE_CONTEXT_TOTAL_TEXT_BYTES:
+            warnings.append("page-context text limit reached; remaining source text remains in raw parser output")
+            break
+        valid_page_idx = isinstance(page_idx, int) and not isinstance(page_idx, bool) and page_idx >= 0
+        page = page_idx + 1 if valid_page_idx else None
+        retained_page_idx = (page_idx if valid_page_idx else
+                             page_idx if isinstance(page_idx, int) and not isinstance(page_idx, bool) else
+                             page_idx[:128] if isinstance(page_idx, str) else None)
+        normalized_box = _box(raw_bbox, scale=scale)
+        if raw_bbox is not None and normalized_box is None:
+            warnings.append("invalid page-context bbox omitted; raw parser output retained")
+        if not valid_page_idx:
+            warnings.append("page-context block has no valid parser page index; raw parser output retained")
+        if len(nested_path) > 64:
+            warnings.append("page-context nesting limit reached; raw parser output retained")
+            continue
+        safe_block_id = (block_id if isinstance(block_id, str) and len(block_id) <= 512 else
+                         block_id if isinstance(block_id, int) and not isinstance(block_id, bool)
+                         and block_id.bit_length() <= 4096 else None)
+        if block_id is not None and safe_block_id is None:
+            warnings.append("unsupported page-context block id omitted; raw parser output retained")
+        safe_block_type = block_type if isinstance(block_type, str) and len(block_type) <= 128 else None
+        if block_type is not None and safe_block_type is None:
+            warnings.append("unsupported page-context block type omitted; raw parser output retained")
+        entry = {
+            "engine": engine,
+            "parser_page_idx": retained_page_idx,
+            "page": page,
+            "block_index": block_index,
+            "nested_path": nested_path,
+            "block_id": safe_block_id,
+            "block_type": safe_block_type,
+            "bbox": normalized_box,
+            "bbox_precision": "block" if normalized_box else None,
+            "text_parts": parts,
+            "text": "".join(parts),
+        }
+        if page is None:
+            entry["requires_review"] = True
+            entry["ambiguity"] = "parser page provenance is missing or invalid"
+        context.append(entry)
+        total_text_bytes += text_bytes
+    # Repeated warnings are not useful; preserve deterministic order.
+    return context, list(dict.fromkeys(warnings))
+
+
+def _context_text_parts(value: Any, depth: int = 0) -> list[str]:
+    """Extract source strings in parser order without whitespace normalization."""
+    if depth > 64:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [part for item in value for part in _context_text_parts(item, depth + 1)]
+    if isinstance(value, dict):
+        out: list[str] = []
+        for key in ("text", "content"):
+            if key in value:
+                out.extend(_context_text_parts(value[key], depth + 1))
+        return out
+    return []
+
+
+def _nested_context_blocks(value: Any, path: list[int] | None = None,
+                           depth: int = 0) -> list[tuple[list[int], dict[str, Any]]]:
+    """Find parser-labeled non-body child blocks without interpreting their meaning."""
+    path = path or []
+    out: list[tuple[list[int], dict[str, Any]]] = []
+    if depth > 64:
+        return out
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            out.extend(_nested_context_blocks(item, [*path, index], depth + 1))
+    elif isinstance(value, dict):
+        typ = str(value.get("type", "")).lower()
+        if typ and typ not in {"table_body", "table", "formula", "equation"}:
+            if _context_text_parts(value.get("content", value.get("text"))):
+                out.append((path, value))
+                return out
+        for index, (key, child) in enumerate(value.items()):
+            if key in {"content", "children"}:
+                out.extend(_nested_context_blocks(child, [*path, index], depth + 1))
+    return out
 
 
 def _find_html_or_rows(value: Any) -> Any:

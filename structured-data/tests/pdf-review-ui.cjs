@@ -21,9 +21,11 @@ const draft = {
     source: {file_name: 'suspicious.pdf', sha256: bundleHash},
     parser: {engine: 'fixture-engine', version: '0'},
     formulas: [{latex: '\\frac{a}{b}', page: 1}],
+    page_context: [{page: 1, block_type: 'text', text: 'Quantity (tonnes)', bbox: [0.1, 0.1, 0.4, 0.15]}],
     fragments: [{id: 'fragment-1', page: 1, bbox: [0.1, 0.2, 0.9, 0.8], rows: [
       [{text: 'Item'}, {text: 'Amount'}],
-      [{text: 'North'}, {text: '12.50 <img src=x onerror=alert(1)>'}]
+      [{text: 'North'}, {text: '12.50 <img src=x onerror=alert(1)>'}],
+      [{text: ''}, {text: ''}]
     ]}]
   }
 };
@@ -75,15 +77,17 @@ async function main() {
         if(path==='/api/pdf/tables')return {tables:window.__published||[]};
         if(path==='/api/pdf/import')return {id:'job-'+(++window.__jobCount)};
         if(path==='/api/pdf/import-knowledge'){window.__knowledgeImportBody=JSON.parse(options.body);return {id:'job-'+(++window.__jobCount)}}
-        if(path.startsWith('/api/pdf/jobs/'))return {status:'completed',draft_id:'pdfd_fixture'};
+        if(path.startsWith('/api/pdf/jobs/'))return {status:'completed',draft_id:window.__jobDraftId||'pdfd_fixture'};
         if(path==='/api/pdf/drafts/pdfd_fixture')return window.__draft;
+        if(path==='/api/pdf/drafts/pdfd_basic')return window.__basicDraft;
+        if(path==='/api/pdf/drafts/pdfd_fixture/reparse'){window.__reparseBody=JSON.parse(options.body);window.__jobDraftId='pdfd_basic';return {id:'job-basic'}}
         if(path.endsWith('/suggest'))return {status:'ready',message:'待人工核对',plan:window.__plan,preview:window.__preview};
         if(path.endsWith('/preview'))return window.__preview;
         if(path.endsWith('/publish')){window.__published=[{table_id:'pdft_fixture',source:{file_name:'suspicious.pdf'},columns:window.__plan.columns,coverage:{logical_row_count:1},extraction_verified:false}];return {table_id:'pdft_fixture'};}
         throw Error('Unexpected API '+path);
       },authenticatedFetch:async(path,options={})=>{if(path.endsWith('/source')){window.__sourceFetches++;return new Response(new Blob(['%PDF-1.4']),{status:200,headers:{'content-type':'application/pdf'}})}throw Error('Unexpected protected fetch '+path)}};
       ${sourceRoute}
-      window.__apiCalls=[];window.__jobCount=0;window.__sourceFetches=0;window.__published=[];window.__draft=${JSON.stringify(draft)};window.__plan=${JSON.stringify(plan)};window.__preview=${JSON.stringify(preview)};
+      window.__apiCalls=[];window.__jobCount=0;window.__sourceFetches=0;window.__published=[];window.__jobDraftId='pdfd_fixture';window.__draft=${JSON.stringify(draft)};window.__basicDraft={...window.__draft,draft_id:'pdfd_basic',bundle_sha256:'${'b'.repeat(64)}',bundle:{...window.__draft.bundle,parser:{engine:'mineru',version:'fixture',requested_tier:'basic',requested_ocr_mode:'ocr'}}};window.__plan=${JSON.stringify(plan)};window.__preview=${JSON.stringify(preview)};
       </script><script src="/pdf-review.js"></script></body>`;
     } else if (url.pathname === '/pdf-review.js') {
       type = 'text/javascript';
@@ -139,6 +143,9 @@ async function main() {
     assert.equal(await evaluate('window.__sourceFetches'), 1, 'draft source must use the protected fetch adapter');
     assert.equal(await evaluate("document.querySelectorAll('#pdfDraftDetail img').length"), 0, 'raw cell strings must not become HTML');
     assert.equal(await evaluate("document.querySelector('#pdfDraftDetail').textContent.includes('公式线索')"), true);
+    assert.match(await evaluate("document.querySelector('#pdfDraftDetail').textContent"), /页面上下文（未绑定到表格）/);
+    assert.match(await evaluate("document.querySelector('#pdfDraftDetail').textContent"), /全空原始行/);
+    assert.match(await evaluate("document.querySelector('#pdfDraftDetail').textContent"), /公式仅保留识别到的 LaTeX/);
 
     await evaluate("document.querySelector('#pdfDraftDetail input[type=checkbox]').click()");
     await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('请求 AI 映射建议')).click()");
@@ -148,6 +155,20 @@ async function main() {
     assert.equal(await evaluate("document.querySelector('#pdfPublish').disabled"), true, 'AI suggestion cannot publish without the human checkbox');
     await evaluate("document.querySelector('#pdfPlanEditor').value=JSON.stringify({...JSON.parse(document.querySelector('#pdfPlanEditor').value),title:'Edited'});document.querySelector('#pdfPlanEditor').dispatchEvent(new Event('input',{bubbles:true}))");
     assert.equal(await evaluate("document.querySelector('#pdfPublish').disabled"), true, 'editing a plan invalidates its preview');
+    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('生成手动计划模板')).click()");
+    assert.equal(await evaluate("[...document.querySelectorAll('#pdfDraftDetail details > summary')].some(s=>s.textContent==='高级映射 JSON')"), true, 'advanced JSON remains collapsible');
+    assert.equal(await evaluate("document.querySelector('[data-exclude-fragment=\"fragment-1\"][data-exclude-row=\"2\"]').checked"), false, 'blank rows are not automatically excluded');
+    await evaluate("(()=>{const h=document.querySelector('[data-header-fragment=\"fragment-1\"][data-header-row=\"0\"]');h.checked=true;h.dispatchEvent(new Event('change',{bubbles:true}));const x=document.querySelector('[data-exclude-fragment=\"fragment-1\"][data-exclude-row=\"2\"]');x.checked=true;x.dispatchEvent(new Event('change',{bubbles:true}))})()");
+    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('应用人工填写到计划')).click()");
+    assert.match(await evaluate("document.querySelector('#pdfReviewStatus').textContent"), /表头行 0 需要原因/);
+    await evaluate("(()=>{document.querySelector('[data-header-reason-fragment=\"fragment-1\"][data-header-reason-row=\"0\"]').value='确认列名';document.querySelector('[data-exclude-reason-fragment=\"fragment-1\"][data-exclude-reason-row=\"2\"]').value='确认是页脚空行';document.querySelector('[data-column-name=\"0\"]').value='Item';document.querySelector('[data-column-name=\"1\"]').value='Amount';document.querySelector('[data-column-type=\"0\"]').value='text';document.querySelector('[data-column-type=\"1\"]').value='decimal';document.querySelector('[data-column-unit=\"1\"]').value='tonnes';document.querySelector('[data-source-column=\"0\"][data-source-fragment=\"fragment-1\"]').value='0';document.querySelector('[data-source-column=\"1\"][data-source-fragment=\"fragment-1\"]').value='1'})()");
+    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('应用人工填写到计划')).click()");
+    const manualPlan = await evaluate("JSON.parse(document.querySelector('#pdfPlanEditor').value)");
+    assert.deepEqual(manualPlan.header_rows['fragment-1'], [{row: 0, reason: '确认列名'}]);
+    assert.deepEqual(manualPlan.excluded_rows, [{fragment_id: 'fragment-1', row: 2, reason: '确认是页脚空行'}]);
+    assert.equal(manualPlan.columns[1].type, 'decimal');
+    assert.equal(manualPlan.columns[1].unit, 'tonnes');
+    assert.deepEqual(manualPlan.columns[1].source_columns, {'fragment-1': 1});
     await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('验证并预览')).click()");
     await wait("document.querySelector('#pdfPreview')?.textContent.includes('North')");
     await evaluate("document.querySelector('#pdfPublishReviewed').click()");
@@ -157,6 +178,11 @@ async function main() {
     await wait("document.querySelector('#pdfReviewStatus')?.textContent.includes('已发布表格')");
     assert.equal(await evaluate("window.__apiCalls.filter(x=>x.path.endsWith('/publish')).length"), 1);
     assert.equal(await evaluate("JSON.parse(window.__apiCalls.find(x=>x.path.endsWith('/publish')).body).reviewed"), true);
+    await evaluate("document.querySelector('#pdfReparseOcrMode').value='ocr';[...document.querySelectorAll('button')].find(b=>b.textContent.includes('使用基础模型复核')).click()");
+    await wait('window.__sourceFetches===2');
+    assert.deepEqual(await evaluate('window.__reparseBody'), {tier: 'basic', ocr_mode: 'ocr'});
+    assert.match(await evaluate("document.querySelector('#pdfDraftDetail').textContent"), /请求配置：basic \/ ocr/);
+    assert.equal(await evaluate("window.__apiCalls.filter(x=>x.path.endsWith('/publish')).length"), 1, 'reparse creates a new draft and does not publish');
     assert.deepEqual(errors, []);
 
     await evaluate("window.authEpoch++;window.dispatchEvent(new Event('structured-auth-scope-change'))");
@@ -168,12 +194,12 @@ async function main() {
     assert.equal(await evaluate("document.body.classList.contains('pdf-native-source')"), true, 'production route must switch to PDF-only native source mode');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#directUpload')).display"), 'none', 'PDF source mode must hide the Excel importer');
     assert.equal(await evaluate("window.__apiCalls.some(x=>x.path==='/api/pdf/import-knowledge'&&JSON.parse(x.body).source_knowledge_id==='source-pdf-1')"), true, 'knowledge PDF must use its PDF import endpoint and source ID');
-    assert.equal(await evaluate('window.__sourceFetches'), 2, 'knowledge PDF draft must retrieve its protected original');
+    assert.equal(await evaluate('window.__sourceFetches'), 3, 'each selected draft must retrieve its protected original');
     await evaluate("window.authEpoch++;window.dispatchEvent(new Event('structured-auth-scope-change'))");
     await wait("!document.querySelector('#pdfDraftDetail')?.textContent.includes('suspicious.pdf')");
     await evaluate("document.body.classList.remove('view-import');document.body.classList.add('view-query')");
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#pdfReviewPanel')).display"), 'block', 'PDF published information remains accessible in query view');
-    console.log('PASS: protected source fetch, PDF knowledge import, text-only rendering, plan preview invalidation, explicit publish confirmation, and stale-scope clearing.');
+    console.log('PASS: protected source fetch, PDF knowledge import, Basic model reparse into a separate draft, source-anchored review context, manual mapping controls, plan preview invalidation, explicit publish confirmation, and stale-scope clearing.');
   } finally {
     socket?.close();
     await stopBrowser(browser);

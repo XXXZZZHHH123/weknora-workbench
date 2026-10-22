@@ -137,6 +137,28 @@ def _bundle(bundle):
         _span_regions(f)
     if count > MAX_ROWS:
         raise ValueError('Raw input exceeds 50000 rows; split extraction explicitly')
+    contexts = bundle.get('page_context', [])
+    if not isinstance(contexts, list) or len(contexts) > 5000:
+        raise ValueError('Invalid bounded PDF page context')
+    context_bytes = 0
+    for context in contexts:
+        if not isinstance(context, dict) or not isinstance(context.get('text'), str):
+            raise ValueError('PDF page context requires source text')
+        page = context.get('page')
+        if page is not None and (type(page) is not int or page < 1):
+            raise ValueError('PDF page context has an invalid page')
+        _bbox(context.get('bbox'))
+        parts = context.get('text_parts')
+        if not isinstance(parts, list) or any(not isinstance(part, str) for part in parts) or ''.join(parts) != context['text']:
+            raise ValueError('PDF page context text disagrees with source parts')
+        size = len(context['text'].encode('utf-8'))
+        if size > 16 * 1024:
+            raise ValueError('PDF page context block exceeds text budget')
+        context_bytes += size
+    if context_bytes > 1024 * 1024:
+        raise ValueError('PDF page context exceeds text budget')
+    if 'page_context' in bundle and bundle.get('page_context_coverage') not in ('complete', 'incomplete'):
+        raise ValueError('PDF page context coverage must be explicit')
     try:
         size = len(_json(bundle).encode())
     except (ValueError, TypeError) as exc:
@@ -144,6 +166,16 @@ def _bundle(bundle):
     if size > MAX_BUNDLE_BYTES:
         raise ValueError('Raw extraction bundle exceeds storage budget')
     return deepcopy(bundle)
+
+
+def selected_page_context(bundle, pages):
+    """Return source-page evidence; this does not bind a unit or note to a table."""
+    if 'page_context' not in bundle:
+        return {}
+    return dict(page_context=[deepcopy(c) for c in bundle['page_context'] if c.get('page') in pages or c.get('page') is None],
+                page_context_scope='page_candidates_not_table_binding',
+                page_context_coverage=bundle.get('page_context_coverage', 'incomplete'),
+                page_context_warnings=deepcopy(bundle.get('page_context_warnings', [])))
 
 
 def _numeric(text):
@@ -421,7 +453,8 @@ class PDFTableStore:
                     title=title, fragments=[{key: deepcopy(fragments[i].get(key)) for key in
                                            ('id', 'page', 'caption', 'footnotes', 'bbox')} for i in ids],
                     columns=deepcopy(columns), rows=rows, coverage=coverage,
-                    status='validated_draft', extraction_verified=False)
+                    status='validated_draft', extraction_verified=False,
+                    **selected_page_context(bundle, {fragments[i]['page'] for i in ids}))
 
     def publish(self, draft_id, plan):
         if not isinstance(plan, dict) or plan.get('reviewed') is not True:

@@ -50,6 +50,17 @@ def imported(service, native=False):
     raise AssertionError('mocked PDF import did not finish')
 
 
+def finish_pdf_job(client, job_id):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        job = client.get('/api/pdf/jobs/' + job_id, headers=headers()).json()
+        if job['status'] != 'processing':
+            assert job['status'] == 'completed', job
+            return job
+        time.sleep(.01)
+    raise AssertionError('mocked PDF parse job did not finish')
+
+
 def plan(draft):
     return dict(bundle_sha256=draft['bundle_sha256'], fragment_ids=['table-1', 'table-2'],
                 header_rows={'table-1': [{'row': 0, 'reason': 'original header'}], 'table-2': []},
@@ -112,6 +123,143 @@ def test_native_pdf_uses_authorized_original_and_default_excel_stays_restricted(
     assert client.post('/api/pdf/import-knowledge', json={'source_knowledge_id': 'source-a'}, headers=headers()).status_code == 409
 
 
+def test_reparse_accepts_only_server_configured_mineru_profiles_and_keeps_old_draft(pdf_service, monkeypatch):
+    from structured_data.pdf_parser_bridge import ParserConfig
+    client, _, state, _, _ = pdf_service
+    original = imported(pdf_service)
+    base = f"/api/pdf/drafts/{original['draft_id']}/reparse"
+    monkeypatch.setattr(ParserConfig, 'from_env', classmethod(lambda cls: ParserConfig(
+        'mineru_v1', 'http://127.0.0.1:18733', api_key='server-only-key',
+        tier='standard', ocr_mode='auto')))
+    calls = []
+    async def parse(path, source=None, **kwargs):
+        calls.append((path.read_bytes(), source, kwargs))
+        result = deepcopy(bundle([['Item', 'Value'], ['A', '1.20']]))
+        result['source'] = source
+        result['parser'] = {'engine': 'mineru', 'version': 'fixture'}
+        return result
+    monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', parse)
+
+    assert client.post(base, json={'tier': 'basic', 'ocr_mode': 'bad'}, headers=headers()).status_code == 422
+    assert client.post(base, json={'tier': 'basic', 'ocr_mode': 'ocr', 'url': 'http://evil.test'}, headers=headers()).status_code == 422
+    assert client.post(base, json={'tier': 'flash', 'ocr_mode': 'auto'}, headers=headers()).status_code == 422
+    assert not calls
+
+    started = client.post(base, json={'tier': 'basic', 'ocr_mode': 'ocr'}, headers=headers())
+    assert started.status_code == 200, started.text
+    completed = finish_pdf_job(client, started.json()['id'])
+    second = client.get('/api/pdf/drafts/' + completed['draft_id'], headers=headers()).json()
+    assert second['draft_id'] != original['draft_id']
+    assert second['bundle']['source']['sha256'] == original['bundle']['source']['sha256']
+    assert second['bundle']['parser']['requested_tier'] == 'basic'
+    assert second['bundle']['parser']['requested_ocr_mode'] == 'ocr'
+    assert not ({'url', 'api_key'} & set(second['bundle']['parser']))
+    assert calls[0][0] == state['contents']
+    assert calls[0][2]['config'].tier == 'basic'
+    assert calls[0][2]['config'].ocr_mode == 'ocr'
+    assert client.get('/api/pdf/drafts/' + original['draft_id'], headers=headers()).status_code == 200
+    assert read(pdf_service, 'list_pdf_tables', {}).json()['tables'] == []
+
+    monkeypatch.setattr(ParserConfig, 'from_env', classmethod(lambda cls: ParserConfig(
+        'paddleocr_vl', 'http://127.0.0.1:8080')))
+    unsupported = client.post(base, json={'tier': 'standard', 'ocr_mode': 'auto'}, headers=headers())
+    assert unsupported.status_code == 409
+    assert len(calls) == 1
+
+
+def test_native_pdf_reparse_revalidates_current_authorized_source(pdf_service, monkeypatch):
+    from structured_data.pdf_parser_bridge import ParserConfig
+    client, _, state, _, _ = pdf_service
+    original = imported(pdf_service, native=True)
+    source = original['bundle']['source']
+    base = f"/api/pdf/drafts/{original['draft_id']}/reparse"
+    monkeypatch.setattr(ParserConfig, 'from_env', classmethod(lambda cls: ParserConfig(
+        'mineru_v1', 'http://127.0.0.1:18733', tier='standard')))
+    calls = []
+    async def parse(path, source=None, **kwargs):
+        calls.append((path.read_bytes(), source, kwargs))
+        result = deepcopy(bundle([['Item', 'Value'], ['A', '1.20']]))
+        result['source'] = source
+        result['parser'] = {'engine': 'mineru', 'version': 'fixture'}
+        return result
+    monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', parse)
+
+    started = client.post(base, json={'tier': 'standard', 'ocr_mode': 'auto'}, headers=headers())
+    assert started.status_code == 200, started.text
+    second = client.get('/api/pdf/drafts/' + finish_pdf_job(client, started.json()['id'])['draft_id'],
+                        headers=headers()).json()
+    assert second['bundle']['source']['knowledge_id'] == 'source-a'
+    assert second['bundle']['source']['knowledge_base_id'] == 'kb-a'
+    assert second['bundle']['source']['sha256'] == source['sha256']
+    assert calls[0][0] == state['contents']
+    assert calls[0][1]['knowledge_id'] == 'source-a'
+    assert len([path for path, _ in state['calls'] if path.endswith('/download')]) == 2
+
+    state['changed_after_download'] = True
+    denied = client.post(base, json={'tier': 'basic', 'ocr_mode': 'ocr'}, headers=headers())
+    assert denied.status_code == 409
+    assert len(calls) == 1
+
+
+def test_reopening_native_pdf_reuses_latest_verified_matching_profile(pdf_service, monkeypatch):
+    from structured_data.pdf_parser_bridge import ParserConfig
+    client, _, state, _, _ = pdf_service
+    config = ParserConfig('mineru_v1', 'http://127.0.0.1:18733', api_key='secret-fixture-key',
+                          tier='standard', ocr_mode='auto')
+    monkeypatch.setattr(ParserConfig, 'from_env', classmethod(lambda cls: config))
+    calls = []
+    async def parse(path, source=None, **kwargs):
+        calls.append(path.read_bytes())
+        result = deepcopy(bundle([['Item', 'Value'], ['A', '1.20']]))
+        result['source'] = source
+        result['parser'] = {'engine': 'mineru', 'version': 'fixture'}
+        return result
+    monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', parse)
+    first = imported(pdf_service, native=True)
+    assert first['bundle']['parser']['requested_tier'] == 'standard'
+    first_profile = first['bundle']['parser']['profile_sha256']
+    assert len(first_profile) == 64
+    assert '127.0.0.1:18733' not in json.dumps(first['bundle']['parser'])
+    assert 'secret-fixture-key' not in json.dumps(first['bundle']['parser'])
+
+    reused = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id': 'source-a'}, headers=headers())
+    assert reused.status_code == 200, reused.text
+    assert reused.json()['reused'] is True
+    assert reused.json()['draft_id'] == first['draft_id']
+    assert len(calls) == 1
+    # Reuse still downloads through the authorized path and checks the content SHA.
+    assert len([path for path, _ in state['calls'] if path.endswith('/download')]) == 2
+
+    config.tier = 'basic'
+    new_profile = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id': 'source-a'}, headers=headers())
+    assert new_profile.status_code == 200, new_profile.text
+    assert 'reused' not in new_profile.json()
+    second = client.get('/api/pdf/drafts/' + finish_pdf_job(client, new_profile.json()['id'])['draft_id'],
+                        headers=headers()).json()
+    assert second['bundle']['parser']['requested_tier'] == 'basic'
+    assert len(calls) == 2
+
+    config.tier = 'standard'
+    config.url = 'http://127.0.0.1:18734/'
+    changed_endpoint = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id': 'source-a'}, headers=headers())
+    assert changed_endpoint.status_code == 200, changed_endpoint.text
+    assert 'reused' not in changed_endpoint.json()
+    third = client.get('/api/pdf/drafts/' + finish_pdf_job(client, changed_endpoint.json()['id'])['draft_id'],
+                       headers=headers()).json()
+    assert third['bundle']['parser']['profile_sha256'] != first_profile
+    parser_json = json.dumps(third['bundle']['parser'])
+    assert '127.0.0.1:18734' not in parser_json and 'secret-fixture-key' not in parser_json
+    assert len(calls) == 3
+
+
+def test_parser_profile_fingerprint_excludes_api_key():
+    from structured_data.pdf_api import _parser_profile_sha256
+    from structured_data.pdf_parser_bridge import ParserConfig
+    first = ParserConfig('mineru_v1', 'https://parser.internal/api', api_key='one', tier='basic', ocr_mode='ocr')
+    second = ParserConfig('mineru_v1', 'https://parser.internal/api/', api_key='two', tier='basic', ocr_mode='ocr')
+    assert _parser_profile_sha256(first) == _parser_profile_sha256(second)
+
+
 def test_auth_and_mutation_boundaries(pdf_service, monkeypatch):
     client, _, _, _, _ = pdf_service
     assert client.get('/api/pdf/drafts').status_code == 401
@@ -144,6 +292,9 @@ def test_model_suggestion_binds_complete_fragments_and_handles_truncated_output(
     from structured_data.pdf_api import suggest_plan, PDFSuggestRequest
     from structured_data.pdf_tables import PDFTableStore
     raw = bundle([['Item', 'Value'], ['A', '-1.20']], [['C', '2.30']])
+    raw['page_context'] = [{'page': 1, 'block_id': 'p1-context-1', 'bbox': [0.1, 0.2, 0.8, 0.3],
+                            'text': 'Amounts in kg', 'text_parts': ['Amounts in kg']}]
+    raw['page_context_coverage'] = 'complete'
     draft = PDFTableStore(tmp_path).create_draft(raw)
     mapping = plan(draft)
     reply = {'status': 'ready', 'message': 'fixture evidence', 'plan': mapping}
@@ -164,6 +315,10 @@ def test_model_suggestion_binds_complete_fragments_and_handles_truncated_output(
     assert result['status'] == 'ready'
     evidence = json.loads(requests[0]['messages'][1]['content'])
     assert evidence['evidence']['fragments'] == raw['fragments']
+    assert evidence['evidence']['page_context'][0]['text'] == 'Amounts in kg'
+    prompt = requests[0]['messages'][0]['content']
+    assert 'unit:可选字符串' in prompt
+    assert '绝不能推测或标准化单位' in prompt
     assert PDFTableStore(tmp_path).validate_plan(draft['draft_id'], result['plan'])['coverage']['logical_row_count'] == 2
     completion['choices'][0]['finish_reason'] = 'length'
     with pytest.raises(ValueError, match='未正常完成'):
