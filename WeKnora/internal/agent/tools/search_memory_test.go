@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/require"
@@ -84,6 +85,29 @@ func TestSearchMemoryClampsTheRequestedLimit(t *testing.T) {
 
 	runSearchMemory(t, stub, `{"query":"数据库"}`)
 	require.Equal(t, types.MemorySearchDefaultItems, stub.gotLimit)
+}
+
+func TestSearchMemoryReportsOnlyReadItemsAsAdditionalMemories(t *testing.T) {
+	stub := &stubMemorySearch{result: interfaces.MemorySearchResult{Available: true,
+		Items: []*types.MemoryItem{{ID: "selected", Kind: types.MemoryKindFact, Content: "A selected detail"}},
+	}}
+	bus := event.NewEventBus()
+	var received []event.MemoryRecalledData
+	bus.On(event.EventMemoryRecalled, func(_ context.Context, evt event.Event) error {
+		received = append(received, evt.Data.(event.MemoryRecalledData))
+		return nil
+	})
+	ctx := WithToolExecContext(t.Context(), &ToolExecContext{SessionID: "session", AssistantMessageID: "assistant", EventBus: bus})
+	result, err := NewSearchMemoryTool(stub).Execute(ctx, json.RawMessage(`{"query":"a detail"}`))
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Len(t, received, 1)
+	require.True(t, received[0].Merge)
+	require.Equal(t, "selected", received[0].Memories.(types.UsedMemories)[0].ID)
+	stub.result.Items = nil
+	_, err = NewSearchMemoryTool(stub).Execute(ctx, json.RawMessage(`{"query":"nothing"}`))
+	require.NoError(t, err)
+	require.Len(t, received, 1, "an empty additional search must not erase initial recall")
 }
 
 func TestSearchMemoryRejectsABlankQuery(t *testing.T) {

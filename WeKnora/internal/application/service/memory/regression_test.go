@@ -152,7 +152,7 @@ func TestCrossSessionMemoryScenarios(t *testing.T) {
 
 			// A brand new session: nothing but long-term memory carries over.
 			laterCtx := enabledCtx(t, tenantRepo, 1, "alice")
-			prompt := svc.Recall(laterCtx, scenario.laterQuery).Prompt
+			prompt := recallForTest(svc, laterCtx, scenario.laterQuery).Prompt
 
 			for _, want := range scenario.wantInPrompt {
 				require.Contains(t, prompt, want,
@@ -166,9 +166,8 @@ func TestCrossSessionMemoryScenarios(t *testing.T) {
 	}
 }
 
-// TestReadPathMakesNoModelCall pins the cost promise: recall must not add a
-// model call to a turn, no matter how many memories the user has.
-func TestReadPathMakesNoModelCall(t *testing.T) {
+// Relevance admission makes exactly one bounded model call per recall, without retries.
+func TestReadPathMakesOneAdmissionCallPerTurn(t *testing.T) {
 	svc, tenantRepo, _, models, _ := newExtractionHarness(t)
 	ctx := enabledCtx(t, tenantRepo, 1, "alice")
 	for i := 0; i < 30; i++ {
@@ -181,9 +180,10 @@ func TestReadPathMakesNoModelCall(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		require.NotEmpty(t, svc.Recall(ctx, "数据库怎么调优").Prompt)
+		require.NotEmpty(t, recallForTest(svc, ctx, "数据库怎么调优").Prompt)
 	}
-	require.Zero(t, models.calls, "the read path must not call a model")
+	require.Equal(t, 5, models.relevanceCalls, "one final admission call per turn")
+	require.Equal(t, 5, models.calls, "no automatic retries or secondary model calls")
 }
 
 // TestInjectedMemoryStaysInsideItsBudget keeps a user with a large memory
@@ -206,7 +206,7 @@ func TestInjectedMemoryStaysInsideItsBudget(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	prompt := svc.Recall(ctx, "数据库怎么调优").Prompt
+	prompt := recallForTest(svc, ctx, "数据库怎么调优").Prompt
 	require.NotEmpty(t, prompt)
 	// Envelope wording aside, the memory content itself must fit in the two
 	// declared budgets.

@@ -274,15 +274,57 @@ func (c RetrievalContext) Empty() bool {
 	return c.Background == "" && len(c.Interests) == 0 && len(c.Documents) == 0
 }
 
+// MemoryConversationMessage is authorized conversation data for deciding
+// whether a stored memory applies to this turn. It contains no tool payloads,
+// image bytes or previously injected memory envelope.
+type MemoryConversationMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// MemoryRecallRequest is assembled by the server from the current turn, not
+// from tool arguments. SearchQuery is only an optional subproblem to retrieve
+// candidates for; it never replaces the user's actual query and conversation.
+type MemoryRecallRequest struct {
+	Query             string
+	ModelID           string
+	SessionID         string
+	Conversation      []MemoryConversationMessage
+	SearchQuery       string
+	ContextIncomplete bool
+}
+
+type memoryRecallRequestKey struct{}
+
+// WithMemoryRecallRequest carries the same authenticated turn into tool calls
+// so an on-demand memory lookup cannot bypass the turn's relevance decision.
+func WithMemoryRecallRequest(ctx context.Context, request MemoryRecallRequest) context.Context {
+	request.Conversation = append([]MemoryConversationMessage(nil), request.Conversation...)
+	return context.WithValue(ctx, memoryRecallRequestKey{}, request)
+}
+
+func MemoryRecallRequestFromContext(ctx context.Context) (MemoryRecallRequest, bool) {
+	request, ok := ctx.Value(memoryRecallRequestKey{}).(MemoryRecallRequest)
+	if !ok {
+		return MemoryRecallRequest{}, false
+	}
+	request.Conversation = append([]MemoryConversationMessage(nil), request.Conversation...)
+	return request, true
+}
+
 // MemoryService is the read/write API for long-term memory.
 type MemoryService interface {
-	// Recall assembles the memory to inject for one turn. It performs no LLM
-	// calls and returns an empty recall (never an error) whenever memory is
-	// disabled at any level, so callers can use it unconditionally.
+	// Recall is the compatibility entry point. Without a server-provided turn
+	// context/model it must return empty, never an unfiltered resident block.
 	Recall(ctx context.Context, query string) MemoryRecall
+	// RecallForTurn lets the current chat model select only applicable memories
+	// using the full authorized conversation and current user request. Failure,
+	// incomplete context or a valid empty selection all yield no injected memory.
+	RecallForTurn(ctx context.Context, request MemoryRecallRequest) MemoryRecall
 	// SearchMemory ranks the user's stored memories against an arbitrary
 	// query, for callers that need to reach past what Recall's per-turn budget
-	// admitted. Like Recall it performs no LLM call and never errors.
+	// admitted. Candidates also pass the turn-context relevance selector; a
+	// missing turn context yields an available but empty result, never a fallback.
 	SearchMemory(ctx context.Context, query string, limit int) MemorySearchResult
 	// MemoryAvailable reports whether this request may read memory at all:
 	// the workspace switch, the user's own opt out and the agent's preference

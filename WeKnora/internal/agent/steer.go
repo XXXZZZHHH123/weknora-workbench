@@ -8,6 +8,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
 
 // sanitizeSteerContent normalizes newlines and trims, same treatment the chat
@@ -74,6 +75,7 @@ func (e *AgentEngine) drainSteerMessages(
 			e.reviewConversation = append(e.reviewConversation, persistedSteer)
 		}
 		e.documentAnalysisSteers = append(e.documentAnalysisSteers, content)
+		e.memoryAcceptedSteers = append(e.memoryAcceptedSteers, content)
 		state.PendingSteerMessages = append(state.PendingSteerMessages, userMessageID)
 		_ = e.eventBus.Emit(ctx, event.Event{
 			ID:        generateEventID("injected"),
@@ -97,4 +99,30 @@ func (e *AgentEngine) drainSteerMessages(
 
 func getString(evt map[string]interface{}, key string) string {
 	return types.MapString(evt, key)
+}
+
+// memoryContextForTools keeps the server-authorized turn and every accepted
+// human correction visible to the final memory relevance gate. It reads no
+// historical turns itself, so disabling multi-turn still keeps history out.
+// Derive a fresh immutable request for each call; parallel tools share neither
+// a mutable context value nor a slice with the server's original request.
+func (e *AgentEngine) memoryContextForTools(ctx context.Context, sessionID string) context.Context {
+	request, ok := interfaces.MemoryRecallRequestFromContext(ctx)
+	if !ok {
+		return ctx
+	}
+	if request.SessionID != sessionID {
+		request.ContextIncomplete = true
+		return interfaces.WithMemoryRecallRequest(ctx, request)
+	}
+	if len(e.memoryAcceptedSteers) == 0 {
+		return ctx
+	}
+	request.Conversation = append(request.Conversation, interfaces.MemoryConversationMessage{Role: "user", Content: request.Query})
+	for _, content := range e.memoryAcceptedSteers[:len(e.memoryAcceptedSteers)-1] {
+		request.Conversation = append(request.Conversation, interfaces.MemoryConversationMessage{Role: "user", Content: content})
+	}
+	request.Query = e.memoryAcceptedSteers[len(e.memoryAcceptedSteers)-1]
+	request.SearchQuery = ""
+	return interfaces.WithMemoryRecallRequest(ctx, request)
 }

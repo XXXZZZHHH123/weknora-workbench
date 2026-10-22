@@ -16,6 +16,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/models/rerank"
 	"github.com/Tencent/WeKnora/internal/sandbox"
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
 )
 
@@ -255,24 +256,27 @@ func (s *sessionService) AgentQA(
 		return err
 	}
 
-	// Recall long-term memory for this turn. Like the RAG path this is a
-	// no-model read, and an agent may opt out of it entirely.
+	// Keep memory selection and later search_memory tools bound to the same
+	// actual user question/model and authorized complete conversation.
+	memoryRequest := s.agentMemoryRecallRequest(ctx, req, effectiveModelID, agentConfig.MultiTurnEnabled, llmContext)
+	ctx = interfaces.WithMemoryRecallRequest(ctx, memoryRequest)
 	memoryCtx := types.ApplyAgentMemoryPreference(ctx, agentConfig.MemoryEnabled)
+	recall := interfaces.MemoryRecall{}
 	if s.memoryService != nil {
-		recall := s.memoryService.Recall(memoryCtx, req.Query)
-		if recall.Prompt != "" {
-			engine.SetMemoryPrompt(recall.Prompt)
-			used := types.UsedMemoriesFromItems(recall.Items)
-			if err := eventBus.Emit(ctx, event.Event{
-				Type:      event.EventMemoryRecalled,
-				SessionID: sessionID,
-				Data:      event.MemoryRecalledData{Memories: used},
-			}); err != nil {
-				logger.Warnf(ctx, "Failed to emit memory recalled event: %v", err)
-			}
-			logger.Infof(ctx, "Injected %d long-term memories into agent context", len(used))
-		}
+		recall = s.memoryService.RecallForTurn(memoryCtx, memoryRequest)
 	}
+	used := types.UsedMemories{}
+	if recall.Prompt != "" {
+		used = types.UsedMemoriesFromItems(recall.Items)
+	}
+	engine.SetMemoryPrompt(recall.Prompt)
+	if err := eventBus.Emit(ctx, event.Event{
+		Type: event.EventMemoryRecalled, SessionID: sessionID,
+		Data: event.MemoryRecalledData{Memories: used},
+	}); err != nil {
+		logger.Warnf(ctx, "Failed to emit memory recalled event: %v", err)
+	}
+	logger.Infof(ctx, "Injected %d long-term memories into agent context", len(used))
 
 	// Mid-run steering: when the caller supplied a sink, the engine will drain
 	// user-appended messages at every round boundary and persist accepted ones

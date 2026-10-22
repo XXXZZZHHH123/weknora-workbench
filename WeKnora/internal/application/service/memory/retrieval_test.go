@@ -47,7 +47,7 @@ func TestRetrievalContextIsEmptyWhenConditioningIsOff(t *testing.T) {
 	require.True(t, svc.RetrievalContextFor(ctx).Empty())
 	// The answer prompt is a separate switch, and turning off conditioning
 	// must not quietly turn off memory itself.
-	require.NotEmpty(t, svc.Recall(ctx, "医学影像").Items)
+	require.NotEmpty(t, recallForTest(svc, ctx, "医学影像").Items)
 }
 
 func TestPendingMemoriesNeverReachAPrompt(t *testing.T) {
@@ -63,7 +63,7 @@ func TestPendingMemoriesNeverReachAPrompt(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Empty(t, svc.Recall(ctx, "入库流程").Items,
+	require.Empty(t, recallForTest(svc, ctx, "入库流程").Items,
 		"a guess about the user must not be asserted before they confirm it")
 	require.True(t, svc.RetrievalContextFor(ctx).Empty(),
 		"an unconfirmed guess must not steer retrieval either")
@@ -75,7 +75,7 @@ func TestPendingMemoriesNeverReachAPrompt(t *testing.T) {
 	confirmed, err := svc.ConfirmItem(ctx, items[0].ID)
 	require.NoError(t, err)
 	require.Equal(t, types.MemoryStatusActive, confirmed.Status)
-	require.NotEmpty(t, svc.Recall(ctx, "入库流程").Items)
+	require.NotEmpty(t, recallForTest(svc, ctx, "入库流程").Items)
 }
 
 func TestRejectingAGuessStopsItComingBack(t *testing.T) {

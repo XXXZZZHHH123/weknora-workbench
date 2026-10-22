@@ -49,6 +49,7 @@ type AgentEngine struct {
 	taskPlanContext                  string
 	taskPlan                         *taskEvidencePlan
 	documentAnalysisSteers           []string // persisted human corrections only; never review envelopes
+	memoryAcceptedSteers             []string // accepted current-turn user text for the memory relevance gate
 	config                           *types.AgentConfig
 	toolRegistry                     *agenttools.ToolRegistry
 	chatModel                        chat.Chat
@@ -356,6 +357,7 @@ func (e *AgentEngine) Execute(
 	llmContext []chat.Message,
 	imageURLs ...[]string,
 ) (*types.AgentState, error) {
+	e.memoryAcceptedSteers = nil
 	e.structuredReviewMode = false
 	e.reviewedAnswerDeliveryRepairUsed = false
 	e.answerReviewPending = false
