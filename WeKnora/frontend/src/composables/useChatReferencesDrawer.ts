@@ -24,6 +24,8 @@ export type ChatReferencesDrawerContext = {
   sourceKey: Ref<string>
   /** The cited chunk shown inside its original document, or null for the list. */
   source: Ref<ReferenceSourceTarget | null>
+  retainSourceOnClose: Ref<boolean>
+  setSourceRetained: (retained: boolean) => void
   /** Current panel width in px; the source view is wider than the list. */
   panelWidth: Ref<number>
   open: (options: ChatReferencesDrawerOpenOptions) => void
@@ -45,6 +47,7 @@ export function provideChatReferencesDrawer(): ChatReferencesDrawerContext {
   const messageId = ref('')
   const sourceKey = ref('')
   const source = ref<ReferenceSourceTarget | null>(null)
+  const retainSourceOnClose = ref(false)
   const panelWidth = ref(REFERENCES_PANEL_WIDTH)
 
   const getFallbackSourceKey = (options: ChatReferencesDrawerOpenOptions) => {
@@ -65,7 +68,9 @@ export function provideChatReferencesDrawer(): ChatReferencesDrawerContext {
     highlight.value = options.highlight ?? null
     messageId.value = options.messageId || ''
     sourceKey.value = getFallbackSourceKey(options)
-    source.value = sourceFor(options.highlight)
+    const nextSource = sourceFor(options.highlight)
+    if (!nextSource || nextSource.knowledgeId !== source.value?.knowledgeId) retainSourceOnClose.value = false
+    source.value = nextSource
     visible.value = true
   }
 
@@ -83,23 +88,34 @@ export function provideChatReferencesDrawer(): ChatReferencesDrawerContext {
     visible.value = false
     highlight.value = null
     sourceKey.value = ''
-    source.value = null
+    if (!retainSourceOnClose.value) source.value = null
+  }
+
+  const setSourceRetained = (retained: boolean) => {
+    retainSourceOnClose.value = retained && !!source.value
+    if (!visible.value && !retainSourceOnClose.value) source.value = null
   }
 
   const setHighlight = (next: ReferenceHighlightTarget | null) => {
     highlight.value = next
-    if (next?.openSource) source.value = sourceFor(next)
+    if (next?.openSource) {
+      const target = sourceFor(next)
+      if (!target || target.knowledgeId !== source.value?.knowledgeId) retainSourceOnClose.value = false
+      source.value = target
+    }
     if (next && references.value.length) {
       visible.value = true
     }
   }
 
   const openSource = (target: ReferenceSourceTarget) => {
+    if (target.knowledgeId !== source.value?.knowledgeId) retainSourceOnClose.value = false
     source.value = target
     visible.value = true
   }
 
   const closeSource = () => {
+    retainSourceOnClose.value = false
     source.value = null
   }
 
@@ -110,6 +126,8 @@ export function provideChatReferencesDrawer(): ChatReferencesDrawerContext {
     messageId,
     sourceKey,
     source,
+    retainSourceOnClose,
+    setSourceRetained,
     panelWidth,
     open,
     toggle,

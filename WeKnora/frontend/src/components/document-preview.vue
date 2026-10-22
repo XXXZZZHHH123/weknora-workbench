@@ -180,7 +180,7 @@ function updatePptxPageMediaState() {
 
 async function loadPptxPageMedia(force = false) {
   const sourceKey = loadedForId;
-  if (!sourceKey || !props.active || !props.knowledgeId ||
+  if (!sourceKey || !props.active || pptxPermissionChecking.value || !props.knowledgeId ||
       props.locate?.unavailable || previewType.value !== 'pptx' || !pptxData.value) {
     clearPptxPageMedia();
     return;
@@ -237,7 +237,7 @@ function retryPptxPageMedia() {
 }
 
 function isCurrentPptxSource(sourceKey: string) {
-  return isPptxSourceKeyCurrent(sourceKey, loadedForId, props.active) && previewType.value === 'pptx';
+  return !pptxPermissionChecking.value && isPptxSourceKeyCurrent(sourceKey, loadedForId, props.active) && previewType.value === 'pptx';
 }
 
 function failPptxRender(sourceKey: string, reason: string, detail?: string, token = props.locate?.token ?? null) {
@@ -425,10 +425,12 @@ watch(() => props.active, (active) => {
     stopPptxRenderWatch();
     clearPptxPageMedia();
     void exitPreviewFullscreen();
+  } else if (props.knowledgeId && resolvePreviewKind(resolveFilePreviewExt(props.fileName, props.fileType)) === 'pptx') {
+    // Block locator/renderer callbacks synchronously on a retained reopen;
+    // loadPreview releases the gate only after this open's metadata succeeds.
+    pptxPermissionChecking.value = true;
   }
-  // Reactivation is authorized by loadPreview before any cached raster paints.
-
-});
+}, { flush: 'sync' });
 
 onMounted(() => {
   document.addEventListener('fullscreenchange', syncFullscreen);
@@ -636,6 +638,7 @@ async function loadPreview() {
       if (!current()) return;
       const metadata = response?.data;
       if (!metadata || metadata.id !== knowledgeId || metadata.deleted_at) throw new Error(t('preview.loadFailed'));
+      pptxPermissionChecking.value = false;
       const source = knowledgePptxSourceKey(knowledgeId, metadata);
       authority = JSON.stringify([scope, source]);
       if (scope && source) cacheContext = { scope, sourceKey: source };

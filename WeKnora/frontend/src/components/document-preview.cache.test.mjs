@@ -121,3 +121,17 @@ test('changing authentication clears retained PPT content before the next permis
   for (let wait = 0; env.paints < 2; wait++) { assert.ok(wait < 100, view.error.value); await new Promise(resolve => setImmediate(resolve)) }
   assert.equal(env.originals, 2)
 })
+
+test('retained locator callbacks cannot start raster loading while the reopen permission check is pending', async () => {
+  const start = source.indexOf('async function loadPptxPageMedia(force = false) {')
+  const end = source.indexOf('\nfunction onPptxMediaImageLoad', start)
+  const script = ts.transpile(source.slice(start, end))
+  let cleared = 0
+  const run = vm.runInNewContext(script + '; loadPptxPageMedia', {
+    loadedForId: 'knowledge:synthetic-ppt', props: { active: true, knowledgeId: 'synthetic-ppt' },
+    pptxPermissionChecking: ref(true), clearPptxPageMedia: () => { cleared++ },
+    createPptxViewportMedia: () => assert.fail('Pending ACL must not create a raster controller'),
+  })
+  await run()
+  assert.equal(cleared, 1)
+})
