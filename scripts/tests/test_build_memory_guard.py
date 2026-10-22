@@ -56,6 +56,116 @@ class BuildMemoryGuardTests(unittest.TestCase):
     def verify(self, **env):
         return guard.verify(env, [str(value) for value in self.budget.values()])
 
+    def monitored_env(self):
+        proc = self.root / 'proc'
+        monitor = proc / '7001'
+        monitor.mkdir(parents=True, exist_ok=True)
+        # /proc/stat field 22 is the immutable process start tick; comm may contain spaces/parentheses.
+        (monitor / 'stat').write_text('7001 (memory monitor (local)) S ' + ' '.join(['0'] * 18 + ['12345']) + '\n')
+        (monitor / 'cgroup').write_text('0::/monitor.scope\n')
+        mocker = patch.object(guard, 'PROC_ROOT', proc, create=True)
+        mocker.start()
+        self.addCleanup(mocker.stop)
+        return {'WEKNORA_BUILD_PROFILE': 'monitored-local-once',
+                'WEKNORA_BUILD_MONITOR_PID': '7001',
+                'WEKNORA_BUILD_MONITOR_STARTTIME': '12345',
+                'WEKNORA_BUILD_MEMORY_MB': '3328', 'WEKNORA_BUILD_NODE_HEAP_MB': '2560'}
+
+    def test_monitored_profile_has_finite_budget_and_keeps_other_profiles_unchanged(self):
+        env = self.monitored_env()
+        monitored = guard.calculate(5897, 4300, env)
+        self.assertEqual((monitored.memory, monitored.heap, monitored.swap, monitored.reserve),
+                         (3328, 2560, 128, 768))
+        self.assertEqual(guard.calculate(5897, 5000, {}).reserve, 1024)
+        for profile in ('default', 'large-frontend-once'):
+            with self.subTest(profile=profile), self.assertRaises(guard.GuardError):
+                guard.calculate(5897, 5000, {**env, 'WEKNORA_BUILD_PROFILE': profile,
+                                            'WEKNORA_BUILD_RESERVE_MB': '768'})
+            with self.subTest(host_profile=profile), self.assertRaises(guard.GuardError):
+                guard.check_host({**env, 'WEKNORA_BUILD_PROFILE': profile,
+                                  'WEKNORA_BUILD_HOST_RESERVE_MB': '768'}, probe=lambda: 10000)
+
+    def test_monitored_profile_requires_matching_live_monitor(self):
+        env = self.monitored_env()
+        for changes in ({'WEKNORA_BUILD_MONITOR_PID': ''},
+                        {'WEKNORA_BUILD_MONITOR_PID': str(os.getpid())},
+                        {'WEKNORA_BUILD_MONITOR_PID': '7002'},
+                        {'WEKNORA_BUILD_MONITOR_STARTTIME': '12346'}):
+            with self.subTest(changes=changes), self.assertRaises(guard.GuardError):
+                guard.calculate(5897, 5000, {**env, **changes})
+        path = self.root / 'proc/7001/stat'
+        path.write_text(path.read_text().replace(') S ', ') Z '))
+        with self.assertRaises(guard.GuardError):
+            guard.calculate(5897, 5000, env)
+
+    def test_monitored_profile_rejects_foreign_or_unreadable_monitor_evidence(self):
+        env = self.monitored_env()
+        with patch.object(guard.os, 'getuid', return_value=os.getuid() + 1), self.assertRaises(guard.GuardError):
+            guard.calculate(5897, 5000, env)
+        (self.root / 'proc/7001/stat').write_text('invalid process evidence\n')
+        with self.assertRaises(guard.GuardError):
+            guard.calculate(5897, 5000, env)
+
+    def test_monitored_profile_only_relaxes_host_growth_estimate_with_startup_margin(self):
+        env = self.monitored_env()
+        for starting in (True, False):
+            self.assertEqual(guard.check_host(env, 3328, probe=lambda: 896, starting=starting), (896, 768))
+            with self.assertRaises(guard.GuardError):
+                guard.check_host(env, 3328, probe=lambda: 895, starting=starting)
+        selected = {**env, 'WEKNORA_BUILD_HOST_RESERVE_MB': '512'}
+        self.assertEqual(guard.check_host(selected, 3328, probe=lambda: 640), (640, 512))
+        with self.assertRaises(guard.GuardError):
+            guard.check_host({**selected, 'WEKNORA_BUILD_HOST_RESERVE_MB': '511'}, probe=lambda: 10000)
+
+    def test_monitored_profile_cannot_raise_budget_heap_swap_or_reduce_guest_floor(self):
+        env = self.monitored_env()
+        for changes in ({'WEKNORA_BUILD_MEMORY_MB': '3841'},
+                        {'WEKNORA_BUILD_MEMORY_MB': '3840', 'WEKNORA_BUILD_NODE_HEAP_MB': '3073'},
+                        {'WEKNORA_BUILD_NODE_HEAP_MB': '2688'},
+                        {'WEKNORA_BUILD_SWAP_MB': '129'},
+                        {'WEKNORA_BUILD_RESERVE_MB': '767'}):
+            with self.subTest(changes=changes), self.assertRaises(guard.GuardError):
+                guard.calculate(5897, 5000, {**env, **changes})
+        with self.assertRaises(guard.GuardError):
+            guard.calculate(4096, 4096, env)
+        with self.assertRaises(guard.GuardError):
+            guard.calculate(5897, 3328 + 767, env)
+
+    def test_monitored_verify_rechecks_monitor_scope_actual_limits_and_live_reserves(self):
+        env = self.monitored_env()
+        self.budget = guard.calculate(5897, 4300, env, host_available=1000, host_reserve=768)
+        for name, value in self.actual_limits().items():
+            (self.scope / name).write_text(str(value))
+        with patch.object(guard, 'meminfo', return_value=(5897, 4300)), \
+                patch.object(guard, 'is_wsl', return_value=True), \
+                patch.object(guard, 'windows_available', return_value=896):
+            self.assertEqual(self.verify(**env), self.budget)
+            with patch.object(guard, 'windows_available', return_value=895), self.assertRaises(guard.GuardError):
+                self.verify(**env)
+            with patch.object(guard, 'meminfo', return_value=(5897, 3328 + 767)), self.assertRaises(guard.GuardError):
+                self.verify(**env)
+            original = self.budget
+            for changes in ({'reserve': 767}, {'host_reserve': 511}, {'swap': 129}):
+                with self.subTest(changes=changes), self.assertRaises(guard.GuardError):
+                    self.budget = dataclasses.replace(original, **changes)
+                    self.verify(**env)
+            self.budget = original
+            (self.root / 'proc/7001/cgroup').write_text('0::/build.slice/compiler.scope/child\n')
+            with self.assertRaises(guard.GuardError):
+                self.verify(**env)
+            (self.root / 'proc/7001/cgroup').write_text('0::/monitor.scope\n')
+            (self.parent / 'memory.max').write_text(str(2560 * guard.MIB))
+            with self.assertRaises(guard.GuardError):
+                self.verify(**env)
+            (self.parent / 'memory.max').write_text('max')
+            (self.scope / 'memory.oom.group').write_text('0')
+            with self.assertRaises(guard.GuardError):
+                self.verify(**env)
+            (self.scope / 'memory.oom.group').write_text('1')
+            (self.root / 'proc/7001/stat').unlink()
+            with self.assertRaises(guard.GuardError):
+                self.verify(**env)
+
     def test_default_budget_preserves_guest_reserve_and_finite_runtime_limits(self):
         self.assertEqual((self.budget.memory, self.budget.high, self.budget.swap,
                           self.budget.heap, self.budget.go, self.budget.reserve),
