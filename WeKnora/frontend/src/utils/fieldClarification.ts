@@ -84,7 +84,7 @@ export function fieldClarification(events: any[], completed = true): Clarificati
   return latest?.status === 'needs_clarification' ? latest : null;
 }
 export function structuredFieldAnswer(events: any[], completed = true): Clarification | null {
-  if (!completed) return null;
+  if (!completed || isChartOnlyDelivery(events, completed)) return null;
   if (structuredFieldIssue(events)) return null;
   const analysisIndex=[...(events || [])].reverse().findIndex(e=>e.type==='tool_call' && /^(?:structured_data|(?:mcp__)?analyze_table(?:_[a-z0-9]+)?)$/.test(e.tool_name || ''));
   const fieldIndex=[...(events || [])].reverse().findIndex(e=>e.type==='tool_call' && /^(?:structured_data|(?:mcp__)?(?:resolve_fields|confirm_fields|query_series)(?:_[a-z0-9]+)?)$/.test(e.tool_name || ''));
@@ -153,9 +153,32 @@ export function suppressStructuredProse(events: any[], completed: boolean): bool
   return !completed && (events || []).some(e => e.type === 'tool_call' && /^(?:structured_data|(?:mcp__)?(?:resolve_fields|confirm_fields|query_series|analyze_table)(?:_[a-z0-9]+)?)$/.test(e.tool_name || ''));
 }
 
+/** A saved native chart can explicitly opt out of automatic answer appendices.
+ * This controls presentation only; tool evidence and the model's answer stay
+ * intact. Missing/legacy metadata, later failures and mixed analysis deliveries
+ * keep the ordinary evidence panels.
+ */
+export function isChartOnlyDelivery(events: any[], completed = true): boolean {
+  if (!completed) return false;
+  let chartOnly = false;
+  for (const event of events || []) {
+    if (event.type !== 'tool_call' || event.tool_name !== 'render_chart') continue;
+    chartOnly = false;
+    const data = event.tool_data;
+    if (event.pending || event.success !== true || !data || data.kind !== 'data_chart' || data.status !== 'ok') continue;
+    const artifact = data.artifact;
+    if (!artifact || !Number.isSafeInteger(artifact.index) || artifact.index < 0 || artifact.deleted_at ||
+        typeof artifact.handle !== 'string' || !/^resource:\/\/[A-Za-z0-9_-]{22}$/.test(artifact.handle) ||
+        typeof artifact.file_name !== 'string' || !/\.png$/i.test(artifact.file_name)) continue;
+    if (data.delivery_mode === 'chart_with_analysis') return false;
+    chartOnly = data.delivery_mode === 'chart_only';
+  }
+  return chartOnly;
+}
+
 /** The last analysis is evidence for the final response, never its replacement. */
 export function structuredAnalysisEvidence(events: any[], completed=true): any | null {
-  if(!completed)return null;
+  if(!completed || isChartOnlyDelivery(events, completed))return null;
   let result:any=null;
   for(const event of events || []) {
     if(event.type!=='tool_call' || !/^(?:structured_data|(?:mcp__)?analyze_table(?:_[a-z0-9]+)?)$/.test(event.tool_name || ''))continue;

@@ -1,8 +1,47 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fieldClarification, confirmationText, confirmationDisplayText, structuredFieldIssue, structuredFieldAnswer, canConfirmFields, isNoteOnlyClarification } from './fieldClarification';
+import { fieldClarification, confirmationText, confirmationDisplayText, structuredFieldIssue, structuredFieldAnswer, canConfirmFields, isNoteOnlyClarification, isChartOnlyDelivery, structuredAnalysisEvidence, suppressStructuredProse } from './fieldClarification';
 const plan = { kind: 'structured_field_resolution', status: 'needs_clarification', resolution_id: 'a'.repeat(24), question: '查哪种汇率？', fields: [{ role: 'v1', label: '汇率', candidates: [{ series_id: 'eur', sheet: '商品报价', metric: '欧元兑人民币', unit: '人民币/欧元', header_cells: ['G1'] }] }] };
 const event = (output: unknown, tool = 'mcp__resolve_fields_a123') => ({ type: 'tool_call', tool_name: tool, success: true, output });
+const savedChart = (mode: string | undefined = 'chart_only') => ({
+  type: 'tool_call', tool_name: 'render_chart', success: true,
+  tool_data: { kind: 'data_chart', status: 'ok', delivery_mode: mode, artifact: { handle: `resource://${'p'.repeat(22)}`, index: 0, file_name: 'result.png' } },
+});
+test('an explicitly saved chart-only delivery omits automatic panels without changing stored evidence or prose', () => {
+  const raw={kind:'structured_analysis',status:'ok',columns:['Synthetic value'],rows:[[15]],inputs:{},input_count:3};
+  const analysis=event(JSON.stringify(raw),'mcp__analyze_table_abc');
+  const field=event(JSON.stringify({...plan,status:'resolved',answer:{sources:{}}}));
+  const chart=savedChart();
+  for(const events of [[field,chart],[analysis,chart],JSON.parse(JSON.stringify([analysis,chart]))]) {
+    const before=JSON.stringify(events);
+    assert.equal(isChartOnlyDelivery(events),true);
+    assert.equal(structuredAnalysisEvidence(events),null);
+    assert.equal(structuredFieldAnswer(events),null);
+    assert.equal(suppressStructuredProse(events,true),false,'Completed model text remains unchanged');
+    assert.equal(JSON.stringify(events),before,'The audit events are never removed or rewritten');
+  }
+});
+test('mixed chart-plus-analysis deliveries preserve automatic evidence regardless of chart order', () => {
+  const analysis=event(JSON.stringify({kind:'structured_analysis',status:'ok',columns:['Value'],rows:[[15]]}),'mcp__analyze_table_abc');
+  for(const charts of [[savedChart('chart_with_analysis'),savedChart()],[savedChart(),savedChart('chart_with_analysis')]]) {
+    assert.equal(isChartOnlyDelivery([analysis,...charts]),false);
+    assert.equal(structuredAnalysisEvidence([analysis,...charts])?.rows[0][0],15);
+  }
+});
+test('pending, failed, inspected, legacy and invalid chart metadata never hides automatic evidence', () => {
+  const valid=savedChart();
+  for(const chart of [
+    {...valid,pending:true}, {...valid,success:false}, {...valid,success:undefined},
+    {...valid,tool_data:{kind:'chart_source_catalog',sources:[]}},
+    {...valid,tool_data:{...valid.tool_data,delivery_mode:undefined}},
+    {...valid,tool_name:'another_tool'}, {...valid,tool_data:undefined,output:JSON.stringify(valid.tool_data)},
+    ...[{...valid.tool_data.artifact,file_name:'legacy.html'},{...valid.tool_data.artifact,handle:'https://provider.invalid/temp.png'},
+      {...valid.tool_data.artifact,index:-1},{...valid.tool_data.artifact,deleted_at:'2026-01-01'}].map(artifact=>({...valid,tool_data:{...valid.tool_data,artifact}})),
+  ]) assert.equal(isChartOnlyDelivery([chart]),false);
+  assert.equal(isChartOnlyDelivery([valid],false),false);
+  assert.equal(isChartOnlyDelivery([valid,{...valid,success:false}]),false,'A later failed chart attempt keeps diagnostics available');
+  assert.equal(isChartOnlyDelivery([{...valid,success:false},valid]),true,'A successful retry can explicitly finish chart-only delivery');
+});
 test('time-only clarification preserves unique bindings but only displays the human reply', () => {
   const p={...plan,requires_note:true,clarification:{type:'time_range',title:'请补充时间范围'}};
   assert.equal(isNoteOnlyClarification(p),true);

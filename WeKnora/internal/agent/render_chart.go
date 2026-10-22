@@ -31,8 +31,8 @@ func (e *AgentEngine) SetChartWriter(writer chart.Writer) {
 }
 func newRenderChartTool(ctx context.Context, steps func() []types.AgentStep, writer chart.Writer, session, message string) *renderChartTool {
 	return &renderChartTool{BaseTool: agenttools.NewBaseTool(renderChartToolName,
-		"根据本轮成功读取的真实数值表格确定性绘图并保存可预览/下载的HTML附件，不调用AI生图、不联网、不执行脚本。先operation=inspect查看真实source_id、列索引、单位、行数、截断和来源；再operation=render选择source_id、x_column、y_columns、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。模型依据完整请求选择图型、来源与列，不能提交任意数字、推造日期或把目录/元数据当事实。time仅接受源表真实ISO日期，category保持原标签及行序。数值不改写/平滑/补值，空值断线；截断数据明显标注部分范围。单位未知保持未知，多个不同单位需分图。不提供原件图像复刻；实际数据不足时先查询/读取来源，再inspect。保存成功后用返回的resource链接展示文件预览入口。",
-		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation"],"properties":{"operation":{"type":"string","enum":["inspect","render"]},"source_id":{"type":"string","maxLength":128},"chart_type":{"type":"string","enum":["line","bar","scatter"]},"x_column":{"type":"integer","minimum":0},"y_columns":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"integer","minimum":0}},"x_type":{"type":"string","enum":["category","numeric","time"]},"title":{"type":"string","maxLength":512}}}`)), steps: steps, writer: writer, tenant: types.CallerFromContext(ctx).TenantID, owner: types.SessionOwnerIDFromContext(ctx), session: session, message: message}
+		"根据本轮成功读取的真实数值表格确定性绘图，保存可预览和下载的PNG图片。先inspect核对真实source_id/列索引/单位/范围，再render选择source_id、x_column、y_columns、chart_type(line/bar/scatter)、x_type(category/numeric/time)、简短title。依据完整问题与对话选择来源和图型，不提交任意数字、代码、URL或推造日期，缺失留空断线，不平滑补值；单位未知保持未知，多个不同单位需分图。图内仅放标题、坐标、图例和必要标注，不放原始表、技术JSON、解释段落。delivery_mode默认chart_only：用户只要求图时最终回复仅包含返回的图片Markdown，不重复价格、统计、过程、来源解释或后续建议；只有用户明确同时要求文字分析时才选择chart_with_analysis并简短回答该分析。内部来源与范围在工具审计中保留，不需要复述到聊天。保存失败不能声称已交付。",
+		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation"],"properties":{"operation":{"type":"string","enum":["inspect","render"]},"source_id":{"type":"string","maxLength":128},"chart_type":{"type":"string","enum":["line","bar","scatter"]},"x_column":{"type":"integer","minimum":0},"y_columns":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"integer","minimum":0}},"x_type":{"type":"string","enum":["category","numeric","time"]},"title":{"type":"string","maxLength":512},"delivery_mode":{"type":"string","enum":["chart_only","chart_with_analysis"],"description":"根据完整请求选择：默认chart_only，只交付图片；明确同时要求文字分析才用chart_with_analysis。"}}}`)), steps: steps, writer: writer, tenant: types.CallerFromContext(ctx).TenantID, owner: types.SessionOwnerIDFromContext(ctx), session: session, message: message}
 }
 func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
 	fail := func(message string) (*types.ToolResult, error) {
@@ -46,13 +46,14 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		return fail("绘图计划或真实工具记录无效")
 	}
 	var input struct {
-		Operation string `json:"operation"`
-		SourceID  string `json:"source_id"`
-		Type      string `json:"chart_type"`
-		X         *int   `json:"x_column"`
-		Y         []int  `json:"y_columns"`
-		XType     string `json:"x_type"`
-		Title     string `json:"title"`
+		Operation    string `json:"operation"`
+		SourceID     string `json:"source_id"`
+		Type         string `json:"chart_type"`
+		X            *int   `json:"x_column"`
+		Y            []int  `json:"y_columns"`
+		XType        string `json:"x_type"`
+		Title        string `json:"title"`
+		DeliveryMode string `json:"delivery_mode"`
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
@@ -61,6 +62,12 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	}
 	if input.Operation != "inspect" && input.Operation != "render" {
 		return fail("operation必须为inspect或render")
+	}
+	if input.DeliveryMode == "" {
+		input.DeliveryMode = "chart_only"
+	}
+	if input.DeliveryMode != "chart_only" && input.DeliveryMode != "chart_with_analysis" {
+		return fail("delivery_mode必须为chart_only或chart_with_analysis")
 	}
 	tables, omitted := chartSources(t.steps())
 	if input.Operation == "inspect" {
@@ -97,19 +104,22 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	if title == "" {
 		title = "数据图表"
 	}
-	html, err := chart.Render(*source, chart.Spec{Type: input.Type, X: *input.X, Y: input.Y, XType: input.XType, Title: title})
+	png, err := chart.Render(*source, chart.Spec{Type: input.Type, X: *input.X, Y: input.Y, XType: input.XType, Title: title})
 	if err != nil {
 		return fail(err.Error())
 	}
-	delivered, err := t.writer.SaveChart(ctx, chart.SaveRequest{SessionID: t.session, MessageID: t.message, ToolCallID: meta.ToolCallID, FileName: "chart.html", SourceID: source.ID, HTML: html})
+	delivered, err := t.writer.SaveChart(ctx, chart.SaveRequest{SessionID: t.session, MessageID: t.message, ToolCallID: meta.ToolCallID, FileName: "chart.png", SourceID: source.ID, PNG: png})
 	if err != nil {
 		return fail("图表附件保存失败，未交付可下载文件")
 	}
-	if delivered == nil || !strings.HasPrefix(delivered.Handle, "resource://") || delivered.FileName == "" || delivered.Index < 0 {
+	if delivered == nil {
 		return fail("图表附件服务没有返回有效持久化资源")
 	}
-	data := map[string]any{"kind": "data_chart", "status": "ok", "artifact": delivered, "source_id": source.ID, "row_count": len(source.Rows), "source_truncated": source.Truncated, "provenance": source.Provenance}
-	return &types.ToolResult{Success: true, Data: data, Output: fmt.Sprintf("已按真实来源数据绘图并保存。打开预览或下载：[%s](%s)。本图是确定性重绘，不是原件原图。来源截断=%t；图内保留来源、范围、原值核对表和缺失说明。", delivered.FileName, delivered.Handle, source.Truncated)}, nil
+	if _, ok := types.ParseResourcePath(delivered.Handle); !ok || !strings.HasSuffix(delivered.FileName, ".png") || delivered.Index < 0 {
+		return fail("图表附件服务没有返回有效持久化资源")
+	}
+	data := map[string]any{"kind": "data_chart", "status": "ok", "artifact": delivered, "delivery_mode": input.DeliveryMode, "source_id": source.ID, "row_count": len(source.Rows), "source_truncated": source.Truncated, "provenance": source.Provenance}
+	return &types.ToolResult{Success: true, Data: data, Output: fmt.Sprintf("![图表](%s)", delivered.Handle)}, nil
 }
 
 // Only successful numeric query executions and fetched document bodies are
@@ -280,4 +290,4 @@ func structuredChartTable(call types.ToolCall) (chart.Table, bool) {
 	return chart.Table{Columns: cols, Rows: matrix, Provenance: string(provenance), Truncated: truncated, Notice: notice}, true
 }
 
-const dataChartInstructions = `本轮具备render_chart数据绘图能力。根据完整请求和上下文决定是否需要新图；需要时先从已授权来源取得真实typed行或读取原文表格，再调用render_chart inspect核对source_id/列/单位/范围，选择图型与X/Y列后render保存。模型不逐点重写原值，不凭记忆补数或造日期。查询结果仅部分返回时先取得合适完整范围，或明确交付部分图。没有原件图像不等于无法按真实数据绘图；无需反复翻页寻找绘图执行能力。数据走势图、比较图等精确数据表达使用确定性render_chart，不调用generate_image编造数值。只有保存成功才给出真实附件链接；静态HTML图表可点击预览和下载。原件图像复核与确定性重绘的来源含义需说清。`
+const dataChartInstructions = `render_chart从已授权且本轮真正读取的typed行或原文表格生成PNG图片，inspect核对真实句柄、列、单位和范围，render确定性绘制。保持原值、真实日期与缺失，不平滑补数，不用generate_image编造数据。图内只需标题、图形、坐标、图例和必要范围标注，技术来源和审计不进图片。根据完整用户请求选择delivery_mode：只要绘图时默认chart_only，最终回答只输出成功返回的图片Markdown，可交付多张图；不额外重复数据表、涨跌统计、来源说明、方法介绍、局限段落或后续建议。明确同时要求文字分析时用chart_with_analysis，只补用户要求的分析。失败或数据不足时简短说明实际缺口，不伪造图片或已完成状态。`

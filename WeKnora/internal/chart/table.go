@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const MaxHTMLBytes = 1024 * 1024
+const MaxPNGBytes = 8 * 1024 * 1024
 const MaxRows = 2000
 const MaxColumns = 40
 const MaxSources = 32
@@ -21,7 +21,7 @@ const MaxSourceBytes = 1024 * 1024
 
 type SaveRequest struct {
 	SessionID, MessageID, ToolCallID, FileName, SourceID string
-	HTML                                                 []byte
+	PNG                                                  []byte
 }
 type Delivery struct {
 	Handle   string `json:"handle"`

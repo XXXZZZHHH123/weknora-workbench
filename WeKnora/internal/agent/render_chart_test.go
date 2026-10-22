@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -23,7 +25,7 @@ func (w *chartWriterFixture) SaveChart(_ context.Context, request chart.SaveRequ
 	if w.fail {
 		return nil, errors.New("private storage error")
 	}
-	return &chart.Delivery{Handle: "resource://saved-chart", Index: 2, FileName: "chart-saved.html"}, nil
+	return &chart.Delivery{Handle: "resource://abcdefghijklmnopqrstuv", Index: 2, FileName: "chart-saved.png"}, nil
 }
 func chartContext(t *testing.T) context.Context {
 	t.Helper()
@@ -65,16 +67,19 @@ func TestRenderChartInspectsActualRowsAndSavesTheSelectedServerEvidence(t *testi
 	}
 	result := chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": source.ID, "x_column": x, "y_columns": []int{y}, "chart_type": "line", "x_type": "time"})
 	require.True(t, result.Success, result.Error)
-	require.Contains(t, result.Output, "resource://saved-chart")
+	require.Contains(t, result.Output, "resource://abcdefghijklmnopqrstuv")
 	require.Len(t, writer.requests, 1)
 	actual := writer.requests[0]
 	require.Equal(t, "session", actual.SessionID)
 	require.Equal(t, "message", actual.MessageID)
 	require.Equal(t, "chart-call", actual.ToolCallID)
 	require.Equal(t, source.ID, actual.SourceID)
-	require.Contains(t, string(actual.HTML), "B3")
-	require.Contains(t, string(actual.HTML), "15")
-	require.NotContains(t, string(actual.HTML), "<script")
+	_, err := png.Decode(bytes.NewReader(actual.PNG))
+	require.NoError(t, err)
+	require.Equal(t, "chart.png", actual.FileName)
+	require.Equal(t, "![图表](resource://abcdefghijklmnopqrstuv)", result.Output)
+	require.Equal(t, "chart_only", result.Data["delivery_mode"])
+	require.Equal(t, source.Provenance, result.Data["provenance"], "source audit remains available outside the picture")
 	// Changing a successful source invalidates an old content-bound handle.
 	steps[0].ToolCalls[0].Result.Data["rows"] = []any{map[string]any{"date": "2025-01-01", "value": 999.0}}
 	result = chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": source.ID, "x_column": x, "y_columns": []int{y}, "chart_type": "line"})
@@ -123,7 +128,25 @@ func TestRenderChartRetainsPartialFlagsAndSQLResultColumns(t *testing.T) {
 	require.Equal(t, "label", tables[0].Columns[0].Name)
 	out, err := chart.Render(tables[0], chart.Spec{Type: "bar", X: 0, Y: []int{1}})
 	require.NoError(t, err)
-	require.Contains(t, string(out), "来源结果已截断")
+	_, err = png.Decode(bytes.NewReader(out))
+	require.NoError(t, err)
+}
+
+func TestRenderChartDeliveryModeRetainsExplicitAnalysisAndRejectsUnknownModes(t *testing.T) {
+	ctx := chartContext(t)
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{queryChartFixture()}}}
+	sources, _ := chartSources(steps)
+	writer := &chartWriterFixture{}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, writer, "session", "message")
+	args := map[string]any{"operation": "render", "source_id": sources[0].ID, "x_column": 0, "y_columns": []int{2}, "chart_type": "line", "delivery_mode": "chart_with_analysis"}
+	result := chartRun(t, tool, ctx, args)
+	require.True(t, result.Success, result.Error)
+	require.Equal(t, "chart_with_analysis", result.Data["delivery_mode"])
+	require.Len(t, writer.requests, 1)
+	args["delivery_mode"] = "unknown"
+	result = chartRun(t, tool, ctx, args)
+	require.False(t, result.Success)
+	require.Len(t, writer.requests, 1, "invalid mode must not save an attachment")
 }
 func TestRenderChartEnforcesTurnAndCallerBoundaries(t *testing.T) {
 	ctx := chartContext(t)

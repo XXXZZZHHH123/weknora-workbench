@@ -45,6 +45,23 @@ test('ordinary Markdown artifact links render preview cards for streamed and per
   }
 })
 
+test('saved PNG charts render as protected inline images from image or link Markdown on live and history paths', () => {
+  for (const source of [{ handle: artifactHref }, { url: artifactHref }]) {
+    const artifacts = [{ index: 0, file_name: 'result.png', file_type: '.png', ...source }]
+    const renderRef = ({ href, text }: { href: string; text: string }) => renderArtifactReference({
+      href, alt: text, artifacts, labels: artifactLabels, context: { sessionId: 'saved-session', messageId: 'saved-message' },
+    })
+    const renderer = createChatMarkdownRenderer({ linkRenderer: renderRef, imageRenderer: args => renderRef(args) || '' })
+    for (const markdown of [`![Chart](${artifactHref})`, `[Chart](${artifactHref})`]) {
+      const html = renderChatMarkdown(markdown, { renderer, escapeMarkdown: value => value, sanitizeHtml: value => value })
+      assert.match(html, /class="markdown-image artifact-ref-image"/)
+      assert.match(html, /data-artifact-index="0"/)
+      assert.match(html, /data-img-loading="1"/)
+      assert.doesNotMatch(html, /artifact-ref-card|<iframe|src="resource:\/\//)
+    }
+  }
+})
+
 test('artifact metadata arriving after answer text turns the same link into a card', () => {
   let artifacts: ArtifactRefMeta[] = []
   const render = artifactMarkdown(() => artifacts)

@@ -1,7 +1,15 @@
 package chart
 
 import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"golang.org/x/image/math/fixed"
+	"image"
+	"image/png"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,42 +22,111 @@ func fixture(t *testing.T) Table {
 	require.NoError(t, table.Seal("query-real"))
 	return table
 }
-func TestTimeChartUsesActualCoordinatesPreservesGapsAndSourceCells(t *testing.T) {
-	table := fixture(t)
-	document, err := Render(table, Spec{Type: "line", X: 0, Y: []int{1}, XType: "time", Title: "Observed values"})
+func decodeChart(t *testing.T, out []byte) image.Image {
+	t.Helper()
+	require.True(t, bytes.HasPrefix(out, []byte("\x89PNG\r\n\x1a\n")))
+	picture, err := png.Decode(bytes.NewReader(out))
 	require.NoError(t, err)
-	text := string(document)
-	require.Contains(t, text, `cx="95.00"`)
-	require.Contains(t, text, `cx="945.00"`)
-	require.Contains(t, text, `M 95.00 440.00 `)
-	require.Contains(t, text, `M 945.00 90.00 `)
-	require.NotContains(t, text, `L 945.00`, "a missing row breaks the line rather than bridging or filling it")
-	require.Contains(t, text, "空值 1 个")
-	require.Contains(t, text, "B3")
-	require.Contains(t, text, "kg")
-	require.NotContains(t, text, "<script")
-	require.Contains(t, text, "default-src 'none'")
+	require.Equal(t, image.Rect(0, 0, 1600, 1000), picture.Bounds())
+	return picture
+}
+func blueNear(picture image.Image, x, y int) bool {
+	for yy := y - 4; yy <= y+4; yy++ {
+		for xx := x - 4; xx <= x+4; xx++ {
+			r, g, b, _ := picture.At(xx, yy).RGBA()
+			if b > r*2 && b > g {
+				return true
+			}
+		}
+	}
+	return false
+}
+func TestTimeChartUsesActualCoordinatesAndPreservesGaps(t *testing.T) {
+	table := fixture(t)
+	out, err := Render(table, Spec{Type: "line", X: 0, Y: []int{1}, XType: "time", Title: "Observed values"})
+	require.NoError(t, err)
+	picture := decodeChart(t, out)
+	require.True(t, blueNear(picture, 165, 715))
+	require.True(t, blueNear(picture, 1485, 150))
+	require.False(t, blueNear(picture, 825, 432), "missing observation must break the segment, not interpolate it")
+	table.Rows[1][1] = "12"
+	connected, err := Render(table, Spec{Type: "line", X: 0, Y: []int{1}, XType: "time"})
+	require.NoError(t, err)
+	require.True(t, blueNear(decodeChart(t, connected), 297, 659), "one actual day maps to one tenth of the ten-day axis, not half")
 }
 func TestNumericAxisDoesNotReplaceUnevenSourceValuesWithCategorySpacing(t *testing.T) {
 	table := Table{Columns: []Column{{Name: "position"}, {Name: "observed"}}, Rows: [][]string{{"0", "2"}, {"1", "3"}, {"10", "4"}}}
 	require.NoError(t, table.Seal("numerics"))
 	out, err := Render(table, Spec{Type: "scatter", X: 0, Y: []int{1}, XType: "numeric"})
 	require.NoError(t, err)
-	require.Contains(t, string(out), `cx="180.00"`)
+	picture := decodeChart(t, out)
+	require.True(t, blueNear(picture, 297, 432))
+	require.False(t, blueNear(picture, 825, 432))
 }
-func TestChartEscapesUntrustedLabelsAndDisclosesPartialScope(t *testing.T) {
+func TestChartIsDeterministicPNGWithoutHTMLOrSourcePayload(t *testing.T) {
 	table := fixture(t)
 	table.Truncated = true
-	table.Columns[1].Name = `<img src=x onerror=alert(1)>`
-	table.Provenance = `</pre><script>attack()</script>`
-	out, err := Render(table, Spec{Type: "bar", X: 0, Y: []int{1}, Title: `</title><script>bad()</script>`})
+	table.Provenance = "PRIVATE provenance must stay in artifact metadata"
+	table.Notice = "PRIVATE original-data notice"
+	spec := Spec{Type: "bar", X: 0, Y: []int{1}, Title: "Literal <script> labels"}
+	out, err := Render(table, spec)
 	require.NoError(t, err)
-	text := string(out)
-	require.NotContains(t, text, "<script>")
-	require.NotContains(t, text, "<img src=")
-	require.Contains(t, text, "&lt;script&gt;")
-	require.Contains(t, text, "来源结果已截断")
-	require.Contains(t, text, `<rect`)
+	decodeChart(t, out)
+	again, err := Render(table, spec)
+	require.NoError(t, err)
+	require.Equal(t, out, again)
+	// Only standard raster chunks: labels/provenance/tables are not shipped in
+	// hidden HTML, text chunks, executable scripts, or a second document.
+	chunks := []string{}
+	for offset := 8; offset < len(out); {
+		length := int(binary.BigEndian.Uint32(out[offset : offset+4]))
+		chunks = append(chunks, string(out[offset+4:offset+8]))
+		offset += 12 + length
+	}
+	for _, kind := range chunks {
+		require.Contains(t, []string{"IHDR", "IDAT", "IEND"}, kind)
+	}
+	require.NotContains(t, string(out), "PRIVATE")
+	require.NotContains(t, string(out), "<script>")
+	full := table
+	full.Truncated = false
+	plain, err := Render(full, spec)
+	require.NoError(t, err)
+	require.NotEqual(t, out, plain, "partial-source badge must remain visible on raster output")
+}
+func TestChineseGlyphsAreRealAndMissingGlyphsFailClosed(t *testing.T) {
+	face, err := chartFace(30)
+	require.NoError(t, err)
+	defer face.Close()
+	masks := map[string]bool{}
+	for _, ch := range "观测记录日期实值千克单位未确认部分数据" {
+		_, mask, point, _, ok := face.Glyph(fixed.P(0, 36), ch)
+		require.True(t, ok, "glyph %c", ch)
+		var ink bytes.Buffer
+		for y := point.Y; y < point.Y+mask.Bounds().Dy(); y++ {
+			for x := point.X; x < point.X+mask.Bounds().Dx(); x++ {
+				_, _, _, a := mask.At(x, y).RGBA()
+				ink.WriteByte(byte(a >> 8))
+			}
+		}
+		require.Contains(t, ink.Bytes(), byte(255))
+		masks[string(ink.Bytes())] = true
+	}
+	require.Greater(t, len(masks), 10, "different Chinese characters must have distinct outlines, not one tofu box")
+	table := fixture(t)
+	_, err = Render(table, Spec{Type: "line", X: 0, Y: []int{1}, Title: "Unsupported \U00020000"})
+	require.ErrorContains(t, err, "no glyph")
+}
+func TestChinesePNGVisualFixture(t *testing.T) {
+	table := Table{Columns: []Column{{Name: "记录日期"}, {Name: "实测值", Unit: "千克"}}, Rows: [][]string{{"2026-04-01", "12.5"}, {"2026-04-02", "15"}, {"2026-04-03", ""}, {"2026-04-04", "19.75"}, {"2026-04-08", "18"}}, Truncated: true}
+	require.NoError(t, table.Seal("synthetic-visual-only"))
+	out, err := Render(table, Spec{Type: "line", X: 0, Y: []int{1}, XType: "time", Title: "观测值走势"})
+	require.NoError(t, err)
+	decodeChart(t, out)
+	if directory := os.Getenv("CHART_PNG_SAMPLE_DIR"); directory != "" {
+		require.NoError(t, os.MkdirAll(directory, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "synthetic-chinese-chart.png"), out, 0600))
+	}
 }
 func TestChartRejectsInvalidNumbersColumnsTypesAndInventedDates(t *testing.T) {
 	for name, spec := range map[string]Spec{"unknown_type": {Type: "python", X: 0, Y: []int{1}}, "unknown_column": {Type: "line", X: 0, Y: []int{10}}, "same_axis": {Type: "line", X: 0, Y: []int{0}}, "repeated": {Type: "line", X: 0, Y: []int{1, 1}}, "date_as_number": {Type: "line", X: 0, Y: []int{1}, XType: "numeric"}} {
@@ -90,4 +167,51 @@ func TestChartHandlesAreBoundToExactEvidenceAndBudgets(t *testing.T) {
 	value, ok := Number("−1,234.5")
 	require.True(t, ok)
 	require.Equal(t, -1234.5, value)
+}
+
+func TestLargeConstantNumericXAndBoundedFullTable(t *testing.T) {
+	table := Table{Columns: []Column{{Name: "X"}, {Name: "Y"}}, Rows: [][]string{{"1e308", "1"}, {"1e308", "2"}}}
+	require.NoError(t, table.Seal("constant-large"))
+	out, err := Render(table, Spec{Type: "scatter", X: 0, Y: []int{1}, XType: "numeric"})
+	require.NoError(t, err)
+	decodeChart(t, out)
+	table.Rows = make([][]string, MaxRows)
+	for i := range table.Rows {
+		table.Rows[i] = []string{fmt.Sprint(i), fmt.Sprint(i % 100)}
+	}
+	require.NoError(t, table.Seal("bounded-full-table"))
+	out, err = Render(table, Spec{Type: "line", X: 0, Y: []int{1}, XType: "numeric"})
+	require.NoError(t, err)
+	decodeChart(t, out)
+}
+func TestBarContainsPositiveAndNegativeActualObservations(t *testing.T) {
+	table := Table{Columns: []Column{{Name: "Group"}, {Name: "Value", Unit: "kg"}}, Rows: [][]string{{"A", "-10"}, {"B", "10"}}}
+	require.NoError(t, table.Seal("signed"))
+	out, err := Render(table, Spec{Type: "bar", X: 0, Y: []int{1}})
+	require.NoError(t, err)
+	picture := decodeChart(t, out)
+	require.True(t, blueNear(picture, 165, 575))
+	require.True(t, blueNear(picture, 1485, 290))
+	require.False(t, blueNear(picture, 165, 290))
+	require.False(t, blueNear(picture, 1485, 575))
+}
+
+func TestConcurrentChartRenderingProducesIdenticalImages(t *testing.T) {
+	table := fixture(t)
+	spec := Spec{Type: "line", X: 0, Y: []int{1}, XType: "time", Title: "中文图表"}
+	baseline, err := Render(table, spec)
+	require.NoError(t, err)
+	type result struct {
+		image []byte
+		err   error
+	}
+	results := make(chan result, 8)
+	for i := 0; i < 8; i++ {
+		go func() { out, err := Render(table, spec); results <- result{out, err} }()
+	}
+	for i := 0; i < 8; i++ {
+		r := <-results
+		require.NoError(t, r.err)
+		require.Equal(t, baseline, r.image)
+	}
 }

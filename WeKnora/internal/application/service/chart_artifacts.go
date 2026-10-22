@@ -1,11 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"image/png"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/chart"
@@ -35,6 +37,22 @@ func chartDigest(value []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func validateChartPNG(data []byte) error {
+	if len(data) == 0 || len(data) > chart.MaxPNGBytes {
+		return errors.New("chart PNG is empty or exceeds the 8 MiB limit")
+	}
+	config, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > 12000 || config.Height > 12000 || int64(config.Width)*int64(config.Height) > 40_000_000 {
+		return errors.New("chart PNG format or dimensions exceed supported bounds")
+	}
+	// Decode only after bounding dimensions so compressed/corrupt inputs cannot
+	// bypass PNG verification or request an unbounded pixel allocation.
+	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+		return errors.New("chart PNG is corrupt")
+	}
+	return nil
+}
+
 func chartDelivery(record types.MessageArtifactRecord, digest string) (*chart.Delivery, error) {
 	if record.ContentHash != digest {
 		return nil, errors.New("chart execution parameters changed; use a new tool execution")
@@ -53,8 +71,11 @@ func (s *ChartArtifactService) SaveChart(ctx context.Context, request chart.Save
 	if tenantID == 0 || request.SessionID == "" || request.MessageID == "" || request.ToolCallID == "" {
 		return nil, errors.New("chart storage requires an authenticated message and tool execution")
 	}
-	if len(request.HTML) == 0 || len(request.HTML) > chart.MaxHTMLBytes || request.SourceID == "" || len(request.SourceID) > 1024 {
-		return nil, errors.New("invalid chart document or source identity")
+	if request.SourceID == "" || len(request.SourceID) > 1024 {
+		return nil, errors.New("invalid chart source identity")
+	}
+	if err := validateChartPNG(request.PNG); err != nil {
+		return nil, err
 	}
 	ctx = context.WithValue(ctx, types.TenantIDContextKey, tenantID)
 	ctx = context.WithValue(ctx, types.SessionTenantIDContextKey, nil)
@@ -69,7 +90,7 @@ func (s *ChartArtifactService) SaveChart(ctx context.Context, request chart.Save
 	}
 	identity, _ := json.Marshal([]any{tenantID, request.SessionID, request.MessageID, request.ToolCallID})
 	sourcePath := "data-chart://" + chartDigest(identity)
-	digest := chartDigest(request.HTML)
+	digest := chartDigest(request.PNG)
 	var existing types.MessageArtifactRecord
 	lookup := s.db.WithContext(ctx).Where("session_id = ? AND message_id = ? AND source_path = ?", request.SessionID, request.MessageID, sourcePath).First(&existing)
 	if lookup.Error == nil {
@@ -81,8 +102,8 @@ func (s *ChartArtifactService) SaveChart(ctx context.Context, request chart.Save
 	// Completing a local delivery after cancellation cannot submit a paid action.
 	deliveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	fileName := "chart-" + digest[:16] + ".html"
-	reference, err := s.files.SaveBytes(deliveryCtx, request.HTML, tenantID, fileName, false)
+	fileName := "chart-" + digest[:16] + ".png"
+	reference, err := s.files.SaveBytes(deliveryCtx, request.PNG, tenantID, fileName, false)
 	if err != nil {
 		return nil, errors.New("chart could not be saved; no downloadable chart was delivered")
 	}
@@ -113,7 +134,7 @@ func (s *ChartArtifactService) SaveChart(ctx context.Context, request chart.Save
 		if err := tx.Model(&types.MessageArtifactRecord{}).Select("COALESCE(MAX(position), -1) AS max").Where("message_id = ?", request.MessageID).Scan(&highest).Error; err != nil {
 			return err
 		}
-		record = types.NewMessageArtifactRecords(request.SessionID, request.MessageID, types.MessageArtifacts{{URL: reference, FileName: fileName, FileType: ".html", FileSize: int64(len(request.HTML)), ContentHash: digest, SourcePath: sourcePath}})[0]
+		record = types.NewMessageArtifactRecords(request.SessionID, request.MessageID, types.MessageArtifacts{{URL: reference, FileName: fileName, FileType: ".png", FileSize: int64(len(request.PNG)), ContentHash: digest, SourcePath: sourcePath}})[0]
 		record.Position = highest.Max + 1
 		return tx.Create(&record).Error
 	})
