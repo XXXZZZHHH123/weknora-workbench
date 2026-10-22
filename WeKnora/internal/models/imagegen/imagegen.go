@@ -60,6 +60,7 @@ type generator struct {
 	endpoint                      api.Endpoint
 	size, quality, responseFormat string
 	timeout                       time.Duration
+	sensitiveValues               []string
 }
 
 func New(config *Config) (Generator, error) {
@@ -93,7 +94,11 @@ func New(config *Config) (Generator, error) {
 	if configured := strings.TrimSpace(config.ExtraConfig["image_timeout_seconds"]); configured != "" {
 		seconds, _ = strconv.Atoi(configured)
 	}
-	return &generator{endpoint: endpoint, size: strings.TrimSpace(config.ExtraConfig["image_size"]), quality: strings.TrimSpace(config.ExtraConfig["image_quality"]), responseFormat: strings.TrimSpace(config.ExtraConfig["image_response_format"]), timeout: time.Duration(seconds) * time.Second}, nil
+	sensitiveValues := []string{config.APIKey, resolved.Vendor.DefaultAPIKey}
+	for _, value := range endpoint.Headers {
+		sensitiveValues = append(sensitiveValues, value)
+	}
+	return &generator{endpoint: endpoint, size: strings.TrimSpace(config.ExtraConfig["image_size"]), quality: strings.TrimSpace(config.ExtraConfig["image_quality"]), responseFormat: strings.TrimSpace(config.ExtraConfig["image_response_format"]), timeout: time.Duration(seconds) * time.Second, sensitiveValues: sensitiveValues}, nil
 }
 func (g *generator) GetModelName() string { return g.endpoint.Model }
 func (g *generator) GetModelID() string   { return g.endpoint.ModelID }
@@ -132,7 +137,7 @@ func (g *generator) Generate(ctx context.Context, input Request) (*Result, error
 	response, err := g.endpoint.Do(req)
 	if err != nil {
 		if status, ok := err.(*api.HTTPError); ok {
-			return nil, fmt.Errorf("image generation provider returned HTTP %d", status.StatusCode)
+			return nil, providerError(status.StatusCode, status.Body, g.sensitiveValues)
 		}
 		return nil, fmt.Errorf("image generation request failed; upstream completion is unknown")
 	}

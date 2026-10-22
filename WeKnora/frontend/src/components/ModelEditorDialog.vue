@@ -6,7 +6,7 @@
     :confirm-disabled="protocolReviewPending || formData.provider === 'weknoracloud' && wkcCredentialState !== 'configured'"
     @update:visible="(v: boolean) => dialogVisible = v" @confirm="handleConfirm" @cancel="handleCancel">
 
-    <template v-if="formData.source === 'remote' && activeModelType !== 'image-generation'" #footer-left>
+    <template v-if="formData.source === 'remote'" #footer-left>
       <t-button variant="outline" @click="checkRemoteAPI" :loading="checking"
         :disabled="protocolReviewPending || saving || !formData.modelName || (!formData.baseUrl && formData.provider !== 'weknoracloud') || (formData.provider === 'weknoracloud' && wkcCredentialState !== 'configured')">
         <template #icon>
@@ -15,10 +15,10 @@
           <t-icon v-else-if="!checking && remoteChecked && !remoteAvailable" name="close-circle-filled"
             class="status-icon unavailable" />
         </template>
-        {{ checking ? $t('model.editor.testing') : $t('model.editor.testConnection') }}
+        {{ checking ? $t('model.editor.testing') : activeModelType === 'image-generation' ? $t('imageGeneration.testButton') : $t('model.editor.testConnection') }}
       </t-button>
       <span v-if="remoteChecked" :class="['connection-status', remoteAvailable ? 'success' : 'error']">
-        {{ remoteAvailable ? $t('model.editor.connectionSuccess') : $t('model.editor.connectionFailed') }}
+        {{ remoteAvailable ? $t(activeModelType === 'image-generation' ? 'imageGeneration.testSuccess' : 'model.editor.connectionSuccess') : $t('model.editor.connectionFailed') }}
       </span>
     </template>
 
@@ -36,6 +36,12 @@
       <div v-if="formData.source === 'remote'" class="connection-feedback" aria-live="polite">
         <p class="connection-hint">{{ activeModelType === 'image-generation' ? $t('imageGeneration.testHint') : $t(isEdit ? 'model.editor.testDraftEditHint' : 'model.editor.testDraftHint') }}</p>
         <p v-if="remoteStale" class="connection-hint">{{ $t('model.editor.testStale') }}</p>
+        <figure v-if="activeModelType === 'image-generation' && remoteChecked && remoteAvailable && imageTestPreview" class="image-test-preview">
+          <img :src="imageTestPreview.data_url" :alt="$t('imageGeneration.testPreview')" @error="failImageTestPreview" />
+          <figcaption>{{ $t('imageGeneration.testPreview') }} · {{ imageTestPreview.width }} × {{ imageTestPreview.height }}</figcaption>
+          <p class="connection-hint">{{ $t('imageGeneration.testPreviewHint') }}</p>
+        </figure>
+
         <div v-if="remoteChecked && !remoteAvailable" class="connection-result error">
           <div class="connection-result__header">
             <strong>{{ $t('model.editor.connectionFailed') }}</strong>
@@ -43,7 +49,7 @@
               {{ $t('common.copy') }}
             </t-button>
           </div>
-          <p class="connection-result__hint">{{ connectionFailureHint }}</p>
+          <p class="connection-result__hint">{{ activeModelType === 'image-generation' ? remoteMessage : connectionFailureHint }}</p>
           <details class="connection-result__raw">
             <summary>{{ $t('model.editor.connectionDiagnostic.details') }}</summary>
             <div class="connection-result__details" tabindex="0">{{ remoteMessage }}</div>
@@ -491,6 +497,7 @@
           <label class="form-label">{{ $t('imageGeneration.size') }}</label>
           <t-input :model-value="formData.extraConfig.image_size || ''" placeholder="1024x1024"
             @update:model-value="(v: string) => setExtraConfig('image_size', v)" />
+          <p class="form-desc">{{ $t('imageGeneration.sizeHint') }}</p>
         </div>
         <div class="form-item">
           <label class="form-label">{{ $t('imageGeneration.quality') }}</label>
@@ -1288,6 +1295,23 @@ const remoteChecked = ref(false)
 const remoteAvailable = ref(false)
 const remoteMessage = ref('')
 const remoteStale = ref(false)
+interface ImageTestPreview { data_url: string; width: number; height: number; mime_type: string }
+const imageTestPreview = ref<ImageTestPreview | null>(null)
+
+// A test image stays in this editor only; never accept an arbitrary preview URL.
+const validatedImageTestPreview = (value: unknown): ImageTestPreview | null => {
+  if (!value || typeof value !== 'object') return null
+  const image = value as ImageTestPreview
+  if (typeof image.data_url !== 'string' || image.data_url.length > 44 * 1024 * 1024) return null
+  if (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.data_url)) return null
+  if (!Number.isInteger(image.width) || !Number.isInteger(image.height) || image.width <= 0 || image.height <= 0) return null
+  return { data_url: image.data_url, width: image.width, height: image.height, mime_type: image.mime_type }
+}
+const failImageTestPreview = () => {
+  imageTestPreview.value = null
+  remoteAvailable.value = false
+  remoteMessage.value = t('imageGeneration.testMissingImage')
+}
 let connectionRevision = 0
 let applyingDetectedDimension = false
 
@@ -1299,6 +1323,7 @@ const invalidateConnectionTest = (showStale = true) => {
   remoteChecked.value = false
   remoteAvailable.value = false
   remoteMessage.value = ''
+  imageTestPreview.value = null
   dimensionChecked.value = false
   dimensionSuccess.value = false
   dimensionMessage.value = ''
@@ -1975,7 +2000,7 @@ const buildExtraConfig = (): Record<string, string> => {
 
 // 检查 Remote API 连接（根据模型类型调用不同的接口）
 const checkRemoteAPI = async () => {
-  if (checking.value || saving.value || protocolReviewPending.value || activeModelType.value === 'image-generation') return
+  if (checking.value || saving.value || protocolReviewPending.value) return
   if (!formData.value.modelName || (!formData.value.baseUrl && formData.value.provider !== 'weknoracloud')) {
     MessagePlugin.warning(t('model.editor.fillModelAndUrl'))
     return
@@ -1986,6 +2011,7 @@ const checkRemoteAPI = async () => {
   remoteStale.value = false
   remoteChecked.value = false
   remoteMessage.value = ''
+  imageTestPreview.value = null
 
   try {
     let result: any
@@ -2024,6 +2050,18 @@ const checkRemoteAPI = async () => {
     }
 
     switch (activeModelType.value) {
+      case 'image-generation':
+        // This branch is reached only by the explicit test button, never on save/open.
+        result = await checkRemoteModel({
+          modelType: 'ImageGeneration', imageGenerationTest: true,
+          modelName: formData.value.modelName,
+          baseUrl: formData.value.baseUrl || '',
+          apiKey: formData.value.apiKey || '',
+          provider: formData.value.provider,
+          ...idPayload, ...headerPayload, ...extraPayload,
+        })
+        break
+
       case 'chat':
         // 对话模型（KnowledgeQA）
         result = await checkRemoteModel({
@@ -2103,10 +2141,16 @@ const checkRemoteAPI = async () => {
     if (revision !== connectionRevision) return
     remoteChecked.value = true
     remoteAvailable.value = result.available || false
+    if (activeModelType.value === 'image-generation' && result.available) {
+      imageTestPreview.value = validatedImageTestPreview(result.image)
+      remoteAvailable.value = imageTestPreview.value !== null
+    }
     connectionDiagnostic.value = ['configuration', 'request_rejected', 'access_denied', 'not_found', 'rate_limited', 'upstream_unavailable', 'connection'].includes(result.diagnostic?.kind) ? result.diagnostic.kind : 'unknown'
-    remoteMessage.value = result.available
-      ? t('model.editor.connectionSuccess')
-      : result.message || t('model.editor.connectionFailed')
+    remoteMessage.value = remoteAvailable.value
+      ? t(activeModelType.value === 'image-generation' ? 'imageGeneration.testSuccess' : 'model.editor.connectionSuccess')
+      : activeModelType.value === 'image-generation' && result.available
+        ? t('imageGeneration.testMissingImage')
+        : result.message || t('model.editor.connectionFailed')
   } catch (error: any) {
     if (revision !== connectionRevision) return
     remoteChecked.value = true
@@ -2343,6 +2387,12 @@ const handleCancel = () => {
 </script>
 
 <style lang="less" scoped>
+.image-test-preview {
+  margin: 8px 0 0;
+  img { display: block; max-width: 100%; max-height: 240px; border-radius: var(--app-radius-sm); }
+  figcaption { margin-top: 6px; color: var(--td-text-color-secondary); font-size: var(--app-text-sm); }
+}
+
 .provider-doc-link {
   margin-top: 6px;
 }

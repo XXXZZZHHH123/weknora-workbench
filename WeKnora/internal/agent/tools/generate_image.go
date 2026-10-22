@@ -22,9 +22,10 @@ func NewGenerateImageTool(service interfaces.ImageGenerationService, modelID str
 	return &GenerateImageTool{BaseTool: NewBaseTool(ToolGenerateImage,
 		"Generate one new image from a detailed text description using the configured image generation model. "+
 			"Describe the requested composition, style and visible text in prompt. This creates a generated illustration, not source evidence. "+
+			"Use the configured model's defaults for dimensions and quality unless the user explicitly requests an override and the model is known to support it. Do not invent default dimensions or assume that different image models support the same sizes. "+
 			"The result contains a saved image resource that can be shown with Markdown ![description](resource://handle). "+
 			"Only claim successful delivery when the tool returns a saved artifact. At most one provider submission is allowed per assistant reply; another image requires a new user request. Do not repeat failed or interrupted generation automatically.",
-		json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Description of the image to generate, including composition, style and any visible text","minLength":1,"maxLength":32000},"size":{"type":"string","description":"Optional image dimensions supported by the configured provider, e.g. WIDTHxHEIGHT; omit for provider default","maxLength":32},"quality":{"type":"string","description":"Optional quality supported by the configured provider; omit for provider default","maxLength":32}},"required":["prompt"],"additionalProperties":false}`)),
+		json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Description of the image to generate, including composition, style and any visible text","minLength":1,"maxLength":32000},"size":{"type":"string","description":"Omit to use configured/provider defaults. Only set for an explicit user override when the configured model supports those dimensions (WIDTHxHEIGHT). Never guess a default size.","maxLength":32},"quality":{"type":"string","description":"Omit to use configured/provider defaults. Only set for an explicit user override known to be supported by the configured model.","maxLength":32}},"required":["prompt"],"additionalProperties":false}`)),
 		service: service, modelID: modelID}
 }
 

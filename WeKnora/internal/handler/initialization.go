@@ -22,6 +22,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/handler/dto"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/middleware"
+	"github.com/Tencent/WeKnora/internal/models"
 	modelapi "github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -1764,6 +1765,10 @@ func (h *InitializationHandler) buildConfigResponse(ctx context.Context, models 
 // 所有 provider/model 通用字段都在这里集中声明；若未来新增字段（比如现在的
 // custom_headers），只需改一处，生产路径和测试路径会同时生效。
 type ModelTestRequest struct {
+	// Image output tests are opt-in actions; neither saving nor ordinary chat checks generate images.
+	ModelType                 string                   `json:"modelType,omitempty"`
+	ImageGenerationTest       bool                     `json:"imageGenerationTest,omitempty"`
+	ImagePrompt               string                   `json:"imagePrompt,omitempty"`
 	Spec                      *types.ModelSpecOverride `json:"spec,omitempty"`
 	Source                    string                   `json:"source"` // 为空时按需默认为 "remote"
 	ModelName                 string                   `json:"modelName" binding:"required"`
@@ -1815,6 +1820,16 @@ func (h *InitializationHandler) fillSecretsFromStoredModel(ctx context.Context, 
 	if err != nil || stored == nil {
 		logger.Warnf(ctx, "test-connection: stored model %s not found, leaving secrets empty: %v",
 			utils.SanitizeForLog(req.ModelID), err)
+		return
+	}
+	fillModelTestSecretsFromStored(req, stored)
+}
+
+// fillModelTestSecretsFromStored is shared by every draft test. The image
+// test first validates a supplied model ID and its type, then reuses exactly
+// the same credential precedence without a second lookup or persistence.
+func fillModelTestSecretsFromStored(req *ModelTestRequest, stored *types.Model) {
+	if req == nil || stored == nil {
 		return
 	}
 	if req.Spec == nil && req.Provider == stored.Parameters.Provider {
@@ -1925,6 +1940,21 @@ func (h *InitializationHandler) CheckRemoteModel(c *gin.Context) {
 		logger.Error(ctx, "Failed to parse remote model check request", err)
 		c.Error(errors.NewBadRequestError(err.Error()))
 		return
+	}
+	if req.ModelType != "" || req.ImageGenerationTest {
+		kind, valid := models.ParseModelType(req.ModelType)
+		if !valid || (kind != types.ModelTypeKnowledgeQA && kind != types.ModelTypeImageGeneration) {
+			_ = c.Error(errors.NewBadRequestError("This endpoint requires a chat or image-generation model type"))
+			return
+		}
+		if kind == types.ModelTypeImageGeneration {
+			h.checkImageGenerationDraft(c, &req)
+			return
+		}
+		if req.ImageGenerationTest {
+			_ = c.Error(errors.NewBadRequestError("Explicit image testing requires the image-generation model type"))
+			return
+		}
 	}
 	// This route checks chat connectivity. An image output model must never
 	// be sent through chat completion or trigger paid generation implicitly.

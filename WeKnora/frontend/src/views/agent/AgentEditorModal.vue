@@ -731,12 +731,25 @@
             <div class="setting-info">
               <label>{{ $t('imageGeneration.agentModel') }}</label>
               <p class="desc">{{ $t('imageGeneration.agentHint') }}</p>
+              <p class="desc-hint">{{ $t('imageGeneration.bindingHint') }}</p>
             </div>
             <div class="setting-control">
               <ModelSelector model-type="ImageGeneration" :selected-model-id="formData.config.image_generation_model_id"
                 :all-models="allModels" clearable
-                @update:selected-model-id="(val: string) => formData.config.image_generation_model_id = val"
+                @update:selected-model-id="selectImageGenerationModel"
                 @add-model="handleAddModel('image-generation')" :placeholder="$t('imageGeneration.selectModel')" />
+            </div>
+          </div>
+
+          <div v-if="isAgentMode" class="setting-row" data-image-generation-binding>
+            <div class="setting-info">
+              <label>{{ $t('imageGeneration.toolEnabled') }}</label>
+              <p class="desc">{{ $t(imageGenerationEnabled ? 'imageGeneration.bindingReady' : 'imageGeneration.bindingDisabled') }}</p>
+            </div>
+            <div class="setting-control">
+              <t-switch :value="imageGenerationEnabled"
+                :disabled="!formData.config.image_generation_model_id && !imageGenerationEnabled"
+                @update:value="(value: unknown) => setImageGenerationEnabled(value === true)" />
             </div>
           </div>
 
@@ -1871,6 +1884,7 @@ import {
 } from '@/config/contextualGuides';
 import { useI18n } from 'vue-i18n';
 import { selectInitialModelId } from '@/utils/modelDefaults';
+import { imageGenerationTools } from '@/utils/imageGenerationBinding';
 import { hydrateAgentPromptRefs, serializeAgentPrompts } from '@/utils/agentPromptTemplates';
 import { copyWithToast } from '@/utils/clipboard';
 import { MessagePlugin } from 'tdesign-vue-next';
@@ -2629,6 +2643,23 @@ const missKindToReason = (kind: RequirementMissKind): string | undefined => {
 // 保存时的 allowed_tools：保持未设置的列表在未被修改时以 null 发送。
 const allowedToolsToSave = (): string[] | null =>
   allowedToolsForSave(formData.value.config.allowed_tools || [], keepAllowedToolsUnset.value);
+
+const imageGenerationEnabled = computed(() => formData.value.config.allowed_tools?.includes('generate_image') ?? false);
+
+function setImageGenerationEnabled(enabled: boolean) {
+  if (enabled && !formData.value.config.image_generation_model_id) return;
+  formData.value.config.allowed_tools = imageGenerationTools(
+    keepAllowedToolsUnset.value ? null : formData.value.config.allowed_tools,
+    enabled,
+    agentToolCatalog.value?.default_tools,
+  );
+  keepAllowedToolsUnset.value = false;
+}
+
+function selectImageGenerationModel(modelID: string) {
+  formData.value.config.image_generation_model_id = modelID;
+  setImageGenerationEnabled(Boolean(modelID));
+}
 
 // 能力不满足时只禁止新勾选；已勾选的工具保持可点击，以便取消勾选（并显示原因）。
 const availableTools = computed(() => {

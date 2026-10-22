@@ -25,7 +25,7 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-type Result = { available: boolean; message?: string; dimension?: number; diagnostic?: { kind: string } }
+type Result = { available: boolean; message?: string; dimension?: number; diagnostic?: { kind: string }; image?: { data_url: string; width: number; height: number; mime_type: string } }
 async function fixture(options: {
   type?: string
   initialType?: string
@@ -1399,5 +1399,109 @@ test('remote protocol review never blocks a local model and returns when the rem
     f.vm.formData.source = 'remote'
     await nextTick()
     assert.equal(f.vm.protocolReviewPending, true)
+  } finally { f.close() }
+})
+
+
+const testImage = {
+  data_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5wAAAABJRU5ErkJggg==',
+  width: 1, height: 1, mime_type: 'image/png',
+}
+
+test('image generation: opening and saving configuration never make a generation request', async () => {
+  const f = await fixture({ type: 'image-generation' })
+  try {
+    f.vm.formData.extraConfig = { image_size: '1024x1024' }
+    await nextTick()
+    assert.equal(f.requests.length, 0)
+    await f.vm.handleConfirm()
+    assert.equal(f.requests.length, 0)
+    assert.equal(f.saves.length, 1)
+    assert.equal(f.saves[0].extraConfig.image_size, '1024x1024')
+    assert.equal(f.saves[0].modelType, 'image-generation')
+  } finally { f.close() }
+})
+
+test('image generation: explicit test uses the unsaved draft once and shows its returned image', async () => {
+  const f = await fixture({ type: 'image-generation', check: async () => ({ available: true, image: testImage }) })
+  try {
+    f.vm.formData.extraConfig = { image_size: '1024x1024', image_quality: 'high', image_response_format: 'b64_json' }
+    f.vm.formData.customHeaders = [{ key: ' X-Test ', value: ' image-draft ' }]
+    await nextTick()
+    await f.vm.checkRemoteAPI()
+    assert.equal(f.requests.length, 1)
+    const payload = f.requests[0]
+    assert.equal(payload.modelType, 'ImageGeneration')
+    assert.equal(payload.imageGenerationTest, true)
+    assert.equal(payload.modelName, 'draft-model')
+    assert.equal(payload.apiKey, 'draft-key')
+    assert.equal(payload.baseUrl, 'https://example.com/v1')
+    assert.equal(payload.extraConfig.image_size, '1024x1024')
+    assert.equal(payload.customHeaders['X-Test'], 'image-draft')
+    assert.equal(f.saves.length, 0)
+    assert.equal(f.vm.remoteAvailable, true)
+    assert.equal(f.vm.imageTestPreview.data_url, testImage.data_url)
+    assert.equal(f.vm.remoteMessage, 'imageGeneration.testSuccess')
+  } finally { f.close() }
+})
+
+test('image generation: stored credential fallback uses the model ID and clears preview when draft changes or closes', async () => {
+  const f = await fixture({ type: 'image-generation', edit: true, check: async () => ({ available: true, image: testImage }) })
+  try {
+    await f.vm.checkRemoteAPI()
+    assert.equal(f.requests[0].modelId, 'saved-model')
+    assert.equal(f.requests[0].apiKey, '')
+    assert.ok(f.vm.imageTestPreview)
+    f.vm.formData.extraConfig.image_size = '2048x1024'
+    await nextTick()
+    assert.equal(f.vm.remoteChecked, false)
+    assert.equal(f.vm.imageTestPreview, null)
+    assert.equal(f.requests.length, 1)
+    await f.vm.checkRemoteAPI()
+    assert.ok(f.vm.imageTestPreview)
+    f.props.visible = false
+    await nextTick()
+    assert.equal(f.vm.imageTestPreview, null)
+  } finally { f.close() }
+})
+
+test('image generation: missing or untrusted preview output cannot claim a successful image test', async () => {
+  for (const image of [undefined, { ...testImage, data_url: 'https://vendor.invalid/image.png' },
+    { ...testImage, data_url: 'data:text/html;base64,PHNjcmlwdD4=' }, { ...testImage, width: 0 }]) {
+    const f = await fixture({ type: 'image-generation', check: async () => ({ available: true, image }) })
+    try {
+      await f.vm.checkRemoteAPI()
+      assert.equal(f.requests.length, 1)
+      assert.equal(f.vm.remoteAvailable, false)
+      assert.equal(f.vm.imageTestPreview, null)
+      assert.equal(f.vm.remoteMessage, 'imageGeneration.testMissingImage')
+    } finally { f.close() }
+  }
+})
+
+test('image generation: stale completions after draft edits are discarded without retrying', async () => {
+  const response = deferred<Result>()
+  const f = await fixture({ type: 'image-generation', check: () => response.promise })
+  try {
+    const pending = f.vm.checkRemoteAPI()
+    f.vm.formData.modelName = 'different-model'
+    await nextTick()
+    response.resolve({ available: true, image: testImage })
+    await pending
+    assert.equal(f.requests.length, 1)
+    assert.equal(f.vm.remoteChecked, false)
+    assert.equal(f.vm.imageTestPreview, null)
+  } finally { f.close() }
+})
+
+test('image generation: upstream failure does not automatically repeat a paid test request', async () => {
+  const f = await fixture({ type: 'image-generation', check: async () => { throw new Error('provider rejected request') } })
+  try {
+    await f.vm.checkRemoteAPI()
+    assert.equal(f.requests.length, 1)
+    assert.equal(f.vm.remoteAvailable, false)
+    assert.equal(f.vm.remoteMessage, 'provider rejected request')
+    assert.equal(f.vm.imageTestPreview, null)
+    assert.equal(f.saves.length, 0)
   } finally { f.close() }
 })

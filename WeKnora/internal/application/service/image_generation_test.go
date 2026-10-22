@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"io"
@@ -223,6 +224,77 @@ func TestImageGenerationOnePaidSubmissionPerAssistantReply(t *testing.T) {
 			request.MessageID = "next-message"
 			_, _ = svc.Generate(ctx, request)
 			require.Equal(t, int32(2), g.calls.Load())
+		})
+	}
+}
+
+func TestImageGenerationSafeProviderHTTPDiagnosticIsVisibleWithoutRetry(t *testing.T) {
+	t.Setenv("SSRF_WHITELIST", "127.0.0.1")
+	utils.ResetSSRFWhitelistForTest()
+	t.Cleanup(utils.ResetSSRFWhitelistForTest)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+			"code": "invalid_size", "param": "size",
+			"message": "private request body and credential fixture-private-api-key; signed URL https://provider.invalid/?token=private-token",
+		}})
+	}))
+	defer server.Close()
+	g, err := imagegen.New(&imagegen.Config{ModelID: "image-model", ModelName: "configured-image-name", Provider: "generic", BaseURL: server.URL + "/v1", APIKey: "fixture-private-api-key"})
+	require.NoError(t, err)
+	svc, db, ctx := newImageDeliveryFixture(t, g)
+	request := imageDeliveryRequest()
+	delivery, err := svc.Generate(ctx, request)
+	require.Nil(t, delivery)
+	require.ErrorContains(t, err, "HTTP 422")
+	require.ErrorContains(t, err, "invalid_size")
+	require.ErrorContains(t, err, "size")
+	require.ErrorContains(t, err, "will not be retried")
+	for _, secret := range []string{"fixture-private-api-key", "private-token", "provider.invalid", "private request body"} {
+		require.NotContains(t, err.Error(), secret)
+	}
+	var diagnostic *imagegen.ProviderError
+	require.ErrorAs(t, err, &diagnostic, "preserve safe typed details without retaining the original transport error")
+	_, err = svc.Generate(ctx, request)
+	require.ErrorContains(t, err, "already submitted")
+	request.ToolCallID = "new-call-after-provider-error"
+	_, err = svc.Generate(ctx, request)
+	require.ErrorContains(t, err, "already submitted for this reply")
+	require.Equal(t, int32(1), calls.Load())
+	var count int64
+	require.NoError(t, db.Model(&types.MessageArtifactRecord{}).Count(&count).Error)
+	require.Zero(t, count)
+}
+
+func TestImageGenerationOnlyPublicProviderDetailsCrossServiceBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		failure  error
+		wantHTTP bool
+	}{
+		{name: "unknown transport error", failure: errors.New("secret-key=transport-secret https://private.invalid/?token=private-token body=private-user-prompt")},
+		{name: "wrapped public provider error", failure: fmt.Errorf("secret-key=transport-secret https://private.invalid/?token=private-token: %w", &imagegen.ProviderError{StatusCode: 400, Code: "invalid_parameter", Param: "quality"}), wantHTTP: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &imageGeneratorFixture{err: tc.failure}
+			svc, _, ctx := newImageDeliveryFixture(t, g)
+			_, err := svc.Generate(ctx, imageDeliveryRequest())
+			require.Error(t, err)
+			for _, secret := range []string{"transport-secret", "private.invalid", "private-token", "private-user-prompt"} {
+				require.NotContains(t, err.Error(), secret)
+			}
+			if tc.wantHTTP {
+				require.ErrorContains(t, err, "HTTP 400")
+				require.ErrorContains(t, err, "invalid_parameter")
+				require.ErrorContains(t, err, "quality")
+			} else {
+				require.EqualError(t, err, "image generation failed or was interrupted; the request will not be retried automatically")
+			}
+			_, err = svc.Generate(ctx, imageDeliveryRequest())
+			require.ErrorContains(t, err, "already submitted")
+			require.Equal(t, int32(1), g.calls.Load())
 		})
 	}
 }

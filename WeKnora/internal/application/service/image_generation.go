@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -111,6 +112,13 @@ func (s *ImageGenerationService) Generate(ctx context.Context, request types.Ima
 	if err != nil {
 		// Do not persist a provider error which might include a URL or secret.
 		s.markFailed(ctx, record.ID)
+		var providerError *imagegen.ProviderError
+		if errors.As(err, &providerError) && providerError != nil {
+			// This type exposes only adapter-validated status/code/parameter
+			// metadata. Discard the original wrapper: it may contain arbitrary
+			// transport messages, signed URLs or credentials.
+			return nil, fmt.Errorf("%w; the request will not be retried automatically", providerError)
+		}
 		return nil, errors.New("image generation failed or was interrupted; the request will not be retried automatically")
 	}
 	if generated == nil || len(generated.Data) == 0 || generated.Width <= 0 || generated.Height <= 0 {
