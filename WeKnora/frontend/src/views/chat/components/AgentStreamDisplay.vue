@@ -708,6 +708,7 @@ import {
 import { copyWithToast } from '@/utils/clipboard';
 import {
   configureMarkedForChatMarkdown,
+  createChatMarkdownRenderer,
   renderChatMarkdown,
   wrapChatMarkdownTables,
 } from '@/utils/chatMarkdownRenderer';
@@ -2524,7 +2525,16 @@ onUpdated(() => {
 });
 
 // 自定义渲染器 - 支持 Mermaid
-const agentRenderer = new marked.Renderer();
+const agentRenderer = createChatMarkdownRenderer({
+  linkRenderer: ({ href, text }) => renderArtifactReference({
+    href,
+    alt: text || '',
+    artifacts: artifactList.value,
+    labels: artifactRefLabels.value,
+    context: artifactRefContext.value,
+    streaming: !isSegmentDone.value,
+  }),
+});
 agentRenderer.code = createMermaidCodeRenderer('mermaid-agent');
 
 // Files the agent generated in its sandbox carry the same `resource://` handle

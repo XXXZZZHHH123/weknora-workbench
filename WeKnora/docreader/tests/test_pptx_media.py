@@ -235,6 +235,19 @@ class TestPptxMedia(unittest.TestCase):
         kill.assert_called_once_with(1234, media.signal.SIGKILL)
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
+    def test_conversion_cancel_kills_process_group_and_skips_fallback(self):
+        with patch.object(media.subprocess, "Popen") as popen, patch.object(media.os, "killpg") as kill:
+            proc = popen.return_value
+            proc.pid = 4321
+            proc.wait.side_effect = [subprocess.TimeoutExpired("soffice", .1), 0]
+            # Initial entry, loop entry, next loop sees the last waiter leave.
+            with media.conversion_cancellation(iter([False, False, True]).__next__):
+                self.assertFalse(media._run_conversion(["soffice", "input.emf"], 30))
+            kill.assert_called_once_with(4321, media.signal.SIGKILL)
+        with media.conversion_cancellation(lambda: True), patch.object(media, "_rasterize_with_libreoffice") as office:
+            self.assertIsNone(media.rasterize_media_bytes("cache.emf", b"vector"))
+            office.assert_not_called()
+
     def test_generated_deck_preserves_text_notes_and_shared_logo_once_per_page(self):
         from PIL import Image
         from pptx import Presentation

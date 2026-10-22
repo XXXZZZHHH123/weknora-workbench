@@ -4,6 +4,9 @@ import io
 import logging
 import zipfile
 import unittest
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from PIL import Image
@@ -44,6 +47,12 @@ def deck_with_unicode_media_name():
 
 
 class TestSourceMediaPng(unittest.TestCase):
+    def setUp(self):
+        with media_png._STATE_LOCK:
+            self.assertFalse(media_png._FLIGHTS)
+            media_png._CACHE.clear()
+            media_png._CACHE_BYTES = 0
+
     def test_invalid_selector_has_typed_unary_and_streaming_error_metadata(self):
         from docreader.proto.docreader_pb2 import ReadRequest
 
@@ -205,6 +214,162 @@ class TestSourceMediaPng(unittest.TestCase):
                 reader.assert_called_once()
         finally:
             root_logger.handlers[:] = original_handlers
+
+
+class TestSharedSourceMediaRender(unittest.TestCase):
+    """Concurrency tests use synthetic bytes and never invoke Office/model APIs."""
+
+    def setUp(self):
+        TestSourceMediaPng.setUp(self)
+        self.source = fixture()
+
+    def read(self, context=None, page="1"):
+        with media_png.source_media_request_context(context):
+            return media_png.read_source_media_png(self.source, "pptx", {
+                "source_page": page, "source_part": "ppt/media/chart-a.emf"})
+
+    def wait_for(self, predicate):
+        deadline = time.monotonic() + 2
+        while not predicate():
+            if time.monotonic() > deadline:
+                self.fail("Concurrent operation did not reach expected state")
+            time.sleep(0.005)
+
+    def test_same_image_merges_and_cache_still_checks_page_relation(self):
+        entered, release = threading.Event(), threading.Event()
+        def render(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return png_bytes()
+        with patch.object(media_png, "rasterize_media_bytes", side_effect=render) as raster, ThreadPoolExecutor(2) as pool:
+            first = pool.submit(self.read)
+            self.assertTrue(entered.wait(2))
+            second = pool.submit(self.read)
+            self.wait_for(lambda: any(f.peak_waiters == 2 for f in list(media_png._FLIGHTS.values())))
+            release.set()
+            self.assertEqual(first.result().metadata, second.result().metadata)
+            self.read()
+            with self.assertRaises(media_png.SourceMediaSelectorError):
+                self.read(page="2")
+            self.assertEqual(raster.call_count, 1)
+
+    def test_one_waiter_cancel_does_not_cancel_shared_conversion(self):
+        class Context:
+            active = True
+            def is_active(self):
+                return self.active
+        context = Context()
+        entered, release = threading.Event(), threading.Event()
+        def render(*args, **kwargs):
+            from docreader.parser.pptx_media import _conversion_is_cancelled
+            entered.set()
+            self.assertTrue(release.wait(2))
+            self.assertFalse(_conversion_is_cancelled())
+            return png_bytes()
+        with patch.object(media_png, "rasterize_media_bytes", side_effect=render) as raster, ThreadPoolExecutor(2) as pool:
+            first = pool.submit(self.read, context)
+            self.assertTrue(entered.wait(2))
+            second = pool.submit(self.read)
+            self.wait_for(lambda: any(f.peak_waiters == 2 for f in list(media_png._FLIGHTS.values())))
+            context.active = False
+            with self.assertRaises(media_png.SourceMediaRenderError) as error:
+                first.result(timeout=2)
+            self.assertEqual(error.exception.code, "cancelled")
+            release.set()
+            self.assertTrue(second.result(timeout=2).metadata)
+            self.assertEqual(raster.call_count, 1)
+
+    def test_last_cancel_stops_conversion_without_caching_failure(self):
+        class Context:
+            active = True
+            def is_active(self):
+                return self.active
+        context = Context()
+        entered, stopped = threading.Event(), threading.Event()
+        def render(*args, **kwargs):
+            from docreader.parser.pptx_media import _conversion_is_cancelled
+            entered.set()
+            self.wait_for(_conversion_is_cancelled)
+            stopped.set()
+            return None
+        with patch.object(media_png, "rasterize_media_bytes", side_effect=render), ThreadPoolExecutor(1) as pool:
+            future = pool.submit(self.read, context)
+            self.assertTrue(entered.wait(2))
+            context.active = False
+            with self.assertRaises(media_png.SourceMediaRenderError):
+                future.result(timeout=2)
+            self.assertTrue(stopped.wait(2))
+            self.wait_for(lambda: not media_png._FLIGHTS)
+            self.assertFalse(media_png._CACHE)
+        with patch.object(media_png, "rasterize_media_bytes", return_value=png_bytes()) as raster:
+            self.read()
+            raster.assert_called_once()
+
+    def test_queue_budget_is_independent_and_capacity_is_bounded(self):
+        slot = threading.BoundedSemaphore(1)
+        slot.acquire()
+        with patch.object(media_png, "_RENDER_SLOTS", slot), patch.object(media_png, "_QUEUE_TIMEOUT_SECONDS", .08), patch.object(media_png, "rasterize_media_bytes") as raster:
+            with self.assertRaises(media_png.SourceMediaRenderError) as error:
+                self.read()
+            self.assertEqual(error.exception.code, "busy")
+            raster.assert_not_called()
+        slot.release()
+        slot.acquire()
+        with patch.object(media_png, "_RENDER_SLOTS", slot), patch.object(media_png, "rasterize_media_bytes", return_value=png_bytes()) as raster, ThreadPoolExecutor(1) as pool:
+            future = pool.submit(self.read)
+            self.wait_for(lambda: bool(media_png._FLIGHTS))
+            time.sleep(.06)
+            slot.release()
+            future.result(timeout=2)
+            self.assertEqual(raster.call_args.kwargs["timeout"], 30)
+
+    def test_cache_has_expiry_and_size_bounds_and_failure_is_not_cached(self):
+        with media_png._STATE_LOCK, patch.object(media_png, "_CACHE_MAX_ITEMS", 2), patch.object(media_png, "_CACHE_MAX_BYTES", 4):
+            media_png._save_png("a", b"12")
+            media_png._save_png("b", b"34")
+            self.assertEqual(media_png._cached_png("a"), b"12")
+            media_png._save_png("c", b"56")
+            self.assertIsNone(media_png._cached_png("b"))
+            self.assertEqual(media_png._CACHE_BYTES, 4)
+            with patch.object(media_png, "_CACHE_TTL_SECONDS", 0):
+                media_png._save_png("expired", b"7")
+            self.assertIsNone(media_png._cached_png("expired"))
+        with patch.object(media_png, "rasterize_media_bytes", side_effect=[None, png_bytes()]) as raster:
+            with self.assertRaises(media_png.SourceMediaRenderError):
+                self.read()
+            self.read()
+            self.assertEqual(raster.call_count, 2)
+
+    def test_pending_capacity_and_thread_creation_failure_are_bounded(self):
+        with patch.object(media_png, "_MAX_PENDING_RENDERS", 0), patch.object(media_png, "rasterize_media_bytes") as raster:
+            with self.assertRaises(media_png.SourceMediaRenderError) as error:
+                self.read()
+            self.assertEqual(error.exception.code, "busy")
+            raster.assert_not_called()
+        with patch.object(media_png.threading.Thread, "start", side_effect=RuntimeError("thread capacity")):
+            with self.assertRaises(media_png.SourceMediaRenderError) as error:
+                self.read()
+            self.assertEqual(error.exception.code, "busy")
+            self.assertFalse(media_png._FLIGHTS)
+
+    def test_changed_source_bytes_cannot_reuse_previous_source_cache(self):
+        with patch.object(media_png, "rasterize_media_bytes", return_value=png_bytes()) as raster:
+            previous = self.read()
+            changed = media_png.read_source_media_png(self.source + b"changed source", "pptx", {
+                "source_page": "1", "source_part": "ppt/media/chart-a.emf"})
+            self.assertNotEqual(previous.metadata["source_file_sha256"], changed.metadata["source_file_sha256"])
+            self.assertEqual(raster.call_count, 2)
+
+    def test_operational_status_is_preserved_by_both_rpc_methods(self):
+        from docreader.proto.docreader_pb2 import ReadRequest
+        from docreader.main import DocReaderServicer
+        servicer = DocReaderServicer.__new__(DocReaderServicer)
+        for code in ("busy", "timeout", "cancelled", "render_failed"):
+            with patch.object(servicer, "_parse_request", side_effect=media_png.SourceMediaRenderError(code)):
+                unary = servicer.Read(ReadRequest(), None)
+                frames = list(servicer.ReadStream(ReadRequest(), None))
+                self.assertEqual(unary.metadata["source_media_error_code"], code)
+                self.assertEqual(frames[0].meta.metadata["source_media_error_code"], code)
 
 
 if __name__ == "__main__":
