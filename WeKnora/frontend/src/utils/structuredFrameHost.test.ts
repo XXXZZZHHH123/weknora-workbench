@@ -34,6 +34,7 @@ test('PDF review entry is restricted to a PDF preview and mounts the shared auth
   assert.match(docContent, /@navigate="navigateFromPdfReview"/)
   assert.match(docContent, /@click="pdfReviewOpen = true"/)
   assert.match(docContent, /v-model:visible="pdfReviewOpen"/)
+  assert.match(docContent, /\.pdf-review-dialog__frame\s*\{[^}]*display:\s*flex/, 'give the iframe host a flex height from the fixed-height dialog frame')
   assert.ok(docContent.includes('watch(pdfReviewKey, () => { pdfReviewOpen.value = false; });'))
   assert.ok(docContent.includes('if (!visible) pdfReviewOpen.value = false;'))
   assert.match(docContent, /预览通过不代表 OCR 或公式识别已经验证/)

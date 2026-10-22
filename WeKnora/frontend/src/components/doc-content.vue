@@ -2200,7 +2200,7 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
 .pdf-review-entry-note { margin: 10px 0; color: var(--td-text-color-secondary); font-size: 12px; }
 .pdf-review-dialog { display: flex; flex-direction: column; min-height: 0; }
 .pdf-review-dialog__note { margin: 0 0 10px; color: var(--td-text-color-secondary); font-size: 13px; line-height: 1.6; }
-.pdf-review-dialog__frame { width: 100%; height: min(74vh, 850px); min-height: 420px; overflow: hidden; border: 1px solid var(--app-border-color); border-radius: 8px; }
+.pdf-review-dialog__frame { display: flex; width: 100%; height: min(74vh, 850px); min-height: 420px; overflow: hidden; border: 1px solid var(--app-border-color); border-radius: 8px; }
 .metadata-empty { color: var(--td-text-color-placeholder); }
 .metadata-actions, .chunk-editor-actions { margin-top: 8px; justify-content: flex-end; }
 .chunk-disabled { opacity: .5; }
