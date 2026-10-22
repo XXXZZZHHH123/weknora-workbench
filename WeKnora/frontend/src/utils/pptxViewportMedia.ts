@@ -25,7 +25,7 @@ export function createPptxViewportMedia(options: {
   const pageTasks = new Map<number, Promise<void>>()
   const parts = new Map<string, { source: string; url?: string; state: PptxPageMediaView['state']; task?: Promise<void> }>()
   const urls = new Set<string>()
-  const queue: Array<() => Promise<void>> = []
+  const queue: Array<{ part: string; run: () => Promise<void> }> = []
   let running = 0
   let root: ParentNode | null = null
   let observer: IntersectionObserver | null = null
@@ -74,7 +74,7 @@ export function createPptxViewportMedia(options: {
           // The renderer may choose image/* for uppercase extensions. Identity
           // comes from the embedded bytes, not its guessed MIME label.
           const comma = original?.indexOf(',') ?? -1
-          const identicalBytes = comma >= 0 && /^data:[^,]*;base64$/i.test(original!.slice(0, comma)) &&
+          const identicalBytes = !!media.source && comma >= 0 && /^data:[^,]*;base64$/i.test(original!.slice(0, comma)) &&
             original!.slice(comma + 1) === media.source.slice(media.source.indexOf(',') + 1)
           if (!identicalBytes && !previouslyVerified) continue
           image.dataset.pptxVectorPart = item.part
@@ -88,31 +88,61 @@ export function createPptxViewportMedia(options: {
       }
     }
   }
+  const priority = (part: string): [number, number] => {
+    const element = root as HTMLElement | null
+    if (!element?.getBoundingClientRect) return [1, 0]
+    const viewport = element.getBoundingClientRect()
+    const top = Math.max(0, viewport.top)
+    const bottom = Math.min(globalThis.innerHeight || viewport.bottom, viewport.bottom)
+    if (bottom <= top) return [1, 0]
+    const center = (top + bottom) / 2
+    const slides = element.querySelectorAll<HTMLElement>('.pptx-preview-slide-wrapper')
+    let best: [number, number] = [2, Number.POSITIVE_INFINITY]
+    for (const [page, items] of pages) {
+      if (!items.some(item => item.part === part)) continue
+      const slide = slides[page - 1]
+      if (!slide) continue
+      const rect = slide.getBoundingClientRect()
+      const candidate: [number, number] = [rect.bottom > top && rect.top < bottom ? 0 : 1,
+        Math.abs((rect.top + rect.bottom) / 2 - center)]
+      if (candidate[0] < best[0] || candidate[0] === best[0] && candidate[1] < best[1]) best = candidate
+    }
+    return best
+  }
   const drain = () => {
     while (active() && running < 2 && queue.length) {
-      const work = queue.shift()!
+      // Recompute from the current viewport after every completion: scrolling
+      // must move visible work ahead of old pages and rootMargin prefetches.
+      let next = 0
+      let best = priority(queue[0]!.part)
+      for (let index = 1; index < queue.length; index++) {
+        const candidate = priority(queue[index]!.part)
+        if (candidate[0] < best[0] || candidate[0] === best[0] && candidate[1] < best[1]) {
+          next = index; best = candidate
+        }
+      }
+      const [work] = queue.splice(next, 1)
       running++
-      void work().finally(() => { running--; drain() })
+      void work!.run().finally(() => { running--; drain() })
     }
   }
   async function request(page: number, part: string, retry: boolean) {
     let value = parts.get(part)
     if (value && !(retry && value.state === 'failed')) { publishPart(part); return value.task }
-    const file = (await zip).file(part)
-    if (!file || !active()) return
-    const source = `data:image/x-${part.toLowerCase().endsWith('.emf') ? 'emf' : 'wmf'};base64,${await file.async('base64')}`
-    if (!active()) return
-    // Another visible page can reference the same original media part.
-    value = parts.get(part)
-    if (value && !(retry && value.state === 'failed')) { publishPart(part); return value.task }
-    value = { source, state: 'pending' }
+    // Reserve work in manifest order before any asynchronous media inflation.
+    // Otherwise smaller, distant figures can monopolize the raster queue.
+    value = { source: '', state: 'pending' }
     const media = value
     parts.set(part, media)
     media.task = new Promise<void>(resolve => {
-      queue.push(async () => {
+      queue.push({ part, run: async () => {
         if (!active()) { resolve(); return }
         media.state = 'loading'; publishPart(part)
         try {
+          const file = (await zip).file(part)
+          if (!file) throw new Error('Vector snapshot is missing')
+          media.source = `data:image/x-${part.toLowerCase().endsWith('.emf') ? 'emf' : 'wmf'};base64,${await file.async('base64')}`
+          if (!active()) return
           const blob = await options.loadRaster(page, part, controller.signal)
           if (!active()) return
           if (blob.type && blob.type !== 'image/png') throw new Error('Invalid PNG content type')
@@ -124,7 +154,7 @@ export function createPptxViewportMedia(options: {
         } catch {
           if (active()) { media.state = 'failed'; publishPart(part) }
         } finally { resolve() }
-      })
+      } })
       drain()
     })
     return media.task
@@ -194,7 +224,7 @@ export function createPptxViewportMedia(options: {
       for (const url of urls) URL.revokeObjectURL(url)
       urls.clear()
       // Release queued promises without starting further network requests.
-      for (const work of queue.splice(0)) void work()
+      for (const work of queue.splice(0)) void work.run()
     },
   }
 }

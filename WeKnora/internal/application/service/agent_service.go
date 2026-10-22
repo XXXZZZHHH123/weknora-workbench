@@ -1257,7 +1257,20 @@ func (s *agentService) registerTools(
 		case tools.ToolThinking:
 			toolToRegister = tools.NewSequentialThinkingTool()
 		case tools.ToolStructuredData:
-			toolToRegister = tools.NewStructuredDataTool().WithSearchTargets(config.SearchTargets)
+			structuredTool := tools.NewStructuredDataTool().WithSearchTargets(config.SearchTargets)
+			// Names describe the already authenticated KB scope; they never
+			// grant another library or determine which source a question needs.
+			if s.knowledgeBaseService != nil {
+				ids := structuredTool.KnowledgeBaseScopeIDs()
+				if len(ids) > 0 {
+					if bases, err := s.knowledgeBaseService.GetKnowledgeBasesByIDsOnly(ctx, ids); err == nil {
+						structuredTool.WithKnowledgeBaseMetadata(bases)
+					} else {
+						logger.Warnf(ctx, "Could not load structured KB directory metadata; scope remains unchanged")
+					}
+				}
+			}
+			toolToRegister = structuredTool
 		case tools.ToolCommodityResearch:
 			toolToRegister = tools.NewCommodityResearchTool()
 		case tools.ToolTodoWrite:

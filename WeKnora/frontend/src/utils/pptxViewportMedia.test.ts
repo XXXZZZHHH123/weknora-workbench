@@ -19,17 +19,17 @@ function picture(rid: string) {
 function ole(rid: string) {
   return `<p:graphicFrame><p:xfrm><a:off x="10" y="20"/><a:ext cx="300" cy="400"/></p:xfrm><a:graphic><a:graphicData><mc:AlternateContent><mc:Choice Requires="v"><p:oleObj r:id="externalBook"><p:link/></p:oleObj></mc:Choice><mc:Fallback><p:oleObj r:id="externalBook"><p:link/>${picture(rid)}</p:oleObj></mc:Fallback></mc:AlternateContent></a:graphicData></a:graphic></p:graphicFrame>`
 }
-async function fixture() {
+async function fixture(thirdPageVector = false) {
   const zip = new JSZip()
   zip.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
   zip.file('ppt/presentation.xml', `<p:presentation xmlns:p="${P}" xmlns:r="${R}"><p:sldIdLst>${[1,2,3,4].map(i => `<p:sldId id="${i}" r:id="s${i}"/>`).join('')}</p:sldIdLst></p:presentation>`)
   zip.file('ppt/_rels/presentation.xml.rels', `<Relationships xmlns="${REL}">${[1,2,3,4].map(i => `<Relationship Id="s${i}" Target="slides/slide${i}.xml"/>`).join('')}</Relationships>`)
   for (const page of [1,2,3,4]) {
-    zip.file(`ppt/slides/slide${page}.xml`, `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}" xmlns:mc="${MC}"><p:cSld><p:spTree>${page === 1 ? picture('logo') : page === 2 ? ['a','b','c'].map(ole).join('') : page === 4 ? ole('a') : ''}</p:spTree></p:cSld></p:sld>`)
-    zip.file(`ppt/slides/_rels/slide${page}.xml.rels`, `<Relationships xmlns="${REL}"><Relationship Id="logo" Target="../media/image-logo.png"/>${['a','b','c'].map(id => `<Relationship Id="${id}" Target="../media/image-${id}.emf"/>`).join('')}<Relationship Id="externalBook" Target="https://example.invalid/book.xls" TargetMode="External"/></Relationships>`)
+    zip.file(`ppt/slides/slide${page}.xml`, `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}" xmlns:mc="${MC}"><p:cSld><p:spTree>${page === 1 ? picture('logo') : page === 2 ? ['a','b','c'].map(ole).join('') : page === 4 ? ole('a') : page === 3 && thirdPageVector ? ole('d') : ''}</p:spTree></p:cSld></p:sld>`)
+    zip.file(`ppt/slides/_rels/slide${page}.xml.rels`, `<Relationships xmlns="${REL}"><Relationship Id="logo" Target="../media/image-logo.png"/>${['a','b','c','d'].map(id => `<Relationship Id="${id}" Target="../media/image-${id}.emf"/>`).join('')}<Relationship Id="externalBook" Target="https://example.invalid/book.xls" TargetMode="External"/></Relationships>`)
   }
   zip.file('ppt/media/image-logo.png', 'Original logo')
-  for (const id of ['a','b','c']) zip.file(`ppt/media/image-${id}.emf`, `Original vector ${id}`)
+  for (const id of ['a','b','c','d']) zip.file(`ppt/media/image-${id}.emf`, `Original vector ${id}`)
   return zip.generateAsync({ type: 'arraybuffer' })
 }
 
@@ -126,6 +126,44 @@ test('visible-page requests are bounded to two, and a source change cancels queu
   await task
   assert.equal(calls, 2, 'the queued third request never starts after cancellation')
   assert.equal(snapshots, atStop, 'late responses cannot publish into the next source')
+})
+
+test('scrolling moves newly visible figures ahead of queued work from an old page', { timeout: 5000 }, async t => {
+  const doc = dom(), calls: string[] = [], releases: Array<() => void> = []
+  let visiblePage = 2, finishRemaining = false
+  doc.slides.forEach((slide, index) => {
+    slide.getBoundingClientRect = () => ({ top: (index + 1 - visiblePage) * 200, bottom: (index + 1 - visiblePage) * 200 + 100 })
+  })
+  Object.assign(doc.root, { getBoundingClientRect: () => ({ top: 0, bottom: 100 }), addEventListener: () => {} })
+  let firstTwo!: () => void, thirdStarted!: () => void, pageThreeKnown!: () => void
+  const twoStarted = new Promise<void>(resolve => { firstTwo = resolve })
+  const nextStarted = new Promise<void>(resolve => { thirdStarted = resolve })
+  const pageThreeReady = new Promise<void>(resolve => { pageThreeKnown = resolve })
+  const loader = createPptxViewportMedia({ data: await fixture(true), sourceSha256: 'd'.repeat(64), generation: 4,
+    loadRaster: async (_page, part) => {
+      calls.push(part)
+      if (calls.length === 2) firstTwo()
+      if (calls.length === 3) thirdStarted()
+      if (!finishRemaining) await new Promise<void>(resolve => releases.push(resolve))
+      return png
+    }, onPage: page => { if (page === 3) pageThreeKnown() }, onPageError: () => assert.fail('unexpected metadata error'),
+  })
+  t.after(() => { loader.stop(); releases.splice(0).forEach(release => release()) })
+  loader.observe(doc.root)
+  const oldPage = loader.loadPage(2)
+  await twoStarted
+  assert.deepEqual(new Set(calls), new Set(['ppt/media/image-a.emf', 'ppt/media/image-b.emf']), 'manifest order reserves the first two tasks before inflation')
+  const newPage = loader.loadPage(3)
+  await pageThreeReady
+  await flush()
+  visiblePage = 3
+  releases.shift()!()
+  await nextStarted
+  assert.equal(calls[2], 'ppt/media/image-d.emf', 'current viewport takes priority over the old page third figure')
+  finishRemaining = true
+  releases.splice(0).forEach(release => release())
+  await Promise.all([oldPage, newPage])
+  assert.equal(calls[3], 'ppt/media/image-c.emf', 'old page work remains available after visible work')
 })
 
 test('a failed raster is explicit and retry does not refetch successful parts', async () => {
