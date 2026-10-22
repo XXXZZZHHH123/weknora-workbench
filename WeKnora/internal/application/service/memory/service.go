@@ -107,170 +107,64 @@ func (s *Service) enabledScope(ctx context.Context) (interfaces.MemoryScope, *ty
 	return scope, cfg, true
 }
 
-// Recall assembles the memory to inject for one turn. It never calls a model
-// and never returns an error: memory is an enhancement, so any failure has to
-// degrade into an ordinary answer rather than into a failed request.
+// Recall is a compatibility wrapper. Without the current turn's model and
+// conversation it cannot authorize relevance, so it never returns a resident
+// block or falls back to cached subject text.
 func (s *Service) Recall(ctx context.Context, query string) interfaces.MemoryRecall {
-	recallCtx, recallSpan := langfuse.GetManager().StartSpan(ctx, langfuse.SpanOptions{
-		Name: "memory.recall",
-		Input: map[string]interface{}{
-			"query": langfuse.TruncateRunes(query, recallQueryPreviewRunes),
-		},
-	})
-
-	scope, cfg, ok := s.enabledScope(recallCtx)
-	if !ok {
-		reason := s.scopeDisableReason(recallCtx)
-		logger.Infof(recallCtx, "memory: recall skipped (%s)", reason)
-		recallSpan.Finish(langfuse.SummarizeMemoryRecallOutput(map[string]interface{}{
-			"outcome": "disabled",
-			"reason":  reason,
-		}, nil), nil, nil)
-		return interfaces.MemoryRecall{}
-	}
-
-	subject, err := s.repo.GetSubject(recallCtx, scope)
-	if err != nil || subject == nil {
-		reason := "no_subject"
-		if err != nil {
-			reason = "subject_load_failed"
-			logger.Warnf(recallCtx, "memory: load subject for recall failed: %v", err)
-		}
-		logger.Infof(recallCtx, "memory: recall skipped (%s)", reason)
-		recallSpan.Finish(langfuse.SummarizeMemoryRecallOutput(map[string]interface{}{
-			"outcome":    "empty",
-			"reason":     reason,
-			"subject_id": scope.SubjectID,
-		}, nil), map[string]interface{}{
-			"tenant_id": scope.TenantID,
-		}, nil)
-		return interfaces.MemoryRecall{}
-	}
-
-	residentItems, err := s.repo.ListActiveResident(recallCtx, scope, 60)
-	if err != nil {
-		logger.Warnf(recallCtx, "memory: load resident items failed: %v", err)
-		residentItems = nil
-	}
-	standing, interests := splitResidentInterests(residentItems)
-	selectedInterests, relevantInterests := selectResidentInterests(
-		query, interests, types.MemoryResidentInterestMaxItems)
-	blockItems := append(append([]*types.MemoryItem(nil), standing...), selectedInterests...)
-
-	// Render from the items rather than from subject.BlockText. The cached
-	// block saves nothing here — the items were just loaded either way — and
-	// trusting it means any change that alters what belongs in the block
-	// (a write that failed, a new resident kind) stays invisible until the
-	// user's next write. The cache is only a fallback for a failed load.
-	block := types.RenderMemoryBlock(blockItems)
-	if block == "" {
-		block = subject.BlockText
-	}
-
-	situational, err := s.repo.ListActiveByKinds(recallCtx, scope,
-		[]string{types.MemoryKindFact, types.MemoryKindTask}, lexicalPoolSize(cfg))
-	if err != nil {
-		logger.Warnf(recallCtx, "memory: load situational items failed: %v", err)
-		situational = nil
-	}
-	// Resident items are already in the block; matching them again would print
-	// them twice.
-	resident := make(map[string]struct{}, len(residentItems))
-	for _, item := range residentItems {
-		resident[item.ID] = struct{}{}
-	}
-	candidates := situational[:0:0]
-	for _, item := range situational {
-		if _, ok := resident[item.ID]; !ok {
-			candidates = append(candidates, item)
-		}
-	}
-
-	logger.Infof(recallCtx,
-		"memory: recall start subject=%s resident=%d candidates=%d block_runes=%d",
-		scope.SubjectID, len(residentItems), len(candidates), len([]rune(block)))
-
-	matched, rankTrace := s.selectRecallWithTrace(recallCtx, scope, cfg, recallSelection{
-		Query:      query,
-		Candidates: candidates,
-		Kinds:      []string{types.MemoryKindFact, types.MemoryKindTask},
-		// The semantic search runs over the whole subject, so it can find a
-		// resident memory the block already printed. Passing the exclusion in
-		// keeps that from being injected twice.
-		ExcludeIDs: resident,
-		MaxItems:   types.MemoryRecallMaxItems,
-		RuneBudget: types.MemoryRecallRuneBudget,
-	})
-
-	prompt := types.WrapMemoryForPrompt(block, types.RenderMemoryRecall(matched))
-	if prompt == "" {
-		emptyMeta := s.recallEmptyMeta(scope, len(residentItems), len(candidates), rankTrace)
-		emptyMeta["block_runes"] = len([]rune(block))
-		logger.Infof(recallCtx,
-			"memory: recall empty subject=%s resident=%d candidates=%d mode=%s",
-			scope.SubjectID, len(residentItems), len(candidates), rankTrace.Mode)
-		recallSpan.Finish(langfuse.SummarizeMemoryRecallOutput(emptyMeta, nil), map[string]interface{}{
-			"tenant_id": scope.TenantID,
-		}, nil)
-		return interfaces.MemoryRecall{}
-	}
-
-	// What was injected and what is reported are deliberately not the same set.
-	// An interest that rode along because the cap left room is standing
-	// background, not something this question pulled in, and reporting it would
-	// put a memory unrelated to the answer on the chat timeline every turn.
-	//
-	// The block is also rendered from a truncated list, so report the items
-	// that actually fit rather than everything that was loaded.
-	used := residentItemsWithinBlock(standing, block)
-	used = append(used, residentItemsWithinBlock(relevantInterests, block)...)
-	used = append(used, matched...)
-	s.touchAsync(recallCtx, scope, used)
-
-	logger.Infof(recallCtx,
-		"memory: recall done subject=%s used=%d matched=%d outside_pool=%d "+
-			"interest_injected=%d interest_relevant=%d mode=%s prompt_runes=%d",
-		scope.SubjectID, len(used), len(matched), rankTrace.VectorOutsidePool,
-		len(selectedInterests), len(relevantInterests),
-		rankTrace.Mode, len([]rune(prompt)))
-	recallSpan.Finish(langfuse.SummarizeMemoryRecallOutput(map[string]interface{}{
-		"outcome":           "ok",
-		"subject_id":        scope.SubjectID,
-		"resident_count":    len(residentItems),
-		"block_runes":       len([]rune(block)),
-		"candidate_count":   len(candidates),
-		"lexical_hits":      rankTrace.LexicalHits,
-		"vector_hits":       rankTrace.VectorHits,
-		"vector_outside":    rankTrace.VectorOutsidePool,
-		"vector_skip":       rankTrace.VectorSkipReason,
-		"ranking_mode":      rankTrace.Mode,
-		"fused_candidates":  rankTrace.FusedCandidates,
-		"matched_count":     len(matched),
-		"interest_total":    len(interests),
-		"interest_injected": len(selectedInterests),
-		"interest_relevant": len(relevantInterests),
-		"used_count":        len(used),
-		"prompt_runes":      len([]rune(prompt)),
-	}, used), map[string]interface{}{
-		"tenant_id": scope.TenantID,
-	}, nil)
-
-	return interfaces.MemoryRecall{Prompt: prompt, Items: used}
+	return s.RecallForTurn(ctx, interfaces.MemoryRecallRequest{Query: query})
 }
 
-// residentItemsWithinBlock filters to the items whose content survived the
-// block's rune budget.
-func residentItemsWithinBlock(items []*types.MemoryItem, block string) []*types.MemoryItem {
-	if block == "" {
-		return nil
+// RecallForTurn treats every memory as a candidate, including explicit notes
+// and stable traits. Only the current chat model may decide applicability.
+func (s *Service) RecallForTurn(ctx context.Context, request interfaces.MemoryRecallRequest) interfaces.MemoryRecall {
+	recallCtx, span := langfuse.GetManager().StartSpan(ctx, langfuse.SpanOptions{Name: "memory.recall", Input: map[string]interface{}{"query": langfuse.TruncateRunes(request.Query, recallQueryPreviewRunes)}})
+	finish := func(reason string, items []*types.MemoryItem) {
+		span.Finish(langfuse.SummarizeMemoryRecallOutput(map[string]interface{}{"reason": reason, "used_count": len(items), "ranking_mode": "model_relevance"}, items), nil, nil)
 	}
-	within := make([]*types.MemoryItem, 0, len(items))
-	for _, item := range items {
-		if item != nil && strings.Contains(block, types.SanitizeMemoryContent(item.Content)) {
-			within = append(within, item)
-		}
+	scope, cfg, ok := s.enabledScope(recallCtx)
+	if !ok {
+		finish("disabled", nil)
+		return interfaces.MemoryRecall{}
 	}
-	return within
+	if strings.TrimSpace(request.ModelID) == "" || strings.TrimSpace(request.Query) == "" || request.ContextIncomplete {
+		finish("turn_context_unavailable", nil)
+		return interfaces.MemoryRecall{}
+	}
+	subject, err := s.repo.GetSubject(recallCtx, scope)
+	if err != nil || subject == nil {
+		finish("subject_unavailable", nil)
+		return interfaces.MemoryRecall{}
+	}
+	if subject.TenantID != scope.TenantID || subject.SubjectID != scope.SubjectID {
+		finish("subject_scope_mismatch", nil)
+		return interfaces.MemoryRecall{}
+	}
+	residents, err := s.repo.ListActiveResident(recallCtx, scope, recallResidentCandidateLimit)
+	if err != nil {
+		finish("resident_load_failed", nil)
+		return interfaces.MemoryRecall{}
+	}
+	situational, err := s.repo.ListActiveByKinds(recallCtx, scope, []string{types.MemoryKindFact, types.MemoryKindTask}, lexicalPoolSize(cfg))
+	if err != nil {
+		finish("candidate_load_failed", nil)
+		return interfaces.MemoryRecall{}
+	}
+	matched, _ := s.selectRecallWithTrace(recallCtx, scope, cfg, recallSelection{Query: request.Query, Candidates: situational, Kinds: []string{types.MemoryKindFact, types.MemoryKindTask}, MaxItems: recallSituationalCandidateLimit, RuneBudget: relevanceCandidateRuneBudget})
+	matched = conversationalCandidates(request, situational, matched, recallSituationalCandidateLimit)
+	candidates := append(append([]*types.MemoryItem(nil), residents...), matched...)
+	selected, reason := s.selectRelevantMemories(recallCtx, scope, request, candidates, types.MemoryRecallMaxItems)
+	if reason != "ok" {
+		finish(reason, nil)
+		return interfaces.MemoryRecall{}
+	}
+	prompt, used := renderRelevantMemories(selected, types.MemoryBlockRuneBudget+types.MemoryRecallRuneBudget)
+	if prompt == "" {
+		finish("no_relevant_memories", nil)
+		return interfaces.MemoryRecall{}
+	}
+	s.touchAsync(recallCtx, scope, used)
+	finish("ok", used)
+	return interfaces.MemoryRecall{Prompt: prompt, Items: used}
 }
 
 // touchAsync records usage without adding a write to the request's critical

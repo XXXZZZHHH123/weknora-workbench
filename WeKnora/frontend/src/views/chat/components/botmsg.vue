@@ -365,6 +365,14 @@ const closePreImg = () => {
 
 const markdownRenderer = createChatMarkdownRenderer({
     codeRenderer: createMermaidCodeRenderer('mermaid-botmsg'),
+    linkRenderer: ({ href, text }) => renderArtifactReference({
+        href,
+        alt: text || '',
+        artifacts: artifactList.value,
+        labels: artifactRefLabels.value,
+        context: artifactRefContext.value,
+        streaming: !props.session?.is_completed,
+    }),
     imageRenderer: ({ href, title, text }) => {
         // A sandbox-generated file shares the resource:// form with every other
         // protected image, so it is matched against this message's artifacts

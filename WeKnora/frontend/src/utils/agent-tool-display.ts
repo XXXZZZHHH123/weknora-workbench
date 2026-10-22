@@ -1,4 +1,5 @@
 import type { ComposerTranslation } from 'vue-i18n'
+import { knowledgeSearchSummary } from './knowledgeSearchSummary'
 
 export type RetrievalSearchSource = 'knowledge' | 'web' | 'mixed'
 
@@ -117,6 +118,10 @@ export function getKnowledgeSearchSummaryHtml(
 ): string {
   if (!toolData) return ''
 
+  if (toolData.display_type === 'document_info') return knowledgeSearchSummary(t, toolData)
+  if (!Array.isArray(toolData.results) && typeof toolData.count !== 'number'
+    && !(Number(toolData.candidate_count) > 0)) return ''
+
   const results = toolData.results
   const count = (Array.isArray(results) ? results.length : 0) || Number(toolData.count) || 0
   if (count === 0) {
@@ -175,6 +180,13 @@ export function getRagPipelineStepTitle(t: ComposerTranslation, event: RagPipeli
   const query =
     getQueryText(event.arguments) ||
     getQueryText(event.tool_data)
+
+  if (toolName === 'render_chart') return t(pending ? 'chartRendering.rendering' : event.success === false ? 'chartRendering.failed' : 'chartRendering.completed')
+
+  if (toolName === 'generate_image') {
+    if (pending) return t('imageGeneration.generating')
+    return t(event.success === false ? 'imageGeneration.failed' : 'imageGeneration.completed')
+  }
 
   if (toolName === 'query_understand') {
     return pending

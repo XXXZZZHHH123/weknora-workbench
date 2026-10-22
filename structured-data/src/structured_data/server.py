@@ -826,10 +826,12 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.get("/api/imports/{import_id}")
     def import_review(import_id: str, summary_only: bool = False):
-        doc = manager.get(import_id)
+        doc = manager.publication_view(manager.get(import_id))
         result = {k: v for k, v in doc.items() if k != "source_path"}
         if summary_only:
-            fields = {"name", "rows", "columns", "status", "layout", "fingerprint", "reasons", "template_status", "import_state", "review_state"}
+            fields = {"name", "rows", "columns", "status", "layout", "fingerprint", "reasons", "template_status",
+                      "import_state", "review_state",
+                      "published_in_dataset", "published_dataset_id", "published_fingerprint"}
             briefs = []
             for sheet in doc["sheets"]:
                 item = {k: v for k, v in sheet.items() if k in fields}
@@ -843,7 +845,10 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.get("/api/imports/{import_id}/sheet")
     def sheet_review(import_id: str, name: str):
-        return manager.sheet(import_id, name)
+        sheet = manager.sheet(import_id, name)
+        doc = manager.publication_view(manager.get(import_id), verified_legacy_sheet=sheet)
+        publication = next(s for s in doc['sheets'] if s['name'] == name)
+        return {**sheet, **{k: v for k, v in publication.items() if k.startswith('published_')}}
 
     @app.get("/api/imports/{import_id}/sheet-view")
     async def sheet_view(

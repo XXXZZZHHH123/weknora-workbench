@@ -28,6 +28,7 @@ func TestSQLiteWorkbenchTemplatesUpgradeAndRollback(t *testing.T) {
 	m, err := migrate.New("file://"+filepath.Join(root, "migrations", "sqlite"), "sqlite3://"+path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = m.Close() })
+	// Target the template migration by version: later migrations may exist.
 	require.NoError(t, m.Migrate(40))
 	require.False(t, sqliteColumnExists(t, db, "research_workbenches", "workspace_mode"))
 	require.False(t, sqliteColumnExists(t, db, "sessions", "research_workbench_id"))
@@ -38,8 +39,9 @@ func TestSQLiteWorkbenchTemplatesUpgradeAndRollback(t *testing.T) {
 	require.Equal(t, "existing-hash", hash)
 	require.NoError(t, db.QueryRow("SELECT title FROM sessions WHERE id='existing-session'").Scan(&title))
 	require.Equal(t, "Existing conversation", title)
-	require.NoError(t, m.Migrate(expectedSQLiteMigrationVersion))
+	require.NoError(t, m.Migrate(41))
 	assertWorkbenchTemplateMigration(t, db)
+	require.NoError(t, m.Up())
 }
 
 func TestPostgresWorkbenchTemplatesUpgradeAndRollback(t *testing.T) {

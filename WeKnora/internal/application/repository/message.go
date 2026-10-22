@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
@@ -262,6 +263,12 @@ func (r *messageRepository) ListAssistantCheckpointsUpTo(
 // when message.Artifacts is non-nil (see writeMessageArtifacts).
 func (r *messageRepository) UpdateMessage(ctx context.Context, message *types.Message) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Serialize with API-generated artifact delivery, which appends under
+		// the same message lock. A stop/finalization snapshot may predate it.
+		var locked types.Message
+		if err := tx.Select("id").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND session_id = ?", message.ID, message.SessionID).First(&locked).Error; err != nil {
+			return err
+		}
 		if err := tx.Model(&types.Message{}).Where(
 			"id = ? AND session_id = ?", message.ID, message.SessionID,
 		).Updates(message).Error; err != nil {

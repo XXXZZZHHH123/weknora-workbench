@@ -2,7 +2,8 @@
   <Teleport to="body" :disabled="!useOverlay">
     <Transition name="references-panel" @after-enter="handlePanelAfterEnter">
       <aside
-        v-if="visible"
+        v-if="visible || retainSourceDOM"
+        v-show="visible"
         class="chat-references-panel"
         :class="{ 'is-overlay': useOverlay, 'is-embedded': embeddedMode, 'is-source': !!sourceTarget }"
         :style="panelStyle"
@@ -50,10 +51,12 @@
 
         <ChatReferenceSourceView
           v-if="sourceTarget"
+          :key="`${sourceTarget.knowledgeId}:${sourceViewerEpoch}`"
           class="chat-references-panel__source"
           :target="sourceTarget"
           :active="visible"
           @unavailable="onSourceUnavailable"
+          @retention-change="setSourceRetained"
         />
 
         <div v-else ref="listElement" class="chat-references-panel__body">
@@ -181,6 +184,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import { REFERENCES_PANEL_WIDTH, useChatReferencesDrawer } from '@/composables/useChatReferencesDrawer'
 import ArtifactFileIcon from '@/views/chat/components/ArtifactFileIcon.vue'
 import ChatReferenceSourceView from '@/components/ChatReferenceSourceView.vue'
@@ -200,6 +204,7 @@ const props = defineProps<{
 const { t } = useI18n()
 const router = useRouter()
 const drawer = useChatReferencesDrawer()
+const previewAuth = useAuthStore()
 
 const listElement = ref<HTMLElement | null>(null)
 const itemElements = new Map<string, HTMLElement>()
@@ -212,6 +217,18 @@ const references = computed(() => drawer?.references.value ?? [])
 const highlight = computed(() => drawer?.highlight.value ?? null)
 // The embed has no access to original files, so it always lists sources.
 const sourceTarget = computed(() => (props.embeddedMode ? null : drawer?.source.value ?? null))
+// Retain only the one current PPT viewer, never a history of document trees.
+const retainSourceDOM = computed(() => !!sourceTarget.value && !!drawer?.retainSourceOnClose.value)
+const sourceViewerEpoch = ref(0)
+function setSourceRetained(retained: boolean, knowledgeId: string) {
+  if (sourceTarget.value?.knowledgeId === knowledgeId) drawer?.setSourceRetained(retained)
+}
+watch(() => [previewAuth.token, previewAuth.selectedTenantId], () => {
+  // Retained hidden trees must disappear on an access change. A visible source
+  // remounts with no old file DOM and follows its normal metadata/preview ACLs.
+  sourceViewerEpoch.value++
+  drawer?.setSourceRetained(false)
+}, { flush: 'sync' })
 
 const viewportWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth)
 const onViewportResize = () => {

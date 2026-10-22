@@ -15,10 +15,10 @@
           <t-icon v-else-if="!checking && remoteChecked && !remoteAvailable" name="close-circle-filled"
             class="status-icon unavailable" />
         </template>
-        {{ checking ? $t('model.editor.testing') : $t('model.editor.testConnection') }}
+        {{ checking ? $t('model.editor.testing') : activeModelType === 'image-generation' ? $t('imageGeneration.testButton') : $t('model.editor.testConnection') }}
       </t-button>
       <span v-if="remoteChecked" :class="['connection-status', remoteAvailable ? 'success' : 'error']">
-        {{ remoteAvailable ? $t('model.editor.connectionSuccess') : $t('model.editor.connectionFailed') }}
+        {{ remoteAvailable ? $t(activeModelType === 'image-generation' ? 'imageGeneration.testSuccess' : 'model.editor.connectionSuccess') : $t('model.editor.connectionFailed') }}
       </span>
     </template>
 
@@ -34,8 +34,14 @@
         <div class="connection-result__details" tabindex="0">{{ saveError }}</div>
       </div>
       <div v-if="formData.source === 'remote'" class="connection-feedback" aria-live="polite">
-        <p class="connection-hint">{{ $t(isEdit ? 'model.editor.testDraftEditHint' : 'model.editor.testDraftHint') }}</p>
+        <p class="connection-hint">{{ activeModelType === 'image-generation' ? $t('imageGeneration.testHint') : $t(isEdit ? 'model.editor.testDraftEditHint' : 'model.editor.testDraftHint') }}</p>
         <p v-if="remoteStale" class="connection-hint">{{ $t('model.editor.testStale') }}</p>
+        <figure v-if="activeModelType === 'image-generation' && remoteChecked && remoteAvailable && imageTestPreview" class="image-test-preview">
+          <img :src="imageTestPreview.data_url" :alt="$t('imageGeneration.testPreview')" @error="failImageTestPreview" />
+          <figcaption>{{ $t('imageGeneration.testPreview') }} · {{ imageTestPreview.width }} × {{ imageTestPreview.height }}</figcaption>
+          <p class="connection-hint">{{ $t('imageGeneration.testPreviewHint') }}</p>
+        </figure>
+
         <div v-if="remoteChecked && !remoteAvailable" class="connection-result error">
           <div class="connection-result__header">
             <strong>{{ $t('model.editor.connectionFailed') }}</strong>
@@ -43,7 +49,7 @@
               {{ $t('common.copy') }}
             </t-button>
           </div>
-          <p class="connection-result__hint">{{ connectionFailureHint }}</p>
+          <p class="connection-result__hint">{{ activeModelType === 'image-generation' ? remoteMessage : connectionFailureHint }}</p>
           <details class="connection-result__raw">
             <summary>{{ $t('model.editor.connectionDiagnostic.details') }}</summary>
             <div class="connection-result__details" tabindex="0">{{ remoteMessage }}</div>
@@ -97,7 +103,7 @@
               <span class="source-option__label">{{ $t('model.editor.sourceRemote') }}</span>
             </button>
             <button
-              v-if="activeModelType !== 'rerank'"
+              v-if="activeModelType !== 'rerank' && activeModelType !== 'image-generation'"
               type="button"
               class="source-option"
               :class="{ 'is-active': formData.source === 'local', 'is-disabled': ollamaServiceStatus === false }"
@@ -484,6 +490,37 @@
         </section>
       </template>
 
+      <section v-if="activeModelType === 'image-generation'" class="setting-drawer__section">
+        <h4 class="setting-drawer__section-title">{{ $t('imageGeneration.parameters') }}</h4>
+        <p class="form-desc">{{ $t('imageGeneration.parametersHint') }}</p>
+        <div class="form-item">
+          <label class="form-label">{{ $t('imageGeneration.size') }}</label>
+          <t-input :model-value="formData.extraConfig.image_size || ''" placeholder="1024x1024"
+            @update:model-value="(v: string) => setExtraConfig('image_size', v)" />
+          <p class="form-desc">{{ $t('imageGeneration.sizeHint') }}</p>
+        </div>
+        <div class="form-item">
+          <label class="form-label">{{ $t('imageGeneration.quality') }}</label>
+          <t-input :model-value="formData.extraConfig.image_quality || ''" :placeholder="$t('imageGeneration.upstreamDefault')"
+            @update:model-value="(v: string) => setExtraConfig('image_quality', v)" />
+        </div>
+        <div class="form-item">
+          <label class="form-label">{{ $t('imageGeneration.responseFormat') }}</label>
+          <t-select :model-value="formData.extraConfig.image_response_format || ''" clearable
+            @update:model-value="(v: string) => setExtraConfig('image_response_format', v)">
+            <t-option value="" :label="$t('imageGeneration.upstreamDefault')" />
+            <t-option value="b64_json" label="b64_json" />
+            <t-option value="url" label="url" />
+          </t-select>
+        </div>
+        <div class="form-item">
+          <label class="form-label">{{ $t('imageGeneration.timeout') }}</label>
+          <t-input-number :model-value="Number(formData.extraConfig.image_timeout_seconds) || undefined" :min="30" :max="600" clearable
+            :placeholder="$t('imageGeneration.upstreamDefault')"
+            @update:model-value="(v: number | undefined) => setExtraConfig('image_timeout_seconds', v == null ? '' : String(v))" />
+        </div>
+      </section>
+
       <!-- Section 3 — 高级选项（仅在有内容时渲染，避免空 section 出现底部分隔线） -->
       <section v-if="['embedding', 'chat', 'vllm'].includes(activeModelType) || formData.source === 'remote'" class="setting-drawer__section">
         <h4 class="setting-drawer__section-title">{{ $t('model.editor.sectionAdvanced') }}</h4>
@@ -565,7 +602,7 @@
           高级：协议覆盖 / 远端模型名 / 目录 compat 覆盖，以及仅旧数据才显示的
           thinking_control 兼容选择。默认折叠，绝大多数用户无需触碰。
         -->
-        <template v-if="formData.source === 'remote' && formData.provider !== 'weknoracloud'">
+        <template v-if="formData.source === 'remote' && formData.provider !== 'weknoracloud' && activeModelType !== 'image-generation'">
           <button type="button" class="advanced-toggle" :aria-expanded="advancedOpen" @click="advancedOpen = !advancedOpen">
             <t-icon name="chevron-right" class="toggle-arrow" :class="{ open: advancedOpen }" />
             <span>{{ $t('model.editor.advanced.toggle') }}</span>
@@ -735,7 +772,7 @@ const LEGACY_THINKING_CONTROL_VALUES = ['none', 'enable_thinking', 'thinking_typ
 /** Keys of extra_config that are edited by dedicated controls, not the generic renderer. */
 const RESERVED_EXTRA_CONFIG_KEYS = new Set(['thinking_control'])
 
-type EditorModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr'
+type EditorModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr' | 'image-generation'
 
 interface Props {
   visible: boolean
@@ -771,6 +808,7 @@ const modelTypeChoices = computed(() => ([
   { value: 'rerank' as const, label: t('modelSettings.typeShort.rerank'), icon: 'filter-sort' },
   { value: 'vllm' as const, label: t('modelSettings.typeShort.vllm'), icon: 'image' },
   { value: 'asr' as const, label: t('modelSettings.typeShort.asr'), icon: 'sound' },
+  { value: 'image-generation' as const, label: t('imageGeneration.type'), icon: 'image' },
 ]))
 
 // 厂商列表完全来自后端目录（store 按模型类型缓存）；前端不再维护任何厂商表。
@@ -1180,6 +1218,7 @@ const modelTypeIcon = computed(() => {
     rerank: 'filter-sort',
     vllm: 'image',
     asr: 'sound',
+    'image-generation': 'image',
   }
   return map[activeModelType.value] || 'setting'
 })
@@ -1256,6 +1295,23 @@ const remoteChecked = ref(false)
 const remoteAvailable = ref(false)
 const remoteMessage = ref('')
 const remoteStale = ref(false)
+interface ImageTestPreview { data_url: string; width: number; height: number; mime_type: string }
+const imageTestPreview = ref<ImageTestPreview | null>(null)
+
+// A test image stays in this editor only; never accept an arbitrary preview URL.
+const validatedImageTestPreview = (value: unknown): ImageTestPreview | null => {
+  if (!value || typeof value !== 'object') return null
+  const image = value as ImageTestPreview
+  if (typeof image.data_url !== 'string' || image.data_url.length > 44 * 1024 * 1024) return null
+  if (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.data_url)) return null
+  if (!Number.isInteger(image.width) || !Number.isInteger(image.height) || image.width <= 0 || image.height <= 0) return null
+  return { data_url: image.data_url, width: image.width, height: image.height, mime_type: image.mime_type }
+}
+const failImageTestPreview = () => {
+  imageTestPreview.value = null
+  remoteAvailable.value = false
+  remoteMessage.value = t('imageGeneration.testMissingImage')
+}
 let connectionRevision = 0
 let applyingDetectedDimension = false
 
@@ -1267,6 +1323,7 @@ const invalidateConnectionTest = (showStale = true) => {
   remoteChecked.value = false
   remoteAvailable.value = false
   remoteMessage.value = ''
+  imageTestPreview.value = null
   dimensionChecked.value = false
   dimensionSuccess.value = false
   dimensionMessage.value = ''
@@ -1466,6 +1523,7 @@ watch(
 
 // 获取弹窗描述文字
 const getModalDescription = () => {
+  if (activeModelType.value === 'image-generation') return t('imageGeneration.modelDescription')
   const key = `model.editor.description.${activeModelType.value}` as const
   return t(key) || t('model.editor.description.default')
 }
@@ -1615,7 +1673,7 @@ watch(() => props.visible, (val) => {
       lastOpenedModelId.value = currentId
 
       // ReRank 模型强制使用 remote 来源（Ollama 不支持 ReRank）
-      if (activeModelType.value === 'rerank') {
+      if (activeModelType.value === 'rerank' || activeModelType.value === 'image-generation') {
         formData.value.source = 'remote'
       }
 
@@ -1953,6 +2011,7 @@ const checkRemoteAPI = async () => {
   remoteStale.value = false
   remoteChecked.value = false
   remoteMessage.value = ''
+  imageTestPreview.value = null
 
   try {
     let result: any
@@ -1991,6 +2050,18 @@ const checkRemoteAPI = async () => {
     }
 
     switch (activeModelType.value) {
+      case 'image-generation':
+        // This branch is reached only by the explicit test button, never on save/open.
+        result = await checkRemoteModel({
+          modelType: 'ImageGeneration', imageGenerationTest: true,
+          modelName: formData.value.modelName,
+          baseUrl: formData.value.baseUrl || '',
+          apiKey: formData.value.apiKey || '',
+          provider: formData.value.provider,
+          ...idPayload, ...headerPayload, ...extraPayload,
+        })
+        break
+
       case 'chat':
         // 对话模型（KnowledgeQA）
         result = await checkRemoteModel({
@@ -2070,10 +2141,16 @@ const checkRemoteAPI = async () => {
     if (revision !== connectionRevision) return
     remoteChecked.value = true
     remoteAvailable.value = result.available || false
+    if (activeModelType.value === 'image-generation' && result.available) {
+      imageTestPreview.value = validatedImageTestPreview(result.image)
+      remoteAvailable.value = imageTestPreview.value !== null
+    }
     connectionDiagnostic.value = ['configuration', 'request_rejected', 'access_denied', 'not_found', 'rate_limited', 'upstream_unavailable', 'connection'].includes(result.diagnostic?.kind) ? result.diagnostic.kind : 'unknown'
-    remoteMessage.value = result.available
-      ? t('model.editor.connectionSuccess')
-      : result.message || t('model.editor.connectionFailed')
+    remoteMessage.value = remoteAvailable.value
+      ? t(activeModelType.value === 'image-generation' ? 'imageGeneration.testSuccess' : 'model.editor.connectionSuccess')
+      : activeModelType.value === 'image-generation' && result.available
+        ? t('imageGeneration.testMissingImage')
+        : result.message || t('model.editor.connectionFailed')
   } catch (error: any) {
     if (revision !== connectionRevision) return
     remoteChecked.value = true
@@ -2310,6 +2387,12 @@ const handleCancel = () => {
 </script>
 
 <style lang="less" scoped>
+.image-test-preview {
+  margin: 8px 0 0;
+  img { display: block; max-width: 100%; max-height: 240px; border-radius: var(--app-radius-sm); }
+  figcaption { margin-top: 6px; color: var(--td-text-color-secondary); font-size: var(--app-text-sm); }
+}
+
 .provider-doc-link {
   margin-top: 6px;
 }

@@ -270,3 +270,58 @@ func TestStructuredKnowledgeScopeAPIKeyDirectoryRemainsAuthorizedMetadata(t *tes
 	require.True(t, result.Success)
 	require.Equal(t, int64(1), calls.Load())
 }
+
+func TestStructuredMultiScopeNamesAndSchemasPermitExplicitDatasetDiscovery(t *testing.T) {
+	var calls atomic.Int64
+	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		identity := decodeStructuredScopeIdentity(t, r)
+		switch payload["operation"] {
+		case "describe_tools":
+			require.Len(t, identity, 5, "protocol schema must not pick a business library or read the legacy dataset root")
+			require.NotContains(t, identity, "knowledge_base_id")
+			require.NoError(t, json.NewEncoder(w).Encode(describedStructuredReadTools(t)))
+		case "list_datasets":
+			require.Equal(t, "kb-second", identity["knowledge_base_id"])
+			require.Equal(t, float64(29), identity["knowledge_base_tenant_id"])
+			_, _ = io.WriteString(w, `{"datasets":[{"dataset_id":"real-scoped-dataset","source_file":"fixture.xlsx"}]}`)
+		default:
+			t.Fatalf("unexpected operation %v", payload["operation"])
+		}
+	}).WithSearchTargets(types.SearchTargets{
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-first", TenantID: 7},
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-second", TenantID: 29},
+	}).WithKnowledgeBaseMetadata([]*types.KnowledgeBase{
+		{ID: "kb-first", TenantID: 7, Name: "Operations documents", Description: "Documents and source reports"},
+		{ID: "kb-second", TenantID: 29, Name: "Reviewed measurements", Description: "Timestamped tables from approved sources"},
+		{ID: "kb-outside", TenantID: 29, Name: "Unrelated private library"},
+		{ID: "kb-first", TenantID: 99, Name: "Forged owner metadata"},
+	})
+	ctx := types.WithTenantAPIKeyScope(structuredScopeContext(), types.TenantAPIKeyScope{KeyID: 4, KnowledgeBaseIDs: types.StringArray{"kb-first", "kb-second"}})
+	result, err := base.Execute(ctx, json.RawMessage(`{"operation":"list_datasets","arguments":{}}`))
+	require.NoError(t, err)
+	require.Equal(t, "scope_selection_required", result.Data["status"])
+	require.Equal(t, "not_queried", result.Data["dataset_catalog_status"])
+	require.NotContains(t, result.Data, "datasets", "an unresolved library selection is not an empty dataset catalogue")
+	require.Contains(t, result.Output, "Reviewed measurements")
+	require.Contains(t, result.Output, "Timestamped tables")
+	require.NotContains(t, result.Output, "Unrelated private library")
+	require.NotContains(t, result.Output, "Forged owner metadata")
+	require.Zero(t, calls.Load(), "unselected data scopes must not be scanned")
+	schema, err := base.Execute(ctx, json.RawMessage(`{"operation":"describe_tools","arguments":{"operations":["list_series"]}}`))
+	require.NoError(t, err)
+	require.NotEmpty(t, NewStructuredReadOperationTools(base, schema.Data), "multi-library turns must still receive real typed operation schemas")
+	result, err = base.Execute(ctx, json.RawMessage(`{"operation":"list_datasets","knowledge_base_id":"kb-second","arguments":{}}`))
+	require.NoError(t, err)
+	require.Contains(t, result.Output, "real-scoped-dataset")
+	require.Equal(t, int64(2), calls.Load(), "only protocol schemas and the explicitly selected real catalogue are fetched")
+	_, err = base.Execute(ctx, json.RawMessage(`{"operation":"describe_tools","knowledge_base_id":"kb-outside","arguments":{}}`))
+	require.ErrorContains(t, err, "授权范围")
+	require.Equal(t, int64(2), calls.Load())
+	restricted := types.WithTenantAPIKeyScope(structuredScopeContext(), types.TenantAPIKeyScope{KeyID: 4, KnowledgeBaseIDs: types.StringArray{"kb-first"}})
+	_, err = base.Execute(restricted, json.RawMessage(`{"operation":"describe_tools","arguments":{}}`))
+	require.Error(t, err, "schema path must not skip the existing current API-key scope recheck")
+	require.Equal(t, int64(2), calls.Load())
+}

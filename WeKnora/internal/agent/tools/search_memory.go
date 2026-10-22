@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Tencent/WeKnora/internal/event"
+	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
@@ -142,6 +144,17 @@ func (t *SearchMemoryTool) Execute(
 				"have been recorded.",
 			Data: map[string]interface{}{"query": query, "available": true, "matches": 0},
 		}, nil
+	}
+	// Search results pass the same server-provided turn relevance gate as
+	// automatic recall. Report the actual additional items the model can read,
+	// rather than leaving on-demand memory use invisible after a reload.
+	if meta, ok := ToolExecFromContext(ctx); ok && meta.EventBus != nil {
+		if err := meta.EventBus.Emit(ctx, event.Event{
+			Type: event.EventMemoryRecalled, SessionID: meta.SessionID,
+			Data: event.MemoryRecalledData{Memories: types.UsedMemoriesFromItems(result.Items), Merge: true},
+		}); err != nil {
+			logger.Warnf(ctx, "Could not report selected memory search results")
+		}
 	}
 
 	var b strings.Builder

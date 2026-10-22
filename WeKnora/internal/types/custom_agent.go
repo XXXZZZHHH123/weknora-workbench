@@ -215,6 +215,8 @@ type CustomAgentConfig struct {
 	ImageUploadEnabled bool `yaml:"image_upload_enabled" json:"image_upload_enabled"`
 	// VLM model ID for image analysis (optional, falls back to workspace-level VLM)
 	VLMModelID string `yaml:"vlm_model_id" json:"vlm_model_id"`
+	// ImageGenerationModelID binds the separate image-output model used by generate_image.
+	ImageGenerationModelID string `yaml:"image_generation_model_id,omitempty" json:"image_generation_model_id,omitempty"`
 	// Whether audio upload (ASR transcription) is enabled for this agent (default: false)
 	AudioUploadEnabled bool `yaml:"audio_upload_enabled" json:"audio_upload_enabled"`
 	// ASR model ID for audio transcription (optional)

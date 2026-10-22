@@ -20,7 +20,9 @@ const small={name:'数据汇总',rows:15,columns:8,status:'needs_review',layout:
 const large={name:'大数据表',rows:500000,columns:100,status:'needs_review',layout:'single_header',fingerprint:'fixture-large',mapping:{sheet:'大数据表',fingerprint:'fixture-large',blocks:[{name:'大表记录',date_mode:'date',date_column:'A',header_rows:[1],data_start_row:2,data_end_row:null,columns:[{column:'B',metric:'测试数值',unit:null,header_cells:['B1']}]}]},regions:[],reasons:[]};
 const chartOnly={name:'库存图',rows:1,columns:1,status:'needs_review',layout:'chart_or_image',fingerprint:'fixture-chart',mapping:{sheet:'库存图',fingerprint:'fixture-chart',blocks:[]},charts:{chart_count:2,image_count:1},regions:[],reasons:[]};
 const trusted={...small,name:'已核验规则表',status:'trusted_existing',mapping:{...mapping,sheet:'已核验规则表',blocks:[mapping.blocks[0]]}};
-const sheets=()=>[{...small,status:published?'confirmed':'needs_review',mapping:published?(publishedMapping||mapping):mapping},large,chartOnly,trusted];
+trusted.published_in_dataset=true;trusted.published_dataset_id='saved-fixture';trusted.published_mapping=trusted.mapping;trusted.published_fingerprint=null;
+const previousMapping=null; // Legacy stored records can lack an editable mapping; scan blocks remain unapproved.
+const sheets=()=>[{...small,status:published?'confirmed':'needs_review',mapping:published?(publishedMapping||mapping):mapping,published_in_dataset:true,published_dataset_id:'saved-fixture',published_mapping:published?(publishedMapping||mapping):previousMapping,published_fingerprint:mapping.fingerprint},{...large,published_in_dataset:false,published_dataset_id:null,published_mapping:null},{...chartOnly,published_in_dataset:false,published_dataset_id:null,published_mapping:null},trusted];
 const col=n=>{let s='';for(;n;n=Math.floor((n-1)/26))s=String.fromCharCode(65+(n-1)%26)+s;return s;};
 function view(sheet,sr,sc,nr,nc){
   const rows=sheet.rows,cols=sheet.columns,er=Math.min(rows,sr+nr-1),ec=Math.min(cols,sc+nc-1),cells=[];

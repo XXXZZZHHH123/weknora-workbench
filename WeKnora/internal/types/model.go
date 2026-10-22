@@ -15,11 +15,12 @@ import (
 type ModelType string
 
 const (
-	ModelTypeEmbedding   ModelType = "Embedding"   // Embedding model
-	ModelTypeRerank      ModelType = "Rerank"      // Rerank model
-	ModelTypeKnowledgeQA ModelType = "KnowledgeQA" // KnowledgeQA model
-	ModelTypeVLLM        ModelType = "VLLM"        // VLLM model
-	ModelTypeASR         ModelType = "ASR"         // ASR (Automatic Speech Recognition) model
+	ModelTypeEmbedding       ModelType = "Embedding"       // Embedding model
+	ModelTypeRerank          ModelType = "Rerank"          // Rerank model
+	ModelTypeKnowledgeQA     ModelType = "KnowledgeQA"     // KnowledgeQA model
+	ModelTypeVLLM            ModelType = "VLLM"            // VLLM model
+	ModelTypeImageGeneration ModelType = "ImageGeneration" // Image output model
+	ModelTypeASR             ModelType = "ASR"             // ASR (Automatic Speech Recognition) model
 )
 
 // ModelStatus represents the status of the model
@@ -43,6 +44,7 @@ const (
 	ModelUsageBindingImageProcessingModel ModelUsageBinding = "image_processing_model"
 	ModelUsageBindingVLMModel             ModelUsageBinding = "vlm_model"
 	ModelUsageBindingASRModel             ModelUsageBinding = "asr_model"
+	ModelUsageBindingImageGenerationModel ModelUsageBinding = "image_generation_model"
 	ModelUsageBindingWikiSynthesisModel   ModelUsageBinding = "wiki_synthesis_model"
 	ModelUsageBindingAutoTagModel         ModelUsageBinding = "auto_tag_model"
 	ModelUsageBindingChatModel            ModelUsageBinding = "chat_model"

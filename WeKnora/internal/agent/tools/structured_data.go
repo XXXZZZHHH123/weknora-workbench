@@ -30,14 +30,15 @@ const ToolStructuredData = "structured_data"
 // or a shared agent's execution tenant. No operation writes research state.
 type StructuredDataTool struct {
 	BaseTool
-	endpoint        string
-	sourceQuestion  string
-	key             []byte
-	client          *http.Client
-	readCache       structuredReadCache
-	knowledgeScopes []structuredKnowledgeScope
-	scopeConfigured bool
-	scopeError      error
+	endpoint          string
+	sourceQuestion    string
+	key               []byte
+	client            *http.Client
+	readCache         structuredReadCache
+	knowledgeScopes   []structuredKnowledgeScope
+	knowledgeMetadata map[string]structuredKnowledgeMetadata
+	scopeConfigured   bool
+	scopeError        error
 }
 
 func NewStructuredDataTool() *StructuredDataTool {
@@ -117,7 +118,18 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		return nil, err
 	}
 	if directory != nil {
-		return directory, nil
+		if operation == "list_datasets" {
+			if recalled := t.recallAcrossKnowledgeBases(ctx, arguments, directory); recalled != nil {
+				return recalled, nil
+			}
+		}
+		if operation != "describe_tools" {
+			return directory, nil
+		}
+		// describe_tools is a service protocol directory: the server returns
+		// mcp.list_tools() before accessing any workspace data. Keep the caller
+		// identity, but do not choose a business KB merely to fetch schemas.
+		scope = structuredKnowledgeScope{}
 	}
 	sourceQuestion, cacheGeneration := t.structuredSourceQuestion()
 	if sourceQuestion != "" && (operation == "query_series" || operation == "analyze_table" || operation == "compare_series" || operation == "convert_price" || operation == "resolve_fields") {

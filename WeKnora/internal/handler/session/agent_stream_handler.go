@@ -50,6 +50,11 @@ type AgentStreamHandler struct {
 	// sandbox after the agent completes. Nil when the sandbox backend
 	// doesn't support artifact collection or WeKnora was built without it.
 	artifactCollector *service.ArtifactCollector
+	// Direct API image deliveries are persisted while the agent is running.
+	// Load their authoritative artifact order for live and completion metadata.
+	artifactMessageReader interface {
+		GetMessage(context.Context, string, string) (*types.Message, error)
+	}
 
 	// checkpointer commits the sandbox's /workspace at the end of the turn so
 	// session fork can roll a forked sandbox back to this exact message. Nil
@@ -280,6 +285,9 @@ func (h *AgentStreamHandler) handleToolResult(ctx context.Context, evt event.Eve
 	if !ok {
 		return nil
 	}
+	if (data.ToolName == agenttools.ToolGenerateImage || data.ToolName == agenttools.ToolRenderChart) && data.Success {
+		h.refreshPersistedArtifacts(ctx)
+	}
 
 	h.mu.Lock()
 	// Calculate duration from start time if available, otherwise use provided duration
@@ -480,7 +488,7 @@ func (h *AgentStreamHandler) handleReferences(ctx context.Context, evt event.Eve
 	return nil
 }
 
-// handleMemoryRecalled records the long-term memories injected into this turn.
+// handleMemoryRecalled records the long-term memories read by this turn.
 // The list is both persisted on the assistant message and streamed, so the
 // panel is present live and after a reload.
 func (h *AgentStreamHandler) handleMemoryRecalled(ctx context.Context, evt event.Event) error {
@@ -489,13 +497,19 @@ func (h *AgentStreamHandler) handleMemoryRecalled(ctx context.Context, evt event
 		return nil
 	}
 	used, ok := data.Memories.(types.UsedMemories)
-	if !ok || len(used) == 0 {
+	if !ok {
 		return nil
 	}
 
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if data.Merge {
+		used = types.MergeUsedMemories(h.assistantMessage.UsedMemories, used)
+	}
+	// Keep a non-nil empty slice: repository struct updates must persist an
+	// explicit clear, and clients need [] rather than null to clear the row.
+	used = append(make(types.UsedMemories, 0, len(used)), used...)
 	h.assistantMessage.UsedMemories = used
-	h.mu.Unlock()
 
 	if err := h.streamManager.AppendEvent(h.ctx, h.sessionID, h.assistantMessageID, interfaces.StreamEvent{
 		ID:        evt.ID,
@@ -735,6 +749,7 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 	if !ok {
 		return nil
 	}
+	h.refreshPersistedArtifacts(ctx)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()

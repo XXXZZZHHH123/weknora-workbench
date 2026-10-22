@@ -6,6 +6,8 @@ workbook must never be opened or refreshed while indexing.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 import io
 import logging
 import os
@@ -47,27 +49,55 @@ _NS = {
 }
 
 
+_CONVERSION_CANCELLED = ContextVar("pptx_conversion_cancelled", default=None)
+
+
+@contextmanager
+def conversion_cancellation(cancelled):
+    token = _CONVERSION_CANCELLED.set(cancelled)
+    try:
+        yield
+    finally:
+        _CONVERSION_CANCELLED.reset(token)
+
+
+def _conversion_is_cancelled():
+    check = _CONVERSION_CANCELLED.get()
+    return check is not None and check()
+
+
 def _run_conversion(command: list[str], timeout: float) -> bool:
-    # soffice can start a child: kill the entire process group on timeout.
-    # The Linux docreader image provides prlimit. Apply limits before soffice
-    # starts (and inherit them in its children), without unsafe preexec_fn in
-    # the threaded gRPC server. Other hosts still have input/time/pixel limits.
+    if _conversion_is_cancelled():
+        return False
+    # Isolated process groups and limits also cover the converter's children.
     prlimit = shutil.which("prlimit")
     if prlimit:
         command = [prlimit, "--as=1610612736", "--cpu=" + str(max(1, int(timeout) + 1)),
                    "--fsize=" + str(_MAX_PNG_BYTES), "--"] + command
     proc = subprocess.Popen(command, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True)
+    deadline = time.monotonic() + max(0.1, timeout)
     try:
-        return proc.wait(timeout=max(0.1, timeout)) == 0
+        if _CONVERSION_CANCELLED.get() is None:
+            return proc.wait(timeout=max(0.1, timeout)) == 0
+        while not _conversion_is_cancelled():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                return proc.wait(timeout=min(0.1, remaining)) == 0
+            except subprocess.TimeoutExpired:
+                continue
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
         logger.warning("PPT image conversion timed out")
-        return False
+    # A cancelled RPC must release its renderer capacity as soon as its last
+    # shared waiter leaves, rather than consuming the entire conversion budget.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+    return False
 
 
 def _rasterize_with_pillow(data: bytes, *, trim_canvas: bool = False) -> bytes | None:
@@ -140,6 +170,8 @@ def _rasterize_with_libreoffice(data: bytes, suffix: str, timeout: float = 30) -
 
 def rasterize_media_bytes(name: str, data: bytes, *, timeout: float = 30) -> bytes | None:
     ext = posixpath.splitext(name)[1].lower()
+    if _conversion_is_cancelled():
+        return None
     if not data or len(data) > _MAX_MEDIA_BYTES:
         return None
     if ext in _RASTER_EXT:
@@ -153,7 +185,7 @@ def rasterize_media_bytes(name: str, data: bytes, *, timeout: float = 30) -> byt
         if png:
             return png
         timeout -= time.monotonic() - started
-        if timeout <= 0:
+        if timeout <= 0 or _conversion_is_cancelled():
             return None
     if ext == ".svg":
         # No external resources/scripts may be fetched by a vector renderer.

@@ -13,6 +13,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
+	"github.com/Tencent/WeKnora/internal/models/imagegen"
 	"github.com/Tencent/WeKnora/internal/models/providers"
 	"github.com/Tencent/WeKnora/internal/models/rerank"
 	"github.com/Tencent/WeKnora/internal/models/utils/ollama"
@@ -99,6 +100,9 @@ func (s *modelService) resolveWeKnoraCloudCredentials(ctx context.Context, param
 // For local models, it initiates an asynchronous download process
 // Remote models are immediately set to active status
 func (s *modelService) CreateModel(ctx context.Context, model *types.Model) error {
+	if model.Type == types.ModelTypeImageGeneration && model.Source != types.ModelSourceRemote {
+		return errors.New("image generation requires a remote model")
+	}
 	logger.Infof(ctx, "Creating model: %s, type: %s, source: %s", model.Name, model.Type, model.Source)
 
 	// Handle remote models (e.g., OpenAI, Azure)
@@ -316,6 +320,9 @@ func (s *modelService) ListModels(ctx context.Context) ([]*types.Model, error) {
 
 // UpdateModel updates an existing model in the repository
 func (s *modelService) UpdateModel(ctx context.Context, model *types.Model) error {
+	if model.Type == types.ModelTypeImageGeneration && model.Source != types.ModelSourceRemote {
+		return errors.New("image generation requires a remote model")
+	}
 	logger.Info(ctx, "Start updating model")
 	logger.Infof(ctx, "Updating model ID: %s, name: %s", model.ID, model.Name)
 
@@ -703,6 +710,10 @@ func (s *modelService) GetChatModel(ctx context.Context, modelId string) (chat.C
 		return nil, ErrModelNotFound
 	}
 
+	if model.Type == types.ModelTypeImageGeneration {
+		return nil, fmt.Errorf("model is not a chat model")
+	}
+
 	logger.Infof(ctx, "Getting chat model: %s, source: %s", model.Name, model.Source)
 
 	appID, appSecret := s.resolveWeKnoraCloudCredentials(ctx, &model.Parameters)
@@ -810,4 +821,22 @@ func formatModelInUseMessage(kbCount, agentCount int64, memory bool) string {
 		"model is used by %s; reconfigure or remove those references before deleting",
 		joined,
 	)
+}
+
+// GetImageGenerationModel resolves an authorized, active remote image model.
+func (s *modelService) GetImageGenerationModel(ctx context.Context, modelID string) (imagegen.Generator, error) {
+	if strings.TrimSpace(modelID) == "" {
+		return nil, errors.New("model ID cannot be empty")
+	}
+	model, err := s.repo.GetByID(ctx, types.MustTenantIDFromContext(ctx), modelID)
+	if err != nil {
+		return nil, err
+	}
+	if model == nil {
+		return nil, ErrModelNotFound
+	}
+	if model.Type != types.ModelTypeImageGeneration || model.Source != types.ModelSourceRemote || model.Status != types.ModelStatusActive {
+		return nil, errors.New("an active remote image generation model is required")
+	}
+	return imagegen.New(imagegen.ConfigFromModel(model))
 }

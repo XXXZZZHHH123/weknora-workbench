@@ -708,6 +708,7 @@ import {
 import { copyWithToast } from '@/utils/clipboard';
 import {
   configureMarkedForChatMarkdown,
+  createChatMarkdownRenderer,
   renderChatMarkdown,
   wrapChatMarkdownTables,
 } from '@/utils/chatMarkdownRenderer';
@@ -776,6 +777,8 @@ const TOOL_NAME_KEYS: Record<string, string> = {
   edit_sandbox_file: 'agentStream.tools.editSandboxFile',
   shell_exec: 'agentStream.tools.shellExec',
   local_browser: 'localBrowser.local',
+  generate_image: 'imageGeneration.type',
+  render_chart: 'chartRendering.type',
   data_analysis: 'agentStream.tools.dataAnalysis',
   data_schema: 'agentStream.tools.dataSchema',
   database_query: 'agentStream.tools.databaseQuery',
@@ -2522,7 +2525,16 @@ onUpdated(() => {
 });
 
 // 自定义渲染器 - 支持 Mermaid
-const agentRenderer = new marked.Renderer();
+const agentRenderer = createChatMarkdownRenderer({
+  linkRenderer: ({ href, text }) => renderArtifactReference({
+    href,
+    alt: text || '',
+    artifacts: artifactList.value,
+    labels: artifactRefLabels.value,
+    context: artifactRefContext.value,
+    streaming: !isSegmentDone.value,
+  }),
+});
 agentRenderer.code = createMermaidCodeRenderer('mermaid-agent');
 
 // Files the agent generated in its sandbox carry the same `resource://` handle
@@ -2819,6 +2831,8 @@ const getSandboxToolDetail = (event: any): string => {
 
 // Get tool title - prefer summary over description, add query for search tools
 const getToolTitle = (event: any): string => {
+  if (event.tool_name === 'render_chart') return t(event.pending ? 'chartRendering.rendering' : event.success === false ? 'chartRendering.failed' : 'chartRendering.completed');
+  if (event.tool_name === 'generate_image') return t(event.pending ? 'imageGeneration.generating' : event.success === false ? 'imageGeneration.failed' : 'imageGeneration.completed');
   if (event.tool_name === 'local_browser') return browserToolTitle(t, event);
   const mcpTitle = getMcpToolTitle(t, event)
   if (mcpTitle) return mcpTitle
@@ -2983,6 +2997,9 @@ const skillScriptCommandLabel = (event: any): string => {
 
 // Tool description
 const getToolDescription = (event: any): string => {
+  if (event.tool_name === 'render_chart') return t(event.pending ? 'chartRendering.rendering' : event.success === false ? 'chartRendering.failed' : 'chartRendering.completed');
+  if (event.tool_name === 'generate_image') return t(event.pending ? 'imageGeneration.generating' : event.success === false ? 'imageGeneration.failed' : 'imageGeneration.completed');
+  if (event.tool_name === 'generate_image') return t(event.pending ? 'imageGeneration.generating' : event.success === false ? 'imageGeneration.failed' : 'imageGeneration.completed');
   if (event.tool_name === 'local_browser') return browserToolTitle(t, event);
   if (event.pending) {
     if (event.tool_name === 'image_analysis') {

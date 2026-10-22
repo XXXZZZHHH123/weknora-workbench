@@ -36,6 +36,89 @@ vm.runInNewContext(compiled, {
 })
 const useChatStreamHandler = exports.useChatStreamHandler!
 
+for (const mode of ['quick', 'agent'] as const) {
+  test(`${mode}: explicit empty memory snapshot clears only its turn and remains empty after history reload`, async () => {
+    const oldMemory = { id: 'old-memory', kind: 'fact', content: 'An earlier turn used this' }
+    const newMemory = { id: 'tool-memory', kind: 'task', content: 'Read later this turn' }
+    const messagesList = vue.reactive<Record<string, any>[]>([])
+    const makeHandler = (list: Record<string, any>[]) => useChatStreamHandler({
+      messagesList: list, loading: vue.ref(true), isReplying: vue.ref(true),
+      currentAssistantMessageId: vue.ref('current'), fullContent: vue.ref(''),
+      isAgentStreamSession: () => mode === 'agent', scrollToBottom() {},
+      preserveIncompleteStreamReactive: true,
+    })
+    const handler = makeHandler(messagesList)
+    await handler.handleMsgList([
+      { id: 'older', request_id: 'old-request', role: 'assistant', content: 'Previous answer', is_completed: true, used_memories: [oldMemory] },
+      { id: 'current', request_id: 'request', role: 'assistant', content: '', is_completed: false, used_memories: [oldMemory] },
+    ])
+    const current = messagesList[1]
+    const hasMemory = vue.computed(() => Boolean(current.used_memories?.length))
+    assert.equal(hasMemory.value, true)
+    const send = (memories: unknown, id = 'request') => handler.processStreamChunk({
+      id, response_type: 'memory_recalled', data: { memories },
+    })
+    send([])
+    assert.deepEqual(current.used_memories, [])
+    assert.equal(hasMemory.value, false)
+    assert.deepEqual(messagesList[0].used_memories, [oldMemory])
+    send([newMemory])
+    send([newMemory, oldMemory]) // Server-side tool merges arrive as complete snapshots.
+    assert.deepEqual(current.used_memories, [newMemory, oldMemory])
+    send(null)
+    assert.equal(current.used_memories.length, 2, 'malformed payloads do not clear valid memory')
+    send([], 'unknown-request')
+    assert.equal(current.used_memories.length, 2, 'unknown explicit identities cannot fall back to the active turn')
+    send([])
+    const stored = JSON.parse(JSON.stringify(messagesList))
+    // Backend omitempty may omit the empty array; neither representation may
+    // inherit another message's memories when the production history handler runs.
+    for (const omitEmpty of [false, true]) {
+      const rows = structuredClone(stored)
+      if (omitEmpty) delete rows[1].used_memories
+      const restored = vue.reactive<Record<string, any>[]>([])
+      await makeHandler(restored).handleMsgList(rows)
+      assert.equal(restored[1].used_memories?.length || 0, 0)
+      assert.deepEqual(restored[0].used_memories, [oldMemory])
+    }
+  })
+}
+
+for (const mode of ['quick', 'agent'] as const) {
+  for (const partial of [false, true]) {
+    test(`${mode}: resumed ${partial ? 'partial' : 'empty'} history keeps tool results and reasoning reactive`, async () => {
+      const messagesList = vue.reactive<Record<string, any>[]>([])
+      const handler = useChatStreamHandler({
+        messagesList, loading: vue.ref(true), isReplying: vue.ref(true),
+        currentAssistantMessageId: vue.ref('assistant'), fullContent: vue.ref(''),
+        isAgentStreamSession: () => mode === 'agent', scrollToBottom() {},
+        preserveIncompleteStreamReactive: true,
+      })
+      await handler.handleMsgList([{
+        id: 'assistant', request_id: 'request', role: 'assistant', content: '', is_completed: false,
+        agent_steps: partial ? [{ iteration: 1, reasoning_content: 'Earlier reasoning', tool_calls: [] }] : [],
+      }])
+      const message = messagesList[0]
+      const visible = vue.computed(() => (message.agentEventStream || []).map((event: any) =>
+        event.type === 'tool_call' ? `${event.tool_name}:${event.pending}:${event.tool_data?.documents?.length || 0}`
+          : `${event.type}:${event.content || ''}`).join('|'))
+      const before = visible.value
+      const send = (response_type: string, content = '', data: Record<string, unknown> = {}) =>
+        handler.processStreamChunk({ id: 'request', response_type, content, done: false, data })
+      send('tool_call', '', { tool_name: 'search_knowledge', tool_call_id: 'search-1', arguments: {} })
+      assert.notEqual(visible.value, before)
+      assert.match(visible.value, /search_knowledge:true:0/)
+      send('tool_result', '', { tool_name: 'search_knowledge', tool_call_id: 'search-1', success: true,
+        display_type: 'document_info', requires_source_scope: true, documents: [{ id: 'a' }, { id: 'b' }] })
+      assert.match(visible.value, /search_knowledge:false:2/)
+      send('thinking', 'Resumed reasoning', { event_id: 'reason-2' })
+      assert.match(visible.value, /thinking:Resumed reasoning/)
+      send('thinking', ' continues', { event_id: 'reason-2' })
+      assert.match(visible.value, /thinking:Resumed reasoning continues/)
+    })
+  }
+}
+
 function setup(t: TestContext, mode: 'ordinary' | 'quick-timeline' | 'agent') {
   const effects = vue.effectScope()
   const oldWindow = (globalThis as any).window

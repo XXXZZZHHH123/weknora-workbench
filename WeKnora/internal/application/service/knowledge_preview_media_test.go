@@ -61,6 +61,7 @@ type previewMediaReader struct {
 	interfaces.DocumentReader
 	result  *types.ReadResult
 	request *types.ReadRequest
+	err     error
 }
 
 func previewMediaContext() context.Context {
@@ -69,7 +70,7 @@ func previewMediaContext() context.Context {
 
 func (r *previewMediaReader) Read(_ context.Context, request *types.ReadRequest) (*types.ReadResult, error) {
 	r.request = request
-	return r.result, nil
+	return r.result, r.err
 }
 
 func TestRenderKnowledgePreviewMediaBindsSourceAndAllowsReadableParseStates(t *testing.T) {
@@ -216,23 +217,27 @@ func TestRenderKnowledgePreviewMediaRequiresMatchingSourceSHAAndTenantContext(t 
 	}
 }
 
-func TestRenderKnowledgePreviewMediaMapsOnlyTypedSelectorFailures(t *testing.T) {
+func TestRenderKnowledgePreviewMediaMapsOnlyTypedReaderFailures(t *testing.T) {
 	source := []byte("original")
 	md5Hash := md5.Sum(source)
 	fileSHA := sha256.Sum256(source)
-	for _, typed := range []bool{true, false} {
+	for _, tc := range []struct {
+		code     string
+		httpCode int
+	}{{"invalid_selector", 400}, {"busy", 503}, {"timeout", 504}, {"cancelled", 0}, {"render_failed", 0}, {"", 0}} {
 		knowledge := &types.Knowledge{ID: "doc", TenantID: 7, KnowledgeBaseID: "kb", FileName: "a.pptx", FileType: "pptx", FilePath: "local://a.pptx", FileHash: hex.EncodeToString(md5Hash[:])}
 		result := &types.ReadResult{Error: "same opaque reader error"}
-		if typed {
-			result.Metadata = map[string]string{"evidence_version": "source_media_png_v1", "source_media_error_code": "invalid_selector"}
-		}
+		result.Metadata = map[string]string{"evidence_version": "source_media_png_v1", "source_media_error_code": tc.code}
 		svc := &knowledgeService{repo: &previewMediaRepo{knowledge: knowledge}, kbService: &previewMediaKB{kb: &types.KnowledgeBase{ID: "kb", TenantID: 7}}, fileSvc: &previewMediaFiles{body: source}, documentReader: &previewMediaReader{result: result}}
 		_, err := svc.RenderKnowledgePreviewMedia(previewMediaContext(), knowledge, 1, "ppt/media/a.emf", hex.EncodeToString(fileSHA[:]))
 		require.Error(t, err)
 		appErr, ok := apperrors.IsAppError(err)
-		require.Equal(t, typed, ok, "error wording cannot determine its HTTP category")
-		if typed {
-			require.Equal(t, 400, appErr.HTTPCode)
+		require.Equal(t, tc.httpCode != 0, ok, "error wording cannot determine its HTTP category")
+		if tc.httpCode != 0 {
+			require.Equal(t, tc.httpCode, appErr.HTTPCode)
+		}
+		if tc.code == "cancelled" {
+			require.ErrorIs(t, err, context.Canceled)
 		}
 	}
 }
@@ -245,4 +250,16 @@ func TestRenderKnowledgePreviewMediaPropagatesKnowledgeLookupFailure(t *testing.
 	fileSHA := sha256.Sum256(source)
 	_, err := svc.RenderKnowledgePreviewMedia(previewMediaContext(), knowledge, 1, "ppt/media/a.emf", hex.EncodeToString(fileSHA[:]))
 	require.Error(t, err)
+}
+
+func TestRenderKnowledgePreviewMediaKeepsCallerCancellation(t *testing.T) {
+	source := []byte("original")
+	md5Hash := md5.Sum(source)
+	fileSHA := sha256.Sum256(source)
+	knowledge := &types.Knowledge{ID: "doc", TenantID: 7, KnowledgeBaseID: "kb", FileName: "a.pptx", FileType: "pptx", FilePath: "local://a.pptx", FileHash: hex.EncodeToString(md5Hash[:])}
+	svc := &knowledgeService{repo: &previewMediaRepo{knowledge: knowledge}, kbService: &previewMediaKB{kb: &types.KnowledgeBase{ID: "kb", TenantID: 7}}, fileSvc: &previewMediaFiles{body: source}, documentReader: &previewMediaReader{err: errors.New("wrapped RPC cancellation")}}
+	ctx, cancel := context.WithCancel(previewMediaContext())
+	cancel()
+	_, err := svc.RenderKnowledgePreviewMedia(ctx, knowledge, 1, "ppt/media/a.emf", hex.EncodeToString(fileSHA[:]))
+	require.ErrorIs(t, err, context.Canceled)
 }

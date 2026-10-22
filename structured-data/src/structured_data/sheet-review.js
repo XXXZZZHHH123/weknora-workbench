@@ -53,9 +53,10 @@
   const cellPoint = s => {const m=/^([A-Z]{1,3})([1-9][0-9]*)$/.exec(s||'');return m?{row:+m[2],col:colIndex(m[1])}:null;};
   const colorVars = i => {const p=palette[i%palette.length];return `--block-color:${p[0]};--block-soft:${p[1]};--block-tint:${p[2]};--block-selected:${p[3]}`;};
   const clean = mapping => {const m=copy(mapping);m.blocks.forEach(b=>delete b._review_id);return m;};
-  const publishedStatuses = new Set(['trusted_existing','auto_ready','template_ready','confirmed']);
-  const isPublished = s => s?.import_state ? s.import_state==='imported' : publishedStatuses.has(s?.status);
-  const isConfirmedSheet = s => !isChartOnly(s) && (s?.review_state ? s.review_state.status==='confirmed' : publishedStatuses.has(s?.status));
+  const isPublished = s => s?.published_in_dataset === true;
+  const publishedBlocks = s => isPublished(s) && Array.isArray(s?.published_mapping?.blocks) ? s.published_mapping.blocks : [];
+  const waitingImport = s => !isPublished(s) && ['trusted_existing','auto_ready','template_ready','confirmed'].includes(s?.status);
+  const isConfirmedSheet = s => !isChartOnly(s) && (s?.review_state ? s.review_state.status==='confirmed' : ['trusted_existing','auto_ready','template_ready','confirmed'].includes(s?.status));
   function canonical(value) {
     if(Array.isArray(value))return value.map(canonical);
     if(!value||typeof value!=='object')return value;
@@ -102,13 +103,13 @@
     if (needle && !s.name.toLowerCase().includes(needle)) return false;
     if (ui.filter === 'all') return true;
     if (ui.filter === 'charts') return isChartOnly(s);
-    return s.status === 'needs_review' && !isChartOnly(s);
+    return !isPublished(s) && (s.status === 'needs_review' || waitingImport(s)) && !isChartOnly(s);
   }
   function sheetMeta(s) {
     const blocks = s.block_count ?? s.mapping?.blocks?.length ?? 0;
     const charts = s.chart_count || s.charts?.chart_count || 0;
     if (isChartOnly(s)) return `图表页 · ${charts} 个图 · ${s.rows || 0} 行 × ${s.columns || 0} 列`;
-    return `${statusLabels[s.status] || s.status} · ${s.rows || 0} 行 × ${s.columns || 0} 列 · ${blocks} 个区块${charts ? ' · ' + charts + ' 个图' : ''}`;
+    return `${sheetStatusLabel(s)} · ${s.rows || 0} 行 × ${s.columns || 0} 列 · ${blocks} 个区块${charts ? ' · ' + charts + ' 个图' : ''}`;
   }
   function ensureBlocks(m) {
     const seen=new Set();
@@ -122,8 +123,11 @@
       if(!state.serverReviewed&&original&&sig===blockSignature(original)&&review&&!state.rangePending){
         state.checked=review.status==='confirmed';state.diagnostics=copy(review.diagnostics||[]);state.serverReviewed=true;
       }
-      state.published=isPublished(currentSheet)&&(currentSheet.mapping?.blocks||[]).some(original=>sig===blockSignature(original))&&!state.rangePending&&!state.diagnostics?.length;
-      if(state.published&&currentSheet.status==='confirmed')state.checked=true;
+      const published=publishedBlocks(currentSheet).some(original=>sig===blockSignature(original))&&!state.rangePending&&!state.diagnostics?.length;
+      // A restored draft cannot carry a former publication acknowledgement
+      // into a different or absent manifest mapping.
+      if(state.published&&!published)state.checked=false;
+      state.published=published;
     });
     Object.keys(ui.states).forEach(id=>{if(!seen.has(id))delete ui.states[id];});
     if(!seen.has(ui.selected))ui.selected=m.blocks[0]?._review_id||null;
@@ -193,7 +197,7 @@
   };
   function updateImportSummary() {
     const sheets=currentImport?.sheets||[],ready=sheets.filter(isPublished).length;
-    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(s=>s.status==='needs_review').length} 张待确认`;
+    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(waitingImport).length} 张待导入 · ${sheets.filter(s=>!isPublished(s)&&s.status==='needs_review').length} 张待核对`;
     updateBatchState();
   }
   function updateBatchState() {
@@ -210,13 +214,14 @@
       const mapping=draft?.mapping,states=draft?.states||{},blocks=Array.isArray(mapping?.blocks)&&mapping.blocks.length<=100?mapping.blocks.filter(b=>states[b._review_id]?.enabled):[];
       const submitted=blocks?.length?clean({...mapping,blocks}):null;
       const validDraft=draft?.version===2&&draft.base_signature===serverSignature&&mapping?.sheet===sheet.name&&mapping.fingerprint===sheet.fingerprint&&blocks?.length&&blocks.every(b=>{const state=states[b._review_id];return !state.rangePending&&!state.diagnostics?.length&&(state.checked||state.published);});
-      const changedFromPublished=!isPublished(sheet)||mappingSignature(submitted)!==serverSignature;
+      const publishedSignature=mappingSignature(sheet.published_mapping);
+      const changedFromPublished=!isPublished(sheet)||!publishedSignature||mappingSignature(submitted)!==publishedSignature;
       if(validDraft&&changedFromPublished){sheets.push(sheet);mappings.push(submitted);}
       else if(isConfirmedSheet(sheet)&&!isPublished(sheet))sheets.push(sheet);
     }
     return {sheets,mappings};
   }
-  function tabState(s){return isPublished(s)?'ready':s.status==='needs_review'?'pending':'quiet';}
+  function tabState(s){return isPublished(s)?'ready':s.status==='needs_review'||waitingImport(s)?'pending':'quiet';}
   function renderSheetList() {
     $('sheetList').innerHTML=(currentImport?.sheets||[]).map((s,i)=>({s,i})).filter(({s})=>sheetVisible(s,'')||(ui.filter==='pending'&&s.name===currentSheet?.name&&isPublished(s))).map(({s,i})=>`<button class="sheet-tab" data-sheet-index="${i}" aria-pressed="${s.name===currentSheet?.name}" title="${esc(s.name+' · '+sheetMeta(s))}"><i class="sheet-state ${tabState(s)}" aria-hidden="true"></i><strong>${esc(s.name)}</strong><small class="sr-only">${esc(sheetMeta(s))}</small></button>`).join('')||'<p class="muted" style="font-size:12px">没有匹配的工作表。</p>';
     document.querySelectorAll('[data-sheet-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.sheetFilter===ui.filter)));
@@ -225,7 +230,7 @@
   function renderSheetMenu() {
     const host=$('sheetMenuList');if(!host)return;
     const needle=$('sheetSearch').value.trim().toLowerCase();
-    host.innerHTML=(currentImport?.sheets||[]).map((s,i)=>({s,i})).filter(({s})=>!needle||s.name.toLowerCase().includes(needle)).map(({s,i})=>`<button data-sheet-index="${i}" title="${esc(sheetMeta(s))}">${esc(s.name)}<small>${esc(statusLabels[s.status]||s.status)}</small></button>`).join('')||'<p class="muted">没有匹配的工作表。</p>';
+    host.innerHTML=(currentImport?.sheets||[]).map((s,i)=>({s,i})).filter(({s})=>!needle||s.name.toLowerCase().includes(needle)).map(({s,i})=>`<button data-sheet-index="${i}" title="${esc(sheetMeta(s))}">${esc(s.name)}<small>${esc(sheetStatusLabel(s))}</small></button>`).join('')||'<p class="muted">没有匹配的工作表。</p>';
     if($('allSheets'))$('allSheets').textContent=`全部 ${currentImport?.sheets?.length||0} 张⌄`;
   }
   selectSheet = async function(index,requestApi=api) {
@@ -235,14 +240,17 @@
     currentSheet=null;mappingConfirmed=false;mappingBusy=false;ui.checkSignature=null;
     $('sheetDetail').innerHTML='<p class="grid-loading">正在读取当前工作表…</p>';
     const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller,30000,requestApi);
-    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
+    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,mapping:sheet.mapping,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons,published_in_dataset:sheet.published_in_dataset===true,published_dataset_id:sheet.published_dataset_id??null,published_mapping:sheet.published_mapping??null,published_fingerprint:sheet.published_fingerprint??null});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
     if(isChartOnly(sheet)){showPreview('charts');return;}
     showPreview('table');await loadWindow(1,1,requestApi);
   };
   renderSheet = function(s) {
     const chartOnly = isChartOnly(s);
     ui.editable = s.status!=='empty' && !chartOnly;
-    let seed = copy(s.mapping || {sheet:s.name,fingerprint:s.fingerprint,blocks:[]});
+    // A saved mapping may have canonical defaults or different confirmed ranges.
+    // Use that actual baseline unless a local draft explicitly supersedes it.
+    const publishedSeed=isPublished(s)&&Array.isArray(s.published_mapping?.blocks)?s.published_mapping:null;
+    let seed = copy({...publishedSeed||s.mapping||{blocks:[]},sheet:s.name,fingerprint:s.fingerprint});
     ui.restore = false;
     if (ui.editable) try {
       const d = readDraftFor(s);
@@ -258,8 +266,8 @@
     const hasInspector=!chartOnly&&(ui.editable||ui.mapping.blocks.length>0||!!currentImport?.dataset_id);
     const strip=hasInspector?`<div class="block-strip"><div id="blockLegend" class="block-chips"></div>${ui.editable?'<button id="addMappingBlock" class="text-button" type="button">+ 添加区块</button><button id="undoMapping" class="text-button" type="button">↶ 撤销</button>':''}</div>`:'<div id="blockLegend" hidden></div>';
     const inspector=hasInspector?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对 <small class="editor-mode">${ui.editable?'可调整':'只读'}</small></strong><button id="previewBlockSample" class="secondary" type="button" aria-expanded="false" aria-controls="samplePreview">${isPublished(s)?'查看记录':'预览几条记录'}</button></div><p class="source-click-hint">点击下方来源坐标，可在左侧原表定位并高亮。</p><div id="samplePreview" class="block-sample-content" role="status" hidden></div><div id="mappingForm"></div><section id="resultPanel" class="stored-data-panel" hidden aria-label="已保存记录"><div class="result-heading"><h3 id="resultTitle"></h3><button id="closeResults" class="secondary" type="button">返回字段</button></div><div id="resultContent"></div></section>${ui.editable?'<div class="editor-footer"><label><input id="ackBlock" type="checkbox"><span id="ackBlockLabel">我已核对这个区块</span></label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div>':''}</aside>`:'<div id="mappingForm" hidden></div>';
-    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${currentImport?.dataset_id&&!chartOnly?'<button id="storedResults" class="secondary" type="button">查看记录</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><details class="sheet-processing-details"><summary>处理详情</summary><p>${esc(processingDetails[s.status]||'请核对识别说明。')}</p></details><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong><span>单击定位 · 拖动框选 · Shift 扩展 · Esc 取消</span></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
-    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 一键辅助确认</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'已恢复这张表的本地草稿。完整检查需要重新执行。':'正常区块已确认；仅需处理标红区块。修改自动保存在当前浏览器。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'这张表只有图，不需要确认单元格导入。源表导入后，曲线才会关联到已导入的单元格。':s.status==='trusted_existing'?'已按核验规则导入；修改字段和范围后需重新核对并导入。':'此工作表没有需要确认的数据区块。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div>`;
+    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${isPublished(s)&&s.published_dataset_id&&!chartOnly?'<button id="storedResults" class="secondary" type="button">查看记录</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><details class="sheet-processing-details"><summary>处理详情</summary><p>${esc(sheetProcessingDetails(s))}</p></details><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong><span>单击定位 · 拖动框选 · Shift 扩展 · Esc 取消</span></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
+    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 一键辅助确认</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'已恢复这张表的本地草稿。完整检查需要重新执行。':'正常区块已确认；仅需处理标红区块。修改自动保存在当前浏览器。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'这张表只有图，不需要确认单元格导入。源表导入后，曲线才会关联到已导入的单元格。':s.status==='trusted_existing'?(isPublished(s)?'已按核验规则导入；修改字段和范围后需重新核对并导入。':'已匹配核验规则，但尚未发布到查询版本；核对并导入后才能查询。'):'此工作表没有需要确认的数据区块。'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div>`;
     $('sheetDetail').innerHTML=`<div class="review-workspace">${strip}<div class="review-panes${hasInspector?'':' readonly'}">${source}${inspector}</div>${footer}${s.reasons?.length?`<details class="review-explanation"><summary>识别说明</summary><ul>${reasonsList(s.reasons)}</ul></details>`:''}<textarea id="mappingEditor" class="hidden">${esc(JSON.stringify(ui.mapping))}</textarea></div>`;
     $('mappingEditor').value = JSON.stringify(ui.mapping, null, 2);
     renderMappingForm(ui.mapping); renderLegend(); bindReviewEvents(); updateConfirmState();
@@ -331,7 +339,7 @@
       const input=panel.querySelector('[data-range-input]');if(input&&!input.dataset.pendingRange&&document.activeElement!==input)input.value=dataRangeLabel(b);
     });
     const b=selectedBlock(),state=b&&ui.states[b._review_id];
-    const sheetBadge=document.querySelector('#sheetDetail .source-head .badge');if(sheetBadge){const failed=enabledBlocks().some(block=>ui.states[block._review_id]?.diagnostics?.length),status=failed?'needs_review':currentSheet.status;sheetBadge.classList.toggle('pending',status==='needs_review');sheetBadge.textContent=statusLabels[status]||status;}
+    const sheetBadge=document.querySelector('#sheetDetail .source-head .badge');if(sheetBadge){const failed=enabledBlocks().some(block=>ui.states[block._review_id]?.diagnostics?.length),sheet={...currentSheet,status:failed?'needs_review':currentSheet.status};sheetBadge.className='badge'+(isPublished(sheet)?'':['empty','unsupported'].includes(sheet.status)?' quiet':' pending');sheetBadge.textContent=sheetStatusLabel(sheet);}
     if($('ackBlock')){$('ackBlock').checked=!!(state?.published||state?.checked);$('ackBlock').disabled=mappingBusy||!state?.enabled||!!state?.published;}
     if($('ackBlockLabel'))$('ackBlockLabel').textContent=state?.published?'已可查询，修改后需重新核对':'我已核对这个区块';
     if($('previewBlockSample')){$('previewBlockSample').disabled=mappingBusy||(!ui.editable?!currentImport?.dataset_id:!state?.enabled);$('previewBlockSample').textContent=state?.published||!ui.editable?'查看记录':'预览几条记录';}
@@ -381,7 +389,7 @@
     return `<h4>字段将如何保存</h4><p>同名列分别保存，原表列号用于区分；不会自动合并或补写年度、品种。下方数值是有限解析样本，尚未写入可用数据。</p><div class="scroll"><table><thead><tr><th>区块</th><th>原列</th><th>指标／期间</th><th>保存维度</th><th>单位</th><th>表头来源</th></tr></thead><tbody>${mapping.blocks.flatMap((b,i)=>(b.columns||[]).map(c=>`<tr><td>${esc(b.name||'区块 '+(i+1))}</td><td>${esc(c.column)}</td><td>${esc(c.metric||c.period||'按行标签')}</td><td>${esc(dimensionsText(c.dimensions)||'无额外维度')}</td><td>${esc(c.unit||'原表未注明')}</td><td>${esc((c.header_cells||[]).join('、'))}</td></tr>`)).join('')}</tbody></table></div>`;
   }
   async function showStoredResults() {
-    const dataset=currentImport?.dataset_id,sheet=currentSheet?.name,version=reviewVersion;
+    const dataset=isPublished(currentSheet)?currentSheet.published_dataset_id:null,sheet=currentSheet?.name,version=reviewVersion;
     if(!dataset||!sheet)return;
     const panel=$('resultPanel'),content=$('resultContent');if(!panel)return;
     clearSample();$('blockEditor').classList.add('showing-records');panel.hidden=false;
@@ -661,7 +669,7 @@
   updateConfirmState = function() {
     const included=enabledBlocks(),checkValid=ui.checkSignature===JSON.stringify(submittedMapping());mappingConfirmed=checkValid;
     const pending=included.filter(b=>!ui.states[b._review_id]?.checked&&!ui.states[b._review_id]?.published).length;
-    const alreadyPublished=isPublished(currentSheet)&&included.length===(currentSheet.mapping?.blocks?.length||0)&&included.every(b=>ui.states[b._review_id]?.published);
+    const alreadyPublished=isPublished(currentSheet)&&included.length===publishedBlocks(currentSheet).length&&included.every(b=>ui.states[b._review_id]?.published);
     if($('confirmMapping')){$('confirmMapping').disabled=mappingBusy||!included.length||!!pending||alreadyPublished;$('confirmMapping').title=alreadyPublished?'本表已可查询；修改映射后才需要重新核对和导入。':!included.length?'请至少保留一个要导入的区块。':pending?`还有 ${pending} 个区块需要核对字段。`:'';}
     if($('confirmHint'))$('confirmHint').innerHTML=alreadyPublished?'本表已可查询<small>修改映射后，请重新核对并导入。</small>':included.length?`${pending?`还有 ${pending} 个区块待核对`:`${included.length} 个区块已核对`}<small>${mappingBusy?'正在检查和处理，请等待…':'导入前检查全部选定数据，通过后写入新版本。'}</small>`:`没有要导入的区块<small>恢复一个区块后才能确认这张表。</small>`;
     if($('undoMapping'))$('undoMapping').disabled=mappingBusy||!ui.history.length;

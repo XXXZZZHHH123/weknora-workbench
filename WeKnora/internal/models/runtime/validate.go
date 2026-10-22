@@ -28,15 +28,19 @@ func ValidateRow(modelName string, modelType types.ModelType, params *types.Mode
 			}
 		}
 	}
-	if _, err := Resolve(Ref{
+	resolved, err := Resolve(Ref{
 		Provider:  params.Provider,
 		Model:     modelName,
 		BaseURL:   params.BaseURL,
 		ModelType: modelType,
 		Extra:     params.ExtraConfig,
 		Override:  params.Spec,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("model parameters: %w", err)
+	}
+	if modelType == types.ModelTypeImageGeneration && resolved.BaseURL == "" {
+		return fmt.Errorf("image generation base URL is required")
 	}
 	return nil
 }
@@ -44,7 +48,7 @@ func ValidateRow(modelName string, modelType types.ModelType, params *types.Mode
 func resolvesThroughCatalog(modelType types.ModelType) bool {
 	switch modelType {
 	case types.ModelTypeKnowledgeQA, types.ModelTypeVLLM, types.ModelTypeEmbedding, types.ModelTypeRerank,
-		types.ModelTypeASR:
+		types.ModelTypeASR, types.ModelTypeImageGeneration:
 		return true
 	}
 	return false

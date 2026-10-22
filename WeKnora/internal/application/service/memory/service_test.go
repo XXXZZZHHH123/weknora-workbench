@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/application/repository"
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -39,8 +40,9 @@ func newMemoryHarness(t *testing.T) (*Service, *gorm.DB, *stubTenantRepo) {
 		configs: map[uint64]*types.MemoryConfig{},
 	}
 	svc := &Service{
-		repo:       repository.NewMemoryRepository(db),
-		tenantRepo: tenantRepo,
+		repo:         repository.NewMemoryRepository(db),
+		tenantRepo:   tenantRepo,
+		modelService: &stubModelService{},
 	}
 	return svc, db, tenantRepo
 }
@@ -65,16 +67,13 @@ func TestRememberStoresAndRecalls(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	recall := svc.Recall(ctx, "帮我看看这个报错")
+	recall := recallForTest(svc, ctx, "帮我看看这个报错")
 	require.Contains(t, recall.Prompt, "回答请直接给结论")
 	require.Len(t, recall.Items, 1)
 }
 
-// TestExplicitMemoryIsAlwaysAvailable pins the rule that a user who said
-// "remember this" gets it back regardless of how they phrase the next
-// question. Leaving it to lexical matching means the one memory the user
-// deliberately asked for is the one most likely to go missing.
-func TestExplicitMemoryIsAlwaysAvailable(t *testing.T) {
+// Explicit memories are candidates even without lexical overlap; the model decides admission.
+func TestExplicitMemoryCanBeSelectedWithoutLexicalOverlap(t *testing.T) {
 	svc, _, tenantRepo := newMemoryHarness(t)
 	ctx := enabledCtx(t, tenantRepo, 1, "alice")
 
@@ -86,7 +85,7 @@ func TestExplicitMemoryIsAlwaysAvailable(t *testing.T) {
 	require.NoError(t, err)
 
 	// Not one word in common with the memory.
-	recall := svc.Recall(ctx, "what tools do I use daily")
+	recall := recallForTest(svc, ctx, "what tools do I use daily")
 	require.Contains(t, recall.Prompt, "Neovim")
 	require.Len(t, recall.Items, 1)
 }
@@ -106,8 +105,8 @@ func TestExtractedFactStillNeedsAQueryMatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Empty(t, svc.Recall(ctx, "帮我算一下这个月的账").Prompt)
-	require.Contains(t, svc.Recall(ctx, "编辑器怎么配置").Prompt, "Neovim")
+	require.Empty(t, recallForTest(svc, ctx, "帮我算一下这个月的账").Prompt)
+	require.Contains(t, recallForTest(svc, ctx, "编辑器怎么配置").Prompt, "Neovim")
 }
 
 // TestRecalledItemIsNotListedTwice guards the seam between the resident block
@@ -123,7 +122,7 @@ func TestRecalledItemIsNotListedTwice(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	recall := svc.Recall(ctx, "数据库连接池配多大")
+	recall := recallForTest(svc, ctx, "数据库连接池配多大")
 	require.Len(t, recall.Items, 1, "the same memory must not be reported twice")
 	require.Equal(t, 1, strings.Count(recall.Prompt, "生产数据库是 PostgreSQL 17"))
 }
@@ -141,7 +140,7 @@ func TestRecallMatchesSituationalItemsByQuery(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	recall := svc.Recall(ctx, "数据库连接超时应该怎么排查")
+	recall := recallForTest(svc, ctx, "数据库连接超时应该怎么排查")
 	require.Contains(t, recall.Prompt, "PostgreSQL 17")
 	// An unrelated fact must stay out: injecting it would spend context and
 	// invite the model to use it.
@@ -171,7 +170,7 @@ func TestContradictionSupersedesRatherThanDeletes(t *testing.T) {
 	require.Equal(t, "我们用的是 MySQL", old.Content,
 		"history must stay readable, so the old content is preserved")
 
-	recall := svc.Recall(ctx, "我们的数据库是什么")
+	recall := recallForTest(svc, ctx, "我们的数据库是什么")
 	require.Contains(t, recall.Prompt, "PostgreSQL")
 	require.NotContains(t, recall.Prompt, "MySQL")
 }
@@ -281,16 +280,16 @@ func TestMemoriesAreIsolatedAcrossSubjectsAndWorkspaces(t *testing.T) {
 
 	// Same workspace, different person.
 	bobInOne := enabledCtx(t, tenantRepo, 1, "bob")
-	require.Empty(t, svc.Recall(bobInOne, "我在做什么项目").Prompt,
+	require.Empty(t, recallForTest(svc, bobInOne, "我在做什么项目").Prompt,
 		"another user in the same workspace must not see the memory")
 
 	// Same person, different workspace: the agreed scope is (workspace,
 	// principal), so work memories do not follow someone across workspaces.
 	aliceInTwo := enabledCtx(t, tenantRepo, 2, "alice")
-	require.Empty(t, svc.Recall(aliceInTwo, "我在做什么项目").Prompt,
+	require.Empty(t, recallForTest(svc, aliceInTwo, "我在做什么项目").Prompt,
 		"the same user in another workspace must not see the memory")
 
-	require.Contains(t, svc.Recall(aliceInOne, "我在做什么项目").Prompt, "医疗影像")
+	require.Contains(t, recallForTest(svc, aliceInOne, "我在做什么项目").Prompt, "医疗影像")
 }
 
 func TestListItemsIsScopedToTheCaller(t *testing.T) {
@@ -316,7 +315,7 @@ func TestDeleteAnotherUsersMemoryIsNotFound(t *testing.T) {
 	require.ErrorIs(t, svc.DeleteItem(bobCtx, item.ID), ErrItemNotFound)
 
 	// And the item survives the attempt.
-	require.Contains(t, svc.Recall(aliceCtx, "爱丽丝的秘密").Prompt, "爱丽丝的秘密")
+	require.Contains(t, recallForTest(svc, aliceCtx, "爱丽丝的秘密").Prompt, "爱丽丝的秘密")
 }
 
 func TestWorkspaceSwitchOffDisablesReadAndWrite(t *testing.T) {
@@ -326,7 +325,7 @@ func TestWorkspaceSwitchOffDisablesReadAndWrite(t *testing.T) {
 	require.NoError(t, err)
 
 	tenantRepo.set(1, &types.MemoryConfig{Enabled: false})
-	require.Empty(t, svc.Recall(ctx, "记住的东西").Prompt)
+	require.Empty(t, recallForTest(svc, ctx, "记住的东西").Prompt)
 	_, err = svc.Remember(ctx, types.MemoryItem{Kind: types.MemoryKindFact, Content: "新的东西"})
 	require.ErrorIs(t, err, ErrMemoryDisabled)
 }
@@ -338,14 +337,14 @@ func TestUserSwitchOffDisablesReadAndWrite(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, svc.SetEnabled(ctx, false))
-	require.Empty(t, svc.Recall(ctx, "记住的东西").Prompt)
+	require.Empty(t, recallForTest(svc, ctx, "记住的东西").Prompt)
 	_, err = svc.Remember(ctx, types.MemoryItem{Kind: types.MemoryKindFact, Content: "新的东西"})
 	require.ErrorIs(t, err, ErrMemoryDisabled)
 
 	// Turning it back on restores what was stored: an opt out pauses memory,
 	// it does not erase it.
 	require.NoError(t, svc.SetEnabled(ctx, true))
-	require.Contains(t, svc.Recall(ctx, "记住的东西").Prompt, "记住的东西")
+	require.Contains(t, recallForTest(svc, ctx, "记住的东西").Prompt, "记住的东西")
 }
 
 func TestAgentOptOutDisablesRecall(t *testing.T) {
@@ -356,15 +355,15 @@ func TestAgentOptOutDisablesRecall(t *testing.T) {
 
 	disabled := false
 	agentCtx := types.ApplyAgentMemoryPreference(ctx, &disabled)
-	require.Empty(t, svc.Recall(agentCtx, "帮我写个函数").Prompt)
-	require.Contains(t, svc.Recall(ctx, "帮我写个函数").Prompt, "只要中文回答")
+	require.Empty(t, recallForTest(svc, agentCtx, "帮我写个函数").Prompt)
+	require.Contains(t, recallForTest(svc, ctx, "帮我写个函数").Prompt, "只要中文回答")
 }
 
 func TestRecallWithoutPrincipalIsEmpty(t *testing.T) {
 	svc, _, tenantRepo := newMemoryHarness(t)
 	tenantRepo.set(1, &types.MemoryConfig{Enabled: true})
 	ctx := context.WithValue(t.Context(), types.TenantIDContextKey, uint64(1))
-	require.Empty(t, svc.Recall(ctx, "任何问题").Prompt,
+	require.Empty(t, recallForTest(svc, ctx, "任何问题").Prompt,
 		"a request with no principal has no memory space to read")
 }
 
@@ -417,7 +416,7 @@ func TestClearForgetsEverything(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(3), removed)
 
-	require.Empty(t, svc.Recall(ctx, "事实").Prompt)
+	require.Empty(t, recallForTest(svc, ctx, "事实").Prompt)
 	settings, err := svc.GetSettings(ctx)
 	require.NoError(t, err)
 	require.Zero(t, settings.ItemCount)
@@ -508,7 +507,7 @@ func TestUpdateItemMarksMemoryAsManual(t *testing.T) {
 	require.Equal(t, types.MemoryOriginManual, updated.Origin,
 		"a corrected memory must be marked manual so extraction does not undo it")
 
-	require.Contains(t, svc.Recall(ctx, "随便问点什么").Prompt, "喜欢简短的解释")
+	require.Contains(t, recallForTest(svc, ctx, "随便问点什么").Prompt, "喜欢简短的解释")
 }
 
 func TestResidentBlockSurvivesCacheLoss(t *testing.T) {
@@ -523,47 +522,39 @@ func TestResidentBlockSurvivesCacheLoss(t *testing.T) {
 	require.NoError(t, db.Model(&types.MemorySubject{}).
 		Where("1 = 1").Update("block_text", "").Error)
 
-	require.Contains(t, svc.Recall(ctx, "随便问").Prompt, "在做医疗影像",
+	require.Contains(t, recallForTest(svc, ctx, "随便问").Prompt, "在做医疗影像",
 		"an empty block cache must not silently drop the user's memories")
 }
 
-// An interest is a standing property of the person, so it has to be present
-// whatever they ask. The case that forced this: "what am I focused on" shares
-// no words with "小微SDK设备接入", so query matching can never reach it, and
-// the assistant claimed to know nothing about a memory the user could see
-// listed in the memory manager.
-func TestInterestIsPresentRegardlessOfTheQuestion(t *testing.T) {
+// A resident interest is admitted only when the current model selects it.
+func TestInterestIsSelectedByTheCurrentModel(t *testing.T) {
 	svc, _, tenantRepo := newMemoryHarness(t)
 	ctx := enabledCtx(t, tenantRepo, 1, "alice")
 	_, err := svc.CreateItem(ctx, types.MemoryKindInterest, "小微SDK设备接入", 3)
 	require.NoError(t, err)
-
-	require.Contains(t, svc.Recall(ctx, "我关注哪些事情？").Prompt, "小微SDK设备接入")
-	require.Contains(t, svc.Recall(ctx, "我关注哪些事情？").Prompt, "Long-term focus")
-	require.Contains(t, svc.Recall(ctx, "今天天气怎么样").Prompt, "小微SDK设备接入")
+	recall := recallForTest(svc, ctx, "我关注哪些事情？")
+	require.Contains(t, recall.Prompt, "小微SDK设备接入")
+	require.Len(t, recall.Items, 1)
 }
 
-// Being injected and being reported are different things. An interest that is
-// present only because the cap left room is standing background; listing it as
-// a memory this answer recalled would put something unrelated to the question
-// on the chat timeline every single turn.
-func TestUnrelatedInterestIsInjectedButNotReported(t *testing.T) {
+func TestUnselectedInterestIsNeitherInjectedNorReported(t *testing.T) {
 	svc, _, tenantRepo := newMemoryHarness(t)
 	ctx := enabledCtx(t, tenantRepo, 1, "alice")
 	_, err := svc.CreateItem(ctx, types.MemoryKindInterest, "小微SDK设备接入", 3)
 	require.NoError(t, err)
-
-	unrelated := svc.Recall(ctx, "今天天气怎么样")
-	require.Contains(t, unrelated.Prompt, "小微SDK设备接入")
+	models := svc.modelService.(*stubModelService)
+	empty := `{"selected_ids":[]}`
+	models.relevanceResponse = &empty
+	unrelated := recallForTest(svc, ctx, "今天天气怎么样")
+	require.Empty(t, unrelated.Prompt)
 	require.Empty(t, unrelated.Items)
-
-	related := svc.Recall(ctx, "小微SDK怎么接入设备")
+	models.relevanceResponse = nil
+	related := recallForTest(svc, ctx, "小微SDK怎么接入设备")
 	require.Contains(t, related.Prompt, "小微SDK设备接入")
-	require.Len(t, related.Items, 1, "an interest the question matches is a real recall")
+	require.Len(t, related.Items, 1)
 }
 
-// Relevance does not decide whether interests appear, it decides which ones
-// survive the cap.
+// The final model selection remains bounded when many interests are candidates.
 func TestInterestsBeyondTheCapAreChosenByRelevance(t *testing.T) {
 	svc, _, tenantRepo := newMemoryHarness(t)
 	ctx := enabledCtx(t, tenantRepo, 1, "alice")
@@ -576,7 +567,7 @@ func TestInterestsBeyondTheCapAreChosenByRelevance(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	recall := svc.Recall(ctx, "小微SDK怎么接入设备")
+	recall := recallForTest(svc, ctx, "小微SDK怎么接入设备")
 	require.Contains(t, recall.Prompt, "小微SDK设备接入",
 		"the interest the question is about must not be the one dropped by the cap")
 
@@ -603,4 +594,16 @@ func TestCreateItemFromManagerGoesThroughTheWritePath(t *testing.T) {
 	require.Equal(t, "回答请用中文", items[0].Content, "manual input must be sanitized like any other")
 	require.Equal(t, types.MemoryOriginManual, items[0].Origin)
 	require.False(t, strings.Contains(items[0].Content, "\n"))
+}
+
+// Legacy storage/ranking tests use a deterministic test-only admission model.
+// Production Recall without a current model remains fail closed.
+func testTurn(query string) interfaces.MemoryRecallRequest {
+	return interfaces.MemoryRecallRequest{Query: query, ModelID: "relevance-test", Conversation: []interfaces.MemoryConversationMessage{{Role: "user", Content: query}}}
+}
+func recallForTest(svc *Service, ctx context.Context, query string) interfaces.MemoryRecall {
+	return svc.RecallForTurn(ctx, testTurn(query))
+}
+func searchForTest(svc *Service, ctx context.Context, query string, limit int) interfaces.MemorySearchResult {
+	return svc.SearchMemory(interfaces.WithMemoryRecallRequest(ctx, testTurn(query)), query, limit)
 }

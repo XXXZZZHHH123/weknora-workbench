@@ -101,9 +101,20 @@ def test_review_preview_confirm_and_reuse_through_http(client):
     assert 'source_path' not in doc
     assert {s['name']: s['status'] for s in doc['sheets']} == {
         'simple': 'auto_ready', 'parallel': 'needs_review', 'empty': 'empty'}
+    assert {s['name']: s['published_in_dataset'] for s in doc['sheets']} == {
+        'simple': True, 'parallel': False, 'empty': False}
+    summary = client.get('/api/imports/' + import_id, params={'summary_only': True}).json()
+    assert {s['name']: s['published_in_dataset'] for s in summary['sheets']} == {
+        'simple': True, 'parallel': False, 'empty': False}
+    assert {s['name']: s['import_state'] for s in summary['sheets']} == {
+        'simple': 'imported', 'parallel': 'pending', 'empty': 'pending'}
+    assert next(s for s in summary['sheets'] if s['name'] == 'simple')['review_state'] == (
+        next(s for s in doc['sheets'] if s['name'] == 'simple')['review_state'])
+    assert all('published_mapping' not in s for s in summary['sheets'])
     before = client.get('/api/datasets/' + uploaded['dataset_id'] + '/series').json()
     assert {s['sheet'] for s in before['series']} == {'simple'}
     sheet = client.get('/api/imports/' + import_id + '/sheet', params={'name': 'parallel'}).json()
+    assert sheet['published_in_dataset'] is False
     mapping = sheet['mapping']
     preview = client.post('/api/imports/' + import_id + '/preview', json={'mapping': mapping})
     assert preview.status_code == 200, preview.text
@@ -115,6 +126,10 @@ def test_review_preview_confirm_and_reuse_through_http(client):
     assert confirmed['dataset_id'] != uploaded['dataset_id']
     after = client.get('/api/datasets/' + confirmed['dataset_id'] + '/series').json()
     assert {s['sheet'] for s in after['series']} == {'simple', 'parallel'}
+    saved = client.get('/api/imports/' + import_id + '/sheet', params={'name': 'parallel'}).json()
+    assert saved['published_in_dataset'] is True
+    assert saved['published_dataset_id'] == confirmed['dataset_id']
+    assert saved['published_mapping']['blocks']
     assert len(client.get('/api/templates').json()['templates']) == 1
     repeat = poll(client, client.post('/api/import', files={'file': ('sample.xlsx', make_workbook(2024))}))
     assert repeat['import_id'] != import_id

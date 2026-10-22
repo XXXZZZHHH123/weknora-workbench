@@ -20,6 +20,7 @@ const (
 	maxBodySize = 1024 * 10 // 最大记录10KB的body内容
 	// bodyTruncatedMarker 是日志里跟在被截断的 body 后面的标记。
 	bodyTruncatedMarker = "... [内容过长，已截断]"
+	omitBodyLoggingKey  = "weknora.logger.omit_bodies"
 )
 
 // replayedBody 把日志窥探消费掉的字节还给 handler，让它读到的 body 与没有这层
@@ -32,13 +33,14 @@ type replayedBody struct {
 // loggerResponseBodyWriter 自定义ResponseWriter用于捕获响应内容（用于logger中间件）
 type loggerResponseBodyWriter struct {
 	gin.ResponseWriter
-	body *bytes.Buffer
+	body     *bytes.Buffer
+	omitBody bool
 }
 
 // Write 重写Write方法，同时写入buffer和原始writer
 // 限制buffer大小，避免SSE等流式响应导致内存无限增长
 func (r loggerResponseBodyWriter) Write(b []byte) (int, error) {
-	if r.body.Len() < maxBodySize {
+	if !r.omitBody && r.body.Len() < maxBodySize {
 		remaining := maxBodySize - r.body.Len()
 		if len(b) <= remaining {
 			r.body.Write(b)
@@ -47,6 +49,17 @@ func (r loggerResponseBodyWriter) Write(b []byte) (int, error) {
 		}
 	}
 	return r.ResponseWriter.Write(b)
+}
+
+// OmitBodyLogging lets a server handler suppress sensitive request/response
+// payloads while retaining normal access metadata. The marker is not client
+// controlled. Stop buffering any response bytes and discard an earlier prefix.
+func OmitBodyLogging(c *gin.Context) {
+	c.Set(omitBodyLoggingKey, true)
+	if writer, ok := c.Writer.(*loggerResponseBodyWriter); ok {
+		writer.omitBody = true
+		writer.body.Reset()
+	}
 }
 
 // sensitiveFieldRegex 匹配 JSON 中的敏感字段（不区分大小写，兼容 snake_case / camelCase / PascalCase）。
@@ -235,7 +248,7 @@ func Logger() gin.HandlerFunc {
 
 		// 读取响应体
 		responseBodyStr := ""
-		if responseBody.Len() > 0 {
+		if !c.GetBool(omitBodyLoggingKey) && responseBody.Len() > 0 {
 			contentType := c.Writer.Header().Get("Content-Type")
 			if strings.Contains(contentType, "text/event-stream") {
 				responseBodyStr = "[SSE流式响应，已跳过]"
@@ -266,7 +279,7 @@ func Logger() gin.HandlerFunc {
 		})
 
 		// 添加请求体（如果有）
-		if requestBody != "" {
+		if !c.GetBool(omitBodyLoggingKey) && requestBody != "" {
 			logMsg = logMsg.WithField("request_body", secutils.SanitizeForLog(requestBody))
 		}
 

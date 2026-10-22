@@ -227,11 +227,12 @@ func pruneOrphanYAMLManagedModels(ctx context.Context, db *gorm.DB, keepIDs []st
 // case-sensitively and a misspelled YAML entry would produce a row that
 // looks present in the table but is unusable downstream.
 var validBuiltinModelTypes = map[ModelType]struct{}{
-	ModelTypeKnowledgeQA: {},
-	ModelTypeEmbedding:   {},
-	ModelTypeRerank:      {},
-	ModelTypeVLLM:        {},
-	ModelTypeASR:         {},
+	ModelTypeKnowledgeQA:     {},
+	ModelTypeEmbedding:       {},
+	ModelTypeRerank:          {},
+	ModelTypeVLLM:            {},
+	ModelTypeASR:             {},
+	ModelTypeImageGeneration: {},
 }
 
 // validBuiltinModelStatuses is the set of statuses the loader accepts.
@@ -288,7 +289,7 @@ func validateBuiltinModelEntry(e *BuiltinModelEntry, index int) error {
 	}
 	if _, ok := validBuiltinModelTypes[e.Type]; !ok {
 		return errBuiltinModel(
-			"entry %d (%s) has unknown type %q (expected one of: KnowledgeQA, Embedding, Rerank, VLLM, ASR)",
+			"entry %d (%s) has unknown type %q (expected one of: KnowledgeQA, Embedding, Rerank, VLLM, ASR, ImageGeneration)",
 			index, e.ID, e.Type)
 	}
 	if e.Status != "" {

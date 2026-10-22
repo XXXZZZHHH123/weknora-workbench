@@ -227,9 +227,18 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
   const applyUsedMemories = (data: ChatMessage) => {
     const payload = (data.data ?? {}) as Record<string, unknown>
     const memories = (payload.memories ?? data.memories) as unknown
-    if (!Array.isArray(memories) || memories.length === 0) return undefined
+    if (!Array.isArray(memories)) return undefined
 
-    const message = resolveActiveAssistantMessage(data)
+    // A replayed or delayed event must target its own turn. Do not let an
+    // unmatched explicit id fall back to another turn's incomplete bubble.
+    const requestId = data.id as string | undefined
+    const assistantId = data.assistant_message_id as string | undefined
+    const message = (requestId && replaySegments.get(requestId)) ||
+      (requestId || assistantId
+        ? findLastMessage(item => item.role === 'assistant' && (assistantId
+          ? item.id === assistantId || item.assistant_message_id === assistantId
+          : item.id === requestId || item.request_id === requestId))
+        : resolveActiveAssistantMessage(data))
     if (!message) {
       log('[Memory] No assistant message to attach memories to')
       return undefined
@@ -296,7 +305,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       item.hideContent = true
     }
     ensureRagPipelineHistoryStream(item as Parameters<typeof ensureRagPipelineHistoryStream>[0])
-    if (item.isRagMode && item.agentEventStream) {
+    if (item.is_completed && item.isRagMode && item.agentEventStream) {
       item.agentEventStream = markRaw(item.agentEventStream as object)
     }
   }
@@ -457,16 +466,17 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
 
       if (item.agent_steps && Array.isArray(item.agent_steps) && item.agent_steps.length > 0) {
         item.isAgentMode = true
-        item.agentEventStream = markRaw(
-          reconstructEventStreamFromSteps(
+        const restoredEvents = reconstructEventStreamFromSteps(
             item.agent_steps as unknown[],
             String(item.content || ''),
             Boolean(item.is_completed),
             Boolean(item.is_fallback),
             Number(item.agent_duration_ms) || 0,
             item.usage,
-          ),
-        )
+          )
+        // An unfinished history row is still receiving replay and live events.
+        // Freezing its array makes computed timelines retain the initial snapshot.
+        item.agentEventStream = willContinueStream ? restoredEvents : markRaw(restoredEvents)
         item.hideContent = true
         if (agentStepsAreTruncated(item.agent_steps as unknown[])) item.truncated = true
       }

@@ -21,6 +21,74 @@ import {
   resolveCitationChunkId,
   stripIncompleteCitationTag,
 } from './citationMarkdown.ts'
+import { renderArtifactReference, type ArtifactRefMeta } from './sandboxArtifactRefs.ts'
+
+const artifactLabels = { previewHint: 'Open preview', missingHint: 'Unavailable', deletedHint: 'Deleted' }
+const artifactHref = `resource://${'a'.repeat(22)}`
+function artifactMarkdown(artifacts: () => ArtifactRefMeta[]) {
+  const renderer = createChatMarkdownRenderer({
+    linkRenderer: ({ href, text }) => renderArtifactReference({ href, alt: text, artifacts: artifacts(), labels: artifactLabels }),
+  })
+  return (markdown: string) => renderChatMarkdown(markdown, {
+    renderer, escapeMarkdown: value => value, sanitizeHtml: value => value,
+  })
+}
+
+test('ordinary Markdown artifact links render preview cards for streamed and persisted metadata', () => {
+  for (const source of [{ handle: artifactHref }, { url: artifactHref }]) {
+    const render = artifactMarkdown(() => [{ index: 2, file_name: 'chart.html', file_type: '.html', ...source }])
+    const html = render(`[Open chart preview or download](${artifactHref})`)
+    assert.match(html, /class="artifact-ref-card"/)
+    assert.match(html, /data-artifact-index="2"/)
+    assert.match(html, /chart\.html/)
+    assert.doesNotMatch(html, /<a|<iframe|<img|resource:\/\//)
+  }
+})
+
+test('saved PNG charts render as protected inline images from image or link Markdown on live and history paths', () => {
+  for (const source of [{ handle: artifactHref }, { url: artifactHref }]) {
+    const artifacts = [{ index: 0, file_name: 'result.png', file_type: '.png', ...source }]
+    const renderRef = ({ href, text }: { href: string; text: string }) => renderArtifactReference({
+      href, alt: text, artifacts, labels: artifactLabels, context: { sessionId: 'saved-session', messageId: 'saved-message' },
+    })
+    const renderer = createChatMarkdownRenderer({ linkRenderer: renderRef, imageRenderer: args => renderRef(args) || '' })
+    for (const markdown of [`![Chart](${artifactHref})`, `[Chart](${artifactHref})`]) {
+      const html = renderChatMarkdown(markdown, { renderer, escapeMarkdown: value => value, sanitizeHtml: value => value })
+      assert.match(html, /class="markdown-image artifact-ref-image"/)
+      assert.match(html, /data-artifact-index="0"/)
+      assert.match(html, /data-img-loading="1"/)
+      assert.doesNotMatch(html, /artifact-ref-card|<iframe|src="resource:\/\//)
+    }
+  }
+})
+
+test('artifact metadata arriving after answer text turns the same link into a card', () => {
+  let artifacts: ArtifactRefMeta[] = []
+  const render = artifactMarkdown(() => artifacts)
+  const markdown = `[Open file](${artifactHref})`
+  assert.doesNotMatch(render(markdown), /artifact-ref-card/)
+  artifacts = [{ index: 0, file_name: 'chart.html', url: artifactHref }]
+  assert.match(render(markdown), /data-artifact-index="0"/)
+})
+
+test('ordinary links and resource handles outside this message retain default Markdown rendering', () => {
+  const render = artifactMarkdown(() => [{ index: 0, file_name: 'chart.html', handle: artifactHref }])
+  const foreign = `resource://${'b'.repeat(22)}`
+  const html = render(`[**Documentation**](https://example.test/docs "Docs") [Other resource](${foreign})`)
+  assert.match(html, /<a href="https:\/\/example\.test\/docs" title="Docs"><strong>Documentation<\/strong><\/a>/)
+  assert.match(html, new RegExp(`<a href="${foreign}">Other resource</a>`))
+  assert.doesNotMatch(html, /artifact-ref-card/)
+})
+
+test('artifact links preserve deleted-file states and normalize spaced sandbox filenames', () => {
+  const deleted = artifactMarkdown(() => [{ index: 0, file_name: 'chart.html', url: artifactHref, deleted_at: '2026-01-01' }])
+  const html = deleted(`[Open file](${artifactHref})`)
+  assert.match(html, /artifact-ref-card--deleted/)
+  assert.doesNotMatch(html, /data-artifact-index|<a/)
+  const render = artifactMarkdown(() => [{ index: 3, file_name: 'chart (draft).html' }])
+  assert.match(render('[Open file](sandbox:chart (draft).html)'), /data-artifact-index="3"/)
+  assert.doesNotMatch(render('`[Open file](sandbox:chart (draft).html)`'), /artifact-ref-card/)
+})
 
 const SAMPLE_DOC = 'example-report.docx'
 const SAMPLE_CHUNK_A = '00000001-0000-4000-8000-000000000001'

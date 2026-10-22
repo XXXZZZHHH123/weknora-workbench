@@ -30,6 +30,8 @@ export type ImageRendererArgs = {
 export type ChatMarkdownRendererOptions = {
   codeRenderer?: Renderer['code']
   imageRenderer?: (args: ImageRendererArgs) => string
+  /** Return null to preserve marked's ordinary link behavior. */
+  linkRenderer?: (args: ImageRendererArgs) => string | null
   invalidImageHtml?: (href: string) => string
   isValidImageUrl?: (href: string) => boolean
 }
@@ -392,6 +394,14 @@ export function applyStreamingTailFade(html: string, tailLength = 24): string {
 
 export function createChatMarkdownRenderer(options: ChatMarkdownRendererOptions = {}): Renderer {
   const renderer = new marked.Renderer()
+
+  if (options.linkRenderer) {
+    const defaultLink = renderer.link
+    renderer.link = function (token: Tokens.Link) {
+      const rendered = options.linkRenderer?.({ href: token.href || '', title: token.title || null, text: token.text || '' })
+      return rendered ?? defaultLink.call(this, token)
+    }
+  }
 
   if (options.imageRenderer) {
     renderer.image = ({ href, title, text }: Tokens.Image) => {

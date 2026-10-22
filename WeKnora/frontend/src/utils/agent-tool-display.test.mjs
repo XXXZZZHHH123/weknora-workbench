@@ -82,6 +82,15 @@ test('getKnowledgeSearchSummaryHtml includes file count when present', () => {
   assert.match(html, /found <strong>2<\/strong> from <strong>2<\/strong> files/)
 })
 
+test('quick-answer source discovery reports candidates rather than an empty search', () => {
+  const html = getKnowledgeSearchSummaryHtml(t, {
+    display_type: 'document_info', requires_source_scope: true,
+    documents: [{ id: 'source-a' }, { id: 'source-b' }],
+  })
+  assert.equal(html, 'agentStream.search.candidateDocuments')
+  assert.equal(getKnowledgeSearchSummaryHtml(t, { notice: 'Still selecting sources' }), '')
+})
+
 // Candidates that all fell below the relevance threshold never reached the
 // answer, so the row must not read like a plain empty search: the difference
 // points at the threshold rather than at the knowledge base.
@@ -124,4 +133,10 @@ test('getRagPipelineStepTitle uses attachment parsing labels', () => {
     getRagPipelineStepTitle(t, { tool_name: 'attachment_parsing', pending: false, success: true }),
     'agentStream.toolStatus.attachmentParsingDone',
   )
+})
+
+test('data charts have a distinct deterministic rendering status', () => {
+  assert.equal(getRagPipelineStepTitle(t, { tool_name: 'render_chart', pending: true }), 'chartRendering.rendering')
+  assert.equal(getRagPipelineStepTitle(t, { tool_name: 'render_chart', success: true }), 'chartRendering.completed')
+  assert.equal(getRagPipelineStepTitle(t, { tool_name: 'render_chart', success: false }), 'chartRendering.failed')
 })

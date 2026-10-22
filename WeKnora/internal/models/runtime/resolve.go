@@ -101,6 +101,9 @@ func resolveWithVendor(ref Ref, vendor *Provider) (*Resolved, error) {
 		applySpecOverride(&spec, ref.Override)
 	}
 
+	if modelType == types.ModelTypeImageGeneration {
+		return resolveImageGeneration(ref, vendor, spec, cataloged, baseURL)
+	}
 	if modelType == types.ModelTypeRerank {
 		return resolveRerank(ref, vendor, spec, cataloged, baseURL)
 	}

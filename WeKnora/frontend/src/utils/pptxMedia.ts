@@ -170,6 +170,39 @@ export async function listPptxVectorMediaForSlide(data: ArrayBuffer, physicalPag
   return [...byPart.values()]
 }
 
+/** Make cached vector pictures visible to the browser renderer on every slide.
+ * The renderer ignores OLE frames; these are only their existing snapshots,
+ * never the linked workbook or executable object. No original bytes change.
+ */
+export async function preparePptxOlePreview(data: ArrayBuffer): Promise<ArrayBuffer> {
+  const zip = await JSZip.loadAsync(data)
+  const presentation = zip.file('ppt/presentation.xml')
+  if (!presentation) throw new Error('PPTX presentation part is missing')
+  const count = parseXml(await presentation.async('string')).getElementsByTagNameNS(PRESENTATION_NS, 'sldId').length
+  let changed = false
+  for (let page = 1; page <= count; page++) {
+    const { slide, slidePart } = await readPhysicalSlide(zip, page)
+    const targets = await relationshipTargets(zip, slidePart)
+    let slideChanged = false
+    for (const frame of Array.from(slide.getElementsByTagNameNS(PRESENTATION_NS, 'graphicFrame'))) {
+      if (!frame.getElementsByTagNameNS(PRESENTATION_NS, 'oleObj').length) continue
+      const cached = Array.from(frame.getElementsByTagNameNS(PRESENTATION_NS, 'pic')).filter(pic => {
+        const blip = pic.getElementsByTagNameNS(DRAWING_NS, 'blip')[0]
+        const part = blip && targets.get(relationId(blip, 'embed'))
+        return part && VECTOR_MEDIA.test(part)
+      })
+      if (cached.length !== 1 || !shapeBounds(cached[0]!)) continue
+      frame.parentNode!.replaceChild(cached[0]!.cloneNode(true), frame)
+      slideChanged = true
+    }
+    if (slideChanged) {
+      zip.file(slidePart, new XMLSerializer().serializeToString(slide))
+      changed = true
+    }
+  }
+  return changed ? zip.generateAsync({ type: 'arraybuffer' }) : data
+}
+
 /** Replace only verified vector snapshots on one physical slide in a preview
  * copy. An OLE fallback picture becomes a normal picture in the same tree
  * position, preserving its own crop, transform and surrounding group. The
