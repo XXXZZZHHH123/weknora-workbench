@@ -55,7 +55,10 @@ func (s *WorkspaceService) populateWorkbenchAccess(ctx context.Context, caller t
 	row.CanEdit = caller.Role.HasPermission(types.TenantRoleContributor) && (row.AccessPolicy == nil || types.ResourceCanEdit(types.ResourcePermissionFor(row.AccessPolicy, row.UserID, caller)))
 	row.CanManageSource = kb != nil && kb.TenantID == caller.TenantID && kb.CreatorID != "" && kb.CreatorID == caller.UserID && caller.Role.HasPermission(types.TenantRoleContributor)
 	row.SourceSharingApproved = kb != nil && row.SourceSharingApproved && row.SourceSharingApprovedBy != "" && row.SourceSharingApprovedBy == kb.CreatorID
-	row.SourceDataAvailable = kb != nil && (row.CanReadSource || row.SourceSharingApproved)
+	if !row.SourceSharingApproved || !types.ValidWorkbenchSourceModules(row.SourceSharingModules) || row.SourceSharingModules == nil {
+		row.SourceSharingModules = []string{}
+	}
+	row.SourceDataAvailable = kb != nil && (row.CanReadSource || (row.SourceSharingApproved && len(row.SourceSharingModules) > 0))
 	return kb, nil
 }
 
@@ -68,7 +71,8 @@ func (s *WorkspaceService) GetWorkbenchPermissions(ctx context.Context, id strin
 		return nil, apperrors.NewForbiddenError("仅工作台主人可设置权限")
 	}
 	return &types.WorkbenchPermissions{Policy: row.AccessPolicy, OwnerID: row.UserID, CanManage: row.CanManage,
-		Legacy: row.AccessPolicy == nil, SourceSharingApproved: row.SourceSharingApproved, SourceSharingRequested: row.SourceSharingRequested, CanManageSource: row.CanManageSource}, nil
+		Legacy: row.AccessPolicy == nil, SourceSharingApproved: row.SourceSharingApproved, SourceSharingRequested: row.SourceSharingRequested,
+		SourceSharingModules: row.SourceSharingModules, CanManageSource: row.CanManageSource}, nil
 }
 
 func (s *WorkspaceService) UpdateWorkbenchPermissions(ctx context.Context, id string, policy *types.ResourceAccessPolicy) (*types.WorkbenchPermissions, error) {
@@ -103,9 +107,10 @@ func (s *WorkspaceService) UpdateWorkbenchPermissions(ctx context.Context, id st
 }
 
 type WorkbenchSourceSharing struct {
-	Approved        bool `json:"approved"`
-	Requested       bool `json:"requested"`
-	CanManageSource bool `json:"can_manage_source"`
+	Approved             bool     `json:"approved"`
+	Requested            bool     `json:"requested"`
+	CanManageSource      bool     `json:"can_manage_source"`
+	SourceSharingModules []string `json:"source_sharing_modules"`
 }
 
 func (s *WorkspaceService) RequestWorkbenchSourceSharing(ctx context.Context, id string) (*types.WorkbenchPermissions, error) {
@@ -154,10 +159,18 @@ func (s *WorkspaceService) GetWorkbenchSourceSharing(ctx context.Context, id str
 	if err != nil {
 		return nil, err
 	}
-	return &WorkbenchSourceSharing{Approved: row.SourceSharingApproved && row.SourceSharingApprovedBy == kb.CreatorID, Requested: row.SourceSharingRequested, CanManageSource: true}, nil
+	approved := row.SourceSharingApproved && row.SourceSharingApprovedBy == kb.CreatorID
+	modules := row.SourceSharingModules
+	if !approved || !types.ValidWorkbenchSourceModules(modules) || modules == nil {
+		modules = []string{}
+	}
+	return &WorkbenchSourceSharing{Approved: approved, Requested: row.SourceSharingRequested, CanManageSource: true, SourceSharingModules: modules}, nil
 }
 
-func (s *WorkspaceService) UpdateWorkbenchSourceSharing(ctx context.Context, id string, approved bool) (*WorkbenchSourceSharing, error) {
+func (s *WorkspaceService) UpdateWorkbenchSourceSharing(ctx context.Context, id string, approved bool, modules []string) (*WorkbenchSourceSharing, error) {
+	if !types.ValidWorkbenchSourceModules(modules) || (approved && len(modules) == 0) {
+		return nil, apperrors.NewBadRequestError("请选择至少一个有效页面，页面不能重复")
+	}
 	verified, kb, err := s.workbenchSourceOwner(ctx, id)
 	if err != nil {
 		return nil, err
@@ -185,8 +198,10 @@ func (s *WorkspaceService) UpdateWorkbenchSourceSharing(ctx context.Context, id 
 		}
 		current.SourceSharingApproved = approved
 		current.SourceSharingApprovedBy = ""
+		current.SourceSharingModules = []string{}
 		if approved {
 			current.SourceSharingApprovedBy = caller.UserID
+			current.SourceSharingModules = append(current.SourceSharingModules, modules...)
 		}
 		return tx.Save(&current).Error
 	})
@@ -222,6 +237,7 @@ type WorkbenchSourceScope struct {
 	KnowledgeBaseID string                      `json:"knowledge_base_id"`
 	CanEdit         bool                        `json:"can_edit"`
 	CanManage       bool                        `json:"can_manage"`
+	ViewModules     []string                    `json:"view_modules"`
 	Sources         []WorkbenchSourceProjection `json:"sources"`
 }
 
@@ -251,6 +267,10 @@ func (s *WorkspaceService) GetWorkbenchSourceScope(ctx context.Context, id strin
 	}
 	scope := &WorkbenchSourceScope{ID: row.ID, UserID: caller.UserID, ScopeTenantID: row.TenantID, KnowledgeBaseID: row.KnowledgeBaseID,
 		CanEdit: row.CanEdit, CanManage: row.CanManage, Sources: []WorkbenchSourceProjection{primary}}
+	scope.ViewModules = row.SourceSharingModules
+	if row.CanReadSource {
+		scope.ViewModules = types.WorkbenchViewModules()
+	}
 	_, macro, err := s.defaultKnowledgeBase(ctx, caller)
 	if err != nil {
 		return nil, err

@@ -27,7 +27,7 @@ func (*workspaceHandlerKBs) GetKnowledgeBaseByIDOnly(_ context.Context, id strin
 	if id != "kb" {
 		return nil, gorm.ErrRecordNotFound
 	}
-	return &types.KnowledgeBase{ID: id, TenantID: 1, Name: "Library"}, nil
+	return &types.KnowledgeBase{ID: id, TenantID: 1, Name: "Library", CreatorID: "alice"}, nil
 }
 
 func TestWorkspaceHTTPContract(t *testing.T) {
@@ -71,7 +71,7 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	if err := db.AutoMigrate(&types.ResearchWorkbench{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library"}).Error; err != nil {
+	if err := db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library", CreatorID: "alice"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	h := NewWorkspaceHandler(service.NewWorkspaceService(db, &workspaceHandlerKBs{}, nil))
@@ -95,6 +95,8 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	r.GET("/research/:id/permissions", h.GetWorkbenchPermissions)
 	r.PUT("/research/:id/permissions", h.UpdateWorkbenchPermissions)
 	r.POST("/research/:id/source-sharing/request", h.RequestWorkbenchSourceSharing)
+	r.GET("/research/:id/source-sharing", h.GetWorkbenchSourceSharing)
+	r.PUT("/research/:id/source-sharing", h.UpdateWorkbenchSourceSharing)
 	r.PUT("/research/:id/onboarding", h.UpdateWorkbenchOnboarding)
 	request := func(method, path, body, user string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -185,6 +187,24 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 		t.Fatal(response.Code, response.Body.String())
 	}
 	if response := request("POST", "/research/"+research.Data.ID+"/source-sharing/request", "", "bob"); response.Code != 403 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	sharingPath := "/research/" + research.Data.ID + "/source-sharing"
+	for _, body := range []string{`{}`, `{"approved":true}`, `{"approved":true,"modules":[]}`, `{"approved":true,"modules":["market","market"]}`, `{"approved":true,"modules":["all"]}`, `{"approved":true,"modules":["market"],"user_id":"bob"}`, `{"approved":true,"modules":["market"]} {}`} {
+		if response := request("PUT", sharingPath, body, "alice"); response.Code != 400 {
+			t.Fatal(response.Code, response.Body.String())
+		}
+	}
+	if response := request("PUT", sharingPath, `{"approved":true,"modules":["market","diagram"]}`, "bob"); response.Code != 403 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("PUT", sharingPath, `{"approved":true,"modules":["market","diagram"]}`, "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"source_sharing_modules":["market","diagram"]`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("GET", sharingPath, "", "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"source_sharing_modules":["market","diagram"]`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("PUT", sharingPath, `{"approved":false}`, "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"source_sharing_modules":[]`) {
 		t.Fatal(response.Code, response.Body.String())
 	}
 	if response := request("PUT", path, `{"status":"dismissed","tasks":{"sources":true}}`, "bob"); response.Code != 200 || !strings.Contains(response.Body.String(), `"status":"dismissed"`) {

@@ -16,6 +16,8 @@ from tin.config import settings
 from tin.db import _tenant_lock, make_engine
 from tin.integration.identity import Identity, current_identity
 
+VIEW_MODULES = ('home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports')
+
 
 @dataclass(frozen=True)
 class WorkbenchScope:
@@ -27,6 +29,16 @@ class WorkbenchScope:
     authorization: str = field(default='', repr=False, compare=False)
     additional_knowledge_bases: tuple[dict, ...] = ()
     source_delegations: tuple[str, ...] = ()
+    view_modules: tuple[str, ...] = VIEW_MODULES
+
+    @property
+    def restricted(self):
+        return (self.metadata.get('can_read_source') is False
+                or self.knowledge_base_id in self.source_delegations)
+
+    @property
+    def source_available(self):
+        return self.metadata.get('source_data_available') is not False
 
     @property
     def can_edit(self):
@@ -68,6 +80,14 @@ def validated_source_scope(scope, document):
         seen.add(source['knowledge_base_id'])
     if primary_id not in seen:
         raise HTTPException(403, '工作台绑定知识库尚未允许共享研究数据')
+    modules = data.get('view_modules')
+    if (not isinstance(modules, list) or any(not isinstance(value, str) or value not in VIEW_MODULES for value in modules)
+            or len(set(modules)) != len(modules)):
+        raise HTTPException(403, '研究工作台页面授权信息无效')
+    if any(source['delegated'] for source in data['sources']):
+        expected = scope.metadata.get('source_sharing_modules')
+        if not isinstance(expected, list) or set(modules) != set(expected):
+            raise HTTPException(403, '研究工作台页面授权已改变，请重新打开')
     return data
 
 
@@ -111,6 +131,8 @@ async def verified_workbench(request: Request, workbench_id: str):
     identity = current_identity.get()
     authorization = request.headers.get("authorization", "")
     scope = await resolve_workbench(identity, workbench_id, authorization)
+    if scope.restricted:
+        raise HTTPException(403, '受限视角仅允许已授权页面读取必要数值，不开放通用研究接口')
     marker = current_workbench.set(scope)
     try:
         yield scope
@@ -136,14 +158,42 @@ async def resolve_workbench(identity, workbench_id, authorization):
     if not isinstance(kb_id, str) or not kb_id or len(kb_id) > 128:
         raise HTTPException(403, "工作台没有有效的知识库绑定")
     scope = WorkbenchScope(identity, workbench_id, kb_id, 0, metadata, authorization)
+    if metadata.get('can_read_source') is False and metadata.get('source_data_available') is False:
+        # The WB read was freshly authorized. Absence of source consent is a
+        # valid restricted shell, not a reason to call an expected-to-fail facts
+        # endpoint. A later 401/403/404 from a claimed available scope is never
+        # caught here or converted to an apparently successful page.
+        return WorkbenchScope(identity, workbench_id, kb_id, 0, metadata, authorization,
+                              view_modules=())
     source_doc = await go_request(scope, '/api/v1/workspaces/research/' + quote(workbench_id, safe='') + '/source-scope')
     grant = validated_source_scope(scope, source_doc)
     primary = next(source for source in grant['sources'] if source['knowledge_base_id'] == kb_id)
     additional = tuple({'knowledge_base_id': source['knowledge_base_id'], 'tenant_id': source['tenant_id'],
                         'kind': source['kind']} for source in grant['sources'] if source['knowledge_base_id'] != kb_id)
     delegated = tuple(source['knowledge_base_id'] for source in grant['sources'] if source['delegated'])
-    scope = WorkbenchScope(identity, workbench_id, kb_id, primary['tenant_id'], metadata, authorization, additional, delegated)
+    scope = WorkbenchScope(identity, workbench_id, kb_id, primary['tenant_id'], metadata, authorization,
+                           additional, delegated, tuple(grant['view_modules']))
     return scope
+
+
+@contextmanager
+def artifact_session(scope):
+    """Results-only storage: never attach or read any legacy fact projection."""
+    if scope.metadata.get('workspace_mode') == 'legacy':
+        from tin.db import tenant_database_path
+        factory = result_session_factory(tenant_database_path(scope.identity.tenant_id))
+    else:
+        factory = isolated_session_factory(scope.identity.tenant_id, scope.workbench_id)
+    with factory() as session:
+        existing = session.execute(text('SELECT knowledge_base_id, knowledge_base_tenant_id FROM isolated_scope '
+            'WHERE workbench_id=:id'), {'id': scope.workbench_id}).first()
+        if existing and tuple(existing) != (scope.knowledge_base_id, scope.knowledge_base_tenant_id):
+            raise HTTPException(409, '工作台主知识库已改变，未展示旧来源研究内容')
+        session.info.update(scope.identity.session_info(), workbench_id=scope.workbench_id,
+            knowledge_base_id=scope.knowledge_base_id,
+            knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
+            source_storage_legacy=scope.metadata.get('workspace_mode') == 'legacy')
+        yield session
 
 
 def isolated_database_path(tenant_id: int, workbench_id: str):

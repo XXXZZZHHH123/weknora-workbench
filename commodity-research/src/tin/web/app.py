@@ -188,7 +188,7 @@ from tin.web.diagram_generation import router as diagram_generation_router
 app.include_router(diagram_generation_router)
 from tin.web.judgment_generation import router as judgment_generation_router
 app.include_router(judgment_generation_router)
-from tin.web.market import build_market_router, market_catalog as market_catalog_data
+from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
 app.include_router(build_market_router(lambda: SessionLocal(), templates,
                                        lambda session, day: _home_date(session, day)))
 
@@ -433,7 +433,7 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
     with SessionLocal() as s:
         d = _home_date(s, date)
         today = datetime.now(SHANGHAI).date()
-        cards = core_cards(s, V, d) if d is not None else []
+        cards = saved_core_cards(s, d, core_cards(s, V, d) if d is not None else [])
         return templates.TemplateResponse(request, "variety.html", _shell(
             s, "variety", d, cards=cards,
             market_catalog=market_catalog_data(s, cards, d) if s.info.get('workbench_id') else None,

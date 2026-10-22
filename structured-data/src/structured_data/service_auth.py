@@ -151,6 +151,22 @@ async def verify_research_projection(request, identity):
             raise ValueError('invalid source scope')
         if source['delegated'] and request.url.path != '/api/research/facts':
             raise HTTPException(403, '研究数据共享仅允许已发布指标，不能读取原件或知识库全文')
+        if source['delegated']:
+            modules = grant.get('view_modules')
+            allowed = {'home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports'}
+            if (not isinstance(modules, list) or not 1 <= len(modules) <= len(allowed)
+                    or any(not isinstance(module, str) or module not in allowed for module in modules)
+                    or len(set(modules)) != len(modules)):
+                raise HTTPException(403, '研究台缺少当前有效的页面共享授权')
+            body = await request.json()
+            from .research_facts import _bounded_parameters
+            try:
+                if (not isinstance(body, dict) or not isinstance(body.get('view_module'), str)
+                        or body['view_module'] not in modules or _bounded_parameters(body) is None):
+                    raise ValueError('missing bounded page read')
+            except (ValueError, TypeError):
+                raise HTTPException(403, '研究台仅允许已授权页面的必要指标，不能读取全量目录或历史') from None
+            request.state.research_view_module = body['view_module']
         request.state.research_source_manifest = source['knowledge']
     except HTTPException:
         raise

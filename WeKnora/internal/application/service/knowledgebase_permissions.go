@@ -21,10 +21,11 @@ type KnowledgeBasePermissions struct {
 }
 
 type WorkbenchSourceRequest struct {
-	ID                    string `json:"id"`
-	Name                  string `json:"name"`
-	OwnerID               string `json:"owner_id"`
-	SourceSharingApproved bool   `json:"source_sharing_approved"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	OwnerID               string   `json:"owner_id"`
+	SourceSharingApproved bool     `json:"source_sharing_approved"`
+	SourceSharingModules  []string `json:"source_sharing_modules"`
 }
 
 func canManageKBPolicy(ctx context.Context, kb *types.KnowledgeBase) bool {
@@ -48,7 +49,12 @@ func (s *knowledgeBaseService) GetKnowledgeBasePermissions(ctx context.Context, 
 			return nil, err
 		}
 		for _, row := range rows {
-			result.PendingWorkbenches = append(result.PendingWorkbenches, WorkbenchSourceRequest{ID: row.ID, Name: row.Name, OwnerID: row.UserID, SourceSharingApproved: row.SourceSharingApproved && row.SourceSharingApprovedBy == kb.CreatorID})
+			approved := row.SourceSharingApproved && row.SourceSharingApprovedBy == kb.CreatorID
+			modules := row.SourceSharingModules
+			if !approved || !types.ValidWorkbenchSourceModules(modules) || modules == nil {
+				modules = []string{}
+			}
+			result.PendingWorkbenches = append(result.PendingWorkbenches, WorkbenchSourceRequest{ID: row.ID, Name: row.Name, OwnerID: row.UserID, SourceSharingApproved: approved, SourceSharingModules: modules})
 		}
 	}
 	return result, nil

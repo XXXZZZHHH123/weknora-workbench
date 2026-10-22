@@ -191,6 +191,8 @@ def current_version(scope, sources):
 
 
 def fact_pages(scope, sources=None, pinned_version=None):
+    if scope.restricted:
+        raise HTTPException(403, '受限研究台不允许装载全量事实，请使用已授权页面的必要数值接口')
     from tin.provenance.bridge import structured_request
     sources, offset, version, total = current_sources(scope) if sources is None else sources, 0, pinned_version, None
     catalog, datasets, encoding = None, None, None
@@ -460,6 +462,8 @@ def _attach_projection(connection, paths):
 
 
 def projected_session(engine, scope, **kwargs):
+    if scope.restricted:
+        raise HTTPException(403, '受限研究台不允许装载全量指标投影')
     from tin.integration.fact_cache import get_projection
     connection = _projection_engine(engine).connect()
     try:

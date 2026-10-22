@@ -1,4 +1,5 @@
 import { get, post, put, del } from '@/utils/request'
+import type { SourceSharingModule } from '@/utils/sourceSharingModules'
 
 export interface AssistantProject {
   id: string
@@ -31,6 +32,7 @@ export interface ResearchWorkbench {
   can_edit_source?: boolean
   source_data_available?: boolean
   source_sharing_approved?: boolean
+  source_sharing_modules?: SourceSharingModule[]
   creator_id?: string
   id: string
   name: string

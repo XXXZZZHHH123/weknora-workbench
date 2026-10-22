@@ -37,7 +37,7 @@ def signed_projection(body, *, path=PATH, user='reader', kb='library-a', authori
 def delegated(facts, monkeypatch):
     client, store, parsed, review_path, review, body = facts
     state = {'status': 200, 'calls': 0, 'user_id': 'reader', 'delegated': True,
-             'direct_status': 200, 'dataset_id': review['dataset_id']}
+             'direct_status': 200, 'dataset_id': review['dataset_id'], 'view_modules': ['market']}
     original_client = httpx.AsyncClient
 
     def upstream(request):
@@ -55,22 +55,50 @@ def delegated(facts, monkeypatch):
                         for source in body['sources']]}]
         return httpx.Response(state['status'], json={'success': state['status'] == 200, 'data': {
             'id': WB, 'user_id': state['user_id'], 'scope_tenant_id': 9,
-            'knowledge_base_id': 'library-a', 'sources': sources}})
+            'knowledge_base_id': 'library-a', 'sources': sources, 'view_modules': state['view_modules']}})
 
     monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: original_client(transport=httpx.MockTransport(upstream), **kw))
     return client, body, state
 
 
-def test_delegated_published_facts_and_metadata_revalidate_current_consent(delegated):
+def test_delegated_page_facts_revalidate_current_consent_and_reject_full_catalog(delegated):
     client, body, state = delegated
-    result = client.post(PATH, **signed_projection(body))
+    from test_knowledge_research_facts import signed
+    field = client.post(PATH, **signed(body)).json()['indicators'][0]['series_id']
+    request = {**body, 'series_ids': [field], 'view_module': 'market'}
+    result = client.post(PATH, **signed_projection(request))
     assert result.status_code == 200, result.text
     assert result.json()['rows'][0]['value'] == 0
-    assert client.post(PATH, **signed_projection({**body, 'metadata_only': True})).status_code == 200
-    assert state['calls'] == 2
+    assert client.post(PATH, **signed_projection(body)).status_code == 403
+    assert client.post(PATH, **signed_projection({**body, 'metadata_only': True})).status_code == 403
+    assert state['calls'] == 3
     state['status'] = 403
-    denied = client.post(PATH, **signed_projection(body))
+    denied = client.post(PATH, **signed_projection(request))
     assert denied.status_code == 403 and 'quantity' not in denied.text
+
+
+@pytest.mark.parametrize('modules', [[], None, ['market', 'market'], ['all'], 'market'])
+def test_delegated_facts_require_a_current_valid_module_grant(delegated, modules):
+    client, body, state = delegated
+    from test_knowledge_research_facts import signed
+    field = client.post(PATH, **signed(body)).json()['indicators'][0]['series_id']
+    state['view_modules'] = modules
+    response = client.post(PATH, **signed_projection({**body, 'series_ids': [field], 'view_module': 'market'}))
+    assert response.status_code == 403
+
+
+def test_delegated_facts_cannot_change_the_approved_page_or_read_unbounded_metadata(delegated):
+    client, body, state = delegated
+    from test_knowledge_research_facts import signed
+    field = client.post(PATH, **signed(body)).json()['indicators'][0]['series_id']
+    for changes in ({}, {'view_module': 'diagram'}, {'view_module': 'indicators'},
+                    {'view_module': 'market', 'metadata_only': True}):
+        response = client.post(PATH, **signed_projection({**body, 'series_ids': [field], **changes}))
+        assert response.status_code == 403, response.text
+    # A later revocation is checked even when the facts have already been read.
+    assert client.post(PATH, **signed_projection({**body, 'series_ids': [field], 'view_module': 'market'})).status_code == 200
+    state['view_modules'] = ['diagram']
+    assert client.post(PATH, **signed_projection({**body, 'series_ids': [field], 'view_module': 'market'})).status_code == 403
 
 
 def test_delegation_cannot_read_raw_exports_or_other_sources(delegated):

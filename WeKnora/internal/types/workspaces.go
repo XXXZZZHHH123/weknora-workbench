@@ -47,6 +47,7 @@ type ResearchWorkbench struct {
 	SourceSharingApproved   bool                        `json:"source_sharing_approved" gorm:"not null;default:false"`
 	SourceSharingRequested  bool                        `json:"source_sharing_requested" gorm:"not null;default:false"`
 	SourceSharingApprovedBy string                      `json:"-" gorm:"type:varchar(512);not null;default:''"`
+	SourceSharingModules    []string                    `json:"source_sharing_modules" gorm:"serializer:json;type:text"`
 	DefaultKnowledgeBase    *ResearchWorkbenchSource    `json:"default_knowledge_base,omitempty" gorm:"-"`
 	ScopeTenantID           uint64                      `json:"scope_tenant_id" gorm:"-"`
 	WorkspaceMode           string                      `json:"workspace_mode" gorm:"type:varchar(16);not null;default:legacy"`
@@ -67,6 +68,7 @@ type WorkbenchPermissions struct {
 	Legacy                 bool                  `json:"legacy"`
 	SourceSharingApproved  bool                  `json:"source_sharing_approved"`
 	SourceSharingRequested bool                  `json:"source_sharing_requested"`
+	SourceSharingModules   []string              `json:"source_sharing_modules"`
 	CanManageSource        bool                  `json:"can_manage_source"`
 }
 

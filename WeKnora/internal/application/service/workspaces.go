@@ -493,6 +493,7 @@ func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input
 				row.SourceSharingApproved = false
 				row.SourceSharingApprovedBy = ""
 				row.SourceSharingRequested = false
+				row.SourceSharingModules = []string{}
 			}
 			row.KnowledgeBaseID = *input.KnowledgeBaseID
 		}

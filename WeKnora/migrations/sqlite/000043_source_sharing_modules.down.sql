@@ -1,0 +1,1 @@
+ALTER TABLE research_workbenches DROP COLUMN source_sharing_modules;

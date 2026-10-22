@@ -31,20 +31,17 @@ def test_readonly_diagram_get_does_not_create_shared_state(canonical):
         assert session.scalar(select(func.count()).select_from(DiagramTemplate)) == 0
 
 
-def test_approved_derived_read_works_without_raw_knowledge_base_access(canonical):
+def test_approved_source_does_not_grant_full_indicator_or_generic_api_access(canonical):
     client, headers, state, _ = canonical
     state['source_delegated'] = True
     result = client.get(api(FIRST, 'indicators/' + SERIES + '/observations'), headers=headers)
-    assert result.status_code == 200, result.text
-    assert result.json()['observations'][0]['value'] == 17.5
+    assert result.status_code == 403, result.text
+    assert '17.5' not in result.text
     overview = client.get(api(FIRST, 'overview'), headers=headers)
-    assert overview.status_code == 200, overview.text
-    assert overview.json()['source_access'] == 'derived'
-    assert overview.json()['counts']['indicators'] == 1
-    assert overview.json()['source_inventory']['sources'] == []
+    assert overview.status_code == 403, overview.text
     assert client.get(api(FIRST, 'sources'), headers=headers).status_code == 403
     before = len(state['calls'])
-    assert client.get(api(), headers=headers).status_code == 200
+    assert client.get(api(), headers=headers).status_code == 403
     assert ('GET', '/api/v1/knowledge-bases/' + KB + '/knowledge') not in state['calls'][before:]
     state['source_consent_revoked'] = True
     denied = client.get(api(FIRST, 'indicators/' + SERIES + '/observations'), headers=headers)

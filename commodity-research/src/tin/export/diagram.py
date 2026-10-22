@@ -373,11 +373,22 @@ def save_template(session: Session, variety: str, payload: dict) -> dict:
                               is_default=not list_templates(session, variety))
         session.add(row)
     row.name, row.layout, row.updated_at = name, layout, now
+    if session.info.get('knowledge_facts') is True:
+        from tin.web.restricted_views import remember_origins
+        # Persist origins only for bindings present in the verified catalog.
+        # Restrictions on delegated projection must not prevent a normal editor
+        # from saving an old layout with retired/legacy IDs or many nodes.
+        remember_origins(session, [binding['series_id'] for node in layout.get('nodes') or []
+            if (binding := node.get('binding') or {}).get('kind') == 'series'
+            and isinstance(binding.get('series_id'), str)])
     if payload.get("is_default"):
         for other in session.scalars(select(DiagramTemplate)
                                      .where(DiagramTemplate.variety == variety)):
             other.is_default = other is row
     session.flush()
+    if session.info.get('knowledge_facts') is True:
+        from tin.web.restricted_views import remember_diagram
+        remember_diagram(session, row)
     session.commit()
     return to_dict(row)
 

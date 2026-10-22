@@ -84,6 +84,7 @@ def export_client(monkeypatch, tmp_path):
                 return httpx.Response(403, json={'success': False})
             return httpx.Response(200, json={'success': True, 'data': {
                 'id': request.url.path.split('/')[-2], 'user_id': token, 'scope_tenant_id': 17,
+                'view_modules': ['home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports'],
                 'knowledge_base_id': KB, 'sources': [{'knowledge_base_id': KB, 'tenant_id': 23,
                     'kind': 'primary', 'delegated': False, 'permission': 'viewer', 'knowledge': []}]}})
         if request.url.path.startswith('/api/v1/workspaces/research/'):

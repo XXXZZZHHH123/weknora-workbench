@@ -1,4 +1,5 @@
 import { get, post, put } from '@/utils/request'
+import type { SourceSharingModule } from '@/utils/sourceSharingModules'
 
 export type ResourcePermission = 'viewer' | 'editor'
 export type SpaceResourcePermission = 'none' | ResourcePermission
@@ -13,9 +14,10 @@ export interface ResourcePermissionsView {
   can_manage: boolean
   legacy: boolean
   source_sharing_approved?: boolean
+  source_sharing_modules?: SourceSharingModule[]
   can_manage_source?: boolean
   source_sharing_requested?: boolean
-  pending_workbenches?: Array<{ id: string; name: string; owner_id: string; source_sharing_approved: boolean }>
+  pending_workbenches?: Array<{ id: string; name: string; owner_id: string; source_sharing_approved: boolean; source_sharing_modules?: SourceSharingModule[] }>
 }
 type Envelope<T> = { success: boolean; data: T; message?: string }
 function base(kind: ResourceKind, id: string) {
@@ -28,8 +30,8 @@ export function getResourcePermissions(kind: ResourceKind, id: string): Promise<
 export function updateResourcePermissions(kind: ResourceKind, id: string, policy: ResourceAccessPolicy): Promise<Envelope<ResourcePermissionsView>> {
   return put(`${base(kind, id)}/permissions`, policy)
 }
-export function updateWorkbenchSourceSharing(id: string, approved: boolean): Promise<Envelope<unknown>> {
-  return put(`${base('research-workbench', id)}/source-sharing`, { approved })
+export function updateWorkbenchSourceSharing(id: string, approved: boolean, modules: SourceSharingModule[]): Promise<Envelope<unknown>> {
+  return put(`${base('research-workbench', id)}/source-sharing`, { approved, modules: approved ? modules : [] })
 }
 export function requestWorkbenchSourceSharing(id: string): Promise<Envelope<unknown>> {
   return post(`${base('research-workbench', id)}/source-sharing/request`, {})

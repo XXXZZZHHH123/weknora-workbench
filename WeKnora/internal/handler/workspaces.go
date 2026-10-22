@@ -175,7 +175,8 @@ func (h *WorkspaceHandler) RequestWorkbenchSourceSharing(c *gin.Context) {
 
 func (h *WorkspaceHandler) UpdateWorkbenchSourceSharing(c *gin.Context) {
 	var input struct {
-		Approved *bool `json:"approved"`
+		Approved *bool    `json:"approved"`
+		Modules  []string `json:"modules"`
 	}
 	if !workspacePermissionInput(c, &input) {
 		return
@@ -184,7 +185,7 @@ func (h *WorkspaceHandler) UpdateWorkbenchSourceSharing(c *gin.Context) {
 		_ = c.Error(apperrors.NewBadRequestError("请选择是否授权研究数据共享"))
 		return
 	}
-	row, err := h.service.UpdateWorkbenchSourceSharing(c.Request.Context(), c.Param("id"), *input.Approved)
+	row, err := h.service.UpdateWorkbenchSourceSharing(c.Request.Context(), c.Param("id"), *input.Approved, input.Modules)
 	workspaceReply(c, row, err)
 }
 

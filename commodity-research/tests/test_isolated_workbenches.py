@@ -64,6 +64,7 @@ def isolated(monkeypatch, tmp_path):
                     return httpx.Response(403, json={'success': False})
                 return httpx.Response(200, json={'success': True, 'data': {'id': target,
                     'user_id': token, 'scope_tenant_id': 17, 'knowledge_base_id': state['knowledge_base_id'],
+                    'view_modules': ['home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports'],
                     'sources': [{'knowledge_base_id': state['knowledge_base_id'], 'tenant_id': 23,
                         'kind': 'primary', 'delegated': False, 'permission': 'viewer', 'knowledge': [
                             {'id': 'source-1', 'file_type': 'xlsx', 'parse_status': state['parse_status'],

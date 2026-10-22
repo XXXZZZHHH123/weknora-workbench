@@ -70,7 +70,7 @@ func TestKnowledgeBaseMemberPermissionsPersistAndRevoke(t *testing.T) {
 	require.Len(t, filterLocalKBPolicies(admin, []*types.KnowledgeBase{legacy}), 1)
 	for _, row := range []types.ResearchWorkbench{
 		{ID: "undisclosed", TenantID: 7, UserID: "researcher", Name: "Private title", KnowledgeBaseID: kb.ID, IdempotencyKey: "unrequested", AccessPolicy: types.NewResourceAccessPolicy()},
-		{ID: "requested", TenantID: 7, UserID: "researcher", Name: "Sent for approval", KnowledgeBaseID: kb.ID, IdempotencyKey: "requested", AccessPolicy: types.NewResourceAccessPolicy(), SourceSharingRequested: true},
+		{ID: "requested", TenantID: 7, UserID: "researcher", Name: "Sent for approval", KnowledgeBaseID: kb.ID, IdempotencyKey: "requested", AccessPolicy: types.NewResourceAccessPolicy(), SourceSharingRequested: true, SourceSharingApproved: true, SourceSharingApprovedBy: "alice", SourceSharingModules: []string{"market", "diagram"}},
 	} {
 		require.NoError(t, db.Create(&row).Error)
 	}
@@ -78,6 +78,13 @@ func TestKnowledgeBaseMemberPermissionsPersistAndRevoke(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, permissions.PendingWorkbenches, 1)
 	require.Equal(t, "requested", permissions.PendingWorkbenches[0].ID)
+	require.Equal(t, []string{"market", "diagram"}, permissions.PendingWorkbenches[0].SourceSharingModules)
+	require.True(t, permissions.PendingWorkbenches[0].SourceSharingApproved)
+	require.NoError(t, db.Model(&types.ResearchWorkbench{}).Where("id = ?", "requested").Update("source_sharing_approved_by", "former-owner").Error)
+	permissions, err = s.GetKnowledgeBasePermissions(alice, kb.ID)
+	require.NoError(t, err)
+	require.Empty(t, permissions.PendingWorkbenches[0].SourceSharingModules)
+	require.False(t, permissions.PendingWorkbenches[0].SourceSharingApproved)
 }
 
 func TestResourceURLRespectsCurrentKnowledgeBasePolicy(t *testing.T) {

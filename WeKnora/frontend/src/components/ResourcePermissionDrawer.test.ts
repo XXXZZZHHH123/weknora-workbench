@@ -6,6 +6,7 @@ import ts from 'typescript'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import * as policyHelpers from '../utils/resourcePermissions'
+import * as sourceHelpers from '../utils/sourceSharingModules'
 
 type Host = { tag: string; props: Record<string, any>; children: Host[]; text: string; parent?: Host }
 const node = (tag: string): Host => ({ tag, props: {}, children: [], text: '' })
@@ -21,13 +22,14 @@ const find = (el: Host, predicate: (el: Host) => boolean): Host[] => [...(predic
 const text = (el: Host): string => el.tag === '#comment' ? '' : el.text + el.children.map(text).join('')
 const flush = async () => { for (let i = 0; i < 12; i++) { await Promise.resolve(); await vue.nextTick() } }
 const deferred = () => { let resolve!: (value: any) => void; const promise = new Promise<any>(r => { resolve = r }); return { promise, resolve } }
-function fixture(options: { kind?: 'knowledge-base' | 'research-workbench'; legacy?: boolean; denied?: boolean; pending?: boolean; requested?: boolean; save?: () => Promise<any>; read?: () => Promise<any> } = {}) {
+function fixture(options: { kind?: 'knowledge-base' | 'research-workbench'; legacy?: boolean; denied?: boolean; pending?: boolean; approved?: boolean; sourceModules?: string[]; requested?: boolean; sourceSave?: () => Promise<any>; save?: () => Promise<any>; read?: () => Promise<any> } = {}) {
   const auth = vue.reactive({ selectedTenantId: 7, tenant: { id: 7 }, user: { id: 'owner', username: '主人' }, token: 'fixture-token' })
   const props = vue.reactive({ visible: true, kind: options.kind || 'knowledge-base', resourceId: 'resource', resourceName: '资料' })
   const calls: any[] = [], emitted: any[] = [], events: string[] = [], messages: string[] = []
   const modules: Record<string, any> = {
-    vue: { ...vue, vModelSelect: {}, vModelText: {} }, 'tdesign-vue-next': { MessagePlugin: { success: (value: string) => messages.push(value) } },
+    vue: { ...vue, vModelSelect: {}, vModelText: {}, vModelCheckbox: { mounted(el: Host, binding: any) { el.props.modelValue = binding.value }, updated(el: Host, binding: any) { el.props.modelValue = binding.value } } }, 'tdesign-vue-next': { MessagePlugin: { success: (value: string) => messages.push(value) } },
     '@/stores/auth': { useAuthStore: () => auth }, '@/utils/resourcePermissions': policyHelpers,
+    '@/utils/sourceSharingModules': sourceHelpers,
     '@/views/workspaces/workspaceForm': { workspaceErrorMessage: (value: any) => value.message || 'error' },
     '@/components/settings/SettingDrawer.vue': { default: vue.defineComponent({ setup: (_p, { attrs, slots }) => () => vue.h('drawer', attrs, slots.default?.()) }) },
     '@/api/tenant/members': { listMembers: async () => ({ success: true, data: { total: 3, members: [
@@ -36,10 +38,10 @@ function fixture(options: { kind?: 'knowledge-base' | 'research-workbench'; lega
       { user_id: 'editor', username: '编辑成员', role: 'contributor', status: 'active' },
     ] } }) },
     '@/api/resourcePermissions': {
-      getResourcePermissions: async (...args: any[]) => { calls.push(['get', ...args]); return options.read ? options.read() : { success: true, data: { policy: options.legacy ? null : { space_permission: 'none', members: [] }, owner_id: 'owner', can_manage: !options.denied, legacy: !!options.legacy, source_sharing_requested: !!options.requested, pending_workbenches: options.pending ? [{ id: 'requested-workbench', name: '请求的研究台', owner_id: 'editor', source_sharing_approved: false }] : [] } } },
+      getResourcePermissions: async (...args: any[]) => { calls.push(['get', ...args]); return options.read ? options.read() : { success: true, data: { policy: options.legacy ? null : { space_permission: 'none', members: [] }, owner_id: 'owner', can_manage: !options.denied, legacy: !!options.legacy, source_sharing_requested: !!options.requested, pending_workbenches: options.pending ? [{ id: 'requested-workbench', name: '请求的研究台', owner_id: 'editor', source_sharing_approved: !!options.approved, source_sharing_modules: options.sourceModules }] : [] } } },
       updateResourcePermissions: async (...args: any[]) => { calls.push(['put', ...JSON.parse(JSON.stringify(args))]); return options.save ? options.save() : { success: true } },
       requestWorkbenchSourceSharing: async (...args: any[]) => { calls.push(['request-source', ...args]); return { success: true } },
-      updateWorkbenchSourceSharing: async (...args: any[]) => { calls.push(['approve-source', ...args]); return { success: true } },
+      updateWorkbenchSourceSharing: async (...args: any[]) => { calls.push(['approve-source', ...JSON.parse(JSON.stringify(args))]); return options.sourceSave ? options.sourceSave() : { success: true } },
     },
   }
   const { descriptor } = parse(readFileSync(new URL('./ResourcePermissionDrawer.vue', import.meta.url), 'utf8'))
@@ -106,13 +108,59 @@ test('workbench owner requests source approval without changing resource permiss
   assert.equal(f.calls.some(call => call[0] === 'put'), false)
   assert.match(text(f.root), /已请求，等待知识库主人授权/)
 })
-test('knowledge base owner can approve then revoke only explicitly requested workbench data', async t => {
+test('knowledge base owner approves only explicitly selected pages and can revoke source access', async t => {
   const f = fixture({ pending: true }); t.after(f.close); await flush()
   assert.match(text(f.root), /请求的研究台/)
   const button = (label: string) => find(f.root, el => el.tag === 'stub' && text(el) === label)[0]!
-  button('允许共享').props.onClick(); await flush()
-  assert.deepEqual(f.calls[1], ['approve-source', 'requested-workbench', true])
+  button('配置共享').props.onClick(); await flush()
+  const toggle = find(f.root, el => el.tag === 'input' && el.props['aria-label'] === '允许共享研究数据')[0]!
+  assert.ok(toggle); toggle.props['onUpdate:modelValue'](true); await flush()
+  const modules = find(f.root, el => el.tag === 'input' && el.props.name === 'source-sharing-module')
+  assert.equal(modules.length, 7)
+  assert.ok(modules.every(el => el.props['onUpdate:modelValue']))
+  button('保存共享配置').props.onClick(); await flush()
+  assert.equal(f.calls.length, 1)
+  assert.match(text(f.root), /请至少选择一个可展示数据的页面/)
+  modules.find(el => el.props.value === 'market')!.props['onUpdate:modelValue'](['market']); await flush()
+  button('保存共享配置').props.onClick(); await flush()
+  assert.deepEqual(f.calls[1], ['approve-source', 'requested-workbench', true, ['market']])
   button('撤销授权').props.onClick(); await flush()
-  assert.deepEqual(f.calls[2], ['approve-source', 'requested-workbench', false])
+  assert.deepEqual(f.calls[2], ['approve-source', 'requested-workbench', false, []])
   assert.equal(f.calls.some(call => call[0] === 'put'), false)
+})
+test('previous approval without page grants never defaults to every page or indicators', async t => {
+  const f = fixture({ pending: true, approved: true }); t.after(f.close); await flush()
+  const button = find(f.root, el => el.tag === 'stub' && text(el) === '修改配置')[0]!
+  button.props.onClick(); await flush()
+  const module = find(f.root, el => el.tag === 'input' && el.props.value === 'indicators')[0]!
+  assert.ok(module)
+  assert.deepEqual(Array.from(module.props['modelValue'] || []), [])
+  find(f.root, el => el.tag === 'stub' && text(el) === '保存共享配置')[0]!.props.onClick(); await flush()
+  assert.equal(f.calls.length, 1)
+})
+test('failed source approval preserves selected page draft and does not announce success', async t => {
+  const f = fixture({ pending: true, sourceSave: async () => { throw new Error('来源授权已变化') } }); t.after(f.close); await flush()
+  const button = (label: string) => find(f.root, el => el.tag === 'stub' && text(el) === label)[0]!
+  button('配置共享').props.onClick(); await flush()
+  find(f.root, el => el.tag === 'input' && el.props['aria-label'] === '允许共享研究数据')[0]!.props['onUpdate:modelValue'](true); await flush()
+  find(f.root, el => el.tag === 'input' && el.props.value === 'diagram')[0]!.props['onUpdate:modelValue'](['diagram']); await flush()
+  button('保存共享配置').props.onClick(); await flush()
+  assert.match(text(f.root), /来源授权已变化/)
+  assert.ok(button('保存共享配置')); assert.equal(f.messages.length, 0)
+  button('保存共享配置').props.onClick(); await flush()
+  assert.deepEqual(f.calls[2], ['approve-source', 'requested-workbench', true, ['diagram']])
+})
+test('member permission save cannot discard an open source-sharing draft', async t => {
+  const f = fixture({ pending: true }); t.after(f.close); await flush()
+  assert.equal(f.drawer().props['confirm-text'], '保存成员权限')
+  const button = (label: string) => find(f.root, el => el.tag === 'stub' && text(el) === label)[0]!
+  button('配置共享').props.onClick(); await flush()
+  assert.equal(f.drawer().props['confirm-disabled'], true)
+  assert.match(text(f.root), /请先保存或取消共享配置，再保存成员权限/)
+  f.drawer().props.onConfirm(); await flush()
+  assert.equal(f.calls.some(call => call[0] === 'put'), false)
+  button('取消').props.onClick(); await flush()
+  assert.equal(f.drawer().props['confirm-disabled'], false)
+  f.drawer().props.onConfirm(); await flush()
+  assert.equal(f.calls.filter(call => call[0] === 'put').length, 1)
 })

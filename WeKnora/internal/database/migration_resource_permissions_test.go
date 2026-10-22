@@ -75,9 +75,9 @@ INSERT INTO research_workbenches(id,tenant_id,user_id,name,knowledge_base_id,ide
 	m, err := migrate.New("file://"+filepath.Join(root, "migrations", "sqlite"), "sqlite3://"+path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = m.Close() })
-	require.NoError(t, m.Steps(-1))
+	require.NoError(t, m.Steps(-2))
 	require.False(t, sqliteColumnExists(t, db, "knowledge_bases", "access_policy"))
-	require.NoError(t, m.Steps(1))
+	require.NoError(t, m.Steps(2))
 	require.NoError(t, db.QueryRow(`SELECT access_policy FROM knowledge_bases WHERE id='old-kb'`).Scan(&kbPolicy))
 	require.False(t, kbPolicy.Valid)
 }

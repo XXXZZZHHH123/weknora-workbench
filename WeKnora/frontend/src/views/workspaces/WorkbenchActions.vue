@@ -5,6 +5,7 @@ import { deleteResearchWorkbench, getResearchWorkbench, updateResearchWorkbench,
 import { validateWorkspaceName, workspaceErrorMessage, workspaceIdentity } from './workspaceForm'
 import ResourcePermissionDrawer from '@/components/ResourcePermissionDrawer.vue'
 import { updateWorkbenchSourceSharing } from '@/api/resourcePermissions'
+import { SOURCE_SHARING_MODULES, sourceSharingModulesDraft, type SourceSharingModule } from '@/utils/sourceSharingModules'
 
 const props = defineProps<{ workbench: ResearchWorkbench }>()
 const emit = defineEmits<{ renamed: [workbench: ResearchWorkbench]; deleted: [id: string] }>()
@@ -14,6 +15,7 @@ const canManagePermissions = computed(() => (props.workbench.can_manage_permissi
 const canManageSource = computed(() => props.workbench.can_manage_source === true)
 const scope = computed(() => JSON.stringify([workspaceIdentity(auth.selectedTenantId ?? auth.tenant?.id, auth.user?.id), auth.token, props.workbench.id]))
 const menuOpen = ref(false), action = ref<'rename' | 'delete' | 'source' | null>(null), permissionsOpen = ref(false), sourceApproved = ref(false)
+const sourceModules = ref<SourceSharingModule[]>([])
 const name = ref(''), error = ref(''), busy = ref(false)
 let generation = 0
 function close() {
@@ -24,14 +26,15 @@ function select(kind: 'rename' | 'delete' | 'source') {
   if (busy.value || !(kind === 'source' ? canManageSource.value : canManage.value)) return
   menuOpen.value = false; name.value = props.workbench.name; error.value = ''; action.value = kind
   sourceApproved.value = props.workbench.source_sharing_approved === true
+  sourceModules.value = sourceSharingModulesDraft(props.workbench.source_sharing_modules)
 }
 watch([scope, canManage, canManagePermissions, canManageSource], () => {
-  generation++; menuOpen.value = false; action.value = null; permissionsOpen.value = false; name.value = ''; error.value = ''; busy.value = false
+  generation++; menuOpen.value = false; action.value = null; permissionsOpen.value = false; sourceModules.value = []; name.value = ''; error.value = ''; busy.value = false
 }, { flush: 'sync' })
 onBeforeUnmount(() => { generation++ })
 async function confirm() {
   if (busy.value || !action.value || !(action.value === 'source' ? canManageSource.value : canManage.value)) return
-  error.value = action.value === 'rename' ? validateWorkspaceName(name.value) : ''
+  error.value = action.value === 'rename' ? validateWorkspaceName(name.value) : action.value === 'source' && sourceApproved.value && sourceSharingModulesDraft(sourceModules.value).length === 0 ? '请至少选择一个可展示数据的页面。' : ''
   if (error.value) return
   const own = generation, id = props.workbench.id, selected = action.value
   busy.value = true
@@ -47,7 +50,7 @@ async function confirm() {
       if (response?.success !== true) throw new Error('未能删除工作台，请重试。')
       emit('deleted', id)
     } else {
-      const response = await updateWorkbenchSourceSharing(id, sourceApproved.value)
+      const response = await updateWorkbenchSourceSharing(id, sourceApproved.value, sourceApproved.value ? sourceSharingModulesDraft(sourceModules.value) : [])
       if (own !== generation) return
       if (response?.success !== true) throw new Error('未能更新来源共享授权，请重试。')
       const refreshed = await getResearchWorkbench(id)
@@ -82,7 +85,14 @@ async function confirm() {
       :cancel-btn="{ content: '取消', disabled: busy }" :close-btn="!busy" :close-on-overlay-click="!busy" :close-on-esc-keydown="!busy"
       @update:visible="(value: boolean) => { if (!value) close() }" @confirm="confirm" @cancel="close" @close="close">
       <t-input v-if="action === 'rename'" v-model="name" autofocus :maxlength="80" :disabled="busy" aria-label="工作台名称" @enter="confirm" />
-      <template v-else-if="action === 'source'"><p class="workbench-actions__note">允许此工作台的授权成员使用绑定知识库的指标和产业图。不会授予浏览原库、下载原文件或全文问答的权限。</p><label class="workbench-actions__source"><input v-model="sourceApproved" type="checkbox" :disabled="busy" />允许共享研究数据</label></template>
+      <template v-else-if="action === 'source'">
+        <p class="workbench-actions__note">勾选页面可展示必要指标数值，授权作用于此台所有获授权成员。不会开放全库指标、任意查询、下载原文件或全文问答。</p>
+        <label class="workbench-actions__source"><input v-model="sourceApproved" type="checkbox" aria-label="允许共享研究数据" :disabled="busy" />允许共享研究数据</label>
+        <fieldset v-if="sourceApproved" class="workbench-actions__modules" :disabled="busy">
+          <legend>允许展示来源数据的页面</legend>
+          <label v-for="module in SOURCE_SHARING_MODULES" :key="module.key"><input v-model="sourceModules" type="checkbox" name="source-sharing-module" :value="module.key" :aria-label="module.label" /><span>{{ module.label }}<small>{{ module.hint }}</small></span></label>
+        </fieldset>
+      </template>
       <p v-else class="workbench-actions__note">确定删除“{{ workbench.name }}”？绑定的知识库及其中资料会保留。</p>
       <t-alert v-if="error" theme="error" :message="error" class="workbench-actions__error" />
     </t-dialog>
@@ -98,6 +108,12 @@ async function confirm() {
 .workbench-actions__note{margin:0;color:var(--td-text-color-secondary);line-height:1.6}
 .workbench-actions__error{margin-top:var(--app-space-3)}
 .workbench-actions__source{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:var(--app-text-sm)}
+.workbench-actions__source input,.workbench-actions__modules input{accent-color:var(--td-brand-color)}
+.workbench-actions__modules{display:flex;flex-direction:column;gap:9px;margin:12px 0 0;padding:0;border:0;font-size:var(--app-text-sm)}
+.workbench-actions__modules legend{padding:0 0 10px;color:var(--td-text-color-secondary);font-size:var(--app-text-xs)}
+.workbench-actions__modules label{display:flex;align-items:flex-start;gap:7px;cursor:pointer}
+.workbench-actions__modules input{margin:3px 0 0}.workbench-actions__modules span{display:flex;flex-direction:column;gap:2px}
+.workbench-actions__modules small{color:var(--td-text-color-secondary);font-size:var(--app-text-xs);line-height:1.5}
 .workbench-actions__menu :deep(button.popup-menu-item){width:100%;border:0;background:transparent;text-align:left}
 .workbench-actions__menu :deep(button.popup-menu-item:hover){background:var(--td-bg-color-container-hover)}
 .workbench-actions__menu :deep(button.popup-menu-item.delete:hover){background:var(--td-error-color-1)}

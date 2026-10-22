@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ restricted_title }} · {{ research_workbench().metadata.name }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ research_static_prefix() }}/static/restricted.css?v={{ static_version() }}">{% endblock %}
+{% block main %}
+<div class="restricted-notice" role="status"><span aria-hidden="true">&#128274;</span><strong>受限视角</strong><span>仅展示主人已授权页面的必要内容；指标目录、原始资料、任意查询和下载未开放。</span></div>
+<header class="restricted-heading"><h1>{{ restricted_title }}</h1><span>{{ research_workbench().metadata.name }}</span></header>
+{% if not restricted_authorized %}
+<section class="restricted-empty"><strong>来源未授权</strong><p>你可以访问此研究台，当前页面尚未获准展示来源内容。请联系研究台主人配置页面，并由知识库主人批准来源共享。</p></section>
+{% else %}
+{% if restricted_module == 'home' %}
+<section class="restricted-empty"><strong>研究工作台</strong><p>通过上方导航查看已授权页面。每页仅按研究台保存的绑定读取必要数值，不加载整个指标库。</p></section>
+{% elif restricted_module in ('market', 'indicators') %}
+{% if restricted_data.cards %}<section class="restricted-cards" aria-label="已绑定指标">
+{% for card in restricted_data.cards %}<article class="restricted-card"><h2>{{ card.name }}</h2><div class="restricted-value tabular">{{ card.value | num(card.unit) }} <small>{{ card.unit }}</small></div><p>{{ card.date or '暂无观测' }}{% if card.change is not none %}<span class="tabular">较上期 {{ card.change | num(card.unit, true) }}</span>{% endif %}</p></article>{% endfor %}
+</section>{% else %}<section class="restricted-empty"><strong>尚未配置可展示的绑定指标</strong><p>由具备来源和研究台编辑权限的成员保存核心指标或产业图绑定后，这里才会读取对应的必要数值。</p></section>{% endif %}
+{% elif restricted_module == 'diagram' %}
+{% set diagram = restricted_data.diagram %}
+{% if diagram and diagram.nodes %}<section class="restricted-diagram"><h2>{{ diagram.name }}</h2><div class="restricted-diagram-scroll"><svg xmlns="http://www.w3.org/2000/svg" width="{{ diagram.width }}" height="{{ diagram.height }}" role="img" aria-label="{{ diagram.name }}">
+<defs><marker id="restricted-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="var(--text-muted)"/></marker></defs>
+{% for edge in diagram.edges %}<line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="var(--text-muted)" stroke-width="1.3" marker-end="url(#restricted-arrow)"/>{% endfor %}
+{% for node in diagram.nodes %}<g transform="translate({{ node.x }},{{ node.y }})"><rect width="{{ node.w }}" height="{{ node.h }}" rx="8" fill="var(--surface)" stroke="var(--line)"/><foreignObject width="{{ node.w }}" height="{{ node.h }}"><div xmlns="http://www.w3.org/1999/xhtml" class="restricted-diagram-node"><strong>{{ node.label }}</strong>{% if node.data %}<span class="tabular">{{ node.data.value | num(node.data.unit) }} {{ node.data.unit }}</span><small>{{ node.data.date or '暂无观测' }}</small>{% elif node.kind != 'group' %}<small>暂无已授权数值</small>{% endif %}{% for item in node.statics %}<small>{{ item.label }} {{ item.value }}</small>{% endfor %}</div></foreignObject></g>{% endfor %}
+</svg></div></section>{% else %}<section class="restricted-empty"><strong>尚未保存产业图</strong><p>由具备来源和研究台编辑权限的成员保存产业图后，这里展示已授权的结构和绑定数值。</p></section>{% endif %}
+{% else %}
+{% if restricted_data.entries %}<section class="restricted-entries">{% for item in restricted_data.entries %}<article class="restricted-card"><header><h2>{{ item.title }}</h2><span>{{ item.status }} · {{ item.date }}</span></header>{% if item.text %}<p class="restricted-prose">{{ item.text }}</p>{% endif %}</article>{% endfor %}</section>{% else %}<section class="restricted-empty"><strong>暂无本人研究记录</strong><p>研究台可见权限不会公开其他成员的个人判断、策略或日报。历史快照、证据原文和批量数据未在受限视角开放。</p></section>{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}
