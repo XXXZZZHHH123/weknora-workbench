@@ -164,14 +164,14 @@ func (t *StructuredDataTool) authorizeStructuredAPIKeyScope(ctx context.Context,
 }
 
 const (
-	maxRecallKnowledgeBases     = 8
+	maxRecallKnowledgeBases     = 32
 	maxRecallFieldsPerKnowledge = 16
 	maxRecallFieldsAcrossScopes = 64
 )
 
 // recallAcrossKnowledgeBases keeps the multi-library directory but, when the
 // caller supplied the user's question, also runs the service's literal field
-// recall in every authorized library. A field whose real header matches the
+// recall in every authorized library (bounded; directory listings are cheap). A field whose real header matches the
 // question is then visible before the model picks a library, instead of
 // depending on whether it guesses that a token names a field. Each library is
 // queried with its own signed scope; matches are recall evidence only and

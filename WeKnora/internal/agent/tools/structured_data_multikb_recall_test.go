@@ -84,3 +84,17 @@ func TestStructuredMultiScopeRecallKeepsUnavailableLibraryVisible(t *testing.T) 
 	require.Equal(t, "unavailable", catalogs[0]["catalog_status"])
 	require.Equal(t, "queried", catalogs[1]["catalog_status"])
 }
+
+func TestStructuredMultiScopeRecallMarksLibraryBoundTruncation(t *testing.T) {
+	targets := types.SearchTargets{}
+	for i := 0; i < maxRecallKnowledgeBases+2; i++ {
+		targets = append(targets, &types.SearchTarget{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-" + string(rune('a'+i%26)) + string(rune('a'+i/26)), TenantID: 7})
+	}
+	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"datasets":[],"literal_fields":[]}`)
+	}).WithSearchTargets(targets)
+	result, err := base.Execute(structuredScopeContext(), json.RawMessage(`{"operation":"list_datasets","arguments":{"question":"q"}}`))
+	require.NoError(t, err)
+	require.Len(t, result.Data["knowledge_base_catalogs"].([]map[string]any), maxRecallKnowledgeBases)
+	require.Equal(t, true, result.Data["literal_fields_truncated"], "unqueried libraries are reported as truncation, never as absence")
+}
