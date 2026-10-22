@@ -45,6 +45,7 @@ function setup(t, native = true) {
     listeners.get('fullscreenchange')?.fn()
   }
   const runtime = {
+    previewLoadVersion: 0, pptxPermissionChecking: ref(false),
     props, isFullscreen, previewRoot: ref(root), document, window: events, watch,
     onMounted: fn => mounted.push(fn), onUnmounted: fn => unmounted.push(fn),
     stopPptxRenderWatch: () => pptxWatchStops.push('stopped'),

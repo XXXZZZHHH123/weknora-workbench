@@ -43,7 +43,7 @@ function dom() {
   const image = (id: string) => new Image('data:image/x-emf;base64,' + Buffer.from(`Original vector ${id}`).toString('base64'))
   const images = [[], [image('a'), image('b'), image('c'), image('unrelated')], [], [image('a')]]
   const slides = images.map(imgs => ({ dataset: {} as Record<string,string>, querySelectorAll: () => imgs, getBoundingClientRect: () => ({ top: 0, bottom: 100 }) }))
-  const root = { querySelectorAll: () => slides }
+  const root = { querySelectorAll: () => slides, addEventListener: () => {} }
   return { images, slides, root: root as unknown as HTMLElement }
 }
 
@@ -181,4 +181,76 @@ test('a failed raster is explicit and retry does not refetch successful parts', 
   assert.equal(calls.get('ppt/media/image-a.emf'), 1)
   assert.equal(calls.get('ppt/media/image-c.emf'), 1)
   loader.stop()
+})
+
+test('warm remount uses successful PNG blobs with fresh local URLs and retained DOM part identity', async t => {
+  const { getPptxPreviewScope, pptxPreviewCache } = await import('./pptxPreviewCache')
+  const oldStorage = globalThis.localStorage
+  Object.assign(globalThis, { localStorage: { getItem: (key: string) => key === 'weknora_token' ? 'cache-test-token' : key === 'weknora_selected_tenant_id' ? 'synthetic-tenant' : '{}' } })
+  t.after(() => { pptxPreviewCache.clear(); Object.assign(globalThis, { localStorage: oldStorage }) })
+  const data = await fixture(), doc = dom(), calls: string[] = []
+  const cache = { scope: getPptxPreviewScope(), sourceKey: 'authorized-original-version-a' }
+  const make = () => createPptxViewportMedia({ data, sourceSha256: 'e'.repeat(64), generation: 7, cache,
+    loadRaster: async (_page, part) => { calls.push(part); return png }, onPage: () => {}, onPageError: () => assert.fail('metadata error'),
+  })
+  const first = make(); first.observe(doc.root); await first.loadPage(2); await flush()
+  const oldURLs = doc.images[1].slice(0,3).map(image => image.getAttribute('src'))
+  first.stop()
+  assert.ok(doc.images[1].slice(0,3).every(image => !image.getAttribute('src')!.startsWith('blob:')), 'closed viewer does not retain revoked blob URLs')
+  assert.ok(doc.images[1].slice(0,3).every(image => !!image.dataset.pptxVectorPart), 'verified original part identity survives close')
+  const second = make(); t.after(() => second.stop()); second.observe(doc.root); await second.loadPage(2); await flush()
+  assert.equal(calls.length, 3, 'warm reopen makes zero raster HTTP requests')
+  assert.ok(doc.images[1].slice(0,3).every((image, i) => image.getAttribute('src')!.startsWith('blob:') && image.getAttribute('src') !== oldURLs[i]))
+})
+
+test('close/reopen shares two in-flight rasters while global requests stay bounded and closed queued work never starts', async t => {
+  const { getPptxPreviewScope, pptxPreviewCache } = await import('./pptxPreviewCache')
+  const oldStorage = globalThis.localStorage
+  Object.assign(globalThis, { localStorage: { getItem: (key: string) => key === 'weknora_token' ? 'inflight-test-token' : key === 'weknora_selected_tenant_id' ? 'synthetic-tenant' : '{}' } })
+  const releases: Array<() => void> = []; let calls = 0, active = 0, maximum = 0, stopPublications = 0
+  const data = await fixture(), cache = { scope: getPptxPreviewScope(), sourceKey: 'authorized-original-version-b' }
+  const make = (old: boolean) => createPptxViewportMedia({ data, sourceSha256: 'f'.repeat(64), generation: old ? 8 : 9, cache,
+    loadRaster: async () => { calls++; active++; maximum = Math.max(maximum, active); if (calls <= 2) await new Promise<void>(resolve => releases.push(resolve)); active--; return png },
+    onPage: () => { if (old) stopPublications++ }, onPageError: () => assert.fail('metadata error'),
+  })
+  const first = make(true), a = first.loadPage(2)
+  t.after(() => { first.stop(); releases.splice(0).forEach(release => release()); pptxPreviewCache.clear(); Object.assign(globalThis, { localStorage: oldStorage }) })
+  while (calls < 2) await flush()
+  first.stop(); const atStop = stopPublications
+  const second = make(false), b = second.loadPage(2); t.after(() => second.stop())
+  await flush(); await flush(); assert.equal(calls, 2, 'reopen awaits actual same in-flight parts')
+  releases.splice(0).forEach(release => release()); await Promise.all([a, b])
+  assert.equal(calls, 3); assert.equal(maximum, 2); assert.equal(stopPublications, atStop)
+})
+
+test('a failed PNG is not a shared cache hit on a new viewer; successful parts remain reusable', async t => {
+  const { getPptxPreviewScope, pptxPreviewCache } = await import('./pptxPreviewCache')
+  const oldStorage = globalThis.localStorage
+  Object.assign(globalThis, { localStorage: { getItem: (key: string) => key === 'weknora_token' ? 'failed-test-token' : key === 'weknora_selected_tenant_id' ? 'synthetic-tenant' : '{}' } })
+  t.after(() => { pptxPreviewCache.clear(); Object.assign(globalThis, { localStorage: oldStorage }) })
+  const calls = new Map<string, number>(), data = await fixture(), cache = { scope: getPptxPreviewScope(), sourceKey: 'authorized-version-failed-png' }
+  const make = () => createPptxViewportMedia({ data, sourceSha256: '1'.repeat(64), generation: 11, cache,
+    loadRaster: async (_page, part) => { const count = (calls.get(part) || 0) + 1; calls.set(part, count); return part.endsWith('-b.emf') && count === 1 ? new Blob(['not PNG']) : png },
+    onPage: () => {}, onPageError: () => assert.fail('metadata error'),
+  })
+  const first = make(); await first.loadPage(2); first.stop()
+  const second = make(); t.after(() => second.stop()); await second.loadPage(2)
+  assert.equal(calls.get('ppt/media/image-a.emf'), 1); assert.equal(calls.get('ppt/media/image-c.emf'), 1); assert.equal(calls.get('ppt/media/image-b.emf'), 2)
+})
+
+test('an actual decode failure invalidates only its PNG so retry can fetch repaired bytes', async t => {
+  const { getPptxPreviewScope, pptxPreviewCache } = await import('./pptxPreviewCache')
+  const oldStorage = globalThis.localStorage
+  Object.assign(globalThis, { localStorage: { getItem: (key: string) => key === 'weknora_token' ? 'decode-test-token' : key === 'weknora_selected_tenant_id' ? 'synthetic-tenant' : '{}' } })
+  t.after(() => { pptxPreviewCache.clear(); Object.assign(globalThis, { localStorage: oldStorage }) })
+  const calls = new Map<string, number>(), doc = dom()
+  const loader = createPptxViewportMedia({ data: await fixture(), sourceSha256: '2'.repeat(64), generation: 12,
+    cache: { scope: getPptxPreviewScope(), sourceKey: 'authorized-version-decode' },
+    loadRaster: async (_page, part) => { calls.set(part, (calls.get(part) || 0) + 1); return png },
+    onPage: () => {}, onPageError: () => assert.fail('metadata error'),
+  })
+  t.after(() => loader.stop()); loader.observe(doc.root); await loader.loadPage(2); await flush()
+  loader.markFailed('ppt/media/image-b.emf'); await loader.loadPage(2, true); await flush()
+  assert.equal(calls.get('ppt/media/image-b.emf'), 2); assert.equal(calls.get('ppt/media/image-a.emf'), 1); assert.equal(calls.get('ppt/media/image-c.emf'), 1)
+  assert.equal(doc.images[1][1].dataset.pptxMediaState, 'displayed')
 })

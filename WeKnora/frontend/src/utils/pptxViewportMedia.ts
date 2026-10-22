@@ -1,5 +1,34 @@
 import JSZip from 'jszip'
+import { getPptxPreviewScope, pptxPreviewCache } from './pptxPreviewCache'
 import { listPptxVectorMediaForSlide, type PptxVectorMedia } from './pptxMedia'
+
+// Blobs live in the bounded permission-scoped cache; object URLs belong only
+// to the current viewer. Never leave a revoked URL attached to retained DOM.
+const VECTOR_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+let rasterRunning = 0
+const rasterQueue: Array<() => void> = []
+async function rasterSlot<T>(signal: AbortSignal, load: () => Promise<T>): Promise<T> {
+  await new Promise<void>((resolve, reject) => {
+    const abort = () => { const index = rasterQueue.indexOf(start); if (index >= 0) rasterQueue.splice(index, 1); reject(new DOMException('Preview request canceled', 'AbortError')) }
+    const start = () => {
+      signal.removeEventListener('abort', abort)
+      if (signal.aborted) { reject(new DOMException('Preview request canceled', 'AbortError')); return }
+      rasterRunning++; resolve()
+    }
+    if (signal.aborted) { abort(); return }
+    if (rasterRunning < 2) start()
+    else { rasterQueue.push(start); signal.addEventListener('abort', abort, { once: true }) }
+  })
+  try { return await load() }
+  finally { rasterRunning--; rasterQueue.shift()?.() }
+}
+async function checkedRaster(load: () => Promise<Blob>): Promise<Blob> {
+  const blob = await load()
+  if (blob.type && blob.type !== 'image/png') throw new Error('Invalid PNG content type')
+  const signature = new Uint8Array(await blob.slice(0, 8).arrayBuffer())
+  if (signature.length !== 8 || ![137, 80, 78, 71, 13, 10, 26, 10].every((b, i) => signature[i] === b)) throw new Error('Invalid PNG snapshot')
+  return blob
+}
 
 export type PptxPageMediaView = PptxVectorMedia & {
   generation: number
@@ -15,6 +44,7 @@ export function createPptxViewportMedia(options: {
   data: ArrayBuffer
   sourceSha256: string
   generation: number
+  cache?: { scope: string; sourceKey: string }
   loadRaster: (page: number, part: string, signal: AbortSignal) => Promise<Blob>
   onPage: (page: number, items: PptxPageMediaView[]) => void
   onPageError: (page: number) => void
@@ -23,7 +53,7 @@ export function createPptxViewportMedia(options: {
   const zip = JSZip.loadAsync(options.data)
   const pages = new Map<number, PptxPageMediaView[]>()
   const pageTasks = new Map<number, Promise<void>>()
-  const parts = new Map<string, { source: string; url?: string; state: PptxPageMediaView['state']; task?: Promise<void> }>()
+  const parts = new Map<string, { source: string; url?: string; cacheKey?: string; state: PptxPageMediaView['state']; task?: Promise<void> }>()
   const urls = new Set<string>()
   const queue: Array<{ part: string; run: () => Promise<void> }> = []
   let running = 0
@@ -31,7 +61,7 @@ export function createPptxViewportMedia(options: {
   let observer: IntersectionObserver | null = null
   let mutations: MutationObserver | null = null
   const observed = new Set<Element>()
-  const active = () => !controller.signal.aborted
+  const active = () => !controller.signal.aborted && (!options.cache || getPptxPreviewScope() === options.cache.scope)
   const publish = (page: number) => {
     if (!active()) return
     const items = pages.get(page) || []
@@ -56,6 +86,10 @@ export function createPptxViewportMedia(options: {
     const item = parts.get(part)
     if (!item || !active()) return
     item.state = state
+    if (state === 'failed') {
+      if (options.cache && item.cacheKey) pptxPreviewCache.invalidate(options.cache.scope, item.cacheKey)
+      if (item.url) { urls.delete(item.url); URL.revokeObjectURL(item.url); item.url = undefined }
+    }
     publishPart(part)
     paint()
   }
@@ -80,7 +114,14 @@ export function createPptxViewportMedia(options: {
           image.dataset.pptxVectorPart = item.part
           image.dataset.pptxVectorSource = options.sourceSha256
           image.dataset.pptxMediaState = media.state
-          if (!media.url || original === media.url) continue
+          if (!media.url) {
+            // These bytes were matched to an actual vector part above. Native
+            // browsers cannot decode EMF/WMF; keep their exact shape in place
+            // while the authorized PNG is loading rather than a broken image.
+            if (original !== VECTOR_PLACEHOLDER) image.src = VECTOR_PLACEHOLDER
+            continue
+          }
+          if (original === media.url) continue
           image.addEventListener('load', () => { if (active() && image.getAttribute('src') === media.url) mark(item.part, 'displayed') }, { once: true, signal: controller.signal })
           image.addEventListener('error', () => { if (active() && image.getAttribute('src') === media.url) mark(item.part, 'failed') }, { once: true, signal: controller.signal })
           image.src = media.url
@@ -143,12 +184,19 @@ export function createPptxViewportMedia(options: {
           if (!file) throw new Error('Vector snapshot is missing')
           media.source = `data:image/x-${part.toLowerCase().endsWith('.emf') ? 'emf' : 'wmf'};base64,${await file.async('base64')}`
           if (!active()) return
-          const blob = await options.loadRaster(page, part, controller.signal)
-          if (!active()) return
-          if (blob.type && blob.type !== 'image/png') throw new Error('Invalid PNG content type')
-          const signature = new Uint8Array(await blob.slice(0, 8).arrayBuffer())
-          if (signature.length !== 8 || ![137, 80, 78, 71, 13, 10, 26, 10].every((b, i) => signature[i] === b)) throw new Error('Invalid PNG snapshot')
-          if (!active()) return
+          paint()
+          const cache = options.cache
+          if (cache && getPptxPreviewScope() !== cache.scope) return
+          const load = (signal: AbortSignal) => rasterSlot(signal, () => checkedRaster(() => options.loadRaster(page, part, signal)))
+          media.cacheKey = cache ? JSON.stringify(['png', cache.sourceKey, options.sourceSha256, page, part]) : undefined
+          const blob = cache
+            ? await pptxPreviewCache.getOrLoad<Blob>(cache.scope,
+              media.cacheKey!, async signal => {
+                const value = await load(signal)
+                return { value, bytes: value.size }
+              })
+            : await load(controller.signal)
+          if (!active() || cache && getPptxPreviewScope() !== cache.scope) return
           media.url = URL.createObjectURL(blob); urls.add(media.url)
           media.state = 'loaded'; publishPart(part); paint()
         } catch {
@@ -221,6 +269,14 @@ export function createPptxViewportMedia(options: {
     stop() {
       controller.abort()
       observer?.disconnect(); mutations?.disconnect()
+      // A retained DOM can outlive its controller (active=false). Its part
+      // identity remains valid for the next authorized controller to repaint.
+      for (const image of Array.from(root?.querySelectorAll('.pptx-preview-slide-wrapper') || []).flatMap(slide => Array.from(slide.querySelectorAll<HTMLImageElement>('img')))) {
+        if (urls.has(image.getAttribute('src') || '')) {
+          image.dataset.pptxMediaState = 'pending'
+          image.src = VECTOR_PLACEHOLDER
+        }
+      }
       for (const url of urls) URL.revokeObjectURL(url)
       urls.clear()
       // Release queued promises without starting further network requests.
