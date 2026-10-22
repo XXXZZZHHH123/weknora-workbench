@@ -37,6 +37,12 @@ function sendAuth() {
 }
 function receive(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
+  if (event.data?.type === 'structured-import-updated') {
+    if (event.data.knowledge_base_id === kbId.value && String(event.data.tenant_id) === String(tenant.value)) {
+      window.dispatchEvent(new CustomEvent('weknora:knowledge-directory-change', { detail: { kbId: kbId.value } }))
+    }
+    return
+  }
   if (event.data?.type === 'structured-refresh-auth') { void refreshStructuredFrame(event, () => frame.value?.contentWindow === event.source); return }
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'structured-ready') sendAuth()

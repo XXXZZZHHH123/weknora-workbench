@@ -795,19 +795,74 @@ def create_app(data_dir: str | Path | None = None):
                     f.write(chunk)
             identity = current_identity.get()
             authorization = request.state.verified_authorization
+            native = None
+            if identity.knowledge_base_id:
+                from .native_import import register_source
+                native = await register_source(path, authorization, identity, MAX_UPLOAD)
             with job_lock:
                 jobs[job_id] = {"id": job_id, 'tenant_id':identity.tenant_id,
                     'knowledge_base_id':identity.knowledge_base_id, 'user_id': identity.user_id,
+                    **({'source_knowledge_id': native['source_knowledge_id'], 'native_source': native}
+                       if native else {}),
                     "status": "processing", "stage": "扫描全部工作表并导入结构明确的表，不调用模型"}
             context = contextvars.copy_context()
-            threading.Thread(target=context.run, args=(run_import, job_id, path, None, None,
-                True, authorization, identity), daemon=True).start()
+            threading.Thread(target=context.run, args=(run_import, job_id, path, native, None,
+                not bool(native), authorization, identity), daemon=True).start()
         except Exception:
             path.unlink(missing_ok=True)
             uploads.rmdir()
             import_lock.release()
             raise
-        return {"id": job_id, "status": "processing"}
+        return {"id": job_id, "status": "processing",
+                **({'source_knowledge_id': native['source_knowledge_id']} if native else {})}
+
+    @app.post('/api/imports/{import_id}/register-original')
+    async def register_original(import_id: str, request: Request):
+        from .native_import import load_source, original_fingerprint, register_source
+        identity = current_identity.get()
+        if not identity.knowledge_base_id:
+            raise HTTPException(400, '请在原件所属知识库中登记文件。')
+        if not import_lock.acquire(blocking=False):
+            raise HTTPException(409, '已有导入任务，请等待完成后登记原件。')
+        try:
+            authorization = request.state.verified_authorization
+            doc = await run_in_threadpool(manager.get, import_id)
+            path = manager.source_path(doc)
+            # Only the current scoped manager's saved original is eligible;
+            # request bodies cannot supply a local path, a destination KB or bytes.
+            if (doc.get('import_id') != import_id or path.resolve().parent != manager.path(import_id).resolve()
+                    or not isinstance(doc.get('sha256'), str)):
+                raise HTTPException(409, '原件登记信息无效。')
+            size, digest = await run_in_threadpool(original_fingerprint, path, MAX_UPLOAD, doc['sha256'])
+            source = None
+            for binding in doc.get('native_source_bindings', []):
+                if (binding.get('knowledge_base_id') != identity.knowledge_base_id
+                        or binding.get('tenant_id') != identity.knowledge_base_tenant_id):
+                    continue
+                if not valid_knowledge_base_id(binding.get('source_knowledge_id')):
+                    raise HTTPException(409, '原件标识无效，请核对已保存的来源关联。')
+                try:
+                    candidate = await load_source(binding.get('source_knowledge_id'), authorization, identity, MAX_UPLOAD)
+                except HTTPException as exc:
+                    if exc.status_code == 404:
+                        continue
+                    raise
+                if candidate['file_size'] != size or candidate['file_hash'] != digest:
+                    raise HTTPException(409, '知识库原件已改变，未重复登记旧结构化数据。')
+                source = candidate
+                break
+            if source is None:
+                source = await register_source(path, authorization, identity, MAX_UPLOAD,
+                                               expected_sha256=doc['sha256'])
+            await run_in_threadpool(manager.bind_native_source, import_id, source,
+                before_commit=lambda: check_job_write(authorization, identity))
+            identifier = source['source_knowledge_id']
+            library = quote(identity.knowledge_base_id, safe='')
+            return {'source_knowledge_id': identifier, 'import_id': import_id,
+                    'preview_path': f'/platform/knowledge-bases/{library}?knowledge_id={quote(identifier, safe="")}',
+                    'structured_path': f'/platform/knowledge-bases/{library}/structured-data?mode=import&source_knowledge_id={quote(identifier, safe="")}'}
+        finally:
+            import_lock.release()
 
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str):

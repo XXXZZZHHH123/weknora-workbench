@@ -398,7 +398,22 @@ function notifyImportUpdated(importId,datasetId,status,expectedEpoch=authEpoch){
 $('sheetList').onclick=e=>{const b=e.target.closest('[data-sheet-index]');if(b)selectSheet(Number(b.dataset.sheetIndex)).catch(e=>note(e.message))};$('importSelect').onchange=()=>selectImport().catch(e=>note(e.message));$('reloadImports').onclick=()=>refreshImports().catch(e=>note(e.message));
 $('sampleImportList').onclick=e=>{const button=e.target.closest('[data-sample-import]');if(button)refreshImports(button.dataset.sampleImport).catch(e=>note(e.message));};
 $('rescanImport').onclick=async()=>{if(!currentImport)return;const id=currentImport.import_id,scopeEpoch=authEpoch;$('rescanImport').disabled=true;try{await api('/api/imports/'+id+'/rescan',{method:'POST'});await refreshImports(id);note('已更新待确认表的识别建议。已确认映射和已发布数据保持原版本。');notifyImportUpdated(id,'','rescanned',scopeEpoch)}catch(e){note(e.message)}finally{$('rescanImport').disabled=false}};
-$('upload').onclick=async()=>{const file=$('file').files[0];if(!file)return note('请先选择 Excel。');if(file.size>100*1024*1024)return note('文件超过100MB。');const epoch=authEpoch,isCurrent=()=>epoch===authEpoch;$('upload').disabled=true;taskProgress($('jobState'),'正在上传 Excel 原件…');try{const form=new FormData();form.append('file',file);const job=await api('/api/import',{method:'POST',body:form});taskProgress($('jobState'),'正在扫描全部工作表并导入可识别数据…');const result=await waitJob(job.id,(stage,progress)=>{if(isCurrent())taskProgress($('jobState'),stage,progress)},isCurrent);if(!isCurrent())return;$('jobState').textContent=`扫描完成${result.elapsed_seconds!=null?'，用时 '+result.elapsed_seconds+' 秒':''}${result.reused?'；已复用既有结果':''}。请查看各工作表识别状态。`;await refresh(isCurrent);if(!isCurrent())return;if(result.import_id)await refreshImports(result.import_id,isCurrent);if(result.dataset_id&&isCurrent()){$('dataset').value=result.dataset_id;await selectDataset(isCurrent)}}catch(e){if(isCurrent())$('jobState').textContent=e.message}finally{if(isCurrent()){endTaskProgress($('jobState'));$('upload').disabled=false}}};
+$('upload').onclick=async()=>{
+ const file=$('file').files[0];if(!file)return note('请先选择 Excel。');if(file.size>100*1024*1024)return note('文件超过100MB。');
+ const epoch=authEpoch,isCurrent=()=>epoch===authEpoch;$('upload').disabled=true;taskProgress($('jobState'),'正在上传 Excel 原件…');
+ try{
+  const form=new FormData();form.append('file',file);const job=await api('/api/import',{method:'POST',body:form});
+  if(!isCurrent())return;
+  if(job.source_knowledge_id)notifyImportUpdated('','','original-stored',epoch);
+  taskProgress($('jobState'),'正在扫描全部工作表并导入可识别数据…');
+  const result=await waitJob(job.id,(stage,progress)=>{if(isCurrent())taskProgress($('jobState'),stage,progress)},isCurrent);if(!isCurrent())return;
+  $('jobState').textContent=`扫描完成${result.elapsed_seconds!=null?'，用时 '+result.elapsed_seconds+' 秒':''}${result.reused?'；已复用既有结果':''}。请查看各工作表识别状态。`;
+  await refresh(isCurrent);if(!isCurrent())return;if(result.import_id)await refreshImports(result.import_id,isCurrent);
+  if(result.dataset_id&&isCurrent()){$('dataset').value=result.dataset_id;await selectDataset(isCurrent)}
+  notifyImportUpdated(result.import_id,result.dataset_id,'imported',epoch);
+ }catch(e){if(isCurrent())$('jobState').textContent=e.message}
+ finally{if(isCurrent()){endTaskProgress($('jobState'));$('upload').disabled=false}}
+};
 api('/api/ui-config').then(c=>{document.title='中哲物产 · '+c.title;$('appTitle').textContent=c.title;$('workspaceLabel').textContent=c.workspace_label;if(!embedded){const u=new URL(c.weknora_url);if(['http:','https:'].includes(u.protocol))document.querySelectorAll('.conversation-link').forEach(a=>a.href=u.href)}}).catch(()=>{});
 async function showModelSettings(){
  const cfg=await api('/api/model-settings');$('loginPanel').classList.add('hidden');$('workspace').classList.add('hidden');$('modelSettings').classList.remove('hidden');

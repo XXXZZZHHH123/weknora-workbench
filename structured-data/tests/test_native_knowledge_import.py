@@ -52,6 +52,10 @@ def native(tmp_path, monkeypatch):
         if request.url.path == "/api/v1/auth/me":
             return httpx.Response(200, json={"data": {"user": {"id": "user-a", "tenant_id": tenant},
                                    "memberships": [{"tenant_id": tenant, "role": role}]}})
+        if request.method == "POST" and request.url.path == "/api/v1/knowledge-bases/kb-a/knowledge/file":
+            state.setdefault('uploads', []).append(request.read())
+            return httpx.Response(state.get('upload_status', 200), json=state.get('upload_payload', {
+                "success": True, "data": state["document"]}))
         if request.url.path.startswith("/api/v1/knowledge-bases/"):
             identifier = request.url.path.rsplit("/", 1)[-1]
             return httpx.Response(200, json={"success": True, "data": {
@@ -161,6 +165,145 @@ def test_native_original_import_preserves_real_source_and_reuses_after_restart(n
         assert reused.json()["reused"] is True
         assert reused.json()["result"]["import_id"] == result["import_id"]
     assert [path for path, _ in state["calls"] if path.endswith("/download")] == downloads
+
+
+def test_direct_knowledge_base_upload_stores_a_native_original_before_scanning(native):
+    client, _, state, _ = native
+    response = client.post('/api/import', headers=headers(),
+                           files={'file': ('source.xlsx', state['contents'])})
+    assert response.status_code == 200, response.text
+    assert response.json().get('source_knowledge_id') == 'source-a'
+    completed = finish(client, response.json()['id'])['result']
+    assert completed['source_knowledge_id'] == 'source-a'
+    review = client.get('/api/imports/' + completed['import_id'], headers=headers()).json()
+    assert review['native_source_bindings'][0]['file_hash'] == state['document']['file_hash']
+    assert review['use_reviewed_mappings'] is False
+    assert len(state['uploads']) == 1
+    assert b'"source_only":true' in state['uploads'][0]
+
+
+def seed_unregistered_original(native):
+    from structured_data.imports import ImportManager
+    _, _, state, root = native
+    original = root / 'source.xlsx'
+    original.write_bytes(state['contents'])
+    manager = ImportManager(root / 'knowledge-bases' / 'kb-a')
+    result = manager.ingest(original, use_reviewed_mappings=False)
+    return manager, result
+
+
+def test_existing_knowledge_base_original_can_register_idempotently_without_reimport(native):
+    client, _, state, _ = native
+    manager, initial = seed_unregistered_original(native)
+    before = manager.get(initial['import_id'])
+    path = '/api/imports/' + initial['import_id'] + '/register-original'
+    response = client.post(path, headers=headers())
+    assert response.status_code == 200, response.text
+    assert response.json()['source_knowledge_id'] == 'source-a'
+    assert response.json()['preview_path'].endswith('knowledge_id=source-a')
+    after = manager.get(initial['import_id'])
+    assert after['dataset_id'] == before['dataset_id']
+    assert after['sheets'] == before['sheets']
+    assert len(after['native_source_bindings']) == 1
+    assert len(state['uploads']) == 1
+    assert client.post(path, headers=headers()).status_code == 200
+    assert len(state['uploads']) == 1
+
+
+def test_register_original_is_confined_to_the_requested_knowledge_base(native):
+    client, _, state, _ = native
+    _, initial = seed_unregistered_original(native)
+    path = '/api/imports/' + initial['import_id'] + '/register-original'
+    assert client.post(path, headers=headers('kb-b')).status_code in {400, 404}
+    assert client.post(path, headers={key: value for key, value in headers().items()
+                                     if key != 'X-Knowledge-Base-ID'}).status_code == 400
+    state['permission'] = 'viewer'
+    assert client.post(path, headers=headers()).status_code == 403
+    assert not state.get('uploads')
+
+
+def test_register_original_refuses_a_changed_saved_workbook_before_upload(native):
+    client, _, state, _ = native
+    manager, initial = seed_unregistered_original(native)
+    source = manager.source_path(manager.get(initial['import_id']))
+    source.write_bytes(source.read_bytes() + b'tampered')
+    response = client.post('/api/imports/' + initial['import_id'] + '/register-original', headers=headers())
+    assert response.status_code == 409, response.text
+    assert not state.get('uploads')
+    assert not manager.get(initial['import_id']).get('native_source_bindings')
+
+
+@pytest.mark.parametrize('status', [403, 413, 500])
+def test_native_storage_failure_does_not_start_a_private_structured_import(native, status):
+    client, _, state, root = native
+    state['upload_status'] = status
+    response = client.post('/api/import', headers=headers(),
+                           files={'file': ('source.xlsx', state['contents'])})
+    assert response.status_code == (status if status in {403, 413} else 502), response.text
+    assert not list(root.glob('**/review.json'))
+    assert not list(root.glob('**/uploads/*'))
+
+
+@pytest.mark.parametrize('patch,status', [({'knowledge_base_id': 'kb-b'}, 403),
+                                        ({'tenant_id': 10001}, 403),
+                                        ({'file_hash': 'a' * 32}, 409)])
+def test_direct_upload_rejects_cross_scope_or_mismatched_native_receipts(native, patch, status):
+    client, _, state, root = native
+    state['document'].update(patch)
+    response = client.post('/api/import', headers=headers(),
+                           files={'file': ('source.xlsx', state['contents'])})
+    assert response.status_code == status, response.text
+    assert not list(root.glob('**/review.json'))
+    assert not list(root.glob('**/uploads/*'))
+
+
+def duplicate_reply(state):
+    state['upload_status'] = 409
+    state['upload_payload'] = {'success': False, 'code': 'duplicate_file',
+                               'data': dict(state['document'])}
+
+
+def test_real_native_duplicate_file_receipt_reuses_a_reverified_original(native):
+    client, _, state, _ = native
+    duplicate_reply(state)
+    response = client.post('/api/import', headers=headers(),
+                           files={'file': ('source.xlsx', state['contents'])})
+    assert response.status_code == 200, response.text
+    completed = finish(client, response.json()['id'])['result']
+    assert completed['source_knowledge_id'] == 'source-a'
+    assert state['metadata_reads'] >= 1
+    assert len(state['uploads']) == 1
+
+
+@pytest.mark.parametrize('patch,status', [({'knowledge_base_id': 'kb-b'}, 403),
+                                        ({'tenant_id': 10001}, 403),
+                                        ({'file_hash': 'b' * 32}, 409)])
+def test_native_duplicate_receipt_never_overrides_reverified_scope_or_hash(native, patch, status):
+    client, _, state, root = native
+    duplicate_reply(state)
+    # The receipt remains convincing; the metadata re-read is authoritative.
+    state['document'].update(patch)
+    response = client.post('/api/import', headers=headers(),
+                           files={'file': ('source.xlsx', state['contents'])})
+    assert response.status_code == status, response.text
+    assert state['metadata_reads'] >= 1
+    assert not list(root.glob('**/review.json'))
+
+
+@pytest.mark.parametrize('payload', [
+    {'success': False, 'code': 'duplicate_url', 'data': {'id': 'source-a'}},
+    {'success': False, 'data': {'id': 'source-a'}},
+    {'success': True, 'code': 'duplicate_file', 'data': {'id': 'source-a'}},
+    {'success': False, 'code': 'duplicate_file', 'data': []},
+])
+def test_other_conflict_receipts_are_not_accepted_as_a_native_original(native, payload):
+    client, _, state, root = native
+    state.update(upload_status=409, upload_payload=payload)
+    response = client.post('/api/import', headers=headers(),
+                           files={'file': ('source.xlsx', state['contents'])})
+    assert response.status_code == 502, response.text
+    assert not state.get('metadata_reads')
+    assert not list(root.glob('**/review.json'))
 
 
 @pytest.mark.parametrize("patch,status", [

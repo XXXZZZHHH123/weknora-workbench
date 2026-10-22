@@ -19,6 +19,7 @@ from test_review_api import make_workbook
 def scoped(tmp_path, monkeypatch):
     grants = {'kb-a': 10000, 'kb-b': 10000, 'kb-other': 10001}
     requests = []
+    originals = {}
 
     class Auth:
         def __init__(self, **kwargs): pass
@@ -31,6 +32,10 @@ def scoped(tmp_path, monkeypatch):
             if url.endswith('/auth/me'):
                 return httpx.Response(200, json={'data': {'user': {'id': 'test-user', 'tenant_id': tenant},
                     'memberships': [{'tenant_id': tenant, 'role': role}]}})
+            if '/api/v1/knowledge/' in url:
+                identifier = url.rsplit('/', 1)[-1]
+                return httpx.Response(200 if identifier in originals else 404,
+                                     json={'success': True, 'data': originals.get(identifier)})
             kb_id = url.rsplit('/', 1)[-1]
             if kb_id not in grants:
                 return httpx.Response(404, json={})
@@ -42,6 +47,22 @@ def scoped(tmp_path, monkeypatch):
                 data = {'id': kb_id, 'tenant_id': grants[kb_id], 'my_permission': 'editor'}
                 if grants[kb_id] != tenant: data['my_permission'] = 'viewer'
             return httpx.Response(200, json={'success': True, 'data': data}, request=httpx.Request('GET', url))
+
+        async def post(self, url, headers, files, data):
+            requests.append((url, dict(headers)))
+            kb_id = url.removesuffix('/knowledge/file').rsplit('/', 1)[-1]
+            assert kb_id in grants
+            assert data == {'process_config': '{"source_only":true}'}
+            name, stream, _ = files['file']
+            contents = stream.read()
+            digest = hashlib.md5(contents).hexdigest()
+            identifier = 'source-' + kb_id + '-' + digest[:12]
+            owner = grants[kb_id]['tenant_id'] if isinstance(grants[kb_id], dict) else grants[kb_id]
+            document = {'id': identifier, 'tenant_id': owner, 'knowledge_base_id': kb_id,
+                        'type': 'file', 'file_type': 'xlsx', 'file_name': name, 'file_size': len(contents),
+                        'file_hash': digest, 'parse_status': 'stored'}
+            originals[identifier] = document
+            return httpx.Response(200, json={'success': True, 'data': document})
 
     monkeypatch.setattr(httpx, 'AsyncClient', Auth)
     monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
