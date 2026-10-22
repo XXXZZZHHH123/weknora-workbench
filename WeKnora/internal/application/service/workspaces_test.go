@@ -88,7 +88,7 @@ func workspaceFixture(t *testing.T) (*WorkspaceService, *workspaceKBFixture, *wo
 	if err := db.AutoMigrate(&types.KnowledgeBase{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&types.ResearchWorkbench{}, &types.TenantMember{}, &types.Knowledge{}); err != nil {
+	if err := db.AutoMigrate(&types.ResearchWorkbench{}, &types.UserWorkbenchPin{}, &types.TenantMember{}, &types.Knowledge{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, kb := range kbs.rows {

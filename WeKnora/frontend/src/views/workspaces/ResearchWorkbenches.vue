@@ -9,7 +9,7 @@ import ResourceListToolbar from '@/components/ResourceListToolbar.vue'
 import ResourceSortControl from '@/components/ResourceSortControl.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import WorkbenchActions from './WorkbenchActions.vue'
-import { DEFAULT_RESOURCE_SORT, sortResourceItems, type ResourceSortValue } from '@/utils/resourceSorting'
+import { sortResourcesWithinGroups, type ResourceSortValue } from '@/utils/resourceSorting'
 import { createResearchWorkbench, listResearchWorkbenches, type ResearchWorkbench } from '@/api/workspaces'
 import { validateWorkbenchSource, validateWorkspaceName, workspaceErrorMessage as message, workspaceIdentity } from './workspaceForm'
 import { workspaceKnowledgeBases } from './workspaceKnowledgeBases'
@@ -22,7 +22,7 @@ const route = useRoute(), router = useRouter(), auth = useAuthStore(), resources
 const identity = computed(() => workspaceIdentity(auth.selectedTenantId ?? auth.tenant?.id, auth.user?.id))
 const creating = computed(() => route.name === 'researchWorkbenchCreate')
 const items = ref<ResearchWorkbench[]>([]), loading = ref(false), busy = ref(false), error = ref('')
-const keyword = ref(''), selectedResourceSort = ref<ResourceSortValue>(DEFAULT_RESOURCE_SORT)
+const keyword = ref(''), selectedResourceSort = ref<ResourceSortValue>('created_desc')
 const templateId = ref<WorkbenchTemplateId>('industrial')
 const kbId = ref(''), name = ref(''), description = ref(''), kbEditorOpen = ref(false)
 const sharedKnowledgeBaseIdentity = ref('')
@@ -31,7 +31,7 @@ function sourceName(workbench: ResearchWorkbench) { return libraries.value.find(
 const visibleItems = computed(() => {
   const query = keyword.value.trim().toLocaleLowerCase()
   const filtered = query ? items.value.filter(workbench => [workbench.name, workbench.description, sourceName(workbench)].some(value => value?.toLocaleLowerCase().includes(query))) : items.value
-  return sortResourceItems(filtered, selectedResourceSort.value, { getName: item => item.name, getCreatedAt: item => item.created_at, getUpdatedAt: item => item.updated_at })
+  return sortResourcesWithinGroups(filtered, selectedResourceSort.value, item => item.is_pinned ? 'pinned' : 'normal', ['pinned', 'normal'], { getName: item => item.name, getCreatedAt: item => item.created_at, getUpdatedAt: item => item.updated_at })
 })
 const existing = computed(() => items.value.filter(w => w.knowledge_base_id === kbId.value))
 let generation = 0, creationKey = createRandomUUID()
@@ -105,7 +105,7 @@ async function knowledgeCreated(newId: string) {
     </form>
     <div v-else-if="!creating" class="research-list-main">
       <div v-if="visibleItems.length" class="workbench-card-wrap"><article v-for="workbench in visibleItems" :key="workbench.id" class="workbench-card" role="link" tabindex="0" :aria-label="`进入${workbench.name}`" @click="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)" @keydown.enter.self.prevent="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)" @keydown.space.self.prevent="router.push(`/platform/research-workbenches/${encodeURIComponent(workbench.id)}`)">
-        <div class="card-header"><span class="workbench-avatar"><t-icon name="chart-bar" size="18px" /></span><span class="card-title" :title="workbench.name">{{ workbench.name }}</span><WorkbenchActions :workbench="workbench" @renamed="updated => { items = items.map(item => item.id === updated.id ? updated : item) }" @deleted="id => { items = items.filter(item => item.id !== id) }" /><t-icon class="workbench-open" name="chevron-right" size="16px" /></div>
+        <div class="card-header"><span class="workbench-avatar"><t-icon name="chart-bar" size="18px" /></span><span class="card-title" :title="workbench.name">{{ workbench.name }}</span><t-icon v-if="workbench.is_pinned" name="pin-filled" size="14px" title="已置顶" /><WorkbenchActions :workbench="workbench" @renamed="updated => { items = items.map(item => item.id === updated.id ? updated : item) }" @deleted="id => { items = items.filter(item => item.id !== id) }" /><t-icon class="workbench-open" name="chevron-right" size="16px" /></div>
         <div class="card-content"><div class="card-description" :class="{ 'is-empty': !workbench.description }">{{ workbench.description || '暂无说明' }}</div></div>
         <div class="card-bottom"><button type="button" class="workbench-source" :disabled="workbench.can_read_source === false" :title="workbench.can_read_source === false ? '来源库单独授权' : `转到知识库：${sourceName(workbench)}`" @click.stop="workbench.can_read_source !== false && router.push(`/platform/knowledge-bases/${encodeURIComponent(workbench.knowledge_base_id)}`)" @keydown.stop><t-icon name="folder" size="14px" /><span>{{ sourceName(workbench) }}</span></button><span class="workbench-template">{{ workbench.workspace_mode === 'isolated' ? templateById(workbench.template_id || 'blank').name : '研究工作台' }}</span></div>
       </article></div>

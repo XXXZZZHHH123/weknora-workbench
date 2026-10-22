@@ -266,7 +266,7 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 	if kbID != "" {
 		q = q.Where("knowledge_base_id = ?", kbID)
 	}
-	if err := q.Order("updated_at DESC, id").Find(&rows).Error; err != nil {
+	if err := q.Order("created_at DESC, id").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
@@ -279,6 +279,9 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 		visible = append(visible, row)
 	}
 	if err := s.loadWorkbenchOnboarding(ctx, visible); err != nil {
+		return nil, err
+	}
+	if err := s.applyWorkbenchPins(ctx, caller, visible); err != nil {
 		return nil, err
 	}
 	return visible, nil
@@ -344,6 +347,9 @@ func (s *WorkspaceService) GetWorkbench(ctx context.Context, id string) (*types.
 	if err = s.loadWorkbenchOnboarding(ctx, []*types.ResearchWorkbench{row}); err != nil {
 		return nil, err
 	}
+	if err = s.applyWorkbenchPins(ctx, caller, []*types.ResearchWorkbench{row}); err != nil {
+		return nil, err
+	}
 	return row, nil
 }
 
@@ -374,7 +380,7 @@ func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceI
 	}
 	row := &types.ResearchWorkbench{ID: uuid.NewString(), TenantID: caller.TenantID, UserID: caller.UserID, Name: *input.Name, KnowledgeBaseID: kb.ID, KnowledgeBaseName: kb.Name, IdempotencyKey: input.IdempotencyKey,
 		WorkspaceMode: types.ResearchWorkbenchModeIsolated, TemplateID: templateID, TemplateVersion: templateVersion,
-		AccessPolicy: types.NewResourceAccessPolicy()}
+		AccessPolicy: types.NewResourceAccessPolicy(), RestrictedViewProfiles: []types.WorkbenchRestrictedViewProfile{}}
 	if input.Description != nil {
 		row.Description = *input.Description
 	}

@@ -23,6 +23,8 @@ func TestWorkbenchNewResourcesArePrivateAndAdminHasNoBypass(t *testing.T) {
 	row := permissionWorkbench(t, s, "alice")
 	require.Equal(t, types.ResourcePermissionNone, row.AccessPolicy.SpacePermission)
 	require.Empty(t, row.AccessPolicy.Members)
+	require.NotNil(t, row.RestrictedViewProfiles)
+	require.Empty(t, row.RestrictedViewProfiles)
 	require.True(t, row.CanEdit)
 	require.True(t, row.CanManage)
 	for _, role := range []types.TenantRole{types.TenantRoleOwner, types.TenantRoleAdmin, types.TenantRoleContributor, types.TenantRoleViewer} {
@@ -125,7 +127,8 @@ func TestWorkbenchDerivedSourceNeedsCurrentKnowledgeOwnerConsent(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, approval.Requested)
 	require.False(t, approval.Approved)
-	_, err = s.UpdateWorkbenchPermissions(owner, row.ID, &types.ResourceAccessPolicy{SpacePermission: "viewer", Members: []types.ResourceMemberPermission{}})
+	profiles := []types.WorkbenchRestrictedViewProfile{{ID: "explicit-readers", Name: "Readers", Modules: []string{"market", "diagram"}, AllMembers: true}}
+	_, err = s.UpdateWorkbenchPermissionSettings(owner, row.ID, WorkbenchPermissionSettings{ResourceAccessPolicy: &types.ResourceAccessPolicy{SpacePermission: "viewer", Members: []types.ResourceMemberPermission{}}, RestrictedViewProfiles: &profiles})
 	require.NoError(t, err)
 	// Closing the KB must not revoke independently shared workbench metadata.
 	kb.AccessPolicy = types.NewResourceAccessPolicy()
@@ -232,7 +235,8 @@ func TestWorkbenchSourceModulesAreExplicitAndRevalidated(t *testing.T) {
 	owner := workspaceContext("research-owner", 1, types.TenantRoleContributor)
 	sourceOwner := workspaceContext("source-owner", 1, types.TenantRoleContributor)
 	reader := workspaceContext("reader", 1, types.TenantRoleViewer)
-	_, err := s.UpdateWorkbenchPermissions(owner, row.ID, &types.ResourceAccessPolicy{SpacePermission: "viewer", Members: []types.ResourceMemberPermission{}})
+	profiles := []types.WorkbenchRestrictedViewProfile{{ID: "explicit-readers", Name: "Readers", Modules: types.WorkbenchViewModules(), AllMembers: true}}
+	_, err := s.UpdateWorkbenchPermissionSettings(owner, row.ID, WorkbenchPermissionSettings{ResourceAccessPolicy: &types.ResourceAccessPolicy{SpacePermission: "viewer", Members: []types.ResourceMemberPermission{}}, RestrictedViewProfiles: &profiles})
 	require.NoError(t, err)
 	kb.AccessPolicy = types.NewResourceAccessPolicy()
 	require.NoError(t, s.db.Save(kb).Error)

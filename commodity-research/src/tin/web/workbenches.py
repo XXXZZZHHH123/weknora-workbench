@@ -29,6 +29,13 @@ def _write(scope):
     require_shared_write(scope)
 
 
+@router.post('/diagram/publish')
+async def publish_current_diagram(scope: WorkbenchScope = Depends(verified_workbench)):
+    _write(scope)
+    from tin.web.restricted_views import publish_diagram
+    return await run_in_threadpool(publish_diagram, scope)
+
+
 def _structured_catalog(operation, arguments):
     try:
         return bridge.structured_request("POST", "/api/tools/read",

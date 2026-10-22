@@ -125,12 +125,18 @@ func (s *tenantMemberService) emitAudit(ctx context.Context, entry *types.AuditL
 // auth middleware didn't set it (e.g. service-internal flows like
 // EnsureOwner during register, where there is no "caller").
 func auditActorRole(ctx context.Context) string {
+	if caller := types.CallerFromContext(ctx); caller.UserID != "" {
+		return string(caller.Role)
+	}
 	return string(types.TenantRoleFromContext(ctx))
 }
 
 // auditActor returns the calling user id from context, "" when no
 // authenticated caller is present (service-internal paths).
 func auditActor(ctx context.Context) string {
+	if caller := types.CallerFromContext(ctx); caller.UserID != "" {
+		return caller.UserID
+	}
 	uid, _ := types.UserIDFromContext(ctx)
 	return uid
 }

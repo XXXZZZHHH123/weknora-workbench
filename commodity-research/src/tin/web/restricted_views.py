@@ -10,6 +10,7 @@ from datetime import date, datetime, timezone
 import math
 import re
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException
@@ -124,8 +125,9 @@ def _diagram_ids(layout):
     identifiers = []
     for node in layout.get('nodes') or []:
         binding = node.get('binding') or {}
-        if binding.get('kind') == 'series' and binding.get('series_id'):
-            identifiers.append(binding['series_id'])
+        identifier = binding.get('series_id')
+        if binding.get('kind') == 'series' and isinstance(identifier, str) and SERIES_ID.fullmatch(identifier):
+            identifiers.append(identifier)
     return _ids(list(dict.fromkeys(identifiers)))
 
 
@@ -194,8 +196,10 @@ def _bounded_part(scope, identifiers, module):
             latest, previous = (rows[0] if rows else {}), (rows[1] if len(rows) > 1 else {})
             value, old = latest.get('value'), previous.get('value')
             output[identifier] = {'name': spec.get('metric') or spec.get('name') or '已绑定指标',
-                'unit': spec.get('unit') or '', 'date': latest.get('date'), 'value': value,
-                'change': value - old if value is not None and old is not None else None}
+                'unit': spec.get('unit') or '', 'frequency': spec.get('frequency') or '',
+                'date': latest.get('date'), 'value': value,
+                'change': value - old if value is not None and old is not None else None,
+                'change_pct': (value - old) / abs(old) * 100 if value is not None and old not in {None, 0} else None}
         return output
     except HTTPException:
         raise
@@ -229,38 +233,72 @@ def necessary_values(session, scope, identifiers, module):
     return output
 
 
+def readonly_diagram_layout(layout):
+    """Only fields drawn by the canvas cross the restricted-view boundary."""
+    from tin.export.diagram_md import ID_TOKEN
+    sources = [node for node in layout.get('nodes') or [] if isinstance(node, dict)]
+    identifiers, used = {}, set()
+    for index, source in enumerate(sources):
+        original = str(source.get('id') or '')
+        identifier = original if ID_TOKEN.fullmatch(original) and original not in {'__proto__', 'constructor', 'prototype'} else f'view-node-{index}'
+        while identifier in used:
+            identifier += '-view'
+        identifiers[original] = identifier
+        used.add(identifier)
+    nodes = []
+    for source in sources:
+        node = {'id': identifiers[str(source.get('id') or '')],
+                'label': source.get('label') if isinstance(source.get('label'), str) else ''}
+        for key in ('kind', 'layer'):
+            if isinstance(source.get(key), str):
+                node[key] = source[key]
+        if source.get('parent') is not None:
+            node['parent'] = identifiers.get(str(source['parent']))
+        for key, fallback in [('x', 0), ('y', 0), ('w', 160), ('h', 80)]:
+            number = source.get(key, fallback)
+            node[key] = number if type(number) in {float, int} and math.isfinite(number) else fallback
+        if isinstance(source.get('binding'), dict):
+            binding = source['binding']
+            node['binding'] = {key: binding[key] for key in ('kind', 'series_id', 'formula_id', 'op')
+                               if isinstance(binding.get(key), str)}
+            if 'proxy' in binding:
+                node['binding']['proxy'] = binding['proxy'] is True
+            if isinstance(binding.get('members'), list):
+                node['binding']['members'] = [identifiers.get(str(member), 'missing-view-member')
+                                               for member in binding['members']]
+        if isinstance(source.get('statics'), list):
+            node['statics'] = [{key: item.get(key, '') for key in ('label', 'value')
+                                if isinstance(item.get(key, ''), (str, int, float, bool))}
+                               for item in source['statics'] if isinstance(item, dict)]
+        nodes.append(node)
+    edges = []
+    for source in layout.get('edges') or []:
+        if not isinstance(source, dict):
+            continue
+        start, end = identifiers.get(str(source.get('from'))), identifiers.get(str(source.get('to')))
+        if start and end:
+            edge = {'from': start, 'to': end}
+            if isinstance(source.get('kind'), str):
+                edge['kind'] = source['kind']
+            edges.append(edge)
+    return {'nodes': nodes, 'edges': edges}
+
+
 def page_data(scope, module):
     """Page bindings and private artifacts are read without any fact projection."""
     with artifact_session(scope) as session:
-        identifiers = bound_series_ids(session, module)
+        template = default_diagram(session) if module == 'diagram' else None
+        identifiers = _diagram_ids(template.layout or {}) if template else (
+            [] if module == 'diagram' else bound_series_ids(session, module))
         values = necessary_values(session, scope, identifiers, module)
         output = {'cards': [values[identifier] for identifier in identifiers if identifier in values],
                   'diagram': None, 'entries': []}
         if module == 'diagram':
-            template = default_diagram(session)
             if template:
-                layout = template.layout or {}
-                nodes = []
-                for source in layout.get('nodes') or []:
-                    node = {key: source.get(key) for key in ('id', 'label', 'kind', 'layer', 'parent')}
-                    for key, fallback in [('x', 0), ('y', 0), ('w', 160), ('h', 80)]:
-                        number = source.get(key, fallback)
-                        node[key] = number if type(number) in {float, int} and math.isfinite(number) else fallback
-                    binding = source.get('binding') or {}
-                    node['data'] = values.get(binding.get('series_id')) if binding.get('kind') == 'series' else None
-                    node['statics'] = [{'label': str(item.get('label') or ''), 'value': str(item.get('value') or '')}
-                                       for item in source.get('statics') or [] if isinstance(item, dict)]
-                    nodes.append(node)
-                by_id = {node['id']: node for node in nodes}
-                edges = []
-                for edge in layout.get('edges') or []:
-                    source, target = by_id.get(edge.get('from')), by_id.get(edge.get('to'))
-                    if source and target:
-                        edges.append({'x1': source['x'] + source['w']/2, 'y1': source['y'] + source['h'],
-                                      'x2': target['x'] + target['w']/2, 'y2': target['y']})
-                output['diagram'] = {'name': template.name, 'nodes': nodes, 'edges': edges,
-                    'width': max((node['x'] + node['w'] for node in nodes), default=800) + 20,
-                    'height': max((node['y'] + node['h'] for node in nodes), default=400) + 20}
+                layout = readonly_diagram_layout(template.layout or {})
+                output['diagram'] = {'id': template.id, 'name': template.name,
+                    'layout': layout, 'is_default': True}
+                output['diagram_values'] = diagram_values(layout, values)
         if module in {'home', 'judgments', 'strategies', 'reports'} and not session.info.get('source_storage_legacy'):
             # Personal result ownership remains independent from WB visibility.
             # Saved snapshots, claims, source captures and generated signal
@@ -283,6 +321,78 @@ def page_data(scope, module):
         return output
 
 
+def diagram_values(layout, values):
+    """Resolve saved structure from bounded points without opening a facts session."""
+    from tin.export.diagram import NodeValue, UNBOUND, NO_DATA, OK, STALE, _EXPECTED_DAYS, _aggregate
+    today = datetime.now(SHANGHAI).date()
+    output = {}
+    for node in layout.get('nodes') or []:
+        binding = node.get('binding') or {}
+        item = NodeValue(node['id'], UNBOUND, node.get('label') or '').dump()
+        if binding.get('kind') in {'series', 'derived'}:
+            card = values.get(binding.get('series_id')) if binding.get('kind') == 'series' else None
+            item.update(state=NO_DATA, series_id=binding.get('series_id') or binding.get('formula_id'),
+                        proxy=bool(binding.get('proxy')), note='暂无已授权的观测值')
+            if card:
+                day = date.fromisoformat(card['date']) if card.get('date') else None
+                gap = (today - day).days if day else None
+                stale = gap is not None and gap > _EXPECTED_DAYS.get(card['frequency'], 30)
+                item.update(state=STALE if stale else OK if card['value'] is not None else NO_DATA,
+                    value=card['value'], unit=card['unit'], frequency=card['frequency'], as_of=card['date'],
+                    delta=card['change'], mom=card['change_pct'],
+                    note=f'已 {gap} 天未更新' if stale else None)
+        output[node['id']] = item
+    for node in layout.get('nodes') or []:
+        binding = node.get('binding') or {}
+        if binding.get('kind') == 'agg':
+            output[node['id']].update(_aggregate(node, binding.get('op', 'sum'), layout, output))
+    return {'nodes': list(output.values()), 'judgment': {},
+            'as_of': max((item['as_of'] for item in output.values() if item.get('as_of')), default=None)}
+
+
+def publish_diagram(scope):
+    """A source-readable editor explicitly publishes the layout they can already see."""
+    from tin.integration.workbench_scope import require_shared_write, workbench_session
+    require_shared_write(scope)
+    if scope.restricted:
+        raise HTTPException(403, '仅可读取来源的研究台编辑成员能发布产业图')
+    with workbench_session(scope) as session:
+        template = default_diagram(session)
+        if template is None:
+            template = session.scalar(select(DiagramTemplate).where(DiagramTemplate.variety == settings.variety)
+                .order_by(DiagramTemplate.is_default.desc(), DiagramTemplate.updated_at.desc()).limit(1))
+        if template is None:
+            return {'published': False, 'template_id': None}
+        # A cold projection may take time. Do not commit a new shared snapshot
+        # using edit/source rights that were revoked during that preparation.
+        try:
+            response = httpx.request('GET', settings.weknora_api_url.rstrip('/')
+                + '/api/v1/workspaces/research/' + quote(scope.workbench_id, safe=''),
+                headers={'Authorization': scope.authorization, 'X-Tenant-ID': str(scope.identity.tenant_id)},
+                trust_env=False, follow_redirects=False, timeout=15)
+            if response.status_code in {401, 403, 404}:
+                raise HTTPException(response.status_code, '产业图发布权限已改变，请重新打开研究台')
+            response.raise_for_status()
+            document = response.json()
+            current = document.get('data') if isinstance(document, dict) else None
+            if (document.get('success') is not True or not isinstance(current, dict)
+                    or current.get('id') != scope.workbench_id
+                    or type(current.get('scope_tenant_id')) is not int
+                    or current['scope_tenant_id'] != scope.identity.tenant_id):
+                raise ValueError('Invalid current workbench')
+            if (current.get('knowledge_base_id') != scope.knowledge_base_id
+                    or current.get('workspace_mode') != scope.metadata.get('workspace_mode')):
+                raise HTTPException(409, '研究台来源已改变，未发布旧产业图')
+            if current.get('can_edit') is not True or current.get('can_read_source') is not True:
+                raise HTTPException(403, '产业图发布需要当前来源读取和研究台编辑权限')
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+            raise HTTPException(503, '暂时无法重新核验产业图发布权限，未保存快照') from None
+        remember_origins(session, _diagram_ids(template.layout or {}))
+        remember_diagram(session, template)
+        session.commit()
+        return {'published': True, 'template_id': template.id}
+
+
 async def restricted_response(request, scope, route_path):
     if request.method not in {'GET', 'HEAD'} or route_path not in PAGES:
         raise HTTPException(403, '受限视角不开放指标目录、任意取数、原文、导出和修改接口')
@@ -292,7 +402,12 @@ async def restricted_response(request, scope, route_path):
     authorized = scope.source_available and module in scope.view_modules
     payload = await run_in_threadpool(page_data, scope, module) if authorized else {'cards': [], 'entries': [], 'diagram': None}
     from tin.web.app import templates
-    return templates.TemplateResponse(request, 'restricted.html', {'nav': {'market': 'variety', 'judgments': 'judgment'}.get(module, module),
+    context = {'nav': {'market': 'variety', 'judgments': 'judgment'}.get(module, module),
         'restricted_view': True, 'restricted_module': module, 'restricted_title': title,
         'restricted_authorized': authorized, 'restricted_pages': PAGES, 'restricted_data': payload,
-        'd': None, 'ticker': [], 'manual_indicators': [], 'err': None})
+        'd': None, 'ticker': [], 'manual_indicators': [], 'err': None}
+    if authorized and module == 'diagram' and payload.get('diagram'):
+        context.update(template=payload['diagram'], templates_all=[payload['diagram']],
+                       restricted_diagram_values=payload['diagram_values'])
+        return templates.TemplateResponse(request, 'diagram.html', context)
+    return templates.TemplateResponse(request, 'restricted.html', context)

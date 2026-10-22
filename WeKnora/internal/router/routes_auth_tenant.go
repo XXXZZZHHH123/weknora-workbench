@@ -148,6 +148,16 @@ func RegisterTenantRoutes(
 	}
 }
 
+func RegisterTenantNotificationRoutes(r *gin.RouterGroup, h *handler.WorkspaceNotificationHandler, g *rbacGuards) {
+	if h == nil {
+		return
+	}
+	// Inbox actions belong to an authenticated person, never an API key.
+	group := r.Group("/tenants/:id/notifications", g.PathTenantMatch(), g.Viewer())
+	group.GET("", h.List)
+	group.PUT("/:notification_id/read", h.MarkRead)
+}
+
 // RegisterMyInvitationRoutes wires the per-user invitation inbox under
 // /me/invitations. The v1 group already applies middleware.Auth so we
 // don't need a role gate here — the service enforces "only the invitee

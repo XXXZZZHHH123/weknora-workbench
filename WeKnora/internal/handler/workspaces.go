@@ -8,7 +8,6 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/application/service"
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
-	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -150,11 +149,15 @@ func workspacePermissionInput(c *gin.Context, input any) bool {
 }
 
 func (h *WorkspaceHandler) UpdateWorkbenchPermissions(c *gin.Context) {
-	var policy *types.ResourceAccessPolicy
-	if !workspacePermissionInput(c, &policy) {
+	var input *service.WorkbenchPermissionSettings
+	if !workspacePermissionInput(c, &input) {
 		return
 	}
-	row, err := h.service.UpdateWorkbenchPermissions(c.Request.Context(), c.Param("id"), policy)
+	if input == nil {
+		_ = c.Error(apperrors.NewBadRequestError("权限参数无效"))
+		return
+	}
+	row, err := h.service.UpdateWorkbenchPermissionSettings(c.Request.Context(), c.Param("id"), *input)
 	workspaceReply(c, row, err)
 }
 

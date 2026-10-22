@@ -4,7 +4,7 @@ export const SOURCE_SHARING_MODULES = [
   { key: 'indicators', label: '指标', hint: '仅本台绑定指标，无全库查询或下载' },
   { key: 'judgments', label: '研究判断', hint: '仅本人版本概览，不展示正文或区间计算' },
   { key: 'strategies', label: '策略', hint: '仅本人策略条目，不展示正文或触发计算' },
-  { key: 'diagram', label: '产业图', hint: '展示本台直接绑定的必要指标数值' },
+  { key: 'diagram', label: '产业图', hint: '完整产业图及其绑定的必要指标数值；不开放全库浏览' },
   { key: 'reports', label: '日报', hint: '仅本人日报记录，不展示摘要或证据快照' },
 ] as const
 

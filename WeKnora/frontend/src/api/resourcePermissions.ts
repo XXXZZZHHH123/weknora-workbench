@@ -1,4 +1,5 @@
 import { get, post, put } from '@/utils/request'
+import type { RestrictedViewProfile } from '@/utils/restrictedViewProfiles'
 import type { SourceSharingModule } from '@/utils/sourceSharingModules'
 
 export type ResourcePermission = 'viewer' | 'editor'
@@ -17,6 +18,7 @@ export interface ResourcePermissionsView {
   source_sharing_modules?: SourceSharingModule[]
   can_manage_source?: boolean
   source_sharing_requested?: boolean
+  restricted_view_profiles?: RestrictedViewProfile[] | null
   pending_workbenches?: Array<{ id: string; name: string; owner_id: string; source_sharing_approved: boolean; source_sharing_modules?: SourceSharingModule[] }>
 }
 type Envelope<T> = { success: boolean; data: T; message?: string }
@@ -27,7 +29,7 @@ function base(kind: ResourceKind, id: string) {
 export function getResourcePermissions(kind: ResourceKind, id: string): Promise<Envelope<ResourcePermissionsView>> {
   return get(`${base(kind, id)}/permissions`)
 }
-export function updateResourcePermissions(kind: ResourceKind, id: string, policy: ResourceAccessPolicy): Promise<Envelope<ResourcePermissionsView>> {
+export function updateResourcePermissions(kind: ResourceKind, id: string, policy: ResourceAccessPolicy & { restricted_view_profiles?: RestrictedViewProfile[]; source_sharing_approved?: boolean }): Promise<Envelope<ResourcePermissionsView>> {
   return put(`${base(kind, id)}/permissions`, policy)
 }
 export function updateWorkbenchSourceSharing(id: string, approved: boolean, modules: SourceSharingModule[]): Promise<Envelope<unknown>> {

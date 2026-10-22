@@ -164,6 +164,10 @@ const (
 	AuditActionKnowledgeMoveStarted    AuditAction = "knowledge.move_started"
 	AuditActionKnowledgeMoveCompleted  AuditAction = "knowledge.move_completed"
 	AuditActionKnowledgeMoveFailed     AuditAction = "knowledge.move_failed"
+	AuditActionKnowledgeFolderChanged  AuditAction = "knowledge.folder_changed"
+	AuditActionFolderCreated           AuditAction = "folder.created"
+	AuditActionFolderUpdated           AuditAction = "folder.updated"
+	AuditActionFolderDeleted           AuditAction = "folder.deleted"
 
 	AuditActionTagCreated AuditAction = "tag.created"
 	AuditActionTagUpdated AuditAction = "tag.updated"

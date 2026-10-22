@@ -25,7 +25,7 @@ export function createIsolatedResearchClient(captured: IsolatedResearchIdentity,
   }
   async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     assertIdentity()
-    if (!/^\/(overview|sources|source-imports|scan-jobs|datasets|imports|indicators|structure|judgments|notes|briefs|strategies|exports)(\/|\?|$)/.test(path) || path.includes('..')) throw new Error('无效的工作台请求。')
+    if (!/^\/(diagram\/publish|overview|sources|source-imports|scan-jobs|datasets|imports|indicators|structure|judgments|notes|briefs|strategies|exports)(\/|\?|$)/.test(path) || path.includes('..')) throw new Error('无效的工作台请求。')
     const headers = new Headers(options.headers)
     headers.set('Authorization', `Bearer ${own.token}`)
     headers.set('X-Tenant-ID', own.tenantId)

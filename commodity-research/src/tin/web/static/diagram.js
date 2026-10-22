@@ -68,6 +68,15 @@ async function dgLoad() {
   // 于是**每个方框都渲染成「未绑定」**——看上去像是绑定全丢了，实际只是取值没回来。
   // 服务端没重启（POST 这个路由是新加的，旧进程上是 405）就会正好撞上。
   if (!dg.layout) return;
+  if (window.DG_RESTRICTED) {
+    const data = window.DG_RESTRICTED_DATA;
+    dg.values = Object.fromEntries((data.nodes || []).map((n) => [n.node_id, n]));
+    dg.judgment = {};
+    const asOf = document.getElementById("dg-asof");
+    if (asOf) asOf.textContent = data.as_of == null ? "尚无已授权观测" : `数据截至 ${data.as_of}`;
+    dgRender();
+    return;
+  }
   const body = JSON.stringify({ date: window.DG_DATE || null,
                                 layout: { nodes: dg.layout.nodes, edges: dg.layout.edges } });
   let data = null, why = "";
@@ -599,6 +608,7 @@ function dgFit() {
 /* ---------- 编辑：拖动与绑定 ---------- */
 
 function dgToggleEdit() {
+  if (window.DG_RESTRICTED) return;
   // 「编辑布局」只负责进；出走 dgExitEdit（它要先问未保存的改动怎么办）
   if (dg.edit) { dgExitEdit(); return; }
   dg.edit = true;
@@ -628,7 +638,7 @@ function dgExitEdit() {
 function dgSyncEditUI() {
   const on = dg.edit;
   const btn = document.getElementById("dg-edit-btn");
-  btn.classList.toggle("hidden", on);
+  btn?.classList.toggle("hidden", on);
   for (const [id, hidden] of [["dg-exit", !on], ["dg-save", !on],
                               ["dg-tools", !on], ["dg-hint", !on]]) {
     document.getElementById(id)?.classList.toggle("hidden", hidden);
@@ -1096,7 +1106,7 @@ function dgInit() {
   dgLoad();
   dgSyncCompareBtn();
   // 新建的空图直接进编辑模式——否则落地看到一块白板，工具栏还藏着
-  if (new URLSearchParams(location.search).get("edit") === "1" || !dg.layout.nodes.length) {
+  if (!window.DG_RESTRICTED && (new URLSearchParams(location.search).get("edit") === "1" || !dg.layout.nodes.length)) {
     if (!dg.edit) dgToggleEdit();
   }
   dgSyncEditUI();
@@ -1440,6 +1450,18 @@ async function dgOpenDetail(nodeId) {
   const box = document.getElementById("dg-detail-body");
   document.getElementById("dg-detail-title").textContent = node.label;
   toggleDrawer("dg-detail-drawer", true);
+
+  if (window.DG_RESTRICTED) {
+    box.innerHTML = `<div class="py-3 border-b border-[var(--line)]">
+      <div class="text-2xl font-black tabular">${dgEsc(dgNum(v.value, v.unit))}</div>
+      <p class="mt-1 text-[11px] text-[var(--text-muted)]">${dgEsc(v.as_of || "暂无观测")}${v.proxy ? " · 代理指标" : ""}</p>
+      ${v.delta != null ? `<p class="mt-1 text-[11px] tabular">较上期 ${dgEsc(dgNum(v.delta))} ${dgEsc(dgPct(v.mom) || "")}</p>` : ""}
+      ${v.note ? `<p class="mt-1 text-[11px] text-[var(--text-muted)]">${dgEsc(v.note)}</p>` : ""}
+      </div>${(node.statics || []).map((item) => `<div class="flex gap-2 py-1 text-[11px]">
+        <span class="text-[var(--text-muted)]">${dgEsc(item.label)}</span><span>${dgEsc(item.value)}</span></div>`).join("")}
+      <p class="mt-3 text-[11px] text-[var(--text-muted)]">仅展示本图绑定的必要数值；历史明细和原始资料未开放。</p>`;
+    return;
+  }
 
   if (!v.series_id) {
     // 未绑定不代表这个框是空的：纯调研节点全靠静态系数说话，方框上只放得下两条
@@ -1936,6 +1958,7 @@ function dgOpenGroup(gid) {
           ${dgEsc(x.label)} ›</button>`).join("")}</div>` : ""}
     </div>
 
+    ${window.DG_RESTRICTED ? "" : `
     <div class="mt-3 pt-3 border-t border-[var(--line)]">
       <div class="text-[10px] font-semibold text-[var(--text-muted)] mb-1.5">分组公式</div>
       <div class="flex items-center gap-1.5 text-[11px]">
@@ -1971,7 +1994,7 @@ function dgOpenGroup(gid) {
         实物吨和金属吨差 2–3 倍，加出来的数看着完全正常，那比留空危险得多。
         Markdown 写成 <code>## 分组名 &lt;!-- agg: sum(甲, 乙) --&gt;</code>，
         不写括号即全部。</p>
-    </div>`;
+    </div>`}`;
 }
 
 function dgToggleMember(gid, nid) {

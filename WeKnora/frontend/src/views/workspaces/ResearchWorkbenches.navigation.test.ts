@@ -35,8 +35,8 @@ const toolbar = vue.defineComponent({ props: ['query'], emits: ['update:query'],
 const sortControl = vue.defineComponent({ props: ['modelValue'], emits: ['update:modelValue'], setup: (props, { emit }) => () => vue.h('select', { 'data-sort': true, value: props.modelValue, onChange: (value: string) => emit('update:modelValue', value) }) })
 const emptyState = vue.defineComponent({ props: ['title', 'description'], setup: (props, { slots }) => () => vue.h('section', {}, [props.title, props.description, slots.default?.()]) })
 const workbenches = [
-  { can_manage: true, id: 'wb-a', name: '研究 A', description: '独立资料研究', knowledge_base_id: 'kb-a', workspace_mode: 'isolated', template_id: 'industrial', updated_at: '2026-01-01' },
-  { can_manage: true, id: 'wb-b', name: '研究 B', description: '', knowledge_base_id: 'kb-b', workspace_mode: 'isolated', template_id: 'blank', updated_at: '2026-02-01' },
+  { can_manage: true, id: 'wb-a', name: '研究 A', description: '独立资料研究', knowledge_base_id: 'kb-a', workspace_mode: 'isolated', template_id: 'industrial', created_at: '2026-03-01', updated_at: '2026-01-01' },
+  { can_manage: true, id: 'wb-b', name: '研究 B', description: '', knowledge_base_id: 'kb-b', workspace_mode: 'isolated', template_id: 'blank', created_at: '2026-04-01', updated_at: '2026-02-01' },
 ]
 
 function fixture(options: { fail?: boolean; items?: Array<(typeof workbenches)[number] & { can_manage_source?: boolean; source_sharing_approved?: boolean; source_sharing_modules?: string[] }>; creating?: boolean; contributor?: boolean; update?: (id: string, data: any) => Promise<any>; remove?: (id: string) => Promise<any> } = {}) {
@@ -49,7 +49,7 @@ function fixture(options: { fail?: boolean; items?: Array<(typeof workbenches)[n
     'vue': { ...vue, vModelCheckbox: { mounted(el: Host, binding: any) { el.props.modelValue = binding.value }, updated(el: Host, binding: any) { el.props.modelValue = binding.value } } }, 'vue-router': { useRoute: () => route, useRouter: () => ({ push: (target: any) => { navigations.push(target); return Promise.resolve() } }) },
     '@/stores/auth': { useAuthStore: () => auth }, '@/stores/chatResources': { useChatResourcesStore: () => ({ rawKnowledgeBases: [{ id: 'kb-a', name: '资料 A' }, { id: 'kb-b', name: '资料 B' }], ensureKnowledgeBases: async () => {} }) },
     '@/stores/organization': { useOrganizationStore: () => ({ sharedKnowledgeBases: [], fetchSharedKnowledgeBases: async () => {} }) },
-    '@/api/workspaces': { listResearchWorkbenches: async () => { if (options.fail) throw new Error('列表不可用'); return { data: options.items || workbenches } }, getResearchWorkbench: async () => ({ data: null }), updateResearchWorkbench: async (id: string, data: any) => { mutations.push({ action: 'rename', id, data }); return options.update ? options.update(id, data) : { success: true, data: { ...workbenches.find(w => w.id === id), ...data } } }, deleteResearchWorkbench: async (id: string) => { mutations.push({ action: 'delete', id }); return options.remove ? options.remove(id) : { success: true } } },
+    '@/api/workspaces': { listResearchWorkbenches: async () => { if (options.fail) throw new Error('列表不可用'); return { data: options.items || workbenches } }, getResearchWorkbench: async () => ({ data: null }), setResearchWorkbenchPin: async (id: string, pinned: boolean) => { mutations.push({action:'pin',id,pinned}); return {success:true,data:{id,is_pinned:pinned,pinned_at:pinned?'2026-01-01':null}} }, updateResearchWorkbench: async (id: string, data: any) => { mutations.push({ action: 'rename', id, data }); return options.update ? options.update(id, data) : { success: true, data: { ...workbenches.find(w => w.id === id), ...data } } }, deleteResearchWorkbench: async (id: string) => { mutations.push({ action: 'delete', id }); return options.remove ? options.remove(id) : { success: true } } },
     '@/views/knowledge/KnowledgeBaseEditorModal.vue': { default: passthrough }, '@/utils/uuid': { createRandomUUID: () => 'request-a' },
     './workspaceForm': forms, './workspaceKnowledgeBases': knowledgeBases, '@/views/research/workbenchTemplates': templates,
     '@/components/ResourceListToolbar.vue': { default: toolbar }, '@/components/ResourceSortControl.vue': { default: sortControl },
@@ -76,11 +76,11 @@ function fixture(options: { fail?: boolean; items?: Array<(typeof workbenches)[n
   app.component('t-input', vue.defineComponent({ props: ['modelValue'], emits: ['update:modelValue', 'enter'], setup: (props, { emit }) => () => vue.h('input', { 'data-rename-input': true, value: props.modelValue, onInput: (value: string) => emit('update:modelValue', value) }) }))
   app.component('t-dialog', vue.defineComponent({ props: ['visible', 'header', 'confirmBtn'], emits: ['confirm', 'cancel'], setup: (props, { slots, emit }) => () => props.visible ? vue.h('dialog', { 'data-dialog': true }, [props.header, slots.default?.(), vue.h('button', { 'data-confirm': true, onClick: () => emit('confirm') }, props.confirmBtn.content), vue.h('button', { 'data-cancel': true, onClick: () => emit('cancel') }, '取消')]) : null }))
   app.config.warnHandler = () => {}; app.mount(root)
-  async function openAction(card: Host, kind: 'rename' | 'delete' | 'source') {
+  async function openAction(card: Host, kind: 'rename' | 'delete' | 'pin') {
     const trigger = all(card, el => el.type === 'button' && el.props['aria-haspopup'] === 'menu')[0]; assert.ok(trigger)
     for (const handle of [trigger.props.onKeydown].flat()) handle({ key: 'ArrowDown', preventDefault() {} })
     await flush()
-    const item = all(root, el => el.props.role === 'menuitem' && textOf(el) === (kind === 'rename' ? '重命名' : kind === 'source' ? '来源共享授权' : '删除'))[0]; assert.ok(item)
+    const item = all(root, el => el.props.role === 'menuitem' && textOf(el) === (kind === 'rename' ? '重命名' : kind === 'pin' ? '置顶' : '删除'))[0]; assert.ok(item)
     item.props.onClick({ stopPropagation() {} }); await flush()
   }
   return { root, navigations, mutations, auth, openAction, cards: () => all(root, el => el.props.role === 'link'), find: (key: string) => all(root, el => !!el.props[key])[0]!, close: () => app.unmount() }
@@ -226,10 +226,10 @@ test('tenant changes discard pending rename results and duplicate submits are ig
   assert.equal(f.find('data-dialog'), undefined)
 })
 
-test('viewers can navigate research cards without mutation controls', async t => {
+test('viewers can navigate and personally pin without resource mutation controls', async t => {
   const f = fixture({ contributor: false }); t.after(f.close); await flush()
   assert.equal(f.cards().length, 2)
-  assert.equal(all(f.root, el => el.props['aria-haspopup'] === 'menu').length, 0)
+  assert.equal(all(f.root, el => el.props['aria-haspopup'] === 'menu').length, 2)
   assert.equal(f.mutations.length, 0)
 })
 
@@ -270,13 +270,13 @@ test('rename requires an explicit successful response before changing the card',
 })
 
 
-test('readable workbenches without server management permission have no mutation menu', async () => {
+test('readable workbenches without management permission retain personal pins only', async () => {
   for (const can_manage of [false, undefined]) {
     const f = fixture({ items: workbenches.map(item => ({ ...item, can_manage })) as typeof workbenches })
     try {
       await flush()
       assert.equal(f.cards().length, 2)
-      assert.equal(all(f.root, el => el.props['aria-haspopup'] === 'menu').length, 0)
+      assert.equal(all(f.root, el => el.props['aria-haspopup'] === 'menu').length, 2)
       assert.equal(f.mutations.length, 0)
     } finally { f.close() }
   }
@@ -309,27 +309,18 @@ test('native workbench popup closes on Escape and before opening the confirmatio
   f.find('data-cancel').props.onClick(); await flush(); assert.equal(f.find('data-dialog'), undefined); assert.equal(f.mutations.length, 0)
 })
 
-test('source authorization starts with no page grants and sends only selected modules', async t => {
-  const f = fixture({ items: [{ ...workbenches[0]!, can_manage_source: true }] }); t.after(f.close); await flush()
-  await f.openAction(f.cards()[0]!, 'source')
-  const enabled = all(f.root, el => el.type === 'input' && el.props['aria-label'] === '允许共享研究数据')[0]!
-  assert.ok(enabled); enabled.props['onUpdate:modelValue'](true); await flush()
-  const modules = all(f.root, el => el.type === 'input' && el.props.name === 'source-sharing-module')
-  assert.equal(modules.length, 7)
-  assert.deepEqual(Array.from(modules.find(el => el.props.value === 'indicators')!.props.modelValue), [])
-  f.find('data-confirm').props.onClick(); await flush()
-  assert.equal(f.mutations.length, 0)
-  modules.find(el => el.props.value === 'diagram')!.props['onUpdate:modelValue'](['diagram']); await flush()
-  f.find('data-confirm').props.onClick(); await flush()
-  assert.deepEqual(f.mutations[0], { action: 'source', args: ['wb-a', true, ['diagram']] })
+test('source management is consolidated into members and permissions rather than a separate menu', async t => {
+ const f=fixture({items:[{...workbenches[0]!,can_manage_source:true}]});t.after(f.close);await flush()
+ await f.openAction(f.cards()[0]!, 'pin')
+ assert.equal(f.mutations[0].action, 'pin')
+ assert.equal(textOf(f.root).includes('来源共享授权'), false)
+ assert.ok(textOf(f.root).includes('研究 A'))
 })
-
-test('source authorization with old approved flag never grants every module implicitly', async t => {
-  const f = fixture({ items: [{ ...workbenches[0]!, can_manage_source: true, source_sharing_approved: true }] }); t.after(f.close); await flush()
-  await f.openAction(f.cards()[0]!, 'source')
-  const modules = all(f.root, el => el.type === 'input' && el.props.name === 'source-sharing-module')
-  assert.equal(modules.length, 7)
-  assert.deepEqual(Array.from(modules[0]!.props.modelValue), [])
-  f.find('data-confirm').props.onClick(); await flush()
-  assert.equal(f.mutations.length, 0)
+test('default order follows creation time even after an older workbench was edited later', async t => {
+ const f=fixture({items:[{...workbenches[0]!,updated_at:'2030-01-01'},workbenches[1]!]});t.after(f.close);await flush()
+ assert.equal(f.find('data-sort').props.value,'created_desc')
+ assert.ok(textOf(f.cards()[0]!).includes('研究 B'))
+ await f.openAction(f.cards()[1]!, 'pin');await flush()
+ assert.ok(textOf(f.cards()[0]!).includes('研究 A'))
+ assert.equal(f.navigations.length,0)
 })

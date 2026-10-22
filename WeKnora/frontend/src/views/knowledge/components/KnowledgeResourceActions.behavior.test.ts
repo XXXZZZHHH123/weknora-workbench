@@ -36,6 +36,7 @@ function fixture(kind: 'kb' | 'folder', options: { canRename?: boolean; canDelet
   events.addEventListener('weknora:workspaces-changed', () => emitted.push('workspaces'))
   events.addEventListener(directory.KNOWLEDGE_DIRECTORY_EVENT, () => emitted.push('directory'))
   const api = {
+    togglePinKnowledgeBase: async (...args: any[]) => { calls.push({operation:'pin-kb',args}); return options.mutate ? options.mutate() : {success:true,data:{id:base.id,is_pinned:true}} },
     getKnowledgeBaseById: async (...args: any[]) => { calls.push({ operation: 'read', args }); return options.read ? options.read() : { success: true, data: { id: base.id, description: 'Keep the existing description.' } } },
     updateKnowledgeBase: async (...args: any[]) => { calls.push({ operation: 'rename-kb', args }); return options.mutate ? options.mutate() : { success: true } },
     deleteKnowledgeBase: async (...args: any[]) => { calls.push({ operation: 'delete-kb', args }); return options.mutate ? options.mutate() : { success: true } },
@@ -213,4 +214,12 @@ test('compiled directory rows expose their labels, real counts and action button
   const triggers = all(root, n => String(n.props.class || '').includes('actual-folder-trigger'))
   assert.equal(triggers.length, 1); assert.ok(triggers.every(isRendered))
   rows[1].props.onClick({}); await flush(); assert.deepEqual(selected, ['Folder'])
+})
+
+test('readable KB context menus retain personal pinning without edit or owner rights', async t => {
+ const f=fixture('kb',{canRename:false,canDelete:false,canManage:false});t.after(f.close)
+ assert.ok(f.button('置顶'));assert.equal(f.button('重命名'),undefined)
+ await f.click('置顶')
+ assert.deepEqual(plainValue(f.calls.find(call=>call.operation==='pin-kb')?.args),['kb-a'])
+ assert.ok(f.button('取消置顶'))
 })

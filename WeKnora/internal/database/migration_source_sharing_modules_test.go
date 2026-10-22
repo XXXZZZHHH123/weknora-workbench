@@ -36,6 +36,9 @@ VALUES('old-wb',1,'researcher','Unchanged workbench','old-kb','old-key','old-has
 	m, err := migrate.New("file://"+filepath.Join(root, "migrations", "sqlite"), "sqlite3://"+path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = m.Close() })
+	if version, _, err := m.Version(); err == nil && version != 43 {
+		require.NoError(t, m.Migrate(43))
+	}
 	require.NoError(t, m.Steps(-1))
 	require.False(t, sqliteColumnExists(t, db, "research_workbenches", "source_sharing_modules"))
 	require.NoError(t, m.Steps(1))

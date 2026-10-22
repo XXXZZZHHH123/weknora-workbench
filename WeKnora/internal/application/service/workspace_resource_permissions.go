@@ -58,6 +58,10 @@ func (s *WorkspaceService) populateWorkbenchAccess(ctx context.Context, caller t
 	if !row.SourceSharingApproved || !types.ValidWorkbenchSourceModules(row.SourceSharingModules) || row.SourceSharingModules == nil {
 		row.SourceSharingModules = []string{}
 	}
+	row.ApprovedSourceModules = append([]string{}, row.SourceSharingModules...)
+	if !row.CanReadSource {
+		row.SourceSharingModules = types.EffectiveWorkbenchSourceModules(row.RestrictedViewProfiles, caller.UserID, row.ApprovedSourceModules)
+	}
 	row.SourceDataAvailable = kb != nil && (row.CanReadSource || (row.SourceSharingApproved && len(row.SourceSharingModules) > 0))
 	return kb, nil
 }
@@ -72,10 +76,21 @@ func (s *WorkspaceService) GetWorkbenchPermissions(ctx context.Context, id strin
 	}
 	return &types.WorkbenchPermissions{Policy: row.AccessPolicy, OwnerID: row.UserID, CanManage: row.CanManage,
 		Legacy: row.AccessPolicy == nil, SourceSharingApproved: row.SourceSharingApproved, SourceSharingRequested: row.SourceSharingRequested,
-		SourceSharingModules: row.SourceSharingModules, CanManageSource: row.CanManageSource}, nil
+		SourceSharingModules: row.ApprovedSourceModules, CanManageSource: row.CanManageSource, RestrictedViewProfiles: row.RestrictedViewProfiles}, nil
 }
 
 func (s *WorkspaceService) UpdateWorkbenchPermissions(ctx context.Context, id string, policy *types.ResourceAccessPolicy) (*types.WorkbenchPermissions, error) {
+	return s.UpdateWorkbenchPermissionSettings(ctx, id, WorkbenchPermissionSettings{ResourceAccessPolicy: policy})
+}
+
+type WorkbenchPermissionSettings struct {
+	*types.ResourceAccessPolicy
+	RestrictedViewProfiles *[]types.WorkbenchRestrictedViewProfile `json:"restricted_view_profiles,omitempty"`
+	SourceSharingApproved  *bool                                   `json:"source_sharing_approved,omitempty"`
+}
+
+func (s *WorkspaceService) UpdateWorkbenchPermissionSettings(ctx context.Context, id string, input WorkbenchPermissionSettings) (*types.WorkbenchPermissions, error) {
+	policy := input.ResourceAccessPolicy
 	caller, err := workspaceCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -96,6 +111,42 @@ func (s *WorkspaceService) UpdateWorkbenchPermissions(ctx context.Context, id st
 		// independent policy is an ownership decision rather than an RBAC bypass.
 		if row.UserID != caller.UserID {
 			return apperrors.NewForbiddenError("仅工作台主人可设置权限")
+		}
+		if err := validateResourcePolicyMembers(ctx, tx, caller.TenantID, policy); err != nil {
+			return err
+		}
+		profiles := row.RestrictedViewProfiles
+		if input.RestrictedViewProfiles != nil {
+			profiles = *input.RestrictedViewProfiles
+		}
+		if input.RestrictedViewProfiles != nil {
+			if err := validateWorkbenchRestrictedProfiles(ctx, tx, caller.TenantID, row.UserID, policy, profiles); err != nil {
+				return err
+			}
+			row.RestrictedViewProfiles = profiles
+		}
+		if input.SourceSharingApproved != nil {
+			var currentKB types.KnowledgeBase
+			if source == nil || source.TenantID != caller.TenantID {
+				return apperrors.NewForbiddenError("仅来源知识库主人可授权研究数据共享")
+			}
+			if err := tx.Where("id = ? AND tenant_id = ?", source.ID, caller.TenantID).First(&currentKB).Error; err != nil {
+				return workspaceDBError(err)
+			}
+			if currentKB.CreatorID != caller.UserID {
+				return apperrors.NewForbiddenError("仅来源知识库主人可授权研究数据共享")
+			}
+			modules := types.WorkbenchRestrictedProfileModules(profiles)
+			if *input.SourceSharingApproved && len(modules) == 0 {
+				return apperrors.NewBadRequestError("请先配置受限视角页面")
+			}
+			row.SourceSharingApproved = *input.SourceSharingApproved
+			row.SourceSharingApprovedBy = ""
+			row.SourceSharingModules = []string{}
+			if row.SourceSharingApproved {
+				row.SourceSharingApprovedBy = caller.UserID
+				row.SourceSharingModules = modules
+			}
 		}
 		row.AccessPolicy = policy
 		return tx.Save(row).Error

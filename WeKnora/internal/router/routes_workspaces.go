@@ -26,6 +26,7 @@ func RegisterWorkspaceRoutes(r *gin.RouterGroup, h *handler.WorkspaceHandler, g 
 	workbenches.GET("", h.ListWorkbenches)
 	workbenches.GET("/templates", h.ListWorkbenchTemplates)
 	workbenches.GET("/:id", h.GetWorkbench)
+	workbenches.PUT("/:id/pin", h.SetWorkbenchPin)
 	workbenches.GET("/:id/permissions", h.GetWorkbenchPermissions)
 	workbenches.PUT("/:id/permissions", g.Contributor(), h.UpdateWorkbenchPermissions)
 	workbenches.GET("/:id/source-scope", h.GetWorkbenchSourceScope)

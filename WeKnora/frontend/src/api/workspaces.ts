@@ -24,6 +24,8 @@ export interface ResearchWorkbenchTemplate {
 }
 
 export interface ResearchWorkbench {
+  is_pinned?: boolean
+  pinned_at?: string | null
   can_manage?: boolean
   can_manage_permissions?: boolean
   can_edit?: boolean
@@ -127,4 +129,8 @@ export function listResearchWorkbenchTemplates(): Promise<Envelope<ResearchWorkb
 }
 export function updateResearchWorkbenchOnboarding(workbenchId: string, data: ResearchWorkbenchOnboardingInput): Promise<Envelope<ResearchWorkbench>> {
   return put(`${base}/research/${id(workbenchId)}/onboarding`, data)
+}
+
+export function setResearchWorkbenchPin(workbenchId: string, isPinned: boolean): Promise<Envelope<{id: string; is_pinned: boolean; pinned_at: string | null}>> {
+  return put(`${base}/research/${id(workbenchId)}/pin`, { is_pinned: isPinned })
 }

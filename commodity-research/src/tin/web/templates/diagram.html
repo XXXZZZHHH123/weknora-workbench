@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}动态产业图 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
+{% block head %}{% if restricted_view %}<link rel="stylesheet" href="{{ research_static_prefix() }}/static/restricted.css?v={{ static_version() }}">{% endif %}{% endblock %}
 {% block main %}
-{% set can_edit_diagram = not research_workbench() or research_workbench().can_edit %}
+{% set can_edit_diagram = not restricted_view and (not research_workbench() or research_workbench().can_edit) %}
+{% if restricted_view %}<div class="restricted-notice" role="status"><span aria-hidden="true">&#128274;</span><strong>受限视角</strong><span>展示已授权的完整产业图与绑定数值；指标目录、原始资料、任意查询和下载未开放。</span></div>{% endif %}
 
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
@@ -13,7 +15,7 @@
       <span class="text-[var(--amber)]">没数的环节显示「尚无数据」，不会拿旧值充数</span>
     </p>
   </div>
-  <div class="flex items-center gap-1.5 shrink-0 text-xs">
+  {% if not restricted_view %}<div class="flex items-center gap-1.5 shrink-0 text-xs">
     <select id="dg-template" onchange="dgSwitch(this.value)" class="px-2 py-1.5 rounded-md">
       {% for t in templates_all %}
       <option value="{{ t.id }}" {{ 'selected' if t.id == template.id }}>{{ t.name }}{{ '（默认）' if t.is_default }}</option>
@@ -33,7 +35,7 @@
       px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">退出编辑</button>
     <button type="button" onclick="dgSave()" id="dg-save" disabled class="hidden
       px-3 py-1.5 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-40">保存</button>
-  </div>
+  </div>{% endif %}
 </div>
 
 <div class="flex items-center flex-wrap gap-3 py-2 text-[11px] text-[var(--text-muted)]">
@@ -81,7 +83,7 @@
   </div>
 
   <!-- 看图的选项放右上角：左上是编辑工具、左下是缩放，右上空着，语义上也正好 -->
-  <div id="dg-views" class="absolute right-3 top-3 flex items-center gap-1 text-xs
+  {% if not restricted_view %}<div id="dg-views" class="absolute right-3 top-3 flex items-center gap-1 text-xs
        bg-[var(--surface)] rounded-md border border-[var(--line)] px-1 py-0.5 shadow-sm">
     <button type="button" onclick="dgToggleJudgment()" id="dg-judge-btn"
       class="px-2 py-1 rounded hover:bg-[var(--surface-soft)]">判断视角</button>
@@ -89,6 +91,7 @@
       class="px-2 py-1 rounded hover:bg-[var(--surface-soft)]">趋势对比<span data-count class="tabular"></span></button>
   </div>
 
+  {% endif %}
   <div id="dg-tools" class="absolute left-3 top-3 hidden flex items-center gap-1 text-xs
        bg-[var(--surface)] rounded-md border border-[var(--line)] px-1 py-0.5 shadow-sm">
     {# 点按钮只是"拿起工具"，真正放在哪由下一次点击/拖拽决定——
@@ -126,6 +129,7 @@
   </div>
 </div>
 
+{% if not restricted_view %}
 <!-- 指标池：编辑模式下点节点才打开 -->
 <aside id="dg-drawer" data-drawer
   class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-md bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
@@ -158,6 +162,7 @@
   <div id="dg-pool" class="mt-1 flex-1 overflow-y-auto text-xs"></div>
 </aside>
 
+{% endif %}
 <!-- 节点详情：看图模式点方框即开 -->
 <aside id="dg-detail-drawer" data-drawer
   class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-md bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
@@ -179,13 +184,14 @@
       <p id="dg-group-trail" class="text-[10px] text-[var(--text-muted)]"></p>
       <h2 id="dg-group-title" class="text-lg font-bold truncate"></h2>
       <button type="button" onclick="dgRenameGroup()"
-        class="text-[11px] text-[var(--primary)] hover:underline">改名</button>
+        class="text-[11px] text-[var(--primary)] hover:underline" {% if restricted_view %}hidden{% endif %}>改名</button>
     </div>
     <button onclick="toggleDrawer('dg-group-drawer', false)" class="text-xl leading-none text-[var(--text-muted)] hover:text-[var(--text)]">&times;</button>
   </div>
   <div id="dg-group-body" class="mt-3 flex-1 overflow-y-auto"></div>
 </aside>
 
+{% if not restricted_view %}
 <!-- 跨来源交叉校验 -->
 <aside id="dg-check-drawer" data-drawer
   class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-lg bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
@@ -302,10 +308,13 @@
   <div id="dg-md-msg" class="mt-1.5 text-[11px] text-[var(--amber)] min-h-[16px]"></div>
 </aside>
 
+{% endif %}
 <script>
-  window.DG_TEMPLATE = {{ template | tojson }};
+  window.DG_RESTRICTED = {{ (restricted_view or false) | tojson }};
+  {% if restricted_view %}window.DG_RESTRICTED_DATA = {{ restricted_diagram_values | tojson }};
+  {% endif %}window.DG_TEMPLATE = {{ template | tojson }};
   window.DG_DATE = {{ (d or '') | tojson }};
 </script>
 <script src="{{ research_static_prefix() }}/static/diagram.js?v={{ static_version() }}"></script>
-{% if research_workbench() %}<script src="{{ research_static_prefix() }}/static/diagram-generation.js?v={{ static_version() }}"></script>{% endif %}
+{% if research_workbench() and not restricted_view %}<script src="{{ research_static_prefix() }}/static/diagram-generation.js?v={{ static_version() }}"></script>{% endif %}
 {% endblock %}

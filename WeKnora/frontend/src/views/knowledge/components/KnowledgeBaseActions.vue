@@ -1,23 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
-import { deleteKnowledgeBase, getKnowledgeBaseById, updateKnowledgeBase } from '@/api/knowledge-base'
+import { deleteKnowledgeBase, getKnowledgeBaseById, togglePinKnowledgeBase, updateKnowledgeBase } from '@/api/knowledge-base'
 import { useAuthStore } from '@/stores/auth'
 import { useChatResourcesStore } from '@/stores/chatResources'
 import { useOrganizationStore } from '@/stores/organization'
 import { validateWorkspaceName, workspaceErrorMessage } from '@/views/workspaces/workspaceForm'
 import ResourcePermissionDrawer from '@/components/ResourcePermissionDrawer.vue'
 
-const props = defineProps<{ knowledgeBase: { id: string; name: string; tenant_id?: string | number; can_manage?: boolean; can_manage_permissions?: boolean }; canRename?: boolean; canDelete?: boolean }>()
+const props = defineProps<{ knowledgeBase: { id: string; name: string; tenant_id?: string | number; can_manage?: boolean; can_manage_permissions?: boolean; is_pinned?: boolean }; canRename?: boolean; canDelete?: boolean }>()
 const emit = defineEmits<{ changed: [payload: { id: string; deleted: boolean; name?: string }] }>()
 const auth = useAuthStore(), resources = useChatResourcesStore(), organizations = useOrganizationStore()
 const menuOpen = ref(false), action = ref<'rename' | 'delete' | null>(null), name = ref(''), error = ref(''), busy = ref(false)
 const identity = computed(() => JSON.stringify([auth.selectedTenantId ?? auth.tenant?.id, auth.user?.id, auth.token, props.knowledgeBase.id]))
 const canDeleteHere = computed(() => props.canDelete && props.knowledgeBase.tenant_id != null && String(props.knowledgeBase.tenant_id) === String(auth.selectedTenantId ?? auth.tenant?.id))
-const permissionsOpen = ref(false)
+const permissionsOpen = ref(false), pinned = ref(props.knowledgeBase.is_pinned === true)
+watch(() => props.knowledgeBase.is_pinned, value => { pinned.value = value === true })
 const canManagePermissions = computed(() => (props.knowledgeBase.can_manage_permissions ?? props.knowledgeBase.can_manage) === true && canDeleteHere.value)
 let epoch = 0
-function reset() { epoch++; menuOpen.value = false; action.value = null; permissionsOpen.value = false; error.value = ''; busy.value = false }
+function reset() { pinned.value = props.knowledgeBase.is_pinned === true; epoch++; menuOpen.value = false; action.value = null; permissionsOpen.value = false; error.value = ''; busy.value = false }
 watch(() => [identity.value, props.canRename, canDeleteHere.value, canManagePermissions.value], reset, { flush: 'sync' })
 onBeforeUnmount(reset)
 function open(kind: 'rename' | 'delete') {
@@ -61,6 +62,23 @@ async function confirm() {
   } catch (e) { if (current()) error.value = workspaceErrorMessage(e) }
   finally { if (current()) busy.value = false }
 }
+async function pin() {
+  if (busy.value || !props.knowledgeBase.id) return
+  const own = identity.value, version = epoch, id = props.knowledgeBase.id
+  busy.value = true; error.value = ''
+  try {
+    const response: any = await togglePinKnowledgeBase(id)
+    if (own !== identity.value || version !== epoch) return
+    if (response?.success !== true || response.data?.id !== id || typeof response.data.is_pinned !== 'boolean') throw new Error('未能更新置顶状态，请重试。')
+    pinned.value = response.data.is_pinned
+    resources.invalidate('knowledgeBases')
+    window.dispatchEvent(new CustomEvent('weknora:workspaces-changed'))
+    emit('changed', { id, deleted: false })
+    menuOpen.value = false
+  } catch (e) { if (own === identity.value && version === epoch) error.value = workspaceErrorMessage(e) }
+  finally { if (own === identity.value && version === epoch) busy.value = false }
+}
+
 </script>
 
 <template>
@@ -71,13 +89,14 @@ async function confirm() {
       </button>
       <template #content>
         <div class="popup-menu knowledge-base-actions__menu" role="menu" @click.stop @keydown.esc.stop="menuOpen = false">
-          <slot name="before" :close="() => menuOpen = false" />
+          <slot name="before" :close="() => menuOpen = false"><button type="button" role="menuitem" class="popup-menu-item" :disabled="busy" @click="pin"><t-icon class="menu-icon" :name="pinned ? 'pin-filled' : 'pin'" /><span>{{ pinned ? '取消置顶' : '置顶' }}</span></button></slot>
           <button v-if="canManagePermissions" type="button" role="menuitem" class="popup-menu-item" @click="menuOpen = false; permissionsOpen = true"><t-icon name="usergroup" class="menu-icon" /><span>成员与权限</span></button>
           <button v-if="canRename" type="button" role="menuitem" class="popup-menu-item" @click="open('rename')"><t-icon name="edit" class="menu-icon" /><span>重命名</span></button>
           <button v-if="canDeleteHere" type="button" role="menuitem" class="popup-menu-item delete" @click="open('delete')"><t-icon name="delete" class="menu-icon" /><span>删除</span></button>
         </div>
       </template>
     </t-popup>
+    <span v-if="error && !action" role="alert" class="knowledge-base-actions__error">{{ error }}</span>
     <t-dialog :visible="action !== null" :header="action === 'rename' ? '重命名知识库' : '删除知识库'" width="400px"
       :confirm-btn="{ content: action === 'rename' ? '保存' : '删除知识库', theme: action === 'delete' ? 'danger' : 'primary', loading: busy }"
       :cancel-btn="{ content: '取消', disabled: busy }" :close-btn="!busy" :close-on-overlay-click="!busy" :close-on-esc-keydown="!busy"

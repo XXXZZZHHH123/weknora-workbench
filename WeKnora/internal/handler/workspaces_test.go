@@ -68,7 +68,7 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	if err := db.AutoMigrate(&types.KnowledgeBase{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&types.ResearchWorkbench{}); err != nil {
+	if err := db.AutoMigrate(&types.ResearchWorkbench{}, &types.UserWorkbenchPin{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library", CreatorID: "alice"}).Error; err != nil {
@@ -205,6 +205,23 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 		t.Fatal(response.Code, response.Body.String())
 	}
 	if response := request("PUT", sharingPath, `{"approved":false}`, "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"source_sharing_modules":[]`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	for _, body := range []string{
+		`{"space_permission":"viewer","members":[],"restricted_view_profiles":[{"id":"view","name":"View","modules":["diagram"],"member_ids":[],"all_members":true,"can_manage":true}]}`,
+		`{"space_permission":"viewer","members":[],"restricted_view_profiles":[{"id":"view","name":"View","modules":["unknown"],"member_ids":[],"all_members":true}]}`,
+		`{"space_permission":"viewer","members":[],"restricted_view_profiles":[],"source_sharing_approved":true}`,
+		`{"space_permission":"viewer","members":[],"restricted_view_profiles":[],"source_sharing_approved":"true"}`,
+	} {
+		if response := request("PUT", permissionPath, body, "alice"); response.Code != 400 {
+			t.Fatal(response.Code, response.Body.String())
+		}
+	}
+	profileBody := `{"space_permission":"viewer","members":[],"restricted_view_profiles":[{"id":"view","name":"View","modules":["diagram"],"member_ids":[],"all_members":true}],"source_sharing_approved":true}`
+	if response := request("PUT", permissionPath, profileBody, "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"source_sharing_modules":["diagram"]`) || !strings.Contains(response.Body.String(), `"restricted_view_profiles":[{"id":"view"`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("GET", "/research/"+research.Data.ID, "", "bob"); response.Code != 200 || strings.Contains(response.Body.String(), "member_ids") || strings.Contains(response.Body.String(), "restricted_view_profiles") {
 		t.Fatal(response.Code, response.Body.String())
 	}
 	if response := request("PUT", path, `{"status":"dismissed","tasks":{"sources":true}}`, "bob"); response.Code != 200 || !strings.Contains(response.Body.String(), `"status":"dismissed"`) {

@@ -14,12 +14,7 @@
 {% for card in restricted_data.cards %}<article class="restricted-card"><h2>{{ card.name }}</h2><div class="restricted-value tabular">{{ card.value | num(card.unit) }} <small>{{ card.unit }}</small></div><p>{{ card.date or '暂无观测' }}{% if card.change is not none %}<span class="tabular">较上期 {{ card.change | num(card.unit, true) }}</span>{% endif %}</p></article>{% endfor %}
 </section>{% else %}<section class="restricted-empty"><strong>尚未配置可展示的绑定指标</strong><p>由具备来源和研究台编辑权限的成员保存核心指标或产业图绑定后，这里才会读取对应的必要数值。</p></section>{% endif %}
 {% elif restricted_module == 'diagram' %}
-{% set diagram = restricted_data.diagram %}
-{% if diagram and diagram.nodes %}<section class="restricted-diagram"><h2>{{ diagram.name }}</h2><div class="restricted-diagram-scroll"><svg xmlns="http://www.w3.org/2000/svg" width="{{ diagram.width }}" height="{{ diagram.height }}" role="img" aria-label="{{ diagram.name }}">
-<defs><marker id="restricted-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="var(--text-muted)"/></marker></defs>
-{% for edge in diagram.edges %}<line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="var(--text-muted)" stroke-width="1.3" marker-end="url(#restricted-arrow)"/>{% endfor %}
-{% for node in diagram.nodes %}<g transform="translate({{ node.x }},{{ node.y }})"><rect width="{{ node.w }}" height="{{ node.h }}" rx="8" fill="var(--surface)" stroke="var(--line)"/><foreignObject width="{{ node.w }}" height="{{ node.h }}"><div xmlns="http://www.w3.org/1999/xhtml" class="restricted-diagram-node"><strong>{{ node.label }}</strong>{% if node.data %}<span class="tabular">{{ node.data.value | num(node.data.unit) }} {{ node.data.unit }}</span><small>{{ node.data.date or '暂无观测' }}</small>{% elif node.kind != 'group' %}<small>暂无已授权数值</small>{% endif %}{% for item in node.statics %}<small>{{ item.label }} {{ item.value }}</small>{% endfor %}</div></foreignObject></g>{% endfor %}
-</svg></div></section>{% else %}<section class="restricted-empty"><strong>尚未保存产业图</strong><p>由具备来源和研究台编辑权限的成员保存产业图后，这里展示已授权的结构和绑定数值。</p></section>{% endif %}
+<section class="restricted-empty"><strong>尚未保存产业图</strong><p>当前工作台还没有可展示的产业图。请由可读取来源的研究台编辑成员在成员与权限中保存产业图展示配置。</p></section>
 {% else %}
 {% if restricted_data.entries %}<section class="restricted-entries">{% for item in restricted_data.entries %}<article class="restricted-card"><header><h2>{{ item.title }}</h2><span>{{ item.status }} · {{ item.date }}</span></header>{% if item.text %}<p class="restricted-prose">{{ item.text }}</p>{% endif %}</article>{% endfor %}</section>{% else %}<section class="restricted-empty"><strong>暂无本人研究记录</strong><p>研究台可见权限不会公开其他成员的个人判断、策略或日报。历史快照、证据原文和批量数据未在受限视角开放。</p></section>{% endif %}
 {% endif %}
