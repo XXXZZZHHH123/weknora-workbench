@@ -212,6 +212,16 @@ func (g *rbacGuards) Owner() gin.HandlerFunc {
 	return middleware.RequireRole(types.TenantRoleOwner, g.cfg)
 }
 
+func (g *rbacGuards) MemberManagement() gin.HandlerFunc {
+	requireAdmin := g.Admin()
+	return func(c *gin.Context) {
+		if middleware.IsCrossTenantSuperuser(c.Request.Context(), g.cfg) {
+			c.Request = c.Request.WithContext(types.WithTenantOwnerManagement(c.Request.Context()))
+		}
+		requireAdmin(c)
+	}
+}
+
 // API-key authorization — a SEPARATE authority from the JWT role/ownership
 // guards above. Instead of stacking a per-route guard that also had to know
 // the caller's ownership, every API-key-accessible route declares one

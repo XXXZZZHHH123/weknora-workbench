@@ -19,8 +19,8 @@ import (
 )
 
 // TenantMemberHandler exposes /tenants/:id/members CRUD. The route layer
-// enforces RBAC (Viewer for list, Owner for any mutation) — see
-// router.RegisterTenantRoutes — so we don't re-check role here.
+// enforces RBAC (Viewer for list, Admin for mutations); owner membership
+// changes remain protected separately from ordinary member management.
 //
 // Tenant scoping: the auth middleware resolves the caller's role against
 // the *active* tenant (JWT / X-Tenant-ID switch / API-key). The URL :id
@@ -166,7 +166,7 @@ func (h *TenantMemberHandler) ListMembers(c *gin.Context) {
 // @Summary      直接添加空间成员（直加路径）
 // @Description
 //
-//	Owner 通过 email 直接把用户作为 active 成员添加进当前空间。
+//	Owner 或 Admin 通过 email 直接把用户作为 active 成员添加进当前空间；Admin 不能授予 Owner。
 //
 //	这是【直加路径】，被加入的用户没有任何确认机会就出现在空间里——
 //	保留它是为了三类不需要走邀请确认的场景：
@@ -204,6 +204,9 @@ func (h *TenantMemberHandler) AddMember(c *gin.Context) {
 	// sentinel-mapped 400.
 	if !req.Role.IsValid() {
 		c.Error(apperrors.NewValidationError("role must be one of owner/admin/contributor/viewer"))
+		return
+	}
+	if !allowTenantOwnerAssignment(c, req.Role) {
 		return
 	}
 
@@ -250,7 +253,7 @@ func writeAddMemberError(
 	switch {
 	case errors.Is(err, service.ErrInvalidTenantRole):
 		c.Error(apperrors.NewValidationError(err.Error()))
-	case errors.Is(err, service.ErrAPIKeyCannotAssignOwner):
+	case errors.Is(err, service.ErrAPIKeyCannotAssignOwner), errors.Is(err, service.ErrTenantOwnerManagementRequired):
 		c.Error(apperrors.NewForbiddenError(err.Error()))
 	case errors.Is(err, service.ErrMembershipAlreadyExists):
 		// 409 reads better than 400 here: the request was syntactically
@@ -261,6 +264,15 @@ func writeAddMemberError(
 			user.ID, tenantID, err)
 		c.Error(apperrors.NewInternalServerError("failed to add member").WithDetails(err.Error()))
 	}
+}
+
+func allowTenantOwnerAssignment(c *gin.Context, role types.TenantRole) bool {
+	ctx := c.Request.Context()
+	if role == types.TenantRoleOwner && types.CallerFromContext(ctx).Role == types.TenantRoleAdmin && !types.CanManageTenantOwners(ctx) {
+		c.Error(apperrors.NewForbiddenError(service.ErrTenantOwnerManagementRequired.Error()))
+		return false
+	}
+	return true
 }
 
 func writeAddMemberSuccess(c *gin.Context, user *types.User, member *types.TenantMember) {
@@ -307,7 +319,7 @@ func addMemberAndRespond(
 
 // UpdateMemberRole godoc
 // @Summary      修改空间成员角色
-// @Description  Owner 修改某位成员在当前空间内的角色；不能将最后一位 Owner 降级
+// @Description  Owner 或 Admin 修改成员角色；Admin 不能更改 Owner 身份，不能将最后一位 Owner 降级
 // @Tags         空间成员
 // @Accept       json
 // @Produce      json
@@ -347,7 +359,7 @@ func (h *TenantMemberHandler) UpdateMemberRole(c *gin.Context) {
 			c.Error(apperrors.NewConflictError(err.Error()))
 		case errors.Is(err, service.ErrInvalidTenantRole):
 			c.Error(apperrors.NewValidationError(err.Error()))
-		case errors.Is(err, service.ErrAPIKeyCannotAssignOwner):
+		case errors.Is(err, service.ErrAPIKeyCannotAssignOwner), errors.Is(err, service.ErrTenantOwnerManagementRequired):
 			c.Error(apperrors.NewForbiddenError(err.Error()))
 		default:
 			logger.Errorf(ctx, "UpdateRole failed: user=%s tenant=%d err=%v",
@@ -362,7 +374,7 @@ func (h *TenantMemberHandler) UpdateMemberRole(c *gin.Context) {
 
 // RemoveMember godoc
 // @Summary      移除空间成员
-// @Description  Owner 将某位成员从当前空间中移除（软删除 tenant_members 行）；不能移除最后一位 Owner
+// @Description  Owner 或 Admin 移除成员；Admin 不能移除 Owner，不能移除最后一位 Owner
 // @Tags         空间成员
 // @Produce      json
 // @Param        id       path  string  true  "空间 ID"
@@ -388,6 +400,8 @@ func (h *TenantMemberHandler) RemoveMember(c *gin.Context) {
 			c.Error(apperrors.NewNotFoundError("membership not found"))
 		case errors.Is(err, service.ErrLastOwner):
 			c.Error(apperrors.NewConflictError(err.Error()))
+		case errors.Is(err, service.ErrTenantOwnerManagementRequired):
+			c.Error(apperrors.NewForbiddenError(err.Error()))
 		default:
 			logger.Errorf(ctx, "RemoveMember failed: user=%s tenant=%d err=%v",
 				userID, tenantID, err)
