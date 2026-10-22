@@ -168,7 +168,7 @@ onBeforeUnmount(() => { generation++; memberGeneration++ })
           <label class="resource-permissions__source-toggle"><input v-model="restrictedEnabled" type="checkbox" :disabled="busy" aria-label="启用受限视角" />无知识库权限时展示受限视角</label>
           <p class="resource-permissions__hint">仅作用于已有本台权限的成员；有知识库权限时仍按原权限访问。同一人加入多套配置，可见页面合并。指标目录、任意查询、原件和下载始终关闭。</p>
           <template v-if="restrictedEnabled">
-            <p v-if="!details.can_manage_source" class="resource-permissions__hint">{{ details.source_sharing_approved ? `知识库主人已批准：${SOURCE_SHARING_MODULES.filter(module => details.source_sharing_modules?.includes(module.key)).map(module => module.label).join('、') || '暂无'}。未获批页面暂不生效。` : '需要知识库主人批准来源使用，批准前不展示指标数值。' }}</p>
+            <p v-if="!details.can_manage_source" class="resource-permissions__hint">{{ details.source_sharing_approved ? `知识库主人已批准：${SOURCE_SHARING_MODULES.filter(module => details?.source_sharing_modules?.includes(module.key)).map(module => module.label).join('、') || '暂无'}。未获批页面暂不生效。` : '需要知识库主人批准来源使用，批准前不展示指标数值。' }}</p>
             <details v-for="(profile, index) in profiles" :key="profile.id" class="resource-permissions__profile" :open="index === profiles.length - 1">
               <summary>{{ profile.name || '未命名配置' }}<small>{{ profile.all_members ? '所有获授权成员' : `${profile.member_ids.length} 人` }} · {{ profile.modules.length }} 个页面</small></summary>
               <div class="resource-permissions__profile-title"><input v-model="profile.name" :disabled="busy" maxlength="80" :aria-label="`配置 ${index + 1} 名称`" /><button type="button" class="resource-permissions__remove" :disabled="busy" :aria-label="`删除配置 ${index + 1}`" @click="profiles.splice(index, 1)"><t-icon name="delete" /></button></div>
