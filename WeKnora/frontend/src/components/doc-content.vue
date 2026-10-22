@@ -197,29 +197,6 @@ const detailTags = computed(() => {
   return Array.isArray(tags) ? tags : [];
 });
 
-const pdfReviewOpen = ref(false);
-const canReviewPdfTables = computed(() => resolveFilePreviewExt(props.details?.title || props.details?.file_name || '') === 'pdf');
-const pdfReviewKey = computed(() => `${authStore.selectedTenantId ?? authStore.tenant?.id ?? ''}:${authStore.user?.id ?? ''}:${props.kbId}:${props.details?.id ?? ''}`);
-watch(pdfReviewKey, () => { pdfReviewOpen.value = false; });
-watch(() => props.visible, visible => { if (!visible) pdfReviewOpen.value = false; });
-function navigateFromPdfReview(view: string) {
-  pdfReviewOpen.value = false;
-  if (!props.kbId) return;
-  if (view === 'conversation') {
-    void router.push(`/platform/knowledge-bases/${props.kbId}/creatChat`);
-    return;
-  }
-  void router.push({
-    path: `/platform/knowledge-bases/${props.kbId}/structured-data`,
-    query: {
-      mode: 'import',
-      source_knowledge_id: props.details?.id,
-      source_file_type: 'pdf',
-      ...(view === 'model-settings' ? { view: 'model-settings' } : {}),
-    },
-  });
-}
-
 const headerIconFileName = computed(() => {
   const detail = props.details;
   return detail?.file_type
@@ -266,6 +243,28 @@ mermaid.initialize({
   }
 });
 const props = defineProps(["visible", "details", "knowledgeType", "sourceInfo", "canEditKB", "canDownloadKB", "parse_status", "kbId"]);
+const pdfReviewOpen = ref(false);
+const canReviewPdfTables = computed(() => resolveFilePreviewExt(props.details?.title || props.details?.file_name || '', props.details?.file_type) === 'pdf');
+const pdfReviewKey = computed(() => `${authStore.selectedTenantId ?? authStore.tenant?.id ?? ''}:${authStore.user?.id ?? ''}:${props.kbId}:${props.details?.id ?? ''}`);
+watch(pdfReviewKey, () => { pdfReviewOpen.value = false; });
+watch(() => props.visible, visible => { if (!visible) pdfReviewOpen.value = false; });
+function navigateFromPdfReview(view: string) {
+  pdfReviewOpen.value = false;
+  if (!props.kbId) return;
+  if (view === 'conversation') {
+    void router.push(`/platform/knowledge-bases/${props.kbId}/creatChat`);
+    return;
+  }
+  void router.push({
+    path: `/platform/knowledge-bases/${props.kbId}/structured-data`,
+    query: {
+      mode: 'import',
+      source_knowledge_id: props.details?.id,
+      source_file_type: 'pdf',
+      ...(view === 'model-settings' ? { view: 'model-settings' } : {}),
+    },
+  });
+}
 const emit = defineEmits(["closeDoc", "getDoc", "questionDeleted", "summaryStateChange"]);
 
 const applySummaryState = (summaryStatus?: string, description?: string) => {

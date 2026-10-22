@@ -25,6 +25,8 @@ test('structured iframe messages require both the same origin and the current if
 test('PDF review entry is restricted to a PDF preview and mounts the shared authenticated host with the selected source', () => {
   const docContent = readFileSync(new URL('../components/doc-content.vue', import.meta.url), 'utf8')
   assert.match(docContent, /viewMode === 'preview' && canReviewPdfTables/)
+  assert.match(docContent, /resolveFilePreviewExt\(props\.details\?\.title \|\| props\.details\?\.file_name \|\| '', props\.details\?\.file_type\) === 'pdf'/, 'use authoritative file_type when the visible title has no PDF extension')
+  assert.ok(docContent.indexOf('const props = defineProps(') < docContent.indexOf('const pdfReviewKey = computed('), 'initialize props before registering watchers that synchronously read the PDF review key')
   assert.match(docContent, /核对 PDF 表格/)
   assert.match(docContent, /:key="pdfReviewKey"/)
   assert.match(docContent, /:knowledge-base-id="String\(kbId \|\| ''\)"/)
