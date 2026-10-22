@@ -44,8 +44,8 @@ type StructuredDataTool struct {
 func NewStructuredDataTool() *StructuredDataTool {
 	key, _ := os.ReadFile(os.Getenv("COMMODITY_RESEARCH_TOKEN_FILE"))
 	return &StructuredDataTool{BaseTool: NewBaseTool(ToolStructuredData,
-		"只读查询本轮授权范围的Excel、字段、序列和原单元格证据。单知识库自动限定，多知识库先读取返回的真实知识库目录，再根据完整问题和上下文用knowledge_base_id选择来源。按需describe_tools获取目标操作schema；发现字段后查询或用analyze_table运行完整只读SQL计算；inspect_source检查原件未解析区域、年度标签和单元格，并可用sums做原值求和。resolve_fields处理语义歧义，confirm_fields须真实用户选择。不会上传、删除或修改原表。",
-		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation","arguments"],"properties":{"knowledge_base_id":{"type":"string","description":"可选的真实知识库ID，必须在本轮已授权的知识库目录中；单库时默认使用该库，多库时先读取返回目录再根据完整问题选择"},"operation":{"type":"string","enum":["describe_tools","inspect_source","list_datasets","list_series","list_charts","query_series","compare_series","convert_price","resolve_fields","confirm_fields","execute_field_plan","get_result_evidence","analyze_table"]},"arguments":{"type":"object","description":"先describe_tools {operations:[目标操作]}获取参数schema；其余参数沿用操作schema，不接受账号、空间、URL或凭据"}}}`)),
+		"只读查询本轮授权范围的Excel、已确认PDF表格、字段、序列和原单元格证据。单知识库自动限定，多知识库先读取返回的真实知识库目录，再根据完整问题和上下文用knowledge_base_id选择来源。按需describe_tools获取目标操作schema；发现Excel字段后查询或用analyze_table运行完整只读SQL计算；list_datasets的pdf_tables或list_pdf_tables列出已确认PDF表，read_pdf_table核对原页单元格，query_pdf_table按真实列名只读计算；PDF草稿不可用于计算，人工确认不等于识别正确，必须注意跨页覆盖和单位；inspect_source检查原件未解析区域、年度标签和单元格，并可用sums做原值求和。resolve_fields处理语义歧义，confirm_fields须真实用户选择。不会上传、删除或修改原表。",
+		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation","arguments"],"properties":{"knowledge_base_id":{"type":"string","description":"可选的真实知识库ID，必须在本轮已授权的知识库目录中；单库时默认使用该库，多库时先读取返回目录再根据完整问题选择"},"operation":{"type":"string","enum":["describe_tools","inspect_source","list_datasets","list_series","list_charts","query_series","compare_series","convert_price","resolve_fields","confirm_fields","execute_field_plan","get_result_evidence","analyze_table","list_pdf_tables","read_pdf_table","query_pdf_table"]},"arguments":{"type":"object","description":"先describe_tools {operations:[目标操作]}获取参数schema；其余参数沿用操作schema，不接受账号、空间、URL或凭据"}}}`)),
 		endpoint: strings.TrimRight(os.Getenv("STRUCTURED_DATA_URL"), "/"),
 		key:      bytes.TrimSpace(key), client: &http.Client{Timeout: 30 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
@@ -101,7 +101,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	if json.Unmarshal(input["operation"], &operation) != nil || json.Unmarshal(input["arguments"], &arguments) != nil || arguments == nil {
 		return nil, fmt.Errorf("结构化表格需要合法 operation 和 arguments 对象")
 	}
-	allowed := map[string]bool{"describe_tools": true, "inspect_source": true, "list_datasets": true, "list_series": true, "list_charts": true, "query_series": true, "compare_series": true, "convert_price": true, "resolve_fields": true, "confirm_fields": true, "execute_field_plan": true, "get_result_evidence": true, "analyze_table": true}
+	allowed := map[string]bool{"describe_tools": true, "inspect_source": true, "list_datasets": true, "list_series": true, "list_charts": true, "query_series": true, "compare_series": true, "convert_price": true, "resolve_fields": true, "confirm_fields": true, "execute_field_plan": true, "get_result_evidence": true, "analyze_table": true, "list_pdf_tables": true, "read_pdf_table": true, "query_pdf_table": true}
 	if !allowed[operation] {
 		return nil, fmt.Errorf("结构化表格不支持此操作")
 	}

@@ -39,9 +39,13 @@ async function main() {
       type = 'text/html';
     } else if(route==='/') {body=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
     else if(['/sheet-review.js','/sheet-review.css','/workspace.css'].includes(route)){body=fs.readFileSync(path.join(source,route.slice(1)),'utf8');type=route.endsWith('.js')?'application/javascript':'text/css';}
+    else if(route==='/pdf-review.js'){body=fs.readFileSync(path.join(source,'static','pdf-review.js'),'utf8');type='application/javascript';}
     else if(route==='/api/ui-config')body={title:'Fixture',workspace_label:'Fixture',weknora_url:'http://127.0.0.1'};
     else if(route==='/api/datasets')body={datasets:[]};
     else if(route==='/api/imports')body={imports:[{import_id:importId,source_file:'Same.xlsx'}]};
+    else if(route==='/api/pdf/config')body={configured:false,max_bytes:52428800};
+    else if(route==='/api/pdf/drafts')body={drafts:[]};
+    else if(route==='/api/pdf/tables')body={tables:[]};
     else if(route.endsWith('/sheet'))body=sheet;
     else if(route.endsWith('/sheet-view'))body={sheet_name:sheet.name,total_rows:3,total_cols:2,range:{start_row:1,end_row:3,start_col:1,end_col:2,row_count:3,col_count:2},cells:[{row:1,column:1,cell:'A1',value:'Date',display:'Date'},{row:1,column:2,cell:'B1',value:'Metric',display:'Metric'},{row:2,column:1,cell:'A2',value:'2023-01-01',display:'2023-01-01'},{row:2,column:2,cell:'B2',value:100,display:'100'}],styles:{},merges:[],column_widths:{},row_heights:{},warnings:[]};
     else if(route.startsWith('/api/imports/'))body={import_id:importId,source_file:'Same.xlsx',sheets:[sheet]};

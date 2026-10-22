@@ -68,6 +68,10 @@ services:
       STRUCTURED_PUBLIC_ORIGIN: ${STRUCTURED_PUBLIC_ORIGIN:-}
       STRUCTURED_DATA_DIR: /data
       STRUCTURED_SERVICE_TOKEN_FILE: /run/secrets/research-token
+      PDF_TABLE_PARSER_ENGINE: ${PDF_TABLE_PARSER_ENGINE:-}
+      PDF_TABLE_PARSER_URL: ${PDF_TABLE_PARSER_URL:-}
+      PDF_TABLE_PARSER_API_KEY: ${PDF_TABLE_PARSER_API_KEY:-}
+      PDF_TABLE_PARSER_TIER: ${PDF_TABLE_PARSER_TIER:-basic}
     volumes:
       - structured-data:/data
       - ${DEPLOY_SHARED_DIR:?shared directory required}/research-service-token:/run/secrets/research-token:ro

@@ -16,6 +16,11 @@ def test_workspace_assets_load_before_login_without_opening_data(tmp_path):
         assert stylesheet.headers['cache-control'] == 'no-cache'
         assert '.series-choice' in stylesheet.text
         assert client.get('/workspace.css', headers={'Host': 'malicious.invalid'}).status_code == 403
+        pdf_script = client.get('/pdf-review.js')
+        assert pdf_script.status_code == 200
+        assert pdf_script.headers['content-type'].startswith('text/javascript')
+        assert 'openKnowledgeSource' in pdf_script.text
+        assert client.get('/api/pdf/drafts').status_code == 401
         assert client.get('/api/datasets').status_code == 401
 
 
@@ -34,7 +39,7 @@ def test_authentication_and_mcp_read_only_surface(tmp_path):
         result = client.post("/mcp", json=request, headers=headers)
         assert result.status_code == 200
         names = {t["name"] for t in result.json()["result"]["tools"]}
-        assert names == {"list_datasets", "list_series", "list_charts", "query_series", "compare_series", "convert_price", "resolve_fields", "confirm_fields", "execute_field_plan", "get_result_evidence", "analyze_table", "inspect_source"}
+        assert names == {"list_datasets", "list_series", "list_charts", "query_series", "compare_series", "convert_price", "resolve_fields", "confirm_fields", "execute_field_plan", "get_result_evidence", "analyze_table", "inspect_source", "list_pdf_tables", "read_pdf_table", "query_pdf_table"}
         headers["Host"] = "malicious.invalid"
         assert client.post("/mcp", json=request, headers=headers).status_code == 403
 

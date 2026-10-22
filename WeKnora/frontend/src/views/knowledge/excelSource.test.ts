@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { excelSourceExtension, isExcelFilename, isExcelSource, sameNativeUploadScope, structuredSourceLocation } from './excelSource.ts'
+import { excelSourceExtension, isPdfSource, isStructuredSource, isExcelFilename, isExcelSource, sameNativeUploadScope, structuredSourceLocation } from './excelSource.ts'
 
 test('Excel source routing uses the actual extension and leaves other formats alone', () => {
   assert.equal(isExcelFilename('Budget.XLSX'), true)
@@ -28,4 +28,15 @@ test('structured parsing keeps real source ID and knowledge-base scope for legac
   assert.equal(structuredSourceLocation('kb-b', source), null)
   assert.equal(structuredSourceLocation('kb-a', { ...source, file_type: 'xls' }), null)
   assert.equal(structuredSourceLocation('kb-a', { ...source, id: '' }), null)
+})
+
+ test('PDF structure entry preserves original scope and keeps normal document classification', () => {
+  const file = { id: 'pdf-source', type: 'file', file_type: 'PDF', file_name: 'native.pdf', knowledge_base_id: 'kb-a' }
+  assert.equal(isPdfSource(file), true)
+  assert.equal(isStructuredSource(file), true)
+  assert.equal(isExcelSource(file), false)
+  assert.deepEqual(structuredSourceLocation('kb-a', file), {path: '/platform/knowledge-bases/kb-a/structured-data', query: { mode: 'import', source_knowledge_id: 'pdf-source', source_file_type: 'pdf' }})
+  assert.equal(structuredSourceLocation('kb-b', file), null)
+  assert.equal(isPdfSource({...file, type: 'manual'}), false)
+  assert.equal(isPdfSource({...file, file_type: 'docx'}), false)
 })

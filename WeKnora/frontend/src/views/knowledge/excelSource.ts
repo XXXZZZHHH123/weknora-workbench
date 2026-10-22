@@ -25,11 +25,21 @@ export function isExcelSource(file: ExcelSourceFile): boolean {
   return !!excelSourceExtension(file)
 }
 
+export function isPdfSource(file: ExcelSourceFile): boolean {
+  if (file.type && file.type !== 'file') return false
+  const name = file.original_file_name || file.file_name || ''
+  return (file.file_type || (name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : '')).replace(/^\./, '').toLowerCase() === 'pdf'
+}
+
+export function isStructuredSource(file: ExcelSourceFile): boolean {
+  return isExcelSource(file) || isPdfSource(file)
+}
+
 export function structuredSourceLocation(kbId: string, file: ExcelSourceFile) {
-  if (!kbId || !file.id || excelSourceExtension(file) !== 'xlsx'
+  if (!kbId || !file.id || (excelSourceExtension(file) !== 'xlsx' && !isPdfSource(file))
       || (file.knowledge_base_id && file.knowledge_base_id !== kbId)) return null
   return { path: `/platform/knowledge-bases/${kbId}/structured-data`,
-    query: { mode: 'import', source_knowledge_id: file.id } }
+    query: { mode: 'import', source_knowledge_id: file.id, ...(isPdfSource(file) ? { source_file_type: 'pdf' } : {}) } }
 }
 
 export interface NativeUploadScope { userId: string; tenantId: string; knowledgeBaseId: string }

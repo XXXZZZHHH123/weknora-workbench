@@ -15,6 +15,7 @@ const tenant = computed(() => auth.selectedTenantId ?? auth.tenant?.id)
 const scope = computed(() => `${workspaceIdentity(tenant.value, auth.user?.id)}:${kbId.value}`)
 const mode = computed(() => route.query.mode === 'query' ? 'query' : 'import')
 const sourceKnowledgeId = computed(() => route.query.view !== 'model-settings' && typeof route.query.source_knowledge_id === 'string' ? route.query.source_knowledge_id : '')
+const sourceFileType = computed(() => route.query.source_file_type === 'pdf' ? 'pdf' : 'xlsx')
 const library = ref<any>(null), frame = ref<HTMLIFrameElement>(), frameGeneration = ref(0), loading = ref(false), error = ref('')
 const src = computed(() => `/structured/?session=${frameGeneration.value}${route.query.view === 'model-settings' ? '&view=model-settings' : ''}`)
 let generation = 0
@@ -32,7 +33,7 @@ function sendView() { frame.value?.contentWindow?.postMessage({ type: 'structure
 function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function sendAuth() {
   if (!library.value || !auth.token || !tenant.value) return
-  frame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: tenant.value, knowledgeBaseId: kbId.value, sourceKnowledgeId: sourceKnowledgeId.value }, window.location.origin)
+  frame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: tenant.value, knowledgeBaseId: kbId.value, sourceKnowledgeId: sourceKnowledgeId.value, sourceFileType: sourceFileType.value }, window.location.origin)
   sendView()
 }
 function receive(event: MessageEvent) {
@@ -48,7 +49,7 @@ function receive(event: MessageEvent) {
 }
 watch(scope, load, { immediate: true })
 watch(() => auth.token, sendAuth)
-watch(sourceKnowledgeId, sendAuth)
+watch([sourceKnowledgeId, sourceFileType], sendAuth)
 watch(mode, sendView)
 watch(effectiveTheme, sendTheme)
 watch(() => route.query.mode, (value) => {
@@ -65,7 +66,7 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('message', rece
         <h1>结构化数据库</h1>
         <div class="knowledge-structured-context">
           <span class="knowledge-structured-library" :title="library?.name || '知识库'">{{ library?.name || '知识库' }}</span>
-          <span class="knowledge-structured-mode">{{ route.query.view === 'model-settings' ? '字段模型设置' : mode === 'query' ? '数据查询' : 'Excel 导入' }}</span>
+          <span class="knowledge-structured-mode">{{ route.query.view === 'model-settings' ? '字段模型设置' : mode === 'query' ? '数据查询' : '表格导入' }}</span>
         </div>
       </div>
       <nav class="knowledge-structured-actions" aria-label="结构化数据库操作">

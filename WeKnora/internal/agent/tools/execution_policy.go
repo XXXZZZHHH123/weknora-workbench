@@ -13,7 +13,7 @@ func CanRunConcurrently(name string) bool {
 		ToolReadFile, ToolListSandboxFiles,
 		ToolWikiSearch, ToolWikiReadPage, ToolWikiReadIssue,
 		"structured_list_series", "structured_query_series", "structured_analyze_table",
-		"structured_inspect_source", "structured_get_result_evidence":
+		"structured_inspect_source", "structured_get_result_evidence", "structured_list_pdf_tables", "structured_read_pdf_table", "structured_query_pdf_table":
 		return true
 	default:
 		return false
@@ -44,7 +44,7 @@ func CanRunToolCallConcurrently(name, arguments string) bool {
 	}
 	switch operation {
 	case "describe_tools", "list_datasets", "list_series", "list_charts",
-		"query_series", "analyze_table", "inspect_source", "get_result_evidence":
+		"query_series", "analyze_table", "inspect_source", "get_result_evidence", "list_pdf_tables", "read_pdf_table", "query_pdf_table":
 		return true
 	default:
 		return false

@@ -290,7 +290,7 @@ func isTaskSourceProtocolTool(name string) bool {
 	switch name {
 	case renderChartToolName, expandTaskToolsName, agenttools.ToolSearchKnowledge, agenttools.ToolReadDocument, agenttools.ToolListDocuments,
 		agenttools.ToolBindDocumentScope, agenttools.ToolStructuredData, documentTableCalculationToolName, documentTableAnalysisToolName,
-		"structured_list_series", "structured_query_series", "structured_analyze_table", "structured_inspect_source", "structured_get_result_evidence":
+		"structured_list_series", "structured_query_series", "structured_analyze_table", "structured_inspect_source", "structured_get_result_evidence", "structured_list_pdf_tables", "structured_read_pdf_table", "structured_query_pdf_table":
 		return true
 	}
 	return false

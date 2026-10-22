@@ -40,7 +40,7 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 			catalogArgs, _ := json.Marshal(map[string]any{"operation": "list_datasets", "arguments": map[string]string{"question": query}})
 			requests = append(requests,
 				types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(catalogArgs)}},
-				types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: `{"operation":"describe_tools","arguments":{"operations":["list_series","query_series","analyze_table","inspect_source","get_result_evidence"]}}`}},
+				types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: `{"operation":"describe_tools","arguments":{"operations":["list_series","query_series","analyze_table","inspect_source","get_result_evidence","list_pdf_tables","read_pdf_table","query_pdf_table"]}}`}},
 			)
 		}
 	}

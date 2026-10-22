@@ -51,7 +51,7 @@ import DocumentListView from './components/DocumentListView.vue';
 import DocumentCardView from './components/DocumentCardView.vue';
 import DocumentBatchBar from './components/DocumentBatchBar.vue';
 import KbUploadSourceDropdown from './components/KbUploadSourceDropdown.vue';
-import { isExcelFilename, isExcelSource, sameNativeUploadScope, structuredSourceLocation } from './excelSource';
+import { isExcelFilename, isStructuredSource, sameNativeUploadScope, structuredSourceLocation } from './excelSource';
 import KbFolderTree from './components/KbFolderTree.vue';
 import KnowledgeBaseActions from './components/KnowledgeBaseActions.vue';
 import KnowledgeFolderActions from './components/KnowledgeFolderActions.vue';
@@ -2316,7 +2316,7 @@ const downloadKnowledge = async (item: KnowledgeCard) => {
 };
 
 const openStructuredSource = (item: KnowledgeCard) => {
-  if (!canMutateKnowledge.value || !isExcelSource(item)) return;
+  if (!canMutateKnowledge.value || !isStructuredSource(item)) return;
   const location = structuredSourceLocation(kbId.value, item);
   if (!location) {
     MessagePlugin.warning(t('knowledgeBase.structuredXlsNotice'));

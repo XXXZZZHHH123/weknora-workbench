@@ -9,7 +9,7 @@ import DocumentActionMenu from './DocumentActionMenu.vue';
 import FolderPickerMenu, { type FolderOption } from './FolderPickerMenu.vue';
 import KnowledgeProcessingTimeline from '@/components/knowledge-processing-timeline.vue';
 import { shownStall } from '@/utils/knowledgeProcessingStall';
-import { excelSourceExtension, isExcelSource } from '../excelSource';
+import { excelSourceExtension, isStructuredSource } from '../excelSource';
 
 interface KnowledgeCard {
   id: string;
@@ -345,9 +345,9 @@ const handleAction = (action: 'download' | 'edit' | 'view-trace' | 'reparse' | '
           </div>
           <button type="button" class="card-content-title" :title="item.file_name"
             @click.stop="onCardClick(item)">{{ item.file_name }}</button>
-          <t-button v-if="canMutateKnowledge && isExcelSource(item)" variant="text" size="small"
-            :disabled="excelSourceExtension(item) !== 'xlsx'"
-            :title="excelSourceExtension(item) === 'xls' ? t('knowledgeBase.structuredXlsNotice') : t('knowledgeBase.excelSourceHint')"
+          <t-button v-if="canMutateKnowledge && isStructuredSource(item)" variant="text" size="small"
+            :disabled="excelSourceExtension(item) === 'xls'"
+            :title="excelSourceExtension(item) === 'xls' ? t('knowledgeBase.structuredXlsNotice') : t('knowledgeBase.structuredParse')"
             @click.stop="emit('action', 'structured-parse', item)">{{ t('knowledgeBase.structuredParse') }}</t-button>
           <div v-if="(canEdit || canDownload) && batchMode" class="card-nav-check" @click.stop>
             <t-checkbox
