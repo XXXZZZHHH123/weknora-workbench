@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"image/png"
@@ -187,4 +189,150 @@ func TestRenderChartStorageFailureDoesNotClaimDelivery(t *testing.T) {
 	require.False(t, result.Success)
 	require.Contains(t, result.Error, "未交付")
 	require.NotContains(t, result.Error, "private storage error")
+}
+
+func largeAuditChartFixture() types.ToolCall {
+	call := queryChartFixture()
+	call.Name = "structured_analyze_table"
+	call.Result.Data = map[string]any{
+		"kind": "structured_analysis", "status": "ok", "dataset_id": "real-dataset", "result_id": "actual-analysis-result",
+		"source":  map[string]any{"file": "measurements.xlsx", "sha256": strings.Repeat("cd", 32)},
+		"columns": []string{"date", "measurement"}, "rows": [][]any{{"2025-01-01", 2.5}, {"2025-01-02", nil}, {"2025-01-03", 3.75}},
+		"sql": "SELECT date, value AS measurement FROM data ORDER BY date", "filters": map[string]any{"region": "actual-region"},
+		"requested_range": map[string]any{"start_date": "2025-01-01", "end_date": "2025-01-03"},
+		"input_complete":  true, "output_truncated": false,
+		"inputs": map[string]any{"actual-series": map[string]any{
+			"series":      map[string]any{"series_id": "actual-series", "sheet": "Measurements", "metric": "Observed quantity", "unit": "kg", "unit_status": "explicit"},
+			"input_count": 3, "valid_count": 2, "actual_first_date": "2025-01-01", "actual_last_date": "2025-01-03",
+			"observation_coverage": map[string]any{"detail": strings.Repeat("audit evidence ", 1300)},
+		}},
+	}
+	return call
+}
+
+func TestRenderChartProjectsOversizedInputAuditWithoutChangingRowsOrCoreMetadata(t *testing.T) {
+	call := largeAuditChartFixture()
+	original, err := json.Marshal(call.Result.Data)
+	require.NoError(t, err)
+	require.Greater(t, len(original), 18*1024)
+	tables, omitted := chartSources([]types.AgentStep{{ToolCalls: []types.ToolCall{call}}})
+	require.Zero(t, omitted)
+	require.Len(t, tables, 1)
+	source := tables[0]
+	require.LessOrEqual(t, len(source.Provenance), 16*1024)
+	require.Equal(t, [][]string{{"2025-01-01", "2.5"}, {"2025-01-02", ""}, {"2025-01-03", "3.75"}}, source.Rows)
+	require.False(t, source.Truncated, "audit projection must not rewrite actual row/input completeness")
+	var audit map[string]any
+	require.NoError(t, json.Unmarshal([]byte(source.Provenance), &audit))
+	for _, field := range []string{"source", "dataset_id", "sql", "result_id", "filters", "requested_range", "input_complete", "output_truncated"} {
+		expected, _ := json.Marshal(call.Result.Data[field])
+		actual, _ := json.Marshal(audit[field])
+		require.JSONEq(t, string(expected), string(actual), field)
+	}
+	projection := audit["audit_projection"].(map[string]any)
+	require.Equal(t, true, projection["projection_partial"])
+	inputs, _ := json.Marshal(call.Result.Data["inputs"])
+	digest := sha256.Sum256(inputs)
+	require.Equal(t, hex.EncodeToString(digest[:]), projection["inputs_sha256"])
+	require.EqualValues(t, len(inputs), projection["inputs_original_bytes"])
+	input := audit["inputs"].(map[string]any)["actual-series"].(map[string]any)
+	require.Equal(t, "kg", input["series"].(map[string]any)["unit"])
+	require.EqualValues(t, 3, input["input_count"])
+	require.NotContains(t, input, "observation_coverage")
+	unchanged, _ := json.Marshal(call.Result.Data)
+	require.Equal(t, original, unchanged, "projection must never mutate the true canonical tool result")
+}
+
+func TestRenderChartLargeAuditDigestAndRowsAndSourceRemainBoundToHandle(t *testing.T) {
+	for _, change := range []string{"omitted-audit", "row", "source"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := chartContext(t)
+			call := largeAuditChartFixture()
+			steps := []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}
+			sources, _ := chartSources(steps)
+			require.Len(t, sources, 1)
+			previous := sources[0]
+			switch change {
+			case "omitted-audit":
+				call.Result.Data["inputs"].(map[string]any)["actual-series"].(map[string]any)["observation_coverage"].(map[string]any)["detail"] = strings.Repeat("different audit ", 1300)
+			case "row":
+				call.Result.Data["rows"] = [][]any{{"2025-01-01", 99}, {"2025-01-03", 100}}
+			case "source":
+				call.Result.Data["source"].(map[string]any)["sha256"] = strings.Repeat("ef", 32)
+			}
+			updated, _ := chartSources(steps)
+			require.Len(t, updated, 1)
+			require.NotEqual(t, previous.ID, updated[0].ID)
+			writer := &chartWriterFixture{}
+			tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, writer, "session", "message")
+			result := chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": previous.ID, "x_column": 0, "y_columns": []int{1}, "chart_type": "line"})
+			require.False(t, result.Success)
+			require.Empty(t, writer.requests)
+		})
+	}
+}
+
+func TestRenderChartReportsRejectedSourceAndDoesNotDropOversizedCoreAudit(t *testing.T) {
+	for _, field := range []string{"source", "sql"} {
+		t.Run(field, func(t *testing.T) {
+			call := largeAuditChartFixture()
+			if field == "source" {
+				call.Result.Data["source"].(map[string]any)["file"] = strings.Repeat("x", 4097)
+			} else {
+				call.Result.Data["sql"] = strings.Repeat("SELECT source_data ", 1300)
+			}
+			ctx := chartContext(t)
+			steps := []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}
+			tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, &chartWriterFixture{}, "session", "message")
+			result := chartRun(t, tool, ctx, map[string]any{"operation": "inspect"})
+			require.True(t, result.Success)
+			require.Empty(t, result.Data["sources"])
+			require.Equal(t, 1, result.Data["omitted_source_count"])
+			require.Equal(t, 1, result.Data["rejected_source_count"])
+			rejections := result.Data["source_rejections"].([]map[string]any)
+			require.Len(t, rejections, 1)
+			require.Equal(t, call.ID, rejections[0]["tool_call_id"])
+			require.Contains(t, rejections[0]["reason"], "over_budget")
+		})
+	}
+}
+
+func TestRenderChartRequiresChartHandleAndCanRenderLargeAuditAnalysis(t *testing.T) {
+	ctx := chartContext(t)
+	call := largeAuditChartFixture()
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}
+	writer := &chartWriterFixture{}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, writer, "session", "message")
+	inspected := chartRun(t, tool, ctx, map[string]any{"operation": "inspect"})
+	sourceID := inspected.Data["sources"].([]any)[0].(map[string]any)["source_id"]
+	args := map[string]any{"operation": "render", "source_id": call.Result.Data["result_id"], "x_column": 0, "y_columns": []int{1}, "chart_type": "line", "x_type": "time"}
+	wrong := chartRun(t, tool, ctx, args)
+	require.False(t, wrong.Success)
+	require.Contains(t, wrong.Data["available_source_ids"], sourceID)
+	require.Empty(t, writer.requests)
+	args["source_id"] = sourceID
+	result := chartRun(t, tool, ctx, args)
+	require.True(t, result.Success, result.Error)
+	require.Len(t, writer.requests, 1)
+	_, err := png.Decode(bytes.NewReader(writer.requests[0].PNG))
+	require.NoError(t, err)
+}
+
+func TestRenderChartRejectionDiagnosticsStayBoundedAndKeepTotalCount(t *testing.T) {
+	ctx := chartContext(t)
+	call := largeAuditChartFixture()
+	call.Result.Data["source"].(map[string]any)["file"] = strings.Repeat("x", 4097)
+	calls := []types.ToolCall{}
+	for i := 0; i < chart.MaxSources+3; i++ {
+		call.ID = strings.Repeat("long-tool-call-id", 40) + strings.Repeat("a", i+1)
+		calls = append(calls, call)
+	}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return []types.AgentStep{{ToolCalls: calls}} }, &chartWriterFixture{}, "session", "message")
+	result := chartRun(t, tool, ctx, map[string]any{"operation": "inspect"})
+	require.Equal(t, chart.MaxSources+3, result.Data["rejected_source_count"])
+	require.Equal(t, true, result.Data["source_rejections_truncated"])
+	rejections := result.Data["source_rejections"].([]map[string]any)
+	require.Len(t, rejections, chart.MaxSources)
+	require.Less(t, len(rejections[0]["tool_call_id"].(string)), 80)
+	require.LessOrEqual(t, len(result.Output), 64*1024)
 }

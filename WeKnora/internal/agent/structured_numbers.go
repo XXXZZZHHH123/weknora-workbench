@@ -34,6 +34,7 @@ var sourceSeriesID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.:-]{2,159}$`)
 var sourceCellRow = regexp.MustCompile(`^[A-Z]{1,3}([1-9][0-9]{0,6})$`)
 var sourceFormulaReference = regexp.MustCompile(`\b([A-Z]{1,3})\$?([1-9][0-9]{0,6})\b`)
 var sourceFormulaQuotedText = regexp.MustCompile(`"(?:""|[^"])*"|'(?:''|[^'])*'`)
+var artifactMarkdownDestination = regexp.MustCompile(`!?\[[^\]\r\n]*\]\([ \t]*(?:<([^<>\s]+)>|([^()\s]+))(?:[ \t]+(?:"[^"\r\n]*"|'[^'\r\n]*'|\([^()\r\n]*\)))?[ \t]*\)`)
 
 func opaqueSourceID(value string) bool {
 	if !sourceOpaqueToken.MatchString(value) || sourceOpaqueToken.FindString(value) != value {
@@ -508,6 +509,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 	if len(values) == 0 {
 		return nil
 	} // No numeric evidence; ordinary conversation.
+	answer = maskCurrentChartImageDestinations(answer, rawSteps...)
 	for _, file := range filenames {
 		answer = strings.ReplaceAll(answer, file, "")
 	}
@@ -602,6 +604,55 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 		}
 	}
 	return unsupported
+}
+
+// A saved chart's exact Markdown URL is an opaque identity, never a decimal
+// observation. Only this turn's successful native delivery can register it;
+// history, model-authored output and proposed URLs cannot. Keep the label,
+// optional title and surrounding prose subject to the normal numeric checks.
+func maskCurrentChartImageDestinations(answer string, rounds ...[]types.AgentStep) string {
+	targets := map[string]bool{}
+	for _, steps := range rounds {
+		for _, step := range steps {
+			for _, call := range step.ToolCalls {
+				if call.Name != renderChartToolName || call.Result == nil || !call.Result.Success || call.Result.Data["kind"] != "data_chart" || call.Result.Data["status"] != "ok" {
+					continue
+				}
+				// Live deliveries use a typed value; persisted steps decode maps.
+				raw, err := json.Marshal(call.Result.Data["artifact"])
+				if err != nil {
+					continue
+				}
+				var artifact struct {
+					Handle   string `json:"handle"`
+					FileName string `json:"file_name"`
+					Index    *int   `json:"index"`
+				}
+				if json.Unmarshal(raw, &artifact) != nil || artifact.Index == nil || *artifact.Index < 0 || !strings.HasSuffix(artifact.FileName, ".png") {
+					continue
+				}
+				if _, valid := types.ParseResourcePath(artifact.Handle); valid {
+					targets[artifact.Handle] = true
+				}
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return answer
+	}
+	masked := []byte(answer)
+	for _, match := range artifactMarkdownDestination.FindAllStringSubmatchIndex(answer, -1) {
+		start, end := match[2], match[3]
+		if start < 0 {
+			start, end = match[4], match[5]
+		}
+		if targets[answer[start:end]] {
+			for i := start; i < end; i++ {
+				masked[i] = ' '
+			}
+		}
+	}
+	return string(masked)
 }
 
 // Return only canonical results of real document-table executions. The
