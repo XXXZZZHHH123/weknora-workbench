@@ -132,3 +132,7 @@ SHEET_REVIEW_BROWSER=/path/to/chromium node tests/knowledge-scope-ui.cjs
 2. 扩展剩余工作表的模板规则与单位字典。
 3. 提取原生图表的数据引用；单独评估截图识别。
 4. 整合到 WeKnora 原生上传页面，再增加多人权限、任务队列、审计和自动更新。
+
+## PDF 表格
+
+支持保留原件与逐页片段、核对跨页映射后发布只读数据表。配置、权限和识别边界见 [PDF 结构化导入](../docs/PDF_STRUCTURED_TABLES.md)，解析服务协议见 [PDF parser bridge](PDF_PARSER_BRIDGE.md)。未配置独立解析服务时，PDF 结构化入口明确不可用；现有 Excel 导入和 PDF 正文检索继续各自原流程。

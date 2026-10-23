@@ -72,10 +72,10 @@ def make_workbook(year=2023):
     return raw.getvalue()
 
 
-def poll(client, response):
+def poll(client, response, *, timeout=10):
     assert response.status_code == 200, response.text
     identifier = response.json()['id']
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         response = client.get('/api/jobs/' + identifier)
         assert response.status_code == 200

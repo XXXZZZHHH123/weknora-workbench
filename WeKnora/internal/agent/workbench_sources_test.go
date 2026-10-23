@@ -192,7 +192,7 @@ func TestWorkbenchSourceDiscoveryExposesDescribedNativeSchemasInFirstModelCall(t
 	requestedMu.Lock()
 	describedOperations := append([]string(nil), requested...)
 	requestedMu.Unlock()
-	require.ElementsMatch(t, []string{"list_series", "query_series", "analyze_table", "inspect_source", "get_result_evidence"}, describedOperations)
+	require.ElementsMatch(t, []string{"list_series", "query_series", "analyze_table", "inspect_source", "get_result_evidence", "list_pdf_tables", "read_pdf_table", "query_pdf_table"}, describedOperations)
 	firstDefinitions := map[string]json.RawMessage{}
 	for _, tool := range model.opts[0].Tools {
 		firstDefinitions[tool.Function.Name] = tool.Function.Parameters

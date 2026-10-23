@@ -21,8 +21,10 @@ import { ensureLiteralSingleTildeOnGlobalMarked } from '@/utils/markedLiteralTil
 import { openMermaidFullscreen } from '@/utils/mermaidViewer';
 import { diffWikiLines, type WikiDiffLine } from '@/utils/wikiLineDiff';
 import { useI18n } from 'vue-i18n';
+import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import DocumentPreview from '@/components/document-preview.vue';
+import KnowledgeStructuredFrame from '@/components/KnowledgeStructuredFrame.vue';
 import DocumentFileIcon from '@/views/knowledge/components/DocumentFileIcon.vue';
 import KnowledgeProcessingTimeline from '@/components/knowledge-processing-timeline.vue';
 import { resolveKnowledgeDownloadFileName } from '@/views/knowledge/knowledgeDownloadFileName';
@@ -30,6 +32,7 @@ import { isKnownPreviewableExt, resolveFilePreviewExt } from '@/utils/filePrevie
 
 const { t } = useI18n();
 const authStore = useAuthStore();
+const router = useRouter();
 
 // canDeleteGeneratedQuestion 对应后端 DELETE /chunks/by-id/:id/questions
 // 的 OwnedChunkKBOrAdminFromChunkID 守卫——KB 创建者或空间 Admin+
@@ -240,6 +243,28 @@ mermaid.initialize({
   }
 });
 const props = defineProps(["visible", "details", "knowledgeType", "sourceInfo", "canEditKB", "canDownloadKB", "parse_status", "kbId"]);
+const pdfReviewOpen = ref(false);
+const canReviewPdfTables = computed(() => resolveFilePreviewExt(props.details?.title || props.details?.file_name || '', props.details?.file_type) === 'pdf');
+const pdfReviewKey = computed(() => `${authStore.selectedTenantId ?? authStore.tenant?.id ?? ''}:${authStore.user?.id ?? ''}:${props.kbId}:${props.details?.id ?? ''}`);
+watch(pdfReviewKey, () => { pdfReviewOpen.value = false; });
+watch(() => props.visible, visible => { if (!visible) pdfReviewOpen.value = false; });
+function navigateFromPdfReview(view: string) {
+  pdfReviewOpen.value = false;
+  if (!props.kbId) return;
+  if (view === 'conversation') {
+    void router.push(`/platform/knowledge-bases/${props.kbId}/creatChat`);
+    return;
+  }
+  void router.push({
+    path: `/platform/knowledge-bases/${props.kbId}/structured-data`,
+    query: {
+      mode: 'import',
+      source_knowledge_id: props.details?.id,
+      source_file_type: 'pdf',
+      ...(view === 'model-settings' ? { view: 'model-settings' } : {}),
+    },
+  });
+}
 const emit = defineEmits(["closeDoc", "getDoc", "questionDeleted", "summaryStateChange"]);
 
 const applySummaryState = (summaryStatus?: string, description?: string) => {
@@ -1834,6 +1859,8 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
                 class="view-mode-btn">
                 {{ $t('knowledgeBase.viewChunks') }}
               </t-button>
+              <t-button v-if="viewMode === 'preview' && canReviewPdfTables" size="small" theme="primary"
+                class="view-mode-btn" @click="pdfReviewOpen = true">核对 PDF 表格</t-button>
             </div>
           </div>
 
@@ -2135,11 +2162,27 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
           <div v-else-if="viewMode === 'preview'">
             <DocumentPreview :knowledgeId="details.id" :fileType="details.file_type" :fileName="details.title"
               :active="visible && viewMode === 'preview'" />
+            <p v-if="canReviewPdfTables" class="pdf-review-entry-note">
+              核对原始片段、表头和跨页关系后再发布。预览通过不代表 OCR 或公式识别已经验证；公式不会作为可执行公式。
+            </p>
           </div>
         </section>
       </div>
 
     </t-drawer>
+    <t-dialog v-model:visible="pdfReviewOpen" header="核对 PDF 表格" :footer="false" width="94vw"
+      attach="body" :z-index="2300" :close-on-overlay-click="false" @close="pdfReviewOpen = false">
+      <div class="pdf-review-dialog">
+        <p class="pdf-review-dialog__note">
+          请逐项核对原 PDF、单元格、单位与跨页边界。识别线索仍需人工检查，公式不会执行；确认发布表示人工检查过映射，不代表 OCR 准确率已验证。
+        </p>
+        <div class="pdf-review-dialog__frame">
+          <KnowledgeStructuredFrame v-if="pdfReviewOpen" :key="pdfReviewKey" :knowledge-base-id="String(kbId || '')"
+            :source-knowledge-id="String(details?.id || '')" source-file-type="pdf" mode="import"
+            title="当前 PDF 表格核对工作台" @navigate="navigateFromPdfReview" />
+        </div>
+      </div>
+    </t-dialog>
   </div>
 </template>
 <style scoped lang="less">
@@ -2154,6 +2197,10 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
 }
 
 .section-title-actions { justify-content: space-between; }
+.pdf-review-entry-note { margin: 10px 0; color: var(--td-text-color-secondary); font-size: 12px; }
+.pdf-review-dialog { display: flex; flex-direction: column; min-height: 0; }
+.pdf-review-dialog__note { margin: 0 0 10px; color: var(--td-text-color-secondary); font-size: 13px; line-height: 1.6; }
+.pdf-review-dialog__frame { display: flex; width: 100%; height: min(74vh, 850px); min-height: 420px; overflow: hidden; border: 1px solid var(--app-border-color); border-radius: 8px; }
 .metadata-empty { color: var(--td-text-color-placeholder); }
 .metadata-actions, .chunk-editor-actions { margin-top: 8px; justify-content: flex-end; }
 .chunk-disabled { opacity: .5; }

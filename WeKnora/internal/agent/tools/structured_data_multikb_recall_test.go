@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -10,6 +11,68 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStructuredMultiScopeRecallPreservesPDFOnlyLibrary(t *testing.T) {
+	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+		identity := decodeStructuredScopeIdentity(t, r)
+		switch identity["knowledge_base_id"] {
+		case "kb-pdf":
+			_, _ = io.WriteString(w, `{"datasets":[],"pdf_tables":[{"table_id":"pdft-fixture","title":null,"source":{"file_name":"sample.pdf","knowledge_id":"doc-fixture"},"fragments":[{"id":"fragment-1","page":2,"caption":"Quarterly flows (tonnes)","footnotes":["Provisional"]}],"columns":[{"name":"Amount","type":"decimal","unit":"tonnes"}],"coverage":{"logical_row_count":3,"source_document_completeness":"unknown"},"status":"reviewed","extraction_verified":false}],"pdf_notice":"Review is not OCR verification."}`)
+		case "kb-excel":
+			_, _ = io.WriteString(w, `{"datasets":[{"dataset_id":"sheet-fixture","source_file":"other.xlsx","is_latest_for_source":true}],"literal_fields":[]}`)
+		default:
+			t.Fatalf("unauthorized or guessed library: %v", identity)
+		}
+	}).WithSearchTargets(types.SearchTargets{
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-pdf", TenantID: 7},
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-excel", TenantID: 29},
+	})
+	result, err := base.Execute(structuredScopeContext(), json.RawMessage(`{"operation":"list_datasets","arguments":{"question":"What does the flows table contain?"}}`))
+	require.NoError(t, err)
+	require.Equal(t, "scope_selection_required", result.Data["status"])
+	catalogs := result.Data["knowledge_base_catalogs"].([]map[string]any)
+	require.Empty(t, catalogs[0]["datasets"])
+	tables := structuredRecallRows(catalogs[0]["pdf_tables"])
+	require.Len(t, tables, 1, "an Excel-empty library must retain its published PDF catalog")
+	require.Equal(t, "pdft-fixture", tables[0]["table_id"])
+	require.Equal(t, "reviewed", tables[0]["status"])
+	require.Equal(t, false, tables[0]["extraction_verified"])
+	require.Contains(t, result.Output, "Quarterly flows (tonnes)")
+	require.Contains(t, result.Output, "Provisional")
+	require.Contains(t, result.Output, "unknown")
+	require.Equal(t, "Review is not OCR verification.", catalogs[0]["pdf_notice"])
+	require.Equal(t, false, catalogs[0]["pdf_tables_truncated"])
+	require.Len(t, structuredRecallRows(catalogs[1]["datasets"]), 1)
+	require.Empty(t, structuredRecallRows(catalogs[1]["pdf_tables"]))
+}
+
+func TestStructuredMultiScopeRecallBoundsPDFCatalogWithoutClaimingAbsence(t *testing.T) {
+	var targets types.SearchTargets
+	for i := 0; i < 6; i++ {
+		targets = append(targets, &types.SearchTarget{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: fmt.Sprintf("kb-%d", i), TenantID: 7})
+	}
+	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+		identity := decodeStructuredScopeIdentity(t, r)
+		var tables []map[string]any
+		for i := 0; i < 20; i++ {
+			tables = append(tables, map[string]any{"table_id": fmt.Sprintf("%s-table-%d", identity["knowledge_base_id"], i), "status": "reviewed"})
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"datasets": []any{}, "pdf_tables": tables}))
+	}).WithSearchTargets(targets)
+	result, err := base.Execute(structuredScopeContext(), json.RawMessage(`{"operation":"list_datasets","arguments":{"question":"List available tables"}}`))
+	require.NoError(t, err)
+	total := 0
+	for _, catalog := range result.Data["knowledge_base_catalogs"].([]map[string]any) {
+		listed := len(structuredRecallRows(catalog["pdf_tables"]))
+		require.LessOrEqual(t, listed, 16)
+		require.Equal(t, 20, catalog["pdf_table_count"])
+		require.Equal(t, true, catalog["pdf_tables_truncated"])
+		total += listed
+	}
+	require.Equal(t, 64, total)
+	require.Equal(t, true, result.Data["pdf_tables_truncated"])
+	require.Contains(t, result.Output, "list_pdf_tables")
+}
 
 // Synthetic libraries and headers; not acceptance facts.
 func TestStructuredMultiScopeQuestionRecallsFieldsInEveryLibrary(t *testing.T) {

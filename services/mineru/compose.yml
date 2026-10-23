@@ -1,0 +1,79 @@
+name: weknora-mineru
+
+services:
+  mineru:
+    image: ${MINERU_IMAGE:?Set the reviewed MinerU image reference, preferably an immutable digest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    user: "${MINERU_UID:-10001}:${MINERU_GID:-10001}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "${MINERU_CPUS:-2.0}"
+    mem_limit: ${MINERU_MEMORY:-6g}
+    memswap_limit: ${MINERU_MEMORY:-6g}
+    mem_reservation: 2g
+    pids_limit: 256
+    shm_size: 256m
+    stop_grace_period: 45s
+    environment:
+      MINERU_SETTINGS_FILE: /run/secrets/mineru.json
+      MINERU_HOME: /var/lib/mineru/data/home/.mineru
+      MINERU_MODEL_BASE_DIR: /var/lib/mineru/models
+      MINERU_MODEL_SMALL_BACKEND: onnx
+      MINERU_MODEL_SOURCE: local
+      MINERU_PARSE_CONCURRENCY: "${MINERU_PARSE_CONCURRENCY:-1}"
+      MINERU_VLM_CONCURRENCY: "${MINERU_VLM_CONCURRENCY:-2}"
+      MINERU_VLM_HTTP_TIMEOUT: "${MINERU_VLM_HTTP_TIMEOUT:-600}"
+      MINERU_RETENTION_SECONDS: "${MINERU_RETENTION_SECONDS:-86400}"
+      MINERU_LOG_LEVEL: warning
+      MINERU_API_ENABLE_FASTAPI_DOCS: "false"
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+    volumes:
+      - type: bind
+        source: ${MINERU_SETTINGS_FILE:?Set the private JSON settings file}
+        target: /run/secrets/mineru.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MINERU_DATA_DIR:?Set the private parser data directory}
+        target: /var/lib/mineru/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MINERU_MODEL_CACHE_DIR:?Set the existing CPU ONNX model cache directory}
+        target: /var/lib/mineru/models
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    ports:
+      - target: 8000
+        published: "${MINERU_HOST_PORT:-18733}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks:
+      - parser
+      - workbench
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  parser:
+    name: ${MINERU_PRIVATE_NETWORK:-weknora-mineru-parser}
+    internal: true
+  # Only the new worker joins the already existing development network.
+  # This does not modify/restart other services. Local mode needs no VLM egress.
+  # The existing network may permit outbound traffic; this is not an egress ACL.
+  workbench:
+    external: true
+    name: ${MINERU_WORKBENCH_NETWORK:-weknora-workbench-dev_default}

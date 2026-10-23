@@ -15,7 +15,7 @@ func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]a
 	if base == nil {
 		return nil
 	}
-	allowed := map[string]bool{"list_series": true, "query_series": true, "analyze_table": true, "inspect_source": true, "get_result_evidence": true}
+	allowed := map[string]bool{"list_series": true, "query_series": true, "analyze_table": true, "inspect_source": true, "get_result_evidence": true, "list_pdf_tables": true, "read_pdf_table": true, "query_pdf_table": true}
 	directory, ok := data["tools"].([]any)
 	if !ok {
 		return nil

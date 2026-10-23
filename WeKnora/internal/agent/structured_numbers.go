@@ -266,6 +266,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 	digests := map[string]bool{}
 	inspectedRows := map[string]bool{}
 	hasDigest := false
+	hasPDFEvidence := false
 	identityLabels := map[string]bool{}
 	// Capability schemas describe valid arguments; their numeric limits are
 	// never executed observations. Preserve the actual call identity even when
@@ -273,6 +274,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 	nonEvidenceToolCalls := map[string]bool{}
 	toolNames := map[string]string{}
 	canonicalTableAnalyses := map[string]types.ToolCall{}
+	canonicalPDFResults := map[string]types.ToolCall{}
 	markNonEvidence := func(id, name, operation string) {
 		if id != "" {
 			if _, exists := toolNames[id]; !exists {
@@ -292,6 +294,12 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 				markNonEvidence(call.ID, call.Name, operation)
 				if call.ID != "" && call.Name == documentTableAnalysisToolName {
 					canonicalTableAnalyses[call.ID] = call
+				}
+				if call.ID != "" && (strings.HasPrefix(call.Name, "structured_") &&
+					(call.Name == "structured_list_pdf_tables" || call.Name == "structured_read_pdf_table" || call.Name == "structured_query_pdf_table") ||
+					call.Name == "structured_data" && (operation == "list_pdf_tables" || operation == "read_pdf_table" || operation == "query_pdf_table")) {
+					canonicalPDFResults[call.ID] = call
+					hasPDFEvidence = true
 				}
 			}
 		}
@@ -316,6 +324,33 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			values = append(values, x)
 			percentageValues = append(percentageValues, x, x*100)
 		case map[string]any:
+			if x["source_kind"] == "pdf_table" {
+				// PDF coordinates, plan indexes and raw-cell provenance describe
+				// where values came from. They are never SQL result statistics.
+				if x["status"] != "ok" {
+					return
+				}
+				hasPDFEvidence = true
+				for _, value := range pdfTableNumericEvidence(x) {
+					collect(value)
+				}
+				if source, ok := x["source"].(map[string]any); ok {
+					collect(map[string]any{"file": source["file_name"], "sha256": source["sha256"]})
+				}
+				for _, key := range []string{"table_id", "draft_id"} {
+					if id, ok := x[key].(string); ok && sourceSeriesID.MatchString(id) {
+						identifiers[id] = true
+					}
+				}
+				for _, key := range []string{"bundle_sha256", "plan_sha256", "record_sha256"} {
+					if digest, ok := x[key].(string); ok && len(digest) == 64 && sourceOpaqueToken.FindString(digest) == digest {
+						identifiers[digest] = true
+						digests[digest] = true
+						hasDigest = true
+					}
+				}
+				return
+			}
 			if x["kind"] == "task_tool_capabilities" || x["kind"] == "document_table_analysis" {
 				// Analysis wrappers are interpreted only at an actual executor
 				// boundary below. Never recurse into plans, schemas or advice.
@@ -331,6 +366,12 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 				return
 			}
 			for key, item := range x {
+				if key == "pdf_tables" {
+					if tables, ok := item.([]any); ok && len(tables) > 0 {
+						hasPDFEvidence = true
+					}
+					continue
+				}
 				// Identity text is only exempt as a complete known token below.
 				// Never promote its numeric substrings/dimension codes to values.
 				if key == "metric" || key == "sheet" || key == "unit" || key == "dimensions" || key == "headers" || key == "literal_fields" || key == "source_context" || key == "chart_titles" {
@@ -400,10 +441,10 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 				}
 				operation, _ := executed.Args["operation"].(string)
 				switch executed.Name {
-				case "structured_list_series", "structured_query_series", "structured_analyze_table", "structured_inspect_source", "structured_get_result_evidence", "calculate_source_values", "calculate_document_table":
+				case "structured_list_series", "structured_query_series", "structured_analyze_table", "structured_inspect_source", "structured_get_result_evidence", "structured_list_pdf_tables", "structured_read_pdf_table", "structured_query_pdf_table", "calculate_source_values", "calculate_document_table":
 				case "structured_data":
 					switch operation {
-					case "list_datasets", "list_series", "query_series", "analyze_table", "inspect_source", "compare_series", "convert_price", "get_result_evidence", "execute_field_plan":
+					case "list_datasets", "list_series", "query_series", "analyze_table", "inspect_source", "compare_series", "convert_price", "get_result_evidence", "execute_field_plan", "list_pdf_tables", "read_pdf_table", "query_pdf_table":
 					default:
 						continue
 					}
@@ -445,6 +486,9 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			}
 			if name == expandTaskToolsName || nonEvidenceToolCalls[msg.ToolCallID] {
 				continue
+			}
+			if _, exists := canonicalPDFResults[msg.ToolCallID]; exists {
+				continue // The canonical runtime Data/status was processed above.
 			}
 			if name == documentTableAnalysisToolName {
 				if canonical, exists := canonicalTableAnalyses[msg.ToolCallID]; exists {
@@ -506,7 +550,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			}
 		}
 	}
-	if len(values) == 0 {
+	if len(values) == 0 && !hasPDFEvidence {
 		return nil
 	} // No numeric evidence; ordinary conversation.
 	answer = maskCurrentChartImageDestinations(answer, rawSteps...)
@@ -897,6 +941,68 @@ func fetchedDocumentIdentityTitles(content string) []string {
 	}
 }
 
+// PDF query/read protocols have an explicit numeric surface. In particular,
+// source_cells, row_provenance and plans may contain other raw values and
+// geometry, and text cells can themselves contain JSON. Neither is recursively
+// promoted to executed facts.
+func pdfTableNumericEvidence(data map[string]any) []float64 {
+	values := []float64{}
+	add := func(value any) {
+		var n float64
+		switch v := value.(type) {
+		case float64:
+			n = v
+		case string:
+			parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err != nil {
+				return
+			}
+			n = parsed
+		default:
+			return
+		}
+		if !math.IsNaN(n) && !math.IsInf(n, 0) {
+			values = append(values, n)
+		}
+	}
+	rows, _ := data["rows"].([]any)
+	switch data["kind"] {
+	case "structured_analysis":
+		columns, _ := data["columns"].([]any)
+		for _, raw := range rows {
+			row, ok := raw.([]any)
+			if !ok {
+				continue
+			}
+			for i, value := range row {
+				if i < len(columns) && columns[i] == "_row_id" {
+					continue
+				}
+				add(value)
+			}
+		}
+	case "structured_source_inspection":
+		for _, raw := range rows {
+			if row, ok := raw.(map[string]any); ok {
+				if cells, ok := row["values"].(map[string]any); ok {
+					for _, value := range cells {
+						add(value)
+					}
+				}
+			}
+		}
+	}
+	for _, key := range []string{"input_count", "returned_row_count", "total_row_count"} {
+		add(data[key])
+	}
+	if coverage, ok := data["coverage"].(map[string]any); ok {
+		for _, key := range []string{"raw_fragment_count", "selected_fragment_count", "selected_raw_row_count", "header_row_count", "excluded_row_count", "covered_data_source_row_count", "logical_row_count", "extraction_ambiguity_count"} {
+			add(coverage[key])
+		}
+	}
+	return values
+}
+
 // Only actual catalogue and source-context fields establish label identities.
 // SQL text, free-form notices and arbitrary metadata do not authorize labels.
 func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
@@ -911,6 +1017,39 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 		if len(proseNumber.FindAllString(text, -1)) > 0 {
 			labels[text] = true
 		}
+	}
+	pdfLabels := func(table map[string]any) {
+		if source, ok := table["source"].(map[string]any); ok {
+			add(source["file_name"])
+			add(source["file"])
+		}
+		for _, key := range []string{"table_id", "draft_id"} {
+			add(table[key])
+		}
+		if columns, ok := table["columns"].([]any); ok {
+			for _, raw := range columns {
+				if column, ok := raw.(map[string]any); ok {
+					add(column["name"])
+					add(column["unit"])
+				}
+			}
+		}
+	}
+	for _, key := range []string{"tables", "pdf_tables"} {
+		if data["source_kind"] != "pdf_table" && key != "pdf_tables" {
+			continue
+		}
+		if tables, ok := data[key].([]any); ok {
+			for _, raw := range tables {
+				if table, ok := raw.(map[string]any); ok {
+					pdfLabels(table)
+				}
+			}
+		}
+	}
+	if data["source_kind"] == "pdf_table" {
+		pdfLabels(data)
+		return
 	}
 	var catalogue func(any)
 	catalogue = func(value any) {

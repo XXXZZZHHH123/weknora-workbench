@@ -311,7 +311,7 @@ def test_bulk_api_live_cancel_keeps_completed_new_sheet_and_original_snapshot(cl
         kwargs['budget'].consume()
         if sheet == 'pending-1':
             entered.set()
-            release.wait(4)
+            assert release.wait(30), 'Cancellation fixture did not release the model call'
         return {'mapping': kwargs['mapping'], 'notice': '',
                 'review_state': {'status': 'confirmed'}, 'model_requests': 1}
 
@@ -320,7 +320,9 @@ def test_bulk_api_live_cancel_keeps_completed_new_sheet_and_original_snapshot(cl
     assert response.status_code == 200
     job_url = '/api/jobs/' + response.json()['id']
     try:
-        assert entered.wait(3)
+        # Several real parser subprocesses precede this event. Synchronize on
+        # the event without treating shared-runner scheduling as a latency SLA.
+        assert entered.wait(30), client.get(job_url).json()
         working = client.get(job_url).json()
         assert working['result']['sheets_imported'] == ['pending-0']
         assert working['progress']['total'] == 2
@@ -424,7 +426,7 @@ def test_ai_claim_of_confirmation_cannot_publish_a_mixed_empty_block(client, mon
     calls = []
     monkeypatch.setattr('structured_data.ai_review.assist_mapping', fake_assist(calls))
     if batch:
-        result = poll(client, client.post(url + '/assist-confirm-all', json={'acknowledged_risk': True}))
+        result = poll(client, client.post(url + '/assist-confirm-all', json={'acknowledged_risk': True}), timeout=30)
         assert result['sheets_pending'] == ['mixed-blocks'] and not result['sheets_imported']
         state = result['details'][0]['review_state']
     else:

@@ -58,15 +58,26 @@ async function main(){
   const url=new URL(req.url,'http://localhost'),route=url.pathname.replace(/^\/structured(?=\/)/,'');
   const scope=req.headers['x-knowledge-base-id']||'';
   const chunks=[];for await(const chunk of req)chunks.push(chunk);const payload=Buffer.concat(chunks);
-  requests.push({method:req.method,path:url.pathname,query:Object.fromEntries(url.searchParams),scope,tenant:req.headers['x-tenant-id']||'',authorized:req.headers.authorization==='Bearer fixture-token',size:payload.length});
+  requests.push({method:req.method,path:url.pathname,query:Object.fromEntries(url.searchParams),scope,tenant:req.headers['x-tenant-id']||'',authorization:req.headers.authorization||'',authorized:['Bearer fixture-token','Bearer fixture-renewed'].includes(req.headers.authorization||''),size:payload.length});
   if(nativeStall==='initial-refresh-renew'&&route==='/api/datasets'||nativeStall==='source-refresh-timeout'&&route==='/api/datasets'||nativeStall==='source-sheet-timeout'&&route.endsWith('/sheet'))await pause(800);
   let body={},type='application/json',status=200;
   if(route==='/harness'){
    const review=url.searchParams.get('review')==='1',legacy=url.searchParams.get('legacy')==='1',settings=url.searchParams.get('settings')==='1',nativeSource=url.searchParams.get('source')||'';
-   body=`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><style>html,body{margin:0;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}</style></head><body><iframe id="frame" src="/structured/${review?'?view=review&import_id='+ids.import:settings?'?view=model-settings':''}" title="隔离结构化页面"></iframe><script>const frame=document.getElementById('frame');window.auth=(kb='kb-a',token='fixture-token',sourceKnowledgeId='',userId='fixture-user')=>frame.contentWindow.postMessage({type:'structured-auth',token,tenant:10000,userId,knowledgeBaseId:kb,sourceKnowledgeId},location.origin);window.view=mode=>frame.contentWindow.postMessage({type:'structured-view',mode},location.origin);addEventListener('message',e=>{if(e.origin!==location.origin||e.source!==frame.contentWindow)return;if(e.data?.type==='structured-ready'){auth(${legacy?"''":"'kb-a'"},'fixture-token',${JSON.stringify(nativeSource)});${legacy?'':"view('import')"}}else if(e.data?.type==='structured-refresh-auth'){frame.contentWindow.postMessage({type:'structured-auth-refreshed',requestId:e.data.requestId,token:e.data.token},location.origin)}else if(e.data?.type==='structured-navigate'&&e.data.view===''){frame.src='/structured/';}});</script></body></html>`;type='text/html';
+   body=`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><style>html,body{margin:0;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}</style></head><body><iframe id="frame" src="/structured/${review?'?view=review&import_id='+ids.import:settings?'?view=model-settings':''}" title="隔离结构化页面"></iframe><script>const frame=document.getElementById('frame');window.auth=(kb='kb-a',token='fixture-token',sourceKnowledgeId='',userId='fixture-user',sourceFileType='xlsx')=>frame.contentWindow.postMessage({type:'structured-auth',token,tenant:10000,userId,knowledgeBaseId:kb,sourceKnowledgeId,sourceFileType},location.origin);window.view=mode=>frame.contentWindow.postMessage({type:'structured-view',mode},location.origin);addEventListener('message',e=>{if(e.origin!==location.origin||e.source!==frame.contentWindow)return;if(e.data?.type==='structured-ready'){auth(${legacy?"''":"'kb-a'"},'fixture-token',${JSON.stringify(nativeSource)});${legacy?'':"view('import')"}}else if(e.data?.type==='structured-refresh-auth'){frame.contentWindow.postMessage({type:'structured-auth-refreshed',requestId:e.data.requestId,token:e.data.token},location.origin)}else if(e.data?.type==='structured-navigate'&&e.data.view===''){frame.src='/structured/';}});</script></body></html>`;type='text/html';
   }else if(route==='/'){body=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
   else if(['/sheet-review.js','/sheet-review.css','/workspace.css'].includes(route)){
    const target=path.join(source,route.slice(1));if(!fs.existsSync(target)){status=404;body={detail:'Fixture static resource absent'}}else{body=fs.readFileSync(target,'utf8');type=route.endsWith('.js')?'application/javascript':'text/css';}
+  }else if(route==='/pdf-review.js'){
+   body=fs.readFileSync(path.join(source,'static','pdf-review.js'),'utf8');type='application/javascript';
+  }else if(route==='/api/pdf/config')body={configured:false,max_bytes:52428800};
+  else if(route==='/api/pdf/drafts')body={drafts:[{draft_id:'pdf-fixture',source:{file_name:'fixture.pdf'},fragment_count:1,raw_row_count:1}]};
+  else if(route==='/api/pdf/tables')body={tables:[]};
+  else if(route==='/api/pdf/import-knowledge'&&req.method==='POST'){
+   const input=JSON.parse(payload),sourceId=input.source_knowledge_id;requests.at(-1).sourceKnowledgeId=sourceId;requests.at(-1).pdfKnowledgeImport=true;body={id:'pdf-native-job'};
+  }else if(route==='/api/pdf/jobs/pdf-native-job')body={status:'completed',draft_id:'pdf-fixture'};
+  else if(route==='/api/pdf/drafts/pdf-fixture')body={draft_id:'pdf-fixture',bundle_sha256:'a'.repeat(64),bundle:{source:{file_name:'fixture.pdf',sha256:'b'.repeat(64)},parser:{engine:'fixture',version:'1'},fragments:[{id:'fixture-fragment',page:1,rows:[[{text:'Synthetic PDF cell'}]]}]}};
+  else if(route==='/api/pdf/drafts/pdf-fixture/source'){
+   body=Buffer.from('%PDF-1.4 synthetic fixture');type='application/pdf';
   }else if(route==='/api/ui-config')body={title:'结构化数据库',workspace_label:'隔离浏览器验收',weknora_url:'http://127.0.0.1'};
   else if(route==='/api/datasets')body={datasets:catalogue(scope)};
   else if(route==='/api/model-settings'&&req.method==='GET')body={native_model_id:'fixture-chat',protocol:'platform',can_edit:true,models:[{id:'fixture-chat',name:'Fixture configured chat'}]};
@@ -110,7 +121,7 @@ async function main(){
    else body={status:'completed',result:job.nativeResult||{import_id:ids.import,dataset_id:ids.primary,elapsed_seconds:1.2,reused:false}};
   }else if(route.startsWith('/api/imports/')){const id=route.split('/')[3],row=nativeImports.get(id);body={import_id:id,source_file:row?.source_file||'同一合成原件.xlsx',sheets:[{...fixtureSheet,status:route.includes('6'.repeat(24))?'confirmed':fixtureSheet.status,published_in_dataset:route.includes('6'.repeat(24)),published_dataset_id:route.includes('6'.repeat(24))?ids.secondary:null}]};}
   else {status=404;body={detail:'Unsupported isolated route'};}
-  res.writeHead(status,{'Content-Type':type});res.end(typeof body==='string'?body:JSON.stringify(body));
+  res.writeHead(status,{'Content-Type':type});res.end(Buffer.isBuffer(body)?body:typeof body==='string'?body:JSON.stringify(body));
  });
  try{
   server.listen(0,'127.0.0.1');await once(server,'listening');const origin=`http://127.0.0.1:${server.address().port}`;
@@ -280,6 +291,16 @@ async function main(){
   await verify('Native source page explains reuse and hides the unnecessary second file picker',"d.body.classList.contains('native-source') && d.getElementById('directUpload').querySelector('h2').textContent==='结构化解析' && d.getElementById('directUpload').textContent.includes('无需重新选择文件') && w.getComputedStyle(d.querySelector('.import-actions')).display==='none' && d.getElementById('jobState').textContent.includes('知识库内原件.xlsx')");
   assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')&&r.sourceKnowledgeId==='source-reused').length,1);await js("window.auth('kb-a','fixture-token','source-reused')");await pause(100);assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')&&r.sourceKnowledgeId==='source-reused').length,1);checks.push('Repeated iframe auth does not enqueue duplicate source scans');
   assert(requests.some(r=>r.path.endsWith('/import-knowledge')&&r.scope==='kb-a'&&r.authorized&&r.sourceKnowledgeId==='source-reused'));checks.push('Native Excel bridge sends real source identity and current authenticated KB scope');assert(requests.filter(r=>r.path.endsWith('/import-knowledge')).every(r=>r.restoreReviewedState===false),'KB originals must not restore legacy workspace mappings');checks.push('KB native bridge explicitly uses fresh source review without legacy restore');
+  const excelImportCount=requests.filter(r=>r.path==='/structured/api/import-knowledge').length,pdfImportCount=requests.filter(r=>r.path==='/structured/api/pdf/import-knowledge').length;
+  await js("window.auth('kb-a','fixture-token','source-pdf-fixture','fixture-user','pdf')");
+  await wait("d.getElementById('pdfDraftDetail')?.textContent.includes('Synthetic PDF cell')");
+  await verify('An iframe PDF source message opens the PDF review panel and hides Excel import',"d.body.classList.contains('pdf-native-source') && w.getComputedStyle(d.getElementById('pdfReviewPanel')).display!=='none' && w.getComputedStyle(d.getElementById('directUpload')).display==='none' && d.getElementById('pdfDraftDetail').textContent.includes('fixture.pdf')");
+  assert.equal(requests.filter(r=>r.path==='/structured/api/pdf/import-knowledge'&&r.sourceKnowledgeId==='source-pdf-fixture'&&r.scope==='kb-a'&&r.authorized).length,pdfImportCount+1,'PDF source must use the authenticated PDF import endpoint');
+  assert.equal(requests.filter(r=>r.path==='/structured/api/import-knowledge').length,excelImportCount,'PDF source must not call the Excel native import API');
+  await js("window.auth('kb-a','fixture-token','source-reused','fixture-user','xlsx')");
+  await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled && !d.body.classList.contains('pdf-native-source')");
+  assert.equal(requests.filter(r=>r.path==='/structured/api/import-knowledge'&&r.sourceKnowledgeId==='source-reused').length,excelImportCount+1);
+  checks.push('Switching the same iframe back to XLSX restores its native Excel import route');
   await js("window.auth('kb-a','fixture-token','source-new')");await wait("d.getElementById('importSelect').value==='555555555555555555555555' && !d.getElementById('upload').disabled");
   assert(requests.some(r=>r.path.endsWith('/api/jobs/native-job')));checks.push('First native source scan follows existing asynchronous job progress and opens its sheet review');await screenshot('10_知识库原件_直接解析');
   await js("window.auth('kb-a','fixture-token','source-stale')");await pause(100);await js("window.auth('kb-a','fixture-renewed','source-reused')");await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");await pause(800);

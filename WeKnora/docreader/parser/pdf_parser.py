@@ -241,56 +241,34 @@ def _is_chart_debris_line(line: str) -> bool:
 
 
 def _strip_chart_text_debris(text: str) -> str:
-    """Drop runs of axis/legend lines leaked from vector figures into the text layer."""
-    if not text:
-        return text
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    out: list = []
-    i = 0
-    while i < len(lines):
-        if _is_chart_debris_line(lines[i]):
-            j = i
-            while j < len(lines) and (
-                _is_chart_debris_line(lines[j]) or not lines[j].strip()
-            ):
-                j += 1
-            if j - i >= 3:
-                i = j
-                continue
-        out.append(lines[i])
-        i += 1
-    return "\n".join(out)
+    """Keep text-layer content whose figure/table role is not geometrically known.
+
+    A run of numeric glyphs can be chart ticks, but it can also be the only
+    representation of a table row.  This text-only stage has no bounding boxes
+    with which to distinguish those cases, so it must not discard the text.
+    Vector figure images are extracted separately for visual interpretation.
+    """
+    return text
 
 
 def _strip_arxiv_and_page_num_lines(text: str) -> str:
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    kept: list = []
-    for ln in lines:
-        t = ln.strip()
-        if _ARXIV_LINE_RE.match(t):
-            continue
-        if _PAGE_NUM_LINE_RE.match(t):
-            continue
-        if "arXiv:" in ln:
-            ln = re.sub(r"\s*arXiv:\s*\S+\s*(?:\[[^\]]+\])?\s*[^\n]*", "", ln).strip()
-            if not ln:
-                continue
-        kept.append(ln)
-    return "\n".join(kept)
+    """Keep flattened text until an artifact can be located geometrically.
+
+    Identifiers and short integers are not reliable evidence of decoration.
+    Page-edge cleanup is performed only by layout filtering, where coordinates
+    are still available.
+    """
+    return text
 
 
 def _strip_lines_above_figure_captions(text: str) -> str:
-    """Remove diagram/chart label lines that sit immediately above a Figure caption."""
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    out: list = []
-    for ln in lines:
-        if _line_has_figure_caption(ln):
-            while out and _is_figure_interior_line(out[-1]):
-                out.pop()
-            out.append(ln)
-        else:
-            out.append(ln)
-    return "\n".join(out)
+    """Preserve lines before captions when only flattened text is available.
+
+    Figure labels and table values have overlapping textual forms.  Cropping a
+    vector figure uses glyph geometry in ``_bbox_above_caption``; this flattened
+    string pass cannot safely identify which lines belong to that figure.
+    """
+    return text
 
 
 def _is_body_paragraph_line(text: str) -> bool:
@@ -742,12 +720,21 @@ def _is_artifact_column(chars: list, width: float) -> bool:
     lines = _group_lines(chars)
     single_frac = _column_single_line_fraction(lines)
     narrow = span / width < MARGIN_COL_WIDTH_RATIO
-    if narrow and single_frac >= 0.45:
+    x0 = min(c["x0"] for c in chars)
+    x1 = max(c["x1"] for c in chars)
+    # Narrow columns inside the page body commonly hold numeric table values.
+    # A margin strip is supported by both narrow width and proximity to a page
+    # edge; width alone is not sufficient evidence to discard it.
+    at_page_edge = (
+        x0 / width < MARGIN_COL_WIDTH_RATIO
+        or (width - x1) / width < MARGIN_COL_WIDTH_RATIO
+    )
+    if narrow and at_page_edge and single_frac >= 0.45:
         return True
     ys = [(c["y0"] + c["y1"]) / 2 for c in chars]
     y_span = max(ys) - min(ys)
     # Vertical text: tall stack, narrow horizontal extent, mostly one char/line.
-    if y_span > span * 3.5 and len(chars) >= 8 and single_frac >= 0.35:
+    if at_page_edge and y_span > span * 3.5 and len(chars) >= 8 and single_frac >= 0.35:
         return True
     return False
 
@@ -1410,41 +1397,12 @@ def _extract_embedded_images(pdf, classes, raw, base_name: str, quality: int) ->
 
 
 def _strip_repeating_lines(texts: list, classes: list) -> list:
-    """Remove running headers/footers that repeat across most text pages.
+    """Preserve repeated lines when page geometry is not available.
 
-    Conservative: only the first/last non-empty line of each text page is a
-    candidate, the line must be short, and it must appear on at least 60% of the
-    text pages (and there must be enough pages to judge). Mirrors DeepDoc's
-    cross-page "garbage set" idea without risking removal of real content.
+    A line at the text stream's beginning or end is not proof of a running
+    header/footer: a page can start or end with a table header or data row.
     """
-    from collections import Counter
-
-    text_indices = [i for i, c in enumerate(classes) if c == "text"]
-    if len(text_indices) < 4:
-        return list(texts)
-
-    counter: Counter = Counter()
-    for i in text_indices:
-        lines = [ln.strip() for ln in texts[i].splitlines() if ln.strip()]
-        if not lines:
-            continue
-        for edge in {lines[0], lines[-1]}:
-            if len(edge) <= 80:
-                counter[edge] += 1
-
-    threshold = max(2, int(len(text_indices) * 0.6))
-    repeating = {line for line, count in counter.items() if count >= threshold}
-    if not repeating:
-        return list(texts)
-
-    cleaned = []
-    for i, text in enumerate(texts):
-        if classes[i] != "text":
-            cleaned.append(text)
-            continue
-        kept = [ln for ln in text.splitlines() if ln.strip() not in repeating]
-        cleaned.append("\n".join(kept))
-    return cleaned
+    return list(texts)
 
 
 class PDFScannedParser(BaseParser):

@@ -56,19 +56,23 @@ class ClassifyPageTest(unittest.TestCase):
 
 
 class StripRepeatingLinesTest(unittest.TestCase):
-    def test_removes_repeated_header_footer(self):
+    def test_preserves_repeated_edge_lines_without_geometry(self):
         header = "ACME CONFIDENTIAL"
         texts = [f"{header}\nbody page {i}\npage {i} footer" for i in range(6)]
-        # Make the footer identical across pages so it is detected.
         texts = [f"{header}\nbody page {i}\nshared footer" for i in range(6)]
         classes = ["text"] * 6
         cleaned = _strip_repeating_lines(texts, classes)
-        for page in cleaned:
-            self.assertNotIn(header, page)
-            self.assertNotIn("shared footer", page)
+        for page, original in zip(cleaned, texts):
+            self.assertEqual(page, original)
+            self.assertIn(header, page)
+            self.assertIn("shared footer", page)
         self.assertIn("body page 0", cleaned[0])
 
-    def test_keeps_lines_when_too_few_pages(self):
+    def test_preserves_repeated_table_header(self):
+        texts = ["Item North South\nAlpha 10.25 20.50"] * 6
+        self.assertEqual(_strip_repeating_lines(texts, ["text"] * 6), texts)
+
+    def test_keeps_short_document_text(self):
         texts = ["HEADER\nbody"] * 2
         classes = ["text"] * 2
         self.assertEqual(_strip_repeating_lines(texts, classes), texts)
@@ -195,6 +199,33 @@ class MarginColumnFilterTest(unittest.TestCase):
         cols = _filter_reading_columns(left + right, scale=12.0, width=600.0)
         self.assertEqual(len(cols), 2)
 
+    def test_keeps_narrow_numeric_table_column_inside_page_body(self):
+        # A narrow numeric column in the body is not a margin artifact.
+        numbers = []
+        for row, value in enumerate(("10.25", "-2.50", "0.00", "30.75")):
+            for offset, ch in enumerate(value):
+                x = 360 + offset * 5
+                y = 600 - row * 24
+                numbers.append(_char(ch, x, x + 4, y, y + 10))
+        kept = _filter_reading_columns(numbers, scale=10.0, width=612.0)
+        kept_chars = [char for column in kept for char in column]
+        self.assertEqual(
+            "".join(
+                c["ch"]
+                for c in sorted(kept_chars, key=lambda c: (-c["y0"], c["x0"]))
+            ),
+            "10.25-2.500.0030.75",
+        )
+
+    def test_keeps_single_digit_values_stacked_in_body_column(self):
+        digits = [
+            _char(str(i), 360, 366, 600 - i * 20, 610 - i * 20)
+            for i in range(8)
+        ]
+        kept = _filter_reading_columns(digits, scale=10.0, width=612.0)
+        kept_chars = [char for column in kept for char in column]
+        self.assertEqual(len(kept_chars), 8)
+
 
 class PunctuationMergeTest(unittest.TestCase):
     def test_merges_orphan_periods(self):
@@ -215,7 +246,7 @@ class PdfTextSanitizeTest(unittest.TestCase):
         out = _postprocess_pdf_text(raw)
         self.assertEqual(out, "multilayer and nontrivial")
 
-    def test_strips_chart_axis_run(self):
+    def test_preserves_numeric_rows_and_chart_like_text_without_geometry(self):
         from docreader.parser.pdf_parser import _postprocess_pdf_text
 
         raw = (
@@ -231,10 +262,11 @@ class PdfTextSanitizeTest(unittest.TestCase):
         )
         out = _postprocess_pdf_text(raw)
         self.assertIn("breakthroughs", out)
-        self.assertNotIn("56-layer", out)
+        for value in ("0 1 2 3 4 5 6 0", "10", "20", "56-layer", "20-layer"):
+            self.assertIn(value, out)
         self.assertIn("Figure 1.", out)
 
-    def test_strips_diagram_labels_above_caption(self):
+    def test_preserves_flattened_lines_above_caption_without_geometry(self):
         from docreader.parser.pdf_parser import _postprocess_pdf_text
 
         raw = (
@@ -249,16 +281,33 @@ class PdfTextSanitizeTest(unittest.TestCase):
         self.assertIn("Paragraph before.", out)
         self.assertIn("Figure 2.", out)
         self.assertIn("Paragraph after.", out)
-        self.assertNotIn("identity", out)
-        self.assertNotIn("weight layer", out)
+        self.assertIn("identity", out)
+        self.assertIn("weight layer", out)
 
-    def test_strips_arxiv_header_line(self):
+    def test_preserves_numeric_table_cells_blank_lines_and_superscript_text(self):
+        from docreader.parser.pdf_parser import _postprocess_pdf_text
+
+        raw = "Year North South\n2024 98.76 -2.50\n2025 0.00\n\nE = mc2"
+        out = _postprocess_pdf_text(raw)
+        self.assertEqual(out, raw)
+        self.assertNotIn("2025 0.00 0", out)  # blank cells are never synthesized
+
+    def test_preserves_cross_page_continuation_values(self):
+        from docreader.parser.pdf_parser import _postprocess_pdf_text
+
+        page_one = "Table A\nItem North South\nAlpha 10.25 20.50\nBeta 30.75"
+        page_two = "Gamma 40.00 50.00\nDelta -2.50 0.00"
+        self.assertEqual(_postprocess_pdf_text(page_one), page_one)
+        self.assertEqual(_postprocess_pdf_text(page_two), page_two)
+
+    def test_preserves_arxiv_identifier_and_short_integer_without_geometry(self):
         from docreader.parser.pdf_parser import _postprocess_pdf_text
 
         raw = "Body text.\n1\narXiv:1512.03385v1 [cs.CV] 10 Dec 2015\nMore body."
         out = _postprocess_pdf_text(raw)
-        self.assertNotIn("arXiv:", out)
+        self.assertIn("arXiv:1512.03385v1", out)
         self.assertIn("Body text.", out)
+        self.assertIn("\n1\n", out)
 
 
 class PlainWellFormedTest(unittest.TestCase):
@@ -321,11 +370,10 @@ class ResNetPaperFigureTest(unittest.TestCase):
         self.assertGreater(doc.metadata.get("vector_figure_count", 0), 0)
         self.assertIn("![", doc.content)
         self.assertIn("Figure 2. Residual learning", doc.content)
-        self.assertNotIn("arXiv:", doc.content)
+        self.assertIn("arXiv:", doc.content)
         fig2 = doc.content.find("Figure 2. Residual learning")
         before = doc.content[max(0, fig2 - 120) : fig2]
         self.assertIn("![", before)
-        self.assertNotIn("identity", before)
 
 
 class Gpt3PaperLayoutTest(unittest.TestCase):

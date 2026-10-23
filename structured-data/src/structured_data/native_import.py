@@ -38,7 +38,7 @@ def check_response(response):
         raise HTTPException(502, "无法读取知识库原件，请稍后重试。")
 
 
-async def load_source(source_id, authorization, identity, max_upload):
+async def load_source(source_id, authorization, identity, max_upload, *, allowed_types=('xlsx',)):
     if not identity.knowledge_base_id:
         raise HTTPException(400, "请从原件所属知识库打开结构化解析。")
     base = os.environ.get("WEKNORA_API_URL", "http://127.0.0.1:18081").rstrip("/")
@@ -61,9 +61,10 @@ async def load_source(source_id, authorization, identity, max_upload):
     if source.get("parse_status") == "deleting" or source.get("deleted_at"):
         raise HTTPException(409, "原件正在删除，请刷新知识库目录。")
     filename = source.get("file_name")
-    if (source.get("type") != "file" or str(source.get("file_type", "")).lower() != "xlsx"
-            or not isinstance(filename, str) or not filename.lower().endswith(".xlsx")):
-        raise HTTPException(400, "结构化解析目前支持 .xlsx；旧版 Excel 请先另存为 .xlsx。")
+    file_type = str(source.get("file_type", "")).lower()
+    if (source.get("type") != "file" or file_type not in allowed_types
+            or not isinstance(filename, str) or not filename.lower().endswith('.' + file_type)):
+        raise HTTPException(400, "原件类型与当前导入入口不匹配。")
     if filename != Path(filename.replace("\\", "/")).name or any(ord(char) < 32 for char in filename):
         raise HTTPException(400, "原件文件名无效。")
     size, fingerprint = source.get("file_size"), source.get("file_hash")
@@ -142,7 +143,7 @@ async def register_source(path, authorization, identity, max_upload, *, expected
     return source
 
 
-async def download_source(source, path, authorization, identity, max_upload):
+async def download_source(source, path, authorization, identity, max_upload, *, allowed_types=('xlsx',)):
     base = os.environ.get("WEKNORA_API_URL", "http://127.0.0.1:18081").rstrip("/")
     endpoint = base + "/api/v1/knowledge/" + quote(source["source_knowledge_id"], safe="") + "/download"
     size, digest = 0, hashlib.md5()
@@ -161,6 +162,6 @@ async def download_source(source, path, authorization, identity, max_upload):
         raise HTTPException(502, "原件传输失败，请稍后重试。") from None
     if size != source["file_size"] or digest.hexdigest() != source["file_hash"]:
         raise HTTPException(409, "原件在读取期间改变或校验失败，请刷新后重试。")
-    current = await load_source(source["source_knowledge_id"], authorization, identity, max_upload)
+    current = await load_source(source["source_knowledge_id"], authorization, identity, max_upload, allowed_types=allowed_types)
     if current != source:
         raise HTTPException(409, "原件所属知识库或文件已改变，请刷新后重试。")

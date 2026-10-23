@@ -7,7 +7,7 @@ import DocumentFileIcon from './DocumentFileIcon.vue';
 import DocumentActionMenu from './DocumentActionMenu.vue';
 import FolderPickerMenu, { type FolderOption } from './FolderPickerMenu.vue';
 import { shownStall } from '@/utils/knowledgeProcessingStall';
-import { excelSourceExtension, isExcelSource } from '../excelSource';
+import { excelSourceExtension, isStructuredSource } from '../excelSource';
 
 interface Tag {
   id: string;
@@ -351,9 +351,9 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
         </div>
 
         <div class="cell cell-actions" role="cell" v-if="canEdit" @click.stop>
-          <t-button v-if="canMutateKnowledge && isExcelSource(item)" variant="text" size="small"
-            :disabled="excelSourceExtension(item) !== 'xlsx'"
-            :title="excelSourceExtension(item) === 'xls' ? t('knowledgeBase.structuredXlsNotice') : t('knowledgeBase.excelSourceHint')"
+          <t-button v-if="canMutateKnowledge && isStructuredSource(item)" variant="text" size="small"
+            :disabled="excelSourceExtension(item) === 'xls'"
+            :title="excelSourceExtension(item) === 'xls' ? t('knowledgeBase.structuredXlsNotice') : t('knowledgeBase.structuredParse')"
             @click.stop="emit('action', 'structured-parse', item)">{{ t('knowledgeBase.structuredParse') }}</t-button>
           <t-popup :visible="moreOpen === item.id" placement="bottom-right" trigger="click" destroy-on-close overlay-class-name="card-more"
             :on-visible-change="(v: boolean) => onMoreVisible(item.id, v)">

@@ -7,7 +7,7 @@ function frame() {
   let receive: (event: any) => Promise<void>
   const parent = { postMessage() {} }, location = { origin: 'http://localhost' }
   const context: any = { parent, location, window: { addEventListener: (_: string, listener: any) => { receive = listener } },
-    authReceived: true, authEpoch: 5, authMessageSequence: 0, bearer: 'old', activeTenant: '7', activeKnowledgeBase: 'kb', activeUserId: '', requestedSourceKnowledge: '',
+    authReceived: true, authEpoch: 5, authMessageSequence: 0, bearer: 'old', activeTenant: '7', activeKnowledgeBase: 'kb', activeUserId: '', requestedSourceKnowledge: '', requestedSourceType: 'xlsx',
     reviewOnly: false, viewParams: new URLSearchParams(), nativeSourceBusy: false,
     modelOpenRequested: false, closeModelSettings: () => { context.modelOpenRequested = false },
     $: () => ({ classList: { contains: () => true } }), authRefreshPending: null, clearTimeout, Error,
@@ -21,6 +21,16 @@ test('token rotation preserves structured request epoch and current editing stat
   const { context, send } = frame()
   await send({ type: 'structured-auth', token: 'new', tenant: '7', knowledgeBaseId: 'kb' })
   assert.equal(context.bearer, 'new'); assert.equal(context.authEpoch, 5)
+})
+test('token rotation preserves the active PDF review source and request epoch', async () => {
+  const { context, send } = frame()
+  context.requestedSourceKnowledge = 'pdf-source'
+  context.requestedSourceType = 'pdf'
+  await send({ type: 'structured-auth', token: 'new', tenant: '7', knowledgeBaseId: 'kb', sourceKnowledgeId: 'pdf-source', sourceFileType: 'pdf' })
+  assert.equal(context.bearer, 'new')
+  assert.equal(context.authEpoch, 5)
+  assert.equal(context.requestedSourceKnowledge, 'pdf-source')
+  assert.equal(context.requestedSourceType, 'pdf')
 })
 test('token rotation retains a pending model selector request without resetting the editing epoch', async () => {
   const { context, send } = frame(); let opened = 0
