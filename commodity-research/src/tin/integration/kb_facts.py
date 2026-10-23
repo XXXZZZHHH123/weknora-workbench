@@ -48,6 +48,12 @@ def _projection_engine(engine):
 
 
 def current_sources(scope):
+    if scope.knowledge_base_id not in getattr(scope, 'source_delegations', ()):
+        return _direct_sources(scope)
+    return _delegated_sources(scope)
+
+
+def _direct_sources(scope):
     """Check current originals with the caller's bearer, never a saved inventory."""
     if not scope.authorization.startswith('Bearer '):
         raise HTTPException(401, '缺少当前知识库登录核验，未读取历史研究事实')
@@ -114,6 +120,50 @@ def current_sources(scope):
         raise HTTPException(503, '暂时无法核验当前知识库原件，未读取历史研究事实') from None
 
 
+def _delegated_sources(scope):
+    """Revalidate the explicit research projection before using any cached facts."""
+    from tin.integration.workbench_scope import validated_source_scope
+    if not scope.authorization.startswith('Bearer '):
+        raise HTTPException(401, '缺少当前知识库登录核验，未读取历史研究事实')
+    endpoint = (settings.weknora_api_url.rstrip('/') + '/api/v1/workspaces/research/'
+                + quote(scope.workbench_id, safe='') + '/source-scope')
+    try:
+        response = httpx.request('GET', endpoint,
+            headers={'Authorization': scope.authorization, 'X-Tenant-ID': str(scope.identity.tenant_id)},
+            trust_env=False, follow_redirects=False, timeout=15)
+        if response.status_code in {401, 403, 404}:
+            raise HTTPException(response.status_code, '知识库研究数据共享授权已失效')
+        response.raise_for_status()
+        document = validated_source_scope(scope, response.json())
+        source = next((item for item in document['sources']
+                       if item['knowledge_base_id'] == scope.knowledge_base_id), None)
+        if source is None or source['tenant_id'] != scope.knowledge_base_tenant_id:
+            raise HTTPException(403, '知识库研究来源范围已改变')
+        sources, seen = [], set()
+        for row in source['knowledge']:
+            if (not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                    or not row['id'] or row['id'] in seen):
+                raise ValueError('Invalid research source inventory')
+            seen.add(row['id'])
+            if row.get('parse_status') in {'deleting', 'deleted'}:
+                continue
+            if str(row.get('file_type', '')).lower().lstrip('.') not in {'xlsx', 'xls', 'xlsm', 'csv', 'tsv'}:
+                continue
+            fingerprint = row.get('file_hash')
+            if not fingerprint:
+                continue
+            if not isinstance(fingerprint, str) or not re.fullmatch('[0-9a-fA-F]{32}|[0-9a-fA-F]{64}', fingerprint):
+                raise ValueError('Invalid source fingerprint')
+            sources.append({'knowledge_id': row['id'], 'file_hash': fingerprint.lower()})
+            if len(sources) > 128:
+                raise HTTPException(503, '当前知识库超过一次核验的128份结构化原件上限，未返回部分或历史事实')
+        return sources
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        raise HTTPException(503, '暂时无法核验当前知识库原件，未读取历史研究事实') from None
+
+
 def current_version(scope, sources):
     from tin.provenance.bridge import structured_request
     try:
@@ -141,6 +191,8 @@ def current_version(scope, sources):
 
 
 def fact_pages(scope, sources=None, pinned_version=None):
+    if scope.restricted:
+        raise HTTPException(403, '受限研究台不允许装载全量事实，请使用已授权页面的必要数值接口')
     from tin.provenance.bridge import structured_request
     sources, offset, version, total = current_sources(scope) if sources is None else sources, 0, pinned_version, None
     catalog, datasets, encoding = None, None, None
@@ -410,6 +462,8 @@ def _attach_projection(connection, paths):
 
 
 def projected_session(engine, scope, **kwargs):
+    if scope.restricted:
+        raise HTTPException(403, '受限研究台不允许装载全量指标投影')
     from tin.integration.fact_cache import get_projection
     connection = _projection_engine(engine).connect()
     try:
@@ -449,25 +503,6 @@ def projected_session(engine, scope, **kwargs):
                 def verify(source_scope=source_scope, sources=sources, version=version):
                     preparation_checks.append(True)
                     verify_workbench()
-                    # Native KB detail checks permissions even when no files exist.
-                    if source_scope.knowledge_base_id != scope.knowledge_base_id:
-                        try:
-                            response = httpx.request('GET', settings.weknora_api_url.rstrip('/') +
-                                '/api/v1/knowledge-bases/' + quote(source_scope.knowledge_base_id, safe=''),
-                                headers={'Authorization': scope.authorization, 'X-Tenant-ID': str(scope.identity.tenant_id)},
-                                trust_env=False, follow_redirects=False, timeout=15)
-                            if response.status_code in {401, 403, 404}:
-                                raise HTTPException(response.status_code, '默认知识库授权在准备期间改变')
-                            response.raise_for_status()
-                            document = response.json()
-                            kb = document.get('data') if isinstance(document, dict) else None
-                            if (not isinstance(document, dict) or document.get('success') is not True or not isinstance(kb, dict)
-                                    or kb.get('id') != source_scope.knowledge_base_id
-                                    or type(kb.get('tenant_id')) is not int
-                                    or kb['tenant_id'] != source_scope.knowledge_base_tenant_id):
-                                raise HTTPException(403, '默认知识库来源范围在准备期间改变')
-                        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-                            raise HTTPException(503, '默认知识库授权暂时无法核验，未返回缓存事实') from None
                     fresh = current_sources(source_scope)
                     if fresh != sources or current_version(source_scope, fresh) != version:
                         raise HTTPException(409, '知识库来源在准备期间改变，请刷新重试')

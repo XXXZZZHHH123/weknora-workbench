@@ -32,7 +32,7 @@ export interface TenantInvitation {
   responded_at?: string | null
   created_at: string
   // invite_url is set on share-link rows that are still pending. The
-  // backend re-emits it on every list/get so Owners can copy the
+  // backend re-emits permitted links so Owners and Admins can copy the
   // link on demand without "copy now or revoke" pressure.
   invite_url?: string
   // is_share_link distinguishes share-link rows (no specific invitee,
@@ -142,7 +142,7 @@ export async function listTenantInvitations(
 /**
  * Send a new invitation. The invitee will see it in /me/invitations
  * and must accept before they actually become a member.
- * Backend: POST /api/v1/tenants/:id/invitations (Owner+).
+ * Backend: POST /api/v1/tenants/:id/invitations (Admin+; owner invitations require Owner).
  *
  * 404 when the email is not a registered user (ask them to register).
  * 409 when an existing pending invitation already covers this pair, or
@@ -162,7 +162,7 @@ export async function createInvitation(
  * Revoke a still-pending invitation. Already-finalised rows return
  * 409; rows from another tenant render as 404 to avoid existence
  * leaks across tenants.
- * Backend: DELETE /api/v1/tenants/:id/invitations/:inv_id (Owner+).
+ * Backend: DELETE /api/v1/tenants/:id/invitations/:inv_id (Admin+).
  */
 export async function revokeInvitation(
   tenantId: number,
@@ -254,7 +254,7 @@ export interface CreateInviteLinkResponse {
  * stays valid until expiry or revocation; revoking is the same DELETE
  * as a per-user invitation.
  *
- * Backend: POST /api/v1/tenants/:id/invite-links (Owner+).
+ * Backend: POST /api/v1/tenants/:id/invite-links (Admin+; owner links require Owner).
  */
 export async function createInviteLink(
   tenantId: number,

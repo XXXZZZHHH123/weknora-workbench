@@ -58,10 +58,6 @@ if [[ "${WEKNORA_BUILD_LIMITED:-0}" != "1" ]]; then
   budget="$(/usr/bin/python3 "$memory_guard" plan)"
   read_budget
   apply_budget_environment
-  if [[ "$check_memory" == "1" ]]; then
-    report_budget
-    exit 0
-  fi
   # All native builds share a parent budget; a compiler failure stays in its scope.
   exec systemd-run --user --scope --quiet --unit="weknora-build-$BASHPID" \
     --slice=weknorabuild.slice \

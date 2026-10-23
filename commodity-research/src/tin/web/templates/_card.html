@@ -13,10 +13,10 @@
 
     {% if c.status == 'ok' %}
     <div class="mt-2.5 flex items-baseline gap-2 flex-wrap">
-      <span class="text-3xl font-extrabold tabular tracking-tight text-[var(--text)]">{{ c.value | num(c.unit, c.badge == '派生') }}</span>
+      <span class="{{ 'restricted-value' if restricted_view else '' }} text-3xl font-extrabold tabular tracking-tight text-[var(--text)]">{{ c.value | num(c.unit, c.badge == '派生') }}</span>
       <span class="text-xs font-medium text-[var(--text-muted)]">{{ c.unit }}</span>
       {% if c.change is not none %}
-      <span class="ml-auto text-xs font-semibold tabular {{ 'text-[var(--up)]' if c.change > 0 else 'text-[var(--down)]' if c.change < 0 else 'text-[var(--text-muted)]' }}">
+      <span aria-label="较上期 {{ c.change | num(c.unit, true) }}" class="ml-auto text-xs font-semibold tabular {{ 'text-[var(--up)]' if c.change > 0 else 'text-[var(--down)]' if c.change < 0 else 'text-[var(--text-muted)]' }}">
         {{ c.change | num(c.unit, true) }}{% if c.change_pct %} ({{ c.change_pct | num('%', true) }}%){% endif %}</span>
       {% elif c.sub %}<span class="ml-auto text-xs px-2 py-0.5 rounded bg-[var(--surface-soft)] text-[var(--text-muted)]">{{ c.sub }}</span>{% endif %}
     </div>

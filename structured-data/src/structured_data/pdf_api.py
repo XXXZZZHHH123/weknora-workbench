@@ -104,7 +104,7 @@ def suggest_plan(draft, body, model_root):
     import httpx
     from .model_settings import read_model, thinking_fields
     cfg = read_model(model_root)
-    if not all(cfg.get(k) for k in ('base_url', 'api_key', 'model')):
+    if not cfg.get('native_model_id') and not all(cfg.get(k) for k in ('base_url', 'api_key', 'model')):
         raise ValueError('请先配置结构化数据 AI 模型，或手动核对映射')
     bundle = _draft_bundle(draft)
     fragments = {item['id']: item for item in bundle['fragments']}
@@ -122,22 +122,33 @@ def suggest_plan(draft, body, model_root):
     prompt += '\npage_context 是所选页的候选正文证据，不是程序确认的表格单位、标题或脚注；应结合原文判断关联，不得把同页出现就当成归属。coverage=incomplete 或来源页不明时必须明确说明遗漏与待核对处。'
     messages = [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({
         'bundle_sha256': draft['bundle_sha256'], 'evidence': json.loads(evidence)}, ensure_ascii=False)}]
-    with httpx.Client(trust_env=False, follow_redirects=False, timeout=90) as client:
-        response = client.post(cfg['base_url'].rstrip('/') + '/chat/completions',
-            headers={'Authorization': 'Bearer ' + cfg['api_key']}, json={
-                'model': cfg['model'], 'messages': messages, 'temperature': 0, 'max_tokens': 6000,
-                **thinking_fields(cfg, False)})
-        if response.status_code != 200:
-            raise ValueError(f'表格规划模型请求失败（HTTP {response.status_code}），未生成映射')
-        if len(response.content) > 200000:
+    if cfg.get('native_model_id'):
+        from .model_gateway import complete
+        completion = complete(cfg, messages, max_tokens=6000, temperature=0,
+                              enable_thinking=False, timeout=90)
+        if len(json.dumps(completion, ensure_ascii=False).encode('utf-8')) > 200000:
             raise ValueError('表格规划模型响应超过预算')
-        try:
-            choice = response.json()['choices'][0]
-            if choice.get('finish_reason') != 'stop':
-                raise ValueError('表格规划模型未正常完成，未接受不完整映射')
-            result = json.loads(choice['message']['content'])
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
-            raise ValueError('表格规划模型返回格式无效，未接受映射') from None
+    else:
+        with httpx.Client(trust_env=False, follow_redirects=False, timeout=90) as client:
+            response = client.post(cfg['base_url'].rstrip('/') + '/chat/completions',
+                headers={'Authorization': 'Bearer ' + cfg['api_key']}, json={
+                    'model': cfg['model'], 'messages': messages, 'temperature': 0, 'max_tokens': 6000,
+                    **thinking_fields(cfg, False)})
+            if response.status_code != 200:
+                raise ValueError(f'表格规划模型请求失败（HTTP {response.status_code}），未生成映射')
+            if len(response.content) > 200000:
+                raise ValueError('表格规划模型响应超过预算')
+            try:
+                completion = response.json()
+            except json.JSONDecodeError:
+                raise ValueError('表格规划模型返回格式无效，未接受映射') from None
+    try:
+        choice = completion['choices'][0]
+        if choice.get('finish_reason') != 'stop':
+            raise ValueError('表格规划模型未正常完成，未接受不完整映射')
+        result = json.loads(choice['message']['content'])
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        raise ValueError('表格规划模型返回格式无效，未接受映射') from None
     if not isinstance(result, dict) or result.get('status') not in {'ready', 'needs_review'}:
         raise ValueError('表格规划模型返回格式无效')
     if result['status'] == 'ready':

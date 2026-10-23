@@ -8,6 +8,6 @@
   <p>当前知识库尚未形成可核对的具体合约行情。每个报价都需要明确的具体合约、交割月份和价格类型，不能仅凭名称认定，也未读取旧研究库补数。当前通用字段确认尚未提供这些语义绑定，导入本身不代表合约期限结构已补齐。</p>
   {% endif %}
   <ol><li>从官方日交易快讯或<a href="https://www.shfe.com.cn/reports/tradedata/datadownload/" target="_blank" rel="noopener noreferrer">数据下载</a>取得目标交易日的原始行情文件，并保留下载链接与时间。</li><li>整理为 Excel 或 CSV，保留原交易日、合约代码、价格类型和单位；在“资料与来源”导入绑定知识库并确认字段，保留原始文件。</li><li>核对每个具体合约的交割月份与收盘/结算类型，以及成交量、持仓量；完成明确的字段语义绑定后才能绘图。缺失字段保留缺口，不用主力连续或历史价格代填。</li></ol>
-  <button type="button" class="market-core-button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)">资料与来源</button>
+  {% if not restricted_view %}<button type="button" class="market-core-button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)">资料与来源</button>{% endif %}
   {% else %}<p>独立部署可使用现有“数据更新”中的上期所行情来源。集成工作台在知识库统一维护事实，不使用独立部署的历史行情库。</p>{% endif %}
 </details>

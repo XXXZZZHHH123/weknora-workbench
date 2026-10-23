@@ -45,7 +45,9 @@ func TestPreviewKnowledgeFileForcesActiveContentDownload(t *testing.T) {
 		c.Next()
 	})
 
-	h := &KnowledgeHandler{kgService: &previewKnowledgeServiceStub{filename: "payload.html"}}
+	h := &KnowledgeHandler{kgService: &previewKnowledgeServiceStub{filename: "payload.html"}, kbService: &stubKBService{get: func(context.Context, string) (*types.KnowledgeBase, error) {
+		return &types.KnowledgeBase{ID: "kb1", TenantID: 42}, nil
+	}}}
 	router.GET("/knowledge/:id/preview", h.PreviewKnowledgeFile)
 
 	req := httptest.NewRequest(http.MethodGet, "/knowledge/k1/preview", nil)

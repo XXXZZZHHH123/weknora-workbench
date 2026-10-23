@@ -2,6 +2,7 @@
 {% block title %}每日快照与归档 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
 {% block head %}<style>.report-table th,.report-table td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}.report-table th{font-weight:600}.report-value{font-variant-numeric:tabular-nums;white-space:nowrap}.report-table tbody tr:last-child td{border-bottom:0}</style>{% endblock %}
 {% block main %}
+{% if restricted_view %}{% include "_reports_readonly.html" %}{% else %}
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
   <div>
@@ -97,5 +98,6 @@
     <p class="text-[11px] text-[var(--text-muted)]">{{ "回放使用当前已确认来源；以后修订原表或判断，回放结果也可能更新。需要留存请导出到知识库。" if live_report else "本页读取生成时保存的历史快照，不重算原记录。" }} 缺失或被阻断的计算保留空值和原因，不补零。</p>
   </div>
 </div>
+{% endif %}
 {% endif %}
 {% endblock %}

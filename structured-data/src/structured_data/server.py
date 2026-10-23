@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
 from dataclasses import replace
 import datetime as dt
 from decimal import Decimal
@@ -30,9 +31,10 @@ from starlette.concurrency import run_in_threadpool
 from .store import DataStore, dump
 from .imports import ImportManager
 from .workspaces import WorkspaceRegistry, Identity, current_identity, valid_knowledge_base_id
-from .review_worker import run_review_task
+from .review_worker import run_review_task, MAX_REQUEST_BYTES
 from .review_errors import error_location
 from .pdf_api import pdf_store, install_pdf_routes, verify_pdf_original
+from .progress import progress_value
 
 MAX_UPLOAD = 100 * 1024 * 1024
 logger = logging.getLogger(__name__)
@@ -61,6 +63,31 @@ class MappingRequest(BaseModel):
 
 class SuggestRequest(BaseModel):
     sheet: str
+
+
+class BatchConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    mappings: list[dict] = Field(default_factory=list, max_length=256)
+    save_template: bool = Field(default=True, strict=True)
+
+
+class AssistConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    sheet: str = Field(min_length=1, max_length=254)
+    mapping: dict | None = None
+    save_template: bool = Field(default=True, strict=True)
+    max_requests: int = Field(default=12, ge=1, le=32, strict=True)
+    request_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
+
+
+class BatchAssistConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    acknowledged_risk: bool = Field(strict=True)
+    request_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
+    total_max_requests: int = Field(default=256, ge=1, le=512, strict=True)
+    per_sheet_max_requests: int = Field(default=12, ge=1, le=32, strict=True)
+    save_template: bool = Field(default=True, strict=True)
+    mappings: list[dict] = Field(default_factory=list, max_length=256)
 
 
 class NativeImportRequest(BaseModel):
@@ -104,7 +131,18 @@ def create_app(data_dir: str | Path | None = None):
     store, manager, resolver = (registry.proxy(name) for name in ('store', 'manager', 'resolver'))
     sessions: dict[str, dict] = {}
     jobs: dict[str, dict] = {}
+    # A browser can cancel before its create-job response arrives. Keep these
+    # short-lived intents separate from real jobs, scoped to the verified user,
+    # so another member cannot reserve/cancel someone else's future task ID.
+    pending_ai_cancels: dict[tuple, float] = {}
     job_lock = threading.Lock()
+
+    def update_job_progress(job_id, value):
+        value = progress_value(value)
+        with job_lock:
+            jobs[job_id].update(stage=value['stage'],
+                progress={key: item for key, item in value.items() if key != 'stage'})
+
     import_lock = registry.proxy('import_lock')
     sheet_view_lock = threading.BoundedSemaphore(1)
     hosts = ["127.0.0.1:*", "localhost:*", "structured-data:*", "cotton-data:*", "host.docker.internal:*"]
@@ -392,6 +430,14 @@ def create_app(data_dir: str | Path | None = None):
     async def research_facts(request: Request):
         from .research_facts import read_facts
         body = await request.json()
+        manifest = getattr(request.state, 'research_source_manifest', None)
+        if manifest is not None:
+            from .research_facts import _parameters
+            sources, _, _, _ = _parameters(body)
+            permitted = {(row.get('id'), str(row.get('file_hash', '')).lower()) for row in manifest
+                         if isinstance(row, dict) and row.get('parse_status') not in {'deleting', 'deleted'}}
+            if any((row['knowledge_id'], row['file_hash']) not in permitted for row in sources):
+                raise HTTPException(403, '来源不在当前工作台已批准的研究数据范围内')
         def read_current():
             with manager.lock:
                 document=read_facts(store, manager, body)
@@ -473,11 +519,9 @@ def create_app(data_dir: str | Path | None = None):
             permission = data.get('my_permission')
             if (document.get('success') is False or data.get('id') != knowledge_base_id
                     or type(owner) is not int or owner <= 0
-                    or (owner != identity.tenant_id and permission not in {'viewer', 'editor', 'admin'})):
+                    or permission not in {'viewer', 'editor', 'admin'}):
                 raise ValueError('invalid knowledge-base grant')
-            writable = permission in {'editor', 'admin'} if permission else (
-                owner == identity.tenant_id and (identity.role in {'owner', 'admin'}
-                    or data.get('creator_id') == identity.user_id))
+            writable = permission in {'editor', 'admin'}
             return replace(identity, knowledge_base_id=knowledge_base_id,
                            knowledge_base_tenant_id=owner, knowledge_base_can_write=writable)
         except (ValueError, TypeError, AttributeError):
@@ -543,10 +587,21 @@ def create_app(data_dir: str | Path | None = None):
                 if origin != expected_origin(request):
                     return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
             request.state.verified_authorization = authorization
+        if request.method == 'POST' and path.endswith(('/assist-confirm', '/confirm-all', '/assist-confirm-all')):
+            chunks, total = [], 0
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > MAX_REQUEST_BYTES:
+                    return JSONResponse({'detail': '确认配置过大，请分批处理工作表。'}, status_code=413)
+                chunks.append(chunk)
+            request._body = b''.join(chunks)
         marker = current_identity.set(identity)
+        from .model_gateway import current_authorization
+        authorization_marker = current_authorization.set(getattr(request.state, 'verified_authorization', ''))
         try:
             return await call_next(request)
         finally:
+            current_authorization.reset(authorization_marker)
             current_identity.reset(marker)
 
     @app.get("/")
@@ -609,16 +664,37 @@ def create_app(data_dir: str | Path | None = None):
         return response
 
     @app.get('/api/model-settings')
-    def model_settings():
+    async def model_settings():
         from .model_settings import public_model
+        identity = current_identity.get()
+        if identity.knowledge_base_id:
+            from .model_gateway import available_models
+            cfg = public_model(store.root)
+            return {'native_model_id': cfg.get('native_model_id', ''), 'protocol': 'platform',
+                    'legacy_configured': cfg.get('has_api_key', False),
+                    'can_edit': identity.can_write, 'models': await available_models()}
         return public_model(store.root)
 
     @app.post('/api/model-settings')
     async def update_model_settings(request: Request):
         from .model_settings import save_model
-        if current_identity.get().role not in {'owner','admin'}:
+        identity = current_identity.get()
+        if identity.knowledge_base_id:
+            if not identity.can_write:
+                raise HTTPException(403, '只有知识库可编辑成员可修改字段模型')
+            from .model_gateway import validate_model
+            body = await request.json()
+            if not isinstance(body, dict) or set(body) != {'native_model_id'}:
+                raise ValueError('请选择已配置的通用模型，不需要地址或密钥。')
+            await validate_model(body['native_model_id'])
+            await run_in_threadpool(check_job_write, request.state.verified_authorization, identity)
+            return save_model(store.root, body)
+        if identity.role not in {'owner','admin'}:
             raise HTTPException(403, '只有空间所有者或管理员可修改模型配置')
-        return save_model(store.root,await request.json())
+        body = await request.json()
+        if isinstance(body, dict) and 'native_model_id' in body:
+            raise ValueError('请从具体知识库选择平台字段模型。')
+        return save_model(store.root,body)
 
     @app.get("/api/datasets")
     def datasets(include_samples: bool = False):
@@ -671,24 +747,29 @@ def create_app(data_dir: str | Path | None = None):
     def query(dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, offset: int = 0):
         return store.query_series(store.select_dataset(dataset_id), series_id, start_date, end_date, operation, limit, period, offset=offset)
 
-    def run_import(job_id: str, path: Path, native_source=None, legacy=None, use_reviewed_mappings=True):
+    def run_import(job_id: str, path: Path, native_source=None, legacy=None,
+                   use_reviewed_mappings=True, authorization='', identity=None):
         try:
             result = None
             if legacy:
+                check_job_write(authorization, identity)
                 from .legacy_import import recover
                 if not legacy['import_lock'].acquire(blocking=False):
                     raise ValueError('原空间正在处理表格，请稍后重试恢复；不会重新扫描或覆盖。')
                 try:
                     with job_lock:
                         jobs[job_id]['stage'] = '校验并恢复已核对记录和历史数据，不重新扫描'
-                    result = recover(manager, legacy['manager'], native_source, path)
+                    result = recover(manager, legacy['manager'], native_source, path,
+                        before_commit=lambda: check_job_write(authorization, identity))
                 finally:
                     legacy['import_lock'].release()
             if result is None:
                 result = run_review_task(registry.directory(), "import", path=path,
-                                         use_reviewed_mappings=use_reviewed_mappings)
+                    use_reviewed_mappings=use_reviewed_mappings,
+                    publish_guard=lambda: check_job_write(authorization, identity),
+                    native_source=native_source,
+                    progress_callback=lambda value: update_job_progress(job_id, value))
             if native_source:
-                manager.bind_native_source(result['import_id'], native_source)
                 result['source_knowledge_id'] = native_source['source_knowledge_id']
             with job_lock:
                 jobs[job_id].update(status='completed', result=result)
@@ -752,7 +833,7 @@ def create_app(data_dir: str | Path | None = None):
                 jobs[job_id]['stage'] = '扫描本知识库原件并导入结构明确的表，不调用模型'
             context = contextvars.copy_context()
             threading.Thread(target=context.run, args=(run_import, job_id, path, native, legacy,
-                                                       body.restore_reviewed_state), daemon=True).start()
+                body.restore_reviewed_state, authorization, identity), daemon=True).start()
         except Exception as exc:
             with job_lock:
                 if job_id in jobs:
@@ -765,7 +846,7 @@ def create_app(data_dir: str | Path | None = None):
         return {'id': job_id, 'status': 'processing', 'source_knowledge_id': body.source_knowledge_id}
 
     @app.post("/api/import")
-    async def upload(file: UploadFile):
+    async def upload(request: Request, file: UploadFile):
         if not file.filename or not file.filename.lower().endswith(".xlsx"):
             raise HTTPException(400, "目前支持 .xlsx 文件。")
         if not import_lock.acquire(blocking=False):
@@ -782,22 +863,84 @@ def create_app(data_dir: str | Path | None = None):
                     if size > MAX_UPLOAD:
                         raise HTTPException(413, "文件超过100MB。")
                     f.write(chunk)
+            identity = current_identity.get()
+            authorization = request.state.verified_authorization
+            native = None
+            if identity.knowledge_base_id:
+                from .native_import import register_source
+                native = await register_source(path, authorization, identity, MAX_UPLOAD)
             with job_lock:
-                jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, 'knowledge_base_id':current_identity.get().knowledge_base_id, "status": "processing", "stage": "扫描全部工作表并导入结构明确的表，不调用模型"}
+                jobs[job_id] = {"id": job_id, 'tenant_id':identity.tenant_id,
+                    'knowledge_base_id':identity.knowledge_base_id, 'user_id': identity.user_id,
+                    **({'source_knowledge_id': native['source_knowledge_id'], 'native_source': native}
+                       if native else {}),
+                    "status": "processing", "stage": "扫描全部工作表并导入结构明确的表，不调用模型"}
             context = contextvars.copy_context()
-            threading.Thread(target=context.run, args=(run_import, job_id, path), daemon=True).start()
+            threading.Thread(target=context.run, args=(run_import, job_id, path, native, None,
+                not bool(native), authorization, identity), daemon=True).start()
         except Exception:
             path.unlink(missing_ok=True)
             uploads.rmdir()
             import_lock.release()
             raise
-        return {"id": job_id, "status": "processing"}
+        return {"id": job_id, "status": "processing",
+                **({'source_knowledge_id': native['source_knowledge_id']} if native else {})}
+
+    @app.post('/api/imports/{import_id}/register-original')
+    async def register_original(import_id: str, request: Request):
+        from .native_import import load_source, original_fingerprint, register_source
+        identity = current_identity.get()
+        if not identity.knowledge_base_id:
+            raise HTTPException(400, '请在原件所属知识库中登记文件。')
+        if not import_lock.acquire(blocking=False):
+            raise HTTPException(409, '已有导入任务，请等待完成后登记原件。')
+        try:
+            authorization = request.state.verified_authorization
+            doc = await run_in_threadpool(manager.get, import_id)
+            path = manager.source_path(doc)
+            # Only the current scoped manager's saved original is eligible;
+            # request bodies cannot supply a local path, a destination KB or bytes.
+            if (doc.get('import_id') != import_id or path.resolve().parent != manager.path(import_id).resolve()
+                    or not isinstance(doc.get('sha256'), str)):
+                raise HTTPException(409, '原件登记信息无效。')
+            size, digest = await run_in_threadpool(original_fingerprint, path, MAX_UPLOAD, doc['sha256'])
+            source = None
+            for binding in doc.get('native_source_bindings', []):
+                if (binding.get('knowledge_base_id') != identity.knowledge_base_id
+                        or binding.get('tenant_id') != identity.knowledge_base_tenant_id):
+                    continue
+                if not valid_knowledge_base_id(binding.get('source_knowledge_id')):
+                    raise HTTPException(409, '原件标识无效，请核对已保存的来源关联。')
+                try:
+                    candidate = await load_source(binding.get('source_knowledge_id'), authorization, identity, MAX_UPLOAD)
+                except HTTPException as exc:
+                    if exc.status_code == 404:
+                        continue
+                    raise
+                if candidate['file_size'] != size or candidate['file_hash'] != digest:
+                    raise HTTPException(409, '知识库原件已改变，未重复登记旧结构化数据。')
+                source = candidate
+                break
+            if source is None:
+                source = await register_source(path, authorization, identity, MAX_UPLOAD,
+                                               expected_sha256=doc['sha256'])
+            await run_in_threadpool(manager.bind_native_source, import_id, source,
+                before_commit=lambda: check_job_write(authorization, identity))
+            identifier = source['source_knowledge_id']
+            library = quote(identity.knowledge_base_id, safe='')
+            return {'source_knowledge_id': identifier, 'import_id': import_id,
+                    'preview_path': f'/platform/knowledge-bases/{library}?knowledge_id={quote(identifier, safe="")}',
+                    'structured_path': f'/platform/knowledge-bases/{library}/structured-data?mode=import&source_knowledge_id={quote(identifier, safe="")}'}
+        finally:
+            import_lock.release()
 
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str):
         with job_lock:
             if (job_id not in jobs or jobs[job_id].get('tenant_id') != current_identity.get().tenant_id
-                    or jobs[job_id].get('knowledge_base_id', '') != current_identity.get().knowledge_base_id):
+                    or jobs[job_id].get('knowledge_base_id', '') != current_identity.get().knowledge_base_id
+                    or (jobs[job_id].get('user_id') is not None
+                        and jobs[job_id]['user_id'] != current_identity.get().user_id)):
                 raise HTTPException(404, "任务不存在；服务重启后请查看数据集列表确认导入结果。")
             return jobs[job_id]
 
@@ -814,6 +957,7 @@ def create_app(data_dir: str | Path | None = None):
         result = {k: v for k, v in doc.items() if k != "source_path"}
         if summary_only:
             fields = {"name", "rows", "columns", "status", "layout", "fingerprint", "reasons", "template_status",
+                      "import_state", "review_state", "automatic_skip",
                       "published_in_dataset", "published_dataset_id", "published_fingerprint"}
             briefs = []
             for sheet in doc["sheets"]:
@@ -867,14 +1011,17 @@ def create_app(data_dir: str | Path | None = None):
             sheet_view_lock.release()
 
     @app.post('/api/imports/{import_id}/rescan')
-    async def rescan(import_id: str):
+    async def rescan(import_id: str, request: Request):
         manager.path(import_id)
         if not import_lock.acquire(blocking=False):
             raise HTTPException(409,'已有导入或确认任务，请等待完成。')
         try:
             doc=manager.get(import_id)
+            identity = current_identity.get()
+            authorization = request.state.verified_authorization
             return await run_in_threadpool(run_review_task, registry.directory(), "import", path=manager.source_path(doc),
-                                            use_reviewed_mappings=doc.get('use_reviewed_mappings', True))
+                use_reviewed_mappings=doc.get('use_reviewed_mappings', True),
+                publish_guard=lambda: check_job_write(authorization, identity))
         finally:
             import_lock.release()
 
@@ -897,7 +1044,8 @@ def create_app(data_dir: str | Path | None = None):
 
     def run_preview(job_id, import_id, body):
         try:
-            result = run_review_task(registry.directory(), "preview", import_id=import_id, mapping=body.mapping)
+            result = run_review_task(registry.directory(), "preview", import_id=import_id, mapping=body.mapping,
+                progress_callback=lambda value: update_job_progress(job_id, value))
             with job_lock:
                 jobs[job_id].update(status="completed", result=result)
         except Exception as exc:
@@ -906,9 +1054,12 @@ def create_app(data_dir: str | Path | None = None):
         finally:
             import_lock.release()
 
-    def run_confirm(job_id, import_id, body):
+    def run_confirm(job_id, import_id, body, authorization, identity):
         try:
-            result = run_review_task(registry.directory(), "confirm", import_id=import_id, mapping=body.mapping, save_template=body.save_template)
+            result = run_review_task(registry.directory(), "confirm", import_id=import_id,
+                mapping=body.mapping, save_template=body.save_template,
+                publish_guard=lambda: check_job_write(authorization, identity),
+                progress_callback=lambda value: update_job_progress(job_id, value))
             with job_lock:
                 jobs[job_id].update(status='completed', result=result)
         except Exception as exc:
@@ -918,20 +1069,352 @@ def create_app(data_dir: str | Path | None = None):
             import_lock.release()
 
     @app.post("/api/imports/{import_id}/confirm")
-    def confirm(import_id: str, body: MappingRequest):
+    def confirm(import_id: str, body: MappingRequest, request: Request):
         manager.path(import_id)
         if not import_lock.acquire(blocking=False):
             raise HTTPException(409, "已有导入或确认任务，请等待完成。")
         job_id = uuid.uuid4().hex
+        identity = current_identity.get()
         with job_lock:
-            jobs[job_id] = {"id": job_id, 'tenant_id':current_identity.get().tenant_id, 'knowledge_base_id':current_identity.get().knowledge_base_id, "status": "processing", "stage": "校验当前工作表并增量保存，复用其他已导入工作表"}
+            jobs[job_id] = {"id": job_id, 'tenant_id':identity.tenant_id,
+                'knowledge_base_id':identity.knowledge_base_id, 'user_id': identity.user_id,
+                "status": "processing", "stage": "校验当前工作表并增量保存，复用其他已导入工作表"}
         context = contextvars.copy_context()
-        threading.Thread(target=context.run, args=(run_confirm, job_id, import_id, body), daemon=True).start()
+        threading.Thread(target=context.run, args=(run_confirm, job_id, import_id, body,
+            request.state.verified_authorization, identity), daemon=True).start()
         return {"id": job_id, "status": "processing"}
 
     @app.post("/api/imports/{import_id}/suggest")
     async def suggest(import_id: str, body: SuggestRequest):
         return await run_in_threadpool(manager.suggest, import_id, body.sheet)
+
+    def check_job_write(authorization, expected):
+        async def refresh():
+            identity = await verify_weknora(authorization, expected.tenant_id)
+            if identity.user_id != expected.user_id:
+                raise ValueError('账号已改变，未自动导入。')
+            if expected.knowledge_base_id:
+                identity = await verify_knowledge_base(identity, authorization, expected.knowledge_base_id)
+            if (not identity.can_write
+                    or identity.knowledge_base_tenant_id != expected.knowledge_base_tenant_id):
+                raise ValueError('编辑权限或知识库归属已改变，未自动导入。')
+        try:
+            asyncio.run(refresh())
+        except HTTPException as exc:
+            raise ValueError(str(exc.detail)) from None
+
+    def run_batch_confirm(job_id, import_id, body, authorization, identity):
+        try:
+            from .imports import READY
+            doc = manager.get(import_id)
+            selected = {sheet['name']: sheet['mapping'] for sheet in doc['sheets']
+                        if sheet['status'] in READY and sheet.get('mapping')
+                        and sheet.get('import_state') != 'imported'}
+            seen = set()
+            for mapping in body.mappings:
+                name = mapping.get('sheet')
+                if not isinstance(name, str) or name in seen:
+                    raise ValueError('批量确认工作表无效或重复。')
+                manager.sheet(import_id, name)
+                seen.add(name)
+                selected[name] = mapping
+            imported, failed = [], []
+            check_job_write(authorization, identity)
+            total = len(selected)
+            for index, (name, mapping) in enumerate(selected.items()):
+                # A long batch must not continue publishing other sheets after
+                # the caller loses editing rights during an earlier sheet.
+                check_job_write(authorization, identity)
+                update_job_progress(job_id, {'phase': 'batch', 'completed': index, 'total': total})
+
+                def sheet_progress(value):
+                    value = progress_value(value)
+                    with job_lock:
+                        jobs[job_id]['stage'] = f'工作表 {index + 1}/{total} · {value["stage"]}'
+
+                try:
+                    run_review_task(registry.directory(), 'confirm', import_id=import_id,
+                        mapping=mapping, save_template=body.save_template,
+                        publish_guard=lambda: check_job_write(authorization, identity),
+                        progress_callback=sheet_progress)
+                except ValueError as exc:
+                    failed.append({'sheet': name, 'message': str(exc), **error_location(exc)})
+                else:
+                    imported.append(name)
+                update_job_progress(job_id, {'phase': 'batch', 'completed': index + 1, 'total': total})
+            doc = manager.get(import_id)
+            result = {**manager._result(doc), 'sheets_imported': imported, 'sheets_failed': failed,
+                'sheets_pending': [sheet['name'] for sheet in doc['sheets']
+                    if sheet['status'] not in READY and sheet['status'] != 'trusted_existing']}
+            with job_lock:
+                jobs[job_id].update(status='completed', result=result)
+        except Exception as exc:
+            with job_lock:
+                jobs[job_id].update(status='failed', error=str(exc), **error_location(exc))
+        finally:
+            import_lock.release()
+
+    @app.post('/api/imports/{import_id}/confirm-all')
+    def confirm_all(import_id: str, body: BatchConfirmRequest, request: Request):
+        manager.path(import_id)
+        if not import_lock.acquire(blocking=False):
+            raise HTTPException(409, '已有导入或确认任务，请等待完成。')
+        job_id = uuid.uuid4().hex
+        identity = current_identity.get()
+        with job_lock:
+            jobs[job_id] = {'id': job_id, 'tenant_id': identity.tenant_id,
+                'knowledge_base_id': identity.knowledge_base_id, 'user_id': identity.user_id,
+                'status': 'processing', 'stage': '逐表校验并导入已确认工作表，失败表保留待确认'}
+        context = contextvars.copy_context()
+        threading.Thread(target=context.run, args=(run_batch_confirm, job_id, import_id, body,
+            request.state.verified_authorization, identity), daemon=True).start()
+        return {'id': job_id, 'status': 'processing'}
+
+    def run_assist_confirm(job_id, import_id, body, authorization, identity):
+        deadline = time.monotonic() + 600
+
+        def cancelled():
+            with job_lock:
+                return jobs[job_id].get('cancel_requested', False) or time.monotonic() >= deadline
+
+        def progress(value):
+            if cancelled():
+                raise ValueError('AI 辅助已取消或超时，尚未确认的工作表未导入。')
+            check_job_write(authorization, identity)
+            current = progress_value({'phase': 'ai', 'completed': value.get('completed_blocks'),
+                                      'total': value.get('total_blocks')})
+            with job_lock:
+                jobs[job_id].update(stage=str(value.get('stage') or current['stage']),
+                    progress={**{key: item for key, item in current.items() if key != 'stage'},
+                              **{key: value[key] for key in ('block_index', 'total_blocks', 'completed_blocks')
+                                 if type(value.get(key)) is int}})
+
+        def review(mapping):
+            if cancelled():
+                raise ValueError('AI 辅助已取消或超时，尚未确认的工作表未导入。')
+            return run_review_task(registry.directory(), 'review', import_id=import_id,
+                mapping=mapping, timeout=min(300, max(.001, deadline - time.monotonic())))
+
+        try:
+            from .ai_review import AIRequestBudget, assist_mapping
+            check_job_write(authorization, identity)
+            result = assist_mapping(manager, import_id, body.sheet, mapping=body.mapping,
+                budget=AIRequestBudget(max_requests=body.max_requests), cancelled=cancelled, progress=progress,
+                review=review)
+            if cancelled():
+                raise ValueError('AI 辅助已取消或超时，尚未确认的工作表未导入。')
+            result = {**result, 'import_id': import_id, 'sheet': body.sheet,
+                      'dataset_id': manager.get(import_id).get('dataset_id'), 'imported': False}
+            if result.get('review_state', {}).get('status') == 'confirmed':
+                check_job_write(authorization, identity)
+                try:
+                    actual = run_review_task(registry.directory(), 'preview', import_id=import_id,
+                        mapping=result['mapping'], timeout=min(300, max(.001, deadline - time.monotonic())),
+                        cancel_check=cancelled)
+                except ValueError as exc:
+                    if not cancelled():
+                        exc.review_state = review(result['mapping'])
+                    raise
+                if not actual.get('valid_observation_count'):
+                    from .batch_ai_import import NO_DATA_NOTICE
+                    run_review_task(registry.directory(), 'mark_skip', import_id=import_id,
+                        mapping=result['mapping'], publish_guard=lambda: check_job_write(authorization, identity),
+                        timeout=min(300, max(.001, deadline - time.monotonic())))
+                    result.update(skipped={'code': 'no_indicator_data', 'message': NO_DATA_NOTICE},
+                                  notice=NO_DATA_NOTICE)
+                    with job_lock:
+                        jobs[job_id].update(status='completed', result=result, cancellable=False)
+                    return
+                strict_state = review(result['mapping'])
+                if strict_state.get('status') != 'confirmed':
+                    result.update(review_state=strict_state,
+                        notice='AI 建议未通过逐区块真实数据检查，请补齐或排除无数据区块。')
+                    with job_lock:
+                        jobs[job_id].update(status='completed', result=result, cancellable=False)
+                    return
+                with job_lock:
+                    if jobs[job_id].get('cancel_requested') or time.monotonic() >= deadline:
+                        raise ValueError('AI 辅助已取消或超时，尚未确认的工作表未导入。')
+                    jobs[job_id].update(cancellable=False, stage='全部区块检查通过，校验并导入当前表')
+                published = run_review_task(registry.directory(), 'confirm', import_id=import_id,
+                    mapping=result['mapping'], save_template=body.save_template,
+                    publish_guard=lambda: check_job_write(authorization, identity),
+                    progress_callback=lambda value: update_job_progress(job_id, value))
+                result.update(published, imported=True)
+            with job_lock:
+                jobs[job_id].update(status='completed', result=result, cancellable=False)
+        except Exception as exc:
+            with job_lock:
+                status = 'cancelled' if jobs[job_id].get('cancel_requested') else 'failed'
+                jobs[job_id].update(status=status, error=str(exc), cancellable=False, **error_location(exc))
+        finally:
+            import_lock.release()
+
+    @app.post('/api/imports/{import_id}/assist-confirm')
+    def assist_confirm(import_id: str, body: AssistConfirmRequest, request: Request):
+        manager.sheet(import_id, body.sheet)
+        if body.mapping is not None and body.mapping.get('sheet') != body.sheet:
+            raise HTTPException(400, '当前草稿不属于所选工作表。')
+        job_id = body.request_id or uuid.uuid4().hex
+        identity = current_identity.get()
+        with job_lock:
+            prune_pending_ai_cancels()
+            if job_id in jobs:
+                raise HTTPException(409, '任务编号已使用，请重新发起。')
+            cancel_key = ai_cancel_key(identity, job_id)
+            if cancel_key in pending_ai_cancels:
+                pending_ai_cancels.pop(cancel_key)
+                jobs[job_id] = {'id': job_id, 'tenant_id': identity.tenant_id,
+                    'knowledge_base_id': identity.knowledge_base_id, 'user_id': identity.user_id,
+                    'status': 'cancelled', 'cancel_requested': True, 'cancellable': False,
+                    'error': 'AI 辅助已取消，未调用模型或自动导入。'}
+                return {'id': job_id, 'status': 'cancelled'}
+            if not import_lock.acquire(blocking=False):
+                raise HTTPException(409, '已有导入或确认任务，请等待完成。')
+            jobs[job_id] = {'id': job_id, 'tenant_id': identity.tenant_id,
+                'knowledge_base_id': identity.knowledge_base_id, 'user_id': identity.user_id,
+                'status': 'processing', 'stage': '检查当前映射，逐个辅助待确认区块', 'cancellable': True}
+        context = contextvars.copy_context()
+        try:
+            threading.Thread(target=context.run, args=(run_assist_confirm, job_id, import_id, body,
+                request.state.verified_authorization, identity), daemon=True).start()
+        except Exception:
+            with job_lock:
+                jobs[job_id].update(status='failed', cancellable=False, error='AI 任务未能启动，请重试。')
+            import_lock.release()
+            raise
+        return {'id': job_id, 'status': 'processing'}
+
+    def run_assist_confirm_all(job_id, import_id, body, authorization, identity):
+        from .batch_ai_import import import_all_with_ai
+
+        def cancelled():
+            with job_lock:
+                return bool(jobs[job_id].get('cancel_requested'))
+
+        def progress(value):
+            current = progress_value({'phase': 'batch', 'completed': value['completed'], 'total': value['total']})
+            with job_lock:
+                jobs[job_id].update(
+                    stage=f'工作表 {min(value["completed"] + 1, value["total"])}/{value["total"]} · {value["stage"]}',
+                    progress={key: item for key, item in current.items() if key != 'stage'},
+                    batch_ai={key: item for key, item in value.items() if key != 'stage'})
+
+        def sheet_result(row):
+            # Keep visible partial results while a later model request is
+            # running. The final result is rebuilt from authoritative state.
+            with job_lock:
+                result = jobs[job_id]['result']
+                result['details'].append(row)
+                field = {'imported': 'sheets_imported', 'existing': 'sheets_existing',
+                         'needs_review': 'sheets_pending', 'not_started': 'sheets_pending',
+                         'failed': 'sheets_failed', 'skipped_no_data': 'sheets_skipped'}[row['status']]
+                result[field].append(row if field in {'sheets_failed', 'sheets_skipped'} else row['sheet'])
+                result['requests_used'] += row['requests_used']
+
+        try:
+            result = import_all_with_ai(manager, import_id, mappings=body.mappings,
+                save_template=body.save_template, total_max_requests=body.total_max_requests,
+                per_sheet_max_requests=body.per_sheet_max_requests,
+                task=lambda action, **kwargs: run_review_task(registry.directory(), action, **kwargs),
+                check_write=lambda: check_job_write(authorization, identity), cancelled=cancelled,
+                progress=progress, sheet_result=sheet_result)
+            stopped = result.get('stopped')
+            status = 'cancelled' if stopped == 'cancelled' else 'failed' if stopped else 'completed'
+            with job_lock:
+                jobs[job_id].update(status=status, result=result, cancellable=False,
+                    stage=result['notice'], **({'error': result['notice']} if stopped else {}))
+        except Exception as exc:
+            with job_lock:
+                jobs[job_id].update(status='cancelled' if jobs[job_id].get('cancel_requested') else 'failed',
+                    error=str(exc)[:2000], cancellable=False)
+        finally:
+            import_lock.release()
+
+    @app.post('/api/imports/{import_id}/assist-confirm-all')
+    def assist_confirm_all(import_id: str, body: BatchAssistConfirmRequest, request: Request):
+        manager.path(import_id)
+        if not body.acknowledged_risk:
+            raise HTTPException(400, '请先确认逐表 AI 辅助的调用预算和自动导入风险。')
+        names = set()
+        for mapping in body.mappings:
+            name = mapping.get('sheet')
+            if not isinstance(name, str) or name in names:
+                raise HTTPException(400, '批量 AI 的工作表草稿无效或重复。')
+            manager.sheet(import_id, name)
+            names.add(name)
+        job_id = body.request_id or uuid.uuid4().hex
+        identity = current_identity.get()
+        with job_lock:
+            prune_pending_ai_cancels()
+            if job_id in jobs:
+                raise HTTPException(409, '任务编号已使用，请重新发起。')
+            cancel_key = ai_cancel_key(identity, job_id)
+            if cancel_key in pending_ai_cancels:
+                pending_ai_cancels.pop(cancel_key)
+                jobs[job_id] = {'id': job_id, 'tenant_id': identity.tenant_id,
+                    'knowledge_base_id': identity.knowledge_base_id, 'user_id': identity.user_id,
+                    'status': 'cancelled', 'cancel_requested': True, 'cancellable': False,
+                    'error': '批量 AI 已取消，未调用模型或自动导入。'}
+                return {'id': job_id, 'status': 'cancelled'}
+            if not import_lock.acquire(blocking=False):
+                raise HTTPException(409, '已有导入或确认任务，请等待完成。')
+            jobs[job_id] = {'id': job_id, 'kind': 'batch_ai', 'tenant_id': identity.tenant_id,
+                'knowledge_base_id': identity.knowledge_base_id, 'user_id': identity.user_id,
+                'status': 'processing', 'stage': '逐表检查，辅助待确认区块并导入核验通过的表',
+                'cancellable': True, 'result': {'import_id': import_id,
+                    'sheets_imported': [], 'sheets_existing': [], 'sheets_pending': [],
+                    'sheets_failed': [], 'sheets_skipped': [], 'details': [], 'requests_used': 0}}
+        context = contextvars.copy_context()
+        try:
+            threading.Thread(target=context.run, args=(run_assist_confirm_all, job_id, import_id, body,
+                request.state.verified_authorization, identity), daemon=True).start()
+        except Exception:
+            with job_lock:
+                jobs[job_id].update(status='failed', cancellable=False, error='批量 AI 任务未能启动，请重试。')
+            import_lock.release()
+            raise
+        return {'id': job_id, 'status': 'processing'}
+
+    def ai_cancel_key(identity, job_id):
+        return (identity.tenant_id, identity.knowledge_base_id, identity.user_id, job_id)
+
+    def prune_pending_ai_cancels():
+        # Caller holds job_lock. A bounded ten-minute intent covers delayed
+        # requests without retaining arbitrary IDs or growing with page closes.
+        now = time.monotonic()
+        for key, expiry in list(pending_ai_cancels.items()):
+            if expiry <= now:
+                pending_ai_cancels.pop(key, None)
+
+    @app.post('/api/jobs/{job_id}/cancel')
+    def cancel_job(job_id: str):
+        identity = current_identity.get()
+        with job_lock:
+            record = jobs.get(job_id)
+            if record is None:
+                if len(job_id) != 32 or any(c not in '0123456789abcdef' for c in job_id):
+                    raise HTTPException(404, '任务不存在。')
+                prune_pending_ai_cancels()
+                key = ai_cancel_key(identity, job_id)
+                if key not in pending_ai_cancels:
+                    own = sum(item[:3] == key[:3] for item in pending_ai_cancels)
+                    if own >= 32 or len(pending_ai_cancels) >= 512:
+                        raise HTTPException(429, '待取消任务过多，请稍后重试。')
+                pending_ai_cancels[key] = time.monotonic() + 600
+                return {'id': job_id, 'status': 'cancelled', 'cancel_requested': True}
+            if (record.get('tenant_id') != identity.tenant_id
+                    or record.get('knowledge_base_id') != identity.knowledge_base_id
+                    or record.get('user_id') != identity.user_id):
+                raise HTTPException(404, '任务不存在。')
+            if record.get('cancel_requested') and record.get('status') == 'cancelled':
+                return {'id': job_id, 'status': 'cancelled', 'cancel_requested': True}
+            if record.get('status') != 'processing' or not record.get('cancellable'):
+                raise HTTPException(409, '任务已结束或正在保存已确认数据，无法取消。')
+            record['cancel_requested'] = True
+            record['stage'] = ('正在取消；已完成工作表保留，后续不再导入' if record.get('kind') == 'batch_ai'
+                               else '正在取消，等待当前请求返回；不会自动导入')
+        return {'id': job_id, 'status': 'processing', 'cancel_requested': True}
 
     @app.get("/api/templates")
     def templates():

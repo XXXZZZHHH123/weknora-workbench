@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}动态产业图 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
+{% block head %}{% if restricted_view %}<link rel="stylesheet" href="{{ research_static_prefix() }}/static/restricted.css?v={{ static_version() }}">{% endif %}{% endblock %}
 {% block main %}
-
+{% set can_edit_diagram = not restricted_view and (not research_workbench() or research_workbench().can_edit) %}
+{% if restricted_view %}<div class="restricted-notice" role="status"><span aria-hidden="true">&#128274;</span><strong>受限视角</strong><span>展示已授权的完整产业图与绑定数值；指标目录、原始资料、任意查询和下载未开放。</span></div>{% endif %}
 
 
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
@@ -14,25 +16,27 @@
     </p>
   </div>
   <div class="flex items-center gap-1.5 shrink-0 text-xs">
-    <select id="dg-template" onchange="dgSwitch(this.value)" class="px-2 py-1.5 rounded-md">
+    <select id="dg-template" aria-label="选择产业图" onchange="dgSwitch(this.value)" class="px-2 py-1.5 rounded-md">
       {% for t in templates_all %}
       <option value="{{ t.id }}" {{ 'selected' if t.id == template.id }}>{{ t.name }}{{ '（默认）' if t.is_default }}</option>
       {% endfor %}
-      <option value="__new">＋ 新建空白布局…</option>
+      {% if can_edit_diagram %}<option value="__new">＋ 新建空白布局…</option>{% endif %}
     </select>
-    <button type="button" onclick="dgDeleteTemplate()" title="删除当前布局"
+    {% if not restricted_view %}
+    <button type="button" onclick="dgDeleteTemplate()" title="删除当前布局" {% if not can_edit_diagram %}disabled{% endif %}
       class="px-2 py-1.5 rounded-md border border-[var(--line)] text-[var(--text-muted)] hover:text-[var(--alert)] hover:bg-[var(--surface-soft)]">🗑</button>
     {# 上方工具栏只放"这张图本身"的事：换布局、结构文本、进出编辑。
        看图时才用的判断视角 / 趋势对比挪到画布右上角——它们是看图的选项，不是编辑动作。 #}
     <button type="button" onclick="dgOpenMarkdown()" id="dg-md-btn"
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">md管理</button>
-    <button type="button" onclick="dgToggleEdit()" id="dg-edit-btn"
+    <button type="button" onclick="dgToggleEdit()" id="dg-edit-btn" {% if not can_edit_diagram %}disabled title="当前账号只有工作台查看权限"{% endif %}
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">编辑布局</button>
     {# 保存只在编辑态出现：看图时摆在那里既点不动也提示不了什么 #}
     <button type="button" onclick="dgExitEdit()" id="dg-exit" class="hidden
       px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">退出编辑</button>
     <button type="button" onclick="dgSave()" id="dg-save" disabled class="hidden
       px-3 py-1.5 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-40">保存</button>
+    {% endif %}
   </div>
 </div>
 
@@ -81,7 +85,7 @@
   </div>
 
   <!-- 看图的选项放右上角：左上是编辑工具、左下是缩放，右上空着，语义上也正好 -->
-  <div id="dg-views" class="absolute right-3 top-3 flex items-center gap-1 text-xs
+  {% if not restricted_view %}<div id="dg-views" class="absolute right-3 top-3 flex items-center gap-1 text-xs
        bg-[var(--surface)] rounded-md border border-[var(--line)] px-1 py-0.5 shadow-sm">
     <button type="button" onclick="dgToggleJudgment()" id="dg-judge-btn"
       class="px-2 py-1 rounded hover:bg-[var(--surface-soft)]">判断视角</button>
@@ -89,6 +93,7 @@
       class="px-2 py-1 rounded hover:bg-[var(--surface-soft)]">趋势对比<span data-count class="tabular"></span></button>
   </div>
 
+  {% endif %}
   <div id="dg-tools" class="absolute left-3 top-3 hidden flex items-center gap-1 text-xs
        bg-[var(--surface)] rounded-md border border-[var(--line)] px-1 py-0.5 shadow-sm">
     {# 点按钮只是"拿起工具"，真正放在哪由下一次点击/拖拽决定——
@@ -110,12 +115,16 @@
   <div id="dg-blank" class="hidden absolute inset-0 flex items-center justify-center pointer-events-none">
     <div class="text-center max-w-sm pointer-events-auto">
       <div class="text-sm font-bold">这张布局还是空的</div>
+      {% if restricted_view %}
+      <p class="text-xs text-[var(--text-muted)] mt-1.5 leading-relaxed">主人保存节点和分组后，这里会展示完整产业图。也可以从上方切换其他布局。</p>
+      {% else %}
       <p class="text-xs text-[var(--text-muted)] mt-1.5 leading-relaxed">
         左上角 <b>＋ 分组</b> 圈出环节、<b>＋ 节点</b> 放具体指标；<br>
         拖节点进分组即归属，点方框绑定指标。</p>
       <p class="text-xs text-[var(--text-muted)] mt-2">
         已经有维护好的大纲？<button type="button" onclick="dgOpenMarkdown()"
           class="text-[var(--primary)] font-semibold underline">从 Markdown 导入</button>更快。</p>
+      {% endif %}
     </div>
   </div>
 
@@ -126,6 +135,7 @@
   </div>
 </div>
 
+{% if not restricted_view %}
 <!-- 指标池：编辑模式下点节点才打开 -->
 <aside id="dg-drawer" data-drawer
   class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-md bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
@@ -158,6 +168,7 @@
   <div id="dg-pool" class="mt-1 flex-1 overflow-y-auto text-xs"></div>
 </aside>
 
+{% endif %}
 <!-- 节点详情：看图模式点方框即开 -->
 <aside id="dg-detail-drawer" data-drawer
   class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-md bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
@@ -179,13 +190,14 @@
       <p id="dg-group-trail" class="text-[10px] text-[var(--text-muted)]"></p>
       <h2 id="dg-group-title" class="text-lg font-bold truncate"></h2>
       <button type="button" onclick="dgRenameGroup()"
-        class="text-[11px] text-[var(--primary)] hover:underline">改名</button>
+        class="text-[11px] text-[var(--primary)] hover:underline" {% if restricted_view %}hidden{% endif %}>改名</button>
     </div>
     <button onclick="toggleDrawer('dg-group-drawer', false)" class="text-xl leading-none text-[var(--text-muted)] hover:text-[var(--text)]">&times;</button>
   </div>
   <div id="dg-group-body" class="mt-3 flex-1 overflow-y-auto"></div>
 </aside>
 
+{% if not restricted_view %}
 <!-- 跨来源交叉校验 -->
 <aside id="dg-check-drawer" data-drawer
   class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-lg bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
@@ -272,7 +284,7 @@
         <b>流向里的名称必须写全</b>，对不上会报错并指出是哪一个，不会静默丢掉。</p>
     </div>
   </details>
-  {% if research_workbench() and research_identity().can_write %}
+  {% if research_workbench() and can_edit_diagram %}
   <section id="dg-generator" aria-label="从资料生成 Markdown" class="mt-2 p-2 rounded-md border border-[var(--line)] text-xs">
     <div class="flex items-center gap-2 flex-wrap">
       <select id="dg-ai-model" aria-label="生成模型" onchange="dgGenerationInputChanged()" class="px-2 py-1 rounded-md max-w-[220px]"></select>
@@ -294,18 +306,21 @@
            class="flex-1 px-2 py-1.5 rounded-md">
     <button type="button" onclick="dgCopyMarkdown()"
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制</button>
-    <button type="button" onclick="dgImportMarkdown(false)"
+    <button type="button" onclick="dgImportMarkdown(false)" {% if not can_edit_diagram %}disabled{% endif %}
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">导入为新布局</button>
-    <button type="button" onclick="dgImportMarkdown(true)"
+    <button type="button" onclick="dgImportMarkdown(true)" {% if not can_edit_diagram %}disabled{% endif %}
       class="px-3 py-1.5 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)]">应用到当前布局</button>
   </div>
   <div id="dg-md-msg" class="mt-1.5 text-[11px] text-[var(--amber)] min-h-[16px]"></div>
 </aside>
 
+{% endif %}
 <script>
-  window.DG_TEMPLATE = {{ template | tojson }};
+  window.DG_RESTRICTED = {{ (restricted_view or false) | tojson }};
+  {% if restricted_view %}window.DG_RESTRICTED_DATA = {{ restricted_diagram_values | tojson }};
+  {% endif %}window.DG_TEMPLATE = {{ template | tojson }};
   window.DG_DATE = {{ (d or '') | tojson }};
 </script>
 <script src="{{ research_static_prefix() }}/static/diagram.js?v={{ static_version() }}"></script>
-{% if research_workbench() %}<script src="{{ research_static_prefix() }}/static/diagram-generation.js?v={{ static_version() }}"></script>{% endif %}
+{% if research_workbench() and not restricted_view %}<script src="{{ research_static_prefix() }}/static/diagram-generation.js?v={{ static_version() }}"></script>{% endif %}
 {% endblock %}

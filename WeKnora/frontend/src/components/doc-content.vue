@@ -2161,7 +2161,7 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
 
           <div v-else-if="viewMode === 'preview'">
             <DocumentPreview :knowledgeId="details.id" :fileType="details.file_type" :fileName="details.title"
-              :active="viewMode === 'preview'" />
+              :active="visible && viewMode === 'preview'" />
             <p v-if="canReviewPdfTables" class="pdf-review-entry-note">
               核对原始片段、表头和跨页关系后再发布。预览通过不代表 OCR 或公式识别已经验证；公式不会作为可执行公式。
             </p>

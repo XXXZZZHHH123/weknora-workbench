@@ -29,25 +29,63 @@ type AssistantProjectSession struct {
 // Legacy workbenches name a tenant research entry; new workbenches carry an
 // explicit isolated scope and a versioned template without business data.
 type ResearchWorkbench struct {
-	ID                   string                      `json:"id" gorm:"type:varchar(36);primaryKey"`
-	TenantID             uint64                      `json:"-" gorm:"uniqueIndex:idx_research_create_key;index"`
-	UserID               string                      `json:"-" gorm:"type:varchar(512);uniqueIndex:idx_research_create_key"`
-	Name                 string                      `json:"name" gorm:"type:varchar(128)"`
-	Description          string                      `json:"description"`
-	KnowledgeBaseID      string                      `json:"knowledge_base_id" gorm:"type:varchar(36);index"`
-	KnowledgeBaseName    string                      `json:"knowledge_base_name,omitempty" gorm:"-"`
-	CanManage            bool                        `json:"can_manage" gorm:"-"`
-	DefaultKnowledgeBase *ResearchWorkbenchSource    `json:"default_knowledge_base,omitempty" gorm:"-"`
-	ScopeTenantID        uint64                      `json:"scope_tenant_id" gorm:"-"`
-	WorkspaceMode        string                      `json:"workspace_mode" gorm:"type:varchar(16);not null;default:legacy"`
-	TemplateID           string                      `json:"template_id" gorm:"type:varchar(32);not null;default:''"`
-	TemplateVersion      int                         `json:"template_version" gorm:"not null;default:0"`
-	Onboarding           ResearchWorkbenchOnboarding `json:"onboarding" gorm:"-"`
-	IdempotencyKey       string                      `json:"-" gorm:"type:varchar(128);uniqueIndex:idx_research_create_key"`
-	RequestHash          string                      `json:"-" gorm:"type:varchar(64)"`
-	CreatedAt            time.Time                   `json:"created_at"`
-	UpdatedAt            time.Time                   `json:"updated_at"`
-	DeletedAt            gorm.DeletedAt              `json:"-" gorm:"index"`
+	IsPinned                bool                             `json:"is_pinned" gorm:"-"`
+	PinnedAt                *time.Time                       `json:"pinned_at" gorm:"-"`
+	ID                      string                           `json:"id" gorm:"type:varchar(36);primaryKey"`
+	TenantID                uint64                           `json:"-" gorm:"uniqueIndex:idx_research_create_key;index"`
+	UserID                  string                           `json:"-" gorm:"type:varchar(512);uniqueIndex:idx_research_create_key"`
+	OwnerID                 string                           `json:"owner_id" gorm:"-"`
+	Name                    string                           `json:"name" gorm:"type:varchar(128)"`
+	Description             string                           `json:"description"`
+	KnowledgeBaseID         string                           `json:"knowledge_base_id" gorm:"type:varchar(36);index"`
+	KnowledgeBaseName       string                           `json:"knowledge_base_name,omitempty" gorm:"-"`
+	CanManage               bool                             `json:"can_manage" gorm:"-"`
+	CanManagePermissions    bool                             `json:"can_manage_permissions" gorm:"-"`
+	CanEdit                 bool                             `json:"can_edit" gorm:"-"`
+	CanReadSource           bool                             `json:"can_read_source" gorm:"-"`
+	CanEditSource           bool                             `json:"can_edit_source" gorm:"-"`
+	CanManageSource         bool                             `json:"can_manage_source" gorm:"-"`
+	SourceDataAvailable     bool                             `json:"source_data_available" gorm:"-"`
+	AccessPolicy            *ResourceAccessPolicy            `json:"-" gorm:"serializer:json;type:text"`
+	SourceSharingApproved   bool                             `json:"source_sharing_approved" gorm:"not null;default:false"`
+	SourceSharingRequested  bool                             `json:"source_sharing_requested" gorm:"not null;default:false"`
+	SourceSharingApprovedBy string                           `json:"-" gorm:"type:varchar(512);not null;default:''"`
+	SourceSharingModules    []string                         `json:"source_sharing_modules" gorm:"serializer:json;type:text"`
+	RestrictedViewProfiles  []WorkbenchRestrictedViewProfile `json:"-" gorm:"serializer:json;type:text"`
+	ApprovedSourceModules   []string                         `json:"-" gorm:"-"`
+	DefaultKnowledgeBase    *ResearchWorkbenchSource         `json:"default_knowledge_base,omitempty" gorm:"-"`
+	ScopeTenantID           uint64                           `json:"scope_tenant_id" gorm:"-"`
+	WorkspaceMode           string                           `json:"workspace_mode" gorm:"type:varchar(16);not null;default:legacy"`
+	TemplateID              string                           `json:"template_id" gorm:"type:varchar(32);not null;default:''"`
+	TemplateVersion         int                              `json:"template_version" gorm:"not null;default:0"`
+	Onboarding              ResearchWorkbenchOnboarding      `json:"onboarding" gorm:"-"`
+	IdempotencyKey          string                           `json:"-" gorm:"type:varchar(128);uniqueIndex:idx_research_create_key"`
+	RequestHash             string                           `json:"-" gorm:"type:varchar(64)"`
+	CreatedAt               time.Time                        `json:"created_at"`
+	UpdatedAt               time.Time                        `json:"updated_at"`
+	DeletedAt               gorm.DeletedAt                   `json:"-" gorm:"index"`
+}
+
+type WorkbenchPermissions struct {
+	Policy                 *ResourceAccessPolicy            `json:"policy"`
+	OwnerID                string                           `json:"owner_id"`
+	CanManage              bool                             `json:"can_manage"`
+	Legacy                 bool                             `json:"legacy"`
+	SourceSharingApproved  bool                             `json:"source_sharing_approved"`
+	SourceSharingRequested bool                             `json:"source_sharing_requested"`
+	SourceSharingModules   []string                         `json:"source_sharing_modules"`
+	CanManageSource        bool                             `json:"can_manage_source"`
+	RestrictedViewProfiles []WorkbenchRestrictedViewProfile `json:"restricted_view_profiles"`
+}
+
+// A profile only narrows an independently authorized workbench's visible pages.
+// It never grants knowledge-base access or makes the workbench itself visible.
+type WorkbenchRestrictedViewProfile struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Modules    []string `json:"modules"`
+	MemberIDs  []string `json:"member_ids"`
+	AllMembers bool     `json:"all_members"`
 }
 
 // ResearchWorkbenchSource is derived from a tenant's explicit system binding;

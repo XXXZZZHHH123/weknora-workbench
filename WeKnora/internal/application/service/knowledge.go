@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/application/access"
 	"github.com/Tencent/WeKnora/internal/application/repository"
 	"github.com/Tencent/WeKnora/internal/application/service/retriever"
 	"github.com/Tencent/WeKnora/internal/config"
@@ -721,6 +722,14 @@ func (s *knowledgeService) MoveKnowledgeToFolder(ctx context.Context,
 		return 0, err
 	}
 	logger.Infof(ctx, "Moved %d knowledge entries to folder %q in kb %s", affected, normalized, kbID)
+	if affected > 0 {
+		details := map[string]any{"count": affected, "folder_path": normalized}
+		if len(ids) <= 20 {
+			details["knowledge_ids"] = ids
+		}
+		recordKBActivity(ctx, s.audit, tenantID, kbID, types.AuditActionKnowledgeFolderChanged,
+			"knowledge", "", types.AuditOutcomeSuccess, details)
+	}
 	return affected, nil
 }
 
@@ -767,6 +776,9 @@ func (s *knowledgeService) RenameKnowledgeFolder(ctx context.Context,
 	}
 	logger.Infof(ctx, "Renamed folder %q to %q in kb %s, %d entries affected",
 		source, target, kbID, affected)
+	recordKBActivity(ctx, s.audit, tenantID, kbID, types.AuditActionFolderUpdated,
+		"knowledge_folder", "", types.AuditOutcomeSuccess,
+		map[string]any{"from_path": source, "folder_path": target, "count": affected})
 	return affected, nil
 }
 
@@ -829,6 +841,13 @@ func (s *knowledgeService) UpdateKnowledge(ctx context.Context, knowledge *types
 		logger.Errorf(ctx, "Failed to get knowledge record: %v", err)
 		return err
 	}
+	changedFields := make([]string, 0, 3)
+	if knowledge.Title != "" && record.Title != knowledge.Title {
+		changedFields = append(changedFields, "title")
+	}
+	if (knowledge.DescriptionSpecified || knowledge.Description != "") && record.Description != knowledge.Description {
+		changedFields = append(changedFields, "description")
+	}
 	// if need other fields update, please add here
 	if knowledge.Title != "" {
 		record.Title = knowledge.Title
@@ -867,6 +886,9 @@ func (s *knowledgeService) UpdateKnowledge(ctx context.Context, knowledge *types
 			_ = json.Unmarshal(record.CustomMetadata, &existing)
 		}
 		metadataChanged = !reflect.DeepEqual(existing, custom)
+		if metadataChanged {
+			changedFields = append(changedFields, "custom_metadata")
+		}
 		record.CustomMetadata = knowledge.CustomMetadata
 	}
 
@@ -874,6 +896,10 @@ func (s *knowledgeService) UpdateKnowledge(ctx context.Context, knowledge *types
 	if err := s.repo.UpdateKnowledge(ctx, record); err != nil {
 		logger.Errorf(ctx, "Failed to update knowledge: %v", err)
 		return err
+	}
+	if len(changedFields) > 0 {
+		recordKBActivity(ctx, s.audit, record.TenantID, record.KnowledgeBaseID, types.AuditActionKnowledgeUpdated,
+			"knowledge", record.ID, types.AuditOutcomeSuccess, map[string]any{"fields": changedFields})
 	}
 	if metadataChanged && record.SummaryStatus != "" && record.SummaryStatus != types.SummaryStatusNone {
 		if err := enqueueSummaryRefresh(ctx, s.repo, s.task, s.kbService, s.tracker(), record); err != nil {
@@ -893,7 +919,27 @@ func (s *knowledgeService) GetKnowledgeBatch(ctx context.Context,
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	return s.repo.GetKnowledgeBatch(ctx, tenantID, ids)
+	rows, err := s.repo.GetKnowledgeBatch(ctx, tenantID, ids)
+	if err != nil {
+		return nil, err
+	}
+	caller := types.CallerFromContext(ctx)
+	_, machine := types.TenantAPIKeyScopeFromContext(ctx)
+	if _, ok := s.kbShareService.(access.KBPolicyLookup); ok && caller.TenantID != 0 && (caller.UserID != "" || machine) {
+		permissions := kbReadPermissions(ctx, s.kbShareService)
+		visible := make([]*types.Knowledge, 0, len(rows))
+		for _, row := range rows {
+			allowed, err := permissions.Check(row.KnowledgeBaseID, row.TenantID, types.OrgRoleViewer)
+			if err != nil {
+				return nil, err
+			}
+			if allowed {
+				visible = append(visible, row)
+			}
+		}
+		rows = visible
+	}
+	return rows, nil
 }
 
 // GetKnowledgeBatchWithSharedAccess retrieves knowledge by IDs, including items from shared KBs the user has access to.
@@ -1055,7 +1101,12 @@ func (s *knowledgeService) UpdateKnowledgeTag(ctx context.Context, knowledgeID s
 		return err
 	}
 
-	return s.repo.SetKnowledgeTags(ctx, knowledgeID, tagIDs)
+	if err := s.repo.SetKnowledgeTags(ctx, knowledgeID, tagIDs); err != nil {
+		return err
+	}
+	recordKBActivity(ctx, s.audit, tenantID, knowledge.KnowledgeBaseID, types.AuditActionKnowledgeUpdated,
+		"knowledge", knowledge.ID, types.AuditOutcomeSuccess, map[string]any{"fields": []string{"tag_ids"}})
+	return nil
 }
 
 // UpdateKnowledgeTagBatch updates tags for document knowledge items in batch.
@@ -1140,10 +1191,17 @@ func (s *knowledgeService) UpdateKnowledgeTagBatch(
 	}
 
 	// Set tags for each knowledge
+	knowledgeByID := make(map[string]*types.Knowledge, len(knowledgeList))
+	for _, knowledge := range knowledgeList {
+		knowledgeByID[knowledge.ID] = knowledge
+	}
 	for _, knowledgeID := range knowledgeIDs {
 		if err := s.repo.SetKnowledgeTags(ctx, knowledgeID, updates[knowledgeID]); err != nil {
 			return err
 		}
+		knowledge := knowledgeByID[knowledgeID]
+		recordKBActivity(ctx, s.audit, knowledge.TenantID, knowledge.KnowledgeBaseID, types.AuditActionKnowledgeUpdated,
+			"knowledge", knowledge.ID, types.AuditOutcomeSuccess, map[string]any{"fields": []string{"tag_ids"}})
 	}
 
 	return nil
@@ -1201,6 +1259,23 @@ func (s *knowledgeService) SearchKnowledge(ctx context.Context, keyword string, 
 func (s *knowledgeService) SearchKnowledgeForScopes(ctx context.Context, scopes []types.KnowledgeSearchScope, keyword string, offset, limit int, fileTypes []string) ([]*types.Knowledge, bool, int64, error) {
 	if len(scopes) == 0 {
 		return nil, false, 0, nil
+	}
+	if _, ok := s.kbShareService.(access.KBPolicyLookup); ok {
+		permissions := kbReadPermissions(ctx, s.kbShareService)
+		visible := make([]types.KnowledgeSearchScope, 0, len(scopes))
+		for _, scope := range scopes {
+			allowed, err := permissions.Check(scope.KBID, scope.TenantID, types.OrgRoleViewer)
+			if err != nil {
+				return nil, false, 0, err
+			}
+			if allowed {
+				visible = append(visible, scope)
+			}
+		}
+		scopes = visible
+		if len(scopes) == 0 {
+			return nil, false, 0, nil
+		}
 	}
 	return s.repo.SearchKnowledgeInScopes(ctx, scopes, keyword, offset, limit, fileTypes)
 }

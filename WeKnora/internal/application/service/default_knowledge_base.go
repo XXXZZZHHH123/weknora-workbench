@@ -98,6 +98,7 @@ func (s *WorkspaceService) InitializeDefaultKnowledgeBase(ctx context.Context) (
 	}
 	native := &types.KnowledgeBase{
 		ID: binding.KnowledgeBaseID, Name: "宏观数据", Type: types.KnowledgeBaseTypeDocument,
+		AccessPolicy:             &types.ResourceAccessPolicy{SpacePermission: types.ResourcePermissionViewer, Members: []types.ResourceMemberPermission{}},
 		Description:              "Default 宏观知识库。当前空间所有研究工作台共享此知识库已确认的结构化数据；来源与观测统一在本知识库维护。",
 		IndexingStrategy:         types.IndexingStrategy{Disabled: true},
 		ProfileConfig:            &types.KnowledgeBaseProfileConfig{Enabled: false},

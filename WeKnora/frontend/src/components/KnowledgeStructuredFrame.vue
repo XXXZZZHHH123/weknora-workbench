@@ -15,13 +15,14 @@ const props = withDefaults(defineProps<{
   view?: string
   title?: string
 }>(), { sourceKnowledgeId: '', sourceFileType: 'xlsx', mode: 'import', view: '', title: '当前知识库结构化数据工作台' })
-const emit = defineEmits<{ navigate: [view: string] }>()
+const emit = defineEmits<{ navigate: [view: string]; modelSettingsOpened: [] }>()
 const auth = useAuthStore()
 const { effectiveTheme } = useTheme()
 const tenant = computed(() => auth.selectedTenantId ?? auth.tenant?.id)
 const scope = computed(() => `${workspaceIdentity(tenant.value, auth.user?.id)}:${props.knowledgeBaseId}`)
 const library = ref<any>(null), frame = ref<HTMLIFrameElement>(), frameGeneration = ref(0), loading = ref(false), error = ref('')
-const src = computed(() => `/structured/?session=${frameGeneration.value}${props.view === 'model-settings' ? '&view=model-settings' : ''}`)
+const src = computed(() => `/structured/?session=${frameGeneration.value}`)
+const modelSettingsRequested = ref(props.view === 'model-settings')
 let generation = 0
 
 async function load() {
@@ -38,20 +39,39 @@ function sendView() { frame.value?.contentWindow?.postMessage({ type: 'structure
 function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function sendAuth() {
   if (!library.value || !auth.token || !tenant.value) return
-  frame.value?.contentWindow?.postMessage(structuredFrameAuthPayload({ token: auth.token, tenant: tenant.value, knowledgeBaseId: props.knowledgeBaseId, sourceKnowledgeId: props.sourceKnowledgeId, sourceFileType: props.sourceFileType }), window.location.origin)
+  frame.value?.contentWindow?.postMessage(structuredFrameAuthPayload({ token: auth.token, tenant: tenant.value, userId: auth.user?.id || '', openModelSettings: modelSettingsRequested.value, knowledgeBaseId: props.knowledgeBaseId, sourceKnowledgeId: props.sourceKnowledgeId, sourceFileType: props.sourceFileType }), window.location.origin)
   sendView()
+}
+function openModelSettings() {
+  modelSettingsRequested.value = true
+  frame.value?.contentWindow?.postMessage({ type: 'structured-open-model-settings' }, window.location.origin)
 }
 function receive(event: MessageEvent) {
   if (!isTrustedStructuredFrameMessage(event, frame.value, window.location.origin)) return
+  if (event.data?.type === 'structured-import-updated') {
+    if (event.data.knowledge_base_id === props.knowledgeBaseId && String(event.data.tenant_id) === String(tenant.value)) {
+      window.dispatchEvent(new CustomEvent('weknora:knowledge-directory-change', { detail: { kbId: props.knowledgeBaseId } }))
+    }
+    return
+  }
+  if (event.data?.type === 'structured-model-settings-opened') {
+    modelSettingsRequested.value = false
+    emit('modelSettingsOpened')
+    return
+  }
   if (event.data?.type === 'structured-refresh-auth') { void refreshStructuredFrame(event, () => frame.value?.contentWindow === event.source); return }
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'structured-ready') sendAuth()
-  if (event.data?.type === 'structured-navigate') emit('navigate', String(event.data.view || ''))
+  if (event.data?.type === 'structured-navigate') {
+    if (event.data.view === 'model-settings') openModelSettings()
+    else emit('navigate', String(event.data.view || ''))
+  }
 }
 watch(scope, load, { immediate: true })
 watch(() => auth.token, sendAuth)
 watch(() => [props.sourceKnowledgeId, props.sourceFileType], sendAuth)
 watch(() => props.mode, sendView)
+watch(() => props.view, value => { if (value === 'model-settings') openModelSettings() })
 watch(effectiveTheme, sendTheme)
 onMounted(() => window.addEventListener('message', receive))
 onBeforeUnmount(() => { generation++; window.removeEventListener('message', receive) })

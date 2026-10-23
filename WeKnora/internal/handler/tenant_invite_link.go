@@ -81,6 +81,9 @@ func (h *TenantInvitationHandler) CreateInviteLink(c *gin.Context) {
 		c.Error(apperrors.NewValidationError("role must be one of owner/admin/contributor/viewer"))
 		return
 	}
+	if !allowTenantOwnerAssignment(c, req.Role) {
+		return
+	}
 
 	caller, _ := types.UserIDFromContext(ctx)
 	var invitedBy *string
@@ -90,7 +93,7 @@ func (h *TenantInvitationHandler) CreateInviteLink(c *gin.Context) {
 
 	inv, _, err := h.invitationService.CreateShareLink(ctx, tenantID, req.Role, invitedBy, req.Message)
 	if err != nil {
-		if errors.Is(err, service.ErrAPIKeyCannotAssignOwner) {
+		if errors.Is(err, service.ErrAPIKeyCannotAssignOwner) || errors.Is(err, service.ErrTenantOwnerManagementRequired) {
 			c.Error(apperrors.NewForbiddenError(err.Error()))
 			return
 		}

@@ -1,4 +1,5 @@
 from datetime import datetime
+import hashlib
 import json
 
 from openpyxl import Workbook
@@ -57,6 +58,139 @@ def test_spawn_import_preview_confirm_and_failed_confirm_preserves_snapshot(tmp_
     assert not manager.list_templates()
     assert not list(root.glob(".review-task-*"))
     assert not list((root / "datasets").glob(".import-*"))
+
+
+def test_publish_guard_runs_at_worker_commit_boundary_and_denial_keeps_old_version(tmp_path):
+    root = tmp_path / "data"
+    source = make_source(root)
+    calls = []
+    imported = review_worker.run_review_task(
+        root, "import", path=source, publish_guard=lambda: calls.append("import"))
+    assert calls == ["import"]
+    manager = ImportManager(root)
+    old_dataset = imported["dataset_id"]
+    mapping = manager.sheet(imported["import_id"], "复杂表")["mapping"]
+    before_denial = manager.get(imported["import_id"])
+
+    def revoked():
+        calls.append("denied-confirm")
+        raise ValueError("编辑权限已撤销，未发布。")
+
+    with pytest.raises(ValueError, match="权限已撤销"):
+        review_worker.run_review_task(root, "confirm", import_id=imported["import_id"],
+            mapping=mapping, save_template=False, publish_guard=revoked)
+    assert calls == ["import", "denied-confirm"]
+    assert manager.get(imported["import_id"]) == before_denial
+    assert len(manager.store.list_datasets()) == 1
+
+    confirmed = review_worker.run_review_task(root, "confirm", import_id=imported["import_id"],
+        mapping=mapping, save_template=False, publish_guard=lambda: calls.append("confirm"))
+    assert calls[-1] == "confirm"
+    assert confirmed["dataset_id"] != old_dataset
+
+
+def test_publish_guard_runs_after_snapshot_is_fully_staged(tmp_path):
+    root = tmp_path / "data"
+    source = make_source(root)
+    manager = ImportManager(root)
+    observed = []
+
+    def inspect_commit_boundary():
+        staged = list(manager.store.datasets.glob(".import-*"))
+        publications = [item for item in staged if (item / "manifest.json").is_file()]
+        assert len(publications) == 1
+        assert manager.store.list_datasets() == []
+        observed.append(publications[0].name)
+
+    result = manager.ingest(source, before_publish=inspect_commit_boundary)
+    assert observed and manager.store.manifest(result["dataset_id"])
+
+
+def test_denied_first_import_removes_staged_source_review_and_snapshot(tmp_path):
+    root = tmp_path / "data"
+    source = make_source(root)
+
+    def revoked():
+        raise ValueError("编辑权限已撤销，未发布。")
+
+    with pytest.raises(ValueError, match="权限已撤销"):
+        review_worker.run_review_task(root, "import", path=source, publish_guard=revoked)
+    manager = ImportManager(root)
+    assert manager.list() == []
+    assert manager.store.list_datasets(include_samples=True) == []
+    assert not list(manager.directory.glob("*/review.json"))
+    assert not [path for path in manager.directory.iterdir() if path.is_dir()]
+
+
+def test_native_binding_is_part_of_guarded_first_import_commit(tmp_path):
+    root = tmp_path / "data"
+    source = make_source(root)
+    native = {"source_knowledge_id": "source-test", "file_name": "source.xlsx",
+              "file_size": source.stat().st_size,
+              "file_hash": hashlib.md5(source.read_bytes()).hexdigest(),
+              "tenant_id": 10000, "knowledge_base_id": "kb-test"}
+
+    with pytest.raises(ValueError, match="权限已撤销"):
+        review_worker.run_review_task(root, "import", path=source, native_source=native,
+            publish_guard=lambda: (_ for _ in ()).throw(ValueError("编辑权限已撤销，未发布。")))
+    manager = ImportManager(root)
+    assert manager.list() == []
+    assert manager.store.list_datasets(include_samples=True) == []
+
+    result = review_worker.run_review_task(root, "import", path=source,
+        native_source=native, publish_guard=lambda: None)
+    assert manager.get(result["import_id"])["native_source_bindings"] == [native]
+
+
+def test_existing_import_adds_native_binding_only_after_final_guard(tmp_path):
+    root = tmp_path / "data"
+    source = make_source(root)
+    manager = ImportManager(root)
+    imported = manager.ingest(source)
+    review = manager.directory / imported["import_id"] / "review.json"
+    before = review.read_bytes()
+    native = {"source_knowledge_id": "source-test", "file_name": "source.xlsx",
+              "file_size": source.stat().st_size,
+              "file_hash": hashlib.md5(source.read_bytes()).hexdigest(),
+              "tenant_id": 10000, "knowledge_base_id": "kb-test"}
+
+    with pytest.raises(ValueError, match="权限已撤销"):
+        review_worker.run_review_task(root, "import", path=source, native_source=native,
+            publish_guard=lambda: (_ for _ in ()).throw(ValueError("编辑权限已撤销，未绑定。")))
+    assert review.read_bytes() == before
+    assert manager.get(imported["import_id"]).get("native_source_bindings") in (None, [])
+
+
+def test_native_source_binding_rechecks_permission_before_review_write(tmp_path):
+    root = tmp_path / "data"
+    source = make_source(root)
+    manager = ImportManager(root)
+    imported = manager.ingest(source)
+    review = manager.directory / imported["import_id"] / "review.json"
+    before = review.read_bytes()
+    native = {"source_knowledge_id": "source-test", "file_name": "source.xlsx",
+              "file_size": source.stat().st_size, "file_hash": "0" * 32,
+              "tenant_id": 10000, "knowledge_base_id": "kb-test"}
+
+    def revoked():
+        raise ValueError("编辑权限已撤销，未绑定。")
+
+    with pytest.raises(ValueError, match="权限已撤销"):
+        manager.bind_native_source(imported["import_id"], native, before_commit=revoked)
+    assert review.read_bytes() == before
+    assert manager.get(imported["import_id"]).get("native_source_bindings") in (None, [])
+
+    calls = []
+    manager.bind_native_source(imported["import_id"], native,
+                               before_commit=lambda: calls.append("checked"))
+    assert calls == ["checked"]
+    assert manager.get(imported["import_id"])["native_source_bindings"] == [native]
+
+
+def test_internal_worker_cannot_run_unguarded_confirm_all(tmp_path):
+    with pytest.raises(ValueError, match="不支持"):
+        review_worker.run_review_task(tmp_path, "confirm_all", import_id="a" * 24,
+                                      mapping={})
 
 
 def test_import_and_confirm_prepare_chart_index_before_worker_completes(tmp_path, monkeypatch):
@@ -202,6 +336,26 @@ def test_rss_watchdog_stops_worker_at_budget():
     with pytest.raises(ValueError, match="内存限制"):
         review_worker._monitor_worker(process, float("inf"), 512, rss_reader=lambda pid: 513)
     assert process.terminated and not process.is_alive()
+
+
+def test_closed_publish_control_channel_does_not_mask_child_completion():
+    class CompletingProcess(FakeProcess):
+        def join(self, timeout=None):
+            self.alive = False
+
+    class ClosedControl:
+        def poll(self):
+            return True
+
+        def recv(self):
+            raise EOFError
+
+        def send(self, value):
+            raise AssertionError("a closed child channel must not receive a reply")
+
+    review_worker._monitor_worker(
+        CompletingProcess(), float("inf"), 512,
+        rss_reader=lambda pid: 0, control=ClosedControl(), publish_guard=lambda: None)
 
 
 def test_resource_limits_apply_without_increasing_existing_limits():

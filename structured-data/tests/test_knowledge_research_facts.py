@@ -21,7 +21,7 @@ def signed(body, *, kb='library-a', tenant=9, owner=9):
     payload = {'user_id':'reader', 'email':'reader@example.test', 'display_name':'Reader',
                'tenant_id':tenant, 'role':'viewer'}
     if kb is not None:
-        payload.update(knowledge_base_id=kb,knowledge_base_tenant_id=owner)
+        payload.update(knowledge_base_id=kb,knowledge_base_tenant_id=owner,principal_type='api_key')
     raw=json.dumps(body,separators=(',',':')).encode()
     encoded=base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
     stamp=str(int(time.time()))

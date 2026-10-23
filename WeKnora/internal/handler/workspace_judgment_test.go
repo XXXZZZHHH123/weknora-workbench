@@ -33,6 +33,28 @@ func TestWorkspaceJudgmentUsesFixedResearchSystemAndNormalConfiguredModel(t *tes
 	require.False(t, *f.models.client.options.Thinking)
 }
 
+func TestWorkspaceJudgmentRequiresItsOwnApprovedSourceModule(t *testing.T) {
+	for _, module := range []string{"market", "diagram", "judgments"} {
+		t.Run(module, func(t *testing.T) {
+			f := newWorkspaceDiagramFixture(t)
+			f.kbs.private = true
+			require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Where("id = ?", f.workbenchID).Updates(map[string]any{
+				"access_policy":           `{"space_permission":"viewer","members":[]}`,
+				"source_sharing_approved": true, "source_sharing_approved_by": "source-owner",
+				"source_sharing_modules": `["` + module + `"]`,
+			}).Error)
+			response := judgmentRequest(f, diagramBody(t, ""))
+			if module == "judgments" {
+				require.Equal(t, 200, response.Code, response.Body.String())
+				require.Equal(t, 1, f.models.client.calls)
+			} else {
+				require.Equal(t, 403, response.Code, response.Body.String())
+				require.Zero(t, f.models.client.calls)
+			}
+		})
+	}
+}
+
 func TestWorkspaceJudgmentRejectsPurposeOverridesImagesAndViewersBeforeInference(t *testing.T) {
 	for _, scenario := range []string{"purpose", "image", "viewer", "api-key"} {
 		t.Run(scenario, func(t *testing.T) {

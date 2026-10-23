@@ -89,3 +89,11 @@ test('logout rejects pending research responses even if the resource IDs remain 
   const pending = client.get('/overview'); active = { ...active, token: '' }; release(Response.json({ ok: true }))
   await assert.rejects(pending, /已切换/)
 })
+
+test('publishing uses the same bound workbench while generic diagram paths remain unavailable', async () => {
+  const scope = identity(), calls: string[] = []
+  const api = createIsolatedResearchClient(scope, () => scope, async url => { calls.push(String(url)); return Response.json({ published: true }) })
+  await api.post('/diagram/publish', {})
+  assert.deepEqual(calls, ['/research/api/workbenches/new-workbench/diagram/publish'])
+  for (const path of ['/diagram/catalog', '/diagram/templates', '/diagram/publish-other', '/diagram/publish/../../sources']) await assert.rejects(api.get(path), /无效/)
+})

@@ -138,6 +138,9 @@ func (s *knowledgeBaseService) CreateKnowledgeBase(ctx context.Context,
 	// re-attribute.
 	if uid, ok := types.UserIDFromContext(ctx); ok && !types.IsSyntheticUserID(uid) {
 		kb.CreatorID = uid
+		if kb.AccessPolicy == nil {
+			kb.AccessPolicy = types.NewResourceAccessPolicy()
+		}
 	}
 	kb.EnsureDefaults()
 	applyTenantDefaultStorageProvider(ctx, kb)
@@ -365,6 +368,7 @@ func (s *knowledgeBaseService) ListKnowledgeBases(ctx context.Context) ([]*types
 		return nil, err
 	}
 
+	kbs = filterLocalKBPolicies(ctx, kbs)
 	// Query knowledge count and chunk count for each knowledge base
 	for _, kb := range kbs {
 		kb.EnsureDefaults()
@@ -421,6 +425,21 @@ func (s *knowledgeBaseService) ListKnowledgeBasesByTenantID(ctx context.Context,
 			"tenant_id": tenantID,
 		})
 		return nil, err
+	}
+	kbs = filterLocalKBPolicies(ctx, kbs)
+	if tenantID != types.CallerFromContext(ctx).TenantID {
+		visible := make([]*types.KnowledgeBase, 0, len(kbs))
+		permissions := kbReadPermissions(ctx, s.kbShareService)
+		for _, kb := range kbs {
+			if kb.AccessPolicy != nil && kb.AccessPolicy.SpacePermission == types.ResourcePermissionNone {
+				allowed, err := permissions.CheckKB(kb, types.OrgRoleViewer)
+				if err != nil || !allowed {
+					continue
+				}
+			}
+			visible = append(visible, kb)
+		}
+		kbs = visible
 	}
 	for _, kb := range kbs {
 		kb.EnsureDefaults()
@@ -1350,6 +1369,9 @@ func (s *knowledgeBaseService) CopyKnowledgeBase(ctx context.Context,
 		if uid, ok := types.UserIDFromContext(ctx); ok && !types.IsSyntheticUserID(uid) {
 			targetKB.CreatorID = uid
 		}
+		if targetKB.CreatorID != "" {
+			targetKB.AccessPolicy = types.NewResourceAccessPolicy()
+		}
 		targetKB.EnsureDefaults()
 		if err := s.repo.CreateKnowledgeBase(ctx, targetKB); err != nil {
 			return nil, nil, err
@@ -1391,8 +1413,10 @@ func (s *knowledgeBaseService) DuplicateKnowledgeBase(
 	targetKB.TenantID = tenantID
 	targetKB.Name = s.buildDuplicateKnowledgeBaseName(ctx, tenantID, sourceKB.Name)
 	targetKB.CreatorID = ""
+	targetKB.AccessPolicy = nil
 	if uid, ok := types.UserIDFromContext(ctx); ok && !types.IsSyntheticUserID(uid) {
 		targetKB.CreatorID = uid
+		targetKB.AccessPolicy = types.NewResourceAccessPolicy()
 	}
 	now := time.Now()
 	targetKB.CreatedAt = now

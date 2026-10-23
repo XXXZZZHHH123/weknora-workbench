@@ -61,6 +61,9 @@ def make_workbook(year=2023):
     auto.append([datetime(year, 1, 2), 11])
     parallel = book.create_sheet('parallel')
     parallel.append(['date', 'price', None, 'date', 'inventory'])
+    # Keep this workflow fixture genuinely ambiguous: plain independent date
+    # blocks are now auto-importable and have dedicated scanner regressions.
+    parallel.append([None, 'group A', None, None, 'group B'])
     parallel.append([datetime(year, 1, 1), 20, None, datetime(year, 1, 1), 30])
     parallel.append([datetime(year, 1, 2), 21, None, datetime(year, 1, 2), 31])
     book.create_sheet('empty')
@@ -106,6 +109,10 @@ def test_review_preview_confirm_and_reuse_through_http(client):
     summary = client.get('/api/imports/' + import_id, params={'summary_only': True}).json()
     assert {s['name']: s['published_in_dataset'] for s in summary['sheets']} == {
         'simple': True, 'parallel': False, 'empty': False}
+    assert {s['name']: s['import_state'] for s in summary['sheets']} == {
+        'simple': 'imported', 'parallel': 'pending', 'empty': 'pending'}
+    assert next(s for s in summary['sheets'] if s['name'] == 'simple')['review_state'] == (
+        next(s for s in doc['sheets'] if s['name'] == 'simple')['review_state'])
     assert all('published_mapping' not in s for s in summary['sheets'])
     before = client.get('/api/datasets/' + uploaded['dataset_id'] + '/series').json()
     assert {s['sheet'] for s in before['series']} == {'simple'}
@@ -116,7 +123,7 @@ def test_review_preview_confirm_and_reuse_through_http(client):
     assert preview.status_code == 200, preview.text
     assert preview.json()['series_count'] == 2
     assert preview.json()['observation_count'] == 4
-    assert preview.json()['sample'][0]['source_cell'] == 'B2'
+    assert preview.json()['sample'][0]['source_cell'] == 'B3'
     assert client.get('/api/imports/' + import_id).json()['dataset_id'] == uploaded['dataset_id']
     confirmed = poll(client, client.post('/api/imports/' + import_id + '/confirm', json={'mapping': mapping, 'save_template': True}))
     assert confirmed['dataset_id'] != uploaded['dataset_id']

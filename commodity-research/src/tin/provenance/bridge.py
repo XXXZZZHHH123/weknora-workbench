@@ -41,15 +41,19 @@ def structured_request(method, path, body=None, *, return_error_response=False):
         if scope.identity.user_id != identity.user_id or scope.identity.tenant_id != identity.tenant_id:
             raise PermissionError("结构化桥接与工作台身份不匹配")
         caller.update(knowledge_base_id=scope.knowledge_base_id,
-                      knowledge_base_tenant_id=scope.knowledge_base_tenant_id)
+                      knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
+                      workbench_id=scope.workbench_id,
+                      authorization_sha256=hashlib.sha256(scope.authorization.encode()).hexdigest())
     encoded = base64.urlsafe_b64encode(json.dumps(caller,
         separators=(",", ":")).encode()).decode().rstrip("=")
     stamp = str(int(time.time()))
     message = "\n".join((stamp, method, path, encoded, hashlib.sha256(content).hexdigest()))
     signature = hmac.new(key, message.encode(), hashlib.sha256).hexdigest()
-    response = httpx.request(method, base+path, content=content,
-        headers={"Content-Type": "application/json", "X-Research-Timestamp": stamp,
-                 "X-Research-Identity": encoded, "X-Research-Signature": signature},
+    headers = {"Content-Type": "application/json", "X-Research-Timestamp": stamp,
+               "X-Research-Identity": encoded, "X-Research-Signature": signature}
+    if scope is not None:
+        headers['Authorization'] = scope.authorization
+    response = httpx.request(method, base+path, content=content, headers=headers,
         follow_redirects=False, trust_env=False, timeout=120)
     if response.status_code != 200 and not return_error_response:
         raise ValueError(f"结构化服务读取失败（HTTP {response.status_code}）")

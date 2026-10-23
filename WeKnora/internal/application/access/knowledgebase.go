@@ -101,6 +101,16 @@ func ResolveKB(ctx context.Context, request KBRequest, kb *types.KnowledgeBase, 
 	if kb == nil || kb.ID == "" {
 		return nil, ErrNotFound
 	}
+	if lookup, ok := shares.(KBPolicyLookup); ok {
+		current, err := lookup.LookupKnowledgeBaseAccess(ctx, kb.ID)
+		if err != nil {
+			return nil, err
+		}
+		if current == nil || current.TenantID != kb.TenantID {
+			return nil, ErrNotFound
+		}
+		kb = current
+	}
 	if err := types.AuthorizeTenantAPIKeyKnowledgeBases(ctx, kb.ID); err != nil {
 		return nil, err
 	}
@@ -115,6 +125,13 @@ func ResolveKB(ctx context.Context, request KBRequest, kb *types.KnowledgeBase, 
 		}, nil
 	}
 	if kb.TenantID == request.Caller.TenantID {
+		if kb.AccessPolicy != nil {
+			permission := LocalKBPermission(ctx, request.Caller, kb)
+			if !permission.IsValid() || !permission.HasPermission(required) {
+				return nil, ErrForbidden
+			}
+			return grant(permission)
+		}
 		return grant(types.OrgRoleAdmin)
 	}
 	if shares != nil {
@@ -123,6 +140,11 @@ func ResolveKB(ctx context.Context, request KBRequest, kb *types.KnowledgeBase, 
 		if err == nil && shared && permission.HasPermission(required) {
 			return grant(permission)
 		}
+	}
+	// A private library cannot be redistributed by adding its ID to another
+	// member's shared agent. Its owner must explicitly authorize the KB share.
+	if kb.AccessPolicy != nil && kb.AccessPolicy.SpacePermission == types.ResourcePermissionNone {
+		return nil, ErrForbidden
 	}
 	if required != types.OrgRoleViewer || agents == nil {
 		return nil, ErrForbidden
@@ -153,4 +175,38 @@ func ResolveKB(ctx context.Context, request KBRequest, kb *types.KnowledgeBase, 
 		}
 	}
 	return nil, ErrForbidden
+}
+
+// LocalKBPermission applies the ACL even to administrators. Scoped machine
+// grants require both an explicit KB scope and space-visible data. An API key
+// minted by a space administrator cannot stand in for a private KB's owner.
+func LocalKBPermission(ctx context.Context, caller types.Caller, kb *types.KnowledgeBase) types.OrgMemberRole {
+	if kb == nil || caller.TenantID == 0 || kb.TenantID != caller.TenantID {
+		return ""
+	}
+	if kb.AccessPolicy == nil {
+		return types.OrgRoleAdmin
+	}
+	if scope, ok := types.TenantAPIKeyScopeFromContext(ctx); ok {
+		if kb.AccessPolicy.SpacePermission == types.ResourcePermissionNone || len(scope.KnowledgeBaseIDs) == 0 || !scope.AllowsKnowledgeBase(kb.ID) {
+			return ""
+		}
+		if kb.AccessPolicy.SpacePermission == types.ResourcePermissionEditor && scope.HasCapability(types.APIKeyCapabilityIngest) {
+			return types.OrgRoleEditor
+		}
+		if scope.HasCapability(types.APIKeyCapabilityRetrieve) || scope.HasCapability(types.APIKeyCapabilityIngest) || scope.HasCapability(types.APIKeyCapabilityManageKnowledgeBases) {
+			return types.OrgRoleViewer
+		}
+		return ""
+	}
+	switch types.ResourcePermissionFor(kb.AccessPolicy, kb.CreatorID, caller) {
+	case types.ResourcePermissionOwner:
+		return types.OrgRoleAdmin
+	case types.ResourcePermissionEditor:
+		return types.OrgRoleEditor
+	case types.ResourcePermissionViewer:
+		return types.OrgRoleViewer
+	default:
+		return ""
+	}
 }

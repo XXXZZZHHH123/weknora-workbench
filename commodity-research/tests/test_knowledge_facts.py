@@ -50,26 +50,56 @@ def canonical(monkeypatch, tmp_path):
         path = request.url.path
         if request.url.host == 'native.test':
             if path == '/api/v1/auth/me':
+                if state.get('login_revoked'):
+                    return httpx.Response(401, json={'success': False})
                 viewer = request.headers.get('authorization') == 'Bearer source-viewer'
                 return httpx.Response(200, json={'success': True, 'data': {'user': {
                     'id': 'viewer' if viewer else 'researcher', 'email': 'researcher@test', 'username': 'Researcher'},
                     'tenant': {'id': 17}, 'memberships': [{'tenant_id': 17, 'role': 'viewer' if viewer else 'owner'}]}})
+            if path.startswith('/api/v1/workspaces/research/') and path.endswith('/source-scope'):
+                identifier = path.split('/')[-2]
+                if identifier not in {FIRST, SECOND, LEGACY}:
+                    return httpx.Response(404, json={'success': False})
+                if state['revoked'] or state.get('macro_revoked') or state.get('source_consent_revoked'):
+                    return httpx.Response(403, json={'success': False})
+                bound = OTHER_KB if identifier == SECOND and state['second_other_kb'] else KB
+                sources = [{'knowledge_base_id': bound, 'tenant_id': 17, 'kind': 'primary',
+                    'delegated': state.get('source_delegated', False), 'permission': 'viewer',
+                    'knowledge': state['sources'] if bound == KB else []}]
+                if state.get('default_macro'):
+                    sources.append({'knowledge_base_id': OTHER_KB, 'tenant_id': state['default_macro']['tenant_id'],
+                        'kind': 'macro', 'delegated': False, 'permission': 'viewer', 'knowledge': [
+                            {'id': 'macro-source', 'file_hash': 'c' * 32, 'file_type': 'xlsx'}]})
+                viewer = request.headers.get('authorization') == 'Bearer source-viewer'
+                return httpx.Response(200, json={'success': True, 'data': {'id': identifier,
+                    'user_id': 'viewer' if viewer else 'researcher', 'scope_tenant_id': 17,
+                    'knowledge_base_id': bound, 'sources': sources,
+                    'view_modules': state.get('grant_modules', state.get('view_modules', ['home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports']))}})
             if path.startswith('/api/v1/workspaces/research/'):
+                if state.get('workbench_revoked'):
+                    return httpx.Response(404, json={'success': False})
                 identifier = path.rsplit('/', 1)[1]
                 if identifier not in {FIRST, SECOND, LEGACY}:
                     return httpx.Response(404, json={'success': False})
                 metadata = {
                     'id': identifier, 'name': 'Research', 'scope_tenant_id': 17,
+                    **({} if state.get('owner_missing') else {'owner_id': state.get('owner_id', 'researcher')}),
                     'knowledge_base_id': OTHER_KB if identifier == SECOND and state['second_other_kb'] else KB,
-                    'workspace_mode': 'legacy' if identifier == LEGACY else 'isolated'}
+                    'workspace_mode': 'legacy' if identifier == LEGACY or state.get('force_legacy') else 'isolated',
+                    'can_read_source': not state.get('source_delegated', False),
+                    'source_data_available': not state.get('source_unavailable', False),
+                    'source_sharing_modules': state.get('view_modules', ['home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports']),
+                    'can_edit': state.get('wb_edit', True) and request.headers.get('authorization') != 'Bearer source-viewer'}
                 if state.get('default_macro'):
                     metadata['default_knowledge_base'] = state['default_macro']
                 return httpx.Response(200, json={'success': True, 'data': metadata})
             if path in {'/api/v1/knowledge-bases/' + KB, '/api/v1/knowledge-bases/' + OTHER_KB}:
-                denied = state['revoked'] or (state.get('macro_revoked') and path.endswith(OTHER_KB))
+                denied = state['revoked'] or state.get('source_delegated') or (state.get('macro_revoked') and path.endswith(OTHER_KB))
                 return httpx.Response(403 if denied else 200, json={'success': True,
-                    'data': {'id': path.rsplit('/', 1)[1], 'tenant_id': 17, 'creator_id': 'researcher'}})
+                    'data': {'id': path.rsplit('/', 1)[1], 'tenant_id': 17, 'creator_id': 'researcher', 'my_permission': 'editor'}})
             if path == '/api/v1/knowledge-bases/' + KB + '/knowledge':
+                if state.get('source_delegated'):
+                    return httpx.Response(403, json={'success': False})
                 return httpx.Response(200, json={'success': True, 'data': state['sources'], 'total': len(state['sources'])})
             if path == '/api/v1/knowledge-bases/' + OTHER_KB + '/knowledge':
                 rows = [{'id': 'macro-source', 'knowledge_base_id': OTHER_KB, 'tenant_id': 17,
@@ -81,7 +111,26 @@ def canonical(monkeypatch, tmp_path):
             body = json.loads(request.content)
             encoded = request.headers['x-research-identity']
             caller = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
-            assert set(body) <= {'sources', 'offset', 'limit', 'version', 'metadata_only', 'encoding'}
+            assert set(body) <= {'sources', 'offset', 'limit', 'version', 'metadata_only', 'encoding',
+                                 'series_ids', 'as_of', 'points_per_series', 'view_module'}
+            if 'series_ids' in body:
+                state.setdefault('bounded_requests', []).append(body)
+                selected_spec, value = spec, state['value']
+                if caller['knowledge_base_id'] == OTHER_KB and state.get('default_macro'):
+                    selected_spec = {**spec, 'series_id': 'kb-' + 'c' * 48, 'metric': 'Macro quantity',
+                        'source_knowledge_id': 'macro-source', 'dataset_id': 'f' * 24}
+                    value = state.get('macro_value', 41.25)
+                active = state['ready'] and selected_spec['series_id'] in body['series_ids']
+                if state.get('bounded_bad_response'):
+                    active = True
+                version = hashlib.sha256(b'bounded-fixture').hexdigest()
+                rows = [{'series_id': selected_spec['series_id'], 'date': '2026-01-02', 'value': value, 'value_status': 'valid'}]
+                if state.get('bounded_previous') is not None:
+                    rows.append({**rows[0], 'date': '2026-01-01', 'value': state['bounded_previous']})
+                return httpx.Response(200, json={'knowledge_base_id': caller['knowledge_base_id'],
+                    'knowledge_base_tenant_id': 17, 'version': version, 'bounded': True,
+                    'indicators': [selected_spec] if active else [], 'datasets': [], 'rows': rows if active else [],
+                    'total': len(rows) if active else 0, 'offset': 0, 'next_offset': None, 'truncated': False})
             if caller['knowledge_base_id'] == OTHER_KB and state.get('default_macro'):
                 assert body['sources'] == [{'knowledge_id': 'macro-source', 'file_hash': 'c' * 32}]
                 version = hashlib.sha256(json.dumps(state.get('macro_value', 41.25)).encode()).hexdigest()

@@ -84,13 +84,18 @@ func (f *workspaceDiagramChat) GetModelID() string   { return "configured-chat" 
 type workspaceDiagramKBs struct {
 	interfaces.KnowledgeBaseService
 	allowed bool
+	private bool
 }
 
 func (f *workspaceDiagramKBs) GetKnowledgeBaseByIDOnly(_ context.Context, id string) (*types.KnowledgeBase, error) {
 	if !f.allowed || id != "kb" {
 		return nil, gorm.ErrRecordNotFound
 	}
-	return &types.KnowledgeBase{ID: id, TenantID: 1, Name: "Library"}, nil
+	kb := &types.KnowledgeBase{ID: id, TenantID: 1, Name: "Library"}
+	if f.private {
+		kb.CreatorID, kb.AccessPolicy = "source-owner", types.NewResourceAccessPolicy()
+	}
+	return kb, nil
 }
 
 type workspaceDiagramFixture struct {
@@ -122,6 +127,7 @@ func newWorkspaceDiagramFixture(t *testing.T) *workspaceDiagramFixture {
 		require.NoError(t, db.Exec(string(migration)).Error)
 	}
 	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}))
+	require.NoError(t, db.AutoMigrate(&types.ResearchWorkbench{}))
 	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library"}).Error)
 	kbs := &workspaceDiagramKBs{allowed: true}
 	workspaces := service.NewWorkspaceService(db, kbs, nil)
@@ -129,6 +135,8 @@ func newWorkspaceDiagramFixture(t *testing.T) *workspaceDiagramFixture {
 	name, kb := "Synthetic research", "kb"
 	workbench, err := workspaces.CreateWorkbench(ctx, service.WorkspaceInput{Name: &name, KnowledgeBaseID: &kb, IdempotencyKey: "test-create"})
 	require.NoError(t, err)
+	// Existing generation cases also cover compatibility with pre-ACL rows.
+	require.NoError(t, db.Model(workbench).Update("access_policy", nil).Error)
 	models := &workspaceDiagramModels{model: &types.Model{ID: "configured-chat", TenantID: 1, Type: types.ModelTypeKnowledgeQA, Status: types.ModelStatusActive, Source: types.ModelSourceLocal}, client: &workspaceDiagramChat{response: &types.ChatResponse{Content: "# Generated configuration\n"}}}
 	f := &workspaceDiagramFixture{models: models, service: workspaces, db: db, kbs: kbs, workbenchID: workbench.ID, user: "alice", tenant: 1, role: types.TenantRoleContributor}
 	r := gin.New()
@@ -185,6 +193,34 @@ func TestWorkspaceDiagramGeneratesDraftUsingConfiguredProductionModel(t *testing
 	var count int64
 	require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Count(&count).Error)
 	require.EqualValues(t, 1, count, "generation must not create or replace workbenches")
+}
+
+func TestWorkspaceDiagramRequiresApprovedModuleBeforeAndAfterModelCall(t *testing.T) {
+	for _, revokeDuringCall := range []bool{false, true} {
+		t.Run(fmt.Sprintf("revoke_during_call_%v", revokeDuringCall), func(t *testing.T) {
+			f := newWorkspaceDiagramFixture(t)
+			f.kbs.private = true
+			require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Where("id = ?", f.workbenchID).Updates(map[string]any{
+				"access_policy":           `{"space_permission":"editor","members":[]}`,
+				"source_sharing_approved": true, "source_sharing_approved_by": "source-owner",
+				"source_sharing_modules": `["market"]`,
+			}).Error)
+			if revokeDuringCall {
+				require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Where("id = ?", f.workbenchID).Update("source_sharing_modules", `["diagram"]`).Error)
+				f.models.client.after = func() {
+					require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Where("id = ?", f.workbenchID).Update("source_sharing_modules", `["market"]`).Error)
+				}
+			}
+			response := f.request(diagramBody(t, ""))
+			require.Equal(t, 403, response.Code, response.Body.String())
+			if revokeDuringCall {
+				require.Equal(t, 1, f.models.client.calls)
+			} else {
+				require.Zero(t, f.models.client.calls, "unapproved modules must be rejected before calling the provider")
+			}
+			require.NotContains(t, response.Body.String(), "Generated configuration")
+		})
+	}
 }
 
 func TestWorkspaceDiagramRecognizesLegacyGenericCatalogVision(t *testing.T) {

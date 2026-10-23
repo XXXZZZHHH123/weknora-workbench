@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS task_pending_ops (
 
 const resetPendingKnowledgeBasesDDL = `
 CREATE TABLE IF NOT EXISTS knowledge_bases (
+	access_policy TEXT,
     profile_config TEXT,
     generated_profile TEXT,
     id          VARCHAR(64) PRIMARY KEY,

@@ -195,6 +195,9 @@ func RunMigrationsWithOptions(dsn string, opts MigrationOptions) error {
 			return captureMigrationFailure(m, fmt.Errorf("failed to reconcile workbench migration lineage: %w", err))
 		}
 	}
+	if err := reconcileImageGenerationPermissionLineage(ctx, dsn, opts, oldVersion); err != nil {
+		return captureMigrationFailure(m, fmt.Errorf("failed to reconcile image generation permission lineage: %w", err))
+	}
 
 	// Run all pending migrations
 	logger.Infof(ctx, "Running pending migrations...")

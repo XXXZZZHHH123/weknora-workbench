@@ -3,6 +3,8 @@ export type StructuredFrameSourceType = 'pdf' | 'xlsx'
 export interface StructuredFrameAuthContext {
   token: string
   tenant: string | number
+  userId: string
+  openModelSettings: boolean
   knowledgeBaseId: string
   sourceKnowledgeId: string
   sourceFileType: StructuredFrameSourceType

@@ -60,11 +60,25 @@ def thinking_fields(cfg, enabled):
 
 def public_model(root):
     cfg=read_model(root)
+    if cfg.get('native_model_id'):
+        return {'native_model_id':cfg['native_model_id'],'protocol':'platform'}
     return {k:cfg.get(k,'') for k in ('model','base_url')} | {'has_api_key':bool(cfg.get('api_key')),'protocol':'OpenAI-compatible'}
 
 
 def save_model(root, body):
+    if not isinstance(body,dict):raise ValueError('模型配置格式无效')
+    if 'native_model_id' in body:
+        from .model_gateway import _identifier
+        if set(body)-{'native_model_id','enable_thinking'}:raise ValueError('平台模型只需选择已配置的模型，不接收地址或密钥')
+        selected={'native_model_id':_identifier(body['native_model_id'])}
+        if 'enable_thinking' in body:
+            if not isinstance(body['enable_thinking'],bool):raise ValueError('enable_thinking 须为布尔值')
+            selected['enable_thinking']=body['enable_thinking']
+        _write_model(root,selected)
+        return public_model(root)
     cfg=read_model(root)
+    if cfg.get('native_model_id'):
+        raise ValueError('当前已选择平台模型，请继续从平台模型列表选择；不会自动回退旧服务')
     old_endpoint=cfg.get('base_url','').rstrip('/')
     new_endpoint=str(body.get('base_url','')).strip().rstrip('/')
     if old_endpoint and new_endpoint!=old_endpoint and not body.get('api_key'):
@@ -84,10 +98,14 @@ def save_model(root, body):
         cfg['api_key']=body['api_key'].strip()
     if not cfg.get('api_key'):raise ValueError('请填写 API Key')
     # Only this service's override changes. Original shared provider configuration stays intact.
+    _write_model(root,{k:cfg[k] for k in ('model','base_url','api_key','enable_thinking') if k in cfg})
+    return public_model(root)
+
+
+def _write_model(root,cfg):
     fd,tmp=tempfile.mkstemp(prefix='.model-',dir=root)
     try:
-        with os.fdopen(fd,'w') as f:json.dump({'chat':{k:cfg[k] for k in ('model','base_url','api_key','enable_thinking') if k in cfg}},f)
+        with os.fdopen(fd,'w') as f:json.dump({'chat':cfg},f)
         os.replace(tmp,Path(root)/'model-settings.json')
     finally:
         if Path(tmp).exists():Path(tmp).unlink()
-    return public_model(root)

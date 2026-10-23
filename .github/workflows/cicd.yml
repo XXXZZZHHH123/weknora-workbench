@@ -105,7 +105,7 @@ jobs:
           cache-dependency-path: WeKnora/frontend/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npm run type-check
-      - run: npm test -- 'src/**/*.test.ts'
+      - run: npm test -- 'src/**/*.test.ts' 'build/**/*.test.ts'
       - name: Build production frontend for preview
         env:
           VITE_FRONTEND_COMMIT: ${{ github.sha }}

@@ -5,7 +5,8 @@ from copy import deepcopy
 BLOCK_FIELDS = {'name', 'date_mode', 'date_column', 'date_cell', 'date_format',
                 'category_column', 'category_name', 'row_label_column',
                 'header_rows', 'data_start_row', 'data_end_row', 'row_rules'}
-COLUMN_FIELDS = {'metric', 'unit', 'dimensions', 'period'}
+COLUMN_FIELDS = {'metric', 'unit', 'dimensions', 'period', 'header_cells',
+                 'frequency', 'frequency_cells'}
 
 
 def apply_suggestion(candidate, suggestion):
@@ -18,8 +19,14 @@ def apply_suggestion(candidate, suggestion):
         if not isinstance(proposed, dict):
             raise ValueError('AI 返回的完整映射格式无效。')
         proposed = deepcopy(proposed)
+        if not isinstance(proposed.get('blocks'), list):
+            raise ValueError('AI 返回的完整映射区块格式无效。')
+        if proposed.get('sheet') != candidate.get('sheet') or proposed.get('fingerprint') != candidate.get('fingerprint'):
+            raise ValueError('AI 建议改变了工作表或结构指纹，原数据未改变。')
+        if len(proposed['blocks']) < len(candidate.get('blocks', [])):
+            raise ValueError('AI 建议遗漏了已有区块，原数据未改变。')
         restored = 0
-        if isinstance(proposed.get('blocks'), list) and len(proposed['blocks']) == len(candidate.get('blocks', [])):
+        if isinstance(proposed.get('blocks'), list) and len(proposed['blocks']) >= len(candidate.get('blocks', [])):
             for original, block in zip(candidate['blocks'], proposed['blocks']):
                 if not isinstance(block, dict) or block.get('layout') != original.get('layout'):
                     continue

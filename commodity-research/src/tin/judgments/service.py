@@ -71,6 +71,9 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
     )
     session.add(row)
     session.flush()
+    if session.info.get('workbench_id'):
+        from tin.web.restricted_views import remember_origins
+        remember_origins(session, wanted)
     session.add_all(JudgmentSeriesRef(judgment_id=row.id, ref_type=t, ref_id=i, series_id=sid)
                     for t, i, sid in refs)
     session.add(AuditLog(at=datetime.now(timezone.utc), actor=actor, action="判断保存",

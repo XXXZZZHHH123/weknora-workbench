@@ -5,10 +5,10 @@ import { isTrustedStructuredFrameMessage, structuredFrameAuthPayload } from './s
 
 test('structured iframe auth carries current tenant, knowledge base, and exact source type', () => {
   assert.deepEqual(structuredFrameAuthPayload({
-    token: 'refreshed-token', tenant: 12, knowledgeBaseId: 'kb-current',
+    token: 'refreshed-token', tenant: 12, userId: 'user-current', openModelSettings: true, knowledgeBaseId: 'kb-current',
     sourceKnowledgeId: 'pdf-current', sourceFileType: 'pdf',
   }), {
-    type: 'structured-auth', token: 'refreshed-token', tenant: 12,
+    type: 'structured-auth', token: 'refreshed-token', tenant: 12, userId: 'user-current', openModelSettings: true,
     knowledgeBaseId: 'kb-current', sourceKnowledgeId: 'pdf-current', sourceFileType: 'pdf',
   })
 })
@@ -38,13 +38,14 @@ test('PDF review entry is restricted to a PDF preview and mounts the shared auth
   assert.ok(docContent.includes('watch(pdfReviewKey, () => { pdfReviewOpen.value = false; });'))
   assert.ok(docContent.includes('if (!visible) pdfReviewOpen.value = false;'))
   assert.match(docContent, /预览通过不代表 OCR 或公式识别已经验证/)
+  assert.match(docContent, /:active="visible && viewMode === 'preview'"/)
 })
 
 test('the knowledge structured route and preview drawer share the same iframe auth and theme host', () => {
   const routePage = readFileSync(new URL('../views/workspaces/KnowledgeStructuredData.vue', import.meta.url), 'utf8')
   assert.match(routePage, /<KnowledgeStructuredFrame :knowledge-base-id="kbId"/)
   assert.match(routePage, /:source-knowledge-id="sourceKnowledgeId" :source-file-type="sourceFileType"/)
-  assert.match(routePage, /:mode="mode" :view="String\(route\.query\.view \|\| ''\)"/)
+  assert.match(routePage, /:mode="mode" :view="modelSettingsRequested/)
   const host = readFileSync(new URL('../components/KnowledgeStructuredFrame.vue', import.meta.url), 'utf8')
   assert.ok(host.includes('if (!library.value || !auth.token || !tenant.value) return'))
   assert.ok(host.includes('if (own !== generation) return'))

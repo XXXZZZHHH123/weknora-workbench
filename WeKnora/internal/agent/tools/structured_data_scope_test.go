@@ -186,7 +186,8 @@ func TestStructuredKnowledgeScopeRestrictedAPIKeyCannotReadLegacyDirectory(t *te
 	var calls atomic.Int64
 	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		require.Len(t, decodeStructuredScopeIdentity(t, r), 5)
+		identity := decodeStructuredScopeIdentity(t, r)
+		require.Len(t, identity, 5)
 		_, _ = io.WriteString(w, `{"status":"ok"}`)
 	})
 	request := json.RawMessage(`{"operation":"list_datasets","arguments":{}}`)
@@ -209,11 +210,28 @@ func TestStructuredKnowledgeScopeRestrictedAPIKeyCannotReadLegacyDirectory(t *te
 	require.Equal(t, int64(2), calls.Load(), "unselected JWT and full-access keys retain their existing legacy policy")
 }
 
+func TestNativeStructuredReadBindsCurrentAuthorization(t *testing.T) {
+	const authorization = "Bearer isolated-acl-test-token"
+	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+		identity := decodeStructuredScopeIdentity(t, r)
+		require.Equal(t, authorization, r.Header.Get("Authorization"))
+		hash := sha256.Sum256([]byte(authorization))
+		require.Equal(t, hex.EncodeToString(hash[:]), identity["authorization_sha256"])
+		require.NotContains(t, identity, "principal_type")
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}).WithSearchTargets(types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "library", TenantID: 7}})
+	ctx := types.WithResearchAuthorization(structuredScopeContext(), authorization)
+	result, err := base.Execute(ctx, json.RawMessage(`{"operation":"list_datasets","arguments":{}}`))
+	require.NoError(t, err)
+	require.True(t, result.Success)
+}
+
 func TestStructuredKnowledgeScopeRestrictedAPIKeyAllowsVerifiedLibraryAndRejectsCachedOutsideScope(t *testing.T) {
 	var calls atomic.Int64
 	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		identity := decodeStructuredScopeIdentity(t, r)
+		require.Equal(t, "api_key", identity["principal_type"])
 		require.Equal(t, "kb-allowed", identity["knowledge_base_id"])
 		require.Equal(t, float64(29), identity["knowledge_base_tenant_id"])
 		_, _ = io.WriteString(w, `{"status":"ok"}`)

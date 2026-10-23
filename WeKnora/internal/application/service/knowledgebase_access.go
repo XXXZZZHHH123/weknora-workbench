@@ -12,10 +12,11 @@ import (
 // Service reads accept exact upstream grants. Otherwise cross-tenant reads
 // require a user and organization permission resolved for the original caller.
 func kbReadPermissions(ctx context.Context, shares access.KBShareLookup) *access.KBPermissions {
+	lookup, _ := shares.(access.KBPolicyLookup)
 	if types.CallerFromContext(ctx).UserID == "" {
 		shares = nil
 	}
-	return access.NewKBPermissions(ctx, shares)
+	return access.NewKBPermissions(ctx, shares, lookup)
 }
 
 // kbWritableIDs returns the target KBs the caller may modify: those of its own
@@ -39,9 +40,6 @@ func kbWritableIDs(
 	} else if roleEnforced && !caller.Role.HasPermission(types.TenantRoleContributor) {
 		return nil
 	}
-	if caller.UserID == "" {
-		shares = nil
-	}
 	permissions := access.NewKBSharePermissions(ctx, shares, caller.TenantID, caller.Role)
 	seen := make(map[string]bool, len(targets))
 	var ids []string
@@ -51,7 +49,17 @@ func kbWritableIDs(
 		}
 		seen[target.KnowledgeBaseID] = true
 		writable := caller.TenantID != 0 && target.TenantID == caller.TenantID
-		if !writable {
+		if lookup, ok := shares.(access.KBPolicyLookup); ok && writable {
+			kb, err := lookup.LookupKnowledgeBaseAccess(ctx, target.KnowledgeBaseID)
+			if err != nil || kb == nil {
+				continue
+			}
+			if kb.AccessPolicy != nil {
+				permission := access.LocalKBPermission(ctx, caller, kb)
+				writable = permission.IsValid() && permission.HasPermission(types.OrgRoleEditor)
+			}
+		}
+		if !writable && target.TenantID != caller.TenantID && caller.UserID != "" {
 			writable, _ = permissions.Check(target.KnowledgeBaseID, types.OrgRoleEditor)
 		}
 		if writable {
@@ -63,7 +71,7 @@ func kbWritableIDs(
 
 func resolveKBReadTenant(ctx context.Context, kb *types.KnowledgeBase, shares access.KBShareLookup) (uint64, error) {
 	if kb != nil {
-		allowed, err := kbReadPermissions(ctx, shares).Check(kb.ID, kb.TenantID, types.OrgRoleViewer)
+		allowed, err := kbReadPermissions(ctx, shares).CheckKB(kb, types.OrgRoleViewer)
 		if err == nil && allowed {
 			return kb.TenantID, nil
 		}

@@ -178,7 +178,7 @@ func (h *KnowledgeBaseHandler) buildKBListResponse(
 				view = v
 			}
 		}
-		out = append(out, buildKBResponse(kb, view, nil))
+		out = append(out, buildKBResponse(kb, view, kbCapabilityExtras(ctx, kb)))
 	}
 	return out
 }
@@ -512,10 +512,10 @@ func (h *KnowledgeBaseHandler) GetKnowledgeBase(c *gin.Context) {
 	}
 	tenantID := c.GetUint64(types.TenantIDContextKey.String())
 	storeView := h.resolveKBStoreView(c.Request.Context(), kb, tenantID)
-	var extras map[string]interface{}
+	extras := kbCapabilityExtras(c.Request.Context(), kb)
 	if kb.TenantID != tenantID && permission != "" {
 		// Include my_permission in data so frontend can show role (e.g. "只读") instead of "--" for agent-visible KBs
-		extras = map[string]interface{}{"my_permission": permission}
+		extras["my_permission"] = permission
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": buildKBResponse(kb, storeView, extras)})
 }

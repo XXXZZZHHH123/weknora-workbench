@@ -21,7 +21,7 @@ import (
 
 // TenantInvitationHandler exposes the tenant-scoped CRUD on the
 // `tenant_invitations` table plus the user-self-service inbox endpoints
-// (/me/invitations*). Route-level RBAC: tenant routes are Owner-gated
+// (/me/invitations*). Route-level RBAC: tenant routes are Admin-gated
 // (POST/DELETE) or Viewer-gated (GET); inbox routes only require
 // authentication (the service enforces "only invitee can act").
 type TenantInvitationHandler struct {
@@ -227,14 +227,14 @@ func (h *TenantInvitationHandler) ListTenantInvitations(c *gin.Context) {
 	}
 
 	usersByID := h.hydrateUsers(c, rows)
-	showShareLinks := types.TenantRoleFromContext(ctx).HasPermission(types.TenantRoleOwner)
+	showShareLinks := types.CallerFromContext(ctx).Role.HasPermission(types.TenantRoleAdmin)
 	resp := make([]types.TenantInvitationResponse, 0, len(rows))
 	for _, inv := range rows {
 		// Within the tenant view we don't bother hydrating tenant name
 		// (the caller already knows the tenant). Pass an empty map.
-		// Share-link URLs embed the registration token — only Owners may
-		// re-copy them; other roles see metadata without invite_url.
-		if showShareLinks {
+		// Owner invitation tokens would allow assigning ownership, so an
+		// ordinary administrator may only re-copy lower-role links.
+		if showShareLinks && (inv.Role != types.TenantRoleOwner || types.CanManageTenantOwners(ctx)) {
 			resp = append(resp, h.projectInvitationWithLink(inv, usersByID, nil))
 		} else {
 			resp = append(resp, projectInvitation(inv, usersByID, nil))
@@ -278,6 +278,9 @@ func (h *TenantInvitationHandler) CreateInvitation(c *gin.Context) {
 		c.Error(apperrors.NewValidationError("role must be one of owner/admin/contributor/viewer"))
 		return
 	}
+	if !allowTenantOwnerAssignment(c, req.Role) {
+		return
+	}
 
 	user, err := h.userService.GetUserByEmail(ctx, strings.TrimSpace(req.Email))
 	if err != nil {
@@ -316,7 +319,7 @@ func (h *TenantInvitationHandler) CreateInvitation(c *gin.Context) {
 		switch {
 		case errors.Is(err, service.ErrInvalidTenantRole):
 			c.Error(apperrors.NewValidationError(err.Error()))
-		case errors.Is(err, service.ErrAPIKeyCannotAssignOwner):
+		case errors.Is(err, service.ErrAPIKeyCannotAssignOwner), errors.Is(err, service.ErrTenantOwnerManagementRequired):
 			c.Error(apperrors.NewForbiddenError(err.Error()))
 		case errors.Is(err, service.ErrPendingInvitationExists):
 			c.Error(apperrors.NewConflictError(err.Error()))

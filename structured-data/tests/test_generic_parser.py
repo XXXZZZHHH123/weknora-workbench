@@ -67,7 +67,7 @@ def test_duplicate_dates_block_import(tmp_path):
 
 def test_parallel_blocks_explicit_mapping(tmp_path):
     p=book(tmp_path,[['日期','收盘',None,'日期','库存'],[datetime(2023,1,1),1,None,datetime(2023,2,1),11],[datetime(2023,1,2),2,None,datetime(2023,2,2),12]])
-    s=candidate(p);assert s['status']=='needs_review';assert len(s['mapping']['blocks'])==2
+    s=candidate(p);assert s['status']=='auto_ready';assert len(s['mapping']['blocks'])==2
     result=parse_mapped_workbook(p,[s['mapping']]);assert len(result['observations'])==4
     assert result['observations'][1]['date_cell']=='D2';assert result['observations'][1]['date']=='2023-02-01'
 

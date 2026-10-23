@@ -201,6 +201,15 @@ func AuthorizeMessageFile(ctx context.Context, message *types.Message, reference
 	if err != nil {
 		return FileAccess{}, err
 	}
+	if resource != nil && resource.TenantID == caller.TenantID {
+		if validator, ok := catalog.(interface {
+			AuthorizeResourceReference(context.Context, string) error
+		}); ok {
+			if err := validator.AuthorizeResourceReference(ctx, reference); err != nil {
+				return FileAccess{}, ErrForbidden
+			}
+		}
+	}
 	owner := message.AgentTenantID
 	if resource != nil {
 		owner = resource.TenantID
@@ -284,6 +293,13 @@ func ResolveMessageArtifact(ctx context.Context, message *types.Message, index i
 	file, resource, err := resolveFile(ctx, catalog, artifact.URL)
 	if err != nil {
 		return FileAccess{}, err
+	}
+	if validator, ok := catalog.(interface {
+		AuthorizeResourceReference(context.Context, string) error
+	}); ok && resource != nil && resource.TenantID == caller.TenantID {
+		if err := validator.AuthorizeResourceReference(ctx, artifact.URL); err != nil {
+			return FileAccess{}, ErrForbidden
+		}
 	}
 	if (resource != nil && resource.TenantID == caller.TenantID) ||
 		(resource == nil && secutils.ValidateStoragePathTenant(file.Path, caller.TenantID) == nil) {

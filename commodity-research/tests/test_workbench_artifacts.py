@@ -29,7 +29,7 @@ def client(tmp_path, monkeypatch):
     def scope(request: Request, workbench_id: str):
         identity = Identity(request.headers.get("x-actor", "first"), "fixture@example.test", "Fixture", 7,
                             request.headers.get("x-role", "owner"))
-        return WorkbenchScope(identity, workbench_id, "library-a", 7, {"id": workbench_id, "workspace_mode": "isolated"}, "Bearer fixture")
+        return WorkbenchScope(identity, workbench_id, "library-a", 7, {"id": workbench_id, "workspace_mode": "isolated", "can_edit": request.headers.get("x-can-edit", "true") == "true"}, "Bearer fixture")
 
     def native_document(path):
         if path in {'/api/v1/workspaces/research/' + FIRST, '/api/v1/workspaces/research/' + SECOND}:
@@ -123,3 +123,17 @@ def test_explicit_confirmation_and_optimistic_revision(client):
 def test_viewer_cannot_create_or_edit(client):
     assert client.post(path(), json=entry(), headers={"x-role": "viewer"}).status_code == 403
     assert client.get(path()).json()["total"] == 0
+
+
+def test_space_editor_without_workbench_edit_can_only_write_personal_notes(client):
+    reader = {'x-role': 'contributor', 'x-can-edit': 'false'}
+    assert client.post(path('structure'), json=entry(), headers=reader).status_code == 403
+    created = client.post(path('notes'), json=entry(), headers=reader)
+    assert created.status_code == 201, created.text
+    assert client.get(path('structure'), headers=reader).json()['total'] == 0
+    assert client.get(path('notes'), headers={**reader, 'x-actor': 'second'}).json()['total'] == 0
+
+
+def test_workbench_edit_does_not_raise_space_viewer_ceiling(client):
+    headers = {'x-role': 'viewer', 'x-can-edit': 'true'}
+    assert client.post(path('structure'), json=entry(), headers=headers).status_code == 403

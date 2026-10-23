@@ -1,0 +1,8 @@
+<details class="mt-3 border-t border-[var(--line)] pt-3 text-xs"><summary class="cursor-pointer text-[var(--primary)]">完整执行计划与触发条件</summary>
+<div class="space-y-3 mt-3">
+{% if s.plan.legs %}<section><h3 class="font-bold">策略腿</h3>{% for leg in s.plan.legs %}<p>{{ '买入' if leg.side == 'buy' else '卖出' }} {{ leg.contract }} × {{ leg.ratio }} · {{ leg.quote_series_id }}</p>{% endfor %}</section>{% endif %}
+{% for key,label in [('entry','入场区间'),('target','目标区间'),('stop','止损区间')] %}{% set band = s.plan.get(key) %}{% if band %}<p><b>{{ label }}：</b><span class="tabular">{{ band.low }} – {{ band.high }}</span> · {{ band.reason }}</p>{% endif %}{% endfor %}
+{% for key,label in [('entry_condition','入场条件'),('invalidation','失效条件'),('catalyst','催化剂'),('alternative_explanation','竞争性解释'),('market_expectation','市场预期')] %}{% if s.plan.get(key) %}<p class="research-prose whitespace-pre-wrap"><b>{{ label }}：</b>{{ s.plan[key] }}</p>{% endif %}{% endfor %}
+{% if s.plan.horizon_days %}<p>期限 {{ s.plan.horizon_days }} 天{% if s.plan.review_at %} · 复核 {{ s.plan.review_at }}{% endif %}</p>{% endif %}
+{% if s.plan.risk_budget %}<p>计划风险预算 <span class="tabular">{{ s.plan.risk_budget }}</span></p>{% endif %}
+</div></details>

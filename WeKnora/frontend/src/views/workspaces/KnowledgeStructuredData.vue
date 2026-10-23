@@ -12,9 +12,10 @@ const kbId = computed(() => String(route.params.kbId || ''))
 const tenant = computed(() => auth.selectedTenantId ?? auth.tenant?.id)
 const scope = computed(() => `${workspaceIdentity(tenant.value, auth.user?.id)}:${kbId.value}`)
 const mode = computed(() => route.query.mode === 'query' ? 'query' : 'import')
-const sourceKnowledgeId = computed(() => route.query.view !== 'model-settings' && typeof route.query.source_knowledge_id === 'string' ? route.query.source_knowledge_id : '')
+const sourceKnowledgeId = computed(() => typeof route.query.source_knowledge_id === 'string' ? route.query.source_knowledge_id : '')
 const sourceFileType = computed(() => route.query.source_file_type === 'pdf' ? 'pdf' : 'xlsx')
 const library = ref<any>(null), loading = ref(false), error = ref('')
+const modelSettingsRequested = ref(route.query.view === 'model-settings')
 let generation = 0
 async function load() {
   const own = ++generation
@@ -29,9 +30,15 @@ async function load() {
 function handleNavigate(view: string) {
   if (view === 'conversation') router.push(`/platform/knowledge-bases/${kbId.value}/creatChat`)
   else if (view === 'materials') router.push({ path: route.path, query: { mode: 'import' } })
-  else router.push({ path: route.path, query: { ...route.query, view: view === 'model-settings' ? 'model-settings' : undefined } })
+  else if (view === 'model-settings') openModelSettings()
+}
+function openModelSettings() { modelSettingsRequested.value = true }
+function modelSettingsOpened() {
+  modelSettingsRequested.value = false
+  if (route.query.view === 'model-settings') void router.replace({ path: route.path, query: { ...route.query, view: undefined }, hash: route.hash })
 }
 watch(scope, load, { immediate: true })
+watch(() => route.query.view, value => { if (value === 'model-settings') openModelSettings() })
 watch(() => route.query.mode, (value) => {
   if (value === 'source') router.replace({ path: route.path, query: { ...route.query, mode: 'query' }, hash: route.hash })
 }, { immediate: true })
@@ -45,13 +52,13 @@ onBeforeUnmount(() => { generation++ })
         <h1>结构化数据库</h1>
         <div class="knowledge-structured-context">
           <span class="knowledge-structured-library" :title="library?.name || '知识库'">{{ library?.name || '知识库' }}</span>
-          <span class="knowledge-structured-mode">{{ route.query.view === 'model-settings' ? '字段模型设置' : mode === 'query' ? '数据查询' : '表格导入' }}</span>
+          <span class="knowledge-structured-mode">{{ mode === 'query' ? '数据查询' : '表格导入' }}</span>
         </div>
       </div>
       <nav class="knowledge-structured-actions" aria-label="结构化数据库操作">
         <router-link class="knowledge-structured-legacy" to="/platform/structured-data" title="旧 Excel 保留在原空间，尚未自动分配到本库">原空间表格</router-link>
         <router-link :to="`/platform/knowledge-bases/${kbId}`"><t-icon name="folder" aria-hidden="true" />目录</router-link>
-        <router-link :to="{ path: route.path, query: { ...route.query, view: route.query.view ? undefined : 'model-settings' } }"><t-icon :name="route.query.view ? 'arrow-left' : 'setting'" aria-hidden="true" />{{ route.query.view ? '返回数据库' : '字段模型设置' }}</router-link>
+        <button type="button" @click="openModelSettings"><t-icon name="setting" aria-hidden="true" />字段模型</button>
         <KnowledgeWorkbenchLink :kb-id="kbId" />
       </nav>
     </header>
@@ -59,7 +66,7 @@ onBeforeUnmount(() => { generation++ })
     <div v-else-if="loading" class="knowledge-structured-status"><t-loading text="正在打开当前知识库" /></div>
     <template v-else-if="library">
 
-      <KnowledgeStructuredFrame :knowledge-base-id="kbId" :source-knowledge-id="sourceKnowledgeId" :source-file-type="sourceFileType" :mode="mode" :view="String(route.query.view || '')" @navigate="handleNavigate" />
+      <KnowledgeStructuredFrame :knowledge-base-id="kbId" :source-knowledge-id="sourceKnowledgeId" :source-file-type="sourceFileType" :mode="mode" :view="modelSettingsRequested ? 'model-settings' : ''" @navigate="handleNavigate" @model-settings-opened="modelSettingsOpened" />
     </template>
   </div>
 </template>
@@ -133,7 +140,7 @@ onBeforeUnmount(() => { generation++ })
   gap: var(--app-space-1);
   min-width: 0;
 }
-.knowledge-structured-actions a {
+.knowledge-structured-actions :is(a, button) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -148,7 +155,8 @@ onBeforeUnmount(() => { generation++ })
   white-space: nowrap;
   transition: color var(--app-motion-fast), background-color var(--app-motion-fast);
 }
-.knowledge-structured-actions a:hover {
+.knowledge-structured-actions button { border: 0; background: transparent; font-family: inherit; cursor: pointer; }
+.knowledge-structured-actions :is(a, button):hover {
   color: var(--structured-accent);
   background: var(--structured-accent-soft);
 }

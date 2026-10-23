@@ -1,7 +1,9 @@
 """Read-only research projection of the knowledge base's published snapshots."""
 import hashlib
 import json
+import math
 import re
+from datetime import date
 
 from fastapi import HTTPException
 
@@ -19,7 +21,8 @@ def _hash(value):
 
 
 def _parameters(body):
-    if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only','encoding'}:
+    if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only','encoding',
+                                              'series_ids','as_of','points_per_series','view_module'}:
         raise ValueError('只接受当前原件、分页和快照版本参数')
     sources,offset,limit=body.get('sources'),body.get('offset',0),body.get('limit',10000)
     if not isinstance(sources,list) or len(sources)>128:
@@ -45,6 +48,57 @@ def _parameters(body):
     return sorted(normalized,key=lambda item:item['knowledge_id']),offset,limit,version
 
 
+def _bounded_parameters(body):
+    if 'series_ids' not in body:
+        if {'as_of', 'points_per_series', 'view_module'} & body.keys():
+            raise ValueError('页面取数必须提供明确的指标绑定')
+        return None
+    identifiers = body['series_ids']
+    if (not isinstance(identifiers, list) or len(identifiers) > 256
+            or any(not isinstance(value, str) or not re.fullmatch('kb-[0-9a-f]{48}', value) for value in identifiers)
+            or len(set(identifiers)) != len(identifiers)):
+        raise ValueError('页面指标绑定无效或超过256项')
+    if {'offset', 'limit', 'metadata_only', 'encoding'} & body.keys():
+        raise ValueError('页面取数不接受全量分页或编码参数')
+    points = body.get('points_per_series', 2)
+    if type(points) is not int or not 1 <= points <= 2:
+        raise ValueError('每个页面指标仅可读取最近1至2个数值')
+    boundary = body.get('as_of')
+    if 'as_of' in body:
+        if not isinstance(boundary, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', boundary):
+            raise ValueError('页面日期边界无效')
+        date.fromisoformat(boundary)
+    if 'view_module' in body:
+        if not isinstance(body['view_module'], str) or body['view_module'] not in {
+                'home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports'}:
+            raise ValueError('页面模块无效')
+    return {'series_ids': sorted(identifiers), 'as_of': boundary, 'points_per_series': points}
+
+
+def _bounded_rows(store, bindings, selection):
+    rows = []
+    for info, mapping in bindings:
+        if not mapping:
+            continue
+        identifiers = sorted(mapping)
+        where = 'series_id IN (' + ','.join('?' for _ in identifiers) + ') AND ' + _RESEARCH_ROW_FILTER
+        parameters = list(identifiers)
+        if selection['as_of'] is not None:
+            where += ' AND date <= ?'
+            parameters.append(selection['as_of'])
+        with store._connect(info['dataset_id']) as connection:
+            cursor = connection.execute(
+                'SELECT series_id,date,value,value_status FROM observations WHERE ' + where
+                + ' QUALIFY row_number() OVER (PARTITION BY series_id ORDER BY date DESC,source_cell DESC) <= ?'
+                + ' ORDER BY series_id,date,source_cell',
+                [*parameters, selection['points_per_series']])
+            for source_id, when, value, status in cursor.fetchall():
+                if not math.isfinite(value):
+                    raise HTTPException(503, '页面指标含非有限数值，未返回部分结果')
+                rows.append({'series_id': mapping[source_id], 'date': when, 'value': value, 'value_status': status})
+    return rows
+
+
 def _page_series(identifiers,counts,offset,limit):
     """Narrow the stable series/date/cell ordering to the requested page.
 
@@ -68,6 +122,7 @@ def read_facts(store,manager,body):
     if identity is None or not identity.knowledge_base_id:
         raise ValueError('研究指标必须绑定已授权知识库，不能读取空间旧事实')
     sources,offset,limit,requested=_parameters(body)
+    bounded = _bounded_parameters(body)
     compact=body.get('encoding')==RESEARCH_ROWS_ENCODING
     records=manager.list()
     selected=[]
@@ -126,20 +181,32 @@ def read_facts(store,manager,body):
               'import_id':record['import_id'],'rule_version':manifest.get('rule_version'),
               'imported_at':manifest.get('imported_at'),
               'confirmed_sheets':sorted(confirmed_names),'review_fingerprint':_hash(confirmed)}
-        datasets.append(info)
         mapping={}
         for field in catalog:
             identifier='kb-'+_hash([identity.knowledge_base_id,source['knowledge_id'],field['series_id']])[:48]
+            if bounded is not None and identifier not in bounded['series_ids']:
+                continue
             mapping[field['series_id']]=identifier
             indicators.append({**field,'series_id':identifier,'source_series_id':field['series_id'],
                 'source_knowledge_id':source['knowledge_id'],'dataset_id':dataset,
                 'source_file':manifest.get('source_file'),'source_sha256':manifest['sha256']})
-        bindings.append((info,mapping))
+        if bounded is None or mapping:
+            datasets.append(info)
+            bindings.append((info,mapping))
+    if bounded is not None and set(bounded['series_ids']) != {field['series_id'] for field in indicators}:
+        raise HTTPException(403, '页面指标不属于当前已确认的来源范围，未返回部分结果')
     version=_hash({'knowledge_base_id':identity.knowledge_base_id,
                    'knowledge_base_tenant_id':identity.knowledge_base_tenant_id,
-                   'sources':sources,'datasets':datasets,'indicators':indicators})
+                   'sources':sources,'datasets':datasets,'indicators':indicators,
+                   **({'selection': bounded} if bounded is not None else {})})
     if requested is not None and requested!=version:
         raise HTTPException(409,'知识库结构化版本已改变，请重新读取完整事实；未混合新旧快照')
+    if bounded is not None:
+        rows = _bounded_rows(store, bindings, bounded)
+        return {'knowledge_base_id': identity.knowledge_base_id,
+                'knowledge_base_tenant_id': identity.knowledge_base_tenant_id,
+                'version': version, 'bounded': True, 'indicators': indicators,
+                'rows': rows, 'total': len(rows), 'offset': 0, 'next_offset': None, 'truncated': False}
     if body.get('metadata_only'):
         # Exactly the same current original, confirmation and catalog checks as
         # a full read; no DuckDB row scan or page serialization is necessary.

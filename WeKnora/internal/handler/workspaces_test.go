@@ -27,7 +27,7 @@ func (*workspaceHandlerKBs) GetKnowledgeBaseByIDOnly(_ context.Context, id strin
 	if id != "kb" {
 		return nil, gorm.ErrRecordNotFound
 	}
-	return &types.KnowledgeBase{ID: id, TenantID: 1, Name: "Library"}, nil
+	return &types.KnowledgeBase{ID: id, TenantID: 1, Name: "Library", CreatorID: "alice"}, nil
 }
 
 func TestWorkspaceHTTPContract(t *testing.T) {
@@ -68,7 +68,10 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	if err := db.AutoMigrate(&types.KnowledgeBase{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library"}).Error; err != nil {
+	if err := db.AutoMigrate(&types.ResearchWorkbench{}, &types.UserWorkbenchPin{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library", CreatorID: "alice"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	h := NewWorkspaceHandler(service.NewWorkspaceService(db, &workspaceHandlerKBs{}, nil))
@@ -89,6 +92,11 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	r.GET("/research/templates", h.ListWorkbenchTemplates)
 	r.GET("/research/:id", h.GetWorkbench)
 	r.PUT("/research/:id", h.UpdateWorkbench)
+	r.GET("/research/:id/permissions", h.GetWorkbenchPermissions)
+	r.PUT("/research/:id/permissions", h.UpdateWorkbenchPermissions)
+	r.POST("/research/:id/source-sharing/request", h.RequestWorkbenchSourceSharing)
+	r.GET("/research/:id/source-sharing", h.GetWorkbenchSourceSharing)
+	r.PUT("/research/:id/source-sharing", h.UpdateWorkbenchSourceSharing)
 	r.PUT("/research/:id/onboarding", h.UpdateWorkbenchOnboarding)
 	request := func(method, path, body, user string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -163,6 +171,59 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 		t.Fatal(response.Code, response.Body.String())
 	}
 	path := "/research/" + research.Data.ID + "/onboarding"
+	permissionPath := "/research/" + research.Data.ID + "/permissions"
+	if response := request("GET", permissionPath, "", "bob"); response.Code != 404 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	for _, body := range []string{`null`, `{}`, `{"space_permission":"owner","members":[]}`, `{"space_permission":"none","members":[],"user_id":"bob"}`, `{"space_permission":"none","members":[]} {}`} {
+		if response := request("PUT", permissionPath, body, "alice"); response.Code != 400 {
+			t.Fatal(response.Code, response.Body.String())
+		}
+	}
+	if response := request("PUT", permissionPath, `{"space_permission":"viewer","members":[]}`, "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"owner_id":"alice"`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("GET", permissionPath, "", "bob"); response.Code != 403 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("POST", "/research/"+research.Data.ID+"/source-sharing/request", "", "bob"); response.Code != 403 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	sharingPath := "/research/" + research.Data.ID + "/source-sharing"
+	for _, body := range []string{`{}`, `{"approved":true}`, `{"approved":true,"modules":[]}`, `{"approved":true,"modules":["market","market"]}`, `{"approved":true,"modules":["all"]}`, `{"approved":true,"modules":["market"],"user_id":"bob"}`, `{"approved":true,"modules":["market"]} {}`} {
+		if response := request("PUT", sharingPath, body, "alice"); response.Code != 400 {
+			t.Fatal(response.Code, response.Body.String())
+		}
+	}
+	if response := request("PUT", sharingPath, `{"approved":true,"modules":["market","diagram"]}`, "bob"); response.Code != 403 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("PUT", sharingPath, `{"approved":true,"modules":["market","diagram"]}`, "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"source_sharing_modules":["market","diagram"]`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("GET", sharingPath, "", "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"source_sharing_modules":["market","diagram"]`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("PUT", sharingPath, `{"approved":false}`, "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"source_sharing_modules":[]`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	for _, body := range []string{
+		`{"space_permission":"viewer","members":[],"restricted_view_profiles":[{"id":"view","name":"View","modules":["diagram"],"member_ids":[],"all_members":true,"can_manage":true}]}`,
+		`{"space_permission":"viewer","members":[],"restricted_view_profiles":[{"id":"view","name":"View","modules":["unknown"],"member_ids":[],"all_members":true}]}`,
+		`{"space_permission":"viewer","members":[],"restricted_view_profiles":[],"source_sharing_approved":true}`,
+		`{"space_permission":"viewer","members":[],"restricted_view_profiles":[],"source_sharing_approved":"true"}`,
+	} {
+		if response := request("PUT", permissionPath, body, "alice"); response.Code != 400 {
+			t.Fatal(response.Code, response.Body.String())
+		}
+	}
+	profileBody := `{"space_permission":"viewer","members":[],"restricted_view_profiles":[{"id":"view","name":"View","modules":["diagram"],"member_ids":[],"all_members":true}],"source_sharing_approved":true}`
+	if response := request("PUT", permissionPath, profileBody, "alice"); response.Code != 200 || !strings.Contains(response.Body.String(), `"source_sharing_modules":["diagram"]`) || !strings.Contains(response.Body.String(), `"restricted_view_profiles":[{"id":"view"`) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := request("GET", "/research/"+research.Data.ID, "", "bob"); response.Code != 200 || strings.Contains(response.Body.String(), "member_ids") || strings.Contains(response.Body.String(), "restricted_view_profiles") {
+		t.Fatal(response.Code, response.Body.String())
+	}
 	if response := request("PUT", path, `{"status":"dismissed","tasks":{"sources":true}}`, "bob"); response.Code != 200 || !strings.Contains(response.Body.String(), `"status":"dismissed"`) {
 		t.Fatal(response.Code, response.Body.String())
 	}

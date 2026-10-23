@@ -318,7 +318,7 @@
               </template>
               <template #role="{ row }">
                 <div class="role-cell">
-                  <t-select v-if="canManage && row.user_id !== currentUserId" :model-value="row.role"
+                  <t-select v-if="canManageMember(row)" :model-value="row.role"
                     class="member-role-select" :borderless="true" :popup-props="roleSelectPopupProps"
                     :aria-label="`${memberPrimary(row)} · ${$t('tenantMember.columns.role')}`"
                     @change="(val: string) => onRoleChange(row, val)">
@@ -339,7 +339,7 @@
               <template #joined_at="{ row }">{{ formatDate(row.joined_at) }}</template>
               <template #actions="{ row }">
                 <t-popconfirm
-                  v-if="canManage && row.user_id !== currentUserId"
+                  v-if="canManageMember(row)"
                   :content="$t('tenantMember.remove.confirmBody', { name: row.username || row.email })"
                   :confirm-btn="{ content: $t('tenantMember.remove.confirm'), theme: 'danger' }"
                   :cancel-btn="{ content: $t('common.cancel') }"
@@ -506,6 +506,7 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import SettingDrawer from '@/components/settings/SettingDrawer.vue'
 import { copyWithToast } from '@/utils/clipboard'
 import { useAuthStore } from '@/stores/auth'
+import { tenantMemberAccess } from '@/config/tenantMemberAccess'
 import { AUDIT_ACTION_I18N_ROOTS } from '@/i18n/auditActionRegistry'
 import { auditActionLabel } from '@/i18n/auditActionLabel'
 import {
@@ -632,19 +633,19 @@ const addForm = reactive<{ email: string; role: TenantRole }>({
 // Role-aware gates. The server enforces every mutation; UI gates here
 // are presentational only, matching the security note in stores/auth.ts.
 const currentRole = computed<TenantRole | ''>(() => (authStore.currentTenantRole || '') as TenantRole | '')
-// Cross-tenant superusers (org-level operators) bypass the Owner gate
-// on the server (see middleware/rbac.go RequireRole). The UI must
-// mirror that or the buttons would be invisible to the exact admins
-// who actually need them. Local Owners of their own tenant come in via
-// the role branch.
-const canManage = computed(
-  () => currentRole.value === 'owner' || authStore.canAccessAllTenants === true,
-)
+const memberAccess = computed(() => tenantMemberAccess(currentRole.value, authStore.canAccessAllTenants === true))
+const canManage = computed(() => memberAccess.value.canManage)
+const canManageMember = (row: TenantMember) => memberAccess.value.canManageMember(row, currentUserId.value)
 // Admin+ (and cross-tenant superusers) can view the audit log. Mirrors
 // the server's g.Admin() guard on /tenants/:id/audit-log so we don't
 // render a tab that would just 403.
 watch(canManage, (allowed) => {
   if (!allowed) activeListTab.value = 'members'
+})
+watch(memberAccess, (access) => {
+  if (!access.assignableRoles.includes(addForm.role)) addForm.role = 'contributor'
+  if (!access.assignableRoles.includes(shareLinkForm.role)) shareLinkForm.role = 'contributor'
+  if (!access.canManageOwners && shareLinkResult.value?.role === 'owner') shareLinkResult.value = null
 })
 
 const canViewAudit = computed(
@@ -660,12 +661,9 @@ const currentUserId = computed(() => authStore.user?.id ?? '')
 // don't expose a tenant picker here.
 const activeTenantId = computed(() => Number(authStore.currentTenantId ?? 0))
 
-const roleOptions = computed(() => [
-  { label: t('tenantMember.role.owner'), value: 'owner' },
-  { label: t('tenantMember.role.admin'), value: 'admin' },
-  { label: t('tenantMember.role.contributor'), value: 'contributor' },
-  { label: t('tenantMember.role.viewer'), value: 'viewer' },
-])
+const roleOptions = computed(() => memberAccess.value.assignableRoles.map(value => ({
+  label: t(`tenantMember.role.${value}`), value,
+})))
 
 /** 下拉层须高于邀请浮层（3050）与组织设置全屏遮罩，否则会被压住 */
 const roleSelectPopupProps = {
@@ -689,7 +687,7 @@ const roleMatrix: Record<TenantRole, RolePerm[]> = {
     { key: 'readAll', has: true },
   ],
   admin: [
-    { key: 'manageMembers', has: false },
+    { key: 'manageMembers', has: true },
     { key: 'manageTenantConfig', has: false },
     { key: 'manageInfra', has: true },
     { key: 'createOwnKB', has: true },
@@ -1266,6 +1264,7 @@ async function copyText(text: string) {
 }
 
 async function submitShareLink() {
+  if (!canManage.value || !memberAccess.value.assignableRoles.includes(shareLinkForm.role)) return
   creatingShareLink.value = true
   try {
     const resp = await createInviteLink(activeTenantId.value, { role: shareLinkForm.role })
@@ -1294,6 +1293,7 @@ const addConfirmRoleLabel = computed(() => t('tenantMember.role.' + addForm.role
 // With auto-accept the action is a direct add, so we skip the invitation
 // confirm step entirely and fire the API right after validation.
 async function submitAdd() {
+  if (!canManage.value || !memberAccess.value.assignableRoles.includes(addForm.role)) return
   if (addDialogStep.value === 'form') {
     const valid = await addFormRef.value?.validate?.()
     if (valid !== true) return
@@ -1367,6 +1367,7 @@ async function sendInvitation(email: string, role: TenantRole) {
 }
 
 async function onRoleChange(row: TenantMember, newRole: string) {
+  if (!canManageMember(row) || !memberAccess.value.assignableRoles.includes(newRole as TenantRole)) return
   const prev = row.role
   const next = newRole as TenantRole
   if (prev === next) return
@@ -1413,6 +1414,7 @@ async function onRoleChange(row: TenantMember, newRole: string) {
 // 的删除入口风格统一，避免一个简单的二次确认打断成员管理表格的浏览节奏。
 // 错误分支保持与旧实现一致（409 last-owner / 404 not-found / 兜底）。
 async function removeRow(row: TenantMember) {
+  if (!canManageMember(row)) return
   try {
     const resp = await removeMember(activeTenantId.value, row.user_id)
     if (resp.success) {

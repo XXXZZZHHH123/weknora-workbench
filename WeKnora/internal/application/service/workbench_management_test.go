@@ -14,6 +14,7 @@ func TestWorkspaceWorkbenchManagementProjectionMatchesExistingWritePolicy(t *tes
 	created, err := s.CreateWorkbench(owner, WorkspaceInput{Name: workspaceString("Source-bound research"), KnowledgeBaseID: workspaceString("own"), IdempotencyKey: "manage-projection"})
 	require.NoError(t, err)
 	require.True(t, created.CanManage)
+	require.NoError(t, s.db.Model(created).Update("access_policy", nil).Error)
 	for _, tc := range []struct {
 		name, user string
 		role       types.TenantRole

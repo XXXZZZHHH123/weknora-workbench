@@ -82,6 +82,10 @@ func WorkspaceJudgmentGenerator(workspaces *WorkspaceHandler, models *ModelHandl
 }
 
 func workspaceDraftGenerator(workspaces *WorkspaceHandler, models *ModelHandler, system string, allowImages bool) gin.HandlerFunc {
+	module := "judgments"
+	if allowImages {
+		module = "diagram"
+	}
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 		caller := types.CallerFromContext(ctx).Normalize()
@@ -140,6 +144,10 @@ func workspaceDraftGenerator(workspaces *WorkspaceHandler, models *ModelHandler,
 			_ = c.Error(apperrors.NewConflictError("工作台绑定知识库已变化，请重新打开生成助手"))
 			return
 		}
+		if !workbench.CanViewSourceModule(module) || (allowImages && !workbench.CanEdit) {
+			_ = c.Error(apperrors.NewForbiddenError("需要有效的研究来源及工作台编辑权限"))
+			return
+		}
 		ctx, cancel := context.WithTimeout(types.WithExecutionTenant(ctx, caller.TenantID), workspaceDiagramTimeout)
 		defer cancel()
 		model, err := models.service.GetModelByID(ctx, input.ModelID)
@@ -196,6 +204,10 @@ func workspaceDraftGenerator(workspaces *WorkspaceHandler, models *ModelHandler,
 		}
 		if current.KnowledgeBaseID != input.KnowledgeBaseID {
 			_ = c.Error(apperrors.NewConflictError("工作台绑定知识库已变化，请重新生成"))
+			return
+		}
+		if !current.CanViewSourceModule(module) || (allowImages && !current.CanEdit) {
+			_ = c.Error(apperrors.NewForbiddenError("研究来源或工作台编辑权限已失效"))
 			return
 		}
 		workspaceReply(c, gin.H{"content": response.Content, "model_id": model.ID}, nil)

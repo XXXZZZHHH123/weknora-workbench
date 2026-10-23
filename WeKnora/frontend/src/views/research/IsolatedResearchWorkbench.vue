@@ -25,6 +25,7 @@ const sourceContent = ref<{text?: string; sha256?: string; supported?: boolean; 
 const sourceContentOpen = ref(false), sourceContentLoading = ref(false)
 const selectedSource = ref<WorkbenchSource | null>(null), pendingFiles = ref<File[]>([])
 const isIsolated = computed(() => props.workbench.workspace_mode === 'isolated')
+const canEditSource = computed(() => props.workbench.can_edit_source !== false)
 const taskNames = { sources: '添加资料', review: '核对来源', research: '开始研究' }
 let generation = 0, scopeEpoch = 0, sourceSelection = 0
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -105,9 +106,9 @@ async function showSource(source: WorkbenchSource) {
   } catch (e) { if (own === generation && selection === sourceSelection && selectedSource.value?.id === real.id) drawerError.value = workspaceErrorMessage(e) }
   finally { if (own === generation && selection === sourceSelection && selectedSource.value?.id === real.id) sourceContentLoading.value = false }
 }
-function selectFiles(files: File[]) { if (!files.length || !validBinding()) return; pendingFiles.value = [...files]; drawer.value = 'upload'; drawerError.value = '' }
+function selectFiles(files: File[]) { if (!files.length || !validBinding() || !canEditSource.value) return; pendingFiles.value = [...files]; drawer.value = 'upload'; drawerError.value = '' }
 function enqueueFiles() {
-  if (!pendingFiles.value.length || busy.value) return
+  if (!pendingFiles.value.length || busy.value || !canEditSource.value) return
   const own = identity()
   if (!validBinding()) { drawerError.value = '请先登录并选择空间。'; return }
   const rawOnly = saveVisualOriginals.value ? pendingFiles.value.filter(file => ['png','jpg','jpeg','zip'].includes(file.name.split('.').at(-1)?.toLowerCase() || '')) : []
@@ -168,7 +169,7 @@ defineExpose({ openSources, drawerOpen })
         <t-alert v-if="drawerError" theme="error" :message="drawerError" />
         <template v-if="drawer === 'sources'">
           <div class="isolated-actions">
-            <span data-guide="research-upload"><KbUploadSourceDropdown unified :supported-file-types="uploadTypes" trigger-label="添加资料" @files="selectFiles" /></span>
+            <span v-if="canEditSource" data-guide="research-upload"><KbUploadSourceDropdown unified :supported-file-types="uploadTypes" trigger-label="添加资料" @files="selectFiles" /></span>
             <t-button size="small" variant="text" :loading="loading" @click="load">刷新来源</t-button>
             <t-button size="small" variant="text" data-guide="research-kb-manage" @click="openKnowledgeBase">知识库管理</t-button>
           </div>
@@ -178,7 +179,7 @@ defineExpose({ openSources, drawerOpen })
           <div v-else-if="!sources.length && !error" class="isolated-note">尚无原件，可以先添加文件或文件夹。</div>
           <div v-for="source in sources" :key="source.id" class="isolated-review-row">
             <div><strong>{{ sourceLabel(source) }}</strong><small>{{ sourceStatus(source) }}</small></div>
-            <t-button v-if="isWorkbook(source)" size="small" variant="text" data-guide="research-structured" @click="openStructured(source)">结构化解析</t-button>
+            <t-button v-if="isWorkbook(source) && canEditSource" size="small" variant="text" data-guide="research-structured" @click="openStructured(source)">结构化解析</t-button>
             <t-button size="small" variant="text" data-guide="research-source-preview" @click="showSource(source)">预览</t-button>
           </div>
           <div v-if="sourceTotal" class="isolated-actions isolated-pagination">
@@ -202,7 +203,7 @@ defineExpose({ openSources, drawerOpen })
             <pre v-else-if="sourceContentOpen && sourceContent?.supported">{{ sourceContent.text }}</pre>
           </div>
           <div class="isolated-actions">
-            <t-button v-if="isWorkbook(selectedSource)" size="small" @click="openStructured(selectedSource)">结构化解析</t-button>
+            <t-button v-if="isWorkbook(selectedSource) && canEditSource" size="small" @click="openStructured(selectedSource)">结构化解析</t-button>
             <t-button size="small" variant="outline" @click="openSources">返回来源</t-button>
           </div>
         </template>
