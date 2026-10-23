@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, shallowRef, watch } from 'vue';
 import type { ExcelPreviewPage } from '@/utils/excelPreview';
+import type { ExcelPreviewChart, ExcelPreviewChartList } from '@/utils/excelPreviewCharts';
+import ExcelSourceChart from './ExcelSourceChart.vue';
 import type { SourceLocateRequest } from '@/utils/sourceLocator';
 import { sourceQuoteText } from '@/utils/sourceLocator';
 import { findTextRange, highlightElements, highlightRanges, buildTextIndex, scrollRectIntoContainer } from '@/utils/sourceLocatorDom';
@@ -15,6 +17,10 @@ const busy = ref(false);
 const error = ref('');
 const sheetFilter = ref('');
 const jumpRow = ref<number | string>(1);
+const mode = ref<'table' | 'charts'>('table');
+const chartList = shallowRef<ExcelPreviewChartList>({ charts: [] });
+const chart = shallowRef<ExcelPreviewChart | null>(null);
+const chartId = ref(''), chartBusy = ref(false), chartListBusy = ref(false), chartError = ref('');
 const matchingSheets = computed(() => {
   const text = sheetFilter.value.trim().toLocaleLowerCase();
   return text ? sheetNames.value.filter(name => name.toLocaleLowerCase().includes(text)) : sheetNames.value;
@@ -23,12 +29,14 @@ const selectedSheetIndex = computed(() => sheetNames.value.indexOf(selectedSheet
 const availableRows = computed(() => page.value ? Math.max(0, Math.min(page.value.previewRows, page.value.totalRows)) : 0);
 let worker: Worker | null = null;
 let generation = 0, requestId = 0, viewVersion = 0;
+let chartVersion = 0, listVersion = 0;
 let queuedLocate: number | null = null, locating = false;
 let marks: Array<() => void> = [];
 const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
 function clearMarks() { marks.forEach(clear => clear()); marks = []; }
 function dispose(reason = '预览已关闭。') {
+  chartVersion++; listVersion++; chart.value = null;
   worker?.terminate(); worker = null;
   for (const item of pending.values()) { clearTimeout(item.timer); item.reject(new Error(reason)); }
   pending.clear(); clearMarks();
@@ -44,11 +52,15 @@ function request<T>(message: object, transfer: Transferable[] = []): Promise<T> 
 }
 async function showPage(sheet: string, row = 0, column = 0): Promise<boolean> {
   const version = ++viewVersion, own = generation;
+  const changedSheet = sheet !== selectedSheet.value;
+  showTable();
+  if (changedSheet) { listVersion++; chartList.value = { charts: [] }; chartId.value = ''; chartError.value = ''; }
   clearMarks(); busy.value = true; error.value = '';
   try {
     const value = await request<ExcelPreviewPage>({ type: 'page', sheet, row, column });
     if (own !== generation || version !== viewVersion) return false;
     page.value = value; selectedSheet.value = sheet; jumpRow.value = value.startRow + 1;
+    if (changedSheet) void loadChartList(sheet);
     await nextTick();
     if (viewport.value) { viewport.value.scrollTop = 0; viewport.value.scrollLeft = 0; }
     return true;
@@ -58,6 +70,35 @@ async function showPage(sheet: string, row = 0, column = 0): Promise<boolean> {
   } finally {
     if (own === generation && version === viewVersion) { busy.value = false; void drainLocate(); }
   }
+}
+async function loadChartList(sheet: string) {
+  const own = generation, version = ++listVersion;
+  chartListBusy.value = true; chartError.value = '';
+  try {
+    const value = await request<ExcelPreviewChartList>({ type: 'chart-list', sheet });
+    if (own !== generation || version !== listVersion || sheet !== selectedSheet.value) return;
+    chartList.value = value; chartId.value = value.charts[0]?.id || '';
+  } catch (failure) {
+    if (own === generation && version === listVersion) chartError.value = (failure as Error).message;
+  } finally { if (own === generation && version === listVersion) chartListBusy.value = false; }
+}
+function showTable() {
+  if (mode.value === 'charts') worker?.postMessage({ type: 'cancel-charts' });
+  mode.value = 'table'; chartVersion++; chart.value = null; chartBusy.value = false;
+}
+async function showChart(id = chartId.value) {
+  mode.value = 'charts'; chart.value = null; chartError.value = ''; chartId.value = id;
+  const own = generation, version = ++chartVersion, sheet = selectedSheet.value;
+  if (!id) return;
+  chartBusy.value = true;
+  try {
+    const value = await request<ExcelPreviewChart>({ type: 'chart', sheet, chartId: id });
+    if (own !== generation || version !== chartVersion || sheet !== selectedSheet.value || mode.value !== 'charts') return;
+    chart.value = value;
+    chartList.value = { ...chartList.value, charts: chartList.value.charts.map(entry => entry.id === id ? { ...entry, title: value.title || entry.title } : entry) };
+  } catch (failure) {
+    if (own === generation && version === chartVersion) chartError.value = (failure as Error).message;
+  } finally { if (own === generation && version === chartVersion) chartBusy.value = false; }
 }
 async function jumpToRow() {
   const row = Number(jumpRow.value);
@@ -76,7 +117,7 @@ async function drainLocate() {
 async function locateSource() {
   const current = props.locate, own = generation;
   if (!current || !page.value) return;
-  clearMarks();
+  showTable(); await nextTick(); clearMarks();
   if (current.unavailable) { emit('located', { found: false, precise: false, reason: 'unavailable' }); return; }
   const locator = current.locators.find(l => l.type === 'sheet' && l.mapping === 'exact' && !l.partial
     && Number.isSafeInteger(l.row_start) && (l.row_start || 0) > 0 && l.sheet && sheetNames.value.includes(l.sheet));
@@ -112,6 +153,7 @@ async function locateSource() {
 async function open() {
   const own = ++generation;
   dispose(); page.value = null; sheetNames.value = []; selectedSheet.value = ''; sheetFilter.value = '';
+  mode.value = 'table'; chartList.value = { charts: [] }; chartId.value = ''; chartBusy.value = false; chartListBusy.value = false; chartError.value = '';
   jumpRow.value = 1; error.value = ''; busy.value = true;
   queuedLocate = props.locate?.token ?? null;
   try {
@@ -162,7 +204,11 @@ onUnmounted(() => { generation++; queuedLocate = null; dispose(); });
       </template>
       <span class="excel-caption" title="公式显示原文件保存的结果，预览不重新计算；未保存计算结果时可能为空">原件预览 · 只读</span>
       <span v-if="busy" class="excel-pending" role="status"><span class="excel-spinner" />正在读取…</span>
-      <template v-if="page">
+      <div v-if="page" class="excel-mode" role="group" aria-label="原件预览视图">
+        <button :aria-pressed="mode === 'table'" @click="showTable">表格</button>
+        <button :aria-pressed="mode === 'charts'" :disabled="busy || chartListBusy" @click="showChart()">图表{{ chartListBusy ? '…' : ` (${chartList.charts.length})` }}</button>
+      </div>
+      <template v-if="page && mode === 'table'">
         <div class="excel-pager excel-row-pager">
           <button aria-label="上一页" :disabled="busy || page.startRow === 0" @click="showPage(selectedSheet, page.startRow - 100, page.startColumn)">‹</button>
           <span>{{ page.startRow + 1 }}–{{ page.startRow + page.rows.length }} / {{ page.totalRows }} 行</span>
@@ -182,7 +228,18 @@ onUnmounted(() => { generation++; queuedLocate = null; dispose(); });
     </div>
     <p v-if="error" class="excel-error" role="alert">{{ error }} <button @click="open">重试</button></p>
     <p v-if="page?.truncated" class="excel-note">当前可预览前 {{ page.previewRows.toLocaleString('zh-CN') }} / {{ page.totalRows.toLocaleString('zh-CN') }} 行；完整内容请下载原件。预览不计算公式，显示文件保存的值。</p>
-    <div v-if="page && !error" ref="viewport" class="excel-grid" tabindex="0" :aria-label="`${selectedSheet}工作表`">
+    <template v-if="mode === 'charts' && !error">
+      <div v-if="chartList.charts.length" class="excel-controls excel-chart-picker">
+        <label>图表 <select :value="chartId" aria-label="选择原件图表" @change="showChart(($event.target as HTMLSelectElement).value)"><option v-for="(entry, index) in chartList.charts" :key="entry.id" :value="entry.id">{{ index + 1 }} · {{ entry.title }}</option></select></label>
+        <span class="excel-caption">{{ chartList.charts.findIndex(item => item.id === chartId) + 1 }} / {{ chartList.charts.length }} 张</span>
+        <span v-if="chartBusy" class="excel-pending" role="status"><span class="excel-spinner" />正在读取图表…</span>
+      </div>
+      <p v-if="chartError" class="excel-error" role="alert">{{ chartError }} <button @click="open">重新打开</button></p>
+      <p v-if="!chartListBusy && !chartList.charts.length && !chartError" class="excel-note">当前工作表没有可读取的原生图表。</p>
+      <p v-for="notice in chartList.notices || []" :key="notice" class="excel-note">{{ notice }}</p>
+      <ExcelSourceChart v-if="chart" :key="chart.id" :chart="chart" />
+    </template>
+    <div v-if="page && !error && mode === 'table'" ref="viewport" class="excel-grid" tabindex="0" :aria-label="`${selectedSheet}工作表`">
       <table>
         <thead><tr><th aria-label="行号" /><th v-for="column in page.columns" :key="column" scope="col">{{ column }}</th></tr></thead>
         <tbody><tr v-for="row in page.rows" :key="row.number" :data-row="row.number">
@@ -211,6 +268,10 @@ onUnmounted(() => { generation++; queuedLocate = null; dispose(); });
 .excel-caption, .excel-note { color: var(--td-text-color-secondary); }
 .excel-pager { display: flex; align-items: center; gap: 6px; }
 .excel-row-pager { margin-left: auto; }
+.excel-mode { display: inline-flex; gap: 3px; }
+.excel-mode button[aria-pressed="true"] { color: var(--td-brand-color); border-color: var(--td-brand-color); }
+.excel-chart-picker label { display: inline-flex; align-items: center; gap: 8px; }
+.excel-chart-picker select { max-width: min(64vw, 520px); }
 button { font: inherit; color: inherit; cursor: pointer; background: var(--td-bg-color-container); border: 1px solid var(--td-component-stroke); border-radius: 5px; min-width: 26px; height: 26px; }
 button:disabled { opacity: .4; cursor: default; }
 .excel-pending { display: inline-flex; align-items: center; gap: 5px; }

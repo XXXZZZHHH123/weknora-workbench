@@ -1,6 +1,8 @@
 import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 import { DOMParser, type Element as XmlElement } from '@xmldom/xmldom';
+import { EXCEL_CHART_LIMITS, parseDrawingCharts, parseExcelChart, sheetDrawingScanner,
+  type ExcelPreviewChart, type ExcelPreviewChartList } from './excelPreviewCharts';
 
 // Preview is deliberately separate from structured import. It never evaluates
 // formulas, loads remote links or publishes data, and keeps only one sheet.
@@ -17,6 +19,8 @@ export const EXCEL_PREVIEW_LIMITS = Object.freeze({
   pageRows: 100,
   pageColumns: 30,
   cellCharacters: 4_096,
+  chartCacheEntries: 2,
+  chartCacheBytes: 8 * 1024 * 1024,
 });
 
 export type ExcelPreviewCell = { text: string; rowSpan: number; colSpan: number; hidden: boolean };
@@ -148,6 +152,33 @@ async function readMember(data: ArrayBuffer, member: ZipMember, budget: PreviewB
   } finally { await reader.cancel().catch(() => {}); }
 }
 
+/** Validate actual output while scanning large worksheet XML without a DOM. */
+async function scanMemberXml(data: ArrayBuffer, member: ZipMember, scanner: ReturnType<typeof sheetDrawingScanner>): Promise<void> {
+  if (member.expanded > EXCEL_PREVIEW_LIMITS.entryBytes) throw new Error('当前工作表 XML 超过预览上限。');
+  let expanded = 0, decoder: TextDecoder | undefined;
+  const chunk = (bytes: Uint8Array) => {
+    expanded += bytes.byteLength;
+    if (expanded > member.expanded || expanded > EXCEL_PREVIEW_LIMITS.entryBytes) throw new Error('文件展开大小与声明不符，已停止图表预览。');
+    if (!decoder) {
+      let encoding = 'utf-8';
+      if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0)) encoding = 'utf-16le';
+      if ((bytes[0] === 0xfe && bytes[1] === 0xff) || (bytes[0] === 0 && bytes[1] === 0x3c)) encoding = 'utf-16be';
+      decoder = new TextDecoder(encoding, { fatal: true });
+    }
+    scanner.write(decoder.decode(bytes, { stream: true }));
+  };
+  if (member.method === 0) {
+    for (let at = 0; at < member.compressed; at += 65_536) chunk(new Uint8Array(data, member.start + at, Math.min(65_536, member.compressed - at)));
+  } else {
+    const reader = new Blob([new Uint8Array(data, member.start, member.compressed)]).stream()
+      .pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+    try { for (;;) { const item = await reader.read(); if (item.done) break; chunk(item.value); } }
+    finally { await reader.cancel().catch(() => {}); }
+  }
+  if (expanded !== member.expanded) throw new Error('Excel 图表所属工作表压缩内容不完整。');
+  scanner.write(decoder?.decode() || '').close();
+}
+
 function xmlText(bytes: Uint8Array): string {
   let encoding = 'utf-8';
   if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0)) encoding = 'utf-16le';
@@ -261,6 +292,23 @@ function escapedXml(value: string): string {
   return value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[character]!);
 }
 
+/** Conservative retained DTO estimate, including sparse-array slots and text. */
+function retainedChartBytes(value: unknown, limit = EXCEL_PREVIEW_LIMITS.chartCacheBytes): number {
+  if (typeof value === 'string') return 64 + value.length * 2;
+  if (value === null || typeof value !== 'object') return 32;
+  let bytes = Array.isArray(value) ? 64 + value.length * 8 : 256;
+  if (bytes > limit) return bytes;
+  if (Array.isArray(value)) {
+    for (const item of value) { bytes += retainedChartBytes(item, limit - bytes); if (bytes > limit) break; }
+  } else {
+    for (const [key, item] of Object.entries(value)) {
+      bytes += 64 + key.length * 2 + retainedChartBytes(item, limit - bytes);
+      if (bytes > limit) break;
+    }
+  }
+  return bytes;
+}
+
 /** The full ZIP stays compressed; SheetJS receives only one bounded sheet. */
 export class ExcelPreviewArchive {
   sheetNames: string[] = [];
@@ -272,6 +320,10 @@ export class ExcelPreviewArchive {
   private selectedSheet = '';
   private selected: ExcelPreviewWorkbook | null = null;
   private fallback: ExcelPreviewWorkbook | null = null;
+  private chartSheet = '';
+  private chartDirectory: ExcelPreviewChartList | null = null;
+  private chartCache = new Map<string, { chart: ExcelPreviewChart; bytes: number }>();
+  private chartCacheBytes = 0;
 
   private constructor(private data: ArrayBuffer, members: ZipMember[]) {
     this.members = new Map(members.map(member => [member.name, member]));
@@ -342,9 +394,93 @@ export class ExcelPreviewArchive {
     this.date1904 = date1904 === '1' || date1904 === 'true';
   }
 
+  async chartList(sheet: string): Promise<ExcelPreviewChartList> {
+    if (this.fallback) return { charts: [], notices: ['此格式暂不支持原生图表预览。'] };
+    const source = this.sheets.get(sheet);
+    if (!source) throw new Error('工作表不存在。');
+    if (this.chartSheet === sheet && this.chartDirectory) return this.chartDirectory;
+    this.chartCache.clear(); this.chartCacheBytes = 0;
+    this.chartSheet = ''; this.chartDirectory = null;
+    const budget = { left: EXCEL_CHART_LIMITS.metadataBytes };
+    const readXml = async (part: string) => {
+      const member = this.member(part), limit = part.endsWith('.rels') ? 512 * 1024 : 2 * 1024 * 1024;
+      if (member.expanded > limit) throw new Error('当前工作表的图表关系或绘图目录过大，已停止预览。');
+      return xmlText(await readMember(this.data, member, budget));
+    };
+    const sheetRelsPart = relationshipPart(source.target);
+    if (!this.members.has(sheetRelsPart)) return { charts: [] };
+    const links = relationships(await readXml(sheetRelsPart));
+    const typeIs = (link: PartRelationship, kind: string) => [...RELATIONSHIP_NAMESPACES].some(base => link.type === `${base}/${kind}`);
+    // No worksheet inflate is needed if no drawing relationship exists.
+    if (![...links.values()].some(link => typeIs(link, 'drawing'))) return { charts: [] };
+    const drawingIds: string[] = [];
+    await scanMemberXml(this.data, this.member(source.target), sheetDrawingScanner(drawingIds));
+    const result: ExcelPreviewChartList = { charts: [] }, seen = new Set<string>();
+    for (const id of drawingIds) {
+      const drawingLink = links.get(id);
+      if (!drawingLink || !typeIs(drawingLink, 'drawing')) throw new Error('Excel 图形关系类型或来源无效。');
+      const drawingPart = resolvePart(source.target, drawingLink, this.members);
+      const relsPart = relationshipPart(drawingPart);
+      const drawingXml = await readXml(drawingPart);
+      const entries = parseDrawingCharts(drawingXml);
+      if (!entries.length) continue;
+      if (!this.members.has(relsPart)) throw new Error('Excel 图表来源关系缺失。');
+      const chartLinks = relationships(await readXml(relsPart));
+      for (const entry of entries) {
+        const link = chartLinks.get(entry.relationshipId);
+        if (!link || !typeIs(link, 'chart')) throw new Error('Excel 图表关系类型或来源无效。');
+        const target = resolvePart(drawingPart, link, this.members);
+        this.member(target);
+        if (seen.has(target)) continue;
+        seen.add(target);
+        if (result.charts.length >= EXCEL_CHART_LIMITS.charts) throw new Error('当前工作表图表目录超过预览上限。');
+        result.charts.push({ id: target, title: `图表 ${result.charts.length + 1}`, ...('anchorRow' in entry ? { anchorRow: entry.anchorRow } : {}) });
+      }
+    }
+    this.chartSheet = sheet; this.chartDirectory = result; return result;
+  }
+
+  async chart(sheet: string, id: string): Promise<ExcelPreviewChart> {
+    // A chart view does not retain the full selected-sheet grid as well.
+    // The immutable original remains available to rebuild it on returning.
+    this.selected = null; this.selectedSheet = '';
+    const list = await this.chartList(sheet), entry = list.charts.find(item => item.id === id);
+    if (!entry) throw new Error('图表不属于当前工作表，不能读取。');
+    // Membership is checked before every hit, even though this cache is local
+    // to one immutable Archive/Blob and is cleared whenever its sheet changes.
+    const cached = this.chartCache.get(id);
+    if (cached) {
+      this.chartCache.delete(id); this.chartCache.set(id, cached);
+      return cached.chart;
+    }
+    const budget = { left: EXCEL_CHART_LIMITS.chartBytes };
+    const bytes = await readMember(this.data, this.member(id), budget);
+    const chart = parseExcelChart(xmlText(bytes), id, this.date1904);
+    entry.title = chart.title;
+    const retained = retainedChartBytes(chart);
+    if (this.chartSheet === sheet && retained <= EXCEL_PREVIEW_LIMITS.chartCacheBytes) {
+      // Two in-flight requests may finish for the same ID; replacing that
+      // entry must not count its retained bytes twice. A stale other-sheet
+      // completion is returned to its caller but never fills the new cache.
+      const prior = this.chartCache.get(id);
+      if (prior) { this.chartCacheBytes -= prior.bytes; this.chartCache.delete(id); }
+      while (this.chartCache.size >= EXCEL_PREVIEW_LIMITS.chartCacheEntries
+          || this.chartCacheBytes + retained > EXCEL_PREVIEW_LIMITS.chartCacheBytes) {
+        const oldest = this.chartCache.keys().next().value;
+        if (oldest === undefined) break;
+        this.chartCacheBytes -= this.chartCache.get(oldest)!.bytes; this.chartCache.delete(oldest);
+      }
+      this.chartCache.set(id, { chart, bytes: retained }); this.chartCacheBytes += retained;
+    }
+    return chart;
+  }
+
   async page(sheet: string, row = 0, column = 0): Promise<ExcelPreviewPage> {
     if (this.fallback) return this.fallback.page(sheet, row, column);
     if (!this.sheets.has(sheet)) throw new Error('工作表不存在。');
+    if (this.chartSheet && this.chartSheet !== sheet) {
+      this.chartCache.clear(); this.chartCacheBytes = 0; this.chartDirectory = null; this.chartSheet = '';
+    }
     if (this.sheets.get(sheet)!.kind !== 'worksheet') throw new Error('该标签为图表或宏页面，请下载原件查看；其他工作表仍可预览。');
     if (sheet !== this.selectedSheet) {
       this.selected = null; this.selectedSheet = '';

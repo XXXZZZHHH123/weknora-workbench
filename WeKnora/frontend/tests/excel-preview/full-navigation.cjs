@@ -14,22 +14,31 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'excel-full-navigation-'))
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let browser, socket, server;
 const errors = [], checks = [];
+const chartFixture = process.env.EXCEL_CHART_FIXTURE === '1';
 const fixture = `
 import {createApp, h, ref} from 'vue';
 import ExcelSourceViewer from '/src/components/source-preview/ExcelSourceViewer.vue';
 const names = ['Large', 'Small', ...Array.from({length:135}, (_,i)=>'Notes ' + (i+3))];
 const requests = [], workers = [], located = [];
+const chartInstances = [], chartFixture = ${chartFixture};
 class PreviewWorker {
   terminated = false;
   timers = new Set();
   constructor() { workers.push(this); }
   postMessage(message) {
+    if(message.type==='cancel-charts')return;
     requests.push({...message, data:undefined});
     const timer = setTimeout(() => {
       this.timers.delete(timer);
       if (this.terminated) return;
       let value;
       if (message.type === 'open') value = [...names];
+      else if (message.type === 'chart-list') value = {charts:chartFixture&&message.sheet==='Large'?Array.from({length:133},(_,index)=>({id:'chart-'+(index+1),title:'Saved chart '+(index+1)})):[]};
+      else if (message.type === 'chart') value = {id:message.chartId,title:message.chartId==='chart-1'?'Saved combo <img src=x onerror=alert(1)>':message.chartId,
+        axes:[{id:'x',type:'category'},{id:'right',type:'value',position:'right'},{id:'left',type:'value',position:'left'}],
+        series:[{name:'Line <script>',type:'line',axisId:'left',categoryAxisId:'x',values:[1,null,0,4],categories:['A','B','C','D']},
+          {name:'Bars',type:'bar',axisId:'right',categoryAxisId:'x',values:[100,200],categories:['A','B']}],
+        notices:['External source preserved as saved cache; no remote refresh.']};
       else {
         const totalRows = message.sheet === 'Large' ? 12345 : message.sheet === 'Small' ? 400 : 1;
         const previewRows = message.sheet === 'Small' ? 275 : totalRows;
@@ -44,7 +53,7 @@ class PreviewWorker {
           truncated:previewRows<totalRows};
       }
       this.onmessage?.({data:{id:message.id,value}});
-    }, message.type === 'open' ? 10 : 35);
+    }, message.type === 'open' ? 10 : message.type==='chart'&&message.chartId==='chart-2'?350:35);
     this.timers.add(timer);
   }
   terminate() { this.terminated=true; for (const timer of this.timers) clearTimeout(timer); this.timers.clear(); }
@@ -56,6 +65,10 @@ const makeLocate = (sheet,row) => ({token:++token,quotes:[],locators:[{type:'she
 const locate = ref(makeLocate('Large',6105));
 const app = createApp({setup:()=>()=>h(ExcelSourceViewer,{blob:blob.value,extension:'xlsx',fileName:'Synthetic workbook.xlsx',locate:locate.value,onLocated:event=>located.push(event)})});
 window.__excelFixture = {requests,workers,located,
+  chartOption:async()=>{const {getInstanceByDom}=await import('echarts/core');return getInstanceByDom(document.querySelector('.chart-canvas'))?.getOption()},
+  chartGeometry:async()=>{const {getInstanceByDom}=await import('echarts/core');const model=getInstanceByDom(document.querySelector('.chart-canvas'))?.getModel();return {extent:model.getComponent('yAxis',0).axis.scale.getExtent(),bars:[0,1].map(index=>model.getSeriesByIndex(1).getData().getItemLayout(index))}},
+  rememberChart:async()=>{const {getInstanceByDom}=await import('echarts/core');const chart=getInstanceByDom(document.querySelector('.chart-canvas'));if(chart)chartInstances.push(chart);return !!chart},
+  chartsDisposed:()=>chartInstances.every(chart=>chart.isDisposed()),
   cite:(sheet,row)=>{locate.value=makeLocate(sheet,row)},
   replaceAndCite:(sheet,row)=>{blob.value=new Blob(['replacement workbook']);locate.value=makeLocate(sheet,row)},
   unmount:()=>app.unmount()};
@@ -133,6 +146,31 @@ async function main() {
     await js('window.__excelFixture.cite("Small",450)');await wait('window.__excelFixture.located.at(-1)?.reason==="out_of_range"');checks.push('Citation beyond the actual row count is reported as out of range');
     await js('window.__excelFixture.replaceAndCite("Large",9905)');await wait('document.querySelector(\'tr[data-row="9905"]\')?.classList.contains("source-locate-block") && document.querySelector(".excel-viewer").getAttribute("aria-busy")==="false"');
     await verify('Replacing a source releases its worker and retains the queued citation','window.__excelFixture.workers.length===2 && window.__excelFixture.workers[0].terminated && !window.__excelFixture.workers[1].terminated && window.__excelFixture.located.at(-1).found');
+    if(chartFixture){
+      await wait('document.querySelector(".excel-mode button:nth-child(2)").textContent.includes("133")');
+      await verify('Chart directory shows all 133 entries without parsing them','window.__excelFixture.requests.filter(item=>item.type==="chart").length===0');
+      await js('document.querySelector(".excel-mode button:nth-child(2)").click()');
+      await wait('document.querySelector(".chart-canvas canvas") && document.querySelector(".excel-source-chart").getAttribute("aria-busy")==="false"');
+      await verify('Only one current chart is decoded and rendered as Canvas','window.__excelFixture.requests.filter(item=>item.type==="chart").length===1 && document.querySelectorAll(".excel-source-chart").length===1 && document.querySelectorAll("[aria-label=选择原件图表] option").length===133');
+      await verify('Real ECharts instance preserves combo axes and a zero beside missing cached values','window.__excelFixture.chartOption().then(option=>option.series[0].yAxisIndex===1&&option.series[1].yAxisIndex===0&&option.series[0].data[1].value===null&&option.series[0].data[2].value===0&&option.tooltip[0].renderMode==="richText")');
+      await verify('The real bar axis starts at zero and both positive bars remain visible','window.__excelFixture.chartGeometry().then(value=>value.extent[0]===0&&value.bars.every(bar=>Math.abs(bar.height)>0&&bar.width>0))');
+      await verify('Malicious cached title remains Canvas text and never becomes HTML','window.__excelFixture.chartOption().then(option=>option.title[0].text.includes("<img")&&!document.querySelector(".excel-source-chart img")&&!document.querySelector(".excel-source-chart script"))');
+      const chartScreenshot=await call('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(output,'excel-chart-combo.png'),Buffer.from(chartScreenshot.data,'base64'));
+      await js('window.__excelFixture.rememberChart()');
+      await js('(()=>{const select=document.querySelector("[aria-label=选择原件图表]");select.value="chart-2";select.dispatchEvent(new Event("change",{bubbles:true}));select.value="chart-3";select.dispatchEvent(new Event("change",{bubbles:true}))})()');
+      await wait('document.querySelector(".excel-source-chart")?.getAttribute("aria-label")==="chart-3" && document.querySelector(".chart-canvas canvas")');await pause(450);
+      await verify('A delayed prior chart cannot replace the current selection','window.__excelFixture.chartOption().then(option=>option.title[0].text==="chart-3"&&window.__excelFixture.chartsDisposed())');
+      await js('window.__excelFixture.rememberChart()');await js('window.__excelFixture.cite("Large",10105)');
+      await wait('document.querySelector(\'tr[data-row="10105"]\')?.classList.contains("source-locate-block")');
+      await verify('Citations return to the table and dispose the active chart','!document.querySelector(".excel-source-chart")&&window.__excelFixture.chartsDisposed()');
+      await js('document.querySelector(".excel-mode button:nth-child(2)").click()');await wait('!!document.querySelector(".chart-canvas canvas")');await js('window.__excelFixture.rememberChart()');
+      await js('(()=>{const select=document.querySelector(".excel-sheet-picker select");select.value="Notes 137";select.dispatchEvent(new Event("change",{bubbles:true}))})()');
+      await wait('document.querySelector(".excel-sheet-count").textContent.includes("137 / 137") && !document.querySelector(".excel-source-chart")');
+      await verify('Changing sheets disposes the chart without opening all other charts','window.__excelFixture.chartsDisposed()&&window.__excelFixture.requests.filter(item=>item.type==="chart").length===4');
+      await js('document.querySelector(".excel-mode button:nth-child(2)").click()');await wait('document.querySelector(".excel-note")?.textContent.includes("没有可读取")');checks.push('Sheets without charts show an explicit empty state');
+      await js('window.__excelFixture.replaceAndCite("Large",11105)');await wait('document.querySelector(\'tr[data-row="11105"]\')?.classList.contains("source-locate-block")');
+      await verify('Replacing the source terminates the prior chart worker and clears chart state','window.__excelFixture.workers.slice(0,-1).every(worker=>worker.terminated)&&!document.querySelector(".excel-source-chart")');
+    }
     await js('document.fonts.ready.then(()=>true)');
     const screenshot=await call('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(output,'excel-full-navigation.png'),Buffer.from(screenshot.data,'base64'));
     await js('window.__excelFixture.cite("Large",11010)');await pause(5);await js('window.__excelFixture.unmount()');await pause(100);

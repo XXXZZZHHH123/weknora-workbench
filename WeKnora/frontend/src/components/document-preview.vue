@@ -576,6 +576,9 @@ async function openMermaid() {
 async function loadPreview() {
   const sourceKey = getPreviewSourceKey();
   if (!sourceKey || !props.active) return;
+  // Unmount the previous spreadsheet (including its chart and worker) before
+  // awaiting the new source's ACL. A retained Blob must not bridge sources.
+  excelBlob.value = null;
   const version = ++previewLoadVersion;
   const knowledgeId = props.sourceBlob ? '' : props.knowledgeId || '';
   let ft = resolveFilePreviewExt(props.fileName, props.fileType);
