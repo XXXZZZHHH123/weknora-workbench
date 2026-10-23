@@ -1234,6 +1234,8 @@ export default {
       DOCREADER_TIMEOUT_SUGGESTION: "Check DocReader health and load before retrying. Split large files if needed.",
       DOCREADER_PARSE_FAILED: "Document parsing failed",
       DOCREADER_PARSE_FAILED_SUGGESTION: "Check the file format and ask an administrator to inspect the DocReader logs for this attempt.",
+      DOCREADER_STORAGE_EXHAUSTED: "Parsing service storage is full",
+      DOCREADER_STORAGE_EXHAUSTED_SUGGESTION: "The parsing service has insufficient disk, temporary, or shared memory space. Ask an administrator to free or expand capacity, then retry.",
       TASK_STALLED: 'Stopped after no progress',
       TASK_STALLED_SUGGESTION: 'Processing made no progress past the time limit and had no task left in the queue, so it was marked as failed. Click Retry; if this keeps happening, check the service this stage depends on (document parsing, model, or vector store).',
       UNKNOWN_SUGGESTION: 'Check the application logs for details.'

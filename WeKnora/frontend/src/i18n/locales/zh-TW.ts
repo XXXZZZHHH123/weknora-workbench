@@ -7110,6 +7110,8 @@ export default {
       DOCREADER_TIMEOUT_SUGGESTION: "請檢查 DocReader 的健康狀態和負載；服務正常後再重試，必要時拆分大檔案。",
       DOCREADER_PARSE_FAILED: "文件解析失敗",
       DOCREADER_PARSE_FAILED_SUGGESTION: "請檢查檔案格式，並讓管理員查看本次解析對應的 DocReader 日誌。",
+      DOCREADER_STORAGE_EXHAUSTED: "解析服務空間不足",
+      DOCREADER_STORAGE_EXHAUSTED_SUGGESTION: "解析服務的磁碟、暫存目錄或共享記憶體空間不足。請聯絡管理員清理或擴充後重試。",
       TASK_STALLED: '長時間無進展，已自動終止',
       TASK_STALLED_SUGGESTION: '處理超過閾值仍沒有任何進展，且佇列中已無對應任務，已被系統標記為失敗。請點擊「重試」；如反覆出現，請檢查該階段依賴的服務（文件解析、模型、向量庫）是否正常。',
       UNKNOWN_SUGGESTION: '請查看應用日誌獲取詳細資訊。'

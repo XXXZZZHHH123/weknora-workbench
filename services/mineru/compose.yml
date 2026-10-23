@@ -22,6 +22,8 @@ services:
     environment:
       MINERU_SETTINGS_FILE: /run/secrets/mineru.json
       MINERU_HOME: /var/lib/mineru/data/home/.mineru
+      TMPDIR: /var/lib/mineru/data/tmp
+      MINERU_PROCESSING_WINDOW_SIZE: "${MINERU_PROCESSING_WINDOW_SIZE:-8}"
       MINERU_MODEL_BASE_DIR: /var/lib/mineru/models
       MINERU_MODEL_SMALL_BACKEND: onnx
       MINERU_MODEL_SOURCE: local

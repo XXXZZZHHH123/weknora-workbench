@@ -23,6 +23,10 @@ const (
 	// error (encoding, corrupted file, OCR engine crash, ...).
 	ErrCodeDocReaderParseFailed = "DOCREADER_PARSE_FAILED"
 
+	// ErrCodeDocReaderStorageExhausted — parser disk, temporary storage, or
+	// shared memory is full. Retrying requires freeing or expanding capacity.
+	ErrCodeDocReaderStorageExhausted = "DOCREADER_STORAGE_EXHAUSTED"
+
 	// ErrCodeChunkingFailed — text chunking step itself failed (rare;
 	// usually only on extreme-size inputs).
 	ErrCodeChunkingFailed = "CHUNKING_FAILED"

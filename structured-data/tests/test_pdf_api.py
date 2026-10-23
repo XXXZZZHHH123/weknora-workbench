@@ -61,6 +61,87 @@ def finish_pdf_job(client, job_id):
     raise AssertionError('mocked PDF parse job did not finish')
 
 
+@pytest.mark.parametrize('reparse', [False, True])
+@pytest.mark.parametrize('storage', [False, True])
+def test_parser_failures_have_safe_capacity_hint_for_import_and_review(pdf_service, monkeypatch, reparse, storage):
+    from structured_data.pdf_parser_bridge import ParserConfig, PDFParserError
+    client, _, state, _, _ = pdf_service
+    if reparse:
+        original = imported(pdf_service)
+        endpoint = f"/api/pdf/drafts/{original['draft_id']}/reparse"
+        monkeypatch.setattr(ParserConfig, 'from_env', classmethod(lambda cls: ParserConfig(
+            'mineru_v1', 'http://127.0.0.1:18733', tier='standard')))
+    async def fail(*a, **kw):
+        raise PDFParserError(('[Errno 28] No space left on device' if storage else 'bad input')
+                             + ': private-path secret-token')
+    monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', fail)
+    if reparse:
+        response = client.post(endpoint, json={'tier': 'basic', 'ocr_mode': 'auto'}, headers=headers())
+    else:
+        response = client.post('/api/pdf/import', files={
+            'file': ('fixture.pdf', state['contents'], 'application/pdf')}, headers=headers())
+    assert response.status_code == 200, response.text
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        job = client.get('/api/pdf/jobs/' + response.json()['id'], headers=headers()).json()
+        if job['status'] != 'processing':
+            break
+        time.sleep(.01)
+    assert job['status'] == 'failed', job
+    assert job['error_code'] == ('PARSER_STORAGE_EXHAUSTED' if storage else 'PDF_PARSE_FAILED')
+    assert ('空间不足' in job['error']) is storage
+    assert 'private-path' not in json.dumps(job) and 'secret-token' not in json.dumps(job)
+    drafts = client.get('/api/pdf/drafts', headers=headers()).json()['drafts']
+    assert len(drafts) == (1 if reparse else 0)
+    if reparse:
+        assert client.get('/api/pdf/drafts/' + original['draft_id'], headers=headers()).status_code == 200
+
+
+def test_upload_storage_failure_returns_safe_actionable_http_error(pdf_service, monkeypatch):
+    import errno
+    from pathlib import Path
+    client, _, state, _, _ = pdf_service
+    original_open = Path.open
+    def fail_upload(path, *a, **kw):
+        if path.suffix == '.pdf' and a and a[0] == 'xb':
+            raise OSError(errno.ENOSPC, 'private-path secret-token')
+        return original_open(path, *a, **kw)
+    monkeypatch.setattr(Path, 'open', fail_upload)
+    response = client.post('/api/pdf/import', files={
+        'file': ('fixture.pdf', state['contents'], 'application/pdf')}, headers=headers())
+    assert response.status_code == 507, response.text
+    assert '空间不足' in response.json()['detail']
+    assert 'private-path' not in response.text and 'secret-token' not in response.text
+
+
+def test_local_full_disk_preserves_failed_job_capacity_cause(pdf_service, monkeypatch):
+    import errno
+    from structured_data import pdf_api
+    client, _, state, _, _ = pdf_service
+    original_write = pdf_api._write
+    def write(path, data):
+        if data['status'] != 'processing':
+            raise OSError(errno.ENOSPC, 'private-path secret-token')
+        return original_write(path, data)
+    async def fail(*a, **kw):
+        raise OSError(errno.ENOSPC, 'private-path secret-token')
+    monkeypatch.setattr(pdf_api, '_write', write)
+    monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', fail)
+    response = client.post('/api/pdf/import', files={
+        'file': ('fixture.pdf', state['contents'], 'application/pdf')}, headers=headers())
+    assert response.status_code == 200, response.text
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        job = client.get('/api/pdf/jobs/' + response.json()['id'], headers=headers()).json()
+        if job['status'] != 'processing':
+            break
+        time.sleep(.01)
+    assert job['status'] == 'failed', job
+    assert job['error_code'] == 'PARSER_STORAGE_EXHAUSTED'
+    assert '空间不足' in job['error']
+    assert 'private-path' not in json.dumps(job) and 'secret-token' not in json.dumps(job)
+
+
 def plan(draft):
     return dict(bundle_sha256=draft['bundle_sha256'], fragment_ids=['table-1', 'table-2'],
                 header_rows={'table-1': [{'row': 0, 'reason': 'original header'}], 'table-2': []},

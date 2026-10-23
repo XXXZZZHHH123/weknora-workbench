@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
 import html
 from html.parser import HTMLParser
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -33,13 +35,50 @@ MAX_PAGE_CONTEXT_TEXT_BYTES = 16 * 1024
 MAX_PAGE_CONTEXT_TOTAL_TEXT_BYTES = 1024 * 1024
 DEFAULT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 600
-DEFAULT_MAX_POLLS = 100
+MAX_TIMEOUT_SECONDS = 7200
+MIN_POLL_INTERVAL_SECONDS = 0.05
+MAX_POLLS = math.ceil(MAX_TIMEOUT_SECONDS / MIN_POLL_INTERVAL_SECONDS) + 1
 DEFAULT_POLL_INTERVAL_SECONDS = 10
+CANCEL_TIMEOUT_SECONDS = 5
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class PDFParserError(RuntimeError):
     """Raised when a configured parser cannot provide trustworthy layout data."""
+
+
+class PDFParserStorageError(PDFParserError):
+    """A local or remote parser exhausted disk, temporary, or shared space."""
+
+    code = "PARSER_STORAGE_EXHAUSTED"
+
+    def __init__(self):
+        super().__init__("The PDF parsing service has insufficient disk, temporary, or shared memory space. "
+                         "Ask an administrator to free or expand capacity, then retry.")
+
+
+_STORAGE_ERROR = re.compile(r"\bENOSPC\b|\[errno 28\]|no space left on device|disk quota exceeded", re.I)
+
+
+def is_storage_space_error(error: Any) -> bool:
+    """Classify OS/protocol failures without exposing arbitrary diagnostics."""
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, PDFParserStorageError):
+            return True
+        if isinstance(error, OSError) and error.errno in {errno.ENOSPC, errno.EDQUOT}:
+            return True
+        if _STORAGE_ERROR.search(str(error)):
+            return True
+        error = (getattr(error, "__cause__", None) or getattr(error, "__context__", None)
+                 or getattr(error, "reason", None))
+    return False
+
+
+def _raise_if_storage_exhausted(error: Any) -> None:
+    if is_storage_space_error(error):
+        raise PDFParserStorageError()
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -60,7 +99,7 @@ class ParserConfig:
                  max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
                  max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
                  max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
-                 max_polls: int = DEFAULT_MAX_POLLS,
+                 max_polls: int | None = None,
                  poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
                  paddle_params: Mapping[str, Any] | None = None):
         self.engine = str(engine).strip().lower()
@@ -70,12 +109,17 @@ class ParserConfig:
         self.api_key = str(api_key or "").strip()
         self.tier = tier if tier in {"", "flash", "basic", "standard", "advanced"} else ""
         self.ocr_mode = ocr_mode if ocr_mode in {"auto", "txt", "ocr"} else "auto"
-        self.timeout_seconds = _bounded_int(timeout_seconds, 1, 1800, "timeout_seconds")
+        self.timeout_seconds = _bounded_int(timeout_seconds, 1, MAX_TIMEOUT_SECONDS, "timeout_seconds")
         self.max_file_bytes = _bounded_int(max_file_bytes, 1, 100 * 1024 * 1024, "max_file_bytes")
         self.max_response_bytes = _bounded_int(max_response_bytes, 1024, 64 * 1024 * 1024, "max_response_bytes")
         self.max_archive_bytes = _bounded_int(max_archive_bytes, 1024, 128 * 1024 * 1024, "max_archive_bytes")
-        self.max_polls = _bounded_int(max_polls, 1, 100, "max_polls")
-        self.poll_interval_seconds = min(max(float(poll_interval_seconds), 0.05), 30.0)
+        interval = float(poll_interval_seconds)
+        if not math.isfinite(interval):
+            raise ValueError("poll_interval_seconds must be finite")
+        self.poll_interval_seconds = min(max(interval, MIN_POLL_INTERVAL_SECONDS), 30.0)
+        automatic_polls = math.ceil(self.timeout_seconds / self.poll_interval_seconds) + 1
+        self.max_polls = (_bounded_int(max_polls, 1, MAX_POLLS, "max_polls")
+                          if max_polls is not None else automatic_polls)
         self.paddle_params = dict(paddle_params or {})
 
     @classmethod
@@ -93,7 +137,7 @@ class ParserConfig:
             max_file_bytes=_env_int("PDF_TABLE_PARSER_MAX_FILE_BYTES", DEFAULT_MAX_FILE_BYTES),
             max_response_bytes=_env_int("PDF_TABLE_PARSER_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES),
             max_archive_bytes=_env_int("PDF_TABLE_PARSER_MAX_ARCHIVE_BYTES", DEFAULT_MAX_ARCHIVE_BYTES),
-            max_polls=_env_int("PDF_TABLE_PARSER_MAX_POLLS", DEFAULT_MAX_POLLS),
+            max_polls=_env_int("PDF_TABLE_PARSER_MAX_POLLS", None),
             poll_interval_seconds=_env_float("PDF_TABLE_PARSER_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS),
         )
 
@@ -248,6 +292,30 @@ def _parser_version(response: Mapping[str, Any]) -> str | None:
 async def _mineru_v1(content: bytes, filename: str, cfg: ParserConfig,
                      started: float) -> tuple[dict[str, Any], Any]:
     deadline = started + cfg.timeout_seconds
+    # One deadline covers upload, queueing, parsing, and artifact download.
+    # Socket timeouts alone can be extended by a slowly streaming response.
+    try:
+        async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
+            return await _mineru_v1_job(content, filename, cfg, deadline)
+    except TimeoutError as exc:
+        raise PDFParserError("MinerU parse exceeded configured total timeout") from exc
+
+
+async def _cancel_mineru_job(cfg: ParserConfig, job_id: str, headers: Mapping[str, str]) -> None:
+    """Cancel only our submitted job, with a fresh, short cleanup budget."""
+    try:
+        await asyncio.wait_for(asyncio.to_thread(
+            _json_request, cfg, "DELETE", f"/v1/parse/jobs/{quote(job_id, safe='')}",
+            None, headers, time.monotonic() + CANCEL_TIMEOUT_SECONDS),
+            timeout=CANCEL_TIMEOUT_SECONDS)
+    except (Exception, asyncio.CancelledError):
+        # The original timeout/cancellation/failure must remain authoritative.
+        # A race with server completion may legitimately return HTTP 409.
+        pass
+
+
+async def _mineru_v1_job(content: bytes, filename: str, cfg: ParserConfig,
+                         deadline: float) -> tuple[dict[str, Any], Any]:
     api_headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
     sha = hashlib.sha256(content).hexdigest()
     upload = await asyncio.to_thread(_json_request, cfg, "POST", "/v1/uploads", {
@@ -290,21 +358,31 @@ async def _mineru_v1(content: bytes, filename: str, cfg: ParserConfig,
     if not job_id:
         raise PDFParserError("MinerU parse job response omitted job_id")
     terminal = {"completed", "partial", "failed", "canceled"}
-    for attempt in range(cfg.max_polls):
-        if time.monotonic() >= deadline:
-            raise PDFParserError("MinerU parse exceeded configured total timeout")
-        job = await asyncio.to_thread(_json_request, cfg, "GET",
-                                      f"/v1/parse/jobs/{quote(str(job_id), safe='')}", None, api_headers, deadline)
-        status = str(job.get("status", "")).lower()
-        if status in terminal:
-            break
-        await asyncio.sleep(min(cfg.poll_interval_seconds, max(0.0, deadline - time.monotonic())))
-    else:
-        raise PDFParserError("MinerU parse exceeded configured poll limit")
+    terminal_observed = False
+    try:
+        for attempt in range(cfg.max_polls):
+            if time.monotonic() >= deadline:
+                raise PDFParserError("MinerU parse exceeded configured total timeout")
+            job = await asyncio.to_thread(_json_request, cfg, "GET",
+                                          f"/v1/parse/jobs/{quote(str(job_id), safe='')}", None, api_headers, deadline)
+            status = str(job.get("status", "")).lower()
+            if status in terminal:
+                terminal_observed = True
+                break
+            if time.monotonic() >= deadline:
+                raise PDFParserError("MinerU parse exceeded configured total timeout")
+            if attempt + 1 < cfg.max_polls:
+                await asyncio.sleep(min(cfg.poll_interval_seconds, max(0.0, deadline - time.monotonic())))
+        else:
+            raise PDFParserError("MinerU parse exceeded configured poll limit")
+    finally:
+        if not terminal_observed:
+            await _cancel_mineru_job(cfg, str(job_id), api_headers)
     files = job.get("files")
     file_result = files[0] if isinstance(files, list) and files else None
     if not isinstance(file_result, dict) or file_result.get("status") != "completed":
         detail = file_result.get("error") if isinstance(file_result, dict) else None
+        _raise_if_storage_exhausted(detail or job.get("error"))
         raise PDFParserError(f"MinerU parse did not complete: {detail or job.get('status')}")
     output_files = file_result.get("output_files") or {}
     zip_ref = output_files.get("zip") if isinstance(output_files, dict) else None
@@ -341,12 +419,15 @@ def _mineru_legacy(content: bytes, filename: str, cfg: ParserConfig) -> dict[str
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise PDFParserError("MinerU legacy response is not valid JSON") from exc
     results = envelope.get("results") if isinstance(envelope, dict) else None
+    if isinstance(envelope, dict):
+        _raise_if_storage_exhausted(envelope.get("error") or envelope.get("detail"))
     if not isinstance(results, dict) or not results:
         raise PDFParserError("MinerU legacy response is missing results")
     # A one-file request must have one result. Avoid filename-stem guessing.
     entry = next(iter(results.values()))
     if not isinstance(entry, dict):
         raise PDFParserError("MinerU legacy result entry is invalid")
+    _raise_if_storage_exhausted(entry.get("error"))
     return entry
 
 
@@ -374,6 +455,8 @@ def _paddle_layout(content: bytes, cfg: ParserConfig) -> dict[str, Any]:
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise PDFParserError("PaddleOCR-VL response is not valid JSON") from exc
     if not isinstance(response, dict) or response.get("errorCode", 0) not in (0, None):
+        if isinstance(response, dict):
+            _raise_if_storage_exhausted(response.get("errorMsg"))
         raise PDFParserError(f"PaddleOCR-VL returned an error: {response.get('errorMsg') if isinstance(response, dict) else 'invalid response'}")
     return response
 
@@ -420,8 +503,16 @@ def _request(cfg: ParserConfig, method: str, url: str, data: bytes | None,
             return body
     except HTTPError as exc:
         # Do not follow redirects, including signed URLs from parser responses.
+        # Inspect a bounded error body only for capacity markers; never return
+        # backend paths, response text, or credentials to the caller.
+        try:
+            error_body = exc.read(64 * 1024).decode("utf-8", errors="replace")
+        except OSError:
+            error_body = ""
+        _raise_if_storage_exhausted(error_body)
         raise PDFParserError(f"parser returned HTTP {exc.code}; redirects are disabled") from exc
     except (URLError, TimeoutError, OSError) as exc:
+        _raise_if_storage_exhausted(exc)
         raise PDFParserError(f"parser request failed: {exc}") from exc
 
 
@@ -1154,7 +1245,7 @@ def _json_safe_artifact(value: Any, limit: int) -> Any:
     return value
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int | None) -> int | None:
     try:
         return int(os.getenv(name, str(default)))
     except ValueError:

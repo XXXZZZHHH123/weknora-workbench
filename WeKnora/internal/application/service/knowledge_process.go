@@ -4282,22 +4282,28 @@ func (s *knowledgeService) convert(
 	if err != nil {
 		code, message := docReaderFailure(err)
 		logger.Errorf(ctx, "[convert] DocReader failed knowledge=%s code=%s: %v", knowledge.ID, code, err)
+		stageErr := err
+		if code == werrors.ErrCodeDocReaderStorageExhausted {
+			// Keep raw storage paths in server logs, outside the client-visible timeline.
+			stageErr = nil
+		}
 		s.failStage(ctx, knowledge.ID, types.StageDocReader,
-			code, message, err)
+			code, message, stageErr)
 		return s.failKnowledge(ctx, knowledge, isLastRetry, "%s", message)
 	}
 	sanitizeReadResult(result)
 	if result.Error != "" {
 		logger.Errorf(ctx, "[convert] parser returned error kb=%s knowledge=%s file=%q type=%s engine=%q: %s",
 			kb.ID, knowledge.ID, req.FileName, fileType, parserEngine, result.Error)
+		code, message := docReaderResultFailure(result.Error)
 		knowledge.ParseStatus = "failed"
-		knowledge.ErrorMessage = result.Error
+		knowledge.ErrorMessage = message
 		knowledge.UpdatedAt = time.Now()
 		if err := s.updateKnowledgeUnlessSourceReplaced(ctx, knowledge); err != nil {
 			logger.Errorf(ctx, "failed to persist parser error for %s: %v", knowledge.ID, err)
 		}
 		s.failStage(ctx, knowledge.ID, types.StageDocReader,
-			werrors.ErrCodeDocReaderParseFailed, result.Error, nil)
+			code, message, nil)
 		return nil, nil
 	}
 	if !isURL {

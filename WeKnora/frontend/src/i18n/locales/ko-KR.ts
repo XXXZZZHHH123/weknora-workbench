@@ -7107,6 +7107,8 @@ export default {
       DOCREADER_TIMEOUT_SUGGESTION: "DocReader 상태와 부하를 확인한 후 다시 시도하세요. 필요한 경우 큰 파일을 나누세요.",
       DOCREADER_PARSE_FAILED: "문서 분석 실패",
       DOCREADER_PARSE_FAILED_SUGGESTION: "파일 형식을 확인하고 관리자에게 이번 DocReader 로그 확인을 요청하세요.",
+      DOCREADER_STORAGE_EXHAUSTED: "분석 서비스 저장 공간 부족",
+      DOCREADER_STORAGE_EXHAUSTED_SUGGESTION: "분석 서비스의 디스크, 임시 저장소 또는 공유 메모리 공간이 부족합니다. 관리자에게 공간 확보 또는 확장을 요청한 후 다시 시도하세요.",
       TASK_STALLED: '진행이 없어 자동 중단됨',
       TASK_STALLED_SUGGESTION: '임계 시간을 넘도록 진행이 없고 대기열에도 해당 작업이 없어 실패로 표시되었습니다. 「다시 시도」를 누르세요. 반복되면 이 단계가 의존하는 서비스(문서 파싱, 모델, 벡터 저장소)를 확인하세요.',
       UNKNOWN_SUGGESTION: '자세한 내용은 애플리케이션 로그를 확인하세요.'
