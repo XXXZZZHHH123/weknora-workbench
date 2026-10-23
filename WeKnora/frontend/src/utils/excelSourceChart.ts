@@ -1,7 +1,7 @@
 import type { EChartsCoreOption } from 'echarts/core';
 import type { ExcelPreviewChart } from './excelPreviewCharts';
 
-export function excelSourceChartOption(chart: ExcelPreviewChart, style: { color: string; muted: string; border: string; font: string }) {
+export function excelSourceChartOption(chart: ExcelPreviewChart, style: { color: string; muted: string; border: string; font: string }, view: { connectGaps?: boolean } = {}) {
   const notices: string[] = [];
   const valueAxes = chart.axes.filter(axis => axis.type === 'value');
   const categoryAxes = chart.axes.filter(axis => axis.type !== 'value');
@@ -62,7 +62,8 @@ export function excelSourceChartOption(chart: ExcelPreviewChart, style: { color:
       id: String(seriesIndex), name: source.name, type: source.type === 'bar' ? 'bar' : 'line',
       xAxisIndex: horizontal ? indexOf(ys, source.axisId) : indexOf(xs, source.categoryAxisId),
       yAxisIndex: horizontal ? indexOf(xs, source.categoryAxisId) : indexOf(ys, source.axisId),
-      data, connectNulls: false, showSymbol: false, smooth: source.smooth === true,
+      data, connectNulls: source.type !== 'bar' && (view.connectGaps ?? chart.displayBlanksAs === 'span'),
+      showSymbol: false, smooth: source.smooth === true,
       ...(source.type === 'area' ? { areaStyle: { opacity: .24 } } : {}),
       ...(stacked ? { stack: `excel:${key}`, stackStrategy: 'samesign' } : {}),
       ...(source.color && /^#[a-f\d]{6}$/i.test(source.color) ? { itemStyle: { color: source.color }, lineStyle: { color: source.color } } : {}),

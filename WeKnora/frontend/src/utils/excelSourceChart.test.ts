@@ -16,6 +16,29 @@ test('combo preserves real axis IDs even when axis declaration order differs', (
   assert.deepEqual(value.series[0].data.map((point: any) => point.value), [1, null, 0, 4]);
   assert.equal(value.series[0].connectNulls, false);
 });
+test('source span joins line gaps without filling cached values or joining bars', () => {
+  const chart = fixture(); chart.displayBlanksAs = 'span';
+  const original = structuredClone(chart.series);
+  const value = excelSourceChartOption(chart, style).option as any;
+  assert.equal(value.series[0].connectNulls, true);
+  assert.equal(value.series[1].connectNulls, false);
+  assert.deepEqual(value.series[0].data.map((point: any) => point.value), [1, null, 0, 4]);
+  assert.equal(value.series[0].data[1].rawValue, null);
+  assert.deepEqual(chart.series, original);
+  chart.displayBlanksAs = 'gap';
+  assert.equal((excelSourceChartOption(chart, style).option as any).series[0].connectNulls, false);
+});
+test('continuous preview joins existing points without changing source policy, nulls or dates', () => {
+  const chart = fixture(); chart.displayBlanksAs = 'gap'; chart.axes[0]!.type = 'date';
+  chart.series[0]!.categoryTimes = [0, 86_400_000, 172_800_000, null];
+  const original = structuredClone(chart);
+  const value = excelSourceChartOption(chart, style, { connectGaps: true }).option as any;
+  assert.equal(value.series[0].connectNulls, true);
+  assert.deepEqual(value.series[0].data.map((point: any) => point.value), [[0, 1], [86_400_000, null], [172_800_000, 0], [null, 4]]);
+  assert.equal(value.series[0].data[1].rawValue, null);
+  assert.deepEqual(chart, original);
+  assert.equal(value.tooltip.formatter([{seriesName: 'Line', data: value.series[0].data[1]}]), 'B Line：无保存值');
+});
 test('source titles and legends remain plain text; tooltips never request HTML or URL content', () => {
   const chart = fixture(); chart.title = '<img src=x onerror=alert(1)>'; chart.series[0]!.name = '{evil|<script>}';
   const value = excelSourceChartOption(chart, style).option as any;

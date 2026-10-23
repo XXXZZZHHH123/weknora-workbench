@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx';
 
 export type ExcelPreviewChartList = { charts: { id: string; title: string; anchorRow?: number }[]; notices?: string[] };
 export type ExcelPreviewChart = {
-  id: string; title: string;
+  id: string; title: string; displayBlanksAs?: 'gap' | 'span' | 'zero';
   series: { name: string; type: 'line' | 'bar' | 'area'; values: (number | null)[];
     categories: (string | number | null)[]; color?: string; axisId?: string; categoryAxisId?: string;
     grouping?: 'standard' | 'stacked' | 'percentStacked'; smooth?: boolean; horizontal?: boolean; groupId?: string;
@@ -158,9 +158,13 @@ function cache(container: Node | undefined, numericValues: boolean, notices: Set
 export function parseExcelChart(xml: string, id: string, date1904 = false): ExcelPreviewChart {
   const root = tree(xml), chart = child(root, 'chart'), plot = child(chart, 'plotArea');
   if (!chart || !plot) throw new Error('Excel 图表结构不完整。');
+  const blanks = children(chart, 'dispBlanksAs');
+  const displayBlanksAs = blanks.length ? blanks[0]!.attrs.val : 'gap';
+  if (blanks.length > 1 || !['gap', 'span', 'zero'].includes(displayBlanksAs || '')) throw new Error('Excel 图表空值显示设置无效或重复。');
   const notices = new Set<string>(['显示 Excel 原件已保存的图表结果，不重新计算；缓存可能不是最新值。']);
   const titleNode = child(chart, 'title');
-  const result: ExcelPreviewChart = { id, title: textContent(titleNode).trim() || '未命名图表', series: [], axes: [], notices: [] };
+  const result: ExcelPreviewChart = { id, title: textContent(titleNode).trim() || '未命名图表',
+    displayBlanksAs: displayBlanksAs as 'gap' | 'span' | 'zero', series: [], axes: [], notices: [] };
   const axes = children(plot).filter(node => ['catAx', 'valAx', 'dateAx'].includes(node.name)), unsupportedAxes = new Set<string>();
   for (const axis of axes) {
     const axisId = value(axis, 'axId'); if (!axisId || result.axes.some(item => item.id === axisId)) throw new Error('Excel 图表坐标轴标识无效或重复。');

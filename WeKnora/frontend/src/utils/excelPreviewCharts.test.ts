@@ -40,6 +40,19 @@ test('reads cached sparse points, real zero and errors without recomputation', (
   assert.equal(result.series[0]!.color, '#ABC123');
   assert.equal(result.series[0]!.axisId, '2'); assert.equal(result.axes[0]!.crossAxisId, '2');
 });
+test('source blank display policy defaults to gap and retains raw nulls for every mode', () => {
+  assert.equal(parseExcelChart(chartFixture(), 'id').displayBlanksAs, 'gap');
+  for (const mode of ['gap', 'span', 'zero'] as const) {
+    const parsed = parseExcelChart(chartFixture().replace('</c:chart>', `<c:dispBlanksAs val="${mode}"/></c:chart>`), 'id');
+    assert.equal(parsed.displayBlanksAs, mode);
+    assert.deepEqual(parsed.series[0]!.values, [0, null, null, 42]);
+  }
+});
+test('source blank display policy rejects duplicate missing or invalid enum values', () => {
+  for (const setting of ['<c:dispBlanksAs val="other"/>', '<c:dispBlanksAs/>', '<c:dispBlanksAs val="span"/><c:dispBlanksAs val="gap"/>']) {
+    assert.throws(() => parseExcelChart(chartFixture().replace('</c:chart>', setting + '</c:chart>'), 'id'), /空值显示设置/);
+  }
+});
 test('missing caches never fetch references and external formulas only expose saved values', () => {
   const external = chartFixture().replace('Data!$B$1:$B$4', '[external.xlsx]Data!$B$1:$B$4');
   assert.ok(parseExcelChart(external, 'id').notices.some(text => text.includes('未访问外部')));

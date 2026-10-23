@@ -5,19 +5,18 @@ import type { ExcelPreviewChart } from '@/utils/excelPreviewCharts';
 import { excelSourceChartOption } from '@/utils/excelSourceChart';
 
 const props = defineProps<{ chart: ExcelPreviewChart }>();
-const container = ref<HTMLElement | null>(null), error = ref(''), loading = ref(false), notices = ref<string[]>([]);
+const container = ref<HTMLElement | null>(null), error = ref(''), loading = ref(false);
 let instance: EChartsType | null = null, resize: ResizeObserver | null = null, theme: MutationObserver | null = null;
 let version = 0, alive = true;
 function dispose() { resize?.disconnect(); resize = null; instance?.dispose(); instance = null; }
 async function render() {
-  const own = ++version; dispose(); loading.value = true; error.value = ''; notices.value = [];
+  const own = ++version; dispose(); loading.value = true; error.value = '';
   try {
     const engine = await import('@/utils/excelChartEngine'); await nextTick();
     if (!alive || own !== version || !container.value) return;
     const style = getComputedStyle(container.value), root = getComputedStyle(document.documentElement);
-    const result = excelSourceChartOption(props.chart, { color: root.getPropertyValue('--td-text-color-primary').trim() || '#292723', muted: root.getPropertyValue('--td-text-color-secondary').trim() || '#73726c', border: root.getPropertyValue('--td-component-stroke').trim() || '#e6e5e2', font: style.fontFamily });
-    notices.value = result.notices;
-    if (!result.option) return;
+    const result = excelSourceChartOption(props.chart, { color: root.getPropertyValue('--td-text-color-primary').trim() || '#292723', muted: root.getPropertyValue('--td-text-color-secondary').trim() || '#73726c', border: root.getPropertyValue('--td-component-stroke').trim() || '#e6e5e2', font: style.fontFamily }, { connectGaps: true });
+    if (!result.option) { error.value = '这张图暂无法预览。'; return; }
     instance = engine.init(container.value, undefined, { renderer: 'canvas', devicePixelRatio: Math.min(2, window.devicePixelRatio || 1) });
     instance.setOption(result.option, { notMerge: true });
     resize = new ResizeObserver(() => instance?.resize()); resize.observe(container.value);
@@ -34,8 +33,6 @@ onUnmounted(() => { alive = false; version++; dispose(); theme?.disconnect(); })
     <p v-if="loading" class="chart-notice" role="status">正在绘制原件图表…</p>
     <p v-if="error" class="chart-notice" role="alert">{{ error }} <button @click="render">重试</button></p>
     <div ref="container" class="chart-canvas" role="img" :aria-label="`${chart.title || '原件图表'}，${chart.series.length} 个已保存系列`" />
-    <p v-for="notice in [...new Set([...chart.notices, ...notices])]" :key="notice" class="chart-notice">{{ notice }}</p>
-    <p class="chart-notice">按原件保存的图表数据重绘，不重新计算或刷新外部来源。</p>
   </section>
 </template>
 

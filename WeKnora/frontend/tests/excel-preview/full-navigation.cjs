@@ -34,11 +34,14 @@ class PreviewWorker {
       let value;
       if (message.type === 'open') value = [...names];
       else if (message.type === 'chart-list') value = {charts:chartFixture&&message.sheet==='Large'?Array.from({length:133},(_,index)=>({id:'chart-'+(index+1),title:'Saved chart '+(index+1)})):[]};
-      else if (message.type === 'chart') value = {id:message.chartId,title:message.chartId==='chart-1'?'Saved combo <img src=x onerror=alert(1)>':message.chartId,
+      else if (message.type === 'chart') {value = {id:message.chartId,title:message.chartId==='chart-1'?'Saved combo <img src=x onerror=alert(1)>':message.chartId,
         axes:[{id:'x',type:'category'},{id:'right',type:'value',position:'right'},{id:'left',type:'value',position:'left'}],
         series:[{name:'Line <script>',type:'line',axisId:'left',categoryAxisId:'x',values:[1,null,0,4],categories:['A','B','C','D']},
           {name:'Bars',type:'bar',axisId:'right',categoryAxisId:'x',values:[100,200],categories:['A','B']}],
         notices:['External source preserved as saved cache; no remote refresh.']};
+        if(message.chartId==='chart-132'){value.axes[0].type='date';value.series=[{...value.series[0],categoryTimes:[null,null,null,null]}];}
+        if(message.chartId==='chart-133')value.series.forEach(series=>series.axisId='missing-axis');
+      }
       else {
         const totalRows = message.sheet === 'Large' ? 12345 : message.sheet === 'Small' ? 400 : 1;
         const previewRows = message.sheet === 'Small' ? 275 : totalRows;
@@ -153,6 +156,8 @@ async function main() {
       await wait('document.querySelector(".chart-canvas canvas") && document.querySelector(".excel-source-chart").getAttribute("aria-busy")==="false"');
       await verify('Only one current chart is decoded and rendered as Canvas','window.__excelFixture.requests.filter(item=>item.type==="chart").length===1 && document.querySelectorAll(".excel-source-chart").length===1 && document.querySelectorAll("[aria-label=选择原件图表] option").length===133');
       await verify('Real ECharts instance preserves combo axes and a zero beside missing cached values','window.__excelFixture.chartOption().then(option=>option.series[0].yAxisIndex===1&&option.series[1].yAxisIndex===0&&option.series[0].data[1].value===null&&option.series[0].data[2].value===0&&option.tooltip[0].renderMode==="richText")');
+      await verify('Only line gaps are visually connected; saved null, zero and raw values remain unchanged','window.__excelFixture.chartOption().then(option=>option.series[0].connectNulls===true&&option.series[1].connectNulls!==true&&option.series[0].data[1].value===null&&option.series[0].data[1].rawValue===null&&option.series[0].data[2].value===0&&option.series[0].data[2].rawValue===0)');
+      await verify('Successful chart rendering leaves no explanatory text underneath','!document.querySelector(".excel-source-chart .chart-notice")&&!document.querySelector(".excel-source-chart").textContent.includes("按原件保存")&&!document.querySelector(".excel-source-chart").textContent.includes("External source")');
       await verify('The real bar axis starts at zero and both positive bars remain visible','window.__excelFixture.chartGeometry().then(value=>value.extent[0]===0&&value.bars.every(bar=>Math.abs(bar.height)>0&&bar.width>0))');
       await verify('Malicious cached title remains Canvas text and never becomes HTML','window.__excelFixture.chartOption().then(option=>option.title[0].text.includes("<img")&&!document.querySelector(".excel-source-chart img")&&!document.querySelector(".excel-source-chart script"))');
       const chartScreenshot=await call('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(output,'excel-chart-combo.png'),Buffer.from(chartScreenshot.data,'base64'));
@@ -168,6 +173,17 @@ async function main() {
       await wait('document.querySelector(".excel-sheet-count").textContent.includes("137 / 137") && !document.querySelector(".excel-source-chart")');
       await verify('Changing sheets disposes the chart without opening all other charts','window.__excelFixture.chartsDisposed()&&window.__excelFixture.requests.filter(item=>item.type==="chart").length===4');
       await js('document.querySelector(".excel-mode button:nth-child(2)").click()');await wait('document.querySelector(".excel-note")?.textContent.includes("没有可读取")');checks.push('Sheets without charts show an explicit empty state');
+      await js('(()=>{const select=document.querySelector(".excel-sheet-picker select");select.value="Large";select.dispatchEvent(new Event("change",{bubbles:true}))})()');
+      await wait('document.querySelector(".excel-sheet-count").textContent.includes("1 / 137")&&!document.querySelector(".excel-mode button:nth-child(2)").disabled');
+      await js('document.querySelector(".excel-mode button:nth-child(2)").click()');await wait('!!document.querySelector(".chart-canvas canvas")');
+      await js('(()=>{const select=document.querySelector("[aria-label=选择原件图表]");select.value="chart-132";select.dispatchEvent(new Event("change",{bubbles:true}))})()');
+      await wait('document.querySelector(".excel-source-chart [role=alert]")?.textContent.includes("这张图暂无法预览")&&!document.querySelector(".chart-canvas canvas")');
+      await verify('A date chart without cached timestamps remains undrawn with a short retryable failure','!document.querySelector(".chart-canvas canvas")&&document.querySelector(".excel-source-chart [role=alert]").textContent.trim()==="这张图暂无法预览。 重试"&&!document.querySelector(".excel-source-chart [role=alert] button").disabled');
+      await js('document.querySelector(".excel-source-chart [role=alert] button").click()');await wait('document.querySelector(".excel-source-chart").getAttribute("aria-busy")==="false"&&!!document.querySelector(".excel-source-chart [role=alert]")');
+      await verify('Retrying missing cached timestamps never fabricates a chart','!document.querySelector(".chart-canvas canvas")');
+      await js('(()=>{const select=document.querySelector("[aria-label=选择原件图表]");select.value="chart-133";select.dispatchEvent(new Event("change",{bubbles:true}))})()');
+      await wait('document.querySelector(".excel-source-chart")?.getAttribute("aria-label")==="chart-133"&&!!document.querySelector(".excel-source-chart [role=alert]")');
+      await verify('An unsupported axis relationship still produces only a short undrawn failure','!document.querySelector(".chart-canvas canvas")&&document.querySelector(".excel-source-chart [role=alert]").textContent.trim()==="这张图暂无法预览。 重试"');
       await js('window.__excelFixture.replaceAndCite("Large",11105)');await wait('document.querySelector(\'tr[data-row="11105"]\')?.classList.contains("source-locate-block")');
       await verify('Replacing the source terminates the prior chart worker and clears chart state','window.__excelFixture.workers.slice(0,-1).every(worker=>worker.terminated)&&!document.querySelector(".excel-source-chart")');
     }
