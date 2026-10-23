@@ -6302,6 +6302,10 @@ export default {
           name: 'anydoc',
           desc: 'プロセス内で動作するOfficeドキュメントの解析エンジン（外部サービス不要）'
         },
+        remote_vlm: {
+          name: 'リモート PDF 解析',
+          desc: '共有キュー、ページ出典、表の検証'
+        },
         mineru: {
           name: 'MinerU',
           desc: 'MinerUセルフホストサービス'

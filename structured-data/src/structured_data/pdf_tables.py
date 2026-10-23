@@ -284,7 +284,7 @@ class PDFTableStore:
         draft = self.read_draft(draft_id)
         if not isinstance(plan, dict) or plan.get('bundle_sha256') != draft['bundle_sha256']:
             raise ValueError('Plan must bind the exact raw bundle SHA256')
-        allowed = {'bundle_sha256', 'fragment_ids', 'header_rows', 'columns', 'excluded_rows', 'boundary_merges', 'reviewed', 'title', 'review_note'}
+        allowed = {'bundle_sha256', 'fragment_ids', 'header_rows', 'columns', 'excluded_rows', 'boundary_merges', 'reviewed', 'title', 'review_note', 'join_mode', 'row_groups', 'key_columns', 'row_alignment_review', 'cell_corrections', 'quality_reviews'}
         if set(plan) - allowed:
             raise ValueError('Unknown PDF plan fields')
         bundle = draft['bundle']
@@ -324,6 +324,30 @@ class PDFTableStore:
             for region in _span_regions(fragment):
                 if any((ident, row) not in omitted for row, _ in region['positions']):
                     raise ValueError('Merged data cell regions require explicit future mapping; only wholly reviewed header/excluded regions are supported')
+        horizontal = plan.get('join_mode', 'vertical') == 'horizontal'
+        if plan.get('join_mode', 'vertical') not in ('vertical', 'horizontal'):
+            raise ValueError('Unknown join_mode')
+        if not horizontal and any(k in plan for k in ('row_groups', 'key_columns', 'row_alignment_review')):
+            raise ValueError('Horizontal alignment fields require join_mode horizontal')
+        corrections = {}
+        entries = plan.get('cell_corrections', [])
+        if not isinstance(entries, list):
+            raise ValueError('cell_corrections must be a list')
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {'fragment_id', 'row', 'column', 'text', 'reason'}:
+                raise ValueError('Cell correction requires exact source, reviewed text and reason')
+            ident = entry['fragment_id']
+            if ident not in fragments:
+                raise ValueError('Unknown correction fragment')
+            ri = _index(entry['row'], len(fragments[ident]['rows']))
+            ci = _index(entry['column'], len(fragments[ident]['rows'][ri]))
+            _reason(entry['reason'])
+            if not isinstance(entry['text'], str) or len(entry['text']) > MAX_CELL_CHARS:
+                raise ValueError('Correction text must be bounded')
+            key = (ident, ri, ci)
+            if key in corrections or (ident, ri) in omitted:
+                raise ValueError('Duplicate or excluded cell correction')
+            corrections[key] = entry
         columns = plan.get('columns')
         if not isinstance(columns, list) or not 1 <= len(columns) <= MAX_COLUMNS:
             raise ValueError('Plan requires 1 to 256 explicit columns')
@@ -339,9 +363,9 @@ class PDFTableStore:
             if col.get('type') not in ('text', 'decimal'):
                 raise ValueError('Column type must be text or decimal')
             mapping = col.get('source_columns')
-            if not isinstance(mapping, dict) or set(mapping) != set(ids):
-                raise ValueError('Each logical column must map each fragment explicitly')
-            for ident in ids:
+            if not isinstance(mapping, dict) or not mapping or (not horizontal and set(mapping) != set(ids)) or set(mapping) - set(ids):
+                raise ValueError('Each column requires explicit real fragment mapping; vertical joins must map every fragment')
+            for ident in mapping:
                 widths = {len(r) for r in fragments[ident]['rows']}
                 if len(widths) != 1:
                     raise ValueError('Ragged raw grid requires explicit parser normalization before review')
@@ -361,12 +385,82 @@ class PDFTableStore:
                     continue
                 values, spans = {}, {}
                 for col in columns:
+                    if ident not in col['source_columns']:
+                        continue
                     ci = col['source_columns'][ident]
-                    values[col['name']] = raw_row[ci]['text']
-                    spans[col['name']] = [_span(f, ri, ci, bundle['source'])]
+                    correction = corrections.get((ident, ri, ci))
+                    values[col['name']] = correction['text'] if correction else raw_row[ci]['text']
+                    span = _span(f, ri, ci, bundle['source'])
+                    if correction:
+                        span['correction'] = dict(text=correction['text'], reason=correction['reason'])
+                    spans[col['name']] = [span]
                 row = dict(values=values, source_cells=spans, source_rows=[dict(fragment_id=ident, row=ri)])
                 rows.append(row)
                 by_key[(ident, ri)] = row
+        alignment_verified = True
+        if horizontal:
+            if len(ids) < 2 or len({fragments[i]['page'] for i in ids}) != len(ids):
+                raise ValueError('Horizontal joins require distinct cross-page fragments')
+            if plan.get('boundary_merges'):
+                raise ValueError('Horizontal and boundary row joins cannot be mixed in one plan')
+            groups = plan.get('row_groups')
+            keys = plan.get('key_columns')
+            if not isinstance(groups, list) or not groups or len(groups) > MAX_ROWS:
+                raise ValueError('Horizontal joins require explicit complete row_groups')
+            if not isinstance(keys, list) or any(not isinstance(k, str) for k in keys) or len(set(keys)) != len(keys):
+                raise ValueError('Explicit distinct key_columns required (empty means manual alignment)')
+            col_by_name = {c['name']: c for c in columns}
+            if any(k not in col_by_name or set(col_by_name[k]['source_columns']) != set(ids) for k in keys):
+                raise ValueError('Key columns must exist in every joined fragment')
+            alignment_verified = bool(keys)
+            if 'row_alignment_review' in plan:
+                review = plan['row_alignment_review']
+                if not isinstance(review, dict) or set(review) != {'reason'}:
+                    raise ValueError('row_alignment_review requires original-source evidence reason')
+                _reason(review['reason'])
+            # Repeated source identifiers are ambiguous even if a model supplies row positions.
+            if keys:
+                for ident in ids:
+                    seen_keys = set()
+                    for (fid, _), row in by_key.items():
+                        if fid != ident:
+                            continue
+                        key = tuple(row['values'][k] for k in keys)
+                        if any(not value.strip() for value in key) or key in seen_keys:
+                            raise ValueError('Horizontal source keys must be nonblank and unique within each fragment')
+                        seen_keys.add(key)
+            combined, consumed = [], set()
+            for group in groups:
+                if not isinstance(group, dict) or set(group) != {'source_rows', 'reason'}:
+                    raise ValueError('Each horizontal row group requires source_rows and reason')
+                _reason(group['reason'])
+                refs = group['source_rows']
+                if not isinstance(refs, list) or len(refs) != len(ids):
+                    raise ValueError('Every horizontal row must explicitly map every fragment; missing rows cannot be invented')
+                group_keys = []
+                for ref in refs:
+                    if not isinstance(ref, dict) or set(ref) != {'fragment_id', 'row'} or ref['fragment_id'] not in fragments:
+                        raise ValueError('Invalid horizontal source row')
+                    key = (ref['fragment_id'], _index(ref['row'], len(fragments[ref['fragment_id']]['rows'])))
+                    if key not in by_key or key in consumed:
+                        raise ValueError('Horizontal source row missing, excluded, or reused')
+                    group_keys.append(key)
+                if {k[0] for k in group_keys} != set(ids):
+                    raise ValueError('Horizontal group must contain one row from every fragment')
+                parts = [by_key[k] for k in group_keys]
+                values, spans = {}, {}
+                for col in columns:
+                    name = col['name']
+                    present = [r for r in parts if name in r['values']]
+                    if len({r['values'][name] for r in present}) != 1:
+                        raise ValueError('Horizontal mapping conflicts: differing repeated source values cannot be discarded')
+                    values[name] = present[0]['values'][name]
+                    spans[name] = [span for r in present for span in r['source_cells'][name]]
+                combined.append(dict(values=values, source_cells=spans, source_rows=deepcopy(refs)))
+                consumed.update(group_keys)
+            if consumed != set(by_key):
+                raise ValueError('All horizontal data source rows must be mapped exactly once')
+            rows = combined
         merges = plan.get('boundary_merges', [])
         if not isinstance(merges, list):
             raise ValueError('boundary_merges must be a list')
@@ -433,6 +527,41 @@ class PDFTableStore:
                 if col['type'] == 'decimal':
                     number = _numeric(row['values'][col['name']])
                     row['values'][col['name']] = None if number is None else str(number)
+        quality_issues = []
+        for ident, fragment in fragments.items():
+            quality = fragment.get('quality', {})
+            if not isinstance(quality, dict):
+                raise ValueError('Fragment quality must be an object')
+            issues = quality.get('issues', [])
+            if not isinstance(issues, list) or any(not isinstance(i, dict) for i in issues):
+                raise ValueError('Fragment quality issues must be objects')
+            for index, issue in enumerate(issues):
+                quality_issues.append(dict(fragment_id=ident, issue_index=index, **{k: v for k, v in issue.items() if k not in ('fragment_id', 'issue_index')}))
+            if quality.get('status') == 'needs_review' and not issues:
+                quality_issues.append(dict(fragment_id=ident, issue_index=-1, code='extraction_needs_review', message='Extraction requires source review'))
+        reviews = plan.get('quality_reviews', [])
+        if not isinstance(reviews, list):
+            raise ValueError('quality_reviews must be a list')
+        issue_keys = {(i['fragment_id'], i['issue_index']) for i in quality_issues}
+        resolved = set()
+        for review in reviews:
+            if not isinstance(review, dict) or set(review) != {'fragment_id', 'issue_index', 'reason'}:
+                raise ValueError('Every quality review requires exact issue and source evidence reason')
+            _reason(review['reason'])
+            key = (review['fragment_id'], review['issue_index'])
+            if type(review['issue_index']) is not int or key not in issue_keys or key in resolved:
+                raise ValueError('Quality review must refer to a distinct real issue')
+            resolved.add(key)
+        unresolved = [i for i in quality_issues if (i['fragment_id'], i['issue_index']) not in resolved]
+        for ident, fragment in fragments.items():
+            for ri, raw_row in enumerate(fragment['rows']):
+                if (ident, ri) in omitted:
+                    continue
+                for ci, cell in enumerate(raw_row):
+                    if cell.get('uncertain') and (ident, ri, ci) not in corrections:
+                        unresolved.append(dict(fragment_id=ident, row=ri, column=ci, code='uncertain_cell', message='Uncertain source cell requires explicit corrected text and evidence'))
+        if horizontal and not alignment_verified and not plan.get('row_alignment_review'):
+            unresolved.append(dict(code='row_alignment_unverified', message='No shared source key; independently verify every source row and supply row_alignment_review'))
         coverage = dict(raw_fragment_count=len(bundle['fragments']), selected_fragment_count=len(ids),
                         selected_raw_row_count=sum(len(fragments[i]['rows']) for i in ids),
                         header_row_count=sum(len(x) for x in headers.values()), excluded_row_count=len(exclusions),
@@ -443,6 +572,12 @@ class PDFTableStore:
                         table_input_complete=not exclusions and not bundle.get('ambiguities') and not bundle.get('requires_review'),
                         source_document_complete=False,
                         source_document_completeness='unknown', extraction_verified=False)
+        if horizontal or quality_issues or corrections or unresolved:
+            coverage.update(join_mode='horizontal' if horizontal else 'vertical',
+                            row_alignment_verified=alignment_verified,
+                            quality_issues=quality_issues, unresolved_quality_issues=unresolved,
+                            cell_correction_count=len(corrections), publishable=not unresolved)
+            coverage['table_input_complete'] = coverage['table_input_complete'] and not unresolved and alignment_verified
         canonical_plan = deepcopy(plan)
         canonical_plan.pop('reviewed', None)
         title = plan.get('title')
@@ -460,6 +595,8 @@ class PDFTableStore:
         if not isinstance(plan, dict) or plan.get('reviewed') is not True:
             raise ValueError('Publishing requires explicit reviewed:true')
         record = self.validate_plan(draft_id, plan)
+        if record['coverage'].get('unresolved_quality_issues'):
+            raise ValueError('Unresolved extraction or row alignment issues block publication; review each issue and correct uncertain cells against the original PDF')
         ident = 'pdft_' + _hash(dict(draft_id=draft_id, plan_sha256=record['plan_sha256']))
         record.update(table_id=ident, status='reviewed', extraction_verified=False)
         record['record_sha256'] = _hash(record)

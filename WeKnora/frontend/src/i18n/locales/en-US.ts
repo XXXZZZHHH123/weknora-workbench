@@ -6302,6 +6302,10 @@ export default {
           name: 'anydoc',
           desc: 'In-process office document parser (no external service required)'
         },
+        remote_vlm: {
+          name: 'Remote vision PDF',
+          desc: 'Shared parsing queue with page provenance and table validation'
+        },
         mineru: {
           name: 'MinerU',
           desc: 'MinerU self-hosted service'

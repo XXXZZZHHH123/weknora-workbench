@@ -75,6 +75,8 @@ async function main() {
         if(path==='/api/pdf/config')return {configured:true,max_bytes:52428800};
         if(path==='/api/pdf/drafts')return {drafts:[{draft_id:'pdfd_fixture',source:{file_name:'suspicious.pdf'},fragment_count:1,raw_row_count:2}]};
         if(path==='/api/pdf/tables')return {tables:window.__published||[]};
+        if(path==='/api/pdf/jobs')return {jobs:window.__jobs||[]};
+        if(path==='/api/pdf/jobs/failed-job/retry'){window.__retried=(window.__retried||0)+1;return {id:'retry-child',status:'processing'}}
         if(path==='/api/pdf/import')return {id:'job-'+(++window.__jobCount)};
         if(path==='/api/pdf/import-knowledge'){window.__knowledgeImportBody=JSON.parse(options.body);return {id:'job-'+(++window.__jobCount)}}
         if(path.startsWith('/api/pdf/jobs/'))return {status:'completed',draft_id:window.__jobDraftId||'pdfd_fixture'};
@@ -153,6 +155,17 @@ async function main() {
     assert.match(await evaluate("document.querySelector('#pdfPreview').textContent"), /来源文档完整性：unknown/);
     assert.match(await evaluate("document.querySelector('#pdfPreview').textContent"), /OCR\/解析结果尚未独立验证/);
     assert.equal(await evaluate("document.querySelector('#pdfPublish').disabled"), true, 'AI suggestion cannot publish without the human checkbox');
+    await evaluate("window.__preview.coverage.unresolved_quality_issues=[{fragment_id:'fragment-1',row:1,column:1,code:'uncertain_cell',message:'Unclear source value'}];[...document.querySelectorAll('button')].find(b=>b.textContent.includes('验证并预览')).click()");
+    await wait("document.querySelector('#pdfPreview')?.textContent.includes('Unclear source value')");
+    await evaluate("document.querySelector('#pdfPublishReviewed').click()");
+    assert.equal(await evaluate("document.querySelector('#pdfPublish').disabled"), true, 'known source issue blocks publication despite reviewed checkbox');
+    await evaluate("[...document.querySelectorAll('#pdfPreview button')].find(b=>b.textContent.includes('记录此项人工处理')).click()");
+    assert.match(await evaluate("document.querySelector('#pdfReviewStatus').textContent"), /具体原件证据/);
+    await evaluate("document.querySelector('[aria-label=\"质量问题 1 核对依据\"]').value='Original page1 amount row independently checked';document.querySelector('[aria-label=\"质量问题 1 原件文本\"]').value='12.50';[...document.querySelectorAll('#pdfPreview button')].find(b=>b.textContent.includes('记录此项人工处理')).click()");
+    const correction = await evaluate("JSON.parse(document.querySelector('#pdfPlanEditor').value).cell_corrections[0]");
+    assert.deepEqual(correction, {fragment_id:'fragment-1',row:1,column:1,text:'12.50',reason:'Original page1 amount row independently checked'});
+    assert.equal(await evaluate("document.querySelector('#pdfPublish').disabled"), true, 'recording correction invalidates old preview');
+    await evaluate("delete window.__preview.coverage.unresolved_quality_issues");
     await evaluate("document.querySelector('#pdfPlanEditor').value=JSON.stringify({...JSON.parse(document.querySelector('#pdfPlanEditor').value),title:'Edited'});document.querySelector('#pdfPlanEditor').dispatchEvent(new Event('input',{bubbles:true}))");
     assert.equal(await evaluate("document.querySelector('#pdfPublish').disabled"), true, 'editing a plan invalidates its preview');
     await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('生成手动计划模板')).click()");
@@ -195,6 +208,12 @@ async function main() {
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#directUpload')).display"), 'none', 'PDF source mode must hide the Excel importer');
     assert.equal(await evaluate("window.__apiCalls.some(x=>x.path==='/api/pdf/import-knowledge'&&JSON.parse(x.body).source_knowledge_id==='source-pdf-1')"), true, 'knowledge PDF must use its PDF import endpoint and source ID');
     assert.equal(await evaluate('window.__sourceFetches'), 3, 'each selected draft must retrieve its protected original');
+    await evaluate("window.__jobs=[{id:'failed-job',status:'failed',retry_available:true,file_name:'retry.pdf',error:'Provider unavailable'}];[...document.querySelectorAll('button')].find(b=>b.textContent==='刷新记录').click()");
+    await wait("document.querySelector('#pdfJobs')?.textContent.includes('Provider unavailable')");
+    assert.equal(await evaluate("window.__retried||0"), 0, 'loading failed jobs must not retry automatically');
+    await evaluate("[...document.querySelectorAll('#pdfJobs button')].find(b=>b.textContent==='手动重试此文件').click()");
+    await wait("window.__retried===1 && window.__sourceFetches===4");
+    assert.equal(await evaluate("window.__apiCalls.filter(x=>x.path==='/api/pdf/jobs/failed-job/retry').length"), 1, 'explicit retry targets only the chosen scoped job');
     await evaluate("window.authEpoch++;window.dispatchEvent(new Event('structured-auth-scope-change'))");
     await wait("!document.querySelector('#pdfDraftDetail')?.textContent.includes('suspicious.pdf')");
     await evaluate("document.body.classList.remove('view-import');document.body.classList.add('view-query')");

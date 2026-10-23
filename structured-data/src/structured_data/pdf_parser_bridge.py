@@ -103,7 +103,7 @@ class ParserConfig:
                  poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
                  paddle_params: Mapping[str, Any] | None = None):
         self.engine = str(engine).strip().lower()
-        if self.engine not in {"mineru", "mineru_v1", "mineru_legacy", "paddleocr_vl"}:
+        if self.engine not in {"mineru", "mineru_v1", "mineru_legacy", "paddleocr_vl", "remote_vlm"}:
             raise ValueError("PDF_TABLE_PARSER_ENGINE must be mineru_v1, mineru_legacy, or paddleocr_vl")
         self.url = _validate_base_url(url)
         self.api_key = str(api_key or "").strip()
@@ -154,7 +154,7 @@ def parser_availability() -> dict[str, Any]:
 
 
 async def parse_pdf(path: str | os.PathLike[str], source: Mapping[str, Any] | None = None,
-                    config: ParserConfig | None = None) -> dict[str, Any]:
+                    config: ParserConfig | None = None, progress_callback=None, retry_token=None) -> dict[str, Any]:
     """Parse one local PDF and return a normalized ``pdf_tables_v1`` bundle.
 
     ``source`` may contain ``file_name`` and ``knowledge_id``. Its optional
@@ -172,6 +172,9 @@ async def parse_pdf(path: str | os.PathLike[str], source: Mapping[str, Any] | No
         raise PDFParserError("PDF input is empty or not a regular file")
     if stat.st_size > cfg.max_file_bytes:
         raise PDFParserError(f"PDF input exceeds configured limit ({cfg.max_file_bytes} bytes)")
+    if cfg.engine == "remote_vlm":
+        from .remote_pdf_client import parse_remote_pdf
+        return await parse_remote_pdf(pdf_path, source or {}, cfg, progress_callback, retry_token=retry_token)
     raw_pdf = await asyncio.to_thread(pdf_path.read_bytes)
     if len(raw_pdf) != stat.st_size or len(raw_pdf) > cfg.max_file_bytes:
         raise PDFParserError("PDF input changed or exceeded its size limit while being read")
@@ -273,6 +276,8 @@ def normalize_parser_response(engine: str, response: Mapping[str, Any],
 
 
 def _engine_name(engine: str) -> str:
+    if engine == "remote_vlm":
+        return engine
     return "mineru" if engine in {"mineru", "mineru_v1", "mineru_legacy"} else "paddleocr_vl"
 
 

@@ -2023,6 +2023,10 @@ export default {
           name: 'MinerU Cloud',
           desc: 'MinerU Cloud API'
         },
+        remote_vlm: {
+          name: '遠端視覺解析',
+          desc: '共用解析佇列，保留頁碼並校驗表格'
+        },
         mineru: {
           name: 'MinerU',
           desc: 'MinerU 自部署服務'

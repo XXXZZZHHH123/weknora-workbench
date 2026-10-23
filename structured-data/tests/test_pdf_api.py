@@ -404,6 +404,23 @@ def test_model_suggestion_binds_complete_fragments_and_handles_truncated_output(
     assert 'unit:可选字符串' in prompt
     assert '绝不能推测或标准化单位' in prompt
     assert PDFTableStore(tmp_path).validate_plan(draft['draft_id'], result['plan'])['coverage']['logical_row_count'] == 2
+    assert 'row_groups' in prompt and 'key_columns' in prompt
+    for field, value in [('quality_reviews', []), ('cell_corrections', []), ('row_alignment_review', {'reason': 'model claims human approval'})]:
+        bad_reply = deepcopy(reply)
+        bad_reply['plan'][field] = value
+        completion['choices'][0]['message']['content'] = json.dumps(bad_reply)
+        with pytest.raises(ValueError, match='模型不能代替人工'):
+            suggest_plan(draft, body, tmp_path)
+    unconfirmed = deepcopy(reply)
+    unconfirmed['status'] = 'needs_review'
+    unconfirmed['message'] = 'Source alignment remains uncertain'
+    unconfirmed['plan']['quality_reviews'] = [{'invented': 'model approval'}]
+    completion['choices'][0]['message']['content'] = json.dumps(unconfirmed)
+    result = suggest_plan(draft, body, tmp_path)
+    assert result['status'] == 'needs_review' and result['plan'] is None
+    assert result['unconfirmed_plan_discarded'] is True
+    assert result['message'] == 'Source alignment remains uncertain'
+    completion['choices'][0]['message']['content'] = json.dumps(reply)
     completion['choices'][0]['finish_reason'] = 'length'
     with pytest.raises(ValueError, match='未正常完成'):
         suggest_plan(draft, body, tmp_path)
@@ -488,3 +505,153 @@ def test_native_pdf_model_failures_do_not_fall_back_or_publish(pdf_service, monk
     assert b'legacy-provider-secret' not in calls[0].content
     assert 'legacy-provider-secret' not in response.text
     assert read(pdf_service, 'list_pdf_tables', {}).json()['tables'] == []
+
+
+def _failed_remote_job(pdf_service, monkeypatch, native_source=False):
+    from structured_data.pdf_parser_bridge import ParserConfig
+    from structured_data.remote_pdf_client import RemotePDFError
+    client, _, state, root, _ = pdf_service
+    monkeypatch.setattr(ParserConfig, 'from_env', classmethod(lambda cls: ParserConfig(
+        'remote_vlm', 'http://remote.test', api_key='fixture-server-key')))
+    calls = []
+    async def parse(path, source=None, **kwargs):
+        calls.append({'bytes': path.read_bytes(), 'source': deepcopy(source), **kwargs})
+        kwargs['progress_callback']({'remote_job_id': 'remote-fixture', 'queue_status': 'running', 'progress': {'page': 1}})
+        if not kwargs.get('retry_token'):
+            raise RemotePDFError('MODEL_UNAVAILABLE')
+        result = bundle()
+        result['source'] = source
+        return result
+    monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', parse)
+    if native_source:
+        started = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id': 'source-a'}, headers=headers())
+    else:
+        started = client.post('/api/pdf/import', files={'file': ('source.pdf', state['contents'], 'application/pdf')}, headers=headers())
+    assert started.status_code == 200, started.text
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        job = client.get('/api/pdf/jobs/' + started.json()['id'], headers=headers()).json()
+        if job['status'] == 'failed':
+            return job, calls
+        time.sleep(.01)
+    raise AssertionError('remote fixture did not fail')
+
+
+def test_remote_explicit_retry_preserves_source_and_is_idempotent(pdf_service, monkeypatch):
+    client, _, state, root, _ = pdf_service
+    job, calls = _failed_remote_job(pdf_service, monkeypatch)
+    assert job['retry_available'] and job['remote_job_id'] == 'remote-fixture'
+    assert job['source']['sha256'] == hashlib.sha256(state['contents']).hexdigest()
+    assert next(root.rglob(job['source']['sha256'] + '.pdf')).read_bytes() == state['contents']
+    assert client.get('/api/pdf/jobs', headers=headers()).json()['jobs'][0]['id'] == job['id']
+    assert len(calls) == 1 and not calls[0].get('retry_token')
+    endpoint = '/api/pdf/jobs/' + job['id'] + '/retry'
+    assert client.post(endpoint, headers=headers(role='viewer')).status_code == 403
+    assert client.post(endpoint, headers=headers(kb='other-kb')).status_code == 404
+    started = client.post(endpoint, headers=headers())
+    assert started.status_code == 200, started.text
+    finished = finish_pdf_job(client, started.json()['id'])
+    assert len(calls) == 2
+    assert calls[1]['bytes'] == state['contents']
+    assert len(calls[1]['retry_token']) == 32
+    assert calls[1]['source'] == calls[0]['source']
+    again = client.post(endpoint, headers=headers())
+    assert again.status_code == 200 and again.json()['id'] == finished['id']
+    assert len(calls) == 2
+    assert read(pdf_service, 'list_pdf_tables', {}).json()['tables'] == []
+
+
+def test_remote_retry_rechecks_native_permission_and_source_bytes(pdf_service, monkeypatch):
+    client, _, state, _, _ = pdf_service
+    job, calls = _failed_remote_job(pdf_service, monkeypatch, native_source=True)
+    endpoint = '/api/pdf/jobs/' + job['id'] + '/retry'
+    state['permission'] = 'viewer'
+    assert client.post(endpoint, headers=headers()).status_code == 403
+    state['permission'] = 'admin'
+    state['contents'] = b'%PDF-1.7\n changed source'
+    state['document']['file_hash'] = hashlib.md5(state['contents']).hexdigest()
+    state['document']['file_size'] = len(state['contents'])
+    response = client.post(endpoint, headers=headers())
+    assert response.status_code == 409, response.text
+    assert len(calls) == 1
+
+
+def test_remote_retry_rejects_changed_parser_configuration(pdf_service, monkeypatch):
+    from structured_data.pdf_parser_bridge import ParserConfig
+    client, _, _, _, _ = pdf_service
+    job, calls = _failed_remote_job(pdf_service, monkeypatch)
+    monkeypatch.setattr(ParserConfig, 'from_env', classmethod(lambda cls: ParserConfig(
+        'remote_vlm', 'http://different.test', api_key='fixture-server-key')))
+    response = client.post('/api/pdf/jobs/' + job['id'] + '/retry', headers=headers())
+    assert response.status_code == 409 and len(calls) == 1
+
+
+@pytest.mark.parametrize('code,expected,phrase', [
+    ('MODEL_CONTENT_FILTER', 'REMOTE_PDF_MODEL_CONTENT_FILTER', '拒绝处理此页'),
+    ('MODEL_AUTH_FAILED', 'REMOTE_PDF_MODEL_AUTH_FAILED', '鉴权'),
+    ('model_auth', 'REMOTE_PDF_MODEL_AUTH', '鉴权'),
+    ('MODEL_TIMEOUT', 'REMOTE_PDF_MODEL_TIMEOUT', '模型请求超时'),
+    ('MODEL_RATE_LIMIT', 'REMOTE_PDF_MODEL_RATE_LIMIT', '限流'),
+    ('QUEUE_TIMEOUT', 'REMOTE_PDF_QUEUE_TIMEOUT', '排队超时'),
+    ('EXECUTION_TIMEOUT', 'REMOTE_PDF_EXECUTION_TIMEOUT', '执行时限'),
+    ('LOCAL_OCR_FAILED', 'REMOTE_PDF_LOCAL_OCR_FAILED', '备用识别失败'),
+    ('REMOTE_PDF_OUTPUT_INVALID', 'REMOTE_PDF_OUTPUT_INVALID', '页面结构无效'),
+    ('PARSER_STORAGE_EXHAUSTED', 'PARSER_STORAGE_EXHAUSTED', '空间不足'),
+    ('http_507', 'PARSER_STORAGE_EXHAUSTED', '空间不足'),
+    ('http_429', 'REMOTE_PDF_HTTP_429', '队列已满'),
+    ('SOURCE_MISMATCH', 'REMOTE_PDF_SOURCE_MISMATCH', '指纹不一致'),
+    ('PAGE_COVERAGE_INVALID', 'REMOTE_PDF_PAGE_COVERAGE_INVALID', '页码或页数'),
+    ('UNKNOWN_SAFE', 'REMOTE_PDF_UNKNOWN_SAFE', '远程解析未完成'),
+    ('https://secret.example/key=private', 'REMOTE_PDF_FAILED', '远程解析未完成'),
+])
+def test_remote_errors_keep_safe_specific_action_and_single_prefix(code, expected, phrase):
+    from structured_data.pdf_api import _pdf_failure
+    from structured_data.remote_pdf_client import RemotePDFError
+    failure = _pdf_failure(RemotePDFError(code))
+    assert failure['error_code'] == expected
+    assert phrase in failure['error']
+    assert 'REMOTE_PDF_REMOTE_PDF_' not in failure['error_code']
+    assert 'secret.example' not in json.dumps(failure) and 'private' not in json.dumps(failure)
+
+
+def test_polling_worker_completion_never_reports_stale_processing_as_interrupted(pdf_service, monkeypatch):
+    import threading
+    from pathlib import Path
+    from structured_data.pdf_api import _write, _jobs_lock, _running_jobs
+    client, _, _, root, _ = pdf_service
+    path = root / 'knowledge-bases' / 'kb-a' / 'pdf-tables' / 'jobs' / 'completion-race.json'
+    _write(path, {'id': 'completion-race', 'status': 'processing'})
+    with _jobs_lock:
+        _running_jobs.add(str(path))
+    real_read = Path.read_text
+    wrote = threading.Event()
+    finished = threading.Event()
+    reads = []
+    def complete():
+        _write(path, {'id': 'completion-race', 'status': 'completed'})
+        wrote.set()
+        with _jobs_lock:
+            _running_jobs.discard(str(path))
+        finished.set()
+    worker = threading.Thread(target=complete)
+    def raced_read(target, *args, **kwargs):
+        text = real_read(target, *args, **kwargs)
+        if target == path and not reads:
+            reads.append(True)
+            worker.start()
+            assert wrote.wait(2)
+            # Completion can write while reading, but cannot relinquish ownership
+            # between the API's stale snapshot and its interruption check.
+            finished.wait(.05)
+        return text
+    monkeypatch.setattr(Path, 'read_text', raced_read)
+    try:
+        result = client.get('/api/pdf/jobs/completion-race', headers=headers())
+        assert result.status_code == 200
+        assert result.json()['status'] in ('processing', 'completed'), result.text
+        worker.join(2)
+        assert finished.is_set()
+        assert client.get('/api/pdf/jobs/completion-race', headers=headers()).json()['status'] == 'completed'
+    finally:
+        with _jobs_lock:
+            _running_jobs.discard(str(path))

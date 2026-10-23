@@ -36,6 +36,7 @@ func init() {
 	RegisterEngine(&anydocEngine{})
 	RegisterEngine(&weKnoraCloudEngine{})
 	RegisterEngine(&mineruEngine{})
+	RegisterEngine(&remotePDFEngine{})
 	RegisterEngine(&mineruCloudEngine{})
 	RegisterEngine(&paddleOCRVLEngine{})
 	RegisterEngine(&paddleOCRVLCloudEngine{})

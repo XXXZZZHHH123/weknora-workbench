@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	werrors "github.com/Tencent/WeKnora/internal/errors"
+	"github.com/Tencent/WeKnora/internal/infrastructure/docparser"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -20,6 +21,9 @@ func TestDocReaderFailure(t *testing.T) {
 		err  error
 		code string
 	}{
+		{"remote queue full", &docparser.RemotePDFError{Code: "http_429"}, "REMOTE_PDF_HTTP_429"},
+		{"remote parser storage full", &docparser.RemotePDFError{Code: "http_507"}, "REMOTE_PDF_HTTP_507"},
+		{"remote unconfigured", &docparser.RemotePDFError{Code: "not_configured"}, "REMOTE_PDF_NOT_CONFIGURED"},
 		{
 			"scanned PDF wrapped connection failure",
 			fmt.Errorf("anydoc fallback: %w",

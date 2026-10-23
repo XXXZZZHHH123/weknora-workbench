@@ -12,6 +12,7 @@
   let config = {configured: false, max_bytes: 50 * 1024 * 1024};
   let drafts = [];
   let tables = [];
+  let jobs = [];
   let draft = null;
   let selectedFragments = new Set();
   let preview = null;
@@ -76,6 +77,7 @@
     config = {configured: false, max_bytes: 50 * 1024 * 1024};
     drafts = [];
     tables = [];
+    jobs = [];
     draft = null;
     selectedFragments = new Set();
     preview = null;
@@ -104,6 +106,52 @@
     if (coverage.extraction_verified === false || result.extraction_verified === false) {
       pane.append(make('p', '此预览只验证映射和来源覆盖，不代表 OCR 或原件识别已核实；公式不会作为可执行公式。', 'warning'));
     }
+    const unresolved = coverage.unresolved_quality_issues || [];
+    if (coverage.join_mode === 'horizontal') {
+      pane.append(make('p', coverage.row_alignment_verified
+        ? '横向续列表：按每页实际标识核对行对应；共有标识保留全部来源。'
+        : '横向续列表缺少各页共有行标识。行号映射不能自动证明对应正确，发布前必须对照原件逐行确认。', 'warning'));
+    }
+    if (unresolved.length) {
+      const box = make('fieldset');
+      box.append(make('legend', `待处理质量问题 · ${unresolved.length}`));
+      box.append(make('p', '已知问题不能通过最后的发布勾选绕过。请填写具体原页证据，修正不确定单元格，然后重新预览。', 'warning'));
+      for (const [index, issue] of unresolved.entries()) {
+        const item = make('div');
+        item.append(make('p', `${issue.fragment_id || ''} ${issue.row !== undefined ? `行 ${issue.row} 列 ${issue.column}` : ''} · ${issue.code || 'quality'} · ${issue.message || ''}`));
+        const reason = make('input');
+        reason.type = 'text'; reason.placeholder = '核对的页码、原文及处理依据（必填）';
+        reason.setAttribute('aria-label', `质量问题 ${index + 1} 核对依据`);
+        item.append(reason);
+        let corrected;
+        if (issue.code === 'uncertain_cell') {
+          corrected = make('input'); corrected.type = 'text'; corrected.placeholder = '原件真实单元格文本（原件空白可留空）';
+          corrected.setAttribute('aria-label', `质量问题 ${index + 1} 原件文本`);
+          item.append(corrected);
+        }
+        item.append(action('记录此项人工处理', () => {
+          try {
+            if (!reason.value.trim()) throw new Error('请填写此项的具体原件证据。');
+            const editor = document.getElementById('pdfPlanEditor');
+            const plan = jsonValue(editor);
+            if (issue.code === 'row_alignment_unverified') {
+              plan.row_alignment_review = {reason: reason.value.trim()};
+            } else if (issue.code === 'uncertain_cell') {
+              plan.cell_corrections = (plan.cell_corrections || []).filter(c => !(c.fragment_id === issue.fragment_id && c.row === issue.row && c.column === issue.column));
+              plan.cell_corrections.push({fragment_id: issue.fragment_id, row: issue.row, column: issue.column, text: corrected.value, reason: reason.value.trim()});
+            } else {
+              plan.quality_reviews = (plan.quality_reviews || []).filter(r => !(r.fragment_id === issue.fragment_id && r.issue_index === issue.issue_index));
+              plan.quality_reviews.push({fragment_id: issue.fragment_id, issue_index: issue.issue_index, reason: reason.value.trim()});
+            }
+            editor.value = JSON.stringify(plan, null, 2);
+            editor.dispatchEvent(new Event('input', {bubbles: true}));
+            setStatus('已记录此项核对依据，请重新预览查看剩余问题；尚未发布。');
+          } catch (error) { setStatus(error.message, true); }
+        }, true));
+        box.append(item);
+      }
+      pane.append(box);
+    }
     const columns = result.columns || [];
     const rows = result.rows || [];
     if (!columns.length || !rows.length) {
@@ -126,6 +174,7 @@
         for (const ref of refs) {
           const detail = make('small', `第 ${ref.page} 页 · 行 ${ref.row} · 列 ${ref.column} · 原文「${ref.text ?? ''}」`);
           td.append(document.createElement('br'), detail);
+          if (ref.correction) td.append(make('small', `人工修正为「${ref.correction.text}」；依据：${ref.correction.reason}`));
         }
         tr.append(td);
       }
@@ -164,6 +213,42 @@
       list.append(item);
     }
     target.append(list);
+  }
+
+  function renderJobs() {
+    const target = document.getElementById('pdfJobs');
+    if (!target) return;
+    target.replaceChildren();
+    for (const job of jobs) {
+      const row = make('div', undefined, 'row');
+      row.append(make('span', `${job.file_name || 'PDF'} · ${job.status} · ${job.error || job.stage || ''}`));
+      if (job.retry_available && ['failed', 'cancelled'].includes(job.status)) {
+        const retry = action('手动重试此文件', async () => {
+          retry.disabled = true;
+          const savedEpoch = epoch, savedOperation = ++operation;
+          try {
+            setStatus('正在重新校验原件与权限；只重试这一份文件，已完成页面将按配置复用。');
+            const result = await api(`/api/pdf/jobs/${encodeURIComponent(job.id)}/retry`, {method: 'POST'}, 120000);
+            if (!current(savedEpoch, savedOperation)) return;
+            await pollJob(result.id, savedEpoch, savedOperation);
+            if (savedEpoch === epoch && savedEpoch === host.getAuthEpoch()) await loadJobs(savedEpoch, operation);
+          } catch (error) {
+            if (current(savedEpoch, savedOperation)) setStatus(error.message, true);
+          } finally {
+            if (current(savedEpoch, savedOperation)) retry.disabled = false;
+          }
+        }, true);
+        row.append(retry);
+      }
+      target.append(row);
+    }
+  }
+
+  async function loadJobs(savedEpoch = epoch, savedOperation = operation) {
+    const result = await api('/api/pdf/jobs');
+    if (!current(savedEpoch, savedOperation)) return;
+    jobs = result.jobs || [];
+    renderJobs();
   }
 
   function renderDrafts() {
@@ -207,6 +292,7 @@
     const details = make('details');
     const summary = make('summary', `第 ${fragment.page} 页 · ${fragment.rows?.length || 0} 行 · ${fragment.id}`);
     details.append(summary);
+    if (fragment.quality) details.append(make('p', `提取质量：${fragment.quality.status || '未知'}；${(fragment.quality.issues || []).map(i => i.message || i.code).join('；')}`, fragment.quality.status === 'needs_review' ? 'warning' : 'muted'));
     if (fragment.bbox) details.append(make('p', `片段位置：${JSON.stringify(fragment.bbox)}`, 'muted'));
     const wrap = make('div', undefined, 'scroll');
     const table = make('table');
@@ -402,6 +488,27 @@
     viewer.style.cssText = 'display:block;width:100%;height:420px;border:1px solid var(--line);border-radius:8px;margin-top:12px';
     target.append(make('p', '原始 OCR/版面识别结果需要人工核对；同页相邻片段或列数相同不足以证明它们属于同一张续表。', 'warning'));
 
+    const proposals = bundle.continuation_proposals || [];
+    if (proposals.length) {
+      const proposed = make('details');
+      proposed.append(make('summary', `跨页关系候选 · ${proposals.length} 项（尚未确认）`));
+      proposed.append(make('p', '候选仅帮助定位，选择不会合并或发布；请检查原件后请求映射并逐项预览。', 'warning'));
+      const actualIds = new Set((bundle.fragments || []).map(f => f.id));
+      for (const proposal of proposals) {
+        const item = make('div');
+        item.append(make('p', `${proposal.left_fragment_id} → ${proposal.right_fragment_id} · ${proposal.kind === 'horizontal' ? '横向续列' : proposal.kind === 'vertical' ? '纵向续行' : '关系不确定'} · ${proposal.reason || ''}`));
+        if (actualIds.has(proposal.left_fragment_id) && actualIds.has(proposal.right_fragment_id)) {
+          item.append(action('选择这组片段核对', () => {
+            selectedFragments = new Set([proposal.left_fragment_id, proposal.right_fragment_id]);
+            invalidatePreview();
+            renderSelectedDraft();
+            setStatus('已选择候选片段；请核对原件后请求 AI 映射建议，不会自动合并或发布。');
+          }, true));
+        }
+        proposed.append(item);
+      }
+      target.append(proposed);
+    }
     const fragmentList = make('div');
     fragmentList.append(make('h3', `原始表片段 · ${(bundle.fragments || []).length}`));
     for (const fragment of bundle.fragments || []) {
@@ -445,7 +552,7 @@
     const manualForm = make('div');
     const planDetails = make('details');
     planDetails.append(make('summary', '高级映射 JSON'));
-    const planHelp = make('p', 'header_rows 的 row 为片段内零起算行号；每列 source_columns 必须为每个片段填写原始零起算列号。表头移除需填写 {row, reason}。边界续接需显式填写 boundary_merges。', 'muted');
+    const planHelp = make('p', 'header_rows 的 row 为片段内零起算行号；每列 source_columns 必须为每个片段填写原始零起算列号。表头移除需填写 {row, reason}。边界续接需显式填写 boundary_merges。横向续列使用 join_mode:horizontal、key_columns 和 row_groups；每列 source_columns 只映射实际贡献片段，每个数据行必须显式对应。缺少行标识时必须独立核对原件。修正使用 cell_corrections:[{fragment_id,row,column,text,reason}]，保留原文。', 'muted');
     const editor = make('textarea');
     editor.id = 'pdfPlanEditor';
     editor.rows = 20;
@@ -505,7 +612,7 @@
   function updatePublishButton() {
     const publish = document.getElementById('pdfPublish');
     const checkbox = document.getElementById('pdfPublishReviewed');
-    if (publish) publish.disabled = !preview || !checkbox?.checked;
+    if (publish) publish.disabled = !preview || !checkbox?.checked || Boolean(preview?.coverage?.unresolved_quality_issues?.length);
   }
 
   async function suggestPlan() {
@@ -555,6 +662,7 @@
 
   async function publishPlan() {
     if (!preview) throw new Error('请先验证并预览当前计划。');
+    if (preview.coverage?.unresolved_quality_issues?.length) throw new Error('请先逐项处理质量问题并重新预览。');
     const editor = document.getElementById('pdfPlanEditor');
     const plan = jsonValue(editor);
     if (JSON.stringify(plan) !== previewSignature) throw new Error('计划内容在预览后已改变，请重新预览。');
@@ -617,7 +725,11 @@
       const job = await api(`/api/pdf/jobs/${encodeURIComponent(jobId)}`);
       if (!current(savedEpoch, savedOperation)) return;
       setStatus(job.stage || `PDF 任务：${job.status}`);
-      if (job.status === 'failed') throw new Error(job.error || 'PDF 解析失败。');
+      if (['failed', 'cancelled'].includes(job.status)) {
+        jobs = [job, ...jobs.filter(item => item.id !== job.id)];
+        renderJobs();
+        throw new Error(job.error || 'PDF 解析失败，可通过任务旁的按钮手动重试。');
+      }
       if (job.status === 'completed') {
         const draftId = job.draft_id || job.result?.draft_id;
         if (!draftId) throw new Error('解析完成但没有可读取的 PDF 草稿编号。');
@@ -719,10 +831,12 @@
         renderShell();
         renderedEpoch = savedEpoch;
       }
-      const [draftResult, tableResult] = await Promise.all([api('/api/pdf/drafts'), api('/api/pdf/tables')]);
+      const [draftResult, tableResult, jobResult] = await Promise.all([api('/api/pdf/drafts'), api('/api/pdf/tables'), api('/api/pdf/jobs')]);
       if (!current(savedEpoch, savedOperation)) return;
       drafts = draftResult.drafts || [];
       tables = tableResult.tables || [];
+      jobs = jobResult.jobs || [];
+      renderJobs();
       renderDrafts();
       renderPublishedTables();
       setStatus(config.configured ? 'PDF 解析服务已配置。导入后先核对原件与片段，再预览并人工发布。' : 'PDF 解析服务尚未配置。已有草稿和已发布表仍可查看；导入入口已停用。');
@@ -744,7 +858,7 @@
     const upload = action('上传并解析', () => uploadFile(file.files?.[0]).catch(error => setStatus(error.message, true)));
     upload.id = 'pdfUpload';
     upload.disabled = !config.configured;
-    const refresh = action('刷新记录', () => Promise.all([loadDrafts(), loadTables()]).catch(error => setStatus(error.message, true)), true);
+    const refresh = action('刷新记录', () => Promise.all([loadDrafts(), loadTables(), loadJobs()]).catch(error => setStatus(error.message, true)), true);
     const toolbar = make('div', undefined, 'row');
     toolbar.append(fileLabel, upload, refresh);
     root.append(toolbar);
@@ -762,6 +876,9 @@
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
     root.append(status);
+    const jobList = make('div');
+    jobList.id = 'pdfJobs';
+    root.append(jobList);
     root.append(make('h3', '待核对 PDF 草稿'));
     const draftList = make('div');
     draftList.id = 'pdfDraftList';

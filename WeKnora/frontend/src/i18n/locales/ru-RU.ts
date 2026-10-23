@@ -2021,6 +2021,10 @@ export default {
           name: 'MinerU Cloud',
           desc: 'MinerU Cloud API'
         },
+        remote_vlm: {
+          name: 'Удалённый разбор PDF',
+          desc: 'Общая очередь, источники страниц и проверка таблиц'
+        },
         mineru: {
           name: 'MinerU',
           desc: 'Самостоятельно развёрнутый сервис MinerU'

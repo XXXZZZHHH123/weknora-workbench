@@ -2970,6 +2970,8 @@ func (s *knowledgeService) reparseKnowledge(
 
 		lang := types.LanguageFromContextOrDefault(ctx)
 		taskPayload := types.DocumentProcessPayload{
+			ParserRetryKey:           uuid.NewString(),
+			Initiator:                types.TaskInitiatorFromContext(ctx),
 			TenantID:                 tenantID,
 			KnowledgeID:              existing.ID,
 			KnowledgeBaseID:          existing.KnowledgeBaseID,
@@ -3024,6 +3026,8 @@ func (s *knowledgeService) reparseKnowledge(
 
 		lang := types.LanguageFromContextOrDefault(ctx)
 		taskPayload := types.DocumentProcessPayload{
+			ParserRetryKey:           uuid.NewString(),
+			Initiator:                types.TaskInitiatorFromContext(ctx),
 			TenantID:                 tenantID,
 			KnowledgeID:              existing.ID,
 			KnowledgeBaseID:          existing.KnowledgeBaseID,
@@ -3077,6 +3081,8 @@ func (s *knowledgeService) reparseKnowledge(
 
 		lang := types.LanguageFromContextOrDefault(ctx)
 		taskPayload := types.DocumentProcessPayload{
+			ParserRetryKey:           uuid.NewString(),
+			Initiator:                types.TaskInitiatorFromContext(ctx),
 			TenantID:                 tenantID,
 			KnowledgeID:              existing.ID,
 			KnowledgeBaseID:          existing.KnowledgeBaseID,
@@ -3663,6 +3669,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 
 	ctx = logger.WithRequestID(ctx, payload.RequestId)
 	ctx = logger.WithField(ctx, "document_process", payload.KnowledgeID)
+	ctx = payload.Initiator.Apply(ctx)
 	ctx = types.WithExecutionTenant(ctx, payload.TenantID)
 	if payload.Language != "" {
 		ctx = context.WithValue(ctx, types.LanguageContextKey, payload.Language)
@@ -4255,11 +4262,19 @@ func (s *knowledgeService) convert(
 		URL:                   payload.URL,
 		Title:                 knowledge.Title,
 		ParserEngine:          parserEngine,
+		ParserRetryKey:        payload.ParserRetryKey,
 		RequestID:             payload.RequestId,
 		ParserEngineOverrides: mergedOverrides,
 	}
 
 	if !isURL {
+		if parserEngine == docparser.RemotePDFEngineName {
+			release, err := docparser.AcquireRemotePDFBuffer(ctx)
+			if err != nil {
+				return s.failKnowledge(ctx, knowledge, isLastRetry, "Remote PDF admission cancelled: %v", err)
+			}
+			defer release()
+		}
 		fileReader, err := s.resolveFileServiceForPath(ctx, kb, payload.FilePath).GetFile(ctx, payload.FilePath)
 		if err != nil {
 			s.failStage(ctx, knowledge.ID, types.StageDocReader,
@@ -4267,7 +4282,11 @@ func (s *knowledgeService) convert(
 			return s.failKnowledge(ctx, knowledge, isLastRetry, "failed to get file: %v", err)
 		}
 		defer fileReader.Close()
-		contentBytes, err := io.ReadAll(fileReader)
+		var boundedReader io.Reader = fileReader
+		if parserEngine == docparser.RemotePDFEngineName {
+			boundedReader = io.LimitReader(fileReader, (100<<20)+1)
+		}
+		contentBytes, err := io.ReadAll(boundedReader)
 		if err != nil {
 			s.failStage(ctx, knowledge.ID, types.StageDocReader,
 				werrors.ErrCodeDocReaderParseFailed, "failed to read file", err)
@@ -4296,6 +4315,10 @@ func (s *knowledgeService) convert(
 		logger.Errorf(ctx, "[convert] parser returned error kb=%s knowledge=%s file=%q type=%s engine=%q: %s",
 			kb.ID, knowledge.ID, req.FileName, fileType, parserEngine, result.Error)
 		code, message := docReaderResultFailure(result.Error)
+		if parserEngine == docparser.RemotePDFEngineName && result.Metadata["parser_error_code"] != "" {
+			// This code is sanitized by the trusted reader, never taken from document text.
+			code = "REMOTE_PDF_" + strings.TrimPrefix(result.Metadata["parser_error_code"], "REMOTE_PDF_")
+		}
 		knowledge.ParseStatus = "failed"
 		knowledge.ErrorMessage = message
 		knowledge.UpdatedAt = time.Now()
@@ -4316,6 +4339,14 @@ func (s *knowledgeService) convert(
 	}
 	if pages := result.Metadata["pages"]; pages != "" {
 		docOutput["pages"] = pages
+	}
+	if result.Metadata["parser_engine"] == docparser.RemotePDFEngineName {
+		docOutput["parser_engine"] = result.Metadata["parser_engine"]
+		docOutput["parser_job_id"] = result.Metadata["parser_job_id"]
+		var quality map[string]interface{}
+		if json.Unmarshal([]byte(result.Metadata["parser_quality"]), &quality) == nil {
+			docOutput["parser_quality"] = quality
+		}
 	}
 	s.endStage(ctx, knowledge.ID, types.StageDocReader, docOutput)
 	return result, nil

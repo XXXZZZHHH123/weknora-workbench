@@ -5,6 +5,8 @@ import "strings"
 // ReadRequest is the unified transport-agnostic request for document reading.
 // Set FileContent for file mode, URL for URL mode.
 type ReadRequest struct {
+	// ParserRetryKey is generated only by explicit user reparse, never document input.
+	ParserRetryKey        string
 	FileContent           []byte
 	FileName              string
 	FileType              string

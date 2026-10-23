@@ -2021,6 +2021,10 @@ export default {
           name: 'MinerU Cloud',
           desc: 'MinerU Cloud API'
         },
+        remote_vlm: {
+          name: '원격 PDF 분석',
+          desc: '공유 대기열, 페이지 출처 및 표 검증'
+        },
         mineru: {
           name: 'MinerU',
           desc: 'MinerU 자체 호스팅 서비스'

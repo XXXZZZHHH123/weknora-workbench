@@ -242,6 +242,7 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 
 	lang := types.LanguageFromContextOrDefault(ctx)
 	taskPayload := types.DocumentProcessPayload{
+		Initiator:                types.TaskInitiatorFromContext(ctx),
 		TenantID:                 tenantID,
 		KnowledgeID:              knowledge.ID,
 		KnowledgeBaseID:          kbID,
@@ -443,6 +444,7 @@ func (s *knowledgeService) CreateKnowledgeFromURL(ctx context.Context,
 
 	lang := types.LanguageFromContextOrDefault(ctx)
 	taskPayload := types.DocumentProcessPayload{
+		Initiator:                types.TaskInitiatorFromContext(ctx),
 		TenantID:                 tenantID,
 		KnowledgeID:              knowledge.ID,
 		KnowledgeBaseID:          kbID,
@@ -688,6 +690,7 @@ func (s *knowledgeService) createKnowledgeFromFileURL(
 
 	lang := types.LanguageFromContextOrDefault(ctx)
 	taskPayload := types.DocumentProcessPayload{
+		Initiator:                types.TaskInitiatorFromContext(ctx),
 		TenantID:                 tenantID,
 		KnowledgeID:              knowledge.ID,
 		KnowledgeBaseID:          kbID,
@@ -967,6 +970,7 @@ func (s *knowledgeService) createKnowledgeFromPassageInternal(ctx context.Contex
 
 		lang := types.LanguageFromContextOrDefault(ctx)
 		taskPayload := types.DocumentProcessPayload{
+			Initiator:                types.TaskInitiatorFromContext(ctx),
 			TenantID:                 tenantID,
 			KnowledgeID:              knowledge.ID,
 			KnowledgeBaseID:          kbID,
