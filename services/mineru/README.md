@@ -65,6 +65,8 @@ docker compose -f services/mineru/compose.yml exec mineru python /opt/mineru/ent
 
 默认限额 `2 CPU / 6 GiB`，任务并发 1、VLM 客户端额度 2，数据保留 86400 秒。可设置 `MINERU_CPUS`、`MINERU_MEMORY`、`MINERU_PARSE_CONCURRENCY`、`MINERU_VLM_CONCURRENCY`、`MINERU_RETENTION_SECONDS`。这是受限环境的起始试运行配置；官方安装说明给 ONNX+llama Standard 的内存建议是 **8 GB**，6 GiB 需要实测峰值/是否 OOM，不能据健康接口判断容量足够。
 
+`MINERU_CPU_SHARES` 默认 512，使 worker 在 CPU 争用时使用低于通常应用服务的相对权重；它不是独占核心预留。调优先观察 cgroup CPU 限流计数、内存峰值/OOM 和宿主余量。仅遇 CPU 配额限流且内存有余量时，不应把增大内存当成提速措施；可在线提高独立 worker 的 CPU 配额并同步私有部署配置，任务和模型无需重启。
+
 4.0.12 的 `VlmConfig` 不公开 llama.cpp 的 `n_threads/n_parallel` 设置，本封装不修改官方引擎。Docker CPU 配额限制实际使用量；上游本地 Engine 仍使用默认线程自动探测和 4 slots，VLM 客户端额度 2 不等于 Engine slots 被改为 2。容器无 GPU 设备时使用 CPU 路径；如果需要 GPU，必须另行选择部署配置和重新验收。
 
 根文件系统只读、非 root、删除 capabilities、禁止提权。`/tmp` 保留 512 MiB tmpfs，但 PDF 渲染通过 `TMPDIR=/var/lib/mineru/data/tmp` 使用解析数据卷的磁盘空间；启动前验证可写，正常完成或失败由上游临时目录上下文清理。异常强杀后须按实际任务状态清理残留，不能删除正在处理的目录。显式设置 `MINERU_PROCESSING_WINDOW_SIZE=8`（支持 1–32），限制同时渲染的页数；它不是文档总页数限制。Linux 渲染会写入原始位图，64 页可能超过 512 MiB，不能用增大共享内存替代此配置。磁盘容量仍需监控。
