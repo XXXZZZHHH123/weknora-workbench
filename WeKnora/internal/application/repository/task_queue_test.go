@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS task_dead_letters (
 
 const taskQueueKnowledgeBaseTestDDL = `
 CREATE TABLE IF NOT EXISTS knowledge_bases (
+	access_policy TEXT,
     profile_config TEXT,
     generated_profile TEXT,
     id         VARCHAR(64) PRIMARY KEY,

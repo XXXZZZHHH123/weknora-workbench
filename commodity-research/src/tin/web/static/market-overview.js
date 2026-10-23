@@ -108,17 +108,29 @@ document.addEventListener("DOMContentLoaded", () => {
   get("search").addEventListener("input", renderCatalog);
   get("cancel").addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", () => get("open").focus());
-  get("save").addEventListener("click", () => {
+  get("save").addEventListener("click", async () => {
+    const saveButton = get("save");
+    if (saveButton.disabled) return;
+    saveButton.disabled = true;
     try {
       // Re-read this browser's favorites so a second tab's changes are retained.
       let currentFavorites = favorites;
       try { currentFavorites = preferences.read(storage, preferences.key(context), allowed, 40) || favorites; } catch (_) {}
       const selection = preferences.plan(draft, currentFavorites, allowed);
+      if (metadata.can_edit_shared) {
+        const response = await window.researchFetch(`${window.RESEARCH_PREFIX || ""}/api/sn/market/core/config`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ series_ids: selection.core }),
+        });
+        if (!response.ok) throw new Error("工作台核心指标未保存，请核对编辑权限后重试。");
+        const saved = await response.json();
+        if (JSON.stringify(saved.series_ids) !== JSON.stringify(selection.core)) throw new Error("保存的核心指标范围不一致，请刷新后重试。");
+      }
       selected = selection.core; favorites = selection.favorites;
       const persisted = preferences.save(storage, context, selection);
-      announce(persisted ? "核心指标与排列已保存，选中的指标已加入自选。移出核心不会移出自选。" : "浏览器未允许完整保存，本次选择在当前页面有效；请在指标页核对自选。");
+      announce(persisted ? `${metadata.can_edit_shared ? "工作台核心指标与排列已保存；" : "当前浏览器排列已保存；"}选中的指标已加入自选。移出核心不会移出自选。` : "浏览器未允许完整保存，本次选择在当前页面有效；请在指标页核对自选。");
       dialog.close(); void loadCards();
     } catch (e) { get("dialog-error").textContent = e.message; get("dialog-error").hidden = false; }
+    finally { saveButton.disabled = false; }
   });
   get("retry").addEventListener("click", loadCards);
   syncCount();

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% from "_card.html" import card with context %}
+{% block title %}今日研究 · {{ research_workbench().metadata.name }}{% endblock %}
+{% block main %}
+{% set home = restricted_data %}
+<div data-readonly-home>
+<header class="research-hero">
+  <div class="research-hero-copy">
+    <div class="research-eyebrow">商品研究 <span>/</span> {{ research_workbench().metadata.name }}</div>
+    <h1>今日研究工作台</h1>
+    <p>{{ home.owner_name or '工作台主人' }} 已分享的研究 · 跟进待办、核对市场变化，查看今日简报。</p>
+    <div class="research-hero-meta">
+      {% if home.d %}<span class="research-date-chip">行情截至 <b class="tabular">{{ home.d }}</b></span>{% else %}<span class="research-date-chip">尚无共享行情数据</span>{% endif %}
+      {% if 'market' in home.view_modules %}<a href="{{ research_prefix() }}/sn">查看市场总览 <span aria-hidden="true">↗</span></a>{% endif %}
+    </div>
+  </div>
+  <div class="research-hero-stats">
+    <div class="research-stat {{ 'has-alert' if home.todos }}"><small>待办事项</small><strong class="tabular">{{ home.todos | length }}</strong><span>主人待跟进</span></div>
+    <div class="research-stat"><small>核心数字有变化</small><strong class="tabular">{{ home.changes.core | length }}</strong><span>较上一数据点</span></div>
+  </div>
+</header>
+
+<section class="research-section space-y-3">
+  <div class="flex items-center gap-2"><span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">01</span><h2 class="text-sm font-bold">待办</h2><span class="text-xs text-[var(--text-muted)]">证伪触发 · 判断到期 · 指标断供</span></div>
+  {% if home.todos %}
+  <div id="home-todos" class="rounded-lg border border-[var(--line)] bg-[var(--surface)] shadow-sm divide-y divide-[var(--line)] overflow-hidden">
+    {% for item in home.todos %}<article class="px-4 py-3">
+      <div class="flex items-center gap-2"><span class="text-[10px] px-1.5 py-0.5 rounded border border-[var(--line)] text-[var(--text-muted)]">{{ item.kind }}</span><strong class="text-sm">{{ item.title }}</strong></div>
+      <p class="text-[11px] text-[var(--text-muted)] mt-1">{{ item.detail }}{% if item.assignee %} · 负责人 {{ item.assignee }}{% endif %}{% if item.created_at %} · {{ item.created_at }}{% endif %}</p>
+    </article>{% endfor %}
+  </div>
+  {% else %}<div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-muted)]">{{ home.brief_gap if home.owner_unavailable or home.legacy_unassigned else '当前没有主人待处理的复盘任务。' }}</div>{% endif %}
+</section>
+
+<section class="research-section space-y-3">
+  <div class="flex items-center gap-2"><span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">02</span><h2 class="text-sm font-bold">今日简报</h2><span class="text-xs text-[var(--text-muted)]">基调 · 参考运行区间 · 操作倾向 · 证据链</span></div>
+  {% if home.brief %}{% set brief = home.brief %}
+  <article id="brief-card" class="rounded-xl border border-[var(--line)] bg-[var(--surface)] shadow-sm overflow-hidden">
+    <header class="flex items-start justify-between gap-3 px-5 pt-4 pb-3 border-b border-[var(--line)] flex-wrap">
+      <div><span class="text-[10px] px-2 py-0.5 rounded bg-[var(--primary-soft)] text-[var(--primary)]">{{ 'AI 草稿，未经主人确认' if brief.is_draft else brief.status }}</span><div class="mt-2 flex items-baseline gap-3"><strong class="text-2xl font-black text-[var(--primary)]">{{ brief.tone or '未定基调' }}</strong><span class="text-sm font-semibold">{{ brief.stance or '未给操作倾向' }}</span></div></div>
+      <div class="text-right text-[10px] text-[var(--text-muted)] tabular"><div>交易日 {{ brief.trade_date }}</div><div>{{ brief.generated_at }}</div></div>
+    </header>
+    <div class="px-5 py-4 space-y-3">
+      {% if brief.tone_note %}<p class="research-prose text-xs text-[var(--text-muted)]">{{ brief.tone_note }}</p>{% endif %}
+      {% if brief.range_low is not none or brief.range_high is not none %}<div class="text-xs text-[var(--text-muted)]">参考运行区间 <strong class="tabular text-[var(--text)]">{{ brief.range_low | num }} – {{ brief.range_high | num }}</strong></div>{% endif %}
+      {% if brief.summary %}<p class="research-prose text-sm leading-relaxed whitespace-pre-wrap">{{ brief.summary }}</p>{% endif %}
+      {% for claim in brief.claims %}<div class="border-l-2 border-[var(--primary)] pl-3 py-1"><p class="research-prose text-xs leading-relaxed">{{ claim.text }}</p>{% if claim.evidence %}<div class="mt-1 text-[10px] text-[var(--text-muted)]">当前共享观测：{% for evidence in claim.evidence %}{{ evidence.name }} <span class="tabular">{{ evidence.value | num(evidence.unit) }} {{ evidence.unit }} · {{ evidence.as_of or '无观测' }}</span>{% if not loop.last %}；{% endif %}{% endfor %}</div>{% endif %}</div>{% endfor %}
+      {% for item in brief.unverified %}<div class="border-l-2 border-dashed border-[var(--text-muted)] pl-3 py-1"><p class="text-xs line-through">{{ item.claim }}</p><p class="text-[10px] text-[var(--alert)]">未通过证据校验：{{ item.reasons | join('；') }}</p></div>{% endfor %}
+      {% if brief.playbook %}<p class="text-[10px] text-[var(--text-muted)]">本条结论使用的思路：{% for item in brief.playbook %}{{ item.text }}{% if not loop.last %}；{% endif %}{% endfor %}</p>{% endif %}
+    </div>
+  </article>
+  {% elif home.brief_entries %}
+    {% for item in home.brief_entries %}<article class="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 space-y-2"><header class="flex items-center justify-between gap-3"><strong class="text-sm">{{ item.title }}</strong><span class="text-[10px] text-[var(--text-muted)]">{{ item.status }} · {{ item.date }}</span></header><p class="research-prose text-sm leading-relaxed whitespace-pre-wrap">{{ item.text }}</p></article>{% endfor %}
+  {% else %}<div id="brief-missing" class="rounded-lg border border-dashed border-[var(--line-strong)] bg-[var(--surface)] px-4 py-5"><strong class="text-sm">当前还没有可展示的简报</strong><p class="text-xs text-[var(--text-muted)] mt-1.5">{{ home.brief_gap }}</p></div>{% endif %}
+</section>
+
+<section class="research-section space-y-3">
+  <div class="flex items-center gap-2"><span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">03</span><h2 class="text-sm font-bold">昨夜到今早什么变了</h2><span class="text-xs text-[var(--text-muted)]">核心数字与上一数据点的变化，按幅度排序</span></div>
+  {% if home.changes.core %}<div id="home-changes" class="rounded-lg border border-[var(--line)] bg-[var(--surface)] shadow-sm divide-y divide-[var(--line)]">
+    {% for item in home.changes.core %}<article class="flex items-center justify-between gap-3 px-4 py-2.5"><div><strong class="text-xs">{{ item.label }}</strong><p class="text-[10px] text-[var(--text-muted)] tabular">{{ item.as_of }}</p></div><div class="text-right"><div class="text-sm font-bold tabular">{{ item.value | num(item.unit) }} <small>{{ item.unit }}</small></div><div class="text-[11px] font-semibold tabular {{ 'text-[var(--up)]' if item.change > 0 else 'text-[var(--down)]' }}">{{ item.change | num(item.unit, true) }}{% if item.change_pct is not none %} ({{ item.change_pct | num('%', true) }}%){% endif %}</div></div></article>{% endfor %}
+  </div>{% else %}<div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-muted)]">{{ '当前共享核心数字与上一数据点相比没有变化。' if home.d else '尚无共享指标观测，暂时无法比对变化。' }}</div>{% endif %}
+</section>
+
+<section class="research-section space-y-3">
+  <details id="home-wall" class="rounded-lg border border-[var(--line)] bg-[var(--surface)] shadow-sm">
+    <summary class="flex items-center gap-2 px-4 py-3 cursor-pointer select-none"><span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">04</span><h2 class="text-sm font-bold">全景数据墙</h2><span class="text-xs text-[var(--text-muted)]">核心卡片 · 阈值测距 · 缺口台账</span><span class="ml-auto text-xs text-[var(--primary)]">展开 / 收起</span></summary>
+    <div class="px-4 pb-4 space-y-4 border-t border-[var(--line)] pt-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">{% for item in home.cards %}{{ card(item) }}{% else %}<p class="text-xs text-[var(--text-muted)]">尚未配置可展示的核心指标。</p>{% endfor %}</div>
+      {% if home.radar %}<div><h3 class="text-[11px] font-semibold text-[var(--text-muted)] mb-1.5">阈值测距（只陈述当前值、触发条件与距离）</h3><div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">{% for item in home.radar %}<article class="p-2.5 rounded-lg border border-[var(--line)] bg-[var(--surface-soft)]/50"><div class="flex items-center justify-between gap-2 text-[11px]"><span>{{ item.name }}（{{ item.condition }}）</span><strong class="tabular">{{ item.value | num(item.unit) }}</strong></div><div class="w-full bg-[var(--surface)] h-1.5 rounded-full overflow-hidden border border-[var(--line)] my-1"><div class="h-full rounded-full bg-[var(--primary)]" style="width: {{ item.progress | round(0) }}%"></div></div><p class="text-[10px] text-[var(--text-muted)]">{{ item.distance }}</p></article>{% endfor %}</div></div>{% endif %}
+      <div><h3 class="text-[11px] font-semibold text-[var(--text-muted)] mb-1.5">共享绑定数据完整性{% if home.gaps %}：{{ home.gaps | length }} 项待补{% endif %}</h3>{% if home.gaps %}<div class="rounded-lg border border-[var(--line)] divide-y divide-[var(--line)]">{% for item in home.gaps %}<div class="px-3 py-2 text-xs"><strong>{{ item.name }}</strong><span class="text-[var(--text-muted)] ml-2">{{ item.note }}</span></div>{% endfor %}</div>{% else %}<p class="text-xs text-[var(--text-muted)]">{{ '已绑定指标均有可展示的当前观测。' if home.cards else '尚未配置共享绑定，不对全库完整性作判断。' }}</p>{% endif %}</div>
+    </div>
+  </details>
+</section>
+</div>
+{% endblock %}

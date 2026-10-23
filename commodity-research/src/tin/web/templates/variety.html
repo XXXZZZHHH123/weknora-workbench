@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% from "_card.html" import card, trend %}
+{% from "_card.html" import card, trend with context %}
 {% block title %}{{ research_workbench().metadata.name if research_workbench() else '锡 SN' }} · 研究总览{% endblock %}
 {% block head %}
 {% if research_workbench() %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/market-overview.css?v={{ static_version() }}">
-<script defer src="{{ research_static_prefix() }}/static/indicator-preferences.js?v={{ static_version() }}"></script>
-<script defer src="{{ research_static_prefix() }}/static/market-overview.js?v={{ static_version() }}"></script>
+{% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/indicator-preferences.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/market-overview.js?v={{ static_version() }}"></script>{% endif %}
 {% endif %}
 {% endblock %}
 {% block main %}
@@ -29,7 +29,7 @@
       <div class="text-xl font-bold tabular {{ 'text-[var(--amber)]' if gaps else '' }}">{{ gaps | length }}</div>
       <div class="text-[11px] text-[var(--text-muted)]">待录入缺口</div>
     </div>
-    <button onclick="openExportDrawer()" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shadow-sm whitespace-nowrap">自定义导出 Excel</button>
+    {% if not restricted_view %}<button onclick="openExportDrawer()" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shadow-sm whitespace-nowrap">自定义导出 Excel</button>{% endif %}
   </div>
   {% endif %}
 </div>
@@ -39,23 +39,23 @@
   <h2 class="text-base font-bold">{{ '当前工作台尚无已确认观测' if research_workbench() else '当前空间尚无行情数据' }}</h2>
   <p class="text-sm text-[var(--text-muted)]">{% if research_workbench() %}请在「资料与来源」准备并确认本知识库资料，核对真实字段、单位和来源后，市场数据与图表将在这里显示。{% else %}尚未采集到交易日行情，市场数据与图表将在行情入库后显示。可以在下方「数据更新」中立即更新，或导入行情来源文件。{% endif %}</p>
   <div class="flex flex-wrap gap-3 text-sm">
-    {% if research_workbench() %}<button type="button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)" class="text-[var(--primary)] hover:underline">准备资料</button>{% else %}<a href="{{ research_url('/files') }}" class="text-[var(--primary)] hover:underline">导入行情文件</a>{% endif %}
-    <a href="{{ research_url('/sn/indicators') }}" class="text-[var(--primary)] hover:underline">查看指标与来源</a>
+    {% if research_workbench() %}{% if not restricted_view %}<button type="button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)" class="text-[var(--primary)] hover:underline">准备资料</button>{% endif %}{% elif not restricted_view %}<a href="{{ research_url('/files') }}" class="text-[var(--primary)] hover:underline">导入行情文件</a>{% endif %}
+    {% if not restricted_view or 'indicators' in research_workbench().view_modules %}<a href="{{ research_url('/sn/indicators') }}" class="text-[var(--primary)] hover:underline">查看指标与来源</a>{% endif %}
   </div>
 </section>
 {% endif %}
 
-{% include '_refresh.html' %}
+{% if not restricted_view %}{% include '_refresh.html' %}{% endif %}
 
 {% set j = judgment %}
 {% if j is none %}
 <section class="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-sm flex items-center justify-between gap-4">
   <div>
     <div class="text-[10px] font-bold tracking-wider text-[var(--primary)] uppercase">RESEARCH VIEW</div>
-    <h2 class="text-base font-bold mt-1">尚未登记{{ '' if research_workbench() else '锡的' }}研究判断</h2>
+    <h2 class="text-base font-bold mt-1">{% if restricted_view and restricted_data.legacy_unassigned %}历史研究判断尚未归属到当前研究台{% elif restricted_view and restricted_data.owner_unavailable %}主人归属信息尚未同步{% else %}尚未登记{{ '' if research_workbench() else '锡的' }}研究判断{% endif %}</h2>
     <p class="text-xs text-[var(--text-muted)] mt-1">{% if d %}事实区照常显示；{% endif %}登记判断并更新行情后，阈值与证伪条件将每日自动比对。</p>
   </div>
-  <a href="{{ research_prefix() }}/sn/judgment" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">登记判断 &rarr;</a>
+  {% if not restricted_view %}<a href="{{ research_prefix() }}/sn/judgment" class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]">登记判断 &rarr;</a>{% endif %}
 </section>
 {% else %}
 <section class="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4 sm:p-5 shadow-sm">
@@ -100,7 +100,7 @@
         <div class="text-[10px] text-[var(--text-muted)]">{{ t.distance }}</div>
       </div>
       {% endfor %}
-      <a href="{{ research_prefix() }}/sn/judgment" class="block text-[10px] text-[var(--primary)] font-semibold hover:underline">查看完整研判 &rarr;</a>
+      {% if not restricted_view or 'judgments' in research_workbench().view_modules %}<a href="{{ research_prefix() }}/sn/judgment" class="block text-[10px] text-[var(--primary)] font-semibold hover:underline">查看完整研判 &rarr;</a>{% endif %}
     </div>
   </div>
   {% if j.status == '草稿' and j.blockers %}
@@ -221,7 +221,7 @@
       <h2 class="text-sm font-bold">宏观镜头</h2>
       <span class="text-xs text-[var(--text-muted)]">流动性、风险偏好与半导体景气</span>
     </div>
-    <a href="{{ research_prefix() }}/sn/indicators?scope=macro&date={{ d }}" class="text-xs font-semibold text-[var(--primary)] hover:underline">查看宏观指标 &rarr;</a>
+    {% if not restricted_view %}<a href="{{ research_prefix() }}/sn/indicators?scope=macro&date={{ d }}" class="text-xs font-semibold text-[var(--primary)] hover:underline">查看宏观指标 &rarr;</a>{% endif %}
   </div>
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
     {% for m in macro[:4] %}{{ trend(m, d) }}{% endfor %}
@@ -233,7 +233,7 @@
     <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">04</span>
     <h2 class="text-sm font-bold">数据完整性与缺口台账</h2>
     {% if gaps %}<span class="text-xs text-[var(--amber)] font-medium">{{ gaps | length }} 项待补</span>
-    {% else %}<span class="text-xs text-[var(--primary)] font-medium">全部指标在预期更新时间内</span>{% endif %}
+    {% else %}<span class="text-xs text-[var(--primary)] font-medium">{{ '已授权指标暂无已登记缺口' if restricted_view else '全部指标在预期更新时间内' }}</span>{% endif %}
   </div>
   {% if gaps %}
   <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] overflow-hidden shadow-sm overflow-x-auto">
@@ -266,12 +266,12 @@
   {% endif %}
 </section>
 
-<p class="text-[11px] text-[var(--text-muted)]">agent 读取：<a class="text-[var(--primary)] hover:underline" href="{{ research_prefix() }}/api/sn/snapshot?date={{ d }}">/api/sn/snapshot?date={{ d }}</a></p>
+{% if not restricted_view %}<p class="text-[11px] text-[var(--text-muted)]">agent 读取：<a class="text-[var(--primary)] hover:underline" href="{{ research_prefix() }}/api/sn/snapshot?date={{ d }}">/api/sn/snapshot?date={{ d }}</a></p>{% endif %}
 {% endif %}
 {% endblock %}
 
 {% block drawer %}
-{% if d %}
+{% if d and not restricted_view %}
 <aside id="export-drawer" data-drawer class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-xl bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
   <div class="flex items-center justify-between pb-3 border-b border-[var(--line)]">
     <div>

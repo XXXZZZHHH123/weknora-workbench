@@ -18,9 +18,9 @@ import (
 //   - DELETE /:id         Owner+ (also normally a CanAccessAllTenants op)
 //   - GET/POST/PUT/DELETE /:id/api-keys   Owner+ (scoped API key management)
 //   - GET    /:id/members            Viewer+ (any member can see who else is in)
-//   - POST   /:id/members            Owner+ (only Owner can add new members)
-//   - PUT    /:id/members/:user_id   Owner+ (only Owner can change roles)
-//   - DELETE /:id/members/:user_id   Owner+ (only Owner can remove members)
+//   - POST   /:id/members            Admin+ (Owner-only ownership changes)
+//   - PUT    /:id/members/:user_id   Admin+ (Owner-only ownership changes)
+//   - DELETE /:id/members/:user_id   Admin+ (Owner-only ownership changes)
 //   - POST   /:id/leave              Viewer+ (any member can quit on their own)
 //
 // All /tenants/:id endpoints share g.PathTenantMatch() at the group
@@ -104,15 +104,15 @@ func RegisterTenantRoutes(
 
 			// Tenant member management (PR 3 of #1303). Listing is
 			// Viewer+ so any active member can see the roster; mutation
-			// is Owner+ because membership changes are the highest-impact
-			// tenant op. /:id/leave is Viewer+ — any member can quit on
+			// is Admin+ with separate Owner protection. /:id/leave is
+			// Viewer+ — any member can quit on
 			// their own; the service still rejects when it would leave
 			// the tenant without an Owner.
 			if memberHandler != nil {
 				g.apiKeyRoute(tenantByID, http.MethodGet, "/members", apiKeyManageMembers(apiKeyFullAccess()), g.Viewer(), memberHandler.ListMembers)
-				g.apiKeyRoute(tenantByID, http.MethodPost, "/members", apiKeyManageMembers(apiKeyFullAccess()), g.Owner(), memberHandler.AddMember)
-				g.apiKeyRoute(tenantByID, http.MethodPut, "/members/:user_id", apiKeyManageMembers(apiKeyFullAccess()), g.Owner(), memberHandler.UpdateMemberRole)
-				g.apiKeyRoute(tenantByID, http.MethodDelete, "/members/:user_id", apiKeyManageMembers(apiKeyFullAccess()), g.Owner(), memberHandler.RemoveMember)
+				g.apiKeyRoute(tenantByID, http.MethodPost, "/members", apiKeyManageMembers(apiKeyFullAccess()), g.MemberManagement(), memberHandler.AddMember)
+				g.apiKeyRoute(tenantByID, http.MethodPut, "/members/:user_id", apiKeyManageMembers(apiKeyFullAccess()), g.MemberManagement(), memberHandler.UpdateMemberRole)
+				g.apiKeyRoute(tenantByID, http.MethodDelete, "/members/:user_id", apiKeyManageMembers(apiKeyFullAccess()), g.MemberManagement(), memberHandler.RemoveMember)
 				tenantByID.POST("/leave", g.Viewer(), memberHandler.LeaveTenant)
 			}
 
@@ -121,19 +121,19 @@ func RegisterTenantRoutes(
 			// so the invitee gets to confirm via /me/invitations
 			// before any tenant_members row is written. List is
 			// Viewer+ so any member can see pending invites in the
-			// management view; create/revoke are Owner+ to match the
+			// management view; create/revoke are Admin+ to match the
 			// existing /members mutation gates. nil-skip pattern
 			// mirrors memberHandler above for environments built
 			// without the invitation dependency wired.
 			if invitationHandler != nil {
 				g.apiKeyRoute(tenantByID, http.MethodGet, "/invitations", apiKeyManageMembers(apiKeyFullAccess()), g.Viewer(), invitationHandler.ListTenantInvitations)
-				g.apiKeyRoute(tenantByID, http.MethodPost, "/invitations", apiKeyManageMembers(apiKeyFullAccess()), g.Owner(), invitationHandler.CreateInvitation)
-				g.apiKeyRoute(tenantByID, http.MethodDelete, "/invitations/:inv_id", apiKeyManageMembers(apiKeyFullAccess()), g.Owner(), invitationHandler.RevokeInvitation)
+				g.apiKeyRoute(tenantByID, http.MethodPost, "/invitations", apiKeyManageMembers(apiKeyFullAccess()), g.MemberManagement(), invitationHandler.CreateInvitation)
+				g.apiKeyRoute(tenantByID, http.MethodDelete, "/invitations/:inv_id", apiKeyManageMembers(apiKeyFullAccess()), g.MemberManagement(), invitationHandler.RevokeInvitation)
 				// Share-link create lives under /invite-links so the URL
 				// reads as "create a link" rather than another flavour
 				// of /invitations; the underlying row still lives in the
 				// tenant_invitations table and shows up in the GET above.
-				g.apiKeyRoute(tenantByID, http.MethodPost, "/invite-links", apiKeyManageMembers(apiKeyFullAccess()), g.Owner(), invitationHandler.CreateInviteLink)
+				g.apiKeyRoute(tenantByID, http.MethodPost, "/invite-links", apiKeyManageMembers(apiKeyFullAccess()), g.MemberManagement(), invitationHandler.CreateInviteLink)
 			}
 
 			// Audit log feed (PR 6 of #1303). Admin+ so denied-action
@@ -146,6 +146,16 @@ func RegisterTenantRoutes(
 			}
 		}
 	}
+}
+
+func RegisterTenantNotificationRoutes(r *gin.RouterGroup, h *handler.WorkspaceNotificationHandler, g *rbacGuards) {
+	if h == nil {
+		return
+	}
+	// Inbox actions belong to an authenticated person, never an API key.
+	group := r.Group("/tenants/:id/notifications", g.PathTenantMatch(), g.Viewer())
+	group.GET("", h.List)
+	group.PUT("/:notification_id/read", h.MarkRead)
 }
 
 // RegisterMyInvitationRoutes wires the per-user invitation inbox under

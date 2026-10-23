@@ -84,7 +84,9 @@ func TestDocumentTagBodyRouteIssuesWriteGrant(t *testing.T) {
 
 func TestSingleDocumentDeletePersistsAuthorizedKBInTask(t *testing.T) {
 	q := &documentDeleteEnqueuer{}
-	h := &KnowledgeHandler{kgService: &documentWriteHandlerKnowledge{}, asynqClient: q}
+	h := &KnowledgeHandler{kgService: &documentWriteHandlerKnowledge{}, asynqClient: q, kbService: &stubKBService{get: func(context.Context, string) (*types.KnowledgeBase, error) {
+		return &types.KnowledgeBase{ID: "kb", TenantID: 7, CreatorID: "user"}, nil
+	}}}
 	r := documentHandlerRouter()
 	r.DELETE("/:id", h.DeleteKnowledge)
 	w := httptest.NewRecorder()

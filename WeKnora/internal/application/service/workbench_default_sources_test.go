@@ -23,6 +23,9 @@ func TestWorkbenchDefaultSourceUsesExplicitTenantBinding(t *testing.T) {
 	require.Equal(t, source.ID, row.DefaultKnowledgeBase.KnowledgeBaseID)
 	require.Equal(t, uint64(1), row.DefaultKnowledgeBase.TenantID)
 	require.Equal(t, "macro", row.DefaultKnowledgeBase.Kind)
+	readable := &types.ResourceAccessPolicy{SpacePermission: types.ResourcePermissionViewer, Members: []types.ResourceMemberPermission{}}
+	row.AccessPolicy = readable
+	require.NoError(t, s.db.Save(row).Error)
 	// Viewer reads the same current, system-bound source.
 	viewer, err := s.GetWorkbench(workspaceContext("reader", 1, types.TenantRoleViewer), row.ID)
 	require.NoError(t, err)

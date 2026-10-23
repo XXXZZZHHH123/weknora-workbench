@@ -18,6 +18,8 @@ HOST_GROWTH_OVERHEAD_MB = 128
 CGROUP_ROOT = Path('/sys/fs/cgroup')
 CGROUP_MEMBERSHIP = Path('/proc/self/cgroup')
 COREDUMP_FILTER = Path('/proc/self/coredump_filter')
+PROC_ROOT = Path('/proc')
+MONITORED_PROFILE = 'monitored-local-once'
 
 
 class GuardError(Exception):
@@ -46,6 +48,54 @@ def integer(env, key, default, minimum=0):
     if not re.fullmatch(r"\d+", value) or int(value) < minimum:
         raise GuardError(f"{key} 必须是至少 {minimum} 的整数（MiB）。")
     return int(value)
+
+
+def monitored(env):
+    return env.get('WEKNORA_BUILD_PROFILE', 'default') == MONITORED_PROFILE
+
+
+def require_monitor(env, *, in_build_scope=False):
+    """Bind the exceptional profile to a live, separately supervised process.
+
+    A PID alone can be reused; Linux starttime plus owner and state identify the
+    specific monitoring process. This proves its presence, not its policy: the
+    caller remains responsible for sampling pressure and stopping its own build.
+    """
+    if not monitored(env):
+        return
+    pid = env.get('WEKNORA_BUILD_MONITOR_PID', '')
+    starttime = env.get('WEKNORA_BUILD_MONITOR_STARTTIME', '')
+    if (not re.fullmatch(r'[1-9]\d*', pid) or
+            not re.fullmatch(r'[1-9]\d*', starttime) or int(pid) == os.getpid()):
+        raise GuardError('受监控构建需要独立监控进程的 PID 与匹配的 STARTTIME；已停止。')
+    process = PROC_ROOT / pid
+    try:
+        if process.stat().st_uid != os.getuid():
+            raise ValueError('monitor owner mismatch')
+        # comm is parenthesized and may itself include spaces or parentheses.
+        stat = (process / 'stat').read_text().rsplit(')', 1)[1].split()
+        if stat[0] in ('Z', 'X', 'x') or stat[19] != starttime:
+            raise ValueError('monitor missing or PID reused')
+        if in_build_scope:
+            def unified(path):
+                paths = [line[3:] for line in path.read_text().splitlines() if line.startswith('0::')]
+                if len(paths) != 1 or not paths[0].startswith('/'):
+                    raise ValueError('invalid monitor cgroup')
+                return paths[0].rstrip('/')
+            build_scope = unified(CGROUP_MEMBERSHIP)
+            monitor_scope = unified(process / 'cgroup')
+            if monitor_scope == build_scope or monitor_scope.startswith(build_scope + '/'):
+                raise ValueError('monitor is inside compiler scope')
+    except (OSError, ValueError, IndexError) as exc:
+        raise GuardError('受监控构建的监控进程不存在、身份不匹配或位于构建组内；已停止。') from exc
+
+
+def guest_reserve_minimum(env):
+    return 768 if monitored(env) else 1024
+
+
+def host_reserve_minimum(env):
+    return 512 if monitored(env) else HOST_RESERVE_MB
 
 
 def meminfo():
@@ -99,18 +149,24 @@ public static class BuildHostMemoryProbe {
 
 
 def check_host(env, memory=MIN_BUILD_MB, probe=None, *, starting=True):
-    reserve = integer(env, 'WEKNORA_BUILD_HOST_RESERVE_MB', HOST_RESERVE_MB, HOST_RESERVE_MB)
+    require_monitor(env)
+    reserve = integer(env, 'WEKNORA_BUILD_HOST_RESERVE_MB',
+                      768 if monitored(env) else HOST_RESERVE_MB, host_reserve_minimum(env))
     available = (probe or windows_available)()
     if not isinstance(available, int) or isinstance(available, bool) or available < 0:
         raise GuardError('Windows 可用内存查询结果无效，已停止构建。')
     # No credit is taken for guest cache reclamation: the whole build limit may
     # become new host residency. Verification still precedes compiler allocation;
     # only the outer startup allowance is omitted on that second check.
-    required = reserve + memory + (HOST_GROWTH_OVERHEAD_MB if starting else 0)
+    # Only the explicit supervised profile credits reclaimable guest residency;
+    # it still needs a host floor plus startup margin at BOTH preflight checks.
+    growth = 0 if monitored(env) else memory
+    extra = HOST_GROWTH_OVERHEAD_MB if starting or monitored(env) else 0
+    required = reserve + growth + extra
     if available < required:
         raise GuardError(f'Windows 当前可用 {available}MiB；本次构建需要 {required}MiB（保留 {reserve}MiB' +
-                         f'，构建最多新增 {memory}MiB' +
-                         (f'，额外余量 {HOST_GROWTH_OVERHEAD_MB}MiB' if starting else '') +
+                         (f'，构建最多新增 {memory}MiB' if not monitored(env) else '，已启用独立监控') +
+                         (f'，额外余量 {extra}MiB' if extra else '') +
                          '）。余量不足，已停止，现有构建未替换。')
     return available, reserve
 
@@ -152,7 +208,7 @@ def go_limit(env, budget):
 
 def profile_limits(total, env):
     profile = env.get('WEKNORA_BUILD_PROFILE', 'default')
-    if profile == 'large-frontend-once':
+    if profile in ('large-frontend-once', MONITORED_PROFILE):
         if total <= 4096:
             raise GuardError('3GiB 前端试构建需要大于 4GiB 的实际 guest 内存。')
         return 3840, 3072, 768
@@ -174,7 +230,9 @@ def heap_ceiling(total, memory, env=None):
 
 
 def calculate(total, available, env, host_available=-1, host_reserve=1536):
-    reserve = integer(env, 'WEKNORA_BUILD_RESERVE_MB', 1024, 1024)
+    require_monitor(env)
+    minimum = guest_reserve_minimum(env)
+    reserve = integer(env, 'WEKNORA_BUILD_RESERVE_MB', minimum, minimum)
     ceiling = min(memory_ceiling(total, env), available - reserve)
     if ceiling < MIN_BUILD_MB:
         raise GuardError(f'WSL/Linux 当前可用 {available}MiB，保留 {reserve}MiB 后不足最低构建预算 {MIN_BUILD_MB}MiB；已停止，现有构建未替换。')
@@ -206,7 +264,7 @@ def read_cgroup():
     directory = (root / unified[0].lstrip('/')).resolve()
     if not directory.is_relative_to(root):
         raise GuardError('无法验证本进程的 cgroup 路径。')
-    limits = {}
+    limits = {'_path': str(directory)}
     def read_limit(path):
         value = path.read_text().strip()
         if value == 'max':
@@ -223,8 +281,9 @@ def read_cgroup():
                 break  # The unified root has no memory.max limit file.
             if not parent.is_relative_to(root):
                 raise ValueError('cgroup ancestor escaped the unified hierarchy')
-            ancestors.append({name: read_limit(parent / name)
-                              for name in ('memory.max', 'memory.high', 'memory.swap.max')})
+            ancestors.append({'_path': str(parent),
+                              **{name: read_limit(parent / name)
+                                 for name in ('memory.max', 'memory.high', 'memory.swap.max')}})
         limits['_ancestors'] = ancestors
     except (OSError, ValueError) as exc:
         raise GuardError('无法读取实际 cgroup 内存限制，已停止构建。') from exc
@@ -234,28 +293,35 @@ def read_cgroup():
 def verify_limits(budget, limits, env=None):
     if budget.memory < MIN_BUILD_MB or budget.memory > memory_ceiling(budget.total, env):
         raise GuardError('构建预算不符合内存保留策略。')
-    if budget.reserve < 1024 or not 0 < budget.high <= budget.memory * 9 // 10 or not 0 <= budget.swap <= MAX_SWAP_MB:
+    if budget.reserve < guest_reserve_minimum(env or {}) or not 0 < budget.high <= budget.memory * 9 // 10 or not 0 <= budget.swap <= MAX_SWAP_MB:
         raise GuardError('构建限制参数无效。')
     if not 512 <= budget.heap <= heap_ceiling(budget.total, budget.memory, env):
         raise GuardError('Node 堆上限不符合本次构建预算。')
     effective = {}
+    effective_paths = {}
     for name, maximum in [('memory.max', budget.memory*MIB),
                           ('memory.high', budget.high*MIB),
                           ('memory.swap.max', budget.swap*MIB)]:
         actual = limits.get(name)
         if actual is None or actual < 0 or actual > maximum:
             raise GuardError(f'未检测到有效的 {name} 构建约束；环境标记不能代替实际 cgroup 限额，已停止。')
-        finite = [actual]
+        finite = [(actual, limits.get('_path'))]
         for ancestor in limits.get('_ancestors', []):
             value = ancestor.get(name)
             if value is not None:
                 if not isinstance(value, int) or value < 0:
                     raise GuardError('祖先 cgroup 内存限制无效，已停止。')
-                finite.append(value)
-        effective[name] = min(finite)
+                finite.append((value, ancestor.get('_path')))
+        effective[name], effective_paths[name] = min(finite, key=lambda item: item[0])
     _, _, overhead = profile_limits(budget.total, env or {})
-    if effective['memory.max'] < max(MIN_BUILD_MB, budget.heap + overhead) * MIB:
-        raise GuardError('祖先 cgroup 的有效内存上限不足以容纳本次构建预算，已停止。')
+    required = max(MIN_BUILD_MB, budget.heap + overhead)
+    if effective['memory.max'] < required * MIB:
+        path = effective_paths['memory.max']
+        source = str(Path(path) / 'memory.max') if path else '未知 cgroup 的 memory.max'
+        actual_mb = f"{effective['memory.max'] / MIB:.6f}".rstrip('0').rstrip('.')
+        raise GuardError(f'cgroup 的有效内存上限不足以容纳本次构建预算：{source} 实际 {actual_mb}MiB，'
+                         f'本次至少需要 {required}MiB（Node 堆 {budget.heap}MiB + 原生余量 {overhead}MiB，'
+                         f'最低构建预算 {MIN_BUILD_MB}MiB）；已停止。')
     if effective['memory.high'] <= 0:
         raise GuardError('有效 memory.high 为零，已停止构建。')
     if limits.get('memory.oom.group') != 1:
@@ -263,13 +329,14 @@ def verify_limits(budget, limits, env=None):
 
 
 def verify(env, values):
+    require_monitor(env, in_build_scope=True)
     if len(values) != len(dataclasses.fields(Budget)) or not all(re.fullmatch(r'-?\d+', x) for x in values):
         raise GuardError('内部构建预算缺失或无效，已停止。')
     budget = Budget(*(int(x) for x in values))
     total, available = meminfo()
     if (total != budget.total or not 0 <= budget.available <= total or
             budget.memory > min(memory_ceiling(total, env), budget.available-budget.reserve) or
-            budget.host_reserve < HOST_RESERVE_MB or
+            budget.host_reserve < host_reserve_minimum(env) or
             not 128 <= budget.go <= budget.memory - 640):
         raise GuardError('内部构建预算不符合本机内存策略。')
     if budget.memory > available - budget.reserve:

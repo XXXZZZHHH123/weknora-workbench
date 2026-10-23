@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBodyKBOwnershipSkipsUnnecessaryLookup(t *testing.T) {
+func TestBodyKBOwnershipChecksResourcePolicyBeforeRoleBypass(t *testing.T) {
 	for _, tt := range []struct {
 		name                        string
 		role                        types.TenantRole
@@ -44,16 +44,18 @@ func TestBodyKBOwnershipSkipsUnnecessaryLookup(t *testing.T) {
 			}
 			c.Request = c.Request.WithContext(ctx)
 			enabled := !tt.disabled
+			calls := 0
 			h := &KnowledgeHandler{
 				cfg: &config.Config{
 					Tenant: &config.TenantConfig{EnableRBAC: &enabled, EnableCrossTenantAccess: tt.superuser},
 				},
 				kbService: &stubKBService{get: func(context.Context, string) (*types.KnowledgeBase, error) {
-					t.Fatal("body-carried KB ownership must be looked up lazily")
-					return nil, stderrors.New("unavailable")
+					calls++
+					return &types.KnowledgeBase{ID: "kb", TenantID: 1}, nil
 				}},
 			}
 			require.NoError(t, h.requireKBOwnershipOrAdmin(c, "kb"))
+			require.Equal(t, 1, calls, "legacy role bypass must not skip loading a potentially private resource")
 		})
 	}
 }

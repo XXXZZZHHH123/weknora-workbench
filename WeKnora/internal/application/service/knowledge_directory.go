@@ -35,7 +35,13 @@ func (s *knowledgeService) CreateKnowledgeFolder(ctx context.Context, kbID, path
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.CreateKnowledgeFolder(ctx, kb.TenantID, kbID, normalized)
+	row, err := s.repo.CreateKnowledgeFolder(ctx, kb.TenantID, kbID, normalized)
+	if err != nil {
+		return nil, err
+	}
+	recordKBActivity(ctx, s.audit, kb.TenantID, kbID, types.AuditActionFolderCreated,
+		"knowledge_folder", "", types.AuditOutcomeSuccess, map[string]any{"folder_path": normalized})
+	return row, nil
 }
 func (s *knowledgeService) DeleteKnowledgeFolder(ctx context.Context, kbID, path string, recursive ...bool) error {
 	ctx, kb, normalized, err := s.writableDirectory(ctx, kbID, path)
@@ -43,9 +49,17 @@ func (s *knowledgeService) DeleteKnowledgeFolder(ctx context.Context, kbID, path
 		return err
 	}
 	if len(recursive) > 0 && recursive[0] {
-		return s.deleteKnowledgeFolderRecursive(ctx, kb, normalized)
+		err = s.deleteKnowledgeFolderRecursive(ctx, kb, normalized)
+	} else {
+		err = s.repo.DeleteKnowledgeFolder(ctx, kb.TenantID, kbID, normalized)
 	}
-	return s.repo.DeleteKnowledgeFolder(ctx, kb.TenantID, kbID, normalized)
+	if err != nil {
+		return err
+	}
+	recordKBActivity(ctx, s.audit, kb.TenantID, kbID, types.AuditActionFolderDeleted,
+		"knowledge_folder", "", types.AuditOutcomeSuccess,
+		map[string]any{"folder_path": normalized, "recursive": len(recursive) > 0 && recursive[0]})
+	return nil
 }
 
 func incompleteFolderDeletion(ctx context.Context, err error, deleted int) error {

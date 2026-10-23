@@ -244,7 +244,7 @@ async function commitMapping() {
   finally { actionBusy.value = false }
 }
 function openReview(op: LibraryOperation) { reviewImport.value = op.remote_ids?.import_id || op.result?.import_id || ''; reviewOpen.value = true }
-function authReview() { reviewFrame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: auth.effectiveTenantId }, window.location.origin) }
+function authReview() { reviewFrame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: auth.effectiveTenantId, userId: auth.user?.id || '' }, window.location.origin) }
 function sendTheme() { if (reviewOpen.value) reviewFrame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 async function closeReview() { reviewOpen.value = false; if (selected.value) await openDetail(selected.value, false); await refresh() }
 async function page(next: boolean) { offset.value = next ? nextOffset.value || offset.value : Math.max(0, offset.value - 25); await refresh() }

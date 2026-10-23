@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/application/access"
 	"github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/google/uuid"
@@ -26,10 +27,14 @@ func (h *Handler) resolveResearchWorkbenchScope(ctx context.Context, session *ty
 		row.TenantID != session.TenantID || row.TenantID != caller.TenantID || caller.UserID == "" {
 		return scope, errors.NewNotFoundError("研究工作台不存在或无权访问")
 	}
-	// GetWorkbench has already resolved read access, including shared KB grants.
+	// Workbench sharing may authorize indicator projections without raw source
+	// access. Full-text chat must independently verify the caller's KB grant.
 	kb, err := h.knowledgebaseService.GetKnowledgeBaseByIDOnly(ctx, row.KnowledgeBaseID)
 	if err != nil || kb == nil || kb.ID != row.KnowledgeBaseID || kb.TenantID == 0 || kb.DeletedAt.Valid {
 		return scope, errors.NewNotFoundError("绑定的知识库不存在或无权访问")
+	}
+	if _, err := access.ResolveKB(ctx, access.KBRequest{Caller: caller}, kb, types.OrgRoleViewer, h.kbShareService, nil); err != nil {
+		return scope, errors.NewForbiddenError("工作台全文问答需要来源知识库查看权限")
 	}
 	return types.ResearchWorkbenchScope{ID: row.ID, TenantID: row.TenantID, UserID: caller.UserID,
 		KnowledgeBaseID: kb.ID, KnowledgeBaseTenantID: kb.TenantID}, nil

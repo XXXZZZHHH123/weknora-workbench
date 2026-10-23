@@ -19,6 +19,7 @@ async function fixture(surface: typeof surfaces[number]) {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   }).outputText
   const effectiveTheme = ref<'light' | 'dark'>('light'), requested: string[] = [], calls: string[] = [], messages: Array<{ payload: any; target: string }> = []
+  const events: CustomEvent[] = []
   const auth = reactive({ token: '', user: { id: 'test-user' }, selectedTenantId: 1, effectiveTenantId: 1, tenant: { id: 1 }, currentTenantRole: 'admin' })
   const route = reactive({ params: { kbId: 'test-kb' }, query: { source_knowledge_id: 'test-original' }, path: '/platform/knowledge-bases/test-kb/structured-data', fullPath: '/platform/knowledge-bases/test-kb/structured-data' })
   const unmounts: Array<() => void> = [], scope = effectScope()
@@ -33,13 +34,14 @@ async function fixture(surface: typeof surfaces[number]) {
     createMaterialClient: () => ({ async get() { calls.push('materials'); return {} } }),
     workspaceIdentity: (tenant: number, user: string) => `${tenant}:${user}`, workspaceErrorMessage: () => 'error',
     takeIntake: () => null, isTable: () => false, isStructuredFile: () => false, clearTimeout() {},
-    window: { location: { origin: 'https://test.local' }, removeEventListener() {} },
+    CustomEvent,
+    window: { location: { origin: 'https://test.local' }, removeEventListener() {}, dispatchEvent(event: CustomEvent) { events.push(event) } },
   }))
   if (surface.name === 'materials review') view.reviewOpen.value = true
   view.frame.value = { contentWindow: { postMessage: (payload: unknown, target: string) => messages.push({ payload, target }) } }
   for (let i = 0; i < 4; i++) { await Promise.resolve(); await nextTick() }
   const event = (data: any) => ({ origin: 'https://test.local', source: view.frame.value.contentWindow, data })
-  return { view, effectiveTheme, requested, calls, messages, event, close: () => { unmounts.forEach(fn => fn()); scope.stop() } }
+  return { view, effectiveTheme, requested, calls, messages, events, event, close: () => { unmounts.forEach(fn => fn()); scope.stop() } }
 }
 
 for (const surface of surfaces) {
@@ -74,4 +76,18 @@ test('research theme requests change the parent preference only from the registe
   f.view.receive(request); await nextTick()
   assert.deepEqual(f.requested, ['dark'])
   assert.equal(f.messages[0]!.payload.type, 'workspace-theme')
+})
+
+test('knowledge structured uploads refresh the current directory only from its trusted scoped frame', async t => {
+  const f = await fixture(surfaces[0]); t.after(f.close)
+  const updated = f.event({ type: 'structured-import-updated', tenant_id: '1', knowledge_base_id: 'test-kb' })
+  f.view.receive({ ...updated, origin: 'https://untrusted.example' })
+  f.view.receive({ ...updated, source: {} })
+  f.view.receive(f.event({ ...updated.data, tenant_id: '2' }))
+  f.view.receive(f.event({ ...updated.data, knowledge_base_id: 'other-kb' }))
+  assert.equal(f.events.length, 0)
+  f.view.receive(updated)
+  assert.equal(f.events.length, 1)
+  assert.equal(f.events[0]!.type, 'weknora:knowledge-directory-change')
+  assert.deepEqual({ ...f.events[0]!.detail }, { kbId: 'test-kb' })
 })

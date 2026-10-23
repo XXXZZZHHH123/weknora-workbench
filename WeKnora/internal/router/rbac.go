@@ -212,6 +212,16 @@ func (g *rbacGuards) Owner() gin.HandlerFunc {
 	return middleware.RequireRole(types.TenantRoleOwner, g.cfg)
 }
 
+func (g *rbacGuards) MemberManagement() gin.HandlerFunc {
+	requireAdmin := g.Admin()
+	return func(c *gin.Context) {
+		if middleware.IsCrossTenantSuperuser(c.Request.Context(), g.cfg) {
+			c.Request = c.Request.WithContext(types.WithTenantOwnerManagement(c.Request.Context()))
+		}
+		requireAdmin(c)
+	}
+}
+
 // API-key authorization — a SEPARATE authority from the JWT role/ownership
 // guards above. Instead of stacking a per-route guard that also had to know
 // the caller's ownership, every API-key-accessible route declares one
@@ -446,7 +456,7 @@ func (g *rbacGuards) SystemAdmin() gin.HandlerFunc {
 // creator may proceed; otherwise Admin+ is required. Contributors who
 // did not create the KB get 403 (when enforcement is on).
 func (g *rbacGuards) OwnedKBOrAdmin() gin.HandlerFunc {
-	return middleware.RequireOwnershipOrRole(types.TenantRoleAdmin, g.kbCreator, g.cfg)
+	return g.kbPolicyGuard(middleware.KBIDFromParam("id"), g.kbCreator, false)
 }
 
 // OwnedKBOrAdminFromKbIDParam is the same matrix as OwnedKBOrAdmin but
@@ -455,7 +465,7 @@ func (g *rbacGuards) OwnedKBOrAdmin() gin.HandlerFunc {
 // engine, materialising indexes — are at least as sensitive as
 // updating the KB itself, so they share the "creator OR Admin+" rule.
 func (g *rbacGuards) OwnedKBOrAdminFromKbIDParam() gin.HandlerFunc {
-	return middleware.RequireOwnershipOrRole(types.TenantRoleAdmin, g.kbCreatorFromKbIDParam, g.cfg)
+	return g.kbPolicyGuard(middleware.KBIDFromParam("kbId"), g.kbCreatorFromKbIDParam, true)
 }
 
 // OwnedAgentOrAdmin: same shape as OwnedKBOrAdmin but for CustomAgent.
@@ -470,7 +480,7 @@ func (g *rbacGuards) OwnedAgentOrAdmin() gin.HandlerFunc {
 // walks it back to the owning KB's CreatorID. Same "creator OR Admin+"
 // rule as OwnedKBOrAdmin, just one chain hop deeper. PR 5 (#1303).
 func (g *rbacGuards) OwnedKnowledgeKBOrAdmin() gin.HandlerFunc {
-	return middleware.RequireOwnershipOrRole(types.TenantRoleAdmin, g.knowledgeKBCreator, g.cfg)
+	return g.kbPolicyGuard(middleware.KBIDFromKnowledgeIDParam("id", g.knowledgeService), g.knowledgeKBCreator, false)
 }
 
 // OwnedChunkKBOrAdmin: chunk mutations addressed via :knowledge_id.
@@ -481,7 +491,7 @@ func (g *rbacGuards) OwnedKnowledgeKBOrAdmin() gin.HandlerFunc {
 // see OwnedChunkKBOrAdminFromChunkID below: same matrix, walks one
 // extra hop (chunk_id -> knowledge_id) before reusing this chain.
 func (g *rbacGuards) OwnedChunkKBOrAdmin() gin.HandlerFunc {
-	return middleware.RequireOwnershipOrRole(types.TenantRoleAdmin, g.chunkKBCreator, g.cfg)
+	return g.kbPolicyGuard(middleware.KBIDFromKnowledgeIDParam("knowledge_id", g.knowledgeService), g.chunkKBCreator, false)
 }
 
 // OwnedChunkKBOrAdminFromChunkID: chunk mutations addressed via :id
@@ -491,14 +501,14 @@ func (g *rbacGuards) OwnedChunkKBOrAdmin() gin.HandlerFunc {
 // flat Contributor because the chunk-id -> knowledge-id -> kb chain
 // wasn't wired; that's now plumbed through KBCreatorLookupFromChunkIDParam.
 func (g *rbacGuards) OwnedChunkKBOrAdminFromChunkID() gin.HandlerFunc {
-	return middleware.RequireOwnershipOrRole(types.TenantRoleAdmin, g.chunkKBCreatorFromID, g.cfg)
+	return g.kbPolicyGuard(middleware.KBIDFromChunkIDParam("id", g.chunkService), g.chunkKBCreatorFromID, false)
 }
 
 // OwnedWikiKBOrAdmin: wiki page CRUD and maintenance ops. Wiki routes
 // use :kb_id directly so the lookup is a single hop into the KB
 // service — no knowledge chain. Same matrix as OwnedKBOrAdmin.
 func (g *rbacGuards) OwnedWikiKBOrAdmin() gin.HandlerFunc {
-	return middleware.RequireOwnershipOrRole(types.TenantRoleAdmin, g.wikiKBCreator, g.cfg)
+	return g.kbPolicyGuard(middleware.KBIDFromParam("kb_id"), g.wikiKBCreator, false)
 }
 
 // Tenant-access guards. Distinct from the role guards above: these

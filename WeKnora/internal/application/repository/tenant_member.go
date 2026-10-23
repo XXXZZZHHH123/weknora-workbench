@@ -18,6 +18,8 @@ import (
 // semantic; just kept separate so the repo doesn't import service).
 var ErrLastOwner = errors.New("repository: last active owner")
 
+var ErrOwnerMembershipProtected = errors.New("repository: owner membership is protected")
+
 // forUpdateClause returns the gorm SELECT ... FOR UPDATE clause. Kept
 // in one place so we can swap it out for `clause.Locking{Strength: "UPDATE"}`
 // on databases that don't support row-level locking (none in our matrix,
@@ -149,17 +151,29 @@ func (r *tenantMemberRepository) ListPagedByTenant(
 
 // UpdateRole changes the role of an existing active membership.
 func (r *tenantMemberRepository) UpdateRole(ctx context.Context, userID string, tenantID uint64, role types.TenantRole) error {
-	res := r.db.WithContext(ctx).
+	query := r.db.WithContext(ctx).
 		Model(&types.TenantMember{}).
-		Where("user_id = ? AND tenant_id = ?", userID, tenantID).
-		Updates(map[string]any{
-			"role":       role,
-			"updated_at": time.Now(),
-		})
+		Where("user_id = ? AND tenant_id = ?", userID, tenantID)
+	protectOwner := types.CallerFromContext(ctx).Role == types.TenantRoleAdmin && !types.CanManageTenantOwners(ctx)
+	if protectOwner {
+		if role == types.TenantRoleOwner {
+			return ErrOwnerMembershipProtected
+		}
+		// Check the persisted role in the write statement, since an owner
+		// may promote the target after the service's earlier membership read.
+		query = query.Where("role <> ?", types.TenantRoleOwner)
+	}
+	res := query.Updates(map[string]any{
+		"role":       role,
+		"updated_at": time.Now(),
+	})
 	if res.Error != nil {
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
+		if protectOwner {
+			return ErrOwnerMembershipProtected
+		}
 		return gorm.ErrRecordNotFound
 	}
 	return nil
@@ -168,9 +182,19 @@ func (r *tenantMemberRepository) UpdateRole(ctx context.Context, userID string, 
 // SoftDelete marks the membership row as deleted. GORM's soft-delete
 // support populates DeletedAt automatically.
 func (r *tenantMemberRepository) SoftDelete(ctx context.Context, userID string, tenantID uint64) error {
-	return r.db.WithContext(ctx).
-		Where("user_id = ? AND tenant_id = ?", userID, tenantID).
-		Delete(&types.TenantMember{}).Error
+	query := r.db.WithContext(ctx).Where("user_id = ? AND tenant_id = ?", userID, tenantID)
+	protectOwner := types.CallerFromContext(ctx).Role == types.TenantRoleAdmin && !types.CanManageTenantOwners(ctx)
+	if protectOwner {
+		query = query.Where("role <> ?", types.TenantRoleOwner)
+	}
+	res := query.Delete(&types.TenantMember{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if protectOwner && res.RowsAffected == 0 {
+		return ErrOwnerMembershipProtected
+	}
+	return nil
 }
 
 // CountActiveOwners reports the number of active owner rows in the tenant.

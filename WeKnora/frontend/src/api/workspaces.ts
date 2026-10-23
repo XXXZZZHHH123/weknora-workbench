@@ -1,4 +1,5 @@
 import { get, post, put, del } from '@/utils/request'
+import type { SourceSharingModule } from '@/utils/sourceSharingModules'
 
 export interface AssistantProject {
   id: string
@@ -23,7 +24,19 @@ export interface ResearchWorkbenchTemplate {
 }
 
 export interface ResearchWorkbench {
+  is_pinned?: boolean
+  pinned_at?: string | null
+  owner_id?: string
   can_manage?: boolean
+  can_manage_permissions?: boolean
+  can_edit?: boolean
+  can_manage_source?: boolean
+  can_read_source?: boolean
+  can_edit_source?: boolean
+  source_data_available?: boolean
+  source_sharing_approved?: boolean
+  source_sharing_modules?: SourceSharingModule[]
+  creator_id?: string
   id: string
   name: string
   description?: string
@@ -117,4 +130,8 @@ export function listResearchWorkbenchTemplates(): Promise<Envelope<ResearchWorkb
 }
 export function updateResearchWorkbenchOnboarding(workbenchId: string, data: ResearchWorkbenchOnboardingInput): Promise<Envelope<ResearchWorkbench>> {
   return put(`${base}/research/${id(workbenchId)}/onboarding`, data)
+}
+
+export function setResearchWorkbenchPin(workbenchId: string, isPinned: boolean): Promise<Envelope<{id: string; is_pinned: boolean; pinned_at: string | null}>> {
+  return put(`${base}/research/${id(workbenchId)}/pin`, { is_pinned: isPinned })
 }

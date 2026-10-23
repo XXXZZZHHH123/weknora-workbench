@@ -1,4 +1,4 @@
-CREATE TABLE image_generation_executions (
+CREATE TABLE IF NOT EXISTS image_generation_executions (
     id VARCHAR(64) PRIMARY KEY,
     tenant_id BIGINT NOT NULL,
     session_id VARCHAR(36) NOT NULL,
@@ -16,7 +16,7 @@ CREATE TABLE image_generation_executions (
     width INTEGER NOT NULL DEFAULT 0,
     height INTEGER NOT NULL DEFAULT 0,
     position INTEGER NOT NULL DEFAULT -1,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE UNIQUE INDEX ux_image_generation_message ON image_generation_executions (tenant_id, session_id, message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_image_generation_message ON image_generation_executions (tenant_id, session_id, message_id);

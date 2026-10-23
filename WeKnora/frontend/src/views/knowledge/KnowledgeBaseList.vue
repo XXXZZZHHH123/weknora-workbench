@@ -531,7 +531,7 @@
                 <span class="card-title" :title="shared.knowledge_base.name">
                   <span class="card-title-text">{{ shared.knowledge_base.name }}</span>
                 </span>
-                <KnowledgeBaseActions v-if="shared.is_mine ? canManageKBCard(shared.knowledge_base as KB) : permissionCanEditKB(shared.permission)" :knowledge-base="shared.knowledge_base" :can-rename="shared.is_mine ? canRenameKBCard(shared.knowledge_base as KB) : permissionCanEditKB(shared.permission)" :can-delete="shared.is_mine ? canManageKBCard(shared.knowledge_base as KB) : permissionCanManageKB(shared.permission)" @changed="handleKBActionChanged" />
+                <KnowledgeBaseActions v-if="shared.is_mine ? canManageKBCard(shared.knowledge_base as KB) : permissionCanEditKB(shared.permission)" :knowledge-base="shared.knowledge_base" :can-rename="shared.is_mine ? canRenameKBCard(shared.knowledge_base as KB) : permissionCanManageKB(shared.permission)" :can-delete="shared.is_mine ? canManageKBCard(shared.knowledge_base as KB) : permissionCanManageKB(shared.permission)" @changed="handleKBActionChanged" />
                 <t-tooltip v-if="!shared.is_mine" :content="$t('knowledgeList.menu.viewDetails')" placement="top">
                   <button type="button" class="shared-detail-trigger" @click.stop="openSharedDetail(shared)"
                     :aria-label="$t('knowledgeList.menu.viewDetails')">
@@ -712,6 +712,7 @@ import { matchesResourceQuery } from '@/utils/resourceListSearch'
 import ResourceOriginBadge from '@/components/ResourceOriginBadge.vue'
 import { shouldShowResourceOriginBadge } from '@/utils/card-list-badge'
 import { permissionCanEditKB, permissionCanManageKB } from '@/utils/kbPermission'
+import { canManageResource } from '@/utils/resourcePermissions'
 import ContextualGuide from '@/components/ContextualGuide.vue'
 import ResourceSortControl from '@/components/ResourceSortControl.vue'
 import { isContextualGuideDone, markContextualGuideDone } from '@/config/contextualGuides'
@@ -762,6 +763,10 @@ const kbRecentsCount = computed(
 )
 
 interface KB {
+  can_manage?: boolean;
+  can_manage_permissions?: boolean;
+  can_edit?: boolean;
+  my_permission?: string;
   id: string;
   name: string;
   description?: string;
@@ -959,23 +964,9 @@ function isSharedKbEditable(perm: string | undefined): boolean {
   return !!perm && EDITABLE_PERMS.has(perm)
 }
 
-// 同空间、非当前用户创建的 KB 分组标题。
-// contributor / viewer 在本空间里对这些 KB 没有写权限，所以打"仅查看"；
-// admin / owner 反而对整个空间都有编辑权限，"仅查看"会反复误导他们以为
-// 自己改不了——这一段实际上是"工作空间里其他成员创建的 KB"，按所有权
-// 而非权限来标注更准确。
-const tenantSectionLabelKey = computed(() =>
-  authStore.hasRole('admin')
-    ? 'knowledgeList.sections.tenantOthers'
-    : 'knowledgeList.sections.tenantReadonly'
-)
-
-// 图标和上面的文案对齐：admin/owner 看到的是"本空间 · 其他成员"，按所有权
-// 划分，配 usergroup（多人）更贴；contributor/viewer 看到的是"仅查看"，
-// 维持 browse（眼睛）传达"只能看不能改"的语义。
-const tenantSectionIconName = computed(() =>
-  authStore.hasRole('admin') ? 'usergroup' : 'browse'
-)
+// A collaborator may edit another member's KB; this group describes ownership.
+const tenantSectionLabelKey = computed(() => 'knowledgeList.sections.tenantOthers')
+const tenantSectionIconName = computed(() => 'usergroup')
 
 // 分组折叠：ephemeral，只在当前会话里生效，不落 localStorage/服务器。
 // 之所以走"折叠集合"而不是"展开集合"，是因为默认全展开——空 Set
@@ -1214,6 +1205,8 @@ const handleSettings = (kb: KB) => {
 // those as tenant-owned (Admin+ may manage) so existing KBs aren't
 // suddenly unmanageable for everyone.
 function canManageKBCard(kb: KB): boolean {
+  if (typeof kb.can_manage === 'boolean') return canManageResource(kb);
+  if (kb.my_permission) return permissionCanManageKB(kb.my_permission);
   // Shared-space cards carry the org-share permission; when it exists it is
   // the only signal that counts. A read-only (viewer) or editor share must
   // not surface Settings/Delete even when the browsing user is an admin of
@@ -1377,8 +1370,9 @@ const goToSharedKbFromPanel = () => {
 }
 
 function canRenameKBCard(kb: KB): boolean {
+  if (typeof kb.can_manage === 'boolean') return canManageResource(kb);
   const permission = (kb as any).permission
-  if (permission) return permissionCanEditKB(permission)
+  if (permission) return permissionCanManageKB(permission)
   return canManageKBCard(kb)
 }
 

@@ -28,7 +28,15 @@ func NewAuditLogRepository(db *gorm.DB) interfaces.AuditLogRepository {
 // the database default if zero. Service-layer Log() fills both before
 // calling here so this is mostly a pass-through.
 func (r *auditLogRepository) Create(ctx context.Context, entry *types.AuditLog) error {
-	return r.db.WithContext(ctx).Create(entry).Error
+	if !notifiesWorkspaceAdministrators(entry) {
+		return r.db.WithContext(ctx).Create(entry).Error
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(entry).Error; err != nil {
+			return err
+		}
+		return createWorkspaceAdminNotifications(tx, entry)
+	})
 }
 
 // auditLogListLimitMax is the hard ceiling regardless of caller input.

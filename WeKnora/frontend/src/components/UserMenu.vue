@@ -73,6 +73,12 @@
           <t-icon name="user-circle" class="menu-icon" />
           <span>{{ $t('settings.workspaceSettings') }}</span>
         </div>
+        <div v-if="!authStore.isLiteMode && authStore.isLoggedIn" class="menu-item" role="button" tabindex="0"
+          @click="openNotifications" @keydown.enter.prevent="openNotifications" @keydown.space.prevent="openNotifications">
+          <t-icon name="notification" class="menu-icon" />
+          <span class="menu-text-with-icon">空间通知</span>
+          <span v-if="notificationUnreadCount" class="menu-new-badge">{{ notificationUnreadCount > 99 ? '99+' : notificationUnreadCount }}</span>
+        </div>
         <!-- “管理”类快捷入口只对真正具备写权限的人展示。只读名册和模型列表
              仍可从「全部设置」进入，避免 viewer 看到名不副实的管理入口。 -->
         <div v-if="canManageMembers" class="menu-item" @click="handleQuickNav('members')">
@@ -183,6 +189,7 @@
 
     <!-- 创建工作区弹窗 -->
     <CreateTenantDialog v-model:visible="createTenantDialogVisible" @created="onTenantCreated" />
+    <TenantNotificationsDrawer v-model:visible="notificationsVisible" :menu-open="menuVisible" @unread="notificationUnreadCount = $event" />
   </div>
 </template>
 
@@ -195,6 +202,7 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import { logout as logoutApi } from '@/api/auth'
 import { useI18n } from 'vue-i18n'
 import CreateTenantDialog from '@/components/CreateTenantDialog.vue'
+import TenantNotificationsDrawer from '@/components/TenantNotificationsDrawer.vue'
 import {
   navigateAfterTenantSwitch,
   persistLastActiveTenantPreference,
@@ -248,6 +256,13 @@ const canManageModels = computed(() =>
 const menuRef = ref<HTMLElement>()
 const tenantMenuItemRef = ref<HTMLElement>()
 const menuVisible = ref(false)
+const notificationsVisible = ref(false)
+const notificationUnreadCount = ref(0)
+const openNotifications = () => {
+  menuVisible.value = false
+  tenantSubmenuOpen.value = false
+  notificationsVisible.value = true
+}
 const tenantSubmenuOpen = ref(false)
 const tenantSubmenuStyle = ref<Record<string, string>>({})
 let tenantSubmenuHideTimer: ReturnType<typeof setTimeout> | null = null

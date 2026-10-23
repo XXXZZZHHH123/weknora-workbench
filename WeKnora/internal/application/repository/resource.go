@@ -18,6 +18,8 @@ func NewResourceRepository(db *gorm.DB) interfaces.ResourceRepository {
 	return &resourceRepository{db: db}
 }
 
+func (r *resourceRepository) ResourceAccessDB() *gorm.DB { return r.db }
+
 func (r *resourceRepository) Create(ctx context.Context, resource *types.StoredResource) error {
 	return r.db.WithContext(ctx).Create(resource).Error
 }

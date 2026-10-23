@@ -355,7 +355,11 @@ def gaps(session: Session, variety: str, d: date) -> list[dict]:
 
 
 def judgment_block(session: Session, variety: str, today: date) -> dict | None:
-    j = current_judgment(session, variety)
+    return judgment_record_block(current_judgment(session, variety), today)
+
+
+def judgment_record_block(j, today):
+    """Present an already authorized judgment without changing its owner scope."""
     if j is None:
         return None
     expired = (today - j.review_due).days
@@ -419,10 +423,32 @@ def threshold_radar(session: Session, variety: str, d: date) -> list[dict]:
     j = current_judgment(session, variety)
     if j is None:
         return []
+    def lookup(identifier):
+        indicator = session.get(Indicator, identifier)
+        observation = latest_obs(session, identifier, day_end(d)) if indicator else None
+        return indicator, observation
+    return _threshold_radar(j, lookup)
+
+
+def threshold_radar_values(judgment, values):
+    """Use the same range arithmetic on an already permission-bounded response."""
+    from types import SimpleNamespace
+    def lookup(identifier):
+        value = values.get(identifier)
+        if value is None:
+            return None, None
+        indicator = SimpleNamespace(name=value['name'], unit=value['unit'])
+        observation = (SimpleNamespace(value=value['value'], as_of=datetime.combine(
+            date.fromisoformat(value['date']), datetime.min.time(), SHANGHAI))
+            if value.get('date') and value.get('value') is not None else None)
+        return indicator, observation
+    return _threshold_radar(judgment, lookup) if judgment else []
+
+
+def _threshold_radar(j, lookup):
     out = []
     for t in j.thresholds:
-        ind = session.get(Indicator, t["series_id"])
-        o = latest_obs(session, t["series_id"], day_end(d)) if ind else None
+        ind, o = lookup(t['series_id'])
         row = {"id": t["id"], "name": t["name"], "series_id": t["series_id"],
                "series_name": ind.name if ind else t["series_id"], "unit": ind.unit if ind else "",
                "type": t["type"], "horizon": t["horizon"], "action_hint": t.get("action_hint"),

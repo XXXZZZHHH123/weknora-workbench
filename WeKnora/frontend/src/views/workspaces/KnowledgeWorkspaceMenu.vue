@@ -26,6 +26,7 @@ const directoryOpen = ref(true), structuredOpen = ref(true)
 const isDirectory = computed(() => route.name === 'knowledgeBaseDetail')
 const canEdit = computed(() => {
   if (!library.value || library.value.type === 'faq') return false
+  if (typeof library.value.can_edit === 'boolean') return library.value.can_edit
   const grant = org.getKBPermission(kbId.value) || library.value.my_permission
   if (grant) return permissionCanEditKB(grant)
   const ownTenant = String(library.value.tenant_id) === String(auth.selectedTenantId ?? auth.tenant?.id)

@@ -16,6 +16,17 @@ type kbGrant struct {
 	task       bool
 }
 
+func hasKBTaskGrant(ctx context.Context, kbID string, tenantID uint64, required types.OrgMemberRole) bool {
+	caller := types.CallerFromContext(ctx)
+	grants, _ := ctx.Value(types.KBGrantsContextKey).([]kbGrant)
+	for _, grant := range grants {
+		if grant.task && grant.caller == caller && grant.kbID == kbID && grant.tenantID == tenantID && grant.permission.HasPermission(required) {
+			return true
+		}
+	}
+	return false
+}
+
 type agentGrant struct {
 	caller types.Caller
 	scope  types.SharedAgentKBScope
@@ -60,18 +71,35 @@ func HasKBGrant(ctx context.Context, kbID string, tenantID uint64, required type
 // shares for one service operation. Pass nil shares when that entry point does
 // not permit organization expansion (for example, a caller without a user).
 type KBPermissions struct {
-	ctx    context.Context
-	caller types.Caller
-	shares *KBSharePermissions
+	ctx      context.Context
+	caller   types.Caller
+	shares   *KBSharePermissions
+	lookup   KBPolicyLookup
+	policies map[string]kbPolicyResult
+}
+
+type kbPolicyResult struct {
+	kb  *types.KnowledgeBase
+	err error
+}
+
+type KBPolicyLookup interface {
+	LookupKnowledgeBaseAccess(context.Context, string) (*types.KnowledgeBase, error)
 }
 
 // NewKBPermissions resolves reads for one caller and operation.
-func NewKBPermissions(ctx context.Context, shares KBShareLookup) *KBPermissions {
+func NewKBPermissions(ctx context.Context, shares KBShareLookup, policyLookups ...KBPolicyLookup) *KBPermissions {
 	caller := types.CallerFromContext(ctx)
+	lookup, _ := shares.(KBPolicyLookup)
+	if len(policyLookups) > 0 && policyLookups[0] != nil {
+		lookup = policyLookups[0]
+	}
 	return &KBPermissions{
-		ctx:    ctx,
-		caller: caller,
-		shares: NewKBSharePermissions(ctx, shares, caller.TenantID, caller.Role),
+		ctx:      ctx,
+		caller:   caller,
+		shares:   NewKBSharePermissions(ctx, shares, caller.TenantID, caller.Role),
+		lookup:   lookup,
+		policies: make(map[string]kbPolicyResult),
 	}
 }
 
@@ -83,6 +111,30 @@ func (p *KBPermissions) Check(kbID string, ownerTenantID uint64, required types.
 	if err := types.AuthorizeTenantAPIKeyKnowledgeBases(p.ctx, kbID); err != nil {
 		return false, err
 	}
+	if hasKBTaskGrant(p.ctx, kbID, ownerTenantID, required) {
+		return true, nil
+	}
+	if p.lookup != nil {
+		result, found := p.policies[kbID]
+		if !found {
+			result.kb, result.err = p.lookup.LookupKnowledgeBaseAccess(p.ctx, kbID)
+			p.policies[kbID] = result
+		}
+		kb, err := result.kb, result.err
+		if err != nil {
+			return false, err
+		}
+		if kb == nil || kb.TenantID != ownerTenantID {
+			return false, nil
+		}
+		if kb.AccessPolicy != nil && p.caller.TenantID == ownerTenantID {
+			permission := LocalKBPermission(p.ctx, p.caller, kb)
+			return permission.IsValid() && permission.HasPermission(required), nil
+		}
+		if kb.AccessPolicy != nil && kb.AccessPolicy.SpacePermission == types.ResourcePermissionNone {
+			return p.shares.Check(kbID, required)
+		}
+	}
 	if (p.caller.TenantID == ownerTenantID && required == types.OrgRoleViewer) ||
 		HasKBGrant(p.ctx, kbID, ownerTenantID, required) {
 		return true, nil
@@ -91,4 +143,24 @@ func (p *KBPermissions) Check(kbID string, ownerTenantID uint64, required types.
 		return false, nil
 	}
 	return p.shares.Check(kbID, required)
+}
+
+func (p *KBPermissions) CheckKB(kb *types.KnowledgeBase, required types.OrgMemberRole) (bool, error) {
+	if kb == nil {
+		return false, nil
+	}
+	if err := types.AuthorizeTenantAPIKeyKnowledgeBases(p.ctx, kb.ID); err != nil {
+		return false, err
+	}
+	if hasKBTaskGrant(p.ctx, kb.ID, kb.TenantID, required) {
+		return true, nil
+	}
+	if kb.AccessPolicy != nil && p.caller.TenantID == kb.TenantID {
+		permission := LocalKBPermission(p.ctx, p.caller, kb)
+		return permission.IsValid() && permission.HasPermission(required), nil
+	}
+	if kb.AccessPolicy != nil && kb.AccessPolicy.SpacePermission == types.ResourcePermissionNone {
+		return p.shares.Check(kb.ID, required)
+	}
+	return p.Check(kb.ID, kb.TenantID, required)
 }

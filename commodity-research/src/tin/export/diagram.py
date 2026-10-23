@@ -353,6 +353,8 @@ def list_templates(session: Session, variety: str) -> list[dict]:
 
 
 def save_template(session: Session, variety: str, payload: dict) -> dict:
+    from tin.integration.workbench_scope import require_shared_write
+    require_shared_write()
     from tin.models import DiagramTemplate
 
     name = str(payload.get("name", "")).strip()
@@ -371,16 +373,29 @@ def save_template(session: Session, variety: str, payload: dict) -> dict:
                               is_default=not list_templates(session, variety))
         session.add(row)
     row.name, row.layout, row.updated_at = name, layout, now
+    if session.info.get('knowledge_facts') is True:
+        from tin.web.restricted_views import remember_origins
+        # Persist origins only for bindings present in the verified catalog.
+        # Restrictions on delegated projection must not prevent a normal editor
+        # from saving an old layout with retired/legacy IDs or many nodes.
+        remember_origins(session, [binding['series_id'] for node in layout.get('nodes') or []
+            if (binding := node.get('binding') or {}).get('kind') == 'series'
+            and isinstance(binding.get('series_id'), str)])
     if payload.get("is_default"):
         for other in session.scalars(select(DiagramTemplate)
                                      .where(DiagramTemplate.variety == variety)):
             other.is_default = other is row
     session.flush()
+    if session.info.get('knowledge_facts') is True:
+        from tin.web.restricted_views import remember_diagram
+        remember_diagram(session, row)
     session.commit()
     return to_dict(row)
 
 
 def delete_template(session: Session, variety: str, template_id: int) -> dict:
+    from tin.integration.workbench_scope import require_shared_write
+    require_shared_write()
     from tin.models import DiagramTemplate
 
     row = session.get(DiagramTemplate, template_id)
@@ -394,6 +409,9 @@ def delete_template(session: Session, variety: str, template_id: int) -> dict:
                                .order_by(DiagramTemplate.updated_at.desc()).limit(1)).first()
         if heir is not None:
             heir.is_default = True
+    if session.info.get('knowledge_facts') is True:
+        from tin.web.restricted_views import forget_diagram
+        forget_diagram(session, template_id)
     session.commit()
     return {"deleted": template_id, "templates": list_templates(session, variety)}
 
@@ -404,6 +422,10 @@ def ensure_default(session: Session, variety: str) -> dict:
     if existing:
         return existing[0]
     if session.info.get("workbench_id"):
+        from tin.integration.workbench_scope import current_workbench
+        scope = current_workbench.get()
+        if scope is not None and not scope.can_edit:
+            return {'id': None, 'name': '研究结构', 'layout': {'nodes': [], 'edges': []}, 'is_default': True}
         return save_template(session, variety, {"name": "研究结构", "layout": {"nodes": [], "edges": []}, "is_default": True})
     import json
 

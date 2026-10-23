@@ -31,7 +31,6 @@ import {
   resolvePreviewKind,
   shouldPrettyPrintJson,
   sniffPreview,
-  isValidUTF8,
   type FilePreviewKind,
 } from '@/utils/filePreview';
 import {
@@ -52,6 +51,7 @@ import { renderEpubPreview } from '@/utils/epubPreview';
 
 const VueOfficePptx = defineAsyncComponent(() => import('@vue-office/pptx'));
 const PdfSourceViewer = defineAsyncComponent(() => import('@/components/source-preview/PdfSourceViewer.vue'));
+const ExcelSourceViewer = defineAsyncComponent(() => import('@/components/source-preview/ExcelSourceViewer.vue'));
 
 const { t } = useI18n();
 const previewAuth = useAuthStore();
@@ -96,7 +96,7 @@ const blobUrl = ref('');
 const textContent = ref('');
 const highlightedCode = ref('');
 const markdownHtml = ref('');
-const excelHtml = ref('');
+const excelBlob = shallowRef<Blob | null>(null);
 const mermaidSvg = ref('');
 const htmlViewMode = ref<'render' | 'source'>('render');
 const pptxData = shallowRef<ArrayBuffer | null>(null);
@@ -107,7 +107,6 @@ const pptxInlineMediaFailed = ref(false);
 const pdfData = shallowRef<ArrayBuffer | null>(null);
 const epubHtml = ref('');
 let epubObjectUrls: string[] = [];
-let excelSheetNames: string[] = [];
 let previewExt = '';
 let pptxSlideCount = 0;
 let pptxSourceSha256 = '';
@@ -476,48 +475,6 @@ async function renderDocx(blob: Blob) {
   }
 }
 
-function decodeCSVBlob(arrayBuffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(arrayBuffer);
-  if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
-    return new TextDecoder('utf-8').decode(bytes);
-  }
-  if (isValidUTF8(bytes)) {
-    return new TextDecoder('utf-8').decode(bytes);
-  }
-  return new TextDecoder('gbk').decode(bytes);
-}
-
-async function renderExcel(blob: Blob, fileType?: string) {
-  const XLSX = await import('xlsx');
-  const arrayBuffer = await blob.arrayBuffer();
-
-  let workbook;
-  const lowerType = fileType?.toLowerCase();
-  if (lowerType === 'csv') {
-    const csvText = decodeCSVBlob(arrayBuffer);
-    workbook = XLSX.read(csvText, { type: 'string' });
-  } else if (lowerType === 'tsv' || lowerType === 'tab') {
-    const tsvText = decodeCSVBlob(arrayBuffer);
-    workbook = XLSX.read(tsvText, { type: 'string', FS: '\t' });
-  } else {
-    workbook = XLSX.read(arrayBuffer, { type: 'array' });
-  }
-
-  excelSheetNames = [...workbook.SheetNames];
-  let html = '';
-  workbook.SheetNames.forEach((name, sheetIdx) => {
-    const sheet = workbook.Sheets[name];
-    const sheetHtml = XLSX.utils.sheet_to_html(sheet, { id: `sheet-${sheetIdx}` });
-    html += `<div class="excel-sheet">`;
-    if (workbook.SheetNames.length > 1) {
-      html += `<div class="excel-sheet-name">${name}</div>`;
-    }
-    html += sheetHtml;
-    html += `</div>`;
-  });
-  excelHtml.value = sanitizeHTML(html);
-}
-
 async function renderText(blob: Blob, fileType: string) {
   let text = await blob.text();
   if (shouldPrettyPrintJson(fileType)) {
@@ -619,17 +576,21 @@ async function openMermaid() {
 async function loadPreview() {
   const sourceKey = getPreviewSourceKey();
   if (!sourceKey || !props.active) return;
+  // Unmount the previous spreadsheet (including its chart and worker) before
+  // awaiting the new source's ACL. A retained Blob must not bridge sources.
+  excelBlob.value = null;
   const version = ++previewLoadVersion;
   const knowledgeId = props.sourceBlob ? '' : props.knowledgeId || '';
   let ft = resolveFilePreviewExt(props.fileName, props.fileType);
   const knowledgePptx = !!knowledgeId && resolvePreviewKind(ft) === 'pptx';
-  const scope = knowledgePptx ? getPptxPreviewScope() : '';
+  const knowledgeExcel = !!knowledgeId && resolvePreviewKind(ft) === 'excel';
+  const scope = getPptxPreviewScope();
   const current = () => version === previewLoadVersion && props.active && getPreviewSourceKey() === sourceKey
-    && (!knowledgePptx || getPptxPreviewScope() === scope);
+    && getPptxPreviewScope() === scope;
   let cacheContext: { scope: string; sourceKey: string } | undefined;
   let authority = '';
   try {
-    if (knowledgePptx) {
+    if (knowledgePptx || knowledgeExcel) {
       // Even a warm file must pass the actual current knowledge ACL on every
       // open. Hide retained content while this small metadata request runs.
       pptxPermissionChecking.value = true;
@@ -639,17 +600,19 @@ async function loadPreview() {
       const metadata = response?.data;
       if (!metadata || metadata.id !== knowledgeId || metadata.deleted_at) throw new Error(t('preview.loadFailed'));
       pptxPermissionChecking.value = false;
-      const source = knowledgePptxSourceKey(knowledgeId, metadata);
-      authority = JSON.stringify([scope, source]);
-      if (scope && source) cacheContext = { scope, sourceKey: source };
-      if (cacheContext && loadedForId === sourceKey && loadedPptxAuthority === authority && pptxData.value && pptxSourceSha256) {
-        pptxMediaCacheContext = cacheContext;
-        pptxPermissionChecking.value = false;
-        await nextTick();
-        if (!current()) return;
-        watchPptxRender(sourceKey);
-        void loadPptxPageMedia();
-        return;
+      if (knowledgePptx) {
+        const source = knowledgePptxSourceKey(knowledgeId, metadata);
+        authority = JSON.stringify([scope, source]);
+        if (scope && source) cacheContext = { scope, sourceKey: source };
+        if (cacheContext && loadedForId === sourceKey && loadedPptxAuthority === authority && pptxData.value && pptxSourceSha256) {
+          pptxMediaCacheContext = cacheContext;
+          pptxPermissionChecking.value = false;
+          await nextTick();
+          if (!current()) return;
+          watchPptxRender(sourceKey);
+          void loadPptxPageMedia();
+          return;
+        }
       }
     } else if (loadedForId === sourceKey) {
       return;
@@ -718,7 +681,7 @@ async function loadPreview() {
         break;
       }
       case 'excel': {
-        await renderExcel(blob, ft);
+        excelBlob.value = blob;
         break;
       }
       case 'text': {
@@ -761,7 +724,7 @@ async function loadPreview() {
       }
     }
     // PPTX location waits for the renderer event or the bounded slide-DOM fallback.
-    if (kind !== 'pptx') scheduleLocate();
+    if (kind !== 'pptx' && kind !== 'excel') scheduleLocate();
   } catch (err: any) {
     if (!current()) return;
     cleanup();
@@ -791,7 +754,7 @@ function cleanup() {
   textContent.value = '';
   highlightedCode.value = '';
   markdownHtml.value = '';
-  excelHtml.value = '';
+  excelBlob.value = null;
   mermaidSvg.value = '';
   htmlViewMode.value = 'render';
   pptxData.value = null;
@@ -803,7 +766,6 @@ function cleanup() {
   for (const url of epubObjectUrls) URL.revokeObjectURL(url);
   epubObjectUrls = [];
   epubHtml.value = '';
-  excelSheetNames = [];
   clearLocateMarks();
   pptxSlideCount = 0;
   imageNaturalWidth.value = 0;
@@ -1004,43 +966,6 @@ function locatePptx(request: SourceLocateRequest): SourceLocateResult {
   };
 }
 
-/** Map sheet row numbers to table rows using the cell ids SheetJS emits. */
-function sheetRows(table: Element): Map<number, Element> {
-  const rows = new Map<number, Element>();
-  for (const cell of Array.from(table.querySelectorAll('td[id]'))) {
-    const match = /-[A-Z]+(\d+)$/.exec(cell.id);
-    const tr = cell.closest('tr');
-    if (match && tr && !rows.has(Number(match[1]))) rows.set(Number(match[1]), tr);
-  }
-  return rows;
-}
-
-function locateExcel(request: SourceLocateRequest): SourceLocateResult {
-  const box = previewContent.value;
-  if (!box) return NOT_FOUND;
-  const locators = request.locators.filter((l) => l.type === 'sheet' && l.mapping === 'exact' && !l.partial && l.row_start);
-  const targets: Element[] = [];
-  for (const loc of locators) {
-    const byName = loc.sheet ? excelSheetNames.indexOf(loc.sheet) : -1;
-    if (byName < 0) continue;
-    const sheetIdx = byName;
-    const table = box.querySelector(`#user-content-sheet-${sheetIdx}`) || box.querySelector(`#sheet-${sheetIdx}`);
-    if (!table) continue;
-    const rows = sheetRows(table);
-    const last = Math.min(loc.row_end || loc.row_start || 0, (loc.row_start || 0) + 200);
-    for (let r = loc.row_start as number; r <= last; r++) {
-      const tr = rows.get(r);
-      if (tr && !targets.includes(tr)) targets.push(tr);
-    }
-  }
-  if (targets.length) {
-    commitMarks([], targets);
-    reveal(box, targets[0]);
-    return { found: true, precise: false, granularity: 'block' };
-  }
-  return locateQuote(box, box, evidenceQuotes(request));
-}
-
 function locateEpub(request: SourceLocateRequest): SourceLocateResult {
   const box = previewContent.value;
   if (!box) return NOT_FOUND;
@@ -1130,14 +1055,13 @@ function applyLocate() {
   const request = props.locate;
   clearLocateMarks();
   // The pdf.js viewer locates on its own and reports through @located.
-  if (!request || previewType.value === 'pdf') return;
+  if (!request || previewType.value === 'pdf' || previewType.value === 'excel') return;
   if (request.unavailable) { emit('located', { ...NOT_FOUND, reason: 'unavailable' }); return; }
   let result = NOT_FOUND;
   try {
     switch (previewType.value) {
       case 'docx': result = locateDocx(request); break;
       case 'pptx': result = locatePptx(request); break;
-      case 'excel': result = locateExcel(request); break;
       case 'epub': result = locateEpub(request); break;
       case 'text':
       case 'html': result = locateText(request); break;
@@ -1160,12 +1084,17 @@ watch(
       // Rotate the shared cache's access generation even for a hidden viewer.
       // read validates scope without canceling another viewer's new-scope task.
       pptxPreviewCache.read(scope, '');
-      if (previewType.value === 'pptx') {
+      if (previewType.value === 'pptx' || previewType.value === 'excel') {
         previewLoadVersion++;
         cleanup();
         loading.value = false;
         error.value = '';
       }
+    }
+    if (!active && previewType.value === 'excel') {
+      previewLoadVersion++;
+      cleanup();
+      loading.value = false;
     }
     if (active && getPreviewSourceKey()) {
       loadPreview();
@@ -1330,8 +1259,8 @@ onUnmounted(() => {
     </div>
 
     <!-- Excel -->
-    <div v-else-if="previewType === 'excel' && excelHtml" class="preview-excel">
-      <div ref="previewContent" tabindex="0" :aria-label="fileName" class="excel-container" v-html="excelHtml" />
+    <div v-else-if="previewType === 'excel' && excelBlob" class="preview-excel">
+      <ExcelSourceViewer :blob="excelBlob" :extension="previewExt" :file-name="fileName" :locate="locate" @located="emit('located', $event)" />
     </div>
 
     <!-- EPUB -->
@@ -1826,7 +1755,8 @@ onUnmounted(() => {
 
 // ── Excel ──
 .preview-excel {
-  .excel-container { .preview-container(); }
+  .preview-container();
+  padding: 0;
 }
 
 // ── Text / Code ──

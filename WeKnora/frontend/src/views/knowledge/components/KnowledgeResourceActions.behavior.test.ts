@@ -24,10 +24,10 @@ const text = (n: Host): string => n.type === '#comment' ? '' : n.text + n.childr
 const flush = async () => { for (let i = 0; i < 6; i++) { await Promise.resolve(); await vue.nextTick() } }
 const deferred = () => { let resolve!: (v: any) => void; const promise = new Promise<any>(r => { resolve = r }); return { promise, resolve } }
 const plainValue = (v: unknown) => JSON.parse(JSON.stringify(v))
-function fixture(kind: 'kb' | 'folder', options: { canRename?: boolean; canDelete?: boolean; canEdit?: boolean; read?: () => Promise<any>; mutate?: () => Promise<any>; rootFolder?: boolean } = {}) {
+function fixture(kind: 'kb' | 'folder', options: { canRename?: boolean; canDelete?: boolean; canEdit?: boolean; canManage?: boolean; canManagePermissions?: boolean; read?: () => Promise<any>; mutate?: () => Promise<any>; rootFolder?: boolean } = {}) {
   const auth = vue.reactive({ selectedTenantId: 1, tenant: { id: 1 }, user: { id: 'actor-a' }, token: 'test-token' })
   const calls: Array<{ operation: string; args: any[] }> = [], changes: any[] = [], events = new EventTarget(), emitted: string[] = []
-  const base = vue.reactive({ id: 'kb-a', name: 'Original', tenant_id: 1 }), folder = vue.reactive({ path: options.rootFolder ? '' : 'Parent/Original', name: 'Original', total_count: undefined as number | undefined })
+  const base = vue.reactive({ id: 'kb-a', name: 'Original', tenant_id: 1, can_manage: options.canManage, can_manage_permissions: options.canManagePermissions }), folder = vue.reactive({ path: options.rootFolder ? '' : 'Parent/Original', name: 'Original', total_count: undefined as number | undefined })
   const props = vue.reactive({ knowledgeBase: base, canRename: options.canRename ?? true, canDelete: options.canDelete ?? true,
     kbId: 'kb-a', folder, canEdit: options.canEdit ?? true, allowDelete: true })
   const resources = { invalidate: (...args: any[]) => calls.push({ operation: 'invalidate', args }), ensureKnowledgeBases: async (...args: any[]) => { calls.push({ operation: 'refresh', args }) } }
@@ -36,6 +36,7 @@ function fixture(kind: 'kb' | 'folder', options: { canRename?: boolean; canDelet
   events.addEventListener('weknora:workspaces-changed', () => emitted.push('workspaces'))
   events.addEventListener(directory.KNOWLEDGE_DIRECTORY_EVENT, () => emitted.push('directory'))
   const api = {
+    togglePinKnowledgeBase: async (...args: any[]) => { calls.push({operation:'pin-kb',args}); return options.mutate ? options.mutate() : {success:true,data:{id:base.id,is_pinned:true}} },
     getKnowledgeBaseById: async (...args: any[]) => { calls.push({ operation: 'read', args }); return options.read ? options.read() : { success: true, data: { id: base.id, description: 'Keep the existing description.' } } },
     updateKnowledgeBase: async (...args: any[]) => { calls.push({ operation: 'rename-kb', args }); return options.mutate ? options.mutate() : { success: true } },
     deleteKnowledgeBase: async (...args: any[]) => { calls.push({ operation: 'delete-kb', args }); return options.mutate ? options.mutate() : { success: true } },
@@ -47,6 +48,7 @@ function fixture(kind: 'kb' | 'folder', options: { canRename?: boolean; canDelet
     '@/stores/auth': { useAuthStore: () => auth }, '@/stores/chatResources': { useChatResourcesStore: () => resources },
     '@/stores/organization': { useOrganizationStore: () => organizations }, '@/views/workspaces/workspaceForm': forms,
     '@/views/workspaces/knowledgeDirectory': directory,
+    '@/components/ResourcePermissionDrawer.vue': {},
   }
   const file = kind === 'kb' ? './KnowledgeBaseActions.vue' : './KnowledgeFolderActions.vue'
   const { descriptor } = parse(readFileSync(new URL(file, import.meta.url), 'utf8'))
@@ -118,6 +120,20 @@ test('read-only KBs and root/read-only folders do not expose mutations', async t
   for (const f of [fixture('kb', { canRename: false, canDelete: false }), fixture('folder', { canEdit: false }), fixture('folder', { rootFolder: true })]) {
     t.after(f.close); await flush(); assert.equal(f.button('重命名'), undefined); assert.equal(f.button('删除'), undefined); assert.equal(f.calls.length, 0)
   }
+})
+test('legacy KB administrator retains rename and delete without owner-only permission management', async t => {
+  const f = fixture('kb', { canManage: true, canManagePermissions: false }); t.after(f.close)
+  await flush()
+  assert.ok(f.button('重命名')); assert.ok(f.button('删除'))
+  assert.equal(f.button('成员与权限'), undefined)
+})
+test('KB owner can manage permissions and a revoked grant closes its drawer', async t => {
+  const f = fixture('kb', { canManage: true, canManagePermissions: true }); t.after(f.close)
+  await flush(); assert.ok(f.button('成员与权限'))
+  await f.click('成员与权限')
+  f.base.can_manage_permissions = false; await flush()
+  assert.equal(f.button('成员与权限'), undefined)
+  assert.ok(f.button('重命名')); assert.ok(f.button('删除'))
 })
 test('folder rename keeps its parent path and emits a scoped directory refresh', async t => {
   const f = fixture('folder'); t.after(f.close); await f.click('重命名'); await f.setName('Renamed'); await f.confirm()
@@ -198,4 +214,12 @@ test('compiled directory rows expose their labels, real counts and action button
   const triggers = all(root, n => String(n.props.class || '').includes('actual-folder-trigger'))
   assert.equal(triggers.length, 1); assert.ok(triggers.every(isRendered))
   rows[1].props.onClick({}); await flush(); assert.deepEqual(selected, ['Folder'])
+})
+
+test('readable KB context menus retain personal pinning without edit or owner rights', async t => {
+ const f=fixture('kb',{canRename:false,canDelete:false,canManage:false});t.after(f.close)
+ assert.ok(f.button('置顶'));assert.equal(f.button('重命名'),undefined)
+ await f.click('置顶')
+ assert.deepEqual(plainValue(f.calls.find(call=>call.operation==='pin-kb')?.args),['kb-a'])
+ assert.ok(f.button('取消置顶'))
 })

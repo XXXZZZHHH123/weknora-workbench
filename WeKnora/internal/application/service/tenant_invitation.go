@@ -154,6 +154,11 @@ func (s *tenantInvitationService) Create(
 	if err := rejectAPIKeyOwnerAssignment(ctx, role); err != nil {
 		return nil, err
 	}
+	if role == types.TenantRoleOwner {
+		if err := rejectAdminOwnerManagement(ctx); err != nil {
+			return nil, err
+		}
+	}
 	// Reject early if the invitee is already an active member; the
 	// handler renders this as "they're already in" rather than the
 	// generic conflict.
@@ -513,6 +518,11 @@ func (s *tenantInvitationService) CreateShareLink(
 	}
 	if err := rejectAPIKeyOwnerAssignment(ctx, role); err != nil {
 		return nil, "", err
+	}
+	if role == types.TenantRoleOwner {
+		if err := rejectAdminOwnerManagement(ctx); err != nil {
+			return nil, "", err
+		}
 	}
 	token, err := generateShareLinkToken()
 	if err != nil {

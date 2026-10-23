@@ -84,7 +84,7 @@ func TestPostgresWorkbenchMigrationLineages(t *testing.T) {
 			var got int
 			var dirty bool
 			require.NoError(t, db.QueryRow(`SELECT version,dirty FROM schema_migrations`).Scan(&got, &dirty))
-			require.Equal(t, 122, got)
+			require.Equal(t, expectedPostgresMigrationVersion, got)
 			require.False(t, dirty)
 			for _, table := range []string{"assistant_projects", "assistant_project_sessions", "research_workbenches", "knowledge_folders", "default_knowledge_base_bindings", "model_catalog_configs", "chunk_images"} {
 				var exists bool

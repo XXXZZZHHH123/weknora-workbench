@@ -27,7 +27,7 @@ const pending={...imported,name:'合成待核对表',status:'needs_review',mappi
    await route.fulfill({contentType:type,body:typeof data==='string'?data:JSON.stringify(data)});
   });
   const openTarget=async()=>{await page.locator('#allSheets').click();await page.locator('#sheetMenuList [data-sheet-index="1"]').click();await page.waitForFunction(()=>document.querySelector('.source-head h3')?.textContent==='合成目标表');};
-  const reload=async()=>{await page.reload();await page.locator('.sheet-grid td').first().waitFor();};
+  const reload=async(identified=true)=>{await page.reload();await page.locator('.sheet-grid td').first().waitFor();if(identified)await page.evaluate(()=>{activeUserId='fixture-user';});};
   const reset=async()=>{await page.evaluate(()=>localStorage.clear());await reload();};
   await page.goto('http://fixture.test/');await page.locator('.sheet-grid td').first().waitFor();
   assert.match(await page.locator('#importSummary').innerText(),/0 张已可查询/);
@@ -43,6 +43,12 @@ const pending={...imported,name:'合成待核对表',status:'needs_review',mappi
   await unit.fill('另一单位');
   assert.equal(await page.locator('#ackBlock').isChecked(),false);
   assert.equal(await page.locator('#ackBlock').isEnabled(),true);
+  assert.equal(await page.locator('#confirmMapping').isDisabled(),true);
+  await reload(false);await openTarget();
+  assert.equal(await unit.inputValue(),'单位','A page without a verified user id must not persist its draft across reloads');
+  assert.equal(await page.locator('#ackBlock').isChecked(),true,'Reload without an identity returns to the published mapping');
+  await page.evaluate(()=>{activeUserId='fixture-user';});
+  await unit.fill('另一单位');
   await reload();await openTarget();
   assert.equal(await unit.inputValue(),'另一单位');
   assert.equal(await page.locator('#ackBlock').isChecked(),false,'An edited restored draft cannot inherit publication');
@@ -96,6 +102,9 @@ const pending={...imported,name:'合成待核对表',status:'needs_review',mappi
   published=false;await reload();await openTarget();
   assert.equal(await page.locator('#ackBlock').isChecked(),false,'Stale published draft acknowledgements do not survive manifest removal');
   published=true;await reset();await openTarget();
+  await page.evaluate(()=>{const editor=document.querySelector('#mappingEditor'),value=JSON.parse(editor.value);value.blocks[0].columns[0].dimensions={header_expectations:'合成业务维度'};editor.value=JSON.stringify(value);editor.dispatchEvent(new Event('input',{bubbles:true}));});
+  assert.equal(await page.locator('#ackBlock').isChecked(),false,'Business dimensions remain part of the mapping review signature');
+  await reset();await openTarget();
   await page.locator('.mapping-block.selected [data-range-input]').fill('B2:B2');
   assert.equal(await page.locator('#ackBlock').isChecked(),false);
   await reload();await openTarget();

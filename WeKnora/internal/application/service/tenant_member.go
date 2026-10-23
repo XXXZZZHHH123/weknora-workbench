@@ -62,6 +62,8 @@ var (
 	// the tenant.
 	ErrAPIKeyCannotAssignOwner = errors.New("API keys cannot assign the owner role")
 
+	ErrTenantOwnerManagementRequired = errors.New("only workspace owners can manage owner memberships")
+
 	// ErrLastOwner is returned when an operation would leave the tenant
 	// without an active Owner. Demoting the last Owner or removing them
 	// is forbidden; an explicit ownership transfer must happen first.
@@ -125,12 +127,18 @@ func (s *tenantMemberService) emitAudit(ctx context.Context, entry *types.AuditL
 // auth middleware didn't set it (e.g. service-internal flows like
 // EnsureOwner during register, where there is no "caller").
 func auditActorRole(ctx context.Context) string {
+	if caller := types.CallerFromContext(ctx); caller.UserID != "" {
+		return string(caller.Role)
+	}
 	return string(types.TenantRoleFromContext(ctx))
 }
 
 // auditActor returns the calling user id from context, "" when no
 // authenticated caller is present (service-internal paths).
 func auditActor(ctx context.Context) string {
+	if caller := types.CallerFromContext(ctx); caller.UserID != "" {
+		return caller.UserID
+	}
 	uid, _ := types.UserIDFromContext(ctx)
 	return uid
 }
@@ -146,6 +154,13 @@ func rejectAPIKeyOwnerAssignment(ctx context.Context, role types.TenantRole) err
 	}
 	if _, ok := types.TenantAPIKeyScopeFromContext(ctx); ok {
 		return ErrAPIKeyCannotAssignOwner
+	}
+	return nil
+}
+
+func rejectAdminOwnerManagement(ctx context.Context) error {
+	if types.CallerFromContext(ctx).Role == types.TenantRoleAdmin && !types.CanManageTenantOwners(ctx) {
+		return ErrTenantOwnerManagementRequired
 	}
 	return nil
 }
@@ -318,12 +333,22 @@ func (s *tenantMemberService) UpdateRole(
 	if err := rejectAPIKeyOwnerAssignment(ctx, newRole); err != nil {
 		return err
 	}
+	if newRole == types.TenantRoleOwner {
+		if err := rejectAdminOwnerManagement(ctx); err != nil {
+			return err
+		}
+	}
 	current, err := s.repo.Get(ctx, userID, tenantID)
 	if err != nil {
 		return err
 	}
 	if current == nil {
 		return ErrMembershipNotFound
+	}
+	if current.Role == types.TenantRoleOwner {
+		if err := rejectAdminOwnerManagement(ctx); err != nil {
+			return err
+		}
 	}
 	if current.Role == newRole {
 		return nil
@@ -347,6 +372,9 @@ func (s *tenantMemberService) UpdateRole(
 		return nil
 	}
 	if err := s.repo.UpdateRole(ctx, userID, tenantID, newRole); err != nil {
+		if errors.Is(err, apprepo.ErrOwnerMembershipProtected) {
+			return ErrTenantOwnerManagementRequired
+		}
 		return err
 	}
 	s.emitRoleChangeAudit(ctx, tenantID, userID, oldRole, newRole)
@@ -406,6 +434,9 @@ func (s *tenantMemberService) RemoveMember(ctx context.Context, userID string, t
 		return ErrMembershipNotFound
 	}
 	if current.Role == types.TenantRoleOwner {
+		if err := rejectAdminOwnerManagement(ctx); err != nil {
+			return err
+		}
 		err := s.repo.RemoveOwnerAtomically(ctx, userID, tenantID)
 		switch {
 		case errors.Is(err, apprepo.ErrLastOwner):
@@ -418,6 +449,9 @@ func (s *tenantMemberService) RemoveMember(ctx context.Context, userID string, t
 		return nil
 	}
 	if err := s.repo.SoftDelete(ctx, userID, tenantID); err != nil {
+		if errors.Is(err, apprepo.ErrOwnerMembershipProtected) {
+			return ErrTenantOwnerManagementRequired
+		}
 		return err
 	}
 	s.emitRemovalAudit(ctx, tenantID, userID)

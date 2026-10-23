@@ -41,7 +41,7 @@ func AuthorizeKBAccess(
 	permissions := NewKBPermissions(ctx, shares)
 
 	for _, kb := range kbs {
-		hasPermission, permErr := permissions.Check(kb.ID, kb.TenantID, types.OrgRoleViewer)
+		hasPermission, permErr := permissions.CheckKB(kb, types.OrgRoleViewer)
 		if permErr != nil {
 			logger.ErrorWithFields(ctx, permErr, map[string]interface{}{
 				"caller_tenant_id": requestTenantID,

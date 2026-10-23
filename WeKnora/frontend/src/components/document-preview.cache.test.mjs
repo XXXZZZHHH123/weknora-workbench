@@ -17,7 +17,7 @@ function environment() {
     const r = { props: { active: true, knowledgeId: metadata.id, fileName: 'synthetic.pptx', fileType: 'pptx' },
       previewExt: '', pptxSourceSha256: '', pptxSourceHashError: '', pptxSlideCount: 0,
       previewLoadVersion: 0, loadedForId: '', loadedPptxAuthority: '', pptxMediaCacheContext: undefined,
-      loading: ref(false), error: ref(''), htmlViewMode: ref('render'), previewType: ref('pptx'), pptxPermissionChecking: ref(false), pptxData: ref(null),
+      loading: ref(false), error: ref(''), htmlViewMode: ref('render'), previewType: ref('pptx'), pptxPermissionChecking: ref(false), pptxData: ref(null), excelBlob: ref(null),
       getPreviewSourceKey: () => 'knowledge:' + r.props.knowledgeId,
       resolveFilePreviewExt: () => 'pptx', resolvePreviewKind: () => 'pptx', getPptxPreviewScope: () => ctx.scope,
       getKnowledgeDetails: async () => { ctx.gets++; if (ctx.denied) throw new Error('HTTP 403'); await ctx.metadataWait; return { data: { ...ctx.meta } } },
@@ -77,6 +77,20 @@ test('changing credentials while metadata is in flight cannot reuse old authorit
   env.metadataWait = new Promise(resolve => { release = resolve })
   const view = env.view(), task = view.loadPreview(); env.scope = 'tenant-b:token-b'; release(); await task
   assert.equal(env.originals, 0); assert.equal(env.prepares, 0); assert.equal(env.paints, 0)
+})
+test('changing spreadsheet sources removes the old Blob before awaiting the new source ACL', async () => {
+  const env = environment(), view = env.view(); let release
+  view.previewType.value = 'excel'
+  view.resolveFilePreviewExt = () => 'xlsx'; view.resolvePreviewKind = () => 'excel'
+  view.loadedForId = 'knowledge:previous-document'
+  view.excelBlob.value = new Blob(['previous workbook'])
+  env.metadataWait = new Promise(resolve => { release = resolve })
+  const task = view.loadPreview()
+  assert.equal(env.gets, 1)
+  assert.equal(view.excelBlob.value, null, 'previous viewer unmounts while permission is pending')
+  assert.equal(env.originals, 0)
+  view.props.active = false; view.previewLoadVersion++; release(); await task
+  assert.equal(env.originals, 0, 'closing during ACL validation cannot fetch the next original')
 })
 test('incomplete source metadata disables shared reuse rather than guessing source identity', async () => {
   const env = environment(); delete env.meta.file_path

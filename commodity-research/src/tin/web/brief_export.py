@@ -62,7 +62,7 @@ async def _folders(scope):
     if (not isinstance(kb, dict) or kb.get('id') != scope.knowledge_base_id
             or kb.get('tenant_id') != scope.knowledge_base_tenant_id):
         raise HTTPException(403, '绑定知识库范围已改变')
-    if kb.get('my_permission') == 'viewer':
+    if kb.get('my_permission') not in {'editor', 'admin'}:
         raise HTTPException(403, '当前账号没有知识库写入权限')
     document = await go_request(scope, '/api/v1/knowledge-bases/' + quote(scope.knowledge_base_id, safe='') + '/knowledge/folders')
     tree = document.get('data')

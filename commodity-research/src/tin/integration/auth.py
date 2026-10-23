@@ -238,6 +238,8 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                     raise HTTPException(403, '研究服务签名账号与当前登录不一致')
                 from tin.integration.workbench_scope import resolve_workbench, current_workbench
                 scope = await resolve_workbench(fresh, identity.workbench_id, identity.authorization)
+                if scope.restricted:
+                    raise HTTPException(403, '受限研究台不开放通用查询和来源浏览')
                 if (scope.knowledge_base_id != identity.knowledge_base_id
                         or scope.knowledge_base_tenant_id != identity.knowledge_base_tenant_id):
                     raise HTTPException(403, '工作台知识库绑定已改变')
@@ -259,6 +261,10 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                         raise HTTPException(403, "当前空间角色只有读取权限")
                     if not _same_origin(request):
                         raise HTTPException(403, "请求来源不匹配")
+                    if route_path.startswith('/api/sn/diagram') and route_path not in {
+                            '/api/sn/diagram/values', '/api/sn/diagram/markdown/dump'}:
+                        from tin.integration.workbench_scope import require_shared_write
+                        require_shared_write(scope)
                 scope_marker = current_workbench.set(scope)
                 request.scope["path"] = prefix + route_path
                 request.scope["raw_path"] = (prefix + route_path).encode()
@@ -271,7 +277,11 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
             request.state.research_identity = identity
             marker = current_identity.set(identity)
             try:
-                response = await call_next(request)
+                if scoped_path is not None and scope.restricted:
+                    from tin.web.restricted_views import restricted_response
+                    response = await restricted_response(request, scope, route_path)
+                else:
+                    response = await call_next(request)
                 response.headers["Cache-Control"] = "no-store"
                 return response
             finally:

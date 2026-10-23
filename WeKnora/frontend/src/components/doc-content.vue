@@ -2134,7 +2134,7 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
 
           <div v-else-if="viewMode === 'preview'">
             <DocumentPreview :knowledgeId="details.id" :fileType="details.file_type" :fileName="details.title"
-              :active="viewMode === 'preview'" />
+              :active="visible && viewMode === 'preview'" />
           </div>
         </section>
       </div>

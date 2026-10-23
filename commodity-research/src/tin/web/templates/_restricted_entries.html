@@ -1,0 +1,6 @@
+{% if restricted_data.entries %}
+<section class="space-y-3" aria-label="主人分享的研究记录"><h2 class="text-sm font-bold">已保存内容</h2>
+{% for item in restricted_data.entries %}<article class="research-panel p-4 space-y-2"><header class="flex justify-between gap-3 text-xs"><h3 class="font-bold">{{ item.title }}</h3><span class="text-[var(--text-muted)]">{{ item.status }} · {{ item.date }}</span></header><div class="research-prose whitespace-pre-wrap text-sm">{{ item.text }}</div></article>{% endfor %}
+</section>
+{% endif %}
+{% if restricted_data.entries_truncated %}<p class="text-xs text-[var(--text-muted)]">已显示最近 50 条已保存内容；更早记录仍保留，受限视角不开放任意历史查询。</p>{% endif %}

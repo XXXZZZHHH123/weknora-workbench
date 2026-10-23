@@ -19,6 +19,7 @@ from test_review_api import make_workbook
 def scoped(tmp_path, monkeypatch):
     grants = {'kb-a': 10000, 'kb-b': 10000, 'kb-other': 10001}
     requests = []
+    originals = {}
 
     class Auth:
         def __init__(self, **kwargs): pass
@@ -31,17 +32,37 @@ def scoped(tmp_path, monkeypatch):
             if url.endswith('/auth/me'):
                 return httpx.Response(200, json={'data': {'user': {'id': 'test-user', 'tenant_id': tenant},
                     'memberships': [{'tenant_id': tenant, 'role': role}]}})
+            if '/api/v1/knowledge/' in url:
+                identifier = url.rsplit('/', 1)[-1]
+                return httpx.Response(200 if identifier in originals else 404,
+                                     json={'success': True, 'data': originals.get(identifier)})
             kb_id = url.rsplit('/', 1)[-1]
             if kb_id not in grants:
                 return httpx.Response(404, json={})
-            if kb_id == 'kb-other' and tenant != 10001:
+            if kb_id == 'kb-other' and tenant != 10001 and role != 'service-reader':
                 return httpx.Response(403, json={})
             if isinstance(grants[kb_id], dict):
                 data = grants[kb_id]
             else:
-                data = {'id': kb_id, 'tenant_id': grants[kb_id]}
+                data = {'id': kb_id, 'tenant_id': grants[kb_id], 'my_permission': 'editor'}
                 if grants[kb_id] != tenant: data['my_permission'] = 'viewer'
-            return httpx.Response(200, json={'success': True, 'data': data})
+            return httpx.Response(200, json={'success': True, 'data': data}, request=httpx.Request('GET', url))
+
+        async def post(self, url, headers, files, data):
+            requests.append((url, dict(headers)))
+            kb_id = url.removesuffix('/knowledge/file').rsplit('/', 1)[-1]
+            assert kb_id in grants
+            assert data == {'process_config': '{"source_only":true}'}
+            name, stream, _ = files['file']
+            contents = stream.read()
+            digest = hashlib.md5(contents).hexdigest()
+            identifier = 'source-' + kb_id + '-' + digest[:12]
+            owner = grants[kb_id]['tenant_id'] if isinstance(grants[kb_id], dict) else grants[kb_id]
+            document = {'id': identifier, 'tenant_id': owner, 'knowledge_base_id': kb_id,
+                        'type': 'file', 'file_type': 'xlsx', 'file_name': name, 'file_size': len(contents),
+                        'file_hash': digest, 'parse_status': 'stored'}
+            originals[identifier] = document
+            return httpx.Response(200, json={'success': True, 'data': document})
 
     monkeypatch.setattr(httpx, 'AsyncClient', Auth)
     monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
@@ -78,13 +99,14 @@ def upload(client, kb='', tenant=10000, role='owner'):
 
 def sign(key, body, kb='', owner=10000):
     data = {'user_id': 'tool-user', 'email': '', 'display_name': '', 'tenant_id': 10000, 'role': 'viewer'}
-    if kb: data.update(knowledge_base_id=kb, knowledge_base_tenant_id=owner)
+    if kb: data.update(knowledge_base_id=kb, knowledge_base_tenant_id=owner,
+                       authorization_sha256=hashlib.sha256(b'Bearer service-reader').hexdigest())
     encoded = base64.urlsafe_b64encode(json.dumps(data, separators=(',', ':')).encode()).decode().rstrip('=')
     raw = json.dumps(body, separators=(',', ':')).encode()
     stamp = str(int(time.time()))
     signature = hmac.new(key, '\n'.join((stamp, 'POST', '/api/tools/read', encoded,
         hashlib.sha256(raw).hexdigest())).encode(), hashlib.sha256).hexdigest()
-    return raw, {'Content-Type': 'application/json', 'X-Research-Identity': encoded,
+    return raw, {'Content-Type': 'application/json', 'Authorization': 'Bearer service-reader', 'X-Research-Identity': encoded,
         'X-Research-Timestamp': stamp, 'X-Research-Signature': signature}
 
 
@@ -153,18 +175,20 @@ def test_scope_is_verified_on_every_request_and_shared_readers_cannot_write(scop
     assert client.get('/api/datasets', headers=headers('kb-a')).status_code == 403
 
 
-def test_native_kb_write_requires_its_creator_or_space_administrator(scoped):
+def test_native_kb_write_uses_resource_grant_instead_of_creator_or_space_administrator(scoped):
     client, _, grants, _, _ = scoped
-    grants['kb-a'] = {'id': 'kb-a', 'tenant_id': 10000, 'creator_id': 'other-user'}
+    grants['kb-a'] = {'id': 'kb-a', 'tenant_id': 10000, 'creator_id': 'other-user', 'my_permission': 'viewer'}
     contributor = headers('kb-a', role='contributor')
     assert client.get('/api/datasets', headers=contributor).status_code == 200
     assert client.post('/api/import', headers=contributor,
         files={'file': ('isolated.xlsx', make_workbook())}).status_code == 403
     assert client.post('/api/model-settings', headers=contributor, json={}).status_code == 403
-    upload(client, 'kb-a', role='admin')
-    grants['kb-a']['creator_id'] = 'test-user'
+    assert client.post('/api/import', headers=headers('kb-a', role='admin'),
+        files={'file': ('isolated.xlsx', make_workbook())}).status_code == 403
+    grants['kb-a']['my_permission'] = 'editor'
     upload(client, 'kb-a', role='contributor')
     grants['kb-a'].pop('creator_id')
+    grants['kb-a']['my_permission'] = 'viewer'
     assert client.post('/api/import', headers=contributor,
         files={'file': ('isolated.xlsx', make_workbook())}).status_code == 403
 
@@ -194,7 +218,7 @@ def test_shared_signed_reads_use_the_verified_owner_storage(scoped):
     assert response.status_code == 200, response.text
     assert response.json()['datasets'][0]['dataset_id'] == result['dataset_id']
     raw, auth = sign(key, body, 'kb-other', owner=10000)
-    assert client.post('/api/tools/read', content=raw, headers=auth).json()['datasets'] == []
+    assert client.post('/api/tools/read', content=raw, headers=auth).status_code == 403
 
 
 @pytest.mark.parametrize('grant', [
