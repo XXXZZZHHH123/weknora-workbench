@@ -370,4 +370,3 @@ def test_source_sha_is_computed_and_mismatch_is_rejected(tmp_path, monkeypatch):
     with pytest.raises(bridge.PDFParserError, match="source sha256"):
         asyncio.run(bridge.parse_pdf(pdf, {"sha256": "0" * 64}, cfg))
     assert hashlib.sha256(content).hexdigest() != "0" * 64
-

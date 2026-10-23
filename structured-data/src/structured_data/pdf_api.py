@@ -443,4 +443,3 @@ def install_pdf_routes(app, registry):
         result = pdf_store(registry).read_table(_identifier(table_id), offset=offset, limit=limit)
         verify_pdf_original(registry, result['source'])
         return result
-
