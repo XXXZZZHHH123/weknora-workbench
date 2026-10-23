@@ -83,6 +83,8 @@ async def verify_service(request):
             await verify_research_projection(request, identity)
         elif scoped and principal != 'api_key':
             await verify_direct_knowledge(identity, authorization)
+        if scoped and principal != 'api_key':
+            request.state.verified_authorization = authorization
         return identity
     except (KeyError, ValueError, TypeError, OSError):
         raise HTTPException(401, "结构化查询未通过空间身份核验") from None

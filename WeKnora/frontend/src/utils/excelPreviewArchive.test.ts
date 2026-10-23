@@ -188,3 +188,45 @@ test('preserves a percent-encoded ZIP member identity and rejects a conflicting 
   zip.file('xl/worksheets/sheet 1.xml', second);
   await assert.rejects(ExcelPreviewArchive.open(await bytes(zip), 'xlsx'), /编码歧义/);
 });
+
+test('keeps more than 136 worksheet names and opens the final sheet beyond row 5000', async () => {
+  const input = XLSX.utils.book_new();
+  for (let index = 0; index < 137; index++) {
+    const sheet = index === 136
+      ? XLSX.utils.aoa_to_sheet(Array.from({ length: 6_003 }, (_, row) => [row + 1]))
+      : XLSX.utils.aoa_to_sheet([[index]]);
+    XLSX.utils.book_append_sheet(input, sheet, `Sheet ${index + 1}`);
+  }
+  const book = await ExcelPreviewArchive.open(XLSX.write(input, { type: 'array', bookType: 'xlsx', compression: true }), 'xlsx');
+  assert.equal(book.sheetNames.length, 137);
+  const last = await book.page(book.sheetNames.at(-1)!, 6_002);
+  assert.equal(last.totalRows, 6_003);
+  assert.equal(last.rows.at(-1)!.number, 6_003);
+  assert.equal(last.rows.at(-1)!.cells[0]!.text, '6003');
+  assert.equal(last.truncated, false);
+});
+
+test('preserves saved formula results without loading their other-sheet dependencies', async () => {
+  const zip = await fixture();
+  const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+  zip.file('xl/worksheets/sheet1.xml', `<worksheet xmlns="${namespace}"><dimension ref="A1:H1"/><sheetData><row r="1">
+    <c r="A1"><f>Second!B1+1</f><v>25</v></c>
+    <c r="B1"><f t="shared" si="0" ref="B1:C1">A1+1</f><v>26</v></c>
+    <c r="C1"><f t="shared" si="0"/><v>27</v></c>
+    <c r="D1"><f t="array" ref="D1:D1">SUM(A1:C1)</f><v>78</v></c>
+    <c r="E1"><f>1-1</f><v>0</v></c>
+    <c r="F1" t="b"><f>FALSE()</f><v>0</v></c>
+    <c r="G1" t="e"><f>NA()</f><v>#N/A</v></c>
+    <c r="H1" t="str"><f>IF(A1&gt;0,&quot;&quot;,&quot;value&quot;)</f><v></v></c>
+  </row></sheetData></worksheet>`);
+  const book = await ExcelPreviewArchive.open(await bytes(zip), 'xlsx');
+  const page = await book.page('First');
+  assert.deepEqual(page.rows[0]!.cells.map(cell => cell.text), ['25', '26', '27', '78', '0', 'FALSE', '#N/A', '']);
+});
+
+test('does not invent zero when an original formula has no saved calculation result', async () => {
+  const zip = await fixture();
+  zip.file('xl/worksheets/sheet1.xml', '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:B1"/><sheetData><row r="1"><c r="A1"><f>Second!A1</f></c><c r="B1"><f>0</f><v>0</v></c></row></sheetData></worksheet>');
+  const book = await ExcelPreviewArchive.open(await bytes(zip), 'xlsx');
+  assert.deepEqual((await book.page('First')).rows[0]!.cells.map(cell => cell.text), ['', '0']);
+});

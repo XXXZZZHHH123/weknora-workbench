@@ -4,6 +4,7 @@ from __future__ import annotations
 
 STAGES = {
     'scan': '识别工作表结构',
+    'review': '逐块检查待确认工作表',
     'parse': '逐表校验并解析数据',
     'preview': '检查选定区块的全部数据',
     'publish': '保存结构化数据',

@@ -11,7 +11,9 @@ export const EXCEL_PREVIEW_LIMITS = Object.freeze({
   metadataBytes: 8 * 1024 * 1024,
   entryBytes: 64 * 1024 * 1024,
   entries: 20_000,
-  rows: 5_000,
+  // Browse the complete selected sheet; the DOM remains a 100 × 30 viewport.
+  // This is the XLSX format boundary, not a product preview cutoff.
+  rows: 1_048_576,
   pageRows: 100,
   pageColumns: 30,
   cellCharacters: 4_096,

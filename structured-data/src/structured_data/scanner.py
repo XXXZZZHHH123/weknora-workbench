@@ -34,6 +34,39 @@ def complete_date(value):
     return None
 
 
+def source_dated_blocks_ready(blocks, rows):
+    """Accept independent simple blocks, without assuming the first starts at A.
+
+    Multiple blocks alone are not ambiguity. Layered non-unit headings,
+    inferred dates, sparse dates and mixed text still require review.
+    Full publication subsequently checks every original row.
+    """
+    if not blocks:
+        return False
+    for block in blocks:
+        start = block['data_start_row']
+        columns = block['columns']
+        if start not in (2, 3) or not columns:
+            return False
+        metrics = [column['metric'] for column in columns]
+        if not all(metrics) or len(metrics) != len(set(metrics)):
+            return False
+        if start == 3 and not all(
+                rows[1][ordcol(column['column']) - 1] is None
+                or str(rows[1][ordcol(column['column']) - 1]).strip() in _UNITS
+                for column in columns):
+            return False
+        if not all(complete_date(row[ordcol(block['date_column']) - 1])
+                   for row in rows[start - 1:]):
+            return False
+        values = [row[ordcol(column['column']) - 1]
+                  for row in rows[start - 1:] for column in columns]
+        if not all(value is None or isinstance(value, (int, float)) and not isinstance(value, bool)
+                   or isinstance(value, str) and value.startswith('#') for value in values):
+            return False
+    return True
+
+
 def _json_value(value):
     return value.isoformat() if isinstance(value, (date, datetime)) else value
 
@@ -173,24 +206,18 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True, progress=
                 layout='parallel_blocks' if len(blocks)>1 else 'multi_header'
                 if len(blocks)>1:reasons.append('存在多个日期区块，须确认每块边界及指标。')
                 b=blocks[0]
-                simple = len(blocks)==1 and b['date_column']=='A' and b['data_start_row'] in (2,3) and bool(b['columns'])
-                if simple:
-                    metrics=[c['metric'] for c in b['columns']]
-                    simple=all(metrics) and len(metrics)==len(set(metrics))
-                    if b['data_start_row']==3:
-                        # Only accept a dedicated unit/blank second row, not a second header layer.
-                        simple=simple and all(rows[1][ordcol(c['column'])-1] is None or str(rows[1][ordcol(c['column'])-1]).strip() in _UNITS for c in b['columns'])
-                    # Date-contiguous top sample and numeric/error/blank cells only.
-                    simple=simple and all(complete_date(row[0]) for row in rows[b['data_start_row']-1:])
-                    simple=simple and all(v is None or isinstance(v,(int,float)) and not isinstance(v,bool) or isinstance(v,str) and v.startswith('#') for row in rows[b['data_start_row']-1:] for c in b['columns'] for v in [row[ordcol(c['column'])-1]])
+                simple = source_dated_blocks_ready(blocks, rows)
                 if simple and not has_visual:
-                    status='auto_ready';layout='single_header' if b['data_start_row']==2 else 'header_and_units'
-                    reasons.append('样本符合单日期列、明确指标表头及数字/空值/错误值结构；全量导入仍执行逐行校验。')
+                    status='auto_ready'
+                    if len(blocks)==1:layout='single_header' if b['data_start_row']==2 else 'header_and_units'
+                    reasons=['各日期区块具有独立完整日期、明确指标表头及数字/空值/错误值结构；多区块本身不阻止自动导入，全量导入仍执行逐行校验。']
                 else:
                     reasons.append('复杂表头、混合内容或图形需要审核字段映射。')
             if (ws.max_column or 1)>width:
                 status='needs_review';reasons.append('超过512列，右侧未扫描；不可自动导入整页。')
-            candidate_revision='merged-headers-v2' if merged_headers and blocks else None
+            candidate_revision=('source-dated-blocks-v1' if status=='auto_ready' and
+                (len(blocks)>1 or blocks[0]['date_column']!='A') else
+                'merged-headers-v2' if merged_headers and blocks else None)
             regions=[]
             if blocks and status=='needs_review':
                 from .row_sections import discover_row_sections, REVISION

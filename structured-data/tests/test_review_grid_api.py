@@ -88,13 +88,13 @@ def test_current_sheet_view_does_not_start_full_parser(client, review, monkeypat
     assert response.status_code == 200, response.text
     result = response.json()
     cells = {cell['cell']: cell for cell in result['cells']}
-    assert cells['B2']['value'] == 20
-    assert cells['E2']['value'] == 30
-    assert cells['A2']['date_value'] == '2023-01-01'
-    assert 'C2' not in cells  # The empty separator retains its original column.
+    assert cells['B3']['value'] == 20
+    assert cells['E3']['value'] == 30
+    assert cells['A3']['date_value'] == '2023-01-01'
+    assert 'C3' not in cells  # The empty separator retains its original column.
     assert result['total_cols'] == 5
-    response = client.get(base + '/sheet-view', params={'name': 'parallel', 'start_row': 2, 'start_col': 4, 'row_count': 1, 'col_count': 2})
-    assert {cell['cell'] for cell in response.json()['cells']} == {'D2', 'E2'}
+    response = client.get(base + '/sheet-view', params={'name': 'parallel', 'start_row': 3, 'start_col': 4, 'row_count': 1, 'col_count': 2})
+    assert {cell['cell'] for cell in response.json()['cells']} == {'D3', 'E3'}
     assert client.get(base).json()['dataset_id'] == review['dataset_id']
 
 
@@ -124,7 +124,7 @@ def test_small_sample_never_approves_or_publishes(client, review, monkeypatch):
     assert result['sample_only'] is True
     assert result['blocks'][0]['sample'][0]['date'] == '2023-01-01'
     assert result['blocks'][0]['sample'][0]['value'] == 20
-    assert result['blocks'][1]['sample'][0]['source_cell'] == 'E2'
+    assert result['blocks'][1]['sample'][0]['source_cell'] == 'E3'
     assert client.get(base).json()['dataset_id'] == review['dataset_id']
 
 

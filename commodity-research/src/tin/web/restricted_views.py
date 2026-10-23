@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from tin.config import SHANGHAI, settings
 from tin.integration.workbench_scope import artifact_session, current_workbench
 from tin.models import DailyBrief, DiagramTemplate, Judgment, Researcher, SourceMapping, Strategy
-from tin.models.workbench import WorkbenchArtifact
+from tin.models.workbench import WorkbenchArtifact, WorkbenchStorageScope
 
 CORE_KEY = 'workbench-market-core'
 ORIGINS_KEY = 'workbench-series-origins'
@@ -325,6 +325,25 @@ def shared_owner_id(scope):
     return owner if isinstance(owner, str) and owner.strip() and len(owner) <= 128 else None
 
 
+def shared_owner_storage_available(session, scope):
+    """A legacy tenant DB is attributable only with one verified workbench binding.
+
+    Assigned owner records are safe to share under that page's current consent.
+    A missing or competing binding must not turn an entire tenant's personal
+    history into this workbench's records; unassigned researchers remain excluded
+    separately by ``shared_owner_query``.
+    """
+    if not session.info.get('source_storage_legacy'):
+        return True
+    identifier = getattr(scope, 'workbench_id', None)
+    if not identifier or session.info.get('workbench_id') != identifier:
+        return False
+    expected = (identifier, scope.knowledge_base_id, scope.knowledge_base_tenant_id)
+    bindings = session.execute(select(WorkbenchStorageScope.workbench_id,
+        WorkbenchStorageScope.knowledge_base_id, WorkbenchStorageScope.knowledge_base_tenant_id).limit(2)).all()
+    return len(bindings) == 1 and tuple(bindings[0]) == expected
+
+
 def shared_owner_query(scope, statement, model):
     """Only the verified workbench owner's explicitly shared page records."""
     owner = shared_owner_id(scope)
@@ -368,7 +387,7 @@ def page_data(scope, module, template_id=None):
         identifiers = _diagram_ids(template.layout or {}) if template else (
             [] if module == 'diagram' else bound_series_ids(session, module))
         output = {'cards': [], 'diagram': None, 'entries': [],
-                  'legacy_unassigned': bool(session.info.get('source_storage_legacy')),
+                  'legacy_unassigned': not shared_owner_storage_available(session, scope),
                   'owner_unavailable': shared_owner_id(scope) is None}
         core_ids = list(identifiers)
         include_judgment = (module == 'judgments'

@@ -79,6 +79,16 @@ class AssistConfirmRequest(BaseModel):
     request_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
 
 
+class BatchAssistConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    acknowledged_risk: bool = Field(strict=True)
+    request_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
+    total_max_requests: int = Field(default=256, ge=1, le=512, strict=True)
+    per_sheet_max_requests: int = Field(default=12, ge=1, le=32, strict=True)
+    save_template: bool = Field(default=True, strict=True)
+    mappings: list[dict] = Field(default_factory=list, max_length=256)
+
+
 class NativeImportRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     source_knowledge_id: str = Field(min_length=1, max_length=128, pattern=r'^[A-Za-z0-9][A-Za-z0-9_-]*$')
@@ -545,7 +555,7 @@ def create_app(data_dir: str | Path | None = None):
                 if origin != expected_origin(request):
                     return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
             request.state.verified_authorization = authorization
-        if request.method == 'POST' and path.endswith(('/assist-confirm', '/confirm-all')):
+        if request.method == 'POST' and path.endswith(('/assist-confirm', '/confirm-all', '/assist-confirm-all')):
             chunks, total = [], 0
             async for chunk in request.stream():
                 total += len(chunk)
@@ -554,9 +564,12 @@ def create_app(data_dir: str | Path | None = None):
                 chunks.append(chunk)
             request._body = b''.join(chunks)
         marker = current_identity.set(identity)
+        from .model_gateway import current_authorization
+        authorization_marker = current_authorization.set(getattr(request.state, 'verified_authorization', ''))
         try:
             return await call_next(request)
         finally:
+            current_authorization.reset(authorization_marker)
             current_identity.reset(marker)
 
     @app.get("/")
@@ -615,16 +628,37 @@ def create_app(data_dir: str | Path | None = None):
         return response
 
     @app.get('/api/model-settings')
-    def model_settings():
+    async def model_settings():
         from .model_settings import public_model
+        identity = current_identity.get()
+        if identity.knowledge_base_id:
+            from .model_gateway import available_models
+            cfg = public_model(store.root)
+            return {'native_model_id': cfg.get('native_model_id', ''), 'protocol': 'platform',
+                    'legacy_configured': cfg.get('has_api_key', False),
+                    'can_edit': identity.can_write, 'models': await available_models()}
         return public_model(store.root)
 
     @app.post('/api/model-settings')
     async def update_model_settings(request: Request):
         from .model_settings import save_model
-        if current_identity.get().role not in {'owner','admin'}:
+        identity = current_identity.get()
+        if identity.knowledge_base_id:
+            if not identity.can_write:
+                raise HTTPException(403, '只有知识库可编辑成员可修改字段模型')
+            from .model_gateway import validate_model
+            body = await request.json()
+            if not isinstance(body, dict) or set(body) != {'native_model_id'}:
+                raise ValueError('请选择已配置的通用模型，不需要地址或密钥。')
+            await validate_model(body['native_model_id'])
+            await run_in_threadpool(check_job_write, request.state.verified_authorization, identity)
+            return save_model(store.root, body)
+        if identity.role not in {'owner','admin'}:
             raise HTTPException(403, '只有空间所有者或管理员可修改模型配置')
-        return save_model(store.root,await request.json())
+        body = await request.json()
+        if isinstance(body, dict) and 'native_model_id' in body:
+            raise ValueError('请从具体知识库选择平台字段模型。')
+        return save_model(store.root,body)
 
     @app.get("/api/datasets")
     def datasets(include_samples: bool = False):
@@ -868,7 +902,9 @@ def create_app(data_dir: str | Path | None = None):
     def job(job_id: str):
         with job_lock:
             if (job_id not in jobs or jobs[job_id].get('tenant_id') != current_identity.get().tenant_id
-                    or jobs[job_id].get('knowledge_base_id', '') != current_identity.get().knowledge_base_id):
+                    or jobs[job_id].get('knowledge_base_id', '') != current_identity.get().knowledge_base_id
+                    or (jobs[job_id].get('user_id') is not None
+                        and jobs[job_id]['user_id'] != current_identity.get().user_id)):
                 raise HTTPException(404, "任务不存在；服务重启后请查看数据集列表确认导入结果。")
             return jobs[job_id]
 
@@ -885,7 +921,7 @@ def create_app(data_dir: str | Path | None = None):
         result = {k: v for k, v in doc.items() if k != "source_path"}
         if summary_only:
             fields = {"name", "rows", "columns", "status", "layout", "fingerprint", "reasons", "template_status",
-                      "import_state", "review_state",
+                      "import_state", "review_state", "automatic_skip",
                       "published_in_dataset", "published_dataset_id", "published_fingerprint"}
             briefs = []
             for sheet in doc["sheets"]:
@@ -1135,6 +1171,31 @@ def create_app(data_dir: str | Path | None = None):
                       'dataset_id': manager.get(import_id).get('dataset_id'), 'imported': False}
             if result.get('review_state', {}).get('status') == 'confirmed':
                 check_job_write(authorization, identity)
+                try:
+                    actual = run_review_task(registry.directory(), 'preview', import_id=import_id,
+                        mapping=result['mapping'], timeout=min(300, max(.001, deadline - time.monotonic())),
+                        cancel_check=cancelled)
+                except ValueError as exc:
+                    if not cancelled():
+                        exc.review_state = review(result['mapping'])
+                    raise
+                if not actual.get('valid_observation_count'):
+                    from .batch_ai_import import NO_DATA_NOTICE
+                    run_review_task(registry.directory(), 'mark_skip', import_id=import_id,
+                        mapping=result['mapping'], publish_guard=lambda: check_job_write(authorization, identity),
+                        timeout=min(300, max(.001, deadline - time.monotonic())))
+                    result.update(skipped={'code': 'no_indicator_data', 'message': NO_DATA_NOTICE},
+                                  notice=NO_DATA_NOTICE)
+                    with job_lock:
+                        jobs[job_id].update(status='completed', result=result, cancellable=False)
+                    return
+                strict_state = review(result['mapping'])
+                if strict_state.get('status') != 'confirmed':
+                    result.update(review_state=strict_state,
+                        notice='AI 建议未通过逐区块真实数据检查，请补齐或排除无数据区块。')
+                    with job_lock:
+                        jobs[job_id].update(status='completed', result=result, cancellable=False)
+                    return
                 with job_lock:
                     if jobs[job_id].get('cancel_requested') or time.monotonic() >= deadline:
                         raise ValueError('AI 辅助已取消或超时，尚未确认的工作表未导入。')
@@ -1188,6 +1249,97 @@ def create_app(data_dir: str | Path | None = None):
             raise
         return {'id': job_id, 'status': 'processing'}
 
+    def run_assist_confirm_all(job_id, import_id, body, authorization, identity):
+        from .batch_ai_import import import_all_with_ai
+
+        def cancelled():
+            with job_lock:
+                return bool(jobs[job_id].get('cancel_requested'))
+
+        def progress(value):
+            current = progress_value({'phase': 'batch', 'completed': value['completed'], 'total': value['total']})
+            with job_lock:
+                jobs[job_id].update(
+                    stage=f'工作表 {min(value["completed"] + 1, value["total"])}/{value["total"]} · {value["stage"]}',
+                    progress={key: item for key, item in current.items() if key != 'stage'},
+                    batch_ai={key: item for key, item in value.items() if key != 'stage'})
+
+        def sheet_result(row):
+            # Keep visible partial results while a later model request is
+            # running. The final result is rebuilt from authoritative state.
+            with job_lock:
+                result = jobs[job_id]['result']
+                result['details'].append(row)
+                field = {'imported': 'sheets_imported', 'existing': 'sheets_existing',
+                         'needs_review': 'sheets_pending', 'not_started': 'sheets_pending',
+                         'failed': 'sheets_failed', 'skipped_no_data': 'sheets_skipped'}[row['status']]
+                result[field].append(row if field in {'sheets_failed', 'sheets_skipped'} else row['sheet'])
+                result['requests_used'] += row['requests_used']
+
+        try:
+            result = import_all_with_ai(manager, import_id, mappings=body.mappings,
+                save_template=body.save_template, total_max_requests=body.total_max_requests,
+                per_sheet_max_requests=body.per_sheet_max_requests,
+                task=lambda action, **kwargs: run_review_task(registry.directory(), action, **kwargs),
+                check_write=lambda: check_job_write(authorization, identity), cancelled=cancelled,
+                progress=progress, sheet_result=sheet_result)
+            stopped = result.get('stopped')
+            status = 'cancelled' if stopped == 'cancelled' else 'failed' if stopped else 'completed'
+            with job_lock:
+                jobs[job_id].update(status=status, result=result, cancellable=False,
+                    stage=result['notice'], **({'error': result['notice']} if stopped else {}))
+        except Exception as exc:
+            with job_lock:
+                jobs[job_id].update(status='cancelled' if jobs[job_id].get('cancel_requested') else 'failed',
+                    error=str(exc)[:2000], cancellable=False)
+        finally:
+            import_lock.release()
+
+    @app.post('/api/imports/{import_id}/assist-confirm-all')
+    def assist_confirm_all(import_id: str, body: BatchAssistConfirmRequest, request: Request):
+        manager.path(import_id)
+        if not body.acknowledged_risk:
+            raise HTTPException(400, '请先确认逐表 AI 辅助的调用预算和自动导入风险。')
+        names = set()
+        for mapping in body.mappings:
+            name = mapping.get('sheet')
+            if not isinstance(name, str) or name in names:
+                raise HTTPException(400, '批量 AI 的工作表草稿无效或重复。')
+            manager.sheet(import_id, name)
+            names.add(name)
+        job_id = body.request_id or uuid.uuid4().hex
+        identity = current_identity.get()
+        with job_lock:
+            prune_pending_ai_cancels()
+            if job_id in jobs:
+                raise HTTPException(409, '任务编号已使用，请重新发起。')
+            cancel_key = ai_cancel_key(identity, job_id)
+            if cancel_key in pending_ai_cancels:
+                pending_ai_cancels.pop(cancel_key)
+                jobs[job_id] = {'id': job_id, 'tenant_id': identity.tenant_id,
+                    'knowledge_base_id': identity.knowledge_base_id, 'user_id': identity.user_id,
+                    'status': 'cancelled', 'cancel_requested': True, 'cancellable': False,
+                    'error': '批量 AI 已取消，未调用模型或自动导入。'}
+                return {'id': job_id, 'status': 'cancelled'}
+            if not import_lock.acquire(blocking=False):
+                raise HTTPException(409, '已有导入或确认任务，请等待完成。')
+            jobs[job_id] = {'id': job_id, 'kind': 'batch_ai', 'tenant_id': identity.tenant_id,
+                'knowledge_base_id': identity.knowledge_base_id, 'user_id': identity.user_id,
+                'status': 'processing', 'stage': '逐表检查，辅助待确认区块并导入核验通过的表',
+                'cancellable': True, 'result': {'import_id': import_id,
+                    'sheets_imported': [], 'sheets_existing': [], 'sheets_pending': [],
+                    'sheets_failed': [], 'sheets_skipped': [], 'details': [], 'requests_used': 0}}
+        context = contextvars.copy_context()
+        try:
+            threading.Thread(target=context.run, args=(run_assist_confirm_all, job_id, import_id, body,
+                request.state.verified_authorization, identity), daemon=True).start()
+        except Exception:
+            with job_lock:
+                jobs[job_id].update(status='failed', cancellable=False, error='批量 AI 任务未能启动，请重试。')
+            import_lock.release()
+            raise
+        return {'id': job_id, 'status': 'processing'}
+
     def ai_cancel_key(identity, job_id):
         return (identity.tenant_id, identity.knowledge_base_id, identity.user_id, job_id)
 
@@ -1224,7 +1376,8 @@ def create_app(data_dir: str | Path | None = None):
             if record.get('status') != 'processing' or not record.get('cancellable'):
                 raise HTTPException(409, '任务已结束或正在保存已确认数据，无法取消。')
             record['cancel_requested'] = True
-            record['stage'] = '正在取消，等待当前请求返回；不会自动导入'
+            record['stage'] = ('正在取消；已完成工作表保留，后续不再导入' if record.get('kind') == 'batch_ai'
+                               else '正在取消，等待当前请求返回；不会自动导入')
         return {'id': job_id, 'status': 'processing', 'cancel_requested': True}
 
     @app.get("/api/templates")

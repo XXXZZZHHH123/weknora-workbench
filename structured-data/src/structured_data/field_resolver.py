@@ -1,5 +1,6 @@
 """LLM interpretation of bounded catalogue metadata; source IDs stay authoritative."""
 from copy import deepcopy
+from contextvars import copy_context
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from hashlib import sha256
@@ -112,7 +113,8 @@ def narrow_catalogue(payload, root, call):
             request.update(invalid_proposal=raw,repair_instruction='返回了本批次不存在的ID。只逐字复制本批catalog.id，不推算相邻编号，不从别的批次复制。重新筛选。')
         raise ValueError('目录筛选返回了批次外的字段，已纠正仍无有效方案；不执行查询')
     with ThreadPoolExecutor(max_workers=3) as pool:
-        selected=set().union(*pool.map(select,batches)) if batches else set()
+        futures=[pool.submit(copy_context().run,select,batch) for batch in batches]
+        selected=set().union(*(future.result() for future in futures)) if futures else set()
     if not payload.get('task_requirements',{}).get('metadata'):
         selected.update(s['id'] for s in payload.get('prior_series',[]) if isinstance(s,dict) and s.get('id'))
     # Source groups remain complete for every model-selected field. Unrelated
@@ -146,7 +148,7 @@ def ask_model(payload, root=None):
     from .model_settings import read_model
     cfg=read_model(root)
     key=cfg.get('api_key') or os.environ.get(cfg.get('api_key_env',''),'')
-    if not key or not cfg.get('base_url') or not cfg.get('model'):raise ValueError('语义识别模型配置不完整')
+    if not cfg.get('native_model_id') and (not key or not cfg.get('base_url') or not cfg.get('model')):raise ValueError('语义识别模型配置不完整')
     auxiliary=any(payload.get(k) for k in ('_intent','_context_resolution','_catalog_selection','_metadata_catalog_query','_metadata_scope','_expand_query','_source_binding'))
     semantic=payload.get('semantic_task')
     if not auxiliary and semantic is None:
@@ -197,7 +199,13 @@ def ask_model(payload, root=None):
       try:
         timeout=max(.1,min(18,source_deadline-time.monotonic())) if source_deadline else 90
         if source_deadline and time.monotonic()>=source_deadline:raise ValueError('来源模型核验超过时间预算，尚未取数')
-        with httpx.Client(timeout=timeout,trust_env=False) as client:
+        if cfg.get('native_model_id'):
+            from .model_gateway import complete
+            choice=complete(cfg,messages,max_tokens=2000 if source_deadline else 3500 if attempt==0 else 6000,
+                temperature=0,enable_thinking=False if source_deadline else cfg.get('enable_thinking'),timeout=timeout,purpose='fields')['choices'][0]
+            content=choice['message']['content']
+        else:
+          with httpx.Client(timeout=timeout,trust_env=False) as client:
             body={'model':cfg['model'],'temperature':0,'max_tokens':2000 if source_deadline else 3500 if attempt==0 else 6000,'messages':messages}
             from .model_settings import thinking_fields
             body.update(thinking_fields(cfg,False if source_deadline else cfg.get('enable_thinking')))
@@ -480,7 +488,8 @@ class FieldResolver:
                         request.update(semantic_task=None,intent_repair={'error':str(error),'invalid_plan':proposed})
         from .model_settings import read_model
         cfg=read_model(self.store.root)
-        model_identity=json.dumps({k:cfg.get(k) for k in ('model','base_url','enable_thinking')},sort_keys=True)
+        from .model_gateway import cache_identity
+        model_identity=cache_identity(cfg)
         from .intent_model import PROMPT as INTENT_PROMPT, BINDING_PROMPT, CONTEXT_PROMPT
         prompt_identity=sha256((PROMPT+TASK_PROMPT+INTENT_PROMPT+BINDING_PROMPT+CONTEXT_PROMPT+CATALOGUE_PROMPT+METADATA_PROMPT+METADATA_SCOPE_PROMPT+EXPAND_PROMPT).encode()).hexdigest()
         cache_key=sha256((VERSION+prompt_identity+dataset_id+model_identity+encoded).encode()).hexdigest()

@@ -196,17 +196,22 @@ def _validate_shape(suggestion):
 def _request(cfg, payload, budget, cancelled):
     _check_cancelled(cancelled)
     key = cfg.get('api_key')
-    if not key or not cfg.get('base_url') or not cfg.get('model'):
+    if not cfg.get('native_model_id') and (not key or not cfg.get('base_url') or not cfg.get('model')):
         raise ValueError('尚未配置完整聊天模型；无需配置或调用嵌入模型。')
     encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
     if len(encoded.encode('utf-8')) > MAX_INPUT_BYTES:
         raise ValueError('当前区块证据超过 AI 请求大小限制，请拆分或手动核对；本次未调用模型。')
-    body = {'model': cfg['model'], 'temperature': 0, 'max_tokens': 8192,
+    body = {'model': cfg.get('model'), 'temperature': 0, 'max_tokens': 8192,
             'messages': [{'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': encoded}],
             **thinking_fields(cfg, cfg.get('enable_thinking'))}
     budget.consume()
     try:
-        with httpx.Client(timeout=httpx.Timeout(60, connect=10), trust_env=True,
+        if cfg.get('native_model_id'):
+            from .model_gateway import complete
+            choice = complete(cfg, body['messages'], max_tokens=8192, temperature=0,
+                              enable_thinking=cfg.get('enable_thinking'), timeout=60)['choices'][0]
+        else:
+          with httpx.Client(timeout=httpx.Timeout(60, connect=10), trust_env=True,
                           follow_redirects=False) as client:
             response = client.post(str(cfg['base_url']).rstrip('/') + '/chat/completions',
                                    headers={'Authorization': 'Bearer ' + key}, json=body)
@@ -214,21 +219,21 @@ def _request(cfg, payload, budget, cancelled):
             if len(response.content) > MAX_RESPONSE_BYTES:
                 raise ValueError('AI 返回内容过大，未应用建议。')
             choice = response.json()['choices'][0]
-            _check_cancelled(cancelled)
-            if not isinstance(choice, dict) or not isinstance(choice.get('message'), dict):
-                raise ValueError('模型建议未成功返回有效映射，请稍后重试或手动编辑。')
-            if choice.get('finish_reason') == 'length':
-                raise ValueError('AI 建议达到输出长度上限，映射没有返回完整；请缩小区块后重试。原数据未改变。')
-            message = choice['message']
-            if message.get('refusal') or choice.get('finish_reason') == 'content_filter':
-                raise ValueError('模型未提供可用的确认方案，该区块保留待确认。')
-            content = message.get('content')
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError('AI 只返回了思考内容或空响应，没有给出表格映射；请检查模型思考设置后重试。原数据未改变。')
-            content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content.strip())
-            def reject_constant(_):
-                raise ValueError('AI 返回非有限数值。')
-            result = json.loads(content, object_pairs_hook=_unique_object, parse_constant=reject_constant)
+        _check_cancelled(cancelled)
+        if not isinstance(choice, dict) or not isinstance(choice.get('message'), dict):
+            raise ValueError('模型建议未成功返回有效映射，请稍后重试或手动编辑。')
+        if choice.get('finish_reason') == 'length':
+            raise ValueError('AI 建议达到输出长度上限，映射没有返回完整；请缩小区块后重试。原数据未改变。')
+        message = choice['message']
+        if message.get('refusal') or choice.get('finish_reason') == 'content_filter':
+            raise ValueError('模型未提供可用的确认方案，该区块保留待确认。')
+        content = message.get('content')
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError('AI 只返回了思考内容或空响应，没有给出表格映射；请检查模型思考设置后重试。原数据未改变。')
+        content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content.strip())
+        def reject_constant(_):
+            raise ValueError('AI 返回非有限数值。')
+        result = json.loads(content, object_pairs_hook=_unique_object, parse_constant=reject_constant)
     except (httpx.ConnectError, httpx.TimeoutException):
         raise ValueError('无法连接模型服务，请检查网络、系统代理和服务地址；原数据未改变。') from None
     except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError):

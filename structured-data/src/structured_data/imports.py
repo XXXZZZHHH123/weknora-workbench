@@ -19,7 +19,12 @@ from .store import DataStore, dump
 from .progress import report_progress
 
 READY = {'auto_ready', 'template_ready', 'confirmed'}
+AUTOMATIC_REVIEW_REVISION = 'full-candidate-block-validation-v1'
 logger = logging.getLogger(__name__)
+
+
+class NoIndicatorDataError(ValueError):
+    """A validated mapping yielded no records; absence never approves a mapping."""
 
 
 def now():
@@ -188,10 +193,22 @@ class ImportManager:
                         binding_changed = True
                 for updated in scan['sheets']:
                     prior=next((x for x in doc['sheets'] if x['name']==updated['name']),None)
+                    if (prior and updated.get('candidate_revision') == 'source-dated-blocks-v1'
+                            and self._mapping_signature(prior.get('mapping')) !=
+                            self._mapping_signature(updated.get('mapping'))):
+                        # A readiness-only rules upgrade cannot replace a
+                        # different saved plan or a user-adjusted mapping.
+                        continue
                     if prior and prior['status']=='needs_review' and ((updated.get('region_profile') and updated.get('region_profile')!=prior.get('region_profile')) or (updated.get('candidate_revision') and updated.get('candidate_revision')!=prior.get('candidate_revision'))):
                         prior.update(updated)
                         changed = True
-                if doc.get('publish_status') != 'completed':
+                if doc.get('automatic_review_revision') != AUTOMATIC_REVIEW_REVISION or changed:
+                    self._validate_pending_candidates(doc, progress=progress)
+                    changed = True
+                if doc.get('publish_status') != 'completed' or any(
+                        sheet['status'] in READY and sheet.get('import_state') != 'imported'
+                        and sheet.get('candidate_revision') == 'source-dated-blocks-v1'
+                        for sheet in doc['sheets']):
                     self._publish(doc, before_publish=before_publish, progress=progress)
                     doc['publish_status'] = 'completed'
                     self._save(doc)
@@ -240,6 +257,7 @@ class ImportManager:
                 # _publish. Save the source and review only after its final
                 # authorization guard succeeds, so a revoked first import does
                 # not leave a discoverable half-created record behind.
+                self._validate_pending_candidates(doc, progress=progress)
                 self._publish(doc, before_publish=before_publish, progress=progress)
                 doc['publish_status'] = 'completed'
                 self._save(doc)
@@ -301,6 +319,48 @@ class ImportManager:
                 return [clean(v) for v in value]
             return value
         return json.dumps(clean(mapping), ensure_ascii=False, sort_keys=True)
+
+    def _validate_pending_candidates(self, doc, *, progress=None):
+        """Separate untested mappings from actual block errors before review.
+
+        A successful structural check does not promote uncertain business
+        headings to automatic publication. It does preserve passed blocks so
+        manual confirmation or AI assistance need only resolve actual issues.
+        """
+        from .generic_parser import parse_mapped_workbook
+        candidates = [sheet for sheet in doc['sheets'] if sheet['status'] == 'needs_review'
+                      and (sheet.get('mapping') or {}).get('blocks')]
+        total = len(candidates)
+        if total:
+            report_progress(progress, 'review', completed=0, total=total)
+        for index, sheet in enumerate(candidates):
+            mapping = sheet['mapping']
+            with self._records() as (observations, issues):
+                try:
+                    parsed = parse_mapped_workbook(self.source_path(doc), [mapping], scan=doc,
+                                                  observations=observations, issues=issues)
+                    if not parsed['series'] or not len(observations):
+                        raise ValueError('区块没有产生可查询记录，请核对数据范围。')
+                    self._require_block_values(mapping, observations)
+                except ValueError as exc:
+                    sheet['review_state'] = self._review_failed(doc, sheet, mapping, exc)
+                else:
+                    sheet['review_state'] = self._review_success(mapping)
+                    sheet['review_state']['status'] = 'structure_checked'
+                    sheet['review_state']['notice'] = '全部区块通过结构校验，业务指标和口径仍请对照原件核对。'
+            sheet['review_state']['automatic_structure_check'] = True
+            report_progress(progress, 'review', completed=index + 1, total=total)
+        doc['automatic_review_revision'] = AUTOMATIC_REVIEW_REVISION
+
+    @staticmethod
+    def _require_block_values(mapping, observations):
+        from .review_errors import ReviewValidationError
+        present = {row.get('block_index', 0) for row in observations
+                   if row.get('value_status') == 'valid' and row.get('value') is not None}
+        for index, block in enumerate(mapping.get('blocks', [])):
+            if index not in present:
+                raise ReviewValidationError('此区块只有空白、错误或无缓存公式，没有实际指标数值；可核对原件或排除此区块。',
+                    block_index=index, field='columns')
 
     def _publish(self, doc, changed_sheet=None, before_publish=None, progress=None):
         from .profiles.reviewed import parse_workbook, reviewed_mapping
@@ -402,7 +462,12 @@ class ImportManager:
                     parsed = parse_mapped_workbook(path, [mapping], scan=doc,
                                                    observations=observations, issues=issues)
                     if not parsed['series'] or not len(observations):
-                        raise ValueError('映射没有产生可查询记录，不能导入。')
+                        raise NoIndicatorDataError('已识别区块没有可查询指标记录，跳过自动导入；可保留预览并手动调整映射。')
+                    if not changed_sheet and not any(row.get('value_status') == 'valid'
+                                                      and row.get('value') is not None for row in observations):
+                        raise NoIndicatorDataError('已识别区块只有空白、错误或无缓存公式，没有实际指标数值；跳过自动导入，保留预览。')
+                    if not changed_sheet:
+                        self._require_block_values(mapping, observations)
                 except ValueError as exc:
                     review = self._review_failed(doc, sheet, sheet.get('mapping'), exc)
                     if sheet['name'] == changed_sheet:
@@ -411,8 +476,12 @@ class ImportManager:
                     sheet['status'] = 'needs_review'
                     sheet['reasons'] = ['全量校验未通过，未导入此表：' + str(exc)]
                     sheet['review_state'] = review
-                    failed.add(sheet['name'])
+                    if isinstance(exc, NoIndicatorDataError):
+                        sheet['automatic_skip'] = {'code': 'no_indicator_data', 'message': str(exc)}
+                    else:
+                        failed.add(sheet['name'])
                 else:
+                    sheet.pop('automatic_skip', None)
                     sheet['review_state'] = self._review_success(mapping)
                     parts.append(parsed)
                     imported.append(sheet['name'])
@@ -443,8 +512,12 @@ class ImportManager:
         published = set(base_sheets) | set(imported)
         for sheet in doc['sheets']:
             sheet['import_state'] = ('imported' if sheet['name'] in published else
-                                     'failed' if sheet['name'] in failed else 'pending')
+                                     'failed' if sheet['name'] in failed else
+                                     'skipped' if sheet.get('automatic_skip') else 'pending')
         return {'sheets_imported': imported,
+                'sheets_skipped': [{'sheet': s['name'], **s['automatic_skip']}
+                                   for s in doc['sheets'] if s.get('automatic_skip')
+                                   and s['name'] not in published],
                 'sheets_failed': [{'sheet': s['name'], 'message': s['reasons'][0],
                                    'review_state': s['review_state']}
                                   for s in doc['sheets'] if s['name'] in failed],
@@ -491,6 +564,7 @@ class ImportManager:
                                                        observations=observations, issues=issues)
                         if not parsed['series'] or not len(observations):
                             raise ValueError('区块没有产生可查询记录。')
+                        self._require_block_values({'blocks': [block]}, observations)
                     except ValueError as block_error:
                         problem = self._diagnostic(block_error, sheet['name'], index)
                         item.update(status='needs_review', diagnostics=[problem])
@@ -513,7 +587,14 @@ class ImportManager:
         doc = self.get(import_id)
         sheet = self.sheet(import_id, mapping.get('sheet'))
         try:
-            self.preview(import_id, mapping)
+            checked = self.preview(import_id, mapping)
+            if not checked['series_count'] or not checked['observation_count']:
+                raise ValueError('区块没有产生可查询记录，请核对数据范围。')
+            from .review_errors import ReviewValidationError
+            for index, block in enumerate(checked.get('blocks', [])):
+                if not block.get('valid_observation_count'):
+                    raise ReviewValidationError('此区块只有空白、错误或无缓存公式，没有实际指标数值；可核对原件或排除此区块。',
+                        block_index=index, field='columns')
         except ValueError as exc:
             return self._review_failed(doc, sheet, mapping, exc)
         return self._review_success(mapping)
@@ -565,16 +646,21 @@ class ImportManager:
             parsed = parse_mapped_workbook(self.source_path(doc), [mapping], scan=doc,
                                            observations=observations, issues=issues)
             blocks = []
-            summaries = {i: {'first': [], 'last': deque(maxlen=10), 'count': 0}
+            summaries = {i: {'first': [], 'last': deque(maxlen=10), 'count': 0, 'valid_count': 0}
                          for i in range(len(mapping['blocks']))}
             matrix_samples = {}
             sample = []
+            valid_observation_count = 0
             for row in observations:
+                if row.get('value_status') == 'valid' and row.get('value') is not None:
+                    valid_observation_count += 1
                 if len(sample) < 20:
                     sample.append(row)
                 bi = row.get('block_index', 0)
                 summary = summaries[bi]
                 summary['count'] += 1
+                if row.get('value_status') == 'valid' and row.get('value') is not None:
+                    summary['valid_count'] += 1
                 if len(summary['first']) < 10:
                     summary['first'].append(row)
                 summary['last'].append(row)
@@ -595,11 +681,13 @@ class ImportManager:
                 else:
                     block_sample = summary['first'] + list(summary['last'])[max(0, 20-summary['count']):] if summary['count'] > 10 else summary['first']
                 blocks.append({'name': block.get('name', f'区块{bi+1}'), 'series_count': len(series),
-                               'observation_count': summary['count'], 'series': series[:20],
+                               'observation_count': summary['count'],
+                               'valid_observation_count': summary['valid_count'], 'series': series[:20],
                                'sample': block_sample, 'issues': bounded_issues[:20]})
             return {'blocks': blocks, 'excluded_regions': parsed.get('excluded_regions', []),
                     'mapping': mapping, 'series_count': len(parsed['series']),
-                    'observation_count': len(observations), 'series': parsed['series'][:20],
+                    'observation_count': len(observations), 'valid_observation_count': valid_observation_count,
+                    'series': parsed['series'][:20],
                     'sample': sample, 'issues': bounded_issues,
                     'notice': ('同名指标按原表列分别保存，未合并或推测品种、年度。' if any('原表列' in c.get('dimensions', {}) for b in mapping['blocks'] for c in b['columns']) else '') + '预览已执行全量结构校验，但业务指标、单位和年度口径仍需人工确认。'}
 

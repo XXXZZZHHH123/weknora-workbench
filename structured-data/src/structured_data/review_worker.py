@@ -55,7 +55,7 @@ def _compact(value, depth=0):
 def _bounded_preview(parsed):
     """Keep a preview contract; never send the parser's full observations back."""
     result = {k: parsed[k] for k in
-              ("mapping", "series_count", "observation_count", "notice") if k in parsed}
+              ("mapping", "series_count", "observation_count", "valid_observation_count", "notice") if k in parsed}
     for field, maximum in (("series", 20), ("sample", 20), ("issues", 50),
                            ("excluded_regions", 50)):
         source = parsed.get(field, [])
@@ -65,7 +65,7 @@ def _bounded_preview(parsed):
     blocks = []
     for block in parsed.get("blocks", [])[:64]:
         item = {k: _compact(block[k]) for k in
-                ("name", "series_count", "observation_count") if k in block}
+                ("name", "series_count", "observation_count", "valid_observation_count") if k in block}
         for field, maximum in (("series", 20), ("sample", 20), ("issues", 20)):
             source = block.get(field, [])
             item[field] = _compact(source[:maximum])
@@ -245,6 +245,12 @@ def _review_child(request, result_path, memory_bytes, timeout_seconds, control=N
         elif action == "review":
             report_progress(progress, 'preview')
             result = manager.review_mapping(request["import_id"], request["mapping"])
+        elif action == "evidence":
+            from .batch_ai_import import inspect_sheet_data
+            result = inspect_sheet_data(manager, request['import_id'], request['mapping'].get('sheet'))
+        elif action == 'mark_skip':
+            from .batch_ai_import import mark_no_data
+            result = mark_no_data(manager, request['import_id'], request['mapping'], before_write=before_publish)
         else:
             result = manager.ingest(request["path"],
                 use_reviewed_mappings=request.get("use_reviewed_mappings", True),
@@ -274,10 +280,13 @@ def _stop_process(process):
 
 
 def _monitor_worker(process, deadline, memory_bytes, rss_reader=None,
-                    control=None, publish_guard=None, progress_callback=None):
+                    control=None, publish_guard=None, progress_callback=None, cancel_check=None):
     rss_reader = rss_reader or _read_rss_bytes
     guard_used = False
     while True:
+        if cancel_check is not None and cancel_check():
+            _stop_process(process)
+            raise ValueError('任务已取消，未提交的工作表停止处理；已有数据保留。')
         # Drain bounded messages promptly, without making fast sheet scans wait
         # for one watchdog interval per event. Guards still run exactly once.
         for _ in range(128):
@@ -358,7 +367,7 @@ def _cleanup_temporary_snapshots(root, previous):
 def run_review_task(root, action, *, import_id=None, mapping=None,
                     save_template=True, path=None, timeout=None,
                     memory_limit_mb=None, use_reviewed_mappings=True,
-                    publish_guard=None, native_source=None, progress_callback=None):
+                    publish_guard=None, native_source=None, progress_callback=None, cancel_check=None):
     """Return a bounded task result or raise ValueError with a safe Chinese notice.
 
     Defaults: STRUCTURED_REVIEW_MEMORY_MB=768 and
@@ -366,13 +375,15 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
     budget is a termination threshold, not a zero-overshoot allocation promise.
     The caller must hold its cross-action import/confirmation lock throughout.
     """
-    if action not in {"import", "preview", "confirm", "review"}:
+    if action not in {"import", "preview", "confirm", "review", "evidence", "mark_skip"}:
         raise ValueError("不支持的工作表任务。")
-    if publish_guard is not None and (action not in {"import", "confirm"}
+    if publish_guard is not None and (action not in {"import", "confirm", "mark_skip"}
                                       or not callable(publish_guard)):
         raise ValueError("发布权限核验配置无效。")
     if progress_callback is not None and not callable(progress_callback):
         raise ValueError('工作表进度回调配置无效。')
+    if cancel_check is not None and not callable(cancel_check):
+        raise ValueError('工作表取消检查配置无效。')
     if type(use_reviewed_mappings) is not bool:
         raise ValueError("原件核对模式必须明确为布尔值。")
     if native_source is not None and action != "import":
@@ -399,7 +410,7 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
                "path": str(Path(path).resolve()) if path is not None else None}
     if action == "import" and not request["path"]:
         raise ValueError("导入任务缺少源文件。")
-    if action in {"preview", "confirm", "review"} and (not import_id or not isinstance(mapping, dict)):
+    if action in {"preview", "confirm", "review", "evidence", "mark_skip"} and (not import_id or not isinstance(mapping, dict)):
         raise ValueError("工作表任务缺少导入记录或映射。")
     try:
         encoded = json.dumps(request, ensure_ascii=False, allow_nan=False).encode("utf-8")
@@ -431,7 +442,7 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
                 child_control = None
             _monitor_worker(process, deadline, memory_limit_mb * 1024 * 1024,
                             control=parent_control, publish_guard=publish_guard,
-                            progress_callback=progress_callback)
+                            progress_callback=progress_callback, cancel_check=cancel_check)
             if process.exitcode != 0 or not result_path.is_file():
                 raise ValueError("工作进程已停止，任务未能完成；原有版本仍可使用。")
             if result_path.stat().st_size > MAX_RESULT_BYTES:

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onUnmounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, shallowRef, watch } from 'vue';
 import type { ExcelPreviewPage } from '@/utils/excelPreview';
 import type { SourceLocateRequest } from '@/utils/sourceLocator';
 import { sourceQuoteText } from '@/utils/sourceLocator';
@@ -13,6 +13,14 @@ const page = shallowRef<ExcelPreviewPage | null>(null);
 const viewport = ref<HTMLElement | null>(null);
 const busy = ref(false);
 const error = ref('');
+const sheetFilter = ref('');
+const jumpRow = ref<number | string>(1);
+const matchingSheets = computed(() => {
+  const text = sheetFilter.value.trim().toLocaleLowerCase();
+  return text ? sheetNames.value.filter(name => name.toLocaleLowerCase().includes(text)) : sheetNames.value;
+});
+const selectedSheetIndex = computed(() => sheetNames.value.indexOf(selectedSheet.value));
+const availableRows = computed(() => page.value ? Math.max(0, Math.min(page.value.previewRows, page.value.totalRows)) : 0);
 let worker: Worker | null = null;
 let generation = 0, requestId = 0, viewVersion = 0;
 let queuedLocate: number | null = null, locating = false;
@@ -40,7 +48,7 @@ async function showPage(sheet: string, row = 0, column = 0): Promise<boolean> {
   try {
     const value = await request<ExcelPreviewPage>({ type: 'page', sheet, row, column });
     if (own !== generation || version !== viewVersion) return false;
-    page.value = value; selectedSheet.value = sheet;
+    page.value = value; selectedSheet.value = sheet; jumpRow.value = value.startRow + 1;
     await nextTick();
     if (viewport.value) { viewport.value.scrollTop = 0; viewport.value.scrollLeft = 0; }
     return true;
@@ -50,6 +58,14 @@ async function showPage(sheet: string, row = 0, column = 0): Promise<boolean> {
   } finally {
     if (own === generation && version === viewVersion) { busy.value = false; void drainLocate(); }
   }
+}
+async function jumpToRow() {
+  const row = Number(jumpRow.value);
+  if (!page.value || busy.value || !Number.isSafeInteger(row) || row < 1 || row > availableRows.value) return;
+  if (!await showPage(selectedSheet.value, row - 1, page.value.startColumn)) return;
+  jumpRow.value = row;
+  const target = viewport.value?.querySelector<HTMLElement>(`tr[data-row="${row}"]`);
+  if (target && viewport.value) scrollRectIntoContainer(viewport.value, target.getBoundingClientRect());
 }
 async function drainLocate() {
   if (busy.value || locating || queuedLocate === null || !page.value) return;
@@ -62,11 +78,18 @@ async function locateSource() {
   if (!current || !page.value) return;
   clearMarks();
   if (current.unavailable) { emit('located', { found: false, precise: false, reason: 'unavailable' }); return; }
-  const locator = current.locators.find(l => l.type === 'sheet' && l.mapping === 'exact' && !l.partial && l.row_start && l.sheet && sheetNames.value.includes(l.sheet));
+  const locator = current.locators.find(l => l.type === 'sheet' && l.mapping === 'exact' && !l.partial
+    && Number.isSafeInteger(l.row_start) && (l.row_start || 0) > 0 && l.sheet && sheetNames.value.includes(l.sheet));
   if (locator) {
-    // A bounded preview cannot claim to have located rows beyond its limit.
-    if ((locator.row_start || 0) > 5_000) { emit('located', { found: false, precise: false, reason: 'preview_limit' }); return; }
     if (!await showPage(locator.sheet!, (locator.row_start || 1) - 1)) return;
+    if (own !== generation || current.token !== props.locate?.token || !page.value) return;
+    // The worker owns the accessible range. A future fallback may retain a
+    // bounded range, while full worksheets can be cited beyond any old cap.
+    if ((locator.row_start || 0) > availableRows.value) {
+      emit('located', { found: false, precise: false,
+        reason: (locator.row_start || 0) > page.value.totalRows ? 'out_of_range' : 'preview_limit' });
+      return;
+    }
   }
   if (own !== generation || current.token !== props.locate?.token || !viewport.value) return;
   const box = viewport.value;
@@ -88,7 +111,8 @@ async function locateSource() {
 }
 async function open() {
   const own = ++generation;
-  dispose(); page.value = null; sheetNames.value = []; error.value = ''; busy.value = true;
+  dispose(); page.value = null; sheetNames.value = []; selectedSheet.value = ''; sheetFilter.value = '';
+  jumpRow.value = 1; error.value = ''; busy.value = true;
   queuedLocate = props.locate?.token ?? null;
   try {
     if (props.blob.size > 100 * 1024 * 1024) throw new Error('文件超过 100 MB，请下载原件查看。');
@@ -124,17 +148,31 @@ onUnmounted(() => { generation++; queuedLocate = null; dispose(); });
 <template>
   <section class="excel-viewer" :aria-label="fileName" :aria-busy="busy">
     <div class="excel-controls">
-      <select v-if="sheetNames.length" :value="selectedSheet" :disabled="busy" aria-label="选择工作表" @change="showPage(($event.target as HTMLSelectElement).value)">
-        <option v-for="name in sheetNames" :key="name" :value="name">{{ name }}</option>
-      </select>
-      <span class="excel-caption">原件预览 · 只读</span>
+      <template v-if="sheetNames.length">
+        <div class="excel-sheet-picker">
+          <select :value="selectedSheet" :disabled="busy" aria-label="选择工作表" @change="showPage(($event.target as HTMLSelectElement).value)">
+            <option v-if="selectedSheet && !matchingSheets.includes(selectedSheet)" :value="selectedSheet">{{ selectedSheet }}</option>
+            <option v-for="name in matchingSheets" :key="name" :value="name">{{ name }}</option>
+          </select>
+          <span class="excel-caption excel-sheet-count" aria-label="工作表数量">{{ selectedSheetIndex >= 0 ? `${selectedSheetIndex + 1} / ${sheetNames.length}` : `共 ${sheetNames.length}` }} 张</span>
+        </div>
+        <input v-if="sheetNames.length > 10" v-model="sheetFilter" type="search" class="excel-sheet-filter"
+          aria-label="筛选工作表" placeholder="筛选工作表" :disabled="busy">
+        <span v-if="sheetFilter.trim()" class="excel-caption" role="status">{{ matchingSheets.length }} 个匹配</span>
+      </template>
+      <span class="excel-caption" title="公式显示原文件保存的结果，预览不重新计算；未保存计算结果时可能为空">原件预览 · 只读</span>
       <span v-if="busy" class="excel-pending" role="status"><span class="excel-spinner" />正在读取…</span>
       <template v-if="page">
-        <div class="excel-pager">
+        <div class="excel-pager excel-row-pager">
           <button aria-label="上一页" :disabled="busy || page.startRow === 0" @click="showPage(selectedSheet, page.startRow - 100, page.startColumn)">‹</button>
           <span>{{ page.startRow + 1 }}–{{ page.startRow + page.rows.length }} / {{ page.totalRows }} 行</span>
-          <button aria-label="下一页" :disabled="busy || page.startRow + 100 >= page.previewRows" @click="showPage(selectedSheet, page.startRow + 100, page.startColumn)">›</button>
+          <button aria-label="下一页" :disabled="busy || page.startRow + 100 >= availableRows" @click="showPage(selectedSheet, page.startRow + 100, page.startColumn)">›</button>
         </div>
+        <form class="excel-row-jump" @submit.prevent="jumpToRow">
+          <label>跳到 <input v-model="jumpRow" type="number" required min="1" :max="availableRows" step="1"
+            aria-label="跳转到行" :disabled="busy || !availableRows"> 行</label>
+          <button type="submit" :disabled="busy || !availableRows">跳转</button>
+        </form>
         <div v-if="page.totalColumns > 30" class="excel-pager">
           <button aria-label="前一组列" :disabled="busy || page.startColumn === 0" @click="showPage(selectedSheet, page.startRow, page.startColumn - 30)">‹</button>
           <span>{{ page.columns[0] }}–{{ page.columns.at(-1) }}</span>
@@ -143,7 +181,7 @@ onUnmounted(() => { generation++; queuedLocate = null; dispose(); });
       </template>
     </div>
     <p v-if="error" class="excel-error" role="alert">{{ error }} <button @click="open">重试</button></p>
-    <p v-if="page?.truncated" class="excel-note">为保持流畅，仅预览当前工作表前 5,000 行；完整内容请下载原件。预览不计算公式，显示文件保存的值。</p>
+    <p v-if="page?.truncated" class="excel-note">当前可预览前 {{ page.previewRows.toLocaleString('zh-CN') }} / {{ page.totalRows.toLocaleString('zh-CN') }} 行；完整内容请下载原件。预览不计算公式，显示文件保存的值。</p>
     <div v-if="page && !error" ref="viewport" class="excel-grid" tabindex="0" :aria-label="`${selectedSheet}工作表`">
       <table>
         <thead><tr><th aria-label="行号" /><th v-for="column in page.columns" :key="column" scope="col">{{ column }}</th></tr></thead>
@@ -162,9 +200,17 @@ onUnmounted(() => { generation++; queuedLocate = null; dispose(); });
 .excel-viewer { display: flex; flex-direction: column; min-height: 0; height: 100%; font-family: inherit; color: var(--td-text-color-primary); }
 .excel-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 8px 12px; border-bottom: 1px solid var(--td-component-stroke); font-size: var(--app-text-sm, 12px); }
 .excel-controls select { max-width: min(45vw, 280px); height: 30px; border: 1px solid var(--td-component-stroke); border-radius: 6px; padding: 0 6px; font: inherit; color: inherit; background: var(--td-bg-color-container); }
+.excel-sheet-picker { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.excel-sheet-count { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.excel-sheet-filter { width: 112px; min-width: 0; }
+.excel-row-jump { display: inline-flex; align-items: center; gap: 5px; }
+.excel-row-jump label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.excel-row-jump input { width: 76px; font-variant-numeric: tabular-nums; }
+.excel-sheet-filter, .excel-row-jump input { height: 26px; border: 1px solid var(--td-component-stroke); border-radius: 5px; padding: 0 6px; font: inherit; color: inherit; background: var(--td-bg-color-container); }
+.excel-sheet-filter:focus-visible, .excel-row-jump input:focus-visible { outline: 2px solid var(--td-brand-color); outline-offset: 1px; }
 .excel-caption, .excel-note { color: var(--td-text-color-secondary); }
 .excel-pager { display: flex; align-items: center; gap: 6px; }
-.excel-pager:first-of-type { margin-left: auto; }
+.excel-row-pager { margin-left: auto; }
 button { font: inherit; color: inherit; cursor: pointer; background: var(--td-bg-color-container); border: 1px solid var(--td-component-stroke); border-radius: 5px; min-width: 26px; height: 26px; }
 button:disabled { opacity: .4; cursor: default; }
 .excel-pending { display: inline-flex; align-items: center; gap: 5px; }

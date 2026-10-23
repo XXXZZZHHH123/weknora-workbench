@@ -77,7 +77,7 @@ def build_home_context(session, scope, identifiers, values):
     ``values`` is already selected by server bindings and checked against live
     page grants. No local facts, captured evidence values or full catalog are read.
     """
-    from tin.web.restricted_views import shared_artifacts, shared_owner_id, shared_owner_query
+    from tin.web.restricted_views import shared_artifacts, shared_owner_id, shared_owner_query, shared_owner_storage_available
     values = {identifier: values[identifier] for identifier in identifiers if identifier in values}
     today = datetime.now(SHANGHAI).date().isoformat()
     observed = []
@@ -89,7 +89,7 @@ def build_home_context(session, scope, identifiers, values):
         if value.isoformat() <= today:
             observed.append(value.isoformat())
     day = max(observed, default=today)
-    legacy = bool(session.info.get('source_storage_legacy'))
+    legacy = not shared_owner_storage_available(session, scope)
     owner = shared_owner_id(scope)
     researcher = session.scalar(select(Researcher).where(Researcher.weknora_user_id == owner)) if owner and not legacy else None
     result = {'d': max(observed, default=None), 'owner_name': researcher.display_name if researcher else '',

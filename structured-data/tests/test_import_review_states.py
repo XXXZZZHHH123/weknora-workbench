@@ -95,7 +95,7 @@ def test_sheet_level_error_keeps_independently_validated_blocks_confirmed(tmp_pa
         block = mappings[0]['blocks'][0]
         if block['name'] == 'bad':
             raise ValueError('bad block without an original block target')
-        observations.append({'block_index': 0})
+        observations.append({'block_index': 0, 'value': 1, 'value_status': 'valid'})
         return {'series': [{'block_index': 0}]}
 
     monkeypatch.setattr(generic_parser, 'parse_mapped_workbook', parse_one)

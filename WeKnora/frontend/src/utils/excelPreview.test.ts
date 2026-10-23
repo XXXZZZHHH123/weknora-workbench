@@ -18,12 +18,13 @@ test('opens all sheet names but returns only the selected bounded viewport', () 
   const page = book.page('First');
   assert.equal(page.rows.length, 100);
   assert.equal(page.totalRows, 6_000);
-  assert.equal(page.previewRows, 5_000);
-  assert.equal(page.truncated, true);
+  assert.equal(page.previewRows, 6_000);
+  assert.equal(page.truncated, false);
   assert.equal(page.rows[0]!.cells[1]!.text, 'row 1');
   assert.equal(book.page('Second').rows[0]!.cells[0]!.text, 'different');
   assert.equal(book.page('First', 4_999).rows[99]!.cells[1]!.text, 'row 5000');
-  assert.equal(book.page('First', 9_000).startRow, 4_900);
+  assert.equal(book.page('First', 9_000).startRow, 5_900);
+  assert.equal(book.page('First', 5_999).rows[99]!.cells[1]!.text, 'row 6000');
   assert.throws(() => book.page('Other'), /不存在/);
 });
 
@@ -36,6 +37,19 @@ test('wide sheets keep column coordinates and limit rendered cells', () => {
   assert.equal(page.columns.length, 30);
   assert.equal(page.rows[0]!.cells[0]!.text, 'column31');
   assert.equal(book.page('Wide', Number.NaN, Number.POSITIVE_INFINITY).startColumn, 0);
+});
+
+test('the last page of a full sheet remains reachable with a bounded cell viewport', () => {
+  const rows = Array.from({ length: 16_033 }, (_, index) => [index + 1, `record ${index + 1}`]);
+  const book = new ExcelPreviewWorkbook(source({ Complete: XLSX.utils.aoa_to_sheet(rows) }), 'xlsx');
+  const last = book.page('Complete', 16_032);
+  assert.equal(last.totalRows, 16_033);
+  assert.equal(last.previewRows, 16_033);
+  assert.equal(last.startRow, 16_000);
+  assert.equal(last.rows.length, 33);
+  assert.equal(last.rows.at(-1)!.cells[1]!.text, 'record 16033');
+  assert.equal(last.truncated, false);
+  assert(last.rows.every(row => row.cells.length <= EXCEL_PREVIEW_LIMITS.pageColumns));
 });
 
 test('merged headers are clipped safely when they cross row and column pages', () => {

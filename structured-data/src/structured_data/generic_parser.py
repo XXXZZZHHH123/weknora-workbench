@@ -176,13 +176,67 @@ def _date(value, mode, epoch, date_format=None):
     return None
 
 
+def _complete_source_scan(scan):
+    """Only internal, complete scanner metadata may replace discovery work.
+
+    This is shape validation, not an authentication mechanism. HTTP callers
+    cannot supply ``scan``; it comes from the server's scan/review document and
+    is usable only after the original file's full content hash is rechecked.
+    """
+    sheets = scan.get('sheets')
+    if not isinstance(sheets, list) or not sheets:
+        return False
+    names = set()
+    for sheet in sheets:
+        if not isinstance(sheet, dict):
+            return False
+        name = sheet.get('name')
+        if not isinstance(name, str) or not name or name in names:
+            return False
+        names.add(name)
+        if (type(sheet.get('rows')) is not int or not 1 <= sheet['rows'] <= 1_048_576
+                or type(sheet.get('columns')) is not int or not 1 <= sheet['columns'] <= 16_384
+                or not isinstance(sheet.get('fingerprint'), str)
+                or not re.fullmatch(r'[0-9a-f]{64}', sheet['fingerprint'])):
+            return False
+        charts = sheet.get('charts')
+        if (not isinstance(charts, dict)
+                or any(type(charts.get(key)) is not int or charts[key] < 0
+                       for key in ('chart_count', 'image_count'))
+                or type(charts.get('visual_content_parsed')) is not bool):
+            return False
+    return True
+
+
+def _scan_for_source(path, scan):
+    if scan is None:
+        return scan_workbook(path)
+    if not isinstance(scan, dict) or type(scan.get('use_reviewed_mappings', True)) is not bool:
+        raise ValueError('原件识别记录无效，请重新扫描。')
+    mode = scan.get('use_reviewed_mappings', True)
+    expected = scan.get('sha256')
+    if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected):
+        # Missing/old metadata is never evidence for cached sheet boundaries.
+        return scan_workbook(path, use_reviewed_mappings=mode)
+    digest = sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    if digest.hexdigest() != expected:
+        raise ValueError('源文件已变化，请重新扫描后导入')
+    if _complete_source_scan(scan):
+        return scan
+    current = scan_workbook(path, use_reviewed_mappings=mode)
+    if current['sha256'] != expected:
+        raise ValueError('源文件已变化，请重新扫描后导入')
+    return current
+
+
 def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issues=None):
     """Parse bounded regions with row dates or a source-cell date shared by categories."""
     path=Path(path).expanduser().resolve()
-    use_reviewed_mappings = scan.get('use_reviewed_mappings', True) if scan is not None else True
-    current=scan_workbook(path, use_reviewed_mappings=use_reviewed_mappings)
-    if scan is not None and scan.get('sha256')!=current['sha256']:
-        raise ValueError('源文件已变化，请重新扫描后导入')
+    current = _scan_for_source(path, scan)
+    use_reviewed_mappings = current.get('use_reviewed_mappings', True)
     byname={s['name']:s for s in current['sheets']}
     if not isinstance(mappings,list) or not mappings:raise ValueError('至少选择一个工作表映射')
     if len({m.get('sheet') for m in mappings if isinstance(m,dict)})!=len(mappings):raise ValueError('工作表映射重复或无效')

@@ -10,6 +10,8 @@ const source = process.env.STRUCTURED_UI_SOURCE || path.join(__dirname, '..', 's
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const importId = 'b'.repeat(24), requests = [], errors = [], checks = [];
 const cancelledJobIds = new Set();
+let allJobId='', allSlow=false, allPolls=0, structureChecked=false;
+const allResult=()=>({import_id:importId,sheets_imported:['合成已确认表'],sheets_pending:[mapping.sheet],sheets_failed:[],sheets_skipped:[{sheet:'<img src=x onerror=alert(1)>',message:'没有指标数据，保留预览。'}],requests_used:2,notice:'批量处理已完成，无法确认的表仍待核对。'});
 let assisted = false, bulkDone = false, polls = 0, assistUnresolved = false, assistSlow = false, cancelledAssist = false, cancelPolls = 0, submitted = null, currentMapping = null, batchFailure = false, batchSubmitted = [], assistJobId = '', assistCreationSlow = false, cancelResponseSlow = false, loadingRequestSlow = false;
 const mapping = {sheet:'合成待确认表',fingerprint:'synthetic-review',blocks:[
   {name:'正常区块',date_mode:'date',date_column:'A',header_rows:[1],data_start_row:2,data_end_row:3,columns:[{column:'B',metric:'合成指标',unit:'件',header_cells:['B1']}]},
@@ -17,8 +19,10 @@ const mapping = {sheet:'合成待确认表',fingerprint:'synthetic-review',block
 ]};
 const diagnostic = {code:'MISSING_METRIC',message:'E 列缺少指标名称，请对照 E1 补全。',sheet:mapping.sheet,block_index:1,block_id:'block-1',field:'metric',column:'E',cells:['E1']};
 function pendingSheet() {
-  const current = structuredClone(currentMapping||mapping);if(assisted)current.blocks.forEach(block=>{if(!block.columns[0].metric)block.columns[0].metric='来源名称';});
-  return {name:mapping.sheet,rows:3,columns:5,status:assisted?'confirmed':'needs_review',import_state:assisted?'imported':'failed',published_in_dataset:assisted,published_dataset_id:assisted?'synthetic-snapshot':null,published_mapping:assisted?current:null,published_fingerprint:assisted?mapping.fingerprint:null,layout:'mixed_regions',fingerprint:mapping.fingerprint,mapping:current,reasons:[],review_state:{status:assisted?'confirmed':'needs_review',blocks:current.blocks.map((_,block_index)=>({block_index,block_id:'block-'+block_index,status:assisted||block_index===0?'confirmed':'needs_review',diagnostics:!assisted&&block_index===1?[diagnostic]:[]})),diagnostics:assisted?[]:[diagnostic]}};
+  const current = structuredClone(currentMapping||mapping);if(assisted||structureChecked)current.blocks.forEach(block=>{if(!block.columns[0].metric)block.columns[0].metric='来源名称';});
+  const result={name:mapping.sheet,rows:3,columns:5,status:assisted?'confirmed':'needs_review',import_state:assisted?'imported':'failed',published_in_dataset:assisted,published_dataset_id:assisted?'synthetic-snapshot':null,published_mapping:assisted?current:null,published_fingerprint:assisted?mapping.fingerprint:null,layout:'mixed_regions',fingerprint:mapping.fingerprint,mapping:current,reasons:[],review_state:{status:assisted?'confirmed':'needs_review',blocks:current.blocks.map((_,block_index)=>({block_index,block_id:'block-'+block_index,status:assisted||block_index===0?'confirmed':'needs_review',diagnostics:!assisted&&block_index===1?[diagnostic]:[]})),diagnostics:assisted?[]:[diagnostic]}};
+  if(structureChecked)result.review_state={status:'structure_checked',automatic_structure_check:true,blocks:current.blocks.map((_,block_index)=>({block_index,status:'confirmed',diagnostics:[]})),diagnostics:[]};
+  return result;
 }
 function readySheet() {const readyMapping={...structuredClone(mapping),sheet:'合成已确认表',blocks:[structuredClone(mapping.blocks[0])]};return {...pendingSheet(),name:'合成已确认表',status:'confirmed',import_state:bulkDone?'imported':'pending',published_in_dataset:bulkDone,published_dataset_id:bulkDone?'synthetic-snapshot':null,published_mapping:bulkDone?readyMapping:null,published_fingerprint:bulkDone?mapping.fingerprint:null,mapping:readyMapping,review_state:{status:'confirmed',blocks:[{block_index:0,status:'confirmed',diagnostics:[]}],diagnostics:[]}};}
 function sheetView(sheet) {const cells=[];for(let row=1;row<=3;row++)for(let column=1;column<=5;column++){const cell=String.fromCharCode(64+column)+row;const value=row===1?['日期','合成指标','','日期','来源名称'][column-1]:column===1||column===4?'2026-01-01':column===2||column===5?row*10:'';cells.push({row,column,cell,value,display:String(value),style_id:0});}return {sheet_name:sheet.name,total_rows:3,total_cols:5,range:{start_row:1,end_row:3,start_col:1,end_col:5,row_count:3,col_count:5},cells,styles:{},merges:[],column_widths:{},row_heights:{},warnings:[]};}
@@ -34,6 +38,8 @@ async function main(){
     else if(url.pathname.endsWith('/sheet'))result=url.searchParams.get('name')==='合成已确认表'?readySheet():pendingSheet();
     else if(url.pathname.endsWith('/sheet-view'))result=sheetView(pendingSheet());
     else if(url.pathname==='/api/model-settings'){if(loadingRequestSlow)await pause(600);result={model:'fixture-model',has_api_key:true};}
+    else if(url.pathname.endsWith('/assist-confirm-all')){allJobId=data.request_id;allPolls=0;assert.equal(data.acknowledged_risk,true);assert.equal(data.total_max_requests,256);assert.equal(data.per_sheet_max_requests,12);result={id:allJobId,status:'processing'};}
+    else if(allJobId&&url.pathname==='/api/jobs/'+allJobId){result=cancelledJobIds.has(allJobId)?{status:'cancelled',error:'用户取消',result:{...allResult(),cancelled:true,notice:'已取消，已导入的表仍保留。'}}:allSlow||allPolls++===0?{status:'processing',stage:'逐表核对 1/2',progress:{phase:'batch',completed:1,total:2}}:{status:'completed',result:allResult()};}
     else if(url.pathname.endsWith('/assist-confirm')){polls=0;submitted=data.mapping;assistJobId=data.request_id;assert.match(assistJobId,/^[a-f0-9]{32}$/);cancelledAssist=cancelledJobIds.has(assistJobId);if(assistCreationSlow)await pause(750);result={id:assistJobId,status:'processing'};}
     else if(req.method==='POST'&&/^\/api\/jobs\/[a-f0-9]{32}\/cancel$/.test(url.pathname)){if(cancelResponseSlow)await pause(350);const cancelledId=url.pathname.split('/')[3];cancelledJobIds.add(cancelledId);if(cancelledId===assistJobId)cancelledAssist=true;cancelPolls=0;result={id:cancelledId,status:'processing',cancel_requested:true};}
     else if(assistSlow&&url.pathname==='/api/jobs/'+assistJobId){result=cancelledAssist?(cancelPolls++===0?{status:'processing',stage:'正在取消，等待当前请求返回；不会自动导入'}:{status:'cancelled',error:'AI 辅助已取消，尚未确认的工作表未导入。'}):{status:'processing',stage:'AI 正在等待模型返回',progress:{phase:'ai',completed:1,total:3}};}
@@ -121,6 +127,28 @@ async function main(){
     await js('window.dispatchEvent(new PageTransitionEvent("pagehide"))');
     for(let i=0;i<40&&requests.filter(request=>request.path.endsWith('/cancel')).length===cancelsBeforePendingClose;i++)await pause(25);
     assert.equal(requests.filter(request=>request.path.endsWith('/cancel')).length,cancelsBeforePendingClose+1);checks.push('Page close can cancel a preallocated job before its creation response');
+    await pause(1200);assistCreationSlow=false;assistSlow=false;loadingRequestSlow=false;assisted=false;bulkDone=false;currentMapping=null;
+    await js('localStorage.clear()');await call('Page.navigate',{url:origin});await wait('!!document.querySelector(".sheet-grid td")');
+    const allBefore=requests.filter(request=>request.path.endsWith('/assist-confirm-all')).length;
+    await js('document.getElementById("aiImportAllSheets").click()');await wait('document.getElementById("aiDialog").open');
+    await verify('AI import all discloses samples, cost, incorrect interpretation, request bounds and retained history','["少量原始样本","费用","口径错误","256","已导入表不重复","历史版本"].every(text=>document.getElementById("aiDialogText").innerText.includes(text))');
+    assert.equal(requests.filter(request=>request.path.endsWith('/assist-confirm-all')).length,allBefore);
+    await js('document.getElementById("aiCancel").click()');assert.equal(requests.filter(request=>request.path.endsWith('/assist-confirm-all')).length,allBefore);checks.push('Closing the risk dialog never starts a model or batch request');
+    await js('document.getElementById("aiImportAllSheets").click()');await wait('document.getElementById("aiDialog").open');await js('document.getElementById("aiContinue").click()');
+    await wait('document.getElementById("mappingFeedback")?.innerText.includes("模型请求 2 次")');
+    await verify('Batch all summary lists imported, pending and skipped counts with inspectable escaped reasons','document.getElementById("mappingFeedback").innerText.includes("已导入 1 张")&&document.getElementById("mappingFeedback").innerText.includes("待确认 1 张")&&document.getElementById("mappingFeedback").innerText.includes("跳过 1 张")&&!!document.querySelector("#mappingFeedback details")&&!document.querySelector("#mappingFeedback img")');
+    assert.equal(requests.filter(request=>request.path.endsWith('/assist-confirm-all')).length,allBefore+1);checks.push('AI import all starts one bounded serial server job after explicit risk acceptance');
+    allSlow=true;await js('document.getElementById("aiImportAllSheets").click()');await wait('document.getElementById("aiDialog").open');await js('document.getElementById("aiContinue").click()');
+    await wait('document.getElementById("mappingFeedback").innerText.includes("50%（1/2）")');
+    await js('document.getElementById("cancelAiJob").click()');await wait('document.getElementById("mappingFeedback")?.innerText.includes("已取消，已导入的表仍保留")');
+    await verify('Cancelled batch retains and displays completed imports rather than losing the partial result','document.getElementById("mappingFeedback").innerText.includes("已导入 1 张")&&!document.getElementById("aiImportAllSheets").disabled&&document.getElementById("cancelAiJob").hidden');
+    structureChecked=true;assisted=false;bulkDone=true;currentMapping=null;
+    await js('localStorage.clear()');await call('Page.navigate',{url:origin});await wait('!!document.querySelector(".sheet-grid td")');
+    await verify('A full structural check does not silently mark an ambiguous business schema as an already confirmed sheet','document.querySelector(".card-state")?.innerText.includes("结构通过")&&document.querySelectorAll(".block-chip.review-block-error").length===0&&document.getElementById("confirmAllSheets").disabled&&!document.getElementById("confirmMapping").disabled');
+    await js('activeUserId="fixture-user";document.querySelector("[data-sheet-index=\\"0\\"]").click()');await wait('!!document.querySelector(".sheet-grid td")');
+    await js('(()=>{for(const key of Object.keys(localStorage)){if(!key.startsWith("sheet-review%3Av2:"))continue;const draft=JSON.parse(localStorage.getItem(key));for(const state of Object.values(draft.states)){delete state.structureOnly;delete state.businessConfirmed;state.serverReviewed=true;state.checked=true;}localStorage.setItem(key,JSON.stringify(draft));}document.querySelector("[data-sheet-index=\\"1\\"]").click();})()');
+    await wait('document.querySelector(".source-head h3")?.innerText==="合成已确认表"');await js('document.querySelector("[data-sheet-index=\\"0\\"]").click()');await wait('document.querySelector(".source-head h3")?.innerText==="合成待确认表"');
+    await verify('Legacy drafts without new semantic flags cannot override the server structural-only check','document.getElementById("confirmAllSheets").disabled');
     assert.deepEqual(errors,[]);checks.push('No browser runtime errors');
     if(process.env.STRUCTURED_UI_SCREENSHOTS){fs.mkdirSync(process.env.STRUCTURED_UI_SCREENSHOTS,{recursive:true});const image=await call('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(process.env.STRUCTURED_UI_SCREENSHOTS,'batch-complete.png'),Buffer.from(image.data,'base64'));}
     console.log(JSON.stringify({passed:checks.length,checks}));
