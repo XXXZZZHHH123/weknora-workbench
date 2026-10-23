@@ -848,6 +848,14 @@ func writeDocumentInfo(b *strings.Builder, info map[string]interface{}) {
 	if len(info) == 0 {
 		return
 	}
+	// This header is rendered from Data, so a notice present only in the tool's
+	// plain Output would never reach the model. Keep numbering systems distinct
+	// without deriving physical coverage from source text or a partial read.
+	b.WriteString("    <page_numbering>Chunk indexes, chunk_count and pagination offsets count text chunks, not physical pages. " +
+		"Printed page numbers and table-of-contents ranges are source labels, which may differ from physical PDF pages. " +
+		"A contents entry establishes only what the contents list; it does not establish that the referenced section or range is present in this file. " +
+		"Use parser source_locators or an actual read_document page read to identify physical pages; describe directory-only evidence as a contents listing. " +
+		"Use an explicit parser-provided physical page total when available; never infer the file's page count or physical range from chunk counts, printed labels, contents entries or the largest observed locator.</page_numbering>\n")
 	b.WriteString("    <info")
 	for _, key := range []string{"source", "file_name", "file_type", "file_size", "parse_status"} {
 		if value := stringValue(info, key); value != "" {

@@ -270,7 +270,7 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 		if text == "" {
 			text = "[No readable text on this page]"
 		}
-		segment := fmt.Sprintf("\n\n<!-- PDF page %d -->\n%s", p.Page, text)
+		segment := fmt.Sprintf("\n\n<!-- PDF page %d -->\n[来源定位：PDF 物理页 %d/%d。正文、目录和页脚的印刷页码另计，不能据此推断物理页范围；目录只能证明其记载的内容，不能证明本文件包含目录列出的全部页面。]\n%s", p.Page, p.Page, len(artifact.Pages), text)
 		output.WriteString(segment)
 		end := offset + len([]rune(segment))
 		result.SourceBlocks = append(result.SourceBlocks, types.SourceBlock{Start: offset, End: end, Locator: types.SourceLocator{Type: types.SourceLocatorPDF, Page: p.Page, SourceID: fmt.Sprintf("remote_pdf:%d", p.Page)}})

@@ -119,6 +119,9 @@ func TestRemotePDFTableAgreementDoesNotApproveValuesForRetrieval(t *testing.T) {
 	if strings.Contains(result.MarkdownContent, "98765") || !strings.Contains(result.MarkdownContent, "Inventory") || !strings.Contains(result.MarkdownContent, "Amount") || !strings.Contains(result.MarkdownContent, "x^2") || !strings.Contains(result.MarkdownContent, "Ordinary prose") || len(result.SourceBlocks) != 2 {
 		t.Fatalf("unreviewed table must remain discoverable without exposing exact values: %+v", result)
 	}
+	if !strings.Contains(result.MarkdownContent, "PDF 物理页 1/2") || !strings.Contains(result.MarkdownContent, "PDF 物理页 2/2") {
+		t.Fatal("every page must carry its verified physical position and document page count")
+	}
 }
 func TestRemotePDFCancellationDetachesLease(t *testing.T) {
 	utils.SetSSRFWhitelistFromRaw("127.0.0.1")
