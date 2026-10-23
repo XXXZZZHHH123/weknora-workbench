@@ -167,6 +167,8 @@ const (
 	maxRecallKnowledgeBases     = 32
 	maxRecallFieldsPerKnowledge = 16
 	maxRecallFieldsAcrossScopes = 64
+	maxRecallPDFsPerKnowledge   = 16
+	maxRecallPDFsAcrossScopes   = 64
 )
 
 // recallAcrossKnowledgeBases keeps the multi-library directory but, when the
@@ -189,6 +191,8 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 	catalogs := make([]map[string]any, 0, len(scopes))
 	fields := []any{}
 	fieldsTruncated := truncated
+	pdfTablesListed := 0
+	pdfTablesTruncated := truncated
 	for _, scope := range scopes {
 		row := map[string]any{"knowledge_base_id": scope.KnowledgeBaseID}
 		if metadata, ok := t.knowledgeMetadata[scope.KnowledgeBaseID]; ok {
@@ -221,6 +225,26 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 			datasets = append(datasets, compact)
 		}
 		row["datasets"] = datasets
+		// A library with no Excel datasets can still contain reviewed PDF
+		// tables. Preserve their captions, columns, units and provenance so
+		// the model can choose a source from evidence, not a guessed filename.
+		pdfTables := structuredRecallRows(result.Data["pdf_tables"])
+		row["pdf_table_count"] = len(pdfTables)
+		pdfLimit := min(maxRecallPDFsPerKnowledge, maxRecallPDFsAcrossScopes-pdfTablesListed)
+		pdfTruncated := len(pdfTables) > pdfLimit
+		if pdfTruncated {
+			pdfTables = pdfTables[:pdfLimit]
+			pdfTablesTruncated = true
+		}
+		if pdfTables == nil {
+			pdfTables = []map[string]any{}
+		}
+		row["pdf_tables"] = pdfTables
+		row["pdf_tables_truncated"] = pdfTruncated
+		pdfTablesListed += len(pdfTables)
+		if notice, ok := result.Data["pdf_notice"]; ok {
+			row["pdf_notice"] = notice
+		}
 		matches := structuredRecallRows(result.Data["literal_fields"])
 		if more, _ := result.Data["literal_fields_truncated"].(bool); more || len(matches) > maxRecallFieldsPerKnowledge {
 			fieldsTruncated = true
@@ -251,7 +275,8 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 	data["literal_fields"] = fields
 	data["literal_field_count"] = len(fields)
 	data["literal_fields_truncated"] = fieldsTruncated
-	data["scope_notice"] = "已按问题在每个授权知识库中查询数据集目录与真实表头字面召回。literal_fields 是召回证据，不是口径选择：依据完整问题、对话和真实来源选择知识库与字段，后续操作带上对应的 knowledge_base_id。某库 catalog_status=unavailable 或召回截断时，不能据此判断来源不存在。"
+	data["pdf_tables_truncated"] = pdfTablesTruncated
+	data["scope_notice"] = "已在授权知识库中查询 Excel 数据集、已确认 PDF 表目录与真实表头字面召回。datasets 仅为 Excel；PDF 表见各库 pdf_tables，空 Excel 目录不表示该库没有 PDF 表。literal_fields 和 PDF 标题、列、页来源均是候选证据，不是口径选择：依据完整问题、对话和真实来源选择知识库与表，后续操作在顶层传 knowledge_base_id（与 operation、arguments 同级）。PDF 用 read_pdf_table 核对原值、query_pdf_table 计算；pdf_tables_truncated=true 时用该库 list_pdf_tables 读取完整目录。某库 catalog_status=unavailable 或目录截断时，不能据此判断来源不存在；人工确认映射不保证 OCR 正确或整篇覆盖。"
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		return nil
