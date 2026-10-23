@@ -178,11 +178,18 @@ func workspaceDraftGenerator(workspaces *WorkspaceHandler, models *ModelHandler,
 			// Keep the bounded draft budget available for the requested JSON output.
 			thinking := false
 			options.Thinking = &thinking
+			// The judgment route has a fixed JSON contract. Protocol clients only
+			// send a response format when the resolved vendor supports it.
+			options.Format = json.RawMessage(`{"type":"object"}`)
 		}
 		response, err := client.Chat(ctx, []chat.Message{{Role: "system", Content: system}, message}, options)
 		if err != nil {
 			class, status := workspaceDiagramCallError(err)
 			workspaceDiagramFailure(c, "completion", class, status)
+			return
+		}
+		if !allowImages && response != nil && (response.FinishReason == "length" || response.FinishReason == "max_tokens") && strings.TrimSpace(response.Content) == "" {
+			workspaceDiagramFailure(c, "response_validation", "output_limit", 0)
 			return
 		}
 		if response == nil || strings.TrimSpace(response.Content) == "" {
@@ -210,7 +217,17 @@ func workspaceDraftGenerator(workspaces *WorkspaceHandler, models *ModelHandler,
 			_ = c.Error(apperrors.NewForbiddenError("研究来源或工作台编辑权限已失效"))
 			return
 		}
-		workspaceReply(c, gin.H{"content": response.Content, "model_id": model.ID}, nil)
+		result := gin.H{"content": response.Content, "model_id": model.ID}
+		if !allowImages {
+			// A finite protocol diagnostic never echoes arbitrary provider text.
+			switch response.FinishReason {
+			case "stop", "end_turn", "stop_sequence", "completed", "length", "max_tokens", "content_filter":
+				result["finish_reason"] = response.FinishReason
+			default:
+				result["finish_reason"] = "unknown"
+			}
+		}
+		workspaceReply(c, result, nil)
 	}
 }
 

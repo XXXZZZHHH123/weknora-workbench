@@ -174,7 +174,10 @@ def bound_series_ids(session, module):
     if module in {'diagram', 'indicators'}:
         templates = shared_diagrams(session)
         diagram = [identifier for template in templates for identifier in _diagram_ids(template.layout or {})]
-        return _ids(list(dict.fromkeys((core_config(session) if module == 'indicators' else []) + diagram)))
+        if module == 'indicators':
+            from tin.web.market_history import history_config
+            return _ids(list(dict.fromkeys(core_config(session) + history_config(session)['series_ids'] + diagram)))
+        return _ids(list(dict.fromkeys(diagram)))
     return []
 
 
@@ -412,7 +415,11 @@ def page_data(scope, module, template_id=None):
         output['market_cards'] = _market_cards(core_ids if module == 'market' else identifiers, values)
         if module == 'market':
             from tin.export.board import threshold_radar_values
+            from tin.web.market_history import readonly_market_history
+            from tin.web.market_contracts import readonly_contract_curve
             output['radar'] = threshold_radar_values(output.get('j'), values)
+            output['market_history'] = readonly_market_history(session, scope)
+            output['contract_curve'] = readonly_contract_curve(session, scope)
         if module == 'diagram' and template:
             layout = readonly_diagram_layout(template.layout or {})
             output['diagram'] = {'id': template.id, 'name': template.name,
@@ -581,9 +588,15 @@ async def restricted_response(request, scope, route_path):
         return templates.TemplateResponse(request, 'indicators.html', context)
     if authorized and module == 'market':
         dates = [card.as_of for card in payload.get('market_cards', []) if card.as_of]
+        history = payload.get('market_history')
+        if history:
+            dates.extend(row['last_date'] for row in history['series'] if row.get('last_date'))
+        curve = payload.get('contract_curve') or {'rows': [], 'shape': None}
+        if curve.get('date'):
+            dates.append(curve['date'])
         context.update(cards=payload.get('market_cards', []), market_catalog=None, judgment=payload.get('block'),
             radar=payload.get('radar', []), gaps=[], macro=[], liquidity_min=settings.liquidity_min_volume,
-            curve={'rows': [], 'shape': None}, d=max(dates, default=None))
+            curve=curve, market_history=history, d=max(dates, default=None))
         return templates.TemplateResponse(request, 'variety.html', context)
     if authorized and not payload.get('legacy_unassigned') and not payload.get('owner_unavailable'):
         if module == 'judgments':

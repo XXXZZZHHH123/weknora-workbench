@@ -79,7 +79,10 @@ def observation_boundary(session: Session, *, before: datetime | None = None,
 
 def latest_trade_date(session: Session) -> date | None:
     if session.info.get("workbench_id"):
-        timestamp = observation_boundary(session)
+        # Annual/forecast fields may use a future period-end date. Keep those
+        # originals available, but do not let them select a future "today" for
+        # the entire workbench and hide available historical market quotes.
+        timestamp = observation_boundary(session, before=day_end(datetime.now(SHANGHAI).date()))
         return timestamp.astimezone(SHANGHAI).date() if timestamp else None
     v = session.scalar(select(func.max(TradingDay.trade_date)))
     return date.fromisoformat(v) if v else None

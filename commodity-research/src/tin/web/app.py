@@ -3,6 +3,7 @@ import io
 import json
 import logging
 from datetime import date, datetime, time
+from datetime import date as CalendarDate
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -316,7 +317,7 @@ def home_page(request: Request, date: str | None = None, err: str | None = None)
             brief=home.brief_view(s, brief, d) if brief is not None else None,
             brief_gap=None if brief is not None else home.brief_gap(s, researcher, d),
             changes=home.overnight(s, V, d) if d is not None else {"core": [], "macro": []},
-            cards=core_cards(s, V, d) if d is not None else [],
+            cards=saved_core_cards(s, d, core_cards(s, V, d)) if d is not None else [],
             radar=threshold_radar(s, V, d) if d is not None else [],
             gaps=gaps(s, V, d) if d is not None else [],
             tones=TONES, stances=STANCES, editable=brief_store.EDITABLE_FIELDS, err=err))
@@ -434,13 +435,18 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
         d = _home_date(s, date)
         today = datetime.now(SHANGHAI).date()
         cards = saved_core_cards(s, d, core_cards(s, V, d) if d is not None else [])
+        from tin.web.market_history import market_history
+        from tin.web.market_contracts import configured_contract_curve
+        curve = (configured_contract_curve(s, d if date else None) if s.info.get('workbench_id')
+                 else contract_curve(s, V, d) if d is not None else None)
         return templates.TemplateResponse(request, "variety.html", _shell(
             s, "variety", d, cards=cards,
             market_catalog=market_catalog_data(s, cards, d) if s.info.get('workbench_id') else None,
             judgment=judgment_block(s, V, today),
             radar=threshold_radar(s, V, d) if d is not None else [],
             gaps=gaps(s, V, d) if d is not None else [],
-            curve=contract_curve(s, V, d) if d is not None else None,
+            curve=curve,
+            market_history=market_history(s, d) if s.info.get('workbench_id') and d else None,
             macro=macro_featured(s, d) if d is not None else [],
             liquidity_min=settings.liquidity_min_volume, err=err))
 
@@ -460,7 +466,7 @@ def judgment_page(request: Request, err: str | None = None):
 
 def _judgment_response(request: Request, *, err=None, logic_input=""):
     with SessionLocal() as s:
-        d = latest_trade_date(s)
+        d = _home_date(s, request.query_params.get('date'))
         today = datetime.now(SHANGHAI).date()
         versions = s.execute(scope_query(s, select(Judgment.version, Judgment.status, Judgment.author, Judgment.written_at, Judgment.review_due, Judgment.created_at).where(Judgment.variety == V).order_by(Judgment.version.desc()).limit(50), Judgment)).all()
         last_import = s.scalars(select(AuditLog).where(AuditLog.action == "判断导入", *([AuditLog.actor == verified_actor()] if current_identity.get() else []))
@@ -792,14 +798,28 @@ def report_file(day: str):
 @app.get("/sn/contracts.csv")
 def contracts_csv(date: str | None = None):
     with SessionLocal() as s:
-        d = _board_date(s, date)
-        rows = contract_curve(s, V, d)["rows"]
+        from tin.web.market_contracts import configured_contract_curve
+        if s.info.get('workbench_id'):
+            curve = configured_contract_curve(s, _board_date(s, date) if date else None)
+            if not curve['date']:
+                raise HTTPException(404, '当前知识库尚无已绑定的合约日行情')
+            d = CalendarDate.fromisoformat(curve['date'])
+        else:
+            d = _board_date(s, date)
+            curve = contract_curve(s, V, d)
+        rows = curve['rows']
+        scoped = curve.get('source') == 'knowledge-base'
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["交易日", "合约", "结算价", "收盘价", "成交量(手)", "持仓量(手)", "主力", "流动性"])
+    writer.writerow(["交易日", "合约", "结算价", "收盘价", "成交量", "成交量单位", "持仓量", "持仓量单位", "价格单位", "主力", "流动性"])
     for r in rows:
-        writer.writerow([d.isoformat(), r["contract"], r["settle"], r["close"], r["volume"], r["oi"],
-                         "是" if r["main"] else "", "活跃" if r["active"] else "低流动性"])
+        cells = [d.isoformat(), r["contract"], r["settle"], r["close"], r["volume"],
+                         r.get('volume_unit') if scoped else '手', r["oi"],
+                         r.get('oi_unit') if scoped else '手', curve.get('unit') if scoped else '元/吨',
+                         "是" if r["main"] else "", "活跃" if r["active"] else
+                         "未判定" if scoped and not r['liquidity_comparable'] else "低流动性"]
+        writer.writerow(["'" + cell if isinstance(cell, str) and cell.startswith(('=', '+', '-', '@', '\t', '\r'))
+                         else cell for cell in cells])
     buf.seek(0)
     return StreamingResponse(iter([buf.getvalue().encode("utf-8-sig")]), media_type="text/csv",
                              headers={"Content-Disposition": f'attachment; filename="{V}_contracts_{d}.csv"'})

@@ -31,6 +31,36 @@ func TestWorkspaceJudgmentUsesFixedResearchSystemAndNormalConfiguredModel(t *tes
 	require.Equal(t, workspaceDiagramTokens, f.models.client.options.MaxTokens)
 	require.NotNil(t, f.models.client.options.Thinking)
 	require.False(t, *f.models.client.options.Thinking)
+	require.JSONEq(t, `{"type":"object"}`, string(f.models.client.options.Format))
+	require.Contains(t, response.Body.String(), `"finish_reason":"unknown"`)
+}
+
+func TestWorkspaceJudgmentReportsOnlyFiniteCompletionDiagnostics(t *testing.T) {
+	for _, scenario := range []struct {
+		name, reason, content string
+		status                int
+	}{
+		{"complete", "stop", `{"judgment":{}}`, 200},
+		{"truncated", "length", `{"judgment":`, 200},
+		{"empty-budget", "length", "", 503},
+		{"untrusted-reason", "provider secret diagnostic", `{"judgment":{}}`, 200},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newWorkspaceDiagramFixture(t)
+			f.models.client.response.Content = scenario.content
+			f.models.client.response.FinishReason = scenario.reason
+			response := judgmentRequest(f, diagramBody(t, ""))
+			require.Equal(t, scenario.status, response.Code, response.Body.String())
+			require.NotContains(t, response.Body.String(), "provider secret diagnostic")
+			if scenario.status == 503 {
+				require.Contains(t, response.Body.String(), `"error_class":"output_limit"`)
+			} else if scenario.reason == "provider secret diagnostic" {
+				require.Contains(t, response.Body.String(), `"finish_reason":"unknown"`)
+			} else {
+				require.Contains(t, response.Body.String(), `"finish_reason":"`+scenario.reason+`"`)
+			}
+		})
+	}
 }
 
 func TestWorkspaceJudgmentRequiresItsOwnApprovedSourceModule(t *testing.T) {

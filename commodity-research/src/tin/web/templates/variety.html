@@ -6,6 +6,7 @@
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/market-overview.css?v={{ static_version() }}">
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/indicator-preferences.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/market-overview.js?v={{ static_version() }}"></script>{% endif %}
+{% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/market-history.js?v={{ static_version() }}"></script>{% endif %}
 {% endif %}
 {% endblock %}
 {% block main %}
@@ -114,6 +115,7 @@
 {% if research_workbench() %}
 {% include '_market_core.html' %}
 {% include '_market_contract_guide.html' %}
+{% if not restricted_view %}{% include '_market_history_selector.html' %}{% endif %}
 {% endif %}
 
 {% if d %}
@@ -133,11 +135,18 @@
 </section>
 {% endif %}
 
+{% if research_workbench() and not curve.rows %}
+{% include '_market_history.html' %}
+{% else %}
+{% set price_unit = curve.unit or '元/吨' %}
+{% set volume_unit = curve.volume_unit if curve.source == 'knowledge-base' else '手' %}
+{% set oi_unit = curve.oi_unit if curve.source == 'knowledge-base' else '手' %}
 <section class="space-y-3">
   <div class="flex items-center justify-between gap-3 flex-wrap">
     <div class="flex items-center gap-2">
       <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">02</span>
       <h2 class="text-sm font-bold">{{ '合约期限结构' if research_workbench() else '沪锡期限结构' }}</h2>
+      {% if curve.date %}<span class="text-[11px] text-[var(--text-muted)] tabular">{{ curve.date }} · 历史日行情</span>{% endif %}
       {% if curve.shape %}<span class="text-xs px-2 py-0.5 rounded bg-[var(--primary-soft)] text-[var(--primary)] font-medium">活跃段 {{ curve.shape }}</span>
       {% else %}<span class="text-xs text-[var(--text-muted)]">活跃合约不足，暂不判定结构</span>{% endif %}
     </div>
@@ -148,7 +157,7 @@
   <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
     <div class="lg:col-span-5 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm flex flex-col justify-between">
       <div class="flex justify-between text-xs text-[var(--text-muted)] font-medium mb-1 gap-2">
-        <span>结算价结构（元/吨）</span>
+        <span>结算价结构（{{ price_unit }}）</span>
         <span id="chart-hover-indicator" class="text-[var(--primary)] font-bold tabular truncate"></span>
       </div>
       <div class="relative w-full h-44 my-auto">
@@ -160,7 +169,7 @@
           {% for r in curve.rows %}
           <circle cx="{{ r.x }}" cy="{{ r.y }}" r="{{ 5.5 if r.main else 4 }}"
                   data-contract-point="{{ r.contract }}" data-main="{{ 1 if r.main else 0 }}"
-                  data-caption="{{ r.contract }}{{ '（主力）' if r.main }}: {{ r.settle | num('元/吨') }} 元/吨"
+                  data-caption="{{ r.contract }}{{ '（主力）' if r.main }}: {{ r.settle | num(price_unit) }} {{ price_unit }}"
                   fill="{{ 'var(--primary)' if r.main else 'var(--surface)' }}"
                   stroke="{{ 'var(--surface)' if r.main else ('var(--primary)' if r.active else 'var(--text-muted)') }}"
                   stroke-width="2" vector-effect="non-scaling-stroke"/>
@@ -173,7 +182,7 @@
         {% endfor %}
       </div>
       <div class="flex justify-between text-[10px] tabular text-[var(--text-muted)] pt-1">
-        <span>下沿 {{ curve.min | num('元/吨') }}</span><span>上沿 {{ curve.max | num('元/吨') }}</span>
+        <span>下沿 {{ curve.min | num(price_unit) }}</span><span>上沿 {{ curve.max | num(price_unit) }}</span>
       </div>
     </div>
 
@@ -182,21 +191,21 @@
       <table class="w-full text-left text-xs">
         <thead class="bg-[var(--surface-soft)] text-[11px] font-semibold text-[var(--text-muted)] border-b border-[var(--line)]">
           <tr><th class="py-2.5 px-3">合约</th><th class="py-2.5 px-3 text-right">结算价</th>
-            <th class="py-2.5 px-3 text-right">收盘价</th><th class="py-2.5 px-3 text-right">成交量（手）</th>
-            <th class="py-2.5 px-3 text-right">持仓量（手）</th><th class="py-2.5 px-3 text-center">状态</th></tr>
+            <th class="py-2.5 px-3 text-right">收盘价</th><th class="py-2.5 px-3 text-right">成交量{% if volume_unit %}（{{ volume_unit }}）{% endif %}</th>
+            <th class="py-2.5 px-3 text-right">持仓量{% if oi_unit %}（{{ oi_unit }}）{% endif %}</th><th class="py-2.5 px-3 text-center">状态</th></tr>
         </thead>
         <tbody class="divide-y divide-[var(--line)]">
           {% for r in curve.rows %}
-          <tr class="contract-row cursor-default transition-colors {{ 'bg-[var(--primary-soft)]/40 font-semibold' if r.main }}"
-              onmouseenter="highlightContract('{{ r.contract }}')" onmouseleave="resetContract()">
+          <tr class="contract-row cursor-default transition-colors {{ 'bg-[var(--primary-soft)]/40 font-semibold' if r.main }}" data-contract="{{ r.contract }}">
             <td class="py-2 px-3 whitespace-nowrap">{{ r.contract }}
               {% if r.main %}<span class="ml-1 px-1.5 py-0.5 text-[9px] font-bold rounded bg-[var(--primary)] text-white">主力</span>{% endif %}</td>
-            <td class="py-2 px-3 text-right tabular {{ 'font-bold text-[var(--primary)]' if r.main }}">{{ r.settle | num('元/吨') }}</td>
-            <td class="py-2 px-3 text-right tabular">{{ r.close | num('元/吨') }}</td>
-            <td class="py-2 px-3 text-right tabular {{ '' if r.active else 'text-[var(--text-muted)]' }}">{{ r.volume | num('手') }}</td>
-            <td class="py-2 px-3 text-right tabular text-[var(--text-muted)]">{{ r.oi | num('手') }}</td>
+            <td class="py-2 px-3 text-right tabular {{ 'font-bold text-[var(--primary)]' if r.main }}">{{ r.settle | num(price_unit) }}</td>
+            <td class="py-2 px-3 text-right tabular">{{ r.close | num(price_unit) }}</td>
+            <td class="py-2 px-3 text-right tabular {{ '' if r.active else 'text-[var(--text-muted)]' }}">{{ r.volume | num(r.volume_unit if curve.source == 'knowledge-base' else '手') }}{% if curve.source == 'knowledge-base' and not volume_unit and r.volume_unit %} {{ r.volume_unit }}{% endif %}</td>
+            <td class="py-2 px-3 text-right tabular text-[var(--text-muted)]">{{ r.oi | num(r.oi_unit if curve.source == 'knowledge-base' else '手') }}{% if curve.source == 'knowledge-base' and not oi_unit and r.oi_unit %} {{ r.oi_unit }}{% endif %}</td>
             <td class="py-2 px-3 text-center">
               {% if r.active %}<span class="w-1.5 h-1.5 rounded-full bg-[var(--primary)] inline-block" title="活跃"></span>
+              {% elif curve.source == 'knowledge-base' and not r.liquidity_comparable %}<span class="text-[var(--text-muted)]">未判定</span>
               {% else %}<span class="px-1.5 py-0.5 text-[10px] rounded bg-[var(--surface-soft)] text-[var(--text-muted)]">低流动性</span>{% endif %}</td>
           </tr>
           {% endfor %}
@@ -204,8 +213,8 @@
       </table>
       </div>
       <div class="mt-auto px-3 py-2 bg-[var(--surface-soft)] border-t border-[var(--line)] text-[11px] text-[var(--text-muted)] flex justify-between gap-2">
-        <span>成交低于 {{ liquidity_min }} 手视为低流动性，价差计算自动改用结算价。</span>
-        <a href="{{ research_prefix() }}/sn/contracts.csv?date={{ d }}" class="text-[var(--primary)] hover:underline shrink-0">导出 CSV</a>
+        <span>{% if curve.source == 'knowledge-base' %}{{ curve.date }} · 当前知识库已确认的历史日行情{% else %}成交低于 {{ liquidity_min }} 手视为低流动性，价差计算自动改用结算价。{% endif %}</span>
+        {% if not restricted_view %}<a href="{{ research_prefix() }}/sn/contracts.csv?date={{ curve.date or d }}" class="text-[var(--primary)] hover:underline shrink-0">导出 CSV</a>{% endif %}
       </div>
     </div>
   </div>
@@ -213,6 +222,7 @@
   <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-6 text-sm text-[var(--text-muted)]">该交易日没有可用的合约行情。</div>
   {% endif %}
 </section>
+{% endif %}
 
 <section class="space-y-3">
   <div class="flex items-center justify-between gap-3 flex-wrap">

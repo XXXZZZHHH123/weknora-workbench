@@ -272,7 +272,8 @@ def overnight(session: Session, variety: str, d: date) -> dict:
     「首屏说涨 2%、总览说涨 1.8%」，那比不显示还糟。
     """
     core = []
-    for c in core_cards(session, variety, d):
+    from tin.web.market import saved_core_cards
+    for c in saved_core_cards(session, d, core_cards(session, variety, d)):
         if c.status != "ok" or not c.change:
             continue
         core.append({"label": c.label, "unit": c.unit, "value": c.value, "change": c.change,

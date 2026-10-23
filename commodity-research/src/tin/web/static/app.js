@@ -171,7 +171,8 @@ function copyText(txt) {
 }
 
 function highlightContract(contract) {
-  const point = document.querySelector('[data-contract-point="' + contract + '"]');
+  const point = Array.from(document.querySelectorAll('[data-contract-point]'))
+    .find((item) => item.dataset.contractPoint === contract);
   const label = document.getElementById("chart-hover-indicator");
   document.querySelectorAll("[data-contract-point]").forEach((c) => {
     c.setAttribute("r", c.dataset.main === "1" ? "5.5" : "4");
@@ -190,6 +191,13 @@ function resetContract() {
   const main = document.querySelector('[data-contract-point][data-main="1"]');
   if (label && main) label.innerText = main.dataset.caption;
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.contract-row[data-contract]').forEach((row) => {
+    row.addEventListener('mouseenter', () => highlightContract(row.dataset.contract));
+    row.addEventListener('mouseleave', resetContract);
+  });
+});
 
 function setMacroFilterActive(targetId) {
   document.querySelectorAll("[data-macro-filter]").forEach((link) => {

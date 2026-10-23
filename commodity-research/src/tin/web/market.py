@@ -16,18 +16,31 @@ def market_catalog(session, cards, day):
     available = {row['series_id'] for row in rows}
     from tin.integration.workbench_scope import current_workbench
     scope = current_workbench.get()
+    from tin.web.market_history import history_config
     return {
         'indicators': [{key: row.get(key) or '' for key in
                         ('series_id', 'name', 'category', 'unit', 'source')} for row in rows],
         'defaults': [card.series_id for card in cards if card.series_id in available][:12],
         'date': day.isoformat() if day else None,
         'can_edit_shared': bool(scope and scope.can_edit and not scope.restricted),
+        'history': history_config(session),
     }
 
 
 class CoreConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     series_ids: list[str] = Field(max_length=12)
+
+
+class HistoryConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    series_ids: list[str] = Field(max_length=12)
+    points_per_series: int = Field(default=180, ge=2, le=180, strict=True)
+
+
+class ContractsConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    contracts: list[dict] = Field(max_length=24)
 
 
 def saved_core_cards(session, day, fallback):
@@ -55,6 +68,29 @@ def build_market_router(session_factory, templates, resolve_date):
         with session_factory() as session:
             save_core_config(session, body.series_ids)
         return {'series_ids': body.series_ids}
+
+    @router.post('/api/sn/market/history/config')
+    def save_history(body: HistoryConfig):
+        from tin.integration.workbench_scope import current_workbench, require_shared_write
+        from tin.web.market_history import save_history_config
+        scope = current_workbench.get()
+        if scope is None or scope.restricted:
+            raise HTTPException(403, '只有来源可读的研究台编辑成员可以配置历史行情')
+        require_shared_write(scope)
+        with session_factory() as session:
+            save_history_config(session, body.series_ids, body.points_per_series)
+        return body.model_dump()
+
+    @router.post('/api/sn/market/contracts/config')
+    def save_contracts(body: ContractsConfig):
+        from tin.integration.workbench_scope import current_workbench, require_shared_write
+        from tin.web.market_contracts import save_contract_config
+        scope = current_workbench.get()
+        if scope is None or scope.restricted:
+            raise HTTPException(403, '只有来源可读的研究台编辑成员可以配置合约来源')
+        require_shared_write(scope)
+        with session_factory() as session:
+            return save_contract_config(session, body.contracts)
 
     @router.get('/api/sn/market/core')
     def core(request: Request, series_id: list[str] = Query(..., min_length=1, max_length=12), date: str | None = None):
