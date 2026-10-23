@@ -331,41 +331,59 @@ def test_model_suggestion_binds_complete_fragments_and_handles_truncated_output(
         suggest_plan(draft, body, tmp_path)
 
 
-def test_native_model_pdf_suggestion_keeps_verified_context_and_requires_publication(pdf_service, monkeypatch):
+def mock_native_pdf_gateway(monkeypatch, data, status=200):
     import httpx
+    from types import SimpleNamespace
+    from structured_data import model_gateway
+    calls = []
+
+    def upstream(request):
+        assert request.method == 'POST'
+        assert str(request.url) == 'http://native.test/api/v1/knowledge-bases/kb-a/structured-model/chat'
+        calls.append(request)
+        return httpx.Response(status, json={'success': True, 'data': data})
+
+    def client_factory(**options):
+        assert options['trust_env'] is False and options['follow_redirects'] is False
+        return httpx.Client(transport=httpx.MockTransport(upstream), **options)
+
+    # Keep Starlette's own httpx client intact, including versions whose
+    # TestClient.post delegates directly to httpx.Client.post.
+    monkeypatch.setattr(model_gateway, 'httpx', SimpleNamespace(
+        Client=client_factory, HTTPError=httpx.HTTPError))
+    return calls
+
+
+def test_native_model_pdf_suggestion_keeps_verified_context_and_requires_publication(pdf_service, monkeypatch):
     from structured_data.model_settings import save_model
     client, _, _, root, _ = pdf_service
     draft = imported(pdf_service)
     save_model(root / 'knowledge-bases' / 'kb-a', {'native_model_id': 'configured-chat'})
     mapping = plan(draft)
-    calls = []
-
-    def post(model_client, url, **options):
-        calls.append((url, options))
-        return httpx.Response(200, json={'success': True, 'data': {
-            'model_id': 'configured-chat', 'finish_reason': 'stop',
-            'content': json.dumps({'status': 'ready', 'message': 'fixture evidence', 'plan': mapping})}})
-
-    monkeypatch.setattr(httpx.Client, 'post', post)
-    response = client.post('/api/pdf/drafts/' + draft['draft_id'] + '/suggest',
+    calls = mock_native_pdf_gateway(monkeypatch, {
+        'model_id': 'configured-chat', 'finish_reason': 'stop',
+        'content': json.dumps({'status': 'ready', 'message': 'fixture evidence', 'plan': mapping})})
+    path = '/api/pdf/drafts/' + draft['draft_id'] + '/suggest'
+    response = client.post(path,
                            json={'fragment_ids': ['table-1', 'table-2']}, headers=headers())
+    assert str(response.request.url) == 'http://testserver' + path
     assert response.status_code == 200, response.text
     assert len(response.json()['preview']['rows']) == 3
     assert read(pdf_service, 'list_pdf_tables', {}).json()['tables'] == []
     assert len(calls) == 1
-    url, options = calls[0]
-    assert url == 'http://native.test/api/v1/knowledge-bases/kb-a/structured-model/chat'
-    assert options['headers'] == {'Authorization': 'Bearer owner', 'X-Tenant-ID': '10000'}
-    assert {k: v for k, v in options['json'].items() if k != 'messages'} == {
+    request = calls[0]
+    assert request.headers['authorization'] == 'Bearer owner'
+    assert request.headers['x-tenant-id'] == '10000'
+    body = json.loads(request.content)
+    assert {k: v for k, v in body.items() if k != 'messages'} == {
         'model_id': 'configured-chat', 'max_tokens': 6000, 'temperature': 0, 'enable_thinking': False}
-    evidence = json.loads(options['json']['messages'][1]['content'])
+    evidence = json.loads(body['messages'][1]['content'])
     assert evidence['bundle_sha256'] == draft['bundle_sha256']
     assert evidence['evidence']['fragments'] == draft['bundle']['fragments']
 
 
 @pytest.mark.parametrize('failure', ['permission', 'wrong_model', 'truncated', 'invalid_json', 'wrong_source'])
 def test_native_pdf_model_failures_do_not_fall_back_or_publish(pdf_service, monkeypatch, failure):
-    import httpx
     client, _, _, _, _ = pdf_service
     draft = imported(pdf_service)
     mapping = plan(draft)
@@ -375,20 +393,17 @@ def test_native_pdf_model_failures_do_not_fall_back_or_publish(pdf_service, monk
             'finish_reason': 'length' if failure == 'truncated' else 'stop',
             'content': 'not JSON' if failure == 'invalid_json' else json.dumps({
                 'status': 'ready', 'message': 'fixture evidence', 'plan': mapping})}
-    calls = []
-
-    def post(model_client, url, **options):
-        calls.append(url)
-        return httpx.Response(403 if failure == 'permission' else 200,
-                              json={'success': True, 'data': data})
-
-    monkeypatch.setattr(httpx.Client, 'post', post)
+    calls = mock_native_pdf_gateway(monkeypatch, data, 403 if failure == 'permission' else 200)
     monkeypatch.setattr('structured_data.model_settings.read_model', lambda root: {
         'native_model_id': 'configured-chat', 'base_url': 'http://legacy.invalid/v1',
         'api_key': 'legacy-provider-secret', 'model': 'legacy-chat'})
-    response = client.post('/api/pdf/drafts/' + draft['draft_id'] + '/suggest',
+    path = '/api/pdf/drafts/' + draft['draft_id'] + '/suggest'
+    response = client.post(path,
                            json={'fragment_ids': ['table-1', 'table-2']}, headers=headers())
+    assert str(response.request.url) == 'http://testserver' + path
     assert response.status_code == 400, response.text
-    assert calls == ['http://native.test/api/v1/knowledge-bases/kb-a/structured-model/chat']
+    assert 'detail' in response.json()
+    assert len(calls) == 1
+    assert b'legacy-provider-secret' not in calls[0].content
     assert 'legacy-provider-secret' not in response.text
     assert read(pdf_service, 'list_pdf_tables', {}).json()['tables'] == []
