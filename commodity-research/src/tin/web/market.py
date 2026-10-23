@@ -46,12 +46,14 @@ class ContractsConfig(BaseModel):
 def saved_core_cards(session, day, fallback):
     from tin.models import SourceMapping
     from tin.web.restricted_views import CORE_KEY, core_config, mapping_key
+    from tin.web.market_card_labels import compact_market_cards
     if not session.info.get('workbench_id') or session.get(SourceMapping, mapping_key(session, CORE_KEY)) is None:
-        return fallback
+        return compact_market_cards(session, fallback)
     ids = core_config(session)
     selected = {row.series_id: row for row in session.scalars(select(Indicator).where(Indicator.series_id.in_(ids)))}
-    return [_obs_card(session, identifier, selected[identifier].name, identifier, day)
-            for identifier in ids if identifier in selected] if day else []
+    cards = [_obs_card(session, identifier, selected[identifier].name, identifier, day)
+             for identifier in ids if identifier in selected] if day else []
+    return compact_market_cards(session, cards)
 
 
 def build_market_router(session_factory, templates, resolve_date):
@@ -116,6 +118,8 @@ def build_market_router(session_factory, templates, resolve_date):
                 raise HTTPException(404, '部分指标已不在当前知识库目录，请刷新后重新选择')
             cards = [_obs_card(session, identifier, chosen[identifier].name, identifier, day)
                      for identifier in series_id]
+            from tin.web.market_card_labels import compact_market_cards
+            cards = compact_market_cards(session, cards)
             html = templates.get_template('_market_cards.html').render(cards=cards)
             return {'series_ids': series_id, 'ready_count': sum(card.status == 'ok' for card in cards), 'html': html}
 

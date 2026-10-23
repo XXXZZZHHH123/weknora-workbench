@@ -236,6 +236,8 @@ def _bounded_part(scope, identifiers, module):
             value, old = latest.get('value'), previous.get('value')
             output[identifier] = {'name': spec.get('metric') or spec.get('name') or '已绑定指标',
                 'unit': spec.get('unit') or '', 'frequency': spec.get('frequency') or '',
+                'display_name': spec.get('display_name') or spec.get('name'),
+                'display_metadata': {key: spec[key] for key in ('code', 'vendor_code', 'coverage') if key in spec},
                 'date': latest.get('date'), 'value': value,
                 'change': value - old if value is not None and old is not None else None,
                 'change_pct': (value - old) / abs(old) * 100 if value is not None and old not in {None, 0} else None}
@@ -367,13 +369,20 @@ def shared_artifacts(session, scope, module, *, with_truncation=False):
     return (items, len(rows) > 50) if with_truncation else items
 
 
-def _market_cards(identifiers, values):
+def _market_cards(identifiers, values, compact=False):
     from tin.export.board import Card
-    return [Card(key=identifier, series_id=identifier, label=values[identifier]['name'],
+    cards = [Card(key=identifier, series_id=identifier, label=values[identifier]['name'],
                  unit=values[identifier]['unit'], status='ok' if values[identifier]['value'] is not None else 'missing',
                  value=values[identifier]['value'], as_of=values[identifier]['date'],
                  change=values[identifier]['change'], change_pct=values[identifier]['change_pct'],
                  badge='已授权') for identifier in identifiers if identifier in values]
+    if compact:
+        from tin.web.market_card_labels import compact_market_card
+        return [compact_market_card(card, {'metric': values[card.series_id]['name'],
+            'display_name': values[card.series_id].get('display_name'),
+            'unit': values[card.series_id]['unit'], 'frequency': values[card.series_id].get('frequency'),
+            **(values[card.series_id].get('display_metadata') or {})}) for card in cards]
+    return cards
 
 
 def page_data(scope, module, template_id=None):
@@ -412,7 +421,8 @@ def page_data(scope, module, template_id=None):
             identifiers = []
         values = necessary_values(session, scope, identifiers, module)
         output['cards'] = [values[identifier] for identifier in identifiers if identifier in values]
-        output['market_cards'] = _market_cards(core_ids if module == 'market' else identifiers, values)
+        output['market_cards'] = _market_cards(core_ids if module == 'market' else identifiers, values,
+                                               compact=module == 'market')
         if module == 'market':
             from tin.export.board import threshold_radar_values
             from tin.web.market_history import readonly_market_history

@@ -5,13 +5,28 @@ from contextlib import contextmanager
 import pytest
 from sqlalchemy.orm import Session
 
+from tin.compute import engine as compute_engine
 from tin.compute.engine import latest_trade_date
+from tin.config import SHANGHAI
 from tin.db import make_engine
 from tin.web.app import _neighbour_dates
 
 
 @pytest.fixture
-def fact_calendar():
+def calendar_clock(monkeypatch):
+    class CalendarDateTime(datetime):
+        current = datetime(2031, 9, 14, 12, tzinfo=SHANGHAI)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz) if tz else cls.current.replace(tzinfo=None)
+
+    monkeypatch.setattr(compute_engine, 'datetime', CalendarDateTime)
+    return CalendarDateTime
+
+
+@pytest.fixture
+def fact_calendar(calendar_clock):
     engine = make_engine('sqlite://')
     with engine.connect() as connection:
         for source in ('primary_facts', 'macro_facts'):
@@ -87,3 +102,29 @@ def test_workbench_calendar_has_no_dates_when_confirmed_facts_are_empty(fact_cal
     c.exec_driver_sql('DELETE FROM macro_facts.observations')
     assert latest_trade_date(fact_calendar) is None
     assert _neighbour_dates(fact_calendar, date(2031, 1, 1)) == (None, None)
+
+
+def test_workbench_default_date_obeys_shanghai_midnight_without_removing_future_rows(fact_calendar, calendar_clock):
+    c = fact_calendar.connection()
+    c.exec_driver_sql('DELETE FROM primary_facts.observations')
+    c.exec_driver_sql('DELETE FROM macro_facts.observations')
+    c.exec_driver_sql('INSERT INTO primary_facts.observations VALUES (?,?,?)', [
+        ('primary_facts0', '2031-01-01 15:59:59.000000', '正常'),
+        ('primary_facts0', '2031-01-01 16:00:00.000000', '正常'),
+    ])
+    # UTC 15:59:59 and 16:00:00 straddle Shanghai's local midnight.
+    calendar_clock.current = datetime(2031, 1, 1, 23, 59, 59, tzinfo=SHANGHAI)
+    with bounded_sql(fact_calendar):
+        assert latest_trade_date(fact_calendar) == date(2031, 1, 1)
+    calendar_clock.current = datetime(2031, 1, 2, 0, 0, tzinfo=SHANGHAI)
+    assert latest_trade_date(fact_calendar) == date(2031, 1, 2)
+    assert c.exec_driver_sql('SELECT count(*) FROM primary_facts.observations').scalar() == 2
+
+
+def test_workbench_default_date_is_empty_when_only_future_dates_exist(fact_calendar, calendar_clock):
+    calendar_clock.current = datetime(2030, 12, 31, 23, 59, tzinfo=SHANGHAI)
+    with bounded_sql(fact_calendar):
+        assert latest_trade_date(fact_calendar) is None
+    assert fact_calendar.connection().exec_driver_sql(
+        "SELECT count(*) FROM primary_facts.observations WHERE status = '正常'"
+    ).scalar() == 8 * 256
