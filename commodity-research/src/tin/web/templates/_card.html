@@ -1,14 +1,16 @@
-{% macro card(c, loop_index) -%}
+{% macro card(c, loop_index, compact=false) -%}
 {% set pid = "pop-" ~ c.key %}
 <div class="relative rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm hover:border-[var(--line-strong)] flex flex-col justify-between h-[156px]">
   <div>
     <div class="flex items-start justify-between gap-2 text-xs">
-      <span class="font-medium text-[var(--text-muted)]">{{ c.label }}{% if c.caliber and c.key == 'main' %} ({{ c.detail.caliber.contract }}){% endif %}</span>
+      <span class="{{ 'block min-w-0 truncate' if compact }} font-medium text-[var(--text-muted)]" {% if compact %}data-market-card-title title="{{ c.label }}"{% endif %}>{{ c.label }}{% if not compact and c.caliber and c.key == 'main' %} ({{ c.detail.caliber.contract }}){% endif %}</span>
+      {% if not compact %}
       <span class="shrink-0 px-1.5 py-0.5 text-[10px] font-semibold rounded border
         {% if c.manual %}bg-[var(--amber-soft)] text-[var(--amber)] border-[var(--amber)]/20
         {% elif c.badge == '派生' %}bg-[var(--blue-soft)] text-[var(--blue)] border-[var(--blue)]/20
         {% else %}bg-[var(--surface-soft)] text-[var(--text-muted)] border-[var(--line)]{% endif %}"
         {% if c.entered %}title="{{ c.entered }}"{% endif %}>{{ '人工' if c.manual else c.badge or '' }}</span>
+      {% endif %}
     </div>
 
     {% if c.status == 'ok' %}
@@ -32,23 +34,27 @@
 
   <div class="pt-2 border-t border-[var(--line)]/60 flex items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]">
     <span class="truncate">
-      {%- if c.status == 'ok' -%}{{ c.as_of }}{% if c.caliber %} · {{ c.caliber }}{% endif %}
+      {%- if c.status == 'ok' -%}{{ c.as_of }}{% if c.caliber and not compact %} · {{ c.caliber }}{% endif %}
       {%- elif c.status == 'blocked' -%}两端时点不满足容差
       {%- else -%}{{ c.source or '' }}{%- endif -%}
     </span>
     {% if c.detail %}
-    <button type="button" data-popover-trigger onclick="togglePopover('{{ pid }}')"
+    <button type="button" data-popover-trigger onclick="window.togglePopover('{{ pid }}')"
             class="shrink-0 text-[var(--primary)] hover:bg-[var(--primary-soft)] px-1.5 py-0.5 rounded font-medium">
-      {{ '输入穿透' if c.badge == '派生' else '录入人' if c.manual else '口径' }} ⓘ</button>
+      {{ '口径' if compact else '输入穿透' if c.badge == '派生' else '录入人' if c.manual else '口径' }} ⓘ</button>
     {% endif %}
   </div>
 
   {% if c.detail %}
-  <div id="{{ pid }}" data-popover class="hidden absolute left-0 right-0 top-full mt-1.5 z-20 p-3 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] shadow-xl text-xs space-y-1">
+  <div id="{{ pid }}" data-popover class="hidden absolute left-0 right-0 top-full mt-1.5 z-20 p-3 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] shadow-xl text-xs space-y-1 {{ 'max-h-72 overflow-y-auto break-words' if compact }}">
     <div class="flex justify-between items-center font-bold border-b border-[var(--line)] pb-1 gap-2">
       <span class="tabular truncate">{{ c.detail.series_id or c.detail.formula or c.key }}</span>
-      <button type="button" onclick="togglePopover('{{ pid }}')" class="text-[var(--text-muted)]">&times;</button>
+      <button type="button" onclick="window.togglePopover('{{ pid }}')" class="text-[var(--text-muted)]">&times;</button>
     </div>
+    {% if compact and c.detail.display %}
+      <div class="text-[var(--text)]" data-card-full-name>完整名称：{{ c.detail.display.full_name }}</div>
+      {% for item in c.detail.display.metadata %}<div class="text-[var(--text-muted)]">{{ item.label }}：{{ item.value }}</div>{% endfor %}
+    {% endif %}
     {% if c.detail.inputs is defined %}
       <div class="text-[var(--text-muted)]">{{ c.detail.formula }}</div>
       <div class="text-[var(--text-muted)]">容差：{{ c.detail.tolerance }}</div>

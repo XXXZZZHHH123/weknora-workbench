@@ -172,6 +172,61 @@ def test_full_130k_catalog_that_fits_final_prompt_skips_selection(monkeypatch):
     assert selected == catalog and partial is False and calls == []
 
 
+def test_source_index_compression_preserves_every_field_and_full_source_without_selection(monkeypatch):
+    import json
+    catalog = [{'id': 'real-' + str(index), 'name': '量' * 65 + str(index),
+        'unit': 'kg', 'frequency': '日', 'sheet': 'Measurements', 'dimensions': {'scope': 'all'},
+        'source_file': 'current-source-' + 'a' * 140 + '.xlsx', 'source_kind': 'primary',
+        'knowledge_base_id': 'library-' + '1' * 36, 'source_version': 'f' * 64}
+        for index in range(300)]
+    assert len(generation.catalog_json(catalog).encode()) > generation.PROMPT_BYTES
+    async def no_selection(*args):
+        raise AssertionError('A losslessly indexed full catalog must not call a selector')
+    monkeypatch.setattr(generation, 'completion', no_selection)
+    selected, partial = asyncio.run(generation.choose_catalog(None, 'm', catalog, TEXT))
+    assert selected == catalog and partial is False
+    prompt = generation.make_prompt(generation.analysis_protocol(False), selected, TEXT)
+    assert len(prompt.encode()) <= generation.PROMPT_BYTES and TEXT in prompt
+    encoded = prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0]
+    grouped = json.loads(encoded)
+    restored = [{**{key: value for key, value in field.items() if key != 'source_ref'},
+                 **grouped['sources'][field['source_ref']]} for field in grouped['indicators']]
+    assert restored == catalog and len(grouped['sources']) == 1
+    assert 'source_ref不是指标ID' in prompt
+
+
+def test_source_index_preserves_nulls_and_distinct_source_versions_without_key_collision():
+    import json
+    source = {'source_file': 'a' * 1024, 'source_kind': None, 'knowledge_base_id': 'library'}
+    catalog = [{'id': 'real-' + str(index), 'unit': None if index == 0 else 'kg',
+                **source, 'source_version': 'v1' if index < 2 else 'v2'} for index in range(4)]
+    encoded, grouped = generation.prompt_catalog(catalog)
+    assert grouped
+    doc = json.loads(encoded)
+    assert len(doc['sources']) == 2 and doc['indicators'][0]['unit'] is None
+    assert all(source['source_kind'] is None for source in doc['sources'].values())
+    catalog[0]['source_ref'] = 'actual field metadata'
+    encoded, grouped = generation.prompt_catalog(catalog)
+    assert not grouped and json.loads(encoded) == catalog
+
+
+@pytest.mark.parametrize('finish_reason', ['length', 'max_tokens'])
+def test_truncated_native_output_is_not_repaired_or_saved(monkeypatch, finish_reason):
+    from fastapi import HTTPException
+    monkeypatch.setattr(generation.settings, 'weknora_api_url', 'http://native.test')
+    original = httpx.AsyncClient
+    def upstream(request):
+        return httpx.Response(200, json={'success': True, 'data': {
+            'model_id': 'm', 'content': '{"judgment":', 'finish_reason': finish_reason}})
+    monkeypatch.setattr(generation.httpx, 'AsyncClient', lambda *args, **kwargs: original(*args, **{
+        **kwargs, 'transport': httpx.MockTransport(upstream)}))
+    scope = SimpleNamespace(workbench_id=FIRST, knowledge_base_id=KB, authorization='Bearer synthetic',
+        identity=SimpleNamespace(tenant_id=17))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(generation.completion(scope, 'm', 'full source'))
+    assert caught.value.status_code == 422 and '长度上限' in caught.value.detail
+
+
 def test_total_generate_deadline_preserves_existing_versions_and_no_preview(generator,monkeypatch):
     client, headers, _, response, _ = generator
     monkeypatch.setattr(generation, 'GENERATION_SECONDS', 0.1, raising=False)
@@ -288,6 +343,84 @@ def test_explicit_numeric_interval_with_original_quote_remains_a_valid_preview(g
     assert result.status_code == 200, result.text
     assert len(calls) == 1 and rows() == []
     assert result.json()['bindings'][0]['unit'] == '吨'
+
+
+def test_authorized_macro_threshold_and_original_monthly_falsifier_are_valid_preview(generator, monkeypatch):
+    from tin.judgments.prompt import SOURCE_BINDING_PROTOCOL
+    client, headers, _, response, calls = generator
+    macro = 'kb-' + 'c' * 48
+    original_snapshot = generation.snapshot
+    def mixed_snapshot():
+        return {**original_snapshot(), 'catalog': [
+            {'id': SERIES, 'name': 'Monthly measured stocks', 'unit': '吨', 'frequency': '月',
+             'source_kind': 'primary', 'knowledge_base_id': KB},
+            {'id': macro, 'name': 'External risk gauge', 'unit': 'points', 'frequency': '日',
+             'source_kind': 'macro', 'knowledge_base_id': 'authorized-reference-library'}]}
+    monkeypatch.setattr(generation, 'snapshot', mixed_snapshot)
+    risk_quote = 'External risk gauge above 7 points requires review.'
+    monthly_quote = 'Monthly stocks above 12 吨 for 2 consecutive monthly periods invalidate the claim.'
+    text = TEXT + ' ' + risk_quote + ' ' + monthly_quote
+    response['judgment']['thresholds'].append({'id': 'external-risk', 'name': 'External risk boundary',
+        'series_id': macro, 'operator': '>', 'value': 7, 'type': '风控线', 'horizon': '短期'})
+    response['judgment']['falsifiers'] = [{'id': 'monthly-evidence', 'desc': 'Original monthly condition',
+        'series_id': SERIES, 'expression': 'value > 12', 'unit_confirmed': '吨',
+        'consecutive_periods': 2, 'side': 'bull', 'note': 'Use the original monthly cadence.'}]
+    response['binding_units'][macro] = 'points'
+    response['rule_quotes'].update({'external-risk': risk_quote, 'monthly-evidence': monthly_quote})
+    result = client.post(endpoint('/generate'), headers=headers,
+        json={'model_id': 'synthetic-chat', 'text': text, 'base_version': 0})
+    assert result.status_code == 200, result.text
+    assert len(calls) == 1 and rows() == []
+    prompt = calls[0]['prompt']
+    assert SOURCE_BINDING_PROTOCOL in prompt and macro in prompt
+    assert 'primary和macro只是来源分类' in prompt and '观测频率与研究期限分开处理' in prompt
+    changed = {item['field']: item['after'] for item in result.json()['diff']['fields']}
+    assert len(changed['thresholds']) == 2
+    assert changed['thresholds'][1]['series_id'] == macro and changed['thresholds'][1]['value'] == 7
+    assert changed['falsifiers'][0]['consecutive_periods'] == 2
+    assert 'monthly' in changed['falsifiers'][0]['note']
+
+
+def test_catalog_selector_keeps_authorized_macro_and_original_cadence_in_every_batch(monkeypatch):
+    from tin.judgments.prompt import SOURCE_BINDING_PROTOCOL
+    import json
+    catalog = [{'id': 'real-' + str(index), 'unit': 'kg', 'frequency': '月',
+                'source_kind': 'macro' if index == 0 else 'primary', 'name': '量' * 1400 + str(index)}
+               for index in range(53)]
+    observed = []
+    async def choose(scope, model, prompt):
+        assert SOURCE_BINDING_PROTOCOL in prompt and TEXT in prompt
+        document = json.loads(prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0])
+        if isinstance(document, dict):
+            fields = [{**{k: v for k, v in item.items() if k != 'source_ref'},
+                       **document['sources'][item['source_ref']]} for item in document['indicators']]
+        else:
+            fields = document
+        observed.extend(fields)
+        return {'series_ids': ['real-0'] if any(field['id'] == 'real-0' for field in fields) else []}
+    monkeypatch.setattr(generation, 'completion', choose)
+    selected, partial = asyncio.run(generation.choose_catalog(None, 'm', catalog, TEXT))
+    assert partial and selected == [catalog[0]] and observed == catalog
+
+
+@pytest.mark.parametrize('invalid', ['unit', 'foreign', 'periods'])
+def test_macro_or_low_frequency_never_bypasses_source_unit_and_quote_guards(invalid):
+    from tin.judgments.analysis import AnalysisError, validate_analysis
+    macro = 'kb-' + 'c' * 48
+    quote = 'The external series above 7 points for 2 monthly periods invalidates the claim.'
+    body = {'judgment': {'contradiction': {}, 'falsifiers': [{'id': 'external-condition',
+        'desc': 'Original condition', 'series_id': macro, 'expression': 'value > 7',
+        'unit_confirmed': 'points', 'consecutive_periods': 2, 'side': 'bull'}]},
+        'binding_units': {macro: 'points'}, 'rule_quotes': {'external-condition': quote}, 'unresolved': []}
+    catalog = [{'id': macro, 'unit': 'points', 'source_kind': 'macro', 'frequency': '月'}]
+    if invalid == 'unit':
+        body['binding_units'][macro] = 'kg'
+    elif invalid == 'foreign':
+        catalog = []
+    else:
+        body['judgment']['falsifiers'][0]['consecutive_periods'] = 3
+    with pytest.raises(AnalysisError):
+        validate_analysis(body, quote, catalog, variety='TEST', actor='synthetic')
 
 
 def test_selection_empty_example_keeps_one_object_shape_on_every_complete_batch(monkeypatch):

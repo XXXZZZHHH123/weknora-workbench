@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from tin.config import SHANGHAI
 from tests.test_knowledge_facts import canonical, api, page, FIRST, SECOND, SERIES, KB, OTHER_KB
 
 
@@ -58,9 +59,15 @@ def test_market_uses_only_server_core_and_rejects_browser_scope_expansion(canoni
     assert response.status_code == 200, response.text
     from lxml.html import fromstring
     assert fromstring(response.text).xpath('//*[contains(@class,"restricted-value")]')[0].text_content().strip().startswith('18')
-    request = state['bounded_requests'][-1]
-    assert request['series_ids'] == [SERIES] and request['points_per_series'] == 2
-    assert request['view_module'] == 'market' and 'offset' not in request
+    requests = state['bounded_requests']
+    # Existing core-card consent must not implicitly publish a longer history.
+    assert len(requests) == 1
+    assert [request['points_per_series'] for request in requests] == [2]
+    for request in requests:
+        assert request['series_ids'] == [SERIES]
+        assert request['view_module'] == 'market'
+        assert not {'offset', 'limit', 'encoding', 'metadata_only'} & request.keys()
+    assert requests[0]['as_of'] == datetime.now(SHANGHAI).date().isoformat()
     assert 'source_cell' not in response.text and 'source_file' not in response.text
     before = len(state['bounded_requests'])
     for suffix in ['/sn?series_id=hidden', '/sn?date=2000-01-01',

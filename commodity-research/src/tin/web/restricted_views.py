@@ -174,7 +174,10 @@ def bound_series_ids(session, module):
     if module in {'diagram', 'indicators'}:
         templates = shared_diagrams(session)
         diagram = [identifier for template in templates for identifier in _diagram_ids(template.layout or {})]
-        return _ids(list(dict.fromkeys((core_config(session) if module == 'indicators' else []) + diagram)))
+        if module == 'indicators':
+            from tin.web.market_history import history_config
+            return _ids(list(dict.fromkeys(core_config(session) + history_config(session)['series_ids'] + diagram)))
+        return _ids(list(dict.fromkeys(diagram)))
     return []
 
 
@@ -233,6 +236,8 @@ def _bounded_part(scope, identifiers, module):
             value, old = latest.get('value'), previous.get('value')
             output[identifier] = {'name': spec.get('metric') or spec.get('name') or '已绑定指标',
                 'unit': spec.get('unit') or '', 'frequency': spec.get('frequency') or '',
+                'display_name': spec.get('display_name') or spec.get('name'),
+                'display_metadata': {key: spec[key] for key in ('code', 'vendor_code', 'coverage') if key in spec},
                 'date': latest.get('date'), 'value': value,
                 'change': value - old if value is not None and old is not None else None,
                 'change_pct': (value - old) / abs(old) * 100 if value is not None and old not in {None, 0} else None}
@@ -364,13 +369,20 @@ def shared_artifacts(session, scope, module, *, with_truncation=False):
     return (items, len(rows) > 50) if with_truncation else items
 
 
-def _market_cards(identifiers, values):
+def _market_cards(identifiers, values, compact=False):
     from tin.export.board import Card
-    return [Card(key=identifier, series_id=identifier, label=values[identifier]['name'],
+    cards = [Card(key=identifier, series_id=identifier, label=values[identifier]['name'],
                  unit=values[identifier]['unit'], status='ok' if values[identifier]['value'] is not None else 'missing',
                  value=values[identifier]['value'], as_of=values[identifier]['date'],
                  change=values[identifier]['change'], change_pct=values[identifier]['change_pct'],
                  badge='已授权') for identifier in identifiers if identifier in values]
+    if compact:
+        from tin.web.market_card_labels import compact_market_card
+        return [compact_market_card(card, {'metric': values[card.series_id]['name'],
+            'display_name': values[card.series_id].get('display_name'),
+            'unit': values[card.series_id]['unit'], 'frequency': values[card.series_id].get('frequency'),
+            **(values[card.series_id].get('display_metadata') or {})}) for card in cards]
+    return cards
 
 
 def page_data(scope, module, template_id=None):
@@ -409,10 +421,15 @@ def page_data(scope, module, template_id=None):
             identifiers = []
         values = necessary_values(session, scope, identifiers, module)
         output['cards'] = [values[identifier] for identifier in identifiers if identifier in values]
-        output['market_cards'] = _market_cards(core_ids if module == 'market' else identifiers, values)
+        output['market_cards'] = _market_cards(core_ids if module == 'market' else identifiers, values,
+                                               compact=module == 'market')
         if module == 'market':
             from tin.export.board import threshold_radar_values
+            from tin.web.market_history import readonly_market_history
+            from tin.web.market_contracts import readonly_contract_curve
             output['radar'] = threshold_radar_values(output.get('j'), values)
+            output['market_history'] = readonly_market_history(session, scope)
+            output['contract_curve'] = readonly_contract_curve(session, scope)
         if module == 'diagram' and template:
             layout = readonly_diagram_layout(template.layout or {})
             output['diagram'] = {'id': template.id, 'name': template.name,
@@ -581,9 +598,15 @@ async def restricted_response(request, scope, route_path):
         return templates.TemplateResponse(request, 'indicators.html', context)
     if authorized and module == 'market':
         dates = [card.as_of for card in payload.get('market_cards', []) if card.as_of]
+        history = payload.get('market_history')
+        if history:
+            dates.extend(row['last_date'] for row in history['series'] if row.get('last_date'))
+        curve = payload.get('contract_curve') or {'rows': [], 'shape': None}
+        if curve.get('date'):
+            dates.append(curve['date'])
         context.update(cards=payload.get('market_cards', []), market_catalog=None, judgment=payload.get('block'),
             radar=payload.get('radar', []), gaps=[], macro=[], liquidity_min=settings.liquidity_min_volume,
-            curve={'rows': [], 'shape': None}, d=max(dates, default=None))
+            curve=curve, market_history=history, d=max(dates, default=None))
         return templates.TemplateResponse(request, 'variety.html', context)
     if authorized and not payload.get('legacy_unassigned') and not payload.get('owner_unavailable'):
         if module == 'judgments':

@@ -1,0 +1,30 @@
+<section id="market-history" class="space-y-3" aria-labelledby="market-history-title">
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <div class="flex items-center gap-2"><h2 id="market-history-title" class="text-sm font-bold">历史行情</h2><span class="text-[11px] text-[var(--text-muted)]">当前知识库 · 每项最近最多 {{ market_history.points_per_series }} 个真实数据点</span></div>
+    {% if not restricted_view and market_catalog and market_catalog.can_edit_shared %}<button id="market-history-open" type="button" class="market-core-button" aria-haspopup="dialog">选择行情</button>{% endif %}
+  </div>
+  {% if market_history.unavailable %}
+  <p role="status" class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 text-xs text-[var(--text-muted)]">{{ market_history.notice }}</p>
+  {% elif market_history.series %}
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+    {% for line in market_history.series %}
+    <article class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm" data-history-series="{{ line.series_id }}">
+      <div class="flex items-start justify-between gap-3"><h3 class="text-xs font-semibold">{{ line.name }}</h3><span class="text-[11px] text-[var(--text-muted)] shrink-0">{{ line.unit }}</span></div>
+      {% if line.points %}
+      <div class="flex justify-between gap-2 mt-2 text-[11px] tabular"><span class="font-semibold">{{ line.latest | num(line.unit) }}</span><span class="text-[var(--text-muted)]">{{ line.last_date }} · {{ line.count }} 点</span></div>
+      <svg viewBox="0 0 500 158" class="w-full mt-2" role="img" aria-label="{{ line.name }}，{{ line.first_date }} 至 {{ line.last_date }}的历史走势">
+        <line x1="52" y1="16" x2="484" y2="16" stroke="var(--line)" stroke-dasharray="3 3"/>
+        <line x1="52" y1="128" x2="484" y2="128" stroke="var(--line)"/>
+        <text x="46" y="20" text-anchor="end" fill="var(--text-muted)" font-size="9" class="tabular">{{ line.max | num(line.unit) }}</text>
+        <text x="46" y="128" text-anchor="end" fill="var(--text-muted)" font-size="9" class="tabular">{{ line.min | num(line.unit) }}</text>
+        {% if line.count > 1 %}<polyline points="{{ line.path }}" fill="none" stroke="var(--primary)" stroke-width="1.8" vector-effect="non-scaling-stroke"/>{% endif %}
+        {% for point in line.points %}<circle cx="{{ point.x }}" cy="{{ point.y }}" r="{{ 3 if line.count == 1 else 1.5 }}" fill="var(--primary)"><title>{{ point.date }} · {{ point.value | num(line.unit) }} {{ line.unit }}</title></circle>{% endfor %}
+        <text x="52" y="151" fill="var(--text-muted)" font-size="9" class="tabular">{{ line.first_date }}</text>
+        {% if line.count > 1 %}<text x="484" y="151" text-anchor="end" fill="var(--text-muted)" font-size="9" class="tabular">{{ line.last_date }}</text>{% endif %}
+      </svg>
+      {% else %}<p class="mt-4 text-xs text-[var(--text-muted)]">截至 {{ market_history.through }} 暂无该指标的已确认数值。</p>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}<p class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 text-xs text-[var(--text-muted)]">{{ '尚未配置可展示的历史行情。' if restricted_view else '选择当前知识库指标后显示历史行情。' }}</p>{% endif %}
+</section>

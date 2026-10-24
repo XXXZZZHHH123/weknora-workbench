@@ -1,0 +1,11 @@
+{% if market_catalog and market_catalog.can_edit_shared %}
+<dialog id="market-history-dialog" class="market-core-dialog" aria-labelledby="market-history-dialog-title">
+  <h2 id="market-history-dialog-title">选择历史行情</h2>
+  <p class="market-core-muted">从已确认的知识库指标中选择，最多 12 项。每项按原始日期和单位独立显示最近 180 个数据点。</p>
+  <label><span class="sr-only">查找历史行情指标</span><input id="market-history-search" class="market-core-search" type="search" placeholder="搜索名称、来源或单位" autocomplete="off"></label>
+  <div id="market-history-choices" class="market-core-choices"></div>
+  <p id="market-history-selection" class="market-core-muted" role="status"></p>
+  <p id="market-history-error" class="market-core-error" role="alert" hidden></p>
+  <footer class="market-core-footer"><button id="market-history-cancel" type="button" class="market-core-button">取消</button><button id="market-history-save" type="button" class="market-core-button market-core-primary">保存</button></footer>
+</dialog>
+{% endif %}

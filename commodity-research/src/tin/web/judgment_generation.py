@@ -114,10 +114,42 @@ def snapshot():
 
 
 def make_prompt(protocol, catalog, text):
-    value = protocol + '\n真实字段目录：' + catalog_json(catalog) + '\n完整原文：\n' + text
+    encoded, grouped = prompt_catalog(catalog)
+    if grouped:
+        protocol += ('\n真实字段目录采用无损来源索引：sources对象保存来源元数据，indicators数组保存全部真实字段。'
+                     '每个字段的source_ref只指向sources的同名来源；请结合其完整来源信息理解字段。'
+                     'source_ref不是指标ID；所有series_id仍逐字使用indicators中实际id，不输出来源索引。')
+    value = protocol + '\n真实字段目录：' + encoded + '\n完整原文：\n' + text
     if len(value.encode('utf-8')) > PROMPT_BYTES:
         raise HTTPException(413, '完整资料与指标目录超过本次容量，请缩小范围后重试')
     return value
+
+
+def prompt_catalog(catalog):
+    """Intern repeated source metadata without dropping any catalog evidence."""
+    original = catalog_json(catalog)
+    if any('source_ref' in field for field in catalog):
+        return original, False
+    sources, references, fields = {}, {}, []
+    source_keys = {'source_file', 'source_kind', 'knowledge_base_id', 'source_version'}
+    for field in catalog:
+        source = {key: value for key, value in field.items() if key in source_keys}
+        if not source:
+            fields.append(field)
+            continue
+        identity = json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        reference = references.get(identity)
+        if reference is None:
+            reference = 's' + str(len(references))
+            references[identity] = reference
+            sources[reference] = source
+        fields.append({**{key: value for key, value in field.items() if key not in source_keys},
+                       'source_ref': reference})
+    compact = catalog_json({'sources': sources, 'indicators': fields})
+    # Keep small, already economical catalogs in their established flat shape.
+    if len(compact.encode('utf-8')) + 1024 >= len(original.encode('utf-8')):
+        return original, False
+    return compact, True
 
 
 async def completion(scope, model_id, prompt):
@@ -133,13 +165,20 @@ async def completion(scope, model_id, prompt):
                        404: '模型或知识库已不存在', 409: '工作台来源已改变，请重新分析',
                        413: '研究逻辑资料过大', 429: '模型请求受限，请稍后重试'}.get(status,
                        '模型未完成研究逻辑分析，原文和现有版本保持不变')
-            try: message = native_failure_message(response.json().get('error', {}), status) or message
+            try:
+                error = response.json().get('error', {})
+                message = native_failure_message(error, status) or message
+                if (status == 503 and isinstance(error, dict) and error.get('code') == 1008
+                        and error.get('details') == {'phase': 'response_validation', 'error_class': 'output_limit'}):
+                    message = '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试'
             except (ValueError, AttributeError): pass
             raise HTTPException(status, message)
         envelope = response.json()
         data = envelope.get('data')
         if envelope.get('success') is not True or not isinstance(data, dict) or data.get('model_id') != model_id:
             raise ValueError()
+        if data.get('finish_reason') in {'length', 'max_tokens'}:
+            raise HTTPException(422, '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试')
         return strict_json(data.get('content'))
     except HTTPException:
         raise

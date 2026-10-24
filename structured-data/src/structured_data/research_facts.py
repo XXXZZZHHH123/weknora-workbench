@@ -22,7 +22,7 @@ def _hash(value):
 
 def _parameters(body):
     if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only','encoding',
-                                              'series_ids','as_of','points_per_series','view_module'}:
+                                              'series_ids','as_of','points_per_series','view_module','same_day_series_ids'}:
         raise ValueError('只接受当前原件、分页和快照版本参数')
     sources,offset,limit=body.get('sources'),body.get('offset',0),body.get('limit',10000)
     if not isinstance(sources,list) or len(sources)>128:
@@ -50,7 +50,7 @@ def _parameters(body):
 
 def _bounded_parameters(body):
     if 'series_ids' not in body:
-        if {'as_of', 'points_per_series', 'view_module'} & body.keys():
+        if {'as_of', 'points_per_series', 'view_module', 'same_day_series_ids'} & body.keys():
             raise ValueError('页面取数必须提供明确的指标绑定')
         return None
     identifiers = body['series_ids']
@@ -61,8 +61,14 @@ def _bounded_parameters(body):
     if {'offset', 'limit', 'metadata_only', 'encoding'} & body.keys():
         raise ValueError('页面取数不接受全量分页或编码参数')
     points = body.get('points_per_series', 2)
-    if type(points) is not int or not 1 <= points <= 2:
-        raise ValueError('每个页面指标仅可读取最近1至2个数值')
+    # Only the saved market chart needs a bounded history. Other pages keep
+    # their two-point projection, and the chart cannot become a catalog scan.
+    history = body.get('view_module') == 'market' and type(points) is int and points > 2
+    maximum = 180 if history else 2
+    if type(points) is not int or not 1 <= points <= maximum:
+        raise ValueError('页面指标点数超出允许范围')
+    if history and len(identifiers) > 12:
+        raise ValueError('市场历史行情最多绑定12项指标')
     boundary = body.get('as_of')
     if 'as_of' in body:
         if not isinstance(boundary, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', boundary):
@@ -72,7 +78,87 @@ def _bounded_parameters(body):
         if not isinstance(body['view_module'], str) or body['view_module'] not in {
                 'home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports'}:
             raise ValueError('页面模块无效')
-    return {'series_ids': sorted(identifiers), 'as_of': boundary, 'points_per_series': points}
+    selection = {'series_ids': sorted(identifiers), 'as_of': boundary, 'points_per_series': points}
+    if 'same_day_series_ids' in body:
+        same_day = body['same_day_series_ids']
+        if (body.get('view_module') != 'market' or points != 1 or boundary is None
+                or len(identifiers) > 128 or not isinstance(same_day, list) or not 1 <= len(same_day) <= 24
+                or any(not isinstance(identifier, str) or identifier not in identifiers for identifier in same_day)
+                or len(set(same_day)) != len(same_day)):
+            raise ValueError('同日合约行情仅允许市场页明确绑定的至多24项结算字段、128项必要字段及每项1点')
+        selection['same_day_series_ids'] = sorted(same_day)
+    return selection
+
+
+def _same_day_date(store, bindings, selection):
+    """Intersect dates inside the source service, streaming only date aggregates.
+
+    A date bitset bounds Python memory by the calendar (under 456KiB even at
+    year 9999), independent of row/history length. No historic dates or values
+    are returned to the restricted research service.
+    """
+    boundary = date.fromisoformat(selection['as_of'])
+    size = boundary.toordinal() // 8 + 1
+    common, latest = None, None
+    selected = set(selection['same_day_series_ids'])
+    for info, mapping in bindings:
+        identifiers = [raw for raw, canonical in mapping.items() if canonical in selected]
+        if not identifiers:
+            continue
+        local = bytearray(size)
+        where = 'series_id IN (' + ','.join('?' for _ in identifiers) + ') AND ' + _RESEARCH_ROW_FILTER + ' AND date <= ?'
+        with store._connect(info['dataset_id']) as connection:
+            cursor = connection.execute('SELECT date,count(DISTINCT series_id) FROM observations WHERE '
+                + where + ' GROUP BY date', [*identifiers, selection['as_of']])
+            while batch := cursor.fetchmany(256):
+                for stamp, count in batch:
+                    try:
+                        if type(stamp) is date:
+                            stamp = stamp.isoformat()
+                        parsed = date.fromisoformat(stamp)
+                        if parsed.isoformat() != stamp or parsed > boundary:
+                            raise ValueError
+                    except (ValueError, TypeError):
+                        raise HTTPException(409, '合约原表日期未明确为交易日，不能推定共同日') from None
+                    latest = max(latest, stamp) if latest else stamp
+                    if count == len(identifiers):
+                        ordinal = parsed.toordinal()
+                        local[ordinal // 8] |= 1 << (ordinal % 8)
+        if common is None:
+            common = local
+        else:
+            for index in range(size):
+                common[index] &= local[index]
+    if common is not None:
+        for index in range(size - 1, -1, -1):
+            if common[index]:
+                ordinal = index * 8 + common[index].bit_length() - 1
+                return date.fromordinal(ordinal).isoformat()
+    return latest
+
+
+def _same_day_rows(store, bindings, selection):
+    stamp = selection['selected_date']
+    if stamp is None:
+        return []
+    rows = []
+    for info, mapping in bindings:
+        if not mapping:
+            continue
+        identifiers = sorted(mapping)
+        where = 'series_id IN (' + ','.join('?' for _ in identifiers) + ') AND ' + _RESEARCH_ROW_FILTER + ' AND date = ?'
+        with store._connect(info['dataset_id']) as connection:
+            # Aggregate duplicates in SQL; no arbitrary source-cell winner and
+            # no unbounded duplicate list materialized in the page service.
+            values = connection.execute('SELECT series_id,min(value),max(value),bool_and(isfinite(value)) '
+                + 'FROM observations WHERE ' + where + ' GROUP BY series_id', [*identifiers, stamp]).fetchall()
+            for identifier, low, high, finite in values:
+                if finite is not True or not math.isfinite(low) or not math.isfinite(high):
+                    raise HTTPException(503, '同日合约行情含非有限数值，未返回部分结果')
+                if low != high:
+                    raise HTTPException(409, '同一字段交易日存在冲突数值，请先核对原始数据')
+                rows.append({'series_id': mapping[identifier], 'date': stamp, 'value': low, 'value_status': 'valid'})
+    return rows
 
 
 def _bounded_rows(store, bindings, selection):
@@ -195,6 +281,8 @@ def read_facts(store,manager,body):
             bindings.append((info,mapping))
     if bounded is not None and set(bounded['series_ids']) != {field['series_id'] for field in indicators}:
         raise HTTPException(403, '页面指标不属于当前已确认的来源范围，未返回部分结果')
+    if bounded is not None and 'same_day_series_ids' in bounded:
+        bounded = {**bounded, 'selected_date': _same_day_date(store, bindings, bounded)}
     version=_hash({'knowledge_base_id':identity.knowledge_base_id,
                    'knowledge_base_tenant_id':identity.knowledge_base_tenant_id,
                    'sources':sources,'datasets':datasets,'indicators':indicators,
@@ -202,11 +290,12 @@ def read_facts(store,manager,body):
     if requested is not None and requested!=version:
         raise HTTPException(409,'知识库结构化版本已改变，请重新读取完整事实；未混合新旧快照')
     if bounded is not None:
-        rows = _bounded_rows(store, bindings, bounded)
+        rows = _same_day_rows(store, bindings, bounded) if 'same_day_series_ids' in bounded else _bounded_rows(store, bindings, bounded)
         return {'knowledge_base_id': identity.knowledge_base_id,
                 'knowledge_base_tenant_id': identity.knowledge_base_tenant_id,
                 'version': version, 'bounded': True, 'indicators': indicators,
-                'rows': rows, 'total': len(rows), 'offset': 0, 'next_offset': None, 'truncated': False}
+                'rows': rows, 'total': len(rows), 'offset': 0, 'next_offset': None, 'truncated': False,
+                **({'selected_date': bounded['selected_date']} if 'same_day_series_ids' in bounded else {})}
     if body.get('metadata_only'):
         # Exactly the same current original, confirmation and catalog checks as
         # a full read; no DuckDB row scan or page serialization is necessary.

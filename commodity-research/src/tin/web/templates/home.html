@@ -146,7 +146,7 @@
             {% for e in c.evidence %}
             {% set eid = "ev-" ~ ci ~ "-" ~ loop.index0 %}
             <span class="relative inline-block">
-              <button type="button" data-popover-trigger onclick="togglePopover('{{ eid }}')"
+              <button type="button" data-popover-trigger onclick="window.togglePopover('{{ eid }}')"
                       class="px-1.5 py-0.5 text-[10px] font-semibold rounded border border-[var(--line)] bg-[var(--surface)] text-[var(--primary)] hover:bg-[var(--primary-soft)] tabular">
                 {% if e.series_id %}{{ e.name or e.series_id }}{% if e.value is not none %} {{ e.value | num(e.unit) }}{% endif %}
                 {% elif e.playbook_item_id %}思路 #{{ e.playbook_item_id }}
