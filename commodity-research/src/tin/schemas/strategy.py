@@ -1,5 +1,6 @@
 """Explicit, reviewable SN trading plans. Prices are CNY/tonne, PnL is CNY."""
 from datetime import datetime
+import re
 from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -28,13 +29,13 @@ class StrategyLeg(_Model):
     side: Literal["buy", "sell"]
     ratio: int = Field(default=1, ge=1, le=10000, strict=True)
     multiplier: float = Field(default=1, gt=0)
-    quote_series_id: str
+    quote_series_id: str = Field(min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def specific_quote(self):
         if self.multiplier != 1:
             raise ValueError("SN 合约乘数必须为 1 吨/手")
-        if self.quote_series_id not in {
+        if not re.fullmatch(r'kb-[0-9a-f]{48}', self.quote_series_id) and self.quote_series_id not in {
             f"SHFE.SN.{self.contract[2:]}.close", f"SHFE.SN.{self.contract[2:]}.settle"
         }:
             raise ValueError("行情必须是该具体合约的 close 或 settle；不能使用主连")
@@ -101,7 +102,7 @@ class StrategyPlan(_Model):
                 raise ValueError("跨期腿必须按近月、远月顺序且合约不同")
             if near.side == far.side or near.ratio != far.ratio:
                 raise ValueError("一期跨期必须等手数、相反方向")
-            if near.quote_series_id.rsplit('.', 1)[1] != far.quote_series_id.rsplit('.', 1)[1]:
+            if not (near.quote_series_id.startswith('kb-') or far.quote_series_id.startswith('kb-')) and near.quote_series_id.rsplit('.', 1)[1] != far.quote_series_id.rsplit('.', 1)[1]:
                 raise ValueError("跨期两腿须使用相同价格口径")
         if self.legs[0].side == "buy":
             valid = self.stop.high < self.entry.low and self.entry.high < self.target.low

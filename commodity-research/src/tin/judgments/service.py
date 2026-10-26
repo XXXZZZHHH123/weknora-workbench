@@ -36,7 +36,11 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
     """每次保存都生成新版本（FR-1.5）。activate=True 时须通过全部硬校验，且旧的生效版本转为已归档。"""
     refs = _refs(j)
     wanted = {sid for _t, _i, sid in refs}
-    known = set(session.scalars(select(Indicator.series_id).where(Indicator.series_id.in_(wanted))))
+    verified_catalog = session.info.get('knowledge_facts_catalog')
+    if session.info.get('knowledge_facts') is True and isinstance(verified_catalog, dict):
+        known = set(verified_catalog).intersection(wanted)
+    else:
+        known = set(session.scalars(select(Indicator.series_id).where(Indicator.series_id.in_(wanted))))
     if wanted - known:
         raise JudgmentError(f"引用了未登记的指标：{', '.join(sorted(wanted - known))}（请先在指标管理页登记）")
 

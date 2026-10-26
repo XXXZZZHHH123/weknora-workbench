@@ -48,7 +48,7 @@ def history_config(session):
 def save_history_config(session, identifiers, points_per_series=MAX_HISTORY_POINTS):
     """Only a current source-readable editor may publish explicit history IDs."""
     scope = current_workbench.get()
-    if (scope is None or scope.restricted or not scope.source_available
+    if (scope is None or scope.restricted or not scope.source_available and scope.scope_version != 2
             or session.info.get('workbench_id') != scope.workbench_id
             or session.info.get('knowledge_facts') is not True):
         raise HTTPException(403, '只有来源可读的研究台编辑成员可以配置历史行情')
@@ -102,7 +102,7 @@ def _result(config, day, series):
 def market_history(session, day):
     """Read only selected IDs from an already verified current-KB session."""
     scope = current_workbench.get()
-    if (scope is None or scope.restricted or not scope.source_available
+    if (scope is None or scope.restricted or not scope.source_available and scope.scope_version != 2
             or session.info.get('workbench_id') != scope.workbench_id
             or session.info.get('knowledge_facts') is not True):
         raise HTTPException(403, '历史行情只读取当前知识库的已授权事实')
@@ -225,6 +225,16 @@ def readonly_market_history(session, scope):
     origins = (row.config or {}).get('origins') if row else None
     if not isinstance(origins, dict):
         raise HTTPException(409, '历史行情缺少已核验的来源绑定，请由编辑成员重新保存')
+    if scope.scope_version == 2:
+        from tin.integration.page_facts import bounded_facts
+        result = bounded_facts(scope,config['series_ids'],'market',points=config['points_per_series'],origins=origins)
+        if result.get('unavailable_series_ids'):
+            return {**_result(config,day,[]),'unavailable':result['unavailable_series_ids'],
+                'notice':'部分历史行情来源已解除或不可用，请重新选择。'}
+        metadata = {field['series_id']:field for field in result['indicators']}
+        return _result(config,day,[_chart(identifier,str(metadata[identifier].get('metric') or metadata[identifier].get('name') or '已绑定指标'),
+            str(metadata[identifier].get('unit') or ''),[{'date':row['date'],'value':row['value']} for row in result['rows'] if row['series_id']==identifier])
+            for identifier in config['series_ids']])
     permitted = {(scope.knowledge_base_id, scope.knowledge_base_tenant_id)}
     permitted.update((item['knowledge_base_id'], item['tenant_id']) for item in scope.additional_knowledge_bases)
     groups = {}

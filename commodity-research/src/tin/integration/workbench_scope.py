@@ -30,14 +30,28 @@ class WorkbenchScope:
     additional_knowledge_bases: tuple[dict, ...] = ()
     source_delegations: tuple[str, ...] = ()
     view_modules: tuple[str, ...] = VIEW_MODULES
+    scope_version: int = 1
+    sources_revision: int = 0
+    sources: tuple[dict, ...] = ()
+    unavailable_sources: tuple[dict, ...] = ()
+    source_binding_id: str = ''
 
     @property
     def restricted(self):
+        if self.scope_version == 2:
+            if self.source_binding_id:
+                return next((item['delegated'] for item in self.sources if item['id'] == self.source_binding_id), True)
+            unavailable = any(isinstance(item,dict) and item.get('status','unavailable') in {'active','unavailable'} for item in self.unavailable_sources)
+            return bool(self.sources or unavailable) and (
+                self.metadata.get('can_read_source') is False or any(item['delegated'] for item in self.sources)
+                or unavailable)
         return (self.metadata.get('can_read_source') is False
                 or self.knowledge_base_id in self.source_delegations)
 
     @property
     def source_available(self):
+        if self.scope_version == 2:
+            return bool(self.sources)
         return self.metadata.get('source_data_available') is not False
 
     @property
@@ -54,6 +68,8 @@ def require_shared_write(scope=None):
 def validated_source_scope(scope, document):
     """The main platform grants a narrow projection, never a raw KB proxy."""
     data = document.get('data') if isinstance(document, dict) else None
+    if isinstance(data, dict) and data.get('scope_version') == 2:
+        return _validated_v2(scope, document)
     primary_id = scope.metadata.get('knowledge_base_id', scope.knowledge_base_id)
     if (not isinstance(document, dict) or document.get('success') is not True
             or not isinstance(data, dict) or data.get('id') != scope.workbench_id
@@ -91,6 +107,48 @@ def validated_source_scope(scope, document):
     return data
 
 
+def _validated_v2(scope, document):
+    data = document.get('data')
+    if (document.get('success') is not True or data.get('id') != scope.workbench_id
+            or data.get('user_id') != scope.identity.user_id
+            or type(data.get('scope_tenant_id')) is not int or data['scope_tenant_id'] != scope.identity.tenant_id
+            or type(data.get('sources_revision')) is not int or data['sources_revision'] < 1
+            or not isinstance(data.get('sources'), list) or len(data['sources']) > 8
+            or not isinstance(data.get('unavailable_sources', []), list)
+            or not isinstance(data.get('view_modules'),list) or len(data['view_modules'])>len(VIEW_MODULES)
+            or any(not isinstance(module,str) or module not in VIEW_MODULES for module in data['view_modules'])
+            or len(set(data['view_modules']))!=len(data['view_modules'])):
+        raise HTTPException(403, '研究工作台多来源授权范围不匹配')
+    seen, backing = set(), set()
+    for item in data['sources']:
+        if (not isinstance(item, dict) or item.get('source_type') not in {'knowledge_base', 'central_dataset'}
+                or any(not isinstance(item.get(key), str) or not item[key] or len(item[key]) > 128
+                       for key in ('id', 'source_id', 'knowledge_base_id'))
+                or item['id'] in seen or item['knowledge_base_id'] in backing
+                or type(item.get('tenant_id')) is not int or item['tenant_id'] <= 0
+                or item.get('permission') not in {'viewer', 'editor', 'admin'}
+                or type(item.get('delegated')) is not bool or not isinstance(item.get('knowledge'), list)
+                or not isinstance(item.get('view_modules'), list)
+                or any(not isinstance(module, str) or module not in VIEW_MODULES for module in item['view_modules'])
+                or len(set(item['view_modules'])) != len(item['view_modules'])):
+            raise HTTPException(403, '研究工作台多来源信息无效')
+        seen.add(item['id'])
+        backing.add(item['knowledge_base_id'])
+    return data
+
+
+def source_scope_for_binding(scope, binding_id, *, module=None, direct_only=False):
+    from dataclasses import replace
+    if scope.scope_version != 2:
+        raise HTTPException(409, '来源绑定接口需要已核验的多来源工作台')
+    source = next((item for item in scope.sources if item['id'] == binding_id), None)
+    if source is None or (source['delegated'] and (direct_only or module not in source['view_modules'])):
+        raise HTTPException(403, '当前来源或页面没有读取授权')
+    return replace(scope, knowledge_base_id=source['knowledge_base_id'],
+        knowledge_base_tenant_id=source['tenant_id'], source_binding_id=source['id'],
+        additional_knowledge_bases=(), view_modules=tuple(source['view_modules']))
+
+
 current_workbench: ContextVar[WorkbenchScope | None] = ContextVar("isolated_workbench", default=None)
 _factories = {}
 
@@ -110,16 +168,26 @@ async def go_request(scope: WorkbenchScope, path: str, *, params=None):
         raise HTTPException(401, "缺少已核验的主平台登录")
     if not path.startswith("/api/v1/") or "?" in path or "#" in path:
         raise ValueError("Only fixed main-platform API paths are accepted")
+    headers={"Authorization":scope.authorization,"X-Tenant-ID":str(scope.identity.tenant_id)}
+    if path.endswith('/source-scope'):
+        if params: raise ValueError('Source-scope inventory does not accept query parameters')
+        from tin.integration.source_scope_auth import proof_headers
+        headers.update(proof_headers(path,scope.authorization,scope.identity.tenant_id))
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
             response = await client.get(settings.weknora_api_url.rstrip("/") + path, params=params,
-                headers={"Authorization": scope.authorization, "X-Tenant-ID": str(scope.identity.tenant_id)})
+                headers=headers)
         if response.status_code in {401, 403, 404}:
             raise HTTPException(response.status_code, "工作台或知识库授权已失效")
+        if response.status_code==413:
+            raise HTTPException(413,'当前来源原件超过本次容量，请分批处理或拆分来源；未返回部分清单')
         response.raise_for_status()
         document = response.json()
         if not isinstance(document, dict) or document.get("success") is not True:
             raise ValueError("Invalid API envelope")
+        if path.endswith('/source-scope'):
+            from tin.integration.source_scope_auth import require_inventory
+            require_inventory(document)
         return document
     except HTTPException:
         raise
@@ -131,7 +199,14 @@ async def verified_workbench(request: Request, workbench_id: str):
     identity = current_identity.get()
     authorization = request.headers.get("authorization", "")
     scope = await resolve_workbench(identity, workbench_id, authorization)
-    if scope.restricted:
+    source_prefix = '/api/workbenches/' + workbench_id + '/sources'
+    local_path = request.url.path.removeprefix(settings.public_prefix.rstrip('/'))
+    source_read_route = local_path == source_prefix or (local_path.startswith(source_prefix+'/')
+        and local_path.endswith('/content') and len(local_path[len(source_prefix)+1:].split('/'))==2)
+    explicit_source_read = (request.method in {'GET','HEAD'} and source_read_route
+        and isinstance(request.query_params.get('source_binding_id'),str)
+        and any(item['id']==request.query_params['source_binding_id'] and not item['delegated'] for item in scope.sources))
+    if scope.restricted and not explicit_source_read:
         raise HTTPException(403, '受限视角仅允许已授权页面读取必要数值，不开放通用研究接口')
     marker = current_workbench.set(scope)
     try:
@@ -158,10 +233,13 @@ async def resolve_workbench(identity, workbench_id, authorization):
     if metadata.get("workspace_mode") not in {"isolated", "legacy"}:
         raise HTTPException(409, "研究工作台来源模式无效，未使用历史事实")
     kb_id = metadata.get("knowledge_base_id")
-    if not isinstance(kb_id, str) or not kb_id or len(kb_id) > 128:
+    if kb_id is None:
+        kb_id = ''
+    if not isinstance(kb_id, str) or len(kb_id) > 128:
         raise HTTPException(403, "工作台没有有效的知识库绑定")
     scope = WorkbenchScope(identity, workbench_id, kb_id, 0, metadata, authorization)
-    if metadata.get('can_read_source') is False and metadata.get('source_data_available') is False:
+    if (metadata.get('scope_version') != 2 and kb_id
+            and metadata.get('can_read_source') is False and metadata.get('source_data_available') is False):
         # The WB read was freshly authorized. Absence of source consent is a
         # valid restricted shell, not a reason to call an expected-to-fail facts
         # endpoint. A later 401/403/404 from a claimed available scope is never
@@ -170,6 +248,15 @@ async def resolve_workbench(identity, workbench_id, authorization):
                               view_modules=())
     source_doc = await go_request(scope, '/api/v1/workspaces/research/' + quote(workbench_id, safe='') + '/source-scope')
     grant = validated_source_scope(scope, source_doc)
+    if grant.get('scope_version') == 2:
+        selected = next((item for item in grant['sources'] if item['knowledge_base_id'] == kb_id), None)
+        from dataclasses import replace
+        return replace(scope, knowledge_base_id=selected['knowledge_base_id'] if selected else '',
+            knowledge_base_tenant_id=selected['tenant_id'] if selected else 0,
+            scope_version=2, sources_revision=grant['sources_revision'], sources=tuple(grant['sources']),
+            unavailable_sources=tuple(grant.get('unavailable_sources') or ()),
+            source_delegations=tuple(item['knowledge_base_id'] for item in grant['sources'] if item['delegated']),
+            view_modules=tuple(grant['view_modules']))
     primary = next(source for source in grant['sources'] if source['knowledge_base_id'] == kb_id)
     additional = tuple({'knowledge_base_id': source['knowledge_base_id'], 'tenant_id': source['tenant_id'],
                         'kind': source['kind']} for source in grant['sources'] if source['knowledge_base_id'] != kb_id)
@@ -190,7 +277,7 @@ def artifact_session(scope):
     with factory() as session:
         existing = session.execute(text('SELECT knowledge_base_id, knowledge_base_tenant_id FROM isolated_scope '
             'WHERE workbench_id=:id'), {'id': scope.workbench_id}).first()
-        if existing and tuple(existing) != (scope.knowledge_base_id, scope.knowledge_base_tenant_id):
+        if scope.scope_version != 2 and existing and tuple(existing) != (scope.knowledge_base_id, scope.knowledge_base_tenant_id):
             raise HTTPException(409, '工作台主知识库已改变，未展示旧来源研究内容')
         session.info.update(scope.identity.session_info(), workbench_id=scope.workbench_id,
             knowledge_base_id=scope.knowledge_base_id,
@@ -282,7 +369,7 @@ def open_workbench_session(scope: WorkbenchScope, **kwargs):
                         {"id": scope.workbench_id, "kb": expected[0], "tenant": expected[1]})
         existing = session.execute(text("SELECT knowledge_base_id, knowledge_base_tenant_id FROM isolated_scope "
                                         "WHERE workbench_id=:id"), {"id": scope.workbench_id}).first()
-        if tuple(existing) != expected:
+        if scope.scope_version != 2 and tuple(existing) != expected:
             raise HTTPException(409, "工作台主知识库已改变，需重新建立独立来源范围，未提供旧来源数据")
         session.commit()
         session.close()
@@ -299,9 +386,15 @@ def open_workbench_session(scope: WorkbenchScope, **kwargs):
 
 
 def service_scope(identity: Identity):
-    if not identity.workbench_id or not identity.knowledge_base_id or identity.knowledge_base_tenant_id <= 0:
+    if not identity.workbench_id or (identity.scope_version != 2 and (not identity.knowledge_base_id or identity.knowledge_base_tenant_id <= 0)):
         raise PermissionError("Signed isolated workbench scope is incomplete")
     canonical_workbench_id(identity.workbench_id)
+    if identity.scope_version == 2:
+        scope = current_workbench.get()
+        if (scope is None or scope.workbench_id != identity.workbench_id or scope.scope_version != 2
+                or scope.sources_revision != identity.sources_revision):
+            raise PermissionError('Fresh multi-source workbench grant is required')
+        return scope
     return WorkbenchScope(identity, identity.workbench_id, identity.knowledge_base_id,
                           identity.knowledge_base_tenant_id, {"id": identity.workbench_id,
                           "knowledge_base_id": identity.knowledge_base_id, "workspace_mode": "isolated"}, identity.authorization)

@@ -9,6 +9,7 @@ from tin.config import SHANGHAI
 from tin.export.board import _obs_card
 from tin.export.indicators import catalog
 from tin.models import Indicator
+from tin.integration.page_facts import page_read_scope
 
 
 def market_catalog(session, cards, day):
@@ -22,6 +23,7 @@ def market_catalog(session, cards, day):
                         ('series_id', 'name', 'category', 'unit', 'source')} for row in rows],
         'defaults': [card.series_id for card in cards if card.series_id in available][:12],
         'date': day.isoformat() if day else None,
+        'catalog_paged': bool(scope and scope.scope_version == 2),
         'can_edit_shared': bool(scope and scope.can_edit and not scope.restricted),
         'history': history_config(session),
     }
@@ -67,7 +69,7 @@ def build_market_router(session_factory, templates, resolve_date):
         if scope is None or scope.restricted:
             raise HTTPException(403, '只有来源可读的研究台编辑成员可以配置共享核心指标')
         require_shared_write(scope)
-        with session_factory() as session:
+        with page_read_scope('market',series_ids=body.series_ids), session_factory() as session:
             save_core_config(session, body.series_ids)
         return {'series_ids': body.series_ids}
 
@@ -79,7 +81,7 @@ def build_market_router(session_factory, templates, resolve_date):
         if scope is None or scope.restricted:
             raise HTTPException(403, '只有来源可读的研究台编辑成员可以配置历史行情')
         require_shared_write(scope)
-        with session_factory() as session:
+        with page_read_scope('market',series_ids=body.series_ids), session_factory() as session:
             save_history_config(session, body.series_ids, body.points_per_series)
         return body.model_dump()
 
@@ -91,7 +93,9 @@ def build_market_router(session_factory, templates, resolve_date):
         if scope is None or scope.restricted:
             raise HTTPException(403, '只有来源可读的研究台编辑成员可以配置合约来源')
         require_shared_write(scope)
-        with session_factory() as session:
+        from tin.web.market_contracts import _validate, _identifiers
+        identifiers = _identifiers(_validate(body.contracts))
+        with page_read_scope('market',series_ids=identifiers), session_factory() as session:
             return save_contract_config(session, body.contracts)
 
     @router.get('/api/sn/market/core')
@@ -106,7 +110,7 @@ def build_market_router(session_factory, templates, resolve_date):
                     raise ValueError
             except ValueError:
                 raise HTTPException(400, '日期格式应为 YYYY-MM-DD') from None
-        with session_factory() as session:
+        with page_read_scope('market',series_ids=series_id,day=date), session_factory() as session:
             if session.info.get('knowledge_facts') is not True or not session.info.get('workbench_id'):
                 raise HTTPException(409, '请从绑定知识库的研究工作台进入；未使用旧研究库事实')
             day = resolve_date(session, date) or datetime.now(SHANGHAI).date()

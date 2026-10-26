@@ -224,7 +224,8 @@ def test_original_strategy_drafts_stay_in_current_workbench(isolated, monkeypatc
     assert client.get(page(f'/sn/strategies/{identifier}')).status_code == 200
     rejected = client.post(page(f'/api/sn/strategies/{identifier}/publish'), headers={'Origin':'http://testserver'}, json={})
     assert rejected.status_code == 400  # Missing real quotes are not fabricated to publish a draft.
-    assert client.post(page('/api/sn/strategies/generate'), headers={'Origin':'http://testserver'}, json={}).status_code == 409
+    missing_model = client.post(page('/api/sn/strategies/generate'), headers={'Origin':'http://testserver'}, json={})
+    assert missing_model.status_code == 400 and '模型' in missing_model.json()['detail']
     assert not (tmp / 'workspaces').exists()
 
 

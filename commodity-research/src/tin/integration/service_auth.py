@@ -45,8 +45,14 @@ async def verify_service_request(request):
         data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
         required = {"user_id", "email", "display_name", "tenant_id", "role"}
         scoped = {"workbench_id", "knowledge_base_id", "knowledge_base_tenant_id"}
-        if not isinstance(data, dict) or set(data) not in (required, required | scoped | {'authorization_sha256'}):
+        multi = isinstance(data,dict) and data.get('scope_version') == 2
+        if not isinstance(data, dict) or set(data) not in (required, required | scoped | {'authorization_sha256'},
+                required | scoped | {'authorization_sha256','scope_version','sources_revision'}):
             raise ValueError("invalid identity")
+        if ('scope_version' in data or 'sources_revision' in data) and not multi:
+            raise ValueError('invalid source protocol')
+        if multi and (type(data['scope_version']) is not int or type(data.get('sources_revision')) is not int or data['sources_revision'] < 1):
+            raise ValueError('invalid source revision')
         if scoped <= set(data):
             authorization = request.headers.get('x-research-authorization', '')
             if (not authorization.startswith('Bearer ') or len(authorization) > 16391
@@ -56,10 +62,12 @@ async def verify_service_request(request):
             data['authorization'] = authorization
             from uuid import UUID
             workbench = UUID(data["workbench_id"])
-            knowledge_base = UUID(data["knowledge_base_id"])
+            knowledge_base = UUID(data["knowledge_base_id"]) if data['knowledge_base_id'] else None
+            valid_kb = (knowledge_base is not None and str(knowledge_base) == data['knowledge_base_id']
+                and knowledge_base.int != 0 and type(data['knowledge_base_tenant_id']) is int and data['knowledge_base_tenant_id'] > 0)
             if (str(workbench) != data["workbench_id"] or workbench.int == 0
-                    or str(knowledge_base) != data["knowledge_base_id"] or knowledge_base.int == 0
-                    or type(data["knowledge_base_tenant_id"]) is not int or data["knowledge_base_tenant_id"] <= 0):
+                    or not valid_kb and not (multi and data['knowledge_base_id'] == ''
+                        and type(data['knowledge_base_tenant_id']) is int and data['knowledge_base_tenant_id'] == 0)):
                 raise ValueError("invalid workbench scope")
         if (not isinstance(data["tenant_id"], int) or isinstance(data["tenant_id"], bool)
                 or data["tenant_id"] <= 0 or not isinstance(data["user_id"], str)

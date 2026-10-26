@@ -33,6 +33,9 @@ def export_client(monkeypatch, tmp_path):
     from tin.web import app as module
     monkeypatch.setattr(settings, 'weknora_api_url', 'http://native-export.test')
     monkeypatch.setattr(settings, 'data_dir', tmp_path)
+    service_key=tmp_path/'source-scope-service-key'
+    service_key.write_bytes(b'synthetic-export-source-scope-key'*2)
+    monkeypatch.setattr(settings,'service_token_file',service_key)
     factories = {}
     for identifier in (WB, OTHER_WB):
         engine = make_engine('sqlite://', poolclass=StaticPool, connect_args={'check_same_thread': False})
@@ -83,6 +86,7 @@ def export_client(monkeypatch, tmp_path):
             if state['revoked']:
                 return httpx.Response(403, json={'success': False})
             return httpx.Response(200, json={'success': True, 'data': {
+                'inventory_included':True,
                 'id': request.url.path.split('/')[-2], 'user_id': token, 'scope_tenant_id': 17,
                 'view_modules': ['home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports'],
                 'knowledge_base_id': KB, 'sources': [{'knowledge_base_id': KB, 'tenant_id': 23,

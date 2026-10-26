@@ -63,6 +63,7 @@ def isolated(monkeypatch, tmp_path):
                 if state['revoked_kb']:
                     return httpx.Response(403, json={'success': False})
                 return httpx.Response(200, json={'success': True, 'data': {'id': target,
+                    'inventory_included':True,
                     'user_id': token, 'scope_tenant_id': 17, 'knowledge_base_id': state['knowledge_base_id'],
                     'view_modules': ['home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports'],
                     'sources': [{'knowledge_base_id': state['knowledge_base_id'], 'tenant_id': 23,

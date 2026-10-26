@@ -3,14 +3,22 @@
 from datetime import date, datetime
 
 from fastapi import APIRouter, Body, HTTPException, Request
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from tin.compute.engine import latest_trade_date
-from tin.config import SHANGHAI
+from tin.config import SHANGHAI, settings
 from tin.jobs.seed import seed_researcher
 from tin.integration.identity import verified_actor
 from tin.schemas.strategy import ExecutionIn, StrategyPlan
 from tin.strategy import service
+from tin.integration.workbench_scope import current_workbench, go_request, require_shared_write
+
+
+class StrategyGenerationInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    date: str | None = Field(default=None, max_length=10)
+    model_id: str | None = Field(default=None, min_length=1, max_length=128)
+    research_question: str = Field(default='', max_length=4000)
 
 STATUS_LABELS = {"draft": "草稿", "watching": "等待入场", "open": "跟踪中",
                  "closed": "已退出", "cancelled": "已作废"}
@@ -38,7 +46,8 @@ def build_router(session_factory, templates, shell) -> APIRouter:
     def context(session, **extra):
         return shell(session, "strategies", None, status_labels=STATUS_LABELS,
                      mode_labels=MODE_LABELS, kind_labels=KIND_LABELS,
-                     now_local=datetime.now(SHANGHAI).strftime("%Y-%m-%dT%H:%M"), **extra)
+                     now_local=datetime.now(SHANGHAI).strftime("%Y-%m-%dT%H:%M"),
+                     platform_models=current_workbench.get() is not None, **extra)
 
     def find(session, strategy_id):
         row = service.get_strategy(session, strategy_id)
@@ -107,26 +116,53 @@ def build_router(session_factory, templates, shell) -> APIRouter:
                 raise HTTPException(400, str(exc)) from None
 
     @router.post("/api/sn/strategies/generate")
-    def generate_strategy(body: dict = Body(...)):
+    def generate_strategy(body: StrategyGenerationInput):
         from tin.strategy.generate import generate_candidates
-
-        with session_factory() as session:
-            requested = body.get("date")
+        from tin.integration.kb_facts import page_read_scope
+        try:
+            requested_day = date.fromisoformat(body.date) if body.date else None
+        except (TypeError, ValueError):
+            raise HTTPException(400, '研究日期应为 YYYY-MM-DD') from None
+        if requested_day is not None and requested_day > datetime.now(SHANGHAI).date():
+            raise HTTPException(400, '研究日期不能晚于今天')
+        scope = current_workbench.get()
+        provider = None
+        if scope is not None:
+            require_shared_write(scope)
+            if not body.model_id:
+                raise HTTPException(400, '请选择已配置的通用模型')
+            from tin.llm.platform_provider import PlatformStrategyProvider
+            from tin.llm.base import ProviderUnavailable
             try:
-                day = date.fromisoformat(requested) if requested else latest_trade_date(session)
-            except (TypeError, ValueError):
-                raise HTTPException(400, "研究日期应为 YYYY-MM-DD") from None
+                provider = PlatformStrategyProvider(scope, body.model_id)
+            except ProviderUnavailable:
+                raise HTTPException(400, '请选择本工作台可用的已配置通用模型') from None
+        with page_read_scope('strategies', day=requested_day), session_factory() as session:
+            day = requested_day or latest_trade_date(session)
             if day is None:
                 return {"status": "no_candidate", "strategies": [],
                         "gaps": ["尚无行情数据。先录入明确合约的行情，再生成策略草稿。"]}
-            if day > datetime.now(SHANGHAI).date():
-                raise HTTPException(400, "研究日期不能晚于今天")
-            result = generate_candidates(session, "SN", day,
+            result = generate_candidates(session, settings.variety, day,
                                          researcher_id=seed_researcher(session).id,
-                                         research_question=str(body.get("research_question") or "").strip())
+                                         provider=provider,
+                                         research_question=body.research_question.strip())
             session.commit()
             return {"status": result.status, "gaps": result.gaps, "call_id": result.call_id,
                     "strategies": [service.serialize_strategy(session, row) for row in result.strategies]}
+
+    @router.get('/api/sn/strategies/models')
+    async def strategy_models():
+        scope = current_workbench.get()
+        if scope is None:
+            raise HTTPException(409, '请从研究工作台选择平台模型')
+        require_shared_write(scope)
+        document = await go_request(scope, '/api/v1/models')
+        rows = document.get('data')
+        if not isinstance(rows, list):
+            raise HTTPException(503, '模型目录暂时不可用')
+        return {'models': [{'id': row['id'], 'name': row.get('display_name') or row.get('name') or row['id']}
+            for row in rows if isinstance(row, dict) and row.get('id')
+            and row.get('type') == 'KnowledgeQA' and row.get('status') == 'active']}
 
     @router.get("/api/sn/strategies/{strategy_id}")
     def strategy_api(strategy_id: int):

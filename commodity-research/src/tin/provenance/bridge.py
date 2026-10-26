@@ -40,10 +40,13 @@ def structured_request(method, path, body=None, *, return_error_response=False):
     if scope is not None:
         if scope.identity.user_id != identity.user_id or scope.identity.tenant_id != identity.tenant_id:
             raise PermissionError("结构化桥接与工作台身份不匹配")
-        caller.update(knowledge_base_id=scope.knowledge_base_id,
-                      knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
-                      workbench_id=scope.workbench_id,
+        caller.update(workbench_id=scope.workbench_id,
                       authorization_sha256=hashlib.sha256(scope.authorization.encode()).hexdigest())
+        if scope.scope_version == 2:
+            caller.update(scope_version=2, sources_revision=scope.sources_revision)
+        else:
+            caller.update(knowledge_base_id=scope.knowledge_base_id,
+                          knowledge_base_tenant_id=scope.knowledge_base_tenant_id)
     encoded = base64.urlsafe_b64encode(json.dumps(caller,
         separators=(",", ":")).encode()).decode().rstrip("=")
     stamp = str(int(time.time()))

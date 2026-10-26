@@ -26,6 +26,7 @@ PROJECTION_SECONDS = 300
 MAX_PROJECTION_ENGINES = 4
 FACT_ENCODING = 'research-rows-v1'
 FACT_COLUMNS = ['series_id', 'date', 'value', 'source_cell', 'formula', 'value_status', 'date_cell', 'raw_value']
+from tin.integration.page_facts import page_read_scope, catalog_page, catalog_snapshot
 _projection_engines = OrderedDict()
 _projection_lock = threading.Lock()
 
@@ -127,14 +128,23 @@ def _delegated_sources(scope):
         raise HTTPException(401, '缺少当前知识库登录核验，未读取历史研究事实')
     endpoint = (settings.weknora_api_url.rstrip('/') + '/api/v1/workspaces/research/'
                 + quote(scope.workbench_id, safe='') + '/source-scope')
+    from tin.integration.source_scope_auth import proof_headers
+    path='/api/v1/workspaces/research/'+quote(scope.workbench_id,safe='')+'/source-scope'
+    headers={'Authorization':scope.authorization,'X-Tenant-ID':str(scope.identity.tenant_id)}
+    headers.update(proof_headers(path,scope.authorization,scope.identity.tenant_id))
     try:
         response = httpx.request('GET', endpoint,
-            headers={'Authorization': scope.authorization, 'X-Tenant-ID': str(scope.identity.tenant_id)},
+            headers=headers,
             trust_env=False, follow_redirects=False, timeout=15)
         if response.status_code in {401, 403, 404}:
             raise HTTPException(response.status_code, '知识库研究数据共享授权已失效')
+        if response.status_code==413:
+            raise HTTPException(413,'当前来源原件超过本次容量，请分批处理或拆分来源；未返回部分清单')
         response.raise_for_status()
-        document = validated_source_scope(scope, response.json())
+        document=response.json()
+        from tin.integration.source_scope_auth import require_inventory
+        require_inventory(document)
+        document = validated_source_scope(scope,document)
         source = next((item for item in document['sources']
                        if item['knowledge_base_id'] == scope.knowledge_base_id), None)
         if source is None or source['tenant_id'] != scope.knowledge_base_tenant_id:
@@ -289,7 +299,7 @@ def _date_stamp(when):
     return _sql_time(parsed)
 
 
-def install_projection(connection, scope, sources=None, pinned_version=None):
+def install_projection(connection, scope, sources=None, pinned_version=None, *, pages=None):
     connection.connection.driver_connection.set_authorizer(None)
     connection.exec_driver_sql('PRAGMA temp_store=MEMORY')
     connection.exec_driver_sql('DROP TABLE IF EXISTS temp._kb_evidence')
@@ -302,7 +312,7 @@ def install_projection(connection, scope, sources=None, pinned_version=None):
     known, seen, version, datasets, raw_counts = {}, {}, None, [], {}
     fetched_at = _sql_time(datetime.now(timezone.utc))
     caliber = json.dumps({'time_type': '原表日期'})
-    for index, page in enumerate(fact_pages(scope, sources, pinned_version)):
+    for index, page in enumerate(fact_pages(scope, sources, pinned_version) if pages is None else pages):
         version = page['version']
         if index == 0:
             datasets = page.get('datasets', [])
@@ -462,6 +472,9 @@ def _attach_projection(connection, paths):
 
 
 def projected_session(engine, scope, **kwargs):
+    if scope.scope_version == 2:
+        from tin.integration.page_facts import projected_page_session
+        return projected_page_session(engine, scope, **kwargs)
     if scope.restricted:
         raise HTTPException(403, '受限研究台不允许装载全量指标投影')
     from tin.integration.fact_cache import get_projection

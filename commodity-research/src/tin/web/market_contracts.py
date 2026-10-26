@@ -108,9 +108,9 @@ def _verify_catalog(contracts, catalog, scope):
             if identifier is None:
                 continue
             spec = catalog.get(identifier)
-            if (not isinstance(spec, dict) or spec.get('knowledge_base_id') != scope.knowledge_base_id
-                    or type(spec.get('knowledge_base_tenant_id')) is not int
-                    or spec['knowledge_base_tenant_id'] != scope.knowledge_base_tenant_id):
+            allowed = {(source['knowledge_base_id'],source['tenant_id']) for source in scope.sources} if scope.scope_version == 2 else {(scope.knowledge_base_id,scope.knowledge_base_tenant_id)}
+            if (not isinstance(spec, dict) or type(spec.get('knowledge_base_tenant_id')) is not int
+                    or (spec.get('knowledge_base_id'),spec['knowledge_base_tenant_id']) not in allowed):
                 raise HTTPException(404, '合约指标不在当前绑定知识库，不能借用其他来源')
             expected = row['price_unit'] if field in {'settle', 'close'} else row[field + '_unit']
             actual = spec.get('unit') or None
@@ -120,7 +120,7 @@ def _verify_catalog(contracts, catalog, scope):
 
 def _readable_scope(session):
     scope = current_workbench.get()
-    if (scope is None or scope.restricted or not scope.source_available
+    if (scope is None or scope.restricted or not scope.source_available and scope.scope_version != 2
             or session.info.get('workbench_id') != scope.workbench_id
             or session.info.get('knowledge_facts') is not True):
         raise HTTPException(403, '合约行情只读取当前知识库的已授权事实')
@@ -205,6 +205,10 @@ def _default_day(session, contracts):
 def configured_contract_curve(session, day=None):
     scope = _readable_scope(session)
     contracts = contract_config(session)
+    if scope.scope_version == 2:
+        unavailable = set(_identifiers(contracts)) - set(session.info.get('knowledge_facts_catalog',{}))
+        if unavailable:
+            return {**_curve(contracts,None,{},notices=('部分合约指标的来源已解除或不可用，请重新绑定。',)), 'unavailable':sorted(unavailable)}
     _verify_catalog(contracts, session.info.get('knowledge_facts_catalog'), scope)
     if day is not None and type(day) is not date:
         raise HTTPException(400, '合约行情日期应为明确的交易日')
@@ -302,6 +306,21 @@ def readonly_contract_curve(session, scope):
     origins = (row.config or {}).get('origins') if row and isinstance(row.config, dict) else None
     if not isinstance(origins, dict):
         raise HTTPException(409, '合约行情缺少已核验来源，请由编辑成员重新保存')
+    if scope.scope_version == 2:
+        from tin.integration.page_facts import bounded_facts
+        result = bounded_facts(scope,identifiers,'market',points=1,
+            same_day=[row['settle'] for row in contracts],origins=origins)
+        if result.get('unavailable_series_ids'):
+            return {**_curve(contracts,None,{},notices=('部分合约指标的来源已解除或不可用，请重新绑定。',)), 'unavailable':result['unavailable_series_ids']}
+        metadata = {field['series_id']:field for field in result['indicators']}
+        _verify_catalog(contracts,metadata,scope)
+        stamp = result.get('selected_date')
+        if stamp is not None and (not isinstance(stamp,str) or date.fromisoformat(stamp).isoformat()!=stamp):
+            raise HTTPException(503,'合约行情共同日期无效')
+        values = {row['series_id']:{row['date']:row['value']} for row in result['rows']}
+        if any(row['date'] != stamp for row in result['rows']):
+            raise HTTPException(503,'合约行情响应包含不同日期')
+        return _curve(contracts,date.fromisoformat(stamp) if stamp else None,values)
     for identifier in identifiers:
         origin = origins.get(identifier)
         if (not isinstance(origin, dict) or origin.get('knowledge_base_id') != scope.knowledge_base_id

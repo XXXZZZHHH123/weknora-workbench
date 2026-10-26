@@ -1,0 +1,32 @@
+    {% for group in groups %}
+    <details id="indicator-group-{{ (catalog_offset | default(0)) + loop.index }}" class="indicator-group indicator-anchor" data-indicator-group data-category="{{ group.name }}" open>
+      <summary>{{ group.name }} <span data-group-count class="indicator-muted">{{ group.rows | length }}</span></summary>
+      <div class="indicator-table-scroll"><table class="indicator-table">
+        {% if restricted_view %}
+        <thead><tr><th>指标 / 代码</th><th>单位</th><th>最新值</th><th>较上一观测</th><th>观测日期 / 频率</th></tr></thead>
+        {% else %}<thead><tr><th class="indicator-action-cell">对比</th><th>指标 / 代码</th><th>单位</th><th>来源</th><th>频率 / 采集</th><th>查看</th></tr></thead>{% endif %}
+        <tbody>{% for r in group.rows %}
+          {% if restricted_view %}
+          <tr data-indicator-row data-series-id="{{ r.series_id }}" data-name="{{ r.name }}" data-search="{{ r.name }} {{ r.series_id }} {{ r.unit }}">
+            <td><div class="indicator-name-line"><b>{{ r.name }}</b></div><div class="indicator-code">{{ r.series_id }}</div></td>
+            <td>{{ r.unit or '—' }}</td>
+            <td class="tabular">{% if r.value is not none %}{{ r.value | num }}{% else %}<span class="indicator-muted">暂无有效值</span>{% endif %}</td>
+            <td class="tabular {% if r.change is not none and r.change > 0 %}text-[var(--up)]{% elif r.change is not none and r.change < 0 %}text-[var(--down)]{% endif %}">{% if r.change is not none %}{{ r.change | num(r.unit, true) }}{% if r.change_pct is not none %} <span>({{ r.change_pct | num('%', true) }}%)</span>{% endif %}{% else %}<span class="indicator-muted">—</span>{% endif %}</td>
+            <td>{{ r.as_of or '—' }}{% if r.frequency %} <span class="indicator-muted">· {{ r.frequency }}</span>{% endif %}</td>
+          </tr>
+          {% else %}
+          <tr data-indicator-row data-series-id="{{ r.series_id }}" data-name="{{ r.name }}" data-macro="{{ 'true' if r.macro else 'false' }}"
+              data-search="{{ r.name }} {{ r.series_id }} {{ r.vendor_code or '' }} {{ r.category }} {{ r.source }} {{ r.caliber.values() | map('string') | join(' ') }}">
+            <td class="indicator-action-cell"><input type="checkbox" data-compare="{{ r.series_id }}" aria-label="对比 {{ r.name }}"></td>
+            <td><div class="indicator-name-line"><b>{% if r.registered %}<a href="{{ research_prefix() }}/sn/indicators/{{ r.series_id }}{% if d %}?date={{ d }}{% endif %}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}</b>{% if r.is_proxy %} <span class="indicator-warning">代理</span>{% endif %}{% if r.status == '停用' %} <span class="indicator-warning">已停用</span>{% endif %}
+              <button type="button" class="indicator-bookmark" data-favorite="{{ r.series_id }}" aria-pressed="false" aria-label="加入自选 {{ r.name }}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3.2L6 20V5.5a1 1 0 0 1 1-1z"/></svg></button></div>
+              <div class="indicator-code">{{ r.series_id }} <button type="button" data-copy-series="{{ r.series_id }}" aria-label="复制 {{ r.series_id }}" title="复制代码">⧉</button>{% if r.vendor_code %} · {{ r.vendor_code }}{% endif %}</div></td>
+            <td>{{ r.unit }}</td><td>{{ r.source }}</td><td>{{ r.frequency }} · {{ '自动' if r.fetch_mode == 'auto' else '人工' }}</td>
+            <td class="indicator-row-links"><button type="button" data-series-chart="{{ r.series_id }}" data-chart-date="{{ d or '' }}" aria-haspopup="dialog">走势</button>
+              {% if r.registered %}<a href="{{ research_prefix() }}/sn/indicators/{{ r.series_id }}{% if d %}?date={{ d }}{% endif %}">详情</a>{% else %}<span class="indicator-muted">待采集</span>{% endif %}</td>
+          </tr>
+          {% endif %}
+        {% endfor %}</tbody>
+      </table></div>
+    </details>
+    {% endfor %}

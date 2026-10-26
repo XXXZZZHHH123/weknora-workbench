@@ -3,7 +3,7 @@ from datetime import date
 import copy
 import math
 import pytest
-from tin.judgments.analysis import AnalysisError, validate_analysis
+from tin.judgments.analysis import AnalysisError, assess_draft, validate_analysis
 from tin.judgments.markdown import dump_markdown, version_diff
 
 SID = 'kb-' + '1' * 48
@@ -62,6 +62,24 @@ def test_cost_line_references_receive_same_id_and_unit_validation():
     value = document()
     value['judgment']['cost_line'] = {'type': 'cash', 'items': [{'desc': 'Cost basis', 'series_id': 'foreign'}]}
     with pytest.raises(AnalysisError): validate(value)
+
+
+def test_all_forbidden_cost_facts_are_reported_together_without_mutating_or_accepting_them():
+    value = document()
+    value['judgment']['cost_line'] = {'type': 'cash', 'value': 41, 'source': 'untrusted text',
+        'items': [{'desc': 'First cost', 'series_id': SID, 'value': 11},
+                  {'desc': 'Second cost', 'series_id': SID, 'value': 30}]}
+    original = copy.deepcopy(value)
+    expected = {'/judgment/cost_line/value', '/judgment/cost_line/source',
+                '/judgment/cost_line/items/0/value', '/judgment/cost_line/items/1/value'}
+    for check in (validate, lambda body: assess_draft(body, TEXT, CATALOG,
+                                                   variety='TEST', actor='researcher')):
+        with pytest.raises(AnalysisError, match='实际成本值须从知识库读取，不能由模型填造') as caught:
+            check(value)
+        assert {issue['path'] for issue in caught.value.issues} == expected
+        assert all(issue['code'] == 'cost_fact_not_allowed' and 'JSON null' in issue['message']
+                   for issue in caught.value.issues)
+        assert value == original
 
 
 def test_markdown_and_diff_are_deterministic_and_show_binding_changes():
@@ -132,3 +150,66 @@ def test_optional_binding_must_be_null_or_a_real_id(section):
     elif section == 'marginal': body['judgment']['marginal_focus'][0]['series_id'] = ''
     else: body['judgment']['cost_line'] = {'items': [{'desc': 'Unmatched', 'series_id': ''}]}
     with pytest.raises(AnalysisError): validate(body)
+
+
+def test_partial_draft_preserves_valid_rule_and_explicitly_quarantines_invalid_rule():
+    body = document()
+    body['judgment']['thresholds'].append({**body['judgment']['thresholds'][0], 'id': 'unsupported', 'value': 99999})
+    body['rule_quotes']['unsupported'] = 'stocks above 12 kg'
+    result = assess_draft(body, TEXT, CATALOG, variety='TEST', actor='r')
+    assert [rule.id for rule in result.result.payload.thresholds] == ['watch']
+    assert any(item.get('rule_id') == 'unsupported' and item['code'] == 'number_not_in_source' for item in result.issues)
+    assert any('unsupported' in item['text'] and '不执行' in item['text'] for item in result.result.unresolved)
+    assert result.result.payload.source_note == TEXT
+    assert validate(result.document).payload.thresholds[0].value == 12
+
+
+def test_null_unit_does_not_block_description_but_cannot_license_a_quantitative_rule():
+    catalog = [{**CATALOG[0], 'unit': None}]
+    body = document()
+    result = assess_draft(body, TEXT, catalog, variety='TEST', actor='r')
+    assert result.result.payload.marginal_focus[0].series_id == SID
+    assert result.result.binding_units == {SID: None}
+    assert result.result.payload.thresholds == []
+    assert any(item['code'] == 'unit_metadata_missing' for item in result.issues)
+    assert any('目录单位' in item['reason'] or '单位尚未确认' in item['reason'] for item in result.result.unresolved)
+    with pytest.raises(AnalysisError, match='单位'):
+        validate_analysis(body, TEXT, catalog, variety='TEST', actor='r')
+
+
+def test_redundant_real_unit_key_is_protocol_cleanup_without_inventing_a_binding():
+    extra = 'kb-' + '2' * 48
+    body = document(); body['binding_units'][extra] = 'kg'
+    result = assess_draft(body, TEXT, [*CATALOG, {**CATALOG[0], 'id': extra}], variety='TEST', actor='r')
+    assert result.document['binding_units'] == {SID: 'kg'}
+    assert not any(item.get('severity') == 'error' for item in result.issues)
+    with pytest.raises(AnalysisError): validate(body)
+
+
+@pytest.mark.parametrize('change', [
+    lambda d: d['judgment']['thresholds'][0].update(series_id='unknown'),
+    lambda d: d['binding_units'].update(unknown='kg'),
+    lambda d: d['judgment']['contradiction']['bull']['evidence'][0].update(value=999),
+    lambda d: d['judgment'].update(extra='unsupported'),
+    lambda d: d.pop('unresolved'),
+])
+def test_partial_draft_does_not_swallow_unknown_identity_facts_or_broken_protocol(change):
+    body = document(); change(body)
+    with pytest.raises(AnalysisError): assess_draft(body, TEXT, CATALOG, variety='TEST', actor='r')
+
+
+def test_partial_priority_preserves_original_order_of_surviving_rules_only():
+    body = document()
+    body['judgment']['thresholds'].append({**body['judgment']['thresholds'][0], 'id': 'unsupported', 'value': 99999})
+    body['rule_quotes']['unsupported'] = 'stocks above 12 kg'
+    body['judgment']['priority_rule'] = {'order': ['unsupported', 'watch'], 'note': 'Explicit original precedence'}
+    result = assess_draft(body, TEXT, CATALOG, variety='TEST', actor='r')
+    assert result.result.payload.priority_rule.order == ['watch']
+    assert result.result.payload.priority_rule.note == 'Explicit original precedence'
+
+
+@pytest.mark.parametrize('identifier', [None, [], {}, 7, 'bad id'])
+def test_partial_draft_rejects_malformed_rule_identity_without_server_errors(identifier):
+    body = document(); body['judgment']['thresholds'][0]['id'] = identifier
+    with pytest.raises(AnalysisError, match='ID'):
+        assess_draft(body, TEXT, CATALOG, variety='TEST', actor='r')

@@ -36,5 +36,4 @@ def allowed_workbench_route(path: str, method: str) -> bool:
 
 def source_preparation_required(path: str) -> bool:
     # These workflows schedule tenant-only workers or use a tenant-only file registry.
-    return (path.startswith('/api/sn/refresh') or path.startswith('/api/sn/import/')
-            or path == '/api/sn/strategies/generate')
+    return path.startswith('/api/sn/refresh') or path.startswith('/api/sn/import/')

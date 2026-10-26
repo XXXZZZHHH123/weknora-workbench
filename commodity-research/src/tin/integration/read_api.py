@@ -179,6 +179,30 @@ def research_read(body: ReadRequest):
         scope = current_workbench.get()
         if scope is None or scope.workbench_id != identity.workbench_id:
             raise HTTPException(403, '缺少当前已核验工作台范围')
+        if scope.scope_version == 2:
+            from tin.integration.page_facts import catalog_page,page_read_scope
+            if body.operation == Operation.indicators:
+                page = catalog_page(scope,offset=body.offset,limit=body.limit,search=body.search)
+                return {'operation':body.operation.value,'workbench_id':scope.workbench_id,
+                    'knowledge_base_sources':[{'id':source['id'],'source_type':source['source_type'],'source_id':source['source_id']} for source in scope.sources if not source['delegated']],
+                    'indicators':[{**field,'name':field.get('metric') or field.get('name') or ''} for field in page['series']],
+                    'total':page['total'],'offset':page['offset'],'next_offset':page['next_offset'],
+                    'truncated':page['truncated'],'version':page['version'],
+                    'notice':'当前直接授权来源的真实指标元数据；目录检索不代表业务口径已确认。'}
+            if body.operation == Operation.series:
+                if not body.series_id: raise HTTPException(400,'请先选择真实指标ID')
+                if body.offset+body.limit > 2000: raise HTTPException(413,'单次研究序列窗口最多2000点，请缩小范围')
+                module,identifiers,points='indicators',[body.series_id],body.offset+body.limit
+            else:
+                module={Operation.summary:'home',Operation.judgment:'judgments',Operation.signals:'judgments',
+                    Operation.brief:'reports',Operation.strategies:'strategies'}[body.operation]
+                identifiers,points=None,None
+            with page_read_scope(module,series_ids=identifiers,day=body.date,points_per_series=points),workbench_session(scope) as session:
+                result = read_isolated_research(session,body,identity.workbench_id)
+                if body.operation == Operation.summary:
+                    result['coverage'] = 'saved_workbench_bindings_only'
+                    result['notice'] = '仅当前工作台已保存绑定所需的必要观测，不是来源全部历史或全库统计。'
+                return result
         with workbench_session(scope) as session:
             return read_isolated_research(session, body, identity.workbench_id)
     if settings.weknora_api_url:
@@ -261,8 +285,14 @@ def read_isolated_research(session, body: ReadRequest, workbench_id: str):
     if body.operation == Operation.series:
         if not body.series_id:
             raise HTTPException(400, "读取序列必须先提供本工作台真实指标 ID")
-        return {**base, "data": observation_rows(session, body.series_id, workbench_id,
-                    offset=body.offset, limit=body.limit, through=body.date)}
+        data = observation_rows(session, body.series_id, workbench_id,
+                    offset=body.offset, limit=body.limit, through=body.date)
+        totals = session.info.get('knowledge_facts_series_totals',{})
+        if body.series_id in totals:
+            data['total'] = totals[body.series_id]
+            data['truncated'] = data['total'] > body.offset+len(data.get('observations',[]))
+            data['next_offset'] = body.offset+len(data.get('observations',[])) if data['truncated'] else None
+        return {**base,'data':data}
     if body.operation == Operation.summary:
         versions = select(Observation.series_id, Observation.as_of,
                           func.max(Observation.revision).label('revision')).where(Observation.status == '正常')

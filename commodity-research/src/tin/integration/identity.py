@@ -13,6 +13,8 @@ class Identity:
     knowledge_base_id: str = ""
     knowledge_base_tenant_id: int = 0
     authorization: str = field(default='', repr=False, compare=False)
+    scope_version: int = 1
+    sources_revision: int = 0
 
     @property
     def can_write(self):

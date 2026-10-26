@@ -14,7 +14,7 @@ from sqlalchemy import and_, func, select
 from starlette.concurrency import run_in_threadpool
 
 from tin.config import SHANGHAI, settings
-from tin.integration.workbench_scope import WorkbenchScope, go_request, verified_workbench, workbench_session, require_shared_write
+from tin.integration.workbench_scope import WorkbenchScope, go_request, verified_workbench, workbench_session, require_shared_write, source_scope_for_binding
 from tin.models import Indicator, Observation, ObservationSource, SourceArtifact, SourceBatch, SourceMapping
 from tin.provenance import bridge
 from tin.provenance.service import artifact_path, stable_hash, verified_artifact_bytes
@@ -103,7 +103,20 @@ def _current_datasets(sources, records, catalog, scope):
     return current, history
 
 
-async def source_inventory(scope: WorkbenchScope, page=1, page_size=100):
+async def source_inventory(scope: WorkbenchScope, page=1, page_size=100, source_binding_id=None):
+    if scope.scope_version == 2:
+        if not source_binding_id:
+            raise HTTPException(400, '请选择明确的数据来源')
+        selected = source_scope_for_binding(scope, source_binding_id, direct_only=True)
+        result = await _native_source_page(selected, page, page_size)
+        allowed = {'id', 'title', 'file_name', 'file_type', 'file_size', 'folder_path',
+                   'parse_status', 'enable_status', 'error_message', 'updated_at', 'created_at', 'type'}
+        return {'scope_version': 2, 'sources_revision': scope.sources_revision,
+                'source_binding_id': source_binding_id, 'knowledge_base_id': selected.knowledge_base_id,
+                'sources': [{**{key: value for key, value in row.items() if key in allowed},
+                    'knowledge_base_id': selected.knowledge_base_id, 'source_binding_id': source_binding_id}
+                    for row in result['data']], 'total': result['total'], 'page': page, 'page_size': page_size,
+                'has_more': result['total'] > page * page_size}
     result = await _native_source_page(scope, page, page_size)
     sources = result['data']
     allowed = {"id", "title", "file_name", "file_type", "file_size", "file_hash", "folder_path",
@@ -182,6 +195,34 @@ def source_review_progress(inventory, scope):
 
 @router.get("/overview")
 async def overview(scope: WorkbenchScope = Depends(verified_workbench)):
+    if scope.scope_version == 2:
+        from tin.integration.kb_facts import catalog_page
+        from tin.integration.workbench_scope import artifact_session
+        from tin.integration.read_api import research_result_counts
+        source_count,documents,excel,partial = 0,0,0,False
+        for source in scope.sources:
+            if source['delegated']: continue
+            target = source_scope_for_binding(scope,source['id'],direct_only=True)
+            page = await _native_source_page(target,1,200)
+            source_count += page['total'];partial = partial or page['total']>len(page['data'])
+            for row in page['data']:
+                if str(row.get('file_type','')).lower().lstrip('.') in {'xlsx','xls','xlsm','csv','tsv'}: excel += 1
+                elif row.get('parse_status')=='completed': documents += 1
+        metadata = await run_in_threadpool(lambda:catalog_page(scope,limit=1))
+        def results():
+            with artifact_session(scope) as session: return research_result_counts(session,scope)
+        research_counts = await run_in_threadpool(results)
+        counts = {'sources':source_count,'documents_ready':documents,'excel_pending':None,
+            'indicators':metadata['total'],'observations':None,'counts_partial':True,
+            'review_counts_partial':bool(excel or partial),'pending_sheet_count':0,'unknown_source_count':excel,
+            'observation_source_count':excel}
+        return {'workbench':scope.metadata,'counts':counts,'research_counts':research_counts,
+            'source_access':'per_source','readiness':{'status':'partially_ready' if metadata['total'] or documents or any(research_counts.values()) else 'preparing' if source_count else 'empty',
+                'tasks':[{'id':'sources','status':'ready' if source_count else 'pending','count':source_count},
+                    {'id':'review','status':'partially_ready' if metadata['total'] else 'pending','count':metadata['total']},
+                    {'id':'research','status':'ready' if any(research_counts.values()) else 'pending','optional':True}]},
+            'modules':[],'structured_error':None,'review_error':None,
+            'notice':'此概览仅读取来源和已确认指标元数据；观测总量未加载，工作表确认进度以知识库为准。'}
     delegated = scope.knowledge_base_id in scope.source_delegations
     if delegated:
         def derived_inventory():
@@ -227,8 +268,9 @@ async def overview(scope: WorkbenchScope = Depends(verified_workbench)):
 
 @router.get("/sources")
 async def sources(page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=200),
+                  source_binding_id: str | None = Query(None, min_length=1, max_length=128),
                   scope: WorkbenchScope = Depends(verified_workbench)):
-    return await source_inventory(scope, page, page_size)
+    return await source_inventory(scope, page, page_size, source_binding_id)
 
 
 @router.get("/datasets/{dataset_id}/series")
@@ -431,6 +473,10 @@ async def confirm_batch(body: ConfirmBatch, scope: WorkbenchScope = Depends(veri
 @router.get("/indicators")
 def indicators(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200),
                scope: WorkbenchScope = Depends(verified_workbench)):
+    if scope.scope_version == 2:
+        from tin.integration.kb_facts import catalog_page
+        page = catalog_page(scope,offset=offset,limit=limit)
+        return {**page,'indicators':[{**field,'name':field.get('metric') or field.get('name') or ''} for field in page['series']]}
     with workbench_session(scope) as session:
         rows = session.scalars(select(Indicator).order_by(Indicator.series_id).offset(offset).limit(limit)).all()
         total = session.scalar(select(func.count()).select_from(Indicator))
@@ -476,6 +522,16 @@ def observation_rows(session, series_id, workbench_id, *, offset=0, limit=100, t
 @router.get("/indicators/{series_id}/observations")
 def observations(series_id: str, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200),
                  scope: WorkbenchScope = Depends(verified_workbench)):
+    if scope.scope_version == 2:
+        from tin.integration.kb_facts import page_read_scope
+        if offset+limit>2000:
+            raise HTTPException(413,'单次序列读取最多2000点，请缩小范围')
+        with page_read_scope('indicators',series_ids=[series_id],points_per_series=offset+limit),workbench_session(scope) as session:
+            result = observation_rows(session,series_id,scope.workbench_id,offset=offset,limit=limit)
+            total = session.info['knowledge_facts_series_totals'].get(series_id,result['total'])
+            result.update(total=total,truncated=total>offset+len(result['observations']),
+                next_offset=offset+len(result['observations']) if total>offset+len(result['observations']) else None)
+            return result
     with workbench_session(scope) as session:
         return observation_rows(session, series_id, scope.workbench_id, offset=offset, limit=limit)
 

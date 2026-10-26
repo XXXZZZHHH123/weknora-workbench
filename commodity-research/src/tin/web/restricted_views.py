@@ -255,6 +255,23 @@ def necessary_values(session, scope, identifiers, module):
         return {}
     row = session.get(SourceMapping, mapping_key(session, ORIGINS_KEY))
     origins = (row.config or {}).get('origins') or {} if row else {}
+    if scope.scope_version == 2:
+        from tin.integration.page_facts import bounded_facts
+        result = bounded_facts(scope,identifiers,module,origins=origins)
+        output = {}
+        for spec in result['indicators']:
+            identifier = spec['series_id']
+            rows = sorted((row for row in result['rows'] if row['series_id']==identifier),key=lambda row:row['date'],reverse=True)
+            latest = rows[0] if rows else {};previous = rows[1] if len(rows)>1 else {}
+            value, old = latest.get('value'), previous.get('value')
+            output[identifier] = {'name':spec.get('metric') or spec.get('name') or '已绑定指标',
+                'unit':spec.get('unit') or '', 'frequency':spec.get('frequency') or '',
+                'display_name':spec.get('display_name') or spec.get('name'),
+                'display_metadata':{key:spec[key] for key in ('code','vendor_code','coverage') if key in spec},
+                'date':latest.get('date'),'value':value,
+                'change':value-old if value is not None and old is not None else None,
+                'change_pct':(value-old)/abs(old)*100 if value is not None and old not in {None,0} else None}
+        return output
     permitted = {(scope.knowledge_base_id, scope.knowledge_base_tenant_id)}
     permitted.update((item['knowledge_base_id'], item['tenant_id']) for item in scope.additional_knowledge_bases)
     groups = {}

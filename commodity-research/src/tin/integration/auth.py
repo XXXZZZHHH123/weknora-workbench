@@ -240,13 +240,17 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                 scope = await resolve_workbench(fresh, identity.workbench_id, identity.authorization)
                 if scope.restricted:
                     raise HTTPException(403, '受限研究台不开放通用查询和来源浏览')
-                if (scope.knowledge_base_id != identity.knowledge_base_id
+                if identity.scope_version == 2:
+                    if scope.scope_version != 2 or scope.sources_revision != identity.sources_revision:
+                        raise HTTPException(409, '工作台数据来源版本已改变')
+                elif (scope.knowledge_base_id != identity.knowledge_base_id
                         or scope.knowledge_base_tenant_id != identity.knowledge_base_tenant_id):
                     raise HTTPException(403, '工作台知识库绑定已改变')
                 identity = replace(fresh, workbench_id=identity.workbench_id,
                     knowledge_base_id=scope.knowledge_base_id,
                     knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
-                    authorization=identity.authorization)
+                    authorization=identity.authorization,scope_version=scope.scope_version,
+                    sources_revision=scope.sources_revision)
                 scope = replace(scope, identity=identity)
                 scope_marker = current_workbench.set(scope)
             if scoped_path is not None:

@@ -27,7 +27,9 @@
     });
     let value;
     try { value = await response.json(); } catch { throw new Error('研究逻辑服务暂时不可用，输入已保留。'); }
-    if (!response.ok) { const error = new Error(typeof value.detail === 'string' ? value.detail : '请求未完成，输入已保留。'); error.status = response.status; throw error; }
+    if (!response.ok) { const detail = value.detail; const message = typeof detail === 'string' ? detail :
+      detail?.message ? detail.message + (detail.issues?.length ? '：' + detail.issues.slice(0, 4).map(item => `${item.path} ${item.message}`).join('；') : '') : '请求未完成，输入已保留。';
+      const error = new Error(message); error.status = response.status; throw error; }
     return value;
   }
   function text(id, value) { byId(id).textContent = value || ''; }
@@ -43,7 +45,7 @@
     text('coverage', `${value.bindings.length} 个真实指标绑定 · ${value.candidate_count}/${value.catalog_total} 个${value.candidate_subset ? '候选' : '目录'}指标`);
     const bindings = byId('bindings'); bindings.replaceChildren();
     for (const binding of value.bindings) {
-      const chip = document.createElement('span'); chip.textContent = `${binding.name} · ${binding.unit}`; bindings.append(chip);
+      const chip = document.createElement('span'); chip.textContent = `${binding.name} · ${binding.unit || '单位待确认，仅描述'}`; bindings.append(chip);
     }
     const gaps = byId('unresolved'); gaps.replaceChildren();
     for (const item of value.unresolved) {
