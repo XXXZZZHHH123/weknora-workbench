@@ -36,7 +36,7 @@ const server=http.createServer(async(req,res)=>{try{
  assert.equal(await page.locator('#pdfReparseOcrMode').count(),0);
  await page.locator('.pdf-exception-drawer>summary').click();await page.getByRole('button',{name:'查看疑点',exact:true}).click();
  assert.equal(await page.locator('.pdf-quality-detail').evaluate(e=>e.open),true);
- assert.match(await page.locator('.pdf-quality-item>p').first().innerText(),/多次识别得到的单元格内容不同/);
+ assert.match(await page.locator('.pdf-quality-item>p').first().innerText(),/多次识别得到的单元格内容不同|两次识别的内容不一致/);
  assert.equal(await page.locator('.pdf-quality-item>details').evaluateAll(items=>items.some(e=>e.open)),false);
  // A cell is editable immediately, without finding a separate mode switch.
  await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();

@@ -454,6 +454,14 @@
       if(savedEpoch!==host.getAuthEpoch()||draft?.draft_id!==id||!details.isConnected)return;
       const item=result.issues?.find(item=>item.issue_index===index);
       description.textContent=item?.explanation||qualityHint(issue);advice.textContent=item?.action||'';
+      const container=details.closest('.pdf-quality-item');
+      if(container && item){
+        const primary=container.querySelector(':scope>p');
+        if(primary)primary.textContent=item.explanation;
+        let nextStep=container.querySelector('.pdf-quality-advice');
+        if(!nextStep){nextStep=make('p','','pdf-quality-advice muted');container.insertBefore(nextStep,primary?.nextSibling||details);}
+        nextStep.textContent=item.action;
+      }
     }).catch(()=>{
       if(!details.isConnected)return;
       description.textContent='暂时无法取得详细中文说明。'+qualityHint(issue);
