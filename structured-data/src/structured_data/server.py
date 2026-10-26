@@ -202,7 +202,7 @@ def create_app(data_dir: str | Path | None = None):
         pdf_catalog = pdf_store(registry).list_tables()['tables']
         if pdf_catalog:
             result['pdf_tables'] = pdf_catalog
-            result['pdf_notice'] = 'PDF 表为经人工确认的解析结果；用 list_pdf_tables/read_pdf_table/query_pdf_table 核验和计算。保留原页出处，识别正确性与整份文档覆盖未自动保证。'
+            result['pdf_notice'] = 'PDF 表的 status=auto_accepted 表示自动校验入库，status=reviewed 表示人工确认；用 list_pdf_tables/read_pdf_table/query_pdf_table 核验和计算。保留原页出处，识别正确性与整份文档覆盖未自动保证。'
         if question:
             from .field_index import literal_fields
             matches=[]
@@ -348,19 +348,19 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def list_pdf_tables(source_sha256: str | None = None) -> dict:
-        """列出当前授权空间已确认的 PDF 逻辑表、真实 table_id、列类型/单位及覆盖。草稿不参与查询。模型根据完整问题与实际标题/列/来源选择表，不按页相邻或列数推定同表；多个表可能重叠，不能重复累计。"""
+        """列出当前授权空间已入库的 PDF 逻辑表、真实 table_id、列类型/单位及覆盖。草稿不参与查询。模型根据完整问题与实际标题/列/来源选择表，不按页相邻或列数推定同表；多个表可能重叠，不能重复累计。"""
         return {**pdf_store(registry).list_tables(source_sha256), 'source_kind': 'pdf_table', 'kind': 'structured_pdf_tables', 'status': 'ok'}
 
     @mcp.tool()
     def read_pdf_table(table_id: str, offset: int = 0, limit: int = 100) -> dict:
-        """按实际 table_id 分页核对 PDF 逻辑表，返回原值、列映射、每格页码/坐标和跨页来源。output_truncated 表示还需翻页，空值不补零。reviewed 只指映射经人工确认，不保证 OCR 正确或整篇覆盖。"""
+        """按实际 table_id 分页核对 PDF 逻辑表，返回原值、列映射、每格页码/坐标和跨页来源。output_truncated 表示还需翻页，空值不补零。review_status=auto_accepted 表示自动校验入库，reviewed 表示映射经人工确认；两者都不保证 OCR 正确或整篇覆盖。"""
         result = pdf_store(registry).read_table(table_id, offset=offset, limit=limit)
         verify_pdf_original(registry, result['source'])
         return {**result, 'kind': 'structured_source_inspection', 'source_kind': 'pdf_table', 'status': 'ok', 'review_status': result['status']}
 
     @mcp.tool()
     async def query_pdf_table(table_id: str, sql: str, limit: int = 100) -> dict:
-        """对已确认 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID 和列名；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源/单位构造 SQL，程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。公式保留不等于可执行。"""
+        """对已入库 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID 和列名；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源/单位构造 SQL，程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。公式保留不等于可执行。"""
         def run():
             selected = pdf_store(registry)
             verify_pdf_original(registry, selected.read_table(table_id, limit=1)['source'])

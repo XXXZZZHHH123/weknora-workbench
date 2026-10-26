@@ -81,6 +81,12 @@ def test_upload_automatically_accepts_clean_tables_and_retry_is_idempotent(pdf_s
     assert draft['automation']['attention_count'] == 0
     published = client.get('/api/pdf/tables', headers=headers()).json()['tables']
     assert len(published) == 1 and published[0]['status'] == 'auto_accepted'
+    table_id = published[0]['table_id']
+    catalog = read(pdf_service, 'list_datasets', {}).json()
+    assert 'auto_accepted' in catalog['pdf_notice']
+    assert read(pdf_service, 'read_pdf_table', {'table_id': table_id}).json()['review_status'] == 'auto_accepted'
+    query = read(pdf_service, 'query_pdf_table', {'table_id': table_id, 'sql': 'SELECT * FROM data'}).json()
+    assert query['rows'] and not query['extraction_verified']
     endpoint = f"/api/pdf/drafts/{draft['draft_id']}/auto-process"
     assert client.post(endpoint, headers=headers(role='viewer')).status_code == 403
     assert client.post(endpoint, headers=headers(kb='other-kb')).status_code == 404

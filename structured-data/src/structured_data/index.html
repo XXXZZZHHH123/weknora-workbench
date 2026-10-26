@@ -429,8 +429,8 @@ async function processUploadedFile(){
  try{
   if(type==='pdf'){
    if(!window.pdfReviewHost?.uploadFile)throw Error('文件处理尚未就绪，请稍后重试。');
-   await window.pdfReviewHost.uploadFile(file);if(!isCurrent())return;
-   $('jobState').textContent='PDF 识别完成，请在下方核对表格。核对并发布后可用于数据查询与问答。';
+   const result=await window.pdfReviewHost.uploadFile(file);if(!isCurrent())return;
+   $('jobState').textContent=result?.stage||'PDF 识别完成，请查看处理结果。';
    return;
   }
   const form=new FormData();form.append('file',file);const job=await api('/api/import',{method:'POST',body:form});

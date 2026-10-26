@@ -921,11 +921,11 @@
         await loadTables(savedEpoch, savedOperation);
         if (!current(savedEpoch, savedOperation)) return;
         if(job.automatic_result?.status==='completed'){
-          showFileList();setStatus(job.stage||'表格已自动入库，可用于查询与问答。');return;
+          showFileList();setStatus(job.stage||'表格已自动入库，可用于查询与问答。');return job;
         }
         if (await selectDraft(draftId) === false) throw new Error('PDF 已识别，但无法打开核对结果，请检查原件读取权限后重试。');
         if(job.automatic_result)setStatus(job.stage||'可用表格已入库，请处理剩余识别疑点。');
-        return;
+        return job;
       }
       if (!['processing', 'queued', 'pending', 'running'].includes(job.status)) throw new Error(`未知的 PDF 任务状态：${job.status}`);
       await new Promise((resolve, reject) => {
@@ -1004,7 +1004,7 @@
     setStatus('正在安全上传 PDF 并启动解析…');
     const job = await api('/api/pdf/import', {method: 'POST', body: form}, 120000);
     if (!current(savedEpoch, savedOperation)) return;
-    await pollJob(job.id, savedEpoch, savedOperation);
+    return await pollJob(job.id, savedEpoch, savedOperation);
   }
 
   async function loadWorkspace({throwOnError = false} = {}) {
@@ -1083,7 +1083,7 @@
     await loadWorkspace({throwOnError: true});
     if (savedEpoch !== host.getAuthEpoch() || savedEpoch !== epoch || scopeController.signal.aborted) throw new Error('账号或知识库已切换，请重新上传。');
     root.inert = true;
-    try { await uploadFile(file); }
+    try { return await uploadFile(file); }
     finally { if (savedEpoch === host.getAuthEpoch()) root.inert = false; }
   };
   host.openKnowledgeSource = openKnowledgeSource;

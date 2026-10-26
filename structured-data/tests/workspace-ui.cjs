@@ -27,6 +27,7 @@ const requests = [], checks = [], errors = [], networkFailures = [], fileChooser
 let uploadCount=0,nativeStall='',pdfConfigured=process.argv.includes('--upload-regression'),pdfStall=false,pdfSourceDenied=false,pdfListDenied=false;
 const layoutMode=process.argv.includes('--layout-regression');let emptyImports=false;
 const layoutRecords=[{draft_id:'pdf-old',source:{file_name:'same.pdf',sha256:'b'.repeat(64)},fragment_count:2,raw_row_count:2,created_at:'2025-01-01T00:00:00Z'},{draft_id:'pdf-fixture',source:{file_name:'same.pdf',sha256:'b'.repeat(64)},fragment_count:2,raw_row_count:2,created_at:'2026-01-01T00:00:00Z'},{draft_id:'pdf-other',source:{file_name:'same.pdf',sha256:'c'.repeat(64)},fragment_count:1,raw_row_count:1,created_at:'2024-01-01T00:00:00Z'}];
+let pdfAutomatic=false;
 const jobs = new Map();
 const nativeImports = new Map();
 const nativeAttempts = new Map();
@@ -74,13 +75,13 @@ async function main(){
   }else if(route==='/pdf-review.js'){
    body=fs.readFileSync(path.join(source,'static','pdf-review.js'),'utf8');type='application/javascript';
   }else if(route==='/api/pdf/config')body={configured:pdfConfigured,max_bytes:52428800};
-  else if(route==='/api/pdf/import'&&req.method==='POST'){if(pdfStall)await pause(650);body={id:'pdf-native-job'};}
+  else if(route==='/api/pdf/import'&&req.method==='POST'){if(pdfStall)await pause(650);pdfAutomatic=payload.toString().includes('automatic-fixture.pdf');body={id:'pdf-native-job'};}
   else if(route==='/api/pdf/jobs')body={jobs:[]};
   else if(route==='/api/pdf/drafts'){if(pdfListDenied){status=403;body={detail:'隔离夹具：无法读取处理记录'};}else body={drafts:layoutMode?layoutRecords:[{draft_id:'pdf-fixture',source:{file_name:'fixture.pdf'},fragment_count:1,raw_row_count:1}]};}
   else if(route==='/api/pdf/tables')body={tables:layoutMode?[{table_id:'published-old',draft_id:'pdf-old',source:{file_name:'same.pdf',sha256:'b'.repeat(64)},title:'Reviewed data',columns:[{}],coverage:{logical_row_count:1}}]:[]};
   else if(route==='/api/pdf/import-knowledge'&&req.method==='POST'){
    const input=JSON.parse(payload),sourceId=input.source_knowledge_id;requests.at(-1).sourceKnowledgeId=sourceId;requests.at(-1).pdfKnowledgeImport=true;body={id:'pdf-native-job'};
-  }else if(route==='/api/pdf/jobs/pdf-native-job')body={status:'completed',draft_id:'pdf-fixture'};
+  }else if(route==='/api/pdf/jobs/pdf-native-job')body={status:'completed',draft_id:'pdf-fixture',...(pdfAutomatic?{stage:'已自动入库 1 张表格',automatic_result:{status:'completed',accepted_count:1,attention_count:0}}:{})};
   else if(route==='/api/pdf/drafts/pdf-fixture')body={draft_id:'pdf-fixture',bundle_sha256:'a'.repeat(64),bundle:{source:{file_name:'fixture.pdf',sha256:'b'.repeat(64)},parser:{engine:'fixture',version:'1'},fragments:[{id:'fixture-fragment',page:1,rows:[[{text:'Synthetic PDF cell'}]]},...(layoutMode?[{id:'second-fragment',page:2,rows:[[{text:'Second synthetic table'},{text:'12345678901234567890'}]]}]:[])]}};
   else if(route==='/api/pdf/drafts/pdf-fixture/source'){
    if(pdfSourceDenied){status=403;body='Denied'}else{body=Buffer.from('%PDF-1.4 synthetic fixture');type='application/pdf';}
@@ -224,6 +225,8 @@ async function main(){
    pdfStall=false;pdfListDenied=true;const listFailureWrites=writes().length;await choose('list-failure.pdf');await wait("!d.getElementById('file').disabled && d.getElementById('jobState').textContent.includes('无法读取处理记录')");assert.equal(writes().length,listFailureWrites);
    pdfListDenied=false;await click('#upload');await wait("d.getElementById('jobState').textContent.includes('PDF 识别完成') && !d.getElementById('file').disabled && d.getElementById('pdfDraftDetail')?.textContent.includes('Synthetic PDF cell')");checks.push('A failed workspace load blocks submission and retry rebuilds the review');
    pdfSourceDenied=true;await choose('denied-source.pdf');await wait("!d.getElementById('file').disabled && d.getElementById('jobState').textContent.includes('无法打开核对结果')");checks.push('Protected source failure is not reported as a successful import');
+   pdfSourceDenied=false;await choose('automatic-fixture.pdf');await wait("d.getElementById('jobState').textContent.includes('已自动入库 1 张表格') && !d.getElementById('file').disabled");
+   await verify('The unified uploader preserves automatic acceptance and never asks for another confirmation',"!d.getElementById('jobState').textContent.includes('核对并发布') && !d.getElementById('pdfDraftDetail').children.length && w.getComputedStyle(d.getElementById('pdfInventory')).display!=='none'");
    await resize(650);await screenshot('unified-upload-mobile');
    assert.deepEqual(errors,[]);checks.push('No JavaScript runtime errors');
    if(keepArtifacts)fs.writeFileSync(path.join(output,'upload-acceptance.json'),JSON.stringify({passed:checks.length,checks,writes:writes()},null,2));
