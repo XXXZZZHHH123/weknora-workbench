@@ -3,7 +3,7 @@ const assert=require('node:assert/strict'),fs=require('fs'),os=require('os'),pat
 const {execFileSync}=require('node:child_process');
 const {chromium}=require('playwright');
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'pdf-correction-'));
-const python=`import sys,json\nfrom structured_data.pdf_tables import PDFTableStore\nfrom test_pdf_tables import bundle\ns=PDFTableStore(sys.argv[1]);req=json.load(sys.stdin);op=req['op']\nif op=='init':\n b=bundle([['Item','Amount'],['Example',''],['Blank','']]);b['fragments'][0]['quality']={'status':'needs_review','issues':[{'code':'TRANSCRIPTION_CELL_CONFLICT','message':'Independent transcriptions disagree on source cells'}]};b['fragments'][0]['rows'][1][1]['uncertain']=True;r=s.create_draft(b)\nelif op=='preview':r=s.validate_plan(req['id'],req['plan'])\nelif op=='publish':r=s.publish(req['id'],dict(req['plan'],reviewed=True))\nelif op=='tables':r=s.list_tables()\nelif op=='draft':r=s.read_draft(req['id'])\nelif op=='query':r=s.query(req['id'])\nprint(json.dumps(r))`;
+const python=`import sys,json\nfrom structured_data.pdf_tables import PDFTableStore\nfrom test_pdf_tables import bundle\ns=PDFTableStore(sys.argv[1]);req=json.load(sys.stdin);op=req['op']\nif op=='init':\n b=bundle([['Item','Amount'],['Example',''],['Blank','']]);b['fragments'][0]['quality']={'status':'needs_review','issues':[{'code':'TRANSCRIPTION_CELL_CONFLICT','message':'Independent transcriptions disagree on source cells'},{'code':'MISSING_HEADER','message':'At least one header is absent or unreadable'},{'code':'MODEL_UNCERTAINTY','message':'The unit row requires review'}]};b['fragments'][0]['rows'][1][1]['uncertain']=True;r=s.create_draft(b)\nelif op=='preview':r=s.validate_plan(req['id'],req['plan'])\nelif op=='publish':r=s.publish(req['id'],dict(req['plan'],reviewed=True))\nelif op=='tables':r=s.list_tables()\nelif op=='draft':r=s.read_draft(req['id'])\nelif op=='query':r=s.query(req['id'])\nprint(json.dumps(r))`;
 function store(op,values={}){return JSON.parse(execFileSync('python',['-c',python,dir],{input:JSON.stringify({op,...values}),env:{...process.env,PYTHONPATH:'structured-data/src:structured-data/tests'},encoding:'utf8'}));}
 const original=store('init');const automation={status:'needs_attention',accepted_count:0,attention_count:1,groups:[{fragment_ids:['table-1'],status:'needs_attention',problem:{title:'表格存在识别疑点',message:'请对照原件核对',action:'review'}}]};
 let publishes=0;
@@ -35,18 +35,18 @@ const server=http.createServer(async(req,res)=>{try{
  assert.equal(await page.locator('#pdfReparseOcrMode').count(),0);
  await page.locator('.pdf-exception-drawer>summary').click();await page.getByRole('button',{name:'查看疑点',exact:true}).click();
  assert.equal(await page.locator('.pdf-quality-detail').evaluate(e=>e.open),true);
- assert.match(await page.locator('.pdf-quality-item>p').innerText(),/多次识别得到的单元格内容不同/);
- assert.equal(await page.locator('.pdf-quality-item>details').evaluate(e=>e.open),false);
+ assert.match(await page.locator('.pdf-quality-item>p').first().innerText(),/多次识别得到的单元格内容不同/);
+ assert.equal(await page.locator('.pdf-quality-item>details').evaluateAll(items=>items.some(e=>e.open)),false);
  await page.getByRole('button',{name:'核对并修改这张表',exact:true}).click();
  const editing=await page.locator('.pdf-source-viewer').elementHandle();
+ assert(await page.locator('.pdf-raw-table').evaluate(e=>e.clientHeight>=230),'multiple doubts must leave a usable table viewport');
  await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();
  await page.getByRole('button',{name:'保存此格修改',exact:true}).click();assert.match(await page.locator('.pdf-cell-editor').innerText(),/请填写你在原件/);
  await page.getByRole('textbox',{name:'核对后的单元格内容',exact:true}).fill('-1.20');
  await page.getByRole('textbox',{name:'单元格核对依据',exact:true}).fill('核对第1页第2行，原文为负数 -1.20');
  await page.getByRole('button',{name:'保存此格修改',exact:true}).click();
  assert.equal(await editing.evaluate(e=>e.isConnected),true);
- await page.getByRole('textbox',{name:'疑点 1 核对依据',exact:true}).fill('对照第1页全部行列，已修正第2行金额，空白单元格与原件一致');
- await page.getByRole('button',{name:'已核对，记录依据',exact:true}).click();
+ for(let i=0;i<3;i++){await page.getByRole('textbox',{name:'疑点 '+(i+1)+' 核对依据',exact:true}).fill('对照第1页全部行列及列名单位，已修正第2行金额，空白单元格与原件一致');await page.getByRole('button',{name:'已核对，记录依据',exact:true}).nth(i).click();}
  await page.getByRole('button',{name:'下一步：设置列名和表头',exact:true}).click();
  await page.locator('[data-column-name="0"]').fill('项目');await page.locator('[data-column-name="1"]').fill('金额');
  await page.locator('[data-column-type="1"]').selectOption('decimal');

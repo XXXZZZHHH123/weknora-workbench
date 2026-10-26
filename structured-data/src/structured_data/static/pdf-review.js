@@ -447,7 +447,7 @@
     const pane=document.querySelector('.pdf-fragment-pane');
     const detail=pane?.querySelector('.pdf-quality-detail');if(detail)detail.open=true;
     document.querySelector('.pdf-review-comparison')?.classList.remove('source-collapsed');
-    pane?.scrollIntoView({block:'start'});
+    document.querySelector('.pdf-review-comparison')?.scrollIntoView({block:'start'});
     const focus=detail?.querySelector('summary') || pane?.querySelector('button');focus?.focus({preventScroll:true});
   }
   function beginCorrection(fragment) {
