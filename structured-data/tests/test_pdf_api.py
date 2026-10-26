@@ -61,6 +61,65 @@ def finish_pdf_job(client, job_id):
     raise AssertionError('mocked PDF parse job did not finish')
 
 
+def test_upload_automatically_accepts_clean_tables_and_retry_is_idempotent(pdf_service, monkeypatch):
+    client, _, _, _, _ = pdf_service
+    calls = []
+    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', lambda draft, root: [
+        {'fragment_ids': [f['id'] for f in draft['bundle']['fragments']], 'reason': 'explicit continuation'}])
+    def suggest(draft, body, root):
+        calls.append(body.fragment_ids)
+        ids = body.fragment_ids
+        return {'status': 'ready', 'plan': {
+            'bundle_sha256': draft['bundle_sha256'], 'fragment_ids': ids,
+            'header_rows': {i: ([{'row': 0, 'reason': 'explicit header'}] if n == 0 else []) for n, i in enumerate(ids)},
+            'columns': [{'name': 'Item', 'type': 'text', 'source_columns': {i: 0 for i in ids}},
+                        {'name': 'Value', 'type': 'decimal', 'source_columns': {i: 1 for i in ids}}],
+        }}
+    monkeypatch.setattr('structured_data.pdf_api.suggest_plan', suggest)
+    draft = imported(pdf_service)
+    assert draft['automation']['accepted_count'] == 1
+    assert draft['automation']['attention_count'] == 0
+    published = client.get('/api/pdf/tables', headers=headers()).json()['tables']
+    assert len(published) == 1 and published[0]['status'] == 'auto_accepted'
+    endpoint = f"/api/pdf/drafts/{draft['draft_id']}/auto-process"
+    assert client.post(endpoint, headers=headers(role='viewer')).status_code == 403
+    assert client.post(endpoint, headers=headers(kb='other-kb')).status_code == 404
+    job = client.post(endpoint, headers=headers()).json()
+    finish_pdf_job(client, job['id'])
+    assert len(calls) == 1
+    assert len(client.get('/api/pdf/tables', headers=headers()).json()['tables']) == 1
+
+
+def test_automatic_failure_keeps_draft_and_safe_retry_state(pdf_service, monkeypatch):
+    def fail(*args):
+        raise RuntimeError('private-api-key')
+    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', fail)
+    client, _, _, _, _ = pdf_service
+    draft = imported(pdf_service)
+    assert draft['automation']['status'] == 'needs_attention'
+    assert 'private-api-key' not in str(draft['automation'])
+    assert draft['bundle']['fragments']
+    assert not client.get('/api/pdf/tables', headers=headers()).json()['tables']
+
+
+def test_automatic_acceptance_rechecks_permission_after_model_call(pdf_service, monkeypatch):
+    client, _, state, _, _ = pdf_service
+    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', lambda draft, root: [
+        {'fragment_ids': ['table-1', 'table-2'], 'reason': 'explicit continuation'}])
+    def suggest(draft, body, root):
+        state['permission'] = 'viewer'
+        ids = body.fragment_ids
+        return {'status': 'ready', 'plan': {'bundle_sha256': draft['bundle_sha256'], 'fragment_ids': ids,
+            'header_rows': {'table-1': [{'row': 0, 'reason': 'header'}], 'table-2': []},
+            'columns': [{'name': 'Item', 'type': 'text', 'source_columns': {i: 0 for i in ids}},
+                        {'name': 'Value', 'type': 'decimal', 'source_columns': {i: 1 for i in ids}}]}}
+    monkeypatch.setattr('structured_data.pdf_api.suggest_plan', suggest)
+    draft = imported(pdf_service)
+    assert draft['automation']['attention_count'] == 1
+    assert draft['automation']['accepted_count'] == 0
+    assert not client.get('/api/pdf/tables', headers=headers()).json()['tables']
+
+
 @pytest.mark.parametrize('reparse', [False, True])
 @pytest.mark.parametrize('storage', [False, True])
 def test_parser_failures_have_safe_capacity_hint_for_import_and_review(pdf_service, monkeypatch, reparse, storage):

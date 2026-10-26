@@ -230,7 +230,7 @@ body.native-source .upload-steps{display:none}
 .pdf-review-heading small{display:block;color:var(--muted);margin-top:5px}
 .pdf-review-heading a{font-size:12px;white-space:nowrap}
 .pdf-technical{margin:8px 0 14px;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
-.pdf-review-comparison{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;margin-top:20px}
+.pdf-review-comparison{display:grid;grid-template-columns:minmax(240px,.9fr) minmax(0,2fr);gap:16px;margin-top:20px}
 .pdf-original-pane,.pdf-fragment-pane{min-width:0;border:1px solid var(--line);border-radius:8px;padding:16px;background:var(--paper);height:570px;display:flex;flex-direction:column}
 .pdf-source-viewer{display:block;width:100%;flex:1;min-height:0;border:0;border-radius:4px;background:var(--surface-soft)}
 .pdf-fragment-toolbar{display:flex;gap:6px;align-items:center;margin-bottom:14px}
@@ -268,3 +268,9 @@ body.document-results:has(#pdfReviewApp.reviewing-file) #workspaceIntro,body.doc
 .pdf-source-viewer[hidden]{display:none}
 .pdf-source-fallback{display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;background:var(--surface-soft);color:var(--muted);text-align:center;border-radius:6px;padding:16px}
 .pdf-source-fallback a{font-size:13px}
+.pdf-original-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.pdf-original-heading h3{margin:0!important}.pdf-original-heading button{font-size:11px!important;padding:4px 6px!important}
+.pdf-show-source{display:none}.pdf-review-comparison.source-collapsed{grid-template-columns:1fr}.source-collapsed>.pdf-original-pane{display:none}.source-collapsed>.pdf-show-source{display:block;justify-self:start}
+.pdf-automation{display:flex;justify-content:space-between;align-items:center;gap:16px;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px;padding:16px;margin:16px 0}.pdf-automation p{margin:6px 0 0;font-size:12px}.pdf-automation>button{flex-shrink:0}.pdf-exceptions{max-height:180px;overflow:auto}.pdf-exception{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);font-size:12px}
+.pdf-file-actions{white-space:normal}.pdf-file-actions button{margin:3px}
+@media(max-width:1000px){.pdf-review-comparison{grid-template-columns:1fr}.pdf-original-pane{height:380px}}
+@media(max-width:680px){.pdf-automation{align-items:flex-start;flex-direction:column}}

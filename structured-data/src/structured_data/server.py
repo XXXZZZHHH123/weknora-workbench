@@ -397,7 +397,7 @@ def create_app(data_dir: str | Path | None = None):
     app.state.import_manager = manager
     app.state.mcp = mcp
     app.state.workspaces = registry
-    install_pdf_routes(app, registry)
+    install_pdf_routes(app, registry, publish_guard=lambda authorization, identity: check_job_write(authorization, identity))
 
     @app.post('/api/tools/read')
     async def native_read(request: Request):

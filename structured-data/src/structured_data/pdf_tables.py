@@ -597,12 +597,34 @@ class PDFTableStore:
     def publish(self, draft_id, plan):
         if not isinstance(plan, dict) or plan.get('reviewed') is not True:
             raise ValueError('Publishing requires explicit reviewed:true')
+        return self._publish(draft_id, plan, automatic=False)
+
+    def publish_automatic(self, draft_id, plan, *, before_commit=None):
+        """Accept a model plan without inventing human review or OCR verification."""
+        self._check_automatic(draft_id, plan)
+        return self._publish(draft_id, plan, automatic=True, before_commit=before_commit)
+
+    def _check_automatic(self, draft_id, plan):
+        if not isinstance(plan, dict) or any(k in plan for k in
+                ('reviewed', 'quality_reviews', 'cell_corrections', 'row_alignment_review')):
+            raise ValueError('Automatic acceptance cannot supply human review or cell corrections')
+        record = self.validate_plan(draft_id, plan)
+        if (record['coverage'].get('unresolved_quality_issues') or plan.get('excluded_rows')
+                or self.read_draft(draft_id)['bundle'].get('ambiguities') or not record['rows']):
+            raise ValueError('识别疑点、排除数据或空表需要处理后才能入库')
+
+    def _publish(self, draft_id, plan, *, automatic, before_commit=None):
         record = self.validate_plan(draft_id, plan)
         if record['coverage'].get('unresolved_quality_issues'):
             raise ValueError('Unresolved extraction or row alignment issues block publication; review each issue and correct uncertain cells against the original PDF')
         ident = 'pdft_' + _hash(dict(draft_id=draft_id, plan_sha256=record['plan_sha256']))
-        record.update(table_id=ident, status='reviewed', extraction_verified=False)
+        # Preserve an existing manually reviewed record for the identical plan.
+        if self._path('tables', ident).exists():
+            return self.read_table(ident, limit=20)
+        record.update(table_id=ident, status='auto_accepted' if automatic else 'reviewed', extraction_verified=False)
         record['record_sha256'] = _hash(record)
+        if before_commit:
+            before_commit()
         self._write('tables', ident, record)
         return self.read_table(ident, limit=20)
 
@@ -619,7 +641,9 @@ class PDFTableStore:
             raise ValueError('Stored PDF table identity mismatch')
         # Revalidate against the immutable raw artifact, not only a table checksum.
         check = self.validate_plan(stored['draft_id'], stored['plan'])
-        if any(stored.get(k) != v for k, v in check.items() if k != 'status') or stored.get('status') != 'reviewed':
+        if stored.get('status') == 'auto_accepted':
+            self._check_automatic(stored['draft_id'], stored['plan'])
+        if any(stored.get(k) != v for k, v in check.items() if k != 'status') or stored.get('status') not in {'reviewed', 'auto_accepted'}:
             raise ValueError('Stored table no longer agrees with its raw source and plan')
         stored['record_sha256'] = digest
         return stored
