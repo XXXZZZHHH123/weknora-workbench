@@ -38,6 +38,19 @@ func TestCloneDocumentImageSourcesOnlyKeepsNewOwnedResources(t *testing.T) {
 	require.Empty(t, types.ChunkDocumentImageSources(cloneDocumentImageSourceMetadata(types.JSON(metadata), nil)))
 }
 
+func TestDocumentImageSourcesBindPDFPageWithoutSlideMetadata(t *testing.T) {
+	ref := "resource://AbCdEfGhIjKlMnOpQrStUv"
+	sources := resolvedDocumentImageSources(&types.ReadResult{}, []docparser.StoredImage{
+		{OriginalRef: "pdf-page-0013.png", ServingURL: ref, SourcePage: 13, SkipMultimodal: true},
+	}, "original-hash")
+	require.Len(t, sources, 1)
+	got := types.ChunkDocumentImageSources(documentImageSourceMetadata("![原页]("+ref+")", sources))
+	require.Len(t, got, 1)
+	require.Equal(t, 13, got[0].Page)
+	require.Equal(t, "original-hash", got[0].SourceHash)
+	require.Empty(t, got[0].SourcePart)
+}
+
 func TestRasterMultimodalImagesExcludesOnlyDeferredSourceVectors(t *testing.T) {
 	images := []docparser.StoredImage{{OriginalRef: "images/a.emf"}, {OriginalRef: "images/b.WMF"}, {OriginalRef: "images/c.png"}, {OriginalRef: "images/d.jpg"}}
 	got := rasterMultimodalImages(images)
@@ -45,4 +58,17 @@ func TestRasterMultimodalImagesExcludesOnlyDeferredSourceVectors(t *testing.T) {
 	require.Equal(t, "images/c.png", got[0].OriginalRef)
 	require.Len(t, images, 4)
 	require.Empty(t, rasterMultimodalImages(images[:2]))
+}
+
+func TestDocumentImageInfoPreservesOriginalWithoutInventedOCR(t *testing.T) {
+	ref := "resource://AbCdEfGhIjKlMnOpQrStUv"
+	images := []docparser.StoredImage{{ServingURL: ref, MimeType: "image/png", SourcePage: 13, SkipMultimodal: true}}
+	var info []types.ImageInfo
+	require.NoError(t, json.Unmarshal([]byte(storedSourceImageInfo("原页 ![图片]("+ref+")", images)), &info))
+	require.Len(t, info, 1)
+	require.Equal(t, ref, info[0].OriginalURL)
+	require.Equal(t, "PDF 第 13 页原件", info[0].Caption)
+	require.Empty(t, info[0].OCRText)
+	require.Empty(t, info[0].Attrs)
+	require.Empty(t, storedSourceImageInfo("unrelated", images))
 }

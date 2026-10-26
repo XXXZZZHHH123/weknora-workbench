@@ -61,8 +61,10 @@ const meta = computed(() => {
     case 'saving':
       return t('uploadTasks.phaseSaving')
     case 'parsing':
+      if (item.processingStage) return item.processingStage
       return t(item.parseStatus === 'processing' ? 'uploadTasks.phaseParsing' : 'uploadTasks.phasePending')
     case 'ready':
+      if (item.attentionCount) return t('uploadTasks.attentionReady', {count: item.attentionCount})
       if (item.parseStatus === 'stored') return t('knowledgeBase.uploadedStored')
       return t(item.parseStatus === 'finalizing' ? 'uploadTasks.phaseFinalizing' : 'uploadTasks.phaseReady')
     case 'failed': {
@@ -91,7 +93,7 @@ const handleRowClick = () => {
 <template>
   <div
     class="upload-task-row"
-    :class="[`is-${phase}`, { 'is-openable': action === 'open' }]"
+    :class="[`is-${phase}`, { 'is-openable': action === 'open', 'is-attention': phase === 'ready' && !!item.attentionCount }]"
     @click="handleRowClick"
   >
     <span class="row-file-icon" aria-hidden="true">
@@ -109,6 +111,7 @@ const handleRowClick = () => {
         <ProgressRing v-if="phase === 'uploading'" :value="ratio" :size="20" :stroke="2.5" />
         <t-icon v-else-if="phase === 'waiting'" name="time" />
         <t-icon v-else-if="phase === 'saving' || phase === 'parsing'" name="loading" class="row-spin" />
+        <t-icon v-else-if="phase === 'ready' && item.attentionCount" name="error-circle" />
         <t-icon v-else-if="phase === 'ready'" name="check-circle-filled" />
         <t-icon v-else-if="phase === 'failed'" name="error-circle-filled" />
         <t-icon v-else-if="phase === 'duplicate'" name="info-circle-filled" />
@@ -306,4 +309,5 @@ const handleRowClick = () => {
     animation: none;
   }
 }
+.upload-task-row.is-attention .row-meta,.upload-task-row.is-attention .row-status{color:var(--td-warning-color)}
 </style>

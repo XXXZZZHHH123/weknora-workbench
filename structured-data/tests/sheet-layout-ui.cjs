@@ -41,7 +41,7 @@ function verify(name,fn){try{fn();checks.push({name,pass:true});}catch(error){ch
         else throw Error('Unexpected synthetic endpoint: '+url.pathname);
         await route.fulfill({contentType:'application/json',body:JSON.stringify(data)});return;
       }
-      const file=url.pathname==='/'?'index.html':url.pathname.slice(1);assert(['index.html','sheet-review.css','workspace.css','sheet-review.js'].includes(file));
+      const file=url.pathname==='/'?'index.html':url.pathname.slice(1);assert(['pdf-query.js','index.html','sheet-review.css','workspace.css','sheet-review.js'].includes(file));
       await route.fulfill({contentType:file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(path.join(source,file),'utf8')});
     });
     await page.goto('http://sheet-layout.fixture/');await page.locator('.sheet-grid td').first().waitFor();

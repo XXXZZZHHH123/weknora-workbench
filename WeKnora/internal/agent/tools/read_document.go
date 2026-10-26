@@ -31,6 +31,7 @@ var readDocumentTool = BaseTool{
 		"id is a dN document handle (reads a page of chunks starting at offset) or a cN chunk handle (reads that " +
 		"chunk; set context to include neighbouring chunks on each side).\n" +
 		"For a user-specified physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
+		"Printed page labels and table-of-contents ranges are not physical PDF pages or proof that a listed section is present in this file. Verify physical pages with parser source_locators or page reads; chunk counts and the largest observed locator do not establish total pages.\n" +
 		"The result includes an image_catalog of actual stored figures, even for older text-only imports. " +
 		"To inspect a figure, repeat the same authorized document/page read with images=[its exact reference], detail=full and focus describing the complete user request. " +
 		"Choose the figure from its actual source labels/context; text labels and image URLs alone do not reveal curves or their colors. " +

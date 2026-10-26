@@ -2023,6 +2023,10 @@ export default {
           name: 'MinerU Cloud',
           desc: 'MinerU Cloud API'
         },
+        remote_vlm: {
+          name: '远程视觉解析',
+          desc: '共用解析队列，保留页码并校验表格'
+        },
         mineru: {
           name: 'MinerU',
           desc: 'MinerU 自部署服务'
@@ -2950,6 +2954,7 @@ export default {
     phaseParsing: '解析中',
     phaseFinalizing: '可检索，后台优化中',
     phaseReady: '已完成',
+    attentionReady: '可用内容已就绪，{count} 项需要处理',
     phaseUploadFailed: '上传失败',
     phaseParseFailed: '解析失败',
     phaseDuplicate: '知识库中已有相同文件',
@@ -7109,6 +7114,8 @@ export default {
       DOCREADER_TIMEOUT_SUGGESTION: "请检查 DocReader 的健康状态和负载；服务正常后再重试，必要时拆分大文件。",
       DOCREADER_PARSE_FAILED: "文档解析失败",
       DOCREADER_PARSE_FAILED_SUGGESTION: "请检查文件格式，并让管理员查看本次解析对应的 DocReader 日志。",
+      DOCREADER_STORAGE_EXHAUSTED: "解析服务空间不足",
+      DOCREADER_STORAGE_EXHAUSTED_SUGGESTION: "解析服务的磁盘、临时目录或共享内存空间不足。请联系管理员清理或扩容后重试。",
       TASK_STALLED: '长时间无进展，已自动终止',
       TASK_STALLED_SUGGESTION: '处理超过阈值仍没有任何进展，且队列中已无对应任务，已被系统标记为失败。请点击「重试」；如反复出现，请检查该阶段依赖的服务（文档解析、模型、向量库）是否正常。',
       UNKNOWN_SUGGESTION: '请查看应用日志获取详细信息。'
@@ -7528,6 +7535,7 @@ export default {
     batchReparseFailed: '批量重建失败',
     batchReparseSkippedInFlight: '已跳过 {count} 个正在解析中的文档',
     statusCompleted: '已完成',
+    processingAttention: '{count} 项需要处理',
     statusProcessing: '解析中',
     statusFinalizing: '优化中',
     statusStalled: '疑似卡住',
@@ -7553,7 +7561,7 @@ export default {
     parseStatusProcessing: '处理中',
     statusStored: "原件已保存",
     uploadedStored: "原件已上传",
-    structuredParse: "结构化解析",
+    structuredParse: "查看处理结果",
     structuredXlsNotice: "目前支持 .xlsx，请将旧版 Excel 另存为 .xlsx 后上传。",
     excelSourceHint: "Excel 只保存原件，上传后点击“结构化解析”；其他文件按当前配置自动解析。",
     confirmStoreOriginal: "确认保存原件",

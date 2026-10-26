@@ -173,13 +173,10 @@ def test_direct_knowledge_base_upload_stores_a_native_original_before_scanning(n
                            files={'file': ('source.xlsx', state['contents'])})
     assert response.status_code == 200, response.text
     assert response.json().get('source_knowledge_id') == 'source-a'
-    completed = finish(client, response.json()['id'])['result']
-    assert completed['source_knowledge_id'] == 'source-a'
-    review = client.get('/api/imports/' + completed['import_id'], headers=headers()).json()
-    assert review['native_source_bindings'][0]['file_hash'] == state['document']['file_hash']
-    assert review['use_reviewed_mappings'] is False
+    assert response.json()['native_processing'] is True
     assert len(state['uploads']) == 1
-    assert b'"source_only":true' in state['uploads'][0]
+    assert b'"source_only":false' in state['uploads'][0]
+    assert not list(native[3].glob('**/review.json'))
 
 
 def seed_unregistered_original(native):
@@ -269,8 +266,8 @@ def test_real_native_duplicate_file_receipt_reuses_a_reverified_original(native)
     response = client.post('/api/import', headers=headers(),
                            files={'file': ('source.xlsx', state['contents'])})
     assert response.status_code == 200, response.text
-    completed = finish(client, response.json()['id'])['result']
-    assert completed['source_knowledge_id'] == 'source-a'
+    assert response.json()['source_knowledge_id'] == 'source-a'
+    assert response.json()['native_processing'] is True
     assert state['metadata_reads'] >= 1
     assert len(state['uploads']) == 1
 

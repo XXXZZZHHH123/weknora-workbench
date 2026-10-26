@@ -103,6 +103,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         embed: resolve(__dirname, 'embed.html'),
+        pdfTablePreview: resolve(__dirname, 'pdf-table-preview.html'),
       },
       output: {
         // Shared Vue/DOMPurify/preload helpers must not make every page import

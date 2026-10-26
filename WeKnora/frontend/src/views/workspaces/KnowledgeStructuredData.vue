@@ -49,13 +49,13 @@ onBeforeUnmount(() => { generation++ })
   <div class="knowledge-structured-workspace">
     <header class="knowledge-structured-toolbar">
       <div class="knowledge-structured-heading">
-        <h1>结构化数据库</h1>
+        <h1>表格数据</h1>
         <div class="knowledge-structured-context">
           <span class="knowledge-structured-library" :title="library?.name || '知识库'">{{ library?.name || '知识库' }}</span>
-          <span class="knowledge-structured-mode">{{ mode === 'query' ? '数据查询' : '表格导入' }}</span>
+          <span class="knowledge-structured-mode">{{ mode === 'query' ? '数据查询' : '上传与处理' }}</span>
         </div>
       </div>
-      <nav class="knowledge-structured-actions" aria-label="结构化数据库操作">
+      <nav class="knowledge-structured-actions" aria-label="表格数据操作">
         <router-link class="knowledge-structured-legacy" to="/platform/structured-data" title="旧 Excel 保留在原空间，尚未自动分配到本库">原空间表格</router-link>
         <router-link :to="`/platform/knowledge-bases/${kbId}`"><t-icon name="folder" aria-hidden="true" />目录</router-link>
         <button type="button" @click="openModelSettings"><t-icon name="setting" aria-hidden="true" />字段模型</button>

@@ -17,7 +17,7 @@ const pending={...imported,name:'合成待核对表',status:'needs_review',mappi
   await page.route('**/*',async route=>{
    const request=route.request(),u=new URL(request.url());requests.push({method:request.method(),path:u.pathname});let data={},type='application/json';
    if(u.pathname==='/'){data=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
-   else if(['/sheet-review.js','/sheet-review.css','/workspace.css'].includes(u.pathname)){data=fs.readFileSync(path.join(source,u.pathname.slice(1)),'utf8');type=u.pathname.endsWith('.js')?'application/javascript':'text/css';}
+   else if(['/pdf-query.js','/sheet-review.js','/sheet-review.css','/workspace.css'].includes(u.pathname)){data=fs.readFileSync(path.join(source,u.pathname.slice(1)),'utf8');type=u.pathname.endsWith('.js')?'application/javascript':'text/css';}
    else if(u.pathname==='/api/ui-config')data={title:'表格分析',workspace_label:'合成验收',weknora_url:'http://fixture.test'};
    else if(u.pathname==='/api/datasets')data={datasets:[]};
    else if(u.pathname==='/api/imports')data={imports:[{import_id:'a'.repeat(24),source_file:'synthetic.xlsx'}]};

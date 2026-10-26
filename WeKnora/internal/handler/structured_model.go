@@ -1,10 +1,15 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"github.com/Tencent/WeKnora/internal/ingestion"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -90,21 +95,39 @@ func StructuredModelPlan(knowledge *KnowledgeHandler, models *ModelHandler) gin.
 	return structuredModelCompletion(knowledge, models, types.OrgRoleViewer)
 }
 
-func structuredModelCompletion(knowledge *KnowledgeHandler, models *ModelHandler, minimumKBRole types.OrgMemberRole) gin.HandlerFunc {
+func structuredModelCompletion(knowledge *KnowledgeHandler, models *ModelHandler, minimumKBRole types.OrgMemberRole, worker ...bool) gin.HandlerFunc {
 	minimumTenantRole := types.TenantRoleContributor
 	if minimumKBRole == types.OrgRoleViewer {
 		minimumTenantRole = types.TenantRoleViewer
 	}
 	return func(c *gin.Context) {
+		isWorker := len(worker) > 0 && worker[0]
+		var taskClaim ingestion.Claim
 		ctx := c.Request.Context()
+		if isWorker {
+			key, err := os.ReadFile(os.Getenv("COMMODITY_RESEARCH_TOKEN_FILE"))
+			if err != nil {
+				c.JSON(503, gin.H{"success": false})
+				return
+			}
+			taskClaim, err = ingestion.Verify(c.Request, bytes.TrimSpace(key), time.Now())
+			if err != nil || c.Request.Header.Get("X-Ingestion-Body-SHA256") == "" {
+				c.JSON(401, gin.H{"success": false})
+				return
+			}
+			ctx = types.WithExecutionTenant(ctx, taskClaim.TenantID)
+		}
 		caller := types.CallerFromContext(ctx)
 		principal, hasPrincipal := types.PrincipalFromContext(ctx)
 		_, apiKey := types.TenantAPIKeyScopeFromContext(ctx)
-		if caller.TenantID == 0 || caller.UserID == "" {
+		if isWorker {
+			caller = types.Caller{TenantID: taskClaim.TenantID, UserID: taskClaim.UserID, Role: types.TenantRoleContributor}
+		}
+		if !isWorker && (caller.TenantID == 0 || caller.UserID == "") {
 			_ = c.Error(apperrors.NewUnauthorizedError("需要登录后使用模型辅助"))
 			return
 		}
-		if apiKey || types.IsSyntheticUserID(caller.UserID) || !hasPrincipal || principal.Type != types.PrincipalWebUser || principal.ID != caller.UserID || !caller.Role.HasPermission(minimumTenantRole) {
+		if !isWorker && (apiKey || types.IsSyntheticUserID(caller.UserID) || !hasPrincipal || principal.Type != types.PrincipalWebUser || principal.ID != caller.UserID || !caller.Role.HasPermission(minimumTenantRole)) {
 			_ = c.Error(apperrors.NewForbiddenError("需要有效的主平台成员身份和相应空间权限"))
 			return
 		}
@@ -113,18 +136,38 @@ func structuredModelCompletion(knowledge *KnowledgeHandler, models *ModelHandler
 			return
 		}
 		kbID := c.Param("id")
+		if isWorker {
+			kbID = taskClaim.KnowledgeBaseID
+		}
 		if !structuredModelIDValid(kbID, 36) {
 			_ = c.Error(apperrors.NewBadRequestError("知识库 ID 无效"))
 			return
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 6*structuredModelPromptBytes+8192)
-		decoder := json.NewDecoder(c.Request.Body)
+		bodyHash := sha256.New()
+		decoder := json.NewDecoder(io.TeeReader(c.Request.Body, bodyHash))
 		decoder.DisallowUnknownFields()
 		var input structuredModelRequest
 		var trailing any
 		if decoder.Decode(&input) != nil || decoder.Decode(&trailing) != io.EOF {
 			_ = c.Error(apperrors.NewBadRequestError("模型请求参数无效或内容过大"))
 			return
+		}
+		if isWorker && c.Request.Header.Get("X-Ingestion-Body-SHA256") != hex.EncodeToString(bodyHash.Sum(nil)) {
+			c.JSON(401, gin.H{"success": false})
+			return
+		}
+		checkAccess := func() error {
+			if isWorker {
+				validator, ok := knowledge.kgService.(interface {
+					ValidateIngestionSource(context.Context, ingestion.Claim) error
+				})
+				if !ok {
+					return apperrors.NewServiceUnavailableError("上传处理权限核验不可用")
+				}
+				return validator.ValidateIngestionSource(ctx, taskClaim)
+			}
+			return structuredModelKBAccess(c, knowledge, kbID, caller, minimumKBRole)
 		}
 		if !structuredModelIDValid(input.ModelID, types.ModelIDMaxLen) || len(input.Messages) == 0 || len(input.Messages) > 64 || input.MaxTokens < 0 || input.MaxTokens > structuredModelMaxTokens || (input.Temperature != nil && (*input.Temperature < 0 || *input.Temperature > 1)) {
 			_ = c.Error(apperrors.NewBadRequestError("请选择有效模型并提供限定范围的对话参数"))
@@ -145,7 +188,7 @@ func structuredModelCompletion(knowledge *KnowledgeHandler, models *ModelHandler
 			_ = c.Error(apperrors.NewBadRequestError("需要提供用户消息"))
 			return
 		}
-		if err := structuredModelKBAccess(c, knowledge, kbID, caller, minimumKBRole); err != nil {
+		if err := checkAccess(); err != nil {
 			_ = c.Error(err)
 			return
 		}
@@ -174,7 +217,7 @@ func structuredModelCompletion(knowledge *KnowledgeHandler, models *ModelHandler
 			_ = c.Error(apperrors.NewServiceUnavailableError("模型未返回有效结果，请调整输入或模型配置后重试"))
 			return
 		}
-		if err := structuredModelKBAccess(c, knowledge, kbID, caller, minimumKBRole); err != nil {
+		if err := checkAccess(); err != nil {
 			_ = c.Error(err)
 			return
 		}
@@ -186,4 +229,9 @@ func structuredModelCompletion(knowledge *KnowledgeHandler, models *ModelHandler
 			"model_id": model.ID, "content": response.Content, "finish_reason": response.FinishReason,
 		}})
 	}
+}
+
+// IngestionModelChat is registered only on the separate source-bound worker route.
+func IngestionModelChat(knowledge *KnowledgeHandler, models *ModelHandler) gin.HandlerFunc {
+	return structuredModelCompletion(knowledge, models, types.OrgRoleEditor, true)
 }

@@ -183,7 +183,7 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 		EmbeddingModelID: kb.EmbeddingModelID,
 		Metadata:         metadataJSON,
 	}
-	if isExcelFileType(knowledge.FileType) || eff.SourceOnly {
+	if (isExcelFileType(knowledge.FileType) && !(knowledge.FileType == "xlsx" && unifiedIngestionAvailable())) || eff.SourceOnly {
 		knowledge.ParseStatus = types.ParseStatusStored
 		knowledge.SummaryStatus = types.SummaryStatusNone
 	}
@@ -191,6 +191,12 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 	if processOverrides != nil {
 		if err := knowledge.SetProcessOverrides(processOverrides); err != nil {
 			logger.Errorf(ctx, "Failed to set process overrides: %v", err)
+			return nil, err
+		}
+	}
+
+	if !eff.SourceOnly && unifiedIngestionAvailable() && (knowledge.FileType == "pdf" || knowledge.FileType == "xlsx") {
+		if err := setIngestionState(knowledge, knowledgeIngestionState{Attempt: uuid.NewString(), SourceHash: hash, Status: "pending", Stage: "等待自动处理"}); err != nil {
 			return nil, err
 		}
 	}
@@ -242,6 +248,7 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 
 	lang := types.LanguageFromContextOrDefault(ctx)
 	taskPayload := types.DocumentProcessPayload{
+		Initiator:                types.TaskInitiatorFromContext(ctx),
 		TenantID:                 tenantID,
 		KnowledgeID:              knowledge.ID,
 		KnowledgeBaseID:          kbID,
@@ -443,6 +450,7 @@ func (s *knowledgeService) CreateKnowledgeFromURL(ctx context.Context,
 
 	lang := types.LanguageFromContextOrDefault(ctx)
 	taskPayload := types.DocumentProcessPayload{
+		Initiator:                types.TaskInitiatorFromContext(ctx),
 		TenantID:                 tenantID,
 		KnowledgeID:              knowledge.ID,
 		KnowledgeBaseID:          kbID,
@@ -688,6 +696,7 @@ func (s *knowledgeService) createKnowledgeFromFileURL(
 
 	lang := types.LanguageFromContextOrDefault(ctx)
 	taskPayload := types.DocumentProcessPayload{
+		Initiator:                types.TaskInitiatorFromContext(ctx),
 		TenantID:                 tenantID,
 		KnowledgeID:              knowledge.ID,
 		KnowledgeBaseID:          kbID,
@@ -967,6 +976,7 @@ func (s *knowledgeService) createKnowledgeFromPassageInternal(ctx context.Contex
 
 		lang := types.LanguageFromContextOrDefault(ctx)
 		taskPayload := types.DocumentProcessPayload{
+			Initiator:                types.TaskInitiatorFromContext(ctx),
 			TenantID:                 tenantID,
 			KnowledgeID:              knowledge.ID,
 			KnowledgeBaseID:          kbID,

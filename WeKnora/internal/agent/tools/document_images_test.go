@@ -47,6 +47,20 @@ func TestReadDocumentListsStoredOriginalsWithoutImageInfoOrPixelReads(t *testing
 	require.Contains(t, result.Output, "not yet viewed")
 }
 
+func TestDocumentImageCatalogUsesPDFPhysicalPageForWholeDocument(t *testing.T) {
+	ref := "resource://AbCdEfGhIjKlMnOpQrStUv"
+	result := &types.ToolResult{Data: map[string]interface{}{"chunks": []map[string]interface{}{{
+		"chunk_id": "source-chunk", "content": "![原页](" + ref + ")",
+		"image_sources": []types.DocumentImageSource{{Reference: ref, Page: 13, SourceHash: "file-hash"}},
+	}}}}
+	catalog := documentImageCatalog(result, "doc-1", "file-hash")
+	require.Len(t, catalog, 1)
+	require.Equal(t, 13, catalog[0].Page)
+	require.Empty(t, catalog[0].SourcePart)
+	stale := documentImageCatalog(result, "doc-1", "replacement-hash")
+	require.Zero(t, stale[0].Page)
+}
+
 func TestReadDocumentSelectedPixelsKeepActualSourceAndVersion(t *testing.T) {
 	tool, ref, reads := documentFigureFixture(t)
 	input, _ := json.Marshal(ReadDocumentInput{ID: "doc-1", Page: 2, Images: []string{ref}, Focus: "Describe the requested trace using the visible axes"})

@@ -202,7 +202,7 @@ def create_app(data_dir: str | Path | None = None):
         pdf_catalog = pdf_store(registry).list_tables()['tables']
         if pdf_catalog:
             result['pdf_tables'] = pdf_catalog
-            result['pdf_notice'] = 'PDF 表为经人工确认的解析结果；用 list_pdf_tables/read_pdf_table/query_pdf_table 核验和计算。保留原页出处，识别正确性与整份文档覆盖未自动保证。'
+            result['pdf_notice'] = 'PDF 表的 status=auto_accepted 表示自动校验入库，status=reviewed 表示人工确认；用 list_pdf_tables/read_pdf_table/query_pdf_table 核验和计算。保留原页出处，识别正确性与整份文档覆盖未自动保证。'
         if question:
             from .field_index import literal_fields
             matches=[]
@@ -348,19 +348,19 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def list_pdf_tables(source_sha256: str | None = None) -> dict:
-        """列出当前授权空间已确认的 PDF 逻辑表、真实 table_id、列类型/单位及覆盖。草稿不参与查询。模型根据完整问题与实际标题/列/来源选择表，不按页相邻或列数推定同表；多个表可能重叠，不能重复累计。"""
+        """列出当前授权空间已入库的 PDF 逻辑表、真实 table_id、列类型/单位及覆盖。草稿不参与查询。模型根据完整问题与实际标题/列/来源选择表，不按页相邻或列数推定同表；多个表可能重叠，不能重复累计。"""
         return {**pdf_store(registry).list_tables(source_sha256), 'source_kind': 'pdf_table', 'kind': 'structured_pdf_tables', 'status': 'ok'}
 
     @mcp.tool()
     def read_pdf_table(table_id: str, offset: int = 0, limit: int = 100) -> dict:
-        """按实际 table_id 分页核对 PDF 逻辑表，返回原值、列映射、每格页码/坐标和跨页来源。output_truncated 表示还需翻页，空值不补零。reviewed 只指映射经人工确认，不保证 OCR 正确或整篇覆盖。"""
+        """按实际 table_id 分页核对 PDF 逻辑表，返回原值、列映射、每格页码/坐标和跨页来源。output_truncated 表示还需翻页，空值不补零。review_status=auto_accepted 表示自动校验入库，reviewed 表示映射经人工确认；两者都不保证 OCR 正确或整篇覆盖。"""
         result = pdf_store(registry).read_table(table_id, offset=offset, limit=limit)
         verify_pdf_original(registry, result['source'])
         return {**result, 'kind': 'structured_source_inspection', 'source_kind': 'pdf_table', 'status': 'ok', 'review_status': result['status']}
 
     @mcp.tool()
     async def query_pdf_table(table_id: str, sql: str, limit: int = 100) -> dict:
-        """对已确认 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID 和列名；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源/单位构造 SQL，程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。公式保留不等于可执行。"""
+        """对已入库 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID 和列名；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源/单位构造 SQL，程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。公式保留不等于可执行。"""
         def run():
             selected = pdf_store(registry)
             verify_pdf_original(registry, selected.read_table(table_id, limit=1)['source'])
@@ -397,7 +397,7 @@ def create_app(data_dir: str | Path | None = None):
     app.state.import_manager = manager
     app.state.mcp = mcp
     app.state.workspaces = registry
-    install_pdf_routes(app, registry)
+    install_pdf_routes(app, registry, publish_guard=lambda authorization, identity: check_job_write(authorization, identity))
 
     @app.post('/api/tools/read')
     async def native_read(request: Request):
@@ -543,10 +543,22 @@ def create_app(data_dir: str | Path | None = None):
         if host not in {"127.0.0.1", "localhost", "structured-data", "cotton-data", "host.docker.internal", "testserver"} and not (public_authority and authority == public_authority):
             return JSONResponse({"detail": "Host not allowed"}, status_code=403)
         path = request.url.path
-        if path in {"/", "/health", "/login", "/api/ui-config", "/sheet-review.js", "/pdf-review.js", "/sheet-review.css", "/workspace.css"}:
+        if path in {"/", "/health", "/login", "/api/ui-config", "/sheet-review.js", "/pdf-review.js", "/pdf-query.js", "/sheet-review.css", "/workspace.css"}:
             return await call_next(request)
         if path.startswith("/fonts/") and request.method in {"GET", "HEAD"}:
             return await call_next(request)
+        if path in {'/internal/ingestion/upload', '/internal/ingestion/result'}:
+            from .ingestion import verify_ingestion, task_identity
+            try:
+                claim = verify_ingestion(request)
+            except HTTPException as exc:
+                return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
+            request.state.ingestion_claim = claim
+            marker = current_identity.set(task_identity(claim))
+            try:
+                return await call_next(request)
+            finally:
+                current_identity.reset(marker)
         identity = None
         signed = path in {'/api/tools/read', '/api/research/export', '/api/research/facts'} or path.startswith('/api/research/source/')
         if signed:
@@ -620,6 +632,10 @@ def create_app(data_dir: str | Path | None = None):
     @app.get("/pdf-review.js")
     def pdf_review_script():
         return FileResponse(Path(__file__).with_name("static") / "pdf-review.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/pdf-query.js")
+    def pdf_query_js():
+        return FileResponse(Path(__file__).with_name("pdf-query.js"), media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
     @app.get("/sheet-review.js")
     def sheet_review_script():
@@ -790,12 +806,31 @@ def create_app(data_dir: str | Path | None = None):
             path.parent.rmdir()
             import_lock.release()
 
+    @app.get('/api/knowledge-results/{source_id}')
+    async def knowledge_results(source_id: str, request: Request):
+        from .native_import import load_source
+        from .pdf_tables import PDFTableStore
+        identity = current_identity.get()
+        native = await load_source(source_id, request.state.verified_authorization, identity, MAX_UPLOAD,
+                                   allowed_types=('pdf', 'xlsx'))
+        if native['file_name'].lower().endswith('.xlsx'):
+            existing = await run_in_threadpool(manager.find_native_source, native)
+            return {'source_knowledge_id': source_id, 'file_type': 'xlsx', 'import_result': existing}
+        catalog = await run_in_threadpool(PDFTableStore(registry.directory() / 'pdf-tables').list_drafts)
+        matches = [item for item in catalog['drafts'] if item.get('source', {}).get('knowledge_id') == source_id
+                   and item.get('source', {}).get('knowledge_base_id') == identity.knowledge_base_id]
+        latest = max(matches, key=lambda item: item.get('created_at', ''), default=None)
+        return {'source_knowledge_id': source_id, 'file_type': 'pdf', 'draft_id': latest['draft_id'] if latest else None}
+
     @app.post('/api/import-knowledge')
     async def import_knowledge(body: NativeImportRequest, request: Request):
         from .native_import import download_source, load_source
         identity = current_identity.get()
         authorization = request.state.verified_authorization
-        native = await load_source(body.source_knowledge_id, authorization, identity, MAX_UPLOAD)
+        native = await load_source(body.source_knowledge_id, authorization, identity, MAX_UPLOAD, include_processing=True)
+        processing = native.pop('native_processing', None)
+        if processing:
+            return {'status': 'processing', 'source_knowledge_id': body.source_knowledge_id, 'native_processing': True}
         existing = await run_in_threadpool(manager.find_native_source, native,
                                            use_reviewed_mappings=body.restore_reviewed_state)
         legacy = None
@@ -878,6 +913,11 @@ def create_app(data_dir: str | Path | None = None):
             if identity.knowledge_base_id:
                 from .native_import import register_source
                 native = await register_source(path, authorization, identity, MAX_UPLOAD)
+                path.unlink(missing_ok=True)
+                uploads.rmdir()
+                import_lock.release()
+                return {'status': 'processing', 'source_knowledge_id': native['source_knowledge_id'],
+                        'native_processing': True}
             with job_lock:
                 jobs[job_id] = {"id": job_id, 'tenant_id':identity.tenant_id,
                     'knowledge_base_id':identity.knowledge_base_id, 'user_id': identity.user_id,
@@ -932,7 +972,7 @@ def create_app(data_dir: str | Path | None = None):
                 break
             if source is None:
                 source = await register_source(path, authorization, identity, MAX_UPLOAD,
-                                               expected_sha256=doc['sha256'])
+                                               expected_sha256=doc['sha256'], source_only=True)
             await run_in_threadpool(manager.bind_native_source, import_id, source,
                 before_commit=lambda: check_job_write(authorization, identity))
             identifier = source['source_knowledge_id']
@@ -1433,5 +1473,7 @@ def create_app(data_dir: str | Path | None = None):
     async def value_error(request, exc):
         return JSONResponse({"detail": str(exc), **error_location(exc)}, status_code=400)
 
+    from .ingestion import install_ingestion_routes
+    install_ingestion_routes(app, registry)
     app.mount("/", mcp_app)
     return app

@@ -168,6 +168,12 @@ func enqueueDataTableSummaryIfNeeded(
 	knowledgeID string,
 	fileName, fileType, summaryModelID, embeddingModelID string,
 ) {
+	// The admitted workbook pipeline publishes validated tables before its
+	// normal document post-processing; do not race a second raw-cell summary.
+	if unifiedIngestionAvailable() && strings.EqualFold(fileType, "xlsx") {
+		return
+	}
+
 	ft := normalizeFileExtension(fileType)
 	if ft == "" && fileName != "" {
 		ft = getFileType(fileName)

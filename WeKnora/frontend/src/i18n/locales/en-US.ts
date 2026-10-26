@@ -1006,6 +1006,7 @@ export default {
     batchReparseFailed: 'Batch rebuild failed',
     batchReparseSkippedInFlight: 'Skipped {count} document(s) still being parsed',
     statusCompleted: 'Completed',
+    processingAttention: '{count} items need attention',
     statusProcessing: 'Processing',
     statusFinalizing: 'Optimizing',
     statusStalled: 'May be stuck',
@@ -1031,7 +1032,7 @@ export default {
     parseStatusProcessing: 'Processing',
     statusStored: "Original stored",
     uploadedStored: "Original uploaded",
-    structuredParse: "Structured parsing",
+    structuredParse: "View processing results",
     structuredXlsNotice: "Currently supports .xlsx. Save older Excel files as .xlsx before uploading.",
     excelSourceHint: "Excel originals are stored for explicit structured parsing; other files are parsed using the current settings.",
     confirmStoreOriginal: "Confirm storing original",
@@ -1234,6 +1235,8 @@ export default {
       DOCREADER_TIMEOUT_SUGGESTION: "Check DocReader health and load before retrying. Split large files if needed.",
       DOCREADER_PARSE_FAILED: "Document parsing failed",
       DOCREADER_PARSE_FAILED_SUGGESTION: "Check the file format and ask an administrator to inspect the DocReader logs for this attempt.",
+      DOCREADER_STORAGE_EXHAUSTED: "Parsing service storage is full",
+      DOCREADER_STORAGE_EXHAUSTED_SUGGESTION: "The parsing service has insufficient disk, temporary, or shared memory space. Ask an administrator to free or expand capacity, then retry.",
       TASK_STALLED: 'Stopped after no progress',
       TASK_STALLED_SUGGESTION: 'Processing made no progress past the time limit and had no task left in the queue, so it was marked as failed. Click Retry; if this keeps happening, check the service this stage depends on (document parsing, model, or vector store).',
       UNKNOWN_SUGGESTION: 'Check the application logs for details.'
@@ -5380,6 +5383,7 @@ export default {
     phaseParsing: 'Parsing',
     phaseFinalizing: 'Searchable, still optimizing',
     phaseReady: 'Done',
+    attentionReady: 'Available content ready; {count} items need attention',
     phaseUploadFailed: 'Upload failed',
     phaseParseFailed: 'Parsing failed',
     phaseDuplicate: 'Same file already in this knowledge base',
@@ -6299,6 +6303,10 @@ export default {
         anydoc: {
           name: 'anydoc',
           desc: 'In-process office document parser (no external service required)'
+        },
+        remote_vlm: {
+          name: 'Remote vision PDF',
+          desc: 'Shared parsing queue with page provenance and table validation'
         },
         mineru: {
           name: 'MinerU',

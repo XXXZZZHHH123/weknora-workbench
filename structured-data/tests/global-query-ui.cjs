@@ -20,7 +20,10 @@ const requests=[];
   await page.route('**/*',async route=>{
    const url=new URL(route.request().url()),p=url.searchParams;requests.push({path:url.pathname,params:Object.fromEntries(p)});
    let data={},type='application/json';
+   if(url.pathname.startsWith('/fonts/')){await route.fulfill({status:200,contentType:'text/css',body:''});return;}
    if(url.pathname==='/api/ui-config')data={title:'Fixture',workspace_label:'Fixture',weknora_url:'http://fixture.test'};
+   else if(url.pathname==='/pdf-review.js'){await route.fulfill({contentType:'application/javascript',body:''});return;}
+   else if(url.pathname==='/api/pdf/tables')data={tables:[]};
    else if(url.pathname==='/api/datasets')data={datasets:files};
    else if(url.pathname==='/api/imports')data={imports:[]};
    else if(url.pathname.endsWith('/report')){const d=files.find(d=>url.pathname.includes(d.dataset_id));data={manifest:{...d,series_count:1,valid_count:1,observation_count:1,issue_count:0,excluded_regions:[]},issues:[]};}
@@ -36,7 +39,7 @@ const requests=[];
     const d=files.find(d=>d.dataset_id===p.get('dataset_id'));assert(d,'Query requires an exact real dataset ID');
     data={status:'ok',aggregate:null,valid_count:1,record_count:1,source:{file:d.source_file,sheet:'Data'},series:base,rows:[{date:'2026-01-01',value:d.dataset_id===ids.a?7:19,source_cell:'B2',date_cell:'A2',value_status:'valid'}],warnings:[]};
    }else if(url.pathname==='/'){data=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
-   else if(['/sheet-review.js','/sheet-review.css','/workspace.css'].includes(url.pathname)){data=fs.readFileSync(path.join(source,url.pathname.slice(1)),'utf8');type=url.pathname.endsWith('.js')?'application/javascript':'text/css';}
+   else if(['/pdf-query.js','/sheet-review.js','/sheet-review.css','/workspace.css'].includes(url.pathname)){data=fs.readFileSync(path.join(source,url.pathname.slice(1)),'utf8');type=url.pathname.endsWith('.js')?'application/javascript':'text/css';}
    else throw Error('Unexpected fixture route: '+url.pathname);
    await route.fulfill({contentType:type,body:typeof data==='string'?data:JSON.stringify(data)});
   });

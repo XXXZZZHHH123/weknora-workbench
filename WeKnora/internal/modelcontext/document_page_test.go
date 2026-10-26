@@ -2,6 +2,7 @@ package modelcontext
 
 import (
 	"encoding/xml"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -218,4 +219,40 @@ func TestSourceLocatorSummaryStaysWithItsChunkAfterInvalidRow(t *testing.T) {
 	require.Contains(t, output[first:second], `slide="3"`)
 	require.NotContains(t, output[first:second], `slide="9"`)
 	require.Contains(t, output[second:], `slide="9"`)
+}
+
+func TestReadDocumentSeparatesPrintedContentsFromPhysicalPages(t *testing.T) {
+	for _, includeChunk := range []bool{false, true} {
+		t.Run(fmt.Sprint(includeChunk), func(t *testing.T) {
+			data := map[string]any{
+				"display_type": "knowledge_chunks_list", "knowledge_id": "fixture-book", "knowledge_title": "Field manual",
+				"total_chunks": 120, "fetched_chunks": 0,
+				"document": map[string]any{"knowledge_id": "fixture-book", "title": "Field manual", "file_type": "pdf", "chunk_count": 120},
+				"chunks":   []map[string]any{},
+			}
+			if includeChunk {
+				data["fetched_chunks"] = 1
+				data["chunks"] = []map[string]any{{"chunk_id": "contents", "knowledge_id": "fixture-book", "chunk_index": 8,
+					"content":         "Contents: appendix, printed pages 71–110.\nPDF physical page 3 of 24.",
+					"source_locators": types.SourceLocators{{Type: "page", Page: 3, Mapping: "exact", SourceHash: "fixture-source"}}}}
+			}
+			output := NewRegistry(true).ModelToolResultForTool("read_document", &types.ToolResult{Success: true, Data: data})
+			require.Contains(t, output, "<page_numbering>")
+			require.Contains(t, output, "count text chunks, not physical pages")
+			require.Contains(t, output, "does not establish that the referenced section or range is present in this file")
+			require.Contains(t, output, "parser source_locators or an actual read_document page read")
+			require.Contains(t, output, "never infer the file's page count")
+			require.Contains(t, output, "largest observed locator")
+			require.Contains(t, output, `chunk_count="120"`)
+			require.NotContains(t, output, `physical_page="71"`)
+			require.NotContains(t, output, `page_count="120"`)
+			require.NotContains(t, output, `page_count="3"`)
+			if includeChunk {
+				require.Contains(t, output, "printed pages 71–110")
+				require.Contains(t, output, "PDF physical page 3 of 24.")
+				require.Contains(t, output, `page="3"`)
+				require.Contains(t, output, `mapping="exact"`)
+			}
+		})
+	}
 }
