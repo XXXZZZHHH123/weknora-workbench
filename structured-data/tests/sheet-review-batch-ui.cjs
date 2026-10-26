@@ -51,7 +51,7 @@ async function main(){
     else if(url.pathname.endsWith('/confirm')){currentMapping=data.mapping;assisted=true;result={id:'single',status:'processing'};}
     else if(url.pathname==='/api/jobs/single')result={status:'completed',result:{import_id:importId}};
     else if(url.pathname==='/api/imports/'+importId)result={import_id:importId,source_file:'合成测试.xlsx',sheets:[pendingSheet(),readySheet()]};
-    else {const file=url.pathname==='/'?'index.html':url.pathname.slice(1);if(!['index.html','sheet-review.js','sheet-review.css','workspace.css'].includes(file)){res.writeHead(404);res.end();return;}res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(path.join(source,file)));return;}
+    else {const file=url.pathname==='/'?'index.html':url.pathname.slice(1);if(!['pdf-query.js','index.html','sheet-review.js','sheet-review.css','workspace.css'].includes(file)){res.writeHead(404);res.end();return;}res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(path.join(source,file)));return;}
     res.setHeader('Content-Type','application/json');res.end(JSON.stringify(result));
   }catch(error){res.writeHead(500);res.end(JSON.stringify({detail:error.message}));}});
   try{

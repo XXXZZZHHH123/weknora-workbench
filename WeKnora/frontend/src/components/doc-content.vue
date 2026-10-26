@@ -24,6 +24,7 @@ import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import DocumentPreview from '@/components/document-preview.vue';
+import { cssViewportSize, getRootZoom } from '@/utils/zoom';
 import KnowledgeStructuredFrame from '@/components/KnowledgeStructuredFrame.vue';
 import DocumentFileIcon from '@/views/knowledge/components/DocumentFileIcon.vue';
 import KnowledgeProcessingTimeline from '@/components/knowledge-processing-timeline.vue';
@@ -561,6 +562,48 @@ const isChunkPageTransition = computed(
 let mdContentWrap = ref()
 // Drawer uses attach="body", so markdown nodes live outside mdContentWrap in the DOM.
 const docMarkdownRoot = ref<HTMLElement | null>(null)
+const filePreviewHost = ref<HTMLElement | null>(null)
+const drawerViewportHeight = ref('100dvh')
+const filePreviewHeight = ref('420px')
+let previewViewportObserver: ResizeObserver | null = null
+let previewFontObserver: MutationObserver | null = null
+let previewViewportFrame = 0
+function fitFilePreviewViewport() {
+  cancelAnimationFrame(previewViewportFrame)
+  previewViewportFrame = requestAnimationFrame(() => {
+    const zoom = getRootZoom()
+    drawerViewportHeight.value = `${cssViewportSize(zoom).height}px`
+    const host = filePreviewHost.value
+    const body = host?.closest('.t-drawer__body') as HTMLElement | null
+    if (!host || !body) return
+    // Scroll position must not change the chosen height. Measure the block's
+    // layout position inside the drawer, then reserve its remaining space.
+    const top = (host.getBoundingClientRect().top - body.getBoundingClientRect().top) / zoom + body.scrollTop
+    filePreviewHeight.value = `${Math.max(240, body.clientHeight - top - 24)}px`
+  })
+}
+watch([filePreviewHost, docMarkdownRoot], () => {
+  previewViewportObserver?.disconnect()
+  for (const node of [docMarkdownRoot.value, filePreviewHost.value?.closest('.t-drawer__body')]) {
+    if (node) previewViewportObserver?.observe(node)
+  }
+  fitFilePreviewViewport()
+}, { flush: 'post' })
+onMounted(() => {
+  previewViewportObserver = new ResizeObserver(fitFilePreviewViewport)
+  previewFontObserver = new MutationObserver(fitFilePreviewViewport)
+  previewFontObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] })
+  if (docMarkdownRoot.value) previewViewportObserver.observe(docMarkdownRoot.value)
+  window.addEventListener('resize', fitFilePreviewViewport)
+  window.visualViewport?.addEventListener('resize', fitFilePreviewViewport)
+  fitFilePreviewViewport()
+})
+onUnmounted(() => {
+  previewViewportObserver?.disconnect(); previewFontObserver?.disconnect()
+  cancelAnimationFrame(previewViewportFrame)
+  window.removeEventListener('resize', fitFilePreviewViewport)
+  window.visualViewport?.removeEventListener('resize', fitFilePreviewViewport)
+})
 
 const getMarkdownRenderRoot = (): ParentNode | null =>
   docMarkdownRoot.value ?? (mdContentWrap.value as ParentNode | null) ?? null
@@ -1604,6 +1647,7 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
       </div>
     </teleport>
     <t-drawer :visible="visible" :zIndex="2000" :size="`${mainDrawerWidth}px`" attach="body" :closeBtn="true"
+      :style="{ '--document-drawer-height': drawerViewportHeight }"
       :footer="false" :class="['doc-main-drawer', { 'doc-main-drawer--resizing': mainDrawerResizing }]"
       @close="handleClose">
       <template #header>
@@ -2159,12 +2203,11 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
               @change="handleChunkPageChange" />
           </div>
 
-          <div v-else-if="viewMode === 'preview'">
+          <div v-else-if="viewMode === 'preview'" ref="filePreviewHost" class="doc-file-preview-host"
+            :style="{ '--document-preview-height': filePreviewHeight }">
             <DocumentPreview :knowledgeId="details.id" :fileType="details.file_type" :fileName="details.title"
-              :active="visible && viewMode === 'preview'" />
-            <p v-if="canReviewPdfTables" class="pdf-review-entry-note">
-              核对原始片段、表头和跨页关系后再发布。预览通过不代表 OCR 或公式识别已经验证；公式不会作为可执行公式。
-            </p>
+              :active="visible && viewMode === 'preview'" :fill-height="true"
+              :source-mode="details.file_type?.toLowerCase() === 'pdf'" />
           </div>
         </section>
       </div>
@@ -2327,6 +2370,7 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
 }
 
 .doc-drawer-body .setting-drawer__section {
+  flex-shrink: 0;
   padding: 12px 0 16px;
   border-bottom: 1px solid var(--td-component-stroke);
   display: flex;
@@ -3283,14 +3327,31 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
      edge-to-edge. -->
 <style lang="less">
 .t-drawer.doc-main-drawer {
+  .t-drawer__content {
+    height: var(--document-drawer-height, 100dvh);
+    max-height: var(--document-drawer-height, 100dvh);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
   .t-drawer__header {
+    flex: none;
     padding: 14px 18px;
     border-bottom: 1px solid var(--td-component-stroke);
   }
 
   .t-drawer__body {
     padding: 16px 18px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
   }
+}
+.doc-file-preview-host {
+  height: var(--document-preview-height, 420px);
+  min-height: 0;
+  flex: none;
 }
 
 /* 主抽屉宽度可调：拖拽手柄通过 teleport 挂到 body，不受 scoped 影响，

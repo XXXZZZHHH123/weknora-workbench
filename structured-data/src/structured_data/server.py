@@ -534,7 +534,7 @@ def create_app(data_dir: str | Path | None = None):
         if host not in {"127.0.0.1", "localhost", "structured-data", "cotton-data", "host.docker.internal", "testserver"} and not (public_authority and authority == public_authority):
             return JSONResponse({"detail": "Host not allowed"}, status_code=403)
         path = request.url.path
-        if path in {"/", "/health", "/login", "/api/ui-config", "/sheet-review.js", "/pdf-review.js", "/sheet-review.css", "/workspace.css"}:
+        if path in {"/", "/health", "/login", "/api/ui-config", "/sheet-review.js", "/pdf-review.js", "/pdf-query.js", "/sheet-review.css", "/workspace.css"}:
             return await call_next(request)
         if path.startswith("/fonts/") and request.method in {"GET", "HEAD"}:
             return await call_next(request)
@@ -623,6 +623,10 @@ def create_app(data_dir: str | Path | None = None):
     @app.get("/pdf-review.js")
     def pdf_review_script():
         return FileResponse(Path(__file__).with_name("static") / "pdf-review.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/pdf-query.js")
+    def pdf_query_js():
+        return FileResponse(Path(__file__).with_name("pdf-query.js"), media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
     @app.get("/sheet-review.js")
     def sheet_review_script():

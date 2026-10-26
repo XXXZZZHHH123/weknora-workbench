@@ -663,6 +663,12 @@ def install_pdf_routes(app, registry, *, publish_guard):
         result['automation'] = automation_state(draft_id)
         return result
 
+    @app.get('/api/pdf/drafts/{draft_id}/issue-explanations')
+    def pdf_issue_explanations(draft_id: str, fragment_id: str):
+        from .pdf_issue_explanations import explain
+        source_path(draft_id)
+        return explain(pdf_store(registry).read_draft(_identifier(draft_id)), fragment_id, registry.directory())
+
     @app.post('/api/pdf/drafts/{draft_id}/auto-process')
     def pdf_auto_process(draft_id: str):
         identity = current_identity.get()
@@ -739,3 +745,11 @@ def install_pdf_routes(app, registry, *, publish_guard):
         result = pdf_store(registry).read_table(_identifier(table_id), offset=offset, limit=limit)
         verify_pdf_original(registry, result['source'])
         return result
+
+    @app.get('/api/pdf/tables/{table_id}/query')
+    def pdf_query(table_id: str, sql: str = 'SELECT * FROM data', limit: int = 100):
+        # Uses the same workspace ACL, immutable source check and bounded,
+        # read-only SQL engine as the research tools. Viewers may query too.
+        store = pdf_store(registry)
+        verify_pdf_original(registry, store.read_table(_identifier(table_id), limit=1)['source'])
+        return store.query(table_id, sql, limit=limit)

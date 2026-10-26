@@ -287,7 +287,7 @@ class PDFTableStore:
         draft = self.read_draft(draft_id)
         if not isinstance(plan, dict) or plan.get('bundle_sha256') != draft['bundle_sha256']:
             raise ValueError('Plan must bind the exact raw bundle SHA256')
-        allowed = {'bundle_sha256', 'fragment_ids', 'header_rows', 'columns', 'excluded_rows', 'boundary_merges', 'reviewed', 'title', 'review_note', 'join_mode', 'row_groups', 'key_columns', 'row_alignment_review', 'cell_corrections', 'quality_reviews'}
+        allowed = {'bundle_sha256', 'fragment_ids', 'header_rows', 'columns', 'excluded_rows', 'boundary_merges', 'reviewed', 'title', 'review_note', 'join_mode', 'row_groups', 'key_columns', 'row_alignment_review', 'cell_corrections', 'quality_reviews', 'inserted_rows'}
         if set(plan) - allowed:
             raise ValueError('Unknown PDF plan fields')
         bundle = draft['bundle']
@@ -523,6 +523,53 @@ class PDFTableStore:
             upper['source_rows'] += lower['source_rows']
             rows.remove(lower)
             merged_keys.update(keys)
+        inserted = plan.get('inserted_rows', [])
+        if not isinstance(inserted, list) or len(inserted) + len(rows) > MAX_ROWS:
+            raise ValueError('补充行数超过处理范围')
+        if inserted and (horizontal or plan.get('boundary_merges')):
+            raise ValueError('补行时请先单独处理当前表格，再核对跨页合并')
+        inserted_ids = set()
+        anchors = {}
+        for entry in inserted:
+            if not isinstance(entry, dict) or set(entry) != {'id', 'fragment_id', 'after_row', 'texts', 'reason'}:
+                raise ValueError('补行需要原页、位置、每格内容和核对依据')
+            ident, row_id, after = entry['fragment_id'], entry['id'], entry['after_row']
+            if ident not in fragments or not isinstance(row_id, str) or not re.fullmatch('[a-zA-Z0-9_-]{1,64}', row_id) or row_id in inserted_ids:
+                raise ValueError('补行的来源或行编号无效')
+            f = fragments[ident]
+            if type(after) is not int or not -1 <= after < len(f['rows']):
+                raise ValueError('补行的位置不在当前表格范围内')
+            texts = entry['texts']
+            if not isinstance(texts,list) or len(texts) != len(f['rows'][0]) or any(not isinstance(t,str) or len(t)>MAX_CELL_CHARS for t in texts):
+                raise ValueError('请填写当前表格每一列的补行内容')
+            _reason(entry['reason'])
+            inserted_ids.add(row_id)
+            values, spans = {}, {}
+            for col in columns:
+                ci = col['source_columns'][ident]
+                values[col['name']] = texts[ci]
+                # No OCR row coordinate or cell box is invented for a manual
+                # transcription. It is tied to the original physical page.
+                spans[col['name']] = [dict(source_sha256=bundle['source']['sha256'], fragment_id=ident,
+                    page=f['page'], row=None, column=ci, text=texts[ci], bbox=None,
+                    fragment_bbox=f.get('bbox'), origin='manual_transcription', manual_row_id=row_id,
+                    reason=entry['reason'], after_source_row=after)]
+            manual = dict(values=values,source_cells=spans,
+                          source_rows=[dict(fragment_id=ident,manual_row_id=row_id)])
+            anchor = anchors.get((ident,after))
+            if anchor is None:
+                preceding = [r for r in rows if any(ref.get('fragment_id')==ident and ref.get('row', -2)<=after for ref in r['source_rows'])]
+                if preceding:
+                    index = rows.index(preceding[-1])+1
+                else:
+                    next_rows = [r for r in rows if any(ref.get('fragment_id')==ident for ref in r['source_rows'])]
+                    if next_rows: index = rows.index(next_rows[0])
+                    else:
+                        earlier = [r for r in rows if ids.index(r['source_rows'][0]['fragment_id']) < ids.index(ident)]
+                        index = rows.index(earlier[-1])+1 if earlier else 0
+            else:
+                index = rows.index(anchor)+1
+            rows.insert(index,manual); anchors[(ident,after)] = manual
         for row in rows:
             row['_row_id'] = 'pdfr_' + _hash(dict(draft_id=draft_id, source_rows=row['source_rows']))[:32]
             row['raw_values'] = deepcopy(row['values'])
@@ -575,6 +622,10 @@ class PDFTableStore:
                         table_input_complete=not exclusions and not bundle.get('ambiguities') and not bundle.get('requires_review'),
                         source_document_complete=False,
                         source_document_completeness='unknown', extraction_verified=False)
+        if inserted:
+            coverage.update(manual_inserted_row_count=len(inserted),
+                            covered_data_source_row_count=sum(1 for r in rows for ref in r['source_rows'] if 'row' in ref),
+                            table_input_complete=False)
         if horizontal or quality_issues or corrections or unresolved:
             coverage.update(join_mode='horizontal' if horizontal else 'vertical',
                             row_alignment_verified=alignment_verified,
@@ -606,7 +657,7 @@ class PDFTableStore:
 
     def _check_automatic(self, draft_id, plan):
         if not isinstance(plan, dict) or any(k in plan for k in
-                ('reviewed', 'quality_reviews', 'cell_corrections', 'row_alignment_review')):
+                ('reviewed', 'quality_reviews', 'cell_corrections', 'row_alignment_review', 'inserted_rows')):
             raise ValueError('Automatic acceptance cannot supply human review or cell corrections')
         record = self.validate_plan(draft_id, plan)
         if (record['coverage'].get('unresolved_quality_issues') or plan.get('excluded_rows')

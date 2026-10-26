@@ -242,6 +242,14 @@ def test_upload_review_crosspage_query_and_original_integrity(pdf_service):
     published = client.post(base + '/publish', json={'plan': mapping, 'reviewed': True}, headers=headers())
     assert published.status_code == 200, published.text
     table_id = published.json()['table_id']
+    browser_query = '/api/pdf/tables/' + table_id + '/query'
+    browser_result = client.get(browser_query, params={'sql': 'SELECT sum(amount), count(amount) FROM data', 'limit': 1}, headers=headers(role='viewer'))
+    assert browser_result.status_code == 200, browser_result.text
+    assert float(browser_result.json()['rows'][0][0]) == 1.1
+    assert browser_result.json()['input_count'] == 3
+    assert client.get(browser_query, params={'sql':'DELETE FROM data'}, headers=headers()).status_code == 400
+    assert client.get(browser_query, params={'sql':"SELECT * FROM read_csv('/etc/passwd')"}, headers=headers()).status_code == 400
+    assert client.get(browser_query, headers=headers(kb='kb-other')).status_code == 400
     assert read(pdf_service, 'list_datasets', {}).json()['pdf_tables'][0]['table_id'] == table_id
     result = read(pdf_service, 'query_pdf_table', {'table_id': table_id, 'sql': 'SELECT sum(amount) AS total, count(amount) AS n FROM data', 'limit': 1}).json()
     assert result['status'] == 'ok' and result['source_kind'] == 'pdf_table'
@@ -254,8 +262,29 @@ def test_upload_review_crosspage_query_and_original_integrity(pdf_service):
     assert denied.status_code == 400 or denied.json().get('status') == 'error'
     original = next(root.rglob('originals/*.pdf'))
     original.write_bytes(b'changed')
+    assert client.get(browser_query, headers=headers()).status_code == 400
     assert read(pdf_service, 'query_pdf_table', {'table_id': table_id, 'sql': 'SELECT * FROM data'}).json()['status'] == 'error'
     assert client.get(base + '/source', headers=headers()).status_code == 400
+
+
+def test_legacy_issue_explanation_is_chinese_cached_and_does_not_resolve_quality(pdf_service,monkeypatch):
+    client,_,_,_,_=pdf_service
+    draft=imported(pdf_service)
+    # The fixture includes a legacy uncertain cell. The translation service
+    # reads only the saved issues, never a caller's arbitrary prompt.
+    from structured_data.pdf_issue_explanations import explain
+    raw=json.loads(json.dumps(draft));raw['bundle']['fragments'][0]['quality']={'issues':[{'code':'MODEL_UNCERTAINTY','message':'No printed column headings; numeric content is legible.'}]}
+    calls=[]
+    monkeypatch.setattr('structured_data.pdf_api._model_json',lambda cfg,messages:calls.append(messages) or {'issues':[{'issue_index':0,'explanation':'原页没有印列名，数字可以辨认。','action':'对照原件填写列名和单位，再检查数字。'}]})
+    directory=pdf_service[3]/'translation-fixture'
+    before=json.dumps(raw,sort_keys=True)
+    result=explain(raw,'table-1',directory)
+    assert result['issues'][0]['explanation']=='原页没有印列名，数字可以辨认。'
+    assert explain(raw,'table-1',directory)==result and len(calls)==1
+    assert json.dumps(raw,sort_keys=True)==before
+    with pytest.raises(ValueError):explain(raw,'not-a-fragment',directory)
+    monkeypatch.setattr('structured_data.pdf_api._model_json',lambda *a:{'issues':[{'issue_index':0,'explanation':'English only','action':'English only'}]})
+    with pytest.raises(ValueError,match='中文'):explain(raw,'table-1',directory/'another')
 
 
 def test_native_pdf_uses_authorized_original_and_default_excel_stays_restricted(pdf_service):

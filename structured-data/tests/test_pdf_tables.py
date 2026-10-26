@@ -64,6 +64,30 @@ def test_raw_round_trip_and_publication_requires_explicit_review(tmp_path):
     assert cell['text'] == '-1.20' and cell['source_sha256'] == 'a' * 64
 
 
+def test_manual_missing_row_preserves_original_and_audits_page_without_fake_cell_box(tmp_path):
+    store,draft,plan=setup(tmp_path)
+    raw=deepcopy(draft['bundle'])
+    plan['inserted_rows']=[dict(id='manual-1',fragment_id='table-1',after_row=1,
+                                texts=['Missing','-2.75'],reason='Original page 1, row missing between A and B')]
+    table=publish(store,draft,plan)
+    assert [r['raw_values']['col0'] for r in table['rows']]==['A','Missing','B']
+    span=table['rows'][1]['source_cells']['col1'][0]
+    assert span['origin']=='manual_transcription' and span['page']==1
+    assert span['row'] is None and span['bbox'] is None and span['reason']
+    assert table['coverage']['manual_inserted_row_count']==1
+    assert table['coverage']['covered_data_source_row_count']==2
+    assert float(store.query(table['table_id'],'SELECT sum(col1) FROM data')['rows'][0][0])==-3.95
+    assert store.read_draft(draft['draft_id'])['bundle']==raw
+    with pytest.raises(ValueError,match='Automatic'):
+        store.publish_automatic(draft['draft_id'],plan)
+    bad=deepcopy(plan);bad['inserted_rows'][0]['reason']=''
+    with pytest.raises(ValueError):store.validate_plan(draft['draft_id'],bad)
+    bad=deepcopy(plan);bad['inserted_rows'][0]['after_row']=99
+    with pytest.raises(ValueError):store.validate_plan(draft['draft_id'],bad)
+    bad=deepcopy(plan);bad['inserted_rows'][0]['texts']=['Missing']
+    with pytest.raises(ValueError):store.validate_plan(draft['draft_id'],bad)
+
+
 def test_repeat_header_and_headerless_continuation_are_explicit(tmp_path):
     raw = bundle([['Item', 'Value'], ['A', '1']], [['Item', 'Value'], ['B', '2']], [['C', '3']])
     headers = {'table-1': [{'row': 0, 'reason': 'header'}], 'table-2': [{'row': 0, 'reason': 'repeated header reviewed'}], 'table-3': []}

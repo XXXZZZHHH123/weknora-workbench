@@ -55,7 +55,7 @@ const server=http.createServer(async(req,res)=>{
   else if(url.pathname.endsWith('/confirm')){published=true;publishedMapping=structuredClone(data.mapping);result={id:'fixture-publish',status:'processing'};}
   else if(url.pathname==='/api/jobs/fixture-publish')result={status:'completed',result:{}};
   else if(url.pathname.startsWith('/api/imports/'))result={import_id:'123456789012345678901234',source_file:'销售数据.xlsx',dataset_id:'saved-fixture',sheets:sheets()};
-  else {const file=url.pathname==='/'?'index.html':url.pathname.slice(1);if(!['index.html','sheet-review.js','sheet-review.css','workspace.css'].includes(file)){res.writeHead(404);res.end();return;}res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(path.join(root,file)));return;}
+  else {const file=url.pathname==='/'?'index.html':url.pathname.slice(1);if(!['pdf-query.js','index.html','sheet-review.js','sheet-review.css','workspace.css'].includes(file)){res.writeHead(404);res.end();return;}res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(path.join(root,file)));return;}
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify(result));
 });
 (async()=>{

@@ -29,6 +29,7 @@
   const fileProgress = new Map();
   let listScroll = 0;
   let returnFocus = null;
+  const issueExplanations = new Map();
 
   function closeDetail() {
     const detail=document.getElementById('pdfDraftDetail');
@@ -153,7 +154,7 @@
       for (const [index, issue] of unresolved.entries()) {
         const item = make('div');
         const fragment=fragments().find(f=>f.id===issue.fragment_id);
-        item.append(make('p', `${fragment?`第 ${fragment.page} 页 · `:''}${issue.row!==undefined?`第 ${issue.row+1} 行 · 第 ${issue.column+1} 列 · `:''}${qualityHint(issue)}`),originalIssue(issue));
+        item.append(make('p', `${fragment?`第 ${fragment.page} 页 · `:''}${issue.row!==undefined?`第 ${issue.row+1} 行 · 第 ${issue.column+1} 列 · `:''}${qualityHint(issue)}`),originalIssue(issue,fragment,issue.issue_index));
         const reason = make('input');
         reason.type = 'text'; reason.placeholder = '核对的页码、原文及处理依据（必填）';
         reason.setAttribute('aria-label', `质量问题 ${index + 1} 核对依据`);
@@ -207,7 +208,7 @@
         const td = make('td', row.values?.[column.name] ?? '');
         const refs = row.source_cells?.[column.name] || [];
         for (const ref of refs) {
-          const detail = make('small', `第 ${ref.page} 页 · 第 ${ref.row+1} 行 · 第 ${ref.column+1} 列 · 原文「${ref.text ?? ''}」`);
+          const detail = make('small', ref.origin==='manual_transcription'?`第 ${ref.page} 页 · 人工补行 · ${ref.reason}`:`第 ${ref.page} 页 · 第 ${ref.row+1} 行 · 第 ${ref.column+1} 列 · 原文「${ref.text ?? ''}」`);
           td.append(document.createElement('br'), detail);
           if (ref.correction) td.append(make('small', `人工修正为「${ref.correction.text}」；依据：${ref.correction.reason}`));
         }
@@ -215,7 +216,7 @@
       }
       const provenance = make('td');
       const refs = Object.values(row.source_cells || {}).flat();
-      provenance.textContent = refs.map(ref => `第 ${ref.page} 页第 ${ref.row+1} 行第 ${ref.column+1} 列`).join('；') || '来源缺失';
+      provenance.textContent = refs.map(ref => ref.origin==='manual_transcription'?`第 ${ref.page} 页人工补行`:`第 ${ref.page} 页第 ${ref.row+1} 行第 ${ref.column+1} 列`).join('；') || '来源缺失';
       tr.append(provenance);
       tbody.append(tr);
     }
@@ -438,9 +439,26 @@
     missing_header: '有列名缺失或看不清。请对照原件填写列名和依据。'
   };
   const qualityHint = issue => qualityHints[issue.code] || '此处存在识别疑点。请对照原件检查文字、数字和表格结构；无法确认时先不要入库。';
-  function originalIssue(issue) {
+  function originalIssue(issue, fragment, index) {
     const details=make('details',undefined,'pdf-technical');
-    details.append(make('summary','原始识别记录（供排查）'),make('p',issue.message || issue.code || '无补充记录'));
+    const description=make('p',issue.message && /[\u3400-\u9fff]/.test(issue.message) && !/[A-Za-z]{4}/.test(issue.message) ? issue.message : '正在读取这条记录的中文说明…');
+    const advice=make('p','');
+    details.append(make('summary','识别记录的中文说明'),description,advice);
+    if(!fragment || !Number.isInteger(index) || index<0){description.textContent=qualityHint(issue);return details;}
+    const savedEpoch=epoch,id=draft.draft_id,key=`${epoch}:${id}:${fragment.id}`;
+    if(!issueExplanations.has(key)){
+      const pending=api(`/api/pdf/drafts/${encodeURIComponent(id)}/issue-explanations?fragment_id=${encodeURIComponent(fragment.id)}`);
+      issueExplanations.set(key,pending);pending.catch(()=>issueExplanations.delete(key));
+    }
+    issueExplanations.get(key).then(result=>{
+      if(savedEpoch!==host.getAuthEpoch()||draft?.draft_id!==id||!details.isConnected)return;
+      const item=result.issues?.find(item=>item.issue_index===index);
+      description.textContent=item?.explanation||qualityHint(issue);advice.textContent=item?.action||'';
+    }).catch(()=>{
+      if(!details.isConnected)return;
+      description.textContent='暂时无法取得详细中文说明。'+qualityHint(issue);
+      details.append(action('重试中文说明',()=>{const next=originalIssue(issue,fragment,index);details.replaceWith(next);next.open=true;},true));
+    });
     return details;
   }
   function focusReview() {
@@ -490,6 +508,55 @@
     parent.insertBefore(box,parent.querySelector('.pdf-raw-table'));value.focus({preventScroll:true});box.scrollIntoView({block:'nearest'});
   }
 
+  function saveInlinePlan(plan,parent) {
+    const editor=document.getElementById('pdfPlanEditor');editor.value=JSON.stringify(plan,null,2);invalidatePreview();
+    renderManualPlanForm(editor,document.getElementById('pdfManualForm'));
+    renderFragmentInspector(parent,document.querySelector('.pdf-source-viewer'));
+    setStatus('修改已暂存。核对完成后设置列名和表头，检查预览并入库。');
+  }
+  function rowEditor(parent,title) {
+    parent.querySelector('.pdf-cell-editor')?.remove();
+    const box=make('fieldset',undefined,'pdf-cell-editor');box.append(make('legend',title));
+    const reason=make('input');reason.setAttribute('aria-label','行修改的原件依据');reason.placeholder='原件第几页、哪一行，为什么需要这样修改';
+    const feedback=make('p','','pdf-inline-feedback');feedback.setAttribute('role','status');
+    box.append(make('label','原件依据'),reason,feedback);parent.insertBefore(box,parent.querySelector('.pdf-raw-table'));
+    return {box,reason,feedback};
+  }
+  function editRowReason(fragment,row,parent,plan) {
+    const {box,reason,feedback}=rowEditor(parent,`删除第 ${row+1} 行`);
+    box.append(make('p','此行会从入库结果中排除，原始识别记录保留，可以恢复。'),action('确认删除此行',()=>{
+      if(!reason.value.trim()){feedback.textContent='请说明这行为什么不应入库。';reason.focus();return;}
+      plan.excluded_rows=(plan.excluded_rows||[]).filter(item=>!(item.fragment_id===fragment.id&&item.row===row));
+      plan.excluded_rows.push({fragment_id:fragment.id,row,reason:reason.value.trim()});
+      plan.header_rows[fragment.id]=(plan.header_rows[fragment.id]||[]).filter(item=>item.row!==row);
+      plan.cell_corrections=(plan.cell_corrections||[]).filter(item=>!(item.fragment_id===fragment.id&&item.row===row));
+      saveInlinePlan(plan,parent);
+    }),action('取消',()=>box.remove(),true));reason.focus({preventScroll:true});
+  }
+  function insertRow(fragment,parent,existing=null) {
+    const plan=jsonValue(document.getElementById('pdfPlanEditor'));
+    const {box,reason,feedback}=rowEditor(parent,existing?'修改补充行':'补充原件中漏掉的一行');
+    reason.value=existing?.reason||'';
+    const position=make('select');position.setAttribute('aria-label','补行位置');
+    for(let i=-1;i<fragment.rows.length;i++){const option=make('option',i===-1?'放在第一行之前':`放在原第 ${i+1} 行之后`);option.value=String(i);position.append(option);}
+    position.value=String(existing?.after_row??fragment.rows.length-1);box.prepend(make('label','补在哪一行'),position);
+    const fields=make('div',undefined,'pdf-insert-fields'),values=[];
+    for(let i=0;i<fragment.rows[0].length;i++){const label=make('label',plan.columns.find(c=>c.source_columns[fragment.id]===i)?.name||`列 ${i+1}`),input=make('input');input.value=existing?.texts[i]||'';input.setAttribute('aria-label',`补行第 ${i+1} 列`);label.append(input);fields.append(label);values.push(input);}
+    box.insertBefore(fields,reason.previousSibling);
+    box.append(action('保存补充行',()=>{
+      if(!reason.value.trim()){feedback.textContent='请写明原件中的位置和核对依据。';reason.focus();return;}
+      plan.inserted_rows=(plan.inserted_rows||[]).filter(item=>item.id!==existing?.id);
+      plan.inserted_rows.push({id:existing?.id||crypto.randomUUID(),fragment_id:fragment.id,after_row:Number(position.value),texts:values.map(input=>input.value),reason:reason.value.trim()});
+      saveInlinePlan(plan,parent);
+    }),action('取消',()=>box.remove(),true));values[0]?.focus({preventScroll:true});
+  }
+  function renderInsertedRow(fragment,row,parent) {
+    const tr=make('tr',undefined,'pdf-inserted-row');tr.append(make('th','补行'));
+    for(const text of row.texts)tr.append(make('td',text));
+    const controls=make('td');controls.append(action('修改补行',()=>insertRow(fragment,parent,row),true),action('移除此补行',()=>{
+      const plan=jsonValue(document.getElementById('pdfPlanEditor'));plan.inserted_rows=plan.inserted_rows.filter(item=>item.id!==row.id);saveInlinePlan(plan,parent);
+    },true));tr.append(controls);return tr;
+  }
   function renderFragment(fragment, parent) {
     const rows = fragment.rows || [];
     let plan={};try{plan=jsonValue(document.getElementById('pdfPlanEditor') || {value:'{}'});}catch{/* Navigation remains available while advanced JSON is incomplete. */}
@@ -514,12 +581,15 @@
           document.getElementById('pdfPlanEditor').value=JSON.stringify(updated,null,2);invalidatePreview();feedback.textContent='已记录；仍需处理标出的单元格并检查预览。';
         },true),feedback);
       }
-      item.append(originalIssue(issue));quality.append(item);
+      item.append(originalIssue(issue,fragment,index));quality.append(item);
     }
-    quality.append(make('p',editing?'点击下方单元格可修改；标有“需核对”的格子即使内容不变，也要对照原件保存一次核对依据。':'先对照左侧原件查看疑点；开始核对后，可以直接修改下方单元格。','muted'));
+    quality.append(make('p','对照左侧原件，点击下方单元格修改。漏掉的行可以补上，多出的行可以删除；处理后填写列名、表头并检查入库结果。','muted'));
     parent.append(quality);
     const step=editing?action('下一步：设置列名和表头',()=>{const section=document.querySelector('.pdf-manual-details');section.open=true;section.scrollIntoView({block:'start'});},true):action('核对并修改这张表',()=>beginCorrection(fragment));
     step.classList.add('pdf-review-step');parent.append(step);
+    const rowActions=make('div',undefined,'pdf-inline-row-actions');
+    rowActions.append(action('补充漏掉的行',()=>{if(!editing)beginCorrection(fragment);insertRow(fragment,parent);},true));
+    parent.append(rowActions);
     const wrap = make('div', undefined, 'pdf-raw-table scroll');
     const table = make('table'), head = make('thead'), header = make('tr');
     header.append(make('th', '行'));
@@ -533,15 +603,22 @@
       for (const [columnIndex,cell] of row.entries()) {
         const td = make('td');
         const corrected=(plan.cell_corrections||[]).find(c=>c.fragment_id===fragment.id&&c.row===rowIndex&&c.column===columnIndex);
-        if(editing){
-          const edit=action(corrected?.text??cell.text??'',()=>editCell(fragment,rowIndex,columnIndex,parent),true);edit.classList.add('pdf-cell-value');edit.setAttribute('aria-label',`修改第 ${rowIndex+1} 行第 ${columnIndex+1} 列`);td.append(edit);
-        }else td.append(make('span',cell.text,'pdf-raw-cell'));
+        const edit=action(corrected?.text??cell.text??'',()=>{if(!editing)beginCorrection(fragment);editCell(fragment,rowIndex,columnIndex,parent);},true);edit.classList.add('pdf-cell-value');edit.setAttribute('aria-label',`修改第 ${rowIndex+1} 行第 ${columnIndex+1} 列`);td.append(edit);
         if(cell.uncertain||corrected){td.classList.add('pdf-cell-flag');td.append(make('small',corrected?'已核对修改':'需核对'));}
         if (cell.rowspan > 1 || cell.colspan > 1) td.title = `合并 ${cell.rowspan}×${cell.colspan}`;
         tr.append(td);
       }
-      body.append(tr);
+      const excluded=(plan.excluded_rows||[]).some(item=>item.fragment_id===fragment.id&&item.row===rowIndex);
+      const controls=make('td');controls.append(action(excluded?'恢复此行':'删除此行',()=>{
+        if(!editing)beginCorrection(fragment);
+        const editor=document.getElementById('pdfPlanEditor'),updated=jsonValue(editor);
+        if(excluded){updated.excluded_rows=updated.excluded_rows.filter(item=>!(item.fragment_id===fragment.id&&item.row===rowIndex));saveInlinePlan(updated,parent);}
+        else editRowReason(fragment,rowIndex,parent,updated);
+      },true));tr.append(controls);tr.classList.toggle('pdf-excluded-row',excluded);body.append(tr);
+      for(const inserted of (plan.inserted_rows||[]).filter(item=>item.fragment_id===fragment.id&&item.after_row===rowIndex))body.append(renderInsertedRow(fragment,inserted,parent));
     }
+    for(const inserted of (plan.inserted_rows||[]).filter(item=>item.fragment_id===fragment.id&&item.after_row===-1))body.prepend(renderInsertedRow(fragment,inserted,parent));
+    header.append(make('th','行操作'));
     table.append(head,body);wrap.append(table);parent.append(wrap);
   }
 
@@ -816,7 +893,7 @@
       try {
         const plan = createManualPlan();
         const previous=jsonValue(editor);
-        for(const key of ['cell_corrections','quality_reviews'])if(previous[key])plan[key]=previous[key].filter(item=>selectedFragments.has(item.fragment_id));
+        for(const key of ['cell_corrections','quality_reviews','inserted_rows'])if(previous[key])plan[key]=previous[key].filter(item=>selectedFragments.has(item.fragment_id));
         for (const fragment of selected) {
           const headers = [];
           for (const checkbox of parent.querySelectorAll(`[data-header-fragment="${CSS.escape(fragment.id)}"]`)) {
@@ -918,6 +995,7 @@
     const provenance=make('details',undefined,'pdf-technical');
     provenance.append(make('summary','文件与解析信息'),make('p',`SHA256：${src.sha256 || '未知'} · 解析器：${parser.engine || '未知'} ${parser.version || ''}${parserProfile} · 提取状态：未独立验证。`));
     target.append(provenance);
+    const cleaning=bundle.preprocessing;if(cleaning?.status==='cleaned')target.append(make('p',`已在识别副本中去除文字水印，上传原件保留。覆盖 ${cleaning.pages?.length||0} 页。`,'muted'));
     const viewer=createSourceViewer();
     const proposals = bundle.continuation_proposals || [];
     if (proposals.length) {

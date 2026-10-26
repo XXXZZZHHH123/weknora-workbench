@@ -70,7 +70,7 @@ async function main(){
   }else if(route.startsWith('/fonts/')&&!route.includes('..')){
    const target=path.join(__dirname,'../../WeKnora/frontend/public',route);if(fs.existsSync(target)){body=fs.readFileSync(target);type=route.endsWith('.css')?'text/css':'font/woff2';}else{status=404;body='Font not found';}
   }else if(route==='/'){body=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
-  else if(['/sheet-review.js','/sheet-review.css','/workspace.css'].includes(route)){
+  else if(['/pdf-query.js','/sheet-review.js','/sheet-review.css','/workspace.css'].includes(route)){
    const target=path.join(source,route.slice(1));if(!fs.existsSync(target)){status=404;body={detail:'Fixture static resource absent'}}else{body=fs.readFileSync(target,'utf8');type=route.endsWith('.js')?'application/javascript':'text/css';}
   }else if(route==='/pdf-review.js'){
    body=fs.readFileSync(path.join(source,'static','pdf-review.js'),'utf8');type='application/javascript';

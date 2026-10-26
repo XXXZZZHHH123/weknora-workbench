@@ -155,6 +155,9 @@ class Worker:
         extractor_source = Path(__file__).parent/'remote_pdf'/'extractor.py'
         if extractor_source.is_file():
             profile['extractor_sha256'] = hashlib.sha256(extractor_source.read_bytes()).hexdigest()
+        watermark_source = Path(__file__).parent/'remote_pdf'/'watermarks.py'
+        if watermark_source.is_file():
+            profile['watermark_sha256'] = hashlib.sha256(watermark_source.read_bytes()).hexdigest()
         self.profile = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()
         self.page_semaphore = asyncio.Semaphore(int(s['page_concurrency']))
         self.running = {}

@@ -18,6 +18,7 @@ const server=http.createServer(async(req,res)=>{try{
  else if(route==='/api/pdf/drafts')value={drafts:[{...original,source:original.bundle.source,fragment_count:1,automation}]};
  else if(route==='/api/pdf/jobs')value={jobs:[]};
  else if(route==='/api/pdf/tables')value=store('tables');
+ else if(route.endsWith('/issue-explanations'))value={issues:[{issue_index:0,explanation:'两次识别的内容不一致，需要对照原件核对。',action:'核对原页后修改数据。'},{issue_index:1,explanation:'原件列名缺失或看不清。',action:'填写有依据的列名。'},{issue_index:2,explanation:'单位的读取结果需要核对。',action:'对照原件确认单位。'}]};
  else if(route.endsWith('/source')){type='application/pdf';value='%PDF-1.4\nfixture';}
  else if(route==='/api/pdf/drafts/'+original.draft_id)value={...store('draft',{id:original.draft_id}),automation};
  else if(route.endsWith('/preview'))value=store('preview',{id:original.draft_id,plan:body.plan});
@@ -37,7 +38,9 @@ const server=http.createServer(async(req,res)=>{try{
  assert.equal(await page.locator('.pdf-quality-detail').evaluate(e=>e.open),true);
  assert.match(await page.locator('.pdf-quality-item>p').first().innerText(),/多次识别得到的单元格内容不同/);
  assert.equal(await page.locator('.pdf-quality-item>details').evaluateAll(items=>items.some(e=>e.open)),false);
- await page.getByRole('button',{name:'核对并修改这张表',exact:true}).click();
+ // A cell is editable immediately, without finding a separate mode switch.
+ await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();
+ await page.getByRole('button',{name:'取消',exact:true}).last().click();
  const editing=await page.locator('.pdf-source-viewer').elementHandle();
  assert(await page.locator('.pdf-raw-table').evaluate(e=>e.clientHeight>=230),'multiple doubts must leave a usable table viewport');
  await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();
@@ -47,6 +50,14 @@ const server=http.createServer(async(req,res)=>{try{
  await page.getByRole('button',{name:'保存此格修改',exact:true}).click();
  assert.equal(await editing.evaluate(e=>e.isConnected),true);
  for(let i=0;i<3;i++){await page.getByRole('textbox',{name:'疑点 '+(i+1)+' 核对依据',exact:true}).fill('对照第1页全部行列及列名单位，已修正第2行金额，空白单元格与原件一致');await page.getByRole('button',{name:'已核对，记录依据',exact:true}).nth(i).click();}
+ await page.locator('.pdf-raw-table tbody tr').nth(2).getByRole('button',{name:'删除此行',exact:true}).click();
+ await page.getByRole('textbox',{name:'行修改的原件依据'}).fill('原件没有这一空白误识别行');await page.getByRole('button',{name:'确认删除此行',exact:true}).click();
+ assert.equal(await page.locator('.pdf-excluded-row').count(),1);
+ await page.getByRole('button',{name:'恢复此行',exact:true}).click();assert.equal(await page.locator('.pdf-excluded-row').count(),0);
+ await page.getByRole('button',{name:'补充漏掉的行',exact:true}).click();
+ await page.getByRole('textbox',{name:'补行第 1 列',exact:true}).fill('Missing');await page.getByRole('textbox',{name:'补行第 2 列',exact:true}).fill('-2.50');
+ await page.getByRole('textbox',{name:'行修改的原件依据'}).fill('对照原件第1页最后一行，漏识别Missing -2.50');await page.getByRole('button',{name:'保存补充行',exact:true}).click();
+ assert.equal(await page.locator('.pdf-inserted-row').count(),1);
  await page.getByRole('button',{name:'下一步：设置列名和表头',exact:true}).click();
  await page.locator('[data-column-name="0"]').fill('项目');await page.locator('[data-column-name="1"]').fill('金额');
  await page.locator('[data-column-type="1"]').selectOption('decimal');
@@ -61,7 +72,7 @@ const server=http.createServer(async(req,res)=>{try{
  assert.equal(await page.getByRole('button',{name:'查看疑点',exact:true}).count(),0,'resolved review no longer appears as pending');
  const table=store('tables').tables[0],data=store('query',{id:table.table_id});assert.match(JSON.stringify(data),/-1.2/);
  assert.deepEqual(store('draft',{id:original.draft_id}).bundle,original.bundle);
- assert.equal(table.extraction_verified,false);assert.equal(table.coverage.cell_correction_count,1);
+ assert.equal(table.extraction_verified,false);assert.equal(table.coverage.cell_correction_count,1);assert.equal(table.coverage.manual_inserted_row_count,1);assert.match(JSON.stringify(data),/manual_transcription/);
  assert.deepEqual(errors,[]);
  if(process.env.PDF_CORRECTION_EVIDENCE){fs.mkdirSync(process.env.PDF_CORRECTION_EVIDENCE,{recursive:true});await page.screenshot({path:path.join(process.env.PDF_CORRECTION_EVIDENCE,'correction-published.png'),fullPage:true});fs.writeFileSync(path.join(process.env.PDF_CORRECTION_EVIDENCE,'result.json'),JSON.stringify({table,data,publishes,originalUnchanged:true,errors},null,2));}
  console.log('PASS: Chinese issue opens and focuses, direct correction with mandatory evidence, field edits preserve correction, real store preview/publish/query, original unchanged, resolved issue removed, truthful visible parser options.');

@@ -79,7 +79,7 @@ const server=http.createServer(async(req,res)=>{
   await page.waitForFunction(()=>document.querySelector('.pdf-source-viewer')?.dataset.renderedPage==='1');
   assert.equal(await viewer.locator('#paper').getAttribute('data-page'),'1');
   assert(await viewer.locator('canvas').evaluate(canvas=>{const d=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;return d.some((v,i)=>i%4!==3&&v<100)}));
-  const ratio=await page.locator('.pdf-original-pane').evaluate(el=>el.clientWidth/el.parentElement.clientWidth);assert(ratio<.4);
+  const ratio=await page.locator('.pdf-original-pane').evaluate(el=>el.clientWidth/el.parentElement.clientWidth);assert(ratio>.47 && ratio<.51);
   await page.getByRole('button',{name:'收起原件',exact:true}).click();assert.equal(await page.locator('.pdf-original-pane').isVisible(),false);
   await page.getByRole('button',{name:'显示原件',exact:true}).click();
   assert.equal(calls.filter(c=>c.path.endsWith('/auto-process')).length,1);
