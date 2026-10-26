@@ -3327,7 +3327,7 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
      edge-to-edge. -->
 <style lang="less">
 .t-drawer.doc-main-drawer {
-  .t-drawer__content {
+  .t-drawer__content-wrapper {
     height: var(--document-drawer-height, 100dvh);
     max-height: var(--document-drawer-height, 100dvh);
     display: flex;
