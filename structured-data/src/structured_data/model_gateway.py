@@ -14,6 +14,12 @@ current_authorization = ContextVar('structured_model_authorization', default='')
 MAX_RESPONSE_BYTES = 256 * 1024
 
 
+class ModelGatewayError(ValueError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.public_code = code
+
+
 def _context():
     identity = current_identity.get()
     authorization = current_authorization.get()
@@ -48,18 +54,21 @@ def _model(document, tenant):
 
 def _check_status(response):
     if response.status_code in {401, 403}:
-        raise ValueError('当前登录或知识库模型使用权限已失效，请刷新后重试。')
+        raise ModelGatewayError('MODEL_AUTH', '当前登录或知识库模型使用权限已失效，请刷新后重试。')
     if response.status_code == 404:
-        raise ValueError('所选平台模型或知识库已不可用，请重新选择模型。')
+        raise ModelGatewayError('MODEL_NOT_FOUND', '所选平台模型或知识库已不可用，请重新选择模型。')
     if response.status_code == 429:
-        raise ValueError('平台模型暂时达到调用限制，请稍后重试。')
+        raise ModelGatewayError('MODEL_RATE_LIMIT', '平台模型暂时达到调用限制，请稍后重试。')
     if response.status_code >= 300:
-        raise ValueError(f'平台模型服务返回 HTTP {response.status_code}，请稍后重试。')
+        raise ModelGatewayError('MODEL_HTTP_ERROR', f'平台模型服务返回 HTTP {response.status_code}，请稍后重试。')
     if len(response.content) > MAX_RESPONSE_BYTES:
-        raise ValueError('平台模型返回内容超过大小限制。')
-    result = response.json()
+        raise ModelGatewayError('MODEL_RESPONSE_LIMIT', '平台模型返回内容超过大小限制。')
+    try:
+        result = response.json()
+    except ValueError:
+        raise ModelGatewayError('MODEL_OUTPUT_INVALID', '平台模型服务未返回有效结果。') from None
     if not isinstance(result, dict) or result.get('success') is not True:
-        raise ValueError('平台模型服务未返回有效结果。')
+        raise ModelGatewayError('MODEL_OUTPUT_INVALID', '平台模型服务未返回有效结果。')
     return result.get('data')
 
 
@@ -102,7 +111,9 @@ def cache_identity(config):
 def complete(config, messages, *, max_tokens=8192, temperature=0, enable_thinking=None, timeout=90, purpose='repair'):
     """An OpenAI-shaped adapter; authorization stays only in the active context."""
     identifier = _identifier(config.get('native_model_id'))
-    identity, headers = _context()
+    from .ingestion import current_ingestion_claim, signed_headers
+    claim = current_ingestion_claim.get()
+    identity, headers = (current_identity.get(), {}) if claim else _context()
     endpoint = {'repair': 'chat', 'fields': 'plan'}.get(purpose)
     if endpoint is None:
         raise ValueError('不支持的结构化模型任务。')
@@ -111,11 +122,19 @@ def complete(config, messages, *, max_tokens=8192, temperature=0, enable_thinkin
         body['enable_thinking'] = enable_thinking
     try:
         with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as client:
-            data = _check_status(client.post(_base() + '/api/v1/knowledge-bases/'
-                + quote(identity.knowledge_base_id, safe='') + '/structured-model/' + endpoint, headers=headers, json=body))
+            if claim:
+                raw = json.dumps(body, separators=(',', ':')).encode()
+                path = '/internal/ingestion/model'
+                headers = signed_headers(claim, 'POST', path, body=raw)
+                headers['Content-Type'] = 'application/json'
+                data = _check_status(client.post(_base() + path, headers=headers, content=raw))
+            else:
+                data = _check_status(client.post(_base() + '/api/v1/knowledge-bases/'
+                    + quote(identity.knowledge_base_id, safe='') + '/structured-model/' + endpoint, headers=headers, json=body))
         if (not isinstance(data, dict) or data.get('model_id') != identifier
                 or not isinstance(data.get('content'), str) or not isinstance(data.get('finish_reason'), str)):
-            raise ValueError('平台模型未返回所选模型的有效结果，未应用建议。')
+            raise ModelGatewayError('MODEL_OUTPUT_INVALID', '平台模型未返回所选模型的有效结果，未应用建议。')
         return {'choices': [{'message': {'content': data['content']}, 'finish_reason': data['finish_reason']}]}
-    except httpx.HTTPError:
-        raise ValueError('平台模型连接失败或超时，未切换到其他模型。') from None
+    except httpx.HTTPError as exc:
+        code = 'MODEL_TIMEOUT' if isinstance(exc, getattr(httpx, 'TimeoutException', ())) else 'MODEL_CONNECTION'
+        raise ModelGatewayError(code, '平台模型连接失败或超时，未切换到其他模型。') from None

@@ -592,6 +592,7 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 			ChunkType:       types.ChunkTypeText,
 			SourceLocators:  chunkData.SourceLocators,
 			Metadata:        documentImageSourceMetadata(chunkData.Content, options.DocumentImageSources),
+			ImageInfo:       storedSourceImageInfo(chunkData.Content, options.StoredImages),
 		}
 
 		// Wire up ParentChunkID for child chunks
@@ -2820,7 +2821,7 @@ func (s *knowledgeService) reparseKnowledge(
 	if fileType == "" {
 		fileType = getFileType(existing.FileName)
 	}
-	if existing.Type == "file" && isExcelFileType(fileType) {
+	if existing.Type == "file" && isExcelFileType(fileType) && !(fileType == "xlsx" && unifiedIngestionAvailable()) {
 		return nil, werrors.NewBadRequestError("Excel 文件请通过结构化数据库进行结构化解析")
 	}
 	storedOverrides, storedErr := existing.ProcessOverrides()
@@ -2856,6 +2857,14 @@ func (s *knowledgeService) reparseKnowledge(
 		}
 	}
 
+	if existing.Type == "file" && unifiedIngestionAvailable() && (fileType == "pdf" || fileType == "xlsx") {
+		if err := setIngestionState(existing, knowledgeIngestionState{Attempt: uuid.NewString(), SourceHash: existing.FileHash, Status: "pending", Stage: "等待自动处理"}); err != nil {
+			return nil, err
+		}
+		if err := s.repo.UpdateKnowledgeColumn(ctx, existing.ID, "metadata", existing.Metadata); err != nil {
+			return nil, err
+		}
+	}
 	processOverrides, _ = existing.ProcessOverrides()
 	reparseEff := ResolveProcessConfig(kb, processOverrides)
 
@@ -2970,6 +2979,8 @@ func (s *knowledgeService) reparseKnowledge(
 
 		lang := types.LanguageFromContextOrDefault(ctx)
 		taskPayload := types.DocumentProcessPayload{
+			ParserRetryKey:           uuid.NewString(),
+			Initiator:                types.TaskInitiatorFromContext(ctx),
 			TenantID:                 tenantID,
 			KnowledgeID:              existing.ID,
 			KnowledgeBaseID:          existing.KnowledgeBaseID,
@@ -3024,6 +3035,8 @@ func (s *knowledgeService) reparseKnowledge(
 
 		lang := types.LanguageFromContextOrDefault(ctx)
 		taskPayload := types.DocumentProcessPayload{
+			ParserRetryKey:           uuid.NewString(),
+			Initiator:                types.TaskInitiatorFromContext(ctx),
 			TenantID:                 tenantID,
 			KnowledgeID:              existing.ID,
 			KnowledgeBaseID:          existing.KnowledgeBaseID,
@@ -3077,6 +3090,8 @@ func (s *knowledgeService) reparseKnowledge(
 
 		lang := types.LanguageFromContextOrDefault(ctx)
 		taskPayload := types.DocumentProcessPayload{
+			ParserRetryKey:           uuid.NewString(),
+			Initiator:                types.TaskInitiatorFromContext(ctx),
 			TenantID:                 tenantID,
 			KnowledgeID:              existing.ID,
 			KnowledgeBaseID:          existing.KnowledgeBaseID,
@@ -3663,6 +3678,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 
 	ctx = logger.WithRequestID(ctx, payload.RequestId)
 	ctx = logger.WithField(ctx, "document_process", payload.KnowledgeID)
+	ctx = payload.Initiator.Apply(ctx)
 	ctx = types.WithExecutionTenant(ctx, payload.TenantID)
 	if payload.Language != "" {
 		ctx = context.WithValue(ctx, types.LanguageContextKey, payload.Language)
@@ -3958,6 +3974,15 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 			QuestionCount:            payload.QuestionCount,
 		}
 		return s.processChunks(ctx, kb, knowledge, passageChunks, passageOpts)
+	} else if state, stateErr := ingestionState(knowledge); stateErr == nil && state.Attempt != "" && knowledge.FileType == "xlsx" {
+		result, processErr := s.processUnifiedTables(ctx, knowledge, kb, nil)
+		if processErr != nil {
+			return processErr
+		}
+		convertResult, err = s.workbookIngestionDocument(ctx, knowledge, kb, result)
+		if err != nil {
+			return err
+		}
 	} else {
 		// File import
 		convertResult, err = s.convert(ctx, payload, kb, knowledge, eff, isLastRetry)
@@ -3966,6 +3991,12 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 		}
 		if convertResult == nil {
 			return nil
+		}
+	}
+
+	if state, stateErr := ingestionState(knowledge); stateErr == nil && state.Attempt != "" && knowledge.FileType == "pdf" {
+		if _, err := s.processUnifiedTables(ctx, knowledge, kb, convertResult.StructuredTables); err != nil {
+			return err
 		}
 	}
 
@@ -4255,11 +4286,19 @@ func (s *knowledgeService) convert(
 		URL:                   payload.URL,
 		Title:                 knowledge.Title,
 		ParserEngine:          parserEngine,
+		ParserRetryKey:        payload.ParserRetryKey,
 		RequestID:             payload.RequestId,
 		ParserEngineOverrides: mergedOverrides,
 	}
 
 	if !isURL {
+		if parserEngine == docparser.RemotePDFEngineName {
+			release, err := docparser.AcquireRemotePDFBuffer(ctx)
+			if err != nil {
+				return s.failKnowledge(ctx, knowledge, isLastRetry, "Remote PDF admission cancelled: %v", err)
+			}
+			defer release()
+		}
 		fileReader, err := s.resolveFileServiceForPath(ctx, kb, payload.FilePath).GetFile(ctx, payload.FilePath)
 		if err != nil {
 			s.failStage(ctx, knowledge.ID, types.StageDocReader,
@@ -4267,7 +4306,11 @@ func (s *knowledgeService) convert(
 			return s.failKnowledge(ctx, knowledge, isLastRetry, "failed to get file: %v", err)
 		}
 		defer fileReader.Close()
-		contentBytes, err := io.ReadAll(fileReader)
+		var boundedReader io.Reader = fileReader
+		if parserEngine == docparser.RemotePDFEngineName {
+			boundedReader = io.LimitReader(fileReader, (100<<20)+1)
+		}
+		contentBytes, err := io.ReadAll(boundedReader)
 		if err != nil {
 			s.failStage(ctx, knowledge.ID, types.StageDocReader,
 				werrors.ErrCodeDocReaderParseFailed, "failed to read file", err)
@@ -4282,22 +4325,32 @@ func (s *knowledgeService) convert(
 	if err != nil {
 		code, message := docReaderFailure(err)
 		logger.Errorf(ctx, "[convert] DocReader failed knowledge=%s code=%s: %v", knowledge.ID, code, err)
+		stageErr := err
+		if code == werrors.ErrCodeDocReaderStorageExhausted {
+			// Keep raw storage paths in server logs, outside the client-visible timeline.
+			stageErr = nil
+		}
 		s.failStage(ctx, knowledge.ID, types.StageDocReader,
-			code, message, err)
+			code, message, stageErr)
 		return s.failKnowledge(ctx, knowledge, isLastRetry, "%s", message)
 	}
 	sanitizeReadResult(result)
 	if result.Error != "" {
 		logger.Errorf(ctx, "[convert] parser returned error kb=%s knowledge=%s file=%q type=%s engine=%q: %s",
 			kb.ID, knowledge.ID, req.FileName, fileType, parserEngine, result.Error)
+		code, message := docReaderResultFailure(result.Error)
+		if parserEngine == docparser.RemotePDFEngineName && result.Metadata["parser_error_code"] != "" {
+			// This code is sanitized by the trusted reader, never taken from document text.
+			code = "REMOTE_PDF_" + strings.TrimPrefix(result.Metadata["parser_error_code"], "REMOTE_PDF_")
+		}
 		knowledge.ParseStatus = "failed"
-		knowledge.ErrorMessage = result.Error
+		knowledge.ErrorMessage = message
 		knowledge.UpdatedAt = time.Now()
 		if err := s.updateKnowledgeUnlessSourceReplaced(ctx, knowledge); err != nil {
 			logger.Errorf(ctx, "failed to persist parser error for %s: %v", knowledge.ID, err)
 		}
 		s.failStage(ctx, knowledge.ID, types.StageDocReader,
-			werrors.ErrCodeDocReaderParseFailed, result.Error, nil)
+			code, message, nil)
 		return nil, nil
 	}
 	if !isURL {
@@ -4310,6 +4363,14 @@ func (s *knowledgeService) convert(
 	}
 	if pages := result.Metadata["pages"]; pages != "" {
 		docOutput["pages"] = pages
+	}
+	if result.Metadata["parser_engine"] == docparser.RemotePDFEngineName {
+		docOutput["parser_engine"] = result.Metadata["parser_engine"]
+		docOutput["parser_job_id"] = result.Metadata["parser_job_id"]
+		var quality map[string]interface{}
+		if json.Unmarshal([]byte(result.Metadata["parser_quality"]), &quality) == nil {
+			docOutput["parser_quality"] = quality
+		}
 	}
 	s.endStage(ctx, knowledge.ID, types.StageDocReader, docOutput)
 	return result, nil

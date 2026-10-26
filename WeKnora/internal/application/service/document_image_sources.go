@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -17,13 +18,24 @@ func resolvedDocumentImageSources(result *types.ReadResult, images []docparser.S
 	if result == nil || sourceHash == "" {
 		return nil
 	}
+	var out []types.DocumentImageSource
+	seen := map[types.DocumentImageSource]bool{}
+	for _, img := range images {
+		if _, ok := types.ParseResourcePath(img.ServingURL); ok && img.SourcePage > 0 {
+			binding := types.DocumentImageSource{Reference: img.ServingURL, Page: img.SourcePage, SourceHash: sourceHash}
+			if !seen[binding] {
+				out = append(out, binding)
+				seen[binding] = true
+			}
+		}
+	}
 	var parsed []struct {
 		OriginalRef string `json:"original_ref"`
 		Page        int    `json:"page"`
 		SourcePart  string `json:"source_part"`
 	}
 	if raw := result.Metadata["pptx_image_sources_v1"]; len(raw) > 1<<20 || json.Unmarshal([]byte(raw), &parsed) != nil || len(parsed) > 4096 {
-		return nil
+		return out
 	}
 	stored := map[string]string{}
 	for _, img := range images {
@@ -31,8 +43,6 @@ func resolvedDocumentImageSources(result *types.ReadResult, images []docparser.S
 			stored[img.OriginalRef] = img.ServingURL
 		}
 	}
-	var out []types.DocumentImageSource
-	seen := map[types.DocumentImageSource]bool{}
 	for _, item := range parsed {
 		ref := stored[item.OriginalRef]
 		if ref == "" || item.Page < 1 || !pptxMediaSourcePart.MatchString(item.SourcePart) {
@@ -88,4 +98,37 @@ func cloneDocumentImageSourceMetadata(metadata types.JSON, urls map[string]strin
 	envelope[types.DocumentImageSourcesKey] = encoded
 	out, _ := json.Marshal(envelope)
 	return types.JSON(out)
+}
+
+// Original pixels are usable gallery assets even when OCR is disabled or skipped.
+// Captions describe their provenance only; no model observations are invented.
+func storedSourceImageInfo(content string, images []docparser.StoredImage) string {
+	var info []types.ImageInfo
+	seen := map[string]bool{}
+	for _, img := range images {
+		if _, valid := types.ParseResourcePath(img.ServingURL); !valid || seen[img.ServingURL] {
+			continue
+		}
+		switch img.MimeType {
+		case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp":
+		default:
+			continue
+		}
+		at := strings.Index(content, "]("+img.ServingURL+")")
+		if at < 0 {
+			continue
+		}
+		seen[img.ServingURL] = true
+		caption := "原文件图片"
+		if img.SourcePage > 0 {
+			caption = fmt.Sprintf("PDF 第 %d 页原件", img.SourcePage)
+		}
+		start := len([]rune(content[:at+2]))
+		info = append(info, types.ImageInfo{URL: img.ServingURL, OriginalURL: img.ServingURL, Caption: caption, StartPos: start, EndPos: start + len([]rune(img.ServingURL))})
+	}
+	if len(info) == 0 {
+		return ""
+	}
+	raw, _ := json.Marshal(info)
+	return string(raw)
 }

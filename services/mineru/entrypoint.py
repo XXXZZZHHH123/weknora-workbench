@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
 
@@ -57,13 +58,30 @@ def load_settings(path: str | Path | None = None) -> dict:
         vlm_concurrency=positive_env('MINERU_VLM_CONCURRENCY', 2, 8),
         vlm_http_timeout=positive_env('MINERU_VLM_HTTP_TIMEOUT', 600, 1800),
         retention_seconds=positive_env('MINERU_RETENTION_SECONDS', 86400, 604800),
+        processing_window_size=positive_env('MINERU_PROCESSING_WINDOW_SIZE', 8, 32),
     )
     return settings
+
+
+def prepare_scratch(settings: dict) -> None:
+    # Linux PDF rendering writes raw bitmaps here. The container's /tmp tmpfs
+    # cannot hold a long document; use the writable parser data volume instead.
+    scratch = Path(os.environ.get('TMPDIR', '/var/lib/mineru/data/tmp'))
+    if not scratch.is_absolute():
+        raise ValueError('Parser scratch directory must be absolute')
+    scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=scratch) as probe:
+        probe.write(b'parser-scratch-probe')
+        probe.flush()
+    os.environ['TMPDIR'] = str(scratch)
+    tempfile.tempdir = str(scratch)
+    os.environ['MINERU_PROCESSING_WINDOW_SIZE'] = str(settings['processing_window_size'])
 
 
 def create_application(settings: dict):
     if version('mineru') != EXPECTED_VERSION:
         raise ValueError('Unexpected MinerU package version')
+    prepare_scratch(settings)
     # Fix the local backend and prevent helper LLMs from silently merging table
     # fragments or leveling headings with an independently configured provider.
     os.environ['MINERU_MODEL_SMALL_BACKEND'] = 'onnx'

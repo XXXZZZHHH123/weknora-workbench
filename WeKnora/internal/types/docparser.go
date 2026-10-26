@@ -1,10 +1,14 @@
 package types
 
+import "encoding/json"
+
 import "strings"
 
 // ReadRequest is the unified transport-agnostic request for document reading.
 // Set FileContent for file mode, URL for URL mode.
 type ReadRequest struct {
+	// ParserRetryKey is generated only by explicit user reparse, never document input.
+	ParserRetryKey        string
 	FileContent           []byte
 	FileName              string
 	FileType              string
@@ -17,6 +21,9 @@ type ReadRequest struct {
 
 // ReadResult is the transport-agnostic result of document reading.
 type ReadResult struct {
+	// StructuredTables is captured from the same parser result, not a second parse.
+	StructuredTables json.RawMessage
+
 	MarkdownContent string
 	ImageRefs       []ImageRef
 	ImageDirPath    string
@@ -32,6 +39,10 @@ type ReadResult struct {
 
 // ImageRef represents an image reference extracted from the document.
 type ImageRef struct {
+	// SkipMultimodal preserves the original without re-indexing protected or already-transcribed cells.
+	SkipMultimodal bool
+	SourcePage     int // physical original page, supplied by the parser
+
 	Filename    string
 	OriginalRef string
 	MimeType    string

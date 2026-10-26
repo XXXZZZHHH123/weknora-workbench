@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
 
 	werrors "github.com/Tencent/WeKnora/internal/errors"
+	"github.com/Tencent/WeKnora/internal/infrastructure/docparser"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -19,6 +21,9 @@ func TestDocReaderFailure(t *testing.T) {
 		err  error
 		code string
 	}{
+		{"remote queue full", &docparser.RemotePDFError{Code: "http_429"}, "REMOTE_PDF_HTTP_429"},
+		{"remote parser storage full", &docparser.RemotePDFError{Code: "http_507"}, "REMOTE_PDF_HTTP_507"},
+		{"remote unconfigured", &docparser.RemotePDFError{Code: "not_configured"}, "REMOTE_PDF_NOT_CONFIGURED"},
 		{
 			"scanned PDF wrapped connection failure",
 			fmt.Errorf("anydoc fallback: %w",
@@ -38,6 +43,11 @@ func TestDocReaderFailure(t *testing.T) {
 		{"context timeout", fmt.Errorf("parse: %w", context.DeadlineExceeded), werrors.ErrCodeDocReaderTimeout},
 		{"RPC timeout", status.Error(codes.DeadlineExceeded, "private-address"), werrors.ErrCodeDocReaderTimeout},
 		{"parser failure", errors.New("private-address secret-token"), werrors.ErrCodeDocReaderParseFailed},
+		{"local storage full", fmt.Errorf("write private-address: %w", syscall.ENOSPC), werrors.ErrCodeDocReaderStorageExhausted},
+		{"remote shared memory full", errors.New("render: [Errno 28] No space left on device: private-address secret-token"), werrors.ErrCodeDocReaderStorageExhausted},
+		{"remote ENOSPC", errors.New("ENOSPC: private-address secret-token"), werrors.ErrCodeDocReaderStorageExhausted},
+		{"resource error before unavailable", status.Error(codes.Unavailable, "ENOSPC private-address"), werrors.ErrCodeDocReaderStorageExhausted},
+		{"unrelated resource exhausted", status.Error(codes.ResourceExhausted, "provider rate limit"), werrors.ErrCodeDocReaderParseFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, message := docReaderFailure(tc.err)
@@ -48,5 +58,16 @@ func TestDocReaderFailure(t *testing.T) {
 				t.Fatal("raw transport diagnostics leaked into public message")
 			}
 		})
+	}
+}
+
+func TestDocReaderResultFailure(t *testing.T) {
+	code, message := docReaderResultFailure("MinerU parse_failed: [Errno 28] No space left on device: private-address")
+	if code != werrors.ErrCodeDocReaderStorageExhausted || strings.Contains(message, "private-address") {
+		t.Fatalf("unsafe or unclassified parser result: %s %s", code, message)
+	}
+	code, message = docReaderResultFailure("unsupported file encoding")
+	if code != werrors.ErrCodeDocReaderParseFailed || message != "unsupported file encoding" {
+		t.Fatalf("ordinary parser result changed: %s %s", code, message)
 	}
 }

@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   mode?: 'import' | 'query'
   view?: string
   title?: string
-}>(), { sourceKnowledgeId: '', sourceFileType: 'xlsx', mode: 'import', view: '', title: '当前知识库结构化数据工作台' })
+}>(), { sourceKnowledgeId: '', sourceFileType: 'xlsx', mode: 'import', view: '', title: '当前知识库表格数据工作台' })
 const emit = defineEmits<{ navigate: [view: string]; modelSettingsOpened: [] }>()
 const auth = useAuthStore()
 const { effectiveTheme } = useTheme()

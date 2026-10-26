@@ -1,0 +1,50 @@
+name: weknora-remote-pdf
+services:
+  remote-pdf:
+    image: ${REMOTE_PDF_IMAGE:?Set a reviewed remote PDF image}
+    build: .
+    restart: unless-stopped
+    init: true
+    user: "${REMOTE_PDF_UID:-10001}:${REMOTE_PDF_GID:-10001}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "${REMOTE_PDF_CPUS:-2.0}"
+    cpu_shares: 512
+    mem_limit: ${REMOTE_PDF_MEMORY:-2g}
+    memswap_limit: ${REMOTE_PDF_MEMORY:-2g}
+    pids_limit: 128
+    stop_grace_period: 30s
+    environment:
+      REMOTE_PDF_SETTINGS_FILE: /run/secrets/remote-pdf.json
+      REMOTE_PDF_DATA_DIR: /data
+      TMPDIR: /data/tmp
+    volumes:
+      - type: bind
+        source: ${REMOTE_PDF_SETTINGS_FILE:?Set private settings JSON path}
+        target: /run/secrets/remote-pdf.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${REMOTE_PDF_DATA_DIR:?Set private persistent data directory}
+        target: /data
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    ports:
+      - target: 8000
+        published: "${REMOTE_PDF_HOST_PORT:-18735}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks: [workbench]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+networks:
+  workbench:
+    external: true
+    name: ${REMOTE_PDF_NETWORK:-weknora-workbench-dev_default}

@@ -23,6 +23,9 @@ class DeploymentTests(unittest.TestCase):
         self.clean_environment = patch.dict(os.environ, {}, clear=True)
         self.clean_environment.start()
         self.addCleanup(self.clean_environment.stop)
+        os.environ['TMPDIR'] = str(Path(self.temporary.name) / 'scratch')
+        self.saved_tempdir = tempfile.tempdir
+        self.addCleanup(setattr, tempfile, 'tempdir', self.saved_tempdir)
 
     def settings(self, **fields):
         payload = {'api_key': 'synthetic-service-key-' * 3, 'vlm_mode': 'local', **fields}
@@ -34,11 +37,31 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(settings['vlm_mode'], 'local')
         self.assertEqual(settings['parse_concurrency'], 1)
         self.assertEqual(settings['vlm_concurrency'], 2)
+        self.assertEqual(settings['processing_window_size'], 8)
         for name, bad in [('MINERU_PARSE_CONCURRENCY', '0'), ('MINERU_PARSE_CONCURRENCY', '3'),
-                          ('MINERU_VLM_CONCURRENCY', '100'), ('MINERU_RETENTION_SECONDS', '-1')]:
+                          ('MINERU_VLM_CONCURRENCY', '100'), ('MINERU_RETENTION_SECONDS', '-1'),
+                          ('MINERU_PROCESSING_WINDOW_SIZE', '0'), ('MINERU_PROCESSING_WINDOW_SIZE', '64')]:
             with self.subTest(name=name, value=bad), patch.dict(os.environ, {name: bad}):
                 with self.assertRaises(ValueError):
                     self.settings()
+
+    def test_render_scratch_is_writable_and_used_by_temporary_files(self):
+        entrypoint.prepare_scratch(self.settings())
+        scratch = Path(os.environ['TMPDIR'])
+        with tempfile.TemporaryDirectory(prefix='docvortex-render-') as directory:
+            self.assertEqual(Path(directory).parent, scratch)
+            (Path(directory) / 'page.pixels').write_bytes(b'rendered-page')
+        self.assertEqual(list(scratch.iterdir()), [])
+        self.assertEqual(os.environ['MINERU_PROCESSING_WINDOW_SIZE'], '8')
+
+    def test_invalid_scratch_prevents_model_start(self):
+        os.environ['TMPDIR'] = str(self.settings_file)
+        settings = self.settings()
+        with self.assertRaises(OSError):
+            entrypoint.prepare_scratch(settings)
+        os.environ['TMPDIR'] = 'relative'
+        with self.assertRaises(ValueError):
+            entrypoint.prepare_scratch(settings)
 
     def test_local_mode_rejects_remote_values_and_unusable_bearer_keys(self):
         for fields in ({'api_key': ' ' * 40}, {'api_key': 'x' * 31}, {'api_key': 'x' * 40 + '\n'},

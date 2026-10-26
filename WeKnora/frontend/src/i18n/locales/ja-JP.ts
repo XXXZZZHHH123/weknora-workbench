@@ -1234,6 +1234,8 @@ export default {
       DOCREADER_TIMEOUT_SUGGESTION: "DocReader の稼働状態と負荷を確認してから再試行してください。必要に応じて大きなファイルを分割してください。",
       DOCREADER_PARSE_FAILED: "文書解析に失敗しました",
       DOCREADER_PARSE_FAILED_SUGGESTION: "ファイル形式を確認し、管理者に今回の DocReader ログの確認を依頼してください。",
+      DOCREADER_STORAGE_EXHAUSTED: "解析サービスの空き容量不足",
+      DOCREADER_STORAGE_EXHAUSTED_SUGGESTION: "解析サービスのディスク、一時領域、または共有メモリの空き容量が不足しています。管理者に容量の解放または拡張を依頼してから再試行してください。",
       TASK_STALLED: '進捗がないため自動停止しました',
       TASK_STALLED_SUGGESTION: 'しきい値を超えても進捗がなく、キューにも対応するタスクがないため失敗としてマークされました。「再試行」を押してください。繰り返し発生する場合は、この段階が依存するサービス（文書解析、モデル、ベクトルストア）を確認してください。',
       UNKNOWN_SUGGESTION: '詳細はアプリケーションログを確認してください。'
@@ -6299,6 +6301,10 @@ export default {
         anydoc: {
           name: 'anydoc',
           desc: 'プロセス内で動作するOfficeドキュメントの解析エンジン（外部サービス不要）'
+        },
+        remote_vlm: {
+          name: 'リモート PDF 解析',
+          desc: '共有キュー、ページ出典、表の検証'
         },
         mineru: {
           name: 'MinerU',

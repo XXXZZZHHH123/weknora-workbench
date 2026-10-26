@@ -106,8 +106,11 @@ func documentImageCatalog(result *types.ToolResult, knowledgeID, sourceHash stri
 					}
 					matched = s
 				}
-				if matched != nil && !ambiguous && documentFigurePart.MatchString(matched.SourcePart) {
-					item.SourcePart, item.Page = matched.SourcePart, matched.Page
+				if matched != nil && !ambiguous {
+					item.Page = matched.Page
+					if documentFigurePart.MatchString(matched.SourcePart) {
+						item.SourcePart = matched.SourcePart
+					}
 				}
 			}
 			images = append(images, item)

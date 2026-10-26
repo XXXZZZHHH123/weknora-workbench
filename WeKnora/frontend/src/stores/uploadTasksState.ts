@@ -1,3 +1,4 @@
+import { knowledgeIngestion } from '../utils/knowledgeIngestion'
 /**
  * Framework-free rules behind the knowledge upload queue (stores/uploadTasks.ts):
  * how an item's transfer and parse states fold into one display phase, how a
@@ -25,6 +26,9 @@ export interface UploadItem {
   /** Backend parse_status once uploaded; 'deleted' when the row disappeared. */
   parseStatus?: string
   parseError?: string
+  processingStatus?: string
+  processingStage?: string
+  attentionCount?: number
 }
 
 /**
@@ -57,6 +61,7 @@ export function itemPhase(item: UploadItem): ItemPhase {
     case 'cancelled':
       return 'cancelled'
   }
+  if (['pending','processing'].includes(item.processingStatus || '') && !['failed','cancelled','deleting','deleted'].includes(item.parseStatus || '')) return 'parsing'
   switch (item.parseStatus) {
     // stored is a successful original-file upload awaiting explicit structured
     // parsing; there is no background parse to keep the panel open for.
@@ -81,7 +86,7 @@ export function itemPhase(item: UploadItem): ItemPhase {
 export function needsParsePolling(item: UploadItem): boolean {
   if (item.transfer !== 'uploaded' || !item.knowledgeId) return false
   const status = item.parseStatus
-  return !status || status === 'pending' || status === 'processing' || status === 'finalizing'
+  return !status || status === 'pending' || status === 'processing' || status === 'finalizing' || item.processingStatus === 'pending' || item.processingStatus === 'processing'
 }
 
 export interface UploadSummary {
@@ -218,7 +223,7 @@ export function pickNextToStart<T extends UploadItem>(
 }
 
 export type UploadOutcome =
-  | { kind: 'uploaded'; knowledgeId?: string; parseStatus?: string }
+  | { kind: 'uploaded'; knowledgeId?: string; parseStatus?: string; processingStatus?: string; processingStage?: string; attentionCount?: number }
   | { kind: 'duplicate'; knowledgeId?: string; message?: string }
   | { kind: 'failed'; message?: string }
 
@@ -233,7 +238,9 @@ export function classifyUploadResult(result: any): UploadOutcome {
     return { kind: 'duplicate', knowledgeId: result?.data?.id, message: result?.message }
   }
   if (result?.success === true) {
-    return { kind: 'uploaded', knowledgeId: result?.data?.id, parseStatus: result?.data?.parse_status }
+    const processing = knowledgeIngestion(result.data?.metadata)
+    return { kind: 'uploaded', knowledgeId: result?.data?.id, parseStatus: result?.data?.parse_status,
+      ...(processing.status ? {processingStatus: processing.status, processingStage: processing.stage, attentionCount: processing.attentionCount} : {}) }
   }
   return { kind: 'failed', message: result?.error?.message || result?.message }
 }

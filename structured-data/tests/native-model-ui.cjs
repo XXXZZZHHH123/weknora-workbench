@@ -56,7 +56,7 @@ async function main() {
         }
       } else {
         const file = route === '/' ? 'index.html' : route.slice(1);
-        if (!['index.html','sheet-review.js','sheet-review.css','workspace.css'].includes(file)) { res.writeHead(404); res.end(); return; }
+        if (!['pdf-query.js','index.html','sheet-review.js','sheet-review.css','workspace.css'].includes(file)) { res.writeHead(404); res.end(); return; }
         res.setHeader('Content-Type', file.endsWith('.js') ? 'application/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html');
         res.end(fs.readFileSync(path.join(source, file))); return;
       }

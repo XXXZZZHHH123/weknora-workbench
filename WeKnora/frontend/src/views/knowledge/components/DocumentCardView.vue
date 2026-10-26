@@ -2,6 +2,7 @@
 import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { formatFileSize } from '@/utils/files';
+import { knowledgeIngestion } from '@/utils/knowledgeIngestion';
 import { formatReferenceSnippet } from '@/utils/referenceSources';
 import KnowledgeTagPopover from './KnowledgeTagPopover.vue';
 import DocumentFileIcon from './DocumentFileIcon.vue';
@@ -116,6 +117,8 @@ const isTraceMenuVisible = (item: KnowledgeCard): boolean => {
 };
 
 const inFlightCardStatusText = (item: KnowledgeCard): string => {
+  const processing = knowledgeIngestion(item.metadata);
+  if (processing.stage) return processing.stage;
   const stall = shownStall(item.stall_state, item.stalled_minutes);
   if (stall) return t(stall === 'queued' ? 'knowledgeBase.statusQueued' : 'knowledgeBase.statusStalled');
   if (item.parse_status === 'finalizing') {
@@ -514,6 +517,10 @@ const handleAction = (action: 'download' | 'edit' | 'view-trace' | 'reparse' | '
           >
             <t-icon name="chart-line" />
           </button>
+        </div>
+        <div v-else-if="knowledgeIngestion(item.metadata).attentionCount && ['completed','finalizing'].includes(item.parse_status || '')" class="card-analyze card-attention" @click.stop="emit('action','structured-parse',item)">
+          <t-icon name="error-circle" />
+          <span>{{ t('knowledgeBase.processingAttention',{count:knowledgeIngestion(item.metadata).attentionCount}) }}</span>
         </div>
         <div v-else-if="item.parse_status === 'stored'" class="card-analyze">
           <t-icon name="file" class="card-analyze-loading" />
@@ -1013,4 +1020,5 @@ const handleAction = (action: 'download' | 'edit' | 'view-trace' | 'reparse' | '
     color: var(--td-text-color-secondary);
   }
 }
+.card-attention{color:var(--td-warning-color);cursor:pointer}
 </style>

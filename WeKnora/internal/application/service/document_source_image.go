@@ -63,6 +63,9 @@ func (s *knowledgeService) ReadDocumentSourceImage(ctx context.Context, knowledg
 func rasterMultimodalImages(images []docparser.StoredImage) []docparser.StoredImage {
 	out := make([]docparser.StoredImage, 0, len(images))
 	for _, img := range images {
+		if img.SkipMultimodal {
+			continue
+		}
 		ref := strings.ToLower(img.OriginalRef)
 		if strings.HasSuffix(ref, ".emf") || strings.HasSuffix(ref, ".wmf") {
 			continue

@@ -21,7 +21,7 @@ const sample = {...current,dataset_id:'c'.repeat(24),source_file:'中哲_范围�
    else if(url.pathname.endsWith('/series'))data={series:[],total:0};
    else if(url.pathname.endsWith('/charts'))data={charts:[],sheets:[],total:0,next_offset:null};
    else if(url.pathname==='/') {data=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
-   else if(['/sheet-review.js','/sheet-review.css','/workspace.css'].includes(url.pathname)){data=fs.readFileSync(path.join(source,url.pathname.slice(1)),'utf8');type=url.pathname.endsWith('.js')?'application/javascript':'text/css';}
+   else if(['/pdf-query.js','/sheet-review.js','/sheet-review.css','/workspace.css'].includes(url.pathname)){data=fs.readFileSync(path.join(source,url.pathname.slice(1)),'utf8');type=url.pathname.endsWith('.js')?'application/javascript':'text/css';}
    await route.fulfill({contentType:type,body:typeof data==='string'?data:JSON.stringify(data)});
   });
   await page.goto('http://fixture.test/');await page.locator('#stats b').first().waitFor();

@@ -38,7 +38,7 @@ async function main() {
         </script>`;
       type = 'text/html';
     } else if(route==='/') {body=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
-    else if(['/sheet-review.js','/sheet-review.css','/workspace.css'].includes(route)){body=fs.readFileSync(path.join(source,route.slice(1)),'utf8');type=route.endsWith('.js')?'application/javascript':'text/css';}
+    else if(['/pdf-query.js','/sheet-review.js','/sheet-review.css','/workspace.css'].includes(route)){body=fs.readFileSync(path.join(source,route.slice(1)),'utf8');type=route.endsWith('.js')?'application/javascript':'text/css';}
     else if(route==='/pdf-review.js'){body=fs.readFileSync(path.join(source,'static','pdf-review.js'),'utf8');type='application/javascript';}
     else if(route==='/api/ui-config')body={title:'Fixture',workspace_label:'Fixture',weknora_url:'http://127.0.0.1'};
     else if(route==='/api/datasets')body={datasets:[]};

@@ -206,6 +206,14 @@ func NewRouter(params RouterParams) *gin.Engine {
 	r.POST("/api/v1/local-browser/extension/authorize", params.SessionHandler.BrowserSkillAuthorize)
 	r.POST("/api/v1/local-browser/internal", params.SessionHandler.BrowserSkillInternal)
 
+	// Internal worker continuation has its own source-bound HMAC authentication.
+	if params.KnowledgeHandler != nil {
+		r.POST("/internal/ingestion/check", params.KnowledgeHandler.ValidateIngestionTask)
+		if params.ModelHandler != nil {
+			r.POST("/internal/ingestion/model", handler.IngestionModelChat(params.KnowledgeHandler, params.ModelHandler))
+		}
+	}
+
 	// 认证中间件
 	r.Use(middleware.Auth(params.TenantService, params.UserService, params.TenantMemberService, params.TenantAPIKeyService, params.Config))
 

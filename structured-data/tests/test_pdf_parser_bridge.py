@@ -1,16 +1,203 @@
 import asyncio
+import errno
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from structured_data import pdf_parser_bridge as bridge
 
 
+@pytest.mark.parametrize('error', [
+    OSError(errno.ENOSPC, 'private-path secret-token'),
+    RuntimeError('render: [Errno 28] No space left on device: private-path secret-token'),
+    {'code': 'parse_failed', 'message': 'ENOSPC private-path secret-token'},
+])
+def test_storage_failure_is_classified_without_leaking_diagnostics(error):
+    assert bridge.is_storage_space_error(error)
+    with pytest.raises(bridge.PDFParserStorageError) as caught:
+        bridge._raise_if_storage_exhausted(error)
+    assert caught.value.code == 'PARSER_STORAGE_EXHAUSTED'
+    assert 'private-path' not in str(caught.value) and 'secret-token' not in str(caught.value)
+
+
+def test_other_resource_and_file_errors_are_not_storage_failures():
+    assert not bridge.is_storage_space_error(RuntimeError('ResourceExhausted: rate limit'))
+    assert not bridge.is_storage_space_error(RuntimeError('corrupted input file'))
+
+
+def test_v1_failed_job_reports_storage_exhaustion(tmp_path, monkeypatch):
+    pdf = tmp_path / 'fixture.pdf'
+    pdf.write_bytes(b'%PDF-1.7\nfixture')
+    responses = iter([
+        {'status': 'completed', 'file': {'id': 'input-1'}},
+        {'job_id': 'job-1'},
+        {'status': 'failed', 'files': [{'status': 'failed', 'error': {
+            'code': 'parse_failed', 'message': '[Errno 28] No space left on device: secret-path'}}]},
+    ])
+    monkeypatch.setattr(bridge, '_json_request', lambda *a, **kw: next(responses))
+    config = bridge.ParserConfig('mineru_v1', 'http://127.0.0.1:8000')
+    with pytest.raises(bridge.PDFParserStorageError, match='insufficient') as caught:
+        asyncio.run(bridge.parse_pdf(pdf, config=config))
+    assert 'secret-path' not in str(caught.value)
+
+
+@pytest.mark.parametrize('body, storage', [
+    (b'{"detail":"[Errno 28] No space left on device: secret-path"}', True),
+    (b'{"detail":"invalid PDF secret-path"}', False),
+])
+def test_http_error_capacity_is_safe_and_does_not_echo_body(monkeypatch, body, storage):
+    import io
+    from urllib.error import HTTPError
+    class Opener:
+        def open(self, *a, **kw):
+            raise HTTPError('http://secret-host', 500, 'failed', {}, io.BytesIO(body))
+    monkeypatch.setattr(bridge, 'build_opener', lambda *a: Opener())
+    config = bridge.ParserConfig('mineru_legacy', 'http://127.0.0.1:8000')
+    with pytest.raises(bridge.PDFParserError) as caught:
+        bridge._request(config, 'POST', config.url + '/file_parse', b'fixture')
+    assert isinstance(caught.value, bridge.PDFParserStorageError) is storage
+    assert 'secret-path' not in str(caught.value) and 'secret-host' not in str(caught.value)
+
+
 def test_default_poll_budget_covers_standard_job_deadline():
     config = bridge.ParserConfig("mineru_v1", "http://127.0.0.1:8000", tier="standard")
     assert (config.max_polls - 1) * config.poll_interval_seconds >= config.timeout_seconds
+
+
+@pytest.mark.parametrize('timeout, interval', [(600, 10), (3600, 20), (7200, .05)])
+def test_automatic_poll_budget_covers_configured_deadline(timeout, interval):
+    config = bridge.ParserConfig('mineru_v1', 'http://127.0.0.1:8000',
+                                timeout_seconds=timeout, poll_interval_seconds=interval)
+    assert (config.max_polls - 1) * config.poll_interval_seconds >= timeout
+    assert config.max_polls <= bridge.MAX_POLLS
+
+
+def test_environment_budget_defaults_and_explicit_poll_limit(monkeypatch):
+    monkeypatch.setenv('PDF_TABLE_PARSER_ENGINE', 'mineru_v1')
+    monkeypatch.setenv('PDF_TABLE_PARSER_URL', 'http://127.0.0.1:8000')
+    monkeypatch.delenv('PDF_TABLE_PARSER_TIMEOUT_SECONDS', raising=False)
+    monkeypatch.delenv('PDF_TABLE_PARSER_MAX_POLLS', raising=False)
+    monkeypatch.delenv('PDF_TABLE_PARSER_POLL_INTERVAL_SECONDS', raising=False)
+    assert bridge.ParserConfig.from_env().timeout_seconds == 600
+    monkeypatch.setenv('PDF_TABLE_PARSER_TIMEOUT_SECONDS', '3600')
+    monkeypatch.setenv('PDF_TABLE_PARSER_POLL_INTERVAL_SECONDS', '20')
+    assert bridge.ParserConfig.from_env().max_polls == 181
+    monkeypatch.setenv('PDF_TABLE_PARSER_MAX_POLLS', '3')
+    assert bridge.ParserConfig.from_env().max_polls == 3
+    assert bridge.ParserConfig('mineru_v1', 'http://127.0.0.1:8000', timeout_seconds=7201).timeout_seconds == 7200
+
+
+def test_v1_absolute_deadline_includes_upload_and_uses_independent_cancel_budget(monkeypatch):
+    clock = [100.0]
+    calls = []
+    def request(config, method, path, payload, headers, deadline):
+        calls.append((method, path, deadline))
+        if method == 'DELETE':
+            raise bridge.PDFParserError('cancel failed; must not hide original timeout')
+        if path == '/v1/uploads':
+            clock[0] += 10
+            return {'status': 'completed', 'file': {'id': 'input-1'}}
+        if method == 'POST':
+            clock[0] += 10
+            return {'job_id': 'job-1'}
+        return {'status': 'running'}
+    async def sleep(seconds):
+        clock[0] += seconds
+    monkeypatch.setattr(bridge, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(bridge, '_json_request', request)
+    monkeypatch.setattr(bridge.asyncio, 'sleep', sleep)
+    config = bridge.ParserConfig('mineru_v1', 'http://127.0.0.1:8000',
+                                timeout_seconds=30, poll_interval_seconds=20)
+    with pytest.raises(bridge.PDFParserError, match='total timeout'):
+        asyncio.run(bridge._mineru_v1(b'fixture', 'fixture.pdf', config, 100))
+    assert clock[0] == 130
+    assert [deadline for method, _, deadline in calls if method != 'DELETE'] == [130] * 3
+    assert calls[-1] == ('DELETE', '/v1/parse/jobs/job-1', 130 + bridge.CANCEL_TIMEOUT_SECONDS)
+
+
+def test_v1_explicit_poll_limit_cancels_once_and_preserves_original_error(monkeypatch):
+    calls = []
+    def request(config, method, path, payload, headers, deadline):
+        calls.append(method)
+        if method == 'DELETE':
+            raise bridge.PDFParserError('HTTP 409: job_already_terminal')
+        if path == '/v1/uploads':
+            return {'status': 'completed', 'file': {'id': 'input-1'}}
+        if method == 'POST':
+            return {'job_id': 'job-1'}
+        return {'status': 'running'}
+    monkeypatch.setattr(bridge, '_json_request', request)
+    config = bridge.ParserConfig('mineru_v1', 'http://127.0.0.1:8000', max_polls=1)
+    with pytest.raises(bridge.PDFParserError, match='poll limit'):
+        asyncio.run(bridge._mineru_v1(b'fixture', 'fixture.pdf', config, bridge.time.monotonic()))
+    assert calls == ['POST', 'POST', 'GET', 'DELETE']
+
+
+@pytest.mark.parametrize('status', ['completed', 'failed', 'canceled', 'partial'])
+def test_v1_terminal_jobs_are_not_canceled_again(monkeypatch, status):
+    calls = []
+    def request(config, method, path, payload, headers, deadline):
+        calls.append(method)
+        if path == '/v1/uploads':
+            return {'status': 'completed', 'file': {'id': 'input-1'}}
+        if method == 'POST':
+            return {'job_id': 'job-1'}
+        return {'status': status, 'files': [{'status': status}]}
+    monkeypatch.setattr(bridge, '_json_request', request)
+    config = bridge.ParserConfig('mineru_v1', 'http://127.0.0.1:8000')
+    with pytest.raises(bridge.PDFParserError):
+        asyncio.run(bridge._mineru_v1(b'fixture', 'fixture.pdf', config, bridge.time.monotonic()))
+    assert calls == ['POST', 'POST', 'GET']
+
+
+def test_v1_caller_cancellation_cleans_up_job_and_remains_canceled(monkeypatch):
+    calls = []
+    def request(config, method, path, payload, headers, deadline):
+        calls.append(method)
+        if path == '/v1/uploads':
+            return {'status': 'completed', 'file': {'id': 'input-1'}}
+        if method == 'POST':
+            return {'job_id': 'job-1'}
+        return {'status': 'canceled' if method == 'DELETE' else 'running'}
+    async def run():
+        waiting = asyncio.Event()
+        async def sleep(seconds):
+            waiting.set()
+            await asyncio.Event().wait()
+        monkeypatch.setattr(bridge.asyncio, 'sleep', sleep)
+        config = bridge.ParserConfig('mineru_v1', 'http://127.0.0.1:8000')
+        task = asyncio.create_task(bridge._mineru_v1(b'fixture', 'fixture.pdf', config, bridge.time.monotonic()))
+        await waiting.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    monkeypatch.setattr(bridge, '_json_request', request)
+    asyncio.run(run())
+    assert calls == ['POST', 'POST', 'GET', 'DELETE']
+
+
+def test_v1_absolute_async_deadline_interrupts_blocked_poll(monkeypatch):
+    calls = []
+    def request(config, method, path, payload, headers, deadline):
+        calls.append((method, deadline))
+        if path == '/v1/uploads':
+            return {'status': 'completed', 'file': {'id': 'input-1'}}
+        return {'job_id': 'job-1'}
+    async def thread(function, *args, **kwargs):
+        if args[1] == 'GET':
+            await asyncio.Event().wait()
+        return function(*args, **kwargs)
+    monkeypatch.setattr(bridge, '_json_request', request)
+    monkeypatch.setattr(bridge.asyncio, 'to_thread', thread)
+    config = bridge.ParserConfig('mineru_v1', 'http://127.0.0.1:8000', timeout_seconds=1)
+    started = bridge.time.monotonic() - .95
+    with pytest.raises(bridge.PDFParserError, match='total timeout'):
+        asyncio.run(bridge._mineru_v1(b'fixture', 'fixture.pdf', config, started))
+    assert [method for method, _ in calls] == ['POST', 'POST', 'DELETE']
+    assert calls[-1][1] > started + 1
 
 
 def test_expand_html_table_preserves_merged_headers_and_true_blank_cells():

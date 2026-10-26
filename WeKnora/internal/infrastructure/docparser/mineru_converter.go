@@ -135,9 +135,10 @@ func (c *MinerUReader) Read(ctx context.Context, req *types.ReadRequest) (*types
 	logger.Infof(context.Background(), "[MinerU] Parsed successfully, markdown=%d chars, images=%d", len(mdContent), len(imageRefs))
 
 	return &types.ReadResult{
-		MarkdownContent: mdContent,
-		ImageRefs:       imageRefs,
-		SourceBlocks:    minerUSourceBlocks(mdContent, contentList, req.FileType),
+		StructuredTables: capturedMinerUTables(contentList, mdContent),
+		MarkdownContent:  mdContent,
+		ImageRefs:        imageRefs,
+		SourceBlocks:     minerUSourceBlocks(mdContent, contentList, req.FileType),
 	}, nil
 }
 
@@ -156,9 +157,10 @@ func (c *MinerUReader) readV1(ctx context.Context, req *types.ReadRequest) (*typ
 	logger.Infof(ctx, "[MinerU] Parsed successfully (V1), markdown=%d chars, images=%d", len(mdContent), len(imageRefs))
 
 	return &types.ReadResult{
-		MarkdownContent: mdContent,
-		ImageRefs:       imageRefs,
-		SourceBlocks:    minerUSourceBlocks(mdContent, contentList, req.FileType),
+		StructuredTables: capturedMinerUTables(contentList, mdContent),
+		MarkdownContent:  mdContent,
+		ImageRefs:        imageRefs,
+		SourceBlocks:     minerUSourceBlocks(mdContent, contentList, req.FileType),
 	}, nil
 }
 
@@ -579,4 +581,12 @@ func normalizeMinerUImagePath(p string) string {
 	p = strings.TrimPrefix(p, "/")
 	p = strings.TrimPrefix(p, "images/")
 	return p
+}
+
+func capturedMinerUTables(layout json.RawMessage, markdown string) json.RawMessage {
+	if len(layout) == 0 {
+		return nil
+	}
+	raw, _ := json.Marshal(map[string]any{"engine": "mineru_v1", "response": map[string]any{"structured": layout, "markdown": markdown}})
+	return raw
 }

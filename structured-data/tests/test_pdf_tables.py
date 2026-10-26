@@ -64,6 +64,30 @@ def test_raw_round_trip_and_publication_requires_explicit_review(tmp_path):
     assert cell['text'] == '-1.20' and cell['source_sha256'] == 'a' * 64
 
 
+def test_manual_missing_row_preserves_original_and_audits_page_without_fake_cell_box(tmp_path):
+    store,draft,plan=setup(tmp_path)
+    raw=deepcopy(draft['bundle'])
+    plan['inserted_rows']=[dict(id='manual-1',fragment_id='table-1',after_row=1,
+                                texts=['Missing','-2.75'],reason='Original page 1, row missing between A and B')]
+    table=publish(store,draft,plan)
+    assert [r['raw_values']['col0'] for r in table['rows']]==['A','Missing','B']
+    span=table['rows'][1]['source_cells']['col1'][0]
+    assert span['origin']=='manual_transcription' and span['page']==1
+    assert span['row'] is None and span['bbox'] is None and span['reason']
+    assert table['coverage']['manual_inserted_row_count']==1
+    assert table['coverage']['covered_data_source_row_count']==2
+    assert float(store.query(table['table_id'],'SELECT sum(col1) FROM data')['rows'][0][0])==-3.95
+    assert store.read_draft(draft['draft_id'])['bundle']==raw
+    with pytest.raises(ValueError,match='Automatic'):
+        store.publish_automatic(draft['draft_id'],plan)
+    bad=deepcopy(plan);bad['inserted_rows'][0]['reason']=''
+    with pytest.raises(ValueError):store.validate_plan(draft['draft_id'],bad)
+    bad=deepcopy(plan);bad['inserted_rows'][0]['after_row']=99
+    with pytest.raises(ValueError):store.validate_plan(draft['draft_id'],bad)
+    bad=deepcopy(plan);bad['inserted_rows'][0]['texts']=['Missing']
+    with pytest.raises(ValueError):store.validate_plan(draft['draft_id'],bad)
+
+
 def test_repeat_header_and_headerless_continuation_are_explicit(tmp_path):
     raw = bundle([['Item', 'Value'], ['A', '1']], [['Item', 'Value'], ['B', '2']], [['C', '3']])
     headers = {'table-1': [{'row': 0, 'reason': 'header'}], 'table-2': [{'row': 0, 'reason': 'repeated header reviewed'}], 'table-3': []}
@@ -492,3 +516,139 @@ def test_selected_caption_notes_and_explicit_title_survive_list_and_read(tmp_pat
     assert listed['fragments'][0]['caption'] == 'Actual table caption'
     assert listed['fragments'][1]['footnotes'] == ['Unit lb; exact note']
     assert 'rows' not in listed and 'values' not in listed['fragments'][0]
+
+
+def horizontal_setup(tmp_path, third=False, unlabeled=False):
+    tables = [
+        [['Region', '2021 tonnes'], ['North', '10'], ['South', '20']],
+        [['Region', '2022 percent'], ['South', '2'], ['North', '1']],
+    ]
+    if unlabeled:
+        tables[1] = [['2022 percent'], ['2'], ['1']]
+    if third:
+        tables.append([['Region', '2023 kg'], ['North', '1000'], ['South', '2000']])
+    store, draft, _ = setup(tmp_path, bundle(*tables))
+    ids = [f['id'] for f in draft['bundle']['fragments']]
+    plan = dict(bundle_sha256=draft['bundle_sha256'], fragment_ids=ids, join_mode='horizontal',
+                header_rows={i: [dict(row=0, reason='Original explicit header')] for i in ids},
+                key_columns=[] if unlabeled else ['Region'],
+                columns=[dict(name='Region', type='text', source_columns={i: 0 for i in ids if not (unlabeled and i == 'table-2')}),
+                         dict(name='2021 tonnes', type='decimal', unit='tonnes', source_columns={'table-1': 1}),
+                         dict(name='2022 percent', type='decimal', unit='%', source_columns={'table-2': 0 if unlabeled else 1})],
+                row_groups=[dict(source_rows=[dict(fragment_id='table-1', row=r), dict(fragment_id='table-2', row=3-r)]
+                                    + ([dict(fragment_id='table-3', row=r)] if third else []),
+                                 reason='Actual source entity labels and continuation headings') for r in (1, 2)])
+    if third:
+        plan['columns'].append(dict(name='2023 kg', type='decimal', unit='kg', source_columns={'table-3': 1}))
+    return store, draft, plan
+
+
+@pytest.mark.parametrize('third', [False, True])
+def test_horizontal_join_reordered_keys_conserves_all_cells(tmp_path, third):
+    store, draft, plan = horizontal_setup(tmp_path, third)
+    result = publish(store, draft, plan)
+    assert result['coverage']['row_alignment_verified'] is True
+    assert result['coverage']['logical_row_count'] == 2
+    assert result['rows'][0]['values']['2022 percent'] == '1'
+    assert result['rows'][0]['values']['2021 tonnes'] == '10'
+    assert [c['unit'] for c in result['columns'][1:]] == (['tonnes', '%', 'kg'] if third else ['tonnes', '%'])
+    spans = [s for r in result['rows'] for cells in r['source_cells'].values() for s in cells]
+    original = {(f['id'], ri, ci) for f in draft['bundle']['fragments'] for ri in (1, 2) for ci in (0, 1)}
+    assert {(s['fragment_id'], s['row'], s['column']) for s in spans} == original
+    assert len(spans) == len(original)
+    assert len(result['rows'][0]['source_cells']['Region']) == (3 if third else 2)
+    assert store.query(result['table_id'], 'SELECT SUM("2021 tonnes") FROM data')['rows'] == [['30.000000000000000000']]
+
+
+@pytest.mark.parametrize('bad', ['missing_row', 'reused_row', 'wrong_entity', 'missing_column', 'duplicate_column', 'unknown_key', 'boundary_merge', 'mixed_modes'])
+def test_horizontal_rejects_ambiguous_or_lossy_mapping(tmp_path, bad):
+    store, draft, plan = horizontal_setup(tmp_path)
+    if bad == 'missing_row':
+        plan['row_groups'].pop()
+    elif bad == 'reused_row':
+        plan['row_groups'][1]['source_rows'][1]['row'] = 2
+    elif bad == 'wrong_entity':
+        plan['row_groups'][0]['source_rows'][1]['row'] = 1
+    elif bad == 'missing_column':
+        plan['columns'].pop()
+    elif bad == 'duplicate_column':
+        plan['columns'][2]['source_columns']['table-2'] = 0
+    elif bad == 'unknown_key':
+        plan['key_columns'] = ['2021 tonnes']
+    elif bad == 'boundary_merge':
+        plan['boundary_merges'] = [{}]
+    else:
+        plan['join_mode'] = 'vertical'
+    with pytest.raises(ValueError):
+        store.validate_plan(draft['draft_id'], plan)
+
+
+def test_horizontal_duplicate_keys_cannot_be_positional_match(tmp_path):
+    store, draft, plan = horizontal_setup(tmp_path)
+    raw = deepcopy(draft['bundle'])
+    raw['fragments'][0]['rows'][2][0]['text'] = 'North'
+    replacement = store.create_draft(raw)
+    plan['bundle_sha256'] = replacement['bundle_sha256']
+    with pytest.raises(ValueError, match='unique'):
+        store.validate_plan(replacement['draft_id'], plan)
+
+
+def test_horizontal_without_labels_needs_separate_original_alignment_review(tmp_path):
+    store, draft, plan = horizontal_setup(tmp_path, unlabeled=True)
+    preview = store.validate_plan(draft['draft_id'], plan)
+    assert not preview['coverage']['row_alignment_verified']
+    assert preview['coverage']['unresolved_quality_issues'][0]['code'] == 'row_alignment_unverified'
+    with pytest.raises(ValueError, match='Unresolved'):
+        publish(store, draft, plan)
+    plan['row_alignment_review'] = {'reason': 'Reviewer checked original two pages: row labels omitted on second page; all row positions checked individually'}
+    result = publish(store, draft, plan)
+    assert not result['coverage']['row_alignment_verified']
+    assert not result['coverage']['table_input_complete']
+    assert result['rows'][0]['values']['2022 percent'] == '1'
+
+
+def test_uncertain_cell_requires_auditable_correction_not_review_checkbox(tmp_path):
+    raw = bundle()
+    raw['fragments'][0]['quality'] = dict(status='needs_review', issues=[dict(code='transcription_conflict', message='Independent readings disagree')])
+    raw['fragments'][0]['rows'][1][1].update(text='', uncertain=True)
+    store, draft, plan = setup(tmp_path, raw)
+    preview = store.validate_plan(draft['draft_id'], plan)
+    assert len(preview['coverage']['unresolved_quality_issues']) == 2
+    with pytest.raises(ValueError, match='Unresolved'):
+        publish(store, draft, plan)
+    plan['quality_reviews'] = [dict(fragment_id='table-1', issue_index=0, reason='Checked original page row; corrected below')]
+    with pytest.raises(ValueError, match='Unresolved'):
+        publish(store, draft, plan)
+    plan['cell_corrections'] = [dict(fragment_id='table-1', row=1, column=1, text='-1.20', reason='Read original row A amount at page1')]
+    result = publish(store, draft, plan)
+    assert result['rows'][0]['values']['col1'] == '-1.20'
+    span = result['rows'][0]['source_cells']['col1'][0]
+    assert span['text'] == '' and span['correction']['text'] == '-1.20'
+    assert store.read_draft(draft['draft_id'])['bundle'] == raw
+    assert result['coverage']['cell_correction_count'] == 1
+
+
+def test_quality_reviews_cannot_invent_or_duplicate_issue(tmp_path):
+    store, draft, plan = setup(tmp_path)
+    plan['quality_reviews'] = [dict(fragment_id='table-1', issue_index=0, reason='Invented issue')]
+    with pytest.raises(ValueError, match='real issue'):
+        publish(store, draft, plan)
+
+
+def test_draft_catalog_uses_persisted_save_time_without_rewriting_evidence(tmp_path):
+    import os
+    from datetime import datetime, timezone
+    store = PDFTableStore(tmp_path / 'scope')
+    first = store.create_draft(bundle())
+    newer = bundle()
+    newer['parser']['version'] = '2'
+    second = store.create_draft(newer)
+    paths = [store.root / 'drafts' / (d['draft_id'] + '.json') for d in (first, second)]
+    original = [p.read_bytes() for p in paths]
+    os.utime(paths[0], (1000000000, 1000000000))
+    os.utime(paths[1], (1000000100, 1000000100))
+    records = store.list_drafts()['drafts']
+    assert [d['draft_id'] for d in records] == [second['draft_id'], first['draft_id']]
+    assert records[0]['created_at'] == datetime.fromtimestamp(1000000100, timezone.utc).isoformat()
+    assert [p.read_bytes() for p in paths] == original
+    assert store.read_draft(first['draft_id'])['bundle'] == bundle()

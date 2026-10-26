@@ -161,15 +161,15 @@ onBeforeUnmount(() => {
     <div v-if="!ui.sidebarCollapsed" class="knowledge-workspace-menu__context"><button type="button" class="knowledge-workspace-menu__back" @click="router.push('/platform/knowledge-bases')">‹ 全部知识库</button><strong :title="library?.name || '知识库'">{{ library?.name || '知识库' }}</strong></div>
     <button v-else type="button" class="knowledge-workspace-menu__icon" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><t-icon name="arrow-left" /></button>
     <nav id="knowledge-workspace-navigation" class="knowledge-workspace-menu__navigation" aria-label="知识库功能">
-      <WorkspaceNavigationNode title="问答助手" icon="chat" :collapsed="ui.sidebarCollapsed" :active="route.name === 'kbCreatChat' || route.name === 'kbChat'" @navigate="router.push(`/platform/knowledge-bases/${kbId}/creatChat`)" />
-      <WorkspaceNavigationNode title="结构化数据库" icon="table" :collapsed="ui.sidebarCollapsed" :active="route.name === 'knowledgeStructuredData'" expandable :expanded="structuredOpen" @toggle="structuredOpen = !structuredOpen" @navigate="router.push(`/platform/knowledge-bases/${kbId}/structured-data`)">
-        <WorkspaceNavigationNode v-for="[mode, title, icon] in [['import','Excel 导入','file-import'],['query','数据查询','search']]" :key="mode" :title="title!" :icon="icon" :depth="1" :active="route.name === 'knowledgeStructuredData' && (route.query.mode === mode || mode === 'import' && !route.query.mode)" @navigate="router.push({ path: `/platform/knowledge-bases/${kbId}/structured-data`, query: { mode } })" />
-      </WorkspaceNavigationNode>
       <WorkspaceNavigationNode title="目录" icon="folder" :collapsed="ui.sidebarCollapsed" :active="isDirectory" expandable :expanded="directoryOpen" @toggle="directoryOpen = !directoryOpen" @navigate="selectFolder('')">
         <template #actions><button v-if="canEdit && !ui.sidebarCollapsed" type="button" class="knowledge-workspace-menu__icon" aria-label="新建文件夹" @click="openNewFolder"><t-icon name="folder-add" size="16px" /></button></template>
         <WorkspaceNavigationNode title="全库预览" icon="view-list" :depth="1" :active="isDirectory && selected.all" @navigate="allFiles" />
         <p v-if="error" role="alert" class="knowledge-workspace-menu__error">{{ error }}<button type="button" class="knowledge-workspace-menu__back" @click="load()">重试目录</button></p>
         <KbFolderTree v-else :key="identity" :kb-id="kbId" :tree="tree" :selected-path="selected.path" :selected-file-id="typeof route.query.knowledge_id === 'string' ? route.query.knowledge_id : ''" :loading="loading" :can-edit="canEdit" :file-pages="filePages" show-files root-label="库根目录" navigation allow-delete @select="selectFolder" @select-file="selectFile" @load-files="loadFiles" @rename="renameFolder" @delete="folderDeleted" />
+      </WorkspaceNavigationNode>
+      <WorkspaceNavigationNode title="问答助手" icon="chat" :collapsed="ui.sidebarCollapsed" :active="route.name === 'kbCreatChat' || route.name === 'kbChat'" @navigate="router.push(`/platform/knowledge-bases/${kbId}/creatChat`)" />
+      <WorkspaceNavigationNode title="表格数据" icon="table" :collapsed="ui.sidebarCollapsed" :active="route.name === 'knowledgeStructuredData'" expandable :expanded="structuredOpen" @toggle="structuredOpen = !structuredOpen" @navigate="router.push(`/platform/knowledge-bases/${kbId}/structured-data`)">
+        <WorkspaceNavigationNode v-for="[mode, title, icon] in [['import','上传与处理','file-import'],['query','数据查询','search']]" :key="mode" :title="title!" :icon="icon" :depth="1" :active="route.name === 'knowledgeStructuredData' && (route.query.mode === mode || mode === 'import' && !route.query.mode)" @navigate="router.push({ path: `/platform/knowledge-bases/${kbId}/structured-data`, query: { mode } })" />
       </WorkspaceNavigationNode>
     </nav>
     <UserMenu />
