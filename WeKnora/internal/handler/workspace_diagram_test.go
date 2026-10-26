@@ -129,6 +129,7 @@ func newWorkspaceDiagramFixture(t *testing.T) *workspaceDiagramFixture {
 	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}))
 	require.NoError(t, db.AutoMigrate(&types.ResearchWorkbench{}))
 	require.NoError(t, db.AutoMigrate(&types.UserWorkbenchPin{}))
+	require.NoError(t, db.AutoMigrate(&types.CentralDataset{}, &types.ResearchWorkbenchSourceBinding{}, &types.Knowledge{}))
 	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library"}).Error)
 	kbs := &workspaceDiagramKBs{allowed: true}
 	workspaces := service.NewWorkspaceService(db, kbs, nil)
@@ -198,7 +199,7 @@ func TestWorkspaceDiagramGeneratesDraftUsingConfiguredProductionModel(t *testing
 	require.EqualValues(t, 1, count, "generation must not create or replace workbenches")
 }
 
-func TestWorkspaceDiagramRequiresApprovedModuleBeforeAndAfterModelCall(t *testing.T) {
+func TestWorkspaceDiagramRechecksSourceAuthorizationBeforeAndAfterModelCall(t *testing.T) {
 	for _, revokeDuringCall := range []bool{false, true} {
 		t.Run(fmt.Sprintf("revoke_during_call_%v", revokeDuringCall), func(t *testing.T) {
 			f := newWorkspaceDiagramFixture(t)
@@ -209,9 +210,11 @@ func TestWorkspaceDiagramRequiresApprovedModuleBeforeAndAfterModelCall(t *testin
 				"source_sharing_modules": `["market"]`,
 			}).Error)
 			if revokeDuringCall {
-				require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Where("id = ?", f.workbenchID).Update("source_sharing_modules", `["diagram"]`).Error)
+				// Draft generation requires direct source access; delegated page
+				// sharing must not make an initially unreadable source usable.
+				f.kbs.private = false
 				f.models.client.after = func() {
-					require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Where("id = ?", f.workbenchID).Update("source_sharing_modules", `["market"]`).Error)
+					f.kbs.private = true
 				}
 			}
 			response := f.request(diagramBody(t, ""))
@@ -219,7 +222,7 @@ func TestWorkspaceDiagramRequiresApprovedModuleBeforeAndAfterModelCall(t *testin
 			if revokeDuringCall {
 				require.Equal(t, 1, f.models.client.calls)
 			} else {
-				require.Zero(t, f.models.client.calls, "unapproved modules must be rejected before calling the provider")
+				require.Zero(t, f.models.client.calls, "an unreadable source must be rejected before calling the provider")
 			}
 			require.NotContains(t, response.Body.String(), "Generated configuration")
 		})

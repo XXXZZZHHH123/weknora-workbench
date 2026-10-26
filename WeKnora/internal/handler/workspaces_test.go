@@ -68,7 +68,7 @@ func TestWorkspaceHTTPContract(t *testing.T) {
 	if err := db.AutoMigrate(&types.KnowledgeBase{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&types.ResearchWorkbench{}, &types.UserWorkbenchPin{}); err != nil {
+	if err := db.AutoMigrate(&types.ResearchWorkbench{}, &types.UserWorkbenchPin{}, &types.CentralDataset{}, &types.ResearchWorkbenchSourceBinding{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 1, Name: "Library", CreatorID: "alice"}).Error; err != nil {

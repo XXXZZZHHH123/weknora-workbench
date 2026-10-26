@@ -30,5 +30,8 @@ func (w *ResearchWorkbench) CanViewSourceModule(module string) bool {
 	if w == nil || !w.SourceDataAvailable || !slices.Contains(WorkbenchViewModules(), module) {
 		return false
 	}
+	if w.ScopeVersion == 2 {
+		return w.CanReadSource || slices.Contains(w.EffectiveViewModules, module)
+	}
 	return w.CanReadSource || (w.SourceSharingApproved && ValidWorkbenchSourceModules(w.SourceSharingModules) && slices.Contains(w.SourceSharingModules, module))
 }

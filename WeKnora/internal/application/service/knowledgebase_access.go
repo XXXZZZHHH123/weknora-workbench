@@ -54,7 +54,7 @@ func kbWritableIDs(
 			if err != nil || kb == nil {
 				continue
 			}
-			if kb.AccessPolicy != nil {
+			if kb.AccessPolicy != nil || kb.SystemRole == types.KnowledgeBaseSystemRoleCentral {
 				permission := access.LocalKBPermission(ctx, caller, kb)
 				writable = permission.IsValid() && permission.HasPermission(types.OrgRoleEditor)
 			}

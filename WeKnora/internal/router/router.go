@@ -324,6 +324,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWorkspaceRoutes(v1, params.WorkspaceHandler, rbacGuards)
 		RegisterWorkspaceDiagramRoutes(v1, params.WorkspaceHandler, params.ModelHandler, rbacGuards)
 		RegisterWorkspaceJudgmentRoutes(v1, params.WorkspaceHandler, params.ModelHandler, rbacGuards)
+		RegisterWorkspaceStrategyRoutes(v1, params.WorkspaceHandler, params.ModelHandler, rbacGuards)
 		RegisterSkillRoutes(v1, params.SkillHandler, rbacGuards)
 		RegisterOrganizationRoutes(v1, params.OrganizationHandler, rbacGuards)
 		RegisterIMChannelRoutes(v1, params.IMHandler, rbacGuards)

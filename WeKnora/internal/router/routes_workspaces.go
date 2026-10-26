@@ -11,6 +11,8 @@ func RegisterWorkspaceRoutes(r *gin.RouterGroup, h *handler.WorkspaceHandler, g 
 	}
 	r.GET("/workspaces/default-knowledge-base", g.Viewer(), h.GetDefaultKnowledgeBase)
 	r.POST("/workspaces/default-knowledge-base", g.Contributor(), h.InitializeDefaultKnowledgeBase)
+	r.GET("/workspaces/central-datasets", g.Viewer(), h.ListCentralDatasets)
+	r.POST("/workspaces/central-datasets/default", g.Admin(), h.InitializeCentralDataset)
 	// Personal navigation is intentionally unavailable to API keys: no capability
 	// declaration means the existing API-key middleware denies these endpoints.
 	projects := r.Group("/workspaces/projects", g.Viewer())
@@ -30,6 +32,11 @@ func RegisterWorkspaceRoutes(r *gin.RouterGroup, h *handler.WorkspaceHandler, g 
 	workbenches.GET("/:id/permissions", h.GetWorkbenchPermissions)
 	workbenches.PUT("/:id/permissions", g.Contributor(), h.UpdateWorkbenchPermissions)
 	workbenches.GET("/:id/source-scope", h.GetWorkbenchSourceScope)
+	workbenches.GET("/:id/sources", h.GetWorkbenchSources)
+	workbenches.PUT("/:id/sources", g.Contributor(), h.UpdateWorkbenchSources)
+	workbenches.GET("/:id/sources/:source_binding_id/sharing", h.GetSourceBindingSharing)
+	workbenches.PUT("/:id/sources/:source_binding_id/sharing", g.Contributor(), h.UpdateSourceBindingSharing)
+	workbenches.POST("/:id/sources/:source_binding_id/sharing/request", g.Contributor(), h.RequestSourceBindingSharing)
 	workbenches.GET("/:id/source-sharing", h.GetWorkbenchSourceSharing)
 	workbenches.PUT("/:id/source-sharing", g.Contributor(), h.UpdateWorkbenchSourceSharing)
 	workbenches.POST("/:id/source-sharing/request", g.Contributor(), h.RequestWorkbenchSourceSharing)
@@ -54,4 +61,11 @@ func RegisterWorkspaceJudgmentRoutes(r *gin.RouterGroup, h *handler.WorkspaceHan
 		return
 	}
 	r.POST("/workspaces/research/:id/judgment/generate", g.Contributor(), handler.WorkspaceJudgmentGenerator(h, models))
+}
+
+func RegisterWorkspaceStrategyRoutes(r *gin.RouterGroup, h *handler.WorkspaceHandler, models *handler.ModelHandler, g *rbacGuards) {
+	if h == nil || models == nil {
+		return
+	}
+	r.POST("/workspaces/research/:id/strategy/generate", g.Contributor(), handler.WorkspaceStrategyGenerator(h, models))
 }

@@ -31,12 +31,13 @@ func NewWorkspaceService(db *gorm.DB, kbs interfaces.KnowledgeBaseService, share
 }
 
 type WorkspaceInput struct {
-	Name            *string `json:"name"`
-	Description     *string `json:"description"`
-	KnowledgeBaseID *string `json:"knowledge_base_id"`
-	IdempotencyKey  string  `json:"idempotency_key"`
-	TemplateID      *string `json:"template_id"`
-	TemplateVersion *int    `json:"template_version"`
+	Name            *string                       `json:"name"`
+	Description     *string                       `json:"description"`
+	KnowledgeBaseID *string                       `json:"knowledge_base_id"`
+	IdempotencyKey  string                        `json:"idempotency_key"`
+	TemplateID      *string                       `json:"template_id"`
+	TemplateVersion *int                          `json:"template_version"`
+	Sources         *[]types.WorkbenchSourceInput `json:"sources,omitempty"`
 }
 
 func workspaceCaller(ctx context.Context) (types.Caller, error) {
@@ -143,6 +144,9 @@ func (s *WorkspaceService) GetProject(ctx context.Context, id string) (*types.As
 }
 
 func (s *WorkspaceService) CreateProject(ctx context.Context, input WorkspaceInput) (*types.AssistantProject, error) {
+	if input.Sources != nil {
+		return nil, apperrors.NewBadRequestError("项目不接受研究台来源参数")
+	}
 	if input.TemplateID != nil || input.TemplateVersion != nil {
 		return nil, apperrors.NewBadRequestError("项目不接受研究模板参数")
 	}
@@ -167,6 +171,9 @@ func (s *WorkspaceService) CreateProject(ctx context.Context, input WorkspaceInp
 }
 
 func (s *WorkspaceService) UpdateProject(ctx context.Context, id string, input WorkspaceInput) (*types.AssistantProject, error) {
+	if input.Sources != nil {
+		return nil, apperrors.NewBadRequestError("项目不接受研究台来源参数")
+	}
 	if input.TemplateID != nil || input.TemplateVersion != nil {
 		return nil, apperrors.NewBadRequestError("项目不接受研究模板参数")
 	}
@@ -264,7 +271,7 @@ func (s *WorkspaceService) ListWorkbenches(ctx context.Context, kbID string) ([]
 	visible := make([]*types.ResearchWorkbench, 0)
 	q := s.db.WithContext(ctx).Where("tenant_id = ?", caller.TenantID)
 	if kbID != "" {
-		q = q.Where("knowledge_base_id = ?", kbID)
+		q = q.Where("knowledge_base_id = ? OR EXISTS (SELECT 1 FROM research_workbench_source_bindings b WHERE b.workbench_id = research_workbenches.id AND b.source_type = ? AND b.source_id = ? AND b.enabled = ? AND b.status = ?)", kbID, types.WorkbenchSourceKnowledgeBase, kbID, true, "active")
 	}
 	if err := q.Order("created_at DESC, id").Find(&rows).Error; err != nil {
 		return nil, err
@@ -332,18 +339,6 @@ func (s *WorkspaceService) GetWorkbench(ctx context.Context, id string) (*types.
 	if err != nil {
 		return nil, err
 	}
-	_, defaultKB, err := s.defaultKnowledgeBase(ctx, caller)
-	if err != nil {
-		return nil, err
-	}
-	if defaultKB != nil && !defaultKB.DeletedAt.Valid {
-		if _, err = s.readableKB(ctx, defaultKB.ID); err == nil {
-			row.DefaultKnowledgeBase = &types.ResearchWorkbenchSource{KnowledgeBaseID: defaultKB.ID,
-				TenantID: defaultKB.TenantID, Kind: macroKnowledgeBaseKind, Name: defaultKB.Name}
-		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
-		}
-	}
 	if err = s.loadWorkbenchOnboarding(ctx, []*types.ResearchWorkbench{row}); err != nil {
 		return nil, err
 	}
@@ -364,46 +359,97 @@ func (s *WorkspaceService) CreateWorkbench(ctx context.Context, input WorkspaceI
 	if err := validateWorkspaceInput(input, true); err != nil {
 		return nil, err
 	}
-	if input.KnowledgeBaseID == nil {
-		return nil, apperrors.NewBadRequestError("请选择知识库")
+	if input.Sources != nil && input.KnowledgeBaseID != nil {
+		return nil, apperrors.NewBadRequestError("来源数组与旧知识库参数不能同时提供")
+	}
+	if input.Sources == nil && input.KnowledgeBaseID == nil {
+		return nil, apperrors.NewBadRequestError("请提供来源数组，空数组可以创建空白工作台")
 	}
 	if input.IdempotencyKey == "" || len(input.IdempotencyKey) > 128 || strings.IndexFunc(input.IdempotencyKey, unicode.IsControl) >= 0 {
 		return nil, apperrors.NewBadRequestError("创建请求标识无效")
 	}
-	kb, err := s.readableKB(ctx, *input.KnowledgeBaseID)
+	inputs := []types.WorkbenchSourceInput{}
+	if input.Sources != nil {
+		inputs = *input.Sources
+	} else {
+		central, registerErr := s.registerCentralDefault(ctx, caller)
+		if registerErr != nil {
+			return nil, registerErr
+		}
+		kind, id := types.WorkbenchSourceKnowledgeBase, *input.KnowledgeBaseID
+		if central != nil && central.BackingKnowledgeBaseID == id {
+			kind, id = types.WorkbenchSourceCentralDataset, central.ID
+		}
+		inputs = append(inputs, types.WorkbenchSourceInput{SourceType: kind, SourceID: id})
+		if central != nil && central.BackingKnowledgeBaseID != *input.KnowledgeBaseID {
+			if _, readErr := s.readableKB(ctx, central.BackingKnowledgeBaseID); readErr == nil {
+				inputs = append(inputs, types.WorkbenchSourceInput{SourceType: types.WorkbenchSourceCentralDataset, SourceID: central.ID})
+			}
+		}
+	}
+	resolved, err := s.resolveSourceInputs(ctx, inputs)
 	if err != nil {
 		return nil, err
+	}
+	if input.Sources == nil {
+		for i := range resolved {
+			resolved[i].binding.Legacy = resolved[i].kb.ID == *input.KnowledgeBaseID
+		}
+	}
+	primary, primaryName := "", ""
+	for _, source := range resolved {
+		if source.binding.SourceType == types.WorkbenchSourceKnowledgeBase && primary == "" {
+			primary, primaryName = source.kb.ID, source.kb.Name
+		}
 	}
 	templateID, templateVersion, err := workbenchTemplate(input)
 	if err != nil {
 		return nil, err
 	}
-	row := &types.ResearchWorkbench{ID: uuid.NewString(), TenantID: caller.TenantID, UserID: caller.UserID, Name: *input.Name, KnowledgeBaseID: kb.ID, KnowledgeBaseName: kb.Name, IdempotencyKey: input.IdempotencyKey,
+	row := &types.ResearchWorkbench{ID: uuid.NewString(), TenantID: caller.TenantID, UserID: caller.UserID, Name: *input.Name, KnowledgeBaseID: primary, KnowledgeBaseName: primaryName, IdempotencyKey: input.IdempotencyKey, SourcesRevision: 1,
 		WorkspaceMode: types.ResearchWorkbenchModeIsolated, TemplateID: templateID, TemplateVersion: templateVersion,
 		AccessPolicy: types.NewResourceAccessPolicy(), RestrictedViewProfiles: []types.WorkbenchRestrictedViewProfile{}}
 	if input.Description != nil {
 		row.Description = *input.Description
 	}
-	raw, _ := json.Marshal([]any{row.Name, row.Description, row.KnowledgeBaseID, row.WorkspaceMode, row.TemplateID, row.TemplateVersion})
+	sort.Slice(inputs, func(i, j int) bool {
+		return inputs[i].SourceType+":"+inputs[i].SourceID < inputs[j].SourceType+":"+inputs[j].SourceID
+	})
+	raw, _ := json.Marshal([]any{row.Name, row.Description, inputs, row.WorkspaceMode, row.TemplateID, row.TemplateVersion})
+	if input.Sources == nil {
+		raw, _ = json.Marshal([]any{row.Name, row.Description, *input.KnowledgeBaseID, row.WorkspaceMode, row.TemplateID, row.TemplateVersion})
+	}
 	hash := sha256.Sum256(raw)
 	row.RequestHash = hex.EncodeToString(hash[:])
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Coordinate with source deletion after the earlier access check. SQLite
-		// needs the writer reservation before reading to avoid lock upgrades.
-		if tx.Dialector.Name() == "sqlite" {
-			if err := tx.Exec("UPDATE knowledge_bases SET id = id WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL", kb.ID, kb.TenantID).Error; err != nil {
-				return err
+		for _, source := range resolved {
+			if tx.Dialector.Name() == "sqlite" {
+				if err := tx.Exec("UPDATE knowledge_bases SET id=id WHERE id=? AND tenant_id=? AND deleted_at IS NULL", source.kb.ID, source.kb.TenantID).Error; err != nil {
+					return err
+				}
 			}
-		}
-		var activeKB types.KnowledgeBase
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND tenant_id = ?", kb.ID, kb.TenantID).First(&activeKB).Error; err != nil {
-			return workspaceDBError(err)
+			var active types.KnowledgeBase
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND tenant_id=?", source.kb.ID, source.kb.TenantID).First(&active).Error; err != nil {
+				return workspaceDBError(err)
+			}
+			if active.TenantID == caller.TenantID {
+				if _, err := access.ResolveKB(ctx, access.KBRequest{Caller: caller}, &active, types.OrgRoleViewer, nil, nil); err != nil {
+					return apperrors.NewForbiddenError("来源读取权限已改变")
+				}
+			}
 		}
 		result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "tenant_id"}, {Name: "user_id"}, {Name: "idempotency_key"}}, DoNothing: true}).Create(row)
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected > 0 {
+			for _, source := range resolved {
+				binding := source.binding
+				binding.WorkbenchID = row.ID
+				if err := tx.Create(&binding).Error; err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		var existing types.ResearchWorkbench
@@ -459,6 +505,9 @@ func (s *WorkspaceService) mutateWorkbench(ctx context.Context, verified *types.
 }
 
 func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input WorkspaceInput) (*types.ResearchWorkbench, error) {
+	if input.Sources != nil {
+		return nil, apperrors.NewBadRequestError("请通过数据来源管理修改来源")
+	}
 	if input.TemplateID != nil || input.TemplateVersion != nil {
 		return nil, apperrors.NewBadRequestError("工作台模板和版本在创建时固定，不能通过编辑修改")
 	}
@@ -496,6 +545,14 @@ func (s *WorkspaceService) UpdateWorkbench(ctx context.Context, id string, input
 				return apperrors.NewConflictError("独立工作台不能更换主知识库，请基于目标知识库新建工作台")
 			}
 			if row.KnowledgeBaseID != *input.KnowledgeBaseID {
+				if err := tx.Model(&types.ResearchWorkbenchSourceBinding{}).Where("workbench_id=? AND legacy=?", row.ID, true).Updates(map[string]any{"status": "removed", "enabled": false, "sharing_approved": false, "sharing_approved_by": "", "sharing_modules": "[]", "legacy": false}).Error; err != nil {
+					return err
+				}
+				binding := types.ResearchWorkbenchSourceBinding{ID: uuid.NewString(), WorkbenchID: row.ID, SourceType: types.WorkbenchSourceKnowledgeBase, SourceID: target.ID, SourceTenantID: target.TenantID, Name: target.Name, Enabled: true, Status: "active", Legacy: true, SharingModules: []string{}}
+				if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "workbench_id"}, {Name: "source_type"}, {Name: "source_id"}}, DoUpdates: clause.AssignmentColumns([]string{"enabled", "status", "legacy", "sharing_approved", "sharing_approved_by", "sharing_modules"})}).Create(&binding).Error; err != nil {
+					return err
+				}
+				row.SourcesRevision++
 				row.SourceSharingApproved = false
 				row.SourceSharingApprovedBy = ""
 				row.SourceSharingRequested = false

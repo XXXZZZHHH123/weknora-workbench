@@ -20,7 +20,7 @@ func TestKnowledgeBaseMemberPermissionsPersistAndRevoke(t *testing.T) {
 	require.NoError(t, err)
 	sql, _ := db.DB()
 	t.Cleanup(func() { _ = sql.Close() })
-	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}, &types.TenantMember{}, &types.ResearchWorkbench{}, &types.Knowledge{}, &types.StoredResource{}, &types.ResourceBinding{}, &types.ResourceAccessGrant{}))
+	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}, &types.TenantMember{}, &types.ResearchWorkbench{}, &types.Knowledge{}, &types.StoredResource{}, &types.ResourceBinding{}, &types.ResourceAccessGrant{}, &types.CentralDataset{}, &types.ResearchWorkbenchSourceBinding{}))
 	repo := repository.NewKnowledgeBaseRepository(db)
 	s := &knowledgeBaseService{repo: repo}
 	for _, member := range []types.TenantMember{

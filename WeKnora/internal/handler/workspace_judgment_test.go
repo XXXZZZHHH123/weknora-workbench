@@ -63,7 +63,7 @@ func TestWorkspaceJudgmentReportsOnlyFiniteCompletionDiagnostics(t *testing.T) {
 	}
 }
 
-func TestWorkspaceJudgmentRequiresItsOwnApprovedSourceModule(t *testing.T) {
+func TestWorkspaceJudgmentReadOnlySourceSharingNeverAllowsInference(t *testing.T) {
 	for _, module := range []string{"market", "diagram", "judgments"} {
 		t.Run(module, func(t *testing.T) {
 			f := newWorkspaceDiagramFixture(t)
@@ -74,13 +74,8 @@ func TestWorkspaceJudgmentRequiresItsOwnApprovedSourceModule(t *testing.T) {
 				"source_sharing_modules": `["` + module + `"]`,
 			}).Error)
 			response := judgmentRequest(f, diagramBody(t, ""))
-			if module == "judgments" {
-				require.Equal(t, 200, response.Code, response.Body.String())
-				require.Equal(t, 1, f.models.client.calls)
-			} else {
-				require.Equal(t, 403, response.Code, response.Body.String())
-				require.Zero(t, f.models.client.calls)
-			}
+			require.Equal(t, 403, response.Code, response.Body.String())
+			require.Zero(t, f.models.client.calls)
 		})
 	}
 }

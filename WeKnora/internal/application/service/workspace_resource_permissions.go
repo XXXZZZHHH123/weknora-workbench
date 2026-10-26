@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/application/access"
@@ -68,6 +69,9 @@ func (s *WorkspaceService) populateWorkbenchAccess(ctx context.Context, caller t
 		row.SourceSharingModules = types.EffectiveWorkbenchSourceModules(row.RestrictedViewProfiles, caller.UserID, row.ApprovedSourceModules)
 	}
 	row.SourceDataAvailable = kb != nil && (row.CanReadSource || (row.SourceSharingApproved && len(row.SourceSharingModules) > 0))
+	if err := s.populateSources(ctx, caller, row); err != nil {
+		return nil, err
+	}
 	return kb, nil
 }
 
@@ -79,7 +83,7 @@ func (s *WorkspaceService) GetWorkbenchPermissions(ctx context.Context, id strin
 	if !row.CanManagePermissions {
 		return nil, apperrors.NewForbiddenError("仅工作台主人可设置权限")
 	}
-	return &types.WorkbenchPermissions{Policy: row.AccessPolicy, OwnerID: row.UserID, CanManage: row.CanManage,
+	return &types.WorkbenchPermissions{ScopeVersion: row.ScopeVersion, SourcesRevision: row.SourcesRevision, Policy: row.AccessPolicy, OwnerID: row.UserID, CanManage: row.CanManage,
 		Legacy: row.AccessPolicy == nil, SourceSharingApproved: row.SourceSharingApproved, SourceSharingRequested: row.SourceSharingRequested,
 		SourceSharingModules: row.ApprovedSourceModules, CanManageSource: row.CanManageSource, RestrictedViewProfiles: row.RestrictedViewProfiles}, nil
 }
@@ -278,23 +282,31 @@ type WorkbenchSourceKnowledge struct {
 }
 
 type WorkbenchSourceProjection struct {
+	ID              string                     `json:"id"`
+	SourceType      string                     `json:"source_type"`
+	SourceID        string                     `json:"source_id"`
 	KnowledgeBaseID string                     `json:"knowledge_base_id"`
 	TenantID        uint64                     `json:"tenant_id"`
 	Kind            string                     `json:"kind"`
 	Delegated       bool                       `json:"delegated"`
 	Permission      string                     `json:"permission"`
+	ViewModules     []string                   `json:"view_modules"`
 	Knowledge       []WorkbenchSourceKnowledge `json:"knowledge"`
 }
 
 type WorkbenchSourceScope struct {
-	ID              string                      `json:"id"`
-	UserID          string                      `json:"user_id"`
-	ScopeTenantID   uint64                      `json:"scope_tenant_id"`
-	KnowledgeBaseID string                      `json:"knowledge_base_id"`
-	CanEdit         bool                        `json:"can_edit"`
-	CanManage       bool                        `json:"can_manage"`
-	ViewModules     []string                    `json:"view_modules"`
-	Sources         []WorkbenchSourceProjection `json:"sources"`
+	InventoryIncluded  bool                           `json:"inventory_included"`
+	ScopeVersion       int                            `json:"scope_version"`
+	SourcesRevision    int64                          `json:"sources_revision"`
+	ID                 string                         `json:"id"`
+	UserID             string                         `json:"user_id"`
+	ScopeTenantID      uint64                         `json:"scope_tenant_id"`
+	KnowledgeBaseID    string                         `json:"knowledge_base_id"`
+	CanEdit            bool                           `json:"can_edit"`
+	CanManage          bool                           `json:"can_manage"`
+	ViewModules        []string                       `json:"view_modules"`
+	Sources            []WorkbenchSourceProjection    `json:"sources"`
+	UnavailableSources []types.WorkbenchSourceSummary `json:"unavailable_sources"`
 }
 
 func (s *WorkspaceService) sourceProjection(ctx context.Context, kb *types.KnowledgeBase, kind string, delegated bool) (WorkbenchSourceProjection, error) {
@@ -302,44 +314,81 @@ func (s *WorkspaceService) sourceProjection(ctx context.Context, kb *types.Knowl
 	err := s.db.WithContext(ctx).Model(&types.Knowledge{}).
 		Select("id, file_hash, updated_at, enable_status, parse_status, type AS knowledge_type, file_type").
 		Where("tenant_id = ? AND knowledge_base_id = ?", kb.TenantID, kb.ID).
-		Where("parse_status <> ? OR parse_status IS NULL", types.ParseStatusDeleting).Order("id").Scan(&projection.Knowledge).Error
+		Where("LOWER(LTRIM(file_type,'.')) IN ?", []string{"xlsx", "xls", "xlsm", "csv", "tsv"}).
+		Where("parse_status <> ? OR parse_status IS NULL", types.ParseStatusDeleting).Order("id").Limit(129).Scan(&projection.Knowledge).Error
+	if err == nil && len(projection.Knowledge) > 128 {
+		return projection, &apperrors.AppError{Code: apperrors.ErrValidation, HTTPCode: http.StatusRequestEntityTooLarge, Message: "当前研究来源超过128份表格原件容量，请拆分来源后重试；未静默截断数据"}
+	}
 	return projection, err
 }
 
 // This grants only an audited research projection. It never authorizes the raw
 // KB endpoints, document downloads, arbitrary SQL, or document retrieval tools.
 func (s *WorkspaceService) GetWorkbenchSourceScope(ctx context.Context, id string) (*WorkbenchSourceScope, error) {
-	row, kb, err := s.workbenchWithSource(ctx, s.db, id, false)
+	return s.getWorkbenchSourceScope(ctx, id, true)
+}
+
+func (s *WorkspaceService) GetWorkbenchSourceScopeMetadata(ctx context.Context, id string) (*WorkbenchSourceScope, error) {
+	return s.getWorkbenchSourceScope(ctx, id, false)
+}
+
+func (s *WorkspaceService) getWorkbenchSourceScope(ctx context.Context, id string, inventory bool) (*WorkbenchSourceScope, error) {
+	row, err := s.GetWorkbench(ctx, id)
 	if err != nil {
 		return nil, err
-	}
-	if !row.SourceDataAvailable {
-		return nil, apperrors.NewForbiddenError("来源知识库主人尚未授权研究数据共享，或来源权限已失效")
 	}
 	caller, _ := workspaceCaller(ctx)
-	primary, err := s.sourceProjection(ctx, kb, "primary", !row.CanReadSource)
+	scope := &WorkbenchSourceScope{InventoryIncluded: inventory, ScopeVersion: 2, SourcesRevision: row.SourcesRevision, ID: row.ID, UserID: caller.UserID,
+		ScopeTenantID: row.TenantID, KnowledgeBaseID: row.KnowledgeBaseID, CanEdit: row.CanEdit, CanManage: row.CanManage,
+		ViewModules: []string{}, Sources: []WorkbenchSourceProjection{}, UnavailableSources: []types.WorkbenchSourceSummary{}}
+	bindings, err := s.sourceBindings(ctx, row)
 	if err != nil {
 		return nil, err
 	}
-	scope := &WorkbenchSourceScope{ID: row.ID, UserID: caller.UserID, ScopeTenantID: row.TenantID, KnowledgeBaseID: row.KnowledgeBaseID,
-		CanEdit: row.CanEdit, CanManage: row.CanManage, Sources: []WorkbenchSourceProjection{primary}}
-	scope.ViewModules = row.SourceSharingModules
-	if row.CanReadSource {
-		scope.ViewModules = types.WorkbenchViewModules()
-	}
-	_, macro, err := s.defaultKnowledgeBase(ctx, caller)
-	if err != nil {
-		return nil, err
-	}
-	if macro != nil && !macro.DeletedAt.Valid && macro.ID != kb.ID {
-		if _, err := s.readableKB(ctx, macro.ID); err == nil {
-			projection, err := s.sourceProjection(ctx, macro, macroKnowledgeBaseKind, false)
+	moduleSet := map[string]bool{}
+	allDirect, active := true, 0
+	for _, binding := range bindings {
+		if !binding.Enabled || binding.Status != "active" {
+			continue
+		}
+		resolved := s.resolveBoundSource(ctx, caller, row, binding)
+		if binding.Enabled && binding.Status == "active" {
+			active++
+			allDirect = allDirect && resolved.direct
+		}
+		if !binding.Enabled || binding.Status != "active" || resolved.kb == nil || (!resolved.direct && len(resolved.modules) == 0) {
+			scope.UnavailableSources = append(scope.UnavailableSources, sourceSummary(resolved))
+			continue
+		}
+		kind := "knowledge_base"
+		if binding.SourceType == types.WorkbenchSourceCentralDataset {
+			kind = macroKnowledgeBaseKind
+		} else if resolved.kb.ID == row.KnowledgeBaseID {
+			kind = "primary"
+		}
+		projection := WorkbenchSourceProjection{KnowledgeBaseID: resolved.kb.ID, TenantID: resolved.kb.TenantID, Kind: kind, Delegated: !resolved.direct, Knowledge: []WorkbenchSourceKnowledge{}}
+		if inventory {
+			var err error
+			projection, err = s.sourceProjection(ctx, resolved.kb, kind, !resolved.direct)
 			if err != nil {
 				return nil, err
 			}
-			scope.Sources = append(scope.Sources, projection)
-		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
+		}
+		projection.ID = binding.ID
+		projection.SourceType = binding.SourceType
+		projection.SourceID = binding.SourceID
+		projection.Permission = string(resolved.permission)
+		projection.ViewModules = append([]string{}, resolved.modules...)
+		if projection.Delegated {
+			for _, module := range projection.ViewModules {
+				moduleSet[module] = true
+			}
+		}
+		scope.Sources = append(scope.Sources, projection)
+	}
+	for _, module := range types.WorkbenchViewModules() {
+		if active > 0 && allDirect || moduleSet[module] {
+			scope.ViewModules = append(scope.ViewModules, module)
 		}
 	}
 	return scope, nil

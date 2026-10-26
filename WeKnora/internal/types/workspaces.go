@@ -38,6 +38,11 @@ type ResearchWorkbench struct {
 	Name                    string                           `json:"name" gorm:"type:varchar(128)"`
 	Description             string                           `json:"description"`
 	KnowledgeBaseID         string                           `json:"knowledge_base_id" gorm:"type:varchar(36);index"`
+	SourcesRevision         int64                            `json:"sources_revision" gorm:"not null;default:0"`
+	ScopeVersion            int                              `json:"scope_version" gorm:"-"`
+	SourcesSummary          []WorkbenchSourceSummary         `json:"sources" gorm:"-"`
+	SourceCount             int                              `json:"source_count" gorm:"-"`
+	EffectiveViewModules    []string                         `json:"view_modules" gorm:"-"`
 	KnowledgeBaseName       string                           `json:"knowledge_base_name,omitempty" gorm:"-"`
 	CanManage               bool                             `json:"can_manage" gorm:"-"`
 	CanManagePermissions    bool                             `json:"can_manage_permissions" gorm:"-"`
@@ -67,6 +72,8 @@ type ResearchWorkbench struct {
 }
 
 type WorkbenchPermissions struct {
+	ScopeVersion           int                              `json:"scope_version"`
+	SourcesRevision        int64                            `json:"sources_revision"`
 	Policy                 *ResourceAccessPolicy            `json:"policy"`
 	OwnerID                string                           `json:"owner_id"`
 	CanManage              bool                             `json:"can_manage"`

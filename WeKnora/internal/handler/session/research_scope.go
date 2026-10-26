@@ -27,8 +27,36 @@ func (h *Handler) resolveResearchWorkbenchScope(ctx context.Context, session *ty
 		row.TenantID != session.TenantID || row.TenantID != caller.TenantID || caller.UserID == "" {
 		return scope, errors.NewNotFoundError("研究工作台不存在或无权访问")
 	}
-	// Workbench sharing may authorize indicator projections without raw source
-	// access. Full-text chat must independently verify the caller's KB grant.
+	if row.ScopeVersion == 2 {
+		if row.SourcesRevision < 1 || len(row.SourcesSummary) > 8 {
+			return scope, errors.NewForbiddenError("研究台来源版本无效")
+		}
+		result := types.ResearchWorkbenchScope{ID: row.ID, TenantID: row.TenantID, UserID: caller.UserID, ScopeVersion: 2, SourcesRevision: row.SourcesRevision, KnowledgeBases: []types.ResearchWorkbenchKnowledgeScope{}}
+		seen := map[string]bool{}
+		for _, source := range row.SourcesSummary {
+			if source.Status != "active" || !source.CanRead || source.Delegated {
+				continue
+			}
+			if seen[source.KnowledgeBaseID] {
+				return scope, errors.NewForbiddenError("研究台来源重复")
+			}
+			seen[source.KnowledgeBaseID] = true
+			kb, err := h.knowledgebaseService.GetKnowledgeBaseByIDOnly(ctx, source.KnowledgeBaseID)
+			if err != nil || kb == nil || kb.DeletedAt.Valid || kb.TenantID != source.TenantID {
+				return scope, errors.NewForbiddenError("研究台来源已变化")
+			}
+			if _, err := access.ResolveKB(ctx, access.KBRequest{Caller: caller}, kb, types.OrgRoleViewer, h.kbShareService, nil); err != nil {
+				return scope, errors.NewForbiddenError("问答来源查看权限已失效")
+			}
+			result.KnowledgeBases = append(result.KnowledgeBases, types.ResearchWorkbenchKnowledgeScope{ID: kb.ID, TenantID: kb.TenantID})
+			if result.KnowledgeBaseID == "" {
+				result.KnowledgeBaseID = kb.ID
+				result.KnowledgeBaseTenantID = kb.TenantID
+			}
+		}
+		return result, nil
+	}
+	// Workbench sharing never authorizes full-text chat with delegated source data.
 	kb, err := h.knowledgebaseService.GetKnowledgeBaseByIDOnly(ctx, row.KnowledgeBaseID)
 	if err != nil || kb == nil || kb.ID != row.KnowledgeBaseID || kb.TenantID == 0 || kb.DeletedAt.Valid {
 		return scope, errors.NewNotFoundError("绑定的知识库不存在或无权访问")
@@ -54,12 +82,12 @@ func (h *Handler) bindResearchQuestionScope(ctx context.Context, session *types.
 	}
 	kbIDs, knowledgeIDs := mergeKnowledgeTargets(request.KnowledgeBaseIDs, request.KnowledgeIDs, request.MentionedItems)
 	for _, id := range kbIDs {
-		if id != scope.KnowledgeBaseID {
+		if !scope.AllowsKnowledgeBase(id) {
 			return ctx, errors.NewForbiddenError("问答来源必须属于当前工作台绑定知识库")
 		}
 	}
 	for _, item := range request.MentionedItems {
-		if item.Type == "mcp" || item.Type == "skill" || item.KBID != "" && item.KBID != scope.KnowledgeBaseID {
+		if item.Type == "mcp" || item.Type == "skill" || item.KBID != "" && !scope.AllowsKnowledgeBase(item.KBID) {
 			return ctx, errors.NewForbiddenError("问答来源必须属于当前工作台绑定知识库")
 		}
 	}
@@ -68,11 +96,11 @@ func (h *Handler) bindResearchQuestionScope(ctx context.Context, session *types.
 			return ctx, errors.NewForbiddenError("无法核验文件所属知识库")
 		}
 		file, err := h.knowledgeService.GetKnowledgeByIDOnly(ctx, id)
-		if err != nil || file == nil || file.KnowledgeBaseID != scope.KnowledgeBaseID || file.DeletedAt.Valid {
+		if err != nil || file == nil || !scope.AllowsKnowledgeBase(file.KnowledgeBaseID) || file.DeletedAt.Valid {
 			return ctx, errors.NewForbiddenError("问答文件不属于当前工作台绑定知识库")
 		}
 	}
-	request.KnowledgeBaseIDs = []string{scope.KnowledgeBaseID}
+	request.KnowledgeBaseIDs = scope.KnowledgeBaseIDs()
 	return types.WithResearchWorkbenchScope(ctx, scope), nil
 }
 
@@ -94,7 +122,7 @@ func isolatedResearchAgent(original *types.CustomAgent, scope types.ResearchWork
 		agent.Config.MaxIterations = 20
 	}
 	agent.Config.KBSelectionMode = "selected"
-	agent.Config.KnowledgeBases = []string{scope.KnowledgeBaseID}
+	agent.Config.KnowledgeBases = scope.KnowledgeBaseIDs()
 	agent.Config.AllowedTools = []string{tools.ToolSearchKnowledge, tools.ToolReadDocument, tools.ToolListDocuments}
 	if strings.TrimSpace(os.Getenv("STRUCTURED_DATA_URL")) != "" {
 		agent.Config.AllowedTools = append(agent.Config.AllowedTools, tools.ToolStructuredData)
@@ -107,6 +135,6 @@ func isolatedResearchAgent(original *types.CustomAgent, scope types.ResearchWork
 	agent.Config.MCPSelectionMode, agent.Config.SkillsSelectionMode = "none", "none"
 	agent.Config.MCPServices, agent.Config.SelectedSkills = nil, nil
 	agent.Config.SandboxConfigID = ""
-	agent.Config.SystemPrompt += "\n本轮已由服务器固定到一个研究工作台：指标和观测只来自绑定知识库当前已确认的结构化来源，研究工具提供本台与当前账号的研究成果。空白、未导入、失效或缺失来源如实说明，不读取其他工作台或历史研究库数值补齐。"
+	agent.Config.SystemPrompt += "\n本轮已由服务器固定到一个研究工作台：指标和观测只来自当前研究台逐源授权的知识库与中心库已确认结构化来源，研究工具提供本台与当前账号的研究成果。空白、未导入、失效或缺失来源如实说明，不读取其他工作台或历史研究库数值补齐。"
 	return agent
 }

@@ -54,11 +54,12 @@ func TestWorkspaceDiagramDiscardsResultAfterPermissionRevocation(t *testing.T) {
 	}
 }
 
-func TestWorkspaceJudgmentDraftDoesNotRequireSharedEditGrant(t *testing.T) {
+func TestWorkspaceJudgmentDraftRequiresIndependentEditGrant(t *testing.T) {
 	f := newWorkspaceDiagramFixture(t)
 	setDiagramWorkbenchPermission(t, f, "viewer")
 	f.user = "peer"
 	response := judgmentRequest(f, diagramBody(t, ""))
-	require.Equal(t, 200, response.Code, response.Body.String())
-	require.Equal(t, 1, f.models.client.calls)
+	require.Equal(t, 403, response.Code, response.Body.String())
+	require.Zero(t, f.models.client.calls)
+	require.NotContains(t, response.Body.String(), "Generated configuration")
 }

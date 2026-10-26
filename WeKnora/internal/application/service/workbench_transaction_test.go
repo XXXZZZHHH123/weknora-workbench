@@ -142,7 +142,10 @@ func TestWorkspaceMutationRechecksCurrentBindingCreatorAndSource(t *testing.T) {
 				var current types.ResearchWorkbench
 				require.NoError(t, s.db.Unscoped().First(&current, "id = ?", created.ID).Error)
 				require.Equal(t, "Original", current.Name)
-				require.Equal(t, race == "source-deleted", current.DeletedAt.Valid, "a later mutation must never resurrect a cascaded workbench")
+				require.False(t, current.DeletedAt.Valid, "source removal preserves the workbench; a racing mutation must not delete or resurrect it")
+				if race == "source-deleted" {
+					require.Empty(t, current.KnowledgeBaseID)
+				}
 			})
 		}
 	}

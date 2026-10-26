@@ -14,7 +14,7 @@ func TestWorkspaceRoutesStayPersonalAndRegistered(t *testing.T) {
 	RegisterWorkspaceRoutes(r.Group("/api/v1"), handler.NewWorkspaceHandler(nil), g)
 	g.assertAPIKeyPoliciesMatchRoutes(r)
 	routes := r.Routes()
-	if len(routes) != 24 {
+	if len(routes) != 31 {
 		t.Fatalf("routes = %d", len(routes))
 	}
 	for _, route := range routes {
