@@ -74,6 +74,24 @@ async function main(){
    const target=path.join(source,route.slice(1));if(!fs.existsSync(target)){status=404;body={detail:'Fixture static resource absent'}}else{body=fs.readFileSync(target,'utf8');type=route.endsWith('.js')?'application/javascript':'text/css';}
   }else if(route==='/pdf-review.js'){
    body=fs.readFileSync(path.join(source,'static','pdf-review.js'),'utf8');type='application/javascript';
+  }else if(route==='/api/v1/knowledge-bases/'+scope+'/knowledge/file'&&req.method==='POST'){
+   uploadCount++;const kind=payload.toString().includes('.pdf')?'pdf':'xlsx',id='uploaded-'+uploadCount;
+   jobs.set(id,{count:0,kind,failed:payload.toString().includes('\r\nfixture\r\n')});body={success:true,data:{id}};
+  }else if(route.startsWith('/api/v1/knowledge/')){
+   const sourceId=route.split('/').at(-1),job=jobs.get(sourceId),pending=job&&job.count++===0;
+   if(sourceId==='source-timeout')await pause(800);
+   body={success:true,data:{id:sourceId,knowledge_base_id:scope,parse_status:job?.failed?'failed':pending?'processing':'completed',error_message:job?.failed?'夹具模拟：文件结构无法读取':'',metadata:{_knowledge_ingestion:{status:pending?'processing':'completed',stage:'正在整理表格'}}}};
+  }else if(route.startsWith('/api/knowledge-results/')){
+   const sourceId=route.split('/').at(-1),job=jobs.get(sourceId);
+   requests.at(-1).sourceKnowledgeId=sourceId;nativeAttempts.set(sourceId,(nativeAttempts.get(sourceId)||0)+1);
+   if(sourceId==='source-denied'||sourceId==='source-retry'&&nativeAttempts.get(sourceId)===1){status=403;body={detail:'隔离夹具：当前知识库原件无读取权限'};}
+   else if(sourceId==='source-pdf-fixture'||job?.kind==='pdf')body={source_knowledge_id:sourceId,file_type:'pdf',draft_id:'pdf-fixture'};
+   else{
+    const importId=job?ids.import:sourceId==='source-stale'?'6'.repeat(24):sourceId==='source-new'?'5'.repeat(24):'4'.repeat(24);
+    nativeImports.set(importId,{import_id:importId,source_file:sourceId==='source-stale'?'迟到原件.xlsx':'知识库内原件.xlsx',updated_at:'2025-01-06T00:00:00Z',scope});
+    if(sourceId==='source-stale')await pause(650);
+    body={source_knowledge_id:sourceId,file_type:'xlsx',import_result:{import_id:importId,dataset_id:ids.secondary}};
+   }
   }else if(route==='/api/pdf/config')body={configured:pdfConfigured,max_bytes:52428800};
   else if(route==='/api/pdf/import'&&req.method==='POST'){if(pdfStall)await pause(650);pdfAutomatic=payload.toString().includes('automatic-fixture.pdf');body={id:'pdf-native-job'};}
   else if(route==='/api/pdf/jobs')body={jobs:[]};
@@ -113,7 +131,7 @@ async function main(){
    else if(sourceId==='source-expired'&&req.headers.authorization==='Bearer fixture-token'){status=401;body={detail:'隔离夹具：登录已过期，请重新登录'};}
    else if(sourceId==='source-denied'||sourceId==='source-retry'&&nativeAttempts.get(sourceId)===1){status=403;body={detail:'隔离夹具：当前知识库原件无读取权限'};}
    else{
-    const importId=sourceId==='source-recovered'?'6'.repeat(24):sourceId==='source-new'?'5'.repeat(24):sourceId==='source-stale'?'6'.repeat(24):'4'.repeat(24);
+    const importId=sourceId==='source-recovered'?'6'.repeat(24):sourceId==='source-new'?'5'.repeat(24):sourceId==='source-stale'?'6'.repeat(24):sourceId==='source-new'?'5'.repeat(24):'4'.repeat(24);
     const row={import_id:importId,source_file:sourceId==='source-stale'?'迟到原件.xlsx':sourceId==='source-new'?'新知识库原件.xlsx':'知识库内原件.xlsx',updated_at:'2025-01-06T00:00:00Z',scope};nativeImports.set(importId,row);
     const result={import_id:importId,dataset_id:ids.secondary,source_knowledge_id:sourceId,recovered_legacy:sourceId==='source-recovered'};
     if(sourceId==='source-new'||sourceId==='source-poll-timeout'){const id=sourceId==='source-new'?'native-job':'native-poll-timeout';jobs.set(id,{count:0,nativeResult:result});body={id,status:'processing',source_knowledge_id:sourceId};}
@@ -168,6 +186,24 @@ async function main(){
   await wait("d.querySelector('.sheet-grid td') && d.querySelector('#dataset option')");
   assert(!requests.some(r=>r.path.endsWith('/report')||r.path.endsWith('/series')||r.path.endsWith('/charts')));
   checks.push('Import renders saved review without waiting for report, series or native charts');
+  if(process.argv.includes('--unified-ingestion')||process.argv.includes('--upload-regression')){
+   await exec("w.originalTimeout=w.setTimeout;w.setTimeout=(fn,ms,...args)=>w.originalTimeout(fn,ms===1500?30:ms,...args)");
+   const choose=async name=>{await exec(`const file=new w.File(['isolated upload'],${JSON.stringify(name)});const list=new w.DataTransfer();list.items.add(file);d.getElementById('file').files=list.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}));`);};
+   await choose('new.xlsx');await wait("!d.getElementById('file').disabled && d.getElementById('jobState').textContent.includes('自动入库')");
+   await choose('new.pdf');await wait("!d.getElementById('file').disabled && d.getElementById('jobState').textContent.includes('文件处理完成')");
+   assert.equal(requests.filter(r=>r.method==='POST'&&r.path.endsWith('/knowledge/file')).length,2);
+   assert.equal(requests.filter(r=>r.method==='POST'&&r.path.includes('/import')).length,0);
+   checks.push('PDF and XLSX upload through the same native endpoint and poll backend processing');
+   await js("window.auth('kb-a','fixture-token','source-reused')");await wait("d.getElementById('importSelect').value==='444444444444444444444444'");
+   await js("window.auth('kb-a','fixture-token','source-pdf-fixture','fixture-user','pdf')");await wait("d.getElementById('pdfDraftDetail')?.textContent.includes('Synthetic PDF cell')");
+   assert.equal(requests.filter(r=>r.method==='POST'&&r.path.includes('/import')).length,0);
+   checks.push('Existing PDF and Excel results open without another import');
+   await js("window.auth('kb-a','fixture-token','source-stale')");await pause(80);await js("window.auth('kb-b','fixture-token','source-reused')");await wait("d.getElementById('importSelect').value==='444444444444444444444444'");await pause(800);
+   assert.equal(await exec("return d.getElementById('importSelect').value"),'444444444444444444444444');
+   assert(requests.filter(r=>r.path.startsWith('/api/v1/')).every(r=>r.authorized&&r.tenant==='10000'&&r.scope));
+   assert.deepEqual(errors,[]);checks.push('Native authentication and KB scope survive; stale responses cannot replace a newer selection');
+   console.log(JSON.stringify({passed:checks.length,checks}));return;
+  }
   if(layoutMode) {
    await click('#workbookResults');
    await click('[data-sheet-filter="charts"]');
@@ -198,39 +234,6 @@ async function main(){
    await click('#pdfBackToFiles');await verify('Returning to the inventory clears the opened source and preserves file history',"!d.getElementById('pdfDraftDetail').children.length && w.getComputedStyle(d.getElementById('pdfInventory')).display!=='none' && d.querySelectorAll('.pdf-file-table tbody>tr').length===2");
    assert.deepEqual(errors,[]);checks.push('No JavaScript errors, model calls or publication writes');
    if(keepArtifacts)fs.writeFileSync(path.join(output,'layout-acceptance.json'),JSON.stringify({passed:checks.length,checks},null,2));console.log(JSON.stringify({passed:checks.length,checks}));return;
-  }
-  if(process.argv.includes('--upload-regression')) {
-   const choose = (name, size=16) => exec(`const dt=new w.DataTransfer();dt.items.add(new w.File([new Uint8Array(${size})],${JSON.stringify(name)}));d.getElementById('file').files=dt.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}))`);
-   const drop = names => exec(`const dt=new w.DataTransfer();for(const name of ${JSON.stringify(names)})dt.items.add(new w.File(['fixture'],name));d.getElementById('directUpload').dispatchEvent(new w.DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt}))`);
-   const writes = () => requests.filter(r=>r.method==='POST'&&['/structured/api/import','/structured/api/pdf/import'].includes(r.path));
-   await verify('One accessible upload entry supports both actual formats',"w.getComputedStyle(d.getElementById('processingResults')).display!=='none' && d.getElementById('file').accept==='.xlsx,.pdf' && !d.getElementById('pdfUploadFile') && d.getElementById('file').getAttribute('aria-label')==='上传文件'");
-   await choose('not-supported.csv');await wait("d.getElementById('jobState').textContent.includes('暂不支持')");assert.equal(writes().length,0);
-   await choose('large.pdf',50*1024*1024+1);await wait("d.getElementById('jobState').textContent.includes('超过 50 MB')");assert.equal(writes().length,0);
-   await drop(['one.pdf','two.xlsx']);await wait("d.getElementById('jobState').textContent.includes('每次上传一个')");assert.equal(writes().length,0);checks.push('Unsupported, oversized and multiple files never reach an import API');
-   await choose('synthetic.XLSX');await wait("d.getElementById('jobState').textContent.includes('正在处理隔离上传')");await drop(['duplicate.pdf']);assert.equal(writes().length,1);await verify('Processing prevents duplicate file selection',"d.getElementById('file').disabled && d.getElementById('upload').disabled");
-   await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('file').disabled");assert.equal(writes()[0].path,'/structured/api/import');checks.push('Selecting Excel starts its existing scan without a second click');
-   await drop(['synthetic.PDF']);await wait("d.getElementById('jobState').textContent.includes('PDF 识别完成') && !d.getElementById('file').disabled");
-   assert.equal(writes()[1].path,'/structured/api/pdf/import');assert(writes().every(r=>r.scope==='kb-a'&&r.authorized));
-   await verify('PDF results open automatically without another upload picker',"d.body.classList.contains('document-results') && d.getElementById('documentResults').getAttribute('aria-pressed')==='true' && d.getElementById('pdfDraftDetail').textContent.includes('Synthetic PDF cell') && !d.getElementById('pdfUploadFile')");
-   await verify('Optional instructions and technical IDs are collapsed',"!d.querySelector('#pdfDraftList .pdf-file-history').open && !d.querySelector('#pdfDraftList .record-details').open");
-   assert(!requests.some(r=>r.path.endsWith('/publish')||r.path.endsWith('/suggest')));checks.push('Drag-and-drop preserves scope and does not invoke AI mapping or publish data');
-   await screenshot('unified-pdf-results');
-   await click('#workbookResults');await verify('Users can return to the workbook review',"w.getComputedStyle(d.getElementById('importReview')).display!=='none' && w.getComputedStyle(d.getElementById('pdfReviewPanel')).display==='none'");
-   await choose('bad.xlsx');await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('file').disabled");
-   await choose('bad.xlsx');await wait("d.getElementById('jobState').textContent.includes('文件结构无法读取') && !d.getElementById('file').disabled");await verify('Failures expose an explicit retry button',"!d.getElementById('upload').classList.contains('hidden')");
-   await click('#upload');await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('file').disabled");checks.push('Retry reuses the selected file and releases busy state');
-   pdfConfigured=false;const count=writes().length;await choose('disabled.pdf');await wait("d.getElementById('jobState').textContent.includes('尚未配置') && !d.getElementById('file').disabled");assert.equal(writes().length,count);checks.push('Unavailable PDF parser stays an explicit error without a false completion');
-   pdfConfigured=true;pdfStall=true;await choose('late.pdf');await wait("d.getElementById('file').disabled");await pause(50);await js("window.auth('kb-b')");await wait("d.getElementById('dataset')?.textContent.includes('kb-b') && !d.getElementById('file').disabled");await pause(800);
-   await verify('A late PDF response cannot populate the new knowledge base',"!d.getElementById('jobState').textContent.includes('PDF 识别完成') && !d.getElementById('pdfDraftDetail')?.textContent.includes('Synthetic PDF cell') && d.getElementById('selectedFileName').textContent==='支持 Excel、PDF'");
-   pdfStall=false;pdfListDenied=true;const listFailureWrites=writes().length;await choose('list-failure.pdf');await wait("!d.getElementById('file').disabled && d.getElementById('jobState').textContent.includes('无法读取处理记录')");assert.equal(writes().length,listFailureWrites);
-   pdfListDenied=false;await click('#upload');await wait("d.getElementById('jobState').textContent.includes('PDF 识别完成') && !d.getElementById('file').disabled && d.getElementById('pdfDraftDetail')?.textContent.includes('Synthetic PDF cell')");checks.push('A failed workspace load blocks submission and retry rebuilds the review');
-   pdfSourceDenied=true;await choose('denied-source.pdf');await wait("!d.getElementById('file').disabled && d.getElementById('jobState').textContent.includes('无法打开核对结果')");checks.push('Protected source failure is not reported as a successful import');
-   pdfSourceDenied=false;await choose('automatic-fixture.pdf');await wait("d.getElementById('jobState').textContent.includes('已自动入库 1 张表格') && !d.getElementById('file').disabled");
-   await verify('The unified uploader preserves automatic acceptance and never asks for another confirmation',"!d.getElementById('jobState').textContent.includes('核对并发布') && !d.getElementById('pdfDraftDetail').children.length && w.getComputedStyle(d.getElementById('pdfInventory')).display!=='none'");
-   await resize(650);await screenshot('unified-upload-mobile');
-   assert.deepEqual(errors,[]);checks.push('No JavaScript runtime errors');
-   if(keepArtifacts)fs.writeFileSync(path.join(output,'upload-acceptance.json'),JSON.stringify({passed:checks.length,checks,writes:writes()},null,2));
-   console.log(JSON.stringify({passed:checks.length,checks,real_model_calls:0,real_business_writes:0}));return;
   }
   if(process.argv.includes('--loading-regression')) {
    await verify('Saved review is visible on the first visit',"Boolean(d.querySelector('.sheet-grid td'))");
@@ -268,7 +271,7 @@ async function main(){
   const fixtureDir=path.join(output,'fixture-files');fs.mkdirSync(fixtureDir,{recursive:true});const fixtureFile=path.join(fixtureDir,'隔离上传.xlsx');fs.writeFileSync(fixtureFile,Buffer.from([80,75,3,4]));
   await call('DOM.setFileInputFiles',{backendNodeId:fileChoosers[0].backendNodeId,files:[fixtureFile]});await wait("d.getElementById('selectedFileName').textContent==='隔离上传.xlsx'");
   await verify('Native file selection updates the real filename and accessible status',"d.getElementById('selectedFileName').title==='隔离上传.xlsx' && d.getElementById('selectedFileName').getAttribute('role')==='status'");
-  await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('upload').disabled");
+  await wait("d.getElementById('jobState').textContent.includes('自动入库') && !d.getElementById('upload').disabled");
   await js("window.auth('kb-a','fixture-renewed')");await pause(50);await verify('Token refresh keeps the selected filename in the same KB',"d.getElementById('selectedFileName').textContent==='隔离上传.xlsx'");await js("window.auth('kb-a')");
   await exec("window.reviewNode=d.getElementById('sheetDetail');const unit=d.querySelector('[data-column-field=unit]');unit.value='KB A 草稿';unit.dispatchEvent(new w.Event('input',{bubbles:true}))");
   await verifySheetHighlight('Light');
@@ -337,8 +340,8 @@ async function main(){
   await input('#search','不存在的夹具指标');await click('#find');await wait("d.querySelectorAll('#seriesRows button').length===0");await verify('No matching metric is explained',"d.getElementById('seriesCount').textContent.includes('0')");
   await js("window.view('import')");await pause(100);await verify('View switching preserves original review edits',"window.reviewNode===d.getElementById('sheetDetail') && d.querySelector('[data-column-field=unit]').value==='KB A 草稿'");
   await exec("const dt=new w.DataTransfer();dt.items.add(new w.File([new Uint8Array([80,75,3,4])],'隔离上传.xlsx',{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));d.getElementById('file').files=dt.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}));d.getElementById('upload').click()");
-  await wait("d.getElementById('jobState').textContent.includes('正在处理隔离上传')");await verify('Upload pending state prevents duplicate submission',"d.getElementById('upload').disabled");await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('upload').disabled");checks.push('Successful upload refreshes existing sheet review and available datasets');
-  await verify('Upload uses multipart file in the selected knowledge base',"d.querySelector('.sheet-grid td')!==null");assert(requests.some(r=>r.path==='/structured/api/import'&&r.method==='POST'&&r.scope==='kb-a'&&r.size>100));
+  await wait("d.getElementById('jobState').textContent.includes('正在整理表格')");await verify('Upload pending state prevents duplicate submission',"d.getElementById('upload').disabled");await wait("d.getElementById('jobState').textContent.includes('自动入库') && !d.getElementById('upload').disabled");checks.push('Successful upload refreshes existing sheet review and available datasets');
+  await verify('Upload uses multipart file in the selected knowledge base',"d.querySelector('.sheet-grid td')!==null");assert(requests.some(r=>r.path==='/api/v1/knowledge-bases/kb-a/knowledge/file'&&r.method==='POST'&&r.scope==='kb-a'&&r.size>100));
   await screenshot('05_导入_完成_1600');
   await exec("const dt=new w.DataTransfer();dt.items.add(new w.File(['fixture'],'隔离上传.xlsx'));d.getElementById('file').files=dt.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}))");await wait("d.getElementById('jobState').textContent.includes('文件结构无法读取') && !d.getElementById('upload').disabled");checks.push('Failed upload explains error and releases the action button');await screenshot('06_导入_失败_1600');
   for(const width of [900,600]){await resize(width);await exec("w.scrollTo(0,0)");await verify(`Import layout at ${width} px has no document horizontal overflow`,"d.documentElement.scrollWidth<=d.documentElement.clientWidth+1");await screenshot(`07_导入_${width}`);}
@@ -361,61 +364,28 @@ async function main(){
   await js("window.auth('kb-a','fixture-token','source-reused')");
   await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");
   await verify('Knowledge-base Excel reuses its bound scan without a second local file selection',"d.getElementById('file').files.length===0 && d.getElementById('importSelect').selectedOptions[0].textContent.includes('知识库内原件.xlsx') && d.querySelector('.sheet-grid td')!==null");
-  await verify('Native source page explains reuse and hides the unnecessary second file picker',"d.body.classList.contains('native-source') && d.getElementById('directUpload').querySelector('h2').textContent==='处理知识库原件' && d.getElementById('directUpload').textContent.includes('无需重新选择文件') && w.getComputedStyle(d.querySelector('.import-actions')).display==='none' && d.getElementById('jobState').textContent.includes('知识库内原件.xlsx')");
-  assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')&&r.sourceKnowledgeId==='source-reused').length,1);await js("window.auth('kb-a','fixture-token','source-reused')");await pause(100);assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')&&r.sourceKnowledgeId==='source-reused').length,1);checks.push('Repeated iframe auth does not enqueue duplicate source scans');
-  assert(requests.some(r=>r.path.endsWith('/import-knowledge')&&r.scope==='kb-a'&&r.authorized&&r.sourceKnowledgeId==='source-reused'));checks.push('Native Excel bridge sends real source identity and current authenticated KB scope');assert(requests.filter(r=>r.path.endsWith('/import-knowledge')).every(r=>r.restoreReviewedState===false),'KB originals must not restore legacy workspace mappings');checks.push('KB native bridge explicitly uses fresh source review without legacy restore');
-  const excelImportCount=requests.filter(r=>r.path==='/structured/api/import-knowledge').length,pdfImportCount=requests.filter(r=>r.path==='/structured/api/pdf/import-knowledge').length;
+  await verify('Native source page explains reuse and hides the unnecessary second file picker',"d.body.classList.contains('native-source') && d.getElementById('directUpload').querySelector('h2').textContent==='文件处理结果' && d.getElementById('directUpload').textContent.includes('无需再次导入') && w.getComputedStyle(d.querySelector('.import-actions')).display==='none' && d.getElementById('jobState').textContent.includes('知识库内原件.xlsx')");
+  assert.equal(requests.filter(r=>r.path==='/structured/api/knowledge-results/source-reused').length,1);
+  await js("window.auth('kb-a','fixture-token','source-reused')");await pause(100);
+  assert.equal(requests.filter(r=>r.path==='/structured/api/knowledge-results/source-reused').length,1);
+  checks.push('Repeated auth reads the same native result without another import');
   await js("window.auth('kb-a','fixture-token','source-pdf-fixture','fixture-user','pdf')");
   await wait("d.getElementById('pdfDraftDetail')?.textContent.includes('Synthetic PDF cell')");
-  await verify('An iframe PDF source message opens the PDF review panel and hides Excel import',"d.body.classList.contains('pdf-native-source') && w.getComputedStyle(d.getElementById('pdfReviewPanel')).display!=='none' && w.getComputedStyle(d.getElementById('directUpload')).display==='none' && d.getElementById('pdfDraftDetail').textContent.includes('fixture.pdf')");
-  assert.equal(requests.filter(r=>r.path==='/structured/api/pdf/import-knowledge'&&r.sourceKnowledgeId==='source-pdf-fixture'&&r.scope==='kb-a'&&r.authorized).length,pdfImportCount+1,'PDF source must use the authenticated PDF import endpoint');
-  assert.equal(requests.filter(r=>r.path==='/structured/api/import-knowledge').length,excelImportCount,'PDF source must not call the Excel native import API');
+  assert(requests.some(r=>r.path==='/structured/api/knowledge-results/source-pdf-fixture'&&r.authorized));
   await js("window.auth('kb-a','fixture-token','source-reused','fixture-user','xlsx')");
-  await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled && !d.body.classList.contains('pdf-native-source')");
-  assert.equal(requests.filter(r=>r.path==='/structured/api/import-knowledge'&&r.sourceKnowledgeId==='source-reused').length,excelImportCount+1);
-  checks.push('Switching the same iframe back to XLSX restores its native Excel import route');
-  await js("window.auth('kb-a','fixture-token','source-new')");await wait("d.getElementById('importSelect').value==='555555555555555555555555' && !d.getElementById('upload').disabled");
-  assert(requests.some(r=>r.path.endsWith('/api/jobs/native-job')));checks.push('First native source scan follows existing asynchronous job progress and opens its sheet review');await screenshot('10_知识库原件_直接解析');
-  await js("window.auth('kb-a','fixture-token','source-stale')");await pause(100);await js("window.auth('kb-a','fixture-renewed','source-reused')");await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");await pause(800);
-  await verify('Renewed credentials cannot let the previous source response overwrite the current authorized scan',"d.getElementById('importSelect').value==='444444444444444444444444' && d.getElementById('retrySourceImport').classList.contains('hidden')");
-  await js("window.auth('kb-a','fixture-token','source-stale')");await pause(100);await js("window.auth('kb-a','fixture-token','source-reused')");await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");await pause(800);
-  await verify('Late native source response cannot replace a more recently selected document',"d.getElementById('importSelect').value==='444444444444444444444444' && d.getElementById('importSelect').selectedOptions[0].textContent.includes('知识库内原件.xlsx')");
-  await js("window.auth('kb-a','fixture-token','source-stale')");await pause(100);await js("window.auth('kb-b')");await wait("d.getElementById('dataset')?.textContent.includes('kb-b') && !d.getElementById('upload').disabled");await pause(800);
-  await verify('Changing KB cancels late native UI updates and hides the prior source failure action',"d.getElementById('dataset').textContent.includes('kb-b') && !d.getElementById('importSelect').textContent.includes('知识库内原件.xlsx') && d.getElementById('retrySourceImport').classList.contains('hidden')");
-  await js("window.auth('kb-b','fixture-token','source-denied')");await wait("d.getElementById('jobState').textContent.includes('无读取权限') && !d.getElementById('upload').disabled");await verify('Native source permission errors stay visible with an explicit retry action',`${visible('retrySourceImport')} && !d.getElementById('jobState').textContent.includes('就绪')`);
-  await verify('Failed source preparation replaces the loading placeholder with its actual error',"d.querySelector('#sheetDetail [role=alert]').textContent.includes('无读取权限') && !d.getElementById('sheetDetail').textContent.includes('正在准备')");
-  await js("window.auth('kb-b','fixture-token','source-oversize')");await wait("d.getElementById('jobState').textContent.includes('超过允许') && !d.getElementById('upload').disabled");
-  for(const theme of ['light','dark']){
-   await exec(`d.documentElement.setAttribute('theme-mode',${JSON.stringify(theme)})`);
-   await verify(`${theme}: retry original button keeps readable text after an oversized-file failure`,`(()=>{
-    const button=d.getElementById('retrySourceImport'),style=w.getComputedStyle(button);
-    const luminance=color=>color.match(/[\\d.]+/g).slice(0,3).map(Number).map(value=>{const v=value/255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4}).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
-    const foreground=luminance(style.color),background=luminance(style.backgroundColor);
-    return button.getBoundingClientRect().height>0 && (Math.max(foreground,background)+.05)/(Math.min(foreground,background)+.05)>=4.5 && d.querySelector('#sheetDetail [role=alert]').textContent.includes('超过允许');
-   })()`);
-  }
-  await exec("d.documentElement.setAttribute('theme-mode','light');w.originalTimeout=w.setTimeout;w.setTimeout=(fn,ms,...args)=>w.originalTimeout(fn,ms===120000?50:ms,...args)");
-  await pause(220);await screenshot('12_原件读取失败_重试按钮');
-  await js("window.auth('kb-b','fixture-token','source-timeout')");await wait("d.getElementById('jobState').textContent.includes('超时') && !d.getElementById('upload').disabled");
-  await verify('A stalled native download times out into an actionable error instead of an endless spinner',`${visible('retrySourceImport')} && d.querySelector('#sheetDetail [role=alert]').textContent.includes('超时')`);
-  await exec("w.setTimeout=(fn,ms,...args)=>w.originalTimeout(fn,ms===120000?50:ms===30000?350:ms,...args)");
-  for(const sourceId of ['source-poll-timeout','source-refresh-timeout','source-sheet-timeout']){
-   await js(`window.auth('kb-b','fixture-token',${JSON.stringify(sourceId)})`);await wait("d.getElementById('jobState').textContent.includes('超时') && !d.getElementById('upload').disabled");
-   await verify(`${sourceId}: every native preparation request has its own recoverable timeout`,`${visible('retrySourceImport')} && d.querySelector('#sheetDetail [role=alert]').textContent.includes('超时') && !d.getElementById('sheetDetail').textContent.includes('正在读取')`);
-  }
-  await js("window.auth('kb-b','fixture-token','source-new')");await wait("d.getElementById('importSelect').value==='555555555555555555555555' && !d.getElementById('upload').disabled");checks.push('Long-running scan polling can outlast the initial download request budget');
-  await exec("w.setTimeout=w.originalTimeout;delete w.originalTimeout");
-  await call('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
-  await js("window.auth('kb-b','fixture-token','source-offline')");await wait("!d.getElementById('retrySourceImport').classList.contains('hidden') && !d.getElementById('upload').disabled");
-  await verify('A disconnected network releases source loading and presents a retry action',"d.querySelector('#sheetDetail [role=alert]')!==null && !d.getElementById('sheetDetail').textContent.includes('正在准备')");
-  await call('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});await click('#retrySourceImport');await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");checks.push('Retry succeeds for the same native source after the network reconnects');
-  await js("window.auth('kb-b','fixture-token','source-retry')");await wait("d.getElementById('jobState').textContent.includes('无读取权限') && !d.getElementById('upload').disabled");await click('#retrySourceImport');await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");checks.push('Retry loads the same authorized source after its temporary failure resolves');
-  await js("window.auth('kb-b','fixture-token','source-mismatch')");await wait("d.getElementById('jobState').textContent.includes('原件标识与当前选择不一致') && !d.getElementById('upload').disabled");await verify('Mismatched source identity is rejected without opening another scan',"d.getElementById('importSelect').value==='' && d.getElementById('retrySourceImport').classList.contains('hidden')===false");
-  await js("window.auth('kb-b','fixture-token','source-expired')");await wait("d.getElementById('notice').textContent.includes('登录已过期') && !d.getElementById('upload').disabled");await verify('Expired credentials show their real error while keeping the protected workspace hidden',"d.getElementById('workspace').classList.contains('hidden') && d.getElementById('importSelect').value===''");
-  await js("window.auth('kb-b','fixture-renewed','source-expired')");await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");await verify('Credential renewal retries the same source and clears the expired login error',"d.getElementById('notice').textContent==='' && !d.getElementById('workspace').classList.contains('hidden') && d.getElementById('retrySourceImport').classList.contains('hidden')");
-  const settingsStart=requests.length,settingsBridgeRequests=requests.filter(r=>r.path.endsWith('/import-knowledge')).length;await call('Page.navigate',{url:origin+'/harness?settings=1&source=source-reused'});await wait("d.getElementById('nativeModel').value==='fixture-chat' && d.getElementById('modelSettings').open && d.getElementById('importSelect').value==='444444444444444444444444'");await pause(150);
-  await verify('Old settings URL opens a compact model overlay above the existing import workspace',`d.getElementById('modelSettings').open && (${visible('workspace')}) && !d.getElementById('modelBase') && d.body.classList.contains('native-source')`);assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')).length,settingsBridgeRequests+1);assert(requests.slice(settingsStart).some(r=>r.path.endsWith('/api/model-settings')&&r.method==='GET'&&r.scope==='kb-a'));checks.push('Native settings overlay keeps its current source context');await screenshot('11_原件_字段模型浮层');
-  await click('#modelClose');await verify('Closing model settings preserves the current source scan without navigation',"!d.getElementById('modelSettings').open && d.body.classList.contains('native-source') && d.getElementById('importSelect').selectedOptions[0].textContent.includes('知识库内原件.xlsx') && d.getElementById('jobState').textContent.includes('已有的工作表识别记录')");assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')).length,settingsBridgeRequests+1);
+  await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.body.classList.contains('pdf-native-source')");
+  await js("window.auth('kb-a','fixture-token','source-stale')");await pause(80);
+  await js("window.auth('kb-b','fixture-token','source-reused')");await wait("d.getElementById('importSelect').value==='444444444444444444444444'");await pause(800);
+  assert.equal(await exec("return d.getElementById('importSelect').value"),'444444444444444444444444');
+  checks.push('PDF/Excel existing results share read-only opening; a late response from another KB is ignored');
+  await js("window.auth('kb-b','fixture-token','source-denied')");
+  await wait("d.getElementById('jobState').textContent.includes('无读取权限') && !d.getElementById('upload').disabled");
+  await verify('Read permission failures show a recoverable source error',"d.querySelector('#sheetDetail [role=alert]')!==null && !d.getElementById('retrySourceImport').classList.contains('hidden')");
+  await js("window.auth('kb-b','fixture-token','source-retry')");await wait("d.getElementById('jobState').textContent.includes('无读取权限') && !d.getElementById('upload').disabled");
+  await click('#retrySourceImport');await wait("d.getElementById('importSelect').value==='444444444444444444444444'");
+  checks.push('Retry reads the authorized result after the temporary access failure is resolved');
+  assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')&&r.method==='POST').length,0);
+  checks.push('Opening and retrying results never submit a second import');
   assert(!requests.some(r=>r.path.includes('/suggest')||r.path.includes('/resolve_fields')||r.path.includes('/model-settings')&&r.method!=='GET'));checks.push('No model execution or configuration writes were called');assert.deepEqual(errors,[]);checks.push('No JavaScript runtime errors');assert.deepEqual(networkFailures.filter(error=>!['net::ERR_ABORTED','net::ERR_INTERNET_DISCONNECTED'].includes(error)),[]);checks.push('Only intentionally cancelled requests and the simulated offline request failed');
   if(keepArtifacts)fs.writeFileSync(path.join(output,'browser-acceptance.json'),JSON.stringify({passed:checks.length,checks,screenshots:keepArtifacts?fs.readdirSync(path.join(output,'screenshots')):[],real_model_calls:0,real_business_writes:0,fixture_upload_requests:uploadCount,requests},null,2));
   console.log(JSON.stringify({passed:checks.length,checks,real_model_calls:0,real_business_writes:0}));

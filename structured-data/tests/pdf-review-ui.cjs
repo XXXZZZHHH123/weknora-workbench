@@ -71,7 +71,7 @@ async function main() {
     if (url.pathname === '/') {
       type = 'text/html';
       body = `<!doctype html><meta charset="utf-8"><style>${shellCss}${workspaceCss}</style><body class="embedded knowledge-view view-import document-results"><div id="workspace"><section id="pdfReviewPanel"><div id="pdfReviewApp"></div></section><div id="workspaceIntro"><section id="directUpload"></section></div><section id="importReview"></section><section id="queryWorkspace"></section></div>
-      <script>let authEpoch=0,requestedSourceKnowledge='',requestedSourceType='xlsx';function openKnowledgeSource(){throw Error('XLSX route must not be used for PDF')};window.pdfReviewHost={getAuthEpoch:()=>authEpoch,isWorkspaceReady:()=>true,showWorkspace:()=>{},api:async(path,options={},ctx={})=>{
+      <script>let authEpoch=0,requestedSourceKnowledge='',requestedSourceType='xlsx';function openKnowledgeSource(){throw Error('XLSX route must not be used for PDF')};window.pdfReviewHost={getAuthEpoch:()=>authEpoch,isWorkspaceReady:()=>true,showWorkspace:()=>{},loadKnowledgeResult:async id=>window.pdfReviewHost.api('/api/knowledge-results/'+id),api:async(path,options={},ctx={})=>{
         if(ctx.signal?.aborted)throw Error('aborted');window.__apiCalls.push({path,method:options.method||'GET',body:options.body});
         if(path==='/api/pdf/config')return {configured:true,max_bytes:52428800};
         if(path==='/api/pdf/drafts')return {drafts:[{draft_id:'pdfd_fixture',source:{file_name:'suspicious.pdf'},fragment_count:1,raw_row_count:2}]};
@@ -79,6 +79,7 @@ async function main() {
         if(path==='/api/pdf/jobs')return {jobs:window.__jobs||[]};
         if(path==='/api/pdf/jobs/failed-job/retry'){window.__retried=(window.__retried||0)+1;return {id:'retry-child',status:'processing'}}
         if(path==='/api/pdf/import')return {id:'job-'+(++window.__jobCount)};
+        if(path.startsWith('/api/knowledge-results/'))return {source_knowledge_id:path.split('/').at(-1),draft_id:'pdfd_fixture'};
         if(path==='/api/pdf/import-knowledge'){window.__knowledgeImportBody=JSON.parse(options.body);return {id:'job-'+(++window.__jobCount)}}
         if(path.startsWith('/api/pdf/jobs/'))return {status:'completed',draft_id:window.__jobDraftId||'pdfd_fixture'};
         if(path==='/api/pdf/drafts/pdfd_fixture')return window.__draft;
@@ -119,7 +120,8 @@ async function main() {
       const id = ++serial;
       const result = new Promise(resolve => pending.set(id, resolve));
       socket.send(JSON.stringify({id, method, params}));
-      const response = await result;
+      let timer;
+      const response = await Promise.race([result,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('CDP timeout: '+method)),30000)})]).finally(()=>clearTimeout(timer));
       if (response.error) throw Error(JSON.stringify(response.error));
       return response.result;
     };
@@ -207,7 +209,7 @@ async function main() {
     await wait("document.querySelector('#pdfDraftDetail')?.textContent.includes('suspicious.pdf')");
     assert.equal(await evaluate("document.body.classList.contains('pdf-native-source')"), true, 'production route must switch to PDF-only native source mode');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#directUpload')).display"), 'none', 'PDF source mode must hide the Excel importer');
-    assert.equal(await evaluate("window.__apiCalls.some(x=>x.path==='/api/pdf/import-knowledge'&&JSON.parse(x.body).source_knowledge_id==='source-pdf-1')"), true, 'knowledge PDF must use its PDF import endpoint and source ID');
+    assert.equal(await evaluate("window.__apiCalls.some(x=>x.path==='/api/knowledge-results/source-pdf-1'&&x.method==='GET')"), true, 'knowledge PDF must read its existing result with the real source ID');
     assert.equal(await evaluate('window.__sourceFetches'), 3, 'each selected draft must retrieve its protected original');
     await evaluate("window.__jobs=[{id:'failed-job',status:'failed',retry_available:true,file_name:'retry.pdf',error:'Provider unavailable'}];[...document.querySelectorAll('button')].find(b=>b.textContent==='刷新记录').click()");
     await wait("document.querySelector('#pdfJobs')?.textContent.includes('Provider unavailable')");

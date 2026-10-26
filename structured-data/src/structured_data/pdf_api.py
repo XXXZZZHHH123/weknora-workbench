@@ -417,14 +417,14 @@ def install_pdf_routes(app, registry, *, publish_guard):
         return {**parser_availability(), 'max_bytes': MAX_PDF_BYTES}
 
     @app.post('/api/pdf/import')
-    async def upload_pdf(file: UploadFile):
+    async def upload_pdf(request: Request, file: UploadFile):
         name = Path((file.filename or '').replace('\\', '/')).name
         if not name.lower().endswith('.pdf') or any(ord(c) < 32 for c in name):
             raise HTTPException(400, '请选择 PDF 文件')
         uploads = directory() / 'uploads'
-        path = uploads / (uuid.uuid4().hex + '.pdf')
+        path = uploads / uuid.uuid4().hex / name
         try:
-            uploads.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             size = 0
             with path.open('xb') as stream:
                 while chunk := await file.read(1024 * 1024):
@@ -434,6 +434,14 @@ def install_pdf_routes(app, registry, *, publish_guard):
                     stream.write(chunk)
             if not size or path.read_bytes()[:5] != b'%PDF-':
                 raise HTTPException(400, '文件内容不是 PDF')
+            identity = current_identity.get()
+            if identity.knowledge_base_id:
+                from .native_import import register_source
+                native = await register_source(path, request.state.verified_authorization, identity, MAX_PDF_BYTES)
+                path.unlink(missing_ok=True)
+                path.parent.rmdir()
+                return {'status': 'processing', 'source_knowledge_id': native['source_knowledge_id'],
+                        'native_processing': True}
             return await start_import(path, name)
         except BaseException as exc:
             path.unlink(missing_ok=True)
@@ -441,6 +449,8 @@ def install_pdf_routes(app, registry, *, publish_guard):
                 raise HTTPException(507, _STORAGE_ERROR_MESSAGE) from exc
             raise
         finally:
+            if path.parent != uploads and path.parent.is_dir() and not any(path.parent.iterdir()):
+                path.parent.rmdir()
             await file.close()
 
     @app.post('/api/pdf/import-knowledge')
@@ -448,7 +458,9 @@ def install_pdf_routes(app, registry, *, publish_guard):
         from .native_import import load_source, download_source
         identity = current_identity.get()
         authorization = request.state.verified_authorization
-        native = await load_source(body.source_knowledge_id, authorization, identity, MAX_PDF_BYTES, allowed_types=('pdf',))
+        native = await load_source(body.source_knowledge_id, authorization, identity, MAX_PDF_BYTES, allowed_types=('pdf',), include_processing=True)
+        if native.pop('native_processing', None):
+            return {'status': 'processing', 'source_knowledge_id': body.source_knowledge_id, 'native_processing': True}
         uploads = directory() / 'uploads'
         path = uploads / (uuid.uuid4().hex + '.pdf')
         try:

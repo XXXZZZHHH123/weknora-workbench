@@ -100,7 +100,7 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 	if _, err := resolveFileImportProcessConfig(ctx, kb, fileType, overrides, nil); err != nil {
 		return nil, err
 	}
-	if isExcelFileType(fileType) {
+	if isExcelFileType(fileType) && !(fileType == "xlsx" && unifiedIngestionAvailable()) {
 		return nil, werrors.NewBadRequestError("Excel 文件请通过添加文档上传，再到结构化数据库进行结构化解析")
 	}
 

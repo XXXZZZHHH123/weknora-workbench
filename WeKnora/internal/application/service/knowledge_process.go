@@ -592,6 +592,7 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 			ChunkType:       types.ChunkTypeText,
 			SourceLocators:  chunkData.SourceLocators,
 			Metadata:        documentImageSourceMetadata(chunkData.Content, options.DocumentImageSources),
+			ImageInfo:       storedSourceImageInfo(chunkData.Content, options.StoredImages),
 		}
 
 		// Wire up ParentChunkID for child chunks
@@ -2820,7 +2821,7 @@ func (s *knowledgeService) reparseKnowledge(
 	if fileType == "" {
 		fileType = getFileType(existing.FileName)
 	}
-	if existing.Type == "file" && isExcelFileType(fileType) {
+	if existing.Type == "file" && isExcelFileType(fileType) && !(fileType == "xlsx" && unifiedIngestionAvailable()) {
 		return nil, werrors.NewBadRequestError("Excel 文件请通过结构化数据库进行结构化解析")
 	}
 	storedOverrides, storedErr := existing.ProcessOverrides()
@@ -2856,6 +2857,14 @@ func (s *knowledgeService) reparseKnowledge(
 		}
 	}
 
+	if existing.Type == "file" && unifiedIngestionAvailable() && (fileType == "pdf" || fileType == "xlsx") {
+		if err := setIngestionState(existing, knowledgeIngestionState{Attempt: uuid.NewString(), SourceHash: existing.FileHash, Status: "pending", Stage: "等待自动处理"}); err != nil {
+			return nil, err
+		}
+		if err := s.repo.UpdateKnowledgeColumn(ctx, existing.ID, "metadata", existing.Metadata); err != nil {
+			return nil, err
+		}
+	}
 	processOverrides, _ = existing.ProcessOverrides()
 	reparseEff := ResolveProcessConfig(kb, processOverrides)
 
@@ -3965,6 +3974,15 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 			QuestionCount:            payload.QuestionCount,
 		}
 		return s.processChunks(ctx, kb, knowledge, passageChunks, passageOpts)
+	} else if state, stateErr := ingestionState(knowledge); stateErr == nil && state.Attempt != "" && knowledge.FileType == "xlsx" {
+		result, processErr := s.processUnifiedTables(ctx, knowledge, kb, nil)
+		if processErr != nil {
+			return processErr
+		}
+		convertResult, err = s.workbookIngestionDocument(ctx, knowledge, kb, result)
+		if err != nil {
+			return err
+		}
 	} else {
 		// File import
 		convertResult, err = s.convert(ctx, payload, kb, knowledge, eff, isLastRetry)
@@ -3973,6 +3991,12 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 		}
 		if convertResult == nil {
 			return nil
+		}
+	}
+
+	if state, stateErr := ingestionState(knowledge); stateErr == nil && state.Attempt != "" && knowledge.FileType == "pdf" {
+		if _, err := s.processUnifiedTables(ctx, knowledge, kb, convertResult.StructuredTables); err != nil {
+			return err
 		}
 	}
 

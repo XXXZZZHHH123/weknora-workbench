@@ -1,3 +1,4 @@
+import { knowledgeIngestion } from '../utils/knowledgeIngestion'
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess'
 import {
   classifyUploadResult,
@@ -36,6 +37,7 @@ export interface KnowledgeStatusRow {
   id: string
   parse_status?: string
   error_message?: string
+  metadata?: unknown
 }
 
 export interface TransferEnd {
@@ -160,6 +162,9 @@ export function createUploadQueue(items: UploadItem[], batches: UploadBatch[], d
         item.loaded = item.size
         item.knowledgeId = outcome.knowledgeId
         item.parseStatus = outcome.parseStatus || 'pending'
+        item.processingStatus = outcome.processingStatus
+        item.processingStage = outcome.processingStage
+        item.attentionCount = outcome.attentionCount
         payloads.delete(item.id)
         schedulePoll()
       } else if (outcome.kind === 'duplicate') {
@@ -282,6 +287,10 @@ export function createUploadQueue(items: UploadItem[], batches: UploadBatch[], d
             missingPolls.delete(item.id)
             item.parseStatus = row.parse_status
             item.parseError = row.error_message || undefined
+            const processing = knowledgeIngestion(row.metadata)
+            item.processingStatus = processing.status
+            item.processingStage = processing.stage
+            item.attentionCount = processing.attentionCount
           }
         }, () => {}))
       }

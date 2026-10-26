@@ -111,7 +111,9 @@ def cache_identity(config):
 def complete(config, messages, *, max_tokens=8192, temperature=0, enable_thinking=None, timeout=90, purpose='repair'):
     """An OpenAI-shaped adapter; authorization stays only in the active context."""
     identifier = _identifier(config.get('native_model_id'))
-    identity, headers = _context()
+    from .ingestion import current_ingestion_claim, signed_headers
+    claim = current_ingestion_claim.get()
+    identity, headers = (current_identity.get(), {}) if claim else _context()
     endpoint = {'repair': 'chat', 'fields': 'plan'}.get(purpose)
     if endpoint is None:
         raise ValueError('不支持的结构化模型任务。')
@@ -120,8 +122,15 @@ def complete(config, messages, *, max_tokens=8192, temperature=0, enable_thinkin
         body['enable_thinking'] = enable_thinking
     try:
         with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as client:
-            data = _check_status(client.post(_base() + '/api/v1/knowledge-bases/'
-                + quote(identity.knowledge_base_id, safe='') + '/structured-model/' + endpoint, headers=headers, json=body))
+            if claim:
+                raw = json.dumps(body, separators=(',', ':')).encode()
+                path = '/internal/ingestion/model'
+                headers = signed_headers(claim, 'POST', path, body=raw)
+                headers['Content-Type'] = 'application/json'
+                data = _check_status(client.post(_base() + path, headers=headers, content=raw))
+            else:
+                data = _check_status(client.post(_base() + '/api/v1/knowledge-bases/'
+                    + quote(identity.knowledge_base_id, safe='') + '/structured-model/' + endpoint, headers=headers, json=body))
         if (not isinstance(data, dict) or data.get('model_id') != identifier
                 or not isinstance(data.get('content'), str) or not isinstance(data.get('finish_reason'), str)):
             raise ModelGatewayError('MODEL_OUTPUT_INVALID', '平台模型未返回所选模型的有效结果，未应用建议。')

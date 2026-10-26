@@ -38,7 +38,7 @@ def check_response(response):
         raise HTTPException(502, "无法读取知识库原件，请稍后重试。")
 
 
-async def load_source(source_id, authorization, identity, max_upload, *, allowed_types=('xlsx',)):
+async def load_source(source_id, authorization, identity, max_upload, *, allowed_types=('xlsx',), include_processing=False):
     if not identity.knowledge_base_id:
         raise HTTPException(400, "请从原件所属知识库打开结构化解析。")
     base = os.environ.get("WEKNORA_API_URL", "http://127.0.0.1:18081").rstrip("/")
@@ -74,9 +74,12 @@ async def load_source(source_id, authorization, identity, max_upload, *, allowed
         raise HTTPException(413, "原件超过允许的文件大小。")
     if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", fingerprint):
         raise HTTPException(400, "原件指纹无效，请重新上传文件。")
-    return {"source_knowledge_id": source_id, "file_name": filename, "file_size": size,
+    result = {"source_knowledge_id": source_id, "file_name": filename, "file_size": size,
             "file_hash": fingerprint.lower(), "knowledge_base_id": identity.knowledge_base_id,
             "tenant_id": identity.knowledge_base_tenant_id}
+    if include_processing:
+        result['native_processing'] = (source.get('metadata') or {}).get('_knowledge_ingestion')
+    return result
 
 
 def original_fingerprint(path, max_upload, expected_sha256=None):
@@ -98,15 +101,15 @@ def original_fingerprint(path, max_upload, expected_sha256=None):
     return size, md5.hexdigest()
 
 
-async def register_source(path, authorization, identity, max_upload, *, expected_sha256=None):
+async def register_source(path, authorization, identity, max_upload, *, expected_sha256=None, source_only=False):
     """Store an original through the native ACL, storage and duplicate checks."""
     from starlette.concurrency import run_in_threadpool
     if not identity.knowledge_base_id:
         raise HTTPException(400, "请在原件所属知识库中登记文件。")
     if not identity.can_write:
         raise HTTPException(403, "没有编辑当前知识库的权限。")
-    if not path.name.lower().endswith('.xlsx'):
-        raise HTTPException(400, "结构化原件登记目前支持 .xlsx。")
+    if path.suffix.lower() not in ('.xlsx', '.pdf'):
+        raise HTTPException(400, "请选择 PDF 或 Excel（.xlsx）文件。")
     size, digest = await run_in_threadpool(original_fingerprint, path, max_upload, expected_sha256)
     base = os.environ.get("WEKNORA_API_URL", "http://127.0.0.1:18081").rstrip("/")
     endpoint = base + '/api/v1/knowledge-bases/' + quote(identity.knowledge_base_id, safe='') + '/knowledge/file'
@@ -116,8 +119,8 @@ async def register_source(path, authorization, identity, max_upload, *, expected
             with path.open('rb') as original:
                 response = await client.post(endpoint, headers=upstream_headers(authorization, identity),
                     files={'file': (path.name, original,
-                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')},
-                    data={'process_config': '{"source_only":true}'})
+                        ('application/pdf' if path.suffix.lower() == '.pdf' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))},
+                    data={'process_config': '{"source_only":true}' if source_only else '{"source_only":false}'})
         if response.status_code == 413:
             raise HTTPException(413, '原件超过知识库允许的文件大小。')
         if response.status_code != 409:
@@ -136,8 +139,8 @@ async def register_source(path, authorization, identity, max_upload, *, expected
         if not valid_knowledge_base_id(source_id):
             raise ValueError('invalid source identity')
     except (httpx.HTTPError, ValueError):
-        raise HTTPException(502, 'Excel 原件未能保存到知识库，未开始结构化导入，请重试。') from None
-    source = await load_source(source_id, authorization, identity, max_upload)
+        raise HTTPException(502, '原件未能保存到知识库，未开始结构化导入，请重试。') from None
+    source = await load_source(source_id, authorization, identity, max_upload, allowed_types=(path.suffix.lower()[1:],))
     if source['file_size'] != size or source['file_hash'] != digest:
         raise HTTPException(409, '知识库原件与上传内容不一致，未关联结构化数据。')
     return source

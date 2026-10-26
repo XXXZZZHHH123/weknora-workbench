@@ -538,6 +538,18 @@ def create_app(data_dir: str | Path | None = None):
             return await call_next(request)
         if path.startswith("/fonts/") and request.method in {"GET", "HEAD"}:
             return await call_next(request)
+        if path in {'/internal/ingestion/upload', '/internal/ingestion/result'}:
+            from .ingestion import verify_ingestion, task_identity
+            try:
+                claim = verify_ingestion(request)
+            except HTTPException as exc:
+                return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
+            request.state.ingestion_claim = claim
+            marker = current_identity.set(task_identity(claim))
+            try:
+                return await call_next(request)
+            finally:
+                current_identity.reset(marker)
         identity = None
         signed = path in {'/api/tools/read', '/api/research/export', '/api/research/facts'} or path.startswith('/api/research/source/')
         if signed:
@@ -781,12 +793,31 @@ def create_app(data_dir: str | Path | None = None):
             path.parent.rmdir()
             import_lock.release()
 
+    @app.get('/api/knowledge-results/{source_id}')
+    async def knowledge_results(source_id: str, request: Request):
+        from .native_import import load_source
+        from .pdf_tables import PDFTableStore
+        identity = current_identity.get()
+        native = await load_source(source_id, request.state.verified_authorization, identity, MAX_UPLOAD,
+                                   allowed_types=('pdf', 'xlsx'))
+        if native['file_name'].lower().endswith('.xlsx'):
+            existing = await run_in_threadpool(manager.find_native_source, native)
+            return {'source_knowledge_id': source_id, 'file_type': 'xlsx', 'import_result': existing}
+        catalog = await run_in_threadpool(PDFTableStore(registry.directory() / 'pdf-tables').list_drafts)
+        matches = [item for item in catalog['drafts'] if item.get('source', {}).get('knowledge_id') == source_id
+                   and item.get('source', {}).get('knowledge_base_id') == identity.knowledge_base_id]
+        latest = max(matches, key=lambda item: item.get('created_at', ''), default=None)
+        return {'source_knowledge_id': source_id, 'file_type': 'pdf', 'draft_id': latest['draft_id'] if latest else None}
+
     @app.post('/api/import-knowledge')
     async def import_knowledge(body: NativeImportRequest, request: Request):
         from .native_import import download_source, load_source
         identity = current_identity.get()
         authorization = request.state.verified_authorization
-        native = await load_source(body.source_knowledge_id, authorization, identity, MAX_UPLOAD)
+        native = await load_source(body.source_knowledge_id, authorization, identity, MAX_UPLOAD, include_processing=True)
+        processing = native.pop('native_processing', None)
+        if processing:
+            return {'status': 'processing', 'source_knowledge_id': body.source_knowledge_id, 'native_processing': True}
         existing = await run_in_threadpool(manager.find_native_source, native,
                                            use_reviewed_mappings=body.restore_reviewed_state)
         legacy = None
@@ -869,6 +900,11 @@ def create_app(data_dir: str | Path | None = None):
             if identity.knowledge_base_id:
                 from .native_import import register_source
                 native = await register_source(path, authorization, identity, MAX_UPLOAD)
+                path.unlink(missing_ok=True)
+                uploads.rmdir()
+                import_lock.release()
+                return {'status': 'processing', 'source_knowledge_id': native['source_knowledge_id'],
+                        'native_processing': True}
             with job_lock:
                 jobs[job_id] = {"id": job_id, 'tenant_id':identity.tenant_id,
                     'knowledge_base_id':identity.knowledge_base_id, 'user_id': identity.user_id,
@@ -923,7 +959,7 @@ def create_app(data_dir: str | Path | None = None):
                 break
             if source is None:
                 source = await register_source(path, authorization, identity, MAX_UPLOAD,
-                                               expected_sha256=doc['sha256'])
+                                               expected_sha256=doc['sha256'], source_only=True)
             await run_in_threadpool(manager.bind_native_source, import_id, source,
                 before_commit=lambda: check_job_write(authorization, identity))
             identifier = source['source_knowledge_id']
@@ -1424,5 +1460,7 @@ def create_app(data_dir: str | Path | None = None):
     async def value_error(request, exc):
         return JSONResponse({"detail": str(exc), **error_location(exc)}, status_code=400)
 
+    from .ingestion import install_ingestion_routes
+    install_ingestion_routes(app, registry)
     app.mount("/", mcp_app)
     return app

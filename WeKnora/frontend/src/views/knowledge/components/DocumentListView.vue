@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { knowledgeIngestion } from '@/utils/knowledgeIngestion';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { formatFileSize } from '@/utils/files';
@@ -16,6 +17,7 @@ interface Tag {
 }
 
 interface KnowledgeItem {
+ metadata?: unknown;
   id: string;
   file_name: string;
   original_file_name?: string;
@@ -140,6 +142,13 @@ const computeStatus = (item: KnowledgeItem): StatusInfo => {
       icon: 'time',
       hint: t('knowledgeBase.stalledHint', { minutes: item.stalled_minutes }),
     };
+  }
+  const processing = knowledgeIngestion(item.metadata);
+  if (processing.attentionCount && ['completed','finalizing'].includes(item.parse_status || '')) {
+    return {label:t('knowledgeBase.processingAttention',{count:processing.attentionCount}),theme:'warning',icon:'error-circle'};
+  }
+  if (processing.stage && ['pending','processing'].includes(item.parse_status || '')) {
+    return {label:processing.stage,theme:'primary',icon:'loading',spin:true};
   }
   if (item.parse_status === 'pending' || item.parse_status === 'processing') {
     return { label: t('knowledgeBase.statusProcessing'), theme: 'primary', icon: 'loading', spin: true };

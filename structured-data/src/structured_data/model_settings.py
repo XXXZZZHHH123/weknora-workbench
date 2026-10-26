@@ -7,6 +7,19 @@ from urllib.parse import urlsplit
 
 
 def read_model(root=None):
+    from .ingestion import current_ingestion_claim, current_ingestion_model
+    if current_ingestion_claim.get():
+        # The admitted upload uses the KB's server-configured model. No user
+        # credential or legacy provider key is inherited by the background task.
+        selected_root = Path(root) if root else None
+        if selected_root:
+            selected_path = selected_root / 'model-settings.json'
+            if selected_path.is_file():
+                selected = json.loads(selected_path.read_text()).get('chat', {})
+                if selected.get('native_model_id'):
+                    return {key:selected[key] for key in ('native_model_id','enable_thinking') if key in selected}
+        model = current_ingestion_model.get()
+        return {'native_model_id': model} if model else {}
     root=Path(root or os.environ.get('STRUCTURED_DATA_DIR',os.environ.get('COTTON_DATA_DIR','data')))
     path=root/'model-settings.json'
     if not path.is_file():

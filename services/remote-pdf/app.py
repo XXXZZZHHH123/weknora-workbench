@@ -381,6 +381,51 @@ def create_app(settings=None, parser=None):
             raise HTTPException(503, 'Result unavailable')
         return FileResponse(path, media_type='application/json')
 
+    page_image_lock = asyncio.Lock()
+
+    @app.get('/v1/jobs/{job_id}/pages/{page}/image')
+    async def page_image(job_id: str, page: int, identity=Depends(identity)):
+        job = lookup(job_id, identity)
+        if job['status'] != 'completed':
+            raise HTTPException(409, 'PDF result is not complete')
+        directory = worker.directory(job_id)
+        result_file = directory / 'result.json'
+        if not result_file.is_file():
+            raise HTTPException(503, 'PDF source result unavailable')
+        artifact = json.loads(result_file.read_text())
+        if not 1 <= page <= artifact.get('source', {}).get('page_count', 0):
+            raise HTTPException(404, 'PDF page not found')
+        with (directory/'input.pdf').open('rb') as original:
+            source_sha = hashlib.file_digest(original, 'sha256').hexdigest()
+        if source_sha != artifact.get('source', {}).get('sha256'):
+            raise HTTPException(409, 'PDF original no longer matches its result')
+        target = directory / 'page-images' / f'page-{page:04d}.png'
+        async with page_image_lock:
+            if not target.is_file():
+                from remote_pdf.extractor import _render
+                config = settings.get('extractor', {})
+                if shutil.disk_usage(worker.root).free < settings['disk_reserve_bytes'] + 32*1024*1024:
+                    raise HTTPException(507, 'PDF page image storage unavailable')
+                raw, _ = await asyncio.to_thread(_render, directory/'input.pdf', page,
+                    config.get('dpi', 180), config.get('max_image_pixels', 16_000_000))
+                if len(raw) > 16*1024*1024:
+                    raise HTTPException(413, 'PDF page image exceeds size limit')
+                used = sum(p.stat().st_size for p in worker.root.rglob('*') if p.is_file())
+                job_used = sum(p.stat().st_size for p in directory.rglob('*') if p.is_file() and p.name != 'input.pdf')
+                active = sum(worker.store.counts().get(k, 0) for k in ('queued', 'running'))
+                reserved = active * settings['max_job_output_bytes']
+                if (job_used + len(raw) > settings['max_job_output_bytes']
+                        or used + reserved + len(raw) > settings['max_storage_bytes']):
+                    raise HTTPException(507, 'PDF page image storage quota exceeded')
+                target.parent.mkdir(exist_ok=True)
+                pending = target.with_suffix('.tmp')
+                try:
+                    pending.write_bytes(raw)
+                    pending.replace(target)
+                finally:
+                    pending.unlink(missing_ok=True)
+        return FileResponse(target, media_type='image/png', headers={'Cache-Control': 'private, no-store', 'X-Source-SHA256': source_sha, 'X-PDF-Page': str(page)})
+
     @app.delete('/v1/jobs/{job_id}')
     async def cancel(job_id: str, x_parse_lease: str = Header(default=''), identity=Depends(identity)):
         job = lookup(job_id, identity)

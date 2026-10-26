@@ -208,7 +208,8 @@ async def parse_pdf(path: str | os.PathLike[str], source: Mapping[str, Any] | No
 
 def normalize_parser_response(engine: str, response: Mapping[str, Any],
                               source: Mapping[str, Any], *,
-                              max_artifact_bytes: int = DEFAULT_MAX_RESPONSE_BYTES) -> dict[str, Any]:
+                              max_artifact_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+                              allow_empty_tables: bool = False) -> dict[str, Any]:
     """Normalize a captured backend response; useful for store integration tests.
 
     ``mineru_v1`` input is the bridge envelope with ``structured`` and
@@ -241,7 +242,7 @@ def normalize_parser_response(engine: str, response: Mapping[str, Any],
         raw_artifact = {"response_json": response}
     else:
         raise PDFParserError("unsupported parser engine")
-    if not fragments:
+    if not fragments and not allow_empty_tables:
         raise PDFParserError("parser returned no structured table cells; Markdown-only tables are not accepted")
     fragments, ambiguities = _mark_ambiguous_cross_page(fragments)
     source_bundle = {

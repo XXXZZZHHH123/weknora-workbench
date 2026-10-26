@@ -400,3 +400,41 @@ def test_ocr_runtime_profile_changes_with_engine_or_language_data(tmp_path):
     version = 'tesseract 5.4.0'
     assert ocr_runtime_profile(config,runner) != changed
     assert ocr_runtime_profile({'fallback_ocr':False},lambda *a,**k:pytest.fail('must not invoke OCR when disabled')) is None
+
+
+@pytest.mark.anyio
+async def test_original_page_image_scope_identity_and_render_cache(tmp_path, monkeypatch):
+    import fitz
+    import hashlib
+    from remote_pdf import extractor
+    doc = fitz.open()
+    doc.new_page().insert_text((20, 30), 'Source page image fixture')
+    content = doc.tobytes()
+    doc.close()
+    async def parsed(source, output, **kwargs):
+        return {'schema_version': 'remote_pdf_v1', 'source': {'sha256': hashlib.sha256(content).hexdigest(), 'page_count': 1},
+                'pages': [{'page': 1, 'text': 'Source page image fixture'}], 'bundle': {}}
+    calls = []
+    render = extractor._render
+    def capture(*args):
+        calls.append(args[1])
+        return render(*args)
+    monkeypatch.setattr(extractor, '_render', capture)
+    app = create_app(settings(tmp_path, max_upload_bytes=100000, max_job_output_bytes=1000000,
+        max_storage_bytes=10000000), parsed)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        job = (await client.post('/v1/jobs', files={'file':('source.pdf',content)}, headers=headers())).json()
+        await wait(client, job['id'])
+        route = '/v1/jobs/' + job['id'] + '/pages/1/image'
+        assert (await client.get(route)).status_code == 401
+        assert (await client.get(route, headers=headers('other-tenant'))).status_code == 404
+        response = await client.get(route, headers=headers())
+        assert response.status_code == 200, response.text
+        assert response.headers['x-source-sha256'] == hashlib.sha256(content).hexdigest()
+        assert response.headers['x-pdf-page'] == '1'
+        assert response.content.startswith(b'\x89PNG\r\n\x1a\n')
+        assert (await client.get(route, headers=headers())).content == response.content
+        assert calls == [1]
+        assert (await client.get(route.replace('/1/image','/2/image'), headers=headers())).status_code == 404
+        (tmp_path/'jobs'/job['id']/'input.pdf').write_bytes(b'%PDF-changed')
+        assert (await client.get(route, headers=headers())).status_code == 409

@@ -58,6 +58,9 @@ func isIconImage(data []byte) bool {
 
 // StoredImage describes an image that has been saved to storage.
 type StoredImage struct {
+	SkipMultimodal bool
+	SourcePage     int // physical original page, supplied by the parser
+
 	OriginalRef string // reference in the original markdown
 	ServingURL  string // provider:// URL (e.g. local://images/xxx.png, minio://bucket/key)
 	MimeType    string
@@ -202,9 +205,9 @@ func (r *ImageResolver) saveReferencedImage(
 	if ref.Filename != "" {
 		if cached, ok := savedRefs["__filename__:"+ref.Filename]; ok {
 			stored := StoredImage{
-				OriginalRef: refPath,
-				ServingURL:  cached.ServingURL,
-				MimeType:    cached.MimeType,
+				OriginalRef: refPath, SkipMultimodal: ref.SkipMultimodal, SourcePage: ref.SourcePage,
+				ServingURL: cached.ServingURL,
+				MimeType:   cached.MimeType,
 			}
 			savedRefs[refPath] = stored
 			return stored, true
@@ -227,9 +230,9 @@ func (r *ImageResolver) saveReferencedImage(
 	}
 
 	stored := StoredImage{
-		OriginalRef: refPath,
-		ServingURL:  servingURL,
-		MimeType:    ref.MimeType,
+		OriginalRef: refPath, SkipMultimodal: ref.SkipMultimodal, SourcePage: ref.SourcePage,
+		ServingURL: servingURL,
+		MimeType:   ref.MimeType,
 	}
 	savedRefs[refPath] = stored
 	if ref.Filename != "" {

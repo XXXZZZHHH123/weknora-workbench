@@ -51,12 +51,13 @@ func (*remotePDFEngine) CheckAvailable(bool, map[string]string) (bool, string) {
 }
 func (*remotePDFEngine) NewReader(context.Context, ReaderDeps) (interfaces.DocReader, error) {
 	return &RemotePDFReader{endpoint: strings.TrimRight(os.Getenv("WEKNORA_REMOTE_PDF_URL"), "/"),
-		token: os.Getenv("WEKNORA_REMOTE_PDF_TOKEN"), poll: 2 * time.Second}, nil
+		token: os.Getenv("WEKNORA_REMOTE_PDF_TOKEN"), poll: 2 * time.Second, preservePageImages: true}, nil
 }
 
 type RemotePDFReader struct {
-	endpoint, token string
-	poll            time.Duration
+	endpoint, token    string
+	poll               time.Duration
+	preservePageImages bool
 }
 
 type remotePDFJob struct {
@@ -233,6 +234,7 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 			} `json:"formulas"`
 		} `json:"pages"`
 		Quality json.RawMessage `json:"quality"`
+		Bundle  json.RawMessage `json:"bundle"`
 	}
 	if err = call(ctx, "GET", route+"/result", nil, "", &artifact); err != nil {
 		return nil, err
@@ -242,8 +244,12 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 		return nil, &RemotePDFError{Code: "source_mismatch"}
 	}
 	result := &types.ReadResult{Metadata: map[string]string{"pages": strconv.Itoa(len(artifact.Pages)), "parser_engine": RemotePDFEngineName, "parser_job_id": job.ID, "parser_quality": string(artifact.Quality), "parser_table_index_policy": "reviewed_structured_values_only"}}
+	if len(artifact.Bundle) > 0 {
+		result.StructuredTables, _ = json.Marshal(map[string]any{"engine": "remote_vlm", "bundle": artifact.Bundle})
+	}
 	var output strings.Builder
 	offset := 0
+	imageBytes := 0
 	for i, p := range artifact.Pages {
 		if p.Page != i+1 {
 			return nil, &RemotePDFError{Code: "page_coverage_invalid"}
@@ -269,6 +275,28 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 		}
 		if text == "" {
 			text = "[No readable text on this page]"
+		}
+		if c.preservePageImages {
+			imageRequest, imageErr := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+route+"/pages/"+strconv.Itoa(p.Page)+"/image", nil)
+			if imageErr != nil {
+				return nil, imageErr
+			}
+			imageRequest.Header.Set("Authorization", "Bearer "+c.token)
+			imageRequest.Header.Set("X-Parse-Scope", scope)
+			imageRequest.Header.Set("X-Parse-Owner", owner)
+			imageResponse, imageErr := client.Do(imageRequest)
+			if imageErr != nil {
+				return nil, &RemotePDFError{Code: "source_image_unavailable"}
+			}
+			raw, imageErr := io.ReadAll(io.LimitReader(imageResponse.Body, (16<<20)+1))
+			imageResponse.Body.Close()
+			imageBytes += len(raw)
+			if imageErr != nil || imageResponse.StatusCode != http.StatusOK || imageResponse.Header.Get("X-Source-SHA256") != artifact.Source.SHA || imageResponse.Header.Get("X-PDF-Page") != strconv.Itoa(p.Page) || !bytes.HasPrefix(raw, []byte("\x89PNG\r\n\x1a\n")) || len(raw) > 16<<20 || imageBytes > 64<<20 {
+				return nil, &RemotePDFError{Code: "source_image_unavailable"}
+			}
+			reference := fmt.Sprintf("pdf-page-%04d.png", p.Page)
+			result.ImageRefs = append(result.ImageRefs, types.ImageRef{Filename: reference, OriginalRef: reference, MimeType: "image/png", ImageData: raw, SkipMultimodal: true, SourcePage: p.Page, IsOriginal: true})
+			text += fmt.Sprintf("\n\n![PDF 第 %d 页原件](%s)", p.Page, reference)
 		}
 		segment := fmt.Sprintf("\n\n<!-- PDF page %d -->\n[来源定位：PDF 物理页 %d/%d。正文、目录和页脚的印刷页码另计，不能据此推断物理页范围；目录只能证明其记载的内容，不能证明本文件包含目录列出的全部页面。]\n%s", p.Page, p.Page, len(artifact.Pages), text)
 		output.WriteString(segment)

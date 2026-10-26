@@ -35,10 +35,9 @@ def pdf_service(native, monkeypatch):
 
 def imported(service, native=False):
     client, _, state, _, _ = service
-    if native:
-        response = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id': 'source-a'}, headers=headers())
-    else:
-        response = client.post('/api/pdf/import', files={'file': ('source.pdf', state['contents'], 'application/pdf')}, headers=headers())
+    # Seed historical native originals through their explicit recovery route.
+    # New uploads are covered separately and must never start this parser.
+    response = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id': 'source-a'}, headers=headers())
     assert response.status_code == 200, response.text
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -143,8 +142,7 @@ def test_parser_failures_have_safe_capacity_hint_for_import_and_review(pdf_servi
     if reparse:
         response = client.post(endpoint, json={'tier': 'basic', 'ocr_mode': 'auto'}, headers=headers())
     else:
-        response = client.post('/api/pdf/import', files={
-            'file': ('fixture.pdf', state['contents'], 'application/pdf')}, headers=headers())
+        response = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id':'source-a'}, headers=headers())
     assert response.status_code == 200, response.text
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -192,8 +190,7 @@ def test_local_full_disk_preserves_failed_job_capacity_cause(pdf_service, monkey
         raise OSError(errno.ENOSPC, 'private-path secret-token')
     monkeypatch.setattr(pdf_api, '_write', write)
     monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', fail)
-    response = client.post('/api/pdf/import', files={
-        'file': ('fixture.pdf', state['contents'], 'application/pdf')}, headers=headers())
+    response = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id':'source-a'}, headers=headers())
     assert response.status_code == 200, response.text
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -410,13 +407,13 @@ def test_parser_profile_fingerprint_excludes_api_key():
 
 
 def test_auth_and_mutation_boundaries(pdf_service, monkeypatch):
-    client, _, _, _, _ = pdf_service
+    client, _, state, _, _ = pdf_service
     assert client.get('/api/pdf/drafts').status_code == 401
     assert client.post('/api/pdf/import', files={'file': ('a.pdf', b'%PDF-x')}, headers=headers(role='viewer')).status_code == 403
     assert client.post('/api/pdf/import', files={'file': ('a.pdf', b'%PDF-x')}, headers=headers() | {'Origin': 'https://evil.test'}).status_code == 403
     assert client.post('/api/pdf/import', files={'file': ('a.pdf', b'not pdf')}, headers=headers()).status_code == 400
     monkeypatch.setattr('structured_data.pdf_parser_bridge.parser_availability', lambda: {'configured': False, 'engine': None})
-    assert client.post('/api/pdf/import', files={'file': ('a.pdf', b'%PDF-x')}, headers=headers()).status_code == 503
+    assert client.post('/api/pdf/import', files={'file': ('source.pdf', state['contents'])}, headers=headers()).json()['native_processing'] is True
     assert read(pdf_service, 'publish_pdf_table', {}).status_code == 400
     schema = read(pdf_service, 'describe_tools', {'operations': ['query_pdf_table']}).json()['tools'][0]
     assert set(schema['inputSchema']['properties']) == {'table_id', 'sql', 'limit'}
@@ -591,7 +588,7 @@ def _failed_remote_job(pdf_service, monkeypatch, native_source=False):
     if native_source:
         started = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id': 'source-a'}, headers=headers())
     else:
-        started = client.post('/api/pdf/import', files={'file': ('source.pdf', state['contents'], 'application/pdf')}, headers=headers())
+        started = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id':'source-a'}, headers=headers())
     assert started.status_code == 200, started.text
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -748,3 +745,17 @@ def test_remote_reread_uses_server_profile_and_preserves_snapshot(pdf_service, m
     assert calls[0][1] is config
     assert result['bundle']['parser'].get('requested_tier') is None
     assert client.get('/api/pdf/drafts/' + original['draft_id'], headers=headers()).json()['bundle'] == original['bundle']
+
+
+def test_new_pdf_upload_uses_native_task_without_running_parser(pdf_service, monkeypatch):
+    client, _, state, root, _ = pdf_service
+    async def forbidden(*a, **kw):
+        raise AssertionError('new uploads must use the native task')
+    monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', forbidden)
+    response = client.post('/api/pdf/import', files={'file':('source.pdf',state['contents'],'application/pdf')}, headers=headers())
+    assert response.status_code == 200, response.text
+    assert response.json() == {'status':'processing','source_knowledge_id':'source-a','native_processing':True}
+    assert len(state['uploads']) == 1
+    assert b'"source_only":false' in state['uploads'][0]
+    assert not list(root.glob('**/drafts/*.json'))
+    assert not list(root.glob('**/uploads/*/*'))

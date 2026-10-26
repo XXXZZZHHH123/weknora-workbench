@@ -1137,6 +1137,14 @@
     }
     const savedEpoch = epoch;
     const savedOperation = operation;
+    if (host.unifiedUpload && draft.source?.knowledge_id) {
+      const sourceId=draft.source.knowledge_id;
+      setStatus('正在重新处理知识库中的原文件，离开页面后仍会继续。');
+      await api('/api/v1/knowledge/'+encodeURIComponent(sourceId)+'/reparse',{method:'POST'});
+      const result=await host.loadKnowledgeResult(sourceId);
+      if(current(savedEpoch,savedOperation)&&result.draft_id)await selectDraft(result.draft_id);
+      return;
+    }
     setStatus('正在读取已保存的原文件并检查识别配置；相同配置可能复用已有结果。');
     const result = await api(`/api/pdf/drafts/${encodeURIComponent(draft.draft_id)}/reparse`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1217,24 +1225,16 @@
     const isCurrentSourceScope = () => savedEpoch === host.getAuthEpoch() && savedEpoch === epoch && requestedSourceKnowledge === id && requestedSourceEpoch === savedEpoch && !scopeController.signal.aborted;
     setStatus('正在读取知识库中的 PDF 原件并准备核对草稿…');
     try {
-      const response = await api('/api/pdf/import-knowledge', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({source_knowledge_id: id})
-      }, 120000);
+      const response = await host.loadKnowledgeResult(id, {signal: scopeController.signal});
       if (!isCurrentSource()) return;
-      const jobId = response.id || response.job_id;
-      const draftId = response.draft_id || response.result?.draft_id;
-      if (response.status === 'completed' && draftId) {
-        await loadDrafts(savedEpoch, savedOperation);
-        if (isCurrentSource()) await selectDraft(draftId);
-      } else if (jobId) {
-        await pollJob(jobId, savedEpoch, savedOperation);
-      } else {
-        throw new Error('PDF 原件请求没有返回任务或草稿编号。');
+      if (!response.draft_id) {
+        if(response.processing?.result?.message){setStatus(response.processing.result.message,Boolean(response.processing.attention_count));return;}
+        throw new Error('这份文件还没有表格处理结果。请从目录的文件操作中重新处理，后台会自动完成。');
       }
-      if (isCurrentSourceScope()) setStatus(response.reused
-        ? '已复用经当前原件内容校验的同配置 PDF 草稿。请继续核对原件、解析片段和映射。'
-        : '已打开知识库中的 PDF 草稿。请核对原件、解析片段和映射后再预览。');
+      await loadDrafts(savedEpoch, savedOperation);
+      await loadTables(savedEpoch, savedOperation);
+      if (isCurrentSource()) await selectDraft(response.draft_id);
+      if (isCurrentSourceScope()) setStatus('已打开这份知识库文件的处理结果。');
     } catch (error) {
       if (isCurrentSourceScope()) setStatus(error.message || '读取 PDF 原件失败。', true);
     } finally {
@@ -1267,6 +1267,11 @@
     setStatus('正在安全上传 PDF 并启动解析…');
     const job = await api('/api/pdf/import', {method: 'POST', body: form}, 120000);
     if (!current(savedEpoch, savedOperation)) return;
+    if(job.native_processing&&job.source_knowledge_id){
+      const result=await host.loadKnowledgeResult(job.source_knowledge_id);
+      if(current(savedEpoch,savedOperation)&&result.draft_id)return selectDraft(result.draft_id);
+      return;
+    }
     return await pollJob(job.id, savedEpoch, savedOperation);
   }
 
