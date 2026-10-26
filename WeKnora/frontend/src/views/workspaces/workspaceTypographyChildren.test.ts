@@ -35,7 +35,7 @@ function fixture(surface: keyof typeof surfaces, options: { standalone?: boolean
     window, document: { documentElement: { classList: { add: (name: string) => classes.add(name) }, style: { setProperty: (key: string, value: string) => applied.set(key, value) } } },
     MutationObserver: class {
       constructor(callback: () => void) { changed = () => { if (observing) callback() } }
-      observe(target: unknown, config: { attributeFilter: string[] }) { assert.equal(target, parentRoot); assert.equal(config.attributeFilter.join(','), 'style'); observing = true }
+      observe(target: unknown, config: { attributeFilter: string[] }) { assert.equal(target, parentRoot); assert.equal(config.attributeFilter.join(','), surface === 'structured' ? 'style,theme-mode,class' : 'style'); observing = true }
       disconnect() { observing = false }
     },
   })
@@ -62,6 +62,13 @@ for (const surface of Object.keys(surfaces) as Array<keyof typeof surfaces>) {
     assert.equal(f.applied.has('--cds-font-interface'), false, 'Keep the local interface alias attached to the selected UI font')
     assert.equal(f.applied.has('--app-font-family-reading'), false)
     assert.equal(f.applied.has('zoom'), false, 'The parent already scales the iframe; never apply zoom twice')
+    if (surface === 'structured') {
+      f.values.set('--td-brand-color', '#9a4d30')
+      f.values.set('--td-text-color-secondary', '#59534e')
+      f.changed()
+      assert.equal(f.applied.get('--td-brand-color'), '#9a4d30')
+      assert.equal(f.applied.get('--td-text-color-secondary'), '#59534e')
+    }
   })
 
   test(`${surface}: pagehide disconnects and a cached-page restore resumes typography updates`, () => {

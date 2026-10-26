@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -275,9 +276,11 @@ class PDFTableStore:
             bundle = record.pop('bundle')
             if source_sha256 is None or bundle['source']['sha256'] == source_sha256:
                 record.update(source=deepcopy(bundle['source']), parser=deepcopy(bundle['parser']),
+                              created_at=datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
                               fragment_count=len(bundle['fragments']),
                               raw_row_count=sum(len(f['rows']) for f in bundle['fragments']))
                 items.append(record)
+        items.sort(key=lambda item: (item['created_at'], item['draft_id']), reverse=True)
         return dict(drafts=items)
 
     def validate_plan(self, draft_id, plan):

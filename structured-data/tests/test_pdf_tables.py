@@ -609,3 +609,22 @@ def test_quality_reviews_cannot_invent_or_duplicate_issue(tmp_path):
     plan['quality_reviews'] = [dict(fragment_id='table-1', issue_index=0, reason='Invented issue')]
     with pytest.raises(ValueError, match='real issue'):
         publish(store, draft, plan)
+
+
+def test_draft_catalog_uses_persisted_save_time_without_rewriting_evidence(tmp_path):
+    import os
+    from datetime import datetime, timezone
+    store = PDFTableStore(tmp_path / 'scope')
+    first = store.create_draft(bundle())
+    newer = bundle()
+    newer['parser']['version'] = '2'
+    second = store.create_draft(newer)
+    paths = [store.root / 'drafts' / (d['draft_id'] + '.json') for d in (first, second)]
+    original = [p.read_bytes() for p in paths]
+    os.utime(paths[0], (1000000000, 1000000000))
+    os.utime(paths[1], (1000000100, 1000000100))
+    records = store.list_drafts()['drafts']
+    assert [d['draft_id'] for d in records] == [second['draft_id'], first['draft_id']]
+    assert records[0]['created_at'] == datetime.fromtimestamp(1000000100, timezone.utc).isoformat()
+    assert [p.read_bytes() for p in paths] == original
+    assert store.read_draft(first['draft_id'])['bundle'] == bundle()

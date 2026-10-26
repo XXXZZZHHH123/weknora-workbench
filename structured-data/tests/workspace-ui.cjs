@@ -25,6 +25,8 @@ const fixtureSheet = {
 };
 const requests = [], checks = [], errors = [], networkFailures = [], fileChoosers = [];
 let uploadCount=0,nativeStall='',pdfConfigured=process.argv.includes('--upload-regression'),pdfStall=false,pdfSourceDenied=false,pdfListDenied=false;
+const layoutMode=process.argv.includes('--layout-regression');let emptyImports=false;
+const layoutRecords=[{draft_id:'pdf-old',source:{file_name:'same.pdf',sha256:'b'.repeat(64)},fragment_count:2,raw_row_count:2,created_at:'2025-01-01T00:00:00Z'},{draft_id:'pdf-fixture',source:{file_name:'same.pdf',sha256:'b'.repeat(64)},fragment_count:2,raw_row_count:2,created_at:'2026-01-01T00:00:00Z'},{draft_id:'pdf-other',source:{file_name:'same.pdf',sha256:'c'.repeat(64)},fragment_count:1,raw_row_count:1,created_at:'2024-01-01T00:00:00Z'}];
 const jobs = new Map();
 const nativeImports = new Map();
 const nativeAttempts = new Map();
@@ -74,18 +76,18 @@ async function main(){
   }else if(route==='/api/pdf/config')body={configured:pdfConfigured,max_bytes:52428800};
   else if(route==='/api/pdf/import'&&req.method==='POST'){if(pdfStall)await pause(650);body={id:'pdf-native-job'};}
   else if(route==='/api/pdf/jobs')body={jobs:[]};
-  else if(route==='/api/pdf/drafts'){if(pdfListDenied){status=403;body={detail:'隔离夹具：无法读取处理记录'};}else body={drafts:[{draft_id:'pdf-fixture',source:{file_name:'fixture.pdf'},fragment_count:1,raw_row_count:1}]};}
-  else if(route==='/api/pdf/tables')body={tables:[]};
+  else if(route==='/api/pdf/drafts'){if(pdfListDenied){status=403;body={detail:'隔离夹具：无法读取处理记录'};}else body={drafts:layoutMode?layoutRecords:[{draft_id:'pdf-fixture',source:{file_name:'fixture.pdf'},fragment_count:1,raw_row_count:1}]};}
+  else if(route==='/api/pdf/tables')body={tables:layoutMode?[{table_id:'published-old',draft_id:'pdf-old',source:{file_name:'same.pdf',sha256:'b'.repeat(64)},title:'Reviewed data',columns:[{}],coverage:{logical_row_count:1}}]:[]};
   else if(route==='/api/pdf/import-knowledge'&&req.method==='POST'){
    const input=JSON.parse(payload),sourceId=input.source_knowledge_id;requests.at(-1).sourceKnowledgeId=sourceId;requests.at(-1).pdfKnowledgeImport=true;body={id:'pdf-native-job'};
   }else if(route==='/api/pdf/jobs/pdf-native-job')body={status:'completed',draft_id:'pdf-fixture'};
-  else if(route==='/api/pdf/drafts/pdf-fixture')body={draft_id:'pdf-fixture',bundle_sha256:'a'.repeat(64),bundle:{source:{file_name:'fixture.pdf',sha256:'b'.repeat(64)},parser:{engine:'fixture',version:'1'},fragments:[{id:'fixture-fragment',page:1,rows:[[{text:'Synthetic PDF cell'}]]}]}};
+  else if(route==='/api/pdf/drafts/pdf-fixture')body={draft_id:'pdf-fixture',bundle_sha256:'a'.repeat(64),bundle:{source:{file_name:'fixture.pdf',sha256:'b'.repeat(64)},parser:{engine:'fixture',version:'1'},fragments:[{id:'fixture-fragment',page:1,rows:[[{text:'Synthetic PDF cell'}]]},...(layoutMode?[{id:'second-fragment',page:2,rows:[[{text:'Second synthetic table'}]]}]:[])]}};
   else if(route==='/api/pdf/drafts/pdf-fixture/source'){
    if(pdfSourceDenied){status=403;body='Denied'}else{body=Buffer.from('%PDF-1.4 synthetic fixture');type='application/pdf';}
   }else if(route==='/api/ui-config')body={title:'结构化数据库',workspace_label:'隔离浏览器验收',weknora_url:'http://127.0.0.1'};
   else if(route==='/api/datasets')body={datasets:catalogue(scope)};
   else if(route==='/api/model-settings'&&req.method==='GET')body={native_model_id:'fixture-chat',protocol:'platform',can_edit:true,models:[{id:'fixture-chat',name:'Fixture configured chat'}]};
-  else if(route==='/api/imports')body={imports:[{import_id:ids.import,source_file:'同一合成原件.xlsx',updated_at:'2025-01-05T00:00:00Z'},...[...nativeImports.values()].filter(row=>row.scope===scope)]};
+  else if(route==='/api/imports')body={imports:emptyImports?[]:[{import_id:ids.import,source_file:'同一合成原件.xlsx',updated_at:'2025-01-05T00:00:00Z'},...[...nativeImports.values()].filter(row=>row.scope===scope)]};
   else if(route.endsWith('/sheet-view'))body={sheet_name:fixtureSheet.name,total_rows:4,total_cols:2,range:{start_row:1,end_row:4,start_col:1,end_col:2,row_count:4,col_count:2},cells:[{row:1,column:1,cell:'A1',value:'日期',display:'日期'},{row:1,column:2,cell:'B1',value:'合成指标一',display:'合成指标一'},...dates.flatMap((date,i)=>[{row:i+2,column:1,cell:`A${i+2}`,value:date,display:date},{row:i+2,column:2,cell:`B${i+2}`,value:values[i],display:String(values[i])}])],styles:{},merges:[],column_widths:{},row_heights:{},warnings:[]};
   else if(route.endsWith('/sheet')){const restored=route.includes('6'.repeat(24));body={...fixtureSheet,status:restored?'confirmed':fixtureSheet.status,published_in_dataset:restored,published_dataset_id:restored?ids.secondary:null,published_mapping:restored?fixtureSheet.mapping:null,published_fingerprint:restored?fixtureSheet.fingerprint:null};}
   else if(route.endsWith('/report')){const dataset=route.split('/')[3],item=catalogue(scope).find(item=>item.dataset_id===dataset);await pause(250);body={manifest:{...item,series_count:12417,valid_count:608180,observation_count:1048771,issue_count:72945,sha256:'synthetic-source-fingerprint',excluded_regions:[]},issues:[{sheet:fixtureSheet.name,cell:'B5',message:'夹具范围外原值不参与查询'}]};}
@@ -165,6 +167,36 @@ async function main(){
   await wait("d.querySelector('.sheet-grid td') && d.querySelector('#dataset option')");
   assert(!requests.some(r=>r.path.endsWith('/report')||r.path.endsWith('/series')||r.path.endsWith('/charts')));
   checks.push('Import renders saved review without waiting for report, series or native charts');
+  if(layoutMode) {
+   await click('#workbookResults');
+   await click('[data-sheet-filter="charts"]');
+   await wait("d.getElementById('sheetList').textContent.includes('没有匹配')");
+   await verify('An empty filtered sheet strip retains its complete bottom border',"w.getComputedStyle(d.querySelector('.sheet-tabs-row')).borderBottomWidth==='1px' && parseFloat(w.getComputedStyle(d.querySelector('.sheet-tabs-row')).borderBottomLeftRadius)>0");
+   await screenshot('workbook-filter-empty');
+   emptyImports=true;await click('#reloadImports');await wait("d.getElementById('importReview').classList.contains('review-empty')");
+   await verify('A workbook with no imports shows one empty state without dead controls or extra explanation',"d.getElementById('workbookEmpty').getBoundingClientRect().height>0 && w.getComputedStyle(d.querySelector('.sheet-tabbar')).display==='none' && w.getComputedStyle(d.getElementById('sheetDetail')).display==='none' && !d.body.innerText.includes('在本知识库导入 Excel 后')");
+   await screenshot('workbook-no-files');
+   await click('#documentResults');await wait("d.querySelectorAll('.pdf-file-table tbody>tr').length===2");
+   await verify('A file is listed once per content identity and same-name distinct files stay separate',"d.querySelectorAll('.pdf-file-table tbody>tr').length===2 && d.querySelector('.pdf-file-table tbody>tr').dataset.fileIdentity==='sha:'+'b'.repeat(64) && d.querySelector('.pdf-file-table tbody>tr').textContent.includes('1 张表格')");
+   await verify('History and internal IDs stay collapsed',"!d.querySelector('.pdf-file-history').open && !d.querySelector('.record-details').open && !d.getElementById('pdfReviewPanel').innerText.includes('待核对表格') && !d.getElementById('pdfReviewPanel').innerText.includes('pdf-old')");
+   await screenshot('pdf-file-inventory');
+   await click('.pdf-file-table tbody>tr:first-child .pdf-file-actions button');await wait("d.querySelector('.pdf-raw-cell')?.textContent==='Synthetic PDF cell'");
+   assert(requests.some(r=>r.path==='/structured/api/pdf/drafts/pdf-fixture'));
+   await verify('Opening a file hides its inventory and displays one selected table beside the original',"w.getComputedStyle(d.getElementById('pdfInventory')).display==='none' && d.querySelectorAll('.pdf-raw-table').length===1 && d.getElementById('pdfFragmentSelect').options.length===2 && d.querySelector('.pdf-source-viewer').getAttribute('src').endsWith('#page=1')");
+   await exec("d.querySelector('.pdf-fragment-choice input').click()");
+   await verify('Selection is explicit and counted before field recognition',"d.getElementById('pdfSelectionCount').textContent==='已选择 1 处表格'");
+   await input('#pdfFragmentSelect','1');await wait("d.querySelector('.pdf-raw-cell')?.textContent==='Second synthetic table'");
+   await verify('Table navigation retains selection and follows actual source pages',"d.getElementById('pdfSelectionCount').textContent==='已选择 1 处表格' && !d.querySelector('.pdf-fragment-choice input').checked && d.querySelector('.pdf-source-viewer').getAttribute('src').endsWith('#page=2')");
+   await js("document.documentElement.style.setProperty('--td-text-color-secondary','#59534e');document.documentElement.style.setProperty('--app-font-family','Georgia, \"WeKnora Noto Serif SC\", serif')");
+   await wait("w.getComputedStyle(d.getElementById('pdfReviewPanel')).getPropertyValue('--muted').trim()==='#59534e'");
+   await verify('PDF inherits the host font and muted color',"w.getComputedStyle(d.querySelector('.pdf-raw-cell')).fontFamily===w.getComputedStyle(d.getElementById('directUpload')).fontFamily && w.getComputedStyle(d.querySelector('.pdf-table-meta')).color==='rgb(89, 83, 78)'");
+   assert(!requests.some(r=>r.path.endsWith('/suggest')||r.path.endsWith('/publish')));
+   await screenshot('pdf-side-by-side');
+   await resize(650);await verify('The review stacks cleanly without document horizontal overflow',"d.documentElement.scrollWidth<=d.documentElement.clientWidth+1");await screenshot('pdf-review-narrow');
+   await click('#pdfBackToFiles');await verify('Returning to the inventory clears the opened source and preserves file history',"!d.getElementById('pdfDraftDetail').children.length && w.getComputedStyle(d.getElementById('pdfInventory')).display!=='none' && d.querySelectorAll('.pdf-file-table tbody>tr').length===2");
+   assert.deepEqual(errors,[]);checks.push('No JavaScript errors, model calls or publication writes');
+   if(keepArtifacts)fs.writeFileSync(path.join(output,'layout-acceptance.json'),JSON.stringify({passed:checks.length,checks},null,2));console.log(JSON.stringify({passed:checks.length,checks}));return;
+  }
   if(process.argv.includes('--upload-regression')) {
    const choose = (name, size=16) => exec(`const dt=new w.DataTransfer();dt.items.add(new w.File([new Uint8Array(${size})],${JSON.stringify(name)}));d.getElementById('file').files=dt.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}))`);
    const drop = names => exec(`const dt=new w.DataTransfer();for(const name of ${JSON.stringify(names)})dt.items.add(new w.File(['fixture'],name));d.getElementById('directUpload').dispatchEvent(new w.DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt}))`);
@@ -178,7 +210,7 @@ async function main(){
    await drop(['synthetic.PDF']);await wait("d.getElementById('jobState').textContent.includes('PDF 识别完成') && !d.getElementById('file').disabled");
    assert.equal(writes()[1].path,'/structured/api/pdf/import');assert(writes().every(r=>r.scope==='kb-a'&&r.authorized));
    await verify('PDF results open automatically without another upload picker',"d.body.classList.contains('document-results') && d.getElementById('documentResults').getAttribute('aria-pressed')==='true' && d.getElementById('pdfDraftDetail').textContent.includes('Synthetic PDF cell') && !d.getElementById('pdfUploadFile')");
-   await verify('Optional instructions and technical IDs are collapsed',"!d.querySelector('.pdf-instructions').open && !d.querySelector('#pdfDraftList .record-details').open");
+   await verify('Optional instructions and technical IDs are collapsed',"!d.querySelector('#pdfDraftList .pdf-file-history').open && !d.querySelector('#pdfDraftList .record-details').open");
    assert(!requests.some(r=>r.path.endsWith('/publish')||r.path.endsWith('/suggest')));checks.push('Drag-and-drop preserves scope and does not invoke AI mapping or publish data');
    await screenshot('unified-pdf-results');
    await click('#workbookResults');await verify('Users can return to the workbook review',"w.getComputedStyle(d.getElementById('importReview')).display!=='none' && w.getComputedStyle(d.getElementById('pdfReviewPanel')).display==='none'");

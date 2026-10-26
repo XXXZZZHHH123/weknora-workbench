@@ -9,6 +9,7 @@ const {launchBrowser, stopBrowser} = require('./browser-launcher.cjs');
 
 const source = process.env.STRUCTURED_UI_SOURCE || path.join(__dirname, '..', 'src', 'structured_data');
 const indexHtml = fs.readFileSync(path.join(source, 'index.html'), 'utf8');
+const workspaceCss = fs.readFileSync(path.join(source, 'workspace.css'), 'utf8');
 const shellCss = indexHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
 const sourceRoute = indexHtml.match(/function openStructuredKnowledgeSource\([\s\S]*?\nwindow\.pdfReviewHost\.routeKnowledgeSource=openStructuredKnowledgeSource;/)?.[0] || '';
 assert.ok(shellCss.includes('view-import'), 'load knowledge view rules from the real structured workspace');
@@ -69,7 +70,7 @@ async function main() {
     let status = 200, type = 'application/json', body = {};
     if (url.pathname === '/') {
       type = 'text/html';
-      body = `<!doctype html><meta charset="utf-8"><style>${shellCss}</style><body class="embedded knowledge-view view-import"><div id="workspace"><section id="pdfReviewPanel"><div id="pdfReviewApp"></div></section><div id="workspaceIntro"><section id="directUpload"></section></div><section id="importReview"></section><section id="queryWorkspace"></section></div>
+      body = `<!doctype html><meta charset="utf-8"><style>${shellCss}${workspaceCss}</style><body class="embedded knowledge-view view-import document-results"><div id="workspace"><section id="pdfReviewPanel"><div id="pdfReviewApp"></div></section><div id="workspaceIntro"><section id="directUpload"></section></div><section id="importReview"></section><section id="queryWorkspace"></section></div>
       <script>let authEpoch=0,requestedSourceKnowledge='',requestedSourceType='xlsx';function openKnowledgeSource(){throw Error('XLSX route must not be used for PDF')};window.pdfReviewHost={getAuthEpoch:()=>authEpoch,isWorkspaceReady:()=>true,showWorkspace:()=>{},api:async(path,options={},ctx={})=>{
         if(ctx.signal?.aborted)throw Error('aborted');window.__apiCalls.push({path,method:options.method||'GET',body:options.body});
         if(path==='/api/pdf/config')return {configured:true,max_bytes:52428800};
@@ -150,9 +151,9 @@ async function main() {
     assert.match(await evaluate("document.querySelector('#pdfDraftDetail').textContent"), /公式仅保留识别到的 LaTeX/);
 
     await evaluate("document.querySelector('#pdfDraftDetail input[type=checkbox]').click()");
-    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('请求 AI 映射建议')).click()");
+    await evaluate("[...document.querySelectorAll('button')].find(b=>b.id==='pdfSuggestPlan').click()");
     await wait("document.querySelector('#pdfPreview')?.textContent.includes('North')");
-    assert.match(await evaluate("document.querySelector('#pdfPreview').textContent"), /来源文档完整性：unknown/);
+    assert.match(await evaluate("document.querySelector('#pdfPreview').textContent"), /原件覆盖：尚未确认/);
     assert.match(await evaluate("document.querySelector('#pdfPreview').textContent"), /OCR\/解析结果尚未独立验证/);
     assert.equal(await evaluate("document.querySelector('#pdfPublish').disabled"), true, 'AI suggestion cannot publish without the human checkbox');
     await evaluate("window.__preview.coverage.unresolved_quality_issues=[{fragment_id:'fragment-1',row:1,column:1,code:'uncertain_cell',message:'Unclear source value'}];[...document.querySelectorAll('button')].find(b=>b.textContent.includes('验证并预览')).click()");
