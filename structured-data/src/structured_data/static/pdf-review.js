@@ -207,7 +207,7 @@
         const td = make('td', row.values?.[column.name] ?? '');
         const refs = row.source_cells?.[column.name] || [];
         for (const ref of refs) {
-          const detail = make('small', `第 ${ref.page} 页 · 行 ${ref.row} · 列 ${ref.column} · 原文「${ref.text ?? ''}」`);
+          const detail = make('small', `第 ${ref.page} 页 · 第 ${ref.row+1} 行 · 第 ${ref.column+1} 列 · 原文「${ref.text ?? ''}」`);
           td.append(document.createElement('br'), detail);
           if (ref.correction) td.append(make('small', `人工修正为「${ref.correction.text}」；依据：${ref.correction.reason}`));
         }
@@ -215,7 +215,7 @@
       }
       const provenance = make('td');
       const refs = Object.values(row.source_cells || {}).flat();
-      provenance.textContent = refs.map(ref => `P${ref.page} R${ref.row} C${ref.column}`).join('；') || '来源缺失';
+      provenance.textContent = refs.map(ref => `第 ${ref.page} 页第 ${ref.row+1} 行第 ${ref.column+1} 列`).join('；') || '来源缺失';
       tr.append(provenance);
       tbody.append(tr);
     }
@@ -823,7 +823,7 @@
             if (!checkbox.checked) continue;
             const row = Number(checkbox.dataset.headerRow);
             const reason = parent.querySelector(`[data-header-reason-fragment="${CSS.escape(fragment.id)}"][data-header-reason-row="${row}"]`)?.value.trim();
-            if (!reason) throw new Error(`片段 ${fragment.id} 的表头行 ${row} 需要原因。`);
+            if (!reason) throw new Error(`第 ${fragment.page} 页的表头行 ${row+1} 需要原因。`);
             headers.push({row, reason});
           }
           plan.header_rows[fragment.id] = headers;
@@ -831,19 +831,19 @@
             if (!checkbox.checked) continue;
             const row = Number(checkbox.dataset.excludeRow);
             const reason = parent.querySelector(`[data-exclude-reason-fragment="${CSS.escape(fragment.id)}"][data-exclude-reason-row="${row}"]`)?.value.trim();
-            if (!reason) throw new Error(`片段 ${fragment.id} 的排除行 ${row} 需要原因。`);
+            if (!reason) throw new Error(`第 ${fragment.page} 页排除第 ${row+1} 行需要原因。`);
             plan.excluded_rows.push({fragment_id: fragment.id, row, reason});
           }
         }
         plan.columns = plan.columns.map((column, index) => {
           const name = parent.querySelector(`[data-column-name="${index}"]`).value.trim();
-          if (!name) throw new Error(`原始列 ${index} 需要列名。`);
+          if (!name) throw new Error(`第 ${index+1} 列需要列名。`);
           const type = parent.querySelector(`[data-column-type="${index}"]`).value;
-          if (!type) throw new Error(`逻辑列 ${index} 需要明确选择文本或小数类型。`);
+          if (!type) throw new Error(`第 ${index+1} 列请选择文本或小数类型。`);
           const unit = parent.querySelector(`[data-column-unit="${index}"]`).value.trim();
           const source_columns = Object.fromEntries(selected.map(fragment => {
             const value = parent.querySelector(`[data-source-column="${index}"][data-source-fragment="${CSS.escape(fragment.id)}"]`)?.value;
-            if (value === undefined || value === '') throw new Error(`逻辑列 ${index} 需要明确选择片段 ${fragment.id} 的来源列。`);
+            if (value === undefined || value === '') throw new Error(`第 ${index+1} 列请选择第 ${fragment.page} 页对应的原始列。`);
             return [fragment.id, Number(value)];
           }));
           return {...column, name, type, source_columns,
