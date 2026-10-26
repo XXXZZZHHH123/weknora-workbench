@@ -1,5 +1,6 @@
 """Real HTTP/storage isolation with local auth fixtures and no model calls."""
 import base64
+from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import json
@@ -20,6 +21,7 @@ def scoped(tmp_path, monkeypatch):
     grants = {'kb-a': 10000, 'kb-b': 10000, 'kb-other': 10001}
     requests = []
     originals = {}
+    original_bytes = {}
 
     class Auth:
         def __init__(self, **kwargs): pass
@@ -52,7 +54,7 @@ def scoped(tmp_path, monkeypatch):
             requests.append((url, dict(headers)))
             kb_id = url.removesuffix('/knowledge/file').rsplit('/', 1)[-1]
             assert kb_id in grants
-            assert data == {'process_config': '{"source_only":true}'}
+            assert data == {'process_config': '{"source_only":false}'}
             name, stream, _ = files['file']
             contents = stream.read()
             digest = hashlib.md5(contents).hexdigest()
@@ -62,7 +64,16 @@ def scoped(tmp_path, monkeypatch):
                         'type': 'file', 'file_type': 'xlsx', 'file_name': name, 'file_size': len(contents),
                         'file_hash': digest, 'parse_status': 'stored'}
             originals[identifier] = document
+            original_bytes[identifier] = contents
             return httpx.Response(200, json={'success': True, 'data': document})
+
+        @asynccontextmanager
+        async def stream(self, method, url, headers):
+            assert method == 'GET' and url.endswith('/download')
+            requests.append((url, dict(headers)))
+            identifier = url.removesuffix('/download').rsplit('/', 1)[-1]
+            yield httpx.Response(200 if identifier in originals else 404,
+                content=original_bytes.get(identifier, b''), request=httpx.Request(method, url))
 
     monkeypatch.setattr(httpx, 'AsyncClient', Auth)
     monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
@@ -86,6 +97,16 @@ def upload(client, kb='', tenant=10000, role='owner'):
     auth = headers(kb, tenant, role)
     response = client.post('/api/import', headers=auth, files={'file': ('isolated.xlsx', make_workbook())})
     assert response.status_code == 200, response.text
+    if kb:
+        receipt = response.json()
+        source_id = receipt['source_knowledge_id']
+        assert receipt == {'status': 'processing', 'source_knowledge_id': source_id, 'native_processing': True}
+        # The native service now owns upload processing. This fixture represents
+        # a stored original without an active native attempt, so resume through
+        # the authorized original endpoint to keep exercising real scoped jobs.
+        response = client.post('/api/import-knowledge', headers=auth, json={'source_knowledge_id': source_id})
+        assert response.status_code == 200, response.text
+        assert response.json()['source_knowledge_id'] == source_id
     job_id = response.json()['id']
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:

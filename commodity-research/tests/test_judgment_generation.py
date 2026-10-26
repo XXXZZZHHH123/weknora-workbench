@@ -447,7 +447,7 @@ def test_actual_model_request_uses_the_exact_pricing_power_schema(generator):
     category = schema['properties']['category']
     assert any(item.get('type') == 'null' for item in category['anyOf'])
     assert next(item['enum'] for item in category['anyOf'] if 'enum' in item) == [
-        '有LME外盘', '纯宏观', '无外盘']
+        '有境外市场', '有LME外盘', '纯宏观', '无外盘']
     assert 'category仅有LME' not in prompt
     assert SERIES not in json.dumps(schema)
 
