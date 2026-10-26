@@ -3,11 +3,16 @@ import type { SpotlightGuideStep } from '@/types/spotlightGuide'
 export const researchGuidePages = ['home', 'market', 'indicators', 'judgment', 'diagram'] as const
 export type ResearchGuidePage = typeof researchGuidePages[number]
 export type ResearchGuideOutcome = 'pending' | 'completed' | 'skipped'
-export interface ResearchGuideScope { tenantId: string; userId: string; workbenchId: string; knowledgeBaseId: string }
+export interface ResearchGuideScope { tenantId: string; userId: string; workbenchId: string; knowledgeBaseId: string; scopeVersion?: 2; sourcesRevision?: number }
 export interface ResearchGuideLedger { version: 1; pages: Record<ResearchGuidePage, ResearchGuideOutcome> }
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>
 
 export function researchGuideKey(scope: ResearchGuideScope): string {
+  if (scope.scopeVersion === 2) {
+    const identity = [scope.tenantId, scope.userId, scope.workbenchId]
+    return identity.every(value => typeof value === 'string' && value.trim()) && Number.isSafeInteger(scope.sourcesRevision) && Number(scope.sourcesRevision) > 0
+      ? 'weknora:research-feature-guide:v2:' + identity.map(encodeURIComponent).join(':') : ''
+  }
   const values = [scope.tenantId, scope.userId, scope.workbenchId, scope.knowledgeBaseId]
   return values.every(value => typeof value === 'string' && value.trim())
     ? 'weknora:research-feature-guide:v1:' + values.map(encodeURIComponent).join(':') : ''
@@ -43,7 +48,7 @@ export function researchGuideFramePage(scope: ResearchGuideScope, frame: { origi
   if (!researchGuideKey(scope) || frame.origin !== origin) return null
   const context = frame.context as Record<string, unknown> | null
   if (!context || String(context.tenant) !== scope.tenantId || context.user !== scope.userId
-      || context.workbench !== scope.workbenchId || context.knowledge_base !== scope.knowledgeBaseId) return null
+      || context.workbench !== scope.workbenchId || (scope.scopeVersion === 2 ? context.scope_version !== 2 || context.sources_revision !== scope.sourcesRevision : context.knowledge_base !== scope.knowledgeBaseId)) return null
   const prefix = `/research/workbenches/${encodeURIComponent(scope.workbenchId)}`
   const paths: Record<ResearchGuidePage, string> = { home: '/', market: '/sn', indicators: '/sn/indicators', judgment: '/sn/judgment', diagram: '/sn/diagram' }
   const pathname = frame.pathname.endsWith('/') ? frame.pathname.slice(0, -1) : frame.pathname

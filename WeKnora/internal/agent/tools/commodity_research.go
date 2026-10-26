@@ -50,7 +50,7 @@ func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessag
 	scope, scoped := types.ResearchWorkbenchScopeFromContext(ctx)
 	if scoped {
 		if _, err := uuid.Parse(scope.ID); err != nil || scope.TenantID != caller.TenantID ||
-			scope.UserID != caller.UserID || scope.KnowledgeBaseID == "" || scope.KnowledgeBaseTenantID == 0 {
+			scope.UserID != caller.UserID || (scope.ScopeVersion != 2 && (scope.KnowledgeBaseID == "" || scope.KnowledgeBaseTenantID == 0)) || (scope.ScopeVersion == 2 && scope.SourcesRevision < 1) {
 			return nil, fmt.Errorf("研究工作台作用域无效，拒绝回退到空间数据")
 		}
 	}
@@ -75,6 +75,10 @@ func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessag
 		"role": string(caller.Role), "email": "", "display_name": caller.UserID}
 	if scoped {
 		identity["workbench_id"] = scope.ID
+		if scope.ScopeVersion == 2 {
+			identity["scope_version"] = 2
+			identity["sources_revision"] = scope.SourcesRevision
+		}
 		identity["knowledge_base_id"] = scope.KnowledgeBaseID
 		identity["knowledge_base_tenant_id"] = scope.KnowledgeBaseTenantID
 		authorization := types.ResearchAuthorizationFromContext(ctx)

@@ -19,7 +19,10 @@ def test_feature_pages_publish_exact_scope_and_real_start_controls(isolated):
         assert response.status_code == 200
         match = re.search(r'window.RESEARCH_CONTEXT = (.*?);', response.text)
         assert match
-        assert json.loads(match.group(1)) == {'tenant': 17, 'user': 'writer', 'workbench': WB, 'knowledge_base': KB}
+        assert json.loads(match.group(1)) == {
+            'tenant': 17, 'user': 'writer', 'workbench': WB, 'knowledge_base': KB,
+            'scope_version': 1, 'sources_revision': 0,
+        }
         for anchor in expected:
             assert f'id="{anchor}"' in response.text
     assert not any('generate' in path for _, path in state['calls'])

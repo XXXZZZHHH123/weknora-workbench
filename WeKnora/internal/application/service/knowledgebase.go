@@ -615,6 +615,13 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(ctx context.Context,
 	}
 
 	// Update the knowledge base properties
+	if kb.SystemRole == types.KnowledgeBaseSystemRoleCentral {
+		caller := types.CallerFromContext(ctx)
+		permission := access.LocalKBPermission(ctx, caller, kb)
+		if !caller.Role.HasPermission(types.TenantRoleAdmin) || !permission.IsValid() || !permission.HasPermission(types.OrgRoleEditor) {
+			return nil, apperrors.NewForbiddenError("仅有来源读取权限的空间管理员可维护中心数据")
+		}
+	}
 	kb.Name = name
 	kb.Description = description
 	if config != nil {

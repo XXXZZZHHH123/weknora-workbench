@@ -870,32 +870,50 @@ function dgBindCanvas() {
 /* ---------- 指标池 ---------- */
 
 async function dgOpenPool(nodeId) {
+  dgSuggestGeneration++; dgSuggestController?.abort();
+  dgPoolGeneration++; dgPoolController?.abort(); clearTimeout(dgPoolTimer);
   dg.active = nodeId;
   const node = dg.layout.nodes.find((n) => n.id === nodeId);
   document.getElementById("dg-node-label").textContent = node.label;
+  document.getElementById("dg-suggest").innerHTML = "";
   // 分组框是背景分区，没有指标可绑，只能改名或删除
   const isGroup = dgIsGroup(node);
   document.getElementById("dg-pool").classList.toggle("hidden", isGroup);
   document.getElementById("dg-search").classList.toggle("hidden", isGroup);
   if (isGroup) { toggleDrawer("dg-drawer", true); return; }
   document.getElementById("dg-proxy").checked = !!(node.binding || {}).proxy;
-  if (!dg.pool.length) {
+  if (window.RESEARCH_CONTEXT?.scope_version === 2) {
+    document.getElementById("dg-search").value = "";
+    toggleDrawer("dg-drawer", true); await dgFetchPool();
+  } else if (!dg.pool.length) {
     const res = await researchFetch((window.RESEARCH_PREFIX || "") + "/api/sn/export/fields");
     const data = await res.json();
     dg.pool = data.groups.flatMap((g) => g.fields.map((f) => ({ ...f, group: g.name, bindOnly: !!g.bind_only })));
   }
-  dgRenderPool();
+  if (dg.active !== nodeId) return;
+  if (window.RESEARCH_CONTEXT?.scope_version !== 2) dgRenderPool();
   toggleDrawer("dg-drawer", true);
   dgSuggest(node);
 }
 
+let dgSuggestController, dgSuggestGeneration = 0;
 async function dgSuggest(node) {
+  if (dg.active !== node.id) return;
+  dgSuggestController?.abort(); dgSuggestController = new AbortController();
+  const own = ++dgSuggestGeneration, active = node.id;
   const box = document.getElementById("dg-suggest");
   box.innerHTML = '<div class="py-2 text-[var(--text-muted)]">正在匹配…</div>';
   const bound = dg.layout.nodes.map((n) => (n.binding || {}).series_id).filter(Boolean);
   const q = new URLSearchParams({ label: node.label, exclude: bound.join(",") });
-  const res = await researchFetch(`${window.RESEARCH_PREFIX || ""}/api/sn/diagram/suggest?${q}`);
-  const data = res.ok ? await res.json() : { suggestions: [] };
+  let data;
+  try {
+    const res = await researchFetch(`${window.RESEARCH_PREFIX || ""}/api/sn/diagram/suggest?${q}`, { signal: dgSuggestController.signal });
+    data = res.ok ? await res.json() : { suggestions: [] };
+  } catch (error) {
+    if (own === dgSuggestGeneration && active === dg.active && error.name !== "AbortError") box.textContent = "候选指标暂时无法读取，请手动搜索或稍后重试。";
+    return;
+  }
+  if (own !== dgSuggestGeneration || active !== dg.active) return;
   if (!data.suggestions.length) {
     // 给不出推荐时明说。那些给不出的节点往往正是数据本来就缺的，这本身就是信息。
     box.innerHTML = `<div class="px-2 py-2 rounded bg-[var(--surface-soft)] text-[var(--text-muted)]">
@@ -910,10 +928,39 @@ async function dgSuggest(node) {
         <div class="font-medium truncate">${f.points ? "" : "○ "}${dgEsc(f.name)}${
           f.unit ? `（${dgEsc(f.unit)}）` : ""}${f.already_bound ? " · 本图已绑" : ""}</div>
         <div class="text-[10px] text-[var(--text-muted)] truncate">${dgEsc(f.why)} · ${
-          f.points.toLocaleString("zh-CN")} 条 · ${dgEsc(f.frequency)}频</div>
+          f.points === null ? "观测按需读取" : f.points.toLocaleString("zh-CN") + " 条"} · ${dgEsc(f.frequency)}频</div>
       </button>`).join("");
 }
 
+let dgPoolController, dgPoolGeneration = 0, dgPoolTimer;
+async function dgFetchPool(offset = 0) {
+  dgPoolController?.abort(); dgPoolController = new AbortController(); const own = ++dgPoolGeneration, active = dg.active;
+  const pool = document.getElementById("dg-pool"); pool.setAttribute("aria-busy", "true");
+  try {
+    const result = await window.ResearchCatalog.read({ search: document.getElementById("dg-search").value.trim(), offset, signal: dgPoolController.signal });
+    if (own !== dgPoolGeneration || active !== dg.active) return;
+    dg.pool = result.indicators.map(row => ({ field: row.series_id, label: row.name, unit: row.unit, group: row.category, kind: "observation", bindOnly: true }));
+    dg.poolPage = { offset, total: result.total, next: result.next_offset };
+    dgRenderPool();
+  } catch (error) { if (own === dgPoolGeneration && error.name !== "AbortError") pool.textContent = error.message || "指标目录暂时无法读取，请重试。"; }
+  finally { if (own === dgPoolGeneration) pool.removeAttribute("aria-busy"); }
+}
+function dgSearchPool() {
+  if (window.RESEARCH_CONTEXT?.scope_version !== 2) { dgRenderPool(); return; }
+  dgPoolGeneration++; dgPoolController?.abort(); clearTimeout(dgPoolTimer);
+  dgPoolTimer = setTimeout(() => dgFetchPool(), 240);
+}
+function dgRenderPoolPagination() {
+  if (window.RESEARCH_CONTEXT?.scope_version !== 2 || !dg.poolPage) return;
+  const { offset, total, next } = dg.poolPage;
+  const pool = document.getElementById("dg-pool");
+  for (const [label, page] of [["上一页", offset ? Math.max(0, offset - 200) : null], ["下一页", next]]) {
+    if (page === null) continue;
+    const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.className = "px-2 py-1.5 rounded border border-[var(--line)] text-xs mr-2 mt-2";
+    button.addEventListener("click", () => dgFetchPool(page)); pool.append(button);
+  }
+  document.getElementById("dg-pool-count").textContent = `${offset + (dg.pool.length ? 1 : 0)}–${offset + dg.pool.length} / ${total} 条`;
+}
 function dgRenderPool() {
   const q = (document.getElementById("dg-search").value || "").trim().toLowerCase();
   const node = dg.layout.nodes.find((n) => n.id === dg.active) || {};
@@ -928,7 +975,7 @@ function dgRenderPool() {
   document.getElementById("dg-bound-count").textContent = `本图已绑 ${total} 个指标`;
   const all = dg.pool
     .filter((f) => f.kind !== "meta")
-    .filter((f) => !q || f.label.toLowerCase().includes(q) || f.field.toLowerCase().includes(q));
+    .filter((f) => window.RESEARCH_CONTEXT?.scope_version === 2 || !q || f.label.toLowerCase().includes(q) || f.field.toLowerCase().includes(q));
 
   // 近 400 条拍平成一个长列表，即便能搜也看不出全貌：不知道有哪些类别、
   // 每类有多少、自己关心的那类在哪。按类别折叠——默认全收起，只看见目录。
@@ -943,13 +990,14 @@ function dgRenderPool() {
   if (!all.length) {
     document.getElementById("dg-pool").innerHTML =
       '<div class="py-6 text-center text-[var(--text-muted)]">没有匹配的指标</div>';
+    dgRenderPoolPagination();
     return;
   }
 
   dg.openCats = dg.openCats || new Set();
   // 搜索时全部展开（此时结果本来就少）；已绑的那一类也自动展开，否则看不到绑的是什么
   const boundCat = bound ? (all.find((f) => f.field === bound) || {}).group : null;
-  const LIMIT = 60;   // 单个类别内的上限，避免一类几百条撑爆
+  const LIMIT = window.RESEARCH_CONTEXT?.scope_version === 2 ? 200 : 60;
 
   const item = (f) => `
     <button type="button" onclick="dgBind('${dgEsc(f.field)}','${dgEsc(f.kind)}')"
@@ -981,6 +1029,7 @@ function dgRenderPool() {
              这一类还有 ${fields.length - LIMIT} 条未显示 —— 用上面的搜索缩小范围</div>` : ""}
     </div>`;
   }).join("");
+  dgRenderPoolPagination();
 }
 
 function dgToggleCat(name) {

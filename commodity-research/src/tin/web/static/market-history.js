@@ -5,15 +5,29 @@ document.addEventListener("DOMContentLoaded", () => {
   const metadata = JSON.parse(document.getElementById("market-core-catalog").textContent);
   if (!metadata.can_edit_shared) return;
   const get = (name) => document.getElementById(`market-history-${name}`);
-  const catalog = metadata.indicators;
+  let catalog = metadata.indicators;
   const allowed = new Set(catalog.map((row) => row.series_id));
   let draft = [];
+  let directoryController, directoryGeneration = 0, directoryTimer;
   const normalize = (value) => String(value).normalize("NFKC").toLocaleLowerCase();
-  function render() {
+  async function render(offset = 0) {
     const query = normalize(get("search").value.trim());
     const choices = get("choices"); choices.replaceChildren();
+    let result;
+    if (metadata.catalog_paged) {
+      directoryController?.abort(); directoryController = new AbortController(); const own = ++directoryGeneration;
+      choices.setAttribute("aria-busy", "true");
+      try {
+        result = await window.ResearchCatalog.read({ search: get("search").value.trim(), offset, signal: directoryController.signal });
+        if (own !== directoryGeneration) return;
+        catalog = result.indicators; catalog.forEach(row => allowed.add(row.series_id));
+      } catch (error) {
+        if (own === directoryGeneration && error.name !== "AbortError") { get("error").textContent = error.message; get("error").hidden = false; }
+        return;
+      } finally { if (own === directoryGeneration) choices.removeAttribute("aria-busy"); }
+    }
     for (const row of catalog) {
-      if (query && !normalize(`${row.name} ${row.source} ${row.unit}`).includes(query)) continue;
+      if (!metadata.catalog_paged && query && !normalize(`${row.name} ${row.source} ${row.unit}`).includes(query)) continue;
       const label = document.createElement("label"), checkbox = document.createElement("input");
       const content = document.createElement("span"), name = document.createElement("b"), detail = document.createElement("small");
       checkbox.type = "checkbox"; checkbox.value = row.series_id; checkbox.checked = draft.includes(row.series_id);
@@ -29,6 +43,13 @@ document.addEventListener("DOMContentLoaded", () => {
       content.append(name, detail); label.append(checkbox, content); choices.append(label);
     }
     if (!choices.children.length) choices.textContent = "没有匹配的指标。";
+    if (metadata.catalog_paged && (offset || result.next_offset !== null)) {
+      for (const [label, page] of [["上一页", offset ? Math.max(0, offset - 200) : null], ["下一页", result.next_offset]]) {
+        if (page === null) continue;
+        const button = document.createElement("button"); button.type = "button"; button.className = "market-core-button"; button.textContent = label;
+        button.addEventListener("click", () => render(page)); choices.append(button);
+      }
+    }
     get("selection").textContent = `已选择 ${draft.length}/12 项`;
   }
   open.addEventListener("click", () => {
@@ -36,9 +57,9 @@ document.addEventListener("DOMContentLoaded", () => {
     get("error").hidden = true; get("search").value = "";
     render(); dialog.showModal(); get("search").focus();
   });
-  get("search").addEventListener("input", render);
+  get("search").addEventListener("input", () => { if (!metadata.catalog_paged) { void render(); return; } clearTimeout(directoryTimer); directoryGeneration++; directoryController?.abort(); directoryTimer = setTimeout(() => render(), 240); });
   get("cancel").addEventListener("click", () => dialog.close());
-  dialog.addEventListener("close", () => open.focus());
+  dialog.addEventListener("close", () => { directoryGeneration++; directoryController?.abort(); clearTimeout(directoryTimer); open.focus(); });
   get("save").addEventListener("click", async () => {
     const button = get("save"); if (button.disabled) return;
     button.disabled = true; get("error").hidden = true;

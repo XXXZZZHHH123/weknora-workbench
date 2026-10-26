@@ -21,6 +21,8 @@ class Identity:
     knowledge_base_tenant_id: int | None = None
     knowledge_base_can_write: bool = False
     workbench_id: str = ''
+    scope_version: int = 1
+    sources_revision: int = 0
 
     @property
     def can_write(self):

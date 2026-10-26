@@ -17,6 +17,10 @@ func kbCapabilityExtras(ctx context.Context, kb *types.KnowledgeBase) map[string
 		return map[string]interface{}{"can_manage": false, "can_manage_permissions": false}
 	}
 	permission := access.LocalKBPermission(ctx, caller, kb)
+	if kb.SystemRole == types.KnowledgeBaseSystemRoleCentral {
+		admin := caller.Role.HasPermission(types.TenantRoleAdmin) && permission.IsValid()
+		return map[string]interface{}{"my_permission": permission, "can_manage": admin, "can_manage_permissions": admin, "can_edit": admin && permission.IsValid() && permission.HasPermission(types.OrgRoleEditor), "can_delete": false, "access_legacy": false}
+	}
 	owner := kb.CreatorID != "" && caller.UserID == kb.CreatorID && caller.Role.HasPermission(types.TenantRoleContributor)
 	canManage := owner
 	canEdit := permission.IsValid() && permission.HasPermission(types.OrgRoleEditor) && caller.Role.HasPermission(types.TenantRoleContributor)

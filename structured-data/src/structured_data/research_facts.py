@@ -4,6 +4,7 @@ import json
 import math
 import re
 from datetime import date
+from . import snapshot_metadata
 
 from fastapi import HTTPException
 
@@ -22,7 +23,7 @@ def _hash(value):
 
 def _parameters(body):
     if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only','encoding',
-                                              'series_ids','as_of','points_per_series','view_module','same_day_series_ids'}:
+                                              'series_ids','as_of','points_per_series','view_module','same_day_series_ids','catalog_only'}:
         raise ValueError('只接受当前原件、分页和快照版本参数')
     sources,offset,limit=body.get('sources'),body.get('offset',0),body.get('limit',10000)
     if not isinstance(sources,list) or len(sources)>128:
@@ -32,6 +33,8 @@ def _parameters(body):
     version=body.get('version')
     if type(body.get('metadata_only',False)) is not bool:
         raise ValueError('版本核验参数无效')
+    if type(body.get('catalog_only', False)) is not bool:
+        raise ValueError('目录读取参数无效')
     if 'encoding' in body and (body['encoding']!=RESEARCH_ROWS_ENCODING or body.get('metadata_only')):
         raise ValueError('事实传输编码无效；版本核验不接受行编码')
     if version is not None and (not isinstance(version,str) or not re.fullmatch('[a-f0-9]{64}',version)):
@@ -48,7 +51,7 @@ def _parameters(body):
     return sorted(normalized,key=lambda item:item['knowledge_id']),offset,limit,version
 
 
-def _bounded_parameters(body):
+def _bounded_parameters(body, *, extended=False):
     if 'series_ids' not in body:
         if {'as_of', 'points_per_series', 'view_module', 'same_day_series_ids'} & body.keys():
             raise ValueError('页面取数必须提供明确的指标绑定')
@@ -58,17 +61,23 @@ def _bounded_parameters(body):
             or any(not isinstance(value, str) or not re.fullmatch('kb-[0-9a-f]{48}', value) for value in identifiers)
             or len(set(identifiers)) != len(identifiers)):
         raise ValueError('页面指标绑定无效或超过256项')
-    if {'offset', 'limit', 'metadata_only', 'encoding'} & body.keys():
+    if {'offset', 'limit', 'metadata_only', 'encoding', 'catalog_only'} & body.keys():
         raise ValueError('页面取数不接受全量分页或编码参数')
     points = body.get('points_per_series', 2)
-    # Only the saved market chart needs a bounded history. Other pages keep
-    # their two-point projection, and the chart cannot become a catalog scan.
-    history = body.get('view_module') == 'market' and type(points) is int and points > 2
-    maximum = 180 if history else 2
+    module = body.get('view_module')
+    if module is not None and (not isinstance(module,str) or module not in {
+            'home','market','indicators','judgments','strategies','diagram','reports'}):
+        raise ValueError('页面模块无效')
+    # The v1 protocol keeps its original two-point grant. The v2 caller has a
+    # verified page plan and explicit per-module/total resource ceilings.
+    history = module == 'market' and type(points) is int and points > 2
+    maximum = 180 if history else ({'home':121,'reports':121,'judgments':121,'strategies':121,'diagram':24,'indicators':2000}.get(module,2) if extended else 2)
     if type(points) is not int or not 1 <= points <= maximum:
         raise ValueError('页面指标点数超出允许范围')
     if history and len(identifiers) > 12:
         raise ValueError('市场历史行情最多绑定12项指标')
+    if len(identifiers) * points > 20000:
+        raise ValueError('页面总观测点数超过20000项')
     boundary = body.get('as_of')
     if 'as_of' in body:
         if not isinstance(boundary, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', boundary):
@@ -81,7 +90,7 @@ def _bounded_parameters(body):
     selection = {'series_ids': sorted(identifiers), 'as_of': boundary, 'points_per_series': points}
     if 'same_day_series_ids' in body:
         same_day = body['same_day_series_ids']
-        if (body.get('view_module') != 'market' or points != 1 or boundary is None
+        if (module not in ({'market','strategies'} if extended else {'market'}) or points != 1 or boundary is None
                 or len(identifiers) > 128 or not isinstance(same_day, list) or not 1 <= len(same_day) <= 24
                 or any(not isinstance(identifier, str) or identifier not in identifiers for identifier in same_day)
                 or len(set(same_day)) != len(same_day)):
@@ -107,7 +116,7 @@ def _same_day_date(store, bindings, selection):
             continue
         local = bytearray(size)
         where = 'series_id IN (' + ','.join('?' for _ in identifiers) + ') AND ' + _RESEARCH_ROW_FILTER + ' AND date <= ?'
-        with store._connect(info['dataset_id']) as connection:
+        with info.get('_store', store)._connect(info['dataset_id']) as connection:
             cursor = connection.execute('SELECT date,count(DISTINCT series_id) FROM observations WHERE '
                 + where + ' GROUP BY date', [*identifiers, selection['as_of']])
             while batch := cursor.fetchmany(256):
@@ -147,7 +156,7 @@ def _same_day_rows(store, bindings, selection):
             continue
         identifiers = sorted(mapping)
         where = 'series_id IN (' + ','.join('?' for _ in identifiers) + ') AND ' + _RESEARCH_ROW_FILTER + ' AND date = ?'
-        with store._connect(info['dataset_id']) as connection:
+        with info.get('_store', store)._connect(info['dataset_id']) as connection:
             # Aggregate duplicates in SQL; no arbitrary source-cell winner and
             # no unbounded duplicate list materialized in the page service.
             values = connection.execute('SELECT series_id,min(value),max(value),bool_and(isfinite(value)) '
@@ -161,7 +170,7 @@ def _same_day_rows(store, bindings, selection):
     return rows
 
 
-def _bounded_rows(store, bindings, selection):
+def _bounded_rows(store, bindings, selection, *, strict=False):
     rows = []
     for info, mapping in bindings:
         if not mapping:
@@ -172,7 +181,19 @@ def _bounded_rows(store, bindings, selection):
         if selection['as_of'] is not None:
             where += ' AND date <= ?'
             parameters.append(selection['as_of'])
-        with store._connect(info['dataset_id']) as connection:
+        with info.get('_store', store)._connect(info['dataset_id']) as connection:
+            if strict:
+                cursor = connection.execute('SELECT series_id,date,min(value),max(value),bool_and(isfinite(value)) '
+                    + 'FROM observations WHERE '+where+' GROUP BY series_id,date '
+                    + 'QUALIFY row_number() OVER (PARTITION BY series_id ORDER BY date DESC) <= ? '
+                    + 'ORDER BY series_id,date',[*parameters,selection['points_per_series']])
+                for source_id,when,low,high,finite in cursor.fetchall():
+                    if finite is not True or not math.isfinite(low) or not math.isfinite(high):
+                        raise HTTPException(503,'页面指标包含非有限数值')
+                    if low != high:
+                        raise HTTPException(409,'同一来源指标日期存在冲突数值，请在知识库核对')
+                    rows.append({'series_id':mapping[source_id],'date':when,'value':low,'value_status':'valid'})
+                continue
             cursor = connection.execute(
                 'SELECT series_id,date,value,value_status FROM observations WHERE ' + where
                 + ' QUALIFY row_number() OVER (PARTITION BY series_id ORDER BY date DESC,source_cell DESC) <= ?'
@@ -203,12 +224,12 @@ def _page_series(identifiers,counts,offset,limit):
     return selected,offset-(start or 0)
 
 
-def read_facts(store,manager,body):
+def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
     identity=current_identity.get()
     if identity is None or not identity.knowledge_base_id:
         raise ValueError('研究指标必须绑定已授权知识库，不能读取空间旧事实')
     sources,offset,limit,requested=_parameters(body)
-    bounded = _bounded_parameters(body)
+    bounded = _bounded_parameters(body,extended=_allow_partial)
     compact=body.get('encoding')==RESEARCH_ROWS_ENCODING
     records=manager.list()
     selected=[]
@@ -237,14 +258,13 @@ def read_facts(store,manager,body):
         dataset=record['dataset_id']
         try:
             if dataset not in verified:
-                manifest=store.manifest(dataset)
+                manifest=snapshot_metadata.document(store._path(dataset)/'manifest.json')
                 original=store._path(dataset)/'source.xlsx'
-                raw=original.read_bytes()
-                sha256=hashlib.sha256(raw).hexdigest()
-                hashes={hashlib.md5(raw).hexdigest(),sha256}
+                md5,sha256=snapshot_metadata.hashes(original)
+                hashes={md5,sha256}
                 if manifest.get('sha256')!=sha256:
                     raise ValueError('原件哈希不符')
-                catalog=json.loads((store._path(dataset)/'series.json').read_text())
+                catalog=snapshot_metadata.document(store._path(dataset)/'series.json')
                 if (not isinstance(catalog,list) or any(not isinstance(field,dict)
                         or not isinstance(field.get('series_id'),str) or not field['series_id'] for field in catalog)
                         or len({field['series_id'] for field in catalog})!=len(catalog)):
@@ -279,9 +299,9 @@ def read_facts(store,manager,body):
         if bounded is None or mapping:
             datasets.append(info)
             bindings.append((info,mapping))
-    if bounded is not None and set(bounded['series_ids']) != {field['series_id'] for field in indicators}:
+    if bounded is not None and not _allow_partial and set(bounded['series_ids']) != {field['series_id'] for field in indicators}:
         raise HTTPException(403, '页面指标不属于当前已确认的来源范围，未返回部分结果')
-    if bounded is not None and 'same_day_series_ids' in bounded:
+    if bounded is not None and not _prepare_only and 'same_day_series_ids' in bounded:
         bounded = {**bounded, 'selected_date': _same_day_date(store, bindings, bounded)}
     version=_hash({'knowledge_base_id':identity.knowledge_base_id,
                    'knowledge_base_tenant_id':identity.knowledge_base_tenant_id,
@@ -289,6 +309,8 @@ def read_facts(store,manager,body):
                    **({'selection': bounded} if bounded is not None else {})})
     if requested is not None and requested!=version:
         raise HTTPException(409,'知识库结构化版本已改变，请重新读取完整事实；未混合新旧快照')
+    if _prepare_only:
+        return {'version':version,'indicators':indicators,'datasets':datasets,'bindings':bindings,'selection':bounded}
     if bounded is not None:
         rows = _same_day_rows(store, bindings, bounded) if 'same_day_series_ids' in bounded else _bounded_rows(store, bindings, bounded)
         return {'knowledge_base_id': identity.knowledge_base_id,
@@ -302,6 +324,11 @@ def read_facts(store,manager,body):
         return {'knowledge_base_id':identity.knowledge_base_id,
                 'knowledge_base_tenant_id':identity.knowledge_base_tenant_id,
                 'version':version,'metadata_only':True}
+    if body.get('catalog_only'):
+        return {'knowledge_base_id':identity.knowledge_base_id,
+                'knowledge_base_tenant_id':identity.knowledge_base_tenant_id,
+                'version':version,'catalog_only':True,'indicators':indicators,'datasets':datasets,
+                'rows':[],'total':len(indicators),'offset':0,'next_offset':None,'truncated':False}
     rows=[];total=0;raw_total=0
     for info,mapping in bindings:
         if compact:

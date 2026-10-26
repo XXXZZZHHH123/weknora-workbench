@@ -25,6 +25,8 @@ var versionedSQLiteTables = []string{
 	"workspace_notifications",
 	"knowledge_folders",
 	"default_knowledge_base_bindings",
+	"central_datasets",
+	"research_workbench_source_bindings",
 	"memory_extraction_sessions",
 	"task_pending_ops",
 	"task_dead_letters",
@@ -51,14 +53,14 @@ var versionedSQLiteTables = []string{
 // versioned migrations add and the SQLite baseline was missing.
 var versionedSQLiteColumns = map[string][]string{
 	"image_generation_executions": {"tenant_id", "session_id", "message_id", "tool_call_id", "model_id", "request_hash", "status", "resource_url", "position"},
-	"research_workbenches":        {"workspace_mode", "template_id", "template_version", "access_policy", "source_sharing_approved", "source_sharing_approved_by", "source_sharing_requested", "source_sharing_modules", "restricted_view_profiles"},
+	"research_workbenches":        {"workspace_mode", "template_id", "template_version", "access_policy", "source_sharing_approved", "source_sharing_approved_by", "source_sharing_requested", "source_sharing_modules", "restricted_view_profiles", "sources_revision"},
 	"model_catalog_configs":       {"version", "overlay", "history", "updated_by", "updated_at"}, // 000037
 	"memory_subjects":             {"extraction_state"},                                          // 000094
 	"memory_items":                {"replaces_id"},                                               // 000094
 	"tenants":                     {"api_principal_config"},                                      // 000064
 	"users":                       {"is_system_admin"},                                           // 000053
 	"knowledges":                  {"pending_subtasks_count", "profile"},                         // 000056, 000101
-	"knowledge_bases":             {"profile_config", "generated_profile", "access_policy"},
+	"knowledge_bases":             {"profile_config", "generated_profile", "access_policy", "system_role"},
 	"messages":                    {"attachments", "usage", "sandbox_checkpoint", "context_checkpoint"}, // 000034/085/097/105
 	"sessions": {
 		"parent_session_id", "forked_from_message_id", "fork_bootstrap", // 000097
@@ -83,7 +85,7 @@ var versionedSQLiteColumns = map[string][]string{
 	}, // 000028
 }
 
-const expectedSQLiteMigrationVersion = 47
+const expectedSQLiteMigrationVersion = 48
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)

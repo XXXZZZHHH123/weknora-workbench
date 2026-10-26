@@ -76,7 +76,7 @@ func (s *WorkspaceService) InitializeDefaultKnowledgeBase(ctx context.Context) (
 		if kb.DeletedAt.Valid {
 			return nil, apperrors.NewConflictError("Default知识库已删除，请联系管理员处理")
 		}
-		return defaultKnowledgeBaseView(kb), nil
+		return s.initializedDefaultView(ctx, kb)
 	}
 	if binding == nil {
 		candidate := types.DefaultKnowledgeBaseBinding{TenantID: caller.TenantID, Kind: macroKnowledgeBaseKind, KnowledgeBaseID: uuid.NewString()}
@@ -93,11 +93,11 @@ func (s *WorkspaceService) InitializeDefaultKnowledgeBase(ctx context.Context) (
 			if kb.DeletedAt.Valid {
 				return nil, apperrors.NewConflictError("Default知识库已删除，请联系管理员处理")
 			}
-			return defaultKnowledgeBaseView(kb), nil
+			return s.initializedDefaultView(ctx, kb)
 		}
 	}
 	native := &types.KnowledgeBase{
-		ID: binding.KnowledgeBaseID, Name: "宏观数据", Type: types.KnowledgeBaseTypeDocument,
+		ID: binding.KnowledgeBaseID, Name: "default库", Type: types.KnowledgeBaseTypeDocument,
 		AccessPolicy:             &types.ResourceAccessPolicy{SpacePermission: types.ResourcePermissionViewer, Members: []types.ResourceMemberPermission{}},
 		Description:              "Default 宏观知识库。当前空间所有研究工作台共享此知识库已确认的结构化数据；来源与观测统一在本知识库维护。",
 		IndexingStrategy:         types.IndexingStrategy{Disabled: true},
@@ -114,10 +114,21 @@ func (s *WorkspaceService) InitializeDefaultKnowledgeBase(ctx context.Context) (
 		return nil, readErr
 	}
 	if kb != nil && !kb.DeletedAt.Valid {
-		return defaultKnowledgeBaseView(kb), nil
+		return s.initializedDefaultView(ctx, kb)
 	}
 	if createErr != nil {
 		return nil, createErr
 	}
 	return nil, apperrors.NewConflictError("Default知识库初始化未完成，请重试")
+}
+
+func (s *WorkspaceService) initializedDefaultView(ctx context.Context, kb *types.KnowledgeBase) (*DefaultKnowledgeBaseView, error) {
+	caller, err := workspaceCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.registerCentralDefault(ctx, caller); err != nil {
+		return nil, err
+	}
+	return defaultKnowledgeBaseView(kb), nil
 }

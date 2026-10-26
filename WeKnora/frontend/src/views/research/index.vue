@@ -4,13 +4,13 @@
       <router-link v-if="workbenchId" class="research-back" to="/platform/research-workbenches" aria-label="返回研究工作台列表">
         <t-icon name="chevron-left" />研究工作台
       </router-link>
-      <strong>{{ workbench.name }}</strong><span>{{ workbench.knowledge_base_name || '绑定知识库' }}</span>
+      <strong>{{ workbench.name }}</strong><span>{{ sourceLabel }}</span>
       <div class="research-toolbar-actions">
         <t-button v-if="canReadSource" class="research-toolbar-action resource-action resource-action--compact" data-guide="research-sources" theme="default" variant="outline" size="small" @click="isolatedView?.openSources()">资料与来源</t-button>
         <router-link v-if="workbench?.knowledge_base_id && canReadSource" class="research-toolbar-action resource-action resource-action--compact" data-guide="research-kb" :to="`/platform/knowledge-bases/${workbench.knowledge_base_id}`">转到知识库</router-link>
         <t-button v-if="canReadSource" class="research-toolbar-action resource-action resource-action--compact" theme="default" variant="outline" size="small" :disabled="!canShowResearch" :aria-expanded="chatVisible"
           aria-controls="research-chat-panel" data-guide="research-chat" @click="openChat">问答助手</t-button>
-        <WorkbenchActions :workbench="workbench" @renamed="applyWorkbenchUpdate" @deleted="router.replace('/platform/research-workbenches')" />
+        <WorkbenchActions ref="actionsView" :workbench="workbench" @renamed="applyWorkbenchUpdate" @sources-changed="reloadSources" @deleted="router.replace('/platform/research-workbenches')" />
       </div>
     </div>
     <div class="research-body">
@@ -29,7 +29,7 @@
       <ResearchFeatureGuides v-if="canShowResearch && workbench && canReadSource" :workbench="workbench" :frame="frame" :frame-version="frameVersion" :suppressed="chatVisible || !frameReady || Boolean(isolatedView?.drawerOpen)" />
       </div>
       <ResearchChatPanel v-if="chatMounted && canShowResearch && canReadSource" :key="scopeGeneration" :visible="chatVisible"
-        :kb-id="workbench?.knowledge_base_id || ''" :kb-name="workbench?.knowledge_base_name || ''"
+        :kb-id="chatSourceIds[0] || ''" :kb-ids="chatSourceIds" :kb-name="workbench?.knowledge_base_name || ''"
         :workbench-name="workbench?.name || '研究工作台'" :isolated="isIsolated" :workbench-id="workbenchId" @close="chatVisible = false" />
     </div>
   </div>
@@ -45,12 +45,14 @@ import IsolatedResearchWorkbench from './IsolatedResearchWorkbench.vue'
 import { authenticateResearchFrame, researchFramePath } from './researchFrameSession'
 import WorkbenchActions from '@/views/workspaces/WorkbenchActions.vue'
 import ResearchFeatureGuides from './ResearchFeatureGuides.vue'
+import { directKnowledgeBaseIds, workbenchSourceLabel } from './workbenchDataSources'
 const auth = useAuthStore()
 const { effectiveTheme, setTheme } = useTheme()
 const route = useRoute()
 const router = useRouter()
 const frame = ref<HTMLIFrameElement>()
 const isolatedView = ref<InstanceType<typeof IsolatedResearchWorkbench>>()
+const actionsView = ref<InstanceType<typeof WorkbenchActions>>()
 const generation = ref(0)
 const frameVersion = ref(0)
 const scopeGeneration = ref(0)
@@ -69,6 +71,8 @@ let authGeneration = 0
 const isIsolated = computed(() => workbench.value?.workspace_mode === 'isolated')
 const canShowResearch = computed(() => Boolean(auth.token && tenantId.value && workbenchId.value && workbench.value))
 const canReadSource = computed(() => workbench.value?.can_read_source !== false)
+const sourceLabel = computed(() => workbench.value ? workbenchSourceLabel(workbench.value, []) : '')
+const chatSourceIds = computed(() => workbench.value ? directKnowledgeBaseIds(workbench.value) : [])
 const frameUrl = computed(() => {
   if (!canShowResearch.value) return ''
   return researchFramePath(workbenchId.value,researchView.value)
@@ -112,6 +116,12 @@ function applyWorkbenchUpdate(updated: ResearchWorkbench) {
   }
   workbench.value = updated
 }
+async function reloadSources() {
+  scopeGeneration.value++
+  chatMounted.value = false; chatVisible.value = false
+  restartSession()
+  await loadWorkbench()
+}
 async function loadWorkbench() {
   const current = ++requestGeneration
   workbench.value = null
@@ -123,7 +133,9 @@ async function loadWorkbench() {
     const [result, authenticated] = await Promise.all([getResearchWorkbench(workbenchId.value),prepareFrameSession()])
     if (current !== requestGeneration) return
     if (!authenticated) return
-    if (!result.success || !result.data?.knowledge_base_id || result.data.id !== workbenchId.value) throw new Error('工作台或绑定知识库不可用。')
+    const data = result.data
+    const validSources = data?.scope_version === 2 && Number.isSafeInteger(data.sources_revision) && Number(data.sources_revision) > 0 && Array.isArray(data.sources) && data.sources.length <= 8
+    if (!result.success || !data || data.id !== workbenchId.value || (!data.knowledge_base_id && !validSources)) throw new Error('工作台或数据来源不可用。')
     if (!['legacy', 'isolated'].includes(result.data.workspace_mode || '')) throw new Error('工作台范围信息不完整，请更新服务后重试。')
     workbench.value = result.data
   } catch (error) {
@@ -145,7 +157,7 @@ function frameLoaded() {
 }
 function receive(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
-  if (canShowResearch.value && event.data?.type === 'research-open-sources') { isolatedView.value?.openSources(); return }
+  if (canShowResearch.value && event.data?.type === 'research-open-sources') { if (isolatedView.value) isolatedView.value.openSources(); else if (workbench.value?.can_manage) actionsView.value?.openSources(); return }
   if (canShowResearch.value && event.data?.type === 'research-drawer-state' && typeof event.data.open === 'boolean') { nativeDrawerOpen.value = event.data.open; return }
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
   if (event.data?.type === 'workspace-theme-request') {

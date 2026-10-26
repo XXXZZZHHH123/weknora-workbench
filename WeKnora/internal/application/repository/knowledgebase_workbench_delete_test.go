@@ -22,7 +22,7 @@ func knowledgeBaseDeleteFixture(t *testing.T) (*gorm.DB, *knowledgeBaseRepositor
 	require.NoError(t, err)
 	sql.SetMaxOpenConns(1)
 	t.Cleanup(func() { require.NoError(t, sql.Close()) })
-	require.NoError(t, db.AutoMigrate(&types.ResearchWorkbench{}))
+	require.NoError(t, db.AutoMigrate(&types.ResearchWorkbench{}, &types.ResearchWorkbenchSourceBinding{}))
 	kb := makeKB(nil)
 	require.NoError(t, db.Create(kb).Error)
 	return db, NewKnowledgeBaseRepository(db).(*knowledgeBaseRepository), kb
@@ -36,6 +36,8 @@ func insertDeleteWorkbench(t *testing.T, db *gorm.DB, tenantID uint64, kbID stri
 		KnowledgeBaseID: kbID, IdempotencyKey: id, WorkspaceMode: types.ResearchWorkbenchModeIsolated,
 	}
 	require.NoError(t, db.Create(row).Error)
+	binding := types.ResearchWorkbenchSourceBinding{ID: id, WorkbenchID: id, SourceType: types.WorkbenchSourceKnowledgeBase, SourceID: kbID, SourceTenantID: tenantID, Name: "Fixture source", Enabled: true, Status: "active", SharingModules: []string{}}
+	require.NoError(t, db.Create(&binding).Error)
 	return row
 }
 
@@ -47,13 +49,17 @@ func requireDeleteState(t *testing.T, db *gorm.DB, kbID string, workbenches []*t
 	for _, original := range workbenches {
 		var row types.ResearchWorkbench
 		require.NoError(t, db.Unscoped().First(&row, "id = ?", original.ID).Error)
-		require.Equal(t, deleted, row.DeletedAt.Valid)
+		require.Equal(t, original.DeletedAt.Valid, row.DeletedAt.Valid)
 		require.Equal(t, original.Name, row.Name)
-		require.Equal(t, original.KnowledgeBaseID, row.KnowledgeBaseID)
+		if deleted {
+			require.Empty(t, row.KnowledgeBaseID)
+		} else {
+			require.Equal(t, original.KnowledgeBaseID, row.KnowledgeBaseID)
+		}
 	}
 }
 
-func TestKnowledgeBaseDeleteSoftDeletesEveryDirectWorkbenchAndPreservesUnrelatedRows(t *testing.T) {
+func TestKnowledgeBaseDeleteDetachesEveryDirectWorkbenchAndPreservesResults(t *testing.T) {
 	db, repo, kb := knowledgeBaseDeleteFixture(t)
 	bound := []*types.ResearchWorkbench{
 		insertDeleteWorkbench(t, db, 1, kb.ID),
@@ -106,11 +112,18 @@ func TestKnowledgeBaseDeleteRejectsMissingOrDifferentExecutionTenant(t *testing.
 }
 
 func TestKnowledgeBaseDeleteRollsBackBothSidesWhenEitherSoftDeleteFails(t *testing.T) {
-	for _, table := range []string{"research_workbenches", "knowledge_bases"} {
+	for _, table := range []string{"research_workbenches", "knowledge_bases", "research_workbench_source_bindings"} {
 		t.Run(table, func(t *testing.T) {
 			db, repo, kb := knowledgeBaseDeleteFixture(t)
 			bound := []*types.ResearchWorkbench{insertDeleteWorkbench(t, db, 1, kb.ID), insertDeleteWorkbench(t, db, 2, kb.ID)}
-			require.NoError(t, db.Exec("CREATE TRIGGER reject_related_delete BEFORE UPDATE OF deleted_at ON "+table+" BEGIN SELECT RAISE(FAIL, 'forced related soft-delete failure'); END").Error)
+			column := "deleted_at"
+			if table == "research_workbenches" {
+				column = "knowledge_base_id"
+			}
+			if table == "research_workbench_source_bindings" {
+				column = "status"
+			}
+			require.NoError(t, db.Exec("CREATE TRIGGER reject_related_delete BEFORE UPDATE OF "+column+" ON "+table+" BEGIN SELECT RAISE(FAIL, 'forced related soft-delete failure'); END").Error)
 			require.ErrorContains(t, repo.DeleteKnowledgeBase(knowledgeBaseDeleteContext(1), kb.ID), "forced related soft-delete failure")
 			requireDeleteState(t, db, kb.ID, bound, false)
 			require.NoError(t, db.Exec("DROP TRIGGER reject_related_delete").Error)

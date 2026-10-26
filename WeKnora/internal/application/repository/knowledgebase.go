@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"gorm.io/gorm"
@@ -27,6 +28,7 @@ func (r *knowledgeBaseRepository) ResourceAccessDB() *gorm.DB { return r.db }
 
 // CreateKnowledgeBase creates a new knowledge base
 func (r *knowledgeBaseRepository) CreateKnowledgeBase(ctx context.Context, kb *types.KnowledgeBase) error {
+	kb.SystemRole = "" // Only the central registry may claim system ownership.
 	return r.db.WithContext(ctx).Create(kb).Error
 }
 
@@ -172,7 +174,7 @@ func (r *knowledgeBaseRepository) ListUserKBPinIDs(
 
 // UpdateKnowledgeBase updates a knowledge base
 func (r *knowledgeBaseRepository) UpdateKnowledgeBase(ctx context.Context, kb *types.KnowledgeBase) error {
-	return r.db.WithContext(ctx).Omit("AccessPolicy").Save(kb).Error
+	return r.db.WithContext(ctx).Omit("AccessPolicy", "SystemRole").Save(kb).Error
 }
 
 // UpdateKnowledgeBaseGeneratedProfile writes the generated_profile column
@@ -220,10 +222,33 @@ func (r *knowledgeBaseRepository) DeleteKnowledgeBase(ctx context.Context, id st
 			}
 			return err
 		}
-		// Shared libraries can be primary sources for workbenches in other
-		// spaces. Match their real source ID, never just the workbench tenant.
-		if err := tx.Where("knowledge_base_id = ?", kb.ID).Delete(&types.ResearchWorkbench{}).Error; err != nil {
+		if kb.SystemRole == types.KnowledgeBaseSystemRoleCentral {
+			return apperrors.NewForbiddenError("中心数据集不能通过知识库删除入口删除")
+		}
+		// Keep results and source tombstones. No visitor may revive the deleted
+		// source through an old workbench binding or cached fact projection.
+		var affected []string
+		if err := tx.Model(&types.ResearchWorkbenchSourceBinding{}).Where("source_type = ? AND source_id = ? AND status = ? AND enabled = ?", types.WorkbenchSourceKnowledgeBase, kb.ID, "active", true).Pluck("workbench_id", &affected).Error; err != nil {
 			return err
+		}
+		var primary []string
+		if err := tx.Model(&types.ResearchWorkbench{}).Where("knowledge_base_id = ?", kb.ID).Pluck("id", &primary).Error; err != nil {
+			return err
+		}
+		affected = append(affected, primary...)
+		if err := tx.Model(&types.ResearchWorkbenchSourceBinding{}).
+			Where("source_type = ? AND source_id = ? AND status <> ?", types.WorkbenchSourceKnowledgeBase, kb.ID, "removed").
+			Updates(map[string]any{"status": "deleted", "enabled": false, "sharing_approved": false, "sharing_approved_by": "", "sharing_modules": "[]", "updated_at": time.Now()}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&types.ResearchWorkbench{}).Where("knowledge_base_id = ?", kb.ID).
+			Update("knowledge_base_id", "").Error; err != nil {
+			return err
+		}
+		if len(affected) > 0 {
+			if err := tx.Model(&types.ResearchWorkbench{}).Where("id IN ?", affected).Updates(map[string]any{"sources_revision": gorm.Expr("sources_revision + 1"), "updated_at": time.Now()}).Error; err != nil {
+				return err
+			}
 		}
 		return tx.Where("id = ? AND tenant_id = ?", kb.ID, tenantID).Delete(&types.KnowledgeBase{}).Error
 	})

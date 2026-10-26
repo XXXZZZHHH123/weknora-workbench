@@ -115,10 +115,17 @@ func ResolveKB(ctx context.Context, request KBRequest, kb *types.KnowledgeBase, 
 		return nil, err
 	}
 	request.Caller = request.Caller.Normalize()
+	if kb.SystemRole == types.KnowledgeBaseSystemRoleCentral &&
+		(kb.TenantID != request.Caller.TenantID || (required != types.OrgRoleViewer && !request.Caller.Role.HasPermission(types.TenantRoleAdmin))) {
+		return nil, ErrForbidden
+	}
 	if caller, ok := ctx.Value(types.CallerContextKey).(types.Caller); ok && caller != request.Caller {
 		return nil, ErrForbidden
 	}
 	grant := func(permission types.OrgMemberRole) (*KBAccess, error) {
+		if kb.SystemRole == types.KnowledgeBaseSystemRoleCentral && !request.Caller.Role.HasPermission(types.TenantRoleAdmin) {
+			permission = types.OrgRoleViewer
+		}
 		return &KBAccess{
 			KnowledgeBase: kb, Caller: request.Caller,
 			EffectiveTenantID: kb.TenantID, Permission: permission, operationPermission: required,
@@ -181,6 +188,17 @@ func ResolveKB(ctx context.Context, request KBRequest, kb *types.KnowledgeBase, 
 // grants require both an explicit KB scope and space-visible data. An API key
 // minted by a space administrator cannot stand in for a private KB's owner.
 func LocalKBPermission(ctx context.Context, caller types.Caller, kb *types.KnowledgeBase) types.OrgMemberRole {
+	permission := localKBPermission(ctx, caller, kb)
+	if kb != nil && kb.SystemRole == types.KnowledgeBaseSystemRoleCentral && permission.IsValid() {
+		if caller.Role.HasPermission(types.TenantRoleAdmin) {
+			return types.OrgRoleAdmin
+		}
+		return types.OrgRoleViewer
+	}
+	return permission
+}
+
+func localKBPermission(ctx context.Context, caller types.Caller, kb *types.KnowledgeBase) types.OrgMemberRole {
 	if kb == nil || caller.TenantID == 0 || kb.TenantID != caller.TenantID {
 		return ""
 	}

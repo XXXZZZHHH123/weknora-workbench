@@ -72,6 +72,7 @@ def canonical(monkeypatch, tmp_path):
                             {'id': 'macro-source', 'file_hash': 'c' * 32, 'file_type': 'xlsx'}]})
                 viewer = request.headers.get('authorization') == 'Bearer source-viewer'
                 return httpx.Response(200, json={'success': True, 'data': {'id': identifier,
+                    'inventory_included':True,
                     'user_id': 'viewer' if viewer else 'researcher', 'scope_tenant_id': 17,
                     'knowledge_base_id': bound, 'sources': sources,
                     'view_modules': state.get('grant_modules', state.get('view_modules', ['home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports']))}})
@@ -112,7 +113,7 @@ def canonical(monkeypatch, tmp_path):
             encoded = request.headers['x-research-identity']
             caller = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
             assert set(body) <= {'sources', 'offset', 'limit', 'version', 'metadata_only', 'encoding',
-                                 'series_ids', 'as_of', 'points_per_series', 'view_module'}
+                                 'series_ids', 'as_of', 'points_per_series', 'view_module', 'catalog_only'}
             if 'series_ids' in body:
                 state.setdefault('bounded_requests', []).append(body)
                 selected_spec, value = spec, state['value']
@@ -142,6 +143,9 @@ def canonical(monkeypatch, tmp_path):
                 state['macro_pages'] = state.get('macro_pages', 0) + 1
                 macro_spec = {**spec, 'series_id': 'kb-' + 'c' * 48, 'source_knowledge_id': 'macro-source',
                               'dataset_id': 'f' * 24, 'metric': 'Macro quantity', 'source_file': 'macro-source.xlsx'}
+                if body.get('catalog_only'):
+                    return httpx.Response(200,json={**envelope,'catalog_only':True,'indicators':[macro_spec],
+                        'datasets':[],'rows':[],'total':1,'offset':0,'next_offset':None,'truncated':False})
                 return httpx.Response(200, json={**envelope, 'datasets': [{'dataset_id': 'f' * 24,
                     'source_knowledge_id': 'macro-source', 'source_file': 'macro-source.xlsx'}],
                     'indicators': [macro_spec], 'rows': [{'series_id': macro_spec['series_id'],
@@ -155,6 +159,10 @@ def canonical(monkeypatch, tmp_path):
             if body.get('metadata_only'):
                 return httpx.Response(200,json={'knowledge_base_id':caller['knowledge_base_id'],
                     'knowledge_base_tenant_id':17,'version':version,'metadata_only':True})
+            if body.get('catalog_only'):
+                return httpx.Response(200,json={'knowledge_base_id':caller['knowledge_base_id'],
+                    'knowledge_base_tenant_id':17,'version':version,'catalog_only':True,'indicators':[spec] if active else [],
+                    'datasets':[],'rows':[],'total':1 if active else 0,'offset':0,'next_offset':None,'truncated':False})
             state['pages'] += 1
             if state['version_change'] and body.get('offset', 0):
                 return httpx.Response(409, json={'detail': 'version changed'})

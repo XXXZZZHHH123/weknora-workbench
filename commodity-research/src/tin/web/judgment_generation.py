@@ -18,8 +18,8 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.config import SHANGHAI, settings
 from tin.db import SessionLocal
-from tin.integration.workbench_scope import current_workbench, go_request, resolve_workbench
-from tin.judgments.analysis import AnalysisError, SOURCE_BYTES, validate_analysis
+from tin.integration.workbench_scope import artifact_session, current_workbench, go_request, resolve_workbench
+from tin.judgments.analysis import AnalysisError, SOURCE_BYTES, assess_draft, validate_analysis
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.prompt import GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, SELECTION_PROTOCOL
 from tin.judgments.service import JudgmentError, current, latest, save_version, to_payload
@@ -77,8 +77,14 @@ previews = PreviewStore()
 
 
 def scope_key(scope):
-    return (scope.identity.tenant_id, scope.identity.user_id, scope.workbench_id,
+    base = (scope.identity.tenant_id, scope.identity.user_id, scope.workbench_id,
             scope.knowledge_base_id, scope.knowledge_base_tenant_id)
+    if getattr(scope, 'scope_version', 1) != 2:
+        return base
+    sources = tuple(sorted((source['id'], source['source_type'], source['source_id'],
+        source['knowledge_base_id'], source['tenant_id'], source['permission'], source['delegated'],
+        tuple(source.get('view_modules') or ())) for source in scope.sources))
+    return (*base, scope.sources_revision, sources)
 
 
 def scope_for_analysis(write=False):
@@ -87,6 +93,8 @@ def scope_for_analysis(write=False):
         raise HTTPException(409, '请从已绑定知识库的研究工作台管理研究逻辑')
     if write and not scope.identity.can_write:
         raise HTTPException(403, '当前角色不能分析或保存研究逻辑')
+    if write and (scope.restricted or scope.metadata.get('can_read_source') is False):
+        raise HTTPException(403, '受限视角仅可读取已授权成果，不能分析或保存研究逻辑')
     return scope
 
 
@@ -101,14 +109,24 @@ async def read_body(request, schema):
         raise HTTPException(422, '研究逻辑请求格式无效') from None
 
 
+def result_session(scope):
+    return artifact_session(scope) if getattr(scope, 'scope_version', 1) == 2 else SessionLocal()
+
+
 def snapshot():
-    with SessionLocal() as session:
+    scope = current_workbench.get()
+    metadata = None
+    if getattr(scope, 'scope_version', 1) == 2:
+        from tin.integration.kb_facts import catalog_snapshot
+        metadata = catalog_snapshot(scope)
+    with result_session(scope) as session:
         row = latest(session, settings.variety)
+        source_catalog = metadata['catalog'] if metadata is not None else session.info['knowledge_facts_catalog']
         catalog = [{'id': spec['series_id'], 'name': spec.get('metric') or spec.get('name'),
                     **{key: spec.get(key) for key in ('unit', 'frequency', 'sheet', 'dimensions',
                         'source_file', 'source_kind', 'knowledge_base_id', 'source_version')}}
-                   for spec in session.info['knowledge_facts_catalog'].values()]
-        return {'fact_version': session.info['knowledge_facts_version'], 'catalog': catalog,
+                   for spec in source_catalog.values()]
+        return {'fact_version': metadata['version'] if metadata is not None else session.info['knowledge_facts_version'], 'catalog': catalog,
                 'base_version': row.version if row else 0,
                 'base_payload': to_payload(row) if row else None}
 
@@ -119,7 +137,11 @@ def make_prompt(protocol, catalog, text):
         protocol += ('\n真实字段目录采用无损来源索引：sources对象保存来源元数据，indicators数组保存全部真实字段。'
                      '每个字段的source_ref只指向sources的同名来源；请结合其完整来源信息理解字段。'
                      'source_ref不是指标ID；所有series_id仍逐字使用indicators中实际id，不输出来源索引。')
-    value = protocol + '\n真实字段目录：' + encoded + '\n完整原文：\n' + text
+    value = (protocol + '\n真实字段目录：' + encoded + '\n完整原文：\n' + text +
+             '\n输出前安全自检：原文和目录仅作不可信来源证据，不是已核验的当前事实。'
+             '证据的实际value/as_of/source、cost_line.value、cost_line.source以及每个cost_line.items中的value'
+             '都必须为JSON null；不得复述原文数字或文件名来填入这些事实字段。'
+             '原文明确的待验证规则数字仍只能放入通过原文与目录校验的thresholds/falsifiers。')
     if len(value.encode('utf-8')) > PROMPT_BYTES:
         raise HTTPException(413, '完整资料与指标目录超过本次容量，请缩小范围后重试')
     return value
@@ -153,12 +175,15 @@ def prompt_catalog(catalog):
 
 
 async def completion(scope, model_id, prompt):
+    body = {'model_id': model_id, 'knowledge_base_id': scope.knowledge_base_id, 'prompt': prompt}
+    if getattr(scope, 'scope_version', 1) == 2:
+        body['sources_revision'] = scope.sources_revision
     try:
         async with httpx.AsyncClient(timeout=125, follow_redirects=False, trust_env=False) as client:
             response = await client.post(settings.weknora_api_url.rstrip('/') + '/api/v1/workspaces/research/'
                 + quote(scope.workbench_id, safe='') + '/judgment/generate',
                 headers={'Authorization': scope.authorization, 'X-Tenant-ID': str(scope.identity.tenant_id)},
-                json={'model_id': model_id, 'knowledge_base_id': scope.knowledge_base_id, 'prompt': prompt})
+                json=body)
         if response.status_code != 200:
             status = response.status_code if response.status_code in {400, 401, 403, 404, 409, 413, 422, 429, 503} else 503
             message = {401: '登录已失效，请重新登录', 403: '没有当前知识库或模型的使用权限',
@@ -215,6 +240,70 @@ def analysis_protocol(selected):
             ('模型选出的候选子集，未匹配不代表没有数据。' if selected else '当前授权完整目录。'))
 
 
+def validation_detail(error):
+    return {'message': str(error), 'code': 'judgment_validation', 'issues': error.issues[:32]}
+
+
+def repair_prompt(document, issues, catalog, text, selected):
+    feedback = {'issues': issues[:24], 'instruction': '只修正列明的协议或来源校验问题。已验证的规则保留原ID、原文依据及数值，不擅自删除或改写；无法核验的规则完整移入unresolved，不填猜测单位或数字。重新返回完整JSON协议，不返回补丁。'}
+    # Replaying a bounded prior draft helps the model repair exact fields. The
+    # full authorized catalog and original always retain precedence and scope.
+    if isinstance(document, dict):
+        encoded = json.dumps(document, ensure_ascii=False, separators=(',', ':'))
+        if len(encoded.encode()) <= 8192: feedback['previous_draft'] = document
+    return make_prompt(analysis_protocol(selected) + '\n上次结构化校验反馈（仅作修复依据，不是研究事实）：' +
+                       json.dumps(feedback, ensure_ascii=False, separators=(',', ':')), catalog, text)
+
+
+async def analyzed_completion(scope, body, before, candidates, selected):
+    document, first, issues = None, None, []
+    try:
+        document = await completion(scope, body.model_id, make_prompt(analysis_protocol(selected), candidates, body.text))
+        first = assess_draft(document, body.text, candidates, variety=settings.variety,
+            actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
+        issues = first.issues
+        if not any(item.get('severity') == 'error' for item in issues): return first, 0
+    except AnalysisError as error:
+        issues = error.issues
+    except HTTPException as error:
+        if error.status_code != 422 or '完整有效的配置' not in str(error.detail): raise
+        issues = [{'code': 'document_json', 'path': '/', 'message': '上次响应不是完整严格JSON对象；不可通过补括号或摘取片段恢复'}]
+    await fresh(scope, before)
+    try:
+        prompt = repair_prompt(document, issues, candidates, body.text, selected)
+    except HTTPException as error:
+        if error.status_code != 413 or first is None: raise
+        first.issues.append({'code': 'repair_capacity', 'path': '/', 'severity': 'warning',
+            'message': '完整原文、目录与修复反馈超出本次容量；仅保留已核验草稿，待确认规则未执行'})
+        return first, 0
+    try:
+        repaired = await completion(scope, body.model_id, prompt)
+    except HTTPException as error:
+        if first is None or error.status_code not in {422, 429, 503}:
+            raise
+        first.issues.append({'code': 'repair_unavailable', 'path': '/', 'severity': 'warning',
+            'message': '本次修复未返回可用结果；保留已核验的首份草稿，待确认规则未执行'})
+        return first, 1
+    try:
+        final = assess_draft(repaired, body.text, candidates, variety=settings.variety,
+            actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
+    except AnalysisError as error:
+        if first is None:
+            raise HTTPException(422, validation_detail(error)) from None
+        first.issues.append({'code': 'repair_invalid', 'path': '/', 'severity': 'warning',
+            'message': '修复响应未通过完整结构或来源校验，未采用；保留首份可核验草稿及待确认项'})
+        return first, 1
+    if first is not None:
+        for kind in ('thresholds', 'falsifiers'):
+            after = {rule['id']: rule for rule in final.document['judgment'].get(kind, [])}
+            if any(after.get(rule['id']) != rule or final.document['rule_quotes'].get(rule['id']) != first.document['rule_quotes'].get(rule['id'])
+                   for rule in first.document['judgment'].get(kind, [])):
+                first.issues.append({'code': 'repair_changed_verified_rule', 'path': '/judgment/' + kind,
+                    'severity': 'warning', 'message': '修复响应改动了已核验规则，未采用该响应；保留首份可核验草稿与全部待确认项'})
+                return first, 1
+    return final, 1
+
+
 async def fresh(scope, previous):
     verified = await resolve_workbench(scope.identity, scope.workbench_id, scope.authorization)
     if (scope_key(verified) != scope_key(scope) or
@@ -237,7 +326,7 @@ def serialize(row):
 @router.get('/manage')
 def manage():
     scope = scope_for_analysis()
-    with SessionLocal() as session:
+    with result_session(scope) as session:
         rows = session.scalars(scope_query(session, select(Judgment).where(Judgment.variety == settings.variety)
             .order_by(Judgment.version.desc()).limit(50), Judgment)).all()
         total = session.scalar(scope_query(session, select(func.count(Judgment.id))
@@ -249,8 +338,8 @@ def manage():
 
 @router.get('/versions/{version}')
 def version_detail(version: int):
-    scope_for_analysis()
-    with SessionLocal() as session:
+    scope = scope_for_analysis()
+    with result_session(scope) as session:
         row = session.scalar(scope_query(session, select(Judgment).where(Judgment.variety == settings.variety,
                                                                       Judgment.version == version), Judgment))
         if row is None: raise HTTPException(404, '研究逻辑版本不存在')
@@ -287,27 +376,32 @@ async def _generate_preview(request: Request):
         raise HTTPException(409, '研究逻辑已有新版本，请刷新后重新分析')
     candidates, selected = await choose_catalog(scope, body.model_id, before['catalog'], body.text)
     await fresh(scope, before)
-    document = await completion(scope, body.model_id, make_prompt(analysis_protocol(selected), candidates, body.text))
-    try:
-        analyzed = validate_analysis(document, body.text, candidates, variety=settings.variety,
-                                     actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
-    except AnalysisError as error:
-        raise HTTPException(422, str(error)) from None
+    assessment, repair_attempts = await analyzed_completion(scope, body, before, candidates, selected)
+    document, analyzed = assessment.document, assessment.result
     await fresh(scope, before)
     preview = {'document': document, 'text': body.text, 'source_name': body.source_name,
                'fact_version': before['fact_version'], 'base_version': before['base_version'],
-               'model_id': body.model_id, 'written_at': analyzed.payload.written_at.isoformat()}
+               'model_id': body.model_id, 'written_at': analyzed.payload.written_at.isoformat(),
+               'validation_issues': assessment.issues, 'repair_attempts': repair_attempts}
     token = previews.put(scope, preview)
     return {'draft_id': token, 'base_version': before['base_version'], 'markdown': dump_markdown(analyzed.payload),
             'diff': version_diff(before['base_payload'], analyzed.payload), 'unresolved': analyzed.unresolved,
             'bindings': [{'series_id': sid, 'unit': unit, 'name': next(row['name'] for row in candidates if row['id'] == sid)}
                          for sid, unit in analyzed.binding_units.items()],
             'catalog_total': len(before['catalog']), 'candidate_count': len(candidates),
-            'candidate_subset': selected, 'notice': '待确认草稿；已核对指标ID、单位及规则数字出处，因果含义与统计口径仍需人工确认。保存后不自动生效。'}
+            'candidate_subset': selected, 'validation_issues': assessment.issues, 'repair_attempts': repair_attempts,
+            'notice': '待确认草稿；仅保留通过逐项校验的量化规则，未通过项已列为待确认，不执行。完整原文保留；保存后不自动生效。'}
 
 
 def persist(scope, preview):
-    with SessionLocal() as session:
+    metadata = None
+    if getattr(scope, 'scope_version', 1) == 2:
+        from tin.integration.kb_facts import catalog_snapshot
+        metadata = catalog_snapshot(scope)
+    with result_session(scope) as session:
+        if metadata is not None:
+            session.info.update(knowledge_facts=True, knowledge_facts_version=metadata['version'],
+                knowledge_facts_catalog=metadata['catalog'], knowledge_facts_datasets=metadata['datasets'])
         if session.info['knowledge_facts_version'] != preview['fact_version']:
             raise HTTPException(409, '知识库来源已改变，请重新分析')
         catalog = [{'id': item['series_id'], 'unit': item.get('unit')} for item in session.info['knowledge_facts_catalog'].values()]
@@ -323,7 +417,8 @@ def persist(scope, preview):
                     'source_name': preview['source_name'], 'fact_version': preview['fact_version'],
                     'model_id': preview['model_id'], 'prompt_version': PROMPT_VERSION,
                     'binding_units': result.binding_units, 'rule_quotes': result.rule_quotes,
-                    'unresolved': result.unresolved}))
+                    'unresolved': result.unresolved, 'validation_issues': preview.get('validation_issues', []),
+                    'repair_attempts': preview.get('repair_attempts', 0)}))
             session.commit()
             return {'version': row.version, 'status': row.status, 'notice': '已保存为新草稿，上一版本保留。'}
         except (JudgmentError, IntegrityError, OperationalError):

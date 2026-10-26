@@ -23,14 +23,15 @@ const find = (el: Host, predicate: (el: Host) => boolean): Host[] => [...(predic
 const text = (el: Host): string => el.tag === '#comment' ? '' : el.text + el.children.map(text).join('')
 const flush = async () => { for (let i = 0; i < 12; i++) { await Promise.resolve(); await vue.nextTick() } }
 const deferred = () => { let resolve!: (value: any) => void; const promise = new Promise<any>(r => { resolve = r }); return { promise, resolve } }
-function fixture(options: { kind?: 'knowledge-base' | 'research-workbench'; legacy?: boolean; denied?: boolean; pending?: boolean; approved?: boolean; sourceModules?: string[]; manageSource?: boolean; profiles?: profileHelpers.RestrictedViewProfile[]; requested?: boolean; sourceSave?: () => Promise<any>; save?: () => Promise<any>; read?: () => Promise<any> } = {}) {
+function fixture(options: { kind?: 'knowledge-base' | 'research-workbench'; v2?: boolean; legacy?: boolean; denied?: boolean; pending?: boolean; approved?: boolean; sourceModules?: string[]; manageSource?: boolean; profiles?: profileHelpers.RestrictedViewProfile[]; requested?: boolean; sourceSave?: () => Promise<any>; save?: () => Promise<any>; read?: () => Promise<any> } = {}) {
   const auth = vue.reactive({ selectedTenantId: 7, tenant: { id: 7 }, user: { id: 'owner', username: '主人' }, token: 'fixture-token' })
   const props = vue.reactive({ visible: true, kind: options.kind || 'knowledge-base', resourceId: 'resource', resourceName: '资料' })
   const calls: any[] = [], emitted: any[] = [], events: string[] = [], messages: string[] = []
   const modules: Record<string, any> = {
     vue: { ...vue, vModelSelect: {}, vModelText: {}, vModelCheckbox: { mounted(el: Host, binding: any) { el.props.modelValue = binding.value }, updated(el: Host, binding: any) { el.props.modelValue = binding.value } } }, 'tdesign-vue-next': { MessagePlugin: { success: (value: string) => messages.push(value) } },
     '@/stores/auth': { useAuthStore: () => auth }, '@/utils/resourcePermissions': policyHelpers,
-    '@/utils/sourceSharingModules': sourceHelpers, '@/utils/restrictedViewProfiles': profileHelpers, '@/utils/uuid': {createRandomUUID:()=>`profile-${calls.length}`}, '@/api/workspaces': {getResearchWorkbench:async()=>({success:true,data:{id:'resource',knowledge_base_id:'kb',can_read_source:true,can_edit:true}})}, '@/api/isolatedResearch': {createIsolatedResearchClient:()=>({post:async(...args:any[])=>{calls.push(['publish',...args]);return {published:true}}})},
+    '@/utils/sourceSharingModules': sourceHelpers, '@/utils/restrictedViewProfiles': profileHelpers, '@/utils/uuid': {createRandomUUID:()=>`profile-${calls.length}`}, '@/api/workspaces': {getResearchWorkbench:async()=>({success:true,data:{id:'resource',knowledge_base_id:'kb',can_read_source:true,can_edit:true,...(options.v2 ? {scope_version:2,sources_revision:3} : {})}}),updateResearchWorkbenchSourceSharing:async(...args:any[])=>{calls.push(['approve-binding',...JSON.parse(JSON.stringify(args))]);return {success:true}}}, '@/api/isolatedResearch': {createIsolatedResearchClient:()=>({post:async(...args:any[])=>{calls.push(['publish',...args]);return {published:true}}})},
+    './WorkbenchSourcePermissions.vue': { default: vue.defineComponent({ setup: () => () => vue.h('source-permissions') }) },
     '@/views/workspaces/workspaceForm': { workspaceErrorMessage: (value: any) => value.message || 'error' },
     '@/components/settings/SettingDrawer.vue': { default: vue.defineComponent({ setup: (_p, { attrs, slots }) => () => vue.h('drawer', attrs, slots.default?.()) }) },
     '@/api/tenant/members': { listMembers: async () => ({ success: true, data: { total: 3, members: [
@@ -197,4 +198,18 @@ test('saving member permissions cannot silently reapprove previously revoked sou
  assert.equal(f.calls.filter(call=>call[0]==='publish').length,0)
  assert.equal(f.calls[1][3].source_sharing_approved,false)
  assert.deepEqual(f.calls[1][3].restricted_view_profiles,[])
+})
+
+test('v2 audience profiles never write a blanket source approval', async t => {
+  const groups: profileHelpers.RestrictedViewProfile[] = [{ id: 'researchers', name: '研究组', modules: ['diagram'], all_members: true, member_ids: [] }]
+  const f = fixture({ kind: 'research-workbench', v2: true, manageSource: true, approved: false, profiles: groups }); t.after(f.close)
+  await flush()
+  const toggle = find(f.root, el => el.tag === 'input' && el.props['aria-label'] === '启用受限视角')[0]!
+  assert.equal(toggle.props.modelValue, true)
+  assert.equal(find(f.root, el => el.tag === 'source-permissions').length, 1)
+  f.drawer().props.onConfirm(); await flush()
+  const request = f.calls.find(call => call[0] === 'put')
+  assert.deepEqual(request[3].restricted_view_profiles, groups)
+  assert.equal('source_sharing_approved' in request[3], false)
+  assert.equal(f.calls.some(call => call[0] === 'approve-source'), false)
 })

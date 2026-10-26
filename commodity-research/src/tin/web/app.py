@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import logging
+from contextlib import contextmanager
 from datetime import date, datetime, time
 from datetime import date as CalendarDate
 from pathlib import Path
@@ -66,6 +67,51 @@ templates = Jinja2Templates(directory=HERE / "templates")
 V = settings.variety
 # 指标未登记默认发布时刻时的兜底值（收盘截点）
 FALLBACK_ENTRY_TIME = time(15, 0)
+
+
+@contextmanager
+def _page_session(module, *, day=None, series_ids=None, template_id=None, points_per_series=None):
+    scope = current_workbench.get()
+    if scope is None or scope.scope_version != 2:
+        with SessionLocal() as session:
+            yield session
+        return
+    from tin.integration.kb_facts import page_read_scope
+    try:
+        cutoff = CalendarDate.fromisoformat(day) if isinstance(day, str) else day
+    except ValueError:
+        raise HTTPException(400, '日期格式应为 YYYY-MM-DD') from None
+    with page_read_scope(module, series_ids=series_ids, day=cutoff,
+                         template_id=template_id, points_per_series=points_per_series):
+        with SessionLocal() as session:
+            yield session
+
+
+def _layout_series_ids(layout):
+    if not isinstance(layout, dict) or not isinstance(layout.get('nodes', []), list):
+        raise HTTPException(400, '产业图结构无效')
+    identifiers = []
+    for node in layout.get('nodes', []):
+        if not isinstance(node, dict):
+            raise HTTPException(400, '产业图节点无效')
+        binding = node.get('binding') or {}
+        if not isinstance(binding, dict):
+            raise HTTPException(400, '产业图绑定无效')
+        if binding.get('kind') == 'series':
+            identifier = binding.get('series_id')
+            if not isinstance(identifier, str) or not identifier or len(identifier) > 128:
+                raise HTTPException(400, '产业图指标编号无效')
+            scope = current_workbench.get()
+            if scope is not None and scope.scope_version == 2:
+                from tin.integration.page_facts import SERIES, LEGACY_ID
+                if not SERIES.fullmatch(identifier):
+                    if identifier.startswith('kb-') or not LEGACY_ID.fullmatch(identifier):
+                        raise HTTPException(422, '产业图指标编号格式无效')
+                    # Retained legacy bindings remain visible as unavailable;
+                    # they cannot enter the current knowledge-facts query.
+                    continue
+            identifiers.append(identifier)
+    return list(dict.fromkeys(identifiers))
 
 
 def _num(value, unit: str = "", signed: bool = False) -> str:
@@ -190,7 +236,7 @@ app.include_router(diagram_generation_router)
 from tin.web.judgment_generation import router as judgment_generation_router
 app.include_router(judgment_generation_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
-app.include_router(build_market_router(lambda: SessionLocal(), templates,
+app.include_router(build_market_router(lambda: _page_session('market'), templates,
                                        lambda session, day: _home_date(session, day)))
 
 
@@ -205,7 +251,7 @@ def _stop_workspace_refresh():
     from tin.refresh.scheduler import stop
     stop()
 
-app.include_router(build_strategy_router(lambda: SessionLocal(), templates,
+app.include_router(build_strategy_router(lambda: _page_session('strategies'), templates,
                                          lambda *args, **kwargs: _shell(*args, **kwargs)))
 
 
@@ -251,6 +297,12 @@ def _board_date(s, q: str | None) -> date:
 
 def _neighbour_dates(s, d: date) -> tuple[str | None, str | None]:
     if s.info.get("workbench_id"):
+        calendar = s.info.get('knowledge_facts_calendar')
+        if isinstance(calendar, dict):
+            if d.isoformat() == calendar.get('max_date'):
+                return calendar.get('latest_previous_date'), None
+            if d.isoformat() == calendar.get('as_of'):
+                return calendar.get('previous_date'), calendar.get('next_date')
         from tin.compute.engine import day_end
         previous = observation_boundary(s, before=datetime.combine(d, time.min, SHANGHAI))
         following = observation_boundary(s, at_or_after=day_end(d), latest=False)
@@ -286,10 +338,14 @@ def _shell(s, nav: str, d: date | None = None, **extra) -> dict:
         ctx["ticker"] = ticker(s, V, shown)
     if d is not None:
         ctx["prev_date"], ctx["next_date"] = _neighbour_dates(s, d)
-        ctx["min_date"] = s.scalar(select(TradingDay.trade_date)
-                                   .order_by(TradingDay.trade_date).limit(1))
-        ctx["max_date"] = s.scalar(select(TradingDay.trade_date)
-                                   .order_by(TradingDay.trade_date.desc()).limit(1))
+        calendar = s.info.get('knowledge_facts_calendar')
+        if isinstance(calendar, dict):
+            ctx['min_date'], ctx['max_date'] = calendar.get('min_date'), calendar.get('max_date')
+        else:
+            ctx["min_date"] = s.scalar(select(TradingDay.trade_date)
+                                       .order_by(TradingDay.trade_date).limit(1))
+            ctx["max_date"] = s.scalar(select(TradingDay.trade_date)
+                                       .order_by(TradingDay.trade_date.desc()).limit(1))
     return {**ctx, **extra}
 
 
@@ -306,7 +362,7 @@ def _home_date(s, q: str | None) -> date | None:
 @app.get("/")
 def home_page(request: Request, date: str | None = None, err: str | None = None):
     """首屏工作台（F9）：待办 → 今日简报 → 昨夜变化 → 全景数据墙（默认折叠）。"""
-    with SessionLocal() as s:
+    with _page_session('home', day=date) as s:
         d = _home_date(s, date)
         researcher = seed_researcher(s)
         brief = brief_store.current(s, researcher.id, V, d) if d is not None else None
@@ -431,7 +487,7 @@ def healthz():
 
 @app.get("/sn")
 def variety_page(request: Request, date: str | None = None, err: str | None = None):
-    with SessionLocal() as s:
+    with _page_session('market', day=date) as s:
         d = _home_date(s, date)
         today = datetime.now(SHANGHAI).date()
         cards = saved_core_cards(s, d, core_cards(s, V, d) if d is not None else [])
@@ -465,7 +521,7 @@ def judgment_page(request: Request, err: str | None = None):
 
 
 def _judgment_response(request: Request, *, err=None, logic_input=""):
-    with SessionLocal() as s:
+    with _page_session('judgments', day=request.query_params.get('date')) as s:
         d = _home_date(s, request.query_params.get('date'))
         today = datetime.now(SHANGHAI).date()
         versions = s.execute(scope_query(s, select(Judgment.version, Judgment.status, Judgment.author, Judgment.written_at, Judgment.review_due, Judgment.created_at).where(Judgment.variety == V).order_by(Judgment.version.desc()).limit(50), Judgment)).all()
@@ -536,27 +592,44 @@ def entry_submit(series_id: str = Form(...), value: float = Form(...), as_of: st
 
 @app.get("/sn/indicators")
 def indicators_page(request: Request, date: str | None = None):
-    with SessionLocal() as s:
-        rows = indicator_data.catalog(s)
+    with _page_session('indicators', day=date) as s:
+        scope = current_workbench.get()
+        remote = scope is not None and scope.scope_version == 2
+        directory = None
+        if remote:
+            from tin.web.catalog import indicator_page
+            try:
+                offset = int(request.query_params.get('offset', '0'))
+            except ValueError:
+                raise HTTPException(400, '目录页码无效') from None
+            kind = request.query_params.get('scope', 'all')
+            kind = kind if kind in {'all', 'macro', 'industry'} else 'all'
+            directory = indicator_page(scope, offset=offset, search=request.query_params.get('q', ''), kind=kind)
+            rows = directory['indicators']
+        else:
+            rows = indicator_data.catalog(s)
         day = _home_date(s, date)
         groups = [{"name": name, "rows": [r for r in rows if r["category"] == name]}
                   for name in dict.fromkeys(r["category"] for r in rows)]
         checks = diagram_api.crosscheck(s, V, day) if day else []
         return templates.TemplateResponse(request, "indicators.html", _shell(
             s, "indicators", day, rows=rows, groups=groups, dimensions=DIMENSIONS, checks=checks,
+            catalog_remote=remote, catalog_offset=directory['offset'] if directory else 0,
+            catalog_total=directory['total'] if directory else len(rows),
+            catalog_next=directory['next_offset'] if directory else None,
             sources={"rows": [], "counts": {}} if s.info.get("workbench_id") else source_catalog()))
 
 
 @app.get("/sn/indicators/{series_id}")
-def indicator_page(request: Request, series_id: str):
+def indicator_page(request: Request, series_id: str, date: str | None = None):
     """单指标页。
 
     指标列表回答不了研究员真正的问题——444 行里每一行看起来都一样重要。这一页要回答
     三件事：这个数现在多少且怎么来的（口径与凭证）、被谁在用（判断与产业图）、
     历史上有没有被改过（修订）。**「被谁在用」是分辨要不要维护它的唯一依据。**
     """
-    with SessionLocal() as s:
-        day = latest_trade_date(s)
+    with _page_session('indicators', day=date, series_ids=[series_id], points_per_series=120) as s:
+        day = _home_date(s, date)
         try:
             d = diagram_api.detail(s, series_id, day, limit=120)
         except diagram_api.DiagramError as e:
@@ -567,22 +640,37 @@ def indicator_page(request: Request, series_id: str):
 
 @app.get("/api/sn/indicators/{series_id}/usage")
 def indicator_usage(series_id: str):
-    with SessionLocal() as s:
+    with _page_session('indicators', series_ids=[series_id]) as s:
         return diagram_api.usage(s, series_id, V)
 
 
 @app.get("/api/sn/indicators/catalog")
-def indicator_catalog(scope: str = "all"):
-    if scope not in {"all", "macro"}:
+def indicator_catalog(scope: str = "all", search: str = Query('', max_length=200),
+                      offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=200),
+                      series_id: list[str] | None = Query(None, max_length=256), date: str | None = None):
+    if scope not in {"all", "macro", "industry"}:
         raise HTTPException(400, "无效指标目录范围")
+    if date is not None:
+        try:
+            date = CalendarDate.fromisoformat(date).isoformat()
+        except ValueError:
+            raise HTTPException(400, '日期格式应为 YYYY-MM-DD') from None
+    workbench = current_workbench.get()
+    if workbench is not None and workbench.scope_version == 2:
+        from tin.web.catalog import indicator_page
+        page = indicator_page(workbench, offset=offset, limit=limit, search=search, kind=scope, identifiers=series_id)
+        render = {'groups': page['groups'], 'rows': page['indicators'], 'restricted_view': False, 'd': date, 'catalog_offset': offset}
+        return {**{key: value for key, value in page.items() if key not in {'series', 'groups', 'datasets'}},
+                'html': templates.get_template('_indicator_catalog_groups.html').render(render),
+                'nav_html': templates.get_template('_indicator_catalog_links.html').render(render)}
     with SessionLocal() as session:
         rows = indicator_data.catalog(session)
-        return {"indicators": [row for row in rows if scope == "all" or row["macro"]]}
+        return {"indicators": [row for row in rows if scope == "all" or row["macro"] == (scope == 'macro')]}
 
 
 @app.get("/sn/diagram")
 def diagram_page(request: Request, template: int | None = None):
-    with SessionLocal() as s:
+    with _page_session('diagram', template_id=template) as s:
         # 这里原来无条件返回默认布局，`?template=` 被整个忽略——下拉框选哪张都回到同一张，
         # 新建的布局也永远打不开。切换布局是这个页面最基本的操作之一。
         default = diagram_api.ensure_default(s, V)
@@ -614,7 +702,7 @@ def _diagram_query_date(session, requested):
 
 @app.get("/api/sn/diagram/values")
 def diagram_values(template_id: int | None = None, date: str | None = None):
-    with SessionLocal() as s:
+    with _page_session('diagram', day=date, template_id=template_id) as s:
         rows = diagram_api.list_templates(s, V)
         tpl = next((t for t in rows if t["id"] == template_id), None) or (rows[0] if rows else None)
         if tpl is None:
@@ -633,7 +721,7 @@ def diagram_values_live(body: dict = Body(...)):
     于是新节点永远查不到值，看上去就是「绑了但不显示」。编辑态必须走这个入口。
     """
     layout = body.get("layout") or {}
-    with SessionLocal() as s:
+    with _page_session('diagram', day=body.get('date'), series_ids=_layout_series_ids(layout), points_per_series=24) as s:
         day, as_of = _diagram_query_date(s, body.get("date"))
         roles_meta = diagram_api.judgment_roles(s, V)[1]
         return {"as_of": as_of, "judgment": roles_meta,
@@ -642,7 +730,7 @@ def diagram_values_live(body: dict = Body(...)):
 
 @app.post("/api/sn/diagram/templates")
 def diagram_save(body: dict = Body(...)):
-    with SessionLocal() as s:
+    with _page_session('diagram', series_ids=_layout_series_ids(body.get('layout') or {})) as s:
         try:
             saved = diagram_api.save_template(s, V, body)
         except diagram_api.DiagramError as e:
@@ -653,7 +741,7 @@ def diagram_save(body: dict = Body(...)):
 @app.get("/api/sn/diagram/markdown")
 def diagram_to_markdown(template_id: int | None = None):
     """导出为 Markdown 大纲。绑定写成注释，改完再导回无损。"""
-    with SessionLocal() as s:
+    with _page_session('diagram', template_id=template_id) as s:
         rows = diagram_api.list_templates(s, V)
         tpl = next((t for t in rows if t["id"] == template_id), None) or (rows[0] if rows else None)
         if tpl is None:
@@ -689,14 +777,19 @@ def diagram_from_markdown(body: dict = Body(...)):
         layout = diagram_md.parse(str(body.get("markdown", "")))
     except diagram_md.MarkdownError as e:
         raise HTTPException(400, str(e)) from None
-    with SessionLocal() as s:
+    with _page_session('diagram', series_ids=_layout_series_ids(layout)) as s:
         if 'fact_version' in body:
-            if body['fact_version'] != s.info.get('knowledge_facts_version'):
-                raise HTTPException(409,'知识库来源已改变，请重新生成或核对产业图配置')
-            from tin.web.diagram_generation import validate_draft
-            validate_draft(body.get('markdown'),[{'id':spec['series_id'],
-                'name':spec.get('metric') or spec.get('name'),'unit':spec.get('unit')}
-                for spec in s.info.get('knowledge_facts_catalog',{}).values()])
+            scope = current_workbench.get()
+            if scope is not None and scope.scope_version == 2:
+                from tin.web.diagram_generation import validate_generated_configuration
+                validate_generated_configuration(body.get('markdown'), body['fact_version'])
+            else:
+                if body['fact_version'] != s.info.get('knowledge_facts_version'):
+                    raise HTTPException(409,'知识库来源已改变，请重新生成或核对产业图配置')
+                from tin.web.diagram_generation import validate_draft
+                validate_draft(body.get('markdown'),[{'id':spec['series_id'],
+                    'name':spec.get('metric') or spec.get('name'),'unit':spec.get('unit')}
+                    for spec in s.info.get('knowledge_facts_catalog',{}).values()])
         # `into` 表示改写这一张，而不是新建。研究员在文本里改结构比拖方框快，
         # 但改完只能「导入为新布局」的话，每改一次就多一张图，改的还不是手里这张。
         into = body.get("into")
@@ -720,13 +813,13 @@ def diagram_from_markdown(body: dict = Body(...)):
 
 @app.get("/api/sn/diagram/crosscheck")
 def diagram_crosscheck(date: str | None = None):
-    with SessionLocal() as s:
+    with _page_session('diagram', day=date) as s:
         return {"checks": diagram_api.crosscheck(s, V, _board_date(s, date))}
 
 
 @app.get("/api/sn/diagram/detail")
 def diagram_detail(series_id: str, date: str | None = None):
-    with SessionLocal() as s:
+    with _page_session('diagram', day=date, series_ids=[series_id]) as s:
         try:
             return diagram_api.detail(s, series_id, _board_date(s, date))
         except diagram_api.DiagramError as e:
@@ -736,6 +829,15 @@ def diagram_detail(series_id: str, date: str | None = None):
 @app.get("/api/sn/diagram/suggest")
 def diagram_suggest(label: str, exclude: str | None = None):
     """给某个节点推荐候选指标。给不出就明说，不拿"有数据的热门指标"凑数。"""
+    scope = current_workbench.get()
+    if scope is not None and scope.scope_version == 2:
+        from tin.integration.kb_facts import catalog_page
+        page = catalog_page(scope, limit=12, search=label)
+        bound = set((exclude or '').split(',')) - {''}
+        return {'suggestions': [{'series_id': spec['series_id'], 'name': spec.get('metric') or spec.get('name'),
+            'unit': spec.get('unit'), 'frequency': spec.get('frequency') or '未注明', 'points': None,
+            'why': '目录字面匹配，绑定前请核对口径', 'already_bound': spec['series_id'] in bound}
+            for spec in page['series']]}
     with SessionLocal() as s:
         return {"suggestions": diagram_api.suggest(s, V, label,
                                                    bound=set((exclude or "").split(",")) - {""})}
@@ -743,7 +845,7 @@ def diagram_suggest(label: str, exclude: str | None = None):
 
 @app.delete("/api/sn/diagram/templates/{template_id}")
 def diagram_delete(template_id: int):
-    with SessionLocal() as s:
+    with _page_session('diagram', template_id=template_id) as s:
         try:
             return diagram_api.delete_template(s, V, template_id)
         except diagram_api.DiagramError as e:
@@ -753,7 +855,7 @@ def diagram_delete(template_id: int):
 @app.get("/sn/reports")
 def reports_page(request: Request, date: str | None = None):
     from tin.web.report_view import present_snapshot
-    with SessionLocal() as s:
+    with _page_session('reports', day=date) as s:
         available_days = ([value.isoformat() for value in sorted({value.astimezone(SHANGHAI).date()
                           for value in s.scalars(select(Observation.as_of).where(Observation.status == "正常"))}, reverse=True)[:40]]
                           if s.info.get("workbench_id") else s.scalars(select(TradingDay.trade_date).order_by(TradingDay.trade_date.desc()).limit(40)))
@@ -786,7 +888,7 @@ def report_file(day: str):
     except ValueError:
         raise HTTPException(400, "日期格式应为 YYYY-MM-DD") from None
     if settings.weknora_api_url:
-        with SessionLocal() as s:
+        with _page_session('reports', day=day) as s:
             return JSONResponse(snapshot(s, V, _board_date(s, day)), headers={
                 "Content-Disposition": f'attachment; filename="{V}_{day}.json"'})
     path = settings.exports_dir / V / f"{day}.json"
@@ -797,7 +899,7 @@ def report_file(day: str):
 
 @app.get("/sn/contracts.csv")
 def contracts_csv(date: str | None = None):
-    with SessionLocal() as s:
+    with _page_session('market', day=date) as s:
         from tin.web.market_contracts import configured_contract_curve
         if s.info.get('workbench_id'):
             curve = configured_contract_curve(s, _board_date(s, date) if date else None)
@@ -978,14 +1080,14 @@ def export_excel(body: dict = Body(...)):
 
 @app.get("/api/sn/snapshot")
 def api_snapshot(date: str | None = None):
-    with SessionLocal() as s:
+    with _page_session('reports', day=date) as s:
         return JSONResponse(snapshot(s, V, _board_date(s, date)))
 
 
 @app.get("/api/sn/series/{series_id}/history")
 def api_series_history(series_id: str, date: str | None = None,
                        limit: int = Query(900, ge=2, le=2000)):
-    with SessionLocal() as s:
+    with _page_session('indicators', day=date, series_ids=[series_id], points_per_series=limit) as s:
         day = _home_date(s, date) or datetime.now(SHANGHAI).date()
         payload = indicator_data.history(s, series_id, day, limit)
         if payload is None:
@@ -996,7 +1098,7 @@ def api_series_history(series_id: str, date: str | None = None,
 @app.get("/api/sn/indicators/previews")
 def api_indicator_previews(series_id: list[str] = Query(..., min_length=1, max_length=40),
                            date: str | None = None):
-    with SessionLocal() as s:
+    with _page_session('indicators', day=date, series_ids=series_id, points_per_series=180) as s:
         day = _home_date(s, date)
         try:
             cards = indicator_data.previews(s, series_id, day or datetime.now(SHANGHAI).date())
@@ -1011,7 +1113,7 @@ def api_indicator_compare(series_id: list[str] = Query(..., min_length=2, max_le
                           date: str | None = None):
     if len(set(series_id)) != len(series_id):
         raise HTTPException(422, "请选择不同的指标")
-    with SessionLocal() as s:
+    with _page_session('indicators', day=date, series_ids=series_id, points_per_series=2000) as s:
         day = _home_date(s, date) or datetime.now(SHANGHAI).date()
         try:
             return indicator_data.compare(s, series_id, day)

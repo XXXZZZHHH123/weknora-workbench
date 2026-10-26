@@ -13,7 +13,7 @@
       {% if not restricted_view %}{% for key,label in [('all','全部'),('draft','草稿'),('watching','等待入场'),('open','跟踪中'),('closed','已退出'),('cancelled','已作废')] %}
       <a class="{{ 'selected' if selected_status == key else '' }}" href="{{ research_prefix() }}/sn/strategies?status={{ key }}">{{ label }}</a>{% endfor %}{% else %}<span>已保存策略 · 只读</span>{% endif %}
     </div>
-    {% if not restricted_view %}<button class="button-primary" id="generate-strategies" {% if research_workbench() %}disabled title="先准备本工作台来源并确认可用模型额度"{% endif %}>基于研究生成草稿</button>{% endif %}</div>
+    {% if not restricted_view %}<div class="strategy-generation-controls">{% if platform_models %}<select id="strategy-model" aria-label="策略分析模型" disabled><option value="">正在读取模型…</option></select>{% endif %}<button class="button-primary" id="generate-strategies" {% if platform_models %}disabled data-platform-model="true"{% endif %}>基于研究生成草稿</button></div>{% endif %}</div>
     <div id="strategy-notice" class="strategy-notice" role="status"></div>
     <div class="strategy-list">
     {% for s in strategies %}

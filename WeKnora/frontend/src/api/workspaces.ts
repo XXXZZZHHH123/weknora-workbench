@@ -24,6 +24,9 @@ export interface ResearchWorkbenchTemplate {
 }
 
 export interface ResearchWorkbench {
+  scope_version?: 2
+  sources_revision?: number
+  sources?: ResearchWorkbenchSource[]
   is_pinned?: boolean
   pinned_at?: string | null
   owner_id?: string
@@ -60,9 +63,36 @@ export interface ProjectSession {
   updated_at?: string
 }
 
-type Envelope<T> = { success: boolean; data: T }
+type Envelope<T> = { success: boolean; data: T; message?: string }
 type ProjectInput = { name: string; description?: string; knowledge_base_id?: string }
-type WorkbenchInput = { name: string; description?: string; knowledge_base_id: string }
+export type WorkbenchSourceInput = { source_type: 'knowledge_base' | 'central_dataset'; source_id: string }
+export interface ResearchWorkbenchSource extends WorkbenchSourceInput {
+  id: string
+  name?: string
+  knowledge_base_id?: string
+  tenant_id?: number
+  status: string
+  can_read: boolean
+  can_manage_source: boolean
+  can_edit?: boolean
+  delegated: boolean
+  view_modules: SourceSharingModule[]
+  sharing_approved?: boolean
+  sharing_modules?: SourceSharingModule[]
+  sharing_requested?: boolean
+}
+export interface CentralDataset {
+  id: string
+  kind: string
+  name: string
+  knowledge_base_id: string
+  created_at?: string
+}
+export interface WorkbenchSourcesView {
+  sources_revision: number
+  sources: ResearchWorkbenchSource[]
+}
+type WorkbenchInput = { name: string; description?: string; knowledge_base_id?: string; sources?: WorkbenchSourceInput[] }
 type WorkbenchCreateInput = WorkbenchInput & { template_id?: ResearchWorkbenchTemplateId; template_version?: number; idempotency_key: string }
 export type ResearchWorkbenchOnboardingInput = {
   status?: ResearchWorkbenchOnboarding['status']
@@ -83,6 +113,24 @@ export function getDefaultKnowledgeBase(): Promise<Envelope<DefaultKnowledgeBase
 }
 export function initializeDefaultKnowledgeBase(): Promise<Envelope<DefaultKnowledgeBaseBinding>> {
   return post(`${base}/default-knowledge-base`, {})
+}
+export function listCentralDatasets(): Promise<Envelope<CentralDataset[]>> {
+  return get(`${base}/central-datasets`)
+}
+export function initializeCentralDataset(): Promise<Envelope<CentralDataset>> {
+  return post(`${base}/central-datasets/default`, {})
+}
+export function getResearchWorkbenchSources(workbenchId: string): Promise<Envelope<WorkbenchSourcesView>> {
+  return get(`${base}/research/${id(workbenchId)}/sources`)
+}
+export function updateResearchWorkbenchSources(workbenchId: string, expectedRevision: number, sources: WorkbenchSourceInput[]): Promise<Envelope<WorkbenchSourcesView>> {
+  return put(`${base}/research/${id(workbenchId)}/sources`, { expected_revision: expectedRevision, sources })
+}
+export function updateResearchWorkbenchSourceSharing(workbenchId: string, bindingId: string, approved: boolean, modules: SourceSharingModule[]): Promise<Envelope<{ approved: boolean; source_sharing_modules: SourceSharingModule[]; can_manage_source: boolean }>> {
+  return put(`${base}/research/${id(workbenchId)}/sources/${id(bindingId)}/sharing`, { approved, modules })
+}
+export function requestResearchWorkbenchSourceSharing(workbenchId: string, bindingId: string): Promise<Envelope<{ requested: boolean }>> {
+  return post(`${base}/research/${id(workbenchId)}/sources/${id(bindingId)}/sharing/request`, {})
 }
 
 export function listAssistantProjects(): Promise<Envelope<AssistantProject[]>> {

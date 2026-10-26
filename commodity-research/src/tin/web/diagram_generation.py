@@ -11,7 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from tin.config import settings
 from tin.db import SessionLocal
 from tin.export import diagram_md
-from tin.integration.workbench_scope import current_workbench, go_request, require_shared_write
+from tin.integration.workbench_scope import current_workbench, go_request, require_shared_write, resolve_workbench, source_scope_for_binding
 from tin.web.diagram_draft import compile_graph
 from tin.web.workbench_sources import source_content
 
@@ -48,17 +48,48 @@ def scope_for_generation():
     if scope is None or not scope.authorization:
         raise HTTPException(409,'请从已绑定知识库的研究工作台打开产业图助手')
     require_shared_write(scope)
+    if scope.restricted or scope.metadata.get('can_read_source') is False:
+        raise HTTPException(403, '受限视角仅可读取已授权成果，不能调用产业图生成')
     return scope
 
 
-def catalog_snapshot():
+def catalog_snapshot(scope=None):
+    scope = scope or current_workbench.get()
+    if getattr(scope, 'scope_version', 1) == 2:
+        from tin.integration.kb_facts import catalog_snapshot as source_catalog_snapshot
+        metadata = source_catalog_snapshot(scope)
+        return metadata['version'], catalog_fields(metadata['catalog'])
     with SessionLocal() as session:
-        return session.info['knowledge_facts_version'], [
-            {'id':spec['series_id'],'name':spec.get('metric') or spec.get('name'),
+        return session.info['knowledge_facts_version'], catalog_fields(session.info['knowledge_facts_catalog'])
+
+
+def catalog_fields(catalog):
+    return [{'id':spec['series_id'],'name':spec.get('metric') or spec.get('name'),
              'unit':spec.get('unit'),'frequency':spec.get('frequency'),
              'sheet':spec.get('sheet'),'dimensions':spec.get('dimensions'),
              'source_file':spec.get('source_file'), 'knowledge_base_id':spec.get('knowledge_base_id'),
-             'source_kind':spec.get('source_kind')} for spec in session.info['knowledge_facts_catalog'].values()]
+             'source_kind':spec.get('source_kind')} for spec in catalog.values()]
+
+
+async def verify_generation_scope(scope, expected_version):
+    if getattr(scope, 'scope_version', 1) == 2:
+        from tin.web.judgment_generation import scope_key
+        fresh = await resolve_workbench(scope.identity, scope.workbench_id, scope.authorization)
+        if scope_key(fresh) != scope_key(scope):
+            raise HTTPException(409, '工作台数据来源或授权已改变，请重新生成')
+        version, _ = await run_in_threadpool(catalog_snapshot, fresh)
+    else:
+        version, _ = await run_in_threadpool(catalog_snapshot)
+    if version != expected_version:
+        raise HTTPException(409, '生成期间知识库来源已改变，请重新生成')
+
+
+def validate_generated_configuration(markdown, expected_version):
+    """Recheck the full catalog marker, independent of a page's fact window."""
+    version, catalog = catalog_snapshot()
+    if expected_version != version:
+        raise HTTPException(409, '知识库来源已改变，请重新生成或核对产业图配置')
+    return validate_draft(markdown, catalog)
 
 
 def catalog_json(fields):
@@ -185,12 +216,15 @@ def native_failure_message(error,status):
 
 
 async def completion(scope,model_id,prompt,image=None):
+    body = {'model_id':model_id,'knowledge_base_id':scope.knowledge_base_id,'prompt':prompt,'image':image or ''}
+    if getattr(scope, 'scope_version', 1) == 2:
+        body['sources_revision'] = scope.sources_revision
     try:
         async with httpx.AsyncClient(timeout=125,follow_redirects=False,trust_env=False) as client:
             response = await client.post(settings.weknora_api_url.rstrip('/')+'/api/v1/workspaces/research/'
                 +quote(scope.workbench_id,safe='')+'/diagram/generate',
                 headers={'Authorization':scope.authorization,'X-Tenant-ID':str(scope.identity.tenant_id)},
-                json={'model_id':model_id,'knowledge_base_id':scope.knowledge_base_id,'prompt':prompt,'image':image or ''})
+                json=body)
         if response.status_code in {400,401,403,404,409,413,422,429,503}:
             message = {
                 400:'生成参数无效，请核对模型、资料格式或重新打开当前工作台',
@@ -275,6 +309,35 @@ async def models():
 @router.get('/sources')
 async def sources():
     scope = scope_for_generation()
+    if getattr(scope, 'scope_version', 1) == 2:
+        result, seen = [], set()
+        allowed = {'txt','md','markdown','json','xml','csv','tsv','png','jpg','jpeg','webp','gif'}
+        for source in scope.sources:
+            if source['delegated']:
+                continue
+            page, loaded, total = 1, 0, None
+            while total is None or loaded < total:
+                document = await go_request(scope, '/api/v1/knowledge-bases/' + quote(source['knowledge_base_id'], safe='') + '/knowledge',
+                    params={'page': page, 'page_size': 200})
+                rows = document.get('data')
+                expected = document.get('total')
+                if (not isinstance(rows, list) or type(expected) is not int or expected < 0 or expected > 10000
+                        or total is not None and total != expected or loaded + len(rows) > expected or not rows and loaded < expected):
+                    raise HTTPException(503, '当前原件列表不完整，请从知识库选择或直接添加图片')
+                total = expected
+                for row in rows:
+                    if (not isinstance(row, dict) or not isinstance(row.get('id'), str) or not row['id']
+                            or row['id'] in seen or row.get('knowledge_base_id') != source['knowledge_base_id']):
+                        raise HTTPException(503, '原件列表身份或来源范围不完整，请刷新后重试')
+                    seen.add(row['id'])
+                    kind = str(row.get('file_type', '')).lower().lstrip('.')
+                    if kind in allowed:
+                        result.append({'id': row['id'], 'name': row.get('file_name') or row.get('title') or row['id'],
+                            'kind': 'image' if kind in {'png','jpg','jpeg','webp','gif'} else 'text', 'source_binding_id': source['id']})
+                loaded += len(rows); page += 1
+                if len(seen) > 10000:
+                    raise HTTPException(413, '原件目录超过本次容量，请从知识库选择或直接添加图片')
+        return {'sources': result}
     doc = await go_request(scope,'/api/v1/knowledge-bases/'+quote(scope.knowledge_base_id,safe='')+'/knowledge',
                            params={'page':1,'page_size':200})
     rows = doc.get('data')
@@ -292,10 +355,19 @@ async def sources():
 async def generate(body:GenerateRequest):
     scope = scope_for_generation()
     text,image = body.instructions.strip(),body.image
+    original_digest, original_scope, original_metadata = None, scope, None
     if body.source_id:
-        original = await source_content(body.source_id,scope)
+        if getattr(scope, 'scope_version', 1) == 2:
+            original_metadata = await original_identity(scope, body.source_id)
+            matches = [source for source in scope.sources if not source['delegated']
+                       and source['knowledge_base_id'] == original_metadata['knowledge_base_id']]
+            if len(matches) != 1:
+                raise HTTPException(403, '原件不属于当前直接授权的数据来源')
+            original_scope = source_scope_for_binding(scope, matches[0]['id'], direct_only=True)
+        original = await source_content(body.source_id, scope=original_scope)
         if original.get('supported') is not True:
             raise HTTPException(422,'请选择知识库中的图片或文字原件')
+        original_digest = original.get('sha256')
         if original.get('image_data_url'):
             if image:
                 raise HTTPException(400,'一次请选择一张产业图')
@@ -319,9 +391,7 @@ async def generate(body:GenerateRequest):
     version,catalog = await run_in_threadpool(catalog_snapshot)
     candidates,selected = await select_catalog(scope,body.model_id,catalog,text,image)
     if selected:
-        selected_version,_ = await run_in_threadpool(catalog_snapshot)
-        if selected_version != version:
-            raise HTTPException(409,'筛选期间知识库来源已改变，请重新生成')
+        await verify_generation_scope(scope, version)
     protocol = ('根据完整资料及用户研究目标，生成精炼的产业研究图中间结构，程序将它转换为Markdown。'
         '先依据用户目标和资料明确一个核心价格标的，以及主要产品、地域、观察周期和统计边界；'
         '多个标的均合理但依据不足时明确保留待确认，不擅自选定或用其他标的替代。'
@@ -360,11 +430,25 @@ async def generate(body:GenerateRequest):
     draft = await completion(scope,body.model_id,catalog_prompt(protocol,candidates,text),image)
     markdown = compile_graph(draft)
     layout,bindings = validate_draft(markdown,candidates)
-    fresh,_ = await run_in_threadpool(catalog_snapshot)
-    if fresh != version:
-        raise HTTPException(409,'生成期间知识库来源已改变，请重新生成')
+    await verify_generation_scope(scope, version)
+    if body.source_id and getattr(scope, 'scope_version', 1) == 2:
+        current_metadata = await original_identity(scope, body.source_id)
+        current_original = await source_content(body.source_id, scope=original_scope)
+        if current_metadata != original_metadata or not original_digest or current_original.get('sha256') != original_digest:
+            raise HTTPException(409, '生成期间原件版本已变化，请重新选择当前原件后生成')
+        await verify_generation_scope(scope, version)
     return {'markdown':markdown,'version':version,'bindings':bindings,
             'nodes':sum(node.get('kind')!='group' for node in layout['nodes']),
             'catalog_total':len(catalog),'candidate_count':len(candidates),'candidates_truncated':False,
             'model_id':body.model_id,'notice':('生成的是待确认配置；预览后应用，未绑定节点继续显示尚无数据。' if bindings else
                 '生成的是待确认配置；指标绑定待补全，请核对数据覆盖与统计口径；未绑定节点继续显示尚无数据。')}
+
+
+async def original_identity(scope, knowledge_id):
+    document = await go_request(scope, '/api/v1/knowledge/' + quote(knowledge_id, safe=''))
+    item = document.get('data') if isinstance(document, dict) else None
+    direct = {source['knowledge_base_id'] for source in scope.sources if not source['delegated']}
+    if (not isinstance(item, dict) or item.get('id') != knowledge_id
+            or item.get('knowledge_base_id') not in direct or item.get('parse_status') in {'deleting', 'deleted'}):
+        raise HTTPException(403, '原件不属于当前直接授权的数据来源')
+    return {key: item.get(key) for key in ('id', 'knowledge_base_id', 'file_hash', 'updated_at')}

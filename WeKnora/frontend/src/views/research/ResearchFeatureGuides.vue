@@ -15,7 +15,7 @@ import { finishResearchGuide, readResearchGuide, researchFeatureSteps, researchG
 const props = defineProps<{ workbench: ResearchWorkbench; frame?: HTMLIFrameElement; frameVersion: number; suppressed?: boolean }>()
 const auth = useAuthStore()
 const active = ref(false), page = ref<ResearchGuidePage | null>(null)
-const scope = computed<ResearchGuideScope>(() => ({ tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '', workbenchId: props.workbench.id, knowledgeBaseId: props.workbench.knowledge_base_id }))
+const scope = computed<ResearchGuideScope>(() => ({ tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '', workbenchId: props.workbench.id, knowledgeBaseId: props.workbench.knowledge_base_id, scopeVersion: props.workbench.scope_version, sourcesRevision: props.workbench.sources_revision }))
 const scopeKey = computed(() => researchGuideKey(scope.value))
 const steps = computed(() => page.value ? researchFeatureSteps(page.value, openPanel) : [])
 let epoch = 0, concluded = false, stopped = false, openedLogic = false

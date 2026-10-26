@@ -12,12 +12,27 @@
     return data;
   };
 
+  const generator = document.getElementById('generate-strategies');
+  const model = document.getElementById('strategy-model');
+  if (model && generator?.dataset.platformModel === 'true') {
+    researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/strategies/models').then(async response => {
+      const value = await response.json();
+      if (!response.ok || !Array.isArray(value.models)) throw new Error(typeof value.detail === 'string' ? value.detail : '无法读取配置模型');
+      model.replaceChildren();
+      for (const item of value.models) {
+        const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; model.append(option);
+      }
+      if (!value.models.length) { model.append(new Option('暂无可用通用模型', '')); return; }
+      model.disabled = false; generator.disabled = false;
+    }).catch(error => show(error.message, true));
+  }
+
   document.getElementById('generate-strategies')?.addEventListener('click', async event => {
     const button = event.currentTarget;
     button.disabled = true;
     show('正在核对当日具体合约行情、产业证据和有效研究判断…');
     try {
-      const result = await request((window.RESEARCH_PREFIX || "") + '/api/sn/strategies/generate', {date: new URLSearchParams(location.search).get('date')});
+      const result = await request((window.RESEARCH_PREFIX || "") + '/api/sn/strategies/generate', {date: new URLSearchParams(location.search).get('date'), ...(model ? {model_id: model.value} : {})});
       if (result.status === 'generated') {
         show(`已生成 ${result.strategies.length} 条待审阅模拟草稿。`);
         location.reload();

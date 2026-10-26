@@ -65,6 +65,8 @@ type KnowledgeBase struct {
 	Type string `yaml:"type"                    json:"type"                    gorm:"type:varchar(32);default:'document'"`
 	// Whether this knowledge base is temporary (ephemeral) and should be hidden from UI
 	IsTemporary bool `yaml:"is_temporary"            json:"is_temporary"            gorm:"default:false"`
+	// SystemRole is server-managed and cannot be changed through native KB DTOs.
+	SystemRole string `yaml:"-" json:"system_role,omitempty" gorm:"type:varchar(32);not null;default:''"`
 	// Description of the knowledge base
 	Description string `yaml:"description"             json:"description"`
 	// Workspace ID

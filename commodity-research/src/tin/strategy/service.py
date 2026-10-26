@@ -67,7 +67,18 @@ def _quote_snapshot(session: Session, plan: StrategyPlan, now: datetime):
     """Verify exact contract quote registrations and persist the publication snapshot."""
     max_age = timedelta(hours=plan.max_quote_age_hours)
     quotes = []
+    configured = None
+    if session.info.get('workbench_id'):
+        from tin.web.market_contracts import contract_config
+        configured = {item['contract']: item for item in contract_config(session)}
+    price_kinds = set()
     for leg in plan.legs:
+        if configured is not None:
+            binding = configured.get(leg.contract)
+            kind = next((field for field in ('close', 'settle') if binding and binding.get(field) == leg.quote_series_id), None)
+            if kind is None or binding['price_unit'] != '元/吨':
+                raise StrategyError(f"{leg.contract} 的当前合约绑定或价格单位不适用本策略")
+            price_kinds.add(kind)
         indicator = session.get(Indicator, leg.quote_series_id)
         if indicator is None or indicator.variety != plan.variety:
             raise StrategyError(f"{leg.contract} 的具体合约行情指标未登记")
@@ -83,6 +94,8 @@ def _quote_snapshot(session: Session, plan: StrategyPlan, now: datetime):
                        "observation_id": obs.id, "value": obs.value,
                        "as_of": obs.as_of.isoformat(), "fetched_at": obs.fetched_at.isoformat(),
                        "source": obs.source, "source_url": obs.source_url})
+    if len(price_kinds) > 1:
+        raise StrategyError("跨期两腿须使用相同价格口径")
     times = [datetime.fromisoformat(item["as_of"]) for item in quotes]
     if len(times) == 2 and abs((times[0] - times[1]).total_seconds()) > plan.max_leg_skew_minutes * 60:
         raise StrategyError("跨期两腿行情时点错位，暂不能发布")

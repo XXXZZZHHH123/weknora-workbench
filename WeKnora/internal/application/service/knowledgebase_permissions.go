@@ -21,6 +21,7 @@ type KnowledgeBasePermissions struct {
 }
 
 type WorkbenchSourceRequest struct {
+	SourceBindingID       string   `json:"source_binding_id,omitempty"`
 	ID                    string   `json:"id"`
 	Name                  string   `json:"name"`
 	OwnerID               string   `json:"owner_id"`
@@ -30,6 +31,9 @@ type WorkbenchSourceRequest struct {
 
 func canManageKBPolicy(ctx context.Context, kb *types.KnowledgeBase) bool {
 	caller := types.CallerFromContext(ctx)
+	if kb != nil && kb.SystemRole == types.KnowledgeBaseSystemRoleCentral {
+		return kb.TenantID == caller.TenantID && caller.Role.HasPermission(types.TenantRoleAdmin) && access.LocalKBPermission(ctx, caller, kb).IsValid()
+	}
 	return kb != nil && caller.TenantID == kb.TenantID && kb.CreatorID != "" &&
 		caller.UserID == kb.CreatorID && caller.Role.HasPermission(types.TenantRoleContributor)
 }
@@ -44,8 +48,34 @@ func (s *knowledgeBaseService) GetKnowledgeBasePermissions(ctx context.Context, 
 	}
 	result := &KnowledgeBasePermissions{Policy: kb.AccessPolicy, OwnerID: kb.CreatorID, CanManage: true, Legacy: kb.AccessPolicy == nil, PendingWorkbenches: []WorkbenchSourceRequest{}}
 	if provider, ok := s.repo.(interface{ ResourceAccessDB() *gorm.DB }); ok {
+		var bindings []struct {
+			types.ResearchWorkbenchSourceBinding
+			WorkbenchName string
+			OwnerID       string
+		}
+		if err := provider.ResourceAccessDB().WithContext(ctx).Table("research_workbench_source_bindings b").
+			Select("b.*, w.name AS workbench_name,w.user_id AS owner_id").
+			Joins("JOIN research_workbenches w ON w.id=b.workbench_id AND w.deleted_at IS NULL").
+			Where("w.tenant_id=? AND b.enabled=? AND b.status=?", kb.TenantID, true, "active").
+			Where("(b.source_type=? AND b.source_id=?) OR (b.source_type=? AND b.source_id IN (SELECT id FROM central_datasets WHERE backing_knowledge_base_id=? AND tenant_id=?))", types.WorkbenchSourceKnowledgeBase, kb.ID, types.WorkbenchSourceCentralDataset, kb.ID, kb.TenantID).
+			Where("(b.legacy=? OR b.sharing_requested=?) AND (b.sharing_requested=? OR b.sharing_approved=?)", false, true, true, true).Scan(&bindings).Error; err != nil {
+			return nil, err
+		}
+		for _, binding := range bindings {
+			approved := binding.SharingApproved && binding.SharingApprovedBy == kb.CreatorID
+			if kb.SystemRole == types.KnowledgeBaseSystemRoleCentral && binding.SharingApproved {
+				var member types.TenantMember
+				approved = provider.ResourceAccessDB().WithContext(ctx).Where("tenant_id=? AND user_id=? AND status=?", kb.TenantID, binding.SharingApprovedBy, types.TenantMemberStatusActive).First(&member).Error == nil && member.Role.HasPermission(types.TenantRoleAdmin)
+			}
+			modules := []string{}
+			if approved && types.ValidWorkbenchSourceModules(binding.SharingModules) {
+				modules = append(modules, binding.SharingModules...)
+			}
+			result.PendingWorkbenches = append(result.PendingWorkbenches, WorkbenchSourceRequest{ID: binding.WorkbenchID, SourceBindingID: binding.ID, Name: binding.WorkbenchName, OwnerID: binding.OwnerID, SourceSharingApproved: approved, SourceSharingModules: modules})
+		}
 		var rows []types.ResearchWorkbench
-		if err := provider.ResourceAccessDB().WithContext(ctx).Where("tenant_id = ? AND knowledge_base_id = ? AND source_sharing_requested = ?", kb.TenantID, kb.ID, true).Find(&rows).Error; err != nil {
+		if err := provider.ResourceAccessDB().WithContext(ctx).Where("tenant_id = ? AND knowledge_base_id = ? AND source_sharing_requested = ?", kb.TenantID, kb.ID, true).
+			Where("NOT EXISTS (SELECT 1 FROM research_workbench_source_bindings b WHERE b.workbench_id=research_workbenches.id AND b.enabled=? AND b.status=? AND (b.legacy=? OR b.sharing_requested=?) AND b.source_id=?)", true, "active", false, true, kb.ID).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, row := range rows {

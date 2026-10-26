@@ -29,7 +29,7 @@ func (g *rbacGuards) kbPolicyGuard(resolve middleware.KBIDResolver, creator midd
 			c.Abort()
 			return
 		}
-		if kb.AccessPolicy == nil {
+		if kb.AccessPolicy == nil && kb.SystemRole != types.KnowledgeBaseSystemRoleCentral {
 			legacy(c)
 			return
 		}

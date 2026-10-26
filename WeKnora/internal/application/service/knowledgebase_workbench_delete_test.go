@@ -19,7 +19,7 @@ func nativeWorkbenchDeleteFixture(t *testing.T) (*WorkspaceService, *knowledgeBa
 	return s, native, ctx
 }
 
-func TestDeleteKnowledgeBaseRevokesWorkbenchScopeAndKeepsIndirectDefaultConsumers(t *testing.T) {
+func TestDeleteKnowledgeBaseDetachesSourceAndKeepsBothWorkbenches(t *testing.T) {
 	s, native, ctx := nativeWorkbenchDeleteFixture(t)
 	bound, err := s.CreateWorkbench(ctx, WorkspaceInput{Name: workspaceString("Primary"), KnowledgeBaseID: workspaceString("own"), IdempotencyKey: "primary"})
 	require.NoError(t, err)
@@ -30,18 +30,22 @@ func TestDeleteKnowledgeBaseRevokesWorkbenchScopeAndKeepsIndirectDefaultConsumer
 	// Default is an auxiliary source, not every workbench's primary binding.
 	require.NoError(t, s.db.Create(&types.DefaultKnowledgeBaseBinding{TenantID: 1, Kind: macroKnowledgeBaseKind, KnowledgeBaseID: "own"}).Error)
 	require.NoError(t, native.DeleteKnowledgeBase(ctx, "own"))
-	_, err = s.GetWorkbench(ctx, bound.ID)
-	workspaceStatus(t, err, 404)
+	detached, err := s.GetWorkbench(ctx, bound.ID)
+	require.NoError(t, err)
+	require.Empty(t, detached.KnowledgeBaseID)
+	require.False(t, detached.SourceDataAvailable)
+	grant, err := s.GetWorkbenchSourceScope(ctx, bound.ID)
+	require.NoError(t, err)
+	require.Empty(t, grant.Sources)
 	rows, err := s.ListWorkbenches(ctx, "")
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	require.Equal(t, consumer.ID, rows[0].ID)
+	require.Len(t, rows, 2)
 	remaining, err := s.GetWorkbench(ctx, consumer.ID)
 	require.NoError(t, err)
 	require.Nil(t, remaining.DefaultKnowledgeBase)
 	var archived types.ResearchWorkbench
 	require.NoError(t, s.db.Unscoped().First(&archived, "id = ?", bound.ID).Error)
-	require.True(t, archived.DeletedAt.Valid)
+	require.False(t, archived.DeletedAt.Valid)
 	require.Equal(t, bound.Name, archived.Name)
 	var binding types.DefaultKnowledgeBaseBinding
 	require.NoError(t, s.db.First(&binding, "tenant_id = ? AND kind = ?", 1, macroKnowledgeBaseKind).Error)

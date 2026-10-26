@@ -85,8 +85,35 @@ def build_context(session: Session, variety: str, d: date, *, researcher_id: int
         context["research"] = {"id": judgment.id, "version": judgment.version,
                                "payload": to_payload(judgment).model_dump(mode="json", by_alias=True)}
 
-    indicators = list(session.scalars(select(Indicator).where(
-        Indicator.variety.in_([variety, "COMMON"]))))
+    configured = None
+    if session.info.get('workbench_id'):
+        from tin.web.market_contracts import contract_config, _identifiers
+        from tin.judgments.service import _refs
+        configured = contract_config(session)
+        references = {sid for _, _, sid in _refs(to_payload(judgment))} if context['research'] else set()
+        references.update(_identifiers(configured))
+        from tin.integration.workbench_scope import current_workbench
+        source_scope = current_workbench.get()
+        if source_scope is not None:
+            if source_scope.workbench_id != session.info['workbench_id']:
+                raise PermissionError('策略会话与当前工作台不匹配')
+            if source_scope.scope_version == 2:
+                direct = {(item['knowledge_base_id'], item['tenant_id']) for item in source_scope.sources if not item['delegated']}
+            else:
+                direct = {(source_scope.knowledge_base_id, source_scope.knowledge_base_tenant_id), *(
+                    (item['knowledge_base_id'], item['tenant_id']) for item in source_scope.additional_knowledge_bases)}
+                direct = {item for item in direct if item[0] not in source_scope.source_delegations}
+            catalog = session.info.get('knowledge_facts_catalog') or {}
+            eligible = {identifier for identifier in references if identifier in catalog and (
+                catalog[identifier].get('knowledge_base_id'), catalog[identifier].get('knowledge_base_tenant_id')) in direct}
+            if references - eligible:
+                return context, [*blockers, '部分研究依据仅允许受限展示或来源已失效，未用于模型策略分析']
+        if len(references) > 256:
+            return context, [*blockers, '本次研究判断与合约绑定超过256个指标，请缩小研究范围']
+        indicators = list(session.scalars(select(Indicator).where(Indicator.series_id.in_(references))))
+    else:
+        indicators = list(session.scalars(select(Indicator).where(
+            Indicator.variety.in_([variety, "COMMON"]))))
     for indicator in indicators:
         observations = list(session.scalars(select(Observation).where(
             Observation.series_id == indicator.series_id, Observation.as_of < cutoff,
@@ -115,7 +142,30 @@ def build_context(session: Session, variety: str, d: date, *, researcher_id: int
             context["data_gaps"].append(f"{indicator.series_id} 缺少近期可用观测")
 
     quotes = {}
-    for observation in context["observations"]:
+    if configured is not None:
+        by_series = {}
+        for observation in context['observations']:
+            by_series.setdefault(observation['series_id'], []).append(observation)
+        for contract in configured:
+            if not re.fullmatch(r'SN\d{2}(0[1-9]|1[0-2])', contract['contract']):
+                context['data_gaps'].append('当前交易策略规格尚不支持所配置的合约品种')
+                continue
+            if contract['delivery_month'] < d.strftime('%Y-%m'):
+                continue
+            if contract['price_unit'] != '元/吨':
+                context['data_gaps'].append('合约价格原单位与当前交易策略规格不一致，未换算或推测')
+                continue
+            for kind in ('close', 'settle'):
+                identifier = contract.get(kind)
+                matching = [item for item in by_series.get(identifier, [])
+                    if item['unit'] == contract['price_unit'] and item['value'] > 0
+                    and datetime.fromisoformat(item['as_of']).astimezone(SHANGHAI).date() == d]
+                if not matching:
+                    continue
+                quotes[contract['contract']] = {**matching[0], 'quote_kind': kind,
+                    'price_unit': contract['price_unit'], 'delivery_month': contract['delivery_month'], 'multiplier': 1}
+                break
+    for observation in context["observations"] if configured is None else []:
         match = CONTRACT.fullmatch(observation["series_id"])
         if not match:
             continue
@@ -131,16 +181,18 @@ def build_context(session: Session, variety: str, d: date, *, researcher_id: int
             quotes[key] = observation
     context["available_contracts"] = [
         {"contract": name, "quote_series_id": obs["series_id"],
-         "observation_id": obs["observation_id"]}
+         "observation_id": obs["observation_id"], **{key: obs[key] for key in
+            ('quote_kind', 'price_unit', 'delivery_month', 'multiplier') if key in obs}}
         for name, obs in sorted(quotes.items())
     ]
     if not quotes:
         blockers.append("指定行情日缺少具体 SN 合约报价，不能用主力连续代替可交易合约")
     else:
         context["market_as_of"] = max(o["as_of"] for o in quotes.values())
-    if not any(not o["series_id"].startswith("SHFE.SN.") or
-               o["series_id"] in {"SHFE.SN.warrant", "SHFE.SN.stock.weekly"}
-               for o in context["observations"]):
+    quote_ids = {item['series_id'] for item in quotes.values()}
+    has_research_evidence = any(item['series_id'] not in quote_ids for item in context['observations']) if configured is not None else any(
+        not o['series_id'].startswith('SHFE.SN.') or o['series_id'] in {'SHFE.SN.warrant', 'SHFE.SN.stock.weekly'} for o in context['observations'])
+    if not has_research_evidence:
         blockers.append("只有合约行情，缺少近期产业或宏观证据，不能据此编造目标价格")
     return context, blockers
 
@@ -165,14 +217,19 @@ def validate_evidence(plan: StrategyPlan, context: dict) -> list[str]:
         if evidence.source != observation["source"]:
             errors.append(f"{observation['series_id']} 引用来源与输入观测不一致")
     contracts = {c["contract"]: c for c in context["available_contracts"]}
+    quote_kinds = set()
     for leg in plan.legs:
         actual = contracts.get(leg.contract)
         if actual is None or actual["quote_series_id"] != leg.quote_series_id:
             errors.append(f"{leg.contract} 未引用输入中具体合约的报价")
         elif actual["observation_id"] not in quoted:
             errors.append(f"{leg.contract} 缺少对应报价的完整证据引用")
+        if actual and actual.get('quote_kind'):
+            quote_kinds.add(actual['quote_kind'])
         if leg.multiplier != 1:
             errors.append("SN 合约乘数必须为 1 吨/手")
+    if len(quote_kinds) > 1:
+        errors.append('跨期两腿须使用相同价格口径')
     if plan.as_of != datetime.fromisoformat(context["market_as_of"]):
         errors.append("策略行情时点必须等于输入 market_as_of")
     if plan.mode != "simulation":
@@ -192,6 +249,8 @@ def generate_candidates(session: Session, variety: str, d: date, *, researcher_i
                                      knowledge_cutoff=knowledge_cutoff)
     if blockers:
         return GenerationResult("no_candidate", gaps=blockers)
+    if getattr(provider, 'source_version', None):
+        context['source_facts_version'] = provider.source_version
     request = build_request(context, CandidateBatch.model_json_schema())
     try:
         response = invoke(session, provider or build_provider(), request)
@@ -209,6 +268,12 @@ def generate_candidates(session: Session, variety: str, d: date, *, researcher_i
               for error in validate_evidence(candidate, context)]
     if errors:
         return GenerationResult("no_candidate", gaps=errors, call_id=response.call_id)
+    verify_scope = getattr(provider, 'verify_scope', None)
+    if callable(verify_scope):
+        try:
+            verify_scope()
+        except LlmError as exc:
+            return GenerationResult('error', gaps=[str(exc)], call_id=response.call_id)
     rows = []
     for candidate in batch.candidates:
         # Provenance is supplied by the server, never entrusted to model output.

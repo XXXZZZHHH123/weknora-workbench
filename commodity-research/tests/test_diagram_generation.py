@@ -92,6 +92,100 @@ def test_viewer_cannot_generate_and_empty_input_cannot_call_models(generator):
     assert calls==[]
 
 
+def test_v2_diagram_catalog_and_apply_guard_use_metadata_not_page_observations(canonical, monkeypatch):
+    from fastapi import HTTPException
+    from tin.integration import kb_facts
+    from tin.integration.identity import Identity
+    from tin.integration.workbench_scope import WorkbenchScope, current_workbench
+    from tin.web.diagram_draft import compile_graph
+    _, _, _, _ = canonical
+    scope = WorkbenchScope(Identity('researcher', '', '', 17, 'owner'), FIRST, KB, 17,
+        {'workspace_mode': 'isolated', 'can_edit': True}, 'Bearer synthetic', scope_version=2, sources_revision=1)
+    snapshot = {'catalog': {SERIES: {'series_id': SERIES, 'name': 'Measured quantity', 'unit': '吨'}},
+        'version': 'f' * 64, 'datasets': []}
+    monkeypatch.setattr(kb_facts, 'catalog_snapshot', lambda verified: snapshot, raising=False)
+    def no_projection(*args, **kwargs): raise AssertionError('A model catalog must not load observations')
+    monkeypatch.setattr(generation, 'SessionLocal', no_projection)
+    token = current_workbench.set(scope)
+    try:
+        version, catalog = generation.catalog_snapshot()
+        assert version == snapshot['version'] and catalog[0]['id'] == SERIES
+        markdown = compile_graph(model_graph())
+        layout, bindings = generation.validate_generated_configuration(markdown, version)
+        assert bindings[0]['series_id'] == SERIES and len(layout['nodes']) >= 2
+        with pytest.raises(HTTPException) as error:
+            generation.validate_generated_configuration(markdown, '0' * 64)
+        assert error.value.status_code == 409
+        foreign = compile_graph(model_graph('kb-' + 'b' * 48))
+        with pytest.raises(HTTPException) as error:
+            generation.validate_generated_configuration(foreign, version)
+        assert error.value.status_code == 422
+    finally:
+        current_workbench.reset(token)
+
+
+def test_v2_diagram_generation_rejects_a_changed_source_revision_before_reusing_catalog(canonical, monkeypatch):
+    from dataclasses import replace
+    from fastapi import HTTPException
+    from tin.integration.identity import Identity
+    from tin.integration.workbench_scope import WorkbenchScope
+    scope = WorkbenchScope(Identity('researcher', '', '', 17, 'owner'), FIRST, KB, 17,
+        {'workspace_mode': 'isolated', 'can_edit': True}, 'Bearer synthetic', scope_version=2, sources_revision=1)
+    async def changed(*args): return replace(scope, sources_revision=2)
+    monkeypatch.setattr(generation, 'resolve_workbench', changed)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(generation.verify_generation_scope(scope, 'f' * 64))
+    assert error.value.status_code == 409
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_v2_original_selection_uses_native_scope_and_rejects_changes_without_full_inventory(monkeypatch, changed):
+    import base64
+    from fastapi import HTTPException
+    from tin.integration.identity import Identity
+    from tin.integration.workbench_scope import WorkbenchScope, current_workbench
+    binding = {'id': 'binding', 'source_type': 'knowledge_base', 'source_id': KB,
+        'knowledge_base_id': KB, 'tenant_id': 17, 'permission': 'viewer', 'delegated': False,
+        'view_modules': ['diagram'], 'knowledge': []}
+    scope = WorkbenchScope(Identity('researcher', '', '', 17, 'owner'), FIRST, KB, 17,
+        {'workspace_mode': 'isolated', 'can_edit': True, 'can_read_source': True}, 'Bearer synthetic',
+        scope_version=2, sources_revision=1, sources=(binding,))
+    calls = []
+    async def metadata(verified, path, **kwargs):
+        assert path == '/api/v1/knowledge/original-image'
+        calls.append(path)
+        return {'data': {'id': 'original-image', 'knowledge_base_id': KB,
+            'file_hash': ('2' if changed and len(calls) > 1 else '1') * 64, 'updated_at': 'synthetic-version'}}
+    async def content(identifier, *, scope):
+        assert identifier == 'original-image' and scope.source_binding_id == 'binding'
+        return {'supported': True, 'image_data_url': 'data:image/png;base64,' + base64.b64encode(b'synthetic-image').decode(), 'sha256': '1' * 64}
+    async def completion(*args): return model_graph()
+    async def verify(*args): return None
+    monkeypatch.setattr(generation, 'go_request', metadata)
+    monkeypatch.setattr(generation, 'source_content', content)
+    monkeypatch.setattr(generation, 'completion', completion)
+    monkeypatch.setattr(generation, 'verify_generation_scope', verify)
+    monkeypatch.setattr(generation, 'catalog_snapshot', lambda: ('f' * 64, [{'id': SERIES, 'name': 'Measured quantity', 'unit': '吨'}]))
+    token = current_workbench.set(scope)
+    try:
+        body = generation.GenerateRequest(model_id='synthetic-model', source_id='original-image')
+        if changed:
+            with pytest.raises(HTTPException) as caught:
+                asyncio.run(generation.generate(body))
+            assert caught.value.status_code == 409
+        else:
+            result = asyncio.run(generation.generate(body))
+            assert result['bindings'][0]['series_id'] == SERIES
+        assert len(calls) == 2
+        async def foreign(*args, **kwargs): return {'data': {'id': 'original-image', 'knowledge_base_id': 'unbound-kb'}}
+        monkeypatch.setattr(generation, 'go_request', foreign)
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(generation.original_identity(scope, 'original-image'))
+        assert caught.value.status_code == 403
+    finally:
+        current_workbench.reset(token)
+
+
 @pytest.mark.parametrize('image',['https://example.test/image.png','data:image/png;base64,%%%','data:text/html;base64,eA=='])
 def test_images_are_bounded_data_not_external_fetches(generator,image):
     client,headers,_,_,calls=generator

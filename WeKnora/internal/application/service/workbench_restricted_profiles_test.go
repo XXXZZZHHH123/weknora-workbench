@@ -58,7 +58,9 @@ func TestWorkbenchRestrictedProfilesAtomicPermissionsAndUserScope(t *testing.T) 
 		require.NotContains(t, string(raw), "market-group")
 		scope, err := s.GetWorkbenchSourceScope(ctx, row.ID)
 		if len(tc.modules) == 0 {
-			workspaceStatus(t, err, 403)
+			require.NoError(t, err)
+			require.Empty(t, scope.Sources)
+			require.Empty(t, scope.ViewModules)
 		} else {
 			require.NoError(t, err)
 			require.Equal(t, tc.modules, scope.ViewModules)
@@ -75,8 +77,7 @@ func TestWorkbenchRestrictedProfilesAtomicPermissionsAndUserScope(t *testing.T) 
 	profiles = []types.WorkbenchRestrictedViewProfile{}
 	_, err = s.UpdateWorkbenchPermissionSettings(owner, row.ID, WorkbenchPermissionSettings{ResourceAccessPolicy: policy, RestrictedViewProfiles: &profiles})
 	require.NoError(t, err)
-	_, err = s.GetWorkbenchSourceScope(workspaceContext("reader-a", 1, types.TenantRoleViewer), row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, workspaceContext("reader-a", 1, types.TenantRoleViewer), row.ID)
 	// Direct source readers retain their full, independently granted KB view.
 	direct, err := s.GetWorkbenchSourceScope(owner, row.ID)
 	require.NoError(t, err)
@@ -162,14 +163,12 @@ func TestWorkbenchRestrictedProfilesCannotExpandSourceConsent(t *testing.T) {
 	require.Equal(t, []string{"diagram"}, scope.ViewModules)
 	_, err = s.UpdateWorkbenchSourceSharing(sourceOwner, row.ID, false, nil)
 	require.NoError(t, err)
-	_, err = s.GetWorkbenchSourceScope(reader, row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, reader, row.ID)
 	_, err = s.UpdateWorkbenchSourceSharing(sourceOwner, row.ID, true, []string{"diagram"})
 	require.NoError(t, err)
 	kb.CreatorID = "new-owner"
 	require.NoError(t, s.db.Save(kb).Error)
-	_, err = s.GetWorkbenchSourceScope(reader, row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, reader, row.ID)
 }
 
 func TestWorkbenchRestrictedProfilesMetadataWritesPreserveSourceApprovalUpperBound(t *testing.T) {
@@ -229,8 +228,7 @@ func TestWorkbenchNewSourceApprovalWithoutProfilesDoesNotGrantPages(t *testing.T
 	require.NotNil(t, loaded.RestrictedViewProfiles, "new rows must not acquire grandfathered all-member sharing")
 	require.Empty(t, loaded.RestrictedViewProfiles)
 	require.False(t, loaded.SourceDataAvailable)
-	_, err = s.GetWorkbenchSourceScope(reader, row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, reader, row.ID)
 	// NULL is reserved for genuinely grandfathered rows, which retain their
 	// already explicit legacy source consent until their owner adopts profiles.
 	require.NoError(t, s.db.Model(&types.ResearchWorkbench{}).Where("id = ?", row.ID).Update("restricted_view_profiles", nil).Error)

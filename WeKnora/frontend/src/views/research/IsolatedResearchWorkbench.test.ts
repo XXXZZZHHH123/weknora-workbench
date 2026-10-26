@@ -15,8 +15,8 @@ const tick = () => new Promise(setImmediate)
 const ready = async () => { await nextTick(); await tick() }
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value))
 type Extra = (path: string, options?: RequestInit) => Response | Promise<Response> | undefined
-function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated', save?: (id: string, input: any) => Promise<any>) {
-  const props = reactive({ workbench: { id: 'fresh-workbench', knowledge_base_id: 'fresh-kb', workspace_mode: mode, template_id: 'industrial', name: 'Test-only workspace', onboarding: { status: 'active', tasks: { sources: false, review: false, research: false } } } })
+function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated', save?: (id: string, input: any) => Promise<any>, overrides: Record<string, unknown> = {}) {
+  const props = reactive({ workbench: { id: 'fresh-workbench', knowledge_base_id: 'fresh-kb', workspace_mode: mode, template_id: 'industrial', name: 'Test-only workspace', onboarding: { status: 'active', tasks: { sources: false, review: false, research: false } }, ...overrides } })
   const auth = reactive({ token: 'test-token', selectedTenantId: 'test-tenant', user: { id: 'test-user' } })
   const calls: Array<{ url: string; method: string; headers: Headers }> = [], guides: any[] = [], batches: any[] = [], emits: any[] = [], routes: any[] = []
   const cleanups: Array<() => void> = []
@@ -45,6 +45,32 @@ function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated', save?:
 const workbook = { id: 'real-source', file_name: 'Fixture original.xlsx', parse_status: 'stored', knowledge_base_id: 'fresh-kb', folder_path: 'Original folder' }
 const textFile = { id: 'real-text', file_name: 'Source note.txt', parse_status: 'completed', knowledge_base_id: 'fresh-kb' }
 const ownSources: Extra = path => path.includes('/sources?') ? Response.json({ knowledge_base_id: 'fresh-kb', sources: [workbook, textFile], total: 2 }) : undefined
+
+test('v2 opening is lazy; source files load only after the drawer opens and carry the selected binding', async () => {
+  const f = fixture(path => path.includes('/sources?') ? Response.json({ scope_version: 2, sources_revision: 3, source_binding_id: 'binding-a', knowledge_base_id: 'fresh-kb', sources: [workbook], total: 1 }) : undefined, 'isolated', undefined, {
+    scope_version: 2, sources_revision: 3, sources: [{ id: 'binding-a', source_type: 'knowledge_base', source_id: 'fresh-kb', knowledge_base_id: 'fresh-kb', status: 'active', can_read: true, can_edit: false, delegated: false }],
+  })
+  try {
+    await ready(); assert.equal(f.calls.length, 0)
+    f.view.openSources(); await ready()
+    assert.equal(f.calls.length, 1)
+    assert.ok(f.calls[0]!.url.endsWith('/sources?page=1&page_size=100&source_binding_id=binding-a'))
+    assert.equal(f.calls[0]!.headers.get('X-Research-Sources-Revision'), '3')
+    assert.equal(f.view.sources.value[0].id, workbook.id)
+    assert.equal(f.calls.some(call => call.url.endsWith('/overview')), false)
+    f.view.selectFiles([{ name: 'disallowed.txt' }]); f.view.enqueueFiles()
+    assert.equal(f.batches.length, 0, 'Read access to a central/source KB never grants writes')
+  } finally { f.close() }
+})
+
+test('empty-source v2 workbenches need no file or fact calls', async () => {
+  const f = fixture(undefined, 'isolated', undefined, { scope_version: 2, sources_revision: 1, sources: [], knowledge_base_id: '' })
+  try {
+    await ready(); f.view.openSources(); await ready()
+    assert.equal(f.calls.length, 0); assert.equal(f.view.error.value, '')
+    assert.deepEqual(Array.from(f.view.sources.value), [])
+  } finally { f.close() }
+})
 
 for (const mode of ['isolated', 'legacy'] as const) {
   test(`${mode} reads only scoped inventory and never confirms a second copy of KB research facts`, async () => {

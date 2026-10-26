@@ -1,6 +1,6 @@
 import { fetchWithAuthRetry } from '../utils/authFetch'
 
-export interface IsolatedResearchIdentity { token: string; tenantId: string; userId: string; workbenchId: string; knowledgeBaseId: string }
+export interface IsolatedResearchIdentity { token: string; tenantId: string; userId: string; workbenchId: string; knowledgeBaseId: string; sourcesRevision?: number }
 export interface WorkbenchSource {
   id: string; file_name: string; file_type?: string; parse_status?: string; folder_path?: string
   knowledge_base_id?: string; file_size?: number; source_kind?: string; [key: string]: unknown
@@ -19,7 +19,8 @@ export function createIsolatedResearchClient(captured: IsolatedResearchIdentity,
   const own = { ...captured }
   function assertIdentity() {
     const active = current()
-    if (!active.token || !own.token || !own.workbenchId || !own.knowledgeBaseId || (Object.keys(own) as Array<keyof IsolatedResearchIdentity>).filter(key => key !== 'token').some(key => active[key] !== own[key])) {
+    const scoped = own.knowledgeBaseId || Number.isSafeInteger(own.sourcesRevision) && Number(own.sourcesRevision) > 0
+    if (!active.token || !own.token || !own.tenantId || !own.userId || !own.workbenchId || !scoped || (Object.keys(own) as Array<keyof IsolatedResearchIdentity>).filter(key => key !== 'token').some(key => active[key] !== own[key])) {
       throw new Error('账号、空间或工作台已切换，请重新操作。')
     }
   }
@@ -30,7 +31,8 @@ export function createIsolatedResearchClient(captured: IsolatedResearchIdentity,
     headers.set('Authorization', `Bearer ${own.token}`)
     headers.set('X-Tenant-ID', own.tenantId)
     headers.set('X-Research-User', own.userId)
-    headers.set('X-Knowledge-Base-ID', own.knowledgeBaseId)
+    if (own.knowledgeBaseId) headers.set('X-Knowledge-Base-ID', own.knowledgeBaseId)
+    if (own.sourcesRevision !== undefined) headers.set('X-Research-Sources-Revision', String(own.sourcesRevision))
     const response = await fetchWithAuthRetry(`/research/api/workbenches/${encodeURIComponent(own.workbenchId)}${path}`, { ...options, credentials: 'same-origin', headers }, { token: current().token, fetcher, isCurrent: () => { try { assertIdentity(); return true } catch { return false } } })
     assertIdentity()
     const result = await response.json().catch(() => ({}))

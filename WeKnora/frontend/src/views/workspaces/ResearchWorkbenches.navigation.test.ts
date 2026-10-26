@@ -11,6 +11,7 @@ import * as templates from '../research/workbenchTemplates'
 import * as featureGuides from '../research/researchFeatureGuides'
 import * as sorting from '../../utils/resourceSorting'
 import * as sourceHelpers from '../../utils/sourceSharingModules'
+import * as dataSources from '../research/workbenchDataSources'
 
 type Host = { type: string; props: Record<string, any>; children: Host[]; text: string; parent?: Host }
 const node = (type: string): Host => ({ type, props: {}, children: [], text: '' })
@@ -46,11 +47,12 @@ function fixture(options: { fail?: boolean; items?: Array<(typeof workbenches)[n
   const { descriptor } = parse(readFileSync(new URL('./ResearchWorkbenches.vue', import.meta.url), 'utf8'))
   const compiled = ts.transpileModule(compileScript(descriptor, { id: 'research-list-test', inlineTemplate: true }).content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   const modules: Record<string, any> = {
-    'vue': { ...vue, vModelCheckbox: { mounted(el: Host, binding: any) { el.props.modelValue = binding.value }, updated(el: Host, binding: any) { el.props.modelValue = binding.value } } }, 'vue-router': { useRoute: () => route, useRouter: () => ({ push: (target: any) => { navigations.push(target); return Promise.resolve() } }) },
+    'vue': { ...vue, vModelText: {}, vModelRadio: {}, vModelCheckbox: { mounted(el: Host, binding: any) { el.props.modelValue = binding.value }, updated(el: Host, binding: any) { el.props.modelValue = binding.value } } }, 'vue-router': { useRoute: () => route, useRouter: () => ({ push: (target: any) => { navigations.push(target); return Promise.resolve() } }) },
     '@/stores/auth': { useAuthStore: () => auth }, '@/stores/chatResources': { useChatResourcesStore: () => ({ rawKnowledgeBases: [{ id: 'kb-a', name: '资料 A' }, { id: 'kb-b', name: '资料 B' }], ensureKnowledgeBases: async () => {} }) },
     '@/stores/organization': { useOrganizationStore: () => ({ sharedKnowledgeBases: [], fetchSharedKnowledgeBases: async () => {} }) },
     '@/api/workspaces': { listResearchWorkbenches: async () => { if (options.fail) throw new Error('列表不可用'); return { data: options.items || workbenches } }, getResearchWorkbench: async () => ({ data: null }), setResearchWorkbenchPin: async (id: string, pinned: boolean) => { mutations.push({action:'pin',id,pinned}); return {success:true,data:{id,is_pinned:pinned,pinned_at:pinned?'2026-01-01':null}} }, updateResearchWorkbench: async (id: string, data: any) => { mutations.push({ action: 'rename', id, data }); return options.update ? options.update(id, data) : { success: true, data: { ...workbenches.find(w => w.id === id), ...data } } }, deleteResearchWorkbench: async (id: string) => { mutations.push({ action: 'delete', id }); return options.remove ? options.remove(id) : { success: true } } },
     '@/views/knowledge/KnowledgeBaseEditorModal.vue': { default: passthrough }, '@/utils/uuid': { createRandomUUID: () => 'request-a' },
+    './WorkbenchSourcePicker.vue': { default: passthrough }, './WorkbenchSourcesDialog.vue': { default: passthrough }, '@/views/research/workbenchDataSources': dataSources,
     './workspaceForm': forms, './workspaceKnowledgeBases': knowledgeBases, '@/views/research/workbenchTemplates': templates,
     '@/components/ResourceListToolbar.vue': { default: toolbar }, '@/components/ResourceSortControl.vue': { default: sortControl },
     '@/components/EmptyState.vue': { default: emptyState }, '@/utils/resourceSorting': sorting,
@@ -58,6 +60,8 @@ function fixture(options: { fail?: boolean; items?: Array<(typeof workbenches)[n
     '@/utils/sourceSharingModules': sourceHelpers,
     './workspaces.css': {}, '@/views/research/researchFeatureGuides': featureGuides,
   }
+  modules['@/api/workspaces'].listCentralDatasets = async () => ({ success: true, data: [{ id: 'central-a', name: 'Center', kind: 'default', knowledge_base_id: 'center-kb' }] })
+  modules['@/api/workspaces'].createResearchWorkbench = async (data: any) => { mutations.push({ action: 'create', data: JSON.parse(JSON.stringify(data)) }); return { success: true, data: { ...workbenches[0], id: 'new-wb', knowledge_base_id: '', scope_version: 2, sources_revision: 1, sources: data.sources } } }
   function load(code: string) {
     const exports: { default?: vue.Component } = {}
     runInNewContext(code, { exports, console, window: new EventTarget(), CustomEvent, require(name: string) {
@@ -67,6 +71,8 @@ function fixture(options: { fail?: boolean; items?: Array<(typeof workbenches)[n
     return exports.default!
   }
   const actions = parse(readFileSync(new URL('./WorkbenchActions.vue', import.meta.url), 'utf8')).descriptor
+  const picker = parse(readFileSync(new URL('./WorkbenchSourcePicker.vue', import.meta.url), 'utf8')).descriptor
+  modules['./WorkbenchSourcePicker.vue'] = { default: load(ts.transpileModule(compileScript(picker, { id: 'source-picker-test', inlineTemplate: true }).content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText) }
   modules['./WorkbenchActions.vue'] = { default: load(ts.transpileModule(compileScript(actions, { id: 'research-actions-test', inlineTemplate: true }).content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText) }
   const exports = { default: load(compiled) }
   const root = node('root'), app = renderer.createApp(exports.default!)
@@ -323,4 +329,28 @@ test('default order follows creation time even after an older workbench was edit
  await f.openAction(f.cards()[1]!, 'pin');await flush()
  assert.ok(textOf(f.cards()[0]!).includes('研究 A'))
  assert.equal(f.navigations.length,0)
+})
+
+test('creation preselects the central dataset and can create without a primary knowledge base', async t => {
+  const f = fixture({ creating: true }); t.after(f.close); await flush()
+  const name = all(f.root, node => node.props.id === 'workbench-name')[0]!
+  assert.ok(name)
+  name.props['onUpdate:modelValue']('Independent workbench'); await flush()
+  const form = all(f.root, node => node.type === 'form')[0]!
+  form.props.onSubmit({ preventDefault() {} }); await flush()
+  const created = f.mutations.find(item => item.action === 'create')
+  assert.ok(created)
+  assert.deepEqual(created.data.sources, [{ source_type: 'central_dataset', source_id: 'central-a' }])
+  assert.equal('knowledge_base_id' in created.data, false)
+  assert.equal(f.navigations.at(-1), '/platform/research-workbenches/new-wb')
+})
+
+test('creation accepts an explicit empty source selection instead of inventing a KB', async t => {
+  const f = fixture({ creating: true }); t.after(f.close); await flush()
+  const central = all(f.root, node => node.type === 'input' && node.props.type === 'checkbox')[0]!
+  central.props.onChange({ target: { checked: false } }); await flush()
+  all(f.root, node => node.props.id === 'workbench-name')[0]!.props['onUpdate:modelValue']('Blank research')
+  await flush()
+  all(f.root, node => node.type === 'form')[0]!.props.onSubmit({ preventDefault() {} }); await flush()
+  assert.deepEqual(f.mutations.find(item => item.action === 'create')?.data.sources, [])
 })

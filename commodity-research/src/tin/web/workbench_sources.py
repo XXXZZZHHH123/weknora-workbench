@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from tin.config import settings
-from tin.integration.workbench_scope import WorkbenchScope, go_request, verified_workbench
+from tin.integration.workbench_scope import WorkbenchScope, go_request, verified_workbench, source_scope_for_binding
 
 router = APIRouter(prefix="/api/workbenches/{workbench_id}/sources")
 MAX_TEXT_BYTES = 1024 * 1024
@@ -15,7 +15,15 @@ IMAGE_MIMES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "w
 
 
 @router.get("/{knowledge_id}/content")
-async def source_content(knowledge_id: str, scope: WorkbenchScope = Depends(verified_workbench)):
+async def source_content(knowledge_id: str, scope: WorkbenchScope = Depends(verified_workbench),
+                         source_binding_id: str | None = None):
+    if scope.scope_version == 2:
+        source_binding_id = source_binding_id or scope.source_binding_id
+        if not source_binding_id:
+            raise HTTPException(400, '请选择明确的数据来源')
+        if not isinstance(source_binding_id,str) or len(source_binding_id)>128:
+            raise HTTPException(400,'数据来源编号无效')
+        scope = source_scope_for_binding(scope, source_binding_id, direct_only=True)
     doc = await go_request(scope, "/api/v1/knowledge/" + quote(knowledge_id, safe=""))
     source = doc.get("data")
     if not isinstance(source, dict) or source.get("id") != knowledge_id or source.get("knowledge_base_id") != scope.knowledge_base_id:

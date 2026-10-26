@@ -5,8 +5,9 @@ import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { researchFramePath } from './researchFrameSession'
 import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
+import { directKnowledgeBaseIds, workbenchSourceLabel } from './workbenchDataSources'
 
-const source = readFileSync(new URL('./index.vue', import.meta.url), 'utf8')
+const source = readFileSync(process.env.RESEARCH_WORKSPACE_TEST_SOURCE || new URL('./index.vue', import.meta.url), 'utf8')
 const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0]!.replace(/^import .*$/gm, '')
 const updateBinding = source.match(/@update-workbench="([^"]+)"/)![1]!
 // Vue unwraps setup refs in template assignments; preserve that behavior in the setup harness.
@@ -28,6 +29,7 @@ function fixture() {
     onMounted() {}, onBeforeUnmount: (fn: () => void) => unmounts.push(fn),
     window: { location: { origin: 'https://test.local' }, removeEventListener() {} },
     authenticateResearchFrame: async () => true, researchFramePath,
+    directKnowledgeBaseIds, workbenchSourceLabel,
     getResearchWorkbench: (id: string) => new Promise(resolve => requests.push({ id, tenant: header, resolve })),
   }))
   return { auth, route, view, requests, setHeader: (tenant: number) => { header = tenant }, close: () => { unmounts.forEach(fn => fn()); scope.stop() } }
@@ -288,5 +290,28 @@ test('token refresh during the first metadata load preserves the pending workspa
     await new Promise(setImmediate)
     assert.equal(f.view.canShowResearch.value, true)
     assert.equal(f.view.workbench.value.id, 'workbench-a')
+  } finally { f.close() }
+})
+
+test('a v2 workbench with no sources opens its independent frame', async () => {
+  const f = fixture()
+  try {
+    await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: '', workspace_mode: 'isolated', scope_version: 2, sources_revision: 4, sources: [] } })
+    await new Promise(setImmediate)
+    assert.equal(f.view.canShowResearch.value, true)
+    assert.equal(f.view.workbenchError.value, '')
+    assert.equal(new URL(f.view.frameUrl.value, 'https://test.local').pathname, '/research/workbenches/workbench-a/')
+  } finally { f.close() }
+})
+
+test('unversioned empty-source metadata remains invalid', async () => {
+  const f = fixture()
+  try {
+    await nextTick()
+    f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: '', workspace_mode: 'isolated' } })
+    await new Promise(setImmediate)
+    assert.equal(f.view.canShowResearch.value, false)
+    assert.ok(f.view.workbenchError.value)
   } finally { f.close() }
 })

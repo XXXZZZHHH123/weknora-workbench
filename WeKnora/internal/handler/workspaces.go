@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/application/service"
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
@@ -24,6 +25,50 @@ func (h *WorkspaceHandler) GetDefaultKnowledgeBase(c *gin.Context) {
 
 func (h *WorkspaceHandler) InitializeDefaultKnowledgeBase(c *gin.Context) {
 	row, err := h.service.InitializeDefaultKnowledgeBase(c.Request.Context())
+	workspaceReply(c, row, err)
+}
+
+func (h *WorkspaceHandler) ListCentralDatasets(c *gin.Context) {
+	row, err := h.service.ListCentralDatasets(c.Request.Context())
+	workspaceReply(c, row, err)
+}
+func (h *WorkspaceHandler) InitializeCentralDataset(c *gin.Context) {
+	row, err := h.service.InitializeCentralDataset(c.Request.Context())
+	workspaceReply(c, row, err)
+}
+func (h *WorkspaceHandler) GetWorkbenchSources(c *gin.Context) {
+	row, err := h.service.GetWorkbenchSources(c.Request.Context(), c.Param("id"))
+	workspaceReply(c, row, err)
+}
+func (h *WorkspaceHandler) UpdateWorkbenchSources(c *gin.Context) {
+	var input service.WorkbenchSourcesInput
+	if !workspacePermissionInput(c, &input) {
+		return
+	}
+	row, err := h.service.UpdateWorkbenchSources(c.Request.Context(), c.Param("id"), input)
+	workspaceReply(c, row, err)
+}
+func (h *WorkspaceHandler) GetSourceBindingSharing(c *gin.Context) {
+	row, err := h.service.GetSourceBindingSharing(c.Request.Context(), c.Param("id"), c.Param("source_binding_id"))
+	workspaceReply(c, row, err)
+}
+func (h *WorkspaceHandler) RequestSourceBindingSharing(c *gin.Context) {
+	row, err := h.service.RequestSourceBindingSharing(c.Request.Context(), c.Param("id"), c.Param("source_binding_id"))
+	workspaceReply(c, row, err)
+}
+func (h *WorkspaceHandler) UpdateSourceBindingSharing(c *gin.Context) {
+	var input struct {
+		Approved *bool    `json:"approved"`
+		Modules  []string `json:"modules"`
+	}
+	if !workspacePermissionInput(c, &input) {
+		return
+	}
+	if input.Approved == nil {
+		_ = c.Error(apperrors.NewBadRequestError("请选择是否共享该来源"))
+		return
+	}
+	row, err := h.service.UpdateSourceBindingSharing(c.Request.Context(), c.Param("id"), c.Param("source_binding_id"), service.WorkbenchSourceSharingInput{Approved: *input.Approved, Modules: input.Modules})
 	workspaceReply(c, row, err)
 }
 
@@ -162,7 +207,17 @@ func (h *WorkspaceHandler) UpdateWorkbenchPermissions(c *gin.Context) {
 }
 
 func (h *WorkspaceHandler) GetWorkbenchSourceScope(c *gin.Context) {
-	row, err := h.service.GetWorkbenchSourceScope(c.Request.Context(), c.Param("id"))
+	internal, err := workspaceScopeInventoryProof(c, time.Now())
+	if err != nil {
+		workspaceReply(c, nil, err)
+		return
+	}
+	var row *service.WorkbenchSourceScope
+	if internal {
+		row, err = h.service.GetWorkbenchSourceScope(c.Request.Context(), c.Param("id"))
+	} else {
+		row, err = h.service.GetWorkbenchSourceScopeMetadata(c.Request.Context(), c.Param("id"))
+	}
 	workspaceReply(c, row, err)
 }
 

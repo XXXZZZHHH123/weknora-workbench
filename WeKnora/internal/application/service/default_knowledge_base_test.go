@@ -20,7 +20,7 @@ func defaultKBFixture(t *testing.T) (*WorkspaceService, *knowledgeBaseService, c
 	require.NoError(t, err)
 	sql, _ := db.DB()
 	t.Cleanup(func() { sql.Close() })
-	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}))
+	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}, &types.CentralDataset{}))
 	migration, err := os.ReadFile("../../../migrations/sqlite/000040_default_knowledge_base.up.sql")
 	require.NoError(t, err)
 	require.NoError(t, db.Exec(string(migration)).Error)
@@ -120,10 +120,42 @@ func TestDefaultKnowledgeBaseFailedCreationRetriesReservedIdentity(t *testing.T)
 	require.Equal(t, int64(1), count)
 }
 
+func TestDefaultKnowledgeBaseNameAndCentralListFollowCurrentKnowledgeBaseName(t *testing.T) {
+	s, native, ctx := defaultKBFixture(t)
+	view, err := s.InitializeDefaultKnowledgeBase(ctx)
+	require.NoError(t, err)
+	var registered types.CentralDataset
+	require.NoError(t, s.db.First(&registered, "backing_knowledge_base_id = ?", view.KnowledgeBaseID).Error)
+	t.Run("new-default-name", func(t *testing.T) {
+		require.Equal(t, "default库", view.Name)
+		require.Equal(t, "default库", registered.Name)
+	})
+	registeredName := registered.Name
+	admin := types.WithCaller(ctx, types.Caller{TenantID: 1, UserID: "admin", Role: types.TenantRoleAdmin})
+	renamed, err := native.UpdateKnowledgeBase(admin, view.KnowledgeBaseID, "Custom source name", "", nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, view.KnowledgeBaseID, renamed.ID)
+	listed, err := s.ListCentralDatasets(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	require.Equal(t, registered.ID, listed[0].ID)
+	require.Equal(t, view.KnowledgeBaseID, listed[0].BackingKnowledgeBaseID)
+	require.Equal(t, "Custom source name", listed[0].Name)
+	require.NoError(t, s.db.First(&registered, "id = ?", registered.ID).Error)
+	require.Equal(t, registeredName, registered.Name, "listing must not rewrite the registry")
+	repeated, err := s.InitializeDefaultKnowledgeBase(ctx)
+	require.NoError(t, err)
+	require.Equal(t, view.KnowledgeBaseID, repeated.KnowledgeBaseID)
+	require.Equal(t, "Custom source name", repeated.Name, "initialization must preserve an existing custom name")
+}
+
 func TestDefaultKnowledgeBaseSettingsPreserveOptOutAndPermitExplicitEnable(t *testing.T) {
 	s, native, ctx := defaultKBFixture(t)
 	view, err := s.InitializeDefaultKnowledgeBase(ctx)
 	require.NoError(t, err)
+	_, err = native.UpdateKnowledgeBase(ctx, view.KnowledgeBaseID, "Denied", "", nil, nil)
+	workspaceStatus(t, err, 403)
+	ctx = types.WithCaller(ctx, types.Caller{TenantID: 1, UserID: "admin", Role: types.TenantRoleAdmin})
 	updated, err := native.UpdateKnowledgeBase(ctx, view.KnowledgeBaseID, "Renamed", "", &types.KnowledgeBaseConfig{IndexingStrategy: &types.IndexingStrategy{}}, nil)
 	require.NoError(t, err)
 	require.True(t, updated.IndexingStrategy.Disabled)

@@ -76,3 +76,16 @@ test('a late draft response after leaving the workbench cannot populate history 
   assert.deepEqual(panel.history, [])
   assert.deepEqual(panel.chats, [])
 })
+
+test('multiple direct knowledge bases are passed to the original chat composer and session', async () => {
+  const panel = mountPanel()
+  try {
+    panel.props.kbIds = ['first-source', 'central-backing']
+    panel.props.kbId = ''
+    panel.props.visible = true
+    await panel.flush()
+    assert.deepEqual(JSON.parse(JSON.stringify(panel.requests[0].agent_config.knowledge_bases)), ['first-source', 'central-backing'])
+    assert.ok(panel.chats.some(chat => JSON.stringify(chat.kbIds) === JSON.stringify(['first-source', 'central-backing'])))
+    assert.deepEqual(panel.history, [])
+  } finally { panel.app.unmount() }
+})

@@ -139,8 +139,7 @@ func TestWorkbenchDerivedSourceNeedsCurrentKnowledgeOwnerConsent(t *testing.T) {
 	require.Empty(t, loaded.KnowledgeBaseName)
 	require.False(t, loaded.CanReadSource)
 	require.False(t, loaded.SourceDataAvailable)
-	_, err = s.GetWorkbenchSourceScope(reader, row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, reader, row.ID)
 	for _, ctx := range []context.Context{owner, workspaceContext("admin", 1, types.TenantRoleAdmin)} {
 		_, err := s.UpdateWorkbenchSourceSharing(ctx, row.ID, true, []string{"market", "diagram"})
 		workspaceStatus(t, err, 403)
@@ -177,14 +176,12 @@ func TestWorkbenchDerivedSourceNeedsCurrentKnowledgeOwnerConsent(t *testing.T) {
 	require.Equal(t, []string{"market", "diagram"}, loaded.SourceSharingModules)
 	_, err = s.UpdateWorkbenchSourceSharing(sourceOwner, row.ID, false, nil)
 	require.NoError(t, err)
-	_, err = s.GetWorkbenchSourceScope(reader, row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, reader, row.ID)
 	_, err = s.UpdateWorkbenchSourceSharing(sourceOwner, row.ID, true, []string{"market", "diagram"})
 	require.NoError(t, err)
 	kb.CreatorID = "new-source-owner"
 	require.NoError(t, s.db.Save(kb).Error)
-	_, err = s.GetWorkbenchSourceScope(reader, row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, reader, row.ID)
 	// Losing source access does not prevent the workbench owner deleting it.
 	require.NoError(t, s.DeleteWorkbench(owner, row.ID))
 }
@@ -222,8 +219,7 @@ func TestWorkbenchDelegatedSourceWithoutExplicitModulesFailsClosed(t *testing.T)
 	loaded, err := s.GetWorkbench(reader, row.ID)
 	require.NoError(t, err)
 	require.False(t, loaded.SourceDataAvailable)
-	_, err = s.GetWorkbenchSourceScope(reader, row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, reader, row.ID)
 }
 
 func TestWorkbenchSourceModulesAreExplicitAndRevalidated(t *testing.T) {
@@ -272,8 +268,7 @@ func TestWorkbenchSourceModulesAreExplicitAndRevalidated(t *testing.T) {
 	approval, err = s.UpdateWorkbenchSourceSharing(sourceOwner, row.ID, false, []string{"market"})
 	require.NoError(t, err)
 	require.Empty(t, approval.SourceSharingModules)
-	_, err = s.GetWorkbenchSourceScope(reader, row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, reader, row.ID)
 	_, err = s.UpdateWorkbenchSourceSharing(sourceOwner, row.ID, true, []string{"market"})
 	require.NoError(t, err)
 	kb.CreatorID = "new-source-owner"
@@ -283,8 +278,7 @@ func TestWorkbenchSourceModulesAreExplicitAndRevalidated(t *testing.T) {
 	require.False(t, loaded.SourceSharingApproved)
 	require.Empty(t, loaded.SourceSharingModules)
 	require.False(t, loaded.SourceDataAvailable)
-	_, err = s.GetWorkbenchSourceScope(reader, row.ID)
-	workspaceStatus(t, err, 403)
+	assertNoWorkbenchSourceGrant(t, s, reader, row.ID)
 	_, err = s.GetWorkbenchSourceSharing(sourceOwner, row.ID)
 	workspaceStatus(t, err, 403)
 }

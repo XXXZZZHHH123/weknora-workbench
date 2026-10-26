@@ -1,0 +1,4 @@
+            <a href="#indicator-top" data-indicator-jump data-target="indicator-top" class="macro-filter-link active" aria-current="true">全部 <span data-jump-total>{{ rows | length }}</span></a>
+            {% for group in groups %}
+            <a href="#indicator-group-{{ (catalog_offset | default(0)) + loop.index }}" data-indicator-jump data-target="indicator-group-{{ (catalog_offset | default(0)) + loop.index }}" class="macro-filter-link">{{ group.name }} <span data-jump-count>{{ group.rows | length }}</span></a>
+            {% endfor %}
