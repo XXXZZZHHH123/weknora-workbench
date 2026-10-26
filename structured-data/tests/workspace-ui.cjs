@@ -81,7 +81,7 @@ async function main(){
   else if(route==='/api/pdf/import-knowledge'&&req.method==='POST'){
    const input=JSON.parse(payload),sourceId=input.source_knowledge_id;requests.at(-1).sourceKnowledgeId=sourceId;requests.at(-1).pdfKnowledgeImport=true;body={id:'pdf-native-job'};
   }else if(route==='/api/pdf/jobs/pdf-native-job')body={status:'completed',draft_id:'pdf-fixture'};
-  else if(route==='/api/pdf/drafts/pdf-fixture')body={draft_id:'pdf-fixture',bundle_sha256:'a'.repeat(64),bundle:{source:{file_name:'fixture.pdf',sha256:'b'.repeat(64)},parser:{engine:'fixture',version:'1'},fragments:[{id:'fixture-fragment',page:1,rows:[[{text:'Synthetic PDF cell'}]]},...(layoutMode?[{id:'second-fragment',page:2,rows:[[{text:'Second synthetic table'}]]}]:[])]}};
+  else if(route==='/api/pdf/drafts/pdf-fixture')body={draft_id:'pdf-fixture',bundle_sha256:'a'.repeat(64),bundle:{source:{file_name:'fixture.pdf',sha256:'b'.repeat(64)},parser:{engine:'fixture',version:'1'},fragments:[{id:'fixture-fragment',page:1,rows:[[{text:'Synthetic PDF cell'}]]},...(layoutMode?[{id:'second-fragment',page:2,rows:[[{text:'Second synthetic table'},{text:'12345678901234567890'}]]}]:[])]}};
   else if(route==='/api/pdf/drafts/pdf-fixture/source'){
    if(pdfSourceDenied){status=403;body='Denied'}else{body=Buffer.from('%PDF-1.4 synthetic fixture');type='application/pdf';}
   }else if(route==='/api/ui-config')body={title:'结构化数据库',workspace_label:'隔离浏览器验收',weknora_url:'http://127.0.0.1'};
@@ -186,6 +186,7 @@ async function main(){
    await exec("d.querySelector('.pdf-fragment-choice input').click()");
    await verify('Selection is explicit and counted before field recognition',"d.getElementById('pdfSelectionCount').textContent==='已选择 1 处表格'");
    await input('#pdfFragmentSelect','1');await wait("d.querySelector('.pdf-raw-cell')?.textContent==='Second synthetic table'");
+   await verify('Long numeric source text stays on one line',"(()=>{const cell=[...d.querySelectorAll('.pdf-raw-cell')].find(n=>n.textContent==='12345678901234567890');const range=d.createRange();range.selectNodeContents(cell);return range.getClientRects().length===1})()");
    await verify('Table navigation retains selection and follows actual source pages',"d.getElementById('pdfSelectionCount').textContent==='已选择 1 处表格' && !d.querySelector('.pdf-fragment-choice input').checked && d.querySelector('.pdf-source-viewer').getAttribute('src').endsWith('#page=2')");
    await js("document.documentElement.style.setProperty('--td-text-color-secondary','#59534e');document.documentElement.style.setProperty('--app-font-family','Georgia, \"WeKnora Noto Serif SC\", serif')");
    await wait("w.getComputedStyle(d.getElementById('pdfReviewPanel')).getPropertyValue('--muted').trim()==='#59534e'");

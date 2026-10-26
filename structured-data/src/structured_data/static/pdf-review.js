@@ -620,6 +620,12 @@
     }
     const sourceAndTables=make('div',undefined,'pdf-review-comparison');
     const original=make('div',undefined,'pdf-original-pane');original.append(make('h3','原始文件'),viewer);
+    if (navigator.pdfViewerEnabled === false) {
+      viewer.hidden = true;
+      const fallback=make('div',undefined,'pdf-source-fallback');
+      fallback.append(make('p','打开原件，与右侧识别数据核对。'));
+      const open=make('a','打开原始 PDF');open.href=sourceUrl;open.target='_blank';open.rel='noopener noreferrer';fallback.append(open);original.append(fallback);
+    }
     const fragmentList=make('div',undefined,'pdf-fragment-pane');
     sourceAndTables.append(original,fragmentList);target.append(sourceAndTables);
     renderFragmentInspector(fragmentList,viewer);
