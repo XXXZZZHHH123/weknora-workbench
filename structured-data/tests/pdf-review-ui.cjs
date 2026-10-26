@@ -169,14 +169,14 @@ async function main() {
     await evaluate("delete window.__preview.coverage.unresolved_quality_issues");
     await evaluate("document.querySelector('#pdfPlanEditor').value=JSON.stringify({...JSON.parse(document.querySelector('#pdfPlanEditor').value),title:'Edited'});document.querySelector('#pdfPlanEditor').dispatchEvent(new Event('input',{bubbles:true}))");
     assert.equal(await evaluate("document.querySelector('#pdfPublish').disabled"), true, 'editing a plan invalidates its preview');
-    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('生成手动计划模板')).click()");
+    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('重新设置所选表格的字段')).click()");
     assert.equal(await evaluate("[...document.querySelectorAll('#pdfDraftDetail details > summary')].some(s=>s.textContent==='高级映射 JSON')"), true, 'advanced JSON remains collapsible');
     assert.equal(await evaluate("document.querySelector('[data-exclude-fragment=\"fragment-1\"][data-exclude-row=\"2\"]').checked"), false, 'blank rows are not automatically excluded');
     await evaluate("(()=>{const h=document.querySelector('[data-header-fragment=\"fragment-1\"][data-header-row=\"0\"]');h.checked=true;h.dispatchEvent(new Event('change',{bubbles:true}));const x=document.querySelector('[data-exclude-fragment=\"fragment-1\"][data-exclude-row=\"2\"]');x.checked=true;x.dispatchEvent(new Event('change',{bubbles:true}))})()");
-    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('应用人工填写到计划')).click()");
+    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('保存列名和表头')).click()");
     assert.match(await evaluate("document.querySelector('#pdfReviewStatus').textContent"), /表头行 0 需要原因/);
     await evaluate("(()=>{document.querySelector('[data-header-reason-fragment=\"fragment-1\"][data-header-reason-row=\"0\"]').value='确认列名';document.querySelector('[data-exclude-reason-fragment=\"fragment-1\"][data-exclude-reason-row=\"2\"]').value='确认是页脚空行';document.querySelector('[data-column-name=\"0\"]').value='Item';document.querySelector('[data-column-name=\"1\"]').value='Amount';document.querySelector('[data-column-type=\"0\"]').value='text';document.querySelector('[data-column-type=\"1\"]').value='decimal';document.querySelector('[data-column-unit=\"1\"]').value='tonnes';document.querySelector('[data-source-column=\"0\"][data-source-fragment=\"fragment-1\"]').value='0';document.querySelector('[data-source-column=\"1\"][data-source-fragment=\"fragment-1\"]').value='1'})()");
-    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('应用人工填写到计划')).click()");
+    await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('保存列名和表头')).click()");
     const manualPlan = await evaluate("JSON.parse(document.querySelector('#pdfPlanEditor').value)");
     assert.deepEqual(manualPlan.header_rows['fragment-1'], [{row: 0, reason: '确认列名'}]);
     assert.deepEqual(manualPlan.excluded_rows, [{fragment_id: 'fragment-1', row: 2, reason: '确认是页脚空行'}]);
@@ -192,7 +192,7 @@ async function main() {
     await wait("document.querySelector('#pdfReviewStatus')?.textContent.includes('已发布表格')");
     assert.equal(await evaluate("window.__apiCalls.filter(x=>x.path.endsWith('/publish')).length"), 1);
     assert.equal(await evaluate("JSON.parse(window.__apiCalls.find(x=>x.path.endsWith('/publish')).body).reviewed"), true);
-    await evaluate("document.querySelector('#pdfReparseOcrMode').value='ocr';[...document.querySelectorAll('button')].find(b=>b.textContent.includes('使用基础模型复核')).click()");
+    await evaluate("document.querySelector('#pdfReparseOcrMode').value='ocr';[...document.querySelectorAll('button')].find(b=>b.textContent.includes('按基础档重新识别')).click()");
     await wait('window.__sourceFetches===2');
     assert.deepEqual(await evaluate('window.__reparseBody'), {tier: 'basic', ocr_mode: 'ocr'});
     assert.match(await evaluate("document.querySelector('#pdfDraftDetail').textContent"), /请求配置：basic \/ ocr/);

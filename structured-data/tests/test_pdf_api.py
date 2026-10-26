@@ -720,3 +720,31 @@ def test_polling_worker_completion_never_reports_stale_processing_as_interrupted
     finally:
         with _jobs_lock:
             _running_jobs.discard(str(path))
+
+
+def test_remote_reread_uses_server_profile_and_preserves_snapshot(pdf_service, monkeypatch):
+    from structured_data.pdf_parser_bridge import ParserConfig
+    client, _, state, _, _ = pdf_service
+    original = imported(pdf_service)
+    config = ParserConfig('remote_vlm', 'http://127.0.0.1:18735', api_key='server-private', tier='', ocr_mode='auto')
+    monkeypatch.setattr(ParserConfig, 'from_env', classmethod(lambda cls: config))
+    calls = []
+    async def parse(path, source=None, **kwargs):
+        calls.append((path.read_bytes(), kwargs['config']))
+        result = deepcopy(bundle([['Item', 'Value'], ['A', '1.20']]))
+        result['source'] = source
+        result['parser'] = {'engine': 'remote_vlm', 'version': 'fixture'}
+        return result
+    monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', parse)
+    route = f"/api/pdf/drafts/{original['draft_id']}/reparse"
+    assert client.post(route, json={'tier': 'basic', 'ocr_mode': 'auto'}, headers=headers()).status_code == 409
+    assert client.post(route, json={'tier': 'standard', 'ocr_mode': 'ocr'}, headers=headers()).status_code == 409
+    assert not calls
+    response = client.post(route, json={'tier': 'standard', 'ocr_mode': 'auto'}, headers=headers())
+    assert response.status_code == 200, response.text
+    job = finish_pdf_job(client, response.json()['id'])
+    result = client.get('/api/pdf/drafts/' + job['draft_id'], headers=headers()).json()
+    assert calls[0][0] == state['contents']
+    assert calls[0][1] is config
+    assert result['bundle']['parser'].get('requested_tier') is None
+    assert client.get('/api/pdf/drafts/' + original['draft_id'], headers=headers()).json()['bundle'] == original['bundle']

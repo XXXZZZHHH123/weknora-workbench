@@ -515,9 +515,11 @@ def install_pdf_routes(app, registry, *, publish_guard):
             env_config = ParserConfig.from_env()
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(503, 'PDF 表格解析服务尚未配置，不能复核。') from exc
-        if env_config.engine != 'mineru_v1':
-            raise HTTPException(409, '备选模型复核仅支持服务端已配置的 MinerU V1 解析器。')
-        parser_config = ParserConfig(
+        if env_config.engine not in {'mineru_v1', 'remote_vlm'}:
+            raise HTTPException(409, '当前识别服务不支持此读取方式，请重新上传文件。')
+        if env_config.engine == 'remote_vlm' and (body.tier != 'standard' or body.ocr_mode != 'auto'):
+            raise HTTPException(409, '当前识别服务统一使用已配置模型，不支持模型档位或读取方式选择。')
+        parser_config = env_config if env_config.engine == 'remote_vlm' else ParserConfig(
             env_config.engine, env_config.url, api_key=env_config.api_key,
             tier=body.tier, ocr_mode=body.ocr_mode,
             timeout_seconds=env_config.timeout_seconds, max_file_bytes=env_config.max_file_bytes,
@@ -549,7 +551,7 @@ def install_pdf_routes(app, registry, *, publish_guard):
                 ({'source_knowledge_id': source['knowledge_id'],
                   'knowledge_base_id': source['knowledge_base_id']} if source.get('knowledge_id') else None),
                 parser_config=parser_config,
-                parser_request={'tier': body.tier, 'ocr_mode': body.ocr_mode,
+                parser_request={'tier': parser_config.tier or None, 'ocr_mode': parser_config.ocr_mode,
                                 'source_draft_id': draft['draft_id']})
         except BaseException as exc:
             path.unlink(missing_ok=True)
