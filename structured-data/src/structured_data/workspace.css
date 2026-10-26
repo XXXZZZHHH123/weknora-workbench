@@ -220,7 +220,7 @@ body.native-source .upload-steps{display:none}
 .pdf-history-entry{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0;padding:10px;background:var(--surface-soft);border-radius:6px;font-size:12px}
 .pdf-history-entry>span{flex:1;min-width:160px}
 .pdf-history-entry .record-details{flex-basis:100%}
-#pdfReviewApp.reviewing-file #pdfInventory{display:none}
+
 #pdfDraftDetail:empty{display:none}
 .pdf-status:empty{display:none}
 .pdf-status{margin:12px 0;color:var(--muted)}
@@ -259,7 +259,7 @@ body.native-source .upload-steps{display:none}
 :root{--pdf-default-text:var(--text);--pdf-default-muted:var(--muted);--pdf-default-primary:var(--primary);--pdf-default-soft:var(--soft);--pdf-default-paper:var(--paper);--pdf-default-line:var(--line)}
 #pdfReviewPanel{--text:var(--td-text-color-primary,var(--pdf-default-text));--muted:var(--td-text-color-secondary,var(--pdf-default-muted));--primary:var(--td-brand-color,var(--pdf-default-primary));--soft:var(--td-brand-color-light,var(--pdf-default-soft));--paper:var(--app-card-bg,var(--pdf-default-paper));--line:var(--app-border-color,var(--pdf-default-line))}
 #importReview>p{color:var(--muted)}
-body.document-results:has(#pdfReviewApp.reviewing-file) #workspaceIntro,body.document-results:has(#pdfReviewApp.reviewing-file) #processingResults{display:none!important}
+
 .pdf-manual-details>button{margin:12px 0}
 #pdfReviewPanel .pdf-instructions textarea{display:block;width:100%;margin-top:12px;font:inherit}
 .pdf-publication-section[hidden]{display:none}
@@ -274,3 +274,17 @@ body.document-results:has(#pdfReviewApp.reviewing-file) #workspaceIntro,body.doc
 .pdf-file-actions{white-space:normal}.pdf-file-actions button{margin:3px}
 @media(max-width:1000px){.pdf-review-comparison{grid-template-columns:1fr}.pdf-original-pane{height:380px}}
 @media(max-width:680px){.pdf-automation{align-items:flex-start;flex-direction:column}}
+
+/* The list keeps its original height/scroll; details have their own scroll area. */
+html{scrollbar-gutter:stable}html.pdf-detail-open{overflow:hidden}
+#pdfDraftDetail{position:fixed;inset:16px;box-sizing:border-box;width:calc(100% - 32px);height:calc(100% - 32px);max-width:none;max-height:none;margin:0;padding:20px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--text);overflow:auto;overflow-anchor:none;font:inherit}
+#pdfDraftDetail:not([open]){display:none}#pdfDraftDetail::backdrop{background:#0003}
+#pdfDraftDetail>.pdf-review-heading{position:sticky;top:-20px;z-index:3;padding:16px 0;margin-top:-4px;background:var(--paper);border-bottom:1px solid var(--line)}
+#pdfDraftDetail .pdf-detail-loading{display:grid;place-content:center;gap:16px;min-height:480px;color:var(--muted);text-align:center}
+#pdfReviewPanel .pdf-status{min-height:22px;display:block;overflow-anchor:none}#pdfReviewPanel .pdf-status:empty{visibility:hidden}
+#pdfReviewApp{overflow-anchor:none}.pdf-file-actions{vertical-align:top!important}.pdf-file-actions button{min-width:96px}.pdf-file-problem{max-width:300px;margin-top:6px;line-height:1.6;color:var(--muted)}
+.pdf-automation{align-items:flex-start;min-height:100px}.pdf-automation-actions{display:flex;gap:8px;flex-shrink:0}.pdf-automation-actions button{min-width:120px}.pdf-automatic-progress{min-height:20px}.pdf-problem-detail{font-size:12px;color:var(--muted);margin-bottom:12px}.pdf-problem-detail p{margin:6px 0}
+.pdf-exception>div{min-width:0}.pdf-exception strong{font-weight:500}.pdf-exception p{margin:4px 0}.pdf-detail-status{min-height:22px;color:var(--muted);font-size:12px}
+@media(max-width:680px){#pdfDraftDetail{inset:8px;width:calc(100% - 16px);height:calc(100% - 16px);padding:16px}.pdf-automation-actions{flex-wrap:wrap}}
+.pdf-automation-inspection{min-height:30px}.pdf-automation-inspection>details{margin:0 0 10px}.pdf-automation-inspection .pdf-exceptions{margin-top:10px}
+.pdf-processing .pdf-file-problem{visibility:hidden}

@@ -183,7 +183,7 @@ async function main(){
    await screenshot('pdf-file-inventory');
    await click('.pdf-file-table tbody>tr:first-child .pdf-file-actions button:last-child');await wait("d.querySelector('.pdf-raw-cell')?.textContent==='Synthetic PDF cell'");
    assert(requests.some(r=>r.path==='/structured/api/pdf/drafts/pdf-fixture'));
-   await verify('Opening a file hides its inventory and displays one selected table beside the original',"w.getComputedStyle(d.getElementById('pdfInventory')).display==='none' && d.querySelectorAll('.pdf-raw-table').length===1 && d.getElementById('pdfFragmentSelect').options.length===2 && d.querySelector('.pdf-source-viewer').dataset.page==='1'");
+   await verify('Opening a file displays one selected table in an independent detail panel',"d.getElementById('pdfDraftDetail').open && d.querySelectorAll('.pdf-raw-table').length===1 && d.getElementById('pdfFragmentSelect').options.length===2 && d.querySelector('.pdf-source-viewer').dataset.page==='1'");
    await exec("d.querySelector('.pdf-fragment-choice input').click()");
    await verify('Selection is explicit and counted before field recognition',"d.getElementById('pdfSelectionCount').textContent==='已选择 1 处表格'");
    await input('#pdfFragmentSelect','1');await wait("d.querySelector('.pdf-raw-cell')?.textContent==='Second synthetic table'");

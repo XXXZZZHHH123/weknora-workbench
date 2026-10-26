@@ -2,6 +2,8 @@ from copy import deepcopy
 import pytest
 
 from structured_data.pdf_automation import group_fragments, process_draft
+from structured_data.pdf_automation import grouping_evidence
+from structured_data.pdf_errors import PDFProcessingError, processing_problem
 from test_pdf_tables import bundle, setup
 
 
@@ -88,3 +90,37 @@ def test_needs_review_and_model_failure_cannot_publish(tmp_path, monkeypatch):
     result = process_draft(store, draft['draft_id'], tmp_path, previous=result, save=lambda s: None)
     assert 'secret-api-key' not in str(result)
     assert not store.list_tables()['tables']
+
+
+def test_grouping_compaction_keeps_all_text_rows_and_spans():
+    raw = bundle([['Identifier', 'Quantity'], ['A', '-1.20'], ['B', '']])
+    raw['fragments'][0]['rows'][1][0]['rowspan'] = 2
+    raw['page_context'] = [{'page': 1, 'bbox': [0, 0, 1, 1], 'text': 'unit t', 'text_parts': ['unit ', 't']},
+                           {'page': 2, 'text': 'different', 'text_parts': ['extra evidence']}]
+    compact = grouping_evidence(raw)
+    assert compact['fragments'][0]['rows'] == [['Identifier', 'Quantity'], ['A', '-1.20'], ['B', '']]
+    assert compact['fragments'][0]['spans'] == [{'row': 1, 'column': 0, 'rowspan': 2}]
+    assert compact['page_context'][0]['text'] == 'unit t'
+    assert 'text_parts' not in compact['page_context'][0]
+    assert compact['page_context'][1]['text_parts'] == ['extra evidence']
+
+
+@pytest.mark.parametrize('code,action', [('GROUPING_INPUT_LIMIT', 'review'), ('MODEL_NOT_CONFIGURED', 'model_settings'),
+    ('MODEL_RATE_LIMIT', 'retry'), ('MODEL_TIMEOUT', 'retry'), ('MODEL_OUTPUT_INVALID', 'retry')])
+def test_specific_failure_is_persisted_with_recovery_and_no_secret(tmp_path, monkeypatch, code, action):
+    store, draft, _ = setup(tmp_path)
+    def fail(*args):
+        raise PDFProcessingError(code, 'private-api-key hidden-provider-url', input_chars=220000, limit_chars=200000)
+    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', fail)
+    saved = []
+    result = process_draft(store, draft['draft_id'], tmp_path, save=lambda state: saved.append(deepcopy(state)))
+    assert result['problem']['code'] == code and result['problem']['action'] == action
+    assert result['problem']['input_chars'] == 220000
+    assert saved and 'private-api-key' not in str(saved) and 'hidden-provider-url' not in str(saved)
+    assert not store.list_tables()['tables']
+
+
+def test_unknown_failure_does_not_guess_model_configuration():
+    problem = processing_problem(RuntimeError('secret'), stage='grouping')
+    assert problem['code'] == 'PROCESSING_FAILED'
+    assert problem['action'] == 'retry' and 'secret' not in str(problem)

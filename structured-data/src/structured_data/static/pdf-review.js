@@ -24,6 +24,30 @@
   let requestedSourceEpoch = -1;
   let sourceBusy = false;
   let activeFragmentIndex = 0;
+  let automationRun = 0;
+  let processingDraftId = '';
+  const fileProgress = new Map();
+  let listScroll = 0;
+  let returnFocus = null;
+
+  function closeDetail() {
+    const detail=document.getElementById('pdfDraftDetail');
+    if(detail?.open)detail.close();
+    document.documentElement.classList.remove('pdf-detail-open');
+    root.classList.remove('reviewing-file');
+    if(returnFocus?.isConnected)returnFocus.focus({preventScroll:true});
+    window.scrollTo({top:listScroll,behavior:'instant'});
+  }
+
+  function openDetail() {
+    const detail=document.getElementById('pdfDraftDetail');
+    if(!detail || detail.open)return;
+    listScroll=window.scrollY;returnFocus=document.activeElement;
+    document.documentElement.classList.add('pdf-detail-open');
+    root.classList.add('reviewing-file');
+    detail.showModal();
+    detail.scrollTop=0;
+  }
 
   const make = (tag, text, className) => {
     const node = document.createElement(tag);
@@ -51,6 +75,8 @@
     status.textContent = message || '';
     status.classList.toggle('error', Boolean(error));
     status.setAttribute('role', error ? 'alert' : 'status');
+    const detailStatus=document.getElementById('pdfDetailStatus');
+    if(detailStatus){detailStatus.textContent=message||'';detailStatus.classList.toggle('error',Boolean(error));}
   }
 
   function invalidatePreview(message = '计划已修改，请重新预览后才能发布。') {
@@ -71,6 +97,7 @@
   }
 
   function clearScope(message = '账号或知识库已切换，请重新加载 PDF 草稿。') {
+    closeDetail();automationRun++;processingDraftId='';fileProgress.clear();
     operation += 1;
     root.inert = false;
     scopeController.abort();
@@ -231,16 +258,16 @@
   function renderPublishedTables() { renderDrafts(); }
 
   function showFileList() {
+    closeDetail();
     operation += 1;
     draft = null;
     preview = null;
     previewSignature = '';
     selectedFragments = new Set();
     revokeSource();
-    root.classList.remove('reviewing-file');
     document.getElementById('pdfDraftDetail')?.replaceChildren();
     setStatus('');
-    renderDrafts();
+    // The underlying list was never removed; preserve its controls and position.
   }
 
   function renderJobs() {
@@ -310,17 +337,29 @@
       const latest = group.versions[0];
       const row = make('tr');
       row.dataset.fileIdentity = fileIdentity(latest || group.published[0]);
+      if(latest)row.dataset.draftId=latest.draft_id;
       const name = make('td'), nameInfo = make('div', undefined, 'pdf-file-name');
       nameInfo.append(make('strong', group.source.file_name || 'PDF 文件'));
       if (latest?.created_at) nameInfo.append(make('small', `最近识别 ${dateLabel(latest.created_at)}`));
       name.append(nameInfo);
       const state=latest?.automation;
-      const result = make('td', state?.error?'自动整理未完成':state?.status==='processing'?'正在整理':state?.status==='completed'?'处理完成':state?.attention_count?`${state.attention_count} 张需要处理`:latest ? `${latest.fragment_count || 0} 处表格` : '已保存入库结果');
+      const result = make('td',undefined,'pdf-file-result');
+      result.append(make('span',state?.problem?.title|| (state?.error?'自动整理未完成':state?.status==='processing'?'正在整理':state?.status==='completed'?'处理完成':state?.attention_count?`${state.attention_count} 张需要处理`:latest ? `${latest.fragment_count || 0} 处表格` : '已保存入库结果'),'pdf-file-stage'));
+      if(state?.problem || state?.error){
+        const problem=problemFor(state);
+        const explanation=make('div',undefined,'pdf-file-problem');explanation.append(make('small',problem.message));
+        result.append(explanation);
+      }
       const published = make('td');
       published.append(make('span', group.published.length ? `${group.published.length} 张表格` : '尚未入库', group.published.length ? 'pdf-published-state' : 'muted'));
       const controls = make('td', undefined, 'pdf-file-actions');
       if (latest) {
-        if(!state||state.status!=='completed')controls.append(action(state?'重试自动入库':'一键整理并入库',()=>autoProcess(latest.draft_id).catch(error=>setStatus(error.message,true))));
+        if((!state||state.status!=='completed') && !(state?.problem?.retryable===false && state.problem.action!=='model_settings')){
+          const needsModel=state?.problem?.action==='model_settings';
+          const run=action(needsModel?'选择处理模型':state?'重新整理':'一键整理并入库',needsModel?openProcessingModel:()=>autoProcess(latest.draft_id).catch(()=>{}));
+          run.dataset.automaticDraft=latest.draft_id;
+          controls.append(run);
+        }
         controls.append(action(state?.attention_count?'处理疑点':'查看表格', () => selectDraft(latest.draft_id), true));
       }
       const history = make('details', undefined, 'pdf-file-history');
@@ -344,6 +383,7 @@
     const wrap = make('div', undefined, 'pdf-file-list-scroll');
     wrap.append(table);
     list.append(wrap);
+    updateFileProgress();
   }
 
   function createManualPlan() {
@@ -454,39 +494,109 @@
     return viewer;
   }
 
-  async function autoProcess(id) {
-    const savedEpoch=epoch,savedOperation=++operation;
-    setStatus('正在自动整理并入库可用表格…');
-    const result=await api(`/api/pdf/drafts/${encodeURIComponent(id)}/auto-process`,{method:'POST'});
-    if(!current(savedEpoch,savedOperation))return;
-    await pollJob(result.id,savedEpoch,savedOperation);
+  function openProcessingModel() {
+    if(host.openModelSettings)host.openModelSettings();
+    else setStatus('请通过页面右上角的“字段模型”选择可用模型。',true);
+  }
+
+  function problemFor(state) {
+    return state?.problem || {code:'LEGACY_FAILURE',title:'此前整理未完成',
+      message:'此前记录没有保存具体失败原因。可重新整理以获取检查结果，已有表格会保留。',action:'retry',retryable:true};
+  }
+
+  function updateFileProgress() {
+    for(const button of root.querySelectorAll('[data-automatic-draft]')) {
+      const busy=processingDraftId===button.dataset.automaticDraft;
+      button.disabled=Boolean(processingDraftId);button.setAttribute('aria-busy',String(busy));
+      if(!button.dataset.idleLabel)button.dataset.idleLabel=button.textContent;
+      button.textContent=busy?'正在整理…':button.dataset.idleLabel;
+    }
+    for(const row of root.querySelectorAll('[data-draft-id]')){
+      const stage=fileProgress.get(row.dataset.draftId);
+      row.classList.toggle('pdf-processing',Boolean(stage));
+      if(stage)row.querySelector('.pdf-file-stage').textContent=stage;
+    }
+    const button=document.getElementById('pdfAutoProcess');
+    if(button){button.disabled=Boolean(processingDraftId);button.setAttribute('aria-busy',String(processingDraftId===draft?.draft_id));}
+    const progress=document.getElementById('pdfAutomaticProgress');
+    if(progress)progress.textContent=fileProgress.get(draft?.draft_id)||'';
+    const title=document.querySelector('#pdfAutomationSlot .pdf-automation strong');
+    if(title){if(!title.dataset.idleLabel)title.dataset.idleLabel=title.textContent;title.textContent=processingDraftId===draft?.draft_id?'正在整理表格':title.dataset.idleLabel;}
+  }
+
+  async function autoProcess(id,existingJobId='') {
+    if(processingDraftId)return;
+    const savedEpoch=epoch,run=++automationRun;
+    const active=()=>savedEpoch===epoch && savedEpoch===host.getAuthEpoch() && run===automationRun && !scopeController.signal.aborted;
+    processingDraftId=id;fileProgress.set(id,'正在准备整理…');updateFileProgress();
+    try{
+      const started=existingJobId?{id:existingJobId}:await api(`/api/pdf/drafts/${encodeURIComponent(id)}/auto-process`,{method:'POST'});
+      for(;;){
+        const job=await api(`/api/pdf/jobs/${encodeURIComponent(started.id)}`);
+        if(!active())return;
+        fileProgress.set(id,job.stage||'正在整理表格…');updateFileProgress();
+        if(['failed','cancelled'].includes(job.status))throw new Error(job.error||'整理未完成，请重试。');
+        if(job.status==='completed'){
+          const [catalog,published]=await Promise.all([api('/api/pdf/drafts'),api('/api/pdf/tables')]);
+          if(!active())return;
+          drafts=catalog.drafts||[];tables=published.tables||[];
+          fileProgress.delete(id);processingDraftId='';
+          const scroll=window.scrollY;renderDrafts();window.scrollTo({top:scroll,behavior:'instant'});
+          if(draft?.draft_id===id){
+            draft.automation=job.automatic_result||drafts.find(item=>item.draft_id===id)?.automation;
+            renderAutomation(document.getElementById('pdfAutomationSlot'));
+          }
+          updateFileProgress();return job;
+        }
+        if(!['processing','queued','pending','running'].includes(job.status))throw new Error('无法读取整理任务状态，请刷新记录。');
+        await new Promise(resolve=>setTimeout(resolve,1200));
+      }
+    }catch(error){if(active())setStatus(error.message,true);throw error;}
+    finally{if(active()){processingDraftId='';fileProgress.delete(id);updateFileProgress();}}
   }
 
   function renderAutomation(parent) {
-    const state=draft.automation;
-    const panel=make('div',undefined,'pdf-automation');
-    const summary=make('div');
+    if(!parent)return;
+    let slot=parent.id==='pdfAutomationSlot'?parent:document.getElementById('pdfAutomationSlot');
+    if(!slot){slot=make('div');slot.id='pdfAutomationSlot';parent.append(slot);}
+    slot.replaceChildren();
+    const state=draft.automation,problem=(state?.problem||state?.error)?problemFor(state):null;
+    const panel=make('div',undefined,'pdf-automation'),summary=make('div');
     const accepted=state?.accepted_count||0,pending=state?.attention_count||0;
-    summary.append(make('strong',state?.error?'自动整理未完成':state?`已入库 ${accepted} 张${pending?` · ${pending} 张需要处理`:''}`:'自动整理表格'));
-    summary.append(make('p',state?.error||'可用表格自动入库，只有识别疑点需要处理。','muted'));
-    const run=action(state?.status==='completed'?'重新检查表格':state?'重试未完成表格':'一键整理并入库',async()=>{
-      run.disabled=true;
-      try{await autoProcess(draft.draft_id);}catch(error){setStatus(error.message,true);}finally{if(run.isConnected)run.disabled=false;}
-    });run.id='pdfAutoProcess';panel.append(summary,run);parent.append(panel);
-    if(!state)return;
-    const exceptions=(state.groups||[]).filter(group=>group.status!=='accepted');
+    summary.append(make('strong',problem?problem.title:state?`已入库 ${accepted} 张${pending?` · ${pending} 张需要处理`:''}`:'自动整理表格'));
+    summary.append(make('p',problem?problem.message:'可用表格自动入库，只有识别疑点需要处理。','muted'));
+    const existing=tables.filter(item=>fileIdentity(item)===fileIdentity({source:source(draft.bundle)})).length;
+    if(existing)summary.append(make('small',`已保存 ${existing} 张可查询表格，当前整理不会影响已有结果。`,'muted'));
+    const progress=make('p','','pdf-automatic-progress');progress.id='pdfAutomaticProgress';progress.setAttribute('role','status');summary.append(progress);
+    const controls=make('div',undefined,'pdf-automation-actions');
+    if(problem?.action==='model_settings')controls.append(action('选择处理模型',openProcessingModel));
+    if(!problem || problem.retryable!==false){
+      const run=action(state?.status==='completed'?'重新检查表格':state?'重新整理':'一键整理并入库',()=>autoProcess(draft.draft_id).catch(()=>{}));
+      run.id='pdfAutoProcess';run.dataset.automaticDraft=draft.draft_id;controls.append(run);
+    }
+    if(problem?.action==='review')controls.append(make('span','请在下方选择表格，处理对应片段','muted'));
+    panel.append(summary,controls);slot.append(panel);
+    const inspection=make('div',undefined,'pdf-automation-inspection');slot.append(inspection);
+    if(problem){const detail=make('details',undefined,'pdf-problem-detail');detail.append(make('summary','错误详情'),make('p',`错误代码：${problem.code}`));
+      if(problem.input_chars)detail.append(make('p',`本次内容 ${problem.input_chars.toLocaleString()} 字符，单次上限 ${problem.limit_chars.toLocaleString()} 字符。`));inspection.append(detail);}
+    const exceptions=(state?.groups||[]).filter(group=>group.status!=='accepted');
     if(exceptions.length){
       const list=make('div',undefined,'pdf-exceptions');
       for(const group of exceptions){
         const pages=[...new Set(fragments().filter(f=>group.fragment_ids.includes(f.id)).map(f=>f.page))];
-        const item=make('div',undefined,'pdf-exception');
-        item.append(make('span',`第 ${pages.join('、')} 页 · ${group.message||'需要处理'}`),action('查看疑点',()=>{
+        const item=make('div',undefined,'pdf-exception'),text=make('div');
+        text.append(make('strong',`第 ${pages.join('、')} 页 · ${group.problem?.title||group.message||'需要处理'}`));
+        if(group.problem?.message)text.append(make('p',group.problem.message,'muted'));
+        item.append(text,action('查看疑点',()=>{
           activeFragmentIndex=Math.max(0,fragments().findIndex(f=>group.fragment_ids.includes(f.id)));
-          selectedFragments=new Set(group.fragment_ids);renderSelectedDraft();
-          document.querySelector('.pdf-review-comparison')?.scrollIntoView({block:'start',behavior:'smooth'});
+          selectedFragments=new Set(group.fragment_ids);
+          const parent=document.querySelector('.pdf-fragment-pane'),viewer=document.querySelector('.pdf-source-viewer');
+          renderFragmentInspector(parent,viewer);updateSelectionCount();
         },true));list.append(item);
-      }parent.append(list);
+      }
+      const drawer=make('details',undefined,'pdf-exception-drawer');drawer.append(make('summary',`查看需要处理的表格（${exceptions.length}）`),list);inspection.append(drawer);
     }
+    updateFileProgress();
   }
 
   function updateSelectionCount() {
@@ -624,6 +734,13 @@
     selectedFragments = new Set();
     preview = null;
     revokeSource();
+    const detail=document.getElementById('pdfDraftDetail');
+    detail.replaceChildren();
+    const heading=make('div',undefined,'pdf-review-heading');
+    const back=action('返回文件列表',showFileList,true);back.id='pdfBackToFiles';
+    heading.append(back,make('h2',drafts.find(item=>item.draft_id===id)?.source?.file_name||'表格处理结果'));
+    const loading=make('div','正在读取表格与原件…','pdf-detail-loading');loading.setAttribute('role','status');
+    detail.append(heading,loading);openDetail();
     setStatus('正在读取原始片段与受保护的 PDF 原件…');
     invalidatePreview('选择片段并预览映射后，结果会显示在这里。');
     try {
@@ -643,7 +760,11 @@
       setStatus('');
       return true;
     } catch (error) {
-      if (current(savedEpoch, savedOperation)) setStatus(error.message, true);
+      if (current(savedEpoch, savedOperation)) {
+        loading.textContent=error.message;loading.classList.add('error');
+        loading.append(action('重新打开',()=>selectDraft(id),true));
+        setStatus(error.message,true);
+      }
       return false;
     }
   }
@@ -791,6 +912,8 @@
     previewPane.id = 'pdfPreview';
     previewPane.append(make('p', '选择片段并预览映射后，结果会显示在这里。', 'muted'));
     publishSection.append(make('h3','预览与发布'),previewPane,confirmation);target.append(publishSection);
+    const status=make('p','','pdf-detail-status');status.id='pdfDetailStatus';status.setAttribute('role','status');target.append(status);
+    updateFileProgress();
   }
 
   function updatePublishButton() {
@@ -981,6 +1104,7 @@
   }
 
   function closeKnowledgeSource() {
+    closeDetail();
     requestedSourceKnowledge = '';
     requestedSourceEpoch = -1;
     sourceBusy = false;
@@ -1030,7 +1154,8 @@
       renderPublishedTables();
       setStatus(config.configured ? '' : 'PDF 解析服务尚未配置，暂时无法处理新文件。');
       const activeJob=jobs.find(job=>['processing','pending','queued','running'].includes(job.status));
-      if(activeJob)void pollJob(activeJob.id,savedEpoch,savedOperation).catch(error=>{
+      if(activeJob?.kind==='automatic' && activeJob.draft_id)void autoProcess(activeJob.draft_id,activeJob.id).catch(()=>{});
+      else if(activeJob)void pollJob(activeJob.id,savedEpoch,savedOperation).catch(error=>{
         if(current(savedEpoch,savedOperation))setStatus(error.message,true);
       });
     } catch (error) {
@@ -1043,6 +1168,7 @@
   }
 
   function renderShell() {
+    closeDetail();
     root.replaceChildren();root.classList.remove('reviewing-file');
     const inventory=make('div',undefined,'pdf-inventory');inventory.id='pdfInventory';
     const toolbar=make('div',undefined,'pdf-inventory-toolbar');
@@ -1059,7 +1185,8 @@
     const list=make('div');list.id='pdfDraftList';inventory.append(list);
     root.append(inventory);
     const status=make('p','','pdf-status');status.id='pdfReviewStatus';status.setAttribute('role','status');status.setAttribute('aria-live','polite');root.append(status);
-    const detail=make('div');detail.id='pdfDraftDetail';root.append(detail);
+    const detail=make('dialog');detail.id='pdfDraftDetail';detail.setAttribute('aria-label','PDF 表格处理详情');
+    detail.addEventListener('cancel',event=>{event.preventDefault();showFileList();});root.append(detail);
 
   }
 
@@ -1069,6 +1196,7 @@
   });
   window.addEventListener('structured-workspace-ready', () => loadWorkspace());
   window.addEventListener('pagehide', () => {
+    closeDetail();
     operation += 1;
     scopeController.abort();
     revokeSource();
