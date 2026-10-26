@@ -19,7 +19,7 @@ export interface ResourcePermissionsView {
   can_manage_source?: boolean
   source_sharing_requested?: boolean
   restricted_view_profiles?: RestrictedViewProfile[] | null
-  pending_workbenches?: Array<{ id: string; name: string; owner_id: string; source_sharing_approved: boolean; source_sharing_modules?: SourceSharingModule[] }>
+  pending_workbenches?: Array<{ id: string; name: string; owner_id: string; source_binding_id?: string; source_sharing_approved: boolean; source_sharing_modules?: SourceSharingModule[] }>
 }
 type Envelope<T> = { success: boolean; data: T; message?: string }
 function base(kind: ResourceKind, id: string) {

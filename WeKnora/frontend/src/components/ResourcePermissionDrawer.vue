@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { createRandomUUID } from '@/utils/uuid'
-import { getResearchWorkbench } from '@/api/workspaces'
+import { getResearchWorkbench, updateResearchWorkbenchSourceSharing } from '@/api/workspaces'
+import WorkbenchSourcePermissions from './WorkbenchSourcePermissions.vue'
 import { createIsolatedResearchClient, type IsolatedResearchIdentity } from '@/api/isolatedResearch'
 import { restrictedViewProfilesDraft, eligibleProfileMembers, validateRestrictedViewProfiles, type RestrictedViewProfile } from '@/utils/restrictedViewProfiles'
 import { MessagePlugin } from 'tdesign-vue-next'
@@ -13,7 +14,7 @@ import { resourcePolicyDraft, setResourceMemberPermission } from '@/utils/resour
 import { workspaceErrorMessage } from '@/views/workspaces/workspaceForm'
 import { SOURCE_SHARING_MODULES, sourceSharingModulesDraft, type SourceSharingModule } from '@/utils/sourceSharingModules'
 
-const props = defineProps<{ visible: boolean; resourceId: string; resourceName: string; kind: ResourceKind }>()
+const props = defineProps<{ visible: boolean; resourceId: string; resourceName: string; kind: ResourceKind; systemRole?: string }>()
 const emit = defineEmits<{ 'update:visible': [value: boolean]; saved: [] }>()
 const auth = useAuthStore()
 const details = ref<ResourcePermissionsView | null>(null), policy = ref<ResourceAccessPolicy>({ space_permission: 'none', members: [] })
@@ -22,10 +23,12 @@ const loading = ref(false), memberLoading = ref(false), busy = ref(false), error
 const sourceBusy = ref(''), sourceError = ref('')
 const sourceEditing = ref(''), sourceApproved = ref(false), sourceModules = ref<SourceSharingModule[]>([])
 const profiles = ref<RestrictedViewProfile[]>([]), restrictedEnabled = ref(false)
+const sourceScopeV2 = ref(false)
 const profileCandidates = computed(() => Object.values(knownMembers.value).filter(member => member.status === 'active' && member.user_id !== details.value?.owner_id && (policy.value.space_permission !== 'none' || policy.value.members.some(grant => grant.user_id === member.user_id))))
 const knownMembers = ref<Record<string, TenantMember>>({})
 const identity = computed(() => JSON.stringify([auth.selectedTenantId ?? auth.tenant?.id, auth.user?.id, auth.token, props.kind, props.resourceId]))
 const editable = computed(() => details.value?.can_manage === true)
+const centerSource = computed(() => props.kind === 'knowledge-base' && props.systemRole === 'central')
 const ownerLabel = computed(() => { const owner = knownMembers.value[details.value?.owner_id || '']; return owner?.username || owner?.email || (details.value?.owner_id === auth.user?.id ? auth.user?.username || '我' : '资源主人') })
 const available = computed(() => members.value.filter(member => member.status === 'active' && member.user_id !== details.value?.owner_id && !policy.value.members.some(grant => grant.user_id === member.user_id)))
 let generation = 0, memberGeneration = 0
@@ -48,7 +51,7 @@ async function loadMembers(nextPage = 1) {
 }
 async function load() {
   const own = ++generation
-  profiles.value = []; restrictedEnabled.value = false
+  profiles.value = []; restrictedEnabled.value = false; sourceScopeV2.value = false
   details.value = null; policy.value = { space_permission: 'none', members: [] }; members.value = []; knownMembers.value = {}; selected.value = ''; query.value = ''; total.value = 0; page.value = 1; loadedMemberCount.value = 0; error.value = ''; memberError.value = ''; sourceBusy.value = ''; sourceError.value = ''; sourceEditing.value = ''; sourceApproved.value = false; sourceModules.value = []; busy.value = false
   if (!props.visible) { loading.value = false; return }
   loading.value = true
@@ -57,15 +60,25 @@ async function load() {
     if (!current(own)) return
     if (!response.success || !response.data) throw new Error(response.message || '无法读取资源权限，请重试。')
     details.value = response.data; policy.value = resourcePolicyDraft(response.data.policy)
+    if (centerSource.value) {
+      if (policy.value.space_permission === 'editor') policy.value.space_permission = 'viewer'
+      policy.value.members = policy.value.members.map(member => ({ ...member, permission: 'viewer' }))
+    }
+    if (props.kind === 'research-workbench') {
+      const workbench = await getResearchWorkbench(props.resourceId)
+      if (!current(own)) return
+      if (!workbench.success || workbench.data?.id !== props.resourceId) throw new Error('无法核对工作台来源范围，请重试。')
+      sourceScopeV2.value = workbench.data.scope_version === 2
+    }
     profiles.value = restrictedViewProfilesDraft(response.data.restricted_view_profiles, response.data.source_sharing_modules)
-    restrictedEnabled.value = profiles.value.length > 0 && (!response.data.can_manage_source || response.data.source_sharing_approved === true)
+    restrictedEnabled.value = profiles.value.length > 0 && (sourceScopeV2.value || !response.data.can_manage_source || response.data.source_sharing_approved === true)
     await loadMembers()
   } catch (e) { if (current(own)) error.value = workspaceErrorMessage(e) }
   finally { if (current(own)) loading.value = false }
 }
 function grant(userId: string, permission: 'viewer' | 'editor' | 'none') {
   if (!editable.value || busy.value || !userId || userId === details.value?.owner_id) return
-  policy.value = setResourceMemberPermission(policy.value, userId, permission, knownMembers.value[userId]?.role || '')
+  policy.value = setResourceMemberPermission(policy.value, userId, centerSource.value && permission === 'editor' ? 'viewer' : permission, knownMembers.value[userId]?.role || '')
   profiles.value = eligibleProfileMembers(profiles.value, policy.value)
 }
 function add() { grant(selected.value, 'viewer'); selected.value = '' }
@@ -81,12 +94,12 @@ async function save() {
       if (!current(own)) return
       if (!response.success || response.data?.id !== props.resourceId) throw new Error('无法核对产业图归属，请重试。')
       if (response.data.can_read_source && response.data.can_edit) {
-        const captured: IsolatedResearchIdentity = { token: auth.token || '', tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '', workbenchId: props.resourceId, knowledgeBaseId: response.data.knowledge_base_id }
+        const captured: IsolatedResearchIdentity = { token: auth.token || '', tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '', workbenchId: props.resourceId, knowledgeBaseId: response.data.knowledge_base_id, sourcesRevision: response.data.scope_version === 2 ? response.data.sources_revision : undefined }
         await createIsolatedResearchClient(captured, () => current(own) ? { ...captured, token: auth.token || '', tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '' } : { ...captured, token: '' }).post('/diagram/publish', {})
         if (!current(own)) return
       }
     }
-    const settings = props.kind === 'research-workbench' ? { ...policy.value, restricted_view_profiles: selectedProfiles, ...(details.value?.can_manage_source ? { source_sharing_approved: restrictedEnabled.value } : {}) } : policy.value
+    const settings = props.kind === 'research-workbench' ? { ...policy.value, restricted_view_profiles: selectedProfiles, ...(!sourceScopeV2.value && details.value?.can_manage_source ? { source_sharing_approved: restrictedEnabled.value } : {}) } : policy.value
     const response = await updateResourcePermissions(props.kind, props.resourceId, settings)
     if (!current(own)) return
     if (!response.success) throw new Error(response.message || '未收到保存确认，请重试。')
@@ -119,7 +132,8 @@ async function shareSource(workbenchId: string, approved?: boolean, selectedModu
   if (approved && modules.length === 0) { sourceError.value = '请至少选择一个可展示数据的页面。'; return }
   const own = generation; sourceBusy.value = workbenchId; sourceError.value = ''
   try {
-    const response = approved === undefined ? await requestWorkbenchSourceSharing(workbenchId) : await updateWorkbenchSourceSharing(workbenchId, approved, modules)
+    const request = details.value?.pending_workbenches?.find(item => item.id === workbenchId)
+    const response = approved === undefined ? await requestWorkbenchSourceSharing(workbenchId) : request?.source_binding_id ? await updateResearchWorkbenchSourceSharing(workbenchId, request.source_binding_id, approved, modules) : await updateWorkbenchSourceSharing(workbenchId, approved, modules)
     if (!current(own)) return
     if (!response.success) throw new Error(response.message || '未能更新来源授权，请重试。')
     if (approved === undefined) details.value!.source_sharing_requested = true
@@ -146,9 +160,10 @@ onBeforeUnmount(() => { generation++; memberGeneration++ })
       <t-alert v-if="error" theme="error" :message="error" />
       <template v-if="details && !loading">
         <p v-if="details.legacy" class="resource-permissions__legacy">此资源保留原有空间可见范围。保存后将按下方配置独立授权。</p>
-        <div class="resource-permissions__owner"><span>{{ ownerLabel }}</span><small>主人 · 始终可管理</small></div>
-        <label class="resource-permissions__space"><span>空间默认权限</span><select v-model="policy.space_permission" :disabled="!editable || busy" aria-label="空间默认权限"><option value="none">仅自己和指定成员</option><option value="viewer">所有人可查看</option><option value="editor">所有人可编辑</option></select></label>
-        <p class="resource-permissions__hint">各项授权取较高权限，可编辑包含可查看；空间只读成员仍仅可查看。只有主人可修改权限、重命名或删除整个资源。</p>
+        <div class="resource-permissions__owner"><span>{{ ownerLabel }}</span><small>{{ centerSource ? '登记主人' : '主人 · 始终可管理' }}</small></div>
+        <label class="resource-permissions__space"><span>空间默认权限</span><select v-model="policy.space_permission" :disabled="!editable || busy" aria-label="空间默认权限"><option value="none">仅自己和指定成员</option><option value="viewer">所有人可查看</option><option v-if="!centerSource" value="editor">所有人可编辑</option></select></label>
+        <p v-if="centerSource" class="resource-permissions__hint">中心库由已有读取权限的空间管理员维护；其他成员最高可查看，不能删除中心库。</p>
+        <p v-else class="resource-permissions__hint">各项授权取较高权限，可编辑包含可查看；空间只读成员仍仅可查看。只有主人可修改权限、重命名或删除整个资源。</p>
         <div class="resource-permissions__section"><strong>指定成员</strong><small>{{ policy.members.length }} 人</small></div>
         <form v-if="editable" class="resource-permissions__add" @submit.prevent="add">
           <select v-model="selected" :disabled="busy || memberLoading" aria-label="选择空间成员"><option value="" disabled>选择空间成员</option><option v-for="member in available" :key="member.user_id" :value="member.user_id">{{ member.username || member.email }}</option></select>
@@ -160,7 +175,7 @@ onBeforeUnmount(() => { generation++; memberGeneration++ })
         <p v-if="!policy.members.length" class="resource-permissions__empty">尚未授权指定成员</p>
         <div v-for="member in policy.members" :key="member.user_id" class="resource-permissions__member">
           <span class="resource-permissions__member-name"><span>{{ knownMembers[member.user_id]?.username || knownMembers[member.user_id]?.email || member.user_id }}</span><small v-if="knownMembers[member.user_id]?.role === 'viewer'">空间只读成员</small></span>
-          <select :value="member.permission" :disabled="!editable || busy" :aria-label="`${knownMembers[member.user_id]?.username || member.user_id}的权限`" @change="grant(member.user_id, ($event.target as HTMLSelectElement).value as 'viewer' | 'editor')"><option value="viewer">可查看</option><option value="editor" :disabled="knownMembers[member.user_id]?.role === 'viewer'">可编辑</option></select>
+          <select :value="member.permission" :disabled="!editable || busy" :aria-label="`${knownMembers[member.user_id]?.username || member.user_id}的权限`" @change="grant(member.user_id, ($event.target as HTMLSelectElement).value as 'viewer' | 'editor')"><option value="viewer">可查看</option><option v-if="!centerSource" value="editor" :disabled="knownMembers[member.user_id]?.role === 'viewer'">可编辑</option></select>
           <button v-if="editable" type="button" class="resource-permissions__remove" :disabled="busy" :aria-label="`移除${knownMembers[member.user_id]?.username || member.user_id}的授权`" @click="grant(member.user_id, 'none')"><t-icon name="close" size="14px" /></button>
         </div>
         <p class="resource-permissions__hint">{{ kind === 'knowledge-base' ? '文件和文件夹继承本知识库权限。研究工作台单独授权。' : '只共享工作台内容，个人对话、策略和研究草稿不会因此公开。原始资料仍按知识库权限访问。' }}</p>
@@ -168,7 +183,7 @@ onBeforeUnmount(() => { generation++; memberGeneration++ })
           <label class="resource-permissions__source-toggle"><input v-model="restrictedEnabled" type="checkbox" :disabled="busy" aria-label="启用受限视角" />无知识库权限时展示受限视角</label>
           <p class="resource-permissions__hint">仅作用于已有本台权限的成员；有知识库权限时仍按原权限访问。同一人加入多套配置，可见页面合并。指标目录、任意查询、原件和下载始终关闭。</p>
           <template v-if="restrictedEnabled">
-            <p v-if="!details.can_manage_source" class="resource-permissions__hint">{{ details.source_sharing_approved ? `知识库主人已批准：${SOURCE_SHARING_MODULES.filter(module => details?.source_sharing_modules?.includes(module.key)).map(module => module.label).join('、') || '暂无'}。未获批页面暂不生效。` : '需要知识库主人批准来源使用，批准前不展示指标数值。' }}</p>
+            <p v-if="!sourceScopeV2 && !details.can_manage_source" class="resource-permissions__hint">{{ details.source_sharing_approved ? `知识库主人已批准：${SOURCE_SHARING_MODULES.filter(module => details?.source_sharing_modules?.includes(module.key)).map(module => module.label).join('、') || '暂无'}。未获批页面暂不生效。` : '需要知识库主人批准来源使用，批准前不展示指标数值。' }}</p>
             <details v-for="(profile, index) in profiles" :key="profile.id" class="resource-permissions__profile" :open="index === profiles.length - 1">
               <summary>{{ profile.name || '未命名配置' }}<small>{{ profile.all_members ? '所有获授权成员' : `${profile.member_ids.length} 人` }} · {{ profile.modules.length }} 个页面</small></summary>
               <div class="resource-permissions__profile-title"><input v-model="profile.name" :disabled="busy" maxlength="80" :aria-label="`配置 ${index + 1} 名称`" /><button type="button" class="resource-permissions__remove" :disabled="busy" :aria-label="`删除配置 ${index + 1}`" @click="profiles.splice(index, 1)"><t-icon name="delete" /></button></div>
@@ -181,9 +196,10 @@ onBeforeUnmount(() => { generation++; memberGeneration++ })
               <fieldset class="resource-permissions__profile-pages" :disabled="busy"><legend>可查看的页面</legend><label v-for="module in SOURCE_SHARING_MODULES" :key="module.key" :title="module.hint"><input v-model="profile.modules" type="checkbox" name="restricted-view-module" :value="module.key" :aria-label="`配置 ${index + 1} ${module.label}`" />{{ module.label }}</label></fieldset>
             </details>
             <t-button size="small" theme="default" variant="outline" :disabled="busy || profiles.length >= 32" @click="addProfile">添加受限视角配置</t-button>
-            <t-button v-if="!details.can_manage_source" size="small" theme="default" variant="text" :disabled="busy || details.source_sharing_requested" :loading="sourceBusy === resourceId" @click="shareSource(resourceId)">{{ details.source_sharing_requested ? '已请求，等待知识库主人授权' : '请求知识库主人批准' }}</t-button>
+            <t-button v-if="!sourceScopeV2 && !details.can_manage_source" size="small" theme="default" variant="text" :disabled="busy || details.source_sharing_requested" :loading="sourceBusy === resourceId" @click="shareSource(resourceId)">{{ details.source_sharing_requested ? '已请求，等待知识库主人授权' : '请求知识库主人批准' }}</t-button>
           </template>
         </section>
+        <WorkbenchSourcePermissions v-if="kind === 'research-workbench' && sourceScopeV2 && editable" :workbench-id="resourceId" :disabled="busy" @busy-change="value => sourceBusy = value ? 'source-binding' : ''" />
         <section v-if="kind === 'knowledge-base' && editable && details.pending_workbenches?.length" class="resource-permissions__source">
           <strong>研究台数据共享请求</strong><p class="resource-permissions__hint">批准来源可使用的页面上限。具体哪些成员可见哪些页面，由研究台主人在成员与权限中分组配置；不会开放全库、任意查询或原件下载。</p>
           <div v-for="request in details.pending_workbenches" :key="request.id" class="resource-permissions__request-group">

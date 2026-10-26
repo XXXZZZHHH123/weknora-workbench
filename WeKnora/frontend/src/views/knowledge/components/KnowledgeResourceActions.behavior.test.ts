@@ -24,10 +24,10 @@ const text = (n: Host): string => n.type === '#comment' ? '' : n.text + n.childr
 const flush = async () => { for (let i = 0; i < 6; i++) { await Promise.resolve(); await vue.nextTick() } }
 const deferred = () => { let resolve!: (v: any) => void; const promise = new Promise<any>(r => { resolve = r }); return { promise, resolve } }
 const plainValue = (v: unknown) => JSON.parse(JSON.stringify(v))
-function fixture(kind: 'kb' | 'folder', options: { canRename?: boolean; canDelete?: boolean; canEdit?: boolean; canManage?: boolean; canManagePermissions?: boolean; read?: () => Promise<any>; mutate?: () => Promise<any>; rootFolder?: boolean } = {}) {
+function fixture(kind: 'kb' | 'folder', options: { systemRole?: string; canRename?: boolean; canDelete?: boolean; canEdit?: boolean; canManage?: boolean; canManagePermissions?: boolean; read?: () => Promise<any>; mutate?: () => Promise<any>; rootFolder?: boolean } = {}) {
   const auth = vue.reactive({ selectedTenantId: 1, tenant: { id: 1 }, user: { id: 'actor-a' }, token: 'test-token' })
   const calls: Array<{ operation: string; args: any[] }> = [], changes: any[] = [], events = new EventTarget(), emitted: string[] = []
-  const base = vue.reactive({ id: 'kb-a', name: 'Original', tenant_id: 1, can_manage: options.canManage, can_manage_permissions: options.canManagePermissions }), folder = vue.reactive({ path: options.rootFolder ? '' : 'Parent/Original', name: 'Original', total_count: undefined as number | undefined })
+  const base = vue.reactive({ id: 'kb-a', name: 'Original', tenant_id: 1, system_role: options.systemRole, can_manage: options.canManage, can_manage_permissions: options.canManagePermissions }), folder = vue.reactive({ path: options.rootFolder ? '' : 'Parent/Original', name: 'Original', total_count: undefined as number | undefined })
   const props = vue.reactive({ knowledgeBase: base, canRename: options.canRename ?? true, canDelete: options.canDelete ?? true,
     kbId: 'kb-a', folder, canEdit: options.canEdit ?? true, allowDelete: true })
   const resources = { invalidate: (...args: any[]) => calls.push({ operation: 'invalidate', args }), ensureKnowledgeBases: async (...args: any[]) => { calls.push({ operation: 'refresh', args }) } }
@@ -181,9 +181,16 @@ for (const kind of ['kb', 'folder'] as const) {
     })
   }
 }
-test('KB delete confirmation describes only workbenches using this KB as the main library', async t => {
-  const f = fixture('kb'); t.after(f.close); await f.click('删除'); assert.match(text(f.dialog()), /以此库为主知识库的工作台/); await f.confirm()
+test('KB delete confirmation preserves workbenches and explains unavailable source bindings', async t => {
+  const f = fixture('kb'); t.after(f.close); await f.click('删除'); assert.match(text(f.dialog()), /工作台及其他来源会保留/); assert.match(text(f.dialog()), /相关指标将不可用/); await f.confirm()
   assert.deepEqual(f.calls.filter(c => c.operation === 'delete-kb')[0]?.args, ['kb-a']); assert.deepEqual(plainValue(f.changes), [{ id: 'kb-a', deleted: true }])
+})
+
+test('protected center hides deletion while retaining authorized permission management', async t => {
+  const f = fixture('kb', { systemRole: 'central', canManage: true, canManagePermissions: true }); t.after(f.close)
+  assert.equal(f.button('删除'), undefined)
+  assert.ok(f.button('成员与权限'))
+  assert.equal(f.calls.some(call => call.operation === 'delete-kb'), false)
 })
 
 

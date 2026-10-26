@@ -13,32 +13,33 @@
       <t-button variant="outline" @click="chat.open">重试</t-button>
     </div>
     <ChatView v-else-if="chat.state.sessionId" :key="chat.state.sessionId" :session_id="chat.state.sessionId"
-      embedded-mode scoped-session :scoped-model-id="modelId" :scoped-kb-name="kbName" :kb-ids="kbId ? [kbId] : []"
+      embedded-mode scoped-session :scoped-model-id="modelId" :scoped-kb-name="kbName" :kb-ids="sourceIds"
       agent-id="builtin-quick-answer" />
   </aside>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ChatView from '@/views/chat/index.vue'
 import { createSessions } from '@/api/chat'
 import { useSettingsStore } from '@/stores/settings'
 import { createResearchChatSession } from './researchChatSession'
 
-const props = withDefaults(defineProps<{ visible: boolean; kbId: string; kbName: string; workbenchName: string; isolated?: boolean; workbenchId?: string }>(), { isolated: false, workbenchId: '' })
+const props = withDefaults(defineProps<{ visible: boolean; kbId: string; kbIds?: string[]; kbName: string; workbenchName: string; isolated?: boolean; workbenchId?: string }>(), { isolated: false, workbenchId: '' })
 defineEmits<{ close: [] }>()
 const settings = useSettingsStore()
 const modelId = ref(settings.conversationModels.selectedChatModelId || settings.conversationModels.summaryModelId || '')
+const sourceIds = computed(() => props.kbIds ?? (props.kbId ? [props.kbId] : []))
 
 const chat = createResearchChatSession(async () => {
   const title = `${props.workbenchName || '研究工作台'} · 问答`
-  if (!props.workbenchId || !props.kbId) throw new Error('请重新打开当前工作台后重试。')
+  if (!props.workbenchId) throw new Error('请重新打开当前工作台后重试。')
   const response = await createSessions({
     title,
     research_workbench_id: props.workbenchId,
     agent_config: {
       enabled: false,
-      knowledge_bases: props.kbId ? [props.kbId] : [],
+      knowledge_bases: sourceIds.value,
     },
   }) as { data?: { id?: string }; message?: string }
   const id = response?.data?.id

@@ -47,6 +47,25 @@ test('the native frame must match origin, exact route, user, space and both bind
  assert.equal(researchGuideFramePage(scope,{...frame,origin:'https://other.local'},origin),null)
  assert.equal(researchGuideFramePage(scope,{...frame,context:null},origin),null)
 })
+test('a v2 tour belongs to the workbench and survives adding or removing data sources',()=>{
+ const s=storage(), independent:ResearchGuideScope={...scope,knowledgeBaseId:'',scopeVersion:2,sourcesRevision:1}
+ assert.equal(registerResearchGuide(s,independent,'isolated'),true)
+ assert.equal(finishResearchGuide(s,independent,'market','completed'),true)
+ const changed={...independent,knowledgeBaseId:'another-library',sourcesRevision:4}
+ assert.equal(researchGuideKey(changed),researchGuideKey(independent))
+ assert.equal(readResearchGuide(s,changed)?.pages.market,'completed')
+ assert.equal(registerResearchGuide(s,changed,'isolated'),false)
+ assert.notEqual(researchGuideKey(independent),researchGuideKey(scope))
+ assert.equal(researchGuideKey({...independent,sourcesRevision:0}),'')
+})
+test('v2 frame tours reject an obsolete source revision without requiring a primary library',()=>{
+ const independent:ResearchGuideScope={...scope,knowledgeBaseId:'',scopeVersion:2,sourcesRevision:3}
+ const origin='https://test.local',context={tenant:1,user:'user-a',workbench:'workbench-a',knowledge_base:null,scope_version:2,sources_revision:3}
+ const frame={origin,pathname:'/research/workbenches/workbench-a/sn',context}
+ assert.equal(researchGuideFramePage(independent,frame,origin),'market')
+ for(const changed of [{sources_revision:2},{sources_revision:'3'},{scope_version:1}])
+   assert.equal(researchGuideFramePage(independent,{...frame,context:{...context,...changed}},origin),null)
+})
 test('functional tours only open read-only panels and never invoke generate/save/favorite',async()=>{
  const calls:string[]=[]
  const steps=Object.fromEntries(researchGuidePages.map(page=>[page,researchFeatureSteps(page,panel=>{calls.push(panel)})]))

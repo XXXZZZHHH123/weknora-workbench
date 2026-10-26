@@ -4,15 +4,17 @@ import { useAuthStore } from '@/stores/auth'
 import { deleteResearchWorkbench, setResearchWorkbenchPin, updateResearchWorkbench, type ResearchWorkbench } from '@/api/workspaces'
 import { validateWorkspaceName, workspaceErrorMessage, workspaceIdentity } from './workspaceForm'
 import ResourcePermissionDrawer from '@/components/ResourcePermissionDrawer.vue'
+import WorkbenchSourcesDialog from './WorkbenchSourcesDialog.vue'
 
 const props = defineProps<{ workbench: ResearchWorkbench }>()
-const emit = defineEmits<{ renamed: [workbench: ResearchWorkbench]; deleted: [id: string] }>()
+const emit = defineEmits<{ renamed: [workbench: ResearchWorkbench]; deleted: [id: string]; 'sources-changed': [] }>()
 const auth = useAuthStore()
 const canManage = computed(() => props.workbench.can_manage === true && auth.hasRole('contributor'))
 const canManagePermissions = computed(() => (props.workbench.can_manage_permissions ?? props.workbench.can_manage) === true && auth.hasRole('contributor'))
 const canPin = computed(() => Boolean(auth.user?.id && props.workbench.id))
 const scope = computed(() => JSON.stringify([workspaceIdentity(auth.selectedTenantId ?? auth.tenant?.id, auth.user?.id), auth.token, props.workbench.id]))
 const menuOpen = ref(false), action = ref<'rename' | 'delete' | null>(null), permissionsOpen = ref(false)
+const sourcesOpen = ref(false)
 const name = ref(''), error = ref(''), busy = ref(false)
 let generation = 0
 function close() {
@@ -24,7 +26,7 @@ function select(kind: 'rename' | 'delete') {
   menuOpen.value = false; name.value = props.workbench.name; error.value = ''; action.value = kind
 }
 watch([scope, canManage, canManagePermissions, canPin], () => {
-  generation++; menuOpen.value = false; action.value = null; permissionsOpen.value = false; name.value = ''; error.value = ''; busy.value = false
+  generation++; menuOpen.value = false; action.value = null; permissionsOpen.value = false; sourcesOpen.value = false; name.value = ''; error.value = ''; busy.value = false
 }, { flush: 'sync' })
 onBeforeUnmount(() => { generation++ })
 async function confirm() {
@@ -64,6 +66,8 @@ async function pin() {
   } catch (e) { if (own === generation) error.value = workspaceErrorMessage(e) }
   finally { if (own === generation) busy.value = false }
 }
+function openSources() { if (canManage.value && props.workbench.scope_version === 2) { menuOpen.value = false; sourcesOpen.value = true } }
+defineExpose({ openSources })
 </script>
 
 <template>
@@ -75,6 +79,7 @@ async function pin() {
       <template #content>
         <div class="popup-menu workbench-actions__menu" role="menu" @click.stop @keydown.esc.stop="menuOpen = false">
           <button v-if="canManagePermissions" type="button" role="menuitem" class="popup-menu-item" @click="menuOpen = false; permissionsOpen = true"><t-icon name="usergroup" class="menu-icon" /><span>成员与权限</span></button>
+          <button v-if="canManage && workbench.scope_version === 2" type="button" role="menuitem" class="popup-menu-item" @click="menuOpen = false; sourcesOpen = true"><t-icon name="database" class="menu-icon" /><span>数据来源</span></button>
           <button v-if="canPin" type="button" role="menuitem" class="popup-menu-item" :disabled="busy" @click="pin"><t-icon :name="workbench.is_pinned ? 'pin-filled' : 'pin'" class="menu-icon" /><span>{{ workbench.is_pinned ? '取消置顶' : '置顶' }}</span></button>
           <button v-if="canManage" type="button" role="menuitem" class="popup-menu-item" @click="select('rename')"><t-icon name="edit" class="menu-icon" /><span>重命名</span></button>
           <button v-if="canManage" type="button" role="menuitem" class="popup-menu-item delete" @click="select('delete')"><t-icon name="delete" class="menu-icon" /><span>删除</span></button>
@@ -91,6 +96,7 @@ async function pin() {
       <t-alert v-if="error" theme="error" :message="error" class="workbench-actions__error" />
     </t-dialog>
     <ResourcePermissionDrawer v-if="permissionsOpen" v-model:visible="permissionsOpen" kind="research-workbench" :resource-id="workbench.id" :resource-name="workbench.name" />
+    <WorkbenchSourcesDialog v-if="sourcesOpen" v-model:visible="sourcesOpen" :workbench-id="workbench.id" @saved="emit('sources-changed')" />
   </div>
 </template>
 

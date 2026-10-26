@@ -8,15 +8,16 @@ import { useOrganizationStore } from '@/stores/organization'
 import { validateWorkspaceName, workspaceErrorMessage } from '@/views/workspaces/workspaceForm'
 import ResourcePermissionDrawer from '@/components/ResourcePermissionDrawer.vue'
 
-const props = defineProps<{ knowledgeBase: { id: string; name: string; tenant_id?: string | number; can_manage?: boolean; can_manage_permissions?: boolean; is_pinned?: boolean }; canRename?: boolean; canDelete?: boolean }>()
+const props = defineProps<{ knowledgeBase: { id: string; name: string; tenant_id?: string | number; system_role?: string; can_manage?: boolean; can_manage_permissions?: boolean; is_pinned?: boolean }; canRename?: boolean; canDelete?: boolean }>()
 const emit = defineEmits<{ changed: [payload: { id: string; deleted: boolean; name?: string }] }>()
 const auth = useAuthStore(), resources = useChatResourcesStore(), organizations = useOrganizationStore()
 const menuOpen = ref(false), action = ref<'rename' | 'delete' | null>(null), name = ref(''), error = ref(''), busy = ref(false)
 const identity = computed(() => JSON.stringify([auth.selectedTenantId ?? auth.tenant?.id, auth.user?.id, auth.token, props.knowledgeBase.id]))
-const canDeleteHere = computed(() => props.canDelete && props.knowledgeBase.tenant_id != null && String(props.knowledgeBase.tenant_id) === String(auth.selectedTenantId ?? auth.tenant?.id))
+const canManageHere = computed(() => props.canDelete && props.knowledgeBase.tenant_id != null && String(props.knowledgeBase.tenant_id) === String(auth.selectedTenantId ?? auth.tenant?.id))
+const canDeleteHere = computed(() => canManageHere.value && props.knowledgeBase.system_role !== 'central')
 const permissionsOpen = ref(false), pinned = ref(props.knowledgeBase.is_pinned === true)
 watch(() => props.knowledgeBase.is_pinned, value => { pinned.value = value === true })
-const canManagePermissions = computed(() => (props.knowledgeBase.can_manage_permissions ?? props.knowledgeBase.can_manage) === true && canDeleteHere.value)
+const canManagePermissions = computed(() => (props.knowledgeBase.can_manage_permissions ?? props.knowledgeBase.can_manage) === true && canManageHere.value)
 let epoch = 0
 function reset() { pinned.value = props.knowledgeBase.is_pinned === true; epoch++; menuOpen.value = false; action.value = null; permissionsOpen.value = false; error.value = ''; busy.value = false }
 watch(() => [identity.value, props.canRename, canDeleteHere.value, canManagePermissions.value], reset, { flush: 'sync' })
@@ -102,10 +103,10 @@ async function pin() {
       :cancel-btn="{ content: '取消', disabled: busy }" :close-btn="!busy" :close-on-overlay-click="!busy" :close-on-esc-keydown="!busy"
       @update:visible="visibleChanged" @confirm="confirm">
       <t-input v-if="action === 'rename'" v-model="name" aria-label="知识库名称" placeholder="知识库名称" :disabled="busy" autofocus @enter="confirm" />
-      <p v-else>删除“{{ knowledgeBase.name }}”及库内资料，并一并删除以此库为主知识库的工作台。不会删除仅通过宏观资料间接关联的其他工作台。此操作无法撤销。</p>
+      <p v-else>删除“{{ knowledgeBase.name }}”及库内资料，并解除研究工作台的此项来源。研究工作台及其他来源会保留，相关指标将不可用。此操作无法撤销。</p>
       <t-alert v-if="error" theme="error" :message="error" class="knowledge-base-actions__error" />
     </t-dialog>
-    <ResourcePermissionDrawer v-if="permissionsOpen" v-model:visible="permissionsOpen" kind="knowledge-base" :resource-id="knowledgeBase.id" :resource-name="knowledgeBase.name" />
+    <ResourcePermissionDrawer v-if="permissionsOpen" v-model:visible="permissionsOpen" kind="knowledge-base" :resource-id="knowledgeBase.id" :resource-name="knowledgeBase.name" :system-role="knowledgeBase.system_role" />
   </span>
 </template>
 

@@ -25,16 +25,27 @@ const sourceContent = ref<{text?: string; sha256?: string; supported?: boolean; 
 const sourceContentOpen = ref(false), sourceContentLoading = ref(false)
 const selectedSource = ref<WorkbenchSource | null>(null), pendingFiles = ref<File[]>([])
 const isIsolated = computed(() => props.workbench.workspace_mode === 'isolated')
-const canEditSource = computed(() => props.workbench.can_edit_source !== false)
+const multiSource = computed(() => props.workbench.scope_version === 2)
+const directSources = computed(() => (props.workbench.sources || []).filter(source => source.status === 'active' && source.can_read && !source.delegated))
+const sourceBindingId = ref('')
+const selectedBinding = computed(() => directSources.value.find(source => source.id === sourceBindingId.value))
+const targetKnowledgeBaseId = computed(() => multiSource.value ? selectedBinding.value?.knowledge_base_id || '' : props.workbench.knowledge_base_id)
+const canEditSource = computed(() => multiSource.value ? selectedBinding.value?.can_edit === true : props.workbench.can_edit_source !== false)
 const taskNames = { sources: '添加资料', review: '核对来源', research: '开始研究' }
 let generation = 0, scopeEpoch = 0, sourceSelection = 0
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
-function identity(): IsolatedResearchIdentity { return { token: auth.token || '', tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '', workbenchId: props.workbench.id, knowledgeBaseId: props.workbench.knowledge_base_id } }
+function identity(): IsolatedResearchIdentity { return { token: auth.token || '', tenantId: String(auth.selectedTenantId ?? auth.tenant?.id ?? ''), userId: auth.user?.id || '', workbenchId: props.workbench.id, knowledgeBaseId: props.workbench.knowledge_base_id, sourcesRevision: multiSource.value ? props.workbench.sources_revision : undefined } }
 const scopeKey = computed(() => { const { token, ...scope } = identity(); return `${Boolean(token)}:${Object.values(scope).join(':')}` })
 function client() { return createIsolatedResearchClient(identity(), identity) }
 function validBinding() {
   const own = identity()
-  return Boolean(own.token && own.tenantId && own.userId && own.workbenchId && own.knowledgeBaseId && ['legacy', 'isolated'].includes(props.workbench.workspace_mode))
+  return Boolean(own.token && own.tenantId && own.userId && own.workbenchId && (own.knowledgeBaseId || multiSource.value && Number.isSafeInteger(own.sourcesRevision) && Number(own.sourcesRevision) > 0) && ['legacy', 'isolated'].includes(props.workbench.workspace_mode))
+}
+function sourceQuery() { return multiSource.value ? `&source_binding_id=${encodeURIComponent(sourceBindingId.value)}` : '' }
+function validInventory(result: { knowledge_base_id?: string; scope_version?: number; sources_revision?: number; source_binding_id?: string; sources?: WorkbenchSource[] }) {
+  return (!multiSource.value || result.scope_version === 2 && result.sources_revision === props.workbench.sources_revision && result.source_binding_id === sourceBindingId.value)
+    && result.knowledge_base_id === targetKnowledgeBaseId.value && Array.isArray(result.sources)
+    && result.sources.every(source => typeof source.id === 'string' && source.id && (!source.knowledge_base_id || source.knowledge_base_id === targetKnowledgeBaseId.value))
 }
 function clearPreview() { sourceSelection++; selectedSource.value = null; sourceContent.value = null; sourceContentOpen.value = false; sourceContentLoading.value = false }
 async function load() {
@@ -43,6 +54,14 @@ async function load() {
   loading.value = true; error.value = ''
   try {
     if (!validBinding()) throw new Error('请先登录并重新打开当前工作台。')
+    if (multiSource.value) {
+      if (!selectedBinding.value) return
+      const list = await client().get<{ knowledge_base_id: string; scope_version: number; sources_revision: number; source_binding_id: string; sources: WorkbenchSource[]; total: number }>(`/sources?page=1&page_size=100${sourceQuery()}`)
+      if (own !== generation) return
+      if (!validInventory(list) || !Number.isSafeInteger(list.total) || list.total < list.sources.length) throw new Error('来源范围或版本已变化，请重新打开。')
+      sources.value = list.sources; sourceTotal.value = list.total
+      return
+    }
     const api = client()
     const summary = await api.get<WorkbenchOverview>('/overview')
     const sourceList = summary.source_inventory || await api.get<{ knowledge_base_id: string; sources: WorkbenchSource[]; total?: number }>('/sources?page=1&page_size=100')
@@ -79,21 +98,21 @@ async function guide(status: 'active' | 'dismissed' | 'skipped' | 'completed', t
   } catch (e) { if (stillOwner()) guideError.value = workspaceErrorMessage(e) }
   finally { if (stillOwner()) guideSaving.value = false }
 }
-function openSources() { clearPreview(); drawer.value = 'sources'; drawerError.value = '' }
+function openSources() { clearPreview(); drawer.value = 'sources'; drawerError.value = ''; if (multiSource.value && !loading.value && !sources.value.length) void load() }
 function openKnowledgeBase() {
-  if (validBinding()) void router.push(`/platform/knowledge-bases/${encodeURIComponent(props.workbench.knowledge_base_id)}`)
+  if (validBinding() && targetKnowledgeBaseId.value) void router.push(`/platform/knowledge-bases/${encodeURIComponent(targetKnowledgeBaseId.value)}`)
 }
 function openReview() {
-  if (validBinding()) void router.push({ path: `/platform/knowledge-bases/${encodeURIComponent(props.workbench.knowledge_base_id)}/structured-data`, query: { mode: 'import' } })
+  if (validBinding() && targetKnowledgeBaseId.value) void router.push({ path: `/platform/knowledge-bases/${encodeURIComponent(targetKnowledgeBaseId.value)}/structured-data`, query: { mode: 'import' } })
 }
 function currentSource(source: WorkbenchSource) {
   if (!validBinding() || !source?.id) return undefined
-  return sources.value.find(item => item.id === source.id && (!item.knowledge_base_id || item.knowledge_base_id === props.workbench.knowledge_base_id))
+  return sources.value.find(item => item.id === source.id && (!item.knowledge_base_id || item.knowledge_base_id === targetKnowledgeBaseId.value))
 }
 function openStructured(source: WorkbenchSource) {
   const real = currentSource(source)
   if (!real || !isWorkbook(real)) { drawerError.value = '请重新选择当前知识库中的 Excel 原件。'; return }
-  void router.push({ path: `/platform/knowledge-bases/${encodeURIComponent(props.workbench.knowledge_base_id)}/structured-data`, query: { mode: 'import', source_knowledge_id: real.id } })
+  void router.push({ path: `/platform/knowledge-bases/${encodeURIComponent(targetKnowledgeBaseId.value)}/structured-data`, query: { mode: 'import', source_knowledge_id: real.id } })
 }
 async function showSource(source: WorkbenchSource) {
   const real = currentSource(source)
@@ -101,7 +120,7 @@ async function showSource(source: WorkbenchSource) {
   selectedSource.value = real; drawer.value = 'evidence'; drawerError.value = ''; sourceContent.value = null; sourceContentOpen.value = false; sourceContentLoading.value = true
   const own = generation, selection = ++sourceSelection
   try {
-    const result = await client().get<NonNullable<typeof sourceContent.value>>(`/sources/${encodeURIComponent(real.id)}/content`)
+    const result = await client().get<NonNullable<typeof sourceContent.value>>(`/sources/${encodeURIComponent(real.id)}/content${multiSource.value ? `?source_binding_id=${encodeURIComponent(sourceBindingId.value)}` : ''}`)
     if (own === generation && selection === sourceSelection && selectedSource.value?.id === real.id) sourceContent.value = result
   } catch (e) { if (own === generation && selection === sourceSelection && selectedSource.value?.id === real.id) drawerError.value = workspaceErrorMessage(e) }
   finally { if (own === generation && selection === sourceSelection && selectedSource.value?.id === real.id) sourceContentLoading.value = false }
@@ -109,18 +128,17 @@ async function showSource(source: WorkbenchSource) {
 function selectFiles(files: File[]) { if (!files.length || !validBinding() || !canEditSource.value) return; pendingFiles.value = [...files]; drawer.value = 'upload'; drawerError.value = '' }
 function enqueueFiles() {
   if (!pendingFiles.value.length || busy.value || !canEditSource.value) return
-  const own = identity()
-  if (!validBinding()) { drawerError.value = '请先登录并选择空间。'; return }
+  if (!validBinding() || !targetKnowledgeBaseId.value) { drawerError.value = '请先选择可编辑的数据来源。'; return }
   const rawOnly = saveVisualOriginals.value ? pendingFiles.value.filter(file => ['png','jpg','jpeg','zip'].includes(file.name.split('.').at(-1)?.toLowerCase() || '')) : []
   const normal = pendingFiles.value.filter(file => !rawOnly.includes(file))
   for (const [files,sourceOnly] of [[normal,false],[rawOnly,true]] as const) {
-    if (files.length) uploads.enqueue({kbId:own.knowledgeBaseId,kbName:props.workbench.knowledge_base_name||'',targetFolder:'',...(sourceOnly?{processConfig:{source_only:true}}:{}),uploads:files.map(file=>({file,fileName:buildUploadFileName(file,'')}))})
+    if (files.length) uploads.enqueue({kbId:targetKnowledgeBaseId.value,kbName:selectedBinding.value?.name||props.workbench.knowledge_base_name||'',targetFolder:'',...(sourceOnly?{processConfig:{source_only:true}}:{}),uploads:files.map(file=>({file,fileName:buildUploadFileName(file,'')}))})
   }
   pendingFiles.value = []; drawer.value = 'sources'; void guide('active', 'sources')
   MessagePlugin.info('原件上传到绑定知识库；Excel 等待结构化解析，其他文档按知识库配置解析。')
 }
 function filesChanged(event: Event) {
-  if ((event as CustomEvent).detail?.kbId !== props.workbench.knowledge_base_id) return
+  if ((event as CustomEvent).detail?.kbId !== targetKnowledgeBaseId.value) return
   if (refreshTimer) clearTimeout(refreshTimer)
   const own = scopeEpoch
   refreshTimer = setTimeout(() => { if (own === scopeEpoch) { void load(); emit('refresh') } }, 300)
@@ -129,10 +147,9 @@ async function moreSources() {
   if (busy.value || loading.value || sources.value.length >= sourceTotal.value) return
   const own = generation, ownerEpoch = scopeEpoch; busy.value = true; drawerError.value = ''
   try {
-    const result = await client().get<{knowledge_base_id: string; sources: WorkbenchSource[]; total: number}>(`/sources?page=${sourcePage.value+1}&page_size=100`)
+    const result = await client().get<{knowledge_base_id: string; sources: WorkbenchSource[]; total: number}>(`/sources?page=${sourcePage.value+1}&page_size=100${sourceQuery()}`)
     if (own !== generation) return
-    if (result.knowledge_base_id !== props.workbench.knowledge_base_id || !Array.isArray(result.sources)
-      || result.sources.some(source => typeof source.id !== 'string' || !source.id || source.knowledge_base_id && source.knowledge_base_id !== props.workbench.knowledge_base_id)) throw new Error('资料范围不匹配，已停止显示。')
+    if (!validInventory(result)) throw new Error('资料范围不匹配，已停止显示。')
     sources.value = [...new Map([...sources.value, ...result.sources].map(source => [source.id, source])).values()]
     sourceTotal.value = result.total; sourcePage.value++
   } catch (e) { if (own === generation) drawerError.value = workspaceErrorMessage(e) }
@@ -146,9 +163,11 @@ watch(scopeKey, () => {
   if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = undefined }
   overview.value = null; sources.value = []; sourceTotal.value = 0; sourcePage.value = 1
   loading.value = false; busy.value = false; guideSaving.value = false; guideError.value = ''; error.value = ''; drawerError.value = ''; drawer.value = null; pendingFiles.value = []
+  sourceBindingId.value = directSources.value[0]?.id || ''
   const own = generation
-  void nextTick(() => { if (own === generation) void load() })
+  if (!multiSource.value) void nextTick(() => { if (own === generation) void load() })
 }, { immediate: true, flush: 'sync' })
+watch(sourceBindingId, () => { if (!multiSource.value) return; generation++; clearPreview(); sources.value = []; sourceTotal.value = 0; sourcePage.value = 1; pendingFiles.value = []; if (drawer.value === 'sources') void load() }, { flush: 'sync' })
 onMounted(() => window.addEventListener('knowledgeFileUploaded', filesChanged))
 onBeforeUnmount(() => { generation++; scopeEpoch++; sourceSelection++; if (refreshTimer) clearTimeout(refreshTimer); window.removeEventListener('knowledgeFileUploaded', filesChanged) })
 defineExpose({ openSources, drawerOpen })
@@ -168,10 +187,11 @@ defineExpose({ openSources, drawerOpen })
       <div class="isolated-drawer__body">
         <t-alert v-if="drawerError" theme="error" :message="drawerError" />
         <template v-if="drawer === 'sources'">
+          <label v-if="multiSource && directSources.length" class="isolated-source-select">数据来源<select v-model="sourceBindingId" aria-label="资料所属数据来源"><option v-for="source in directSources" :key="source.id" :value="source.id">{{ source.name }}</option></select></label>
           <div class="isolated-actions">
             <span v-if="canEditSource" data-guide="research-upload"><KbUploadSourceDropdown unified :supported-file-types="uploadTypes" trigger-label="添加资料" @files="selectFiles" /></span>
             <t-button size="small" variant="text" :loading="loading" @click="load">刷新来源</t-button>
-            <t-button size="small" variant="text" data-guide="research-kb-manage" @click="openKnowledgeBase">知识库管理</t-button>
+            <t-button v-if="targetKnowledgeBaseId" size="small" variant="text" data-guide="research-kb-manage" @click="openKnowledgeBase">知识库管理</t-button>
           </div>
           <p class="isolated-hint">原件保存在绑定知识库。Excel 在知识库确认结构后，指标即可在工作台使用。</p>
           <p v-if="overview" class="isolated-hint">{{ overview.counts.sources }} 份原件 · {{ overview.counts.indicators }} 个指标 · {{ overview.counts.observations }} 条观测</p>
@@ -221,6 +241,7 @@ defineExpose({ openSources, drawerOpen })
   </div>
 </template>
 <style scoped>
+.isolated-source-select{display:flex;align-items:center;gap:8px;font-size:var(--app-text-sm);margin-bottom:10px}.isolated-source-select select{flex:1;min-width:0;height:30px;border:1px solid var(--app-border-color);border-radius:var(--app-radius-sm);background:var(--app-card-bg);color:var(--app-text-primary);font:inherit;padding:0 7px}
 .isolated-research,.isolated-research *{box-sizing:border-box}.isolated-research{position:relative;display:flex;flex:1;min-width:0;min-height:0;color:var(--app-text-primary);background:var(--app-bg)}.isolated-nav{width:150px;flex:none;padding:15px 9px;display:flex;flex-direction:column;background:var(--app-sidebar-bg,var(--app-card-bg));border-right:1px solid var(--app-border-color);overflow:auto}.isolated-nav__item{display:flex;align-items:center;gap:7px;width:100%;height:32px;padding:0 9px;border:0;border-radius:var(--app-radius-sm);background:transparent;color:var(--app-text-primary);font:inherit;font-size:var(--app-text-sm);text-align:left;cursor:pointer;flex:none;margin:2px 0}.isolated-nav__item:hover,.isolated-nav__item.active{color:var(--td-brand-color);background:var(--td-brand-color-light)}.isolated-nav__label{font-size:var(--app-text-xs);color:var(--app-text-secondary);padding:15px 9px 6px}.isolated-nav__label span{display:block;font-size:var(--app-text-2xs);margin-top:3px}.isolated-nav__scope{margin-top:auto;padding:16px 9px 0;font-size:var(--app-text-2xs);line-height:1.7;color:var(--app-text-secondary)}.isolated-content{min-width:0;flex:1;overflow:auto;padding:16px 18px 24px}.isolated-status{display:flex;align-items:center;gap:7px;font-size:var(--app-text-sm);padding:5px 10px;min-height:36px;background:var(--app-card-bg);border:1px solid var(--app-border-color);border-radius:var(--app-radius-sm);margin-bottom:10px;flex-wrap:wrap}.isolated-status>span:nth-child(2){flex:1;min-width:100px}.isolated-status__dot{width:6px;height:6px;border-radius:50%;background:var(--td-brand-color);flex:none}.isolated-status .t-button{height:25px;font-size:var(--app-text-xs)}.isolated-guide{background:var(--app-card-bg);border:1px solid var(--app-border-color);border-radius:var(--app-radius-md);margin-bottom:14px}.isolated-guide__header{display:flex;align-items:center;gap:8px;padding:7px 11px;font-size:var(--app-text-sm)}.isolated-guide__header>span{font-size:var(--app-text-xs);color:var(--app-text-secondary);flex:1}.isolated-guide__header .t-button{height:24px;padding:0 5px;font-size:var(--app-text-xs)}.isolated-guide__tasks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:0 11px 11px}.isolated-guide__task{display:flex;gap:7px;border-top:1px solid var(--app-border-color);padding-top:9px;min-width:0}.isolated-guide__task strong{font-size:var(--app-text-sm);font-weight:500}.isolated-guide__task small{display:block;color:var(--app-text-secondary);font-size:var(--app-text-2xs)}.isolated-guide__task .t-button{height:23px;padding:0;font-size:var(--app-text-xs)}.isolated-guide__number{width:19px;height:19px;display:grid;place-items:center;border:1px solid var(--app-border-color);border-radius:50%;font-size:var(--app-text-2xs);flex:none;color:var(--td-brand-color)}.isolated-error{margin-bottom:12px}.isolated-loading{padding:20px}.isolated-counts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--app-border-color);border-radius:var(--app-radius-md);overflow:hidden;background:var(--app-card-bg);margin-bottom:14px}.isolated-counts>div{padding:10px 12px;border-right:1px solid var(--app-border-color)}.isolated-counts>div:last-child{border:0}.isolated-counts span{display:block;font-size:var(--app-text-xs);color:var(--app-text-secondary)}.isolated-counts strong{font-size:var(--app-text-2xl);font-weight:600}.isolated-counts small{font-size:var(--app-text-2xs);font-weight:400;color:var(--app-text-secondary)}.isolated-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.isolated-grid__full{grid-column:1/-1}.isolated-panel{min-width:0;background:var(--app-card-bg);border:1px solid var(--app-border-color);border-radius:var(--app-radius-md);overflow:hidden}.isolated-panel>header{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:41px;padding:7px 12px;border-bottom:1px solid var(--app-border-color)}.isolated-panel h2{font-size:var(--app-text-md);font-weight:500;margin:0}.isolated-panel>header>span{font-size:var(--app-text-2xs);color:var(--app-text-secondary)}.isolated-panel footer{padding:9px 12px;background:var(--app-bg);font-size:var(--app-text-2xs);color:var(--app-text-secondary);border-top:1px solid var(--app-border-color)}.isolated-empty{padding:27px 14px;text-align:center}.isolated-empty strong{font-size:var(--app-text-sm);font-weight:500}.isolated-empty p{font-size:var(--app-text-xs);color:var(--app-text-secondary);line-height:1.7;margin:5px 0 12px}.isolated-empty .isolated-actions{justify-content:center}.isolated-empty--small{padding:16px}.isolated-empty--small p{margin:0}.isolated-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.isolated-actions .t-button{font-size:var(--app-text-xs);height:28px}.isolated-source-row{display:flex;gap:8px;align-items:center;width:100%;padding:10px 12px;border:0;border-bottom:1px solid var(--app-border-color);background:transparent;color:var(--app-text-primary);font:inherit;font-size:var(--app-text-sm);text-align:left;cursor:pointer}.isolated-source-row:last-child{border-bottom:0}.isolated-source-row:hover{background:var(--td-brand-color-light)}.isolated-source-row>span{flex:1;overflow-wrap:anywhere;min-width:0}.isolated-source-row>small{font-size:var(--app-text-2xs);color:var(--app-text-secondary);flex:none}.isolated-source-row .t-icon{flex:none;color:var(--app-text-secondary)}.isolated-list button{display:flex;flex-direction:column;gap:3px;width:100%;padding:10px 12px;border:0;border-bottom:1px solid var(--app-border-color);font:inherit;background:none;text-align:left;color:var(--app-text-primary);cursor:pointer}.isolated-list button span{font-size:var(--app-text-sm)}.isolated-list button small{font-size:var(--app-text-2xs);color:var(--app-text-secondary)}.isolated-data-row{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:11px 12px;border-bottom:1px solid var(--app-border-color)}.isolated-data-row strong{font-size:var(--app-text-sm);font-weight:500}.isolated-data-row small{display:block;color:var(--app-text-secondary);font-size:var(--app-text-2xs);margin-top:3px}.isolated-record{padding:12px;border-bottom:1px solid var(--app-border-color)}.isolated-record:last-child{border:0}.isolated-record>div{display:flex;justify-content:space-between;gap:10px}.isolated-record strong{font-size:var(--app-text-md);font-weight:500}.isolated-record span,.isolated-record small{font-size:var(--app-text-2xs);color:var(--app-text-secondary)}.isolated-record p{font-size:var(--app-text-sm);line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0;color:var(--app-text-secondary)}.isolated-drawer{position:absolute;z-index:8;right:0;top:0;bottom:0;width:min(460px,calc(100% - 24px));display:flex;flex-direction:column;background:var(--app-card-bg);border-left:1px solid var(--app-border-color);box-shadow:-8px 0 24px #20344717}.isolated-drawer>header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 15px;border-bottom:1px solid var(--app-border-color)}.isolated-drawer h2{font-size:var(--app-text-base);font-weight:500;margin:0}.isolated-drawer__body{overflow:auto;padding:14px 15px;flex:1;min-height:0}.isolated-hint{font-size:var(--app-text-xs);color:var(--app-text-secondary);line-height:1.7;margin:10px 0}.isolated-note{font-size:var(--app-text-xs);color:var(--app-text-secondary);padding:10px;line-height:1.7;border:1px solid var(--app-border-color);border-radius:var(--app-radius-sm);background:var(--app-bg);margin:12px 0}.isolated-review-row{display:flex;gap:4px;align-items:center;padding:10px 0;border-bottom:1px solid var(--app-border-color)}.isolated-review-row>div{flex:1;min-width:0;overflow-wrap:anywhere}.isolated-review-row strong{font-size:var(--app-text-sm);font-weight:400}.isolated-review-row small{display:block;font-size:var(--app-text-2xs);color:var(--app-text-secondary)}.isolated-review-row .t-button{height:25px;font-size:var(--app-text-xs);padding:0 5px;flex:none}.isolated-section-title{font-size:var(--app-text-sm);font-weight:500;margin:16px 0 5px}.isolated-evidence-name{font-size:var(--app-text-md);font-weight:500;overflow-wrap:anywhere}.isolated-evidence{display:grid;grid-template-columns:64px 1fr;gap:10px;font-size:var(--app-text-sm);margin-top:16px}.isolated-evidence dt{color:var(--app-text-secondary)}.isolated-evidence dd{margin:0;overflow-wrap:anywhere;min-width:0}.isolated-upload-row{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--app-border-color);padding:9px 0;font-size:var(--app-text-xs)}.isolated-upload-row span{flex:1;min-width:0;overflow-wrap:anywhere}.isolated-upload-row small{flex:none;color:var(--app-text-secondary)}.isolated-field{display:flex;gap:10px;align-items:flex-start;margin-bottom:12px;font-size:var(--app-text-sm)}.isolated-field>span{width:33px;flex:none;padding-top:6px}.isolated-field input,.isolated-field textarea{min-width:0;flex:1;border:1px solid var(--app-border-color);border-radius:var(--app-radius-sm);background:var(--app-card-bg);color:var(--app-text-primary);font:inherit;padding:7px 9px;line-height:1.6}.isolated-field input{height:32px}.isolated-field textarea{resize:vertical;max-height:160px}.isolated-field input:focus-visible,.isolated-field textarea:focus-visible,.isolated-nav__item:focus-visible,.isolated-source-row:focus-visible{outline:2px solid var(--td-brand-color);outline-offset:2px}
 @media(max-width:1100px){.isolated-grid{grid-template-columns:1fr}.isolated-grid__full{grid-column:auto}.isolated-nav{width:130px}.isolated-content{padding:13px}.isolated-guide__tasks{grid-template-columns:1fr}.isolated-guide__task>div{display:flex;gap:8px;align-items:center;flex:1;justify-content:space-between}.isolated-guide__task small{display:none}.isolated-guide__task{padding-top:6px}.isolated-guide__header>span{display:none}.isolated-guide__header strong{flex:1}.isolated-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.isolated-counts>div:nth-child(-n+2){border-bottom:1px solid var(--app-border-color)}}
 @media(max-width:650px){.isolated-nav{width:108px;padding:12px 5px}.isolated-nav__item{font-size:var(--app-text-xs);padding:0 6px}.isolated-nav__label{padding:12px 6px 5px}.isolated-content{padding:10px}.isolated-counts>div{padding:9px}.isolated-counts strong{font-size:var(--app-text-xl)}.isolated-status{padding:6px;gap:4px;font-size:var(--app-text-xs)}.isolated-guide__header{gap:3px;padding:6px 8px}.isolated-guide__tasks{padding:0 8px 9px}.isolated-guide__task strong{font-size:var(--app-text-xs)}.isolated-guide__task .t-button{font-size:var(--app-text-2xs)}.isolated-panel>header{padding:7px 9px}.isolated-panel h2{font-size:var(--app-text-sm)}.isolated-source-row{padding:9px;font-size:var(--app-text-xs);gap:5px;flex-wrap:wrap}.isolated-source-row small{font-size:var(--app-text-2xs)}.isolated-drawer{width:calc(100% - 12px)}.isolated-drawer__body{padding:12px}.isolated-review-row{flex-wrap:wrap}.isolated-review-row>div{flex-basis:100%}.isolated-counts span{font-size:var(--app-text-2xs)}}
