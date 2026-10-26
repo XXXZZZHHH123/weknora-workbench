@@ -448,11 +448,12 @@ let mainResizeStartX = 0;
 let mainResizeStartWidth = 0;
 
 function mainDrawerMaxWidth() {
-  return Math.min(1600, Math.max(MAIN_DRAWER_MIN_WIDTH, Math.floor(window.innerWidth * 0.95)));
+  return Math.min(1600, Math.max(280, Math.floor(cssViewportSize().width * 0.95)));
 }
 
 function clampMainDrawerWidth(width: number) {
-  return Math.max(MAIN_DRAWER_MIN_WIDTH, Math.min(mainDrawerMaxWidth(), width));
+  const maximum = mainDrawerMaxWidth();
+  return Math.max(Math.min(MAIN_DRAWER_MIN_WIDTH, maximum), Math.min(maximum, width));
 }
 
 function loadMainDrawerWidth() {
@@ -479,7 +480,7 @@ function onMainDrawerResizeStart(e: MouseEvent) {
 
 function onMainDrawerResizeMove(e: MouseEvent) {
   // 抽屉在右侧，向左拖动变宽
-  const delta = mainResizeStartX - e.clientX;
+  const delta = (mainResizeStartX - e.clientX) / getRootZoom();
   mainDrawerWidth.value = clampMainDrawerWidth(mainResizeStartWidth + delta);
 }
 
@@ -572,6 +573,7 @@ function fitFilePreviewViewport() {
   cancelAnimationFrame(previewViewportFrame)
   previewViewportFrame = requestAnimationFrame(() => {
     const zoom = getRootZoom()
+    mainDrawerWidth.value = clampMainDrawerWidth(mainDrawerWidth.value)
     drawerViewportHeight.value = `${cssViewportSize(zoom).height}px`
     const host = filePreviewHost.value
     const body = host?.closest('.t-drawer__body') as HTMLElement | null
