@@ -87,7 +87,7 @@ async function main(){
    if(sourceId==='source-denied'||sourceId==='source-retry'&&nativeAttempts.get(sourceId)===1){status=403;body={detail:'隔离夹具：当前知识库原件无读取权限'};}
    else if(sourceId==='source-pdf-fixture'||job?.kind==='pdf')body={source_knowledge_id:sourceId,file_type:'pdf',draft_id:'pdf-fixture'};
    else{
-    const importId=job?ids.import:sourceId==='source-stale'?'6'.repeat(24):sourceId==='source-new'?'5'.repeat(24):'4'.repeat(24);
+    const importId=job?ids.import:['source-stale','source-recovered'].includes(sourceId)?'6'.repeat(24):sourceId==='source-new'?'5'.repeat(24):'4'.repeat(24);
     nativeImports.set(importId,{import_id:importId,source_file:sourceId==='source-stale'?'迟到原件.xlsx':'知识库内原件.xlsx',updated_at:'2025-01-06T00:00:00Z',scope});
     if(sourceId==='source-stale')await pause(650);
     body={source_knowledge_id:sourceId,file_type:'xlsx',import_result:{import_id:importId,dataset_id:ids.secondary}};
@@ -244,7 +244,11 @@ async function main(){
    await verify('Returning from query preserves the existing grid',"window.savedGrid===d.getElementById('sheetDetail') && w.getComputedStyle(d.getElementById('importReview')).display!=='none'");
    await js("window.auth('kb-a','fixture-token','source-recovered')");
    await wait("d.getElementById('importSelect').value==='666666666666666666666666' && !d.getElementById('upload').disabled");
-   await verify('Restored reviews render automatically without leaving the page',"d.querySelector('.sheet-tab').textContent.includes('合成工作表') && d.getElementById('importSummary').textContent.includes('1 张已可查询') && d.getElementById('jobState').textContent.includes('已恢复')");
+   await verify('Previously confirmed results render automatically without leaving the page',"d.querySelector('.sheet-tab').textContent.includes('合成工作表') && d.getElementById('importSummary').textContent.includes('1 张已可查询') && d.getElementById('jobState').textContent.includes('已打开工作表处理结果')");
+   const reopened=requests.filter(r=>r.path==='/structured/api/knowledge-results/source-recovered');
+   assert.equal(reopened.length,1);
+   assert(reopened[0].authorized&&reopened[0].scope==='kb-a'&&reopened[0].tenant==='10000');
+   assert(requests.some(r=>r.path==='/api/v1/knowledge/source-recovered'&&r.authorized&&r.scope==='kb-a'&&r.tenant==='10000'));
    const before=requests.filter(r=>r.path==='/structured/api/datasets').length;
    nativeStall='initial-refresh-renew';
    await call('Page.navigate',{url:origin+'/harness'});
@@ -253,6 +257,8 @@ async function main(){
    await wait("d.querySelector('.sheet-grid td') && d.getElementById('importSelect').value");
    checks.push('Token renewal during the initial request retries initialization without a page switch');
    nativeStall='';
+   assert.deepEqual(requests.filter(r=>!['GET','HEAD'].includes(r.method)),[]);
+   checks.push('Loading confirmed results and renewing auth keep source scope and perform no import or model writes');
    assert.deepEqual(errors,[]);checks.push('No JavaScript errors');
    console.log(JSON.stringify({passed:checks.length,checks}));return;
   }

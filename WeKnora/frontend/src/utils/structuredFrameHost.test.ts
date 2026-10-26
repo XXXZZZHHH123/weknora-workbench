@@ -37,7 +37,12 @@ test('PDF review entry is restricted to a PDF preview and mounts the shared auth
   assert.match(docContent, /\.pdf-review-dialog__frame\s*\{[^}]*display:\s*flex/, 'give the iframe host a flex height from the fixed-height dialog frame')
   assert.ok(docContent.includes('watch(pdfReviewKey, () => { pdfReviewOpen.value = false; });'))
   assert.ok(docContent.includes('if (!visible) pdfReviewOpen.value = false;'))
-  assert.match(docContent, /预览通过不代表 OCR 或公式识别已经验证/)
+  const reviewNote = docContent.match(/<p class="pdf-review-dialog__note">([\s\S]*?)<\/p>/)?.[1]
+  assert.ok(reviewNote, 'keep the review limitations beside the authenticated PDF review frame')
+  assert.match(reviewNote, /识别线索仍需人工检查/)
+  assert.match(reviewNote, /公式不会执行/)
+  assert.match(reviewNote, /确认发布表示人工检查过映射/)
+  assert.match(reviewNote, /不代表 OCR 准确率已验证/)
   assert.match(docContent, /:active="visible && viewMode === 'preview'"/)
 })
 

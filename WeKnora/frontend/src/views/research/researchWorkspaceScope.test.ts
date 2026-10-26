@@ -4,7 +4,7 @@ import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { researchFramePath } from './researchFrameSession'
-import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, effectScope, h, nextTick, reactive, ref, shallowRef, watch } from 'vue'
 import { directKnowledgeBaseIds, workbenchSourceLabel } from './workbenchDataSources'
 
 const source = readFileSync(process.env.RESEARCH_WORKSPACE_TEST_SOURCE || new URL('./index.vue', import.meta.url), 'utf8')
@@ -24,7 +24,7 @@ function fixture() {
   const unmounts: Array<() => void> = []
   const scope = effectScope()
   const view: any = scope.run(() => runInNewContext(code, {
-    computed, nextTick, ref, watch, useAuthStore: () => auth, useRoute: () => route, useRouter: () => ({ replace: async () => {} }),
+    computed, defineAsyncComponent, h, nextTick, ref, shallowRef, watch, useAuthStore: () => auth, useRoute: () => route, useRouter: () => ({ replace: async () => {} }),
     useTheme: () => ({ effectiveTheme: ref('light'), setTheme() {} }),
     onMounted() {}, onBeforeUnmount: (fn: () => void) => unmounts.push(fn),
     window: { location: { origin: 'https://test.local' }, removeEventListener() {} },
