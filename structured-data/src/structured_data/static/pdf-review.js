@@ -44,6 +44,7 @@
 
   function setStatus(message, error = false) {
     const status = document.getElementById('pdfReviewStatus');
+    host.onUploadStatus?.(message || '', error);
     if (!status) return;
     status.textContent = message || '';
     status.classList.toggle('error', Boolean(error));
@@ -68,6 +69,7 @@
 
   function clearScope(message = '账号或知识库已切换，请重新加载 PDF 草稿。') {
     operation += 1;
+    root.inert = false;
     scopeController.abort();
     scopeController = new AbortController();
     requestedSourceKnowledge = '';
@@ -205,11 +207,13 @@
       target.append(make('p', '当前空间还没有发布的 PDF 表格。', 'muted'));
       return;
     }
-    const list = make('ul');
+    const list = make('div', undefined, 'processed-files');
     for (const table of tables) {
-      const item = make('li');
+      const item = make('div', undefined, 'processed-file');
       const src = table.source || {};
-      item.textContent = `${src.file_name || 'PDF'} · ${table.columns?.length || 0} 列 · ${table.coverage?.logical_row_count || 0} 行 · ${table.extraction_verified ? '已验证提取' : '提取未验证'} · ${table.table_id}`;
+      const info = make('div', undefined, 'processed-file-info');
+      info.append(make('strong', src.file_name || 'PDF'), make('small', `${table.columns?.length || 0} 列 · ${table.coverage?.logical_row_count || 0} 行 · ${table.extraction_verified ? '已验证提取' : '提取未独立验证'}`));
+      item.append(info, recordDetails(table.table_id));
       list.append(item);
     }
     target.append(list);
@@ -221,7 +225,9 @@
     target.replaceChildren();
     for (const job of jobs) {
       const row = make('div', undefined, 'row');
-      row.append(make('span', `${job.file_name || 'PDF'} · ${job.status} · ${job.error || job.stage || ''}`));
+      const statuses = {queued:'排队中',pending:'等待处理',processing:'处理中',running:'处理中',completed:'识别完成',failed:'处理失败',cancelled:'已取消'};
+      row.classList.add('processed-file');
+      row.append(make('span', `${job.file_name || 'PDF'} · ${statuses[job.status] || job.status} · ${job.error || job.stage || ''}`));
       if (job.retry_available && ['failed', 'cancelled'].includes(job.status)) {
         const retry = action('手动重试此文件', async () => {
           retry.disabled = true;
@@ -251,18 +257,26 @@
     renderJobs();
   }
 
+  function recordDetails(id) {
+    const details = make('details', undefined, 'record-details');
+    details.append(make('summary', '记录信息'), make('code', id || ''));
+    return details;
+  }
+
   function renderDrafts() {
     const list = document.getElementById('pdfDraftList');
     if (!list) return;
     list.replaceChildren();
+    list.className = 'processed-files';
     if (!drafts.length) {
-      list.append(make('p', '暂无 PDF 草稿。', 'muted'));
+      list.append(make('p', '上传 PDF 后，识别出的表格会显示在这里。', 'muted'));
       return;
     }
     for (const item of drafts) {
-      const row = make('div', undefined, 'row');
-      const detail = make('span', `${item.source?.file_name || 'PDF'} · ${item.fragment_count || 0} 个片段 · ${item.raw_row_count || 0} 行 · ${item.draft_id}`);
-      row.append(detail, action('核对草稿', () => selectDraft(item.draft_id), true));
+      const row = make('div', undefined, 'processed-file');
+      const detail = make('div', undefined, 'processed-file-info');
+      detail.append(make('strong', item.source?.file_name || 'PDF'), make('small', `待核对 · ${item.fragment_count || 0} 个表格片段 · ${item.raw_row_count || 0} 行`));
+      row.append(detail, action('核对表格', () => selectDraft(item.draft_id), true), recordDetails(item.draft_id));
       list.append(row);
     }
   }
@@ -460,8 +474,10 @@
       sourceUrl = url;
       renderSelectedDraft();
       setStatus('草稿已载入。请先检查原件和每个表片段，再生成或编写映射。');
+      return true;
     } catch (error) {
       if (current(savedEpoch, savedOperation)) setStatus(error.message, true);
+      return false;
     }
   }
 
@@ -680,7 +696,7 @@
     previewSignature = '';
     document.getElementById('pdfPublishReviewed').checked = false;
     updatePublishButton();
-    setStatus(`已发布表格 ${result.table_id || ''}。提取状态仍为未独立验证。`);
+    setStatus('已发布表格，可用于查询与问答。提取结果仍未独立验证。');
     await loadTables(savedEpoch, savedOperation);
   }
 
@@ -735,7 +751,7 @@
         if (!draftId) throw new Error('解析完成但没有可读取的 PDF 草稿编号。');
         await loadDrafts(savedEpoch, savedOperation);
         if (!current(savedEpoch, savedOperation)) return;
-        await selectDraft(draftId);
+        if (await selectDraft(draftId) === false) throw new Error('PDF 已识别，但无法打开核对结果，请检查原件读取权限后重试。');
         return;
       }
       if (!['processing', 'queued', 'pending', 'running'].includes(job.status)) throw new Error(`未知的 PDF 任务状态：${job.status}`);
@@ -818,8 +834,8 @@
     await pollJob(job.id, savedEpoch, savedOperation);
   }
 
-  async function loadWorkspace() {
-    if (!host.isWorkspaceReady()) return;
+  async function loadWorkspace({throwOnError = false} = {}) {
+    if (!host.isWorkspaceReady()) throw new Error('工作区尚未就绪，请稍后重试。');
     const savedEpoch = host.getAuthEpoch();
     epoch = savedEpoch;
     const savedOperation = ++operation;
@@ -839,11 +855,13 @@
       renderJobs();
       renderDrafts();
       renderPublishedTables();
-      setStatus(config.configured ? 'PDF 解析服务已配置。导入后先核对原件与片段，再预览并人工发布。' : 'PDF 解析服务尚未配置。已有草稿和已发布表仍可查看；导入入口已停用。');
+      setStatus(config.configured ? '识别结果需核对后发布。请检查表头、单位和跨页关系。' : 'PDF 解析服务尚未配置。已有草稿和已发布表仍可查看；导入入口已停用。');
     } catch (error) {
       if (current(savedEpoch, savedOperation)) {
         root.replaceChildren(make('p', error.message, 'error'));
+        renderedEpoch = -1;
       }
+      if (throwOnError) throw error;
     }
   }
 
@@ -861,8 +879,9 @@
     const refresh = action('刷新记录', () => Promise.all([loadDrafts(), loadTables(), loadJobs()]).catch(error => setStatus(error.message, true)), true);
     const toolbar = make('div', undefined, 'row');
     toolbar.append(fileLabel, upload, refresh);
+    if (host.unifiedUpload) { fileLabel.remove(); upload.remove(); }
     root.append(toolbar);
-    root.append(make('p', `单个 PDF 最大 ${Math.round((config.max_bytes || 0) / 1024 / 1024)} MB。提交、轮询、草稿读取和原件查看均使用当前工作台登录身份。`, 'muted'));
+    if (!host.unifiedUpload) root.append(make('p', `单个 PDF 最大 ${Math.round((config.max_bytes || 0) / 1024 / 1024)} MB。提交、轮询、草稿读取和原件查看均使用当前工作台登录身份。`, 'muted'));
     const instructionLabel = make('label', '映射补充说明（可选）');
     instructionLabel.style.maxWidth = '760px';
     const instructions = make('textarea');
@@ -870,7 +889,9 @@
     instructions.rows = 3;
     instructions.placeholder = '描述需要核对的标题、表头、单位或跨页边界；不要将推测当作原件事实。';
     instructionLabel.append(instructions);
-    root.append(instructionLabel);
+    const extra = make('details', undefined, 'pdf-instructions');
+    extra.append(make('summary', '补充识别说明（可选）'), instructionLabel);
+    root.append(extra);
     const status = make('p', '', 'muted');
     status.id = 'pdfReviewStatus';
     status.setAttribute('role', 'status');
@@ -879,7 +900,7 @@
     const jobList = make('div');
     jobList.id = 'pdfJobs';
     root.append(jobList);
-    root.append(make('h3', '待核对 PDF 草稿'));
+    root.append(make('h3', '待核对表格'));
     const draftList = make('div');
     draftList.id = 'pdfDraftList';
     root.append(draftList);
@@ -910,6 +931,14 @@
   } else if (host.isWorkspaceReady()) {
     loadWorkspace();
   }
+  host.uploadFile = async file => {
+    const savedEpoch = host.getAuthEpoch();
+    await loadWorkspace({throwOnError: true});
+    if (savedEpoch !== host.getAuthEpoch() || savedEpoch !== epoch || scopeController.signal.aborted) throw new Error('账号或知识库已切换，请重新上传。');
+    root.inert = true;
+    try { await uploadFile(file); }
+    finally { if (savedEpoch === host.getAuthEpoch()) root.inert = false; }
+  };
   host.openKnowledgeSource = openKnowledgeSource;
   host.closeKnowledgeSource = closeKnowledgeSource;
 })();

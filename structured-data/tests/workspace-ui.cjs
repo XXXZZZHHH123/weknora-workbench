@@ -24,7 +24,7 @@ const fixtureSheet = {
   }]}
 };
 const requests = [], checks = [], errors = [], networkFailures = [], fileChoosers = [];
-let uploadCount=0,nativeStall='';
+let uploadCount=0,nativeStall='',pdfConfigured=process.argv.includes('--upload-regression'),pdfStall=false,pdfSourceDenied=false,pdfListDenied=false;
 const jobs = new Map();
 const nativeImports = new Map();
 const nativeAttempts = new Map();
@@ -64,20 +64,24 @@ async function main(){
   if(route==='/harness'){
    const review=url.searchParams.get('review')==='1',legacy=url.searchParams.get('legacy')==='1',settings=url.searchParams.get('settings')==='1',nativeSource=url.searchParams.get('source')||'';
    body=`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><style>html,body{margin:0;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}</style></head><body><iframe id="frame" src="/structured/${review?'?view=review&import_id='+ids.import:settings?'?view=model-settings':''}" title="隔离结构化页面"></iframe><script>const frame=document.getElementById('frame');window.auth=(kb='kb-a',token='fixture-token',sourceKnowledgeId='',userId='fixture-user',sourceFileType='xlsx')=>frame.contentWindow.postMessage({type:'structured-auth',token,tenant:10000,userId,knowledgeBaseId:kb,sourceKnowledgeId,sourceFileType},location.origin);window.view=mode=>frame.contentWindow.postMessage({type:'structured-view',mode},location.origin);addEventListener('message',e=>{if(e.origin!==location.origin||e.source!==frame.contentWindow)return;if(e.data?.type==='structured-ready'){auth(${legacy?"''":"'kb-a'"},'fixture-token',${JSON.stringify(nativeSource)});${legacy?'':"view('import')"}}else if(e.data?.type==='structured-refresh-auth'){frame.contentWindow.postMessage({type:'structured-auth-refreshed',requestId:e.data.requestId,token:e.data.token},location.origin)}else if(e.data?.type==='structured-navigate'&&e.data.view===''){frame.src='/structured/';}});</script></body></html>`;type='text/html';
+  }else if(route.startsWith('/fonts/')&&!route.includes('..')){
+   const target=path.join(__dirname,'../../WeKnora/frontend/public',route);if(fs.existsSync(target)){body=fs.readFileSync(target);type=route.endsWith('.css')?'text/css':'font/woff2';}else{status=404;body='Font not found';}
   }else if(route==='/'){body=fs.readFileSync(path.join(source,'index.html'),'utf8');type='text/html';}
   else if(['/sheet-review.js','/sheet-review.css','/workspace.css'].includes(route)){
    const target=path.join(source,route.slice(1));if(!fs.existsSync(target)){status=404;body={detail:'Fixture static resource absent'}}else{body=fs.readFileSync(target,'utf8');type=route.endsWith('.js')?'application/javascript':'text/css';}
   }else if(route==='/pdf-review.js'){
    body=fs.readFileSync(path.join(source,'static','pdf-review.js'),'utf8');type='application/javascript';
-  }else if(route==='/api/pdf/config')body={configured:false,max_bytes:52428800};
-  else if(route==='/api/pdf/drafts')body={drafts:[{draft_id:'pdf-fixture',source:{file_name:'fixture.pdf'},fragment_count:1,raw_row_count:1}]};
+  }else if(route==='/api/pdf/config')body={configured:pdfConfigured,max_bytes:52428800};
+  else if(route==='/api/pdf/import'&&req.method==='POST'){if(pdfStall)await pause(650);body={id:'pdf-native-job'};}
+  else if(route==='/api/pdf/jobs')body={jobs:[]};
+  else if(route==='/api/pdf/drafts'){if(pdfListDenied){status=403;body={detail:'隔离夹具：无法读取处理记录'};}else body={drafts:[{draft_id:'pdf-fixture',source:{file_name:'fixture.pdf'},fragment_count:1,raw_row_count:1}]};}
   else if(route==='/api/pdf/tables')body={tables:[]};
   else if(route==='/api/pdf/import-knowledge'&&req.method==='POST'){
    const input=JSON.parse(payload),sourceId=input.source_knowledge_id;requests.at(-1).sourceKnowledgeId=sourceId;requests.at(-1).pdfKnowledgeImport=true;body={id:'pdf-native-job'};
   }else if(route==='/api/pdf/jobs/pdf-native-job')body={status:'completed',draft_id:'pdf-fixture'};
   else if(route==='/api/pdf/drafts/pdf-fixture')body={draft_id:'pdf-fixture',bundle_sha256:'a'.repeat(64),bundle:{source:{file_name:'fixture.pdf',sha256:'b'.repeat(64)},parser:{engine:'fixture',version:'1'},fragments:[{id:'fixture-fragment',page:1,rows:[[{text:'Synthetic PDF cell'}]]}]}};
   else if(route==='/api/pdf/drafts/pdf-fixture/source'){
-   body=Buffer.from('%PDF-1.4 synthetic fixture');type='application/pdf';
+   if(pdfSourceDenied){status=403;body='Denied'}else{body=Buffer.from('%PDF-1.4 synthetic fixture');type='application/pdf';}
   }else if(route==='/api/ui-config')body={title:'结构化数据库',workspace_label:'隔离浏览器验收',weknora_url:'http://127.0.0.1'};
   else if(route==='/api/datasets')body={datasets:catalogue(scope)};
   else if(route==='/api/model-settings'&&req.method==='GET')body={native_model_id:'fixture-chat',protocol:'platform',can_edit:true,models:[{id:'fixture-chat',name:'Fixture configured chat'}]};
@@ -113,7 +117,7 @@ async function main(){
     else{if(sourceId==='source-stale')await pause(650);body={status:'completed',reused:true,result,source_knowledge_id:sourceId==='source-mismatch'?'another-source':sourceId};}
    }
   }else if(route==='/api/import'&&req.method==='POST'){
-   uploadCount++;const id=`fixture-job-${uploadCount}`;jobs.set(id,{count:0,failed:uploadCount===2});body={id};
+   uploadCount++;const id=`fixture-job-${uploadCount}`;jobs.set(id,{count:0,failed:uploadCount===3});body={id};
   }else if(route.startsWith('/api/jobs/')){
    if(route.endsWith('/native-poll-timeout'))await pause(800);
    const job=jobs.get(route.split('/').at(-1));if(!job){status=404;body={detail:'Unknown synthetic job'}}else if(job.count++===0)body={status:'processing',stage:'正在处理隔离上传'};
@@ -136,7 +140,7 @@ async function main(){
   const verify=async(name,expression)=>{assert.equal(await exec(`return ${expression}`),true,name);checks.push(name);};
   const click=selector=>exec(`d.querySelector(${JSON.stringify(selector)}).click()`);
   const input=async(selector,value)=>exec(`const el=d.querySelector(${JSON.stringify(selector)});el.value=${JSON.stringify(value)};el.dispatchEvent(new w.Event('input',{bubbles:true}));el.dispatchEvent(new w.Event('change',{bubbles:true}))`);
-  const screenshot=async name=>{if(!keepArtifacts)return;fs.mkdirSync(path.join(output,'screenshots'),{recursive:true});const shot=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(output,'screenshots',name+'.png'),Buffer.from(shot.data,'base64'));};
+  const screenshot=async name=>{if(!keepArtifacts)return;await js("(document.getElementById('frame')?.contentDocument||document).fonts.ready.then(()=>true)");fs.mkdirSync(path.join(output,'screenshots'),{recursive:true});const shot=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(output,'screenshots',name+'.png'),Buffer.from(shot.data,'base64'));};
   const resize=async width=>{await call('Emulation.setDeviceMetricsOverride',{width,height:980,deviceScaleFactor:1,mobile:false});await pause(150);};
   const verifySheetHighlight=async theme=>{
     const original=await exec("return d.querySelector('.sheet-tab').getAttribute('aria-pressed')");
@@ -161,6 +165,37 @@ async function main(){
   await wait("d.querySelector('.sheet-grid td') && d.querySelector('#dataset option')");
   assert(!requests.some(r=>r.path.endsWith('/report')||r.path.endsWith('/series')||r.path.endsWith('/charts')));
   checks.push('Import renders saved review without waiting for report, series or native charts');
+  if(process.argv.includes('--upload-regression')) {
+   const choose = (name, size=16) => exec(`const dt=new w.DataTransfer();dt.items.add(new w.File([new Uint8Array(${size})],${JSON.stringify(name)}));d.getElementById('file').files=dt.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}))`);
+   const drop = names => exec(`const dt=new w.DataTransfer();for(const name of ${JSON.stringify(names)})dt.items.add(new w.File(['fixture'],name));d.getElementById('directUpload').dispatchEvent(new w.DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt}))`);
+   const writes = () => requests.filter(r=>r.method==='POST'&&['/structured/api/import','/structured/api/pdf/import'].includes(r.path));
+   await verify('One accessible upload entry supports both actual formats',"w.getComputedStyle(d.getElementById('processingResults')).display!=='none' && d.getElementById('file').accept==='.xlsx,.pdf' && !d.getElementById('pdfUploadFile') && d.getElementById('file').getAttribute('aria-label')==='上传文件'");
+   await choose('not-supported.csv');await wait("d.getElementById('jobState').textContent.includes('暂不支持')");assert.equal(writes().length,0);
+   await choose('large.pdf',50*1024*1024+1);await wait("d.getElementById('jobState').textContent.includes('超过 50 MB')");assert.equal(writes().length,0);
+   await drop(['one.pdf','two.xlsx']);await wait("d.getElementById('jobState').textContent.includes('每次上传一个')");assert.equal(writes().length,0);checks.push('Unsupported, oversized and multiple files never reach an import API');
+   await choose('synthetic.XLSX');await wait("d.getElementById('jobState').textContent.includes('正在处理隔离上传')");await drop(['duplicate.pdf']);assert.equal(writes().length,1);await verify('Processing prevents duplicate file selection',"d.getElementById('file').disabled && d.getElementById('upload').disabled");
+   await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('file').disabled");assert.equal(writes()[0].path,'/structured/api/import');checks.push('Selecting Excel starts its existing scan without a second click');
+   await drop(['synthetic.PDF']);await wait("d.getElementById('jobState').textContent.includes('PDF 识别完成') && !d.getElementById('file').disabled");
+   assert.equal(writes()[1].path,'/structured/api/pdf/import');assert(writes().every(r=>r.scope==='kb-a'&&r.authorized));
+   await verify('PDF results open automatically without another upload picker',"d.body.classList.contains('document-results') && d.getElementById('documentResults').getAttribute('aria-pressed')==='true' && d.getElementById('pdfDraftDetail').textContent.includes('Synthetic PDF cell') && !d.getElementById('pdfUploadFile')");
+   await verify('Optional instructions and technical IDs are collapsed',"!d.querySelector('.pdf-instructions').open && !d.querySelector('#pdfDraftList .record-details').open");
+   assert(!requests.some(r=>r.path.endsWith('/publish')||r.path.endsWith('/suggest')));checks.push('Drag-and-drop preserves scope and does not invoke AI mapping or publish data');
+   await screenshot('unified-pdf-results');
+   await click('#workbookResults');await verify('Users can return to the workbook review',"w.getComputedStyle(d.getElementById('importReview')).display!=='none' && w.getComputedStyle(d.getElementById('pdfReviewPanel')).display==='none'");
+   await choose('bad.xlsx');await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('file').disabled");
+   await choose('bad.xlsx');await wait("d.getElementById('jobState').textContent.includes('文件结构无法读取') && !d.getElementById('file').disabled");await verify('Failures expose an explicit retry button',"!d.getElementById('upload').classList.contains('hidden')");
+   await click('#upload');await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('file').disabled");checks.push('Retry reuses the selected file and releases busy state');
+   pdfConfigured=false;const count=writes().length;await choose('disabled.pdf');await wait("d.getElementById('jobState').textContent.includes('尚未配置') && !d.getElementById('file').disabled");assert.equal(writes().length,count);checks.push('Unavailable PDF parser stays an explicit error without a false completion');
+   pdfConfigured=true;pdfStall=true;await choose('late.pdf');await wait("d.getElementById('file').disabled");await pause(50);await js("window.auth('kb-b')");await wait("d.getElementById('dataset')?.textContent.includes('kb-b') && !d.getElementById('file').disabled");await pause(800);
+   await verify('A late PDF response cannot populate the new knowledge base',"!d.getElementById('jobState').textContent.includes('PDF 识别完成') && !d.getElementById('pdfDraftDetail')?.textContent.includes('Synthetic PDF cell') && d.getElementById('selectedFileName').textContent==='支持 Excel、PDF'");
+   pdfStall=false;pdfListDenied=true;const listFailureWrites=writes().length;await choose('list-failure.pdf');await wait("!d.getElementById('file').disabled && d.getElementById('jobState').textContent.includes('无法读取处理记录')");assert.equal(writes().length,listFailureWrites);
+   pdfListDenied=false;await click('#upload');await wait("d.getElementById('jobState').textContent.includes('PDF 识别完成') && !d.getElementById('file').disabled && d.getElementById('pdfDraftDetail')?.textContent.includes('Synthetic PDF cell')");checks.push('A failed workspace load blocks submission and retry rebuilds the review');
+   pdfSourceDenied=true;await choose('denied-source.pdf');await wait("!d.getElementById('file').disabled && d.getElementById('jobState').textContent.includes('无法打开核对结果')");checks.push('Protected source failure is not reported as a successful import');
+   await resize(650);await screenshot('unified-upload-mobile');
+   assert.deepEqual(errors,[]);checks.push('No JavaScript runtime errors');
+   if(keepArtifacts)fs.writeFileSync(path.join(output,'upload-acceptance.json'),JSON.stringify({passed:checks.length,checks,writes:writes()},null,2));
+   console.log(JSON.stringify({passed:checks.length,checks,real_model_calls:0,real_business_writes:0}));return;
+  }
   if(process.argv.includes('--loading-regression')) {
    await verify('Saved review is visible on the first visit',"Boolean(d.querySelector('.sheet-grid td'))");
    await js("window.savedGrid=document.getElementById('frame').contentDocument.getElementById('sheetDetail');window.view('query')");
@@ -187,7 +222,7 @@ async function main(){
   await verify('Current file selector stays compact without stretching across the review',"d.getElementById('importSelect').getBoundingClientRect().width<=360 && d.getElementById('importSelect').getBoundingClientRect().height<=38 && d.getElementById('importSelect').getBoundingClientRect().width>=160");
   await screenshot('01_导入_1600');
   if(process.argv.includes('--baseline')){await js("window.view('query')");await pause(150);await screenshot('00_改动前查询_1600');console.log(JSON.stringify({baseline:true,checks}));return;}
-  await verify('Chinese file picker initially shows an explicit empty selection',"d.querySelector('.file-trigger').textContent==='选择 Excel 文件' && d.getElementById('selectedFileName').textContent==='未选择文件' && d.getElementById('file').getAttribute('aria-label')==='选择 Excel 文件'");
+  await verify('Chinese file picker initially shows an explicit empty selection',"d.querySelector('.file-trigger').textContent==='上传文件' && d.getElementById('selectedFileName').textContent==='支持 Excel、PDF' && d.getElementById('file').getAttribute('aria-label')==='上传文件'");
   await call('Page.setInterceptFileChooserDialog',{enabled:true});await exec("d.getElementById('file').focus()");
   await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
   await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9,modifiers:8});await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9,modifiers:8});
@@ -196,8 +231,9 @@ async function main(){
   for(let count=0;!fileChoosers.length&&count<100;count++)await pause(50);assert.equal(fileChoosers.length,1,'Space on the real file input must open the native picker');checks.push('Keyboard Space opens the actual file chooser');
   const fixtureDir=path.join(output,'fixture-files');fs.mkdirSync(fixtureDir,{recursive:true});const fixtureFile=path.join(fixtureDir,'隔离上传.xlsx');fs.writeFileSync(fixtureFile,Buffer.from([80,75,3,4]));
   await call('DOM.setFileInputFiles',{backendNodeId:fileChoosers[0].backendNodeId,files:[fixtureFile]});await wait("d.getElementById('selectedFileName').textContent==='隔离上传.xlsx'");
-  await verify('Native file selection updates the real filename and accessible status',"d.getElementById('file').files[0].name==='隔离上传.xlsx' && d.getElementById('selectedFileName').title==='隔离上传.xlsx' && d.getElementById('selectedFileName').getAttribute('role')==='status'");
-  await js("window.auth('kb-a','fixture-renewed')");await pause(50);await verify('Token refresh keeps the pending file in the same KB',"d.getElementById('file').files[0]?.name==='隔离上传.xlsx' && d.getElementById('selectedFileName').textContent==='隔离上传.xlsx'");await js("window.auth('kb-a')");
+  await verify('Native file selection updates the real filename and accessible status',"d.getElementById('selectedFileName').title==='隔离上传.xlsx' && d.getElementById('selectedFileName').getAttribute('role')==='status'");
+  await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('upload').disabled");
+  await js("window.auth('kb-a','fixture-renewed')");await pause(50);await verify('Token refresh keeps the selected filename in the same KB',"d.getElementById('selectedFileName').textContent==='隔离上传.xlsx'");await js("window.auth('kb-a')");
   await exec("window.reviewNode=d.getElementById('sheetDetail');const unit=d.querySelector('[data-column-field=unit]');unit.value='KB A 草稿';unit.dispatchEvent(new w.Event('input',{bubbles:true}))");
   await verifySheetHighlight('Light');
   const themeRequests=requests.length;
@@ -217,11 +253,12 @@ async function main(){
   await verify('Reduced motion removes import and query control transitions',"w.getComputedStyle(d.getElementById('upload')).transitionDuration==='0s' && w.getComputedStyle(d.getElementById('query')).transitionDuration==='0s'");
   await call('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
   await js("window.view('query')");await wait("d.querySelector('#seriesRows button') && d.querySelector('#scope [data-download]')");
-  await verify('Query starts across every current business file',"d.getElementById('dataset').value==='__all__' && d.querySelectorAll('#seriesRows button').length===6");
+  await input('#dataset','__all__');await wait("d.querySelectorAll('#seriesRows button').length===6");
+  await verify('Query can include every current business file',"d.getElementById('dataset').value==='__all__' && d.querySelectorAll('#seriesRows button').length===6");
   await input('#dataset',ids.primary);await wait("d.querySelectorAll('#seriesRows button').length===3 && d.querySelector('#scope [data-download]')?.dataset.download==='111111111111111111111111'");
   await verify('Query mode keeps original review DOM and edit state hidden',"window.reviewNode===d.getElementById('sheetDetail') && w.getComputedStyle(d.getElementById('importReview')).display==='none' && d.querySelector('[data-column-field=unit]').value==='KB A 草稿'");
   await verify('Query awaits a chosen metric',"d.getElementById('query').disabled && d.getElementById('selectedSeries').value===''");
-  await verify('Compact import has no standalone bordered upload card',"(()=>{const style=w.getComputedStyle(d.getElementById('directUpload'));return style.borderTopWidth==='0px' && style.borderLeftWidth==='0px' && style.borderRadius==='0px' && style.backgroundColor==='rgba(0, 0, 0, 0)'})()");
+  await verify('Unified upload presents one drop target',"(()=>{const style=w.getComputedStyle(d.getElementById('directUpload'));return style.borderTopStyle==='dashed' && d.getElementById('file').accept==='.xlsx,.pdf' && !d.getElementById('pdfUploadFile')})()");
   await verify('File selector, metric picker and query result share one visible working surface',`${visible('queryWorkspace')} && d.getElementById('queryWorkspace').contains(d.getElementById('dataset')) && d.getElementById('queryWorkspace').contains(d.getElementById('seriesRows')) && d.getElementById('queryWorkspace').contains(d.getElementById('query'))`);
   await screenshot('02_查询_未选择_1600');
   await js("window.view('source')");await pause(100);
@@ -267,11 +304,11 @@ async function main(){
   await wait("d.getElementById('jobState').textContent.includes('正在处理隔离上传')");await verify('Upload pending state prevents duplicate submission',"d.getElementById('upload').disabled");await wait("d.getElementById('jobState').textContent.includes('扫描完成') && !d.getElementById('upload').disabled");checks.push('Successful upload refreshes existing sheet review and available datasets');
   await verify('Upload uses multipart file in the selected knowledge base',"d.querySelector('.sheet-grid td')!==null");assert(requests.some(r=>r.path==='/structured/api/import'&&r.method==='POST'&&r.scope==='kb-a'&&r.size>100));
   await screenshot('05_导入_完成_1600');
-  await click('#upload');await wait("d.getElementById('jobState').textContent.includes('文件结构无法读取') && !d.getElementById('upload').disabled");checks.push('Failed upload explains error and releases the action button');await screenshot('06_导入_失败_1600');
+  await exec("const dt=new w.DataTransfer();dt.items.add(new w.File(['fixture'],'隔离上传.xlsx'));d.getElementById('file').files=dt.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}))");await wait("d.getElementById('jobState').textContent.includes('文件结构无法读取') && !d.getElementById('upload').disabled");checks.push('Failed upload explains error and releases the action button');await screenshot('06_导入_失败_1600');
   for(const width of [900,600]){await resize(width);await exec("w.scrollTo(0,0)");await verify(`Import layout at ${width} px has no document horizontal overflow`,"d.documentElement.scrollWidth<=d.documentElement.clientWidth+1");await screenshot(`07_导入_${width}`);}
   await resize(1600);await exec("const unit=d.querySelector('[data-column-field=unit]');unit.value='KB A 草稿';unit.dispatchEvent(new w.Event('input',{bubbles:true}))");
   await js("window.auth('kb-b')");await wait("d.querySelector('.sheet-grid td') && d.querySelector('[data-column-field=unit]').value==='' && d.getElementById('dataset').textContent.includes('kb-b')");checks.push('Changing KB clears first KB draft and loads other KB real IDs');
-  await verify('Changing KB clears the selected native file and displayed filename',"d.getElementById('file').files.length===0 && d.getElementById('selectedFileName').textContent==='未选择文件'");
+  await verify('Changing KB clears the selected native file and displayed filename',"d.getElementById('file').files.length===0 && d.getElementById('selectedFileName').textContent==='支持 Excel、PDF'");
   await exec("const unit=d.querySelector('[data-column-field=unit]');unit.value='KB B 草稿';unit.dispatchEvent(new w.Event('input',{bubbles:true}))");await js("window.auth('kb-a')");await wait("d.querySelector('[data-column-field=unit]')?.value==='KB A 草稿' && d.getElementById('dataset')?.textContent.includes('kb-a')");checks.push('Returning to first KB restores only its own persistent draft');
   assert(requests.filter(r=>r.path.startsWith('/structured/api/')&&!r.path.endsWith('/ui-config')).every(r=>['kb-a','kb-b'].includes(r.scope)&&r.tenant==='10000'&&r.authorized));checks.push('All business requests retain tenant, bearer and explicit KB scope');
   await js("window.view('query')");await pause(100);await exec("d.getElementById('search').focus()");await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
@@ -283,12 +320,12 @@ async function main(){
   await verify('Legacy iframe entry retains existing review and query controls',`${visible('importReview')} && ${visible('queryWorkspace')} && !d.body.classList.contains('knowledge-view')`);checks.push('Legacy requests remain unbound to a knowledge base');
   await call('Page.navigate',{url:origin+'/structured/'});
   for(let count=0;count<200;count++){if(await js("document.querySelector('.sheet-grid td') && document.querySelector('#seriesRows button')"))break;await pause(50);}
-  assert.equal(await js("getComputedStyle(document.getElementById('directUpload')).display!=='none' && document.getElementById('upload').getBoundingClientRect().width>0 && document.getElementById('queryWorkspace').getBoundingClientRect().height>0"),true);checks.push('Standalone legacy page retains visible import action and complete query workspace');await screenshot('09_原空间独立页_1600');
+  assert.equal(await js("getComputedStyle(document.getElementById('directUpload')).display!=='none' && document.querySelector('.file-trigger').getBoundingClientRect().width>0 && document.getElementById('queryWorkspace').getBoundingClientRect().height>0"),true);checks.push('Standalone legacy page retains visible import action and complete query workspace');await screenshot('09_原空间独立页_1600');
   await call('Page.navigate',{url:origin+'/harness'});await wait("d.querySelector('.sheet-grid td')");
   await js("window.auth('kb-a','fixture-token','source-reused')");
   await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");
   await verify('Knowledge-base Excel reuses its bound scan without a second local file selection',"d.getElementById('file').files.length===0 && d.getElementById('importSelect').selectedOptions[0].textContent.includes('知识库内原件.xlsx') && d.querySelector('.sheet-grid td')!==null");
-  await verify('Native source page explains reuse and hides the unnecessary second file picker',"d.body.classList.contains('native-source') && d.getElementById('directUpload').querySelector('h2').textContent==='结构化解析' && d.getElementById('directUpload').textContent.includes('无需重新选择文件') && w.getComputedStyle(d.querySelector('.import-actions')).display==='none' && d.getElementById('jobState').textContent.includes('知识库内原件.xlsx')");
+  await verify('Native source page explains reuse and hides the unnecessary second file picker',"d.body.classList.contains('native-source') && d.getElementById('directUpload').querySelector('h2').textContent==='处理知识库原件' && d.getElementById('directUpload').textContent.includes('无需重新选择文件') && w.getComputedStyle(d.querySelector('.import-actions')).display==='none' && d.getElementById('jobState').textContent.includes('知识库内原件.xlsx')");
   assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')&&r.sourceKnowledgeId==='source-reused').length,1);await js("window.auth('kb-a','fixture-token','source-reused')");await pause(100);assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')&&r.sourceKnowledgeId==='source-reused').length,1);checks.push('Repeated iframe auth does not enqueue duplicate source scans');
   assert(requests.some(r=>r.path.endsWith('/import-knowledge')&&r.scope==='kb-a'&&r.authorized&&r.sourceKnowledgeId==='source-reused'));checks.push('Native Excel bridge sends real source identity and current authenticated KB scope');assert(requests.filter(r=>r.path.endsWith('/import-knowledge')).every(r=>r.restoreReviewedState===false),'KB originals must not restore legacy workspace mappings');checks.push('KB native bridge explicitly uses fresh source review without legacy restore');
   const excelImportCount=requests.filter(r=>r.path==='/structured/api/import-knowledge').length,pdfImportCount=requests.filter(r=>r.path==='/structured/api/pdf/import-knowledge').length;

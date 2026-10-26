@@ -144,3 +144,33 @@ body.native-source #directUpload .import-actions{display:none}
 #directUpload :is(input,select),#queryWorkspace :is(input,select){transition:border-color var(--motion-fast) var(--ease-out),background-color var(--motion-fast) var(--ease-out)}
 #importReview,body.review-only #importReview{--primary:#A84427;--primary-hover:#92391F;--primary-active:#7D301B;--on-primary:#fff;--navy:var(--primary-hover);--focus:color-mix(in srgb,var(--primary) 20%,transparent);--soft:#F8EEE9;--paper:#fff;--surface-soft:#FBFBF9;--text:#1F1E1D;--muted:#73726C;--line:#E6E5E2;--line-strong:#D4D3CE;--warning:#8a602b;--warning-soft:#fff3df;--error:#a32b26;--control-radius:6px;background:var(--paper);color:var(--text);color-scheme:light}
 @media(prefers-reduced-motion:reduce){#directUpload :is(button,input,select),#queryWorkspace :is(button,input,select){transition:none}}
+
+/* One upload entry; file-specific review appears after processing. */
+#directUpload{padding:24px;border:1px dashed var(--line-strong);border-radius:var(--radius);background:var(--surface-soft)}
+#directUpload.drag-over{border-color:var(--primary);background:var(--soft)}
+#directUpload .file-trigger{background:var(--primary);color:var(--on-primary);border-color:transparent;padding:11px 18px;font-size:13px}
+#directUpload .upload-file-label:has(input:disabled){opacity:.6;cursor:progress}
+.upload-steps{display:flex;flex-wrap:wrap;gap:12px 24px;grid-column:1/-1;font-size:12px;color:var(--muted);padding-top:12px}
+#jobState.error{color:var(--error)}
+#processingResults{display:flex;align-items:center;gap:8px;margin:8px 0 16px;flex-wrap:wrap}
+#processingResults>span{font-size:13px;margin-right:12px;color:var(--muted)}
+#processingResults button{font-size:13px;background:transparent;color:var(--muted);border-color:transparent;padding:8px 14px}
+#processingResults button[aria-pressed="true"]{color:var(--primary);background:var(--soft);border-color:var(--line)}
+body:not(.document-results):not(.pdf-native-source) #pdfReviewPanel{display:none}
+body.document-results #importReview{display:none}
+body.document-results #pdfReviewPanel{display:block}
+body.knowledge-view.view-import #processingResults{display:flex}
+body.knowledge-view.view-query #processingResults{display:none}
+body.knowledge-view.view-query #pdfReviewPanel{display:block}
+body.native-source .upload-steps{display:none}
+#pdfReviewPanel .processed-files{display:grid;gap:8px}
+.processed-file{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:14px 16px;border:1px solid var(--line);border-radius:var(--control-radius);min-width:0}
+.processed-file-info{flex:1;min-width:180px;overflow-wrap:anywhere;display:grid;gap:6px}
+.processed-file-info strong{font-size:14px;font-weight:500}
+.processed-file-info small{font-size:12px}
+.record-details{font-size:11px;color:var(--muted);max-width:100%;overflow-wrap:anywhere}
+.record-details code{display:block;max-width:280px;margin-top:8px}
+.pdf-instructions{font-size:12px;color:var(--muted);margin-top:16px}
+.pdf-instructions label{margin-top:12px}
+.pdf-instructions textarea{border:1px solid var(--line);border-radius:var(--control-radius);padding:10px}
+@media(max-width:680px){#directUpload{padding:18px}.processed-file-info{flex-basis:100%}}
