@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { ref, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, shallowRef, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import SettingDrawer from '@/components/settings/SettingDrawer.vue'
-import { marked } from 'marked'
 import { DialogPlugin, MessagePlugin } from 'tdesign-vue-next'
 import { useUIStore } from '@/stores/ui'
 import {
@@ -581,14 +580,35 @@ const shortcutRows = computed(() => [
   { keys: 'Tab', label: t('manualEditor.shortcuts.indent') },
 ])
 
-marked.use({})
+const previewParser = shallowRef<typeof import('marked').marked | null>(null)
+const previewLoading = ref(false)
+const previewFailed = ref(false)
+let previewModulePromise: Promise<void> | undefined
+function loadPreviewMarkdown(): Promise<void> {
+  if (previewParser.value) return Promise.resolve()
+  if (previewModulePromise) return previewModulePromise
+  previewLoading.value = true
+  previewFailed.value = false
+  // Only code is shared across close/reopen; no form, account or file state is
+  // captured by this promise. Existing editorSessionScope guards still own IO.
+  previewModulePromise = import('marked').then(({ marked }) => {
+    previewParser.value = marked
+  }).catch(() => {
+    previewFailed.value = true
+  }).finally(() => {
+    previewLoading.value = false
+    previewModulePromise = undefined
+  })
+  return previewModulePromise
+}
 
 const previewHTML = computed(() => {
+  if (!previewParser.value) return ''
   if (!form.content) {
     return `<p class="empty-preview">${t('manualEditor.preview.empty')}</p>`
   }
   const safeMarkdown = safeMarkdownToHTML(form.content)
-  const html = marked.parse(safeMarkdown, { async: false })
+  const html = previewParser.value.parse(safeMarkdown, { async: false })
   return sanitizeHTML(html)
 })
 
@@ -931,6 +951,7 @@ const handleClose = () => {
 watch(visible, async (val) => {
   editorGeneration++
   if (val) {
+    void loadPreviewMarkdown()
     const session = editorSessionScope()
     await nextTick()
     if (!editorSessionCurrent(session)) return
@@ -1150,6 +1171,13 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="editor-pane editor-pane--preview" v-show="showPreview">
+            <div v-if="previewLoading" class="loading-placeholder" role="status">
+              <t-loading size="small" :text="$t('preview.loading')" />
+            </div>
+            <div v-else-if="previewFailed" class="loading-placeholder" role="alert">
+              <span>{{ $t('preview.loadFailed') }}</span>
+              <t-button size="small" variant="text" @click="loadPreviewMarkdown">{{ $t('preview.retry') }}</t-button>
+            </div>
             <div ref="previewRoot" class="preview-container" v-html="previewHTML" />
           </div>
         </div>
