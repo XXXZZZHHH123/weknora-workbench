@@ -321,3 +321,7 @@ html{scrollbar-gutter:stable}html.pdf-detail-open{overflow:hidden}
 .pdf-insert-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .pdf-insert-fields input{width:100%}
 .pdf-cell-editor select{width:100%}
+#pdfQueryOutput .pdf-numeric{white-space:nowrap;overflow-wrap:normal;font-variant-numeric:tabular-nums}
+#pdfQueryOutput .pdf-query-source{min-width:130px}
+#pdfQueryOutput .pdf-query-source>button{white-space:nowrap}
+#pdfQueryOutput th{position:sticky;top:0;z-index:1}

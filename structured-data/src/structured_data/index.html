@@ -218,8 +218,8 @@ async function selectDataset(isCurrent=()=>true,requestApi=api){
  if(id===ALL_DATASETS){
   PDFQuery.showList(id);
   const current=datasetCatalog.filter(d=>d.is_latest_for_source!==false),total=key=>current.reduce((sum,d)=>sum+Number(d[key]||0),0);
-  $('versionNotice').textContent=activeKnowledgeBase?'搜索本知识库全部业务文件的最新导入结果，保留各文件独立来源。':'搜索当前空间全部业务文件的最新导入结果，保留各文件独立来源。';renderImportHistory();
-  $('stats').innerHTML=`<div><b>${current.length}</b>文件</div><div><b>${total('series_count').toLocaleString()}</b>指标</div><div><b>${total('valid_count').toLocaleString()}</b>有效数值</div><div><b>${total('observation_count').toLocaleString()}</b>记录</div>`;
+  $('versionNotice').textContent=PDFQuery.count()?'选择已入库的指标或表格，原文件和出处分别保留。':activeKnowledgeBase?'搜索本知识库全部业务文件的最新导入结果，保留各文件独立来源。':'搜索当前空间全部业务文件的最新导入结果，保留各文件独立来源。';renderImportHistory();
+  $('stats').innerHTML=PDFQuery.count()?`<div><b>${current.length+PDFQuery.fileCount()}</b>文件</div><div><b>${PDFQuery.count()}</b>PDF 表格</div>${current.length?`<div><b>${total('series_count').toLocaleString()}</b>Excel 指标</div>`:''}`:`<div><b>${current.length}</b>文件</div><div><b>${total('series_count').toLocaleString()}</b>指标</div><div><b>${total('valid_count').toLocaleString()}</b>有效数值</div><div><b>${total('observation_count').toLocaleString()}</b>记录</div>`;
   $('scope').innerHTML=current.map(d=>`<p>${esc(d.source_file)} · 已可查询 ${esc(d.sheets?.length||0)} 张表 · <a href="#" data-download="${esc(d.dataset_id)}">下载原文件</a></p>`).join('');
   $('report').textContent='包含各业务文件的最新导入结果；历史版本与验收样例不参与全局搜索。需要查看单个文件的质量提示，可切换查询范围。';
   await findSeries(requestApi);if(isCurrent())await loadCharts(0,requestApi);return;

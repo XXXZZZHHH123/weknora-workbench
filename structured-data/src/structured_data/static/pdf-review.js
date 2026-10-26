@@ -587,6 +587,9 @@
     parent.append(quality);
     const step=editing?action('下一步：设置列名和表头',()=>{const section=document.querySelector('.pdf-manual-details');section.open=true;section.scrollIntoView({block:'start'});},true):action('核对并修改这张表',()=>beginCorrection(fragment));
     step.classList.add('pdf-review-step');parent.append(step);
+    if(fragment.header_rows?.includes(0) && rows[0]?.every(cell=>!cell.text?.trim())){
+      parent.append(make('p','首行是空白的表头候选。若原页没有列名，请根据原页含义设置列名，并将这行设为表头或删除；下面的实际数据继续保留。','pdf-table-meta'));
+    }
     const rowActions=make('div',undefined,'pdf-inline-row-actions');
     rowActions.append(action('补充漏掉的行',()=>{if(!editing)beginCorrection(fragment);insertRow(fragment,parent);},true));
     parent.append(rowActions);

@@ -7,6 +7,9 @@ const PDFQuery = (() => {
   const title = t => t.title || (t.fragments||[]).map(f => f.caption).filter(Boolean).join(' / ') || `第 ${pages(t)} 页表格`;
   const quote = name => '"' + name.replaceAll('"', '""') + '"';
   const literal = value => "'" + value.replaceAll("'", "''") + "'";
+  // Display decimals without padding introduced by DECIMAL(38,18). Keep the
+  // exact response and source text in provenance; never round through Number.
+  const numericText = value => typeof value==='string' ? value.replace(/(\.\d*?[1-9])0+$/,'$1').replace(/\.0+$/,'') : value;
   function elements() {
     if ($('pdfQueryList')) return;
     $('seriesSearch').insertAdjacentHTML('beforeend', '<div id="pdfQueryList" hidden></div>');
@@ -23,7 +26,9 @@ const PDFQuery = (() => {
   function groups() { return [...new Map(tables.map(t => [scopeOf(t), t.source.file_name])).entries()]; }
   function showList(scope) {
     elements();
-    const selected = tables.filter(t => scope === ALL_DATASETS || scopeOf(t) === scope);
+    const search=$('search').value.trim().toLocaleLowerCase();
+    const selected = tables.filter(t => (scope === ALL_DATASETS || scopeOf(t) === scope) &&
+      (!search || [title(t),t.source.file_name,...t.columns.map(c=>c.name)].join(' ').toLocaleLowerCase().includes(search)));
     $('pdfQueryList').hidden = !selected.length;
     $('seriesSearchForm').hidden = scope.startsWith(prefix);
     $('pdfQueryList').innerHTML = `<h3>PDF 表格 · ${selected.length}</h3>` + selected.map(t => `<button type="button" class="series-choice" data-pdf-table="${esc(t.table_id)}" aria-pressed="${t.table_id === active?.table_id}"><strong>${esc(title(t))}</strong><span class="series-line">${esc(t.source.file_name)}</span><span class="series-range">第 ${esc(pages(t))} 页 · ${esc(t.coverage?.logical_row_count??0)} 行 · ${esc(t.columns.length)} 列</span></button>`).join('');
@@ -82,7 +87,7 @@ const PDFQuery = (() => {
     const indexes = result.columns.map((name,i) => ({name,i})).filter(c => c.name !== '_row_id');
     $('pdfQueryOutput').innerHTML = `<div class="scroll"><table><thead><tr>${indexes.map(c=>`<th>${esc(c.name)}</th>`).join('')}${operation === 'rows' ? '<th>原页出处</th>' : ''}</tr></thead><tbody>${result.rows.map((row,i) => {
       const sourceRows = result.row_provenance[i]?.source_rows || [], cells = sourceRows.flatMap(r => Object.values(r.source_cells).flat()), originPages = [...new Set(cells.map(c=>c.page))];
-      return `<tr>${indexes.map(c=>`<td>${row[c.i] === null ? '<span class="muted">空值</span>' : esc(row[c.i])}</td>`).join('')}${operation === 'rows' ? `<td>${originPages.map(page=>`<button type="button" class="secondary subtle-button" data-source-page="${page}">第 ${page} 页</button>`).join(' ')}<details><summary>单元格出处</summary>${sourceRows.map(r=>Object.entries(r.source_cells).map(([name,refs])=>`<p>${esc(name)}：${refs.map(c=>c.origin==='manual_transcription'?`第 ${esc(c.page)} 页，人工补行：${esc(c.reason)}`:`第 ${esc(c.page)} 页，第 ${esc(c.row+1)} 行、第 ${esc(c.column+1)} 列`).join('；')}</p>`).join('')).join('')}</details></td>` : ''}</tr>`;
+      return `<tr>${indexes.map(c=>{const numeric=operation!=='rows'||table.columns.some(column=>column.name===c.name&&column.type==='decimal');return `<td${numeric?' class="pdf-numeric"':''} title="${esc(row[c.i])}">${row[c.i] === null ? '<span class="muted">空值</span>' : esc(numeric?numericText(row[c.i]):row[c.i])}</td>`;}).join('')}${operation === 'rows' ? `<td class="pdf-query-source">${originPages.map(page=>`<button type="button" class="secondary subtle-button" data-source-page="${page}">第 ${page} 页</button>`).join(' ')}<details><summary>单元格出处</summary>${sourceRows.map(r=>Object.entries(r.source_cells).map(([name,refs])=>`<p>${esc(name)}：${refs.map(c=>c.origin==='manual_transcription'?`第 ${esc(c.page)} 页，人工补行：${esc(c.reason)}`:`第 ${esc(c.page)} 页，识别第 ${esc(c.row+1)} 行、第 ${esc(c.column+1)} 列；原文「${esc(c.text)}」`).join('；')}</p>`).join('')).join('')}</details></td>` : ''}</tr>`;
     }).join('') || `<tr><td colspan="${indexes.length+1}">没有符合条件的数据，请调整筛选条件。</td></tr>`}</tbody></table></div>`;
     $('pdfQueryOutput').onclick = async event => {
       const button = event.target.closest('[data-source-page]'); if (!button) return;
@@ -99,7 +104,7 @@ const PDFQuery = (() => {
   window.addEventListener('structured-auth-scope-change',()=>{ tables=[]; clear(); });
   return {
     async loadCatalog(requestApi,isCurrent) { const result=await requestApi('/api/pdf/tables');if(isCurrent()) tables=result.tables||[]; },
-    ids:()=>tables.map(t=>t.table_id), count:()=>tables.length, options:()=>groups().map(([id,name])=>`<option value="${esc(id)}">PDF · ${esc(name)} · ${tables.filter(t=>scopeOf(t)===id).length} 张表</option>`).join(''),
+    ids:()=>tables.map(t=>t.table_id), count:()=>tables.length, fileCount:()=>groups().length, options:()=>groups().map(([id,name])=>`<option value="${esc(id)}">PDF · ${esc(name)} · ${tables.filter(t=>scopeOf(t)===id).length} 张表</option>`).join(''),
     deactivate,hasScope:id=>typeof id==='string'&&id.startsWith(prefix)&&tables.some(t=>scopeOf(t)===id), clear,showList,
     async selectScope(id,isCurrent,requestApi) { showList(id);$('seriesRows').innerHTML='';$('seriesCount').textContent='PDF 表格';$('versionNotice').textContent='选择已入库表格查看数据、筛选和计算。';$('stats').innerHTML='';if(isCurrent()){const first=tables.find(t=>scopeOf(t)===id);if(first)await selectTable(first.table_id,requestApi);} }
   };
