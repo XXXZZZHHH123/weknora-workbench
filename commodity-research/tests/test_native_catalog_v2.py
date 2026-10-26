@@ -81,6 +81,24 @@ def test_invalid_catalog_date_does_not_fetch_any_metadata(native_catalog_client)
     assert requests == []
 
 
+def test_metadata_only_catalog_keeps_the_same_authorized_fields_without_rendering_tables(native_catalog_client):
+    client, requests, identifier = native_catalog_client
+    metadata = client.get('/api/sn/indicators/catalog?format=metadata&limit=200').json()
+    ordinary = client.get('/api/sn/indicators/catalog?limit=200').json()
+    assert 'html' not in metadata and 'nav_html' not in metadata
+    assert metadata['indicators'] == ordinary['indicators']
+    for key in ('version', 'total', 'offset', 'next_offset', 'sources_revision'):
+        assert metadata[key] == ordinary[key]
+    assert metadata['indicators'][0]['series_id'] == identifier
+    assert len(requests) == 2 and all(request['catalog_only'] is True for request in requests)
+
+
+def test_invalid_catalog_presentation_does_not_fetch_or_render_metadata(native_catalog_client):
+    client, requests, _ = native_catalog_client
+    assert client.get('/api/sn/indicators/catalog?format=arbitrary').status_code in (400, 422)
+    assert requests == []
+
+
 def test_native_indicator_detail_respects_explicit_history_cutoff(loaded, monkeypatch):
     identifier = 'FIXTURE.CATALOG.HISTORY'
     loaded.add(Indicator(series_id=identifier, name='Fixture history metric', variety='SN', category='Fixture',

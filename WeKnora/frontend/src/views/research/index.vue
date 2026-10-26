@@ -35,12 +35,11 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useTheme } from '@/composables/useTheme'
 import { useRoute, useRouter } from 'vue-router'
 import { getResearchWorkbench, type ResearchWorkbench } from '@/api/workspaces'
-import ResearchChatPanel from './ResearchChatPanel.vue'
 import IsolatedResearchWorkbench from './IsolatedResearchWorkbench.vue'
 import { authenticateResearchFrame, researchFramePath } from './researchFrameSession'
 import WorkbenchActions from '@/views/workspaces/WorkbenchActions.vue'
@@ -63,6 +62,25 @@ const workbenchLoading = ref(false)
 const workbenchError = ref('')
 const chatMounted = ref(false)
 const chatVisible = ref(false)
+function makeResearchChatPanel(): ReturnType<typeof defineAsyncComponent> {
+  const placeholder = (failed: boolean) => ({ setup: () => () => h('aside', {
+    class: 'research-chat-loader', 'aria-label': '研究工作台问答助手',
+    style: { display: chatVisible.value ? '' : 'none' },
+  }, [
+    h('div', { class: 'research-chat-loader__header' }, [
+      h('strong', '问答助手'),
+      h('button', { type: 'button', onClick: () => { chatVisible.value = false } }, '收起'),
+    ]),
+    h('div', { class: 'research-chat-loader__status', role: failed ? 'alert' : 'status' }, failed
+      ? [h('p', '问答助手暂时无法载入，请重试。'), h('button', {
+        type: 'button', onClick: () => { ResearchChatPanel.value = makeResearchChatPanel() },
+      }, '重试')]
+      : '正在载入问答助手…'),
+  ]) })
+  return defineAsyncComponent({ loader: () => import('./ResearchChatPanel.vue'),
+    loadingComponent: placeholder(false), errorComponent: placeholder(true), delay: 120, timeout: 30000 })
+}
+const ResearchChatPanel = shallowRef(makeResearchChatPanel())
 const researchView = ref('home')
 const nativeDrawerOpen = ref(false), frameIsHome = ref(true)
 const frameReady = ref(false)
@@ -203,5 +221,11 @@ onBeforeUnmount(() => { requestGeneration++; authGeneration++; scopeGeneration.v
 .research-body{position:relative;display:flex;flex:1;min-height:0;min-width:0;overflow:hidden}
 .research-canvas{position:relative;display:flex;flex:1;min-width:0;min-height:0}
 .research-empty{padding:24px;flex:1}iframe{width:100%;flex:1;min-width:0;min-height:0;border:0}
+.research-chat-loader{display:flex;flex-direction:column;flex:0 0 400px;width:400px;min-width:0;min-height:0;background:var(--app-card-bg);border-left:1px solid var(--app-border-color)}
+.research-chat-loader__header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--app-border-color)}
+.research-chat-loader__status{padding:24px 16px;font-size:var(--app-text-sm);line-height:1.6}
+.research-chat-loader button{font:inherit;color:var(--td-brand-color);background:var(--app-card-bg);border:1px solid var(--app-border-color);border-radius:var(--app-radius-sm);padding:4px 10px;cursor:pointer}
+.research-chat-loader button:focus-visible{outline:2px solid var(--td-brand-color);outline-offset:2px}
+@media(max-width:900px){.research-chat-loader{position:absolute;inset:0 0 0 auto;width:min(400px,100%);z-index:5;box-shadow:var(--td-shadow-2)}}
 @media(max-width:720px){.research-toolbar{gap:6px;padding:6px 16px}.research-toolbar>span{display:none}.research-toolbar strong{max-width:calc(100vw - 150px)}.research-toolbar-actions{margin-left:0;flex-wrap:wrap;gap:6px}}
 </style>

@@ -29,8 +29,11 @@ def test_authentication_and_mcp_read_only_surface(tmp_path):
     token = (tmp_path / "service-token").read_text()
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
-        assert "结构化数据工作台" in client.get("/").text
-        assert "棉花结构化数据" not in client.get("/").text
+        page = client.get("/")
+        assert page.status_code == 200
+        assert '<title>中哲物产 · 表格分析</title>' in page.text
+        assert '<h1 id="appTitle">表格分析</h1>' in page.text
+        assert "棉花结构化数据" not in page.text
         assert client.get("/api/datasets").status_code == 401
         request = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
         headers = {"Host": "localhost:18082", "Accept": "application/json, text/event-stream"}

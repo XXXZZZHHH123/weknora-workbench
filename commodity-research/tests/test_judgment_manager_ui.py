@@ -14,4 +14,4 @@ def test_judgment_manager_interactions():
     result = subprocess.run([node, str(root / 'tests' / 'judgment-manager-ui.cjs')],
                             cwd=root, capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert '7 isolated judgment manager interaction checks passed' in result.stdout
+    assert 'isolated judgment manager interaction checks passed' in result.stdout

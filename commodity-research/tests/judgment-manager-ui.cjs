@@ -16,8 +16,8 @@ class Element {
   close(){this.open=false;}
   click(){}
 }
-function setup({viewer=false,failure=false,stale=false}={}) {
-  const ids=['judgment-manager',...['original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
+function setup({viewer=false,failure=false,stale=false,empty=false}={}) {
+  const ids=['judgment-manager',...['original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','structured','variety','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
   const nodes=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
   nodes['judgment-manager'].dataset.prefill='false';
   const tabs=['current','analyze','versions'].map(name=>{const el=new Element();el.dataset.logicTab=name;return el;});
@@ -33,14 +33,17 @@ function setup({viewer=false,failure=false,stale=false}={}) {
     async researchFetch(url,options={}) {
       requests.push({url,body:options.body?JSON.parse(options.body):undefined});
       let result;
-      if(url.endsWith('/manage')) result={current:{version:1,status:'生效',author:'r',markdown:'# Current',source_text:'# Original input'},latest:{version:stale&&generations?3:2},versions:[{version:2,status:'草稿'},{version:1,status:'生效'}],version_total:2,can_write:!viewer};
+      if(url.endsWith('/manage')&&empty) result={variety:'SN',current:null,latest:null,versions:[],version_total:0,can_write:!viewer};
+      else if(url.endsWith('/manage')) result={variety:'SN',current:{version:1,status:'生效',author:'r',markdown:'# Current',source_text:'# Original input'},latest:{version:stale&&generations?3:2},versions:[{version:2,status:'草稿'},{version:1,status:'生效'}],version_total:2,can_write:!viewer};
+      else if(url.includes('/manage?variety='))result={variety:'XY',current:null,latest:null,versions:[],version_total:0,can_write:!viewer};
       else if(url.endsWith('/models')) result={models:[{id:'configured',name:'Configured chat'}]};
       else if(url.endsWith('/generate')) {
         generations++;
         if(stale&&generations===1)return {ok:false,status:409,json:async()=>({detail:'Synthetic version changed'})};
         if(failure)return {ok:false,json:async()=>({detail:'Synthetic unavailable; input retained'})};
         result={draft_id:'server-bound-nonce',base_version:2,markdown:'# Proposed',diff:{markdown:'-old\n+new',fields:[{label:'Rule',before:null,after:'<img onerror=bad>'}]},bindings:[{name:'Actual quantity',unit:'kg'}],unresolved:[],candidate_count:1,catalog_total:5,candidate_subset:true,notice:'Preview only'};
-      } else if(url.endsWith('/apply'))result={version:3,status:'草稿',notice:'Saved draft'};
+      } else if(url.endsWith('/structured/preview'))result={kind:'structured',draft_id:'typed-bound-nonce',base_version:0,markdown:'# Typed research',diff:{markdown:'',fields:[]},bindings:[],unresolved:[],candidate_count:0,catalog_total:0,notice:'Typed preview'};
+      else if(url.endsWith('/apply'))result={version:3,status:'草稿',notice:'Saved draft'};
       else result={markdown:'# Historical',diff:{markdown:'-Current\n+Historical'}};
       return {ok:true,json:async()=>result};
     }};
@@ -107,5 +110,31 @@ function setup({viewer=false,failure=false,stale=false}={}) {
     env.nodes['logic-input'].value='Keep existing';await env.nodes['logic-reuse-original'].fire('click');
     assert.equal(env.nodes['logic-input'].value,'Keep existing');
   }
-  console.log('7 isolated judgment manager interaction checks passed');
+  {
+    const env=setup();await env.context.window.JudgmentManager.open();
+    env.nodes['logic-variety'].value='XY';env.nodes['logic-input'].value='New explicit product';env.nodes['logic-model'].value='configured';
+    await env.nodes['logic-generate'].fire('click');
+    const generated=env.requests.find(r=>r.url.endsWith('/generate'));
+    assert.equal(generated.body.variety,'XY');assert.equal(generated.body.base_version,0);
+    assert.equal(generated.body.text,'New explicit product');
+  }
+  {
+    const env=setup();await env.context.window.JudgmentManager.open();
+    env.nodes['logic-input'].value=JSON.stringify({variety:'XY',contradiction:{}});
+    await env.nodes['logic-structured'].fire('click');
+    assert.equal(env.nodes['logic-preview'].hidden,false);
+    assert.equal(env.requests.filter(r=>r.url.endsWith('/generate')).length,0);
+    assert.equal(env.requests.find(r=>r.url.endsWith('/structured/preview')).body.payload.variety,'XY');
+    await env.nodes['logic-apply'].fire('click');
+    assert.equal(env.requests.filter(r=>r.url.endsWith('/structured/apply')).length,1);
+  }
+  {
+    const env=setup({empty:true});await env.context.window.JudgmentManager.open();
+    assert.equal(env.nodes['logic-variety'].value,'','An empty workbench must not silently inherit the legacy product');
+    env.nodes['logic-input'].value='Complete source for a new product';env.nodes['logic-model'].value='configured';
+    await env.nodes['logic-generate'].fire('click');
+    assert.equal(env.requests.filter(r=>r.url.endsWith('/generate')).length,0,'Missing product identity must not spend a model call');
+    assert.match(env.nodes['logic-status'].textContent,/品种代码/);
+  }
+  console.log('10 isolated judgment manager interaction checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

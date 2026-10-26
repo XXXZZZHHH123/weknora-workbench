@@ -1,6 +1,6 @@
 window.ResearchCatalog = {
   async read({ search = "", offset = 0, identifiers, date, signal } = {}) {
-    const query = new URLSearchParams({ search, offset: String(offset), limit: "200" });
+    const query = new URLSearchParams({ search, offset: String(offset), limit: "200", format: "metadata" });
     identifiers?.forEach(identifier => query.append("series_id", identifier));
     if (date) query.set("date", date);
     const response = await window.researchFetch(`${window.RESEARCH_PREFIX || ""}/api/sn/indicators/catalog?${query}`, { signal });

@@ -42,12 +42,14 @@ class ReadRequest(BaseModel):
 
 def read_research(session, body: ReadRequest):
     """Return actual coverage, provenance and explicit gaps, without generating data."""
+    from tin.integration.research_profile import research_variety
+    variety = research_variety(session)
     latest = latest_trade_date(session)
     day = body.date or latest
     brief_row = None
     if body.operation == Operation.brief:
         me = seed_researcher(session)
-        query = select(DailyBrief).where(DailyBrief.researcher_id == me.id, DailyBrief.variety == "SN")
+        query = select(DailyBrief).where(DailyBrief.researcher_id == me.id, DailyBrief.variety == variety)
         if body.date:
             query = query.where(DailyBrief.trade_date == body.date.isoformat())
             day = body.date
@@ -120,7 +122,7 @@ def read_research(session, body: ReadRequest):
                          "source_url": indicator.source_url,
                          "url": research_url("/sn/indicators/" + body.series_id)}
     if body.operation == Operation.judgment:
-        row = current(session, "SN")
+        row = current(session, variety)
         return result | {"data": None if row is None else {
             "id": row.id, "version": row.version, "status": row.status,
             "review_due": row.review_due, "payload": to_payload(row).model_dump(mode="json")},
@@ -153,7 +155,7 @@ def read_research(session, body: ReadRequest):
                          "total": len(rows), "truncated": len(rows) > body.offset + body.limit,
                          "url": research_url("/sn/strategies")}
     # summary is composed exclusively from current stored facts and owned judgment/signals.
-    data = board.snapshot(session, 'SN', day)
+    data = board.snapshot(session, variety, day)
     from tin.provenance.service import observation_sources
     # Summary answers need the same exact file/cell evidence as series reads.
     for point in data.get('observations', []):

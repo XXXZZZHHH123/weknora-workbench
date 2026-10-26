@@ -17,7 +17,7 @@
   }
   function setBusy(value) {
     busy = value; status.dataset.busy = String(value); input.readOnly = value;
-    for (const name of ['generate', 'apply', 'file', 'skeleton', 'reuse', 'reuse-original', 'model']) {
+    for (const name of ['generate', 'apply', 'file', 'skeleton', 'structured', 'reuse', 'reuse-original', 'model', 'variety']) {
       byId(name).disabled = value || managed?.can_write === false;
     }
   }
@@ -66,6 +66,7 @@
     inform('正在读取当前逻辑与版本…');
     try {
       managed = await api('/manage'); showVersion(managed.current);
+      byId('variety').value = managed.current || managed.latest ? managed.variety || '' : '';
       text('version-label', `${managed.current ? `当前展示 v${managed.current.version}` : '暂无当前逻辑'} · 最新基准 v${managed.latest?.version || 0}。新版本保存后仍为草稿。`);
       const versions = byId('version'); versions.replaceChildren();
       for (const row of managed.versions) {
@@ -100,11 +101,15 @@
   byId('generate').addEventListener('click', async () => {
     if (busy || !managed?.can_write) return;
     if (!input.value.trim() || !byId('model').value) return inform('请添加完整原文并选择模型。', true);
+    const variety = byId('variety').value.trim();
+    if (!variety) return inform('请按研究原文填写品种代码。', true);
     if (new TextEncoder().encode(input.value).length > 48 * 1024) return inform('原文超过48 KiB，请缩小范围。', true);
     invalidate(); controller = new AbortController(); setBusy(true); inform('正在分析完整原文并匹配真实指标，尚未保存版本…');
     try {
+      const baseline = variety && variety !== managed.variety ? await api('/manage?variety=' + encodeURIComponent(variety)) : managed;
       const value = await api('/generate', {model_id: byId('model').value, text: input.value,
-        source_name: byId('file-name').textContent.slice(0, 128), base_version: managed.latest?.version || 0});
+        source_name: byId('file-name').textContent.slice(0, 128), base_version: baseline.latest?.version || 0,
+        ...(variety ? {variety} : {})});
       presentDraft(value); inform(value.notice);
     } catch (error) { await recover(error); }
     finally { setBusy(false); }
@@ -113,15 +118,16 @@
     if (busy || !draft || !managed?.can_write) return;
     const selected = draft; controller = new AbortController(); setBusy(true); inform('正在确认来源与版本并保存草稿…');
     try {
-      const result = await api('/apply', {draft_id: selected.draft_id, base_version: selected.base_version});
+      const result = await api(selected.kind === 'structured' ? '/structured/apply' : '/apply', {draft_id: selected.draft_id, base_version: selected.base_version});
       invalidate(); inform(result.notice); location.reload();
     } catch (error) { await recover(error); }
     finally { setBusy(false); }
   });
   input.addEventListener('input', invalidate); byId('model').addEventListener('change', invalidate);
+  byId('variety').addEventListener('input', invalidate);
   byId('file').addEventListener('change', async event => {
     const file = event.target.files?.[0]; if (!file) return;
-    if (file.size > 48 * 1024) return inform('请选择48 KiB以内的完整 .md / .txt 文件。', true);
+    if (file.size > 48 * 1024) return inform('请选择48 KiB以内的完整 .md / .txt / .json 文件。', true);
     try { input.value = new TextDecoder('utf-8', {fatal: true}).decode(await file.arrayBuffer()); text('file-name', file.name); invalidate(); }
     catch { inform('文件不是有效UTF-8文本，请转换编码后再导入。', true); }
   });
@@ -131,6 +137,16 @@
       '## 短线边际', '## 成本线与口径', '## 边际定价权', '## 时间维度', '## 调研信息差',
       '立场、样本、时点、价格是否已反映：', '## 指标白名单', '## 编排范式与基调',
       '## 阈值、证伪条件与数据缺口'].join('\n\n'); invalidate(); input.focus();
+  });
+  byId('structured').addEventListener('click', async () => {
+    if (busy || !managed?.can_write) return;
+    let payload;
+    try { payload = JSON.parse(input.value); }
+    catch { return inform('请选择或粘贴完整的结构化 JSON 研究稿；普通文本请使用“分析原文”。', true); }
+    invalidate(); controller = new AbortController(); setBusy(true); inform('正在核对结构和已授权指标，尚未保存…');
+    try { const result = await api('/structured/preview', {payload}); presentDraft(result); inform(result.notice); }
+    catch (error) { await recover(error); }
+    finally { setBusy(false); }
   });
   byId('reuse').addEventListener('click', () => {
     if (!displayed) return inform('尚无可复用版本。');

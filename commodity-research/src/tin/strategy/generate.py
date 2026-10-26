@@ -70,8 +70,8 @@ def build_context(session: Session, variety: str, d: date, *, researcher_id: int
         "observations": [], "available_contracts": [], "research": None,
         "market_as_of": None, "data_gaps": [],
     }
-    if variety != "SN":
-        return context, ["首版策略生成仅支持 SN"]
+    if variety != 'SN' and not session.info.get('workbench_id'):
+        return context, ['当前品种需要在研究台明确配置合约来源与规格']
     judgment = session.scalars(scope_query(session, select(Judgment).where(
         Judgment.variety == variety, Judgment.status == "生效",
         Judgment.written_at <= d, Judgment.created_at <= known,
@@ -87,7 +87,7 @@ def build_context(session: Session, variety: str, d: date, *, researcher_id: int
 
     configured = None
     if session.info.get('workbench_id'):
-        from tin.web.market_contracts import contract_config, _identifiers
+        from tin.web.market_contracts import contract_config, _identifiers, execution_spec
         from tin.judgments.service import _refs
         configured = contract_config(session)
         references = {sid for _, _, sid in _refs(to_payload(judgment))} if context['research'] else set()
@@ -147,8 +147,9 @@ def build_context(session: Session, variety: str, d: date, *, researcher_id: int
         for observation in context['observations']:
             by_series.setdefault(observation['series_id'], []).append(observation)
         for contract in configured:
-            if not re.fullmatch(r'SN\d{2}(0[1-9]|1[0-2])', contract['contract']):
-                context['data_gaps'].append('当前交易策略规格尚不支持所配置的合约品种')
+            spec = execution_spec(contract)
+            if spec is None or spec['variety'] != variety:
+                context['data_gaps'].append(f"{contract['contract']} 缺少当前品种已确认的合约规格")
                 continue
             if contract['delivery_month'] < d.strftime('%Y-%m'):
                 continue
@@ -163,7 +164,7 @@ def build_context(session: Session, variety: str, d: date, *, researcher_id: int
                 if not matching:
                     continue
                 quotes[contract['contract']] = {**matching[0], 'quote_kind': kind,
-                    'price_unit': contract['price_unit'], 'delivery_month': contract['delivery_month'], 'multiplier': 1}
+                    'price_unit': contract['price_unit'], 'delivery_month': contract['delivery_month'], **spec}
                 break
     for observation in context["observations"] if configured is None else []:
         match = CONTRACT.fullmatch(observation["series_id"])
@@ -182,11 +183,12 @@ def build_context(session: Session, variety: str, d: date, *, researcher_id: int
     context["available_contracts"] = [
         {"contract": name, "quote_series_id": obs["series_id"],
          "observation_id": obs["observation_id"], **{key: obs[key] for key in
-            ('quote_kind', 'price_unit', 'delivery_month', 'multiplier') if key in obs}}
+            ('quote_kind', 'price_unit', 'delivery_month', 'multiplier', 'tick_size', 'spec_source', 'variety') if key in obs}}
         for name, obs in sorted(quotes.items())
     ]
     if not quotes:
-        blockers.append("指定行情日缺少具体 SN 合约报价，不能用主力连续代替可交易合约")
+        blockers.append("指定行情日缺少已确认规格的具体合约报价，不能用主力连续代替可交易合约")
+        blockers.extend(context['data_gaps'])
     else:
         context["market_as_of"] = max(o["as_of"] for o in quotes.values())
     quote_ids = {item['series_id'] for item in quotes.values()}
@@ -226,8 +228,13 @@ def validate_evidence(plan: StrategyPlan, context: dict) -> list[str]:
             errors.append(f"{leg.contract} 缺少对应报价的完整证据引用")
         if actual and actual.get('quote_kind'):
             quote_kinds.add(actual['quote_kind'])
-        if leg.multiplier != 1:
-            errors.append("SN 合约乘数必须为 1 吨/手")
+        if actual and (leg.multiplier != actual.get('multiplier', 1)
+                or leg.tick_size != actual.get('tick_size', 10)
+                or actual.get('variety', context['variety']) != plan.variety
+                or leg.delivery_month is not None and leg.delivery_month != actual.get('delivery_month')):
+            errors.append(f'{leg.contract} 的合约规格与已确认来源不一致')
+    if plan.variety != context['variety']:
+        errors.append('策略品种与当前研究范围不一致')
     if len(quote_kinds) > 1:
         errors.append('跨期两腿须使用相同价格口径')
     if plan.as_of != datetime.fromisoformat(context["market_as_of"]):

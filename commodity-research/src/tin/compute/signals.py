@@ -9,6 +9,7 @@ LLM 只在下游 compose_brief 出现，而它看到的 signals 已经是算好�
 """
 
 import operator
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 
 from sqlalchemy import select
@@ -18,7 +19,7 @@ from tin.compute.engine import day_end, latest_obs
 from tin.config import SHANGHAI
 from tin.export.board import threshold_radar
 from tin.judgments.service import current as current_judgment
-from tin.models import Indicator, Judgment, Observation, ReviewTask, Signal
+from tin.models import Indicator, Judgment, Observation, Researcher, ReviewTask, Signal
 from tin.schemas.judgment import EXPRESSION
 from tin.ownership import require_owned
 
@@ -33,6 +34,7 @@ TRIGGER_FALSIFIED, TRIGGER_EXPIRED = "证伪触发", "判断到期"
 RADAR_STATE = {"已触发": "触发", "在区间内": "触发", "未触发": "未触发", "数据缺失": "数据缺失"}
 
 OPS = {">": operator.gt, ">=": operator.ge, "<": operator.lt, "<=": operator.le}
+_transient_signals = ContextVar('research_transient_signals', default=False)
 
 
 def _iso(dt: datetime) -> str:
@@ -82,6 +84,10 @@ def _upsert(session: Session, judgment_id: int, rule_id: str, rule_type: str, d:
     signals 表上没有这个组合的唯一索引（建表在一期，改索引要动 alembic），所以幂等在代码里做：
     每天两班取数都会重算同一天，插入式写法会让同一条规则一天堆出两三行互相矛盾的记录。
     """
+    if _transient_signals.get():
+        return Signal(judgment_id=judgment_id, rule_id=rule_id, rule_type=rule_type,
+            trade_date=d.isoformat(), state=state, current_value=current_value,
+            evidence=evidence, gap_note=gap_note, generated_at=datetime.now(timezone.utc))
     row = session.scalars(
         select(Signal).where(Signal.judgment_id == judgment_id, Signal.rule_id == rule_id,
                              Signal.trade_date == d.isoformat())
@@ -149,6 +155,13 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
         # 绕过服务层直接写库。宁可让流水线响，也不能把「算不了」悄悄渲染成「未触发」。
         raise ValueError(f"证伪条件 {f['id']} 的表达式无法解析：{f['expression']!r}")
     kind, op, target = m.group(1), m.group(2), float(m.group(3))
+    indicator = session.get(Indicator, f['series_id'])
+    confirmed = f.get('unit_confirmed')
+    if indicator is not None and (not isinstance(confirmed, str) or not confirmed.strip()
+            or not indicator.unit or indicator.unit != confirmed):
+        gap = (f"指标 {f['series_id']} 已确认单位为「{confirmed or '未注明'}」，"
+               f"当前单位为「{indicator.unit or '未注明'}」；单位不一致或未注明，无法比对")
+        return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [], gap)
     need = int(f.get("consecutive_periods") or 1)
     want = need + 1 if kind == "change" else need
     points = recent_points(session, f["series_id"], d, want)
@@ -177,6 +190,41 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
 
 
 # ---------- 对外入口 ----------
+
+def evaluate_preview(session: Session, variety: str, d: date) -> list[Signal]:
+    """Run current saved rules without touching signals, tasks or executions."""
+    with session.no_autoflush:
+        user_id = session.info.get('weknora_user_id')
+        if user_id and session.scalar(select(Researcher.id).where(
+                Researcher.weknora_user_id == str(user_id)).limit(1)) is None:
+            # A read-only first visit cannot create a profile or claim legacy research.
+            return []
+        judgment = current_judgment(session, variety)
+        if judgment is None:
+            return []
+        require_owned(session, judgment)
+        if len(judgment.thresholds) + len(judgment.falsifiers) > 256:
+            raise ValueError('当前规则超过256条，请拆分研究逻辑后试算')
+        windows = {rule['series_id']: 1 for rule in judgment.thresholds}
+        for rule in judgment.falsifiers:
+            match = EXPRESSION.fullmatch(rule['expression'].strip())
+            periods = rule.get('consecutive_periods', 1)
+            if match is None:
+                raise ValueError(f"证伪条件 {rule['id']} 的表达式无法解析")
+            if type(periods) is not int or not 1 <= periods <= 120:
+                raise ValueError('只读规则试算的连续期须为1至120期')
+            need = periods + int(match.group(1) == 'change')
+            windows[rule['series_id']] = max(windows.get(rule['series_id'], 0), need)
+        if len(windows) > 256 or sum(windows.values()) > 20000:
+            raise ValueError('当前规则试算超过256项指标或20000个必要数据点，请拆分研究逻辑')
+        marker = _transient_signals.set(True)
+        try:
+            rows = _threshold_signals(session, judgment, variety, d)
+            rows += [_falsifier_signal(session, judgment, rule, d) for rule in judgment.falsifiers]
+            return rows
+        finally:
+            _transient_signals.reset(marker)
+
 
 def evaluate(session: Session, variety: str, d: date) -> list[Signal]:
     """把 d 日的事实与当前判断逐条对上，写入 signals；同一 judgment+rule+trade_date 幂等。

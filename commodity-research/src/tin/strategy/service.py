@@ -1,7 +1,7 @@
 """Strategy lifecycle, evidence gates, and fill-based accounting.
 
-Prices are CNY/tonne and the SHFE tin multiplier is one tonne per lot. This
-module never treats a quote touching a level as an execution.
+Execution uses verified quote bindings, multipliers and tick sizes. A quote
+touching a level is never treated as an execution.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -78,9 +78,15 @@ def _quote_snapshot(session: Session, plan: StrategyPlan, now: datetime):
             kind = next((field for field in ('close', 'settle') if binding and binding.get(field) == leg.quote_series_id), None)
             if kind is None or binding['price_unit'] != '元/吨':
                 raise StrategyError(f"{leg.contract} 的当前合约绑定或价格单位不适用本策略")
+            from tin.web.market_contracts import execution_spec
+            spec = execution_spec(binding)
+            if (spec is None or spec['variety'] != plan.variety or spec['multiplier'] != leg.multiplier
+                    or spec['tick_size'] != leg.tick_size
+                    or leg.delivery_month is not None and binding['delivery_month'] != leg.delivery_month):
+                raise StrategyError(f'{leg.contract} 的合约规格已经变化，请重新审阅策略')
             price_kinds.add(kind)
         indicator = session.get(Indicator, leg.quote_series_id)
-        if indicator is None or indicator.variety != plan.variety:
+        if indicator is None or configured is None and indicator.variety != plan.variety:
             raise StrategyError(f"{leg.contract} 的具体合约行情指标未登记")
         obs = session.scalars(select(Observation).where(
             Observation.series_id == leg.quote_series_id,
@@ -149,6 +155,9 @@ def _execution(plan: StrategyPlan, execution: ExecutionIn, *, existing=None, ope
     result = []
     units = []
     for fill in execution.fills:
+        tick = legs[fill.contract].tick_size
+        if abs(fill.price / tick - round(fill.price / tick)) > 1e-8:
+            raise StrategyError('成交价不符合已确认的合约最小变动价位')
         if fill.filled_at > now:
             raise StrategyError("成交时点不能晚于当前时间")
         if opening:
@@ -229,9 +238,10 @@ def _realized(row):
     total = 0.0
     for exit_fill in row.exit_fills:
         original = entry[exit_fill["contract"]]
-        side = next(x.side for x in plan.legs if x.contract == exit_fill["contract"])
+        leg = next(x for x in plan.legs if x.contract == exit_fill["contract"])
+        side = leg.side
         direction = 1 if side == "buy" else -1
-        total += direction * (exit_fill["price"] - original["price"]) * exit_fill["quantity"]
+        total += direction * (exit_fill["price"] - original["price"]) * exit_fill["quantity"] * leg.multiplier
         total -= original.get("costs", 0) + exit_fill.get("costs", 0)
     return round(total, 8)
 

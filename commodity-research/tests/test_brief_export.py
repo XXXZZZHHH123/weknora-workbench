@@ -296,8 +296,13 @@ def test_snapshot_export_matches_actual_current_source_rows_and_ignores_render_c
     first = client.post(endpoint('reports/2026-02-03/export'),headers=headers,json={'folder_path':'日报'})
     assert first.status_code == 200, first.text
     content = state['uploads'][0]['file'].decode()
-    assert field in content and '"value": 0.0' in content and '当日数据与研判' in content
-    assert '"generated_at"' not in content
+    assert field in content and '"value": 0.0' in content
+    assert '## 主要变化' in content and '## 研究判断' in content and '## 策略跟踪' in content
+    assert content.index('## 研究判断') < content.index('<details><summary>原始记录与来源审计')
+    audit = json.loads(content.split('<details><summary>原始记录与来源审计', 1)[1]
+                       .split('```json', 1)[1].split('```', 1)[0])
+    assert 'generated_at' not in audit
+    assert audit['briefs'][0]['generated_at'] == '2026-02-03T08:00:00+08:00'
     second = client.post(endpoint('reports/2026-02-03/export'),headers=headers,json={'folder_path':'日报'})
     assert second.status_code == 200, second.text
     assert second.json()['knowledge_id'] == first.json()['knowledge_id'] and second.json()['reused'] is True

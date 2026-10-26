@@ -61,6 +61,7 @@ test('shared catalog client sends literal global search and at most 200 metadata
   assert.equal(requests[0][0].searchParams.get('search'), '[literal] A%');
   assert.equal(requests[0][0].searchParams.get('limit'), '200');
   assert.equal(requests[0][0].searchParams.get('offset'), '200');
+  assert.equal(requests[0][0].searchParams.get('format'), 'metadata');
   assert.deepEqual(requests[0][0].searchParams.getAll('series_id'), [sid('a')]);
 });
 

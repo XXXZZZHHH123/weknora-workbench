@@ -200,7 +200,7 @@ def _saved_plan(scope, request):
                 dict(ids=_identifiers(contracts),points=1,same_day=[row['settle'] for row in contracts])],origins
         identifiers = []
         windows = {}
-        if module in {'home','indicators'}: identifiers.extend(core_config(session))
+        if module in {'home','indicators','reports'}: identifiers.extend(core_config(session))
         if module == 'diagram':
             templates = shared_diagrams(session)
             selected = next((row for row in templates if row.id == request['template_id']),None) if request['template_id'] is not None else default_diagram(session,templates)
@@ -209,22 +209,29 @@ def _saved_plan(scope, request):
             if selected: identifiers.extend(_diagram_ids(selected.layout or {}))
         if module in {'home','reports','judgments','strategies'}:
             from tin.judgments.service import current,to_payload
-            judgment = current(session,settings.variety)
+            from tin.integration.research_profile import research_variety
+            judgment = current(session,research_variety(session))
             if judgment:
                 payload = to_payload(judgment)
                 windows.update(_judgment_windows(payload))
         contract_plan = None
-        if module == 'strategies':
-            contracts=contract_config(session)
-            contract_plan=dict(ids=_identifiers(contracts),points=1,same_day=[row['settle'] for row in contracts])
+        if module in {'strategies','reports'}:
+            if module == 'strategies':
+                contracts=contract_config(session)
+                contract_plan=dict(ids=_identifiers(contracts),points=1,same_day=[row['settle'] for row in contracts])
             from tin.strategy.service import list_strategies
             for row in list_strategies(session):
                 if isinstance(row.plan,dict):
                     identifiers.extend(leg['quote_series_id'] for leg in row.plan.get('legs',[]) if isinstance(leg,dict) and isinstance(leg.get('quote_series_id'),str) and SERIES.fullmatch(leg['quote_series_id']))
+                    if module == 'reports':
+                        identifiers.extend(item['series_id'] for item in row.plan.get('evidence',[])
+                            if isinstance(item,dict) and isinstance(item.get('series_id'),str) and SERIES.fullmatch(item['series_id']))
         for identifier in identifiers:windows.setdefault(identifier,24 if module=='diagram' else 2)
         grouped = {}
         for identifier,points in windows.items():
-            grouped.setdefault(request.get('points') or points,[]).append(identifier)
+            requested = request.get('points')
+            count = max(requested, points) if module == 'reports' and requested else requested or points
+            grouped.setdefault(count,[]).append(identifier)
         plans=[dict(ids=values,points=points) for points,values in sorted(grouped.items())]
         if contract_plan and contract_plan['ids']:plans.append(contract_plan)
         if len(set(windows)|set(contract_plan['ids'] if contract_plan else []))>256:

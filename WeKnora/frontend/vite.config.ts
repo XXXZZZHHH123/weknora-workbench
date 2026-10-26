@@ -7,6 +7,7 @@ import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueJsx from '@vitejs/plugin-vue-jsx'
 import { serialEsbuildMinify } from './build/serialEsbuildMinify'
+import { vendorChunk } from './build/manualChunks'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
@@ -105,18 +106,10 @@ export default defineConfig({
         pdfTablePreview: resolve(__dirname, 'pdf-table-preview.html'),
       },
       output: {
-        manualChunks(id) {
-          if (!id.includes('node_modules')) return
-          if (id.includes('mermaid') || id.includes('/dagre') || id.includes('cytoscape')) {
-            return 'vendor-mermaid'
-          }
-          if (id.includes('marked') || id.includes('katex')) {
-            return 'vendor-markdown'
-          }
-          if (id.includes('highlight.js')) {
-            return 'vendor-highlight'
-          }
-        },
+        // Shared Vue/DOMPurify/preload helpers must not make every page import
+        // a graph-rendering bundle. Only the named packages belong here.
+        onlyExplicitManualChunks: true,
+        manualChunks: vendorChunk,
       },
     },
   },

@@ -112,19 +112,28 @@ def _brief_payload(brief_id):
 
 
 def _snapshot_payload(day):
+    return _period_payload(day, 'daily')
+
+
+def _period_payload(day, period):
+    from tin.integration.kb_facts import page_read_scope
+    from tin.integration.research_profile import research_variety
+    from tin.web.report_period import build_period, period_start
     try:
         value = date.fromisoformat(day)
         if value.isoformat() != day:
             raise ValueError
     except ValueError:
         raise HTTPException(400, '日期格式应为 YYYY-MM-DD') from None
-    with _session() as session:
-        start = datetime.combine(value, time.min, tzinfo=SHANGHAI)
+    with page_read_scope('reports', day=value, points_per_series=8 if period == 'weekly' else 2), _session() as session:
+        start = datetime.combine(period_start(value, period), time.min, tzinfo=SHANGHAI)
+        end = datetime.combine(value + timedelta(days=1), time.min, tzinfo=SHANGHAI)
         exists = session.scalar(select(Observation.id).where(Observation.status == '正常',
-            Observation.as_of >= start, Observation.as_of < start + timedelta(days=1)).limit(1))
-        if exists is None:
+            Observation.as_of >= start, Observation.as_of < end).limit(1))
+        variety = research_variety(session)
+        payload = build_period(session, variety, value, period, source=snapshot(session, variety, value), preview_rules=True)
+        if exists is None and not any(payload.get(key) for key in ('judgment','briefs','strategies','research_cards')):
             raise HTTPException(404, '当前知识库在该日没有可导出的数据快照')
-        payload = snapshot(session, settings.variety, value)
     # Integrated reports are current-source snapshots, not pre-existing archives.
     # A rendering timestamp changes per click and must not create false versions.
     payload.pop('generated_at', None)
@@ -142,33 +151,46 @@ def _markdown(scope, kind, identifier, folder, payload):
             raise ValueError
     except (ValueError, TypeError):
         raise HTTPException(409, '日报中的日期无效，请先核对原记录') from None
-    title = f'{report_day} {scope.metadata.get("name") or "研究工作台"} 日报'
+    weekly = kind == 'weekly'
+    period = payload.get('period') or {}
+    prefix = str(period.get('start') or report_day) + ' — ' + report_day if weekly else report_day
+    title = f'{prefix} {scope.metadata.get("name") or "研究工作台"} ' + ('周报' if weekly else '日报')
     provenance = {'research_workbench_id': scope.workbench_id, 'knowledge_base_id': scope.knowledge_base_id,
                   'research_owner_id': scope.identity.user_id, 'report_kind': kind,
                   'report_id': str(identifier), 'export_folder': folder}
     # JSON strings are valid YAML scalar values; names are content, never paths.
     front = '\n'.join(f'{key}: {json.dumps(value, ensure_ascii=False)}' for key, value in provenance.items())
-    lines = ['---', front, '---', '', '# ' + title.replace('\n', ' ').replace('\r', ' '), '']
+    lines = ['---', front, '---', '']
     if kind == 'brief':
+        from tin.web.report_view import present_snapshot, _md
+        lines += ['# ' + _md(title), '']
         label = str(payload.get('status') or '未登记')
         if label == '草稿':
             label += '（未经研究员确认）'
         lines += ['> 状态：' + label, '', '## 研究结论', '',
-                  str(payload.get('summary') or '未填写结论'), '',
-                  '- 基调：' + str(payload.get('tone') or '未填写'),
-                  '- 基调说明：' + str(payload.get('tone_note') or '未填写'),
-                  '- 操作倾向：' + str(payload.get('stance') or '未填写'), '']
-        for title, key in [('证据链', 'claims'), ('未通过证据校验的内容', 'unverified')]:
-            lines += ['## ' + title, '', '```json', _json(payload.get(key) or []), '```', '']
-        lines += ['## 原始日报记录', '', '```json', _json(payload), '```', '']
+                  _md(payload.get('summary') or '未填写结论'), '',
+                  '- 基调：' + _md(payload.get('tone') or '未填写'),
+                  '- 基调说明：' + _md(payload.get('tone_note') or '未填写'),
+                  '- 操作倾向：' + _md(payload.get('stance') or '未填写'), '']
+        rendered = present_snapshot({'briefs': [payload]})['briefs'][0]
+        lines += ['## 证据链', '']
+        for claim in rendered['claims']:
+            lines += ['- ' + _md(claim['text'])]
+            for evidence in claim['evidence']:
+                lines += ['  - ' + _md(evidence.get('name') or '已保存证据') + ' · '
+                          + _md(evidence.get('value')) + ' · ' + _md(evidence.get('as_of'))]
+        if rendered['unverified']:
+            lines += ['', '## 待核验内容', '']
+            lines += ['- ' + _md(item['text']) + ' · ' + _md(item['reason']) for item in rendered['unverified']]
     else:
-        lines += ['> 依据当前绑定知识库的已确认来源生成；保留原始来源与缺口，未补造数值。', '',
-                  '## 当日数据与研判', '', '```json', _json(payload), '```', '']
+        from tin.web.report_view import readable_markdown
+        lines += [readable_markdown(payload, title=title)]
+    lines += ['', '<details><summary>原始记录与来源审计</summary>', '', '```json', _json(payload), '```', '', '</details>', '']
     blob = '\n'.join(lines).encode('utf-8')
     if len(blob) > 4 * 1024 * 1024:
         raise HTTPException(413, '日报内容过大，请缩小归档范围')
     digest = hashlib.sha256(blob).hexdigest()
-    filename = f'研究日报_{report_day}_{digest[:12]}.md'
+    filename = f'研究{"周报" if weekly else "日报"}_{report_day}_{digest[:12]}.md'
     return filename, blob, digest
 
 
@@ -304,7 +326,10 @@ async def _export(kind, identifier, body):
     async with _export_lock(scope, lock_identity):
         # Capture one complete record inside the per-report lock. Simultaneous
         # clicks must not interleave its database snapshot or native upload.
-        payload = await run_in_threadpool(_brief_payload if kind == 'brief' else _snapshot_payload, identifier)
+        if kind == 'weekly':
+            payload = await run_in_threadpool(_period_payload, identifier, 'weekly')
+        else:
+            payload = await run_in_threadpool(_brief_payload if kind == 'brief' else _snapshot_payload, identifier)
         filename, blob, _ = await run_in_threadpool(_markdown, scope, kind, identifier, folder, payload)
         # Permissions and directory existence were freshly validated this request;
         # native upload independently enforces write ownership again.
@@ -327,3 +352,8 @@ async def export_brief(brief_id: int, body: ExportInput):
 @router.post('/reports/{day}/export')
 async def export_snapshot(day: str, body: ExportInput):
     return await _export('snapshot', day, body)
+
+
+@router.post('/reports/{day}/weekly/export')
+async def export_weekly(day: str, body: ExportInput):
+    return await _export('weekly', day, body)
