@@ -65,6 +65,7 @@ if FONT_ASSETS.is_dir():
 templates = Jinja2Templates(directory=HERE / "templates")
 
 V = settings.variety
+from tin.integration.research_profile import research_variety
 # 指标未登记默认发布时刻时的兜底值（收盘截点）
 FALLBACK_ENTRY_TIME = time(15, 0)
 
@@ -235,6 +236,10 @@ from tin.web.diagram_generation import router as diagram_generation_router
 app.include_router(diagram_generation_router)
 from tin.web.judgment_generation import router as judgment_generation_router
 app.include_router(judgment_generation_router)
+from tin.web.judgment_structured import router as judgment_structured_router
+app.include_router(judgment_structured_router)
+from tin.web.research_strategy import router as research_strategy_router
+app.include_router(research_strategy_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
 app.include_router(build_market_router(lambda: _page_session('market'), templates,
                                        lambda session, day: _home_date(session, day)))
@@ -335,7 +340,7 @@ def _shell(s, nav: str, d: date | None = None, **extra) -> dict:
     ctx = {"nav": nav, "d": d.isoformat() if d else None, "manual_indicators": _manual_indicators(s)}
     shown = d or latest_trade_date(s)
     if shown is not None:
-        ctx["ticker"] = ticker(s, V, shown)
+        ctx["ticker"] = ticker(s, research_variety(s), shown)
     if d is not None:
         ctx["prev_date"], ctx["next_date"] = _neighbour_dates(s, d)
         calendar = s.info.get('knowledge_facts_calendar')
@@ -365,17 +370,17 @@ def home_page(request: Request, date: str | None = None, err: str | None = None)
     with _page_session('home', day=date) as s:
         d = _home_date(s, date)
         researcher = seed_researcher(s)
-        brief = brief_store.current(s, researcher.id, V, d) if d is not None else None
+        brief = brief_store.current(s, researcher.id, research_variety(s), d) if d is not None else None
         return templates.TemplateResponse(request, "home.html", _shell(
             s, "home", d,
             researcher=researcher,
-            todos=home.todos(s, V, d),
+            todos=home.todos(s, research_variety(s), d),
             brief=home.brief_view(s, brief, d) if brief is not None else None,
             brief_gap=None if brief is not None else home.brief_gap(s, researcher, d),
-            changes=home.overnight(s, V, d) if d is not None else {"core": [], "macro": []},
-            cards=saved_core_cards(s, d, core_cards(s, V, d)) if d is not None else [],
-            radar=threshold_radar(s, V, d) if d is not None else [],
-            gaps=gaps(s, V, d) if d is not None else [],
+            changes=home.overnight(s, research_variety(s), d) if d is not None else {"core": [], "macro": []},
+            cards=saved_core_cards(s, d, core_cards(s, research_variety(s), d)) if d is not None else [],
+            radar=threshold_radar(s, research_variety(s), d) if d is not None else [],
+            gaps=gaps(s, research_variety(s), d) if d is not None else [],
             tones=TONES, stances=STANCES, editable=brief_store.EDITABLE_FIELDS, err=err))
 
 
@@ -490,17 +495,17 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
     with _page_session('market', day=date) as s:
         d = _home_date(s, date)
         today = datetime.now(SHANGHAI).date()
-        cards = saved_core_cards(s, d, core_cards(s, V, d) if d is not None else [])
+        cards = saved_core_cards(s, d, core_cards(s, research_variety(s), d) if d is not None else [])
         from tin.web.market_history import market_history
         from tin.web.market_contracts import configured_contract_curve
         curve = (configured_contract_curve(s, d if date else None) if s.info.get('workbench_id')
-                 else contract_curve(s, V, d) if d is not None else None)
+                 else contract_curve(s, research_variety(s), d) if d is not None else None)
         return templates.TemplateResponse(request, "variety.html", _shell(
             s, "variety", d, cards=cards,
             market_catalog=market_catalog_data(s, cards, d) if s.info.get('workbench_id') else None,
-            judgment=judgment_block(s, V, today),
-            radar=threshold_radar(s, V, d) if d is not None else [],
-            gaps=gaps(s, V, d) if d is not None else [],
+            judgment=judgment_block(s, research_variety(s), today),
+            radar=threshold_radar(s, research_variety(s), d) if d is not None else [],
+            gaps=gaps(s, research_variety(s), d) if d is not None else [],
             curve=curve,
             market_history=market_history(s, d) if s.info.get('workbench_id') and d else None,
             macro=macro_featured(s, d) if d is not None else [],
@@ -524,13 +529,13 @@ def _judgment_response(request: Request, *, err=None, logic_input=""):
     with _page_session('judgments', day=request.query_params.get('date')) as s:
         d = _home_date(s, request.query_params.get('date'))
         today = datetime.now(SHANGHAI).date()
-        versions = s.execute(scope_query(s, select(Judgment.version, Judgment.status, Judgment.author, Judgment.written_at, Judgment.review_due, Judgment.created_at).where(Judgment.variety == V).order_by(Judgment.version.desc()).limit(50), Judgment)).all()
+        versions = s.execute(scope_query(s, select(Judgment.version, Judgment.status, Judgment.author, Judgment.written_at, Judgment.review_due, Judgment.created_at).where(Judgment.variety == research_variety(s)).order_by(Judgment.version.desc()).limit(50), Judgment)).all()
         last_import = s.scalars(select(AuditLog).where(AuditLog.action == "判断导入", *([AuditLog.actor == verified_actor()] if current_identity.get() else []))
                                 .order_by(AuditLog.id.desc()).limit(1)).first()
         return templates.TemplateResponse(request, "judgment.html", _shell(
-            s, "judgment", d, j=current(s, V), block=judgment_block(s, V, today), versions=versions,
+            s, "judgment", d, j=current(s, research_variety(s)), block=judgment_block(s, research_variety(s), today), versions=versions,
             names={i.series_id: i.name for i in s.scalars(select(Indicator))},
-            radar=threshold_radar(s, V, d) if d else [],
+            radar=threshold_radar(s, research_variety(s), d) if d else [],
             report=last_import.detail if last_import else None, err=err, logic_input=logic_input))
 
 
@@ -611,7 +616,7 @@ def indicators_page(request: Request, date: str | None = None):
         day = _home_date(s, date)
         groups = [{"name": name, "rows": [r for r in rows if r["category"] == name]}
                   for name in dict.fromkeys(r["category"] for r in rows)]
-        checks = diagram_api.crosscheck(s, V, day) if day else []
+        checks = diagram_api.crosscheck(s, research_variety(s), day) if day else []
         return templates.TemplateResponse(request, "indicators.html", _shell(
             s, "indicators", day, rows=rows, groups=groups, dimensions=DIMENSIONS, checks=checks,
             catalog_remote=remote, catalog_offset=directory['offset'] if directory else 0,
@@ -635,19 +640,22 @@ def indicator_page(request: Request, series_id: str, date: str | None = None):
         except diagram_api.DiagramError as e:
             raise HTTPException(404, str(e)) from e
         return templates.TemplateResponse(request, "indicator.html", _shell(
-            s, "indicators", day, detail=d, usage=diagram_api.usage(s, series_id, V)))
+            s, "indicators", day, detail=d, usage=diagram_api.usage(s, series_id, research_variety(s))))
 
 
 @app.get("/api/sn/indicators/{series_id}/usage")
 def indicator_usage(series_id: str):
     with _page_session('indicators', series_ids=[series_id]) as s:
-        return diagram_api.usage(s, series_id, V)
+        return diagram_api.usage(s, series_id, research_variety(s))
 
 
 @app.get("/api/sn/indicators/catalog")
 def indicator_catalog(scope: str = "all", search: str = Query('', max_length=200),
                       offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=200),
-                      series_id: list[str] | None = Query(None, max_length=256), date: str | None = None):
+                      series_id: list[str] | None = Query(None, max_length=256), date: str | None = None,
+                      format: str = 'html'):
+    if format not in {'html', 'metadata'}:
+        raise HTTPException(400, '无效指标目录显示格式')
     if scope not in {"all", "macro", "industry"}:
         raise HTTPException(400, "无效指标目录范围")
     if date is not None:
@@ -659,8 +667,11 @@ def indicator_catalog(scope: str = "all", search: str = Query('', max_length=200
     if workbench is not None and workbench.scope_version == 2:
         from tin.web.catalog import indicator_page
         page = indicator_page(workbench, offset=offset, limit=limit, search=search, kind=scope, identifiers=series_id)
+        metadata = {key: value for key, value in page.items() if key not in {'series', 'groups', 'datasets'}}
+        if format == 'metadata':
+            return metadata
         render = {'groups': page['groups'], 'rows': page['indicators'], 'restricted_view': False, 'd': date, 'catalog_offset': offset}
-        return {**{key: value for key, value in page.items() if key not in {'series', 'groups', 'datasets'}},
+        return {**metadata,
                 'html': templates.get_template('_indicator_catalog_groups.html').render(render),
                 'nav_html': templates.get_template('_indicator_catalog_links.html').render(render)}
     with SessionLocal() as session:
@@ -853,48 +864,113 @@ def diagram_delete(template_id: int):
 
 
 @app.get("/sn/reports")
-def reports_page(request: Request, date: str | None = None):
+def reports_page(request: Request, date: str | None = None, period: str = 'daily'):
+    from tin.integration.research_profile import research_variety
+    from tin.web.report_period import build_period, period_start
     from tin.web.report_view import present_snapshot
-    with _page_session('reports', day=date) as s:
+    if period not in {'daily', 'weekly'}:
+        raise HTTPException(400, '报告周期应为 daily 或 weekly')
+    if date is not None:
+        try:
+            if CalendarDate.fromisoformat(date).isoformat() != date:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(400, '日期格式应为 YYYY-MM-DD') from None
+    with _page_session('reports', day=date, points_per_series=8 if period == 'weekly' else 2) as s:
+        variety = research_variety(s)
         available_days = ([value.isoformat() for value in sorted({value.astimezone(SHANGHAI).date()
                           for value in s.scalars(select(Observation.as_of).where(Observation.status == "正常"))}, reverse=True)[:40]]
                           if s.info.get("workbench_id") else s.scalars(select(TradingDay.trade_date).order_by(TradingDay.trade_date.desc()).limit(40)))
-        files = ([{"date": day, "weekday": "一二三四五六日"[__import__("datetime").date.fromisoformat(day).weekday()],
+        files = ([{"date": day, "weekday": "一二三四五六日"[CalendarDate.fromisoformat(day).weekday()],
                    "tone": None, "main": None, "gaps": None, "generated_at": None}
                   for day in available_days]
-                 if settings.weknora_api_url else archive_days(s, V))
-        selected = next((f for f in files if f["date"] == date), files[0] if files else {"date": None})
+                 if settings.weknora_api_url else archive_days(s, variety))
+        selected = next((f for f in files if f["date"] == date),
+            {"date": date} if date else files[0] if files else {"date": None})
         preview, report, names = "", None, {}
-        if selected.get("date"):
-            path = settings.exports_dir / V / f"{selected['date']}.json"
+        chosen = CalendarDate.fromisoformat(selected['date']) if selected.get('date') else (
+            datetime.now(SHANGHAI).date() if settings.weknora_api_url else None)
+        if chosen is not None:
+            path = settings.exports_dir / variety / f"{chosen.isoformat()}.json"
             if settings.weknora_api_url:
-                report = snapshot(s, V, __import__("datetime").date.fromisoformat(selected["date"]))
+                report = build_period(s, variety, chosen, period)
                 names = dict(s.execute(select(Indicator.series_id, Indicator.name)).all())
+            elif period == 'weekly':
+                # Standalone weekly reports use explicit current-source replay,
+                # never claim seven regenerated days are frozen archives.
+                report = build_period(s, variety, chosen, period)
             elif path.exists():
                 report = json.loads(path.read_text(encoding="utf-8"))
             if report is not None:
+                if not files and not date and not any(report.get(key) for key in
+                        ('judgment', 'briefs', 'strategies', 'research_cards')):
+                    report = None
+                else:
+                    selected = {**selected, 'date': chosen.isoformat()}
+            if report is not None:
                 preview = json.dumps(report, ensure_ascii=False, indent=2)
         return templates.TemplateResponse(request, "reports.html", _shell(
-            s, "reports", latest_trade_date(s), files=files, selected=selected, preview=preview,
+            s, "reports", None, files=files, selected=selected, preview=preview,
             report=present_snapshot(report, names) if report is not None else None,
-            report_generated_at=(report or {}).get('generated_at'),
-            live_report=bool(settings.weknora_api_url)))
+            report_generated_at=(report or {}).get('generated_at'), period_kind=period,
+            report_start=period_start(chosen, period).isoformat() if chosen else None,
+            live_report=bool(settings.weknora_api_url) or period == 'weekly'))
 
 
 @app.get("/sn/reports/{day}.json")
 def report_file(day: str):
+    from tin.integration.research_profile import research_variety
     try:
-        date.fromisoformat(day)
+        CalendarDate.fromisoformat(day)
     except ValueError:
         raise HTTPException(400, "日期格式应为 YYYY-MM-DD") from None
     if settings.weknora_api_url:
         with _page_session('reports', day=day) as s:
-            return JSONResponse(snapshot(s, V, _board_date(s, day)), headers={
-                "Content-Disposition": f'attachment; filename="{V}_{day}.json"'})
+            variety = research_variety(s)
+            return JSONResponse(snapshot(s, variety, _board_date(s, day)), headers={
+                "Content-Disposition": f'attachment; filename="{variety}_{day}.json"'})
     path = settings.exports_dir / V / f"{day}.json"
     if not path.exists():
         raise HTTPException(404, "该日没有归档快照")
     return FileResponse(path, media_type="application/json", filename=f"{V}_{day}.json")
+
+
+def _period_download(day, period, markdown=False):
+    from tin.integration.research_profile import research_variety
+    from tin.web.report_period import build_period
+    from tin.web.report_view import readable_markdown
+    try:
+        cutoff = CalendarDate.fromisoformat(day)
+        if cutoff.isoformat() != day:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, '日期格式应为 YYYY-MM-DD') from None
+    with _page_session('reports', day=cutoff, points_per_series=8 if period == 'weekly' else 2) as s:
+        variety = research_variety(s)
+        payload = build_period(s, variety, cutoff, period)
+        if markdown:
+            scope = current_workbench.get()
+            title = (scope.metadata.get('name') if scope else None) or '研究工作台'
+            body = readable_markdown(payload, title=title + (' 周报' if period == 'weekly' else ' 日报'))
+            return StreamingResponse(iter([body.encode('utf-8')]), media_type='text/markdown', headers={
+                'Content-Disposition': f'attachment; filename="research_{period}_{day}.md"'})
+        return JSONResponse(payload, headers={
+            'Content-Disposition': f'attachment; filename="research_{period}_{day}.json"'})
+
+
+@app.get('/sn/reports/{day}/weekly.json')
+def weekly_report_json(day: str):
+    return _period_download(day, 'weekly')
+
+
+@app.get('/sn/reports/{day}/weekly.md')
+def weekly_report_markdown(day: str):
+    return _period_download(day, 'weekly', markdown=True)
+
+
+@app.get('/sn/reports/{day}/daily.md')
+def daily_report_markdown(day: str):
+    return _period_download(day, 'daily', markdown=True)
 
 
 @app.get("/sn/contracts.csv")

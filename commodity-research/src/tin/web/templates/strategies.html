@@ -3,10 +3,11 @@
 {% block main %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/strategy.css?v={{ static_version() }}">
 <section class="strategy-head">
-  <div><p class="eyebrow">RESEARCH → DECISION → REVIEW</p><h1>交易策略</h1>
-    <p>把产业判断转成可证伪的入场、目标与止损；发布后记录真实成交，不把行情触价当作盈利。</p></div>
+  <div><p class="eyebrow">RESEARCH → DECISION → REVIEW</p><h1>研究与策略</h1>
+    <p>研究假设 → 观察验证 → 交易计划 → 人工审阅 → 日常跟踪与每周复盘</p></div>
   <div class="strategy-counts"><span><b>{{ summary.active }}</b> 跟踪中</span><span><b>{{ summary.drafts }}</b> 待审阅</span></div>
 </section>
+{% include "_research_strategy_cards.html" %}
 <section class="strategy-grid">
   <div class="strategy-main">
     <div class="strategy-toolbar"><div class="strategy-filters">
@@ -24,7 +25,7 @@
         <div class="strategy-card-meta">{% for leg in s.plan.legs %}<span>{{ '多' if leg.side == 'buy' else '空' }} {{ leg.contract }} × {{ leg.ratio }}</span>{% endfor %}
           <span>研究时点 {{ (s.plan.as_of or '')[:16].replace('T',' ') }}</span></div>
       {% if restricted_view %}{% include "_strategy_plan_readonly.html" %}</article>{% else %}</a>{% endif %}
-    {% else %}<div class="empty-state"><strong>这里还没有策略</strong><p>先建立并生效一条研究判断、录入具体合约行情和产业证据，再生成可审阅的策略草稿。</p></div>{% endfor %}
+    {% else %}<div class="empty-state"><strong>尚无交易计划</strong><p>上方研究方案用于跟踪假设；确认并生效研究判断、具体合约行情和产业证据后，再生成可审阅的交易计划草稿。</p></div>{% endfor %}
     {% if restricted_view and restricted_data.strategies_truncated %}<p class="text-xs text-[var(--text-muted)]">已显示最近 50 条策略；更早记录仍保留，受限视角不开放任意历史查询。</p>{% endif %}
     </div>
   </div>

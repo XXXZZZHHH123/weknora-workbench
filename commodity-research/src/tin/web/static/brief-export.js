@@ -46,12 +46,12 @@
     });
     form.addEventListener('submit', async event => {
       event.preventDefault(); if (busy || submit.disabled || folders.disabled) return;
-      if (!['brief', 'snapshot'].includes(kind) || !identifier) { message('日报标识无效，请刷新后重试。', true); return; }
+      if (!['brief', 'snapshot', 'weekly'].includes(kind) || !identifier) { message('报告标识无效，请刷新后重试。', true); return; }
       busy = true; submit.disabled = true; folders.disabled = true; submit.textContent = '导出中…'; message('正在保存…');
       const selectedFolder = folders.value;
       try {
         const path = kind === 'brief' ? 'brief/' : 'reports/';
-        const payload = await json(await researchFetch(base + path + encodeURIComponent(identifier) + '/export', {
+        const payload = await json(await researchFetch(base + path + encodeURIComponent(identifier) + (kind === 'weekly' ? '/weekly/export' : '/export'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_path: selectedFolder }),
         }));
         if (payload.knowledge_base_id !== control.dataset.exportKb || payload.folder_path !== selectedFolder

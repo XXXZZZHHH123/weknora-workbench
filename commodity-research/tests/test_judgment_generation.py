@@ -52,6 +52,22 @@ def test_generate_is_preview_only_then_explicit_save_appends_draft(generator):
     assert managed['current']['version']==1 and SERIES in managed['current']['markdown']
     assert client.get(endpoint('/versions/1'),headers=headers).json()['diff']['fields']==[]
 
+
+def test_new_explicit_product_reuses_model_analysis_without_inheriting_other_product_versions(generator):
+    client, headers, _, _, calls = generator
+    first = generate(client, headers).json()
+    assert apply(client, headers, first).status_code == 200
+    response = client.post(endpoint('/generate'), headers=headers,
+        json={'model_id': 'synthetic-chat', 'text': TEXT, 'base_version': 0, 'variety': 'XY'})
+    assert response.status_code == 200, response.text
+    assert response.json()['base_version'] == 0
+    assert apply(client, headers, response.json()).status_code == 200
+    assert [(row.variety, row.version) for row in rows()] == [('SN', 1), ('XY', 1)]
+    managed = client.get(endpoint('/manage'), headers=headers).json()
+    assert managed['variety'] == 'XY' and managed['current']['variety'] == 'XY'
+    assert client.get(endpoint('/manage?variety=SN'), headers=headers).json()['current']['variety'] == 'SN'
+    assert len(calls) == 2
+
 @pytest.mark.parametrize('change',[
     lambda d:d['judgment']['thresholds'][0].update(series_id='foreign'),
     lambda d:d['judgment']['contradiction']['bull'].update(evidence=None)])

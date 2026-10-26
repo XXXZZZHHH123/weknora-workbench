@@ -1,4 +1,4 @@
-"""Explicit, reviewable SN trading plans. Prices are CNY/tonne, PnL is CNY."""
+"""Explicit trading plans; contract identity and execution specs are verified inputs."""
 from datetime import datetime
 import re
 from typing import Literal
@@ -19,26 +19,25 @@ class PriceBand(_Model):
     def ordered(self):
         if self.low > self.high:
             raise ValueError("区间下限不得大于上限")
-        if any(abs(value / 10 - round(value / 10)) > 1e-8 for value in (self.low, self.high)):
-            raise ValueError("沪锡价格区间须按 10 元/吨最小变动价位报价")
         return self
 
 
 class StrategyLeg(_Model):
-    contract: str = Field(pattern=r"^SN\d{2}(0[1-9]|1[0-2])$")
+    contract: str = Field(pattern=r"^[A-Z]{1,8}\d{3,6}$")
     side: Literal["buy", "sell"]
     ratio: int = Field(default=1, ge=1, le=10000, strict=True)
     multiplier: float = Field(default=1, gt=0)
+    tick_size: float = Field(default=10, gt=0)
+    delivery_month: str | None = Field(default=None, pattern=r'^\d{4}-(0[1-9]|1[0-2])$')
     quote_series_id: str = Field(min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def specific_quote(self):
-        if self.multiplier != 1:
-            raise ValueError("SN 合约乘数必须为 1 吨/手")
-        if not re.fullmatch(r'kb-[0-9a-f]{48}', self.quote_series_id) and self.quote_series_id not in {
-            f"SHFE.SN.{self.contract[2:]}.close", f"SHFE.SN.{self.contract[2:]}.settle"
-        }:
-            raise ValueError("行情必须是该具体合约的 close 或 settle；不能使用主连")
+        if not re.fullmatch(r'kb-[0-9a-f]{48}', self.quote_series_id):
+            if (not re.fullmatch(r'SN\d{2}(0[1-9]|1[0-2])', self.contract)
+                    or self.multiplier != 1 or self.tick_size != 10
+                    or self.quote_series_id not in {f"SHFE.SN.{self.contract[2:]}.close", f"SHFE.SN.{self.contract[2:]}.settle"}):
+                raise ValueError("行情必须绑定已确认的具体合约；不能使用主连或推测合约规格")
         return self
 
 
@@ -60,7 +59,7 @@ class StrategyEvidence(_Model):
 
 class StrategyPlan(_Model):
     title: str = Field(min_length=1, max_length=200)
-    variety: Literal["SN"] = "SN"
+    variety: str = Field(default='SN', min_length=1, max_length=16)
     kind: Literal["outright", "calendar_spread"]
     mode: Literal["simulation", "actual"] = "simulation"
     legs: list[StrategyLeg] = Field(min_length=1, max_length=2)
@@ -85,6 +84,13 @@ class StrategyPlan(_Model):
 
     @model_validator(mode="after")
     def coherent(self):
+        ticks = {leg.tick_size for leg in self.legs}
+        if len(ticks) != 1:
+            raise ValueError('同品种策略各腿的报价最小变动价位必须一致')
+        tick = self.legs[0].tick_size
+        if any(abs(value / tick - round(value / tick)) > 1e-8
+               for band in (self.entry, self.target, self.stop) for value in (band.low, band.high)):
+            raise ValueError('价格区间必须符合已确认的合约最小变动价位')
         if self.review_at <= self.as_of:
             raise ValueError("复核时间必须晚于研究数据截止时间")
         if any(e.as_of > self.as_of for e in self.evidence):
@@ -98,7 +104,7 @@ class StrategyPlan(_Model):
             if len(self.legs) != 2:
                 raise ValueError("跨期策略必须有两条腿")
             near, far = self.legs
-            if near.contract >= far.contract:
+            if (near.delivery_month or near.contract) >= (far.delivery_month or far.contract):
                 raise ValueError("跨期腿必须按近月、远月顺序且合约不同")
             if near.side == far.side or near.ratio != far.ratio:
                 raise ValueError("一期跨期必须等手数、相反方向")
@@ -114,18 +120,11 @@ class StrategyPlan(_Model):
 
 
 class LegFill(_Model):
-    contract: str = Field(pattern=r"^SN\d{2}(0[1-9]|1[0-2])$")
+    contract: str = Field(pattern=r"^[A-Z]{1,8}\d{3,6}$")
     price: float = Field(gt=0)
     quantity: int = Field(gt=0, strict=True)
     filled_at: AwareDatetime
     costs: float = Field(default=0, ge=0)
-
-    @model_validator(mode="after")
-    def tick_size(self):
-        if abs(self.price / 10 - round(self.price / 10)) > 1e-8:
-            raise ValueError("沪锡成交价须按 10 元/吨最小变动价位记录")
-        return self
-
 
 class ExecutionIn(_Model):
     fills: list[LegFill] = Field(min_length=1, max_length=2)

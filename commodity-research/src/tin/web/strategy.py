@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from tin.compute.engine import latest_trade_date
 from tin.config import SHANGHAI, settings
+from tin.integration.research_profile import research_variety
 from tin.jobs.seed import seed_researcher
 from tin.integration.identity import verified_actor
 from tin.schemas.strategy import ExecutionIn, StrategyPlan
@@ -82,8 +83,10 @@ def build_router(session_factory, templates, shell) -> APIRouter:
         with session_factory() as session:
             rows = service.list_strategies(session)
             visible = [row for row in rows if status == "all" or row.status == status]
+            from tin.web.research_strategy import build_context as research_cards_context
             return templates.TemplateResponse(request, "strategies.html", context(
                 session, strategies=[service.serialize_strategy(session, row) for row in visible],
+                research_cards=research_cards_context(session, current_workbench.get()),
                 selected_status=status, summary=strategy_summary(session),
                 latest_date=latest_trade_date(session)))
 
@@ -142,7 +145,7 @@ def build_router(session_factory, templates, shell) -> APIRouter:
             if day is None:
                 return {"status": "no_candidate", "strategies": [],
                         "gaps": ["尚无行情数据。先录入明确合约的行情，再生成策略草稿。"]}
-            result = generate_candidates(session, settings.variety, day,
+            result = generate_candidates(session, research_variety(session), day,
                                          researcher_id=seed_researcher(session).id,
                                          provider=provider,
                                          research_question=body.research_question.strip())

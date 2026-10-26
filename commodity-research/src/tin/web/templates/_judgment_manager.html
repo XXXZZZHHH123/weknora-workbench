@@ -12,10 +12,10 @@
     <details><summary>保留的原始输入</summary><pre id="logic-original-source" class="logic-code"></pre></details>
   </section>
   <section data-logic-panel="analyze" class="logic-panel" hidden>
-    <div class="logic-toolbar"><label class="logic-file">选择 .md / .txt<input id="logic-file" type="file" accept=".txt,.md,text/plain,text/markdown"></label><span id="logic-file-name"></span><button type="button" id="logic-skeleton">插入通用骨架</button></div>
+    <div class="logic-toolbar"><label class="logic-file">选择 .md / .txt / .json<input id="logic-file" type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"></label><span id="logic-file-name"></span><button type="button" id="logic-skeleton">插入通用骨架</button><button type="button" id="logic-structured">预览结构化稿</button></div>
     <label class="logic-editor-label" for="logic-input">研究逻辑原文 <span>完整分析，不沿用上一版本规则</span></label>
     <textarea id="logic-input" rows="7" placeholder="选择文件，或粘贴主矛盾、数据锚、边际、成本与证伪条件。">{{ logic_input or '' }}</textarea>
-    <div class="logic-toolbar"><label for="logic-model">分析模型</label><select id="logic-model" aria-label="研究逻辑分析模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-generate" class="logic-primary">分析原文</button><span class="logic-hint">先预览，再确认保存；不会自动生效。</span></div>
+    <div class="logic-toolbar"><label for="logic-variety">品种代码</label><input id="logic-variety" maxlength="16" aria-label="研究品种代码" placeholder="按研究原文填写" style="width:90px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--text);font:inherit"><label for="logic-model">分析模型</label><select id="logic-model" aria-label="研究逻辑分析模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-generate" class="logic-primary">分析原文</button><span class="logic-hint">先预览，再确认保存；不会自动生效。</span></div>
     <div id="logic-preview" hidden>
       <div class="logic-toolbar"><strong>待确认草稿</strong><span id="logic-coverage"></span><button type="button" id="logic-apply" class="logic-primary">确认保存为新草稿</button></div>
       <div id="logic-bindings" class="logic-bindings"></div>

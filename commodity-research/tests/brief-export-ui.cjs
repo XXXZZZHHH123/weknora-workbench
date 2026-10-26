@@ -4,6 +4,9 @@ const { spawnSync } = require('node:child_process');
 const { chromium } = require('playwright');
 const source = path.join(__dirname, '..', 'src', 'tin', 'web');
 const python = process.env.RESEARCH_PYTHON || 'python';
+const exportKind = process.env.REPORT_EXPORT_KIND || 'brief';
+assert(['brief', 'weekly'].includes(exportKind));
+const exportId = exportKind === 'weekly' ? '2026-02-08' : '1';
 const render = spawnSync(python, ['-c', `
 import sys
 from types import SimpleNamespace
@@ -11,8 +14,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 scope=SimpleNamespace(knowledge_base_id='fixture-kb')
 env=Environment(loader=FileSystemLoader(sys.argv[1]),autoescape=select_autoescape(['html']))
 env.globals.update(research_workbench=lambda:scope,research_identity=lambda:SimpleNamespace(can_write=True),research_static_prefix=lambda:'',static_version=lambda:'fixture')
-print(env.get_template('_brief_export.html').render(export_kind='brief',export_id=1))
-`, path.join(source,'templates')], { encoding:'utf8' });
+print(env.get_template('_brief_export.html').render(export_kind=sys.argv[2],export_id=sys.argv[3]))
+`, path.join(source,'templates'), exportKind, exportId], { encoding:'utf8' });
 assert.equal(render.status,0,render.stderr);
 const fragment = render.stdout;
 (async () => {
@@ -26,7 +29,7 @@ const fragment = render.stdout;
    if(url.pathname==='/')return route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><head><meta charset="utf-8"><script>window.RESEARCH_PREFIX="/research/workbenches/fixture";window.researchFetch=window.fetch.bind(window);</script></head><body><div style="position:relative;margin:80px 300px;display:flex;justify-content:flex-end">'+fragment+'</div></body>'});
    if(url.pathname==='/static/brief-export.js')return route.fulfill({contentType:'application/javascript',body:fs.readFileSync(path.join(source,'static/brief-export.js'),'utf8')});
    if(url.pathname.endsWith('/brief/export/folders'))return route.fulfill({status:folderFailure?403:200,json:folderFailure?{detail:'没有知识库写入权限'}:{knowledge_base_id:'fixture-kb',folders:[{path:'',name:'知识库根目录',depth:0},{path:'日报',name:'日报',depth:1},{path:'日报/归档',name:'归档',depth:2},{path:'<example>',name:'<example>',depth:1}]}});
-   if(url.pathname.endsWith('/brief/1/export')){
+   if(url.pathname.endsWith(exportKind === 'weekly' ? '/reports/'+exportId+'/weekly/export' : '/brief/1/export')){
     const data=request.postDataJSON();assert.deepEqual(Object.keys(data),['folder_path']);count++;
     if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
     return route.fulfill({status:exportFailure?503:parseFailure?502:200,json:exportFailure?{detail:'原生上传失败，未确认保存'}:parseFailure?{detail:{message:'文件已保存但解析失败',knowledge_id:'real-fixture-id',knowledge_base_id:'fixture-kb',folder_path:data.folder_path}}:{knowledge_id:'real-fixture-id',knowledge_base_id:wrongScope?'foreign-kb':'fixture-kb',folder_path:data.folder_path,parse_status:'pending',reused:count>1}});
@@ -66,6 +69,6 @@ const fragment = render.stdout;
   folderFailure=true;await page.locator('summary').click();await page.waitForFunction(()=>document.querySelector('[data-export-status]')?.textContent.includes('没有知识库写入权限'));
   assert.equal(await page.locator('[data-export-submit]').isDisabled(),true);
   assert.deepEqual(errors,[]);
-  console.log('PASS: actual Jinja export control, root/default and nested folder selection, safe labels, real document link, repeat reuse, failures/retry, scope mismatch, duplicate-click protection, permission loss, zero model calls.');
+  console.log('PASS ('+exportKind+'): actual Jinja export control, root/default and nested folder selection, safe labels, real document link, repeat reuse, failures/retry, scope mismatch, duplicate-click protection, permission loss, zero model calls.');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

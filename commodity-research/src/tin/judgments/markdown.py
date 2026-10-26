@@ -16,7 +16,7 @@ def cell(value):
 
 def dump_markdown(payload: JudgmentIn):
     j = payload.model_dump(mode='json', by_alias=True)
-    lines = ['# 研究逻辑', '', '## 主矛盾']
+    lines = ['# 研究逻辑', '', f"品种：{j['variety']} · 撰写日期：{j['written_at']} · 复核周期：{j['review_period_days']}天", '', '## 主矛盾']
     for side, label in [('bull', '支持依据'), ('bear', '反对依据')]:
         data = j['contradiction'][side]
         lines.extend(['', '### ' + label, data['claim'] or '待确认'])

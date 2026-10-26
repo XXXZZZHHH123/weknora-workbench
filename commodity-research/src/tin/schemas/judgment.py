@@ -76,7 +76,7 @@ class CostLine(_Model):
 
 
 class PricingPower(_Model):
-    category: Literal["有LME外盘", "纯宏观", "无外盘"] | None = None
+    category: Literal["有境外市场", "有LME外盘", "纯宏观", "无外盘"] | None = None
     short: list[str] = Field(default_factory=list)
     long: list[str] = Field(default_factory=list)
     key: str | None = None

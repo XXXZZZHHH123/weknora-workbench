@@ -7,6 +7,7 @@ import json
 import secrets
 import threading
 import time
+import re
 from urllib.parse import quote
 
 import httpx
@@ -17,8 +18,9 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.concurrency import run_in_threadpool
 
 from tin.config import SHANGHAI, settings
+from tin.integration.research_profile import research_variety
 from tin.db import SessionLocal
-from tin.integration.workbench_scope import artifact_session, current_workbench, go_request, resolve_workbench
+from tin.integration.workbench_scope import artifact_session, current_workbench, go_request, resolve_workbench, require_shared_write
 from tin.judgments.analysis import AnalysisError, SOURCE_BYTES, assess_draft, validate_analysis
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.prompt import GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, SELECTION_PROTOCOL
@@ -39,6 +41,7 @@ class GenerateRequest(BaseModel):
     text: str = Field(min_length=1, max_length=SOURCE_BYTES)
     source_name: str = Field(default='', max_length=128)
     base_version: int = Field(ge=0)
+    variety: str | None = Field(default=None, pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,15}$')
 
 
 class ApplyRequest(BaseModel):
@@ -95,14 +98,16 @@ def scope_for_analysis(write=False):
         raise HTTPException(403, '当前角色不能分析或保存研究逻辑')
     if write and (scope.restricted or scope.metadata.get('can_read_source') is False):
         raise HTTPException(403, '受限视角仅可读取已授权成果，不能分析或保存研究逻辑')
+    if write:
+        require_shared_write(scope)
     return scope
 
 
 async def read_body(request, schema):
     body = bytearray()
     async for piece in request.stream():
+        if len(body) + len(piece) > 128 * 1024: raise HTTPException(413, '研究逻辑请求过大')
         body.extend(piece)
-        if len(body) > 128 * 1024: raise HTTPException(413, '研究逻辑请求过大')
     try:
         return schema.model_validate(strict_json(body.decode('utf-8')))
     except (ValidationError, UnicodeError, ValueError, RecursionError):
@@ -113,20 +118,21 @@ def result_session(scope):
     return artifact_session(scope) if getattr(scope, 'scope_version', 1) == 2 else SessionLocal()
 
 
-def snapshot():
+def snapshot(selected_variety=None):
     scope = current_workbench.get()
     metadata = None
     if getattr(scope, 'scope_version', 1) == 2:
         from tin.integration.kb_facts import catalog_snapshot
         metadata = catalog_snapshot(scope)
     with result_session(scope) as session:
-        row = latest(session, settings.variety)
+        variety = selected_variety or research_variety(session)
+        row = latest(session, variety)
         source_catalog = metadata['catalog'] if metadata is not None else session.info['knowledge_facts_catalog']
         catalog = [{'id': spec['series_id'], 'name': spec.get('metric') or spec.get('name'),
                     **{key: spec.get(key) for key in ('unit', 'frequency', 'sheet', 'dimensions',
                         'source_file', 'source_kind', 'knowledge_base_id', 'source_version')}}
                    for spec in source_catalog.values()]
-        return {'fact_version': metadata['version'] if metadata is not None else session.info['knowledge_facts_version'], 'catalog': catalog,
+        return {'variety': variety, 'fact_version': metadata['version'] if metadata is not None else session.info['knowledge_facts_version'], 'catalog': catalog,
                 'base_version': row.version if row else 0,
                 'base_payload': to_payload(row) if row else None}
 
@@ -259,7 +265,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
     document, first, issues = None, None, []
     try:
         document = await completion(scope, body.model_id, make_prompt(analysis_protocol(selected), candidates, body.text))
-        first = assess_draft(document, body.text, candidates, variety=settings.variety,
+        first = assess_draft(document, body.text, candidates, variety=before.get('variety', settings.variety),
             actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
         issues = first.issues
         if not any(item.get('severity') == 'error' for item in issues): return first, 0
@@ -285,7 +291,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
             'message': '本次修复未返回可用结果；保留已核验的首份草稿，待确认规则未执行'})
         return first, 1
     try:
-        final = assess_draft(repaired, body.text, candidates, variety=settings.variety,
+        final = assess_draft(repaired, body.text, candidates, variety=before.get('variety', settings.variety),
             actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
     except AnalysisError as error:
         if first is None:
@@ -306,11 +312,13 @@ async def analyzed_completion(scope, body, before, candidates, selected):
 
 async def fresh(scope, previous):
     verified = await resolve_workbench(scope.identity, scope.workbench_id, scope.authorization)
+    require_shared_write(verified)
     if (scope_key(verified) != scope_key(scope) or
             verified.additional_knowledge_bases != scope.additional_knowledge_bases):
         raise HTTPException(409, '研究工作台的知识库来源已改变，请重新分析')
-    state = await run_in_threadpool(snapshot)
-    if state['fact_version'] != previous['fact_version'] or state['base_version'] != previous['base_version']:
+    state = await run_in_threadpool(snapshot, previous['selected_variety']) if previous.get('selected_variety') else await run_in_threadpool(snapshot)
+    if (state['fact_version'] != previous['fact_version'] or state['base_version'] != previous['base_version']
+            or 'variety' in previous and state.get('variety') != previous['variety']):
         raise HTTPException(409, '研究逻辑版本或知识库来源已改变，请刷新后重新分析')
     return state
 
@@ -318,20 +326,23 @@ async def fresh(scope, previous):
 def serialize(row):
     if row is None: return None
     payload = to_payload(row)
-    return {'version': row.version, 'status': row.status, 'author': row.author,
+    return {'version': row.version, 'status': row.status, 'author': row.author, 'variety': row.variety,
             'created_at': row.created_at.isoformat(), 'markdown': dump_markdown(payload),
             'source_text': row.source_note or dump_markdown(payload)}
 
 
 @router.get('/manage')
-def manage():
+def manage(variety: str | None = None):
     scope = scope_for_analysis()
     with result_session(scope) as session:
-        rows = session.scalars(scope_query(session, select(Judgment).where(Judgment.variety == settings.variety)
+        if variety is not None and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,15}', variety):
+            raise HTTPException(422, '研究品种代码格式无效')
+        variety = variety or research_variety(session)
+        rows = session.scalars(scope_query(session, select(Judgment).where(Judgment.variety == variety)
             .order_by(Judgment.version.desc()).limit(50), Judgment)).all()
         total = session.scalar(scope_query(session, select(func.count(Judgment.id))
-            .where(Judgment.variety == settings.variety), Judgment))
-        return {'current': serialize(current(session, settings.variety)), 'latest': serialize(rows[0]) if rows else None,
+            .where(Judgment.variety == variety), Judgment))
+        return {'variety': variety, 'current': serialize(current(session, variety)), 'latest': serialize(rows[0]) if rows else None,
                 'versions': [{'version': row.version, 'status': row.status, 'author': row.author} for row in rows],
                 'version_total': total, 'versions_partial': total > len(rows), 'can_write': scope.identity.can_write}
 
@@ -340,10 +351,11 @@ def manage():
 def version_detail(version: int):
     scope = scope_for_analysis()
     with result_session(scope) as session:
-        row = session.scalar(scope_query(session, select(Judgment).where(Judgment.variety == settings.variety,
+        variety = research_variety(session)
+        row = session.scalar(scope_query(session, select(Judgment).where(Judgment.variety == variety,
                                                                       Judgment.version == version), Judgment))
         if row is None: raise HTTPException(404, '研究逻辑版本不存在')
-        shown = current(session, settings.variety)
+        shown = current(session, variety)
         return {**serialize(row), 'diff': version_diff(to_payload(shown) if shown else None, to_payload(row))}
 
 
@@ -371,7 +383,9 @@ async def _generate_preview(request: Request):
     body = await read_body(request, GenerateRequest)
     if not body.text.strip(): raise HTTPException(400, '请先选择文件或输入完整研究逻辑')
     if len(body.text.encode('utf-8')) > SOURCE_BYTES: raise HTTPException(413, '研究逻辑原文超过48 KiB')
-    before = await run_in_threadpool(snapshot)
+    before = await run_in_threadpool(snapshot, body.variety) if body.variety else await run_in_threadpool(snapshot)
+    if body.variety:
+        before['selected_variety'] = body.variety
     if body.base_version != before['base_version']:
         raise HTTPException(409, '研究逻辑已有新版本，请刷新后重新分析')
     candidates, selected = await choose_catalog(scope, body.model_id, before['catalog'], body.text)
@@ -381,8 +395,10 @@ async def _generate_preview(request: Request):
     await fresh(scope, before)
     preview = {'document': document, 'text': body.text, 'source_name': body.source_name,
                'fact_version': before['fact_version'], 'base_version': before['base_version'],
-               'model_id': body.model_id, 'written_at': analyzed.payload.written_at.isoformat(),
+               'model_id': body.model_id, 'variety': analyzed.payload.variety, 'written_at': analyzed.payload.written_at.isoformat(),
                'validation_issues': assessment.issues, 'repair_attempts': repair_attempts}
+    if body.variety:
+        preview['selected_variety'] = body.variety
     token = previews.put(scope, preview)
     return {'draft_id': token, 'base_version': before['base_version'], 'markdown': dump_markdown(analyzed.payload),
             'diff': version_diff(before['base_payload'], analyzed.payload), 'unresolved': analyzed.unresolved,
@@ -406,7 +422,7 @@ def persist(scope, preview):
             raise HTTPException(409, '知识库来源已改变，请重新分析')
         catalog = [{'id': item['series_id'], 'unit': item.get('unit')} for item in session.info['knowledge_facts_catalog'].values()]
         try:
-            result = validate_analysis(preview['document'], preview['text'], catalog, variety=settings.variety,
+            result = validate_analysis(preview['document'], preview['text'], catalog, variety=preview.get('variety', settings.variety),
                 actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']))
             row = save_version(session, result.payload, actor=scope.identity.user_id,
                                expected_base_version=preview['base_version'])

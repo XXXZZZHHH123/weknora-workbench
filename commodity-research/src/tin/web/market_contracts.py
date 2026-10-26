@@ -23,7 +23,18 @@ MAX_CONTRACTS = 24
 MAX_CONTRACT_IDS = 128
 FIELDS = ('settle', 'close', 'volume', 'oi')
 CONFIG_FIELDS = {'contract', 'delivery_month', 'settle', 'close', 'volume', 'oi',
-                 'price_unit', 'volume_unit', 'oi_unit', 'main'}
+                 'price_unit', 'volume_unit', 'oi_unit', 'main',
+                 'variety', 'multiplier', 'tick_size', 'spec_source'}
+SPEC_FIELDS = {'variety', 'multiplier', 'tick_size', 'spec_source'}
+
+
+def execution_spec(contract):
+    if SPEC_FIELDS <= contract.keys():
+        return {key: contract[key] for key in SPEC_FIELDS}
+    # Preserve the old, explicit SHFE adapter without guessing new products' terms.
+    if re.fullmatch(r'SN\d{2}(0[1-9]|1[0-2])', contract['contract']):
+        return {'variety': 'SN', 'multiplier': 1, 'tick_size': 10, 'spec_source': 'legacy-shfe-sn'}
+    return None
 
 
 def _unit(value, *, optional=False):
@@ -42,6 +53,19 @@ def _validate(contracts):
     for item in contracts:
         if not isinstance(item, dict) or set(item) - CONFIG_FIELDS:
             raise HTTPException(409, '合约来源配置格式无效')
+        spec = {}
+        if SPEC_FIELDS.intersection(item):
+            if not SPEC_FIELDS <= item.keys():
+                raise HTTPException(409, '请完整填写品种、合约乘数、最小变动价位和规格来源')
+            for key in ('multiplier', 'tick_size'):
+                value = item[key]
+                if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1000000:
+                    raise HTTPException(409, '合约乘数和最小变动价位必须为有限正数')
+            if (not isinstance(item['variety'], str) or not re.fullmatch(r'[A-Z0-9_.-]{1,16}', item['variety'])
+                    or not isinstance(item['spec_source'], str) or not item['spec_source'].strip()
+                    or len(item['spec_source']) > 2048):
+                raise HTTPException(409, '合约规格需要明确的品种代码与来源')
+            spec = {key: item[key] for key in SPEC_FIELDS}
         label, month = item.get('contract'), item.get('delivery_month')
         if (not isinstance(label, str) or not label.strip() or label != label.strip()
                 or len(label) > 64 or label in labels or any(ord(char) < 32 for char in label)):
@@ -72,7 +96,7 @@ def _validate(contracts):
         volume_unit, oi_unit = _unit(item.get('volume_unit'), optional=True), _unit(item.get('oi_unit'), optional=True)
         if mapped['volume'] is None and volume_unit is not None or mapped['oi'] is None and oi_unit is not None:
             raise HTTPException(409, '未绑定数量指标时不能声明其单位')
-        result.append({'contract': label, 'delivery_month': month, **mapped, 'price_unit': price_unit,
+        result.append({'contract': label, 'delivery_month': month, **mapped, **spec, 'price_unit': price_unit,
                        'volume_unit': volume_unit, 'oi_unit': oi_unit, 'main': main})
         labels.add(label)
         months.add(month)
