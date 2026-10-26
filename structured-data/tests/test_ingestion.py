@@ -136,3 +136,28 @@ def test_pdf_without_tables_still_completes_native_document(setup, engine):
     assert result['result']['table_count'] == 0
     assert result['result']['attention_count'] == 0
     assert not list(root.glob('**/drafts/*.json'))
+
+
+def test_native_excel_followup_publishes_with_one_source_guard(setup):
+    from io import BytesIO
+    from openpyxl import load_workbook
+    client, root, checks = setup
+    book=load_workbook(BytesIO(workbook()));book.active['B1']='mass (kg)'
+    # A drawing keeps a dated numeric block pending at scan time; follow-up
+    # must confirm the source-backed mapping without duplicating its guard.
+    from openpyxl.chart import BarChart, Reference
+    chart=BarChart();chart.add_data(Reference(book.active,min_col=2,min_row=1,max_row=3),titles_from_data=True)
+    book.active.add_chart(chart,'E1')
+    stream=BytesIO();book.save(stream);data=stream.getvalue()
+    claim=claim_for(data,b'{}')
+    response=client.post(ingestion.UPLOAD_PATH,files={'file':('source.xlsx',data)},data={'bundle':'{}'},
+        headers=ingestion.signed_headers(claim,'POST',ingestion.UPLOAD_PATH))
+    assert response.status_code==200,response.text
+    result=finish(client,claim)
+    assert result['status']=='completed',result
+    assert result['result']['attention_count']==0,result
+    assert result['result']['dataset_id'],result
+    assert result['result']['sheets']==[{'name':'records','status':'confirmed'}],result
+    review=result['result']['automatic_review']
+    assert review['sheets_imported']==['records'] and not review['sheets_failed'],review
+    assert len(checks)>3

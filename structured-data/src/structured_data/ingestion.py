@@ -137,8 +137,7 @@ def install_ingestion_routes(app, registry):
                         from .batch_ai_import import import_all_with_ai
                         assisted = import_all_with_ai(manager, result['import_id'], total_max_requests=64,
                             per_sheet_max_requests=8, max_seconds=1200,
-                            task=lambda action, **kwargs: run_review_task(directory, action,
-                                **({'publish_guard':guard} if action in {'confirm','mark_skip'} else {}), **kwargs),
+                            task=lambda action, **kwargs: run_review_task(directory, action, **kwargs),
                             check_write=guard, cancelled=lambda: False,
                             progress=lambda value: progress(value.get('stage', '正在核对工作表')))
                         result['automatic_review'] = assisted
@@ -146,7 +145,8 @@ def install_ingestion_routes(app, registry):
                     import_lock.release()
                 doc = manager.publication_view(manager.get(result['import_id']))
                 sheets = doc['sheets']
-                result = {**result, 'sheets': [{'name': sheet['name'], 'status': sheet['status']} for sheet in sheets],
+                result = {**result, 'dataset_id':doc.get('dataset_id'),
+                          'sheets': [{'name': sheet['name'], 'status': sheet['status']} for sheet in sheets],
                           'attention_count': sum(sheet.get('status') not in {'auto_ready', 'template_ready', 'confirmed', 'trusted_existing', 'skip', 'chart_ready'} for sheet in sheets)}
             else:
                 from .pdf_tables import PDFTableStore
