@@ -590,6 +590,7 @@
         item.append(text,action('查看疑点',()=>{
           activeFragmentIndex=Math.max(0,fragments().findIndex(f=>group.fragment_ids.includes(f.id)));
           selectedFragments=new Set(group.fragment_ids);
+          invalidatePreview('已切换核对范围，请重新生成或验证映射。');
           const parent=document.querySelector('.pdf-fragment-pane'),viewer=document.querySelector('.pdf-source-viewer');
           renderFragmentInspector(parent,viewer);updateSelectionCount();
         },true));list.append(item);
