@@ -4,7 +4,7 @@ import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 import { isTrustedStructuredFrameMessage, structuredFrameAuthPayload } from '../../utils/structuredFrameHost'
-import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, effectScope, h, nextTick, reactive, ref, shallowRef, watch } from 'vue'
 
 const surfaces = [
   { name: 'knowledge structured', file: '../../components/KnowledgeStructuredFrame.vue', frame: 'frame', receiver: 'receive', generation: 'frameGeneration.value' },
@@ -29,7 +29,7 @@ async function fixture(surface: typeof surfaces[number], initialView = '') {
     defineProps: () => props, withDefaults: (value: unknown) => value,
     defineEmits: () => (name: string, ...args: any[]) => emitted.push({ name, args }),
     isTrustedStructuredFrameMessage, structuredFrameAuthPayload,
-    computed, nextTick, reactive, ref, watch, useAuthStore: () => auth, useRoute: () => route, useRouter: () => ({ push() {}, replace() {} }),
+    computed, defineAsyncComponent, h, nextTick, reactive, ref, shallowRef, watch, useAuthStore: () => auth, useRoute: () => route, useRouter: () => ({ push() {}, replace() {} }),
     useTheme: () => ({ effectiveTheme, setTheme(mode: 'light' | 'dark') { requested.push(mode); effectiveTheme.value = mode; return true } }),
     onMounted() {}, onBeforeUnmount: (fn: () => void) => unmounts.push(fn),
     useUploadConfirmStore: () => ({ rejectConfirm() {} }),
