@@ -122,9 +122,21 @@ const server=http.createServer(async(req,res)=>{
   await page.getByRole('button',{name:'刷新记录',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('.pdf-file-problem')?.textContent.includes('稍后重试'));
   assert.equal(await page.getByRole('button',{name:'重新整理',exact:true}).isEnabled(),true);
+  await page.evaluate(()=>{document.body.style.minHeight='';const spacer=document.createElement('div');spacer.style.height='900px';document.querySelector('#pdfReviewPanel').before(spacer);window.scrollTo(0,document.documentElement.scrollHeight)});
+  const bottomScroll=await page.evaluate(()=>window.scrollY);assert(bottomScroll>0);
+  await page.getByRole('button',{name:'重新整理',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('.pdf-file-stage')?.textContent==='处理完成');
+  assert.equal(await page.evaluate(()=>window.scrollY),bottomScroll);
+  await page.locator('.pdf-file-actions button:last-child').click();
+  await page.locator('#pdfDraftDetail[open]').waitFor();
+  await page.evaluate(()=>window.postMessage({type:'structured-view',mode:'query'},location.origin));
+  await page.waitForFunction(()=>!document.querySelector('#pdfDraftDetail').open);
+  assert.equal(await page.locator('html').evaluate(el=>el.classList.contains('pdf-detail-open')),false);
+
+
 
   assert.deepEqual(errors,[]);
   if(process.env.PDF_PREVIEW_EVIDENCE){fs.mkdirSync(process.env.PDF_PREVIEW_EVIDENCE,{recursive:true});await page.screenshot({path:path.join(process.env.PDF_PREVIEW_EVIDENCE,'automatic-complete.png')});}
-  console.log(JSON.stringify({realPdfCanvas:true,pages:[1,3,1],rapidNavigation:true,previewWidthRatio:ratio,collapsibleOriginal:true,partialSuccess:true,retry:true,noManualConfirmation:true,stableListScroll:true,stableDialog:true,processingPreservesViewer:true,actionableErrors:true,configurationAction:true,pageErrors:errors}));
+  console.log(JSON.stringify({realPdfCanvas:true,pages:[1,3,1],rapidNavigation:true,previewWidthRatio:ratio,collapsibleOriginal:true,partialSuccess:true,retry:true,noManualConfirmation:true,stableListScroll:true,bottomScrollStable:true,stableDialog:true,processingPreservesViewer:true,actionableErrors:true,configurationAction:true,queryClosesDialog:true,pageErrors:errors}));
  }finally{await browser.close();server.close();}
 })().catch(e=>{console.error(e);server.close();process.exitCode=1});

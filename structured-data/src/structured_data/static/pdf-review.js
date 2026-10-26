@@ -319,6 +319,7 @@
   function renderDrafts() {
     const list = document.getElementById('pdfDraftList');
     if (!list) return;
+    const expanded=new Set([...list.querySelectorAll('.pdf-file-history[open]')].map(item=>item.closest('[data-file-identity]')?.dataset.fileIdentity));
     list.replaceChildren();
     const groups = fileGroups();
     host.onFileCatalog?.(groups.length);
@@ -363,6 +364,7 @@
         controls.append(action(state?.attention_count?'处理疑点':'查看表格', () => selectDraft(latest.draft_id), true));
       }
       const history = make('details', undefined, 'pdf-file-history');
+      history.open=expanded.has(row.dataset.fileIdentity);
       history.append(make('summary', `历史与发布记录（${group.versions.length} 次识别）`));
       for (const item of group.versions) {
         const entry = make('div', undefined, 'pdf-history-entry');
@@ -541,7 +543,12 @@
           if(!active())return;
           drafts=catalog.drafts||[];tables=published.tables||[];
           fileProgress.delete(id);processingDraftId='';
-          const scroll=window.scrollY;renderDrafts();window.scrollTo({top:scroll,behavior:'instant'});
+          const scroll=window.scrollY;renderDrafts();
+          // A shorter completion message must not clamp a list scrolled to its
+          // bottom. Reserve just the lost footer space before restoring scroll.
+          const missing=scroll+window.innerHeight-document.documentElement.scrollHeight;
+          if(missing>0){const list=document.getElementById('pdfDraftList');list.style.paddingBottom=`${(parseFloat(list.style.paddingBottom)||0)+missing}px`;}
+          window.scrollTo({top:scroll,behavior:'instant'});
           if(draft?.draft_id===id){
             draft.automation=job.automatic_result||drafts.find(item=>item.draft_id===id)?.automation;
             renderAutomation(document.getElementById('pdfAutomationSlot'));
@@ -570,7 +577,9 @@
     const progress=make('p','','pdf-automatic-progress');progress.id='pdfAutomaticProgress';progress.setAttribute('role','status');summary.append(progress);
     const controls=make('div',undefined,'pdf-automation-actions');
     if(problem?.action==='model_settings')controls.append(action('选择处理模型',openProcessingModel));
-    if(!problem || problem.retryable!==false){
+    const reviewOnly=pending>0 && !problem && state?.groups?.every(group=>group.status==='accepted'||group.problem?.action==='review');
+    if(reviewOnly)controls.append(action('查看需处理表格',()=>{const drawer=slot.querySelector('.pdf-exception-drawer');if(drawer)drawer.open=true;}));
+    else if(!problem || problem.retryable!==false){
       const run=action(state?.status==='completed'?'重新检查表格':state?'重新整理':'一键整理并入库',()=>autoProcess(draft.draft_id).catch(()=>{}));
       run.id='pdfAutoProcess';run.dataset.automaticDraft=draft.draft_id;controls.append(run);
     }
@@ -587,7 +596,10 @@
         const item=make('div',undefined,'pdf-exception'),text=make('div');
         text.append(make('strong',`第 ${pages.join('、')} 页 · ${group.problem?.title||group.message||'需要处理'}`));
         if(group.problem?.message)text.append(make('p',group.problem.message,'muted'));
-        item.append(text,action('查看疑点',()=>{
+        const recover=group.problem?.action;
+        if(recover==='model_settings')item.append(text,action('选择处理模型',openProcessingModel,true));
+        else if(recover==='retry')item.append(text,action('重试未完成表格',()=>autoProcess(draft.draft_id).catch(()=>{}),true));
+        else item.append(text,action('查看疑点',()=>{
           activeFragmentIndex=Math.max(0,fragments().findIndex(f=>group.fragment_ids.includes(f.id)));
           selectedFragments=new Set(group.fragment_ids);
           invalidatePreview('已切换核对范围，请重新生成或验证映射。');
@@ -1194,6 +1206,9 @@
   window.addEventListener('structured-auth-scope-change', () => {
     epoch = host.getAuthEpoch();
     clearScope();
+  });
+  window.addEventListener('message', event => {
+    if(event.source===window.parent && event.origin===location.origin && event.data?.type==='structured-view' && event.data.mode==='query')closeDetail();
   });
   window.addEventListener('structured-workspace-ready', () => loadWorkspace());
   window.addEventListener('pagehide', () => {

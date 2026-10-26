@@ -85,6 +85,10 @@ def process_draft(store, draft_id, model_root, *, save, previous=None, progress=
             save(state)
             return state
     for index, group in enumerate(state['groups']):
+        # Retrying a service failure cannot repair immutable source ambiguities.
+        # These groups resume through explicit source review or a new extraction.
+        if group.get('status') == 'needs_attention' and group.get('problem', {}).get('action') == 'review':
+            continue
         if group.get('status') == 'accepted':
             try:
                 existing = store.read_table(group['table_id'], limit=1)

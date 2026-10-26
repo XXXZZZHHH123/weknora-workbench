@@ -73,7 +73,7 @@ def test_partial_success_persists_and_retry_skips_accepted_tables(tmp_path, monk
     assert len(snapshots) >= 3
     calls.clear()
     again = process_draft(store, draft['draft_id'], tmp_path, previous=result, save=lambda s: None)
-    assert calls == [['table-2']]
+    assert calls == []  # source review is not repaired by repeating the same model call
     assert again['accepted_count'] == 1
     assert len(store.list_tables()['tables']) == 1
 
@@ -84,12 +84,17 @@ def test_needs_review_and_model_failure_cannot_publish(tmp_path, monkeypatch):
     monkeypatch.setattr('structured_data.pdf_api.suggest_plan', lambda *args: {'status': 'needs_review', 'plan': {'ignored': True}, 'message': 'cannot identify columns'})
     result = process_draft(store, draft['draft_id'], tmp_path, save=lambda s: None)
     assert result['attention_count'] == 1 and not store.list_tables()['tables']
+    failures = []
     def fail(*args):
+        failures.append(True)
         raise RuntimeError('secret-api-key')
     monkeypatch.setattr('structured_data.pdf_api.suggest_plan', fail)
-    result = process_draft(store, draft['draft_id'], tmp_path, previous=result, save=lambda s: None)
+    result = process_draft(store, draft['draft_id'], tmp_path, save=lambda s: None)
+    assert result['groups'][0]['problem']['action'] == 'retry'
     assert 'secret-api-key' not in str(result)
     assert not store.list_tables()['tables']
+    process_draft(store, draft['draft_id'], tmp_path, previous=result, save=lambda s: None)
+    assert len(failures) == 2
 
 
 def test_grouping_compaction_keeps_all_text_rows_and_spans():
