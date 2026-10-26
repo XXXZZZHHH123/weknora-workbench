@@ -430,6 +430,15 @@ def create_app(data_dir: str | Path | None = None):
     async def research_facts(request: Request):
         from .research_facts import read_facts
         body = await request.json()
+        multi = getattr(request.state, 'research_sources', None)
+        if multi is not None:
+            from .research_facts_v2 import read_current
+            document = await run_in_threadpool(read_current, registry, body, multi)
+            from .service_auth import verify_research_projection
+            await verify_research_projection(request,current_identity.get())
+            if getattr(request.state,'research_sources',None) != multi:
+                raise HTTPException(409,'研究台来源或权限在读取期间变化，未返回旧范围数据')
+            return _ResearchFactsJSONResponse(document)
         manifest = getattr(request.state, 'research_source_manifest', None)
         if manifest is not None:
             from .research_facts import _parameters

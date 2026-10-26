@@ -44,7 +44,7 @@ async def verify_service(request):
         data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
         required = {"user_id", "email", "display_name", "tenant_id", "role"}
         scope_fields = {"knowledge_base_id", "knowledge_base_tenant_id"}
-        optional = scope_fields | {'workbench_id', 'authorization_sha256', 'principal_type'}
+        optional = scope_fields | {'workbench_id', 'authorization_sha256', 'principal_type', 'scope_version', 'sources_revision'}
         if not isinstance(data, dict) or not required <= set(data) or set(data) - required - optional:
             raise ValueError("invalid identity")
         if (type(data["tenant_id"]) is not int or data["tenant_id"] <= 0
@@ -62,14 +62,20 @@ async def verify_service(request):
         scoped = bool(scope_fields & set(data))
         if scoped and not scope_fields <= set(data):
             raise ValueError('incomplete knowledge-base scope')
-        if data.get('workbench_id') and not scoped:
+        multi = data.get('scope_version') == 2
+        if ('scope_version' in data or 'sources_revision' in data) and (
+                not multi or type(data.get('scope_version')) is not int
+                or type(data.get('sources_revision')) is not int or data['sources_revision'] < 1
+                or not data.get('workbench_id') or scoped):
+            raise ValueError('invalid multi-source scope')
+        if data.get('workbench_id') and not scoped and not multi:
             raise ValueError('missing workbench source scope')
         principal = data.pop('principal_type', None)
         authorization_hash = data.pop('authorization_sha256', None)
         if principal is not None and (principal != 'api_key' or not scoped or data.get('workbench_id')):
             raise ValueError('invalid machine grant')
         authorization = request.headers.get('authorization', '')
-        if scoped and principal != 'api_key':
+        if (scoped or multi) and principal != 'api_key':
             if (not authorization.startswith('Bearer ') or len(authorization) > 16391
                     or not isinstance(authorization_hash, str)
                     or not hmac.compare_digest(authorization_hash, hashlib.sha256(authorization.encode()).hexdigest())):
@@ -83,7 +89,7 @@ async def verify_service(request):
             await verify_research_projection(request, identity)
         elif scoped and principal != 'api_key':
             await verify_direct_knowledge(identity, authorization)
-        if scoped and principal != 'api_key':
+        if (scoped or multi) and principal != 'api_key':
             request.state.verified_authorization = authorization
         return identity
     except (KeyError, ValueError, TypeError, OSError):
@@ -127,15 +133,27 @@ async def verify_research_projection(request, identity):
         if not authorization.startswith('Bearer '):
             raise HTTPException(401, '研究工作台读取缺少当前登录核验')
         base = os.environ.get('WEKNORA_API_URL', 'http://127.0.0.1:18081').rstrip('/')
+        path='/api/v1/workspaces/research/'+quote(identity.workbench_id,safe='')+'/source-scope'
+        headers={'Authorization':authorization,'X-Tenant-ID':str(identity.tenant_id)}
+        try:
+            key=Path(os.environ['STRUCTURED_SERVICE_TOKEN_FILE']).read_bytes().strip()
+            if len(key)<32: raise ValueError
+        except (KeyError,OSError,ValueError):
+            raise HTTPException(503,'研究来源服务核验配置不可用，未请求原件清单') from None
+        stamp=str(int(time.time()))
+        message='\n'.join(('weknora.research-scope.v1','GET',path,stamp,hashlib.sha256(authorization.encode()).hexdigest(),str(identity.tenant_id))).encode()
+        headers.update({'X-Research-Scope-Timestamp':stamp,'X-Research-Scope-Signature':hmac.new(key,message,hashlib.sha256).hexdigest()})
         async with httpx.AsyncClient(trust_env=False, timeout=10, follow_redirects=False) as client:
-            response = await client.get(base + '/api/v1/workspaces/research/'
-                + quote(identity.workbench_id, safe='') + '/source-scope',
-                headers={'Authorization': authorization, 'X-Tenant-ID': str(identity.tenant_id)})
+            response = await client.get(base+path,headers=headers)
         if response.status_code in {401, 403, 404}:
             raise HTTPException(response.status_code, '研究数据共享授权已失效')
+        if response.status_code==413:
+            raise HTTPException(413,'当前来源原件超过本次容量，请分批处理或拆分来源；未返回部分清单')
         response.raise_for_status()
         document = response.json()
         grant = document.get('data')
+        if not isinstance(grant,dict) or grant.get('inventory_included') is not True:
+            raise HTTPException(503,'研究来源服务未确认原件清单核验，未将公开摘要当作空库')
         if (document.get('success') is not True or not isinstance(grant, dict)
                 or grant.get('id') != identity.workbench_id
                 or grant.get('user_id') != identity.user_id
@@ -143,6 +161,40 @@ async def verify_research_projection(request, identity):
                 or grant['scope_tenant_id'] != identity.tenant_id
                 or not isinstance(grant.get('sources'), list)):
             raise ValueError('invalid research grant')
+        if identity.scope_version == 2:
+            if (grant.get('scope_version') != 2 or type(grant.get('sources_revision')) is not int
+                    or grant['sources_revision'] != identity.sources_revision or len(grant['sources']) > 8
+                    or request.url.path != '/api/research/facts'):
+                raise HTTPException(409, '研究台来源版本已变化，请刷新后重新读取')
+            body = await request.json()
+            bindings = body.get('source_bindings') if isinstance(body, dict) else None
+            if (not isinstance(bindings, list) or len(bindings) > 8 or len(set(bindings)) != len(bindings)
+                    or any(not isinstance(value, str) or not 1 <= len(value) <= 128
+                           or any(ord(char) < 32 for char in value) for value in bindings)):
+                raise ValueError('invalid source binding selection')
+            indexed = {}
+            for source in grant['sources']:
+                if (not isinstance(source, dict) or not isinstance(source.get('id'), str)
+                        or source['id'] in indexed or source.get('source_type') not in {'knowledge_base','central_dataset'}
+                        or not valid_knowledge_base_id(source.get('knowledge_base_id'))
+                        or not valid_knowledge_base_id(source.get('source_id'))
+                        or type(source.get('tenant_id')) is not int or source['tenant_id'] < 1
+                        or source.get('permission') not in {'viewer','editor','admin'}
+                        or type(source.get('delegated')) is not bool or not isinstance(source.get('knowledge'), list)
+                        or not isinstance(source.get('view_modules'), list)):
+                    raise ValueError('invalid multi-source grant')
+                indexed[source['id']] = source
+            if any(binding not in indexed for binding in bindings):
+                raise HTTPException(403, '所选来源已不在当前研究台授权范围中')
+            selected = [indexed[binding] for binding in bindings]
+            for source in selected:
+                if source['delegated']:
+                    from .research_facts_v2 import parameters
+                    parsed = parameters(body)
+                    if parsed['catalog'] or body.get('view_module') not in source['view_modules']:
+                        raise HTTPException(403, '受限来源只允许已授权页面的必要数值，不能浏览目录')
+            request.state.research_sources = selected
+            return
         source = next((item for item in grant['sources'] if isinstance(item, dict)
                        and item.get('knowledge_base_id') == identity.knowledge_base_id), None)
         if (source is None or type(source.get('tenant_id')) is not int

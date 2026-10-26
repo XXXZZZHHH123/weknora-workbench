@@ -54,6 +54,7 @@ def delegated(facts, monkeypatch):
                         {'id': source['knowledge_id'], 'file_hash': source['file_hash'], 'file_type': 'xlsx'}
                         for source in body['sources']]}]
         return httpx.Response(state['status'], json={'success': state['status'] == 200, 'data': {
+            'inventory_included':True,
             'id': WB, 'user_id': state['user_id'], 'scope_tenant_id': 9,
             'knowledge_base_id': 'library-a', 'sources': sources, 'view_modules': state['view_modules']}})
 
