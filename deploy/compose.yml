@@ -34,7 +34,7 @@ services:
       LOCAL_STORAGE_BASE_DIR: /data/files
       GIN_MODE: release
       MAX_FILE_SIZE_MB: "100"
-      BATCH_EMBED_SIZE: "2"
+      BATCH_EMBED_SIZE: "10"
       SSRF_WHITELIST_EXTRA: "structured-data,cotton-data,commodity-research"
       COMMODITY_RESEARCH_URL: http://commodity-research:8765
       STRUCTURED_DATA_URL: http://structured-data:18082
