@@ -36,7 +36,10 @@ _MAX_MEDIA_BYTES = 16 * 1024 * 1024
 _MAX_XML_BYTES = 8 * 1024 * 1024
 _MAX_PNG_BYTES = 32 * 1024 * 1024
 _MAX_PIXELS = 40_000_000
-_MEDIA_BUDGET_SECONDS = 180
+# Parsing runs in the background under a 30-minute reader timeout. Rendering
+# every vector chart here lets previews serve stored PNGs instead of converting
+# them one by one on demand (a 279-chart weekly report needs ~6 minutes).
+_MEDIA_BUDGET_SECONDS = 600
 _OFFICE_PNG_FILTER = (
     'png:draw_png_Export:{"PixelWidth":{"type":"long","value":"2048"},'
     '"PixelHeight":{"type":"long","value":"2896"}}'
