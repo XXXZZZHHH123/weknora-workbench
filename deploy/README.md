@@ -108,6 +108,31 @@ wb exec --user 0 -T postgres sh -c 'set -e; umask 077; backup="/backups/manual-$
 
 这个备份仅含 PostgreSQL。结构化数据文件、原文件和 `shared/.env` 需要另行保留；数据库恢复会覆盖当前内容，应按选定备份和对应代码版本执行，不作为日常更新步骤。不要使用 `docker compose down -v` 或删除 `/mnt/weknora-storage/docker-data`。
 
+### 调整结构化解析的时间与内存预算
+
+结构化工作进程默认限时 300 秒、内存 768 MB。大文件首次导入若报“任务超过时间限制”，可在实际部署的 `shared/.env` 中设置，例如：
+
+```dotenv
+STRUCTURED_REVIEW_TIMEOUT_SECONDS=900
+STRUCTURED_REVIEW_MEMORY_MB=768
+```
+
+当前版本的 `structured-data.environment` 必须包含这两个变量的转发；旧版本只修改 `.env` 不会生效。更新配置后，先确认没有正在处理的解析任务，再复用上面的 `wb()` 函数，仅重建结构化服务：
+
+```sh
+wb up -d --no-deps --no-build --pull never --force-recreate structured-data
+```
+
+这会保留原数据卷。`restart` 不会重新读取修改后的环境变量；不要执行 `down -v`。`wb()` 已固定原生产项目名、两份环境文件和当前版本的 Compose 路径，不能在其他目录执行裸 `docker compose`，以免操作另一套服务。
+
+重建前后可核对运行进程的实际值；下面的命令只打印这两个参数，不输出完整环境或密钥：
+
+```sh
+wb exec -T structured-data python -c 'from pathlib import Path; rows=Path("/proc/1/environ").read_bytes().split(b"\0"); keys=("STRUCTURED_REVIEW_TIMEOUT_SECONDS","STRUCTURED_REVIEW_MEMORY_MB"); print({k:next((v.split(b"=",1)[1].decode() for v in rows if v.startswith(k.encode()+b"=")),"<unset>") for k in keys})'
+```
+
+`<unset>` 表示未传入，对应程序默认值。`/structured/health` 不返回工作进程预算，健康检查通过不能证明新的时限已生效。
+
 ### 维护时禁止更新、回退版本
 
 设置维护标记只阻止更新脚本，不停止正在运行的服务：
