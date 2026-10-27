@@ -27,7 +27,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
       <span>{{ '已确认观测' if research_workbench() else '收盘 15:00' }}</span>
     </div>
     {% for t in ticker %}
-    <div class="shrink-0">{{ t.label }}
+    <div class="shrink-0">{{ human_text(t.label, names|default({})) }}
       <span class="tabular font-bold text-[var(--text)]">{{ t.value }}</span>
       {%- if t.change is not none %}
       <span class="tabular font-bold {{ 'text-[var(--up)]' if t.change > 0 else 'text-[var(--down)]' if t.change < 0 else '' }}">
