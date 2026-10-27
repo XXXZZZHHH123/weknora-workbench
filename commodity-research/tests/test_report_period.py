@@ -29,7 +29,8 @@ def test_nested_judgment_is_readable_without_python_dict_representations():
     assert result['judgment']['cases'][0]['evidence'][0]['name'] == '已核对字段'
     assert result['judgment']['thresholds'][0]['condition'] == '0 – 3'
     assert result['judgment']['thresholds'][0]['state'] == '在区间内'
-    assert result['judgment']['falsifiers'][0]['condition'] == 'value > 3 · 连续 2 期'
+    assert result['judgment']['falsifiers'][0]['condition'] == '指标数值高于 3 · 连续 2 期'
+    assert result['judgment']['falsifiers'][0]['expression'] == 'value > 3'
     assert payload == original
 
 

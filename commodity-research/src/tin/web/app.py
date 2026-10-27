@@ -213,6 +213,8 @@ templates.env.globals["research_identity"] = lambda: current_identity.get()
 templates.env.globals["static_version"] = static_version
 templates.env.filters["num"] = _num
 templates.env.filters["local"] = lambda dt: dt.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M") if dt else ""
+from tin.web.research_display import register_display
+register_display(templates.env)
 
 # Resolve SessionLocal at request time, preserving the app's test/deployment overrides.
 from tin.integration.read_api import router as research_read_router
@@ -349,6 +351,9 @@ def _shell(s, nav: str, d: date | None = None, **extra) -> dict:
     扫一眼就知道盘面的地方，缺了很显眼。
     """
     ctx = {"nav": nav, "d": d.isoformat() if d else None, "manual_indicators": _manual_indicators(s)}
+    ctx['names'] = {identifier: row.get('name') or row.get('metric') or ''
+                    for identifier, row in s.info.get('knowledge_facts_catalog', {}).items()
+                    if isinstance(row, dict)}
     shown = d or latest_trade_date(s)
     if shown is not None:
         ctx["ticker"] = ticker(s, research_variety(s), shown)

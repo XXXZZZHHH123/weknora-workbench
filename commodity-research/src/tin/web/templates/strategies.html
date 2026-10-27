@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}策略 · {{ research_workbench().metadata.name if research_workbench() else '研究工作台' }}{% endblock %}
 {% block main %}
+<script id="research-display-names" type="application/json">{{ names|default({})|tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/research-display.js?v={{ static_version() }}"></script>
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/strategy.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/research-strategy.css?v={{ static_version() }}">
 <header class="strategy-head strategy-workspace-head">
@@ -18,7 +20,7 @@
 <div id="strategy-notice" class="strategy-notice" role="status"></div>
 {% if restricted_view %}
 <section class="strategy-readonly-list">
-{% for s in strategies %}<article class="detail-panel"><div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span><span>已分享 · 只读</span></div><h2>{{ s.title }}</h2><p class="research-prose">{{ s.plan.thesis }}</p>{% include "_strategy_plan_readonly.html" %}</article>{% else %}<p class="empty-state">尚无已分享策略。</p>{% endfor %}
+{% for s in strategies %}<article class="detail-panel"><div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span><span>已分享 · 只读</span></div><h2>{{ human_text(s.title, names|default({})) }}</h2><p class="research-prose">{{ human_text(s.plan.thesis, names|default({})) }}</p>{% include "_strategy_plan_readonly.html" %}</article>{% else %}<p class="empty-state">尚无已分享策略。</p>{% endfor %}
 </section>
 {% if restricted_data.strategies_truncated %}<p class="strategy-small-note">已显示最近50条已分享策略。</p>{% endif %}
 {% include "_restricted_entries.html" %}
@@ -29,11 +31,11 @@
     <div id="strategy-sidebar-entries">
       {% if research_cards.enabled %}<h2>策略方案 <span>{{ research_cards['items']|length }}</span></h2>
       <div id="research-sidebar-list">
-      {% for item in research_cards['items'] %}<button type="button" class="strategy-entry{% if workspace_selected == 'research:' ~ item.id %} selected{% endif %}" data-strategy-select="research:{{ item.id }}" aria-pressed="{{ 'true' if workspace_selected == 'research:' ~ item.id else 'false' }}"><strong>{{ item.title }}</strong><span>{{ item.direction_label }} · {{ '草稿' if item.status == 'draft' else '人工确认' }}{% if item.review_date %} · {{ item.review_date }}{% endif %}</span><small data-draft-mark hidden>未保存草稿</small></button>{% else %}<p class="strategy-sidebar-empty">暂无策略方案</p>{% endfor %}
+      {% for item in research_cards['items'] %}<button type="button" class="strategy-entry{% if workspace_selected == 'research:' ~ item.id %} selected{% endif %}" data-strategy-select="research:{{ item.id }}" aria-pressed="{{ 'true' if workspace_selected == 'research:' ~ item.id else 'false' }}"><strong>{{ human_text(item.title, names|default({})) }}</strong><span>{{ item.direction_label }} · {{ '草稿' if item.status == 'draft' else '人工确认' }}{% if item.review_date %} · {{ item.review_date }}{% endif %}</span><small data-draft-mark hidden>未保存草稿</small></button>{% else %}<p class="strategy-sidebar-empty">暂无策略方案</p>{% endfor %}
       </div>{% endif %}
       <h2>交易计划 <span>{{ strategy_entries|length }}</span></h2>
       <div id="plan-sidebar-list">
-      {% for item in strategy_entries %}<button type="button" class="strategy-entry{% if workspace_selected == item.key %} selected{% endif %}" data-strategy-select="{{ item.key }}" aria-pressed="{{ 'true' if workspace_selected == item.key else 'false' }}"><strong>{{ item.title }}</strong><span>{{ item.status_label }} · {{ item.kind_label }}{% if item.review_date %} · {{ item.review_date }}{% endif %}</span><small data-draft-mark hidden>未保存草稿</small></button>{% else %}<p class="strategy-sidebar-empty">暂无交易计划</p>{% endfor %}
+      {% for item in strategy_entries %}<button type="button" class="strategy-entry{% if workspace_selected == item.key %} selected{% endif %}" data-strategy-select="{{ item.key }}" aria-pressed="{{ 'true' if workspace_selected == item.key else 'false' }}"><strong>{{ human_text(item.title, names|default({})) }}</strong><span>{{ item.status_label }} · {{ item.kind_label }}{% if item.review_date %} · {{ item.review_date }}{% endif %}</span><small data-draft-mark hidden>未保存草稿</small></button>{% else %}<p class="strategy-sidebar-empty">暂无交易计划</p>{% endfor %}
       </div>
     </div>
     <p id="strategy-search-empty" class="strategy-sidebar-empty" hidden>没有匹配的策略</p>
@@ -43,7 +45,7 @@
     <div id="strategy-workspace-status" role="status" class="strategy-small-note"></div>
     <div id="strategy-preview-content">
       {% if workspace_selected and workspace_selected.startswith('plan:') and workspace_initial %}{% set s = workspace_initial %}
-      <article class="strategy-preview-article"><div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span><span>交易计划 · v{{ s.version }}</span></div><h2>{{ s.title }}</h2><p class="research-prose">{{ s.plan.thesis }}</p>{% include "_strategy_plan_readonly.html" %}<a class="strategy-detail-link" href="{{ research_prefix() }}/sn/strategies/{{ s.id }}">完整计划与成交记录 ↗</a></article>
+      <article class="strategy-preview-article"><div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span><span>交易计划 · 已保存方案</span></div><h2>{{ human_text(s.title, names|default({})) }}</h2><p class="research-prose">{{ human_text(s.plan.thesis, names|default({})) }}</p>{% include "_strategy_plan_readonly.html" %}<a class="strategy-detail-link" href="{{ research_prefix() }}/sn/strategies/{{ s.id }}">完整计划与成交记录 ↗</a></article>
       {% endif %}
       {% include "_research_strategy_cards.html" %}
       {% if not workspace_selected %}<div id="strategy-workspace-empty" class="strategy-workspace-empty"><strong>从左侧选择策略</strong><p>记录适用条件与应对措施，核对后形成可审阅的计划。</p></div>{% endif %}

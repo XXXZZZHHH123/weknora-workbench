@@ -1,10 +1,12 @@
 {% extends "base.html" %}
-{% block title %}{{ strategy.title }} · {{ research_workbench().metadata.name if research_workbench() else '锡研究工作台' }}{% endblock %}
+{% block title %}{{ human_text(strategy.title, names|default({})) }} · {{ research_workbench().metadata.name if research_workbench() else '锡研究工作台' }}{% endblock %}
 {% block main %}
+<script id="research-display-names" type="application/json">{{ names|default({})|tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/research-display.js?v={{ static_version() }}"></script>
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/strategy.css?v={{ static_version() }}">
 <a class="back-link" href="{{ research_prefix() }}/sn/strategies">← 返回策略列表</a>
 <section class="strategy-detail-head"><div><div class="strategy-card-top"><span class="status-chip status-{{ strategy.status }}">{{ status_labels[strategy.status] }}</span><span>{{ kind_labels[strategy.kind] }} · {{ mode_labels[strategy.mode] }}</span></div>
-  <h1>{{ strategy.title }}</h1><p class="research-prose">{{ strategy.plan.thesis }}</p></div>
+  <h1>{{ human_text(strategy.title, names|default({})) }}</h1><p class="research-prose">{{ human_text(strategy.plan.thesis, names|default({})) }}</p></div>
   {% if strategy_can_write and (strategy.status == 'draft' or strategy.status == 'watching') %}<div class="strategy-actions">
     {% if strategy.status == 'draft' %}<button class="button-primary" data-action="publish">审阅并发布</button>{% endif %}
     <button class="button-muted" data-action="cancel">作废</button></div>{% endif %}</section>
@@ -12,16 +14,16 @@
 {% if strategy_scope_status == 'unassigned' %}<p class="strategy-scope-notice">归属待核对 · 历史原记录仅供只读预览。</p>{% endif %}
 <div class="detail-grid"><div class="strategy-main">
   <section class="detail-panel"><h2>执行计划 <small>价格单位：元/吨；跨期为近月减远月</small></h2>
-    <div class="leg-list">{% for leg in strategy.plan.legs %}<div class="leg"><b>{{ '买入' if leg.side == 'buy' else '卖出' }} {{ leg.contract }}</b><span>× {{ leg.ratio }} 手 / 比例单位</span><code>{{ leg.quote_series_id }}</code></div>{% endfor %}</div>
-    <div class="price-grid"><div><label>入场区间</label><b>{{ strategy.plan.entry.low }} – {{ strategy.plan.entry.high }}</b><small>{{ strategy.plan.entry.reason }}</small></div>
-      <div><label>目标区间</label><b>{{ strategy.plan.target.low }} – {{ strategy.plan.target.high }}</b><small>{{ strategy.plan.target.reason }}</small></div>
-      <div><label>止损区间</label><b>{{ strategy.plan.stop.low }} – {{ strategy.plan.stop.high }}</b><small>{{ strategy.plan.stop.reason }}</small></div></div>
-    <p class="research-prose"><b>入场条件：</b>{{ strategy.plan.entry_condition }}</p><p class="research-prose"><b>失效条件：</b>{{ strategy.plan.invalidation }}</p>
-    <p><b>催化剂：</b>{{ strategy.plan.catalyst }} · <b>期限：</b>{{ strategy.plan.horizon_days }} 天 · <b>复核：</b>{{ strategy.plan.review_at[:16].replace('T',' ') }}</p>
-    <p class="research-prose"><b>竞争性解释：</b>{{ strategy.plan.alternative_explanation }}</p>
+    <div class="leg-list">{% for leg in strategy.plan.legs %}<div class="leg"><b>{{ '买入' if leg.side == 'buy' else '卖出' }} {{ leg.contract }}</b><span>× {{ leg.ratio }} 手 / 比例单位</span><span data-indicator-reference>{{ indicator_name(leg.quote_series_id, names|default({})) }}</span></div>{% endfor %}</div>
+    <div class="price-grid"><div><label>入场区间</label><b>{{ strategy.plan.entry.low }} – {{ strategy.plan.entry.high }}</b><small>{{ human_text(strategy.plan.entry.reason, names|default({})) }}</small></div>
+      <div><label>目标区间</label><b>{{ strategy.plan.target.low }} – {{ strategy.plan.target.high }}</b><small>{{ human_text(strategy.plan.target.reason, names|default({})) }}</small></div>
+      <div><label>止损区间</label><b>{{ strategy.plan.stop.low }} – {{ strategy.plan.stop.high }}</b><small>{{ human_text(strategy.plan.stop.reason, names|default({})) }}</small></div></div>
+    <p class="research-prose"><b>入场条件：</b>{{ human_text(strategy.plan.entry_condition, names|default({})) }}</p><p class="research-prose"><b>失效条件：</b>{{ human_text(strategy.plan.invalidation, names|default({})) }}</p>
+    <p><b>催化剂：</b>{{ human_text(strategy.plan.catalyst, names|default({})) }} · <b>期限：</b>{{ strategy.plan.horizon_days }} 天 · <b>复核：</b>{{ strategy.plan.review_at[:16].replace('T',' ') }}</p>
+    <p class="research-prose"><b>竞争性解释：</b>{{ human_text(strategy.plan.alternative_explanation, names|default({})) }}</p>
   </section>
-  <section class="detail-panel"><h2>研究依据</h2><p class="research-prose">{{ strategy.plan.market_expectation }}</p>
-    {% for evidence in strategy.plan.evidence %}<div class="evidence"><div class="research-prose">{{ evidence.statement }}</div><small>{{ evidence.series_id or '定性判断' }} · {{ evidence.value if evidence.value is not none else '' }} · {{ evidence.as_of[:16].replace('T',' ') }} · {{ evidence.source }}{% if evidence.observation_id %} · 观测 #{{ evidence.observation_id }}{% endif %}</small></div>{% endfor %}
+  <section class="detail-panel"><h2>研究依据</h2><p class="research-prose">{{ human_text(strategy.plan.market_expectation, names|default({})) }}</p>
+    {% for evidence in strategy.plan.evidence %}<div class="evidence"><div class="research-prose">{{ human_text(evidence.statement, names|default({})) }}</div><small><span data-indicator-reference>{{ indicator_name(evidence.series_id, names|default({})) if evidence.series_id else '定性判断' }}</span> · {{ evidence.value if evidence.value is not none else '' }} · {{ evidence.as_of[:16].replace('T',' ') }} · {{ human_text(evidence.source, names|default({})) }}</small></div>{% endfor %}
   </section>
   {% if strategy_can_write and strategy.status in ('watching','open') %}<section class="detail-panel execution-panel"><h2>{{ '登记开仓成交' if strategy.status == 'watching' else '登记平仓成交' }}</h2><p>必须录入全部策略腿的真实成交；本页不会因为行情触价而自动成交。</p>
     <div class="fill-forms">{% for leg in strategy.plan.legs %}<label>{{ leg.contract }} 成交价<input type="number" step="any" data-fill-price="{{ leg.contract }}" placeholder="元/吨"></label><label>{{ leg.contract }} 手数<input type="number" min="1" step="1" data-fill-qty="{{ leg.contract }}" {% if strategy.status == 'open' %}value="{{ strategy.entry_fills[loop.index0].quantity }}" readonly{% endif %}></label><label>{{ leg.contract }} 成交时间<input type="datetime-local" data-fill-time="{{ leg.contract }}" value="{{ now_local }}"></label>{% endfor %}</div>
@@ -29,7 +31,7 @@
     <label class="full-label">成交说明<input id="fill-reason" value="研究员登记实际逐腿成交" required></label>
     <button class="button-primary" data-action="{{ 'open' if strategy.status == 'watching' else 'close' }}">{{ '确认完整开仓成交' if strategy.status == 'watching' else '确认完整平仓成交' }}</button></section>{% endif %}
   {% if strategy.status == 'closed' %}<section class="realized-panel"><span>已实现盈亏（含费用）</span><strong class="{{ 'positive' if strategy.realized_pnl >= 0 else 'negative' }}">{{ '%.2f'|format(strategy.realized_pnl) }} 元</strong><small>仅按记录的逐腿成交计算；不代表历史回测收益。</small></section>{% endif %}
-</div><aside class="strategy-aside"><p class="eyebrow">策略生命周期</p><div class="event-list">{% for event in strategy.events %}<div class="event"><b>{{ {'created':'建立草稿','published':'发布等待入场','opened':'登记开仓','closed':'登记平仓','cancelled':'作废'}.get(event.type, event.type) }}</b><time>{{ event.at[:16].replace('T',' ') }} UTC</time><p>{{ event.reason }}</p></div>{% endfor %}</div>
+</div><aside class="strategy-aside"><p class="eyebrow">策略生命周期</p><div class="event-list">{% for event in strategy.events %}<div class="event"><b>{{ {'created':'建立草稿','published':'发布等待入场','opened':'登记开仓','closed':'登记平仓','cancelled':'作废'}.get(event.type, event.type) }}</b><time>{{ event.at[:16].replace('T',' ') }} UTC</time><p>{{ human_text(event.reason, names|default({})) }}</p></div>{% endfor %}</div>
   <p class="strategy-caution">风险预算 {{ strategy.plan.risk_budget }} 元是研究员填写的计划参数，不是系统保证的最大亏损。策略不是个性化投资建议。</p></aside></div>
 <script>window.STRATEGY_ID={{ strategy.id }};window.STRATEGY_STATUS={{ strategy.status|tojson }};</script>
 <script src="{{ research_static_prefix() }}/static/strategy.js?v={{ static_version() }}"></script>

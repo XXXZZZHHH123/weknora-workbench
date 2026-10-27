@@ -2,6 +2,7 @@
   const dialog = document.getElementById('judgment-manager');
   if (!dialog) return;
   const byId = name => document.getElementById('logic-' + name);
+  const display = window.ResearchDisplay || {text: value => String(value ?? ''), reference: row => row?.title || (row?.created_at ? '研究判断 · ' + row.created_at.slice(0, 16).replace('T', ' ') : '已保存研究判断')};
   const input = byId('input'), status = byId('status');
   const endpoint = (window.RESEARCH_PREFIX || '') + '/api/sn/judgment';
   let managed, draft, displayed, busy = false, controller, panels = [];
@@ -55,19 +56,19 @@
     const selector = byId('panel-switch'); selector.replaceChildren();
     for (const row of panels) {
       const option = document.createElement('option'); option.value = String(row.judgment_id);
-      option.textContent = `${row.title} · v${row.version} · ${row.status || '草稿'}`; selector.append(option);
+      option.textContent = `${display.reference(row)} · ${row.status || '草稿'}`; selector.append(option);
     }
     selector.value = previous || selectedId() || String(managed.current?.id || panels[0]?.judgment_id || '');
     byId('panel-range').textContent = `${panels.length}/${result.total} 个已保存研判`;
     byId('panel-more').hidden = !result.has_more;
     syncPanelName();
   }
-  function text(id, value) { byId(id).textContent = value || ''; }
+  function text(id, value) { byId(id).textContent = display.text(value || ''); }
   function showVersion(row) {
     displayed = row;
     text('current-md', row?.markdown || '尚无研究逻辑。可在“导入与分析”添加原文。');
     text('original-source', row?.source_text || '尚无原始输入');
-    text('current-state', row ? `v${row.version} · ${row.status} · ${row.author}` : '尚无研究逻辑');
+    text('current-state', row ? `${display.reference(row)} · ${row.status} · ${row.author}` : '尚无研究逻辑');
   }
   function presentDraft(value) {
     draft = value; byId('preview').hidden = false;
@@ -75,11 +76,11 @@
     text('coverage', `${value.bindings.length} 个真实指标绑定 · ${value.candidate_count}/${value.catalog_total} 个${value.candidate_subset ? '候选' : '目录'}指标`);
     const bindings = byId('bindings'); bindings.replaceChildren();
     for (const binding of value.bindings) {
-      const chip = document.createElement('span'); chip.textContent = `${binding.name} · ${binding.unit || '单位待确认，仅描述'}`; bindings.append(chip);
+      const chip = document.createElement('span'); chip.textContent = `${display.text(binding.name)} · ${binding.unit || '单位待确认，仅描述'}`; bindings.append(chip);
     }
     const gaps = byId('unresolved'); gaps.replaceChildren();
     for (const item of value.unresolved) {
-      const line = document.createElement('li'); line.textContent = `${item.section}：${item.text} — ${item.reason}`; gaps.append(line);
+      const line = document.createElement('li'); line.textContent = display.text(`${item.section}：${item.text} — ${item.reason}`); gaps.append(line);
     }
     const fields = byId('field-diff'); fields.replaceChildren();
     for (const change of value.diff.fields) {
@@ -99,10 +100,10 @@
     try {
       managed = await api(managePath()); showVersion(managed.current);
       byId('variety').value = managed.current || managed.latest ? managed.variety || '' : '';
-      text('version-label', `${managed.current ? `当前展示 v${managed.current.version}` : '暂无当前逻辑'} · 最新基准 v${managed.latest?.version || 0}。新版本保存后仍为草稿。`);
+      text('version-label', `${managed.current ? display.reference(managed.current) : '暂无当前逻辑'}。后续保存仍为草稿，原记录保留。`);
       const versions = byId('version'); versions.replaceChildren();
       for (const row of managed.versions) {
-        const option = document.createElement('option'); option.value = row.version; option.textContent = `v${row.version} · ${row.status}`; versions.append(option);
+        const option = document.createElement('option'); option.value = row.version; option.textContent = `${display.reference(row)} · ${row.status}`; versions.append(option);
       }
       text('version-range', managed.versions_partial ? `最近${managed.versions.length}/${managed.version_total}版；更早版本可输入版号` : `${managed.version_total}个版本`);
       dialog.querySelector('[data-logic-tab="analyze"]').disabled = !managed.can_write;
@@ -207,12 +208,12 @@
   byId('reuse').addEventListener('click', () => {
     if (!displayed) return inform('尚无可复用版本。');
     if (input.value.trim() && input.value !== displayed.markdown) return inform('已有输入，请先保留或清空，再复用当前MD。');
-    input.value = displayed.markdown; text('file-name', `复用 v${displayed.version} MD`); invalidate(); tab('analyze'); input.focus();
+    input.value = displayed.markdown; text('file-name', '复用已保存研判 MD'); invalidate(); tab('analyze'); input.focus();
   });
   byId('reuse-original').addEventListener('click', () => {
     if (!displayed?.source_text) return inform('尚无可复用原文。');
     if (input.value.trim() && input.value !== displayed.source_text) return inform('已有输入，请先保留或清空，再复用原文。');
-    input.value = displayed.source_text; text('file-name', `复用 v${displayed.version} 原文`); invalidate(); tab('analyze'); input.focus();
+    input.value = displayed.source_text; text('file-name', '复用已保存研判原文'); invalidate(); tab('analyze'); input.focus();
   });
   byId('download').addEventListener('click', () => {
     if (!displayed) return;

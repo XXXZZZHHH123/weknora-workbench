@@ -2,11 +2,11 @@
 {% set initial_cards = ([research_cards.selected] if research_cards.get('selected') else []) if research_cards.get('metadata_only') else research_cards['items'] %}
 <div id="research-card-panels"{% if workspace_selected is defined and workspace_selected and workspace_selected.startswith('plan:') %} hidden{% endif %}>
 {% for item in initial_cards %}<article class="strategy-preview-article research-card" data-research-card="{{ item.id }}">
-  <header class="strategy-preview-header"><div><div class="strategy-card-top"><span>{{ item.direction_label }} · {{ '应对策略草稿' if item.card and item.card.get('response_action') else '观察方案 · 待补应对' }}</span><span>v{{ item.revision }}</span></div><h2>{{ item.title }}</h2></div>
+  <header class="strategy-preview-header"><div><div class="strategy-card-top"><span>{{ item.direction_label }} · {{ '应对策略草稿' if item.card and item.card.get('response_action') else '观察方案 · 待补应对' }}</span><span>{{ item.review_date or '已保存草稿' }}</span></div><h2>{{ human_text(item.title, names|default({})) }}</h2></div>
   {% if item.get('can_edit', research_cards.can_write) %}<button type="button" data-research-card-edit="{{ item.id }}" class="button-muted">编辑</button>{% endif %}</header>
-  {% if item.card %}<dl class="research-preview-fields"><div><dt>适用 / 触发</dt><dd>{{ item.card.trigger }}</dd></div><div class="research-response-action"><dt>应对措施</dt><dd>{{ item.card.get('response_action') or '待补应对措施；当前仅作为观察方案保留。' }}</dd></div><div><dt>暂停 / 撤回</dt><dd>{{ item.card.invalidation }}</dd></div><div><dt>复核日期</dt><dd>{{ item.card.review_date }}</dd></div></dl>
-  <details><summary>适用范围、执行前核对与原文</summary><p>{{ item.card.thesis }}</p><p>{{ item.card.watch_for }}</p>{% if item.card.original_text %}<pre>{{ item.card.original_text }}</pre>{% endif %}</details>
-  {% else %}<p class="strategy-small-note">这是一份尚未整理的历史研究记录。</p><pre>{{ item.legacy_body }}</pre>{% endif %}
+  {% if item.card %}<dl class="research-preview-fields"><div><dt>适用 / 触发</dt><dd>{{ human_text(item.card.trigger, names|default({})) }}</dd></div><div class="research-response-action"><dt>应对措施</dt><dd>{{ human_text(item.card.get('response_action') or '待补应对措施；当前仅作为观察方案保留。', names|default({})) }}</dd></div><div><dt>暂停 / 撤回</dt><dd>{{ human_text(item.card.invalidation, names|default({})) }}</dd></div><div><dt>复核日期</dt><dd>{{ item.card.review_date }}</dd></div></dl>
+  <details><summary>适用范围、执行前核对与原文</summary><p>{{ human_text(item.card.thesis, names|default({})) }}</p><p>{{ human_text(item.card.watch_for, names|default({})) }}</p>{% if item.card.original_text %}<pre>{{ human_text(item.card.original_text, names|default({})) }}</pre>{% endif %}</details>
+  {% else %}<p class="strategy-small-note">这是一份尚未整理的历史研究记录。</p><pre>{{ human_text(item.legacy_body, names|default({})) }}</pre>{% endif %}
   <small class="strategy-small-note">{{ item.evidence_notice }}</small>
 </article>{% endfor %}
 </div>

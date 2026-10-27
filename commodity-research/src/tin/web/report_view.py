@@ -1,6 +1,7 @@
 """Readable views and Markdown from actual report records, without inference."""
 from copy import deepcopy
 from math import isfinite
+from tin.web.research_display import human_text, indicator_name, condition_text
 
 
 def _plain(value):
@@ -30,12 +31,13 @@ def _judgment_view(payload, names, signals, preview=None):
             for item in side.get('evidence') or []:
                 if isinstance(item, dict):
                     identifier = item.get('series_id')
-                    evidence.append({'text': _plain(item.get('desc')), 'series_id': identifier,
-                                     'name': names.get(identifier) or '指标名称待核对' if identifier else None})
-            row['cases'].append({'label': label, 'claim': _plain(side.get('claim')), 'evidence': evidence})
-        row['contradiction'] = _plain(contradiction.get('text'))
+                    evidence.append({'text': human_text(item.get('desc'), names), 'series_id': identifier,
+                                     'name': indicator_name(identifier, names) if identifier else None})
+            row['cases'].append({'label': label, 'claim': human_text(side.get('claim'), names), 'evidence': evidence})
+        row['contradiction'] = human_text(contradiction.get('text'), names)
     else:
-        row['contradiction'] = _plain(contradiction)
+        row['contradiction'] = human_text(contradiction, names)
+    row['tone_note'] = human_text(row.get('tone_note'), names)
     states = {item.get('rule_id'): item for item in signals if isinstance(item, dict)}
     trial = {item.get('rule_id'): item for item in (preview or {}).get('signals') or [] if isinstance(item, dict)}
     for kind in ('thresholds', 'falsifiers'):
@@ -45,14 +47,14 @@ def _judgment_view(payload, names, signals, preview=None):
                 continue
             rule = dict(item)
             value = item.get('value')
-            rule['name'] = item.get('name') or item.get('desc') or item.get('id')
-            rule['series_name'] = names.get(item.get('series_id')) or '指标名称待核对'
+            rule['name'] = human_text(item.get('name') or item.get('desc'), names) or '已保存观察条件'
+            rule['series_name'] = indicator_name(item.get('series_id'), names)
             if kind == 'thresholds':
                 rule['condition'] = (' – '.join(_plain(part) for part in value)
                     if item.get('operator') == 'between' and isinstance(value, list)
                     else _plain(item.get('operator')) + ' ' + _plain(value))
             else:
-                rule['condition'] = _plain(item.get('expression')) + ' · 连续 ' + str(item.get('consecutive_periods') or 1) + ' 期'
+                rule['condition'] = condition_text(item.get('expression')) + ' · 连续 ' + str(item.get('consecutive_periods') or 1) + ' 期'
             saved = states.get(item.get('id')) or {}
             computed = trial.get(item.get('id'))
             signal = computed if computed is not None else saved
@@ -63,7 +65,7 @@ def _judgment_view(payload, names, signals, preview=None):
                 if isinstance(entry, dict) and isinstance(entry.get('as_of'), str)})
             rule['current_value'] = signal.get('current_value')
             rule['current_value_text'] = _number(rule['current_value'])
-            rule['gap_note'] = signal.get('gap_note')
+            rule['gap_note'] = human_text(signal.get('gap_note'), names)
             rules.append(rule)
         row[kind] = rules
     return row
@@ -89,6 +91,15 @@ def _brief_view(item, names):
     return row
 
 
+def _content_rows(rows, names):
+    output = deepcopy(rows or [])
+    fields = {'title', 'thesis', 'trigger', 'response_action', 'invalidation', 'watch_for', 'reason'}
+    for row in output:
+        for key in fields & row.keys():
+            row[key] = human_text(row[key], names)
+    return output
+
+
 def present_snapshot(payload, names=None):
     from tin.web.report_watch import present_watch, watch_items
     fallback = {item['series_id']: item['name'] for item in payload.get('observations') or []
@@ -100,12 +111,12 @@ def present_snapshot(payload, names=None):
     observations = []
     for item in payload.get('observations', []):
         row = dict(item)
-        row['name'] = item.get('name') or names.get(item['series_id']) or '指标名称待核对'
+        row['name'] = indicator_name(item['series_id'], names)
         observations.append(row)
     changes = []
     for item in payload.get('changes') or []:
         first, last = item.get('first') or {}, item.get('last') or {}
-        changes.append({**item, 'name': item.get('name') or names.get(item['series_id']) or '指标名称待核对',
+        changes.append({**item, 'name': human_text(item.get('name'), names) or indicator_name(item['series_id'], names),
             'first_text': _number(first.get('value')), 'last_text': _number(last.get('value')),
             'change_text': _number(item.get('change')), 'change_pct_text': _number(item.get('change_pct'))})
     sections = {key: payload.get(key) or [] for key in ('derived', 'signals', 'gaps')}
@@ -120,8 +131,8 @@ def present_snapshot(payload, names=None):
             'judgment': judgment, 'judgment_replay': replay,
             'rule_preview': payload.get('rule_preview'),
             'period': payload.get('period'), 'changes': changes, 'briefs': briefs,
-            'strategies': payload.get('strategies') or [], 'strategy_events': payload.get('strategy_events') or [],
-            'research_cards': payload.get('research_cards') or [],
+            'strategies': _content_rows(payload.get('strategies'), names), 'strategy_events': _content_rows(payload.get('strategy_events'), names),
+            'research_cards': _content_rows(payload.get('research_cards'), names),
             'research_events': payload.get('research_events') or [],
             'coverage': payload.get('coverage') or {},
             'next_review': present_watch(watch_items(payload.get('judgment'),
@@ -209,7 +220,7 @@ def _legacy_markdown(payload, *, title='研究报告', names=None):
                                  + ' · ' + _md(evidence.get('as_of')))
     elif view['judgment_replay']:
         replay = view['judgment_replay']
-        lines += ['### ' + replay['label'] + ' · v' + _md(replay['version']) + ' · ' + _md(replay['status']), '',
+        lines += ['### ' + replay['label'] + ' · ' + _md(replay['status']), '',
                   '- 基调：' + ( _md(replay['tone']) or '未填写'), '',
                   _md(replay['tone_note']) or '当前保存记录未填写基调说明。', '',
                   '> 回放当前已保存研究判断，供本次数据核对；没有据此生成新的日报结论。', '']
@@ -235,7 +246,7 @@ def _legacy_markdown(payload, *, title='研究报告', names=None):
     lines += ['', '## 研究判断', '']
     judgment = view['judgment']
     if judgment:
-        lines += ['- 当前版本：' + _md(judgment.get('version')) + ' · ' + _md(judgment.get('status')),
+        lines += ['- 研究状态：' + _md(judgment.get('status')),
                   '- 基调：' + _md(judgment.get('tone')), _md(judgment.get('contradiction')), '']
         for side in judgment['cases']:
             lines += ['### ' + side['label'], _md(side['claim'])]

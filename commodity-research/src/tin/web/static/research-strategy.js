@@ -6,6 +6,7 @@
   const research = sourceNode ? JSON.parse(sourceNode.textContent) : {items: [], enabled: false};
   const prefix = window.RESEARCH_PREFIX || '', api = prefix + '/api/sn';
   const byId = id => document.getElementById(id), field = id => byId('research-card-' + id);
+  const display = window.ResearchDisplay || {text: value => String(value ?? ''), indicator: () => '指标名称待核对', reference: row => row?.title || '已保存研究判断'};
   const form = field('form'), editor = field('dialog'), planEditor = byId('strategy-plan-editor');
   const fields = {title: 'title', direction: 'direction', thesis: 'thesis', watch_for: 'watch',
     trigger: 'trigger', response_action: 'response-action', invalidation: 'invalidation',
@@ -24,7 +25,7 @@
   byId('research-card-panels')?.setAttribute('hidden', '');
   byId('strategy-preview-content').querySelectorAll(':scope > article, :scope > #strategy-workspace-empty').forEach(node => node.hidden = true);
   function element(tag, text, className) {
-    const node = document.createElement(tag); if (text !== undefined) node.textContent = text;
+    const node = document.createElement(tag); if (text !== undefined) node.textContent = display.text(text);
     if (className) node.className = className; return node;
   }
   function button(text, action, className = 'button-muted') {
@@ -152,7 +153,7 @@
     const header = element('header', undefined, 'strategy-preview-header'), title = element('div');
     const card = item.card;
     title.append(element('div', (item.direction_label || '研究记录') + ' · ' +
-      (card?.response_action?.trim() ? '应对策略草稿' : '观察方案 · 待补应对') + ' · v' + item.revision, 'strategy-card-top'), element('h2', item.title));
+      (card?.response_action?.trim() ? '应对策略草稿' : '观察方案 · 待补应对') + (item.created_at ? ' · ' + item.created_at.slice(0, 10) : ''), 'strategy-card-top'), element('h2', item.title));
     const actions = element('div', undefined, 'strategy-preview-actions');
     if (item.can_edit !== false && editable(key) && card) actions.append(button(drafts.get(key)?.dirty ? '继续编辑草稿' : '编辑',
       () => openCard(key, drafts.get(key)?.source || item, drafts.get(key))));
@@ -164,7 +165,7 @@
       if (card.judgment_reference) {
         const line = element('div', undefined, 'strategy-basis-line');
         const ref = card.judgment_reference;
-        line.append(element('span', '依据研判 · v' + ref.revision),
+        line.append(element('span', '依据研判 · 已保存记录'),
           button('预览依据', () => previewReference(ref, line, key)));
         article.append(line);
       }
@@ -175,7 +176,7 @@
       disclosure(article, '原始文字', card.original_text);
       if (card.reference) {
         const line = element('div', undefined, 'strategy-basis-line');
-        line.append(element('span', '引用策略 · v' + card.reference.revision + ' · 独立副本'),
+        line.append(element('span', '引用策略 · 独立副本'),
           button('预览原策略', () => previewReference(card.reference, line, key))); article.append(line);
       }
       const sources = item.source_snapshots || [];
@@ -188,7 +189,7 @@
     const article = element('article', undefined, 'strategy-preview-article'), plan = item.plan;
     const header = element('header', undefined, 'strategy-preview-header'), title = element('div');
     const statusLabel = metadata.get(key)?.status_label || item.status;
-    title.append(element('div', '交易计划 · ' + statusLabel + ' · v' + item.version, 'strategy-card-top'), element('h2', item.title));
+    title.append(element('div', '交易计划 · ' + statusLabel, 'strategy-card-top'), element('h2', item.title));
     header.append(title);
     if (editable(key)) header.append(button(drafts.get(key)?.dirty ? '继续编辑草稿' : '编辑为独立草稿',
       () => openPlan(key, drafts.get(key)?.source || item, drafts.get(key))));
@@ -203,7 +204,7 @@
     definition(article, [['合约与方向', plan.legs.map(row => row.contract + ' · ' + (row.side === 'buy' ? '买入' : '卖出') + ' × ' + row.ratio).join('\n')],
       ['计划风险预算', String(plan.risk_budget)], ['替代解释', plan.alternative_explanation], ['市场预期', plan.market_expectation], ['催化与期限', plan.catalyst + ' · ' + plan.horizon_days + '天']]);
     disclosure(article, '证据与数据口径（' + plan.evidence.length + '）', plan.evidence.map(row =>
-      [row.statement, row.series_id, row.value, row.source, row.as_of].filter(value => value !== undefined && value !== null).join(' · ')).join('\n\n'));
+      [row.statement, row.series_id ? display.indicator(row.series_id) : null, row.value, row.source, row.as_of].filter(value => value !== undefined && value !== null).join(' · ')).join('\n\n'));
     const link = element('a', '完整计划与成交记录 ↗', 'strategy-detail-link'); link.href = prefix + '/sn/strategies/' + item.id; article.append(link);
     host.replaceChildren(article);
   }
@@ -237,7 +238,7 @@
     selectedSources = new Set(body.source_ids || []); cardReference = body.card.reference || null;
     judgmentReference = body.card.judgment_reference || null; field('observation-only').checked = body.acknowledge_observation === true;
     field('reference-note').hidden = !cardReference;
-    field('reference-note').textContent = cardReference ? '引用策略 v' + cardReference.revision + '；保存为独立副本，不随原记录更新。' : '';
+    field('reference-note').textContent = cardReference ? '引用已保存策略；独立副本不随原记录更新。' : '';
     field('judgment-preview').hidden = true; field('judgment-preview').replaceChildren();
     renderSelectedSources();
   }
@@ -274,7 +275,7 @@
     finally { if (own === editSequence) { loadingSources = false; field('more-sources').disabled = false; } }
   }
   function showJudgmentOption(ref, title) {
-    const option = element('option', title || '研判 #' + ref.id + ' · v' + ref.revision); option.value = ref.id + ':' + ref.revision;
+    const option = element('option', title || '已引用研究判断'); option.value = ref.id + ':' + ref.revision;
     option.dataset.reference = JSON.stringify(ref); field('judgment').append(option); return option;
   }
   async function loadJudgments() {
@@ -287,7 +288,9 @@
       if (own !== editSequence || editor.hidden) return;
       for (const item of result.items || []) {
         const ref = {kind: 'judgment', id: item.id, revision: item.revision};
-        if (![...choice.options].some(option => option.value === item.id + ':' + item.revision)) showJudgmentOption(ref, item.title + ' · v' + item.revision);
+        const existing = [...choice.options].find(option => option.value === item.id + ':' + item.revision);
+        if (existing) existing.textContent = display.reference(item);
+        else showJudgmentOption(ref, display.reference(item));
       }
     } catch (error) { if (own === editSequence) status('研判目录未读取：' + error.message + ' 当前编辑内容已保留。', true, field('form-status')); }
   }
@@ -317,7 +320,7 @@
       if (!selectionKey && (judgmentReference?.id !== ref.id || judgmentReference?.revision !== ref.revision)) return;
       target.querySelector('[data-reference-text]')?.remove();
       const details = element('details'); details.dataset.referenceText = ''; details.open = true;
-      details.append(element('summary', data.title + ' · v' + data.revision), element('pre', referenceText(data)));
+      details.append(element('summary', display.reference(data, ref.kind === 'judgment' ? '研究判断' : '策略方案')), element('pre', referenceText(data)));
       target.append(details); target.hidden = false;
     } catch (error) { status(error.message, true, editor && !editor.hidden ? field('form-status') : byId('strategy-workspace-status')); }
   }

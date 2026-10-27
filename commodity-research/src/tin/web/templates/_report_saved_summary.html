@@ -10,11 +10,11 @@
       </article>
       {% else %}
       {% if report.judgment_replay %}{% set replay = report.judgment_replay %}
-      <article class="report-brief"><header><strong>{{ replay.label }}</strong><span class="report-badge">v{{ replay.version }} · {{ replay.status }}</span></header>
+      <article class="report-brief"><header><strong>{{ replay.label }}</strong><span class="report-badge">{{ replay.status }}{% if report.judgment.written_at %} · {{ report.judgment.written_at }}{% endif %}</span></header>
         <p class="report-muted">基调：{{ replay.tone or '未填写' }}</p>
         <p class="research-prose whitespace-pre-wrap">{{ replay.tone_note or '当前保存记录未填写基调说明。' }}</p>
         <p class="report-muted">回放当前已保存研究判断，供本次数据核对；没有据此生成新的日报结论。</p>
       </article>
       {% else %}<p class="report-muted">暂无已保存研究结论。以下按已确认数据与研究逻辑呈现，不自动编写市场观点。</p>{% endif %}
       {% endfor %}
-    
+

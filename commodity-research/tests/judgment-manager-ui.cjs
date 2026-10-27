@@ -58,7 +58,8 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
   {
     const env=setup();await env.context.window.JudgmentManager.open();
     assert.equal(env.nodes['logic-current-md'].textContent,'# Current');
-    assert.match(env.nodes['logic-version-label'].textContent,/最新基准 v2/);
+    assert.match(env.nodes['logic-version-label'].textContent,/后续保存仍为草稿/);
+    assert.doesNotMatch(env.nodes['logic-version-label'].textContent,/v2/);
     assert.equal(env.requests.filter(r=>r.url.endsWith('/generate')).length,0,'Opening a manager never invokes a model');
     env.nodes['logic-input'].value='Complete private source';env.nodes['logic-model'].value='configured';
     await env.nodes['logic-generate'].fire('click');
