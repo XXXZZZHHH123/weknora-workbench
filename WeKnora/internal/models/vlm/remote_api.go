@@ -3,6 +3,8 @@ package vlm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -109,12 +112,22 @@ func (v *RemoteAPIVLM) Predict(ctx context.Context, imgBytesList [][]byte, promp
 	logger.Infof(ctx, "[VLM] Calling chat protocol, model=%s, numImages=%d, totalImageSize=%d",
 		v.modelName, len(imgBytesList), totalImageSize)
 
-	ctx, cancel := context.WithTimeout(ctx, vlmHTTPTimeout())
-	defer cancel()
-	resp, err := v.chat.Chat(ctx, []chat.Message{{Role: "user", MultiContent: parts}}, &chat.ChatOptions{
-		Temperature: v.temperature,
-		MaxTokens:   defaultMaxToks,
-	})
+	var resp *types.ChatResponse
+	var err error
+	for attempt := 1; ; attempt++ {
+		resp, err = v.chatOnce(ctx, parts)
+		wait, limited := vlmRateLimitDelay(err, attempt)
+		if !limited || attempt >= vlmRateLimitAttempts {
+			break
+		}
+		logger.Warnf(ctx, "[VLM] model=%s rate limited, retrying in %s (attempt %d/%d)",
+			v.modelName, wait, attempt+1, vlmRateLimitAttempts)
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("VLM request: %w", err)
+		case <-time.After(wait):
+		}
+	}
 	if err != nil {
 		return "", fmt.Errorf("VLM request: %w", err)
 	}
@@ -126,6 +139,46 @@ func (v *RemoteAPIVLM) Predict(ctx context.Context, imgBytesList [][]byte, promp
 	}
 	logger.Infof(ctx, "[VLM] response received, len=%d", len(content))
 	return content, nil
+}
+
+func (v *RemoteAPIVLM) chatOnce(ctx context.Context, parts []chat.MessageContentPart) (*types.ChatResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, vlmHTTPTimeout())
+	defer cancel()
+	return v.chat.Chat(ctx, []chat.Message{{Role: "user", MultiContent: parts}}, &chat.ChatOptions{
+		Temperature: v.temperature,
+		MaxTokens:   defaultMaxToks,
+	})
+}
+
+const (
+	// A rate-limited image would otherwise lose its caption or OCR for good:
+	// the multimodal task records the failure and moves on.
+	vlmRateLimitAttempts = 4
+	vlmRateLimitMaxWait  = 30 * time.Second
+)
+
+// vlmRateLimitDelay reports whether err is a provider 429/503 and how long to
+// wait before attempt+1: the vendor's Retry-After header or a JSON
+// retry_after_ms field, never shorter than a linear backoff, capped.
+func vlmRateLimitDelay(err error, attempt int) (time.Duration, bool) {
+	var httpErr *api.HTTPError
+	if !errors.As(err, &httpErr) ||
+		(httpErr.StatusCode != http.StatusTooManyRequests && httpErr.StatusCode != http.StatusServiceUnavailable) {
+		return 0, false
+	}
+	wait := time.Duration(attempt) * 2 * time.Second
+	if hinted := httpErr.RetryAfter(); hinted > wait {
+		wait = hinted
+	}
+	var body struct {
+		RetryAfterMS int64 `json:"retry_after_ms"`
+	}
+	if json.Unmarshal([]byte(httpErr.Body), &body) == nil && body.RetryAfterMS > 0 {
+		if hinted := time.Duration(body.RetryAfterMS) * time.Millisecond; hinted > wait {
+			wait = hinted
+		}
+	}
+	return min(wait, vlmRateLimitMaxWait), true
 }
 
 func (v *RemoteAPIVLM) GetModelName() string { return v.modelName }

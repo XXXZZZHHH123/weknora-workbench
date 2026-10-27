@@ -6,7 +6,9 @@ workbook must never be opened or refreshed while indexing.
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import contextvars
 from contextvars import ContextVar
 import io
 import logging
@@ -36,7 +38,10 @@ _MAX_MEDIA_BYTES = 16 * 1024 * 1024
 _MAX_XML_BYTES = 8 * 1024 * 1024
 _MAX_PNG_BYTES = 32 * 1024 * 1024
 _MAX_PIXELS = 40_000_000
-_MEDIA_BUDGET_SECONDS = 180
+# Parsing runs in the background under a 30-minute reader timeout. Rendering
+# every vector chart here lets previews serve stored PNGs instead of converting
+# them one by one on demand (a 279-chart weekly report needs ~5 single-core minutes).
+_MEDIA_BUDGET_SECONDS = 600
 _OFFICE_PNG_FILTER = (
     'png:draw_png_Export:{"PixelWidth":{"type":"long","value":"2048"},'
     '"PixelHeight":{"type":"long","value":"2896"}}'
@@ -381,46 +386,66 @@ def extract_emf_labels(data: bytes) -> list[str]:
     return labels
 
 
+def _vector_render_workers() -> int:
+    try:
+        return max(1, min(4, int(os.environ.get("DOCREADER_VECTOR_RENDER_WORKERS", "3"))))
+    except ValueError:
+        return 3
+
+
 def _rasterize_vector_batches(archive: zipfile.ZipFile, targets: list[str], deadline: float) -> dict[str, bytes]:
     """Avoid one LibreOffice startup per chart in image-heavy reports.
 
     Eight standalone caches per isolated process keeps temporary disk/input
     bounded and still validates each output separately. Only referenced image
-    parts are converted, never OLE workbooks or presentation links.
+    parts are converted, never OLE workbooks or presentation links. Batches run
+    in a few independent LibreOffice processes (own profile and directory);
+    members are read here first because ZipFile is not safe across threads.
     """
     soffice = find_soffice()
     if not soffice:
         return {}
-    results = {}
+    batches = []
     for offset in range(0, len(targets), 8):
+        batch = []
+        for target in targets[offset:offset + 8]:
+            try:
+                batch.append((target, _read_member(archive, target, _MAX_MEDIA_BYTES)))
+            except (KeyError, ValueError) as exc:
+                logger.warning("PPT cached image unavailable: %s", exc)
+        if batch:
+            batches.append(batch)
+
+    def convert(batch):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            break
+            return {}
+        rendered = {}
         with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as profile:
             inputs = []
-            parts = []
-            for target in targets[offset:offset + 8]:
-                try:
-                    raw = _read_member(archive, target, _MAX_MEDIA_BYTES)
-                except (KeyError, ValueError) as exc:
-                    logger.warning("PPT cached image unavailable: %s", exc)
-                    continue
+            for target, raw in batch:
                 src = os.path.join(temp_dir, f"asset{len(inputs)}" + posixpath.splitext(target)[1])
                 Path(src).write_bytes(raw)
                 inputs.append(src)
-                parts.append(target)
-            if not inputs:
-                continue
             try:
                 _run_conversion([soffice, "-env:UserInstallation=" + Path(profile).as_uri(),
                                  "--headless", "--convert-to", _OFFICE_PNG_FILTER, "--outdir", temp_dir] + inputs,
                                 min(30, remaining))
-                for target, src in zip(parts, inputs):
+                for (target, _), src in zip(batch, inputs):
                     png = _read_png(os.path.splitext(src)[0] + ".png", trim_canvas=True)
                     if png:
-                        results[target] = png
+                        rendered[target] = png
             except OSError as exc:
                 logger.warning("PPT cached image batch conversion failed: %s", exc)
+        return rendered
+
+    results = {}
+    workers = min(_vector_render_workers(), len(batches)) or 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # Each worker keeps the caller's cancellation context.
+        futures = [pool.submit(contextvars.copy_context().run, convert, batch) for batch in batches]
+        for future in futures:
+            results.update(future.result())
     return results
 
 

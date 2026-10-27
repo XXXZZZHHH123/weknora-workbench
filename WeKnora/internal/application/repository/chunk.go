@@ -656,6 +656,28 @@ func (r *chunkRepository) ListImageInfoByKnowledgeIDs(
 	return results, err
 }
 
+// FindDocumentImageSourceReferences returns distinct stored references bound by
+// live chunk metadata to one source page/part of the current original file.
+func (r *chunkRepository) FindDocumentImageSourceReferences(
+	ctx context.Context, tenantID uint64, knowledgeID string, page int, sourcePart, sourceHash string,
+) ([]string, error) {
+	selector, err := json.Marshal(map[string]any{"page": page, "source_part": sourcePart, "source_hash": sourceHash})
+	if err != nil {
+		return nil, err
+	}
+	var refs []string
+	err = r.db.WithContext(ctx).Raw(`
+		SELECT DISTINCT source->>'reference'
+		FROM chunks,
+			jsonb_array_elements(COALESCE(metadata::jsonb -> ?, '[]'::jsonb)) AS source
+		WHERE tenant_id = ? AND knowledge_id = ? AND deleted_at IS NULL
+			AND source @> ?::jsonb
+		LIMIT 4`,
+		types.DocumentImageSourcesKey, tenantID, knowledgeID, string(selector),
+	).Scan(&refs).Error
+	return refs, err
+}
+
 // DeleteByKnowledgeList deletes all chunks for a knowledge list
 func (r *chunkRepository) DeleteByKnowledgeList(ctx context.Context, tenantID uint64, knowledgeIDs []string) error {
 	return r.db.WithContext(ctx).Where(

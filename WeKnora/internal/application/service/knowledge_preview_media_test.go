@@ -263,3 +263,86 @@ func TestRenderKnowledgePreviewMediaKeepsCallerCancellation(t *testing.T) {
 	_, err := svc.RenderKnowledgePreviewMedia(ctx, knowledge, 1, "ppt/media/a.emf", hex.EncodeToString(fileSHA[:]))
 	require.ErrorIs(t, err, context.Canceled)
 }
+
+type previewMediaChunks struct {
+	interfaces.ChunkRepository
+	refs []string
+	args []any
+}
+
+func (r *previewMediaChunks) FindDocumentImageSourceReferences(
+	_ context.Context, tenantID uint64, knowledgeID string, page int, part, hash string,
+) ([]string, error) {
+	r.args = []any{tenantID, knowledgeID, page, part, hash}
+	return r.refs, nil
+}
+
+type previewMediaCatalog struct {
+	interfaces.ResourceCatalog
+	resource *types.StoredResource
+}
+
+func (c *previewMediaCatalog) Resolve(context.Context, string) (*types.StoredResource, error) {
+	return c.resource, nil
+}
+
+type previewMediaPathFiles struct {
+	interfaces.FileService
+	bodies map[string][]byte
+	reads  []string
+}
+
+func (f *previewMediaPathFiles) GetFile(_ context.Context, path string) (io.ReadCloser, error) {
+	f.reads = append(f.reads, path)
+	body, ok := f.bodies[path]
+	if !ok {
+		return nil, errors.New("missing")
+	}
+	return io.NopCloser(bytes.NewReader(body)), nil
+}
+
+func TestRenderKnowledgePreviewMediaServesParseTimePNGWithoutReader(t *testing.T) {
+	var stored bytes.Buffer
+	require.NoError(t, png.Encode(&stored, image.NewRGBA(image.Rect(0, 0, 3, 2))))
+	source := []byte("stored original PPTX with a parse-time chart")
+	md5Hash := md5.Sum(source)
+	fileSHA := sha256.Sum256(source)
+	knowledge := &types.Knowledge{ID: "doc-stored", TenantID: 7, KnowledgeBaseID: "kb", FileName: "weekly.pptx", FileType: "pptx",
+		FilePath: "local://7/weekly.pptx", FileHash: hex.EncodeToString(md5Hash[:]), ParseStatus: types.ParseStatusCompleted}
+	newService := func(resource *types.StoredResource) (*knowledgeService, *previewMediaPathFiles, *previewMediaReader, *previewMediaChunks) {
+		files := &previewMediaPathFiles{bodies: map[string][]byte{knowledge.FilePath: source, "resource://chart": stored.Bytes()}}
+		reader := &previewMediaReader{err: errors.New("reader must not run")}
+		chunks := &previewMediaChunks{refs: []string{"resource://chart"}}
+		return &knowledgeService{repo: &previewMediaRepo{knowledge: knowledge}, chunkRepo: chunks,
+			resourceCatalog: &previewMediaCatalog{resource: resource}, kbService: &previewMediaKB{kb: &types.KnowledgeBase{ID: "kb", TenantID: 7}},
+			fileSvc: files, documentReader: reader}, files, reader, chunks
+	}
+	png := &types.StoredResource{TenantID: 7, State: types.ResourceStateActive, MimeType: "image/png"}
+
+	svc, files, reader, chunks := newService(png)
+	for range 2 {
+		got, err := svc.RenderKnowledgePreviewMedia(previewMediaContext(), knowledge, 14, "ppt/media/image107.emf", hex.EncodeToString(fileSHA[:]))
+		require.NoError(t, err)
+		require.Equal(t, stored.Bytes(), got)
+	}
+	require.Nil(t, reader.request)
+	require.Equal(t, []any{uint64(7), "doc-stored", 14, "ppt/media/image107.emf", knowledge.FileHash}, chunks.args)
+	// The original is hashed once; later parts reuse the remembered digest.
+	require.Equal(t, []string{knowledge.FilePath, "resource://chart", "resource://chart"}, files.reads)
+
+	// A preview of different bytes never receives the stored PNG.
+	_, err := svc.RenderKnowledgePreviewMedia(previewMediaContext(), knowledge, 14, "ppt/media/image107.emf", strings.Repeat("a", 64))
+	require.Error(t, err)
+
+	// A part the parse budget left as a raw vector still renders on demand.
+	svc, _, reader, _ = newService(&types.StoredResource{TenantID: 7, State: types.ResourceStateActive, MimeType: "image/emf"})
+	_, err = svc.RenderKnowledgePreviewMedia(previewMediaContext(), knowledge, 14, "ppt/media/image107.emf", hex.EncodeToString(fileSHA[:]))
+	require.ErrorContains(t, err, "reader must not run")
+	require.NotNil(t, reader.request)
+
+	// Resources from another workspace are never served.
+	svc, _, reader, _ = newService(&types.StoredResource{TenantID: 8, State: types.ResourceStateActive, MimeType: "image/png"})
+	_, err = svc.RenderKnowledgePreviewMedia(previewMediaContext(), knowledge, 14, "ppt/media/image107.emf", hex.EncodeToString(fileSHA[:]))
+	require.Error(t, err)
+	require.NotNil(t, reader.request)
+}
