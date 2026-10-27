@@ -90,10 +90,13 @@ def _brief_view(item, names):
 
 
 def present_snapshot(payload, names=None):
+    from tin.web.report_watch import present_watch, watch_items
     fallback = {item['series_id']: item['name'] for item in payload.get('observations') or []
                 if isinstance(item, dict) and isinstance(item.get('series_id'), str)
                 and isinstance(item.get('name'), str) and item['name'].strip()}
     names = {**fallback, **(names or {})}
+    units = {row['series_id']: row.get('unit') or '' for row in payload.get('observations') or []
+             if isinstance(row, dict) and isinstance(row.get('series_id'), str)}
     observations = []
     for item in payload.get('observations', []):
         row = dict(item)
@@ -120,15 +123,18 @@ def present_snapshot(payload, names=None):
             'strategies': payload.get('strategies') or [], 'strategy_events': payload.get('strategy_events') or [],
             'research_cards': payload.get('research_cards') or [],
             'research_events': payload.get('research_events') or [],
-            'coverage': payload.get('coverage') or {}, 'next_review': payload.get('next_review') or [],
+            'coverage': payload.get('coverage') or {},
+            'next_review': present_watch(watch_items(payload.get('judgment'),
+                payload.get('strategies') or [], payload.get('research_cards') or []), names, units),
             'counts': {'observations': len(observations),
                        **{key: len(rows) for key, rows in sections.items()}}}
-    result.update(_workflow_view(result, payload))
+    result.update(_workflow_view(result, payload, names))
     return result
 
 
-def _workflow_view(view, payload):
+def _workflow_view(view, payload, names):
     from tin.web.report_drafts import FORMAT, SECTION_LABELS
+    from tin.web.report_watch import display_text
     period = payload.get('period') or {'kind': 'daily', 'end': payload.get('as_of')}
     manual = payload.get('manual_report')
     saved = manual.get('draft') if isinstance(manual, dict) else None
@@ -157,6 +163,8 @@ def _workflow_view(view, payload):
             'visible': selected.get('visible') is True if selected is not None else True,
             'text': _plain(selected.get('text')) if selected is not None else texts[key],
             'references': [row for row in (saved or {}).get('reference_snapshots') or [] if row.get('section') == key]}
+        if key == 'watch':
+            panels[key]['text'] = display_text(panels[key]['text'], names)
     default_ids = payload.get('report_figure_selection')
     if not isinstance(default_ids, list):
         default_ids = [row['series_id'] for row in view['observations'][:6]]

@@ -160,22 +160,8 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
             'notice': '以当前保存规则和截至所选日可读数据试算，不是历史当时已知结论；数据时点见各条依据，不写入信号、复盘任务或成交。',
             'signals': [{key: deepcopy(getattr(row, key)) for key in
                 ('rule_id','rule_type','trade_date','state','current_value','evidence','gap_note')} for row in preview]}
-    pending = []
-    for item in judgment.get('falsifiers') or []:
-        pending.append({'kind': 'falsifier', 'text': item.get('desc') or item.get('id') or '已保存证伪条件',
-                        'series_id': item.get('series_id')})
-    for item in judgment.get('thresholds') or []:
-        pending.append({'kind': 'threshold', 'text': item.get('name') or item.get('id') or '已保存区间',
-                        'series_id': item.get('series_id')})
-    for item in judgment.get('unstructured') or []:
-        pending.append({'kind': 'unconfirmed', 'text': str(item.get('text') or '') + ' · ' + str(item.get('reason') or '')})
-    for row in result['strategies']:
-        if row['status'] in {'watching', 'open', 'draft'}:
-            pending.append({'kind': 'strategy', 'text': row['title'] + '：' + (row['invalidation'] or '复核入场、退出与失效条件')})
-    for row in result['research_cards']:
-        pending.append({'kind': 'research_card', 'text': row['title'] + '：' + row['trigger']
-                        + ' · 复核日期 ' + row['review_date']})
-    result['next_review'] = pending
+    from tin.web.report_watch import watch_items
+    result['next_review'] = watch_items(judgment, result['strategies'], result['research_cards'])
     if live_rules:
         from tin.web.report_drafts import attach_saved_report, bound_series
         scope = current_workbench.get()

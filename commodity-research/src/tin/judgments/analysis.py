@@ -150,6 +150,19 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         raise AnalysisError('研究逻辑字段或规则格式无效，请调整资料后重试', issues=issues) from None
     except (TypeError, ValueError):
         raise AnalysisError('研究逻辑字段或规则格式无效，请调整资料后重试') from None
+    for index, item in enumerate(payload.unstructured):
+        path = f'/unresolved/{index}'
+        if item.business_condition is None:
+            if item.rule_kind is not None:
+                _error('业务条件类型必须同时提供完整原文中的逐字条件',
+                       'business_condition_missing', path + '/business_condition')
+        else:
+            if not item.business_condition.strip() or item.business_condition not in original:
+                _error('待观察业务条件必须是完整原文中的非空逐字摘录',
+                       'business_condition_not_in_source', path + '/business_condition')
+            if item.rule_kind is None:
+                _error('待观察业务条件必须明确声明threshold或falsifier类型',
+                       'business_condition_kind', path + '/rule_kind')
     if len(payload.whitelist) != len(set(payload.whitelist)):
         raise AnalysisError('指标白名单不能重复')
     if payload.priority_rule and len(payload.priority_rule.order) != len(set(payload.priority_rule.order)):
@@ -293,6 +306,12 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
                 valid[kind].append(deepcopy(rule))
 
     cleaned = deepcopy(document)
+    # This path assesses a current model response, not a historical typed
+    # import. Missing business metadata cannot acquire legacy display semantics.
+    for item in cleaned['unresolved']:
+        if isinstance(item, dict):
+            item.setdefault('business_condition', None)
+            item.setdefault('rule_kind', None)
     cleaned['judgment'].update(valid)
     priority = fields.get('priority_rule')
     if priority is not None:
@@ -324,11 +343,14 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
             if rule.get('id') in accepted: continue
             related = [item for item in issues if item['path'].startswith(f'/judgment/{kind}/{index}') or item.get('rule_id') == rule.get('id')]
             quote = document['rule_quotes'].get(rule.get('id'))
-            source = quote if isinstance(quote, str) and quote in original else '完整原文保留在研究逻辑来源中；候选引文未获逐字核验。'
+            verified_quote = quote if isinstance(quote, str) and quote.strip() and quote in original else None
+            source = verified_quote or '完整原文保留在研究逻辑来源中；候选引文未获逐字核验。'
             candidate = json.dumps(rule, ensure_ascii=False, separators=(',', ':'))
             notes.append({'section': f'{kind}[{index}]待确认',
                 'text': ('原文依据：' + source + '\n未通过校验的模型候选（不执行）：' + candidate)[:4000],
-                'reason': '；'.join(dict.fromkeys(item['message'] for item in related)) or '规则未通过逐项校验'})
+                'reason': '；'.join(dict.fromkeys(item['message'] for item in related)) or '规则未通过逐项校验',
+                'business_condition': verified_quote,
+                'rule_kind': ('threshold' if kind == 'thresholds' else 'falsifier') if verified_quote else None})
     missing_units = [item for item in issues if item['code'] == 'unit_metadata_missing' and item['severity'] == 'warning']
     if missing_units:
         notes.append({'section': '描述性引用单位待确认', 'text': '\n'.join(item['path'] for item in missing_units)[:4000],
