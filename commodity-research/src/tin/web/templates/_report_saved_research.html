@@ -1,0 +1,36 @@
+<h4 class="report-subheading">研究判断</h4>
+      {% if report.judgment %}{% set j = report.judgment %}
+      <p class="report-muted">当前 v{{ j.version }} · {{ j.status or '未登记状态' }} · {{ j.tone or '未填写基调' }} · 复核期限 {{ j.review_due or '未登记' }}</p>
+      <p class="report-muted">当前保存版本用于本次数据回放，不代表报告期当时已形成该判断。</p>
+      {% if report.rule_preview %}<p class="report-muted">{{ report.rule_preview.label }}：{{ report.rule_preview.notice }}</p>{% endif %}
+      {% if j.tone_note %}<p class="research-prose whitespace-pre-wrap">{{ j.tone_note }}</p>{% endif %}
+      {% if j.contradiction %}<p class="research-prose whitespace-pre-wrap">{{ j.contradiction }}</p>{% endif %}
+      <div class="report-cases">{% for side in j.cases %}<div><h4>{{ side.label }}</h4><p class="research-prose">{{ side.claim or '待补充' }}</p><ul>{% for evidence in side.evidence %}<li>{{ evidence.text }}{% if evidence.name %}<small>{{ evidence.name }}</small>{% else %}<small>未绑定指标</small>{% endif %}</li>{% endfor %}</ul></div>{% endfor %}</div>
+      {% for rules, heading in [(j.thresholds, '区间与阈值'), (j.falsifiers, '证伪条件')] %}
+      {% if rules %}<div class="report-rule-section"><h4>{{ heading }}</h4><div class="report-scroll"><table class="report-table"><thead><tr><th>条件</th><th>指标与规则</th><th>{{ report.rule_preview.label if report.rule_preview else '已记录状态' }}</th></tr></thead><tbody>{% for rule in rules %}<tr><td>{{ rule.name }}</td><td>{{ rule.series_name }}<small>{{ rule.condition }}</small></td><td>{{ rule.state }}{% if rule.current_value is not none %}<small>{{ '试算值' if rule.is_preview else '已记录值' }} {{ rule.current_value_text }}</small>{% endif %}{% if rule.is_preview and rule.recorded_state %}<small>原已记录：{{ rule.recorded_state }}</small>{% endif %}{% if rule.evidence_dates %}<details><summary>依据日期</summary>{% for stamp in rule.evidence_dates %}<small>{{ stamp }}</small>{% endfor %}</details>{% endif %}{% if rule.gap_note %}<small>{{ rule.gap_note }}</small>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div>{% endif %}
+      {% endfor %}
+      {% if report.research_events %}<details class="report-evidence"><summary>报告期内登记的版本变化</summary><ul>{% for event in report.research_events %}<li>v{{ event.version }} · 当前状态 {{ event.status }} · 登记 {{ event.recorded_at }} · 编写日期 {{ event.written_at }}</li>{% endfor %}</ul></details>{% endif %}
+      {% else %}<p class="report-muted">未登记研究判断；请导入并确认研究逻辑后，再跟踪区间和证伪条件。</p>{% endif %}
+    
+<h4 class="report-subheading">策略跟踪</h4>
+      <p class="report-muted">当前已保存策略与报告期内的实际事件分别列示。条件触发不等于实际成交记录。</p>
+      {% if report.research_cards %}
+      <h4>当前保存的人工研究策略</h4>
+      <p class="report-muted">人工研究方案用于跟踪假设与条件，不代表历史当时已知观点或实际成交；正文数字未逐项核验。</p>
+      {% for card in report.research_cards %}<article class="report-strategy"><header><a href="{{ research_prefix() }}/sn/strategies">{{ card.title }}</a><span class="report-badge">{{ card.direction_label }} · {{ card.status_label }}</span></header>
+        <p class="research-prose">触发条件：{{ card.trigger }}</p>
+        <p class="research-prose">应对：{{ card.response_action or '尚未填写 · 观察方案待补应对' }}</p>
+        <p>暂停/撤回：{{ card.invalidation }}</p>
+        <details class="report-evidence"><summary>补充范围与执行前核对</summary><p>适用范围：{{ card.thesis }}</p><p>执行前核对：{{ card.watch_for }}</p></details>
+        <small class="report-muted">复核日期 {{ card.review_date }} · 当前保存 v{{ card.revision }}</small></article>{% endfor %}
+      {% endif %}
+      {% if report.coverage.research_cards_truncated or report.coverage.research_cards_legacy %}<p class="report-muted">仅展示最近40张已整理研究卡；未整理的旧记录保留在策略管理，不自动转换为结构化策略。</p>{% endif %}
+      {% for strategy in report.strategies %}<article class="report-strategy"><header><a href="{{ research_prefix() }}/sn/strategies/{{ strategy.id }}">{{ strategy.title }}</a><span class="report-badge">{{ strategy.status_label }} · {{ strategy.mode_label }}</span></header>
+        {% if strategy.thesis %}<p class="research-prose">{{ strategy.thesis }}</p>{% endif %}
+        <p class="report-muted">{% for leg in strategy.legs %}{{ leg.contract }} · {{ '买入' if leg.side == 'buy' else '卖出' if leg.side == 'sell' else leg.side }}{% if not loop.last %} ／ {% endif %}{% endfor %}{% if strategy.entry %} · 入场 {{ strategy.entry.low }} – {{ strategy.entry.high }}{% endif %}</p>
+        {% if strategy.invalidation %}<p>失效/复核：{{ strategy.invalidation }}</p>{% endif %}
+        {% if strategy.review_at %}<small class="report-muted">复核时间 {{ strategy.review_at }}</small>{% endif %}
+      </article>{% else %}<p class="report-muted">{{ '尚无已保存交易方案。研究卡不会自动转为成交或持仓。' if report.research_cards else '尚无已保存策略。先核对研究逻辑与具体合约，再由研究员建立、审核策略草稿。' }}</p>{% endfor %}
+      {% if report.strategy_events %}<details class="report-evidence" open><summary>报告期内策略事件</summary><ul>{% for event in report.strategy_events %}<li><time>{{ event.at }}</time> · {{ event.title }} · {{ event.label }}{% if event.reason %}：{{ event.reason }}{% endif %}</li>{% endfor %}</ul></details>{% else %}<p class="report-muted">报告期内无已记录策略事件。</p>{% endif %}
+      {% if report.coverage.strategies_truncated or report.coverage.events_truncated %}<p class="report-muted">已展示最近40个策略和100条期内事件；更多记录请在策略管理查看。</p>{% endif %}
+    

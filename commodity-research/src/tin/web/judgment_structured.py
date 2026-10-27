@@ -6,7 +6,7 @@ import math
 import re
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.concurrency import run_in_threadpool
 
@@ -27,6 +27,7 @@ previews = PreviewStore()
 class StructuredInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     payload: JudgmentIn
+    panel_title: str = Field(default='', max_length=120, strict=True)
 
 
 def _validate_payload(payload, catalog):
@@ -104,6 +105,7 @@ async def preview(request: Request):
     state = await run_in_threadpool(_state, scope, payload)
     _validate_payload(payload, state['catalog'])
     token = previews.put(scope, {'payload': payload.model_dump(mode='json', by_alias=True),
+                                'panel_title': body.panel_title,
                                 'base_version': state['base_version'], 'fact_version': state['version']})
     bindings = [{'series_id': sid, 'name': spec.get('metric') or spec.get('name') or sid,
                  'unit': spec.get('unit')} for sid, spec in state['catalog'].items()
@@ -142,14 +144,17 @@ async def apply(request: Request):
             try:
                 row = save_version(session, payload, actor=scope.identity.user_id,
                                    expected_base_version=saved['base_version'])
+                from tin.web.judgment_panels import register_panel
+                panel = register_panel(session, scope, row, saved.get('panel_title') or '')
                 digest = hashlib.sha256(json.dumps(saved['payload'], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
                 session.add(AuditLog(at=datetime.now(timezone.utc), actor=scope.identity.user_id,
                     action='结构化研究逻辑导入', target_type='judgment', target_id=str(row.id),
-                    detail={'version': row.version, 'variety': row.variety, 'payload_sha256': digest,
+                    detail={'workbench_id': scope.workbench_id, 'judgment_id': row.id,
+                            'version': row.version, 'variety': row.variety, 'payload_sha256': digest,
                             'fact_version': state['version'], 'model_calls': 0, 'status': '草稿'}))
                 session.commit()
-                return {'version': row.version, 'status': row.status, 'variety': row.variety,
-                        'notice': '已保存为新草稿；上一版本保留，请核对后再生效。'}
+                return {'id': row.id, 'panel': panel, 'version': row.version, 'status': row.status, 'variety': row.variety,
+                        'notice': '已保存为新的研判面板草稿；原有研判保留，请核对后再生效。'}
             except (JudgmentError, IntegrityError, OperationalError):
                 session.rollback()
                 raise HTTPException(409, '研究逻辑已有新版本或正在保存，请重新预览') from None

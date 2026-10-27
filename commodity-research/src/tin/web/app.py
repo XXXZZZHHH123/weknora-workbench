@@ -28,6 +28,7 @@ from tin.export.board import (
     core_cards,
     gaps,
     judgment_block,
+    judgment_record_block,
     macro_featured,
     snapshot,
     source_catalog,
@@ -71,7 +72,7 @@ FALLBACK_ENTRY_TIME = time(15, 0)
 
 
 @contextmanager
-def _page_session(module, *, day=None, series_ids=None, template_id=None, points_per_series=None):
+def _page_session(module, *, day=None, series_ids=None, template_id=None, points_per_series=None, judgment_id=None):
     scope = current_workbench.get()
     if scope is None or scope.scope_version != 2:
         with SessionLocal() as session:
@@ -83,7 +84,7 @@ def _page_session(module, *, day=None, series_ids=None, template_id=None, points
     except ValueError:
         raise HTTPException(400, '日期格式应为 YYYY-MM-DD') from None
     with page_read_scope(module, series_ids=series_ids, day=cutoff,
-                         template_id=template_id, points_per_series=points_per_series):
+                         template_id=template_id, points_per_series=points_per_series, judgment_id=judgment_id):
         with SessionLocal() as session:
             yield session
 
@@ -240,6 +241,16 @@ from tin.web.judgment_structured import router as judgment_structured_router
 app.include_router(judgment_structured_router)
 from tin.web.research_strategy import router as research_strategy_router
 app.include_router(research_strategy_router)
+from tin.web.research_references import router as research_references_router
+app.include_router(research_references_router)
+from tin.web.judgment_panels import router as judgment_panels_router
+app.include_router(judgment_panels_router)
+from tin.web.report_drafts import router as report_drafts_router
+app.include_router(report_drafts_router)
+from tin.web.report_figures import router as report_figures_router
+app.include_router(report_figures_router)
+from tin.web.affairs import router as affairs_router
+app.include_router(affairs_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
 app.include_router(build_market_router(lambda: _page_session('market'), templates,
                                        lambda session, day: _home_date(session, day)))
@@ -366,7 +377,15 @@ def _home_date(s, q: str | None) -> date | None:
 
 @app.get("/")
 def home_page(request: Request, date: str | None = None, err: str | None = None):
-    """首屏工作台（F9）：待办 → 今日简报 → 昨夜变化 → 全景数据墙（默认折叠）。"""
+    """Verified workbenches open a metadata inbox; standalone keeps its brief review."""
+    scope = current_workbench.get()
+    if scope is not None and not scope.restricted:
+        from tin.integration.workbench_scope import artifact_session
+        from tin.web.affairs import build_affairs
+        with artifact_session(scope) as session:
+            return templates.TemplateResponse(request, 'home.html', {
+                'nav': 'home', 'd': None, 'manual_indicators': [], 'ticker': [],
+                'affairs': build_affairs(session, scope, today=datetime.now(SHANGHAI).date()), 'err': err})
     with _page_session('home', day=date) as s:
         d = _home_date(s, date)
         researcher = seed_researcher(s)
@@ -526,16 +545,40 @@ def judgment_page(request: Request, err: str | None = None):
 
 
 def _judgment_response(request: Request, *, err=None, logic_input=""):
-    with _page_session('judgments', day=request.query_params.get('date')) as s:
+    from tin.web.judgment_panels import judgment_directory, selected_judgment
+    selected_id = request.query_params.get('judgment_id')
+    if selected_id is not None:
+        if not selected_id.isascii() or not selected_id.isdecimal() or not 1 <= len(selected_id) <= 19:
+            raise HTTPException(422, '研究判断编号无效')
+        selected_id = int(selected_id)
+        if not 1 <= selected_id <= 2**63 - 1:
+            raise HTTPException(422, '研究判断编号无效')
+    with _page_session('judgments', day=request.query_params.get('date'), judgment_id=selected_id) as s:
         d = _home_date(s, request.query_params.get('date'))
         today = datetime.now(SHANGHAI).date()
-        versions = s.execute(scope_query(s, select(Judgment.version, Judgment.status, Judgment.author, Judgment.written_at, Judgment.review_due, Judgment.created_at).where(Judgment.variety == research_variety(s)).order_by(Judgment.version.desc()).limit(50), Judgment)).all()
-        last_import = s.scalars(select(AuditLog).where(AuditLog.action == "判断导入", *([AuditLog.actor == verified_actor()] if current_identity.get() else []))
+        scope = current_workbench.get()
+        j = selected_judgment(s, selected_id, scope=scope) if selected_id is not None else current(s, research_variety(s))
+        allowed_ids = [row.id for row in judgment_directory(s, scope)] if scope else None
+        if j is not None and allowed_ids is not None and j.id not in allowed_ids:
+            j = None
+        variety = j.variety if j is not None else research_variety(s)
+        version_query = select(Judgment.version, Judgment.status, Judgment.author, Judgment.written_at,
+                               Judgment.review_due, Judgment.created_at).where(Judgment.variety == variety)
+        if allowed_ids is not None:
+            version_query = version_query.where(Judgment.id.in_(allowed_ids))
+        versions = s.execute(scope_query(s, version_query.order_by(Judgment.version.desc()).limit(50), Judgment)).all()
+        audit_filter = [AuditLog.action == '判断导入']
+        if current_identity.get():
+            audit_filter.append(AuditLog.actor == verified_actor())
+        if scope:
+            audit_filter.append(AuditLog.detail['workbench_id'].as_string() == scope.workbench_id)
+        last_import = s.scalars(select(AuditLog).where(*audit_filter)
                                 .order_by(AuditLog.id.desc()).limit(1)).first()
         return templates.TemplateResponse(request, "judgment.html", _shell(
-            s, "judgment", d, j=current(s, research_variety(s)), block=judgment_block(s, research_variety(s), today), versions=versions,
+            s, "judgment", d, j=j, block=judgment_record_block(j, today), versions=versions,
+            selected_judgment_id=selected_id,
             names={i.series_id: i.name for i in s.scalars(select(Indicator))},
-            radar=threshold_radar(s, research_variety(s), d) if d else [],
+            radar=threshold_radar(s, variety, d, judgment=j) if d and j is not None else [],
             report=last_import.detail if last_import else None, err=err, logic_input=logic_input))
 
 
@@ -902,7 +945,7 @@ def reports_page(request: Request, date: str | None = None, period: str = 'daily
             elif path.exists():
                 report = json.loads(path.read_text(encoding="utf-8"))
             if report is not None:
-                if not files and not date and not any(report.get(key) for key in
+                if not settings.weknora_api_url and not files and not date and not any(report.get(key) for key in
                         ('judgment', 'briefs', 'strategies', 'research_cards')):
                     report = None
                 else:
@@ -925,10 +968,7 @@ def report_file(day: str):
     except ValueError:
         raise HTTPException(400, "日期格式应为 YYYY-MM-DD") from None
     if settings.weknora_api_url:
-        with _page_session('reports', day=day) as s:
-            variety = research_variety(s)
-            return JSONResponse(snapshot(s, variety, _board_date(s, day)), headers={
-                "Content-Disposition": f'attachment; filename="{variety}_{day}.json"'})
+        return _period_download(day, 'daily')
     path = settings.exports_dir / V / f"{day}.json"
     if not path.exists():
         raise HTTPException(404, "该日没有归档快照")

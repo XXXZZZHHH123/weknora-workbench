@@ -5,10 +5,11 @@
 <a class="back-link" href="{{ research_prefix() }}/sn/strategies">← 返回策略列表</a>
 <section class="strategy-detail-head"><div><div class="strategy-card-top"><span class="status-chip status-{{ strategy.status }}">{{ status_labels[strategy.status] }}</span><span>{{ kind_labels[strategy.kind] }} · {{ mode_labels[strategy.mode] }}</span></div>
   <h1>{{ strategy.title }}</h1><p class="research-prose">{{ strategy.plan.thesis }}</p></div>
-  {% if strategy.status == 'draft' or strategy.status == 'watching' %}<div class="strategy-actions">
+  {% if strategy_can_write and (strategy.status == 'draft' or strategy.status == 'watching') %}<div class="strategy-actions">
     {% if strategy.status == 'draft' %}<button class="button-primary" data-action="publish">审阅并发布</button>{% endif %}
     <button class="button-muted" data-action="cancel">作废</button></div>{% endif %}</section>
 <div id="strategy-notice" class="strategy-notice" role="status"></div>
+{% if strategy_scope_status == 'unassigned' %}<p class="strategy-scope-notice">归属待核对 · 历史原记录仅供只读预览。</p>{% endif %}
 <div class="detail-grid"><div class="strategy-main">
   <section class="detail-panel"><h2>执行计划 <small>价格单位：元/吨；跨期为近月减远月</small></h2>
     <div class="leg-list">{% for leg in strategy.plan.legs %}<div class="leg"><b>{{ '买入' if leg.side == 'buy' else '卖出' }} {{ leg.contract }}</b><span>× {{ leg.ratio }} 手 / 比例单位</span><code>{{ leg.quote_series_id }}</code></div>{% endfor %}</div>
@@ -22,7 +23,7 @@
   <section class="detail-panel"><h2>研究依据</h2><p class="research-prose">{{ strategy.plan.market_expectation }}</p>
     {% for evidence in strategy.plan.evidence %}<div class="evidence"><div class="research-prose">{{ evidence.statement }}</div><small>{{ evidence.series_id or '定性判断' }} · {{ evidence.value if evidence.value is not none else '' }} · {{ evidence.as_of[:16].replace('T',' ') }} · {{ evidence.source }}{% if evidence.observation_id %} · 观测 #{{ evidence.observation_id }}{% endif %}</small></div>{% endfor %}
   </section>
-  {% if strategy.status in ('watching','open') %}<section class="detail-panel execution-panel"><h2>{{ '登记开仓成交' if strategy.status == 'watching' else '登记平仓成交' }}</h2><p>必须录入全部策略腿的真实成交；本页不会因为行情触价而自动成交。</p>
+  {% if strategy_can_write and strategy.status in ('watching','open') %}<section class="detail-panel execution-panel"><h2>{{ '登记开仓成交' if strategy.status == 'watching' else '登记平仓成交' }}</h2><p>必须录入全部策略腿的真实成交；本页不会因为行情触价而自动成交。</p>
     <div class="fill-forms">{% for leg in strategy.plan.legs %}<label>{{ leg.contract }} 成交价<input type="number" step="any" data-fill-price="{{ leg.contract }}" placeholder="元/吨"></label><label>{{ leg.contract }} 手数<input type="number" min="1" step="1" data-fill-qty="{{ leg.contract }}" {% if strategy.status == 'open' %}value="{{ strategy.entry_fills[loop.index0].quantity }}" readonly{% endif %}></label><label>{{ leg.contract }} 成交时间<input type="datetime-local" data-fill-time="{{ leg.contract }}" value="{{ now_local }}"></label>{% endfor %}</div>
     <label class="full-label">成交费用（总额，系统按腿均分）<input type="number" min="0" step="any" id="fill-costs" value="0"></label>
     <label class="full-label">成交说明<input id="fill-reason" value="研究员登记实际逐腿成交" required></label>

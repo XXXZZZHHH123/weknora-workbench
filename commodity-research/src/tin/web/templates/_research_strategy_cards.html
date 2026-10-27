@@ -1,49 +1,37 @@
 {% if research_cards and research_cards.enabled and not restricted_view %}
-<link rel="stylesheet" href="{{ research_static_prefix() }}/static/research-strategy.css?v={{ static_version() }}">
-<section class="research-cards" aria-labelledby="research-cards-title">
-  <header class="research-cards-head"><div><h2 id="research-cards-title">研究方案</h2><p>先记录假设、观察与证伪，再决定是否形成具体交易计划。</p></div>
-    {% if research_cards.can_write %}<button type="button" id="research-card-add">添加研究方案</button>{% endif %}</header>
-  <div id="research-card-notice" role="status" aria-live="polite"></div>
-  <div class="research-cards-grid">
-  {% for item in research_cards['items'] %}
-    <article class="research-card" data-research-card="{{ item.id }}">
-      <header><span>{{ item.direction_label }} · {{ '人工草稿' if item.status == 'draft' else '人工确认记录' }}</span><span>版本 {{ item.revision }}</span></header>
-      <h3>{{ item.title }}</h3>
-      {% if item.card %}
-      <p class="research-card-thesis">{{ item.card.thesis }}</p>
-      <dl><div><dt>观察依据</dt><dd>{{ item.card.watch_for }}</dd></div><div><dt>触发条件</dt><dd>{{ item.card.trigger }}</dd></div>
-        <div><dt>失效条件</dt><dd>{{ item.card.invalidation }}</dd></div></dl>
-      <footer><span>复核 {{ item.card.review_date }}</span><span>{{ item.source_ids|length }} 份关联资料</span>
-        {% if research_cards.can_write %}<button type="button" data-research-card-edit="{{ item.id }}">编辑</button>{% endif %}</footer>
-      {% if item.card.original_text %}<details><summary>保留的原文</summary><pre>{{ item.card.original_text }}</pre></details>{% endif %}
-      {% else %}<p>此记录为旧格式研究文本，尚未整理为研究方案。</p><details><summary>查看原文</summary><pre>{{ item.legacy_body }}</pre></details>{% endif %}
-      <small>{{ item.evidence_notice }}</small>
-    </article>
-  {% else %}<p class="research-cards-empty">还没有研究方案。可导入已有研究文字，填写观察、触发和失效条件；暂时不需要填交易价位。</p>{% endfor %}
-  </div>
-  {% if research_cards.truncated %}<p class="research-cards-hint">当前显示最近 {{ research_cards['items']|length }} 条；其他记录仍保留。</p>{% endif %}
-</section>
+{% set initial_cards = ([research_cards.selected] if research_cards.get('selected') else []) if research_cards.get('metadata_only') else research_cards['items'] %}
+<div id="research-card-panels"{% if workspace_selected is defined and workspace_selected and workspace_selected.startswith('plan:') %} hidden{% endif %}>
+{% for item in initial_cards %}<article class="strategy-preview-article research-card" data-research-card="{{ item.id }}">
+  <header class="strategy-preview-header"><div><div class="strategy-card-top"><span>{{ item.direction_label }} · {{ '应对策略草稿' if item.card and item.card.get('response_action') else '观察方案 · 待补应对' }}</span><span>v{{ item.revision }}</span></div><h2>{{ item.title }}</h2></div>
+  {% if item.get('can_edit', research_cards.can_write) %}<button type="button" data-research-card-edit="{{ item.id }}" class="button-muted">编辑</button>{% endif %}</header>
+  {% if item.card %}<dl class="research-preview-fields"><div><dt>适用 / 触发</dt><dd>{{ item.card.trigger }}</dd></div><div class="research-response-action"><dt>应对措施</dt><dd>{{ item.card.get('response_action') or '待补应对措施；当前仅作为观察方案保留。' }}</dd></div><div><dt>暂停 / 撤回</dt><dd>{{ item.card.invalidation }}</dd></div><div><dt>复核日期</dt><dd>{{ item.card.review_date }}</dd></div></dl>
+  <details><summary>适用范围、执行前核对与原文</summary><p>{{ item.card.thesis }}</p><p>{{ item.card.watch_for }}</p>{% if item.card.original_text %}<pre>{{ item.card.original_text }}</pre>{% endif %}</details>
+  {% else %}<p class="strategy-small-note">这是一份尚未整理的历史研究记录。</p><pre>{{ item.legacy_body }}</pre>{% endif %}
+  <small class="strategy-small-note">{{ item.evidence_notice }}</small>
+</article>{% endfor %}
+</div>
+<div id="research-card-notice" role="status" aria-live="polite"></div>
 {% if research_cards.can_write %}
-<dialog id="research-card-dialog" class="research-card-dialog" aria-labelledby="research-card-dialog-title">
-  <header><h2 id="research-card-dialog-title">研究方案</h2><button type="button" data-research-card-close aria-label="关闭研究方案">×</button></header>
+<section id="research-card-dialog" class="strategy-inline-editor" hidden aria-labelledby="research-card-dialog-title">
+  <header class="strategy-preview-header"><h2 id="research-card-dialog-title">策略方案</h2><button type="button" data-research-card-close class="button-muted">返回预览</button></header>
   <form id="research-card-form">
-    <div class="research-card-import"><label>导入 .txt / .md / .json<input id="research-card-file" type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"></label><span id="research-card-filename"></span></div>
-    <p class="research-cards-hint">文件原文会保留；请亲自填写或核对下面的研究条件，不会自动提取数字或绑定指标。</p>
-    <div class="research-card-fields research-card-meta-fields"><label>方案名称<input id="research-card-title" maxlength="120" required></label>
-      <label>研究方向<select id="research-card-direction"><option value="observe">等待验证</option><option value="bull">偏多观察</option><option value="bear">偏空观察</option><option value="range">区间观察</option></select></label>
-      <label>复核日期<input id="research-card-review" type="date" required></label></div>
-    <label>研究假设<textarea id="research-card-thesis" rows="2" maxlength="8000" required placeholder="当前主要矛盾是什么，什么证据可以支持它？"></textarea></label>
-    <label>观察依据<textarea id="research-card-watch" rows="2" maxlength="8000" required placeholder="需要看哪些指标、报告或调研；写清来源与时间。"></textarea></label>
-    <div class="research-card-fields"><label>触发条件<textarea id="research-card-trigger" rows="2" maxlength="4000" required placeholder="出现什么证据后，再采取下一步？"></textarea></label>
-      <label>失效条件<textarea id="research-card-invalidation" rows="2" maxlength="4000" required placeholder="什么情况会推翻这份假设？"></textarea></label></div>
-    <details><summary>关联资料与原文</summary><div id="research-card-sources" class="research-card-sources"></div><button type="button" id="research-card-more-sources" hidden>更多资料</button>
-      <label>原始研究文字<textarea id="research-card-original" rows="4" maxlength="24000"></textarea></label></details>
-    <p class="research-cards-hint">关联原件只提供可追溯依据，不代表正文数字已核验；保存为个人草稿，不会生成订单或自动生效。</p>
-    <div id="research-card-form-status" role="status" aria-live="polite"></div>
-    <footer><button type="button" data-research-card-close>取消</button><button type="submit" class="button-primary" id="research-card-save">保存研究草稿</button></footer>
+    <div class="research-card-import"><label>导入<input id="research-card-file" type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"></label><span id="research-card-filename"></span></div>
+    <div class="research-card-fields research-card-meta-fields"><label>方案名称<input id="research-card-title" maxlength="120" required></label><label>方向<select id="research-card-direction"><option value="observe">等待验证</option><option value="bull">偏多观察</option><option value="bear">偏空观察</option><option value="range">区间观察</option></select></label><label>复核日期<input id="research-card-review" type="date" required></label></div>
+    <div class="research-judgment-reference"><label for="research-card-judgment">依据研判</label><select id="research-card-judgment"><option value="">不引用研判 · 临时观察方案</option></select><button type="button" id="research-card-preview-judgment" class="button-muted" disabled>预览</button></div>
+    <div id="research-card-judgment-preview" class="strategy-reference-preview" hidden></div>
+    <label>适用 / 触发<textarea id="research-card-trigger" rows="2" maxlength="4000" required placeholder="什么情况出现后，需要采取下面的应对？"></textarea></label>
+    <label>应对措施<textarea id="research-card-response-action" rows="3" maxlength="4000" placeholder="明确需要做什么、暂缓什么，以及执行顺序。"></textarea></label>
+    <label class="research-observation-option"><input id="research-card-observation-only" type="checkbox"> 保存为观察方案（暂未制定应对措施）</label>
+    <label>暂停 / 撤回<textarea id="research-card-invalidation" rows="2" maxlength="4000" required placeholder="出现什么情况需要暂停、撤回或重新复核？"></textarea></label>
+    <details><summary>补充适用范围、执行前核对、关联资料和原文</summary>
+      <label>适用范围与目标<textarea id="research-card-thesis" rows="2" maxlength="8000" required></textarea></label>
+      <label>执行前核对<textarea id="research-card-watch" rows="2" maxlength="8000" required></textarea></label>
+      <div id="research-card-selected-sources" class="research-selected-sources"></div><div id="research-card-sources" class="research-card-sources"></div><button type="button" id="research-card-more-sources" class="button-muted" hidden>更多资料</button><label>原始研究文字<textarea id="research-card-original" rows="4" maxlength="24000"></textarea></label>
+    </details>
+    <p id="research-card-reference-note" class="strategy-small-note" hidden></p><div id="research-card-form-status" role="status" aria-live="polite"></div>
+    <footer><span class="strategy-small-note">保存为个人草稿，文字条件不会自动执行。</span><button type="button" id="research-card-save-copy" class="button-muted" hidden>另存为新方案</button><button type="submit" class="button-primary" id="research-card-save">保存草稿</button></footer>
   </form>
-</dialog>
-<script id="research-card-data" type="application/json">{{ research_cards|tojson }}</script>
-<script src="{{ research_static_prefix() }}/static/research-strategy.js?v={{ static_version() }}"></script>
+</section>
 {% endif %}
+<script id="research-card-data" type="application/json">{{ research_cards|tojson }}</script>
 {% endif %}

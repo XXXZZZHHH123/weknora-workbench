@@ -55,6 +55,9 @@ def create_strategy(session: Session, plan: StrategyPlan, *, actor: str, reason:
                    entry_fills=[], exit_fills=[])
     session.add(row)
     session.flush()
+    if session.info.get('workbench_id'):
+        from tin.web.research_references import remember_record_scope
+        remember_record_scope(session, 'plan', str(row.id))
     _event(session, row, "created", actor, reason, {"plan": row.plan})
     return row
 

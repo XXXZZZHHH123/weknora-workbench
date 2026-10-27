@@ -14,6 +14,7 @@
         {{ 'bg-[var(--amber-soft)] text-[var(--amber)] border-[var(--amber)]/20' if j.status == '草稿' else 'bg-[var(--primary-soft)] text-[var(--primary)] border-[var(--primary)]/20' }}">v{{ j.version }} · {{ j.status }}</span>{% endif %}
     </h1>
     <p class="text-xs text-[var(--text-muted)] mt-1">九字段结构化研判 ｜ 阈值与证伪条件绑定已登记指标 ｜ 复核周期预警</p>
+    {% if j and selected_judgment_id %}<p class="text-xs text-[var(--text-muted)] mt-1">正在查看 {{ j.variety }} · v{{ j.version }}；面板选择不改变正式生效版本。</p>{% endif %}
   </div>
   {% if not restricted_view %}<button type="button" data-open-logic class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shrink-0">管理研究逻辑</button>{% endif %}
 </div>

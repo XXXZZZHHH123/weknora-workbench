@@ -176,4 +176,10 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
         pending.append({'kind': 'research_card', 'text': row['title'] + '：' + row['trigger']
                         + ' · 复核日期 ' + row['review_date']})
     result['next_review'] = pending
+    if live_rules:
+        from tin.web.report_drafts import attach_saved_report, bound_series
+        scope = current_workbench.get()
+        result = attach_saved_report(session, scope, result)
+        if scope is not None and not scope.restricted:
+            result['report_figure_selection'] = bound_series(session, scope)[:6]
     return result

@@ -1,39 +1,66 @@
 {% extends "base.html" %}
-{% block title %}策略 · {{ research_workbench().metadata.name if research_workbench() else '锡研究工作台' }}{% endblock %}
+{% block title %}策略 · {{ research_workbench().metadata.name if research_workbench() else '研究工作台' }}{% endblock %}
 {% block main %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/strategy.css?v={{ static_version() }}">
-<section class="strategy-head">
-  <div><p class="eyebrow">RESEARCH → DECISION → REVIEW</p><h1>研究与策略</h1>
-    <p>研究假设 → 观察验证 → 交易计划 → 人工审阅 → 日常跟踪与每周复盘</p></div>
-  <div class="strategy-counts"><span><b>{{ summary.active }}</b> 跟踪中</span><span><b>{{ summary.drafts }}</b> 待审阅</span></div>
-</section>
-{% include "_research_strategy_cards.html" %}
-<section class="strategy-grid">
-  <div class="strategy-main">
-    <div class="strategy-toolbar"><div class="strategy-filters">
-      {% if not restricted_view %}{% for key,label in [('all','全部'),('draft','草稿'),('watching','等待入场'),('open','跟踪中'),('closed','已退出'),('cancelled','已作废')] %}
-      <a class="{{ 'selected' if selected_status == key else '' }}" href="{{ research_prefix() }}/sn/strategies?status={{ key }}">{{ label }}</a>{% endfor %}{% else %}<span>已保存策略 · 只读</span>{% endif %}
-    </div>
-    {% if not restricted_view %}<div class="strategy-generation-controls">{% if platform_models %}<select id="strategy-model" aria-label="策略分析模型" disabled><option value="">正在读取模型…</option></select>{% endif %}<button class="button-primary" id="generate-strategies" {% if platform_models %}disabled data-platform-model="true"{% endif %}>基于研究生成草稿</button></div>{% endif %}</div>
-    <div id="strategy-notice" class="strategy-notice" role="status"></div>
-    <div class="strategy-list">
-    {% for s in strategies %}
-      {% if restricted_view %}<article class="strategy-card">{% else %}<a class="strategy-card" href="{{ research_prefix() }}/sn/strategies/{{ s.id }}">{% endif %}
-        <div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span>
-          <span>{{ kind_labels[s.kind] }} · {{ mode_labels[s.mode] }}</span></div>
-        <h2>{{ s.title }}</h2><p>{{ s.plan.thesis }}</p>
-        <div class="strategy-card-meta">{% for leg in s.plan.legs %}<span>{{ '多' if leg.side == 'buy' else '空' }} {{ leg.contract }} × {{ leg.ratio }}</span>{% endfor %}
-          <span>研究时点 {{ (s.plan.as_of or '')[:16].replace('T',' ') }}</span></div>
-      {% if restricted_view %}{% include "_strategy_plan_readonly.html" %}</article>{% else %}</a>{% endif %}
-    {% else %}<div class="empty-state"><strong>尚无交易计划</strong><p>上方研究方案用于跟踪假设；确认并生效研究判断、具体合约行情和产业证据后，再生成可审阅的交易计划草稿。</p></div>{% endfor %}
-    {% if restricted_view and restricted_data.strategies_truncated %}<p class="text-xs text-[var(--text-muted)]">已显示最近 50 条策略；更早记录仍保留，受限视角不开放任意历史查询。</p>{% endif %}
-    </div>
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/research-strategy.css?v={{ static_version() }}">
+<header class="strategy-head strategy-workspace-head">
+  <div><h1>策略</h1><p>选择方案查看依据和条件，核对后编辑或引用为独立草稿。</p></div>
+  <div class="strategy-workspace-tools">
+    {% if not restricted_view and workspace_can_write %}
+      {% if research_cards.enabled %}<button type="button" id="research-card-add" class="button-muted">＋ 策略方案</button>{% endif %}
+      <details class="strategy-generation-menu"><summary>生成交易草稿</summary><div class="strategy-generation-controls">
+      {% if platform_models %}<select id="strategy-model" aria-label="策略分析模型" disabled><option value="">正在读取模型…</option></select>{% endif %}
+      <button class="button-primary" id="generate-strategies" {% if platform_models %}disabled data-platform-model="true"{% endif %}>生成待审阅草稿</button>
+      <small>使用生效研判与真实合约证据，生成后仍需人工审阅。</small></div></details>
+    {% endif %}
   </div>
-  <aside class="strategy-aside"><p class="eyebrow">产品边界</p><h2>建议不是订单</h2>
-    <p>系统先提出有证据、能被推翻的模拟策略。研究员审阅发布后进入等待；只有登记了完整腿的实际成交，才会进入持仓跟踪。</p>
-    <p>跨期价差统一按「近月 − 远月」报价。已实现盈亏只根据逐腿开平仓成交与费用计算。</p>
-    <div class="strategy-caution">AI 生成失败或证据不足时会明确列出缺口，不会凑出买卖价位。</div>
-  </aside>
+</header>
+<div id="strategy-notice" class="strategy-notice" role="status"></div>
+{% if restricted_view %}
+<section class="strategy-readonly-list">
+{% for s in strategies %}<article class="detail-panel"><div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span><span>已分享 · 只读</span></div><h2>{{ s.title }}</h2><p class="research-prose">{{ s.plan.thesis }}</p>{% include "_strategy_plan_readonly.html" %}</article>{% else %}<p class="empty-state">尚无已分享策略。</p>{% endfor %}
 </section>
-{% if restricted_view %}{% include "_restricted_entries.html" %}{% else %}<script src="{{ research_static_prefix() }}/static/strategy.js?v={{ static_version() }}"></script>{% endif %}
+{% if restricted_data.strategies_truncated %}<p class="strategy-small-note">已显示最近50条已分享策略。</p>{% endif %}
+{% include "_restricted_entries.html" %}
+{% else %}
+<section id="strategy-workspace" class="strategy-workspace" aria-label="策略列表与内容">
+  <aside class="strategy-sidebar" aria-label="策略列表">
+    <label class="strategy-search"><span class="sr-only">筛选策略</span><input id="strategy-search" type="search" placeholder="筛选策略" autocomplete="off"></label>
+    <div id="strategy-sidebar-entries">
+      {% if research_cards.enabled %}<h2>策略方案 <span>{{ research_cards['items']|length }}</span></h2>
+      <div id="research-sidebar-list">
+      {% for item in research_cards['items'] %}<button type="button" class="strategy-entry{% if workspace_selected == 'research:' ~ item.id %} selected{% endif %}" data-strategy-select="research:{{ item.id }}" aria-pressed="{{ 'true' if workspace_selected == 'research:' ~ item.id else 'false' }}"><strong>{{ item.title }}</strong><span>{{ item.direction_label }} · {{ '草稿' if item.status == 'draft' else '人工确认' }}{% if item.review_date %} · {{ item.review_date }}{% endif %}</span><small data-draft-mark hidden>未保存草稿</small></button>{% else %}<p class="strategy-sidebar-empty">暂无策略方案</p>{% endfor %}
+      </div>{% endif %}
+      <h2>交易计划 <span>{{ strategy_entries|length }}</span></h2>
+      <div id="plan-sidebar-list">
+      {% for item in strategy_entries %}<button type="button" class="strategy-entry{% if workspace_selected == item.key %} selected{% endif %}" data-strategy-select="{{ item.key }}" aria-pressed="{{ 'true' if workspace_selected == item.key else 'false' }}"><strong>{{ item.title }}</strong><span>{{ item.status_label }} · {{ item.kind_label }}{% if item.review_date %} · {{ item.review_date }}{% endif %}</span><small data-draft-mark hidden>未保存草稿</small></button>{% else %}<p class="strategy-sidebar-empty">暂无交易计划</p>{% endfor %}
+      </div>
+    </div>
+    <p id="strategy-search-empty" class="strategy-sidebar-empty" hidden>没有匹配的策略</p>
+    {% if research_cards.truncated or strategy_entries|length >= 100 %}<p class="strategy-small-note">这里显示最近100条。记录及历史版本仍保留。</p>{% endif %}
+  </aside>
+  <div class="strategy-preview" id="strategy-preview" aria-live="polite">
+    <div id="strategy-workspace-status" role="status" class="strategy-small-note"></div>
+    <div id="strategy-preview-content">
+      {% if workspace_selected and workspace_selected.startswith('plan:') and workspace_initial %}{% set s = workspace_initial %}
+      <article class="strategy-preview-article"><div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span><span>交易计划 · v{{ s.version }}</span></div><h2>{{ s.title }}</h2><p class="research-prose">{{ s.plan.thesis }}</p>{% include "_strategy_plan_readonly.html" %}<a class="strategy-detail-link" href="{{ research_prefix() }}/sn/strategies/{{ s.id }}">完整计划与成交记录 ↗</a></article>
+      {% endif %}
+      {% include "_research_strategy_cards.html" %}
+      {% if not workspace_selected %}<div id="strategy-workspace-empty" class="strategy-workspace-empty"><strong>从左侧选择策略</strong><p>记录适用条件与应对措施，核对后形成可审阅的计划。</p></div>{% endif %}
+    </div>
+    <section id="strategy-plan-editor" class="strategy-inline-editor" hidden aria-labelledby="strategy-plan-editor-title">
+      <header class="strategy-preview-header"><h2 id="strategy-plan-editor-title">交易计划草稿</h2><button type="button" data-plan-edit-close class="button-muted">返回预览</button></header>
+      <p class="strategy-small-note">修订会建立独立草稿，保留原计划。合约、证据及成交记录不会自动改动。</p>
+      <form id="strategy-plan-form"><label>名称<input id="plan-edit-title" maxlength="200" required></label><label>研究逻辑<textarea id="plan-edit-thesis" rows="3" required></textarea></label>
+      <div class="strategy-plan-bands">{% for key,label in [('entry','入场'),('target','目标'),('stop','止损')] %}<fieldset><legend>{{ label }}区间</legend><div><input id="plan-edit-{{ key }}-low" type="number" step="any" aria-label="{{ label }}下限" required><span>—</span><input id="plan-edit-{{ key }}-high" type="number" step="any" aria-label="{{ label }}上限" required></div><label>依据<input id="plan-edit-{{ key }}-reason" required></label></fieldset>{% endfor %}</div>
+      <label>入场条件<textarea id="plan-edit-entry-condition" rows="2" required></textarea></label><label>失效条件<textarea id="plan-edit-invalidation" rows="2" required></textarea></label>
+      <div class="research-card-fields"><label>复核时间<input id="plan-edit-review" type="datetime-local" required></label><label>计划风险预算（元）<input id="plan-edit-risk" type="number" min="0" step="any" required></label></div>
+      <div id="strategy-plan-edit-status" role="status"></div><footer><button type="button" data-plan-edit-close class="button-muted">取消编辑</button><button type="submit" class="button-primary" id="strategy-plan-save">保存独立草稿</button></footer></form>
+    </section>
+  </div>
+</section>
+<script id="strategy-workspace-data" type="application/json">{{ {'plans': strategy_entries, 'selected': workspace_selected, 'initial_plan': workspace_initial if workspace_selected and workspace_selected.startswith('plan:') else none, 'can_write': workspace_can_write}|tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/research-strategy.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/strategy.js?v={{ static_version() }}"></script>
+{% endif %}
 {% endblock %}

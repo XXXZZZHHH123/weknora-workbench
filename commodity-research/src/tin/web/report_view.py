@@ -113,7 +113,7 @@ def present_snapshot(payload, names=None):
         replay = {'label': '已保存研判回放', 'tone': _plain(judgment.get('tone')),
                   'tone_note': _plain(judgment.get('tone_note')),
                   'version': judgment.get('version'), 'status': judgment.get('status')}
-    return {**sections, 'observations': observations,
+    result = {**sections, 'observations': observations,
             'judgment': judgment, 'judgment_replay': replay,
             'rule_preview': payload.get('rule_preview'),
             'period': payload.get('period'), 'changes': changes, 'briefs': briefs,
@@ -123,6 +123,57 @@ def present_snapshot(payload, names=None):
             'coverage': payload.get('coverage') or {}, 'next_review': payload.get('next_review') or [],
             'counts': {'observations': len(observations),
                        **{key: len(rows) for key, rows in sections.items()}}}
+    result.update(_workflow_view(result, payload))
+    return result
+
+
+def _workflow_view(view, payload):
+    from tin.web.report_drafts import FORMAT, SECTION_LABELS
+    period = payload.get('period') or {'kind': 'daily', 'end': payload.get('as_of')}
+    manual = payload.get('manual_report')
+    saved = manual.get('draft') if isinstance(manual, dict) else None
+    if not isinstance(saved, dict) or saved.get('format') != FORMAT:
+        saved = None
+    summary = '\n\n'.join(_plain(row.get('summary')) for row in view['briefs'] if row.get('summary'))
+    if not summary and view['judgment_replay']:
+        summary = view['judgment_replay']['tone_note']
+    research = []
+    if view['judgment']:
+        judgment = view['judgment']
+        if judgment.get('contradiction'):
+            research.append(judgment['contradiction'])
+        research.extend(side['label'] + '：' + side['claim'] for side in judgment['cases'] if side['claim'])
+    research.extend(row['title'] + '：触发 ' + row['trigger'] + '；应对 '
+                    + (row.get('response_action') or '尚未填写') for row in view['research_cards'])
+    research.extend(row['title'] + '：' + row['thesis'] for row in view['strategies'] if row.get('thesis'))
+    texts = {'summary': summary, 'research': '\n\n'.join(research), 'dashboard': '',
+             'watch': '\n'.join(row['text'] for row in view['next_review'] if row.get('text'))}
+    panels = {}
+    for key, label in SECTION_LABELS.items():
+        selected = (saved.get('sections') or {}).get(key) if saved else None
+        # A saved empty string is an intentional edit. Only an entirely absent
+        # personal draft receives automatic material from saved research.
+        panels[key] = {'label': label,
+            'visible': selected.get('visible') is True if selected is not None else True,
+            'text': _plain(selected.get('text')) if selected is not None else texts[key],
+            'references': [row for row in (saved or {}).get('reference_snapshots') or [] if row.get('section') == key]}
+    default_ids = payload.get('report_figure_selection')
+    if not isinstance(default_ids, list):
+        default_ids = [row['series_id'] for row in view['observations'][:6]]
+    figures = deepcopy(saved.get('figures') or []) if saved else [
+        {'series_id': identifier, 'caption': ''} for identifier in default_ids[:6]]
+    draft = ({key: deepcopy(saved[key]) for key in ('format', 'period', 'date', 'title', 'sections', 'figures', 'references')}
+             if saved else None)
+    if draft is None:
+        draft = {'format': FORMAT, 'period': period.get('kind', 'daily'),
+            'date': period.get('end') or payload.get('as_of'), 'title': '研究周报' if period.get('kind') == 'weekly' else '研究日报',
+            'sections': {key: {'visible': row['visible'], 'text': row['text'][:4000]} for key, row in panels.items()},
+            'figures': figures, 'references': []}
+    return {'panels': panels, 'is_manual_report': saved is not None, 'manual_report': manual if saved else None,
+        'editable_draft': draft, 'selected_figures': figures,
+        'figure_options': [{'series_id': row['series_id'], 'name': row['name'], 'unit': row.get('unit') or ''}
+            for row in view['observations']],
+        'report_title': saved.get('title') if saved else None}
 
 
 def _md(value):
@@ -130,7 +181,7 @@ def _md(value):
     return _plain(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('|', '\\|').replace('\n', ' ')
 
 
-def readable_markdown(payload, *, title='研究报告', names=None):
+def _legacy_markdown(payload, *, title='研究报告', names=None):
     view = present_snapshot(payload, names)
     period = view.get('period') or {'kind': 'daily', 'start': payload.get('as_of'), 'end': payload.get('as_of')}
     weekly = period['kind'] == 'weekly'
@@ -199,9 +250,10 @@ def readable_markdown(payload, *, title='研究报告', names=None):
                   '以下为当前人工研究方案，不代表历史当时已知观点或实际成交；正文数字未逐项核验。']
     for card in view['research_cards']:
         lines += ['', '#### ' + _md(card['title']) + ' · ' + _md(card['direction_label']),
-            '- 研究假设：' + _md(card['thesis']), '- 观察依据：' + _md(card['watch_for']),
-            '- 触发条件：' + _md(card['trigger']), '- 失效条件：' + _md(card['invalidation']),
-            '- 复核日期：' + _md(card['review_date'])]
+            '- 触发条件：' + _md(card['trigger']),
+            '- 应对：' + (_md(card.get('response_action')) or '尚未填写 · 观察方案待补应对'),
+            '- 暂停/撤回：' + _md(card['invalidation']), '- 复核日期：' + _md(card['review_date']),
+            '- 补充范围：' + _md(card['thesis']), '- 执行前核对：' + _md(card['watch_for'])]
     for item in view['strategies']:
         lines += ['', '### ' + _md(item['title']) + ' · ' + _md(item['status_label']),
                   '- 类型：' + _md(item['mode_label']), '- 依据：' + _md(item.get('thesis')),
@@ -221,3 +273,64 @@ def readable_markdown(payload, *, title='研究报告', names=None):
         lines.append('- ' + _md(item['name']) + ' · `' + _md(item['series_id']).replace('`', '') + '` · '
                      + _md(item.get('as_of')) + ' · ' + _md(item.get('source')))
     return '\n'.join(lines).rstrip() + '\n'
+
+
+def readable_markdown(payload, *, title='研究报告', names=None):
+    """The same four panels as HTML; manual omissions are never auto-filled."""
+    view = present_snapshot(payload, names)
+    if not view['is_manual_report']:
+        original = _legacy_markdown(payload, title=title, names=names)
+        pieces = original.split('\n## ')
+        intro, sections = pieces[0], {}
+        for piece in pieces[1:]:
+            heading, _, content = piece.partition('\n')
+            sections[heading] = content.strip()
+        watch = sections.get('下周待验证') or sections.get('下次研究待验证') or ''
+        source = sections.get('数据缺口与来源', '')
+        return (intro.rstrip() + '\n\n## 摘要\n\n### 研究结论\n\n' + sections.get('研究结论', '')
+            + '\n\n## 研判策略\n\n### 研究判断\n\n' + sections.get('研究判断', '')
+            + '\n\n### 策略跟踪\n\n' + sections.get('策略跟踪', '')
+            + '\n\n## 数据展板\n\n### 主要变化\n\n' + sections.get('主要变化', '')
+            + '\n\n## 待关注\n\n' + watch
+            + '\n\n<details><summary>数据缺口与来源</summary>\n\n## 数据缺口与来源\n\n'
+            + source + '\n\n</details>\n')
+    manual = view['manual_report']
+    if manual.get('unavailable_references'):
+        from fastapi import HTTPException
+        raise HTTPException(409, '报告引用已不可读，请调整引用后再导出')
+    saved = manual['draft']
+    period = view.get('period') or {'start': saved['date'], 'end': saved['date']}
+    lines = ['# ' + _md(saved['title']), '', '> 报告期：' + str(period.get('start')) + ' — ' + str(period.get('end')),
+        '> 个人手工报告 v' + str(manual['revision']) + '；文字为人工内容，原始指标事实保持只读。', '']
+    for key, panel in view['panels'].items():
+        if not panel['visible']:
+            continue
+        lines += ['## ' + panel['label'], '']
+        lines += [_md(line) for line in panel['text'].splitlines()]
+        for ref in panel['references']:
+            lines += ['', '### ' + _md(ref['title']) + ' · v' + str(ref['revision']),
+                '> 引用已保存记录的明确版本；原文数字不据此变成核验事实。', '',
+                *[_md(line) for line in (ref.get('body_text') or ref.get('summary') or '').splitlines()]]
+        if key == 'dashboard':
+            lines += ['', '| 指标 | 首个有效值 | 末个有效值 | 变化 | 单位 | 数据日期 |',
+                '| --- | --- | --- | --- | --- | --- |']
+            rows = view['changes'] or [{'name': row['name'], 'first_text': '—', 'last_text': _number(row.get('value')),
+                'change_text': '—', 'unit': row.get('unit'), 'last': {'as_of': row.get('as_of')}} for row in view['observations']]
+            for row in rows:
+                first, last = row.get('first') or {}, row.get('last') or {}
+                lines.append('| ' + ' | '.join(_md(value) for value in [row['name'], row['first_text'], row['last_text'],
+                    row['change_text'], row.get('unit'), _plain(first.get('as_of')) + ' → ' + _plain(last.get('as_of'))]) + ' |')
+            names = {row['series_id']: row['name'] for row in view['observations']}
+            for figure in saved['figures']:
+                lines += ['', '- 选图：' + _md(names.get(figure['series_id']) or '已引用指标')
+                    + (' · ' + _md(figure.get('caption')) if figure.get('caption') else '')]
+        lines.append('')
+    lines += ['<details><summary>报告版本与来源</summary>', '',
+        '- 记录：`' + _md(manual['id']) + '` · v' + str(manual['revision']),
+        '- 来源版本：`' + _md(saved['source_revision']) + '`']
+    for ref in saved.get('references') or []:
+        lines.append('- 引用：' + _md(ref['kind']) + ' `' + _md(ref['id']) + '` · v' + str(ref['revision']))
+    for row in view['observations']:
+        lines.append('- ' + _md(row['name']) + ' · `' + _md(row['series_id']) + '` · ' + _md(row.get('as_of')))
+    lines += ['', '</details>', '']
+    return '\n'.join(lines)

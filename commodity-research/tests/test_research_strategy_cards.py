@@ -233,7 +233,8 @@ def test_partial_displays_readable_fields_and_escapes_untrusted_markdown(cards):
     environment = Environment(loader=FileSystemLoader(ROOT / "src/tin/web/templates"), autoescape=select_autoescape())
     html = environment.get_template("_research_strategy_cards.html").render(research_cards=context, restricted_view=False,
         research_static_prefix=lambda: "/research", static_version=lambda: "fixture")
-    assert "观察依据" in html and "触发条件" in html and "失效条件" in html and "2024-04-05" in html
+    assert "适用 / 触发" in html and "应对措施" in html and "暂停 / 撤回" in html and "2024-04-05" in html
+    assert "观察方案 · 待补应对" in html and "执行前核对" in html
     assert "<script>window.bad=true</script>" not in html and "&lt;script&gt;" in html
     assert '"format":' not in html.split('<script id="research-card-data"')[0]
     assert environment.get_template("_research_strategy_cards.html").render(research_cards=context, restricted_view=True).strip() == ""
