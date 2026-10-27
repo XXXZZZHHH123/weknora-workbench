@@ -397,3 +397,15 @@ for path in Path("/data/workspaces").glob("*/tin.db"):
 核对恢复记录和对应代码的 Alembic 版本后，另行确认将研究服务的数据卷切到已恢复的新卷；原卷继续保留。`previous/deploy.sh` 只回退镜像，不恢复数据。不要使用 `down -v`，也不要把有写入的 SQLite 主文件单独复制当作备份。
 
 本机需先构建研究镜像：`docker compose -p weknora-research -f commodity-research/compose.yml build`，前端仍用 `bash structured-data/scripts/build_frontend.sh`，再执行根目录 `bash start.sh`。本机研究数据绑定 `commodity-research/data`，服务密钥生成一次；启动脚本不会注册或覆盖智能体。生产是否可运行，仍以服务器手动更新和实际健康检查为准。
+
+## PDF 表格识别（remote_vlm）
+
+生产的远程 PDF 服务不随 release 发布，按 `services/remote-pdf/compose.yml` 单独以
+`weknora-remote-pdf-prod` 项目运行，接入 `weknora-workbench-prod_default` 网络，服务名
+`remote-pdf`（已在 app 的 `SSRF_WHITELIST_EXTRA` 中放行）。设置文件、数据目录、服务令牌和
+模型凭据放在 `shared/remote-pdf/`，权限 600/700，不进仓库。`shared/.env` 中配置：
+
+- app：`WEKNORA_REMOTE_PDF_URL=http://remote-pdf:8000`、`WEKNORA_REMOTE_PDF_TOKEN`
+- 结构化服务：`PDF_TABLE_PARSER_ENGINE=remote_vlm`、`PDF_TABLE_PARSER_URL`、`PDF_TABLE_PARSER_API_KEY`（同一服务令牌）
+
+然后在需要的知识库把 PDF 解析引擎设为 `remote_vlm`。
