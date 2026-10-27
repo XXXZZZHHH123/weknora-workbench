@@ -35,7 +35,7 @@ services:
       GIN_MODE: release
       MAX_FILE_SIZE_MB: "100"
       BATCH_EMBED_SIZE: "10"
-      SSRF_WHITELIST_EXTRA: "structured-data,cotton-data,commodity-research"
+      SSRF_WHITELIST_EXTRA: "structured-data,cotton-data,commodity-research,remote-pdf"
       COMMODITY_RESEARCH_URL: http://commodity-research:8765
       STRUCTURED_DATA_URL: http://structured-data:18082
       COMMODITY_RESEARCH_TOKEN_FILE: /run/secrets/research-token
