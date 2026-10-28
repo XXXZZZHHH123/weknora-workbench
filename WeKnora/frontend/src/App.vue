@@ -6,6 +6,7 @@ import { MessagePlugin, NotifyPlugin } from 'tdesign-vue-next'
 import ProtectedResourcePreview from '@/components/ProtectedResourcePreview.vue'
 import ManualKnowledgeEditor from '@/components/manual-knowledge-editor.vue'
 import UploadConfirmHost from '@/components/UploadConfirmHost.vue'
+import FeedbackLauncher from '@/components/FeedbackLauncher.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { getCurrentUser, userInfoFromApi } from '@/api/auth'
@@ -282,6 +283,7 @@ onUnmounted(() => {
       <ManualKnowledgeEditor />
       <ProtectedResourcePreview />
       <UploadConfirmHost />
+      <FeedbackLauncher />
     </div>
   </t-config-provider>
 </template>
