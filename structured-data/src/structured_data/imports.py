@@ -27,6 +27,10 @@ class NoIndicatorDataError(ValueError):
     """A validated mapping yielded no records; absence never approves a mapping."""
 
 
+class NativeSourceVersionConflict(ValueError):
+    """Different published snapshots cannot both be the latest original result."""
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -143,23 +147,56 @@ class ImportManager:
             return self._result(doc, reused=True)
 
     def find_native_source(self, source, *, use_reviewed_mappings=True):
+        """Reuse one explicit scan mode, or open the latest publication with None."""
         with self.lock:
+            selected = None
+            published = []
             for record in self.directory.glob('*/review.json'):
                 if not re.fullmatch(r'[0-9a-f]{24}', record.parent.name):
                     continue
                 doc = json.loads(record.read_text())
-                if doc.get('use_reviewed_mappings', True) != use_reviewed_mappings:
+                if (use_reviewed_mappings is not None
+                        and doc.get('use_reviewed_mappings', True) != use_reviewed_mappings):
                     continue
                 if source not in doc.get('native_source_bindings', []):
                     continue
-                original = self.source_path(doc)
-                if not original.is_file() or original.stat().st_size != source['file_size']:
-                    raise ValueError('既有结构化原件丢失或已改变，请核对已导入文件。')
-                with original.open('rb') as stream:
-                    if hashlib.file_digest(stream, 'md5').hexdigest() != source['file_hash']:
-                        raise ValueError('既有结构化原件校验失败，请核对已导入文件。')
-                return self._result(doc, reused=True)
-        return None
+                if use_reviewed_mappings is not None:
+                    selected = doc
+                    break
+                if not doc.get('dataset_id'):
+                    continue
+                manifest = self.store.manifest(doc['dataset_id'])
+                if (not doc.get('sha256') or record.parent.name != doc.get('import_id')
+                        or any(manifest.get(key) != doc.get(key)
+                               for key in ('dataset_id', 'import_id', 'sha256', 'source_file'))):
+                    raise ValueError('既有结构化版本与原件导入记录不一致，请核对已发布结果。')
+                if not all((self.store._path(doc['dataset_id']) / name).is_file()
+                           for name in ('data.duckdb', 'series.json', 'source.xlsx')):
+                    raise ValueError('既有结构化版本不完整，请核对已发布结果。')
+                try:
+                    stamp = datetime.fromisoformat(manifest.get('imported_at'))
+                except (TypeError, ValueError):
+                    raise ValueError('既有结构化版本的发布时间无效，请核对导入记录。') from None
+                if stamp.tzinfo is None:
+                    raise ValueError('既有结构化版本的发布时间缺少时区，请核对导入记录。')
+                published.append((stamp, doc))
+            if published:
+                # Review timestamps also change on rescan. Only a committed
+                # snapshot's publication time establishes the newest result.
+                newest = max(stamp for stamp, _ in published)
+                current = [doc for stamp, doc in published if stamp == newest]
+                if len({doc['dataset_id'] for doc in current}) != 1:
+                    raise NativeSourceVersionConflict('同一原件有互相冲突的最新结构化版本，请核对导入记录。')
+                selected = current[0]
+            if selected is None:
+                return None
+            original = self.source_path(selected)
+            if not original.is_file() or original.stat().st_size != source['file_size']:
+                raise ValueError('既有结构化原件丢失或已改变，请核对已导入文件。')
+            with original.open('rb') as stream:
+                if hashlib.file_digest(stream, 'md5').hexdigest() != source['file_hash']:
+                    raise ValueError('既有结构化原件校验失败，请核对已导入文件。')
+            return self._result(selected, reused=True)
 
     @staticmethod
     def template_key(sheet):
