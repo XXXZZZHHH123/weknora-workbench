@@ -450,6 +450,28 @@ def test_actual_model_request_uses_the_exact_pricing_power_schema(generator):
     assert SERIES not in json.dumps(schema)
 
 
+def test_missing_pricing_description_preserves_verified_preview_without_extra_model_call(generator):
+    client, headers, _, response, calls = generator
+    response['judgment']['pricing_power'] = None
+    original = copy.deepcopy(response)
+    result = generate(client, headers)
+    assert result.status_code == 200, result.text
+    preview = result.json()
+    assert len(calls) == 1 and preview['repair_attempts'] == 0
+    assert rows() == [] and response == original
+    assert '## 边际定价权\n未提供' in preview['markdown']
+    assert any(issue['code'] == 'empty_description' and issue['severity'] == 'normalized'
+               for issue in preview['validation_issues'])
+    # Explicit saving is still a separate operation; absence never becomes a
+    # guessed pricing category, evidence or an executable rule.
+    saved = apply(client, headers, preview)
+    assert saved.status_code == 200, saved.text
+    row = rows()[0]
+    assert row.pricing_power == {'category': None, 'short': [], 'long': [], 'key': None, 'sources': []}
+    assert [rule['id'] for rule in row.thresholds] == ['watch']
+    assert row.source_note == TEXT and row.status == '草稿'
+
+
 @pytest.mark.parametrize('category', ['unsupported-category', True, {'category': 'unsupported-category'}])
 def test_pricing_power_schema_keeps_invalid_model_categories_rejected(generator, category):
     client, headers, _, response, calls = generator

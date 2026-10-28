@@ -227,9 +227,18 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
     except (TypeError, ValueError, UnicodeError, RecursionError):
         _error('研究逻辑包含无效数值或结构', 'document_schema', '/')
     bounded(document)
+    issues = []
+    # Model responses may spell an absent optional descriptive section as
+    # JSON null. Its existing empty-object default carries no classification,
+    # evidence, binding or number; normalize only that absence at this boundary.
+    # Typed imports and every non-null invalid shape remain strict.
+    if document['judgment'].get('pricing_power', {}) is None:
+        document = deepcopy(document)
+        document['judgment']['pricing_power'] = {}
+        issues.append({'code': 'empty_description', 'path': '/judgment/pricing_power',
+            'message': '未提供定价权说明，保留为空；未推断分类或补写研究观点', 'severity': 'normalized'})
     known = {row['id']: row for row in catalog}
     fields, declared = document['judgment'], document['binding_units']
-    issues = []
 
     def check_ids(value, path='/judgment'):
         if isinstance(value, dict):
@@ -270,7 +279,8 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
     except ValidationError as error:
         raise AnalysisError('研究逻辑描述字段格式无效', issues=[{
             'code': 'field_schema', 'path': '/judgment/' + '/'.join(map(str, item['loc'])),
-            'message': '描述字段类型或枚举不符合协议'} for item in error.errors(include_url=False)[:16]]) from None
+            'message': '描述字段类型或枚举不符合协议', 'error_type': item['type']}
+            for item in error.errors(include_url=False, include_input=False, include_context=False)[:16]]) from None
     descriptive_ids = {sid for _, _, sid in _refs(descriptive)}
     skeleton['binding_units'] = {sid: known[sid].get('unit') for sid in descriptive_ids}
     for sid in descriptive_ids:

@@ -1,8 +1,9 @@
 """General research-method protocol. No commodity-specific examples or defaults."""
 import json
 from tin.schemas.judgment import PricingPower
+from tin.judgments.output_schema import OUTPUT_SCHEMA
 
-PROMPT_VERSION = 'research-logic-v7'
+PROMPT_VERSION = 'research-logic-v8'
 SOURCE_BINDING_PROTOCOL = '''本次目录中的全部字段均已通过当前研究台来源权限核验；primary和macro只是来源分类，不是可用范围或许可等级。
 原文引用的宏观、跨市场或跨品种因素可以作为数据锚、白名单、阈值或证伪依据，不得以“不是本品种专属指标”或“不属于商品侧Series”为由排除目录中的相容字段。
 指标的观测频率与研究期限分开处理：沿用原文明确的统计周期、比较方式和连续期数，不擅自要求更高频数据；原文的低频条件可用于短期研究观察，不能因为目录为低频就改成高频或声称没有指标。
@@ -44,11 +45,11 @@ PRICING_POWER_SCHEMA = PricingPower.model_json_schema()
 OUTPUT_PROTOCOL = '''只返回一个严格JSON对象，字段只有 judgment、binding_units、rule_quotes、unresolved。
 judgment只允许：contradiction、marginal_focus、cost_line、pricing_power、time_dimension、survey_notes、whitelist、paradigm、tone、tone_note、thresholds、priority_rule、falsifiers。
 contradiction格式为 {"bull":{"claim":"","evidence":[]},"bear":{"claim":"","evidence":[]},"window":{"from":null,"to":null,"note":null},"text":null}；evidence每项只写desc、series_id(可null)、note。
-marginal_focus每项为 {"desc":"","series_id":null}。
+marginal_focus始终为数组，每项为 {"desc":"","series_id":null}。
 unresolved中的未来观察、验证或证伪条件使用business_condition和rule_kind两个显式字段；business_condition只放完整原文中的非空连续逐字摘录，rule_kind由你依据完整原文明确选择threshold或falsifier。两字段同时填写或同时为null，不把程序缺陷、接口限制、目录/单位缺口或模型作业说明混进business_condition，不补造规则数字或触发结果。不能为了转换指标名称而改写逐字摘录；内部ID和供应商编号到自然名称的转换由展示层完成。text与reason保留待确认内容和实现缺口，不能用它们或section标题代替显式业务条件类型。
-cost_line为null或 {"type":"cash或full或null","value":null,"source":null,"items":[{"desc":"","series_id":null,"value":null}],"note":null}。
-pricing_power按下方定价权对象的JSON Schema输出；category逐字使用其中enum的完整字符串，或使用JSON null，不得缩写、改写或拼接枚举。
-time_dimension为null或 {"short":null,"long":null}；survey_notes为文本或null。
+cost_line为JSON null或对象；对象的type只使用JSON字符串"cash"、JSON字符串"full"或JSON null；value与source为JSON null，items始终为数组（每项含desc、series_id、value），note为文本或null。
+pricing_power始终为JSON对象，不得输出null、数组、字符串、布尔值或数字；没有依据时使用空对象{}，不猜测分类或补造说明。short、long、sources始终为字符串数组，没有依据时为[]；category与key可为null。category逐字使用下方Schema中enum的完整字符串，或使用JSON null，不得缩写、改写或拼接枚举。
+time_dimension为JSON null或对象，short与long各为文本或null；survey_notes为文本或null。
 whitelist是已绑定真实ID数组。paradigm仅总线合成/对抗称重/编排层/null；tone仅偏多/偏空/观望/区间震荡/回调买入/反弹做空/等信号/null；tone_note文本或null。
 thresholds每项为 {"id":"局部唯一ID","name":"","series_id":"真实ID","operator":">或>=或<或<=或between","value":JSON number或两端点number数组,"type":"风控线或介入位或观察位","horizon":"短期或中长期","action_hint":null,"note":null}。
 thresholds的value只能是有限JSON number，不加引号、不带单位、比较符或千位逗号，不用字符串、布尔值或null。operator为between时，value必须恰好两个有限JSON number组成的[下限,上限]，且下限小于上限；其他operator只用单个number。
@@ -68,7 +69,7 @@ binding_units逐字复制目录unit，不自行补单位、改单位或换算。
 rule_quotes是每个threshold/falsifier局部ID到完整原文中逐字摘录依据的对象；没有明确数值、单位口径或证伪规则就不生成该规则，改记unresolved。数字须逐字存在于摘录中，仅允许通用千位逗号及千/万/亿/万亿倍率的确定性归一化；不心算推断数字，不把无数字的观点伪造成量化阈值。
 unresolved每项为 {"section":"自由审计标题","text":"待确认内容","reason":"缺口原因","business_condition":null,"rule_kind":null}，最多32项。历史JSON可缺少后两个可选字段，本次模型输出每项必须明确包含两字段。需要在报告待关注中保留原文业务条件时，两者必须同时提供，business_condition为原文逐字条件，rule_kind仅threshold或falsifier。纯诊断项两者为null；section可为中文等自由标题，不是业务分类字段，不用section命名决定是否展示。
 unresolved只记录确实缺少的输入、口径或当前协议无法表达的条件，不写推理过程、自我提醒或应当生成规则的待办。输出前逐条复查：若reason已承认数字、真实指标、单位和引文齐全且协议支持，应将该条件实际写入thresholds或falsifiers，不得只在reason中说“应生成观察位”却漏掉规则；若仍不能生成，明确唯一尚未满足的依据。
-没有依据的可选说明保持空列表或null；缺少依据的阈值/证伪整条不生成、内容进入unresolved，绝不继承旧版本，不补造规则/优先级。
+没有依据时按完整Schema保留字段类型：数组使用[]；pricing_power使用{}；其他对象仅在满足其Schema必填字段时输出，只有Schema明确允许null的字段才使用JSON null。空容器不代表已经形成业务判断，不填写默认分类或观点。缺少依据的阈值/证伪整条不生成、内容进入unresolved，绝不继承旧版本，不补造规则/优先级。
 所有series_id只能使用本次真实候选目录的完整ID，综合产品、地域、频率、维度与单位核对，不能仅看名称相近。
 可选证据、边际数据锚与成本项没有匹配时可用series_id=null并说明缺口；thresholds/falsifiers的series_id必须为真实完整ID，不能null或空字符串。候选子集未命中不等于知识库没有数据。
 不生成当前观测值、观测日期、行情来源或换算系数；证据与成本的value/as_of/source必须为空，实际数据由程序读取。数值字段value:null仅适用于这些可选事实/成本字段，不适用于阈值规则。
@@ -77,7 +78,10 @@ unresolved只记录确实缺少的输入、口径或当前协议无法表达的�
 阈值条目的 JSON Schema 类型示意：
 ''' + json.dumps(THRESHOLD_SCHEMA, ensure_ascii=False, separators=(',', ':')) + '''
 定价权对象的 JSON Schema：
-''' + json.dumps(PRICING_POWER_SCHEMA, ensure_ascii=False, separators=(',', ':'))
+''' + json.dumps(PRICING_POWER_SCHEMA, ensure_ascii=False, separators=(',', ':')) + '''
+以下完整Schema覆盖全部模型输出字段与嵌套结构；它只定义协议，不提供业务答案、规则默认值或数据来源授权。原文、真实目录及后续来源/单位/数值校验仍须全部满足。
+完整研究逻辑输出的 JSON Schema：
+''' + json.dumps(OUTPUT_SCHEMA, ensure_ascii=False, separators=(',', ':'))
 
 SELECTION_PROTOCOL = SOURCE_BINDING_PROTOCOL + '''
 理解完整研究逻辑，从这一片真实目录选择可能用于其数据锚、边际、成本、白名单、阈值及证伪的指标。

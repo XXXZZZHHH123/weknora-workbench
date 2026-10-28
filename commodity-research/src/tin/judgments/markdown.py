@@ -34,11 +34,13 @@ def dump_markdown(payload: JudgmentIn):
             lines.extend('- ' + item['desc'] + (' · 指标 `' + item['series_id'] + '`' if item.get('series_id') else ' · 未绑定') for item in value)
         elif key == 'whitelist': lines.extend('- `' + sid + '`' for sid in value)
         elif isinstance(value, dict):
+            section_start = len(lines)
             for name, content in value.items():
                 if content is None or content == []: continue
                 if name == 'items':
                     lines.extend('- ' + item['desc'] + (' · 指标 `' + item['series_id'] + '`' if item.get('series_id') else '') for item in content)
                 else: lines.append('- ' + {'type':'成本口径','value':'数值','source':'来源','note':'附注','category':'类型','short':'短期','long':'中长期','key':'关键','sources':'来源'}.get(name,name) + '：' + ('；'.join(map(str, content)) if isinstance(content, list) else str(content)))
+            if len(lines) == section_start: lines.append('未提供')
         elif value: lines.append(str(value))
         if not value: lines.append('待确认')
     lines.extend(['', '## 阈值', '', '| 名称 | 指标 | 条件 | 类型 | 周期 |', '| --- | --- | --- | --- | --- |'])

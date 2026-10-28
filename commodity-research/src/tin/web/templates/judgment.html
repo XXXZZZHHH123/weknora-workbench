@@ -189,9 +189,11 @@
     </div>
     <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
       <h3 class="font-bold text-[var(--primary)] mb-2">边际定价权{% if j.pricing_power.category %} · {{ j.pricing_power.category }}{% endif %}</h3>
+      {% if j.pricing_power.short or j.pricing_power.long or j.pricing_power.key or j.pricing_power.category or j.pricing_power.sources %}
       <div class="mb-1"><b>短期</b> {{ j.pricing_power.short | join('；') }}</div>
       {% if j.pricing_power.key %}<div class="mb-1"><b>关键</b> {{ j.pricing_power.key }}</div>{% endif %}
       <div><b>中长期</b> {{ j.pricing_power.long | join(' > ') }}</div>
+      {% else %}<div class="text-[var(--text-muted)]">未提供定价权说明</div>{% endif %}
     </div>
     <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
       <h3 class="font-bold text-[var(--primary)] mb-2">成本线</h3>
