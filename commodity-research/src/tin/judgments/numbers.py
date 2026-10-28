@@ -1,0 +1,177 @@
+"""Bounded numeric syntax and exact decimal evidence; never business intent."""
+from decimal import Decimal, DecimalException
+import math
+import re
+
+
+NUMBER = r'[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
+_GROUPED = r'[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
+_CONNECTORS = '+-/:*^×÷⁄∕‐‑‒–—~～'
+_SCALAR = re.compile(r'(?<![0-9A-Za-z_.,' + re.escape(_CONNECTORS) + r'万亿千\]])' + _GROUPED)
+_MEMBER = re.compile(NUMBER)
+_SCALE = re.compile(r'万亿|亿|万|千')
+_POWERS = {'千': 3, '万': 4, '亿': 8, '万亿': 12}
+_WIDTH = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)}
+_WIDTH.update({0x3000: ord(' '), 0x2212: ord('-')})
+_GROUPED_SPACE = re.compile(r'[0-9]+(?:(?:[\u00a0\u202f\u2009][0-9]+)|(?: +[0-9]{3}))+')
+_ARITHMETIC = re.compile(_GROUPED + r'\s*[*^×÷⁄∕/]\s*' + _GROUPED)
+
+
+def _width(text):
+    # Width variants only: NFKC would invent digits from ², ①, ½ and styled
+    # numerals, turning an unsupported source quantity into a different value.
+    return text.translate(_WIDTH)
+
+
+class NumericPrecisionError(ValueError):
+    pass
+
+
+def _decimal(literal):
+    if not isinstance(literal, str) or len(literal) > 128:
+        raise ValueError('numeric literal too long')
+    value = Decimal(literal)
+    if not value.is_finite() or abs(value.as_tuple().exponent) > 1000:
+        raise ValueError('nonfinite or excessive numeric exponent')
+    return value
+
+
+def exact_float(literal):
+    """Reject a lossy JSON/expression conversion instead of rounding silently."""
+    try:
+        decimal = _decimal(literal)
+        value = float(decimal)
+        if (not math.isfinite(value) or Decimal(str(value)) != decimal
+                or decimal == decimal.to_integral_value() and Decimal.from_float(value) != decimal):
+            raise ValueError('lossy conversion')
+    except (ValueError, DecimalException, OverflowError):
+        raise NumericPrecisionError('研究规则数值超出当前存储精度，不能舍入、截断或改为零') from None
+    return value
+
+
+def check_rule_number(value):
+    if type(value) not in (int, float):
+        raise ValueError('研究规则必须使用有限JSON数字，不能使用布尔值或字符串')
+    exact_float(str(value))
+    return value
+
+
+def _scale(value, power):
+    # Constructing the decimal tuple changes only the explicit base-ten scale;
+    # Decimal's ambient precision cannot round the original significand.
+    parts = value.as_tuple()
+    return Decimal((parts.sign, parts.digits, parts.exponent + power))
+
+
+def _unit_boundary(remainder):
+    if not remainder:
+        return True
+    following = remainder.lstrip()
+    if not following:
+        return True
+    if following.startswith('· '):
+        return True  # Renderer field delimiter, rather than kg·m.
+    if following[0] in '/^*·×÷%‰‱':
+        return False
+    if remainder[0].isspace():
+        return True
+    return not (remainder[0].isalnum() or remainder[0] == '_')
+
+
+def _unit_value(value, tail, unit, units):
+    following = tail.lstrip()
+    expected = _width(unit).strip() if isinstance(unit, str) else None
+    known = {_width(item).strip() for item in units if isinstance(item, str) and item.strip()}
+    known.update({'%', '‰', '‱'})
+    if expected:
+        known.add(expected)
+        prefix = _SCALE.match(expected)
+        if prefix:
+            known.add(expected[prefix.end():])
+    # A compound source unit wins over its prefix. Only an explicit base-ten
+    # multiplier plus the complete expected unit can change the numeric scale.
+    for actual in sorted(known - {''}, key=len, reverse=True):
+        if following.startswith(actual) and _unit_boundary(following[len(actual):]):
+            if actual == expected:
+                return value
+            power = _SCALE.match(actual)
+            if expected and power and actual[power.end():] == expected:
+                return _scale(value, _POWERS[power[0]])
+            return None
+    if expected and following.startswith(expected):
+        return None
+    match = _SCALE.match(following)
+    if match:
+        remainder = following[match.end():].lstrip()
+        if remainder and remainder[0] in '万亿千0123456789.+-':
+            return None
+        if expected:
+            if not remainder.startswith(expected) or not _unit_boundary(remainder[len(expected):]):
+                return None
+        return _scale(value, _POWERS[match[0]])
+    if following and (following[0].isnumeric() or following[0] in '十百千万亿兆两〇零一二三四五六七八九%‰‱'):
+        return None
+    if following and following[0] in _CONNECTORS:
+        return None
+    if tail and not tail[0].isspace():
+        first = tail[0]
+        if first in ',.':
+            if len(tail) > 1 and not tail[1].isspace():
+                return None
+        elif first in '+-/:0123456789' or first.isascii() and (first.isalpha() or first == '_'):
+            return None
+    return value
+
+
+def _arrays(text):
+    start, depth = None, 0
+    for index, char in enumerate(text):
+        if char == '[':
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == ']' and depth:
+            depth -= 1
+            if depth == 0:
+                yield start, index + 1
+    if depth:
+        yield start, len(text)
+
+
+def quoted_quantities(quote, *, unit=None, units=()):
+    """Read explicit decimal literals, masking malformed/nested list contents.
+
+    A flat numeric list owns its commas: [1,200] contains 1 and 200, never 1200.
+    Outside lists, only complete thousands groups are grouped; comma plus space
+    is a separator. No arithmetic, ratios, code fragments or unit aliases are
+    inferred. The caller still checks full original quotes and catalog units.
+    """
+    text = _width(quote)
+    masked, values = list(text), set()
+    for start, end in _arrays(text):
+        masked[start:end] = ' ' * (end - start)
+        if text[end - 1] != ']':
+            continue
+        members = text[start + 1:end - 1].split(',')
+        if len(members) > 32 or any(not _MEMBER.fullmatch(member.strip()) for member in members):
+            continue
+        try:
+            parsed = [_unit_value(_decimal(member.strip()), text[end:], unit, units) for member in members]
+            if all(value is not None for value in parsed):
+                values.update(parsed)
+        except (ValueError, DecimalException):
+            continue
+    scalar_text = ''.join(masked)
+    for pattern in (_GROUPED_SPACE, _ARITHMETIC):
+        scalar_text = pattern.sub(lambda match: 'x' * len(match[0]), scalar_text)
+    for match in _SCALAR.finditer(scalar_text):
+        try:
+            preceding = text[:match.start()].rstrip()
+            if preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～'):
+                continue
+            value = _unit_value(_decimal(match[0].replace(',', '')), text[match.end():], unit, units)
+            if value is not None:
+                values.add(value)
+        except (ValueError, DecimalException):
+            continue
+    return values

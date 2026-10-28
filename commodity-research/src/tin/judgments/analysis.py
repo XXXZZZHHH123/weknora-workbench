@@ -2,14 +2,17 @@
 from dataclasses import dataclass
 from copy import deepcopy
 from datetime import date
-from decimal import Decimal, DecimalException, localcontext
+from decimal import Decimal
 import json
 import math
 import re
-import unicodedata
 from pydantic import ValidationError
 from tin.schemas.judgment import EXPRESSION, JudgmentIn
 from tin.judgments.service import _refs
+from tin.judgments.numbers import quoted_quantities, check_rule_number
+from tin.judgments.markdown_protocol import (
+    exported_rules, quoted_rule_records, threshold_signature, falsifier_signature,
+)
 
 SOURCE_BYTES = 48 * 1024
 OUTPUT_BYTES = 96 * 1024
@@ -62,28 +65,6 @@ def bounded(value, depth=0):
             bounded(item, depth + 1)
 
 
-# This is numeric source verification, never business-intent classification.
-QUANTITY = re.compile(r"(?<![0-9A-Za-z_.,])([+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)(?![0-9,.])\s*(万亿|亿|万|千)?")
-SCALES = {None: Decimal(1), '千': Decimal(1000), '万': Decimal(10000),
-          '亿': Decimal(100000000), '万亿': Decimal(1000000000000)}
-
-
-def quoted_quantities(quote):
-    normalized = unicodedata.normalize('NFKC', quote).replace('−', '-')
-    values = set()
-    for match in QUANTITY.finditer(normalized):
-        try:
-            literal = match.group(1).replace(',', '')
-            if len(literal) > 128: continue
-            with localcontext() as context:
-                context.prec = 128
-                number = Decimal(literal) * SCALES[match.group(2)]
-            if number.is_finite(): values.add(number)
-        except DecimalException:
-            continue
-    return values
-
-
 def validate_analysis(document, original, catalog, *, variety, actor, written_at=None):
     if not isinstance(original, str) or not original.strip() or len(original.encode('utf-8')) > SOURCE_BYTES:
         raise AnalysisError('请提供48 KiB以内的完整研究逻辑文本')
@@ -107,6 +88,12 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
             value = rule.get('value')
             if name == 'thresholds' and any(type(number) not in (int, float) for number in (value if isinstance(value, list) else [value])):
                 _error('研究规则必须使用有限数字，不能使用布尔值或字符串', 'rule_number_type', path + '/value')
+            if name == 'thresholds':
+                try:
+                    for number in value if isinstance(value, list) else [value]:
+                        check_rule_number(number)
+                except ValueError:
+                    _error('研究规则数值超出当前存储精度，未采用舍入值', 'number_precision', path + '/value')
             if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}', str(rule.get('id', ''))):
                 _error('研究规则局部ID无效', 'rule_id', path + '/id')
             if name == 'falsifiers' and (type(rule.get('consecutive_periods', 1)) is not int or not 1 <= rule.get('consecutive_periods', 1) <= 120):
@@ -194,17 +181,41 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
     for identifier, quote in quotes.items():
         if not isinstance(quote, str) or not quote.strip() or quote not in original:
             _error('阈值或证伪条件缺少完整原文中的逐字依据', 'quote_not_in_source', '/rule_quotes/' + identifier)
+    explicit = exported_rules(original)
     for index, rule in enumerate(payload.thresholds):
         values = rule.value if isinstance(rule.value, list) else [rule.value]
-        source_numbers = quoted_quantities(quotes[rule.id])
+        source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
+                                           units=[row.get('unit') for row in catalog])
         if any(Decimal(str(value)) not in source_numbers for value in values):
             _error('阈值数字无法从原文摘录核验；请将缺少明确数字的规则列为待确认项', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
+        records = explicit['thresholds'].get(rule.series_id)
+        signature = threshold_signature(rule.model_dump())
+        quoted = quoted_rule_records(original, quotes[rule.id])
+        matches_source = not records or any(source_signature == signature
+            and (unit is None or unit == units[rule.series_id]) for source_signature, unit in records)
+        matches_quote = quoted is not None and (
+            not records and not quoted or any(kind == 'thresholds' and sid == rule.series_id
+                and record[0] == signature and (record[1] is None or record[1] == units[rule.series_id])
+                for kind, sid, record in quoted))
+        if not matches_source or not matches_quote:
+            _error('规则与引文所在行明确记录的指标、条件、区间或类型不一致，或引文多处定位不一致，未改写或执行',
+                   'exported_rule_mismatch', f'/judgment/thresholds/{index}')
     for index, rule in enumerate(payload.falsifiers):
         match = EXPRESSION.fullmatch(rule.expression)
-        source_numbers = quoted_quantities(quotes[rule.id])
+        source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
+                                           units=[row.get('unit') for row in catalog])
         if not match or Decimal(match.group(3)) not in source_numbers or (
                 rule.consecutive_periods > 1 and Decimal(rule.consecutive_periods) not in source_numbers):
             _error('证伪数字或连续期数无法从原文摘录核验；请列为待确认项', 'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
+        records = explicit['falsifiers'].get(rule.series_id)
+        signature = falsifier_signature(rule.model_dump())
+        quoted = quoted_rule_records(original, quotes[rule.id])
+        matches_source = not records or signature in records
+        matches_quote = quoted is not None and (
+            not records and not quoted or ('falsifiers', rule.series_id, signature) in quoted)
+        if not matches_source or not matches_quote:
+            _error('证伪条件与引文所在行明示的指标、比较方式、连续期数、单位或证伪对象不一致，或引文多处定位不一致，未执行',
+                   'falsifier_source_mismatch', f'/judgment/falsifiers/{index}')
     return AnalysisResult(payload, units, quotes,
                           [item.model_dump() for item in payload.unstructured])
 

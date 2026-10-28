@@ -22,6 +22,7 @@ from tin.integration.research_profile import research_variety
 from tin.db import SessionLocal
 from tin.integration.workbench_scope import artifact_session, current_workbench, go_request, resolve_workbench, require_shared_write
 from tin.judgments.analysis import AnalysisError, SOURCE_BYTES, assess_draft, validate_analysis
+from tin.judgments.numbers import exact_float, NumericPrecisionError
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.prompt import GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, SELECTION_PROTOCOL
 from tin.judgments.service import JudgmentError, current, latest, save_version, to_payload
@@ -81,6 +82,17 @@ class PreviewStore:
 previews = PreviewStore()
 
 
+def research_json(content):
+    def parse_number(literal):
+        try:
+            return exact_float(literal)
+        except NumericPrecisionError:
+            raise HTTPException(422, {'message': '研究规则数字超出当前存储精度，未舍入或替换数值',
+                'code': 'number_precision', 'issues': [{'code': 'number_precision', 'path': '/',
+                    'message': '使用当前数值类型可无损表示的有限JSON数字；不能截断、舍入或将非零数改成零'}]}) from None
+    return strict_json(content, parse_float=parse_number)
+
+
 def scope_key(scope):
     base = (scope.identity.tenant_id, scope.identity.user_id, scope.workbench_id,
             scope.knowledge_base_id, scope.knowledge_base_tenant_id)
@@ -111,7 +123,7 @@ async def read_body(request, schema):
         if len(body) + len(piece) > 128 * 1024: raise HTTPException(413, '研究逻辑请求过大')
         body.extend(piece)
     try:
-        return schema.model_validate(strict_json(body.decode('utf-8')))
+        return schema.model_validate(research_json(body.decode('utf-8')))
     except (ValidationError, UnicodeError, ValueError, RecursionError):
         raise HTTPException(422, '研究逻辑请求格式无效') from None
 
@@ -307,7 +319,7 @@ async def completion(scope, model_id, prompt):
             raise ValueError()
         if data.get('finish_reason') in {'length', 'max_tokens'}:
             raise HTTPException(422, '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试')
-        return strict_json(data.get('content'))
+        return research_json(data.get('content'))
     except HTTPException:
         raise
     except (httpx.HTTPError, ValueError, TypeError, AttributeError, RecursionError):
@@ -363,8 +375,12 @@ async def analyzed_completion(scope, body, before, candidates, selected):
     except AnalysisError as error:
         issues = error.issues
     except HTTPException as error:
-        if error.status_code != 422 or '完整有效的配置' not in str(error.detail): raise
-        issues = [{'code': 'document_json', 'path': '/', 'message': '上次响应不是完整严格JSON对象；不可通过补括号或摘取片段恢复'}]
+        if error.status_code == 422 and isinstance(error.detail, dict) and error.detail.get('code') == 'number_precision':
+            issues = error.detail['issues']
+        elif error.status_code == 422 and '完整有效的配置' in str(error.detail):
+            issues = [{'code': 'document_json', 'path': '/', 'message': '上次响应不是完整严格JSON对象；不可通过补括号或摘取片段恢复'}]
+        else:
+            raise
     await fresh(scope, before)
     try:
         prompt = repair_prompt(document, issues, candidates, body.text, selected)

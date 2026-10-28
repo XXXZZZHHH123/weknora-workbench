@@ -6,10 +6,11 @@ from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from tin.judgments.numbers import NUMBER, check_rule_number, exact_float
 
 TONES = ("偏多", "偏空", "观望", "区间震荡", "回调买入", "反弹做空", "等信号")
 PARADIGMS = ("总线合成", "对抗称重", "编排层")
-EXPRESSION = re.compile(r"^(value|change)\s*(>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)$")
+EXPRESSION = re.compile(r"^(value|change)\s*(>=|<=|>|<)\s*(" + NUMBER + r")$")
 
 
 class ThresholdType(StrEnum):
@@ -99,6 +100,13 @@ class Threshold(_Model):
     action_hint: str | None = None
     note: str | None = None
 
+    @field_validator('value', mode='before')
+    @classmethod
+    def _exact_number(cls, value):
+        for number in value if isinstance(value, list) else [value]:
+            check_rule_number(number)
+        return value
+
     @model_validator(mode="after")
     def _value_shape(self):
         if self.operator == "between":
@@ -116,14 +124,16 @@ class Falsifier(_Model):
     expression: str
     unit_confirmed: str
     consecutive_periods: int = Field(1, ge=1)
-    side: Literal["bull", "bear"]
+    side: Literal["bull", "bear"] = Field(description='被证伪的原假设一方：bull为多方原假设失效，bear为空方原假设失效；不是条件触发后的价格涨跌方向。')
     note: str | None = None
 
     @field_validator("expression")
     @classmethod
     def _expr(cls, v: str) -> str:
-        if not EXPRESSION.match(v.strip()):
+        match = EXPRESSION.fullmatch(v.strip())
+        if match is None:
             raise ValueError(f"判定表达式无法自动验证：「{v}」，请写成 value/change 比较一个数，如 value >= 10000")
+        exact_float(match.group(3))
         return v.strip()
 
 

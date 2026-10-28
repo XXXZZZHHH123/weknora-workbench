@@ -2,6 +2,7 @@
 import difflib
 import json
 from tin.schemas.judgment import JudgmentIn
+from tin.judgments.markdown_protocol import TARGET_LABELS
 
 FIELDS = {'contradiction': '主矛盾', 'marginal_focus': '短线边际', 'cost_line': '成本线',
           'pricing_power': '边际定价权', 'time_dimension': '时间维度', 'survey_notes': '调研信息差',
@@ -43,12 +44,22 @@ def dump_markdown(payload: JudgmentIn):
             if len(lines) == section_start: lines.append('未提供')
         elif value: lines.append(str(value))
         if not value: lines.append('待确认')
-    lines.extend(['', '## 阈值', '', '| 名称 | 指标 | 条件 | 类型 | 周期 |', '| --- | --- | --- | --- | --- |'])
+    lines.extend(['', '## 阈值', '', '| 名称 | 指标 | 条件 | 类型 | 周期 | 用途说明 | 补充说明 |',
+                  '| --- | --- | --- | --- | --- | --- | --- |'])
     for t in j['thresholds']:
-        lines.append('| ' + ' | '.join(map(cell, [t['name'], t['series_id'], t['operator'] + ' ' + str(t['value']), t['type'], t['horizon']])) + ' |')
-    lines.extend(['', '## 冲突优先级', ' > '.join((j['priority_rule'] or {}).get('order', [])) or '待确认', '', '## 证伪条件'])
-    lines.extend('- ' + f['desc'] + ' · `' + f['series_id'] + '` · ' + f['expression'] + ' ' + f['unit_confirmed']
-                 + ' · 连续' + str(f['consecutive_periods']) + '期' for f in j['falsifiers'])
+        lines.append('| ' + ' | '.join(map(cell, [t['name'], t['series_id'],
+            t['operator'] + ' ' + json.dumps(t['value'], allow_nan=False), t['type'], t['horizon'],
+            t['action_hint'], t['note']])) + ' |')
+    lines.extend(['', '## 冲突优先级', ' > '.join((j['priority_rule'] or {}).get('order', [])) or '待确认'])
+    if j['priority_rule'] and j['priority_rule']['note']:
+        lines.append('说明：' + j['priority_rule']['note'])
+    lines.extend(['', '## 证伪条件'])
+    for f in j['falsifiers']:
+        lines.append('- ' + cell(f['desc']) + ' · `' + f['series_id'] + '` · 条件：' + f['expression']
+            + ' · 单位：' + cell(f['unit_confirmed']) + ' · 连续' + str(f['consecutive_periods'])
+            + '期 · 证伪对象：' + TARGET_LABELS[f['side']])
+        if f['note']:
+            lines.append('  - 说明：' + cell(f['note']))
     lines.extend(['', '## 待确认项'])
     lines.extend('- ' + item['section'] + '：' + item['text'] + '（' + item['reason'] + '）' for item in j['unstructured'])
     return '\n'.join(lines).rstrip() + '\n'

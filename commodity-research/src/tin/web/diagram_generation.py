@@ -158,7 +158,7 @@ async def select_catalog(scope,model_id,catalog,text,image):
     return candidates,True
 
 
-def strict_json(content):
+def strict_json(content, *, parse_float=None):
     def pairs(items):
         result = {}
         for key,value in items:
@@ -177,7 +177,8 @@ def strict_json(content):
             content,newline,closing=body.rpartition('\n')
             if not newline or closing.strip(' \t\r')!='```':
                 raise ValueError('incomplete JSON fence')
-        return json.loads(content,object_pairs_hook=pairs,parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        return json.loads(content,object_pairs_hook=pairs,parse_float=parse_float,
+                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     except (ValueError,UnicodeError,TypeError,RecursionError):
         raise HTTPException(422,'模型没有返回完整有效的配置，请调整资料后重试') from None
 
