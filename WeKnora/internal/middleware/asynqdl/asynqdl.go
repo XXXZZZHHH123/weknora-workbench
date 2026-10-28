@@ -16,6 +16,7 @@ package asynqdl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 	"unicode/utf8"
 
@@ -70,7 +71,8 @@ func MiddlewareWithCallback(repo interfaces.TaskDeadLetterRepository, cb OnDeadL
 			if err == nil {
 				return nil
 			}
-			if !isFinalAttempt(ctx) {
+			// A deferred parse is waiting for a slot, not failing.
+			if errors.Is(err, types.ErrParseDeferred) || !isFinalAttempt(ctx) {
 				return err
 			}
 			attempts := 0
