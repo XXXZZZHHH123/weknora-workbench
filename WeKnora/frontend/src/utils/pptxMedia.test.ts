@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import JSZip from 'jszip'
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom'
-import { createPptxMediaRequestGate, listPptxVectorMediaForSlide, rasterizePptxSlidePreview, sha256Hex } from './pptxMedia'
+import { createPptxMediaRequestGate, listPptxVectorMediaForSlide, rasterizePptxSlidePreview, sha256Fallback, sha256Hex } from './pptxMedia'
 
 Object.assign(globalThis, { DOMParser, XMLSerializer })
 
@@ -85,6 +85,24 @@ test('computes a SHA-256 fingerprint for the exact original byte buffer', async 
   const bytes = new TextEncoder().encode('source bytes')
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
   assert.equal(await sha256Hex(buffer), '4d4823794cbed3c4ee0bbc684c8f66e1dfd5afa6f078d494ce254ec5a4671753')
+})
+
+test('matches WebCrypto SHA-256 without a secure context across padding boundaries', async () => {
+  const { createHash } = await import('node:crypto')
+  for (const size of [0, 1, 55, 56, 63, 64, 65, 119, 120, 1000, 1 << 20]) {
+    const bytes = new Uint8Array(size + 3).map((_, index) => (index * 31 + 7) & 0xff).subarray(3)
+    const expected = createHash('sha256').update(bytes).digest('hex')
+    assert.equal(Buffer.from(sha256Fallback(bytes)).toString('hex'), expected, `size ${size}`)
+  }
+  const subtle = Object.getOwnPropertyDescriptor(globalThis.crypto, 'subtle')
+  Object.defineProperty(globalThis.crypto, 'subtle', { value: undefined, configurable: true })
+  try {
+    const bytes = new TextEncoder().encode('source bytes')
+    assert.equal(await sha256Hex(bytes.buffer), '4d4823794cbed3c4ee0bbc684c8f66e1dfd5afa6f078d494ce254ec5a4671753')
+  } finally {
+    if (subtle) Object.defineProperty(globalThis.crypto, 'subtle', subtle)
+    else delete (globalThis.crypto as { subtle?: unknown }).subtle
+  }
 })
 
 const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0]).buffer

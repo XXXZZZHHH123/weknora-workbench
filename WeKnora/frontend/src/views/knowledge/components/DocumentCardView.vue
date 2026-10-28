@@ -854,6 +854,15 @@ const handleAction = (action: 'download' | 'edit' | 'view-trace' | 'reparse' | '
   font-size: var(--app-text-sm);
 }
 .card-analyze-loading { flex-shrink: 0; }
+.card-analyze > span {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.card-analyze > .t-icon, .card-analyze-trace-btn { flex-shrink: 0; }
 .card-analyze-trace-link { cursor: pointer; &:hover { text-decoration: underline; } }
 .card-analyze-trace-btn {
   display: inline-flex;

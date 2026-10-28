@@ -112,6 +112,11 @@ type ChunkRepository interface {
 	DeleteByKnowledgeList(ctx context.Context, tenantID uint64, knowledgeIDs []string) error
 	// ListImageInfoByKnowledgeIDs returns non-empty (knowledge_id, image_info) pairs for image cleanup.
 	ListImageInfoByKnowledgeIDs(ctx context.Context, tenantID uint64, knowledgeIDs []string) ([]ChunkImageInfo, error)
+	// FindDocumentImageSourceReferences returns stored image references that a
+	// live chunk of the knowledge binds to the exact source page, part and hash.
+	FindDocumentImageSourceReferences(
+		ctx context.Context, tenantID uint64, knowledgeID string, page int, sourcePart, sourceHash string,
+	) ([]string, error)
 	// ListImageAssets returns one page of a KB's de-duplicated image assets
 	// (one per image_info entry, keyed by URL) with the query's filters and
 	// sort applied in the database, plus the filtered total.

@@ -348,12 +348,12 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
           <template v-if="statusByRow.get(item.id) as StatusInfo | undefined">
             <t-tag v-if="statusByRow.get(item.id)!.label !== '--'" size="small" :theme="statusByRow.get(item.id)!.theme"
               variant="light" class="row-status-tag" :class="`status-${statusByRow.get(item.id)!.theme}`"
-              :title="statusByRow.get(item.id)!.hint">
+              :title="statusByRow.get(item.id)!.hint || statusByRow.get(item.id)!.label">
               <template v-if="statusByRow.get(item.id)!.icon" #icon>
                 <t-icon :name="statusByRow.get(item.id)!.icon!"
                   :class="{ 'icon-spin': statusByRow.get(item.id)!.spin }" />
               </template>
-              {{ statusByRow.get(item.id)!.label }}
+              <span class="row-status-text">{{ statusByRow.get(item.id)!.label }}</span>
             </t-tag>
             <span v-else class="row-muted">--</span>
           </template>
@@ -497,7 +497,7 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
 .doc-list-header,
 .doc-list-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) minmax(180px, 24%) 120px 120px;
+  grid-template-columns: 24px minmax(0, 1fr) minmax(160px, 22%) 168px 136px;
   align-items: center;
   column-gap: 12px;
   padding: 0 8px;
@@ -590,6 +590,12 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
 .cell-actions {
   justify-content: flex-end;
   gap: 4px;
+
+  :deep(.t-button) {
+    flex-shrink: 0;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
 }
 
 /* TDesign 勾选框：去掉空白 label、与表格行对齐 */
@@ -705,10 +711,24 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
 }
 
 .row-status-tag {
+  max-width: 100%;
+  height: auto;
   background: transparent;
   border: 0;
   padding: 0;
   color: var(--td-text-color-secondary);
+  white-space: normal;
+  /* 长状态文案（如解析阶段说明）最多两行，超出省略，完整内容见 title */
+  .row-status-text {
+    min-width: 0;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 18px;
+  }
   &.status-success::before { content: ''; width: 5px; height: 5px; margin-right: 6px; border-radius: 50%; background: var(--td-success-color); }
   &.status-danger { color: var(--td-error-color); }
   &.status-warning { color: var(--td-warning-color); }
@@ -764,6 +784,7 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
   &:hover { background: var(--td-bg-color-container-hover); }
 }
 .row-status-tag :deep(.t-icon) {
+  flex-shrink: 0;
   margin-right: 2px;
 }
 
@@ -815,7 +836,7 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
 }
 @container doc-card-area (max-width: 720px) {
   .doc-list-header, .doc-list-row {
-    grid-template-columns: 24px minmax(0, 1fr) 120px 120px;
+    grid-template-columns: 24px minmax(0, 1fr) 140px 136px;
     column-gap: 8px;
   }
   .doc-list-header .cell-tags { display: none; }

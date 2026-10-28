@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -26,6 +27,7 @@ import (
 const (
 	previewMediaSourceLimit = 32 << 20
 	previewMediaPNGLimit    = 8 << 20
+	previewSourceSHACap     = 512
 )
 
 var (
@@ -51,10 +53,145 @@ func validPreviewMediaPart(part string) bool {
 	return (ext == ".emf" || ext == ".wmf") && strings.TrimSpace(stem) != "" && stem != "." && stem != ".."
 }
 
-// RenderKnowledgePreviewMedia converts one authorized original PPTX media part
-// to PNG for preview. The result is never persisted or attached to the source.
+// previewSourceKey identifies one immutable stored original. A reparse or
+// replacement changes FilePath or FileHash, so stale digests are never reused.
+type previewSourceKey struct{ knowledgeID, filePath, fileHash string }
+
+// previewSourceSHAs remembers original SHA-256 digests so each preview media
+// request does not re-read and re-hash the whole presentation.
+var previewSourceSHAs = struct {
+	sync.Mutex
+	digests map[previewSourceKey]string
+	order   []previewSourceKey
+}{digests: map[previewSourceKey]string{}}
+
+func cachedPreviewSourceSHA(key previewSourceKey) string {
+	previewSourceSHAs.Lock()
+	defer previewSourceSHAs.Unlock()
+	return previewSourceSHAs.digests[key]
+}
+
+func rememberPreviewSourceSHA(key previewSourceKey, digest string) {
+	previewSourceSHAs.Lock()
+	defer previewSourceSHAs.Unlock()
+	if _, ok := previewSourceSHAs.digests[key]; ok {
+		return
+	}
+	if len(previewSourceSHAs.order) >= previewSourceSHACap {
+		delete(previewSourceSHAs.digests, previewSourceSHAs.order[0])
+		previewSourceSHAs.order = previewSourceSHAs.order[1:]
+	}
+	previewSourceSHAs.digests[key] = digest
+	previewSourceSHAs.order = append(previewSourceSHAs.order, key)
+}
+
+// RenderKnowledgePreviewMedia returns one authorized original PPTX media part
+// as PNG for preview. Parsing already rasterized most vector parts and bound
+// them to their source page/part; those are served from storage. Only parts the
+// parse budget left as raw vectors are converted on demand.
 func (s *knowledgeService) RenderKnowledgePreviewMedia(ctx context.Context, knowledge *types.Knowledge, page int, part, expectedSourceSHA256 string) ([]byte, error) {
+	if stored := s.storedKnowledgePreviewMedia(ctx, knowledge, page, part, expectedSourceSHA256); stored != nil {
+		return stored, nil
+	}
 	return s.renderKnowledgeSourceMedia(ctx, knowledge, page, part, expectedSourceSHA256, "")
+}
+
+// storedKnowledgePreviewMedia returns the parse-time PNG for a source part, or
+// nil whenever any binding cannot be proven; the caller then takes the fully
+// verified render path, which also reports the precise error.
+func (s *knowledgeService) storedKnowledgePreviewMedia(ctx context.Context, knowledge *types.Knowledge, page int, part, expectedSourceSHA256 string) []byte {
+	if knowledge == nil || s.chunkRepo == nil || s.resourceCatalog == nil ||
+		strings.ToLower(strings.TrimPrefix(knowledge.FileType, ".")) != "pptx" ||
+		page < 1 || !validPreviewMediaPart(part) || !previewMediaSHA256.MatchString(expectedSourceSHA256) {
+		return nil
+	}
+	tenantID, ok := ctx.Value(types.TenantIDContextKey).(uint64)
+	if !ok || tenantID == 0 || tenantID != knowledge.TenantID {
+		return nil
+	}
+	current, err := s.repo.GetKnowledgeByIDOnly(ctx, knowledge.ID)
+	if err != nil || current == nil || current.DeletedAt.Valid || current.ParseStatus == types.ParseStatusDeleting ||
+		current.TenantID != knowledge.TenantID || current.KnowledgeBaseID != knowledge.KnowledgeBaseID ||
+		current.FilePath != knowledge.FilePath || current.FileHash != knowledge.FileHash || current.FileHash == "" {
+		return nil
+	}
+	refs, err := s.chunkRepo.FindDocumentImageSourceReferences(ctx, tenantID, current.ID, page, part, current.FileHash)
+	if err != nil || len(refs) != 1 {
+		return nil
+	}
+	resource, err := s.resourceCatalog.Resolve(ctx, refs[0])
+	if err != nil || resource == nil || resource.TenantID != tenantID ||
+		resource.State != types.ResourceStateActive || resource.MimeType != "image/png" {
+		return nil
+	}
+	kb, err := s.kbService.GetKnowledgeBaseByID(ctx, current.KnowledgeBaseID)
+	if err != nil || kb == nil || kb.TenantID != tenantID {
+		return nil
+	}
+	key := previewSourceKey{current.ID, current.FilePath, current.FileHash}
+	digest := cachedPreviewSourceSHA(key)
+	if digest == "" {
+		if digest = s.previewSourceSHA(ctx, kb, current); digest == "" {
+			return nil
+		}
+		rememberPreviewSourceSHA(key, digest)
+	}
+	if !strings.EqualFold(digest, expectedSourceSHA256) {
+		return nil
+	}
+	files := s.resolveFileServiceForPath(ctx, kb, refs[0])
+	if files == nil {
+		return nil
+	}
+	reader, err := files.GetFile(ctx, refs[0])
+	if err != nil {
+		return nil
+	}
+	defer reader.Close()
+	pngBytes, err := io.ReadAll(io.LimitReader(reader, previewMediaPNGLimit+1))
+	if err != nil || len(pngBytes) == 0 || len(pngBytes) > previewMediaPNGLimit {
+		return nil
+	}
+	config, err := png.DecodeConfig(bytes.NewReader(pngBytes))
+	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > 12000 || config.Height > 12000 ||
+		int64(config.Width)*int64(config.Height) > 40_000_000 {
+		return nil
+	}
+	return pngBytes
+}
+
+// previewSourceSHA hashes the stored original once it matches the upload
+// fingerprint, returning "" when the source cannot be read or has changed.
+func (s *knowledgeService) previewSourceSHA(ctx context.Context, kb *types.KnowledgeBase, knowledge *types.Knowledge) string {
+	files := s.resolveFileServiceForPath(ctx, kb, knowledge.FilePath)
+	if files == nil {
+		return ""
+	}
+	reader, err := files.GetFile(ctx, knowledge.FilePath)
+	if err != nil {
+		return ""
+	}
+	defer reader.Close()
+	content, err := io.ReadAll(io.LimitReader(reader, previewMediaSourceLimit+1))
+	if err != nil || len(content) == 0 || len(content) > previewMediaSourceLimit {
+		return ""
+	}
+	fileSHA := sha256.Sum256(content)
+	fileSHAHex := hex.EncodeToString(fileSHA[:])
+	switch len(knowledge.FileHash) {
+	case 32:
+		stored := md5.Sum(content)
+		if !strings.EqualFold(hex.EncodeToString(stored[:]), knowledge.FileHash) {
+			return ""
+		}
+	case 64:
+		if !strings.EqualFold(fileSHAHex, knowledge.FileHash) {
+			return ""
+		}
+	default:
+		return ""
+	}
+	return fileSHAHex
 }
 
 func (s *knowledgeService) renderKnowledgeSourceMedia(ctx context.Context, knowledge *types.Knowledge, page int, part, expectedSourceSHA256, expectedMediaSHA256 string) ([]byte, error) {
@@ -116,6 +253,7 @@ func (s *knowledgeService) renderKnowledgeSourceMedia(ctx context.Context, knowl
 	default:
 		return nil, errors.New("original source fingerprint unavailable")
 	}
+	rememberPreviewSourceSHA(previewSourceKey{current.ID, current.FilePath, current.FileHash}, fileSHAHex)
 
 	// Allow the reader's bounded capacity wait (10s) and conversion (30s)
 	// separately, with transport overhead. A queued request retains its full
