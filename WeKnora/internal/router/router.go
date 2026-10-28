@@ -81,6 +81,7 @@ type RouterParams struct {
 	CustomAgentHandler           *handler.CustomAgentHandler
 	UserFavoriteHandler          *handler.UserResourceFavoriteHandler
 	WorkspaceHandler             *handler.WorkspaceHandler
+	UserFeedbackHandler          *handler.UserFeedbackHandler
 	SkillHandler                 *handler.SkillHandler
 	OrganizationHandler          *handler.OrganizationHandler
 	IMHandler                    *handler.IMHandler
@@ -330,6 +331,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterCustomAgentRoutes(v1, params.CustomAgentHandler, rbacGuards)
 		RegisterUserFavoriteRoutes(v1, params.UserFavoriteHandler, rbacGuards)
 		RegisterWorkspaceRoutes(v1, params.WorkspaceHandler, rbacGuards)
+		RegisterUserFeedbackRoutes(v1, params.UserFeedbackHandler, rbacGuards)
 		RegisterWorkspaceDiagramRoutes(v1, params.WorkspaceHandler, params.ModelHandler, rbacGuards)
 		RegisterWorkspaceJudgmentRoutes(v1, params.WorkspaceHandler, params.ModelHandler, rbacGuards)
 		RegisterWorkspaceStrategyRoutes(v1, params.WorkspaceHandler, params.ModelHandler, rbacGuards)
