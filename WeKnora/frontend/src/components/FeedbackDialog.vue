@@ -1,35 +1,40 @@
 <template>
-  <!-- 全局「反馈与建议」弹窗：入口在左侧栏底部，任何页面都能打开。
+  <!-- 全局「反馈与建议」弹窗：由右下角悬浮按钮打开，任何登录后页面可用。
        提交时附带当前页面地址和标题，方便管理员在「系统管理 → 用户反馈」里定位。 -->
-  <t-dialog :visible="visible" width="520px" :on-confirm="handleSubmit" :on-close="handleClose"
-    :confirm-btn="{ content: '提交', loading: submitting, theme: 'primary', disabled: !canSubmit }"
+  <t-dialog :visible="visible" width="520px" class="feedback-dialog" :on-confirm="handleSubmit" :on-close="handleClose"
+    :confirm-btn="{ content: '提交反馈', loading: submitting, theme: 'primary', disabled: !canSubmit }"
     cancel-btn="取消" :close-on-overlay-click="!submitting" :close-on-esc-keydown="!submitting"
     @update:visible="onVisibleUpdate">
     <template #header>
-      <span class="feedback-dialog-header">
-        <t-icon name="chat-bubble-help" size="20px" class="feedback-dialog-header-icon" aria-hidden="true" />
-        <span>反馈与建议</span>
-      </span>
+      <div class="feedback-dialog-header">
+        <span class="feedback-dialog-header__title">反馈与建议</span>
+        <span class="feedback-dialog-header__sub">遇到问题或有改进想法都可以告诉我们，管理员会看到并跟进。</span>
+      </div>
     </template>
 
-    <p class="feedback-tip">遇到问题或有改进想法都可以告诉我们，管理员会看到并跟进处理。</p>
+    <div class="feedback-body">
+      <div class="feedback-kinds" role="radiogroup" aria-label="反馈类型">
+        <button v-for="option in kindOptions" :key="option.value" type="button" role="radio"
+          class="feedback-kind" :class="{ 'is-active': form.kind === option.value }"
+          :aria-checked="form.kind === option.value" @click="form.kind = option.value">
+          <span class="feedback-kind__icon"><t-icon :name="option.icon" size="18px" aria-hidden="true" /></span>
+          <span class="feedback-kind__text">
+            <span class="feedback-kind__title">{{ option.title }}</span>
+            <span class="feedback-kind__desc">{{ option.desc }}</span>
+          </span>
+          <t-icon v-if="form.kind === option.value" name="check-circle-filled" size="16px"
+            class="feedback-kind__check" aria-hidden="true" />
+        </button>
+      </div>
 
-    <t-form label-align="top" class="feedback-form" @submit.prevent>
-      <t-form-item label="类型">
-        <t-radio-group v-model="form.kind" variant="default-filled">
-          <t-radio-button value="bug">报告问题</t-radio-button>
-          <t-radio-button value="suggestion">提出建议</t-radio-button>
-        </t-radio-group>
-      </t-form-item>
-      <t-form-item label="内容">
-        <t-textarea v-model="form.content" :placeholder="placeholder" :maxlength="5000"
-          :autosize="{ minRows: 5, maxRows: 12 }" autofocus />
-      </t-form-item>
-      <p class="feedback-page" :title="pageLabel">
+      <t-textarea v-model="form.content" class="feedback-content" :placeholder="placeholder" :maxlength="5000"
+        :autosize="{ minRows: 5, maxRows: 12 }" autofocus />
+
+      <div class="feedback-page" :title="page.url">
         <t-icon name="link" size="14px" aria-hidden="true" />
-        <span>将附带当前页面：{{ pageLabel }}</span>
-      </p>
-    </t-form>
+        <span class="feedback-page__text">将附带当前页面：{{ pageLabel }}</span>
+      </div>
+    </div>
   </t-dialog>
 </template>
 
@@ -52,6 +57,10 @@ const canSubmit = computed(() => form.content.trim().length > 0)
 const placeholder = computed(() => form.kind === 'bug'
   ? '请描述遇到的问题：做了什么操作、看到了什么、期望是什么。'
   : '请描述你的建议：希望改进哪里、为什么。')
+const kindOptions: { value: FeedbackKind; title: string; desc: string; icon: string }[] = [
+  { value: 'bug', title: '报告问题', desc: '报错、功能异常或结果不对', icon: 'error-circle' },
+  { value: 'suggestion', title: '提出建议', desc: '新功能或体验改进的想法', icon: 'lightbulb' },
+]
 const pageLabel = computed(() => page.title || page.url || '—')
 
 watch(() => props.visible, (open) => {
@@ -88,42 +97,135 @@ async function handleSubmit() {
 
 <style lang="less" scoped>
 .feedback-dialog-header {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.feedback-dialog-header-icon {
+.feedback-dialog-header__title {
+  font-size: var(--app-text-xl);
+  font-weight: 600;
+  color: var(--td-text-color-primary);
+}
+
+.feedback-dialog-header__sub {
+  font-size: var(--app-text-sm);
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--td-text-color-secondary);
+}
+
+.feedback-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 4px;
+}
+
+.feedback-kinds {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.feedback-kind {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--td-component-stroke);
+  border-radius: var(--app-radius-lg);
+  background: var(--td-bg-color-container);
+  color: var(--td-text-color-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--app-motion-base) ease, background-color var(--app-motion-base) ease,
+    box-shadow var(--app-motion-base) ease;
+
+  &:hover {
+    border-color: var(--td-component-border);
+    background: var(--td-bg-color-container-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--td-brand-color);
+    outline-offset: 2px;
+  }
+
+  &.is-active {
+    border-color: var(--td-brand-color);
+    background: var(--td-brand-color-light);
+    box-shadow: 0 0 0 1px var(--td-brand-color) inset;
+  }
+}
+
+.feedback-kind__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--td-bg-color-secondarycontainer);
+  color: var(--td-text-color-secondary);
+
+  .is-active & {
+    background: var(--td-bg-color-container);
+    color: var(--td-brand-color);
+  }
+}
+
+.feedback-kind__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.feedback-kind__title {
+  font-size: var(--app-text-md);
+  font-weight: 500;
+}
+
+.feedback-kind__desc {
+  font-size: var(--app-text-sm);
+  line-height: 1.45;
+  color: var(--td-text-color-secondary);
+}
+
+.feedback-kind__check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
   color: var(--td-brand-color);
 }
 
-.feedback-tip {
-  margin: 0 0 16px;
-  font-size: var(--app-text-md);
-  line-height: 1.55;
-  color: var(--td-text-color-secondary);
+.feedback-content {
+  :deep(.t-textarea__inner) {
+    border-radius: var(--app-radius-lg);
+    padding: 10px 12px;
+    line-height: 1.6;
+  }
 }
 
 .feedback-page {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0;
   min-width: 0;
+  padding: 6px 10px;
+  border-radius: var(--app-radius-md);
+  background: var(--td-bg-color-secondarycontainer);
   font-size: var(--app-text-sm);
   color: var(--td-text-color-placeholder);
-
-  span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 }
 
-.feedback-form {
-  :deep(.t-form__item) {
-    margin-bottom: 16px;
-  }
+.feedback-page__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
