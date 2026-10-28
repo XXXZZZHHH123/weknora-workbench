@@ -3,12 +3,14 @@
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tin.compute.engine import contracts_on, day_end, latest_derived, latest_obs
 from tin.compute.formulas import REGISTRY
+from tin.compute.rule_values import decimal_difference, decimal_value
 from tin.config import NEW_YORK, SHANGHAI, settings
 from tin.ingest.fred import FEATURED_SERIES, FRED_SERIES, SERIES_BY_ID, SOURCE_CATALOG, MacroSeries
 from tin.judgments.service import current as current_judgment
@@ -411,7 +413,7 @@ def snapshot(session: Session, variety: str, d: date) -> dict:
     }
 
 
-def _fmt(v: float | None, unit: str = "") -> str:
+def _fmt(v: float | Decimal | None, unit: str = "") -> str:
     if v is None:
         return "—"
     digits = 4 if unit == "元" else 0 if abs(v) >= 1000 or float(v).is_integer() else 2
@@ -460,23 +462,26 @@ def _threshold_radar(j, lookup):
         if o is None:
             out.append(row)
             continue
-        v = o.value
-        row.update({"value": v, "as_of": _local(o.as_of)})
+        v = decimal_value(o.value)
+        row.update({"value": o.value, "as_of": _local(o.as_of)})
         if op == "between":
-            lo, hi = target
+            lo, hi = (decimal_value(endpoint) for endpoint in target)
             hit = lo <= v <= hi
-            gap = 0 if hit else (lo - v if v < lo else v - hi)
+            gap = Decimal(0) if hit else (decimal_difference(lo, v) if v < lo
+                                          else decimal_difference(v, hi))
             row["state"] = "在区间内" if hit else "未触发"
-            row["progress"] = 100 if hit else max(0, 100 - abs(gap) / max(hi - lo, 1) * 100)
-            row["distance"] = "已进入区间" if hit else f"距区间 {_fmt(abs(gap), row['unit'])} {row['unit']}"
+            row["progress"] = 100 if hit else float(max(0, 100 - gap.copy_abs()
+                / max(decimal_difference(hi, lo), 1) * 100))
+            row["distance"] = "已进入区间" if hit else f"距区间 {_fmt(gap.copy_abs(), row['unit'])} {row['unit']}"
         else:
+            target = decimal_value(target)
             hit = (v > target if op == ">" else v >= target if op == ">=" else
                    v < target if op == "<" else v <= target)
             row["state"] = "已触发" if hit else "未触发"
-            row["progress"] = min(100, v / target * 100 if target else 0) if op in (">", ">=") \
-                else min(100, target / v * 100 if v else 0)
+            row["progress"] = float(min(100, v / target * 100 if target else 0) if op in (">", ">=")
+                else min(100, target / v * 100 if v else 0))
             row["distance"] = ("已越线" if hit else
-                               f"距触发 {_fmt(abs(target - v), row['unit'])} {row['unit']}")
+                               f"距触发 {_fmt(decimal_difference(target, v).copy_abs(), row['unit'])} {row['unit']}")
         out.append(row)
     return out
 

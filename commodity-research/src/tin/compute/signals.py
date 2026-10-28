@@ -11,11 +11,13 @@ LLM 只在下游 compose_brief 出现，而它看到的 signals 已经是算好�
 import operator
 from contextvars import ContextVar
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tin.compute.engine import day_end, latest_obs
+from tin.compute.rule_values import decimal_difference, decimal_value
 from tin.config import SHANGHAI
 from tin.export.board import threshold_radar
 from tin.judgments.service import current as current_judgment
@@ -135,12 +137,13 @@ def _threshold_signals(session: Session, j: Judgment, variety: str, d: date) -> 
 
 # ---------- 证伪条件 ----------
 
-def _quantities(kind: str, points: list[Observation]) -> list[tuple[Observation, float]]:
+def _quantities(kind: str, points: list[Observation]) -> list[tuple[Observation, Decimal]]:
     """把观测序列折成被比较的量。change 的语义是与上一个数据点的差值，
     因此 n 期 change 要 n+1 个点，首个点只当基期不参与判定。"""
     if kind == "change":
-        return [(cur, cur.value - prev.value) for prev, cur in zip(points, points[1:], strict=False)]
-    return [(p, p.value) for p in points]
+        return [(cur, decimal_difference(cur.value, prev.value))
+                for prev, cur in zip(points, points[1:], strict=False)]
+    return [(p, decimal_value(p.value)) for p in points]
 
 
 def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal:
@@ -154,7 +157,7 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
         # 保存时 schemas.judgment.Falsifier 已经把表达式限死成这个形状；走到这里说明有人
         # 绕过服务层直接写库。宁可让流水线响，也不能把「算不了」悄悄渲染成「未触发」。
         raise ValueError(f"证伪条件 {f['id']} 的表达式无法解析：{f['expression']!r}")
-    kind, op, target = m.group(1), m.group(2), float(m.group(3))
+    kind, op, target = m.group(1), m.group(2), decimal_value(m.group(3))
     indicator = session.get(Indicator, f['series_id'])
     confirmed = f.get('unit_confirmed')
     if indicator is not None and (not isinstance(confirmed, str) or not confirmed.strip()
@@ -186,7 +189,7 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
         evidence.append(_evidence(p, f"{_iso(p.as_of)[:10]} {moved}", p.value,
                                   note=f"{f['expression']} {'成立' if hit else '不成立'}"))
     state = "触发" if all(hits) else "未触发"
-    return _upsert(session, j.id, f["id"], FALSIFIER, d, state, quantities[-1][1], evidence, None)
+    return _upsert(session, j.id, f["id"], FALSIFIER, d, state, float(quantities[-1][1]), evidence, None)
 
 
 # ---------- 对外入口 ----------

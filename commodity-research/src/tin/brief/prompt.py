@@ -23,11 +23,13 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tin.compute.engine import day_end, latest_obs
+from tin.compute.rule_values import decimal_difference, decimal_value
 from tin.compute.signals import OPS, recent_points  # 比较算子与信号层共用一张表
 from tin.config import SHANGHAI
 from tin.export.board import contract_curve, core_cards, macro_featured, previous_value
@@ -118,13 +120,13 @@ def _lines(*parts: str) -> str:
 
 # ---------------------------------------------------------------- scope 筛选
 
-def _series_value(session: Session, series_id: str, kind: str, d: date) -> float | None:
+def _series_value(session: Session, series_id: str, kind: str, d: date) -> Decimal | None:
     """取 scope 条件要比的量。kind=value 取最新观测；kind=change 取与上一个数据点的差。"""
     if kind == "change":
         points = recent_points(session, series_id, d, 2)
-        return None if len(points) < 2 else points[-1].value - points[-2].value
+        return None if len(points) < 2 else decimal_difference(points[-1].value, points[-2].value)
     o = latest_obs(session, series_id, day_end(d))
-    return None if o is None else o.value
+    return None if o is None else decimal_value(o.value)
 
 
 def scope_applies(session: Session, scope: dict | None, d: date) -> tuple[bool, str | None]:
@@ -173,7 +175,7 @@ def scope_applies(session: Session, scope: dict | None, d: date) -> tuple[bool, 
         # 与 schemas.judgment.Falsifier 用同一个表达式词法：L2 的条件不该比 L1 更自由，
         # 否则「可自动判定」这条底线就从软思路这边漏掉了。
         return False, f"条件「{when}」无法解析（写成 value/change 比较一个数，如 value > 19）"
-    kind, op, target = m.group(1), m.group(2), float(m.group(3))
+    kind, op, target = m.group(1), m.group(2), decimal_value(m.group(3))
     actual = _series_value(session, series_id, kind, d)
     if actual is None:
         return False, f"{series_id} 截至 {d.isoformat()} 数据不足，条件「{when}」无法判定"
