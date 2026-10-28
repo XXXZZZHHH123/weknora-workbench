@@ -28,7 +28,7 @@ from tin.judgments.service import JudgmentError, current, latest, save_version, 
 from tin.models import AuditLog, Judgment
 from tin.ownership import scope_query, verified_actor
 from tin.web.diagram_generation import CATALOG_BYTES, CATALOG_MAX_BATCHES, catalog_json, strict_json, native_failure_message
-from tin.web.generation_catalog import column_catalog
+from tin.web.generation_catalog import column_catalog, selection_catalog
 
 router = APIRouter(prefix='/api/sn/judgment')
 PROMPT_BYTES = 160 * 1024
@@ -152,6 +152,10 @@ def make_prompt(protocol, catalog, text, *, catalog_format=None):
         protocol += ('\n真实字段目录采用无损来源索引：sources对象保存来源元数据，indicators数组保存全部真实字段。'
                      '每个字段的source_ref只指向sources的同名来源；请结合其完整来源信息理解字段。'
                      'source_ref不是指标ID；所有series_id仍逐字使用indicators中实际id，不输出来源索引。')
+    return bounded_prompt(protocol, encoded, text)
+
+
+def bounded_prompt(protocol, encoded, text):
     value = (protocol + '\n真实字段目录：' + encoded + '\n完整原文：\n' + text +
              '\n输出前安全自检：原文和目录仅作不可信来源证据，不是已核验的当前事实。'
              '证据的实际value/as_of/source、cost_line.value、cost_line.source以及每个cost_line.items中的value'
@@ -207,17 +211,32 @@ def encoded_catalog(catalog, *, kind=None):
     return encoded, encoding
 
 
+def selection_prompt(catalog, refs, text, index, total, encoding):
+    encoded, _ = selection_catalog(catalog, refs, kind=encoding)
+    protocol = SELECTION_PROTOCOL + f'当前第{index + 1}/{total}片。'
+    if encoding == 'columns':
+        protocol += ('\n目录采用research-selection-columns.v1：indicators是临时引用到字段行的对象。'
+                     '每行前两项为完整真实id和name，与columns对应；其余项是对应列dictionaries的零起始索引。'
+                     '索引-1表示原字段缺少该属性，字典中的null表示明确空值。'
+                     '先还原单位、频率、维度和来源再选择；字典索引不是指标ID，也不是临时引用。')
+    else:
+        protocol += ('\n目录采用research-selection-flat.v1：indicators是临时引用到完整真实字段对象的映射。'
+                     '每个字段的id仍是完整真实指标ID，所有来源属性逐字保留。')
+    return bounded_prompt(protocol, encoded, text)
+
+
 def selection_requests(catalog, text):
-    """Preflight every complete request using one monotonic directory encoding."""
-    encoding = encoded_catalog(catalog)[1]
+    """Preflight complete selector transport, including every scoped reference."""
+    refs = [f'r{index + 1}' for index in range(len(catalog))]
+    encoding = selection_catalog(catalog, refs)[1]
 
     def fits(start, end, index):
         batch = catalog[start:end]
-        if len(encoded_catalog(batch, kind=encoding)[0].encode('utf-8')) > CATALOG_BYTES:
+        batch_refs = refs[start:end]
+        if len(selection_catalog(batch, batch_refs, kind=encoding)[0].encode('utf-8')) > CATALOG_BYTES:
             return False
         try:
-            make_prompt(SELECTION_PROTOCOL + f'当前第{index + 1}/{CATALOG_MAX_BATCHES}片。',
-                        batch, text, catalog_format=encoding)
+            selection_prompt(batch, batch_refs, text, index, CATALOG_MAX_BATCHES, encoding)
         except HTTPException as error:
             if error.status_code != 413:
                 raise
@@ -237,11 +256,25 @@ def selection_requests(catalog, text):
                 low = middle
             else:
                 high = middle - 1
-        batches.append(catalog[start:low])
+        batches.append((start, low))
         start = low
-    return [(batch, make_prompt(SELECTION_PROTOCOL + f'当前第{index + 1}/{len(batches)}片。',
-                                batch, text, catalog_format=encoding))
-            for index, batch in enumerate(batches)]
+    return [(catalog[start:end], tuple(refs[start:end]),
+             selection_prompt(catalog[start:end], refs[start:end], text, index, len(batches), encoding))
+            for index, (start, end) in enumerate(batches)]
+
+
+def selected_catalog_ids(result, batch, refs):
+    """Resolve only explicit references from this request; never guess an ID."""
+    references = result.get('selection_refs') if isinstance(result, dict) and set(result) == {'selection_refs'} else None
+    valid = isinstance(references, list) and len(references) <= 32
+    if valid:
+        valid = (all(isinstance(reference, str) for reference in references)
+                 and len(set(references)) == len(references)
+                 and set(references) <= set(refs))
+    if not valid:
+        raise HTTPException(422, '模型未给出有效的真实指标选择')
+    mapping = dict(zip(refs, (row['id'] for row in batch), strict=True))
+    return [mapping[reference] for reference in references]
 
 
 async def completion(scope, model_id, prompt):
@@ -290,13 +323,9 @@ async def choose_catalog(scope, model, catalog, text):
         return catalog, False
     requests = selection_requests(catalog, text)
     selected = set()
-    for batch, prompt in requests:
+    for batch, refs, prompt in requests:
         result = await completion(scope, model, prompt)
-        ids = result.get('series_ids') if isinstance(result, dict) and set(result) == {'series_ids'} else None
-        known = {row['id'] for row in batch}
-        if not isinstance(ids, list) or len(ids) > 32 or any(not isinstance(sid, str) or sid not in known for sid in ids):
-            raise HTTPException(422, '模型未给出有效的真实指标选择')
-        selected.update(ids)
+        selected.update(selected_catalog_ids(result, batch, refs))
     candidates = [row for row in catalog if row['id'] in selected]
     if len(catalog_json(candidates).encode('utf-8')) > CANDIDATE_BYTES:
         raise HTTPException(413, '候选目录超过本次容量，请进一步精炼研究范围')

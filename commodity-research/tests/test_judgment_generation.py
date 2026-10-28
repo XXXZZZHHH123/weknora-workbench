@@ -6,7 +6,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 from tests.test_knowledge_facts import canonical, FIRST, SECOND, KB, SERIES, page
-from tests.test_judgment_catalog_capacity import restore as restore_catalog, encoded_directory
+from tests.test_judgment_catalog_capacity import restore as restore_catalog, encoded_directory, selected_refs
 from tin.web import judgment_generation as generation
 from tin.integration.workbench_scope import isolated_session_factory
 from tin.models import Judgment
@@ -242,7 +242,7 @@ def test_complete_catalog_batches_and_complete_source_are_model_selected(monkeyp
         observed.extend(row['id'] for row in chunk)
         chosen.append(chunk[0])
         assert len(prompt.encode('utf-8')) <= generation.PROMPT_BYTES
-        return {'series_ids': [chunk[0]['id']]}
+        return {'selection_refs': selected_refs(encoded_directory(prompt), [chunk[0]['id']])}
     monkeypatch.setattr(generation, 'completion', choose)
     selected, partial = asyncio.run(generation.choose_catalog(None, 'm', catalog, TEXT))
     assert partial and selected == chosen
@@ -395,7 +395,10 @@ def test_222k_catalog_uses_three_complete_selections_then_one_final_analysis(gen
             import json
             chunk = restore_catalog(encoded_directory(prompt))
             seen.extend(item['id'] for item in chunk)
-            return {'series_ids': [SERIES] if any(item['id'] == SERIES for item in chunk) else []}
+            return {'selection_refs': selected_refs(encoded_directory(prompt), [SERIES])}
+        # Temporary selector references never become analysis IDs or metadata.
+        assert all('selection_ref' not in field for field in restore_catalog(encoded_directory(prompt)))
+        assert {field['id'] for field in restore_catalog(encoded_directory(prompt))} == {SERIES}
         return copy.deepcopy(response)
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
@@ -404,6 +407,7 @@ def test_222k_catalog_uses_three_complete_selections_then_one_final_analysis(gen
     assert seen == [item['id'] for item in catalog]
     assert all(TEXT in prompt for prompt in calls)
     assert rows() == []
+    assert result.json()['bindings'] == [{'series_id': SERIES, 'unit': '吨', 'name': catalog[0]['name']}]
 
 
 def test_actual_model_request_contains_a_machine_readable_numeric_rule_contract(generator):
@@ -570,7 +574,7 @@ def test_catalog_selector_keeps_authorized_macro_and_original_cadence_in_every_b
         assert SOURCE_BINDING_PROTOCOL in prompt and TEXT in prompt
         fields = restore_catalog(encoded_directory(prompt))
         observed.extend(fields)
-        return {'series_ids': ['real-0'] if any(field['id'] == 'real-0' for field in fields) else []}
+        return {'selection_refs': selected_refs(encoded_directory(prompt), ['real-0'])}
     monkeypatch.setattr(generation, 'completion', choose)
     selected, partial = asyncio.run(generation.choose_catalog(None, 'm', catalog, TEXT))
     assert partial and selected == [catalog[0]] and observed == catalog
@@ -607,8 +611,8 @@ def test_selection_empty_example_keeps_one_object_shape_on_every_complete_batch(
         marker = '空结果 JSON 示例：\n'
         assert marker in prompt, 'The selection protocol must provide an unambiguous empty object example'
         example, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
-        assert isinstance(example, dict) and set(example) == {'series_ids'}
-        assert example['series_ids'] == []
+        assert isinstance(example, dict) and set(example) == {'selection_refs'}
+        assert example['selection_refs'] == []
         fields = restore_catalog(encoded_directory(prompt))
         observed.extend(field['id'] for field in fields)
         assert TEXT in prompt
@@ -621,8 +625,9 @@ def test_selection_empty_example_keeps_one_object_shape_on_every_complete_batch(
 
 
 @pytest.mark.parametrize('response', [
-    [], {'series_ids': [], 'extra': 'not part of protocol'}, {'series_ids': None},
-    {'series_ids': ['unknown-id']}, {'series_ids': [True]}, {'series_ids': ['real-0'] * 33},
+    [], {'selection_refs': [], 'extra': 'not part of protocol'}, {'selection_refs': None},
+    {'selection_refs': ['unknown-ref']}, {'selection_refs': [True]}, {'selection_refs': ['r1'] * 33},
+    {'selection_refs': ['r1', 'r1']}, {'series_ids': ['real-0']},
 ])
 def test_selection_protocol_keeps_strict_shape_source_and_raw_size_validation(monkeypatch, response):
     from fastapi import HTTPException

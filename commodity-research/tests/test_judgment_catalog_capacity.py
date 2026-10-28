@@ -31,10 +31,13 @@ def encoded_directory(prompt):
 def restore(encoded):
     if isinstance(encoded, list):
         return encoded
-    if encoded.get('format') == 'research-catalog-columns.v1':
+    if encoded.get('format') == 'research-selection-flat.v1':
+        return list(encoded['indicators'].values())
+    if encoded.get('format') in {'research-catalog-columns.v1', 'research-selection-columns.v1'}:
         columns, dictionaries = encoded['columns'], encoded['dictionaries']
         restored = []
-        for row in encoded['indicators']:
+        rows = encoded['indicators'].values() if isinstance(encoded['indicators'], dict) else encoded['indicators']
+        for row in rows:
             item = dict(zip(columns[:2], row[:2]))
             for column, reference in zip(columns[2:], row[2:]):
                 if reference != -1:
@@ -45,11 +48,16 @@ def restore(encoded):
              **encoded['sources'][field['source_ref']]} for field in encoded['indicators']]
 
 
+def selected_refs(encoded, ids):
+    """Independent test-side lookup of explicit references to the real fields."""
+    return [ref for ref, field in zip(encoded['indicators'], restore(encoded)) if field['id'] in ids]
+
+
 def test_large_repeated_metadata_directory_reaches_complete_bounded_model_selection(monkeypatch):
     catalog = directory()
     before = deepcopy(catalog)
     assert len(generation.catalog_json(catalog).encode()) > 4 * 96 * 1024
-    seen, calls, selected = [], [], []
+    seen, calls, selected, seen_refs = [], [], [], []
 
     async def choose(scope, model, prompt):
         batch = restore(encoded_directory(prompt))
@@ -58,16 +66,52 @@ def test_large_repeated_metadata_directory_reaches_complete_bounded_model_select
         assert len(json.dumps(encoded_directory(prompt), ensure_ascii=False,
                               separators=(',', ':')).encode()) <= 96 * 1024
         seen.extend(batch)
+        refs = list(encoded_directory(prompt)['indicators'])
+        assert set(refs).isdisjoint(seen_refs)
+        seen_refs.extend(refs)
         calls.append(prompt)
         selected.append(batch[-1])
-        return {'series_ids': [batch[-1]['id']]}
+        return {'selection_refs': selected_refs(encoded_directory(prompt), [batch[-1]['id']])}
 
     monkeypatch.setattr(generation, 'completion', choose)
     candidates, partial = asyncio.run(generation.choose_catalog(None, 'model', catalog, TEXT))
     assert partial is True and 1 < len(calls) <= 4
     assert seen == catalog and candidates == selected and catalog == before
-    assert all(encoded_directory(prompt)['format'] == 'research-catalog-columns.v1' for prompt in calls)
+    assert all(encoded_directory(prompt)['format'] == 'research-selection-columns.v1' for prompt in calls)
     assert all('字典索引不是指标ID' in prompt for prompt in calls)
+    assert seen_refs == [f'r{index + 1}' for index in range(len(catalog))]
+    assert all(set(item) == set(catalog[0]) for item in candidates)
+
+
+def test_short_references_resolve_exact_real_ids_without_mutating_or_guessing():
+    batch = directory(3)
+    before = deepcopy(batch)
+    refs = ('r41', 'r42', 'r43')
+    assert generation.selected_catalog_ids({'selection_refs': ['r43', 'r41']}, batch, refs) == [
+        batch[2]['id'], batch[0]['id']]
+    assert generation.selected_catalog_ids({'selection_refs': []}, batch, refs) == []
+    assert batch == before
+    assert generation.selected_catalog_ids({'selection_refs': [f'r{index + 1}' for index in range(32)]},
+        directory(32), tuple(f'r{index + 1}' for index in range(32))) == [row['id'] for row in directory(32)]
+
+
+@pytest.mark.parametrize('response', [
+    {'series_ids': ['kb-' + '0' * 48]},
+    {'selection_refs': ['kb-' + '0' * 48]},
+    {'selection_refs': ['kb-' + '0' * 45]},
+    {'selection_refs': ['r41', 'r41']},
+    {'selection_refs': ['r40']}, {'selection_refs': ['r44']},
+    {'selection_refs': ['R41']}, {'selection_refs': ['r041']},
+    {'selection_refs': [41]}, {'selection_refs': [True]},
+    {'selection_refs': [None]}, {'selection_refs': 'r41'},
+    {'selection_refs': ['r41'], 'extra': []},
+])
+def test_short_reference_resolution_never_accepts_ids_typo_cross_batch_or_wrong_shape(response):
+    batch = directory(3)
+    before = deepcopy(batch)
+    with pytest.raises(HTTPException) as caught:
+        generation.selected_catalog_ids(response, batch, ('r41', 'r42', 'r43'))
+    assert caught.value.status_code == 422 and batch == before
 
 
 def test_dictionary_encoding_keeps_absence_null_types_and_untrusted_literals_distinct():
@@ -118,11 +162,11 @@ def test_large_selection_still_rejects_unknown_cross_batch_and_excess_ids(monkey
         fields = restore(encoded_directory(prompt))
         calls.append(prompt)
         if kind == 'invented':
-            return {'series_ids': ['not-a-real-field']}
+            return {'selection_refs': ['not-a-real-reference']}
         if kind == 'another-batch':
             assert catalog[-1]['id'] not in {item['id'] for item in fields}
-            return {'series_ids': [catalog[-1]['id']]}
-        return {'series_ids': [item['id'] for item in fields[:33]]}
+            return {'selection_refs': [f'r{len(catalog)}']}
+        return {'selection_refs': list(encoded_directory(prompt)['indicators'])[:33]}
 
     monkeypatch.setattr(generation, 'completion', invalid)
     with pytest.raises(HTTPException) as caught:
