@@ -117,6 +117,9 @@ func (v *RemoteAPIVLM) Predict(ctx context.Context, imgBytesList [][]byte, promp
 	for attempt := 1; ; attempt++ {
 		resp, err = v.chatOnce(ctx, parts)
 		wait, limited := vlmRateLimitDelay(err, attempt)
+		if limited {
+			rateLimitSignal.note(time.Now())
+		}
 		if !limited || attempt >= vlmRateLimitAttempts {
 			break
 		}

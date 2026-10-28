@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -122,7 +123,17 @@ func asynqRetryDelayFunc(n int, e error, t *asynq.Task) time.Duration {
 	if errors.Is(e, service.ErrWikiIngestConcurrent) {
 		return wikiIngestRetryDelay
 	}
+	if errors.Is(e, types.ErrParseDeferred) {
+		// Jitter keeps many waiting documents from re-asking the gate in lockstep.
+		return types.ParseDeferredRetryDelay + time.Duration(rand.Int63n(int64(3*time.Second)))
+	}
 	return asynq.DefaultRetryDelayFunc(n, e, t)
+}
+
+// asynqIsFailure keeps admission deferrals from consuming the retry budget:
+// a document waiting for a parse slot has not failed.
+func asynqIsFailure(e error) bool {
+	return !errors.Is(e, types.ErrParseDeferred)
 }
 
 // Worker defaults live in types so server construction and runtime reporting
@@ -141,6 +152,7 @@ func newAsynqServer(concurrency int, queues map[string]int) *asynq.Server {
 			Concurrency:    concurrency,
 			Queues:         queues,
 			RetryDelayFunc: asynqRetryDelayFunc,
+			IsFailure:      asynqIsFailure,
 		},
 	)
 }

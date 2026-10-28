@@ -3762,6 +3762,14 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 		// 这里可以根据错误类型判断是否可恢复，暂时允许重试
 	}
 
+	// 全局与按用户的并发准入：没有空位时保持排队，稍后由 asynq 重新投递。
+	// 最后一次重试不再排队：asynq 会把已用尽重试的任务直接归档，延后只会让文档丢失。
+	if !isLastRetry {
+		if err := s.admitDocumentParse(ctx, payload); err != nil {
+			return err
+		}
+	}
+
 	// 检查是否有部分处理（有chunks但状态不是completed）
 	if knowledge.ParseStatus != "completed" && knowledge.ParseStatus != "pending" &&
 		knowledge.ParseStatus != "processing" {
