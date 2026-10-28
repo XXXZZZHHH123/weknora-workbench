@@ -7,6 +7,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const remoteCatalog = root.dataset.catalogRemote === "true";
   let catalogTotal = Number(root.dataset.catalogTotal || rows.length), catalogOffset = Number(root.dataset.catalogOffset || 0);
   let catalogNext = catalogOffset + rows.length < catalogTotal ? catalogOffset + rows.length : null;
+  const catalogPagers = remoteCatalog ? ["-top", ""].map(suffix => ({
+    previous: get("prev-page" + suffix), next: get("next-page" + suffix), status: get("page-status" + suffix),
+  })) : [];
+  let catalogLoading = false;
   let catalogController, catalogTimer, catalogGeneration = 0;
   const names = new Map(rows.map((r) => [r.dataset.seriesId, r.dataset.name]));
   const normalize = (s) => String(s).normalize("NFKC").toLocaleLowerCase();
@@ -42,7 +46,23 @@ document.addEventListener("DOMContentLoaded", () => {
     get("search-clear-input").hidden = !get("search").value.trim();
   }
 
+  function syncCatalogPaging(message = "") {
+    const status = message || `${rows.length ? catalogOffset + 1 : 0}–${catalogOffset + rows.length} / ${catalogTotal} 项`;
+    catalogPagers.forEach(pager => {
+      pager.previous.disabled = catalogLoading || !catalogOffset;
+      pager.next.disabled = catalogLoading || catalogNext === null;
+      pager.status.textContent = status;
+    });
+    root.querySelectorAll("[data-catalog-total-count]").forEach(slot => { slot.textContent = String(remoteCatalog ? catalogTotal : rows.length); });
+  }
+
+  function pruneNames() {
+    const keep = new Set([...rows.map(row => row.dataset.seriesId), ...favorites, ...selected]);
+    for (const identifier of names.keys()) if (!keep.has(identifier)) names.delete(identifier);
+  }
+
   function filterRows() {
+    pruneNames();
     const terms = remoteCatalog ? [] : normalize(get("search").value).trim().split(/\s+/).filter(Boolean);
     let count = 0;
     rows.forEach((row) => {
@@ -57,7 +77,8 @@ document.addEventListener("DOMContentLoaded", () => {
       group.querySelector("[data-group-count]").textContent = visible;
       if (terms.length || scope !== "all") group.open = true;
     });
-    get("result-count").textContent = `${count} / ${remoteCatalog ? catalogTotal : rows.length} 项`;
+    get("result-count").textContent = `本页 ${count} 项 · 范围共 ${remoteCatalog ? catalogTotal : rows.length} 项`;
+    syncCatalogPaging();
     get("no-results").hidden = count > 0;
     const url = new URL(location.href);
     if (get("search").value.trim()) url.searchParams.set("q", get("search").value.trim());
@@ -91,8 +112,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!remoteCatalog) { filterRows(); return; }
     clearTimeout(catalogTimer); catalogController?.abort(); catalogController = new AbortController();
     const own = ++catalogGeneration, controller = catalogController;
+    let catalogError = "";
+    catalogLoading = true;
     get("catalog-groups").setAttribute("aria-busy", "true");
-    get("page-status").textContent = "正在查找指标…";
+    syncCatalogPaging("正在查找指标…");
     try {
       const query = new URLSearchParams({ search: get("search").value.trim(), scope: scope === "favorites" ? "all" : scope, offset: String(offset), limit: "200" });
       if (root.dataset.date) query.set("date", root.dataset.date);
@@ -106,12 +129,16 @@ document.addEventListener("DOMContentLoaded", () => {
       rows = Array.from(root.querySelectorAll("[data-indicator-row]")); groups = Array.from(root.querySelectorAll("[data-indicator-group]"));
       searchText.clear(); rows.forEach(row => { names.set(row.dataset.seriesId, row.dataset.name); searchText.set(row, normalize(row.dataset.search)); });
       catalogOffset = data.offset; catalogTotal = data.total; catalogNext = data.next_offset;
-      get("prev-page").disabled = !catalogOffset; get("next-page").disabled = catalogNext === null;
-      get("page-status").textContent = `${rows.length ? catalogOffset + 1 : 0}–${catalogOffset + rows.length} / ${catalogTotal} 项`;
       filterRows(); syncFavorites(); syncSelection();
     } catch (error) {
-      if (own === catalogGeneration && error.name !== "AbortError") get("page-status").textContent = error.message || "目录暂时不可用，请重新搜索。";
-    } finally { if (own === catalogGeneration) get("catalog-groups").removeAttribute("aria-busy"); }
+      if (own === catalogGeneration && error.name !== "AbortError") catalogError = error.message || "目录暂时不可用，请重新搜索。";
+    } finally {
+      if (own === catalogGeneration) {
+        catalogLoading = false;
+        get("catalog-groups").removeAttribute("aria-busy");
+        syncCatalogPaging(catalogError);
+      }
+    }
   }
   function searchCatalog() {
     if (!remoteCatalog) { filterRows(); return; }
@@ -294,6 +321,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   function syncSelection() {
+    pruneNames();
     get("compare-bar").hidden = !selected.size;
     get("selection").textContent = `已选 ${selected.size}/4：${[...selected].map((sid) => names.get(sid)).join("、")}`;
     get("compare-open").disabled = selected.size < 2;
@@ -360,8 +388,10 @@ document.addEventListener("DOMContentLoaded", () => {
   get("search-clear").addEventListener("click", () => { get("search").value = ""; scope = "all"; remoteCatalog ? void loadCatalog() : filterRows(); get("search").focus(); });
   get("search-clear-input").addEventListener("click", () => { get("search").value = ""; remoteCatalog ? void loadCatalog() : filterRows(); get("search").focus(); });
   if (remoteCatalog) {
-    get("prev-page").addEventListener("click", () => loadCatalog(Math.max(0, catalogOffset - 200)));
-    get("next-page").addEventListener("click", () => { if (catalogNext !== null) void loadCatalog(catalogNext); });
+    catalogPagers.forEach(pager => {
+      pager.previous.addEventListener("click", () => loadCatalog(Math.max(0, catalogOffset - 200)));
+      pager.next.addEventListener("click", () => { if (catalogNext !== null) return loadCatalog(catalogNext); });
+    });
     window.addEventListener("pagehide", () => { catalogGeneration++; clearTimeout(catalogTimer); catalogController?.abort(); });
     if (scope === "favorites") void loadCatalog();
   }

@@ -105,6 +105,117 @@ test('off-page favorite retains its server-rendered accessible name without anot
   assert.ok(requests.every((url) => !new URL(url, 'http://fixture.invalid').pathname.endsWith('/catalog')));
 });
 
+function pagedIndicators({ total = 405, offset = 0, count = 200, favorites = [] } = {}) {
+  const storage = new Map([['tin.indicators.favorites.v1', JSON.stringify(favorites)]]);
+  const f = fixture({ storage }), requests = [], previewRequests = [], compareRequests = [], maps = [], root = f.element('indicator-workspace');
+  f.sandbox.Map = class ObservedMap extends Map { constructor(entries) { super(entries); maps.push(this); } };
+  const header = new Element('indicator-header-total');
+  const makeRows = (start, length) => Array.from({ length }, (_, index) => {
+    const element = new Element();
+    Object.assign(element.dataset, { seriesId: 'fixture.' + (start + index), name: 'Fixture field ' + (start + index), search: 'Fixture field ' + (start + index) });
+    return element;
+  });
+  let visibleRows = makeRows(offset, count);
+  Object.assign(root.dataset, { catalogRemote: 'true', catalogTotal: String(total), catalogOffset: String(offset) });
+  root.querySelector = () => null;
+  root.querySelectorAll = (selector) => selector === '[data-indicator-row]' ? visibleRows : selector === '[data-catalog-total-count]' ? [header] : [];
+  Object.defineProperty(f.element('indicator-catalog-groups'), 'innerHTML', {
+    get() { return ''; }, set(value) { const data = JSON.parse(value); visibleRows = makeRows(data.offset, data.count); },
+  });
+  f.sandbox.location = { href: 'http://fixture.invalid/sn/indicators', search: '', hash: '' };
+  f.sandbox.history = { replaceState() {} }; f.sandbox.localStorage = f.window.localStorage;
+  Object.assign(f.window, { scrollY: 0, innerHeight: 900 });
+  f.window.researchFetch = async (url) => {
+    const parsed = new URL(url, 'http://fixture.invalid'), query = parsed.searchParams;
+    if (parsed.pathname.endsWith('/previews')) {
+      previewRequests.push(query); return { ok: true, json: async () => ({ cards: [], html: '' }) };
+    }
+    if (parsed.pathname.endsWith('/compare')) {
+      compareRequests.push(query); return { ok: true, json: async () => ({ status: 'unavailable', reason: 'Fixture has no shared observations' }) };
+    }
+    requests.push(query);
+    const at = Number(query.get('offset')), matched = query.get('search') === 'no-match' ? 0 : query.get('search') ? 1 : total;
+    const length = Math.min(200, Math.max(0, matched - at));
+    return { ok: true, json: async () => ({ indicators: Array.from({ length }, (_, i) => ({ series_id: 'fixture.' + (at + i) })),
+      total: matched, offset: at, next_offset: at + length < matched ? at + length : null,
+      html: JSON.stringify({ offset: at, count: length }), nav_html: '' }) };
+  };
+  f.load('indicator-preferences.js'); f.load('indicators.js'); f.boot();
+  return { ...f, requests, previewRequests, compareRequests, header, namesCache: maps.find(map => map.has('fixture.' + offset)) };
+}
+
+test('top and bottom indicator pagers show actual totals and only request explicit pages', async () => {
+  const f = pagedIndicators();
+  assert.equal(f.header.textContent, '405');
+  assert.equal(f.element('indicator-result-count').textContent, '本页 200 项 · 范围共 405 项');
+  assert.deepEqual(f.requests, [], 'Opening the page must not preload other metadata pages');
+  for (const suffix of ['-top', '']) {
+    assert.equal(f.element('indicator-page-status' + suffix).textContent, '1–200 / 405 项');
+    assert.equal(f.element('indicator-prev-page' + suffix).disabled, true);
+    assert.equal(f.element('indicator-next-page' + suffix).disabled, false);
+  }
+  await f.element('indicator-next-page-top').emit('click'); await settle();
+  for (const suffix of ['-top', '']) assert.equal(f.element('indicator-page-status' + suffix).textContent, '201–400 / 405 项');
+  await f.element('indicator-next-page').emit('click'); await settle();
+  for (const suffix of ['-top', '']) {
+    assert.equal(f.element('indicator-page-status' + suffix).textContent, '401–405 / 405 项');
+    assert.equal(f.element('indicator-next-page' + suffix).disabled, true);
+  }
+  await f.element('indicator-prev-page-top').emit('click'); await settle();
+  assert.deepEqual(f.requests.map(query => query.get('offset')), ['200', '400', '200']);
+  assert.ok(f.requests.every(query => query.get('limit') === '200'));
+});
+
+test('search and clear reset both indicator pagers, including no-result state', async () => {
+  const f = pagedIndicators({ offset: 400, count: 5 });
+  f.element('indicator-search').value = 'off-page literal';
+  await f.element('indicator-search').emit('input');
+  await new Promise(resolve => setTimeout(resolve, 280)); await settle();
+  assert.equal(f.requests.at(-1).get('search'), 'off-page literal');
+  assert.equal(f.requests.at(-1).get('offset'), '0');
+  assert.equal(f.header.textContent, '1');
+  for (const suffix of ['-top', '']) assert.equal(f.element('indicator-page-status' + suffix).textContent, '1–1 / 1 项');
+  f.element('indicator-search').value = 'no-match';
+  await f.element('indicator-search').emit('input');
+  await new Promise(resolve => setTimeout(resolve, 280)); await settle();
+  for (const suffix of ['-top', '']) {
+    assert.equal(f.element('indicator-page-status' + suffix).textContent, '0–0 / 0 项');
+    assert.equal(f.element('indicator-prev-page' + suffix).disabled, true);
+    assert.equal(f.element('indicator-next-page' + suffix).disabled, true);
+  }
+  assert.equal(f.element('indicator-no-results').hidden, false);
+  await f.element('indicator-search-clear-input').emit('click'); await settle();
+  assert.equal(f.requests.at(-1).get('offset'), '0');
+  assert.equal(f.requests.at(-1).get('search'), '');
+  assert.equal(f.header.textContent, '405');
+  assert.equal(f.element('indicator-result-count').textContent, '本页 200 项 · 范围共 405 项');
+  assert.equal(f.requests.length, 3);
+});
+
+test('long indicator paging retains only current, favorite and compared names without extra reads', async () => {
+  const favoriteIds = Array.from({ length: 40 }, (_, index) => 'fixture.' + index);
+  const f = pagedIndicators({ total: 2400, favorites: favoriteIds }); await settle();
+  assert.equal(f.namesCache.size, 200);
+  const chosen = [40, 41, 42, 43].map(index => 'fixture.' + index);
+  for (const identifier of chosen) {
+    const box = new Element(); box.dataset.compare = identifier; box.checked = true;
+    box.closest = selector => selector === '[data-compare]' ? box : null;
+    f.element('indicator-workspace').listeners.change[0]({ target: box });
+  }
+  for (let page = 1; page < 12; page++) {
+    await f.element('indicator-next-page-top').emit('click'); await settle();
+    assert.ok(f.namesCache.size <= 244, 'Visited metadata names must not accumulate beyond current 200 + favorite 40 + comparison 4');
+    for (const identifier of [...favoriteIds, ...chosen]) assert.ok(f.namesCache.has(identifier));
+    for (const index of [40, 41, 42, 43]) assert.match(f.element('indicator-selection').textContent, new RegExp('Fixture field ' + index));
+  }
+  assert.equal(f.namesCache.size, 244);
+  await f.element('indicator-compare-open').emit('click'); await settle();
+  assert.deepEqual(f.compareRequests[0].getAll('series_id'), chosen);
+  assert.deepEqual(f.requests.map(query => Number(query.get('offset'))), Array.from({ length: 11 }, (_, index) => (index + 1) * 200));
+  assert.equal(f.previewRequests.length, 1, 'Name retention must not add preview reads while paging');
+  assert.equal(f.compareRequests.length, 1);
+});
+
 test('diagram metadata pagination survives category expansion and renders next page', async () => {
   const f = fixture({ context: { scope_version: 2 } }), requests = [];
   f.window.researchFetch = async (url) => {

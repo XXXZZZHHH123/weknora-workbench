@@ -1,0 +1,6 @@
+{% set pager_suffix = '-top' if pager_location == 'top' else '' %}
+<div class="indicator-catalog-pager" aria-label="指标目录{{ '顶部' if pager_location == 'top' else '底部' }}翻页">
+  <button id="indicator-prev-page{{ pager_suffix }}" data-catalog-page-prev type="button" class="indicator-button"{% if not catalog_offset %} disabled{% endif %}>上一页</button>
+  <span id="indicator-page-status{{ pager_suffix }}" data-catalog-page-status class="indicator-muted"{% if pager_location == 'top' %} role="status" aria-live="polite"{% endif %}>{{ catalog_offset + 1 if rows else 0 }}–{{ catalog_offset + rows | length }} / {{ visible_catalog_total }} 项</span>
+  <button id="indicator-next-page{{ pager_suffix }}" data-catalog-page-next type="button" class="indicator-button"{% if catalog_next is none %} disabled{% endif %}>下一页</button>
+</div>
