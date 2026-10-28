@@ -14,6 +14,7 @@ from tin.integration.identity import Identity, current_identity
 from tin.integration.workbench_scope import WorkbenchScope, current_workbench, artifact_session
 from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
 from tin.web import research_strategy
+from tin.web.research_display import register_display
 
 WB = "fbc4430b-cb50-49c2-9479-289f2f52971f"
 OTHER = "272c1307-3f64-4306-953e-9789bf2b53c8"
@@ -231,6 +232,7 @@ def test_partial_displays_readable_fields_and_escapes_untrusted_markdown(cards):
     assert client.post(URL, json=value).status_code == 201
     context = client.get(URL).json()
     environment = Environment(loader=FileSystemLoader(ROOT / "src/tin/web/templates"), autoescape=select_autoescape())
+    register_display(environment)
     html = environment.get_template("_research_strategy_cards.html").render(research_cards=context, restricted_view=False,
         research_static_prefix=lambda: "/research", static_version=lambda: "fixture")
     assert "适用 / 触发" in html and "应对措施" in html and "暂停 / 撤回" in html and "2024-04-05" in html
@@ -254,6 +256,7 @@ def test_partial_renders_saved_database_dates_without_response_encoding(cards):
                           for field in ("created_at", "updated_at")}
         context = research_strategy.build_context(session, state["scope"])
     environment = Environment(loader=FileSystemLoader(ROOT / "src/tin/web/templates"), autoescape=select_autoescape())
+    register_display(environment)
     html = environment.get_template("_research_strategy_cards.html").render(research_cards=context, restricted_view=False,
         research_static_prefix=lambda: "/research", static_version=lambda: "fixture")
     embedded = html.split('<script id="research-card-data" type="application/json">', 1)[1].split("</script>", 1)[0]
