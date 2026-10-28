@@ -36,6 +36,7 @@ func newAdmissionService(t *testing.T, global, perUser int) (*knowledgeService, 
 	t.Helper()
 	t.Setenv("WEKNORA_PARSE_MAX_CONCURRENT_DOCUMENTS", fmt.Sprint(global))
 	t.Setenv("WEKNORA_PARSE_MAX_CONCURRENT_PER_USER", fmt.Sprint(perUser))
+	stubParseResources(t, parseResourceSample{MemAvailableMB: -1, Load1: -1})
 	_, rdb := newSlotReleaseRedis(t)
 	repo := &admissionRepo{status: map[string]string{}}
 	return &knowledgeService{repo: repo, redisClient: rdb}, repo
@@ -122,4 +123,81 @@ func TestParseAdmissionFailsOpenWithoutRedis(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		require.NoError(t, admit(svc, "alice", fmt.Sprintf("a%d", i)))
 	}
+}
+
+func stubParseResources(t *testing.T, sample parseResourceSample) {
+	t.Helper()
+	original := sampleParseResources
+	sampleParseResources = func() parseResourceSample { return sample }
+	t.Cleanup(func() { sampleParseResources = original })
+}
+
+func TestParseGlobalLimitFollowsResources(t *testing.T) {
+	t.Setenv("WEKNORA_PARSE_MIN_CONCURRENT_DOCUMENTS", "2")
+	t.Setenv("WEKNORA_PARSE_MAX_CONCURRENT_DOCUMENTS", "30")
+	idle := parseResourceSample{MemAvailableMB: 17 * 1024, Load1: 1, CPUs: 8}
+
+	cases := []struct {
+		name   string
+		active int
+		sample parseResourceSample
+		want   int
+		reason string
+	}{
+		// (17 GB - 3 GB reserve) / 1.5 GB = 9 more documents.
+		{"memory bounds an idle host", 0, idle, 9, "memory"},
+		{"memory room adds to running documents", 4, idle, 13, "memory"},
+		{"just-admitted documents reserve their memory", 4,
+			parseResourceSample{MemAvailableMB: 17 * 1024, Load1: 1, CPUs: 8, Warming: 4}, 9, "memory"},
+		{"plenty of memory hits the ceiling", 0,
+			parseResourceSample{MemAvailableMB: 64 * 1024, Load1: 1, CPUs: 8}, 30, "ceiling"},
+		{"busy CPU holds at the running count", 6,
+			parseResourceSample{MemAvailableMB: 17 * 1024, Load1: 9, CPUs: 8}, 6, "cpu"},
+		{"VLM throttling holds at the running count", 5,
+			parseResourceSample{MemAvailableMB: 17 * 1024, Load1: 1, CPUs: 8, VLMThrottled: 12}, 5, "vlm_rate_limited"},
+		{"the floor keeps documents moving", 0,
+			parseResourceSample{MemAvailableMB: 2 * 1024, Load1: 20, CPUs: 8, VLMThrottled: 50}, 2, "memory+floor"},
+		{"unknown signals are not pressure", 3,
+			parseResourceSample{MemAvailableMB: -1, Load1: -1}, 30, "ceiling"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, reason := parseGlobalLimit(tc.active, tc.sample)
+			require.Equal(t, tc.want, got)
+			require.Equal(t, tc.reason, reason)
+		})
+	}
+}
+
+func TestParseAdmissionReservesMemoryForJustAdmittedDocuments(t *testing.T) {
+	svc, _ := newAdmissionService(t, 30, 2)
+	// Room for three documents; the first three have not reached their
+	// docreader peak yet, so a fourth must wait even though MemAvailable has
+	// not dropped.
+	stubParseResources(t, parseResourceSample{MemAvailableMB: 3072 + 3*1536, Load1: 1, CPUs: 8})
+	require.NoError(t, admit(svc, "alice", "a1"))
+	require.NoError(t, admit(svc, "bob", "b1"))
+	require.NoError(t, admit(svc, "carol", "c1"))
+	require.ErrorIs(t, admit(svc, "dave", "d1"), types.ErrParseDeferred)
+}
+
+func TestParseAdmissionWaitsWhileResourcesAreTight(t *testing.T) {
+	svc, repo := newAdmissionService(t, 30, 2)
+	stubParseResources(t, parseResourceSample{MemAvailableMB: 17 * 1024, Load1: 1, CPUs: 8})
+
+	require.NoError(t, admit(svc, "alice", "a1"))
+	require.NoError(t, admit(svc, "bob", "b1"))
+	require.NoError(t, admit(svc, "carol", "c1"))
+
+	stubParseResources(t, parseResourceSample{MemAvailableMB: 17 * 1024, Load1: 12, CPUs: 8})
+	require.ErrorIs(t, admit(svc, "dave", "d1"), types.ErrParseDeferred)
+	// A running document keeps its slot when the host gets busy.
+	require.NoError(t, admit(svc, "alice", "a1"))
+
+	// Still busy: a finished document is not replaced until the load drops.
+	repo.status["a1"] = types.ParseStatusCompleted
+	require.ErrorIs(t, admit(svc, "dave", "d1"), types.ErrParseDeferred)
+
+	stubParseResources(t, parseResourceSample{MemAvailableMB: 17 * 1024, Load1: 2, CPUs: 8})
+	require.NoError(t, admit(svc, "dave", "d1"))
 }
