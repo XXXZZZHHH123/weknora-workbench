@@ -6,6 +6,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 from tests.test_knowledge_facts import canonical, FIRST, SECOND, KB, SERIES, page
+from tests.test_judgment_catalog_capacity import restore as restore_catalog, encoded_directory
 from tin.web import judgment_generation as generation
 from tin.integration.workbench_scope import isolated_session_factory
 from tin.models import Judgment
@@ -237,9 +238,7 @@ def test_complete_catalog_batches_and_complete_source_are_model_selected(monkeyp
     observed, chosen = [], []
     async def choose(scope, model, prompt):
         assert TEXT in prompt
-        encoded = prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0]
-        import json
-        chunk = json.loads(encoded)
+        chunk = restore_catalog(encoded_directory(prompt))
         observed.extend(row['id'] for row in chunk)
         chosen.append(chunk[0])
         assert len(prompt.encode('utf-8')) <= generation.PROMPT_BYTES
@@ -293,10 +292,9 @@ def test_source_index_compression_preserves_every_field_and_full_source_without_
     prompt = generation.make_prompt(generation.analysis_protocol(False), selected, TEXT)
     assert len(prompt.encode()) <= generation.PROMPT_BYTES and TEXT in prompt
     encoded = prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0]
-    grouped = json.loads(encoded)
-    restored = [{**{key: value for key, value in field.items() if key != 'source_ref'},
-                 **grouped['sources'][field['source_ref']]} for field in grouped['indicators']]
-    assert restored == catalog and len(grouped['sources']) == 1
+    restored = restore_catalog(json.loads(encoded))
+    source_encoded, grouped = generation.prompt_catalog(catalog)
+    assert restored == catalog and grouped and len(json.loads(source_encoded)['sources']) == 1
     assert 'source_ref不是指标ID' in prompt
 
 
@@ -395,7 +393,7 @@ def test_222k_catalog_uses_three_complete_selections_then_one_final_analysis(gen
         calls.append(prompt)
         if prompt.startswith(generation.SELECTION_PROTOCOL):
             import json
-            chunk = json.loads(prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0])
+            chunk = restore_catalog(encoded_directory(prompt))
             seen.extend(item['id'] for item in chunk)
             return {'series_ids': [SERIES] if any(item['id'] == SERIES for item in chunk) else []}
         return copy.deepcopy(response)
@@ -548,12 +546,7 @@ def test_catalog_selector_keeps_authorized_macro_and_original_cadence_in_every_b
     observed = []
     async def choose(scope, model, prompt):
         assert SOURCE_BINDING_PROTOCOL in prompt and TEXT in prompt
-        document = json.loads(prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0])
-        if isinstance(document, dict):
-            fields = [{**{k: v for k, v in item.items() if k != 'source_ref'},
-                       **document['sources'][item['source_ref']]} for item in document['indicators']]
-        else:
-            fields = document
+        fields = restore_catalog(encoded_directory(prompt))
         observed.extend(fields)
         return {'series_ids': ['real-0'] if any(field['id'] == 'real-0' for field in fields) else []}
     monkeypatch.setattr(generation, 'completion', choose)
@@ -594,7 +587,7 @@ def test_selection_empty_example_keeps_one_object_shape_on_every_complete_batch(
         example, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
         assert isinstance(example, dict) and set(example) == {'series_ids'}
         assert example['series_ids'] == []
-        fields = json.loads(prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0])
+        fields = restore_catalog(encoded_directory(prompt))
         observed.extend(field['id'] for field in fields)
         assert TEXT in prompt
         return example
