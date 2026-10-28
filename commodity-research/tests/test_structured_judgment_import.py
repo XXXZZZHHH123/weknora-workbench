@@ -4,6 +4,7 @@ import copy
 from sqlalchemy import select
 
 from tin.models import Judgment
+from tin.models.workbench import WorkbenchArtifact
 from tin.integration.workbench_scope import isolated_session_factory
 from tests.test_knowledge_facts import canonical, FIRST, page
 from tests.test_judgment_generation import SERIES
@@ -60,3 +61,32 @@ def test_structured_import_cannot_silently_activate_or_accept_unknown_protocol(c
         json={'payload': copy.deepcopy(payload()), 'activate': True})
     assert response.status_code == 422
     assert saved() == []
+
+
+def test_multiple_imports_keep_independent_markdown_and_open_the_selected_draft(canonical):
+    client, headers, *_ = canonical
+    identifiers = []
+    for title in ['First research case', 'Second research case']:
+        document = payload()
+        document['contradiction']['bull']['claim'] = title
+        preview = client.post(path('/structured/preview'), headers=headers,
+            json={'payload': document, 'panel_title': title})
+        assert preview.status_code == 200, preview.text
+        proposed = preview.json()
+        response = client.post(path('/structured/apply'), headers=headers,
+            json={'draft_id': proposed['draft_id'], 'base_version': proposed['base_version']})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        identifiers.append(result['id'])
+        assert result['panel']['title'] == title and result['panel']['judgment_id'] == result['id']
+    assert identifiers[0] != identifiers[1]
+    for identifier, title in zip(identifiers, ['First research case', 'Second research case']):
+        managed = client.get(path('/manage?judgment_id=' + str(identifier)), headers=headers)
+        assert managed.status_code == 200, managed.text
+        assert managed.json()['current']['id'] == identifier
+        assert title in managed.json()['current']['markdown']
+        assert managed.json()['latest'] == {'version': 2}
+    with isolated_session_factory(17, FIRST)() as session:
+        assert len(list(session.scalars(select(Judgment)))) == 2
+        assert len(list(session.scalars(select(WorkbenchArtifact).where(WorkbenchArtifact.module == 'judgments')))) == 2
+    assert all(row.status == '草稿' for row in saved())

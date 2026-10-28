@@ -19,11 +19,14 @@ LEGACY_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z')
 
 
 @contextmanager
-def page_read_scope(module, *, series_ids=None, day=None, template_id=None, points_per_series=None):
+def page_read_scope(module, *, series_ids=None, day=None, template_id=None, points_per_series=None, judgment_id=None):
     if module not in MODULES:
         raise HTTPException(400, '研究页面模块无效')
     if points_per_series is not None and (type(points_per_series) is not int or not 1 <= points_per_series <= 2000):
         raise HTTPException(400, '页面所需观测点数无效')
+    if judgment_id is not None and (module != 'judgments' or type(judgment_id) is not int
+            or not 1 <= judgment_id <= 2**63 - 1):
+        raise HTTPException(422, '研究判断需要明确的有效记录编号')
     from tin.integration.workbench_scope import current_workbench
     active = current_workbench.get()
     pattern = SERIES if active is not None and active.scope_version == 2 else LEGACY_ID
@@ -44,7 +47,9 @@ def page_read_scope(module, *, series_ids=None, day=None, template_id=None, poin
         day = previous['day'] if day is None else day
         template_id = previous['template_id'] if template_id is None else template_id
         points_per_series = previous.get('points') if points_per_series is None else points_per_series
-    marker = _page.set({'module':module,'series_ids':series_ids,'day':day,'template_id':template_id,'points':points_per_series})
+        judgment_id = previous.get('judgment_id') if judgment_id is None else judgment_id
+    marker = _page.set({'module':module,'series_ids':series_ids,'day':day,'template_id':template_id,
+                       'points':points_per_series,'judgment_id':judgment_id})
     try:
         yield
     finally:
@@ -210,7 +215,11 @@ def _saved_plan(scope, request):
         if module in {'home','reports','judgments','strategies'}:
             from tin.judgments.service import current,to_payload
             from tin.integration.research_profile import research_variety
-            judgment = current(session,research_variety(session))
+            if module == 'judgments' and request.get('judgment_id') is not None:
+                from tin.web.judgment_panels import selected_judgment
+                judgment = selected_judgment(session, request['judgment_id'], scope=scope)
+            else:
+                judgment = current(session,research_variety(session, scope=scope), scope=scope)
             if judgment:
                 payload = to_payload(judgment)
                 windows.update(_judgment_windows(payload))

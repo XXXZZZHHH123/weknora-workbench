@@ -1,0 +1,23 @@
+<header class="affairs-header"><div><h1>事务中心</h1><p>核对已记录预警，复核研究，处理计划与报告草稿。</p>
+  <div class="affairs-shortcuts">{% for item in affairs.shortcuts %}<a href="{{ research_url(item.href) }}">{{ item.title }} ↗</a>{% endfor %}</div>
+</div></header>
+
+<section class="affairs-alerts" aria-labelledby="affairs-alert-title">
+  <div class="affairs-section-head"><h2 id="affairs-alert-title">已记录预警 <span>按需检查，不在后台轮询</span></h2><button id="affairs-check" type="button" class="affairs-check" {% if not affairs.can_check %}disabled{% endif %}>检查预警</button></div>
+  <p id="affairs-check-status" class="affairs-status" role="status" aria-live="polite"></p>
+  <div id="affairs-alert-list">
+    {% for item in affairs.alerts %}
+    <a class="affairs-row" href="{{ research_url(item.href) }}"><div><div class="affairs-row-title"><span class="affairs-row-kind">{{ item.kind }}</span>{{ item.title }}</div><div class="affairs-row-detail">{{ item.detail }}{% if item.trade_date %} · 计算日期 {{ item.trade_date }}{% endif %}{% if item.recorded_at %} · 记录于 {{ item.recorded_at }}{% endif %} · 非实时记录</div></div><span class="affairs-row-arrow">查看 →</span></a>
+    {% else %}<div class="affairs-empty">暂无已记录的触发或缺数预警。尚未进行本次检查，不能据此判断当前没有风险。</div>{% endfor %}
+  </div>
+</section>
+
+<div class="affairs-grid">
+  {% for key, label, more, empty in [('review', '待复核', '/sn/judgment', '暂无已到复核日期的研判或策略。'), ('approvals', '待审核计划', '/sn/strategies', '暂无待审核的交易计划。研究策略卡仍可在策略页管理。'), ('reports', '报告草稿', '/sn/reports', '暂无手动保存的日报或周报草稿。')] %}
+  {% if key in affairs.sections %}<section class="affairs-group" aria-label="{{ label }}"><div class="affairs-section-head"><h2>{{ label }}</h2><a class="affairs-count" href="{{ research_url(more) }}">{{ affairs.counts[key] }} 项 · 查看全部 ↗</a></div>
+    {% for item in affairs[key] %}<a class="affairs-row" href="{{ research_url(item.href) }}"><div><div class="affairs-row-title">{{ item.title }}</div><div class="affairs-row-detail">{{ item.detail }}</div></div><span class="affairs-row-arrow">→</span></a>
+    {% else %}<div class="affairs-empty">{{ empty }}</div>{% endfor %}
+  </section>{% endif %}
+  {% endfor %}
+</div>
+{% if affairs.partial %}<p class="affairs-notice">仅检查每类最近 {{ affairs.record_budget }} 条成果和 {{ affairs.signal_budget }} 条信号记录；更多内容请进入对应页面查看。列表为空不代表没有风险。</p>{% endif %}

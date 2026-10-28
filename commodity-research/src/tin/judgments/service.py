@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import case, func, select, update
+from sqlalchemy.orm import Session, load_only
 
 from tin.judgments.validate import activation_blockers
 from tin.models import AuditLog, Indicator, Judgment, JudgmentSeriesRef
@@ -76,6 +76,8 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
     session.add(row)
     session.flush()
     if session.info.get('workbench_id'):
+        from tin.web.research_references import remember_record_scope
+        remember_record_scope(session, 'judgment', str(row.id))
         from tin.web.restricted_views import remember_origins
         remember_origins(session, wanted)
     session.add_all(JudgmentSeriesRef(judgment_id=row.id, ref_type=t, ref_id=i, series_id=sid)
@@ -100,8 +102,38 @@ def to_payload(row: Judgment) -> JudgmentIn:
     })
 
 
-def current(session: Session, variety: str) -> Judgment | None:
+def authorized_judgments(session: Session, scope, *, variety=None):
+    """Bounded owner/workbench metadata; chosen payloads load only on use."""
+    from fastapi import HTTPException
+    from tin.models import Researcher
+    from tin.web.research_references import _directory_proofs, record_in_workbench
+    owner = session.scalar(select(Researcher.id).where(Researcher.weknora_user_id == scope.identity.user_id))
+    if owner is None:
+        return []
+    query = select(Judgment).where(Judgment.researcher_id == owner).options(load_only(
+        Judgment.id, Judgment.researcher_id, Judgment.variety, Judgment.version, Judgment.status,
+        Judgment.created_at, Judgment.review_due, Judgment.written_at))
+    if variety is not None:
+        query = query.where(Judgment.variety == variety).order_by(
+            case((Judgment.status == '生效', 0), else_=1), Judgment.version.desc(), Judgment.id.desc())
+    else:
+        query = query.order_by(Judgment.created_at.desc(), Judgment.id.desc())
+    rows = list(session.scalars(query.limit(1001)))
+    if len(rows) > 1000:
+        raise HTTPException(413, '研判范围超过1000项，请先整理历史记录')
+    with _directory_proofs(session, scope, {'judgment': rows}):
+        return [row for row in rows if record_in_workbench(session, scope, 'judgment', row.id, row)]
+
+
+def current(session: Session, variety: str, *, scope=None) -> Judgment | None:
     """看板展示用：优先生效版本，没有则取最新草稿。"""
+    from tin.integration.workbench_scope import current_workbench
+    scope = scope or current_workbench.get()
+    if scope is not None:
+        rows = authorized_judgments(session, scope, variety=variety)
+        # Hydrate only the proved winner in one query, rather than issuing one
+        # deferred-column query per payload field in downstream presenters.
+        return session.scalar(select(Judgment).where(Judgment.id == rows[0].id)) if rows else None
     active = session.scalars(scope_query(session, select(Judgment).where(
         Judgment.variety == variety, Judgment.status == "生效"), Judgment)).first()
     if active:

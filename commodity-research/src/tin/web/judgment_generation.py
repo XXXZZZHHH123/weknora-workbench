@@ -42,6 +42,7 @@ class GenerateRequest(BaseModel):
     source_name: str = Field(default='', max_length=128)
     base_version: int = Field(ge=0)
     variety: str | None = Field(default=None, pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,15}$')
+    panel_title: str = Field(default='', max_length=120)
 
 
 class ApplyRequest(BaseModel):
@@ -326,36 +327,65 @@ async def fresh(scope, previous):
 def serialize(row):
     if row is None: return None
     payload = to_payload(row)
-    return {'version': row.version, 'status': row.status, 'author': row.author, 'variety': row.variety,
+    return {'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author, 'variety': row.variety,
             'created_at': row.created_at.isoformat(), 'markdown': dump_markdown(payload),
             'source_text': row.source_note or dump_markdown(payload)}
 
 
 @router.get('/manage')
-def manage(variety: str | None = None):
+def manage(variety: str | None = None, judgment_id: int | None = None):
     scope = scope_for_analysis()
+    from tin.web.judgment_panels import judgment_directory, panel_scope, selected_judgment
+    panel_scope()
     with result_session(scope) as session:
         if variety is not None and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,15}', variety):
             raise HTTPException(422, '研究品种代码格式无效')
-        variety = variety or research_variety(session)
-        rows = session.scalars(scope_query(session, select(Judgment).where(Judgment.variety == variety)
-            .order_by(Judgment.version.desc()).limit(50), Judgment)).all()
-        total = session.scalar(scope_query(session, select(func.count(Judgment.id))
+        selected = None
+        if judgment_id is not None:
+            selected = selected_judgment(session, judgment_id, scope=scope)
+            if variety is not None and variety != selected.variety:
+                raise HTTPException(409, '所选研判品种与请求不一致，请重新选择')
+        directory = judgment_directory(session, scope)
+        variety = variety or (selected.variety if selected is not None else directory[0].variety if directory else research_variety(session))
+        versions = sorted((row for row in directory if row.variety == variety), key=lambda row: row.version, reverse=True)
+        total, rows = len(versions), versions[:50]
+        shown = selected or current(session, variety)
+        if shown is not None and shown.id not in {row.id for row in versions}:
+            shown = None
+        if shown is None and rows:
+            shown = selected_judgment(session, rows[0].id, scope=scope)
+        # The numeric CAS counter can span old storage; never return a foreign
+        # workbench's Markdown just to tell the editor its next save baseline.
+        base = session.scalar(scope_query(session, select(func.max(Judgment.version))
             .where(Judgment.variety == variety), Judgment))
-        return {'variety': variety, 'current': serialize(current(session, variety)), 'latest': serialize(rows[0]) if rows else None,
-                'versions': [{'version': row.version, 'status': row.status, 'author': row.author} for row in rows],
-                'version_total': total, 'versions_partial': total > len(rows), 'can_write': scope.identity.can_write}
+        return {'variety': variety, 'current': serialize(shown), 'latest': {'version': base} if base else None,
+                'versions': [{'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author} for row in rows],
+                'version_total': total, 'versions_partial': total > len(rows), 'can_write': scope.can_edit}
 
 
 @router.get('/versions/{version}')
-def version_detail(version: int):
+def version_detail(version: int, variety: str | None = None, judgment_id: int | None = None):
     scope = scope_for_analysis()
+    from tin.web.judgment_panels import panel_scope, selected_judgment
+    panel_scope()
     with result_session(scope) as session:
-        variety = research_variety(session)
+        if variety is not None and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,15}', variety):
+            raise HTTPException(422, '研究品种代码格式无效')
+        selected = None
+        if judgment_id is not None:
+            selected = selected_judgment(session, judgment_id, scope=scope)
+            if variety is not None and variety != selected.variety:
+                raise HTTPException(409, '所选研判品种与请求不一致，请重新选择')
+        variety = variety or (selected.variety if selected is not None else research_variety(session))
         row = session.scalar(scope_query(session, select(Judgment).where(Judgment.variety == variety,
                                                                       Judgment.version == version), Judgment))
         if row is None: raise HTTPException(404, '研究逻辑版本不存在')
-        shown = current(session, variety)
+        selected_judgment(session, row.id, scope=scope)
+        shown = selected or current(session, variety)
+        if shown is not None:
+            from tin.web.research_references import record_in_workbench
+            if not record_in_workbench(session, scope, 'judgment', str(shown.id), record=shown):
+                shown = None
         return {**serialize(row), 'diff': version_diff(to_payload(shown) if shown else None, to_payload(row))}
 
 
@@ -394,6 +424,7 @@ async def _generate_preview(request: Request):
     document, analyzed = assessment.document, assessment.result
     await fresh(scope, before)
     preview = {'document': document, 'text': body.text, 'source_name': body.source_name,
+               'panel_title': body.panel_title,
                'fact_version': before['fact_version'], 'base_version': before['base_version'],
                'model_id': body.model_id, 'variety': analyzed.payload.variety, 'written_at': analyzed.payload.written_at.isoformat(),
                'validation_issues': assessment.issues, 'repair_attempts': repair_attempts}
@@ -426,8 +457,11 @@ def persist(scope, preview):
                 actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']))
             row = save_version(session, result.payload, actor=scope.identity.user_id,
                                expected_base_version=preview['base_version'])
+            from tin.web.judgment_panels import register_panel
+            panel = register_panel(session, scope, row, preview.get('panel_title') or (preview.get('source_name') or '')[:120])
             session.add(AuditLog(at=datetime.now(timezone.utc), actor=verified_actor(session, ''),
                 action='研究逻辑分析保存', target_type='judgment', target_id=str(row.id), detail={
+                    'workbench_id': scope.workbench_id, 'judgment_id': row.id,
                     'version': row.version, 'base_version': preview['base_version'],
                     'source_sha256': hashlib.sha256(preview['text'].encode()).hexdigest(),
                     'source_name': preview['source_name'], 'fact_version': preview['fact_version'],
@@ -436,7 +470,8 @@ def persist(scope, preview):
                     'unresolved': result.unresolved, 'validation_issues': preview.get('validation_issues', []),
                     'repair_attempts': preview.get('repair_attempts', 0)}))
             session.commit()
-            return {'version': row.version, 'status': row.status, 'notice': '已保存为新草稿，上一版本保留。'}
+            return {'id': row.id, 'panel': panel, 'version': row.version, 'status': row.status,
+                    'notice': '已保存为新的研判面板草稿，原有研判和历史保留。'}
         except (JudgmentError, IntegrityError, OperationalError):
             session.rollback()
             raise HTTPException(409, '研究逻辑已有新版本或正在保存，请刷新后重新分析') from None

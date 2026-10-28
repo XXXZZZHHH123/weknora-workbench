@@ -1,10 +1,14 @@
-<dialog id="judgment-manager" class="logic-dialog" aria-labelledby="logic-title" data-prefill="{{ 'true' if logic_input else 'false' }}">
+<dialog id="judgment-manager" class="logic-dialog" aria-labelledby="logic-title" data-prefill="{{ 'true' if logic_input else 'false' }}" data-judgment-id="{{ selected_judgment_id or (j.id if j else '') }}">
   <header class="logic-header"><div><h2 id="logic-title">管理研究逻辑</h2><p id="logic-version-label">查看当前逻辑，或分析新原文后保存草稿。</p></div><button type="button" data-logic-close aria-label="关闭研究逻辑管理">×</button></header>
   <nav class="logic-tabs" aria-label="研究逻辑管理">
     <button type="button" data-logic-tab="current" aria-selected="true">当前 MD</button>
     <button type="button" data-logic-tab="analyze" aria-selected="false">导入与分析</button>
     <button type="button" data-logic-tab="versions" aria-selected="false">版本比较</button>
   </nav>
+  <div class="logic-panel-picker" role="group" aria-label="切换当前工作台研判">
+    <div class="logic-toolbar"><label for="logic-panel-switch">研判面板</label><select id="logic-panel-switch" aria-label="已保存研判"></select><button type="button" id="logic-panel-open">切换查看</button><span id="logic-panel-range" class="logic-hint"></span><button type="button" id="logic-panel-more" hidden>更多</button></div>
+    <div class="logic-toolbar"><label for="logic-panel-name">面板名称</label><input id="logic-panel-name" maxlength="120" placeholder="为选中研判命名"><button type="button" id="logic-panel-save">保存名称</button><span class="logic-hint">切换仅影响当前预览，不自动生效。</span></div>
+  </div>
   <div id="logic-status" class="logic-status" role="status" aria-live="polite"></div>
   <section data-logic-panel="current" class="logic-panel">
     <div class="logic-toolbar"><span id="logic-current-state">尚无研究逻辑</span><button type="button" id="logic-reuse">复用当前 MD</button><button type="button" id="logic-reuse-original">复用原文</button><button type="button" id="logic-download">下载 MD</button></div>
@@ -12,6 +16,7 @@
     <details><summary>保留的原始输入</summary><pre id="logic-original-source" class="logic-code"></pre></details>
   </section>
   <section data-logic-panel="analyze" class="logic-panel" hidden>
+    <div class="logic-toolbar"><label for="logic-new-panel-title">新研判名称</label><input id="logic-new-panel-title" maxlength="120" placeholder="可选，用于区分多个研判面板"></div>
     <div class="logic-toolbar"><label class="logic-file">选择 .md / .txt / .json<input id="logic-file" type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"></label><span id="logic-file-name"></span><button type="button" id="logic-skeleton">插入通用骨架</button><button type="button" id="logic-structured">预览结构化稿</button></div>
     <label class="logic-editor-label" for="logic-input">研究逻辑原文 <span>完整分析，不沿用上一版本规则</span></label>
     <textarea id="logic-input" rows="7" placeholder="选择文件，或粘贴主矛盾、数据锚、边际、成本与证伪条件。">{{ logic_input or '' }}</textarea>

@@ -116,7 +116,17 @@ def test_confirmed_native_source_appears_in_original_cards_and_history(isolated,
     series = confirm_kb_source(state)
     login(client, headers)
     no_legacy(monkeypatch)
-    for suffix in ('/', '/sn', '/sn/indicators', '/sn/indicators/' + series):
+    state['calls'].clear()
+    with monkeypatch.context() as home_patch:
+        def forbidden(*args, **kwargs):
+            raise AssertionError('The affairs homepage opened a market fact session')
+        home_patch.setattr('tin.web.app._page_session', forbidden)
+        homepage = client.get(page('/'))
+    assert homepage.status_code == 200
+    assert '事务中心' in homepage.text and '全景数据墙' not in homepage.text
+    assert not any(path in {'/api/research/facts', '/api/research/export'} for method, path in state['calls'])
+    # Facts stay visible in the market/indicator pages, independently of inbox metadata.
+    for suffix in ('/sn', '/sn/indicators', '/sn/indicators/' + series):
         response = client.get(page(suffix))
         assert response.status_code == 200, (suffix, response.text)
         assert 'Quantity' in response.text
@@ -248,7 +258,10 @@ def test_empty_workbench_guidance_and_quick_entry_lead_to_scoped_sources(isolate
     for suffix in ('/', '/sn'):
         response = client.get(page(suffix))
         assert response.status_code == 200
-        assert '请在「资料与来源」准备并确认本知识库资料' in response.text
+        if suffix == '/sn':
+            assert '请在「资料与来源」准备并确认本知识库资料' in response.text
+        else:
+            assert '事务中心' in response.text and '尚未进行本次检查' in response.text
         assert '「数据更新」中立即更新' not in response.text
         assert '下方「数据更新」中立即更新' not in response.text
         elements = _html_elements(response.text)

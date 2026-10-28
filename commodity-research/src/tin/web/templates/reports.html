@@ -1,121 +1,42 @@
 {% extends "base.html" %}
-{% block title %}研究日报与周报 · {{ research_workbench().metadata.name if research_workbench() else '研究工作台' }}{% endblock %}
-{% block head %}<link rel="stylesheet" href="{{ research_static_prefix() }}/static/reports.css?v={{ static_version() }}">{% endblock %}
+{% block title %}日报与周报 · {{ research_workbench().metadata.name if research_workbench() else '研究工作台' }}{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/reports.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/report-figures.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/report-drafts.js?v={{ static_version() }}"></script>
+{% endblock %}
+{% macro references(panel) %}{% for ref in panel.references %}
+<details class="report-reference" open><summary>{{ ref.title }} <small>引用 v{{ ref.revision }} · {{ '研判' if ref.kind == 'judgment' else '策略' }}</small></summary><p class="research-prose whitespace-pre-wrap">{{ ref.body_text or ref.summary }}</p>{% if ref.body_text_truncated %}<small>引用正文为节选，完整记录保留在原页面。</small>{% endif %}</details>
+{% endfor %}{% endmacro %}
 {% block main %}
 {% if restricted_view %}{% include "_reports_readonly.html" %}{% else %}
-{% set weekly = period_kind == 'weekly' %}
-<header class="report-header">
-  <div><h1>研究日报与周报</h1><p>{{ "依据当前已确认数据回放；并非历史冻结归档，研究判断为当前版本" if live_report else "历史冻结归档：保留生成时的数据、口径、研判与缺口状态" }}</p></div>
-  <div class="report-controls">
-    <nav id="report-period-switch" class="report-segment" aria-label="报告周期">
-      <a href="{{ research_prefix() }}/sn/reports?period=daily{% if selected.date %}&amp;date={{ selected.date }}{% endif %}" {% if not weekly %}aria-current="page"{% endif %}>日报</a>
-      <a href="{{ research_prefix() }}/sn/reports?period=weekly{% if selected.date %}&amp;date={{ selected.date }}{% endif %}" {% if weekly %}aria-current="page"{% endif %}>周报</a>
-    </nav>
-    <form action="{{ research_prefix() }}/sn/reports" method="get" class="report-date-form">
-      <input type="hidden" name="period" value="{{ period_kind }}">
-      <label>截至<input type="date" name="date" value="{{ selected.date or '' }}" onchange="this.form.submit()" aria-label="报告截止日期"></label>
-      {% if files %}<label class="report-history-label"><span class="sr-only">{{ "可回放日期" if live_report else "归档交易日" }}</span>
-        <select name="history" aria-label="{{ '可回放日期' if live_report else '归档交易日' }}" onchange="this.form.elements.date.value=this.value;this.form.submit()">
-          <option value="" disabled>选择历史日期</option>{% for f in files %}<option value="{{ f.date }}" {% if f.date == selected.date %}selected{% endif %}>{{ f.date }} · 周{{ f.weekday }}</option>{% endfor %}
-        </select></label>{% endif %}
-      <noscript><button type="submit">查看</button></noscript>
-    </form>
-  </div>
-</header>
-{% if not report %}
-<section class="report-section report-empty"><strong>尚无{{ '周报' if weekly else '日报' }}数据</strong><p>{{ "尚无可回放数据，请先在绑定知识库完成结构化导入，并在市场总览选择核心指标或保存研究逻辑。" if live_report else "尚无历史归档。" }}</p></section>
+{% set weekly = period_kind == 'weekly' %}{% set scope = research_workbench() %}{% set can_edit = live_report and scope and scope.can_edit %}
+<header class="report-header"><div><h1>日报与周报</h1><p>{{ "依据当前已确认数据回放；并非历史冻结归档，研究判断为当前版本" if live_report else "历史冻结归档：保留生成时的数据、口径、研判与缺口状态" }}</p></div><div class="report-controls">
+<nav id="report-period-switch" class="report-segment" aria-label="报告周期"><a href="{{ research_prefix() }}/sn/reports?period=daily{% if selected.date %}&amp;date={{ selected.date }}{% endif %}" {% if not weekly %}aria-current="page"{% endif %}>日报</a><a href="{{ research_prefix() }}/sn/reports?period=weekly{% if selected.date %}&amp;date={{ selected.date }}{% endif %}" {% if weekly %}aria-current="page"{% endif %}>周报</a></nav>
+<form action="{{ research_prefix() }}/sn/reports" method="get" class="report-date-form"><input type="hidden" name="period" value="{{ period_kind }}"><label>截至<input type="date" name="date" value="{{ selected.date or '' }}" onchange="this.form.submit()" aria-label="报告截止日期"></label>{% if files %}<label class="report-history-label"><span class="sr-only">可回放日期</span><select name="history" aria-label="可回放日期" onchange="this.form.elements.date.value=this.value;this.form.submit()"><option value="" disabled>选择历史日期</option>{% for f in files %}<option value="{{ f.date }}" {% if f.date == selected.date %}selected{% endif %}>{{ f.date }} · 周{{ f.weekday }}</option>{% endfor %}</select></label>{% endif %}<noscript><button type="submit">查看</button></noscript></form></div></header>
+{% if not report %}<section class="report-section report-empty"><strong>尚无{{ '周报' if weekly else '日报' }}数据</strong><p>可先准备绑定资料、保存研究逻辑，再将需要的内容整理成报告。</p></section>
 {% else %}
-<div class="report-document">
-  <header class="report-document-header">
-    <div><h2>{{ report_start if weekly else selected.date }}{% if weekly %} — {{ selected.date }}{% endif %} {{ '周报' if weekly else '日报' }}</h2>
-      <p>{{ '本次回放时间' if live_report else '归档生成时间' }}：{{ report_generated_at or selected.generated_at or '—' }}{% if weekly %} · 周一至所选日{% endif %}</p></div>
-    <div class="report-actions">
-      {% with export_kind='weekly' if weekly else 'snapshot', export_id=selected.date %}{% include '_brief_export.html' %}{% endwith %}
-      <a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}/{{ 'weekly' if weekly else 'daily' }}.md" class="report-button">下载 Markdown</a>
-      <a href="{{ research_prefix() }}/sn?date={{ selected.date }}" class="report-button">市场总览 ↗</a>
-    </div>
-  </header>
-  <div id="report-readable" class="report-content">
-    <section class="report-section">
-      <div class="report-section-heading"><h3>{{ '本周研究结论' if weekly else '研究结论' }}</h3><small>只展示已保存记录</small></div>
-      {% for brief in report.briefs %}
-      <article class="report-brief">
-        <header><strong>{{ brief.trade_date }}</strong><span class="report-badge">{{ brief.status }}{% if brief.status == '草稿' %} · 未经研究员确认{% endif %}</span></header>
-        <p class="research-prose whitespace-pre-wrap">{{ brief.summary or '未填写结论' }}</p>
-        <p class="report-muted">基调：{{ brief.tone or '未填写' }}{% if brief.stance %} · 操作倾向：{{ brief.stance }}{% endif %}{% if brief.range_low is not none and brief.range_high is not none %} · 参考区间：{{ brief.range_low }} – {{ brief.range_high }}{% endif %}</p>
-        {% if brief.tone_note %}<p class="research-prose">{{ brief.tone_note }}</p>{% endif %}
-        {% for claim in brief.claims %}<details class="report-evidence"><summary>{{ claim.text }}</summary><ul>{% for evidence in claim.evidence %}<li>{{ evidence.name or '已保存证据' }}{% if evidence.value is not none %} · {{ evidence.value }}{% endif %}{% if evidence.as_of %} · {{ evidence.as_of }}{% endif %}</li>{% endfor %}</ul></details>{% endfor %}
-        {% if brief.unverified %}<div class="report-warning"><strong>待核验内容</strong>{% for item in brief.unverified %}<p>{{ item.text }}{% if item.reason %} · {{ item.reason }}{% endif %}</p>{% endfor %}</div>{% endif %}
-      </article>
-      {% else %}
-      {% if report.judgment_replay %}{% set replay = report.judgment_replay %}
-      <article class="report-brief"><header><strong>{{ replay.label }}</strong><span class="report-badge">v{{ replay.version }} · {{ replay.status }}</span></header>
-        <p class="report-muted">基调：{{ replay.tone or '未填写' }}</p>
-        <p class="research-prose whitespace-pre-wrap">{{ replay.tone_note or '当前保存记录未填写基调说明。' }}</p>
-        <p class="report-muted">回放当前已保存研究判断，供本次数据核对；没有据此生成新的日报结论。</p>
-      </article>
-      {% else %}<p class="report-muted">暂无已保存研究结论。以下按已确认数据与研究逻辑呈现，不自动编写市场观点。</p>{% endif %}
-      {% endfor %}
-    </section>
-    <section class="report-section">
-      <div class="report-section-heading"><h3>{{ '本周主要变化' if weekly else '主要变化' }}</h3><small>{{ '比较报告期内首末有效观测' if weekly else '与上一有效观测比较，不等同于上一交易日' }}</small></div>
-      {% if report.changes %}<div class="report-scroll"><table class="report-table"><thead><tr><th>指标</th><th>首个有效值</th><th>末个有效值</th><th>变化</th><th>数据时点与口径</th></tr></thead><tbody>
-      {% for row in report.changes %}<tr><td>{{ row.name }}<small>{{ row.unit }}</small></td><td class="report-value">{{ row.first_text }}</td><td class="report-value">{{ row.last_text }}</td><td class="report-value">{{ row.change_text }}{% if row.change_pct is not none %}<small>{{ row.change_pct_text }}%</small>{% endif %}</td><td><small>{{ row.first.as_of if row.first else '期内无观测' }}{% if row.last and row.first.as_of != row.last.as_of %}<br>→ {{ row.last.as_of }}{% endif %}</small>{% if row.note %}<p class="report-muted">{{ row.note }}</p>{% endif %}</td></tr>{% endfor %}
-      </tbody></table></div>{% else %}<p class="report-muted">暂无可比较的已绑定指标。</p>{% endif %}
-    </section>
-    <section class="report-section">
-      <div class="report-section-heading"><h3>研究判断</h3><a href="{{ research_prefix() }}/sn/judgment">管理研究逻辑 ↗</a></div>
-      {% if report.judgment %}{% set j = report.judgment %}
-      <p class="report-muted">当前 v{{ j.version }} · {{ j.status or '未登记状态' }} · {{ j.tone or '未填写基调' }} · 复核期限 {{ j.review_due or '未登记' }}</p>
-      <p class="report-muted">当前保存版本用于本次数据回放，不代表报告期当时已形成该判断。</p>
-      {% if report.rule_preview %}<p class="report-muted">{{ report.rule_preview.label }}：{{ report.rule_preview.notice }}</p>{% endif %}
-      {% if j.tone_note %}<p class="research-prose whitespace-pre-wrap">{{ j.tone_note }}</p>{% endif %}
-      {% if j.contradiction %}<p class="research-prose whitespace-pre-wrap">{{ j.contradiction }}</p>{% endif %}
-      <div class="report-cases">{% for side in j.cases %}<div><h4>{{ side.label }}</h4><p class="research-prose">{{ side.claim or '待补充' }}</p><ul>{% for evidence in side.evidence %}<li>{{ evidence.text }}{% if evidence.name %}<small>{{ evidence.name }}</small>{% else %}<small>未绑定指标</small>{% endif %}</li>{% endfor %}</ul></div>{% endfor %}</div>
-      {% for rules, heading in [(j.thresholds, '区间与阈值'), (j.falsifiers, '证伪条件')] %}
-      {% if rules %}<div class="report-rule-section"><h4>{{ heading }}</h4><div class="report-scroll"><table class="report-table"><thead><tr><th>条件</th><th>指标与规则</th><th>{{ report.rule_preview.label if report.rule_preview else '已记录状态' }}</th></tr></thead><tbody>{% for rule in rules %}<tr><td>{{ rule.name }}</td><td>{{ rule.series_name }}<small>{{ rule.condition }}</small></td><td>{{ rule.state }}{% if rule.current_value is not none %}<small>{{ '试算值' if rule.is_preview else '已记录值' }} {{ rule.current_value_text }}</small>{% endif %}{% if rule.is_preview and rule.recorded_state %}<small>原已记录：{{ rule.recorded_state }}</small>{% endif %}{% if rule.evidence_dates %}<details><summary>依据日期</summary>{% for stamp in rule.evidence_dates %}<small>{{ stamp }}</small>{% endfor %}</details>{% endif %}{% if rule.gap_note %}<small>{{ rule.gap_note }}</small>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div>{% endif %}
-      {% endfor %}
-      {% if report.research_events %}<details class="report-evidence"><summary>报告期内登记的版本变化</summary><ul>{% for event in report.research_events %}<li>v{{ event.version }} · 当前状态 {{ event.status }} · 登记 {{ event.recorded_at }} · 编写日期 {{ event.written_at }}</li>{% endfor %}</ul></details>{% endif %}
-      {% else %}<p class="report-muted">未登记研究判断；请导入并确认研究逻辑后，再跟踪区间和证伪条件。</p>{% endif %}
-    </section>
-    <section class="report-section">
-      <div class="report-section-heading"><h3>策略跟踪</h3><a href="{{ research_prefix() }}/sn/strategies">策略管理 ↗</a></div>
-      <p class="report-muted">当前已保存策略与报告期内的实际事件分别列示。条件触发不等于实际成交记录。</p>
-      {% if report.research_cards %}
-      <h4>当前保存的人工研究策略</h4>
-      <p class="report-muted">人工研究方案用于跟踪假设与条件，不代表历史当时已知观点或实际成交；正文数字未逐项核验。</p>
-      {% for card in report.research_cards %}<article class="report-strategy"><header><a href="{{ research_prefix() }}/sn/strategies">{{ card.title }}</a><span class="report-badge">{{ card.direction_label }} · {{ card.status_label }}</span></header>
-        <p class="research-prose">{{ card.thesis }}</p>
-        <details class="report-evidence"><summary>观察依据与条件</summary><p>观察依据：{{ card.watch_for }}</p><p>触发条件：{{ card.trigger }}</p><p>失效条件：{{ card.invalidation }}</p></details>
-        <small class="report-muted">复核日期 {{ card.review_date }} · 当前保存 v{{ card.revision }}</small></article>{% endfor %}
-      {% endif %}
-      {% if report.coverage.research_cards_truncated or report.coverage.research_cards_legacy %}<p class="report-muted">仅展示最近40张已整理研究卡；未整理的旧记录保留在策略管理，不自动转换为结构化策略。</p>{% endif %}
-      {% for strategy in report.strategies %}<article class="report-strategy"><header><a href="{{ research_prefix() }}/sn/strategies/{{ strategy.id }}">{{ strategy.title }}</a><span class="report-badge">{{ strategy.status_label }} · {{ strategy.mode_label }}</span></header>
-        {% if strategy.thesis %}<p class="research-prose">{{ strategy.thesis }}</p>{% endif %}
-        <p class="report-muted">{% for leg in strategy.legs %}{{ leg.contract }} · {{ '买入' if leg.side == 'buy' else '卖出' if leg.side == 'sell' else leg.side }}{% if not loop.last %} ／ {% endif %}{% endfor %}{% if strategy.entry %} · 入场 {{ strategy.entry.low }} – {{ strategy.entry.high }}{% endif %}</p>
-        {% if strategy.invalidation %}<p>失效/复核：{{ strategy.invalidation }}</p>{% endif %}
-        {% if strategy.review_at %}<small class="report-muted">复核时间 {{ strategy.review_at }}</small>{% endif %}
-      </article>{% else %}<p class="report-muted">{{ '尚无已保存交易方案。研究卡不会自动转为成交或持仓。' if report.research_cards else '尚无已保存策略。先核对研究逻辑与具体合约，再由研究员建立、审核策略草稿。' }}</p>{% endfor %}
-      {% if report.strategy_events %}<details class="report-evidence" open><summary>报告期内策略事件</summary><ul>{% for event in report.strategy_events %}<li><time>{{ event.at }}</time> · {{ event.title }} · {{ event.label }}{% if event.reason %}：{{ event.reason }}{% endif %}</li>{% endfor %}</ul></details>{% else %}<p class="report-muted">报告期内无已记录策略事件。</p>{% endif %}
-      {% if report.coverage.strategies_truncated or report.coverage.events_truncated %}<p class="report-muted">已展示最近40个策略和100条期内事件；更多记录请在策略管理查看。</p>{% endif %}
-    </section>
-    <section class="report-section">
-      <div class="report-section-heading"><h3>{{ '下周待验证' if weekly else '下次研究待验证' }}</h3><small>沿用已保存规则，未新设阈值</small></div>
-      <ul class="report-checklist">{% for item in report.next_review %}<li><span aria-hidden="true">○</span>{{ item.text }}</li>{% else %}<li>暂无已保存验证条件，请由研究员补充。</li>{% endfor %}</ul>
-    </section>
-    <section class="report-section">
-      <div class="report-section-heading"><h3>数据质量与来源</h3><small>缺失不补零 · 不重算原件公式</small></div>
-      {% if report.gaps %}<ul class="report-gaps">{% for row in report.gaps %}<li><strong>{{ row.name or row.series_id }}</strong>：{{ row.reason }}<small>最近数据 {{ row.last_as_of or '暂无' }} · 预期日期 {{ row.expected_by or '未注明' }}</small></li>{% endfor %}</ul>{% else %}<p class="report-muted">本次读取未记录数据缺口；不代表未绑定的数据也已齐备。</p>{% endif %}
-      <details class="report-evidence"><summary>截至所选日期的最新指标 · {{ report.counts.observations }} 项</summary>
-        {% if report.observations %}<div class="report-scroll"><table class="report-table"><thead><tr><th>指标</th><th>数值</th><th>单位</th><th>数据时点</th><th>来源与口径</th></tr></thead><tbody>{% for row in report.observations %}<tr><td>{{ row.name }}</td><td class="report-value">{{ row.value if row.value is not none else '暂无值' }}</td><td>{{ row.unit or '未注明' }}</td><td>{{ row.as_of or '未注明' }}</td><td>{{ row.source or '未注明' }}<details><summary>来源详情</summary><small>{{ row.series_id }}</small>{% if row.caliber %}<dl>{% for key, value in row.caliber.items() %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>{% endif %}</details></td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="report-muted">截至该日尚无已记录指标。</p>{% endif %}
-      </details>
-      {% if report.derived %}<details class="report-evidence"><summary>派生计算 · {{ report.counts.derived }} 项</summary><table class="report-table"><thead><tr><th>计算项</th><th>数值</th><th>状态与原因</th></tr></thead><tbody>{% for row in report.derived %}<tr><td>{{ row.formula_id }}</td><td>{{ row.value if row.value is not none else '未计算' }}</td><td>{{ row.status }}{% if row.note %} · {{ row.note }}{% endif %}</td></tr>{% endfor %}</tbody></table></details>{% endif %}
-    </section>
-  </div>
-  <footer class="report-footer"><details><summary>原始 JSON · 来源、输入与完整记录</summary><pre>{{ preview }}</pre><a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}{{ '/weekly' if weekly else '' }}.json" class="report-button">下载 JSON</a></details>
-    <p>{{ "回放使用当前已确认来源；以后修订原表或判断，回放结果也可能更新。需要留存请导出到知识库。" if live_report else "本页读取生成时保存的历史快照，不重算原记录。" }}</p>
-  </footer>
-</div>
+<div class="report-document"><header class="report-document-header"><div><span class="report-eyebrow">{{ 'WEEKLY' if weekly else 'DAILY' }} RESEARCH</span><h2>{{ report.report_title or (scope.metadata.name if scope else '研究') }}{% if not report.report_title %} {{ '周报' if weekly else '日报' }}{% endif %}</h2><p>{{ report_start if weekly else selected.date }}{% if weekly %} — {{ selected.date }}{% endif %} · {% if report.is_manual_report %}个人草稿 v{{ report.manual_report.revision }}{% else %}沿用已保存研究记录{% endif %}{% if report.coverage.latest_data_date %} · 最近数据 {{ report.coverage.latest_data_date[:10] }}{% endif %}</p></div><div class="report-actions">{% if can_edit %}<button type="button" class="report-button" id="report-edit-open">编辑报告</button>{% endif %}{% with export_kind='weekly' if weekly else 'snapshot', export_id=selected.date %}{% include '_brief_export.html' %}{% endwith %}<a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}/{{ 'weekly' if weekly else 'daily' }}.md" class="report-button">下载 Markdown</a><button type="button" class="report-button" onclick="window.print()">打印</button></div></header>
+<div id="report-readable" class="report-content">
+{% for key, panel in report.panels.items() %}{% if panel.visible %}
+<section class="report-section" id="report-{{ key }}"><div class="report-section-heading"><h3><span class="report-section-number">{{ '%02d'|format(loop.index) }}</span>{{ panel.label }}</h3><small>{{ '人工内容与明确版本引用' if report.is_manual_report else '沿用已保存研究记录' }}</small></div>
+{% if report.is_manual_report %}{% if panel.text %}<p class="research-prose whitespace-pre-wrap {{ 'report-lead' if key == 'summary' else '' }}">{{ panel.text }}</p>{% endif %}{{ references(panel) }}
+{% elif key == 'summary' %}{% include '_report_saved_summary.html' %}
+{% elif key == 'research' %}{% include '_report_saved_research.html' %}
+{% elif key == 'watch' %}{% include '_report_saved_watch.html' %}{% endif %}
+{% if key == 'dashboard' %}
+{% if live_report and report.selected_figures %}<div id="report-figures" class="report-figures" data-series-count="{{ report.selected_figures | length }}" data-url="{{ research_prefix() }}/api/sn/reports/figures" data-day="{{ selected.date }}" data-period="{{ period_kind }}" data-revision="{{ report.manual_report.revision if report.is_manual_report else '' }}" aria-live="polite"><div class="report-figure-state"><span class="report-spinner" aria-hidden="true"></span>正在读取报告所需图表</div></div>{% elif live_report %}<p class="report-muted" id="report-no-figures">未选择报告图表，可在编辑报告中选择已有绑定指标。</p>{% else %}<p class="report-muted">历史冻结归档沿用保存时的数据，不重新加载当前图表。</p>{% endif %}
+<div class="report-section-heading report-subheading"><h4>{{ '本周主要变化' if weekly else '主要变化' }}</h4><small>指标事实只读，手工说明不改写这些数值</small></div>{% include '_report_saved_data.html' %}
+{% endif %}
+</section>{% endif %}{% endfor %}
+</div><footer class="report-footer"><details><summary>来源、资料缺口与完整记录</summary>{% if report.manual_report and report.manual_report.unavailable_references %}<p>部分引用的版本或权限已改变，请调整后再导出。</p>{% endif %}{% include '_report_saved_sources.html' %}<p>文字复用已保存研判或人工编辑，不代表新的模型分析；条件触发不等于成交。图表最多6条序列，日报90点/周报120点，是观测点数而非自然天数。</p><details><summary>原始 JSON · 来源、输入与完整记录</summary><pre>{{ preview }}</pre><a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}{{ '/weekly' if weekly else '' }}.json" class="report-button">下载 JSON</a></details></details></footer></div>
+{% if can_edit %}
+<script type="application/json" id="report-editor-data">{{ {'draft': report.editable_draft, 'id': report.manual_report.id if report.is_manual_report else none, 'revision': report.manual_report.revision if report.is_manual_report else none, 'figure_options': report.figure_options} | tojson }}</script>
+<dialog id="report-editor" class="report-editor"><form id="report-editor-form"><header class="report-editor-heading"><div><strong>编辑{{ '周报' if weekly else '日报' }}</strong><small>四节可留空或隐藏，保存为本人的报告草稿。</small></div><button type="button" id="report-edit-close" class="report-icon-button" aria-label="关闭">×</button></header>
+<div class="report-editor-body"><label class="report-title-field">标题<input id="report-edit-title" maxlength="120" required></label><div class="report-editor-tabs" role="tablist" aria-label="报告段落">{% for key, label in [('summary','摘要'),('research','研判策略'),('dashboard','数据展板'),('watch','待关注')] %}<button type="button" data-report-section="{{ key }}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ label }}</button>{% endfor %}</div><div class="report-edit-section"><label class="report-check"><input id="report-edit-visible" type="checkbox">显示本节</label><textarea id="report-edit-text" rows="6" maxlength="4000" placeholder="可以留空；填写本节说明，不改写原始指标事实。" aria-label="段落正文"></textarea></div>
+<details class="report-editor-tools"><summary>引用已有研判或策略</summary><div class="report-reference-picker"><select id="report-ref-kind" aria-label="引用类型"><option value="judgment">研判</option><option value="strategy">策略</option></select><select id="report-ref-record" aria-label="选择已有记录"><option value="">选择记录与版本</option></select><button type="button" id="report-ref-add" class="report-button">引用</button></div><div id="report-ref-list"></div></details>
+<details class="report-editor-tools"><summary>选图与图说 · 最多6条</summary><div id="report-figure-options"></div></details><p class="report-muted">手工文字与引用保留版本；数值、单位、日期和来源仍由系统读取。清空后不会重新填回默认内容。</p><p id="report-edit-status" class="report-edit-status" role="status" aria-live="polite"></p></div><footer class="report-editor-footer"><button type="button" id="report-edit-cancel" class="report-button">取消</button><button type="submit" id="report-edit-save" class="report-button report-button-primary">保存草稿</button></footer></form></dialog>
+{% endif %}
 {% endif %}
 {% endif %}
 {% endblock %}

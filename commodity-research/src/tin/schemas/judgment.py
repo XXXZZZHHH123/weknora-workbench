@@ -5,7 +5,7 @@ from datetime import date
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 TONES = ("偏多", "偏空", "观望", "区间震荡", "回调买入", "反弹做空", "等信号")
 PARADIGMS = ("总线合成", "对抗称重", "编排层")
@@ -136,6 +136,18 @@ class UnstructuredItem(_Model):
     section: str
     text: str
     reason: str
+    business_condition: str | None = None
+    rule_kind: Literal["threshold", "falsifier"] | None = None
+
+    @model_serializer(mode="wrap")
+    def _preserve_condition_presence(self, handler):
+        result = handler(self)
+        # Old saved JSON has neither key. Explicit new nulls identify audit-only
+        # entries and must not acquire the legacy display compatibility.
+        for name in ("business_condition", "rule_kind"):
+            if name not in self.model_fields_set:
+                result.pop(name, None)
+        return result
 
 
 class JudgmentIn(_Model):

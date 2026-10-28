@@ -117,6 +117,8 @@ async def create_artifact(module: ArtifactModule, body: ArtifactInput, scope: Wo
             revision=1, created_at=now, updated_at=now, **values)
         session.add(row)
         session.flush()
+        from tin.web.research_references import remember_record_scope
+        remember_record_scope(session, 'artifact', row.id)
         record_revision(session, row, scope.identity.user_id)
         session.commit()
         return serialize_artifact(row)

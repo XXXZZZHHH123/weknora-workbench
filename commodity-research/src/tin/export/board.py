@@ -418,9 +418,9 @@ def _fmt(v: float | None, unit: str = "") -> str:
     return f"{v:,.{digits}f}".replace("-", "−")
 
 
-def threshold_radar(session: Session, variety: str, d: date) -> list[dict]:
+def threshold_radar(session: Session, variety: str, d: date, *, judgment=None) -> list[dict]:
     """阈值测距：只陈述当前值、触发条件与距离，不给「安全与否」的结论（P1）。"""
-    j = current_judgment(session, variety)
+    j = judgment if judgment is not None else current_judgment(session, variety)
     if j is None:
         return []
     def lookup(identifier):

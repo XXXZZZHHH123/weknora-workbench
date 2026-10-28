@@ -67,15 +67,20 @@ def test_report_boundaries_still_reject_over_budget_saved_bindings(report_scope,
     assert error.value.status_code == 413
 
 
-def test_report_display_points_never_shorten_a_saved_rule_window(report_scope, monkeypatch):
-    from tin.judgments import service
+def test_report_display_points_never_shorten_a_saved_rule_window(report_scope, session):
+    from tin.judgments.service import save_version
+    from tin.models import Indicator
     from tin.schemas.judgment import JudgmentIn
     scope, (core, *_), _ = report_scope
     payload = JudgmentIn(variety='SN', author='fixture', written_at=date(2026, 1, 2), contradiction={},
         falsifiers=[{'id': 'long_window', 'desc': 'Synthetic observed changes', 'series_id': core,
                      'expression': 'change > 0', 'unit_confirmed': '吨', 'consecutive_periods': 9, 'side': 'bull'}])
-    monkeypatch.setattr(service, 'current', lambda *_: object())
-    monkeypatch.setattr(service, 'to_payload', lambda _: payload)
+    session.add(Indicator(series_id=core, name='Window fixture', variety='SN', unit='吨',
+        source='Fixture', frequency='日', fetch_mode='readonly', category='fixture', caliber={}))
+    session.flush()
+    row = save_version(session, payload, actor=scope.identity.user_id)
+    session.commit()
+    assert row.falsifiers[0]['consecutive_periods'] == 9
     plans, _ = page_facts._saved_plan(scope, {'module': 'reports', 'series_ids': None,
         'day': '2026-01-02', 'template_id': None, 'points': 2})
     assert next(plan['points'] for plan in plans if core in plan['ids']) == 10

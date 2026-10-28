@@ -1,7 +1,12 @@
 {% extends "base.html" %}
 {% from "_card.html" import card %}
-{% block title %}今日研究 · 中哲物产{% endblock %}
+{% block title %}{{ '事务中心' if affairs is defined else '今日研究' }} · 中哲物产{% endblock %}
+{% block head %}{% if affairs is defined %}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/affairs.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/affairs.js?v={{ static_version() }}"></script>
+{% endif %}{% endblock %}
 {% block main %}
+{% if affairs is defined %}{% include '_affairs_home.html' %}{% else %}
 
 {#
   首屏四个区，从上到下就是研究员早上的动作顺序：
@@ -391,4 +396,5 @@
     </div>
   </details>
 </section>
+{% endif %}
 {% endblock %}

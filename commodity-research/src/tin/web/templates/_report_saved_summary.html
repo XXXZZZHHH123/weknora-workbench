@@ -1,0 +1,19 @@
+
+      {% for brief in report.briefs %}
+      <article class="report-brief">
+        <header><strong>{{ brief.trade_date }}</strong><span class="report-badge">{{ brief.status }}{% if brief.status == '草稿' %} · 未经研究员确认{% endif %}</span></header>
+        <p class="research-prose whitespace-pre-wrap">{{ brief.summary or '未填写结论' }}</p>
+        <p class="report-muted">基调：{{ brief.tone or '未填写' }}{% if brief.stance %} · 操作倾向：{{ brief.stance }}{% endif %}{% if brief.range_low is not none and brief.range_high is not none %} · 参考区间：{{ brief.range_low }} – {{ brief.range_high }}{% endif %}</p>
+        {% if brief.tone_note %}<p class="research-prose">{{ brief.tone_note }}</p>{% endif %}
+        {% for claim in brief.claims %}<details class="report-evidence"><summary>{{ claim.text }}</summary><ul>{% for evidence in claim.evidence %}<li>{{ evidence.name or '已保存证据' }}{% if evidence.value is not none %} · {{ evidence.value }}{% endif %}{% if evidence.as_of %} · {{ evidence.as_of }}{% endif %}</li>{% endfor %}</ul></details>{% endfor %}
+        {% if brief.unverified %}<div class="report-warning"><strong>待核验内容</strong>{% for item in brief.unverified %}<p>{{ item.text }}{% if item.reason %} · {{ item.reason }}{% endif %}</p>{% endfor %}</div>{% endif %}
+      </article>
+      {% else %}
+      {% if report.judgment_replay %}{% set replay = report.judgment_replay %}
+      <article class="report-brief"><header><strong>{{ replay.label }}</strong><span class="report-badge">{{ replay.status }}{% if report.judgment.written_at %} · {{ report.judgment.written_at }}{% endif %}</span></header>
+        <p class="report-muted">基调：{{ replay.tone or '未填写' }}</p>
+        <p class="research-prose whitespace-pre-wrap">{{ replay.tone_note or '当前保存记录未填写基调说明。' }}</p>
+        <p class="report-muted">回放当前已保存研究判断，供本次数据核对；没有据此生成新的日报结论。</p>
+      </article>
+      {% else %}<p class="report-muted">暂无已保存研究结论。以下按已确认数据与研究逻辑呈现，不自动编写市场观点。</p>{% endif %}
+      {% endfor %}

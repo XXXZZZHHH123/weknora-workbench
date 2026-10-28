@@ -224,7 +224,7 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                         or (expected_user is not None and expected_user != identity.user_id)):
                     raise HTTPException(403, "当前页面的账号或空间已改变，请重新打开商品研究")
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
-                    read_posts = {"/api/sn/diagram/values", "/api/sn/diagram/markdown/dump"}
+                    read_posts = {"/api/sn/diagram/values", "/api/sn/diagram/markdown/dump", "/api/sn/affairs/check"}
                     if not identity.can_write and route_path not in read_posts and not path.startswith("/api/library"):
                         raise HTTPException(403, "当前空间角色只有读取权限")
                     if not _same_origin(request):
@@ -261,7 +261,8 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                 if source_preparation_required(route_path) or (route_path == '/sn/entry' and request.method == 'POST'):
                     raise HTTPException(409, "请在绑定知识库准备资料，并从本工作台的资料与来源入口核对后导入")
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
-                    if not identity.can_write and route_path not in {"/api/sn/diagram/values", "/api/sn/diagram/markdown/dump"}:
+                    if not identity.can_write and route_path not in {
+                            "/api/sn/diagram/values", "/api/sn/diagram/markdown/dump", "/api/sn/affairs/check"}:
                         raise HTTPException(403, "当前空间角色只有读取权限")
                     if not _same_origin(request):
                         raise HTTPException(403, "请求来源不匹配")

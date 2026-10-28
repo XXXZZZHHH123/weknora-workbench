@@ -29,7 +29,8 @@ def test_nested_judgment_is_readable_without_python_dict_representations():
     assert result['judgment']['cases'][0]['evidence'][0]['name'] == '已核对字段'
     assert result['judgment']['thresholds'][0]['condition'] == '0 – 3'
     assert result['judgment']['thresholds'][0]['state'] == '在区间内'
-    assert result['judgment']['falsifiers'][0]['condition'] == 'value > 3 · 连续 2 期'
+    assert result['judgment']['falsifiers'][0]['condition'] == '指标数值高于 3 · 连续 2 期'
+    assert result['judgment']['falsifiers'][0]['expression'] == 'value > 3'
     assert payload == original
 
 
@@ -108,7 +109,10 @@ def test_weekly_report_page_has_period_switch_and_readable_download(isolated):
     assert 'id="report-period-switch"' in response.text
     assert '2026-01-05 — 2026-01-09' in response.text
     assert '首个有效值' in response.text and '末个有效值' in response.text
-    assert '下周待验证' in response.text
+    panel_ids = ['id="report-summary"', 'id="report-research"', 'id="report-dashboard"', 'id="report-watch"']
+    assert all(identifier in response.text for identifier in panel_ids)
+    assert [response.text.index(identifier) for identifier in panel_ids] == sorted(response.text.index(identifier) for identifier in panel_ids)
+    assert '待关注' in response.text and 'report-figures.js' in response.text
     assert '实际成交记录' in response.text
     download = client.get(page('/sn/reports/2026-01-09/weekly.md'))
     assert download.status_code == 200
@@ -116,7 +120,8 @@ def test_weekly_report_page_has_period_switch_and_readable_download(isolated):
     assert '# ' in download.text and '周报' in download.text
     assert '| Quantity |' in download.text and field in download.text
     assert '99.0' not in download.text
-    assert '## 研究判断' in download.text and '## 下周待验证' in download.text
+    assert '## 研究判断' in download.text
+    assert all('\n## ' + title in download.text for title in ['摘要', '研判策略', '数据展板', '待关注'])
     assert client.get(page('/sn/reports?period=unknown')).status_code == 400
 
 
@@ -173,24 +178,31 @@ def test_personal_reports_never_include_another_researchers_brief_strategy_or_ve
 
 def test_report_includes_only_owned_current_research_cards_without_original_source_blobs(session):
     import json
-    from types import SimpleNamespace
     from uuid import uuid4
-    from tin.integration.workbench_scope import current_workbench
+    from tin.integration.identity import Identity
+    from tin.integration.workbench_scope import WorkbenchScope, current_workbench
     from tin.models import WorkbenchArtifact
     from tin.web.report_period import build_period
     from tin.web.report_view import readable_markdown
+    from tin.web.research_references import remember_record_scope
+    identity = Identity('card-owner', 'cards@test.invalid', 'Cards', 17, 'owner')
+    scope = WorkbenchScope(identity, '50505050-5050-4050-8050-505050505050', 'library', 17,
+                           {'workspace_mode': 'isolated', 'can_edit': True}, 'Bearer fixture')
+    session.info.update(identity.session_info(), workbench_id=scope.workbench_id)
     when = datetime(2026, 1, 5, 10, tzinfo=SHANGHAI)
     for actor in ('card-owner', 'foreign-card-owner'):
         body = {'format': 'research-strategy-card.v1', 'title': actor + '人工研究卡', 'direction':'observe',
                 'thesis':'仅保存研究假设', 'watch_for':'等待真实需求数据', 'trigger':'原件数据确认后复核',
                 'invalidation':'证据改变则撤回', 'review_date':'2026-01-12',
                 'original_text':'PRIVATE_ORIGINAL_SOURCE_TEXT'}
-        session.add(WorkbenchArtifact(id=str(uuid4()), module='strategies', actor=actor, title=body['title'],
+        row = WorkbenchArtifact(id=str(uuid4()), module='strategies', actor=actor, title=body['title'],
             body=json.dumps(body,ensure_ascii=False), status='draft', source_ids=[],
-            source_snapshots=[{'private':'PRIVATE_SOURCE_SNAPSHOT'}], revision=1, created_at=when, updated_at=when))
+            source_snapshots=[{'private':'PRIVATE_SOURCE_SNAPSHOT'}], revision=1, created_at=when, updated_at=when)
+        session.add(row)
+        session.flush()
+        if actor == identity.user_id:
+            remember_record_scope(session, 'artifact', row.id)
     session.commit()
-    scope = SimpleNamespace(restricted=False, view_modules=('reports','strategies'),
-                            identity=SimpleNamespace(user_id='card-owner',can_write=True))
     marker = current_workbench.set(scope)
     try:
         result = build_period(session,'SN',date(2026,1,9),'weekly',source={'observations':[]})
@@ -226,7 +238,7 @@ def test_weekly_export_on_a_weekend_uses_only_its_week_and_keeps_native_idempote
     assert '| 期内合成字段 | 10 | 16 | 6 | 件 |' in content
     assert '"value": 10.0' in content and '"value": 16.0' in content
     assert '999.0' not in content
-    assert '## 下周待验证' in content
+    assert all('\n## ' + title in content for title in ['摘要', '研判策略', '数据展板', '待关注'])
     repeated = client.post(endpoint('reports/2026-02-08/weekly/export'), headers=headers, json={'folder_path':'日报'})
     assert repeated.status_code == 200
     assert repeated.json()['knowledge_id'] == first.json()['knowledge_id']

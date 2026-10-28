@@ -312,10 +312,12 @@ def test_snapshot_export_matches_actual_current_source_rows_and_ignores_render_c
     assert page.status_code == 200, page.text
     assert '导出到知识库' in page.text and 'data-export-kind="snapshot"' in page.text
     assert '日报导出文件夹' in page.text
+    before_home = len(state['calls'])
     home = client.get('/research/workbenches/'+WB+'/',headers=headers)
     assert home.status_code == 200, home.text
-    assert 'data-export-kind="brief"' in home.text and 'data-export-id="1"' in home.text
-    assert 'brief-export.js' in home.text
+    assert 'affairs-header' in home.text and '报告草稿' in home.text and '/sn/reports' in home.text
+    assert 'affairs.js' in home.text and '隔离的日报正文' not in home.text
+    assert not any(path.endswith('/knowledge') for _, path in state['calls'][before_home:]), 'The metadata inbox must not scan source documents'
 
 
 def test_native_malformed_receipt_is_not_success(export_client):

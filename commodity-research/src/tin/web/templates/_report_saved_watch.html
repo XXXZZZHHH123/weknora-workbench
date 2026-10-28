@@ -1,0 +1,2 @@
+
+      <ul class="report-checklist">{% for item in report.next_review %}<li><span aria-hidden="true">○</span>{{ item.text }}</li>{% else %}<li>暂无已保存验证条件，请由研究员补充。</li>{% endfor %}</ul>

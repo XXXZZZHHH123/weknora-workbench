@@ -2,9 +2,12 @@
   const dialog = document.getElementById('judgment-manager');
   if (!dialog) return;
   const byId = name => document.getElementById('logic-' + name);
+  const display = window.ResearchDisplay || {text: value => String(value ?? ''), reference: row => row?.title || (row?.created_at ? '研究判断 · ' + row.created_at.slice(0, 16).replace('T', ' ') : '已保存研究判断')};
   const input = byId('input'), status = byId('status');
   const endpoint = (window.RESEARCH_PREFIX || '') + '/api/sn/judgment';
-  let managed, draft, displayed, busy = false, controller;
+  let managed, draft, displayed, busy = false, controller, panels = [];
+  const selectedId = () => dialog.dataset.judgmentId || '';
+  const managePath = () => '/manage' + (selectedId() ? '?judgment_id=' + encodeURIComponent(selectedId()) : '');
   function inform(message, error = false) {
     status.textContent = message || '';
     status.dataset.error = String(error);
@@ -20,10 +23,12 @@
     for (const name of ['generate', 'apply', 'file', 'skeleton', 'structured', 'reuse', 'reuse-original', 'model', 'variety']) {
       byId(name).disabled = value || managed?.can_write === false;
     }
+    for (const name of ['panel-name', 'panel-save', 'new-panel-title']) if (byId(name)) byId(name).disabled = value || managed?.can_write === false;
+    for (const name of ['panel-switch', 'panel-open', 'panel-more']) if (byId(name)) byId(name).disabled = value;
   }
-  async function api(path, body) {
-    const response = await researchFetch(endpoint + path, body === undefined ? {} : {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal: controller?.signal
+  async function api(path, body, method = 'POST') {
+    const response = await researchFetch(endpoint + path, body === undefined ? {signal: controller?.signal} : {
+      method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal: controller?.signal
     });
     let value;
     try { value = await response.json(); } catch { throw new Error('研究逻辑服务暂时不可用，输入已保留。'); }
@@ -32,12 +37,38 @@
       const error = new Error(message); error.status = response.status; throw error; }
     return value;
   }
-  function text(id, value) { byId(id).textContent = value || ''; }
+  function panelTitle() { const title = byId('new-panel-title')?.value.trim(); return title ? {panel_title: title} : {}; }
+  function navigateToJudgment(identifier) {
+    const url = new URL(location.href || endpoint.replace('/api/sn/judgment', '/sn/judgment'), location.origin);
+    url.searchParams.set('judgment_id', String(identifier));
+    if (typeof location.assign === 'function') location.assign(url.href); else location.href = url.href;
+  }
+  function syncPanelName() {
+    const row = panels.find(item => String(item.judgment_id) === byId('panel-switch')?.value);
+    if (byId('panel-name')) byId('panel-name').value = row?.title || '';
+    if (byId('panel-save')) byId('panel-save').textContent = row?.named ? '保存名称' : '引用为面板';
+  }
+  async function loadPanels(append = false) {
+    if (!byId('panel-switch')) return;
+    const result = await api('/panels' + (append ? '?offset=' + panels.length : ''));
+    const previous = byId('panel-switch').value;
+    panels = append ? [...panels, ...result.items] : result.items;
+    const selector = byId('panel-switch'); selector.replaceChildren();
+    for (const row of panels) {
+      const option = document.createElement('option'); option.value = String(row.judgment_id);
+      option.textContent = `${display.reference(row)} · ${row.status || '草稿'}`; selector.append(option);
+    }
+    selector.value = previous || selectedId() || String(managed.current?.id || panels[0]?.judgment_id || '');
+    byId('panel-range').textContent = `${panels.length}/${result.total} 个已保存研判`;
+    byId('panel-more').hidden = !result.has_more;
+    syncPanelName();
+  }
+  function text(id, value) { byId(id).textContent = display.text(value || ''); }
   function showVersion(row) {
     displayed = row;
     text('current-md', row?.markdown || '尚无研究逻辑。可在“导入与分析”添加原文。');
     text('original-source', row?.source_text || '尚无原始输入');
-    text('current-state', row ? `v${row.version} · ${row.status} · ${row.author}` : '尚无研究逻辑');
+    text('current-state', row ? `${display.reference(row)} · ${row.status} · ${row.author}` : '尚无研究逻辑');
   }
   function presentDraft(value) {
     draft = value; byId('preview').hidden = false;
@@ -45,11 +76,11 @@
     text('coverage', `${value.bindings.length} 个真实指标绑定 · ${value.candidate_count}/${value.catalog_total} 个${value.candidate_subset ? '候选' : '目录'}指标`);
     const bindings = byId('bindings'); bindings.replaceChildren();
     for (const binding of value.bindings) {
-      const chip = document.createElement('span'); chip.textContent = `${binding.name} · ${binding.unit || '单位待确认，仅描述'}`; bindings.append(chip);
+      const chip = document.createElement('span'); chip.textContent = `${display.text(binding.name)} · ${binding.unit || '单位待确认，仅描述'}`; bindings.append(chip);
     }
     const gaps = byId('unresolved'); gaps.replaceChildren();
     for (const item of value.unresolved) {
-      const line = document.createElement('li'); line.textContent = `${item.section}：${item.text} — ${item.reason}`; gaps.append(line);
+      const line = document.createElement('li'); line.textContent = display.text(`${item.section}：${item.text} — ${item.reason}`); gaps.append(line);
     }
     const fields = byId('field-diff'); fields.replaceChildren();
     for (const change of value.diff.fields) {
@@ -61,16 +92,18 @@
     }
   }
   async function open() {
+    if (busy) return;
+    controller = new AbortController();
     if (!dialog.open) dialog.showModal();
     if (parent !== window) parent.postMessage({type: 'research-drawer-state', open: true}, location.origin);
     inform('正在读取当前逻辑与版本…');
     try {
-      managed = await api('/manage'); showVersion(managed.current);
+      managed = await api(managePath()); showVersion(managed.current);
       byId('variety').value = managed.current || managed.latest ? managed.variety || '' : '';
-      text('version-label', `${managed.current ? `当前展示 v${managed.current.version}` : '暂无当前逻辑'} · 最新基准 v${managed.latest?.version || 0}。新版本保存后仍为草稿。`);
+      text('version-label', `${managed.current ? display.reference(managed.current) : '暂无当前逻辑'}。后续保存仍为草稿，原记录保留。`);
       const versions = byId('version'); versions.replaceChildren();
       for (const row of managed.versions) {
-        const option = document.createElement('option'); option.value = row.version; option.textContent = `v${row.version} · ${row.status}`; versions.append(option);
+        const option = document.createElement('option'); option.value = row.version; option.textContent = `${display.reference(row)} · ${row.status}`; versions.append(option);
       }
       text('version-range', managed.versions_partial ? `最近${managed.versions.length}/${managed.version_total}版；更早版本可输入版号` : `${managed.version_total}个版本`);
       dialog.querySelector('[data-logic-tab="analyze"]').disabled = !managed.can_write;
@@ -82,6 +115,7 @@
         }
         if (!models.models.length) { selector.append(new Option('暂无可用对话模型', '')); }
       }
+      await loadPanels();
       inform('');
       if (dialog.dataset.prefill === 'true') { tab('analyze'); dialog.dataset.prefill = 'false'; }
     } catch (error) { inform(error.message, true); }
@@ -94,7 +128,7 @@
     if (error.name === 'AbortError') return;
     if (error.status === 409) {
       invalidate();
-      try { const refreshed = await api('/manage'); if (managed) managed.latest = refreshed.latest; } catch {}
+      try { const refreshed = await api(managePath()); if (managed) managed.latest = refreshed.latest; } catch {}
       inform(error.message + ' 原文已保留，可重新分析。', true);
     } else inform(error.message, true);
   }
@@ -109,7 +143,7 @@
       const baseline = variety && variety !== managed.variety ? await api('/manage?variety=' + encodeURIComponent(variety)) : managed;
       const value = await api('/generate', {model_id: byId('model').value, text: input.value,
         source_name: byId('file-name').textContent.slice(0, 128), base_version: baseline.latest?.version || 0,
-        ...(variety ? {variety} : {})});
+        ...(variety ? {variety} : {}), ...panelTitle()});
       presentDraft(value); inform(value.notice);
     } catch (error) { await recover(error); }
     finally { setBusy(false); }
@@ -119,12 +153,35 @@
     const selected = draft; controller = new AbortController(); setBusy(true); inform('正在确认来源与版本并保存草稿…');
     try {
       const result = await api(selected.kind === 'structured' ? '/structured/apply' : '/apply', {draft_id: selected.draft_id, base_version: selected.base_version});
-      invalidate(); inform(result.notice); location.reload();
+      invalidate(); inform(result.notice); if (result.id) navigateToJudgment(result.id); else location.reload();
     } catch (error) { await recover(error); }
     finally { setBusy(false); }
   });
   input.addEventListener('input', invalidate); byId('model').addEventListener('change', invalidate);
   byId('variety').addEventListener('input', invalidate);
+  byId('new-panel-title')?.addEventListener('input', invalidate);
+  byId('panel-switch')?.addEventListener('change', syncPanelName);
+  byId('panel-open')?.addEventListener('click', () => {
+    if (busy || !byId('panel-switch').value) return;
+    if (input.value.trim() || draft) return inform('输入原文或草稿尚未处理，请先保存、保留或清空，再切换研判。', true);
+    navigateToJudgment(byId('panel-switch').value);
+  });
+  byId('panel-more')?.addEventListener('click', async () => {
+    if (busy) return;
+    setBusy(true); try { await loadPanels(true); } catch (error) { inform(error.message, true); } finally { setBusy(false); }
+  });
+  byId('panel-save')?.addEventListener('click', async () => {
+    if (busy || !managed?.can_write) return;
+    const row = panels.find(item => String(item.judgment_id) === byId('panel-switch').value);
+    const title = byId('panel-name').value.trim();
+    if (!row || !title) return inform('请先选择已保存研判并填写名称。', true);
+    setBusy(true);
+    try {
+      await api(row.named ? '/panels/' + encodeURIComponent(row.id) : '/panels', row.named ?
+        {title, revision: row.revision} : {title, judgment_id: row.judgment_id, version: row.version}, row.named ? 'PATCH' : 'POST');
+      await loadPanels(); inform('面板名称已保存；研判原文和生效状态保持不变。');
+    } catch (error) { inform(error.message, true); } finally { setBusy(false); }
+  });
   byId('file').addEventListener('change', async event => {
     const file = event.target.files?.[0]; if (!file) return;
     if (file.size > 48 * 1024) return inform('请选择48 KiB以内的完整 .md / .txt / .json 文件。', true);
@@ -144,19 +201,19 @@
     try { payload = JSON.parse(input.value); }
     catch { return inform('请选择或粘贴完整的结构化 JSON 研究稿；普通文本请使用“分析原文”。', true); }
     invalidate(); controller = new AbortController(); setBusy(true); inform('正在核对结构和已授权指标，尚未保存…');
-    try { const result = await api('/structured/preview', {payload}); presentDraft(result); inform(result.notice); }
+    try { const result = await api('/structured/preview', {payload, ...panelTitle()}); presentDraft(result); inform(result.notice); }
     catch (error) { await recover(error); }
     finally { setBusy(false); }
   });
   byId('reuse').addEventListener('click', () => {
     if (!displayed) return inform('尚无可复用版本。');
     if (input.value.trim() && input.value !== displayed.markdown) return inform('已有输入，请先保留或清空，再复用当前MD。');
-    input.value = displayed.markdown; text('file-name', `复用 v${displayed.version} MD`); invalidate(); tab('analyze'); input.focus();
+    input.value = displayed.markdown; text('file-name', '复用已保存研判 MD'); invalidate(); tab('analyze'); input.focus();
   });
   byId('reuse-original').addEventListener('click', () => {
     if (!displayed?.source_text) return inform('尚无可复用原文。');
     if (input.value.trim() && input.value !== displayed.source_text) return inform('已有输入，请先保留或清空，再复用原文。');
-    input.value = displayed.source_text; text('file-name', `复用 v${displayed.version} 原文`); invalidate(); tab('analyze'); input.focus();
+    input.value = displayed.source_text; text('file-name', '复用已保存研判原文'); invalidate(); tab('analyze'); input.focus();
   });
   byId('download').addEventListener('click', () => {
     if (!displayed) return;
@@ -165,7 +222,8 @@
   });
   async function loadVersion(value) {
     if (!value) return;
-    try { const result = await api('/versions/' + encodeURIComponent(value)); text('history-md', result.markdown); text('history-diff', result.diff.markdown); inform(''); }
+    const selection = selectedId() ? '?judgment_id=' + encodeURIComponent(selectedId()) : '';
+    try { const result = await api('/versions/' + encodeURIComponent(value) + selection); text('history-md', result.markdown); text('history-diff', result.diff.markdown); inform(''); }
     catch (error) { inform(error.message, true); }
   }
   byId('version').addEventListener('change', event => loadVersion(event.target.value));
