@@ -66,6 +66,9 @@
             <WorkspaceNavigationNode title="研究工作台" icon="chart-bar" guide="nav-commodity-research"
                 :collapsed="uiStore.sidebarCollapsed" :active="isWorkbenchActive"
                 @navigate="router.push('/platform/research-workbenches')" />
+            <WorkspaceNavigationNode v-if="canAccessAgents" title="智能体管理" icon="robot-1" guide="nav-agents"
+                :collapsed="uiStore.sidebarCollapsed" :active="isAgentsActive"
+                @navigate="router.push('/platform/agents')" />
         </nav>
 
         <section v-if="!uiStore.sidebarCollapsed" class="sidebar-recents" aria-labelledby="sidebar-recents-title">
@@ -161,8 +164,11 @@
 
         <!-- 下半部分：用户菜单 -->
         <div class="menu_bottom">
+            <WorkspaceNavigationNode title="反馈与建议" icon="chat-bubble-help" class="sidebar-feedback"
+                :collapsed="uiStore.sidebarCollapsed" @navigate="feedbackVisible = true" />
             <UserMenu />
         </div>
+        <FeedbackDialog v-model:visible="feedbackVisible" />
 
     </div>
 </template>
@@ -237,6 +243,7 @@ import { useUIStore } from '@/stores/ui';
 import { useCommandPaletteStore } from '@/stores/commandPalette';
 import { MessagePlugin, DialogPlugin, Icon as TIcon } from "tdesign-vue-next";
 import UserMenu from '@/components/UserMenu.vue';
+import FeedbackDialog from '@/components/FeedbackDialog.vue';
 import BrandWordmark from '@/components/BrandWordmark.vue';
 import TenantSelector from '@/components/TenantSelector.vue';
 import { useI18n } from 'vue-i18n';
@@ -421,6 +428,9 @@ function identifyDefaultKnowledgeBase(id: string) {
 const isProjectsActive = computed(() => ['assistantProjects', 'assistantProjectPreview'].includes(String(route.name)));
 const isKnowledgeBaseActive = computed(() => String(route.name).startsWith('knowledgeBase') || route.name === 'kbCreatChat');
 const isWorkbenchActive = computed(() => String(route.name).startsWith('researchWorkbench') || route.name === 'commodityResearch');
+const isAgentsActive = computed(() => route.name === 'agentList');
+const canAccessAgents = computed(() => deploymentCapabilities.isSupported('agents'));
+const feedbackVisible = ref(false);
 
 async function refreshWorkspaceLists() {
     const generation = ++workspaceRequestGeneration;
@@ -1463,6 +1473,20 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
             background: transparent;
         }
     }
+    // 底部「反馈与建议」与主导航同一行样式，位于用户菜单分隔线之上。
+    .sidebar-feedback {
+        margin-bottom: 4px;
+        :deep(.workspace-nav-node__row) {
+            min-height: var(--app-sidebar-row-height);
+            color: var(--td-text-color-secondary);
+            padding-left: var(--sidebar-inset-x);
+            border-radius: 8px;
+        }
+        :deep(.workspace-nav-node__row:hover) { color: var(--td-text-color-primary); }
+        :deep(.workspace-nav-node__link) { gap: 10px; padding: var(--app-sidebar-link-padding-y) 0; }
+        :deep(.workspace-nav-node__title) { font-weight: 400; font-size: var(--app-text-base); }
+        :deep(.workspace-nav-node__icon) { width: var(--sidebar-icon-size); height: var(--sidebar-icon-size); color: var(--td-text-color-secondary); }
+    }
     .sidebar-recents {
         display: flex;
         flex-direction: column;
@@ -1484,6 +1508,8 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     &.aside_box--collapsed {
         .sidebar-primary-nav :deep(.workspace-nav-node__row) { min-height: 32px; width: 32px; margin: 0 auto 3px; padding: 0; }
         .sidebar-primary-nav :deep(.workspace-nav-node__link) { justify-content: center; }
+        .sidebar-feedback :deep(.workspace-nav-node__row) { min-height: 32px; width: 32px; margin: 0 auto 3px; padding: 0; }
+        .sidebar-feedback :deep(.workspace-nav-node__link) { justify-content: center; }
     }
 
     .menu_bottom {
