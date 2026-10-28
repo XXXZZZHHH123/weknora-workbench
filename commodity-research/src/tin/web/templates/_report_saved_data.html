@@ -2,4 +2,3 @@
       {% if report.changes %}<div class="report-scroll"><table class="report-table"><thead><tr><th>指标</th><th>首个有效值</th><th>末个有效值</th><th>变化</th><th>数据时点与口径</th></tr></thead><tbody>
       {% for row in report.changes %}<tr><td>{{ row.name }}<small>{{ row.unit }}</small></td><td class="report-value">{{ row.first_text }}</td><td class="report-value">{{ row.last_text }}</td><td class="report-value">{{ row.change_text }}{% if row.change_pct is not none %}<small>{{ row.change_pct_text }}%</small>{% endif %}</td><td><small>{{ row.first.as_of if row.first else '期内无观测' }}{% if row.last and row.first.as_of != row.last.as_of %}<br>→ {{ row.last.as_of }}{% endif %}</small>{% if row.note %}<p class="report-muted">{{ row.note }}</p>{% endif %}</td></tr>{% endfor %}
       </tbody></table></div>{% else %}<p class="report-muted">暂无可比较的已绑定指标。</p>{% endif %}
-    

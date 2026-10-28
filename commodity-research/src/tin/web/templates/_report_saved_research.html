@@ -11,7 +11,7 @@
       {% endfor %}
       {% if report.research_events %}<details class="report-evidence"><summary>报告期内登记的版本变化</summary><ul>{% for event in report.research_events %}<li>{{ event.written_at }} 保存 · 当前状态 {{ event.status }} · 登记 {{ event.recorded_at }} · 编写日期 {{ event.written_at }}</li>{% endfor %}</ul></details>{% endif %}
       {% else %}<p class="report-muted">未登记研究判断；请导入并确认研究逻辑后，再跟踪区间和证伪条件。</p>{% endif %}
-    
+
 <h4 class="report-subheading">策略跟踪</h4>
       <p class="report-muted">当前已保存策略与报告期内的实际事件分别列示。条件触发不等于实际成交记录。</p>
       {% if report.research_cards %}
@@ -33,4 +33,3 @@
       </article>{% else %}<p class="report-muted">{{ '尚无已保存交易方案。研究卡不会自动转为成交或持仓。' if report.research_cards else '尚无已保存策略。先核对研究逻辑与具体合约，再由研究员建立、审核策略草稿。' }}</p>{% endfor %}
       {% if report.strategy_events %}<details class="report-evidence" open><summary>报告期内策略事件</summary><ul>{% for event in report.strategy_events %}<li><time>{{ event.at }}</time> · {{ event.title }} · {{ event.label }}{% if event.reason %}：{{ event.reason }}{% endif %}</li>{% endfor %}</ul></details>{% else %}<p class="report-muted">报告期内无已记录策略事件。</p>{% endif %}
       {% if report.coverage.strategies_truncated or report.coverage.events_truncated %}<p class="report-muted">已展示最近40个策略和100条期内事件；更多记录请在策略管理查看。</p>{% endif %}
-    
