@@ -48,6 +48,37 @@ def test_negative_actual_value_clamps_only_display_width_without_changing_hit():
     assert rows[0]['progress'] == 0
 
 
+@pytest.mark.parametrize('operator,target,value,hit,progress', [
+    ('>', -10, -5, True, 100),
+    ('<', -10, -20, True, 100),
+    ('>=', -10, -10, True, 100),
+    ('<=', -10, -10, True, 100),
+    ('>', 0, 1, True, 100),
+    ('<', 0, -1, True, 100),
+    ('>=', 0, 0, True, 100),
+    ('<=', 0, 0, True, 100),
+    ('>', -10, -12, False, 80),
+    ('<', -10, -5, False, 50),
+    ('>=', -10, -11, False, 90),
+    ('<=', -10, -9, False, 90),
+    ('>', 0, -0.25, False, 75),
+    ('<', 0, 0.25, False, 0),
+    ('>', 10, 8, False, 80),
+    ('<', 10, 12, False, 100 * (1 - 2 / 12)),
+    ('>', -10, -10, False, 100),
+    ('<', 0, 0, False, 100),
+])
+def test_scalar_radar_uses_gap_display_for_negative_and_zero_boundaries(
+        operator, target, value, hit, progress):
+    rule = condition(operator=operator, value=target)
+    row = threshold_radar_values(SimpleNamespace(thresholds=[rule]), {rule['series_id']: {
+        'name': 'Synthetic signed quantity', 'unit': 'kg', 'date': '2026-01-02', 'value': value}})[0]
+    assert row['value'] == value
+    assert row['state'] == ('已触发' if hit else '未触发')
+    assert row['progress'] == pytest.approx(progress)
+    assert 0 <= row['progress'] <= 100
+
+
 def test_range_and_missing_values_keep_deterministic_geometry_and_explicit_gaps():
     rule = condition(operator='between', value=[10, 20])
     rows = threshold_radar_values(SimpleNamespace(thresholds=[rule]), {rule['series_id']: {

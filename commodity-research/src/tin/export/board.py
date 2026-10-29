@@ -478,10 +478,12 @@ def _threshold_radar(j, lookup):
             hit = (v > target if op == ">" else v >= target if op == ">=" else
                    v < target if op == "<" else v <= target)
             row["state"] = "已触发" if hit else "未触发"
-            row["progress"] = float(min(100, v / target * 100 if target else 0) if op in (">", ">=")
-                else min(100, target / v * 100 if v else 0))
+            gap = decimal_difference(target, v).copy_abs()
+            scale = (target.copy_abs() if op in (">", ">=")
+                     else max(v.copy_abs(), target.copy_abs())) or Decimal(1)
+            row["progress"] = 100 if hit else float(max(0, 100 - gap / scale * 100))
             row["distance"] = ("已越线" if hit else
-                               f"距触发 {_fmt(decimal_difference(target, v).copy_abs(), row['unit'])} {row['unit']}")
+                               f"距触发 {_fmt(gap, row['unit'])} {row['unit']}")
         row["progress"] = max(0, min(100, row["progress"]))
         out.append(row)
     return out
