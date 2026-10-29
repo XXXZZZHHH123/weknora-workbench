@@ -328,5 +328,16 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     for(const id of ['unknown-op','unknown-expression']){assert.match(reviewControl(env,id,'condition')?.textContent||'',/需核对条件/);assert.doesNotMatch(reviewControl(env,id,'condition').textContent,/unrecognized|<script>|operator|value_literal|!=/);}
     for(let index=0;index<6;index++)assert.match(reviewControl(env,'invalid-literal-'+index,'condition').textContent,/需核对条件/,'Malformed candidate numbers are never reformatted into a valid comparison');
   }
-  console.log('27 isolated judgment manager interaction checks passed');
+  {
+    const literal='900719925474099312345.123456789',env=await generateReview({ruleEntries:[{id:'unit-edit',kind:'thresholds',rule:{operator:'>=',value_literal:literal,type:'观察位',horizon:'短期'}}]});
+    const condition=reviewControl(env,'unit-edit','condition'),search=reviewControl(env,'unit-edit','search');
+    assert.match(condition.textContent,/吨/);
+    await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});
+    assert.equal(condition.textContent,'解析后的条件：指标值不低于 '+literal+' t；观察位；短期','Changing the binding immediately refreshes the condition unit without rounding its literal');
+    assert.equal(env.requests.filter(row=>row.url.endsWith('/review/update')).length,0,'The selected unit is visible before item confirmation');
+    search.value='';await search.fire('input');
+    assert.equal(condition.textContent,'解析后的条件：指标值不低于 '+literal+'（单位待确认）；观察位；短期','Clearing the selection immediately removes the previous unit');
+    env.context.window.JudgmentManager.close();
+  }
+  console.log('28 isolated judgment manager interaction checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});
