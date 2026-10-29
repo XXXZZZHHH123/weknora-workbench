@@ -188,8 +188,6 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         values = rule.value if isinstance(rule.value, list) else [rule.value]
         source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
                                            units=[row.get('unit') for row in catalog])
-        if any(Decimal(str(value)) not in source_numbers for value in values):
-            _error('阈值数字无法从原文摘录核验；请将缺少明确数字的规则列为待确认项', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
         records = explicit['thresholds'].get(rule.series_id)
         signature = threshold_signature(rule.model_dump())
         quoted = quoted_rule_records(original, quotes[rule.id])
@@ -202,13 +200,13 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         if not matches_source or not matches_quote:
             _error('规则与引文所在行明确记录的指标、条件、区间或类型不一致，或引文多处定位不一致，未改写或执行',
                    'exported_rule_mismatch', f'/judgment/thresholds/{index}')
+        if any(Decimal(str(value)) not in source_numbers for value in values):
+            _error('阈值数字或单位无法从原文依据核验，请核对指标单位和原文条件', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
     for index, rule in enumerate(payload.falsifiers):
         match = EXPRESSION.fullmatch(rule.expression)
         source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
                                            units=[row.get('unit') for row in catalog])
-        if not match or Decimal(match.group(3)) not in source_numbers or (
-                rule.consecutive_periods > 1 and Decimal(rule.consecutive_periods) not in source_numbers):
-            _error('证伪数字或连续期数无法从原文摘录核验；请列为待确认项', 'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
+        period_numbers = quoted_quantities(quotes[rule.id]) if rule.consecutive_periods > 1 else set()
         records = explicit['falsifiers'].get(rule.series_id)
         signature = falsifier_signature(rule.model_dump())
         quoted = quoted_rule_records(original, quotes[rule.id])
@@ -218,6 +216,9 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         if not matches_source or not matches_quote:
             _error('证伪条件与引文所在行明示的指标、比较方式、连续期数、单位或证伪对象不一致，或引文多处定位不一致，未执行',
                    'falsifier_source_mismatch', f'/judgment/falsifiers/{index}')
+        if not match or Decimal(match.group(3)) not in source_numbers or (
+                rule.consecutive_periods > 1 and Decimal(rule.consecutive_periods) not in period_numbers):
+            _error('证伪数字、单位或连续期数无法从原文依据核验', 'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
     return AnalysisResult(payload, units, quotes,
                           [item.model_dump() for item in payload.unstructured])
 

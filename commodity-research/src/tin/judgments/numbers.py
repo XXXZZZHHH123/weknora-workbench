@@ -7,7 +7,9 @@ import re
 NUMBER = r'[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
 _GROUPED = r'[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
 _CONNECTORS = '+-/:*^×÷⁄∕‐‑‒–—~～'
-_SCALAR = re.compile(r'(?<![0-9A-Za-z_.,' + re.escape(_CONNECTORS) + r'万亿千\]])' + _GROUPED)
+_START = r'(?<![0-9A-Za-z_.,' + re.escape(_CONNECTORS) + r'万亿千\]])'
+_SCALAR = re.compile(_START + _GROUPED)
+_SHARED_UNIT_PAIR = re.compile(_START + '(' + _GROUPED + r')\s+and\s+(' + _GROUPED + ')', re.IGNORECASE)
 _MEMBER = re.compile(NUMBER)
 _SCALE = re.compile(r'万亿|亿|万|千')
 _POWERS = {'千': 3, '万': 4, '亿': 8, '万亿': 12}
@@ -90,15 +92,21 @@ def _unit_value(value, tail, unit, units):
             known.add(expected[prefix.end():])
     # A compound source unit wins over its prefix. Only an explicit base-ten
     # multiplier plus the complete expected unit can change the numeric scale.
+    unit_prefix = False
     for actual in sorted(known - {''}, key=len, reverse=True):
-        if following.startswith(actual) and _unit_boundary(following[len(actual):]):
+        if following.startswith(actual):
+            unit_prefix = True
+            if not _unit_boundary(following[len(actual):]):
+                continue
             if actual == expected:
                 return value
             power = _SCALE.match(actual)
             if expected and power and actual[power.end():] == expected:
                 return _scale(value, _POWERS[power[0]])
             return None
-    if expected and following.startswith(expected):
+    # A failed unit boundary is not permission to reinterpret a quantity as
+    # unitless. Unknown attached text is equally ambiguous for a typed quantity.
+    if unit_prefix:
         return None
     match = _SCALE.match(following)
     if match:
@@ -109,6 +117,8 @@ def _unit_value(value, tail, unit, units):
             if not remainder.startswith(expected) or not _unit_boundary(remainder[len(expected):]):
                 return None
         return _scale(value, _POWERS[match[0]])
+    if expected and following and (following[0].isalpha() or following[0] in '([{'):
+        return None
     if following and (following[0].isnumeric() or following[0] in '十百千万亿兆两〇零一二三四五六七八九%‰‱'):
         return None
     if following and following[0] in _CONNECTORS:
@@ -164,6 +174,22 @@ def quoted_quantities(quote, *, unit=None, units=()):
     scalar_text = ''.join(masked)
     for pattern in (_GROUPED_SPACE, _ARITHMETIC):
         scalar_text = pattern.sub(lambda match: 'x' * len(match[0]), scalar_text)
+    masked = list(scalar_text)
+    # A literal pair can share its final unit. Both endpoints must validate
+    # together; an unknown word after the first number is never a bare value.
+    for pair in _SHARED_UNIT_PAIR.finditer(scalar_text):
+        try:
+            preceding = text[:pair.start()].rstrip()
+            invalid_start = preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～')
+            parsed = [] if invalid_start else [
+                _unit_value(_decimal(member.replace(',', '')), text[pair.end():], unit, units)
+                for member in pair.groups()]
+            if all(value is not None for value in parsed):
+                values.update(parsed)
+        except (ValueError, DecimalException):
+            pass
+        masked[pair.start():pair.end()] = ' ' * (pair.end() - pair.start())
+    scalar_text = ''.join(masked)
     for match in _SCALAR.finditer(scalar_text):
         try:
             preceding = text[:match.start()].rstrip()
