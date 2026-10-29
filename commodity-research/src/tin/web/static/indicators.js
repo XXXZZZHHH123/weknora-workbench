@@ -341,7 +341,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderComparison(data) {
     const output = get("compare-result");
     if (data.status !== "ok") { output.textContent = data.reason; return; }
-    const colors = ["var(--primary)", "#d97706", "#8b5cf6", "#0891b2"];
+    const colors = ["#4472C4", "#ED7D31", "#A5A5A5", "#FFC000"];
     const values = data.series.flatMap((s) => s.values);
     const low = Math.min(...values), high = Math.max(...values);
     const span = high - low || 1;
@@ -354,7 +354,7 @@ document.addEventListener("DOMContentLoaded", () => {
       svg += `<path d="M65 ${y(value)} H855" stroke="var(--line)"/><text x="55" y="${y(value) + 4}" text-anchor="end" fill="var(--text-muted)" font-size="11">${value.toFixed(1)}</text>`;
     }
     data.series.forEach((s, index) => {
-      svg += `<polyline points="${s.values.map((v, i) => `${x(i)},${y(v)}`).join(" ")}" fill="none" stroke="${colors[index]}" stroke-width="2"/>`;
+      svg += `<polyline points="${s.values.map((v, i) => `${x(i)},${y(v)}`).join(" ")}" fill="none" stroke="${colors[index]}" stroke-width="2.5"/>`;
       s.values.forEach((v, i) => { svg += `<circle class="indicator-compare-point" cx="${x(i)}" cy="${y(v)}" r="4" fill="${colors[index]}"><title>${escape(s.name)} · ${data.dates[i]} · ${v.toFixed(2)}（原值 ${s.raw_values[i]} ${escape(s.unit)}）</title></circle>`; });
     });
     svg += `<text x="65" y="315" fill="var(--text-muted)" font-size="11">${data.dates[0]}</text><text x="855" y="315" text-anchor="end" fill="var(--text-muted)" font-size="11">${data.dates.at(-1)}</text></svg>`;
