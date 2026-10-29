@@ -41,11 +41,13 @@ import { useTheme } from '@/composables/useTheme'
 import { useRoute, useRouter } from 'vue-router'
 import { getResearchWorkbench, type ResearchWorkbench } from '@/api/workspaces'
 import IsolatedResearchWorkbench from './IsolatedResearchWorkbench.vue'
-import { authenticateResearchFrame, researchFramePath } from './researchFrameSession'
+import { analysisJobId, analysisJudgmentId, authenticateResearchFrame, researchFramePath } from './researchFrameSession'
+import { useAnalysisTasksStore } from '@/stores/analysisTasks'
 import WorkbenchActions from '@/views/workspaces/WorkbenchActions.vue'
 import ResearchFeatureGuides from './ResearchFeatureGuides.vue'
 import { directKnowledgeBaseIds, workbenchSourceLabel } from './workbenchDataSources'
 const auth = useAuthStore()
+const analysisTasks = useAnalysisTasksStore()
 const { effectiveTheme, setTheme } = useTheme()
 const route = useRoute()
 const router = useRouter()
@@ -81,7 +83,11 @@ function makeResearchChatPanel(): ReturnType<typeof defineAsyncComponent> {
     loadingComponent: placeholder(false), errorComponent: placeholder(true), delay: 120, timeout: 30000 })
 }
 const ResearchChatPanel = shallowRef(makeResearchChatPanel())
-const researchView = ref('home')
+function requestedResearchView() {
+  if (analysisJobId(route.query.analysis_job) || analysisJudgmentId(route.query.judgment_id)) return 'judgment'
+  return typeof route.query.view === 'string' && ['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(route.query.view) ? route.query.view : 'home'
+}
+const researchView = ref(requestedResearchView())
 const nativeDrawerOpen = ref(false), frameIsHome = ref(true)
 const frameReady = ref(false)
 let requestGeneration = 0
@@ -93,7 +99,7 @@ const sourceLabel = computed(() => workbench.value ? workbenchSourceLabel(workbe
 const chatSourceIds = computed(() => workbench.value ? directKnowledgeBaseIds(workbench.value) : [])
 const frameUrl = computed(() => {
   if (!canShowResearch.value) return ''
-  return researchFramePath(workbenchId.value,researchView.value)
+  return researchFramePath(workbenchId.value,researchView.value,route.query.analysis_job,route.query.judgment_id)
 })
 function restartSession() { generation.value += 1 }
 async function prepareFrameSession() {
@@ -175,6 +181,18 @@ function frameLoaded() {
 }
 function receive(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
+  if (canShowResearch.value && event.data?.workbenchId === workbenchId.value && analysisJobId(event.data?.jobId)) {
+    if (event.data.type === 'research-analysis-job-started') { void analysisTasks.refresh(); return }
+    if (event.data.type === 'research-analysis-job-applied' && analysisJudgmentId(event.data.judgmentId)) {
+      void analysisTasks.refresh()
+      if (route.query.analysis_job === event.data.jobId) {
+        const query: typeof route.query = { ...route.query, judgment_id: analysisJudgmentId(event.data.judgmentId) }
+        delete query.analysis_job
+        void router.replace({ query })
+      }
+      return
+    }
+  }
   if (canShowResearch.value && event.data?.type === 'research-open-sources') { if (isolatedView.value) isolatedView.value.openSources(); else if (workbench.value?.can_manage) actionsView.value?.openSources(); return }
   if (canShowResearch.value && event.data?.type === 'research-drawer-state' && typeof event.data.open === 'boolean') { nativeDrawerOpen.value = event.data.open; return }
   if (event.data?.type === 'workspace-theme-ready') { sendTheme(); return }
@@ -185,6 +203,9 @@ function receive(event: MessageEvent) {
   if (event.data?.type === 'research-auth-expired') void reauthenticateFrame()
 }
 watch(effectiveTheme, sendTheme)
+watch(() => [route.query.view, route.query.analysis_job, route.query.judgment_id], () => {
+  researchView.value = requestedResearchView(); nativeDrawerOpen.value = false; frameIsHome.value = researchView.value === 'home'; restartSession()
+})
 // Replace both surfaces on identity changes; old workspace content must disappear.
 watch(() => [auth.token, tenantId.value, auth.user?.id, workbenchId.value], (scope, previous) => {
   const identityChanged = !previous || scope.slice(1).some((value, index) => value !== previous[index + 1]) || Boolean(scope[0]) !== Boolean(previous[0])
@@ -194,7 +215,7 @@ watch(() => [auth.token, tenantId.value, auth.user?.id, workbenchId.value], (sco
   frameReady.value = false
   chatMounted.value = false
   chatVisible.value = false
-  researchView.value = 'home'
+  researchView.value = requestedResearchView()
   nativeDrawerOpen.value = false
   frameIsHome.value = true
   scopeGeneration.value++
