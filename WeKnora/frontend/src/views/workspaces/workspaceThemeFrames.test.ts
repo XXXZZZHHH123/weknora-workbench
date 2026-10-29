@@ -4,6 +4,7 @@ import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 import { isTrustedStructuredFrameMessage, structuredFrameAuthPayload } from '../../utils/structuredFrameHost'
+import { analysisJobId, analysisJudgmentId, researchFramePath } from '../research/researchFrameSession'
 import { computed, defineAsyncComponent, effectScope, h, nextTick, reactive, ref, shallowRef, watch } from 'vue'
 
 const surfaces = [
@@ -29,6 +30,7 @@ async function fixture(surface: typeof surfaces[number], initialView = '') {
     defineProps: () => props, withDefaults: (value: unknown) => value,
     defineEmits: () => (name: string, ...args: any[]) => emitted.push({ name, args }),
     isTrustedStructuredFrameMessage, structuredFrameAuthPayload,
+    analysisJobId, analysisJudgmentId, researchFramePath, useAnalysisTasksStore: () => ({ refresh: async () => {} }),
     computed, defineAsyncComponent, h, nextTick, reactive, ref, shallowRef, watch, useAuthStore: () => auth, useRoute: () => route, useRouter: () => ({ push() {}, replace() {} }),
     useTheme: () => ({ effectiveTheme, setTheme(mode: 'light' | 'dark') { requested.push(mode); effectiveTheme.value = mode; return true } }),
     onMounted() {}, onBeforeUnmount: (fn: () => void) => unmounts.push(fn),
