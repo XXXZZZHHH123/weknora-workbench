@@ -111,10 +111,19 @@ def _unit_value(value, tail, unit, units):
     match = _SCALE.match(following)
     if match:
         remainder = following[match.end():].lstrip()
-        if remainder and remainder[0] in '万亿千0123456789.+-':
+        closed = (not remainder or remainder[0] in '，;；。!?！？、)]}）'
+            or remainder[0] in ',.' and (len(remainder) == 1 or remainder[1].isspace()))
+        if remainder and (remainder[0] in '万亿千0123456789' + _CONNECTORS
+                or remainder[0] in ',.' and not closed):
             return None
         if expected:
-            if not remainder.startswith(expected) or not _unit_boundary(remainder[len(expected):]):
+            if closed:
+                # A closed explicit multiplier is numeric evidence like a bare
+                # literal. An already scaled catalog unit needs an actual
+                # source unit to disambiguate the repeated multiplier.
+                if _SCALE.match(expected):
+                    return None
+            elif not remainder.startswith(expected) or not _unit_boundary(remainder[len(expected):]):
                 return None
         return _scale(value, _POWERS[match[0]])
     if expected and following and (following[0].isalpha() or following[0] in '([{'):
@@ -131,6 +140,58 @@ def _unit_value(value, tail, unit, units):
         elif first in '+-/:0123456789' or first.isascii() and (first.isalpha() or first == '_'):
             return None
     return value
+
+
+def _range_pattern(unit, units):
+    known = {_width(item).strip() for item in units if isinstance(item, str) and item.strip()}
+    known.update({'%', '‰', '‱'})
+    if isinstance(unit, str) and unit.strip():
+        expected = _width(unit).strip()
+        known.add(expected)
+        prefix = _SCALE.match(expected)
+        if prefix:
+            known.add(expected[prefix.end():])
+    literal_units = '|'.join(re.escape(item) for item in sorted(known - {''}, key=lambda item: (-len(item), item)))
+    scale = _SCALE.pattern
+    suffix = rf'(?:(?:{scale})\s*(?:{literal_units})|(?:{literal_units})|(?:{scale}))'
+    return re.compile(_START + rf'(?P<lower>{_GROUPED})(?:\s*(?P<lower_unit>{suffix}))?\s*'
+        + rf'(?:-|–|—|~|～|至|到|(?i:\bto\b))\s*(?P<upper>{_GROUPED})(?:\s*(?P<upper_unit>{suffix}))?')
+
+
+def _connected_ranges(text, unit, units, original):
+    """Consume whole candidate intervals, including rejected ones.
+
+    Only explicit units or multipliers distinguish these from bare subtraction
+    or date fragments. The model, rather than this syntax reader, still chooses
+    whether the original describes a threshold, observation, or other rule.
+    """
+    masked, values = list(text), set()
+    for match in _range_pattern(unit, units).finditer(text):
+        masked[match.start():match.end()] = ' ' * (match.end() - match.start())
+        lower_suffix, upper_suffix = match['lower_unit'] or '', match['upper_unit'] or ''
+        preceding = original[:match.start()].rstrip()
+        after = text[match.end():].lstrip()
+        if (not re.compile(_START).match(original, match.start()) or not upper_suffix
+                or preceding and (preceding[-1].isnumeric() or preceding[-1] in _CONNECTORS)
+                or after and (after[0].isnumeric() or after[0] in _CONNECTORS)):
+            continue
+        try:
+            upper_tail = text[match.end('upper'):]
+            if not lower_suffix:
+                lower_tail = upper_tail
+            elif _SCALE.fullmatch(lower_suffix):
+                prefix = _SCALE.match(upper_suffix)
+                base_unit = upper_suffix[prefix.end():].strip() if prefix else upper_suffix
+                lower_tail = lower_suffix + base_unit
+            else:
+                lower_tail = lower_suffix
+            lower = _unit_value(_decimal(match['lower'].replace(',', '')), lower_tail, unit, units)
+            upper = _unit_value(_decimal(match['upper'].replace(',', '')), upper_tail, unit, units)
+            if lower is not None and upper is not None and lower < upper:
+                values.update((lower, upper))
+        except (ValueError, DecimalException):
+            continue
+    return ''.join(masked), values
 
 
 def _arrays(text):
@@ -156,6 +217,7 @@ def quoted_quantities(quote, *, unit=None, units=()):
     is a separator. No arithmetic, ratios, code fragments or unit aliases are
     inferred. The caller still checks full original quotes and catalog units.
     """
+    units = tuple(units)
     text = _width(quote)
     masked, values = list(text), set()
     for start, end in _arrays(text):
@@ -174,6 +236,8 @@ def quoted_quantities(quote, *, unit=None, units=()):
     scalar_text = ''.join(masked)
     for pattern in (_GROUPED_SPACE, _ARITHMETIC):
         scalar_text = pattern.sub(lambda match: 'x' * len(match[0]), scalar_text)
+    scalar_text, range_values = _connected_ranges(scalar_text, unit, units, text)
+    values.update(range_values)
     masked = list(scalar_text)
     # A literal pair can share its final unit. Both endpoints must validate
     # together; an unknown word after the first number is never a bare value.

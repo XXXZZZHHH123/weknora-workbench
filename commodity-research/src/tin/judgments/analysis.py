@@ -9,7 +9,7 @@ import re
 from pydantic import ValidationError
 from tin.schemas.judgment import EXPRESSION, JudgmentIn
 from tin.judgments.service import _refs
-from tin.judgments.numbers import quoted_quantities, check_rule_number
+from tin.judgments.numbers import quoted_quantities, check_rule_number, _SCALAR, _arrays, _width
 from tin.judgments.markdown_protocol import (
     exported_rules, quoted_rule_records, threshold_signature, falsifier_signature,
 )
@@ -30,6 +30,81 @@ class AnalysisError(ValueError):
 
 def _error(message, code, path):
     raise AnalysisError(message, code=code, path=path)
+
+
+def _quote_continuation(original, end, quote, units):
+    """Inspect only a quantity's adjoining token, never a later source amount."""
+    tail = original[end:]
+    if not tail:
+        return ''
+    units = {_width(unit).strip() for unit in units if isinstance(unit, str) and unit.strip()}
+    units.update({'%', '‰', '‱'})
+    normalized = _width(quote)
+    following = _width(tail).lstrip(' \t')
+    leading = len(tail) - len(tail.lstrip(' \t'))
+    explicit = [unit for unit in units if normalized.rstrip().endswith(unit)]
+    unit_prefix = [unit for unit in units if following.startswith(unit)]
+    wrapped = following[:1] in {'(', '['} and (
+        any(following[1:].lstrip().startswith(unit) for unit in units)
+        or following[1:].lstrip()[:1].isascii() and following[1:].lstrip()[:1].isalpha())
+    first = following[:1]
+    # A bare number can inherit its selected catalog unit. Pure Chinese prose
+    # does not prove an extra unit; model/user binding still owns that meaning.
+    if not (explicit or unit_prefix or wrapped or first and (
+            first.isascii() and first.isalpha() or first.isnumeric()
+            or first in '.,:+-/*^×÷⁄∕千万元亿')):
+        return ''
+    maximum = max(256, max(map(len, units), default=0) + 2)
+    candidate = tail[:maximum]
+    token = re.match(r'[ \t]*[^\s，。；;!?！？、"“”‘’()（）{}<>=]*', candidate)
+    length = max(leading + 1, token.end())
+    protected = []
+    for unit in unit_prefix:
+        protected.append((leading, leading + len(unit)))
+        length = max(length, leading + len(unit) + 1)
+    trimmed_end = end - (len(normalized) - len(normalized.rstrip()))
+    for short in explicit:
+        start = trimmed_end - len(short)
+        for unit in units:
+            if len(unit) > len(short) and unit.startswith(short) and _width(original[start:]).startswith(unit):
+                finish = start + len(unit) - end
+                if finish > 0:
+                    protected.append((0, finish))
+                    length = max(length, finish + 1)
+    raw = candidate[:min(length, maximum)]
+    masked = list(raw)
+    for index, char in enumerate(raw):
+        if char.isnumeric() and not any(start <= index < finish for start, finish in protected):
+            masked[index] = 'x'
+    return ''.join(masked)
+
+
+def _quote_quantity_context(original, quote, values, unit, units):
+    needed = {Decimal(str(value)) for value in values}
+    normalized = _width(quote)
+    matches = list(_SCALAR.finditer(normalized))
+    owner = matches[-1].start() if matches else None
+    if owner is not None:
+        owner = next((start for start, end in _arrays(normalized) if start <= owner < end), owner)
+    offset, occurrences = 0, 0
+    while (start := original.find(quote, offset)) >= 0:
+        occurrences += 1
+        if occurrences > 128:
+            return False
+        offset = start + 1
+        prefix = _width(original[max(0, start - 1):start])
+        if _SCALAR.match(normalized) and not _SCALAR.match(prefix + normalized, len(prefix)):
+            return False
+        continuation = _quote_continuation(original, start + len(quote), quote, units)
+        if not needed <= quoted_quantities(prefix + quote + continuation, unit=unit, units=units):
+            return False
+        if owner is not None:
+            suffix = quote[owner:]
+            owned = needed & quoted_quantities(suffix, unit=unit, units=units)
+            before = _width(original[max(0, start + owner - 1):start + owner])
+            if not owned <= quoted_quantities(before + suffix + continuation, unit=unit, units=units):
+                return False
+    return bool(occurrences)
 
 
 @dataclass
@@ -202,6 +277,10 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
                    'exported_rule_mismatch', f'/judgment/thresholds/{index}')
         if any(Decimal(str(value)) not in source_numbers for value in values):
             _error('阈值数字或单位无法从原文依据核验，请核对指标单位和原文条件', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
+        if not _quote_quantity_context(original, quotes[rule.id], values, known[rule.series_id].get('unit'),
+                [row.get('unit') for row in catalog]):
+            _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
+                   'unit_context', f'/judgment/thresholds/{index}/value')
     for index, rule in enumerate(payload.falsifiers):
         match = EXPRESSION.fullmatch(rule.expression)
         source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
@@ -219,6 +298,12 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         if not match or Decimal(match.group(3)) not in source_numbers or (
                 rule.consecutive_periods > 1 and Decimal(rule.consecutive_periods) not in period_numbers):
             _error('证伪数字、单位或连续期数无法从原文依据核验', 'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
+        if not _quote_quantity_context(original, quotes[rule.id], [Decimal(match.group(3))],
+                known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]) or (
+                rule.consecutive_periods > 1 and not _quote_quantity_context(
+                    original, quotes[rule.id], [rule.consecutive_periods], None, [])):
+            _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
+                   'unit_context', f'/judgment/falsifiers/{index}/expression')
     return AnalysisResult(payload, units, quotes,
                           [item.model_dump() for item in payload.unstructured])
 

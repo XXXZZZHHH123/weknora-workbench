@@ -53,7 +53,7 @@ def test_invalid_or_ambiguous_notation_never_supplies_partial_numbers(quote):
     ('12%', 'kg', []),
     ('1.2万元/吨', '吨', []),
     ('1.2吨', '万吨', []),
-    ('1.2万', 'kg', []),
+    ('1.2万', 'kg', ['12000']),
 ])
 def test_explicit_multiplier_respects_the_actual_catalog_unit(quote, unit, expected):
     assert quoted_quantities(quote, unit=unit) == {Decimal(value) for value in expected}
