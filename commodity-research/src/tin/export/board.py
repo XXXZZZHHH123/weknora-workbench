@@ -482,6 +482,7 @@ def _threshold_radar(j, lookup):
                 else min(100, target / v * 100 if v else 0))
             row["distance"] = ("已越线" if hit else
                                f"距触发 {_fmt(decimal_difference(target, v).copy_abs(), row['unit'])} {row['unit']}")
+        row["progress"] = max(0, min(100, row["progress"]))
         out.append(row)
     return out
 

@@ -2,9 +2,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
+const {webcrypto} = require('node:crypto');
 const source = fs.readFileSync(path.join(__dirname, '../src/tin/web/static/judgment-manager.js'), 'utf8');
 class Element {
-  constructor(id='') { this.id=id;this.dataset={};this.attributes={};this.children=[];this.listeners={};this.value='';this.textContent='';this.hidden=false;this.disabled=false;this.open=false; }
+  constructor(id='') { this.id=id;this.dataset={};this.attributes={};this.children=[];this.listeners={};this.style={};this.value='';this.textContent='';this.hidden=false;this.disabled=false;this.open=false; }
   get textContent(){return (this._text||'')+this.children.map(child=>child.textContent).join('');}
   set textContent(value){this._text=String(value);this.children=[];}
   set innerHTML(_) { throw new Error('Unsafe HTML rendering attempted'); }
@@ -20,7 +21,7 @@ class Element {
   close(){this.open=false;}
   click(){}
 }
-function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false}={}) {
+function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false}={}) {
   const ids=['judgment-manager',...['original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','structured','variety','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
   const nodes=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
   for(const name of ['import','review','review-nav','review-items','review-count','review-reuse','review-note','review-edit','review-save-note','review-ready','review-source','review-attention','review-all','review-empty'])nodes['logic-'+name]=new Element('logic-'+name);
@@ -32,22 +33,58 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
   const close=new Element();
   nodes['judgment-manager'].querySelectorAll=selector=>selector==='[data-logic-tab]'?tabs:panels;
   nodes['judgment-manager'].querySelector=selector=>selector==='[data-logic-close]'?close:tabs[1];
-  const requests=[],navigations=[],catalogReplies=[],reviewReplies=[];let reloads=0,generations=0,revision=1;
+  const requests=[],navigations=[],catalogReplies=[],reviewReplies=[],jobStartReplies=[],jobStatusReplies=[],jobResultReplies=[],baselineReplies=[];
+  const firstJob='synthetic-analysis-job-0001',jobStates=new Map([[firstJob,failure?'failed':jobState]]),jobSources=new Map(),jobInputs=new Map(),jobKeys=new Map();
+  let reloads=0,generations=0,revision=1,submittedBody=null;
   const catalog=[{series_id:'authorized-other',name:'Directory quantity <script>',unit:'t',source_file:'Shared workbook.xlsx',sheet:'Daily'},{series_id:'authorized-page-two',name:'Another authorized field',unit:'t',source_file:'Other workbook.xlsx',sheet:'Weekly'}];
   const review={draft_id:'server-bound-nonce',revision:1,sections:[{id:'contradiction',title:'主矛盾',items:[{id:'anchor',kind:'binding',title:'数据锚',original_text:'Supply quantity <script>',description:'请核对数据来源与口径。',status:'pending',requires_binding:true,can_bind:true,can_confirm:true,warnings:[],binding:null,ai_binding:{series_id:'ai-choice',name:'AI quantity',unit:'kg',source_file:'Initial workbook.xlsx',sheet:'Table'}}]},{id:'rules',title:'阈值与证伪',items:[{id:'rule',kind:'thresholds',rule:{operator:'>',value_literal:'12',type:'观察位',horizon:'短期'},title:'阈值条件',original_text:'A condition without a unit',status:'pending',requires_binding:false,can_bind:false,can_confirm:false,attention_fields:['condition'],attention_reasons:['原文缺少阈值单位，请补充原文或保留文字。'],warnings:['原文缺少阈值单位，请补充原文或保留文字。']},{id:'note',kind:'text',title:'研究说明',original_text:'Keep this observation',status:'pending',requires_binding:false,can_bind:false,can_confirm:true,warnings:[]}]}],pending_count:3,confirmed_count:0,total:3};
   if(emptyExcerpt)review.sections[0].items[0].original_text='';
   if(ruleEntries){review.sections[1].items=ruleEntries.map(row=>({title:'解析条件',original_text:'Exact research evidence',description:'请核对解析后的条件。',status:'pending',requires_binding:true,can_bind:true,can_confirm:false,warnings:[],binding:{series_id:'condition-unit',name:'研究数量',unit:'吨'},...row}));review.total=review.pending_count=1+ruleEntries.length;}
   if(readyMode){review.sections[0].items[0].status='ready';review.sections[1].items[1].status='ready';review.sections.push({id:'time_dimension',title:'时间维度',items:[{id:'time-text',kind:'description',title:'适用周期',description:'短期关注供需变化，中期观察成本约束。',status:'ready',original_text:'',can_confirm:true,can_bind:false,requires_binding:false,warnings:[]}]});review.total=4;review.pending_count=review.needs_attention_count=1;review.ready_count=3;}
   if(readyMode==='all'){review.sections[1].items[0].status='ready';review.sections[1].items[0].warnings=[];review.pending_count=review.needs_attention_count=0;review.ready_count=4;}
+  if(visualMode){
+    const anchor=review.sections[0].items[0];Object.assign(anchor,{kind:'thresholds',status:'ready',binding:anchor.ai_binding,rule:{operator:'>',value_literal:'12',type:'观察位',horizon:'短期'}});
+    Object.assign(review.sections[1].items[0],{status:'ready',can_bind:true,binding:{series_id:'second-visual',name:'Second quantity',unit:'吨'}});
+  }
   function preview(){return {draft_id:review.draft_id,base_version:2,markdown:'# Proposed',diff:{markdown:'-old\n+new',fields:[{label:'Rule',before:null,after:'<img onerror=bad>'}]},bindings:[],unresolved:[],candidate_count:1,catalog_total:5,review_available:true,review:JSON.parse(JSON.stringify(review))};}
-  const window={RESEARCH_PREFIX:'/research/workbenches/synthetic'};
+  const window={RESEARCH_PREFIX:'/research/workbenches/synthetic',crypto:webcrypto};
   const context={window,parent:window,location:{origin:'http://unit.test',href:'http://unit.test/research/workbenches/synthetic/sn/judgment?date=2024-03-01&judgment_id=42',reload(){reloads++;},assign(url){navigations.push(url);}},
-    document:{getElementById:id=>nodes[id],createElement:()=>new Element(),querySelectorAll:()=>[]},
+    document:{getElementById:id=>nodes[id],createElement:()=>new Element(),createElementNS:()=>new Element(),querySelectorAll:()=>[]},
     TextEncoder,TextDecoder,AbortController,Blob,URL,URLSearchParams,Option:Element,console,setTimeout,clearTimeout,
     async researchFetch(url,options={}) {
-      requests.push({url,body:options.body?JSON.parse(options.body):undefined,method:options.method,signal:options.signal});
+      requests.push({url,body:options.body?JSON.parse(options.body):undefined,method:options.method,signal:options.signal,headers:options.headers,keepalive:options.keepalive});
       let result;
-      if(url.includes('/review/indicators')){
+      if(baselineDeferred&&url.includes('/manage')&&requests.filter(row=>row.url.includes('/manage')).length>1)await new Promise(resolve=>baselineReplies.push(resolve));
+      const jobMatch=/\/jobs\/([A-Za-z0-9_-]+)(\/result)?$/.exec(url);
+      if(url.endsWith('/jobs')&&options.method==='POST'){
+        generations++;submittedBody=JSON.parse(options.body);
+        if(stale&&generations===1)return {ok:false,status:409,json:async()=>({detail:'Synthetic version changed'})};
+        const key=options.headers['Idempotency-Key'];let identifier=jobKeys.get(key);
+        if(!identifier){identifier='synthetic-analysis-job-'+String(jobKeys.size+1).padStart(4,'0');jobKeys.set(key,identifier);jobInputs.set(identifier,JSON.parse(options.body));jobStates.set(identifier,failure?'failed':jobState);}
+        if(jobNetworkFailure&&generations===1)throw new TypeError('Synthetic network outcome unknown');
+        if(jobStartDeferred)await new Promise(resolve=>jobStartReplies.push(resolve));
+        result={id:identifier,job_id:identifier,workbench_id:'synthetic',state:'queued',phase:'queued',title:'研究逻辑分析',result_available:false};
+      }
+      else if(jobMatch){
+        const identifier=jobMatch[1],state=jobStates.get(identifier)||'succeeded';
+        if(jobMatch[2]){
+          if(jobResultDeferred&&identifier===firstJob)await new Promise(resolve=>jobResultReplies.push(resolve));
+          const value=reviewMode?preview():{draft_id:'server-bound-nonce',base_version:2,markdown:'# Proposed',diff:{markdown:'-old\n+new',fields:[{label:'Rule',before:null,after:'<img onerror=bad>'}]},bindings:[{name:'Actual quantity',unit:'kg'}],unresolved:[],candidate_count:1,catalog_total:5,candidate_subset:true,notice:'Preview only'};
+          const input=jobInputs.get(identifier)||submittedBody;
+          result={...value,source_text:jobSources.get(identifier)||input?.text||'Recovered exact source',variety:input?.variety||'SN',model_id:input?.model_id||'configured',source_name:input?.source_name||'Recovered source.md',panel_title:input?.panel_title||'',job:{id:identifier,state}};
+        }else{
+          if(jobStatusDeferred&&identifier===firstJob)await new Promise(resolve=>jobStatusReplies.push(resolve));
+          result={id:identifier,job_id:identifier,workbench_id:'synthetic',state,phase:state==='running'?'analyzing':state,title:'研究逻辑分析',result_available:state==='succeeded',...(failure?{message:'Synthetic unavailable; input retained'}:{})};
+        }
+      }
+      else if(url.includes('/review/indicator-values?')){
+        const selected=new URL(url,'http://unit.test').searchParams.get('item_ids')||'';
+        result={draft_id:review.draft_id,revision:review.revision,series:visualMode?[{series_id:selected==='rule'?'second-visual':'ai-choice',unit:selected==='rule'?'吨':'kg',latest_value:visualMode==='empty'?null:selected==='rule'?7:0,as_of:'2024-03-01',points:visualMode==='empty'?[]:[{date:'2024-02-29',value:2},{date:'2024-03-01',value:0}]}]:[]};
+      }
+      else if(url.includes('/review/radar?')){
+        result={draft_id:review.draft_id,revision:review.revision,rows:visualMode&&visualMode!=='empty'?[{item_id:'anchor',value:0,unit:'kg',as_of:'2024-03-01',progress:visualMode==='negative'?-30:240,distance:'Synthetic distance',state:'Synthetic condition'}]:[]};
+      }
+      else if(url.includes('/review/indicators')){
         if(catalogDeferred&&url.includes('search=slow'))await new Promise(resolve=>catalogReplies.push(resolve));
         result={items:url.includes('search=slow')?[{series_id:'stale-result',name:'Stale catalog reply',unit:'kg'}]:url.includes('offset=1')?[catalog[1]]:[catalog[0]],total:2,next_offset:url.includes('offset=1')?null:1};
       }
@@ -57,7 +94,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
         if(reviewFailure)return {ok:false,status:422,json:async()=>({detail:{message:'请选择有可核对单位的指标，当前修改已保留。',attention_fields:['binding']}})};
         const body=JSON.parse(options.body),item=review.sections.flatMap(section=>section.items).find(row=>row.id===body.item_id);
         item.status={confirm:'confirmed',keep_text:'kept_text',exclude:'excluded'}[body.action];
-        if(body.series_id)item.binding=catalog.find(row=>row.series_id===body.series_id)||item.ai_binding;
+        if(Object.hasOwn(body,'series_id'))item.binding=body.series_id===null?null:catalog.find(row=>row.series_id===body.series_id)||item.ai_binding;
         if(body.source_quote)item.source_quote=body.source_quote;
         item.remembered=body.remember;review.pending_count=review.sections.flatMap(section=>section.items).filter(row=>row.status==='pending').length;review.confirmed_count=review.sections.flatMap(section=>section.items).filter(row=>row.status==='confirmed').length;if(Object.hasOwn(review,'needs_attention_count'))review.needs_attention_count=review.pending_count;review.revision=++revision;review.draft_id='server-bound-nonce-r'+revision;result=preview();
       }
@@ -70,19 +107,17 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
       else if(url.endsWith('/manage')||url.includes('/manage?judgment_id=')) result={variety:'SN',current:{id:42,version:1,status:'生效',author:'r',markdown:'# Current',source_text:'# Original input'},latest:{version:stale&&generations?3:2},versions:[{version:2,status:'草稿'},{version:1,status:'生效'}],version_total:2,can_write:!viewer};
       else if(url.includes('/manage?variety='))result={variety:'XY',current:null,latest:null,versions:[],version_total:0,can_write:!viewer};
       else if(url.endsWith('/models')) result={models:[{id:'configured',name:'Configured chat'}]};
-      else if(url.endsWith('/generate')) {
-        generations++;
-        if(stale&&generations===1)return {ok:false,status:409,json:async()=>({detail:'Synthetic version changed'})};
-        if(failure)return {ok:false,json:async()=>({detail:'Synthetic unavailable; input retained'})};
-        result=reviewMode?preview():{draft_id:'server-bound-nonce',base_version:2,markdown:'# Proposed',diff:{markdown:'-old\n+new',fields:[{label:'Rule',before:null,after:'<img onerror=bad>'}]},bindings:[{name:'Actual quantity',unit:'kg'}],unresolved:[],candidate_count:1,catalog_total:5,candidate_subset:true,notice:'Preview only'};
-      } else if(url.endsWith('/structured/preview'))result={kind:'structured',draft_id:'typed-bound-nonce',base_version:0,markdown:'# Typed research',diff:{markdown:'',fields:[]},bindings:[],unresolved:[],candidate_count:0,catalog_total:0,notice:'Typed preview'};
+      else if(url.endsWith('/structured/preview'))result={kind:'structured',draft_id:'typed-bound-nonce',base_version:0,markdown:'# Typed research',diff:{markdown:'',fields:[]},bindings:[],unresolved:[],candidate_count:0,catalog_total:0,notice:'Typed preview'};
       else if(url.endsWith('/apply'))result={...(savedId?{id:44}:{}),version:3,status:'草稿',notice:'Saved draft'};
       else result={markdown:'# Historical',diff:{markdown:'-Current\n+Historical'}};
       return {ok:true,json:async()=>result};
     }};
   vm.runInNewContext(source,context);
-  return {nodes,requests,context,navigations,catalogReplies,reviewReplies,reloads:()=>reloads};
+  return {nodes,requests,context,navigations,catalogReplies,reviewReplies,jobStartReplies,jobStatusReplies,jobResultReplies,baselineReplies,firstJob,jobStates,jobSources,jobsCreated:()=>jobKeys.size,reloads:()=>reloads};
 }
+const isGeneration=request=>request.url.endsWith('/jobs')&&request.method==='POST';
+async function until(condition){for(let attempt=0;attempt<50&&!condition();attempt++)await new Promise(resolve=>setTimeout(resolve,0));assert.ok(condition(),'Expected asynchronous request was reached');}
+async function flush(){await new Promise(resolve=>setTimeout(resolve,0));await new Promise(resolve=>setTimeout(resolve,0));}
 function descendants(node){return node.children.flatMap(child=>[child,...descendants(child)]);}
 function visibleDescendants(node){return node.hidden?[]:node.children.flatMap(child=>child.hidden?[]:[child,...(child.className?.includes('logic-item-adjustments')&&!child.open?[]:visibleDescendants(child))]);}
 function reviewControl(env,itemId,control){return descendants(env.nodes['logic-review-items']).find(node=>node.dataset.reviewItem===itemId&&node.dataset.reviewControl===control);}
@@ -93,7 +128,7 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     assert.equal(env.nodes['logic-current-md'].textContent,'# Current');
     assert.match(env.nodes['logic-version-label'].textContent,/后续保存仍为草稿/);
     assert.doesNotMatch(env.nodes['logic-version-label'].textContent,/v2/);
-    assert.equal(env.requests.filter(r=>r.url.endsWith('/generate')).length,0,'Opening a manager never invokes a model');
+    assert.equal(env.requests.filter(isGeneration).length,0,'Opening a manager never invokes a model');
     env.nodes['logic-input'].value='Complete private source';env.nodes['logic-model'].value='configured';
     await env.nodes['logic-generate'].fire('click');
     assert.equal(env.nodes['logic-preview'].hidden,false);
@@ -122,7 +157,7 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     const env=setup({viewer:true});await env.context.window.JudgmentManager.open();
     assert.equal(env.nodes['logic-generate'].disabled,true);
     await env.nodes['logic-generate'].fire('click');
-    assert.equal(env.requests.filter(r=>r.url.endsWith('/models')||r.url.endsWith('/generate')).length,0);
+    assert.equal(env.requests.filter(r=>r.url.endsWith('/models')||isGeneration(r)).length,0);
   }
   {
     const env=setup();await env.context.window.JudgmentManager.open();env.nodes['logic-input'].value='Keep existing text';
@@ -136,9 +171,9 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     await env.nodes['logic-generate'].fire('click');
     assert.equal(env.nodes['logic-input'].value,'Keep complete source');
     assert.equal(env.nodes['logic-preview'].hidden,true);
-    assert.equal(env.requests.filter(r=>r.url.endsWith('/generate')).length,1,'A conflict does not automatically call the model again');
+    assert.equal(env.requests.filter(isGeneration).length,1,'A conflict does not automatically call the model again');
     await env.nodes['logic-generate'].fire('click');
-    assert.equal(env.requests.filter(r=>r.url.endsWith('/generate'))[1].body.base_version,3,'Retry uses the freshly verified latest version');
+    assert.equal(env.requests.filter(isGeneration)[1].body.base_version,3,'Retry uses the freshly verified latest version');
   }
   {
     const env=setup();await env.context.window.JudgmentManager.open();
@@ -152,7 +187,7 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     const env=setup();await env.context.window.JudgmentManager.open();
     env.nodes['logic-variety'].value='XY';env.nodes['logic-input'].value='New explicit product';env.nodes['logic-model'].value='configured';
     await env.nodes['logic-generate'].fire('click');
-    const generated=env.requests.find(r=>r.url.endsWith('/generate'));
+    const generated=env.requests.find(isGeneration);
     assert.equal(generated.body.variety,'XY');assert.equal(generated.body.base_version,0);
     assert.equal(generated.body.text,'New explicit product');
   }
@@ -161,7 +196,7 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     env.nodes['logic-input'].value=JSON.stringify({variety:'XY',contradiction:{}});
     await env.nodes['logic-structured'].fire('click');
     assert.equal(env.nodes['logic-preview'].hidden,false);
-    assert.equal(env.requests.filter(r=>r.url.endsWith('/generate')).length,0);
+    assert.equal(env.requests.filter(isGeneration).length,0);
     assert.equal(env.requests.find(r=>r.url.endsWith('/structured/preview')).body.payload.variety,'XY');
     await env.nodes['logic-apply'].fire('click');
     assert.equal(env.requests.filter(r=>r.url.endsWith('/structured/apply')).length,1);
@@ -171,7 +206,7 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     assert.equal(env.nodes['logic-variety'].value,'','An empty workbench must not silently inherit the legacy product');
     env.nodes['logic-input'].value='Complete source for a new product';env.nodes['logic-model'].value='configured';
     await env.nodes['logic-generate'].fire('click');
-    assert.equal(env.requests.filter(r=>r.url.endsWith('/generate')).length,0,'Missing product identity must not spend a model call');
+    assert.equal(env.requests.filter(isGeneration).length,0,'Missing product identity must not spend a model call');
     assert.match(env.nodes['logic-status'].textContent,/品种代码/);
   }
   {
@@ -180,7 +215,7 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     assert.match(env.nodes['logic-panel-switch'].children[0].textContent,/<img onerror=unsafe>/,'Panel titles render as safe text');
     env.nodes['logic-panel-switch'].value='43';await env.nodes['logic-panel-open'].fire('click');
     assert.match(env.navigations[0],/date=2024-03-01/);assert.match(env.navigations[0],/judgment_id=43/);
-    assert.equal(env.requests.filter(r=>r.url.endsWith('/apply')||r.url.endsWith('/generate')).length,0,'Switching never activates or imports a judgment');
+    assert.equal(env.requests.filter(r=>r.url.endsWith('/apply')||isGeneration(r)).length,0,'Switching never activates or imports a judgment');
   }
   {
     const env=setup({panelMode:true});await env.context.window.JudgmentManager.open();
@@ -192,7 +227,7 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
   {
     const env=setup({panelMode:true,savedId:true});await env.context.window.JudgmentManager.open();
     env.nodes['logic-new-panel-title'].value='Independent second panel';env.nodes['logic-input'].value='Complete source';env.nodes['logic-model'].value='configured';
-    await env.nodes['logic-generate'].fire('click');assert.equal(env.requests.find(r=>r.url.endsWith('/generate')).body.panel_title,'Independent second panel');
+    await env.nodes['logic-generate'].fire('click');assert.equal(env.requests.find(isGeneration).body.panel_title,'Independent second panel');
     env.nodes['logic-panel-switch'].value='43';await env.nodes['logic-panel-open'].fire('click');assert.equal(env.navigations.length,0,'Switching cannot discard source input');
     await env.nodes['logic-apply'].fire('click');assert.match(env.navigations[0],/judgment_id=44/);assert.equal(env.reloads(),0,'Saved draft opens its own panel');
   }
@@ -232,7 +267,7 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
   {
     const env=await generateReview(),search=reviewControl(env,'anchor','search');await search.fire('focus');assert.equal(env.requests.filter(row=>row.url.includes('/review/indicators')).length,1);
     await reviewControl(env,'anchor','more').fire('click');assert.match(env.requests.filter(row=>row.url.includes('/review/indicators')).at(-1).url,/offset=1.*limit=20/);assert.equal(reviewControl(env,'anchor','more').hidden,true);
-    await search.fire('keydown',{key:'ArrowUp'});await search.fire('keydown',{key:'Enter'});assert.equal(reviewControl(env,'anchor','search').value,'Another authorized field');
+    await search.fire('keydown',{key:'ArrowUp'});await search.fire('keydown',{key:'ArrowUp'});await search.fire('keydown',{key:'Enter'});assert.equal(reviewControl(env,'anchor','search').value,'Another authorized field');
     await search.fire('keydown',{key:'Escape'});assert.equal(search.attributes['aria-expanded'],'false');
   }
   {
@@ -248,7 +283,7 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
   }
   {
     const env=await generateReview({reviewDeferred:true}),search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});const updating=search.fire('keydown',{key:'Enter'});assert.equal(env.nodes['logic-apply'].disabled,true,'A network-pending edit prevents saving');env.reviewReplies[0]();await updating;assert.equal(env.nodes['logic-apply'].disabled,false);
-    env.context.window.JudgmentManager.close();await env.context.window.JudgmentManager.open();const reopened=reviewControl(env,'anchor','search');await reopened.fire('focus');assert.ok(env.requests.filter(row=>row.url.includes('/review/indicators')).length>=2);assert.equal(env.requests.filter(row=>row.url.endsWith('/generate')).length,1,'Reopening never reruns the model');
+    env.context.window.JudgmentManager.close();await env.context.window.JudgmentManager.open();const reopened=reviewControl(env,'anchor','search');await reopened.fire('focus');assert.ok(env.requests.filter(row=>row.url.includes('/review/indicators')).length>=2);assert.equal(env.requests.filter(isGeneration).length,1,'Reopening never reruns the model');
   }
   {
     const env=await generateReview({reviewConflict:true}),search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});assert.equal(env.nodes['logic-preview'].hidden,true,'A source/version conflict invalidates the stale draft');assert.equal(env.nodes['logic-input'].value,'Full research source');await env.nodes['logic-apply'].fire('click');assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0);
@@ -319,5 +354,78 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     const field=descendants(env.nodes['logic-review-items']).find(node=>node.dataset.reviewField==='binding');assert.equal(field.dataset.invalid,'true');assert.match(field.textContent,/当前修改已保留/);assert.equal(env.nodes['logic-apply'].disabled,true);
     await env.nodes['logic-apply'].fire('click');assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0,'An unsynchronized remembered choice cannot save the old AI binding');
   }
-  console.log('32 isolated judgment manager interaction checks passed');
+  {
+    const env=await generateReview({readyMode:true});const search=reviewControl(env,'anchor','search');await search.fire('focus');
+    const emptyChoice=descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-binding-option'&&node.textContent==='暂无，暂不关联');
+    assert.ok(emptyChoice,'The indicator menu offers an explicit unbound choice');await emptyChoice.fire('click');
+    const change=env.requests.find(row=>row.url.endsWith('/review/update'));assert.equal(change.body.series_id,null);assert.equal(change.body.action,'keep_text');assert.equal(change.body.remember,false);
+    assert.equal(reviewControl(env,'anchor','search').value,'','A deliberate null never falls back to an AI recommendation');assert.equal(env.nodes['logic-apply'].disabled,false);
+    env.context.window.JudgmentManager.close();await env.context.window.JudgmentManager.open();assert.equal(reviewControl(env,'anchor','search').value,'','Reopening preserves an explicit unbound choice');
+    await env.nodes['logic-apply'].fire('click');assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,1,'An explicitly unbound text draft can be saved');
+  }
+  {
+    const env=setup({jobStartDeferred:true});await env.context.window.JudgmentManager.open();
+    env.nodes['logic-input'].value='Source accepted before closing';env.nodes['logic-model'].value='configured';env.nodes['logic-file-name'].textContent='Original source.md';
+    const starting=env.nodes['logic-generate'].fire('click');await until(()=>env.jobStartReplies.length===1);
+    const posted=env.requests.find(isGeneration);assert.equal(posted.signal,null);assert.equal(posted.keepalive,true);assert.match(posted.headers['Idempotency-Key'],/^[a-f0-9]{32}$/);
+    env.context.window.JudgmentManager.close();assert.equal(env.nodes['judgment-manager'].open,false);env.jobStartReplies[0]();await starting;
+    assert.equal(env.requests.filter(row=>/\/jobs\/[^/]+$/.test(row.url)).length,0,'Closing while a starter is pending does not fetch a result into the closed dialog');
+    await env.context.window.JudgmentManager.openJob(env.firstJob);
+    assert.equal(env.nodes['logic-input'].value,'Source accepted before closing');assert.equal(env.nodes['logic-file-name'].textContent,'Original source.md');
+    assert.equal(env.requests.filter(isGeneration).length,1);assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0);
+  }
+  {
+    const env=await generateReview({jobState:'running'});assert.equal(env.nodes['logic-preview'].hidden,true);assert.match(env.nodes['logic-status'].textContent,/后台|正在分析/);
+    env.context.window.JudgmentManager.close();env.jobStates.set(env.firstJob,'succeeded');await env.context.window.JudgmentManager.openJob(env.firstJob);
+    assert.equal(env.nodes['logic-preview'].hidden,false);assert.equal(env.requests.filter(isGeneration).length,1,'A completed server task is reopened without spending another model call');
+    assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0);env.context.window.JudgmentManager.close();
+  }
+  for(const state of ['failed','interrupted']){
+    const env=await generateReview({jobState:state});assert.equal(env.nodes['logic-preview'].hidden,true);assert.equal(env.nodes['logic-status'].dataset.error,'true');assert.equal(env.nodes['logic-generate'].disabled,false);
+    assert.match(env.nodes['logic-status'].textContent,state==='failed'?/失败/:/中断/);assert.equal(env.requests.filter(row=>row.url.endsWith('/result')).length,0);
+    env.context.window.JudgmentManager.close();await env.context.window.JudgmentManager.openJob(env.firstJob);
+    assert.equal(env.requests.filter(isGeneration).length,1);assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0);env.context.window.JudgmentManager.close();
+  }
+  {
+    const env=setup({jobResultDeferred:true,reviewMode:true});await env.context.window.JudgmentManager.open();env.nodes['logic-input'].value='Earlier task source';env.nodes['logic-model'].value='configured';
+    const generating=env.nodes['logic-generate'].fire('click');await until(()=>env.jobResultReplies.length===1);env.context.window.JudgmentManager.close();
+    const newer='synthetic-analysis-job-0002';env.jobSources.set(newer,'Newer task source');await env.context.window.JudgmentManager.openJob(newer);
+    assert.equal(env.nodes['logic-input'].value,'Newer task source');env.jobResultReplies[0]();await generating;assert.equal(env.nodes['logic-input'].value,'Newer task source','A late result cannot replace the newly opened task');
+    assert.equal(env.requests.filter(isGeneration).length,1);assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0);
+  }
+  {
+    const env=setup({jobStatusDeferred:true,jobState:'running'});await env.context.window.JudgmentManager.open();env.nodes['logic-input'].value='Earlier task source';env.nodes['logic-model'].value='configured';
+    const generating=env.nodes['logic-generate'].fire('click');await until(()=>env.jobStatusReplies.length===1);env.context.window.JudgmentManager.close();
+    const newer='synthetic-analysis-job-0002';env.jobStates.set(newer,'succeeded');env.jobSources.set(newer,'Current task source');await env.context.window.JudgmentManager.openJob(newer);
+    env.jobStatusReplies[0]();await generating;assert.equal(env.nodes['logic-input'].value,'Current task source');assert.equal(env.nodes['logic-preview'].hidden,false,'An old running status cannot hide or restart the current result');env.context.window.JudgmentManager.close();
+  }
+  {
+    const env=setup({baselineDeferred:true,panelMode:true});await env.context.window.JudgmentManager.open();env.nodes['logic-input'].value='Original captured source';env.nodes['logic-model'].value='configured';env.nodes['logic-new-panel-title'].value='Captured panel';
+    const starting=env.nodes['logic-generate'].fire('click');await until(()=>env.baselineReplies.length===1);env.context.window.JudgmentManager.close();env.nodes['logic-input'].value='New unsent source';await env.nodes['logic-input'].fire('input');env.nodes['logic-new-panel-title'].value='Unsent panel';
+    env.baselineReplies[0]();await starting;const posted=env.requests.find(isGeneration);assert.equal(posted.body.text,'Original captured source');assert.equal(posted.body.panel_title,'Captured panel');assert.equal(env.nodes['logic-input'].value,'New unsent source');assert.equal(env.nodes['logic-preview'].hidden,true);
+  }
+  {
+    const env=setup({jobNetworkFailure:true});await env.context.window.JudgmentManager.open();env.nodes['logic-input'].value='Retry the identical source';env.nodes['logic-model'].value='configured';
+    await env.nodes['logic-generate'].fire('click');assert.equal(env.nodes['logic-generate'].disabled,false);await env.nodes['logic-generate'].fire('click');
+    const starts=env.requests.filter(isGeneration);assert.equal(starts.length,2);assert.equal(starts[0].headers['Idempotency-Key'],starts[1].headers['Idempotency-Key']);assert.deepEqual(starts[0].body,starts[1].body);assert.equal(env.jobsCreated(),1,'An uncertain network outcome does not create a second analysis');assert.equal(env.nodes['logic-preview'].hidden,false);
+  }
+  {
+    const env=await generateReview({visualMode:true});await flush();
+    const lines=visibleDescendants(env.nodes['logic-review-items']).filter(node=>node.className==='logic-visual-value');assert.ok(lines.some(line=>line.children.some(child=>child.textContent==='0')),'A real observation equal to zero is displayed');
+    const fill=descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-radar-fill');assert.equal(fill.style.width,'100%');assert.ok(descendants(env.nodes['logic-review-items']).some(node=>node.attributes.role==='img'),'Saved points produce a small trend');
+    let values=env.requests.filter(row=>row.url.includes('/indicator-values?'));assert.equal(values.length,1);assert.equal(new URL(values[0].url,'http://unit.test').searchParams.get('item_ids'),'anchor');
+    await env.nodes['logic-review-nav'].children.find(node=>node.dataset.reviewSection==='rules').fire('click');await flush();values=env.requests.filter(row=>row.url.includes('/indicator-values?'));assert.equal(values.length,2);assert.equal(new URL(values[1].url,'http://unit.test').searchParams.get('item_ids'),'rule');assert.ok(values.every(row=>(row.method||'GET')==='GET'&&!row.body));env.context.window.JudgmentManager.close();
+  }
+  {
+    const env=await generateReview({visualMode:'negative'});await flush();const meter=descendants(env.nodes['logic-review-items']).find(node=>node.attributes.role==='meter');assert.equal(meter.attributes['aria-valuenow'],'0');assert.equal(descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-radar-fill').style.width,'0%');env.context.window.JudgmentManager.close();
+  }
+  {
+    const env=await generateReview({visualMode:'empty'});await flush();const visible=visibleDescendants(env.nodes['logic-review-items']);assert.ok(visible.some(node=>node.className==='logic-visual-empty'&&node.textContent==='暂无可用数值'));assert.equal(visible.some(node=>node.className==='logic-visual-value'||node.attributes.role==='meter'),false,'Missing observations do not create a zero or a progress bar');env.context.window.JudgmentManager.close();
+  }
+  {
+    const env=await generateReview({visualMode:true});await flush();const before=env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length;
+    const search=reviewControl(env,'anchor','search');search.value='Unselected text';await search.fire('input');await flush();assert.equal(visibleDescendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-visual-value'||node.attributes.role==='meter'),false);assert.equal(env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length,before,'Dirty bindings do not fetch or draw numerical observations');
+    await search.fire('focus');const empty=descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-binding-option'&&node.textContent==='暂无，暂不关联');await empty.fire('click');await flush();assert.equal(reviewControl(env,'anchor','search').value,'');assert.equal(env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length,before,'A null choice never fetches or restores an AI binding value');env.context.window.JudgmentManager.close();
+  }
+  console.log('45 isolated judgment manager interaction checks passed (33 existing + 12 background/visual scenarios)');
 })().catch(error=>{console.error(error);process.exitCode=1;});

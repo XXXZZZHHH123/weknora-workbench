@@ -8,6 +8,7 @@ import secrets
 import threading
 import time
 import re
+from contextvars import ContextVar
 from urllib.parse import quote
 
 import httpx
@@ -28,6 +29,7 @@ from tin.judgments.prompt import GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION
 from tin.judgments.service import JudgmentError, current, latest, latest_workbench_payload, save_version, to_payload
 from tin.models import AuditLog, Judgment
 from tin.ownership import scope_query, verified_actor
+from tin.integration.identity import current_identity
 from tin.web.diagram_generation import CATALOG_BYTES, CATALOG_MAX_BATCHES, catalog_json, strict_json, native_failure_message
 from tin.web.generation_catalog import column_catalog, selection_catalog
 
@@ -35,6 +37,13 @@ router = APIRouter(prefix='/api/sn/judgment')
 PROMPT_BYTES = 160 * 1024
 CANDIDATE_BYTES = 96 * 1024
 GENERATION_SECONDS = 270
+_analysis_progress = ContextVar('judgment_analysis_progress', default=None)
+
+
+async def notify_progress(phase):
+    callback = _analysis_progress.get()
+    if callback is not None:
+        await callback(phase)
 
 
 class GenerateRequest(BaseModel):
@@ -73,6 +82,9 @@ class PreviewStore:
             return token
 
     def get(self, scope, token):
+        if isinstance(token, str) and token.startswith('job.'):
+            from tin.web.judgment_jobs import load_preview
+            return load_preview(scope, token)
         with self.lock:
             item = self.items.get(token)
             if not item or item[0] <= time.monotonic() or item[1] != scope_key(scope):
@@ -90,6 +102,9 @@ class PreviewStore:
             return PreviewMutation(self.mutations.setdefault(token, threading.Lock()))
 
     def replace(self, scope, token, value, revision):
+        if isinstance(token, str) and token.startswith('job.'):
+            from tin.web.judgment_jobs import atomic_replace
+            return atomic_replace(scope, token, value, revision)
         with self.lock:
             item = self.items.get(token)
             if not item or item[0] <= time.monotonic() or item[1] != scope_key(scope):
@@ -368,6 +383,7 @@ async def choose_catalog(scope, model, catalog, text):
     requests = selection_requests(catalog, text)
     selected = set()
     for batch, refs, prompt in requests:
+        await notify_progress('selecting')
         result = await completion(scope, model, prompt)
         selected.update(selected_catalog_ids(result, batch, refs))
     candidates = [row for row in catalog if row['id'] in selected]
@@ -399,7 +415,9 @@ def repair_prompt(document, issues, catalog, text, selected):
 async def analyzed_completion(scope, body, before, candidates, selected):
     document, first, issues = None, None, []
     try:
+        await notify_progress('analyzing')
         document = await completion(scope, body.model_id, make_prompt(analysis_protocol(selected), candidates, body.text))
+        await notify_progress('validating')
         first = assess_draft(document, body.text, candidates, variety=before.get('variety', settings.variety),
             actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
         issues = first.issues
@@ -422,6 +440,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
             'message': '完整原文、目录与修复反馈超出本次容量；仅保留已核验草稿，待确认规则未执行'})
         return first, 0
     try:
+        await notify_progress('analyzing')
         repaired = await completion(scope, body.model_id, prompt)
     except HTTPException as error:
         if first is None or error.status_code not in {422, 429, 503}:
@@ -430,6 +449,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
             'message': '本次修复未返回可用结果；保留已核验的首份草稿，待确认规则未执行'})
         return first, 1
     try:
+        await notify_progress('validating')
         final = assess_draft(repaired, body.text, candidates, variety=before.get('variety', settings.variety),
             actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
     except AnalysisError as error:
@@ -564,6 +584,25 @@ async def generate(request: Request):
 async def _generate_preview(request: Request):
     scope = scope_for_analysis(write=True)
     body = await read_body(request, GenerateRequest)
+    preview, before = await _analyze(scope, body)
+    from tin.web.judgment_review import preview_response
+    token = previews.put(scope, preview)
+    return preview_response(scope, token, preview, before)
+
+
+async def _analyze(scope, body, progress=None):
+    identity_marker = current_identity.set(scope.identity)
+    scope_marker = current_workbench.set(scope)
+    progress_marker = _analysis_progress.set(progress)
+    try:
+        return await _analyze_scoped(scope, body)
+    finally:
+        _analysis_progress.reset(progress_marker)
+        current_workbench.reset(scope_marker)
+        current_identity.reset(identity_marker)
+
+
+async def _analyze_scoped(scope, body):
     if not body.text.strip(): raise HTTPException(400, '请先选择文件或输入完整研究逻辑')
     if len(body.text.encode('utf-8')) > SOURCE_BYTES: raise HTTPException(413, '研究逻辑原文超过48 KiB')
     before = await run_in_threadpool(snapshot, body.variety) if body.variety else await run_in_threadpool(snapshot)
@@ -583,11 +622,11 @@ async def _generate_preview(request: Request):
                'validation_issues': assessment.issues, 'repair_attempts': repair_attempts}
     if body.variety:
         preview['selected_variety'] = body.variety
-    from tin.web.judgment_review import initialize_review, preview_response
+    await notify_progress('validating')
+    from tin.web.judgment_review import initialize_review
     preview.update(candidate_count=len(candidates), candidate_subset=selected)
     initialize_review(preview, assessment, before['catalog'])
-    token = previews.put(scope, preview)
-    return preview_response(scope, token, preview, before)
+    return preview, before
 
 
 def persist(scope, preview):
@@ -603,6 +642,9 @@ def persist(scope, preview):
             raise HTTPException(409, '知识库来源已改变，请重新分析')
         catalog = [{'id': item['series_id'], 'unit': item.get('unit')} for item in session.info['knowledge_facts_catalog'].values()]
         try:
+            if preview.get('_job_id'):
+                from tin.web.judgment_jobs import mark_applied
+                mark_applied(session, scope, preview)
             result = validate_analysis(preview['document'], preview['text'], catalog, variety=preview.get('variety', settings.variety),
                 actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']))
             row = save_version(session, result.payload, actor=scope.identity.user_id,
@@ -648,5 +690,8 @@ async def apply(request: Request):
             raise HTTPException(409, '逐项确认已更新，请刷新预览后保存')
         await fresh(scope, preview)
         result = await run_in_threadpool(persist, scope, preview)
+        if preview.get('_job_id'):
+            from tin.web.judgment_jobs import acknowledge_applied
+            await run_in_threadpool(acknowledge_applied, scope, preview['_job_id'])
         previews.consume(body.draft_id)
         return result

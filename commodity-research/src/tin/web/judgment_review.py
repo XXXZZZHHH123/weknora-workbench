@@ -446,6 +446,8 @@ def preference_signature(scope, field):
 
 
 def record_decisions(scope, token, before, preview, catalog, decisions):
+    from tin.web.judgment_jobs import is_job_token, replace_preview
+    durable = is_job_token(token)
     known = {field['id']: field for field in catalog}
     now = datetime.now(timezone.utc)
     with artifact_session(scope) as session:
@@ -473,12 +475,16 @@ def record_decisions(scope, token, before, preview, catalog, decisions):
             preview['review']['audit'].append(detail)
             session.add(AuditLog(at=now, actor=verified_actor(session, ''), action='研判逐项确认',
                 target_type='judgment_preview', target_id=digest(token), detail=detail))
-        generation.previews.replace(scope, token, preview, before['review']['revision'])
+        if durable:
+            replace_preview(session, scope, token, preview, before['review']['revision'])
+        else:
+            generation.previews.replace(scope, token, preview, before['review']['revision'])
         try:
             session.commit()
         except Exception:
             session.rollback()
-            generation.previews.replace(scope, token, before, preview['review']['revision'])
+            if not durable:
+                generation.previews.replace(scope, token, before, preview['review']['revision'])
             raise
 
 

@@ -6,8 +6,13 @@
   const input = byId('input'), status = byId('status');
   const endpoint = (window.RESEARCH_PREFIX || '') + '/api/sn/judgment';
   let managed, draft, displayed, busy = false, controller, panels = [], review = null, reviewEpoch = 0;
+  let activeJob = null, jobTimer, jobEpoch = 0, submissionSerial = 0, submittingJob = false;
+  let uncertainSubmission = null;
   const reviewEdits = new Map();
   const rememberedChoices = new Set();
+  let visualKey = '', visualEpoch = 0, visualController;
+  const visualSlots = new Map(), visualValues = new Map(), visualRadar = new Map();
+  let radarLoaded = false, visualPending = false;
   let reviewControls = [], searchSessions = [], selectedSection = '', reviewView = 'all';
   const selectedId = () => dialog.dataset.judgmentId || '';
   const managePath = () => '/manage' + (selectedId() ? '?judgment_id=' + encodeURIComponent(selectedId()) : '');
@@ -18,10 +23,12 @@
   }
   function stopSearches() {
     reviewEpoch++;
+    visualController?.abort(); visualEpoch++; visualPending = false;
     for (const session of searchSessions) { clearTimeout(session.timer); session.controller?.abort(); }
     searchSessions = [];
   }
   function invalidate() {
+    stopJobMonitor(true); submissionSerial++;
     stopSearches(); draft = null; review = null; reviewEdits.clear(); rememberedChoices.clear();
     byId('preview').hidden = true;
     if (byId('import')) byId('import').hidden = false;
@@ -40,9 +47,9 @@
     syncReviewControls();
     syncApply();
   }
-  async function api(path, body, method = 'POST', signal = controller?.signal) {
+  async function api(path, body, method = 'POST', signal = controller?.signal, headers = {}, keepalive = false) {
     const response = await researchFetch(endpoint + path, body === undefined ? {signal} : {
-      method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal
+      method, headers: {'Content-Type': 'application/json', ...headers}, body: JSON.stringify(body), signal, keepalive
     });
     let value;
     try { value = await response.json(); } catch { throw new Error('研究逻辑服务暂时不可用，输入已保留。'); }
@@ -55,7 +62,57 @@
   function navigateToJudgment(identifier) {
     const url = new URL(location.href || endpoint.replace('/api/sn/judgment', '/sn/judgment'), location.origin);
     url.searchParams.set('judgment_id', String(identifier));
+    url.searchParams.delete('analysis_job');
     if (typeof location.assign === 'function') location.assign(url.href); else location.href = url.href;
+  }
+  const jobId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(value) ? value : '';
+  function announceJob(job, appliedId) {
+    const workbenchId = window.RESEARCH_CONTEXT?.workbench;
+    if (parent === window || !workbenchId || !jobId(job?.id)) return;
+    parent.postMessage({type: appliedId ? 'research-analysis-job-applied' : 'research-analysis-job-started',
+      workbenchId, jobId: job.id, ...(appliedId ? {judgmentId: appliedId} : {})}, location.origin);
+  }
+  function stopJobMonitor(forget = false) {
+    clearTimeout(jobTimer); jobEpoch++;
+    if (forget) activeJob = null;
+  }
+  function requestKey() {
+    const bytes = new Uint8Array(16);
+    (window.crypto || globalThis.crypto).getRandomValues(bytes);
+    return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  }
+  async function followJob(identifier) {
+    stopJobMonitor(); const epoch = jobEpoch;
+    activeJob = {...activeJob, id: identifier};
+    const current = () => epoch === jobEpoch && activeJob?.id === identifier && dialog.open;
+    async function poll() {
+      if (!current()) return;
+      setBusy(true);
+      try {
+        const job = await api('/jobs/' + encodeURIComponent(identifier));
+        if (!current()) return;
+        activeJob = job;
+        if (job.state === 'queued' || job.state === 'running') {
+          const labels = {queued: '等待分析', selecting: '正在匹配指标', analyzing: '正在分析原文', validating: '正在校验结果'};
+          inform((labels[job.phase] || '正在后台分析') + '，可关闭窗口。');
+          jobTimer = setTimeout(poll, 2000); return;
+        }
+        if (job.state === 'succeeded') {
+          const value = await api('/jobs/' + encodeURIComponent(identifier) + '/result');
+          if (!current()) return;
+          input.value = value.source_text || input.value;
+          if (value.variety) byId('variety').value = value.variety;
+          if (value.model_id) byId('model').value = value.model_id;
+          if (value.source_name) text('file-name', value.source_name);
+          if (byId('new-panel-title') && value.panel_title !== undefined) byId('new-panel-title').value = value.panel_title;
+          presentDraft(value); await hydrateReview(value); tab('analyze'); inform('');
+        } else inform(job.message || ({failed: '分析失败，请重新发起。', interrupted: '分析已中断，请重新发起。', expired: '分析结果已过期，请重新分析。', applied: '此分析已保存。'}[job.state] || '分析暂不可用。'), true);
+        announceJob(job); setBusy(false);
+      } catch (error) {
+        if (current() && error.name !== 'AbortError') { setBusy(false); inform(error.message, true); }
+      }
+    }
+    return poll();
   }
   function syncPanelName() {
     const row = panels.find(item => String(item.judgment_id) === byId('panel-switch')?.value);
@@ -115,6 +172,78 @@
     review = value.review || null;
     if (!preserveEdits) reviewView = 'all';
     renderReview();
+  }
+  function visualDay() {
+    const value = new URL(location.href).searchParams.get('date');
+    return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
+  }
+  function drawVisual(item, slot) {
+    slot.node.replaceChildren();
+    const binding = slot.edit.selected;
+    if (!binding || slot.edit.dirty || ['kept_text', 'excluded'].includes(item.status)) { slot.node.hidden = true; return; }
+    slot.node.hidden = false;
+    const series = visualValues.get(binding.series_id), radar = visualRadar.get(item.id);
+    const current = radar && typeof radar.value === 'number' && Number.isFinite(radar.value) ? radar : series;
+    const number = radar && radar === current ? radar.value : series?.latest_value;
+    if (typeof number !== 'number' || !Number.isFinite(number)) {
+      slot.node.append(element('small', 'logic-visual-empty', series ? '暂无可用数值' : '正在读取数值…')); return;
+    }
+    const line = element('div', 'logic-visual-value');
+    line.append(element('strong', '', number.toLocaleString('zh-CN', {maximumSignificantDigits: 21})),
+      element('span', '', current.unit || binding.unit || ''), element('time', '', String(current.as_of || '').slice(0, 16).replace('T', ' ')));
+    slot.node.append(line);
+    const points = (series?.points || []).filter(point => typeof point.value === 'number' && Number.isFinite(point.value) && typeof point.date === 'string');
+    if (points.length > 1) {
+      const values = points.map(point => point.value), low = Math.min(...values), high = Math.max(...values);
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'), path = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      svg.setAttribute('viewBox', '0 0 240 36'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', '近期已保存数据走势');
+      svg.setAttribute('class', 'logic-indicator-trend');
+      const times = points.map(point => Date.parse(point.date)), timed = times.every(Number.isFinite) && Math.max(...times) > Math.min(...times);
+      const start = Math.min(...times), duration = Math.max(...times) - start;
+      path.setAttribute('points', values.map((value, index) => `${(timed ? (times[index] - start) / duration : index / (values.length - 1)) * 236 + 2},${high === low ? 18 : 32 - (value - low) / (high - low) * 28}`).join(' '));
+      svg.append(path); slot.node.append(svg);
+    }
+    if (radar && radar === current && typeof radar.progress === 'number' && Number.isFinite(radar.progress)) {
+      const width = Math.max(0, Math.min(100, radar.progress)), track = element('div', 'logic-radar-track'), fill = element('span', 'logic-radar-fill');
+      track.setAttribute('role', 'meter'); track.setAttribute('aria-label', '阈值测距'); track.setAttribute('aria-valuemin', '0'); track.setAttribute('aria-valuemax', '100'); track.setAttribute('aria-valuenow', String(width));
+      track.setAttribute('aria-valuetext', [radar.distance, radar.state].filter(Boolean).join(' · '));
+      fill.style.width = width + '%'; track.append(fill); slot.node.append(track, element('small', 'logic-radar-label', [radar.distance, radar.state].filter(Boolean).join(' · ')));
+    }
+  }
+  async function loadVisibleVisuals() {
+    if (!review || !draft || !dialog.open) return;
+    const selected = [...visualSlots.values()].filter(slot => slot.section === selectedSection && !slot.card.hidden && !slot.edit.dirty && slot.edit.selected && !['kept_text', 'excluded'].includes(slot.item.status));
+    for (const slot of visualSlots.values()) drawVisual(slot.item, slot);
+    if (visualPending) return;
+    const needed = selected.filter(slot => !visualValues.has(slot.edit.selected.series_id)).map(slot => ({itemId: slot.item.id, seriesId: slot.edit.selected.series_id}));
+    const needRadar = !radarLoaded && selected.some(slot => slot.item.kind === 'thresholds' && ['ready', 'confirmed'].includes(slot.item.status));
+    if (!needed.length && !needRadar) return;
+    const epoch = visualEpoch, key = visualKey, token = draft.draft_id, revision = review.revision;
+    visualPending = true; visualController = new AbortController();
+    const signal = visualController.signal, current = () => visualEpoch === epoch && visualKey === key && dialog.open;
+    const day = visualDay(), suffix = day ? '&date=' + encodeURIComponent(day) : '';
+    function valid(result) { return current() && result.draft_id === token && result.revision === revision; }
+    try {
+      for (let offset = 0; offset < needed.length; offset += 24) {
+        const batch = needed.slice(offset, offset + 24);
+        const result = await api('/review/indicator-values?draft_id=' + encodeURIComponent(token) + '&item_ids=' + encodeURIComponent(batch.map(slot => slot.itemId).join(',')) + suffix, undefined, 'GET', signal);
+        if (!valid(result)) return;
+        for (const slot of batch) visualValues.set(slot.seriesId, {points: [], latest_value: null});
+        const permitted = new Set(batch.map(slot => slot.seriesId));
+        for (const row of result.series || []) if (permitted.has(row.series_id)) visualValues.set(row.series_id, row);
+      }
+      if (needRadar) {
+        const result = await api('/review/radar?draft_id=' + encodeURIComponent(token) + suffix, undefined, 'GET', signal);
+        if (!valid(result)) return;
+        for (const row of result.rows || []) if (visualSlots.has(row.item_id)) visualRadar.set(row.item_id, row);
+        radarLoaded = true;
+      }
+      if (current()) for (const slot of visualSlots.values()) drawVisual(slot.item, slot);
+    } catch (error) {
+      if (current() && error.name !== 'AbortError') for (const slot of selected) { slot.node.replaceChildren(element('small', 'logic-visual-empty', '数值暂不可用')); }
+    } finally {
+      if (current()) { visualPending = false; if (selectedSection !== selected[0]?.section) loadVisibleVisuals(); }
+    }
   }
   function element(tag, className, value) {
     const node = document.createElement(tag); if (className) node.className = className;
@@ -198,6 +327,7 @@
       }
     }
     if (byId('review-empty')) byId('review-empty').hidden = visibleSections.length > 0;
+    loadVisibleVisuals();
   }
   function renderBinding(item, edit) {
     const field = element('div', 'logic-binding-field');
@@ -205,7 +335,7 @@
     const search = registerControl(element('input', 'logic-binding-search'), item, 'search');
     search.type = 'text'; search.id = 'logic-binding-' + reviewControls.length;
     label.setAttribute('for', search.id); search.value = edit.selected ? display.text(edit.selected.name) : edit.query || '';
-    search.placeholder = '搜索全部授权指标'; search.autocomplete = 'off';
+    search.placeholder = item.status === 'kept_text' ? '暂无，暂不关联' : '搜索全部授权指标'; search.autocomplete = 'off';
     search.setAttribute('role', 'combobox'); search.setAttribute('aria-autocomplete', 'list');
     search.setAttribute('aria-expanded', 'false'); search.setAttribute('aria-label', item.title + '：搜索全部授权指标');
     const menu = element('div', 'logic-binding-menu'); menu.hidden = true;
@@ -218,6 +348,7 @@
     meta.title = meta.textContent; meta.textContent = edit.selected?.unit || '单位待确认';
     search.title = meta.title;
     const session = {timer: null, controller: null, token: 0, rows: [], active: -1, next: null, epoch: reviewEpoch, list}; searchSessions.push(session);
+    const options = () => [...session.rows, null];
     function closeMenu() { menu.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute?.('aria-activedescendant'); }
     function showMenu() { menu.hidden = false; search.setAttribute('aria-expanded', 'true'); }
     function activate(index) {
@@ -227,17 +358,19 @@
     }
     function choose(row) {
       if (busy || !managed?.can_write) return;
-      edit.selected = row; edit.query = ''; edit.bindingChanged = true; search.value = display.text(row.name); meta.textContent = bindingMeta(row); meta.title = meta.textContent;
-      meta.textContent = row.unit || '单位待确认'; search.title = bindingMeta(row);
-      changed(edit); closeMenu(); return updateReview(item, edit, 'confirm');
+      edit.selected = row; edit.query = ''; edit.bindingChanged = true; search.value = row ? display.text(row.name) : ''; meta.title = row ? bindingMeta(row) : '暂无，暂不关联';
+      meta.textContent = row ? row.unit || '单位待确认' : '暂无'; search.title = meta.title;
+      if (!row) { edit.remember = false; rememberedChoices.delete(item.id); }
+      changed(edit); closeMenu(); return updateReview(item, edit, row ? 'confirm' : 'keep_text');
     }
     function drawOptions() {
       list.replaceChildren();
-      for (const [index, row] of session.rows.entries()) {
+      for (const [index, row] of options().entries()) {
         const option = element('button', 'logic-binding-option'); option.type = 'button'; option.id = list.id + '-' + index;
         option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false'); option.tabIndex = -1;
-        const name = element('span', '', display.text(row.name)), detail = element('small', '', bindingMeta(row));
-        option.title = bindingMeta(row); option.append(name, detail);
+        const name = element('span', '', row ? display.text(row.name) : '暂无，暂不关联');
+        option.title = row ? bindingMeta(row) : '保留文字，暂不关联指标'; option.append(name);
+        if (row) option.append(element('small', '', bindingMeta(row)));
         option.addEventListener('mousedown', event => event.preventDefault());
         option.addEventListener('click', () => choose(row)); list.append(option);
       }
@@ -272,10 +405,11 @@
       if (event.key === 'Escape') { closeMenu(); event.preventDefault(); }
       else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault(); showMenu();
-        if (session.rows.length) activate(session.active < 0 ? (event.key === 'ArrowDown' ? 0 : session.rows.length - 1) :
-          (session.active + (event.key === 'ArrowDown' ? 1 : -1) + session.rows.length) % session.rows.length);
+        const length = options().length;
+        activate(session.active < 0 ? (event.key === 'ArrowDown' ? 0 : length - 1) :
+          (session.active + (event.key === 'ArrowDown' ? 1 : -1) + length) % length);
       } else if (event.key === 'Enter' && !menu.hidden) {
-        event.preventDefault(); if (session.active >= 0) return choose(session.rows[session.active]);
+        event.preventDefault(); if (session.active >= 0) return choose(options()[session.active]);
       } else if (event.key === 'Tab') closeMenu();
     });
     search.addEventListener('blur', () => { session.timer = setTimeout(closeMenu, 120); });
@@ -286,6 +420,9 @@
   function renderReview() {
     if (!byId('review')) return;
     stopSearches(); reviewControls = [];
+    visualSlots.clear();
+    const key = draft?.draft_id + ':' + review?.revision + ':' + visualDay();
+    if (key !== visualKey) { visualKey = key; visualValues.clear(); visualRadar.clear(); radarLoaded = false; }
     const available = Boolean(review?.sections); byId('review').hidden = !available;
     for (const name of ['coverage', 'bindings', 'unresolved']) byId(name).hidden = available;
     if (!available) { syncApply(); return; }
@@ -302,7 +439,7 @@
       group.append(element('h3', '', section.title));
       for (const item of sectionItems) {
         let edit = reviewEdits.get(item.id);
-        if (!edit) { edit = {selected: item.binding || item.ai_binding || null, remember: rememberedChoices.has(item.id), dirty: false, query: '', sourceQuote: null, bindingChanged: false}; reviewEdits.set(item.id, edit); }
+        if (!edit) { edit = {selected: Object.hasOwn(item, 'binding') ? item.binding : item.ai_binding || null, remember: rememberedChoices.has(item.id), dirty: false, query: '', sourceQuote: null, bindingChanged: false}; reviewEdits.set(item.id, edit); }
         const card = element('article', 'logic-review-card'); card.dataset.reviewItem = item.id; card.dataset.reviewStatus = item.status;
         card.append(element('strong', 'logic-item-title', display.text(item.title)));
         const fields = new Map();
@@ -342,6 +479,8 @@
           const remember = registerControl(element('input'), item, 'remember', () => !edit.selected); remember.type = 'checkbox'; remember.checked = edit.remember;
           remember.addEventListener('change', () => { edit.remember = remember.checked; changed(edit); return updateReview(item, edit, 'confirm'); });
           rememberLabel.append(remember, element('span', '', '记住选择')); binding.append(rememberLabel); columns.append(binding); card.append(columns);
+          const visual = element('div', 'logic-indicator-visual'); visual.hidden = true; binding.append(visual);
+          visualSlots.set(item.id, {item, edit, card, node: visual, section: section.id});
         }
         const actions = element('div', 'logic-item-actions');
         for (const [action, label] of [['keep_text', '仅保留文字'], ['exclude', '排除']]) {
@@ -371,7 +510,7 @@
   async function updateReview(item, edit, action, holdBusy = false) {
     if ((busy && !holdBusy) || !review || !draft || !managed?.can_write) return;
     const body = {draft_id: draft.draft_id, revision: review.revision, item_id: item.id, action, remember: action === 'confirm' && edit.remember};
-    if (action === 'confirm' && item.can_bind) body.series_id = edit.selected?.series_id || null;
+    if (item.can_bind && (action === 'confirm' || action === 'keep_text')) body.series_id = action === 'keep_text' ? null : edit.selected?.series_id || null;
     if (edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
     setBusy(true); inform('正在同步修改…');
     try {
@@ -383,7 +522,7 @@
       else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; edit.renderErrors?.(); inform(''); }
     } finally { if (!holdBusy) setBusy(false); }
   }
-  async function open() {
+  async function open(requestedJob) {
     if (busy) return;
     controller = new AbortController();
     if (!dialog.open) dialog.showModal();
@@ -411,9 +550,13 @@
       if (review && draft) renderReview();
       inform('');
       if (dialog.dataset.prefill === 'true') { tab('analyze'); dialog.dataset.prefill = 'false'; }
+      const selectedJob = jobId(requestedJob) || activeJob?.id;
+      if (selectedJob) { tab('analyze'); await followJob(selectedJob); }
+      else if (submittingJob) { setBusy(true); inform('正在提交后台分析，可关闭窗口。'); }
     } catch (error) { inform(error.message, true); }
   }
   function close() {
+    stopJobMonitor();
     controller?.abort(); stopSearches(); setBusy(false); dialog.close();
     if (parent !== window) parent.postMessage({type: 'research-drawer-state', open: false}, location.origin);
   }
@@ -426,20 +569,33 @@
     } else inform(error.message, true);
   }
   byId('generate').addEventListener('click', async () => {
-    if (busy || !managed?.can_write) return;
+    if (busy || submittingJob || !managed?.can_write) return;
     if (!input.value.trim() || !byId('model').value) return inform('请添加完整原文并选择模型。', true);
     const variety = byId('variety').value.trim();
     if (!variety) return inform('请按研究原文填写品种代码。', true);
     if (new TextEncoder().encode(input.value).length > 48 * 1024) return inform('原文超过48 KiB，请缩小范围。', true);
-    invalidate(); controller = new AbortController(); setBusy(true); inform('正在分析完整原文并匹配真实指标，尚未保存版本…');
+    const submittedInput = {model_id: byId('model').value, text: input.value,
+      source_name: byId('file-name').textContent.slice(0, 128), variety, ...panelTitle()};
+    invalidate(); const submitted = submissionSerial; submittingJob = true;
+    controller = new AbortController(); setBusy(true); inform('正在提交后台分析…');
     try {
-      const baseline = variety && variety !== managed.variety ? await api('/manage?variety=' + encodeURIComponent(variety)) : managed;
-      const value = await api('/generate', {model_id: byId('model').value, text: input.value,
-        source_name: byId('file-name').textContent.slice(0, 128), base_version: baseline.latest?.version || 0,
-        ...(variety ? {variety} : {}), ...panelTitle()});
-      presentDraft(value); await hydrateReview(value); inform(value.review_available ? '' : value.notice);
-    } catch (error) { await recover(error); }
-    finally { setBusy(false); }
+      const baseline = await api(variety !== managed.variety ? '/manage?variety=' + encodeURIComponent(variety) : managePath(), undefined, 'GET', null);
+      const body = {...submittedInput, base_version: baseline.latest?.version || 0}, signature = JSON.stringify(body);
+      const key = uncertainSubmission?.signature === signature ? uncertainSubmission.key : requestKey();
+      uncertainSubmission = {signature, key};
+      const value = await api('/jobs', body, 'POST', null, {'Idempotency-Key': key}, true);
+      uncertainSubmission = null;
+      const identifier = jobId(value.id || value.job_id);
+      if (!identifier) throw new Error('任务返回无效，请从右下角查看分析记录。');
+      announceJob({...value, id: identifier});
+      if (submitted !== submissionSerial) return;
+      activeJob = {...value, id: identifier};
+      if (dialog.open) await followJob(identifier);
+    } catch (error) { if (error.status) uncertainSubmission = null; await recover(error); }
+    finally {
+      submittingJob = false;
+      if (!activeJob || !['queued', 'running'].includes(activeJob.state) || !dialog.open) setBusy(false);
+    }
   });
   byId('apply').addEventListener('click', async () => {
     if (busy || !draft || !managed?.can_write) return;
@@ -448,6 +604,7 @@
     try {
       const result = await api(selected.kind === 'structured' ? '/structured/apply' : '/apply', {draft_id: selected.draft_id, base_version: selected.base_version,
         ...(selected.kind !== 'structured' && review ? {review_revision: review.revision} : {})});
+      if (activeJob && result.id) announceJob(activeJob, result.id);
       invalidate(); inform(result.notice); if (result.id) navigateToJudgment(result.id); else location.reload();
     } catch (error) { await recover(error); }
     finally { setBusy(false); }
@@ -555,6 +712,8 @@
   dialog.querySelector('[data-logic-close]').addEventListener('click', close);
   dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
   document.querySelectorAll('[data-open-logic]').forEach(button => button.addEventListener('click', open));
-  window.JudgmentManager = {open, close};
-  if (dialog.dataset.prefill === 'true') open();
+  window.JudgmentManager = {open, close, openJob: identifier => open(jobId(identifier))};
+  const requestedJob = jobId(new URL(location.href).searchParams.get('analysis_job'));
+  if (requestedJob) open(requestedJob);
+  else if (dialog.dataset.prefill === 'true') open();
 })();

@@ -167,12 +167,13 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 raise HTTPException(404, "研究工作台路径无效") from None
             route_path = scoped_path[1] if scoped_path else path
+            global_analysis_list = path == '/api/research/analysis-jobs' and request.method == 'GET'
             authorization = request.headers.get("authorization", "")
             if path == "/api/tools/read":
                 from tin.integration.service_auth import verify_service_request
                 identity = await verify_service_request(request)
             elif (path.startswith("/api/library") or path.startswith("/api/workbenches/")
-                  or scoped_path is not None
+                  or scoped_path is not None or global_analysis_list
                   or (path == "/api/sn/indicators/catalog" and request.method == "GET")) and request.headers.get("authorization", "").startswith("Bearer "):
                 if request.method not in {"GET", "HEAD", "OPTIONS"} and not _same_origin(request):
                     raise HTTPException(403, "请求来源不匹配")
@@ -273,7 +274,7 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                 scope_marker = current_workbench.set(scope)
                 request.scope["path"] = prefix + route_path
                 request.scope["raw_path"] = (prefix + route_path).encode()
-            elif path != '/api/tools/read' and not path.startswith('/api/workbenches/'):
+            elif path != '/api/tools/read' and not path.startswith('/api/workbenches/') and not global_analysis_list:
                 raise HTTPException(409, '请先选择绑定知识库的研究工作台，未读取旧工作台事实')
             if path.startswith('/api/workbenches/') and request.method == 'POST':
                 suffix = path.split('/', 4)[-1]
