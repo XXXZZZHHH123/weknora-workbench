@@ -103,8 +103,10 @@ def attention_message(fields):
     return '此项可保留文字，也可补充关联指标。'
 
 
-def reject_fields(fields):
-    raise HTTPException(422, {'message': attention_message(fields), 'attention_fields': fields})
+def reject_fields(fields, issues=()):
+    message = next((issue['message'] for issue in issues if isinstance(issue.get('message'), str)
+                    and issue['message'].strip()), attention_message(fields))
+    raise HTTPException(422, {'message': message, 'attention_fields': fields})
 
 
 def initialize_review(preview, assessment, catalog):
@@ -535,12 +537,12 @@ async def update_review(request: Request):
         if body.action == 'confirm':
             issues = confirmation_issues(preview, item, state['catalog'], scope)
             if issues:
-                reject_fields(attention_fields(issues))
+                reject_fields(attention_fields(issues), issues)
         try:
             preview['document'] = build_document(preview, state['catalog'])
             checked(preview, preview['document'], state['catalog'], scope)
         except AnalysisError as error:
-            reject_fields(attention_fields(error.issues))
+            reject_fields(attention_fields(error.issues), error.issues)
         preview['review']['revision'] += 1
         await current_preview(scope, body.draft_id)
         await run_in_threadpool(record_decisions, scope, body.draft_id, before, preview, state['catalog'], [(item, body.remember)])

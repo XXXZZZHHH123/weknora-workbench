@@ -155,6 +155,8 @@ def test_review_route_rejects_cross_unit_rebind_without_mutating_preview(generat
         'draft_id': preview['draft_id'], 'revision': preview['review']['revision'],
         'item_id': item['id'], 'action': 'confirm', 'series_id': 'kg-field'})
     assert changed.status_code == 422, changed.text
+    message = changed.json()['detail']['message']
+    assert '单位' in message and '原文' in message
     current = client.get(endpoint('/review'), headers=headers, params={'draft_id': preview['draft_id']}).json()
     assert current['revision'] == preview['review']['revision']
     same = next(entry for section in current['sections'] for entry in section['items'] if entry['id'] == item['id'])
