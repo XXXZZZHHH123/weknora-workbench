@@ -17,7 +17,11 @@ def test_authorized_judgment_displays_full_owned_logic_without_editor_or_other_u
     assert response.status_code == 200, response.text
     assert 'researcher original thesis' in response.text
     assert 'Human record' in response.text
-    assert '主逻辑与证伪条件' in response.text and '版本记录' in response.text
+    # The redesigned page keeps both hypotheses, their falsifiers, and saved versions.
+    assert 'id="judgment-hypotheses"' in response.text
+    assert 'data-hypothesis="bull"' in response.text and 'data-hypothesis="bear"' in response.text
+    assert '什么变化会证伪多方判断' in response.text and '什么变化会证伪空方判断' in response.text
+    assert '资料关联与版本' in response.text and '已保存研究' in response.text
     assert 'another-user' not in response.text
     assert 'data-open-logic' not in response.text and 'judgment-manager.js' not in response.text
     assert 'source_snapshots' not in response.text and not state.get('bounded_requests')
