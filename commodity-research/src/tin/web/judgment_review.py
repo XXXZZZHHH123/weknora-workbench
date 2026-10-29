@@ -404,7 +404,7 @@ def preview_response(scope, token, preview, state):
         'candidate_subset': preview.get('candidate_subset', False), 'validation_issues': preview['validation_issues'],
         'repair_attempts': preview['repair_attempts'], 'review_available': True,
         'review': review_response(scope, token, preview, catalog),
-        'notice': '可逐项核对并保存包含待确认项的新草稿；未通过校验的量化候选不执行，保存后不会自动生效。'}
+        'notice': '解析完成。'}
 
 
 def review_snapshot(scope, preview, page_query=None):

@@ -61,7 +61,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
         if(body.source_quote)item.source_quote=body.source_quote;
         item.remembered=body.remember;review.pending_count=review.sections.flatMap(section=>section.items).filter(row=>row.status==='pending').length;review.confirmed_count=review.sections.flatMap(section=>section.items).filter(row=>row.status==='confirmed').length;if(Object.hasOwn(review,'needs_attention_count'))review.needs_attention_count=review.pending_count;review.revision=++revision;review.draft_id='server-bound-nonce-r'+revision;result=preview();
       }
-      else if(url.endsWith('/review/reuse')){review.reuse_enabled=JSON.parse(options.body).enabled;review.sections[0].items[0].binding=catalog[1];review.sections[0].items[0].remembered=true;review.revision=++revision;result=preview();}
+      else if(url.endsWith('/review/reuse')){const enabled=JSON.parse(options.body).enabled,item=review.sections[0].items[0];review.reuse_enabled=enabled;item.binding=enabled?catalog[1]:null;item.remembered=enabled;item.status=enabled?'pending':readyMode?'ready':'pending';item.origin=enabled?'remembered':'model';review.pending_count=review.sections.flatMap(section=>section.items).filter(row=>row.status==='pending').length;if(Object.hasOwn(review,'needs_attention_count'))review.needs_attention_count=review.pending_count;review.revision=++revision;result=preview();}
       else if(url.endsWith('/review/confirm-ready')){for(const item of review.sections.flatMap(section=>section.items))if(item.can_confirm)item.status='confirmed';review.pending_count=1;review.confirmed_count=2;review.revision=++revision;result=preview();}
       else if(url.includes('/review?'))result=JSON.parse(JSON.stringify(review));
       else if(url.includes('/panels')&&options.method==='PATCH')result={id:'named-panel',judgment_id:42,version:1,title:JSON.parse(options.body).title,revision:2,named:true};
@@ -304,5 +304,20 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     const env=await generateReview({ruleEntries:[{id:'diagnostic',kind:'unresolved_binding',description:'需要观察订单变化。',attention_fields:['binding'],attention_reasons:['可保留文字或补充指标。'],warnings:['{"path":"/tmp/private","code":"internal-diagnostic"}']}]});
     const shown=env.nodes['logic-review-items'].textContent;assert.match(shown,/需要观察订单变化。/);assert.match(shown,/可保留文字或补充指标。/);assert.doesNotMatch(shown,/\/tmp\/private|internal-diagnostic|"path"/,'Model diagnostics never leak into field errors');
   }
-  console.log('30 isolated judgment manager interaction checks passed');
+  {
+    const env=await generateReview({readyMode:true,reviewDeferred:true});
+    assert.equal(env.requests.filter(row=>row.url.endsWith('/review/reuse')||row.url.endsWith('/review/update')||row.url.endsWith('/apply')).length,0,'Leaving reuse off never applies remembered choices');
+    env.nodes['logic-review-reuse'].checked=true;const reusing=env.nodes['logic-review-reuse'].fire('change');await new Promise(resolve=>setTimeout(resolve,0));
+    const updates=env.requests.filter(row=>row.url.endsWith('/review/update'));assert.equal(updates.length,1,'Explicit reuse synchronizes a different remembered ID into the private draft');assert.equal(updates[0].body.item_id,'anchor');assert.equal(updates[0].body.series_id,'authorized-page-two');assert.equal(updates[0].body.action,'confirm');assert.equal(updates[0].body.revision,2);
+    assert.equal(env.nodes['logic-apply'].disabled,true,'Reuse keeps saving disabled until all adopted suggestions finish validation');env.reviewReplies[0]();await reusing;
+    assert.equal(env.nodes['logic-apply'].disabled,false);assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')||row.url.endsWith('/review/confirm-ready')).length,0,'Adopting preferences never saves a business judgment or confirms unrelated items');
+    await env.nodes['logic-apply'].fire('click');assert.equal(env.requests.find(row=>row.url.endsWith('/apply')).body.review_revision,3,'Final save uses the revision containing the remembered binding');
+  }
+  {
+    const env=await generateReview({readyMode:true,reviewFailure:true});env.nodes['logic-review-reuse'].checked=true;await env.nodes['logic-review-reuse'].fire('change');
+    assert.equal(env.requests.filter(row=>row.url.endsWith('/review/update')).length,1);assert.equal(reviewControl(env,'anchor','search').value,'Another authorized field','An invalid remembered choice remains visible for correction');
+    const field=descendants(env.nodes['logic-review-items']).find(node=>node.dataset.reviewField==='binding');assert.equal(field.dataset.invalid,'true');assert.match(field.textContent,/当前修改已保留/);assert.equal(env.nodes['logic-apply'].disabled,true);
+    await env.nodes['logic-apply'].fire('click');assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0,'An unsynchronized remembered choice cannot save the old AI binding');
+  }
+  console.log('32 isolated judgment manager interaction checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -368,8 +368,8 @@
   async function hydrateReview(value) {
     if (value.review_available && !value.review) { review = await api('/review?draft_id=' + encodeURIComponent(value.draft_id)); draft.review = review; renderReview(); }
   }
-  async function updateReview(item, edit, action) {
-    if (busy || !review || !draft || !managed?.can_write) return;
+  async function updateReview(item, edit, action, holdBusy = false) {
+    if ((busy && !holdBusy) || !review || !draft || !managed?.can_write) return;
     const body = {draft_id: draft.draft_id, revision: review.revision, item_id: item.id, action, remember: action === 'confirm' && edit.remember};
     if (action === 'confirm' && item.can_bind) body.series_id = edit.selected?.series_id || null;
     if (edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
@@ -381,7 +381,7 @@
     } catch (error) {
       if (error.status === 409) { invalidate(); inform(error.message, true); }
       else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; edit.renderErrors?.(); inform(''); }
-    } finally { setBusy(false); }
+    } finally { if (!holdBusy) setBusy(false); }
   }
   async function open() {
     if (busy) return;
@@ -534,7 +534,17 @@
     setBusy(true); inform('正在更新当前工作台的复用偏好…');
     try {
       const result = await api('/review/reuse', {draft_id: draft.draft_id, revision: review.revision, enabled});
-      presentDraft(result, true); inform('');
+      presentDraft(result, true);
+      if (enabled) {
+        const suggestions = review.sections.flatMap(section => section.items || []).filter(item => item.remembered && item.status === 'pending' && item.can_bind && item.binding?.series_id);
+        for (const item of suggestions) { const edit = reviewEdits.get(item.id); edit.selected = item.binding; changed(edit); }
+        for (const suggestion of suggestions) {
+          if (!review || !draft) break;
+          const item = review.sections.flatMap(section => section.items || []).find(row => row.id === suggestion.id);
+          await updateReview(item, reviewEdits.get(item.id), 'confirm', true);
+        }
+      }
+      inform('');
     } catch (error) { byId('review-reuse').checked = !enabled; if (error.name !== 'AbortError') inform(error.message, true); }
     finally { setBusy(false); }
   });
