@@ -16,18 +16,27 @@
     <details><summary>保留的原始输入</summary><pre id="logic-original-source" class="logic-code"></pre></details>
   </section>
   <section data-logic-panel="analyze" class="logic-panel" hidden>
+    <div id="logic-import">
     <div class="logic-toolbar"><label for="logic-new-panel-title">新研判名称</label><input id="logic-new-panel-title" maxlength="120" placeholder="可选，用于区分多个研判面板"></div>
     <div class="logic-toolbar"><label class="logic-file">选择 .md / .txt / .json<input id="logic-file" type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"></label><span id="logic-file-name"></span><button type="button" id="logic-skeleton">插入通用骨架</button><button type="button" id="logic-structured">预览结构化稿</button></div>
     <label class="logic-editor-label" for="logic-input">研究逻辑原文 <span>完整分析，不沿用上一版本规则</span></label>
     <textarea id="logic-input" rows="7" placeholder="选择文件，或粘贴主矛盾、数据锚、边际、成本与证伪条件。">{{ logic_input or '' }}</textarea>
     <div class="logic-toolbar"><label for="logic-variety">品种代码</label><input id="logic-variety" maxlength="16" aria-label="研究品种代码" placeholder="按研究原文填写" style="width:90px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--text);font:inherit"><label for="logic-model">分析模型</label><select id="logic-model" aria-label="研究逻辑分析模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-generate" class="logic-primary">分析原文</button><span class="logic-hint">先预览，再确认保存；不会自动生效。</span></div>
+    </div>
     <div id="logic-preview" hidden>
-      <div class="logic-toolbar"><strong>待确认草稿</strong><span id="logic-coverage"></span><button type="button" id="logic-apply" class="logic-primary">确认保存为新草稿</button></div>
+      <div class="logic-toolbar logic-review-heading"><strong>核对研究逻辑</strong><span id="logic-review-count"></span><button type="button" id="logic-review-ready">确认已就绪项</button><button type="button" id="logic-review-edit">修改原文</button><button type="button" id="logic-apply" class="logic-primary">保存为新草稿</button></div>
+      <p id="logic-review-save-note" class="logic-hint"></p>
+      <section id="logic-review" aria-label="逐项确认研究逻辑" hidden>
+        <div class="logic-review-preferences"><label><input type="checkbox" id="logic-review-reuse"> 本次使用我记住的指标建议</label><span id="logic-review-note">选择仅限你在当前工作台，下次可再次勾选；建议仍需逐项确认。</span></div>
+        <details class="logic-review-original"><summary>对照完整原文 · 可选择片段作为依据</summary><p class="logic-hint">在下方原文中选中准确片段，再点击对应条目的“采用所选原文”。</p><pre id="logic-review-source" class="logic-source-text" tabindex="0"></pre></details>
+        <div class="logic-review-layout"><nav id="logic-review-nav" class="logic-review-nav" aria-label="研究结构"></nav><div id="logic-review-items" class="logic-review-items"></div></div>
+      </section>
+      <span id="logic-coverage" class="logic-hint"></span>
       <div id="logic-bindings" class="logic-bindings"></div>
       <ul id="logic-unresolved" class="logic-unresolved"></ul>
-      <details><summary>结构字段变化</summary><div id="logic-field-diff" class="logic-field-diff"></div></details>
-      <details><summary>Markdown 行差异</summary><pre id="logic-generated-diff" class="logic-code"></pre></details>
-      <details><summary>完整新 MD</summary><pre id="logic-preview-md" class="logic-code"></pre></details>
+      <details><summary>本次研究内容调整</summary><div id="logic-field-diff" class="logic-field-diff"></div></details>
+      <details><summary>研究稿 Markdown 差异（技术导出）</summary><pre id="logic-generated-diff" class="logic-code"></pre></details>
+      <details><summary>完整研究稿 Markdown（技术导出）</summary><pre id="logic-preview-md" class="logic-code"></pre></details>
     </div>
   </section>
   <section data-logic-panel="versions" class="logic-panel" hidden>

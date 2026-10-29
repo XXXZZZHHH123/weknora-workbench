@@ -5,7 +5,9 @@
   const display = window.ResearchDisplay || {text: value => String(value ?? ''), reference: row => row?.title || (row?.created_at ? '研究判断 · ' + row.created_at.slice(0, 16).replace('T', ' ') : '已保存研究判断')};
   const input = byId('input'), status = byId('status');
   const endpoint = (window.RESEARCH_PREFIX || '') + '/api/sn/judgment';
-  let managed, draft, displayed, busy = false, controller, panels = [];
+  let managed, draft, displayed, busy = false, controller, panels = [], review = null, reviewEpoch = 0;
+  const reviewEdits = new Map();
+  let reviewControls = [], searchSessions = [], selectedSection = '';
   const selectedId = () => dialog.dataset.judgmentId || '';
   const managePath = () => '/manage' + (selectedId() ? '?judgment_id=' + encodeURIComponent(selectedId()) : '');
   function inform(message, error = false) {
@@ -13,7 +15,16 @@
     status.dataset.error = String(error);
     status.dataset.busy = String(busy);
   }
-  function invalidate() { draft = null; byId('preview').hidden = true; }
+  function stopSearches() {
+    reviewEpoch++;
+    for (const session of searchSessions) { clearTimeout(session.timer); session.controller?.abort(); }
+    searchSessions = [];
+  }
+  function invalidate() {
+    stopSearches(); draft = null; review = null; reviewEdits.clear();
+    byId('preview').hidden = true;
+    if (byId('import')) byId('import').hidden = false;
+  }
   function tab(name) {
     dialog.querySelectorAll('[data-logic-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.logicTab === name)));
     dialog.querySelectorAll('[data-logic-panel]').forEach(panel => { panel.hidden = panel.dataset.logicPanel !== name; });
@@ -25,15 +36,17 @@
     }
     for (const name of ['panel-name', 'panel-save', 'new-panel-title']) if (byId(name)) byId(name).disabled = value || managed?.can_write === false;
     for (const name of ['panel-switch', 'panel-open', 'panel-more']) if (byId(name)) byId(name).disabled = value;
+    syncReviewControls();
+    syncApply();
   }
-  async function api(path, body, method = 'POST') {
-    const response = await researchFetch(endpoint + path, body === undefined ? {signal: controller?.signal} : {
-      method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal: controller?.signal
+  async function api(path, body, method = 'POST', signal = controller?.signal) {
+    const response = await researchFetch(endpoint + path, body === undefined ? {signal} : {
+      method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal
     });
     let value;
     try { value = await response.json(); } catch { throw new Error('研究逻辑服务暂时不可用，输入已保留。'); }
     if (!response.ok) { const detail = value.detail; const message = typeof detail === 'string' ? detail :
-      detail?.message ? detail.message + (detail.issues?.length ? '：' + detail.issues.slice(0, 4).map(item => `${item.path} ${item.message}`).join('；') : '') : '请求未完成，输入已保留。';
+      detail?.message ? detail.message + (detail.issues?.length ? '：' + detail.issues.slice(0, 4).map(item => item.message).join('；') : '') : '请求未完成，输入已保留。';
       const error = new Error(message); error.status = response.status; throw error; }
     return value;
   }
@@ -70,26 +83,286 @@
     text('original-source', row?.source_text || '尚无原始输入');
     text('current-state', row ? `${display.reference(row)} · ${row.status} · ${row.author}` : '尚无研究逻辑');
   }
-  function presentDraft(value) {
+  function summarize(value) {
+    if (value === null || value === undefined || value === '') return '未设置';
+    if (Array.isArray(value)) return value.length + ' 项研究内容';
+    if (typeof value === 'object') return Object.keys(value).length + ' 项研究信息';
+    return display.text(String(value));
+  }
+  function presentDraft(value, preserveEdits = false) {
     draft = value; byId('preview').hidden = false;
-    text('preview-md', value.markdown); text('generated-diff', value.diff.markdown);
-    text('coverage', `${value.bindings.length} 个真实指标绑定 · ${value.candidate_count}/${value.catalog_total} 个${value.candidate_subset ? '候选' : '目录'}指标`);
+    text('preview-md', value.markdown); text('generated-diff', value.diff?.markdown);
+    text('coverage', `${(value.bindings || []).length} 个已绑定指标`);
     const bindings = byId('bindings'); bindings.replaceChildren();
-    for (const binding of value.bindings) {
+    for (const binding of value.bindings || []) {
       const chip = document.createElement('span'); chip.textContent = `${display.text(binding.name)} · ${binding.unit || '单位待确认，仅描述'}`; bindings.append(chip);
     }
     const gaps = byId('unresolved'); gaps.replaceChildren();
-    for (const item of value.unresolved) {
+    for (const item of value.unresolved || []) {
       const line = document.createElement('li'); line.textContent = display.text(`${item.section}：${item.text} — ${item.reason}`); gaps.append(line);
     }
     const fields = byId('field-diff'); fields.replaceChildren();
-    for (const change of value.diff.fields) {
+    for (const change of value.diff?.fields || []) {
       const section = document.createElement('section'), title = document.createElement('strong'); title.textContent = change.label;
-      const before = document.createElement('pre'), after = document.createElement('pre');
-      before.textContent = '原：' + JSON.stringify(change.before, null, 2);
-      after.textContent = '新：' + JSON.stringify(change.after, null, 2);
+      const before = document.createElement('p'), after = document.createElement('p');
+      before.textContent = '原：' + summarize(change.before);
+      after.textContent = '新：' + summarize(change.after);
       section.append(title, before, after); fields.append(section);
     }
+    if (!preserveEdits) reviewEdits.clear();
+    else for (const [id, edit] of reviewEdits) if (!edit.dirty) reviewEdits.delete(id);
+    review = value.review || null;
+    renderReview();
+  }
+  function element(tag, className, value) {
+    const node = document.createElement(tag); if (className) node.className = className;
+    if (value !== undefined) node.textContent = value;
+    return node;
+  }
+  function pendingCount() { return review?.pending_count ?? 0; }
+  function hasReviewEdits() { return [...reviewEdits.values()].some(edit => edit.dirty); }
+  function syncApply() {
+    const unsynced = hasReviewEdits();
+    byId('apply').disabled = busy || !draft || managed?.can_write === false || unsynced;
+    const note = byId('review-save-note');
+    if (note) note.textContent = !review ? '' : unsynced ? '有尚未确认的修改，请先处理对应条目，再保存草稿。' :
+      pendingCount() ? `仍有 ${pendingCount()} 项待确认，可先保存草稿；未通过校验的规则不会参与执行。` : '已处理全部条目。保存后保留原记录，不会自动生效。';
+    if (byId('review-ready')) byId('review-ready').disabled = busy || !review || !pendingCount() || unsynced || !managed?.can_write;
+    if (byId('review-reuse')) byId('review-reuse').disabled = busy || !review || unsynced || !managed?.can_write;
+    if (byId('review-edit')) byId('review-edit').disabled = busy;
+  }
+  function syncReviewControls() {
+    for (const control of reviewControls) control.node.disabled = busy || !managed?.can_write || Boolean(control.disabled?.());
+    for (const session of searchSessions) for (const option of session.list?.children || []) option.disabled = busy || !managed?.can_write;
+  }
+  function registerControl(node, item, name, disabled) {
+    node.dataset.reviewItem = item.id; node.dataset.reviewControl = name;
+    reviewControls.push({node, disabled}); return node;
+  }
+  function shortFile(value) { return String(value || '').split(/[\\/]/).pop(); }
+  function bindingMeta(row) {
+    return [row?.unit || '单位待核对', shortFile(row?.source_file), row?.sheet].filter(Boolean).join(' · ');
+  }
+  function changed(edit) { edit.dirty = true; edit.renderCondition?.(); syncReviewControls(); syncApply(); }
+  const ruleNumber = '[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?';
+  const singleRuleNumber = new RegExp('^' + ruleNumber + '$');
+  const rangeRuleNumbers = new RegExp('^\\[\\s*(' + ruleNumber + ')\\s*,\\s*(' + ruleNumber + ')\\s*\\]$');
+  const comparisonExpression = new RegExp('^(value|change)\\s*(>=|<=|>|<)\\s*(' + ruleNumber + ')$');
+  const comparisonWords = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于'};
+  function ruleCondition(item, edit) {
+    const rule = item.rule, unit = edit.selected?.unit ? ' ' + display.text(edit.selected.unit) : '（单位待确认）';
+    const details = [rule.type, rule.horizon].filter(value => typeof value === 'string' && value).map(value => display.text(value));
+    if (item.kind === 'thresholds') {
+      const literal = typeof rule.value_literal === 'string' ? rule.value_literal.trim() : '';
+      if (rule.operator === 'between') {
+        const range = rangeRuleNumbers.exec(literal);
+        if (range) return [`指标值不低于 ${range[1]}${unit}，且不高于 ${range[2]}${unit}（含上下界）`, ...details].join('；');
+      } else if (Object.hasOwn(comparisonWords, rule.operator) && singleRuleNumber.test(literal)) {
+        return [`指标值${comparisonWords[rule.operator]} ${literal}${unit}`, ...details].join('；');
+      }
+    } else if (item.kind === 'falsifiers') {
+      const match = typeof rule.expression === 'string' ? comparisonExpression.exec(rule.expression.trim()) : null;
+      if (match) {
+        const periods = Number.isSafeInteger(rule.consecutive_periods) && rule.consecutive_periods > 0 ? `连续 ${rule.consecutive_periods} 期成立` : '连续期数待核对';
+        const side = rule.side === 'bull' ? '多方原假设失效' : rule.side === 'bear' ? '空方原假设失效' : '原假设方向待核对';
+        return [`${match[1] === 'change' ? '较上一数据点的变化值' : '指标值'}${comparisonWords[match[2]]} ${match[3]}${unit}`, periods, side, ...details].join('；');
+      }
+    }
+    return ['需核对条件，请结合原文和下方提示确认。', ...details].join('；');
+  }
+  function canConfirm(item, edit) {
+    return Boolean((item.can_confirm || (item.can_confirm_with_binding && edit.bindingChanged && edit.selected) || edit.sourceQuote !== null) &&
+      (!item.requires_binding || edit.selected));
+  }
+  function selectSection(identifier) {
+    selectedSection = identifier;
+    for (const node of byId('review-nav').children) node.setAttribute('aria-current', String(node.dataset.reviewSection === identifier));
+    for (const node of byId('review-items').children) node.hidden = node.dataset.reviewSection !== identifier;
+  }
+  function renderBinding(item, edit) {
+    const field = element('div', 'logic-binding-field');
+    const label = element('label', 'logic-item-label', '选择真实指标');
+    const search = registerControl(element('input', 'logic-binding-search'), item, 'search');
+    search.type = 'text'; search.id = 'logic-binding-' + reviewControls.length;
+    label.setAttribute('for', search.id); search.value = edit.selected ? display.text(edit.selected.name) : edit.query || '';
+    search.placeholder = '搜索全部授权指标'; search.autocomplete = 'off';
+    search.setAttribute('role', 'combobox'); search.setAttribute('aria-autocomplete', 'list');
+    search.setAttribute('aria-expanded', 'false'); search.setAttribute('aria-label', item.title + '：搜索全部授权指标');
+    const menu = element('div', 'logic-binding-menu'); menu.hidden = true;
+    const list = element('div', 'logic-binding-options'); list.id = search.id + '-options'; list.setAttribute('role', 'listbox');
+    search.setAttribute('aria-controls', list.id);
+    const feedback = element('div', 'logic-binding-feedback'); feedback.setAttribute('aria-live', 'polite');
+    const more = registerControl(element('button', 'logic-binding-more', '更多指标'), item, 'more'); more.type = 'button'; more.hidden = true;
+    menu.append(list, feedback, more);
+    const meta = element('p', 'logic-binding-meta', edit.selected ? bindingMeta(edit.selected) : '请按口径选择，搜索覆盖当前工作台全部授权指标。');
+    meta.title = meta.textContent;
+    const recommended = element('div', 'logic-ai-binding');
+    if (item.ai_binding) {
+      const badge = element('span', 'logic-ai-badge', 'AI 推荐');
+      const name = element('span', '', display.text(item.ai_binding.name)); name.title = bindingMeta(item.ai_binding);
+      recommended.append(badge, name);
+    }
+    const origin = element('span', 'logic-binding-origin', item.remembered ? '曾用选择，仍需确认' : item.binding ? '当前选择' : '推荐选择，等待确认');
+    const session = {timer: null, controller: null, token: 0, rows: [], active: -1, next: null, epoch: reviewEpoch, list}; searchSessions.push(session);
+    function closeMenu() { menu.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute?.('aria-activedescendant'); }
+    function showMenu() { menu.hidden = false; search.setAttribute('aria-expanded', 'true'); }
+    function activate(index) {
+      session.active = index;
+      [...list.children].forEach((option, position) => option.setAttribute('aria-selected', String(position === index)));
+      if (index >= 0) { search.setAttribute('aria-activedescendant', list.children[index].id); list.children[index].scrollIntoView?.({block: 'nearest'}); }
+    }
+    function choose(row) {
+      if (busy || !managed?.can_write) return;
+      edit.selected = row; edit.query = ''; edit.bindingChanged = true; search.value = display.text(row.name); meta.textContent = bindingMeta(row); meta.title = meta.textContent;
+      origin.textContent = '你的选择，等待确认';
+      changed(edit); closeMenu();
+    }
+    function drawOptions() {
+      list.replaceChildren();
+      for (const [index, row] of session.rows.entries()) {
+        const option = element('button', 'logic-binding-option'); option.type = 'button'; option.id = list.id + '-' + index;
+        option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false'); option.tabIndex = -1;
+        const name = element('span', '', display.text(row.name)), detail = element('small', '', bindingMeta(row));
+        option.title = bindingMeta(row); option.append(name, detail);
+        option.addEventListener('mousedown', event => event.preventDefault());
+        option.addEventListener('click', () => choose(row)); list.append(option);
+      }
+      session.active = -1; more.hidden = session.next === null || session.next === undefined;
+    }
+    async function load(append = false) {
+      clearTimeout(session.timer); session.controller?.abort(); session.controller = new AbortController();
+      const token = ++session.token, draftId = draft?.draft_id;
+      if (!draftId) return;
+      showMenu(); feedback.textContent = '正在搜索授权目录…'; more.disabled = true;
+      try {
+        const query = new URLSearchParams({draft_id: draftId, search: edit.query || '', offset: String(append ? session.next : 0), limit: '20'});
+        const result = await api('/review/indicators?' + query, undefined, 'GET', session.controller.signal);
+        if (token !== session.token || session.epoch !== reviewEpoch || draft?.draft_id !== draftId) return;
+        const rows = result.items || [];
+        session.rows = append ? [...session.rows, ...rows.filter(row => !session.rows.some(existing => existing.series_id === row.series_id))] : rows;
+        session.next = result.next_offset; drawOptions();
+        feedback.textContent = session.rows.length ? `已显示 ${session.rows.length} / ${result.total} 个匹配指标` : '没有匹配指标，可调整搜索或保留文字。';
+      } catch (error) {
+        if (error.name !== 'AbortError' && token === session.token && session.epoch === reviewEpoch) feedback.textContent = '指标目录暂时不可用，请稍后重试。';
+      } finally { if (token === session.token) more.disabled = false; }
+    }
+    search.addEventListener('focus', () => load());
+    search.addEventListener('input', () => {
+      edit.query = search.value; edit.selected = null; changed(edit);
+      session.token++; session.controller?.abort(); clearTimeout(session.timer);
+      session.rows = []; list.replaceChildren(); more.hidden = true;
+      meta.textContent = '请从搜索结果选择一个指标，再确认此项。'; showMenu(); feedback.textContent = '等待搜索…';
+      session.timer = setTimeout(() => load(), 180);
+    });
+    search.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { closeMenu(); event.preventDefault(); }
+      else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault(); showMenu();
+        if (session.rows.length) activate(session.active < 0 ? (event.key === 'ArrowDown' ? 0 : session.rows.length - 1) :
+          (session.active + (event.key === 'ArrowDown' ? 1 : -1) + session.rows.length) % session.rows.length);
+      } else if (event.key === 'Enter' && !menu.hidden) {
+        event.preventDefault(); if (session.active >= 0) choose(session.rows[session.active]);
+      } else if (event.key === 'Tab') closeMenu();
+    });
+    search.addEventListener('blur', () => { session.timer = setTimeout(closeMenu, 120); });
+    more.addEventListener('click', () => { if (session.next !== null && session.next !== undefined) return load(true); });
+    const picker = element('div', 'logic-binding-picker'); picker.append(search, menu);
+    field.append(label, recommended, picker, origin, meta); return field;
+  }
+  function renderReview() {
+    if (!byId('review')) return;
+    stopSearches(); reviewControls = [];
+    const available = Boolean(review?.sections); byId('review').hidden = !available;
+    byId('review-ready').hidden = !available;
+    for (const name of ['coverage', 'bindings', 'unresolved']) byId(name).hidden = available;
+    if (!available) { syncApply(); return; }
+    byId('import').hidden = true;
+    const rawSource = review.source_text ?? draft.source_text ?? input.value;
+    if (byId('review-source')) byId('review-source').textContent = rawSource;
+    byId('review-reuse').checked = review.reuse_enabled === true;
+    byId('review-count').textContent = `${review.confirmed_count || 0} 已确认 · ${pendingCount()} 待确认 · 共 ${review.total || 0} 项`;
+    const nav = byId('review-nav'), items = byId('review-items'); nav.replaceChildren(); items.replaceChildren();
+    const statuses = {pending: '待确认', confirmed: '已确认', kept_text: '保留文字', excluded: '已排除'};
+    for (const section of review.sections) {
+      const sectionItems = section.items || [], remaining = sectionItems.filter(item => item.status === 'pending').length;
+      const navButton = element('button', 'logic-review-section-link'); navButton.type = 'button'; navButton.dataset.reviewSection = section.id;
+      navButton.append(element('span', '', section.title), element('small', '', `${sectionItems.length - remaining}/${sectionItems.length}`));
+      navButton.addEventListener('click', () => selectSection(section.id)); nav.append(navButton);
+      const group = element('section', 'logic-review-group'); group.dataset.reviewSection = section.id;
+      group.append(element('h3', '', section.title));
+      if (!sectionItems.length) group.append(element('p', 'logic-hint', '原文未提供此部分，可返回补充原文。'));
+      for (const item of sectionItems) {
+        let edit = reviewEdits.get(item.id);
+        if (!edit) { edit = {selected: item.binding || item.ai_binding || null, remember: false, dirty: false, query: '', sourceQuote: null, bindingChanged: false}; reviewEdits.set(item.id, edit); }
+        const card = element('article', 'logic-review-card'); card.dataset.reviewItem = item.id; card.dataset.reviewStatus = item.status;
+        const heading = element('div', 'logic-item-heading'); heading.append(element('strong', '', display.text(item.title)), element('span', 'logic-item-status', statuses[item.status] || '待确认'));
+        const columns = element('div', 'logic-item-columns'), original = element('div', 'logic-item-original');
+        const excerpt = item.original_text || item.source_quote;
+        const sourceParagraph = element('p', 'logic-item-source', excerpt || '尚未定位逐字依据，可在本项展开完整原文对照并选取。');
+        original.append(element('span', 'logic-item-label', excerpt ? '原文与依据' : '原文依据待选择'), sourceParagraph);
+        const localSource = element('pre', 'logic-source-text'); localSource.tabIndex = 0;
+        if (!excerpt) {
+          const fullSource = element('details', 'logic-item-full-source');
+          fullSource.append(element('summary', '', '完整原文（尚未选取依据）'), localSource);
+          fullSource.addEventListener('toggle', () => { if (fullSource.open && !localSource.textContent) localSource.textContent = rawSource; });
+          original.append(fullSource);
+        }
+        const quote = element('p', 'logic-item-quote', edit.sourceQuote || item.source_quote || ''); quote.hidden = !quote.textContent;
+        const quoteButton = registerControl(element('button', 'logic-quote-button', '采用所选原文'), item, 'quote'); quoteButton.type = 'button';
+        quoteButton.title = '在“对照完整原文”中选择准确片段，再采用为此项依据';
+        quoteButton.addEventListener('mousedown', event => event.preventDefault());
+        quoteButton.addEventListener('click', () => {
+          const selection = window.getSelection?.(), selected = selection?.toString() || '';
+          const sourceNodes = [byId('review-source'), localSource, ...(excerpt ? [sourceParagraph] : [])];
+          if (!selected || !sourceNodes.some(node => node?.contains(selection.anchorNode) && node.contains(selection.focusNode)) || !rawSource.includes(selected)) return inform('请先在本项或“对照完整原文”中选中对应的准确片段。', true);
+          if (selected.length > 4000) return inform('所选片段过长，请缩小到对应依据。', true);
+          edit.sourceQuote = selected; quote.textContent = selected; quote.hidden = false; changed(edit); inform('已选择原文依据，请确认此项以提交修改。');
+        });
+        original.append(quote, quoteButton); columns.append(original);
+        if (item.can_bind) columns.append(renderBinding(item, edit));
+        card.append(heading, columns);
+        const note = element('p', 'logic-item-description', display.text(item.description || (item.can_bind ? '请核对指标口径、单位和来源，再确认绑定。' : '请核对这段文字在研究中的作用。'))); card.append(note);
+        if (item.rule) {
+          const condition = element('p', 'logic-item-condition'); condition.dataset.reviewItem = item.id; condition.dataset.reviewControl = 'condition';
+          edit.renderCondition = () => { condition.textContent = '解析后的条件：' + ruleCondition(item, edit); };
+          edit.renderCondition(); card.append(condition);
+        }
+        const warnings = element('ul', 'logic-item-warnings');
+        for (const warning of item.warnings || []) warnings.append(element('li', '', display.text(typeof warning === 'string' ? warning : warning.message || '此项需要进一步核对。')));
+        if (warnings.children.length) card.append(warnings);
+        const actions = element('div', 'logic-item-actions');
+        if (item.can_bind) {
+          const rememberLabel = element('label', 'logic-remember-label');
+          const remember = registerControl(element('input'), item, 'remember', () => !edit.selected); remember.type = 'checkbox'; remember.checked = edit.remember;
+          remember.addEventListener('change', () => { edit.remember = remember.checked; changed(edit); });
+          rememberLabel.append(remember, element('span', '', '记住此绑定')); actions.append(rememberLabel);
+        }
+        for (const [action, label] of [['confirm', '确认此项'], ['keep_text', '保留文字'], ['exclude', '排除此项']]) {
+          const button = registerControl(element('button', action === 'confirm' ? 'logic-confirm-item' : '', label), item, action, () => action === 'confirm' && !canConfirm(item, edit));
+          button.type = 'button'; button.addEventListener('click', () => updateReview(item, edit, action)); actions.append(button);
+        }
+        card.append(actions); group.append(card);
+      }
+      items.append(group);
+    }
+    if (!review.sections.some(section => section.id === selectedSection)) selectedSection = review.sections.find(section => section.items?.length)?.id || review.sections[0]?.id;
+    selectSection(selectedSection); syncReviewControls(); syncApply();
+  }
+  async function hydrateReview(value) {
+    if (value.review_available && !value.review) { review = await api('/review?draft_id=' + encodeURIComponent(value.draft_id)); draft.review = review; renderReview(); }
+  }
+  async function updateReview(item, edit, action) {
+    if (busy || !review || !draft || !managed?.can_write) return;
+    if (action === 'confirm' && !canConfirm(item, edit)) return;
+    const body = {draft_id: draft.draft_id, revision: review.revision, item_id: item.id, action, remember: action === 'confirm' && edit.remember};
+    if (action === 'confirm' && item.can_bind) body.series_id = edit.selected?.series_id || null;
+    if (edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
+    setBusy(true); inform('正在核对此项来源与条件…');
+    try {
+      const result = await api('/review/update', body);
+      reviewEdits.delete(item.id); presentDraft(result, true); inform(result.notice || '此项已更新，尚未保存草稿。');
+    } catch (error) { if (error.name !== 'AbortError') inform(error.message, true); }
+    finally { setBusy(false); }
   }
   async function open() {
     if (busy) return;
@@ -116,12 +389,13 @@
         if (!models.models.length) { selector.append(new Option('暂无可用对话模型', '')); }
       }
       await loadPanels();
+      if (review && draft) renderReview();
       inform('');
       if (dialog.dataset.prefill === 'true') { tab('analyze'); dialog.dataset.prefill = 'false'; }
     } catch (error) { inform(error.message, true); }
   }
   function close() {
-    controller?.abort(); setBusy(false); dialog.close();
+    controller?.abort(); stopSearches(); setBusy(false); dialog.close();
     if (parent !== window) parent.postMessage({type: 'research-drawer-state', open: false}, location.origin);
   }
   async function recover(error) {
@@ -144,15 +418,17 @@
       const value = await api('/generate', {model_id: byId('model').value, text: input.value,
         source_name: byId('file-name').textContent.slice(0, 128), base_version: baseline.latest?.version || 0,
         ...(variety ? {variety} : {}), ...panelTitle()});
-      presentDraft(value); inform(value.notice);
+      presentDraft(value); await hydrateReview(value); inform(value.notice);
     } catch (error) { await recover(error); }
     finally { setBusy(false); }
   });
   byId('apply').addEventListener('click', async () => {
     if (busy || !draft || !managed?.can_write) return;
+    if (hasReviewEdits()) return inform('请先确认、保留文字或排除已修改的条目，再保存草稿。', true);
     const selected = draft; controller = new AbortController(); setBusy(true); inform('正在确认来源与版本并保存草稿…');
     try {
-      const result = await api(selected.kind === 'structured' ? '/structured/apply' : '/apply', {draft_id: selected.draft_id, base_version: selected.base_version});
+      const result = await api(selected.kind === 'structured' ? '/structured/apply' : '/apply', {draft_id: selected.draft_id, base_version: selected.base_version,
+        ...(selected.kind !== 'structured' && review ? {review_revision: review.revision} : {})});
       invalidate(); inform(result.notice); if (result.id) navigateToJudgment(result.id); else location.reload();
     } catch (error) { await recover(error); }
     finally { setBusy(false); }
@@ -201,7 +477,7 @@
     try { payload = JSON.parse(input.value); }
     catch { return inform('请选择或粘贴完整的结构化 JSON 研究稿；普通文本请使用“分析原文”。', true); }
     invalidate(); controller = new AbortController(); setBusy(true); inform('正在核对结构和已授权指标，尚未保存…');
-    try { const result = await api('/structured/preview', {payload, ...panelTitle()}); presentDraft(result); inform(result.notice); }
+    try { const result = await api('/structured/preview', {payload, ...panelTitle()}); presentDraft(result); await hydrateReview(result); inform(result.notice); }
     catch (error) { await recover(error); }
     finally { setBusy(false); }
   });
@@ -227,6 +503,30 @@
     catch (error) { inform(error.message, true); }
   }
   byId('version').addEventListener('change', event => loadVersion(event.target.value));
+  byId('review-edit')?.addEventListener('click', () => {
+    if (busy) return;
+    byId('import').hidden = false; input.focus();
+    inform('修改原文后需重新分析；当前原文已完整保留。');
+  });
+  byId('review-reuse')?.addEventListener('change', async () => {
+    if (busy || !review || !draft || !managed?.can_write || hasReviewEdits()) return;
+    const enabled = byId('review-reuse').checked;
+    setBusy(true); inform('正在更新当前工作台的复用偏好…');
+    try {
+      const result = await api('/review/reuse', {draft_id: draft.draft_id, revision: review.revision, enabled});
+      presentDraft(result, true); inform(result.notice || '偏好已更新，建议仍需逐项确认。');
+    } catch (error) { byId('review-reuse').checked = !enabled; if (error.name !== 'AbortError') inform(error.message, true); }
+    finally { setBusy(false); }
+  });
+  byId('review-ready')?.addEventListener('click', async () => {
+    if (busy || !review || !draft || !managed?.can_write || hasReviewEdits()) return;
+    setBusy(true); inform('正在逐项核对已就绪内容，缺少条件的项目仍保留待确认…');
+    try {
+      const result = await api('/review/confirm-ready', {draft_id: draft.draft_id, revision: review.revision});
+      presentDraft(result, true); inform(result.notice || '已确认通过校验的项目，其余项目仍待核对。');
+    } catch (error) { if (error.name !== 'AbortError') inform(error.message, true); }
+    finally { setBusy(false); }
+  });
   byId('load-version').addEventListener('click', () => loadVersion(byId('version-number').value || byId('version').value));
   dialog.querySelectorAll('[data-logic-tab]').forEach(button => button.addEventListener('click', () => {
     tab(button.dataset.logicTab); if (button.dataset.logicTab === 'versions') loadVersion(byId('version').value);
