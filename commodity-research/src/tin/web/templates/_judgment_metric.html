@@ -1,0 +1,14 @@
+{% macro metric_view(metric) %}
+{% if metric %}
+<div class="judgment-metric">
+  <div class="judgment-metric-heading"><span>{{ human_text(metric.name) }}</span><time>{{ metric.date[:16]|replace('T', ' ') if metric.date else '' }}</time></div>
+  {% if metric.latest is not none %}
+  <div class="judgment-metric-value"><strong>{{ metric.latest | num(metric.unit) }}</strong><span>{{ metric.unit or '' }}</span>
+    {% if metric.change is not none %}<small>较前次 {{ '+' if metric.change > 0 else '' }}{{ metric.change | num(metric.unit) }}{% if metric.change_pct is not none %}（{{ '+' if metric.change_pct > 0 else '' }}{{ metric.change_pct | round(2) }}%）{% endif %}</small>{% endif %}
+  </div>
+  {% if metric.previous is not none %}<p class="judgment-metric-previous">前次 {{ metric.previous | num(metric.unit) }} {{ metric.unit or '' }} · {{ metric.previous_date[:16]|replace('T', ' ') if metric.previous_date else '' }}</p>{% endif %}
+  {% if metric.segments %}<svg data-metric-trend viewBox="0 0 240 48" role="img" aria-label="{{ human_text(metric.name) }}近期观测走势" preserveAspectRatio="none">{% for segment in metric.segments %}<polyline points="{{ segment }}" />{% endfor %}</svg><span class="judgment-metric-window">近 {{ metric.point_count }} 次观测</span>{% endif %}
+  {% else %}<p class="judgment-metric-missing">暂无可用数值</p>{% endif %}
+</div>
+{% endif %}
+{% endmacro %}

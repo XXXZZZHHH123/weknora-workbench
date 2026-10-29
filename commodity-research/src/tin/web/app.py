@@ -572,6 +572,7 @@ def judgment_page(request: Request, err: str | None = None):
 
 def _judgment_response(request: Request, *, err=None, logic_input=""):
     from tin.web.judgment_panels import judgment_directory, selected_judgment
+    from tin.web.judgment_research import judgment_research_view
     selected_id = request.query_params.get('judgment_id')
     if selected_id is not None:
         if not selected_id.isascii() or not selected_id.isdecimal() or not 1 <= len(selected_id) <= 19:
@@ -609,6 +610,7 @@ def _judgment_response(request: Request, *, err=None, logic_input=""):
             s, "judgment", d, j=j, block=judgment_record_block(j, today), versions=versions,
             selected_judgment_id=selected_id,
             names={identifier: indicator.name for identifier, indicator in indicators.items()},
+            research=judgment_research_view(s, j, d),
             radar=radar_rows,
             report=last_import.detail if last_import else None, err=err, logic_input=logic_input))
 

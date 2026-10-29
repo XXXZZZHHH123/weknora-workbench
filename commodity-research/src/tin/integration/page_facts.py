@@ -223,6 +223,8 @@ def _saved_plan(scope, request):
             if judgment:
                 payload = to_payload(judgment)
                 windows.update(_judgment_windows(payload))
+                if module == 'judgments' and scope.scope_version == 2:
+                    windows = {identifier: max(24, points) for identifier, points in windows.items()}
         contract_plan = None
         if module in {'strategies','reports'}:
             if module == 'strategies':
@@ -239,7 +241,8 @@ def _saved_plan(scope, request):
         grouped = {}
         for identifier,points in windows.items():
             requested = request.get('points')
-            count = max(requested, points) if module == 'reports' and requested else requested or points
+            preserve = module == 'reports' or module == 'judgments' and scope.scope_version == 2
+            count = max(requested, points) if preserve and requested else requested or points
             grouped.setdefault(count,[]).append(identifier)
         plans=[dict(ids=values,points=points) for points,values in sorted(grouped.items())]
         if contract_plan and contract_plan['ids']:plans.append(contract_plan)
