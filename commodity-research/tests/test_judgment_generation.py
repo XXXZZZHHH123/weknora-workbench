@@ -9,7 +9,7 @@ from tests.test_knowledge_facts import canonical, FIRST, SECOND, KB, SERIES, pag
 from tests.test_judgment_catalog_capacity import restore as restore_catalog, encoded_directory, selected_refs
 from tin.web import judgment_generation as generation
 from tin.integration.workbench_scope import isolated_session_factory
-from tin.models import Judgment
+from tin.models import AuditLog, Judgment
 
 TEXT='A supply contraction and soft orders require opposing evidence. Stocks above 12 吨 require review.'
 def document():
@@ -152,7 +152,12 @@ def test_repair_transport_failure_keeps_the_already_verified_partial_draft(gener
     assert any(item['code'] == 'repair_unavailable' for item in result.json()['validation_issues'])
     assert apply(client, headers, result.json()).status_code == 200
     assert [item['id'] for item in rows()[0].thresholds] == ['watch']
-    assert any('pending' in item['text'] for item in rows()[0].unstructured)
+    assert any(item['status'] == 'pending' for section in result.json()['review']['sections'] for item in section['items'])
+    assert '未通过校验的模型候选' not in result.json()['markdown']
+    with isolated_session_factory(17, FIRST)() as session:
+        audit = session.scalar(select(AuditLog).where(AuditLog.action == '研究逻辑分析保存'))
+        candidates = audit.detail['review_candidates']['judgment']['thresholds']
+        assert next(item for item in candidates if item['id'] == 'pending') == broken['judgment']['thresholds'][1]
 
 
 def test_source_access_failure_during_repair_never_releases_a_partial_preview(generator, monkeypatch):
@@ -490,7 +495,6 @@ def test_pricing_power_schema_keeps_invalid_model_categories_rejected(generator,
 
 @pytest.mark.parametrize('value', ['12', True, None, {'minimum': 12}, 'missing'])
 def test_invalid_numeric_threshold_stays_unmodified_in_pending_items_and_never_executes(generator, value):
-    import json
     from tin.judgments.analysis import AnalysisError, validate_analysis
     client, headers, _, response, calls = generator
     rule = response['judgment']['thresholds'][0]
@@ -507,12 +511,17 @@ def test_invalid_numeric_threshold_stays_unmodified_in_pending_items_and_never_e
     preview = result.json()
     assert len(calls) == 2 and rows() == [] and preview['repair_attempts'] == 1
     assert any(item['code'] == 'rule_number_type' and item['path'] == '/judgment/thresholds/0/value' for item in preview['validation_issues'])
-    pending = next(item for item in preview['unresolved'] if item['section'] == 'thresholds[0]待确认')
-    assert json.loads(pending['text'].split('未通过校验的模型候选（不执行）：', 1)[1]) == original
-    assert 'Stocks above 12 吨' in pending['text'] and '有限数字' in pending['reason']
+    pending = next(item for section in preview['review']['sections'] for item in section['items'] if item['kind'] == 'thresholds')
+    assert pending['status'] == 'pending' and pending['source_quote'] == 'Stocks above 12 吨'
+    assert pending['can_confirm'] is False and any('有限数字' in message for message in pending['warnings'])
+    assert '未通过校验的模型候选' not in preview['markdown'] and '"series_id"' not in preview['markdown']
     assert apply(client, headers, preview).status_code == 200
     saved = rows()[0]
     assert saved.status == '草稿' and saved.thresholds == [] and saved.source_note == TEXT
+    with isolated_session_factory(17, FIRST)() as session:
+        audit = session.scalar(select(AuditLog).where(AuditLog.action == '研究逻辑分析保存'))
+        assert audit.detail['review_candidates']['judgment']['thresholds'] == [original]
+        assert audit.detail['review_candidate_history'][0]['judgment']['thresholds'] == [original]
 
 
 def test_explicit_numeric_interval_with_original_quote_remains_a_valid_preview(generator):

@@ -45,6 +45,8 @@ class DraftAssessment:
     document: dict
     result: AnalysisResult
     issues: list
+    candidate_document: dict | None = None
+    candidate_history: list | None = None
 
 
 def bounded(value, depth=0):
@@ -261,6 +263,7 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
             for index, child in enumerate(value): check_ids(child, path + '/' + str(index))
 
     check_ids(fields)
+    check_ids(document['unresolved'], '/unresolved')
     if any(sid not in known for sid in declared):
         _error('单位声明包含未知指标ID', 'unknown_series_id', '/binding_units')
     whitelist = fields.get('whitelist', [])
@@ -380,4 +383,4 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
         _error('待确认条目超过32项，请缩小资料后重试；未静默丢失规则', 'unresolved_capacity', '/unresolved')
     cleaned['unresolved'].extend(notes)
     result = validate_analysis(cleaned, original, catalog, variety=variety, actor=actor, written_at=written_at)
-    return DraftAssessment(cleaned, result, issues)
+    return DraftAssessment(cleaned, result, issues, deepcopy(document), [deepcopy(document)])

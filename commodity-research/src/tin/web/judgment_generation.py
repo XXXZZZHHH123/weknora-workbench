@@ -51,6 +51,7 @@ class ApplyRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     draft_id: str = Field(min_length=16, max_length=128)
     base_version: int = Field(ge=0)
+    review_revision: int | None = Field(default=None, ge=1)
 
 
 class PreviewStore:
@@ -58,14 +59,17 @@ class PreviewStore:
     def __init__(self):
         self.lock = threading.Lock()
         self.items = {}
+        self.mutations = {}
 
     def put(self, scope, value):
         with self.lock:
             now = time.monotonic()
             self.items = {key: item for key, item in self.items.items() if item[0] > now}
             while len(self.items) >= 16: self.items.pop(next(iter(self.items)))
+            self.mutations = {key: lock for key, lock in self.mutations.items() if key in self.items}
             token = secrets.token_urlsafe(32)
             self.items[token] = (now + 900, scope_key(scope), copy.deepcopy(value))
+            self.mutations[token] = threading.Lock()
             return token
 
     def get(self, scope, token):
@@ -76,7 +80,35 @@ class PreviewStore:
             return copy.deepcopy(item[2])
 
     def consume(self, token):
-        with self.lock: self.items.pop(token, None)
+        with self.lock:
+            self.items.pop(token, None)
+            self.mutations.pop(token, None)
+
+    def mutation(self, scope, token):
+        self.get(scope, token)
+        with self.lock:
+            return PreviewMutation(self.mutations.setdefault(token, threading.Lock()))
+
+    def replace(self, scope, token, value, revision):
+        with self.lock:
+            item = self.items.get(token)
+            if not item or item[0] <= time.monotonic() or item[1] != scope_key(scope):
+                raise HTTPException(409, '研究逻辑预览已失效，请重新分析')
+            if item[2].get('review', {}).get('revision') != revision:
+                raise HTTPException(409, '逐项确认已更新，请刷新后继续')
+            self.items[token] = (item[0], item[1], copy.deepcopy(value))
+
+
+class PreviewMutation:
+    def __init__(self, lock):
+        self.lock = lock
+
+    async def __aenter__(self):
+        if not self.lock.acquire(blocking=False):
+            raise HTTPException(409, '研究逻辑预览正在修改或保存，请稍后刷新')
+
+    async def __aexit__(self, *args):
+        self.lock.release()
 
 
 previews = PreviewStore()
@@ -407,6 +439,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
             'message': '修复响应未通过完整结构或来源校验，未采用；保留首份可核验草稿及待确认项'})
         return first, 1
     if first is not None:
+        final.candidate_history = first.candidate_history + final.candidate_history
         for kind in ('thresholds', 'falsifiers'):
             after = {rule['id']: rule for rule in final.document['judgment'].get(kind, [])}
             if any(after.get(rule['id']) != rule or final.document['rule_quotes'].get(rule['id']) != first.document['rule_quotes'].get(rule['id'])
@@ -414,14 +447,28 @@ async def analyzed_completion(scope, body, before, candidates, selected):
                 first.issues.append({'code': 'repair_changed_verified_rule', 'path': '/judgment/' + kind,
                     'severity': 'warning', 'message': '修复响应改动了已核验规则，未采用该响应；保留首份可核验草稿与全部待确认项'})
                 return first, 1
+        # A repair may demote a candidate into prose. Review retains its typed
+        # original independently of that prose, without making it executable.
+        existing = {rule['id'] for kind in ('thresholds', 'falsifiers')
+                    for rule in final.candidate_document['judgment'].get(kind, [])}
+        for kind in ('thresholds', 'falsifiers'):
+            for rule in first.candidate_document['judgment'].get(kind, []):
+                if rule['id'] not in existing:
+                    final.candidate_document['judgment'].setdefault(kind, []).append(copy.deepcopy(rule))
+                    if rule['id'] in first.candidate_document['rule_quotes']:
+                        final.candidate_document['rule_quotes'][rule['id']] = first.candidate_document['rule_quotes'][rule['id']]
+                    final.issues.extend(copy.deepcopy(issue) for issue in first.issues if issue.get('rule_id') == rule['id'])
     return final, 1
 
 
 async def fresh(scope, previous):
     verified = await resolve_workbench(scope.identity, scope.workbench_id, scope.authorization)
     require_shared_write(verified)
+    if verified.restricted or verified.metadata.get('can_read_source') is False:
+        raise HTTPException(403, '来源读取权限已改变，不能修改或保存研究逻辑')
     if (scope_key(verified) != scope_key(scope) or
-            verified.additional_knowledge_bases != scope.additional_knowledge_bases):
+            verified.additional_knowledge_bases != scope.additional_knowledge_bases
+            or verified.source_delegations != scope.source_delegations):
         raise HTTPException(409, '研究工作台的知识库来源已改变，请重新分析')
     state = await run_in_threadpool(snapshot, previous['selected_variety']) if previous.get('selected_variety') else await run_in_threadpool(snapshot)
     if (state['fact_version'] != previous['fact_version'] or state['base_version'] != previous['base_version']
@@ -536,14 +583,11 @@ async def _generate_preview(request: Request):
                'validation_issues': assessment.issues, 'repair_attempts': repair_attempts}
     if body.variety:
         preview['selected_variety'] = body.variety
+    from tin.web.judgment_review import initialize_review, preview_response
+    preview.update(candidate_count=len(candidates), candidate_subset=selected)
+    initialize_review(preview, assessment, before['catalog'])
     token = previews.put(scope, preview)
-    return {'draft_id': token, 'base_version': before['base_version'], 'markdown': dump_markdown(analyzed.payload),
-            'diff': version_diff(before['base_payload'], analyzed.payload), 'unresolved': analyzed.unresolved,
-            'bindings': [{'series_id': sid, 'unit': unit, 'name': next(row['name'] for row in candidates if row['id'] == sid)}
-                         for sid, unit in analyzed.binding_units.items()],
-            'catalog_total': len(before['catalog']), 'candidate_count': len(candidates),
-            'candidate_subset': selected, 'validation_issues': assessment.issues, 'repair_attempts': repair_attempts,
-            'notice': '待确认草稿；仅保留通过逐项校验的量化规则，未通过项已列为待确认，不执行。完整原文保留；保存后不自动生效。'}
+    return preview_response(scope, token, preview, before)
 
 
 def persist(scope, preview):
@@ -574,7 +618,12 @@ def persist(scope, preview):
                     'model_id': preview['model_id'], 'prompt_version': PROMPT_VERSION,
                     'binding_units': result.binding_units, 'rule_quotes': result.rule_quotes,
                     'unresolved': result.unresolved, 'validation_issues': preview.get('validation_issues', []),
-                    'repair_attempts': preview.get('repair_attempts', 0)}))
+                    'repair_attempts': preview.get('repair_attempts', 0),
+                    'review': preview.get('review', {}).get('audit', []),
+                    'review_candidates': preview.get('review', {}).get('candidate'),
+                    'review_candidate_history': preview.get('review', {}).get('candidate_history', []),
+                    'review_status': [{'item_id': item['id'], 'status': item['status']}
+                        for item in preview.get('review', {}).get('items', [])]}))
             session.commit()
             return {'id': row.id, 'panel': panel, 'version': row.version, 'status': row.status,
                     'notice': '已保存为新的研判面板草稿，原有研判和历史保留。'}
@@ -590,10 +639,14 @@ def persist(scope, preview):
 async def apply(request: Request):
     scope = scope_for_analysis(write=True)
     body = await read_body(request, ApplyRequest)
-    preview = previews.get(scope, body.draft_id)
-    if body.base_version != preview['base_version']:
-        raise HTTPException(409, '预览基准版本不一致，请重新分析')
-    await fresh(scope, preview)
-    result = await run_in_threadpool(persist, scope, preview)
-    previews.consume(body.draft_id)
-    return result
+    async with previews.mutation(scope, body.draft_id):
+        preview = previews.get(scope, body.draft_id)
+        if body.base_version != preview['base_version']:
+            raise HTTPException(409, '预览基准版本不一致，请重新分析')
+        if (body.review_revision is not None
+                and body.review_revision != preview.get('review', {}).get('revision')):
+            raise HTTPException(409, '逐项确认已更新，请刷新预览后保存')
+        await fresh(scope, preview)
+        result = await run_in_threadpool(persist, scope, preview)
+        previews.consume(body.draft_id)
+        return result

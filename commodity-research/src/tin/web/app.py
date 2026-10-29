@@ -239,6 +239,8 @@ from tin.web.diagram_generation import router as diagram_generation_router
 app.include_router(diagram_generation_router)
 from tin.web.judgment_generation import router as judgment_generation_router
 app.include_router(judgment_generation_router)
+from tin.web.judgment_review import router as judgment_review_router
+app.include_router(judgment_review_router)
 from tin.web.judgment_structured import router as judgment_structured_router
 app.include_router(judgment_structured_router)
 from tin.web.research_strategy import router as research_strategy_router
