@@ -14,7 +14,7 @@ from tin.integration.page_facts import catalog_page
 from tin.integration.workbench_scope import artifact_session, require_shared_write, resolve_workbench
 from tin.judgments.analysis import AnalysisError, validate_analysis
 from tin.judgments.markdown import dump_markdown, version_diff
-from tin.judgments.service import latest, to_payload
+from tin.judgments.service import latest, latest_workbench_payload
 from tin.models import AuditLog, SourceMapping
 from tin.ownership import verified_actor
 from tin.web import judgment_generation as generation
@@ -332,7 +332,7 @@ def review_snapshot(scope, preview, page_query=None):
         # used for generation. A current version check makes its metadata safe
         # to reuse without downloading that catalog on every keystroke.
         return {'catalog': preview['review']['catalog'], 'page': metadata,
-            'base_payload': to_payload(row) if row else None}
+            'base_payload': latest_workbench_payload(session, preview['variety'], scope)}
 
 
 async def current_preview(scope, token, page_query=None):

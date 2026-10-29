@@ -25,7 +25,7 @@ from tin.judgments.analysis import AnalysisError, SOURCE_BYTES, assess_draft, va
 from tin.judgments.numbers import exact_float, NumericPrecisionError
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.prompt import GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, SELECTION_PROTOCOL
-from tin.judgments.service import JudgmentError, current, latest, save_version, to_payload
+from tin.judgments.service import JudgmentError, current, latest, latest_workbench_payload, save_version, to_payload
 from tin.models import AuditLog, Judgment
 from tin.ownership import scope_query, verified_actor
 from tin.web.diagram_generation import CATALOG_BYTES, CATALOG_MAX_BATCHES, catalog_json, strict_json, native_failure_message
@@ -180,7 +180,7 @@ def snapshot(selected_variety=None):
                    for spec in source_catalog.values()]
         return {'variety': variety, 'fact_version': metadata['version'] if metadata is not None else session.info['knowledge_facts_version'], 'catalog': catalog,
                 'base_version': row.version if row else 0,
-                'base_payload': to_payload(row) if row else None}
+                'base_payload': latest_workbench_payload(session, variety, scope)}
 
 
 def make_prompt(protocol, catalog, text, *, catalog_format=None):

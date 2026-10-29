@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.integration.workbench_scope import resolve_workbench, require_shared_write
 from tin.judgments.markdown import dump_markdown, version_diff
-from tin.judgments.service import _refs, latest, save_version, to_payload, JudgmentError
+from tin.judgments.service import _refs, latest, latest_workbench_payload, save_version, to_payload, JudgmentError
 from tin.judgments.validate import activation_blockers
 from tin.models import AuditLog
 from tin.schemas.judgment import JudgmentIn, EXPRESSION
@@ -90,7 +90,8 @@ def _state(scope, payload):
         return {'catalog': catalog,
                 'version': metadata['version'] if metadata is not None else session.info['knowledge_facts_version'],
                 'datasets': metadata['datasets'] if metadata is not None else session.info.get('knowledge_facts_datasets', []),
-                'base_version': row.version if row else 0, 'before': to_payload(row) if row else None}
+                'base_version': row.version if row else 0,
+                'before': latest_workbench_payload(session, payload.variety, scope)}
 
 
 @router.post('/preview')

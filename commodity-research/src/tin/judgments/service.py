@@ -104,6 +104,19 @@ def to_payload(row: Judgment) -> JudgmentIn:
     })
 
 
+def latest_workbench_payload(session: Session, variety: str, scope) -> JudgmentIn | None:
+    """Scope comparison content while preserving the existing numeric CAS basis."""
+    if scope is None or scope.metadata.get('workspace_mode') != 'legacy':
+        row = latest(session, variety)
+    else:
+        records = authorized_judgments(session, scope, variety=variety)
+        # The directory prefers an active record for display. A comparison
+        # needs this workbench's newest saved version, including later drafts.
+        winner = max(records, key=lambda record: record.version, default=None)
+        row = session.scalar(select(Judgment).where(Judgment.id == winner.id)) if winner else None
+    return to_payload(row) if row is not None else None
+
+
 def authorized_judgments(session: Session, scope, *, variety=None):
     """Bounded owner/workbench metadata; chosen payloads load only on use."""
     from fastapi import HTTPException
