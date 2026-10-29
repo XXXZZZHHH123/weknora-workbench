@@ -53,7 +53,25 @@
 .logic-dialog .logic-binding-option[aria-selected=true] { color: var(--primary); background: var(--primary-soft); }
 .logic-binding-feedback { padding: 5px 7px; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
 .logic-dialog .logic-binding-more { width: 100%; padding: 4px 7px; font-size: 10px; }
-.logic-item-description { margin: 9px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.6; }
+.logic-item-description { margin: 5px 0; color: var(--text); font-size: 12px; line-height: 1.75; }
+.logic-review-views { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin: 0 0 10px; }
+.logic-dialog .logic-review-views button { padding: 5px 9px; font-size: 11px; }
+.logic-review-views button[aria-pressed=true] { color: var(--primary); background: var(--primary-soft); border-color: var(--primary); }
+.logic-review-views .logic-hint { margin-left: 6px; }
+.logic-review-card[data-review-status=ready] .logic-item-status { color: var(--text-muted); }
+.logic-review-card[data-review-status=ready] > .logic-item-description { margin: 0; color: var(--text); font-size: 12px; line-height: 1.8; white-space: pre-wrap; }
+.logic-dialog .logic-item-adjustments { margin: 10px 0 0; font-size: 11px; }
+.logic-item-adjustments > summary { width: fit-content; font-size: 10px; }
+.logic-item-adjustments[open] > summary { margin-bottom: 10px; }
+.logic-parsed-binding { margin: 0 0 7px; color: var(--text-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.logic-review-field[data-invalid=true] { border: 1px solid var(--alert); border-radius: 5px; padding: 7px; }
+.logic-field-error { margin: 5px 0 0; color: var(--alert); font-size: 11px; line-height: 1.5; }
+.logic-item-description > p { margin: 5px 0; white-space: pre-wrap; }
+.logic-item-title { display: block; margin-bottom: 4px; font-size: 12px; }
+.logic-item-columns { margin-top: 8px; }
+.logic-binding-field > .logic-remember-label { margin-top: 6px; }
+.logic-item-condition { font-size: 12px; }
+.logic-review-empty { padding: 15px 0; color: var(--text-muted); font-size: 12px; }
 .logic-item-condition { margin: 8px 0 0; padding: 7px 9px; border-left: 2px solid var(--primary); border-radius: 0 4px 4px 0; background: var(--surface-soft); color: var(--text); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .logic-item-warnings { margin: 7px 0 0; padding: 7px 9px 7px 23px; border-radius: 5px; background: var(--amber-soft, var(--surface-soft)); color: var(--amber); font-size: 11px; line-height: 1.65; }
 .logic-item-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }

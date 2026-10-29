@@ -74,6 +74,39 @@ def describe(value):
     return ''
 
 
+def requires_binding(item):
+    return item['kind'] in ('thresholds', 'falsifiers', 'whitelist') or item['path'][0] == 'marginal_focus'
+
+
+def attention_fields(issues):
+    fields = []
+    for issue in issues:
+        code = issue.get('code', '')
+        if code in {'missing_binding', 'unknown_series_id'} or code.startswith('unit_'):
+            field = 'binding'
+        elif code.startswith('quote_') or code in {'business_condition_not_in_source', 'business_condition_missing'}:
+            field = 'source_quote'
+        else:
+            field = 'condition'
+        if field not in fields:
+            fields.append(field)
+    return fields
+
+
+def attention_message(fields):
+    if 'binding' in fields and 'content' not in fields:
+        return '请选择口径一致的指标。'
+    if 'source_quote' in fields:
+        return '请选取支持此条件的原文。'
+    if 'condition' in fields:
+        return '条件缺少可核验数字或格式，请补充原文或保留文字。'
+    return '此项可保留文字，也可补充关联指标。'
+
+
+def reject_fields(fields):
+    raise HTTPException(422, {'message': attention_message(fields), 'attention_fields': fields})
+
+
 def initialize_review(preview, assessment, catalog):
     candidate = deepcopy(assessment.candidate_document or assessment.document)
     baseline = deepcopy(assessment.document)
@@ -152,6 +185,40 @@ def initialize_review(preview, assessment, catalog):
             kind='unresolved_binding', sid=value.get('series_id'),
             quote=value.get('business_condition') or (value.get('text') if value.get('text') in preview['text'] else ''))
         review['items'][-1]['description'] = 'AI建议说明：' + review['items'][-1]['description']
+    valid_rules = {kind: {rule['id'] for rule in baseline['judgment'].get(kind, [])}
+        for kind in ('thresholds', 'falsifiers')}
+    for item in review['items']:
+        path = ('/unresolved/' + '/'.join(map(str, item['path'][1:])) if item['section'] == 'unresolved'
+            else '/judgment/' + '/'.join(map(str, item['path'])))
+        related = [issue for issue in assessment.issues if issue.get('path') == path
+            or issue.get('path', '').startswith(path + '/')
+            or item['kind'] in valid_rules and issue.get('rule_id') == item['value']['id']
+            or item['series_id'] and issue.get('rule_id') is None
+                and issue.get('path') == '/binding_units/' + item['series_id']]
+        item['warnings'] = list(dict.fromkeys(item['warnings'] + [issue['message'] for issue in related]))
+        informational_units = {'unit_metadata_missing', 'descriptive_unit_metadata'}
+        reasons = [issue['message'] for issue in related if issue.get('severity') in {'error', 'warning'}
+            and not (item['kind'] in {'binding', 'whitelist', 'unresolved_binding'}
+                and issue.get('code') in informational_units and issue.get('rule_id') is None)]
+        if item['kind'] == 'unresolved_binding':
+            reasons.insert(0, '模型将此项列为待补充内容，可补充指标或保留文字。')
+        if requires_binding(item) and not item['series_id']:
+            reasons.append('此结构条目需要关联真实指标，当前尚未关联。')
+        if item['kind'] == 'binding' and not requires_binding(item) and not item['series_id']:
+            item['warnings'].append('未关联指标，可按需要选择；当前保留为描述文字。')
+        if item['kind'] in valid_rules and item['value']['id'] not in valid_rules[item['kind']]:
+            reasons.append('此量化候选未通过原文、数字、单位与指标校验，当前不执行。')
+        item['initial_attention_reasons'] = list(dict.fromkeys(reasons))
+        item['initial_attention_fields'] = attention_fields([issue for issue in related
+            if issue.get('severity') == 'error'])
+        if requires_binding(item) and not item['series_id']:
+            item['initial_attention_fields'].append('binding')
+        if item['kind'] == 'unresolved_binding':
+            item['initial_attention_fields'] = ['content'] + ([] if item['series_id'] else ['binding'])
+        if reasons and not item['initial_attention_fields']:
+            item['initial_attention_fields'] = ['condition']
+        item['status'] = item['initial_status'] = 'pending' if reasons else 'ready'
+        item['origin'] = 'model'
     preview['document'] = build_document(preview, catalog)
     if len(preview['document']['unresolved']) > 32:
         raise HTTPException(422, '待确认内容超过本次32项容量，请缩小资料；未静默丢失模型候选')
@@ -197,7 +264,7 @@ def build_document(preview, catalog):
             rule = deepcopy(item['value'])
             if status == 'excluded':
                 continue
-            if status == 'kept_text' or status == 'pending' and rule['id'] not in valid[kind]:
+            if status == 'kept_text' or status in {'pending', 'ready'} and rule['id'] not in valid[kind]:
                 notes.append(note_for(item, '已保留为文字，未作为量化规则执行。' if status == 'kept_text'
                     else '待核对原文、数字、单位和指标；当前不作为量化规则执行。'))
                 continue
@@ -214,10 +281,10 @@ def build_document(preview, catalog):
         elif kind in ('binding', 'unresolved_binding'):
             value = deepcopy(item['value'])
             value['series_id'] = (None if status == 'kept_text' else item['ai_series_id']
-                if status == 'pending' and item['remembered'] else item['series_id'])
+                if status in {'pending', 'ready'} and item['remembered'] else item['series_id'])
             set_path(root, path, value)
         elif kind == 'whitelist':
-            sid = item['ai_series_id'] if status == 'pending' and item['remembered'] else item['series_id']
+            sid = item['ai_series_id'] if status in {'pending', 'ready'} and item['remembered'] else item['series_id']
             set_path(root, path, None if status == 'kept_text' else sid)
             if status == 'kept_text':
                 notes.append(note_for(item, '仅保留指标说明，不列为绑定指标。'))
@@ -257,19 +324,23 @@ def checked(preview, document, catalog, scope):
         actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']))
 
 
-def confirmation_error(preview, item, catalog, scope):
+def confirmation_issues(preview, item, catalog, scope):
     trial = {**preview, 'review': {**preview['review'], 'items': [
         {**row, 'status': 'confirmed'} if row['id'] == item['id'] else row
         for row in preview['review']['items']]}}
-    if item['kind'] in ('thresholds', 'falsifiers', 'whitelist') and not item['series_id']:
-        return ['请先选择当前授权目录中的指标。']
+    if requires_binding(item) and not item['series_id']:
+        return [{'code': 'missing_binding', 'message': '请先选择当前授权目录中的指标。'}]
     if item['requires_explicit_binding'] and not item['binding_explicit']:
-        return ['模型推荐的单位声明与目录不一致，请重新选择真实指标并核对原单位。']
+        return [{'code': 'unit_mismatch', 'message': '模型推荐的单位声明与目录不一致，请重新选择真实指标并核对原单位。'}]
     try:
         checked(trial, build_document(trial, catalog), catalog, scope)
     except AnalysisError as error:
-        return list(dict.fromkeys(issue['message'] for issue in error.issues))
+        return error.issues
     return []
+
+
+def confirmation_error(preview, item, catalog, scope):
+    return list(dict.fromkeys(issue['message'] for issue in confirmation_issues(preview, item, catalog, scope)))
 
 
 def review_response(scope, token, preview, catalog):
@@ -280,7 +351,14 @@ def review_response(scope, token, preview, catalog):
         for item in preview['review']['items']:
             if item['section'] != section_id:
                 continue
-            errors = confirmation_error(preview, item, catalog, scope)
+            issues = confirmation_issues(preview, item, catalog, scope)
+            errors = list(dict.fromkeys(issue['message'] for issue in issues))
+            fields = []
+            if item['status'] == 'pending':
+                fields = list(item['initial_attention_fields']) + attention_fields(issues)
+                if item['remembered'] and item['series_id'] != item['ai_series_id']:
+                    fields.append('binding')
+                fields = list(dict.fromkeys(fields))
             rule = None
             if item['kind'] in ('thresholds', 'falsifiers'):
                 value = item['value']
@@ -290,10 +368,14 @@ def review_response(scope, token, preview, catalog):
             items.append({'id': item['id'], 'kind': item['kind'], 'title': item['title'],
                 'description': item['description'], 'original_text': item['source_quote'],
                 'source_quote': item['source_quote'], 'status': item['status'],
+                'origin': item['origin'], 'requires_attention': item['status'] == 'pending',
+                'attention_fields': fields,
+                'attention_reasons': [attention_message(fields)] if fields else [],
+                'requires_quote': item['kind'] in ('thresholds', 'falsifiers'),
                 'warnings': errors if errors else item['warnings'] if item['status'] == 'pending' else [],
                 'binding': binding(known.get(item['series_id'])),
                 'ai_binding': binding(known.get(item['ai_series_id'])),
-                'requires_binding': item['kind'] in ('thresholds', 'falsifiers', 'whitelist'),
+                'requires_binding': requires_binding(item),
                 'can_bind': item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers'),
                 'can_confirm': not errors, 'can_confirm_with_binding': item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers'),
                 'rule': rule, 'remembered': item['remembered']})
@@ -302,6 +384,8 @@ def review_response(scope, token, preview, catalog):
     items = preview['review']['items']
     return {'draft_id': token, 'revision': preview['review']['revision'], 'sections': sections,
         'pending_count': sum(item['status'] == 'pending' for item in items),
+        'needs_attention_count': sum(item['status'] == 'pending' for item in items),
+        'ready_count': sum(item['status'] == 'ready' for item in items),
         'confirmed_count': sum(item['status'] == 'confirmed' for item in items), 'total': len(items),
         'reuse_enabled': preview['review']['reuse_enabled']}
 
@@ -436,26 +520,27 @@ async def update_review(request: Request):
         known = {field['id']: field for field in state['catalog']}
         if 'series_id' in body.model_fields_set:
             if not can_bind or body.series_id is not None and body.series_id not in known:
-                raise HTTPException(422, '请选择当前授权目录中的真实指标')
+                reject_fields(['binding'])
             item['series_id'] = body.series_id
             item['remembered'] = False
             item['binding_explicit'] = body.series_id is not None
         if body.source_quote is not None:
             if not body.source_quote.strip() or body.source_quote not in preview['text']:
-                raise HTTPException(422, '原文依据须为完整原文中的非空逐字摘录')
+                reject_fields(['source_quote'])
             item['source_quote'] = body.source_quote
         if body.remember and (body.action != 'confirm' or not can_bind or not item['series_id']):
             raise HTTPException(422, '只有明确确认绑定指标时才可勾选记住')
         item['status'] = {'confirm': 'confirmed', 'keep_text': 'kept_text', 'exclude': 'excluded'}[body.action]
+        item['origin'] = 'user'
         if body.action == 'confirm':
-            errors = confirmation_error(preview, item, state['catalog'], scope)
-            if errors:
-                raise HTTPException(422, '；'.join(errors))
+            issues = confirmation_issues(preview, item, state['catalog'], scope)
+            if issues:
+                reject_fields(attention_fields(issues))
         try:
             preview['document'] = build_document(preview, state['catalog'])
             checked(preview, preview['document'], state['catalog'], scope)
         except AnalysisError as error:
-            raise HTTPException(422, '；'.join(dict.fromkeys(issue['message'] for issue in error.issues))) from None
+            reject_fields(attention_fields(error.issues))
         preview['review']['revision'] += 1
         await current_preview(scope, body.draft_id)
         await run_in_threadpool(record_decisions, scope, body.draft_id, before, preview, state['catalog'], [(item, body.remember)])
@@ -471,8 +556,9 @@ async def confirm_ready(request: Request):
         check_revision(before, body.revision)
         preview, decisions = deepcopy(before), []
         for item in preview['review']['items']:
-            if item['status'] == 'pending' and not confirmation_error(preview, item, state['catalog'], scope):
+            if item['status'] in {'pending', 'ready'} and not confirmation_error(preview, item, state['catalog'], scope):
                 item['status'] = 'confirmed'
+                item['origin'] = 'user'
                 decisions.append((item, False))
         preview['document'] = build_document(preview, state['catalog'])
         checked(preview, preview['document'], state['catalog'], scope)
@@ -485,7 +571,7 @@ async def confirm_ready(request: Request):
 def apply_preferences(scope, preview, catalog):
     known = {field['id']: field for field in catalog}
     with artifact_session(scope) as session:
-        items = [item for item in preview['review']['items'] if item['status'] == 'pending'
+        items = [item for item in preview['review']['items'] if item['status'] in {'pending', 'ready'}
             and item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers')]
         keys = {preference_key(scope, preview, item): item for item in items}
         rows = session.scalars(select(SourceMapping).where(SourceMapping.id.in_(keys))) if keys else []
@@ -500,6 +586,8 @@ def apply_preferences(scope, preview, catalog):
                     and config.get('signature') == preference_signature(scope, field)):
                 item['series_id'] = field['id']
                 item['remembered'] = True
+                item['origin'] = 'remembered'
+                item['status'] = 'pending' if field['id'] != item['ai_series_id'] else item['initial_status']
 
 
 @router.post('/reuse')
@@ -511,9 +599,11 @@ async def reuse(request: Request):
         check_revision(before, body.revision)
         preview = deepcopy(before)
         for item in preview['review']['items']:
-            if item['status'] == 'pending' and item['remembered']:
+            if item['status'] in {'pending', 'ready'} and item['remembered']:
                 item['series_id'] = item['ai_series_id']
                 item['remembered'] = False
+                item['origin'] = 'model'
+                item['status'] = item['initial_status']
         if body.enabled:
             await run_in_threadpool(apply_preferences, scope, preview, state['catalog'])
         preview['review']['reuse_enabled'] = body.enabled

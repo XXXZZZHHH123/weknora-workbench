@@ -7,7 +7,8 @@
   const endpoint = (window.RESEARCH_PREFIX || '') + '/api/sn/judgment';
   let managed, draft, displayed, busy = false, controller, panels = [], review = null, reviewEpoch = 0;
   const reviewEdits = new Map();
-  let reviewControls = [], searchSessions = [], selectedSection = '';
+  const rememberedChoices = new Set();
+  let reviewControls = [], searchSessions = [], selectedSection = '', reviewView = 'all';
   const selectedId = () => dialog.dataset.judgmentId || '';
   const managePath = () => '/manage' + (selectedId() ? '?judgment_id=' + encodeURIComponent(selectedId()) : '');
   function inform(message, error = false) {
@@ -21,7 +22,7 @@
     searchSessions = [];
   }
   function invalidate() {
-    stopSearches(); draft = null; review = null; reviewEdits.clear();
+    stopSearches(); draft = null; review = null; reviewEdits.clear(); rememberedChoices.clear();
     byId('preview').hidden = true;
     if (byId('import')) byId('import').hidden = false;
   }
@@ -47,7 +48,7 @@
     try { value = await response.json(); } catch { throw new Error('研究逻辑服务暂时不可用，输入已保留。'); }
     if (!response.ok) { const detail = value.detail; const message = typeof detail === 'string' ? detail :
       detail?.message ? detail.message + (detail.issues?.length ? '：' + detail.issues.slice(0, 4).map(item => item.message).join('；') : '') : '请求未完成，输入已保留。';
-      const error = new Error(message); error.status = response.status; throw error; }
+      const error = new Error(message); error.status = response.status; error.fields = detail?.attention_fields; throw error; }
     return value;
   }
   function panelTitle() { const title = byId('new-panel-title')?.value.trim(); return title ? {panel_title: title} : {}; }
@@ -112,6 +113,7 @@
     if (!preserveEdits) reviewEdits.clear();
     else for (const [id, edit] of reviewEdits) if (!edit.dirty) reviewEdits.delete(id);
     review = value.review || null;
+    if (!preserveEdits) reviewView = 'all';
     renderReview();
   }
   function element(tag, className, value) {
@@ -119,15 +121,14 @@
     if (value !== undefined) node.textContent = value;
     return node;
   }
-  function pendingCount() { return review?.pending_count ?? 0; }
+  function pendingCount() { return review?.needs_attention_count ?? review?.pending_count ?? 0; }
   function hasReviewEdits() { return [...reviewEdits.values()].some(edit => edit.dirty); }
   function syncApply() {
     const unsynced = hasReviewEdits();
     byId('apply').disabled = busy || !draft || managed?.can_write === false || unsynced;
     const note = byId('review-save-note');
-    if (note) note.textContent = !review ? '' : unsynced ? '有尚未确认的修改，请先处理对应条目，再保存草稿。' :
-      pendingCount() ? `仍有 ${pendingCount()} 项待确认，可先保存草稿；未通过校验的规则不会参与执行。` : '已处理全部条目。保存后保留原记录，不会自动生效。';
-    if (byId('review-ready')) byId('review-ready').disabled = busy || !review || !pendingCount() || unsynced || !managed?.can_write;
+    if (note) note.textContent = !review ? '' : unsynced ? '修改尚未同步，请处理红框位置后再保存。' :
+      pendingCount() ? `有 ${pendingCount()} 项需处理，也可先保存草稿；未通过校验的规则不会参与执行。` : '内容已解析，可以保存草稿；保存后不会自动生效。';
     if (byId('review-reuse')) byId('review-reuse').disabled = busy || !review || unsynced || !managed?.can_write;
     if (byId('review-edit')) byId('review-edit').disabled = busy;
   }
@@ -143,7 +144,7 @@
   function bindingMeta(row) {
     return [row?.unit || '单位待核对', shortFile(row?.source_file), row?.sheet].filter(Boolean).join(' · ');
   }
-  function changed(edit) { edit.dirty = true; edit.renderCondition?.(); syncReviewControls(); syncApply(); }
+  function changed(edit) { edit.dirty = true; edit.renderCondition?.(); edit.renderErrors?.(); syncReviewVisibility(); syncReviewControls(); syncApply(); }
   const ruleNumber = '[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?';
   const singleRuleNumber = new RegExp('^' + ruleNumber + '$');
   const rangeRuleNumbers = new RegExp('^\\[\\s*(' + ruleNumber + ')\\s*,\\s*(' + ruleNumber + ')\\s*\\]$');
@@ -170,18 +171,37 @@
     }
     return ['需核对条件，请结合原文和下方提示确认。', ...details].join('；');
   }
-  function canConfirm(item, edit) {
-    return Boolean((item.can_confirm || (item.can_confirm_with_binding && edit.bindingChanged && edit.selected) || edit.sourceQuote !== null) &&
-      (!item.requires_binding || edit.selected));
-  }
   function selectSection(identifier) {
     selectedSection = identifier;
-    for (const node of byId('review-nav').children) node.setAttribute('aria-current', String(node.dataset.reviewSection === identifier));
-    for (const node of byId('review-items').children) node.hidden = node.dataset.reviewSection !== identifier;
+    syncReviewVisibility();
+  }
+  function needsAttention(item) { return item.status === 'pending' || item.requires_attention === true || reviewEdits.get(item.id)?.dirty === true; }
+  function syncReviewVisibility() {
+    if (!review?.sections || !byId('review-items')) return;
+    const allItems = review.sections.flatMap(section => section.items || []), count = allItems.filter(needsAttention).length;
+    if (!count) reviewView = 'all';
+    byId('review-count').textContent = `已解析 ${review.total ?? allItems.length} 项 · 需处理 ${count} 项`;
+    byId('review-attention')?.setAttribute('aria-pressed', String(reviewView === 'attention'));
+    byId('review-all')?.setAttribute('aria-pressed', String(reviewView === 'all'));
+    const visibleSections = review.sections.filter(section => reviewView === 'all' || section.items?.some(needsAttention));
+    if (!visibleSections.some(section => section.id === selectedSection)) selectedSection = visibleSections[0]?.id || '';
+    for (const node of byId('review-nav').children) {
+      const section = review.sections.find(section => section.id === node.dataset.reviewSection);
+      node.hidden = !visibleSections.includes(section); node.setAttribute('aria-current', String(section?.id === selectedSection));
+    }
+    for (const group of byId('review-items').children) {
+      group.hidden = group.dataset.reviewSection !== selectedSection;
+      for (const card of group.children) {
+        if (!card.dataset.reviewItem) continue;
+        const item = allItems.find(row => row.id === card.dataset.reviewItem), dirty = reviewEdits.get(item.id)?.dirty;
+        card.hidden = reviewView === 'attention' && !needsAttention(item); card.dataset.reviewDirty = String(Boolean(dirty));
+      }
+    }
+    if (byId('review-empty')) byId('review-empty').hidden = visibleSections.length > 0;
   }
   function renderBinding(item, edit) {
     const field = element('div', 'logic-binding-field');
-    const label = element('label', 'logic-item-label', '选择真实指标');
+    const label = element('label', 'logic-item-label', '关联指标');
     const search = registerControl(element('input', 'logic-binding-search'), item, 'search');
     search.type = 'text'; search.id = 'logic-binding-' + reviewControls.length;
     label.setAttribute('for', search.id); search.value = edit.selected ? display.text(edit.selected.name) : edit.query || '';
@@ -194,15 +214,9 @@
     const feedback = element('div', 'logic-binding-feedback'); feedback.setAttribute('aria-live', 'polite');
     const more = registerControl(element('button', 'logic-binding-more', '更多指标'), item, 'more'); more.type = 'button'; more.hidden = true;
     menu.append(list, feedback, more);
-    const meta = element('p', 'logic-binding-meta', edit.selected ? bindingMeta(edit.selected) : '请按口径选择，搜索覆盖当前工作台全部授权指标。');
-    meta.title = meta.textContent;
-    const recommended = element('div', 'logic-ai-binding');
-    if (item.ai_binding) {
-      const badge = element('span', 'logic-ai-badge', 'AI 推荐');
-      const name = element('span', '', display.text(item.ai_binding.name)); name.title = bindingMeta(item.ai_binding);
-      recommended.append(badge, name);
-    }
-    const origin = element('span', 'logic-binding-origin', item.remembered ? '曾用选择，仍需确认' : item.binding ? '当前选择' : '推荐选择，等待确认');
+    const meta = element('p', 'logic-binding-meta', edit.selected ? bindingMeta(edit.selected) : '单位待确认');
+    meta.title = meta.textContent; meta.textContent = edit.selected?.unit || '单位待确认';
+    search.title = meta.title;
     const session = {timer: null, controller: null, token: 0, rows: [], active: -1, next: null, epoch: reviewEpoch, list}; searchSessions.push(session);
     function closeMenu() { menu.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute?.('aria-activedescendant'); }
     function showMenu() { menu.hidden = false; search.setAttribute('aria-expanded', 'true'); }
@@ -214,8 +228,8 @@
     function choose(row) {
       if (busy || !managed?.can_write) return;
       edit.selected = row; edit.query = ''; edit.bindingChanged = true; search.value = display.text(row.name); meta.textContent = bindingMeta(row); meta.title = meta.textContent;
-      origin.textContent = '你的选择，等待确认';
-      changed(edit); closeMenu();
+      meta.textContent = row.unit || '单位待确认'; search.title = bindingMeta(row);
+      changed(edit); closeMenu(); return updateReview(item, edit, 'confirm');
     }
     function drawOptions() {
       list.replaceChildren();
@@ -248,10 +262,10 @@
     }
     search.addEventListener('focus', () => load());
     search.addEventListener('input', () => {
-      edit.query = search.value; edit.selected = null; changed(edit);
+      edit.query = search.value; edit.selected = null; edit.errorFields = [...new Set([...(edit.errorFields || item.attention_fields || []), 'binding'])]; edit.errorMessage = '请选择搜索结果中的指标。'; changed(edit);
       session.token++; session.controller?.abort(); clearTimeout(session.timer);
       session.rows = []; list.replaceChildren(); more.hidden = true;
-      meta.textContent = '请从搜索结果选择一个指标，再确认此项。'; showMenu(); feedback.textContent = '等待搜索…';
+      meta.textContent = '单位待确认'; showMenu(); feedback.textContent = '等待搜索…';
       session.timer = setTimeout(() => load(), 180);
     });
     search.addEventListener('keydown', event => {
@@ -261,91 +275,94 @@
         if (session.rows.length) activate(session.active < 0 ? (event.key === 'ArrowDown' ? 0 : session.rows.length - 1) :
           (session.active + (event.key === 'ArrowDown' ? 1 : -1) + session.rows.length) % session.rows.length);
       } else if (event.key === 'Enter' && !menu.hidden) {
-        event.preventDefault(); if (session.active >= 0) choose(session.rows[session.active]);
+        event.preventDefault(); if (session.active >= 0) return choose(session.rows[session.active]);
       } else if (event.key === 'Tab') closeMenu();
     });
     search.addEventListener('blur', () => { session.timer = setTimeout(closeMenu, 120); });
     more.addEventListener('click', () => { if (session.next !== null && session.next !== undefined) return load(true); });
     const picker = element('div', 'logic-binding-picker'); picker.append(search, menu);
-    field.append(label, recommended, picker, origin, meta); return field;
+    field.append(label, picker, meta); return field;
   }
   function renderReview() {
     if (!byId('review')) return;
     stopSearches(); reviewControls = [];
     const available = Boolean(review?.sections); byId('review').hidden = !available;
-    byId('review-ready').hidden = !available;
     for (const name of ['coverage', 'bindings', 'unresolved']) byId(name).hidden = available;
     if (!available) { syncApply(); return; }
     byId('import').hidden = true;
     const rawSource = review.source_text ?? draft.source_text ?? input.value;
-    if (byId('review-source')) byId('review-source').textContent = rawSource;
-    byId('review-reuse').checked = review.reuse_enabled === true;
-    byId('review-count').textContent = `${review.confirmed_count || 0} 已确认 · ${pendingCount()} 待确认 · 共 ${review.total || 0} 项`;
+    byId('review-source').textContent = rawSource; byId('review-reuse').checked = review.reuse_enabled === true;
     const nav = byId('review-nav'), items = byId('review-items'); nav.replaceChildren(); items.replaceChildren();
-    const statuses = {pending: '待确认', confirmed: '已确认', kept_text: '保留文字', excluded: '已排除'};
     for (const section of review.sections) {
-      const sectionItems = section.items || [], remaining = sectionItems.filter(item => item.status === 'pending').length;
+      const sectionItems = section.items || [], remaining = sectionItems.filter(needsAttention).length;
       const navButton = element('button', 'logic-review-section-link'); navButton.type = 'button'; navButton.dataset.reviewSection = section.id;
-      navButton.append(element('span', '', section.title), element('small', '', `${sectionItems.length - remaining}/${sectionItems.length}`));
+      navButton.append(element('span', '', section.title), element('small', '', remaining ? `${remaining} 需处理` : `${sectionItems.length} 项`));
       navButton.addEventListener('click', () => selectSection(section.id)); nav.append(navButton);
       const group = element('section', 'logic-review-group'); group.dataset.reviewSection = section.id;
       group.append(element('h3', '', section.title));
-      if (!sectionItems.length) group.append(element('p', 'logic-hint', '原文未提供此部分，可返回补充原文。'));
       for (const item of sectionItems) {
         let edit = reviewEdits.get(item.id);
-        if (!edit) { edit = {selected: item.binding || item.ai_binding || null, remember: false, dirty: false, query: '', sourceQuote: null, bindingChanged: false}; reviewEdits.set(item.id, edit); }
+        if (!edit) { edit = {selected: item.binding || item.ai_binding || null, remember: rememberedChoices.has(item.id), dirty: false, query: '', sourceQuote: null, bindingChanged: false}; reviewEdits.set(item.id, edit); }
         const card = element('article', 'logic-review-card'); card.dataset.reviewItem = item.id; card.dataset.reviewStatus = item.status;
-        const heading = element('div', 'logic-item-heading'); heading.append(element('strong', '', display.text(item.title)), element('span', 'logic-item-status', statuses[item.status] || '待确认'));
+        card.append(element('strong', 'logic-item-title', display.text(item.title)));
+        const fields = new Map();
+        function field(node, name) {
+          node.dataset.reviewField = name; node.className += ' logic-review-field';
+          const error = element('p', 'logic-field-error'); error.setAttribute('role', 'status'); error.hidden = true;
+          node.append(error); fields.set(name, {node, error}); return node;
+        }
+        const note = element('div', 'logic-item-description');
+        note.append(element('p', '', display.text(item.description || ''))); field(note, 'content'); card.append(note);
+        if (item.rule) {
+          const condition = element('div', 'logic-item-condition'); condition.dataset.reviewItem = item.id; condition.dataset.reviewControl = 'condition';
+          const value = element('span'); condition.append(value); field(condition, 'condition');
+          edit.renderCondition = () => { value.textContent = ruleCondition(item, edit); condition.dataset.conditionText = value.textContent; };
+          edit.renderCondition(); card.append(condition);
+        }
         const columns = element('div', 'logic-item-columns'), original = element('div', 'logic-item-original');
         const excerpt = item.original_text || item.source_quote;
-        const sourceParagraph = element('p', 'logic-item-source', excerpt || '尚未定位逐字依据，可在本项展开完整原文对照并选取。');
-        original.append(element('span', 'logic-item-label', excerpt ? '原文与依据' : '原文依据待选择'), sourceParagraph);
+        const sourceParagraph = element('p', 'logic-item-source', excerpt || ''); sourceParagraph.hidden = !excerpt; original.append(sourceParagraph);
         const localSource = element('pre', 'logic-source-text'); localSource.tabIndex = 0;
-        if (!excerpt) {
-          const fullSource = element('details', 'logic-item-full-source');
-          fullSource.append(element('summary', '', '完整原文（尚未选取依据）'), localSource);
-          fullSource.addEventListener('toggle', () => { if (fullSource.open && !localSource.textContent) localSource.textContent = rawSource; });
-          original.append(fullSource);
-        }
-        const quote = element('p', 'logic-item-quote', edit.sourceQuote || item.source_quote || ''); quote.hidden = !quote.textContent;
+        const fullSource = element('details', 'logic-item-full-source'); fullSource.append(element('summary', '', '原文'), localSource);
+        fullSource.addEventListener('toggle', () => { if (fullSource.open && !localSource.textContent) localSource.textContent = rawSource; });
+        const quote = element('p', 'logic-item-quote', edit.sourceQuote || ''); quote.hidden = !quote.textContent;
         const quoteButton = registerControl(element('button', 'logic-quote-button', '采用所选原文'), item, 'quote'); quoteButton.type = 'button';
-        quoteButton.title = '在“对照完整原文”中选择准确片段，再采用为此项依据';
         quoteButton.addEventListener('mousedown', event => event.preventDefault());
         quoteButton.addEventListener('click', () => {
           const selection = window.getSelection?.(), selected = selection?.toString() || '';
-          const sourceNodes = [byId('review-source'), localSource, ...(excerpt ? [sourceParagraph] : [])];
-          if (!selected || !sourceNodes.some(node => node?.contains(selection.anchorNode) && node.contains(selection.focusNode)) || !rawSource.includes(selected)) return inform('请先在本项或“对照完整原文”中选中对应的准确片段。', true);
-          if (selected.length > 4000) return inform('所选片段过长，请缩小到对应依据。', true);
-          edit.sourceQuote = selected; quote.textContent = selected; quote.hidden = false; changed(edit); inform('已选择原文依据，请确认此项以提交修改。');
+          if (!selected || ![byId('review-source'), localSource, sourceParagraph].some(node => node.contains(selection.anchorNode) && node.contains(selection.focusNode)) || !rawSource.includes(selected)) return inform('请在原文中选择对应片段。', true);
+          if (selected.length > 4000) return inform('请选择较短的原文依据。', true);
+          edit.sourceQuote = selected; quote.textContent = selected; quote.hidden = false; changed(edit); return updateReview(item, edit, 'confirm');
         });
-        original.append(quote, quoteButton); columns.append(original);
-        if (item.can_bind) columns.append(renderBinding(item, edit));
-        card.append(heading, columns);
-        const note = element('p', 'logic-item-description', display.text(item.description || (item.can_bind ? '请核对指标口径、单位和来源，再确认绑定。' : '请核对这段文字在研究中的作用。'))); card.append(note);
-        if (item.rule) {
-          const condition = element('p', 'logic-item-condition'); condition.dataset.reviewItem = item.id; condition.dataset.reviewControl = 'condition';
-          edit.renderCondition = () => { condition.textContent = '解析后的条件：' + ruleCondition(item, edit); };
-          edit.renderCondition(); card.append(condition);
-        }
-        const warnings = element('ul', 'logic-item-warnings');
-        for (const warning of item.warnings || []) warnings.append(element('li', '', display.text(typeof warning === 'string' ? warning : warning.message || '此项需要进一步核对。')));
-        if (warnings.children.length) card.append(warnings);
-        const actions = element('div', 'logic-item-actions');
+        fullSource.append(quoteButton); original.append(quote, fullSource); field(original, 'source_quote');
         if (item.can_bind) {
+          columns.append(original);
+          const binding = renderBinding(item, edit); field(binding, 'binding');
           const rememberLabel = element('label', 'logic-remember-label');
           const remember = registerControl(element('input'), item, 'remember', () => !edit.selected); remember.type = 'checkbox'; remember.checked = edit.remember;
-          remember.addEventListener('change', () => { edit.remember = remember.checked; changed(edit); });
-          rememberLabel.append(remember, element('span', '', '记住此绑定')); actions.append(rememberLabel);
+          remember.addEventListener('change', () => { edit.remember = remember.checked; changed(edit); return updateReview(item, edit, 'confirm'); });
+          rememberLabel.append(remember, element('span', '', '记住选择')); binding.append(rememberLabel); columns.append(binding); card.append(columns);
         }
-        for (const [action, label] of [['confirm', '确认此项'], ['keep_text', '保留文字'], ['exclude', '排除此项']]) {
-          const button = registerControl(element('button', action === 'confirm' ? 'logic-confirm-item' : '', label), item, action, () => action === 'confirm' && !canConfirm(item, edit));
-          button.type = 'button'; button.addEventListener('click', () => updateReview(item, edit, action)); actions.append(button);
+        const actions = element('div', 'logic-item-actions');
+        for (const [action, label] of [['keep_text', '仅保留文字'], ['exclude', '排除']]) {
+          const button = registerControl(element('button', '', label), item, action); button.type = 'button'; button.addEventListener('click', () => updateReview(item, edit, action)); actions.append(button);
         }
-        card.append(actions); group.append(card);
+        const adjustments = element('details', 'logic-item-adjustments'); adjustments.dataset.reviewItem = item.id; adjustments.dataset.reviewControl = 'adjust'; adjustments.open = Boolean(edit.adjusting);
+        adjustments.append(element('summary', '', '调整'));
+        if (!item.can_bind) adjustments.append(original);
+        adjustments.append(actions); adjustments.addEventListener('toggle', () => { edit.adjusting = adjustments.open; }); card.append(adjustments);
+        edit.renderErrors = () => {
+          const marked = edit.errorFields || item.attention_fields || (item.status === 'pending' ? [item.can_bind ? 'binding' : 'content'] : []);
+          const reasons = item.kind === 'unresolved_binding' ? item.attention_reasons || [] : item.warnings?.length ? item.warnings : item.attention_reasons || [];
+          const reason = display.text(edit.errorMessage || (typeof reasons[0] === 'string' ? reasons[0] : reasons[0]?.message) || '请修改红框位置。');
+          for (const [name, entry] of fields) {
+            const invalid = marked.includes(name); entry.node.dataset.invalid = String(invalid); entry.node.setAttribute('aria-invalid', String(invalid)); entry.error.hidden = !invalid; entry.error.textContent = invalid ? reason : '';
+          }
+        };
+        edit.renderErrors(); group.append(card);
       }
       items.append(group);
     }
-    if (!review.sections.some(section => section.id === selectedSection)) selectedSection = review.sections.find(section => section.items?.length)?.id || review.sections[0]?.id;
     selectSection(selectedSection); syncReviewControls(); syncApply();
   }
   async function hydrateReview(value) {
@@ -353,16 +370,18 @@
   }
   async function updateReview(item, edit, action) {
     if (busy || !review || !draft || !managed?.can_write) return;
-    if (action === 'confirm' && !canConfirm(item, edit)) return;
     const body = {draft_id: draft.draft_id, revision: review.revision, item_id: item.id, action, remember: action === 'confirm' && edit.remember};
     if (action === 'confirm' && item.can_bind) body.series_id = edit.selected?.series_id || null;
     if (edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
-    setBusy(true); inform('正在核对此项来源与条件…');
+    setBusy(true); inform('正在同步修改…');
     try {
       const result = await api('/review/update', body);
-      reviewEdits.delete(item.id); presentDraft(result, true); inform(result.notice || '此项已更新，尚未保存草稿。');
-    } catch (error) { if (error.name !== 'AbortError') inform(error.message, true); }
-    finally { setBusy(false); }
+      if (body.remember) rememberedChoices.add(item.id); else rememberedChoices.delete(item.id);
+      reviewEdits.delete(item.id); presentDraft(result, true); inform('');
+    } catch (error) {
+      if (error.status === 409) { invalidate(); inform(error.message, true); }
+      else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; edit.renderErrors?.(); inform(''); }
+    } finally { setBusy(false); }
   }
   async function open() {
     if (busy) return;
@@ -418,7 +437,7 @@
       const value = await api('/generate', {model_id: byId('model').value, text: input.value,
         source_name: byId('file-name').textContent.slice(0, 128), base_version: baseline.latest?.version || 0,
         ...(variety ? {variety} : {}), ...panelTitle()});
-      presentDraft(value); await hydrateReview(value); inform(value.notice);
+      presentDraft(value); await hydrateReview(value); inform(value.review_available ? '' : value.notice);
     } catch (error) { await recover(error); }
     finally { setBusy(false); }
   });
@@ -503,6 +522,7 @@
     catch (error) { inform(error.message, true); }
   }
   byId('version').addEventListener('change', event => loadVersion(event.target.value));
+  for (const [name, mode] of [['review-attention', 'attention'], ['review-all', 'all']]) byId(name)?.addEventListener('click', () => { reviewView = mode; syncReviewVisibility(); });
   byId('review-edit')?.addEventListener('click', () => {
     if (busy) return;
     byId('import').hidden = false; input.focus();
@@ -514,17 +534,8 @@
     setBusy(true); inform('正在更新当前工作台的复用偏好…');
     try {
       const result = await api('/review/reuse', {draft_id: draft.draft_id, revision: review.revision, enabled});
-      presentDraft(result, true); inform(result.notice || '偏好已更新，建议仍需逐项确认。');
+      presentDraft(result, true); inform('');
     } catch (error) { byId('review-reuse').checked = !enabled; if (error.name !== 'AbortError') inform(error.message, true); }
-    finally { setBusy(false); }
-  });
-  byId('review-ready')?.addEventListener('click', async () => {
-    if (busy || !review || !draft || !managed?.can_write || hasReviewEdits()) return;
-    setBusy(true); inform('正在逐项核对已就绪内容，缺少条件的项目仍保留待确认…');
-    try {
-      const result = await api('/review/confirm-ready', {draft_id: draft.draft_id, revision: review.revision});
-      presentDraft(result, true); inform(result.notice || '已确认通过校验的项目，其余项目仍待核对。');
-    } catch (error) { if (error.name !== 'AbortError') inform(error.message, true); }
     finally { setBusy(false); }
   });
   byId('load-version').addEventListener('click', () => loadVersion(byId('version-number').value || byId('version').value));

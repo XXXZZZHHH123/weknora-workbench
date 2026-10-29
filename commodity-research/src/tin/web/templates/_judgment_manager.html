@@ -24,12 +24,14 @@
     <div class="logic-toolbar"><label for="logic-variety">品种代码</label><input id="logic-variety" maxlength="16" aria-label="研究品种代码" placeholder="按研究原文填写" style="width:90px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--text);font:inherit"><label for="logic-model">分析模型</label><select id="logic-model" aria-label="研究逻辑分析模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-generate" class="logic-primary">分析原文</button><span class="logic-hint">先预览，再确认保存；不会自动生效。</span></div>
     </div>
     <div id="logic-preview" hidden>
-      <div class="logic-toolbar logic-review-heading"><strong>核对研究逻辑</strong><span id="logic-review-count"></span><button type="button" id="logic-review-ready">确认已就绪项</button><button type="button" id="logic-review-edit">修改原文</button><button type="button" id="logic-apply" class="logic-primary">保存为新草稿</button></div>
+      <div class="logic-toolbar logic-review-heading"><strong>研究逻辑解析结果</strong><span id="logic-review-count"></span><button type="button" id="logic-review-edit">修改原文</button><button type="button" id="logic-apply" class="logic-primary">保存为新草稿</button></div>
       <p id="logic-review-save-note" class="logic-hint"></p>
-      <section id="logic-review" aria-label="逐项确认研究逻辑" hidden>
-        <div class="logic-review-preferences"><label><input type="checkbox" id="logic-review-reuse"> 本次使用我记住的指标建议</label><span id="logic-review-note">选择仅限你在当前工作台，下次可再次勾选；建议仍需逐项确认。</span></div>
-        <details class="logic-review-original"><summary>对照完整原文 · 可选择片段作为依据</summary><p class="logic-hint">在下方原文中选中准确片段，再点击对应条目的“采用所选原文”。</p><pre id="logic-review-source" class="logic-source-text" tabindex="0"></pre></details>
+      <section id="logic-review" aria-label="研究逻辑解析结果" hidden>
+        <div class="logic-review-views" role="group" aria-label="显示内容"><button type="button" id="logic-review-all" aria-pressed="true">全部内容</button><button type="button" id="logic-review-attention" aria-pressed="false">仅看问题</button></div>
+        <div class="logic-review-preferences"><label><input type="checkbox" id="logic-review-reuse"> 使用已记住的指标选择</label><span id="logic-review-note">仅限你在当前工作台的选择。</span></div>
+        <details class="logic-review-original"><summary>完整原文</summary><pre id="logic-review-source" class="logic-source-text" tabindex="0"></pre></details>
         <div class="logic-review-layout"><nav id="logic-review-nav" class="logic-review-nav" aria-label="研究结构"></nav><div id="logic-review-items" class="logic-review-items"></div></div>
+        <p id="logic-review-empty" class="logic-review-empty" hidden>原文没有提供可展示的研究条目，可返回补充原文。</p>
       </section>
       <span id="logic-coverage" class="logic-hint"></span>
       <div id="logic-bindings" class="logic-bindings"></div>

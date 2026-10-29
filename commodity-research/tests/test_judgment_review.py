@@ -47,7 +47,8 @@ def preferences():
 def test_review_read_and_confirm_only_save_when_explicitly_applied(generator):
     client, headers, state, _, calls = generator
     preview = generate(client, headers).json()
-    assert preview['review_available'] and preview['review']['pending_count'] == preview['review']['total']
+    assert preview['review_available'] and preview['review']['pending_count'] == 1
+    assert preview['review']['ready_count'] == preview['review']['total'] - 1
     assert preview['source_text'] == TEXT
     count, pages = len(calls), state['pages']
     fetched = client.get(endpoint(), headers=headers, params={'draft_id': preview['draft_id']})
@@ -289,7 +290,7 @@ def test_remember_is_opt_in_reuse_is_pending_and_source_metadata_changes_invalid
     reused = reuse(client, headers, other)
     assert reused.status_code == 200, reused.text
     item = pick(reused.json(), 'binding')
-    assert item['remembered'] and item['status'] == 'pending'
+    assert item['remembered'] and item['status'] == 'ready' and item['origin'] == 'remembered'
     disabled = reuse(client, headers, reused.json(), False).json()
     assert not pick(disabled, 'binding')['remembered']
     original = generation.snapshot
@@ -330,6 +331,128 @@ def test_confirmation_does_not_mutate_shared_preview_or_copy_the_catalog(monkeyp
     scope = SimpleNamespace(identity=SimpleNamespace(user_id='one'))
     assert not review.confirmation_error(preview, preview['review']['items'][0], catalog, scope)
     assert preview == before
+
+
+def test_clear_descriptions_and_verified_rules_are_ready_without_optional_quotes():
+    catalog = [{'id': SERIES, 'unit': '吨', 'name': 'Synthetic quantity'}]
+    model = document()
+    model['judgment']['time_dimension'] = {'short': 'Short descriptive horizon', 'long': 'Long descriptive horizon'}
+    model['judgment']['contradiction']['bull']['evidence'].append({'desc': 'Qualitative evidence without data', 'series_id': None})
+    assessment = assess_draft(model, TEXT, catalog, variety='XY', actor='one')
+    preview = {'text': TEXT, 'variety': 'XY', 'written_at': '2026-10-29'}
+    review.initialize_review(preview, assessment, catalog)
+    scope = SimpleNamespace(identity=SimpleNamespace(user_id='one'))
+    result = review.review_response(scope, 'synthetic-preview-token', preview, catalog)
+    items = [item for section in result['sections'] for item in section['items']]
+    assert result['ready_count'] == len(items) - 1
+    assert result['pending_count'] == result['needs_attention_count'] == 1
+    assert all(item['status'] == 'ready' and not item['requires_attention'] and item['origin'] == 'model'
+        for item in items if item['kind'] != 'unresolved_binding')
+    descriptions = [item for item in items if item['kind'] == 'description']
+    assert descriptions and all(not item['source_quote'] and not item['requires_quote'] for item in descriptions)
+    assert all(item['attention_reasons'] for item in items if item['requires_attention'])
+    assert [rule['id'] for rule in preview['document']['judgment']['thresholds']] == ['watch']
+
+
+def test_quantitative_failure_stays_pending_and_cannot_enter_document_as_ready():
+    catalog = [{'id': SERIES, 'unit': '吨', 'name': 'Synthetic quantity'}]
+    model = document()
+    model['judgment']['thresholds'][0]['value'] = 0
+    assessment = assess_draft(model, TEXT, catalog, variety='XY', actor='one')
+    preview = {'text': TEXT, 'variety': 'XY', 'written_at': '2026-10-29'}
+    review.initialize_review(preview, assessment, catalog)
+    rule = next(item for item in preview['review']['items'] if item['kind'] == 'thresholds')
+    assert rule['status'] == 'pending'
+    rule['status'] = 'ready'
+    rebuilt = review.build_document(preview, catalog)
+    assert rebuilt['judgment']['thresholds'] == []
+    assert rebuilt['unresolved'][-1]['reason']
+
+
+def test_missing_optional_descriptive_units_are_information_without_quantitative_readiness():
+    catalog = [{'id': SERIES, 'unit': None, 'name': 'Synthetic quantity'}]
+    model = document()
+    model['binding_units'][SERIES] = None
+    assessment = assess_draft(model, TEXT, catalog, variety='XY', actor='one')
+    preview = {'text': TEXT, 'variety': 'XY', 'written_at': '2026-10-29'}
+    review.initialize_review(preview, assessment, catalog)
+    scope = SimpleNamespace(identity=SimpleNamespace(user_id='one'))
+    result = review.review_response(scope, 'synthetic-preview-token', preview, catalog)
+    items = [item for section in result['sections'] for item in section['items']]
+    bindings = [item for item in items if item['kind'] in ('binding', 'whitelist')]
+    assert bindings and all(item['status'] == 'ready' and not item['requires_attention'] for item in bindings)
+    assert next(item for item in items if item['kind'] == 'thresholds')['status'] == 'pending'
+    assert preview['document']['judgment']['thresholds'] == []
+
+
+def test_required_marginal_binding_is_attention_while_optional_evidence_stays_ready():
+    catalog = [{'id': SERIES, 'unit': '吨', 'name': 'Synthetic quantity'}]
+    model = document()
+    model['judgment']['marginal_focus'][0]['series_id'] = None
+    model['judgment']['contradiction']['bull']['evidence'][0]['series_id'] = None
+    assessment = assess_draft(model, TEXT, catalog, variety='XY', actor='one')
+    preview = {'text': TEXT, 'variety': 'XY', 'written_at': '2026-10-29'}
+    review.initialize_review(preview, assessment, catalog)
+    scope = SimpleNamespace(identity=SimpleNamespace(user_id='one'))
+    result = review.review_response(scope, 'synthetic-preview-token', preview, catalog)
+    sections = {section['id']: section['items'] for section in result['sections']}
+    marginal = sections['marginal_focus'][0]
+    evidence = next(item for item in sections['contradiction'] if item['kind'] == 'binding')
+    assert marginal['status'] == 'pending' and marginal['requires_attention'] and marginal['requires_binding']
+    assert not marginal['can_confirm'] and marginal['attention_reasons']
+    assert evidence['status'] == 'ready' and not evidence['requires_attention'] and not evidence['requires_binding']
+
+
+def test_fully_resolved_model_draft_is_ready_and_needs_no_item_confirmations(generator):
+    client, headers, _, response, _ = generator
+    response['unresolved'] = []
+    generated = generate(client, headers)
+    assert generated.status_code == 200, generated.text
+    preview = generated.json()
+    assert preview['review']['pending_count'] == preview['review']['needs_attention_count'] == 0
+    assert preview['review']['ready_count'] == preview['review']['total']
+    assert preview['review']['confirmed_count'] == 0
+    assert apply(client, headers, preview).status_code == 200
+    assert rows()[0].status == '草稿' and rows()[0].thresholds[0]['value'] == 12
+
+
+def test_remembered_different_choice_requires_action_and_toggle_restores_auto_ready(generator, monkeypatch):
+    client, headers, _, _, _ = generator
+    other = 'kb-' + 'b' * 48
+    original = generation.snapshot
+    def directory():
+        state = original()
+        state['catalog'].append({'id': other, 'name': 'Other synthetic quantity', 'unit': '吨'})
+        return state
+    monkeypatch.setattr(generation, 'snapshot', directory)
+    first = generate(client, headers).json()
+    saved = update(client, headers, first, pick(first, 'binding'), series_id=other, remember=True)
+    assert saved.status_code == 200, saved.text
+    next_preview = generate(client, headers).json()
+    assert pick(next_preview, 'binding')['status'] == 'ready'
+    baseline = copy.deepcopy(generation.previews.items[next_preview['draft_id']][2]['document'])
+    suggestion = reuse(client, headers, next_preview)
+    assert suggestion.status_code == 200, suggestion.text
+    suggested = suggestion.json()
+    item = pick(suggested, 'binding')
+    assert item['status'] == 'pending' and item['origin'] == 'remembered' and item['requires_attention']
+    assert item['binding']['series_id'] == other and item['attention_reasons']
+    assert generation.previews.items[next_preview['draft_id']][2]['document'] == baseline
+    unchanged = update(client, headers, suggested, pick(suggested, 'description'))
+    assert unchanged.status_code == 200
+    assert generation.previews.items[next_preview['draft_id']][2]['document'] == baseline
+    disabled = reuse(client, headers, unchanged.json(), False)
+    assert disabled.status_code == 200, disabled.text
+    restored = pick(disabled.json(), 'binding')
+    assert restored['status'] == 'ready' and restored['origin'] == 'model' and not restored['remembered']
+    assert restored['binding']['series_id'] == SERIES
+    again = reuse(client, headers, disabled.json()).json()
+    chosen = update(client, headers, again, pick(again, 'binding'), series_id=other)
+    assert chosen.status_code == 200, chosen.text
+    final = reuse(client, headers, chosen.json(), False)
+    assert final.status_code == 200
+    human = pick(final.json(), 'binding')
+    assert human['status'] == 'confirmed' and human['origin'] == 'user' and human['binding']['series_id'] == other
 
 
 def test_preview_store_rejects_cross_user_token_and_stale_revision():
@@ -377,5 +500,26 @@ def test_missing_real_unit_never_confirms_quantitative_rule(generator, monkeypat
     monkeypatch.setattr(generation, 'snapshot', missing_unit)
     preview = generate(client, headers).json()
     result = update(client, headers, preview, pick(preview, 'thresholds'), series_id=SERIES)
-    assert result.status_code == 422 and '单位' in result.json()['detail']
+    assert result.status_code == 422 and result.json()['detail']['attention_fields'] == ['binding']
     assert rows() == []
+
+
+@pytest.mark.parametrize(('change', 'field'), [
+    (lambda model: model['judgment']['thresholds'][0].update(value=0), 'condition'),
+    (lambda model: model['rule_quotes'].update(watch='Missing original selection'), 'source_quote'),
+    (lambda model: model['binding_units'].update({SERIES: 'kg'}), 'binding'),
+])
+def test_attention_fields_come_from_protocol_codes_and_failed_updates_keep_revision(generator, change, field):
+    client, headers, _, response, _ = generator
+    change(response)
+    preview = generate(client, headers).json()
+    item = pick(preview, 'thresholds')
+    assert item['requires_attention'] and field in item['attention_fields']
+    assert len(item['attention_reasons']) == 1 and len(item['attention_reasons'][0]) < 50
+    rejected = update(client, headers, preview, item)
+    assert rejected.status_code == 422, rejected.text
+    detail = rejected.json()['detail']
+    assert field in detail['attention_fields'] and detail['message']
+    stored = generation.previews.items[preview['draft_id']][2]
+    assert stored['review']['revision'] == preview['review']['revision']
+    assert stored['document']['judgment']['thresholds'] == []
