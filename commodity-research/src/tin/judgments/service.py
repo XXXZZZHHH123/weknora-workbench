@@ -23,6 +23,8 @@ def _refs(j: JudgmentIn) -> list[tuple[str, str, str]]:
                  for i, e in enumerate(getattr(j.contradiction, side).evidence) if e.series_id]
     refs += [("cost", f"cost{i}", item.series_id)
              for i, item in enumerate(j.cost_line.items if j.cost_line else []) if item.series_id]
+    refs += [("unstructured", f"note{i}", item.series_id)
+             for i, item in enumerate(j.unstructured) if item.series_id]
     return refs
 
 

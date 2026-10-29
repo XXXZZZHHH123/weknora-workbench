@@ -146,6 +146,7 @@ class UnstructuredItem(_Model):
     section: str
     text: str
     reason: str
+    series_id: str | None = None
     business_condition: str | None = None
     rule_kind: Literal["threshold", "falsifier"] | None = None
 
@@ -154,7 +155,7 @@ class UnstructuredItem(_Model):
         result = handler(self)
         # Old saved JSON has neither key. Explicit new nulls identify audit-only
         # entries and must not acquire the legacy display compatibility.
-        for name in ("business_condition", "rule_kind"):
+        for name in ("business_condition", "rule_kind", "series_id"):
             if name not in self.model_fields_set:
                 result.pop(name, None)
         return result

@@ -61,7 +61,9 @@ def dump_markdown(payload: JudgmentIn):
         if f['note']:
             lines.append('  - 说明：' + cell(f['note']))
     lines.extend(['', '## 待确认项'])
-    lines.extend('- ' + item['section'] + '：' + item['text'] + '（' + item['reason'] + '）' for item in j['unstructured'])
+    lines.extend('- ' + item['section'] + '：' + item['text'] + '（' + item['reason'] + '）'
+                 + (' · 指标 `' + item['series_id'] + '`' if item.get('series_id') else '')
+                 for item in j['unstructured'])
     return '\n'.join(lines).rstrip() + '\n'
 
 

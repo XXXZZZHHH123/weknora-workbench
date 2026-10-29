@@ -3,7 +3,7 @@ import json
 from tin.schemas.judgment import PricingPower
 from tin.judgments.output_schema import OUTPUT_SCHEMA
 
-PROMPT_VERSION = 'research-logic-v10'
+PROMPT_VERSION = 'research-logic-v11'
 SOURCE_BINDING_PROTOCOL = '''本次目录中的全部字段均已通过当前研究台来源权限核验；primary和macro只是来源分类，不是可用范围或许可等级。
 原文引用的宏观、跨市场或跨品种因素可以作为数据锚、白名单、阈值或证伪依据，不得以“不是本品种专属指标”或“不属于商品侧Series”为由排除目录中的相容字段。
 指标的观测频率与研究期限分开处理：沿用原文明确的统计周期、比较方式和连续期数，不擅自要求更高频数据；原文的低频条件可用于短期研究观察，不能因为目录为低频就改成高频或声称没有指标。
@@ -71,6 +71,8 @@ rule_quotes是每个threshold/falsifier局部ID到完整原文中逐字摘录依
 原文表格和结构化列表同样是有效引文依据，不得自行要求数字还必须出现在正文段落。数组区间须保留两端点与顺序，不能漏掉负号、小数或科学计数法；倍率按目录单位核对，目录单位本身为“万…”时不重复乘万。不能舍入或截断原文高精度数字；无法在当前数值类型中无损表示的规则列为待确认。导出MD中的明确运算符、区间、周期和证伪对象不能悄悄改写。
 unresolved每项为 {"section":"自由审计标题","text":"待确认内容","reason":"缺口原因","business_condition":null,"rule_kind":null}，最多32项。历史JSON可缺少后两个可选字段，本次模型输出每项必须明确包含两字段。需要在报告待关注中保留原文业务条件时，两者必须同时提供，business_condition为原文逐字条件，rule_kind仅threshold或falsifier。纯诊断项两者为null；section可为中文等自由标题，不是业务分类字段，不用section命名决定是否展示。
 unresolved只记录确实缺少的输入、口径或当前协议无法表达的条件，不写推理过程、自我提醒或应当生成规则的待办。输出前逐条复查：若reason已承认数字、真实指标、单位和引文齐全且协议支持，应将该条件实际写入thresholds或falsifiers，不得只在reason中说“应生成观察位”却漏掉规则；若仍不能生成，明确唯一尚未满足的依据。
+unresolved每项还可提供series_id，值只能是本次目录中相容的真实完整ID或null；没有匹配时留null，由用户在确认页面选择。此引用只为描述性数据锚，也必须计入binding_units，不代表该待确认条件已经成为可执行规则，不把缺口移入其他业务小节来伪装为已解决。
+面向研究者的section、text、reason、desc和note使用自然语言，说明原文观点、仍缺的证据以及用户要核对什么。不在这些文字中粘贴JSON对象、程序字段路径、内部规则编号、校验堆栈或终端日志。真实ID只填写在协议规定的引用字段；程序另外保留技术审计，文字仍须准确保留条件、数字、单位与统计周期，不能用简化展示掩盖尚未核验的条件。
 没有依据时按完整Schema保留字段类型：数组使用[]；pricing_power使用{}；其他对象仅在满足其Schema必填字段时输出，只有Schema明确允许null的字段才使用JSON null。空容器不代表已经形成业务判断，不填写默认分类或观点。缺少依据的阈值/证伪整条不生成、内容进入unresolved，绝不继承旧版本，不补造规则/优先级。
 所有series_id只能使用本次真实候选目录的完整ID，综合产品、地域、频率、维度与单位核对，不能仅看名称相近。
 可选证据、边际数据锚与成本项没有匹配时可用series_id=null并说明缺口；thresholds/falsifiers的series_id必须为真实完整ID，不能null或空字符串。候选子集未命中不等于知识库没有数据。
