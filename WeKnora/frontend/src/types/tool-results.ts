@@ -34,7 +34,12 @@ export type DisplayType =
     | 'image_view'
     | 'image_generation'
     | 'mcp_discovery'
-    | 'mcp_call';
+    | 'mcp_call'
+    | 'find_operations'
+    | 'run_operation'
+    | 'search_weknora_docs'
+    | 'read_weknora_doc'
+    | 'work_wait';
 
 // Search result item
 export interface SearchResultItem {

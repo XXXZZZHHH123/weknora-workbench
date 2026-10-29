@@ -53,9 +53,13 @@ export const TOOL_CAPABILITY_REQUIREMENTS: Record<string, ToolRequirement> = {
   // ---- base / reasoning (no KB dependency) ----
   thinking: {},
   todo_write: {},
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   // First-phase generation accepts text, not @file references or KB scope.
   generate_image: {},
   render_chart: {},
+=======
+  ask_user: {},
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
   // ---- RAG / chunk retrieval (need at least one chunk-indexed KB) ----
   // We use vector|keyword as the canonical "has RAG chunks" signal. FAQ KBs

@@ -78,6 +78,7 @@ and includes them in the destination bundle. Offline packaging requires those
 module archives to be present in the Go module cache beforehand. To verify a
 packaged source directory, run `scripts/check-license-bundle.sh PATH/TO/licenses/sources`.
 
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 ## Open Claude UI
 
 - Source: [Caho1/open-claude-ui](https://github.com/Caho1/open-claude-ui),
@@ -103,3 +104,68 @@ packaged source directory, run `scripts/check-license-bundle.sh PATH/TO/licenses
 - [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/notosanssc), copyright 2014–2021 Adobe, supplies variable-weight interface text; [Noto Serif SC](https://github.com/google/fonts/tree/main/ofl/notoserifsc), copyright 2017–2024 Adobe, supplies weight-600 titles and weight-400 reading text.
 - These Google Fonts assets use the SIL Open Font License 1.1. Complete upstream Unicode ranges are retained as locally hosted WOFF2 chunks, loaded only when required by visible text. There are no runtime Google Fonts requests.
 - Licenses, source URLs and asset hashes are included beside the files in `frontend/public/fonts/noto-sans-sc`, `noto-serif-sc` and `noto-serif-reading-sc`. All HTML entry points register them through `frontend/public/fonts/workspace-typography.css`.
+=======
+## Docreader OCR page-preprocessing components (Python)
+
+The docreader service straightens and crops photographed pages before OCR. That
+capability adds the following Python components to the docreader image. They are
+redistributed inside the container image, so their notices travel here rather
+than in `licenses/sources/modules.tsv`, which records Go modules only
+(`scripts/check-license-bundle.sh` verifies that manifest against `go.mod`).
+
+### RapidOCR
+
+- Component: `rapidocr`, version `3.10.0` (Python package, docreader service).
+- Used in the docreader service to detect text lines and score their
+  recognition, which is what the page-cropping pipeline keys off.
+- License: Apache License 2.0, reproduced in
+  [`licenses/rapidocr-Apache-2.0.txt`](licenses/rapidocr-Apache-2.0.txt).
+- Copyright: The RapidOCR Authors.
+- Model artifacts: RapidOCR redistributes OCR model weights whose copyright is
+  held separately by Baidu and/or the applicable PaddleOCR rights holders. They
+  are distributed under Apache-2.0 as well, and their provenance and
+  redistribution terms are recorded in
+  [`licenses/rapidocr-MODEL_LICENSES.md`](licenses/rapidocr-MODEL_LICENSES.md).
+- Modifications by WeKnora: none. The integration calls the published API and
+  adds no changes to the component.
+- Corresponding source: [PyPI](https://pypi.org/project/rapidocr/3.10.0/) and
+  [upstream repository](https://github.com/RapidAI/RapidOCR).
+
+### ONNX Runtime
+
+- Component: `onnxruntime`, version `1.23.2` (Python package, docreader service).
+- Used as the inference engine RapidOCR runs its models on.
+- License: MIT License, reproduced in
+  [`licenses/onnxruntime-MIT.txt`](licenses/onnxruntime-MIT.txt).
+- Copyright: Microsoft Corporation.
+- Modifications by WeKnora: none.
+- Corresponding source: [PyPI](https://pypi.org/project/onnxruntime/1.23.2/) and
+  [upstream repository](https://github.com/microsoft/onnxruntime).
+
+### OpenCV (headless)
+
+- Component: `opencv-python-headless`, version `5.0.0.93` (Python package,
+  docreader service).
+- Used for geometric image operations: rotation with canvas expansion, line
+  intersection, homography and warping.
+- License: Apache License 2.0, reproduced in
+  [`licenses/opencv-python-headless-Apache-2.0.txt`](licenses/opencv-python-headless-Apache-2.0.txt);
+  bundled third-party components are listed in
+  [`licenses/opencv-python-headless-THIRD-PARTY.txt`](licenses/opencv-python-headless-THIRD-PARTY.txt).
+- Copyright: The OpenCV Foundation and contributors (see the notice file for
+  the per-component attributions it carries).
+- Modifications by WeKnora: none.
+- Corresponding source: [PyPI](https://pypi.org/project/opencv-python-headless/5.0.0.93/)
+  and [upstream repository](https://github.com/opencv/opencv-python).
+
+### NumPy
+
+- Component: `numpy`, version `2.3.4` (Python package, docreader service).
+- Used for array manipulation throughout the page-preprocessing pipeline.
+- License: BSD 3-Clause License, reproduced in
+  [`licenses/numpy-BSD-3-Clause.txt`](licenses/numpy-BSD-3-Clause.txt).
+- Copyright: The NumPy Developers.
+- Modifications by WeKnora: none.
+- Corresponding source: [PyPI](https://pypi.org/project/numpy/2.3.4/) and
+  [upstream repository](https://github.com/numpy/numpy).
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0

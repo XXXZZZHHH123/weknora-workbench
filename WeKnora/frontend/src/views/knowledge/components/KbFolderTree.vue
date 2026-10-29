@@ -85,11 +85,48 @@
               :title="t('knowledgeBase.folderTree.countHint', { direct: row.documentCount, total: row.totalCount })">
               {{ row.documentCount }}
             </span>
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
             <KnowledgeFolderActions v-if="canEdit && row.kind === 'folder'" class="kb-folder-row__more"
               :kb-id="kbId" :folder="{ path: row.path, name: row.name, total_count: row.totalCount }" :can-edit="canEdit" :allow-delete="allowDelete"
               @renamed="emit('rename', $event)" @deleted="emit('delete', $event)" />
             <span v-else class="kb-folder-row__more-placeholder" aria-hidden="true"></span>
           </span>
+=======
+            <span class="kb-folder-row__trailing">
+              <span class="kb-folder-row__count"
+                :title="t('knowledgeBase.folderTree.countHint', { direct: row.documentCount, total: row.totalCount })">
+                {{ row.totalCount }}
+              </span>
+              <t-popup
+                v-if="canEdit && row.kind === 'folder'"
+                :visible="menuOpenPath === row.path"
+                trigger="click"
+                placement="bottom-right"
+                destroy-on-close
+                overlay-class-name="card-more-popup"
+                @visible-change="(visible: boolean) => onFolderMenuVisible(row.path, visible)"
+              >
+                <button
+                  type="button"
+                  class="kb-folder-row__more"
+                  :class="{ 'is-open': menuOpenPath === row.path }"
+                  :aria-label="t('knowledgeBase.columnActions')"
+                  @click.stop
+                >
+                  <t-icon name="more" />
+                </button>
+                <template #content>
+                  <div class="popup-menu kb-folder-row__menu" @click.stop>
+                    <div class="popup-menu-item" @click="onFolderMenuRename(row)">
+                      <t-icon name="edit" class="menu-icon" />
+                      <span>{{ t('knowledgeBase.folderTree.rename') }}</span>
+                    </div>
+                  </div>
+                </template>
+              </t-popup>
+            </span>
+          </template>
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
         </div>
         <button v-else-if="row.kind === 'file'" type="button" class="kb-folder-row kb-folder-file"
           :class="{ active: selectedFileId === row.file.id }" :style="{ '--kb-folder-depth': row.depth }"
@@ -211,8 +248,15 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
 
 <style scoped lang="less">
 .kb-folder-tree {
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   --kb-folder-indent: 14px;
   --kb-folder-base-indent: 4px;
+=======
+  /* Cap indent so a 8–10 level path still has room for the folder name.
+     Past this depth the chevron already shows the parent/child relation. */
+  --kb-folder-indent: 12px;
+  --kb-folder-indent-max: 4;
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -319,7 +363,11 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   width: 100%;
   height: 32px;
   margin-bottom: 2px;
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   padding: 0 4px 0 calc(var(--kb-folder-base-indent) + var(--kb-folder-depth, 0) * var(--kb-folder-indent));
+=======
+  padding: 0 4px 0 calc(4px + min(var(--kb-folder-depth, 0), var(--kb-folder-indent-max)) * var(--kb-folder-indent));
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--td-text-color-primary);
@@ -341,13 +389,31 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   }
 
   &.active {
+    height: auto;
+    min-height: 32px;
+    align-items: flex-start;
+    padding-top: 6px;
+    padding-bottom: 6px;
     background: var(--app-selection-bg);
 
     .kb-folder-row__label,
     .kb-folder-row__icon {
       color: var(--td-brand-color);
     }
-    .kb-folder-row__label { font-weight: 500; }
+    .kb-folder-row__label {
+      font-weight: 500;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: unset;
+      overflow-wrap: anywhere;
+      line-height: 18px;
+    }
+    .kb-folder-row__toggle,
+    .kb-folder-row__toggle-placeholder,
+    .kb-folder-row__icon,
+    .kb-folder-row__trailing {
+      margin-top: 1px;
+    }
   }
 
   &.is-root .kb-folder-row__label {
@@ -406,12 +472,13 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
 }
 
 .kb-folder-row__trailing {
+  position: relative;
   flex: 0 0 auto;
-  gap: 2px;
+  min-width: 16px;
   height: 20px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
   margin-left: 2px;
 }
 
@@ -424,9 +491,10 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   line-height: 1;
 }
 
-.kb-folder-row__more-placeholder { width: 20px; }
-
 .kb-folder-row__more {
+  position: absolute;
+  right: 0;
+  top: 50%;
   display: inline-flex;
   opacity: 0;
   pointer-events: none;
@@ -435,10 +503,11 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   padding: 0;
   border: 0;
   border-radius: var(--app-radius-xs);
-  background: transparent;
+  background: var(--td-bg-color-container);
   color: var(--td-text-color-placeholder);
   align-items: center;
   justify-content: center;
+  transform: translateY(-50%);
   cursor: pointer;
   transition: color var(--app-motion-fast) ease, background-color var(--app-motion-fast) ease;
 
@@ -458,6 +527,10 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   .kb-folder-row__more {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  .kb-folder-row__count {
+    visibility: hidden;
   }
 }
 

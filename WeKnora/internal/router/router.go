@@ -13,6 +13,7 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 	"go.uber.org/dig"
 
+	"github.com/Tencent/WeKnora/internal/agent/operations"
 	"github.com/Tencent/WeKnora/internal/application/service"
 	"github.com/Tencent/WeKnora/internal/config"
 	"github.com/Tencent/WeKnora/internal/handler"
@@ -43,6 +44,7 @@ type RouterParams struct {
 	KBShareService               interfaces.KBShareService
 	AgentShareService            interfaces.AgentShareService
 	KBHandler                    *handler.KnowledgeBaseHandler
+	GraphSearchHandler           *handler.GraphSearchHandler
 	KnowledgeHandler             *handler.KnowledgeHandler
 	TenantHandler                *handler.TenantHandler
 	TenantService                interfaces.TenantService
@@ -96,7 +98,9 @@ type RouterParams struct {
 	WeKnoraCloudHandler          *handler.WeKnoraCloudHandler
 	WikiPageHandler              *handler.WikiPageHandler
 	MemoryHandler                *handler.MemoryHandler
+	AutomationHandler            *handler.AutomationHandler
 	HostSandbox                  service.HostSandboxManager
+	OperationDispatcher          *operations.HandlerDispatcher
 }
 
 // NewRouter 创建新的路由
@@ -169,8 +173,8 @@ func NewRouter(params RouterParams) *gin.Engine {
 		r.Use(embedFrameAncestorsMiddleware(params.EmbedChannelService))
 	}
 
-	// 前端静态文件（仅 Lite 版本内嵌前端）
-	if handler.Edition == "lite" {
+	// Lite bundles the frontend; other editions can explicitly opt in.
+	if handler.Edition == "lite" || strings.TrimSpace(os.Getenv("WEKNORA_WEB_DIR")) != "" {
 		serveFrontendStatic(r)
 	}
 
@@ -306,7 +310,11 @@ func NewRouter(params RouterParams) *gin.Engine {
 		)
 		RegisterKnowledgeTagRoutes(v1, params.TagHandler, rbacGuards)
 		RegisterKnowledgeRoutes(v1, params.KnowledgeHandler, rbacGuards)
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 		RegisterStructuredModelRoutes(v1, params.KnowledgeHandler, params.ModelHandler, rbacGuards)
+=======
+		RegisterGraphSearchRoutes(v1, params.GraphSearchHandler, rbacGuards)
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		RegisterFAQRoutes(v1, params.FAQHandler, rbacGuards)
 		RegisterChunkRoutes(v1, params.ChunkHandler, rbacGuards)
 		RegisterSessionRoutes(v1, params.SessionHandler, params.MessageSuggestionHandler, rbacGuards)
@@ -344,6 +352,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterMemoryRoutes(v1, params.MemoryHandler, rbacGuards)
+		RegisterAutomationRoutes(v1, params.AutomationHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
 
 		// Fail fast if any declared API-key policy points at a route
@@ -351,6 +360,11 @@ func NewRouter(params RouterParams) *gin.Engine {
 		// stale template would silently 403 every API key on that route,
 		// so we panic at startup instead of shipping a dead policy.
 		rbacGuards.assertAPIKeyPoliciesMatchRoutes(r)
+	}
+
+	if params.OperationDispatcher != nil {
+		assertOperationRoutesExist(r, operations.Builtin())
+		params.OperationDispatcher.Bind(r)
 	}
 
 	return r

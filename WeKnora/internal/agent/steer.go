@@ -77,6 +77,7 @@ func (e *AgentEngine) drainSteerMessages(
 		e.documentAnalysisSteers = append(e.documentAnalysisSteers, content)
 		e.memoryAcceptedSteers = append(e.memoryAcceptedSteers, content)
 		state.PendingSteerMessages = append(state.PendingSteerMessages, userMessageID)
+		e.recordSteerMessage(userMessageID, content)
 		_ = e.eventBus.Emit(ctx, event.Event{
 			ID:        generateEventID("injected"),
 			Type:      event.EventUserMessageInjected,

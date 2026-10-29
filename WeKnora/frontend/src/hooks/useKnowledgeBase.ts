@@ -112,6 +112,7 @@ export default function (knowledgeBaseId?: string) {
     }
   };
   const getCardDetails = (item: any) => {
+    const requestGeneration = ++detailRequestGeneration;
     activeKnowledgeId = item.id;
     const scope = currentScope();
     const targetKbId = currentKbId();
@@ -137,7 +138,11 @@ export default function (knowledgeBaseId?: string) {
     });
     getKnowledgeDetails(item.id)
       .then((result: any) => {
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
         if (requestGeneration !== detailRequestGeneration || activeKnowledgeId !== item.id || !scopeCurrent(scope)) return;
+=======
+        if (requestGeneration !== detailRequestGeneration || activeKnowledgeId !== item.id) return;
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
         if (result.success && result.data) {
           const { data } = result;
           if (data.id !== item.id || data.knowledge_base_id !== targetKbId) {

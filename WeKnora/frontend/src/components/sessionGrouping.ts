@@ -16,6 +16,7 @@ export const API_EXTERNAL_USER_SESSION_OWNER_PREFIX = 'api_external_user:'
 
 export interface SessionForGrouping {
   id: string
+  kind?: '' | 'assistant'
   title?: string
   has_user_message?: boolean
   is_pinned?: boolean

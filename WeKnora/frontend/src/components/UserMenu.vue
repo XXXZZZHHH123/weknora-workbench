@@ -1,5 +1,6 @@
 <template>
   <div class="user-menu" :class="{ 'user-menu--collapsed': uiStore.sidebarCollapsed }" ref="menuRef">
+    <div class="user-bar">
     <!-- 用户按钮 -->
     <button type="button" class="user-button" data-guide="user-menu"
       :aria-expanded="menuVisible" aria-controls="user-menu-dropdown"
@@ -8,6 +9,7 @@
       <span class="user-avatar">
         <img v-if="userAvatar" :src="userAvatar" :alt="$t('common.avatar')" />
         <span v-else class="avatar-placeholder">{{ userInitial }}</span>
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
       </span>
       <template v-if="!uiStore.sidebarCollapsed">
         <span class="user-info">
@@ -18,6 +20,47 @@
         <t-icon :name="menuVisible ? 'chevron-up' : 'chevron-down'" class="dropdown-icon" />
       </template>
     </button>
+=======
+      </div>
+      <div v-if="!uiStore.sidebarCollapsed" class="user-info">
+          <!-- 多空间 / superuser：首行空间名，次行 username · 角色。单空间：昵称 + 邮箱。 -->
+          <template v-if="showTenantIdentityLine">
+            <div class="user-tenant-name" :title="activeTenantName">{{ activeTenantName }}</div>
+            <div class="user-tenant-meta">
+              <span v-if="userName && userName !== activeTenantName" class="user-tenant-meta-name">{{ userName }}</span>
+              <span v-if="(userName && userName !== activeTenantName) && currentRoleLabel"
+                class="user-tenant-meta-sep">·</span>
+              <t-icon v-if="currentRoleIcon" :name="currentRoleIcon" size="12px" class="user-tenant-meta-icon" />
+              <span v-if="currentRoleLabel" class="user-tenant-meta-role">{{ currentRoleLabel }}</span>
+            </div>
+          </template>
+          <template v-else>
+            <div class="user-name">{{ userName }}</div>
+            <div class="user-email">{{ userEmail }}</div>
+          </template>
+        </div>
+    </div>
+    <GlobalInvitationBell v-if="!uiStore.sidebarCollapsed" v-slot="{ count, open }">
+      <t-tooltip :content="t('notifications.title')" placement="top">
+        <button type="button" class="user-notify" :class="{ 'is-open': open }"
+          :aria-label="t('notifications.title')" @click.stop>
+          <t-badge :count="count" :max-count="99" size="small" :offset="[2, -2]">
+            <t-icon name="notification" size="16px" />
+          </t-badge>
+        </button>
+      </t-tooltip>
+    </GlobalInvitationBell>
+    </div>
+    <GlobalInvitationBell v-if="uiStore.sidebarCollapsed" v-slot="{ count, open }">
+      <t-tooltip :content="t('notifications.title')" placement="right">
+        <button type="button" class="user-notify" :class="{ 'is-open': open }"
+          :aria-label="t('notifications.title')" @click.stop>
+          <t-icon name="notification" size="16px" />
+          <i v-if="count > 0" class="user-notify__dot" aria-hidden="true" />
+        </button>
+      </t-tooltip>
+    </GlobalInvitationBell>
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
     <!-- 下拉菜单 -->
     <Transition name="dropdown">
@@ -202,7 +245,11 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import { logout as logoutApi } from '@/api/auth'
 import { useI18n } from 'vue-i18n'
 import CreateTenantDialog from '@/components/CreateTenantDialog.vue'
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 import TenantNotificationsDrawer from '@/components/TenantNotificationsDrawer.vue'
+=======
+import GlobalInvitationBell from '@/components/GlobalInvitationBell.vue'
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 import {
   navigateAfterTenantSwitch,
   persistLastActiveTenantPreference,
@@ -570,7 +617,18 @@ onUnmounted(() => {
   padding-top: 8px;
 
   &--collapsed {
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: center;
+    gap: 4px;
+
+    .user-bar {
+      width: auto;
+      justify-content: center;
+    }
+
     .user-button {
+      flex: none;
       justify-content: center;
       width: 32px;
       height: 32px;
@@ -590,18 +648,37 @@ onUnmounted(() => {
   }
 }
 
-.user-button {
+.user-bar {
   display: flex;
   align-items: center;
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   gap: 10px;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
   padding: 7px 4px;
+=======
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+}
+
+.user-button {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 6px;
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   border-radius: var(--app-radius-md);
   border: 0;
   cursor: pointer;
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   transition: background-color var(--app-motion-base), color var(--app-motion-base);
+=======
+  transition: background-color var(--app-motion-base);
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   background: transparent;
   color: inherit;
   text-align: left;
@@ -705,11 +782,40 @@ onUnmounted(() => {
   }
 }
 
-.dropdown-icon {
-  font-size: var(--app-text-xl);
-  color: var(--td-text-color-secondary);
+.user-notify {
+  display: inline-flex;
   flex-shrink: 0;
-  transition: transform var(--app-motion-base);
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--app-radius-sm);
+  background: transparent;
+  color: var(--td-text-color-placeholder);
+  cursor: pointer;
+
+  &:hover,
+  &.is-open {
+    background: var(--td-bg-color-container-hover);
+    color: var(--td-text-color-primary);
+  }
+}
+
+.user-notify__dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--td-error-color);
+  box-shadow: 0 0 0 1.5px var(--td-bg-color-sidebar);
+}
+
+.user-menu--collapsed .user-notify {
+  position: relative;
 }
 
 .user-dropdown {

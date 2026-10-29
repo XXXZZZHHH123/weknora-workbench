@@ -73,7 +73,12 @@ export function redirectToLogin() {
 
 export function clearAuthStorage() {
   for (const key of AUTH_STORAGE_KEYS) {
-    localStorage.removeItem(key)
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      // Storage may be unavailable. Still attempt the remaining keys and
+      // allow callers to reject waiting requests and redirect to login.
+    }
   }
 }
 
@@ -101,8 +106,13 @@ async function defaultRefresh(refreshToken: string): Promise<TokenRefreshResult>
 /**
  * Refresh the access token, de-duplicated across all callers.
  *
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
  * Resolves with the current access token. Invalid sessions redirect to login;
  * temporary failures preserve credentials so the operation can be retried.
+=======
+ * Resolves with the new access token. On failure it attempts to clear
+ * credentials and redirects to /login, even when browser storage is blocked.
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
  */
 export async function refreshAccessTokenShared(
   options: RefreshAccessTokenOptions = {},
@@ -123,6 +133,7 @@ export async function refreshAccessTokenShared(
   }
 
   isRefreshing = true
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   const storedRefreshToken = localStorage.getItem('weknora_refresh_token')
 
   if (!storedRefreshToken) {
@@ -136,7 +147,13 @@ export async function refreshAccessTokenShared(
 
   const sessionUser = localStorage.getItem('weknora_user')
   const stillOwnsSession = () => localStorage.getItem('weknora_refresh_token') === storedRefreshToken && localStorage.getItem('weknora_user') === sessionUser
+=======
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   try {
+    const storedRefreshToken = localStorage.getItem('weknora_refresh_token')
+    if (!storedRefreshToken) {
+      throw new Error(messages.pleaseRelogin)
+    }
     const response = await refresh(storedRefreshToken)
     if (!stillOwnsSession()) throw new Error('登录会话已改变，请重新操作')
 

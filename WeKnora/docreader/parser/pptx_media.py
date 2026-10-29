@@ -177,7 +177,20 @@ def rasterize_media_bytes(name: str, data: bytes, *, timeout: float = 30) -> byt
     ext = posixpath.splitext(name)[1].lower()
     if _conversion_is_cancelled():
         return None
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
     if not data or len(data) > _MAX_MEDIA_BYTES:
+=======
+    try:
+        img = Image.open(io.BytesIO(data))
+        # These PNG-compatible modes retain alpha channels or palette transparency.
+        if img.mode not in ("RGB", "RGBA", "L", "LA", "P"):
+            img = img.convert("RGB")
+        out = io.BytesIO()
+        img.save(out, format="PNG")
+        return out.getvalue()
+    except Exception as exc:
+        logger.debug("Pillow could not open media bytes: %s", exc)
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
         return None
     if ext in _RASTER_EXT:
         return _rasterize_with_pillow(data)

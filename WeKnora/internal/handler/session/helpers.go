@@ -423,6 +423,7 @@ func (h *Handler) writeAgentQueryEvent(
 	sessionID, userMessageID string,
 	userCreatedAt time.Time,
 	assistantMessage *types.Message,
+	resume *types.AgentResume,
 ) {
 	assistantMessageID := ""
 	var assistantCreatedAt time.Time
@@ -433,6 +434,10 @@ func (h *Handler) writeAgentQueryEvent(
 	agentQueryEvent := createAgentQueryEvent(
 		sessionID, assistantMessageID, userMessageID, userCreatedAt, assistantCreatedAt,
 	)
+	if resume != nil && resume.Prompt != nil {
+		agentQueryEvent.Data["resume_pending_id"] = resume.Prompt.ID
+		agentQueryEvent.Data["resume_tool_call_id"] = resume.Prompt.ToolCallID
+	}
 	if err := h.streamManager.AppendEvent(ctx, sessionID, assistantMessageID, agentQueryEvent); err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"session_id": sessionID,

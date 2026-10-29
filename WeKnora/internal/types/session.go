@@ -74,25 +74,52 @@ type ContextConfig struct {
 	SummarizeThreshold int `json:"summarize_threshold"`
 }
 
+// SessionKindAssistant keeps assistant conversations out of ordinary chat listings.
+const SessionKindAssistant = "assistant"
+
+// SessionKindAgentDelegated retains a child transcript outside ordinary listings.
+const SessionKindAgentDelegated = "agent_delegated"
+
+// IsValidSessionKind restricts API kinds to ordinary chats (empty) and assistant history.
+func IsValidSessionKind(kind string) bool {
+	return kind == "" || kind == SessionKindAssistant
+}
+
 // Session represents the session
 type Session struct {
 	// ID
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	ID string `json:"id"          gorm:"type:varchar(36);primaryKey"`
 	// HasUserMessage is populated on detail reads, without a schema column.
 	HasUserMessage *bool `json:"has_user_message,omitempty" gorm:"->;-:migration"`
+=======
+	ID string `json:"id"          gorm:"type:varchar(36);primaryKey" extensions:"x-agent=session_id,x-agent-response"`
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	// Title
-	Title string `json:"title"`
+	Title string `json:"title" extensions:"x-agent,x-agent-response"`
 	// Description
 	Description string `json:"description"`
 	// Workspace ID
 	TenantID uint64 `json:"tenant_id"   gorm:"index"`
+	// Kind is empty for ordinary chats and SessionKindAssistant for assistant
+	// conversations; it is set at creation and never updated.
+	Kind string `json:"kind" gorm:"column:kind;type:varchar(32);not null;default:''"`
 	// UserID is the owner scope for this session. WeKnora user UUIDs, API
 	// external-user principals, and embed visitor principals all use this column.
 	UserID string `json:"user_id,omitempty" gorm:"type:varchar(512);index"`
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	// ResearchWorkbenchID fixes the isolated research scope for the session.
 	ResearchWorkbenchID string `json:"research_workbench_id,omitempty" gorm:"type:varchar(36);not null;default:'';index"`
+=======
+	// OwnerAuthSource records, server-side, how UserID was authenticated when
+	// the session was created or its owner first bound (AuthSource*).
+	// Per-user sandbox allocation reads it; client input never sets it
+	// (CreateSession overwrites). Empty on rows created before the column
+	// existed, which means "unknown".
+	OwnerAuthSource string `json:"owner_auth_source,omitempty" gorm:"type:varchar(32);not null;default:''"`
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	// IsPinned indicates whether the session is pinned in the list.
-	IsPinned bool `json:"is_pinned" gorm:"default:false"`
+	IsPinned bool `json:"is_pinned" gorm:"default:false" extensions:"x-agent,x-agent-response"`
 	// PinnedAt records when the session was pinned; nil when not pinned.
 	PinnedAt *time.Time `json:"pinned_at,omitempty"`
 
@@ -167,8 +194,8 @@ type Session struct {
 	// AgentConfig       *SessionAgentConfig `json:"agent_config"       gorm:"type:jsonb"` // Agent 配置（会话级别，仅存储enabled和knowledge_bases）
 	// ContextConfig     *ContextConfig      `json:"context_config"     gorm:"type:jsonb"` // 上下文管理配置（可选）
 
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	CreatedAt time.Time      `json:"created_at" extensions:"x-agent,x-agent-response"`
+	UpdatedAt time.Time      `json:"updated_at" extensions:"x-agent,x-agent-response"`
 	DeletedAt gorm.DeletedAt `json:"deleted_at" gorm:"index"`
 
 	// IMPlatform is the originating IM platform (e.g. "feishu", "wecom") when
@@ -271,6 +298,7 @@ func SanitizeClientSessionDescription(incoming, existing string) string {
 // (e.g. "feishu", "wechat"). IM and embed sources are also Admin+ only.
 // AgentID currently only filters sessions that have an IM channel mapping.
 type SessionListQuery struct {
+	Kind     string
 	TenantID uint64
 	UserID   string
 	Keyword  string

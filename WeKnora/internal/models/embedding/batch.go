@@ -64,8 +64,21 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 	processChunk := func(texts []*textEmbedding) func() {
 		return func() {
 			defer wg.Done()
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 			// If an error has already occurred, don't continue processing
 			if batchCtx.Err() != nil {
+=======
+			// If an error has already occurred, don't continue processing. The
+			// read takes mu for the same reason the writes below do: every pool
+			// worker evaluates this guard, so an unsynchronised read races with
+			// another worker's write. Beyond the detector, a worker that misses
+			// the write bills another provider request after the run has already
+			// failed, which is exactly what this guard exists to prevent.
+			mu.Lock()
+			aborted := firstErr != nil
+			mu.Unlock()
+			if aborted {
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 				return
 			}
 			// Embed text

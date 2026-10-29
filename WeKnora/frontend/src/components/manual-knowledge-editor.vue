@@ -2,7 +2,9 @@
 import { ref, shallowRef, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import SettingDrawer from '@/components/settings/SettingDrawer.vue'
 import { DialogPlugin, MessagePlugin } from 'tdesign-vue-next'
+import { registerUnsavedChanges } from '@/utils/unsavedChanges'
 import { useUIStore } from '@/stores/ui'
+import { resolvePreferredKnowledgeBaseId } from '@/utils/manualKnowledgeDraft'
 import {
   getKnowledgeDetails,
   getKnowledgeBaseById,
@@ -16,8 +18,12 @@ import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess'
 import { sanitizeHTML, safeMarkdownToHTML, hydrateProtectedFileImages } from '@/utils/security'
 import { continueListOnEnter, countContent, indentOnTab } from '@/utils/markdownEditing'
 import { useI18n } from 'vue-i18n'
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 import { useAuthStore } from '@/stores/auth'
 import { useRoute } from 'vue-router'
+=======
+import AssistantActionsButton from '@/components/assistant/AssistantActionsButton.vue'
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 interface KnowledgeBaseOption {
   label: string
@@ -62,6 +68,12 @@ const authStore = useAuthStore()
 const route = useRoute()
 const chatResources = useChatResourcesStore()
 const { t } = useI18n()
+// The assistant fills the open editor; the user saves the result.
+const assistantActions = computed(() => ['continue', 'outline', 'polish', 'summarize'].map(action => ({
+  key: action,
+  label: t(`manualEditor.assistant.${action}`),
+  query: t(`manualEditor.assistant.prompts.${action}`),
+})))
 
 const visible = computed({
   get: () => uiStore.manualEditorVisible,
@@ -659,7 +671,14 @@ const loadKnowledgeBases = async (session = editorSessionScope()) => {
 
     kbOptions.value = list
 
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
     if (mode.value === 'create' && form.kbId === originalKbId) {
+=======
+    if (mode.value === 'create') {
+      // Explicit kbId (KB-page callers) keeps the historical force-insert path.
+      // Chat preferences are soft: only select an id already in the writable
+      // candidate list, otherwise fall back to list[0].
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
       const presetKbId = uiStore.manualEditorKBId
       if (presetKbId) {
         const exists = list.find((item) => item.value === presetKbId)
@@ -671,7 +690,10 @@ const loadKnowledgeBases = async (session = editorSessionScope()) => {
         }
         form.kbId = presetKbId
       } else {
-        form.kbId = list[0]?.value ?? ''
+        form.kbId = resolvePreferredKnowledgeBaseId(
+          uiStore.manualEditorPreferredKbIds,
+          list.map((item) => item.value),
+        )
       }
     }
   } catch (error) {
@@ -785,8 +807,21 @@ const initialize = async (session = editorSessionScope()) => {
     if (!await loadKnowledgeContent(session)) return
     if (!editorSessionCurrent(session)) return
   } else {
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
     if (!form.kbId && kbOptions.value.length) {
       form.kbId = kbOptions.value[0].value
+=======
+    const presetKbId = uiStore.manualEditorKBId
+    if (presetKbId) {
+      form.kbId = presetKbId
+    } else {
+      // Re-resolve preferences against the loaded candidates (resetForm may have
+      // left form.kbId empty; do not re-apply a preferred id missing from the list).
+      form.kbId = resolvePreferredKnowledgeBaseId(
+        uiStore.manualEditorPreferredKbIds,
+        kbOptions.value.map((item) => item.value),
+      )
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
     }
     form.title = form.title || generateDefaultTitle()
     form.content = form.content || ''
@@ -927,6 +962,7 @@ const markPristine = () => {
   pristineSnapshot.value = snapshot()
 }
 const isDirty = () => initialLoaded.value && snapshot() !== pristineSnapshot.value
+onBeforeUnmount(registerUnsavedChanges(() => visible.value && isDirty()))
 
 const handleClose = () => {
   if (!isDirty()) {
@@ -1110,6 +1146,8 @@ onBeforeUnmount(() => {
             </template>
           </div>
           <div class="editor-toolbar__view">
+            <AssistantActionsButton :label="$t('manualEditor.assistant.button')"
+              :title="$t('manualEditor.assistant.tooltip')" :actions="assistantActions" @mousedown.prevent />
             <t-tooltip placement="top-right" :show-arrow="false">
               <template #content>
                 <div class="shortcut-sheet">
@@ -1171,6 +1209,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="editor-pane editor-pane--preview" v-show="showPreview">
+<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
             <div v-if="previewLoading" class="loading-placeholder" role="status">
               <t-loading size="small" :text="$t('preview.loading')" />
             </div>
@@ -1179,6 +1218,9 @@ onBeforeUnmount(() => {
               <t-button size="small" variant="text" @click="loadPreviewMarkdown">{{ $t('preview.retry') }}</t-button>
             </div>
             <div ref="previewRoot" class="preview-container" v-html="previewHTML" />
+=======
+            <div ref="previewRoot" class="preview-container" data-assistant-ignore v-html="previewHTML" />
+>>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
           </div>
         </div>
 

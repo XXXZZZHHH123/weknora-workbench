@@ -232,7 +232,7 @@ type InitializationRequest struct {
 // @Produce      json
 // @Param        kbId     path      string               true  "知识库ID"
 // @Param        request  body      KBModelConfigRequest true  "配置请求"
-// @Success      200      {object}  map[string]interface{}  "更新成功"
+// @Success      200      {object}  handler.MessageResponse  "更新成功"
 // @Failure      400      {object}  errors.AppError         "请求参数错误"
 // @Failure      404      {object}  errors.AppError         "知识库不存在"
 // @Security     Bearer
@@ -418,7 +418,7 @@ func (h *InitializationHandler) UpdateKBConfig(c *gin.Context) {
 		return
 	}
 
-	// 更新问题生成配置
+	// 更新问题生成配置。检索是否使用问句由查询时的开关决定，保存设置不改索引。
 	if req.QuestionGeneration.Enabled {
 		questionCount := req.QuestionGeneration.QuestionCount
 		if questionCount <= 0 {
@@ -1280,7 +1280,7 @@ func (h *InitializationHandler) DownloadOllamaModel(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        taskId  path      string  true  "任务ID"
-// @Success      200     {object}  map[string]interface{}  "下载进度"
+// @Success      200     {object}  handler.DataResponse{data=handler.DownloadTask}  "下载进度"
 // @Failure      404     {object}  errors.AppError         "任务不存在"
 // @Security     Bearer
 // @Security     ApiKeyAuth
@@ -1314,7 +1314,7 @@ func (h *InitializationHandler) GetDownloadProgress(c *gin.Context) {
 // @Tags         初始化
 // @Accept       json
 // @Produce      json
-// @Success      200  {object}  map[string]interface{}  "任务列表"
+// @Success      200  {object}  handler.DataResponse{data=[]handler.DownloadTask}  "任务列表"
 // @Security     Bearer
 // @Security     ApiKeyAuth
 // @Router       /initialization/ollama/download/tasks [get]
@@ -2614,7 +2614,7 @@ type TextRelationExtractionResponse struct {
 // @Accept       json
 // @Produce      json
 // @Param        request  body      TextRelationExtractionRequest  true  "提取请求"
-// @Success      200      {object}  map[string]interface{}         "提取结果"
+// @Success      200      {object}  handler.DataResponse{data=handler.TextRelationExtractionResponse}         "提取结果"
 // @Failure      400      {object}  errors.AppError                "请求参数错误"
 // @Security     Bearer
 // @Security     ApiKeyAuth
@@ -2715,7 +2715,7 @@ type FabriTextResponse struct {
 // @Accept       json
 // @Produce      json
 // @Param        request  body      FabriTextRequest  true  "生成请求"
-// @Success      200      {object}  map[string]interface{}  "生成的文本"
+// @Success      200      {object}  handler.DataResponse{data=handler.FabriTextResponse}  "生成的文本"
 // @Failure      400      {object}  errors.AppError         "请求参数错误"
 // @Security     Bearer
 // @Security     ApiKeyAuth
@@ -2792,7 +2792,7 @@ var tagOptions = []string{
 // @Tags         初始化
 // @Accept       json
 // @Produce      json
-// @Success      200  {object}  map[string]interface{}  "生成的标签"
+// @Success      200  {object}  handler.DataResponse{data=handler.FabriTagResponse}  "生成的标签"
 // @Router       /initialization/extract/fabri-tag [post]
 func (h *InitializationHandler) FabriTag(c *gin.Context) {
 	tagRandom := RandomSelect(tagOptions, rand.Intn(len(tagOptions)-1)+1)
