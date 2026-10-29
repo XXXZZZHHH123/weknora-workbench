@@ -401,8 +401,25 @@ def validation_detail(error):
     return {'message': str(error), 'code': 'judgment_validation', 'issues': error.issues[:32]}
 
 
-def repair_prompt(document, issues, catalog, text, selected):
-    feedback = {'issues': issues[:24], 'instruction': '只修正列明的协议或来源校验问题。已验证的规则保留原ID、原文依据及数值，不擅自删除或改写；无法核验的规则完整移入unresolved，不填猜测单位或数字。重新返回完整JSON协议，不返回补丁。'}
+def repair_prompt(document, issues, catalog, text, selected, *, coverage=False, verified=None):
+    instruction = ('对照完整原文与真实候选目录进行量化条件完整性复核，不只检查首稿已经写出的规则。'
+        '自行理解全文，包括普通说明、时间维度及待确认内容，检查是否遗漏明确水平比较、区间或证伪条件。'
+        '研究观察阈值不要求仓位、止损或完整交易计划，action_hint可以为null。'
+        '数字、真实指标、单位和逐字依据齐全且协议支持的条件应实际写入规则，不能只在reason里说应生成。'
+        '标的或单位尚未明确的条件保留原始数字及逐字business_condition、rule_kind，说明唯一真实缺口；'
+        '不删除条件，不补零占位，不把动态比较伪造成固定数值。'
+        'frozen_rules只列出首稿已通过程序核验的规则，所有字段、原ID、原文依据及数值均原样保留；'
+        '新增遗漏规则另设唯一ID，不重命名或改写已核验项。无法核验的规则完整移入unresolved，'
+        '不填猜测单位或数字。重新返回完整JSON协议，不返回补丁。')
+    if not coverage:
+        instruction = '先修正列明的协议或来源校验问题，再做全文完整性复核。' + instruction
+    feedback = {'mode': 'coverage' if coverage else 'repair_and_coverage',
+        'issues': issues[:24], 'instruction': instruction}
+    if verified is not None:
+        rules = {kind: verified['judgment'].get(kind, []) for kind in ('thresholds', 'falsifiers')}
+        identifiers = {rule['id'] for rows in rules.values() for rule in rows}
+        feedback['frozen_rules'] = {**rules, 'rule_quotes': {
+            identifier: verified['rule_quotes'][identifier] for identifier in sorted(identifiers)}}
     # Replaying a bounded prior draft helps the model repair exact fields. The
     # full authorized catalog and original always retain precedence and scope.
     if isinstance(document, dict):
@@ -413,7 +430,7 @@ def repair_prompt(document, issues, catalog, text, selected):
 
 
 async def analyzed_completion(scope, body, before, candidates, selected):
-    document, first, issues = None, None, []
+    document, first, issues, coverage = None, None, [], False
     try:
         await notify_progress('analyzing')
         document = await completion(scope, body.model_id, make_prompt(analysis_protocol(selected), candidates, body.text))
@@ -421,7 +438,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
         first = assess_draft(document, body.text, candidates, variety=before.get('variety', settings.variety),
             actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
         issues = first.issues
-        if not any(item.get('severity') == 'error' for item in issues): return first, 0
+        coverage = not any(item.get('severity') == 'error' for item in issues)
     except AnalysisError as error:
         issues = error.issues
     except HTTPException as error:
@@ -433,11 +450,12 @@ async def analyzed_completion(scope, body, before, candidates, selected):
             raise
     await fresh(scope, before)
     try:
-        prompt = repair_prompt(document, issues, candidates, body.text, selected)
+        prompt = repair_prompt(document, issues, candidates, body.text, selected,
+            coverage=coverage, verified=first.document if first is not None else None)
     except HTTPException as error:
         if error.status_code != 413 or first is None: raise
         first.issues.append({'code': 'repair_capacity', 'path': '/', 'severity': 'warning',
-            'message': '完整原文、目录与修复反馈超出本次容量；仅保留已核验草稿，待确认规则未执行'})
+            'message': '完整原文、目录与复核反馈超出本次容量；完整性复核未完成，仅保留首份已核验草稿和待确认条件'})
         return first, 0
     try:
         await notify_progress('analyzing')
@@ -446,7 +464,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
         if first is None or error.status_code not in {422, 429, 503}:
             raise
         first.issues.append({'code': 'repair_unavailable', 'path': '/', 'severity': 'warning',
-            'message': '本次修复未返回可用结果；保留已核验的首份草稿，待确认规则未执行'})
+            'message': '本次修复及完整性复核未返回可用结果；保留已核验首稿，原文可能仍有待提取条件'})
         return first, 1
     try:
         await notify_progress('validating')
@@ -456,7 +474,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
         if first is None:
             raise HTTPException(422, validation_detail(error)) from None
         first.issues.append({'code': 'repair_invalid', 'path': '/', 'severity': 'warning',
-            'message': '修复响应未通过完整结构或来源校验，未采用；保留首份可核验草稿及待确认项'})
+            'message': '完整性复核响应未通过结构或来源校验，未采用；保留首份可核验草稿及待确认条件'})
         return first, 1
     if first is not None:
         final.candidate_history = first.candidate_history + final.candidate_history
@@ -467,6 +485,33 @@ async def analyzed_completion(scope, body, before, candidates, selected):
                 first.issues.append({'code': 'repair_changed_verified_rule', 'path': '/judgment/' + kind,
                     'severity': 'warning', 'message': '修复响应改动了已核验规则，未采用该响应；保留首份可核验草稿与全部待确认项'})
                 return first, 1
+        pending = {(item.get('rule_kind'), item.get('business_condition'))
+            for item in final.document['unresolved']}
+        resolved = {(kind, final.document['rule_quotes'][rule['id']])
+            for kind, field in (('threshold', 'thresholds'), ('falsifier', 'falsifiers'))
+            for rule in final.document['judgment'].get(field, [])}
+        # Only model-declared, source-validated conditions are tracked here.
+        # Exact quote identity avoids merging different conditions by substring.
+        original_count = len((first.candidate_document or first.document)['unresolved'])
+        missing = [copy.deepcopy(item) for item in first.document['unresolved'][:original_count]
+            if item.get('rule_kind') in {'threshold', 'falsifier'} and item.get('business_condition')
+            and (item['rule_kind'], item['business_condition']) not in pending | resolved]
+        if len(final.document['unresolved']) + len(missing) > 32:
+            first.candidate_history = final.candidate_history
+            first.issues.append({'code': 'coverage_pending_capacity', 'path': '/unresolved',
+                'severity': 'warning', 'message': '复核结果无法在容量内保留全部待确认条件，未采用；首稿条件和两次候选均保留，请缩小范围后复核'})
+            return first, 1
+        if missing:
+            for item in missing:
+                item['series_id'] = None
+            position = len(final.candidate_document['unresolved'])
+            final.document['unresolved'][position:position] = copy.deepcopy(missing)
+            final.candidate_document['unresolved'].extend(copy.deepcopy(missing))
+            final.result = validate_analysis(final.document, body.text, candidates,
+                variety=before.get('variety', settings.variety), actor=scope.identity.user_id,
+                written_at=datetime.now(SHANGHAI).date())
+            final.issues.append({'code': 'coverage_condition_retained', 'path': '/unresolved',
+                'severity': 'warning', 'message': '首稿待确认条件在复核中遗漏，已保留原文和数字，仍待核对关联指标与口径'})
         # A repair may demote a candidate into prose. Review retains its typed
         # original independently of that prose, without making it executable.
         existing = {rule['id'] for kind in ('thresholds', 'falsifiers')

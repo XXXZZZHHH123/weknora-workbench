@@ -42,7 +42,7 @@ def test_generate_is_preview_only_then_explicit_save_appends_draft(generator):
     client,headers,_,_,calls=generator
     generated=generate(client,headers);assert generated.status_code==200,generated.text
     preview=generated.json();assert TEXT in calls[0]['prompt'] and SERIES in calls[0]['prompt']
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert rows()==[] and preview['bindings'][0]['unit']=='吨'
     saved=apply(client,headers,preview);assert saved.status_code==200,saved.text
     assert saved.json()['status']=='草稿' and saved.json()['version']==1
@@ -67,7 +67,7 @@ def test_new_explicit_product_reuses_model_analysis_without_inheriting_other_pro
     managed = client.get(endpoint('/manage'), headers=headers).json()
     assert managed['variety'] == 'XY' and managed['current']['variety'] == 'XY'
     assert client.get(endpoint('/manage?variety=SN'), headers=headers).json()['current']['variety'] == 'SN'
-    assert len(calls) == 2
+    assert len(calls) == 4
 
 @pytest.mark.parametrize('change',[
     lambda d:d['judgment']['thresholds'][0].update(series_id='foreign'),
@@ -386,7 +386,7 @@ def test_total_generate_deadline_preserves_existing_versions_and_no_preview(gene
     assert rows() == [] and not generation.previews.items
 
 
-def test_222k_catalog_uses_three_complete_selections_then_one_final_analysis(generator,monkeypatch):
+def test_222k_catalog_uses_three_complete_selections_then_analysis_and_coverage(generator,monkeypatch):
     client, headers, _, response, _ = generator
     catalog = [{'id': SERIES if index == 0 else 'real-' + str(index), 'unit': '吨',
                 'name': '量' * 1400 + str(index)} for index in range(53)]
@@ -408,7 +408,8 @@ def test_222k_catalog_uses_three_complete_selections_then_one_final_analysis(gen
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 4 and len(seen) == len(catalog)
+    assert len(calls) == 5 and len(seen) == len(catalog)
+    assert sum(prompt.startswith(generation.SELECTION_PROTOCOL) for prompt in calls) == 3
     assert seen == [item['id'] for item in catalog]
     assert all(TEXT in prompt for prompt in calls)
     assert rows() == []
@@ -420,7 +421,7 @@ def test_actual_model_request_contains_a_machine_readable_numeric_rule_contract(
     client, headers, _, _, calls = generator
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 1 and rows() == []
+    assert len(calls) == 2 and rows() == []
     prompt = calls[0]['prompt']
     marker = '阈值条目的 JSON Schema 类型示意：\n'
     assert marker in prompt
@@ -445,7 +446,7 @@ def test_actual_model_request_uses_the_exact_pricing_power_schema(generator):
     client, headers, _, _, calls = generator
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 1 and rows() == []
+    assert len(calls) == 2 and rows() == []
     prompt = calls[0]['prompt']
     marker = '定价权对象的 JSON Schema：\n'
     assert marker in prompt
@@ -459,14 +460,14 @@ def test_actual_model_request_uses_the_exact_pricing_power_schema(generator):
     assert SERIES not in json.dumps(schema)
 
 
-def test_missing_pricing_description_preserves_verified_preview_without_extra_model_call(generator):
+def test_missing_pricing_description_preserves_verified_preview_with_one_coverage_pass(generator):
     client, headers, _, response, calls = generator
     response['judgment']['pricing_power'] = None
     original = copy.deepcopy(response)
     result = generate(client, headers)
     assert result.status_code == 200, result.text
     preview = result.json()
-    assert len(calls) == 1 and preview['repair_attempts'] == 0
+    assert len(calls) == 2 and preview['repair_attempts'] == 1
     assert rows() == [] and response == original
     assert '## 边际定价权\n未提供' in preview['markdown']
     assert any(issue['code'] == 'empty_description' and issue['severity'] == 'normalized'
@@ -532,7 +533,7 @@ def test_explicit_numeric_interval_with_original_quote_remains_a_valid_preview(g
     result = client.post(endpoint('/generate'), headers=headers,
         json={'model_id': 'synthetic-chat', 'text': TEXT + ' ' + quote, 'base_version': 0})
     assert result.status_code == 200, result.text
-    assert len(calls) == 1 and rows() == []
+    assert len(calls) == 2 and rows() == []
     assert result.json()['bindings'][0]['unit'] == '吨'
 
 
@@ -561,7 +562,7 @@ def test_authorized_macro_threshold_and_original_monthly_falsifier_are_valid_pre
     result = client.post(endpoint('/generate'), headers=headers,
         json={'model_id': 'synthetic-chat', 'text': text, 'base_version': 0})
     assert result.status_code == 200, result.text
-    assert len(calls) == 1 and rows() == []
+    assert len(calls) == 2 and rows() == []
     prompt = calls[0]['prompt']
     assert SOURCE_BINDING_PROTOCOL in prompt and macro in prompt
     assert 'primary和macro只是来源分类' in prompt and '观测频率与研究期限分开处理' in prompt

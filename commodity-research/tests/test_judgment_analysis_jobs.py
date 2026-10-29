@@ -53,13 +53,13 @@ def test_detached_result_survives_memory_restart_and_keeps_the_same_canonical_to
     async def run():
         scope, meta, result = await completed_job()
         assert result['draft_id'] != meta['id'] and meta['id'] in result['draft_id']
-        assert rows() == [] and len(calls) == 1
+        assert rows() == [] and len(calls) == 2
         generation.previews.items.clear()
         monkeypatch.setattr(jobs, 'runtime', jobs.Runtime())
         monkeypatch.setattr(jobs, 'registry', Registry(settings.data_dir / 'job-index.sqlite'))
         restored = await jobs.job_result(scope, meta['id'])
         assert restored['draft_id'] == result['draft_id']
-        assert restored['review'] == result['review'] and len(calls) == 1
+        assert restored['review'] == result['review'] and len(calls) == 2
         return scope, meta, result
     asyncio.run(run())
 
@@ -75,7 +75,7 @@ def test_duplicate_start_runs_one_analysis_and_scope_context_is_reset(background
         assert first['id'] == second['id']
         await jobs.runtime.tasks[first['id']]
         assert current_identity.get() is None and current_workbench.get() is None
-        assert len(calls) == 1 and rows() == []
+        assert len(calls) == 2 and rows() == []
     asyncio.run(run())
 
 
@@ -218,7 +218,7 @@ def test_cancelling_the_http_starter_does_not_cancel_an_accepted_task(background
         await asyncio.gather(*list(jobs.runtime.admissions))
         await asyncio.gather(*list(jobs.runtime.tasks.values()))
         result = jobs.list_jobs(scope.identity)['items'][0]
-        assert result['state'] == 'succeeded' and len(calls) == 1 and rows() == []
+        assert result['state'] == 'succeeded' and len(calls) == 2 and rows() == []
     asyncio.run(run())
 
 
