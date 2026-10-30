@@ -141,11 +141,11 @@ func (v *RemoteAPIVLM) PredictWithOptions(
 	logger.Infof(ctx, "[VLM] Calling chat protocol, model=%s, numImages=%d, totalImageSize=%d",
 		v.modelName, len(imgBytesList), totalImageSize)
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
+	maxTokens := vlmMaxTokens()
 	var resp *types.ChatResponse
 	var err error
 	for attempt := 1; ; attempt++ {
-		resp, err = v.chatOnce(ctx, parts)
+		resp, err = v.chatOnce(ctx, parts, opts)
 		wait, limited := vlmRateLimitDelay(err, attempt)
 		if limited {
 			rateLimitSignal.note(time.Now())
@@ -161,23 +161,6 @@ func (v *RemoteAPIVLM) PredictWithOptions(
 		case <-time.After(wait):
 		}
 	}
-=======
-	maxTokens := vlmMaxTokens()
-	chatOpts := &chat.ChatOptions{
-		Temperature: v.temperature,
-		MaxTokens:   maxTokens,
-	}
-	// Only an explicit preference is forwarded. The protocol layer skips the
-	// thinking fields entirely when nobody asked for a level, which is what
-	// leaves an always-on reasoning model running as its vendor intends.
-	if opts != nil && opts.Thinking != nil {
-		chatOpts.Thinking = opts.Thinking
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, vlmHTTPTimeout())
-	defer cancel()
-	resp, err := v.chat.Chat(ctx, []chat.Message{{Role: "user", MultiContent: parts}}, chatOpts)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	if err != nil {
 		return "", fmt.Errorf("VLM request: %w", err)
 	}
@@ -191,13 +174,14 @@ func (v *RemoteAPIVLM) PredictWithOptions(
 	return content, nil
 }
 
-func (v *RemoteAPIVLM) chatOnce(ctx context.Context, parts []chat.MessageContentPart) (*types.ChatResponse, error) {
+func (v *RemoteAPIVLM) chatOnce(ctx context.Context, parts []chat.MessageContentPart, opts *PredictOptions) (*types.ChatResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, vlmHTTPTimeout())
 	defer cancel()
-	return v.chat.Chat(ctx, []chat.Message{{Role: "user", MultiContent: parts}}, &chat.ChatOptions{
-		Temperature: v.temperature,
-		MaxTokens:   defaultMaxToks,
-	})
+	chatOpts := &chat.ChatOptions{Temperature: v.temperature, MaxTokens: vlmMaxTokens()}
+	if opts != nil && opts.Thinking != nil {
+		chatOpts.Thinking = opts.Thinking
+	}
+	return v.chat.Chat(ctx, []chat.Message{{Role: "user", MultiContent: parts}}, chatOpts)
 }
 
 const (

@@ -195,13 +195,8 @@ func (s *Server) runSearchKnowledgeWithFilter(
 	ctx context.Context, targets types.SearchTargets, query, mode string, limit int, pattern *regexp.Regexp,
 ) (*mcp.CallToolResult, error) {
 	tool := tools.NewSearchKnowledgeTool(
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-		s.kbService, s.knowledgeService, s.chunkService, searchTargetsFor(kbs), nil, s.cfg,
-	).WithWikiPageService(s.wikiService)
-=======
 		s.kbService, s.knowledgeService, s.chunkService, targets, nil, s.cfg,
-	)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	).WithWikiPageService(s.wikiService)
 	if pattern != nil {
 		tool.WithPatternFilter(pattern)
 	}

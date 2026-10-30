@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import { compileScript, parse } from '@vue/compiler-sfc'
-import { DOMParser } from '@xmldom/xmldom'
+import { ExcelPreviewWorkbook } from '../utils/excelPreview'
 import ts from 'typescript'
 import { createRenderer, h, ref } from 'vue'
 import * as filePreview from '../utils/filePreview'
@@ -26,6 +26,8 @@ function fixture(bytes: Uint8Array, fileType: string) {
     exports,
     require(name: string) {
       if (name === 'vue' || name === 'xlsx') return require(name)
+      if (name === '@/utils/pptxPreviewCache') return { getPptxPreviewScope: () => 'user:10000', pptxPreviewCache: { read() {}, invalidate() {} } }
+      if (name === '@/stores/auth') return { useAuthStore: () => ({ user: { id: 'user' }, effectiveTenantId: 10000 }) }
       if (name === '@/utils/filePreview') return filePreview
       if (name === 'vue-i18n') return { useI18n: () => ({ t: (key: string) => key }) }
       // Encoding and SheetJS rendering stay real. DOM sanitization and the
@@ -50,8 +52,8 @@ function fixture(bytes: Uint8Array, fileType: string) {
       ref: instance,
       sourceBlob: new Blob([Uint8Array.from(bytes)]),
       fileName: `encoding.${fileType}`, fileType,
-      // Invoke loadPreview explicitly so the test can await the whole pipeline.
-      active: false,
+      // Await the final explicit load; the automatic initial load is superseded.
+      active: true,
     }),
   })
   app.mount({})
@@ -77,8 +79,8 @@ for (const fileType of ['csv', 'tsv', 'tab']) {
         assert.equal(f.vm.error, '')
         assert.equal(f.vm.loading, false)
         assert.equal(f.vm.previewType, 'excel')
-        const doc = new DOMParser().parseFromString(f.vm.excelHtml, 'text/html')
-        const cells = Array.from(doc.getElementsByTagName('td'), cell => cell.textContent)
+        const workbook = new ExcelPreviewWorkbook(await f.vm.excelBlob.arrayBuffer(), fileType)
+        const cells = workbook.page(workbook.sheetNames[0]).rows.flatMap(row => row.cells.map(cell => cell.text))
         assert.deepEqual(cells, ['item', 'count', '蜡', '1'])
       } finally {
         f.close()

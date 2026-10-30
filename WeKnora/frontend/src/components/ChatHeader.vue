@@ -372,11 +372,7 @@ async function submitDeleteSession(): Promise<void> {
   font-family: var(--cds-font-interface, var(--app-font-family));
   align-items: center;
   gap: 2px;
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   max-width: min(420px, calc(100% - 36px));
-=======
-  max-width: min(520px, calc(100% - 36px));
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   min-width: 0;
   box-sizing: border-box;
 }

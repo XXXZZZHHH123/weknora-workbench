@@ -192,13 +192,8 @@ func providerDTO(v *modelruntime.Provider, modelType types.ModelType, includeMod
 // @Tags         模型管理
 // @Accept       json
 // @Produce      json
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-// @Param        model_type  query     string  false  "模型类型 (chat, embedding, rerank, vllm, asr, image-generation)"
-// @Success      200         {object}  map[string]interface{}  "厂商列表"
-=======
-// @Param        model_type  query     string  false  "模型类型 (chat, embedding, rerank, vllm, asr)"  Enums(chat,embedding,rerank,vllm,asr)  extensions(x-agent)
+// @Param        model_type  query     string  false  "模型类型 (chat, embedding, rerank, vllm, asr, image-generation)"  Enums(chat,embedding,rerank,vllm,asr,image-generation)  extensions(x-agent)
 // @Success      200         {object}  handler.DataResponse{data=[]handler.ModelProviderDTO}  "厂商列表"
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 // @Security     Bearer
 // @Security     ApiKeyAuth
 // @x-agent      {"id":"model.list_providers","risk":"read","max_items":200}

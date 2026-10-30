@@ -34,6 +34,7 @@ function setup(t: TestContext) {
   t.after(() => pinia.disposePinia(root))
   const { default: useKnowledgeBase } = f.evaluate(readFileSync(new URL('./useKnowledgeBase.ts', import.meta.url), 'utf8'), {
     vue, pinia,
+    '@/stores/auth': { useAuthStore: () => ({ user: { id: 'user' }, effectiveTenantId: 10000 }) },
     '../utils/index': { formatStringDate: (date: Date) => date.toISOString() },
     '@/api/knowledge-base/index': api,
     '@/stores/knowledge': stores,
@@ -48,7 +49,7 @@ function detail(id: string, revision = 'current') {
   return {
     success: true,
     data: {
-      id, file_name: `${id}-${revision}.pdf`, file_type: 'pdf',
+      id, knowledge_base_id: 'kb', file_name: `${id}-${revision}.pdf`, file_type: 'pdf',
       updated_at: '2026-01-01T00:00:00Z', description: `${id}-${revision} summary`,
       custom_metadata: { revision }, tags: [{ id: revision, name: revision }],
     },
@@ -60,13 +61,17 @@ const chunkPage = (content: string) => ({ success: true, data: [{ id: content, c
 test('late metadata and chunks from a previous document cannot replace the current document', async t => {
   const { hook, metadata, chunks } = setup(t)
   hook.getCardDetails({ id: 'a' })
+  metadata[0].resolve(detail('a'))
+  await flush()
+  hook.getCardDetails({ id: 'a' })
   hook.getCardDetails({ id: 'b' })
-  metadata[1].resolve(detail('b'))
+  metadata[2].resolve(detail('b'))
+  await flush()
   chunks[1].resolve(chunkPage('b content'))
   await flush()
   const current = JSON.stringify(hook.details)
 
-  metadata[0].resolve(detail('a', 'stale'))
+  metadata[1].resolve(detail('a', 'stale'))
   chunks[0].resolve(chunkPage('a content'))
   await flush()
   assert.equal(JSON.stringify(hook.details), current)
@@ -91,14 +96,16 @@ for (const ids of [['a', 'b', 'a'], ['a', 'a']]) {
   })
 }
 
-test('chunk pagination does not discard pending metadata for the same document', async t => {
+test('only the latest chunk page applies after document metadata validates', async t => {
   const { hook, metadata, chunks } = setup(t)
   hook.getCardDetails({ id: 'a' })
+  assert.equal(chunks.length, 0, 'no content is requested before its KB binding validates')
+  metadata[0].resolve(detail('a'))
+  await flush()
   hook.getfDetails('a', 2)
   assert.match(chunks[1].url, /page=2&/)
   chunks[1].resolve(chunkPage('page 2'))
   await flush()
-  metadata[0].resolve(detail('a'))
   chunks[0].resolve(chunkPage('stale page 1'))
   await flush()
 

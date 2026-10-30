@@ -9,7 +9,6 @@
       <span class="user-avatar">
         <img v-if="userAvatar" :src="userAvatar" :alt="$t('common.avatar')" />
         <span v-else class="avatar-placeholder">{{ userInitial }}</span>
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
       </span>
       <template v-if="!uiStore.sidebarCollapsed">
         <span class="user-info">
@@ -20,26 +19,6 @@
         <t-icon :name="menuVisible ? 'chevron-up' : 'chevron-down'" class="dropdown-icon" />
       </template>
     </button>
-=======
-      </div>
-      <div v-if="!uiStore.sidebarCollapsed" class="user-info">
-          <!-- 多空间 / superuser：首行空间名，次行 username · 角色。单空间：昵称 + 邮箱。 -->
-          <template v-if="showTenantIdentityLine">
-            <div class="user-tenant-name" :title="activeTenantName">{{ activeTenantName }}</div>
-            <div class="user-tenant-meta">
-              <span v-if="userName && userName !== activeTenantName" class="user-tenant-meta-name">{{ userName }}</span>
-              <span v-if="(userName && userName !== activeTenantName) && currentRoleLabel"
-                class="user-tenant-meta-sep">·</span>
-              <t-icon v-if="currentRoleIcon" :name="currentRoleIcon" size="12px" class="user-tenant-meta-icon" />
-              <span v-if="currentRoleLabel" class="user-tenant-meta-role">{{ currentRoleLabel }}</span>
-            </div>
-          </template>
-          <template v-else>
-            <div class="user-name">{{ userName }}</div>
-            <div class="user-email">{{ userEmail }}</div>
-          </template>
-        </div>
-    </div>
     <GlobalInvitationBell v-if="!uiStore.sidebarCollapsed" v-slot="{ count, open }">
       <t-tooltip :content="t('notifications.title')" placement="top">
         <button type="button" class="user-notify" :class="{ 'is-open': open }"
@@ -60,7 +39,6 @@
         </button>
       </t-tooltip>
     </GlobalInvitationBell>
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
     <!-- 下拉菜单 -->
     <Transition name="dropdown">
@@ -245,11 +223,8 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import { logout as logoutApi } from '@/api/auth'
 import { useI18n } from 'vue-i18n'
 import CreateTenantDialog from '@/components/CreateTenantDialog.vue'
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 import TenantNotificationsDrawer from '@/components/TenantNotificationsDrawer.vue'
-=======
 import GlobalInvitationBell from '@/components/GlobalInvitationBell.vue'
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 import {
   navigateAfterTenantSwitch,
   persistLastActiveTenantPreference,
@@ -651,13 +626,6 @@ onUnmounted(() => {
 .user-bar {
   display: flex;
   align-items: center;
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  padding: 7px 4px;
-=======
   gap: 2px;
   width: 100%;
   min-width: 0;
@@ -667,18 +635,14 @@ onUnmounted(() => {
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   min-width: 0;
-  padding: 8px 6px;
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+  box-sizing: border-box;
+  padding: 7px 4px;
   border-radius: var(--app-radius-md);
   border: 0;
   cursor: pointer;
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   transition: background-color var(--app-motion-base), color var(--app-motion-base);
-=======
-  transition: background-color var(--app-motion-base);
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   background: transparent;
   color: inherit;
   text-align: left;

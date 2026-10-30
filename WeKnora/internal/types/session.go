@@ -88,13 +88,9 @@ func IsValidSessionKind(kind string) bool {
 // Session represents the session
 type Session struct {
 	// ID
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	ID string `json:"id"          gorm:"type:varchar(36);primaryKey"`
+	ID string `json:"id"          gorm:"type:varchar(36);primaryKey" extensions:"x-agent=session_id,x-agent-response"`
 	// HasUserMessage is populated on detail reads, without a schema column.
 	HasUserMessage *bool `json:"has_user_message,omitempty" gorm:"->;-:migration"`
-=======
-	ID string `json:"id"          gorm:"type:varchar(36);primaryKey" extensions:"x-agent=session_id,x-agent-response"`
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	// Title
 	Title string `json:"title" extensions:"x-agent,x-agent-response"`
 	// Description
@@ -107,17 +103,14 @@ type Session struct {
 	// UserID is the owner scope for this session. WeKnora user UUIDs, API
 	// external-user principals, and embed visitor principals all use this column.
 	UserID string `json:"user_id,omitempty" gorm:"type:varchar(512);index"`
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	// ResearchWorkbenchID fixes the isolated research scope for the session.
 	ResearchWorkbenchID string `json:"research_workbench_id,omitempty" gorm:"type:varchar(36);not null;default:'';index"`
-=======
 	// OwnerAuthSource records, server-side, how UserID was authenticated when
 	// the session was created or its owner first bound (AuthSource*).
 	// Per-user sandbox allocation reads it; client input never sets it
 	// (CreateSession overwrites). Empty on rows created before the column
 	// existed, which means "unknown".
 	OwnerAuthSource string `json:"owner_auth_source,omitempty" gorm:"type:varchar(32);not null;default:''"`
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	// IsPinned indicates whether the session is pinned in the list.
 	IsPinned bool `json:"is_pinned" gorm:"default:false" extensions:"x-agent,x-agent-response"`
 	// PinnedAt records when the session was pinned; nil when not pinned.

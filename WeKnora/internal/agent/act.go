@@ -447,9 +447,6 @@ func (e *AgentEngine) runToolCall(
 	ctx context.Context, tc types.LLMToolCall, i int,
 	iteration, round int, sessionID, assistantMessageID string,
 ) types.ToolCall {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	ctx = e.memoryContextForTools(ctx, sessionID)
-=======
 	return e.runToolCallAnswered(ctx, tc, i, iteration, round, sessionID, assistantMessageID, nil)
 }
 
@@ -459,7 +456,7 @@ func (e *AgentEngine) runToolCallAnswered(
 	ctx context.Context, tc types.LLMToolCall, i int,
 	iteration, round int, sessionID, assistantMessageID string, answered *types.AgentPrompt,
 ) types.ToolCall {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	ctx = e.memoryContextForTools(ctx, sessionID)
 	tc.ID = agenttools.NormalizeToolCallID(tc.ID, tc.Function.Name, i)
 	total := "?" // unknown in isolation; callers log the batch size
 	toolTag := fmt.Sprintf("[Agent][Round-%d][Tool %s (%d/%s)]",

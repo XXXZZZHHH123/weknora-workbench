@@ -89,3 +89,24 @@ func TestPreferAnydocSkipsPDF(t *testing.T) {
 		}
 	}
 }
+
+// A newer remote converter must not advertise formats that bypass this
+// workbench's source review and publication gate.
+func TestRemoteParserFormatsRespectPlatformImportPolicy(t *testing.T) {
+	for _, name := range []string{"builtin", "remote-discovered"} {
+		remote := []types.ParserEngineInfo{{Name: name, FileTypes: []string{"pdf", "xlsx", "xlsm", "ods", "exe"}, Available: true}}
+		found := false
+		for _, engine := range ListAllEngines(true, nil, remote) {
+			if engine.Name != name {
+				continue
+			}
+			found = true
+			if len(engine.FileTypes) != 2 || engine.FileTypes[0] != "pdf" || engine.FileTypes[1] != "xlsx" {
+				t.Fatalf("%s formats = %v; want the supported source formats only", name, engine.FileTypes)
+			}
+		}
+		if !found || len(remote[0].FileTypes) != 5 {
+			t.Fatal("discovery metadata was lost or mutated")
+		}
+	}
+}

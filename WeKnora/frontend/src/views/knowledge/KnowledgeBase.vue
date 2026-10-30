@@ -75,11 +75,8 @@ import { listMoveTargets, moveKnowledge, getKnowledgeMoveProgress } from '@/api/
 import { resolveKnowledgeDownloadFileName } from './knowledgeDownloadFileName';
 import {
   buildUploadFileName,
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-=======
   canMoveFolderTo,
   childFolders,
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   folderBreadcrumbs as buildFolderBreadcrumbs,
   folderDocumentCounts,
   folderPathExists as folderExistsInTree,
@@ -845,14 +842,10 @@ const folderTree = ref<KnowledgeFolderTree | null>(null);
 const folderTreeLoading = ref(false);
 // The folder being browsed; ROOT_FOLDER_PATH ('') is the knowledge base top
 // level, a real node of the tree rather than a separate mode.
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 const selectedFolderPath = ref<string>(knowledgeDirectorySelection(route.query).path);
 const allFolderPreview = computed(() => knowledgeDirectorySelection(route.query).all);
 const localDirectoryNavigation = computed(() => route.meta.knowledgeWorkspace === true);
-=======
-const selectedFolderPath = ref<string>(ROOT_FOLDER_PATH);
 watch([kbId, selectedFolderPath], resetStatusPolling, { flush: 'sync' });
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 const folderTreeCollapsed = ref(readStoredFlag(FOLDER_TREE_COLLAPSED_KEY));
 const hasFolders = computed(() => (folderTree.value?.folders?.length ?? 0) > 0);
 // The folder column only earns its space once the knowledge base actually has
@@ -871,7 +864,6 @@ const isFiltering = computed(() =>
   }),
 );
 // A row's folder is worth showing only when the list can span folders.
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 const showDocumentFolderPath = computed(() => hasFolders.value && (isFiltering.value || allFolderPreview.value));
 const visibleChildFolders = computed(() => {
   const result: KnowledgeFolderTree['folders'] = [];
@@ -882,16 +874,11 @@ const visibleChildFolders = computed(() => {
   walk(folderTree.value?.folders || []);
   const keyword = docSearchKeyword.value.trim().toLocaleLowerCase();
   return keyword ? result.filter(node => node.path.toLocaleLowerCase().includes(keyword)) : result;
-=======
-const showDocumentFolderPath = computed(() => hasFolders.value && isFiltering.value);
-// Folders belong in the sidebar tree. The document pane only lists them when
-// that tree is collapsed, so navigation still works. Filtering already returns
-// matching documents from the whole subtree, so folder entries would be noise.
+});
 const visibleSubFolders = computed(() => {
   if (isFiltering.value) return []
   if (showFolderTree.value && !folderTreeCollapsed.value) return []
   return childFolders(folderTree.value, selectedFolderPath.value)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 });
 const folderBreadcrumbs = computed(() => buildFolderBreadcrumbs(selectedFolderPath.value));
 // What the breadcrumb reports is the folder's own contents the way a file
@@ -3165,7 +3152,6 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
   container-name: doc-card-area;
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 .doc-child-folders {
   display: flex;
   flex-wrap: wrap;
@@ -3198,9 +3184,6 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
 .doc-child-folder:focus-visible { outline: 2px solid var(--td-brand-color); outline-offset: 1px; }
 
 // One navigation row; filters open in a single anchored panel.
-=======
-// Wrap by content as well as pane width: long paths must not squeeze out actions.
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 .doc-filter-bar {
   display: flex;
   flex-wrap: wrap;

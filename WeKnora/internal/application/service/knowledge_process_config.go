@@ -216,14 +216,11 @@ func ValidateProcessOverrides(
 	if overrides == nil {
 		return nil
 	}
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	if overrides.SourceOnly {
 		return werrors.NewBadRequestError("仅保存原件模式只支持文件上传，不用于正文解析或重新解析")
 	}
-=======
 	return validateEffectiveProcessOverrides(ResolveProcessConfig(kb, overrides), fileTypes)
 }
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 // Validate the final config, including the legacy enableMultimodel argument
 // applied by upload and reparse callers, before persisting or enqueueing it.

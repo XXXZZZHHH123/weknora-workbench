@@ -209,12 +209,8 @@ type CustomAgentConfig struct {
 	// Allowed tools (only for agent type)
 	AllowedTools []string `yaml:"allowed_tools" json:"allowed_tools" extensions:"x-agent,x-agent-detail"`
 	// MCP service selection mode: "all" = all enabled MCP services, "selected" = specific services, "none" = no MCP
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	MCPSelectionMode    string `yaml:"mcp_selection_mode" json:"mcp_selection_mode"`
+	MCPSelectionMode    string `yaml:"mcp_selection_mode" json:"mcp_selection_mode" extensions:"x-agent,x-agent-detail"`
 	MCPToolExposureMode string `yaml:"mcp_tool_exposure_mode,omitempty" json:"mcp_tool_exposure_mode,omitempty"`
-=======
-	MCPSelectionMode string `yaml:"mcp_selection_mode" json:"mcp_selection_mode" extensions:"x-agent,x-agent-detail"`
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	// Selected MCP service IDs (only used when MCPSelectionMode is "selected")
 	MCPServices []string `yaml:"mcp_services" json:"mcp_services" extensions:"x-agent=mcp_service_ids,x-agent-detail"`
 	// MCPAuthWaitTimeout is how many seconds to wait for in-conversation OAuth

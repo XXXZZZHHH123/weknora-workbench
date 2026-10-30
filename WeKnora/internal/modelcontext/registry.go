@@ -116,11 +116,7 @@ func (r *Registry) DecodeToolCalls(toolCalls []types.LLMToolCall) {
 	normalizeWebFetchItems(toolCalls)
 	normalizeMCPCallArguments(toolCalls)
 	r.resources.DecodeToolCalls(toolCalls)
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	r.sources.DecodeToolCallsWithPathPolicy(toolCalls, sourceArgumentPathAllowed)
-=======
-	r.sources.DecodeToolCallsWithPolicy(toolCalls, sourceArgumentAllowed, sourceBareTextAllowed)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	for i := range toolCalls {
 		r.decodeToolPolicies(&toolCalls[i])
 		decodedMCP, unresolvedMCP := r.decodeMCPArguments(toolCalls[i].Function.Name, toolCalls[i].Function.Arguments)

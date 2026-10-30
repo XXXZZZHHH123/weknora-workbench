@@ -213,6 +213,17 @@ func (h *AgentStreamHandler) handleProgress(ctx context.Context, evt event.Event
 	if !ok {
 		return nil
 	}
+	if data.Stage != "" {
+		switch data.Stage {
+		case "sources", "generation", "verification":
+		default:
+			return nil
+		}
+		return h.streamManager.AppendEvent(h.ctx, h.sessionID, h.assistantMessageID, interfaces.StreamEvent{
+			ID: evt.ID, Type: "progress", Done: true, Timestamp: time.Now(),
+			Data: map[string]interface{}{"stage": data.Stage, "iteration": data.Iteration},
+		})
+	}
 	// Progress reusing an answer's ID retracts text already streamed as answer.
 	h.mu.Lock()
 	h.supersedeAnswerSegments(func(seg *answerSegment) bool { return seg.id == evt.ID })
@@ -220,22 +231,6 @@ func (h *AgentStreamHandler) handleProgress(ctx context.Context, evt event.Event
 	return h.streamManager.AppendEvent(ctx, h.sessionID, h.assistantMessageID, interfaces.StreamEvent{
 		ID: evt.ID, Type: types.ResponseTypeProgress, Content: data.Content, Done: true, Timestamp: time.Now(),
 		Data: map[string]interface{}{"event_id": evt.ID, "iteration": data.Iteration},
-	})
-}
-
-func (h *AgentStreamHandler) handleProgress(ctx context.Context, evt event.Event) error {
-	data, ok := evt.Data.(event.AgentProgressData)
-	if !ok {
-		return nil
-	}
-	switch data.Stage {
-	case "sources", "generation", "verification":
-	default:
-		return nil
-	}
-	return h.streamManager.AppendEvent(h.ctx, h.sessionID, h.assistantMessageID, interfaces.StreamEvent{
-		ID: evt.ID, Type: "progress", Done: true, Timestamp: time.Now(),
-		Data: map[string]interface{}{"stage": data.Stage, "iteration": data.Iteration},
 	})
 }
 

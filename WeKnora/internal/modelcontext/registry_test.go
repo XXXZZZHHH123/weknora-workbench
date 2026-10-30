@@ -655,7 +655,7 @@ func TestStructuredToolKnowledgeBaseAliasesAreRootScopedAndReplaySafe(t *testing
 		Name: "structured_query_series", Arguments: original,
 	}}}}})
 	require.Len(t, encoded, 1)
-	require.JSONEq(t, `{"knowledge_base_id":"b1","operation":"sum","arguments":{"knowledge_base_id":"literal","sql":"SELECT 'kb-authorized'"}}`, encoded[0].ToolCalls[0].Function.Arguments)
+	require.JSONEq(t, `{"knowledge_base_id":"kb://1","operation":"sum","arguments":{"knowledge_base_id":"literal","sql":"SELECT 'kb-authorized'"}}`, encoded[0].ToolCalls[0].Function.Arguments)
 	replayed := []types.LLMToolCall{{Function: types.FunctionCall{Name: "structured_query_series", Arguments: encoded[0].ToolCalls[0].Function.Arguments}}}
 	replayRegistry.DecodeToolCalls(replayed)
 	require.JSONEq(t, original, replayed[0].Function.Arguments)

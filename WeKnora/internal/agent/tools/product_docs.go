@@ -32,7 +32,8 @@ const searchWeKnoraDocsDescription = "" +
 	"Search the WeKnora documentation for this version: setup, configuration and environment " +
 	"variables, features and how they behave, API reference, clients, architecture and release notes. " +
 	"Use it for how-to and how-it-works questions about WeKnora itself; it does not show the state " +
-	"of this workspace (use operations for that). The documentation is written in Chinese, so search " +
+	"of this workspace (use operations for that). This workbench customizes upstream behavior; verify current " +
+	"workspace operations and configuration before describing its deployed settings or UI. The documentation is written in Chinese, so search " +
 	"with Chinese terms plus any product or setting names (e.g. \"Wiki 抽取粒度\", \"MinerU\", " +
 	"\"OLLAMA_BASE_URL\"). Returns matching sections with path, anchor, url and a snippet; read one " +
 	"with read_weknora_doc. Call with no query to list the pages, optionally of one category."

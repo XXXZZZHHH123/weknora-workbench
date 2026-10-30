@@ -79,15 +79,8 @@ class StdMarkitdownParser(BaseParser):
         # disproportionately expensive. XLSX conversion therefore starts with
         # them disabled; all other formats retain the historical image-first
         # behavior and its single bounded fallback.
-        first_keep_data_uris = not xlsx
+        first_keep_data_uris = not xlsx and pptx_bytes is None
         with parser_worker_limit("markitdown", CONFIG.markitdown_max_workers):
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-            # PPTX pictures are resolved from exact slide relationships below.
-            # Letting MarkItDown inline them first needlessly builds/copies large
-            # base64 strings, especially when a repeated logo appears per page.
-            result = self._convert_markitdown(content, ext, keep_data_uris=pptx_bytes is None)
-            if result is None:
-=======
             started = time.monotonic()
             try:
                 result = self._convert_markitdown(
@@ -112,7 +105,6 @@ class StdMarkitdownParser(BaseParser):
                 first_keep_data_uris,
             )
             if result is None and first_keep_data_uris:
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
                 logger.warning(
                     "MarkItDown failed with embedded images for %s; retrying without data URIs",
                     ft or ext,
@@ -139,7 +131,8 @@ class StdMarkitdownParser(BaseParser):
                     len(result.text_content) if result is not None else 0,
                 )
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
+            if result is None:
+                raise RuntimeError(f"MarkItDown conversion failed for {ft or ext or 'document'}")
             # Raster conversion belongs to the same heavy parser slot. Without
             # this, concurrent uploads can launch separate LibreOffice batches
             # after MarkItDown has released the configured worker semaphore.
@@ -152,15 +145,6 @@ class StdMarkitdownParser(BaseParser):
         if image_sources:
             metadata["pptx_image_sources_v1"] = json.dumps(image_sources, ensure_ascii=False)
         return Document(content=text, images=images, metadata=metadata)
-=======
-        if result is None:
-            raise RuntimeError(f"MarkItDown conversion failed for {ft or ext or 'document'}")
-        text = result.text_content
-        images: dict[str, str] = {}
-        if pptx_bytes is not None and markdown_needs_pptx_media_attach(text):
-            text, images = attach_pptx_media_to_markdown(text, pptx_bytes)
-        return Document(content=text, images=images)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
     def _convert_markitdown(
         self, content: bytes, ext: str | None, *, keep_data_uris: bool

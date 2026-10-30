@@ -113,6 +113,9 @@ type finalSynthesisChat struct {
 func (m *finalSynthesisChat) ChatStream(
 	ctx context.Context, messages []chat.Message, opts *chat.ChatOptions,
 ) (<-chan types.StreamResponse, error) {
+	if string(opts.Format) == string(answerCompletenessSchema) {
+		return finalSynthesisChunks(types.StreamResponse{ResponseType: types.ResponseTypeAnswer, Content: `{"complete":true}`, FinishReason: "stop", Done: true}), nil
+	}
 	if len(opts.Tools) > 0 {
 		return m.mockChat.ChatStream(ctx, messages, opts)
 	}
@@ -335,7 +338,7 @@ func TestFinalSynthesisClearsPartialAnswerBeforeOverflowRetry(t *testing.T) {
 		}
 	}
 	require.Equal(t, "Recovered answer.", rendered)
-	require.Equal(t, 1, resets)
+	require.Zero(t, resets, "buffered synthesis does not publish the discarded draft")
 	require.Equal(t, 1, done)
 }
 
@@ -376,7 +379,7 @@ func TestFinalSynthesisRecoversContextLengthStopAndAccountsForBothAttempts(t *te
 	require.Equal(t, 1, done, "the rejected attempt must never close the answer")
 }
 
-func TestFinalSynthesisDoesNotRetryOrdinaryOutputTruncation(t *testing.T) {
+func TestFinalSynthesisRejectsTruncationAfterBoundedRepair(t *testing.T) {
 	model := &finalSynthesisChat{}
 	engine := newTestEngine(t, model, withMaxContextTokens(64000), withMaxCompletionTokens(2048))
 	model.synthesize = func(
@@ -390,9 +393,9 @@ func TestFinalSynthesisDoesNotRetryOrdinaryOutputTruncation(t *testing.T) {
 	}
 	state := &types.AgentState{}
 	require.NoError(t, engine.streamFinalAnswerToEventBus(t.Context(), "Summarize", state, "session", emptyMessages()))
-	require.Len(t, model.finals, 1)
+	require.Len(t, model.finals, 3, "output truncation has a bounded repair budget, independent of overflow recovery")
 	require.Zero(t, model.summaries)
-	require.Equal(t, "Answer cut off at its output limit.", state.FinalAnswer)
+	require.Equal(t, incompleteAnswerFallback, state.FinalAnswer, "partial synthesis is not a verified terminal answer")
 }
 
 func TestFinalSynthesisRejectsUnshrinkableInput(t *testing.T) {

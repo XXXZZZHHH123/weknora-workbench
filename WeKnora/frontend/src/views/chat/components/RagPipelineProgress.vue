@@ -110,13 +110,8 @@
             <div class="action-card" :class="{ 'action-pending': thinkingPending }">
               <div class="action-header" :class="{ 'no-results': !thinkingContent }" @click="toggleThinking">
                 <div class="action-title">
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-                  <t-icon class="action-title-icon" name="lightbulb" />
-                  <span class="action-name">{{ t('agentStream.thinkingTimeline.reasoning') }}</span>
-=======
                   <ChatTimelineIcon class="action-title-icon" name="lightbulb" :active="thinkingActive" />
-                  <span class="action-name">{{ t('agent.think') }}</span>
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+                  <span class="action-name">{{ t('agentStream.thinkingTimeline.reasoning') }}</span>
                 </div>
               </div>
               <div v-if="thinkingContent && thinkingExpanded" class="thinking-detail-content">
@@ -220,13 +215,8 @@
               <div class="action-card" :class="{ 'action-pending': thinkingPending }">
                 <div class="action-header" :class="{ 'no-results': !thinkingContent }" @click="toggleThinking">
                   <div class="action-title">
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-                    <t-icon class="action-title-icon" name="lightbulb" />
-                    <span class="action-name">{{ t('agentStream.thinkingTimeline.reasoning') }}</span>
-=======
                     <ChatTimelineIcon class="action-title-icon" name="lightbulb" :active="thinkingActive" />
-                    <span class="action-name">{{ t('agent.think') }}</span>
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+                    <span class="action-name">{{ t('agentStream.thinkingTimeline.reasoning') }}</span>
                   </div>
                 </div>
                 <div v-if="thinkingContent && thinkingExpanded" class="thinking-detail-content">

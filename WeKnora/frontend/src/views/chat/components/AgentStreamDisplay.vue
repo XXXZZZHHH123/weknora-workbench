@@ -2149,9 +2149,6 @@ const getThinkingSummary = (event: any): string => {
 
 // Helper: build the full result list with plan_task_change injections and thinking merging
 const buildFullEventList = (stream: any[]) => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-  const validStream = stream.filter((e: any) => e && typeof e === 'object' && e.type && e.type !== 'progress');
-=======
   // An ask_user call is shown by its card; its tool row would repeat it.
   const askedCalls = new Set(
     stream
@@ -2160,7 +2157,6 @@ const buildFullEventList = (stream: any[]) => {
   );
   // Retain tool boundaries until reasoning and progress have been associated.
   const validStream = stream.filter((e: any) => e && typeof e === 'object' && e.type);
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   let lastTask: string | null = null;
   const result: any[] = [];
 
@@ -3693,8 +3689,6 @@ const handleAddToKnowledge = (answerEvent: any) => {
       }
     }
   }
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-=======
 
   .answer-toolbar {
     margin-top: 10px;
@@ -3710,7 +3704,6 @@ const handleAddToKnowledge = (answerEvent: any) => {
       margin-top: 0;
     }
   }
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 }
 
 // Tool Event

@@ -38,7 +38,7 @@ func TestDocumentImageGeometrySurvivesSourceCodecAndKeepsSourceHandles(t *testin
 	require.NotContains(t, text, "document-real")
 	require.NotContains(t, text, "chunk-real")
 	require.NotContains(t, text, ref)
-	require.Contains(t, text, `"knowledge_id":"d1"`)
+	require.Contains(t, text, `"knowledge_id":"doc://1"`)
 	decoder := xml.NewDecoder(strings.NewReader(text))
 	documents := 0
 	for {

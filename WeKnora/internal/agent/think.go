@@ -3,11 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	"encoding/json"
-=======
 	"errors"
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	"fmt"
 	"io"
 	"strings"
@@ -850,12 +847,6 @@ func (e *AgentEngine) streamLLMToEventBusWithModel(
 			emitFunc(&chunk, result.Content)
 		}
 	}
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	answerTail := ""
-	if !bufferReviewedAnswer {
-		answerTail = answerDecoder.Flush()
-	}
-=======
 	guardTail, guardErr := answerGuard.Flush()
 	if guardErr != nil {
 		protocolErr = guardErr
@@ -863,8 +854,10 @@ func (e *AgentEngine) streamLLMToEventBusWithModel(
 	if protocolErr != nil {
 		return nil, protocolErr
 	}
-	answerTail := guardTail + answerDecoder.Flush()
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	answerTail := guardTail
+	if !bufferReviewedAnswer {
+		answerTail += answerDecoder.Flush()
+	}
 	thinkingTail := thinkingDecoder.Flush()
 	result.Content += answerTail
 	result.ReasoningContent += thinkingTail
@@ -986,22 +979,9 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	sessionID string,
 	runtimeNotices ...string,
 ) (*types.ChatResponse, error) {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	if e.structuredReviewMode {
 		messages = withReviewedAnswerDeliveryInstruction(messages)
 	}
-	budget := e.clampCompletionBudgetToContext(e.tokenEstimator.EstimateMessages(messages))
-	parallelToolCalls := true
-	opts := &chat.ChatOptions{
-		Temperature:          e.config.Temperature,
-		MaxCompletionTokens:  budget,
-		Tools:                tools,
-		Thinking:             e.config.Thinking,
-		ReasoningEffort:      chat.SanitizeReasoningEffort(ctx, e.config.ReasoningEffort, "agent config"),
-		ThinkingBudgetTokens: e.config.ThinkingBudgetTokens,
-		ParallelToolCalls:    &parallelToolCalls,
-		PromptCacheKey:       sessionID,
-=======
 	runtimeNotice := strings.Join(runtimeNotices, "\n")
 	budgetMessages := messages
 	if runtimeNotice != "" {
@@ -1016,15 +996,15 @@ func (e *AgentEngine) streamThinkingToEventBus(
 
 	parallelToolCalls := true
 	opts := &chat.ChatOptions{
-		RuntimeNotice:       runtimeNotice,
-		Temperature:         e.config.Temperature,
-		MaxCompletionTokens: budget,
-		Tools:               tools,
-		Thinking:            e.config.Thinking,
-		ReasoningEffort:     chat.SanitizeReasoningEffort(ctx, e.config.ReasoningEffort, "agent config"),
-		ParallelToolCalls:   &parallelToolCalls,
-		PromptCacheKey:      sessionID,
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+		RuntimeNotice:        runtimeNotice,
+		Temperature:          e.config.Temperature,
+		MaxCompletionTokens:  budget,
+		Tools:                tools,
+		Thinking:             e.config.Thinking,
+		ReasoningEffort:      chat.SanitizeReasoningEffort(ctx, e.config.ReasoningEffort, "agent config"),
+		ParallelToolCalls:    &parallelToolCalls,
+		PromptCacheKey:       sessionID,
+		ThinkingBudgetTokens: e.config.ThinkingBudgetTokens,
 	}
 	// These rounds only plan further tools or propose a draft for mandatory
 	// independent source review. Use deterministic sampling for that technical
@@ -1113,14 +1093,10 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			thinkingOpen = false
 		}
 	}
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	emitAnswerText := func(content string) {
-=======
-	emitAnswer := func(content string) {
 		if e.holdCollaborationAnswer {
 			return
 		}
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		if content == "" {
 			return
 		}
@@ -1319,7 +1295,6 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	logger.Infof(ctx, "[Agent][Thinking] Iteration-%d completed: content=%d chars, tool_calls=%d, emitted_events=%v",
 		iteration+1, len(llmResult.Content), len(llmResult.ToolCalls), emittedEventTypes)
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	fullContent := agenttools.StripThinkBlocks(llmResult.Content)
 	var deliveryRepairUsage *types.TokenUsage
 	if e.structuredReviewMode && len(llmResult.ToolCalls) == 0 {
@@ -1348,10 +1323,6 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		fullContent = ""
 	}
 	llmResult.ReasoningContent += inlineReasoning.String()
-=======
-	inlineReasoning, cleanContent := agenttools.SplitThinkContent(llmResult.Content)
-	fullContent := strings.TrimSpace(cleanContent)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 	// Use actual finish_reason from LLM stream instead of hardcoding "stop".
 	// Fallback to "stop" when the stream did not report a finish_reason
@@ -1367,7 +1338,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 
 	resp := &types.ChatResponse{
 		Content:            fullContent,
-		ReasoningContent:   llmResult.ReasoningContent + inlineReasoning,
+		ReasoningContent:   llmResult.ReasoningContent,
 		ReasoningSignature: llmResult.ReasoningSignature,
 		ReasoningMetadata:  llmResult.ReasoningMetadata,
 		ToolCalls:          llmResult.ToolCalls,

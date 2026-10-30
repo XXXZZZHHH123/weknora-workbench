@@ -140,15 +140,11 @@
                                     @ask-assistant="handleAskAssistant"
                                     @render-complete-change="(ready) => handleAnswerRenderComplete(session, ready)">
                                 </botmsg>
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
                                 <details v-if="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)"><summary>查看原表取数依据</summary><StructuredFieldAnswer :plan="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)" /></details>
                                 <section v-if="!session.content?.trim() && structuredFieldIssue(session.agentEventStream, !!session.is_completed)" role="alert" style="margin:12px 0;padding:16px;border:1px solid #ead6b6;border-radius:8px;background:#fff9ed;color:#725324;line-height:1.7">{{ structuredFieldIssue(session.agentEventStream, !!session.is_completed) }}</section>
                                 <StructuredAnalysisEvidence v-if="structuredAnalysisEvidence(session.agentEventStream, !!session.is_completed)" :evidence="structuredAnalysisEvidence(session.agentEventStream, !!session.is_completed)" />
                                 <FieldClarificationDialog :session="session" :active="index === messagesList.length - 1 && !isReplying && !isStreaming" @submit="handleFieldClarification" />
-                                <FollowUpSuggestions v-if="session.answerFullyRendered && !session.steerForked && !session.suggestionsDismissed"
-=======
                                 <FollowUpSuggestions v-if="!isAutomationSession && session.answerFullyRendered && !session.steerForked && !session.suggestionsDismissed"
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
                                     :suggestion-set="session.suggestionSet"
                                     :loading="session.suggestionLoading"
                                     :allow-regenerate="session.suggestionSet?.allow_regenerate"
@@ -200,13 +196,10 @@
                         @stop-confirmed="handleStopConfirmed"
                         @stop-failed="handleStopFailed" :isReplying="isReplying" :composer-locked="composerLocked" :sessionId="session_id"
                         :assistantMessageId="currentAssistantMessageId" :embeddedMode="embeddedMode"
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
                         :knowledge-scope="scopedSession ? { kbId: kbIds.length === 1 ? kbIds[0] : '', kbName: scopedKbName, modelId: scopedModelId } : undefined"
-                        :queuedSteers="steerQueue.filter(item => item.delivery === 'after')" :canSteer="isAgentStreamSession() && !scopedSession"></InputField>
-=======
                         :model-id="modelId" :default-model-id="defaultModelId"
                         @update:model-id="(id) => emit('update:modelId', id)"
-                        :queuedSteers="steerQueue.filter(item => item.delivery === 'after')" :canSteer="isAgentStreamSession()">
+                        :queuedSteers="steerQueue.filter(item => item.delivery === 'after')" :canSteer="isAgentStreamSession() && !scopedSession">
                         <template v-if="$slots['composer-chips']" #chips>
                             <slot name="composer-chips" />
                         </template>
@@ -215,7 +208,6 @@
                         </template>
                         <template v-if="$slots['composer-controls']" #controls><slot name="composer-controls" /></template>
                     </InputField>
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
                 </div>
             </div>
             <div v-if="!embeddedMode" class="chat_overlays">
@@ -228,11 +220,7 @@
             <ChildAgentStream :key="tab.task.sessionId + ':' + tab.task.runId" :task="tab.task" :active="childTabs.activeId.value === tab.id" />
         </div>
     </div>
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-    <KnowledgeBaseEditorModal v-if="!scopedSession" :visible="uiStore.showKBEditorModal" :mode="uiStore.kbEditorMode"
-=======
-    <KnowledgeBaseEditorModal v-if="!embeddedMode" :visible="uiStore.showKBEditorModal" :mode="uiStore.kbEditorMode"
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+    <KnowledgeBaseEditorModal v-if="!scopedSession && !embeddedMode" :visible="uiStore.showKBEditorModal" :mode="uiStore.kbEditorMode"
         :kb-id="uiStore.currentKBId || undefined" :initial-type="uiStore.kbEditorType"
         @update:visible="(val) => val ? null : uiStore.closeKBEditor()" @success="handleKBEditorSuccess" />
     <ChatReferencesDrawer :embedded-mode="scopedSession" />
@@ -339,14 +327,10 @@ const props = defineProps({
     session_id: { type: String, default: '' },
     agentId: { type: String, default: '' },
     embeddedMode: { type: Boolean, default: false },
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
     scopedSession: { type: Boolean, default: false },
     scopedModelId: { type: String, default: '' },
     scopedKbName: { type: String, default: '' },
     agentSourceTenantId: { type: String, default: '' },
-});
-const emit = defineEmits(['replying-change']);
-=======
     // Embedded only: sent once on mount, instead of the menu store's firstQuery
     // that belongs to the main chat.
     initialQuery: { type: String, default: '' },
@@ -358,8 +342,7 @@ const emit = defineEmits(['replying-change']);
     modelId: { type: String, default: '' },
     defaultModelId: { type: String, default: '' },
 });
-const emit = defineEmits(['update:modelId']);
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+const emit = defineEmits(['update:modelId', 'replying-change']);
 
 const usemenuStore = useMenuStore();
 const useSettingsStoreInstance = useSettingsStore();
@@ -555,11 +538,7 @@ const composerApprovals = computed(() =>
 )
 
 const composerLocked = computed(() =>
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-    (rewindInFlight.value && String(session_id.value || '') === rewindLockSessionId.value)
-=======
     isAutomationSession.value || (rewindInFlight.value && String(session_id.value || '') === rewindLockSessionId.value)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 )
 
 function stashForkLanding(sessionId, text) {
@@ -759,16 +738,8 @@ const steerQueue = ref([]);
 const isReplying = ref(false);
 watch(isReplying, (replying) => emit('replying-change', replying));
 const currentAssistantMessageId = ref(''); // 当前正在生成的 assistant message ID
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 // History can outlive its SSE replay buffer, for web and IM replies alike.
 const isAttachingHistoryStream = ref(false);
-=======
-// True only while attaching to an in-flight *IM-originated* reply via continue-stream.
-// Such replies are generated on the IM side and never stream through this server, so
-// continue-stream always fails even though the answer is coming — recover by polling
-// instead of erroring. Web/api replies are left on the original error path.
-const isAttachingImStream = ref(false);
-
 // A session change drops the stack; continue-stream replay adds back the
 // cards that are still waiting. Clearing on every isReplying change hid a
 // card that replay had just restored.
@@ -778,7 +749,6 @@ watch(session_id, () => {
 watch(isReplying, (replying) => {
     if (!replying) clearComposerApproval();
 });
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 let recoverPollTimer = null;
 let recoverPollGeneration = 0;
 // Keep a visible generating state while checking the persisted reply.
@@ -1025,12 +995,7 @@ const getUserQuery = (index) => {
 };
 
 watch([() => route.params], async (newvalue) => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-    if (props.scopedSession) return;
-=======
-    // The host owns an embedded view's session; the route belongs to the page behind it.
-    if (props.embeddedMode) return;
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+    if (props.scopedSession || props.embeddedMode) return;
     isFirstEnter.value = true;
     if (newvalue[0].chatid) {
         if (!firstQuery.value) {
@@ -1613,7 +1578,7 @@ const attachSteerFollowUp = async (completedAssistantId) => {
 };
 
 const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = [], attachmentFiles = [], options = {}) => {
-    if (!props.embeddedMode && !currentSession.value) {
+    if (!props.scopedSession && !props.embeddedMode && !currentSession.value) {
         await loadSessionAndHydrate(session_id.value);
         if (!currentSession.value) return;
     }
@@ -1754,25 +1719,15 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
         ? (props.agentId && props.agentId !== 'builtin-quick-answer')
         : useSettingsStoreInstance.isAgentStreamMode;
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-    // Get web search status from settings store
-    const webSearchEnabled = useHostScope ? false : useSettingsStoreInstance.isWebSearchEnabled;
-
-    // Get knowledge_base_ids from settings store (selected by user via KnowledgeBaseSelector)
-    // Merge @mentioned KB/file IDs so retrieval uses the same targets user @mentioned (including shared KBs)
-    const sidebarKbIds = useHostScope ? props.kbIds : (useSettingsStoreInstance.settings.selectedKnowledgeBases || []);
-    const sidebarFileIds = useHostScope ? [] : (useSettingsStoreInstance.settings.selectedFiles || []);
-=======
     // Get web search status from settings store. The embedded assistant has no
     // toggle of its own; its agent config decides on the server.
-    const webSearchEnabled = props.embeddedMode ? true : useSettingsStoreInstance.isWebSearchEnabled;
+    const webSearchEnabled = props.scopedSession ? false : props.embeddedMode ? true : useSettingsStoreInstance.isWebSearchEnabled;
 
     // Get knowledge_base_ids from settings store (selected by user via KnowledgeBaseSelector)
     // Merge @mentioned KB/file IDs so retrieval uses the same targets user @mentioned (including shared KBs)
     const hostScope = props.embeddedMode && props.hostScope ? props.hostScope() : null;
-    const sidebarKbIds = props.embeddedMode ? (hostScope?.knowledgeBaseIds || []) : (useSettingsStoreInstance.settings.selectedKnowledgeBases || []);
-    const sidebarFileIds = props.embeddedMode ? [] : (useSettingsStoreInstance.settings.selectedFiles || []);
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+    const sidebarKbIds = props.scopedSession ? props.kbIds : props.embeddedMode ? (hostScope?.knowledgeBaseIds || []) : (useSettingsStoreInstance.settings.selectedKnowledgeBases || []);
+    const sidebarFileIds = props.scopedSession || props.embeddedMode ? [] : (useSettingsStoreInstance.settings.selectedFiles || []);
     const kbIdSet = new Set(sidebarKbIds);
     const fileIdSet = new Set(sidebarFileIds);
     for (const kbId of props.scopedSession ? [] : pendingSuggestionKnowledgeBaseIds) {
@@ -1944,20 +1899,11 @@ if (props.embeddedMode) {
 
 watch(error, (newError) => {
     if (!newError) return;
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
+    if (attachingResumedRun) return;
     // Reconcile both web and IM history after a failed reconnect. Fresh
     // outgoing requests retain the normal error path below.
     if (isAttachingHistoryStream.value) {
         isAttachingHistoryStream.value = false;
-=======
-    if (attachingResumedRun) return;
-    // A failed attach to an in-flight IM reply isn't a real error — the answer is
-    // produced on the IM side and never streams here. Recover quietly by polling to
-    // completion instead of flashing a "stream failed" toast. Web/api replies fall
-    // through to the normal error toast below, unchanged.
-    if (isAttachingImStream.value) {
-        isAttachingImStream.value = false;
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
         recoverIncompleteMessage();
         return;
     }
@@ -2009,13 +1955,7 @@ const handleSessionMutation = (event) => {
 };
 
 onBeforeMount(async () => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-    // A workspace panel owns its session and scope, independent of the full-page draft.
-    if (props.scopedSession) return;
-=======
-    // 嵌入式的 agent / 知识库由宿主随请求传入，不能写进主对话的 settings store。
-    if (props.embeddedMode) return;
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+    if (props.scopedSession || props.embeddedMode) return;
     // 若从智能体列表点击共享智能体进入，URL 带 agent_id 与 source_tenant_id，同步到 store
     const agentIdFromQuery = route.query.agent_id && String(route.query.agent_id);
     const sourceTenantIdFromQuery = route.query.source_tenant_id && String(route.query.source_tenant_id);
@@ -2039,15 +1979,11 @@ onMounted(async () => {
     isReplying.value = false;
     startBackgroundWork();
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-    if (!props.scopedSession && firstQuery.value) {
-=======
-    if (props.embeddedMode && props.initialQuery) {
+    if (!props.scopedSession && props.embeddedMode && props.initialQuery) {
         scrollLock.value = true;
         historyLoading.value = false;
         sendMsg(props.initialQuery, inputFieldRef.value?.getComposerModelId?.() || props.modelId);
-    } else if (!props.embeddedMode && firstQuery.value) {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+    } else if (!props.scopedSession && !props.embeddedMode && firstQuery.value) {
         scrollLock.value = true;
         historyLoading.value = false;
         if (firstModelId.value) {
@@ -2105,11 +2041,7 @@ onBeforeRouteLeave((to, from, next) => {
     next()
 })
 onBeforeRouteUpdate((to, from, next) => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-    if (props.scopedSession) { next(); return; }
-=======
-    if (props.embeddedMode) return next()
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+    if (props.scopedSession || props.embeddedMode) { next(); return; }
     clearData()
     // 仅"会话 → 会话"会落到这里；跨会话覆盖的还原放到 route.params 的 watch 里，
     // 因为新会话的 getSession 也在那边触发，便于保证 restore→snapshot→apply 顺序。

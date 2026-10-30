@@ -52,7 +52,7 @@ func TestOrphanThinkAnswerReplacementMatchesPersistedRound(t *testing.T) {
 }
 
 func TestOrphanThinkFinalSynthesisReplacesSameAnswer(t *testing.T) {
-	e := newTestEngine(t, &mockChat{responses: []mockResponse{orphanThinkResponse()}})
+	e := newTestEngine(t, &mockChat{responses: []mockResponse{orphanThinkResponse(), sourceConsistencyVerdict(`{"complete":true}`)}})
 	var answer string
 	var replacementID string
 	e.eventBus.On(event.EventAgentFinalAnswer, func(_ context.Context, evt event.Event) error {
@@ -70,7 +70,7 @@ func TestOrphanThinkFinalSynthesisReplacesSameAnswer(t *testing.T) {
 	state := &types.AgentState{}
 	err := e.streamFinalAnswerToEventBus(context.Background(), "report", state, "s", nil)
 	require.NoError(t, err)
-	require.NotEmpty(t, replacementID)
+	require.Empty(t, replacementID, "unreviewed synthesis is buffered, so no draft stream needs retracting")
 	require.Equal(t, "## 进展\n\n真正的完整答案。", answer)
 	require.Equal(t, answer, state.FinalAnswer)
 }

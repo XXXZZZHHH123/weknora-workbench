@@ -447,28 +447,9 @@ func (e *AgentEngine) analyzeResponse(
 		//       same event ID.
 		//   (b) Not streamed live (e.g. the content only surfaced in the
 		//       accumulated result) — emit the full content, then Done.
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 		existingID := ""
 		if response.AnswerStreamed {
 			existingID = response.AnswerEventID
-=======
-		var answerID string
-		if response.AnswerStreamed && response.AnswerEventID != "" {
-			answerID = response.AnswerEventID
-		} else {
-			answerID = generateEventID("answer")
-			if response.Content != "" && !e.holdCollaborationAnswer {
-				e.eventBus.Emit(ctx, event.Event{
-					ID:        answerID,
-					Type:      event.EventAgentFinalAnswer,
-					SessionID: sessionID,
-					Data: event.AgentFinalAnswerData{
-						Content: response.Content,
-						Done:    false,
-					},
-				})
-			}
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		}
 		answerID := e.publishAnswer(ctx, sessionID, response.Content, existingID, false)
 
@@ -527,28 +508,9 @@ func (e *AgentEngine) analyzeResponse(
 		// Same two delivery paths as Case 1: reuse the live stream when the
 		// text already went out, otherwise emit it once here. Done is left to
 		// the caller so a loop-end steer inject can still continue the turn.
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 		existingID := ""
 		if response.AnswerStreamed {
 			existingID = response.AnswerEventID
-=======
-		answerID := response.AnswerEventID
-		if e.holdCollaborationAnswer && answerID == "" {
-			answerID = generateEventID("answer")
-		}
-		if (!response.AnswerStreamed || answerID == "") && !e.holdCollaborationAnswer {
-			answerID = generateEventID("answer")
-			_ = e.eventBus.Emit(ctx, event.Event{
-				ID:        answerID,
-				Type:      event.EventAgentFinalAnswer,
-				SessionID: sessionID,
-				Data: event.AgentFinalAnswerData{
-					Content:   response.Content,
-					Done:      false,
-					Truncated: true,
-				},
-			})
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		}
 		answerID := e.publishAnswer(ctx, sessionID, response.Content, existingID, true)
 

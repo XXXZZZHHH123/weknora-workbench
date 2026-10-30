@@ -282,7 +282,6 @@ func sourceArgumentAllowed(toolName, key string) bool {
 	return ok
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 // sourceArgumentPathAllowed applies the tool's source-key contract at the
 // declared JSON path. Existing policies remain key-based and recursive;
 // structured KB selectors are intentionally limited to the tool envelope.
@@ -290,16 +289,10 @@ func sourceArgumentPathAllowed(toolName string, path []string) bool {
 	if len(path) == 0 {
 		return false
 	}
-=======
-// sourceBareTextAllowed reports structured-text arguments (SQL) whose handles
-// must decode to bare durable IDs rather than weknora:// URIs.
-func sourceBareTextAllowed(toolName, key string) bool {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	policy, ok := toolHandlePolicies[toolName]
 	if !ok {
 		return false
 	}
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	key := strings.ToLower(path[len(path)-1])
 	if _, ok := policy.sourceIDKeys[key]; ok {
 		return true
@@ -309,10 +302,6 @@ func sourceBareTextAllowed(toolName, key string) bool {
 		return ok
 	}
 	return false
-=======
-	_, ok = policy.sourceTextKeys[strings.ToLower(key)]
-	return ok
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 }
 
 func sourceOutputAllowed(toolName string) bool {
@@ -501,4 +490,15 @@ func normalizeWebFetchItems(calls []types.LLMToolCall) {
 			calls[i].Function.Arguments = string(encoded)
 		}
 	}
+}
+
+// sourceBareTextAllowed reports structured-text arguments (SQL) whose handles
+// must decode to bare durable IDs rather than weknora:// URIs.
+func sourceBareTextAllowed(toolName, key string) bool {
+	policy, ok := toolHandlePolicies[toolName]
+	if !ok {
+		return false
+	}
+	_, ok = policy.sourceTextKeys[strings.ToLower(key)]
+	return ok
 }

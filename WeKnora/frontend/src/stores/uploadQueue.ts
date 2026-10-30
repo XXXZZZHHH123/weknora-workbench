@@ -277,32 +277,7 @@ export function createUploadQueue(items: UploadItem[], batches: UploadBatch[], d
     const chunks: Array<{ kbId: string; chunk: UploadItem[] }> = []
     for (const [kbId, group] of byKb) {
       for (let i = 0; i < group.length; i += deps.pollChunkSize) {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-        const chunk = group.slice(i, i + deps.pollChunkSize)
-        requests.push(deps.queryStatus(kbId, chunk.map(item => item.knowledgeId!)).then(rows => {
-          // A failed request just waits for the next tick.
-          if (!rows || startedIn !== generation) return
-          const byId = new Map(rows.map(row => [row.id, row]))
-          for (const item of chunk) {
-            const row = byId.get(item.knowledgeId!)
-            if (!row) {
-              const misses = (missingPolls.get(item.id) ?? 0) + 1
-              missingPolls.set(item.id, misses)
-              if (misses >= MISSING_POLLS_BEFORE_DELETED) item.parseStatus = 'deleted'
-              continue
-            }
-            missingPolls.delete(item.id)
-            item.parseStatus = row.parse_status
-            item.parseError = row.error_message || undefined
-            const processing = knowledgeIngestion(row.metadata)
-            item.processingStatus = processing.status
-            item.processingStage = processing.stage
-            item.attentionCount = processing.attentionCount
-          }
-        }, () => {}))
-=======
         chunks.push({ kbId, chunk: group.slice(i, i + deps.pollChunkSize) })
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
       }
     }
 
@@ -322,6 +297,10 @@ export function createUploadQueue(items: UploadItem[], batches: UploadBatch[], d
         missingPolls.delete(item.id)
         item.parseStatus = row.parse_status
         item.parseError = row.error_message || undefined
+        const processing = knowledgeIngestion(row.metadata)
+        item.processingStatus = processing.status
+        item.processingStage = processing.stage
+        item.attentionCount = processing.attentionCount
       }
     }
 

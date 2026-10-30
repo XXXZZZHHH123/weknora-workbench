@@ -64,10 +64,6 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 	processChunk := func(texts []*textEmbedding) func() {
 		return func() {
 			defer wg.Done()
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-			// If an error has already occurred, don't continue processing
-			if batchCtx.Err() != nil {
-=======
 			// If an error has already occurred, don't continue processing. The
 			// read takes mu for the same reason the writes below do: every pool
 			// worker evaluates this guard, so an unsynchronised read races with
@@ -77,8 +73,7 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 			mu.Lock()
 			aborted := firstErr != nil
 			mu.Unlock()
-			if aborted {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+			if aborted || batchCtx.Err() != nil {
 				return
 			}
 			// Embed text

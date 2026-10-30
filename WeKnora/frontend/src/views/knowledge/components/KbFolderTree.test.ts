@@ -13,32 +13,8 @@ const batchBar = readFileSync(new URL('./DocumentBatchBar.vue', import.meta.url)
 const cardView = readFileSync(new URL('./DocumentCardView.vue', import.meta.url), 'utf8')
 const listView = readFileSync(new URL('./DocumentListView.vue', import.meta.url), 'utf8')
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 // Root exclusion and rename/delete state are exercised through the actual
 // compiled action component in KnowledgeResourceActions.behavior.test.ts.
-=======
-// The root folder's own path IS the empty string, so a falsy "nothing is being
-// renamed" sentinel matches it and leaves a stray rename input on the root row.
-// Two independent guards keep that from coming back.
-test('the rename sentinel cannot collide with the root folder path', () => {
-  assert.match(tree, /const renamingPath = ref<string \| null>\(null\)/)
-  assert.doesNotMatch(tree, /const renamingPath = ref\(''\)/)
-  assert.match(tree, /row\.kind === 'folder' && renamingPath\.value === row\.path/)
-})
-
-test('deep folders stop indenting so the name stays visible', () => {
-  assert.match(tree, /--kb-folder-indent-max:\s*4/)
-  assert.match(tree, /min\(var\(--kb-folder-depth/)
-  assert.doesNotMatch(tree, /kb-folder-row__more-placeholder/)
-})
-
-test('only real folders expose a rename affordance', () => {
-  assert.match(tree, /v-if="canEdit && row\.kind === 'folder'"/)
-  assert.match(tree, /popup-menu-item/)
-  assert.match(tree, /onFolderMenuRename/)
-})
-
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 // Picking a folder is a small, reversible action, so it stays a popup: in the row
 // menu it is another level of the menu that is already open, and in the batch bar
 // it hangs off the button. Neither should escalate to a modal dialog.
@@ -77,10 +53,11 @@ test('folder navigation cancels stale card hover popovers', () => {
 let server: ViteDevServer
 let KbFolderTree: Component
 before(async () => {
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => null } })
   server = await createServer({
     configFile: false,
     optimizeDeps: { noDiscovery: true, entries: [] },
-    plugins: [vue()],
+    plugins: [{ name: 'folder-actions-test', enforce: 'pre', resolveId(id) { if (id.endsWith('KnowledgeFolderActions.vue')) return '\0folder-actions-test' }, load(id) { if (id === '\0folder-actions-test') return 'export default { render: () => null }' } }, vue()],
     resolve: { alias: { '@': fileURLToPath(new URL('../../../', import.meta.url)) } },
     server: { middlewareMode: true },
     appType: 'custom',
@@ -123,7 +100,7 @@ async function renderTree(props: Record<string, unknown>): Promise<string> {
 
 /** Markup of one rendered row, isolated from the rows around it. */
 function rowHtml(html: string, marker: string): string {
-  const starts = [...html.matchAll(/<div class="[^"]*kb-folder-row[^"]*"/g)].map((match) => match.index!)
+  const starts = [...html.matchAll(/<div\b[^>]*class="[^"]*kb-folder-row[^"]*"/g)].map((match) => match.index!)
   const row = starts
     .map((start, index) => html.slice(start, starts[index + 1]))
     .find((markup) => markup.includes(marker))

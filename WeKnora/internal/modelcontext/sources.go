@@ -214,42 +214,34 @@ func (r *sourceRegistry) ChunkHandle(id string) string {
 type toolArgumentPolicy func(toolName, key string) bool
 type toolArgumentPathPolicy func(toolName string, path []string) bool
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 // DecodeToolCallsWithPolicy restores handles only for fields explicitly owned
 // by the named tool. This prevents dynamic tools with coincidentally named
 // fields from inheriting built-in source semantics.
-func (r *sourceRegistry) DecodeToolCallsWithPolicy(toolCalls []types.LLMToolCall, policy toolArgumentPolicy) {
-	r.DecodeToolCallsWithPathPolicy(toolCalls, func(toolName string, path []string) bool {
+func (r *sourceRegistry) DecodeToolCallsWithPolicy(toolCalls []types.LLMToolCall, policy toolArgumentPolicy, barePolicies ...toolArgumentPolicy) {
+	var bare toolArgumentPolicy
+	if len(barePolicies) > 0 {
+		bare = barePolicies[0]
+	}
+	r.decodeToolCallsWithPathPolicy(toolCalls, func(toolName string, path []string) bool {
 		return len(path) > 0 && (policy == nil || policy(toolName, path[len(path)-1]))
-	})
+	}, bare)
 }
 
 // DecodeToolCallsWithPathPolicy restores handles only at JSON paths owned by
 // the named tool. The path is relative to the root arguments object.
 func (r *sourceRegistry) DecodeToolCallsWithPathPolicy(toolCalls []types.LLMToolCall, policy toolArgumentPathPolicy) {
-=======
-// DecodeToolCallsWithPolicy restores handles in every string argument. Fields
-// explicitly owned by the named tool receive the bare durable ID, so dynamic
-// tools with coincidentally named fields do not inherit built-in source
-// semantics; bareText fields (SQL) receive bare IDs inside the expression;
-// all other text receives durable text forms (URLs and weknora:// URIs).
-func (r *sourceRegistry) DecodeToolCallsWithPolicy(
-	toolCalls []types.LLMToolCall,
-	policy toolArgumentPolicy,
-	bareText toolArgumentPolicy,
-) {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	r.decodeToolCallsWithPathPolicy(toolCalls, policy, sourceBareTextAllowed)
+}
+
+func (r *sourceRegistry) decodeToolCallsWithPathPolicy(toolCalls []types.LLMToolCall, policy toolArgumentPathPolicy, bare toolArgumentPolicy) {
 	for i := range toolCalls {
 		toolName := toolCalls[i].Function.Name
 		toolCalls[i].Function.Arguments = r.decodeJSONWithPolicy(
 			toolCalls[i].Function.Arguments,
 			false,
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 			func(path []string) bool { return policy == nil || policy(toolName, path) },
-=======
-			func(key string) bool { return policy == nil || policy(toolName, key) },
-			func(key string) bool { return bareText != nil && bareText(toolName, key) },
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+			func(path []string) bool { return len(path) > 0 && bare != nil && bare(toolName, path[len(path)-1]) },
+			len(toolHandlePolicies[toolName].rootOnlySourceIDKeys) == 0,
 		)
 	}
 }
@@ -278,7 +270,7 @@ func (r *sourceRegistry) UnresolvedToolHandlesWithPathPolicy(
 		return nil
 	}
 	seen := make(map[string]struct{})
-	r.collectUnresolvedToolHandlesPath(nil, value, seen, func(path []string) bool { return policy == nil || policy(toolName, path) })
+	r.collectUnresolvedToolHandlesPath(nil, value, seen, func(path []string) bool { return policy == nil || policy(toolName, path) }, len(toolHandlePolicies[toolName].rootOnlySourceIDKeys) == 0)
 	result := make([]string, 0, len(seen))
 	for handle := range seen {
 		result = append(result, handle)
@@ -287,9 +279,14 @@ func (r *sourceRegistry) UnresolvedToolHandlesWithPathPolicy(
 	return result
 }
 
-func (r *sourceRegistry) collectUnresolvedToolHandlesPath(path []string, value interface{}, seen map[string]struct{}, allowed func([]string) bool) {
+func (r *sourceRegistry) collectUnresolvedToolHandlesPath(path []string, value interface{}, seen map[string]struct{}, allowed func([]string) bool, freeText bool) {
 	switch typed := value.(type) {
 	case string:
+		if freeText {
+			for _, handle := range r.UnresolvedTextHandles(typed) {
+				seen[handle] = struct{}{}
+			}
+		}
 		if len(path) == 0 {
 			return
 		}
@@ -303,12 +300,12 @@ func (r *sourceRegistry) collectUnresolvedToolHandlesPath(path []string, value i
 		}
 	case []interface{}:
 		for _, item := range typed {
-			r.collectUnresolvedToolHandlesPath(path, item, seen, allowed)
+			r.collectUnresolvedToolHandlesPath(path, item, seen, allowed, freeText)
 		}
 	case map[string]interface{}:
 		for childKey, item := range typed {
 			childPath := append(append([]string(nil), path...), childKey)
-			r.collectUnresolvedToolHandlesPath(childPath, item, seen, allowed)
+			r.collectUnresolvedToolHandlesPath(childPath, item, seen, allowed, freeText)
 		}
 	}
 }
@@ -427,22 +424,17 @@ func (r *sourceRegistry) EncodeMessagesWithPathPolicies(
 			out[i].ToolCalls[j].Function.Arguments = r.decodeJSONWithPolicy(
 				out[i].ToolCalls[j].Function.Arguments,
 				true,
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 				func(path []string) bool { return argumentPolicy == nil || argumentPolicy(toolName, path) },
-=======
-				func(key string) bool { return argumentPolicy == nil || argumentPolicy(toolName, key) },
-				nil,
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+				nil, len(toolHandlePolicies[toolName].rootOnlySourceIDKeys) == 0,
 			)
 		}
 	}
 	return out
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-var shortSourceHandleRE = regexp.MustCompile(`(?i)^[cdbw][1-9][0-9]*$`)
+var shortSourceHandleRE = regexp.MustCompile(`(?i)^(?:[cdbw][1-9][0-9]*|(?:chunk|doc|kb|url)://[1-9][0-9]*)$`)
 
-var shortSourceHandleInTextRE = regexp.MustCompile(`(?i)\b[cdbw][1-9][0-9]*\b`)
+var shortSourceHandleInTextRE = regexp.MustCompile(`(?i)\b(?:[cdbw][1-9][0-9]*|(?:chunk|doc|kb|url)://[1-9][0-9]*)\b`)
 
 // DecodeKnownText restores registered source handles embedded in a structured
 // expression such as a built-in SQL tool argument. It must not be used for
@@ -536,9 +528,6 @@ func rewriteQuotedText(text string, rewrite func(string) string) string {
 }
 
 func (r *sourceRegistry) registerToolArguments(raw string, allowed func([]string) bool) {
-=======
-func (r *sourceRegistry) registerToolArguments(raw string, allowed func(string) bool) {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	if r == nil || strings.TrimSpace(raw) == "" {
 		return
 	}
@@ -606,16 +595,7 @@ func (r *sourceRegistry) registerSourceIDByKey(key, value string, evidence bool)
 	}
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-func (r *sourceRegistry) decodeJSONWithPolicy(raw string, encode bool, allowed func([]string) bool) string {
-=======
-func (r *sourceRegistry) decodeJSONWithPolicy(
-	raw string,
-	encode bool,
-	allowed func(string) bool,
-	bareText func(string) bool,
-) string {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+func (r *sourceRegistry) decodeJSONWithPolicy(raw string, encode bool, allowed func([]string) bool, bareText func([]string) bool, freeText bool) string {
 	if r == nil || strings.TrimSpace(raw) == "" {
 		return raw
 	}
@@ -623,14 +603,7 @@ func (r *sourceRegistry) decodeJSONWithPolicy(
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
 		return raw
 	}
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	value = r.walkJSON(nil, value, encode, allowed)
-=======
-	if bareText == nil {
-		bareText = func(string) bool { return false }
-	}
-	value = r.walkJSON("", value, encode, allowed, bareText)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	value = r.walkJSON(nil, value, encode, allowed, bareText, freeText)
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return raw
@@ -638,37 +611,27 @@ func (r *sourceRegistry) decodeJSONWithPolicy(
 	return string(encoded)
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-func (r *sourceRegistry) walkJSON(path []string, value interface{}, encode bool, allowed func([]string) bool) interface{} {
+func (r *sourceRegistry) walkJSON(path []string, value interface{}, encode bool, allowed func([]string) bool, bareText func([]string) bool, freeText bool) interface{} {
 	switch typed := value.(type) {
 	case string:
-		if len(path) == 0 || !allowed(path) {
+		if len(path) == 0 {
 			return typed
 		}
 		key := strings.ToLower(path[len(path)-1])
-=======
-func (r *sourceRegistry) walkJSON(
-	key string,
-	value interface{},
-	encode bool,
-	allowed func(string) bool,
-	bareText func(string) bool,
-) interface{} {
-	switch typed := value.(type) {
-	case string:
-		lower := strings.ToLower(key)
-		_, idKey := sourceKeySpaces[lower]
-		idField := idKey && allowed(lower)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+		_, idKey := sourceKeySpaces[key]
+		idField := idKey && (allowed == nil || allowed(path))
 		if encode {
 			// Encode matches on exact real identifiers (UUIDs/URLs), which do
 			// not collide with prose, so it stays key-agnostic.
-			if allowed(lower) {
+			if idField {
 				if handle := r.handleForDurable(typed); handle != "" {
 					return handle
 				}
 			}
-			return r.EncodeDurableURIs(typed)
+			if freeText {
+				return r.EncodeDurableURIs(typed)
+			}
+			return typed
 		}
 		if idField {
 			trimmed := strings.TrimSpace(typed)
@@ -682,26 +645,21 @@ func (r *sourceRegistry) walkJSON(
 				return id
 			}
 		}
-		if bareText(lower) {
-			return r.DecodeBareText(typed)
+		if bareText != nil && bareText(path) {
+			return r.DecodeKnownQuotedText(typed)
 		}
-		return r.DecodeDurableText(typed)
+		if freeText {
+			return r.DecodeDurableText(typed)
+		}
+		return typed
 	case []interface{}:
 		for i := range typed {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-			typed[i] = r.walkJSON(path, typed[i], encode, allowed)
+			typed[i] = r.walkJSON(path, typed[i], encode, allowed, bareText, freeText)
 		}
 	case map[string]interface{}:
 		for childKey, item := range typed {
 			childPath := append(append([]string(nil), path...), childKey)
-			typed[childKey] = r.walkJSON(childPath, item, encode, allowed)
-=======
-			typed[i] = r.walkJSON(key, typed[i], encode, allowed, bareText)
-		}
-	case map[string]interface{}:
-		for childKey, item := range typed {
-			typed[childKey] = r.walkJSON(childKey, item, encode, allowed, bareText)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+			typed[childKey] = r.walkJSON(childPath, item, encode, allowed, bareText, freeText)
 		}
 	}
 	return value

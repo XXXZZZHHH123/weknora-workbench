@@ -28,8 +28,7 @@ const (
 var readDocumentTool = BaseTool{
 	name: ToolReadDocument,
 	description: "Read a document from the knowledge bases in scope: its metadata plus chunks in document order.\n" +
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-		"id is a dN document handle (reads a page of chunks starting at offset) or a cN chunk handle (reads that " +
+		"id is a doc://N document handle (reads a page of chunks starting at offset) or a chunk://N chunk handle (reads that " +
 		"chunk; set context to include neighbouring chunks on each side).\n" +
 		"For a user-specified physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
 		"Printed page labels and table-of-contents ranges are not physical PDF pages or proof that a listed section is present in this file. Verify physical pages with parser source_locators or page reads; chunk counts and the largest observed locator do not establish total pages.\n" +
@@ -37,27 +36,16 @@ var readDocumentTool = BaseTool{
 		"To inspect a figure, repeat the same authorized document/page read with images=[its exact reference], detail=full and focus describing the complete user request. " +
 		"Choose the figure from its actual source labels/context; text labels and image URLs alone do not reveal curves or their colors. " +
 		"Returned originals are delivered to a vision model or the configured separate image reader; report estimates and unclear overlaps honestly.\n" +
-=======
-		"id is a doc://N document handle (reads a page of chunks starting at offset) or a chunk://N chunk handle " +
-		"(reads that chunk; set context to include neighbouring chunks on each side).\n" +
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		"query finds passages inside the document: matching chunks come back with one chunk of context on each " +
 		"side. By default query is case-insensitive and split on whitespace: a chunk matches when it contains " +
 		"every word, in any order. Set regex=true to match query as one POSIX regular expression instead. " +
 		"When a query result is truncated, repeat it with offset=next_offset to get the following matches.\n" +
 		"Page through long documents with offset and limit: offset counts chunks in reading order from 0 and is " +
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-		"not a chunk index, so continue with the returned next_offset, and use id=cN with context to read around " +
+		"not a chunk index, so continue with the returned next_offset, and use id=chunk://N with context to read around " +
 		"a specific chunk. A page holds fewer than limit chunks when they would exceed the output size budget; " +
 		"next_offset always points at the first chunk not yet returned. If a returned chunk body is partial, " +
-		"continue with id=cN and content_offset=next_content_offset; content offsets count Unicode characters " +
+		"continue with id=chunk://N and content_offset=next_content_offset; content offsets count Unicode characters " +
 		"within that chunk. Reading a long document end to end " +
-=======
-		"not a chunk index, so continue with the returned next_offset, and use id=chunk://N with context " +
-		"to read around a specific chunk. A page holds fewer than limit chunks when they would exceed " +
-		"the output size budget; " +
-		"next_offset always points at the first chunk not yet returned. Reading a long document end to end " +
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		"costs many calls, so prefer query or search_knowledge to locate the relevant part first.",
 	schema: json.RawMessage(`{
   "type": "object",
@@ -74,12 +62,12 @@ var readDocumentTool = BaseTool{
     },
     "content_offset": {
       "type": "integer",
-      "description": "Unicode-character offset within a real cN chunk's returned source text; on a physical-page read it is relative to that page-clipped text",
+      "description": "Unicode-character offset within a real chunk://N chunk's returned source text; on a physical-page read it is relative to that page-clipped text",
       "minimum": 0
     },
     "content_limit": {
       "type": "integer",
-      "description": "Maximum Unicode characters to read from a real cN chunk (default is bounded by output budget)",
+      "description": "Maximum Unicode characters to read from a real chunk://N chunk (default is bounded by output budget)",
       "minimum": 1,
       "maximum": 12000
     },
@@ -285,7 +273,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 		var segment *chunkContentSegment
 		if input.ContentLimit > 0 || input.ContentOffset > 0 {
 			if chunk == nil {
-				return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (cN)"}, nil
+				return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 			}
 			segment = &chunkContentSegment{chunkID: chunk.ID, offset: input.ContentOffset, limit: input.ContentLimit}
 		}
@@ -294,7 +282,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	}
 	if input.ContentLimit > 0 || input.ContentOffset > 0 {
 		if chunk == nil {
-			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (cN)"}, nil
+			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 		}
 		result, err := t.readChunkContent(ctx, knowledge, chunk, input.ContentOffset, input.ContentLimit)
 		return t.finishImageRead(ctx, knowledge, input, result, err)
@@ -596,7 +584,7 @@ func sliceChunkContent(ctx context.Context, chunk *types.Chunk, offset, requeste
 }
 
 // boundChunkRowsContent keeps one oversized source chunk readable and gives
-// the caller a stable cN + Unicode offset to retrieve its remaining source text.
+// the caller a stable chunk://N + Unicode offset to retrieve its remaining source text.
 func boundChunkRowsContent(ctx context.Context, rows []readChunkRow) []readChunkRow {
 	limit := maxChunkContentRunes(ctx)
 	for i, row := range rows {

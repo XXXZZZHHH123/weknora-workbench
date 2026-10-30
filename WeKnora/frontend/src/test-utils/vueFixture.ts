@@ -6,6 +6,10 @@ import { runInNewContext } from 'node:vm'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import ts from 'typescript'
+import * as resourcePermissions from '../utils/resourcePermissions'
+import * as knowledgeDirectory from '../views/workspaces/knowledgeDirectory'
+import * as workspaceForm from '../views/workspaces/workspaceForm'
+import * as tenantMemberAccess from '../config/tenantMemberAccess'
 
 export function change(operation: string, ids: Record<string, string[]> = {}) {
   return { operation, area: operation.split('.')[0], ids }
@@ -64,7 +68,11 @@ export function fixture(
       .replace('return __returned__', '__expose(__returned__); return __returned__')
     const require = createRequire(file)
     const compiled = evaluate(script, {
-      vue, '@/utils/assistantDataChange': dataChange, ...dependencies,
+      vue, '@/utils/assistantDataChange': dataChange,
+      '@/utils/resourcePermissions': resourcePermissions,
+      '@/views/workspaces/knowledgeDirectory': knowledgeDirectory,
+      '@/views/workspaces/workspaceForm': workspaceForm,
+      '@/config/tenantMemberAccess': tenantMemberAccess, ...dependencies,
     }, name => {
       if (name.endsWith('.vue')) return { default: {} }
       if (name.startsWith('.')) return require(name)

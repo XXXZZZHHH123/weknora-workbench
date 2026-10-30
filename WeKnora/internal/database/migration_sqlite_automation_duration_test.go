@@ -10,7 +10,7 @@ import (
 
 func TestSQLiteAutomationDurationUpgradePreservesExistingRuns(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)
-	for _, version := range []int{45, 47} {
+	for _, version := range []int{58, 60} {
 		t.Run(fmt.Sprintf("from-v%d", version), func(t *testing.T) {
 			chdirAndRestore(t, copySQLiteMigrationsThrough(t, repoRoot, version))
 			dbPath := filepath.Join(t.TempDir(), "automations.db")

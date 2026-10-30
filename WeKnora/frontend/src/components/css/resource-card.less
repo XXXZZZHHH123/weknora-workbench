@@ -21,19 +21,11 @@
   cursor: pointer;
   transition: border-color var(--app-motion-fast) ease, box-shadow var(--app-motion-fast) ease;
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
+  @media (hover: hover) and (pointer: fine) {
   &:hover {
     border-color: var(--cds-border-strong, var(--td-component-border));
     box-shadow: var(--cds-shadow-sm, var(--app-paper-shadow));
-=======
-  @media (hover: hover) and (pointer: fine) {
-    &:hover {
-      border-color: var(--td-component-border);
-      box-shadow:
-        0 1px 2px color-mix(in srgb, var(--td-text-color-primary) 3%, transparent),
-        0 3px 10px color-mix(in srgb, var(--td-text-color-primary) 4%, transparent);
     }
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   }
   &:focus-visible {
     outline: 2px solid var(--td-brand-color);
@@ -303,7 +295,6 @@
     flex-shrink: 0;
     .header-title { width: 100%; gap: 4px; }
     .title-row { flex-wrap: wrap; gap: 12px; }
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
     .header-title h2 {
       margin-right: auto;
       font-family: var(--cds-font-display);
@@ -311,8 +302,7 @@
       font-weight: var(--app-page-title-weight);
       line-height: var(--app-page-title-line-height);
       letter-spacing: .04em;
-=======
-    h2 { margin-right: auto; }
+    }
     .header-actions-lite {
       max-width: 100%;
       flex-wrap: wrap;
@@ -333,7 +323,6 @@
       background: var(--td-bg-color-container);
       &:hover:not(:disabled) { background: var(--td-bg-color-container-hover); }
       &:focus-visible { outline: 2px solid var(--td-brand-color); outline-offset: 2px; }
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
     }
     .header-subtitle { color: var(--td-text-color-secondary); font-size: var(--app-text-base); line-height: 1.7; }
 

@@ -179,12 +179,9 @@ import WriteSandboxFileResult from './tool-results/WriteSandboxFileResult.vue';
 import ReadSkillResult from './tool-results/ReadSkillResult.vue';
 import McpToolResult from './tool-results/McpToolResult.vue';
 import ImageViewResult from './tool-results/ImageViewResult.vue';
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 import ImageGenerationResult from './tool-results/ImageGenerationResult.vue';
-=======
 import OperationsResult from './tool-results/OperationsResult.vue';
 import WeKnoraDocResult from './tool-results/WeKnoraDocResult.vue';
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 interface Props {
   success?: boolean;

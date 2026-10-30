@@ -107,6 +107,8 @@ const props = defineProps({
   },
   // Authenticated research panels reuse this composer while keeping every
   // selection local. An absent scope retains the normal/public-embed contract.
+  modelId: { type: String, default: '' },
+  defaultModelId: { type: String, default: '' },
   knowledgeScope: {
     type: Object as PropType<{ kbId: string; kbName?: string; modelId?: string }>,
     required: false
@@ -306,13 +308,8 @@ const sharedAgentKbList = ref<Array<{ id: string; name: string; type?: string; k
 // 当智能体改变时，模型、可@知识库列表均跟随新智能体配置；网络搜索由用户主动开启
 // 知识库：用新智能体配置的列表替换当前选中，使已选与可@列表一致（含共享智能体）
 watch([selectedAgentId, agentKnowledgeBases, agentKBSelectionMode], ([newAgentId, newAgentKbs, newKbMode], [oldAgentId]) => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   if (props.knowledgeScope || settingsStore._isApplyingSessionState) return;
-  if (newAgentId !== oldAgentId && oldAgentId !== undefined) {
-=======
-  if (settingsStore._isApplyingSessionState) return;
   if (newAgentId !== oldAgentId && oldAgentId !== undefined && !props.embeddedMode) {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
     if (newKbMode === 'none') {
       settingsStore.selectKnowledgeBases([]);
     } else {
@@ -376,12 +373,9 @@ const isKnowledgeBaseDisabledByAgent = computed(() => {
   return agentKBSelectionMode.value === 'none';
 });
 const isMentionDisabled = computed(() => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   if (props.knowledgeScope) return !props.knowledgeScope.kbId;
-=======
   // The host pins the scope; @-mentions would edit the main chat's selection.
   if (props.embeddedMode) return true;
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   if (settingsStore.isAgentStreamMode && isKnowledgeBaseDisabledByAgent.value) {
     return agentMCPSelectionMode.value === 'none' && agentSkillsSelectionMode.value === 'none';
   }
@@ -449,11 +443,7 @@ const isSkillAllowedByAgent = (skillName: string) => {
 
 // 切换智能体时清理不允许的 MCP / Skill @mention
 watch([selectedAgentId, agentMCPSelectionMode, agentSkillsSelectionMode], ([newAgentId], [oldAgentId]) => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-  if (props.knowledgeScope || settingsStore._isApplyingSessionState) return;
-=======
-  if (props.embeddedMode || settingsStore._isApplyingSessionState) return;
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+  if (props.knowledgeScope || props.embeddedMode || settingsStore._isApplyingSessionState) return;
   if (newAgentId === oldAgentId || oldAgentId === undefined) return;
 
   const mcpMode = agentMCPSelectionMode.value;
@@ -585,72 +575,10 @@ const sharedAgentOrgName = computed(() => {
   return shared?.org_name || shared?.shared_by_username || '';
 });
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 const isAgentEnabled = computed(() => !props.knowledgeScope && settingsStore.isAgentEnabled);
 const isWebSearchEnabled = computed(() => !props.knowledgeScope && settingsStore.isWebSearchEnabled);
 const selectedKbIds = computed(() => props.knowledgeScope ? [] : settingsStore.settings.selectedKnowledgeBases || []);
 const selectedFileIds = computed(() => props.knowledgeScope ? [] : settingsStore.settings.selectedFiles || []);
-=======
-const props = defineProps({
-  compact: {
-    type: Boolean,
-    default: false
-  },
-  autoFocus: {
-    type: Boolean,
-    default: false
-  },
-  isReplying: {
-    type: Boolean,
-    required: false
-  },
-  composerLocked: {
-    type: Boolean,
-    default: false
-  },
-  sessionId: {
-    type: String,
-    required: false
-  },
-  assistantMessageId: {
-    type: String,
-    required: false
-  },
-  embeddedMode: {
-    type: Boolean,
-    default: false
-  },
-  // Embedded only: the host owns the model choice (v-model:model-id) so the
-  // main chat's pick is neither read nor overwritten. '' follows
-  // defaultModelId.
-  modelId: {
-    type: String,
-    default: ''
-  },
-  // Embedded only: the model used while modelId is empty, normally the open
-  // knowledge base's chat model. Falls back to the first available model.
-  defaultModelId: {
-    type: String,
-    default: ''
-  },
-  queuedSteers: {
-    type: Array as PropType<SteerQueueItem[]>,
-    default: () => []
-  },
-  // Only agent turns have a loop that can take a mid-run message. In a
-  // quick-answer session the composer keeps its old behaviour: Stop is the
-  // only action while a reply is streaming.
-  canSteer: {
-    type: Boolean,
-    default: false
-  }
-});
-
-const isAgentEnabled = computed(() => settingsStore.isAgentEnabled);
-const isWebSearchEnabled = computed(() => settingsStore.isWebSearchEnabled);
-const selectedKbIds = computed(() => settingsStore.settings.selectedKnowledgeBases || []);
-const selectedFileIds = computed(() => settingsStore.settings.selectedFiles || []);
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 const selectedTags = computed(() => settingsStore.settings.selectedTags || []);
 const selectedMCPServiceIds = computed(() => settingsStore.settings.selectedMCPServices || []);
 const selectedSkillNames = computed(() => settingsStore.settings.selectedSkills || []);
@@ -1107,7 +1035,7 @@ const loadChatModels = async (force = false) => {
   modelsLoading.value = true;
   try {
     await chatResources.ensureChatModels(force);
-    if (!props.embeddedMode) ensureModelSelection();
+    if (!props.embeddedMode || props.knowledgeScope) ensureModelSelection();
   } catch (error) {
     console.error('Failed to load chat models:', error);
     chatResources.invalidate('models');
@@ -1146,12 +1074,7 @@ const ensureModelSelection = () => {
 watch(
   [selectedAgentId, () => settingsStore.selectedAgentSourceTenantId, agentModelId],
   ([, sourceTenantId, newModelId]) => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-    if (props.knowledgeScope) return;
-    if (!newModelId || newModelId.trim() === '') return;
-=======
-    if (props.embeddedMode || !newModelId || newModelId.trim() === '') return;
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+    if (props.knowledgeScope || props.embeddedMode || !newModelId || newModelId.trim() === '') return;
 
     const lastPick = readLastChatModelID();
     const isSharedAgent = !!sourceTenantId;
@@ -1197,7 +1120,7 @@ const handleModelChange = (value: string | number | Array<string | number> | und
     handleGoToConversationModels();
     return;
   }
-  if (props.embeddedMode) {
+  if (props.embeddedMode && !props.knowledgeScope) {
     emit('update:modelId', val === EMBEDDED_AUTO_MODEL ? '' : val);
     showModelSelector.value = false;
     return;
@@ -1237,13 +1160,13 @@ const embeddedPickedModel = computed(() => props.modelId
   ? availableModels.value.find(model => model.id === props.modelId) : undefined);
 const embeddedDefaultModel = computed(() =>
   availableModels.value.find(model => model.id === props.defaultModelId) || availableModels.value[0]);
-const followsDefaultModel = computed(() => props.embeddedMode && !embeddedPickedModel.value);
+const followsDefaultModel = computed(() => props.embeddedMode && !props.knowledgeScope && !embeddedPickedModel.value);
 const composerModel = computed(() => {
-  if (!props.embeddedMode) return selectedModel.value;
+  if (!props.embeddedMode || props.knowledgeScope) return selectedModel.value;
   return embeddedPickedModel.value || embeddedDefaultModel.value;
 });
 const composerModelId = computed(() => {
-  if (!props.embeddedMode) return selectedModelId.value;
+  if (!props.embeddedMode || props.knowledgeScope) return selectedModelId.value;
   return composerModel.value?.id || '';
 });
 
@@ -2137,16 +2060,10 @@ let scrollHandler: (() => void) | null = null;
 
 onMounted(() => {
   if (props.autoFocus) void focusInput();
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-  // Embed 渠道由宿主注入 agent/KB，勿拉取需 JWT 的平台资源
-  if (props.embeddedMode && !props.knowledgeScope) return;
-=======
-  // 嵌入时 agent/KB 由宿主注入，只需模型列表供宿主选择
-  if (props.embeddedMode) {
+  if (props.embeddedMode && !props.knowledgeScope) {
     void loadChatModels();
     return;
   }
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
   if (props.knowledgeScope) {
     void loadChatModels();
@@ -2241,11 +2158,7 @@ onUnmounted(() => {
 
 // 监听路由变化
 watch(() => route.params.kbId, (newKbId) => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-  if (props.knowledgeScope) return;
-=======
-  if (props.embeddedMode) return;
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+  if (props.knowledgeScope || props.embeddedMode) return;
   if (newKbId && typeof newKbId === 'string' && !selectedKbIds.value.includes(newKbId)) {
     settingsStore.addKnowledgeBase(newKbId);
   }
@@ -2345,7 +2258,6 @@ const createSession = async (
     return;
   }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   if (props.knowledgeScope) {
     if (!props.knowledgeScope.kbId || !props.sessionId || uploadedImages.value.length || uploadedAttachments.value.length
       || !allSelectedItems.value.every(isScopedMention)) {
@@ -2368,10 +2280,6 @@ const createSession = async (
   }
 
   // Embed 渠道由后端绑定 agent/KB，勿走平台侧 agent 列表与就绪校验
-=======
-  // 嵌入时 agent/KB 由宿主注入，勿走平台侧 agent 列表与就绪校验。
-  // 模型只用宿主的选择，不能把主对话里选的模型带进来。
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   if (props.embeddedMode) {
     emit('send-msg', val, composerModelId.value, [], [], [], options);
     clearvalue();
@@ -2965,18 +2873,13 @@ const handleStop = async () => {
 }
 
 onBeforeRouteUpdate((to, from, next) => {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   if (props.knowledgeScope) { next(); return; }
-  clearvalue()
-  clearPendingUploads()
-=======
   // The route belongs to the page behind an embedded assistant. Its draft
   // and uploads belong to the assistant session, which the host manages.
   if (!props.embeddedMode) {
     clearvalue()
     clearPendingUploads()
   }
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   next()
 })
 
@@ -3045,9 +2948,9 @@ defineExpose({
         @update:files="uploadedAttachments = $event" />
 
       <!-- 选中的知识库和文件标签（显示在输入框内顶部） -->
-      <div v-if="$slots.chips || (!embeddedMode && allSelectedItems.length > 0)" class="selected-tags-inline">
+      <div v-if="$slots.chips || ((!embeddedMode || knowledgeScope) && allSelectedItems.length > 0)" class="selected-tags-inline">
         <slot name="chips" />
-        <span v-for="item in (embeddedMode ? [] : allSelectedItems)" :key="`${item.type}:${item.id}`" class="mention-chip" :class="[
+        <span v-for="item in (embeddedMode && !knowledgeScope ? [] : allSelectedItems)" :key="`${item.type}:${item.id}`" class="mention-chip" :class="[
           getMentionChipClass(item),
           { 'mention-chip--agent': item.isAgentConfigured }
         ]">
@@ -3075,13 +2978,9 @@ defineExpose({
       <!-- 控制栏按文档流排列，换行时自动撑开容器 -->
       <div class="control-bar" :class="{ 'is-embedded': embeddedMode }">
         <!-- 左侧控制按钮 -->
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-        <div class="control-left" v-if="!embeddedMode || knowledgeScope">
-=======
         <div class="control-left">
           <!-- 嵌入时宿主已定好 agent/KB，只保留模型选择 -->
-          <template v-if="!embeddedMode">
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+          <template v-if="!embeddedMode || knowledgeScope">
           <!-- Agent 模式切换按钮 -->
           <div v-if="!knowledgeScope" ref="agentModeButtonRef" class="control-btn agent-mode-btn" :class="{
             'is-normal': !isCustomAgent && !isAgentEnabled,
@@ -3264,11 +3163,7 @@ defineExpose({
               </div>
             </div>
           </t-tooltip>
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-          <t-popup v-if="!knowledgeScope && reasoningLevels.length > 0" v-model:visible="showReasoningSelector"
-=======
-          <t-popup v-if="!embeddedMode && reasoningLevels.length > 0" v-model:visible="showReasoningSelector"
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+          <t-popup v-if="!knowledgeScope && !embeddedMode && reasoningLevels.length > 0" v-model:visible="showReasoningSelector"
             trigger="click" placement="top-right" :disabled="composerLocked"
             :overlay-inner-style="{ padding: '4px', borderRadius: 'var(--app-radius-lg)' }"
             @visible-change="handleReasoningVisibleChange">
@@ -3309,7 +3204,7 @@ defineExpose({
                 </button>
               </div>
               <div class="model-selector-content">
-                <div v-if="embeddedMode && embeddedDefaultModel" class="model-option"
+                <div v-if="embeddedMode && !knowledgeScope && embeddedDefaultModel" class="model-option"
                   :class="{ selected: followsDefaultModel }"
                   :title="$t('input.modelAutoHint')" @click="handleModelChange(EMBEDDED_AUTO_MODEL)">
                   <div class="model-option-left">

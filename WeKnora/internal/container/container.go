@@ -262,12 +262,9 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewAuditLogService))
 	must(container.Provide(service.NewAuditLogRetentionRunner))
 	must(container.Provide(service.NewKnowledgeBaseService))
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	must(container.Provide(service.NewWorkspaceService))
 	must(container.Provide(service.NewUserFeedbackService))
-=======
 	must(container.Provide(service.NewGraphSearchService))
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	must(container.Provide(service.NewOrganizationService))
 	must(
 		container.Provide(service.NewKBShareService),
@@ -396,10 +393,8 @@ func BuildContainer(container *dig.Container) *dig.Container {
 		cleaner.RegisterWithName("BrowserSkill", func() error { manager.Close(); return nil })
 		return manager, nil
 	}))
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	must(container.Provide(service.NewImageGenerationService))
 	must(container.Provide(service.NewChartArtifactService))
-=======
 	// Agent catalog operations dispatch into the router, which is built later
 	// and binds itself to this dispatcher.
 	must(container.Provide(operations.NewHandlerDispatcher))
@@ -407,7 +402,6 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewAgentCollaboration))
 	must(container.Provide(service.NewNotificationService))
 	must(container.Provide(service.NewAutomationService))
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	must(container.Provide(service.NewAgentService))
 
 	// Session service (depends on agent service)

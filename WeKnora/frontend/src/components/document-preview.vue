@@ -1,32 +1,22 @@
 // @ts-nocheck
 <script setup lang="ts">
 import { indexEmbeddedSourceImages } from '@/utils/sourceImage';
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-import { ref, shallowRef, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from 'vue';
+import { ref, shallowRef, watch, onMounted, onUnmounted, onErrorCaptured, nextTick, defineAsyncComponent } from 'vue';
 import { previewKnowledgeFile, getKnowledgeDetails } from '@/api/knowledge-base/index';
 import { previewKnowledgeMedia } from '@/api/knowledge-base/preview-media';
-=======
-import { ref, shallowRef, watch, onMounted, onUnmounted, onErrorCaptured, nextTick, defineAsyncComponent } from 'vue';
-import { previewKnowledgeFile } from '@/api/knowledge-base/index';
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 import { previewTemporaryAttachment } from '@/api/chat/temporary-attachments';
 import { downloadArtifact } from '@/api/chat';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import 'katex/dist/katex.min.css';
 import { useI18n } from 'vue-i18n';
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-import { sanitizeHTML, sanitizeMarkdownHTML } from '@/utils/security';
+import { sanitizeHTML, sanitizeMarkdownHTML, hydrateProtectedFileImages } from '@/utils/security';
 import { preparePptxPreview, isCompletePptxRender, watchCompletePptxSlideDOM, bindPptxRendererCallbacks, isPptxSourceKeyCurrent, resolvePptxSlideLocator, resolvePptxLocatePage, type PptxRendererCallbacks } from '@/utils/pptxPreview';
 import { preparePptxOlePreview, sha256Hex } from '@/utils/pptxMedia';
 import { useAuthStore } from '@/stores/auth';
 import { getPptxPreviewScope, pptxPreviewCache } from '@/utils/pptxPreviewCache';
 import { knowledgePptxSourceKey } from '@/utils/pptxPreviewSource';
 import { createPptxViewportMedia, type PptxPageMediaView } from '@/utils/pptxViewportMedia';
-=======
-import { sanitizeHTML, sanitizeMarkdownHTML, hydrateProtectedFileImages } from '@/utils/security';
-import { preparePptxPreview, isCompletePptxRender } from '@/utils/pptxPreview';
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 import { findMarkdownSourceRange } from '@/utils/markdownSourceLocate';
 import { renderDocumentPreviewMarkdown } from '@/utils/documentPreviewMarkdown';
 import { buildHtmlPreview } from '@/utils/htmlPreview';

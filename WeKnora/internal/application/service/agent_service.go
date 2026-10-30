@@ -99,7 +99,6 @@ func knowledgeBaseScopesForPrompt(config *types.AgentConfig) ([]string, map[stri
 
 // agentService implements agent-related business logic
 type agentService struct {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	browserSkill           *browserskill.Manager
 	userRepo               interfaces.UserRepository
 	graphRepo              interfaces.RetrieveGraphRepository
@@ -123,6 +122,9 @@ type agentService struct {
 	memoryService          interfaces.MemoryService
 	storageResolver        interfaces.StorageBackendResolver
 	toolApprovalGate       approval.MCPApproval
+	customAgentService     interfaces.CustomAgentService
+	operationDispatcher    operations.Dispatcher
+	collaboration          *AgentCollaboration
 	sandboxMgr             sandbox.Manager
 	sandboxResolver        sandbox.TenantSandboxResolver
 	sandboxPinner          *SessionSandboxPinner
@@ -132,41 +134,7 @@ type agentService struct {
 	hostSkillInstaller     sandbox.Manager
 	hostSkillsRoot         string
 	hostSkillVersionsRoot  string
-=======
-	browserSkill          *browserskill.Manager
-	userRepo              interfaces.UserRepository
-	graphRepo             interfaces.RetrieveGraphRepository
-	cfg                   *config.Config
-	modelService          interfaces.ModelService
-	mcpServiceService     interfaces.MCPServiceService
-	mcpManager            *mcp.MCPManager
-	eventBus              *event.EventBus
-	db                    *gorm.DB
-	webSearchService      interfaces.WebSearchService
-	knowledgeBaseService  interfaces.KnowledgeBaseService
-	knowledgeService      interfaces.KnowledgeService
-	fileService           interfaces.FileService
-	chunkService          interfaces.ChunkService
-	duckdb                *sql.DB
-	wikiPageService       interfaces.WikiPageService
-	tenantService         interfaces.TenantService
-	messageService        interfaces.MessageService
-	memoryService         interfaces.MemoryService
-	storageResolver       interfaces.StorageBackendResolver
-	toolApprovalGate      approval.MCPApproval
-	customAgentService    interfaces.CustomAgentService
-	operationDispatcher   operations.Dispatcher
-	collaboration         *AgentCollaboration
-	sandboxMgr            sandbox.Manager
-	sandboxResolver       sandbox.TenantSandboxResolver
-	sandboxPinner         *SessionSandboxPinner
-	sandboxPolicy         WorkspaceSandboxPolicy
-	hostSandbox           sandbox.Manager
-	hostDesktop           bool
-	hostSkillInstaller    sandbox.Manager
-	hostSkillsRoot        string
-	hostSkillVersionsRoot string
-	background            *BackgroundWork
+	background             *BackgroundWork
 	// shellJobs is an interface so registration can assert ShellJobSubmitter.
 	// *ShellJobService is the production value. && binds tighter than ||, so
 	// the availability check groups RemoteAvailable and LocalAvailable.
@@ -178,7 +146,6 @@ type agentService struct {
 type shellJobSource interface {
 	RemoteAvailable() bool
 	LocalAvailable() bool
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 }
 
 // NewAgentService creates a new agent service
@@ -209,11 +176,17 @@ func NewAgentService(
 	browserSkill *browserskill.Manager,
 	userRepo interfaces.UserRepository,
 	graphRepo interfaces.RetrieveGraphRepository,
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	imageGenerationService *ImageGenerationService,
 	chartArtifacts *ChartArtifactService,
+	backgroundWork *BackgroundWork,
+	shellJobs *ShellJobService,
+	operationDispatcher *operations.HandlerDispatcher,
+	customAgentService interfaces.CustomAgentService,
+	collaboration *AgentCollaboration,
 ) interfaces.AgentService {
 	svc := &agentService{
+		customAgentService:     customAgentService,
+		operationDispatcher:    operationDispatcher,
 		browserSkill:           browserSkill,
 		userRepo:               userRepo,
 		graphRepo:              graphRepo,
@@ -243,46 +216,8 @@ func NewAgentService(
 		sandboxPolicy:          sandboxPolicy,
 		hostSandbox:            hostSandbox.Manager,
 		hostDesktop:            hostSandbox.Desktop,
-=======
-	backgroundWork *BackgroundWork,
-	shellJobs *ShellJobService,
-	operationDispatcher *operations.HandlerDispatcher,
-	customAgentService interfaces.CustomAgentService,
-	collaboration *AgentCollaboration,
-) interfaces.AgentService {
-	svc := &agentService{
-		customAgentService:   customAgentService,
-		operationDispatcher:  operationDispatcher,
-		browserSkill:         browserSkill,
-		userRepo:             userRepo,
-		graphRepo:            graphRepo,
-		cfg:                  cfg,
-		modelService:         modelService,
-		knowledgeBaseService: knowledgeBaseService,
-		knowledgeService:     knowledgeService,
-		fileService:          fileService,
-		chunkService:         chunkService,
-		mcpServiceService:    mcpServiceService,
-		mcpManager:           mcpManager,
-		eventBus:             eventBus,
-		db:                   db,
-		webSearchService:     webSearchService,
-		duckdb:               duckdb,
-		wikiPageService:      wikiPageService,
-		tenantService:        tenantService,
-		messageService:       messageService,
-		memoryService:        memoryService,
-		storageResolver:      storageResolver,
-		toolApprovalGate:     toolApprovalGate,
-		sandboxMgr:           sandboxMgr,
-		sandboxResolver:      sandboxResolver,
-		sandboxPinner:        sandboxPinner,
-		sandboxPolicy:        sandboxPolicy,
-		hostSandbox:          hostSandbox.Manager,
-		hostDesktop:          hostSandbox.Desktop,
-		background:           backgroundWork,
-		shellJobs:            shellJobs,
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+		background:             backgroundWork,
+		shellJobs:              shellJobs,
 	}
 	if hostSandbox.SkillsAvailable() {
 		svc.hostSkillInstaller = hostSandbox.SkillInstaller

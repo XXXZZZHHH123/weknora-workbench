@@ -55,7 +55,7 @@ type DocumentDateEvidence struct {
 const documentScopePlanSchema = `{"type":"object","additionalProperties":false,"required":["sources","selection_reason"],"properties":{
 "selection_reason":{"type":"string","minLength":1,"maxLength":2000,"description":"Explain source restrictions inferred from the complete user request and context. Ambiguous source dates/versions require clarification, not choosing the first candidate."},
 "sources":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"object","additionalProperties":false,"required":["knowledge_id"],"properties":{
-"knowledge_id":{"type":"string","minLength":1,"description":"Actual authorized dN document handle from search/list metadata"},
+"knowledge_id":{"type":"string","minLength":1,"description":"Actual authorized doc://N document handle from search/list metadata"},
 "expected_file_name":{"type":"string","description":"Exact file_name from real source metadata; at least file_name or title is required"},
 "expected_title":{"type":"string","description":"Exact title from real source metadata"},
 "page":{"type":"integer","minimum":1,"description":"Physical page / PPT slide selected by the QA model, not chunk offset"},

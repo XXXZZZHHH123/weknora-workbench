@@ -347,11 +347,6 @@ func (s *knowledgeService) CreateKnowledgeFromURL(ctx context.Context,
 	title string, tagIDs []string, channel string,
 	processOverrides *types.KnowledgeProcessOverrides,
 ) (*types.Knowledge, error) {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	if processOverrides != nil && processOverrides.SourceOnly {
-		return nil, werrors.NewBadRequestError("仅保存原件模式只支持文件上传，不支持网页或文件URL导入")
-	}
-=======
 	return s.createKnowledgeFromURL(ctx, kbID, rawURL, fileName, fileType, enableMultimodel,
 		title, tagIDs, channel, processOverrides, nil)
 }
@@ -362,7 +357,9 @@ func (s *knowledgeService) createKnowledgeFromURL(ctx context.Context,
 	processOverrides *types.KnowledgeProcessOverrides,
 	replacement *knowledgeReplacement,
 ) (*types.Knowledge, error) {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	if processOverrides != nil && processOverrides.SourceOnly {
+		return nil, werrors.NewBadRequestError("仅保存原件模式只支持文件上传，不支持网页或文件URL导入")
+	}
 	logger.Info(ctx, "Start creating knowledge from URL")
 	logger.Infof(ctx, "Knowledge base ID: %s, URL: %s", kbID, rawURL)
 
@@ -572,11 +569,6 @@ func (s *knowledgeService) createKnowledgeFromFileURL(
 	enableMultimodel *bool, title string, tagIDs []string, channel string,
 	processOverrides *types.KnowledgeProcessOverrides,
 ) (*types.Knowledge, error) {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	if processOverrides != nil && processOverrides.SourceOnly {
-		return nil, werrors.NewBadRequestError("仅保存原件模式只支持文件上传，不支持文件URL导入")
-	}
-=======
 	return s.createKnowledgeFromFileURLWithReplacement(ctx, kbID, fileURL, fileName, fileType,
 		enableMultimodel, title, tagIDs, channel, processOverrides, nil)
 }
@@ -586,7 +578,9 @@ func (s *knowledgeService) createKnowledgeFromFileURLWithReplacement(
 	enableMultimodel *bool, title string, tagIDs []string, channel string,
 	processOverrides *types.KnowledgeProcessOverrides, replacement *knowledgeReplacement,
 ) (*types.Knowledge, error) {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	if processOverrides != nil && processOverrides.SourceOnly {
+		return nil, werrors.NewBadRequestError("仅保存原件模式只支持文件上传，不支持文件URL导入")
+	}
 	logger.Info(ctx, "Start creating knowledge from file URL")
 	logger.Infof(ctx, "Knowledge base ID: %s, file URL: %s", kbID, fileURL)
 

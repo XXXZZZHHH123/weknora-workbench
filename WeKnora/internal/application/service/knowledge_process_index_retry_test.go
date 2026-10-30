@@ -7,13 +7,9 @@ import (
 	"net/http"
 	"testing"
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	"github.com/Tencent/WeKnora/internal/application/service/retriever"
 	werrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/models/api"
-=======
-	werrors "github.com/Tencent/WeKnora/internal/errors"
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	"github.com/Tencent/WeKnora/internal/models/embedding"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
@@ -59,7 +55,7 @@ func (e *failingIndexEngine) DeleteByKnowledgeIDList(context.Context, []string, 
 func runProcessChunksWithFailingIndex(
 	ctx context.Context, t *testing.T, tracker SpanTracker,
 ) (*indexRetryKnowledgeRepo, *indexRetryChunkRepo, *failingIndexEngine, error) {
-	return runProcessChunksWithIndexCause(ctx, t, errors.New("embedding endpoint unavailable"), nil)
+	return runProcessChunksWithIndexCause(ctx, t, errors.New("embedding endpoint unavailable"), tracker)
 }
 
 func runProcessChunksWithIndexCause(
@@ -92,7 +88,6 @@ func runProcessChunksWithIndexCause(
 		graphEngine:    parentChildGraphRepo{},
 		tenantRepo:     parentChildTenantRepo{},
 		task:           parentChildTaskEnqueuer{},
-		spanTracker:    tracker,
 	}
 	kb := &types.KnowledgeBase{
 		ID:               "kb-1",

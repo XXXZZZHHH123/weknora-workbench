@@ -64,7 +64,6 @@ var versionedSQLiteTables = []string{
 // versionedSQLiteColumns maps each existing table to the columns that the
 // versioned migrations add and the SQLite baseline was missing.
 var versionedSQLiteColumns = map[string][]string{
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	"image_generation_executions": {"tenant_id", "session_id", "message_id", "tool_call_id", "model_id", "request_hash", "status", "resource_url", "position"},
 	"research_workbenches":        {"workspace_mode", "template_id", "template_version", "access_policy", "source_sharing_approved", "source_sharing_approved_by", "source_sharing_requested", "source_sharing_modules", "restricted_view_profiles", "sources_revision"},
 	"model_catalog_configs":       {"version", "overlay", "history", "updated_by", "updated_at"}, // 000037
@@ -74,30 +73,16 @@ var versionedSQLiteColumns = map[string][]string{
 	"users":                       {"is_system_admin"},                                           // 000053
 	"knowledges":                  {"pending_subtasks_count", "profile"},                         // 000056, 000101
 	"knowledge_bases":             {"profile_config", "generated_profile", "access_policy", "system_role"},
-	"messages":                    {"attachments", "usage", "sandbox_checkpoint", "context_checkpoint"}, // 000034/085/097/105
-=======
-	"automations":           {"model_id"},                                                  // 000049
-	"automation_runs":       {"execution_duration_ms"},                                     // 000048
-	"model_catalog_configs": {"version", "overlay", "history", "updated_by", "updated_at"}, // 000031
-	"memory_subjects":       {"extraction_state"},                                          // 000094
-	"memory_items":          {"replaces_id"},                                               // 000094
-	"tenants":               {"api_principal_config"},                                      // 000064
-	"users":                 {"is_system_admin"},                                           // 000053
-	"knowledges":            {"pending_subtasks_count", "profile"},                         // 000056, 000101
-	"knowledge_bases":       {"profile_config", "generated_profile"},                       // 000101
-	// 000034/085/097/105/119
-	"messages": {"attachments", "usage", "sandbox_checkpoint", "context_checkpoint", "run_state"},
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	"messages":                    {"attachments", "usage", "sandbox_checkpoint", "context_checkpoint", "run_state"}, // 000034/085/097/105
+	"automations":                 {"model_id"},
+	"automation_runs":             {"execution_duration_ms"},
 	"sessions": {
 		"kind",
 		"parent_session_id", "forked_from_message_id", "fork_bootstrap", // 000097
 		"sandbox_config_tenant_id", // 000027
 		"host_workspace_dir",       // 000029
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 		"research_workbench_id",    // 000041
-=======
 		"owner_auth_source",        // 000046
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	},
 	"session_sandbox_assignments": {"released_at", "cleanup_due_at"},    // 000047
 	"tenant_invitations":          {"token", "accepted_count"},          // 000054
@@ -117,11 +102,7 @@ var versionedSQLiteColumns = map[string][]string{
 	}, // 000028
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-const expectedSQLiteMigrationVersion = 49
-=======
-const expectedSQLiteMigrationVersion = 51
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+const expectedSQLiteMigrationVersion = 64
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)
@@ -298,19 +279,19 @@ func TestSQLiteSandboxAllocationMigrationRollsBack(t *testing.T) {
 	t.Cleanup(func() { _, _ = m.Close() })
 
 	// Target the allocation migration even when newer migrations exist.
-	require.NoError(t, m.Migrate(46))
+	require.NoError(t, m.Migrate(59))
 	version, dirty = sqliteMigrationState(t, sqlDB)
-	require.Equal(t, 46, version)
+	require.Equal(t, 59, version)
 	require.False(t, dirty)
 	for _, table := range []string{"session_sandbox_assignments", "sandbox_user_machines"} {
 		require.Falsef(t, sqliteTableExists(t, sqlDB, table), "down must drop %s", table)
 	}
 	require.True(t, sqliteColumnExists(t, sqlDB, "sessions", "owner_auth_source"),
-		"rolling back the allocation tables keeps the owner source of 000046")
+		"rolling back the allocation tables keeps the owner source of 000059")
 
-	require.NoError(t, m.Migrate(47))
+	require.NoError(t, m.Migrate(60))
 	version, dirty = sqliteMigrationState(t, sqlDB)
-	require.Equal(t, 47, version)
+	require.Equal(t, 60, version)
 	require.False(t, dirty)
 	require.True(t, sqliteTableExists(t, sqlDB, "session_sandbox_assignments"))
 	require.True(t, sqliteTableExists(t, sqlDB, "sandbox_user_machines"))
@@ -527,7 +508,7 @@ func TestSQLiteSessionKindBackfillAndRollback(t *testing.T) {
 		}
 	}
 	require.True(t, sqliteIndexExists(t, db, "idx_sessions_tenant_kind_user_updated"))
-	down, err := os.ReadFile(filepath.Join(repoRoot, "migrations/sqlite/000039_session_kind.down.sql"))
+	down, err := os.ReadFile(filepath.Join(repoRoot, "migrations/sqlite/000052_session_kind.down.sql"))
 	require.NoError(t, err)
 	_, err = db.Exec(string(down))
 	require.NoError(t, err)

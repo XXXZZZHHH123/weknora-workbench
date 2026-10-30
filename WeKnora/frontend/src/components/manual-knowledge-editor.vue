@@ -18,12 +18,9 @@ import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess'
 import { sanitizeHTML, safeMarkdownToHTML, hydrateProtectedFileImages } from '@/utils/security'
 import { continueListOnEnter, countContent, indentOnTab } from '@/utils/markdownEditing'
 import { useI18n } from 'vue-i18n'
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 import { useAuthStore } from '@/stores/auth'
 import { useRoute } from 'vue-router'
-=======
 import AssistantActionsButton from '@/components/assistant/AssistantActionsButton.vue'
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 interface KnowledgeBaseOption {
   label: string
@@ -671,14 +668,10 @@ const loadKnowledgeBases = async (session = editorSessionScope()) => {
 
     kbOptions.value = list
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
     if (mode.value === 'create' && form.kbId === originalKbId) {
-=======
-    if (mode.value === 'create') {
       // Explicit kbId (KB-page callers) keeps the historical force-insert path.
       // Chat preferences are soft: only select an id already in the writable
       // candidate list, otherwise fall back to list[0].
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
       const presetKbId = uiStore.manualEditorKBId
       if (presetKbId) {
         const exists = list.find((item) => item.value === presetKbId)
@@ -807,10 +800,7 @@ const initialize = async (session = editorSessionScope()) => {
     if (!await loadKnowledgeContent(session)) return
     if (!editorSessionCurrent(session)) return
   } else {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-    if (!form.kbId && kbOptions.value.length) {
-      form.kbId = kbOptions.value[0].value
-=======
+    if (!form.kbId) {
     const presetKbId = uiStore.manualEditorKBId
     if (presetKbId) {
       form.kbId = presetKbId
@@ -821,7 +811,7 @@ const initialize = async (session = editorSessionScope()) => {
         uiStore.manualEditorPreferredKbIds,
         kbOptions.value.map((item) => item.value),
       )
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+    }
     }
     form.title = form.title || generateDefaultTitle()
     form.content = form.content || ''
@@ -1209,7 +1199,6 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="editor-pane editor-pane--preview" v-show="showPreview">
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
             <div v-if="previewLoading" class="loading-placeholder" role="status">
               <t-loading size="small" :text="$t('preview.loading')" />
             </div>
@@ -1217,10 +1206,7 @@ onBeforeUnmount(() => {
               <span>{{ $t('preview.loadFailed') }}</span>
               <t-button size="small" variant="text" @click="loadPreviewMarkdown">{{ $t('preview.retry') }}</t-button>
             </div>
-            <div ref="previewRoot" class="preview-container" v-html="previewHTML" />
-=======
             <div ref="previewRoot" class="preview-container" data-assistant-ignore v-html="previewHTML" />
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
           </div>
         </div>
 

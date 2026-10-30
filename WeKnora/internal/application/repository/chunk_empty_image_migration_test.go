@@ -31,9 +31,9 @@ func TestEmptyImageMigrationRemovesOnlyProvenEmptyDerivedChunks(t *testing.T) {
 			kept = append(kept, fx.addRaw("image_caption", 0, raw))
 		}
 
-		path := "../../../migrations/sqlite/000042_remove_empty_image_chunks.up.sql"
+		path := "../../../migrations/sqlite/000055_remove_empty_image_chunks.up.sql"
 		if db.Name() == "postgres" {
-			path = "../../../migrations/versioned/000125_remove_empty_image_chunks.up.sql"
+			path = "../../../migrations/versioned/000138_remove_empty_image_chunks.up.sql"
 		}
 		sql, err := os.ReadFile(path)
 		require.NoError(t, err)

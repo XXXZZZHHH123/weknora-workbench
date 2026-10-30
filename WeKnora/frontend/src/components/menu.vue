@@ -6,27 +6,11 @@
                 <BrandWordmark compact />
             </button>
             <div class="logo_actions">
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-                <div class="sidebar-toggle" role="button" tabindex="0" @keydown.enter.prevent="uiStore.toggleSidebar" @keydown.space.prevent="uiStore.toggleSidebar" @click="uiStore.toggleSidebar" :title="t('menu.collapseSidebar')">
-=======
                 <t-tooltip v-if="assistantStore.entry === 'sidebar'" :content="assistantName" placement="bottom">
                     <AssistantButton data-guide="assistant-entry" icon-only :icon-size="18" :label="assistantName"
                         :active="assistantStore.visible" @click="assistantStore.toggle()" />
                 </t-tooltip>
-                <t-tooltip placement="bottom">
-                    <template #content>
-                        <span class="cmdk-tip">
-                            <span class="cmdk-tip-label">{{ t('menu.search') }}</span>
-                            <span class="cmdk-tip-keys">{{ cmdModKeyLabel }}K</span>
-                        </span>
-                    </template>
-                    <div class="header-icon-btn" @click="commandPaletteStore.openPalette('')"
-                        :aria-label="t('menu.search')">
-                        <img class="header-icon-img" :src="getImgSrc('search.svg')" alt="">
-                    </div>
-                </t-tooltip>
-                <div class="sidebar-toggle" @click="uiStore.toggleSidebar" :title="t('menu.collapseSidebar')">
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+                <div class="sidebar-toggle" role="button" tabindex="0" @keydown.enter.prevent="uiStore.toggleSidebar" @keydown.space.prevent="uiStore.toggleSidebar" @click="uiStore.toggleSidebar" :title="t('menu.collapseSidebar')">
                     <svg viewBox="0 0 20 20" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <rect x="1.5" y="1.5" width="17" height="17" rx="3" stroke="currentColor" stroke-width="1.5" />
                         <line x1="7.5" y1="1.5" x2="7.5" y2="18.5" stroke="currentColor" stroke-width="1.5" />
@@ -64,7 +48,6 @@
             :value="uiStore.sidebarDisplayWidth" :min="SIDEBAR_COLLAPSED_WIDTH" :max="SIDEBAR_MAX_WIDTH"
             @start="startSidebarResize" @resize="resizeSidebar" @end="uiStore.sidebarResizing = false" />
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
         <button type="button" class="sidebar-search" :class="{ 'sidebar-search--collapsed': uiStore.sidebarCollapsed }"
             :aria-label="t('menu.search')" :title="`${t('menu.search')} (${cmdModKeyLabel}K)`"
             @click="commandPaletteStore.openPalette('')">
@@ -72,68 +55,11 @@
             <span v-if="!uiStore.sidebarCollapsed" class="sidebar-search__label">{{ t('menu.search') }}</span>
             <kbd v-if="!uiStore.sidebarCollapsed">{{ cmdModKeyLabel }}K</kbd>
         </button>
-=======
-        <!-- 上半部分：新对话吸顶 + 知识库/智能体/共享空间/历史会话随滚动一起滚走 -->
-        <div class="menu_top" ref="scrollContainer" @scroll="handleScroll">
-            <!-- 全局搜索入口：点击打开命令面板（⌘K）。展开态移至顶部 logo_row 的图标按钮；
-                 折叠态在此处保留为图标项 + 深色 tooltip。 -->
-            <div class="menu_box menu_box--cmdk" v-if="uiStore.sidebarCollapsed">
-                <t-tooltip placement="right">
-                    <template #content>
-                        <span class="cmdk-tip">
-                            <span class="cmdk-tip-label">{{ t('menu.search') }}</span>
-                            <span class="cmdk-tip-keys">{{ cmdModKeyLabel }}K</span>
-                        </span>
-                    </template>
-                    <div class="menu_item menu_item--cmdk" @click="commandPaletteStore.openPalette('')">
-                        <div class="menu_item-box">
-                            <div class="menu_icon">
-                                <img class="icon" :src="getImgSrc('search.svg')" alt="">
-                            </div>
-                        </div>
-                    </div>
-                </t-tooltip>
-                <t-tooltip v-if="assistantStore.entry === 'sidebar'" :content="assistantName" placement="right">
-                    <AssistantButton data-guide="assistant-entry" class="assistant-sidebar-entry" icon-only :icon-size="18"
-                        :label="assistantName" :active="assistantStore.visible" @click="assistantStore.toggle()" />
-                </t-tooltip>
-            </div>
-            <div class="menu_box" :class="{ 'menu_box--sticky': item.children && !uiStore.sidebarCollapsed }"
-                v-for="(item, index) in topMenuItems" :key="index">
-                <t-tooltip :content="item.title" placement="right" :disabled="!uiStore.sidebarCollapsed">
-                    <div @click="handleMenuClick(item.path)" @mouseenter="mouseenteMenu(item.path)"
-                        @mouseleave="mouseleaveMenu(item.path)" :data-guide="`nav-${item.path}`"
-                        :class="['menu_item', item.childrenPath && item.childrenPath == currentpath ? 'menu_item_c_active' : isMenuItemActive(item.path) ? 'menu_item_active' : '']">
-                        <div class="menu_item-box">
-                            <div class="menu_icon" :class="`menu_icon--${item.icon}`">
-                                <img class="icon"
-                                    :src="getImgSrc(item.icon == 'zhishiku' ? knowledgeIcon : item.icon == 'agent' ? agentIcon : item.icon == 'artifact' ? artifactIcon : item.icon == 'automation' ? automationIcon : item.icon == 'toolbox' ? toolboxIcon : item.icon == 'organization' ? organizationIcon : item.icon == 'logout' ? logoutIcon : item.icon == 'setting' ? settingIcon : prefixIcon)"
-                                    alt="">
-                            </div>
-                            <template v-if="!uiStore.sidebarCollapsed">
-                                <span class="menu_title" :title="item.title">{{ item.title }}</span>
-                                <span v-if="item.path === 'organizations' && orgStore.totalPendingJoinRequestCount > 0"
-                                    class="menu-pending-badge"
-                                    :title="t('organization.settings.pendingJoinRequestsBadge')">{{
-                                        orgStore.totalPendingJoinRequestCount }}</span>
-                                <span v-if="item.path === 'toolbox' && toolboxPreview.length" class="menu-toolbox-stack"
-                                    :title="toolboxPreview.map((tool) => tool.key === 'browserconnection' && browserStackStatus
-                                        ? `${t(tool.title)} (${t(`localBrowser.${browserStackStatus}`)})` : t(tool.title)).join(' · ')">
-                                    <span v-for="tool in toolboxPreview" :key="tool.key" class="menu-toolbox-stack__item">
-                                        <template v-if="tool.key === 'browserconnection'">
-                                            <BrowserIcon width="12" height="12" />
-                                            <i v-if="browserStackStatus" class="menu-toolbox-stack__status"
-                                                :class="`is-${browserStackStatus}`" aria-hidden="true" />
-                                        </template>
-                                        <t-icon v-else :name="tool.icon" size="12px" />
-                                    </span>
-                                </span>
-                            </template>
-                        </div>
-                    </div>
-                </t-tooltip>
-            </div>
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+
+        <t-tooltip v-if="uiStore.sidebarCollapsed && assistantStore.entry === 'sidebar'" :content="assistantName" placement="right">
+            <AssistantButton data-guide="assistant-entry" icon-only :icon-size="18" :label="assistantName"
+                :active="assistantStore.visible" @click="assistantStore.toggle()" />
+        </t-tooltip>
 
         <nav class="menu_top sidebar-primary-nav" aria-label="工作区导航">
             <WorkspaceNavigationNode title="New" icon="add" guide="nav-creatChat" class="sidebar-new"
@@ -152,6 +78,9 @@
             <WorkspaceNavigationNode v-if="canAccessAgents" title="智能体管理" icon="robot-1" guide="nav-agents"
                 :collapsed="uiStore.sidebarCollapsed" :active="isAgentsActive"
                 @navigate="router.push('/platform/agents')" />
+            <WorkspaceNavigationNode :title="t('menu.automations')" icon="time" guide="nav-automations"
+                :collapsed="uiStore.sidebarCollapsed" :active="route.name === 'automationList'"
+                @navigate="router.push('/platform/automations')" />
         </nav>
 
         <section v-if="!uiStore.sidebarCollapsed" class="sidebar-recents" aria-labelledby="sidebar-recents-title">
@@ -514,7 +443,6 @@ const isWorkbenchActive = computed(() => String(route.name).startsWith('research
 const isAgentsActive = computed(() => route.name === 'agentList');
 const canAccessAgents = computed(() => deploymentCapabilities.isSupported('agents'));
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 async function refreshWorkspaceLists() {
     const generation = ++workspaceRequestGeneration;
     workspaceLoading.value = true;
@@ -543,58 +471,6 @@ async function refreshKnowledgeBases() {
         if (generation === knowledgeBaseRequestGeneration) knowledgeBasesLoading.value = false;
     }
 }
-=======
-    switch (itemPath) {
-        case 'knowledge-bases':
-            return currentRoute === 'knowledgeBaseList' ||
-                currentRoute === 'knowledgeBaseDetail' ||
-                currentRoute === 'knowledgeBaseSettings';
-        case 'agents':
-            return currentRoute === 'agentList';
-        case 'toolbox':
-            return currentRoute === 'toolbox';
-        case 'artifacts':
-            return currentRoute === 'artifactLibrary';
-        case 'automations':
-            return currentRoute === 'automationList';
-        case 'organizations':
-            return currentRoute === 'organizationList';
-        case 'creatChat':
-            return currentRoute === 'kbCreatChat' || currentRoute === 'globalCreatChat';
-        case 'settings':
-            return currentRoute === 'settings';
-        default:
-            return itemPath === currentpath.value;
-    }
-};
-
-// 统一的图标激活状态判断
-const getIconActiveState = (itemPath: string) => {
-    const currentRoute = route.name;
-
-    return {
-        isKbActive: itemPath === 'knowledge-bases' && (
-            currentRoute === 'knowledgeBaseList' ||
-            currentRoute === 'knowledgeBaseDetail' ||
-            currentRoute === 'knowledgeBaseSettings'
-        ),
-        isCreatChatActive: itemPath === 'creatChat' && (currentRoute === 'kbCreatChat' || currentRoute === 'globalCreatChat'),
-        isSettingsActive: itemPath === 'settings' && currentRoute === 'settings',
-        isChatActive: itemPath === 'chat' && currentRoute === 'chat'
-    };
-};
-
-// 分离上下两部分菜单（使用 visibleMenuArr 以便 lite 模式过滤 logout）
-const TOP_MENU_PATHS = new Set(['creatChat', 'knowledge-bases', 'artifacts', 'agents', 'automations', 'toolbox', 'organizations']);
-
-const topMenuItems = computed<MenuItem[]>(() => {
-    return (visibleMenuArr.value as unknown as MenuItem[]).filter((item: MenuItem) => TOP_MENU_PATHS.has(item.path));
-});
-
-const bottomMenuItems = computed<MenuItem[]>(() => {
-    return (visibleMenuArr.value as unknown as MenuItem[]).filter((item: MenuItem) => !TOP_MENU_PATHS.has(item.path));
-});
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 // 当前知识库信息
 const currentKbName = ref<string>('')
@@ -1280,76 +1156,9 @@ watch([() => route.name, () => route.params], (newvalue, oldvalue) => {
         loadCurrentKbInfo((newvalue[1] as any)?.kbId as string);
     }
 });
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 watch(() => route.fullPath, () => {
     if (route.path.startsWith('/platform/projects') || route.path.startsWith('/platform/research-workbenches')) {
         void refreshWorkspaceLists();
-=======
-let knowledgeIcon = ref('zhishiku-green.svg');
-let prefixIcon = ref('prefixIcon.svg');
-let logoutIcon = ref('logout.svg');
-let settingIcon = ref('setting.svg');
-let agentIcon = ref('agent.svg');
-let artifactIcon = ref('artifact.svg');
-let toolboxIcon = ref('toolbox.svg');
-let automationIcon = ref('automation.svg');
-let organizationIcon = ref('organization.svg');
-let pathPrefix = ref(route.name)
-const getIcon = (path: string) => {
-    // 根据当前路由状态更新所有图标
-    const kbActiveState = getIconActiveState('knowledge-bases');
-    const creatChatActiveState = getIconActiveState('creatChat');
-    const settingsActiveState = getIconActiveState('settings');
-    const agentsActiveState = route.name === 'agentList';
-    const artifactsActiveState = route.name === 'artifactLibrary';
-    const organizationsActiveState = route.name === 'organizationList';
-
-    // 知识库图标：只在知识库页面显示绿色
-    knowledgeIcon.value = kbActiveState.isKbActive ? 'zhishiku-green.svg' : 'zhishiku.svg';
-
-    // 智能体图标：只在智能体页面显示绿色
-    agentIcon.value = agentsActiveState ? 'agent-green.svg' : 'agent.svg';
-
-    // 产物图标：只在产物页面显示绿色
-    artifactIcon.value = artifactsActiveState ? 'artifact-green.svg' : 'artifact.svg';
-
-    toolboxIcon.value = route.name === 'toolbox' ? 'toolbox-green.svg' : 'toolbox.svg';
-    automationIcon.value = route.name === 'automationList' ? 'automation-green.svg' : 'automation.svg';
-
-    // 组织图标：只在组织页面显示绿色
-    organizationIcon.value = organizationsActiveState ? 'organization-green.svg' : 'organization.svg';
-
-    // 对话图标：只在对话创建页面显示绿色，其他情况显示默认
-    prefixIcon.value = creatChatActiveState.isCreatChatActive ? 'prefixIcon-green.svg' : 'prefixIcon.svg';
-
-    // 设置图标：只在设置页面显示绿色
-    settingIcon.value = settingsActiveState.isSettingsActive ? 'setting-green.svg' : 'setting.svg';
-
-    // 退出图标：始终显示默认
-    logoutIcon.value = 'logout.svg';
-}
-getIcon(typeof route.name === 'string' ? route.name as string : (route.name ? String(route.name) : ''))
-const handleMenuClick = async (path: string) => {
-    if (path === 'knowledge-bases') {
-        // 知识库菜单项：如果在知识库内部，跳转到当前知识库文件页；否则跳转到知识库列表
-        const kbId = await getCurrentKbId()
-        if (kbId) {
-            router.push(`/platform/knowledge-bases/${kbId}`)
-        } else {
-            router.push('/platform/knowledge-bases')
-        }
-    } else if (path === 'agents') {
-        router.push('/platform/agents')
-    } else if (path === 'organizations') {
-        // 组织菜单项：跳转到组织列表
-        router.push('/platform/organizations')
-    } else if (path === 'settings') {
-        // 设置菜单项：打开设置弹窗并跳转路由
-        uiStore.openSettings()
-        router.push('/platform/settings')
-    } else {
-        gotopage(path)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
     }
     if (route.path.startsWith('/platform/knowledge-bases')) void refreshKnowledgeBases();
 });

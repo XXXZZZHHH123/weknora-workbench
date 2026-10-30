@@ -36,7 +36,7 @@ function render(kind: string | null, embeddedMode = false) {
   const isAutomationSession = runInNewContext(`${declaration}\nisAutomationSession`, { currentSession, computed: vue.computed })
   return nodes(exports.render({
     currentSession: currentSession.value, isAutomationSession: isAutomationSession.value,
-    embeddedMode, userHasScrolledUp: false, onClickScrollToBottom() {}, t: (key: string) => key,
+    embeddedMode, $t: (key: string) => key, userHasScrolledUp: false, onClickScrollToBottom() {}, t: (key: string) => key,
     focusComposerOnMount: false, isReplying: false, composerLocked: false, session_id: 'session',
     currentAssistantMessageId: '', modelId: '', defaultModelId: '', steerQueue: [],
     isAgentStreamSession: () => true, $slots: {}, backgroundItems: [],

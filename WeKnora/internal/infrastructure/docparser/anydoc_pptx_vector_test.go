@@ -66,7 +66,7 @@ func TestAnydocReaderRoutesPPTXVectorMedia(t *testing.T) {
 			if !reflect.DeepEqual(*fallback.got, expected) || !reflect.DeepEqual(*req, original) {
 				t.Fatal("fallback must change only its copied request's engine")
 			}
-			if got.Metadata["anydoc_fallback"] != "pptx_vector_media" || got.Metadata["parser"] != "markitdown" {
+			if got.Metadata["anydoc_fallback"] != "powerpoint_pages_and_cached_charts" || got.Metadata["parser"] != "markitdown" {
 				t.Fatalf("missing fallback metadata: %+v", got.Metadata)
 			}
 		})
@@ -135,7 +135,7 @@ func TestAnydocReaderPPTXVectorFallbackFailures(t *testing.T) {
 	}
 }
 
-func TestAnydocReaderDoesNotRouteOtherInputsToMarkitdown(t *testing.T) {
+func TestAnydocReaderPreservesPageAwareFallbackForOrdinaryPPTX(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		fileType  string
@@ -155,8 +155,12 @@ func TestAnydocReaderDoesNotRouteOtherInputsToMarkitdown(t *testing.T) {
 			_, _ = NewAnydocReader(tc.overrides, fallback).Read(context.Background(), &types.ReadRequest{
 				FileType: tc.fileType, FileContent: presentationArchive(t, tc.media),
 			})
-			if fallback.got != nil {
-				t.Fatal("non-vector or text-only input unexpectedly used fallback")
+			if tc.fileType == "pptx" {
+				if fallback.got == nil {
+					t.Fatal("PPTX must retain page and cached-chart extraction even without vector images")
+				}
+			} else if fallback.got != nil {
+				t.Fatal("non-PowerPoint input unexpectedly used PowerPoint fallback")
 			}
 		})
 	}

@@ -10,13 +10,9 @@ export function getAgentToolIconName(
   toolName: string,
   searchSource?: 'knowledge' | 'web' | 'mixed',
 ): string {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   if (toolName === 'render_chart') return 'chart-line'
   if (toolName === 'generate_image') return 'image'
-  if (toolName === 'local_browser') return 'internet'
-=======
   if (toolName === 'local_browser') return 'browser'
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   if (toolName === 'thinking') {
     return 'ai-search'
   }

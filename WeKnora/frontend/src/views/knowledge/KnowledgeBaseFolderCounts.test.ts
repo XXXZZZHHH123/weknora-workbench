@@ -55,7 +55,7 @@ const syncedTree = {
 
 async function setup(t: TestContext, tree: unknown) {
   const f = fixture(t)
-  const route = vue.reactive({ params: { kbId: 'kb' }, query: {} })
+  const route = vue.reactive({ params: { kbId: 'kb' }, query: {}, meta: {} })
   const hook = {
     cardList: vue.ref<any[]>([]), total: vue.ref(0), moreIndex: vue.ref(-1),
     details: vue.reactive({ id: 'doc' }), getKnowled: t.mock.fn(async () => {}),
@@ -64,13 +64,13 @@ async function setup(t: TestContext, tree: unknown) {
   const listKnowledgeFolders = t.mock.fn(async (_id: string) => ({ data: tree }))
   const fetchKnowledgeBaseById = t.mock.fn(async (_id: string, _force: boolean) => ({ id: 'kb', type: 'document' }))
   const page = f.component(new URL('./KnowledgeBase.vue', import.meta.url), {
-    'vue-router': { useRoute: () => route, useRouter: () => ({ replace() {} }) },
+    'vue-router': { useRoute: () => route, useRouter: () => ({ currentRoute: vue.ref(route), replace() {} }) },
     'vue-i18n': { useI18n: () => ({ t: (key: string) => key }) },
     'tdesign-vue-next': { MessagePlugin: {} },
     '@/hooks/useKnowledgeBase': () => hook,
     '@/stores/ui': { useUIStore: () => ({ clearSelectedTagIds() {} }) },
     '@/stores/organization': { useOrganizationStore: () => ({ sharedKnowledgeBases: [], getKBPermission: () => 'owner' }) },
-    '@/stores/auth': { useAuthStore: () => ({ hasRole: () => true }) },
+    '@/stores/auth': { useAuthStore: () => ({ hasRole: () => true, user: { id: 'user' }, effectiveTenantId: 10000 }) },
     '@/stores/chatResources': { useChatResourcesStore: () => ({
       fetchKnowledgeBaseById, rawKnowledgeBases: [], async ensureKnowledgeBases() {},
     }) },

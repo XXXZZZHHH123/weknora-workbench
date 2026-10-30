@@ -85,33 +85,6 @@ func (v *KeywordsVectorHybridRetrieveEngineService) BatchIndex(ctx context.Conte
 	}
 
 	if slices.Contains(retrieverTypes, types.VectorRetrieverType) {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-		var contentList []string
-		for _, indexInfo := range indexInfoList {
-			contentList = append(contentList, sanitizeForEmbedding(ctx, indexInfo.Content))
-		}
-		// The protocol layer retries failed requests with shared cooldowns.
-		// Replaying the whole pool here would discard successful vectors and
-		// amplify the traffic that triggered the provider's rate limit.
-		embeddings, err := embedder.BatchEmbedWithPool(ctx, embedder, contentList)
-		if err != nil {
-			return &IndexingError{Phase: IndexingPhaseEmbedding, Err: err}
-		}
-
-		batchSize := 40
-		chunks := utils.ChunkSlice(indexInfoList, batchSize)
-
-		// Use concurrent batch saving for better performance
-		// Limit concurrency to avoid overwhelming the backend
-		const maxConcurrency = 5
-		if len(chunks) <= maxConcurrency {
-			// For small number of batches, use simple concurrency
-			return indexWriteError(v.concurrentBatchSave(ctx, chunks, embeddings, batchSize))
-		}
-
-		// For large number of batches, use bounded concurrency
-		return indexWriteError(v.boundedConcurrentBatchSave(ctx, chunks, embeddings, batchSize, maxConcurrency))
-=======
 		const (
 			batchSize      = 40
 			maxConcurrency = 5
@@ -147,20 +120,19 @@ func (v *KeywordsVectorHybridRetrieveEngineService) BatchIndex(ctx context.Conte
 					vectors:  precomputed.vectors[start:end],
 				}
 			}
-			embeddings, err := batchEmbedWithBackoff(ctx, windowEmbedder, contentList)
+			embeddings, err := windowEmbedder.BatchEmbedWithPool(ctx, windowEmbedder, contentList)
 			if err != nil {
-				return err
+				return &IndexingError{Phase: IndexingPhaseEmbedding, Err: err}
 			}
 			if len(embeddings) != len(window) {
-				return fmt.Errorf("embedding model returned %d embeddings for %d inputs", len(embeddings), len(window))
+				return &IndexingError{Phase: IndexingPhaseEmbedding, Err: fmt.Errorf("embedding model returned %d embeddings for %d inputs", len(embeddings), len(window))}
 			}
 			chunks := utils.ChunkSlice(window, batchSize)
 			if err := v.concurrentBatchSave(ctx, chunks, embeddings, batchSize); err != nil {
-				return err
+				return indexWriteError(err)
 			}
 		}
 		return nil
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	}
 
 	// For non-vector retrieval, use concurrent batch saving as well

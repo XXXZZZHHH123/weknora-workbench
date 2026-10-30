@@ -9,7 +9,7 @@ import (
 
 func TestSQLiteAutomationAssistantRemovesExecutorSelection(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)
-	chdirAndRestore(t, copySQLiteMigrationsThrough(t, repoRoot, 49))
+	chdirAndRestore(t, copySQLiteMigrationsThrough(t, repoRoot, 62))
 	dbPath := filepath.Join(t.TempDir(), "automations.db")
 	opts := MigrationOptions{SQLiteDBPath: dbPath}
 	require.NoError(t, RunMigrationsWithOptions("sqlite3://unused", opts))

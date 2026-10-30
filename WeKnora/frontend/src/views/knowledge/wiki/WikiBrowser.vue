@@ -3710,29 +3710,6 @@ async function handleIssueIgnore(issueId: string) {
   }
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-async function startFixSession(prompt: string) {
-  try {
-    const res = await createSessions({})
-    if (res && (res as any).data && (res as any).data.id) {
-      const sessionId = (res as any).data.id
-      menuStore.changeIsFirstSession(true)
-      menuStore.changeFirstQuery(prompt, [], '', [])
-
-      currentFixSessionId.value = sessionId
-      showFixDrawer.value = true
-      showIssuesBox.value = false // Hide issues box
-    } else {
-      MessagePlugin.error(t('knowledgeEditor.wikiBrowser.fixStartError'))
-    }
-  } catch (e) {
-    console.error('Failed to create fix session', e)
-    MessagePlugin.error(t('knowledgeEditor.wikiBrowser.fixStartError'))
-  }
-}
-
-=======
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 function triggerFixIssue(issue: WikiPageIssue) {
   if (!selectedPage.value) return
   showIssuesBox.value = false

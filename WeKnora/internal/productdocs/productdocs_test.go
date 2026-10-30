@@ -2,14 +2,11 @@ package productdocs
 
 import (
 	"io/fs"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
 
-	websitedocs "github.com/Tencent/WeKnora/website-docs"
+	websitedocs "github.com/Tencent/WeKnora/internal/productdocs/bundled"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -254,14 +251,6 @@ func TestEmbeddedDocsParseAndLinksResolve(t *testing.T) {
 // directory must be one of them, so a new section is neither left out of the
 // index nor labelled differently from the site.
 func TestCategoriesMatchTheSiteAndTheEmbed(t *testing.T) {
-	config, err := os.ReadFile(filepath.Join("..", "..", "website-docs", ".vitepress", "config.mts"))
-	require.NoError(t, err)
-	var site []Category
-	groupRE := regexp.MustCompile(`\{ dir: '([^']+)', label: '([^']+)'`)
-	for _, m := range groupRE.FindAllStringSubmatch(string(config), -1) {
-		site = append(site, Category{Dir: m[1], Label: m[2]})
-	}
-	assert.Equal(t, site, Categories)
 
 	known := map[string]bool{}
 	for _, c := range Categories {

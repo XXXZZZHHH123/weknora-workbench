@@ -172,7 +172,6 @@
                      is now per-user and available to anyone who can see the KB
                      (backend route only requires KB read access). Settings /
                      Delete are mutations, so they stay behind canManageKBCard. -->
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
                 <KnowledgeBaseActions :knowledge-base="kb" :can-rename="canRenameKBCard(kb)" :can-delete="canManageKBCard(kb)" @changed="handleKBActionChanged">
                   <template #before="{ close }">
                     <button type="button" role="menuitem" class="popup-menu-item" @click.stop="close(); handleTogglePinById(kb.id)">
@@ -184,36 +183,6 @@
                     <button v-if="canManageKBCard(kb)" type="button" role="menuitem" class="popup-menu-item" @click.stop="close(); handleSettingsById(kb.id)">
                       <t-icon class="menu-icon" name="setting" /><span>{{ $t('knowledgeBase.settings') }}</span>
                     </button>
-=======
-                <t-popup :visible="openKbMenuId === kb.id" @visible-change="(visible: boolean) => setOpenKbMenu(kb.id, visible)"
-                  overlayClassName="card-more-popup" trigger="click" destroy-on-close placement="bottom-right">
-                  <button type="button" :aria-label="$t('common.expand')" class="more-wrap" @click.stop
-                    :class="{ 'active-more': openKbMenuId === kb.id }" :aria-expanded="openKbMenuId === kb.id" aria-haspopup="true">
-                    <t-icon name="ellipsis" size="16px" aria-hidden="true" />
-                  </button>
-                  <template #content>
-                    <div class="popup-menu" @click.stop>
-                      <div class="popup-menu-item" @click.stop="handleTogglePinById(kb.id)">
-                        <t-icon class="menu-icon" :name="kb.is_pinned ? 'pin-filled' : 'pin'" />
-                        <span>{{ kb.is_pinned ? $t('knowledgeList.pin.unpin') : $t('knowledgeList.pin.pin') }}</span>
-                      </div>
-                      <div v-if="canDuplicateKBCard(kb)" class="popup-menu-item"
-                        @click.stop="handleDuplicateById(kb.id)">
-                        <t-icon class="menu-icon" name="file-copy" />
-                        <span>{{ $t('knowledgeList.menu.duplicate') }}</span>
-                      </div>
-                      <template v-if="canManageKBCard(kb)">
-                        <div class="popup-menu-item" @click.stop="handleSettingsById(kb.id)">
-                          <t-icon class="menu-icon" name="setting" />
-                          <span>{{ $t('knowledgeBase.settings') }}</span>
-                        </div>
-                        <div class="popup-menu-item delete" @click.stop="handleDeleteById(kb.id)">
-                          <t-icon class="menu-icon" name="delete" />
-                          <span>{{ $t('common.delete') }}</span>
-                        </div>
-                      </template>
-                    </div>
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
                   </template>
                 </KnowledgeBaseActions>
               </div>
@@ -419,7 +388,6 @@
                 </span>
                 <!-- See the matching block in the "all" tab template for why
                      this is no longer gated by canManageKBCard. -->
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
                 <KnowledgeBaseActions :knowledge-base="kb" :can-rename="canRenameKBCard(kb)" :can-delete="canManageKBCard(kb)" @changed="handleKBActionChanged">
                   <template #before="{ close }">
                     <button type="button" role="menuitem" class="popup-menu-item" @click.stop="close(); handleTogglePin(kb)">
@@ -431,35 +399,6 @@
                     <button v-if="canManageKBCard(kb)" type="button" role="menuitem" class="popup-menu-item" @click.stop="close(); handleSettings(kb)">
                       <t-icon class="menu-icon" name="setting" /><span>{{ $t('knowledgeBase.settings') }}</span>
                     </button>
-=======
-                <t-popup :visible="openKbMenuId === kb.id" @visible-change="(visible: boolean) => setOpenKbMenu(kb.id, visible)"
-                  overlayClassName="card-more-popup" trigger="click" destroy-on-close placement="bottom-right">
-                  <button type="button" :aria-label="$t('common.expand')" class="more-wrap" @click.stop
-                    :class="{ 'active-more': openKbMenuId === kb.id }" :aria-expanded="openKbMenuId === kb.id" aria-haspopup="true">
-                    <t-icon name="ellipsis" size="16px" aria-hidden="true" />
-                  </button>
-                  <template #content>
-                    <div class="popup-menu" @click.stop>
-                      <div class="popup-menu-item" @click.stop="handleTogglePin(kb)">
-                        <t-icon class="menu-icon" :name="kb.is_pinned ? 'pin-filled' : 'pin'" />
-                        <span>{{ kb.is_pinned ? $t('knowledgeList.pin.unpin') : $t('knowledgeList.pin.pin') }}</span>
-                      </div>
-                      <div v-if="canDuplicateKBCard(kb)" class="popup-menu-item" @click.stop="handleDuplicate(kb)">
-                        <t-icon class="menu-icon" name="file-copy" />
-                        <span>{{ $t('knowledgeList.menu.duplicate') }}</span>
-                      </div>
-                      <template v-if="canManageKBCard(kb)">
-                        <div class="popup-menu-item" @click.stop="handleSettings(kb)">
-                          <t-icon class="menu-icon" name="setting" />
-                          <span>{{ $t('knowledgeBase.settings') }}</span>
-                        </div>
-                        <div class="popup-menu-item delete" @click.stop="handleDelete(kb)">
-                          <t-icon class="menu-icon" name="delete" />
-                          <span>{{ $t('common.delete') }}</span>
-                        </div>
-                      </template>
-                    </div>
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
                   </template>
                 </KnowledgeBaseActions>
               </div>
@@ -861,11 +800,6 @@ const sharedKnowledgeBaseSortAccessors: ResourceSortAccessors<OrganizationShared
 
 const kbs = ref<KB[]>([])
 const loading = ref(false)
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-=======
-const confirmDelete = useConfirmDelete()
-const openKbMenuId = ref<string | null>(null)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 const highlightedKbId = ref<string | null>(null)
 const highlightedCardRef = ref<HTMLElement | null>(null)
 let uploadRefreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -1254,23 +1188,14 @@ watch(() => route.query.highlightKbId, (newKbId) => {
   }
 })
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-=======
-function setOpenKbMenu(id: string, visible: boolean) {
-  if (visible) openKbMenuId.value = id
-  else if (openKbMenuId.value === id) openKbMenuId.value = null
-}
-
 function kbCountLabel(kb: { type?: string; chunk_count?: number; knowledge_count?: number }): string {
   const isFaq = kb.type === 'faq'
   const count = (isFaq ? kb.chunk_count : kb.knowledge_count) ?? '—'
   return t(isFaq ? 'mentionDetail.faqCount' : 'knowledgeBase.documentCount', { count })
 }
 
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 const handleSettings = (kb: KB) => {
   // 手动关闭弹窗
-  openKbMenuId.value = null
   goSettings(kb.id)
 }
 
@@ -1344,22 +1269,10 @@ function showKbOriginBadge(kb: { creator_id?: string; creator_name?: string }): 
 
 // 通过 ID 处理设置（用于全部 Tab 下的知识库）
 const handleSettingsById = (id: string) => {
-  openKbMenuId.value = null
   goSettings(id)
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-=======
-// 通过 ID 处理删除（用于全部 Tab 下的知识库）
-const handleDeleteById = (id: string) => {
-  openKbMenuId.value = null
-  const kb = kbs.value.find(k => k.id === id)
-  if (kb) requestDelete(kb)
-}
-
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 const handleTogglePin = async (kb: KB) => {
-  openKbMenuId.value = null
   try {
     const res: any = await togglePinKnowledgeBase(kb.id)
     if (res.success) {
@@ -1374,7 +1287,6 @@ const handleTogglePin = async (kb: KB) => {
 }
 
 const handleTogglePinById = async (id: string) => {
-  openKbMenuId.value = null
   try {
     const res: any = await togglePinKnowledgeBase(id)
     if (res.success) {
@@ -1389,12 +1301,10 @@ const handleTogglePinById = async (id: string) => {
 }
 
 const handleDuplicate = async (kb: KB) => {
-  openKbMenuId.value = null
   await duplicateKB(kb.id)
 }
 
 const handleDuplicateById = async (id: string) => {
-  openKbMenuId.value = null
   await duplicateKB(id)
 }
 
@@ -1468,18 +1378,11 @@ const goToSharedKbFromPanel = () => {
   }
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 function canRenameKBCard(kb: KB): boolean {
   if (typeof kb.can_manage === 'boolean') return canManageResource(kb);
   const permission = (kb as any).permission
   if (permission) return permissionCanManageKB(permission)
   return canManageKBCard(kb)
-=======
-const handleDelete = (kb: KB) => {
-  // 手动关闭弹窗
-  openKbMenuId.value = null
-  requestDelete(kb)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 }
 
 function handleKBActionChanged(change: { id: string; deleted: boolean; name?: string }) {

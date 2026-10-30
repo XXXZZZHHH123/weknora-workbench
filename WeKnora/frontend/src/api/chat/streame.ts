@@ -304,22 +304,6 @@ export function useStream() {
         }
       };
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-      await runStreamWithAuthRetry({
-        run: runStream,
-        initialToken: token,
-        isEmbed: Boolean(embedToken),
-        isCurrent: () => myGeneration === streamGeneration && !streamAbort.signal.aborted,
-        refreshAccessToken: () => refreshAccessTokenShared({
-          rejectedToken: token,
-          messages: {
-            pleaseRelogin: i18n.global.t('error.pleaseRelogin'),
-            tokenRefreshFailed: i18n.global.t('error.tokenRefreshFailed'),
-          },
-        }),
-        reloginMessage: i18n.global.t('error.pleaseRelogin'),
-      });
-=======
       while (myGeneration === streamGeneration && !streamAbort.signal.aborted) {
         try {
           await runStreamWithAuthRetry({
@@ -328,6 +312,7 @@ export function useStream() {
             isEmbed: Boolean(embedToken),
             isCurrent: () => myGeneration === streamGeneration && !streamAbort.signal.aborted,
             refreshAccessToken: () => refreshAccessTokenShared({
+              rejectedToken: token,
               messages: {
                 pleaseRelogin: i18n.global.t('error.pleaseRelogin'),
                 tokenRefreshFailed: i18n.global.t('error.tokenRefreshFailed'),
@@ -355,7 +340,6 @@ export function useStream() {
           url = `${apiUrl}/api/v1/sessions/continue-stream/${encodeURIComponent(params.session_id)}?message_id=${encodeURIComponent(receivedAssistantId)}`;
         }
       }
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
     } catch (err) {
       // A superseded stream failing must not surface as the current error or
       // abort the stream that replaced it (see onclose).

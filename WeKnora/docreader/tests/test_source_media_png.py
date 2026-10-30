@@ -61,6 +61,7 @@ class TestSourceMediaPng(unittest.TestCase):
             from docreader.main import DocReaderServicer
 
             servicer = DocReaderServicer.__new__(DocReaderServicer)
+            servicer.parser = object()
             request = ReadRequest(request_id="preview-selector-error")
             expected = {"evidence_version": "source_media_png_v1", "source_media_error_code": "invalid_selector"}
             with patch.object(servicer, "_parse_request", side_effect=media_png.SourceMediaSelectorError("Unrelated source part")):
@@ -364,6 +365,7 @@ class TestSharedSourceMediaRender(unittest.TestCase):
         from docreader.proto.docreader_pb2 import ReadRequest
         from docreader.main import DocReaderServicer
         servicer = DocReaderServicer.__new__(DocReaderServicer)
+        servicer.parser = object()
         for code in ("busy", "timeout", "cancelled", "render_failed"):
             with patch.object(servicer, "_parse_request", side_effect=media_png.SourceMediaRenderError(code)):
                 unary = servicer.Read(ReadRequest(), None)

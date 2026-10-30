@@ -5,12 +5,8 @@ import enUS from './locales/en-US.ts'
 import koKR from './locales/ko-KR.ts'
 import jaJP from './locales/ja-JP.ts'
 import zhTW from './locales/zh-TW.ts'
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 import { BUILT_IN_DEFAULT, resolveDefaultLocale, type SupportedLocale } from './resolveDefaultLocale.ts'
-=======
-import { BUILT_IN_DEFAULT, resolveDefaultLocale } from './resolveDefaultLocale.ts'
 import { pluralRules } from './pluralizationRules.ts'
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 // Reuse one exact schema instead of expanding six equivalent trees in vue-i18n.
 const messages: Record<SupportedLocale, typeof zhCN> = {

@@ -16,11 +16,8 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/models/rerank"
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	"github.com/Tencent/WeKnora/internal/sandbox"
-=======
 	modelruntime "github.com/Tencent/WeKnora/internal/models/runtime"
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	"github.com/Tencent/WeKnora/internal/sandbox"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
@@ -163,7 +160,6 @@ func (s *sessionService) AgentQA(
 		if modelInfo, err := s.modelService.GetModelByID(modelCtx, effectiveModelID); err == nil && modelInfo != nil {
 			agentModelSupportsVision = modelInfo.Parameters.SupportsVision
 			modelContextWindow = modelInfo.Parameters.ContextWindow
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 			agentConfig.ReviewReasoningEffort = reviewReasoningEffort(modelInfo)
 			agentConfig.SourceReviewReasoningEffort = sourceReviewReasoningEffort(modelInfo)
 			agentConfig.QuickAnswer = req.CustomAgent != nil && req.CustomAgent.ID == types.BuiltinQuickAnswerID
@@ -174,9 +170,7 @@ func (s *sessionService) AgentQA(
 				(agentConfig.ReasoningEffort == "off" || (agentConfig.ReasoningEffort == "" && agentConfig.Thinking != nil && !*agentConfig.Thinking)) {
 				agentConfig.ReasoningEffort = agentConfig.ReviewReasoningEffort
 			}
-=======
 			agentConfig.ModelMaxOutputTokens = modelMaxOutputTokens(modelInfo)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		}
 	}
 	agentConfig.ChatModelSupportsVision = agentModelSupportsVision
@@ -258,13 +252,8 @@ func (s *sessionService) AgentQA(
 	// the first resolve: if the previous turn left a stale mark, that is
 	// where the new image is picked up. HTTP send already holds the lease it
 	// took before persisting the turn, so only direct callers take one here.
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	if !req.TurnLeaseHeld && workbenchUsesSandbox(agentConfig) {
-		releaseTurn, err := s.holdSandboxTurn(ctx, sessionID, agentConfig.SandboxConfigID)
-=======
-	if !req.TurnLeaseHeld {
 		turnCtx, releaseTurn, err := s.holdSandboxTurn(ctx, sessionID, agentConfig.SandboxConfigID)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		if err != nil {
 			return err
 		}
@@ -467,7 +456,6 @@ func (s *sessionService) AgentQA(
 	return nil
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 // sourceReviewReasoningEffort enables the vendor's default reasoning for the
 // source-consistency critic when the model can reason at all. It is a model
 // capability decision, independent of any question or answer content.
@@ -495,7 +483,8 @@ func reviewReasoningEffort(model *types.Model) string {
 		return string(level)
 	}
 	return "off"
-=======
+}
+
 type dataURIImageDescriber interface {
 	DescribeDataURIImages(context.Context, []string) []string
 }
@@ -566,7 +555,6 @@ func resumableAgentRequest(ctx context.Context, req *types.QARequest) types.Resu
 		r.AgentID, r.AgentTenantID = req.CustomAgent.ID, req.CustomAgent.TenantID
 	}
 	return r
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 }
 
 // buildAgentConfig creates a runtime AgentConfig from the QARequest's custom agent configuration,

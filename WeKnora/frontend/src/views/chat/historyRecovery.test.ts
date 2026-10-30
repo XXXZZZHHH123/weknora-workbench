@@ -129,7 +129,7 @@ test('failed history attaches recover while fresh outgoing request errors remain
     let listener!: (error: string) => void
     let recoveries = 0, errors = 0
     const state = {
-      error: {}, watch: (_: unknown, fn: typeof listener) => { listener = fn },
+      error: {}, attachingResumedRun: false, watch: (_: unknown, fn: typeof listener) => { listener = fn },
       isAttachingHistoryStream: { value: attaching }, recoverIncompleteMessage: () => { recoveries++ },
       MessagePlugin: { error: () => { errors++ } }, isReplying: { value: true },
       loading: { value: true }, currentAssistantMessageId: { value: 'assistant' },

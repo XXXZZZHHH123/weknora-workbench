@@ -51,7 +51,6 @@ const (
 	// Agent streaming events (for real-time feedback)
 	EventAgentProgress      EventType = "progress"       // User-facing intermediate update
 	EventAgentThought       EventType = "thought"        // Agent 思考过程
-	EventAgentProgress      EventType = "progress"       // Actual processing stage, without draft answer text
 	EventAgentCommandOutput EventType = "command_output" // bounded command output
 	EventAgentToolCall      EventType = "tool_call"      // 工具调用通知
 	EventAgentToolResult    EventType = "tool_result"    // 工具结果

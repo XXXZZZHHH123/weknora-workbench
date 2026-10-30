@@ -79,7 +79,7 @@ var searchKnowledgeTool = BaseTool{
     },
     "document_ids": {
       "type": "array",
-      "description": "Optional authorized dN document handles to search only the named report; other reports are never substituted",
+      "description": "Optional authorized doc://N document handles to search only the named report; other reports are never substituted",
       "items": { "type": "string" },
       "maxItems": 10
     },

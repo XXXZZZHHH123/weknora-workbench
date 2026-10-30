@@ -259,7 +259,6 @@ def _is_chart_debris_line(line: str) -> bool:
 
 
 def _strip_chart_text_debris(text: str) -> str:
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
     """Keep text-layer content whose figure/table role is not geometrically known.
 
     A run of numeric glyphs can be chart ticks, but it can also be the only
@@ -268,39 +267,6 @@ def _strip_chart_text_debris(text: str) -> str:
     Vector figure images are extracted separately for visual interpretation.
     """
     return text
-=======
-    """Drop runs of axis/legend lines leaked from vector figures into the text layer."""
-    if not text:
-        return text
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    out: list = []
-    i = 0
-    while i < len(lines):
-        if _is_chart_debris_line(lines[i]):
-            j = i
-            while j < len(lines) and (
-                _is_chart_debris_line(lines[j]) or not lines[j].strip()
-            ):
-                j += 1
-            # Numeric-only lines are also a common representation for table
-            # values.  Only remove a run when a nearby chart/figure marker
-            # provides positive evidence that it is axis or legend text.
-            context_start = max(0, i - 1)
-            context_end = min(len(lines), j + 1)
-            has_chart_context = any(
-                _CHART_CONTEXT_RE.search(lines[k])
-                for k in range(context_start, context_end)
-            )
-            table_context = _tail_looks_like_numeric_table(
-                lines[max(0, i - 2) : j]
-            )
-            if j - i >= 3 and has_chart_context and not table_context:
-                i = j
-                continue
-        out.append(lines[i])
-        i += 1
-    return "\n".join(out)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 
 def _is_probable_page_num_line(lines: list, index: int) -> bool:
@@ -336,7 +302,6 @@ def _is_probable_page_num_line(lines: list, index: int) -> bool:
 
 
 def _strip_arxiv_and_page_num_lines(text: str) -> str:
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
     """Keep flattened text until an artifact can be located geometrically.
 
     Identifiers and short integers are not reliable evidence of decoration.
@@ -354,41 +319,6 @@ def _strip_lines_above_figure_captions(text: str) -> str:
     string pass cannot safely identify which lines belong to that figure.
     """
     return text
-=======
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    kept: list = []
-    for i, ln in enumerate(lines):
-        t = ln.strip()
-        if _ARXIV_LINE_RE.match(t):
-            continue
-        if _is_probable_page_num_line(lines, i):
-            continue
-        if "arXiv:" in ln:
-            ln = re.sub(r"\s*arXiv:\s*\S+\s*(?:\[[^\]]+\])?\s*[^\n]*", "", ln).strip()
-            if not ln:
-                continue
-        kept.append(ln)
-    return "\n".join(kept)
-
-
-def _strip_lines_above_figure_captions(text: str) -> str:
-    """Remove diagram/chart label lines that sit immediately above a Figure caption."""
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    out: list = []
-    for ln in lines:
-        if _line_has_figure_caption(ln):
-            while out and _is_figure_interior_line(out[-1]):
-                # A table can legitimately end immediately before a figure
-                # caption.  Preserve a tail with two labelled numeric rows;
-                # diagram labels do not have this row-shaped signal.
-                if _tail_looks_like_numeric_table(out):
-                    break
-                out.pop()
-            out.append(ln)
-        else:
-            out.append(ln)
-    return "\n".join(out)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 
 def _tail_looks_like_numeric_table(lines: list) -> bool:

@@ -217,7 +217,7 @@ test('compiled directory rows expose their labels, real counts and action button
   assert.ok(labels.every(isRendered), 'Directory labels must not be hidden inside an HTMLTemplateElement')
   assert.deepEqual(labels.map(text), ['Root label', 'Folder label'])
   const counts = all(root, n => String(n.props.class || '') === 'kb-folder-row__count')
-  assert.ok(counts.every(isRendered)); assert.deepEqual(counts.map(text), ['0', '7'])
+  assert.ok(counts.every(isRendered)); assert.deepEqual(counts.map(text), ['7', '7'], 'folder labels count the whole subtree; the tooltip retains the direct count')
   const triggers = all(root, n => String(n.props.class || '').includes('actual-folder-trigger'))
   assert.equal(triggers.length, 1); assert.ok(triggers.every(isRendered))
   rows[1].props.onClick({}); await flush(); assert.deepEqual(selected, ['Folder'])

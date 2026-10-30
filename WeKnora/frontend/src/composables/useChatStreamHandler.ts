@@ -663,7 +663,6 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       if (item.agent_steps && Array.isArray(item.agent_steps) && item.agent_steps.length > 0) {
         item.isAgentMode = true
         const restoredEvents = reconstructEventStreamFromSteps(
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
             item.agent_steps as unknown[],
             String(item.content || ''),
             Boolean(item.is_completed),
@@ -673,15 +672,6 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
           )
         // An unfinished history row is still receiving replay and live events.
         // Freezing its array makes computed timelines retain the initial snapshot.
-=======
-          item.agent_steps as unknown[],
-          String(item.content || ''),
-          Boolean(item.is_completed),
-          Boolean(item.is_fallback),
-          Number(item.agent_duration_ms) || 0,
-          item.usage,
-        )
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
         item.agentEventStream = willContinueStream ? restoredEvents : markRaw(restoredEvents)
         item.hideContent = true
         if (agentStepsAreTruncated(item.agent_steps as unknown[])) item.truncated = true
@@ -892,15 +882,6 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     const payload = dataPayload
 
     switch (responseType) {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-      case 'progress': {
-        const stage = dataPayload?.stage
-        if (stage !== 'sources' && stage !== 'generation' && stage !== 'verification') break
-        if (!message.agentEventStream) message.agentEventStream = []
-        ;(message.agentEventStream as ChatMessage[]).push({
-          type: 'progress', stage, iteration: dataPayload?.iteration, timestamp: Date.now(),
-        })
-=======
       case 'collaboration_status': {
         const snapshot = dataPayload as unknown as CollaborationStatus | undefined
         if (!snapshot?.group_id || !Number.isSafeInteger(snapshot.revision) || !Array.isArray(snapshot.tasks)) break
@@ -924,6 +905,12 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
         break
       }
       case 'progress': {
+        const stage = dataPayload?.stage
+        if (stage === 'sources' || stage === 'generation' || stage === 'verification') {
+          if (!message.agentEventStream) message.agentEventStream = []
+          ;(message.agentEventStream as ChatMessage[]).push({ type: 'progress', stage, iteration: dataPayload?.iteration, timestamp: Date.now() })
+          break
+        }
         const eventId = String(dataPayload?.event_id || dataPayload?.id || '')
         if (!eventId) break
         const previous = turnPromptEvents().find(e => (e.type === 'progress' || e.type === 'answer') && e.event_id === eventId)
@@ -952,7 +939,6 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
             done: Boolean(data.done), iteration: dataPayload?.iteration,
           })
         }
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
         break
       }
       case 'thinking': {

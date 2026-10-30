@@ -248,12 +248,8 @@ func RegisterKnowledgeBaseRoutes(r *gin.RouterGroup, handler *handler.KnowledgeB
 		// handler 内再按 permission/所有者租户做最终判定 —— 尤其 DeleteKnowledgeBase
 		// 以调用者「自身」租户(c.Keys，未被 KBAccess 改写)校验 kb.TenantID，
 		// 把删除锁死为「所有者租户 + Admin」，共享 editor 无法删除源 KB。
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 		kbManagement.PUT("/:id", g.ManageKB(), g.KBAccessWrite("id"), handler.UpdateKnowledgeBase)
-=======
-		kbManagement.PUT("/:id", g.OwnedKBOrAdmin(), g.KBAccessWrite("id"), handler.UpdateKnowledgeBase)
-		kbManagement.PATCH("/:id", g.OwnedKBOrAdmin(), g.KBAccessWrite("id"), handler.PatchKnowledgeBase)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+		kbManagement.PATCH("/:id", g.ManageKB(), g.KBAccessWrite("id"), handler.PatchKnowledgeBase)
 		// 立即重新生成知识库 AI 描述 — 与更新知识库同档鉴权；同步执行一次小模型调用。
 		kbManagement.POST("/:id/profile/generate", g.OwnedKBOrAdmin(), g.KBAccessWrite("id"),
 			handler.GenerateKnowledgeBaseProfile)

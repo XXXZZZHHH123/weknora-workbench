@@ -121,12 +121,9 @@ func NewHandler(
 	forkService *service.SessionForkService,
 	rewindService *service.SessionRewindService,
 	approvedProjectDirs HostProjectDirsLoader,
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	researchWorkbenches *service.WorkspaceService,
 	knowledgeService interfaces.KnowledgeService,
-=======
 	backgroundWork *service.BackgroundWork,
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 ) *Handler {
 	h := &Handler{
 		knowledgeService:      knowledgeService,
@@ -231,7 +228,7 @@ func (h *Handler) CreateSession(c *gin.Context) {
 
 	// Create session object with base properties
 	createdSession := &types.Session{
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
+		Kind:                request.Kind,
 		TenantID:            tenantID.(uint64),
 		Title:               request.Title,
 		Description:         types.SanitizeClientSessionDescription(request.Description, ""),
@@ -243,13 +240,6 @@ func (h *Handler) CreateSession(c *gin.Context) {
 			_ = c.Error(err)
 			return
 		}
-=======
-		TenantID:         tenantID.(uint64),
-		Kind:             request.Kind,
-		Title:            request.Title,
-		Description:      types.SanitizeClientSessionDescription(request.Description, ""),
-		HostWorkspaceDir: hostDir,
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	}
 	// Attach the calling user as the session owner when available.
 	// API-key callers scope sessions per external user when configured;

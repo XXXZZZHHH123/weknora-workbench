@@ -40,7 +40,6 @@ const langfuseQueryPreview = 2000
 // engine therefore does not maintain its own cache, system-prompt store, or
 // cross-turn buffer.
 type AgentEngine struct {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	turnReview                       turnReviewState
 	structuredReviewMode             bool           // bounded source review must not restart open-ended reasoning
 	reviewedAnswerDeliveryRepairUsed bool           // at most one protocol-only serialization repair per turn
@@ -78,33 +77,10 @@ type AgentEngine struct {
 	compactor                        *compaction.Compactor // Summarizes older history to fit the context window (nil = disabled)
 	lastUsage                        types.TokenUsage      // Token usage from the most recent LLM call
 	lastSentMsgCount                 int                   // Number of messages sent in the most recent LLM call
-=======
-	collaboration        *collaboration.Binding
-	config               *types.AgentConfig
-	toolRegistry         *agenttools.ToolRegistry
-	chatModel            chat.Chat
-	eventBus             *event.EventBus
-	knowledgeBasesInfo   []*KnowledgeBaseInfo    // Detailed knowledge base information for prompt
-	selectedDocs         []*SelectedDocumentInfo // User-selected documents (via @ mention)
-	pinnedMCPServices    []*PinnedMCPServiceInfo // User @mentioned MCP services for this turn
-	pinnedSkills         []*PinnedSkillInfo      // User @mentioned skills for this turn
-	questionOrigin       *QuestionOriginInfo     // Source of a picked suggested question, if any
-	pageContext          *PageContextInfo        // Page the user has open, if any
-	assistantName        string                  // Workspace name for the assistant, if renamed
-	sessionID            string                  // Session ID for logging and event emission
-	systemPromptTemplate string                  // System prompt template (optional, uses default if empty)
-	memoryPrompt         string                  // Long-term memory envelope appended to the system prompt
-	runNote              string                  // How this run was started; see SetRunNote
-	skillsManager        *skills.Manager         // Skills manager for Progressive Disclosure (optional)
-	appConfig            *appconfig.Config       // Application config for prompt template resolution (optional)
-	imageDescriber       ImageDescriberFunc      // VLM function for describing images in tool results (optional)
-	imageDescribeSlots   chan struct{}           // Bounds VLM calls across parallel tool calls
-	tokenEstimator       *agenttoken.Estimator   // Token estimator for context window management, calibrated
-	rawEstimator         *agenttoken.Estimator   // Same tokenizer at scale 1, for measuring the calibration
-	compactor            *compaction.Compactor   // Summarizes older history to fit the context window (nil = disabled)
-	lastUsage            types.TokenUsage        // Token usage from the most recent LLM call
-	lastSentMsgCount     int                     // Number of messages sent in the most recent LLM call
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	collaboration                    *collaboration.Binding
+	pageContext                      *PageContextInfo
+	assistantName                    string
+	runNote                          string
 	// overflowRecovered records that this turn already spent its one
 	// compact-and-retry on a context overflow. A second attempt would mean
 	// history size was never the problem, and looping on it burns the round
@@ -127,14 +103,6 @@ type AgentEngine struct {
 	modelContext    *modelcontext.Registry // single request-local boundary for every model handle
 	// steerSink, when set, lets users append messages into the running turn.
 	// Drained at every round boundary; nil disables mid-run injection.
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	steerSink          types.SteerSink
-	allowSteerOverrun  bool // one extra ReAct round after a loop-end inject past MaxIterations
-	steerOverruns      int  // how many times this turn has already used the extra round
-	workspaceLayout    sandbox.WorkspaceLayout
-	artifactFileSource agenttools.SandboxFileSource
-	chartWriter        chart.Writer
-=======
 	steerSink         types.SteerSink
 	allowSteerOverrun bool // one extra ReAct round after a loop-end inject past MaxIterations
 	steerOverruns     int  // how many times this turn has already used the extra round
@@ -153,7 +121,8 @@ type AgentEngine struct {
 	progress turnProgress
 	// Hold speculative parent prose until delegated work has been reviewed.
 	holdCollaborationAnswer bool
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+	artifactFileSource      agenttools.SandboxFileSource
+	chartWriter             chart.Writer
 }
 
 // maxSteerOverruns caps loop-end injects past MaxIterations. One extra round
@@ -825,7 +794,6 @@ func (e *AgentEngine) executeLoop(
 	sessionID string,
 	messageID string,
 ) (*types.AgentState, error) {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	// Keep a turn-local snapshot of real conversation through the last human
 	// request. Later assistant plans, tool exchanges and synthetic reviewer
 	// envelopes belong to the runtime transcript, not the semantic history.
@@ -837,14 +805,12 @@ func (e *AgentEngine) executeLoop(
 		e.reviewConversationReady = false
 	}()
 
-=======
 	if e.collaboration != nil {
 		var stop func()
 		ctx, stop = e.collaboration.Start(ctx)
 		defer stop()
 		e.bindCollaborationInput(sessionID, messageID)
 	}
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	startTime := time.Now()
 	common.PipelineInfo(ctx, "Agent", "loop_start", map[string]interface{}{
 		"max_iterations": e.config.MaxIterations,
@@ -943,21 +909,15 @@ loop:
 	// state.FinalAnswer to the generic "Sorry, I was unable to generate a
 	// complete answer." message, which then leaks to the UI as the final
 	// answer for a conversation the user deliberately stopped.
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	if !state.IsComplete && ctx.Err() == nil {
-		finalMessages := restoreForFinalAnswer(messages, guards)
-		e.handleMaxIterations(ctx, query, state, sessionID, finalMessages)
-=======
 	// A suspended run has not finished either; it resumes once the user
 	// answers, so no answer is synthesized for it.
 	if !state.IsComplete && ctx.Err() == nil && state.Suspended == nil {
 		if e.collaboration != nil && e.collaboration.Child == nil && e.collaborationOwnsFailure(ctx) {
 			return state, fmt.Errorf("parent iteration budget exhausted; remaining delegated work was cancelled")
 		}
-		if err := e.handleMaxIterations(ctx, query, state, sessionID, messages); err != nil {
+		if err := e.handleMaxIterations(ctx, query, state, sessionID, restoreForFinalAnswer(messages, guards)); err != nil {
 			return state, err
 		}
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	}
 
 	return state, nil
@@ -1093,14 +1053,11 @@ func (e *AgentEngine) runReActIteration(
 	// text stays inside the protected tail) and before lastSentMsgCount is
 	// updated (the injected text counts as new delta tokens for the next
 	// call), so the very next LLM call sees the user's addition.
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
 		e.clearTaskToolProjection(messagesPtr)
 		e.taskPlan = nil // The user supplied new requirements.
 		tools = e.buildToolsForLLM()
 	}
-=======
-	e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
 	if e.collaboration != nil {
 		events, err := e.collaboration.Poll(ctx)
 		if err != nil {
@@ -1118,7 +1075,6 @@ func (e *AgentEngine) runReActIteration(
 	// Background-work context rides the same boundary for the same reasons,
 	// after the user's own messages.
 	e.injectBackground(ctx, state, messagesPtr, false)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 	logger.Infof(ctx, "[Agent][Round-%d/%s] Starting: %d messages, %d tools, est_tokens=%d",
 		round, e.maxIterationsDisplay(), len(*messagesPtr), len(tools), currentTokens)
@@ -1138,14 +1094,10 @@ func (e *AgentEngine) runReActIteration(
 	}
 	e.emitProgress(ctx, stage, state.CurrentRound, sessionID)
 	e.lastSentMsgCount = len(*messagesPtr)
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	e.answerReviewPending = hasStructuredEvidence(state.RoundSteps) || hasCurrentDocumentEvidence(state.RoundSteps) || e.needsSourceConsistencyCheck(state) || hasStructuredHistoryEvidence(*messagesPtr)
-	resp, err := e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID)
-=======
 	runtimeNotice := guards.pendingRuntimeNotice
 	guards.pendingRuntimeNotice = ""
 	resp, err := e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID, runtimeNotice)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	if err != nil {
 		retErr = err
 		return iterOutcomeNext, err
@@ -1243,14 +1195,10 @@ func (e *AgentEngine) runReActIteration(
 				e.failTruncatedToolCalls(ctx, response, &step, state.CurrentRound, sessionID)
 			}
 			state.RoundSteps = append(state.RoundSteps, step)
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-			e.finishStalledTurnWithGuards(ctx, state, sessionID, response, true, query, *messagesPtr, guards)
-=======
 			if e.collaborationOwnsFailure(ctx) {
 				return iterOutcomeBreak, fmt.Errorf("collaboration stopped after repeated output truncation")
 			}
-			e.finishStalledTurn(ctx, state, sessionID, response, true)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+			e.finishStalledTurnWithGuards(ctx, state, sessionID, response, true, query, *messagesPtr, guards)
 			return iterOutcomeBreak, nil
 		}
 	} else {
@@ -1262,7 +1210,7 @@ func (e *AgentEngine) runReActIteration(
 	// — a model burning its whole budget on reasoning returns empty every
 	// round, which used to land in the else branch and reset the counter, so
 	// the guard could never fire on the one shape that needs it most (#3446).
-	if len(response.ToolCalls) == 0 {
+	if len(response.ToolCalls) == 0 && (response.Content != "" || response.ReasoningContent != "" || response.FinishReason != "stop") {
 		guards.resetFailedToolCallStreak()
 		if guards.sawPlainRound && response.Content == guards.lastResponseContent {
 			guards.consecutiveSameContent++
@@ -1272,11 +1220,6 @@ func (e *AgentEngine) runReActIteration(
 		guards.sawPlainRound = true
 		guards.lastResponseContent = response.Content
 		if guards.consecutiveSameContent >= maxRepeatedResponseRounds {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-			logger.Warnf(ctx, "[Agent][Round-%d] Detected stuck loop: same content repeated %d times (finish=%s), stopping",
-				round, guards.consecutiveSameContent+1, response.FinishReason)
-			e.finishStalledTurnWithGuards(ctx, state, sessionID, response, false, query, *messagesPtr, guards)
-=======
 			logger.Warnf(
 				ctx,
 				"[Agent][Round-%d] Detected stuck loop: same content repeated %d times (finish=%s), stopping",
@@ -1287,8 +1230,7 @@ func (e *AgentEngine) runReActIteration(
 			if e.collaborationOwnsFailure(ctx) {
 				return iterOutcomeBreak, fmt.Errorf("collaboration stopped after repeated responses without progress")
 			}
-			e.finishStalledTurn(ctx, state, sessionID, response, false)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+			e.finishStalledTurnWithGuards(ctx, state, sessionID, response, false, query, *messagesPtr, guards)
 			return iterOutcomeBreak, nil
 		}
 	} else {
@@ -1332,85 +1274,6 @@ func (e *AgentEngine) runReActIteration(
 		return iterOutcomeBreak, nil
 	}
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	// A normal stop is not proof that the provider delivered an answer. The
-	// initial stream prefix is buffered so these fragments never become a
-	// completed answer in the UI. Repair in the same evidence context, with
-	// reasoning switched off for this turn only; never change model settings.
-	if len(response.ToolCalls) == 0 && hasWorkspaceExecution(state) {
-		e.recordArtifactInventory(ctx, state, messagesPtr, sessionID)
-	}
-	needsAnswerRepair := false
-	runtimeAnswerFailure := response.FinishReason == "content_filter"
-	// Agents without the workbench source critic retain their existing
-	// independent source-audit path; direct acceptance requires that critic.
-	pendingLegacySourceRewrite := !e.needsSourceConsistencyCheck(state) && len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && (needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps))
-	if len(response.ToolCalls) == 0 && (!pendingLegacySourceRewrite || suspectAnswerFragment(response.Content, response.ReasoningContent)) && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
-		reviewConversation, _ := restoreStructuredReviewConversation(*messagesPtr, guards)
-		decision := e.checkCandidate(ctx, query, response.Content, response.ReasoningContent, state, reviewConversation, false)
-		if ctx.Err() != nil {
-			state.RoundSteps = append(state.RoundSteps, step)
-			return iterOutcomeBreak, nil
-		}
-		if decision.Disposition == candidateNumericFailure {
-			if guards.structuredEvidenceRepairs < 2 && e.spendCandidateRepair() {
-				guards.structuredEvidenceRepairs++
-				e.resumeNumericValidationRepair(ctx, state, messagesPtr, guards, sessionID, response.Content, decision.NumericFeedback)
-				state.RoundSteps = append(state.RoundSteps, step)
-				return iterOutcomeNext, nil
-			}
-			response.Content = numericFailureFallback
-			response.AnswerStreamed = false
-			response.AnswerEventID = ""
-			pendingLegacySourceRewrite = false
-			runtimeAnswerFailure = true
-		} else if decision.Err != nil {
-			logger.Warnf(ctx, "[Agent][Round-%d] Answer check failed: %v", round, decision.Err)
-			state.RoundSteps = append(state.RoundSteps, step)
-			fallback := *response
-			fallback.Content = answerReviewUnavailableFallback
-			fallback.AnswerStreamed = false
-			fallback.AnswerEventID = ""
-			e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
-			return iterOutcomeBreak, nil
-		} else {
-			needsAnswerRepair = decision.Disposition != candidateAccepted
-		}
-	}
-
-	if needsAnswerRepair {
-		state.RoundSteps = append(state.RoundSteps, step)
-		if e.answerReviewAction == reviewCollectEvidence && guards.evidenceRecoveryAttempts < maxEvidenceRecoveryAttempts {
-			e.resumeEvidenceCollection(ctx, state, messagesPtr, guards, sessionID)
-			return iterOutcomeNext, nil
-		}
-		guards.incompleteAnswerRetries++
-		if guards.incompleteAnswerRetries <= 2 && e.spendCandidateRepair() {
-			if guards.structuredAnswerReviewed || needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps) {
-				e.beginCandidateRevision(ctx, state, messagesPtr, guards, query, response.Content)
-			}
-			e.structuredReviewMode = true
-			guards.sawPlainRound = false
-			guards.consecutiveSameContent = 0
-			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: "内部运行时反馈：上一轮答复的完整性未能确认。请依据本轮真实工具结果，按用户要求的语言和格式完成原问题；用户要求短答或特定字符时保持该格式。不要继续长篇推理，不要把草稿当成事实；证据缺失时明确说明缺哪项，不得编造数值。" + e.answerRepairAdvice()})
-			return iterOutcomeContinue, nil
-		}
-		fallback := *response
-		fallback.Content = incompleteAnswerFallback
-		fallback.AnswerStreamed = false
-		fallback.AnswerEventID = ""
-		e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
-		return iterOutcomeBreak, nil
-	}
-
-	if pendingLegacySourceRewrite {
-		e.beginCandidateRevision(ctx, state, messagesPtr, guards, query, response.Content)
-		state.RoundSteps = append(state.RoundSteps, step)
-		return iterOutcomeNext, nil
-	}
-	// 2. Analyze: Check for stop conditions (natural stop with no tool calls)
-	verdict := e.analyzeResponse(ctx, response, step, state.CurrentRound, sessionID, roundStart)
-=======
 	// A delegated deliverable must not silently become a partial success. Give
 	// it one text-only revision using existing evidence; never re-run tools or
 	// create an unbounded continuation loop. The last truncated step remains
@@ -1448,9 +1311,88 @@ func (e *AgentEngine) runReActIteration(
 		return iterOutcomeBreak, fmt.Errorf("delegated answer revision requested tools despite text-only recovery")
 	}
 
-	// 2. Analyze: Check for stop conditions (natural stop with no tool calls).
-	// An answer with page buttons stops like a plain answer once the buttons
-	// are offered; if one fails, the round goes on so the model can fix it.
+	// A normal stop is not proof that the provider delivered an answer. The
+	// initial stream prefix is buffered so these fragments never become a
+	// completed answer in the UI. Repair in the same evidence context, with
+	// reasoning switched off for this turn only; never change model settings.
+	if len(response.ToolCalls) == 0 && hasWorkspaceExecution(state) {
+		e.recordArtifactInventory(ctx, state, messagesPtr, sessionID)
+	}
+	needsAnswerRepair := false
+	runtimeAnswerFailure := response.FinishReason == "content_filter"
+	// Agents without the workbench source critic retain their existing
+	// independent source-audit path; direct acceptance requires that critic.
+	pendingLegacySourceRewrite := !e.needsSourceConsistencyCheck(state) && len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && (needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps))
+	if len(response.ToolCalls) == 0 && (!pendingLegacySourceRewrite || suspectAnswerFragment(response.Content, response.ReasoningContent)) && (strings.TrimSpace(response.Content) != "" || strings.TrimSpace(response.ReasoningContent) != "") && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
+		reviewConversation, _ := restoreStructuredReviewConversation(*messagesPtr, guards)
+		decision := e.checkCandidate(ctx, query, response.Content, response.ReasoningContent, state, reviewConversation, false)
+		if ctx.Err() != nil {
+			state.RoundSteps = append(state.RoundSteps, step)
+			return iterOutcomeBreak, nil
+		}
+		if decision.Disposition == candidateNumericFailure {
+			if guards.structuredEvidenceRepairs < 2 && e.spendCandidateRepair() {
+				guards.structuredEvidenceRepairs++
+				e.resumeNumericValidationRepair(ctx, state, messagesPtr, guards, sessionID, response.Content, decision.NumericFeedback)
+				state.RoundSteps = append(state.RoundSteps, step)
+				return iterOutcomeNext, nil
+			}
+			response.Content = numericFailureFallback
+			response.AnswerStreamed = false
+			response.AnswerEventID = ""
+			pendingLegacySourceRewrite = false
+			runtimeAnswerFailure = true
+		} else if decision.Err != nil {
+			if e.collaborationOwnsFailure(ctx) {
+				return iterOutcomeBreak, fmt.Errorf("collaboration stopped after answer verification failed: %w", decision.Err)
+			}
+			logger.Warnf(ctx, "[Agent][Round-%d] Answer check failed: %v", round, decision.Err)
+			state.RoundSteps = append(state.RoundSteps, step)
+			fallback := *response
+			fallback.Content = answerReviewUnavailableFallback
+			fallback.AnswerStreamed = false
+			fallback.AnswerEventID = ""
+			e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
+			return iterOutcomeBreak, nil
+		} else {
+			needsAnswerRepair = decision.Disposition != candidateAccepted
+		}
+	}
+
+	if needsAnswerRepair {
+		state.RoundSteps = append(state.RoundSteps, step)
+		if e.answerReviewAction == reviewCollectEvidence && guards.evidenceRecoveryAttempts < maxEvidenceRecoveryAttempts {
+			e.resumeEvidenceCollection(ctx, state, messagesPtr, guards, sessionID)
+			return iterOutcomeNext, nil
+		}
+		guards.incompleteAnswerRetries++
+		if guards.incompleteAnswerRetries <= 2 && e.spendCandidateRepair() {
+			if guards.structuredAnswerReviewed || needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps) {
+				e.beginCandidateRevision(ctx, state, messagesPtr, guards, query, response.Content)
+			}
+			e.structuredReviewMode = true
+			guards.sawPlainRound = false
+			guards.consecutiveSameContent = 0
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: "内部运行时反馈：上一轮答复的完整性未能确认。请依据本轮真实工具结果，按用户要求的语言和格式完成原问题；用户要求短答或特定字符时保持该格式。不要继续长篇推理，不要把草稿当成事实；证据缺失时明确说明缺哪项，不得编造数值。" + e.answerRepairAdvice()})
+			return iterOutcomeContinue, nil
+		}
+		if e.collaborationOwnsFailure(ctx) {
+			return iterOutcomeBreak, fmt.Errorf("collaboration stopped after incomplete answer repairs")
+		}
+		fallback := *response
+		fallback.Content = incompleteAnswerFallback
+		fallback.AnswerStreamed = false
+		fallback.AnswerEventID = ""
+		e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
+		return iterOutcomeBreak, nil
+	}
+
+	if pendingLegacySourceRewrite {
+		e.beginCandidateRevision(ctx, state, messagesPtr, guards, query, response.Content)
+		state.RoundSteps = append(state.RoundSteps, step)
+		return iterOutcomeNext, nil
+	}
+	// Analyze the reviewed answer and any offered page buttons.
 	analyzed, buttonsRan := response, false
 	if answersWithPageButtons(response) {
 		if e.runRoundTools(ctx, state, response, &step, sessionID, assistantMessageID) {
@@ -1464,7 +1406,6 @@ func (e *AgentEngine) runReActIteration(
 		}
 	}
 	verdict := e.analyzeResponse(ctx, analyzed, step, state.CurrentRound, sessionID, roundStart)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	if verdict.isDone {
 		// Guard against empty content: when the LLM stops naturally with no
 		// content and no tool calls (e.g., thinking-only loop without KB),
@@ -1492,7 +1433,7 @@ func (e *AgentEngine) runReActIteration(
 			// sole terminal answer event (#2906).
 			logger.Warnf(ctx, "[Agent][Round-%d] Empty content after %d retries - using fallback",
 				round, maxEmptyResponseRetries)
-			fallback := stalledAnswerFallback
+			fallback := incompleteAnswerFallback
 			e.commitTerminalResult(ctx, state, sessionID, fallback, "", "failed", false)
 			state.RoundSteps = append(state.RoundSteps, verdict.step)
 			return iterOutcomeBreak, nil
@@ -1517,14 +1458,9 @@ func (e *AgentEngine) runReActIteration(
 				injected := e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
 				injected += e.injectBackground(ctx, state, messagesPtr, true)
 				if injected > 0 {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 					e.clearTaskToolProjection(messagesPtr)
-					e.taskPlan = nil // The user supplied new requirements.
-				}
-				if injected > 0 {
-=======
+					e.taskPlan = nil
 					*messagesPtr = e.appendCollaborationDeliveryBoundary(*messagesPtr, verdict.finalAnswer)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 					verdict.step.IntermediateAnswer = true
 					state.RoundSteps = append(state.RoundSteps, verdict.step)
 					if !e.withinIterationBudget(nextRound) {
@@ -1535,8 +1471,6 @@ func (e *AgentEngine) runReActIteration(
 				}
 			}
 		}
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-=======
 		if e.collaboration != nil && response.FinishReason != "content_filter" {
 			if e.suspendable && e.collaboration.Child == nil {
 				checkpoint := RunSnapshot{
@@ -1607,7 +1541,6 @@ func (e *AgentEngine) runReActIteration(
 			// twice in later turns and show again as a step on reload.
 			verdict.step.Thought = ""
 		}
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		state.RoundSteps = append(state.RoundSteps, verdict.step)
 		outcome := "answer"
 		if runtimeAnswerFailure {
@@ -1689,7 +1622,6 @@ func (e *AgentEngine) runReActIteration(
 	return iterOutcomeNext, nil
 }
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 func usageHasCounts(usage types.TokenUsage) bool {
 	return usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 ||
 		usage.CacheReadTokens != 0 || usage.CacheWriteTokens != 0 || usage.CacheMissTokens != 0 || usage.CacheReported
@@ -1701,7 +1633,8 @@ func accumulateAuxiliaryUsage(state *types.AgentState, response *types.ChatRespo
 	if state != nil && response != nil && usageHasCounts(response.AuxiliaryUsage) {
 		state.TurnUsage.Accumulate(response.AuxiliaryUsage)
 	}
-=======
+}
+
 // runRoundTools executes the round's tool calls and reports whether the run
 // suspended on a prompt.
 func (e *AgentEngine) runRoundTools(
@@ -1750,7 +1683,6 @@ func toolCallsSucceeded(calls []types.ToolCall) bool {
 		}
 	}
 	return true
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 }
 
 // String returns a stable label for Langfuse output payloads.

@@ -7,11 +7,8 @@ import test from 'node:test'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import { createRenderer, h } from 'vue'
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 import { isExcelFilename } from '../excelSource.ts'
-=======
 import * as imageProcessingConfig from '../../../utils/imageProcessingConfig'
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 const require = createRequire(import.meta.url)
 const filename = fileURLToPath(new URL('./UploadConfirmDialog.vue', import.meta.url))
@@ -34,14 +31,10 @@ function fixture(kbInfo: any, extraProps: Record<string, any> = {}) {
       if (name === '@/stores/chatResources') return { useChatResourcesStore: () => ({}) }
       if (name === '@/stores/editorResources') return { useEditorResourcesStore: () => ({}) }
       if (name === '@/stores/ui') return { useUIStore: () => ({}) }
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
       if (name === '@/api/knowledge-base') return { mergeImageActions: () => ({ ocr: { on: [], on_unobserved: true } }) }
       if (name === '../excelSource') return { isExcelFilename }
       if (name === 'tdesign-vue-next') return { MessagePlugin: { warning: (message: string) => warnings.push(message) } }
-=======
-      if (name === '@/api/knowledge-base') return { mergeImageActions: () => ({ ocr: { on: [] } }) }
       if (name === '@/utils/imageProcessingConfig') return imageProcessingConfig
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
       return { default: {} }
     },
   })
@@ -105,7 +98,6 @@ test('image capability warning uses the KB embedding model and tolerates shared 
   } finally { f.dispose() }
 })
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 test('an Excel-only upload keeps the original without image or parser processing overrides', () => {
   const f = fixture({ image_processing_config: { image_vector_enabled: true } })
   try {
@@ -138,7 +130,9 @@ test('the native file-only confirmation rejects a URL without submitting the upl
     f.vm.handleConfirm()
     assert.equal(f.confirmations.length, 0)
     assert.deepEqual(f.warnings, ['knowledgeBase.nativeFileSourcesOnly'])
-=======
+  } finally { f.dispose() }
+})
+
 for (const pipelineId of ['default', 'smartocr', 'caption_ocr', 'ob_cap_ocr']) {
   for (const params of [undefined, {}, { 'default.caption.thinking_enabled': false }]) {
     test(`reparse replaces KB parameters with document ${pipelineId} parameters ${JSON.stringify(params)}`, () => {
@@ -188,6 +182,5 @@ test('reparse inherits KB parameters when the document has no pipeline selection
       f.vm.applyOverridesToState(overrides)
       assert.deepEqual(JSON.parse(JSON.stringify(f.vm.buildProcessOverrides().image_pipeline_params)), params)
     }
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   } finally { f.dispose() }
 })

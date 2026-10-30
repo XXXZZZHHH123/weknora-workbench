@@ -83,50 +83,13 @@
           <span class="kb-folder-row__trailing">
             <span class="kb-folder-row__count"
               :title="t('knowledgeBase.folderTree.countHint', { direct: row.documentCount, total: row.totalCount })">
-              {{ row.documentCount }}
+              {{ row.totalCount }}
             </span>
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
             <KnowledgeFolderActions v-if="canEdit && row.kind === 'folder'" class="kb-folder-row__more"
               :kb-id="kbId" :folder="{ path: row.path, name: row.name, total_count: row.totalCount }" :can-edit="canEdit" :allow-delete="allowDelete"
               @renamed="emit('rename', $event)" @deleted="emit('delete', $event)" />
             <span v-else class="kb-folder-row__more-placeholder" aria-hidden="true"></span>
           </span>
-=======
-            <span class="kb-folder-row__trailing">
-              <span class="kb-folder-row__count"
-                :title="t('knowledgeBase.folderTree.countHint', { direct: row.documentCount, total: row.totalCount })">
-                {{ row.totalCount }}
-              </span>
-              <t-popup
-                v-if="canEdit && row.kind === 'folder'"
-                :visible="menuOpenPath === row.path"
-                trigger="click"
-                placement="bottom-right"
-                destroy-on-close
-                overlay-class-name="card-more-popup"
-                @visible-change="(visible: boolean) => onFolderMenuVisible(row.path, visible)"
-              >
-                <button
-                  type="button"
-                  class="kb-folder-row__more"
-                  :class="{ 'is-open': menuOpenPath === row.path }"
-                  :aria-label="t('knowledgeBase.columnActions')"
-                  @click.stop
-                >
-                  <t-icon name="more" />
-                </button>
-                <template #content>
-                  <div class="popup-menu kb-folder-row__menu" @click.stop>
-                    <div class="popup-menu-item" @click="onFolderMenuRename(row)">
-                      <t-icon name="edit" class="menu-icon" />
-                      <span>{{ t('knowledgeBase.folderTree.rename') }}</span>
-                    </div>
-                  </div>
-                </template>
-              </t-popup>
-            </span>
-          </template>
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
         </div>
         <button v-else-if="row.kind === 'file'" type="button" class="kb-folder-row kb-folder-file"
           :class="{ active: selectedFileId === row.file.id }" :style="{ '--kb-folder-depth': row.depth }"
@@ -248,15 +211,9 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
 
 <style scoped lang="less">
 .kb-folder-tree {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
   --kb-folder-indent: 14px;
   --kb-folder-base-indent: 4px;
-=======
-  /* Cap indent so a 8–10 level path still has room for the folder name.
-     Past this depth the chevron already shows the parent/child relation. */
-  --kb-folder-indent: 12px;
   --kb-folder-indent-max: 4;
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -363,11 +320,7 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   width: 100%;
   height: 32px;
   margin-bottom: 2px;
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-  padding: 0 4px 0 calc(var(--kb-folder-base-indent) + var(--kb-folder-depth, 0) * var(--kb-folder-indent));
-=======
-  padding: 0 4px 0 calc(4px + min(var(--kb-folder-depth, 0), var(--kb-folder-indent-max)) * var(--kb-folder-indent));
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+  padding: 0 4px 0 calc(var(--kb-folder-base-indent) + min(var(--kb-folder-depth, 0), var(--kb-folder-indent-max)) * var(--kb-folder-indent));
   border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--td-text-color-primary);

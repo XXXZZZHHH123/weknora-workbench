@@ -152,7 +152,6 @@ def _iter_image_refs(images: dict):
         )
 
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 def _read_error_metadata(error):
     from docreader.parser.source_media_png import SOURCE_MEDIA_PNG_ENGINE, SourceMediaSelectorError, SourceMediaRenderError
 
@@ -163,7 +162,8 @@ def _read_error_metadata(error):
         return {"evidence_version": SOURCE_MEDIA_PNG_ENGINE,
                 "source_media_error_code": error.code}
     return {}
-=======
+
+
 def _image_ref_from_streamed_data(ref_path: str, image_data: bytes) -> ImageRef:
     """Build one image reference from raw bytes yielded by a parser."""
     fname, mime = _mime_for_ref(ref_path)
@@ -173,7 +173,6 @@ def _image_ref_from_streamed_data(ref_path: str, image_data: bytes) -> ImageRef:
         mime_type=mime,
         image_data=image_data,
     )
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 
 class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
@@ -350,14 +349,10 @@ class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
             except Exception as e:
                 logger.error("Error reading document: %s", e)
                 logger.info("Traceback: %s", traceback.format_exc())
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-                yield ReadStreamResponse(meta=ReadStreamMeta(error=str(e), metadata=_read_error_metadata(e)))
-=======
                 if parsed_stream is not None:
                     parsed_stream.close()
                 del request
-                yield ReadStreamResponse(meta=ReadStreamMeta(error=str(e)))
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+                yield ReadStreamResponse(meta=ReadStreamMeta(error=str(e), metadata=_read_error_metadata(e)))
                 return
 
             # PDF parser streams own a temporary source file; drop the request's

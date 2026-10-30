@@ -519,7 +519,6 @@ class MarginColumnFilterTest(unittest.TestCase):
         cols = _filter_reading_columns(left + right, scale=12.0, width=600.0)
         self.assertEqual(len(cols), 2)
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
     def test_keeps_narrow_numeric_table_column_inside_page_body(self):
         # A narrow numeric column in the body is not a margin artifact.
         numbers = []
@@ -546,7 +545,6 @@ class MarginColumnFilterTest(unittest.TestCase):
         kept = _filter_reading_columns(digits, scale=10.0, width=612.0)
         kept_chars = [char for column in kept for char in column]
         self.assertEqual(len(kept_chars), 8)
-=======
     def test_numeric_table_hint_requires_aligned_value_column(self):
         # A narrow quantity column aligned with labels is a table, not a
         # margin watermark.  The hint is consumed before artifact filtering.
@@ -601,7 +599,6 @@ class MarginColumnFilterTest(unittest.TestCase):
         )
         self.assertIn("Aster", with_empty)
         self.assertIn("Willow 237", with_empty)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 
 class PunctuationMergeTest(unittest.TestCase):
@@ -711,7 +708,8 @@ class PdfTextSanitizeTest(unittest.TestCase):
                 self.assertTrue(_tail_looks_like_numeric_table(rows + [""]))
                 self.assertFalse(_tail_looks_like_numeric_table(rows + ["identity"]))
                 out = _postprocess_pdf_text("\n".join(rows + ["identity", "Figure 1. Diagram", "After"]))
-                self.assertNotIn("identity", out)
+                # Flattened text does not establish chart geometry; retain potential evidence.
+                self.assertIn("identity", out)
                 self.assertIn("\n".join(rows), out)
 
     def test_preserves_repeated_single_digit_values(self):

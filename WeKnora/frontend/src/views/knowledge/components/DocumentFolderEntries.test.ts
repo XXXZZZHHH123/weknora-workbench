@@ -8,8 +8,10 @@ import * as vue from 'vue'
 import * as vueI18n from 'vue-i18n'
 import { createI18n } from 'vue-i18n'
 import enUS from '../../../i18n/locales/en-US'
+import * as excelSource from '../excelSource'
 import * as files from '../../../utils/files.ts'
 import * as referenceSources from '../../../utils/referenceSources.ts'
+import * as knowledgeIngestion from '../../../utils/knowledgeIngestion.ts'
 import * as processingStall from '../../../utils/knowledgeProcessingStall.ts'
 
 /**
@@ -72,7 +74,9 @@ function loadView(file: URL, extraDependencies: Record<string, unknown> = {}): a
   const module = evaluateModule(script, {
     vue,
     'vue-i18n': vueI18n,
+    '../excelSource': excelSource,
     '@/utils/files': files,
+    '@/utils/knowledgeIngestion': knowledgeIngestion,
     '@/utils/referenceSources': referenceSources,
     '@/utils/knowledgeProcessingStall': processingStall,
     './KnowledgeTagPopover.vue': noopComponent,

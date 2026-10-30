@@ -294,7 +294,13 @@ func testCollaborationMCPApproval(t *testing.T, inherited bool) {
 				require.NoError(t, err)
 				require.True(t, m.IsCompleted)
 				require.Empty(t, m.RunState)
-				if mode == "partial" || mode == "fallback_partial" {
+				if mode == "fallback_partial" {
+					require.NotEqual(t, "partial answer", m.Content, "unverified fallback synthesis is not delivered as a report")
+					require.NotEmpty(t, m.Content)
+					g, err := s.Runtime.Store.Read(ctx, scope)
+					require.NoError(t, err)
+					require.NotEmpty(t, g.Members[0].Runs[0].Result.Error)
+				} else if mode == "partial" {
 					require.Equal(t, "partial answer", m.Content)
 					g, err := s.Runtime.Store.Read(ctx, scope)
 					require.NoError(t, err)

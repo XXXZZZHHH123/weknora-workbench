@@ -814,20 +814,9 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 			); err != nil {
 				logger.Errorf(ctx, "Delete index failed: %v", err)
 			}
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 			// The retriever knows whether the provider or the store failed;
 			// their messages (including "quota") do not identify that phase.
 			code := batchIndexFailureCode(err)
-			s.failStage(ctx, knowledge.ID, types.StageEmbedding,
-				code, "batch index failed", err)
-=======
-			// Map vector store / embedding rate-limit errors to a
-			// stable code so the UI can offer "retry later" hints.
-			code := werrors.ErrCodeVectorStoreWriteFailed
-			if isLikelyRateLimitError(err) {
-				code = werrors.ErrCodeEmbeddingRateLimit
-			}
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 			if willRetry {
 				s.failStageRetryable(ctx, knowledge.ID, types.StageEmbedding,
 					code, "batch index failed", err)
@@ -4506,21 +4495,15 @@ func (s *knowledgeService) convert(
 	if err != nil {
 		code, message := docReaderFailure(err)
 		logger.Errorf(ctx, "[convert] DocReader failed knowledge=%s code=%s: %v", knowledge.ID, code, err)
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 		stageErr := err
 		if code == werrors.ErrCodeDocReaderStorageExhausted {
 			// Keep raw storage paths in server logs, outside the client-visible timeline.
 			stageErr = nil
 		}
-		s.failStage(ctx, knowledge.ID, types.StageDocReader,
-			code, message, stageErr)
-		return s.failKnowledge(ctx, knowledge, isLastRetry, "%s", message)
-=======
 		result, taskErr := s.failKnowledge(ctx, knowledge, isLastRetry, "%s", message)
 		s.failStageWithRetry(ctx, knowledge.ID, types.StageDocReader,
-			code, message, err, taskErr != nil)
+			code, message, stageErr, taskErr != nil)
 		return result, taskErr
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	}
 	sanitizeReadResult(result)
 	if result.Error != "" {

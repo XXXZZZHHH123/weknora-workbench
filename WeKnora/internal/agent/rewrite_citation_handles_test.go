@@ -54,7 +54,7 @@ func TestIndependentReviewCitationHandleRoundTripUsesExactCurrentChunk(t *testin
 	conversation := []chat.Message{{Role: "user", Content: question}}
 	model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{{
 		ResponseType: types.ResponseTypeAnswer,
-		Content:      `The cited south finding is supported <ref id="c2"/>; navigation only <ref id="c3"/>; unknown <ref id="c4"/> and <ref id="c999"/>.`,
+		Content:      `The cited south finding is supported <ref id="chunk://2"/>; navigation only <ref id="chunk://3"/>; unknown <ref id="chunk://4"/> and <ref id="chunk://999"/>.`,
 		Done:         true,
 		FinishReason: "stop",
 	}}}}}
@@ -63,14 +63,14 @@ func TestIndependentReviewCitationHandleRoundTripUsesExactCurrentChunk(t *testin
 	// Seed this request's registry from one successful tool result containing
 	// two distinct real chunks. The second chunk must remain the cited source.
 	rendered := engine.modelContext.ModelToolResultForTool("read_document", &types.ToolResult{Success: true, Data: data})
-	require.Contains(t, rendered, `<chunk id="c1"`)
-	require.Contains(t, rendered, `<chunk id="c2"`)
-	require.Equal(t, "c1", engine.modelContext.CitableChunkHandle("north-flow-chunk"))
-	require.Equal(t, "c2", engine.modelContext.CitableChunkHandle("south-rainfall-chunk"))
+	require.Contains(t, rendered, `<chunk id="chunk://1"`)
+	require.Contains(t, rendered, `<chunk id="chunk://2"`)
+	require.Equal(t, "chunk://1", engine.modelContext.CitableChunkHandle("north-flow-chunk"))
+	require.Equal(t, "chunk://2", engine.modelContext.CitableChunkHandle("south-rainfall-chunk"))
 	historyHandle := engine.modelContext.RegisterContextChunk(modelcontext.ChunkReference{
 		ChunkID: "historical-only-chunk", KnowledgeID: "old-report", KnowledgeBaseID: "old-kb", DocumentTitle: "Old field log",
 	})
-	require.Equal(t, "c3", historyHandle)
+	require.Equal(t, "chunk://3", historyHandle)
 	require.Empty(t, engine.modelContext.CitableChunkHandle("historical-only-chunk"), "navigation registration cannot substantiate an answer")
 
 	review := independentStructuredReviewWithSourceCompanions(
@@ -86,8 +86,8 @@ func TestIndependentReviewCitationHandleRoundTripUsesExactCurrentChunk(t *testin
 
 	boundDraft, ok := input["unverified_draft"].(string)
 	require.True(t, ok)
-	require.Contains(t, boundDraft, `<ref id="c2"/>`, "the draft's second real chunk must map to its exact registered handle")
-	require.Contains(t, boundDraft, `<ref id="c3"/>`, "historical navigation can be represented but must not become citable")
+	require.Contains(t, boundDraft, `<ref id="chunk://2"/>`, "the draft's second real chunk must map to its exact registered handle")
+	require.Contains(t, boundDraft, `<ref id="chunk://3"/>`, "historical navigation can be represented but must not become citable")
 	unknownHandle := engine.modelContext.ChunkHandle("never-fetched-chunk")
 	require.NotEmpty(t, unknownHandle)
 	require.Contains(t, boundDraft, `<ref id="`+unknownHandle+`"/>`)
@@ -100,12 +100,12 @@ func TestIndependentReviewCitationHandleRoundTripUsesExactCurrentChunk(t *testin
 	require.Len(t, bindings, 2, "the complete current source directory retains both authorized chunks")
 	binding := bindings[0].(map[string]any)
 	require.Equal(t, "south-rainfall-chunk", binding["chunk_id"])
-	require.Equal(t, "c2", binding["citation_handle"])
+	require.Equal(t, "chunk://2", binding["citation_handle"])
 	require.NotEmpty(t, binding["evidence_id"])
 	require.Equal(t, "/data/chunks/1/content", binding["json_pointer"])
 	other := bindings[1].(map[string]any)
 	require.Equal(t, "north-flow-chunk", other["chunk_id"])
-	require.Equal(t, "c1", other["citation_handle"])
+	require.Equal(t, "chunk://1", other["citation_handle"])
 	require.Equal(t, "/data/chunks/0/content", other["json_pointer"])
 	require.NotContains(t, fmt.Sprint(bindingsView), "historical-only-chunk")
 	require.NotContains(t, fmt.Sprint(bindingsView), "never-fetched-chunk")
@@ -118,7 +118,7 @@ func TestIndependentReviewCitationHandleRoundTripUsesExactCurrentChunk(t *testin
 	require.Contains(t, encodedSource, "The south gauge recorded delayed rainfall runoff.")
 	require.Contains(t, encodedSource, "The north gauge recorded stable flow.", "uncited but successfully fetched source evidence remains available")
 
-	// Run the actual mock stream path: the model copies c2 back, while an old
+	// Run the actual mock stream path: the model copies chunk://2 back, while an old
 	// navigation handle, a newly registered draft-only ID, and a forged handle
 	// must not decode into citable canonical citations.
 	streamed, err := engine.streamLLMToEventBus(context.Background(), bound, nil, nil)
@@ -126,14 +126,14 @@ func TestIndependentReviewCitationHandleRoundTripUsesExactCurrentChunk(t *testin
 	require.Len(t, model.calls, 1)
 	wireInput := rewriteCitationReviewInput(t, model.calls[0])
 	wireDraft, _ := wireInput["unverified_draft"].(string)
-	require.Contains(t, wireDraft, `<ref id="c2"/>`)
+	require.Contains(t, wireDraft, `<ref id="chunk://2"/>`)
 	require.Equal(t, input["source_tool_results"], wireInput["source_tool_results"])
 	require.Equal(t, input["source_citation_handles"], wireInput["source_citation_handles"])
 	require.Contains(t, streamed.Content, `chunk_id="south-rainfall-chunk"`)
 	require.NotContains(t, streamed.Content, "north-flow-chunk")
 	require.NotContains(t, streamed.Content, "historical-only-chunk")
 	require.NotContains(t, streamed.Content, "never-fetched-chunk")
-	require.NotContains(t, streamed.Content, "c999")
+	require.NotContains(t, streamed.Content, "chunk://999")
 }
 
 func TestIndependentReviewCitationHandleViewEnforcesItsOwnBudgetAndCounts(t *testing.T) {
@@ -162,7 +162,7 @@ func TestIndependentReviewCitationHandleViewEnforcesItsOwnBudgetAndCounts(t *tes
 	historyHandle := engine.modelContext.RegisterContextChunk(modelcontext.ChunkReference{
 		ChunkID: historyID, KnowledgeID: "old-report", KnowledgeBaseID: "old-kb", DocumentTitle: "Old field log",
 	})
-	require.Equal(t, "c1", historyHandle)
+	require.Equal(t, "chunk://1", historyHandle)
 	draft.WriteString(`<kb doc="Old field log" chunk_id="` + historyID + `" kb_id="old-kb" />`)
 	items = append(items, map[string]any{
 		"chunk_id":     historyID,

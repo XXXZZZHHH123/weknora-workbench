@@ -6,6 +6,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	"github.com/Tencent/WeKnora/internal/utils"
 )
 
 // EngineRegistration is what every locally registered parser engine provides:
@@ -148,6 +149,18 @@ func ListAllEngines(
 		result = append(result, re)
 	}
 
+	// Parser capability does not authorize platform imports. Keep both local
+	// and remote metadata within the shared upload/review policy advertised
+	// to the browser, without mutating a cached remote capability slice.
+	for i := range result {
+		allowed := make([]string, 0, len(result[i].FileTypes))
+		for _, ext := range result[i].FileTypes {
+			if utils.IsSupportedImportExtension(ext) {
+				allowed = append(allowed, ext)
+			}
+		}
+		result[i].FileTypes = allowed
+	}
 	return result
 }
 

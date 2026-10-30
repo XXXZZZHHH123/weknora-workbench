@@ -157,6 +157,15 @@ def _upstream_fill_merged_cells_xlsx(content: bytes) -> bytes:
     return out.getvalue()
 
 
+def _xlsx_payload(content: bytes):
+    import zipfile
+    import re
+    with zipfile.ZipFile(io.BytesIO(content)) as package:
+        return {name: re.sub(rb"<dcterms:modified[^>]*>.*?</dcterms:modified>", b"", package.read(name))
+                if name == "docProps/core.xml" else package.read(name)
+                for name in package.namelist()}
+
+
 class PercentMaterializationOffTests(unittest.TestCase):
     """Default behavior: unchanged, and byte-identical to the old function."""
 
@@ -164,7 +173,7 @@ class PercentMaterializationOffTests(unittest.TestCase):
         content = _workbook_with_percentages()
 
         self.assertEqual(
-            fill_merged_cells_xlsx(content), _upstream_fill_merged_cells_xlsx(content)
+            _xlsx_payload(fill_merged_cells_xlsx(content)), _xlsx_payload(_upstream_fill_merged_cells_xlsx(content))
         )
 
         values = _read_cells(fill_merged_cells_xlsx(content), "B2", "C2", "B3", "B4")
@@ -176,7 +185,7 @@ class PercentMaterializationOffTests(unittest.TestCase):
         self.assertIn("A: 毛利率,B: 0.61123366", document.content)
         self.assertNotIn("61.12%", document.content)
 
-    def test_switch_off_is_byte_identical_to_the_upstream_implementation(self):
+    def test_switch_off_is_payload_identical_to_the_upstream_implementation(self):
         for build in (
             _workbook_with_percentages,
             _workbook_without_merges,
@@ -188,8 +197,8 @@ class PercentMaterializationOffTests(unittest.TestCase):
                 # cannot turn this into an accidental behavior test.
                 with patch.dict(os.environ, {PERCENT_ENV: "0"}):
                     self.assertEqual(
-                        fill_merged_cells_xlsx(content),
-                        _upstream_fill_merged_cells_xlsx(content),
+                        _xlsx_payload(fill_merged_cells_xlsx(content)),
+                        _xlsx_payload(_upstream_fill_merged_cells_xlsx(content)),
                     )
 
     def test_env_var_off_forms_keep_the_raw_fraction(self):

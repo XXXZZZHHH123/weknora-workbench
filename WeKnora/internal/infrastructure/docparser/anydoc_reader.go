@@ -17,7 +17,6 @@ import (
 // AnydocReader converts office documents to markdown in this process, using
 // the anydoc converter instead of the Python docreader service.
 //
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 // PowerPoint uses the configured DocReader for stable slide numbers and cached
 // OLE chart previews, which the native document model omits. Without DocReader
 // its existing native conversion remains available. Other embedded images are
@@ -25,23 +24,14 @@ import (
 // text layer (scanned exam papers) cannot be converted by anydoc; when a
 // fallback reader is configured (typically the builtin docreader) those files
 // are handed off so pages can be rasterized for OCR.
-=======
-// Embedded images are rendered in place from the document model. PDFs with no
-// text layer or a structure anydoc rejects are handed to the configured
-// fallback reader (typically the builtin docreader). PPTX files with EMF/WMF
-// media use the docreader's MarkItDown path to rasterize those embedded images.
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 type AnydocReader struct {
 	// extractImages controls whether embedded images are parsed and placed
 	// in the markdown. Off halves parse time for text-only indexing.
 	extractImages bool
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	// fallback handles PowerPoint page/chart extraction and scanned PDFs.
 	// Nil retains the native conversion/error behavior.
-=======
 	// fallback handles PDFs requiring OCR/structure recovery and PPTX vector
 	// media. Nil means the required conversion is reported as an error.
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	fallback interfaces.DocReader
 }
 
@@ -64,17 +54,15 @@ func (r *AnydocReader) Read(ctx context.Context, req *types.ReadRequest) (*types
 	if !ok {
 		return nil, fmt.Errorf("anydoc engine does not support file type %q", fileTypeOf(req))
 	}
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	if (format == "ppt" || format == "pptx") && r.canFallback() {
+	if (fileTypeOf(req) == "ppt" || fileTypeOf(req) == "pptx") && r.canFallback() {
 		return r.readPowerPoint(ctx, req, format)
-=======
+	}
 	// Anydoc preserves vector bytes, but cannot rasterize EMF/WMF for the
 	// browser or VLM. MarkItDown's PPTX path already provides that conversion.
 	// Check the actual extension: anydoc also maps PPTM to its PPTX parser,
 	// but docreader does not support PPTM.
 	if r.extractImages && fileTypeOf(req) == "pptx" && pptxHasVectorMedia(req.FileContent) {
 		return r.readVectorPPTX(ctx, req)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	}
 
 	converted, err := anydoc.Convert(req.FileContent, anydoc.Options{

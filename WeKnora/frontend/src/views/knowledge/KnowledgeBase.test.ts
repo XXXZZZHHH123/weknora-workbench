@@ -6,7 +6,7 @@ import { change, fixture, flush } from '../../test-utils/vueFixture.ts'
 
 async function setup(t: TestContext, translate = (key: string, _params?: unknown) => key) {
   const f = fixture(t)
-  const route = vue.reactive({ params: { kbId: 'kb' }, query: {} })
+  const route = vue.reactive({ params: { kbId: 'kb' }, query: {}, meta: {} })
   const hook = {
     cardList: vue.ref([{ id: 'doc', parse_status: 'completed' }]), total: vue.ref(1), moreIndex: vue.ref(-1),
     details: vue.reactive({ id: 'doc' }), getKnowled: t.mock.fn(async () => {}),
@@ -23,13 +23,13 @@ async function setup(t: TestContext, translate = (key: string, _params?: unknown
     settle = () => resolve('completed')
   }))
   const page = f.component(new URL('./KnowledgeBase.vue', import.meta.url), {
-    'vue-router': { useRoute: () => route, useRouter: () => ({ replace() {} }) },
+    'vue-router': { useRoute: () => route, useRouter: () => ({ currentRoute: vue.ref(route), replace() {} }) },
     'vue-i18n': { useI18n: () => ({ t: translate }) },
     'tdesign-vue-next': { MessagePlugin: { success() {}, error() {}, info() {}, warning() {} } },
     '@/hooks/useKnowledgeBase': () => hook,
     '@/stores/ui': { useUIStore: () => ({ clearSelectedTagIds() {} }) },
     '@/stores/organization': { useOrganizationStore: () => ({ sharedKnowledgeBases: [], getKBPermission: () => 'owner' }) },
-    '@/stores/auth': { useAuthStore: () => ({ hasRole: () => true }) },
+    '@/stores/auth': { useAuthStore: () => ({ hasRole: () => true, user: { id: 'user' }, effectiveTenantId: 10000 }) },
     '@/stores/chatResources': { useChatResourcesStore: () => ({
       fetchKnowledgeBaseById, rawKnowledgeBases: [], async ensureKnowledgeBases() {},
     }) },

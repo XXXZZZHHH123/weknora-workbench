@@ -262,14 +262,12 @@ func (h *Handler) parseQARequest(c *gin.Context, logPrefix string) (*qaRequestCo
 		logger.Errorf(ctx, "Failed to get session, session ID: %s, error: %v", sessionID, err)
 		return nil, nil, errors.NewNotFoundError("Session not found")
 	}
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	ctx, err = h.bindResearchQuestionScope(ctx, session, &request)
 	if err != nil {
 		return nil, nil, err
-=======
+	}
 	if session.Kind == types.SessionKindAutomation {
 		return nil, nil, errors.NewForbiddenError("automation conversations do not accept manual messages")
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	}
 
 	// Get custom agent if agent_id is provided. Backend resolves shared agent from share relation (no client-provided tenant).

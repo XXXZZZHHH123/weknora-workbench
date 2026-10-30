@@ -57,7 +57,7 @@ func TestPostgresWorkbenchMigrationLineages(t *testing.T) {
 					_, err = db.Exec(`INSERT INTO assistant_projects (id,tenant_id,user_id,name) VALUES ('retained-project',1,'owner','Retained PostgreSQL project');
      INSERT INTO research_workbenches (id,tenant_id,user_id,name,knowledge_base_id,idempotency_key,request_hash)
       VALUES ('retained-research',1,'owner','Retained PostgreSQL research','kb','key','hash');
-     CREATE TABLE embeddings (id BIGINT PRIMARY KEY,knowledge_id TEXT,chunk_id TEXT);`)
+     CREATE TABLE IF NOT EXISTS embeddings (id BIGINT PRIMARY KEY,knowledge_id TEXT,chunk_id TEXT);`)
 					require.NoError(t, err)
 					_, err = db.Exec(`INSERT INTO sessions (id,tenant_id,title) VALUES ('pg-session',1,'Retained session');
                         INSERT INTO assistant_project_sessions (tenant_id,user_id,session_id,project_id) VALUES (1,'owner','pg-session','retained-project')`)

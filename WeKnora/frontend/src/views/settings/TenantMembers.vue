@@ -318,19 +318,7 @@
               </template>
               <template #role="{ row }">
                 <div class="role-cell">
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
                   <t-select v-if="canManageMember(row)" :model-value="row.role"
-=======
-                  <!-- Role edits on the current user's own row are allowed.
-                       Backend UpdateRole already rejects demoting the last
-                       Owner (409 / ErrLastOwner); the previous
-                       `row.user_id !== currentUserId` guard blocked the
-                       common "promote B, then demote myself to Admin and
-                       stay" ownership handoff even when another Owner
-                       already exists. Remove stays gated below — leaving
-                       the space is TenantInfo's leave flow. -->
-                  <t-select v-if="canManage" :model-value="row.role"
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
                     class="member-role-select" :borderless="true" :popup-props="roleSelectPopupProps"
                     :aria-label="`${memberPrimary(row)} · ${$t('tenantMember.columns.role')}`"
                     @change="(val: string) => onRoleChange(row, val)">

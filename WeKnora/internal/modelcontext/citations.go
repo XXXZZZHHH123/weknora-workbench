@@ -25,21 +25,12 @@ Retrieved content uses request-local source handles: chunk://N identifies a know
   This does not change separate instructions to preserve retrieved Markdown image URLs.`
 
 const citationEnabledProtocolPrompt = `
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-- Source citations are enabled for this answer. Cite a knowledge chunk with exactly <ref id="cN"/> and a web page with exactly <ref id="wN"/>.
+- Source citations are enabled for this answer. Cite a knowledge chunk with exactly <ref id="chunk://N"/> and a web page with exactly <ref id="url://N"/>.
 - Copy the complete handle, including its numeric index, verbatim from the supporting result. N in the syntax above is a schema placeholder, never a literal citation identifier.
-- Cite only cN/wN handles backed by tool results for the current task, and only when that source supports the adjacent
-  claim. Never cite dN/bN.
-- Each cN covers only its own supplied text or image evidence, not every chunk of the same document.
-  For a direct quotation, verify that the quoted words occur in the cited cN. Use the later chunk's handle
-=======
-- Source citations are enabled for this answer. Cite a knowledge chunk with exactly <ref id="chunk://N"/> and a
-  web page with exactly <ref id="url://N"/>.
-- Cite only chunk://N and url://N handles backed by tool results for the current task, and only when that source
-  supports the adjacent claim. Never cite doc://N or kb://N.
+- Cite only chunk://N/url://N handles backed by tool results for the current task, and only when that source supports the adjacent
+  claim. Never cite doc://N/kb://N.
 - Each chunk://N covers only its own supplied text or image evidence, not every chunk of the same document.
-  For a direct quotation, verify that the quoted words occur in the cited chunk. Use the later chunk's handle
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+  For a direct quotation, verify that the quoted words occur in the cited chunk://N. Use the later chunk's handle
   when the words occur there; never reuse a document's first handle for unrelated passages.
 - OCR watermarks, timestamps and image captions are observations of an image. Do not turn a watermark slogan
   into a verified service commitment or a caption into a factual document statement without supporting text.

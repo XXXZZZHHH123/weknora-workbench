@@ -38,16 +38,11 @@ type CustomAgentHandler struct {
 	userService interfaces.UserService
 	// sandboxConfigs validates an agent's sandbox backend selection. Optional —
 	// nil in partially-wired unit tests, where the selection is left unchecked.
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-	modelService   interfaces.ModelService
-	sandboxConfigs sandboxConfigLookup
-	desktop        bool
-=======
+	modelService       interfaces.ModelService
 	sandboxConfigs     sandboxConfigLookup
 	usableSkills       usableSkillLister
 	webSearchProviders interfaces.WebSearchProviderRepository
 	desktop            bool
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 }
 
 // NewCustomAgentHandler creates a new custom agent handler instance
@@ -58,23 +53,13 @@ func NewCustomAgentHandler(
 	userService interfaces.UserService,
 	sandboxConfigs *service.TenantSandboxConfigService,
 	host service.HostSandboxManager,
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 	modelService interfaces.ModelService,
-) *CustomAgentHandler {
-	return &CustomAgentHandler{
-		service:        service,
-		imService:      imService,
-		disabledRepo:   disabledRepo,
-		userService:    userService,
-		sandboxConfigs: sandboxConfigs,
-		modelService:   modelService,
-		desktop:        host.Desktop,
-=======
 	usableSkills *service.TenantSkillService,
 	webSearchProviders interfaces.WebSearchProviderRepository,
 ) *CustomAgentHandler {
 	return &CustomAgentHandler{
 		service:            service,
+		modelService:       modelService,
 		imService:          imService,
 		disabledRepo:       disabledRepo,
 		userService:        userService,
@@ -82,7 +67,6 @@ func NewCustomAgentHandler(
 		usableSkills:       usableSkills,
 		webSearchProviders: webSearchProviders,
 		desktop:            host.Desktop,
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 	}
 }
 

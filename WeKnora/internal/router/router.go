@@ -310,11 +310,8 @@ func NewRouter(params RouterParams) *gin.Engine {
 		)
 		RegisterKnowledgeTagRoutes(v1, params.TagHandler, rbacGuards)
 		RegisterKnowledgeRoutes(v1, params.KnowledgeHandler, rbacGuards)
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 		RegisterStructuredModelRoutes(v1, params.KnowledgeHandler, params.ModelHandler, rbacGuards)
-=======
 		RegisterGraphSearchRoutes(v1, params.GraphSearchHandler, rbacGuards)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		RegisterFAQRoutes(v1, params.FAQHandler, rbacGuards)
 		RegisterChunkRoutes(v1, params.ChunkHandler, rbacGuards)
 		RegisterSessionRoutes(v1, params.SessionHandler, params.MessageSuggestionHandler, rbacGuards)

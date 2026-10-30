@@ -162,10 +162,6 @@ type AgentCompleteData struct {
 // These are used for real-time streaming feedback to clients
 
 // AgentThoughtData represents agent thought streaming data
-type AgentProgressData struct {
-	Stage     string `json:"stage"`
-	Iteration int    `json:"iteration"`
-}
 
 type AgentThoughtData struct {
 	Content   string `json:"content"`
@@ -176,7 +172,8 @@ type AgentThoughtData struct {
 // AgentProgressData is a complete user-facing update, separate from reasoning.
 // ID identifies the update across stream replay; Content is a snapshot, not a delta.
 type AgentProgressData struct {
-	Content   string `json:"content"`
+	Stage     string `json:"stage,omitempty"`
+	Content   string `json:"content,omitempty"`
 	Iteration int    `json:"iteration"`
 }
 

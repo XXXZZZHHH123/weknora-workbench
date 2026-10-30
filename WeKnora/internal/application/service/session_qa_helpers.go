@@ -158,13 +158,8 @@ func (s *sessionService) resolveChatModelID(
 
 	if customAgent != nil {
 		configuredAgentModelID = strings.TrimSpace(customAgent.Config.ModelID)
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-		if configuredAgentModelID == "" && customAgent.ID != types.BuiltinWikiFixerID && !customAgent.WorkbenchDefault {
-			return "", fmt.Errorf("chat model is not configured: please set model_id on agent %s", customAgent.ID)
-=======
-		if configuredAgentModelID == "" && !types.UsesWorkspaceModelFallback(customAgent) {
+		if configuredAgentModelID == "" && !types.UsesWorkspaceModelFallback(customAgent) && !customAgent.WorkbenchDefault {
 			return "", 0, fmt.Errorf("chat model is not configured: please set model_id on agent %s", customAgent.ID)
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		}
 		if configuredAgentModelID != "" {
 			model, err := s.modelService.GetModelByID(ctx, configuredAgentModelID)

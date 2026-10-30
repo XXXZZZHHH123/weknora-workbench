@@ -10,11 +10,8 @@ import DocumentActionMenu from './DocumentActionMenu.vue';
 import FolderPickerMenu, { type FolderOption } from './FolderPickerMenu.vue';
 import KnowledgeProcessingTimeline from '@/components/knowledge-processing-timeline.vue';
 import { shownStall } from '@/utils/knowledgeProcessingStall';
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 import { excelSourceExtension, isStructuredSource } from '../excelSource';
-=======
 import type { FolderEntry } from '../folderTree';
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 
 interface KnowledgeCard {
   id: string;

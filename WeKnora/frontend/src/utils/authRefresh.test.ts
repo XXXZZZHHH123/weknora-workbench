@@ -162,7 +162,7 @@ test('cleanup failure still rejects every queued caller and attempts the other k
   }
   let fail!: (error: Error) => void
   const pending = new Promise<never>((_, reject) => { fail = reject })
-  const refreshError = new Error('refresh provider failed')
+  const refreshError = Object.assign(new Error('refresh provider rejected the session'), { status: 401 })
   const first = refreshAccessTokenShared({ refresh: () => pending })
   const second = refreshAccessTokenShared({ refresh: () => pending })
   const settled = settleRefreshes([first, second])

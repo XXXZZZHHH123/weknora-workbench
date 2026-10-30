@@ -63,7 +63,9 @@ func runPageButtonTurn(
 	engine.eventBus.On(event.EventAgentProgress, func(_ context.Context, evt event.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
-		run.progress = append(run.progress, evt.ID)
+		if data, ok := evt.Data.(event.AgentProgressData); ok && data.Content != "" {
+			run.progress = append(run.progress, evt.ID)
+		}
 		return nil
 	})
 	run.state = &types.AgentState{RoundSteps: []types.AgentStep{}}

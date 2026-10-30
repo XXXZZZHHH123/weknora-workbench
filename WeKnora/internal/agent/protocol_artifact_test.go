@@ -133,7 +133,7 @@ func TestFinalSynthesisStripsNonceThinkContentBeforeStreaming(t *testing.T) {
 			Done:         true,
 			FinishReason: "stop",
 		},
-	}}}})
+	}}, sourceConsistencyVerdict(`{"complete":true}`)}})
 	recorder := &truncationRecorder{}
 	recorder.attach(e.eventBus)
 	state := &types.AgentState{}

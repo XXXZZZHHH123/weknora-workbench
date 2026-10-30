@@ -14,6 +14,8 @@ export interface CreateSessionRequest {
   title?: string;
   description?: string;
   project_dir?: string;
+  research_workbench_id?: string;
+  agent_config?: { enabled?: boolean; knowledge_bases?: string[] };
   kind?: SessionKind;
 }
 

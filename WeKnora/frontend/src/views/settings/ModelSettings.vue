@@ -356,13 +356,9 @@ const uiStore = useUIStore()
 const chatResources = useChatResourcesStore()
 const providersStore = useModelProvidersStore()
 const router = useRouter()
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-type ModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr' | 'image-generation'
-=======
 const route = useRoute()
 const assistant = useAssistantStore()
-type ModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr'
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+type ModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr' | 'image-generation'
 type FilterType = 'all' | ModelType
 
 const showDialog = ref(false)

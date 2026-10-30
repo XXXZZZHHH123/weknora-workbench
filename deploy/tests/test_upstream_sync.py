@@ -108,6 +108,19 @@ class UpstreamSyncTests(unittest.TestCase):
         self.assertEqual(git(self.project, 'status', '--porcelain'), '')
         self.assertIn('local test credential', (self.project / '.private/token').read_text())
 
+    def test_runtime_help_pages_are_imported_without_website_build_or_assets(self):
+        write(self.upstream, 'website-docs/03-features/guide.md', '# Runtime help\n')
+        write(self.upstream, 'website-docs/.vitepress/config.mts', 'site-only config\n')
+        write(self.upstream, 'website-docs/public/screenshot.png', 'site-only image\n')
+        report = self.prepare(self.update())
+        ref = report['branch']
+        self.assertEqual(git(self.project, 'show', ref + ':WeKnora/internal/productdocs/bundled/03-features/guide.md'), '# Runtime help')
+        paths = git(self.project, 'ls-tree', '-r', '--name-only', ref).splitlines()
+        self.assertNotIn('WeKnora/website-docs/03-features/guide.md', paths)
+        self.assertNotIn('WeKnora/website-docs/.vitepress/config.mts', paths)
+        self.assertNotIn('WeKnora/website-docs/public/screenshot.png', paths)
+        self.assertEqual(git(self.project, 'rev-parse', 'HEAD'), self.main)
+
     def test_conflicts_do_not_advance_baseline_and_cannot_pass_ci(self):
         report = self.prepare(self.update(conflict=True))
         self.assertEqual(report['status'], 'conflicts')

@@ -69,21 +69,6 @@ main() {
         fi
     done
 
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-# ─── Drop privileges and exec the main process ───
-# Keep the host's private 0600 signing key private while making a separate
-# runtime copy readable by the application after dropping root privileges.
-if [ -n "${COMMODITY_RESEARCH_TOKEN_FILE:-}" ]; then
-    if [ ! -f "$COMMODITY_RESEARCH_TOKEN_FILE" ]; then
-        echo "weknora: configured research signing key is missing" >&2
-        exit 1
-    fi
-    install -d -m 0700 -o appuser -g appuser /run/weknora-research
-    install -m 0600 -o appuser -g appuser "$COMMODITY_RESEARCH_TOKEN_FILE" /run/weknora-research/service-token
-    export COMMODITY_RESEARCH_TOKEN_FILE=/run/weknora-research/service-token
-fi
-exec gosu appuser "$@"
-=======
     grant_docker_sock_to_appuser /var/run/docker.sock
     case "${DOCKER_HOST:-}" in
         unix://*)
@@ -92,10 +77,20 @@ exec gosu appuser "$@"
     esac
 
     # ─── Drop privileges and exec the main process ───
+    # Keep the host's private 0600 signing key private while making a separate
+    # runtime copy readable by the application after dropping root privileges.
+    if [ -n "${COMMODITY_RESEARCH_TOKEN_FILE:-}" ]; then
+        if [ ! -f "$COMMODITY_RESEARCH_TOKEN_FILE" ]; then
+            echo "weknora: configured research signing key is missing" >&2
+            exit 1
+        fi
+        install -d -m 0700 -o appuser -g appuser /run/weknora-research
+        install -m 0600 -o appuser -g appuser "$COMMODITY_RESEARCH_TOKEN_FILE" /run/weknora-research/service-token
+        export COMMODITY_RESEARCH_TOKEN_FILE=/run/weknora-research/service-token
+    fi
     exec gosu appuser "$@"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     main "$@"
 fi
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0

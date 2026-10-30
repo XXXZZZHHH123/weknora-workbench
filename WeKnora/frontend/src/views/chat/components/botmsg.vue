@@ -153,12 +153,9 @@ import docInfo from './docInfo.vue';
 import deepThink from './deepThink.vue';
 import AgentStreamDisplay from './AgentStreamDisplay.vue';
 import RagPipelineProgress from './RagPipelineProgress.vue';
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
 import AnswerProgress from './AnswerProgress.vue';
-=======
 import ChatActionIcon from '@/components/ChatActionIcon.vue';
 import AssistantActionsButton from '@/components/assistant/AssistantActionsButton.vue';
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 import ChatRequestInfoButton from '@/components/ChatRequestInfoButton.vue';
 import ChatCitationFloat from '@/components/ChatCitationFloat.vue';
 import picturePreview from '@/components/picture-preview.vue';

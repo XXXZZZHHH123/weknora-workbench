@@ -844,6 +844,7 @@ CREATE TABLE IF NOT EXISTS vector_stores (
     deleted_at DATETIME NULL
 );
 CREATE TABLE IF NOT EXISTS knowledge_bases (
+    system_role TEXT NOT NULL DEFAULT '',
 	access_policy TEXT,
     profile_config TEXT,
     generated_profile TEXT,

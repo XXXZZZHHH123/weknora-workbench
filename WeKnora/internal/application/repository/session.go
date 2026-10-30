@@ -127,11 +127,7 @@ func (r *sessionRepository) GetIMPlatform(
 func (r *sessionRepository) GetByTenantID(ctx context.Context, tenantID uint64, userID string) ([]*types.Session, error) {
 	var sessions []*types.Session
 	err := applySessionUserScope(
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).Where(persistedUserMessage),
-=======
 		r.db.WithContext(ctx).Where("tenant_id = ? AND kind = ''", tenantID),
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 		userID,
 	).Order("updated_at DESC").Find(&sessions).Error
 	if err != nil {
@@ -149,11 +145,7 @@ func (r *sessionRepository) GetPagedByTenantID(
 
 	// First query the total count
 	baseQ := applySessionUserScope(
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-		r.db.WithContext(ctx).Model(&types.Session{}).Where("tenant_id = ?", tenantID).Where(persistedUserMessage),
-=======
-		r.db.WithContext(ctx).Model(&types.Session{}).Where("tenant_id = ? AND kind = ''", tenantID),
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+		r.db.WithContext(ctx).Model(&types.Session{}).Where("tenant_id = ? AND kind = ''", tenantID).Where(persistedUserMessage),
 		userID,
 	)
 	err := baseQ.Count(&total).Error
@@ -163,11 +155,7 @@ func (r *sessionRepository) GetPagedByTenantID(
 
 	// Then query the paginated data
 	err = applySessionUserScope(
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).Where(persistedUserMessage),
-=======
-		r.db.WithContext(ctx).Where("tenant_id = ? AND kind = ''", tenantID),
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
+		r.db.WithContext(ctx).Where("tenant_id = ? AND kind = ''", tenantID).Where(persistedUserMessage),
 		userID,
 	).
 		Order("updated_at DESC").
@@ -207,16 +195,13 @@ func (r *sessionRepository) QueryPaged(
 
 	// Base filter shared by count and list queries.
 	applyBase := func(db *gorm.DB) *gorm.DB {
-<<<<<<< a4a0a229ee25fcab7ff4301c95bec5df121485a4
-		db = db.Where("s.tenant_id = ? AND s.deleted_at IS NULL", q.TenantID).
-			Where(strings.ReplaceAll(persistedUserMessage, "sessions.id", "s.id"))
-		if q.UserID != "" {
-=======
 		db = db.Where("s.tenant_id = ? AND s.deleted_at IS NULL AND s.kind = ?", q.TenantID, q.Kind)
+		if q.Kind == "" {
+			db = db.Where(strings.ReplaceAll(persistedUserMessage, "sessions.id", "s.id"))
+		}
 		if q.Kind == types.SessionKindAssistant {
 			db = db.Where("s.user_id = ? AND s.user_id <> ''", q.UserID)
 		} else if q.UserID != "" {
->>>>>>> c153fcd099a85b248ca75337b98a9265b951e7f0
 			db = db.Where("(s.user_id = ? OR s.user_id IS NULL OR s.user_id = '')", q.UserID)
 		}
 		// Skill image maintenance runs in a real session so its transcript can

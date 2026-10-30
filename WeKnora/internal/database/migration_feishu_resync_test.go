@@ -18,10 +18,10 @@ func testFeishuResyncMigration(t *testing.T, db *sql.DB, dialect string) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = tx.Rollback() })
 	jsonType := "TEXT"
-	migration := "sqlite/000040_feishu_deep_adaptation_resync"
+	migration := "sqlite/000053_feishu_deep_adaptation_resync"
 	if dialect == "postgres" {
 		jsonType = "JSONB"
-		migration = "versioned/000122_feishu_deep_adaptation_resync"
+		migration = "versioned/000135_feishu_deep_adaptation_resync"
 	}
 	_, err = tx.Exec("CREATE TEMP TABLE data_sources " +
 		"(id TEXT PRIMARY KEY, type TEXT, config " + jsonType + ", deleted_at TEXT)")

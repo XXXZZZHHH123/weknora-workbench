@@ -20,7 +20,8 @@ var supportedImportFileExtensions = map[string]struct{}{
 	"png":   {}, "jpg": {}, "jpeg": {}, "gif": {},
 	"bmp": {}, "tiff": {}, "webp": {},
 	"csv": {}, "xlsx": {}, "xls": {}, "pptx": {}, "ppt": {}, "json": {},
-	"xlsm": {}, "ods": {}, "pptm": {}, "odp": {},
+	// XLSM/ODS remain unavailable until the reviewed spreadsheet pipeline supports them.
+	"pptm": {}, "odp": {},
 	"mp3": {}, "wav": {}, "m4a": {}, "flac": {}, "ogg": {},
 }
 
