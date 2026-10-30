@@ -134,10 +134,18 @@ def test_review_route_rejects_cross_unit_rebind_without_mutating_preview(generat
     from tests.test_judgment_generation import endpoint
     from tests.test_knowledge_facts import SERIES
     from tin.web import judgment_generation as generation
-    client, headers, _, model, _ = generator
+    client, headers, _, model, calls = generator
     source = '库存超过12吨时复核。'
     model['rule_quotes']['watch'] = source
     original_snapshot = generation.snapshot
+
+    async def complete(scope, selected_model, prompt):
+        calls.append({'model': selected_model, 'prompt': prompt})
+        if prompt.startswith('research-source-inventory.v1'):
+            return {'blocks': [{'id': 's0001', 'disposition': 'research', 'reason': '明确库存复核条件'}],
+                'items': [{'id': 'i_stock', 'block_ids': ['s0001'], 'quote': source,
+                    'kind': 'threshold', 'source_unit': '吨'}]}
+        return {**deepcopy(model), 'source_coverage': {'i_stock': '/judgment/thresholds/0'}}
 
     def with_other_unit(*args, **kwargs):
         state = original_snapshot(*args, **kwargs)
@@ -145,19 +153,29 @@ def test_review_route_rejects_cross_unit_rebind_without_mutating_preview(generat
         return state
 
     monkeypatch.setattr(generation, 'snapshot', with_other_unit)
+    monkeypatch.setattr(generation, 'completion', complete)
     response = client.post(endpoint('/generate'), headers=headers, json={
         'model_id': 'synthetic-chat', 'text': source, 'base_version': 0})
     assert response.status_code == 200, response.text
     preview = response.json()
     item = next(item for section in preview['review']['sections'] for item in section['items']
                 if item['kind'] == 'thresholds')
-    changed = client.post(endpoint('/review/update'), headers=headers, json={
+    attempted = {
         'draft_id': preview['draft_id'], 'revision': preview['review']['revision'],
-        'item_id': item['id'], 'action': 'confirm', 'series_id': 'kg-field'})
+        'item_id': item['id'], 'action': 'confirm', 'series_id': 'kg-field'}
+    changed = client.post(endpoint('/review/update'), headers=headers, json=attempted)
     assert changed.status_code == 422, changed.text
+    assert changed.json()['detail']['code'] == 'binding_warning'
     message = changed.json()['detail']['message']
     assert '单位' in message and '原文' in message
     current = client.get(endpoint('/review'), headers=headers, params={'draft_id': preview['draft_id']}).json()
+    assert current == preview['review']
     assert current['revision'] == preview['review']['revision']
     same = next(entry for section in current['sections'] for entry in section['items'] if entry['id'] == item['id'])
-    assert same['binding']['series_id'] == SERIES and same['status'] == 'pending'
+    assert same['binding']['series_id'] == SERIES and same['status'] == item['status']
+    confirmed = client.post(endpoint('/review/update'), headers=headers, json={**attempted,
+        'binding_warning_token': changed.json()['detail']['confirmation_token']})
+    assert confirmed.status_code == 422, confirmed.text
+    assert confirmed.json()['detail'].get('code') != 'binding_warning'
+    after = client.get(endpoint('/review'), headers=headers, params={'draft_id': preview['draft_id']}).json()
+    assert after == preview['review']

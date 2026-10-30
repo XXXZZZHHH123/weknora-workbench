@@ -8,7 +8,9 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from tests.test_knowledge_facts import canonical, FIRST, SECOND, SERIES, page
-from tests.test_judgment_generation import generator, generate, apply, rows, TEXT, document
+from tests.test_judgment_generation import (
+    generator, generate, apply, rows, TEXT, document, inventory_fixture, covered_fixture,
+)
 from tin.integration.workbench_scope import isolated_session_factory
 from tin.models import AuditLog, SourceMapping
 from tin.web import judgment_generation as generation
@@ -34,6 +36,16 @@ def update(client, headers, preview, item, action='confirm', **fields):
         'item_id': item['id'], 'action': action, **fields})
 
 
+def confirm_new_binding(client, headers, preview, item, *, expected_warning=True, **fields):
+    warning = update(client, headers, preview, item, **fields)
+    if not expected_warning:
+        assert warning.status_code == 200, warning.text
+        return warning
+    assert warning.status_code == 422 and warning.json()['detail']['code'] == 'binding_warning'
+    return update(client, headers, preview, item,
+        binding_warning_token=warning.json()['detail']['confirmation_token'], **fields)
+
+
 def reuse(client, headers, preview, enabled=True):
     return client.post(endpoint('/reuse'), headers=headers, json={
         'draft_id': preview['draft_id'], 'revision': preview['review']['revision'], 'enabled': enabled})
@@ -41,7 +53,8 @@ def reuse(client, headers, preview, enabled=True):
 
 def preferences():
     with isolated_session_factory(17, FIRST)() as session:
-        return session.scalars(select(SourceMapping).where(SourceMapping.confirmed_by == 'researcher')).all()
+        return session.scalars(select(SourceMapping).where(SourceMapping.confirmed_by == 'researcher',
+            SourceMapping.config['kind'].as_string() == 'judgment-review-binding.v1')).all()
 
 
 def test_review_read_and_confirm_only_save_when_explicitly_applied(generator):
@@ -164,7 +177,7 @@ def test_unresolved_can_bind_as_descriptive_evidence_without_becoming_a_rule(gen
     preview = generate(client, headers).json()
     item = pick(preview, 'unresolved_binding')
     assert item['can_bind'] and not item['requires_binding'] and item['binding'] is None
-    result = update(client, headers, preview, item, series_id=SERIES, remember=True)
+    result = confirm_new_binding(client, headers, preview, item, series_id=SERIES, remember=True)
     assert result.status_code == 200, result.text
     pending = result.json()['unresolved'][0]
     assert pending['section'] == 'demand' and pending['text'] == 'Orders' and pending['series_id'] == SERIES
@@ -273,7 +286,7 @@ def test_catalog_search_uses_complete_directory_metadata_without_model_or_observ
     assert client.get(endpoint('/indicators'), headers=headers,
         params={'draft_id': preview['draft_id'], 'limit': 51}).status_code == 422
     assert len(calls) == count and state['pages'] == pages
-    selected = update(client, headers, preview, pick(preview, 'binding'), series_id=fields[-1]['id'])
+    selected = confirm_new_binding(client, headers, preview, pick(preview, 'binding'), series_id=fields[-1]['id'])
     assert selected.status_code == 200 and pick(selected.json(), 'binding')['binding']['series_id'] == fields[-1]['id']
 
 
@@ -426,7 +439,8 @@ def test_remembered_different_choice_requires_action_and_toggle_restores_auto_re
         return state
     monkeypatch.setattr(generation, 'snapshot', directory)
     first = generate(client, headers).json()
-    saved = update(client, headers, first, pick(first, 'binding'), series_id=other, remember=True)
+    saved = confirm_new_binding(client, headers, first, pick(first, 'binding'), series_id=other, remember=True,
+        expected_warning=False)
     assert saved.status_code == 200, saved.text
     next_preview = generate(client, headers).json()
     assert pick(next_preview, 'binding')['status'] == 'ready'
@@ -474,12 +488,14 @@ def test_repair_demotion_preserves_original_typed_rule_for_review(generator, mon
     broken['judgment']['thresholds'][0]['value'] = 0
     async def complete(scope, model, prompt):
         calls.append(prompt)
-        if len(calls) == 1:
-            return broken
+        if prompt.startswith('research-source-inventory.v1'):
+            return inventory_fixture()
+        if len(calls) == 2:
+            return covered_fixture(broken)
         repaired = copy.deepcopy(response)
         repaired['judgment']['thresholds'] = []
         repaired['rule_quotes'] = {}
-        return repaired
+        return covered_fixture(repaired)
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
     assert result.status_code == 200, result.text

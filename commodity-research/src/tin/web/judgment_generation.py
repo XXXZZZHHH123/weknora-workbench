@@ -38,6 +38,7 @@ PROMPT_BYTES = 160 * 1024
 CANDIDATE_BYTES = 96 * 1024
 GENERATION_SECONDS = 270
 _analysis_progress = ContextVar('judgment_analysis_progress', default=None)
+_source_inventory = ContextVar('judgment_source_inventory', default=None)
 
 
 async def notify_progress(phase):
@@ -325,7 +326,7 @@ def selection_requests(catalog, text):
 def selected_catalog_ids(result, batch, refs):
     """Resolve only explicit references from this request; never guess an ID."""
     references = result.get('selection_refs') if isinstance(result, dict) and set(result) == {'selection_refs'} else None
-    valid = isinstance(references, list) and len(references) <= 32
+    valid = isinstance(references, list) and len(references) <= 96
     if valid:
         valid = (all(isinstance(reference, str) for reference in references)
                  and len(set(references)) == len(references)
@@ -393,8 +394,27 @@ async def choose_catalog(scope, model, catalog, text):
 
 
 def analysis_protocol(selected):
-    return (GENERAL_METHOD + '\n' + OUTPUT_PROTOCOL + '\n本次目录是' +
+    inventory = _source_inventory.get()
+    if inventory is not None:
+        from tin.judgments.coverage import source_output_protocol
+        protocol = source_output_protocol(inventory)
+    else:
+        protocol = OUTPUT_PROTOCOL
+    return (GENERAL_METHOD + '\n' + protocol + '\n本次目录是' +
             ('模型选出的候选子集，未匹配不代表没有数据。' if selected else '当前授权完整目录。'))
+
+
+def assessed_response(response, body, before, candidates, scope):
+    inventory = _source_inventory.get()
+    mapping = None
+    if inventory is not None:
+        from tin.judgments.coverage import split_coverage_document
+        response, mapping = split_coverage_document(response, inventory)
+    result = assess_draft(response, body.text, candidates, variety=before.get('variety', settings.variety),
+        actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
+    # Keep transport accounting outside the judgment protocol and its executable rules.
+    result.source_mapping = mapping
+    return result
 
 
 def validation_detail(error):
@@ -435,8 +455,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
         await notify_progress('analyzing')
         document = await completion(scope, body.model_id, make_prompt(analysis_protocol(selected), candidates, body.text))
         await notify_progress('validating')
-        first = assess_draft(document, body.text, candidates, variety=before.get('variety', settings.variety),
-            actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
+        first = assessed_response(document, body, before, candidates, scope)
         issues = first.issues
         coverage = not any(item.get('severity') == 'error' for item in issues)
     except AnalysisError as error:
@@ -468,8 +487,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
         return first, 1
     try:
         await notify_progress('validating')
-        final = assess_draft(repaired, body.text, candidates, variety=before.get('variety', settings.variety),
-            actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
+        final = assessed_response(repaired, body, before, candidates, scope)
     except AnalysisError as error:
         if first is None:
             raise HTTPException(422, validation_detail(error)) from None
@@ -657,23 +675,122 @@ async def _analyze_scoped(scope, body):
         before['selected_variety'] = body.variety
     if body.base_version != before['base_version']:
         raise HTTPException(409, '研究逻辑已有新版本，请刷新后重新分析')
-    candidates, selected = await choose_catalog(scope, body.model_id, before['catalog'], body.text)
+    from tin.web import judgment_analysis_cache as cache
+    from tin.judgments.coverage import inventory_prompt, validate_inventory, retain_coverage
+    try:
+        inventory_request = inventory_prompt(body.text)
+    except AnalysisError as error:
+        raise HTTPException(422, validation_detail(error)) from None
+    model = await current_model(scope, body.model_id)
+    protocol = cache.digest([PROMPT_VERSION, GENERAL_METHOD, OUTPUT_PROTOCOL, SELECTION_PROTOCOL,
+        inventory_request])
+    key = cache.identity(scope, body, before, model, protocol)
     await fresh(scope, before)
-    assessment, repair_attempts = await analyzed_completion(scope, body, before, candidates, selected)
-    document, analyzed = assessment.document, assessment.result
-    await fresh(scope, before)
-    preview = {'document': document, 'text': body.text, 'source_name': body.source_name,
-               'panel_title': body.panel_title,
-               'fact_version': before['fact_version'], 'base_version': before['base_version'],
-               'model_id': body.model_id, 'variety': analyzed.payload.variety, 'written_at': analyzed.payload.written_at.isoformat(),
-               'validation_issues': assessment.issues, 'repair_attempts': repair_attempts}
-    if body.variety:
-        preview['selected_variety'] = body.variety
-    await notify_progress('validating')
-    from tin.web.judgment_review import initialize_review
-    preview.update(candidate_count=len(candidates), candidate_subset=selected)
-    initialize_review(preview, assessment, before['catalog'])
-    return preview, before
+    ticket = await run_in_threadpool(cache.claim, scope, key)
+    reused = 'snapshot' in ticket
+    try:
+        if reused:
+            stored = ticket['snapshot']
+            inventory = validate_inventory(stored['inventory'], body.text)
+            written_at = date.fromisoformat(stored['written_at'])
+            # Recheck all model-authored material, including candidates that can
+            # later be selected by the reviewer, against today's authorized IDs.
+            for candidate in [stored['candidate_document'], *stored['candidate_history']]:
+                assess_draft(candidate, body.text, before['catalog'], variety=before['variety'],
+                    actor=scope.identity.user_id, written_at=written_at)
+            analyzed = validate_analysis(stored['document'], body.text, before['catalog'],
+                variety=before['variety'], actor=scope.identity.user_id, written_at=written_at)
+            from tin.judgments.analysis import DraftAssessment
+            assessment = DraftAssessment(copy.deepcopy(stored['document']), analyzed,
+                copy.deepcopy(stored['issues']), copy.deepcopy(stored['candidate_document']),
+                copy.deepcopy(stored['candidate_history']))
+            repair_attempts = stored['repair_attempts']
+            coverage = copy.deepcopy(stored['coverage'])
+            candidate_count, selected = stored['candidate_count'], stored['candidate_subset']
+        else:
+            await notify_progress('analyzing')
+            inventory = validate_inventory(await completion(scope, body.model_id, inventory_request), body.text)
+            await fresh(scope, before)
+            marker = _source_inventory.set(inventory)
+            try:
+                candidates, selected = await choose_catalog(scope, body.model_id, before['catalog'], body.text)
+                await fresh(scope, before)
+                assessment, repair_attempts = await analyzed_completion(scope, body, before, candidates, selected)
+                assessment, coverage = retain_coverage(assessment, inventory,
+                    getattr(assessment, 'source_mapping', None) or {}, body.text, candidates,
+                    variety=before['variety'], actor=scope.identity.user_id,
+                    written_at=assessment.result.payload.written_at)
+                candidate_count = len(candidates)
+            finally:
+                _source_inventory.reset(marker)
+            stable = not any(issue.get('code') in {'repair_capacity', 'repair_unavailable',
+                'repair_invalid', 'repair_changed_verified_rule', 'coverage_pending_capacity'}
+                for issue in assessment.issues)
+            stored = {
+                'inventory': inventory, 'coverage': coverage, 'document': assessment.document,
+                'candidate_document': assessment.candidate_document or assessment.document,
+                'candidate_history': assessment.candidate_history or [assessment.document],
+                'issues': assessment.issues, 'written_at': assessment.result.payload.written_at.isoformat(),
+                'repair_attempts': repair_attempts, 'candidate_count': candidate_count,
+                'candidate_subset': selected}
+            if not stable:
+                await run_in_threadpool(cache.abandon, scope, ticket)
+    except AnalysisError as error:
+        await run_in_threadpool(cache.abandon, scope, ticket)
+        if reused:
+            raise HTTPException(409, '已存解析与当前资料无法核对，原有研判保持不变') from None
+        raise HTTPException(422, validation_detail(error)) from None
+    except (KeyError, TypeError, ValueError) as error:
+        await run_in_threadpool(cache.abandon, scope, ticket)
+        if reused:
+            raise HTTPException(409, '已存解析内容无法核验，原有研判保持不变') from None
+        raise error
+    except BaseException:
+        await run_in_threadpool(cache.abandon, scope, ticket)
+        raise
+    try:
+        document, analyzed = assessment.document, assessment.result
+        await fresh(scope, before)
+        preview = {'document': document, 'text': body.text, 'source_name': body.source_name,
+                   'panel_title': body.panel_title,
+                   'fact_version': before['fact_version'], 'base_version': before['base_version'],
+                   'model_id': body.model_id, 'prompt_version': PROMPT_VERSION,
+                   'variety': analyzed.payload.variety, 'written_at': analyzed.payload.written_at.isoformat(),
+                   'validation_issues': assessment.issues, 'repair_attempts': repair_attempts,
+                   'source_coverage': coverage, 'analysis_reused': reused,
+                   'analysis_snapshot': key if reused or stable else None}
+        if body.variety:
+            preview['selected_variety'] = body.variety
+        await notify_progress('validating')
+        from tin.web.judgment_review import initialize_review
+        preview.update(candidate_count=candidate_count, candidate_subset=selected)
+        initialize_review(preview, assessment, before['catalog'])
+        await fresh(scope, before)
+        if await current_model(scope, body.model_id) != model:
+            raise HTTPException(409, '分析期间模型配置已改变，请重新分析；原有研判保持不变')
+        if not reused and stable:
+            await run_in_threadpool(cache.publish, scope, ticket, stored)
+        return preview, before
+    except AnalysisError as error:
+        await run_in_threadpool(cache.abandon, scope, ticket)
+        if reused:
+            raise HTTPException(409, '已存解析与当前资料无法核对，原有研判保持不变') from None
+        raise HTTPException(422, validation_detail(error)) from None
+    except BaseException:
+        await run_in_threadpool(cache.abandon, scope, ticket)
+        raise
+
+
+async def current_model(scope, model_id):
+    """A reused interpretation never bypasses model visibility or configuration."""
+    from tin.web.judgment_analysis_cache import digest
+    envelope = await go_request(scope, '/api/v1/models/' + quote(model_id, safe=''))
+    row = envelope.get('data') if isinstance(envelope, dict) else None
+    if (not isinstance(row, dict) or row.get('id') != model_id
+            or row.get('type') != 'KnowledgeQA' or row.get('status') != 'active'):
+        raise HTTPException(400, '所选分析模型已停用或不再可用，请重新选择')
+    return digest({key: row.get(key) for key in ('id', 'tenant_id', 'name', 'type',
+        'status', 'updated_at', 'parameters', 'capabilities')})
 
 
 def persist(scope, preview):
@@ -707,7 +824,10 @@ def persist(scope, preview):
                     'version': row.version, 'base_version': preview['base_version'],
                     'source_sha256': hashlib.sha256(preview['text'].encode()).hexdigest(),
                     'source_name': preview['source_name'], 'fact_version': preview['fact_version'],
-                    'model_id': preview['model_id'], 'prompt_version': PROMPT_VERSION,
+                    'model_id': preview['model_id'], 'prompt_version': preview.get('prompt_version', 'legacy-unversioned'),
+                    'analysis_snapshot': preview.get('analysis_snapshot'),
+                    'analysis_reused': preview.get('analysis_reused', False),
+                    'source_coverage': preview.get('source_coverage'),
                     'binding_units': result.binding_units, 'rule_quotes': result.rule_quotes,
                     'unresolved': result.unresolved, 'validation_issues': preview.get('validation_issues', []),
                     'repair_attempts': preview.get('repair_attempts', 0),

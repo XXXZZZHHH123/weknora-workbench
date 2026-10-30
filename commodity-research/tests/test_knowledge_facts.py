@@ -49,6 +49,14 @@ def canonical(monkeypatch, tmp_path):
         state['calls'].append((request.method, request.url.path))
         path = request.url.path
         if request.url.host == 'native.test':
+            if path == '/api/v1/models/synthetic-chat':
+                if state.get('model_revoked'):
+                    return httpx.Response(404, json={'success': False})
+                return httpx.Response(200, json={'success': True, 'data': {
+                    'id': 'synthetic-chat', 'name': 'Synthetic chat', 'tenant_id': 17,
+                    'type': 'KnowledgeQA', 'status': state.get('model_status', 'active'),
+                    'updated_at': state.get('model_revision', '2030-01-01T00:00:00Z'),
+                    'source': 'remote', 'parameters': {'base_url': 'https://synthetic.invalid'}}})
             if path == '/api/v1/auth/me':
                 if state.get('login_revoked'):
                     return httpx.Response(401, json={'success': False})

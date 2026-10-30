@@ -163,14 +163,22 @@ def test_manual_unit_metadata_is_not_in_model_output_schema():
     assert not Draft202012Validator(OUTPUT_SCHEMA).is_valid(body)
 
 
-def test_daily_ma_preview_can_save_with_original_frequency_metadata(generator):
+def test_daily_ma_preview_can_save_with_original_frequency_metadata(generator, monkeypatch):
     from tests.test_judgment_generation import endpoint
-    client, headers, _, response, _ = generator
+    client, headers, _, response, calls = generator
     source = '合成数量下穿2日均线时复核'
     response.clear(); response.update({'judgment': {'contradiction': {}, 'thresholds': [{
         'id': 'daily_cross', 'name': '均线事件', 'series_id': SERIES, 'operator': 'crosses_below',
         'value': {'kind': 'sma', 'window': 2}, 'type': '观察位', 'horizon': '短期'}]},
         'binding_units': {SERIES: '吨'}, 'rule_quotes': {'daily_cross': source}, 'unresolved': []})
+    async def complete(scope, model, prompt):
+        calls.append({'model': model, 'prompt': prompt})
+        if prompt.startswith('research-source-inventory.v1'):
+            return {'blocks': [{'id': 's0001', 'disposition': 'research', 'reason': '明确均线复核条件'}],
+                'items': [{'id': 'i_daily', 'block_ids': ['s0001'], 'quote': source,
+                    'kind': 'threshold', 'source_unit': None}]}
+        return {**copy.deepcopy(response), 'source_coverage': {'i_daily': '/judgment/thresholds/0'}}
+    monkeypatch.setattr(generation, 'completion', complete)
     preview = client.post(endpoint('/generate'), headers=headers, json={
         'model_id': 'synthetic-chat', 'text': source, 'base_version': 0})
     assert preview.status_code == 200, preview.text

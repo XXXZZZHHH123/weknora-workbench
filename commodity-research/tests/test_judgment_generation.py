@@ -20,6 +20,37 @@ def document():
                       'value':12,'type':'观察位','horizon':'短期'}]},
         'binding_units':{SERIES:'吨'},'rule_quotes':{'watch':'Stocks above 12 吨'},
         'unresolved':[{'section':'demand','text':'Orders','reason':'No comparable indicator'}]}
+
+
+def inventory_fixture():
+    """Independent synthetic interpretation, before field selection or analysis."""
+    return {'blocks': [{'id': 's0001', 'disposition': 'research', 'reason': 'Research source'}],
+        'items': [
+            {'id': 'i_bull', 'block_ids': ['s0001'], 'quote': 'A supply contraction',
+                'kind': 'bull_claim', 'source_unit': None},
+            {'id': 'i_bear', 'block_ids': ['s0001'], 'quote': 'soft orders',
+                'kind': 'bear_claim', 'source_unit': None},
+            {'id': 'i_stock', 'block_ids': ['s0001'], 'quote': 'Stocks above 12 吨',
+                'kind': 'bull_evidence', 'source_unit': '吨'},
+            {'id': 'i_watch', 'block_ids': ['s0001'], 'quote': 'Stocks above 12 吨',
+                'kind': 'threshold', 'source_unit': '吨'},
+        ]}
+
+
+def covered_fixture(value):
+    result = copy.deepcopy(value)
+    result['source_coverage'] = {
+        'i_bull': '/judgment/contradiction/bull/claim',
+        'i_bear': '/judgment/contradiction/bear/claim',
+        'i_stock': '/judgment/contradiction/bull/evidence/0',
+        'i_watch': '/judgment/thresholds/0',
+    }
+    return result
+
+
+def model_fixture(prompt, value):
+    return inventory_fixture() if prompt.startswith('research-source-inventory.v1') else covered_fixture(value)
+
 def endpoint(suffix):return page(FIRST,'/api/sn/judgment'+suffix)
 def rows():
     with isolated_session_factory(17,FIRST)() as session:
@@ -29,7 +60,7 @@ def generator(canonical,monkeypatch):
     client,headers,state,tmp=canonical;calls=[];response=document()
     async def complete(scope,model,prompt):
         assert scope.knowledge_base_id==KB
-        calls.append({'model':model,'prompt':prompt});return copy.deepcopy(response)
+        calls.append({'model':model,'prompt':prompt});return model_fixture(prompt,response)
     monkeypatch.setattr(generation,'completion',complete);generation.previews.items.clear()
     return client,headers,state,response,calls
 
@@ -41,8 +72,8 @@ def apply(client,headers,preview):
 def test_generate_is_preview_only_then_explicit_save_appends_draft(generator):
     client,headers,_,_,calls=generator
     generated=generate(client,headers);assert generated.status_code==200,generated.text
-    preview=generated.json();assert TEXT in calls[0]['prompt'] and SERIES in calls[0]['prompt']
-    assert len(calls) == 2
+    preview=generated.json();assert TEXT in calls[1]['prompt'] and SERIES in calls[1]['prompt']
+    assert len(calls) == 3
     assert rows()==[] and preview['bindings'][0]['unit']=='吨'
     saved=apply(client,headers,preview);assert saved.status_code==200,saved.text
     assert saved.json()['status']=='草稿' and saved.json()['version']==1
@@ -67,7 +98,7 @@ def test_new_explicit_product_reuses_model_analysis_without_inheriting_other_pro
     managed = client.get(endpoint('/manage'), headers=headers).json()
     assert managed['variety'] == 'XY' and managed['current']['variety'] == 'XY'
     assert client.get(endpoint('/manage?variety=SN'), headers=headers).json()['current']['variety'] == 'SN'
-    assert len(calls) == 4
+    assert len(calls) == 6
 
 @pytest.mark.parametrize('change',[
     lambda d:d['judgment']['thresholds'][0].update(series_id='foreign'),
@@ -86,8 +117,8 @@ def test_invalid_quantitative_item_is_not_executable_after_one_bounded_repair(ge
     client, headers, _, response, calls = generator; change(response)
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 2 and result.json()['repair_attempts'] == 1
-    assert '上次结构化校验反馈' in calls[1]['prompt']
+    assert len(calls) == 3 and result.json()['repair_attempts'] == 1
+    assert '上次结构化校验反馈' in calls[2]['prompt']
     preview = result.json()
     assert preview['validation_issues'] and preview['unresolved'] and rows() == []
     assert apply(client, headers, preview).status_code == 200
@@ -99,10 +130,10 @@ def test_single_repair_can_fix_exact_quote_and_never_loops(generator, monkeypatc
     broken = copy.deepcopy(response); broken['rule_quotes']['watch'] = 'paraphrased source'
     async def complete(scope, model, prompt):
         calls.append({'prompt': prompt})
-        return copy.deepcopy(broken if len(calls) == 1 else response)
+        return model_fixture(prompt,broken if len(calls) == 2 else response)
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
-    assert result.status_code == 200 and len(calls) == 2
+    assert result.status_code == 200 and len(calls) == 3
     assert result.json()['validation_issues'] == [] and result.json()['repair_attempts'] == 1
 
 
@@ -111,12 +142,12 @@ def test_forbidden_cost_fact_feedback_names_every_field_and_never_saves_unchange
     response['judgment']['cost_line'] = {'type': 'cash', 'value': 7, 'source': 'untrusted',
         'items': [{'desc': 'Cost', 'series_id': SERIES, 'value': 7}]}
     result = generate(client, headers)
-    assert result.status_code == 422 and len(calls) == 2 and rows() == []
+    assert result.status_code == 422 and len(calls) == 3 and rows() == []
     paths = {'/judgment/cost_line/value', '/judgment/cost_line/source',
              '/judgment/cost_line/items/0/value'}
     assert {issue['path'] for issue in result.json()['detail']['issues']} == paths
-    assert all(path in calls[1]['prompt'] for path in paths)
-    assert 'JSON null' in calls[1]['prompt']
+    assert all(path in calls[2]['prompt'] for path in paths)
+    assert 'JSON null' in calls[2]['prompt']
 
 
 def test_repair_cannot_drop_a_previously_verified_rule(generator, monkeypatch):
@@ -126,11 +157,12 @@ def test_repair_cannot_drop_a_previously_verified_rule(generator, monkeypatch):
     broken['rule_quotes']['bad'] = response['rule_quotes']['watch']
     async def complete(scope, model, prompt):
         calls.append({'prompt': prompt})
-        if len(calls) == 1: return broken
-        return {'judgment': {'contradiction': {}}, 'binding_units': {}, 'rule_quotes': {}, 'unresolved': []}
+        if prompt.startswith('research-source-inventory.v1'): return inventory_fixture()
+        if len(calls) == 2: return covered_fixture(broken)
+        return covered_fixture({'judgment': {'contradiction': {}}, 'binding_units': {}, 'rule_quotes': {}, 'unresolved': []})
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
-    assert result.status_code == 200 and len(calls) == 2
+    assert result.status_code == 200 and len(calls) == 3
     assert any(item['code'] == 'repair_changed_verified_rule' for item in result.json()['validation_issues'])
     assert apply(client, headers, result.json()).status_code == 200
     assert [item['id'] for item in rows()[0].thresholds] == ['watch']
@@ -144,11 +176,12 @@ def test_repair_transport_failure_keeps_the_already_verified_partial_draft(gener
     broken['rule_quotes']['pending'] = response['rule_quotes']['watch']
     async def complete(scope, model, prompt):
         calls.append({'prompt': prompt})
-        if len(calls) == 1: return broken
+        if prompt.startswith('research-source-inventory.v1'): return inventory_fixture()
+        if len(calls) == 2: return covered_fixture(broken)
         raise HTTPException(503, 'Synthetic unavailable repair')
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
-    assert result.status_code == 200 and len(calls) == 2
+    assert result.status_code == 200 and len(calls) == 3
     assert any(item['code'] == 'repair_unavailable' for item in result.json()['validation_issues'])
     assert apply(client, headers, result.json()).status_code == 200
     assert [item['id'] for item in rows()[0].thresholds] == ['watch']
@@ -166,11 +199,12 @@ def test_source_access_failure_during_repair_never_releases_a_partial_preview(ge
     broken = copy.deepcopy(response); broken['judgment']['thresholds'][0]['value'] = 99999
     async def complete(scope, model, prompt):
         calls.append({'prompt': prompt})
-        if len(calls) == 1: return broken
+        if prompt.startswith('research-source-inventory.v1'): return inventory_fixture()
+        if len(calls) == 2: return covered_fixture(broken)
         raise HTTPException(403, 'Synthetic access revoked')
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
-    assert result.status_code == 403 and len(calls) == 2 and rows() == []
+    assert result.status_code == 403 and len(calls) == 3 and rows() == []
     assert generation.previews.items == {}
 
 def test_viewer_and_foreign_workbench_preview_are_rejected(generator):
@@ -202,7 +236,7 @@ def test_latest_draft_is_basis_even_if_an_older_version_is_active(generator):
 
 def test_source_change_during_generation_discards_preview(generator,monkeypatch):
     client,headers,state,response,_=generator
-    async def complete(*args):state['value']+=1;return copy.deepcopy(response)
+    async def complete(scope,model,prompt):state['value']+=1;return model_fixture(prompt,response)
     monkeypatch.setattr(generation,'completion',complete)
     assert generate(client,headers).status_code==409 and rows()==[]
 
@@ -396,6 +430,8 @@ def test_222k_catalog_uses_three_complete_selections_then_analysis_and_coverage(
     calls, seen = [], []
     async def complete(scope, model, prompt):
         calls.append(prompt)
+        if prompt.startswith('research-source-inventory.v1'):
+            return inventory_fixture()
         if prompt.startswith(generation.SELECTION_PROTOCOL):
             import json
             chunk = restore_catalog(encoded_directory(prompt))
@@ -404,11 +440,11 @@ def test_222k_catalog_uses_three_complete_selections_then_analysis_and_coverage(
         # Temporary selector references never become analysis IDs or metadata.
         assert all('selection_ref' not in field for field in restore_catalog(encoded_directory(prompt)))
         assert {field['id'] for field in restore_catalog(encoded_directory(prompt))} == {SERIES}
-        return copy.deepcopy(response)
+        return covered_fixture(response)
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 5 and len(seen) == len(catalog)
+    assert len(calls) == 6 and len(seen) == len(catalog)
     assert sum(prompt.startswith(generation.SELECTION_PROTOCOL) for prompt in calls) == 3
     assert seen == [item['id'] for item in catalog]
     assert all(TEXT in prompt for prompt in calls)
@@ -421,8 +457,8 @@ def test_actual_model_request_contains_a_machine_readable_numeric_rule_contract(
     client, headers, _, _, calls = generator
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 2 and rows() == []
-    prompt = calls[0]['prompt']
+    assert len(calls) == 3 and rows() == []
+    prompt = calls[1]['prompt']
     marker = '阈值条目的 JSON Schema 类型示意：\n'
     assert marker in prompt
     schema, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
@@ -455,8 +491,8 @@ def test_actual_model_request_uses_the_exact_pricing_power_schema(generator):
     client, headers, _, _, calls = generator
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 2 and rows() == []
-    prompt = calls[0]['prompt']
+    assert len(calls) == 3 and rows() == []
+    prompt = calls[1]['prompt']
     marker = '定价权对象的 JSON Schema：\n'
     assert marker in prompt
     schema, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
@@ -476,7 +512,7 @@ def test_missing_pricing_description_preserves_verified_preview_with_one_coverag
     result = generate(client, headers)
     assert result.status_code == 200, result.text
     preview = result.json()
-    assert len(calls) == 2 and preview['repair_attempts'] == 1
+    assert len(calls) == 3 and preview['repair_attempts'] == 1
     assert rows() == [] and response == original
     assert '## 边际定价权\n未提供' in preview['markdown']
     assert any(issue['code'] == 'empty_description' and issue['severity'] == 'normalized'
@@ -500,7 +536,7 @@ def test_pricing_power_schema_keeps_invalid_model_categories_rejected(generator,
     detail = result.json()['detail']
     assert detail['code'] == 'judgment_validation'
     assert any(issue['code'] == 'field_schema' and issue['path'] == '/judgment/pricing_power/category' for issue in detail['issues'])
-    assert len(calls) == 2 and rows() == [] and not generation.previews.items
+    assert len(calls) == 3 and rows() == [] and not generation.previews.items
 
 
 @pytest.mark.parametrize('value', ['12', True, None, {'minimum': 12}, 'missing'])
@@ -519,7 +555,7 @@ def test_invalid_numeric_threshold_stays_unmodified_in_pending_items_and_never_e
     result = generate(client, headers)
     assert result.status_code == 200, result.text
     preview = result.json()
-    assert len(calls) == 2 and rows() == [] and preview['repair_attempts'] == 1
+    assert len(calls) == 3 and rows() == [] and preview['repair_attempts'] == 1
     assert any(item['code'] == 'rule_number_type' and item['path'] == '/judgment/thresholds/0/value' for item in preview['validation_issues'])
     pending = next(item for section in preview['review']['sections'] for item in section['items'] if item['kind'] == 'thresholds')
     assert pending['status'] == 'pending' and pending['source_quote'] == 'Stocks above 12 吨'
@@ -542,7 +578,7 @@ def test_explicit_numeric_interval_with_original_quote_remains_a_valid_preview(g
     result = client.post(endpoint('/generate'), headers=headers,
         json={'model_id': 'synthetic-chat', 'text': TEXT + ' ' + quote, 'base_version': 0})
     assert result.status_code == 200, result.text
-    assert len(calls) == 2 and rows() == []
+    assert len(calls) == 3 and rows() == []
     assert result.json()['bindings'][0]['unit'] == '吨'
 
 
@@ -571,8 +607,8 @@ def test_authorized_macro_threshold_and_original_monthly_falsifier_are_valid_pre
     result = client.post(endpoint('/generate'), headers=headers,
         json={'model_id': 'synthetic-chat', 'text': text, 'base_version': 0})
     assert result.status_code == 200, result.text
-    assert len(calls) == 2 and rows() == []
-    prompt = calls[0]['prompt']
+    assert len(calls) == 3 and rows() == []
+    prompt = calls[1]['prompt']
     assert SOURCE_BINDING_PROTOCOL in prompt and macro in prompt
     assert 'primary和macro只是来源分类' in prompt and '观测频率与研究期限分开处理' in prompt
     changed = {item['field']: item['after'] for item in result.json()['diff']['fields']}

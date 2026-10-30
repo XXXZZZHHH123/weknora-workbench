@@ -2,7 +2,9 @@
 from copy import deepcopy
 from datetime import date, datetime, timezone
 import hashlib
+import hmac
 import json
+import secrets
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -20,6 +22,7 @@ from tin.ownership import verified_actor
 from tin.web import judgment_generation as generation
 
 router = APIRouter(prefix='/api/sn/judgment/review')
+_binding_warning_secret = secrets.token_bytes(32)
 
 SECTIONS = [
     ('contradiction', '主矛盾'), ('marginal_focus', '边际关注'), ('cost_line', '成本线'),
@@ -49,6 +52,7 @@ class UpdateRequest(ReviewRequest):
     source_quote: str | None = Field(default=None, max_length=4000)
     remember: bool = False
     caliber: CaliberUpdate | None = None
+    binding_warning_token: str | None = Field(default=None, max_length=128)
 
 
 class ReuseRequest(ReviewRequest):
@@ -118,12 +122,63 @@ def reject_fields(fields, issues=()):
     raise HTTPException(422, {'message': message, 'attention_fields': fields})
 
 
+def source_unit_for_item(preview, item):
+    path = ('/unresolved/' + '/'.join(map(str, item['path'][1:])) if item['section'] == 'unresolved'
+        else '/judgment/' + '/'.join(map(str, item['path'])))
+    units = set()
+    for covered in preview.get('source_coverage', {}).get('items', []):
+        if (covered.get('candidate_path') or covered.get('path')) != path:
+            continue
+        unit, quote = covered.get('source_unit'), covered.get('quote')
+        if isinstance(unit, str) and unit.strip() and isinstance(quote, str) and unit in quote and quote in preview['text']:
+            units.add(unit)
+    return next(iter(units)) if len(units) == 1 else None
+
+
+def acknowledge_binding(scope, body, preview, item, known):
+    """A warning acknowledges this selection, never its quantitative validity."""
+    if (body.action != 'confirm' or body.series_id is None
+            or 'series_id' not in body.model_fields_set or body.series_id == item['series_id']):
+        return None
+    field = known[body.series_id]
+    previous = known.get(item['series_id']) or known.get(item['ai_series_id'])
+    unit = field.get('unit')
+    from tin.compute.rule_caliber import unit_present
+    known_unit = unit if unit_present(unit) else None
+    source_unit = source_unit_for_item(preview, item)
+    if source_unit and source_unit == known_unit:
+        return None
+    previous_unit = previous.get('unit') if previous and unit_present(previous.get('unit')) else None
+    if source_unit and known_unit:
+        message = f'原文单位为“{source_unit}”，所选指标单位为“{known_unit}”，两者不一致。'
+    elif source_unit:
+        message = f'原文单位为“{source_unit}”；所选指标未注明单位，尚无法核对。'
+    elif previous_unit and known_unit and previous_unit != known_unit:
+        message = f'原绑定单位为“{previous_unit}”，所选指标单位为“{known_unit}”，两者不一致。'
+    else:
+        message = f'原文口径尚未核对；所选指标单位为“{known_unit or "未注明"}”。'
+    message += '继续后展示所选指标的原始值，不自动换算，也不代表原文条件已满足。是否保留此绑定？'
+    signed = {'scope': generation.scope_key(scope), 'draft_id': body.draft_id,
+        'revision': body.revision, 'item_id': item['id'], 'series_id': body.series_id,
+        'field': field, 'source_unit': source_unit, 'fact_version': preview['fact_version']}
+    secret = preview['review'].get('binding_warning_secret')
+    key = secret.encode() if isinstance(secret, str) and secret else _binding_warning_secret
+    token = hmac.new(key, digest(signed).encode(), hashlib.sha256).hexdigest()
+    if not body.binding_warning_token or not hmac.compare_digest(token.encode(), body.binding_warning_token.encode()):
+        raise HTTPException(422, {'code': 'binding_warning', 'message': message,
+            'confirmation_token': token, 'attention_fields': ['binding']})
+    return {'series_id': body.series_id, 'unit': unit, 'source_unit': source_unit, 'previous_unit': previous_unit,
+        'confirmed_revision': body.revision, 'catalog_version': preview['fact_version'],
+        'confirmed_by': scope.identity.user_id, 'confirmed_at': datetime.now(timezone.utc).isoformat()}
+
+
 def initialize_review(preview, assessment, catalog):
     candidate = deepcopy(assessment.candidate_document or assessment.document)
     baseline = deepcopy(assessment.document)
     # Quarantine records are structured here. Audit prose is never reparsed.
     baseline['unresolved'] = deepcopy(baseline['unresolved'][:len(candidate['unresolved'])])
     review = {'revision': 1, 'reuse_enabled': False, 'items': [], 'audit': [],
+              'binding_warning_secret': secrets.token_hex(32),
               'baseline': baseline, 'candidate': candidate,
               'candidate_history': deepcopy(assessment.candidate_history or [candidate]),
               'catalog': deepcopy(catalog)}
@@ -445,7 +500,8 @@ def preview_response(scope, token, preview, state):
         'candidate_subset': preview.get('candidate_subset', False), 'validation_issues': preview['validation_issues'],
         'repair_attempts': preview['repair_attempts'], 'review_available': True,
         'review': review_response(scope, token, preview, catalog),
-        'notice': '解析完成。'}
+        'analysis_reused': preview.get('analysis_reused') is True,
+        'notice': '已复用相同原文的解析结果。' if preview.get('analysis_reused') else '解析完成。'}
 
 
 def review_snapshot(scope, preview, page_query=None):
@@ -517,6 +573,8 @@ def record_decisions(scope, token, before, preview, catalog, decisions):
                 detail['caliber'] = deepcopy(item['caliber_choice'])
             if item.get('caliber_confirmation'):
                 detail['caliber_confirmation'] = deepcopy(item['caliber_confirmation'])
+            if item.get('binding_warning_confirmation'):
+                detail['binding_warning'] = deepcopy(item['binding_warning_confirmation'])
             preview['review']['audit'].append(detail)
             session.add(AuditLog(at=now, actor=verified_actor(session, ''), action='研判逐项确认',
                 target_type='judgment_preview', target_id=digest(token), detail=detail))
@@ -574,9 +632,13 @@ async def update_review(request: Request):
         if 'series_id' in body.model_fields_set:
             if not can_bind or body.series_id is not None and body.series_id not in known:
                 reject_fields(['binding'])
+            acknowledgement = acknowledge_binding(scope, body, preview, item, known)
             if item['series_id'] != body.series_id:
                 item.pop('caliber_confirmation', None)
                 item.pop('caliber_choice', None)
+                item.pop('binding_warning_confirmation', None)
+            if acknowledgement:
+                item['binding_warning_confirmation'] = acknowledgement
             item['series_id'] = body.series_id
             item['remembered'] = False
             item['binding_explicit'] = body.series_id is not None

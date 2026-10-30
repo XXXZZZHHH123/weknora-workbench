@@ -95,6 +95,21 @@ def test_short_references_resolve_exact_real_ids_without_mutating_or_guessing():
         directory(32), tuple(f'r{index + 1}' for index in range(32))) == [row['id'] for row in directory(32)]
 
 
+@pytest.mark.parametrize('count', [96, 97])
+def test_explicit_reference_selection_accepts_the_complete_limit_and_rejects_one_more(count):
+    batch = directory(count)
+    before = deepcopy(batch)
+    refs = tuple(f'r{index + 1}' for index in range(count))
+    response = {'selection_refs': list(refs)}
+    if count == 96:
+        assert generation.selected_catalog_ids(response, batch, refs) == [row['id'] for row in batch]
+    else:
+        with pytest.raises(HTTPException) as caught:
+            generation.selected_catalog_ids(response, batch, refs)
+        assert caught.value.status_code == 422
+    assert batch == before and response['selection_refs'] == list(refs)
+
+
 @pytest.mark.parametrize('response', [
     {'series_ids': ['kb-' + '0' * 48]},
     {'selection_refs': ['kb-' + '0' * 48]},
@@ -166,7 +181,7 @@ def test_large_selection_still_rejects_unknown_cross_batch_and_excess_ids(monkey
         if kind == 'another-batch':
             assert catalog[-1]['id'] not in {item['id'] for item in fields}
             return {'selection_refs': [f'r{len(catalog)}']}
-        return {'selection_refs': list(encoded_directory(prompt)['indicators'])[:33]}
+        return {'selection_refs': list(encoded_directory(prompt)['indicators'])[:97]}
 
     monkeypatch.setattr(generation, 'completion', invalid)
     with pytest.raises(HTTPException) as caught:

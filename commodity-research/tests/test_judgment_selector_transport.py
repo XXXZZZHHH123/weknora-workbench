@@ -128,7 +128,8 @@ def test_selector_schema_enforces_the_same_bounded_unique_reference_shape():
     validator = Draft202012Validator(schema)
     assert validator.is_valid({'selection_refs': []})
     assert validator.is_valid({'selection_refs': ['r41', 'r43']})
+    assert validator.is_valid({'selection_refs': [f'r{index + 1}' for index in range(96)]})
     for invalid in ([], None, {'series_ids': []}, {'selection_refs': [True]},
                     {'selection_refs': ['r1', 'r1']}, {'selection_refs': [], 'extra': []},
-                    {'selection_refs': [f'r{index + 1}' for index in range(33)]}):
+                    {'selection_refs': [f'r{index + 1}' for index in range(97)]}):
         assert not validator.is_valid(invalid)

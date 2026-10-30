@@ -53,7 +53,9 @@
     try { value = await response.json(); } catch { throw new Error('研究逻辑服务暂时不可用，输入已保留。'); }
     if (!response.ok) { const detail = value.detail; const message = typeof detail === 'string' ? detail :
       detail?.message ? detail.message + (detail.issues?.length ? '：' + detail.issues.slice(0, 4).map(item => item.message).join('；') : '') : '请求未完成，输入已保留。';
-      const error = new Error(message); error.status = response.status; error.fields = detail?.attention_fields; throw error; }
+      const error = new Error(message); error.status = response.status; error.fields = detail?.attention_fields;
+      if (detail?.code === 'binding_warning' && typeof detail.confirmation_token === 'string') error.bindingWarningToken = detail.confirmation_token;
+      throw error; }
     return value;
   }
   function panelTitle() { const title = byId('new-panel-title')?.value.trim(); return title ? {panel_title: title} : {}; }
@@ -104,7 +106,7 @@
           if (value.model_id) byId('model').value = value.model_id;
           if (value.source_name) text('file-name', value.source_name);
           if (byId('new-panel-title') && value.panel_title !== undefined) byId('new-panel-title').value = value.panel_title;
-          presentDraft(value); await hydrateReview(value); tab('analyze'); inform('');
+          presentDraft(value); await hydrateReview(value); tab('analyze'); inform(value.analysis_reused ? '已复用相同原文的解析结果。' : '');
         } else inform(job.message || ({failed: '分析失败，请重新发起。', interrupted: '分析已中断，请重新发起。', expired: '分析结果已过期，请重新分析。', applied: '此分析已保存。'}[job.state] || '分析暂不可用。'), true);
         announceJob(job); setBusy(false);
       } catch (error) {
@@ -557,7 +559,15 @@
     if (caliber) body.caliber = caliber;
     setBusy(true); inform('正在同步修改…');
     try {
-      const result = await api('/review/update', body);
+      let result;
+      try { result = await api('/review/update', body); }
+      catch (error) {
+        if (!error.bindingWarningToken || !body.series_id || action !== 'confirm') throw error;
+        if (!window.confirm(error.message)) {
+          reviewEdits.delete(item.id); renderReview(); inform('已取消绑定。'); return;
+        }
+        result = await api('/review/update', {...body, binding_warning_token: error.bindingWarningToken});
+      }
       if (body.remember) rememberedChoices.add(item.id); else rememberedChoices.delete(item.id);
       reviewEdits.delete(item.id); presentDraft(result, true); inform('');
     } catch (error) {
