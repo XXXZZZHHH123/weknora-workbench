@@ -10,9 +10,6 @@
   let uncertainSubmission = null;
   const reviewEdits = new Map();
   const rememberedChoices = new Set();
-  let visualKey = '', visualEpoch = 0, visualController;
-  const visualSlots = new Map(), visualValues = new Map(), visualRadar = new Map();
-  let radarLoaded = false, visualPending = false;
   let reviewControls = [], searchSessions = [], selectedSection = '', reviewView = 'all';
   const selectedId = () => dialog.dataset.judgmentId || '';
   const managePath = () => '/manage' + (selectedId() ? '?judgment_id=' + encodeURIComponent(selectedId()) : '');
@@ -23,7 +20,6 @@
   }
   function stopSearches() {
     reviewEpoch++;
-    visualController?.abort(); visualEpoch++; visualPending = false;
     for (const session of searchSessions) { clearTimeout(session.timer); session.controller?.abort(); }
     searchSessions = [];
   }
@@ -173,78 +169,6 @@
     if (!preserveEdits) reviewView = 'all';
     renderReview();
   }
-  function visualDay() {
-    const value = new URL(location.href).searchParams.get('date');
-    return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
-  }
-  function drawVisual(item, slot) {
-    slot.node.replaceChildren();
-    const binding = slot.edit.selected;
-    if (!binding || slot.edit.dirty || ['kept_text', 'excluded'].includes(item.status)) { slot.node.hidden = true; return; }
-    slot.node.hidden = false;
-    const series = visualValues.get(binding.series_id), radar = visualRadar.get(item.id);
-    const current = radar && typeof radar.value === 'number' && Number.isFinite(radar.value) ? radar : series;
-    const number = radar && radar === current ? radar.value : series?.latest_value;
-    if (typeof number !== 'number' || !Number.isFinite(number)) {
-      slot.node.append(element('small', 'logic-visual-empty', series ? '暂无可用数值' : '正在读取数值…')); return;
-    }
-    const line = element('div', 'logic-visual-value');
-    line.append(element('strong', '', number.toLocaleString('zh-CN', {maximumSignificantDigits: 21})),
-      element('span', '', current.unit || binding.unit || ''), element('time', '', String(current.as_of || '').slice(0, 16).replace('T', ' ')));
-    slot.node.append(line);
-    const points = (series?.points || []).filter(point => typeof point.value === 'number' && Number.isFinite(point.value) && typeof point.date === 'string');
-    if (points.length > 1) {
-      const values = points.map(point => point.value), low = Math.min(...values), high = Math.max(...values);
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'), path = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-      svg.setAttribute('viewBox', '0 0 240 36'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', '近期已保存数据走势');
-      svg.setAttribute('class', 'logic-indicator-trend');
-      const times = points.map(point => Date.parse(point.date)), timed = times.every(Number.isFinite) && Math.max(...times) > Math.min(...times);
-      const start = Math.min(...times), duration = Math.max(...times) - start;
-      path.setAttribute('points', values.map((value, index) => `${(timed ? (times[index] - start) / duration : index / (values.length - 1)) * 236 + 2},${high === low ? 18 : 32 - (value - low) / (high - low) * 28}`).join(' '));
-      svg.append(path); slot.node.append(svg);
-    }
-    if (radar && radar === current && typeof radar.progress === 'number' && Number.isFinite(radar.progress)) {
-      const width = Math.max(0, Math.min(100, radar.progress)), track = element('div', 'logic-radar-track'), fill = element('span', 'logic-radar-fill');
-      track.setAttribute('role', 'meter'); track.setAttribute('aria-label', '阈值测距'); track.setAttribute('aria-valuemin', '0'); track.setAttribute('aria-valuemax', '100'); track.setAttribute('aria-valuenow', String(width));
-      track.setAttribute('aria-valuetext', [radar.distance, radar.state].filter(Boolean).join(' · '));
-      fill.style.width = width + '%'; track.append(fill); slot.node.append(track, element('small', 'logic-radar-label', [radar.distance, radar.state].filter(Boolean).join(' · ')));
-    }
-  }
-  async function loadVisibleVisuals() {
-    if (!review || !draft || !dialog.open) return;
-    const selected = [...visualSlots.values()].filter(slot => slot.section === selectedSection && !slot.card.hidden && !slot.edit.dirty && slot.edit.selected && !['kept_text', 'excluded'].includes(slot.item.status));
-    for (const slot of visualSlots.values()) drawVisual(slot.item, slot);
-    if (visualPending) return;
-    const needed = selected.filter(slot => !visualValues.has(slot.edit.selected.series_id)).map(slot => ({itemId: slot.item.id, seriesId: slot.edit.selected.series_id}));
-    const needRadar = !radarLoaded && selected.some(slot => slot.item.kind === 'thresholds' && ['ready', 'confirmed'].includes(slot.item.status));
-    if (!needed.length && !needRadar) return;
-    const epoch = visualEpoch, key = visualKey, token = draft.draft_id, revision = review.revision;
-    visualPending = true; visualController = new AbortController();
-    const signal = visualController.signal, current = () => visualEpoch === epoch && visualKey === key && dialog.open;
-    const day = visualDay(), suffix = day ? '&date=' + encodeURIComponent(day) : '';
-    function valid(result) { return current() && result.draft_id === token && result.revision === revision; }
-    try {
-      for (let offset = 0; offset < needed.length; offset += 24) {
-        const batch = needed.slice(offset, offset + 24);
-        const result = await api('/review/indicator-values?draft_id=' + encodeURIComponent(token) + '&item_ids=' + encodeURIComponent(batch.map(slot => slot.itemId).join(',')) + suffix, undefined, 'GET', signal);
-        if (!valid(result)) return;
-        for (const slot of batch) visualValues.set(slot.seriesId, {points: [], latest_value: null});
-        const permitted = new Set(batch.map(slot => slot.seriesId));
-        for (const row of result.series || []) if (permitted.has(row.series_id)) visualValues.set(row.series_id, row);
-      }
-      if (needRadar) {
-        const result = await api('/review/radar?draft_id=' + encodeURIComponent(token) + suffix, undefined, 'GET', signal);
-        if (!valid(result)) return;
-        for (const row of result.rows || []) if (visualSlots.has(row.item_id)) visualRadar.set(row.item_id, row);
-        radarLoaded = true;
-      }
-      if (current()) for (const slot of visualSlots.values()) drawVisual(slot.item, slot);
-    } catch (error) {
-      if (current() && error.name !== 'AbortError') for (const slot of selected) { slot.node.replaceChildren(element('small', 'logic-visual-empty', '数值暂不可用')); }
-    } finally {
-      if (current()) { visualPending = false; if (selectedSection !== selected[0]?.section) loadVisibleVisuals(); }
-    }
-  }
   function element(tag, className, value) {
     const node = document.createElement(tag); if (className) node.className = className;
     if (value !== undefined) node.textContent = value;
@@ -334,7 +258,6 @@
       }
     }
     if (byId('review-empty')) byId('review-empty').hidden = visibleSections.length > 0;
-    loadVisibleVisuals();
   }
   function renderBinding(item, edit) {
     const field = element('div', 'logic-binding-field');
@@ -427,9 +350,6 @@
   function renderReview() {
     if (!byId('review')) return;
     stopSearches(); reviewControls = [];
-    visualSlots.clear();
-    const key = draft?.draft_id + ':' + review?.revision + ':' + visualDay();
-    if (key !== visualKey) { visualKey = key; visualValues.clear(); visualRadar.clear(); radarLoaded = false; }
     const available = Boolean(review?.sections); byId('review').hidden = !available;
     for (const name of ['coverage', 'bindings', 'unresolved']) byId(name).hidden = available;
     if (!available) { syncApply(); return; }
@@ -486,8 +406,6 @@
           const remember = registerControl(element('input'), item, 'remember', () => !edit.selected); remember.type = 'checkbox'; remember.checked = edit.remember;
           remember.addEventListener('change', () => { edit.remember = remember.checked; changed(edit); return updateReview(item, edit, 'confirm'); });
           rememberLabel.append(remember, element('span', '', '记住选择')); binding.append(rememberLabel); columns.append(binding); card.append(columns);
-          const visual = element('div', 'logic-indicator-visual'); visual.hidden = true; binding.append(visual);
-          visualSlots.set(item.id, {item, edit, card, node: visual, section: section.id});
         }
         const actions = element('div', 'logic-item-actions');
         for (const [action, label] of [['keep_text', '仅保留文字'], ['exclude', '排除']]) {

@@ -416,21 +416,27 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
   }
   {
     const env=await generateReview({visualMode:true});await flush();
-    const lines=visibleDescendants(env.nodes['logic-review-items']).filter(node=>node.className==='logic-visual-value');assert.ok(lines.some(line=>line.children.some(child=>child.textContent==='0')),'A real observation equal to zero is displayed');
-    const fill=descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-radar-fill');assert.equal(fill.style.width,'100%');assert.ok(descendants(env.nodes['logic-review-items']).some(node=>node.attributes.role==='img'),'Saved points produce a small trend');
-    let values=env.requests.filter(row=>row.url.includes('/indicator-values?'));assert.equal(values.length,1);assert.equal(new URL(values[0].url,'http://unit.test').searchParams.get('item_ids'),'anchor');
-    await env.nodes['logic-review-nav'].children.find(node=>node.dataset.reviewSection==='rules').fire('click');await flush();values=env.requests.filter(row=>row.url.includes('/indicator-values?'));assert.equal(values.length,2);assert.equal(new URL(values[1].url,'http://unit.test').searchParams.get('item_ids'),'rule');assert.ok(values.every(row=>(row.method||'GET')==='GET'&&!row.body));env.context.window.JudgmentManager.close();
+    assert.equal(descendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-indicator-visual'||node.attributes.role==='img'||node.attributes.role==='meter'),false,'Binding confirmation has no numerical or chart preview, including hidden preview nodes');
+    assert.equal(reviewControl(env,'anchor','search').value,'AI quantity');assert.ok(descendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-binding-meta'&&node.textContent==='kg'),'The selected indicator unit remains visible');
+    await env.nodes['logic-review-nav'].children.find(node=>node.dataset.reviewSection==='rules').fire('click');await flush();
+    assert.equal(env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length,0,'Opening and navigating confirmation sections never request numerical observations');env.context.window.JudgmentManager.close();
   }
   {
-    const env=await generateReview({visualMode:'negative'});await flush();const meter=descendants(env.nodes['logic-review-items']).find(node=>node.attributes.role==='meter');assert.equal(meter.attributes['aria-valuenow'],'0');assert.equal(descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-radar-fill').style.width,'0%');env.context.window.JudgmentManager.close();
+    const env=await generateReview({visualMode:true});const search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});
+    const remember=reviewControl(env,'anchor','remember');remember.checked=true;await remember.fire('change');
+    const updates=env.requests.filter(row=>row.url.endsWith('/review/update'));assert.equal(updates.length,2);assert.equal(updates[0].body.series_id,'authorized-other');assert.equal(updates[1].body.series_id,'authorized-other');assert.equal(updates[1].body.remember,true);assert.equal(updates[1].body.revision,2);
+    assert.equal(reviewControl(env,'anchor','search').value,'Directory quantity <script>');assert.equal(reviewControl(env,'anchor','remember').checked,true);
+    await env.nodes['logic-apply'].fire('click');assert.equal(env.requests.find(row=>row.url.endsWith('/apply')).body.review_revision,3,'Saving still uses the latest explicit binding and remember decision');
+    assert.equal(env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length,0,'Binding changes, remembering and final save do not fetch chart data');env.context.window.JudgmentManager.close();
   }
   {
-    const env=await generateReview({visualMode:'empty'});await flush();const visible=visibleDescendants(env.nodes['logic-review-items']);assert.ok(visible.some(node=>node.className==='logic-visual-empty'&&node.textContent==='暂无可用数值'));assert.equal(visible.some(node=>node.className==='logic-visual-value'||node.attributes.role==='meter'),false,'Missing observations do not create a zero or a progress bar');env.context.window.JudgmentManager.close();
+    const env=await generateReview({visualMode:'empty'});await flush();const visible=visibleDescendants(env.nodes['logic-review-items']);assert.equal(visible.some(node=>node.className==='logic-visual-empty'||node.className==='logic-visual-value'||node.attributes.role==='meter'),false,'Confirmation does not add loading, missing-value or numerical placeholders');
+    assert.equal(env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length,0);env.context.window.JudgmentManager.close();
   }
   {
-    const env=await generateReview({visualMode:true});await flush();const before=env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length;
+    const env=await generateReview({visualMode:true});await flush();const before=env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length;assert.equal(before,0);
     const search=reviewControl(env,'anchor','search');search.value='Unselected text';await search.fire('input');await flush();assert.equal(visibleDescendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-visual-value'||node.attributes.role==='meter'),false);assert.equal(env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length,before,'Dirty bindings do not fetch or draw numerical observations');
     await search.fire('focus');const empty=descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-binding-option'&&node.textContent==='暂无，暂不关联');await empty.fire('click');await flush();assert.equal(reviewControl(env,'anchor','search').value,'');assert.equal(env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length,before,'A null choice never fetches or restores an AI binding value');env.context.window.JudgmentManager.close();
   }
-  console.log('45 isolated judgment manager interaction checks passed (33 existing + 12 background/visual scenarios)');
+  console.log('45 isolated judgment manager interaction checks passed (33 existing + 12 background/binding scenarios)');
 })().catch(error=>{console.error(error);process.exitCode=1;});
