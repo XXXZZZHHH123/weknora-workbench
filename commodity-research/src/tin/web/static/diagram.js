@@ -1259,7 +1259,13 @@ function dgRenameActive() {
 /* ---------- Markdown 导入导出 ---------- */
 
 async function dgOpenMarkdown() {
+  const retained = window.dgHasBackgroundGeneration?.();
   const operation = window.dgCancelGeneration?.();
+  if (retained) {
+    toggleDrawer('dg-md-drawer', true);
+    await window.dgLoadGenerator?.();
+    return true;
+  }
   dg.generatedVersion = null;
   // 导的是**画布此刻的样子**，不是库里存的那一份。
   // 按 template_id 从库里导，画布上刚改的结构不在里面——在图上加了个节点，
@@ -1302,6 +1308,7 @@ async function dgImportMarkdown(into) {
   });
   const data = await res.json();
   if (!res.ok) { msg.textContent = data.detail || "失败"; return; }
+  window.dgGenerationApplied?.(data.saved?.id || dg.layout.__id);
   // 导入只给框和标签，绑定要靠「建议参考」逐个补——把这件事说清楚，别让人以为导完就完了
   if (!data.replaced) {
     msg.textContent = `已建「${data.saved.name}」，其中 ${data.unbound} 个节点尚未绑定指标，正在跳转…`;

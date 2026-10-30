@@ -84,7 +84,8 @@ function makeResearchChatPanel(): ReturnType<typeof defineAsyncComponent> {
 }
 const ResearchChatPanel = shallowRef(makeResearchChatPanel())
 function requestedResearchView() {
-  if (analysisJobId(route.query.analysis_job) || analysisJudgmentId(route.query.judgment_id)) return 'judgment'
+  if (analysisJudgmentId(route.query.judgment_id)) return 'judgment'
+  if (analysisJobId(route.query.analysis_job)) return route.query.view === 'diagram' ? 'diagram' : 'judgment'
   return typeof route.query.view === 'string' && ['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(route.query.view) ? route.query.view : 'home'
 }
 const researchView = ref(requestedResearchView())
@@ -99,7 +100,7 @@ const sourceLabel = computed(() => workbench.value ? workbenchSourceLabel(workbe
 const chatSourceIds = computed(() => workbench.value ? directKnowledgeBaseIds(workbench.value) : [])
 const frameUrl = computed(() => {
   if (!canShowResearch.value) return ''
-  return researchFramePath(workbenchId.value,researchView.value,route.query.analysis_job,route.query.judgment_id)
+  return researchFramePath(workbenchId.value,researchView.value,route.query.analysis_job,route.query.judgment_id,route.query.diagram_template)
 })
 function restartSession() { generation.value += 1 }
 async function prepareFrameSession() {
@@ -183,6 +184,16 @@ function receive(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== frame.value?.contentWindow) return
   if (canShowResearch.value && event.data?.workbenchId === workbenchId.value && analysisJobId(event.data?.jobId)) {
     if (event.data.type === 'research-analysis-job-started') { void analysisTasks.refresh(); return }
+    if (event.data.type === 'research-analysis-job-applied' && event.data.purpose === 'diagram' && analysisJudgmentId(event.data.templateId)) {
+      void analysisTasks.refresh()
+      if (route.query.analysis_job === event.data.jobId) {
+        const query: typeof route.query = { ...route.query, view: 'diagram', diagram_template: analysisJudgmentId(event.data.templateId) }
+        delete query.analysis_job
+        delete query.judgment_id
+        void router.replace({ query })
+      }
+      return
+    }
     if (event.data.type === 'research-analysis-job-applied' && analysisJudgmentId(event.data.judgmentId)) {
       void analysisTasks.refresh()
       if (route.query.analysis_job === event.data.jobId) {
@@ -203,7 +214,7 @@ function receive(event: MessageEvent) {
   if (event.data?.type === 'research-auth-expired') void reauthenticateFrame()
 }
 watch(effectiveTheme, sendTheme)
-watch(() => [route.query.view, route.query.analysis_job, route.query.judgment_id], () => {
+watch(() => [route.query.view, route.query.analysis_job, route.query.judgment_id, route.query.diagram_template], () => {
   researchView.value = requestedResearchView(); nativeDrawerOpen.value = false; frameIsHome.value = researchView.value === 'home'; restartSession()
 })
 // Replace both surfaces on identity changes; old workspace content must disappear.

@@ -21,3 +21,14 @@ test('metadata discards raw result, credentials, arbitrary titles and unsupporte
 test('forbidden reads have a stable status for bounded polling and never expose provider bodies', async () => {
   await assert.rejects(listAnalysisJobs({ userId: 'user-a', tenantId: '17', token: 'token' }, () => true, async () => new Response('private provider body', { status: 403 })), error => (error as { status?: number }).status === 403 && !String(error).includes('private'))
 })
+
+test('diagram task metadata keeps its fixed purpose and generation phases without trusting a model title', () => {
+  const jobs = readAnalysisJobs({ items: [
+    { id: 'diagram-job', workbench_id: 'wb-a', purpose: 'diagram', state: 'running', phase: 'generating', title: 'private title' },
+    { id: 'legacy-job', workbench_id: 'wb-a', state: 'queued', phase: 'queued' },
+    { id: 'unsupported-job', workbench_id: 'wb-a', purpose: 'arbitrary', state: 'queued' },
+  ] })
+  assert.equal(jobs.length, 2)
+  assert.equal(jobs[0]!.purpose, 'diagram'); assert.equal(jobs[0]!.title, '产业图配置生成'); assert.equal(jobs[0]!.phase, 'generating')
+  assert.equal(jobs[1]!.purpose, 'judgments')
+})

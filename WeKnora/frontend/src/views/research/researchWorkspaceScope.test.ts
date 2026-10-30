@@ -348,3 +348,25 @@ test('task query changes reopen native results and applied messages remove consu
     assert.equal(new URL(f.view.frameUrl.value, 'https://test.local').searchParams.has('analysis_job'), false)
   } finally { f.close() }
 })
+test('diagram task links reopen its native page and only the scoped applied message consumes the task query', async () => {
+  const f = fixture()
+  try {
+    await nextTick(); f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } }); await new Promise(setImmediate)
+    const query = f.route.query as Record<string, unknown>; query.analysis_job = 'diagram-job'; query.view = 'diagram'; await nextTick()
+    const frameUrl = new URL(f.view.frameUrl.value, 'https://test.local')
+    assert.match(frameUrl.pathname, /\/sn\/diagram$/)
+    assert.equal(frameUrl.searchParams.get('analysis_job'), 'diagram-job')
+    f.view.frame.value = { contentWindow: { postMessage() {} } }
+    const message = { origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-analysis-job-applied', purpose: 'diagram', workbenchId: 'workbench-a', jobId: 'diagram-job', templateId: 23 } }
+    f.view.receive({ ...message, source: {} }); f.view.receive({ ...message, origin: 'https://other.test' })
+    f.view.receive({ ...message, data: { ...message.data, templateId: -1 } })
+    assert.equal(f.replacements.length, 0)
+    f.view.receive(message)
+    assert.equal(f.jobRefreshes.length, 1)
+    assert.equal(f.replacements[0].query.analysis_job, undefined)
+    assert.equal(f.replacements[0].query.view, 'diagram')
+    assert.equal(f.replacements[0].query.diagram_template, '23')
+    Object.assign(query, f.replacements[0].query); delete query.analysis_job; await nextTick()
+    assert.equal(new URL(f.view.frameUrl.value, 'https://test.local').searchParams.get('template'), '23')
+  } finally { f.close() }
+})

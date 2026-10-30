@@ -57,3 +57,15 @@ test('hidden documents defer completion notices and focus resumes authoritative 
     f.document.visibilityState = 'visible'; f.view.wake(); assert.equal(f.calls.refresh, 1); assert.equal(f.calls.notices.length, 1)
   } finally { f.close() }
 })
+
+test('a diagram completion opens the diagram view rather than the judgment manager', async () => {
+  const f = fixture()
+  try {
+    const job = { id: 'diagram-job', workbench_id: 'wb-a', purpose: 'diagram', state: 'succeeded', result_available: true }
+    f.store.jobs.push(job); f.store.pendingNotifications.push(job); await nextTick()
+    assert.equal(f.calls.notices.length, 1)
+    f.calls.notices[0].content().children[1].props.onClick()
+    assert.equal(f.calls.opens[0].query.view, 'diagram')
+    assert.equal(f.calls.opens[0].query.analysis_job, 'diagram-job')
+  } finally { f.close() }
+})

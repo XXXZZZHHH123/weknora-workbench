@@ -88,3 +88,15 @@ test('failed and interrupted tasks stay readable without being announced as succ
   assert.equal(analysisPhaseLabel({ ...job(), phase: 'unknown' }), '后台运行中')
   assert.equal(analysisPhaseLabel({ ...job('failed'), phase: 'analyzing' }), '分析未完成', 'Terminal state takes precedence over a stale stage')
 })
+test('diagram jobs share discovery and report generation stages without being labeled as judgment analysis', async () => {
+  const f = fixture()
+  try {
+    const started = f.tasks.start()
+    f.calls[0]!.resolve([{ ...job(), purpose: 'diagram', phase: 'generating' }, job('running', 'job-b')])
+    await started
+    assert.equal(f.tasks.activeCount.value, 2)
+    assert.equal(analysisPhaseLabel(f.tasks.jobs.value[0]!), '生成图结构')
+    assert.equal(analysisPhaseLabel({ ...job('failed'), purpose: 'diagram', phase: 'generating' }), '生成未完成')
+    assert.equal(analysisPhaseLabel({ ...job(), purpose: 'diagram', phase: 'reading_source' }), '读取原件')
+  } finally { f.close() }
+})

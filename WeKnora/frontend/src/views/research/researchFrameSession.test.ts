@@ -58,3 +58,9 @@ test('analysis results reopen through the authorized native judgment page', () =
   assert.equal(analysisJudgmentId('9223372036854775808'),'')
   assert.equal(analysisJudgmentId(9007199254740993),'')
 })
+
+test('diagram results reopen through their own authorized page and preserve only valid layout identifiers', () => {
+  assert.equal(researchFramePath('workbench-a','diagram','diagram-job-1'),'/research/workbenches/workbench-a/sn/diagram?analysis_job=diagram-job-1')
+  assert.equal(researchFramePath('workbench-a','diagram',undefined,undefined,'7'),'/research/workbenches/workbench-a/sn/diagram?template=7')
+  assert.equal(researchFramePath('workbench-a','diagram','../invalid',undefined,'-1'),'/research/workbenches/workbench-a/sn/diagram')
+})

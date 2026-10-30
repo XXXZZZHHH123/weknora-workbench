@@ -15,7 +15,7 @@ function openTask(job: AnalysisJob) {
   if (!store.jobs.some(row => row.id === job.id && row.workbench_id === job.workbench_id)) return
   closeNotice()
   store.markRead(job.id); expanded.value = false
-  void router.push({ name: 'researchWorkbenchDetail', params: { workbenchId: job.workbench_id }, query: { view: 'judgment', analysis_job: job.id } })
+  void router.push({ name: 'researchWorkbenchDetail', params: { workbenchId: job.workbench_id }, query: { view: job.purpose === 'diagram' ? 'diagram' : 'judgment', analysis_job: job.id } })
 }
 function notifyCompleted() {
   if (document.visibilityState === 'hidden') return
@@ -23,7 +23,7 @@ function notifyCompleted() {
   if (!completed.length) return
   const job = completed[0]!
   closeNotice()
-  notification = NotifyPlugin.success({ title: completed.length > 1 ? `${completed.length} 项研究分析已完成` : '研究分析已完成',
+  notification = NotifyPlugin.success({ title: completed.length > 1 ? `${completed.length} 项研究任务已完成` : job.purpose === 'diagram' ? '产业图配置已生成' : '研究分析已完成',
     content: () => h('div', { class: 'analysis-completion' }, [h('span', '结果已可查看，尚未保存。'),
       h('button', { type: 'button', onClick: () => openTask(job) }, '查看结果')]), duration: 6000, closeBtn: true })
 }
@@ -44,7 +44,7 @@ onBeforeUnmount(() => { closeNotice(); store.stop(); document.removeEventListene
         <li v-for="job in rows" :key="job.id">
           <button type="button" class="analysis-task-row" @click="openTask(job)">
             <t-icon :name="job.state === 'queued' || job.state === 'running' ? 'loading' : job.state === 'succeeded' ? 'check-circle' : 'info-circle'" :class="{ 'is-running': job.state === 'queued' || job.state === 'running' }" />
-            <span><strong>研究逻辑分析</strong><small>{{ analysisPhaseLabel(job) }}</small></span>
+            <span><strong>{{ job.purpose === 'diagram' ? '产业图配置生成' : '研究逻辑分析' }}</strong><small>{{ analysisPhaseLabel(job) }}</small></span>
             <span class="analysis-task-action">{{ job.result_available ? '查看结果' : '查看进度' }}</span>
             <i v-if="store.unreadIds.includes(job.id)" class="analysis-unread" aria-label="未读" />
           </button>

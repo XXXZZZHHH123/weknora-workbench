@@ -26,14 +26,15 @@ export function analysisJudgmentId(value: unknown): string {
   return /^[1-9][0-9]{0,18}$/.test(text) && BigInt(text) <= 9223372036854775807n ? text : ''
 }
 
-export function researchFramePath(workbenchId: string, view: string, analysisJob?: unknown, judgment?: unknown): string {
+export function researchFramePath(workbenchId: string, view: string, analysisJob?: unknown, judgment?: unknown, diagram?: unknown): string {
   const paths: Record<string, string> = { home: '/', diagram: '/sn/diagram', indicators: '/sn/indicators',
     judgment: '/sn/judgment', strategies: '/sn/strategies', reports: '/sn/reports' }
   if (!workbenchId || !Object.hasOwn(paths,view)) return ''
   const query = new URLSearchParams()
-  if (view === 'judgment') {
+  if (view === 'judgment' || view === 'diagram') {
     if (analysisJobId(analysisJob)) query.set('analysis_job', analysisJobId(analysisJob))
-    if (analysisJudgmentId(judgment)) query.set('judgment_id', analysisJudgmentId(judgment))
+    if (view === 'judgment' && analysisJudgmentId(judgment)) query.set('judgment_id', analysisJudgmentId(judgment))
+    if (view === 'diagram' && analysisJudgmentId(diagram)) query.set('template', analysisJudgmentId(diagram))
   }
   return `/research/workbenches/${encodeURIComponent(workbenchId)}${paths[view]}${query.size ? '?' + query : ''}`
 }

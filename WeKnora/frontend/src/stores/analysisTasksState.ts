@@ -15,6 +15,12 @@ const keyFor = (owner: AnalysisTaskOwner | null) => owner?.token && owner.userId
   && Number.isSafeInteger(Number(owner.tenantId)) ? `weknora:analysis-tasks:${encodeURIComponent(owner.userId)}:${owner.tenantId}` : ''
 
 export function analysisPhaseLabel(job: AnalysisJob): string {
+  if (job.purpose === 'diagram') {
+    const diagramPhases: Record<string, string> = { queued: '等待生成', reading_source: '读取原件', loading_catalog: '读取指标目录',
+      selecting: '匹配指标', generating: '生成图结构', validating: '核对配置', succeeded: '配置已生成',
+      failed: '生成未完成', interrupted: '生成已中断', expired: '结果已过期', applied: '已导入配置' }
+    return diagramPhases[active(job) ? job.phase : job.state] || '后台生成中'
+  }
   const phases: Record<string, string> = { queued: '等待分析', selecting: '核对资料范围', analyzing: '正在分析', validating: '核对分析结果',
     succeeded: '分析完成', failed: '分析未完成', interrupted: '分析已中断', expired: '结果已过期', applied: '已保存草稿' }
   return active(job) ? phases[job.phase] || '后台运行中' : phases[job.state] || '后台运行中'
