@@ -1,7 +1,7 @@
 """Compile an explicitly referenced model graph into the existing MD format."""
 import logging
 from collections import defaultdict
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -35,6 +35,7 @@ class Group(DraftObject):
     id: Identifier
     label: Label
     parent_id: Identifier | None = None
+    role: Literal['target', 'supply', 'demand', 'macro', 'inventory', 'balance', 'reference'] | None = None
 
     _plain_label = field_validator('label')(plain_text)
 
@@ -57,6 +58,7 @@ class Node(DraftObject):
 class Edge(DraftObject):
     from_id: Identifier = Field(alias='from')
     to: Identifier
+    kind: Literal['flow', 'influence'] = 'flow'
 
 
 class Graph(DraftObject):
@@ -80,6 +82,11 @@ def compile_graph(document):
     if len(identifiers) != len(objects):
         reject('duplicate_id', '模型生成的节点编号重复，请重新生成')
     groups = {item.id: item for item in graph.groups}
+    if any(group.role for group in graph.groups):
+        if sum(group.role == 'target' for group in graph.groups) != 1:
+            reject('target_role', '研究图需要明确且唯一的核心标的分组，请核对后重新生成')
+        if any(group.role and group.parent_id is not None for group in graph.groups):
+            reject('nested_role', '研究角色应标注在顶层分组，子分组保留包含关系')
     children = defaultdict(list)
     members = defaultdict(list)
     depths = {}
@@ -113,13 +120,20 @@ def compile_graph(document):
     if populated != groups.keys():
         reject('empty_group', '模型生成了没有节点的分组，请重新生成')
     edge_pairs = list(dict.fromkeys((edge.from_id, edge.to) for edge in graph.edges))
+    edge_kinds = {}
+    for edge in graph.edges:
+        pair = (edge.from_id, edge.to)
+        if pair in edge_kinds and edge_kinds[pair] != edge.kind:
+            reject('edge_kind_conflict', '同一连线的物料与研究影响类型冲突，请核对')
+        edge_kinds[pair] = edge.kind
     if any(a not in identifiers or b not in identifiers for a, b in edge_pairs):
         reject('unknown_endpoint', '模型生成的连线端点不存在，请重新生成')
 
     lines = [f'# {graph.title}', '']
 
     def emit(group):
-        lines.append(f'{"#" * (2 + depths[group.id])} {group.label} <!-- id: {group.id} -->')
+        role = f' <!-- role: {group.role} -->' if group.role else ''
+        lines.append(f'{"#" * (2 + depths[group.id])} {group.label} <!-- id: {group.id} -->{role}')
         for node in members[group.id]:
             binding = f' <!-- bind: {node.series_id} -->' if node.series_id else ''
             lines.append(f'- {node.label} <!-- id: {node.id} -->{binding}')
@@ -129,7 +143,8 @@ def compile_graph(document):
 
     for group in children[None]:
         emit(group)
-    lines.extend(f'@{a} -> @{b}' for a, b in edge_pairs)
+    lines.extend(f'@{a} -> @{b}' + (' <!-- relation: influence -->' if edge_kinds[(a, b)] == 'influence' else '')
+                 for a, b in edge_pairs)
     markdown = '\n'.join(lines).rstrip() + '\n'
     if len(markdown.encode('utf-8')) > 64000:
         reject('too_large', '生成的产业图配置过大，请缩小范围')
@@ -142,13 +157,14 @@ def compile_graph(document):
     for group in graph.groups:
         node = actual.get(group.id, {})
         matches &= (node.get('kind') == 'group' and node.get('label') == group.label
-                    and node.get('parent') == group.parent_id)
+                    and node.get('parent') == group.parent_id and node.get('role') == group.role)
     for item in graph.nodes:
         node = actual.get(item.id, {})
         binding = {'kind': 'series', 'series_id': item.series_id} if item.series_id else {'kind': 'none'}
         matches &= (node.get('kind') != 'group' and node.get('label') == item.label
                     and node.get('parent') == item.group_id and node.get('binding') == binding)
     matches &= {(edge['from'], edge['to']) for edge in restored['edges']} == set(edge_pairs)
+    matches &= all(edge.get('kind', 'flow') == edge_kinds[(edge['from'], edge['to'])] for edge in restored['edges'])
     if not matches:
         reject('roundtrip_topology', '图结构转换后层级或连线不一致，未应用到当前工作台')
     return markdown

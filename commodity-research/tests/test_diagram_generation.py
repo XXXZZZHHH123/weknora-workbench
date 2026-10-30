@@ -50,6 +50,26 @@ def test_generated_markdown_binds_only_actual_kb_ids_and_does_not_save_before_co
     assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==200
 
 
+def test_generated_research_roles_and_influence_edges_reach_existing_preview_without_business_save(generator):
+    from tin.export import diagram_md
+    from tests.test_diagram_research_roles import research_graph
+    client, headers, state, response, calls = generator
+    document = research_graph()
+    document['nodes'][0]['series_id'] = SERIES
+    document['edges'] = [{'from': 'macro', 'to': 'target', 'kind': 'influence'},
+                         {'from': 'supply', 'to': 'target', 'kind': 'flow'}]
+    response.clear(); response.update(document)
+    result = client.post(endpoint(), headers=headers, json={
+        'model_id': 'configured-model', 'instructions': 'Study the supplied target and compatible regional comparisons'})
+    assert result.status_code == 200, result.text
+    layout = diagram_md.parse(result.json()['markdown'])
+    assert next(node for node in layout['nodes'] if node['id'] == 'target')['role'] == 'target'
+    assert layout['edges'][0]['kind'] == 'influence'
+    assert result.json()['bindings'][0]['series_id'] == SERIES
+    assert len(calls) == 1
+    assert client.get(page(suffix='/api/sn/diagram/markdown'), headers=headers).status_code == 404
+
+
 @pytest.mark.parametrize('change',[
     lambda d:d['nodes'][0].update(series_id='foreign-id'),
     lambda d:d['groups'][0].update(agg='sum'),

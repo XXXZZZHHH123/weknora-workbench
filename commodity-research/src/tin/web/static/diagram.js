@@ -1,7 +1,7 @@
 /* 动态产业图画布。
  *
- * 手写 SVG 而不是引图库：这张图是分层固定结构（供给 → 精锡 → 需求），
- * 连线由层次自动生成、用户只拖节点，通用图库的自动布局与路由算法都用不上，
+ * 手写 SVG 而不是引图库：布局与研究角色由显式配置保存，
+ * 连线保留物料流与研究影响的区别，
  * 而项目没有构建步骤，多一个几百 KB 的依赖不划算。
  */
 
@@ -127,7 +127,9 @@ function dgRender() {
     .map((g) => ({ g, d: dgDepth(g.id) }))
     .sort((a, b) => a.d - b.d)
     .map(({ g, d }) => {
-      const c = DG_DEPTH[Math.min(d, DG_DEPTH.length - 1)];
+      const c = g.role === 'target'
+        ? {...DG_DEPTH[0], stroke: 'var(--primary)', width: 2.8, dash: '', fill: 'var(--primary-soft)', fillOpacity: .8}
+        : DG_DEPTH[Math.min(d, DG_DEPTH.length - 1)];
       const trail = d ? dgTrail(g.id) : "";
       // 标签做成实心色块：分组框的底色很淡，纯文字压在上面读不出来，
       // 而层级本身也要一眼可辨——靠色块颜色，不靠字号差那 0.8px。
@@ -157,6 +159,7 @@ function dgRender() {
     // 二十来条线互相穿插，谁流向谁反而看不出来。现在分组也能连——
     // 物料流向本来就是环节之间的事，不是某个具体指标之间的事。
     const group = dgIsGroup(a) && dgIsGroup(b);
+    const influence = e.kind === 'influence';
     const geo = dgEdgeGeom(a, b);
     const d = geo.d;
     // 编辑态在箭头附近放一个 ×：要删一条线，Shift 再连一次这种"知道了才会用"的
@@ -171,11 +174,12 @@ function dgRender() {
               stroke-linecap="round"/>
         <title>删除「${dgEsc(a.label)} → ${dgEsc(b.label)}」</title></g>`;
     }
-    return `<path d="${d}"
-      fill="none" stroke="var(--text-muted)" stroke-width="${group ? 3 : 1.6}"
-      opacity="${group ? 0.9 : 0.5}" stroke-linecap="round"
-      ${group ? "" : 'stroke-dasharray="5 4"'}
-      marker-end="url(#dg-arrow${group ? "" : "-thin"})"/>${kill}`;
+    return `<path d="${d}" data-edge-kind="${influence ? 'influence' : 'flow'}"
+      fill="none" stroke="${influence ? 'var(--blue)' : 'var(--text-muted)'}" stroke-width="${group && !influence ? 3 : 1.6}"
+      opacity="${influence ? .75 : group ? 0.9 : 0.5}" stroke-linecap="round"
+      ${influence ? 'stroke-dasharray="2 5"' : group ? "" : 'stroke-dasharray="5 4"'}
+      marker-end="url(#dg-arrow${group && !influence ? "" : "-thin"})"><title>${
+        dgEsc(influence ? `研究影响：${a.label} → ${b.label}（非物料流）` : `物料流向：${a.label} → ${b.label}`)}</title></path>${kill}`;
   }).join("");
 
   nodes.innerHTML = dg.layout.nodes.filter((n) => !dgIsGroup(n)).map((n) => dgNode(n)).join("");

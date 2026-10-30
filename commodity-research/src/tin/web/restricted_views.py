@@ -310,6 +310,9 @@ def readonly_diagram_layout(layout):
         for key in ('kind', 'layer'):
             if isinstance(source.get(key), str):
                 node[key] = source[key]
+        if source.get('kind') == 'group' and isinstance(source.get('role'), str) and source['role'] in {
+                'target', 'supply', 'demand', 'macro', 'inventory', 'balance', 'reference'}:
+            node['role'] = source['role']
         if source.get('parent') is not None:
             node['parent'] = identifiers.get(str(source['parent']))
         for key, fallback in [('x', 0), ('y', 0), ('w', 160), ('h', 80)]:
@@ -336,7 +339,7 @@ def readonly_diagram_layout(layout):
         start, end = identifiers.get(str(source.get('from'))), identifiers.get(str(source.get('to')))
         if start and end:
             edge = {'from': start, 'to': end}
-            if isinstance(source.get('kind'), str):
+            if isinstance(source.get('kind'), str) and source['kind'] in {'flow', 'influence'}:
                 edge['kind'] = source['kind']
             edges.append(edge)
     return {'nodes': nodes, 'edges': edges}

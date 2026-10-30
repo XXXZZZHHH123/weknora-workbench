@@ -48,7 +48,8 @@
   <span class="dg-key"><i class="dg-sw" style="background:var(--amber);opacity:.6"></i>缺少输入</span>
   <span class="dg-key"><i class="dg-sw dg-sw-empty"></i>尚无数据</span>
   <span class="dg-key"><i class="dg-sw dg-sw-proxy"></i>代理指标（非实测）</span>
-  <span class="dg-key">［静］调研系数 · 2026-08</span>
+  <span class="dg-key">［静］来源原文标注</span>
+  {% if template.layout.edges|selectattr('kind', 'equalto', 'influence')|list %}<span class="dg-key"><svg width="22" height="8" aria-hidden="true"><path d="M1 4H21" stroke="var(--blue)" stroke-width="1.6" stroke-dasharray="2 5"/></svg>研究影响（非物料流）</span>{% endif %}
   <span id="dg-asof" class="ml-auto tabular"></span>
 </div>
 
