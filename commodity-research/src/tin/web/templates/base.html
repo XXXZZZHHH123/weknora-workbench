@@ -12,6 +12,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 <script src="{{ research_static_prefix() }}/static/app.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/catalog-client.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/navigation.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/ticker.js?v={{ static_version() }}"></script>
 {% block head %}{% endblock %}
 </head>
 <body class="research-body min-h-screen transition-colors duration-200">
@@ -20,12 +21,14 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 
 {% if ticker %}
 <div class="ticker-strip hidden md:flex items-center justify-between px-6 py-1 bg-[var(--surface-soft)] border-b border-[var(--line)] text-[11px] text-[var(--text-muted)]">
-  <div class="flex items-center gap-5 overflow-x-auto">
-    <div class="flex items-center gap-1.5 shrink-0">
+    <div class="ticker-identity flex items-center gap-1.5 shrink-0">
       <span class="w-2 h-2 rounded-full bg-[var(--primary)]"></span>
       <span class="font-semibold text-[var(--text)]">{{ research_workbench().metadata.name if research_workbench() else 'SHFE 沪锡' }}</span>
       <span>{{ '已确认观测' if research_workbench() else '收盘 15:00' }}</span>
     </div>
+  <div class="ticker-viewport" data-ticker tabindex="0" role="region" aria-label="行情快览" aria-live="off">
+    <div class="ticker-track" data-ticker-track>
+    <div class="ticker-items" data-ticker-items>
     {% for t in ticker %}
     <div class="shrink-0">{{ human_text(t.label, names|default({})) }}
       <span class="tabular font-bold text-[var(--text)]">{{ t.value }}</span>
@@ -35,8 +38,10 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
       {%- endif %}
     </div>
     {% endfor %}
+    </div>
+    </div>
   </div>
-  <div class="flex items-center gap-3 text-[10px] shrink-0 pl-4">
+  <div class="ticker-note flex items-center gap-3 text-[10px] shrink-0">
     <span>数据口径与时点随数字同行</span>
     <span class="px-1.5 rounded bg-[var(--primary-soft)] text-[var(--primary)] font-semibold">研究工作台</span>
   </div>
