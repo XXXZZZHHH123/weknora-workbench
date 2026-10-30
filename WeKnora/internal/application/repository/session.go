@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -34,14 +35,20 @@ func NewSessionRepository(db *gorm.DB) interfaces.SessionRepository {
 	return &sessionRepository{db: db}
 }
 
-// Create creates a new session
+// Create creates a new session. A canonical web owner is locked first so the
+// insert cannot land between account deletion's session list and the user
+// row's soft-delete. A deleted owner returns errWebUserDeleted.
 func (r *sessionRepository) Create(ctx context.Context, session *types.Session) (*types.Session, error) {
 	session.CreatedAt = time.Now()
 	session.UpdatedAt = time.Now()
-	if err := r.db.WithContext(ctx).Create(session).Error; err != nil {
+	if err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockLiveWebUser(tx, session.UserID); err != nil {
+			return err
+		}
+		return tx.Create(session).Error
+	}); err != nil {
 		return nil, err
 	}
-	// Return the session with generated ID
 	return session, nil
 }
 
@@ -116,11 +123,11 @@ func (r *sessionRepository) GetIMPlatform(
 	return platform, nil
 }
 
-// GetByTenantID retrieves all sessions for a tenant
+// GetByTenantID retrieves normal sessions for a tenant
 func (r *sessionRepository) GetByTenantID(ctx context.Context, tenantID uint64, userID string) ([]*types.Session, error) {
 	var sessions []*types.Session
 	err := applySessionUserScope(
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).Where(persistedUserMessage),
+		r.db.WithContext(ctx).Where("tenant_id = ? AND kind = ''", tenantID),
 		userID,
 	).Order("updated_at DESC").Find(&sessions).Error
 	if err != nil {
@@ -129,7 +136,7 @@ func (r *sessionRepository) GetByTenantID(ctx context.Context, tenantID uint64, 
 	return sessions, nil
 }
 
-// GetPagedByTenantID retrieves sessions for a tenant with pagination
+// GetPagedByTenantID retrieves normal sessions for a tenant with pagination
 func (r *sessionRepository) GetPagedByTenantID(
 	ctx context.Context, tenantID uint64, userID string, page *types.Pagination,
 ) ([]*types.Session, int64, error) {
@@ -138,7 +145,7 @@ func (r *sessionRepository) GetPagedByTenantID(
 
 	// First query the total count
 	baseQ := applySessionUserScope(
-		r.db.WithContext(ctx).Model(&types.Session{}).Where("tenant_id = ?", tenantID).Where(persistedUserMessage),
+		r.db.WithContext(ctx).Model(&types.Session{}).Where("tenant_id = ? AND kind = ''", tenantID).Where(persistedUserMessage),
 		userID,
 	)
 	err := baseQ.Count(&total).Error
@@ -148,7 +155,7 @@ func (r *sessionRepository) GetPagedByTenantID(
 
 	// Then query the paginated data
 	err = applySessionUserScope(
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).Where(persistedUserMessage),
+		r.db.WithContext(ctx).Where("tenant_id = ? AND kind = ''", tenantID).Where(persistedUserMessage),
 		userID,
 	).
 		Order("updated_at DESC").
@@ -182,11 +189,19 @@ func (r *sessionRepository) QueryPaged(
 		orderClause = "s.is_pinned DESC, s.pinned_at DESC, s.updated_at DESC"
 	}
 
+	if q.Kind == types.SessionKindAssistant {
+		orderClause = "s.updated_at DESC"
+	}
+
 	// Base filter shared by count and list queries.
 	applyBase := func(db *gorm.DB) *gorm.DB {
-		db = db.Where("s.tenant_id = ? AND s.deleted_at IS NULL", q.TenantID).
-			Where(strings.ReplaceAll(persistedUserMessage, "sessions.id", "s.id"))
-		if q.UserID != "" {
+		db = db.Where("s.tenant_id = ? AND s.deleted_at IS NULL AND s.kind = ?", q.TenantID, q.Kind)
+		if q.Kind == "" {
+			db = db.Where(strings.ReplaceAll(persistedUserMessage, "sessions.id", "s.id"))
+		}
+		if q.Kind == types.SessionKindAssistant {
+			db = db.Where("s.user_id = ? AND s.user_id <> ''", q.UserID)
+		} else if q.UserID != "" {
 			db = db.Where("(s.user_id = ? OR s.user_id IS NULL OR s.user_id = '')", q.UserID)
 		}
 		// Skill image maintenance runs in a real session so its transcript can
@@ -345,8 +360,9 @@ func (r *sessionRepository) SetOwnerID(ctx context.Context, tenantID uint64, id,
 		Model(&types.Session{}).
 		Where("tenant_id = ? AND id = ?", tenantID, id).
 		Updates(map[string]interface{}{
-			"user_id":    ownerID,
-			"updated_at": time.Now(),
+			"user_id":           ownerID,
+			"owner_auth_source": types.AuthSourceForBoundOwnerID(ownerID),
+			"updated_at":        time.Now(),
 		})
 	return res.RowsAffected, res.Error
 }
@@ -399,10 +415,10 @@ func (r *sessionRepository) BatchDelete(ctx context.Context, tenantID uint64, us
 	return res.RowsAffected, res.Error
 }
 
-// DeleteAllByTenantID deletes all sessions for a tenant
+// DeleteAllByTenantID deletes normal sessions for a tenant
 func (r *sessionRepository) DeleteAllByTenantID(ctx context.Context, tenantID uint64, userID string) (int64, error) {
 	res := applySessionUserScope(
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID),
+		r.db.WithContext(ctx).Where("tenant_id = ? AND kind = ''", tenantID),
 		userID,
 	).Delete(&types.Session{})
 	return res.RowsAffected, res.Error
@@ -414,7 +430,25 @@ func (r *sessionRepository) DeleteAllByTenantID(ctx context.Context, tenantID ui
 func (r *sessionRepository) CreateForked(
 	ctx context.Context, session *types.Session, messages []*types.Message,
 ) error {
+	return r.CreateForkedWithAssignment(ctx, session, messages, nil, nil)
+}
+
+// CreateForkedWithAssignment additionally records the fork's inherited
+// sandbox assignment in the same transaction, so a user-mode branch can never
+// exist without its placement. A nil assignment is CreateForked.
+//
+// The canonical web user is locked before the session row, and the machine
+// row is locked inside InsertSandboxAssignmentTx after that insert. If this
+// session already has an assignment, the insert fails and this transaction's
+// session row is rolled back.
+func (r *sessionRepository) CreateForkedWithAssignment(
+	ctx context.Context, session *types.Session, messages []*types.Message,
+	assignment *types.SessionSandboxAssignment, machine *types.SandboxUserMachine,
+) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockLiveWebUser(tx, session.UserID); err != nil {
+			return err
+		}
 		now := time.Now()
 		session.CreatedAt = now
 		session.UpdatedAt = now
@@ -424,14 +458,26 @@ func (r *sessionRepository) CreateForked(
 		if err := tx.Session(&gorm.Session{SkipHooks: true}).Create(session).Error; err != nil {
 			return err
 		}
-		if len(messages) == 0 {
+		if len(messages) > 0 {
+			if err := tx.Session(&gorm.Session{SkipHooks: true}).
+				CreateInBatches(messages, 100).Error; err != nil {
+				return err
+			}
+			if err := insertMessageArtifacts(tx, messages); err != nil {
+				return err
+			}
+		}
+		if assignment == nil {
 			return nil
 		}
-		if err := tx.Session(&gorm.Session{SkipHooks: true}).
-			CreateInBatches(messages, 100).Error; err != nil {
+		created, err := InsertSandboxAssignmentTx(tx, assignment, machine)
+		if err != nil {
 			return err
 		}
-		return insertMessageArtifacts(tx, messages)
+		if !created {
+			return fmt.Errorf("fork %s already has a sandbox assignment", session.ID)
+		}
+		return nil
 	})
 }
 

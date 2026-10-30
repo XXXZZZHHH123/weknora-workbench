@@ -37,7 +37,8 @@ func TestSessionHistoryRequiresPersistedUserMessage(t *testing.T) {
 	}
 	all, err := repo.GetByTenantID(context.Background(), 1, "alice")
 	require.NoError(t, err)
-	require.Equal(t, []string{active.ID}, sessionIDsForTest(all))
+	require.ElementsMatch(t, []string{active.ID, empty.ID, assistantOnly.ID, deleted.ID}, sessionIDsForTest(all),
+		"internal cleanup enumerates drafts as well; public history uses the filtered paged queries")
 	paged, total, err := repo.GetPagedByTenantID(context.Background(), 1, "alice", &types.Pagination{Page: 1, PageSize: 10})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, total)

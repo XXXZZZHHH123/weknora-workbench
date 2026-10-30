@@ -107,6 +107,8 @@ const props = defineProps({
   },
   // Authenticated research panels reuse this composer while keeping every
   // selection local. An absent scope retains the normal/public-embed contract.
+  modelId: { type: String, default: '' },
+  defaultModelId: { type: String, default: '' },
   knowledgeScope: {
     type: Object as PropType<{ kbId: string; kbName?: string; modelId?: string }>,
     required: false
@@ -307,7 +309,7 @@ const sharedAgentKbList = ref<Array<{ id: string; name: string; type?: string; k
 // 知识库：用新智能体配置的列表替换当前选中，使已选与可@列表一致（含共享智能体）
 watch([selectedAgentId, agentKnowledgeBases, agentKBSelectionMode], ([newAgentId, newAgentKbs, newKbMode], [oldAgentId]) => {
   if (props.knowledgeScope || settingsStore._isApplyingSessionState) return;
-  if (newAgentId !== oldAgentId && oldAgentId !== undefined) {
+  if (newAgentId !== oldAgentId && oldAgentId !== undefined && !props.embeddedMode) {
     if (newKbMode === 'none') {
       settingsStore.selectKnowledgeBases([]);
     } else {
@@ -372,6 +374,8 @@ const isKnowledgeBaseDisabledByAgent = computed(() => {
 });
 const isMentionDisabled = computed(() => {
   if (props.knowledgeScope) return !props.knowledgeScope.kbId;
+  // The host pins the scope; @-mentions would edit the main chat's selection.
+  if (props.embeddedMode) return true;
   if (settingsStore.isAgentStreamMode && isKnowledgeBaseDisabledByAgent.value) {
     return agentMCPSelectionMode.value === 'none' && agentSkillsSelectionMode.value === 'none';
   }
@@ -439,7 +443,7 @@ const isSkillAllowedByAgent = (skillName: string) => {
 
 // 切换智能体时清理不允许的 MCP / Skill @mention
 watch([selectedAgentId, agentMCPSelectionMode, agentSkillsSelectionMode], ([newAgentId], [oldAgentId]) => {
-  if (props.knowledgeScope || settingsStore._isApplyingSessionState) return;
+  if (props.knowledgeScope || props.embeddedMode || settingsStore._isApplyingSessionState) return;
   if (newAgentId === oldAgentId || oldAgentId === undefined) return;
 
   const mcpMode = agentMCPSelectionMode.value;
@@ -1031,7 +1035,7 @@ const loadChatModels = async (force = false) => {
   modelsLoading.value = true;
   try {
     await chatResources.ensureChatModels(force);
-    ensureModelSelection();
+    if (!props.embeddedMode || props.knowledgeScope) ensureModelSelection();
   } catch (error) {
     console.error('Failed to load chat models:', error);
     chatResources.invalidate('models');
@@ -1070,8 +1074,7 @@ const ensureModelSelection = () => {
 watch(
   [selectedAgentId, () => settingsStore.selectedAgentSourceTenantId, agentModelId],
   ([, sourceTenantId, newModelId]) => {
-    if (props.knowledgeScope) return;
-    if (!newModelId || newModelId.trim() === '') return;
+    if (props.knowledgeScope || props.embeddedMode || !newModelId || newModelId.trim() === '') return;
 
     const lastPick = readLastChatModelID();
     const isSharedAgent = !!sourceTenantId;
@@ -1113,8 +1116,13 @@ const handleModelChange = (value: string | number | Array<string | number> | und
     return;
   }
   if (val === '__add_model__') {
-    selectedModelId.value = readLastChatModelID();
+    if (!props.embeddedMode) selectedModelId.value = readLastChatModelID();
     handleGoToConversationModels();
+    return;
+  }
+  if (props.embeddedMode && !props.knowledgeScope) {
+    emit('update:modelId', val === EMBEDDED_AUTO_MODEL ? '' : val);
+    showModelSelector.value = false;
     return;
   }
 
@@ -1144,6 +1152,24 @@ const selectedModel = computed(() => {
   return availableModels.value.find(model => model.id === selectedModelId.value);
 });
 
+// What the composer shows and sends. Embedded, an empty or no longer
+// available pick follows the default, which is resolved to a concrete model
+// here so the label always names the model that will answer.
+const EMBEDDED_AUTO_MODEL = '__auto__';
+const embeddedPickedModel = computed(() => props.modelId
+  ? availableModels.value.find(model => model.id === props.modelId) : undefined);
+const embeddedDefaultModel = computed(() =>
+  availableModels.value.find(model => model.id === props.defaultModelId) || availableModels.value[0]);
+const followsDefaultModel = computed(() => props.embeddedMode && !props.knowledgeScope && !embeddedPickedModel.value);
+const composerModel = computed(() => {
+  if (!props.embeddedMode || props.knowledgeScope) return selectedModel.value;
+  return embeddedPickedModel.value || embeddedDefaultModel.value;
+});
+const composerModelId = computed(() => {
+  if (!props.embeddedMode || props.knowledgeScope) return selectedModelId.value;
+  return composerModel.value?.id || '';
+});
+
 const reasoningLevels = computed(() => supportedLevels(selectedModel.value?.capabilities));
 const agentReasoningLevel = computed(() => clampLevel(
   levelFromLegacy(currentAgentConfig.value?.thinking, currentAgentConfig.value?.reasoning_effort),
@@ -1168,12 +1194,18 @@ watch([selectedModel, reasoningLevels, () => settingsStore.reasoningEffortOverri
 
 // 模型展示名：本空间列表中有则用名称；若为共享智能体且其 model_id 不在本空间列表中则显示“共享智能体配置的模型”
 const selectedModelDisplayName = computed(() => {
-  if (selectedModel.value) return modelDisplayName(selectedModel.value);
-  if (!selectedModelId.value) return t('input.notConfigured');
+  if (composerModel.value) return modelDisplayName(composerModel.value);
+  if (!selectedModelId.value || props.embeddedMode) return t('input.notConfigured');
   const isSharedAgent = !!settingsStore.selectedAgentSourceTenantId;
   const modelFromAgent = agentModelId.value && agentModelId.value === selectedModelId.value;
   if (isSharedAgent && modelFromAgent) return t('input.sharedAgentModelLabel');
   return t('input.notConfigured');
+});
+
+const modelTriggerTooltip = computed(() => {
+  if (isModelLockedByAgent.value) return t('input.modelLockedByAgent');
+  if (followsDefaultModel.value) return t('input.modelAutoHint');
+  return '';
 });
 
 const modelDisplayName = (model: ModelConfig) => {
@@ -1189,17 +1221,17 @@ const contextWindowTitle = (tokens?: number) => {
 };
 
 const selectedModelContextLabel = computed(() => {
-  if (!selectedModel.value) return '';
-  return formatContextWindow(selectedModel.value.parameters?.context_window);
+  if (!composerModel.value) return '';
+  return formatContextWindow(composerModel.value.parameters?.context_window);
 });
 
 const selectedModelContextIsDefault = computed(() => {
-  return isDefaultContextWindow(selectedModel.value?.parameters?.context_window);
+  return isDefaultContextWindow(composerModel.value?.parameters?.context_window);
 });
 
 const selectedModelContextTitle = computed(() => {
-  if (!selectedModel.value) return '';
-  return contextWindowTitle(selectedModel.value.parameters?.context_window);
+  if (!composerModel.value) return '';
+  return contextWindowTitle(composerModel.value.parameters?.context_window);
 });
 
 const updateModelDropdownPosition = () => {
@@ -2028,8 +2060,10 @@ let scrollHandler: (() => void) | null = null;
 
 onMounted(() => {
   if (props.autoFocus) void focusInput();
-  // Embed 渠道由宿主注入 agent/KB，勿拉取需 JWT 的平台资源
-  if (props.embeddedMode && !props.knowledgeScope) return;
+  if (props.embeddedMode && !props.knowledgeScope) {
+    void loadChatModels();
+    return;
+  }
 
   if (props.knowledgeScope) {
     void loadChatModels();
@@ -2124,7 +2158,7 @@ onUnmounted(() => {
 
 // 监听路由变化
 watch(() => route.params.kbId, (newKbId) => {
-  if (props.knowledgeScope) return;
+  if (props.knowledgeScope || props.embeddedMode) return;
   if (newKbId && typeof newKbId === 'string' && !selectedKbIds.value.includes(newKbId)) {
     settingsStore.addKnowledgeBase(newKbId);
   }
@@ -2147,6 +2181,7 @@ watch([selectedKbIds, selectedFileIds], ([kbIds, fileIds]) => {
 
 const emit = defineEmits<{
   (e: 'send-msg', query: string, modelId: string, mentionedItems: MentionRequestItem[], imageFiles: File[], attachmentFiles: AttachmentFile[], options: SendMessageOptions): void;
+  (e: 'update:modelId', modelId: string): void;
   (e: 'stop-generation'): void;
   (e: 'stop-confirmed'): void;
   (e: 'stop-failed'): void;
@@ -2191,7 +2226,8 @@ const createSession = async (
       MessagePlugin.warning(t('input.messages.steerHasAttachments'));
       return;
     }
-    const steerMentions: MentionRequestItem[] = allSelectedItems.value.map(item => ({
+    // Embedded scope belongs to the host, including queued and injected turns.
+    const steerMentions: MentionRequestItem[] = (props.embeddedMode ? [] : allSelectedItems.value).map(item => ({
       id: item.id,
       name: item.name,
       type: item.type,
@@ -2245,7 +2281,7 @@ const createSession = async (
 
   // Embed 渠道由后端绑定 agent/KB，勿走平台侧 agent 列表与就绪校验
   if (props.embeddedMode) {
-    emit('send-msg', val, selectedModelId.value || '', [], [], [], options);
+    emit('send-msg', val, composerModelId.value, [], [], [], options);
     clearvalue();
     void focusInput();
     return;
@@ -2838,13 +2874,18 @@ const handleStop = async () => {
 
 onBeforeRouteUpdate((to, from, next) => {
   if (props.knowledgeScope) { next(); return; }
-  clearvalue()
-  clearPendingUploads()
+  // The route belongs to the page behind an embedded assistant. Its draft
+  // and uploads belong to the assistant session, which the host manages.
+  if (!props.embeddedMode) {
+    clearvalue()
+    clearPendingUploads()
+  }
   next()
 })
 
 defineExpose({
   focusInput,
+  getComposerModelId: () => composerModelId.value,
   triggerSend(text: string, options: SendMessageOptions = {}) {
     if (!text.trim()) return;
     query.value = text;
@@ -2907,8 +2948,9 @@ defineExpose({
         @update:files="uploadedAttachments = $event" />
 
       <!-- 选中的知识库和文件标签（显示在输入框内顶部） -->
-      <div v-if="allSelectedItems.length > 0" class="selected-tags-inline">
-        <span v-for="item in allSelectedItems" :key="`${item.type}:${item.id}`" class="mention-chip" :class="[
+      <div v-if="$slots.chips || ((!embeddedMode || knowledgeScope) && allSelectedItems.length > 0)" class="selected-tags-inline">
+        <slot name="chips" />
+        <span v-for="item in (embeddedMode && !knowledgeScope ? [] : allSelectedItems)" :key="`${item.type}:${item.id}`" class="mention-chip" :class="[
           getMentionChipClass(item),
           { 'mention-chip--agent': item.isAgentConfigured }
         ]">
@@ -2936,7 +2978,9 @@ defineExpose({
       <!-- 控制栏按文档流排列，换行时自动撑开容器 -->
       <div class="control-bar" :class="{ 'is-embedded': embeddedMode }">
         <!-- 左侧控制按钮 -->
-        <div class="control-left" v-if="!embeddedMode || knowledgeScope">
+        <div class="control-left">
+          <!-- 嵌入时宿主已定好 agent/KB，只保留模型选择 -->
+          <template v-if="!embeddedMode || knowledgeScope">
           <!-- Agent 模式切换按钮 -->
           <div v-if="!knowledgeScope" ref="agentModeButtonRef" class="control-btn agent-mode-btn" :class="{
             'is-normal': !isCustomAgent && !isAgentEnabled,
@@ -3086,10 +3130,14 @@ defineExpose({
               </svg>
             </div>
           </t-tooltip>
+          <slot name="background-work" />
+          </template>
+          <slot v-if="embeddedMode" name="background-work" />
+
+          <slot name="controls" />
 
           <!-- 模型显示 -->
-          <t-tooltip :content="isModelLockedByAgent ? $t('input.modelLockedByAgent') : ''"
-            :disabled="!isModelLockedByAgent">
+          <t-tooltip :content="modelTriggerTooltip" :disabled="!modelTriggerTooltip">
             <div class="model-display" :class="{ 'agent-controlled': isModelLockedByAgent }">
               <div ref="modelButtonRef" class="model-selector-trigger" role="button" tabindex="0"
                 :aria-label="selectedModelDisplayName" :title="selectedModelDisplayName"
@@ -3099,8 +3147,11 @@ defineExpose({
                 <span class="model-selector-name">
                   {{ selectedModelDisplayName }}
                 </span>
+                <span v-if="followsDefaultModel && composerModel" class="model-selector-default">
+                  {{ $t('input.modelAuto') }}
+                </span>
                 <span
-                  v-if="selectedModelContextLabel"
+                  v-else-if="selectedModelContextLabel"
                   class="model-selector-ctx"
                   :class="{ 'is-default': selectedModelContextIsDefault }"
                   :title="selectedModelContextTitle"
@@ -3112,7 +3163,7 @@ defineExpose({
               </div>
             </div>
           </t-tooltip>
-          <t-popup v-if="!knowledgeScope && reasoningLevels.length > 0" v-model:visible="showReasoningSelector"
+          <t-popup v-if="!knowledgeScope && !embeddedMode && reasoningLevels.length > 0" v-model:visible="showReasoningSelector"
             trigger="click" placement="top-right" :disabled="composerLocked"
             :overlay-inner-style="{ padding: '4px', borderRadius: 'var(--app-radius-lg)' }"
             @visible-change="handleReasoningVisibleChange">
@@ -3153,8 +3204,22 @@ defineExpose({
                 </button>
               </div>
               <div class="model-selector-content">
+                <div v-if="embeddedMode && !knowledgeScope && embeddedDefaultModel" class="model-option"
+                  :class="{ selected: followsDefaultModel }"
+                  :title="$t('input.modelAutoHint')" @click="handleModelChange(EMBEDDED_AUTO_MODEL)">
+                  <div class="model-option-left">
+                    <div class="model-option-name-wrap">
+                      <span class="model-option-name">{{ $t('input.modelFollowDefault') }}</span>
+                      <span class="model-option-raw-name">{{ modelDisplayName(embeddedDefaultModel) }}</span>
+                    </div>
+                  </div>
+                  <span class="model-option-check">
+                    <t-icon v-if="followsDefaultModel" name="check" size="14px" />
+                  </span>
+                </div>
                 <div v-for="model in availableModels" :key="model.id" class="model-option"
-                  :class="{ selected: model.id === selectedModelId }" @click="handleModelChange(model.id || '')">
+                  :class="{ selected: !followsDefaultModel && model.id === composerModelId }"
+                  @click="handleModelChange(model.id || '')">
                   <div class="model-option-left">
                     <div class="model-option-name-wrap">
                       <span class="model-option-name">{{ modelDisplayName(model) }}</span>
@@ -3167,7 +3232,7 @@ defineExpose({
                     :title="contextWindowTitle(model.parameters?.context_window)"
                   >{{ formatContextWindow(model.parameters?.context_window) }}</span>
                   <span class="model-option-check">
-                    <t-icon v-if="model.id === selectedModelId" name="check" size="14px" />
+                    <t-icon v-if="model.id === composerModelId" name="check" size="14px" />
                   </span>
                 </div>
                 <div v-if="availableModels.length === 0" class="model-option empty">
@@ -3543,6 +3608,22 @@ const getImgSrc = (url: string) => {
 
   &.is-embedded {
     justify-content: flex-end;
+    flex-wrap: nowrap;
+
+    .control-left {
+      flex-wrap: nowrap;
+    }
+
+    // Let long model names shrink before the fixed controls wrap or move.
+    .model-display {
+      flex-shrink: 1;
+      min-width: 0;
+    }
+
+    .model-selector-trigger {
+      min-width: 0;
+      max-width: 100%;
+    }
   }
 }
 
@@ -4114,6 +4195,13 @@ const getImgSrc = (url: string) => {
   &.is-default {
     opacity: 0.85;
   }
+}
+
+.model-selector-default {
+  flex-shrink: 0;
+  font-size: var(--app-text-xs);
+  color: var(--td-text-color-placeholder);
+  font-weight: 400;
 }
 
 .model-dropdown-arrow {

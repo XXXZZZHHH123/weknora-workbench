@@ -73,7 +73,12 @@ export function redirectToLogin() {
 
 export function clearAuthStorage() {
   for (const key of AUTH_STORAGE_KEYS) {
-    localStorage.removeItem(key)
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      // Storage may be unavailable. Still attempt the remaining keys and
+      // allow callers to reject waiting requests and redirect to login.
+    }
   }
 }
 
@@ -109,13 +114,6 @@ export async function refreshAccessTokenShared(
 ): Promise<string> {
   const messages = { ...defaultMessages, ...options.messages }
   const refresh = options.refresh ?? defaultRefresh
-  // A delayed 401 may belong to the token already replaced by another caller.
-  const currentToken = localStorage.getItem('weknora_token')
-  if (options.rejectedToken && currentToken && currentToken !== options.rejectedToken) {
-    publishAuthTokens({ token: currentToken, refreshToken: localStorage.getItem('weknora_refresh_token') || '' })
-    return currentToken
-  }
-
   if (isRefreshing) {
     return new Promise<string>((resolve, reject) => {
       failedQueue.push({ resolve, reject })
@@ -123,41 +121,58 @@ export async function refreshAccessTokenShared(
   }
 
   isRefreshing = true
-  const storedRefreshToken = localStorage.getItem('weknora_refresh_token')
-
-  if (!storedRefreshToken) {
-    clearAuthStorage()
-    const noRefreshTokenError = new Error(messages.pleaseRelogin)
-    processQueue(noRefreshTokenError, null)
-    isRefreshing = false
-    redirectToLogin()
-    throw noRefreshTokenError
-  }
-
-  const sessionUser = localStorage.getItem('weknora_user')
-  const stillOwnsSession = () => localStorage.getItem('weknora_refresh_token') === storedRefreshToken && localStorage.getItem('weknora_user') === sessionUser
+  let readingStorage = false
+  let writingTokens = false
+  let sessionCaptured = false
+  let storedRefreshToken: string | null = null
+  let sessionUser: string | null = null
+  const stillOwnsSession = () => localStorage.getItem('weknora_refresh_token') === storedRefreshToken
+    && localStorage.getItem('weknora_user') === sessionUser
   try {
+    readingStorage = true
+    const currentToken = localStorage.getItem('weknora_token')
+    storedRefreshToken = localStorage.getItem('weknora_refresh_token')
+    sessionUser = localStorage.getItem('weknora_user')
+    sessionCaptured = true
+    readingStorage = false
+    // A delayed 401 may belong to a token already replaced by another caller.
+    if (options.rejectedToken && currentToken && currentToken !== options.rejectedToken) {
+      publishAuthTokens({ token: currentToken, refreshToken: storedRefreshToken || '' })
+      processQueue(null, currentToken)
+      return currentToken
+    }
+    if (!storedRefreshToken) {
+      throw Object.assign(new Error(messages.pleaseRelogin), { invalidSession: true })
+    }
     const response = await refresh(storedRefreshToken)
-    if (!stillOwnsSession()) throw new Error('登录会话已改变，请重新操作')
+    readingStorage = true
+    const ownsSession = stillOwnsSession()
+    readingStorage = false
+    if (!ownsSession) throw new Error('登录会话已改变，请重新操作')
 
     if (!response.success || !response.data?.token) {
       throw Object.assign(new Error(response.message || messages.tokenRefreshFailed), { invalidSession: true })
     }
 
     const { token, refreshToken: newRefreshToken } = response.data
+    writingTokens = true
     localStorage.setItem('weknora_token', token)
-    if (newRefreshToken) {
-      localStorage.setItem('weknora_refresh_token', newRefreshToken)
-    }
+    if (newRefreshToken) localStorage.setItem('weknora_refresh_token', newRefreshToken)
+    writingTokens = false
     publishAuthTokens({ token, refreshToken: newRefreshToken || storedRefreshToken })
     processQueue(null, token)
     return token
   } catch (refreshError) {
-    const status = (refreshError as { status?: number })?.status
-    if (stillOwnsSession() && (status === 401 || status === 403 || (refreshError as { invalidSession?: boolean })?.invalidSession)) {
-      clearAuthStorage()
-      redirectToLogin()
+    const failure = refreshError as { status?: number; invalidSession?: boolean }
+    let mustRelogin = readingStorage || writingTokens
+    if (!mustRelogin && sessionCaptured && (failure?.status === 401 || failure?.status === 403 || failure?.invalidSession)) {
+      try {
+        mustRelogin = stillOwnsSession()
+      } catch {
+        mustRelogin = true
+      }
     }
+    if (mustRelogin) forceReloginRedirect()
     processQueue(refreshError, null)
     throw refreshError
   } finally {

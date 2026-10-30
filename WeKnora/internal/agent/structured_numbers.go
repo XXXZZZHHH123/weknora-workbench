@@ -531,7 +531,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			}
 		}
 		if msg.Role == "user" && msg.Kind != chat.MessageKindReviewEvidence {
-			userTexts = append(userTexts, msg.Content)
+			userTexts = append(userTexts, humanNumericText(msg.Content))
 		}
 	}
 	labels := make([]string, 0, len(identityLabels))
@@ -648,6 +648,27 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 		}
 	}
 	return unsupported
+}
+
+// Runtime clocks, resource IDs and routing counts are not user-supplied
+// operands. Strip only the leading envelopes produced by RenderUserTurnContent;
+// leave the human request intact, without classifying its business meaning.
+func humanNumericText(text string) string {
+	text = strings.TrimSpace(text)
+	for _, envelope := range []struct{ open, close string }{
+		{`<runtime_context scope="this_turn">`, `</runtime_context>`},
+		{`<must_use>`, `</must_use>`},
+	} {
+		if !strings.HasPrefix(text, envelope.open) {
+			continue
+		}
+		end := strings.Index(text[len(envelope.open):], envelope.close)
+		if end < 0 {
+			return "" // An incomplete runtime envelope provides no numeric facts.
+		}
+		text = strings.TrimSpace(text[len(envelope.open)+end+len(envelope.close):])
+	}
+	return text
 }
 
 // A saved chart's exact Markdown URL is an opaque identity, never a decimal

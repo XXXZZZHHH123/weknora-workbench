@@ -63,6 +63,7 @@ var ToolCapabilityRequirements = map[string]ToolRequirement{
 	// First-phase generation accepts text, not @file references or KB scope.
 	ToolGenerateImage: {},
 	ToolRenderChart:   {},
+	"ask_user":        {},
 
 	// ---- RAG / chunk retrieval (need at least one chunk-indexed KB) ----
 	"search_knowledge":      {AnyOf: []KBCapability{CapVector, CapKeyword}, ConsumesFiles: true},

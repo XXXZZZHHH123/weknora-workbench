@@ -2,7 +2,9 @@
 import { ref, shallowRef, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import SettingDrawer from '@/components/settings/SettingDrawer.vue'
 import { DialogPlugin, MessagePlugin } from 'tdesign-vue-next'
+import { registerUnsavedChanges } from '@/utils/unsavedChanges'
 import { useUIStore } from '@/stores/ui'
+import { resolvePreferredKnowledgeBaseId } from '@/utils/manualKnowledgeDraft'
 import {
   getKnowledgeDetails,
   getKnowledgeBaseById,
@@ -18,6 +20,7 @@ import { continueListOnEnter, countContent, indentOnTab } from '@/utils/markdown
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { useRoute } from 'vue-router'
+import AssistantActionsButton from '@/components/assistant/AssistantActionsButton.vue'
 
 interface KnowledgeBaseOption {
   label: string
@@ -62,6 +65,12 @@ const authStore = useAuthStore()
 const route = useRoute()
 const chatResources = useChatResourcesStore()
 const { t } = useI18n()
+// The assistant fills the open editor; the user saves the result.
+const assistantActions = computed(() => ['continue', 'outline', 'polish', 'summarize'].map(action => ({
+  key: action,
+  label: t(`manualEditor.assistant.${action}`),
+  query: t(`manualEditor.assistant.prompts.${action}`),
+})))
 
 const visible = computed({
   get: () => uiStore.manualEditorVisible,
@@ -660,6 +669,9 @@ const loadKnowledgeBases = async (session = editorSessionScope()) => {
     kbOptions.value = list
 
     if (mode.value === 'create' && form.kbId === originalKbId) {
+      // Explicit kbId (KB-page callers) keeps the historical force-insert path.
+      // Chat preferences are soft: only select an id already in the writable
+      // candidate list, otherwise fall back to list[0].
       const presetKbId = uiStore.manualEditorKBId
       if (presetKbId) {
         const exists = list.find((item) => item.value === presetKbId)
@@ -671,7 +683,10 @@ const loadKnowledgeBases = async (session = editorSessionScope()) => {
         }
         form.kbId = presetKbId
       } else {
-        form.kbId = list[0]?.value ?? ''
+        form.kbId = resolvePreferredKnowledgeBaseId(
+          uiStore.manualEditorPreferredKbIds,
+          list.map((item) => item.value),
+        )
       }
     }
   } catch (error) {
@@ -785,8 +800,18 @@ const initialize = async (session = editorSessionScope()) => {
     if (!await loadKnowledgeContent(session)) return
     if (!editorSessionCurrent(session)) return
   } else {
-    if (!form.kbId && kbOptions.value.length) {
-      form.kbId = kbOptions.value[0].value
+    if (!form.kbId) {
+    const presetKbId = uiStore.manualEditorKBId
+    if (presetKbId) {
+      form.kbId = presetKbId
+    } else {
+      // Re-resolve preferences against the loaded candidates (resetForm may have
+      // left form.kbId empty; do not re-apply a preferred id missing from the list).
+      form.kbId = resolvePreferredKnowledgeBaseId(
+        uiStore.manualEditorPreferredKbIds,
+        kbOptions.value.map((item) => item.value),
+      )
+    }
     }
     form.title = form.title || generateDefaultTitle()
     form.content = form.content || ''
@@ -927,6 +952,7 @@ const markPristine = () => {
   pristineSnapshot.value = snapshot()
 }
 const isDirty = () => initialLoaded.value && snapshot() !== pristineSnapshot.value
+onBeforeUnmount(registerUnsavedChanges(() => visible.value && isDirty()))
 
 const handleClose = () => {
   if (!isDirty()) {
@@ -1110,6 +1136,8 @@ onBeforeUnmount(() => {
             </template>
           </div>
           <div class="editor-toolbar__view">
+            <AssistantActionsButton :label="$t('manualEditor.assistant.button')"
+              :title="$t('manualEditor.assistant.tooltip')" :actions="assistantActions" @mousedown.prevent />
             <t-tooltip placement="top-right" :show-arrow="false">
               <template #content>
                 <div class="shortcut-sheet">
@@ -1178,7 +1206,7 @@ onBeforeUnmount(() => {
               <span>{{ $t('preview.loadFailed') }}</span>
               <t-button size="small" variant="text" @click="loadPreviewMarkdown">{{ $t('preview.retry') }}</t-button>
             </div>
-            <div ref="previewRoot" class="preview-container" v-html="previewHTML" />
+            <div ref="previewRoot" class="preview-container" data-assistant-ignore v-html="previewHTML" />
           </div>
         </div>
 

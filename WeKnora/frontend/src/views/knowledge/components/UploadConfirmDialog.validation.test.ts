@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
 import ts from 'typescript'
+import { ref } from 'vue'
 import { isExcelFilename } from '../excelSource.ts'
 
 const component = readFileSync(new URL('./UploadConfirmDialog.vue', import.meta.url), 'utf8')
@@ -21,7 +22,7 @@ function confirm(names: string[], missingModel = true, urls: string[] = []) {
   const events: unknown[][] = [], notices: string[] = [], sections: string[] = []
   let configurations = 0
   const context = {
-    props: { mode: 'file', allowURL: false }, batchItemCount: { value: files.length + urls.length },
+    ref, props: { mode: 'file', allowURL: false }, batchItemCount: { value: files.length + urls.length },
     sourceOnlyBatch: { value: files.length > 0 && files.every(file => isExcelFilename(file.name)) },
     hasImages: { value: names.some(name => name.endsWith('.png')) }, hasAudio: { value: false },
     showMultimodalModelError: { value: missingModel }, showAsrModelError: { value: missingModel },

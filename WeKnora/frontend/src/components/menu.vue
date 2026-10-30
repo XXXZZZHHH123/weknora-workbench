@@ -6,6 +6,10 @@
                 <BrandWordmark compact />
             </button>
             <div class="logo_actions">
+                <t-tooltip v-if="assistantStore.entry === 'sidebar'" :content="assistantName" placement="bottom">
+                    <AssistantButton data-guide="assistant-entry" icon-only :icon-size="18" :label="assistantName"
+                        :active="assistantStore.visible" @click="assistantStore.toggle()" />
+                </t-tooltip>
                 <div class="sidebar-toggle" role="button" tabindex="0" @keydown.enter.prevent="uiStore.toggleSidebar" @keydown.space.prevent="uiStore.toggleSidebar" @click="uiStore.toggleSidebar" :title="t('menu.collapseSidebar')">
                     <svg viewBox="0 0 20 20" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <rect x="1.5" y="1.5" width="17" height="17" rx="3" stroke="currentColor" stroke-width="1.5" />
@@ -52,6 +56,11 @@
             <kbd v-if="!uiStore.sidebarCollapsed">{{ cmdModKeyLabel }}K</kbd>
         </button>
 
+        <t-tooltip v-if="uiStore.sidebarCollapsed && assistantStore.entry === 'sidebar'" :content="assistantName" placement="right">
+            <AssistantButton data-guide="assistant-entry" icon-only :icon-size="18" :label="assistantName"
+                :active="assistantStore.visible" @click="assistantStore.toggle()" />
+        </t-tooltip>
+
         <nav class="menu_top sidebar-primary-nav" aria-label="工作区导航">
             <WorkspaceNavigationNode title="New" icon="add" guide="nav-creatChat" class="sidebar-new"
                 :collapsed="uiStore.sidebarCollapsed" :active="route.name === 'globalCreatChat'"
@@ -69,6 +78,9 @@
             <WorkspaceNavigationNode v-if="canAccessAgents" title="智能体管理" icon="robot-1" guide="nav-agents"
                 :collapsed="uiStore.sidebarCollapsed" :active="isAgentsActive"
                 @navigate="router.push('/platform/agents')" />
+            <WorkspaceNavigationNode :title="t('menu.automations')" icon="time" guide="nav-automations"
+                :collapsed="uiStore.sidebarCollapsed" :active="route.name === 'automationList'"
+                @navigate="router.push('/platform/automations')" />
         </nav>
 
         <section v-if="!uiStore.sidebarCollapsed" class="sidebar-recents" aria-labelledby="sidebar-recents-title">
@@ -238,6 +250,8 @@ import { useBrowserConnectionStore } from '@/stores/browserConnection';
 import { useOrganizationStore } from '@/stores/organization';
 import { useUIStore } from '@/stores/ui';
 import { useCommandPaletteStore } from '@/stores/commandPalette';
+import { useAssistantStore } from '@/stores/assistant';
+import AssistantButton from '@/components/assistant/AssistantButton.vue';
 import { MessagePlugin, DialogPlugin, Icon as TIcon } from "tdesign-vue-next";
 import UserMenu from '@/components/UserMenu.vue';
 import BrandWordmark from '@/components/BrandWordmark.vue';
@@ -299,6 +313,8 @@ watch(() => uiStore.sidebarBrowserStatus && toolboxPreview.value.some((tool) => 
     if (visible && !browserConnection.loaded) browserConnection.refresh().catch(() => {});
 }, { immediate: true });
 const commandPaletteStore = useCommandPaletteStore();
+const assistantStore = useAssistantStore();
+const assistantName = computed(() => assistantStore.displayName || t('assistant.title'));
 
 // Platform-aware label for the ⌘K hint. navigator.platform is deprecated but
 // the alternatives (userAgentData.platform) aren't universally available yet;
@@ -1310,7 +1326,6 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
         .menu_bottom {
             align-items: center;
         }
-
         .menu_top {
             margin-right: 0;
             padding-right: 0;
@@ -1897,6 +1912,13 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
     flex-shrink: 0;
 }
 
+.aside_box--collapsed .assistant-sidebar-entry {
+    display: flex;
+    width: 32px;
+    height: 32px;
+    margin: 0 auto 6px;
+}
+
 .header-icon-btn {
     display: flex;
     align-items: center;
@@ -1912,6 +1934,11 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
 
     &:hover {
         background: var(--td-bg-color-container-hover);
+    }
+
+    &.is-active {
+        background: var(--td-bg-color-container-hover);
+        color: var(--td-brand-color);
     }
 
     .header-icon-img {

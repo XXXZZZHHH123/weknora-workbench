@@ -1359,7 +1359,12 @@ func (s *wikiIngestService) mapOneDocument(
 		return nil, nil, nil
 	}
 
-	chunks, err := s.chunkRepo.ListChunksByKnowledgeID(ctx, payload.TenantID, knowledgeID)
+	// Text chunks of a scanned PDF are image links. The readable prose lives on
+	// image_ocr chunks and is not always copied into image_info, so load those
+	// chunks and append the pages that are still missing.
+	chunks, err := s.chunkRepo.ListChunksByKnowledgeIDAndTypes(ctx, payload.TenantID, knowledgeID, []types.ChunkType{
+		types.ChunkTypeText, types.ChunkTypeImageOCR,
+	})
 	if err != nil {
 		s.tracker().FailSpan(ctx, wikiSpan, "LIST_CHUNKS_FAILED", err.Error(), err)
 		return nil, nil, fmt.Errorf("get chunks: %w", err)
@@ -1370,7 +1375,10 @@ func (s *wikiIngestService) mapOneDocument(
 		return nil, nil, nil
 	}
 
-	content := reconstructEnrichedContent(ctx, s.chunkRepo, payload.TenantID, chunks)
+	content := appendScannedPageText(
+		reconstructEnrichedContent(ctx, s.chunkRepo, payload.TenantID, chunks),
+		chunks,
+	)
 	rawRuneCount := len([]rune(content))
 	if len([]rune(content)) > maxContentForWiki {
 		content = string([]rune(content)[:maxContentForWiki])
@@ -1528,7 +1536,9 @@ func (s *wikiIngestService) mapOneDocument(
 			return
 		}
 		candidatesXML := renderCandidateSlugsXML(extractedEntities, extractedConcepts)
-		citations, newSlugs, batchCount = s.classifyChunkCitations(ctx, chatModel, candidatesXML, chunks, lang, batchCtx)
+		citations, newSlugs, batchCount = s.classifyChunkCitations(
+			ctx, chatModel, candidatesXML, wikiCitationChunks(chunks), lang, batchCtx,
+		)
 		s.tracker().EndSpan(ctx, classifySpan, types.JSONMap{
 			"cited_slugs":      len(citations),
 			"new_slugs":        len(newSlugs),

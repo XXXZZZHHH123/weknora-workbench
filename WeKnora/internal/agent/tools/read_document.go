@@ -28,7 +28,7 @@ const (
 var readDocumentTool = BaseTool{
 	name: ToolReadDocument,
 	description: "Read a document from the knowledge bases in scope: its metadata plus chunks in document order.\n" +
-		"id is a dN document handle (reads a page of chunks starting at offset) or a cN chunk handle (reads that " +
+		"id is a doc://N document handle (reads a page of chunks starting at offset) or a chunk://N chunk handle (reads that " +
 		"chunk; set context to include neighbouring chunks on each side).\n" +
 		"For a user-specified physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
 		"Printed page labels and table-of-contents ranges are not physical PDF pages or proof that a listed section is present in this file. Verify physical pages with parser source_locators or page reads; chunk counts and the largest observed locator do not establish total pages.\n" +
@@ -41,10 +41,10 @@ var readDocumentTool = BaseTool{
 		"every word, in any order. Set regex=true to match query as one POSIX regular expression instead. " +
 		"When a query result is truncated, repeat it with offset=next_offset to get the following matches.\n" +
 		"Page through long documents with offset and limit: offset counts chunks in reading order from 0 and is " +
-		"not a chunk index, so continue with the returned next_offset, and use id=cN with context to read around " +
+		"not a chunk index, so continue with the returned next_offset, and use id=chunk://N with context to read around " +
 		"a specific chunk. A page holds fewer than limit chunks when they would exceed the output size budget; " +
 		"next_offset always points at the first chunk not yet returned. If a returned chunk body is partial, " +
-		"continue with id=cN and content_offset=next_content_offset; content offsets count Unicode characters " +
+		"continue with id=chunk://N and content_offset=next_content_offset; content offsets count Unicode characters " +
 		"within that chunk. Reading a long document end to end " +
 		"costs many calls, so prefer query or search_knowledge to locate the relevant part first.",
 	schema: json.RawMessage(`{
@@ -52,7 +52,7 @@ var readDocumentTool = BaseTool{
   "properties": {
     "id": {
       "type": "string",
-      "description": "dN document handle or cN chunk handle from retrieval results or the runtime context",
+      "description": "doc://N document handle or chunk://N chunk handle from retrieval results or the runtime context",
       "minLength": 1
     },
     "offset": {
@@ -62,12 +62,12 @@ var readDocumentTool = BaseTool{
     },
     "content_offset": {
       "type": "integer",
-      "description": "Unicode-character offset within a real cN chunk's returned source text; on a physical-page read it is relative to that page-clipped text",
+      "description": "Unicode-character offset within a real chunk://N chunk's returned source text; on a physical-page read it is relative to that page-clipped text",
       "minimum": 0
     },
     "content_limit": {
       "type": "integer",
-      "description": "Maximum Unicode characters to read from a real cN chunk (default is bounded by output budget)",
+      "description": "Maximum Unicode characters to read from a real chunk://N chunk (default is bounded by output budget)",
       "minimum": 1,
       "maximum": 12000
     },
@@ -92,7 +92,7 @@ var readDocumentTool = BaseTool{
     },
     "context": {
       "type": "integer",
-      "description": "Neighbouring chunks to include on each side of a cN chunk (default 0, max 5)",
+      "description": "Neighbouring chunks to include on each side of a chunk://N chunk (default 0, max 5)",
       "minimum": 0,
       "maximum": 5
     },
@@ -206,8 +206,10 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	}
 	id := strings.TrimSpace(input.ID)
 	if id == "" {
-		return &types.ToolResult{Success: false, Error: "id is required (a dN document handle or a cN chunk handle)"},
-			fmt.Errorf("missing id")
+		return &types.ToolResult{
+			Success: false,
+			Error:   "id is required (a doc://N document handle or a chunk://N chunk handle)",
+		}, fmt.Errorf("missing id")
 	}
 	if t.knowledgeService == nil || t.chunkService == nil {
 		return &types.ToolResult{Success: false, Error: "document services are unavailable"},
@@ -271,7 +273,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 		var segment *chunkContentSegment
 		if input.ContentLimit > 0 || input.ContentOffset > 0 {
 			if chunk == nil {
-				return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (cN)"}, nil
+				return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 			}
 			segment = &chunkContentSegment{chunkID: chunk.ID, offset: input.ContentOffset, limit: input.ContentLimit}
 		}
@@ -280,7 +282,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	}
 	if input.ContentLimit > 0 || input.ContentOffset > 0 {
 		if chunk == nil {
-			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (cN)"}, nil
+			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 		}
 		result, err := t.readChunkContent(ctx, knowledge, chunk, input.ContentOffset, input.ContentLimit)
 		return t.finishImageRead(ctx, knowledge, input, result, err)
@@ -336,7 +338,8 @@ func (t *ReadDocumentTool) resolveTarget(ctx context.Context, id string) (*types
 	}
 	chunk, err := t.chunkService.GetChunkByIDOnly(ctx, id)
 	if err != nil || chunk == nil {
-		return nil, nil, fmt.Errorf("id %s is neither a document (dN) nor a chunk (cN) in the current scope", id)
+		return nil, nil, fmt.Errorf(
+			"id %s is neither a document (doc://N) nor a chunk (chunk://N) in the current scope", id)
 	}
 	authorizedChunk, authErr := authorizeChunkInSearchTargets(
 		ctx, t.searchTargets, id, t.chunkService, t.knowledgeService,
@@ -581,7 +584,7 @@ func sliceChunkContent(ctx context.Context, chunk *types.Chunk, offset, requeste
 }
 
 // boundChunkRowsContent keeps one oversized source chunk readable and gives
-// the caller a stable cN + Unicode offset to retrieve its remaining source text.
+// the caller a stable chunk://N + Unicode offset to retrieve its remaining source text.
 func boundChunkRowsContent(ctx context.Context, rows []readChunkRow) []readChunkRow {
 	limit := maxChunkContentRunes(ctx)
 	for i, row := range rows {

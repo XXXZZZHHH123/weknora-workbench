@@ -24,6 +24,10 @@ const (
 	// over a minute on slow endpoints, so this is intentionally generous and
 	// can be raised further via VLM_HTTP_TIMEOUT_SECONDS.
 	defaultTimeout = 180 * time.Second
+	// defaultMaxToks is the fallback completion budget for a single VLM
+	// request. Reasoning vision models spend part of it on hidden thinking
+	// tokens, so a dense scanned page can stop at finish_reason=length; raise
+	// it via VLM_MAX_TOKENS.
 	defaultMaxToks = 5000
 	defaultTemp    = float32(0.1)
 )
@@ -38,6 +42,20 @@ func vlmHTTPTimeout() time.Duration {
 		}
 	}
 	return defaultTimeout
+}
+
+// vlmMaxTokens returns the completion budget for a single VLM request, read
+// from the VLM_MAX_TOKENS env var when set (and positive), falling back to
+// defaultMaxToks otherwise. The budget covers thinking tokens as well, so a
+// reasoning vision model can exhaust the default on a dense page and fail OCR
+// with finish_reason=length; this makes the cap adjustable without a rebuild.
+func vlmMaxTokens() int {
+	if v := strings.TrimSpace(os.Getenv("VLM_MAX_TOKENS")); v != "" {
+		if tokens, err := strconv.Atoi(v); err == nil && tokens > 0 {
+			return tokens
+		}
+	}
+	return defaultMaxToks
 }
 
 // RemoteAPIVLM implements VLM on top of the catalog-driven chat client: a
@@ -96,6 +114,17 @@ func NewRemoteAPIVLM(config *Config) (*RemoteAPIVLM, error) {
 
 // Predict sends images with a text prompt through the chat client.
 func (v *RemoteAPIVLM) Predict(ctx context.Context, imgBytesList [][]byte, prompt string) (string, error) {
+	return v.PredictWithOptions(ctx, imgBytesList, prompt, nil)
+}
+
+// PredictWithOptions sends the same request, carrying a per-call thinking
+// switch into the chat client. The switch rides on Options.Thinking, which the
+// protocol layer turns into whatever key this vendor uses, so a model that only
+// understands chat_template_kwargs still gets that spelling rather than a
+// bare enable_thinking the server would ignore.
+func (v *RemoteAPIVLM) PredictWithOptions(
+	ctx context.Context, imgBytesList [][]byte, prompt string, opts *PredictOptions,
+) (string, error) {
 	parts := []chat.MessageContentPart{{Type: "text", Text: prompt}}
 	totalImageSize := 0
 	for _, imgBytes := range imgBytesList {
@@ -112,10 +141,11 @@ func (v *RemoteAPIVLM) Predict(ctx context.Context, imgBytesList [][]byte, promp
 	logger.Infof(ctx, "[VLM] Calling chat protocol, model=%s, numImages=%d, totalImageSize=%d",
 		v.modelName, len(imgBytesList), totalImageSize)
 
+	maxTokens := vlmMaxTokens()
 	var resp *types.ChatResponse
 	var err error
 	for attempt := 1; ; attempt++ {
-		resp, err = v.chatOnce(ctx, parts)
+		resp, err = v.chatOnce(ctx, parts, opts)
 		wait, limited := vlmRateLimitDelay(err, attempt)
 		if limited {
 			rateLimitSignal.note(time.Now())
@@ -138,19 +168,20 @@ func (v *RemoteAPIVLM) Predict(ctx context.Context, imgBytesList [][]byte, promp
 	if resp.FinishReason == "length" {
 		// Non-empty partial output is still incomplete and must not be indexed
 		// as successful OCR. Returning an error also marks the model trace failed.
-		return "", fmt.Errorf("%w at %d tokens (finish_reason=length)", ErrTruncatedCompletion, defaultMaxToks)
+		return "", fmt.Errorf("%w at %d tokens (finish_reason=length)", ErrTruncatedCompletion, maxTokens)
 	}
 	logger.Infof(ctx, "[VLM] response received, len=%d", len(content))
 	return content, nil
 }
 
-func (v *RemoteAPIVLM) chatOnce(ctx context.Context, parts []chat.MessageContentPart) (*types.ChatResponse, error) {
+func (v *RemoteAPIVLM) chatOnce(ctx context.Context, parts []chat.MessageContentPart, opts *PredictOptions) (*types.ChatResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, vlmHTTPTimeout())
 	defer cancel()
-	return v.chat.Chat(ctx, []chat.Message{{Role: "user", MultiContent: parts}}, &chat.ChatOptions{
-		Temperature: v.temperature,
-		MaxTokens:   defaultMaxToks,
-	})
+	chatOpts := &chat.ChatOptions{Temperature: v.temperature, MaxTokens: vlmMaxTokens()}
+	if opts != nil && opts.Thinking != nil {
+		chatOpts.Thinking = opts.Thinking
+	}
+	return v.chat.Chat(ctx, []chat.Message{{Role: "user", MultiContent: parts}}, chatOpts)
 }
 
 const (

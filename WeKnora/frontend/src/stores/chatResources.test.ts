@@ -44,6 +44,7 @@ function fixture(options: { sharedFailure?: boolean } = {}) {
         modelRequests.push(request)
         return request.promise
       } }
+      if (name === '@/utils/assistantDataChange') return { useAssistantDataChange() {}, subscribeAssistantDataChange: () => () => {} }
       if (name === '@/utils/request') return { getCurrentLanguage: () => 'zh-CN' }
       if (name.startsWith('@/api/')) return {}
       return require(name)

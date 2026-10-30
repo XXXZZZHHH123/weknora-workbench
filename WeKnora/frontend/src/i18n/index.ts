@@ -6,6 +6,7 @@ import koKR from './locales/ko-KR.ts'
 import jaJP from './locales/ja-JP.ts'
 import zhTW from './locales/zh-TW.ts'
 import { BUILT_IN_DEFAULT, resolveDefaultLocale, type SupportedLocale } from './resolveDefaultLocale.ts'
+import { pluralRules } from './pluralizationRules.ts'
 
 // Reuse one exact schema instead of expanding six equivalent trees in vue-i18n.
 const messages: Record<SupportedLocale, typeof zhCN> = {
@@ -28,6 +29,7 @@ const i18n = createI18n({
   locale: savedLocale,
   fallbackLocale: BUILT_IN_DEFAULT,
   globalInjection: true,
+  pluralRules,
   // Some translations intentionally embed `<strong>` markup (e.g. agent step summaries).
   // We render them via v-html with our own sanitization, so silence vue-i18n's HTML warning
   // to avoid flooding the console and slowing renders during history loads.

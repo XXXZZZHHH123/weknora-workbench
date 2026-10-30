@@ -114,6 +114,20 @@ func TestSharedAgentModelMetadataCannotSwitchToCallerOrThirdWorkspace(t *testing
 	}
 }
 
+// Memory follows the person who is chatting, not the tenant the turn executes
+// in: a shared agent borrows its owner's workspace for models and knowledge,
+// while the caller's memories stay in the caller's own workspace.
+func TestResolveScopeUsesCallerWorkspaceAcrossExecutionTenant(t *testing.T) {
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(7))
+	ctx = types.WithPrincipal(ctx, types.Principal{Type: types.PrincipalWebUser, ID: "alice"})
+	ctx = types.WithExecutionTenant(ctx, 42)
+
+	scope, err := ResolveScope(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint64(7), scope.TenantID)
+	require.Equal(t, "web_user:alice", scope.SubjectID)
+}
+
 func TestMemoryScopeDoesNotFallBackFromMissingAuthenticatedCaller(t *testing.T) {
 	ctx := context.WithValue(t.Context(), types.TenantIDContextKey, uint64(2))
 	ctx = types.WithPrincipal(ctx, types.Principal{Type: types.PrincipalWebUser, ID: "alice"})

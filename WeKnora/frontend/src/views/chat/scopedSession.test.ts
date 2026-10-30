@@ -22,7 +22,7 @@ test('a scoped panel mounts without consuming a pending full-page question or ch
     usemenuStore: { changeFirstQuery: fail }, sendMsg: fail,
     onBeforeMount: (fn: () => Promise<void>) => callbacks.push(fn),
     onMounted: (fn: () => Promise<void>) => callbacks.push(fn),
-    window: { addEventListener() {} }, SESSION_MUTATION_EVENT: 'test', handleSessionMutation() {},
+    startBackgroundWork() {}, window: { addEventListener() {} }, SESSION_MUTATION_EVENT: 'test', handleSessionMutation() {},
     messagesList: [], steerQueue: { value: [] }, loading: { value: false }, isReplying: { value: false },
     historyLoading: { value: true }, firstModelId: { value: '' }, firstMentionedItems: { value: [] },
     firstImageFiles: { value: [] }, firstAttachmentFiles: { value: [] }, firstQuestionOrigin: { value: null },
@@ -40,7 +40,7 @@ test('a scoped panel mounts without consuming a pending full-page question or ch
 test('a full-page route change cannot replace the scoped conversation', async () => {
   let callback!: (value: unknown[]) => Promise<void>
   const conversation = { value: 'panel-session' }
-  runInNewContext(between('watch([() => route.params]', 'const scrollToBottom ='), {
+  runInNewContext(between('watch([() => route.params]', 'const scrollFollow ='), {
     props: { scopedSession: true }, session_id: conversation,
     watch: (_sources: unknown, fn: typeof callback) => { callback = fn },
   })
@@ -79,7 +79,7 @@ test('the inline scoped model picker remains usable before a model is selected',
   const code = between('const composerLocked = computed(', 'function stashForkLanding')
   const props = { scopedSession: true, scopedModelId: '' }
   const value = () => runInNewContext(`${code}\ncomposerLocked`, {
-    props, computed: (fn: () => boolean) => fn(), rewindInFlight: { value: false },
+    isAutomationSession: { value: false }, session_id: { value: 'panel' }, rewindLockSessionId: { value: '' }, props, computed: (fn: () => boolean) => fn(), rewindInFlight: { value: false },
   })
   assert.equal(value(), false)
   props.scopedModelId = 'explicit-model'

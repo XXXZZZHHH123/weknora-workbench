@@ -83,7 +83,7 @@
           <span class="kb-folder-row__trailing">
             <span class="kb-folder-row__count"
               :title="t('knowledgeBase.folderTree.countHint', { direct: row.documentCount, total: row.totalCount })">
-              {{ row.documentCount }}
+              {{ row.totalCount }}
             </span>
             <KnowledgeFolderActions v-if="canEdit && row.kind === 'folder'" class="kb-folder-row__more"
               :kb-id="kbId" :folder="{ path: row.path, name: row.name, total_count: row.totalCount }" :can-edit="canEdit" :allow-delete="allowDelete"
@@ -213,6 +213,7 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
 .kb-folder-tree {
   --kb-folder-indent: 14px;
   --kb-folder-base-indent: 4px;
+  --kb-folder-indent-max: 4;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -319,7 +320,7 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   width: 100%;
   height: 32px;
   margin-bottom: 2px;
-  padding: 0 4px 0 calc(var(--kb-folder-base-indent) + var(--kb-folder-depth, 0) * var(--kb-folder-indent));
+  padding: 0 4px 0 calc(var(--kb-folder-base-indent) + min(var(--kb-folder-depth, 0), var(--kb-folder-indent-max)) * var(--kb-folder-indent));
   border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--td-text-color-primary);
@@ -341,13 +342,31 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   }
 
   &.active {
+    height: auto;
+    min-height: 32px;
+    align-items: flex-start;
+    padding-top: 6px;
+    padding-bottom: 6px;
     background: var(--app-selection-bg);
 
     .kb-folder-row__label,
     .kb-folder-row__icon {
       color: var(--td-brand-color);
     }
-    .kb-folder-row__label { font-weight: 500; }
+    .kb-folder-row__label {
+      font-weight: 500;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: unset;
+      overflow-wrap: anywhere;
+      line-height: 18px;
+    }
+    .kb-folder-row__toggle,
+    .kb-folder-row__toggle-placeholder,
+    .kb-folder-row__icon,
+    .kb-folder-row__trailing {
+      margin-top: 1px;
+    }
   }
 
   &.is-root .kb-folder-row__label {
@@ -406,12 +425,13 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
 }
 
 .kb-folder-row__trailing {
+  position: relative;
   flex: 0 0 auto;
-  gap: 2px;
+  min-width: 16px;
   height: 20px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
   margin-left: 2px;
 }
 
@@ -424,9 +444,10 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   line-height: 1;
 }
 
-.kb-folder-row__more-placeholder { width: 20px; }
-
 .kb-folder-row__more {
+  position: absolute;
+  right: 0;
+  top: 50%;
   display: inline-flex;
   opacity: 0;
   pointer-events: none;
@@ -435,10 +456,11 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   padding: 0;
   border: 0;
   border-radius: var(--app-radius-xs);
-  background: transparent;
+  background: var(--td-bg-color-container);
   color: var(--td-text-color-placeholder);
   align-items: center;
   justify-content: center;
+  transform: translateY(-50%);
   cursor: pointer;
   transition: color var(--app-motion-fast) ease, background-color var(--app-motion-fast) ease;
 
@@ -458,6 +480,10 @@ watch(() => [props.tree, props.filePages, expanded.value, props.showFiles] as co
   .kb-folder-row__more {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  .kb-folder-row__count {
+    visibility: hidden;
   }
 }
 

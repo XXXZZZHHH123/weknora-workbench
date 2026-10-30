@@ -173,6 +173,7 @@ func TestResearchScopeConstructorNilServiceFailsClosed(t *testing.T) {
 		nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil,
+		nil,
 	)
 	if h.researchWorkbenches != nil {
 		t.Fatal("nil concrete dependency must not become a non-nil interface")

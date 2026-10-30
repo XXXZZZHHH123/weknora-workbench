@@ -112,8 +112,14 @@ def replace_path(repo, root_tree, path, mode, kind, oid):
 
 
 def import_snapshot(source, destination, commit, exclude):
-    rows = [row for row in entries(source, commit, recursive=True)
-            if not any(row[3] == path or row[3].startswith(path + '/') for path in exclude)]
+    rows = []
+    for mode, kind, oid, path in entries(source, commit, recursive=True):
+        if re.fullmatch(r'website-docs/0[1-7]-[^/]+/[^/]+\.md', path):
+            # Runtime help is now a Go dependency. Import Markdown pages only;
+            # keep site code, screenshots, homepages and build dependencies excluded.
+            rows.append((mode, kind, oid, 'internal/productdocs/bundled/' + path.removeprefix('website-docs/')))
+        elif not any(path == excluded or path.startswith(excluded + '/') for excluded in exclude):
+            rows.append((mode, kind, oid, path))
     if any(row[1] != 'blob' for row in rows):
         raise ValueError('Upstream introduced a submodule; manual integration is required')
     blobs = sorted({row[2] for row in rows})

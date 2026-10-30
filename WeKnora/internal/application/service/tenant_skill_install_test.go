@@ -22,6 +22,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/application/repository"
+	"github.com/Tencent/WeKnora/internal/application/service/sandboxalloc"
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -30,6 +31,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/models/rerank"
 	"github.com/Tencent/WeKnora/internal/models/vlm"
 	"github.com/Tencent/WeKnora/internal/sandbox"
+	"github.com/Tencent/WeKnora/internal/sandbox/allocation"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/google/uuid"
@@ -225,8 +227,10 @@ func TestSkillTreeVerifyCommandQuotesPaths(t *testing.T) {
 func TestVerifySkillTreeIssuesOneCommandRegardlessOfScriptCount(t *testing.T) {
 	fx := newInstallFixture(t)
 	files := map[string][]byte{"SKILL.md": []byte(validSkillMD)}
-	rels := []string{"run.sh", "scripts/a.py", "scripts/b.py",
-		"scripts/c.py", "scripts/d.py", "scripts/e.py"}
+	rels := []string{
+		"run.sh", "scripts/a.py", "scripts/b.py",
+		"scripts/c.py", "scripts/d.py", "scripts/e.py",
+	}
 	for _, rel := range rels {
 		files[rel] = []byte("pass\n")
 	}
@@ -1902,6 +1906,28 @@ func TestStartMaintenanceSessionMarksAndScopesTheSession(t *testing.T) {
 	require.Equal(t, "Skill install", sess.Title)
 }
 
+type failingPlacer struct{}
+
+func (failingPlacer) Place(context.Context, sandboxalloc.PlaceRequest) (allocation.Assignment, error) {
+	return allocation.Assignment{}, errors.New("db unavailable")
+}
+
+func (failingPlacer) Lookup(context.Context, string) (allocation.Assignment, bool, error) {
+	return allocation.Assignment{}, false, nil
+}
+
+// A placement failure aborts the operation and must not leave the hidden
+// maintenance session row behind.
+func TestStartMaintenanceSessionRemovesTheSessionWhenPlacementFails(t *testing.T) {
+	fx := newInstallFixture(t)
+	fx.svc.WithPlacer(failingPlacer{})
+	ctx := context.WithValue(ctxWithTenant(7), types.UserIDContextKey, "admin-1")
+
+	_, _, err := fx.svc.startMaintenanceSession(ctx, 7, "cfg-1", "install")
+	require.ErrorContains(t, err, "record install sandbox placement")
+	require.Equal(t, []string{"CreateSession", "DeleteSession"}, fx.sessionCalls)
+}
+
 const installSkillDir = "/opt/weknora/tenant/skills/pdf-tools"
 
 // The install commands are asserted verbatim: an install runs as root with the
@@ -2293,6 +2319,13 @@ func (r *installConfigRepo) SetCordon(context.Context, uint64, string, time.Time
 	return nil
 }
 func (r *installConfigRepo) ClearCordon(context.Context, uint64, string) error { return nil }
+func (r *installConfigRepo) RefreshCordon(context.Context, uint64, string, time.Time, time.Time) error {
+	return nil
+}
+
+func (r *installConfigRepo) ClearCordonIf(context.Context, uint64, string, time.Time) error {
+	return nil
+}
 
 type installSkillRepo struct {
 	mu        sync.Mutex
@@ -3227,6 +3260,16 @@ func (e *installAgentEngine) SetMemoryPrompt(string)                            
 func (e *installAgentEngine) SetSteerSink(sink types.SteerSink)                    { e.sink = sink }
 func (e *installAgentEngine) SetContextCheckpointSink(types.ContextCheckpointSink) {}
 
+func (e *installAgentEngine) EnableSuspension(json.RawMessage) {}
+
+func (e *installAgentEngine) SetRunMode(types.RunMode) {}
+
+func (e *installAgentEngine) Resume(context.Context, string, string, []chat.Message,
+	[]byte, *types.AgentPrompt,
+) (*types.AgentState, error) {
+	return nil, errors.New("not supported")
+}
+
 type installSessionService struct {
 	fx *installFixture
 }
@@ -3383,7 +3426,9 @@ func (s *installModelService) GetChatModel(_ context.Context, modelID string) (c
 	}
 	return installChat{id: modelID}, nil
 }
+
 func (s *installModelService) GetVLMModel(context.Context, string) (vlm.VLM, error) { return nil, nil }
+
 func (s *installModelService) GetASRModel(context.Context, string) (asr.ASR, error) { return nil, nil }
 
 type installChat struct{ id string }
@@ -3436,6 +3481,7 @@ func (s installFileService) SaveBytes(_ context.Context, data []byte, _ uint64, 
 	}
 	return "file://bundle.zip", nil
 }
+
 func (s installFileService) GetFile(_ context.Context, ref string) (io.ReadCloser, error) {
 	if s.fx != nil {
 		s.fx.getFileCalls.Add(1)

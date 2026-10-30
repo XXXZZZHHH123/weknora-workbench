@@ -112,10 +112,10 @@ export default function (knowledgeBaseId?: string) {
     }
   };
   const getCardDetails = (item: any) => {
+    const requestGeneration = ++detailRequestGeneration;
     activeKnowledgeId = item.id;
     const scope = currentScope();
     const targetKbId = currentKbId();
-    const requestGeneration = ++detailRequestGeneration;
     chunkRequestGeneration++;
     Object.assign(details, {
       title: "",

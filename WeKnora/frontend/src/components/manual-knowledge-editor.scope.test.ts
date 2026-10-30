@@ -4,6 +4,7 @@ import test from 'node:test'
 import vm from 'node:vm'
 import ts from 'typescript'
 import { ref } from 'vue'
+import { resolvePreferredKnowledgeBaseId } from '../utils/manualKnowledgeDraft'
 
 const source = readFileSync(process.env.MANUAL_EDITOR_TEST_SOURCE || new URL('./manual-knowledge-editor.vue', import.meta.url), 'utf8')
 function code(from: string, to: string) {
@@ -101,7 +102,7 @@ function readSession(editing = false, preset = 'kb-a') {
   const ui = { manualEditorKBId: preset, manualEditorInitialTitle: '', manualEditorInitialContent: '', manualEditorInitialStatus: 'draft', selectedTagIds: [] }
   const visible = ref(true), options = ref<any[]>([]), knowledge = ref(editing ? 'file-a' : null), loaded = ref(false)
   const context: any = {
-    ref, watch: () => {}, form, uiStore: ui, authStore: auth, route, visible, mode: ref(editing ? 'edit' : 'create'),
+    ref, resolvePreferredKnowledgeBaseId, watch: () => {}, form, uiStore: ui, authStore: auth, route, visible, mode: ref(editing ? 'edit' : 'create'),
     knowledgeId: knowledge, currentKnowledgeId: ref(editing ? 'file-a' : null), kbOptions: options, initialLoaded: loaded,
     kbLoading: ref(false), contentLoading: ref(false), lastUpdatedAt: ref(''), manualTagIds: ref([]), selectionRange: { start: 0, end: 0 },
     t: (key: string) => key, markPristine: () => {},

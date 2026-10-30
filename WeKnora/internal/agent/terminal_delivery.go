@@ -17,7 +17,7 @@ func (e *AgentEngine) publishAnswer(ctx context.Context, sessionID, answer, exis
 		return existingID
 	}
 	id := generateEventID("answer")
-	if e.eventBus != nil {
+	if e.eventBus != nil && !e.holdCollaborationAnswer {
 		_ = e.eventBus.Emit(ctx, event.Event{ID: id, Type: event.EventAgentFinalAnswer, SessionID: sessionID, Data: event.AgentFinalAnswerData{Content: answer, Done: false, Truncated: truncated}})
 	}
 	return id

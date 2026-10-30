@@ -224,7 +224,7 @@ function showBadge(item: SettingsModalNavItem): boolean {
 <style lang="less">
 .settings-modal-shell.settings-overlay {
   position: fixed;
-  inset: 0;
+  inset: 0 var(--assistant-dock-width, 0px) 0 0;
   background: rgb(23 19 16 / 38%);
   display: flex;
   align-items: center;

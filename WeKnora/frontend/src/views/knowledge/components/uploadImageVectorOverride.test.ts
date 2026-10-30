@@ -8,6 +8,7 @@ import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import { createRenderer, h } from 'vue'
 import { isExcelFilename } from '../excelSource.ts'
+import * as imageProcessingConfig from '../../../utils/imageProcessingConfig'
 
 const require = createRequire(import.meta.url)
 const filename = fileURLToPath(new URL('./UploadConfirmDialog.vue', import.meta.url))
@@ -33,6 +34,7 @@ function fixture(kbInfo: any, extraProps: Record<string, any> = {}) {
       if (name === '@/api/knowledge-base') return { mergeImageActions: () => ({ ocr: { on: [], on_unobserved: true } }) }
       if (name === '../excelSource') return { isExcelFilename }
       if (name === 'tdesign-vue-next') return { MessagePlugin: { warning: (message: string) => warnings.push(message) } }
+      if (name === '@/utils/imageProcessingConfig') return imageProcessingConfig
       return { default: {} }
     },
   })
@@ -128,5 +130,57 @@ test('the native file-only confirmation rejects a URL without submitting the upl
     f.vm.handleConfirm()
     assert.equal(f.confirmations.length, 0)
     assert.deepEqual(f.warnings, ['knowledgeBase.nativeFileSourcesOnly'])
+  } finally { f.dispose() }
+})
+
+for (const pipelineId of ['default', 'smartocr', 'caption_ocr', 'ob_cap_ocr']) {
+  for (const params of [undefined, {}, { 'default.caption.thinking_enabled': false }]) {
+    test(`reparse replaces KB parameters with document ${pipelineId} parameters ${JSON.stringify(params)}`, () => {
+      const kb = {
+        vlm_config: { enabled: true, model_id: 'vlm' },
+        image_processing_config: { image_pipeline: 'default', image_pipeline_params: { 'default.caption_enabled': false, 'default.caption.thinking_enabled': true } },
+      }
+      const f = fixture(kb)
+      try {
+        f.vm.applyOverridesToState({ image_pipeline: pipelineId, image_pipeline_params: params })
+        const result = JSON.parse(JSON.stringify(f.vm.buildProcessOverrides()))
+        assert.equal(result.image_pipeline, imageProcessingConfig.normalizeImagePipelineId(pipelineId))
+        assert.deepEqual(result.image_pipeline_params ?? {}, params ?? {})
+        assert.deepEqual(kb.image_processing_config.image_pipeline_params, { 'default.caption_enabled': false, 'default.caption.thinking_enabled': true })
+      } finally { f.dispose() }
+    })
+  }
+}
+
+for (const kbPipeline of ['default', 'smartocr']) {
+  for (const attrsEnabled of [false, true]) {
+    test(`legacy reparse override ${attrsEnabled} only retains parameters from ${kbPipeline} when the pipeline matches`, () => {
+      const params = { 'default.caption.thinking_enabled': true }
+      const f = fixture({
+        vlm_config: { enabled: true, model_id: 'vlm' },
+        image_processing_config: { image_pipeline: kbPipeline, image_pipeline_params: params },
+      })
+      try {
+        f.vm.applyOverridesToState({ image_attrs_enabled: attrsEnabled })
+        const result = JSON.parse(JSON.stringify(f.vm.buildProcessOverrides()))
+        const pipeline = attrsEnabled ? 'smartocr' : 'default'
+        assert.equal(result.image_pipeline, pipeline)
+        assert.deepEqual(result.image_pipeline_params ?? {}, kbPipeline === pipeline ? params : {})
+      } finally { f.dispose() }
+    })
+  }
+}
+
+test('reparse inherits KB parameters when the document has no pipeline selection', () => {
+  const params = { 'default.caption_enabled': false }
+  const f = fixture({
+    vlm_config: { enabled: true, model_id: 'vlm' },
+    image_processing_config: { image_pipeline: 'default', image_pipeline_params: params },
+  })
+  try {
+    for (const overrides of [undefined, { summary_enabled: false }, { image_pipeline_params: { 'default.caption_enabled': true } }]) {
+      f.vm.applyOverridesToState(overrides)
+      assert.deepEqual(JSON.parse(JSON.stringify(f.vm.buildProcessOverrides().image_pipeline_params)), params)
+    }
   } finally { f.dispose() }
 })

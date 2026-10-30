@@ -21,12 +21,12 @@ func TestModelDocumentPageScopeKeepsPhysicalPageAndCorrectPagination(t *testing.
 	}}
 	output := r.ModelToolResultForTool("search_knowledge", result)
 	require.Contains(t, output, `physical_page="12"`)
-	require.Contains(t, output, `document="d1"`)
+	require.Contains(t, output, `document="doc://1"`)
 	require.Contains(t, output, `remaining="1"`)
 	require.NotContains(t, output, "report-real")
 	require.Contains(t, output, "Do not replace this chart")
 	require.Contains(t, output, "This physical page is not fully read")
-	require.Contains(t, output, `read_document(id=d1, page=12, offset=1)`)
+	require.Contains(t, output, `read_document(id=doc://1, page=12, offset=1)`)
 	require.Contains(t, output, "原图OCR图例2401，不是行情观察值。")
 	require.Contains(t, output, "Preserve exact legend labels")
 	require.Contains(t, output, "contract year and delivery month")
@@ -77,7 +77,7 @@ func TestModelChunkContentTruncationIncludesSafeContinuation(t *testing.T) {
 	}}
 	output := r.ModelToolResultForTool("read_document", result)
 	require.Contains(t, output, `content_status complete="false" offset_space="physical_page_chunk_unicode_runes" offset="120" physical_page="3" next_content_offset="144"`)
-	require.Contains(t, output, `id=c1 with content_offset=144 and page=3`)
+	require.Contains(t, output, `id=chunk://1 with content_offset=144 and page=3`)
 	require.Contains(t, output, "do not treat this excerpt as the complete chunk")
 }
 
@@ -92,7 +92,7 @@ func TestModelDocumentOnlyScopeNeverInventsPhysicalPageZero(t *testing.T) {
 				"document": map[string]interface{}{"knowledge_id": "actual-document", "title": "文件"},
 			}}
 			output := r.ModelToolResultForTool("search_knowledge", result)
-			require.Contains(t, output, `<document_scope document="d1" matched="true" />`)
+			require.Contains(t, output, `<document_scope document="doc://1" matched="true" />`)
 			require.Contains(t, output, "Use only the requested document.")
 			require.NotContains(t, output, "physical_page=")
 			require.NotContains(t, output, "page=0")
@@ -113,9 +113,9 @@ func TestModelDocumentPlanningUsesActualMetadataAndDecodesNestedSourceHandles(t 
 	require.NotContains(t, output, "<chunk")
 	require.NotContains(t, output, "real-document")
 	for _, tool := range []string{"read_document", "search_knowledge", "bind_document_scope"} {
-		args := `{"source_scope":{"selection_reason":"full conversation","sources":[{"knowledge_id":"d1","expected_file_name":"actual20240310.pptx"}]}}`
+		args := `{"source_scope":{"selection_reason":"full conversation","sources":[{"knowledge_id":"doc://1","expected_file_name":"actual20240310.pptx"}]}}`
 		if tool == "bind_document_scope" {
-			args = `{"selection_reason":"full conversation","sources":[{"knowledge_id":"d1","expected_file_name":"actual20240310.pptx"}]}`
+			args = `{"selection_reason":"full conversation","sources":[{"knowledge_id":"doc://1","expected_file_name":"actual20240310.pptx"}]}`
 		}
 		calls := []types.LLMToolCall{{Function: types.FunctionCall{Name: tool, Arguments: args}}}
 		r.DecodeToolCalls(calls)
