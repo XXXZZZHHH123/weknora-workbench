@@ -51,9 +51,56 @@ def _chart(rows):
     return points, segments
 
 
-def _metric(session, identifier, day):
+def _streak(rows, frequency, limit):
+    daily = str(frequency or '').strip().lower() in {'day', 'daily', '日', '日度'}
+    observations = list(rows)
+    if daily:
+        by_date = {}
+        for row in observations:
+            by_date[_stamp(row)[:10]] = row
+        observations = list(by_date.values())
+    if len(observations) < 2 or not all(_valid(row) for row in observations[-2:]):
+        return None
+    end = observations[-1]
+    delta = decimal_difference(end.value, observations[-2].value)
+    direction = 1 if delta > 0 else -1 if delta < 0 else 0
+    if not direction:
+        return None
+    count = 0
+    start = end
+    for index in range(len(observations) - 1, 0, -1):
+        previous, current = observations[index - 1:index + 1]
+        if not _valid(previous) or not _valid(current):
+            break
+        change = decimal_difference(current.value, previous.value)
+        if not change or (change > 0) != (direction > 0):
+            break
+        count += 1
+        start = previous
+    change = decimal_difference(end.value, start.value)
+    return {'direction': 'up' if direction > 0 else 'down', 'count': count,
+        'period': '个数据日' if daily else '期', 'start': _stamp(start), 'end': _stamp(end),
+        'change': _finite(change),
+        'change_pct': _finite(change / abs(decimal_value(start.value)) * 100) if start.value else None,
+        'at_least': count == len(observations) - 1 and len(rows) == limit}
+
+
+def _metric(session, identifier, day, count=24):
     indicator = session.get(Indicator, identifier)
-    rows = recent_points(session, identifier, day, 24) if indicator is not None and day is not None else []
+    if type(count) is not int or not 1 <= count <= 121:
+        raise HTTPException(400, '图表观测范围无效')
+    rows = recent_points(session, identifier, day, count) if indicator is not None and day is not None else []
+    result = metric_from_rows(indicator, rows, identifier=identifier, limit=count)
+    result['history_complete'] = not session.info.get('knowledge_facts') or bool(session.info.get('knowledge_facts_include_invalid'))
+    if not result['history_complete']:
+        result['streak'] = None
+    return result
+
+
+def metric_from_rows(indicator, rows, *, identifier=None, limit=24):
+    if type(limit) is not int or not 1 <= limit <= 121 or len(rows) > limit:
+        raise HTTPException(400, '图表观测范围无效')
+    identifier = identifier or (indicator.series_id if indicator is not None else '')
     valid = [row for row in rows if _valid(row)]
     latest = valid[-1] if valid else None
     previous = valid[-2] if len(valid) > 1 else None
@@ -70,11 +117,40 @@ def _metric(session, identifier, day):
         'change_pct': _finite(change / decimal_value(previous.value) * 100)
             if previous is not None and previous.value != 0 else None,
         'points': points, 'segments': segments, 'svg_points': segments[0] if len(segments) == 1 else '',
-        'point_count': len(points)}
+        'point_count': len(points), 'boundaries': [], 'history_complete': True,
+        'trend_semantics': 'inventory' if indicator is not None and (indicator.caliber or {}).get('trend_semantics') == 'inventory' else 'change',
+        'streak': _streak(rows, indicator.frequency, limit) if indicator is not None else None,
+        'timeline': [{'date': _stamp(row), 'value': row.value if _valid(row) else None}
+                     for row in rows]}
+
+
+def metric_boundaries(payload, identifier):
+    boundaries = []
+    for rule in payload.thresholds:
+        if rule.series_id != identifier:
+            continue
+        value = rule.value.model_dump() if hasattr(rule.value, 'model_dump') else rule.value
+        if isinstance(value, dict):
+            if value.get('kind') == 'sma':
+                boundaries.append({'kind': 'sma', 'window': value['window'],
+                    'name': human_text(rule.name), 'operator': rule.operator, 'type': str(rule.type)})
+            continue
+        for number in value if isinstance(value, list) else [value]:
+            boundaries.append({'kind': 'fixed', 'value': number, 'name': human_text(rule.name),
+                'operator': rule.operator, 'type': str(rule.type)})
+    for rule in payload.falsifiers:
+        match = EXPRESSION.fullmatch(rule.expression.strip())
+        if rule.series_id == identifier and match and match[1] == 'value':
+            boundaries.append({'kind': 'fixed', 'value': float(match[3]),
+                'name': human_text(rule.desc), 'operator': match[2], 'type': '证伪线'})
+    return boundaries
 
 
 def _windows(payload):
     windows = {identifier: 24 for _, _, identifier in _refs(payload)}
+    for rule in payload.thresholds:
+        if hasattr(rule.value, 'window'):
+            windows[rule.series_id] = max(windows[rule.series_id], min(121, rule.value.window + 23))
     for rule in payload.falsifiers:
         match = EXPRESSION.fullmatch(rule.expression.strip())
         if match is None or not 1 <= rule.consecutive_periods <= 120:
@@ -128,7 +204,9 @@ def judgment_research_view(session, judgment, day):
     payload = to_payload(judgment)
     wanted = _windows(payload)
     with session.no_autoflush:
-        metrics = {identifier: _metric(session, identifier, day) for identifier in wanted}
+        metrics = {identifier: _metric(session, identifier, day, wanted[identifier]) for identifier in wanted}
+        for identifier, metric in metrics.items():
+            metric['boundaries'] = metric_boundaries(payload, identifier)
         names = {identifier: metric['name'] for identifier, metric in metrics.items()}
         references = {side: set() for side in sides}
         marker = _transient_signals.set(True)

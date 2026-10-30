@@ -284,6 +284,13 @@
     const details = [rule.type, rule.horizon].filter(value => typeof value === 'string' && value).map(value => display.text(value));
     if (item.kind === 'thresholds') {
       const literal = typeof rule.value_literal === 'string' ? rule.value_literal.trim() : '';
+      let target;
+      if (literal.startsWith('{')) try { target = JSON.parse(literal); } catch { /* Invalid operands remain marked for review. */ }
+      if (target?.kind === 'sma' && Object.keys(target).length === 2
+          && Number.isInteger(target.window) && target.window >= 2 && target.window <= 120
+          && Object.hasOwn(comparisonWords, rule.operator)) {
+        return [`指标值${comparisonWords[rule.operator]} MA${target.window}`, ...details].join('；');
+      }
       if (rule.operator === 'between') {
         const range = rangeRuleNumbers.exec(literal);
         if (range) return [`指标值不低于 ${range[1]}${unit}，且不高于 ${range[2]}${unit}（含上下界）`, ...details].join('；');

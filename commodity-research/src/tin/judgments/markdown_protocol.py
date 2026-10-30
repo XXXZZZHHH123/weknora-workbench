@@ -23,7 +23,10 @@ def _numeric(value):
 
 
 def threshold_signature(rule):
-    return (rule['operator'], _numeric(rule['value']), rule['type'], rule['horizon'])
+    from tin.compute.moving_average import moving_average_target
+    moving = moving_average_target(rule['value'])
+    target = ('sma', moving['window']) if moving else _numeric(rule['value'])
+    return (rule['operator'], target, rule['type'], rule['horizon'])
 
 
 def falsifier_signature(rule):
@@ -54,7 +57,7 @@ def _exported_rule_lines(text):
                     operator, separator, raw = row['条件'].partition(' ')
                     if not separator or len(raw) > 4096 or operator not in {'>', '>=', '<', '<=', 'between'}:
                         raise ValueError('invalid operator')
-                    value = json.loads(raw, parse_float=Decimal, parse_int=Decimal,
+                    value = json.loads(raw, parse_float=Decimal, parse_int=int,
                                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
                     signature = threshold_signature({'operator': operator, 'value': value,
                         'type': row['类型'], 'horizon': row['周期']})

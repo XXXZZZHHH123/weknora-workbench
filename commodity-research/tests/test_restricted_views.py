@@ -267,7 +267,9 @@ def test_personal_records_stay_actor_scoped_and_never_return_cached_fact_payload
         if suffix == '/sn/reports':
             assert 'researcher original brief' in response.text
         assert '17.5' not in response.text and 'source_snapshots' not in response.text
-    assert not state.get('bounded_requests')
+    assert state['bounded_requests'] and all(request['series_ids'] == [SERIES]
+        and request['view_module'] == 'judgments' and request['include_invalid'] is True
+        for request in state['bounded_requests'])
 
 
 def test_restricted_projection_rules_do_not_block_normal_saving_of_legacy_binding(canonical):

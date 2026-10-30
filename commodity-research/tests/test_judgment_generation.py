@@ -428,11 +428,20 @@ def test_actual_model_request_contains_a_machine_readable_numeric_rule_contract(
     schema, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
     assert schema['type'] == 'object'
     assert {'operator', 'series_id', 'value'} <= set(schema['required'])
-    assert schema['properties']['value']['oneOf'] == [
+    choices = schema['properties']['value']['oneOf']
+    assert choices[:2] == [
         {'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}, 'minItems': 2, 'maxItems': 2}]
+    assert len(choices) == 3
+    moving = choices[2]
+    assert moving['type'] == 'object' and moving['additionalProperties'] is False
+    assert set(moving['required']) == {'kind', 'window'}
+    assert moving['properties']['kind']['const'] == 'sma'
+    assert moving['properties']['window']['type'] == 'integer'
+    assert moving['properties']['window']['minimum'] == 2
+    assert moving['properties']['window']['maximum'] == 120
     assert schema['if']['properties']['operator']['const'] == 'between'
     assert schema['then']['properties']['value']['type'] == 'array'
-    assert schema['else']['properties']['value']['type'] == 'number'
+    assert schema['else']['properties']['value']['oneOf'] == [{'type': 'number'}, moving]
     # The type example is abstract: actual source, unit and IDs arrive only in
     # the request's authorized catalog and source, not as schema defaults.
     assert 'default' not in json.dumps(schema) and SERIES not in json.dumps(schema)

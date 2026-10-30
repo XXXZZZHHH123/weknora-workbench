@@ -293,12 +293,17 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
       {id:'large',kind:'thresholds',rule:{operator:'>=',value_literal:'900719925474099312345.123456789',type:'风控线',horizon:'中长期'}},
       {id:'range',kind:'thresholds',rule:{operator:'between',value_literal:'[-0.000000000000000123,900719925474099312345.123456789]',type:'观察位',horizon:'短期'}},
       {id:'zero',kind:'thresholds',rule:{operator:'<=',value_literal:'0',type:'介入位',horizon:'短期'}},
-      {id:'scientific',kind:'thresholds',rule:{operator:'<',value_literal:'-1.234567890123456789e-23',type:'观察位',horizon:'短期'}}]});
+      {id:'scientific',kind:'thresholds',rule:{operator:'<',value_literal:'-1.234567890123456789e-23',type:'观察位',horizon:'短期'}},
+      {id:'average',kind:'thresholds',rule:{operator:'<',value_literal:'{"kind":"sma","window":20}',type:'观察位',horizon:'短期'}},
+      {id:'invalid-average',kind:'thresholds',rule:{operator:'<',value_literal:'{"kind":"sma","window":1.2}',type:'观察位',horizon:'短期'}}]});
     assert.match(reviewControl(env,'large','condition')?.textContent||'',/不低于 900719925474099312345\.123456789 吨/,'Rule values retain exact numeric literals without browser rounding');
     assert.match(reviewControl(env,'large','condition').textContent,/风控线.*中长期/);
     assert.match(reviewControl(env,'range','condition').textContent,/不低于 -0\.000000000000000123 吨.*不高于 900719925474099312345\.123456789 吨.*含上下界/);
     assert.match(reviewControl(env,'zero','condition').textContent,/不高于 0 吨/,'An invalid zero remains visible instead of disappearing');
     assert.match(reviewControl(env,'scientific','condition').textContent,/低于 -1\.234567890123456789e-23 吨/,'Scientific literals retain their original digits and exponent');
+    assert.match(reviewControl(env,'average','condition').textContent,/指标值低于 MA20/);
+    assert.doesNotMatch(reviewControl(env,'average','condition').textContent,/"kind"|"window"/);
+    assert.match(reviewControl(env,'invalid-average','condition').textContent,/需核对条件/);
   }
   {
     const env=await generateReview({ruleEntries:[

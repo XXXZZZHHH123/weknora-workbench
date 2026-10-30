@@ -179,7 +179,7 @@ def test_v2_only_saved_judgment_windows_get_twenty_four_points(monkeypatch):
     row = saved(whitelist=[A, B], falsifiers=[rule('long', B, 'bull', 'change > 0', 120)])
     scope = _plan_fixture(monkeypatch, row)
     plans, _ = page_facts._saved_plan(scope, {'module': 'judgments', 'series_ids': None})
-    assert plans == [{'ids': [A], 'points': 24}, {'ids': [B], 'points': 121}]
+    assert plans == [{'ids': [A], 'points': 24, 'include_invalid': True}, {'ids': [B], 'points': 121, 'include_invalid': True}]
     other, _ = page_facts._saved_plan(scope, {'module': 'home', 'series_ids': None})
     assert any(plan['points'] == 2 for plan in other if A in plan['ids'])
 
@@ -199,7 +199,7 @@ def test_saved_selected_judgment_does_not_load_current_records_bindings(monkeypa
         return chosen
     monkeypatch.setattr(judgment_panels, 'selected_judgment', selected)
     plans, _ = page_facts._saved_plan(scope, {'module': 'judgments', 'series_ids': None, 'judgment_id': 19})
-    assert plans == [{'ids': [B], 'points': 24}]
+    assert plans == [{'ids': [B], 'points': 24, 'include_invalid': True}]
 
 
 def test_v1_and_other_modules_keep_their_original_windows(monkeypatch):
@@ -214,7 +214,7 @@ def test_v1_and_other_modules_keep_their_original_windows(monkeypatch):
 def test_v2_saved_window_cannot_be_clipped_below_the_rule_requirement(monkeypatch):
     scope = _plan_fixture(monkeypatch, saved(whitelist=[A]))
     plans, _ = page_facts._saved_plan(scope, {'module': 'judgments', 'series_ids': None, 'points': 1})
-    assert plans == [{'ids': [A], 'points': 24}]
+    assert plans == [{'ids': [A], 'points': 24, 'include_invalid': True}]
 
 
 @pytest.mark.parametrize('large', ['identifiers', 'observations'])

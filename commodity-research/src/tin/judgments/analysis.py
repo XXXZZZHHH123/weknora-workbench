@@ -7,7 +7,8 @@ import json
 import math
 import re
 from pydantic import ValidationError
-from tin.schemas.judgment import EXPRESSION, JudgmentIn
+from tin.schemas.judgment import EXPRESSION, JudgmentIn, MovingAverageTarget
+from tin.compute.moving_average import sma_source_window
 from tin.judgments.service import _refs
 from tin.judgments.numbers import quoted_quantities, check_rule_number, _SCALAR, _arrays, _width
 from tin.judgments.markdown_protocol import (
@@ -163,9 +164,15 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
             path = f'/judgment/{name}/{index}'
             if not isinstance(rule, dict): raise AnalysisError('研究规则格式无效')
             value = rule.get('value')
-            if name == 'thresholds' and any(type(number) not in (int, float) for number in (value if isinstance(value, list) else [value])):
+            moving = name == 'thresholds' and isinstance(value, dict) and value.get('kind') == 'sma'
+            if moving:
+                try:
+                    MovingAverageTarget.model_validate(value)
+                except ValueError:
+                    _error('均线窗口必须是2至120的整数，且仅支持简单移动平均', 'rule_moving_average', path + '/value')
+            if name == 'thresholds' and not moving and any(type(number) not in (int, float) for number in (value if isinstance(value, list) else [value])):
                 _error('研究规则必须使用有限数字，不能使用布尔值或字符串', 'rule_number_type', path + '/value')
-            if name == 'thresholds':
+            if name == 'thresholds' and not moving:
                 try:
                     for number in value if isinstance(value, list) else [value]:
                         check_rule_number(number)
@@ -260,6 +267,25 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
             _error('阈值或证伪条件缺少完整原文中的逐字依据', 'quote_not_in_source', '/rule_quotes/' + identifier)
     explicit = exported_rules(original)
     for index, rule in enumerate(payload.thresholds):
+        moving = isinstance(rule.value, MovingAverageTarget)
+        if moving:
+            source_records = explicit['thresholds'].get(rule.series_id)
+            signature = threshold_signature(rule.model_dump())
+            quoted = quoted_rule_records(original, quotes[rule.id])
+            if (source_records and not any(record[0] == signature and (record[1] is None or record[1] == units[rule.series_id]) for record in source_records)
+                    or quoted is None or quoted and not any(kind == 'thresholds' and sid == rule.series_id
+                        and record[0] == signature and (record[1] is None or record[1] == units[rule.series_id])
+                        for kind, sid, record in quoted)):
+                _error('均线规则与原文明确记录的指标、条件或周期不一致',
+                       'exported_rule_mismatch', f'/judgment/thresholds/{index}')
+            if not quoted and not sma_source_window(quotes[rule.id], rule.value.window, original):
+                _error('均线周期没有完整的原文依据，请核对MA周期或原文均线条件',
+                       'number_not_in_source', f'/judgment/thresholds/{index}/value')
+            daily = re.search(rf'(?<![0-9.+-]){rule.value.window}\s*日\s*(?:简单移动平均线|移动平均线|均线|线)', quotes[rule.id])
+            if daily and str(known[rule.series_id].get('frequency', '')).strip().lower() not in {'日', '日度', 'day', 'daily', '1d'}:
+                _error('原文要求日均线，所选指标未确认日频，请核对统计周期',
+                       'moving_average_frequency', f'/judgment/thresholds/{index}/value')
+            continue
         values = rule.value if isinstance(rule.value, list) else [rule.value]
         source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
                                            units=[row.get('unit') for row in catalog])

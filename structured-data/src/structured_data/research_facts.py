@@ -23,7 +23,7 @@ def _hash(value):
 
 def _parameters(body):
     if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only','encoding',
-                                              'series_ids','as_of','points_per_series','view_module','same_day_series_ids','catalog_only'}:
+                                              'series_ids','as_of','points_per_series','view_module','same_day_series_ids','catalog_only','include_invalid'}:
         raise ValueError('只接受当前原件、分页和快照版本参数')
     sources,offset,limit=body.get('sources'),body.get('offset',0),body.get('limit',10000)
     if not isinstance(sources,list) or len(sources)>128:
@@ -53,7 +53,7 @@ def _parameters(body):
 
 def _bounded_parameters(body, *, extended=False):
     if 'series_ids' not in body:
-        if {'as_of', 'points_per_series', 'view_module', 'same_day_series_ids'} & body.keys():
+        if {'as_of', 'points_per_series', 'view_module', 'same_day_series_ids', 'include_invalid'} & body.keys():
             raise ValueError('页面取数必须提供明确的指标绑定')
         return None
     identifiers = body['series_ids']
@@ -65,13 +65,16 @@ def _bounded_parameters(body, *, extended=False):
         raise ValueError('页面取数不接受全量分页或编码参数')
     points = body.get('points_per_series', 2)
     module = body.get('view_module')
+    include_invalid = body.get('include_invalid', False)
+    if type(include_invalid) is not bool or include_invalid and module != 'judgments':
+        raise ValueError('保留缺失观测仅用于新版研究判断的明确指标窗口')
     if module is not None and (not isinstance(module,str) or module not in {
             'home','market','indicators','judgments','strategies','diagram','reports'}):
         raise ValueError('页面模块无效')
     # The v1 protocol keeps its original two-point grant. The v2 caller has a
     # verified page plan and explicit per-module/total resource ceilings.
     history = module == 'market' and type(points) is int and points > 2
-    maximum = 180 if history else ({'home':121,'reports':121,'judgments':121,'strategies':121,'diagram':24,'indicators':2000}.get(module,2) if extended else 2)
+    maximum = 180 if history else 121 if include_invalid else ({'home':121,'reports':121,'judgments':121,'strategies':121,'diagram':24,'indicators':2000}.get(module,2) if extended else 2)
     if type(points) is not int or not 1 <= points <= maximum:
         raise ValueError('页面指标点数超出允许范围')
     if history and len(identifiers) > 12:
@@ -88,6 +91,8 @@ def _bounded_parameters(body, *, extended=False):
                 'home', 'market', 'indicators', 'judgments', 'strategies', 'diagram', 'reports'}:
             raise ValueError('页面模块无效')
     selection = {'series_ids': sorted(identifiers), 'as_of': boundary, 'points_per_series': points}
+    if include_invalid:
+        selection['include_invalid'] = True
     if 'same_day_series_ids' in body:
         same_day = body['same_day_series_ids']
         if (module not in ({'market','strategies'} if extended else {'market'}) or points != 1 or boundary is None
@@ -176,6 +181,30 @@ def _bounded_rows(store, bindings, selection, *, strict=False):
         if not mapping:
             continue
         identifiers = sorted(mapping)
+        if selection.get('include_invalid'):
+            placeholders = ','.join('?' for _ in identifiers)
+            where = 'series_id IN (' + placeholders + ') AND date IS NOT NULL'
+            parameters = list(identifiers)
+            if selection['as_of'] is not None:
+                where += ' AND date <= ?'
+                parameters.append(selection['as_of'])
+            with info.get('_store', store)._connect(info['dataset_id']) as connection:
+                undated = connection.execute('SELECT count(*) FROM observations WHERE series_id IN ('
+                    + placeholders + ') AND date IS NULL', identifiers).fetchone()[0]
+                if undated:
+                    raise HTTPException(409, '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期')
+                cursor = connection.execute('SELECT series_id,date,min(value),max(value),'
+                    "bool_and(coalesce(value_status IN ('valid','ok','正常') AND value IS NOT NULL AND isfinite(value), false)) "
+                    'FROM observations WHERE ' + where + ' GROUP BY series_id,date '
+                    'QUALIFY row_number() OVER (PARTITION BY series_id ORDER BY date DESC) <= ? '
+                    'ORDER BY series_id,date', [*parameters, selection['points_per_series']])
+                for source_id, when, low, high, valid in cursor.fetchall():
+                    if valid is True and low != high:
+                        raise HTTPException(409, '同一来源指标日期存在冲突数值，请在知识库核对')
+                    rows.append({'series_id': mapping[source_id], 'date': when,
+                        'value': low if valid is True else None,
+                        'value_status': 'valid' if valid is True else 'missing'})
+            continue
         where = 'series_id IN (' + ','.join('?' for _ in identifiers) + ') AND ' + _RESEARCH_ROW_FILTER
         parameters = list(identifiers)
         if selection['as_of'] is not None:
@@ -317,6 +346,7 @@ def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
                 'knowledge_base_tenant_id': identity.knowledge_base_tenant_id,
                 'version': version, 'bounded': True, 'indicators': indicators,
                 'rows': rows, 'total': len(rows), 'offset': 0, 'next_offset': None, 'truncated': False,
+                **({'include_invalid':True} if bounded.get('include_invalid') else {}),
                 **({'selected_date': bounded['selected_date']} if 'same_day_series_ids' in bounded else {})}
     if body.get('metadata_only'):
         # Exactly the same current original, confirmation and catalog checks as

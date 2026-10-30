@@ -178,6 +178,9 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
         evidence = [_evidence(p, f"已有数据点：{p.value}", p.value, note="不足以判定") for p in points]
         return _upsert(session, j.id, f["id"], FALSIFIER, d, "数据缺失", None, evidence, gap)
 
+    if any(point.value is None or point.status != '正常' for point in points):
+        return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [],
+                       '证伪条件所需窗口含缺失或未确认观测，未跳过缺失期计算')
     quantities = _quantities(kind, points)
     hits = [OPS[op](q, target) for _p, q in quantities]
     evidence = []
@@ -208,7 +211,11 @@ def evaluate_preview(session: Session, variety: str, d: date) -> list[Signal]:
         require_owned(session, judgment)
         if len(judgment.thresholds) + len(judgment.falsifiers) > 256:
             raise ValueError('当前规则超过256条，请拆分研究逻辑后试算')
-        windows = {rule['series_id']: 1 for rule in judgment.thresholds}
+        from tin.compute.moving_average import moving_average_target
+        windows = {}
+        for rule in judgment.thresholds:
+            moving = moving_average_target(rule['value'])
+            windows[rule['series_id']] = max(windows.get(rule['series_id'], 0), moving['window'] if moving else 1)
         for rule in judgment.falsifiers:
             match = EXPRESSION.fullmatch(rule['expression'].strip())
             periods = rule.get('consecutive_periods', 1)

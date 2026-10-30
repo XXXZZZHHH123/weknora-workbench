@@ -10,20 +10,18 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from tin.config import SHANGHAI
-from tin.compute.engine import day_end
 from tin.export.board import threshold_radar_values
 from tin.integration.page_facts import page_read_scope, projected_page_session
 from tin.integration.workbench_scope import current_workbench
 from tin.judgments.analysis import AnalysisError
-from tin.models import Indicator, Observation
-from sqlalchemy import select
+from tin.models import Indicator
 from tin.web import judgment_generation as generation
 from tin.web import judgment_review as review
 
 router = APIRouter(prefix='/api/sn/judgment/review')
 
 
-def legacy_series(scope, identifiers, day, catalog, points):
+def legacy_series(scope, identifiers, day, catalog, points, *, include_invalid=False):
     """The old protocol still lists metadata, but observes only requested IDs."""
     from tin.integration.kb_facts import current_sources
     from tin.provenance.bridge import structured_request
@@ -46,11 +44,15 @@ def legacy_series(scope, identifiers, day, catalog, points):
         try:
             body = {'sources': current_sources(local), 'series_ids': selected, 'view_module': 'judgments',
                 'as_of': day.isoformat(), 'points_per_series': points}
+            if include_invalid:
+                body['include_invalid'] = True
             response = structured_request('POST', '/api/research/facts', body, return_error_response=True)
             if response.status_code in {401, 403, 404, 409}:
                 raise HTTPException(response.status_code, '阈值来源或权限已改变，请重新核对')
             response.raise_for_status()
             result = response.json()
+            if include_invalid and result.get('include_invalid') is not True:
+                raise HTTPException(409, '来源服务未保留完整均线观测窗口，请更新来源服务')
             if (not isinstance(result, dict) or result.get('bounded') is not True
                     or result.get('knowledge_base_id') != kb
                     or type(result.get('knowledge_base_tenant_id')) is not int
@@ -73,8 +75,9 @@ def legacy_series(scope, identifiers, day, catalog, points):
                 identifier, stamp, value = point.get('series_id'), point.get('date'), point.get('value')
                 if (identifier not in fields or (identifier, stamp) in seen or not isinstance(stamp, str)
                         or Date.fromisoformat(stamp).isoformat() != stamp or stamp > day.isoformat()
-                        or type(value) not in {int, float} or not math.isfinite(value)
-                        or point.get('value_status') not in {'valid', 'ok', '正常'}
+                        or not (include_invalid and point.get('value_status') == 'missing' and value is None)
+                        and (type(value) not in {int, float} or not math.isfinite(value)
+                        or point.get('value_status') not in {'valid', 'ok', '正常'})
                         or len(values[identifier]['points']) >= points):
                     raise ValueError('Unexpected radar observation')
                 seen.add((identifier, stamp))
@@ -88,12 +91,13 @@ def legacy_series(scope, identifiers, day, catalog, points):
     return values
 
 
-def read_series(scope, identifiers, catalog, day, points):
+def read_series(scope, identifiers, catalog, day, points, *, include_invalid=False):
     if not identifiers:
         return []
-    with page_read_scope('judgments', series_ids=identifiers, day=day, points_per_series=points):
+    include_invalid = include_invalid or scope.scope_version == 2 and points > 2
+    with page_read_scope('judgments', series_ids=identifiers, day=day, points_per_series=points, include_invalid=include_invalid):
         if scope.scope_version != 2:
-            values = legacy_series(scope, identifiers, day, catalog, points)
+            values = legacy_series(scope, identifiers, day, catalog, points, include_invalid=include_invalid)
         else:
             # Avoid the ordinary bootstrap's persistent isolated_scope INSERT.
             with generation.result_session(scope) as results:
@@ -105,12 +109,11 @@ def read_series(scope, identifiers, catalog, day, points):
                     indicator = facts.get(Indicator, identifier)
                     if indicator is not None and indicator.unit != (known[identifier].get('unit') or '未注明'):
                         raise HTTPException(409, '指标单位已改变，请重新分析')
-                    rows = facts.scalars(select(Observation).where(Observation.series_id == identifier,
-                        Observation.as_of < day_end(day), Observation.status == '正常').order_by(
-                            Observation.as_of.desc(), Observation.revision.desc()).limit(points)).all()
+                    from tin.compute.signals import recent_points
+                    rows = recent_points(facts, identifier, day, points)
                     values[identifier] = {'name': indicator.name if indicator else known[identifier].get('name'),
                         'unit': known[identifier].get('unit'), 'points': [{'date': row.as_of.astimezone(SHANGHAI).date().isoformat(),
-                            'value': row.value} for row in reversed(rows)]}
+                            'value': row.value if row.status == '正常' else None} for row in rows]}
     result = []
     for identifier in identifiers:
         field = values[identifier]
@@ -123,10 +126,23 @@ def read_series(scope, identifiers, catalog, day, points):
 
 
 def read_radar(scope, rules, catalog, day):
-    identifiers = list(dict.fromkeys(rule['series_id'] for rule in rules))
-    series = read_series(scope, identifiers, catalog, day, 1)
+    from tin.compute.moving_average import moving_average_target
+    windows = {}
+    for rule in rules:
+        moving = moving_average_target(rule['value'])
+        windows[rule['series_id']] = max(windows.get(rule['series_id'], 1), moving['window'] if moving else 1)
+    if len(windows) > 256 or sum(windows.values()) > 20000:
+        raise HTTPException(413, '阈值试算超过必要观测读取范围')
+    series = []
+    for points in sorted(set(windows.values())):
+        identifiers = [identifier for identifier, required in windows.items() if required == points]
+        moving = any(moving_average_target(rule['value']) is not None and rule['series_id'] in identifiers for rule in rules)
+        if moving:
+            series.extend(read_series(scope, identifiers, catalog, day, points, include_invalid=True))
+        else:
+            series.extend(read_series(scope, identifiers, catalog, day, points))
     values = {field['series_id']: {'name': field['name'], 'unit': field['unit'],
-        'value': field['latest_value'], 'date': field['as_of']} for field in series}
+        'value': field['latest_value'], 'date': field['as_of'], 'points': field['points']} for field in series}
     return threshold_radar_values(SimpleNamespace(thresholds=rules), values)
 
 

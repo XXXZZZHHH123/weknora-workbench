@@ -1,13 +1,19 @@
 {% macro metric_view(metric) %}
 {% if metric %}
-<div class="judgment-metric">
-  <div class="judgment-metric-heading"><span>{{ human_text(metric.name) }}</span><time>{{ metric.date[:16]|replace('T', ' ') if metric.date else '' }}</time></div>
-  {% if metric.latest is not none %}
-  <div class="judgment-metric-value"><strong>{{ metric.latest | num(metric.unit) }}</strong><span>{{ metric.unit or '' }}</span>
-    {% if metric.change is not none %}<small>较前次 {{ '+' if metric.change > 0 else '' }}{{ metric.change | num(metric.unit) }}{% if metric.change_pct is not none %}（{{ '+' if metric.change_pct > 0 else '' }}{{ metric.change_pct | round(2) }}%）{% endif %}</small>{% endif %}
+<div class="judgment-metric" data-judgment-chart
+  {% if metric.series_id and j and d %}data-chart-url="{{ research_url('/api/sn/judgment/chart') }}" data-chart-series="{{ metric.series_id }}" data-chart-judgment="{{ j.id }}" data-chart-date="{{ d }}"{% endif %}>
+  <script type="application/json" data-chart-values>{{ metric|tojson }}</script>
+  <div class="judgment-metric-heading"><span title="{{ human_text(metric.name) }}">{{ human_text(metric.name) }}</span>
+    {% if metric.streak %}<span class="judgment-metric-streak" data-chart-streak data-direction="{{ metric.streak.direction }}" title="{{ metric.streak.start[:10] }} 至 {{ metric.streak.end[:10] }}{% if metric.streak.change is not none %} · 累计 {{ '+' if metric.streak.change > 0 else '' }}{{ metric.streak.change|num(metric.unit) }} {{ metric.unit or '' }}{% endif %}{% if metric.streak.change_pct is not none %}（{{ '+' if metric.streak.change_pct > 0 else '' }}{{ metric.streak.change_pct|round(2) }}%）{% endif %}">{{ '↑' if metric.streak.direction == 'up' else '↓' }} {{ '至少' if metric.streak.at_least else '' }}{{ '连升' if metric.streak.direction == 'up' else '连降' }}{{ metric.streak.count }}{{ metric.streak.period }}</span>{% endif %}
   </div>
-  {% if metric.previous is not none %}<p class="judgment-metric-previous">前次 {{ metric.previous | num(metric.unit) }} {{ metric.unit or '' }} · {{ metric.previous_date[:16]|replace('T', ' ') if metric.previous_date else '' }}</p>{% endif %}
-  {% if metric.segments %}<svg data-metric-trend viewBox="0 0 240 48" role="img" aria-label="{{ human_text(metric.name) }}近期观测走势" preserveAspectRatio="none">{% for segment in metric.segments %}<polyline points="{{ segment }}" />{% endfor %}</svg><span class="judgment-metric-window">近 {{ metric.point_count }} 次观测</span>{% endif %}
+  {% if metric.latest is not none %}
+  <div class="judgment-metric-value" title="{{ metric.date[:16]|replace('T',' ') if metric.date else '' }}{% if metric.previous is not none %} · 前次 {{ metric.previous|num(metric.unit) }} {{ metric.unit or '' }} · {{ metric.previous_date[:16]|replace('T',' ') if metric.previous_date else '' }}{% endif %}"><strong>{{ metric.latest | num(metric.unit) }}</strong><span>{{ metric.unit or '' }}</span>
+    {% if metric.change is not none %}<small>{{ '+' if metric.change > 0 else '' }}{{ metric.change | num(metric.unit) }}{% if metric.change_pct is not none %}（{{ '+' if metric.change_pct > 0 else '' }}{{ metric.change_pct | round(2) }}%）{% endif %}</small>{% endif %}
+  </div>
+  {% if metric.segments %}
+  <div class="judgment-chart-toolbar"><select data-chart-semantics aria-label="趋势显示用语"><option value="change">升降</option><option value="inventory">库存</option></select><label>MA <select data-chart-ma aria-label="选择均线"><option value="0">关闭</option><option value="5">5</option><option value="10">10</option><option value="20">20</option><option value="60">60</option><option value="120">120</option><option value="custom">自定义</option></select></label><input data-chart-ma-custom type="number" min="2" max="120" step="1" value="20" aria-label="均线观测期数" hidden><span data-chart-status role="status" hidden></span></div>
+  <div class="judgment-chart-plot"><svg data-metric-trend viewBox="0 0 240 48" role="img" aria-label="{{ human_text(metric.name) }}近期观测走势" preserveAspectRatio="none" tabindex="0">{% for segment in metric.segments %}<polyline points="{{ segment }}" />{% endfor %}</svg><div class="judgment-chart-tooltip" data-chart-tooltip hidden></div></div>
+  {% endif %}
   {% else %}<p class="judgment-metric-missing">暂无可用数值</p>{% endif %}
 </div>
 {% endif %}

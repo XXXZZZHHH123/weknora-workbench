@@ -4,6 +4,7 @@
 {% block head %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-manager.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-research.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/judgment-chart.js?v={{ static_version() }}"></script>
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/judgment-manager.js?v={{ static_version() }}"></script>{% endif %}
 {% endblock %}
 {% block main %}

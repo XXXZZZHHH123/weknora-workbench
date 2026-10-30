@@ -73,11 +73,12 @@ def model_output_schema():
 
     threshold = definitions['Threshold']
     pair = {'type': 'array', 'items': {'type': 'number'}, 'minItems': 2, 'maxItems': 2}
-    threshold['properties']['value'] = {'oneOf': [{'type': 'number'}, deepcopy(pair)]}
+    moving = {'$ref': '#/$defs/MovingAverageTarget'}
+    threshold['properties']['value'] = {'oneOf': [{'type': 'number'}, deepcopy(pair), deepcopy(moving)]}
     threshold.update({
         'if': {'properties': {'operator': {'const': 'between'}}, 'required': ['operator']},
         'then': {'properties': {'value': deepcopy(pair)}},
-        'else': {'properties': {'value': {'type': 'number'}}},
+        'else': {'properties': {'value': {'oneOf': [{'type': 'number'}, deepcopy(moving)]}}},
     })
     for name in ('Threshold', 'Falsifier'):
         definitions[name]['properties']['id']['pattern'] = r'^[A-Za-z][A-Za-z0-9_-]{0,63}$'

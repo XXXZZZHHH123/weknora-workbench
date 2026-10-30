@@ -30,7 +30,10 @@ def test_restricted_legacy_judgment_shows_verified_owner_full_page(canonical):
     assert 'another-user' not in response.text
     assert '历史记录尚未归属' not in response.text
     assert 'data-open-logic' not in response.text and 'judgment-manager.js' not in response.text
-    assert state['pages'] == before and not state.get('bounded_requests')
+    assert state['pages'] == before
+    assert state['bounded_requests'] and all(request['series_ids'] == [SERIES]
+        and request['view_module'] == 'judgments' and request['include_invalid'] is True
+        for request in state['bounded_requests'])
 
 
 def test_restricted_legacy_judgment_fetches_only_its_bound_threshold(canonical):

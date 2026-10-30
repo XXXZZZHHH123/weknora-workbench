@@ -376,6 +376,50 @@ def shared_owner_query(scope, statement, model):
     return statement.where(model.researcher_id.in_(owner_rows)) if owner else statement.where(False)
 
 
+def shared_judgment(session, scope, identifier=None):
+    """Resolve an owner-shared record before planning any observation reads."""
+    if not shared_owner_storage_available(session, scope):
+        if identifier is not None:
+            raise HTTPException(403, '历史记录尚未明确归属到当前工作台')
+        return None
+    query = shared_owner_query(scope, select(Judgment), Judgment)
+    if identifier is not None:
+        query = query.where(Judgment.id == identifier)
+    else:
+        variety = session.scalar(query.with_only_columns(Judgment.variety)
+            .order_by(Judgment.created_at.desc(), Judgment.id.desc()).limit(1))
+        if variety is None:
+            return None
+        query = query.where(Judgment.variety == variety)
+    row = session.scalar(query.order_by((Judgment.status == '生效').desc(), Judgment.version.desc()).limit(1))
+    if identifier is not None and row is None:
+        raise HTTPException(404, '没有这份已授权的研判')
+    return row
+
+
+def _shared_judgment_page(session, scope, output):
+    from tin.export.board import judgment_record_block, threshold_radar
+    from tin.integration.page_facts import page_read_scope, projected_page_session
+    from tin.judgments.service import _refs, to_payload
+    from tin.web.judgment_research import judgment_research_view
+    row = shared_judgment(session, scope)
+    today = datetime.now(SHANGHAI).date()
+    versions = session.scalars(shared_owner_query(scope, select(Judgment).where(
+        Judgment.variety == row.variety), Judgment).order_by(Judgment.version.desc()).limit(51)).all() if row else []
+    output.update(j=row, block=judgment_record_block(row, today), versions=versions[:50],
+                  versions_truncated=len(versions) > 50, d=today, radar=[], names={})
+    output['entries'], output['entries_truncated'] = shared_artifacts(session, scope, 'judgments', with_truncation=True)
+    if row is None or not list(_refs(to_payload(row))):
+        output['research'] = judgment_research_view(session, row, today)
+        return output
+    with page_read_scope('judgments', day=today, judgment_id=row.id, include_invalid=True):
+        with projected_page_session(session.get_bind(), scope) as facts:
+            output['research'] = judgment_research_view(facts, row, today)
+            output['radar'] = threshold_radar(facts, row.variety, today, judgment=row)
+            output['names'] = {identifier: metric['name'] for identifier, metric in output['research']['metrics'].items()}
+    return output
+
+
 def shared_artifacts(session, scope, module, *, with_truncation=False):
     stored_module = 'briefs' if module == 'reports' else module
     owner = shared_owner_id(scope)
@@ -421,6 +465,8 @@ def page_data(scope, module, template_id=None):
         output = {'cards': [], 'diagram': None, 'entries': [],
                   'legacy_unassigned': not shared_owner_storage_available(session, scope),
                   'owner_unavailable': shared_owner_id(scope) is None}
+        if module == 'judgments' and not output['legacy_unassigned'] and not output['owner_unavailable']:
+            return _shared_judgment_page(session, scope, output)
         core_ids = list(identifiers)
         include_judgment = (module == 'judgments'
                             or (module == 'market' and 'judgments' in scope.view_modules))
@@ -579,6 +625,16 @@ def publish_diagram(scope):
 
 
 async def restricted_response(request, scope, route_path):
+    if request.method == 'GET' and route_path == '/api/sn/judgment/chart':
+        from tin.web.judgment_charts import chart
+        from starlette.responses import JSONResponse
+        try:
+            params = request.query_params
+            result = await run_in_threadpool(chart, request, int(params.get('judgment_id', '')),
+                params.get('series_id', ''), params.get('date'), int(params.get('limit', '121')))
+        except (ValueError, TypeError):
+            raise HTTPException(422, '图表参数无效') from None
+        return JSONResponse(result)
     if request.method not in {'GET', 'HEAD'} or route_path not in PAGES:
         raise HTTPException(403, '受限视角不开放指标目录、任意取数、原文、导出和修改接口')
     allowed = {'_research_tenant', '_research_user'} | ({'template'} if route_path == '/sn/diagram' else set())
@@ -631,7 +687,8 @@ async def restricted_response(request, scope, route_path):
     if authorized and not payload.get('legacy_unassigned') and not payload.get('owner_unavailable'):
         if module == 'judgments':
             context.update(j=payload['j'], block=payload['block'], versions=payload['versions'],
-                           radar=payload['radar'], names=payload['names'], report=None, logic_input='')
+                           radar=payload['radar'], names=payload['names'], report=None, logic_input='',
+                           research=payload.get('research'), d=payload.get('d'))
             return templates.TemplateResponse(request, 'judgment.html', context)
         if module == 'strategies':
             from tin.web.strategy import STATUS_LABELS, MODE_LABELS, KIND_LABELS

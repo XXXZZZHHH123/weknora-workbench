@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from tin.compute.engine import contracts_on, day_end, latest_derived, latest_obs
 from tin.compute.formulas import REGISTRY
 from tin.compute.rule_values import decimal_difference, decimal_value
+from tin.compute.moving_average import moving_average_target, sma_boundary
 from tin.config import NEW_YORK, SHANGHAI, settings
 from tin.ingest.fred import FEATURED_SERIES, FRED_SERIES, SERIES_BY_ID, SOURCE_CATALOG, MacroSeries
 from tin.judgments.service import current as current_judgment
@@ -88,6 +89,9 @@ def _obs_card(session: Session, key: str, label: str, series_id: str, d: date) -
                 expected_by=exp.isoformat() if exp else None)
     if o is None:
         card.note = "尚无数据"
+        return card
+    if o.value is None or o.status != '正常':
+        card.note = '最近一期观测缺失或尚未确认'
         return card
     if exp and o.as_of.astimezone(SHANGHAI).date() < exp:
         card.note = f"最近一次数据时点 {_local(o.as_of)}，已过预期更新日"
@@ -428,8 +432,10 @@ def threshold_radar(session: Session, variety: str, d: date, *, judgment=None) -
     def lookup(identifier):
         indicator = session.get(Indicator, identifier)
         observation = latest_obs(session, identifier, day_end(d)) if indicator else None
+        if observation is not None and (observation.value is None or observation.status != '正常'):
+            observation = None
         return indicator, observation
-    return _threshold_radar(j, lookup)
+    return _threshold_radar(j, lookup, lambda identifier, window: sma_boundary(session, identifier, d, window))
 
 
 def threshold_radar_values(judgment, values):
@@ -444,10 +450,14 @@ def threshold_radar_values(judgment, values):
             date.fromisoformat(value['date']), datetime.min.time(), SHANGHAI))
             if value.get('date') and value.get('value') is not None else None)
         return indicator, observation
-    return _threshold_radar(judgment, lookup) if judgment else []
+    def moving_lookup(identifier, window):
+        from tin.compute.moving_average import sma_result
+        field = values.get(identifier) or {}
+        return sma_result(field.get('points') or [], window, field.get('unit'))
+    return _threshold_radar(judgment, lookup, moving_lookup) if judgment else []
 
 
-def _threshold_radar(j, lookup):
+def _threshold_radar(j, lookup, moving_lookup=None):
     out = []
     for t in j.thresholds:
         ind, o = lookup(t['series_id'])
@@ -457,7 +467,22 @@ def _threshold_radar(j, lookup):
                "note": t.get("note"), "state": "数据缺失", "value": None, "progress": 0,
                "distance": "该指标暂无数据", "as_of": None}
         op, target = t["operator"], t["value"]
-        row["condition"] = (f"{_fmt(target[0])} – {_fmt(target[1])}" if op == "between"
+        moving = moving_average_target(target)
+        if moving:
+            if op not in {'>', '>=', '<', '<='}:
+                raise ValueError('简单移动平均阈值只支持水平比较')
+            row.update(condition=f"{op} MA{moving['window']}", target_value=None,
+                       dynamic_target={**moving, 'basis': 'observations'})
+            boundary = moving_lookup(t['series_id'], moving['window']) if moving_lookup else None
+            if boundary is None or boundary['value'] is None:
+                row['distance'] = boundary['error'] if boundary else '尚未加载均线所需的观测窗口'
+                out.append(row)
+                continue
+            target = boundary['total'] / moving['window']
+            row['target_value'] = boundary['value']
+        else:
+            row['target_value'] = target
+        row["condition"] = row.get('condition') or (f"{_fmt(target[0])} – {_fmt(target[1])}" if op == "between"
                             else f"{op} {_fmt(target)}")
         if o is None:
             out.append(row)
@@ -475,8 +500,14 @@ def _threshold_radar(j, lookup):
             row["distance"] = "已进入区间" if hit else f"距区间 {_fmt(gap.copy_abs(), row['unit'])} {row['unit']}"
         else:
             target = decimal_value(target)
-            hit = (v > target if op == ">" else v >= target if op == ">=" else
-                   v < target if op == "<" else v <= target)
+            comparison, compared_target = v, target
+            if moving:
+                from decimal import localcontext
+                with localcontext() as context:
+                    context.prec = max(28, len(str(boundary['total'])) + len(str(v)) + 8)
+                    comparison, compared_target = v * moving['window'], boundary['total']
+            hit = (comparison > compared_target if op == ">" else comparison >= compared_target if op == ">=" else
+                   comparison < compared_target if op == "<" else comparison <= compared_target)
             row["state"] = "已触发" if hit else "未触发"
             gap = decimal_difference(target, v).copy_abs()
             scale = (target.copy_abs() if op in (">", ">=")

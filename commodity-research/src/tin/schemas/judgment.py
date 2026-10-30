@@ -89,12 +89,17 @@ class TimeDimension(_Model):
     long: str | None = None
 
 
+class MovingAverageTarget(_Model):
+    kind: Literal['sma']
+    window: int = Field(ge=2, le=120, strict=True)
+
+
 class Threshold(_Model):
     id: str
     name: str
     series_id: str
     operator: Literal[">", ">=", "<", "<=", "between"]
-    value: float | list[float]
+    value: float | list[float] | MovingAverageTarget
     type: ThresholdType
     horizon: Horizon
     action_hint: str | None = None
@@ -103,6 +108,8 @@ class Threshold(_Model):
     @field_validator('value', mode='before')
     @classmethod
     def _exact_number(cls, value):
+        if isinstance(value, (dict, MovingAverageTarget)):
+            return value
         for number in value if isinstance(value, list) else [value]:
             check_rule_number(number)
         return value

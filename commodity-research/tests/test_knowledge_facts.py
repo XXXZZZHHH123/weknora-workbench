@@ -113,7 +113,10 @@ def canonical(monkeypatch, tmp_path):
             encoded = request.headers['x-research-identity']
             caller = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
             assert set(body) <= {'sources', 'offset', 'limit', 'version', 'metadata_only', 'encoding',
-                                 'series_ids', 'as_of', 'points_per_series', 'view_module', 'catalog_only'}
+                                 'series_ids', 'as_of', 'points_per_series', 'view_module', 'catalog_only', 'include_invalid'}
+            if body.get('include_invalid'):
+                assert body['include_invalid'] is True and body.get('view_module') == 'judgments'
+                assert 'series_ids' in body and 1 <= body['points_per_series'] <= 121
             if 'series_ids' in body:
                 state.setdefault('bounded_requests', []).append(body)
                 selected_spec, value = spec, state['value']
@@ -130,6 +133,7 @@ def canonical(monkeypatch, tmp_path):
                     rows.append({**rows[0], 'date': '2026-01-01', 'value': state['bounded_previous']})
                 return httpx.Response(200, json={'knowledge_base_id': caller['knowledge_base_id'],
                     'knowledge_base_tenant_id': 17, 'version': version, 'bounded': True,
+                    **({'include_invalid': True} if body.get('include_invalid') else {}),
                     'indicators': [selected_spec] if active else [], 'datasets': [], 'rows': rows if active else [],
                     'total': len(rows) if active else 0, 'offset': 0, 'next_offset': None, 'truncated': False})
             if caller['knowledge_base_id'] == OTHER_KB and state.get('default_macro'):

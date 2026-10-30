@@ -247,6 +247,8 @@ from tin.web.judgment_review import router as judgment_review_router
 app.include_router(judgment_review_router)
 from tin.web.judgment_radar import router as judgment_radar_router
 app.include_router(judgment_radar_router)
+from tin.web.judgment_charts import router as judgment_charts_router
+app.include_router(judgment_charts_router)
 from tin.web.judgment_structured import router as judgment_structured_router
 app.include_router(judgment_structured_router)
 from tin.web.research_strategy import router as research_strategy_router
