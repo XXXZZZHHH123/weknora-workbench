@@ -288,7 +288,7 @@ def test_catalog_selection_rejects_invalid_plans_without_generating_or_saving(ge
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
-    assert len(calls)==1
+    assert len(calls)==2
     assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
 
 
@@ -344,7 +344,7 @@ def test_raw_selection_limit_applies_before_deduplicating_real_ids(generator,mon
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
-    assert len(calls)==1
+    assert len(calls)==2
 
 
 @pytest.mark.parametrize('kind',['unknown','other-batch','non-string','nested','field-name','over-limit'])
@@ -365,8 +365,9 @@ def test_catalog_selection_array_keeps_all_id_and_capacity_guards(generator,monk
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
-    assert result.json()['detail']=='模型没有给出有效指标筛选结果'
-    assert len(calls)==1
+    message = result.json()['detail']
+    assert ('上限' in message if kind == 'over-limit' else '编号格式' in message if kind in {'non-string','nested'} else '目录以外' in message)
+    assert len(calls)==2
     assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
 
 
@@ -381,7 +382,7 @@ def test_catalog_selection_rejects_real_id_from_other_batch(generator,monkeypatc
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
-    assert len(calls)==1
+    assert len(calls)==2
 
 
 @pytest.mark.parametrize('kind',['single-field','batch-count'])
@@ -452,8 +453,8 @@ def test_catalog_selection_output_limit_is_rejected_without_taking_first_ids(gen
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
-    assert result.json()['detail']=='模型没有给出有效指标筛选结果'
-    assert len(calls)==1
+    assert '24项上限' in result.json()['detail']
+    assert len(calls)==2
 
 
 @pytest.mark.parametrize('selected_count',[24,25])
@@ -464,6 +465,8 @@ def test_compact_catalog_selection_budget_accepts_24_and_rejects_25(generator,mo
     monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
     responses=[{'series_ids':[field['id'] for field in fields[:selected_count]]},
                {'series_ids':[]},model_graph(fields[0]['id'])]
+    if selected_count==25:
+        responses=[responses[0],responses[0]]
     async def complete(*args,**kwargs):
         calls.append(args)
         return responses.pop(0)
@@ -476,8 +479,8 @@ def test_compact_catalog_selection_budget_accepts_24_and_rejects_25(generator,mo
         assert result.json()['bindings'][0]['series_id']==fields[0]['id']
     else:
         assert result.status_code==422,result.text
-        assert result.json()['detail']=='模型没有给出有效指标筛选结果'
-        assert len(calls)==1
+        assert '24项上限' in result.json()['detail']
+        assert len(calls)==2
 
 
 def test_explicit_detail_request_keeps_all_26_legal_nodes_without_truncation(generator):

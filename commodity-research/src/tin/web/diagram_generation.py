@@ -1,6 +1,8 @@
 """Model-authored diagram drafts; only current, explicit KB IDs may bind."""
 import base64
+from contextvars import ContextVar
 import json
+import logging
 from urllib.parse import quote
 
 import httpx
@@ -20,6 +22,48 @@ CATALOG_BYTES = 96 * 1024
 CATALOG_MAX_BATCHES = 4
 CATALOG_SELECTION_LIMIT = 24
 MODEL_PROMPT_BYTES = 160 * 1024
+_generation_progress = ContextVar('diagram_generation_progress', default=None)
+logger = logging.getLogger(__name__)
+SELECTION_ISSUES = {
+    'selection_shape': '模型未按要求返回指标列表',
+    'selection_capacity': f'模型选出的指标超过本片{CATALOG_SELECTION_LIMIT}项上限',
+    'selection_id_type': '模型返回的指标编号格式有误',
+    'selection_foreign_id': '模型选择了本片目录以外的指标',
+}
+SELECTION_FAILURE_MESSAGES = frozenset(
+    message + suffix for message in SELECTION_ISSUES.values() for suffix in (
+        '；本次已尝试修正，请重试或补充说明',
+        '；修正后仍未通过校验，请重试或补充说明'))
+
+
+async def notify_progress(phase):
+    callback = _generation_progress.get()
+    if callback is not None:
+        await callback(phase)
+
+
+class SelectionPlanError(ValueError):
+    def __init__(self, code):
+        message = SELECTION_ISSUES[code]
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
+def selection_ids(result, batch):
+    identifiers = result if isinstance(result, list) else None
+    if isinstance(result, dict) and set(result) == {'series_ids'}:
+        identifiers = result['series_ids']
+    if not isinstance(identifiers, list):
+        raise SelectionPlanError('selection_shape')
+    if len(identifiers) > CATALOG_SELECTION_LIMIT:
+        raise SelectionPlanError('selection_capacity')
+    if any(not isinstance(identifier, str) for identifier in identifiers):
+        raise SelectionPlanError('selection_id_type')
+    known = {field['id'] for field in batch}
+    if any(identifier not in known for identifier in identifiers):
+        raise SelectionPlanError('selection_foreign_id')
+    return identifiers
+
 # Only application-authored messages cross this boundary. Provider failures may
 # contain credentials, URLs or request bodies and are never echoed verbatim.
 NATIVE_GENERATION_MESSAGES = frozenset({
@@ -142,16 +186,30 @@ async def select_catalog(scope,model_id,catalog,text,image):
     prompts = [catalog_prompt(protocol+f'这是目录第{index+1}/{len(batches)}片。',batch,text)
                for index,batch in enumerate(batches)]
     selected = set()
-    for batch,prompt in zip(batches,prompts):
+    repaired = False
+    for index, (batch,prompt) in enumerate(zip(batches,prompts), 1):
         result = await completion(scope,model_id,prompt,image)
-        # Both JSON shapes carry explicit IDs; source validation stays identical.
-        identifiers = result if isinstance(result,list) else None
-        if isinstance(result,dict) and set(result)=={'series_ids'}:
-            identifiers = result['series_ids']
-        known = {field['id'] for field in batch}
-        if (not isinstance(identifiers,list) or len(identifiers)>CATALOG_SELECTION_LIMIT
-                or any(not isinstance(identifier,str) or identifier not in known for identifier in identifiers)):
-            raise HTTPException(422,'模型没有给出有效指标筛选结果')
+        try:
+            identifiers = selection_ids(result, batch)
+        except SelectionPlanError as error:
+            logger.warning('Diagram selection rejected: batch=%d total=%d class=%s', index, len(batches), error.code)
+            if repaired:
+                raise HTTPException(422, error.message + '；本次已尝试修正，请重试或补充说明') from None
+            repaired = True
+            await notify_progress('selecting')
+            feedback = json.dumps({'issue': error.code, 'message': error.message,
+                'limit': CATALOG_SELECTION_LIMIT}, ensure_ascii=False, separators=(',', ':'))
+            repair = (protocol + f'这是目录第{index}/{len(batches)}片。'
+                + '\n只修正指标筛选：前次结果未通过程序校验。'
+                + '请根据相同完整资料和本片真实目录重新选择，最多修正这一次；'
+                + '不能改成图结构、解释文字或猜测编号。没有相关项时明确返回空series_ids数组。'
+                + '\n程序校验反馈：' + feedback)
+            result = await completion(scope, model_id, catalog_prompt(repair, batch, text), image)
+            try:
+                identifiers = selection_ids(result, batch)
+            except SelectionPlanError as repeated:
+                logger.warning('Diagram selection repair rejected: batch=%d total=%d class=%s', index, len(batches), repeated.code)
+                raise HTTPException(422, repeated.message + '；修正后仍未通过校验，请重试或补充说明') from None
         # Repeated exact IDs have one meaning; retain every distinct choice
         # while still validating the raw response size and each source ID.
         selected.update(identifiers)
@@ -358,6 +416,7 @@ async def sources():
 @router.post('')
 async def generate(body:GenerateRequest):
     scope = scope_for_generation()
+    await notify_progress('reading_source')
     text,image = body.instructions.strip(),body.image
     original_digest, original_scope, original_metadata = None, scope, None
     if body.source_id:
@@ -392,7 +451,9 @@ async def generate(body:GenerateRequest):
                 raise ValueError()
         except (ValueError,TypeError):
             raise HTTPException(400,'请选择5 MiB以内的PNG、JPEG、WebP或GIF图片') from None
+    await notify_progress('loading_catalog')
     version,catalog = await run_in_threadpool(catalog_snapshot)
+    await notify_progress('selecting')
     candidates,selected = await select_catalog(scope,body.model_id,catalog,text,image)
     if selected:
         await verify_generation_scope(scope, version)
@@ -439,7 +500,9 @@ async def generate(body:GenerateRequest):
         '目录可能是筛选后的候选，不能假定穷尽；未匹配不等于知识库没有相关数据。'
         '没有匹配指标时series_id为null；不创造指标ID、数值、聚合公式或静态数字。'
         '输出前检查是否围绕核心标的、是否有重复细节、绑定是否有真实依据，避免用未绑定节点假装研究数据已经齐备。')
+    await notify_progress('generating')
     draft = await completion(scope,body.model_id,catalog_prompt(protocol,candidates,text),image)
+    await notify_progress('validating')
     markdown = compile_graph(draft)
     layout,bindings = validate_draft(markdown,candidates)
     await verify_generation_scope(scope, version)
