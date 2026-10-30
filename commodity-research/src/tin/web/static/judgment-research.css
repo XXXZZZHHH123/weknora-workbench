@@ -28,8 +28,16 @@
 .judgment-chart-unit{max-width:100%;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted);font-size:10px;line-height:14px}
 .judgment-chart-plot svg{height:156px}.judgment-chart-axis-label{fill:var(--text-muted);font-family:inherit;font-size:10px;font-variant-numeric:tabular-nums}.judgment-chart-axis-line{fill:none;stroke:var(--line-strong,var(--line));stroke-width:.8;vector-effect:non-scaling-stroke}
 .judgment-chart-toolbar{flex-wrap:wrap}.judgment-chart-toolbar [data-chart-status]{min-width:0}
-.judgment-hypothesis{border:0;background:transparent;padding:0}.judgment-hypothesis>h3{border-top:3px solid var(--side-color);padding-top:12px;font-size:14px}.judgment-hypothesis-claim{font-size:16px}
+.judgment-hypothesis>h3{border:0;padding:0;font-size:14px}.judgment-hypothesis-claim{font-size:16px}
 .judgment-evidence-list>li.judgment-item-card,.judgment-falsifier.judgment-item-card{min-width:0;max-width:100%;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:14px}
 .judgment-item-card .judgment-evidence-desc{font-weight:550}.judgment-falsifier-heading{min-width:0}.judgment-falsifier-heading>strong{min-width:0;overflow-wrap:anywhere}.judgment-falsifier-state{flex:none}
 .judgment-item-conditions{display:grid;gap:6px;margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}.judgment-item-condition{display:flex;align-items:baseline;gap:10px;justify-content:space-between;font-size:11px;line-height:1.6;color:var(--text-muted)}.judgment-item-condition>span:first-child{min-width:0;overflow-wrap:anywhere}.judgment-item-condition strong{font-weight:500;color:var(--text)}.judgment-item-condition-state{flex:none;white-space:nowrap}.judgment-item-condition-state[data-state="已触发"]{color:var(--alert)}.judgment-item-condition-state[data-state="在区间内"]{color:var(--amber)}
-@media(max-width:760px){.judgment-hypothesis{padding:0}.judgment-evidence-list>li.judgment-item-card,.judgment-falsifier.judgment-item-card{padding:12px}}
+@supports(grid-template-rows:subgrid){@media(min-width:761px){
+  .judgment-hypotheses{row-gap:12px}
+  .judgment-hypothesis{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:subgrid;grid-row:1 / span var(--judgment-total-rows);row-gap:12px}
+  .judgment-hypothesis:first-child{grid-column:1}.judgment-hypothesis:last-child{grid-column:2}
+  .judgment-hypothesis>h3{grid-row:1;margin:0}.judgment-hypothesis-claim{grid-row:2;margin:0}.judgment-hypothesis .judgment-support-heading{grid-row:3;margin:0}
+  .judgment-evidence-list{grid-row:4 / span var(--judgment-evidence-rows);grid-template-rows:subgrid;row-gap:12px}
+  .judgment-hypothesis .judgment-falsifier-section,.judgment-hypothesis .judgment-falsifier-empty,.judgment-hypothesis .judgment-falsifier{margin:0}
+}}
+@media(max-width:760px){.judgment-evidence-list>li.judgment-item-card,.judgment-falsifier.judgment-item-card{padding:12px}}

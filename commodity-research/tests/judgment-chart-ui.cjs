@@ -13,6 +13,11 @@ const sides={};
 for(const [side,offset]of[['bull',0],['bear',2]])sides[side]={claim:`合成${side==='bull'?'多':'空'}方主逻辑`,
  evidence:[0,1].map(index=>({desc:`本条合成支持依据 ${index+1}`,series_id:metrics[offset+index].series_id,metric:metrics[offset+index]})),
  falsifiers:[{rule:{desc:'本条合成证伪条件',series_id:metrics[offset].series_id},condition:'高于 24,000 元/吨',state:'未触发',metric:metrics[offset]}]};
+sides.bull.claim='合成多方观点包含较长的完整说明，用于验证左右观点长短不同时后面的研究条目仍然对齐。'.repeat(3);
+sides.bull.evidence.splice(1,0,{desc:'合成纯文字支持依据，无图表也应作为完整研究条目。',series_id:null,metric:null});
+sides.bear.evidence[0]={desc:'合成另一方的纯文字依据，保留自然文字内容。',series_id:null,metric:null};
+sides.bear.evidence[1]={desc:'合成空方指标支持依据',series_id:metrics[2].series_id,metric:metrics[2]};
+sides.bear.falsifiers.push({rule:{desc:'合成定性证伪条件'},condition:'定性变化待持续观察',state:'观察中',metric:null});
 const radar=[metrics[0],metrics[2]].map((item,index)=>({id:`synthetic-risk-${index}`,name:'合成风险边界',series_id:item.series_id,type:'风控线',horizon:'短期',condition:'高于 22,000 元/吨',value:item.latest,unit:item.unit,as_of:item.date,distance:'高于边界',progress:100,state:'已触发',action_hint:'保持观察',note:null}));
 const fixture={research:{sides,shared:[],pending_conditions:[],counts:{available:4,bound:4}},radar,names:Object.fromEntries(metrics.map(item=>[item.series_id,item.name])),
  j:{id:7,author:'合成研究者',written_at:'2032-03-05',review_due:'2032-03-12',status:'草稿',tone:'合成多空观察',thresholds:[{},{}],falsifiers:[{},{}],contradiction:{bull:{claim:'',evidence:[]},bear:{claim:'',evidence:[]}},priority_rule:null,whitelist:[]},
@@ -44,6 +49,7 @@ const html=render.stdout;
     assert.ok(file.startsWith(fonts+path.sep),'Fixture fonts stay in the local font directory');
     return route.fulfill({contentType:file.endsWith('.css')?'text/css':'font/woff2',body:fs.readFileSync(file)});
    }
+   if(url.pathname==='/static/judgment-research.css'&&process.env.JUDGMENT_CHART_TEST_CSS)return route.fulfill({contentType:'text/css',body:fs.readFileSync(process.env.JUDGMENT_CHART_TEST_CSS)});
    if(['/static/judgment-chart.js','/static/judgment-research.css','/static/judgment-manager.css','/static/research-display.js'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('.js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
    throw new Error('Unexpected fixture request '+url.pathname);
   });
@@ -53,15 +59,59 @@ const html=render.stdout;
   await page.locator('[data-research-item="evidence"]').first().waitFor();
   for(const side of['bull','bear']){
    const column=page.locator(`.judgment-hypothesis[data-hypothesis="${side}"]`);
-   assert.equal(await column.locator('[data-research-item="evidence"]').count(),2);
-   assert.equal(await column.locator('[data-research-item="falsifier"]').count(),1);
-   const entry=column.locator('[data-research-item="evidence"]').first();
+   assert.equal(await column.locator('[data-research-item="evidence"]').count(),side==='bull'?3:2);
+   assert.equal(await column.locator('[data-research-item="falsifier"]').count(),side==='bull'?1:2);
+   const entry=column.locator('[data-research-item="evidence"]').filter({has:page.locator('[data-judgment-chart]')}).first();
    assert.equal(await entry.locator('[data-judgment-chart]').count(),1);
    assert.match(await entry.locator('[data-item-threshold]').innerText(),/合成风险边界.*高于 22,000.*已触发/s);
    const style=await entry.evaluate(el=>({border:getComputedStyle(el).borderTopStyle,radius:getComputedStyle(el).borderRadius,padding:getComputedStyle(el).padding}));
    assert.equal(style.border,'solid');assert.notEqual(style.radius,'0px');assert.notEqual(style.padding,'0px');
   }
-  report.checks.push('Actual judgment page keeps bull/bear columns, two independent evidence cards and a falsifier card per side, with related threshold and metric in each item');
+  report.checks.push('Actual judgment page keeps unequal evidence/falsifier counts without fake cards, including text-only and chart-backed items with related thresholds');
+  report.layouts=[];
+  for(const width of[1280,960,390]){
+   await page.setViewportSize({width,height:900});
+   await page.waitForFunction(()=>[...document.querySelectorAll('[data-metric-trend]')].every(el=>Math.abs(el.viewBox.baseVal.width-el.getBoundingClientRect().width)<1));
+   const layout=await page.evaluate(()=>{
+    const box=el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height}};
+    return{width:innerWidth,scroll:document.documentElement.scrollWidth,
+     columns:[...document.querySelectorAll('.judgment-hypothesis')].map(el=>{const style=getComputedStyle(el),headings=el.querySelectorAll(':scope>h4');return{
+      ...box(el),borders:['Top','Right','Bottom','Left'].map(side=>({width:parseFloat(style['border'+side+'Width']),kind:style['border'+side+'Style']})),
+      padding:parseFloat(style.paddingLeft),headingBorder:parseFloat(getComputedStyle(el.querySelector('h3')).borderTopWidth),
+      title:box(el.querySelector('h3')),claim:box(el.querySelector('.judgment-hypothesis-claim')),support:box(headings[0]),falsifier:box(headings[1]),
+      evidence:[...el.querySelectorAll('[data-research-item="evidence"]')].map(box),conditions:[...el.querySelectorAll('[data-research-item="falsifier"]')].map(box)};})};
+   });
+   assert.ok(layout.scroll<=width,`${width}px: no horizontal page overflow`);
+   for(const column of layout.columns){
+    assert.ok(column.borders.every(item=>item.width>0&&item.kind==='solid'),`${width}px: all four outer borders remain visible`);
+    assert.ok(column.padding>=12,`${width}px: outer frame has padding`);
+    assert.equal(column.headingBorder,0,`${width}px: heading does not repeat the outer color line`);
+    assert.ok([...column.evidence,...column.conditions].every(card=>card.left-column.left>=12&&column.right-card.right>=12),`${width}px: inner cards do not touch the outer frame`);
+   }
+   const[left,right]=layout.columns;
+   if(width>760){
+    assert.ok(right.left>=left.right,`${width}px: two side columns remain separate`);
+    const same=(a,b,what)=>{assert.ok(Math.abs(a.top-b.top)<1,`${width}px: ${what} top aligns`);assert.ok(Math.abs(a.height-b.height)<1,`${width}px: ${what} height aligns`);};
+    for(const part of['title','claim','support','falsifier'])same(left[part],right[part],part);
+    left.evidence.slice(0,right.evidence.length).forEach((card,index)=>same(card,right.evidence[index],`evidence ${index+1}`));
+    same(left.conditions[0],right.conditions[0],'falsifier item');
+    assert.ok(Math.abs(left.bottom-right.bottom)<1,`${width}px: side frames end together with unequal item counts`);
+   }else{
+    assert.ok(right.top>=left.bottom,'Mobile returns to one natural column');
+    assert.ok(right.claim.height<left.claim.height,'Mobile short claim has its natural height');
+    assert.ok(right.evidence[0].height<left.evidence[0].height,'Mobile text-only card is not forced to the chart card height');
+   }
+   await svg.focus();await page.keyboard.press('End');
+   assert.ok(await chart.locator('[data-chart-axis-date]').count()>=2);
+   assert.equal(await chart.locator('[data-chart-axis-value]').count(),3);
+   assert.match(await chart.locator('[data-chart-tooltip]').innerText(),/2032-03-05.*MA20/s);
+   const tip=await chart.locator('[data-chart-tooltip]').boundingBox();assert.ok(tip.x>=0&&tip.x+tip.width<=width,`${width}px: tooltip stays inside viewport`);
+   report.layouts.push(layout);
+   if(out){await page.evaluate(()=>document.fonts.ready);const file=path.join(out,`aligned-cards-${width}.png`);await page.screenshot({path:file,fullPage:true});report.screenshots.push(file);}
+  }
+  report.checks.push('1280px and 960px outer frames and corresponding title/claim/evidence/falsifier rows align and stretch equally; 390px returns to natural card heights');
+  await page.setViewportSize({width:1280,height:800});
+  await page.waitForFunction(()=>[...document.querySelectorAll('[data-metric-trend]')].every(el=>Math.abs(el.viewBox.baseVal.width-el.getBoundingClientRect().width)<1));
   const longLabel=page.locator('.judgment-metric-heading>span').filter({hasText:'合成指标长名称'}).first();
   assert.equal(await longLabel.getAttribute('title'),metrics[1].name);
   assert.equal(await longLabel.evaluate(el=>getComputedStyle(el).textOverflow),'ellipsis');
