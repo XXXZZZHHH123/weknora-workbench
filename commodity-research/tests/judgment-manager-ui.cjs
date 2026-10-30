@@ -21,7 +21,7 @@ class Element {
   close(){this.open=false;}
   click(){}
 }
-function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,analysisReused=false}={}) {
+function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,analysisReused=false,analysisComplete=undefined,previewNotice='',boundIndicators=[]}={}) {
   const ids=['judgment-manager',...['original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','structured','variety','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
   const nodes=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
   for(const name of ['current-delete','history-download','history-reuse','history-delete','history-state','history-more'])nodes['logic-'+name]=new Element('logic-'+name);
@@ -48,7 +48,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
     Object.assign(review.sections[1].items[0],{status:'ready',can_bind:true,binding:{series_id:'second-visual',name:'Second quantity',unit:'吨'}});
   }
   if(caliberMode){const item=review.sections[0].items[0];item.binding=item.ai_binding;item.caliber={catalog_unit:caliberMode==='catalog'?'kg':null,model_unit:'单位不一致',mode:'',unit:'',basis:'',scope_note:'',can_adopt_catalog:caliberMode==='catalog',can_declare:caliberMode==='declared',confirmation_required:true,confirmed:false};}
-  function preview(){return {analysis_reused:analysisReused,draft_id:review.draft_id,base_version:2,markdown:'# Proposed',diff:{markdown:'-old\n+new',fields:[{label:'Rule',before:null,after:'<img onerror=bad>'}]},bindings:[],unresolved:[],candidate_count:1,catalog_total:5,review_available:true,review:JSON.parse(JSON.stringify(review))};}
+  function preview(){return {analysis_complete:analysisComplete,analysis_reused:analysisReused,notice:previewNotice,draft_id:review.draft_id,base_version:2,markdown:'# Proposed',diff:{markdown:'-old\n+new',fields:[{label:'Rule',before:null,after:'<img onerror=bad>'}]},bindings:boundIndicators,unresolved:[],candidate_count:1,catalog_total:5,review_available:true,review:JSON.parse(JSON.stringify(review))};}
   const deleted=new Set(),downloads=[],confirmations=[];
   const window={RESEARCH_PREFIX:'/research/workbenches/synthetic',crypto:webcrypto,confirm(message){confirmations.push(message);return confirmDelete;}};
   class DownloadURL extends URL {static createObjectURL(blob){downloads.push(blob);return 'blob:synthetic';}static revokeObjectURL(){}}

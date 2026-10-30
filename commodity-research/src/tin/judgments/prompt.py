@@ -3,7 +3,7 @@ import json
 from tin.schemas.judgment import PricingPower, MovingAverageTarget
 from tin.judgments.output_schema import OUTPUT_SCHEMA
 
-PROMPT_VERSION = 'research-logic-v15'
+PROMPT_VERSION = 'research-logic-v16'
 SOURCE_BINDING_PROTOCOL = '''本次目录中的全部字段均已通过当前研究台来源权限核验；primary和macro只是来源分类，不是可用范围或许可等级。
 原文引用的宏观、跨市场或跨品种因素可以作为数据锚、白名单、阈值或证伪依据，不得以“不是本品种专属指标”或“不属于商品侧Series”为由排除目录中的相容字段。
 指标的观测频率与研究期限分开处理：沿用原文明确的统计周期、比较方式和连续期数，不擅自要求更高频数据；原文的低频条件可用于短期研究观察，不能因为目录为低频就改成高频或声称没有指标。
@@ -15,7 +15,7 @@ GENERAL_METHOD = '''把完整原文理解为研究方法与待验证观点，不
 区分短期催化与中长期结构，定价权按当前市场证据判断，不按品种名称套固定分类。
 成本优先识别生产决策相关的现金口径，区分完全成本，说明动态变化；不代填成本数字。
 调研信息注明立场、样本、时点及价格是否已反映，不能把调研观点直接当作事实。
-白名单精简且互补，兼顾供需、库存和价差等原文支持的维度；没有合适数据就明确未绑定。
+白名单精简且互补，兼顾供需、库存和价差等原文支持的维度；这不限制原文论据和独立数据锚的完整保留，没有合适数据才明确未绑定。
 总线合成、对抗称重、编排层仅在原文支持时选择，不根据商品关键词决定范式。
 保留可证伪性、数据缺口和观点稳定性；不自行计算交易建议或执行交易。\n''' + SOURCE_BINDING_PROTOCOL
 
@@ -50,6 +50,7 @@ PRICING_POWER_SCHEMA = PricingPower.model_json_schema()
 OUTPUT_PROTOCOL = '''只返回一个严格JSON对象，字段只有 judgment、binding_units、rule_quotes、unresolved。
 judgment只允许：contradiction、marginal_focus、cost_line、pricing_power、time_dimension、survey_notes、whitelist、paradigm、tone、tone_note、thresholds、priority_rule、falsifiers。
 contradiction格式为 {"bull":{"claim":"","evidence":[]},"bear":{"claim":"","evidence":[]},"window":{"from":null,"to":null,"note":null},"text":null}；evidence每项只写desc、series_id(可null)、note。
+每条evidence围绕一个可核对的数据锚组织，保留它支持或反对主张的含义。同一句话涉及多个独立指标时，由你结合全文拆为分别可绑定的依据，不把整句照抄为一个series_id:null条目后仅在其他小节绑定各指标。目录中存在语义、维度、频率和口径相容的真实字段时，论据本身应选择该字段；仅在whitelist、marginal_focus、cost_line或规则中引用它，不能代替此论据的绑定。纯定性逻辑或确实没有相容字段时保持series_id:null，不为了绑定而改变原文、猜测口径或省略多空依据。
 marginal_focus始终为数组，每项为 {"desc":"","series_id":null}。
 unresolved中的未来观察、验证或证伪条件使用business_condition和rule_kind两个显式字段；business_condition只放完整原文中的非空连续逐字摘录，rule_kind由你依据完整原文明确选择threshold或falsifier。两字段同时填写或同时为null，不把程序缺陷、接口限制、目录/单位缺口或模型作业说明混进business_condition，不补造规则数字或触发结果。不能为了转换指标名称而改写逐字摘录；内部ID和供应商编号到自然名称的转换由展示层完成。text与reason保留待确认内容和实现缺口，不能用它们或section标题代替显式业务条件类型。
 cost_line为JSON null或对象；对象的type只使用JSON字符串"cash"、JSON字符串"full"或JSON null；value与source为JSON null，items始终为数组（每项含desc、series_id、value），note为文本或null。

@@ -134,9 +134,9 @@ def test_already_mapped_evidence_is_not_duplicated_and_carries_source_unit_for_r
     assert coverage['items'][2]['source_unit'] == 'kg'
 
 
-@pytest.mark.parametrize('target', ['/judgment', '/judgment/contradiction/bull/claim',
+@pytest.mark.parametrize('target', ['/judgment',
     '/binding_units', '/judgment/contradiction/bear/evidence/0', '/judgment/contradiction/bull/evidence/99'])
-def test_container_wrong_role_and_missing_mapping_never_hide_an_item(target):
+def test_container_metadata_and_missing_mapping_never_hide_an_item(target):
     result, coverage = keep(mapping={'a': target})
     assert result.result.payload.contradiction.bull.evidence[0].desc == inventory()['items'][0]['quote']
     assert coverage['items'][0]['retained'] is True
@@ -169,7 +169,7 @@ def test_retained_items_stay_in_review_prefix_before_program_quarantine_notes():
     assert result.candidate_document['unresolved'][pointer]['text'] == reviewed[pointer]['text']
 
 
-def test_no_false_coverage_when_multiple_distinct_items_point_at_the_same_card():
+def test_multiple_source_items_can_share_a_model_declared_combined_card():
     inv = inventory()
     inv['items'][1]['kind'] = 'bull_evidence'
     doc = document()
@@ -178,18 +178,19 @@ def test_no_false_coverage_when_multiple_distinct_items_point_at_the_same_card()
     result, coverage = retain_coverage(first, validate_inventory(inv, TEXT),
         {'a': '/judgment/contradiction/bull/evidence/0', 'b': '/judgment/contradiction/bull/evidence/0'},
         TEXT, CATALOG, variety='UNIT', actor='synthetic-user')
-    assert len(result.result.payload.contradiction.bull.evidence) == 2
-    assert coverage['retained'] == 2
+    assert len(result.result.payload.contradiction.bull.evidence) == 1
+    assert coverage['retained'] == 1
+    assert all(not item['retained'] for item in coverage['items'][:2])
 
 
-def test_different_semantic_role_cannot_be_silently_absorbed_into_a_general_summary():
+def test_model_can_reorganize_descriptions_but_cannot_hide_quantitative_conditions_in_a_summary():
     result, coverage = keep(mapping={'a': '/judgment/contradiction/bull/claim',
                                      'b': '/judgment/contradiction/bear/claim',
                                      'c': '/judgment/contradiction/bull/claim'})
-    assert len(result.result.payload.contradiction.bull.evidence) == 1
-    assert len(result.result.payload.contradiction.bear.evidence) == 1
+    assert len(result.result.payload.contradiction.bull.evidence) == 0
+    assert len(result.result.payload.contradiction.bear.evidence) == 0
     assert len(result.result.payload.unstructured) == 1
-    assert coverage['retained'] == 3
+    assert coverage['retained'] == 1
 
 
 def test_rules_must_map_to_their_own_source_condition_even_if_both_are_valid():

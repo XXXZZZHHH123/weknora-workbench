@@ -106,7 +106,7 @@
           if (value.model_id) byId('model').value = value.model_id;
           if (value.source_name) text('file-name', value.source_name);
           if (byId('new-panel-title') && value.panel_title !== undefined) byId('new-panel-title').value = value.panel_title;
-          presentDraft(value); await hydrateReview(value); tab('analyze'); inform(value.analysis_reused ? '已复用相同原文的解析结果。' : '');
+          presentDraft(value); await hydrateReview(value); tab('analyze'); inform(previewNotice(value));
         } else inform(job.message || ({failed: '分析失败，请重新发起。', interrupted: '分析已中断，请重新发起。', expired: '分析结果已过期，请重新分析。', applied: '此分析已保存。'}[job.state] || '分析暂不可用。'), true);
         announceJob(job); setBusy(false);
       } catch (error) {
@@ -218,6 +218,11 @@
     if (typeof value === 'object') return Object.keys(value).length + ' 项研究信息';
     return display.text(String(value));
   }
+  function previewNotice(value) {
+    if (value.analysis_complete === false) return value.notice || '部分原文尚未完成核对，已保留可用结果。';
+    if (value.analysis_reused) return '已复用相同原文的解析结果。';
+    return value.notice || '';
+  }
   function presentDraft(value, preserveEdits = false) {
     draft = value; byId('preview').hidden = false;
     text('preview-md', value.markdown); text('generated-diff', value.diff?.markdown);
@@ -242,7 +247,7 @@
     else for (const [id, edit] of reviewEdits) if (!edit.dirty) reviewEdits.delete(id);
     review = value.review || null;
     if (!preserveEdits) reviewView = 'all';
-    renderReview();
+    renderReview(); inform(previewNotice(value));
   }
   function element(tag, className, value) {
     const node = document.createElement(tag); if (className) node.className = className;
@@ -256,7 +261,8 @@
     byId('apply').disabled = busy || !draft || managed?.can_write === false || unsynced;
     const note = byId('review-save-note');
     if (note) note.textContent = !review ? '' : unsynced ? '修改尚未同步，请处理红框位置后再保存。' :
-      pendingCount() ? `有 ${pendingCount()} 项需处理，也可先保存草稿；未通过校验的规则不会参与执行。` : '内容已解析，可以保存草稿；保存后不会自动生效。';
+      pendingCount() ? `有 ${pendingCount()} 项需处理，也可先保存草稿；未通过校验的规则不会参与执行。` :
+      draft?.analysis_complete === false ? '部分原文尚未完成核对，可先保存现有草稿。' : '内容已解析，可以保存草稿；保存后不会自动生效。';
     if (byId('review-reuse')) byId('review-reuse').disabled = busy || !review || unsynced || !managed?.can_write;
     if (byId('review-edit')) byId('review-edit').disabled = busy;
   }
@@ -320,7 +326,8 @@
     if (!review?.sections || !byId('review-items')) return;
     const allItems = review.sections.flatMap(section => section.items || []), count = allItems.filter(needsAttention).length;
     if (!count) reviewView = 'all';
-    byId('review-count').textContent = `已解析 ${review.total ?? allItems.length} 项 · 需处理 ${count} 项`;
+    const bound = new Set((draft?.bindings || []).map(binding => binding.series_id).filter(identifier => typeof identifier === 'string' && identifier)).size;
+    byId('review-count').textContent = `已解析 ${review.total ?? allItems.length} 项 · 已关联 ${bound} 项指标 · 需处理 ${count} 项`;
     byId('review-attention')?.setAttribute('aria-pressed', String(reviewView === 'attention'));
     byId('review-all')?.setAttribute('aria-pressed', String(reviewView === 'all'));
     const visibleSections = review.sections.filter(section => reviewView === 'all' || section.items?.some(needsAttention));
@@ -569,7 +576,7 @@
         result = await api('/review/update', {...body, binding_warning_token: error.bindingWarningToken});
       }
       if (body.remember) rememberedChoices.add(item.id); else rememberedChoices.delete(item.id);
-      reviewEdits.delete(item.id); presentDraft(result, true); inform('');
+      reviewEdits.delete(item.id); presentDraft(result, true);
     } catch (error) {
       if (error.status === 409) { invalidate(); inform(error.message, true); }
       else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; if (caliber) edit.errorFields = [...new Set([...edit.errorFields, 'caliber'])]; edit.renderErrors?.(); inform(''); }

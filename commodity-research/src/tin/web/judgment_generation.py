@@ -414,7 +414,55 @@ def assessed_response(response, body, before, candidates, scope):
         actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
     # Keep transport accounting outside the judgment protocol and its executable rules.
     result.source_mapping = mapping
+    if inventory is not None:
+        from tin.judgments.coverage import coverage_issues
+        result.issues.extend(coverage_issues(result, inventory, mapping))
     return result
+
+
+def remap_source_paths(mapping, remapping):
+    result = {}
+    for identifier, value in mapping.items():
+        paths = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+        changed = []
+        for path in paths:
+            match = next((old for old in sorted(remapping, key=len, reverse=True)
+                if path == old or path.startswith(old + '/')), None)
+            changed.extend([new + path[len(match):] for new in remapping[match]] if match else [path])
+        result[identifier] = list(dict.fromkeys(changed)) if changed else None
+    return result
+
+
+async def refine_anchors(scope, body, before, assessment, candidates):
+    from tin.judgments.anchor_binding import targets, binding_protocol, apply_binding_plan
+    requested = targets(assessment.document)
+    if not any(item['kind'] == 'evidence' for item in requested):
+        return assessment, {'attempted': False}
+    try:
+        await fresh(scope, before)
+        await notify_progress('analyzing')
+        response = await completion(scope, body.model_id, make_prompt(binding_protocol(requested), candidates, body.text))
+        document, metadata = apply_binding_plan(assessment.document, response, body.text, candidates)
+        candidate, candidate_metadata = apply_binding_plan(
+            assessment.candidate_document or assessment.document, response, body.text, candidates)
+        checked = validate_analysis(document, body.text, candidates, variety=before['variety'],
+            actor=scope.identity.user_id, written_at=assessment.result.payload.written_at)
+        await fresh(scope, before)
+        refined = copy.deepcopy(assessment)
+        refined.document, refined.candidate_document, refined.result = document, candidate, checked
+        refined.candidate_history = (refined.candidate_history or []) + [copy.deepcopy(candidate)]
+        refined.source_mapping = remap_source_paths(getattr(assessment, 'source_mapping', None) or {},
+            candidate_metadata['path_remap'])
+        return refined, {'attempted': True, **metadata}
+    except AnalysisError:
+        code, message = 'anchor_binding_invalid', '核心依据的指标复核未通过原文或目录核验，已保留原有内容与可用绑定。'
+    except HTTPException as error:
+        if error.status_code not in {413, 422, 429, 503}:
+            raise
+        code, message = 'anchor_binding_unavailable', '核心依据的指标复核尚未完成，已保留原有内容与可用绑定。'
+    partial = copy.deepcopy(assessment)
+    partial.issues.append({'code': code, 'path': '/judgment/contradiction', 'severity': 'warning', 'message': message})
+    return partial, {'attempted': True, 'completed': False}
 
 
 def validation_detail(error):
@@ -677,13 +725,14 @@ async def _analyze_scoped(scope, body):
         raise HTTPException(409, '研究逻辑已有新版本，请刷新后重新分析')
     from tin.web import judgment_analysis_cache as cache
     from tin.judgments.coverage import inventory_prompt, validate_inventory, retain_coverage
+    from tin.judgments.anchor_binding import binding_protocol
     try:
         inventory_request = inventory_prompt(body.text)
     except AnalysisError as error:
         raise HTTPException(422, validation_detail(error)) from None
     model = await current_model(scope, body.model_id)
     protocol = cache.digest([PROMPT_VERSION, GENERAL_METHOD, OUTPUT_PROTOCOL, SELECTION_PROTOCOL,
-        inventory_request])
+        inventory_request, binding_protocol([])])
     key = cache.identity(scope, body, before, model, protocol)
     await fresh(scope, before)
     ticket = await run_in_threadpool(cache.claim, scope, key)
@@ -706,6 +755,7 @@ async def _analyze_scoped(scope, body):
                 copy.deepcopy(stored['candidate_history']))
             repair_attempts = stored['repair_attempts']
             coverage = copy.deepcopy(stored['coverage'])
+            anchor_bindings = copy.deepcopy(stored.get('anchor_bindings', {'attempted': False}))
             candidate_count, selected = stored['candidate_count'], stored['candidate_subset']
         else:
             await notify_progress('analyzing')
@@ -716,6 +766,11 @@ async def _analyze_scoped(scope, body):
                 candidates, selected = await choose_catalog(scope, body.model_id, before['catalog'], body.text)
                 await fresh(scope, before)
                 assessment, repair_attempts = await analyzed_completion(scope, body, before, candidates, selected)
+                assessment, anchor_bindings = await refine_anchors(scope, body, before, assessment, candidates)
+                from tin.judgments.coverage import coverage_issues
+                assessment.issues = [issue for issue in assessment.issues if issue.get('code') != 'source_mapping_invalid']
+                assessment.issues.extend(coverage_issues(assessment, inventory,
+                    getattr(assessment, 'source_mapping', None) or {}))
                 assessment, coverage = retain_coverage(assessment, inventory,
                     getattr(assessment, 'source_mapping', None) or {}, body.text, candidates,
                     variety=before['variety'], actor=scope.identity.user_id,
@@ -723,8 +778,9 @@ async def _analyze_scoped(scope, body):
                 candidate_count = len(candidates)
             finally:
                 _source_inventory.reset(marker)
-            stable = not any(issue.get('code') in {'repair_capacity', 'repair_unavailable',
-                'repair_invalid', 'repair_changed_verified_rule', 'coverage_pending_capacity'}
+            stable = coverage['retained'] == 0 and not any(issue.get('code') in {'repair_capacity', 'repair_unavailable',
+                'repair_invalid', 'repair_changed_verified_rule', 'coverage_pending_capacity',
+                'source_mapping_invalid', 'anchor_binding_invalid', 'anchor_binding_unavailable'}
                 for issue in assessment.issues)
             stored = {
                 'inventory': inventory, 'coverage': coverage, 'document': assessment.document,
@@ -732,7 +788,7 @@ async def _analyze_scoped(scope, body):
                 'candidate_history': assessment.candidate_history or [assessment.document],
                 'issues': assessment.issues, 'written_at': assessment.result.payload.written_at.isoformat(),
                 'repair_attempts': repair_attempts, 'candidate_count': candidate_count,
-                'candidate_subset': selected}
+                'candidate_subset': selected, 'anchor_bindings': anchor_bindings}
             if not stable:
                 await run_in_threadpool(cache.abandon, scope, ticket)
     except AnalysisError as error:
@@ -758,6 +814,7 @@ async def _analyze_scoped(scope, body):
                    'variety': analyzed.payload.variety, 'written_at': analyzed.payload.written_at.isoformat(),
                    'validation_issues': assessment.issues, 'repair_attempts': repair_attempts,
                    'source_coverage': coverage, 'analysis_reused': reused,
+                   'anchor_bindings': anchor_bindings,
                    'analysis_snapshot': key if reused or stable else None}
         if body.variety:
             preview['selected_variety'] = body.variety
@@ -828,6 +885,7 @@ def persist(scope, preview):
                     'analysis_snapshot': preview.get('analysis_snapshot'),
                     'analysis_reused': preview.get('analysis_reused', False),
                     'source_coverage': preview.get('source_coverage'),
+                    'anchor_bindings': preview.get('anchor_bindings'),
                     'binding_units': result.binding_units, 'rule_quotes': result.rule_quotes,
                     'unresolved': result.unresolved, 'validation_issues': preview.get('validation_issues', []),
                     'repair_attempts': preview.get('repair_attempts', 0),

@@ -1,5 +1,6 @@
 """Binding warnings require an explicit acknowledgement of the exact selection."""
 import copy
+import pytest
 
 from sqlalchemy import select
 
@@ -136,3 +137,23 @@ def test_verified_original_unit_avoids_unnecessary_warning_and_describes_real_mi
         if expected == 422:
             assert '原文单位为“吨”' in result.json()['detail']['message']
             assert 'kg' in result.json()['detail']['message']
+
+
+@pytest.mark.parametrize('snapshot', ['legacy', None, 'stable-interpretation'])
+def test_preview_reports_partial_analysis_without_claiming_completion(generator, snapshot):
+    client, headers, _, _, _ = generator
+    preview = generate(client, headers).json()
+    stored = generation.previews.items[preview['draft_id']][2]
+    if snapshot == 'legacy':
+        stored.pop('analysis_snapshot', None)
+    else:
+        stored['analysis_snapshot'] = snapshot
+    stored['analysis_reused'] = snapshot != 'legacy'
+    response = update(client, headers, preview, pick(preview, 'binding'))
+    assert response.status_code == 200, response.text
+    value = response.json()
+    assert value['analysis_complete'] is (snapshot is not None)
+    if snapshot is None:
+        assert value['notice'] == '部分原文尚未完成核对，已保留可用结果。'
+    elif snapshot == 'stable-interpretation':
+        assert value['notice'] == '已复用相同原文的解析结果。'

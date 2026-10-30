@@ -41,5 +41,24 @@ const {generateReview, reviewControl, descendants, flush} = require('./judgment-
     assert.equal(env.nodes['logic-status'].textContent, '已复用相同原文的解析结果。');
     env.context.window.JudgmentManager.close();
   }
-  console.log('4 binding warning/replay interaction scenarios passed');
+  {
+    const notice = '部分原文尚未完成核对，已保留可用结果。';
+    const env = await generateReview({analysisComplete: false, previewNotice: notice, readyMode: 'all'});
+    assert.equal(env.nodes['logic-status'].textContent, notice, 'Partial background results do not claim analysis finished');
+    assert.match(env.nodes['logic-review-save-note'].textContent, /部分原文尚未完成核对/, 'A zero-pending partial result still does not claim all content was parsed');
+    env.context.window.JudgmentManager.close();
+  }
+  {
+    const env = await generateReview({readyMode: true, boundIndicators: [{series_id: 'synthetic-a'}, {series_id: 'synthetic-b'}, {series_id: 'synthetic-a'}]});
+    const count = '已解析 4 项 · 已关联 2 项指标 · 需处理 1 项';
+    assert.equal(env.nodes['logic-review-count'].textContent, count);
+    const requests = env.requests.length;
+    await env.nodes['logic-review-attention'].fire('click');
+    assert.equal(env.nodes['logic-review-count'].textContent, count, 'The binding count covers the entire preview, even in the attention filter');
+    await env.nodes['logic-review-all'].fire('click');
+    assert.equal(env.nodes['logic-review-count'].textContent, count);
+    assert.equal(env.requests.length, requests, 'Showing statistics does not preload indicator directories or observations');
+    env.context.window.JudgmentManager.close();
+  }
+  console.log('6 binding warning/replay/visibility interaction scenarios passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

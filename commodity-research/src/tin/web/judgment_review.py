@@ -127,7 +127,11 @@ def source_unit_for_item(preview, item):
         else '/judgment/' + '/'.join(map(str, item['path'])))
     units = set()
     for covered in preview.get('source_coverage', {}).get('items', []):
-        if (covered.get('candidate_path') or covered.get('path')) != path:
+        paths = [covered.get('candidate_path'), covered.get('path')]
+        for name in ('candidate_paths', 'paths'):
+            if isinstance(covered.get(name), list):
+                paths.extend(covered[name])
+        if path not in paths:
             continue
         unit, quote = covered.get('source_unit'), covered.get('quote')
         if isinstance(unit, str) and unit.strip() and isinstance(quote, str) and unit in quote and quote in preview['text']:
@@ -492,6 +496,7 @@ def preview_response(scope, token, preview, state):
     catalog = state['catalog']
     result = checked(preview, preview['document'], catalog, scope)
     known = {field['id']: field for field in catalog}
+    complete = 'analysis_snapshot' not in preview or preview['analysis_snapshot'] is not None
     return {'draft_id': token, 'base_version': preview['base_version'], 'source_text': preview['text'],
         'markdown': dump_markdown(result.payload), 'diff': version_diff(state['base_payload'], result.payload),
         'bindings': [{key: value for key, value in binding(known[sid]).items() if key in ('series_id', 'name', 'unit')}
@@ -501,7 +506,9 @@ def preview_response(scope, token, preview, state):
         'repair_attempts': preview['repair_attempts'], 'review_available': True,
         'review': review_response(scope, token, preview, catalog),
         'analysis_reused': preview.get('analysis_reused') is True,
-        'notice': '已复用相同原文的解析结果。' if preview.get('analysis_reused') else '解析完成。'}
+        'analysis_complete': complete,
+        'notice': '部分原文尚未完成核对，已保留可用结果。' if not complete else
+            '已复用相同原文的解析结果。' if preview.get('analysis_reused') else '解析完成。'}
 
 
 def review_snapshot(scope, preview, page_query=None):
