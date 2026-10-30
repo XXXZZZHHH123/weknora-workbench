@@ -12,7 +12,7 @@
   </div>
   {% if metric.segments %}
   <div class="judgment-chart-toolbar"><select data-chart-semantics aria-label="趋势显示用语"><option value="change">升降</option><option value="inventory">库存</option></select><label>MA <select data-chart-ma aria-label="选择均线"><option value="0">关闭</option><option value="5">5</option><option value="10">10</option><option value="20">20</option><option value="60">60</option><option value="120">120</option><option value="custom">自定义</option></select></label><input data-chart-ma-custom type="number" min="2" max="120" step="1" value="20" aria-label="均线观测期数" hidden><span data-chart-status role="status" hidden></span></div>
-  <div class="judgment-chart-plot"><svg data-metric-trend viewBox="0 0 240 48" role="img" aria-label="{{ human_text(metric.name) }}近期观测走势" preserveAspectRatio="none" tabindex="0">{% for segment in metric.segments %}<polyline points="{{ segment }}" />{% endfor %}</svg><div class="judgment-chart-tooltip" data-chart-tooltip hidden></div></div>
+  <div class="judgment-chart-plot"><div class="judgment-chart-unit" data-chart-unit title="{{ metric.unit or '数值' }}">{{ metric.unit or '数值' }}</div><svg data-metric-trend viewBox="0 0 240 48" role="img" aria-label="{{ human_text(metric.name) }}近期观测走势，横轴日期，纵轴数值{% if metric.unit %}（{{ metric.unit }}）{% endif %}" preserveAspectRatio="none" tabindex="0">{% for segment in metric.segments %}<polyline points="{{ segment }}" />{% endfor %}</svg><div class="judgment-chart-tooltip" data-chart-tooltip hidden></div></div>
   {% endif %}
   {% else %}<p class="judgment-metric-missing">暂无可用数值</p>{% endif %}
 </div>

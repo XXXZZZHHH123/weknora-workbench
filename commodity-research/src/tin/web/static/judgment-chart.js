@@ -3,6 +3,11 @@
   const colors = ['#ED7D31', '#4472C4', '#8064A2', '#6B8E23'];
   const pending = new Map();
   const number = value => new Intl.NumberFormat('zh-CN', {maximumSignificantDigits: 15}).format(value);
+  const axisNumber = value => {
+    const magnitude = Math.abs(value);
+    if (magnitude && (magnitude < .001 || magnitude >= 1e7)) return value.toExponential(2).replace(/\.?0+e/, 'e');
+    return new Intl.NumberFormat('zh-CN', {maximumSignificantDigits: 4}).format(value);
+  };
 
   function movingAverage(timeline, window) {
     if (!Number.isInteger(window) || window < 2 || window > 120) return timeline.map(() => null);
@@ -24,11 +29,15 @@
   }
 
   function boundaryText(boundary, unit = '') {
-    const operator = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于', between: '区间边界'}[boundary.operator] || '';
+    const operator = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于', between: '区间边界',
+      crosses_below: '下穿', crosses_above: '上穿'}[boundary.operator] || '';
+    if (boundary.kind === 'sma') return `${boundary.name || ''} ${operator} MA${boundary.window}`.trim();
     return `${boundary.name} ${operator} ${number(boundary.value)} ${unit}`.trim();
   }
 
-  function shape(timeline, boundaries, selectedWindow) {
+  function shape(timeline, boundaries, selectedWindow, width = 480) {
+    width = Number.isFinite(width) && width >= 200 ? width : 480;
+    const plot = {width, height: 156, left: 48, right: width - 10, top: 8, bottom: 128};
     const points = timeline.map(point => ({date: point.date, value: point.value, time: Date.parse(point.date)}));
     const configured = [...new Set(boundaries.filter(item => item.kind === 'sma').map(item => item.window))];
     if (selectedWindow && !configured.includes(selectedWindow)) configured.push(selectedWindow);
@@ -36,24 +45,34 @@
     const values = points.filter(point => Number.isFinite(point.value) && Number.isFinite(point.time)).map(point => point.value);
     for (const boundary of boundaries) if (boundary.kind === 'fixed' && Number.isFinite(boundary.value)) values.push(boundary.value);
     for (const average of averages) for (const value of average.values) if (value !== null) values.push(value);
-    if (!values.length) return {points: [], averages: [], fixed: []};
+    if (!values.length) return {points: [], averages: [], fixed: [], plot, axes: {x: [], y: []}};
     const low = Math.min(...values), high = Math.max(...values);
     const denominator = Math.max(Math.abs(low), Math.abs(high), 1);
     const scaledLow = low / denominator, scaledHigh = high / denominator;
     const span = scaledHigh - scaledLow;
     const padding = span ? span * .08 : Math.max(Math.abs(scaledHigh) * .04, 1 / denominator);
     const minimum = scaledLow - padding, maximum = scaledHigh + padding;
-    const start = points.find(point => Number.isFinite(point.time))?.time;
-    const end = points.findLast(point => Number.isFinite(point.time))?.time;
-    const xOf = time => start === end ? 240 : 12 + (time - start) / (end - start) * 456;
+    const dated = points.filter(point => Number.isFinite(point.time));
+    const start = dated[0]?.time, end = dated.at(-1)?.time;
+    const tickValues = (span ? [scaledHigh, (scaledHigh + scaledLow) / 2, scaledLow]
+      : [maximum, scaledHigh, minimum]).map(value => value * denominator).filter(Number.isFinite);
+    const labels = tickValues.map(axisNumber);
+    plot.left = Math.min(92, Math.max(44, ...labels.map(label => label.length * 6.2 + 9)));
+    const xOf = time => start === end ? (plot.left + plot.right) / 2
+      : plot.left + (time - start) / (end - start) * (plot.right - plot.left);
     // Scale before subtracting: two finite opposite-signed extremes may overflow their difference.
     const scaledSpan = maximum - minimum;
-    const yOf = value => scaledSpan ? 10 + (maximum - value / denominator) / scaledSpan * 102 : 61;
+    const yOf = value => scaledSpan ? plot.top + (maximum - value / denominator) / scaledSpan * (plot.bottom - plot.top)
+      : (plot.top + plot.bottom) / 2;
     for (const point of points) {
       point.x = xOf(point.time);
       point.y = typeof point.value === 'number' && Number.isFinite(point.value) ? yOf(point.value) : null;
     }
-    return {points, averages: averages.map(average => ({...average,
+    const tickIndexes = width < 400 ? [0, dated.length - 1] : [0, Math.floor((dated.length - 1) / 2), dated.length - 1];
+    const dateTicks = [...new Set(tickIndexes)].filter(index => dated[index]).map(index => ({
+      x: xOf(dated[index].time), date: dated[index].date, label: String(dated[index].date).slice(0, 10)}));
+    const axes = {x: dateTicks, y: tickValues.map((value, index) => ({value, label: labels[index], y: yOf(value)}))};
+    return {points, plot, axes, averages: averages.map(average => ({...average,
       points: average.values.map((value, index) => ({...points[index], value, y: value === null ? null : yOf(value)}))})),
       fixed: boundaries.filter(item => item.kind === 'fixed' && Number.isFinite(item.value)).map(item => ({...item, y: yOf(item.value)}))};
   }
@@ -65,12 +84,14 @@
     return node;
   }
 
-  function paths(svg, points, attributes) {
+  function paths(svg, points, attributes, title) {
     let segment = [];
     function flush() {
       if (!segment.length) return;
-      if (segment.length === 1) svg.append(element('circle', {...attributes, cx: segment[0].x, cy: segment[0].y, r: 2.5}));
-      else svg.append(element('polyline', {...attributes, points: segment.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')}));
+      const path = segment.length === 1 ? element('circle', {...attributes, cx: segment[0].x, cy: segment[0].y, r: 2.5})
+        : element('polyline', {...attributes, points: segment.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')});
+      if (title) path.append(element('title', {}, title));
+      svg.append(path);
       segment = [];
     }
     for (const point of points) {
@@ -120,19 +141,36 @@
 
     function message(text) { status.textContent = text; status.hidden = !text; }
     function render() {
-      rendered = shape(metric.timeline || metric.points || [], metric.boundaries || [], selectedWindow);
-      svg.replaceChildren(); svg.setAttribute('viewBox', '0 0 480 132');
-      for (const y of [10, 61, 112]) svg.append(element('line', {x1: 12, x2: 468, y1: y, y2: y, class: 'judgment-chart-grid'}));
+      const width = svg.getBoundingClientRect().width || root.clientWidth || 480;
+      rendered = shape(metric.timeline || metric.points || [], metric.boundaries || [], selectedWindow, width);
+      const plot = rendered.plot;
+      svg.replaceChildren(); svg.setAttribute('viewBox', `0 0 ${plot.width} ${plot.height}`);
+      const unit = root.querySelector('[data-chart-unit]');
+      if (unit) { unit.textContent = metric.unit || '数值'; unit.title = metric.unit || '数值'; }
+      for (const tick of rendered.axes.y) {
+        svg.append(element('line', {x1: plot.left, x2: plot.right, y1: tick.y, y2: tick.y, class: 'judgment-chart-grid'}));
+        svg.append(element('text', {x: plot.left - 7, y: tick.y, dy: '.32em', 'text-anchor': 'end', class: 'judgment-chart-axis-label', 'data-chart-axis-value': tick.value}, tick.label));
+      }
+      svg.append(element('path', {d: `M${plot.left} ${plot.top}V${plot.bottom}H${plot.right}`, class: 'judgment-chart-axis-line'}));
+      rendered.axes.x.forEach((tick, index, ticks) => {
+        svg.append(element('line', {x1: tick.x, x2: tick.x, y1: plot.bottom, y2: plot.bottom + 4, class: 'judgment-chart-axis-line'}));
+        const anchor = ticks.length === 1 ? 'middle' : index === 0 ? 'start' : index === ticks.length - 1 ? 'end' : 'middle';
+        svg.append(element('text', {x: tick.x, y: plot.height - 8, 'text-anchor': anchor, class: 'judgment-chart-axis-label', 'data-chart-axis-date': tick.date}, tick.label));
+      });
       for (const boundary of rendered.fixed) {
-        const line = element('line', {x1: 12, x2: 468, y1: boundary.y, y2: boundary.y, class: 'judgment-chart-boundary', 'data-chart-boundary': '', 'data-boundary-value': boundary.value});
+        const line = element('line', {x1: plot.left, x2: plot.right, y1: boundary.y, y2: boundary.y, class: 'judgment-chart-boundary', 'data-chart-boundary': '', 'data-boundary-value': boundary.value});
         line.append(element('title', {}, boundaryText(boundary, metric.unit || '')));
         svg.append(line);
-        svg.append(element('text', {x: 465, y: Math.max(10, boundary.y - 4), 'text-anchor': 'end', class: 'judgment-chart-boundary-label'}, number(boundary.value)));
+        svg.append(element('text', {x: plot.right - 3, y: Math.max(10, boundary.y - 4), 'text-anchor': 'end', class: 'judgment-chart-boundary-label'}, number(boundary.value)));
       }
       paths(svg, rendered.points, {class: 'judgment-chart-observation'});
-      rendered.averages.forEach((average, index) => paths(svg, average.points, {'data-chart-average': average.window, style: `stroke:${colors[index % colors.length]}`, class: 'judgment-chart-average'}));
+      rendered.averages.forEach((average, index) => {
+        const rules = (metric.boundaries || []).filter(item => item.kind === 'sma' && item.window === average.window);
+        paths(svg, average.points, {'data-chart-average': average.window, style: `stroke:${colors[index % colors.length]}`, class: 'judgment-chart-average'},
+          rules.map(item => boundaryText(item)).join('；') || `MA${average.window}`);
+      });
       const cross = element('g', {'data-chart-crosshair': '', visibility: 'hidden'});
-      cross.append(element('line', {y1: 10, y2: 112, class: 'judgment-chart-cross-line'}));
+      cross.append(element('line', {y1: plot.top, y2: plot.bottom, class: 'judgment-chart-cross-line'}));
       cross.append(element('circle', {r: 3.5, class: 'judgment-chart-cross-point'}));
       svg.append(cross);
       if (selectedWindow && !rendered.averages.find(item => item.window === selectedWindow)?.values.some(value => value !== null)) message(`MA${selectedWindow}：有效连续观测不足`);
@@ -162,14 +200,17 @@
         const value = average.values[index];
         if (value !== null) { const row = document.createElement('span'); row.textContent = `MA${average.window} ${number(value)}`; tooltip.append(row); }
       }
+      for (const boundary of (metric.boundaries || []).filter(item => item.kind === 'sma')) {
+        const row = document.createElement('span'); row.textContent = boundaryText(boundary); tooltip.append(row);
+      }
       for (const boundary of rendered.fixed) { const row = document.createElement('span'); row.textContent = boundaryText(boundary); tooltip.append(row); }
       tooltip.hidden = false;
       tooltip.style.left = '8px';
       const plotWidth = svg.parentElement.clientWidth;
-      tooltip.style.left = `${Math.max(8, Math.min(plotWidth - tooltip.offsetWidth - 8, point.x / 480 * plotWidth))}px`;
+      tooltip.style.left = `${Math.max(8, Math.min(plotWidth - tooltip.offsetWidth - 8, point.x / rendered.plot.width * plotWidth))}px`;
     }
     svg.addEventListener('pointermove', event => {
-      const bounds = svg.getBoundingClientRect(); const x = (event.clientX - bounds.left) / bounds.width * 480;
+      const bounds = svg.getBoundingClientRect(); const x = (event.clientX - bounds.left) / bounds.width * rendered.plot.width;
       let nearest = -1, distance = Infinity;
       rendered.points.forEach((point, index) => {
         if (point.y === null || !Number.isFinite(point.y)) return;
@@ -220,6 +261,11 @@
     }
     select.addEventListener('change', chooseAverage); custom.addEventListener('change', chooseAverage);
     render();
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => {
+        if (Math.abs(svg.getBoundingClientRect().width - rendered.plot.width) >= 1) { hide(); render(); }
+      }).observe(svg);
+    }
   }
 
   const api = {movingAverage, shape, streakText, boundaryText};

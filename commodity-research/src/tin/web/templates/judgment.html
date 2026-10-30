@@ -11,6 +11,17 @@
 <script id="research-display-names" type="application/json">{{ names|default({})|tojson }}</script>
 <script src="{{ research_static_prefix() }}/static/research-display.js?v={{ static_version() }}"></script>
 {% set research = research|default({}) %}
+{% macro item_thresholds(metric) %}
+{% if metric and metric.series_id %}
+  {% set related = radar|selectattr('series_id', 'equalto', metric.series_id)|list %}
+  {% if related %}<div class="judgment-item-conditions">
+    {% for item in related %}<div class="judgment-item-condition" data-item-threshold>
+      <span><strong>{{ human_text(item.name, names) }}</strong> · {{ human_text(item.condition, names) }}</span>
+      <span class="judgment-item-condition-state" data-state="{{ item.state }}">{{ item.state }}</span>
+    </div>{% endfor %}
+  </div>{% endif %}
+{% endif %}
+{% endmacro %}
 <div class="judgment-research">
 <header class="judgment-research-header">
   <div><h1>研究判断</h1><p>{% if j %}{{ j.author }} · {{ j.written_at }} · {{ j.status }}{% else %}梳理多空分歧，跟踪依据与验证条件{% endif %}</p></div>
@@ -38,16 +49,18 @@
       <h4>支持依据与变化</h4>
       <ul class="judgment-evidence-list">
       {% for evidence in hypothesis.evidence|default(original.evidence) %}
-        <li><p class="judgment-evidence-desc">{{ human_text(evidence.desc, names) }}</p>
+        <li class="judgment-item-card" data-research-item="evidence"><p class="judgment-evidence-desc">{{ human_text(evidence.desc, names) }}</p>
           {% if evidence.metric %}{{ metric_view(evidence.metric) }}{% elif evidence.series_id %}<span class="judgment-evidence-unbound">{{ indicator_name(evidence.series_id, names) }} · 暂无可用数值</span>{% else %}<span class="judgment-evidence-unbound">文字依据 · 尚未关联指标</span>{% endif %}
+          {{ item_thresholds(evidence.metric) }}
         </li>
       {% else %}<li class="judgment-research-empty">尚待补充支持依据</li>{% endfor %}
       </ul>
       <h4>什么变化会证伪{{ label }}判断</h4>
       {% for item in hypothesis.falsifiers|default([]) %}
-        <div class="judgment-falsifier"><div class="judgment-falsifier-heading"><strong>{{ human_text(item.rule.desc, names) }}</strong><span class="judgment-falsifier-state" data-state="{{ item.state }}">{{ item.state }}</span></div>
-          <p>{{ item.condition }}</p>
+        <div class="judgment-falsifier judgment-item-card" data-research-item="falsifier"><div class="judgment-falsifier-heading"><strong>{{ human_text(item.rule.desc, names) }}</strong><span class="judgment-falsifier-state" data-state="{{ item.state }}">{{ item.state }}</span></div>
+          {% if item.condition %}<p>{{ item.condition }}</p>{% endif %}
           {% if item.metric %}{{ metric_view(item.metric) }}{% endif %}
+          {{ item_thresholds(item.metric) }}
           {% if item.gap_note %}<p>{{ human_text(item.gap_note, names) }}</p>{% endif %}
         </div>
       {% else %}<p class="judgment-research-empty">尚无已核验的证伪条件{% if research.pending_conditions %}，待验证内容见下方。{% endif %}</p>{% endfor %}
