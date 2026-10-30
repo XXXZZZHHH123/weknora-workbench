@@ -82,7 +82,7 @@ func TestPPTXVectorMediaDetection(t *testing.T) {
 	}
 }
 
-func TestAnydocReaderDoesNotRoutePPTMToMarkitdown(t *testing.T) {
+func TestAnydocReaderNormalizesPPTMForPageAwareMarkitdown(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		fileType string
@@ -95,15 +95,20 @@ func TestAnydocReaderDoesNotRoutePPTMToMarkitdown(t *testing.T) {
 		{"inferred uppercase type", "", "slides.PPTM"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fallback := &stubDocReader{}
-			// The synthetic archive may fail native conversion, but PPTM must
-			// stay on anydoc: docreader does not support this file type.
-			_, _ = NewAnydocReader(nil, fallback).Read(context.Background(), &types.ReadRequest{
-				FileName: tc.fileName, FileType: tc.fileType,
-				FileContent: presentationArchive(t, "ppt/media/chart.emf"),
-			})
-			if fallback.got != nil {
-				t.Fatal("PPTM input incorrectly routed to MarkItDown")
+			fallback := &stubDocReader{result: &types.ReadResult{MarkdownContent: "retained slide"}}
+			// DocReader accepts PPTX rather than raw PPTM. Normalize the copied
+			// request while preserving the source bytes, filename and caller.
+			req := &types.ReadRequest{FileName: tc.fileName, FileType: tc.fileType,
+				FileContent: presentationArchive(t, "ppt/media/chart.emf")}
+			original := *req
+			_, err := NewAnydocReader(nil, fallback).Read(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := original
+			expected.FileType, expected.ParserEngine = "pptx", "markitdown"
+			if fallback.got == nil || !reflect.DeepEqual(*fallback.got, expected) || !reflect.DeepEqual(*req, original) {
+				t.Fatal("PPTM route must normalize only its copied request's parser and format")
 			}
 		})
 	}

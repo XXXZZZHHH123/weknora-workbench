@@ -53,12 +53,18 @@ func TestAnydocPowerPointUsesConfiguredPageAndChartParser(t *testing.T) {
 			}}
 			req := &types.ReadRequest{FileType: fileType, FileName: "report.pptx", FileContent: []byte("pptx"),
 				ParserEngine: AnydocEngineName, RequestID: "retain-request", Title: "retain-title"}
+			if fileType == "pptm" {
+				req.FileName = "report.pptm"
+			}
 			result, err := NewAnydocReader(nil, fallback).Read(context.Background(), req)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if fallback.got == nil || fallback.got.ParserEngine != "markitdown" {
 				t.Fatalf("PowerPoint did not use markitdown: %+v", fallback.got)
+			}
+			if fileType == "pptm" && fallback.got.FileType != "pptx" {
+				t.Fatal("PPTM must use the supported PPTX remote format while retaining the original request")
 			}
 			if req.ParserEngine != AnydocEngineName || fallback.got.RequestID != req.RequestID ||
 				fallback.got.Title != req.Title || string(fallback.got.FileContent) != "pptx" {

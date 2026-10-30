@@ -54,13 +54,13 @@ func (r *AnydocReader) Read(ctx context.Context, req *types.ReadRequest) (*types
 	if !ok {
 		return nil, fmt.Errorf("anydoc engine does not support file type %q", fileTypeOf(req))
 	}
-	if (fileTypeOf(req) == "ppt" || fileTypeOf(req) == "pptx") && r.canFallback() {
+	if isPowerPointFormat(format) && r.canFallback() {
 		return r.readPowerPoint(ctx, req, format)
 	}
 	// Anydoc preserves vector bytes, but cannot rasterize EMF/WMF for the
 	// browser or VLM. MarkItDown's PPTX path already provides that conversion.
-	// Check the actual extension: anydoc also maps PPTM to its PPTX parser,
-	// but docreader does not support PPTM.
+	// The page-aware route above normalizes PPTM to PPTX for DocReader.
+	// Standalone vector fallback retains the original PPTX-only boundary.
 	if r.extractImages && fileTypeOf(req) == "pptx" && pptxHasVectorMedia(req.FileContent) {
 		return r.readVectorPPTX(ctx, req)
 	}
