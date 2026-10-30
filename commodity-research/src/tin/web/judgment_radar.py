@@ -126,11 +126,11 @@ def read_series(scope, identifiers, catalog, day, points, *, include_invalid=Fal
 
 
 def read_radar(scope, rules, catalog, day):
-    from tin.compute.moving_average import moving_average_target
+    from tin.compute.moving_average import moving_average_target, moving_average_points
     windows = {}
     for rule in rules:
-        moving = moving_average_target(rule['value'])
-        windows[rule['series_id']] = max(windows.get(rule['series_id'], 1), moving['window'] if moving else 1)
+        windows[rule['series_id']] = max(windows.get(rule['series_id'], 1),
+            moving_average_points(rule['value'], rule['operator']))
     if len(windows) > 256 or sum(windows.values()) > 20000:
         raise HTTPException(413, '阈值试算超过必要观测读取范围')
     series = []

@@ -3,7 +3,7 @@ import json
 from tin.schemas.judgment import PricingPower, MovingAverageTarget
 from tin.judgments.output_schema import OUTPUT_SCHEMA
 
-PROMPT_VERSION = 'research-logic-v13'
+PROMPT_VERSION = 'research-logic-v14'
 SOURCE_BINDING_PROTOCOL = '''本次目录中的全部字段均已通过当前研究台来源权限核验；primary和macro只是来源分类，不是可用范围或许可等级。
 原文引用的宏观、跨市场或跨品种因素可以作为数据锚、白名单、阈值或证伪依据，不得以“不是本品种专属指标”或“不属于商品侧Series”为由排除目录中的相容字段。
 指标的观测频率与研究期限分开处理：沿用原文明确的统计周期、比较方式和连续期数，不擅自要求更高频数据；原文的低频条件可用于短期研究观察，不能因为目录为低频就改成高频或声称没有指标。
@@ -26,7 +26,7 @@ THRESHOLD_SCHEMA = {
     'properties': {
         'id': {'type': 'string'}, 'name': {'type': 'string'},
         'series_id': {'type': 'string', 'minLength': 1},
-        'operator': {'enum': ['>', '>=', '<', '<=', 'between']},
+        'operator': {'enum': ['>', '>=', '<', '<=', 'between', 'crosses_below', 'crosses_above']},
         'value': {'oneOf': [
             {'type': 'number'},
             {'type': 'array', 'items': {'type': 'number'}, 'minItems': 2, 'maxItems': 2},
@@ -40,6 +40,10 @@ THRESHOLD_SCHEMA = {
     'then': {'properties': {'value': {
         'type': 'array', 'items': {'type': 'number'}, 'minItems': 2, 'maxItems': 2}}},
     'else': {'properties': {'value': {'oneOf': [{'type': 'number'}, MovingAverageTarget.model_json_schema()]}}},
+    'allOf': [{
+        'if': {'properties': {'operator': {'enum': ['crosses_below', 'crosses_above']}}, 'required': ['operator']},
+        'then': {'properties': {'value': MovingAverageTarget.model_json_schema()}},
+    }],
 }
 PRICING_POWER_SCHEMA = PricingPower.model_json_schema()
 
@@ -52,12 +56,14 @@ cost_line为JSON null或对象；对象的type只使用JSON字符串"cash"、JSO
 pricing_power始终为JSON对象，不得输出null、数组、字符串、布尔值或数字；没有依据时使用空对象{}，不猜测分类或补造说明。short、long、sources始终为字符串数组，没有依据时为[]；category与key可为null。category逐字使用下方Schema中enum的完整字符串，或使用JSON null，不得缩写、改写或拼接枚举。
 time_dimension为JSON null或对象，short与long各为文本或null；survey_notes为文本或null。
 whitelist是已绑定真实ID数组。paradigm仅总线合成/对抗称重/编排层/null；tone仅偏多/偏空/观望/区间震荡/回调买入/反弹做空/等信号/null；tone_note文本或null。
-thresholds每项为 {"id":"局部唯一ID","name":"","series_id":"真实ID","operator":">或>=或<或<=或between","value":JSON number、两端点number数组或简单移动平均对象,"type":"风控线或介入位或观察位","horizon":"短期或中长期","action_hint":null,"note":null}。
+thresholds每项为 {"id":"局部唯一ID","name":"","series_id":"真实ID","operator":">或>=或<或<=或between或crosses_below或crosses_above","value":JSON number、两端点number数组或简单移动平均对象,"type":"风控线或介入位或观察位","horizon":"短期或中长期","action_hint":null,"note":null}。
 thresholds的固定value使用有限JSON number，不加引号、不带单位、比较符或千位逗号，不用字符串、布尔值或null。operator为between时，value必须恰好两个有限JSON number组成的[下限,上限]，且下限小于上限。
-原文明示简单移动平均条件时，thresholds的value可为 {"kind":"sma","window":原文明确的整数周期}；window必须2至120，operator仅>、>=、<、<=，比较同一series_id的本期值与含本期的最近N次已记录观测简单平均。不填计算结果或0占位，不将EMA/加权均线当作SMA；仅支持当前低于/高于，不把下穿/上穿事件降格为水平比较。原文周期数字及MA/SMA或“日/期/次均线”写法须在逐字引文中；日均线需目录明确日频，不能拿月度指标代算。程序不补交易日历或缺失点，窗口不完整/无效/单位变化时显示数据不足；规则生成不代表已取得N次观测。falsifiers暂只支持原有value/change与固定数值，复杂动态证伪条件保留待确认。
+原文明示简单移动平均条件时，thresholds的value可为 {"kind":"sma","window":原文明确的整数周期}；window必须2至120；operator为>、>=、<、<=时，比较同一series_id的本期值与含本期的最近N次已记录观测简单平均。不填计算结果或0占位，不将EMA/加权均线当作SMA；当前低于/高于使用水平比较；明确要求本期下穿/跌破或上穿/突破均线的事件时，分别用crosses_below/crosses_above，value仍为同一SMA对象。事件需要最近N+1次真实观测：前一期值>=其当期MA且本期值<其当期MA才是下穿；上穿相反。一直处于均线下方或上方不重复触发。不把事件降格为当前水平，也不把“低于”升级为交叉。完整原文对“破线”究竟是状态还是新交叉仍有歧义时明确待核对。原文周期数字及MA/SMA或“日/期/次均线”写法须在逐字引文中；日均线需目录明确日频，不能拿月度指标代算。程序不补交易日历或缺失点，窗口不完整/无效/单位变化时显示数据不足；规则生成不代表已取得N次观测。falsifiers暂只支持原有value/change与固定数值，复杂动态证伪条件保留待确认。
+均线条件只需原文明示周期，不要求原文另给当日均线结果，也不用等目录另有一条均线指标；绑定真实基础序列，程序按所选窗口确定性计算。binding_units须逐字采用该基础序列目录原单位，不把单位改成指标类别或凭名称补填；单位不符时保留待核对，不以0占位。
 规则只有同时具备原文明确数字、真实候选series_id、相容单位及逐字rule_quotes依据才生成。任何一项不足就不生成该整条threshold/falsifier，将原文内容和缺口记入unresolved；不保留value:null或series_id:null的半条规则，不补猜测数值。
 逐条核对原文的明确量化条件：上述依据齐全且协议可表达的规则应完整保留为thresholds或falsifiers，不得只因指标属于macro、研究用途跨市场、模型不认同原观点或自行要求更高频而删去。规则门槛是原文的待验证条件，不是模型生成的当前观测值；输出规则不代表当前已经触发或判断成立。
 量化条件的识别覆盖完整原文，不以标题、段落、短期或中长期字段的位置限定范围；主逻辑、时间维度、调研和普通说明中的明确数值条件同样逐条核对。每个条件要么形成已匹配真实指标的规则，要么以原文逐字business_condition及rule_kind保留为待确认；只在说明文字中复述不等于已经建立监测条件。
+完整原文中多个条件由“或/任一”连接且共用同一研究动作时，分别提取可表达的独立thresholds，每条保留原文明示的共同action_hint及各自最短完整逐字依据；任意一条触发即可提示同一动作，不要求其他条件同时触发。一个分支缺指标、单位或当前协议不支持时，只将该分支列为待确认，不牵连已具备完整依据的其他分支。不得把“或”改为“且”；原文要求多个条件同时成立而当前协议没有复合门控时，整体保留待确认，不拆成可独立执行的规则来改变含义。仅程序定义语法，条件关系仍由模型依据完整原文判断，不按关键词自动生成规则。
 这是研究监测规则提取，不是生成可下单策略。原文明示的水平比较、区间或观察条件，只要数字、真实指标、单位和逐字引文齐全，就应生成相应观察位；不要求另有仓位、止损、买卖动作或完整交易计划，action_hint可保持null。只有原文明确支持时才选择介入位或风控线，不自行升级为交易建议。
 规则的统计周期与连续期数沿用原文，在desc或note保留必要周期说明；horizon表示研究期限，不代表必须使用日度或周度指标。不能替原文增加频率、连续期数或更改比较方向。
 falsifiers每项为 {"id":"局部唯一ID","desc":"","series_id":"真实ID","expression":"value/change 比较 数值","unit_confirmed":"目录原单位","consecutive_periods":1,"side":"bull或bear","note":null}。

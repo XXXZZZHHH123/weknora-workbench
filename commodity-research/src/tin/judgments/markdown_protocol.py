@@ -55,7 +55,7 @@ def _exported_rule_lines(text):
                 sid = row['指标'].strip('`')
                 try:
                     operator, separator, raw = row['条件'].partition(' ')
-                    if not separator or len(raw) > 4096 or operator not in {'>', '>=', '<', '<=', 'between'}:
+                    if not separator or len(raw) > 4096 or operator not in {'>', '>=', '<', '<=', 'between', 'crosses_below', 'crosses_above'}:
                         raise ValueError('invalid operator')
                     value = json.loads(raw, parse_float=Decimal, parse_int=int,
                                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))

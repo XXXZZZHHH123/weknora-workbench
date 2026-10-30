@@ -203,6 +203,7 @@
   const rangeRuleNumbers = new RegExp('^\\[\\s*(' + ruleNumber + ')\\s*,\\s*(' + ruleNumber + ')\\s*\\]$');
   const comparisonExpression = new RegExp('^(value|change)\\s*(>=|<=|>|<)\\s*(' + ruleNumber + ')$');
   const comparisonWords = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于'};
+  const averageCrossingWords = {crosses_below: '下穿', crosses_above: '上穿'};
   function ruleCondition(item, edit) {
     const rule = item.rule, unit = edit.selected?.unit ? ' ' + display.text(edit.selected.unit) : '（单位待确认）';
     const details = [rule.type, rule.horizon].filter(value => typeof value === 'string' && value).map(value => display.text(value));
@@ -211,9 +212,13 @@
       let target;
       if (literal.startsWith('{')) try { target = JSON.parse(literal); } catch { /* Invalid operands remain marked for review. */ }
       if (target?.kind === 'sma' && Object.keys(target).length === 2
-          && Number.isInteger(target.window) && target.window >= 2 && target.window <= 120
-          && Object.hasOwn(comparisonWords, rule.operator)) {
-        return [`指标值${comparisonWords[rule.operator]} MA${target.window}`, ...details].join('；');
+          && Number.isInteger(target.window) && target.window >= 2 && target.window <= 120) {
+        if (Object.hasOwn(averageCrossingWords, rule.operator)) {
+          return [`指标值${averageCrossingWords[rule.operator]} ${target.window} 期均线`, ...details].join('；');
+        }
+        if (Object.hasOwn(comparisonWords, rule.operator)) {
+          return [`指标值${comparisonWords[rule.operator]} MA${target.window}`, ...details].join('；');
+        }
       }
       if (rule.operator === 'between') {
         const range = rangeRuleNumbers.exec(literal);

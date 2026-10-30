@@ -435,7 +435,8 @@ def threshold_radar(session: Session, variety: str, d: date, *, judgment=None) -
         if observation is not None and (observation.value is None or observation.status != '正常'):
             observation = None
         return indicator, observation
-    return _threshold_radar(j, lookup, lambda identifier, window: sma_boundary(session, identifier, d, window))
+    return _threshold_radar(j, lookup, lambda identifier, window, crossing=False:
+        sma_boundary(session, identifier, d, window, crossing=crossing))
 
 
 def threshold_radar_values(judgment, values):
@@ -450,10 +451,10 @@ def threshold_radar_values(judgment, values):
             date.fromisoformat(value['date']), datetime.min.time(), SHANGHAI))
             if value.get('date') and value.get('value') is not None else None)
         return indicator, observation
-    def moving_lookup(identifier, window):
-        from tin.compute.moving_average import sma_result
+    def moving_lookup(identifier, window, crossing=False):
+        from tin.compute.moving_average import sma_result, sma_crossing_result
         field = values.get(identifier) or {}
-        return sma_result(field.get('points') or [], window, field.get('unit'))
+        return (sma_crossing_result if crossing else sma_result)(field.get('points') or [], window, field.get('unit'))
     return _threshold_radar(judgment, lookup, moving_lookup) if judgment else []
 
 
@@ -467,13 +468,17 @@ def _threshold_radar(j, lookup, moving_lookup=None):
                "note": t.get("note"), "state": "数据缺失", "value": None, "progress": 0,
                "distance": "该指标暂无数据", "as_of": None}
         op, target = t["operator"], t["value"]
+        from tin.compute.moving_average import CROSSING_OPERATORS
+        crossing = op in CROSSING_OPERATORS
         moving = moving_average_target(target)
         if moving:
-            if op not in {'>', '>=', '<', '<='}:
-                raise ValueError('简单移动平均阈值只支持水平比较')
-            row.update(condition=f"{op} MA{moving['window']}", target_value=None,
+            if op not in {'>', '>=', '<', '<='} | CROSSING_OPERATORS:
+                raise ValueError('简单移动平均阈值比较方式无效')
+            label = {'crosses_below': '下穿', 'crosses_above': '上穿'}.get(op, op)
+            row.update(condition=f"{label} MA{moving['window']}", target_value=None,
                        dynamic_target={**moving, 'basis': 'observations'})
-            boundary = moving_lookup(t['series_id'], moving['window']) if moving_lookup else None
+            boundary = ((moving_lookup(t['series_id'], moving['window'], True) if crossing
+                else moving_lookup(t['series_id'], moving['window'])) if moving_lookup else None)
             if boundary is None or boundary['value'] is None:
                 row['distance'] = boundary['error'] if boundary else '尚未加载均线所需的观测窗口'
                 out.append(row)
@@ -481,6 +486,8 @@ def _threshold_radar(j, lookup, moving_lookup=None):
             target = boundary['total'] / moving['window']
             row['target_value'] = boundary['value']
         else:
+            if crossing:
+                raise ValueError('均线交叉事件必须引用简单移动平均窗口')
             row['target_value'] = target
         row["condition"] = row.get('condition') or (f"{_fmt(target[0])} – {_fmt(target[1])}" if op == "between"
                             else f"{op} {_fmt(target)}")
@@ -489,6 +496,21 @@ def _threshold_radar(j, lookup, moving_lookup=None):
             continue
         v = decimal_value(o.value)
         row.update({"value": o.value, "as_of": _local(o.as_of)})
+        if crossing:
+            from decimal import localcontext
+            previous = boundary['previous_value']
+            with localcontext() as context:
+                context.prec = max(28, len(str(boundary['total'])) + len(str(boundary['previous_total']))
+                    + len(str(previous)) + len(str(v)) + 8)
+                current_scaled = v * moving['window']
+                previous_scaled = previous * moving['window']
+                hit = ((previous_scaled >= boundary['previous_total'] and current_scaled < boundary['total'])
+                    if op == 'crosses_below' else
+                    (previous_scaled <= boundary['previous_total'] and current_scaled > boundary['total']))
+            row.update(state='已触发' if hit else '未触发', progress=100 if hit else 0,
+                distance=('本期新发生' if hit else '本期未发生') + label)
+            out.append(row)
+            continue
         if op == "between":
             lo, hi = (decimal_value(endpoint) for endpoint in target)
             hit = lo <= v <= hi

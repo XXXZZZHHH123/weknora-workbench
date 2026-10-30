@@ -211,11 +211,11 @@ def evaluate_preview(session: Session, variety: str, d: date) -> list[Signal]:
         require_owned(session, judgment)
         if len(judgment.thresholds) + len(judgment.falsifiers) > 256:
             raise ValueError('当前规则超过256条，请拆分研究逻辑后试算')
-        from tin.compute.moving_average import moving_average_target
+        from tin.compute.moving_average import moving_average_points
         windows = {}
         for rule in judgment.thresholds:
-            moving = moving_average_target(rule['value'])
-            windows[rule['series_id']] = max(windows.get(rule['series_id'], 0), moving['window'] if moving else 1)
+            windows[rule['series_id']] = max(windows.get(rule['series_id'], 0),
+                moving_average_points(rule['value'], rule['operator']))
         for rule in judgment.falsifiers:
             match = EXPRESSION.fullmatch(rule['expression'].strip())
             periods = rule.get('consecutive_periods', 1)

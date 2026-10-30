@@ -80,6 +80,10 @@ def model_output_schema():
         'then': {'properties': {'value': deepcopy(pair)}},
         'else': {'properties': {'value': {'oneOf': [{'type': 'number'}, deepcopy(moving)]}}},
     })
+    threshold['allOf'] = [{
+        'if': {'properties': {'operator': {'enum': ['crosses_below', 'crosses_above']}}, 'required': ['operator']},
+        'then': {'properties': {'value': deepcopy(moving)}},
+    }]
     for name in ('Threshold', 'Falsifier'):
         definitions[name]['properties']['id']['pattern'] = r'^[A-Za-z][A-Za-z0-9_-]{0,63}$'
         definitions[name]['properties']['series_id']['minLength'] = 1

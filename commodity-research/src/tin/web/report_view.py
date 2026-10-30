@@ -50,9 +50,14 @@ def _judgment_view(payload, names, signals, preview=None):
             rule['name'] = human_text(item.get('name') or item.get('desc'), names) or '已保存观察条件'
             rule['series_name'] = indicator_name(item.get('series_id'), names)
             if kind == 'thresholds':
-                rule['condition'] = (' – '.join(_plain(part) for part in value)
-                    if item.get('operator') == 'between' and isinstance(value, list)
-                    else _plain(item.get('operator')) + ' ' + _plain(value))
+                if isinstance(value, dict) and value.get('kind') == 'sma':
+                    comparison = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于',
+                        'crosses_below': '下穿', 'crosses_above': '上穿'}.get(item.get('operator'), '')
+                    rule['condition'] = comparison + ' MA' + str(value['window'])
+                else:
+                    rule['condition'] = (' – '.join(_plain(part) for part in value)
+                        if item.get('operator') == 'between' and isinstance(value, list)
+                        else _plain(item.get('operator')) + ' ' + _plain(value))
             else:
                 rule['condition'] = condition_text(item.get('expression')) + ' · 连续 ' + str(item.get('consecutive_periods') or 1) + ' 期'
             saved = states.get(item.get('id')) or {}

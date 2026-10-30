@@ -295,6 +295,10 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
       {id:'zero',kind:'thresholds',rule:{operator:'<=',value_literal:'0',type:'介入位',horizon:'短期'}},
       {id:'scientific',kind:'thresholds',rule:{operator:'<',value_literal:'-1.234567890123456789e-23',type:'观察位',horizon:'短期'}},
       {id:'average',kind:'thresholds',rule:{operator:'<',value_literal:'{"kind":"sma","window":20}',type:'观察位',horizon:'短期'}},
+      {id:'cross-below',kind:'thresholds',rule:{operator:'crosses_below',value_literal:'{"kind":"sma","window":20}',type:'风控线',horizon:'短期'}},
+      {id:'cross-above',kind:'thresholds',rule:{operator:'crosses_above',value_literal:'{"kind":"sma","window":60}',type:'观察位',horizon:'中期'}},
+      {id:'cross-numeric',kind:'thresholds',rule:{operator:'crosses_below',value_literal:'0',type:'观察位',horizon:'短期'}},
+      {id:'cross-invalid-average',kind:'thresholds',rule:{operator:'crosses_above',value_literal:'{"kind":"sma","window":1.2}',type:'观察位',horizon:'短期'}},
       {id:'invalid-average',kind:'thresholds',rule:{operator:'<',value_literal:'{"kind":"sma","window":1.2}',type:'观察位',horizon:'短期'}}]});
     assert.match(reviewControl(env,'large','condition')?.textContent||'',/不低于 900719925474099312345\.123456789 吨/,'Rule values retain exact numeric literals without browser rounding');
     assert.match(reviewControl(env,'large','condition').textContent,/风控线.*中长期/);
@@ -302,6 +306,12 @@ async function generateReview(options={}){const env=setup({reviewMode:true,...op
     assert.match(reviewControl(env,'zero','condition').textContent,/不高于 0 吨/,'An invalid zero remains visible instead of disappearing');
     assert.match(reviewControl(env,'scientific','condition').textContent,/低于 -1\.234567890123456789e-23 吨/,'Scientific literals retain their original digits and exponent');
     assert.match(reviewControl(env,'average','condition').textContent,/指标值低于 MA20/);
+    assert.match(reviewControl(env,'cross-below','condition').textContent,/指标值下穿 20 期均线/);
+    assert.match(reviewControl(env,'cross-above','condition').textContent,/指标值上穿 60 期均线/);
+    for(const id of ['cross-numeric','cross-invalid-average']){
+      assert.match(reviewControl(env,id,'condition').textContent,/需核对条件/);
+      assert.doesNotMatch(reviewControl(env,id,'condition').textContent,/crosses_|上穿|下穿|[高低]于 0/,'Crossing conditions require a valid dynamic moving average');
+    }
     assert.doesNotMatch(reviewControl(env,'average','condition').textContent,/"kind"|"window"/);
     assert.match(reviewControl(env,'invalid-average','condition').textContent,/需核对条件/);
   }

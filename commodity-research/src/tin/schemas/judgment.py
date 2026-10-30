@@ -98,7 +98,7 @@ class Threshold(_Model):
     id: str
     name: str
     series_id: str
-    operator: Literal[">", ">=", "<", "<=", "between"]
+    operator: Literal[">", ">=", "<", "<=", "between", "crosses_below", "crosses_above"]
     value: float | list[float] | MovingAverageTarget
     type: ThresholdType
     horizon: Horizon
@@ -116,6 +116,8 @@ class Threshold(_Model):
 
     @model_validator(mode="after")
     def _value_shape(self):
+        if self.operator in {"crosses_below", "crosses_above"} and not isinstance(self.value, MovingAverageTarget):
+            raise ValueError("均线交叉事件必须引用简单移动平均窗口")
         if self.operator == "between":
             if not (isinstance(self.value, list) and len(self.value) == 2 and self.value[0] < self.value[1]):
                 raise ValueError(f"阈值 {self.id}：区间必须是 [下限, 上限] 且下限小于上限")

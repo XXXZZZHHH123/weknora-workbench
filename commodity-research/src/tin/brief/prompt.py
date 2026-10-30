@@ -223,8 +223,13 @@ def _evidence_lines(side: dict) -> str:
 
 def _threshold_line(t: dict) -> str:
     value = t["value"]
-    cond = (f"落在 [{_num(value[0])}, {_num(value[1])}] 区间内"
-            if t["operator"] == "between" else f"{t['operator']} {_num(value)}")
+    if isinstance(value, dict) and value.get('kind') == 'sma':
+        comparison = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于',
+            'crosses_below': '下穿', 'crosses_above': '上穿'}.get(t['operator'], '')
+        cond = comparison + ' MA' + str(value['window'])
+    else:
+        cond = (f"落在 [{_num(value[0])}, {_num(value[1])}] 区间内"
+                if t["operator"] == "between" else f"{t['operator']} {_num(value)}")
     hint = f" → {t['action_hint']}" if t.get("action_hint") else ""
     return f"  - [{t['id']}] {t['name']}：{t['series_id']} {cond}（{t['type']} · {t['horizon']}）{hint}"
 

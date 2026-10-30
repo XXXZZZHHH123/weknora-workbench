@@ -182,9 +182,11 @@ def _judgment_windows(payload):
     from tin.schemas.judgment import EXPRESSION
     windows={identifier:2 for _,_,identifier in _refs(payload)}
     from tin.schemas.judgment import MovingAverageTarget
+    from tin.compute.moving_average import CROSSING_OPERATORS
     for rule in payload.thresholds:
         if isinstance(rule.value, MovingAverageTarget):
-            windows[rule.series_id] = max(windows[rule.series_id], rule.value.window)
+            windows[rule.series_id] = max(windows[rule.series_id],
+                rule.value.window + int(rule.operator in CROSSING_OPERATORS))
     for rule in payload.falsifiers:
         match=EXPRESSION.fullmatch(rule.expression.strip())
         if match is None or not 1<=rule.consecutive_periods<=120:
