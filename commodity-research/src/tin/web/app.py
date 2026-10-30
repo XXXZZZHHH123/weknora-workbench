@@ -243,6 +243,8 @@ app.include_router(judgment_generation_router)
 from tin.web.judgment_jobs import router as judgment_jobs_router, global_router as judgment_jobs_global_router
 app.include_router(judgment_jobs_router)
 app.include_router(judgment_jobs_global_router)
+from tin.web.diagram_jobs import router as diagram_jobs_router
+app.include_router(diagram_jobs_router)
 from tin.web.judgment_review import router as judgment_review_router
 app.include_router(judgment_review_router)
 from tin.web.judgment_radar import router as judgment_radar_router
@@ -278,6 +280,8 @@ def _start_workspace_refresh():
 async def _stop_judgment_jobs():
     from tin.web.judgment_jobs import runtime
     await runtime.shutdown()
+    from tin.web.diagram_jobs import runtime as diagram_runtime
+    await diagram_runtime.shutdown()
 
 
 @app.on_event('startup')
@@ -285,6 +289,8 @@ async def _start_judgment_jobs():
     if settings.weknora_api_url:
         from tin.web.judgment_jobs import runtime
         await runtime.startup()
+        from tin.web.diagram_jobs import runtime as diagram_runtime
+        await diagram_runtime.startup()
 
 
 @app.on_event('shutdown')

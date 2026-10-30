@@ -199,7 +199,7 @@ def _storage_factory(meta):
 
 
 def cleanup_expired():
-    for meta in registry.expired()[:20]:
+    for meta in [row for row in registry.expired() if row.get('purpose', 'judgments') == 'judgments'][:20]:
         key = digest([KIND, meta['tenant_id'], meta['user_id'], meta['workbench_id'], meta['id']])
         factory = _storage_factory(meta)
         if factory is not None:
@@ -352,6 +352,8 @@ async def start_job(scope, body, idempotency_key):
 async def job_status(scope, job_id):
     await fresh_scope(scope)
     meta = await run_in_threadpool(registry.get, scope.identity, job_id, scope.workbench_id)
+    if meta.get('purpose', 'judgments') != 'judgments':
+        raise HTTPException(404, '分析任务不存在或无权访问')
     with artifact_session(scope) as session:
         stored = session.get(SourceMapping, job_key(scope, job_id))
         row = owned_record(session, scope, job_id) if stored is not None or meta['state'] == 'succeeded' else None

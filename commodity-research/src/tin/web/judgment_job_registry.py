@@ -73,13 +73,15 @@ class Registry:
                 row.update(updated_at=iso(), finished_at=iso())
                 self.write(connection, row)
 
-    def create(self, scope, request_hash, idempotency_hash, worker_id):
+    def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments'):
+        if purpose not in {'judgments', 'diagram'}:
+            raise ValueError('Unsupported analysis task purpose')
         with self.transaction() as connection:
             self.expire(connection)
             rows = self.rows(connection)
             for row in rows:
-                if (row['tenant_id'], row['user_id'], row['workbench_id'], row['idempotency_hash']) == (
-                        scope.identity.tenant_id, scope.identity.user_id, scope.workbench_id, idempotency_hash):
+                if (row['tenant_id'], row['user_id'], row['workbench_id'], row['idempotency_hash'], row.get('purpose', 'judgments')) == (
+                        scope.identity.tenant_id, scope.identity.user_id, scope.workbench_id, idempotency_hash, purpose):
                     if row['request_hash'] != request_hash:
                         raise HTTPException(409, '重复请求标识已用于不同资料，请重新发起')
                     return row, False
@@ -92,6 +94,7 @@ class Registry:
                 raise HTTPException(429, '分析任务记录已达容量，请稍后重试')
             now = time.time()
             row = {'kind': 'judgment-analysis-index.v1', 'id': secrets.token_hex(16),
+                **({'purpose': 'diagram'} if purpose == 'diagram' else {}),
                 'tenant_id': scope.identity.tenant_id, 'user_id': scope.identity.user_id,
                 'workbench_id': scope.workbench_id, 'storage_legacy': scope.metadata.get('workspace_mode') == 'legacy',
                 'request_hash': request_hash, 'idempotency_hash': idempotency_hash,
@@ -197,4 +200,7 @@ class Registry:
 def metadata(row):
     result = {key: row.get(key) for key in ('id', 'workbench_id', 'state', 'phase',
         'created_at', 'updated_at', 'finished_at', 'expires_at', 'message')}
-    return {**result, 'job_id': row['id'], 'title': '研究逻辑分析', 'result_available': row['state'] == 'succeeded'}
+    purpose = row.get('purpose', 'judgments')
+    return {**result, 'job_id': row['id'], 'purpose': purpose,
+        'title': '产业图配置生成' if purpose == 'diagram' else '研究逻辑分析',
+        'result_available': row['state'] == 'succeeded'}
