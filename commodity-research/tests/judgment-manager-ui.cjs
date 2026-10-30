@@ -21,11 +21,12 @@ class Element {
   close(){this.open=false;}
   click(){}
 }
-function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false}={}) {
+function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true}={}) {
   const ids=['judgment-manager',...['original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','structured','variety','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
   const nodes=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
+  for(const name of ['current-delete','history-download','history-reuse','history-delete','history-state','history-more'])nodes['logic-'+name]=new Element('logic-'+name);
   for(const name of ['import','review','review-nav','review-items','review-count','review-reuse','review-note','review-edit','review-save-note','review-ready','review-source','review-attention','review-all','review-empty'])nodes['logic-'+name]=new Element('logic-'+name);
-  if(panelMode) for(const name of ['panel-switch','panel-open','panel-name','panel-save','panel-range','panel-more','new-panel-title'])nodes['logic-'+name]=new Element();
+  if(panelMode||lifecycleMode) for(const name of ['panel-switch','panel-open','panel-name','panel-save','panel-range','panel-more','new-panel-title'])nodes['logic-'+name]=new Element();
   nodes['judgment-manager'].dataset.prefill='false';
   if(panelMode)nodes['judgment-manager'].dataset.judgmentId='42';
   const tabs=['current','analyze','versions'].map(name=>{const el=new Element();el.dataset.logicTab=name;return el;});
@@ -46,11 +47,14 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
     const anchor=review.sections[0].items[0];Object.assign(anchor,{kind:'thresholds',status:'ready',binding:anchor.ai_binding,rule:{operator:'>',value_literal:'12',type:'观察位',horizon:'短期'}});
     Object.assign(review.sections[1].items[0],{status:'ready',can_bind:true,binding:{series_id:'second-visual',name:'Second quantity',unit:'吨'}});
   }
+  if(caliberMode){const item=review.sections[0].items[0];item.binding=item.ai_binding;item.caliber={catalog_unit:caliberMode==='catalog'?'kg':null,model_unit:'单位不一致',mode:'',unit:'',basis:'',scope_note:'',can_adopt_catalog:caliberMode==='catalog',can_declare:caliberMode==='declared',confirmation_required:true,confirmed:false};}
   function preview(){return {draft_id:review.draft_id,base_version:2,markdown:'# Proposed',diff:{markdown:'-old\n+new',fields:[{label:'Rule',before:null,after:'<img onerror=bad>'}]},bindings:[],unresolved:[],candidate_count:1,catalog_total:5,review_available:true,review:JSON.parse(JSON.stringify(review))};}
-  const window={RESEARCH_PREFIX:'/research/workbenches/synthetic',crypto:webcrypto};
+  const deleted=new Set(),downloads=[],confirmations=[];
+  const window={RESEARCH_PREFIX:'/research/workbenches/synthetic',crypto:webcrypto,confirm(message){confirmations.push(message);return confirmDelete;}};
+  class DownloadURL extends URL {static createObjectURL(blob){downloads.push(blob);return 'blob:synthetic';}static revokeObjectURL(){}}
   const context={window,parent:window,location:{origin:'http://unit.test',href:'http://unit.test/research/workbenches/synthetic/sn/judgment?date=2024-03-01&judgment_id=42',reload(){reloads++;},assign(url){navigations.push(url);}},
     document:{getElementById:id=>nodes[id],createElement:()=>new Element(),createElementNS:()=>new Element(),querySelectorAll:()=>[]},
-    TextEncoder,TextDecoder,AbortController,Blob,URL,URLSearchParams,Option:Element,console,setTimeout,clearTimeout,
+    TextEncoder,TextDecoder,AbortController,Blob,URL:DownloadURL,URLSearchParams,Option:Element,console,setTimeout,clearTimeout,
     async researchFetch(url,options={}) {
       requests.push({url,body:options.body?JSON.parse(options.body):undefined,method:options.method,signal:options.signal,headers:options.headers,keepalive:options.keepalive});
       let result;
@@ -93,6 +97,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
         if(reviewConflict)return {ok:false,status:409,json:async()=>({detail:'来源已改变，请重新分析。'})};
         if(reviewFailure)return {ok:false,status:422,json:async()=>({detail:{message:'请选择有可核对单位的指标，当前修改已保留。',attention_fields:['binding']}})};
         const body=JSON.parse(options.body),item=review.sections.flatMap(section=>section.items).find(row=>row.id===body.item_id);
+        if(body.caliber){item.caliber={...item.caliber,...body.caliber,unit:body.caliber.mode==='catalog'?item.caliber.catalog_unit:body.caliber.unit,confirmed:true,confirmation_required:false};item.binding={...item.binding,unit:item.caliber.unit};item.warnings=[];item.attention_fields=[];}
         item.status={confirm:'confirmed',keep_text:'kept_text',exclude:'excluded'}[body.action];
         if(Object.hasOwn(body,'series_id'))item.binding=body.series_id===null?null:catalog.find(row=>row.series_id===body.series_id)||item.ai_binding;
         if(body.source_quote)item.source_quote=body.source_quote;
@@ -101,10 +106,15 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
       else if(url.endsWith('/review/reuse')){const enabled=JSON.parse(options.body).enabled,item=review.sections[0].items[0];review.reuse_enabled=enabled;item.binding=enabled?catalog[1]:null;item.remembered=enabled;item.status=enabled?'pending':readyMode?'ready':'pending';item.origin=enabled?'remembered':'model';review.pending_count=review.sections.flatMap(section=>section.items).filter(row=>row.status==='pending').length;if(Object.hasOwn(review,'needs_attention_count'))review.needs_attention_count=review.pending_count;review.revision=++revision;result=preview();}
       else if(url.endsWith('/review/confirm-ready')){for(const item of review.sections.flatMap(section=>section.items))if(item.can_confirm)item.status='confirmed';review.pending_count=1;review.confirmed_count=2;review.revision=++revision;result=preview();}
       else if(url.includes('/review?'))result=JSON.parse(JSON.stringify(review));
+      else if(lifecycleMode&&options.method==='DELETE'){
+        if(deleteFailure)return{ok:false,status:409,json:async()=>({detail:'已有报告引用，请先处理引用。'})};
+        const identifier=Number(url.split('/').pop());deleted.add(identifier);result={deleted:true,id:identifier,version:identifier===42?1:2,revision:2};
+      }
+      else if(lifecycleMode&&url.includes('/versions/')){const historical=url.includes('/versions/2');result={id:historical?43:42,version:historical?2:1,status:'草稿',variety:'SN',delete_revision:historical?0:1,markdown:historical?'# Historical complete MD':'# Current',source_text:'Complete original',diff:{markdown:'-Current\n+Historical'}};}
       else if(url.includes('/panels')&&options.method==='PATCH')result={id:'named-panel',judgment_id:42,version:1,title:JSON.parse(options.body).title,revision:2,named:true};
-      else if(url.endsWith('/panels'))result={items:[{id:'named-panel',judgment_id:42,version:1,title:'<img onerror=unsafe>',revision:1,named:true},{id:null,judgment_id:43,version:2,title:'Other independent research',revision:null,named:false}],total:2,offset:0,has_more:false};
+      else if(url.endsWith('/panels')){const rows=[{id:'named-panel',judgment_id:42,version:1,variety:'SN',status:'生效',title:'<img onerror=unsafe>',revision:1,named:true},{id:null,judgment_id:43,version:2,variety:'SN',status:'草稿',title:'Other independent research',revision:null,named:false}].filter(row=>!deleted.has(row.judgment_id));result={items:rows,total:rows.length,offset:0,has_more:false};}
       else if(url.endsWith('/manage')&&empty) result={variety:'SN',current:null,latest:null,versions:[],version_total:0,can_write:!viewer};
-      else if(url.endsWith('/manage')||url.includes('/manage?judgment_id=')) result={variety:'SN',current:{id:42,version:1,status:'生效',author:'r',markdown:'# Current',source_text:'# Original input'},latest:{version:stale&&generations?3:2},versions:[{version:2,status:'草稿'},{version:1,status:'生效'}],version_total:2,can_write:!viewer};
+      else if(url.endsWith('/manage')||url.includes('/manage?judgment_id=')) result={variety:'SN',current:{id:42,version:1,status:'生效',author:'r',delete_revision:1,markdown:'# Current',source_text:'# Original input'},latest:{version:stale&&generations?3:2},versions:[{version:2,status:'草稿'},{version:1,status:'生效'}],version_total:2,can_write:!viewer};
       else if(url.includes('/manage?variety='))result={variety:'XY',current:null,latest:null,versions:[],version_total:0,can_write:!viewer};
       else if(url.endsWith('/models')) result={models:[{id:'configured',name:'Configured chat'}]};
       else if(url.endsWith('/structured/preview'))result={kind:'structured',draft_id:'typed-bound-nonce',base_version:0,markdown:'# Typed research',diff:{markdown:'',fields:[]},bindings:[],unresolved:[],candidate_count:0,catalog_total:0,notice:'Typed preview'};
@@ -113,7 +123,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
       return {ok:true,json:async()=>result};
     }};
   vm.runInNewContext(source,context);
-  return {nodes,requests,context,navigations,catalogReplies,reviewReplies,jobStartReplies,jobStatusReplies,jobResultReplies,baselineReplies,firstJob,jobStates,jobSources,jobsCreated:()=>jobKeys.size,reloads:()=>reloads};
+  return {nodes,requests,context,navigations,downloads,confirmations,catalogReplies,reviewReplies,jobStartReplies,jobStatusReplies,jobResultReplies,baselineReplies,firstJob,jobStates,jobSources,jobsCreated:()=>jobKeys.size,reloads:()=>reloads};
 }
 const isGeneration=request=>request.url.endsWith('/jobs')&&request.method==='POST';
 async function until(condition){for(let attempt=0;attempt<50&&!condition();attempt++)await new Promise(resolve=>setTimeout(resolve,0));assert.ok(condition(),'Expected asynchronous request was reached');}
@@ -122,7 +132,8 @@ function descendants(node){return node.children.flatMap(child=>[child,...descend
 function visibleDescendants(node){return node.hidden?[]:node.children.flatMap(child=>child.hidden?[]:[child,...(child.className?.includes('logic-item-adjustments')&&!child.open?[]:visibleDescendants(child))]);}
 function reviewControl(env,itemId,control){return descendants(env.nodes['logic-review-items']).find(node=>node.dataset.reviewItem===itemId&&node.dataset.reviewControl===control);}
 async function generateReview(options={}){const env=setup({reviewMode:true,...options});await env.context.window.JudgmentManager.open();env.nodes['logic-input'].value=options.source||'Full research source';env.nodes['logic-model'].value='configured';await env.nodes['logic-generate'].fire('click');return env;}
-(async()=>{
+module.exports = {setup, generateReview, reviewControl, descendants, flush};
+if (require.main === module) (async()=>{
   {
     const env=setup();await env.context.window.JudgmentManager.open();
     assert.equal(env.nodes['logic-current-md'].textContent,'# Current');

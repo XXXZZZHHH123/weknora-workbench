@@ -104,3 +104,11 @@
   .logic-review-preferences { padding: 8px; }
   .logic-binding-menu { min-width: 0; }
 }
+.logic-dialog .logic-danger{color:var(--alert)}
+.logic-panel-picker{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.logic-caliber-field{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.logic-caliber-field p{margin:4px 0 7px}.logic-caliber-field details{margin:5px 0}
+.logic-caliber-label{display:grid;gap:4px;margin:8px 0;color:var(--text-muted);font-size:11px}
+.logic-caliber-label input,.logic-caliber-label textarea{box-sizing:border-box;width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--text);font:inherit}
+.logic-caliber-label textarea{min-height:64px;max-height:130px;margin:0}
+#logic-history-state{margin-right:auto}#logic-version{max-width:min(100%,520px)}

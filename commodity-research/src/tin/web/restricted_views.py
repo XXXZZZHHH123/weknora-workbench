@@ -371,6 +371,8 @@ def shared_owner_storage_available(session, scope):
 
 def shared_owner_query(scope, statement, model):
     """Only the verified workbench owner's explicitly shared page records."""
+    if model is Judgment:
+        statement = statement.where(Judgment.status != '已删除')
     owner = shared_owner_id(scope)
     owner_rows = select(Researcher.id).where(Researcher.weknora_user_id == owner)
     return statement.where(model.researcher_id.in_(owner_rows)) if owner else statement.where(False)
@@ -386,6 +388,7 @@ def shared_judgment(session, scope, identifier=None):
     if identifier is not None:
         query = query.where(Judgment.id == identifier)
     else:
+        query = query.where(Judgment.status != '已归档')
         variety = session.scalar(query.with_only_columns(Judgment.variety)
             .order_by(Judgment.created_at.desc(), Judgment.id.desc()).limit(1))
         if variety is None:
@@ -472,7 +475,8 @@ def page_data(scope, module, template_id=None):
                             or (module == 'market' and 'judgments' in scope.view_modules))
         if include_judgment and not output['legacy_unassigned']:
             from tin.export.board import judgment_record_block
-            query = shared_owner_query(scope, select(Judgment).where(Judgment.variety == settings.variety), Judgment)
+            query = shared_owner_query(scope, select(Judgment).where(Judgment.variety == settings.variety,
+                Judgment.status != '已归档'), Judgment)
             row = session.scalar(query.order_by((Judgment.status == '生效').desc(), Judgment.version.desc()).limit(1))
             threshold_ids = [t['series_id'] for t in (row.thresholds if row else [])
                              if isinstance(t, dict) and isinstance(t.get('series_id'), str)

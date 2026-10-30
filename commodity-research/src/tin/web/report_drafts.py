@@ -239,6 +239,10 @@ def save_report(scope, body, identifier=None):
                 raise HTTPException(409, '报告已有新版本，请重新打开后继续修改')
         elif row is not None:
             raise HTTPException(409, '本期已有个人报告，请重新打开后继续修改')
+        from tin.web.reference_writes import fence_reference
+        seen = set()
+        for reference in body.draft.references:
+            fence_reference(session, scope, reference, seen)
         snapshots = freeze_references(session, scope, body.draft.references)
         allowed = bound_series(session, scope, snapshots)
         chosen = validate_selection([item.series_id for item in body.draft.figures], allowed)

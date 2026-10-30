@@ -48,6 +48,13 @@ def create_strategy(session: Session, plan: StrategyPlan, *, actor: str, reason:
         if get_strategy(session, revision_of) is None:
             raise StrategyError("原策略不存在")
     actor = verified_actor(session, actor)
+    from tin.integration.workbench_scope import current_workbench
+    scope = current_workbench.get()
+    research = plan.source_context.get('research')
+    if scope is not None and isinstance(research, dict) and research.get('id') is not None:
+        from tin.web.reference_writes import fence_reference
+        fence_reference(session, scope, {'kind': 'judgment', 'id': str(research['id']),
+            'revision': research.get('version')})
     row = Strategy(title=plan.title, variety=plan.variety, kind=plan.kind, mode=plan.mode,
                    status="draft", plan=plan.model_dump(mode="json"), author=actor,
                    researcher_id=researcher_id(session),

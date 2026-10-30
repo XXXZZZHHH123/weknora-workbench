@@ -54,7 +54,9 @@ def researcher_id(session: Session) -> int | None:
     return row.id if row is not None else None
 
 
-def scope_query(session: Session, statement, model):
+def scope_query(session: Session, statement, model, *, include_deleted=False):
+    if model is Judgment and not include_deleted:
+        statement = statement.where(Judgment.status != '已删除')
     rid = researcher_id(session)
     return statement.where(model.researcher_id == rid) if rid is not None else statement
 
@@ -73,7 +75,8 @@ def require_owned(session: Session, row):
     owner = row
     if owner is not None and hasattr(owner, "judgment_id"):
         owner = session.get(Judgment, owner.judgment_id)
-    if owner is None or getattr(owner, "researcher_id", None) != rid:
+    if (owner is None or getattr(owner, "researcher_id", None) != rid
+            or isinstance(owner, Judgment) and owner.status == '已删除'):
         raise PermissionError("研究记录不存在或不属于当前账号")
     return row
 

@@ -15,3 +15,14 @@ def test_judgment_manager_interactions():
                             cwd=root, capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'isolated judgment manager interaction checks passed' in result.stdout
+
+
+def test_judgment_manager_management_and_caliber_interactions():
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node is required for the dialog interaction checks')
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run([node, str(root / 'tests' / 'judgment-manager-management.test.cjs')],
+                            cwd=root, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'management/caliber scenarios passed' in result.stdout

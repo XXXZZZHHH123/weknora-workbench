@@ -101,7 +101,7 @@ def sma_crossing_result(points, window, unit=None):
     return result
 
 
-def sma_boundary(session, series_id, day, window, crossing=False):
+def sma_boundary(session, series_id, day, window, crossing=False, declared_unit=None):
     moving_average_target({'kind': 'sma', 'window': window})
     # Imported lazily: signals uses board, whose dynamic thresholds call this helper.
     from tin.compute.signals import recent_points
@@ -111,8 +111,12 @@ def sma_boundary(session, series_id, day, window, crossing=False):
                 'error': '当前来源快照未保留缺失期，请使用完整的均线观测窗口'}
     points = recent_points(session, series_id, day, window + int(crossing))
     indicator = session.get(Indicator, series_id)
-    result = (sma_crossing_result if crossing else sma_result)(points, window, indicator.unit if indicator else None)
-    if indicator is None or not indicator.unit:
+    if declared_unit is not None:
+        from tin.compute.rule_caliber import declared_points
+        points = declared_points(points, declared_unit)
+    result = (sma_crossing_result if crossing else sma_result)(points, window,
+        declared_unit or (indicator.unit if indicator else None))
+    if indicator is None or not indicator.unit and not declared_unit:
         result['error'] = '指标或单位尚未确认'
         result.update(value=None, total=None)
     return result

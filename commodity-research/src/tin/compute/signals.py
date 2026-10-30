@@ -160,8 +160,13 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
     kind, op, target = m.group(1), m.group(2), decimal_value(m.group(3))
     indicator = session.get(Indicator, f['series_id'])
     confirmed = f.get('unit_confirmed')
+    from tin.compute.rule_caliber import rule_unit, unit_present
+    try:
+        current_unit = rule_unit(f, indicator.unit if indicator else None)
+    except ValueError:
+        current_unit = None
     if indicator is not None and (not isinstance(confirmed, str) or not confirmed.strip()
-            or not indicator.unit or indicator.unit != confirmed):
+            or current_unit is None or current_unit != confirmed):
         gap = (f"指标 {f['series_id']} 已确认单位为「{confirmed or '未注明'}」，"
                f"当前单位为「{indicator.unit or '未注明'}」；单位不一致或未注明，无法比对")
         return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [], gap)
@@ -181,6 +186,10 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
     if any(point.value is None or point.status != '正常' for point in points):
         return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [],
                        '证伪条件所需窗口含缺失或未确认观测，未跳过缺失期计算')
+    if any(unit_present((point.caliber_snapshot or {}).get('unit'))
+            and point.caliber_snapshot['unit'] != confirmed for point in points):
+        return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [],
+            '观测窗口的真实单位与本条确认口径不一致，未进行数值换算')
     quantities = _quantities(kind, points)
     hits = [OPS[op](q, target) for _p, q in quantities]
     evidence = []

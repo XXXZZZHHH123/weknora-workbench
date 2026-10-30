@@ -58,7 +58,8 @@ def _owner_id(session, scope):
 
 def _owned(session, scope, model):
     owner = _owner_id(session, scope)
-    return select(model).where(model.researcher_id == owner) if owner is not None else select(model).where(false())
+    query = select(model).where(model.researcher_id == owner) if owner is not None else select(model).where(false())
+    return query.where(Judgment.status != '已删除') if model is Judgment else query
 
 
 @contextmanager
@@ -90,11 +91,12 @@ def _directory_proofs(session, scope, groups):
                     cache['artifact_proofs'][identifier] = 'foreign' if outside else 'current' if has_url else 'unassigned'
         if groups.get('judgment'):
             owner = _owner_id(session, scope)
-            latest_variety = session.scalar(select(Judgment.variety).where(Judgment.researcher_id == owner)
+            latest_variety = session.scalar(select(Judgment.variety).where(Judgment.researcher_id == owner,
+                Judgment.status != '已删除')
                 .order_by(Judgment.created_at.desc(), Judgment.id.desc()).limit(1)) if owner is not None else None
             if latest_variety is not None:
                 cache['visible_judgment'] = session.scalar(select(Judgment.id).where(Judgment.researcher_id == owner,
-                    Judgment.variety == latest_variety).order_by(case((Judgment.status == '生效', 0), else_=1),
+                    Judgment.variety == latest_variety, Judgment.status != '已删除').order_by(case((Judgment.status == '生效', 0), else_=1),
                     Judgment.version.desc()).limit(1))
     marker = _directory_scope.set(cache)
     try:
@@ -105,6 +107,8 @@ def _directory_proofs(session, scope, groups):
 
 def record_scope_status(session, scope, kind, identifier, record=None):
     """Scope proof complements, rather than replaces, the caller's owner query."""
+    if kind == 'judgment' and record is not None and _get(record, 'status') == '已删除':
+        return 'deleted'
     if scope is None or session.info.get('workbench_id') != scope.workbench_id:
         return 'foreign'
     if str(session.info.get('weknora_user_id') or '') != scope.identity.user_id:

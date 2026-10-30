@@ -259,6 +259,8 @@ from tin.web.research_references import router as research_references_router
 app.include_router(research_references_router)
 from tin.web.judgment_panels import router as judgment_panels_router
 app.include_router(judgment_panels_router)
+from tin.web.judgment_lifecycle import router as judgment_lifecycle_router
+app.include_router(judgment_lifecycle_router)
 from tin.web.report_drafts import router as report_drafts_router
 app.include_router(report_drafts_router)
 from tin.web.report_figures import router as report_figures_router

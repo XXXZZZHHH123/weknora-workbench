@@ -40,7 +40,7 @@ class ArtifactInput(BaseModel):
 
 
 def artifact_query(scope, module):
-    query = select(WorkbenchArtifact).where(WorkbenchArtifact.module == module)
+    query = select(WorkbenchArtifact).where(WorkbenchArtifact.module == module, WorkbenchArtifact.status != 'deleted')
     if module != "structure":
         query = query.where(WorkbenchArtifact.actor == scope.identity.user_id)
     return query
@@ -112,6 +112,8 @@ async def create_artifact(module: ArtifactModule, body: ArtifactInput, scope: Wo
     captures = await capture_sources(scope, sources)
     now = datetime.now(timezone.utc)
     with workbench_session(scope) as session:
+        from tin.web.reference_writes import fence_artifact_references
+        fence_artifact_references(session, scope, module.value, values['body'])
         row = WorkbenchArtifact(id=str(uuid4()), module=module.value, actor=scope.identity.user_id,
             source_snapshots=store_captures(session, scope, captures),
             revision=1, created_at=now, updated_at=now, **values)
@@ -141,6 +143,8 @@ async def update_artifact(module: ArtifactModule, artifact_id: str, body: Artifa
     values, sources = await validated_input(scope, body, shared=module == ArtifactModule.structure)
     captures = await capture_sources(scope, sources)
     with workbench_session(scope) as session:
+        from tin.web.reference_writes import fence_artifact_references
+        fence_artifact_references(session, scope, module.value, values['body'])
         row = session.scalar(artifact_query(scope, module.value).where(WorkbenchArtifact.id == artifact_id))
         if row is None:
             raise HTTPException(404, "研究记录不存在或无权访问")

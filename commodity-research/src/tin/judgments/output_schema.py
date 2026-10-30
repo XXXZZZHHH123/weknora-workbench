@@ -85,8 +85,10 @@ def model_output_schema():
         'then': {'properties': {'value': deepcopy(moving)}},
     }]
     for name in ('Threshold', 'Falsifier'):
+        definitions[name]['properties'].pop('caliber_confirmation', None)
         definitions[name]['properties']['id']['pattern'] = r'^[A-Za-z][A-Za-z0-9_-]{0,63}$'
         definitions[name]['properties']['series_id']['minLength'] = 1
+    definitions.pop('CaliberConfirmation', None)
     falsifier = definitions['Falsifier']['properties']
     falsifier['expression']['pattern'] = EXPRESSION.pattern
     falsifier['consecutive_periods']['maximum'] = 120

@@ -435,8 +435,8 @@ def threshold_radar(session: Session, variety: str, d: date, *, judgment=None) -
         if observation is not None and (observation.value is None or observation.status != '正常'):
             observation = None
         return indicator, observation
-    return _threshold_radar(j, lookup, lambda identifier, window, crossing=False:
-        sma_boundary(session, identifier, d, window, crossing=crossing))
+    return _threshold_radar(j, lookup, lambda identifier, window, crossing=False, declared_unit=None:
+        sma_boundary(session, identifier, d, window, crossing=crossing, declared_unit=declared_unit))
 
 
 def threshold_radar_values(judgment, values):
@@ -447,14 +447,20 @@ def threshold_radar_values(judgment, values):
         if value is None:
             return None, None
         indicator = SimpleNamespace(name=value['name'], unit=value['unit'])
-        observation = (SimpleNamespace(value=value['value'], as_of=datetime.combine(
+        points = value.get('points') or []
+        point_unit = points[-1].get('unit') if points and isinstance(points[-1], dict) else None
+        observation = (SimpleNamespace(value=value['value'], unit=point_unit, as_of=datetime.combine(
             date.fromisoformat(value['date']), datetime.min.time(), SHANGHAI))
             if value.get('date') and value.get('value') is not None else None)
         return indicator, observation
-    def moving_lookup(identifier, window, crossing=False):
+    def moving_lookup(identifier, window, crossing=False, declared_unit=None):
         from tin.compute.moving_average import sma_result, sma_crossing_result
         field = values.get(identifier) or {}
-        return (sma_crossing_result if crossing else sma_result)(field.get('points') or [], window, field.get('unit'))
+        points = field.get('points') or []
+        if declared_unit is not None:
+            from tin.compute.rule_caliber import declared_points
+            points = declared_points(points, declared_unit)
+        return (sma_crossing_result if crossing else sma_result)(points, window, declared_unit or field.get('unit'))
     return _threshold_radar(judgment, lookup, moving_lookup) if judgment else []
 
 
@@ -467,6 +473,19 @@ def _threshold_radar(j, lookup, moving_lookup=None):
                "type": t["type"], "horizon": t["horizon"], "action_hint": t.get("action_hint"),
                "note": t.get("note"), "state": "数据缺失", "value": None, "progress": 0,
                "distance": "该指标暂无数据", "as_of": None}
+        from tin.compute.rule_caliber import rule_unit, unit_present
+        try:
+            unit = rule_unit(t, ind.unit if ind else None)
+        except ValueError:
+            row['distance'] = '来源单位与本条人工口径不一致，请重新核对'
+            out.append(row)
+            continue
+        if unit is None:
+            row['distance'] = '来源单位尚未确认，请在研究逻辑中核对此绑定口径'
+            out.append(row)
+            continue
+        row['unit'] = unit
+        declared_unit = unit if t.get('caliber_confirmation') and not unit_present(ind.unit if ind else None) else None
         op, target = t["operator"], t["value"]
         from tin.compute.moving_average import CROSSING_OPERATORS
         crossing = op in CROSSING_OPERATORS
@@ -477,7 +496,8 @@ def _threshold_radar(j, lookup, moving_lookup=None):
             label = {'crosses_below': '下穿', 'crosses_above': '上穿'}.get(op, op)
             row.update(condition=f"{label} MA{moving['window']}", target_value=None,
                        dynamic_target={**moving, 'basis': 'observations'})
-            boundary = ((moving_lookup(t['series_id'], moving['window'], True) if crossing
+            boundary = ((moving_lookup(t['series_id'], moving['window'], crossing, declared_unit) if declared_unit
+                else moving_lookup(t['series_id'], moving['window'], True) if crossing
                 else moving_lookup(t['series_id'], moving['window'])) if moving_lookup else None)
             if boundary is None or boundary['value'] is None:
                 row['distance'] = boundary['error'] if boundary else '尚未加载均线所需的观测窗口'
@@ -492,6 +512,11 @@ def _threshold_radar(j, lookup, moving_lookup=None):
         row["condition"] = row.get('condition') or (f"{_fmt(target[0])} – {_fmt(target[1])}" if op == "between"
                             else f"{op} {_fmt(target)}")
         if o is None:
+            out.append(row)
+            continue
+        point_unit = getattr(o, 'unit', None) or (getattr(o, 'caliber_snapshot', None) or {}).get('unit')
+        if unit_present(point_unit) and point_unit != unit:
+            row['distance'] = '当前观测单位与本条确认口径不一致，未进行数值换算'
             out.append(row)
             continue
         v = decimal_value(o.value)

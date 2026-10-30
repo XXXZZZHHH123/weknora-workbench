@@ -30,11 +30,12 @@ def _refs(j: JudgmentIn) -> list[tuple[str, str, str]]:
 
 def latest(session: Session, variety: str) -> Judgment | None:
     return session.scalars(scope_query(session, select(Judgment).where(Judgment.variety == variety)
-                           .order_by(Judgment.version.desc()).limit(1), Judgment)).first()
+                           .order_by(Judgment.version.desc()).limit(1), Judgment, include_deleted=True)).first()
 
 
 def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool = False,
-                 expected_base_version: int | None = None) -> Judgment:
+                 expected_base_version: int | None = None,
+                 caliber_confirmations: dict | None = None) -> Judgment:
     """每次保存都生成新版本（FR-1.5）。activate=True 时须通过全部硬校验，且旧的生效版本转为已归档。"""
     refs = _refs(j)
     wanted = {sid for _t, _i, sid in refs}
@@ -52,8 +53,22 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
 
     rid = researcher_id(session)
     actor = verified_actor(session, actor)
+    declared_units = {}
+    for rule in [*j.thresholds, *j.falsifiers]:
+        confirmation = rule.caliber_confirmation
+        if confirmation is None:
+            continue
+        if (not isinstance(caliber_confirmations, dict)
+                or caliber_confirmations.get(rule.id) != confirmation.model_dump()
+                or confirmation.confirmed_by != actor):
+            raise JudgmentError('人工口径须在当前研判的确认入口核对，不能直接导入确认标记')
+        if confirmation.series_id != rule.series_id:
+            raise JudgmentError('人工口径与当前绑定指标不一致，请重新确认')
+        if rule.series_id in declared_units and declared_units[rule.series_id] != confirmation.unit:
+            raise JudgmentError('同一研判中的同一指标不能使用互相矛盾的单位')
+        declared_units[rule.series_id] = confirmation.unit
     version = (session.scalar(scope_query(session, select(func.max(Judgment.version))
-                                         .where(Judgment.variety == j.variety), Judgment)) or 0) + 1
+                                         .where(Judgment.variety == j.variety), Judgment, include_deleted=True)) or 0) + 1
     if expected_base_version is not None and version - 1 != expected_base_version:
         raise JudgmentError("研究逻辑已有新版本，请刷新后重新分析或比较")
     if activate:
@@ -114,7 +129,7 @@ def latest_workbench_payload(session: Session, variety: str, scope) -> JudgmentI
         # needs this workbench's newest saved version, including later drafts.
         winner = max(records, key=lambda record: record.version, default=None)
         row = session.scalar(select(Judgment).where(Judgment.id == winner.id)) if winner else None
-    return to_payload(row) if row is not None else None
+    return to_payload(row) if row is not None and row.status != '已删除' else None
 
 
 def authorized_judgments(session: Session, scope, *, variety=None):
@@ -125,7 +140,7 @@ def authorized_judgments(session: Session, scope, *, variety=None):
     owner = session.scalar(select(Researcher.id).where(Researcher.weknora_user_id == scope.identity.user_id))
     if owner is None:
         return []
-    query = select(Judgment).where(Judgment.researcher_id == owner).options(load_only(
+    query = select(Judgment).where(Judgment.researcher_id == owner, Judgment.status != '已删除').options(load_only(
         Judgment.id, Judgment.researcher_id, Judgment.variety, Judgment.version, Judgment.status,
         Judgment.created_at, Judgment.review_due, Judgment.written_at))
     if variety is not None:
@@ -145,7 +160,7 @@ def current(session: Session, variety: str, *, scope=None) -> Judgment | None:
     from tin.integration.workbench_scope import current_workbench
     scope = scope or current_workbench.get()
     if scope is not None:
-        rows = authorized_judgments(session, scope, variety=variety)
+        rows = [row for row in authorized_judgments(session, scope, variety=variety) if row.status != '已归档']
         # Hydrate only the proved winner in one query, rather than issuing one
         # deferred-column query per payload field in downstream presenters.
         return session.scalar(select(Judgment).where(Judgment.id == rows[0].id)) if rows else None
@@ -153,5 +168,6 @@ def current(session: Session, variety: str, *, scope=None) -> Judgment | None:
         Judgment.variety == variety, Judgment.status == "生效"), Judgment)).first()
     if active:
         return active
-    return session.scalars(scope_query(session, select(Judgment).where(Judgment.variety == variety)
+    return session.scalars(scope_query(session, select(Judgment).where(Judgment.variety == variety,
+                           Judgment.status != '已归档')
                            .order_by(Judgment.version.desc()).limit(1), Judgment)).first()

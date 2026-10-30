@@ -94,7 +94,34 @@ class MovingAverageTarget(_Model):
     window: int = Field(ge=2, le=120, strict=True)
 
 
-class Threshold(_Model):
+class CaliberConfirmation(_Model):
+    """A human declaration stored only with this saved rule, never with a source."""
+    series_id: str = Field(min_length=1, max_length=256)
+    unit: str = Field(min_length=1, max_length=80)
+    basis: str = Field(min_length=1, max_length=1000)
+    scope_note: str = Field(default='', max_length=1000)
+    confirmed_by: str = Field(min_length=1, max_length=128)
+    confirmed_at: str = Field(min_length=16, max_length=40)
+    catalog_version: str = Field(min_length=1, max_length=128)
+
+    @field_validator('unit', 'basis')
+    @classmethod
+    def _not_blank(cls, value):
+        if not value.strip():
+            raise ValueError('人工口径必须填写单位和核对依据')
+        return value.strip()
+
+
+class _Rule(_Model):
+    @model_serializer(mode='wrap')
+    def _without_empty_caliber(self, handler):
+        value = handler(self)
+        if value.get('caliber_confirmation') is None:
+            value.pop('caliber_confirmation', None)
+        return value
+
+
+class Threshold(_Rule):
     id: str
     name: str
     series_id: str
@@ -104,6 +131,7 @@ class Threshold(_Model):
     horizon: Horizon
     action_hint: str | None = None
     note: str | None = None
+    caliber_confirmation: CaliberConfirmation | None = None
 
     @field_validator('value', mode='before')
     @classmethod
@@ -126,7 +154,7 @@ class Threshold(_Model):
         return self
 
 
-class Falsifier(_Model):
+class Falsifier(_Rule):
     id: str
     desc: str
     series_id: str
@@ -135,6 +163,7 @@ class Falsifier(_Model):
     consecutive_periods: int = Field(1, ge=1)
     side: Literal["bull", "bear"] = Field(description='被证伪的原假设一方：bull为多方原假设失效，bear为空方原假设失效；不是条件触发后的价格涨跌方向。')
     note: str | None = None
+    caliber_confirmation: CaliberConfirmation | None = None
 
     @field_validator("expression")
     @classmethod

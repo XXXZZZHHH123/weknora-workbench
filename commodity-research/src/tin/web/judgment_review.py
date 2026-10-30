@@ -34,12 +34,21 @@ class ReviewRequest(BaseModel):
     revision: int = Field(ge=1)
 
 
+class CaliberUpdate(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    mode: Literal['catalog', 'declared']
+    unit: str | None = Field(default=None, max_length=80)
+    basis: str | None = Field(default=None, max_length=1000)
+    scope_note: str = Field(default='', max_length=1000)
+
+
 class UpdateRequest(ReviewRequest):
     item_id: str = Field(min_length=1, max_length=80)
     action: Literal['confirm', 'keep_text', 'exclude']
     series_id: str | None = Field(default=None, max_length=256)
     source_quote: str | None = Field(default=None, max_length=4000)
     remember: bool = False
+    caliber: CaliberUpdate | None = None
 
 
 class ReuseRequest(ReviewRequest):
@@ -264,6 +273,7 @@ def build_document(preview, catalog):
         status, kind = item['status'], item['kind']
         if kind in ('thresholds', 'falsifiers'):
             rule = deepcopy(item['value'])
+            rule.pop('caliber_confirmation', None)
             if status == 'excluded':
                 continue
             if status == 'kept_text' or status in {'pending', 'ready'} and rule['id'] not in valid[kind]:
@@ -272,6 +282,10 @@ def build_document(preview, catalog):
                 continue
             if status == 'confirmed':
                 rule['series_id'] = item['series_id']
+                if item.get('caliber_confirmation'):
+                    rule['caliber_confirmation'] = deepcopy(item['caliber_confirmation'])
+                    if kind == 'falsifiers':
+                        rule['unit_confirmed'] = item['caliber_confirmation']['unit']
             fields[kind].append(rule)
             document['rule_quotes'][rule['id']] = item['source_quote']
             continue
@@ -318,12 +332,23 @@ def build_document(preview, catalog):
     refs(document['judgment'])
     refs(document['unresolved'])
     document['binding_units'] = {sid: known[sid].get('unit') for sid in sorted(wanted) if sid in known}
+    for declaration in trusted_calibers(preview).values():
+        if declaration['series_id'] in document['binding_units']:
+            document['binding_units'][declaration['series_id']] = declaration['unit']
     return document
+
+
+def trusted_calibers(preview):
+    return {item['value']['id']: deepcopy(item['caliber_confirmation'])
+        for item in preview.get('review', {}).get('items', [])
+        if item['kind'] in {'thresholds', 'falsifiers'} and item['status'] == 'confirmed'
+        and item.get('caliber_confirmation')}
 
 
 def checked(preview, document, catalog, scope):
     return validate_analysis(document, preview['text'], catalog, variety=preview['variety'],
-        actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']))
+        actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']),
+        caliber_confirmations=trusted_calibers(preview))
 
 
 def confirmation_issues(preview, item, catalog, scope):
@@ -333,7 +358,7 @@ def confirmation_issues(preview, item, catalog, scope):
     if requires_binding(item) and not item['series_id']:
         return [{'code': 'missing_binding', 'message': '请先选择当前授权目录中的指标。'}]
     if item['requires_explicit_binding'] and not item['binding_explicit']:
-        return [{'code': 'unit_mismatch', 'message': '模型推荐的单位声明与目录不一致，请重新选择真实指标并核对原单位。'}]
+        return [{'code': 'unit_mismatch', 'message': '模型单位与目录不同，请明确采用来源登记单位，无需更换指标。'}]
     try:
         checked(trial, build_document(trial, catalog), catalog, scope)
     except AnalysisError as error:
@@ -367,6 +392,22 @@ def review_response(scope, token, preview, catalog):
                 rule = {key: value[key] for key in ('operator', 'type', 'horizon', 'expression', 'side', 'consecutive_periods') if key in value}
                 if 'value' in value:
                     rule['value_literal'] = json.dumps(value['value'], ensure_ascii=False, separators=(',', ':'))
+            field = known.get(item['series_id'])
+            declaration = item.get('caliber_confirmation')
+            caliber_choice = item.get('caliber_choice') or {}
+            display_field = ({**field, 'unit': declaration['unit']} if field is not None
+                and declaration is not None and item['status'] == 'confirmed' else field)
+            from tin.compute.rule_caliber import unit_present
+            caliber = {'catalog_unit': field.get('unit') if field else None,
+                'model_unit': preview['review']['candidate']['binding_units'].get(item['ai_series_id']),
+                'mode': caliber_choice.get('mode'),
+                'unit': declaration['unit'] if declaration else field.get('unit') if field else None,
+                'basis': declaration['basis'] if declaration else '',
+                'scope_note': declaration['scope_note'] if declaration else caliber_choice.get('scope_note', ''),
+                'can_adopt_catalog': bool(field and unit_present(field.get('unit'))),
+                'can_declare': bool(field and not unit_present(field.get('unit')) and item['kind'] in {'thresholds', 'falsifiers'}),
+                'confirmation_required': item['status'] == 'pending' and ('binding' in fields or item['requires_explicit_binding']),
+                'confirmed': item['status'] == 'confirmed' and bool(caliber_choice)}
             items.append({'id': item['id'], 'kind': item['kind'], 'title': item['title'],
                 'description': item['description'], 'original_text': item['source_quote'],
                 'source_quote': item['source_quote'], 'status': item['status'],
@@ -375,7 +416,7 @@ def review_response(scope, token, preview, catalog):
                 'attention_reasons': [attention_message(fields)] if fields else [],
                 'requires_quote': item['kind'] in ('thresholds', 'falsifiers'),
                 'warnings': errors if errors else item['warnings'] if item['status'] == 'pending' else [],
-                'binding': binding(known.get(item['series_id'])),
+                'binding': binding(display_field), 'caliber': caliber,
                 'ai_binding': binding(known.get(item['ai_series_id'])),
                 'requires_binding': requires_binding(item),
                 'can_bind': item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers'),
@@ -472,6 +513,10 @@ def record_decisions(scope, token, before, preview, catalog, decisions):
                 'revision': preview['review']['revision'], 'item_id': item['id'],
                 'action': item['status'], 'series_id': item['series_id'], 'remember': remember,
                 'source_quote': item['source_quote'], 'source_quote_sha256': digest(item['source_quote'])}
+            if item.get('caliber_choice'):
+                detail['caliber'] = deepcopy(item['caliber_choice'])
+            if item.get('caliber_confirmation'):
+                detail['caliber_confirmation'] = deepcopy(item['caliber_confirmation'])
             preview['review']['audit'].append(detail)
             session.add(AuditLog(at=now, actor=verified_actor(session, ''), action='研判逐项确认',
                 target_type='judgment_preview', target_id=digest(token), detail=detail))
@@ -529,9 +574,41 @@ async def update_review(request: Request):
         if 'series_id' in body.model_fields_set:
             if not can_bind or body.series_id is not None and body.series_id not in known:
                 reject_fields(['binding'])
+            if item['series_id'] != body.series_id:
+                item.pop('caliber_confirmation', None)
+                item.pop('caliber_choice', None)
             item['series_id'] = body.series_id
             item['remembered'] = False
             item['binding_explicit'] = body.series_id is not None
+        if body.caliber is not None:
+            from tin.compute.rule_caliber import unit_present
+            if body.action != 'confirm' or not can_bind or item['series_id'] not in known:
+                reject_fields(['binding'], [{'message': '请先选择真实指标，再确认此绑定的来源口径。'}])
+            field = known[item['series_id']]
+            value = body.caliber
+            if value.mode == 'catalog':
+                if not unit_present(field.get('unit')):
+                    reject_fields(['binding'], [{'message': '来源尚未登记单位，请填写仅适用于此规则的人工口径及依据。'}])
+                if value.unit is not None and value.unit != field['unit']:
+                    reject_fields(['binding'], [{'message': '采用来源单位时不能填入其他单位。'}])
+                item.pop('caliber_confirmation', None)
+                item['caliber_choice'] = {'mode': 'catalog', 'unit': field['unit'], 'scope_note': value.scope_note,
+                    'confirmed_by': scope.identity.user_id, 'confirmed_at': datetime.now(timezone.utc).isoformat(),
+                    'catalog_version': preview['fact_version']}
+                if item['kind'] == 'falsifiers':
+                    item['value']['unit_confirmed'] = field['unit']
+            else:
+                if item['kind'] not in {'thresholds', 'falsifiers'} or unit_present(field.get('unit')):
+                    reject_fields(['binding'], [{'message': '人工单位只用于来源单位缺失的本条规则；已有单位请采用来源登记值。'}])
+                if not unit_present(value.unit) or not value.basis or not value.basis.strip():
+                    reject_fields(['binding'], [{'message': '请填写原始数据单位和人工核对依据，不进行数值换算。'}])
+                declaration = {'series_id': item['series_id'], 'unit': value.unit.strip(),
+                    'basis': value.basis.strip(), 'scope_note': value.scope_note,
+                    'confirmed_by': scope.identity.user_id, 'confirmed_at': datetime.now(timezone.utc).isoformat(),
+                    'catalog_version': preview['fact_version']}
+                item['caliber_confirmation'] = declaration
+                item['caliber_choice'] = {'mode': 'declared', **declaration}
+            item['binding_explicit'] = True
         if body.source_quote is not None:
             if not body.source_quote.strip() or body.source_quote not in preview['text']:
                 reject_fields(['source_quote'])

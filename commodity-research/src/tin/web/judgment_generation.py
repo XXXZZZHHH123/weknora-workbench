@@ -542,10 +542,12 @@ async def fresh(scope, previous):
     return state
 
 
-def serialize(row):
+def serialize(row, session=None, scope=None):
     if row is None: return None
     payload = to_payload(row)
+    from tin.web.judgment_lifecycle import delete_revision
     return {'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author, 'variety': row.variety,
+            'delete_revision': delete_revision(session, scope, row) if session is not None and scope is not None else 0,
             'created_at': row.created_at.isoformat(), 'markdown': dump_markdown(payload),
             'source_text': row.source_note or dump_markdown(payload)}
 
@@ -570,14 +572,14 @@ def manage(variety: str | None = None, judgment_id: int | None = None):
         shown = selected or current(session, variety)
         if shown is not None and shown.id not in {row.id for row in versions}:
             shown = None
-        if shown is None and rows:
-            shown = selected_judgment(session, rows[0].id, scope=scope)
         # The numeric CAS counter can span old storage; never return a foreign
         # workbench's Markdown just to tell the editor its next save baseline.
         base = session.scalar(scope_query(session, select(func.max(Judgment.version))
-            .where(Judgment.variety == variety), Judgment))
-        return {'variety': variety, 'current': serialize(shown), 'latest': {'version': base} if base else None,
-                'versions': [{'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author} for row in rows],
+            .where(Judgment.variety == variety), Judgment, include_deleted=True))
+        from tin.web.judgment_lifecycle import delete_revision
+        return {'variety': variety, 'current': serialize(shown, session, scope), 'latest': {'version': base} if base else None,
+                'versions': [{'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author,
+                    'delete_revision': delete_revision(session, scope, row)} for row in rows],
                 'version_total': total, 'versions_partial': total > len(rows), 'can_write': scope.can_edit}
 
 
@@ -604,7 +606,7 @@ def version_detail(version: int, variety: str | None = None, judgment_id: int | 
             from tin.web.research_references import record_in_workbench
             if not record_in_workbench(session, scope, 'judgment', str(shown.id), record=shown):
                 shown = None
-        return {**serialize(row), 'diff': version_diff(to_payload(shown) if shown else None, to_payload(row))}
+        return {**serialize(row, session, scope), 'diff': version_diff(to_payload(shown) if shown else None, to_payload(row))}
 
 
 @router.get('/models')
@@ -685,15 +687,18 @@ def persist(scope, preview):
                 knowledge_facts_catalog=metadata['catalog'], knowledge_facts_datasets=metadata['datasets'])
         if session.info['knowledge_facts_version'] != preview['fact_version']:
             raise HTTPException(409, '知识库来源已改变，请重新分析')
-        catalog = [{'id': item['series_id'], 'unit': item.get('unit')} for item in session.info['knowledge_facts_catalog'].values()]
+        catalog = [{**item, 'id': item['series_id']} for item in session.info['knowledge_facts_catalog'].values()]
         try:
             if preview.get('_job_id'):
                 from tin.web.judgment_jobs import mark_applied
                 mark_applied(session, scope, preview)
+            from tin.web.judgment_review import trusted_calibers
+            declarations = trusted_calibers(preview)
             result = validate_analysis(preview['document'], preview['text'], catalog, variety=preview.get('variety', settings.variety),
-                actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']))
+                actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']),
+                caliber_confirmations=declarations)
             row = save_version(session, result.payload, actor=scope.identity.user_id,
-                               expected_base_version=preview['base_version'])
+                               expected_base_version=preview['base_version'], caliber_confirmations=declarations)
             from tin.web.judgment_panels import register_panel
             panel = register_panel(session, scope, row, preview.get('panel_title') or (preview.get('source_name') or '')[:120])
             session.add(AuditLog(at=datetime.now(timezone.utc), actor=verified_actor(session, ''),

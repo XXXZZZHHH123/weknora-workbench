@@ -8,6 +8,7 @@
   let managed, draft, displayed, busy = false, controller, panels = [], review = null, reviewEpoch = 0;
   let activeJob = null, jobTimer, jobEpoch = 0, submissionSerial = 0, submittingJob = false;
   let uncertainSubmission = null;
+  let historyEntries = [], historical = null, historyEpoch = 0, historyPending = false;
   const reviewEdits = new Map();
   const rememberedChoices = new Set();
   let reviewControls = [], searchSessions = [], selectedSection = '', reviewView = 'all';
@@ -40,6 +41,7 @@
     }
     for (const name of ['panel-name', 'panel-save', 'new-panel-title']) if (byId(name)) byId(name).disabled = value || managed?.can_write === false;
     for (const name of ['panel-switch', 'panel-open', 'panel-more']) if (byId(name)) byId(name).disabled = value;
+    syncManagement();
     syncReviewControls();
     syncApply();
   }
@@ -57,7 +59,8 @@
   function panelTitle() { const title = byId('new-panel-title')?.value.trim(); return title ? {panel_title: title} : {}; }
   function navigateToJudgment(identifier) {
     const url = new URL(location.href || endpoint.replace('/api/sn/judgment', '/sn/judgment'), location.origin);
-    url.searchParams.set('judgment_id', String(identifier));
+    if (identifier) url.searchParams.set('judgment_id', String(identifier));
+    else url.searchParams.delete('judgment_id');
     url.searchParams.delete('analysis_job');
     if (typeof location.assign === 'function') location.assign(url.href); else location.href = url.href;
   }
@@ -116,10 +119,10 @@
     if (byId('panel-save')) byId('panel-save').textContent = row?.named ? '保存名称' : '引用为面板';
   }
   async function loadPanels(append = false) {
-    if (!byId('panel-switch')) return;
+    if (!byId('panel-switch')) { renderHistory(); return; }
     const result = await api('/panels' + (append ? '?offset=' + panels.length : ''));
     const previous = byId('panel-switch').value;
-    panels = append ? [...panels, ...result.items] : result.items;
+    panels = [...new Map((append ? [...panels, ...result.items] : result.items).map(row => [row.judgment_id, row])).values()];
     const selector = byId('panel-switch'); selector.replaceChildren();
     for (const row of panels) {
       const option = document.createElement('option'); option.value = String(row.judgment_id);
@@ -129,13 +132,83 @@
     byId('panel-range').textContent = `${panels.length}/${result.total} 个已保存研判`;
     byId('panel-more').hidden = !result.has_more;
     syncPanelName();
+    renderHistory(result.has_more);
   }
   function text(id, value) { byId(id).textContent = display.text(value || ''); }
   function showVersion(row) {
     displayed = row;
     text('current-md', row?.markdown || '尚无研究逻辑。可在“导入与分析”添加原文。');
     text('original-source', row?.source_text || '尚无原始输入');
-    text('current-state', row ? `${display.reference(row)} · ${row.status} · ${row.author}` : '尚无研究逻辑');
+    text('current-state', row ? `${display.reference(row)} · ${row.status}` : '尚无研究逻辑');
+    syncManagement();
+  }
+  function syncManagement() {
+    const writing = managed?.can_write === true;
+    if (byId('current-delete')) byId('current-delete').disabled = busy || !writing || !displayed || !Number.isSafeInteger(displayed.delete_revision);
+    for (const name of ['history-download', 'history-reuse', 'history-delete']) if (byId(name))
+      byId(name).disabled = busy || historyPending || !historical || (name !== 'history-download' && !writing)
+        || (name === 'history-delete' && !Number.isSafeInteger(historical?.delete_revision));
+    if (byId('history-more')) byId('history-more').disabled = busy;
+  }
+  function renderHistory(hasMore = false) {
+    const selector = byId('version'), previous = selector.value;
+    const rows = panels.length ? panels.map(row => ({...row, record_id: row.judgment_id}))
+      : (managed?.versions || []).map(row => ({...row, record_id: row.id, variety: managed.variety}));
+    historyEntries = rows.map(row => ({...row, key: row.record_id ? 'record:' + row.record_id : 'version:' + row.version}));
+    selector.replaceChildren();
+    for (const row of historyEntries) {
+      const option = document.createElement('option'); option.value = row.key;
+      option.textContent = `${display.reference(row)} · ${row.status || '草稿'}`; selector.append(option);
+    }
+    selector.value = historyEntries.some(row => row.key === previous) ? previous : historyEntries[0]?.key || '';
+    if (!historyEntries.some(row => String(row.record_id) === String(historical?.id))) {
+      historical = null; text('history-md', '选择一份历史研判查看。'); text('history-diff', '');
+    }
+    text('version-range', `${historyEntries.length} 份已保存研判`);
+    if (byId('history-more')) byId('history-more').hidden = !hasMore;
+    syncManagement();
+  }
+  function exportMarkdown(row) {
+    if (!row || typeof row.markdown !== 'string') return;
+    const url = URL.createObjectURL(new Blob([row.markdown], {type: 'text/markdown;charset=utf-8'}));
+    const link = document.createElement('a'); link.href = url; link.download = `research-logic-v${row.version}.md`;
+    link.click(); URL.revokeObjectURL(url);
+  }
+  function reuseMarkdown(row, original = false) {
+    const value = original ? row?.source_text : row?.markdown;
+    if (!value) return inform('尚无可复用内容。');
+    if (busy || draft || input.value.trim() && input.value !== value) return inform('已有输入或待保存草稿，请先保留或清空，再复用研判。');
+    input.value = value;
+    if (row.variety) byId('variety').value = row.variety;
+    text('file-name', original ? '复用已保存研判原文' : '复用已保存研判 MD');
+    invalidate(); tab('analyze'); input.focus();
+  }
+  async function removeVersion(row) {
+    if (busy || !managed?.can_write || !row || !Number.isSafeInteger(row.delete_revision)) return;
+    if (draft || input.value.trim()) return inform('请先保留或清空尚未处理的输入和草稿，再删除研判。', true);
+    const label = panels.find(item => item.judgment_id === row.id)?.title || display.reference(row);
+    if (!window.confirm(`确认删除“${label}”？删除后将从研判列表移除。`)) return;
+    setBusy(true); inform('正在删除研判…');
+    try {
+      await api('/records/' + encodeURIComponent(row.id), {version: row.version, revision: row.delete_revision, confirmed: true}, 'DELETE');
+      if (String(displayed?.id) === String(row.id)) {
+        const wb = window.RESEARCH_CONTEXT?.workbench;
+        if (parent !== window && wb) {
+          try {
+            const outer = new URL(parent.location.href);
+            if (outer.origin === location.origin && outer.pathname.split('/').includes(wb)
+                && outer.searchParams.get('judgment_id') === String(row.id)) {
+              outer.searchParams.delete('judgment_id'); outer.searchParams.delete('analysis_job');
+              parent.location.assign(outer.href); return;
+            }
+          } catch { /* A standalone or cross-origin host retains native navigation. */ }
+        }
+        navigateToJudgment(''); return;
+      }
+      historical = null; historyEpoch++;
+      await loadPanels(); text('history-md', '该研判已删除，请选择其他记录。'); text('history-state', '已删除'); inform('研判已删除。');
+    } catch (error) { if (error.name !== 'AbortError') inform(error.message, true); }
+    finally { setBusy(false); }
   }
   function summarize(value) {
     if (value === null || value === undefined || value === '') return '未设置';
@@ -195,7 +268,7 @@
   }
   function shortFile(value) { return String(value || '').split(/[\\/]/).pop(); }
   function bindingMeta(row) {
-    return [row?.unit || '单位待核对', shortFile(row?.source_file), row?.sheet].filter(Boolean).join(' · ');
+    return [row?.unit || '单位未注明', shortFile(row?.source_file), row?.sheet].filter(Boolean).join(' · ');
   }
   function changed(edit) { edit.dirty = true; edit.renderCondition?.(); edit.renderErrors?.(); syncReviewVisibility(); syncReviewControls(); syncApply(); }
   const ruleNumber = '[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?';
@@ -279,8 +352,8 @@
     const feedback = element('div', 'logic-binding-feedback'); feedback.setAttribute('aria-live', 'polite');
     const more = registerControl(element('button', 'logic-binding-more', '更多指标'), item, 'more'); more.type = 'button'; more.hidden = true;
     menu.append(list, feedback, more);
-    const meta = element('p', 'logic-binding-meta', edit.selected ? bindingMeta(edit.selected) : '单位待确认');
-    meta.title = meta.textContent; meta.textContent = edit.selected?.unit || '单位待确认';
+    const meta = element('p', 'logic-binding-meta', edit.selected ? bindingMeta(edit.selected) : '请先选择指标');
+    meta.title = meta.textContent; meta.textContent = edit.selected ? edit.selected.unit || '单位未注明' : '请先选择指标';
     search.title = meta.title;
     const session = {timer: null, controller: null, token: 0, rows: [], active: -1, next: null, epoch: reviewEpoch, list}; searchSessions.push(session);
     const options = () => [...session.rows, null];
@@ -294,7 +367,7 @@
     function choose(row) {
       if (busy || !managed?.can_write) return;
       edit.selected = row; edit.query = ''; edit.bindingChanged = true; search.value = row ? display.text(row.name) : ''; meta.title = row ? bindingMeta(row) : '暂无，暂不关联';
-      meta.textContent = row ? row.unit || '单位待确认' : '暂无'; search.title = meta.title;
+      meta.textContent = row ? row.unit || '单位未注明' : '暂无'; search.title = meta.title;
       if (!row) { edit.remember = false; rememberedChoices.delete(item.id); }
       changed(edit); closeMenu(); return updateReview(item, edit, row ? 'confirm' : 'keep_text');
     }
@@ -333,7 +406,7 @@
       edit.query = search.value; edit.selected = null; edit.errorFields = [...new Set([...(edit.errorFields || item.attention_fields || []), 'binding'])]; edit.errorMessage = '请选择搜索结果中的指标。'; changed(edit);
       session.token++; session.controller?.abort(); clearTimeout(session.timer);
       session.rows = []; list.replaceChildren(); more.hidden = true;
-      meta.textContent = '单位待确认'; showMenu(); feedback.textContent = '等待搜索…';
+      meta.textContent = '请选择搜索结果中的指标'; showMenu(); feedback.textContent = '等待搜索…';
       session.timer = setTimeout(() => load(), 180);
     });
     search.addEventListener('keydown', event => {
@@ -351,6 +424,44 @@
     more.addEventListener('click', () => { if (session.next !== null && session.next !== undefined) return load(true); });
     const picker = element('div', 'logic-binding-picker'); picker.append(search, menu);
     field.append(label, picker, meta); return field;
+  }
+  function renderCaliber(item, edit) {
+    const caliber = item.caliber;
+    if (!caliber || !(caliber.can_adopt_catalog || caliber.can_declare || caliber.confirmed)
+        || !(caliber.confirmation_required || caliber.confirmed || caliber.can_declare)) return null;
+    const block = element('div', 'logic-caliber-field');
+    block.append(element('strong', 'logic-item-label', caliber.confirmed ? '口径已确认' : '确认本条口径'));
+    if (caliber.can_adopt_catalog) {
+      block.append(element('p', 'logic-hint', `来源单位：${caliber.catalog_unit}`));
+      if (!caliber.confirmed && caliber.model_unit && caliber.model_unit !== caliber.catalog_unit)
+        block.append(element('p', 'logic-hint', `解析时填写：${caliber.model_unit}`));
+      if (!caliber.confirmed) {
+        const button = registerControl(element('button', 'logic-confirm-item', '采用来源单位并确认'), item, 'caliber-catalog', () => !edit.selected);
+        button.type = 'button'; button.addEventListener('click', () => updateReview(item, edit, 'confirm', false, {mode: 'catalog'})); block.append(button);
+      }
+    } else if (caliber.can_declare) {
+      const details = element('details'); details.open = !caliber.confirmed || Boolean(edit.caliberDraft);
+      details.append(element('summary', '', caliber.confirmed ? `${caliber.unit} · 修改本条口径` : '来源缺少单位，填写核对结果'));
+      const value = edit.caliberDraft || {unit: caliber.unit || '', basis: caliber.basis || '', scope_note: caliber.scope_note || ''};
+      const entries = [['unit', '数据单位', '按原表填写单位'], ['basis', '核对依据', '填写来源表头或说明中的依据'], ['scope_note', '统计口径', '统计范围、样本或其他适用说明（可选）']];
+      for (const [name, title, placeholder] of entries) {
+        const label = element('label', 'logic-caliber-label', title);
+        const input = registerControl(element(name === 'basis' ? 'textarea' : 'input'), item, 'caliber-' + (name === 'scope_note' ? 'scope' : name));
+        input.value = value[name]; input.placeholder = placeholder; input.maxLength = name === 'unit' ? 80 : 1000;
+        input.setAttribute('aria-label', item.title + '：' + title);
+        input.addEventListener('input', () => { value[name] = input.value; edit.caliberDraft = value; changed(edit); });
+        label.append(input); details.append(label);
+      }
+      const confirm = registerControl(element('button', 'logic-confirm-item', '确认本条口径'), item, 'caliber-declare', () => !edit.selected);
+      confirm.type = 'button'; confirm.addEventListener('click', () => {
+        if (!value.unit.trim() || !value.basis.trim()) {
+          edit.errorMessage = '请填写数据单位和核对依据。'; edit.errorFields = ['caliber']; edit.renderErrors?.(); return;
+        }
+        return updateReview(item, edit, 'confirm', false, {mode: 'declared', unit: value.unit.trim(), basis: value.basis.trim(), scope_note: value.scope_note.trim()});
+      });
+      details.append(element('p', 'logic-hint', '仅适用于本条规则；不改来源单位，不换算数值。'), confirm); block.append(details);
+    } else if (caliber.confirmed) block.append(element('p', 'logic-hint', caliber.unit || caliber.catalog_unit || '已核对来源口径'));
+    return block;
   }
   function renderReview() {
     if (!byId('review')) return;
@@ -411,6 +522,7 @@
           const remember = registerControl(element('input'), item, 'remember', () => !edit.selected); remember.type = 'checkbox'; remember.checked = edit.remember;
           remember.addEventListener('change', () => { edit.remember = remember.checked; changed(edit); return updateReview(item, edit, 'confirm'); });
           rememberLabel.append(remember, element('span', '', '记住选择')); binding.append(rememberLabel); columns.append(binding); card.append(columns);
+          const caliber = renderCaliber(item, edit); if (caliber) binding.append(field(caliber, 'caliber'));
         }
         const actions = element('div', 'logic-item-actions');
         for (const [action, label] of [['keep_text', '仅保留文字'], ['exclude', '排除']]) {
@@ -437,11 +549,12 @@
   async function hydrateReview(value) {
     if (value.review_available && !value.review) { review = await api('/review?draft_id=' + encodeURIComponent(value.draft_id)); draft.review = review; renderReview(); }
   }
-  async function updateReview(item, edit, action, holdBusy = false) {
+  async function updateReview(item, edit, action, holdBusy = false, caliber) {
     if ((busy && !holdBusy) || !review || !draft || !managed?.can_write) return;
     const body = {draft_id: draft.draft_id, revision: review.revision, item_id: item.id, action, remember: action === 'confirm' && edit.remember};
     if (item.can_bind && (action === 'confirm' || action === 'keep_text')) body.series_id = action === 'keep_text' ? null : edit.selected?.series_id || null;
     if (edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
+    if (caliber) body.caliber = caliber;
     setBusy(true); inform('正在同步修改…');
     try {
       const result = await api('/review/update', body);
@@ -449,7 +562,7 @@
       reviewEdits.delete(item.id); presentDraft(result, true); inform('');
     } catch (error) {
       if (error.status === 409) { invalidate(); inform(error.message, true); }
-      else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; edit.renderErrors?.(); inform(''); }
+      else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; if (caliber) edit.errorFields = [...new Set([...edit.errorFields, 'caliber'])]; edit.renderErrors?.(); inform(''); }
     } finally { if (!holdBusy) setBusy(false); }
   }
   async function open(requestedJob) {
@@ -462,11 +575,7 @@
       managed = await api(managePath()); showVersion(managed.current);
       byId('variety').value = managed.current || managed.latest ? managed.variety || '' : '';
       text('version-label', `${managed.current ? display.reference(managed.current) : '暂无当前逻辑'}。后续保存仍为草稿，原记录保留。`);
-      const versions = byId('version'); versions.replaceChildren();
-      for (const row of managed.versions) {
-        const option = document.createElement('option'); option.value = row.version; option.textContent = `${display.reference(row)} · ${row.status}`; versions.append(option);
-      }
-      text('version-range', managed.versions_partial ? `最近${managed.versions.length}/${managed.version_total}版；更早版本可输入版号` : `${managed.version_total}个版本`);
+      historical = null; historyEpoch++;
       dialog.querySelector('[data-logic-tab="analyze"]').disabled = !managed.can_write;
       setBusy(false);
       if (managed.can_write) {
@@ -486,6 +595,7 @@
     } catch (error) { inform(error.message, true); }
   }
   function close() {
+    historyEpoch++; historyPending = false;
     stopJobMonitor();
     controller?.abort(); stopSearches(); setBusy(false); dialog.close();
     if (parent !== window) parent.postMessage({type: 'research-drawer-state', open: false}, location.origin);
@@ -588,25 +698,32 @@
     finally { setBusy(false); }
   });
   byId('reuse').addEventListener('click', () => {
-    if (!displayed) return inform('尚无可复用版本。');
-    if (input.value.trim() && input.value !== displayed.markdown) return inform('已有输入，请先保留或清空，再复用当前MD。');
-    input.value = displayed.markdown; text('file-name', '复用已保存研判 MD'); invalidate(); tab('analyze'); input.focus();
+    reuseMarkdown(displayed);
   });
   byId('reuse-original').addEventListener('click', () => {
-    if (!displayed?.source_text) return inform('尚无可复用原文。');
-    if (input.value.trim() && input.value !== displayed.source_text) return inform('已有输入，请先保留或清空，再复用原文。');
-    input.value = displayed.source_text; text('file-name', '复用已保存研判原文'); invalidate(); tab('analyze'); input.focus();
+    reuseMarkdown(displayed, true);
   });
   byId('download').addEventListener('click', () => {
-    if (!displayed) return;
-    const url = URL.createObjectURL(new Blob([displayed.markdown], {type: 'text/markdown;charset=utf-8'}));
-    const link = document.createElement('a'); link.href = url; link.download = `research-logic-v${displayed.version}.md`; link.click(); URL.revokeObjectURL(url);
+    exportMarkdown(displayed);
   });
   async function loadVersion(value) {
-    if (!value) return;
-    const selection = selectedId() ? '?judgment_id=' + encodeURIComponent(selectedId()) : '';
-    try { const result = await api('/versions/' + encodeURIComponent(value) + selection); text('history-md', result.markdown); text('history-diff', result.diff.markdown); inform(''); }
-    catch (error) { inform(error.message, true); }
+    const entry = historyEntries.find(row => row.key === value);
+    if (!entry || busy) return;
+    const epoch = ++historyEpoch; historyPending = true; historical = null; syncManagement();
+    text('history-state', '正在读取历史研判…');
+    const sameVariety = entry.variety === managed.variety;
+    const identifier = sameVariety && selectedId() ? selectedId() : entry.record_id;
+    const query = new URLSearchParams(identifier ? {judgment_id: String(identifier)} : {variety: entry.variety || managed.variety});
+    try {
+      const result = await api('/versions/' + encodeURIComponent(entry.version) + '?' + query);
+      if (epoch !== historyEpoch || !dialog.open) return;
+      if (entry.record_id && String(result.id) !== String(entry.record_id) || result.version !== entry.version)
+        throw new Error('历史研判已变化，请重新选择');
+      historical = result; text('history-md', result.markdown);
+      text('history-diff', sameVariety ? result.diff?.markdown || '与当前研判内容一致。' : '不同品种的研判不作版本差异比较。');
+      text('history-state', `${entry.title || display.reference(result)} · ${result.status || '草稿'}`); inform('');
+    } catch (error) { if (epoch === historyEpoch && error.name !== 'AbortError') { text('history-state', '读取未完成'); inform(error.message, true); } }
+    finally { if (epoch === historyEpoch) { historyPending = false; syncManagement(); } }
   }
   byId('version').addEventListener('change', event => loadVersion(event.target.value));
   for (const [name, mode] of [['review-attention', 'attention'], ['review-all', 'all']]) byId(name)?.addEventListener('click', () => { reviewView = mode; syncReviewVisibility(); });
@@ -635,7 +752,14 @@
     } catch (error) { byId('review-reuse').checked = !enabled; if (error.name !== 'AbortError') inform(error.message, true); }
     finally { setBusy(false); }
   });
-  byId('load-version').addEventListener('click', () => loadVersion(byId('version-number').value || byId('version').value));
+  byId('current-delete')?.addEventListener('click', () => removeVersion(displayed));
+  byId('history-delete')?.addEventListener('click', () => removeVersion(historical));
+  byId('history-download')?.addEventListener('click', () => { if (!busy && !historyPending) exportMarkdown(historical); });
+  byId('history-reuse')?.addEventListener('click', () => { if (!historyPending) reuseMarkdown(historical); });
+  byId('history-more')?.addEventListener('click', async () => {
+    if (busy) return; setBusy(true);
+    try { await loadPanels(true); } catch (error) { inform(error.message, true); } finally { setBusy(false); }
+  });
   dialog.querySelectorAll('[data-logic-tab]').forEach(button => button.addEventListener('click', () => {
     tab(button.dataset.logicTab); if (button.dataset.logicTab === 'versions') loadVersion(byId('version').value);
   }));

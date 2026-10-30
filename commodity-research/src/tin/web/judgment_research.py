@@ -167,13 +167,18 @@ def _falsifier(session, judgment, rule, day, metric):
     periods = rule.get('consecutive_periods', 1)
     need = periods + int(match[1] == 'change')
     indicator = session.get(Indicator, rule['series_id'])
+    from tin.compute.rule_caliber import rule_unit
+    try:
+        unit = rule_unit(rule, indicator.unit if indicator else None)
+    except ValueError:
+        unit = None
     rows = recent_points(session, rule['series_id'], day, need) if indicator is not None and day is not None else []
     missing = None
     if day is None:
         missing = '暂无可用观测日期。'
     elif indicator is None:
         missing = '尚无可读指标数据。'
-    elif not indicator.unit or indicator.unit != rule.get('unit_confirmed'):
+    elif unit is None or unit != rule.get('unit_confirmed'):
         missing = '指标单位已变化或尚未确认，请核对绑定。'
     elif len(rows) < need:
         missing = f'需要 {need} 个数据点，当前只有 {len(rows)} 个。'

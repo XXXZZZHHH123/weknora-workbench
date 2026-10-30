@@ -143,7 +143,7 @@ def bounded(value, depth=0):
             bounded(item, depth + 1)
 
 
-def validate_analysis(document, original, catalog, *, variety, actor, written_at=None):
+def validate_analysis(document, original, catalog, *, variety, actor, written_at=None, caliber_confirmations=None):
     if not isinstance(original, str) or not original.strip() or len(original.encode('utf-8')) > SOURCE_BYTES:
         raise AnalysisError('请提供48 KiB以内的完整研究逻辑文本')
     if not isinstance(document, dict) or set(document) != {'judgment', 'binding_units', 'rule_quotes', 'unresolved'}:
@@ -157,6 +157,41 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
     fields = document['judgment']
     if not isinstance(fields, dict) or set(fields) - ALLOWED_FIELDS:
         raise AnalysisError('模型包含不允许的判断字段')
+    # The model never supplies this authority. Only an explicit review mutation
+    # can attach a server-authored declaration to one rule in this preview.
+    from tin.schemas.judgment import CaliberConfirmation
+    from tin.compute.rule_caliber import unit_present
+    known_units = {row['id']: row.get('unit') for row in catalog}
+    local_units = {}
+    for kind in ('thresholds', 'falsifiers'):
+        for index, rule in enumerate(fields.get(kind, []) if isinstance(fields.get(kind, []), list) else []):
+            if not isinstance(rule, dict) or rule.get('caliber_confirmation') is None:
+                continue
+            path = f'/judgment/{kind}/{index}/caliber_confirmation'
+            supplied = rule['caliber_confirmation']
+            if (not isinstance(caliber_confirmations, dict)
+                    or caliber_confirmations.get(rule.get('id')) != supplied):
+                _error('人工口径必须由当前用户在确认页面明确核对，不能由模型或导入稿代填', 'unit_confirmation_authority', path)
+            try:
+                declaration = CaliberConfirmation.model_validate(supplied)
+            except ValueError:
+                _error('人工口径的单位、依据或确认记录不完整', 'unit_confirmation_schema', path)
+            sid = rule.get('series_id')
+            if declaration.series_id != sid or declaration.confirmed_by != actor:
+                _error('人工口径不属于当前用户和此指标绑定', 'unit_confirmation_scope', path)
+            if unit_present(known_units.get(sid)) and known_units[sid] != declaration.unit:
+                _error('人工口径不能覆盖来源已登记的不同单位', 'unit_mismatch', path)
+            if sid in local_units and local_units[sid] != declaration.unit:
+                _error('同一研判版本的同一指标不能声明相互矛盾的单位', 'unit_confirmation_conflict', path)
+            local_units[sid] = declaration.unit
+    for kind in ('thresholds', 'falsifiers'):
+        for index, rule in enumerate(fields.get(kind, []) if isinstance(fields.get(kind, []), list) else []):
+            if (isinstance(rule, dict) and rule.get('series_id') in local_units
+                    and not unit_present(known_units.get(rule.get('series_id')))
+                    and rule.get('caliber_confirmation') is None):
+                _error('此规则尚未人工确认缺失的来源单位；其他条目的声明不能代替此绑定',
+                    'unit_metadata_missing', f'/judgment/{kind}/{index}')
+    catalog = [{**row, 'unit': local_units.get(row['id'], row.get('unit'))} for row in catalog]
     for name in ('thresholds', 'falsifiers'):
         rules = fields.get(name, [])
         if not isinstance(rules, list) or len(rules) > 24: raise AnalysisError('研究规则超过本次容量')
@@ -251,7 +286,8 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
     quantitative = {rule.series_id for rule in [*payload.thresholds, *payload.falsifiers]}
     for sid, unit in units.items():
         expected = known[sid].get('unit')
-        if sid in quantitative and (not isinstance(expected, str) or not expected.strip()):
+        from tin.compute.rule_caliber import unit_present
+        if sid in quantitative and not unit_present(expected):
             _error('量化规则引用指标的目录单位尚未确认', 'unit_metadata_missing', '/binding_units/' + sid)
         if unit != expected or (unit is not None and not isinstance(unit, str)):
             _error('绑定单位与知识库原单位不一致', 'unit_mismatch', '/binding_units/' + sid)
