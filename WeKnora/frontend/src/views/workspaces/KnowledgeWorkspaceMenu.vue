@@ -157,7 +157,7 @@ onBeforeUnmount(() => {
 
 <template>
   <aside class="knowledge-workspace-menu" :class="{ 'is-collapsed': ui.sidebarCollapsed }" aria-label="知识库工作区导航">
-    <div class="knowledge-workspace-menu__brand"><button v-if="!ui.sidebarCollapsed" type="button" class="knowledge-workspace-menu__plain" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><BrandWordmark compact /></button><button type="button" class="knowledge-workspace-menu__icon" :aria-label="ui.sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :aria-expanded="!ui.sidebarCollapsed" @click="ui.toggleSidebar"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="17" height="17" rx="3" stroke="currentColor" stroke-width="1.5"/><line x1="7.5" y1="1.5" x2="7.5" y2="18.5" stroke="currentColor" stroke-width="1.5"/></svg></button></div>
+    <div class="knowledge-workspace-menu__brand"><button v-if="!ui.sidebarCollapsed" type="button" class="knowledge-workspace-menu__plain" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><BrandWordmark compact /></button><button type="button" class="knowledge-workspace-menu__icon mobile-sidebar-toggle-trigger" :aria-label="ui.sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :aria-expanded="!ui.sidebarCollapsed" @click="ui.toggleSidebar"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="17" height="17" rx="3" stroke="currentColor" stroke-width="1.5"/><line x1="7.5" y1="1.5" x2="7.5" y2="18.5" stroke="currentColor" stroke-width="1.5"/></svg></button></div>
     <div v-if="!ui.sidebarCollapsed" class="knowledge-workspace-menu__context"><button type="button" class="knowledge-workspace-menu__back" @click="router.push('/platform/knowledge-bases')">‹ 全部知识库</button><strong :title="library?.name || '知识库'">{{ library?.name || '知识库' }}</strong></div>
     <button v-else type="button" class="knowledge-workspace-menu__icon" aria-label="返回全局知识库" @click="router.push('/platform/knowledge-bases')"><t-icon name="arrow-left" /></button>
     <nav id="knowledge-workspace-navigation" class="knowledge-workspace-menu__navigation" aria-label="知识库功能">
@@ -173,7 +173,7 @@ onBeforeUnmount(() => {
       </WorkspaceNavigationNode>
     </nav>
     <UserMenu />
-    <PanelResizeHandle edge="right" label="调整侧栏宽度" :value="ui.sidebarDisplayWidth" :min="SIDEBAR_COLLAPSED_WIDTH" :max="SIDEBAR_MAX_WIDTH" @start="resizeStart = ui.sidebarDisplayWidth; ui.sidebarResizing = true" @resize="(delta: number) => ui.resizeSidebar(resizeStart + delta)" @end="ui.sidebarResizing = false" />
+    <PanelResizeHandle v-if="!ui.viewportIsNarrow" edge="right" label="调整侧栏宽度" :value="ui.sidebarDisplayWidth" :min="SIDEBAR_COLLAPSED_WIDTH" :max="SIDEBAR_MAX_WIDTH" @start="resizeStart = ui.sidebarDisplayWidth; ui.sidebarResizing = true" @resize="(delta: number) => ui.resizeSidebar(resizeStart + delta)" @end="ui.sidebarResizing = false" />
     <t-dialog v-model:visible="folderOpen" header="新建文件夹" :confirm-btn="{ content: '创建', loading: folderBusy }" :close-on-overlay-click="!folderBusy" @confirm="createFolder"><p>位置：{{ library?.name }} / {{ folderParent || '根目录' }}</p><t-input v-model="folderName" aria-label="文件夹名称" placeholder="文件夹名称" :disabled="folderBusy" @enter="createFolder" /><t-alert v-if="folderError" theme="error" :message="folderError" /></t-dialog>
   </aside>
 </template>

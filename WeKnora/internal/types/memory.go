@@ -149,6 +149,25 @@ func IsValidMemoryKind(kind string) bool {
 // unable to read memory while still writing to it.
 const MemoryDisabledContextKey ContextKey = "MemoryDisabled"
 
+const SessionMemoryDisabledContextKey ContextKey = "SessionMemoryDisabled"
+
+// ApplySessionMemoryPreference only accepts a server-loaded session, never a
+// per-turn UI flag. Forks inherit the stored policy.
+func ApplySessionMemoryPreference(ctx context.Context, session *Session) context.Context {
+	if session != nil && session.MemoryDisabled {
+		return WithMemoryDisabled(context.WithValue(ctx, SessionMemoryDisabledContextKey, true))
+	}
+	return ctx
+}
+
+func SessionMemoryDisabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	disabled, _ := ctx.Value(SessionMemoryDisabledContextKey).(bool)
+	return disabled
+}
+
 // WithMemoryDisabled marks the current request as not allowed to read memory.
 func WithMemoryDisabled(ctx context.Context) context.Context {
 	return context.WithValue(ctx, MemoryDisabledContextKey, true)

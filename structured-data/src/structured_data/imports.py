@@ -74,11 +74,17 @@ class ImportManager:
                         and candidate.get('dataset_id') == dataset_id
                         and candidate.get('import_id') == doc.get('import_id')
                         and candidate.get('sha256') == doc['sha256']
-                        and candidate.get('source_file') == doc.get('source_file')):
+                        and candidate.get('source_file') == self.display_source_file(doc)):
                     manifest = candidate
             except (ValueError, OSError):
                 pass
         published = {s['name']: s for s in (manifest or {}).get('sheets', []) if isinstance(s, dict) and s.get('name')}
+        quality_by_series = self.store.series_quality(dataset_id) if manifest else {}
+        series_rows = (json.loads((self.store._path(dataset_id) / 'series.json').read_text())
+                       if manifest else [])
+        published_series = {}
+        for item in series_rows:
+            published_series.setdefault(item.get('sheet'), []).append(item)
         sheets = []
         for sheet in doc.get('sheets', []):
             actual = published.get(sheet.get('name'))
@@ -90,19 +96,69 @@ class ImportManager:
                     and sheet.get('name') == verified_legacy_sheet.get('name')
                     and verified_legacy_sheet.get('status') == 'trusted_existing'):
                 mapping = verified_legacy_sheet.get('mapping')
+            quality_rows = published_series.get(sheet.get('name'), []) if actual is not None else []
+            quality_summary = {
+                'series_count': len(quality_rows),
+                'unit_review_count': sum(item.get('unit_status') == 'needs_review' for item in quality_rows),
+                'text_field_count': sum(quality_by_series.get(item['series_id'], {}).get('observed_type') == 'text'
+                                        for item in quality_rows),
+                'no_valid_numeric_count': sum(
+                    quality_by_series.get(item['series_id'], {}).get('observed_type') == 'no_valid_numeric_values'
+                    for item in quality_rows),
+            }
             sheets.append({**sheet, 'published_in_dataset': actual is not None,
                            'published_dataset_id': dataset_id if actual is not None else None,
                            'published_mapping': mapping,
-                           'published_fingerprint': actual.get('fingerprint') if actual is not None else None})
+                           'published_fingerprint': actual.get('fingerprint') if actual is not None else None,
+                           'published_quality': quality_summary if actual is not None else None})
         return {**doc, 'sheets': sheets}
+
+    def display_source_file(self, doc):
+        """Return the verified native upload name, falling back for legacy imports."""
+        from .workspaces import current_identity, valid_knowledge_base_id
+        kb_id = self.root.name
+        if self.root.parent.name != 'knowledge-bases' or not valid_knowledge_base_id(kb_id):
+            return doc.get('source_file')
+        identity = current_identity.get()
+        if identity is not None and identity.knowledge_base_id != kb_id:
+            return doc.get('source_file')
+        source = self.source_path(doc)
+        bindings = doc.get('native_source_bindings', [])
+        for binding in reversed(bindings if isinstance(bindings, list) else []):
+            if not isinstance(binding, dict):
+                continue
+            name = binding.get('file_name')
+            if (binding.get('knowledge_base_id') != kb_id
+                    or not valid_knowledge_base_id(binding.get('source_knowledge_id'))
+                    or type(binding.get('tenant_id')) is not int or binding['tenant_id'] <= 0
+                    or (identity is not None and binding['tenant_id'] != identity.knowledge_base_tenant_id)
+                    or not isinstance(name, str) or not name
+                    or Path(name.replace('\\', '/')).name != name
+                    or any(ord(char) < 32 for char in name)
+                    or type(binding.get('file_size')) is not int or binding['file_size'] <= 0
+                    or not isinstance(binding.get('file_hash'), str)
+                    or not re.fullmatch(r'[0-9a-fA-F]{32}', binding['file_hash'])
+                    or not source.is_file() or source.stat().st_size != binding['file_size']):
+                continue
+            return name
+        return doc.get('source_file')
+
+    def presentation_view(self, doc, *, verified_legacy_sheet=None):
+        # Apply publication checks against persisted identity before replacing
+        # the internal legacy name in the response.
+        result = self.publication_view(doc, verified_legacy_sheet=verified_legacy_sheet)
+        result['source_file'] = self.display_source_file(doc)
+        return result
 
     def list(self, *, include_samples=False):
         from .dataset_kind import dataset_kind
         records = [json.loads(p.read_text()) for p in self.directory.glob('*/review.json')]
-        return sorted([{'dataset_kind': dataset_kind(d, self.root),
+        return sorted([{**{k: d.get(k) for k in
+                       ('import_id', 'source_file', 'updated_at', 'dataset_id', 'summary')},
+                        'source_file': self.display_source_file(d),
+                        'dataset_kind': dataset_kind(d, self.root),
                         'use_reviewed_mappings': d.get('use_reviewed_mappings', True),
-                        'native_source_bindings': d.get('native_source_bindings', []), **{k: d.get(k) for k in
-                       ('import_id', 'source_file', 'updated_at', 'dataset_id', 'summary')}}
+                        'native_source_bindings': d.get('native_source_bindings', [])}
                        for d in records if include_samples or dataset_kind(d, self.root) != 'sample'],
                       key=lambda d: d['updated_at'], reverse=True)
 
@@ -125,7 +181,10 @@ class ImportManager:
         return [json.loads(p.read_text()) for p in self.templates.glob('*.json')]
 
     def source_path(self, doc):
-        return self.directory / doc['import_id'] / doc['source_file']
+        # ``source_file`` is the user-facing name for native knowledge imports.
+        # Keep the original temporary basename as a separate storage key so
+        # changing presentation never moves or renames an existing source.
+        return self.directory / doc['import_id'] / doc.get('storage_file', doc['source_file'])
 
     def bind_native_source(self, import_id, source, *, before_commit=None):
         with self.lock:
@@ -224,13 +283,17 @@ class ImportManager:
             folder.mkdir(exist_ok=True)
             doc = None
             try:
-                saved = folder / Path(path).name
+                storage_file = Path(path).name
+                saved = folder / storage_file
                 shutil.copyfile(path, saved)
                 with saved.open('rb') as original:
                     saved_digest = hashlib.file_digest(original, 'sha256').hexdigest()
                 if saved_digest != scan['sha256']:
                     raise ValueError('扫描期间源文件改变，请重新上传。')
-                doc = {**scan, 'import_id': import_id, 'source_file': Path(path).name,
+                display_name = (native_source or {}).get('file_name')
+                doc = {**scan, 'import_id': import_id,
+                       'source_file': display_name if isinstance(display_name, str) and display_name else storage_file,
+                       'storage_file': storage_file,
                        'dataset_id': None, 'publish_status':'pending', 'updated_at': now()}
                 if native_source is not None:
                     doc['native_source_bindings'] = [dict(native_source)]
@@ -270,9 +333,9 @@ class ImportManager:
                     shutil.rmtree(folder, ignore_errors=True)
                 raise
 
-    @staticmethod
-    def _result(doc, reused=False):
+    def _result(self, doc, reused=False):
         result = {'import_id': doc['import_id'], 'dataset_id': doc.get('dataset_id'),
+                  'source_file': self.display_source_file(doc),
                   'summary': doc['summary'], 'reused': reused}
         preparation = doc.get('chart_catalog_preparation')
         if isinstance(preparation, dict):
@@ -503,6 +566,7 @@ class ImportManager:
                 result = None
             else:
                 result = publish_parts(self.store, path, doc['sha256'], parts, metadata,
+                                       source_file=doc.get('source_file'),
                                        base_id=base_id, replace_sheets=imported,
                                        before_commit=before_publish)
             if result:

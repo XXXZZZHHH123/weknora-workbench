@@ -22,7 +22,7 @@ SCHEMA = ('series_id VARCHAR NOT NULL, date DATE, value DOUBLE, source_cell VARC
 
 
 def publish_parts(store, source, sha256, parts, metadata, *, base_id=None,
-                  replace_sheets=(), before_commit=None):
+                  replace_sheets=(), before_commit=None, source_file=None):
     """Parts are consumed individually; the last manifest is the publication boundary."""
     from .store import dump
 
@@ -127,7 +127,7 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None,
         with (work / 'source.xlsx').open('rb') as original:
             if hashlib.file_digest(original, 'sha256').hexdigest() != sha256:
                 raise ValueError('读取期间原文件发生变化，未发布数据。')
-        manifest = {**metadata, 'source_file': Path(source).name, 'sha256': sha256,
+        manifest = {**metadata, 'source_file': source_file or Path(source).name, 'sha256': sha256,
                     'rule_version': rule, 'sheets': sheets, 'excluded_regions': excluded,
                     'dataset_id': dataset_id, 'imported_at': dt.datetime.now(dt.timezone.utc).isoformat(),
                     'series_count': len(series), 'observation_count': sum(r[1] for r in stats),

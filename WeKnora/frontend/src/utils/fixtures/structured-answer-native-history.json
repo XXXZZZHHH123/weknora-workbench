@@ -1,0 +1,43 @@
+{
+  "provenance_note": "Sanitized protocol fixture copied from captured structured tool audit event and agent_steps result shape; all values are synthetic.",
+  "live_query_event": {
+    "type": "tool_call",
+    "tool_name": "structured_query_series",
+    "arguments": { "series_id": "synthetic-series" },
+    "pending": false,
+    "success": true,
+    "tool_data": {
+      "dataset_id": "dddddddddddddddddddddddd",
+      "status": "ok",
+      "series": { "series_id": "synthetic-series", "sheet": "Synthetic Sheet", "unit": "units" },
+      "rows": [{ "source_cell": "B2", "value": 5 }],
+      "source": { "file": "synthetic.xlsx", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sheet": "Synthetic Sheet" },
+      "source_context": { "knowledge_base_id": "kb-synthetic", "knowledge_base_tenant_id": 77 }
+    }
+  },
+  "agent_step": {
+    "tool_calls": [{
+      "id": "synthetic-tool-call",
+      "name": "structured_analyze_table",
+      "args": { "sql": "SELECT value FROM data" },
+      "target": { "name": "structured_analyze_table", "args": { "sql": "SELECT value FROM data" } },
+      "result": {
+        "success": true,
+        "output": "synthetic structured result",
+        "data": {
+          "kind": "structured_analysis",
+          "status": "ok",
+          "dataset_id": "dddddddddddddddddddddddd",
+          "sql": "SELECT value FROM data",
+          "columns": ["value"],
+          "rows": [[5]],
+          "input_count": 1,
+          "input_complete": true,
+          "inputs": { "v1": { "input_count": 1, "valid_count": 1, "example_cells": ["B2"], "series": { "sheet": "Synthetic Sheet", "metric": "Synthetic metric", "unit": "units" } } },
+          "source": { "file": "synthetic.xlsx", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+          "source_context": { "knowledge_base_id": "kb-synthetic", "knowledge_base_tenant_id": 77 }
+        }
+      }
+    }]
+  }
+}

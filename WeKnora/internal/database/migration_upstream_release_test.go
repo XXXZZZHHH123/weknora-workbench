@@ -68,6 +68,9 @@ func assertUpstreamReleaseSentinels(t *testing.T, db *sql.DB, wantVersion int) {
 	require.Equal(t, "Retained conversation", title)
 	require.Empty(t, kind)
 	require.Empty(t, ownerSource)
+	var memoryDisabled bool
+	require.NoError(t, db.QueryRow(`SELECT memory_disabled FROM sessions WHERE id='upgrade-session'`).Scan(&memoryDisabled))
+	require.False(t, memoryDisabled, "existing conversations retain their prior memory behavior")
 	require.NoError(t, db.QueryRow(`SELECT name,source_sharing_approved FROM research_workbenches WHERE id='upgrade-workbench'`).Scan(&name, &shared))
 	require.Equal(t, "Retained research", name)
 	require.False(t, shared, "an official upgrade must not grant research source sharing")

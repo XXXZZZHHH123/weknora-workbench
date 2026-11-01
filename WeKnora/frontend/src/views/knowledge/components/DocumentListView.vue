@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { knowledgeIngestion } from '@/utils/knowledgeIngestion';
+import { knowledgeCoverageSummary, knowledgeIngestion } from '@/utils/knowledgeIngestion';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { formatFileSize } from '@/utils/files';
@@ -396,6 +396,10 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
             </t-tag>
             <span v-else class="row-muted">--</span>
           </template>
+          <span v-if="knowledgeCoverageSummary(item.metadata, item.parse_status).length"
+            class="row-coverage-summary" aria-label="内容处理结果">
+            {{ knowledgeCoverageSummary(item.metadata, item.parse_status).join(' · ') }}
+          </span>
         </div>
 
         <div class="cell cell-actions" role="cell" v-if="canEdit" @click.stop>
@@ -949,6 +953,15 @@ const handleAction = (action: 'download' | 'edit' | 'reparse' | 'cancel-parse' |
   gap: 4px;
 }
 .meta-sep { opacity: 0.6; }
+.row-coverage-summary {
+  display: block;
+  max-width: 180px;
+  margin-top: 4px;
+  color: var(--td-text-color-secondary);
+  font-size: var(--app-text-xs);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .doc-list-row.selected { background: var(--app-selection-bg); }
 .row-file-name:focus-visible,
 .row-file-folder:focus-visible,

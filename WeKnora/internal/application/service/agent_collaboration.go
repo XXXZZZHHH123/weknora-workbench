@@ -421,9 +421,11 @@ func (s *AgentCollaboration) run(ctx context.Context, w collaboration.Work) (col
 	if s.sessions == nil {
 		return result, errors.New("session executor unavailable")
 	}
-	if _, err = s.sessions.GetSession(ctx, w.Scope.SessionID); err != nil {
+	parentSession, err := s.sessions.GetSession(ctx, w.Scope.SessionID)
+	if err != nil {
 		return result, fmt.Errorf("parent conversation unavailable: %w", err)
 	}
+	ctx = types.ApplySessionMemoryPreference(ctx, parentSession)
 	var saved delegatedConfig
 	if err = json.Unmarshal([]byte(w.Member.ConfigJSON), &saved); err != nil {
 		return result, err
@@ -461,13 +463,14 @@ func (s *AgentCollaboration) run(ctx context.Context, w collaboration.Work) (col
 		return result, err
 	}
 	session := &types.Session{
-		ID:        w.Member.SessionID,
-		TenantID:  w.Scope.TenantID,
-		UserID:    w.Scope.UserID,
-		Kind:      types.SessionKindAgentDelegated,
-		Title:     w.Member.Name,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		MemoryDisabled: parentSession != nil && parentSession.MemoryDisabled,
+		ID:             w.Member.SessionID,
+		TenantID:       w.Scope.TenantID,
+		UserID:         w.Scope.UserID,
+		Kind:           types.SessionKindAgentDelegated,
+		Title:          w.Member.Name,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	}
 	if err = s.db.WithContext(ctx).Session(&gorm.Session{
 		SkipHooks: true,

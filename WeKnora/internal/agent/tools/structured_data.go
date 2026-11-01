@@ -131,6 +131,12 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		// identity, but do not choose a business KB merely to fetch schemas.
 		scope = structuredKnowledgeScope{}
 	}
+	if operation == "describe_tools" {
+		// Schema discovery is a service protocol read and carries no knowledge
+		// data. Keep its signed identity unscoped for single- and multi-base
+		// callers alike; data operations retain their verified scope below.
+		scope = structuredKnowledgeScope{}
+	}
 	sourceQuestion, cacheGeneration := t.structuredSourceQuestion()
 	if sourceQuestion != "" && (operation == "query_series" || operation == "analyze_table" || operation == "compare_series" || operation == "convert_price" || operation == "resolve_fields") {
 		question, _ := json.Marshal(sourceQuestion)
@@ -157,7 +163,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		"role": string(caller.Role), "email": "", "display_name": caller.UserID}
 	if _, machine := types.TenantAPIKeyScopeFromContext(ctx); machine && scope.KnowledgeBaseID != "" {
 		identity["principal_type"] = "api_key"
-	} else if authorization := types.ResearchAuthorizationFromContext(ctx); authorization != "" {
+	} else if authorization := types.ResearchAuthorizationFromContext(ctx); authorization != "" && scope.KnowledgeBaseID != "" {
 		authorizationHash := sha256.Sum256([]byte(authorization))
 		identity["authorization_sha256"] = hex.EncodeToString(authorizationHash[:])
 	}
@@ -242,6 +248,12 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		cacheResult = &types.ToolResult{Success: false, Output: string(body), Data: data, Error: detail}
 		return cacheResult, nil
+	}
+	if operation != "describe_tools" && scope.KnowledgeBaseID != "" {
+		data["source_context"] = map[string]any{
+			"knowledge_base_id":        scope.KnowledgeBaseID,
+			"knowledge_base_tenant_id": scope.TenantID,
+		}
 	}
 	cacheResult = &types.ToolResult{Success: true, Output: string(body), Data: data}
 	return cacheResult, nil

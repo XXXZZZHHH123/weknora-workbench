@@ -779,6 +779,7 @@ func (h *Handler) setupSSEStream(reqCtx *qaRequestContext, generateTitle bool, m
 	// Attachment analysis and title generation run before the QA service.
 	// Give all asynchronous work the same business conversation identity.
 	baseCtx = types.WithSessionID(baseCtx, reqCtx.session.ID)
+	baseCtx = types.ApplySessionMemoryPreference(baseCtx, reqCtx.session)
 
 	// An agent that opted out of long-term memory has to be opted out of the
 	// write path too, not just recall. The two run from different contexts:
@@ -2189,7 +2190,7 @@ func (h *Handler) completeAssistantMessage(
 		// into the tenant-wide chat-history index or cross-session memory.
 		return nil
 	}
-	if indexCtx, ok := h.sessionTenantInfoContext(bgCtx); ok {
+	if indexCtx, ok := h.sessionTenantInfoContext(bgCtx); ok && !types.SessionMemoryDisabled(bgCtx) {
 		go h.messageService.IndexMessageToKB(
 			indexCtx, userQuery, assistantMessage.Content, assistantMessage.ID, assistantMessage.SessionID)
 	}
@@ -2217,7 +2218,7 @@ func (h *Handler) completeAssistantMessage(
 func (h *Handler) recordTurnMemory(
 	ctx context.Context, assistantMessage *types.Message, userQuery, userMessageID string,
 ) {
-	if h.memoryService == nil {
+	if h.memoryService == nil || !types.MemoryAllowedForAgent(ctx) {
 		return
 	}
 	// An explicit "remember ..." directive is stored verbatim and immediately,

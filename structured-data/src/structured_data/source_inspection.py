@@ -425,17 +425,72 @@ def _inspect_source_validated(store, dataset_id, request):
         if sheet is not None and sheet not in formulas.sheetnames:
             raise ValueError('指定原工作表不存在；不替换为其他工作表')
         selected = [sheet] if sheet else formulas.sheetnames
+        # The requested cell window may extend beyond the workbook's actual
+        # populated cells. Find the source extent with a shared, bounded scan;
+        # if the bound is reached, report unknown rather than treating a
+        # truncated scan as the sheet's complete used range.
+        extent_budget = MAX_SCAN_CELLS
+        extent_started = time.monotonic()
+
+        def source_extent(name):
+            nonlocal extent_budget
+            ws = formulas[name]
+            declared_max_row, declared_max_column = ws.max_row, ws.max_column
+            # Worksheet dimensions in XLSX XML are supplied by the producer
+            # and can under-report populated rows/cells. Reset them so
+            # read-only iteration follows the actual worksheet XML stream.
+            # Do not call calculate_dimension(force=True): it would consume
+            # the whole sheet before our explicit row/cell/time bounds apply.
+            ws.reset_dimensions()
+            left = top = None
+            right = bottom = 0
+            scanned = 0
+            complete = True
+            for row_index, row in enumerate(ws.iter_rows(min_row=1), 1):
+                if row_index > MAX_SCAN_ROWS:
+                    complete = False
+                    break
+                if len(row) > extent_budget or time.monotonic() - extent_started > MAX_SCAN_SECONDS:
+                    complete = False
+                    break
+                scanned += len(row)
+                extent_budget -= len(row)
+                for col_index, cell in enumerate(row, 1):
+                    if cell.value is None:
+                        continue
+                    left = col_index if left is None else min(left, col_index)
+                    top = row_index if top is None else min(top, row_index)
+                    right = max(right, col_index)
+                    bottom = max(bottom, row_index)
+            if not complete:
+                result = {'source_used_range': None, 'source_extent_status': 'unknown_budget',
+                          'source_extent_cells_scanned': scanned}
+            elif left is None:
+                result = {'source_used_range': None, 'source_extent_status': 'empty',
+                          'source_extent_cells_scanned': scanned}
+            else:
+                start = f'{get_column_letter(left)}{top}'
+                end = f'{get_column_letter(right)}{bottom}'
+                result = {'source_used_range': start if start == end else f'{start}:{end}',
+                          'source_extent_status': 'complete', 'source_extent_cells_scanned': scanned}
+            # Keep the existing bounded search pass on its original declared
+            # dimensions. Extent's reset is local to this bounded pass only.
+            ws._max_row, ws._max_column = declared_max_row, declared_max_column
+            return result
+
+        source_extents = {name: source_extent(name) for name in selected}
         output = {'kind': 'structured_source_inspection', 'status': 'ok',
                   'dataset_id': dataset_id, 'source_file': manifest['source_file'],
                   'sha256': expected, 'hash_verified': True, 'sheets': selected,
                   'coverage': {name: {'parsed_ranges': [s['parsed_range'] for s in manifest.get('sheets', [])
                                   if s.get('name') == name and s.get('parsed_range')],
                                     'excluded_regions': [s for s in manifest.get('excluded_regions', [])
-                                  if s.get('sheet') == name or s.get('name') == name]}
+                                  if s.get('sheet') == name or s.get('name') == name],
+                                    **source_extents[name]}
                                for name in selected},
                   'matches': [], 'ranges': [], 'calculations': [], 'truncated': False,
                   'truncation_reasons': [],
-                  'notice': '原件只读证据；公式使用 Excel 保存的缓存值，不重新计算。parsed_ranges 仅代表已解析区域；单位、年度定义和多个表的优先级须依原件或文档核对，不自行推断。'}
+                  'notice': '原件只读证据；公式使用 Excel 保存的缓存值，不重新计算。source_used_range 是有界扫描得到的原件非空单元格边界，source_extent_status=unknown_budget 时边界未知；parsed_ranges 仅代表已解析区域。ranges[].read_window 是本次请求读取窗口，calculations[].input_ranges 是计算输入范围；读取窗口不代表原表有效范围。单位、年度定义和多个表的优先级须依原件或文档核对，不自行推断。'}
         returned = required_count
         reasons = output['truncation_reasons']
 
@@ -469,8 +524,9 @@ def _inspect_source_validated(store, dataset_id, request):
                 raise SourceInspectionReadError('range_read', exc) from exc
 
         for ref, bounds in requested_bounds:
-            output['ranges'].append({'sheet': sheet, 'range': ref, 'cells': read_range(sheet, bounds)})
-        for bounds in group_bounds:
+            output['ranges'].append({'sheet': sheet, 'range': ref, 'requested_range': ref,
+                                     'read_window': ref, 'cells': read_range(sheet, bounds)})
+        for index, bounds in enumerate(group_bounds):
             cells = [cell for ref_bounds in bounds for cell in read_range(sheet, ref_bounds)]
             with localcontext() as context:
                 # IEEE doubles may have exponents up to 308; don't round large
@@ -489,7 +545,8 @@ def _inspect_source_validated(store, dataset_id, request):
                         raise ValueError('求和输入不是有限数值')
                     total += number
             numeric = float(total)
-            output['calculations'].append({'operation': 'sum', 'sheet': sheet, 'cells': cells,
+            output['calculations'].append({'operation': 'sum', 'sheet': sheet,
+                                           'input_ranges': groups[index], 'cells': cells,
                                            'value': str(total),
                                            **({'numeric_value': numeric} if math.isfinite(numeric) else {}),
                                            'source_file': manifest['source_file'], 'sha256': expected})

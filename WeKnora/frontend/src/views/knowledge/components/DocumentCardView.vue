@@ -2,7 +2,7 @@
 import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { formatFileSize } from '@/utils/files';
-import { knowledgeIngestion } from '@/utils/knowledgeIngestion';
+import { knowledgeCoverageSummary, knowledgeIngestion } from '@/utils/knowledgeIngestion';
 import { formatReferenceSnippet } from '@/utils/referenceSources';
 import KnowledgeTagPopover from './KnowledgeTagPopover.vue';
 import DocumentFileIcon from './DocumentFileIcon.vue';
@@ -603,6 +603,10 @@ const handleAction = (action: 'download' | 'edit' | 'view-trace' | 'reparse' | '
           {{ cardSummaries.get(item.id) || t('knowledgeBase.noDocumentSummary') }}
         </div>
         </div>
+        <div v-if="knowledgeCoverageSummary(item.metadata, item.parse_status).length"
+          class="card-coverage-summary" aria-label="内容处理结果">
+          {{ knowledgeCoverageSummary(item.metadata, item.parse_status).join(' · ') }}
+        </div>
       </div>
 
       <div class="card-bottom">
@@ -990,6 +994,13 @@ const handleAction = (action: 'download' | 'edit' | 'view-trace' | 'reparse' | '
   font-size: var(--app-text-sm);
 }
 .card-analyze-loading { flex-shrink: 0; }
+.card-coverage-summary {
+  margin: 6px 0 0;
+  color: var(--td-text-color-secondary);
+  font-size: var(--app-text-xs);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .card-analyze > span {
   min-width: 0;
   display: -webkit-box;

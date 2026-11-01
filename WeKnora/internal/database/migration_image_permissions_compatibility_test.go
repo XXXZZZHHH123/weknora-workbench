@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const expectedPostgresMigrationVersion = 147
+const expectedPostgresMigrationVersion = 148
 
 func TestImagePermissionMigrationVersionsAreUnique(t *testing.T) {
 	root := sqliteRepoRoot(t)

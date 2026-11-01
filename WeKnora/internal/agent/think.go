@@ -21,6 +21,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -738,6 +739,18 @@ func (e *AgentEngine) streamLLMToEventBusWithModel(
 	reportModelContextLeaks(ctx, "Agent", e.modelContext, messages)
 	prefixFingerprint := chat.PromptPrefixFingerprint(messages, opts)
 	llmCtx = types.WithLLMCallMetadata(llmCtx, "agent_round", prefixFingerprint)
+	fullTools := []chat.Tool(nil)
+	if len(opts.Tools) > 0 && e.toolRegistry != nil && langfuse.GetManager().Enabled() {
+		fullTools = registeredToolSchemasForMetrics(e.toolRegistry)
+	}
+	if len(opts.Tools) == 1 && opts.Tools[0].Function.Name == reviewEvidenceToolName {
+		// The evidence reader is the review's complete, purpose-built tool
+		// set. Comparing it with the generator's registry would report a
+		// misleading omission rather than a projection.
+		fullTools = opts.Tools
+	}
+	llmCtx, contextSpan := beginModelContextObservation(llmCtx, "chat_stream", messages, opts, fullTools)
+	defer contextSpan.Finish(nil, nil, nil)
 	// ChatStream may wait for connection setup and response headers before
 	// returning a channel. Count that silence toward the same idle budget.
 	stallTimeout := e.getLLMStallTimeout()

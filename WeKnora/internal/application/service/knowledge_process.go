@@ -2642,23 +2642,155 @@ func (s *knowledgeService) generateQuestionsWithContext(ctx context.Context,
 // ignore Thinking=false still emit it in content, and each reasoning line
 // would otherwise be indexed as a question.
 func parseGeneratedQuestions(content string, questionCount int) []string {
-	lines := strings.Split(tools.StripThinkBlocks(content), "\n")
-	questions := make([]string, 0, questionCount)
+	content = strings.TrimSpace(tools.StripThinkBlocks(content))
+	if structured := parseStructuredGeneratedQuestions(content); structured != nil {
+		return limitGeneratedQuestions(structured, questionCount)
+	}
+	return limitGeneratedQuestions(parseListedGeneratedQuestions(content), questionCount)
+}
+
+// parseStructuredGeneratedQuestions accepts the explicit JSON list protocol
+// while retaining the historical line-oriented response format. A nil result
+// means the content was not a supported JSON envelope.
+func parseStructuredGeneratedQuestions(content string) []string {
+	var questions []string
+	if err := json.Unmarshal([]byte(content), &questions); err == nil {
+		return questions
+	}
+	var envelope struct {
+		Questions []string `json:"questions"`
+	}
+	if err := json.Unmarshal([]byte(content), &envelope); err == nil && envelope.Questions != nil {
+		return envelope.Questions
+	}
+	return nil
+}
+
+func parseListedGeneratedQuestions(content string) []string {
+	lines := strings.Split(content, "\n")
+	questions := make([]string, 0, len(lines))
+	numberedList := isNumberedGeneratedQuestionList(lines)
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		line = strings.TrimLeft(line, "0123456789.-*) ")
-		line = strings.TrimSpace(line)
+		line = stripGeneratedQuestionListMarker(line, numberedList)
 		if line != "" && len(line) > 5 {
 			questions = append(questions, line)
-			if len(questions) >= questionCount {
-				break
-			}
 		}
 	}
 	return questions
+}
+
+func isNumberedGeneratedQuestionList(lines []string) bool {
+	var previous int
+	seenNumber := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		number, ok := generatedQuestionListNumber(line)
+		if !ok {
+			continue
+		}
+		if !seenNumber {
+			if number != 1 {
+				return false
+			}
+			seenNumber = true
+			previous = number
+			continue
+		}
+		if number != previous+1 {
+			return false
+		}
+		previous = number
+	}
+	return seenNumber
+}
+
+func generatedQuestionListNumber(line string) (int, bool) {
+	index := 0
+	for index < len(line) && line[index] >= '0' && line[index] <= '9' {
+		index++
+	}
+	if index == 0 || index >= len(line) {
+		return 0, false
+	}
+	delimiterWidth := 1
+	chineseListDelimiter := false
+	switch line[index] {
+	case '.', ')', ':':
+	default:
+		if !strings.HasPrefix(line[index:], "、") {
+			return 0, false
+		}
+		delimiterWidth = len("、")
+		chineseListDelimiter = true
+	}
+	contentStart := index + delimiterWidth
+	if contentStart >= len(line) || (!chineseListDelimiter && line[contentStart] != ' ' && line[contentStart] != '\t') {
+		return 0, false
+	}
+	number, err := strconv.Atoi(line[:index])
+	return number, err == nil
+}
+
+// stripGeneratedQuestionListMarker removes only a complete, conventional list
+// prefix. Numeric text without a list delimiter and negative values stay intact.
+func stripGeneratedQuestionListMarker(line string, numberedList bool) string {
+	for _, marker := range []string{"- ", "* ", "+ ", "• "} {
+		if strings.HasPrefix(line, marker) {
+			if (marker == "- " || marker == "+ ") && len(line) > len(marker) && line[len(marker)] >= '0' && line[len(marker)] <= '9' {
+				return line
+			}
+			return strings.TrimSpace(line[len(marker):])
+		}
+	}
+	index := 0
+	for index < len(line) && line[index] >= '0' && line[index] <= '9' {
+		index++
+	}
+	if !numberedList || index == 0 || index >= len(line) {
+		return line
+	}
+	delimiterWidth := 1
+	chineseListDelimiter := false
+	switch line[index] {
+	case '.', ')', ':':
+	default:
+		if !strings.HasPrefix(line[index:], "、") {
+			return line
+		}
+		delimiterWidth = len("、")
+		chineseListDelimiter = true
+	}
+	contentStart := index + delimiterWidth
+	if contentStart >= len(line) || (!chineseListDelimiter && line[contentStart] != ' ' && line[contentStart] != '\t') {
+		return line
+	}
+	return strings.TrimSpace(line[contentStart:])
+}
+
+func limitGeneratedQuestions(questions []string, questionCount int) []string {
+	if questionCount <= 0 {
+		return nil
+	}
+	capacity := questionCount
+	if capacity > len(questions) {
+		capacity = len(questions)
+	}
+	result := make([]string, 0, capacity)
+	for _, question := range questions {
+		question = strings.TrimSpace(question)
+		if question == "" || len(question) <= 5 {
+			continue
+		}
+		result = append(result, question)
+		if len(result) >= questionCount {
+			break
+		}
+	}
+	return result
 }
 
 // RegenerateChunkQuestions synchronously refreshes Doc2Query-style auxiliary

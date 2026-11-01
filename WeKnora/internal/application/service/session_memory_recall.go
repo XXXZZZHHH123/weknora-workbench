@@ -11,6 +11,9 @@ import (
 
 func (s *sessionService) agentMemoryRecallRequest(ctx context.Context, req *types.QARequest, modelID string, multiTurn bool, history []chat.Message) interfaces.MemoryRecallRequest {
 	request := interfaces.MemoryRecallRequest{Query: req.Query, ModelID: modelID, SessionID: req.Session.ID}
+	if req.Session.MemoryDisabled || !types.MemoryAllowedForAgent(ctx) {
+		return request
+	}
 	if !multiTurn {
 		return request
 	}

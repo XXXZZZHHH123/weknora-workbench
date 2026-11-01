@@ -1,8 +1,12 @@
 <template>
     <div class="main" :class="{ 'main--standalone-workbench': route.meta.standaloneWorkbench }" ref="dropzone"
+        @click="handleMobileNavigationClick"
         :style="{ '--sidebar-width': `${route.meta.standaloneWorkbench ? 0 : uiStore.sidebarDisplayWidth}px` }">
         <KnowledgeWorkspaceMenu v-if="route.meta.knowledgeWorkspace" />
         <Menu v-else-if="!route.meta.standaloneWorkbench"></Menu>
+        <button v-if="uiStore.viewportIsNarrow && !uiStore.sidebarCollapsed && !route.meta.standaloneWorkbench"
+            class="mobile-sidebar-backdrop" type="button" aria-label="关闭导航抽屉"
+            tabindex="-1" @click="closeMobileSidebar(true)" />
         <div v-if="isRouterAlive" class="platform-route-outlet">
             <RouterView :key="knowledgeViewKey" />
         </div>
@@ -79,6 +83,39 @@ const handleGlobalKeyDown = (e: KeyboardEvent) => {
         reloadApp()
     }
 }
+
+const mobileSidebarMedia = typeof window !== 'undefined'
+    ? window.matchMedia('(max-width: 720px)')
+    : null
+const syncSidebarViewport = () => uiStore.setNarrowViewport(!!mobileSidebarMedia?.matches)
+const restoreMobileSidebarFocus = async () => {
+    await nextTick()
+    document.querySelector<HTMLElement>('.mobile-sidebar-toggle-trigger')?.focus()
+}
+const closeMobileSidebar = (restoreFocus = false) => {
+    if (!uiStore.viewportIsNarrow || uiStore.sidebarCollapsed) return
+    uiStore.collapseSidebar()
+    if (restoreFocus) void restoreMobileSidebarFocus()
+}
+const handleMobileNavigationClick = (event: MouseEvent) => {
+    if (uiStore.viewportIsNarrow && !uiStore.sidebarCollapsed &&
+        (event.target as HTMLElement | null)?.closest('.workspace-nav-node__link')) {
+        closeMobileSidebar()
+    }
+}
+const handleSidebarEscape = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || !uiStore.viewportIsNarrow || uiStore.sidebarCollapsed) return
+    e.preventDefault()
+    closeMobileSidebar(true)
+}
+const handleSidebarViewportChange = (e: MediaQueryListEvent) => uiStore.setNarrowViewport(e.matches)
+
+watch(() => route.fullPath, () => closeMobileSidebar())
+watch(() => [uiStore.viewportIsNarrow, uiStore.sidebarCollapsed] as const, async ([isNarrow, collapsed], previous) => {
+    if (!isNarrow || collapsed || !previous?.[1]) return
+    await nextTick()
+    document.querySelector<HTMLElement>('.mobile-sidebar-close-trigger')?.focus()
+})
 
 // 用于跟踪拖拽进入/离开的计数器，解决子元素触发 dragleave 的问题
 let dragCounter = 0;
@@ -173,6 +210,9 @@ const handleGlobalDrop = async (event: DragEvent) => {
 
 // 组件挂载时添加全局事件监听器
 onMounted(() => {
+    syncSidebarViewport()
+    mobileSidebarMedia?.addEventListener('change', handleSidebarViewportChange)
+    window.addEventListener('keydown', handleSidebarEscape)
     document.addEventListener('dragenter', handleGlobalDragEnter, true);
     document.addEventListener('dragover', handleGlobalDragOver, true);
     document.addEventListener('dragleave', handleGlobalDragLeave, true);
@@ -208,6 +248,8 @@ function maybeOpenCmdkFromRoute() {
 
 // 组件卸载时移除全局事件监听器
 onUnmounted(() => {
+    mobileSidebarMedia?.removeEventListener('change', handleSidebarViewportChange)
+    window.removeEventListener('keydown', handleSidebarEscape)
     document.removeEventListener('dragenter', handleGlobalDragEnter, true);
     document.removeEventListener('dragover', handleGlobalDragOver, true);
     document.removeEventListener('dragleave', handleGlobalDragLeave, true);
@@ -266,10 +308,22 @@ onUnmounted(() => {
         min-width: 0;
         position: relative;
     }
+}
 
-    .main:has(> .aside_box:not(.aside_box--collapsed)) > .platform-route-outlet,
-    .main:has(> .knowledge-workspace-menu:not(.is-collapsed)) > .platform-route-outlet {
-        margin-left: 48px;
+.mobile-sidebar-backdrop {
+    display: none;
+}
+
+@media (max-width: 720px) {
+    .mobile-sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 99;
+        border: 0;
+        padding: 0;
+        background: color-mix(in srgb, var(--cds-text-primary) 28%, transparent);
+        cursor: default;
     }
 }
 

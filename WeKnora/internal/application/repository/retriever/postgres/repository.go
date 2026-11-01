@@ -42,6 +42,11 @@ WHERE n.nspname IN ('paradedb', 'pgsearch')
 ORDER BY CASE n.nspname WHEN 'paradedb' THEN 0 ELSE 1 END
 LIMIT 1`
 
+const (
+	maxKeywordCandidatePages = 20
+	maxKeywordCandidateScan  = 5000
+)
+
 // resolveKeywordScoreFunction probes lazily so vector-only stores remain usable.
 // Cache successes per repository/database; transient failures can be retried.
 func (g *pgRepository) resolveKeywordScoreFunction(ctx context.Context) (string, error) {
@@ -270,36 +275,92 @@ func (g *pgRepository) KeywordsRetrieve(ctx context.Context,
 		SQL:  "(is_enabled IS NULL OR is_enabled = ?)",
 		Vars: []interface{}{true},
 	})
-	if exclusion := generatedQuestionExclusionClause(params.ExcludeGeneratedQuestionKBIDs); exclusion != nil {
-		conds = append(conds, exclusion)
-	}
 	conds = append(conds, clause.OrderBy{Columns: []clause.OrderByColumn{
 		{Column: clause.Column{Name: "score"}, Desc: true},
+		{Column: clause.Column{Name: "id"}},
 	}})
 
-	var embeddingDBList []pgVectorWithScore
-	err = g.db.WithContext(ctx).Clauses(conds...).
-		Select([]string{
-			scoreFunction + "(id) as score",
-			"id",
-			"content",
-			"source_id",
-			"source_type",
-			"chunk_id",
-			"knowledge_id",
-			"knowledge_base_id",
-			"tag_id",
-		}).
-		Limit(int(params.TopK)).
-		Find(&embeddingDBList).Error
-
-	if err == gorm.ErrRecordNotFound {
-		logger.GetLogger(ctx).Warnf("[Postgres] No records found for keywords query: %s", params.Query)
-		return nil, nil
+	requested := int(params.TopK)
+	if requested < 0 {
+		requested = 0
 	}
-	if err != nil {
-		logger.GetLogger(ctx).Errorf("[Postgres] Keywords retrieval failed: %v", err)
-		return nil, err
+	excludedKBs := make(map[string]struct{}, len(params.ExcludeGeneratedQuestionKBIDs))
+	for _, id := range params.ExcludeGeneratedQuestionKBIDs {
+		excludedKBs[id] = struct{}{}
+	}
+	embeddingDBList := make([]pgVectorWithScore, 0, requested)
+	offset := 0
+	candidateBudget := maxKeywordCandidateScan
+	if requested <= maxKeywordCandidateScan/maxKeywordCandidatePages {
+		candidateBudget = requested * maxKeywordCandidatePages
+	}
+	scanned := 0
+	var partialErr error
+	for requested > len(embeddingDBList) && scanned < candidateBudget {
+		if err = ctx.Err(); err != nil {
+			partialErr = fmt.Errorf("keyword retrieval stopped after %d BM25 candidates: %w", scanned, err)
+			break
+		}
+		pageLimit := requested
+		if remaining := candidateBudget - scanned; pageLimit > remaining {
+			pageLimit = remaining
+		}
+		page := make([]pgVectorWithScore, 0)
+		query := g.db.WithContext(ctx).Clauses(conds...).
+			Select([]string{
+				scoreFunction + "(id) as score",
+				"id",
+				"content",
+				"source_id",
+				"source_type",
+				"chunk_id",
+				"knowledge_id",
+				"knowledge_base_id",
+				"tag_id",
+			}).
+			Limit(pageLimit)
+		if offset > 0 {
+			query = query.Offset(offset)
+		}
+		err = query.Find(&page).Error
+		if err == gorm.ErrRecordNotFound {
+			logger.GetLogger(ctx).Warnf("[Postgres] No records found for keywords query: %s", params.Query)
+			break
+		}
+		if err != nil {
+			logger.GetLogger(ctx).Errorf("[Postgres] Keywords retrieval failed: %v", err)
+			if len(embeddingDBList) > 0 {
+				cause := err
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					cause = errors.Join(err, ctxErr)
+				}
+				partialErr = fmt.Errorf("keyword retrieval stopped after %d BM25 candidates: %w", scanned, cause)
+				break
+			}
+			return nil, err
+		}
+		for i := range page {
+			row := &page[i]
+			if _, excluded := excludedKBs[row.KnowledgeBaseID]; excluded &&
+				types.IsGeneratedQuestionSource(row.ChunkID, row.SourceID, types.SourceType(row.SourceType)) {
+				continue
+			}
+			embeddingDBList = append(embeddingDBList, *row)
+			if len(embeddingDBList) >= requested {
+				break
+			}
+		}
+		scanned += len(page)
+		if len(page) < pageLimit || len(page) == 0 {
+			break
+		}
+		offset += len(page)
+	}
+	if partialErr == nil && requested > len(embeddingDBList) && scanned >= candidateBudget {
+		partialErr = fmt.Errorf(
+			"keyword retrieval returned %d of %d requested results after scanning the %d-candidate BM25 limit",
+			len(embeddingDBList), requested, candidateBudget,
+		)
 	}
 
 	logger.GetLogger(ctx).Infof("[Postgres] Keywords retrieval found %d results", len(embeddingDBList))
@@ -323,7 +384,7 @@ func (g *pgRepository) KeywordsRetrieve(ctx context.Context,
 			Results:             results,
 			RetrieverEngineType: types.PostgresRetrieverEngineType,
 			RetrieverType:       types.KeywordsRetrieverType,
-			Error:               nil,
+			Error:               partialErr,
 		},
 	}, nil
 }
@@ -788,24 +849,4 @@ func (g *pgRepository) BatchUpdateChunkTagID(ctx context.Context, chunkTagMap ma
 
 	logger.GetLogger(ctx).Infof("[Postgres] Successfully batch updated chunk tag ID")
 	return nil
-}
-
-func generatedQuestionExclusionClause(kbIDs []string) clause.Expression {
-	if len(kbIDs) == 0 {
-		return nil
-	}
-	placeholders := make([]string, len(kbIDs))
-	vars := make([]interface{}, len(kbIDs))
-	for i, id := range kbIDs {
-		placeholders[i] = "?"
-		vars[i] = id
-	}
-	return clause.Expr{
-		SQL: fmt.Sprintf(
-			"NOT (knowledge_base_id IN (%s) AND %s)",
-			strings.Join(placeholders, ", "),
-			types.GeneratedQuestionRowPredicate(""),
-		),
-		Vars: vars,
-	}
 }

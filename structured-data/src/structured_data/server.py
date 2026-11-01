@@ -249,7 +249,7 @@ def create_app(data_dir: str | Path | None = None):
                        ranges: list[str] | None = None, sums: list[list[str]] | None = None,
                        max_matches: int = 10, max_cells: int = 200,
                        padding_rows: int = 2, padding_cols: int = 2) -> dict:
-        """只读核验原 Excel 的单元格、公式及相交原生图表的标题、轴标题和系列引用，追查字段目录未覆盖的来源证据；包括 parsed_range 外区域。dataset_id 必须来自真实目录，文件 SHA256 必须与该版本一致。searches 是原值/公式的字面匹配（最多8词），可跨全部列；未指定 sheet 时按原工作簿顺序扫描，预算可能耗在其他表，目标表根本未扫描。已定位字段后必须指定该字段的真实 sheet 定向检索。跨多表搜索截断时看 scan.unscanned_sheets/incomplete_sheets、truncated 和 next_step；matches=[] 不等于没有数据，继续目标表检索。ranges 支持 A1、$绝对坐标、大小写及同工作表前缀；给出 sheet，或每个引用都带同一真实工作表前缀，最多8段、总格数不超过 max_cells(1..400)，返回每格原值、坐标及公式缓存。sums 最多8组、每组1..16个A1引用（单格或有限矩形范围，如 C74:C85、D74:D85），展开后每组至少2格；组内重叠坐标拒绝，组间重复按实际输出格数计入 max_cells。同样允许同表前缀与 $，不接受公式、整列、跨表或外部文件，由 Decimal 求和并返回全部展开原单元格；缺失/错误/无缓存不补零。max_matches 1..30；邻域 padding_rows 0..3、padding_cols 0..4。只检视原件，不重解析、不重新计算公式、不猜单位或年度；年度小表可能与月度汇总/不同定义冲突，必须核对并展示，不能自行选优先表。提供 ranges 时另返回最多20条与这些单元格相交的原生图表文本引用（标题、轴标题、曲线标签与原始范围）；chart_references_truncated 标明超限遗漏。图表返回的是原始文本及真实引用，不自动确认字段单位；模型须结合系列范围、轴对应、表头、公式和完整上下文判断适用性，不把其他系列或另一轴的单位套用。目录单位缺省不代表原件没有单位证据。"""
+        """只读核验原 Excel 的单元格、公式及相交原生图表的标题、轴标题和系列引用，追查字段目录未覆盖的来源证据；包括 parsed_range 外区域。dataset_id 必须来自真实目录，文件 SHA256 必须与该版本一致。searches 是原值/公式的字面匹配（最多8词），可跨全部列；未指定 sheet 时按原工作簿顺序扫描，预算可能耗在其他表，目标表根本未扫描。已定位字段后必须指定该字段的真实 sheet 定向检索。跨多表搜索截断时看 scan.unscanned_sheets/incomplete_sheets、truncated 和 next_step；matches=[] 不等于没有数据，继续目标表检索。ranges 支持 A1、$绝对坐标、大小写及同工作表前缀；给出 sheet，或每个引用都带同一真实工作表前缀，最多8段、总格数不超过 max_cells(1..400)，返回每格原值、坐标及公式缓存；coverage.<sheet>.source_used_range 是有界扫描所得的非空原件范围，source_extent_status=unknown_budget 时范围未知；ranges[].read_window 仅表示本次读取窗口，calculations[].input_ranges 表示实际计算输入范围，不能把读取窗口当作原表有效范围。sums 最多8组、每组1..16个A1引用（单格或有限矩形范围，如 C74:C85、D74:D85），展开后每组至少2格；组内重叠坐标拒绝，组间重复按实际输出格数计入 max_cells。同样允许同表前缀与 $，不接受公式、整列、跨表或外部文件，由 Decimal 求和并返回全部展开原单元格；缺失/错误/无缓存不补零。max_matches 1..30；邻域 padding_rows 0..3、padding_cols 0..4。只检视原件，不重解析、不重新计算公式、不猜单位或年度；年度小表可能与月度汇总/不同定义冲突，必须核对并展示，不能自行选优先表。提供 ranges 时另返回最多20条与这些单元格相交的原生图表文本引用（标题、轴标题、曲线标签与原始范围）；chart_references_truncated 标明超限遗漏。图表返回的是原始文本及真实引用，不自动确认字段单位；模型须结合系列范围、轴对应、表头、公式和完整上下文判断适用性，不把其他系列或另一轴的单位套用。目录单位缺省不代表原件没有单位证据。"""
         from .source_inspection import (
             SourceEvidenceReadBudgetExceeded,
             SourceInspectionReadError,
@@ -292,7 +292,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def list_series(dataset_id: str | None = None, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None) -> dict:
-        """读取字段目录中的真实ID、原表头、维度、单位和日期覆盖，不读取业务观测值。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。模型依据完整问题、上下文和实际目录决定是否需要读取记录或计算；列举字段结构不要求额外查询时序。search空格分词AND，仅作字面召回；别名与partial_candidates也仅为候选，不决定业务口径。sheet严格过滤；context_sheet仅优先排序。catalog_summary按分页前实际匹配目录的sheet/metric精确分组计数，可作为实际字段结构列举的来源，不判断业务类别；groups_truncated表示分组展示也有截断。truncated与next_offset说明字段分页，不能将当前页当作全目录。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
+        """读取字段目录中的真实ID、原表头、维度、单位和日期覆盖，不读取业务观测值。field_quality统计真实观测的数值/文本类型与状态，不推断字段用途；文本观测不得作为数值输入，unit_status=needs_review时单位仍未确认。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。模型依据完整问题、上下文和实际目录决定是否需要读取记录或计算；列举字段结构不要求额外查询时序。search空格分词AND，仅作字面召回；别名与partial_candidates也仅为候选，不决定业务口径。sheet严格过滤；context_sheet仅优先排序。catalog_summary按分页前实际匹配目录的sheet/metric精确分组计数，可作为实际字段结构列举的来源，不判断业务类别；groups_truncated表示分组展示也有截断。truncated与next_offset说明字段分页，不能将当前页当作全目录。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
         return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
 
     @mcp.tool()
@@ -1002,7 +1002,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.get("/api/imports/{import_id}")
     def import_review(import_id: str, summary_only: bool = False):
-        doc = manager.publication_view(manager.get(import_id))
+        doc = manager.presentation_view(manager.get(import_id))
         result = {k: v for k, v in doc.items() if k != "source_path"}
         if summary_only:
             fields = {"name", "rows", "columns", "status", "layout", "fingerprint", "reasons", "template_status",
@@ -1022,7 +1022,7 @@ def create_app(data_dir: str | Path | None = None):
     @app.get("/api/imports/{import_id}/sheet")
     def sheet_review(import_id: str, name: str):
         sheet = manager.sheet(import_id, name)
-        doc = manager.publication_view(manager.get(import_id), verified_legacy_sheet=sheet)
+        doc = manager.presentation_view(manager.get(import_id), verified_legacy_sheet=sheet)
         publication = next(s for s in doc['sheets'] if s['name'] == name)
         return {**sheet, **{k: v for k, v in publication.items() if k.startswith('published_')}}
 

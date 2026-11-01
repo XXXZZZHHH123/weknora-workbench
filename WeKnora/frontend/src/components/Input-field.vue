@@ -34,6 +34,7 @@ import { useDeploymentCapabilitiesStore } from '@/stores/deploymentCapabilities'
 import { hostSkillsOnly, mentionSkillTargetId } from '@/utils/skillTarget';
 import { useI18n } from 'vue-i18n';
 import AttachmentUpload, { type AttachmentFile } from './AttachmentUpload.vue';
+import ConversationMemoryToggle from './ConversationMemoryToggle.vue';
 import {
   kbSatisfiesAgentRequirements,
   deriveKbFilterForAgent,
@@ -77,6 +78,7 @@ const {
 const { t, locale } = useI18n();
 
 const props = defineProps({
+  memoryDisabled: { type: Boolean, default: false },
   compact: {
     type: Boolean,
     default: false
@@ -136,6 +138,7 @@ const isScopedMention = (item: MentionItem) => {
 };
 
 let query = ref("");
+const draftMemoryDisabled = ref(false);
 const showKbSelector = ref(false);
 
 // Image upload state
@@ -2200,6 +2203,7 @@ const createSession = async (
   delivery: 'inject' | 'after' = 'after',
   options: SendMessageOptions = {},
 ) => {
+  options = { ...options, memoryDisabled: props.sessionId ? props.memoryDisabled : draftMemoryDisabled.value };
   if (props.composerLocked) {
     return;
   }
@@ -3077,6 +3081,10 @@ defineExpose({
               <span v-if="uploadedImages.length > 0" class="image-count">{{ uploadedImages.length }}</span>
             </div>
           </t-tooltip>
+
+          <ConversationMemoryToggle v-if="!embeddedMode && !knowledgeScope && (!sessionId || memoryDisabled)"
+            :disabled="sessionId ? memoryDisabled : draftMemoryDisabled" :locked="Boolean(sessionId)"
+            @update:disabled="draftMemoryDisabled = $event" />
 
           <!-- 附件上传按钮 -->
           <t-tooltip v-if="!knowledgeScope" placement="top" theme="light" :popupProps="{ overlayClassName: 'input-field-tooltip' }">

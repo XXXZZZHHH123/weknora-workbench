@@ -185,6 +185,7 @@ func (s *sessionService) KnowledgeQA(
 	// An agent may opt out of long-term memory. The preference is per-request
 	// rather than per-user, so it travels in the context that the recall
 	// plugin reads.
+	ctx = types.ApplySessionMemoryPreference(ctx, req.Session)
 	if req.CustomAgent != nil {
 		ctx = types.ApplyAgentMemoryPreference(ctx, req.CustomAgent.Config.MemoryEnabled)
 	}

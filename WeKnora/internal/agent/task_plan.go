@@ -181,6 +181,8 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	planCtx, cancel := context.WithTimeout(ctx, taskPlanTimeout)
 	defer cancel()
 	planCtx = types.WithLLMCallMetadata(planCtx, "agent_task_plan", chat.PromptPrefixFingerprint(planMessages, options))
+	planCtx, contextSpan := beginModelContextObservation(planCtx, "task_plan", planMessages, options, nil)
+	defer contextSpan.Finish(nil, nil, nil)
 	response, err := e.chatModel.Chat(planCtx, planMessages, options)
 	if response != nil {
 		state.TurnUsage.Accumulate(response.Usage)

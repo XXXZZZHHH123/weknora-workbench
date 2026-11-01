@@ -95,6 +95,7 @@ body.native-source #directUpload .import-actions{display:none}
 .series-choice .series-sheet{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .series-choice .series-unit{font-size:10px;border:1px solid var(--line);padding:1px 5px;border-radius:4px;white-space:nowrap;max-width:45%;overflow:hidden;text-overflow:ellipsis}
 .series-choice .series-range,.series-choice .series-dimensions{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+.series-choice .series-quality{font-size:10px;color:var(--warning);overflow-wrap:anywhere}
 .series-choice[aria-pressed=true] strong{color:var(--primary)}
 .series-empty{font-size:12px;line-height:1.7;color:var(--muted);padding:24px 10px}
 #queryPreview{padding:25px 26px;min-width:0;scroll-margin-top:18px}

@@ -1,0 +1,1 @@
+ALTER TABLE sessions ADD COLUMN memory_disabled BOOLEAN NOT NULL DEFAULT 0;

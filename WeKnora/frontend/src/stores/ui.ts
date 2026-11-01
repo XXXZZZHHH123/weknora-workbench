@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { clampSidebarWidth, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_COLLAPSE_THRESHOLD } from '../utils/sidebarWidth'
 
+const narrowViewport = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 720px)').matches
+const savedSidebarCollapsed = () => localStorage.getItem('sidebar_collapsed') === 'true'
+
 export const useUIStore = defineStore('ui', {
   state: () => ({
     showSettingsModal: false,
@@ -23,7 +26,10 @@ export const useUIStore = defineStore('ui', {
     manualEditorInitialContent: '',
     manualEditorInitialStatus: 'draft' as 'draft' | 'publish',
     manualEditorOnSuccess: null as null | ((payload: { kbId: string; knowledgeId: string; status: 'draft' | 'publish' }) => void),
-    sidebarCollapsed: localStorage.getItem('sidebar_collapsed') === 'true',
+    // Mobile drawer state is viewport state; preserve the desktop preference.
+    viewportIsNarrow: narrowViewport(),
+    desktopSidebarCollapsed: savedSidebarCollapsed(),
+    sidebarCollapsed: narrowViewport() || savedSidebarCollapsed(),
     sidebarWidth: clampSidebarWidth(Number(localStorage.getItem('sidebar_width'))),
     sidebarResizing: false,
     sidebarBrowserStatus: localStorage.getItem('sidebar_browser_status') !== 'false',
@@ -144,7 +150,21 @@ export const useUIStore = defineStore('ui', {
 
     toggleSidebar() {
       this.sidebarCollapsed = !this.sidebarCollapsed
-      localStorage.setItem('sidebar_collapsed', String(this.sidebarCollapsed))
+      if (!this.viewportIsNarrow) {
+        this.desktopSidebarCollapsed = this.sidebarCollapsed
+        localStorage.setItem('sidebar_collapsed', String(this.sidebarCollapsed))
+      }
+    },
+
+    setNarrowViewport(isNarrow: boolean) {
+      if (this.viewportIsNarrow === isNarrow) return
+      if (isNarrow) {
+        this.desktopSidebarCollapsed = this.sidebarCollapsed
+        this.sidebarCollapsed = true
+      } else {
+        this.sidebarCollapsed = this.desktopSidebarCollapsed
+      }
+      this.viewportIsNarrow = isNarrow
     },
 
     resizeSidebar(width: number) {
@@ -160,12 +180,18 @@ export const useUIStore = defineStore('ui', {
 
     collapseSidebar() {
       this.sidebarCollapsed = true
-      localStorage.setItem('sidebar_collapsed', 'true')
+      if (!this.viewportIsNarrow) {
+        this.desktopSidebarCollapsed = true
+        localStorage.setItem('sidebar_collapsed', 'true')
+      }
     },
 
     expandSidebar() {
       this.sidebarCollapsed = false
-      localStorage.setItem('sidebar_collapsed', 'false')
+      if (!this.viewportIsNarrow) {
+        this.desktopSidebarCollapsed = false
+        localStorage.setItem('sidebar_collapsed', 'false')
+      }
     }
   }
 })
