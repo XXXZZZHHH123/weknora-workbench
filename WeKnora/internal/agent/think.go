@@ -740,10 +740,10 @@ func (e *AgentEngine) streamLLMToEventBusWithModel(
 	prefixFingerprint := chat.PromptPrefixFingerprint(messages, opts)
 	llmCtx = types.WithLLMCallMetadata(llmCtx, "agent_round", prefixFingerprint)
 	fullTools := []chat.Tool(nil)
-	if len(opts.Tools) > 0 && e.toolRegistry != nil && langfuse.GetManager().Enabled() {
+	if opts != nil && len(opts.Tools) > 0 && e.toolRegistry != nil && langfuse.GetManager().Enabled() {
 		fullTools = registeredToolSchemasForMetrics(e.toolRegistry)
 	}
-	if len(opts.Tools) == 1 && opts.Tools[0].Function.Name == reviewEvidenceToolName {
+	if opts != nil && len(opts.Tools) == 1 && opts.Tools[0].Function.Name == reviewEvidenceToolName {
 		// The evidence reader is the review's complete, purpose-built tool
 		// set. Comparing it with the generator's registry would report a
 		// misleading omission rather than a projection.

@@ -79,9 +79,14 @@ class ImportManager:
             except (ValueError, OSError):
                 pass
         published = {s['name']: s for s in (manifest or {}).get('sheets', []) if isinstance(s, dict) and s.get('name')}
-        quality_by_series = self.store.series_quality(dataset_id) if manifest else {}
-        series_rows = (json.loads((self.store._path(dataset_id) / 'series.json').read_text())
-                       if manifest else [])
+        series_path = self.store._path(dataset_id) / 'series.json' if manifest else None
+        # series.json is quality/presentation metadata, not the publication
+        # record. Older or interrupted snapshots may have a correctly bound
+        # manifest without it; preserve manifest-derived publication status,
+        # but report quality as unavailable instead of inventing zero counts.
+        quality_available = series_path is not None and series_path.is_file()
+        quality_by_series = self.store.series_quality(dataset_id) if quality_available else {}
+        series_rows = json.loads(series_path.read_text()) if quality_available else []
         published_series = {}
         for item in series_rows:
             published_series.setdefault(item.get('sheet'), []).append(item)
@@ -110,7 +115,8 @@ class ImportManager:
                            'published_dataset_id': dataset_id if actual is not None else None,
                            'published_mapping': mapping,
                            'published_fingerprint': actual.get('fingerprint') if actual is not None else None,
-                           'published_quality': quality_summary if actual is not None else None})
+                           'published_quality': quality_summary
+                           if actual is not None and quality_available else None})
         return {**doc, 'sheets': sheets}
 
     def display_source_file(self, doc):
