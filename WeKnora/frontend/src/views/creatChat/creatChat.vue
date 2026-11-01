@@ -252,6 +252,7 @@ async function createNewSession(value: string, modelId: string, mentionedItems: 
 
     // 构建 session 数据，包含 Agent 配置
     const sessionData: any = {};
+    sessionData.memory_disabled = options.memoryDisabled === true;
 
     // 添加 Agent 配置（知识库信息在 agent_config 中）
     sessionData.agent_config = {

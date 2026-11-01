@@ -38,6 +38,38 @@ def test_all_files_keeps_each_real_dataset_and_global_pagination(tmp_path):
                for row in found['series'])
 
 
+def test_catalog_exposes_observed_text_quality_without_guessing_units(tmp_path):
+    store = DataStore(tmp_path)
+    dataset = store.publish({
+        'source_file': 'quality-fixture.xlsx', 'sha256': 'd' * 64, 'rule_version': 'quality-v1',
+        'series': [
+            {'series_id': 'numeric', 'sheet': 'Records', 'metric': 'Income', 'unit': None,
+             'unit_status': 'needs_review', 'dimensions': {}, 'header_cells': ['B1']},
+            {'series_id': 'text', 'sheet': 'Records', 'metric': 'Notes', 'unit': None,
+             'unit_status': 'needs_review', 'dimensions': {}, 'header_cells': ['C1']},
+        ],
+        'observations': [
+            {'series_id': 'numeric', 'date': '2026-01-01', 'value': 12,
+             'source_cell': 'B2', 'value_status': 'valid', 'raw_value': 12},
+            {'series_id': 'numeric', 'date': '2026-01-02', 'value': None,
+             'source_cell': 'B3', 'value_status': 'blank', 'raw_value': None},
+            {'series_id': 'text', 'date': '2026-01-01', 'value': None,
+             'source_cell': 'C2', 'value_status': 'unexpected_text', 'raw_value': '内部备注'},
+            {'series_id': 'text', 'date': '2026-01-02', 'value': None,
+             'source_cell': 'C3', 'value_status': 'unexpected_text', 'raw_value': '待核实'},
+        ],
+        'sheets': [], 'excluded_regions': [], 'issues': [],
+    })['dataset_id']
+    catalog = store.list_series(dataset)['series']
+    by_id = {row['series_id']: row for row in catalog}
+    assert by_id['numeric']['unit'] is None
+    assert by_id['numeric']['unit_status'] == 'needs_review'
+    assert by_id['numeric']['field_quality']['observed_type'] == 'numeric'
+    assert by_id['numeric']['field_quality']['valid_numeric_count'] == 1
+    assert by_id['text']['field_quality']['observed_type'] == 'text'
+    assert by_id['text']['field_quality']['status_counts']['unexpected_text'] == 2
+
+
 def test_all_excludes_historical_versions_and_explicit_samples(tmp_path):
     store = DataStore(tmp_path)
     old = publish(store, 'alpha.xlsx', 'a', ['Old only'])

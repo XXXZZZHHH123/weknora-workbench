@@ -491,6 +491,9 @@ func (s *sessionService) UpdateSession(ctx context.Context, session *types.Sessi
 		return err
 	}
 	if existing != nil {
+		// The memory policy is immutable. Updating a title must not enable
+		// extraction of a conversation that was created without memory.
+		session.MemoryDisabled = existing.MemoryDisabled
 		// A conversation's evidence boundary stays fixed when its title changes.
 		session.ResearchWorkbenchID = existing.ResearchWorkbenchID
 		session.Description = types.SanitizeClientSessionDescription(

@@ -82,6 +82,40 @@ def test_exact_ranges_and_decimal_calculation_keep_conflicting_source_values(ori
     assert monthly['calculations'][0]['value'] == '777.0080629647059'
 
 
+def test_read_window_and_calculation_inputs_are_separate_from_actual_source_extent(tmp_path):
+    store = DataStore(tmp_path)
+    book = Workbook()
+    sheet = book.active
+    sheet.title = 'Data'
+    for row in [['Date', 'Income', 'Notes'], ['Jan', 4, 'first'], ['Feb', 6, 'second'], ['Mar', 8, 'third']]:
+        sheet.append(row)
+    source = tmp_path / 'extent-fixture.xlsx'
+    book.save(source)
+    sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    dataset = hashlib.sha256((sha + ':extent').encode()).hexdigest()[:24]
+    path = store.datasets / dataset
+    path.mkdir()
+    (path / 'source.xlsx').write_bytes(source.read_bytes())
+    dump(path / 'manifest.json', {'dataset_id': dataset, 'source_file': source.name, 'sha256': sha,
+                                  'sheets': [], 'excluded_regions': []})
+
+    result = inspect_source(store, dataset, sheet='Data', ranges=['A1:D4'], sums=[['B2:B4']])
+    assert result['coverage']['Data']['source_used_range'] == 'A1:C4'
+    assert result['coverage']['Data']['source_extent_status'] == 'complete'
+    assert result['ranges'][0]['range'] == result['ranges'][0]['read_window'] == 'A1:D4'
+    assert result['calculations'][0]['input_ranges'] == ['B2:B4']
+    assert result['calculations'][0]['value'] == '18'
+
+
+def test_source_extent_reports_unknown_when_bounded_scan_stops(original, monkeypatch):
+    store, dataset, _ = original
+    monkeypatch.setattr(source_inspection, 'MAX_SCAN_CELLS', 6)
+    result = inspect_source(store, dataset, sheet='月度', ranges=['B2'])
+    assert result['coverage']['月度']['source_used_range'] is None
+    assert result['coverage']['月度']['source_extent_status'] == 'unknown_budget'
+    assert result['ranges'][0]['cells'][0]['cell'] == 'B2'
+
+
 def test_excel_references_normalize_format_without_changing_source_or_scope(original):
     store, dataset, _ = original
     result = inspect_source(store, dataset, sheet='年度及小表',
@@ -501,3 +535,50 @@ def test_source_read_exception_releases_admission_slot(original, monkeypatch):
     assert result['hash_verified'] and result['ranges'][0]['cells'][0]['value'] == 650
     assert semaphore.acquire(blocking=False)
     semaphore.release()
+
+
+def test_source_extent_can_use_the_entire_shared_cell_budget(original, monkeypatch):
+    store, dataset, _ = original
+    monkeypatch.setattr(source_inspection, 'MAX_SCAN_CELLS', 6)
+    result = inspect_source(store, dataset, sheet='横向标签', ranges=['A1:D4'])
+    extent = result['coverage']['横向标签']
+    assert extent['source_used_range'] == 'A1:C2'
+    assert extent['source_extent_status'] == 'complete'
+    assert extent['source_extent_cells_scanned'] == 6
+
+
+def test_source_extent_ignores_underreported_worksheet_dimension(tmp_path):
+    store = DataStore(tmp_path)
+    book = Workbook()
+    sheet = book.active
+    sheet.title = 'Data'
+    sheet['A1'] = 'header'
+    sheet['D4'] = 'outside declared extent'
+    source = tmp_path / 'bad-dimension.xlsx'
+    book.save(source)
+
+    with zipfile.ZipFile(source) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    worksheet = ET.fromstring(members['xl/worksheets/sheet1.xml'])
+    namespace = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+    dimension = worksheet.find('s:dimension', namespace)
+    assert dimension is not None and dimension.get('ref') == 'A1:D4'
+    dimension.set('ref', 'A1')
+    members['xl/worksheets/sheet1.xml'] = ET.tostring(worksheet)
+    with zipfile.ZipFile(source, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+
+    sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    dataset = hashlib.sha256((sha + ':dimension').encode()).hexdigest()[:24]
+    path = store.datasets / dataset
+    path.mkdir()
+    (path / 'source.xlsx').write_bytes(source.read_bytes())
+    dump(path / 'manifest.json', {'dataset_id': dataset, 'source_file': source.name,
+                                  'sha256': sha, 'sheets': [], 'excluded_regions': []})
+
+    result = inspect_source(store, dataset, sheet='Data', ranges=['D4'])
+    extent = result['coverage']['Data']
+    assert extent['source_used_range'] == 'A1:D4'
+    assert extent['source_extent_status'] == 'complete'
+    assert next(cell for cell in result['ranges'][0]['cells'] if cell['cell'] == 'D4')['value'] == 'outside declared extent'

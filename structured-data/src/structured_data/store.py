@@ -17,6 +17,23 @@ import time
 import duckdb
 
 
+def field_quality(status_counts):
+    """Describe observed value types without guessing from field names."""
+    counts = {str(status): int(count) for status, count in status_counts.items() if count}
+    numeric = counts.get('valid', 0)
+    text = counts.get('unexpected_text', 0)
+    if numeric and text:
+        observed_type = 'mixed'
+    elif numeric:
+        observed_type = 'numeric'
+    elif text:
+        observed_type = 'text'
+    else:
+        observed_type = 'no_valid_numeric_values'
+    return {'observed_type': observed_type, 'record_count': sum(counts.values()),
+            'valid_numeric_count': numeric, 'status_counts': counts}
+
+
 @contextmanager
 def database_lock(path, *, exclusive=False, blocking=True):
     # Keep the lock file: removing it can give waiting processes different
@@ -106,7 +123,53 @@ class DataStore:
         return path
 
     def manifest(self, dataset_id: str) -> dict:
-        return json.loads((self._path(dataset_id) / "manifest.json").read_text())
+        manifest = json.loads((self._path(dataset_id) / "manifest.json").read_text())
+        manifest['source_file'] = self._display_native_source(manifest)
+        return manifest
+
+    def _display_native_source(self, manifest):
+        """Resolve a presentation name from a saved native binding when available."""
+        from .workspaces import current_identity, valid_knowledge_base_id
+        kb_id = self.root.name
+        if self.root.parent.name != 'knowledge-bases' or not valid_knowledge_base_id(kb_id):
+            return manifest.get('source_file')
+        identity = current_identity.get()
+        if identity is not None and identity.knowledge_base_id != kb_id:
+            return manifest.get('source_file')
+        import_id = manifest.get('import_id')
+        if not isinstance(import_id, str) or not re.fullmatch(r'[0-9a-f]{24}', import_id):
+            return manifest.get('source_file')
+        review_path = self.root / 'imports' / import_id / 'review.json'
+        try:
+            if review_path.is_symlink() or not review_path.resolve().is_relative_to(self.root.resolve()):
+                return manifest.get('source_file')
+            review = json.loads(review_path.read_text())
+        except (OSError, ValueError):
+            return manifest.get('source_file')
+        if (not isinstance(review, dict) or review.get('import_id') != import_id
+                or review.get('sha256') != manifest.get('sha256')
+                or review.get('source_file') != manifest.get('source_file')):
+            return manifest.get('source_file')
+        original = self.root / 'imports' / import_id / review.get('storage_file', review['source_file'])
+        bindings = review.get('native_source_bindings', [])
+        for binding in reversed(bindings if isinstance(bindings, list) else []):
+            if not isinstance(binding, dict):
+                continue
+            name = binding.get('file_name')
+            if (binding.get('knowledge_base_id') != kb_id
+                    or not valid_knowledge_base_id(binding.get('source_knowledge_id'))
+                    or type(binding.get('tenant_id')) is not int or binding['tenant_id'] <= 0
+                    or (identity is not None and binding['tenant_id'] != identity.knowledge_base_tenant_id)
+                    or not isinstance(name, str) or not name
+                    or Path(name.replace('\\', '/')).name != name
+                    or any(ord(char) < 32 for char in name)
+                    or type(binding.get('file_size')) is not int or binding['file_size'] <= 0
+                    or not isinstance(binding.get('file_hash'), str)
+                    or not re.fullmatch(r'[0-9a-fA-F]{32}', binding['file_hash'])
+                    or not original.is_file() or original.stat().st_size != binding['file_size']):
+                continue
+            return name
+        return manifest.get('source_file')
 
     def chart_index(self, dataset_id):
         from .native_charts import index
@@ -115,7 +178,31 @@ class DataStore:
     def catalog(self, dataset_id, sheet=None, question=''):
         from .native_charts import catalog
         from .source_context import enrich_catalog
-        return enrich_catalog(self, dataset_id, catalog(self, dataset_id, sheet, question))
+        rows = enrich_catalog(self, dataset_id, catalog(self, dataset_id, sheet, question))
+        quality = self.series_quality(dataset_id, [item['series_id'] for item in rows
+                                                     if item.get('series_id')])
+        return [{**item, **({'field_quality': quality[item['series_id']]}
+                            if item.get('series_id') in quality else {})} for item in rows]
+
+    def series_quality(self, dataset_id, series_ids=None):
+        """Return observed value-type counts keyed by stable series ID."""
+        if series_ids is None:
+            series = json.loads((self._path(dataset_id) / 'series.json').read_text())
+            series_ids = [item['series_id'] for item in series]
+        else:
+            self._path(dataset_id)
+        if not series_ids:
+            return {}
+        with self._connect(dataset_id) as con:
+            rows = con.execute(
+                'SELECT series_id,value_status,count(*) FROM observations '
+                'WHERE series_id IN (SELECT unnest(?)) GROUP BY series_id,value_status',
+                [series_ids]).fetchall()
+        counts = {}
+        for series_id, status, count in rows:
+            counts.setdefault(series_id, {})[status] = count
+        return {series_id: field_quality(status_counts)
+                for series_id, status_counts in counts.items()}
 
     def list_charts(self, dataset_id, sheet=None, search='', limit=50, offset=0):
         self._limit(limit)
@@ -139,7 +226,10 @@ class DataStore:
             kind = dataset_kind(doc, self.root)
             if kind == 'sample' and not include_samples:
                 continue
+            stored_source_file = doc.get('source_file')
+            doc['source_file'] = self._display_native_source(doc)
             items.append({'dataset_kind': kind, 'changed_sheets': doc.get('changed_sheets', []),
+                          '_review_source_file': stored_source_file,
                           'import_id': doc.get('import_id'),
                           'use_reviewed_mappings': doc.get('use_reviewed_mappings', True),
                           'parent_dataset_id': doc.get('parent_dataset_id'),
@@ -169,6 +259,7 @@ class DataStore:
             # A later version of one original must not hide the others.
             item["is_latest_for_source"] = bool(set(keys) - seen)
             seen.update(keys)
+            item.pop('_review_source_file', None)
         from .dataset_history import describe_history
         return describe_history(items, source_keys=source_keys)
 
@@ -205,7 +296,7 @@ class DataStore:
         review = reviews[import_id]
         if (not isinstance(review, dict) or review.get('import_id') != import_id
                 or review.get('sha256') != item['sha256']
-                or review.get('source_file') != item['source_file']
+                or review.get('source_file') != item.get('_review_source_file', item['source_file'])
                 or not isinstance(review.get('native_source_bindings'), list)):
             return legacy
         keys = set()

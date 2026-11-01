@@ -52,6 +52,8 @@ func (e *AgentEngine) registerDocumentTableAnalysis(state *types.AgentState, que
 		options = &localOptions
 		messages = e.modelContext.EncodeMessages(messages)
 		ctx = types.WithLLMCallMetadata(ctx, "agent_document_table_plan", chat.PromptPrefixFingerprint(messages, options))
+		ctx, contextSpan := beginModelContextObservation(ctx, "document_table_plan", messages, options, nil)
+		defer contextSpan.Finish(nil, nil, nil)
 		response, err := e.chatModel.Chat(ctx, messages, options)
 		if response == nil {
 			return nil, err

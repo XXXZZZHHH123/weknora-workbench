@@ -88,6 +88,9 @@ const (
 // executor hand the handler a bare context, so any scope the request knew and
 // the payload does not carry is gone by the time the task runs.
 func (s *Service) ScheduleExtraction(ctx context.Context, sessionID, messageID, chatModelID string) {
+	if !s.sessionAllowsMemory(ctx, sessionID) {
+		return
+	}
 	scope, cfg, ok := s.enabledScope(ctx)
 	if !ok {
 		return
@@ -268,6 +271,7 @@ func (s *Service) Handle(ctx context.Context, task *asynq.Task) error {
 	// downstream repository filters on, and the model service reads it from
 	// the context to pick the workspace's model.
 	ctx = context.WithValue(ctx, types.TenantIDContextKey, payload.TenantID)
+	ctx = context.WithValue(ctx, extractionPolicyContextKey{}, true)
 	if payload.Language != "" {
 		ctx = context.WithValue(ctx, types.LanguageContextKey, payload.Language)
 	}
@@ -462,6 +466,9 @@ type transcriptSegment struct {
 // Every row, including assistant-only pages, belongs to a checkpoint. A gap
 // is flushed before admitting the next message so it cannot advance over it.
 func (s *Service) collectSessionSegments(ctx context.Context, session types.MemoryExtractionSession) ([]transcriptSegment, bool, error) {
+	if !s.sessionAllowsMemory(ctx, session.SessionID) {
+		return nil, false, nil
+	}
 	messages, err := s.messageRepo.ListMessagesBySessionAfterCursor(ctx, session.SessionID, session.Cursor, extractMaxMessagesPerRun+1)
 	if err != nil {
 		return nil, false, fmt.Errorf("load session messages: %w", err)

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -46,7 +47,7 @@ func TestKeywordsRetrieveScoreFunctionCompatibility(t *testing.T) {
 				`FROM "embeddings" WHERE "knowledge_base_id" = \$1.*` +
 				`"knowledge_id" = \$2.*"tag_id" = \$3.*` +
 				`content \|\|\| \$4.*is_enabled IS NULL OR is_enabled = \$5.*` +
-				`ORDER BY "score" DESC LIMIT \$6`
+				`ORDER BY "score" DESC,"id" LIMIT \$6`
 			for range 2 {
 				mock.ExpectQuery(query).
 					WithArgs("kb-test", "doc-test", "tag-test", params.Query, true, 5).
@@ -152,6 +153,94 @@ func TestKeywordsRetrieveQueryFailurePreservesResolvedFunction(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Empty(t, results[0].Results)
+}
+
+func TestKeywordsRetrieveFiltersDisabledGeneratedQuestionsAfterBM25Candidates(t *testing.T) {
+	repo, mock := newKeywordTestRepository(t)
+	mock.ExpectQuery(regexp.QuoteMeta(keywordScoreFunctionSQL)).
+		WillReturnRows(sqlmock.NewRows([]string{"score_function"}).AddRow("paradedb.score"))
+	query := `SELECT paradedb\.score\(id\) as score,.*FROM "embeddings" WHERE "knowledge_base_id" = \$1.*content \|\|\| \$2.*is_enabled IS NULL OR is_enabled = \$3.*ORDER BY.*"score" DESC.*"id".*LIMIT \$4`
+	columns := []string{"id", "content", "source_id", "source_type", "chunk_id", "knowledge_id", "knowledge_base_id", "tag_id", "score"}
+	mock.ExpectQuery(query).
+		WithArgs("kb-disabled", "query", true, 2).
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(1, "generated 1", "parent-q1", int(types.ChunkSourceType), "parent", "doc", "kb-disabled", "", 12.0).
+			AddRow(2, "generated 2", "parent-q2", int(types.ChunkSourceType), "parent", "doc", "kb-disabled", "", 11.0))
+	mock.ExpectQuery(query+` OFFSET \$5`).
+		WithArgs("kb-disabled", "query", true, 2, 2).
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(3, "source chunk 1", "chunk-1", int(types.ChunkSourceType), "chunk-1", "doc", "kb-disabled", "", 10.0).
+			AddRow(4, "source chunk 2", "chunk-2", int(types.ChunkSourceType), "chunk-2", "doc", "kb-disabled", "", 9.0))
+
+	results, err := repo.KeywordsRetrieve(context.Background(), types.RetrieveParams{
+		Query: "query", TopK: 2, KnowledgeBaseIDs: []string{"kb-disabled"},
+		ExcludeGeneratedQuestionKBIDs: []string{"kb-disabled"},
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Len(t, results[0].Results, 2)
+	require.Equal(t, []string{"chunk-1", "chunk-2"}, []string{results[0].Results[0].ChunkID, results[0].Results[1].ChunkID})
+}
+
+func TestKeywordsRetrieveCandidateBudgetReturnsExplicitPartialResults(t *testing.T) {
+	repo, mock := newKeywordTestRepository(t)
+	mock.ExpectQuery(regexp.QuoteMeta(keywordScoreFunctionSQL)).
+		WillReturnRows(sqlmock.NewRows([]string{"score_function"}).AddRow("paradedb.score"))
+	query := `SELECT paradedb\.score\(id\) as score,.*FROM "embeddings" WHERE "knowledge_base_id" = \$1.*content \|\|\| \$2.*is_enabled IS NULL OR is_enabled = \$3.*ORDER BY.*"score" DESC.*"id".*LIMIT \$4`
+	columns := []string{"id", "content", "source_id", "source_type", "chunk_id", "knowledge_id", "knowledge_base_id", "tag_id", "score"}
+	for offset := 0; offset < maxKeywordCandidatePages; offset++ {
+		rows := sqlmock.NewRows(columns).AddRow(
+			offset+1, "generated", "parent-q1", int(types.ChunkSourceType), "parent", "doc", "kb-disabled", "", 12.0,
+		)
+		if offset == 0 {
+			mock.ExpectQuery(query).WithArgs("kb-disabled", "query", true, 1).WillReturnRows(rows)
+		} else {
+			mock.ExpectQuery(query+` OFFSET \$5`).
+				WithArgs("kb-disabled", "query", true, 1, offset).
+				WillReturnRows(rows)
+		}
+	}
+
+	results, err := repo.KeywordsRetrieve(context.Background(), types.RetrieveParams{
+		Query: "query", TopK: 1, KnowledgeBaseIDs: []string{"kb-disabled"},
+		ExcludeGeneratedQuestionKBIDs: []string{"kb-disabled"},
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Empty(t, results[0].Results, "the generated-question exclusion remains enforced at the scan budget")
+	require.ErrorContains(t, results[0].Error, "20-candidate BM25 limit")
+}
+
+func TestKeywordsRetrieveCancellationPreservesAlreadyFoundPartialResults(t *testing.T) {
+	repo, mock := newKeywordTestRepository(t)
+	mock.ExpectQuery(regexp.QuoteMeta(keywordScoreFunctionSQL)).
+		WillReturnRows(sqlmock.NewRows([]string{"score_function"}).AddRow("paradedb.score"))
+	query := `SELECT paradedb\.score\(id\) as score,.*FROM "embeddings" WHERE "knowledge_base_id" = \$1.*content \|\|\| \$2.*is_enabled IS NULL OR is_enabled = \$3.*ORDER BY.*"score" DESC.*"id".*LIMIT \$4`
+	columns := []string{"id", "content", "source_id", "source_type", "chunk_id", "knowledge_id", "knowledge_base_id", "tag_id", "score"}
+	mock.ExpectQuery(query).WithArgs("kb-disabled", "query", true, 2).
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(1, "source chunk", "chunk-1", int(types.ChunkSourceType), "chunk-1", "doc", "kb-disabled", "", 12.0).
+			AddRow(2, "generated", "parent-q1", int(types.ChunkSourceType), "parent", "doc", "kb-disabled", "", 11.0))
+	mock.ExpectQuery(query+` OFFSET \$5`).
+		WithArgs("kb-disabled", "query", true, 2, 2).
+		WillDelayFor(time.Second).
+		WillReturnError(context.Canceled)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(50*time.Millisecond, cancel)
+	defer func() {
+		timer.Stop()
+		cancel()
+	}()
+	results, err := repo.KeywordsRetrieve(ctx, types.RetrieveParams{
+		Query: "query", TopK: 2, KnowledgeBaseIDs: []string{"kb-disabled"},
+		ExcludeGeneratedQuestionKBIDs: []string{"kb-disabled"},
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Len(t, results[0].Results, 1)
+	require.Equal(t, "chunk-1", results[0].Results[0].ChunkID)
+	require.ErrorIs(t, results[0].Error, context.Canceled)
 }
 
 func TestVectorRetrieveDoesNotRequireKeywordScoreFunction(t *testing.T) {

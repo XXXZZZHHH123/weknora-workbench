@@ -142,7 +142,7 @@
                                 </botmsg>
                                 <details v-if="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)"><summary>查看原表取数依据</summary><StructuredFieldAnswer :plan="structuredFieldAnswer(session.agentEventStream, !!session.is_completed)" /></details>
                                 <section v-if="!session.content?.trim() && structuredFieldIssue(session.agentEventStream, !!session.is_completed)" role="alert" style="margin:12px 0;padding:16px;border:1px solid #ead6b6;border-radius:8px;background:#fff9ed;color:#725324;line-height:1.7">{{ structuredFieldIssue(session.agentEventStream, !!session.is_completed) }}</section>
-                                <StructuredAnalysisEvidence v-if="structuredAnalysisEvidence(session.agentEventStream, !!session.is_completed)" :evidence="structuredAnalysisEvidence(session.agentEventStream, !!session.is_completed)" />
+                                <StructuredAnalysisEvidence v-if="structuredAnalysisEvidence(session.agentEventStream, !!session.is_completed) || structuredAnswerSources(session.agentEventStream, !!session.is_completed).length" :evidence="structuredAnalysisEvidence(session.agentEventStream, !!session.is_completed)" :sources="structuredAnswerSources(session.agentEventStream, !!session.is_completed)" />
                                 <FieldClarificationDialog :session="session" :active="index === messagesList.length - 1 && !isReplying && !isStreaming" @submit="handleFieldClarification" />
                                 <FollowUpSuggestions v-if="!isAutomationSession && session.answerFullyRendered && !session.steerForked && !session.suggestionsDismissed"
                                     :suggestion-set="session.suggestionSet"
@@ -187,6 +187,7 @@
                         <span>{{ t('automation.conversationNotice') }}</span>
                     </div>
                     <InputField v-else-if="embeddedMode || currentSession" ref="inputFieldRef" :auto-focus="focusComposerOnMount" compact
+                        :memory-disabled="currentSession?.memory_disabled === true"
                         @send-msg="(query, modelId, mentionedItems, imageFiles, attachmentFiles, options) => sendMsg(query, modelId, mentionedItems, imageFiles, attachmentFiles, options)"
                         @steer-msg="(query, mentionedItems, delivery) => handleSteerMsg(query, mentionedItems, delivery)"
                         @promote-steer="handlePromoteSteer"
@@ -284,6 +285,7 @@ import FieldClarificationDialog from '@/components/chat/FieldClarificationDialog
 import StructuredFieldAnswer from '@/components/chat/StructuredFieldAnswer.vue';
 import StructuredAnalysisEvidence from '@/components/chat/StructuredAnalysisEvidence.vue';
 import { structuredFieldAnswer, structuredFieldIssue, confirmationDisplayText, structuredAnalysisEvidence } from '@/utils/fieldClarification';
+import { structuredAnswerSources } from '@/utils/structuredAnswerSources';
 import MessageTimestamp from '@/components/chat/MessageTimestamp.vue';
 import ChatQuestionMinimap from '@/components/chat/ChatQuestionMinimap.vue';
 import { shouldShowConversationTimestamp } from '@/utils/messageTimestamp';

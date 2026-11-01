@@ -8,7 +8,10 @@ import (
 // Sessions are now knowledge-base-independent and serve as conversation containers.
 // All configuration (knowledge bases, model settings, etc.) comes from custom agent at query time.
 type CreateSessionRequest struct {
-	Kind string `json:"kind,omitempty" enums:",assistant"`
+	// MemoryDisabled opts this entire conversation out of long-term memory.
+	// It is immutable so a later turn cannot extract earlier private content.
+	MemoryDisabled bool   `json:"memory_disabled"`
+	Kind           string `json:"kind,omitempty" enums:",assistant"`
 	// Title for the session (optional)
 	Title string `json:"title"`
 	// Description for the session (optional)

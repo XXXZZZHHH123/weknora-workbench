@@ -106,3 +106,12 @@ func TestCreateSessionWithoutProjectDirLeavesItEmpty(t *testing.T) {
 	require.NotNil(t, h.created)
 	require.Empty(t, h.created.HostWorkspaceDir)
 }
+
+func TestCreateSessionPersistsExplicitMemoryPolicy(t *testing.T) {
+	for _, body := range []string{`{"memory_disabled":true}`, `{}`} {
+		h := handlerWithApprovedDirs()
+		w := postSession(t, h, body)
+		require.Equal(t, http.StatusCreated, w.Code)
+		require.Equal(t, body != `{}`, h.created.MemoryDisabled)
+	}
+}

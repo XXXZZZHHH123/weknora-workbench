@@ -36,6 +36,17 @@ def test_publication_uses_saved_sheets_not_scanner_status_and_does_not_mutate(tm
     assert doc == original
 
 
+def test_bound_legacy_manifest_without_quality_metadata_keeps_publication_but_reports_quality_unknown(tmp_path):
+    manager, doc, _, _ = publication_fixture(tmp_path)
+
+    view = manager.publication_view(doc)
+
+    states = {s['name']: s for s in view['sheets']}
+    assert states['auto_ready']['published_in_dataset'] is True
+    assert states['auto_ready']['published_dataset_id'] == doc['dataset_id']
+    assert states['auto_ready']['published_quality'] is None
+
+
 @pytest.mark.parametrize('key,value', [('dataset_id', 'd' * 24), ('sha256', 'e' * 64),
                                       ('source_file', 'another.xlsx'), ('import_id', 'f' * 24)])
 def test_snapshot_binding_mismatch_cannot_claim_queryability(tmp_path, key, value):

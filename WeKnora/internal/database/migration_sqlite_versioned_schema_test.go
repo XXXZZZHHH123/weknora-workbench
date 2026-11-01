@@ -77,6 +77,7 @@ var versionedSQLiteColumns = map[string][]string{
 	"automations":                 {"model_id"},
 	"automation_runs":             {"execution_duration_ms"},
 	"sessions": {
+		"memory_disabled", // 000065
 		"kind",
 		"parent_session_id", "forked_from_message_id", "fork_bootstrap", // 000097
 		"sandbox_config_tenant_id", // 000027
@@ -102,7 +103,7 @@ var versionedSQLiteColumns = map[string][]string{
 	}, // 000028
 }
 
-const expectedSQLiteMigrationVersion = 64
+const expectedSQLiteMigrationVersion = 65
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)

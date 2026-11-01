@@ -14,6 +14,7 @@ export interface QuestionOrigin {
 // the first one goes out, cannot attach them to the wrong question.
 export interface SendMessageOptions {
   questionOrigin?: QuestionOrigin
+  memoryDisabled?: boolean
 }
 
 // Agent-authored starters have no knowledge source and yield undefined.

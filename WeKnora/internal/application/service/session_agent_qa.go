@@ -339,6 +339,7 @@ func (s *sessionService) AgentQA(
 	// actual user question/model and authorized complete conversation.
 	memoryRequest := s.agentMemoryRecallRequest(ctx, req, effectiveModelID, agentConfig.MultiTurnEnabled, llmContext)
 	ctx = interfaces.WithMemoryRecallRequest(ctx, memoryRequest)
+	ctx = types.ApplySessionMemoryPreference(ctx, req.Session)
 	memoryCtx := types.ApplyAgentMemoryPreference(ctx, agentConfig.MemoryEnabled)
 	recall := interfaces.MemoryRecall{}
 	if s.memoryService != nil {

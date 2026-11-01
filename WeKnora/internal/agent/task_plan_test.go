@@ -83,6 +83,27 @@ func TestTaskPlanProjectsOnlyRealToolsAndKeepsExecutionAuthorization(t *testing.
 	require.False(t, agenttools.CanRunConcurrently(expandTaskToolsName), "plan expansion is an execution barrier")
 }
 
+func TestTaskPlanMetricsMeasureTheCapturedFakeModelBoundaryWithoutContent(t *testing.T) {
+	model := &taskPlannerChat{plan: &types.ChatResponse{Content: validTaskPlan(t, "structured_list_series"), FinishReason: "stop"}}
+	engine, state, messages := taskPlanFixture(t, model)
+	engine.planWorkbenchTask(t.Context(), state, "Current complete request.", messages, "session")
+	require.Len(t, model.requests, 1)
+	require.Len(t, model.options, 1)
+
+	metrics := measureModelContext(model.requests[0], model.options[0], nil)
+	encodedMessages, err := json.Marshal(model.requests[0])
+	require.NoError(t, err)
+	encodedTools, err := json.Marshal(model.options[0].Tools)
+	require.NoError(t, err)
+	metricsJSON, err := json.Marshal(metrics)
+	require.NoError(t, err)
+	require.Equal(t, len(encodedMessages), metrics.MessageJSONBytes)
+	require.Equal(t, len(encodedTools), metrics.ToolSchemaJSONBytes)
+	require.Equal(t, len(encodedMessages)+len(encodedTools), metrics.MessagesAndToolsJSONBytes)
+	require.NotContains(t, string(metricsJSON), "Current complete request.")
+	require.NotContains(t, string(metricsJSON), "Actual runtime rules.")
+}
+
 func TestTaskPlanRetainsQuestionOriginPinnedSourcesAndBoundedDiscovery(t *testing.T) {
 	model := &taskPlannerChat{plan: &types.ChatResponse{Content: validTaskPlan(t, "read_document"), FinishReason: "stop"}}
 	engine, state, messages := taskPlanFixture(t, model)

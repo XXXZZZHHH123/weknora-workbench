@@ -65,6 +65,31 @@ func TestStructuredKnowledgeScopeSignsSharedOwnerAndStripsSelector(t *testing.T)
 	require.Equal(t, int64(2), calls.Load())
 }
 
+func TestDescribeToolsUsesUnscopedIdentityWithCurrentAuthorization(t *testing.T) {
+	const authorization = "Bearer schema-discovery-test-token"
+	for _, targets := range []types.SearchTargets{
+		{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-only", TenantID: 29}},
+		{
+			{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-first", TenantID: 7},
+			{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-second", TenantID: 29},
+		},
+	} {
+		base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+			identity := decodeStructuredScopeIdentity(t, r)
+			require.Len(t, identity, 5, "schema discovery must not bind a knowledge base or JWT hash")
+			require.NotContains(t, identity, "knowledge_base_id")
+			require.NotContains(t, identity, "authorization_sha256")
+			require.Equal(t, authorization, r.Header.Get("Authorization"))
+			_, _ = io.WriteString(w, `{"tools":[]}`)
+		}).WithSearchTargets(targets)
+		ctx := types.WithResearchAuthorization(structuredScopeContext(), authorization)
+		result, err := base.Execute(ctx, json.RawMessage(`{"operation":"describe_tools","arguments":{"operations":["list_series"]}}`))
+		require.NoError(t, err)
+		require.True(t, result.Success)
+		require.NotContains(t, result.Data, "source_context", "schema discovery is not source evidence")
+	}
+}
+
 func TestStructuredKnowledgeScopeMultiRequiresRealModelSelection(t *testing.T) {
 	var calls atomic.Int64
 	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +184,10 @@ func TestStructuredKnowledgeScopeNamedOperationKeepsServerContract(t *testing.T)
 	result, err := tool.Execute(structuredScopeContext(), json.RawMessage(`{"series_id":"selected-series","operation":"sum","knowledge_base_id":"kb-second"}`))
 	require.NoError(t, err)
 	require.True(t, result.Success)
+	require.Equal(t, map[string]any{
+		"knowledge_base_id":        "kb-second",
+		"knowledge_base_tenant_id": uint64(29),
+	}, result.Data["source_context"])
 	_, err = tool.Execute(structuredScopeContext(), json.RawMessage(`{"series_id":"selected-series","knowledge_base_id":"kb-outside"}`))
 	require.ErrorContains(t, err, "授权范围")
 }
@@ -224,6 +253,41 @@ func TestNativeStructuredReadBindsCurrentAuthorization(t *testing.T) {
 	result, err := base.Execute(ctx, json.RawMessage(`{"operation":"list_datasets","arguments":{}}`))
 	require.NoError(t, err)
 	require.True(t, result.Success)
+	require.Equal(t, map[string]any{
+		"knowledge_base_id":        "library",
+		"knowledge_base_tenant_id": uint64(7),
+	}, result.Data["source_context"])
+	require.NotContains(t, result.Output, "source_context", "verified context belongs in Data for UI use")
+}
+
+func TestStructuredSourceContextSurvivesCacheAndTypedFacade(t *testing.T) {
+	var calls atomic.Int64
+	base := nativeReadTestTool(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, `{"status":"ok","aggregate":42}`)
+	}).WithSearchTargets(types.SearchTargets{{
+		Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "library", TenantID: 7,
+	}})
+	request := json.RawMessage(`{"operation":"query_series","arguments":{"dataset_id":"aaaaaaaaaaaaaaaaaaaaaaaa","series_id":"A","operation":"sum"}}`)
+	ctx := types.WithResearchAuthorization(structuredScopeContext(), "Bearer scoped-cache-test-token")
+
+	first, err := base.Execute(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"knowledge_base_id":        "library",
+		"knowledge_base_tenant_id": uint64(7),
+	}, first.Data["source_context"])
+
+	typed := operationToolByName(t, NewStructuredReadOperationTools(base, describedStructuredReadTools(t)), "structured_query_series")
+	hit, err := typed.Execute(ctx, json.RawMessage(`{"dataset_id":"aaaaaaaaaaaaaaaaaaaaaaaa","series_id":"A","operation":"sum"}`))
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"knowledge_base_id":        "library",
+		"knowledge_base_tenant_id": float64(7),
+	}, hit.Data["source_context"], "typed tools must preserve trusted source scope on cache hits")
+	require.Equal(t, true, hit.Data["_execution_cache"].(map[string]any)["cache_hit"])
+	require.NotContains(t, hit.Output, "source_context", "scope metadata must not enter model-visible output")
+	require.Equal(t, int64(1), calls.Load())
 }
 
 func TestStructuredKnowledgeScopeRestrictedAPIKeyAllowsVerifiedLibraryAndRejectsCachedOutsideScope(t *testing.T) {

@@ -339,6 +339,13 @@ func TestCloneContextPreservesTheAgentMemoryOptOut(t *testing.T) {
 	}
 }
 
+func TestCloneContextPreservesTheSessionMemoryOptOut(t *testing.T) {
+	ctx := CloneContext(types.ApplySessionMemoryPreference(context.Background(), &types.Session{MemoryDisabled: true}))
+	if types.MemoryAllowedForAgent(ctx) || !types.SessionMemoryDisabled(ctx) {
+		t.Fatal("session memory opt-out was lost while detaching")
+	}
+}
+
 // Document ingestion detaches mid-flight: knowledge_create hands processChunks
 // to a goroutine on a cloned context, and processChunks vectorises every chunk.
 // If the background mark does not survive, that work stops being visible to the

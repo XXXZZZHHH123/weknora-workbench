@@ -228,6 +228,7 @@ func (h *Handler) CreateSession(c *gin.Context) {
 
 	// Create session object with base properties
 	createdSession := &types.Session{
+		MemoryDisabled:      request.MemoryDisabled,
 		Kind:                request.Kind,
 		TenantID:            tenantID.(uint64),
 		Title:               request.Title,

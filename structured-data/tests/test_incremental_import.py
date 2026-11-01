@@ -65,6 +65,27 @@ def test_confirmation_only_parses_changed_sheet_and_preserves_all_sources(tmp_pa
     assert len(manager.store.list_datasets()) == 2
 
 
+def test_legacy_native_binding_changes_display_name_without_renaming_storage(tmp_path):
+    source = source_file(tmp_path, 'a' * 32 + '.xlsx')
+    root = tmp_path / 'knowledge-bases' / 'kb-a'
+    manager = ImportManager(root)
+    imported = manager.ingest(source)
+    before = manager.get(imported['import_id'])
+    stored_path = manager.source_path(before)
+    binding = {'source_knowledge_id': 'source-a', 'file_name': 'audit-values.xlsx',
+               'file_size': source.stat().st_size,
+               'file_hash': hashlib.md5(source.read_bytes()).hexdigest(),
+               'knowledge_base_id': 'kb-a', 'tenant_id': 10000}
+
+    manager.bind_native_source(imported['import_id'], binding)
+    doc = manager.get(imported['import_id'])
+    assert doc['source_file'] == source.name
+    assert manager.display_source_file(doc) == 'audit-values.xlsx'
+    assert manager.source_path(doc) == stored_path and stored_path.is_file()
+    assert manager.presentation_view(doc)['source_file'] == 'audit-values.xlsx'
+    assert manager.store.manifest(imported['dataset_id'])['source_file'] == 'audit-values.xlsx'
+
+
 def test_changed_mapping_replaces_rows_instead_of_appending_and_failure_is_atomic(tmp_path, monkeypatch):
     from structured_data import generic_parser
     manager = ImportManager(tmp_path / 'data')

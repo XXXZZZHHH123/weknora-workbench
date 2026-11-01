@@ -43,6 +43,7 @@ type Service struct {
 	repo         interfaces.MemoryRepository
 	tenantRepo   interfaces.TenantRepository
 	messageRepo  interfaces.MessageRepository
+	sessionRepo  interfaces.SessionRepository
 	modelService interfaces.ModelService
 	enqueuer     interfaces.TaskEnqueuer
 	config       *config.Config
@@ -56,11 +57,13 @@ func NewMemoryService(
 	modelService interfaces.ModelService,
 	enqueuer interfaces.TaskEnqueuer,
 	cfg *config.Config,
+	sessionRepo interfaces.SessionRepository,
 ) interfaces.MemoryService {
 	return &Service{
 		repo:         repo,
 		tenantRepo:   tenantRepo,
 		messageRepo:  messageRepo,
+		sessionRepo:  sessionRepo,
 		modelService: modelService,
 		enqueuer:     enqueuer,
 		config:       cfg,
@@ -94,6 +97,9 @@ func (s *Service) enabledScope(ctx context.Context) (interfaces.MemoryScope, *ty
 	if !types.MemoryAllowedForAgent(ctx) {
 		return scope, cfg, false
 	}
+	if sessionID, _ := types.SessionIDFromContext(ctx); !s.sessionAllowsMemory(ctx, sessionID) {
+		return scope, cfg, false
+	}
 	subject, err := s.repo.GetSubject(ctx, scope)
 	if err != nil {
 		logger.Warnf(ctx, "memory: load subject failed: %v", err)
@@ -107,6 +113,26 @@ func (s *Service) enabledScope(ctx context.Context) (interfaces.MemoryScope, *ty
 	return scope, cfg, true
 }
 
+type extractionPolicyContextKey struct{}
+
+// sessionAllowsMemory rechecks the durable policy. Interactive reads retain
+// owner checks. The internal extraction worker has an already-scoped durable
+// queue but no HTTP principal; its tenant-scoped lookup adds a policy check
+// before reading transcripts already authorized by that trusted queue.
+func (s *Service) sessionAllowsMemory(ctx context.Context, sessionID string) bool {
+	if sessionID == "" || s.sessionRepo == nil {
+		return true
+	}
+	tenantID := types.CallerFromContext(ctx).TenantID
+	owner := types.SessionOwnerIDFromContext(ctx)
+	worker, _ := ctx.Value(extractionPolicyContextKey{}).(bool)
+	if tenantID == 0 || (owner == "" && !worker) {
+		return false
+	}
+	session, err := s.sessionRepo.Get(ctx, tenantID, owner, sessionID)
+	return err == nil && session != nil && !session.MemoryDisabled
+}
+
 // Recall is a compatibility wrapper. Without the current turn's model and
 // conversation it cannot authorize relevance, so it never returns a resident
 // block or falls back to cached subject text.
@@ -117,6 +143,9 @@ func (s *Service) Recall(ctx context.Context, query string) interfaces.MemoryRec
 // RecallForTurn treats every memory as a candidate, including explicit notes
 // and stable traits. Only the current chat model may decide applicability.
 func (s *Service) RecallForTurn(ctx context.Context, request interfaces.MemoryRecallRequest) interfaces.MemoryRecall {
+	if !s.sessionAllowsMemory(ctx, request.SessionID) {
+		return interfaces.MemoryRecall{}
+	}
 	recallCtx, span := langfuse.GetManager().StartSpan(ctx, langfuse.SpanOptions{Name: "memory.recall", Input: map[string]interface{}{"query": langfuse.TruncateRunes(request.Query, recallQueryPreviewRunes)}})
 	finish := func(reason string, items []*types.MemoryItem) {
 		span.Finish(langfuse.SummarizeMemoryRecallOutput(map[string]interface{}{"reason": reason, "used_count": len(items), "ranking_mode": "model_relevance"}, items), nil, nil)
@@ -188,6 +217,9 @@ func (s *Service) touchAsync(ctx context.Context, scope interfaces.MemoryScope, 
 // Remember stores one statement, resolving any contradiction with what is
 // already known about the same topic.
 func (s *Service) Remember(ctx context.Context, item types.MemoryItem) (*types.MemoryItem, error) {
+	if !s.sessionAllowsMemory(ctx, item.SourceSessionID) {
+		return nil, ErrMemoryDisabled
+	}
 	scope, cfg, ok := s.enabledScope(ctx)
 	if !ok {
 		return nil, ErrMemoryDisabled
@@ -209,6 +241,9 @@ func (s *Service) write(
 }
 
 func (s *Service) writeReplacing(ctx context.Context, scope interfaces.MemoryScope, cfg *types.MemoryConfig, item types.MemoryItem, targetID string) (*types.MemoryItem, error) {
+	if !s.sessionAllowsMemory(ctx, item.SourceSessionID) {
+		return nil, ErrMemoryDisabled
+	}
 	content := types.SanitizeMemoryContent(item.Content)
 	if content == "" {
 		return nil, errors.New("memory: empty content")
