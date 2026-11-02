@@ -28,6 +28,7 @@ const (
 // Hashes are assigned by the runtime, not supplied by a model.
 type candidateDecision struct {
 	Disposition     candidateDisposition
+	Candidate       string
 	CandidateHash   string
 	TaskHash        string
 	EvidenceHash    string
@@ -37,14 +38,15 @@ type candidateDecision struct {
 }
 
 type turnReviewState struct {
-	Repairs       int
-	Checks        int
-	Last          candidateDecision
-	ReadEvidence  *reviewEvidenceHandoff
-	ClosedStreams map[string]bool
-	Committed     bool
-	Query         string
-	Conversation  []chat.Message
+	AdditionsCache map[string]string
+	Repairs        int
+	Checks         int
+	Last           candidateDecision
+	ReadEvidence   *reviewEvidenceHandoff
+	ClosedStreams  map[string]bool
+	Committed      bool
+	Query          string
+	Conversation   []chat.Message
 	// Latest numerically grounded semantic fallback, or a source-reviewed
 	// numeric-warning delivery. The latter retains the exact checked envelope
 	// separately from its deterministic decoded presentation.
@@ -89,6 +91,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
 	decision = candidateDecision{Disposition: candidateAccepted,
+		Candidate:     candidate,
 		CandidateHash: candidateTextDigest(candidate),
 		TaskHash: reviewDigest(struct {
 			Query        string
@@ -119,6 +122,8 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		decision.Disposition = candidateRevise
 		return
 	}
+	candidate = e.selectCandidateAdditions(ctx, query, candidate, state, conversation)
+	decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, candidate) {
 		evidence := answerNumericEvidence(candidate, state.RoundSteps, conversation)
 		decision.Unsupported = ungroundedStructuredNumbers(candidate, evidence, state.RoundSteps)

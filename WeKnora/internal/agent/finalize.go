@@ -142,6 +142,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 				e.turnReview.NumericWarningAllowed = true
 			}
 			decision := e.checkCandidate(ctx, query, fullAnswer, llmResult.ReasoningContent, state, conversation, true)
+			fullAnswer = decision.Candidate
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

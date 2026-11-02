@@ -726,12 +726,11 @@ class PDFTableStore:
                     item['columns'] = item['columns'][:32]
                     item['fragments'] = item['fragments'][:16]
                     item['directory_metadata_truncated'] = item['column_count'] > 32 or item['fragment_count'] > 16
-                    for fragment in item['fragments']:
-                        fragment.pop('bbox', None)
-                        notes = fragment.get('footnotes', [])
-                        fragment['footnotes'] = [str(note)[:256] for note in notes[:2]]
-                        if len(notes) > 2 or any(len(str(note)) > 256 for note in notes):
-                            item['directory_metadata_truncated'] = True
+                    # Candidates expose navigation, not every table's scope
+                    # notes. Full fragment evidence stays in the immutable
+                    # record and is returned by the actual read operation.
+                    item['fragments'] = [{key: fragment[key] for key in ('id', 'page', 'caption')
+                                          if key in fragment} for fragment in item['fragments']]
                     # Source-column mappings are available in read_pdf_table;
                     # repeating them in every catalog entry obscures identities.
                     for column in item['columns']:

@@ -838,3 +838,38 @@ def test_pdf_tool_contract_distinguishes_mapping_history_and_current_review(pdf_
     assert before == after
     assert inspected['plan_sha256'] == before['plan_sha256']
     assert 'pdf_evidence_contract' not in before  # no storage mutation/hash migration
+
+
+def test_pdf_candidate_directories_keep_notes_for_actual_read_only(pdf_service):
+    client, _, _, root, _ = pdf_service
+    draft = imported(pdf_service)
+    mapping = plan(draft)
+    mapping['columns'][1]['unit'] = 'units'
+    response = client.post('/api/pdf/drafts/' + draft['draft_id'] + '/publish',
+        json={'plan': mapping, 'reviewed': True}, headers=headers())
+    assert response.status_code == 200, response.text
+    table_id = response.json()['table_id']
+    before = {path: path.read_bytes() for path in root.rglob('tables/pdft_*.json')}
+    management = client.get('/api/pdf/tables', headers=headers()).json()['tables'][0]
+    assert management['fragments'][0]['footnotes'] == ['Source note']
+    directories = [read(pdf_service, 'list_datasets', {}).json()['pdf_tables'],
+                   read(pdf_service, 'list_pdf_tables', {'limit': 1}).json()['tables']]
+    for tables in directories:
+        assert len(tables) == 1 and tables[0]['table_id'] == table_id
+        assert tables[0]['fragments'] == [{key: fragment[key] for key in ('id', 'page', 'caption')}
+                                          for fragment in management['fragments']]
+        assert tables[0]['source'] == management['source']
+        assert tables[0]['columns'][1]['unit'] == 'units'
+        assert tables[0]['coverage']['source_document_completeness'] == 'unknown'
+        assert 'Source note' not in json.dumps(tables)
+    inspected = read(pdf_service, 'read_pdf_table', {'table_id': table_id}).json()
+    assert inspected['fragments'] == management['fragments']
+    assert inspected['fragments'][0]['footnotes'] == ['Source note']
+    assert inspected['plan_sha256'] == management['plan_sha256']
+    assert read(pdf_service, 'list_pdf_tables', {}, kb='other-library').json()['tables'] == []
+    assert 'pdf_tables' not in read(pdf_service, 'list_datasets', {}, kb='other-library').json()
+    denied = read(pdf_service, 'read_pdf_table', {'table_id': table_id}, kb='other-library')
+    assert denied.status_code == 400 or denied.json().get('status') == 'error'
+    assert client.get('/api/pdf/tables').status_code == 401
+    assert client.get('/api/pdf/tables', headers=headers()).json()['tables'][0] == management
+    assert {path: path.read_bytes() for path in root.rglob('tables/pdft_*.json')} == before

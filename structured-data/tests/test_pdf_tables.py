@@ -699,3 +699,37 @@ def test_discovery_directory_pagination_keeps_all_published_identities(tmp_path)
     for args in ({'offset': -1}, {'limit': 0}, {'limit': 33}, {'offset': True}):
         with pytest.raises(ValueError, match='offset/limit'):
             store.list_tables(discovery=True, **args)
+
+
+def test_discovery_navigation_omits_unselected_scope_notes_without_mutating_sources(tmp_path):
+    raw = bundle([['Item', 'Amount'], ['A', '17']], [['Item', 'Amount'], ['B', '23']])
+    for index, fragment in enumerate(raw['fragments']):
+        fragment['caption'] = f'Independent source table {index}'
+        fragment['footnotes'] = [f'Scope note belonging only to table {index}', 'Full original source note ' * 30]
+    store, draft, plan = setup(tmp_path, raw)
+    for fragment in raw['fragments']:
+        fragment_id = fragment['id']
+        selected = dict(plan, fragment_ids=[fragment_id], header_rows={fragment_id: plan['header_rows'][fragment_id]},
+                        columns=[dict(column, unit='units', source_columns={fragment_id: index})
+                                 for index, column in enumerate(plan['columns'])])
+        publish(store, draft, selected)
+    before = {path: path.read_bytes() for path in store.root.rglob('*.json')}
+    management = store.list_tables()['tables']
+    originals = {table['table_id']: store.read_table(table['table_id']) for table in management}
+    pages = [store.list_tables(discovery=True, offset=offset, limit=1)['tables'][0] for offset in range(2)]
+    assert len({table['table_id'] for table in pages}) == 2
+    for table in pages:
+        original = originals[table['table_id']]
+        assert table['source'] == original['source']
+        assert table['plan_sha256'] == original['plan_sha256']
+        assert table['record_sha256'] == original['record_sha256']
+        assert table['fragments'] == [{key: fragment[key] for key in ('id', 'page', 'caption')}
+                                      for fragment in original['fragments']]
+        assert 'Scope note belonging' not in json.dumps(table)
+        assert table['columns'][1]['unit'] == 'units'
+        assert table['sample_rows'][0]['raw_values']['col1'] in ('17', '23')
+        assert table['coverage']['source_document_completeness'] == 'unknown'
+        assert store.read_table(table['table_id']) == original
+        assert original['fragments'][0]['footnotes']
+    assert {path: path.read_bytes() for path in store.root.rglob('*.json')} == before
+    assert store.list_tables()['tables'] == management

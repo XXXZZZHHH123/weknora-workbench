@@ -575,6 +575,7 @@ func (s *sessionService) buildAgentConfig(
 	agentConfig := &types.AgentConfig{
 		WorkbenchDefault:              customAgent.WorkbenchDefault,
 		TaskPlanningEnabled:           customAgent.WorkbenchDefault,
+		CandidateAdditionsEnabled:     customAgent.WorkbenchDefault,
 		ThinkingBudgetTokens:          customAgent.Config.ThinkingBudgetTokens,
 		ImageGenerationModelID:        customAgent.Config.ImageGenerationModelID,
 		MCPToolExposureMode:           customAgent.Config.MCPToolExposureMode,

@@ -748,6 +748,9 @@ func (e *AgentEngine) finishStalledTurnWithGuards(
 	if !(len(runtimeFallback) > 0 && runtimeFallback[0]) && strings.TrimSpace(answer) != "" {
 		e.turnReview.NumericWarningAllowed = true // This terminal path has no repair round left.
 		decision := e.checkCandidate(ctx, query, answer, response.ReasoningContent, state, conversation, utf8.RuneCountInString(strings.TrimSpace(answer)) <= 4)
+		if decision.Candidate != answer {
+			answer, answerStreamed = decision.Candidate, false
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -1334,6 +1337,10 @@ func (e *AgentEngine) runReActIteration(
 	if len(response.ToolCalls) == 0 && (!pendingLegacySourceRewrite || suspectAnswerFragment(response.Content, response.ReasoningContent)) && (strings.TrimSpace(response.Content) != "" || strings.TrimSpace(response.ReasoningContent) != "") && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
 		reviewConversation, _ := restoreStructuredReviewConversation(*messagesPtr, guards)
 		decision := e.checkCandidate(ctx, query, response.Content, response.ReasoningContent, state, reviewConversation, false)
+		if decision.Candidate != response.Content {
+			response.Content = decision.Candidate
+			response.AnswerStreamed, response.AnswerEventID = false, ""
+		}
 		if ctx.Err() != nil {
 			state.RoundSteps = append(state.RoundSteps, step)
 			return iterOutcomeBreak, nil
