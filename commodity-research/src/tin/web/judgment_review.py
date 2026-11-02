@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import json
 import secrets
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +18,7 @@ from tin.judgments.analysis import AnalysisError, assess_draft, unique_condition
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.service import latest, latest_workbench_payload
 from tin.models import AuditLog, SourceMapping
+from tin.schemas.judgment import binding_ids
 from tin.ownership import verified_actor
 from tin.web import judgment_generation as generation
 
@@ -43,12 +44,15 @@ class CaliberUpdate(BaseModel):
     unit: str | None = Field(default=None, max_length=80)
     basis: str | None = Field(default=None, max_length=1000)
     scope_note: str = Field(default='', max_length=1000)
+    frequency: Literal['日', '周', '月', '季', '年'] | None = None
 
 
 class UpdateRequest(ReviewRequest):
     item_id: str = Field(min_length=1, max_length=80)
     action: Literal['confirm', 'keep_text', 'exclude']
     series_id: str | None = Field(default=None, max_length=256)
+    related_series_ids: list[Annotated[str, Field(strict=True, min_length=1, max_length=256)]] = Field(
+        default_factory=list, max_length=7)
     source_quote: str | None = Field(default=None, max_length=4000)
     remember: bool = False
     caliber: CaliberUpdate | None = None
@@ -68,7 +72,7 @@ def binding(field):
     if field is None:
         return None
     return {'series_id': field['id'], 'name': field.get('name') or '',
-        **{key: field.get(key) for key in ('unit', 'source_file', 'sheet')}}
+        **{key: field.get(key) for key in ('unit', 'frequency', 'source_file', 'sheet')}}
 
 
 def field_catalog(metadata):
@@ -89,6 +93,14 @@ def describe(value):
 
 def requires_binding(item):
     return item['kind'] in ('thresholds', 'falsifiers', 'whitelist') or item['path'][0] == 'marginal_focus'
+
+
+def has_binding(item):
+    return bool(item.get('series_id')) if item['kind'] in ('thresholds', 'falsifiers', 'whitelist') else bool(binding_ids(item))
+
+
+def ai_binding_ids(item):
+    return ([item['ai_series_id']] if item.get('ai_series_id') else []) + item.get('ai_related_series_ids', [])
 
 
 def attention_fields(issues):
@@ -119,7 +131,8 @@ def attention_message(fields):
 def reject_fields(fields, issues=()):
     message = next((issue['message'] for issue in issues if isinstance(issue.get('message'), str)
                     and issue['message'].strip()), attention_message(fields))
-    raise HTTPException(422, {'message': message, 'attention_fields': fields})
+    raise HTTPException(422, {'message': message, 'attention_fields': fields,
+        'frequency_required': any(issue.get('code') in {'period_frequency', 'moving_average_frequency'} for issue in issues)})
 
 
 def source_unit_for_item(preview, item):
@@ -193,6 +206,8 @@ def initialize_review(preview, assessment, catalog):
             for key, child in value.items():
                 if key == 'series_id' and child is not None:
                     wanted.add(child)
+                elif key == 'related_series_ids':
+                    wanted.update(child)
                 refs(child)
         elif isinstance(value, list):
             for child in value:
@@ -223,6 +238,8 @@ def initialize_review(preview, assessment, catalog):
         item = {'id': 'item-' + digest(path)[:24], 'section': section, 'path': path,
             'value': deepcopy(value), 'title': title, 'kind': kind, 'description': describe(value),
             'status': 'pending', 'series_id': sid, 'ai_series_id': sid, 'source_quote': source_quote,
+            'related_series_ids': list(value.get('related_series_ids', [])) if isinstance(value, dict) else [],
+            'ai_related_series_ids': list(value.get('related_series_ids', [])) if isinstance(value, dict) else [],
             'warnings': list(dict.fromkeys(warnings or [])), 'remembered': False,
             'binding_explicit': False, 'requires_explicit_binding': False}
         review['items'].append(item)
@@ -292,8 +309,7 @@ def initialize_review(preview, assessment, catalog):
         related = [issue for issue in assessment.issues if issue.get('path') == path
             or issue.get('path', '').startswith(path + '/')
             or item['kind'] in valid_rules and issue.get('rule_id') == item['value']['id']
-            or item['series_id'] and issue.get('rule_id') is None
-                and issue.get('path') == '/binding_units/' + item['series_id']]
+            or issue.get('rule_id') is None and any(issue.get('path') == '/binding_units/' + sid for sid in binding_ids(item))]
         item['warnings'] = list(dict.fromkeys(item['warnings'] + [issue['message'] for issue in related]))
         informational_units = {'unit_metadata_missing', 'descriptive_unit_metadata'}
         reasons = [issue['message'] for issue in related if issue.get('severity') in {'error', 'warning'}
@@ -301,19 +317,19 @@ def initialize_review(preview, assessment, catalog):
                 and issue.get('code') in informational_units and issue.get('rule_id') is None)]
         if item['kind'] == 'unresolved_binding':
             reasons.insert(0, '模型将此项列为待补充内容，可补充指标或保留文字。')
-        if requires_binding(item) and not item['series_id']:
+        if requires_binding(item) and not has_binding(item):
             reasons.append('此结构条目需要关联真实指标，当前尚未关联。')
-        if item['kind'] == 'binding' and not requires_binding(item) and not item['series_id']:
+        if item['kind'] == 'binding' and not requires_binding(item) and not has_binding(item):
             item['warnings'].append('未关联指标，可按需要选择；当前保留为描述文字。')
         if item['kind'] in valid_rules and item['value']['id'] not in valid_rules[item['kind']]:
             reasons.append('此量化候选未通过原文、数字、单位与指标校验，当前不执行。')
         item['initial_attention_reasons'] = list(dict.fromkeys(reasons))
         item['initial_attention_fields'] = attention_fields([issue for issue in related
             if issue.get('severity') == 'error'])
-        if requires_binding(item) and not item['series_id']:
+        if requires_binding(item) and not has_binding(item):
             item['initial_attention_fields'].append('binding')
         if item['kind'] == 'unresolved_binding':
-            item['initial_attention_fields'] = ['content'] + ([] if item['series_id'] else ['binding'])
+            item['initial_attention_fields'] = ['content'] + ([] if has_binding(item) else ['binding'])
         if reasons and not item['initial_attention_fields']:
             item['initial_attention_fields'] = ['condition']
         item['status'] = item['initial_status'] = 'pending' if reasons else 'ready'
@@ -371,6 +387,10 @@ def build_document(preview, catalog):
                 continue
             if status == 'confirmed':
                 rule['series_id'] = item['series_id']
+                if item.get('related_series_ids'):
+                    rule['related_series_ids'] = list(item['related_series_ids'])
+                else:
+                    rule.pop('related_series_ids', None)
                 from tin.compute.rule_caliber import unit_present
                 unit = known.get(item['series_id'], {}).get('unit')
                 if kind == 'falsifiers' and unit_present(unit):
@@ -391,6 +411,12 @@ def build_document(preview, catalog):
             value = deepcopy(item['value'])
             value['series_id'] = (None if status == 'kept_text' else item['ai_series_id']
                 if status in {'pending', 'ready'} and item['remembered'] else item['series_id'])
+            related = ([] if status == 'kept_text' else item.get('ai_related_series_ids', [])
+                if status in {'pending', 'ready'} and item['remembered'] else item.get('related_series_ids', []))
+            if related:
+                value['related_series_ids'] = list(related)
+            else:
+                value.pop('related_series_ids', None)
             set_path(root, path, value)
         elif kind == 'whitelist':
             sid = item['ai_series_id'] if status in {'pending', 'ready'} and item['remembered'] else item['series_id']
@@ -417,6 +443,8 @@ def build_document(preview, catalog):
             for key, child in value.items():
                 if key == 'series_id' and child is not None:
                     wanted.add(child)
+                elif key == 'related_series_ids':
+                    wanted.update(child)
                 refs(child)
         elif isinstance(value, list):
             for child in value:
@@ -444,7 +472,7 @@ def checked(preview, document, catalog, scope):
 
 
 def confirmation_issues(preview, item, catalog, scope):
-    if requires_binding(item) and not item['series_id']:
+    if requires_binding(item) and not has_binding(item):
         return [{'code': 'missing_binding', 'message': '请先选择当前授权目录中的指标。'}]
     dependencies = set(item['value'].get('order', [])) if item['path'] == ['priority_rule'] else set()
     # A form field must report its own failure, even when another candidate
@@ -469,6 +497,16 @@ def confirmation_issues(preview, item, catalog, scope):
             if location == focused or location.startswith(focused + '/'):
                 location = original + location[len(focused):]
             issues.append({**issue, 'path': location})
+        if (item['kind'] in {'thresholds', 'falsifiers'} and item.get('source_quote')
+                and item['source_quote'] in preview['text']):
+            from tin.judgments.analysis import rule_frequency_issues
+            field = next((field for field in catalog if field['id'] == item['series_id']), {})
+            rule = {**item['value'], 'series_id': item['series_id']}
+            if item.get('caliber_confirmation'):
+                rule['caliber_confirmation'] = item['caliber_confirmation']
+            for issue in rule_frequency_issues(item['kind'], rule, item['source_quote'], field.get('frequency')):
+                if not any(existing.get('code') == issue['code'] for existing in issues):
+                    issues.append({'code': issue['code'], 'message': issue['message'], 'path': original + '/' + issue['field']})
         return issues
     return []
 
@@ -510,13 +548,13 @@ def review_response(scope, token, preview, catalog):
             fields = []
             if item['status'] == 'pending':
                 fields = attention_fields(issues) if issues else list(item['initial_attention_fields'])
-                if item['remembered'] and item['series_id'] != item['ai_series_id']:
+                if item['remembered'] and binding_ids(item) != ai_binding_ids(item):
                     fields.append('binding')
                 fields = list(dict.fromkeys(fields))
             rule = None
             if item['kind'] in ('thresholds', 'falsifiers'):
                 value = item['value']
-                rule = {key: value[key] for key in ('operator', 'type', 'horizon', 'expression', 'side', 'consecutive_periods') if key in value}
+                rule = {key: value[key] for key in ('operator', 'type', 'horizon', 'expression', 'side', 'consecutive_periods', 'unit_confirmed') if key in value}
                 if 'value' in value:
                     rule['value_literal'] = json.dumps(value['value'], ensure_ascii=False, separators=(',', ':'))
             field = known.get(item['series_id'])
@@ -524,15 +562,19 @@ def review_response(scope, token, preview, catalog):
             caliber_choice = item.get('caliber_choice') or {}
             display_field = ({**field, 'unit': declaration['unit']} if field is not None
                 and declaration is not None and item['status'] == 'confirmed' else field)
-            from tin.compute.rule_caliber import unit_present
+            from tin.compute.rule_caliber import unit_present, frequency_present
             caliber = {'catalog_unit': field.get('unit') if field else None,
                 'model_unit': preview['review']['candidate']['binding_units'].get(item['ai_series_id']),
                 'mode': caliber_choice.get('mode'),
                 'unit': declaration['unit'] if declaration else field.get('unit') if field else None,
+                'catalog_frequency': field.get('frequency') if field else None,
+                'frequency': (declaration or {}).get('frequency') or field.get('frequency') if field else None,
                 'basis': declaration['basis'] if declaration else '',
                 'scope_note': declaration['scope_note'] if declaration else caliber_choice.get('scope_note', ''),
                 'can_adopt_catalog': bool(field and unit_present(field.get('unit'))),
                 'can_declare': bool(field and not unit_present(field.get('unit')) and item['kind'] in {'thresholds', 'falsifiers'}),
+                'can_declare_frequency': bool(field and not frequency_present(field.get('frequency')) and item['kind'] in {'thresholds', 'falsifiers'}),
+                'frequency_required': any(issue.get('code') in {'period_frequency', 'moving_average_frequency'} for issue in issues),
                 'confirmation_required': item['status'] == 'pending' and ('binding' in fields or item['requires_explicit_binding']),
                 'confirmed': item['status'] == 'confirmed' and bool(caliber_choice)}
             items.append({'id': item['id'], 'kind': item['kind'], 'title': item['title'],
@@ -546,6 +588,12 @@ def review_response(scope, token, preview, catalog):
                     and item['kind'] not in {'thresholds', 'falsifiers'} else [],
                 'binding': binding(display_field), 'caliber': caliber,
                 'ai_binding': binding(known.get(item['ai_series_id'])),
+                'bindings': [binding(known[sid]) for sid in binding_ids(item) if sid in known],
+                'ai_bindings': [binding(known[sid]) for sid in ai_binding_ids(item) if sid in known],
+                'related_bindings': [binding(known[sid]) for sid in item.get('related_series_ids', []) if sid in known],
+                'ai_related_bindings': [binding(known[sid]) for sid in item.get('ai_related_series_ids', []) if sid in known],
+                'can_add_binding': item['kind'] in ('binding', 'unresolved_binding', 'thresholds', 'falsifiers'),
+                'max_bindings': 8,
                 'requires_binding': requires_binding(item),
                 'can_bind': item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers'),
                 'can_confirm': not errors, 'can_confirm_with_binding': item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers'),
@@ -627,12 +675,14 @@ def record_decisions(scope, token, before, preview, catalog, decisions):
     with artifact_session(scope) as session:
         for item, remember in decisions:
             if remember:
-                field = known[item['series_id']]
                 key = preference_key(scope, preview, item)
                 config = {'kind': 'judgment-review-binding.v1', 'tenant_id': scope.identity.tenant_id,
                     'user_id': scope.identity.user_id, 'workbench_id': scope.workbench_id,
                     'variety': preview['variety'], 'series_id': item['series_id'],
-                    'signature': preference_signature(scope, field)}
+                    'signature': preference_signature(scope, known[item['series_id']]) if item['series_id'] else None}
+                if item.get('related_series_ids'):
+                    config['related_series_ids'] = list(item['related_series_ids'])
+                    config['related_signatures'] = {sid: preference_signature(scope, known[sid]) for sid in item['related_series_ids']}
                 row = session.get(SourceMapping, key)
                 if row is None:
                     session.add(SourceMapping(id=key, config=config, version=1,
@@ -646,6 +696,8 @@ def record_decisions(scope, token, before, preview, catalog, decisions):
                 'revision': preview['review']['revision'], 'item_id': item['id'],
                 'action': item['status'], 'series_id': item['series_id'], 'remember': remember,
                 'source_quote': item['source_quote'], 'source_quote_sha256': digest(item['source_quote'])}
+            if item.get('related_series_ids'):
+                detail['related_series_ids'] = list(item['related_series_ids'])
             if item.get('caliber_choice'):
                 detail['caliber'] = deepcopy(item['caliber_choice'])
             if item.get('caliber_confirmation'):
@@ -706,6 +758,16 @@ async def update_review(request: Request):
             raise HTTPException(404, '待确认条目不存在，请刷新预览')
         can_bind = item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers')
         known = {field['id']: field for field in state['catalog']}
+        if 'related_series_ids' in body.model_fields_set:
+            if item['kind'] not in ('binding', 'unresolved_binding', 'thresholds', 'falsifiers'):
+                reject_fields(['binding'], [{'message': '此条目不支持附加指标。'}])
+            if any(sid not in known for sid in body.related_series_ids):
+                reject_fields(['binding'], [{'message': '请为附加绑定选择当前授权目录中的指标。'}])
+        proposed_related = body.related_series_ids if 'related_series_ids' in body.model_fields_set else item.get('related_series_ids', [])
+        proposed_primary = body.series_id if 'series_id' in body.model_fields_set else item['series_id']
+        proposed = ([proposed_primary] if proposed_primary else []) + proposed_related
+        if len(proposed) != len(set(proposed)):
+            reject_fields(['binding'], [{'message': '同一条目不能重复绑定相同指标。'}])
         if 'series_id' in body.model_fields_set:
             if not can_bind or body.series_id is not None and body.series_id not in known:
                 reject_fields(['binding'])
@@ -719,12 +781,25 @@ async def update_review(request: Request):
             item['series_id'] = body.series_id
             item['remembered'] = False
             item['binding_explicit'] = body.series_id is not None
+        if 'related_series_ids' in body.model_fields_set:
+            item['related_series_ids'] = list(body.related_series_ids)
+            item['remembered'] = False
         if body.caliber is not None:
-            from tin.compute.rule_caliber import unit_present
+            from tin.compute.rule_caliber import unit_present, frequency_present, frequency_kind
             if body.action != 'confirm' or not can_bind or item['series_id'] not in known:
                 reject_fields(['binding'], [{'message': '请先选择真实指标，再确认此绑定的来源口径。'}])
             field = known[item['series_id']]
             value = body.caliber
+            old_declaration = item.get('caliber_confirmation') or {}
+            frequency = value.frequency if 'frequency' in value.model_fields_set else old_declaration.get('frequency')
+            basis = value.basis.strip() if value.basis else old_declaration.get('basis', '')
+            if frequency is not None:
+                if item['kind'] not in {'thresholds', 'falsifiers'}:
+                    reject_fields(['binding'], [{'message': '人工统计频率仅用于本条量化规则。'}])
+                if frequency_present(field.get('frequency')) and frequency_kind(field['frequency']) != frequency_kind(frequency):
+                    reject_fields(['binding'], [{'message': '不能用人工确认覆盖来源已有的不同统计频率。'}])
+                if not frequency_present(field.get('frequency')) and not basis:
+                    reject_fields(['binding'], [{'message': '请填写本条统计频率的人工核对依据。'}])
             if value.mode == 'catalog':
                 if not unit_present(field.get('unit')):
                     reject_fields(['binding'], [{'message': '来源尚未登记单位，请填写仅适用于此规则的人工口径及依据。'}])
@@ -734,6 +809,13 @@ async def update_review(request: Request):
                 item['caliber_choice'] = {'mode': 'catalog', 'unit': field['unit'], 'scope_note': value.scope_note,
                     'confirmed_by': scope.identity.user_id, 'confirmed_at': datetime.now(timezone.utc).isoformat(),
                     'catalog_version': preview['fact_version']}
+                if frequency is not None and not frequency_present(field.get('frequency')):
+                    declaration = {'series_id': item['series_id'], 'unit': field['unit'],
+                        'basis': basis, 'frequency': frequency, 'scope_note': value.scope_note,
+                        'confirmed_by': scope.identity.user_id, 'confirmed_at': datetime.now(timezone.utc).isoformat(),
+                        'catalog_version': preview['fact_version']}
+                    item['caliber_confirmation'] = declaration
+                    item['caliber_choice'].update(declaration)
                 if item['kind'] == 'falsifiers':
                     item['value']['unit_confirmed'] = field['unit']
             else:
@@ -745,6 +827,8 @@ async def update_review(request: Request):
                     'basis': value.basis.strip(), 'scope_note': value.scope_note,
                     'confirmed_by': scope.identity.user_id, 'confirmed_at': datetime.now(timezone.utc).isoformat(),
                     'catalog_version': preview['fact_version']}
+                if frequency is not None:
+                    declaration['frequency'] = frequency
                 item['caliber_confirmation'] = declaration
                 item['caliber_choice'] = {'mode': 'declared', **declaration}
             item['binding_explicit'] = True
@@ -752,8 +836,14 @@ async def update_review(request: Request):
             if not body.source_quote.strip() or body.source_quote not in preview['text']:
                 reject_fields(['source_quote'])
             item['source_quote'] = body.source_quote
-        if body.remember and (body.action != 'confirm' or not can_bind or not item['series_id']):
+        if body.remember and (body.action != 'confirm' or not can_bind or not binding_ids(item)):
             raise HTTPException(422, '只有明确确认绑定指标时才可勾选记住')
+        if body.action in {'keep_text', 'exclude'}:
+            item['series_id'] = None
+            item['related_series_ids'] = []
+            item['remembered'] = False
+            item.pop('caliber_confirmation', None)
+            item.pop('caliber_choice', None)
         item['status'] = {'confirm': 'confirmed', 'keep_text': 'kept_text', 'exclude': 'excluded'}[body.action]
         item['origin'] = 'user'
         if body.action == 'confirm':
@@ -802,16 +892,25 @@ def apply_preferences(scope, preview, catalog):
         for row in rows:
             item, config = keys[row.id], row.config or {}
             field = known.get(config.get('series_id'))
+            related = config.get('related_series_ids', [])
+            related_signatures = config.get('related_signatures', {})
+            related_valid = (isinstance(related, list) and len(related) <= 7 and isinstance(related_signatures, dict)
+                and all(isinstance(sid, str) and sid in known for sid in related)
+                and len(related) == len(set(related))
+                and config.get('series_id') not in related
+                and all(related_signatures.get(sid) == preference_signature(scope, known[sid]) for sid in related))
+            primary_valid = (field is not None and config.get('signature') == preference_signature(scope, field)
+                or config.get('series_id') is None and bool(related) and item['kind'] in ('binding', 'unresolved_binding'))
             if (row.confirmed_by == scope.identity.user_id and config.get('kind') == 'judgment-review-binding.v1'
                     and config.get('tenant_id') == scope.identity.tenant_id
                     and config.get('user_id') == scope.identity.user_id
                     and config.get('workbench_id') == scope.workbench_id
-                    and config.get('variety') == preview['variety'] and field is not None
-                    and config.get('signature') == preference_signature(scope, field)):
-                item['series_id'] = field['id']
+                    and config.get('variety') == preview['variety'] and primary_valid and related_valid):
+                item['series_id'] = field['id'] if field is not None else None
+                item['related_series_ids'] = list(related)
                 item['remembered'] = True
                 item['origin'] = 'remembered'
-                item['status'] = 'pending' if field['id'] != item['ai_series_id'] else item['initial_status']
+                item['status'] = 'pending' if binding_ids(item) != ai_binding_ids(item) else item['initial_status']
 
 
 @router.post('/reuse')
@@ -825,6 +924,7 @@ async def reuse(request: Request):
         for item in preview['review']['items']:
             if item['status'] in {'pending', 'ready'} and item['remembered']:
                 item['series_id'] = item['ai_series_id']
+                item['related_series_ids'] = list(item.get('ai_related_series_ids', []))
                 item['remembered'] = False
                 item['origin'] = 'model'
                 item['status'] = item['initial_status']

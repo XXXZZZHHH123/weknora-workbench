@@ -446,7 +446,7 @@ def threshold_radar_values(judgment, values):
         value = values.get(identifier)
         if value is None:
             return None, None
-        indicator = SimpleNamespace(name=value['name'], unit=value['unit'])
+        indicator = SimpleNamespace(name=value['name'], unit=value['unit'], frequency=value.get('frequency'))
         points = value.get('points') or []
         point_unit = points[-1].get('unit') if points and isinstance(points[-1], dict) else None
         observation = (SimpleNamespace(value=value['value'], unit=point_unit, as_of=datetime.combine(
@@ -473,11 +473,12 @@ def _threshold_radar(j, lookup, moving_lookup=None):
                "type": t["type"], "horizon": t["horizon"], "action_hint": t.get("action_hint"),
                "note": t.get("note"), "state": "数据缺失", "value": None, "progress": 0,
                "distance": "该指标暂无数据", "as_of": None}
-        from tin.compute.rule_caliber import rule_unit, unit_present
+        from tin.compute.rule_caliber import rule_unit, rule_frequency, unit_present
         try:
             unit = rule_unit(t, ind.unit if ind else None)
+            rule_frequency(t, getattr(ind, 'frequency', None))
         except ValueError:
-            row['distance'] = '来源单位与本条人工口径不一致，请重新核对'
+            row['distance'] = '来源单位或统计频率与本条人工口径不一致，请重新核对'
             out.append(row)
             continue
         if unit is None:

@@ -25,6 +25,15 @@ def _refs(j: JudgmentIn) -> list[tuple[str, str, str]]:
              for i, item in enumerate(j.cost_line.items if j.cost_line else []) if item.series_id]
     refs += [("unstructured", f"note{i}", item.series_id)
              for i, item in enumerate(j.unstructured) if item.series_id]
+    groups = [('marginal_focus', f'mf{i}', item) for i, item in enumerate(j.marginal_focus)]
+    groups += [('threshold', item.id, item) for item in j.thresholds]
+    groups += [('falsifier', item.id, item) for item in j.falsifiers]
+    groups += [('evidence', f'{side}{i}', item) for side in ('bull', 'bear')
+               for i, item in enumerate(getattr(j.contradiction, side).evidence)]
+    groups += [('cost', f'cost{i}', item) for i, item in enumerate(j.cost_line.items if j.cost_line else [])]
+    groups += [('unstructured', f'note{i}', item) for i, item in enumerate(j.unstructured)]
+    refs += [(kind, identifier + f':related:{index}', sid) for kind, identifier, item in groups
+             for index, sid in enumerate(item.related_series_ids)]
     return refs
 
 

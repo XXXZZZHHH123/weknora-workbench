@@ -160,15 +160,16 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
     kind, op, target = m.group(1), m.group(2), decimal_value(m.group(3))
     indicator = session.get(Indicator, f['series_id'])
     confirmed = f.get('unit_confirmed')
-    from tin.compute.rule_caliber import rule_unit, unit_present
+    from tin.compute.rule_caliber import rule_unit, rule_frequency, unit_present
     try:
         current_unit = rule_unit(f, indicator.unit if indicator else None)
+        rule_frequency(f, indicator.frequency if indicator else None)
     except ValueError:
         current_unit = None
     if indicator is not None and (not isinstance(confirmed, str) or not confirmed.strip()
             or current_unit is None or current_unit != confirmed):
         gap = (f"指标 {f['series_id']} 已确认单位为「{confirmed or '未注明'}」，"
-               f"当前单位为「{indicator.unit or '未注明'}」；单位不一致或未注明，无法比对")
+               f"当前单位为「{indicator.unit or '未注明'}」；单位或统计频率不一致、未确认，无法比对")
         return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [], gap)
     need = int(f.get("consecutive_periods") or 1)
     want = need + 1 if kind == "change" else need

@@ -61,7 +61,7 @@ def model_output_schema():
             definitions[name]['properties'][field] = {'type': 'null'}
 
     pending = definitions['UnstructuredItem']
-    pending['required'] = [name for name in pending['properties'] if name != 'series_id']
+    pending['required'] = [name for name in pending['properties'] if name not in {'series_id', 'related_series_ids'}]
     rule_kind = next(deepcopy(item) for item in pending['properties']['rule_kind']['anyOf']
                      if item.get('type') != 'null')
     pending['anyOf'] = [
@@ -94,6 +94,8 @@ def model_output_schema():
     falsifier['consecutive_periods']['maximum'] = 120
     for name in ('Evidence', 'MarginalItem', 'CostItem', 'UnstructuredItem'):
         definitions[name]['properties']['series_id']['anyOf'][0]['minLength'] = 1
+    for name in ('Evidence', 'MarginalItem', 'CostItem', 'UnstructuredItem', 'Threshold', 'Falsifier'):
+        definitions[name]['properties']['related_series_ids']['uniqueItems'] = True
     domain['properties']['whitelist']['uniqueItems'] = True
     definitions['PriorityRule']['properties']['order']['uniqueItems'] = True
 

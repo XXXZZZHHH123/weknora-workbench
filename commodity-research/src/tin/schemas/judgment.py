@@ -3,7 +3,7 @@
 import re
 from datetime import date
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 from tin.judgments.numbers import NUMBER, check_rule_number, exact_float
@@ -28,7 +28,33 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class Evidence(_Model):
+class _Bindings(_Model):
+    related_series_ids: list[Annotated[str, Field(strict=True, min_length=1, max_length=256)]] = Field(
+        default_factory=list, max_length=7)
+
+    @model_validator(mode='after')
+    def _distinct_bindings(self):
+        ids = ([self.series_id] if getattr(self, 'series_id', None) else []) + self.related_series_ids
+        if len(ids) != len(set(ids)):
+            raise ValueError('同一条目不能重复绑定相同指标')
+        return self
+
+    @model_serializer(mode='wrap')
+    def _without_empty_related(self, handler):
+        value = handler(self)
+        if not value.get('related_series_ids'):
+            value.pop('related_series_ids', None)
+        return value
+
+
+def binding_ids(value):
+    """Ordered explicit bindings; only series_id owns quantitative semantics."""
+    primary = value.get('series_id') if isinstance(value, dict) else getattr(value, 'series_id', None)
+    related = value.get('related_series_ids', []) if isinstance(value, dict) else getattr(value, 'related_series_ids', [])
+    return ([primary] if primary else []) + list(related)
+
+
+class Evidence(_Bindings):
     desc: str
     series_id: str | None = None
     value: float | None = None
@@ -57,12 +83,12 @@ class Contradiction(_Model):
     text: str | None = None
 
 
-class MarginalItem(_Model):
+class MarginalItem(_Bindings):
     desc: str
     series_id: str | None = None
 
 
-class CostItem(_Model):
+class CostItem(_Bindings):
     desc: str
     series_id: str | None = None
     value: float | None = None
@@ -103,6 +129,14 @@ class CaliberConfirmation(_Model):
     confirmed_by: str = Field(min_length=1, max_length=128)
     confirmed_at: str = Field(min_length=16, max_length=40)
     catalog_version: str = Field(min_length=1, max_length=128)
+    frequency: Literal['日', '周', '月', '季', '年'] | None = None
+
+    @model_serializer(mode='wrap')
+    def _without_empty_frequency(self, handler):
+        value = handler(self)
+        if value.get('frequency') is None:
+            value.pop('frequency', None)
+        return value
 
     @field_validator('unit', 'basis')
     @classmethod
@@ -112,12 +146,14 @@ class CaliberConfirmation(_Model):
         return value.strip()
 
 
-class _Rule(_Model):
+class _Rule(_Bindings):
     @model_serializer(mode='wrap')
     def _without_empty_caliber(self, handler):
         value = handler(self)
         if value.get('caliber_confirmation') is None:
             value.pop('caliber_confirmation', None)
+        if not value.get('related_series_ids'):
+            value.pop('related_series_ids', None)
         return value
 
 
@@ -180,7 +216,7 @@ class PriorityRule(_Model):
     note: str | None = None
 
 
-class UnstructuredItem(_Model):
+class UnstructuredItem(_Bindings):
     section: str
     text: str
     reason: str
@@ -196,6 +232,8 @@ class UnstructuredItem(_Model):
         for name in ("business_condition", "rule_kind", "series_id"):
             if name not in self.model_fields_set:
                 result.pop(name, None)
+        if not result.get('related_series_ids'):
+            result.pop('related_series_ids', None)
         return result
 
 

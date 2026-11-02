@@ -3,7 +3,7 @@ import json
 from tin.schemas.judgment import PricingPower, MovingAverageTarget
 from tin.judgments.output_schema import OUTPUT_SCHEMA
 
-PROMPT_VERSION = 'research-logic-v17'
+PROMPT_VERSION = 'research-logic-v18'
 SOURCE_BINDING_PROTOCOL = '''本次目录中的全部字段均已通过当前研究台来源权限核验；primary和macro只是来源分类，不是可用范围或许可等级。
 原文引用的宏观、跨市场或跨品种因素可以作为数据锚、白名单、阈值或证伪依据，不得以“不是本品种专属指标”或“不属于商品侧Series”为由排除目录中的相容字段。
 指标的观测频率与研究期限分开处理：沿用原文明确的统计周期、比较方式和连续期数，不擅自要求更高频数据；原文的低频条件可用于短期研究观察，不能因为目录为低频就改成高频或声称没有指标。
@@ -26,6 +26,8 @@ THRESHOLD_SCHEMA = {
     'properties': {
         'id': {'type': 'string'}, 'name': {'type': 'string'},
         'series_id': {'type': 'string', 'minLength': 1},
+        'related_series_ids': {'type': 'array', 'maxItems': 7, 'uniqueItems': True,
+            'items': {'type': 'string', 'minLength': 1, 'maxLength': 256}},
         'operator': {'enum': ['>', '>=', '<', '<=', 'between', 'crosses_below', 'crosses_above']},
         'value': {'oneOf': [
             {'type': 'number'},
@@ -49,8 +51,9 @@ PRICING_POWER_SCHEMA = PricingPower.model_json_schema()
 
 OUTPUT_PROTOCOL = '''只返回一个严格JSON对象，字段只有 judgment、binding_units、rule_quotes、unresolved。
 judgment只允许：contradiction、marginal_focus、cost_line、pricing_power、time_dimension、survey_notes、whitelist、paradigm、tone、tone_note、thresholds、priority_rule、falsifiers。
-contradiction格式为 {"bull":{"claim":"","evidence":[]},"bear":{"claim":"","evidence":[]},"window":{"from":null,"to":null,"note":null},"text":null}；evidence每项只写desc、series_id(可null)、note。
-每条evidence围绕一个可核对的数据锚组织，保留它支持或反对主张的含义。同一句话涉及多个独立指标时，由你结合全文拆为分别可绑定的依据，不把整句照抄为一个series_id:null条目后仅在其他小节绑定各指标。目录中存在语义、维度、频率和口径相容的真实字段时，论据本身应选择该字段；仅在whitelist、marginal_focus、cost_line或规则中引用它，不能代替此论据的绑定。纯定性逻辑或确实没有相容字段时保持series_id:null，不为了绑定而改变原文、猜测口径或省略多空依据。
+contradiction格式为 {"bull":{"claim":"","evidence":[]},"bear":{"claim":"","evidence":[]},"window":{"from":null,"to":null,"note":null},"text":null}；evidence每项写desc、series_id(可null)、note及可选related_series_ids。
+每条evidence保留同一个研究观点或观察主题，保留它支持或反对主张的含义。默认绑定一个主要series_id；同一条研究说明确实引用多个相容指标时，可用related_series_ids补充至多7个不同真实指标，不为适配单指标而强行拆散原句。只有各部分承担独立判断或验证意义时才拆成独立依据。目录中存在语义、维度、频率和口径相容的真实字段时，论据本身应选择该字段；仅在whitelist、marginal_focus、cost_line或规则中引用它，不能代替此论据的绑定。纯定性逻辑或确实没有相容字段时保持series_id:null，不为了绑定而改变原文、猜测口径或省略多空依据。
+Evidence、边际关注、成本项、unresolved、thresholds与falsifiers均可选填related_series_ids数组；默认省略或[]。它们仅补充该条目的描述性关联，不能与series_id重复。量化规则仍只对主要series_id计算，不能把同一阈值、证伪表达式、方向或单位套用到附加指标，也不能从并列关系补出AND/OR。导入结构化文档已有的有效整组绑定应保留，binding_units也必须覆盖附加指标。
 marginal_focus始终为数组，每项为 {"desc":"","series_id":null}。
 unresolved中的未来观察、验证或证伪条件使用business_condition和rule_kind两个显式字段；business_condition只放完整原文中的非空连续逐字摘录，rule_kind由你依据完整原文明确选择threshold或falsifier。两字段同时填写或同时为null，不把程序缺陷、接口限制、目录/单位缺口或模型作业说明混进business_condition，不补造规则数字或触发结果。不能为了转换指标名称而改写逐字摘录；内部ID和供应商编号到自然名称的转换由展示层完成。text与reason保留待确认内容和实现缺口，不能用它们或section标题代替显式业务条件类型。
 cost_line为JSON null或对象；对象的type只使用JSON字符串"cash"、JSON字符串"full"或JSON null；value与source为JSON null，items始终为数组（每项含desc、series_id、value），note为文本或null。

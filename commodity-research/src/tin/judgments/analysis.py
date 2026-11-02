@@ -168,6 +168,39 @@ def bounded(value, depth=0):
             bounded(item, depth + 1)
 
 
+def rule_frequency_issues(kind, rule, quote, source_frequency):
+    """Report cadence requirements independently of unit/number failures.
+
+    This is diagnostic only: it never supplies source metadata or validates a
+    rule. Both full validation and review use the same count/cadence syntax.
+    """
+    from tin.compute.rule_caliber import rule_frequency, frequency_kind
+    if not isinstance(rule, dict) or not isinstance(quote, str):
+        return []
+    try:
+        frequency = rule_frequency(rule, source_frequency)
+    except ValueError:
+        return []  # The full validator reports conflicting declarations.
+    if kind == 'thresholds':
+        target = rule.get('value')
+        window = target.get('window') if isinstance(target, dict) and target.get('kind') == 'sma' else None
+        if type(window) is not int or not 2 <= window <= 120:
+            return []
+        daily = re.search(rf'(?<![0-9.+-]){window}\s*日\s*(?:简单移动平均线|移动平均线|均线|线)', quote)
+        if daily and frequency_kind(frequency) != 'day':
+            return [{'code': 'moving_average_frequency', 'field': 'value',
+                'message': '原文要求日均线，所选指标未确认日频，请核对统计周期'}]
+    elif kind == 'falsifiers':
+        count = rule.get('consecutive_periods', 1)
+        if type(count) is not int or not 2 <= count <= 120:
+            return []
+        records = [record for record in observation_periods(quote) if record['count'] == count]
+        if records and not any(period_matches_frequency(record, frequency) for record in records):
+            return [{'code': 'period_frequency', 'field': 'consecutive_periods',
+                'message': '原文连续周期与所选指标的统计频率不一致或频率未确认，请核对日、周、月等口径。'}]
+    return []
+
+
 def validate_analysis(document, original, catalog, *, variety, actor, written_at=None, caliber_confirmations=None):
     if not isinstance(original, str) or not original.strip() or len(original.encode('utf-8')) > SOURCE_BYTES:
         raise AnalysisError('请提供48 KiB以内的完整研究逻辑文本')
@@ -185,8 +218,9 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
     # The model never supplies this authority. Only an explicit review mutation
     # can attach a server-authored declaration to one rule in this preview.
     from tin.schemas.judgment import CaliberConfirmation
-    from tin.compute.rule_caliber import unit_present
+    from tin.compute.rule_caliber import unit_present, rule_frequency
     known_units = {row['id']: row.get('unit') for row in catalog}
+    known_frequencies = {row['id']: row.get('frequency') for row in catalog}
     local_units = {}
     for kind in ('thresholds', 'falsifiers'):
         for index, rule in enumerate(fields.get(kind, []) if isinstance(fields.get(kind, []), list) else []):
@@ -206,6 +240,10 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
                 _error('人工口径不属于当前用户和此指标绑定', 'unit_confirmation_scope', path)
             if unit_present(known_units.get(sid)) and known_units[sid] != declaration.unit:
                 _error('人工口径不能覆盖来源已登记的不同单位', 'unit_mismatch', path)
+            try:
+                rule_frequency(rule, known_frequencies.get(sid))
+            except ValueError:
+                _error('人工统计频率不能覆盖来源已登记的不同口径，请核对本条规则', 'frequency_confirmation_conflict', path)
             if sid in local_units and local_units[sid] != declaration.unit:
                 _error('同一研判版本的同一指标不能声明相互矛盾的单位', 'unit_confirmation_conflict', path)
             local_units[sid] = declaration.unit
@@ -342,10 +380,8 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
             if not quoted and not sma_source_window(quotes[rule.id], rule.value.window, original):
                 _error('均线周期没有完整的原文依据，请核对MA周期或原文均线条件',
                        'number_not_in_source', f'/judgment/thresholds/{index}/value')
-            daily = re.search(rf'(?<![0-9.+-]){rule.value.window}\s*日\s*(?:简单移动平均线|移动平均线|均线|线)', quotes[rule.id])
-            if daily and str(known[rule.series_id].get('frequency', '')).strip().lower() not in {'日', '日度', 'day', 'daily', '1d'}:
-                _error('原文要求日均线，所选指标未确认日频，请核对统计周期',
-                       'moving_average_frequency', f'/judgment/thresholds/{index}/value')
+            for issue in rule_frequency_issues('thresholds', rule.model_dump(), quotes[rule.id], known[rule.series_id].get('frequency')):
+                _error(issue['message'], issue['code'], f'/judgment/thresholds/{index}/' + issue['field'])
             continue
         values = rule.value if isinstance(rule.value, list) else [rule.value]
         source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
@@ -390,11 +426,10 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         period_records = [record for record in observation_periods(quotes[rule.id])
             if record['count'] == rule.consecutive_periods] if rule.consecutive_periods > 1 else []
         if period_records:
+            for issue in rule_frequency_issues('falsifiers', rule.model_dump(), quotes[rule.id], known[rule.series_id].get('frequency')):
+                _error(issue['message'], issue['code'], f'/judgment/falsifiers/{index}/' + issue['field'])
             compatible = [record for record in period_records
-                if period_matches_frequency(record, known[rule.series_id].get('frequency'))]
-            if not compatible:
-                _error('原文连续周期与所选指标的统计频率不一致或频率未确认，请核对日、周、月等口径。',
-                    'period_frequency', f'/judgment/falsifiers/{index}/consecutive_periods')
+                if period_matches_frequency(record, rule_frequency(rule.model_dump(), known[rule.series_id].get('frequency')))]
             if not any(_period_quote_context(original, quotes[rule.id], record) for record in compatible):
                 _error('引文可能截断了连续次数或统计周期，请选取完整原文条件。',
                     'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
@@ -510,6 +545,9 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
             for key, child in value.items():
                 if key == 'series_id' and child is not None and (not isinstance(child, str) or child not in known):
                     _error('引用指标不属于本次已授权真实目录', 'unknown_series_id', path + '/series_id')
+                if key == 'related_series_ids' and (not isinstance(child, list) or len(child) > 7
+                        or any(not isinstance(sid, str) or sid not in known for sid in child)):
+                    _error('附加指标不属于本次已授权真实目录或超过7项', 'unknown_series_id', path + '/related_series_ids')
                 check_ids(child, path + '/' + key)
         elif isinstance(value, list):
             for index, child in enumerate(value): check_ids(child, path + '/' + str(index))
@@ -569,6 +607,9 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
             trial = deepcopy(skeleton)
             trial['judgment'][kind] = [rule]
             sid = rule.get('series_id')
+            for related_id in rule.get('related_series_ids', []):
+                if related_id in declared:
+                    trial['binding_units'][related_id] = declared[related_id]
             if sid is not None:
                 trial['binding_units'].pop(sid, None)
                 if sid in declared: trial['binding_units'][sid] = declared[sid]
@@ -606,6 +647,7 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
         kept = [identifier for identifier in parsed.order if identifier in remaining]
         cleaned['judgment']['priority_rule'] = {**priority, 'order': kept} if kept else None
     final_ids = descriptive_ids | {r['series_id'] for rules in valid.values() for r in rules}
+    final_ids.update(sid for rules in valid.values() for rule in rules for sid in rule.get('related_series_ids', []))
     extra = set(declared) - final_ids
     if extra:
         issues.append({'code': 'redundant_unit_declaration', 'path': '/binding_units',
