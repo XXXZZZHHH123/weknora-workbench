@@ -350,7 +350,6 @@ html{scrollbar-gutter:stable}html.pdf-detail-open{overflow:hidden}
 .pdf-raw-table thead th{min-width:125px;vertical-align:top}.pdf-raw-table thead th:first-child,.pdf-raw-table thead th:last-child{min-width:48px}
 .pdf-raw-table thead th>small{display:block;color:var(--muted);font-weight:400;margin-bottom:4px}
 .pdf-raw-table thead th>input{width:100%;min-width:90px;padding:7px 8px;font-weight:500;box-sizing:border-box}
-.pdf-column-options{font-size:11px;font-weight:400;margin-top:6px}.pdf-column-options select,.pdf-column-options input{width:100%;margin-top:6px}
 .pdf-row-menu{font-size:12px;min-width:60px}.pdf-row-menu summary{cursor:pointer;white-space:nowrap}.pdf-row-menu button{display:block;white-space:nowrap;margin-top:6px}
 .pdf-header-row{background:var(--surface-soft)}.pdf-row-focused,.pdf-cell-focused{outline:2px solid var(--accent);outline-offset:-2px}
 .pdf-table-actions{display:flex;justify-content:flex-end;margin-top:12px}
@@ -379,10 +378,14 @@ html{scrollbar-gutter:stable}html.pdf-detail-open{overflow:hidden}
 #pdfDraftDetail .pdf-column-heading>input{border:0!important;border-radius:3px;background:transparent;box-shadow:none;min-width:70px;width:100%;padding:4px 0;font:inherit;font-weight:500;box-sizing:border-box}
 #pdfDraftDetail .pdf-column-heading>input:hover{background:var(--paper)}
 #pdfDraftDetail .pdf-column-heading>input:focus{outline:1px solid var(--primary);outline-offset:3px;background:var(--paper)}
-#pdfDraftDetail .pdf-column-options{margin:0;flex:0 0 20px;font-weight:400;position:relative}
-#pdfDraftDetail .pdf-column-options>summary{list-style:none;text-align:center;cursor:pointer;color:var(--muted);font-size:16px;border:0}
-#pdfDraftDetail .pdf-column-options[open]{z-index:3}
-#pdfDraftDetail .pdf-column-options[open]>:not(summary){position:relative;width:145px;margin-top:6px;background:var(--paper)}
+#pdfDraftDetail .pdf-column-controls{display:flex;align-items:center;gap:10px;min-width:180px;margin-top:5px;font-size:11px;font-weight:400}
+#pdfDraftDetail .pdf-column-controls label{display:flex;flex-direction:row;align-items:center;gap:5px;min-width:0;margin:0;color:var(--muted)}
+#pdfDraftDetail .pdf-column-controls label>span{white-space:nowrap}
+#pdfDraftDetail .pdf-column-type{flex:0 0 auto}
+#pdfDraftDetail .pdf-column-unit{flex:1}
+#pdfDraftDetail .pdf-column-controls :is(input,select){box-sizing:border-box;height:28px;min-height:28px;padding:3px 6px;border:1px solid var(--line);border-radius:4px;background:var(--paper);color:var(--text);font:inherit;line-height:20px}
+#pdfDraftDetail .pdf-column-type select{width:64px;min-width:64px}
+#pdfDraftDetail .pdf-column-unit input{width:100%;min-width:56px}
 #pdfDraftDetail .pdf-row-menu>summary{list-style:none;color:var(--muted);font-size:16px;text-align:center}
 #pdfDraftDetail .pdf-row-menu{min-width:28px;position:relative}
 #pdfDraftDetail .pdf-row-menu[open]{z-index:2}
@@ -428,6 +431,17 @@ html{scrollbar-gutter:stable}html.pdf-detail-open{overflow:hidden}
 #pdfDraftDetail .pdf-grid-input:focus{outline:1px solid var(--primary);outline-offset:-1px;background:var(--paper)}
 #pdfDraftDetail .pdf-grid-input.is-pending{background:var(--warning-soft)}
 #pdfDraftDetail .pdf-column-review{display:block;margin-top:7px;padding:3px 6px;font-size:11px;color:var(--warning);background:var(--warning-soft);border:0}
+#pdfDraftDetail .pdf-column-review-controls{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap}
+#pdfDraftDetail .pdf-column-review-controls>.pdf-column-review{margin:0;padding:5px 8px;background:var(--warning);color:var(--paper)}
+#pdfDraftDetail .pdf-column-state{color:var(--warning);font-size:11px;font-weight:500}
+#pdfDraftDetail .pdf-column-state.is-reviewed{color:#27734d}
+#pdfDraftDetail .pdf-column-state[hidden]{display:none}
+#pdfDraftDetail .pdf-editable-preview th.has-pending{background:var(--warning-soft)}
+#pdfDraftDetail .pdf-review-findings.has-pending{background:var(--warning-soft);color:var(--warning)}
+#pdfDraftDetail .pdf-review-findings.has-pending>strong{color:inherit}
+#pdfDraftDetail .pdf-review-reason{font-size:12px}
+#pdfDraftDetail .pdf-review-reasons{flex-basis:100%;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+#pdfDraftDetail .pdf-review-reasons p{margin:8px 0}
 #pdfDraftDetail .pdf-column-review[hidden]{display:none}
 #pdfDraftDetail .pdf-cell-origin{display:block;margin:4px 7px;color:var(--muted);font-size:11px}
 #pdfDraftDetail .pdf-grid-pages{position:sticky;bottom:0;display:flex;justify-content:center;align-items:center;gap:12px;padding:8px;background:var(--paper);font-size:12px}

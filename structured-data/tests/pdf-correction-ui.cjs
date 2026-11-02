@@ -58,7 +58,6 @@ const server=http.createServer(async(req,res)=>{try{
  await headerMenu().locator('summary').click();await headerMenu().getByRole('button',{name:'用这行作列名',exact:true}).click();
  assert.equal(await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).inputValue(),'Amount');
  await page.getByRole('textbox',{name:'第 1 列名称',exact:true}).fill('项目');await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('金额');
- const options=page.locator('.pdf-column-options').nth(1);await options.locator('summary').click();
  await page.getByRole('combobox',{name:'第 2 列类型',exact:true}).selectOption('decimal');await page.getByRole('textbox',{name:'第 2 列单位',exact:true}).fill('');
  assert.equal(await page.getByRole('button',{name:'已对照原件核对',exact:true}).count(),0);
  assert(await viewer.evaluate(e=>e.isConnected));

@@ -10,7 +10,7 @@ s=PDFTableStore(sys.argv[1]);req=json.load(sys.stdin);op=req['op']
 if op=='init':
  b=bundle([['Item','Amount']]+[[f'Label {r}',str(r*100)] for r in range(1,215 if req.get('pagination') else 38)],[['Item','Amount'],['Second-only','22']])
  for row in b['fragments'][0]['rows'][3:]:
-  for cell in row: cell['uncertain']=True
+  for cell in row: cell['uncertain']=not req.get('structure')
  if req.get('review_flags'): b['fragments'][0]['quality']={'status':'needs_review','issues':[{'code':'MODEL_UNCERTAINTY'}]}
  if req.get('precise_issue'): b['fragments'][0]['quality']['issues'][0]['cells']=[{'row':1,'column':1}]
  r=s.create_draft(b)
@@ -22,11 +22,12 @@ elif op=='draft':r=s.read_draft(req['id'])
 print(json.dumps(r))`;
 function store(op,args={}){return JSON.parse(execFileSync('python',['-c',py,dir],{input:JSON.stringify({op,...args}),encoding:'utf8',env:{...process.env,PYTHONPATH:'structured-data/src:structured-data/tests'}}));}
 const refreshFixture=true;
-const draft=store('init',{review_flags:refreshFixture,pagination:Boolean(process.env.PDF_GRID_PAGINATION),precise_issue:Boolean(process.env.PDF_PRECISE_FIXTURE)});
+const draft=store('init',{review_flags:refreshFixture,pagination:Boolean(process.env.PDF_GRID_PAGINATION),precise_issue:Boolean(process.env.PDF_PRECISE_FIXTURE),structure:Boolean(process.env.PDF_GRID_STRUCTURE)});
 const plans=draft.bundle.fragments.map(f=>({bundle_sha256:draft.bundle_sha256,fragment_ids:[f.id],header_rows:{[f.id]:[{row:0,reason:'source header'}]},columns:[{name:'Item',type:'text',source_columns:{[f.id]:0}},{name:'Amount',type:'decimal',source_columns:{[f.id]:1}}],excluded_rows:[],boundary_merges:[]}));
 const grouped=Boolean(process.env.PDF_GROUPED_FIXTURE);
 if(grouped){const ids=draft.bundle.fragments.map(f=>f.id);plans[0]={...plans[0],fragment_ids:ids,header_rows:Object.fromEntries(ids.map(id=>[id,[{row:0,reason:'source header'}]])),columns:plans[0].columns.map((c,i)=>({...c,source_columns:Object.fromEntries(ids.map(id=>[id,i]))}))};}
 let automation={status:'needs_attention',accepted_count:0,attention_count:grouped?1:2,groups:(grouped?[plans[0]]:plans).map(plan=>({fragment_ids:plan.fragment_ids,status:'needs_attention',plan,problem:{action:process.env.PDF_AUTO_FIXTURE?'retry':'review',title:'待核对'}}))};
+if(process.env.PDF_GRID_STRUCTURE)automation={status:'needs_attention',accepted_count:0,attention_count:1,groups:[{fragment_ids:draft.bundle.fragments.map(f=>f.id),status:'needs_attention',message:'续页缺少行标签，无法确定两页的对应关系。',problem:{action:'review',stage:'planning'}}]};
 let delayFirst=false,delayPublication=false,failNextPreview=false,previewCalls=0,publishes=[];
 const source=path.resolve('structured-data/src/structured_data');
 const css=fs.readFileSync(path.join(source,'index.html'),'utf8').match(/<style>([\s\S]*?)<\/style>/)[1]+fs.readFileSync(path.join(source,'workspace.css'),'utf8');
@@ -57,6 +58,13 @@ const server=http.createServer(async(req,res)=>{try{
  const grid=page.locator('#pdfPreview');await grid.locator('.pdf-grid-input').first().waitFor();
  const cell=(row,col)=>grid.locator(`textarea[data-fragment-id="table-1"][data-source-row="${row}"][data-source-column="${col}"]`);
  const plan=async()=>JSON.parse(await page.locator('#pdfPlanEditor').inputValue());
+ if(process.env.PDF_GRID_STRUCTURE){
+  assert.equal(await grid.locator('.is-pending').count(),0);
+  assert.match(await page.locator('.pdf-review-findings').innerText(),/跨页结构待核对.*第 1、2 页/s);
+  await page.getByText('查看未自动入库原因',{exact:true}).click();assert.match(await page.locator('.pdf-review-reasons').innerText(),/续页缺少行标签/);
+  assert.equal(publishes.length,0,'absence of localized flags does not silently accept a structural warning');
+  assert.deepEqual(errors,[]);console.log('PASS: unlocated structural risks remain visible with their actual automatic-planning reason.');return;
+ }
 
  if(process.env.PDF_GRID_PAGINATION){
   assert.equal(await grid.locator('.is-pending').count(),396);
@@ -70,6 +78,9 @@ const server=http.createServer(async(req,res)=>{try{
   assert.deepEqual(errors,[]);console.log('PASS: paged column review never confirms unseen cells; column summary locates the remaining page.');return;
  }
  assert.equal(await grid.locator('.is-pending').count(),70);assert.equal((await plan()).cell_corrections?.length||0,0,'opening the grid does not review any cell');
+ assert.equal(await page.locator('#pdfPublish').innerText(),'先核对 2 列');assert.equal(await grid.locator('th.has-pending').count(),2);
+ assert.equal(await grid.locator('.pdf-column-state').filter({hasText:'待核对 35 处'}).count(),2);
+ assert.equal(await grid.getByRole('button',{name:'确认此列',exact:true}).count(),2);
  assert.match(await page.locator('.pdf-review-findings').innerText(),/Item.*35.*Amount.*35/s);
  assert.equal(await page.getByRole('button',{name:'查看并修改',exact:true}).count(),0);
  await cell(3,0).fill('Edited label');await cell(3,1).fill('-1.20');
@@ -79,6 +90,7 @@ const server=http.createServer(async(req,res)=>{try{
  assert.equal(publishes.length,0,'unreviewed cells still block publication');assert.equal(await cell(3,1).inputValue(),'-1.20');
  await grid.locator('.pdf-column-review[data-plan-column="0"]').click();await grid.locator('.pdf-column-review[data-plan-column="1"]').click();
  assert.equal(await grid.locator('.is-pending').count(),0);assert.equal((await plan()).cell_corrections.length,70,'two explicit column confirmations record the remaining exact source cells');
+ assert.equal(await page.locator('#pdfPublish').innerText(),'确认并入库');assert.equal(await grid.locator('.pdf-column-state.is-reviewed').count(),2);
  const removeRow=cell(1,0).locator('xpath=ancestor::tr');await removeRow.getByRole('button',{name:'删除行',exact:true}).click();
  assert.equal((await plan()).excluded_rows.length,1);await removeRow.getByRole('button',{name:'恢复行',exact:true}).click();assert.equal((await plan()).excluded_rows.length,0);
  await removeRow.getByRole('button',{name:'删除行',exact:true}).click();

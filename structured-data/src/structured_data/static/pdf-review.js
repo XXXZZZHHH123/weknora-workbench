@@ -240,7 +240,8 @@
     const box=make('section',undefined,'pdf-review-findings');
     if(pending.length){
       const columns=[...new Set(pending.map(c=>c.column))].sort((a,b)=>a-b);
-      box.append(make('strong','待核对的列'));
+      box.classList.add('has-pending');
+      box.append(make('strong',`还有 ${columns.length} 列待核对，完成后可入库`));
       for(const column of columns){
         const name=plan.columns.find(c=>c.source_columns?.[fragment.id]===column)?.name||`第 ${column+1} 列`;
         box.append(action(`${name} · ${pending.filter(c=>c.column===column).length} 处`,()=>{
@@ -248,7 +249,17 @@
           focusPendingColumn(fragment.id,column);
         },true));
       }
-    }else box.append(make('strong',`第 ${fragment.page} 页 · 整表待确认`));
+    }else{
+      const group=displayedAutomation(draft)?.groups?.find(g=>g.fragment_ids?.includes(fragment.id));
+      const pages=[...new Set(fragments().filter(f=>group?.fragment_ids?.includes(f.id)).map(f=>f.page))];
+      const crossPage=pages.length>1&&!group?.plan&&group?.status!=='accepted';
+      box.append(make('strong',crossPage?`跨页结构待核对 · 第 ${pages.join('、')} 页`:`第 ${fragment.page} 页 · 整表识别待核对`));
+      box.append(make('span',crossPage?'跨页关系尚未确认；确认当前页不会自动合并其他页。':'查看整表识别记录，对照原件确认后入库。','pdf-review-reason'));
+      const details=make('details',undefined,'pdf-review-reasons');details.append(make('summary','查看未自动入库原因'));
+      if(group?.message)details.append(make('p',group.message));
+      for(const issue of remaining)if(issue.message)details.append(make('p',issue.message));
+      if(details.childElementCount>1)box.append(details);
+    }
     for(const row of fragment.header_rows||[]){
       if(!remaining.length||!Number.isInteger(row)||!fragment.rows[row]?.every(cell=>!String(cell.text||'').trim())||
         plan.excluded_rows?.some(r=>r.fragment_id===fragment.id&&r.row===row))continue;
@@ -319,7 +330,16 @@
     }
     for(const button of document.querySelectorAll('.pdf-column-review')){
       const count=[...document.querySelectorAll('.pdf-grid-input')].filter(i=>i.dataset.planColumn===button.dataset.planColumn&&i.dataset.pending==='true').length;
-      button.hidden=!count;button.textContent=`本列无误（${count}）`;
+      const index=Number(button.dataset.planColumn),sourceColumn=plan.columns[index]?.source_columns?.[fragments()[activeFragmentIndex].id];
+      const total=pendingCells(fragments()[activeFragmentIndex],plan).filter(c=>c.column===sourceColumn).length;
+      const th=button.closest('th'),badge=th.querySelector('.pdf-column-state');
+      th.classList.toggle('has-pending',total>0);button.hidden=!total;button.textContent=count?'确认此列':'查看待核对';
+      button.title=count?`已对照原件，确认当前显示的 ${count} 处内容`:'定位此列尚未核对的单元格';
+      const originalPending=fragments()[activeFragmentIndex].rows.some(row=>row[sourceColumn]?.uncertain)||
+        tableIssues(fragments()[activeFragmentIndex]).some(issue=>issue.cells?.some(c=>c.column===sourceColumn))||
+        preview?.coverage?.unresolved_quality_issues?.some(i=>i.fragment_id===fragments()[activeFragmentIndex].id&&i.code==='uncertain_cell'&&i.column===sourceColumn);
+      if(badge){badge.hidden=!total&&!originalPending;
+        badge.textContent=total?`待核对 ${total} 处`:'已核对';badge.classList.toggle('is-reviewed',!total);}
     }
     const parent=document.querySelector('.pdf-fragment-pane'),fragment=fragments()[activeFragmentIndex];
     if(parent&&fragment){
@@ -336,6 +356,7 @@
       const key=`${fragment.id}:${row}:${column}`;if(seen.has(key))continue;seen.add(key);
       correction(plan,fragment,row,column,input.value,'确认当前显示的本列内容无误');
     }
+    if(!seen.size)return focusPendingColumn(fragments()[activeFragmentIndex].id,plan.columns[index].source_columns[fragments()[activeFragmentIndex].id]);
     stageGridPlan(plan);
   }
   function manualPreviewRow(entry,plan,columns=plan.columns) {
@@ -434,8 +455,10 @@
     headRow.append(make('th','行'));
     columns.forEach((column,index)=>{
       const th=columnHeading(fragment,index,plan,index);
-      const review=action('本列无误',()=>confirmVisibleColumn(index),true);review.classList.add('pdf-column-review');review.dataset.planColumn=String(index);
-      review.title='确认当前显示的本列疑点内容无误';th.append(review);headRow.append(th);
+      const review=action('确认此列',()=>confirmVisibleColumn(index),true);review.classList.add('pdf-column-review');review.dataset.planColumn=String(index);
+      const badge=make('span','','pdf-column-state');badge.setAttribute('role','status');
+      const reviewControls=make('div',undefined,'pdf-column-review-controls');reviewControls.append(badge,review);
+      th.querySelector('.pdf-column-heading').append(reviewControls);headRow.append(th);
     });
     headRow.append(make('th','行操作'));
     thead.append(headRow);
@@ -709,13 +732,15 @@
       if(updated.key_columns)updated.key_columns=updated.key_columns.map(key=>key===old?name.value:key);
       save(updated);
     });
-    const options=make('details',undefined,'pdf-column-options');const trigger=make('summary','⋯');trigger.setAttribute('aria-label',`第 ${sourceColumn+1} 列格式与单位`);options.append(trigger);
+    const controls=make('div',undefined,'pdf-column-controls');
     const type=make('select');type.setAttribute('aria-label',`第 ${sourceColumn+1} 列类型`);type.dataset.columnType=String(index);
     for(const [value,label] of [['text','文本'],['decimal','数字']]){const option=make('option',label);option.value=value;type.append(option);}type.value=column.type;
     type.addEventListener('change',()=>{const updated=readEditingPlan();updated.columns[index].type=type.value;save(updated);});
-    const unit=make('input');unit.value=column.unit||'';unit.placeholder='单位';unit.dataset.columnUnit=String(index);unit.setAttribute('aria-label',`第 ${sourceColumn+1} 列单位`);
+    const unit=make('input');unit.value=column.unit||'';unit.placeholder='未设置';unit.dataset.columnUnit=String(index);unit.setAttribute('aria-label',`第 ${sourceColumn+1} 列单位`);
     unit.addEventListener('input',()=>{const updated=readEditingPlan();if(unit.value.trim())updated.columns[index].unit=unit.value.trim();else delete updated.columns[index].unit;save(updated);});
-    options.append(type,unit);const heading=make('div',undefined,'pdf-column-heading');heading.append(name,options);th.append(heading);return th;
+    const typeLabel=make('label',undefined,'pdf-column-type'),unitLabel=make('label',undefined,'pdf-column-unit');
+    typeLabel.append(make('span','类型'),type);unitLabel.append(make('span','单位'),unit);controls.append(typeLabel,unitLabel);
+    const heading=make('div',undefined,'pdf-column-heading');heading.append(name);th.append(heading,controls);return th;
   }
   function focusReview() {
     const pane=document.querySelector('.pdf-fragment-pane');
@@ -1095,7 +1120,9 @@
       const pendingEdit=Boolean(document.querySelector('.pdf-cell-editor'));
       const saved=publishedSignature===JSON.stringify(plan)&&!pendingEdit;
       const busy=activeReview?.busy||activeReview?.loading;
-      publish.textContent=saved?'已入库':busy?'处理中…':'确认并入库';
+      const fragment=fragments()[activeFragmentIndex];
+      const pendingColumns=fragment?new Set(pendingCells(fragment,plan).map(c=>c.column)).size:0;
+      publish.textContent=saved?'已入库':busy?'处理中…':pendingColumns?`先核对 ${pendingColumns} 列`:'确认并入库';
       publish.classList.toggle('is-saved',saved);
       publish.disabled=saved||busy||Boolean(activeReview?.loadError)||!plan.columns?.length||!plan.fragment_ids?.length;
       const toggle=document.getElementById('pdfTogglePreview');if(toggle)toggle.disabled=busy||Boolean(activeReview?.loadError)||!plan.columns?.length;
@@ -1118,7 +1145,8 @@
       }
       if(!preview||JSON.stringify(plan)!==previewSignature)await previewPlan();
       if(!current(savedEpoch,savedOperation)||activeReview!==state||viewGeneration!==generation)return;
-      if(preview?.coverage?.unresolved_quality_issues?.length){previewMode=true;renderCurrentFragment();setStatus('请先处理待核对的内容。',true);return;}
+      if(preview?.coverage?.unresolved_quality_issues?.length){previewMode=true;renderCurrentFragment();setStatus('先处理待核对的内容，再确认入库。',true);
+        const pending=pendingCells(fragments()[activeFragmentIndex],readEditingPlan());if(pending.length)focusPendingColumn(fragments()[activeFragmentIndex].id,pending[0].column);return;}
       await publishPlan();
     } finally {state.busy=false;if(activeReview===state)updatePublishButton();}
   }
