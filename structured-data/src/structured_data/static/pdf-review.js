@@ -131,10 +131,10 @@
     }
   }
 
-  function readEditingPlan() {
-    const form=document.getElementById('pdfManualForm');
-    if(form?.dataset.dirty==='true')form.savePlan();
-    return jsonValue(document.getElementById('pdfPlanEditor'));
+  function readEditingPlan() { return jsonValue(document.getElementById('pdfPlanEditor')); }
+  function writePlan(plan) {
+    document.getElementById('pdfPlanEditor').value=JSON.stringify(plan,null,2);
+    invalidatePreview();setStatus('修改已暂存');
   }
 
   function renderPlanPreview(result) {
@@ -146,48 +146,33 @@
     const coverage = result.coverage || {};
     const note = make('p', `${coverage.logical_row_count ?? result.rows?.length ?? 0} 行 · ${result.columns?.length || 0} 列`);
     pane.append(note);
-    const limits=make('details',undefined,'pdf-technical');limits.append(make('summary','识别与来源信息'),make('p',`原件覆盖：${coverage.source_document_complete===true?'已确认':'尚未确认'}；识别结果未独立验证；公式不会执行。`));pane.append(limits);
-    const unresolved = coverage.unresolved_quality_issues || [];
-    if (coverage.join_mode === 'horizontal') {
-      pane.append(make('p', coverage.row_alignment_verified
-        ? '横向续列表：按每页实际标识核对行对应；共有标识保留全部来源。'
-        : '横向续列表缺少各页共有行标识。行号映射不能自动证明对应正确，发布前必须对照原件逐行确认。', 'warning'));
-    }
-    if (unresolved.length) {
-      const box = make('fieldset');
-      box.append(make('legend', `待处理质量问题 · ${unresolved.length}`));
-
-      for (const [index, issue] of unresolved.entries()) {
-        const item = make('div');
-        const fragment=fragments().find(f=>f.id===issue.fragment_id);
-        item.append(make('p', `${fragment?`第 ${fragment.page} 页 · `:''}${issue.row!==undefined?`第 ${issue.row+1} 行 · 第 ${issue.column+1} 列 · `:''}${qualityHint(issue)}`),originalIssue(issue,fragment,issue.issue_index));
-        let corrected;
-        if (issue.code === 'uncertain_cell') {
-          corrected = make('input'); corrected.type = 'text'; corrected.placeholder = '原件真实单元格文本（原件空白可留空）';
-          corrected.setAttribute('aria-label', `质量问题 ${index + 1} 原件文本`);
-          corrected.value=fragment?.rows?.[issue.row]?.[issue.column]?.text??'';item.append(corrected);
+    const unresolved=coverage.unresolved_quality_issues||[];
+    if(unresolved.length){
+      const box=make('div',undefined,'pdf-preview-issues');
+      const groups=new Map();
+      for(const issue of unresolved){
+        if(issue.code==='uncertain_cell'){
+          const fragment=fragments().find(f=>f.id===issue.fragment_id);
+          if(!fragment)continue;
+          const item=make('div',undefined,'pdf-quality-item');
+          item.append(make('span',`第 ${fragment.page} 页 · 第 ${issue.row+1} 行，第 ${issue.column+1} 列`));
+          item.append(action('查看并修改',()=>locateCell(fragment,issue.row,issue.column),true));box.append(item);
+        }else if(issue.code==='row_alignment_unverified'){
+          const item=make('div',undefined,'pdf-quality-item');
+          const pages=[...new Set(fragments().filter(f=>readEditingPlan().fragment_ids.includes(f.id)).map(f=>f.page))];
+          item.append(make('span',`第 ${pages.join('、')} 页 · 跨页行对应关系`),action('行对应正确',()=>{
+            const plan=readEditingPlan();plan.row_alignment_review={reason:'用户操作：确认跨页行对应关系'};writePlan(plan);item.replaceChildren(make('span','已确认'));
+          },true));box.append(item);
+        }else{
+          const fragment=fragments().find(f=>f.id===issue.fragment_id);
+          if(fragment)groups.set(fragment.id,fragment);
         }
-        item.append(action('确认此项', () => {
-          try {
-            if(!fragment && issue.code!=='row_alignment_unverified')throw new Error('无法定位原表，请重新打开文件。');
-            const reason=fragment?actionReceipt(fragment,'确认预览标记',issue.row,issue.column):'用户操作：确认跨页行对应关系';
-            const editor = document.getElementById('pdfPlanEditor');
-            const plan = readEditingPlan();
-            if (issue.code === 'row_alignment_unverified') {
-              plan.row_alignment_review = {reason};
-            } else if (issue.code === 'uncertain_cell') {
-              plan.cell_corrections = (plan.cell_corrections || []).filter(c => !(c.fragment_id === issue.fragment_id && c.row === issue.row && c.column === issue.column));
-              plan.cell_corrections.push({fragment_id: issue.fragment_id, row: issue.row, column: issue.column, text: corrected.value, reason});
-            } else {
-              plan.quality_reviews = (plan.quality_reviews || []).filter(r => !(r.fragment_id === issue.fragment_id && r.issue_index === issue.issue_index));
-              plan.quality_reviews.push({fragment_id: issue.fragment_id, issue_index: issue.issue_index, reason});
-            }
-            editor.value = JSON.stringify(plan, null, 2);
-            editor.dispatchEvent(new Event('input', {bubbles: true}));
-            item.replaceChildren(make('span','已确认'));setStatus('已确认，完成后点击确认并入库。');
-          } catch (error) { setStatus(error.message, true); }
-        }, true));
-        box.append(item);
+      }
+      for(const fragment of groups.values()){
+        const item=make('div',undefined,'pdf-quality-item');
+        item.append(make('span',`第 ${fragment.page} 页 · 整表核对（未提供具体位置）`),action('查看这张表',()=>{
+          activeFragmentIndex=fragments().indexOf(fragment);renderFragmentInspector(document.querySelector('.pdf-fragment-pane'),document.querySelector('.pdf-source-viewer'));focusReview();
+        },true));box.append(item);
       }
       pane.append(box);
     }
@@ -223,12 +208,7 @@
     wrap.append(table);
     pane.append(wrap);
     if (rows.length > 100) pane.append(make('p', `仅显示前 100 行；共 ${rows.length} 行。`, 'muted'));
-    const raw = make('details');
-    raw.append(make('summary', '查看完整预览 JSON'));
-    const pre = make('pre');
-    pre.textContent = JSON.stringify(result, null, 2);
-    raw.append(pre);
-    pane.append(raw);
+
   }
 
   const fileIdentity = item => /^[a-f0-9]{64}$/i.test(item.source?.sha256 || '')
@@ -421,45 +401,79 @@
     };
   }
 
-  // Parser protocol codes describe extraction flags, never business intent.
-  const qualityHints = {
-    MODEL_UNCERTAINTY: '请核对文字、表头和单位',
-    MISSING_HEADER: '请补全列名', missing_header: '请补全列名',
-    UNREADABLE_CELL: '请核对标黄的单元格',
-    TRANSCRIPTION_CELL_CONFLICT: '识别结果不一致，请核对标黄的单元格',
-    TRANSCRIPTION_DISAGREEMENT: '请检查是否有漏行或错列',
-    NOT_DOUBLE_TRANSCRIBED: '请对照原件检查这张表',
-    VERIFICATION_INVALID: '请对照原件检查这张表',
-    TABLE_COUNT_DISAGREEMENT: '请检查是否有漏表或重复表格',
-    uncertain_cell: '请核对这个单元格',
-    row_alignment_unverified: '请逐行确认跨页对应关系',
-    extraction_needs_review: '请对照原件检查这张表',
-    transcription_conflict: '请核对识别不一致的内容'
-  };
-  const qualityHint = issue => qualityHints[issue.code] || '请对照原件检查此处';
-  // Receipts describe a user action and real source coordinates, not invented evidence.
   const actionReceipt = (fragment, action, row, column) =>
-    `用户操作：${action}；第 ${fragment.page} 页${row === undefined ? '' : `，第 ${row+1} 行`}${column === undefined ? '' : `，第 ${column+1} 列`}`;
-  function originalIssue(issue) {
-    const details=make('details',undefined,'pdf-technical');
-    details.append(make('summary','查看识别记录'),make('p',issue.message || qualityHint(issue)));
-    return details;
+    `用户操作：${action}；第 ${fragment.page} 页${row===undefined?'':`，第 ${row+1} 行`}${column===undefined?'':`，第 ${column+1} 列`}`;
+  function tableIssues(fragment) {
+    const issues=fragment.quality?.issues||[];
+    return issues.length?issues.map((issue,index)=>({...issue,issue_index:index})):
+      fragment.quality?.status==='needs_review'?[{issue_index:-1}]:[];
   }
-  function confirmQualityIssue(plan, fragment, issueIndex) {
-    plan.quality_reviews=(plan.quality_reviews||[]).filter(r=>!(r.fragment_id===fragment.id&&r.issue_index===issueIndex));
-    plan.quality_reviews.push({fragment_id:fragment.id,issue_index:issueIndex,reason:actionReceipt(fragment,'确认识别标记')});
+  function confirmTableFlags(fragment,parent) {
+    const plan=readEditingPlan();
+    plan.quality_reviews=(plan.quality_reviews||[]).filter(r=>r.fragment_id!==fragment.id);
+    for(const issue of tableIssues(fragment))plan.quality_reviews.push({fragment_id:fragment.id,issue_index:issue.issue_index,reason:actionReceipt(fragment,'对照原件确认整张表')});
+    saveInlinePlan(plan,parent);
+  }
+  function locateCell(fragment,row,column) {
+    activeFragmentIndex=fragments().indexOf(fragment);
+    if(!readEditingPlan().fragment_ids?.includes(fragment.id)&&!beginCorrection(fragment))return;
+    const parent=document.querySelector('.pdf-fragment-pane');
+    renderFragmentInspector(parent,document.querySelector('.pdf-source-viewer'));
+    editCell(fragment,row,column,parent);
+    const cell=parent.querySelector(`[data-source-row="${row}"][data-source-column="${column}"]`);
+    cell?.classList.add('pdf-cell-focused');cell?.scrollIntoView({block:'nearest',inline:'nearest'});
+  }
+  function markHeaderRow(fragment,row,parent) {
+    const plan=readEditingPlan(),headers=plan.header_rows[fragment.id]||[];
+    if(headers.some(h=>h.row===row))plan.header_rows[fragment.id]=headers.filter(h=>h.row!==row);
+    else{
+      const cells=fragment.rows[row];
+      if(cells.every(cell=>!String(cell.text||'').trim()))throw new Error(`第 ${row+1} 行为空，不能用作列名。`);
+      for(const column of plan.columns){
+        const sourceColumn=column.source_columns?.[fragment.id];
+        if(sourceColumn===undefined)continue;
+        const text=plan.cell_corrections?.find(c=>c.fragment_id===fragment.id&&c.row===row&&c.column===sourceColumn)?.text??cells[sourceColumn]?.text;
+        if(text?.trim()){
+          const old=column.name;column.name=text.trim();
+          if(plan.key_columns)plan.key_columns=plan.key_columns.map(key=>key===old?column.name:key);
+        }
+      }
+      plan.header_rows[fragment.id]=[...headers,{row,reason:actionReceipt(fragment,'用作列名行',row)}];
+      plan.excluded_rows=(plan.excluded_rows||[]).filter(r=>!(r.fragment_id===fragment.id&&r.row===row));
+      plan.cell_corrections=(plan.cell_corrections||[]).filter(c=>!(c.fragment_id===fragment.id&&c.row===row));
+    }
+    plan.quality_reviews=(plan.quality_reviews||[]).filter(r=>r.fragment_id!==fragment.id);
+    saveInlinePlan(plan,parent);
+  }
+  function columnHeading(fragment,sourceColumn,plan) {
+    const th=make('th');
+    const index=plan.columns?.findIndex(c=>c.source_columns?.[fragment.id]===sourceColumn)??-1;
+    if(index<0){th.textContent=`第 ${sourceColumn+1} 列`;return th;}
+    const column=plan.columns[index],name=make('input');
+    name.value=column.name;name.setAttribute('aria-label',`第 ${sourceColumn+1} 列名称`);name.dataset.columnName=String(index);
+    name.addEventListener('input',()=>{
+      const updated=readEditingPlan(),old=updated.columns[index].name;
+      updated.columns[index].name=name.value;
+      if(updated.key_columns)updated.key_columns=updated.key_columns.map(key=>key===old?name.value:key);
+      writePlan(updated);
+    });
+    const options=make('details',undefined,'pdf-column-options');options.append(make('summary','格式与单位'));
+    const type=make('select');type.setAttribute('aria-label',`第 ${sourceColumn+1} 列类型`);type.dataset.columnType=String(index);
+    for(const [value,label] of [['text','文本'],['decimal','数字']]){const option=make('option',label);option.value=value;type.append(option);}type.value=column.type;
+    type.addEventListener('change',()=>{const updated=readEditingPlan();updated.columns[index].type=type.value;writePlan(updated);});
+    const unit=make('input');unit.value=column.unit||'';unit.placeholder='单位';unit.dataset.columnUnit=String(index);unit.setAttribute('aria-label',`第 ${sourceColumn+1} 列单位`);
+    unit.addEventListener('input',()=>{const updated=readEditingPlan();if(unit.value.trim())updated.columns[index].unit=unit.value.trim();else delete updated.columns[index].unit;writePlan(updated);});
+    options.append(type,unit);th.append(make('small',`第 ${sourceColumn+1} 列`),name,options);return th;
   }
   function focusReview() {
     const pane=document.querySelector('.pdf-fragment-pane');
-    const detail=pane?.querySelector('.pdf-quality-detail');if(detail)detail.open=true;
+    const detail=pane?.querySelector('.pdf-review-findings');
     document.querySelector('.pdf-review-comparison')?.classList.remove('source-collapsed');
     document.querySelector('.pdf-review-comparison')?.scrollIntoView({block:'start'});
-    const focus=detail?.querySelector('summary') || pane?.querySelector('button');focus?.focus({preventScroll:true});
+    const focus=detail?.querySelector('button') || pane?.querySelector('button');focus?.focus({preventScroll:true});
   }
   function beginCorrection(fragment) {
     const editor=document.getElementById('pdfPlanEditor');
-    const fieldForm=document.getElementById('pdfManualForm');
-    if(fieldForm?.dataset.dirty==='true')fieldForm.savePlan();
     const existing=jsonValue(editor);
     const group=displayedAutomation(draft)?.groups?.find(g=>g.status!=='accepted'&&g.fragment_ids?.includes(fragment.id));
     const ids=group?.plan?.fragment_ids || [fragment.id];
@@ -472,12 +486,10 @@
       editor.value=JSON.stringify(plan,null,2);
     }
     invalidatePreview();
-    const form=document.getElementById('pdfManualForm');renderManualPlanForm(editor,form);
-    document.querySelector('.pdf-manual-details').open=!group?.plan;
     const pane=document.querySelector('.pdf-fragment-pane');
     renderFragmentInspector(pane,document.querySelector('.pdf-source-viewer'));
-    updateSelectionCount();focusReview();
-    setStatus('点击单元格修改，完成后确认入库。');
+    focusReview();
+    setStatus('');
     return true;
   }
   function editCell(fragment,row,column,parent) {
@@ -494,14 +506,12 @@
       renderFragmentInspector(parent,document.querySelector('.pdf-source-viewer'));
       setStatus('修改已暂存');
     }),action('取消',()=>{box.remove();updatePublishButton();},true));
-    if(parent.querySelector('.pdf-quality-detail'))parent.querySelector('.pdf-quality-detail').open=false;
     parent.insertBefore(box,parent.querySelector('.pdf-raw-table'));updatePublishButton();value.focus({preventScroll:true});box.scrollIntoView({block:'nearest'});
   }
 
   function saveInlinePlan(plan,parent) {
     const editor=document.getElementById('pdfPlanEditor');
     editor.value=JSON.stringify(plan,null,2);invalidatePreview();
-    renderManualPlanForm(editor,document.getElementById('pdfManualForm'));
     renderFragmentInspector(parent,document.querySelector('.pdf-source-viewer'));
     setStatus('修改已暂存');
   }
@@ -544,31 +554,34 @@
   }
   function renderFragment(fragment, parent) {
     const rows = fragment.rows || [];
-    let plan={};try{plan=jsonValue(document.getElementById('pdfPlanEditor') || {value:'{}'});}catch{/* Navigation remains available while advanced JSON is incomplete. */}
+    let plan={};try{plan=jsonValue(document.getElementById('pdfPlanEditor') || {value:'{}'});}catch{/* Missing plan does not block source navigation. */}
     const editing=plan.fragment_ids?.includes(fragment.id) && plan.columns?.length>0 && plan.fragment_ids.length===selectedFragments.size && plan.fragment_ids.every(id=>selectedFragments.has(id));
-    const issues=[...(fragment.quality?.issues||[])];
-    if(fragment.quality?.status==='needs_review'&&!issues.length)issues.push({code:'extraction_needs_review'});
-    if(issues.length){
-      const quality=make('details',undefined,'pdf-quality-detail');
-      const remaining=issues.filter((issue,index)=>!(plan.quality_reviews||[]).some(r=>r.fragment_id===fragment.id&&r.issue_index===(issue.code==='extraction_needs_review'&&!fragment.quality?.issues?.length?-1:index))).length;
-      quality.append(make('summary',remaining?`待核对 · ${remaining} 项`:'标记已确认'));quality.open=remaining>0;
-      for(const [index,issue] of issues.entries()){
-        const item=make('div',undefined,'pdf-quality-item');item.append(make('p',qualityHint(issue)));
-        if(editing){
-          const issueIndex=issue.code==='extraction_needs_review'&&!fragment.quality?.issues?.length?-1:index;
-          const saved=(plan.quality_reviews||[]).some(r=>r.fragment_id===fragment.id&&r.issue_index===issueIndex);
-          const confirm=action(saved?'已确认':'确认此项无误',()=>{
-            const updated=readEditingPlan();confirmQualityIssue(updated,fragment,issueIndex);saveInlinePlan(updated,parent);
-          },true);confirm.disabled=saved;item.append(confirm);
-        }
-        quality.append(item);
+    const issues=tableIssues(fragment);
+    const remaining=issues.filter(issue=>!(plan.quality_reviews||[]).some(r=>r.fragment_id===fragment.id&&r.issue_index===issue.issue_index));
+    const uncertain=[];
+    for(const [row,cells] of rows.entries()){
+      if(plan.header_rows?.[fragment.id]?.some(h=>h.row===row)||plan.excluded_rows?.some(r=>r.fragment_id===fragment.id&&r.row===row))continue;
+      for(const [column,cell] of cells.entries())if(cell.uncertain&&!plan.cell_corrections?.some(c=>c.fragment_id===fragment.id&&c.row===row&&c.column===column))uncertain.push({row,column});
+    }
+    for(const issue of remaining)for(const cell of issue.cells||[]){
+      const row=cell.row,column=cell.column;
+      if(Number.isInteger(row)&&Number.isInteger(column)&&fragment.rows[row]?.[column]&&!uncertain.some(c=>c.row===row&&c.column===column)&&!plan.cell_corrections?.some(c=>c.fragment_id===fragment.id&&c.row===row&&c.column===column)&&!plan.header_rows?.[fragment.id]?.some(h=>h.row===row)&&!plan.excluded_rows?.some(r=>r.fragment_id===fragment.id&&r.row===row))uncertain.push({row,column});
+    }
+    if(remaining.length||uncertain.length){
+      const quality=make('section',undefined,'pdf-review-findings');quality.append(make('strong',uncertain.length?`${uncertain.length} 个单元格待确认`:'整表核对'));
+      for(const {row,column} of uncertain){const item=make('div',undefined,'pdf-quality-item');
+        item.append(make('span',`第 ${row+1} 行，第 ${column+1} 列`),action('查看并修改',()=>locateCell(fragment,row,column),true));quality.append(item);
       }
-      if(editing && remaining>1){
-        const all=action('确认以上标记无误',()=>{
-          const updated=readEditingPlan();
-          issues.forEach((issue,index)=>confirmQualityIssue(updated,fragment,issue.code==='extraction_needs_review'&&!fragment.quality?.issues?.length?-1:index));
-          saveInlinePlan(updated,parent);
-        },true);all.title='仅确认上方识别标记；标黄的单元格仍需逐格核对';quality.append(all);
+      if(remaining.length){
+        for(const row of fragment.header_rows||[]){
+          const cells=fragment.rows[row];
+          if(!Number.isInteger(row)||!Array.isArray(cells)||!cells.every(cell=>!String(cell.text||'').trim())||plan.excluded_rows?.some(r=>r.fragment_id===fragment.id&&r.row===row))continue;
+          const blank=make('div',undefined,'pdf-quality-item');blank.append(make('span',`识别结果第 ${row+1} 行为空`),action('查看这一行',()=>{const target=parent.querySelector(`tr[data-source-row="${row}"]`);target?.classList.add('pdf-row-focused');target?.scrollIntoView({block:'nearest'});},true));quality.append(blank);
+        }
+        const item=make('div',undefined,'pdf-quality-item');
+        item.append(make('span',`第 ${fragment.page} 页 · 整表（未提供具体错误位置）`));
+        if(editing)item.append(action('已对照原件核对',()=>confirmTableFlags(fragment,parent),true));
+        quality.append(item);
       }
       parent.append(quality);
     }
@@ -580,14 +593,16 @@
     const table = make('table'), head = make('thead'), header = make('tr');
     header.append(make('th', '行'));
     const width = Math.max(0, ...rows.map(row=>row.length));
-    for (let i=0;i<width;i++) header.append(make('th', `列 ${i+1}`));
+    for (let i=0;i<width;i++) header.append(columnHeading(fragment,i,editing?plan:{}));
     head.append(header);
     const body = make('tbody');
     for (const [rowIndex,row] of rows.entries()) {
-      const tr = make('tr');
-      tr.append(make('th', rowIndex+1));
+      const tr = make('tr');tr.dataset.sourceRow=String(rowIndex);
+      const isHeader=plan.header_rows?.[fragment.id]?.some(h=>h.row===rowIndex);
+      tr.classList.toggle('pdf-header-row',Boolean(isHeader));
+      tr.append(make('th',isHeader?`${rowIndex+1} · 列名`:rowIndex+1));
       for (const [columnIndex,cell] of row.entries()) {
-        const td = make('td');
+        const td = make('td');td.dataset.sourceRow=String(rowIndex);td.dataset.sourceColumn=String(columnIndex);
         const corrected=(plan.cell_corrections||[]).find(c=>c.fragment_id===fragment.id&&c.row===rowIndex&&c.column===columnIndex);
         const edit=action(corrected?.text??cell.text??'',()=>{if(!editing&&!beginCorrection(fragment))return;editCell(fragment,rowIndex,columnIndex,parent);},true);edit.classList.add('pdf-cell-value');edit.setAttribute('aria-label',`修改第 ${rowIndex+1} 行第 ${columnIndex+1} 列`);td.append(edit);
         if(cell.uncertain||corrected){td.classList.add('pdf-cell-flag');td.append(make('small',corrected?'已核对修改':'需核对'));}
@@ -595,12 +610,15 @@
         tr.append(td);
       }
       const excluded=(plan.excluded_rows||[]).some(item=>item.fragment_id===fragment.id&&item.row===rowIndex);
-      const controls=make('td');controls.append(action(excluded?'恢复此行':'删除此行',()=>{
+      const controls=make('td');
+      const menu=make('details',undefined,'pdf-row-menu');menu.append(make('summary','操作'));
+      menu.append(action(isHeader?'改为数据行':'用这行作列名',()=>{if(!editing&&!beginCorrection(fragment))return;markHeaderRow(fragment,rowIndex,parent);},true));
+      menu.append(action(excluded?'恢复此行':'删除此行',()=>{
         if(!editing&&!beginCorrection(fragment))return;
         const editor=document.getElementById('pdfPlanEditor'),updated=readEditingPlan();
         if(excluded){updated.excluded_rows=updated.excluded_rows.filter(item=>!(item.fragment_id===fragment.id&&item.row===rowIndex));saveInlinePlan(updated,parent);}
         else editRowReason(fragment,rowIndex,parent,updated);
-      },true));tr.append(controls);tr.classList.toggle('pdf-excluded-row',excluded);body.append(tr);
+      },true));controls.append(menu);tr.append(controls);tr.classList.toggle('pdf-excluded-row',excluded);body.append(tr);
       for(const inserted of (plan.inserted_rows||[]).filter(item=>item.fragment_id===fragment.id&&item.after_row===rowIndex))body.append(renderInsertedRow(fragment,inserted,parent));
     }
     for(const inserted of (plan.inserted_rows||[]).filter(item=>item.fragment_id===fragment.id&&item.after_row===-1))body.prepend(renderInsertedRow(fragment,inserted,parent));
@@ -625,15 +643,8 @@
     previous.disabled=activeFragmentIndex===0;next.disabled=activeFragmentIndex===items.length-1;
     toolbar.append(picker,previous,next);parent.append(toolbar);
     const fragment=items[activeFragmentIndex];
-    const selection=make('label',undefined,'pdf-fragment-choice');
-    const checkbox=make('input');checkbox.type='checkbox';checkbox.checked=selectedFragments.has(fragment.id);
-    checkbox.addEventListener('change',()=>{if(checkbox.checked)selectedFragments.add(fragment.id);else selectedFragments.delete(fragment.id);invalidatePreview();updateSelectionCount();});
-    selection.append(checkbox,make('span','包含当前表格'));
-    const advanced=make('details',undefined,'pdf-technical');advanced.append(make('summary','跨页合并选择'),selection);parent.append(advanced);
     parent.append(make('p',`第 ${fragment.page} 页 · ${fragment.rows?.length || 0} 行 · ${Math.max(0,...(fragment.rows || []).map(row=>row.length))} 列`,'pdf-table-meta'));
     renderFragment(fragment,parent);
-    const raw=make('details',undefined,'pdf-technical');raw.append(make('summary','来源定位信息'),make('code',fragment.id));
-    if(fragment.bbox)raw.append(make('p',`位置：${JSON.stringify(fragment.bbox)}`));parent.append(raw);
     viewer.dataset.page=String(fragment.page);
     viewer.contentWindow?.postMessage({type:'pdf-source-page',page:fragment.page},location.origin);
   }
@@ -780,138 +791,6 @@
     updateFileProgress();
   }
 
-  function updateSelectionCount() {
-    const target=document.getElementById('pdfSelectionCount');
-    if(target)target.textContent=selectedFragments.size>1?`已选择 ${selectedFragments.size} 处表格`:'';
-    const mapping=document.querySelector('.pdf-mapping-section');if(mapping)mapping.hidden=selectedFragments.size===0;
-  }
-
-  function renderManualPlanForm(editor, parent) {
-    const selected = fragments().filter(fragment => selectedFragments.has(fragment.id));
-    parent.replaceChildren();
-    if (!selected.length) {
-      parent.append(make('p', '先勾选原始片段，再生成手动核对表单。', 'muted'));
-      return;
-    }
-    const currentPlan=jsonValue(editor);
-    const widths = selected.map(fragment => Math.max(0, ...(fragment.rows || []).map(row => row.length)));
-    if (widths.some(width => width !== widths[0]) || widths[0] < 1) {
-      parent.append(make('p', '所选片段列数不同，表单不会尝试推断列对齐。请分别选择兼容片段或使用高级 JSON 明确填写。', 'warning'));
-      return;
-    }
-
-    for (const fragment of selected) {
-      const section = make('fieldset');
-      section.append(make('legend', `第 ${fragment.page} 页的表格`));
-      const headers = make('details');
-      headers.append(make('summary', '选择表头行'));
-      for (const [rowIndex, row] of (fragment.rows || []).entries()) {
-        const label = make('label', undefined, 'row');
-        const checkbox = make('input');
-        checkbox.type = 'checkbox';
-        checkbox.dataset.headerFragment = fragment.id;
-        checkbox.dataset.headerRow = String(rowIndex);
-        checkbox.checked=Boolean(currentPlan.header_rows?.[fragment.id]?.some(h=>h.row===rowIndex));
-        label.append(checkbox, make('span', `第 ${rowIndex+1} 行 · ${row.map(cell => cell.text ?? '').join(' | ')}`));
-        headers.append(label);
-      }
-      const excluded = make('details');
-      excluded.append(make('summary', '不导入的行'));
-      for (const [rowIndex, row] of (fragment.rows || []).entries()) {
-        const label = make('label', undefined, 'row');
-        const checkbox = make('input');
-        checkbox.type = 'checkbox';
-        checkbox.dataset.excludeFragment = fragment.id;
-        checkbox.dataset.excludeRow = String(rowIndex);
-        checkbox.checked=Boolean(currentPlan.excluded_rows?.some(e=>e.fragment_id===fragment.id&&e.row===rowIndex));
-        label.append(checkbox, make('span', `第 ${rowIndex+1} 行 · ${row.map(cell => cell.text ?? '').join(' | ')}`));
-        excluded.append(label);
-      }
-      section.append(headers, excluded);
-      parent.append(section);
-    }
-    const columnSet = make('fieldset');
-    columnSet.append(make('legend', '手动定义列名、类型与单位'));
-    for (let columnIndex = 0; columnIndex < (currentPlan.columns?.length || widths[0]); columnIndex += 1) {
-      const row = make('div', undefined, 'row');
-      const name = make('input');
-      name.type = 'text'; name.value = currentPlan.columns?.[columnIndex]?.name || `列 ${columnIndex + 1}`;
-      name.setAttribute('aria-label', `第 ${columnIndex+1} 列名称`);
-      name.dataset.columnName = String(columnIndex);
-      const type = make('select');
-      type.dataset.columnType = String(columnIndex);
-      type.setAttribute('aria-label', `第 ${columnIndex+1} 列类型`);
-      for (const [value, label] of [['', '请选择类型'], ['text', '文本'], ['decimal', '小数']]) {
-        const option = make('option', label); option.value = value; type.append(option);
-      }
-      type.value=currentPlan.columns?.[columnIndex]?.type||'';
-      const unit = make('input');
-      unit.type = 'text'; unit.placeholder = '单位（可留空）'; unit.dataset.columnUnit = String(columnIndex);unit.value=currentPlan.columns?.[columnIndex]?.unit||'';
-      unit.setAttribute('aria-label', `第 ${columnIndex+1} 列单位`);
-      row.append(make('span', `第 ${columnIndex+1} 列`), name, type, unit);
-      for (const fragment of selected) {
-        const mapping = make('select');
-        mapping.dataset.sourceColumn = String(columnIndex);
-        mapping.dataset.sourceFragment = fragment.id;
-        mapping.setAttribute('aria-label', `${fragment.id} 的逻辑列 ${columnIndex} 来源`);
-        const prompt = make('option', `选择第 ${fragment.page} 页对应的列`); prompt.value = ''; mapping.append(prompt);
-        for (let sourceIndex = 0; sourceIndex < Math.max(...fragment.rows.map(row=>row.length)); sourceIndex += 1) {
-          const option = make('option', `第 ${sourceIndex+1} 列`); option.value = String(sourceIndex); mapping.append(option);
-        }
-        mapping.value=String(currentPlan.columns?.[columnIndex]?.source_columns?.[fragment.id]??'');
-        if(selected.length===1&&currentPlan.columns?.[columnIndex]?.source_columns?.[fragment.id]!==null&&currentPlan.columns?.[columnIndex]?.source_columns?.[fragment.id]!==undefined)mapping.hidden=true;row.append(mapping);
-      }
-      columnSet.append(row);
-    }
-    const saveFields = () => {
-        const previous=jsonValue(editor);
-        const same=previous.fragment_ids?.length===selected.length&&selected.every(f=>previous.fragment_ids.includes(f.id));
-        const plan=same?structuredClone(previous):createManualPlan();
-        plan.header_rows={};plan.excluded_rows=[];
-        for(const key of ['cell_corrections','quality_reviews','inserted_rows'])if(previous[key])plan[key]=previous[key].filter(item=>selectedFragments.has(item.fragment_id));
-        for (const fragment of selected) {
-          const headers = [];
-          for (const checkbox of parent.querySelectorAll(`[data-header-fragment="${CSS.escape(fragment.id)}"]`)) {
-            if (!checkbox.checked) continue;
-            const row = Number(checkbox.dataset.headerRow);
-            const reason = actionReceipt(fragment,'设为表头',row);
-            headers.push({row, reason});
-          }
-          plan.header_rows[fragment.id] = headers;
-          for (const checkbox of parent.querySelectorAll(`[data-exclude-fragment="${CSS.escape(fragment.id)}"]`)) {
-            if (!checkbox.checked) continue;
-            const row = Number(checkbox.dataset.excludeRow);
-            const reason = actionReceipt(fragment,'删除行',row);
-            plan.excluded_rows.push({fragment_id: fragment.id, row, reason});
-          }
-        }
-        plan.columns = plan.columns.map((column, index) => {
-          const name = parent.querySelector(`[data-column-name="${index}"]`).value.trim();
-          if (!name) throw new Error(`第 ${index+1} 列需要列名。`);
-          const type = parent.querySelector(`[data-column-type="${index}"]`).value;
-          if (!type) throw new Error(`第 ${index+1} 列请选择文本或小数类型。`);
-          const unit = parent.querySelector(`[data-column-unit="${index}"]`).value.trim();
-          const source_columns = Object.fromEntries(selected.map(fragment => {
-            const value = parent.querySelector(`[data-source-column="${index}"][data-source-fragment="${CSS.escape(fragment.id)}"]`)?.value;
-            if (value === '' && plan.join_mode==='horizontal' && !(fragment.id in column.source_columns)) return null;
-            if (value === undefined || value === '') throw new Error(`第 ${index+1} 列请选择第 ${fragment.page} 页对应的原始列。`);
-            return [fragment.id, Number(value)];
-          }).filter(Boolean));
-          const {unit: previousUnit,...rest}=column;
-          return {...rest, name, type, source_columns,
-            ...(unit ? {unit} : {})};
-        });
-        editor.value = JSON.stringify(plan, null, 2);
-        editor.dispatchEvent(new Event('input', {bubbles: true}));
-        parent.dataset.dirty='false';
-        setStatus('字段已保存');
-    };
-    parent.savePlan=saveFields;parent.dataset.dirty='false';
-    parent.oninput=()=>{parent.dataset.dirty='true';invalidatePreview();};
-    parent.onchange=parent.oninput;
-    parent.append(columnSet,action('保存字段',()=>{try{saveFields();}catch(error){setStatus(error.message,true);}},true));
-  }
-
   async function selectDraft(id) {
     const savedEpoch = epoch;
     const savedOperation = ++operation;
@@ -946,7 +825,7 @@
       const pending=displayedAutomation(draft)?.groups?.find(g=>g.status!=='accepted');
       activeFragmentIndex=Math.max(0,fragments().findIndex(f=>pending?.fragment_ids?.includes(f.id)));
       renderSelectedDraft();
-      if(pending?.plan){const first=fragments().find(f=>pending.fragment_ids.includes(f.id));if(first)beginCorrection(first);}
+      if(pending||!tables.some(t=>t.draft_id===id)){const first=fragments()[activeFragmentIndex];if(first)beginCorrection(first);}
       setStatus('');
       return true;
     } catch (error) {
@@ -966,42 +845,17 @@
     target.replaceChildren();
     const bundle = draft.bundle || {};
     const src = source(bundle);
-    const parser = bundle.parser || {};
-    const parserProfile = parser.requested_tier
-      ? ` · 请求配置：${parser.requested_tier} / ${parser.requested_ocr_mode || 'auto'}` : '';
     const heading=make('div',undefined,'pdf-review-heading');
     const back=action('返回文件列表',showFileList,true);back.id='pdfBackToFiles';
     const title=make('div');title.append(make('h2',src.file_name || 'PDF 文件'),make('small','表格处理结果'));
     const sourceLink=make('a','打开原件');sourceLink.href=sourceUrl;sourceLink.target='_blank';sourceLink.rel='noopener noreferrer';
     heading.append(back,title,sourceLink);target.append(heading);
     renderAutomation(target);
-    const provenance=make('details',undefined,'pdf-technical');
-    provenance.append(make('summary','文件与解析信息'),make('p',`SHA256：${src.sha256 || '未知'} · 解析器：${parser.engine || '未知'} ${parser.version || ''}${parserProfile} · 提取状态：未独立验证。`));
-    const cleaning=bundle.preprocessing;if(cleaning?.status==='cleaned')target.append(make('p',`已在识别副本中去除文字水印，上传原件保留。覆盖 ${cleaning.pages?.length||0} 页。`,'muted'));
+    const editor=make('textarea');editor.id='pdfPlanEditor';editor.hidden=true;
+    editor.value=JSON.stringify({bundle_sha256:draft.bundle_sha256,fragment_ids:[],header_rows:{},columns:[],excluded_rows:[],boundary_merges:[]});
+    target.append(editor);
     const viewer=createSourceViewer();
-    const proposals = bundle.continuation_proposals || [];
-    if (proposals.length) {
-      const proposed = make('details');
-      proposed.append(make('summary', `跨页关系候选 · ${proposals.length} 项（尚未确认）`));
-      proposed.append(make('p', '候选仅帮助定位，选择不会合并或发布；请检查原件后请求映射并逐项预览。', 'warning'));
-      const actualIds = new Set((bundle.fragments || []).map(f => f.id));
-      for (const proposal of proposals) {
-        const item = make('div');
-        const leftPage = fragments().find(f=>f.id===proposal.left_fragment_id)?.page ?? '未知';
-        const rightPage = fragments().find(f=>f.id===proposal.right_fragment_id)?.page ?? '未知';
-        item.append(make('p', `第 ${leftPage} 页与第 ${rightPage} 页 · ${proposal.kind === 'horizontal' ? '横向续列' : proposal.kind === 'vertical' ? '纵向续行' : '关系不确定'} · ${proposal.reason || ''}`));
-        if (actualIds.has(proposal.left_fragment_id) && actualIds.has(proposal.right_fragment_id)) {
-          item.append(action('选择这组片段核对', () => {
-            selectedFragments = new Set([proposal.left_fragment_id, proposal.right_fragment_id]);
-            invalidatePreview();
-            renderSelectedDraft();
-            setStatus('已选择候选片段；请核对原件后请求 AI 映射建议，不会自动合并或发布。');
-          }, true));
-        }
-        proposed.append(item);
-      }
-      target.append(proposed);
-    }
+    heading.append(action('重新解析',()=>reparseDraft('standard','auto'),true));
     const sourceAndTables=make('div',undefined,'pdf-review-comparison');
     const original=make('div',undefined,'pdf-original-pane');
     const originalHeading=make('div',undefined,'pdf-original-heading');originalHeading.append(make('h3','原始文件'),action('收起原件',event=>{
@@ -1011,76 +865,8 @@
     const fragmentList=make('div',undefined,'pdf-fragment-pane');
     sourceAndTables.append(showOriginal,original,fragmentList);target.append(sourceAndTables);
     renderFragmentInspector(fragmentList,viewer);
-    const supporting=make('details',undefined,'pdf-supporting');supporting.append(make('summary','更多来源线索'));
-    const formulas = bundle.formulas || [];
-    if (formulas.length) {
-      const formulaList = make('details');
-      formulaList.append(make('summary', `公式线索 · ${formulas.length} 项（仅为识别线索，不可执行）`));
-      for (const formula of formulas) formulaList.append(make('p', `第 ${formula.page || '未知'} 页 · ${formula.latex || formula.text || JSON.stringify(formula)}`));
-      supporting.append(formulaList);
-    }
-    const context = bundle.page_context || [];
-    const contextDetails = make('details');
-    contextDetails.append(make('summary', `页面上下文（未绑定到表格） · ${context.length} 项`));
-    if (bundle.page_context_coverage === 'incomplete') contextDetails.append(make('p', `上下文提取不完整：${(bundle.page_context_warnings || []).join('；')}`, 'warning'));
-    contextDetails.append(make('p', '这些解析器文本保留原始页码、位置和区块类型，只作为候选证据。它们不自动成为任何表格的单位、标题或脚注。', 'muted'));
-    for (const item of context) contextDetails.append(make('p', `第 ${item.page ?? '未知'} 页 · ${item.block_type || '未知区块'} · ${item.text || item.text_parts?.join('') || ''}${item.bbox ? ` · 坐标 ${JSON.stringify(item.bbox)}` : ''}`));
-    if (context.length || bundle.page_context_coverage === 'incomplete') supporting.append(contextDetails);
-    if ((bundle.fragments || []).some(fragment => (fragment.rows || []).some(row => row.every(cell => !String(cell.text || '').trim())))) {
-      supporting.append(make('p', '检测到全空原始行。请对照 PDF 核对；这些行不会在审核界面中自动删除。', 'warning'));
-    }
-    if (formulas.length) supporting.append(make('p', '公式仅保留识别到的 LaTeX/文本，没有解析器置信度证明，也不会自动计算。', 'warning'));
-    target.append(supporting);
-    const mappingSection=make('div',undefined,'pdf-mapping-section');
-    mappingSection.append(make('h3','表格设置'));
-    const selectionCount=make('span','','pdf-selection-count');selectionCount.id='pdfSelectionCount';mappingSection.append(selectionCount);
-    const manualTitle = make('h3', '设置列名与表头');
-    const manualForm = make('div');manualForm.id='pdfManualForm';
-    const planDetails = make('details');
-    planDetails.append(make('summary', '高级映射 JSON'));
-    const planHelp = make('p', 'header_rows 的 row 为片段内零起算行号；每列 source_columns 必须为每个片段填写原始零起算列号。表头移除需填写 {row, reason}。边界续接需显式填写 boundary_merges。横向续列使用 join_mode:horizontal、key_columns 和 row_groups；每列 source_columns 只映射实际贡献片段，每个数据行必须显式对应。缺少行标识时必须独立核对原件。修正使用 cell_corrections:[{fragment_id,row,column,text,reason}]，保留原文。', 'muted');
-    const editor = make('textarea');
-    editor.id = 'pdfPlanEditor';
-    editor.rows = 20;
-    editor.spellcheck = false;
-    editor.setAttribute('aria-label', 'PDF 表格映射计划 JSON');
-    editor.value = JSON.stringify({bundle_sha256: draft.bundle_sha256, fragment_ids: [], header_rows: {}, columns: [], excluded_rows: [], boundary_merges: []}, null, 2);
-    editor.addEventListener('input', () => {invalidatePreview();const form=document.getElementById('pdfManualForm');if(form?.isConnected){try{renderManualPlanForm(editor,form);}catch{form.replaceChildren();form.dataset.dirty='false';}}});
-    planDetails.append(planHelp, editor);
-    const manualDetails=make('details',undefined,'pdf-manual-details');manualDetails.append(make('summary','列名、表头与单位'),manualTitle,manualForm,planDetails);
-    const controls = make('div', undefined, 'row');
-    controls.style.marginTop = '12px';
-    const reparseControls=make('details',undefined,'pdf-reparse-controls');
-    reparseControls.append(make('summary','重新解析'));
-    reparseControls.append(make('h3','重新读取文件'),make('p','适合文件没有读全或识别服务已经调整后再试。已有入库表格继续保留；原件本身看不清时，请更换清晰文件。','muted'));
-    if(config.engine==='remote_vlm'){
-      reparseControls.append(action('重新读取原文件',()=>reparseDraft('standard','auto').catch(error=>setStatus(error.message,true)),true),make('p','当前服务统一使用已配置的识别模型，不提供模型档位或读取方式选择。同一文件和相同配置可能复用已有结果；已标出的疑点请在下方核对修改。','muted'));
-    }else{
-      const modeLabel=make('label','读取方式');const reparseMode=make('select');reparseMode.id='pdfReparseOcrMode';reparseMode.setAttribute('aria-label','文件读取方式');
-      for(const [value,label] of [['auto','自动判断（建议）'],['ocr','按图片读取'],['txt','读取文件内的文字']]){const option=make('option',label);option.value=value;reparseMode.append(option);}
-      modeLabel.append(reparseMode);reparseControls.append(modeLabel,make('p','自动判断：由服务选择方式。按图片读取：适合扫描件。读取文件内的文字：适合文字可复制的 PDF，扫描件可能读不到。','muted'));
-      const row=make('div',undefined,'row');
-      for(const [tier,label,description] of [['basic','按基础档重新识别','使用服务的基础档位重新读取。'],['standard','按标准档重新识别','改用服务的标准档位重新读取；效果和耗时取决于服务配置。']]){const option=make('div');option.append(action(label,()=>reparseDraft(tier,reparseMode.value).catch(error=>setStatus(error.message,true)),true),make('p',description,'muted'));row.append(option);}
-      reparseControls.append(row);
-    }
-    target.append(reparseControls,provenance);
-    const manualTemplate = action('重新设置所选表格的字段', () => {
-        try {
-          editor.value = JSON.stringify(createManualPlan(), null, 2);
-          renderManualPlanForm(editor, manualForm);
-          manualDetails.open = true;
-          invalidatePreview('手动计划已创建，请填写表头、列名、单位与跨页关系，再预览。');
-        } catch (error) { setStatus(error.message, true); }
-      }, true);
-    manualDetails.insertBefore(manualTemplate, manualTitle);
-    controls.append(
-      Object.assign(action('识别表格字段', () => suggestPlan().catch(error => setStatus(error.message, true))), {id:'pdfSuggestPlan'}),
-      action('查看入库预览', () => previewPlan().catch(error => setStatus(error.message, true)), true)
-    );
-    const instructions=make('textarea');instructions.id='pdfInstructions';instructions.rows=2;instructions.placeholder='补充需要核对的表头、单位或跨页关系';instructions.setAttribute('aria-label','补充核对说明');
-    const options=make('details',undefined,'pdf-instructions');options.append(make('summary','补充核对说明（可选）'),instructions);
-    mappingSection.append(controls,options,manualDetails);
-    target.append(mappingSection);updateSelectionCount();
+    const controls=make('div',undefined,'pdf-table-actions');
+    controls.append(action('查看入库预览',()=>previewPlan(),true));target.append(controls);
     const confirmation = make('div', undefined, 'mapping-block');
 
     const publish = action('确认并入库', () => confirmPlan().catch(error => setStatus(error.message, true)));
@@ -1092,7 +878,7 @@
     previewPane.id = 'pdfPreview';
     previewPane.append(make('p', '选择片段并预览映射后，结果会显示在这里。', 'muted'));
     publishSection.append(make('h3','入库预览'),previewPane);target.append(publishSection);
-    confirmation.classList.add('pdf-confirm-bar');confirmation.prepend(make('span','修改完成后，确认保存当前表格','muted'));target.append(confirmation);
+    confirmation.classList.add('pdf-confirm-bar');target.append(confirmation);
     const status=make('p','','pdf-detail-status');status.id='pdfDetailStatus';status.setAttribute('role','status');target.append(status);
     updateFileProgress();
     updatePublishButton();
@@ -1103,9 +889,8 @@
     const editor = document.getElementById('pdfPlanEditor');
     let plan={};try{plan=jsonValue(editor||{value:'{}'});}catch{/* Invalid JSON cannot be submitted. */}
     if (publish) {
-      const dirtyFields=document.getElementById('pdfManualForm')?.dataset.dirty==='true';
       const pendingEdit=Boolean(document.querySelector('.pdf-cell-editor'));
-      const saved=publishedSignature===JSON.stringify(plan)&&!dirtyFields&&!pendingEdit;
+      const saved=publishedSignature===JSON.stringify(plan)&&!pendingEdit;
       publish.textContent=saved?'已入库':submitting?'正在保存…':'确认并入库';
       publish.disabled=saved||submitting||!plan.columns?.length||!plan.fragment_ids?.length;
       publish.closest('.pdf-confirm-bar').hidden=!plan.columns?.length;
@@ -1119,8 +904,6 @@
       const savedEpoch=epoch,savedOperation=operation,id=draft?.draft_id;
       const pendingEdit=document.querySelector('.pdf-cell-editor');
       if(pendingEdit){pendingEdit.querySelector('button')?.click();if(pendingEdit.isConnected)throw new Error('请先完成当前修改。');}
-      const form=document.getElementById('pdfManualForm');
-      if(form?.dataset.dirty==='true')form.savePlan();
       const plan=readEditingPlan();
       if(!preview || JSON.stringify(plan)!==previewSignature)await previewPlan();
       if(!current(savedEpoch,savedOperation)||draft?.draft_id!==id)return;
@@ -1129,45 +912,14 @@
     } finally {submitting=false;updatePublishButton();}
   }
 
-  async function suggestPlan() {
-    if (!draft) throw new Error('请先打开一个 PDF 草稿。');
-    const ids = fragments().filter(fragment => selectedFragments.has(fragment.id)).map(fragment => fragment.id);
-    if (!ids.length) throw new Error('请先勾选希望核对的表片段。');
-    const savedEpoch = epoch;
-    const savedOperation = operation;
-    setStatus('正在识别表格字段…');
-    const result = await api(`/api/pdf/drafts/${encodeURIComponent(draft.draft_id)}/suggest`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({fragment_ids: ids, instructions: document.getElementById('pdfInstructions')?.value || ''})
-    }, 120000);
-    if (!current(savedEpoch, savedOperation)) return;
-    if (result.status !== 'ready' || !result.plan) {
-      preview = null;
-      previewSignature = '';
-      invalidatePreview(result.message || '建议需要进一步核对；请调整片段选择或手动填写计划。');
-      setStatus(result.message || '模型未给出可验证计划，请人工调整。', true);
-      return;
-    }
-    const editor = document.getElementById('pdfPlanEditor');
-    const previous=jsonValue(editor);
-    const hasReview=['cell_corrections','quality_reviews'].some(key=>previous[key]?.length);
-    for(const key of ['cell_corrections','quality_reviews'])if(previous[key])result.plan[key]=previous[key].filter(item=>ids.includes(item.fragment_id));
-    editor.value = JSON.stringify(result.plan, null, 2);
-    renderManualPlanForm(editor,document.getElementById('pdfManualForm'));
-    renderFragmentInspector(document.querySelector('.pdf-fragment-pane'),document.querySelector('.pdf-source-viewer'));
-    if(hasReview){await previewPlan();return;}
-    preview = result.preview || null;
-    previewSignature = JSON.stringify(result.plan);
-    if (preview) renderPlanPreview(preview);
-    updatePublishButton();
-    setStatus('字段已识别');
-  }
-
   async function previewPlan() {
     if (!draft) throw new Error('请先打开一个 PDF 草稿。');
-    const form=document.getElementById('pdfManualForm');
-    if(form?.dataset.dirty==='true')form.savePlan();
     const plan = jsonValue(document.getElementById('pdfPlanEditor'));
+    const names=new Set();
+    for(const [index,column] of (plan.columns||[]).entries()){
+      const name=column.name.trim();if(!name)throw new Error(`第 ${index+1} 列还没有名称。`);
+      if(names.has(name.toLowerCase()))throw new Error(`列名“${name}”重复，请为每列填写不同名称。`);names.add(name.toLowerCase());
+    }
     if(plan.fragment_ids?.length!==selectedFragments.size || plan.fragment_ids.some(id=>!selectedFragments.has(id)))throw new Error('当前选择的表格已经改变，请先为所选表格设置字段，再预览。');
     const savedEpoch = epoch;
     const savedOperation = operation;
@@ -1202,7 +954,6 @@
     preview = null;
     previewSignature = '';
     publishedSignature=JSON.stringify(plan);
-    document.querySelector('.pdf-manual-details').open=false;
     updatePublishButton();
     setStatus('已入库，可用于查询与问答。');
     await loadTables(savedEpoch, savedOperation);

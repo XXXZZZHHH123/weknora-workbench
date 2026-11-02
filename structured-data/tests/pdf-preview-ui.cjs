@@ -19,6 +19,7 @@ function pdf(){
 const raw=pdf();
 const draft={draft_id:'pdfd_fixture',bundle_sha256:'a'.repeat(64),bundle:{source:{file_name:'Preview fixture.pdf',sha256:'b'.repeat(64)},parser:{engine:'fixture'},fragments:[{id:'first',page:1,rows:[[{text:'Metric'},{text:'Value'}],[{text:'A'},{text:'-1.20'}]]},{id:'second',page:3,rows:[[{text:'Label'},{text:'Amount'}],[{text:'B'},{text:'2.30'}]]}]}};
 draft.bundle.fragments[1].quality={status:'needs_review',issues:[{code:'TRANSCRIPTION_CELL_CONFLICT'}]};draft.bundle.fragments[1].rows[1][1].uncertain=true;
+if(process.env.PDF_UNLOCATED_FIXTURE){draft.bundle.fragments[1]={id:'second',page:3,header_rows:[0],rows:[['','',''],['名称一','Label A','10'],['名称二','Label B','20'],['名称三','Label C','30'],['名称四','Label D','40'],['名称五','Label E','50']].map(row=>row.map(text=>({text}))),quality:{status:'needs_review',issues:[{code:'MODEL_UNCERTAINTY',message:'The table has no printed column headers'},{code:'MISSING_HEADER'},{code:'TRANSCRIPTION_DISAGREEMENT'}]}};}
 let automation=null,automaticCalls=0;
 const calls=[];
 const tables=()=>automation?Array.from({length:automation.accepted_count},(_,i)=>({table_id:'pdft_'+i,draft_id:draft.draft_id,source:draft.bundle.source,status:'auto_accepted',columns:[],coverage:{logical_row_count:1}})):[];
@@ -93,6 +94,9 @@ const server=http.createServer(async(req,res)=>{
   await page.getByRole('button',{name:'查看疑点',exact:true}).click();
   assert.equal(await page.locator('#pdfFragmentSelect').inputValue(),'1');
   if(process.env.PDF_PREVIEW_EVIDENCE){fs.mkdirSync(process.env.PDF_PREVIEW_EVIDENCE,{recursive:true});await page.locator('#pdfDraftDetail').evaluate(e=>e.scrollTop=0);await page.screenshot({path:path.join(process.env.PDF_PREVIEW_EVIDENCE,'review-desktop.png')});await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(process.env.PDF_PREVIEW_EVIDENCE,'review-mobile.png')});assert(await page.locator('#pdfDraftDetail').evaluate(e=>e.scrollWidth<=e.clientWidth+1),'narrow review should not overflow horizontally');await page.setViewportSize({width:1500,height:1000});}
+  assert.equal(await page.locator('#pdfManualForm,.pdf-supporting,.pdf-technical,.pdf-mapping-section').count(),0);
+  assert.doesNotMatch(await page.locator('#pdfDraftDetail').innerText(),/请补全列名|检查是否有漏行|请核对文字|高级映射|更多来源线索/);
+  if(process.env.PDF_UNLOCATED_FIXTURE){assert.equal(await page.locator('.pdf-raw-table thead [data-column-name]').count(),3);assert.match(await page.locator('.pdf-review-findings').innerText(),/第 1 行为空/);assert.equal(await page.getByRole('button',{name:'已对照原件核对',exact:true}).count(),1);await page.getByRole('button',{name:'查看这一行',exact:true}).click();assert.equal(await page.locator('tr.pdf-row-focused').getAttribute('data-source-row'),'0');const firstMenu=page.locator('.pdf-raw-table tbody tr').first().locator('.pdf-row-menu');await firstMenu.locator('summary').click();await firstMenu.getByRole('button',{name:'用这行作列名',exact:true}).click();assert.match(await page.locator('#pdfReviewStatus').innerText(),/第 1 行为空/);assert.deepEqual(JSON.parse(await page.locator('#pdfPlanEditor').inputValue()).header_rows.second,[]);await firstMenu.locator('summary').click();}
   const currentViewer=await page.locator('.pdf-source-viewer').elementHandle();
   await page.locator('#pdfAutoProcess').click();
   await page.waitForFunction(()=>document.querySelector('.pdf-automation strong')?.textContent==='解析完成 · 已入库 2 张');

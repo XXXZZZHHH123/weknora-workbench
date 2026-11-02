@@ -31,65 +31,55 @@ const server=http.createServer(async(req,res)=>{try{
  try{const page=await browser.newPage({viewport:{width:1450,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto('http://127.0.0.1:'+server.address().port);
  await page.locator('.pdf-file-actions button').last().click();await page.locator('#pdfFragmentSelect').waitFor();
- assert.equal(await page.locator('.pdf-reparse-controls').evaluate(e=>e.tagName),'DETAILS');
- assert.equal(await page.locator('.pdf-reparse-controls').evaluate(e=>e.open),false);
- assert.equal(await page.locator('.pdf-reparse-controls button').count(),1);
- assert.equal(await page.locator('#pdfReparseOcrMode').count(),0);
- assert.equal(await page.locator('[data-column-name="1"]').inputValue(),'金额','validated automatic fields are restored');
- assert.equal(await page.locator('[data-column-unit="1"]').inputValue(),'原件单位');
- assert.equal(await page.locator('.pdf-manual-details').evaluate(e=>e.open),false,'recognized fields stay collapsed');
- await page.locator('.pdf-exception-drawer>summary').click();await page.getByRole('button',{name:'查看疑点',exact:true}).click();
- assert.equal(await page.locator('.pdf-quality-detail').evaluate(e=>e.open),true);
- assert.match(await page.locator('.pdf-quality-item>p').first().innerText(),/识别结果不一致/);
- assert.equal(await page.locator('.pdf-quality-item>details').evaluateAll(items=>items.some(e=>e.open)),false);
- // A cell is editable immediately, without finding a separate mode switch.
- await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();
- await page.getByRole('button',{name:'取消',exact:true}).last().click();
- const editing=await page.locator('.pdf-source-viewer').elementHandle();
- assert(await page.locator('.pdf-raw-table').evaluate(e=>e.clientHeight>=230),'multiple doubts must leave a usable table viewport');
- await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();
- assert.equal(await page.getByRole('textbox',{name:'单元格核对依据',exact:true}).count(),0);
+ assert.equal(await page.locator('#pdfManualForm,.pdf-mapping-section,.pdf-supporting,.pdf-technical').count(),0);
+ assert.equal(await page.getByRole('button',{name:'重新解析',exact:true}).count(),1);
+ assert.equal(await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).inputValue(),'金额');
+ assert.equal(await page.locator('#pdfPlanEditor').isVisible(),false);
+ assert.match(await page.locator('.pdf-review-findings').innerText(),/第 2 行，第 2 列/);
+ assert.match(await page.locator('.pdf-review-findings').innerText(),/未提供具体错误位置/);
+ assert.doesNotMatch(await page.locator('#pdfDraftDetail').innerText(),/请补全列名|检查是否有漏行|请核对文字|更多来源线索|表格设置|高级映射/);
+ // The issue action opens exactly the cited cell, not a generic form.
+ await page.locator('.pdf-review-findings .pdf-quality-item').filter({hasText:'第 2 行，第 2 列'}).getByRole('button',{name:'查看并修改'}).click();
+ assert.match(await page.locator('.pdf-cell-editor legend').innerText(),/第 2 行 · 第 2 列/);
+ assert.equal(await page.locator('td.pdf-cell-focused').getAttribute('data-source-row'),'1');
  await page.getByRole('textbox',{name:'核对后的单元格内容',exact:true}).fill('-1.20');
  await page.getByRole('button',{name:'保存修改',exact:true}).click();
- assert.equal(await editing.evaluate(e=>e.isConnected),true);
- await page.getByRole('button',{name:'确认以上标记无误',exact:true}).click();
- const onlyFlags=await page.locator('#pdfPlanEditor').inputValue();assert.equal(JSON.parse(onlyFlags).quality_reviews.length,3);assert.equal(JSON.parse(onlyFlags).cell_corrections.length,1);
- await page.locator('.pdf-raw-table tbody tr').nth(2).getByRole('button',{name:'删除此行',exact:true}).click();
-await page.getByRole('button',{name:'确认删除此行',exact:true}).click();
- assert.equal(await page.locator('.pdf-excluded-row').count(),1);
- await page.getByRole('button',{name:'恢复此行',exact:true}).click();assert.equal(await page.locator('.pdf-excluded-row').count(),0);
+ const viewer=await page.locator('.pdf-source-viewer').elementHandle();
+ const menu=()=>page.locator('.pdf-raw-table tbody tr').nth(2).locator('.pdf-row-menu');
+ await menu().locator('summary').click();await menu().getByRole('button',{name:'删除此行',exact:true}).click();
+ assert.equal(await page.getByRole('textbox',{name:'行修改的原件依据'}).count(),0);
+ await page.getByRole('button',{name:'确认删除此行',exact:true}).click();assert.equal(await page.locator('.pdf-excluded-row').count(),1);
+ await menu().locator('summary').click();await menu().getByRole('button',{name:'恢复此行',exact:true}).click();assert.equal(await page.locator('.pdf-excluded-row').count(),0);
  await page.getByRole('button',{name:'补充漏掉的行',exact:true}).click();
  await page.getByRole('textbox',{name:'补行第 1 列',exact:true}).fill('Missing');await page.getByRole('textbox',{name:'补行第 2 列',exact:true}).fill('-2.50');
-await page.getByRole('button',{name:'保存补充行',exact:true}).click();
- assert.equal(await page.locator('.pdf-inserted-row').count(),1);
- await page.locator('.pdf-manual-details').evaluate(e=>e.open=true);
- await page.locator('[data-column-name="0"]').fill('项目');await page.locator('[data-column-name="1"]').fill('金额');
- await page.locator('[data-column-type="1"]').selectOption('decimal');
- await page.locator('[data-column-unit="1"]').fill('');
- await page.locator('[data-header-fragment][data-header-row="0"]').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});
- // One final button applies unsaved field settings, validates, and then publishes.
- assert.equal(await page.locator('#pdfPublishReviewed').count(),0);
+ await page.getByRole('button',{name:'保存补充行',exact:true}).click();assert.equal(await page.locator('.pdf-inserted-row').count(),1);
+ const headerMenu=()=>page.locator('.pdf-raw-table tbody tr').first().locator('.pdf-row-menu');
+ await headerMenu().locator('summary').click();await headerMenu().getByRole('button',{name:'改为数据行',exact:true}).click();
+ await headerMenu().locator('summary').click();await headerMenu().getByRole('button',{name:'用这行作列名',exact:true}).click();
+ assert.equal(await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).inputValue(),'Amount');
+ await page.getByRole('textbox',{name:'第 1 列名称',exact:true}).fill('项目');await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('金额');
+ const options=page.locator('.pdf-column-options').nth(1);await options.locator('summary').click();
+ await page.getByRole('combobox',{name:'第 2 列类型',exact:true}).selectOption('decimal');await page.getByRole('textbox',{name:'第 2 列单位',exact:true}).fill('');
+ await page.getByRole('button',{name:'已对照原件核对',exact:true}).click();
+ let plan=JSON.parse(await page.locator('#pdfPlanEditor').inputValue());assert.equal(plan.quality_reviews.length,3);assert.equal(plan.cell_corrections.length,1);
+ assert(await viewer.evaluate(e=>e.isConnected));
  await page.locator('#pdfPublish').click();await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('待核对'));
- assert.equal(publishes,0,'blank uncertain cells cannot be waived by confirming quality flags');
- assert.equal(await page.locator('#pdfPreview input').count(),1);
- await page.getByRole('button',{name:'确认此项',exact:true}).click();
- // Final confirmation also saves an open cell editor, including an unchanged value.
- await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();
- await page.getByRole('textbox',{name:'核对后的单元格内容',exact:true}).fill('-1.20');
- await page.locator('#pdfPublish').click();
- await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('待核对'));
- await page.getByRole('button',{name:'确认以上标记无误',exact:true}).click();
- await page.locator('#pdfPublish').click();await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('已入库，可用于'));
+ assert.equal(publishes,0,'whole-table confirmation cannot waive an uncertain blank cell');
+ await page.locator('#pdfPreview').getByRole('button',{name:'查看并修改',exact:true}).click();
+ assert.equal(await page.getByRole('textbox',{name:'核对后的单元格内容'}).inputValue(),'');
+ // Final confirmation saves this open editor, then still requires table flags to be confirmed.
+ await page.locator('#pdfPublish').click();await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('待核对'));
+ await page.getByRole('button',{name:'已对照原件核对',exact:true}).click();await page.locator('#pdfPublish').click();
+ await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('已入库，可用于'));
  assert.equal(publishes,1);await page.waitForFunction(()=>document.querySelector('#pdfAutomationSlot strong')?.textContent==='解析完成 · 已入库 1 张');
- assert.equal(await page.getByRole('button',{name:'查看疑点',exact:true}).count(),0,'resolved review no longer appears as pending');
  const table=store('tables').tables[0],data=store('query',{id:table.table_id});assert.match(JSON.stringify(data),/-1.2/);
  assert.deepEqual(store('draft',{id:original.draft_id}).bundle,original.bundle);
- assert.equal(table.extraction_verified,false);assert.equal('unit' in table.columns[1],false,'clearing a unit removes the old unit');assert.equal(await page.locator('#pdfPublish').isDisabled(),true);assert.equal(table.coverage.cell_correction_count,2);assert.equal(table.coverage.manual_inserted_row_count,1);assert.match(JSON.stringify(data),/manual_transcription/);
- // Previously saved tables can be edited again; cancelling restores the saved state.
+ assert.equal(table.extraction_verified,false);assert.equal('unit' in table.columns[1],false);assert.equal(table.coverage.cell_correction_count,2);assert.equal(table.coverage.manual_inserted_row_count,1);
+ assert.equal(await page.locator('#pdfPublish').isDisabled(),true);
  await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();assert.equal(await page.locator('#pdfPublish').isDisabled(),false);
  await page.getByRole('button',{name:'取消',exact:true}).last().click();assert.equal(await page.locator('#pdfPublish').isDisabled(),true);
  assert.deepEqual(errors,[]);
- if(process.env.PDF_CORRECTION_EVIDENCE){fs.mkdirSync(process.env.PDF_CORRECTION_EVIDENCE,{recursive:true});await page.screenshot({path:path.join(process.env.PDF_CORRECTION_EVIDENCE,'correction-published.png'),fullPage:true});fs.writeFileSync(path.join(process.env.PDF_CORRECTION_EVIDENCE,'result.json'),JSON.stringify({table,data,publishes,originalUnchanged:true,errors},null,2));}
- console.log('PASS: Chinese issue opens and focuses, direct correction without written reasons, bulk flags cannot waive uncertain cells, one-button validation/publication, field edits preserve correction, real store preview/publish/query, original unchanged, resolved issue removed, truthful visible parser options.');
+ if(process.env.PDF_CORRECTION_EVIDENCE){fs.mkdirSync(process.env.PDF_CORRECTION_EVIDENCE,{recursive:true});await page.locator('#pdfDraftDetail').evaluate(e=>e.scrollTop=0);await page.screenshot({path:path.join(process.env.PDF_CORRECTION_EVIDENCE,'correction-published.png')});}
+ console.log('PASS: direct column/format/header edits, exact source-cell focus, consolidated unlocated review, no explanatory/settings panels, no uncertain-cell bypass, real store publication, immutable original, repeat edit.');
  }finally{await browser.close();server.close();fs.rmSync(dir,{recursive:true,force:true});}
 })().catch(e=>{console.error(e);server.close();process.exitCode=1});

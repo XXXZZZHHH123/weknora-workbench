@@ -342,3 +342,18 @@ html{scrollbar-gutter:stable}html.pdf-detail-open{overflow:hidden}
 .pdf-automatic-progress:empty{display:none}
 
 .pdf-raw-table td.pdf-cell-flag{background:#fff8e5}
+
+/* Source review is edited in the table, without a separate mapping form. */
+.pdf-review-findings{flex-shrink:0;border-left:2px solid var(--warning);padding:8px 10px;margin:8px 0 12px;max-height:210px;overflow:auto;font-size:12px}
+.pdf-review-findings>strong{font-weight:500}.pdf-review-findings .pdf-quality-item{padding:6px 0}
+.pdf-review-findings .pdf-quality-item:last-child{border-bottom:0}
+.pdf-raw-table thead th{min-width:125px;vertical-align:top}.pdf-raw-table thead th:first-child,.pdf-raw-table thead th:last-child{min-width:48px}
+.pdf-raw-table thead th>small{display:block;color:var(--muted);font-weight:400;margin-bottom:4px}
+.pdf-raw-table thead th>input{width:100%;min-width:90px;padding:7px 8px;font-weight:500;box-sizing:border-box}
+.pdf-column-options{font-size:11px;font-weight:400;margin-top:6px}.pdf-column-options select,.pdf-column-options input{width:100%;margin-top:6px}
+.pdf-row-menu{font-size:12px;min-width:60px}.pdf-row-menu summary{cursor:pointer;white-space:nowrap}.pdf-row-menu button{display:block;white-space:nowrap;margin-top:6px}
+.pdf-header-row{background:var(--surface-soft)}.pdf-row-focused,.pdf-cell-focused{outline:2px solid var(--accent);outline-offset:-2px}
+.pdf-table-actions{display:flex;justify-content:flex-end;margin-top:12px}
+.pdf-confirm-bar{justify-content:flex-end}
+.pdf-review-heading>button:last-child{margin-left:0}
+@media(max-width:680px){.pdf-review-findings .pdf-quality-item{gap:8px}.pdf-review-findings .pdf-quality-item>span{min-width:0}.pdf-review-heading>button:last-child{margin-left:auto}}
