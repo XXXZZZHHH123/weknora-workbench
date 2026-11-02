@@ -128,8 +128,10 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	// after deterministic numeric grounding, like a single-model answer with
 	// citations; the independent critic is reserved for synthesis tasks, where
 	// it caught real cross-source and trend errors. Without a planner judgement
-	// the critic still runs; fragments still get the completeness check.
-	if e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && !suspectAnswerFragment(candidate, reasoning) {
+	// the critic still runs; fragments still get the completeness check. Actual
+	// successful PDF SQL analysis retains semantic checking even when the
+	// planner initially chose direct lookup; execution does not certify scope.
+	if e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && !suspectAnswerFragment(candidate, reasoning) && !hasExecutedPDFAnalysis(state.RoundSteps) {
 		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{
 			"reason": "direct_task", "reasoning_depth": e.taskReasoningDepth(),
 		})
@@ -150,6 +152,32 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		}
 	}
 	return
+}
+
+// hasExecutedPDFAnalysis recognizes only current canonical results from the
+// actual authorized PDF SQL operation. It does not inspect the question,
+// candidate, SQL text, displayed Output or the planner's proposed tools.
+func hasExecutedPDFAnalysis(steps []types.AgentStep) bool {
+	for _, step := range steps {
+		for _, call := range step.ToolCalls {
+			if call.Result == nil || !call.Result.Success {
+				continue
+			}
+			data := call.Result.Data
+			if data["kind"] != "structured_analysis" || data["status"] != "ok" || data["source_kind"] != "pdf_table" {
+				continue
+			}
+			switch call.ExecutionName() {
+			case "structured_query_pdf_table":
+				return true
+			case "structured_data":
+				if call.ExecutionArgs()["operation"] == "query_pdf_table" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // Recheck version identity at the delivery boundary. No model call is reused
