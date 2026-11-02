@@ -9,7 +9,7 @@ from tin.compute.signals import recent_points, _falsifier_signal, _transient_sig
 from tin.config import SHANGHAI
 from tin.judgments.service import _refs, to_payload
 from tin.models import Indicator
-from tin.schemas.judgment import EXPRESSION
+from tin.schemas.judgment import EXPRESSION, binding_ids
 from tin.web.report_watch import watch_items
 from tin.web.research_display import condition_text, human_text
 
@@ -167,17 +167,22 @@ def _falsifier(session, judgment, rule, day, metric):
     periods = rule.get('consecutive_periods', 1)
     need = periods + int(match[1] == 'change')
     indicator = session.get(Indicator, rule['series_id'])
-    from tin.compute.rule_caliber import rule_unit
+    from tin.compute.rule_caliber import rule_frequency, rule_unit
+    caliber_conflict = False
     try:
         unit = rule_unit(rule, indicator.unit if indicator else None)
+        rule_frequency(rule, indicator.frequency if indicator else None)
     except ValueError:
         unit = None
+        caliber_conflict = True
     rows = recent_points(session, rule['series_id'], day, need) if indicator is not None and day is not None else []
     missing = None
     if day is None:
         missing = '暂无可用观测日期。'
     elif indicator is None:
         missing = '尚无可读指标数据。'
+    elif caliber_conflict:
+        missing = '指标单位或统计频率已变化，请核对本条口径。'
     elif unit is None or unit != rule.get('unit_confirmed'):
         missing = '指标单位已变化或尚未确认，请核对绑定。'
     elif len(rows) < need:
@@ -200,6 +205,13 @@ def _falsifier(session, judgment, rule, day, metric):
         'condition': condition, 'gap_note': missing, 'metric': metric}
 
 
+def _item_view(item, metrics, names):
+    identifiers = binding_ids(item)
+    return {'desc': human_text(item.desc, names), 'series_id': item.series_id,
+        'series_ids': identifiers, 'metric': metrics.get(item.series_id),
+        'metrics': [metrics[identifier] for identifier in identifiers if identifier in metrics]}
+
+
 def judgment_research_view(session, judgment, day):
     sides = {side: {'claim': '', 'evidence': [], 'falsifiers': []} for side in ('bull', 'bear')}
     counts = {'bound': 0, 'available': 0, 'thresholds': 0, 'falsifiers': 0, 'triggered': 0, 'pending': 0}
@@ -220,17 +232,16 @@ def judgment_research_view(session, judgment, day):
                 original = getattr(payload.contradiction, side)
                 view['claim'] = human_text(original.claim, names)
                 for evidence in original.evidence:
-                    metric = metrics.get(evidence.series_id)
-                    view['evidence'].append({'desc': human_text(evidence.desc, names),
-                        'series_id': evidence.series_id, 'metric': metric,
-                        'note': human_text(evidence.note, names)})
-                    if metric is not None:
-                        references[side].add(evidence.series_id)
+                    item = _item_view(evidence, metrics, names)
+                    item['note'] = human_text(evidence.note, names)
+                    view['evidence'].append(item)
+                    references[side].update(item['series_ids'])
                 for rule in payload.falsifiers:
                     if rule.side != side:
                         continue
                     value = _falsifier(session, judgment, rule.model_dump(mode='json'), day, metrics[rule.series_id])
                     value['rule']['desc'] = human_text(value['rule']['desc'], names)
+                    value['metrics'] = [metrics[identifier] for identifier in binding_ids(rule)]
                     view['falsifiers'].append(value)
                     references[side].add(rule.series_id)
         finally:
@@ -240,15 +251,23 @@ def judgment_research_view(session, judgment, day):
         if not all(identifier in references[side] for side in sides):
             continue
         shared.append({'metric': metrics[identifier],
-            **{side + '_texts': [item['desc'] for item in sides[side]['evidence'] if item['series_id'] == identifier]
+            **{side + '_texts': [item['desc'] for item in sides[side]['evidence'] if identifier in item['series_ids']]
                for side in sides},
             **{side + '_falsifiers': [item for item in sides[side]['falsifiers'] if item['rule']['series_id'] == identifier]
                for side in sides}})
-    pending = [{**item, 'text': human_text(item['text'], names)} for item in
-        watch_items(payload.model_dump(mode='json')) if item['kind'] == 'observation']
+    pending = []
+    for note in payload.unstructured:
+        for item in watch_items({'unstructured': [note.model_dump(mode='json')]}):
+            if item['kind'] == 'observation':
+                pending.append({**item, 'text': human_text(item['text'], names),
+                    'metrics': [metrics[identifier] for identifier in binding_ids(note)]})
     counts.update(bound=len(metrics), available=sum(metric['latest'] is not None for metric in metrics.values()),
         thresholds=len(payload.thresholds), falsifiers=len(payload.falsifiers),
         triggered=sum(item['state'] == '触发' for side in sides.values() for item in side['falsifiers']),
         pending=len(pending))
-    result.update(metrics=metrics, shared=shared, pending_conditions=pending)
+    result.update(metrics=metrics, shared=shared, pending_conditions=pending,
+        marginal_focus=[_item_view(item, metrics, names) for item in payload.marginal_focus],
+        cost_items=[_item_view(item, metrics, names) for item in (payload.cost_line.items if payload.cost_line else [])],
+        threshold_related={rule.id: [metrics[identifier] for identifier in rule.related_series_ids]
+            for rule in payload.thresholds if rule.related_series_ids})
     return result
