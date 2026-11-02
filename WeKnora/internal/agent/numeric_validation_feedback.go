@@ -19,7 +19,7 @@ const (
 
 // These instructions describe evidence mechanics, never a domain question or
 // a recipe selecting its data. The model still decides scope and expressions.
-const numericResultPresentationInstructions = `逐项查看未匹配token及其上下文：主数值已经有结果时，不要反复查询相同原值而保留别的数字疑点。拟交付的排名序号、换算系数及说明中的算式操作数同样需要执行结果依据；所需排名可让授权SQL按正确范围与顺序显式返回ROW_NUMBER() OVER的结果，拟展示的换算系数可与换算值一起作为结果列返回。只出现在SQL文本中的常量、目录序号、来源页码或行坐标不能充当已返回统计值。非必要的数字说明可以删去，用户所问结果仍须补齐；不得改成中文数字或文字绕过校验。`
+const numericResultPresentationInstructions = `逐项查看未匹配token及其上下文：主数值已经有结果时，不要反复查询相同原值而保留别的数字疑点。拟交付的排名序号、换算系数及说明中的算式操作数同样需要执行结果依据；所需排名可让授权SQL按正确范围与顺序显式返回ROW_NUMBER() OVER的结果，拟展示的换算系数可与换算值一起作为结果列返回。只出现在SQL文本中的常量、目录序号、来源页码或行坐标不能充当已返回统计值。若数字来自本轮成功读取、绑定原文件的表格标题或脚注，确需引用时保留实际返回的完整原文（包括注释前缀），不要把局部转述或其中的数字当作裸统计依据；非必要的解释可以删除。非必要的数字说明可以删去，用户所问结果仍须补齐；不得改成中文数字或文字绕过校验。`
 
 type numericValidationFeedbackContextKey struct{}
 

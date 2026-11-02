@@ -197,3 +197,23 @@ func TestStructuredPDFQueryProjectionNeverRetainsHiddenRowProvenance(t *testing.
 	require.Equal(t, false, result.Data["row_provenance_complete"])
 	require.NotContains(t, result.Output, "hidden-third-row")
 }
+
+func TestStructuredPDFReadContractAndCurrentReviewSurviveBudgetProjection(t *testing.T) {
+	rows := []map[string]any{}
+	for i := 0; i < 8; i++ {
+		rows = append(rows, map[string]any{"_row_id": string(rune('a' + i)), "raw_values": map[string]any{"field": strings.Repeat("source label ", 40)}, "source_cells": map[string]any{"field": []map[string]any{{"page": 1, "row": i, "column": 0}}}})
+	}
+	contract := map[string]any{"mapping": "header_row_count counts plan-selected rows, not printed-header presence", "page_context": "historical extracted text, not direct visual inspection", "review": "current review_status/unresolved issues are separate from historical flags"}
+	original := &types.ToolResult{Success: true, Data: map[string]any{"kind": "structured_source_inspection", "status": "ok", "review_status": "reviewed", "table_id": "pdft-fixture", "rows": rows, "offset": 0, "total_row_count": 8, "output_truncated": false, "pdf_evidence_contract": contract, "coverage": map[string]any{"header_row_count": 0, "unresolved_quality_issues": []any{}}, "page_context": []map[string]any{{"issues": []string{"historical extraction disagreement"}, "quality": map[string]any{"status": "needs_review"}}}}}
+	result := fitStructuredDirectory(WithOutputBudget(context.Background(), 2400), "read_pdf_table", original)
+	require.True(t, result.Success)
+	require.True(t, json.Valid([]byte(result.Output)))
+	require.LessOrEqual(t, utf8.RuneCountInString(result.Output), 2400)
+	require.Equal(t, "reviewed", result.Data["review_status"])
+	require.Equal(t, contract, result.Data["pdf_evidence_contract"])
+	require.Contains(t, result.Output, "plan-selected rows")
+	require.Contains(t, result.Output, "historical extraction disagreement")
+	require.Empty(t, result.Data["coverage"].(map[string]any)["unresolved_quality_issues"])
+	require.NotEmpty(t, result.Data["rows"])
+	require.Equal(t, rows[0]["raw_values"], structuredRecallRows(result.Data["rows"])[0]["raw_values"])
+}

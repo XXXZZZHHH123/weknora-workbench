@@ -380,7 +380,7 @@ func projectStructuredQueryMetadata(candidates []structuredQueryRowCandidate, bu
 // diagnostics. This is a protocol projection, independent of question/values;
 // omission handles still require reading any missing evidence before judgment.
 func projectPDFQueryReviewMetadata(original map[string]any, budget int) (any, []string) {
-	keys := []string{"kind", "status", "source_kind", "table_id", "input_complete", "input_count", "output_complete", "output_truncated", "returned_row_count", "sql", "provenance", "source", "columns"}
+	keys := []string{"kind", "status", "source_kind", "table_id", "input_complete", "input_count", "output_complete", "output_truncated", "returned_row_count", "review_status", "sql", "provenance", "source", "columns", "pdf_evidence_contract"}
 	seen := map[string]bool{}
 	for _, key := range keys {
 		seen[key] = true

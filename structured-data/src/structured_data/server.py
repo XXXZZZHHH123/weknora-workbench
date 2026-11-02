@@ -39,6 +39,15 @@ from .progress import progress_value
 MAX_UPLOAD = 100 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
+# Tool-view semantics only; never added to immutable extraction/published
+# records, whose plan/source fingerprints must remain unchanged.
+PDF_EVIDENCE_CONTRACT = {
+    'mapping': 'coverage.header_row_count counts plan-selected header rows; zero does not mean no printed header.',
+    'page_context': 'Extracted page text, not visual inspection or a bound table note. Its issues/quality are historical extraction observations.',
+    'review': 'review_status and coverage.unresolved_quality_issues describe current review state. Reviewed is not OCR ground truth; historical flags alone do not reopen review.',
+    'scope': 'Additional scope or layout claims need evidence bound to this table/metric; same-file terminology does not establish shared scope.',
+}
+
 
 class _ResearchFactsJSONResponse(JSONResponse):
     """Encode the already-validated facts document once in its worker thread."""
@@ -355,18 +364,21 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def read_pdf_table(table_id: str, offset: int = 0, limit: int = 100) -> dict:
-        """按实际 table_id 分页核对PDF逻辑表，返回原值、真实列、每格页码/坐标和跨页来源。output_truncated=true时按next_offset或offset加实际返回行数继续，不能按请求limit假定已读完；空值不补零。review_status=auto_accepted/reviewed均已入库，非OCR独立验真。metadata_projection表示为输出预算省略plan及历史诊断副本，原值/来源和当前未解决风险仍保留，不能忽略单位/覆盖或当成整篇完整。"""
+        """按实际 table_id 分页核对PDF逻辑表，返回原值、真实列、每格页码/坐标和跨页来源。output_truncated=true时按next_offset或offset加实际返回行数继续。pdf_evidence_contract限定元数据含义：header_row_count是映射计划选中表头行数，不能推断原件无表头；page_context为页候选转录，非实际看图或自动绑定的表注，issues/quality是历史提取观察；当前核对状态见review_status/unresolved_quality_issues。只回答问题所需且有实际表/格证据的事实，附加范围和版面断言无绑定证据则省略。reviewed不是独立OCR验真，metadata_projection也不改变原值/来源或当前覆盖限制。"""
         result = pdf_store(registry).read_table(table_id, offset=offset, limit=limit)
         verify_pdf_original(registry, result['source'])
-        return {**result, 'kind': 'structured_source_inspection', 'source_kind': 'pdf_table', 'status': 'ok', 'review_status': result['status']}
+        return {**result, 'kind': 'structured_source_inspection', 'source_kind': 'pdf_table', 'status': 'ok',
+                'review_status': result['status'], 'pdf_evidence_contract': dict(PDF_EVIDENCE_CONTRACT)}
 
     @mcp.tool()
     async def query_pdf_table(table_id: str, sql: str, limit: int = 100) -> dict:
-        """对已入库 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID 和列名；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源/单位构造 SQL，程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。公式保留不等于可执行。"""
+        """对已入库 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID 和列名；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源/单位构造 SQL，程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。pdf_evidence_contract区分当前审校与历史页提取观察；附加统计范围/版面事实须绑定实际表或单元格，缺依据则省略。公式保留不等于可执行。"""
         def run():
             selected = pdf_store(registry)
-            verify_pdf_original(registry, selected.read_table(table_id, limit=1)['source'])
-            return {**selected.query(table_id, sql, limit=limit), 'source_kind': 'pdf_table'}
+            original = selected.read_table(table_id, limit=1)
+            verify_pdf_original(registry, original['source'])
+            return {**selected.query(table_id, sql, limit=limit), 'source_kind': 'pdf_table',
+                    'review_status': original['status'], 'pdf_evidence_contract': dict(PDF_EVIDENCE_CONTRACT)}
         try:
             return await run_in_threadpool(run)
         except ValueError as exc:

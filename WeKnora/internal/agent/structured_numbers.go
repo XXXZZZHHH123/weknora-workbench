@@ -1076,6 +1076,32 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 		// authority as a bare measurement. SQL-generated strings, provenance
 		// text, raw values and failed reads cannot establish these identities.
 		if data["kind"] == "structured_source_inspection" && data["status"] == "ok" {
+			// Captions and footnotes belong to the actually read source fragment.
+			// Permit the complete original text as a quote/identity, never its
+			// component digits as observations. A directory, query expression,
+			// historic diagnostic or unbound metadata is not source prose.
+			if source, ok := data["source"].(map[string]any); ok {
+				digest, _ := source["sha256"].(string)
+				if len(digest) == 64 && sourceOpaqueToken.FindString(digest) == digest {
+					if fragments, ok := data["fragments"].([]any); ok {
+						for _, raw := range fragments {
+							fragment, ok := raw.(map[string]any)
+							if !ok {
+								continue
+							}
+							if id, _ := fragment["id"].(string); id == "" {
+								continue
+							}
+							add(fragment["caption"])
+							if footnotes, ok := fragment["footnotes"].([]any); ok {
+								for _, footnote := range footnotes {
+									add(footnote)
+								}
+							}
+						}
+					}
+				}
+			}
 			if rows, ok := data["rows"].([]any); ok {
 				for _, raw := range rows {
 					if row, ok := raw.(map[string]any); ok {
