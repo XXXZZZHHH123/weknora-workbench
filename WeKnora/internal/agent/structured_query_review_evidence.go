@@ -62,7 +62,7 @@ type structuredQueryRowCandidate struct {
 }
 
 // structuredQueryRowReviewEvidence adds a lossless, mechanically encoded row
-// view for successful structured query executions. It reads the same immutable
+// view for successful structured queries and canonical PDF source reads. It reads the same immutable
 // source-tool message used by read_review_evidence, so every handle resolves to
 // the exact original JSON result. No question, candidate answer, or row value
 // is used to select or reorder records.
@@ -84,7 +84,7 @@ func structuredQueryRowReviewEvidence(state *types.AgentState, sourceMessages []
 	seen := map[string]int{}
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {
-			if call.Result == nil || !call.Result.Success || !isStructuredQueryExecution(call) {
+			if call.Result == nil || !call.Result.Success || !isStructuredRowExecution(call) {
 				continue
 			}
 			message, ok := messageByCallID[call.ID]
@@ -269,6 +269,30 @@ func allStructuredRowEntriesComplete(entries []structuredQueryRowCompanionEntry)
 	return true
 }
 
+// PDF reads carry actual row values independently of historical index chunks.
+// Only the successful canonical operation is eligible; a plan/directory or an
+// unrelated tool with a similar payload does not become a source observation.
+func isStructuredRowExecution(call types.ToolCall) bool {
+	if isStructuredQueryExecution(call) {
+		return true
+	}
+	if call.Result == nil || !call.Result.Success {
+		return false
+	}
+	data := call.Result.Data
+	if data["kind"] != "structured_source_inspection" || data["status"] != "ok" || data["source_kind"] != "pdf_table" {
+		return false
+	}
+	switch call.ExecutionName() {
+	case "structured_read_pdf_table":
+		return true
+	case "structured_data":
+		return call.ExecutionArgs()["operation"] == "read_pdf_table"
+	default:
+		return false
+	}
+}
+
 func isStructuredQueryExecution(call types.ToolCall) bool {
 	switch call.ExecutionName() {
 	case "structured_query_series", "structured_analyze_table", "structured_get_result_evidence", "structured_query_pdf_table":
@@ -308,7 +332,7 @@ func newStructuredQueryRowCandidate(message chat.Message, data map[string]any, r
 		}
 	}
 	truncated, truncationKnown := data["truncated"]
-	if data["kind"] == "structured_analysis" {
+	if data["kind"] == "structured_analysis" || (data["kind"] == "structured_source_inspection" && data["source_kind"] == "pdf_table") {
 		truncated, truncationKnown = data["output_truncated"]
 	}
 	columns, constantFields, homogeneous := structuredRowShape(rows)
@@ -362,7 +386,7 @@ func projectStructuredQueryMetadata(candidates []structuredQueryRowCandidate, bu
 	for i := range candidates {
 		original := candidates[i].entry.Metadata
 		projectedValue, helperOmissions := projectReviewValue(original, perResultBudget, "/data", 0)
-		if original["source_kind"] == "pdf_table" && original["kind"] == "structured_analysis" {
+		if original["source_kind"] == "pdf_table" && (original["kind"] == "structured_analysis" || original["kind"] == "structured_source_inspection") {
 			projectedValue, helperOmissions = projectPDFQueryReviewMetadata(original, perResultBudget)
 		}
 		projected := reviewAsMap(projectedValue)
@@ -380,7 +404,7 @@ func projectStructuredQueryMetadata(candidates []structuredQueryRowCandidate, bu
 // diagnostics. This is a protocol projection, independent of question/values;
 // omission handles still require reading any missing evidence before judgment.
 func projectPDFQueryReviewMetadata(original map[string]any, budget int) (any, []string) {
-	keys := []string{"kind", "status", "source_kind", "table_id", "input_complete", "input_count", "output_complete", "output_truncated", "returned_row_count", "review_status", "sql", "provenance", "source", "columns", "pdf_evidence_contract"}
+	keys := []string{"kind", "status", "source_kind", "table_id", "source", "input_complete", "input_count", "output_complete", "output_truncated", "returned_row_count", "review_status", "sql", "provenance", "offset", "next_offset", "total_row_count", "fragments", "plan_sha256", "record_sha256", "bundle_sha256", "columns", "pdf_evidence_contract"}
 	seen := map[string]bool{}
 	for _, key := range keys {
 		seen[key] = true

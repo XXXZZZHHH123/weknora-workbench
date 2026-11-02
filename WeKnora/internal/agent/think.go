@@ -249,6 +249,16 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 	format := answerCompletenessSchema
 	if checkSources {
 		system = sourceConsistencyReviewInstructions + "\n" + sourceRecoveryReviewInstructions + "\n" + sourceReviewReceiptInstructions + "\n" + researchSynthesisInstructions
+		if notice, ok := ctx.Value(numericWarningNoticeKey{}).(string); ok {
+			inputData["numeric_warning_delivery_notice"] = notice
+			// Re-encode below: the numeric matcher has diagnosed a limitation,
+			// not decided which claims are essential to the human's question.
+			input, err = json.Marshal(inputData)
+			if err != nil {
+				return true, err
+			}
+			system += "\nNumeric warning delivery policy: the user prioritizes a useful source-based answer over all numbers passing automatic matching. The runtime will append numeric_warning_delivery_notice to this candidate. Judge the complete request and actual source evidence; unmatched tokens are diagnostics, not an automatic reason to reject the whole answer. Accept supported requested results with explicitly limited ancillary arithmetic or metadata uncertainty when that caution is sufficient. Do not require deletion of the supported answer solely for an optional difference or source label. Still reject fabricated or contradicted core values, unsupported claims presented as verified, and missing requested information disguised as success; request a minimal revision that answers the supported part and states genuine gaps. Preserve the actual source/permission/receipt contracts. Acceptance here is recorded as numeric_warning, never full deterministic verification."
+		}
 		if hasImageObservations {
 			system += "\n" + documentImageReviewInstructions
 		}

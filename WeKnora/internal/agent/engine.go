@@ -746,6 +746,7 @@ func (e *AgentEngine) finishStalledTurnWithGuards(
 		answer = ""
 	}
 	if !(len(runtimeFallback) > 0 && runtimeFallback[0]) && strings.TrimSpace(answer) != "" {
+		e.turnReview.NumericWarningAllowed = true // This terminal path has no repair round left.
 		decision := e.checkCandidate(ctx, query, answer, response.ReasoningContent, state, conversation, utf8.RuneCountInString(strings.TrimSpace(answer)) <= 4)
 		if ctx.Err() != nil {
 			return
@@ -753,8 +754,15 @@ func (e *AgentEngine) finishStalledTurnWithGuards(
 		if decision.Err != nil {
 			answer = answerReviewUnavailableFallback
 			answerStreamed = false
-		} else if decision.Disposition != candidateAccepted {
+		} else if decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning {
 			answer = ""
+		} else if decision.Disposition == candidateNumericWarning {
+			if delivery, ok := e.numericWarningDelivery(answer, state); ok {
+				answer = delivery
+			} else {
+				answer = ""
+			}
+			answerStreamed = false
 		}
 	}
 
@@ -1355,7 +1363,16 @@ func (e *AgentEngine) runReActIteration(
 			e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
 			return iterOutcomeBreak, nil
 		} else {
-			needsAnswerRepair = decision.Disposition != candidateAccepted
+			needsAnswerRepair = decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning
+			if decision.Disposition == candidateNumericWarning {
+				if delivery, ok := e.numericWarningDelivery(response.Content, state); ok {
+					response.Content = delivery
+					response.AnswerStreamed = false
+					response.AnswerEventID = ""
+				} else {
+					needsAnswerRepair = true
+				}
+			}
 		}
 	}
 

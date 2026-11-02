@@ -138,6 +138,9 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		invalid := strings.TrimSpace(fullAnswer) == "" || llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
 		unsupported := []string{}
 		if !invalid {
+			if attempt == 2 {
+				e.turnReview.NumericWarningAllowed = true
+			}
 			decision := e.checkCandidate(ctx, query, fullAnswer, llmResult.ReasoningContent, state, conversation, true)
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -149,7 +152,14 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 				break
 			}
 			unsupported = decision.Unsupported
-			invalid = decision.Disposition != candidateAccepted
+			invalid = decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning
+			if decision.Disposition == candidateNumericWarning {
+				if delivery, ok := e.numericWarningDelivery(fullAnswer, state); ok {
+					fullAnswer = delivery
+				} else {
+					invalid = true
+				}
+			}
 		}
 		if !invalid {
 			outcome = "answer"

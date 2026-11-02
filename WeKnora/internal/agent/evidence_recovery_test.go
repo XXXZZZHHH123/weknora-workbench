@@ -459,23 +459,26 @@ func TestNumericValidationRepairKeepsAuthorizedToolsAndCanCallOne(t *testing.T) 
 	require.Contains(t, rawMessageText(model.calls[2]), query)
 }
 
-func TestNumericValidationRepairStopsAfterTwoAttemptsAndUsesFallback(t *testing.T) {
+func TestNumericValidationRepairStopsAfterTwoAttemptsAndDeliversReviewedWarning(t *testing.T) {
 	const unsupported = "The measured value is 138.67; an optional approximation is 138."
 	model := &mockChat{responses: []mockResponse{
 		chatAnswer(unsupported),
 		chatAnswer(`{"answer":"` + unsupported + `"}`),
 		chatAnswer(unsupported),
+		sourceAcceptedVerdict(),
 	}}
 	engine := numericRecoveryTestEngine(t, model)
 	state, messages, query := numericRecoveryFixture()
 	_, err := engine.executeLoop(t.Context(), state, query, messages, engine.buildToolsForLLM(), "numeric-session", "numeric-message")
 	require.NoError(t, err)
 	require.True(t, state.IsComplete)
-	require.Equal(t, "已经取得原表依据，但完整回答的部分数字未通过来源核验，暂不提供未经核验的统计结论。请查看取数依据。", state.FinalAnswer)
-	require.Len(t, model.calls, 3, "the initial candidate and two numeric repair attempts exhaust the shared repair budget; no critic accepts the failing candidate")
+	require.Contains(t, state.FinalAnswer, unsupported)
+	require.Contains(t, state.FinalAnswer, "138”尚未完成逐项核实")
+	require.Equal(t, candidateNumericWarning, engine.turnReview.Last.Disposition)
+	require.Len(t, model.calls, 4, "two numeric repairs are followed by source review, not a template refusal")
 	require.Equal(t, 2, strings.Count(rawMessageText(model.calls[1]), numericValidationRepairInstructions)+strings.Count(rawMessageText(model.calls[2]), numericValidationRepairInstructions))
 	require.Contains(t, rawMessageText(model.calls[2]), finalNumericRepairInstructions, "the final repair mode must still reject a repeated unsupported candidate without adding another attempt")
-	require.NotContains(t, state.FinalAnswer, "138")
+	require.Equal(t, 2, engine.turnReview.Repairs, "warning delivery does not open another repair budget")
 }
 
 func rawMessageText(messages []chat.Message) string {

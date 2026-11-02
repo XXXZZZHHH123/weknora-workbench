@@ -99,6 +99,9 @@ const finalNumericRepairInstructions = `这是本轮最后一次数值修订。�
 // resumes the ordinary authorized tool loop. Numeric repairs have their own
 // caller-owned bound and do not consume or reset source-recovery attempts.
 func (e *AgentEngine) resumeNumericValidationRepair(ctx context.Context, state *types.AgentState, messages *[]chat.Message, guards *loopGuards, sessionID, candidate string, feedback map[string]any) {
+	if guards.structuredEvidenceRepairs >= 2 {
+		e.turnReview.NumericWarningAllowed = true
+	}
 	restored, restoredOriginal := restoreStructuredReviewConversation(*messages, guards)
 	if len(guards.numericValidationInputs) > 0 {
 		prior := make(map[string]bool, len(guards.numericValidationInputs))
