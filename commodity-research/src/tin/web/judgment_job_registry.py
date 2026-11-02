@@ -112,8 +112,9 @@ class Registry:
                         raise HTTPException(409, '重复请求标识已用于不同资料，请重新发起')
                     return row, False
             active = [row for row in rows if row['state'] in ACTIVE]
-            if any((row['tenant_id'], row['user_id']) == (scope.identity.tenant_id, scope.identity.user_id) for row in active):
-                raise HTTPException(429, '当前账号已有分析任务，请等待完成')
+            # Independent workbenches and task purposes may run for one actor.
+            # Idempotency above handles retries; claim() reserves shared running
+            # slots atomically, so admission must not serialize an entire actor.
             if len(active) >= GLOBAL_PENDING:
                 raise HTTPException(429, '分析队列已满，请稍后重试')
             if len(rows) >= MAX_RECORDS:

@@ -234,13 +234,16 @@ def test_global_listing_contains_only_safe_current_actor_metadata_and_shared_que
         payload = json.dumps(listed)
         assert 'Synthetic supply diagram' not in payload and SERIES not in payload and 'Bearer' not in payload
         assert judgment_jobs.list_jobs(case.scope(user='another-owner').identity)['items'] == []
-        # Both purposes contend for the same personal/global admission limits.
-        row, _ = case.registry.create(case.scope(user='busy-owner'), 'hash-one', 'one-request', 'worker-one')
-        with active(case.scope(user='busy-owner')), pytest.raises(HTTPException) as error:
-            await case.jobs.start_job(case.scope(user='busy-owner'), body(), 'synthetic-second-request')
-        assert error.value.status_code == 429
-        with case.registry.transaction() as connection:
-            row['state'] = 'failed';case.registry.write(connection, row)
+        # A queued judgment must not block a separate diagram for the same actor.
+        owner = case.scope(user='busy-owner')
+        row, _ = case.registry.create(owner, 'hash-one', 'one-request', 'worker-one')
+        with active(owner):
+            diagram = await case.jobs.start_job(owner, body(), 'synthetic-second-request')
+            await asyncio.wait_for(case.jobs.runtime.tasks[diagram['id']], 5)
+            assert (await case.jobs.job_status(owner, diagram['id']))['state'] == 'succeeded'
+        assert diagram['id'] != row['id']
+        assert case.registry.get(owner.identity, row['id'])['state'] == 'queued'
+        case.registry.finish(row['id'], row['worker_id'], row['fence'], 'failed')
     run(case, scenario)
 
 

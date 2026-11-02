@@ -176,6 +176,7 @@ def _complete(scope, meta, preview):
         registry.write(connection, current)
         retired = [item for item in registry.compact(connection)
             if registry.scope_key(item) == registry.scope_key(current)]
+        superseded = any(item['id'] == meta['id'] for item in retired)
         with artifact_session(scope) as session:
             # Serialize with a review/save transaction before reading versions.
             # A save already committed remains a business record; a stale save
@@ -185,20 +186,25 @@ def _complete(scope, meta, preview):
             row = owned_record(session, scope, meta['id'])
             if (row.config.get('fence') != meta['fence'] or row.config.get('state') != 'queued'):
                 raise HTTPException(409, '分析任务已中断，请重新发起')
-            value = deepcopy(preview)
-            value.update(_job_id=meta['id'], _draft_id=row.config['draft_id'])
-            _update_record(session, row, {**row.config, 'state': 'succeeded', 'preview': value})
+            # An older submission can finish after a newer successful one.
+            # Retire its queued private row directly: publishing and then
+            # pruning that same row would use an obsolete CAS revision.
+            if not superseded:
+                value = deepcopy(preview)
+                value.update(_job_id=meta['id'], _draft_id=row.config['draft_id'])
+                _update_record(session, row, {**row.config, 'state': 'succeeded', 'preview': value})
             for old in retired:
                 _discard_private_record(session, old, KIND)
             session.commit()
         for old in retired:
             old['payload_pruned'] = True
             registry.write(connection, old)
-        try:
-            from tin.web.judgment_analysis_cache import prune_snapshots_after_success
-            prune_snapshots_after_success(scope, preview.get('analysis_snapshot'))
-        except Exception:
-            logging.getLogger(__name__).warning('Analysis snapshot cleanup deferred')
+        if not superseded:
+            try:
+                from tin.web.judgment_analysis_cache import prune_snapshots_after_success
+                prune_snapshots_after_success(scope, preview.get('analysis_snapshot'))
+            except Exception:
+                logging.getLogger(__name__).warning('Analysis snapshot cleanup deferred')
 
 
 async def fresh_scope(scope):

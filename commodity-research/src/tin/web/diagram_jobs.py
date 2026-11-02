@@ -111,21 +111,26 @@ def _complete(scope, meta, result, source_identity):
         registry.write(connection, current)
         retired = [item for item in registry.compact(connection)
             if registry.scope_key(item) == registry.scope_key(current)]
+        superseded = any(item['id'] == meta['id'] for item in retired)
         with artifact_session(scope) as session:
             session.execute(update(SourceMapping).where(SourceMapping.id == job_key(scope, meta['id']))
                 .values(version=SourceMapping.version), execution_options={'synchronize_session': False})
             row = owned_record(session, scope, meta['id'])
             if row.version != 1 or row.config.get('fence') != meta['fence']:
                 raise HTTPException(409, '产业图生成已中断，请重新发起')
-            value = {**row.config, 'result': deepcopy(result), 'source_identity': source_identity}
-            if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode()) > MAX_PRIVATE_BYTES:
-                raise HTTPException(413, '生成配置超过预览容量，请缩小范围')
             try:
-                changed = session.execute(update(SourceMapping).where(SourceMapping.id == row.id,
-                    SourceMapping.version == 1).values(config=value, version=2,
-                        confirmed_at=datetime.now(timezone.utc)), execution_options={'synchronize_session': False})
-                if changed.rowcount != 1:
-                    raise HTTPException(409, '产业图预览已更新，请重新打开')
+                # Keep the latest submitted successful result even when API
+                # calls finish out of order. A retired current row is still
+                # queued, so prune it once without publishing an obsolete result.
+                if not superseded:
+                    value = {**row.config, 'result': deepcopy(result), 'source_identity': source_identity}
+                    if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode()) > MAX_PRIVATE_BYTES:
+                        raise HTTPException(413, '生成配置超过预览容量，请缩小范围')
+                    changed = session.execute(update(SourceMapping).where(SourceMapping.id == row.id,
+                        SourceMapping.version == 1).values(config=value, version=2,
+                            confirmed_at=datetime.now(timezone.utc)), execution_options={'synchronize_session': False})
+                    if changed.rowcount != 1:
+                        raise HTTPException(409, '产业图预览已更新，请重新打开')
                 for old in retired:
                     shared._discard_private_record(session, old, KIND)
                 session.commit()
@@ -134,7 +139,7 @@ def _complete(scope, meta, result, source_identity):
         for old in retired:
             old['payload_pruned'] = True
             registry.write(connection, old)
-    if result.get('analysis_snapshot'):
+    if not superseded and result.get('analysis_snapshot'):
         from tin.web.diagram_analysis_cache import mark_delivered
         try:
             mark_delivered(scope, result['analysis_snapshot'])
@@ -157,6 +162,7 @@ def failure_message(error):
             '产业图配置无法解析，请核对分组、节点和连线',
             '模型服务暂时不可用，现有产业图保持原样',
             '所选模型不支持图片，请选择视觉对话模型或提供文字资料',
+            '相同资料正在生成产业图，请等待完成',
         }
         if isinstance(error.detail, str) and error.detail in safe:
             return error.detail

@@ -170,9 +170,9 @@ def test_registry_limits_are_atomic_between_instances_and_lease_loss_fences_the_
     assert first.claim(a['id'], 'worker-a', a['fence'])
     assert second.claim(b['id'], 'worker-b', b['fence'])
     assert not first.claim(c['id'], 'worker-c', c['fence'])
-    with pytest.raises(HTTPException) as busy:
-        second.create(scope('a'), 'another-hash', 'another-key', 'another-worker')
-    assert busy.value.status_code == 429
+    d, created = second.create(scope('a'), 'another-hash', 'another-key', 'another-worker')
+    assert created and d['id'] != a['id']
+    assert not second.claim(d['id'], 'another-worker', d['fence'])
     with first.transaction() as connection:
         a['lease_until'] = 0
         first.write(connection, a)
@@ -180,6 +180,7 @@ def test_registry_limits_are_atomic_between_instances_and_lease_loss_fences_the_
     with pytest.raises(HTTPException):
         first.touch(a['id'], 'worker-a', a['fence'])
     assert second.claim(c['id'], 'worker-c', c['fence'])
+    assert not second.claim(d['id'], 'another-worker', d['fence'])
 
 
 def test_shutdown_cancels_active_analysis_and_records_interrupted_without_retry(background, monkeypatch):
