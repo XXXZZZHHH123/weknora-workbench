@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from tin.config import settings
 
 ACTIVE = frozenset({'queued', 'running'})
+RESULTS = frozenset({'succeeded', 'applied'})
 TTL = 24 * 3600
 LEASE = 60
 GLOBAL_RUNNING = 2
@@ -61,6 +62,30 @@ class Registry:
             'version=source_mappings.version+1,confirmed_at=excluded.confirmed_at',
             (value['id'], json.dumps(value, separators=(',', ':')), value['user_id'], iso()))
 
+    def order(self, row):
+        return row.get('created_order', 0), row['created_at'], row['id']
+
+    def scope_key(self, row):
+        return row['tenant_id'], row['user_id'], row['workbench_id'], row.get('purpose', 'judgments')
+
+    def compact(self, connection):
+        groups = {}
+        for row in self.rows(connection):
+            if row['state'] in RESULTS:
+                groups.setdefault(self.scope_key(row), []).append(row)
+        retired = []
+        for rows in groups.values():
+            newest = max(rows, key=self.order)
+            for row in rows:
+                if row['id'] == newest['id']:
+                    continue
+                row.update(state='superseded', phase='superseded', superseded_by=newest['id'],
+                    message='已有更新的分析结果，请打开最新结果', dismissed=True,
+                    dismissed_at=row.get('dismissed_at') or iso(), updated_at=iso(), payload_pruned=False)
+                self.write(connection, row)
+                retired.append(row)
+        return retired
+
     def expire(self, connection):
         now = time.time()
         for row in self.rows(connection):
@@ -72,6 +97,7 @@ class Registry:
             if state != row['state']:
                 row.update(updated_at=iso(), finished_at=iso())
                 self.write(connection, row)
+        self.compact(connection)
 
     def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments'):
         if purpose not in {'judgments', 'diagram'}:
@@ -98,6 +124,7 @@ class Registry:
                 'tenant_id': scope.identity.tenant_id, 'user_id': scope.identity.user_id,
                 'workbench_id': scope.workbench_id, 'storage_legacy': scope.metadata.get('workspace_mode') == 'legacy',
                 'request_hash': request_hash, 'idempotency_hash': idempotency_hash,
+                'created_order': max((row.get('created_order', 0) for row in rows), default=0) + 1,
                 'worker_id': worker_id, 'fence': secrets.token_hex(16), 'lease_until': now + LEASE,
                 'state': 'queued', 'phase': 'queued', 'created_at': iso(now), 'updated_at': iso(now),
                 'finished_at': None, 'expires_at': iso(now + TTL), 'expires_unix': now + TTL}
@@ -121,12 +148,55 @@ class Registry:
             self.expire(connection)
             return self.owned(self.fetch(connection, job_id), identity, workbench_id)
 
+    def guard_result(self, identity, job_id, workbench_id, purpose):
+        # A private preview transaction may already hold its WB write lock.
+        # This read must never take the scheduler's BEGIN IMMEDIATE write lock:
+        # completion takes that lock before the WB lock. Each SELECT releases
+        # its read lock immediately, avoiding an inverted lock order.
+        path = self.path or Path(settings.data_dir) / 'analysis-jobs.sqlite'
+        if not path.exists():
+            raise HTTPException(404, '分析任务不存在或无权访问')
+        connection = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True,
+            timeout=10, isolation_level=None)
+        try:
+            row = self.owned(self.fetch(connection, job_id), identity, workbench_id)
+            if row.get('purpose', 'judgments') != purpose:
+                raise HTTPException(404, '分析任务不存在或无权访问')
+            newer = any(self.scope_key(other) == self.scope_key(row)
+                and other['state'] in RESULTS and self.order(other) > self.order(row)
+                for other in self.rows(connection))
+            if row['state'] in {'superseded', 'expired'} or row['expires_unix'] <= time.time() or newer:
+                raise HTTPException(410, '已有更新的分析结果或结果已过期，请打开最新结果')
+        finally:
+            connection.close()
+
     def listing(self, identity, limit=20):
         with self.transaction() as connection:
             self.expire(connection)
             rows = [row for row in self.rows(connection) if row.get('tenant_id') == identity.tenant_id
                 and row.get('user_id') == identity.user_id and row.get('kind') == 'judgment-analysis-index.v1']
-            return sorted(rows, key=lambda row: row['created_at'], reverse=True)[:limit]
+            return sorted(rows, key=self.order, reverse=True)[:limit]
+
+    def latest(self, identity, workbench_id, purpose):
+        if purpose not in {'judgments', 'diagram'}:
+            raise ValueError('Unsupported analysis task purpose')
+        with self.transaction() as connection:
+            self.expire(connection)
+            rows = [row for row in self.rows(connection) if self.scope_key(row) == (
+                identity.tenant_id, identity.user_id, workbench_id, purpose)
+                and row['state'] == 'succeeded']
+            return max(rows, key=self.order, default=None)
+
+    def dismiss(self, identity, job_id):
+        with self.transaction() as connection:
+            self.expire(connection)
+            row = self.owned(self.fetch(connection, job_id), identity)
+            if row['state'] in ACTIVE:
+                raise HTTPException(409, '分析仍在进行，完成后可忽略提示')
+            if not row.get('dismissed'):
+                row.update(dismissed=True, dismissed_at=iso())
+                self.write(connection, row)
+            return row
 
     def claim(self, job_id, worker_id, fence):
         with self.transaction() as connection:
@@ -170,26 +240,47 @@ class Registry:
                 return
             row.update(state=state, phase=state, message=message, updated_at=iso(), finished_at=iso())
             self.write(connection, row)
+            self.compact(connection)
 
     def applied(self, identity, job_id, workbench_id):
         with self.transaction() as connection:
             row = self.owned(self.fetch(connection, job_id), identity, workbench_id)
+            if row['state'] in {'expired', 'superseded'}:
+                return
             row.update(state='applied', phase='applied', updated_at=iso(), finished_at=iso())
             self.write(connection, row)
+            self.compact(connection)
 
     def reconcile(self, identity, job_id, workbench_id, state):
         with self.transaction() as connection:
             row = self.owned(self.fetch(connection, job_id), identity, workbench_id)
-            if state not in {'succeeded', 'applied'} or row['expires_unix'] <= time.time():
+            if (state not in RESULTS | {'superseded'} or row['expires_unix'] <= time.time()
+                    or row['state'] in {'expired', 'superseded'}):
                 return row
             row.update(state=state, phase=state, updated_at=iso(), finished_at=row.get('finished_at') or iso())
+            if state == 'superseded':
+                row.update(dismissed=True, dismissed_at=row.get('dismissed_at') or iso())
             self.write(connection, row)
-            return row
+            self.compact(connection)
+            return self.fetch(connection, job_id)
 
     def expired(self):
         with self.transaction() as connection:
             self.expire(connection)
             return [row for row in self.rows(connection) if row['expires_unix'] <= time.time()]
+
+    def discarded(self):
+        with self.transaction() as connection:
+            self.expire(connection)
+            return [row for row in self.rows(connection) if row['state'] == 'expired'
+                or row['state'] == 'superseded' and not row.get('payload_pruned')]
+
+    def mark_pruned(self, job_id):
+        with self.transaction() as connection:
+            row = self.fetch(connection, job_id)
+            if row and row['state'] == 'superseded':
+                row['payload_pruned'] = True
+                self.write(connection, row)
 
     def remove(self, job_id):
         with self.transaction() as connection:
@@ -199,8 +290,9 @@ class Registry:
 
 def metadata(row):
     result = {key: row.get(key) for key in ('id', 'workbench_id', 'state', 'phase',
-        'created_at', 'updated_at', 'finished_at', 'expires_at', 'message')}
+        'created_at', 'updated_at', 'finished_at', 'expires_at', 'message',
+        'dismissed_at', 'superseded_by')}
     purpose = row.get('purpose', 'judgments')
     return {**result, 'job_id': row['id'], 'purpose': purpose,
         'title': '产业图配置生成' if purpose == 'diagram' else '研究逻辑分析',
-        'result_available': row['state'] == 'succeeded'}
+        'result_available': row['state'] == 'succeeded', 'dismissed': row.get('dismissed') is True}

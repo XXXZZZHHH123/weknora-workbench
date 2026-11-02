@@ -17,6 +17,8 @@ template={'id':7,'name':'原始布局','layout':{'nodes':[{'id':'original','labe
 print(env.get_template('diagram.html').render(template=template,templates_all=[dict(id=7,name='原始布局',is_default=True)],d=None))
 `,path.join(web,'templates')],{encoding:'utf8'});
 assert.equal(render.status,0,render.stderr);
+const chartPalette=JSON.parse(fs.readFileSync(path.join(web,'static/chart-palette.json'),'utf8'));
+const chartHtml=render.stdout.replace('</head>','<script>window.ChartPaletteColors='+JSON.stringify(chartPalette)+'</script><script src="/static/chart-palette.js"></script></head>');
 const originalMarkdown='# 原始布局\n\n## 来源分组\n- 原有节点\n';
 const generatedMarkdown='# 合成生成布局\n\n## 产业环节\n- 合成字段 <!-- bind: kb-'+ 'a'.repeat(48)+' -->\n';
 const version='b'.repeat(64);
@@ -25,7 +27,7 @@ const version='b'.repeat(64);
  try{
   const page=await browser.newPage({viewport:{width:1500,height:1000}}),errors=[],requests=[];
   page.on('pageerror',error=>errors.push(error.message));
-  let failure=false,runningJob=false,gate=null,modelLabel='模型 A',catalogGate=null,jobCounter=0;
+  let failure=false,runningJob=false,gate=null,modelLabel='模型 A',catalogGate=null,jobCounter=0,latestJob=null;
   const jobs=new Map();
   const generated={markdown:generatedMarkdown,version,nodes:2,candidates_truncated:false,
    request:{model_id:'fixture-model-b',instructions:'合成任务原说明',source_id:'native-outline',has_image:false},
@@ -33,9 +35,9 @@ const version='b'.repeat(64);
   await page.route('**/*',async route=>{
    const request=route.request(),url=new URL(request.url()),method=request.method();
    requests.push({path:url.pathname,method,body:request.postData(),headers:request.headers()});
-   if(url.pathname==='/')return route.fulfill({contentType:'text/html; charset=utf-8',body:render.stdout});
+   if(url.pathname==='/')return route.fulfill({contentType:'text/html; charset=utf-8',body:chartHtml});
    if(url.pathname==='/fixture-drawers.js')return route.fulfill({contentType:'application/javascript; charset=utf-8',body:drawerScript});
-   if(['/static/diagram.js','/static/diagram-generation.js'].includes(url.pathname))return route.fulfill({contentType:'application/javascript; charset=utf-8',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
+   if(['/static/chart-palette.js','/static/diagram.js','/static/diagram-generation.js'].includes(url.pathname))return route.fulfill({contentType:'application/javascript; charset=utf-8',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
    if(url.pathname.endsWith('/diagram/values'))return route.fulfill({json:{nodes:[],as_of:null}});
    if(url.pathname.endsWith('/diagram/markdown/dump'))return route.fulfill({json:{markdown:originalMarkdown}});
    if(url.pathname.endsWith('/diagram/generation/models')){
@@ -43,6 +45,7 @@ const version='b'.repeat(64);
     return route.fulfill({json:{models:[{id:'fixture-model-a',name:ownLabel,supports_vision:true},{id:'fixture-model-b',name:'模型 B',supports_vision:false}]}});
    }
    if(url.pathname.endsWith('/diagram/generation/sources'))return route.fulfill({json:{sources:[{id:'native-image',name:'真实原件.png',kind:'image'},{id:'native-outline',name:'大纲.md',kind:'text'}]}});
+   if(url.pathname.endsWith('/diagram/jobs/latest'))return route.fulfill({json:{job:latestJob}});
    if(url.pathname.endsWith('/diagram/jobs')&&method==='POST'){
     const id=(++jobCounter).toString(16).padStart(32,'0');
     const job={id,purpose:'diagram',workbench_id:'fixture',state:failure?'failed':runningJob?'running':'succeeded',phase:failure?'failed':runningJob?'generating':'succeeded',message:failure?'隔离模型服务暂不可用':'',result_available:!failure&&!runningJob};
@@ -178,6 +181,24 @@ const version='b'.repeat(64);
   assert.equal(await page.locator('#dg-ai-source').inputValue(),'native-outline');
   assert.equal(await page.locator('#dg-ai-instructions').inputValue(),'合成任务原说明','Restore only non-image request descriptors, without resubmitting them');
   assert.equal(await page.evaluate(()=>JSON.stringify(dg.layout)),initialLayout,'Restoring a job never saves or applies its preview');
+  latestJob={...jobs.get(savedJob),dismissed:true};
+  await page.goto('http://diagram-generation.fixture/');
+  await page.locator('#dg-md-btn').click();
+  await page.waitForFunction(()=>document.getElementById('dg-ai-restore-result')?.hidden===false);
+  assert.equal(await page.locator('#dg-md-text').inputValue(),originalMarkdown,'Latest metadata discovery never replaces the current diagram');
+  const latestPostCount=requests.filter(request=>request.method==='POST'&&request.path.endsWith('/diagram/jobs')).length;
+  page.once('dialog',dialog=>dialog.accept());await page.locator('#dg-ai-restore-result').click();
+  await page.waitForFunction(()=>document.getElementById('dg-md-text').value.includes('合成生成布局'));
+  assert.equal(requests.filter(request=>request.method==='POST'&&request.path.endsWith('/diagram/jobs')).length,latestPostCount,'An ignored latest result is recovered without creating a task');
+  await page.locator('#dg-md-text').fill('# 未完成的手动编辑');
+  page.once('dialog',dialog=>dialog.dismiss());await page.locator('#dg-ai-restore-result').click();
+  assert.equal(await page.locator('#dg-md-text').inputValue(),'# 未完成的手动编辑','Recovery cancellation retains the current editor');
+  latestJob={...latestJob,purpose:'judgments'};
+  await page.goto('http://diagram-generation.fixture/');await page.locator('#dg-md-btn').click();await page.waitForLoadState('networkidle');
+  assert.equal(await page.locator('#dg-ai-restore-result').isHidden(),true,'A judgment task cannot be restored as a diagram');
+  latestJob={...latestJob,purpose:'diagram',workbench_id:'another'};
+  await page.goto('http://diagram-generation.fixture/');await page.locator('#dg-md-btn').click();await page.waitForLoadState('networkidle');
+  assert.equal(await page.locator('#dg-ai-restore-result').isHidden(),true,'Another workbench cannot be offered in the diagram manager');
   assert.deepEqual(errors,[]);
   console.log('PASS: actual diagram Jinja/diagram.js/generator, models and originals, image/remove, no-save draft, safe binding report, import version, failure preservation, duplicate clicks, edits during background generation, close/reopen and full-page restoration without another POST; no cloud model calls.');
  }finally{await browser.close();}

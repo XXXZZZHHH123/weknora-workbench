@@ -106,6 +106,7 @@ def test_job_review_uses_durable_cas_and_retains_an_explicit_empty_selection(bac
 def _replace_worker(data_dir, scope, token, barrier, queue):
     settings.data_dir = Path(data_dir)
     settings.weknora_api_url = 'http://native.test'
+    jobs.registry = Registry(Path(data_dir) / 'job-index.sqlite')
     preview = jobs.load_preview(scope, token)
     preview['review']['revision'] += 1
     barrier.wait(timeout=20)

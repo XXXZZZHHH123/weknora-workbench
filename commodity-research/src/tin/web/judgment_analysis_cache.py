@@ -8,7 +8,7 @@ import secrets
 import time
 
 from fastapi import HTTPException
-from sqlalchemy import delete, update
+from sqlalchemy import and_, delete, or_, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from tin.models import SourceMapping
@@ -54,6 +54,14 @@ def storage(scope):
             raise HTTPException(409, '相同原文的解析记录正在更新，请稍后重试') from None
 
 
+def _owner_filters(scope):
+    return (SourceMapping.confirmed_by == scope.identity.user_id,
+        SourceMapping.config['kind'].as_string() == KIND,
+        SourceMapping.config['tenant_id'].as_integer() == scope.identity.tenant_id,
+        SourceMapping.config['user_id'].as_string() == scope.identity.user_id,
+        SourceMapping.config['workbench_id'].as_string() == scope.workbench_id)
+
+
 def claim(scope, key):
     now = time.time()
     fence = secrets.token_hex(16)
@@ -61,6 +69,11 @@ def claim(scope, key):
         'user_id': scope.identity.user_id, 'workbench_id': scope.workbench_id,
         'state': 'pending', 'fence': fence, 'lease_until': now + LEASE_SECONDS}
     with storage(scope) as session:
+        session.execute(delete(SourceMapping).where(*_owner_filters(scope),
+            SourceMapping.config['lease_until'].as_float() <= now,
+            or_(SourceMapping.config['state'].as_string() == 'pending',
+                and_(SourceMapping.config['state'].as_string() == 'ready',
+                    SourceMapping.config['delivery_pending'].as_boolean().is_(True)))))
         row = session.get(SourceMapping, key)
         if row is not None:
             old = _owned(row, scope, key)
@@ -68,7 +81,9 @@ def claim(scope, key):
                 snapshot = old.get('snapshot')
                 if not isinstance(snapshot, dict) or old.get('snapshot_sha256') != digest(snapshot):
                     raise HTTPException(409, '已存解析内容无法核验，原有研判保持不变')
-                return {'key': key, 'snapshot': deepcopy(snapshot)}
+                cached = {'key': key, 'snapshot': deepcopy(snapshot)}
+                session.commit()
+                return cached
             if old.get('state') != 'pending' or old.get('lease_until', now + 1) > now:
                 raise HTTPException(409, '相同原文正在分析，请等待该任务完成后重试')
             changed = session.execute(update(SourceMapping).where(SourceMapping.id == key,
@@ -95,12 +110,38 @@ def publish(scope, ticket, snapshot):
                 or value.get('lease_until', 0) <= time.time()):
             raise HTTPException(409, '解析任务已中断，请重新分析')
         config = {**value, 'state': 'ready', 'snapshot': deepcopy(snapshot),
-            'snapshot_sha256': digest(snapshot)}
+            'snapshot_sha256': digest(snapshot), 'delivery_pending': True}
         changed = session.execute(update(SourceMapping).where(SourceMapping.id == row.id,
             SourceMapping.version == row.version).values(config=config, version=row.version + 1,
                 confirmed_at=datetime.now(timezone.utc)))
         if changed.rowcount != 1:
             raise HTTPException(409, '解析结果已更新，请重新打开')
+        session.commit()
+
+
+def prune_snapshots_after_success(scope, keep_key):
+    """Publish first; never evict the previous good result for a failed request."""
+    with storage(scope) as session:
+        if keep_key is not None:
+            row = session.get(SourceMapping, keep_key)
+            if row is None:
+                raise HTTPException(409, '暂存解析已更新，请重新打开最新结果')
+            value = _owned(row, scope, keep_key)
+            if value.get('state') != 'ready':
+                raise HTTPException(409, '解析尚未完成，未替换上次结果')
+            changed = session.execute(update(SourceMapping).where(SourceMapping.id == row.id,
+                SourceMapping.version == row.version).values(
+                    config={**value, 'delivery_pending': False}, version=row.version + 1))
+            if changed.rowcount != 1:
+                raise HTTPException(409, '暂存解析正在更新，请稍后重试')
+        # A newer analysis can have published its immutable snapshot before its
+        # private preview is committed. Its delivery lease protects it here.
+        session.execute(delete(SourceMapping).where(*_owner_filters(scope),
+            *([SourceMapping.id != keep_key] if keep_key is not None else []),
+            SourceMapping.config['state'].as_string() == 'ready',
+            or_(SourceMapping.config['delivery_pending'].as_boolean().is_(None),
+                SourceMapping.config['delivery_pending'].as_boolean().is_(False),
+                SourceMapping.config['lease_until'].as_float() <= time.time())))
         session.commit()
 
 

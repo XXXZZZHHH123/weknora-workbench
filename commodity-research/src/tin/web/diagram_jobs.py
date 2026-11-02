@@ -10,7 +10,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import ValidationError
-from sqlalchemy import delete, update
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.concurrency import run_in_threadpool
 
@@ -57,6 +57,8 @@ def owned_record(session, scope, job_id):
         raise HTTPException(404, '产业图任务不存在或无权访问')
     if value.get('grant_digest') != shared.grant_digest(scope):
         raise HTTPException(409, '工作台来源或权限已改变，请重新生成')
+    if isinstance(value.get('result'), dict):
+        registry.guard_result(scope.identity, job_id, scope.workbench_id, PURPOSE)
     return row
 
 
@@ -105,7 +107,13 @@ def _complete(scope, meta, result, source_identity):
     with registry.fenced(meta['id'], meta['worker_id'], meta['fence']) as (connection, current):
         if current.get('purpose', 'judgments') != PURPOSE:
             raise HTTPException(409, '任务类型已改变，请重新生成')
+        current.update(state='succeeded', phase='succeeded', updated_at=iso(), finished_at=iso())
+        registry.write(connection, current)
+        retired = [item for item in registry.compact(connection)
+            if registry.scope_key(item) == registry.scope_key(current)]
         with artifact_session(scope) as session:
+            session.execute(update(SourceMapping).where(SourceMapping.id == job_key(scope, meta['id']))
+                .values(version=SourceMapping.version), execution_options={'synchronize_session': False})
             row = owned_record(session, scope, meta['id'])
             if row.version != 1 or row.config.get('fence') != meta['fence']:
                 raise HTTPException(409, '产业图生成已中断，请重新发起')
@@ -118,28 +126,18 @@ def _complete(scope, meta, result, source_identity):
                         confirmed_at=datetime.now(timezone.utc)), execution_options={'synchronize_session': False})
                 if changed.rowcount != 1:
                     raise HTTPException(409, '产业图预览已更新，请重新打开')
+                for old in retired:
+                    shared._discard_private_record(session, old, KIND)
                 session.commit()
             except (IntegrityError, OperationalError):
                 raise HTTPException(409, '产业图预览正在更新，请稍后重试') from None
-        current.update(state='succeeded', phase='succeeded', updated_at=iso(), finished_at=iso())
-        registry.write(connection, current)
+        for old in retired:
+            old['payload_pruned'] = True
+            registry.write(connection, old)
 
 
 def cleanup_expired():
-    rows = [row for row in registry.expired() if row.get('purpose', 'judgments') == PURPOSE]
-    for meta in rows[:20]:
-        factory = shared._storage_factory(meta)
-        if factory is not None:
-            key = shared.digest([KIND, meta['tenant_id'], meta['user_id'], meta['workbench_id'], meta['id']])
-            with factory() as session:
-                session.execute(delete(SourceMapping).where(SourceMapping.id == key,
-                    SourceMapping.confirmed_by == meta['user_id'],
-                    SourceMapping.config['kind'].as_string() == KIND,
-                    SourceMapping.config['tenant_id'].as_integer() == meta['tenant_id'],
-                    SourceMapping.config['user_id'].as_string() == meta['user_id'],
-                    SourceMapping.config['workbench_id'].as_string() == meta['workbench_id']))
-                session.commit()
-        registry.remove(meta['id'])
+    shared.cleanup_discarded(KIND, registry, PURPOSE)
 
 
 def failure_message(error):
@@ -270,15 +268,20 @@ async def job_status(scope, job_id):
     meta = await run_in_threadpool(registry.get, scope.identity, job_id, scope.workbench_id)
     if meta.get('purpose', 'judgments') != PURPOSE:
         raise HTTPException(404, '产业图任务不存在或无权访问')
+    if meta['state'] in {'superseded', 'expired'}:
+        return metadata(meta)
     with artifact_session(scope) as session:
         stored = session.get(SourceMapping, job_key(scope, job_id))
         row = owned_record(session, scope, job_id) if stored is not None or meta['state'] == 'succeeded' else None
+        superseded = row is not None and row.config.get('state') == 'superseded'
         completed = row is not None and row.version == 2 and isinstance(row.config.get('result'), dict)
-        if meta['state'] == 'succeeded' and not completed:
+        if meta['state'] == 'succeeded' and not completed and not superseded:
             raise HTTPException(409, '产业图预览未完整保存，请重新生成')
         if completed and (row.config.get('fence') != meta['fence'] or row.config.get('worker_id') != meta['worker_id']):
             raise HTTPException(409, '产业图任务状态不一致，请重新生成')
-    if completed and meta['state'] != 'succeeded':
+    if superseded:
+        meta = await run_in_threadpool(registry.reconcile, scope.identity, job_id, scope.workbench_id, 'superseded')
+    elif completed and meta['state'] != 'succeeded':
         meta = await run_in_threadpool(registry.reconcile, scope.identity, job_id, scope.workbench_id, 'succeeded')
     return metadata(meta)
 
@@ -290,11 +293,13 @@ async def job_result(scope, job_id):
     try:
         status = await job_status(verified, job_id)
         if status['state'] != 'succeeded':
-            raise HTTPException(410 if status['state'] == 'expired' else 409,
+            raise HTTPException(410 if status['state'] in {'expired', 'superseded'} else 409,
                 status.get('message') or '产业图尚未完成或预览已失效')
         with artifact_session(verified) as session:
             row = owned_record(session, verified, job_id)
             value = deepcopy(row.config)
+        if value.get('state') == 'superseded':
+            raise HTTPException(410, '已有更新的产业图结果，请打开最新结果')
         if value.get('expires_unix', 0) <= time.time():
             raise HTTPException(410, '产业图预览已过期，请重新生成')
         result = value['result']
@@ -321,9 +326,20 @@ async def read_body(request):
         raise HTTPException(422, '产业图生成请求格式无效') from None
 
 
+async def latest_job(scope):
+    await fresh_scope(scope)
+    meta = await run_in_threadpool(registry.latest, scope.identity, scope.workbench_id, PURPOSE)
+    return {'job': metadata(meta) if meta is not None else None}
+
+
 @router.post('', status_code=202)
 async def create(request: Request):
     return await start_job(generation.scope_for_generation(), await read_body(request), request.headers.get('idempotency-key'))
+
+
+@router.get('/latest')
+async def latest():
+    return await latest_job(generation.scope_for_generation())
 
 
 @router.get('/{job_id}')

@@ -5,6 +5,7 @@ uses a short cached /auth/me verification; tenant and role come from that respon
 """
 import base64
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass, replace
@@ -167,7 +168,10 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 raise HTTPException(404, "研究工作台路径无效") from None
             route_path = scoped_path[1] if scoped_path else path
-            global_analysis_list = path == '/api/research/analysis-jobs' and request.method == 'GET'
+            global_analysis_dismiss = request.method == 'POST' and re.fullmatch(
+                r'/api/research/analysis-jobs/[a-f0-9]{32}/dismiss', path) is not None
+            global_analysis_list = (path == '/api/research/analysis-jobs' and request.method == 'GET'
+                or global_analysis_dismiss)
             authorization = request.headers.get("authorization", "")
             if path == "/api/tools/read":
                 from tin.integration.service_auth import verify_service_request
@@ -226,7 +230,8 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                     raise HTTPException(403, "当前页面的账号或空间已改变，请重新打开商品研究")
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
                     read_posts = {"/api/sn/diagram/values", "/api/sn/diagram/markdown/dump", "/api/sn/affairs/check"}
-                    if not identity.can_write and route_path not in read_posts and not path.startswith("/api/library"):
+                    if (not identity.can_write and route_path not in read_posts
+                            and not path.startswith("/api/library") and not global_analysis_dismiss):
                         raise HTTPException(403, "当前空间角色只有读取权限")
                     if not _same_origin(request):
                         raise HTTPException(403, "请求来源不匹配")

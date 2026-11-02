@@ -2,6 +2,7 @@
 let dgGeneratorImage = null, dgGeneratorEpoch = 0, dgGeneratorController = null;
 let dgGeneratorJob = null, dgJobTimer, dgJobEpoch = 0, dgJobReadController = null;
 let dgSubmittingJob = false, dgSubmission = null, dgGenerationContext = null, dgGenerationResult = null;
+let dgLatestResultJob = null;
 const dgJobId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(value) ? value : '';
 const dgJobActive = () => dgGeneratorJob && ['queued','running'].includes(dgGeneratorJob.state);
 const dgGeneratorOpen = () => {
@@ -16,6 +17,8 @@ function dgCancelGeneration() {
   dgGeneratorEpoch++;
   dgGeneratorController?.abort();dgGeneratorController = null;
   dgStopJobMonitor();
+  const restore = document.getElementById('dg-ai-restore-result');
+  if (restore && !dgGeneratorOpen()) restore.hidden = true;
   const button = document.getElementById('dg-ai-run');
   if (button) button.disabled = dgSubmittingJob || !!dgJobActive();
   return dgGeneratorEpoch;
@@ -51,6 +54,8 @@ async function dgJobRequest(path, options = {}) {
 }
 async function dgLoadGenerator() {
   const own = dgGeneratorEpoch;
+  const restore = document.getElementById('dg-ai-restore-result');
+  if (restore) restore.hidden = true;
   dgGeneratorController = new AbortController();
   const signal = dgGeneratorController.signal;
   const panel = document.getElementById('dg-generator');
@@ -75,6 +80,8 @@ async function dgLoadGenerator() {
     if ([...sourcePicker.options].some(option => option.value === selectedSource)) sourcePicker.value = selectedSource;
     status.textContent = models.models.length ? '从图片、知识库原件或说明生成配置；核对下方 Markdown 后导入。' : '请先配置一个可用的问答模型。';
     dgUpdateGenerationCapability();
+    await dgDiscoverLatestResult(own, signal);
+    if (own !== dgGeneratorEpoch || !dgGeneratorOpen()) return;
     if (dgGeneratorJob) {
       if (!dgGenerationContext) dgGenerationContext = {markdown:document.getElementById('dg-md-text').value,
         body:dgGenerationRequestBody(),restored:true};
@@ -82,6 +89,31 @@ async function dgLoadGenerator() {
     }
     else if (dgSubmittingJob) status.textContent = '正在提交后台生成，可关闭窗口。';
   } catch (error) { if (own === dgGeneratorEpoch) status.textContent = error.message; }
+}
+async function dgDiscoverLatestResult(operation, signal) {
+  const button = document.getElementById('dg-ai-restore-result');
+  dgLatestResultJob = null;
+  if (!button) return;
+  button.hidden = true;
+  try {
+    const result = await dgJobRequest('/latest', {signal});
+    if (!dgGenerationIsCurrent(operation) || !dgGeneratorOpen() || signal.aborted || !result?.job) return;
+    const job = result.job, workbench = window.RESEARCH_CONTEXT?.workbench;
+    dgCheckJob(job);
+    if (job.purpose !== 'diagram' || !workbench || job.workbench_id !== workbench || job.state !== 'succeeded' || job.result_available !== true) return;
+    dgLatestResultJob = job;button.hidden = false;
+  } catch { /* A missing temporary result never blocks the diagram editor. */ }
+}
+async function dgViewLatestResult() {
+  if (!dgLatestResultJob || dgSubmittingJob || dgJobActive()) return;
+  const workbench = window.RESEARCH_CONTEXT?.workbench;
+  try { dgCheckJob(dgLatestResultJob); } catch (error) { document.getElementById('dg-ai-status').textContent = error.message;return; }
+  if (dgLatestResultJob.purpose !== 'diagram' || !workbench || dgLatestResultJob.workbench_id !== workbench) return;
+  if ((document.getElementById('dg-md-text').value.trim() || document.getElementById('dg-ai-instructions').value.trim() || dgGeneratorImage)
+      && !window.confirm('查看最新暂存结果将替换当前 Markdown 草稿和生成说明。是否继续？')) return;
+  dgGenerationContext = {markdown:document.getElementById('dg-md-text').value,body:dgGenerationRequestBody(),restored:true};
+  dgGeneratorJob = dgLatestResultJob;
+  await dgFollowJob(dgLatestResultJob.id);
 }
 function dgUpdateGenerationCapability() {
   const model = document.getElementById('dg-ai-model'), source = document.getElementById('dg-ai-source');
@@ -220,6 +252,7 @@ async function dgFollowJob(identifier) {
   return poll();
 }
 document.addEventListener('keydown',event => { if (event.key === 'Escape') dgCancelGeneration(); });
+document.getElementById('dg-ai-restore-result')?.addEventListener('click',dgViewLatestResult);
 const dgGeneratorDrawer = document.getElementById('dg-md-drawer');
 if (dgGeneratorDrawer) new MutationObserver(() => {
   if (dgGeneratorDrawer.classList.contains('hidden') || dgGeneratorDrawer.classList.contains('translate-x-full')) dgCancelGeneration();

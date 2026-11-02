@@ -4,6 +4,7 @@ import asyncio
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import logging
 import secrets
 import threading
 import time
@@ -74,7 +75,9 @@ class PreviewStore:
     def put(self, scope, value):
         with self.lock:
             now = time.monotonic()
-            self.items = {key: item for key, item in self.items.items() if item[0] > now}
+            owner = scope_key(scope)[:3]
+            self.items = {key: item for key, item in self.items.items()
+                if item[0] > now and item[1][:3] != owner}
             while len(self.items) >= 16: self.items.pop(next(iter(self.items)))
             self.mutations = {key: lock for key, lock in self.mutations.items() if key in self.items}
             token = secrets.token_urlsafe(32)
@@ -699,8 +702,16 @@ async def _generate_preview(request: Request):
     body = await read_body(request, GenerateRequest)
     preview, before = await _analyze(scope, body)
     from tin.web.judgment_review import preview_response
+    response = preview_response(scope, '', preview, before)
     token = previews.put(scope, preview)
-    return preview_response(scope, token, preview, before)
+    try:
+        from tin.web.judgment_analysis_cache import prune_snapshots_after_success
+        await run_in_threadpool(prune_snapshots_after_success, scope, preview.get('analysis_snapshot'))
+    except (HTTPException, IntegrityError, OperationalError):
+        logging.getLogger(__name__).warning('Temporary analysis snapshot cleanup deferred')
+    response['draft_id'] = token
+    response['review']['draft_id'] = token
+    return response
 
 
 async def _analyze(scope, body, progress=None):

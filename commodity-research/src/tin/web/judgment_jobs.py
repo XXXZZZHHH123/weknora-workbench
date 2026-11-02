@@ -12,7 +12,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import delete, update
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.concurrency import run_in_threadpool
 
@@ -75,14 +75,20 @@ def owned_record(session, scope, job_id, *, token=None):
     elif state in {'succeeded', 'applied'}:
         revision = (config.get('preview') or {}).get('review', {}).get('revision')
         valid_version = type(revision) is int and revision >= 1 and row.version == revision + (2 if state == 'applied' else 1)
+    elif state == 'superseded':
+        valid_version = config.get('superseded_revision') == row.version and config.get('preview') is None
     else:
         valid_version = False
     if not valid_version:
         raise HTTPException(409, '分析预览版本无效，请重新发起')
+    if state in {'succeeded', 'applied'}:
+        registry.guard_result(scope.identity, job_id, scope.workbench_id, 'judgments')
     return row
 
 
 def available(config):
+    if config.get('state') == 'superseded':
+        raise HTTPException(410, '已有更新的分析结果，请打开最新结果')
     if config.get('expires_unix', 0) <= time.time():
         raise HTTPException(410, '分析结果已过期，请重新分析')
     if config.get('state') == 'applied':
@@ -166,16 +172,33 @@ def _create_private(scope, body, meta):
 
 def _complete(scope, meta, preview):
     with registry.fenced(meta['id'], meta['worker_id'], meta['fence']) as (connection, current):
+        current.update(state='succeeded', phase='succeeded', updated_at=iso(), finished_at=iso())
+        registry.write(connection, current)
+        retired = [item for item in registry.compact(connection)
+            if registry.scope_key(item) == registry.scope_key(current)]
         with artifact_session(scope) as session:
+            # Serialize with a review/save transaction before reading versions.
+            # A save already committed remains a business record; a stale save
+            # started afterward sees the superseded private preview.
+            session.execute(update(SourceMapping).where(SourceMapping.id == job_key(scope, meta['id']))
+                .values(version=SourceMapping.version), execution_options={'synchronize_session': False})
             row = owned_record(session, scope, meta['id'])
             if (row.config.get('fence') != meta['fence'] or row.config.get('state') != 'queued'):
                 raise HTTPException(409, '分析任务已中断，请重新发起')
             value = deepcopy(preview)
             value.update(_job_id=meta['id'], _draft_id=row.config['draft_id'])
             _update_record(session, row, {**row.config, 'state': 'succeeded', 'preview': value})
+            for old in retired:
+                _discard_private_record(session, old, KIND)
             session.commit()
-        current.update(state='succeeded', phase='succeeded', updated_at=iso(), finished_at=iso())
-        registry.write(connection, current)
+        for old in retired:
+            old['payload_pruned'] = True
+            registry.write(connection, old)
+        try:
+            from tin.web.judgment_analysis_cache import prune_snapshots_after_success
+            prune_snapshots_after_success(scope, preview.get('analysis_snapshot'))
+        except Exception:
+            logging.getLogger(__name__).warning('Analysis snapshot cleanup deferred')
 
 
 async def fresh_scope(scope):
@@ -198,20 +221,47 @@ def _storage_factory(meta):
         else isolated_session_factory(meta['tenant_id'], meta['workbench_id']))
 
 
-def cleanup_expired():
-    for meta in [row for row in registry.expired() if row.get('purpose', 'judgments') == 'judgments'][:20]:
-        key = digest([KIND, meta['tenant_id'], meta['user_id'], meta['workbench_id'], meta['id']])
+def _discard_private_record(session, meta, kind):
+    key = digest([kind, meta['tenant_id'], meta['user_id'], meta['workbench_id'], meta['id']])
+    row = session.get(SourceMapping, key)
+    config = row.config if row is not None and isinstance(row.config, dict) else {}
+    expected = {'kind': kind, 'id': meta['id'], 'tenant_id': meta['tenant_id'],
+        'user_id': meta['user_id'], 'workbench_id': meta['workbench_id']}
+    if (row is None or row.confirmed_by != meta['user_id']
+            or any(config.get(name) != value for name, value in expected.items())):
+        return
+    if meta['state'] == 'expired':
+        session.delete(row)
+        return
+    if config.get('state') == 'superseded':
+        return
+    # Retain only authority and a tombstone, never previous source or result.
+    value = {name: config[name] for name in ('kind', 'id', 'tenant_id', 'user_id',
+        'workbench_id', 'grant_digest', 'fence', 'worker_id', 'expires_unix', 'draft_id') if name in config}
+    value.update(state='superseded', superseded_by=meta.get('superseded_by'),
+        superseded_revision=row.version + 1)
+    if kind == KIND:
+        value.update(input={}, preview=None)
+    else:
+        value.update(request={}, result=None, source_identity=None)
+    _update_record(session, row, value)
+
+
+def cleanup_discarded(kind, index, purpose):
+    for meta in [row for row in index.discarded() if row.get('purpose', 'judgments') == purpose][:20]:
         factory = _storage_factory(meta)
         if factory is not None:
             with factory() as session:
-                session.execute(delete(SourceMapping).where(SourceMapping.id == key,
-                    SourceMapping.confirmed_by == meta['user_id'],
-                    SourceMapping.config['kind'].as_string() == KIND,
-                    SourceMapping.config['tenant_id'].as_integer() == meta['tenant_id'],
-                    SourceMapping.config['user_id'].as_string() == meta['user_id'],
-                    SourceMapping.config['workbench_id'].as_string() == meta['workbench_id']))
+                _discard_private_record(session, meta, kind)
                 session.commit()
-        registry.remove(meta['id'])
+        if meta['state'] == 'expired':
+            index.remove(meta['id'])
+        else:
+            index.mark_pruned(meta['id'])
+
+
+def cleanup_expired():
+    cleanup_discarded(KIND, registry, 'judgments')
 
 
 class Runtime:
@@ -354,11 +404,13 @@ async def job_status(scope, job_id):
     meta = await run_in_threadpool(registry.get, scope.identity, job_id, scope.workbench_id)
     if meta.get('purpose', 'judgments') != 'judgments':
         raise HTTPException(404, '分析任务不存在或无权访问')
+    if meta['state'] in {'superseded', 'expired'}:
+        return metadata(meta)
     with artifact_session(scope) as session:
         stored = session.get(SourceMapping, job_key(scope, job_id))
         row = owned_record(session, scope, job_id) if stored is not None or meta['state'] == 'succeeded' else None
         state = row.config.get('state') if row is not None else None
-    if state in {'succeeded', 'applied'} and state != meta['state']:
+    if state in {'succeeded', 'applied', 'superseded'} and state != meta['state']:
         meta = await run_in_threadpool(registry.reconcile, scope.identity, job_id, scope.workbench_id, state)
     return metadata(meta)
 
@@ -378,7 +430,7 @@ async def _job_result(verified, job_id):
     await job_status(verified, job_id)
     meta = await run_in_threadpool(registry.get, verified.identity, job_id, verified.workbench_id)
     if meta['state'] != 'succeeded':
-        raise HTTPException(410 if meta['state'] == 'expired' else 409,
+        raise HTTPException(410 if meta['state'] in {'expired', 'superseded'} else 409,
             meta.get('message') or '分析尚未完成或预览已经保存')
     with artifact_session(verified) as session:
         row = owned_record(session, verified, job_id)
@@ -397,11 +449,28 @@ def list_jobs(identity, limit=20):
     return {'items': [metadata(meta) for meta in registry.listing(identity, limit)]}
 
 
+def dismiss_job(identity, job_id):
+    if identity is None:
+        raise HTTPException(401, '请先登录研究工作台')
+    return metadata(registry.dismiss(identity, job_id))
+
+
+async def latest_job(scope):
+    await fresh_scope(scope)
+    meta = await run_in_threadpool(registry.latest, scope.identity, scope.workbench_id, 'judgments')
+    return {'job': metadata(meta) if meta is not None else None}
+
+
 @router.post('', status_code=202)
 async def create(request: Request):
     scope = generation.scope_for_analysis(write=True)
     body = await generation.read_body(request, generation.GenerateRequest)
     return await start_job(scope, body, request.headers.get('idempotency-key'))
+
+
+@router.get('/latest')
+async def latest():
+    return await latest_job(generation.scope_for_analysis(write=True))
 
 
 @router.get('/{job_id}')
@@ -419,3 +488,8 @@ def listing(request: Request, limit: int = Query(default=20, ge=1, le=20)):
     if set(request.query_params) - {'limit'}:
         raise HTTPException(422, '任务查询参数无效')
     return list_jobs(current_identity.get(), limit)
+
+
+@global_router.post('/{job_id}/dismiss')
+def dismiss(job_id: str):
+    return dismiss_job(current_identity.get(), job_id)
