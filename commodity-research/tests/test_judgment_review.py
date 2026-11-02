@@ -12,7 +12,7 @@ from tests.test_judgment_generation import (
     generator, generate, apply, rows, TEXT, document, inventory_fixture, covered_fixture,
 )
 from tin.integration.workbench_scope import isolated_session_factory
-from tin.models import AuditLog, SourceMapping
+from tin.models import AuditLog, Judgment, SourceMapping
 from tin.web import judgment_generation as generation
 from tin.web import judgment_review as review
 from tin.judgments.analysis import assess_draft
@@ -36,7 +36,7 @@ def update(client, headers, preview, item, action='confirm', **fields):
         'item_id': item['id'], 'action': action, **fields})
 
 
-def confirm_new_binding(client, headers, preview, item, *, expected_warning=True, **fields):
+def confirm_new_binding(client, headers, preview, item, *, expected_warning=False, **fields):
     warning = update(client, headers, preview, item, **fields)
     if not expected_warning:
         assert warning.status_code == 200, warning.text
@@ -158,18 +158,19 @@ def test_confirm_ready_confirms_verified_items_without_confirming_unsafe_rules(g
     assert apply(client, headers, changed).status_code == 200 and rows()[0].thresholds == []
 
 
-def test_model_unit_mismatch_requires_explicit_reselection_and_is_not_batch_confirmed(generator):
+def test_indicator_unit_is_adopted_without_reselection_or_separate_unit_confirmation(generator):
     client, headers, _, response, _ = generator
     response['binding_units'][SERIES] = 'kg'
     preview = generate(client, headers).json()
     item = pick(preview, 'thresholds')
-    assert not item['can_confirm'] and update(client, headers, preview, item).status_code == 422
+    assert item['can_confirm'] and item['status'] == 'ready'
+    assert item['binding']['unit'] == '吨' and not item['caliber']['confirmation_required']
     batch = client.post(endpoint('/confirm-ready'), headers=headers, json={
         'draft_id': preview['draft_id'], 'revision': preview['review']['revision']})
     assert batch.status_code == 200
-    assert pick(batch.json(), 'thresholds')['status'] == 'pending'
-    explicit = update(client, headers, batch.json(), pick(batch.json(), 'thresholds'), series_id=SERIES)
-    assert explicit.status_code == 200 and pick(explicit.json(), 'thresholds')['status'] == 'confirmed'
+    assert pick(batch.json(), 'thresholds')['status'] == 'confirmed'
+    assert apply(client, headers, batch.json()).status_code == 200
+    assert rows()[0].thresholds[0]['value'] == 12
 
 
 def test_unresolved_can_bind_as_descriptive_evidence_without_becoming_a_rule(generator):
@@ -223,10 +224,22 @@ def test_review_expiry_permission_source_and_workbench_changes_are_rejected(gene
 
 
 def test_new_saved_version_invalidates_review(generator):
+    from tin.judgments.service import save_version, to_payload
     client, headers, _, _, _ = generator
-    first, second = generate(client, headers).json(), generate(client, headers).json()
+    first = generate(client, headers).json()
     assert apply(client, headers, first).status_code == 200
+    second = generate(client, headers, base=1).json()
+    assert second['base_version'] == 1
+    saved_id = rows()[0].id
+    with isolated_session_factory(17, FIRST)() as session:
+        saved = session.get(Judgment, saved_id)
+        session.info.update(weknora_user_id='researcher', knowledge_facts=True,
+                            knowledge_facts_catalog={SERIES: {}})
+        save_version(session, to_payload(saved), actor='researcher', expected_base_version=1)
+        session.commit()
+    assert [row.version for row in rows()] == [1, 2]
     assert update(client, headers, second, pick(second, 'binding')).status_code == 409
+    assert [row.version for row in rows()] == [1, 2]
 
 
 def test_old_tab_apply_revision_is_rejected_and_current_tab_can_save(generator):
@@ -286,7 +299,8 @@ def test_catalog_search_uses_complete_directory_metadata_without_model_or_observ
     assert client.get(endpoint('/indicators'), headers=headers,
         params={'draft_id': preview['draft_id'], 'limit': 51}).status_code == 422
     assert len(calls) == count and state['pages'] == pages
-    selected = confirm_new_binding(client, headers, preview, pick(preview, 'binding'), series_id=fields[-1]['id'])
+    selected = confirm_new_binding(client, headers, preview, pick(preview, 'binding'), series_id=fields[-1]['id'],
+        expected_warning=True)
     assert selected.status_code == 200 and pick(selected.json(), 'binding')['binding']['series_id'] == fields[-1]['id']
 
 
@@ -523,7 +537,7 @@ def test_missing_real_unit_never_confirms_quantitative_rule(generator, monkeypat
 @pytest.mark.parametrize(('change', 'field'), [
     (lambda model: model['judgment']['thresholds'][0].update(value=0), 'condition'),
     (lambda model: model['rule_quotes'].update(watch='Missing original selection'), 'source_quote'),
-    (lambda model: model['binding_units'].update({SERIES: 'kg'}), 'binding'),
+    (lambda model: model['judgment']['thresholds'][0].update(series_id=None), 'binding'),
 ])
 def test_attention_fields_come_from_protocol_codes_and_failed_updates_keep_revision(generator, change, field):
     client, headers, _, response, _ = generator

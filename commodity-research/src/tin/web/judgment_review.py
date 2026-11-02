@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.integration.page_facts import catalog_page
 from tin.integration.workbench_scope import artifact_session, require_shared_write, resolve_workbench
-from tin.judgments.analysis import AnalysisError, validate_analysis
+from tin.judgments.analysis import AnalysisError, assess_draft, validate_analysis
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.service import latest, latest_workbench_payload
 from tin.models import AuditLog, SourceMapping
@@ -28,7 +28,7 @@ SECTIONS = [
     ('contradiction', '主矛盾'), ('marginal_focus', '边际关注'), ('cost_line', '成本线'),
     ('pricing_power', '定价权'), ('time_dimension', '时间维度'), ('survey_notes', '调研备注'),
     ('whitelist', '指标范围'), ('paradigm', '研判范式'), ('tone', '研究基调'),
-    ('thresholds', '阈值条件'), ('falsifiers', '证伪条件'), ('unresolved', '待补充内容')]
+    ('thresholds', '阈值条件'), ('falsifiers', '证伪条件'), ('unresolved', '补充说明')]
 
 
 class ReviewRequest(BaseModel):
@@ -153,6 +153,8 @@ def acknowledge_binding(scope, body, preview, item, known):
     if source_unit and source_unit == known_unit:
         return None
     previous_unit = previous.get('unit') if previous and unit_present(previous.get('unit')) else None
+    if not source_unit and not (previous_unit and known_unit and previous_unit != known_unit):
+        return None
     if source_unit and known_unit:
         message = f'原文单位为“{source_unit}”，所选指标单位为“{known_unit}”，两者不一致。'
     elif source_unit:
@@ -177,17 +179,43 @@ def acknowledge_binding(scope, body, preview, item, known):
 
 
 def initialize_review(preview, assessment, catalog):
-    candidate = deepcopy(assessment.candidate_document or assessment.document)
+    original_candidate = deepcopy(assessment.candidate_document or assessment.document)
+    history = deepcopy(assessment.candidate_history or [original_candidate])
+    candidate = deepcopy(original_candidate)
+    known = {field['id']: field for field in catalog}
+    from tin.compute.rule_caliber import unit_present
+    # Choosing an actual indicator adopts its registered unit. This never
+    # converts a number or supplies a unit absent from that source, and every
+    # normalized candidate still passes the complete source/number validator.
+    wanted = set()
+    def refs(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == 'series_id' and child is not None:
+                    wanted.add(child)
+                refs(child)
+        elif isinstance(value, list):
+            for child in value:
+                refs(child)
+    refs(candidate['judgment'])
+    refs(candidate['unresolved'])
+    wanted.update(candidate['judgment'].get('whitelist', []))
+    candidate['binding_units'] = {sid: known[sid].get('unit') for sid in wanted}
+    for rule in candidate['judgment'].get('falsifiers', []):
+        unit = known.get(rule.get('series_id'), {}).get('unit')
+        if unit_present(unit):
+            rule['unit_confirmed'] = unit
+    assessment = assess_draft(candidate, preview['text'], catalog, variety=preview['variety'],
+        actor=assessment.result.payload.author, written_at=assessment.result.payload.written_at)
     baseline = deepcopy(assessment.document)
     # Quarantine records are structured here. Audit prose is never reparsed.
     baseline['unresolved'] = deepcopy(baseline['unresolved'][:len(candidate['unresolved'])])
     review = {'revision': 1, 'reuse_enabled': False, 'items': [], 'audit': [],
               'binding_warning_secret': secrets.token_hex(32),
-              'baseline': baseline, 'candidate': candidate,
-              'candidate_history': deepcopy(assessment.candidate_history or [candidate]),
+              'baseline': baseline, 'candidate': original_candidate,
+              'candidate_history': history,
               'catalog': deepcopy(catalog)}
     preview['review'] = review
-    known = {field['id']: field for field in catalog}
 
     def add(section, path, value, title, *, kind='description', sid=None, quote='', warnings=None):
         source_quote = quote if isinstance(quote, str) and quote.strip() and quote in preview['text'] else ''
@@ -326,6 +354,7 @@ def build_document(preview, catalog):
     document['rule_quotes'] = {}
     notes = []
     fields.update(thresholds=[], falsifiers=[])
+    known = {field['id']: field for field in catalog}
     valid = {kind: {rule['id'] for rule in review['baseline']['judgment'].get(kind, [])}
              for kind in ('thresholds', 'falsifiers')}
     for item in review['items']:
@@ -341,6 +370,10 @@ def build_document(preview, catalog):
                 continue
             if status == 'confirmed':
                 rule['series_id'] = item['series_id']
+                from tin.compute.rule_caliber import unit_present
+                unit = known.get(item['series_id'], {}).get('unit')
+                if kind == 'falsifiers' and unit_present(unit):
+                    rule['unit_confirmed'] = unit
                 if item.get('caliber_confirmation'):
                     rule['caliber_confirmation'] = deepcopy(item['caliber_confirmation'])
                     if kind == 'falsifiers':
@@ -376,7 +409,6 @@ def build_document(preview, catalog):
     if priority:
         order = [identifier for identifier in priority['order'] if identifier in identifiers]
         document['judgment']['priority_rule'] = {**priority, 'order': order} if order else None
-    known = {field['id']: field for field in catalog}
     wanted = set(document['judgment'].get('whitelist', []))
 
     def refs(value):
@@ -411,22 +443,57 @@ def checked(preview, document, catalog, scope):
 
 
 def confirmation_issues(preview, item, catalog, scope):
-    trial = {**preview, 'review': {**preview['review'], 'items': [
-        {**row, 'status': 'confirmed'} if row['id'] == item['id'] else row
-        for row in preview['review']['items']]}}
     if requires_binding(item) and not item['series_id']:
         return [{'code': 'missing_binding', 'message': '请先选择当前授权目录中的指标。'}]
-    if item['requires_explicit_binding'] and not item['binding_explicit']:
-        return [{'code': 'unit_mismatch', 'message': '模型单位与目录不同，请明确采用来源登记单位，无需更换指标。'}]
+    dependencies = set(item['value'].get('order', [])) if item['path'] == ['priority_rule'] else set()
+    # A form field must report its own failure, even when another candidate
+    # fails earlier in document validation. Persisting/applying still checks
+    # the complete document, including cross-item constraints.
+    trial = {**preview, 'review': {**preview['review'], 'items': [
+        {**row, 'status': 'confirmed'} if row['id'] == item['id'] else row
+        if row['kind'] == 'thresholds' and row['value']['id'] in dependencies
+        else {**row, 'status': 'excluded'} for row in preview['review']['items']]}}
     try:
         checked(trial, build_document(trial, catalog), catalog, scope)
     except AnalysisError as error:
-        return error.issues
+        root = '/unresolved/' if item['section'] == 'unresolved' else '/judgment/'
+        path = item['path'][1:] if item['section'] == 'unresolved' else item['path']
+        focused = root + '/'.join('0' if isinstance(name, int) else name for name in path)
+        original = root + '/'.join(map(str, path))
+        issues = []
+        for issue in error.issues:
+            location = issue.get('path', '')
+            if item['section'] == 'unresolved' and location.startswith('/judgment/unstructured/'):
+                location = '/unresolved/' + location[len('/judgment/unstructured/'):]
+            if location == focused or location.startswith(focused + '/'):
+                location = original + location[len(focused):]
+            issues.append({**issue, 'path': location})
+        return issues
     return []
 
 
 def confirmation_error(preview, item, catalog, scope):
     return list(dict.fromkeys(issue['message'] for issue in confirmation_issues(preview, item, catalog, scope)))
+
+
+def adopt_catalog_choices(preview, catalog):
+    """Upgrade temporary metadata without changing any human decision or number."""
+    value = deepcopy(preview)
+    known = {field['id']: field for field in catalog}
+    from tin.compute.rule_caliber import unit_present
+    for item in value.get('review', {}).get('items', []):
+        if item['status'] not in {'pending', 'ready'}:
+            continue
+        unit = known.get(item.get('series_id'), {}).get('unit')
+        if not unit_present(unit):
+            continue
+        item['requires_explicit_binding'] = False
+        item['initial_attention_fields'] = [field for field in item['initial_attention_fields'] if field != 'binding']
+        if item['kind'] == 'falsifiers' and not (
+                item.get('remembered') and item['series_id'] != item['ai_series_id']):
+            item['value']['unit_confirmed'] = unit
+    value['document'] = build_document(value, catalog)
+    return value
 
 
 def review_response(scope, token, preview, catalog):
@@ -441,7 +508,7 @@ def review_response(scope, token, preview, catalog):
             errors = list(dict.fromkeys(issue['message'] for issue in issues))
             fields = []
             if item['status'] == 'pending':
-                fields = list(item['initial_attention_fields']) + attention_fields(issues)
+                fields = attention_fields(issues) if issues else list(item['initial_attention_fields'])
                 if item['remembered'] and item['series_id'] != item['ai_series_id']:
                     fields.append('binding')
                 fields = list(dict.fromkeys(fields))
@@ -474,7 +541,8 @@ def review_response(scope, token, preview, catalog):
                 'attention_fields': fields,
                 'attention_reasons': [attention_message(fields)] if fields else [],
                 'requires_quote': item['kind'] in ('thresholds', 'falsifiers'),
-                'warnings': errors if errors else item['warnings'] if item['status'] == 'pending' else [],
+                'warnings': errors if errors else item['warnings'] if item['status'] == 'pending'
+                    and item['kind'] not in {'thresholds', 'falsifiers'} else [],
                 'binding': binding(display_field), 'caliber': caliber,
                 'ai_binding': binding(known.get(item['ai_series_id'])),
                 'requires_binding': requires_binding(item),
@@ -494,6 +562,7 @@ def review_response(scope, token, preview, catalog):
 
 def preview_response(scope, token, preview, state):
     catalog = state['catalog']
+    preview = adopt_catalog_choices(preview, catalog)
     result = checked(preview, preview['document'], catalog, scope)
     known = {field['id']: field for field in catalog}
     complete = 'analysis_snapshot' not in preview or preview['analysis_snapshot'] is not None
@@ -534,7 +603,7 @@ async def current_preview(scope, token, page_query=None):
             or verified.additional_knowledge_bases != scope.additional_knowledge_bases):
         raise HTTPException(409, '研究工作台来源或权限已改变，请重新分析')
     state = await run_in_threadpool(review_snapshot, verified, preview, page_query)
-    return preview, state
+    return adopt_catalog_choices(preview, state['catalog']), state
 
 
 def preference_key(scope, preview, item):

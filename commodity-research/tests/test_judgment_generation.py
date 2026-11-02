@@ -109,12 +109,9 @@ def test_invalid_model_draft_never_creates_version(generator,change):
     assert rows()==[]
 
 
-@pytest.mark.parametrize('change', [
-    lambda d: d['binding_units'].update({SERIES: 'kg'}),
-    lambda d: d['judgment']['thresholds'][0].update(value=99999),
-])
-def test_invalid_quantitative_item_is_not_executable_after_one_bounded_repair(generator, change):
-    client, headers, _, response, calls = generator; change(response)
+def test_invalid_quantitative_item_is_not_executable_after_one_bounded_repair(generator):
+    client, headers, _, response, calls = generator
+    response['judgment']['thresholds'][0]['value'] = 99999
     result = generate(client, headers)
     assert result.status_code == 200, result.text
     assert len(calls) == 3 and result.json()['repair_attempts'] == 1
@@ -123,6 +120,20 @@ def test_invalid_quantitative_item_is_not_executable_after_one_bounded_repair(ge
     assert preview['validation_issues'] and preview['unresolved'] and rows() == []
     assert apply(client, headers, preview).status_code == 200
     assert rows()[0].status == '草稿' and rows()[0].thresholds == [] and rows()[0].source_note == TEXT
+
+
+def test_model_unit_is_replaced_by_registered_unit_without_changing_verified_numbers(generator):
+    client, headers, _, response, calls = generator
+    response['binding_units'][SERIES] = 'kg'
+    preview = generate(client, headers)
+    assert preview.status_code == 200, preview.text
+    result = preview.json()
+    assert len(calls) == 3 and result['repair_attempts'] == 1
+    assert result['bindings'][0]['unit'] == '吨'
+    assert apply(client, headers, result).status_code == 200
+    assert rows()[0].status == '草稿'
+    assert rows()[0].thresholds[0]['value'] == response['judgment']['thresholds'][0]['value'] == 12
+    assert rows()[0].source_note == TEXT
 
 
 def test_single_repair_can_fix_exact_quote_and_never_loops(generator, monkeypatch):
@@ -219,7 +230,8 @@ def test_viewer_and_foreign_workbench_preview_are_rejected(generator):
 def test_stale_preview_and_changed_source_cannot_save(generator):
     client,headers,state,_,_=generator
     a=generate(client,headers).json();b=generate(client,headers).json()
-    assert apply(client,headers,a).status_code==200
+    assert apply(client,headers,a).status_code==409 and rows()==[]
+    assert apply(client,headers,b).status_code==200 and len(rows())==1
     assert apply(client,headers,b).status_code==409 and len(rows())==1
     c=generate(client,headers,1).json();state['value']+=1
     assert apply(client,headers,c).status_code==409 and len(rows())==1

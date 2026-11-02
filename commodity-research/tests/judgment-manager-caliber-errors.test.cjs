@@ -28,27 +28,24 @@ async function prepare(attentionFields) {
   env.nodes['logic-input'].value = 'Synthetic original quantity source.';
   env.nodes['logic-model'].value = 'configured';
   await env.nodes['logic-generate'].fire('click');
-  for (const [control, value] of [['caliber-unit', '吨'], ['caliber-basis', 'Checked the original quantity table.']]) {
-    const input = reviewControl(env, 'anchor', control);
-    input.value = value;
-    await input.fire('input');
-  }
   return env;
 }
 
 (async () => {
   for (const field of ['condition', 'source_quote', 'caliber', undefined]) {
     const env = await prepare(field ? [field] : undefined);
-    await reviewControl(env, 'anchor', 'caliber-declare').fire('click');
+    const picker=reviewControl(env,'anchor','search');await picker.fire('focus');await picker.fire('keydown',{key:'ArrowDown'});await picker.fire('keydown',{key:'ArrowDown'});await picker.fire('keydown',{key:'Enter'});
     const card = descendants(env.nodes['logic-review-items']).find(node =>
       node.className?.includes('logic-review-card') && node.dataset.reviewItem === 'anchor');
-    const target = descendants(card).find(node => node.dataset.reviewField === (field || 'caliber'));
-    const caliber = descendants(card).find(node => node.dataset.reviewField === 'caliber');
-    assert.equal(target.dataset.invalid, 'true');
-    assert.equal(caliber.dataset.invalid, field === 'condition' || field === 'source_quote' ? 'false' : 'true',
-      'A separate comparison/source error does not invalidate the entered unit; explicit or fallback caliber errors remain marked');
-    assert.equal(reviewControl(env, 'anchor', 'caliber-unit').value, '吨', 'The unit input remains available after a rule error');
-    assert.equal(env.requests.filter(row => row.url.endsWith('/review/update')).length, 1);
+    const targetField=field==='caliber'||!field?'binding':field;
+    const target=descendants(card).find(node=>node.dataset.reviewField===targetField);
+    assert.equal(target.dataset.invalid,'true','A source selection never hides a numerical, evidence or legacy unit error');
+    assert.match(target.textContent,/comparison value is not supported/);
+    assert.match(reviewControl(env,'anchor','condition').textContent,/12000/,'A rejected comparison retains the exact threshold number');
+    assert.equal(reviewControl(env,'anchor','caliber-unit'),undefined,'Source units are not replaced by manual input');
+    assert.equal(env.nodes['logic-apply'].disabled,true,'A rejected numerical rule cannot be saved as synchronized');
+    const update=env.requests.filter(row=>row.url.endsWith('/review/update'));assert.equal(update.length,1);
+    assert.equal(update[0].body.series_id,'authorized-other');assert.equal(Object.hasOwn(update[0].body,'caliber'),false);
     env.context.window.JudgmentManager.close();
   }
   console.log('4 caliber versus condition/source error scenarios passed');

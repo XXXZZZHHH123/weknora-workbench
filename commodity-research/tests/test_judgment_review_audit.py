@@ -121,7 +121,7 @@ def test_same_preview_cannot_be_reviewed_while_save_holds_mutation(decisions):
 
 
 @pytest.mark.parametrize('declared_units', [{}, {'synthetic-series': 'lb'}])
-def test_quantitative_unit_declaration_cannot_be_silently_repaired_by_confirmation(declared_units):
+def test_selected_indicator_adopts_catalog_unit_and_rechecks_original_number(declared_units):
     source = 'Synthetic amount above 12 kg requires review.'
     catalog = [{'id': 'synthetic-series', 'name': 'Synthetic amount', 'unit': 'kg'}]
     document = {'judgment': {'contradiction': {}, 'thresholds': [{
@@ -136,5 +136,10 @@ def test_quantitative_unit_declaration_cannot_be_silently_repaired_by_confirmati
     item = next(item for item in preview['review']['items'] if item['kind'] == 'thresholds')
     scope = SimpleNamespace(identity=SimpleNamespace(user_id='synthetic-user'))
 
-    assert review.confirmation_error(preview, item, catalog, scope), (
-        'A missing or incorrect model unit declaration needs an explicit selection of the real field')
+    assert review.confirmation_error(preview, item, catalog, scope) == []
+    assert item['status'] == 'ready'
+    assert preview['document']['binding_units'] == {'synthetic-series': 'kg'}
+    assert preview['document']['judgment']['thresholds'][0]['value'] == 12
+    assert preview['review']['candidate']['binding_units'] == declared_units
+    item['value']['value'] = 999
+    assert review.confirmation_issues(preview, item, catalog, scope)[0]['code'] == 'number_not_in_source'

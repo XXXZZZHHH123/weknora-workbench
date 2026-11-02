@@ -27,6 +27,28 @@ _CHINESE_CONTINUATIONS = frozenset(_CONNECTORS + '_.,]十百千万亿兆零〇�
 _COMPARISON_SUFFIXES = ('及以上', '及以下', '以上', '以下', '以内', '以外')
 _COMPARISON_ARITHMETIC = re.compile('(?:' + '|'.join(_COMPARISON_SUFFIXES)
     + r')[ \t]*[+-][ \t]*' + _GROUPED)
+_PERIOD_UNITS = {
+    '期': None, '周期': None, 'period': None, 'periods': None,
+    'observation': None, 'observations': None,
+    '日': 'day', '日度': 'day', '天': 'day', 'day': 'day', 'days': 'day',
+    '周': 'week', '周度': 'week', '星期': 'week', 'week': 'week', 'weeks': 'week',
+    '月': 'month', '月度': 'month', 'month': 'month', 'months': 'month',
+    '季度': 'quarter', '季': 'quarter', 'quarter': 'quarter', 'quarters': 'quarter',
+    '年': 'year', '年度': 'year', 'year': 'year', 'years': 'year',
+}
+_PERIOD_ADVERBS = {'daily': 'day', 'weekly': 'week', 'monthly': 'month',
+    'quarterly': 'quarter', 'annual': 'year', 'yearly': 'year'}
+_PERIOD = re.compile(_START + r'(?P<count>[0-9零〇一二两三四五六七八九十百]{1,9})\s*(?:个\s*)?'
+    + r'(?:consecutive\s+)?(?:(?P<cadence>' + '|'.join(_PERIOD_ADVERBS) + r')\s+)?'
+    + r'(?P<unit>' + '|'.join(re.escape(unit) for unit in sorted(_PERIOD_UNITS, key=len, reverse=True)) + ')',
+    re.IGNORECASE)
+_FREQUENCIES = {
+    'day': {'日', '日度', 'day', 'daily', '1d'},
+    'week': {'周', '周度', 'week', 'weekly', '1w'},
+    'month': {'月', '月度', 'month', 'monthly'},
+    'quarter': {'季', '季度', 'quarter', 'quarterly', '1q'},
+    'year': {'年', '年度', 'year', 'yearly', 'annual', '1y'},
+}
 
 
 def _obscures_quantity(char):
@@ -94,7 +116,7 @@ def _scale(value, power):
     return Decimal((parts.sign, parts.digits, parts.exponent + power))
 
 
-def _unit_boundary(remainder):
+def _unit_boundary(remainder, units=()):
     if not remainder:
         return True
     following = remainder.lstrip()
@@ -107,16 +129,28 @@ def _unit_boundary(remainder):
     for suffix in _COMPARISON_SUFFIXES:
         if following.startswith(suffix):
             rest = following[len(suffix):].lstrip()
-            if rest and _obscures_quantity(rest[0]):
-                return False
-            if rest.startswith('· '):
-                return True
-            return not rest or rest[0] not in _CONNECTORS + '%‰‱_'
+            return _comparison_tail_safe(rest, units)
     if following[0] in '/^*·×÷%‰‱':
         return False
     if remainder[0].isspace():
         return True
     return not (remainder[0].isalnum() or remainder[0] == '_')
+
+
+def _comparison_tail_safe(rest, units=()):
+    """A comparison suffix cannot conceal attached unit or arithmetic syntax."""
+    rest = rest.lstrip()
+    if not rest or rest.startswith('· '):
+        return True
+    if _obscures_quantity(rest[0]) or rest[0] in _CONNECTORS + '%‰‱_':
+        return False
+    clause = re.match(r'[^\r\n，。；;!?！？、]*', rest)[0]
+    if any(char in clause for char in '/^*·×÷⁄∕%‰‱') or any(unicodedata.category(char) == 'Sc' for char in clause):
+        return False
+    head = clause.lstrip(' ([{（【').lstrip()
+    if head and head[0].isascii() and (head[0].isalpha() or head[0].isdigit()):
+        return False
+    return not any(head.startswith(unit) for unit in units if unit)
 
 
 def _complete_quantity_unit(following, unit):
@@ -151,7 +185,7 @@ def _unit_value(value, tail, unit, units):
     for actual in sorted(known - {''}, key=len, reverse=True):
         if following.startswith(actual):
             unit_prefix = True
-            if not _unit_boundary(following[len(actual):]):
+            if not _unit_boundary(following[len(actual):], known):
                 continue
             if actual == expected:
                 return value
@@ -166,8 +200,10 @@ def _unit_value(value, tail, unit, units):
     match = _SCALE.match(following)
     if match:
         remainder = following[match.end():].lstrip()
+        comparison = next((suffix for suffix in _COMPARISON_SUFFIXES if remainder.startswith(suffix)), None)
         closed = (not remainder or remainder[0] in '，;；。!?！？、)]}）'
-            or remainder[0] in ',.' and (len(remainder) == 1 or remainder[1].isspace()))
+            or remainder[0] in ',.' and (len(remainder) == 1 or remainder[1].isspace())
+            or comparison is not None and _comparison_tail_safe(remainder[len(comparison):], known))
         if remainder and (remainder[0] in '万亿千0123456789' + _CONNECTORS
                 or remainder[0] in ',.' and not closed):
             return None
@@ -178,7 +214,7 @@ def _unit_value(value, tail, unit, units):
                 # source unit to disambiguate the repeated multiplier.
                 if _SCALE.match(expected):
                     return None
-            elif not remainder.startswith(expected) or not _unit_boundary(remainder[len(expected):]):
+            elif not remainder.startswith(expected) or not _unit_boundary(remainder[len(expected):], known):
                 return None
         return _scale(value, _POWERS[match[0]])
     if expected and following and (following[0].isalpha() or following[0] in '([{'):
@@ -195,6 +231,61 @@ def _unit_value(value, tail, unit, units):
         elif first in '+-/:0123456789' or first.isascii() and (first.isalpha() or first == '_'):
             return None
     return value
+
+
+def _period_count(literal):
+    if literal.isascii() and literal.isdigit():
+        value = int(literal)
+    else:
+        # Canonical bounded cardinals only. Colloquial abbreviated hundreds,
+        # digit strings, fractions and partial suffixes cannot become counts.
+        digit = r'[一二两三四五六七八九]'
+        if not re.fullmatch(r'(?:' + digit + r'|十' + digit + r'?|[二三四五六七八九]十' + digit
+                + r'?|一百(?:零' + digit + r'|[一二两]十' + digit + r'?)?)', literal):
+            return None
+        value, rest = 0, literal
+        if rest.startswith('一百'):
+            value, rest = 100, rest[2:].removeprefix('零')
+        if '十' in rest:
+            tens, ones = rest.split('十')
+            value += (_CHINESE_DIGITS[tens] if tens else 1) * 10
+            rest = ones
+        if rest:
+            value += _CHINESE_DIGITS[rest]
+    return value if 1 <= value <= 120 else None
+
+
+def observation_periods(text):
+    """Read count/cadence syntax without interpreting research conditions."""
+    text, records = _width(text), []
+    for match in _PERIOD.finditer(text):
+        before, raw_after = text[:match.start()].rstrip(' \t'), text[match.end():]
+        after = raw_after.lstrip(' \t')
+        if before and (before[-1].isnumeric() or before[-1] in _CHINESE_CONTINUATIONS
+                or _obscures_quantity(before[-1]) and before[-1] not in '\r\n'):
+            continue
+        closed = (not after or after[0] in '\r\n，。；;!?！？、)]}）' or after.startswith('· ')
+            or after[0] in ',.' and (len(after) == 1 or not after[1].isnumeric()))
+        if not closed and (after[0].isnumeric() or after[0] in _CHINESE_CONTINUATIONS
+                or _obscures_quantity(after[0])
+                or after[0] in '/^*·×÷⁄∕日天周月季年期'
+                or not raw_after[0].isspace() and after[0].isascii() and after[0].isalpha()):
+            continue
+        count = _period_count(match['count'])
+        cadence = _PERIOD_UNITS[match['unit'].lower()]
+        if match['cadence']:
+            qualifier = _PERIOD_ADVERBS[match['cadence'].lower()]
+            if cadence is not None and cadence != qualifier:
+                continue
+            cadence = qualifier
+        if count is not None:
+            records.append({'start': match.start(), 'end': match.end(), 'count': count,
+                'cadence': cadence})
+    return records
+
+
+def period_matches_frequency(record, frequency):
+    return record['cadence'] is None or str(frequency or '').strip().lower() in _FREQUENCIES[record['cadence']]
 
 
 def _range_pattern(unit, units):

@@ -13,52 +13,70 @@ from tin.web import judgment_generation as generation
 from tin.web import judgment_review as review
 
 
-def test_new_manual_binding_warns_without_mutating_preview_or_audit(generator):
+def mismatch_preview(generator, monkeypatch):
+    client, headers, _, _, _ = generator
+    original = generation.snapshot
+    targets = ['synthetic-first-mismatch', 'synthetic-second-mismatch']
+    def snapshot(*args, **kwargs):
+        state = original(*args, **kwargs)
+        state['catalog'] = copy.deepcopy(state['catalog']) + [
+            {'id': sid, 'name': 'Independent quantity', 'unit': 'kg'} for sid in targets]
+        return state
+    monkeypatch.setattr(generation, 'snapshot', snapshot)
+    preview = generate(client, headers).json()
+    stored = generation.previews.items[preview['draft_id']][2]
+    pending = [item for item in all_items(preview) if item['kind'] == 'unresolved_binding']
+    stored['source_coverage'] = {'items': [{'candidate_path': '/unresolved/' + str(index),
+        'quote': 'Stocks above 12 吨', 'source_unit': '吨'} for index, _ in enumerate(pending)]}
+    return preview, pending, targets
+
+
+def test_unspecified_original_unit_adopts_selected_catalog_without_extra_popup(generator):
     client, headers, _, _, _ = generator
     preview = generate(client, headers).json()
     item = pick(preview, 'unresolved_binding')
     response = update(client, headers, preview, item, series_id=SERIES)
-    assert response.status_code == 422
-    warning = response.json()['detail']
-    assert warning['code'] == 'binding_warning' and warning['confirmation_token']
-    assert '原文口径尚未核对' in warning['message'] and '吨' in warning['message']
-    assert '不自动换算' in warning['message']
+    assert response.status_code == 200, response.text
+    confirmed = pick(response.json(), 'unresolved_binding')
+    assert confirmed['status'] == 'confirmed' and confirmed['binding']['unit'] == '吨'
     current = client.get(endpoint(), headers=headers, params={'draft_id': preview['draft_id']}).json()
-    assert current['revision'] == preview['review']['revision']
-    assert next(row for section in current['sections'] for row in section['items'] if row['id'] == item['id'])['binding'] is None
+    assert current['revision'] == preview['review']['revision'] + 1
+    assert next(row for section in current['sections'] for row in section['items'] if row['id'] == item['id'])['binding']['series_id'] == SERIES
     with isolated_session_factory(17, FIRST)() as session:
-        assert not session.scalars(select(AuditLog).where(AuditLog.action == '研判逐项确认')).all()
+        audit = session.scalars(select(AuditLog).where(AuditLog.action == '研判逐项确认')).one()
+        assert 'binding_warning' not in audit.detail
     assert rows() == []
 
 
-def test_acknowledged_binding_keeps_raw_selection_and_does_not_warn_again(generator):
+def test_acknowledged_binding_keeps_raw_selection_and_does_not_warn_again(generator, monkeypatch):
     client, headers, _, _, _ = generator
-    preview = generate(client, headers).json()
-    item = pick(preview, 'unresolved_binding')
-    warning = update(client, headers, preview, item, series_id=SERIES).json()['detail']
-    response = update(client, headers, preview, item, series_id=SERIES,
+    preview, pending, targets = mismatch_preview(generator, monkeypatch)
+    item, selected = pending[0], targets[0]
+    warning = update(client, headers, preview, item, series_id=selected).json()['detail']
+    response = update(client, headers, preview, item, series_id=selected,
         binding_warning_token=warning['confirmation_token'])
     assert response.status_code == 200, response.text
     changed = response.json()
     confirmed = pick(changed, 'unresolved_binding')
-    assert confirmed['binding']['series_id'] == SERIES and confirmed['binding']['unit'] == '吨'
-    assert update(client, headers, changed, confirmed, series_id=SERIES).status_code == 200
+    assert confirmed['binding']['series_id'] == selected and confirmed['binding']['unit'] == 'kg'
+    assert update(client, headers, changed, confirmed, series_id=selected).status_code == 200
     with isolated_session_factory(17, FIRST)() as session:
         audit = session.scalars(select(AuditLog).where(AuditLog.action == '研判逐项确认')).first()
-        assert audit.detail['binding_warning']['series_id'] == SERIES
-        assert audit.detail['binding_warning']['unit'] == '吨'
+        assert audit.detail['binding_warning']['series_id'] == selected
+        assert audit.detail['binding_warning']['unit'] == 'kg'
         assert audit.detail['binding_warning']['confirmed_by'] == 'researcher'
 
 
-def test_warning_acknowledgement_cannot_be_forged_or_reused_for_another_revision(generator):
+def test_warning_acknowledgement_cannot_be_forged_or_reused_for_another_revision(generator, monkeypatch):
     client, headers, _, _, _ = generator
-    preview = generate(client, headers).json(); item = pick(preview, 'unresolved_binding')
-    first = update(client, headers, preview, item, series_id=SERIES).json()['detail']
+    preview, pending, targets = mismatch_preview(generator, monkeypatch)
+    item, selected = pending[0], targets[0]
+    first = update(client, headers, preview, item, series_id=selected).json()['detail']
     for value in ['forged', '伪造确认']:
-        forged = update(client, headers, preview, item, series_id=SERIES, binding_warning_token=value)
+        forged = update(client, headers, preview, item, series_id=selected, binding_warning_token=value)
         assert forged.status_code == 422 and forged.json()['detail']['code'] == 'binding_warning'
     updated = update(client, headers, preview, pick(preview, 'binding')).json()
-    replay = update(client, headers, updated, item, series_id=SERIES,
+    replay = update(client, headers, updated, item, series_id=selected,
         binding_warning_token=first['confirmation_token'])
     assert replay.status_code == 422 and replay.json()['detail']['code'] == 'binding_warning'
 
@@ -89,17 +107,10 @@ def test_rebinding_reports_known_unit_difference_and_warning_does_not_fix_invali
 def test_warning_token_is_bound_to_item_and_selected_field(generator, monkeypatch):
     client, headers, _, response, _ = generator
     response['unresolved'].append({'section': 'another source', 'text': 'Other observation', 'reason': 'Missing field'})
-    original = generation.snapshot
-    other = 'synthetic-second-selection'
-    def snapshot(*args, **kwargs):
-        state = original(*args, **kwargs)
-        state['catalog'] = copy.deepcopy(state['catalog']) + [{'id': other, 'name': 'Different quantity', 'unit': '吨'}]
-        return state
-    monkeypatch.setattr(generation, 'snapshot', snapshot)
-    preview = generate(client, headers).json()
-    first, second = [item for item in all_items(preview) if item['kind'] == 'unresolved_binding']
-    warning = update(client, headers, preview, first, series_id=SERIES).json()['detail']
-    for item, series in [(second, SERIES), (first, other)]:
+    preview, pending, targets = mismatch_preview(generator, monkeypatch)
+    first, second = pending
+    warning = update(client, headers, preview, first, series_id=targets[0]).json()['detail']
+    for item, series in [(second, targets[0]), (first, targets[1])]:
         attempt = update(client, headers, preview, item, series_id=series,
             binding_warning_token=warning['confirmation_token'])
         assert attempt.status_code == 422 and attempt.json()['detail']['code'] == 'binding_warning'
@@ -109,11 +120,12 @@ def test_warning_token_is_bound_to_item_and_selected_field(generator, monkeypatc
 
 def test_preview_private_signing_key_survives_worker_change_and_is_not_returned(generator, monkeypatch):
     client, headers, _, _, _ = generator
-    preview = generate(client, headers).json(); item = pick(preview, 'unresolved_binding')
+    preview, pending, targets = mismatch_preview(generator, monkeypatch)
+    item, selected = pending[0], targets[0]
     assert 'binding_warning_secret' not in str(preview)
-    warning = update(client, headers, preview, item, series_id=SERIES).json()['detail']
+    warning = update(client, headers, preview, item, series_id=selected).json()['detail']
     monkeypatch.setattr(review, '_binding_warning_secret', b'another-process-secret')
-    result = update(client, headers, preview, item, series_id=SERIES,
+    result = update(client, headers, preview, item, series_id=selected,
         binding_warning_token=warning['confirmation_token'])
     assert result.status_code == 200, result.text
 

@@ -3,23 +3,20 @@ const {setup,generateReview,reviewControl}=require('./judgment-manager-ui.cjs');
 (async()=>{
  {
   const env=await generateReview({caliberMode:'catalog'});
-  const confirm=reviewControl(env,'anchor','caliber-catalog');
-  assert.ok(confirm,'A unit mismatch exposes an explicit confirmation without changing indicators');
-  await confirm.fire('click');
-  const body=env.requests.find(r=>r.url.endsWith('/review/update')).body;
-  assert.deepEqual(body.caliber,{mode:'catalog'});assert.equal(body.series_id,'ai-choice');
+  assert.equal(reviewControl(env,'anchor','caliber-catalog'),undefined,'Catalog units are adopted without a second confirmation');
+  assert.equal(reviewControl(env,'anchor','caliber-unit'),undefined);
+  assert.equal(env.requests.filter(r=>r.url.endsWith('/review/update')).length,0,'Reading a preview never fabricates a user confirmation');
   assert.equal(env.requests.filter(r=>r.url.endsWith('/jobs')).length,1);
   env.context.window.JudgmentManager.close();
  }
  {
   const env=await generateReview({caliberMode:'declared'});
-  const confirm=reviewControl(env,'anchor','caliber-declare');assert.ok(confirm,'Missing source units have an editable declaration');
-  await confirm.fire('click');assert.equal(env.requests.filter(r=>r.url.endsWith('/review/update')).length,0,'An empty declaration is not submitted');
-  for(const [name,value]of[['caliber-unit','吨'],['caliber-basis','已核对原表的单位说明'],['caliber-scope','只限本规则的实物数量']]){const input=reviewControl(env,'anchor',name);input.value=value;await input.fire('input');}
-  await confirm.fire('click');
+  assert.equal(reviewControl(env,'anchor','caliber-declare'),undefined,'Missing source units never force users to type or invent a unit');
+  assert.equal(reviewControl(env,'anchor','caliber-basis'),undefined);
+  const search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});
   const body=env.requests.find(r=>r.url.endsWith('/review/update')).body;
-  assert.deepEqual(body.caliber,{mode:'declared',unit:'吨',basis:'已核对原表的单位说明',scope_note:'只限本规则的实物数量'});
-  assert.equal(body.remember,false,'A local unit declaration does not turn on binding memory');env.context.window.JudgmentManager.close();
+  assert.equal(body.series_id,null);assert.equal(body.action,'keep_text');assert.equal(Object.hasOwn(body,'caliber'),false);
+  assert.equal(body.remember,false,'Keeping text does not invent a source or remember a unit');env.context.window.JudgmentManager.close();
  }
  {
   const env=setup({lifecycleMode:true});await env.context.window.JudgmentManager.open();

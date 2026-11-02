@@ -7,11 +7,12 @@ const {generateReview, reviewControl, descendants, flush} = require('./judgment-
     const search = reviewControl(env, 'anchor', 'search');
     await search.fire('focus');
     await search.fire('keydown', {key: 'ArrowDown'});
+    await search.fire('keydown', {key: 'ArrowDown'});
     await search.fire('keydown', {key: 'Enter'});
     await flush();
     const updates = env.requests.filter(row => row.url.endsWith('/review/update'));
     assert.equal(env.confirmations.length, 1);
-    assert.match(env.confirmations[0], /原文口径尚未核对.*不自动换算/);
+    assert.match(env.confirmations[0], /原绑定单位为kg.*所选指标单位为t.*不自动换算/);
     assert.equal(updates.length, accepted ? 2 : 1);
     assert.equal(updates[0].body.binding_warning_token, undefined);
     if (accepted) {

@@ -11,7 +11,8 @@ from tin.schemas.judgment import EXPRESSION, JudgmentIn, MovingAverageTarget
 from tin.compute.moving_average import sma_source_window
 from tin.judgments.service import _refs
 from tin.judgments.numbers import (quoted_quantities, check_rule_number, _SCALAR, _arrays, _width,
-    starts_chinese_scaled_quantity, chinese_quantity_continuation)
+    starts_chinese_scaled_quantity, chinese_quantity_continuation, observation_periods,
+    period_matches_frequency, _COMPARISON_SUFFIXES)
 from tin.judgments.markdown_protocol import (
     exported_rules, quoted_rule_records, threshold_signature, falsifier_signature,
 )
@@ -50,9 +51,12 @@ def _quote_continuation(original, end, quote, units):
         any(following[1:].lstrip().startswith(unit) for unit in units)
         or following[1:].lstrip()[:1].isascii() and following[1:].lstrip()[:1].isalpha())
     first = following[:1]
+    clause = re.match(r'[^\r\n，。；;!?！？、]*', following[:256])[0]
+    compound = any(char in clause for char in '/^*·×÷⁄∕')
+    comparison = any(following.startswith(suffix) for suffix in _COMPARISON_SUFFIXES)
     # A bare number can inherit its selected catalog unit. Pure Chinese prose
     # does not prove an extra unit; model/user binding still owns that meaning.
-    if not (explicit or unit_prefix or wrapped or first and (
+    if not (explicit or unit_prefix or wrapped or compound or comparison or first and (
             first.isascii() and first.isalpha() or first.isnumeric()
             or first in '.,:+-/*^×÷⁄∕千万元亿')):
         return ''
@@ -60,6 +64,8 @@ def _quote_continuation(original, end, quote, units):
     candidate = tail[:maximum]
     token = re.match(r'[ \t]*[^\s，。；;!?！？、"“”‘’()（）{}<>=]*', candidate)
     length = max(leading + 1, token.end())
+    if compound or comparison:
+        length = max(length, leading + len(clause))
     protected = []
     for unit in unit_prefix:
         protected.append((leading, leading + len(unit)))
@@ -110,6 +116,20 @@ def _quote_quantity_context(original, quote, values, unit, units):
             before = _width(original[max(0, start + owner - 1):start + owner])
             if not owned <= quoted_quantities(before + suffix + continuation, unit=unit, units=units):
                 return False
+    return bool(occurrences)
+
+
+def _period_quote_context(original, quote, record):
+    full = observation_periods(original)
+    offset, occurrences = 0, 0
+    while (start := original.find(quote, offset)) >= 0:
+        occurrences += 1
+        if occurrences > 128:
+            return False
+        offset = start + 1
+        expected = {**record, 'start': start + record['start'], 'end': start + record['end']}
+        if expected not in full:
+            return False
     return bool(occurrences)
 
 
@@ -350,9 +370,9 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
                    'unit_context', f'/judgment/thresholds/{index}/value')
     for index, rule in enumerate(payload.falsifiers):
         match = EXPRESSION.fullmatch(rule.expression)
+        directional_zero = bool(match and match.group(1) == 'change' and Decimal(match.group(3)) == 0)
         source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
                                            units=[row.get('unit') for row in catalog])
-        period_numbers = quoted_quantities(quotes[rule.id]) if rule.consecutive_periods > 1 else set()
         records = explicit['falsifiers'].get(rule.series_id)
         signature = falsifier_signature(rule.model_dump())
         quoted = quoted_rule_records(original, quotes[rule.id])
@@ -362,18 +382,33 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         if not matches_source or not matches_quote:
             _error('证伪条件与引文所在行明示的指标、比较方式、连续期数、单位或证伪对象不一致，或引文多处定位不一致，未执行',
                    'falsifier_source_mismatch', f'/judgment/falsifiers/{index}')
-        if not match or Decimal(match.group(3)) not in source_numbers:
+        if not match or not directional_zero and Decimal(match.group(3)) not in source_numbers:
             value = match.group(3) if match else rule.expression
             unit = known[rule.series_id].get('unit') or '单位未确认'
             _error(f'证伪数字{value}（{unit}）暂不能从原文依据核验。确认单位不能代替数值核对，请核对原文中的数量与倍率。',
                    'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
-        if rule.consecutive_periods > 1 and Decimal(rule.consecutive_periods) not in period_numbers:
+        period_records = [record for record in observation_periods(quotes[rule.id])
+            if record['count'] == rule.consecutive_periods] if rule.consecutive_periods > 1 else []
+        if period_records:
+            compatible = [record for record in period_records
+                if period_matches_frequency(record, known[rule.series_id].get('frequency'))]
+            if not compatible:
+                _error('原文连续周期与所选指标的统计频率不一致或频率未确认，请核对日、周、月等口径。',
+                    'period_frequency', f'/judgment/falsifiers/{index}/consecutive_periods')
+            if not any(_period_quote_context(original, quotes[rule.id], record) for record in compatible):
+                _error('引文可能截断了连续次数或统计周期，请选取完整原文条件。',
+                    'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
+        if rule.consecutive_periods > 1 and not period_records:
+            # Preserve the precise truncation error, but never borrow a
+            # measurement number as a count of observations.
+            if (Decimal(rule.consecutive_periods) in quoted_quantities(quotes[rule.id])
+                    and not _quote_quantity_context(original, quotes[rule.id], [rule.consecutive_periods], None, [])):
+                _error('引文可能截断了连续次数或统计周期，请选取完整原文条件。',
+                    'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
             _error(f'原文依据暂不能核验连续{rule.consecutive_periods}期，请核对原文中的连续次数或统计周期。',
                    'number_not_in_source', f'/judgment/falsifiers/{index}/consecutive_periods')
-        if not _quote_quantity_context(original, quotes[rule.id], [Decimal(match.group(3))],
-                known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]) or (
-                rule.consecutive_periods > 1 and not _quote_quantity_context(
-                    original, quotes[rule.id], [rule.consecutive_periods], None, [])):
+        if not directional_zero and not _quote_quantity_context(original, quotes[rule.id], [Decimal(match.group(3))],
+                known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]):
             _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
                    'unit_context', f'/judgment/falsifiers/{index}/expression')
     return AnalysisResult(payload, units, quotes,

@@ -11,8 +11,8 @@ class Element {
   set innerHTML(_) { throw new Error('Unsafe HTML rendering attempted'); }
   addEventListener(type,fn) { this.listeners[type]=fn; }
   async fire(type,event={}) { return this.listeners[type]?.({target:this,preventDefault(){},...event}); }
-  replaceChildren(...children){this.children=children;}
-  append(...children){this.children.push(...children);}
+  replaceChildren(...children){for(const child of this.children)child.parentNode=null;this.children=[];this.append(...children);}
+  append(...children){for(const child of children){if(child.parentNode)child.parentNode.children=child.parentNode.children.filter(existing=>existing!==child);child.parentNode=this;this.children.push(child);}}
   setAttribute(name,value){this.attributes[name]=value;}
   removeAttribute(name){delete this.attributes[name];}
   contains(node){return node===this||this.children.some(child=>child.contains(node));}
@@ -21,24 +21,26 @@ class Element {
   close(){this.open=false;}
   click(){}
 }
-function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,analysisReused=false,analysisComplete=undefined,previewNotice='',boundIndicators=[]}={}) {
-  const ids=['judgment-manager',...['original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','structured','variety','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
+function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,analysisReused=false,analysisComplete=undefined,previewNotice='',boundIndicators=[],latestJob=null,latestDeferred=false,catalogFailure=false,reviewSections=null}={}) {
+  const ids=['judgment-manager',...['restore-result','original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','structured','variety','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
   const nodes=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
   for(const name of ['current-delete','history-download','history-reuse','history-delete','history-state','history-more'])nodes['logic-'+name]=new Element('logic-'+name);
   for(const name of ['import','review','review-nav','review-items','review-count','review-reuse','review-note','review-edit','review-save-note','review-ready','review-source','review-attention','review-all','review-empty'])nodes['logic-'+name]=new Element('logic-'+name);
   if(panelMode||lifecycleMode) for(const name of ['panel-switch','panel-open','panel-name','panel-save','panel-range','panel-more','new-panel-title'])nodes['logic-'+name]=new Element();
   nodes['judgment-manager'].dataset.prefill='false';
+  nodes['logic-restore-result'].hidden=true;
   if(panelMode)nodes['judgment-manager'].dataset.judgmentId='42';
   const tabs=['current','analyze','versions'].map(name=>{const el=new Element();el.dataset.logicTab=name;return el;});
   const panels=['current','analyze','versions'].map(name=>{const el=new Element();el.dataset.logicPanel=name;return el;});
   const close=new Element();
   nodes['judgment-manager'].querySelectorAll=selector=>selector==='[data-logic-tab]'?tabs:panels;
   nodes['judgment-manager'].querySelector=selector=>selector==='[data-logic-close]'?close:tabs[1];
-  const requests=[],navigations=[],catalogReplies=[],reviewReplies=[],jobStartReplies=[],jobStatusReplies=[],jobResultReplies=[],baselineReplies=[];
+  const requests=[],navigations=[],catalogReplies=[],reviewReplies=[],jobStartReplies=[],jobStatusReplies=[],jobResultReplies=[],baselineReplies=[],latestReplies=[];
   const firstJob='synthetic-analysis-job-0001',jobStates=new Map([[firstJob,failure?'failed':jobState]]),jobSources=new Map(),jobInputs=new Map(),jobKeys=new Map();
   let reloads=0,generations=0,revision=1,submittedBody=null;
   const catalog=[{series_id:'authorized-other',name:'Directory quantity <script>',unit:'t',source_file:'Shared workbook.xlsx',sheet:'Daily'},{series_id:'authorized-page-two',name:'Another authorized field',unit:'t',source_file:'Other workbook.xlsx',sheet:'Weekly'}];
   const review={draft_id:'server-bound-nonce',revision:1,sections:[{id:'contradiction',title:'主矛盾',items:[{id:'anchor',kind:'binding',title:'数据锚',original_text:'Supply quantity <script>',description:'请核对数据来源与口径。',status:'pending',requires_binding:true,can_bind:true,can_confirm:true,warnings:[],binding:null,ai_binding:{series_id:'ai-choice',name:'AI quantity',unit:'kg',source_file:'Initial workbook.xlsx',sheet:'Table'}}]},{id:'rules',title:'阈值与证伪',items:[{id:'rule',kind:'thresholds',rule:{operator:'>',value_literal:'12',type:'观察位',horizon:'短期'},title:'阈值条件',original_text:'A condition without a unit',status:'pending',requires_binding:false,can_bind:false,can_confirm:false,attention_fields:['condition'],attention_reasons:['原文缺少阈值单位，请补充原文或保留文字。'],warnings:['原文缺少阈值单位，请补充原文或保留文字。']},{id:'note',kind:'text',title:'研究说明',original_text:'Keep this observation',status:'pending',requires_binding:false,can_bind:false,can_confirm:true,warnings:[]}]}],pending_count:3,confirmed_count:0,total:3};
+  if(reviewSections){review.sections=JSON.parse(JSON.stringify(reviewSections));review.total=review.sections.flatMap(section=>section.items).length;review.pending_count=review.sections.flatMap(section=>section.items).filter(item=>item.status==='pending').length;}
   if(emptyExcerpt)review.sections[0].items[0].original_text='';
   if(ruleEntries){review.sections[1].items=ruleEntries.map(row=>({title:'解析条件',original_text:'Exact research evidence',description:'请核对解析后的条件。',status:'pending',requires_binding:true,can_bind:true,can_confirm:false,warnings:[],binding:{series_id:'condition-unit',name:'研究数量',unit:'吨'},...row}));review.total=review.pending_count=1+ruleEntries.length;}
   if(readyMode){review.sections[0].items[0].status='ready';review.sections[1].items[1].status='ready';review.sections.push({id:'time_dimension',title:'时间维度',items:[{id:'time-text',kind:'description',title:'适用周期',description:'短期关注供需变化，中期观察成本约束。',status:'ready',original_text:'',can_confirm:true,can_bind:false,requires_binding:false,warnings:[]}]});review.total=4;review.pending_count=review.needs_attention_count=1;review.ready_count=3;}
@@ -47,10 +49,10 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
     const anchor=review.sections[0].items[0];Object.assign(anchor,{kind:'thresholds',status:'ready',binding:anchor.ai_binding,rule:{operator:'>',value_literal:'12',type:'观察位',horizon:'短期'}});
     Object.assign(review.sections[1].items[0],{status:'ready',can_bind:true,binding:{series_id:'second-visual',name:'Second quantity',unit:'吨'}});
   }
-  if(caliberMode){const item=review.sections[0].items[0];item.binding=item.ai_binding;item.caliber={catalog_unit:caliberMode==='catalog'?'kg':null,model_unit:'单位不一致',mode:'',unit:'',basis:'',scope_note:'',can_adopt_catalog:caliberMode==='catalog',can_declare:caliberMode==='declared',confirmation_required:true,confirmed:false};}
+  if(caliberMode){const item=review.sections[0].items[0];item.binding={...item.ai_binding,unit:caliberMode==='declared'?null:item.ai_binding.unit};item.caliber={catalog_unit:caliberMode==='catalog'?'kg':null,model_unit:'单位不一致',mode:'',unit:'',basis:'',scope_note:'',can_adopt_catalog:caliberMode==='catalog',can_declare:caliberMode==='declared',confirmation_required:true,confirmed:false};}
   function preview(){return {analysis_complete:analysisComplete,analysis_reused:analysisReused,notice:previewNotice,draft_id:review.draft_id,base_version:2,markdown:'# Proposed',diff:{markdown:'-old\n+new',fields:[{label:'Rule',before:null,after:'<img onerror=bad>'}]},bindings:boundIndicators,unresolved:[],candidate_count:1,catalog_total:5,review_available:true,review:JSON.parse(JSON.stringify(review))};}
   const deleted=new Set(),downloads=[],confirmations=[];
-  const window={RESEARCH_PREFIX:'/research/workbenches/synthetic',crypto:webcrypto,confirm(message){confirmations.push(message);return confirmDelete;}};
+  const window={RESEARCH_CONTEXT:{workbench:'synthetic'},RESEARCH_PREFIX:'/research/workbenches/synthetic',crypto:webcrypto,confirm(message){confirmations.push(message);return confirmDelete;}};
   class DownloadURL extends URL {static createObjectURL(blob){downloads.push(blob);return 'blob:synthetic';}static revokeObjectURL(){}}
   const context={window,parent:window,location:{origin:'http://unit.test',href:'http://unit.test/research/workbenches/synthetic/sn/judgment?date=2024-03-01&judgment_id=42',reload(){reloads++;},assign(url){navigations.push(url);}},
     document:{getElementById:id=>nodes[id],createElement:()=>new Element(),createElementNS:()=>new Element(),querySelectorAll:()=>[]},
@@ -69,6 +71,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
         if(jobStartDeferred)await new Promise(resolve=>jobStartReplies.push(resolve));
         result={id:identifier,job_id:identifier,workbench_id:'synthetic',state:'queued',phase:'queued',title:'研究逻辑分析',result_available:false};
       }
+      else if(url.endsWith('/jobs/latest')){if(latestDeferred)await new Promise(resolve=>latestReplies.push(resolve));result={job:latestJob};}
       else if(jobMatch){
         const identifier=jobMatch[1],state=jobStates.get(identifier)||'succeeded';
         if(jobMatch[2]){
@@ -89,6 +92,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
         result={draft_id:review.draft_id,revision:review.revision,rows:visualMode&&visualMode!=='empty'?[{item_id:'anchor',value:0,unit:'kg',as_of:'2024-03-01',progress:visualMode==='negative'?-30:240,distance:'Synthetic distance',state:'Synthetic condition'}]:[]};
       }
       else if(url.includes('/review/indicators')){
+        if(catalogFailure)return {ok:false,status:503,json:async()=>({detail:'隔离目录服务暂不可用'})};
         if(catalogDeferred&&url.includes('search=slow'))await new Promise(resolve=>catalogReplies.push(resolve));
         result={items:url.includes('search=slow')?[{series_id:'stale-result',name:'Stale catalog reply',unit:'kg'}]:url.includes('offset=1')?[catalog[1]]:[catalog[0]],total:2,next_offset:url.includes('offset=1')?null:1};
       }
@@ -97,7 +101,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
         if(reviewConflict)return {ok:false,status:409,json:async()=>({detail:'来源已改变，请重新分析。'})};
         if(reviewFailure)return {ok:false,status:422,json:async()=>({detail:{message:'请选择有可核对单位的指标，当前修改已保留。',attention_fields:['binding']}})};
         const body=JSON.parse(options.body),item=review.sections.flatMap(section=>section.items).find(row=>row.id===body.item_id);
-        if(bindingWarning&&body.action==='confirm'&&body.series_id&&body.series_id!==item.binding?.series_id&&body.binding_warning_token!=='synthetic-warning-token')return{ok:false,status:422,json:async()=>({detail:{code:'binding_warning',message:'原文口径尚未核对；所选单位为t，不自动换算。是否保留此绑定？',confirmation_token:'synthetic-warning-token',attention_fields:['binding']}})};
+        if(bindingWarning&&body.action==='confirm'&&body.series_id&&body.series_id!==item.binding?.series_id&&body.binding_warning_token!=='synthetic-warning-token')return{ok:false,status:422,json:async()=>({detail:{code:'binding_warning',message:'原绑定单位为kg，所选指标单位为t，两者不一致，不自动换算。是否保留此绑定？',confirmation_token:'synthetic-warning-token',attention_fields:['binding']}})};
         if(body.caliber){item.caliber={...item.caliber,...body.caliber,unit:body.caliber.mode==='catalog'?item.caliber.catalog_unit:body.caliber.unit,confirmed:true,confirmation_required:false};item.binding={...item.binding,unit:item.caliber.unit};item.warnings=[];item.attention_fields=[];}
         item.status={confirm:'confirmed',keep_text:'kept_text',exclude:'excluded'}[body.action];
         if(Object.hasOwn(body,'series_id'))item.binding=body.series_id===null?null:catalog.find(row=>row.series_id===body.series_id)||item.ai_binding;
@@ -124,7 +128,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
       return {ok:true,json:async()=>result};
     }};
   vm.runInNewContext(source,context);
-  return {nodes,requests,context,navigations,downloads,confirmations,catalogReplies,reviewReplies,jobStartReplies,jobStatusReplies,jobResultReplies,baselineReplies,firstJob,jobStates,jobSources,jobsCreated:()=>jobKeys.size,reloads:()=>reloads};
+  return {nodes,requests,context,navigations,downloads,confirmations,catalogReplies,reviewReplies,jobStartReplies,jobStatusReplies,jobResultReplies,baselineReplies,latestReplies,firstJob,jobStates,jobSources,jobsCreated:()=>jobKeys.size,reloads:()=>reloads};
 }
 const isGeneration=request=>request.url.endsWith('/jobs')&&request.method==='POST';
 async function until(condition){for(let attempt=0;attempt<50&&!condition();attempt++)await new Promise(resolve=>setTimeout(resolve,0));assert.ok(condition(),'Expected asynchronous request was reached');}
@@ -133,7 +137,7 @@ function descendants(node){return node.children.flatMap(child=>[child,...descend
 function visibleDescendants(node){return node.hidden?[]:node.children.flatMap(child=>child.hidden?[]:[child,...(child.className?.includes('logic-item-adjustments')&&!child.open?[]:visibleDescendants(child))]);}
 function reviewControl(env,itemId,control){return descendants(env.nodes['logic-review-items']).find(node=>node.dataset.reviewItem===itemId&&node.dataset.reviewControl===control);}
 async function generateReview(options={}){const env=setup({reviewMode:true,...options});await env.context.window.JudgmentManager.open();env.nodes['logic-input'].value=options.source||'Full research source';env.nodes['logic-model'].value='configured';await env.nodes['logic-generate'].fire('click');return env;}
-module.exports = {setup, generateReview, reviewControl, descendants, flush};
+module.exports = {setup, generateReview, reviewControl, descendants, visibleDescendants, flush};
 if (require.main === module) (async()=>{
   {
     const env=setup();await env.context.window.JudgmentManager.open();
@@ -257,7 +261,7 @@ if (require.main === module) (async()=>{
     const env=await generateReview(),search=reviewControl(env,'anchor','search');await search.fire('focus');
     assert.ok(env.requests.some(row=>row.url.includes('/review/indicators?')),'Search covers the complete authorized directory');
     search.value='Directory';await search.fire('input');await new Promise(resolve=>setTimeout(resolve,260));assert.ok(env.requests.some(row=>row.url.includes('search=Directory')));
-    await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});
+    await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});
     let updates=env.requests.filter(row=>row.url.endsWith('/review/update'));assert.equal(updates.length,1,'Choosing a field synchronizes the private draft directly');assert.equal(updates[0].body.action,'confirm');assert.equal(updates[0].body.series_id,'authorized-other');assert.equal(updates[0].body.remember,false);
     const remember=reviewControl(env,'anchor','remember');remember.checked=true;await remember.fire('change');updates=env.requests.filter(row=>row.url.endsWith('/review/update'));assert.equal(updates.at(-1).body.remember,true);assert.equal(updates.at(-1).body.revision,2);assert.equal(reviewControl(env,'anchor','remember').checked,true,'A successful explicit remember action remains visibly checked in this draft');
     assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0,'Private synchronization is never a business save');
@@ -265,7 +269,7 @@ if (require.main === module) (async()=>{
     const applied=env.requests.find(row=>row.url.endsWith('/apply')).body;assert.equal(applied.draft_id,'server-bound-nonce-r5');assert.equal(applied.review_revision,5,'Final save uses the newest reviewed revision');
   }
   {
-    const env=await generateReview({reviewFailure:true}),search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});
+    const env=await generateReview({reviewFailure:true}),search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});
     assert.equal(reviewControl(env,'anchor','search').value,'Directory quantity <script>','422 retains the selected field');
     const field=descendants(env.nodes['logic-review-items']).find(node=>node.dataset.reviewField==='binding');assert.equal(field.dataset.invalid,'true');assert.match(field.textContent,/当前修改已保留/);
     search.value='Retry';await search.fire('input');assert.equal(field.dataset.invalid,'true','Typing after a rejection does not clear the red field before validation succeeds');
@@ -279,12 +283,12 @@ if (require.main === module) (async()=>{
   {
     const env=await generateReview(),search=reviewControl(env,'anchor','search');await search.fire('focus');assert.equal(env.requests.filter(row=>row.url.includes('/review/indicators')).length,1);
     await reviewControl(env,'anchor','more').fire('click');assert.match(env.requests.filter(row=>row.url.includes('/review/indicators')).at(-1).url,/offset=1.*limit=20/);assert.equal(reviewControl(env,'anchor','more').hidden,true);
-    await search.fire('keydown',{key:'ArrowUp'});await search.fire('keydown',{key:'ArrowUp'});await search.fire('keydown',{key:'Enter'});assert.equal(reviewControl(env,'anchor','search').value,'Another authorized field');
+    await search.fire('keydown',{key:'ArrowUp'});await search.fire('keydown',{key:'Enter'});assert.equal(reviewControl(env,'anchor','search').value,'Another authorized field');
     await search.fire('keydown',{key:'Escape'});assert.equal(search.attributes['aria-expanded'],'false');
   }
   {
     const env=await generateReview({catalogDeferred:true}),search=reviewControl(env,'anchor','search');search.value='slow';await search.fire('input');await new Promise(resolve=>setTimeout(resolve,220));search.value='fast';await search.fire('input');await new Promise(resolve=>setTimeout(resolve,220));
-    assert.equal(env.requests.find(row=>row.url.includes('search=slow')).signal.aborted,true);env.catalogReplies[0]();await new Promise(resolve=>setTimeout(resolve,10));await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});assert.equal(reviewControl(env,'anchor','search').value,'Directory quantity <script>','Late search replies cannot replace the current result');
+    assert.equal(env.requests.find(row=>row.url.includes('search=slow')).signal.aborted,true);env.catalogReplies[0]();await new Promise(resolve=>setTimeout(resolve,10));await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});assert.equal(reviewControl(env,'anchor','search').value,'Directory quantity <script>','Late search replies cannot replace the current result');
   }
   {
     const raw='Exact raw source with `literal evidence`.',env=await generateReview({emptyExcerpt:true,source:raw});
@@ -294,11 +298,11 @@ if (require.main === module) (async()=>{
     env.context.window.getSelection=()=>({anchorNode:env.nodes['logic-input'],focusNode:env.nodes['logic-input'],toString:()=> 'outside'});await reviewControl(env,'rule','quote').fire('click');assert.match(env.nodes['logic-status'].textContent,/原文/);
   }
   {
-    const env=await generateReview({reviewDeferred:true}),search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});const updating=search.fire('keydown',{key:'Enter'});assert.equal(env.nodes['logic-apply'].disabled,true,'A network-pending edit prevents saving');env.reviewReplies[0]();await updating;assert.equal(env.nodes['logic-apply'].disabled,false);
+    const env=await generateReview({reviewDeferred:true}),search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'ArrowDown'});const updating=search.fire('keydown',{key:'Enter'});assert.equal(env.nodes['logic-apply'].disabled,true,'A network-pending edit prevents saving');env.reviewReplies[0]();await updating;assert.equal(env.nodes['logic-apply'].disabled,false);
     env.context.window.JudgmentManager.close();await env.context.window.JudgmentManager.open();const reopened=reviewControl(env,'anchor','search');await reopened.fire('focus');assert.ok(env.requests.filter(row=>row.url.includes('/review/indicators')).length>=2);assert.equal(env.requests.filter(isGeneration).length,1,'Reopening never reruns the model');
   }
   {
-    const env=await generateReview({reviewConflict:true}),search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});assert.equal(env.nodes['logic-preview'].hidden,true,'A source/version conflict invalidates the stale draft');assert.equal(env.nodes['logic-input'].value,'Full research source');await env.nodes['logic-apply'].fire('click');assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0);
+    const env=await generateReview({reviewConflict:true}),search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});assert.equal(env.nodes['logic-preview'].hidden,true,'A source/version conflict invalidates the stale draft');assert.equal(env.nodes['logic-input'].value,'Full research source');await env.nodes['logic-apply'].fire('click');assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0);
   }
   {
     const env=await generateReview({ruleEntries:[
@@ -346,9 +350,9 @@ if (require.main === module) (async()=>{
   }
   {
     const literal='900719925474099312345.123456789',env=await generateReview({ruleEntries:[{id:'unit-edit',kind:'thresholds',rule:{operator:'>=',value_literal:literal,type:'观察位',horizon:'短期'}}],reviewDeferred:true});
-    const condition=reviewControl(env,'unit-edit','condition'),search=reviewControl(env,'unit-edit','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});const updating=search.fire('keydown',{key:'Enter'});
+    const condition=reviewControl(env,'unit-edit','condition'),search=reviewControl(env,'unit-edit','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'ArrowDown'});const updating=search.fire('keydown',{key:'Enter'});
     assert.equal(condition.textContent,'指标值不低于 '+literal+' t；观察位；短期','Unit display updates immediately without rounding while synchronization is pending');env.reviewReplies[0]();await updating;
-    const active=reviewControl(env,'unit-edit','search');active.value='';await active.fire('input');assert.equal(reviewControl(env,'unit-edit','condition').textContent,'指标值不低于 '+literal+'（单位待确认）；观察位；短期');assert.equal(env.nodes['logic-apply'].disabled,true);env.context.window.JudgmentManager.close();
+    const active=reviewControl(env,'unit-edit','search');active.value='';await active.fire('input');assert.equal(reviewControl(env,'unit-edit','condition').textContent,'指标值不低于 '+literal+'（尚未关联指标）；观察位；短期');assert.equal(env.nodes['logic-apply'].disabled,true);env.context.window.JudgmentManager.close();
   }
   {
     const env=await generateReview({readyMode:true});assert.equal(env.nodes['logic-review-all'].attributes['aria-pressed'],'true');assert.match(env.nodes['logic-review-count'].textContent,/已解析 4 项.*需处理 1 项/);
@@ -356,7 +360,7 @@ if (require.main === module) (async()=>{
     await env.nodes['logic-review-attention'].fire('click');const issues=visibleDescendants(env.nodes['logic-review-items']).filter(node=>node.dataset.reviewStatus).map(node=>node.dataset.reviewItem);assert.deepEqual(issues,['rule']);
   }
   {
-    const env=await generateReview({readyMode:true,reviewFailure:true});const search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});assert.equal(env.nodes['logic-apply'].disabled,true,'An unsuccessful change to a ready binding stays unsynchronized');
+    const env=await generateReview({readyMode:true,reviewFailure:true});const search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});assert.equal(env.nodes['logic-apply'].disabled,true,'An unsuccessful change to a ready binding stays unsynchronized');
     await env.nodes['logic-review-attention'].fire('click');assert.equal(visibleDescendants(env.nodes['logic-review-items']).some(node=>node.dataset.reviewStatus==='ready'&&node.dataset.reviewItem==='anchor'),true);assert.equal(reviewControl(env,'anchor','search').value,'Directory quantity <script>');await env.nodes['logic-apply'].fire('click');assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0);
   }
   {
@@ -396,7 +400,7 @@ if (require.main === module) (async()=>{
     const starting=env.nodes['logic-generate'].fire('click');await until(()=>env.jobStartReplies.length===1);
     const posted=env.requests.find(isGeneration);assert.equal(posted.signal,null);assert.equal(posted.keepalive,true);assert.match(posted.headers['Idempotency-Key'],/^[a-f0-9]{32}$/);
     env.context.window.JudgmentManager.close();assert.equal(env.nodes['judgment-manager'].open,false);env.jobStartReplies[0]();await starting;
-    assert.equal(env.requests.filter(row=>/\/jobs\/[^/]+$/.test(row.url)).length,0,'Closing while a starter is pending does not fetch a result into the closed dialog');
+    assert.equal(env.requests.filter(row=>!row.url.endsWith('/jobs/latest')&&/\/jobs\/[^/]+$/.test(row.url)).length,0,'Closing while a starter is pending does not fetch a result into the closed dialog');
     await env.context.window.JudgmentManager.openJob(env.firstJob);
     assert.equal(env.nodes['logic-input'].value,'Source accepted before closing');assert.equal(env.nodes['logic-file-name'].textContent,'Original source.md');
     assert.equal(env.requests.filter(isGeneration).length,1);assert.equal(env.requests.filter(row=>row.url.endsWith('/apply')).length,0);
@@ -439,12 +443,12 @@ if (require.main === module) (async()=>{
   {
     const env=await generateReview({visualMode:true});await flush();
     assert.equal(descendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-indicator-visual'||node.attributes.role==='img'||node.attributes.role==='meter'),false,'Binding confirmation has no numerical or chart preview, including hidden preview nodes');
-    assert.equal(reviewControl(env,'anchor','search').value,'AI quantity');assert.ok(descendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-binding-meta'&&node.textContent==='kg'),'The selected indicator unit remains visible');
+    assert.equal(reviewControl(env,'anchor','search').value,'AI quantity');assert.ok(descendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-binding-meta'&&node.textContent==='采用指标口径 · kg'),'The selected indicator unit remains visible');
     await env.nodes['logic-review-nav'].children.find(node=>node.dataset.reviewSection==='rules').fire('click');await flush();
     assert.equal(env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length,0,'Opening and navigating confirmation sections never request numerical observations');env.context.window.JudgmentManager.close();
   }
   {
-    const env=await generateReview({visualMode:true});const search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});
+    const env=await generateReview({visualMode:true});const search=reviewControl(env,'anchor','search');await search.fire('focus');await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'ArrowDown'});await search.fire('keydown',{key:'Enter'});
     const remember=reviewControl(env,'anchor','remember');remember.checked=true;await remember.fire('change');
     const updates=env.requests.filter(row=>row.url.endsWith('/review/update'));assert.equal(updates.length,2);assert.equal(updates[0].body.series_id,'authorized-other');assert.equal(updates[1].body.series_id,'authorized-other');assert.equal(updates[1].body.remember,true);assert.equal(updates[1].body.revision,2);
     assert.equal(reviewControl(env,'anchor','search').value,'Directory quantity <script>');assert.equal(reviewControl(env,'anchor','remember').checked,true);
