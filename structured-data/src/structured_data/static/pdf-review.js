@@ -239,7 +239,8 @@
           const item=make('div',undefined,'pdf-quality-item');
           const pages=[...new Set(fragments().filter(f=>readEditingPlan().fragment_ids.includes(f.id)).map(f=>f.page))];
           item.append(make('span',`第 ${pages.join('、')} 页 · 跨页行对应关系`),action('行对应正确',()=>{
-            const plan=readEditingPlan();plan.row_alignment_review={reason:'用户操作：确认跨页行对应关系'};writePlan(plan);item.replaceChildren(make('span','已确认'));
+            const plan=readEditingPlan();plan.row_alignment_review={reason:'用户操作：确认跨页行对应关系'};
+            return saveInlinePlan(plan,document.querySelector('.pdf-fragment-pane'));
           },true));box.append(item);
         }
       }
@@ -483,7 +484,7 @@
     const plan=readEditingPlan();
     plan.quality_reviews=(plan.quality_reviews||[]).filter(r=>r.fragment_id!==fragment.id);
     for(const issue of tableIssues(fragment))plan.quality_reviews.push({fragment_id:fragment.id,issue_index:issue.issue_index,reason:actionReceipt(fragment,'对照原件确认整张表')});
-    saveInlinePlan(plan,parent);
+    return saveInlinePlan(plan,parent);
   }
   function locateCell(fragment,row,column) {
     previewMode=false;
@@ -570,6 +571,7 @@
     editor.value=JSON.stringify(plan,null,2);invalidatePreview();
     renderFragmentInspector(parent,document.querySelector('.pdf-source-viewer'));
     setStatus('修改已暂存');
+    if(previewMode)return previewPlan();
   }
   function rowEditor(parent,title) {
     parent.querySelector('.pdf-cell-editor')?.remove();
@@ -968,6 +970,15 @@
   }
 
   async function previewPlan() {
+    try{return await loadPlanPreview();}
+    catch(error){
+      const pane=document.getElementById('pdfPreview');
+      if(previewMode&&pane)pane.replaceChildren(make('p','预览加载失败。'),action('重试',previewPlan,true));
+      throw error;
+    }
+  }
+
+  async function loadPlanPreview() {
     if(!draft||!activeReview||activeReview.loading)return;
     const state=activeReview,generation=viewGeneration,savedEpoch=epoch,savedOperation=operation;
     const plan=readEditingPlan(),signature=JSON.stringify(plan);

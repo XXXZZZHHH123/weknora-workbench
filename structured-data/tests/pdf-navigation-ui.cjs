@@ -3,14 +3,27 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('nod
 const {execFileSync}=require('node:child_process');
 const {chromium}=require('playwright');
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'pdf-navigation-'));
-const py=`import sys,json\nfrom structured_data.pdf_tables import PDFTableStore\nfrom test_pdf_tables import bundle\ns=PDFTableStore(sys.argv[1]);req=json.load(sys.stdin);op=req['op']\nif op=='init':r=s.create_draft(bundle([['Item','Amount'],['First-only','11']],[['Item','Amount'],['Second-only','22']]))\nelif op=='preview':r=s.validate_plan(req['id'],req['plan'])\nelif op=='publish':r=s.publish(req['id'],dict(req['plan'],reviewed=True))\nelif op=='tables':r=s.list_tables()\nelif op=='table':r=s.read_table(req['id'])\nprint(json.dumps(r))`;
+const py=`import sys,json
+from structured_data.pdf_tables import PDFTableStore
+from test_pdf_tables import bundle
+s=PDFTableStore(sys.argv[1]);req=json.load(sys.stdin);op=req['op']
+if op=='init':
+ b=bundle([['Item','Amount'],['First-only','11']],[['Item','Amount'],['Second-only','22']])
+ if req.get('review_flags'): b['fragments'][0]['quality']={'status':'needs_review','issues':[{'code':'MODEL_UNCERTAINTY'}]}
+ r=s.create_draft(b)
+elif op=='preview':r=s.validate_plan(req['id'],req['plan'])
+elif op=='publish':r=s.publish(req['id'],dict(req['plan'],reviewed=True))
+elif op=='tables':r=s.list_tables()
+elif op=='table':r=s.read_table(req['id'])
+print(json.dumps(r))`;
 function store(op,args={}){return JSON.parse(execFileSync('python',['-c',py,dir],{input:JSON.stringify({op,...args}),encoding:'utf8',env:{...process.env,PYTHONPATH:'structured-data/src:structured-data/tests'}}));}
-const draft=store('init');
+const refreshFixture=Boolean(process.env.PDF_REVIEW_REFRESH_FIXTURE);
+const draft=store('init',{review_flags:refreshFixture});
 const plans=draft.bundle.fragments.map(f=>({bundle_sha256:draft.bundle_sha256,fragment_ids:[f.id],header_rows:{[f.id]:[{row:0,reason:'source header'}]},columns:[{name:'Item',type:'text',source_columns:{[f.id]:0}},{name:'Amount',type:'decimal',source_columns:{[f.id]:1}}],excluded_rows:[],boundary_merges:[]}));
 const grouped=Boolean(process.env.PDF_GROUPED_FIXTURE);
 if(grouped){const ids=draft.bundle.fragments.map(f=>f.id);plans[0]={...plans[0],fragment_ids:ids,header_rows:Object.fromEntries(ids.map(id=>[id,[{row:0,reason:'source header'}]])),columns:plans[0].columns.map((c,i)=>({...c,source_columns:Object.fromEntries(ids.map(id=>[id,i]))}))};}
 let automation={status:'needs_attention',accepted_count:0,attention_count:grouped?1:2,groups:(grouped?[plans[0]]:plans).map(plan=>({fragment_ids:plan.fragment_ids,status:'needs_attention',plan,problem:{action:process.env.PDF_AUTO_FIXTURE?'retry':'review',title:'待核对'}}))};
-let delayFirst=false,delayPublication=false,previewCalls=0,publishes=[];
+let delayFirst=false,delayPublication=false,failNextPreview=false,previewCalls=0,publishes=[];
 const source=path.resolve('structured-data/src/structured_data');
 const css=fs.readFileSync(path.join(source,'index.html'),'utf8').match(/<style>([\s\S]*?)<\/style>/)[1]+fs.readFileSync(path.join(source,'workspace.css'),'utf8');
 const server=http.createServer(async(req,res)=>{try{
@@ -26,7 +39,7 @@ const server=http.createServer(async(req,res)=>{try{
  else if(url.pathname.startsWith('/api/pdf/tables/'))value=store('table',{id:url.pathname.split('/').pop()});
  else if(url.pathname.endsWith('/source')){type='application/pdf';value='%PDF-1.4\nfixture';}
  else if(url.pathname==='/api/pdf/drafts/'+draft.draft_id)value={...draft,automation};
- else if(url.pathname.endsWith('/preview')){previewCalls++;value=store('preview',{id:draft.draft_id,plan:body.plan});if(delayFirst&&body.plan.fragment_ids[0]==='table-1')await new Promise(r=>setTimeout(r,600));}
+ else if(url.pathname.endsWith('/preview')){previewCalls++;if(failNextPreview){failNextPreview=false;throw Error('预览请求暂时失败');}value=store('preview',{id:draft.draft_id,plan:body.plan});if(delayFirst&&body.plan.fragment_ids[0]==='table-1')await new Promise(r=>setTimeout(r,600));}
  else if(url.pathname.endsWith('/publish')){assert.equal(body.reviewed,true);value=store('publish',{id:draft.draft_id,plan:body.plan});publishes.push(body.plan.fragment_ids);if(delayPublication)await new Promise(r=>setTimeout(r,600));}
  else{res.statusCode=404;value={detail:'fixture path missing'};}
  res.setHeader('Content-Type',type);res.end(typeof value==='string'||Buffer.isBuffer(value)?value:JSON.stringify(value));
@@ -40,6 +53,24 @@ const server=http.createServer(async(req,res)=>{try{
  const select=async index=>{await page.locator('#pdfFragmentSelect').selectOption(String(index));await page.waitForFunction(i=>JSON.parse(document.querySelector('#pdfPlanEditor').value).fragment_ids.includes('table-'+(i+1)),index);};
  const expectPreview=async word=>{await page.waitForFunction(w=>document.querySelector('#pdfPreview')?.textContent.includes(w),word);const text=await page.locator('#pdfPreview').innerText();assert(!text.includes(word==='First-only'?'Second-only':'First-only'));};
  await open();
+ if(refreshFixture){
+  await page.locator('#pdfPublish').click();await expectPreview('First-only');
+  assert.equal(await page.getByRole('button',{name:'已对照原件核对',exact:true}).count(),1);
+  const before=previewCalls;await page.getByRole('button',{name:'已对照原件核对',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('#pdfPreview table')&&!document.querySelector('.pdf-preview-loading'),null,{timeout:5000});
+  assert.equal(previewCalls,before+1,'confirmation must request an updated preview');await expectPreview('First-only');
+  assert.equal(await page.locator('.pdf-review-findings').count(),0);assert.equal(publishes.length,0,'review confirmation does not publish');
+  failNextPreview=true;await select(1);await page.locator('#pdfPreview').getByRole('button',{name:'重试',exact:true}).waitFor();
+  assert.equal(await page.locator('.pdf-preview-loading').count(),0,'failed preview must stop loading');
+  await page.locator('#pdfPreview').getByRole('button',{name:'重试',exact:true}).click();await expectPreview('Second-only');
+  await page.locator('#pdfTogglePreview').click();await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('Item');
+  await page.locator('#pdfTogglePreview').click();await page.locator('#pdfPreview').getByRole('button',{name:'重试',exact:true}).waitFor();
+  assert.equal(await page.locator('.pdf-preview-loading').count(),0,'invalid column names must stop loading');
+  assert.match(await page.locator('#pdfDetailStatus').innerText(),/重复/);
+  await page.locator('#pdfTogglePreview').click();await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('Amount');
+  await page.locator('#pdfTogglePreview').click();await expectPreview('Second-only');assert.deepEqual(errors,[]);
+  console.log('PASS: whole-table review refreshes the visible preview; request and validation failures stop loading and can be retried.');return;
+ }
  if(process.env.PDF_AUTO_FIXTURE){
   await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('Unsaved first edit');await select(1);
   await page.locator('#pdfAutoProcess').click();await page.waitForFunction(()=>document.querySelector('#pdfPublish')?.textContent==='已入库');
