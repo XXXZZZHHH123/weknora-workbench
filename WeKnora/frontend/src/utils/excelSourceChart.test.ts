@@ -106,7 +106,7 @@ test('default chart series use distinct Office colors independent of the interfa
   const original = structuredClone(chart);
   const light = excelSourceChartOption(chart, style).option as any;
   const dark = excelSourceChartOption(chart, {...style, color: '#eeeeee', border: '#444444'}).option as any;
-  assert.deepEqual(light.color.slice(0, 4), ['#4472C4', '#ED7D31', '#70AD47', '#7030A0']);
+  assert.deepEqual(light.color.slice(0, 4), ['#ED7D31', '#4472C4', '#70AD47', '#7030A0']);
   assert.equal(light.color.length, new Set(light.color).size);
   assert.deepEqual(dark.color, light.color);
   assert.deepEqual(chart, original);

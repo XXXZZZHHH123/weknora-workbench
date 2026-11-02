@@ -1,8 +1,8 @@
 {
   "_generated_from": "commodity-research/src/tin/web/static/chart-palette.json",
   "colors": [
-    "#4472C4",
     "#ED7D31",
+    "#4472C4",
     "#70AD47",
     "#7030A0",
     "#5B9BD5",
