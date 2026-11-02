@@ -413,6 +413,10 @@ func TestNumericValidationRepairCanRemoveOptionalUnsupportedNumberAndPassFeedbac
 	require.Contains(t, unescapedRepairPrompt, `"kind":"structured_result_evidence"`)
 	require.Contains(t, unescapedRepairPrompt, `"value":138.67`)
 	require.Contains(t, repairPrompt, numericValidationRepairInstructions)
+	require.NotContains(t, rawMessageText(model.calls[1]), finalNumericRepairInstructions, "the first repair keeps the ordinary evidence collection policy")
+	require.Contains(t, repairPrompt, finalNumericRepairInstructions, "only the final bounded repair requests the minimal complete answer")
+	require.Equal(t, "system", model.calls[2][len(model.calls[2])-1].Role)
+	require.True(t, strings.HasSuffix(model.calls[2][len(model.calls[2])-1].Content, finalNumericRepairInstructions), "the final repair policy follows the feedback and source transcript")
 	require.Contains(t, repairPrompt, `"token":"138"`)
 	require.Contains(t, repairPrompt, `"check_status":"unsupported_tokens"`)
 	require.NotContains(t, repairPrompt, "独立复核上下文", "the synthetic reviewer envelope is not carried into generation")
@@ -421,6 +425,7 @@ func TestNumericValidationRepairCanRemoveOptionalUnsupportedNumberAndPassFeedbac
 	require.Contains(t, criticPrompt, query)
 	require.Contains(t, criticPrompt, `"check_status":"no_unmatched_numbers"`, "the critic receives typed validator status")
 	require.NotContains(t, criticPrompt, numericValidationRepairInstructions, "runtime instructions are not represented as source facts")
+	require.NotContains(t, criticPrompt, finalNumericRepairInstructions)
 }
 
 func TestNumericValidationRepairKeepsAuthorizedToolsAndCanCallOne(t *testing.T) {
@@ -469,6 +474,7 @@ func TestNumericValidationRepairStopsAfterTwoAttemptsAndUsesFallback(t *testing.
 	require.Equal(t, "已经取得原表依据，但完整回答的部分数字未通过来源核验，暂不提供未经核验的统计结论。请查看取数依据。", state.FinalAnswer)
 	require.Len(t, model.calls, 3, "the initial candidate and two numeric repair attempts exhaust the shared repair budget; no critic accepts the failing candidate")
 	require.Equal(t, 2, strings.Count(rawMessageText(model.calls[1]), numericValidationRepairInstructions)+strings.Count(rawMessageText(model.calls[2]), numericValidationRepairInstructions))
+	require.Contains(t, rawMessageText(model.calls[2]), finalNumericRepairInstructions, "the final repair mode must still reject a repeated unsupported candidate without adding another attempt")
 	require.NotContains(t, state.FinalAnswer, "138")
 }
 

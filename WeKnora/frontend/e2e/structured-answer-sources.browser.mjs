@@ -50,6 +50,22 @@ try {
     await page.screenshot({ path: '/tmp/structured-answer-sources-failed.png', fullPage: true })
     throw error
   }
+  const assertOverlayInViewport = async () => {
+    const geometry = await page.locator('.pdf-source-overlay').evaluate(el => {
+      const rect = el.getBoundingClientRect()
+      return { parentIsBody: el.parentElement === document.body, top: rect.top, left: rect.left,
+        right: rect.right, bottom: rect.bottom, width: innerWidth, height: innerHeight }
+    })
+    assert.equal(geometry.parentIsBody, true, 'PDF dialog escapes chat message layout containment')
+    assert.ok(geometry.top >= 0 && geometry.left >= 0 && geometry.right <= geometry.width && geometry.bottom <= geometry.height,
+      `PDF dialog must fit the viewport: ${JSON.stringify(geometry)}`)
+    assert.equal(await page.getByRole('button', { name: '关闭', exact: true }).isVisible(), true)
+  }
+  await assertOverlayInViewport()
+  await page.setViewportSize({ width: 1280, height: 850 })
+  await assertOverlayInViewport()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await assertOverlayInViewport()
   await page.getByText(/fixture\.pdf · 第 1 页原件/).waitFor()
   await page.locator('.pdf-source-page__canvas').first().waitFor()
   assert.ok(await page.locator('.pdf-source-mark').count() > 0, 'PDF source coordinate should be highlighted')

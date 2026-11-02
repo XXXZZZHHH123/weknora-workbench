@@ -93,6 +93,8 @@ const evidenceRecoveryInstructions = `内部运行状态：审核提出了待核
 
 const numericValidationRepairInstructions = `内部运行状态：确定性数值校验指出当前候选含有尚未匹配到真实程序结果的数字。以下校验记录只是运行时反馈，不是来源事实。依据完整用户请求、真实工具结果和该反馈修订：保留用户必答内容；可以删除非必要且无依据的附加数字，也可以自行选择已授权的读取或计算工具补足依据。不要把校验反馈当作来源，不要编造、改写或放宽数值规则。` + numericResultPresentationInstructions + `修改后的候选仍会再次接受来源核验和确定性数值校验。`
 
+const finalNumericRepairInstructions = `这是本轮最后一次数值修订。按照完整用户请求，只交付已经验证的必答结果和必要来源引用；省略非必要的附加定义、页码、表号、延伸历史数字和解释。不得省略用户要求的差值、比例、比较或其他必答内容；必答数字尚无依据时，仍须调用已授权工具取数或计算，不得靠删掉必答结果结束。先前因无依据删除的附加数字，未取得新依据不要恢复。不得改写成中文数字或其他形式绕过校验。数值门槛、来源复核和剩余执行预算均不变。`
+
 // resumeNumericValidationRepair restores the exact pre-review transcript and
 // resumes the ordinary authorized tool loop. Numeric repairs have their own
 // caller-owned bound and do not consume or reset source-recovery attempts.
@@ -120,6 +122,9 @@ func (e *AgentEngine) resumeNumericValidationRepair(ctx context.Context, state *
 		encodedFeedback = []byte(`{"status":"feedback_encoding_failed"}`)
 	}
 	feedbackMessage := numericValidationRepairInstructions + "\n数值校验记录：" + string(encodedFeedback)
+	if guards.structuredEvidenceRepairs >= 2 {
+		feedbackMessage += "\n" + finalNumericRepairInstructions
+	}
 	guards.numericValidationInputs = append(guards.numericValidationInputs, feedbackMessage)
 	*messages = append(*messages, chat.Message{Role: "assistant", Content: candidate}, chat.Message{Role: "system", Content: feedbackMessage})
 	e.structuredReviewMode = false

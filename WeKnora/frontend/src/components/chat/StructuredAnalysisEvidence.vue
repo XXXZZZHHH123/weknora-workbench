@@ -81,11 +81,13 @@
         <p v-for="warning in view.warnings || []" :key="warning" class="fine-print">{{ warning }}</p>
       </div>
     </section>
+    <Teleport to="body">
     <div v-if="pdfPreview" class="pdf-source-overlay" role="dialog" aria-modal="true" :aria-label="pdfPreview.fileName + ' 原始 PDF 来源'">
       <header><strong>{{ pdfPreview.fileName }} · 第 {{ pdfPreview.page }} 页原件</strong><button type="button" @click="closePdf">关闭</button></header>
       <p v-if="pdfPreviewError" role="alert" class="blocked">{{ pdfPreviewError }}</p>
       <DocumentPreview v-else class="pdf-source-viewer" :source-blob="pdfPreview.blob" file-type="pdf" :file-name="pdfPreview.fileName" :active="true" source-mode fill-height :locate="pdfPreview.locate" />
     </div>
+    </Teleport>
     <p v-if="loadError && !sources?.length" role="alert" class="blocked">{{ loadError }}</p>
   </section>
 </template>
