@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from copy import deepcopy
 from enum import Enum
+import json
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -82,6 +83,22 @@ async def validated_input(scope, body, *, shared=False):
     title, text = body.title.strip(), body.body.strip()
     if not title or not text:
         raise HTTPException(400, "请填写标题和研究内容")
+    # Every publication route shares this boundary, including the generic
+    # artifact API. Authored reference labels never become trusted snapshots
+    # merely by bypassing the strategy-card editor.
+    try:
+        structured = json.loads(text)
+    except (ValueError, TypeError, RecursionError):
+        structured = None
+    if isinstance(structured, dict) and structured.get('format') == 'research-strategy-card.v1':
+        require_shared_write(scope)
+    if (isinstance(structured, dict) and structured.get('format') == 'research-strategy-card.v1'
+            and 'citations' in structured):
+        from tin.web.strategy_citations import normalize_card_citations
+        structured = await normalize_card_citations(scope, structured)
+        text = json.dumps(structured, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+        if len(text.encode('utf-8')) > 128 * 1024:
+            raise HTTPException(413, '策略说明与引用超过128 KiB，请精简后保存')
     if body.status == ArtifactStatus.confirmed and (not body.confirmed or not body.source_ids):
         raise HTTPException(400, "确认研究成果前，请明确勾选确认并关联原始资料")
     source_ids = list(dict.fromkeys(body.source_ids))

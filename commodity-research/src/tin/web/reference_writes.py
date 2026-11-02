@@ -6,7 +6,7 @@ from sqlalchemy import update
 from sqlalchemy.exc import OperationalError
 
 from tin.models import Judgment
-from tin.web.research_references import resolve_reference
+from tin.web.research_references import declared_references, resolve_judgment_condition, resolve_reference
 
 
 def fence_reference(session, scope, reference, seen=None):
@@ -15,8 +15,15 @@ def fence_reference(session, scope, reference, seen=None):
     if not isinstance(reference, dict):
         raise HTTPException(422, '研究引用格式无效')
     kind, identifier, revision = (reference.get(key) for key in ('kind', 'id', 'revision'))
-    if kind not in {'judgment', 'strategy'} or type(revision) is not int or revision < 1:
+    if (not isinstance(kind, str) or kind not in {'judgment', 'strategy', 'judgment_condition'}
+            or type(revision) is not int or revision < 1):
         raise HTTPException(422, '请明确选择引用记录及其版本')
+    actual = None
+    if kind == 'judgment_condition':
+        # Check every rule pin before deduplicating the judgment write lock;
+        # two different rules in the same version cannot bypass validation.
+        actual = resolve_judgment_condition(session, scope, reference)
+        kind, identifier = 'judgment', actual['id']
     seen = set() if seen is None else seen
     key = (kind, str(identifier), revision)
     if key in seen:
@@ -24,7 +31,8 @@ def fence_reference(session, scope, reference, seen=None):
     if len(seen) >= 32:
         raise HTTPException(413, '研究引用层级或数量过多，请精简引用')
     seen.add(key)
-    actual = resolve_reference(session, scope, kind, identifier, revision)
+    actual = actual or resolve_reference(session, scope, kind, identifier, revision,
+        include_declared=kind == 'strategy')
     if kind == 'judgment':
         # A no-op UPDATE serializes this publication with the delete CAS. A
         # previously validated snapshot cannot publish after its source dies.
@@ -37,18 +45,9 @@ def fence_reference(session, scope, reference, seen=None):
         if changed.rowcount != 1:
             raise HTTPException(409, '引用研判已更新或删除，请重新选择')
         return
-    payload = actual.get('payload') or {}
-    linked = payload.get('judgment_reference')
-    if linked is not None:
+    references = actual['declared_references'] if 'declared_references' in actual else declared_references(actual.get('payload'))
+    for linked in references:
         fence_reference(session, scope, linked, seen)
-    linked = payload.get('reference')
-    if linked is not None:
-        fence_reference(session, scope, linked, seen)
-    context = payload.get('source_context')
-    research = context.get('research') if isinstance(context, dict) else None
-    if isinstance(research, dict) and research.get('id') is not None:
-        fence_reference(session, scope, {'kind': 'judgment', 'id': str(research['id']),
-            'revision': research.get('version')}, seen)
 
 
 def fence_artifact_references(session, scope, module, text):
@@ -60,11 +59,10 @@ def fence_artifact_references(session, scope, module, text):
         return  # Ordinary prose does not declare structured references.
     if not isinstance(data, dict):
         return
-    if module == 'strategies' and data.get('format') == 'research-strategy-card.v1':
+    if module == 'strategies' and (data.get('format') == 'research-strategy-card.v1' or 'citations' in data):
         seen = set()
-        for key in ('judgment_reference', 'reference'):
-            if data.get(key) is not None:
-                fence_reference(session, scope, data[key], seen)
+        for item in declared_references(data):
+            fence_reference(session, scope, item, seen)
     elif module == 'briefs' and data.get('format') == 'research-report-draft.v1':
         seen = set()
         for item in data.get('references') or []:

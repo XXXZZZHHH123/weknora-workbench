@@ -39,17 +39,55 @@ def _points_to(value, identifier, version, version_field='revision'):
         and value[version_field] == version and str(value.get('id', '')) == str(identifier))
 
 
-def _references(body, identifier, version):
+def _references(body, identifier, version, *, session=None, scope=None, seen=None):
     if not isinstance(body, dict):
         return False
     if _points_to(body.get('judgment_reference'), identifier, version):
         return True
+    linked = body.get('reference')
+    if isinstance(linked, dict) and linked.get('kind') in ('judgment', 'judgment_condition') \
+            and _points_to(linked, identifier, version):
+        return True
     references = body.get('references')
-    if isinstance(references, list) and any(isinstance(item, dict) and item.get('kind') == 'judgment'
+    if isinstance(references, list) and any(isinstance(item, dict) and item.get('kind') in ('judgment', 'judgment_condition')
             and _points_to(item, identifier, version) for item in references):
         return True
+    citations = body.get('citations')
+    if isinstance(citations, list) and any(isinstance(item, dict) and item.get('kind') == 'judgment_condition'
+            and _points_to(item, identifier, version) for item in citations):
+        return True
     context = body.get('source_context')
-    return isinstance(context, dict) and _points_to(context.get('research'), identifier, version, 'version')
+    if isinstance(context, dict) and _points_to(context.get('research'), identifier, version, 'version'):
+        return True
+    if session is None or scope is None:
+        return False
+    from tin.web.research_references import declared_references, resolve_reference
+    seen = set() if seen is None else seen
+    for item in declared_references(body, strict=False):
+        if not isinstance(item, dict) or item.get('kind') != 'strategy':
+            continue
+        revision = item.get('revision')
+        if not isinstance(item.get('id'), str) or type(revision) is not int or revision < 1:
+            continue
+        key = (item['id'], revision)
+        if key in seen:
+            continue
+        if len(seen) >= 32:
+            raise HTTPException(413, '研究引用层级或数量过多，请先整理引用')
+        seen.add(key)
+        try:
+            actual = resolve_reference(session, scope, 'strategy', item['id'], revision, include_declared=True)
+        except HTTPException as error:
+            if error.status_code in {403, 404, 409}:
+                # Foreign/unavailable versions cannot be substituted by a
+                # current strategy or matched by display name.
+                continue
+            raise
+        for nested in actual['declared_references']:
+            nested_body = {'reference': nested}
+            if _references(nested_body, identifier, version, session=session, scope=scope, seen=seen):
+                return True
+    return False
 
 
 def _decode(body):
@@ -77,7 +115,7 @@ def ensure_unreferenced(session, scope, judgment):
             examined += 1
             if examined > 10000:
                 raise HTTPException(413, '引用历史较多，请先整理策略和报告后再删除研判')
-            if _references(_decode(body), judgment.id, judgment.version):
+            if _references(_decode(body), judgment.id, judgment.version, session=session, scope=scope):
                 raise HTTPException(409, '策略或报告（含历史版本）正在引用此研判，请先处理引用后再删除')
 
 
