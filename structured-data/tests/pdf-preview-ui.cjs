@@ -4,6 +4,7 @@ const {chromium}=require('playwright');
 const dist=process.env.PDF_PREVIEW_DIST;
 if(!dist||!fs.existsSync(path.join(dist,'pdf-table-preview.html')))throw Error('Build the frontend and set PDF_PREVIEW_DIST');
 const source=path.join(__dirname,'../src/structured_data');
+const baseCss=fs.readFileSync(path.join(source,'index.html'),'utf8').match(/<style>([\s\S]*?)<\/style>/)[1];
 function pdf(){
  const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>'];
  for(let i=0;i<3;i++){
@@ -17,6 +18,7 @@ function pdf(){
 }
 const raw=pdf();
 const draft={draft_id:'pdfd_fixture',bundle_sha256:'a'.repeat(64),bundle:{source:{file_name:'Preview fixture.pdf',sha256:'b'.repeat(64)},parser:{engine:'fixture'},fragments:[{id:'first',page:1,rows:[[{text:'Metric'},{text:'Value'}],[{text:'A'},{text:'-1.20'}]]},{id:'second',page:3,rows:[[{text:'Label'},{text:'Amount'}],[{text:'B'},{text:'2.30'}]]}]}};
+draft.bundle.fragments[1].quality={status:'needs_review',issues:[{code:'TRANSCRIPTION_CELL_CONFLICT'}]};draft.bundle.fragments[1].rows[1][1].uncertain=true;
 let automation=null,automaticCalls=0;
 const calls=[];
 const tables=()=>automation?Array.from({length:automation.accepted_count},(_,i)=>({table_id:'pdft_'+i,draft_id:draft.draft_id,source:draft.bundle.source,status:'auto_accepted',columns:[],coverage:{logical_row_count:1}})):[];
@@ -24,7 +26,7 @@ const server=http.createServer(async(req,res)=>{
  const pathname=new URL(req.url,'http://localhost').pathname;
  let body,type='text/html';
  if(pathname==='/'){
-  body=`<!doctype html><meta charset="utf-8"><style>html,body{margin:0;font:14px system-ui}body{padding:20px}button{cursor:pointer}#pdfReviewPanel{padding:20px}</style><style>${fs.readFileSync(path.join(source,'workspace.css'))}</style><body class="knowledge-view view-import document-results"><section id="pdfReviewPanel"><div id="pdfReviewApp"></div></section><script>let epoch=0;window.pdfReviewHost={getAuthEpoch:()=>epoch,isWorkspaceReady:()=>true,openModelSettings:()=>{window.__modelOpened=(window.__modelOpened||0)+1},api:async(p,o={})=>{const r=await fetch(p,o);if(!r.ok)throw Error('API '+r.status);return r.json()},authenticatedFetch:(...args)=>fetch(...args)};</script><script src="/pdf-review.js"></script>`;
+  body=`<!doctype html><meta charset="utf-8"><style>html,body{margin:0;font:14px system-ui}body{padding:20px}button{cursor:pointer}#pdfReviewPanel{padding:20px}</style><style>${baseCss}${fs.readFileSync(path.join(source,'workspace.css'))}</style><body class="knowledge-view view-import document-results"><section id="pdfReviewPanel"><div id="pdfReviewApp"></div></section><script>let epoch=0;window.pdfReviewHost={getAuthEpoch:()=>epoch,isWorkspaceReady:()=>true,openModelSettings:()=>{window.__modelOpened=(window.__modelOpened||0)+1},api:async(p,o={})=>{const r=await fetch(p,o);if(!r.ok)throw Error('API '+r.status);return r.json()},authenticatedFetch:(...args)=>fetch(...args)};</script><script src="/pdf-review.js"></script>`;
  }else if(pathname==='/pdf-review.js'){body=fs.readFileSync(path.join(source,'static/pdf-review.js'));type='text/javascript';}
  else if(pathname.endsWith('/source')){body=raw;type='application/pdf';}
  else if(pathname==='/fixture-problem'){
@@ -68,13 +70,14 @@ const server=http.createServer(async(req,res)=>{
   await page.locator('.pdf-file-actions button:last-child').click();
   assert.equal(await page.locator('#pdfDraftDetail').evaluate(el=>el.open),true);
   const dialogTop=await page.locator('#pdfDraftDetail').evaluate(el=>el.getBoundingClientRect().top);
-  await page.waitForFunction(()=>document.querySelector('.pdf-source-viewer')?.dataset.renderedPage==='1',null,{timeout:15000}).catch(async e=>{console.error(await page.locator('#pdfReviewStatus').innerText());console.error(await page.frameLocator('.pdf-source-viewer').locator('body').innerText());throw e});
+  await page.waitForFunction(()=>document.querySelector('.pdf-source-viewer')?.dataset.renderedPage==='3',null,{timeout:15000}).catch(async e=>{console.error(await page.locator('#pdfReviewStatus').innerText());console.error(await page.frameLocator('.pdf-source-viewer').locator('body').innerText());throw e});
   const viewer=page.frameLocator('.pdf-source-viewer');
+  await viewer.locator('#paper[data-page="3"] canvas').waitFor({state:'attached'});
   assert.equal(await viewer.locator('canvas').count(),1);
-  assert.equal(await viewer.locator('#paper').getAttribute('data-page'),'1');
-  await page.locator('#pdfFragmentSelect').selectOption('1');
-  await page.waitForFunction(()=>document.querySelector('.pdf-source-viewer')?.dataset.renderedPage==='3');
   assert.equal(await viewer.locator('#paper').getAttribute('data-page'),'3');
+  await page.locator('#pdfFragmentSelect').selectOption('0');
+  await page.waitForFunction(()=>document.querySelector('.pdf-source-viewer')?.dataset.renderedPage==='1');
+  assert.equal(await viewer.locator('#paper').getAttribute('data-page'),'1');
   for(const value of ['0','1','0'])await page.locator('#pdfFragmentSelect').selectOption(value);
   await page.waitForFunction(()=>document.querySelector('.pdf-source-viewer')?.dataset.renderedPage==='1');
   assert.equal(await viewer.locator('#paper').getAttribute('data-page'),'1');
@@ -86,12 +89,13 @@ const server=http.createServer(async(req,res)=>{
   await page.locator('.pdf-exception-drawer>summary').click();
   await page.locator('.pdf-exception').waitFor();
   assert.equal(await page.locator('#pdfDraftDetail').evaluate(el=>el.getBoundingClientRect().top),dialogTop);
-  assert.match(await page.locator('.pdf-automation').innerText(),/已入库 1 张.*1 张需要处理/);
+  assert.match(await page.locator('.pdf-automation').innerText(),/已入库 1 张.*待核对 1 张/);
   await page.getByRole('button',{name:'查看疑点',exact:true}).click();
   assert.equal(await page.locator('#pdfFragmentSelect').inputValue(),'1');
+  if(process.env.PDF_PREVIEW_EVIDENCE){fs.mkdirSync(process.env.PDF_PREVIEW_EVIDENCE,{recursive:true});await page.locator('#pdfDraftDetail').evaluate(e=>e.scrollTop=0);await page.screenshot({path:path.join(process.env.PDF_PREVIEW_EVIDENCE,'review-desktop.png')});await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(process.env.PDF_PREVIEW_EVIDENCE,'review-mobile.png')});assert(await page.locator('#pdfDraftDetail').evaluate(e=>e.scrollWidth<=e.clientWidth+1),'narrow review should not overflow horizontally');await page.setViewportSize({width:1500,height:1000});}
   const currentViewer=await page.locator('.pdf-source-viewer').elementHandle();
   await page.locator('#pdfAutoProcess').click();
-  await page.waitForFunction(()=>document.querySelector('.pdf-automation strong')?.textContent==='已入库 2 张');
+  await page.waitForFunction(()=>document.querySelector('.pdf-automation strong')?.textContent==='解析完成 · 已入库 2 张');
   assert.equal(await page.locator('#pdfDraftDetail').evaluate(el=>el.open),true);
   assert(await currentViewer.evaluate(el=>el===document.querySelector('.pdf-source-viewer')));
   assert.equal(await page.locator('#pdfFragmentSelect').inputValue(),'1');

@@ -326,3 +326,19 @@ html{scrollbar-gutter:stable}html.pdf-detail-open{overflow:hidden}
 #pdfQueryOutput .pdf-query-source{min-width:130px}
 #pdfQueryOutput .pdf-query-source>button{white-space:nowrap}
 #pdfQueryOutput th{position:sticky;top:0;z-index:1}
+
+/* Exception review keeps actions beside the data and one final submit. */
+.pdf-quality-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0}
+.pdf-quality-item>p{margin:0;flex:1}.pdf-quality-item>button{flex-shrink:0}
+.pdf-quality-detail>button{margin-top:8px}
+.pdf-confirm-bar{position:sticky;bottom:0;z-index:4;display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 18px!important;background:var(--paper)!important;border:1px solid var(--line);box-shadow:0 -4px 14px #00000008}
+.pdf-confirm-bar button{min-width:140px}.pdf-fragment-pane>.pdf-table-meta{margin:6px 0 12px}
+.pdf-fragment-pane>.pdf-technical{order:10;margin-top:12px}
+@media(max-width:680px){.pdf-confirm-bar{flex-wrap:wrap}.pdf-confirm-bar button{width:100%}.pdf-quality-item{align-items:flex-start}.pdf-quality-item>button{padding:6px 8px!important}}
+
+.pdf-confirm-bar[hidden],.pdf-mapping-section[hidden]{display:none}
+
+.pdf-automation{min-height:0;padding:14px 16px;align-items:center}
+.pdf-automatic-progress:empty{display:none}
+
+.pdf-raw-table td.pdf-cell-flag{background:#fff8e5}
