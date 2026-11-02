@@ -82,7 +82,12 @@ test('successful completion notifies once and persistent read markers contain on
     assert.doesNotMatch(saved, /token|workbench|result|created_at/)
   } finally { f.close() }
   const restored = fixture(storage)
-  try { const started = restored.tasks.start(); restored.calls[0]!.resolve([job('succeeded')]); await started; assert.equal(restored.tasks.visible.value, false); assert.equal(restored.tasks.pendingNotifications.value.length, 0) } finally { restored.close() }
+  try {
+    const started = restored.tasks.start(); restored.calls[0]!.resolve([job('succeeded')]); await started
+    assert.equal(restored.tasks.visible.value, true, 'A read result stays accessible until it is explicitly ignored')
+    assert.deepEqual(restored.tasks.unreadIds.value, [])
+    assert.equal(restored.tasks.pendingNotifications.value.length, 0)
+  } finally { restored.close() }
 })
 test('failed and interrupted tasks stay readable without being announced as successful', async () => {
   const f = fixture()
@@ -118,6 +123,35 @@ test('ignore waits for the server then hides the notice while keeping the recove
     assert.equal(f.tasks.jobs.value[0]!.dismissed, true)
     assert.deepEqual(JSON.parse([...f.storage.values()][0]!).dismissed, ['job-a'])
     assert.doesNotMatch([...f.storage.values()][0]!, /token|markdown|source|result/)
+  } finally { f.close() }
+})
+
+test('ignoring the last unread task leaves other read and undismissed records available', async () => {
+  const f = fixture()
+  try {
+    const read = job('failed', 'read-done'), unread = job('failed', 'new-done')
+    const started = f.tasks.start(); f.calls[0]!.resolve([read, unread]); await started
+    f.tasks.markRead(read.id)
+    assert.deepEqual(f.tasks.unreadIds.value, [unread.id])
+    const rejected = f.tasks.dismiss(unread.id)
+    f.dismissals[0]!.reject(new Error('Synthetic temporary failure'))
+    assert.equal(await rejected, false)
+    assert.equal(f.tasks.visible.value, true)
+    assert.equal(f.tasks.jobs.value.some(row => row.dismissed), false)
+    const ignored = f.tasks.dismiss(unread.id)
+    assert.equal(f.tasks.visible.value, true, 'No record disappears before server acknowledgement')
+    f.dismissals[1]!.resolve({...unread, dismissed: true}); assert.equal(await ignored, true)
+    assert.deepEqual(f.tasks.unreadIds.value, [])
+    assert.equal(f.tasks.activeCount.value, 0)
+    assert.equal(f.tasks.visible.value, true, 'The read record still needs an accessible task panel')
+    assert.equal(f.tasks.jobs.value.find(row => row.id === read.id)!.dismissed, undefined)
+    assert.deepEqual(JSON.parse([...f.storage.values()][0]!).dismissed, [unread.id])
+    const refreshed = f.tasks.refresh(); f.calls[1]!.resolve([read, unread]); await refreshed
+    assert.equal(f.tasks.visible.value, true)
+    assert.equal(f.tasks.jobs.value.find(row => row.id === read.id)!.dismissed, undefined)
+    const last = f.tasks.dismiss(read.id)
+    f.dismissals[2]!.resolve({...read, dismissed: true}); assert.equal(await last, true)
+    assert.equal(f.tasks.visible.value, false, 'The panel hides only after its last available record is ignored')
   } finally { f.close() }
 })
 

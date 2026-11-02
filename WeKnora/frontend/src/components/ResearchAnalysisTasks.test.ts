@@ -7,9 +7,9 @@ import ts from 'typescript'
 import { parse, compileTemplate } from '@vue/compiler-sfc'
 const source = readFileSync(process.env.ANALYSIS_WIDGET_TEST_SOURCE || new URL('./ResearchAnalysisTasks.vue', import.meta.url), 'utf8')
 const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0]!.replace(/^import .*$/gm, '')
-const code = ts.transpileModule(script + '\n;({ expanded, openTask, notifyCompleted, wake, rows, ignoreTask: typeof ignoreTask === "function" ? ignoreTask : undefined })', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
+const code = ts.transpileModule(script + '\n;({ expanded, label, openTask, notifyCompleted, wake, rows, notificationCount: () => notifications.size, ignoreTask: typeof ignoreTask === "function" ? ignoreTask : undefined })', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
 function fixture() {
-  const calls = { start: 0, stop: 0, refresh: 0, closed: 0, notices: [] as any[], opens: [] as any[], read: [] as string[], ignored: [] as string[] }
+  const calls = { start: 0, stop: 0, refresh: 0, closed: 0, notices: [] as any[], handles: [] as any[], closedHandles: [] as any[], opens: [] as any[], read: [] as string[], ignored: [] as string[] }
   const store = reactive({ jobs: [] as any[], scopeVersion: 0, activeCount: 0, unreadIds: [] as string[], pendingNotifications: [] as any[], visible: false,
     dismissingIds: [] as string[], ignoreFails: false,
     start: async () => { calls.start++ }, stop: () => { calls.stop++ }, refresh: async () => { calls.refresh++ }, markRead: (id: string) => { calls.read.push(id) },
@@ -18,7 +18,7 @@ function fixture() {
   const mounted: Array<() => void> = [], cleanup: Array<() => void> = [], listeners = new Map<string, unknown>()
   const document = { visibilityState: 'visible', addEventListener: (name: string, callback: unknown) => listeners.set(name, callback), removeEventListener: (name: string) => listeners.delete(name) }
   const scope = effectScope(), view = scope.run(() => runInNewContext(code, { computed, h, ref, watch, useAnalysisTasksStore: () => store, useRouter: () => ({ push: async (target: unknown) => { calls.opens.push(target) } }),
-    onMounted: (fn: () => void) => mounted.push(fn), onBeforeUnmount: (fn: () => void) => cleanup.push(fn), NotifyPlugin: { success: (notice: unknown) => { calls.notices.push(notice); return Promise.resolve({ close() {} }) }, close: () => { calls.closed++ } },
+    onMounted: (fn: () => void) => mounted.push(fn), onBeforeUnmount: (fn: () => void) => cleanup.push(fn), NotifyPlugin: { success: (notice: unknown) => { calls.notices.push(notice); const handle = Promise.resolve({ close() {} }); calls.handles.push(handle); return handle }, close: (handle: unknown) => { calls.closed++; calls.closedHandles.push(handle) } },
     analysisPhaseLabel: () => '', document, window: { addEventListener: document.addEventListener, removeEventListener: document.removeEventListener } })) as any
   mounted.forEach(fn => fn())
   return { store, calls, view, document, listeners, close() { cleanup.forEach(fn => fn()); scope.stop() } }
@@ -108,5 +108,74 @@ test('ignore failure leaves the task and completion prompt available', async () 
     f.store.jobs.push(job); f.store.ignoreFails = true
     await f.view.ignoreTask(job)
     assert.equal(f.view.rows.value.length, 1); assert.equal(f.calls.closed, 0)
+  } finally { f.close() }
+})
+
+test('a completion batch creates an independent notice for every task and ignore closes only its own notice', async () => {
+  const f = fixture()
+  try {
+    const first = {id: 'job-a', workbench_id: 'wb-a', state: 'succeeded', result_available: true}
+    const second = {id: 'job-b', workbench_id: 'wb-b', purpose: 'diagram', state: 'succeeded', result_available: true}
+    f.store.jobs.push(first, second); f.store.pendingNotifications.push(first, second); await nextTick()
+    assert.equal(f.calls.notices.length, 2, 'Every consumed completion must have a corresponding notice')
+    assert.equal(f.calls.closed, 0, 'The second completion must not replace the first notice')
+    assert.equal(f.calls.notices[0].title, '研究分析已完成')
+    assert.equal(f.calls.notices[1].title, '产业图配置已生成')
+    await f.calls.notices[0].content().children[2].props.onClick()
+    assert.deepEqual(f.calls.ignored, ['job-a'])
+    assert.equal(f.calls.closed, 1)
+    assert.equal(f.calls.closedHandles[0], f.calls.handles[0])
+    assert.deepEqual(Array.from(f.view.rows.value, (row: any) => row.id), ['job-b'])
+    f.calls.notices[1].content().children[1].props.onClick()
+    assert.equal(f.calls.opens[0].query.analysis_job, 'job-b')
+  } finally { f.close() }
+})
+
+test('failure to ignore one completion leaves both notices and task records intact', async () => {
+  const f = fixture()
+  try {
+    const first = {id: 'job-a', workbench_id: 'wb-a', state: 'succeeded'}
+    const second = {id: 'job-b', workbench_id: 'wb-b', state: 'succeeded'}
+    f.store.jobs.push(first, second); f.store.pendingNotifications.push(first, second); await nextTick()
+    assert.equal(f.calls.notices.length, 2)
+    f.store.ignoreFails = true
+    await f.calls.notices[0].content().children[2].props.onClick()
+    assert.equal(f.calls.closed, 0)
+    assert.equal(f.view.rows.value.length, 2)
+    assert.deepEqual(f.calls.ignored, ['job-a'])
+    assert.equal(f.view.expanded.value, true)
+  } finally { f.close() }
+  assert.equal(f.calls.closed, 2, 'Unmount closes every remaining notice without dismissing either task')
+})
+
+test('read task records have a nonempty entry label and account changes close all owned notices', async () => {
+  const f = fixture()
+  try {
+    const first = {id: 'job-a', workbench_id: 'wb-a', state: 'succeeded'}
+    const second = {id: 'job-b', workbench_id: 'wb-b', state: 'succeeded'}
+    f.store.jobs.push(first, second)
+    assert.equal(f.view.label.value, '研究分析：2 项记录')
+    f.store.pendingNotifications.push(first, second); await nextTick()
+    f.store.scopeVersion++; await nextTick()
+    assert.equal(f.calls.closed, 2)
+    assert.deepEqual(f.calls.ignored, [], 'Closing notices on account change is not task dismissal')
+  } finally { f.close() }
+})
+
+for (const callback of ['onCloseBtnClick', 'onDurationEnd']) test(`${callback} releases only that toast reference without ignoring the task`, async () => {
+  const f = fixture()
+  try {
+    const first = {id: 'job-a', workbench_id: 'wb-a', state: 'succeeded'}
+    const second = {id: 'job-b', workbench_id: 'wb-b', state: 'succeeded'}
+    f.store.jobs.push(first, second); f.store.pendingNotifications.push(first, second); await nextTick()
+    assert.equal(f.view.notificationCount(), 2)
+    assert.equal(typeof f.calls.notices[0][callback], 'function')
+    f.calls.notices[0][callback]()
+    assert.equal(f.view.notificationCount(), 1)
+    assert.deepEqual(f.calls.ignored, [])
+    assert.equal(f.view.rows.value.length, 2)
+    f.store.scopeVersion++; await nextTick()
+    assert.equal(f.calls.closed, 1, 'Account cleanup does not retain a toast that already closed')
+    assert.equal(f.calls.closedHandles[0], f.calls.handles[1])
   } finally { f.close() }
 })

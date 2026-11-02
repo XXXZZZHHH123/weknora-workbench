@@ -7,15 +7,20 @@ import { analysisPhaseLabel } from '@/stores/analysisTasksState'
 import type { AnalysisJob } from '@/api/researchAnalysisTasks'
 
 const store = useAnalysisTasksStore(), router = useRouter(), expanded = ref(false)
-const rows = computed(() => store.jobs.filter(job => job.state !== 'applied' && !job.dismissed))
-const label = computed(() => store.activeCount ? `研究分析进行中：${store.activeCount} 项` : `研究分析：${store.unreadIds.length} 项待查看`)
-let notification: ReturnType<typeof NotifyPlugin.success> | undefined
-let noticeJobId: string | undefined
+const rows = computed(() => store.jobs.filter(job => job.state !== 'applied' && job.state !== 'superseded' && !job.dismissed))
+const label = computed(() => store.activeCount ? `研究分析进行中：${store.activeCount} 项`
+  : store.unreadIds.length ? `研究分析：${store.unreadIds.length} 项待查看` : `研究分析：${rows.value.length} 项记录`)
+const notifications = new Map<string, ReturnType<typeof NotifyPlugin.success>>()
 const isRunning = (job: AnalysisJob) => job.state === 'queued' || job.state === 'running'
-function closeNotice() { if (notification) NotifyPlugin.close(notification); notification = undefined; noticeJobId = undefined }
+function closeNotice(id?: string) {
+  for (const [key, notification] of notifications) {
+    if (id !== undefined && key !== id) continue
+    notifications.delete(key); NotifyPlugin.close(notification)
+  }
+}
 function openTask(job: AnalysisJob) {
   if (!store.jobs.some(row => row.id === job.id && row.workbench_id === job.workbench_id && !row.dismissed && row.state !== 'superseded' && row.state !== 'applied')) return
-  closeNotice()
+  closeNotice(job.id)
   store.markRead(job.id); expanded.value = false
   void router.push({ name: 'researchWorkbenchDetail', params: { workbenchId: job.workbench_id }, query: { view: job.purpose === 'diagram' ? 'diagram' : 'judgment', analysis_job: job.id } })
 }
@@ -24,25 +29,27 @@ async function ignoreTask(job: AnalysisJob) {
   const scope = store.scopeVersion
   const ignored = await store.dismiss(job.id)
   if (scope !== store.scopeVersion) return
-  if (ignored) { if (noticeJobId === job.id) closeNotice() }
+  if (ignored) closeNotice(job.id)
   else expanded.value = true
 }
 function notifyCompleted() {
   if (document.visibilityState === 'hidden') return
   const completed = store.takeNotifications()
-  if (!completed.length) return
-  const job = completed[0]!
-  closeNotice()
-  noticeJobId = job.id
-  notification = NotifyPlugin.success({ title: completed.length > 1 ? `${completed.length} 项研究任务已完成` : job.purpose === 'diagram' ? '产业图配置已生成' : '研究分析已完成',
-    content: () => h('div', { class: 'analysis-completion' }, [h('span', '结果已暂存，尚未保存。'),
-      h('button', { type: 'button', onClick: () => openTask(job) }, '查看结果'),
-      h('button', { type: 'button', disabled: store.dismissingIds.includes(job.id), onClick: () => ignoreTask(job) }, '忽略')]), duration: 6000, closeBtn: true })
+  for (const job of completed) {
+    if (notifications.has(job.id)) continue
+    const forget = (): void => { if (notifications.get(job.id) === notification) notifications.delete(job.id) }
+    const notification = NotifyPlugin.success({ title: job.purpose === 'diagram' ? '产业图配置已生成' : '研究分析已完成',
+      content: () => h('div', { class: 'analysis-completion' }, [h('span', '结果已暂存，尚未保存。'),
+        h('button', { type: 'button', onClick: () => openTask(job) }, '查看结果'),
+        h('button', { type: 'button', disabled: store.dismissingIds.includes(job.id), onClick: () => ignoreTask(job) }, '忽略')]),
+      duration: 6000, closeBtn: true, onClose: forget, onCloseBtnClick: forget, onDurationEnd: forget })
+    notifications.set(job.id, notification)
+  }
 }
 function wake() { void store.refresh(); notifyCompleted() }
 watch(() => store.pendingNotifications.length, notifyCompleted, { flush: 'post' })
 watch(() => store.visible, visible => { if (!visible) { expanded.value = false; closeNotice() } })
-watch(() => store.scopeVersion, closeNotice, { flush: 'sync' })
+watch(() => store.scopeVersion, () => closeNotice(), { flush: 'sync' })
 onMounted(() => { void store.start(); document.addEventListener('visibilitychange', wake); window.addEventListener('focus', wake); notifyCompleted() })
 onBeforeUnmount(() => { closeNotice(); store.stop(); document.removeEventListener('visibilitychange', wake); window.removeEventListener('focus', wake) })
 </script>

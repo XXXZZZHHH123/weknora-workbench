@@ -48,7 +48,7 @@ export function createAnalysisTasks(deps: Dependencies) {
   let timer: unknown, started = false, blocked = false, generation = 0, currentKey = '', failures = 0
   let pending: { generation: number; promise: Promise<void> } | null = null
   const activeCount = computed(() => jobs.value.filter(active).length)
-  const visible = computed(() => activeCount.value > 0 || unreadIds.value.length > 0)
+  const visible = computed(() => jobs.value.some(job => !job.dismissed && job.state !== 'applied' && job.state !== 'superseded'))
   const clearTimer = () => { if (timer !== undefined) timers.clearTimer(timer); timer = undefined }
   function persist() {
     if (!currentKey) return
