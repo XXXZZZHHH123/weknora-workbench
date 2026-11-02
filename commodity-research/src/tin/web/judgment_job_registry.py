@@ -233,11 +233,17 @@ class Registry:
                 raise HTTPException(409, '分析任务已中断，请重新发起')
             yield connection, row
 
-    def finish(self, job_id, worker_id, fence, state, message=''):
+    def finish(self, job_id, worker_id, fence, state, message='', *, diagnostic=None):
         with self.transaction() as connection:
             row = self.fetch(connection, job_id)
             if not row or row['worker_id'] != worker_id or row['fence'] != fence or row['state'] not in ACTIVE:
                 return
+            if diagnostic is not None and row.get('purpose', 'judgments') == 'judgments' and state == 'failed':
+                from tin.web.judgment_failures import safe_diagnostic, render_failure
+                safe = safe_diagnostic(diagnostic)
+                if safe is not None:
+                    row['failure'] = safe
+                message = render_failure(safe)
             row.update(state=state, phase=state, message=message, updated_at=iso(), finished_at=iso())
             self.write(connection, row)
             self.compact(connection)
@@ -293,6 +299,12 @@ def metadata(row):
         'created_at', 'updated_at', 'finished_at', 'expires_at', 'message',
         'dismissed_at', 'superseded_by')}
     purpose = row.get('purpose', 'judgments')
+    if purpose == 'judgments' and row.get('state') == 'failed' and 'failure' in row:
+        from tin.web.judgment_failures import safe_diagnostic, render_failure
+        safe = safe_diagnostic(row['failure'])
+        result['message'] = render_failure(safe)
+        if safe is not None:
+            result['failure'] = safe
     return {**result, 'job_id': row['id'], 'purpose': purpose,
         'title': '产业图配置生成' if purpose == 'diagram' else '研究逻辑分析',
         'result_available': row['state'] == 'succeeded', 'dismissed': row.get('dismissed') is True}

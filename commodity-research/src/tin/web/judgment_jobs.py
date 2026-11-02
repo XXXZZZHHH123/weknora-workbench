@@ -305,6 +305,7 @@ class Runtime:
             work.cancel()
 
     async def run(self, scope, body, meta):
+        failure_stage = 'queued'
         identity_marker = current_identity.set(scope.identity)
         scope_marker = current_workbench.set(scope)
         heartbeat = asyncio.create_task(self.heartbeat(meta, asyncio.current_task()))
@@ -316,6 +317,9 @@ class Runtime:
                 await asyncio.sleep(0.25)
 
             async def progress(phase):
+                nonlocal failure_stage
+                from tin.web.judgment_failures import STAGES
+                failure_stage = phase if isinstance(phase, str) and phase in STAGES else 'unknown'
                 await fresh_scope(scope)
                 await run_in_threadpool(registry.touch, meta['id'], self.worker_id, meta['fence'], phase)
 
@@ -327,14 +331,10 @@ class Runtime:
             await run_in_threadpool(registry.finish, meta['id'], self.worker_id, meta['fence'],
                 'interrupted', '分析已中断，请重新发起')
         except Exception as error:
-            message = ('分析超时，请重新发起' if isinstance(error, TimeoutError)
-                else '分析未完成，请重新发起')
-            if isinstance(error, HTTPException):
-                message = {401: '登录已过期，请重新登录后发起分析', 403: '当前权限不能继续分析',
-                    404: '分析所需来源或模型已不存在', 409: '来源或研判版本已改变，请重新分析',
-                    413: '资料或目录超过分析容量，请缩小范围', 422: '模型结果未通过校验，请重新分析',
-                    429: '模型请求受限，请稍后重试'}.get(error.status_code, message)
-            await run_in_threadpool(registry.finish, meta['id'], self.worker_id, meta['fence'], 'failed', message)
+            from tin.web.judgment_failures import failure_for
+            failure = failure_for(error, failure_stage)
+            await run_in_threadpool(registry.finish, meta['id'], self.worker_id, meta['fence'],
+                'failed', failure['message'], diagnostic=failure['diagnostic'])
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
