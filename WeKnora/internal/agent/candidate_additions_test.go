@@ -342,3 +342,53 @@ func TestCandidateAdditionsSentenceBoundariesIgnoreWholeRenderedReferences(t *te
 		require.Equal(t, tc.text, edited)
 	}
 }
+
+func TestCandidateAdditionsNumericDiagnosticUsesActualSourcesNotDiscoveryOrConversation(t *testing.T) {
+	const candidate = `The reference measurement is 138.67. <kb doc="report.pdf" chunk_id="read-chunk" kb_id="read-doc" />`
+	for _, source := range []string{"discovery", "query", "read"} {
+		t.Run(source, func(t *testing.T) {
+			model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{candidate}, nil)}}
+			engine := numericRecoveryTestEngine(t, &model.mockChat)
+			engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
+			state, _, query := numericRecoveryFixture()
+			discovery := types.ToolCall{Name: "structured_data", Args: map[string]any{"operation": "list_datasets"}, Result: &types.ToolResult{Success: true, Data: map[string]any{"sample_rows": []any{map[string]any{"value": 138.67}}, "description": "138.67"}}}
+			switch source {
+			case "discovery":
+				state.RoundSteps = []types.AgentStep{{ToolCalls: []types.ToolCall{discovery}}}
+			case "query":
+				state.RoundSteps[0].ToolCalls = append(state.RoundSteps[0].ToolCalls, discovery)
+			case "read":
+				state.RoundSteps = []types.AgentStep{{ToolCalls: []types.ToolCall{discovery, {Name: "read_document", ID: "actual-read", Result: documentReadResult("read-doc", "read-chunk", "The measured value is 138.67.")}}}}
+			}
+			conversation := []chat.Message{{Role: "user", Content: query + " I previously mentioned 138.67."}, {Role: "assistant", Content: "Earlier I guessed 138.67."}}
+			require.Equal(t, candidate, engine.selectCandidateAdditions(t.Context(), query, candidate, state, conversation), "diagnostics do not automatically remove required text")
+			require.Len(t, model.selectionCalls, 1)
+			var packet map[string]any
+			require.NoError(t, json.Unmarshal([]byte(model.selectionCalls[0][1].Content), &packet))
+			diagnostic := packet["actual_body_numeric_diagnostic"].(map[string]any)
+			if source == "discovery" {
+				require.Empty(t, ungroundedStructuredNumbers(candidate, nil), "ordinary no-source conversation keeps its existing skip")
+				require.Equal(t, float64(1), diagnostic["unsupported_token_count"])
+				issue := diagnostic["unsupported_tokens"].([]any)[0].(map[string]any)
+				require.Equal(t, "138.67", issue["token"])
+			} else {
+				require.Equal(t, float64(0), diagnostic["unsupported_token_count"])
+			}
+		})
+	}
+}
+
+func TestCandidateAdditionsNoBodyReferenceParagraphCanLeaveWhileGapRemains(t *testing.T) {
+	const gap = "The current search has not supplied the requested-period measurement."
+	const reference = "A nearby-period reference is 138.67, according to the candidate table."
+	model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{gap}, []string{reference})}}
+	engine := numericRecoveryTestEngine(t, &model.mockChat)
+	engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
+	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{{Name: "search_knowledge", Result: &types.ToolResult{Success: true, Data: map[string]any{"documents": []any{map[string]any{"description": "A candidate measurement is 138.67."}}}}}}}}}
+	require.Equal(t, gap, engine.selectCandidateAdditions(t.Context(), "Give the requested-period measurement.", gap+"\n\n"+reference, state, nil))
+	var packet map[string]any
+	require.NoError(t, json.Unmarshal([]byte(model.selectionCalls[0][1].Content), &packet))
+	diagnostic := packet["actual_body_numeric_diagnostic"].(map[string]any)
+	require.Equal(t, float64(1), diagnostic["unsupported_token_count"])
+	require.Equal(t, float64(0), packet["source_discovery_activity"].(map[string]any)["omitted_operation_count"])
+}

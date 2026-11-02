@@ -264,6 +264,13 @@ func validCalendarLiteral(value string) bool {
 }
 
 func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawSteps ...[]types.AgentStep) []string {
+	return ungroundedStructuredNumbersWithEmptyEvidence(answer, messages, false, rawSteps...)
+}
+
+// checkEmptyEvidence is used only by the presentation diagnostic after actual
+// source activity: no observed numeric values means unknown claims, rather than
+// the ordinary conversation skip. It never adds a fact or changes delivery policy.
+func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat.Message, checkEmptyEvidence bool, rawSteps ...[]types.AgentStep) []string {
 	values := []float64{}
 	percentageValues := []float64{}
 	filenames := []string{}
@@ -555,7 +562,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			}
 		}
 	}
-	if len(values) == 0 && !hasPDFEvidence {
+	if len(values) == 0 && !hasPDFEvidence && !checkEmptyEvidence {
 		return nil
 	} // No numeric evidence; ordinary conversation.
 	answer = maskCurrentChartImageDestinations(answer, rawSteps...)
