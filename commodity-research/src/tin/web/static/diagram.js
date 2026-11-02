@@ -1363,8 +1363,6 @@ function dgTidyGroups() {
   const tops = dg.layout.nodes.filter((n) => !n.parent || !ids.has(n.parent));
   if (!tops.length) { showToast("图是空的"); return; }
 
-  let arranged = 0;
-  for (const r of tops.filter(dgIsGroup)) arranged += dgArrange(r.id);
   const research = window.DiagramGeometry?.arrange(dg.layout);
   if (research) {
     dg.layout.nodes = research.nodes;
@@ -1372,6 +1370,8 @@ function dgTidyGroups() {
     showToast("已按研究结构重排，可撤销；保存后生效");
     return;
   }
+  let arranged = 0;
+  for (const r of tops.filter(dgIsGroup)) arranged += dgArrange(r.id);
 
   // 顶层也按列归位、统一间距。上一版这里只推开重叠——压上的拉开了，但隔得老远的
   // 照样隔得老远，挨得太近的也照样挨着。「整理」就是要把远近不一的间距拉回同一个值。

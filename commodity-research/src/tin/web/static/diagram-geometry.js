@@ -2,6 +2,7 @@
 (function (root) {
   const roles = new Set(['supply', 'target', 'demand', 'inventory', 'balance', 'macro', 'reference']);
   const GAP = 32, BAND = 64, COLUMN = 60, PAD = 18, HEAD = 28, MIN = 186;
+  const INNER_PAD = 14, INNER_HEAD = 34, INNER_GAP = 16, INNER_COLUMN = 24, ROWS = 4, HEIGHT = 368;
   const box = node => node && ['x', 'y', 'w', 'h'].every(key => Number.isFinite(node[key])) && node.w > 0 && node.h > 0;
   const center = node => ({x: node.x + node.w / 2, y: node.y + node.h / 2});
   const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -25,14 +26,7 @@
       children.get(node.parent).push(node);
     }
     const buckets = Object.fromEntries([...roles].map(role => [role, roots.filter(node => (node.role || 'reference') === role)]));
-    const width = list => list.reduce((sum, node) => sum + node.w, 0) + Math.max(0, list.length - 1) * GAP;
-    const height = list => list.reduce((sum, node) => sum + node.h, 0) + Math.max(0, list.length - 1) * GAP;
-    const maxWidth = list => Math.max(MIN, ...list.map(node => node.w));
-    const stock = [...buckets.inventory, ...buckets.balance], macro = buckets.macro;
-    const widths = [maxWidth(buckets.supply), Math.max(maxWidth(buckets.target), width(stock) + (stock.length ? PAD * 2 : 0), width(macro)), maxWidth(buckets.demand)];
     const x0 = Math.min(...roots.map(node => node.x)), y0 = Math.min(...roots.map(node => node.y));
-    const starts = [x0, x0 + widths[0] + COLUMN, x0 + widths[0] + widths[1] + COLUMN * 2];
-    const targetX = starts[1] + widths[1] / 2;
     function move(node, x, y) {
       const dx = x - node.x, dy = y - node.y, pending = [node], seen = new Set();
       while (pending.length) {
@@ -40,30 +34,53 @@
         current.x += dx; current.y += dy; pending.push(...(children.get(current.id) || []));
       }
     }
-    function row(list, y, centered = true) {
-      let x = centered ? targetX - width(list) / 2 : x0;
-      for (const node of list) { move(node, x, y); x += node.w + GAP; }
-      return y + Math.max(0, ...list.map(node => node.h));
+    // Reflow is explicit. Parent relations remain authoritative, while a long
+    // list can use the canvas width instead of making every ancestor taller.
+    const fitted = new Set(), visiting = new Set();
+    function pack(group) {
+      if (fitted.has(group.id)) return true;
+      if (visiting.has(group.id)) return false;
+      visiting.add(group.id);
+      const items = children.get(group.id) || [];
+      for (const node of items) if (node.kind === 'group' && !pack(node)) return false;
+      let x = group.x + INNER_PAD, y = group.y + INNER_HEAD, count = 0, columnW = 0, bottom = y;
+      for (const node of items) {
+        if (count && (count >= ROWS || y + node.h - group.y - INNER_HEAD > HEIGHT)) {
+          x += columnW + INNER_COLUMN; y = group.y + INNER_HEAD; count = 0; columnW = 0;
+        }
+        move(node, x, y); columnW = Math.max(columnW, node.w);
+        bottom = Math.max(bottom, y + node.h); y += node.h + INNER_GAP; count++;
+      }
+      if (items.length) { group.w = Math.max(MIN, x + columnW - group.x + INNER_PAD); group.h = bottom - group.y + INNER_PAD; }
+      visiting.delete(group.id); fitted.add(group.id); return true;
     }
-    const stockBottom = stock.length ? row(stock, y0 + HEAD) + PAD : y0;
-    const mainY = stock.length ? stockBottom + BAND : y0;
-    const mainH = height(buckets.target);
-    for (const [index, role] of ['supply', 'target', 'demand'].entries()) {
-      let y = mainY + (mainH - height(buckets[role])) / 2;
-      for (const node of buckets[role]) { move(node, starts[index] + (widths[index] - node.w) / 2, y); y += node.h + GAP; }
+    for (const node of result.nodes) if (node.kind === 'group' && !pack(node)) return null;
+    const width = list => list.reduce((sum, node) => sum + node.w, 0) + Math.max(0, list.length - 1) * GAP;
+    const height = list => Math.max(0, ...list.map(node => node.h));
+    const stock = [...buckets.inventory, ...buckets.balance], macro = buckets.macro;
+    const slots = [buckets.supply, buckets.target, stock, buckets.demand].filter(list => list.length);
+    const centerY = y0 + Math.max(...slots.map(list => height(list) / 2 + (list === stock ? HEAD : 0)));
+    function row(list, x, cy) {
+      for (const node of list) { move(node, x, cy - node.h / 2); x += node.w + GAP; }
     }
-    if (macro.length) row(macro, mainY + mainH + BAND);
+    let x = x0, targetX;
+    for (const list of slots) {
+      const slotW = list === buckets.target ? Math.max(width(list), width(macro)) : width(list) + (list === stock ? PAD * 2 : 0);
+      row(list, x + (slotW - width(list)) / 2, centerY);
+      if (list === buckets.target) targetX = x + slotW / 2;
+      x += slotW + COLUMN;
+    }
+    const target = buckets.target[0];
+    if (macro.length) row(macro, targetX - width(macro) / 2, target.y + target.h + BAND + height(macro) / 2);
     const placed = roots.filter(node => (node.role || 'reference') !== 'reference');
     const bottom = Math.max(...placed.map(node => node.y + node.h));
-    row(buckets.reference, bottom + BAND, false);
-    const shift = Math.max(0, y0 - Math.min(...roots.map(node => node.y)));
-    if (shift) for (const node of result.nodes) node.y += shift;
+    row(buckets.reference, x0, bottom + BAND + height(buckets.reference) / 2);
     return result;
   }
   function regions(layout) {
     const roots = researchRoots(layout); if (!roots) return [];
     const inventory = roots.filter(node => node.role === 'inventory'), balance = roots.filter(node => node.role === 'balance');
-    if (!inventory.length || !balance.length) return [];
+    if (!inventory.length && !balance.length) return [];
     const members = [...inventory, ...balance], connected = new Set([members[0].id]);
     const nearby = (a, b) => {
       const dx = Math.max(0, a.x - b.x - b.w, b.x - a.x - a.w);
@@ -77,7 +94,7 @@
     if (connected.size !== members.length) return [];
     const area = bounds(members), region = {x: area.x - PAD, y: area.y - HEAD, w: area.w + PAD * 2, h: area.h + HEAD + PAD};
     if (roots.some(node => !connected.has(node.id) && overlap(region, node))) return [];
-    return [{...region, label: '库存与平衡', members: members.map(node => node.id)}];
+    return [{...region, label: inventory.length && balance.length ? '库存与平衡' : inventory.length ? '库存' : '平衡', members: members.map(node => node.id)}];
   }
   function ancestors(node, by) {
     const result = new Set();

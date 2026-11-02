@@ -373,63 +373,7 @@ def _position_research_roles(nodes):
     for node in nodes:
         descendants[node.get('parent')].append(node)
 
-    # A group with both direct observations and nested groups may be wider
-    # than its initial outline box. Measure the actual subtree before placing
-    # the root, without moving children or changing aggregation membership.
     fitted, visiting = set(), set()
-
-    def fit(group):
-        identifier = group['id']
-        if identifier in fitted:
-            return
-        if identifier in visiting:
-            raise MarkdownError('产业图分组不能成环')
-        visiting.add(identifier)
-        children = descendants[identifier]
-        for child in children:
-            if child.get('kind') == 'group':
-                fit(child)
-        if children:
-            left = min(group['x'], min(child['x'] for child in children) - 14)
-            top = min(group['y'], min(child['y'] for child in children) - 34)
-            right = max(group['x'] + group['w'], max(child['x'] + child['w'] for child in children) + 14)
-            bottom = max(group['y'] + group['h'], max(child['y'] + child['h'] for child in children) + 14)
-            group.update(x=left, y=top, w=right - left, h=bottom - top)
-        visiting.remove(identifier)
-        fitted.add(identifier)
-
-    for group in groups:
-        fit(group)
-    buckets = {role: [group for group in roots if (group.get('role') or 'reference') == role]
-        for role in RESEARCH_ROLES}
-    buckets['reference'].extend(node for node in nodes
-        if node.get('kind') != 'group' and node.get('parent') is None)
-    gap, band_gap = 32, 64
-    upper = buckets['inventory'] + buckets['balance']
-    macro = buckets['macro']
-
-    def row_width(items):
-        return sum(item['w'] for item in items) + gap * max(0, len(items) - 1)
-
-    def row_height(items):
-        return max((item['h'] for item in items), default=0)
-
-    def stack_height(items):
-        return sum(item['h'] for item in items) + gap * max(0, len(items) - 1)
-
-    widths = [max([COL_W + PAD, *(group['w'] for group in buckets['supply'])]),
-        max([COL_W + PAD, *(group['w'] for group in buckets['target']),
-            row_width(upper) + 36 if upper else 0, row_width(macro)]),
-        max([COL_W + PAD, *(group['w'] for group in buckets['demand'])])]
-    starts = [PAD, PAD + widths[0] + 60, PAD + widths[0] + widths[1] + 120]
-    center_x = starts[1] + widths[1] / 2
-    upper_height = row_height(upper) + 28 + 18 if upper else 0
-    main_top = PAD + upper_height + band_gap if upper else PAD
-    # The center column has its own compact reading axis. Tall supply or
-    # demand stacks extend around that axis, rather than pushing the central
-    # inventory/target/macro sequence apart.
-    main_height = stack_height(buckets['target'])
-    center_y = main_top + main_height / 2
 
     def move(group, x, y):
         dx, dy = x - group['x'], y - group['y']
@@ -440,27 +384,73 @@ def _position_research_roles(nodes):
             node['y'] += dy
             pending.extend(descendants[node['id']])
 
-    def row(items, x, top):
+    def pack(group):
+        identifier = group['id']
+        if identifier in fitted:
+            return
+        if identifier in visiting:
+            raise MarkdownError('产业图分组不能成环')
+        visiting.add(identifier)
+        items = descendants[identifier]
+        for child in items:
+            if child.get('kind') == 'group':
+                pack(child)
+        # Apply the same presentation budget as the explicit canvas reflow:
+        # four rows or 368px per column, including mixed leaves/subgroups.
+        x, y = group['x'] + 14, group['y'] + 34
+        count, column_width, bottom = 0, 0, y
+        for child in items:
+            if count and (count >= 4 or y + child['h'] - group['y'] - 34 > 368):
+                x += column_width + 24
+                y, count, column_width = group['y'] + 34, 0, 0
+            move(child, x, y)
+            column_width = max(column_width, child['w'])
+            bottom = max(bottom, y + child['h'])
+            y += child['h'] + 16
+            count += 1
+        if items:
+            group.update(w=max(COL_W + PAD, x + column_width - group['x'] + 14),
+                h=bottom - group['y'] + 14)
+        visiting.remove(identifier)
+        fitted.add(identifier)
+
+    for group in groups:
+        pack(group)
+    buckets = {role: [group for group in roots if (group.get('role') or 'reference') == role]
+        for role in RESEARCH_ROLES}
+    buckets['reference'].extend(node for node in nodes
+        if node.get('kind') != 'group' and node.get('parent') is None)
+    gap, band_gap = 32, 64
+    stock = buckets['inventory'] + buckets['balance']
+    macro = buckets['macro']
+
+    def row_width(items):
+        return sum(item['w'] for item in items) + gap * max(0, len(items) - 1)
+
+    def row_height(items):
+        return max((item['h'] for item in items), default=0)
+
+    slots = [items for items in (buckets['supply'], buckets['target'], stock, buckets['demand']) if items]
+    center_y = PAD + max(row_height(items) / 2 + (28 if items is stock else 0) for items in slots)
+
+    def row(items, x, cy):
         for group in items:
-            move(group, x, top)
+            move(group, x, cy - group['h'] / 2)
             x += group['w'] + gap
 
-    # Inventory/balance share a display slot, never an invented parent group.
-    row(upper, center_x - row_width(upper) / 2, PAD + 28)
-    for column, role in enumerate(('supply', 'target', 'demand')):
-        y = center_y - stack_height(buckets[role]) / 2
-        for group in buckets[role]:
-            move(group, starts[column] + (widths[column] - group['w']) / 2, y)
-            y += group['h'] + gap
-    macro_top = main_top + main_height + band_gap
-    row(macro, center_x - row_width(macro) / 2, macro_top)
+    x = PAD
+    for items in slots:
+        slot_width = (max(row_width(items), row_width(macro)) if items is buckets['target']
+            else row_width(items) + (36 if items is stock else 0))
+        row(items, x + (slot_width - row_width(items)) / 2, center_y)
+        if items is buckets['target']:
+            center_x = x + slot_width / 2
+        x += slot_width + 60
+    target = buckets['target'][0]
+    row(macro, center_x - row_width(macro) / 2, target['y'] + target['h'] + band_gap + row_height(macro) / 2)
     placed = [group for group in roots if (group.get('role') or 'reference') != 'reference']
     reference_top = max(group['y'] + group['h'] for group in placed) + band_gap
-    row(buckets['reference'], PAD, reference_top)
-    shift = max(0, PAD - min(node['y'] for node in nodes))
-    if shift:
-        for node in nodes:
-            node['y'] += shift
+    row(buckets['reference'], PAD, reference_top + row_height(buckets['reference']) / 2)
 
 
 def dump(layout: dict, name: str = "产业结构") -> str:
