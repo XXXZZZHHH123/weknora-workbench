@@ -16,12 +16,13 @@ class Element {
   setAttribute(name,value){this.attributes[name]=value;}
   removeAttribute(name){delete this.attributes[name];}
   contains(node){return node===this||this.children.some(child=>child.contains(node));}
+  remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(child=>child!==this);this.parentNode=null;}
   focus(){}
   showModal(){this.open=true;}
   close(){this.open=false;}
   click(){}
 }
-function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,analysisReused=false,analysisComplete=undefined,previewNotice='',boundIndicators=[],latestJob=null,latestDeferred=false,catalogFailure=false,reviewSections=null}={}) {
+function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,analysisReused=false,analysisComplete=undefined,previewNotice='',boundIndicators=[],latestJob=null,latestDeferred=false,catalogFailure=false,reviewSections=null,catalogEntries=null,reviewFrequencyRequired=null}={}) {
   const ids=['judgment-manager',...['restore-result','original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','structured','variety','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
   const nodes=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
   for(const name of ['current-delete','history-download','history-reuse','history-delete','history-state','history-more'])nodes['logic-'+name]=new Element('logic-'+name);
@@ -38,7 +39,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
   const requests=[],navigations=[],catalogReplies=[],reviewReplies=[],jobStartReplies=[],jobStatusReplies=[],jobResultReplies=[],baselineReplies=[],latestReplies=[];
   const firstJob='synthetic-analysis-job-0001',jobStates=new Map([[firstJob,failure?'failed':jobState]]),jobSources=new Map(),jobInputs=new Map(),jobKeys=new Map();
   let reloads=0,generations=0,revision=1,submittedBody=null;
-  const catalog=[{series_id:'authorized-other',name:'Directory quantity <script>',unit:'t',source_file:'Shared workbook.xlsx',sheet:'Daily'},{series_id:'authorized-page-two',name:'Another authorized field',unit:'t',source_file:'Other workbook.xlsx',sheet:'Weekly'}];
+  const catalog=catalogEntries||[{series_id:'authorized-other',name:'Directory quantity <script>',unit:'t',source_file:'Shared workbook.xlsx',sheet:'Daily'},{series_id:'authorized-page-two',name:'Another authorized field',unit:'t',source_file:'Other workbook.xlsx',sheet:'Weekly'}];
   const review={draft_id:'server-bound-nonce',revision:1,sections:[{id:'contradiction',title:'主矛盾',items:[{id:'anchor',kind:'binding',title:'数据锚',original_text:'Supply quantity <script>',description:'请核对数据来源与口径。',status:'pending',requires_binding:true,can_bind:true,can_confirm:true,warnings:[],binding:null,ai_binding:{series_id:'ai-choice',name:'AI quantity',unit:'kg',source_file:'Initial workbook.xlsx',sheet:'Table'}}]},{id:'rules',title:'阈值与证伪',items:[{id:'rule',kind:'thresholds',rule:{operator:'>',value_literal:'12',type:'观察位',horizon:'短期'},title:'阈值条件',original_text:'A condition without a unit',status:'pending',requires_binding:false,can_bind:false,can_confirm:false,attention_fields:['condition'],attention_reasons:['原文缺少阈值单位，请补充原文或保留文字。'],warnings:['原文缺少阈值单位，请补充原文或保留文字。']},{id:'note',kind:'text',title:'研究说明',original_text:'Keep this observation',status:'pending',requires_binding:false,can_bind:false,can_confirm:true,warnings:[]}]}],pending_count:3,confirmed_count:0,total:3};
   if(reviewSections){review.sections=JSON.parse(JSON.stringify(reviewSections));review.total=review.sections.flatMap(section=>section.items).length;review.pending_count=review.sections.flatMap(section=>section.items).filter(item=>item.status==='pending').length;}
   if(emptyExcerpt)review.sections[0].items[0].original_text='';
@@ -99,12 +100,14 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
       else if(url.endsWith('/review/update')){
         if(reviewDeferred)await new Promise(resolve=>reviewReplies.push(resolve));
         if(reviewConflict)return {ok:false,status:409,json:async()=>({detail:'来源已改变，请重新分析。'})};
-        if(reviewFailure)return {ok:false,status:422,json:async()=>({detail:{message:'请选择有可核对单位的指标，当前修改已保留。',attention_fields:['binding']}})};
+        if(reviewFailure)return {ok:false,status:422,json:async()=>({detail:{message:'请选择有可核对单位的指标，当前修改已保留。',attention_fields:['binding'],...(typeof reviewFrequencyRequired==='boolean'?{frequency_required:reviewFrequencyRequired}:{})}})};
         const body=JSON.parse(options.body),item=review.sections.flatMap(section=>section.items).find(row=>row.id===body.item_id);
         if(bindingWarning&&body.action==='confirm'&&body.series_id&&body.series_id!==item.binding?.series_id&&body.binding_warning_token!=='synthetic-warning-token')return{ok:false,status:422,json:async()=>({detail:{code:'binding_warning',message:'原绑定单位为kg，所选指标单位为t，两者不一致，不自动换算。是否保留此绑定？',confirmation_token:'synthetic-warning-token',attention_fields:['binding']}})};
         if(body.caliber){item.caliber={...item.caliber,...body.caliber,unit:body.caliber.mode==='catalog'?item.caliber.catalog_unit:body.caliber.unit,confirmed:true,confirmation_required:false};item.binding={...item.binding,unit:item.caliber.unit};item.warnings=[];item.attention_fields=[];}
         item.status={confirm:'confirmed',keep_text:'kept_text',exclude:'excluded'}[body.action];
         if(Object.hasOwn(body,'series_id'))item.binding=body.series_id===null?null:catalog.find(row=>row.series_id===body.series_id)||item.ai_binding;
+        if(Object.hasOwn(body,'related_series_ids'))item.related_bindings=body.related_series_ids.map(identifier=>catalog.find(row=>row.series_id===identifier)||item.related_bindings?.find(row=>row.series_id===identifier)||{series_id:identifier,name:'Synthetic related indicator',unit:'kg'});
+        if(item.can_add_binding)item.bindings=[item.binding,...(item.related_bindings||[])].filter(Boolean);
         if(body.source_quote)item.source_quote=body.source_quote;
         item.remembered=body.remember;review.pending_count=review.sections.flatMap(section=>section.items).filter(row=>row.status==='pending').length;review.confirmed_count=review.sections.flatMap(section=>section.items).filter(row=>row.status==='confirmed').length;if(Object.hasOwn(review,'needs_attention_count'))review.needs_attention_count=review.pending_count;review.revision=++revision;review.draft_id='server-bound-nonce-r'+revision;result=preview();
       }
