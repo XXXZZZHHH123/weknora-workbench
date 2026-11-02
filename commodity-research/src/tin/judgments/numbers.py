@@ -2,6 +2,7 @@
 from decimal import Decimal, DecimalException
 import math
 import re
+import unicodedata
 
 
 NUMBER = r'[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
@@ -17,6 +18,34 @@ _WIDTH = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)}
 _WIDTH.update({0x3000: ord(' '), 0x2212: ord('-')})
 _GROUPED_SPACE = re.compile(r'[0-9]+(?:(?:[\u00a0\u202f\u2009][0-9]+)|(?: +[0-9]{3}))+')
 _ARITHMETIC = re.compile(_GROUPED + r'\s*[*^×÷⁄∕/]\s*' + _GROUPED)
+_CHINESE_DIGITS = {'零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3,
+                   '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+_CHINESE_SCALED = re.compile(_START + r'(?:(?P<coefficient>[' + ''.join(_CHINESE_DIGITS)
+    + r'])\s*)?(?P<scale>万亿|亿|万|千)')
+_CHINESE_CONTINUATIONS = frozenset(_CONNECTORS + '_.,]十百千万亿兆零〇一二两三四五六七八九'
+    '壹贰叁肆伍陆柒捌玖拾佰仟萬億负負正点點之几数多余半')
+_COMPARISON_SUFFIXES = ('及以上', '及以下', '以上', '以下', '以内', '以外')
+_COMPARISON_ARITHMETIC = re.compile('(?:' + '|'.join(_COMPARISON_SUFFIXES)
+    + r')[ \t]*[+-][ \t]*' + _GROUPED)
+
+
+def _obscures_quantity(char):
+    return not char.isprintable() or unicodedata.category(char) in {'Mn', 'Mc', 'Me'}
+
+
+def chinese_quantity_continuation(char):
+    """A preceding numeric/code token cannot be removed from a quoted quantity."""
+    char = _width(char) if isinstance(char, str) else ''
+    return bool(char) and (char.isnumeric() or char.isascii() and char.isalnum()
+        or char in _CHINESE_CONTINUATIONS or _obscures_quantity(char))
+
+
+def starts_chinese_scaled_quantity(text, *, unit=None):
+    if not isinstance(text, str):
+        return False
+    normalized = _width(text).lstrip()
+    match = _CHINESE_SCALED.match(normalized)
+    return match is not None and (unit is None or _complete_quantity_unit(normalized[match.start('scale'):], unit))
 
 
 def _width(text):
@@ -71,8 +100,18 @@ def _unit_boundary(remainder):
     following = remainder.lstrip()
     if not following:
         return True
+    if _obscures_quantity(following[0]):
+        return False
     if following.startswith('· '):
         return True  # Renderer field delimiter, rather than kg·m.
+    for suffix in _COMPARISON_SUFFIXES:
+        if following.startswith(suffix):
+            rest = following[len(suffix):].lstrip()
+            if rest and _obscures_quantity(rest[0]):
+                return False
+            if rest.startswith('· '):
+                return True
+            return not rest or rest[0] not in _CONNECTORS + '%‰‱_'
     if following[0] in '/^*·×÷%‰‱':
         return False
     if remainder[0].isspace():
@@ -80,8 +119,24 @@ def _unit_boundary(remainder):
     return not (remainder[0].isalnum() or remainder[0] == '_')
 
 
+def _complete_quantity_unit(following, unit):
+    expected = _width(unit).strip() if isinstance(unit, str) else ''
+    if not expected or _SCALE.fullmatch(expected):
+        return False
+    following = following.lstrip()
+    if following.startswith(expected) and _unit_boundary(following[len(expected):]):
+        return True
+    scale = _SCALE.match(following)
+    if scale is None:
+        return False
+    remainder = following[scale.end():].lstrip()
+    return remainder.startswith(expected) and _unit_boundary(remainder[len(expected):])
+
+
 def _unit_value(value, tail, unit, units):
     following = tail.lstrip()
+    if following and _obscures_quantity(following[0]):
+        return None
     expected = _width(unit).strip() if isinstance(unit, str) else None
     known = {_width(item).strip() for item in units if isinstance(item, str) and item.strip()}
     known.update({'%', '‰', '‱'})
@@ -172,7 +227,7 @@ def _connected_ranges(text, unit, units, original):
         preceding = original[:match.start()].rstrip()
         after = text[match.end():].lstrip()
         if (not re.compile(_START).match(original, match.start()) or not upper_suffix
-                or preceding and (preceding[-1].isnumeric() or preceding[-1] in _CONNECTORS)
+                or preceding and (preceding[-1].isnumeric() or preceding[-1] in _CONNECTORS + '负負')
                 or after and (after[0].isnumeric() or after[0] in _CONNECTORS)):
             continue
         try:
@@ -224,6 +279,8 @@ def quoted_quantities(quote, *, unit=None, units=()):
         masked[start:end] = ' ' * (end - start)
         if text[end - 1] != ']':
             continue
+        if text[:start].rstrip().endswith(('负', '負')):
+            continue
         members = text[start + 1:end - 1].split(',')
         if len(members) > 32 or any(not _MEMBER.fullmatch(member.strip()) for member in members):
             continue
@@ -234,7 +291,7 @@ def quoted_quantities(quote, *, unit=None, units=()):
         except (ValueError, DecimalException):
             continue
     scalar_text = ''.join(masked)
-    for pattern in (_GROUPED_SPACE, _ARITHMETIC):
+    for pattern in (_GROUPED_SPACE, _ARITHMETIC, _COMPARISON_ARITHMETIC):
         scalar_text = pattern.sub(lambda match: 'x' * len(match[0]), scalar_text)
     scalar_text, range_values = _connected_ranges(scalar_text, unit, units, text)
     values.update(range_values)
@@ -244,7 +301,7 @@ def quoted_quantities(quote, *, unit=None, units=()):
     for pair in _SHARED_UNIT_PAIR.finditer(scalar_text):
         try:
             preceding = text[:pair.start()].rstrip()
-            invalid_start = preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～')
+            invalid_start = preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～负負')
             parsed = [] if invalid_start else [
                 _unit_value(_decimal(member.replace(',', '')), text[pair.end():], unit, units)
                 for member in pair.groups()]
@@ -254,10 +311,23 @@ def quoted_quantities(quote, *, unit=None, units=()):
             pass
         masked[pair.start():pair.end()] = ' ' * (pair.end() - pair.start())
     scalar_text = ''.join(masked)
+    # This grammar reads quantities selected as rule evidence. It neither
+    # chooses a comparison operator nor interprets the research around them.
+    for match in _CHINESE_SCALED.finditer(scalar_text):
+        preceding = text[:match.start()].rstrip()
+        if preceding and chinese_quantity_continuation(preceding[-1]):
+            continue
+        tail = text[match.start('scale'):]
+        if not _complete_quantity_unit(tail, unit):
+            continue
+        coefficient = _CHINESE_DIGITS.get(match['coefficient'], 1)
+        value = _unit_value(Decimal(coefficient), tail, unit, units)
+        if value is not None:
+            values.add(value)
     for match in _SCALAR.finditer(scalar_text):
         try:
             preceding = text[:match.start()].rstrip()
-            if preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～'):
+            if preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～负負'):
                 continue
             value = _unit_value(_decimal(match[0].replace(',', '')), text[match.end():], unit, units)
             if value is not None:

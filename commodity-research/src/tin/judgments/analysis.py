@@ -10,7 +10,8 @@ from pydantic import ValidationError
 from tin.schemas.judgment import EXPRESSION, JudgmentIn, MovingAverageTarget
 from tin.compute.moving_average import sma_source_window
 from tin.judgments.service import _refs
-from tin.judgments.numbers import quoted_quantities, check_rule_number, _SCALAR, _arrays, _width
+from tin.judgments.numbers import (quoted_quantities, check_rule_number, _SCALAR, _arrays, _width,
+    starts_chinese_scaled_quantity, chinese_quantity_continuation)
 from tin.judgments.markdown_protocol import (
     exported_rules, quoted_rule_records, threshold_signature, falsifier_signature,
 )
@@ -93,6 +94,10 @@ def _quote_quantity_context(original, quote, values, unit, units):
         if occurrences > 128:
             return False
         offset = start + 1
+        if starts_chinese_scaled_quantity(quote, unit=unit):
+            preceding = _width(original[:start]).rstrip()
+            if preceding and chinese_quantity_continuation(preceding[-1]):
+                return False
         prefix = _width(original[max(0, start - 1):start])
         if _SCALAR.match(normalized) and not _SCALAR.match(prefix + normalized, len(prefix)):
             return False
@@ -357,9 +362,14 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         if not matches_source or not matches_quote:
             _error('证伪条件与引文所在行明示的指标、比较方式、连续期数、单位或证伪对象不一致，或引文多处定位不一致，未执行',
                    'falsifier_source_mismatch', f'/judgment/falsifiers/{index}')
-        if not match or Decimal(match.group(3)) not in source_numbers or (
-                rule.consecutive_periods > 1 and Decimal(rule.consecutive_periods) not in period_numbers):
-            _error('证伪数字、单位或连续期数无法从原文依据核验', 'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
+        if not match or Decimal(match.group(3)) not in source_numbers:
+            value = match.group(3) if match else rule.expression
+            unit = known[rule.series_id].get('unit') or '单位未确认'
+            _error(f'证伪数字{value}（{unit}）暂不能从原文依据核验。确认单位不能代替数值核对，请核对原文中的数量与倍率。',
+                   'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
+        if rule.consecutive_periods > 1 and Decimal(rule.consecutive_periods) not in period_numbers:
+            _error(f'原文依据暂不能核验连续{rule.consecutive_periods}期，请核对原文中的连续次数或统计周期。',
+                   'number_not_in_source', f'/judgment/falsifiers/{index}/consecutive_periods')
         if not _quote_quantity_context(original, quotes[rule.id], [Decimal(match.group(3))],
                 known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]) or (
                 rule.consecutive_periods > 1 and not _quote_quantity_context(

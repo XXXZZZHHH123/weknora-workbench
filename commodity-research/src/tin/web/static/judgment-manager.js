@@ -579,7 +579,7 @@
       reviewEdits.delete(item.id); presentDraft(result, true);
     } catch (error) {
       if (error.status === 409) { invalidate(); inform(error.message, true); }
-      else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; if (caliber) edit.errorFields = [...new Set([...edit.errorFields, 'caliber'])]; edit.renderErrors?.(); inform(''); }
+      else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; if (caliber && !Array.isArray(error.fields)) edit.errorFields = [...new Set([...edit.errorFields, 'caliber'])]; edit.renderErrors?.(); inform(''); }
     } finally { if (!holdBusy) setBusy(false); }
   }
   async function open(requestedJob) {
