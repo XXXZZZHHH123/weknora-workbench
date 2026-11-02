@@ -1070,6 +1070,24 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 	}
 	if data["source_kind"] == "pdf_table" {
 		pdfLabels(data)
+		// Read-table values are actual source cells, including text labels in
+		// tables whose header row was intentionally preserved as data. Only
+		// the complete nonnumeric label is an identity; its digits never gain
+		// authority as a bare measurement. SQL-generated strings, provenance
+		// text, raw values and failed reads cannot establish these identities.
+		if data["kind"] == "structured_source_inspection" && data["status"] == "ok" {
+			if rows, ok := data["rows"].([]any); ok {
+				for _, raw := range rows {
+					if row, ok := raw.(map[string]any); ok {
+						if values, ok := row["values"].(map[string]any); ok {
+							for _, value := range values {
+								add(value)
+							}
+						}
+					}
+				}
+			}
+		}
 		return
 	}
 	var catalogue func(any)
@@ -1198,7 +1216,11 @@ func maskExactSourceIdentity(answer, label string) string {
 			break
 		}
 		end := index + len(label)
-		bounded := !(index > 0 && asciiWord(answer[index-1]) && asciiWord(label[0])) && !(end < len(answer) && asciiWord(answer[end]) && asciiWord(label[len(label)-1]))
+		// A numeric label can end or begin with punctuation (for example a
+		// category code ending in '+'). Adjacent ASCII identifiers still
+		// extend that token; a separately grounded suffix must not turn a
+		// forged composite identity into a valid one.
+		bounded := !(index > 0 && asciiWord(answer[index-1])) && !(end < len(answer) && asciiWord(answer[end]))
 		out.WriteString(answer[:index])
 		if bounded {
 			out.WriteByte(' ')

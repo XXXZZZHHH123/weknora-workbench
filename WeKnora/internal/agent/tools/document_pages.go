@@ -11,9 +11,10 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
-// Markitdown's slide comment is the canonical PPT source boundary. Headings
-// support other readers, but a bare mention of a page in body text is not one.
-var documentPageMarker = regexp.MustCompile(`(?im)^\s*(?:<!--\s*(?:slide number|page)\s*:\s*([1-9][0-9]*)\s*-->|#{1,6}\s*(?:第\s*([1-9][0-9]*)\s*页|(?:slide|page)\s+([1-9][0-9]*))[^\n]*)`)
+// Remote PDF emits "PDF page N" while Markitdown emits "Slide number: N".
+// These parser boundaries and explicit headings are navigation metadata;
+// ordinary body mentions and printed page labels are not physical boundaries.
+var documentPageMarker = regexp.MustCompile(`(?im)^\s*(?:<!--\s*(?:(?:slide number|page)\s*:\s*|PDF[ \t]+page[ \t]+)([1-9][0-9]*)\s*-->|#{1,6}\s*(?:第\s*([1-9][0-9]*)\s*页|(?:slide|page)\s+([1-9][0-9]*))[^\n]*)`)
 
 var imageSourcePageMarker = regexp.MustCompile(`(?im)(?:^\s*|来源[:：]\s*)第\s*([1-9][0-9]*)\s*页`)
 

@@ -173,7 +173,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def list_datasets(question: str | None = None) -> dict:
-        """列出已完成的Excel数据集、文件版本及支持/排除区域。同名文件默认选is_latest_for_source=true；用户指定历史版本时按指定版本。不把旧数据当实时行情。"""
+        """列出已完成的Excel数据集及当前已发布PDF表目录。datasets仅指Excel，pdf_tables才是PDF；Excel为空不表示没有PDF数据。PDF入库状态以当前目录为准，旧文档索引的待审/仅字段说明可能过时。先据完整问题选候选，再read_pdf_table核实列、单位、原值。"""
         # Historical versions need identity metadata, not repeated full coverage
         # inventories. Keep the management API's full report unchanged.
         directory_started = time.perf_counter()
@@ -199,10 +199,12 @@ def create_app(data_dir: str | Path | None = None):
         logger.info('structured list_datasets directory_complete elapsed_ms=%d datasets=%d latest=%d',
                     round((time.perf_counter()-directory_started)*1000), len(datasets), latest_count)
         result={"datasets": datasets}
-        pdf_catalog = pdf_store(registry).list_tables()['tables']
+        pdf_directory = pdf_store(registry).list_tables(discovery=True, samples=False)
+        pdf_catalog = pdf_directory['tables']
         if pdf_catalog:
             result['pdf_tables'] = pdf_catalog
-            result['pdf_notice'] = 'PDF 表的 status=auto_accepted 表示自动校验入库，status=reviewed 表示人工确认；用 list_pdf_tables/read_pdf_table/query_pdf_table 核验和计算。保留原页出处，识别正确性与整份文档覆盖未自动保证。'
+            result['pdf_notice'] = pdf_directory['directory_notice']
+            result['pdf_table_count'] = pdf_directory['total_table_count']
         if question:
             from .field_index import literal_fields
             matches=[]
@@ -347,13 +349,13 @@ def create_app(data_dir: str | Path | None = None):
             return {'kind':'structured_analysis','status':'error','error':str(exc),'retryable':True,'next_step':'修正SQL或输入范围；这是系统反馈，不是字段确认请求'}
 
     @mcp.tool()
-    def list_pdf_tables(source_sha256: str | None = None) -> dict:
-        """列出当前授权空间已入库的 PDF 逻辑表、真实 table_id、列类型/单位及覆盖。草稿不参与查询。模型根据完整问题与实际标题/列/来源选择表，不按页相邻或列数推定同表；多个表可能重叠，不能重复累计。"""
-        return {**pdf_store(registry).list_tables(source_sha256), 'source_kind': 'pdf_table', 'kind': 'structured_pdf_tables', 'status': 'ok'}
+    def list_pdf_tables(source_sha256: str | None = None, offset: int = 0, limit: int = 8) -> dict:
+        """分页列出当前授权空间已发布的PDF表、真实ID、列类型/单位、页来源和前两行导航样例。默认8表，output_truncated=true时按next_offset继续；可用真实source_sha256限定原件。reviewed和auto_accepted均已入库，旧文档待审说明不代表当前状态，extraction_verified=false仅表示非独立OCR验真。历史警告与当前未解决警告分开。样例仅供理解通用列名，不能替代read_pdf_table原值/来源和query_pdf_table计算；不能按相邻页或列数猜测合表、重复累计或跳过覆盖检查。草稿不参与查询。"""
+        return {**pdf_store(registry).list_tables(source_sha256, discovery=True, offset=offset, limit=limit), 'source_kind': 'pdf_table', 'kind': 'structured_pdf_tables', 'status': 'ok'}
 
     @mcp.tool()
     def read_pdf_table(table_id: str, offset: int = 0, limit: int = 100) -> dict:
-        """按实际 table_id 分页核对 PDF 逻辑表，返回原值、列映射、每格页码/坐标和跨页来源。output_truncated 表示还需翻页，空值不补零。review_status=auto_accepted 表示自动校验入库，reviewed 表示映射经人工确认；两者都不保证 OCR 正确或整篇覆盖。"""
+        """按实际 table_id 分页核对PDF逻辑表，返回原值、真实列、每格页码/坐标和跨页来源。output_truncated=true时按next_offset或offset加实际返回行数继续，不能按请求limit假定已读完；空值不补零。review_status=auto_accepted/reviewed均已入库，非OCR独立验真。metadata_projection表示为输出预算省略plan及历史诊断副本，原值/来源和当前未解决风险仍保留，不能忽略单位/覆盖或当成整篇完整。"""
         result = pdf_store(registry).read_table(table_id, offset=offset, limit=limit)
         verify_pdf_original(registry, result['source'])
         return {**result, 'kind': 'structured_source_inspection', 'source_kind': 'pdf_table', 'status': 'ok', 'review_status': result['status']}

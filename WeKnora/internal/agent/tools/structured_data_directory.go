@@ -1,0 +1,155 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"unicode/utf8"
+
+	"github.com/Tencent/WeKnora/internal/types"
+)
+
+// fitStructuredDirectory preserves JSON records and explicit continuation
+// instead of letting the registry cut a source identity in the middle. Only
+// directories and read pagination are projected; cell values/source references
+// and calculation results are never shortened or rewritten.
+func fitStructuredDirectory(ctx context.Context, operation string, result *types.ToolResult) *types.ToolResult {
+	if result == nil || !result.Success || result.Data == nil || (operation != "list_datasets" && operation != "list_pdf_tables" && operation != "read_pdf_table") {
+		return result
+	}
+	budget := OutputBudget(ctx)
+	if result.Output != "" && utf8.RuneCountInString(result.Output) <= budget {
+		return result
+	}
+	encoded, err := json.Marshal(result.Data)
+	if err != nil {
+		return result
+	}
+	var data map[string]any
+	if json.Unmarshal(encoded, &data) != nil {
+		return result
+	}
+	// The authenticated context is attached to Data for application use, not
+	// injected into the model-visible service response. Preserve that contract
+	// both when projecting and when no projection is needed.
+	var originalOutput map[string]any
+	_ = json.Unmarshal([]byte(result.Output), &originalOutput)
+	_, contextWasVisible := originalOutput["source_context"]
+	if !contextWasVisible {
+		delete(data, "source_context")
+	}
+	render := func() bool { encoded, err = json.Marshal(data); return err == nil && utf8.RuneCount(encoded) <= budget }
+	if render() {
+		copy := *result
+		copy.Output = string(encoded)
+		return &copy
+	}
+	if operation == "read_pdf_table" {
+		// The immutable plan and historic issue coordinates are already
+		// represented by hashes/current coverage; repeating them can consume
+		// the whole budget before the first actual source cell is visible.
+		delete(data, "plan")
+		if coverage, ok := data["coverage"].(map[string]any); ok {
+			if issues := structuredRecallRows(coverage["quality_issues"]); len(issues) > 0 {
+				codes := []any{}
+				seen := map[string]bool{}
+				for _, issue := range issues {
+					code, _ := issue["code"].(string)
+					if !seen[code] {
+						codes = append(codes, code)
+						seen[code] = true
+					}
+				}
+				coverage["original_quality_issue_count"], coverage["original_quality_issue_codes"] = len(issues), codes
+				delete(coverage, "quality_issues")
+			}
+		}
+		data["metadata_projection"] = "Plan and historic issue details omitted to preserve complete source rows; hashes and current unresolved/coverage states retained."
+		rows := structuredRecallRows(data["rows"])
+		data["rows"] = rows
+		offset, _ := data["offset"].(float64)
+		data["returned_row_count"] = len(rows)
+		if truncated, _ := data["output_truncated"].(bool); truncated {
+			data["next_offset"] = int(offset) + len(rows)
+		}
+		for !render() && len(rows) > 0 {
+			rows = rows[:len(rows)-1]
+			data["rows"], data["output_truncated"], data["next_offset"] = rows, true, int(offset)+len(rows)
+			data["returned_row_count"] = len(rows)
+		}
+		if len(rows) == 0 {
+			data = map[string]any{"status": "source_row_output_budget_exceeded", "output_truncated": true, "table_id": result.Data["table_id"], "offset": result.Data["offset"], "next_step": "No source row fits this output budget. Use query_pdf_table to select the needed real columns and _row_id, or increase the tool output budget; no absence or complete input is established."}
+		}
+	} else if operation == "list_pdf_tables" {
+		rows := structuredRecallRows(data["tables"])
+		// Navigation samples are optional, unlike table identity and current state.
+		for _, row := range rows {
+			delete(row, "sample_rows")
+			row["sample_rows_truncated"] = true
+		}
+		data["tables"] = rows
+		offset, _ := data["offset"].(float64)
+		for !render() && len(rows) > 1 {
+			rows = rows[:len(rows)-1]
+			data["tables"], data["output_truncated"], data["next_offset"] = rows, true, int(offset)+len(rows)
+		}
+		if !render() && len(rows) == 1 {
+			// A single unusually wide table still has a recoverable navigation entry.
+			original := rows[0]
+			stub := map[string]any{"table_id": original["table_id"], "status": original["status"], "publication_status": original["publication_status"], "directory_metadata_truncated": true, "next_operation": "read_pdf_table"}
+			data["tables"] = []map[string]any{stub}
+			if more, _ := data["output_truncated"].(bool); more {
+				data["next_offset"] = int(offset) + 1
+			}
+			delete(data, "directory_notice")
+		}
+	} else {
+		catalogs := structuredRecallRows(data["knowledge_base_catalogs"])
+		trimPDF := func(row map[string]any) bool {
+			rows := structuredRecallRows(row["pdf_tables"])
+			if len(rows) == 0 {
+				return false
+			}
+			row["pdf_tables"] = rows[:len(rows)-1]
+			row["pdf_tables_truncated"] = true
+			row["pdf_catalog_next_operation"] = "list_pdf_tables"
+			data["pdf_tables_truncated"] = true
+			return true
+		}
+		if len(catalogs) > 0 {
+			data["knowledge_base_catalogs"] = catalogs
+			for !render() {
+				changed := false
+				// Share the remaining budget across libraries; selection stays with the
+				// model and uses full question/context, never question-token heuristics.
+				for _, row := range catalogs {
+					if !render() && trimPDF(row) {
+						changed = true
+					}
+				}
+				if !changed {
+					break
+				}
+			}
+		} else {
+			for !render() && trimPDF(data) {
+			}
+		}
+	}
+	if !render() {
+		data = map[string]any{"status": "directory_output_budget_exceeded", "output_truncated": true,
+			"next_step": "Use an authorized knowledge_base_id and list_pdf_tables with limit:1; absence has not been established."}
+		if scope, ok := result.Data["source_context"]; ok && contextWasVisible {
+			data["source_context"] = scope
+		}
+		if !render() {
+			data = map[string]any{"status": "directory_output_budget_exceeded", "output_truncated": true}
+			render()
+		}
+	}
+	copy := *result
+	if scope, ok := result.Data["source_context"]; ok && !contextWasVisible {
+		data["source_context"] = scope
+	}
+	copy.Output, copy.Data = string(encoded), data
+	return &copy
+}

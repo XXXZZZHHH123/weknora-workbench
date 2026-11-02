@@ -167,7 +167,7 @@ const (
 	maxRecallKnowledgeBases     = 32
 	maxRecallFieldsPerKnowledge = 16
 	maxRecallFieldsAcrossScopes = 64
-	maxRecallPDFsPerKnowledge   = 16
+	maxRecallPDFsPerKnowledge   = 32
 	maxRecallPDFsAcrossScopes   = 64
 )
 
@@ -230,10 +230,16 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 		// the model can choose a source from evidence, not a guessed filename.
 		pdfTables := structuredRecallRows(result.Data["pdf_tables"])
 		row["pdf_table_count"] = len(pdfTables)
+		if total, ok := result.Data["pdf_table_count"]; ok {
+			row["pdf_table_count"] = total
+		}
 		pdfLimit := min(maxRecallPDFsPerKnowledge, maxRecallPDFsAcrossScopes-pdfTablesListed)
-		pdfTruncated := len(pdfTables) > pdfLimit
-		if pdfTruncated {
+		alreadyTruncated, _ := result.Data["pdf_tables_truncated"].(bool)
+		pdfTruncated := len(pdfTables) > pdfLimit || alreadyTruncated
+		if len(pdfTables) > pdfLimit {
 			pdfTables = pdfTables[:pdfLimit]
+		}
+		if pdfTruncated {
 			pdfTablesTruncated = true
 		}
 		if pdfTables == nil {
@@ -276,7 +282,7 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 	data["literal_field_count"] = len(fields)
 	data["literal_fields_truncated"] = fieldsTruncated
 	data["pdf_tables_truncated"] = pdfTablesTruncated
-	data["scope_notice"] = "已在授权知识库中查询 Excel 数据集、已确认 PDF 表目录与真实表头字面召回。datasets 仅为 Excel；PDF 表见各库 pdf_tables，空 Excel 目录不表示该库没有 PDF 表。literal_fields 和 PDF 标题、列、页来源均是候选证据，不是口径选择：依据完整问题、对话和真实来源选择知识库与表，后续操作在顶层传 knowledge_base_id（与 operation、arguments 同级）。PDF 用 read_pdf_table 核对原值、query_pdf_table 计算；pdf_tables_truncated=true 时用该库 list_pdf_tables 读取完整目录。某库 catalog_status=unavailable 或目录截断时，不能据此判断来源不存在；人工确认映射不保证 OCR 正确或整篇覆盖。"
+	data["scope_notice"] = "已查询授权知识库的当前 Excel/PDF 目录。datasets 仅为 Excel；PDF 表见 pdf_tables，空 Excel 目录不表示没有 PDF 数据。PDF reviewed/auto_accepted 均已发布，旧文档索引的待审/仅字段说明可能过时，不能替代当前目录或据此宣称未入库；extraction_verified=false 不表示未入库。literal_fields、标题、列、页来源和目录样例仅为候选证据：按完整问题和对话选择库与表，在顶层传 knowledge_base_id。用 read_pdf_table 核对原值、真实列名/单位与来源，再 query_pdf_table 计算。pdf_tables_truncated=true 时用该库 list_pdf_tables 并按 next_offset 翻页；目录不可用或截断不能证明来源不存在。人工确认不保证 OCR 正确或整篇覆盖，保留所有质量/覆盖检查。"
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		return nil

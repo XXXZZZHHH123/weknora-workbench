@@ -652,3 +652,50 @@ def test_draft_catalog_uses_persisted_save_time_without_rewriting_evidence(tmp_p
     assert records[0]['created_at'] == datetime.fromtimestamp(1000000100, timezone.utc).isoformat()
     assert [p.read_bytes() for p in paths] == original
     assert store.read_draft(first['draft_id'])['bundle'] == bundle()
+
+
+def test_discovery_directory_separates_published_state_from_original_warnings(tmp_path):
+    raw = bundle([['District', 'Volume'], ['North', '17'], ['South', '23']])
+    raw['fragments'][0]['quality'] = dict(status='needs_review', issues=[
+        dict(code='uncertain_fixture', message='original diagnostic ' * 1000)])
+    store, draft, plan = setup(tmp_path, raw, header_rows={'table-1': []}, types=('text', 'text'))
+    plan['quality_reviews'] = [dict(fragment_id='table-1', issue_index=0, reason='Explicit original review')]
+    published = publish(store, draft, plan)
+    before = store.read_table(published['table_id'])
+    catalog = store.list_tables(discovery=True)
+    item = catalog['tables'][0]
+    assert item['publication_status'] == 'published' and item['status'] == 'reviewed'
+    assert not item['extraction_verified']
+    assert item['coverage']['original_quality_issue_count'] == 1
+    assert item['coverage']['original_quality_issue_codes'] == ['uncertain_fixture']
+    assert item['coverage']['unresolved_quality_issues'] == []
+    assert 'quality_issues' not in item['coverage']
+    assert item['sample_rows'][0]['raw_values'] == {'col0': 'District', 'col1': 'Volume'}
+    assert item['sample_rows'][0]['_row_id'] == before['rows'][0]['_row_id']
+    assert item['sample_rows_truncated']
+    assert item['columns'][0]['name'] == 'col0'  # no invented header mapping
+    assert item['record_sha256'] == before['record_sha256']
+    assert item['plan_sha256'] == before['plan_sha256']
+    assert item['source'] == before['source']
+    assert item['fragments'][0]['page'] == 1
+    assert store.read_table(published['table_id']) == before
+    assert store.list_tables()['tables'][0]['coverage']['quality_issues'][0]['message'] == 'original diagnostic ' * 1000
+    assert 'sample_rows' not in store.list_tables(discovery=True, samples=False)['tables'][0]
+
+
+def test_discovery_directory_pagination_keeps_all_published_identities(tmp_path):
+    store, draft, plan = setup(tmp_path)
+    for i in range(10):
+        publish(store, draft, dict(plan, title=f'Independent fixture revision {i}'))
+    # Browser management remains unpaginated; tool discovery is explicit.
+    expected = [table['table_id'] for table in store.list_tables()['tables']]
+    first = store.list_tables(discovery=True, limit=8)
+    assert first['total_table_count'] == 10 and first['output_truncated']
+    assert first['next_offset'] == 8
+    second = store.list_tables(discovery=True, offset=first['next_offset'], limit=8)
+    assert not second['output_truncated'] and second['next_offset'] is None
+    assert [table['table_id'] for table in first['tables'] + second['tables']] == expected
+    assert store.list_tables(discovery=True, offset=10, limit=8)['tables'] == []
+    for args in ({'offset': -1}, {'limit': 0}, {'limit': 33}, {'offset': True}):
+        with pytest.raises(ValueError, match='offset/limit'):
+            store.list_tables(discovery=True, **args)
