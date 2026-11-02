@@ -162,9 +162,10 @@
     $('mappingFeedback').textContent='已撤销上一次映射修改。';
   }
   async function timedApi(path,options={},controller=new AbortController(),ms=30000,requestApi=api) {
-    const timer=setTimeout(()=>controller.abort(),ms);
+    let timedOut=false;
+    const timer=setTimeout(()=>{timedOut=true;controller.abort();},ms);
     try{return await requestApi(path,{...options,signal:controller.signal});}
-    catch(e){if(e.name==='AbortError')throw Error('请求已取消或超时，请重试。');throw e;}
+    catch(e){if(e.name==='AbortError'&&timedOut)throw Error('请求超时，请重试。');throw e;}
     finally{clearTimeout(timer);}
   }
   const enabledBlocks = () => (ui.mapping?.blocks||[]).filter(b=>ui.states[b._review_id]?.enabled);
@@ -986,7 +987,7 @@
     if($('aiJobPanel'))$('aiJobPanel').hidden=true;
   };
   window.addEventListener('pagehide',()=>{if(ui.activeAIJob)cancelActiveAIJob('关闭页面',{keepalive:true});});
-  function noteError(e){if($('viewWarning'))$('viewWarning').textContent=e.message;else note(e.message);}
+  function noteError(e){if(e.name==='AbortError')return;if($('viewWarning'))$('viewWarning').textContent=e.message;else note(e.message);}
   // Expose pure coordinate helpers for fixture-based UI validation.
   window.sheetReviewHelpers={colName,colIndex,cellPoint,hitBlock,parseRange,clean};
 })();
