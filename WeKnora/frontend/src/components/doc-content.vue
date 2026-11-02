@@ -2237,7 +2237,7 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
       attach="body" :z-index="2300" :close-on-overlay-click="false" @close="pdfReviewOpen = false">
       <div class="pdf-review-dialog">
         <p class="pdf-review-dialog__note">
-          请逐项核对原 PDF、单元格、单位与跨页边界。识别线索仍需人工检查，公式不会执行；确认发布表示人工检查过映射，不代表 OCR 准确率已验证。
+          无疑点的表格自动入库；有疑点时，对照原件修改后确认入库。
         </p>
         <div class="pdf-review-dialog__frame">
           <KnowledgeStructuredFrame v-if="pdfReviewOpen" :key="pdfReviewKey" :knowledge-base-id="String(kbId || '')"

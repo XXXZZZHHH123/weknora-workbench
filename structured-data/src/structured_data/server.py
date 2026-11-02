@@ -39,6 +39,15 @@ from .progress import progress_value
 MAX_UPLOAD = 100 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
+# Tool-view semantics only; never added to immutable extraction/published
+# records, whose plan/source fingerprints must remain unchanged.
+PDF_EVIDENCE_CONTRACT = {
+    'mapping': 'coverage.header_row_count counts plan-selected header rows; zero does not mean no printed header.',
+    'page_context': 'Extracted page text, not visual inspection or a bound table note. Its issues/quality are historical extraction observations.',
+    'review': 'review_status and coverage.unresolved_quality_issues describe current review state. Reviewed is not OCR ground truth; historical flags alone do not reopen review.',
+    'scope': 'Additional scope or layout claims need evidence bound to this table/metric; same-file terminology does not establish shared scope.',
+}
+
 
 class _ResearchFactsJSONResponse(JSONResponse):
     """Encode the already-validated facts document once in its worker thread."""
@@ -173,7 +182,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def list_datasets(question: str | None = None) -> dict:
-        """列出已完成的Excel数据集、文件版本及支持/排除区域。同名文件默认选is_latest_for_source=true；用户指定历史版本时按指定版本。不把旧数据当实时行情。"""
+        """列出已完成的Excel数据集及当前已发布PDF表目录。datasets仅指Excel，pdf_tables才是PDF；Excel为空不表示没有PDF数据。PDF入库状态以当前目录为准，旧文档索引的待审/仅字段说明可能过时。先据完整问题选候选，再read_pdf_table核实列、单位、原值。"""
         # Historical versions need identity metadata, not repeated full coverage
         # inventories. Keep the management API's full report unchanged.
         directory_started = time.perf_counter()
@@ -199,10 +208,12 @@ def create_app(data_dir: str | Path | None = None):
         logger.info('structured list_datasets directory_complete elapsed_ms=%d datasets=%d latest=%d',
                     round((time.perf_counter()-directory_started)*1000), len(datasets), latest_count)
         result={"datasets": datasets}
-        pdf_catalog = pdf_store(registry).list_tables()['tables']
+        pdf_directory = pdf_store(registry).list_tables(discovery=True, samples=False)
+        pdf_catalog = pdf_directory['tables']
         if pdf_catalog:
             result['pdf_tables'] = pdf_catalog
-            result['pdf_notice'] = 'PDF 表的 status=auto_accepted 表示自动校验入库，status=reviewed 表示人工确认；用 list_pdf_tables/read_pdf_table/query_pdf_table 核验和计算。保留原页出处，识别正确性与整份文档覆盖未自动保证。'
+            result['pdf_notice'] = pdf_directory['directory_notice']
+            result['pdf_table_count'] = pdf_directory['total_table_count']
         if question:
             from .field_index import literal_fields
             matches=[]
@@ -347,24 +358,27 @@ def create_app(data_dir: str | Path | None = None):
             return {'kind':'structured_analysis','status':'error','error':str(exc),'retryable':True,'next_step':'修正SQL或输入范围；这是系统反馈，不是字段确认请求'}
 
     @mcp.tool()
-    def list_pdf_tables(source_sha256: str | None = None) -> dict:
-        """列出当前授权空间已入库的 PDF 逻辑表、真实 table_id、列类型/单位及覆盖。草稿不参与查询。模型根据完整问题与实际标题/列/来源选择表，不按页相邻或列数推定同表；多个表可能重叠，不能重复累计。"""
-        return {**pdf_store(registry).list_tables(source_sha256), 'source_kind': 'pdf_table', 'kind': 'structured_pdf_tables', 'status': 'ok'}
+    def list_pdf_tables(source_sha256: str | None = None, offset: int = 0, limit: int = 8) -> dict:
+        """分页列出当前授权空间已发布的PDF表、真实ID、列类型/单位、页来源和前两行导航样例。默认8表，output_truncated=true时按next_offset继续；可用真实source_sha256限定原件。reviewed和auto_accepted均已入库，旧文档待审说明不代表当前状态，extraction_verified=false仅表示非独立OCR验真。历史警告与当前未解决警告分开。样例仅供理解通用列名，不能替代read_pdf_table原值/来源和query_pdf_table计算；不能按相邻页或列数猜测合表、重复累计或跳过覆盖检查。草稿不参与查询。"""
+        return {**pdf_store(registry).list_tables(source_sha256, discovery=True, offset=offset, limit=limit), 'source_kind': 'pdf_table', 'kind': 'structured_pdf_tables', 'status': 'ok'}
 
     @mcp.tool()
     def read_pdf_table(table_id: str, offset: int = 0, limit: int = 100) -> dict:
-        """按实际 table_id 分页核对 PDF 逻辑表，返回原值、列映射、每格页码/坐标和跨页来源。output_truncated 表示还需翻页，空值不补零。review_status=auto_accepted 表示自动校验入库，reviewed 表示映射经人工确认；两者都不保证 OCR 正确或整篇覆盖。"""
+        """按实际 table_id 分页核对PDF逻辑表，返回原值、真实列、每格页码/坐标和跨页来源。output_truncated=true时按next_offset或offset加实际返回行数继续。pdf_evidence_contract限定元数据含义：header_row_count是映射计划选中表头行数，不能推断原件无表头；page_context为页候选转录，非实际看图或自动绑定的表注，issues/quality是历史提取观察；当前核对状态见review_status/unresolved_quality_issues。只回答问题所需且有实际表/格证据的事实，附加范围和版面断言无绑定证据则省略。reviewed不是独立OCR验真，metadata_projection也不改变原值/来源或当前覆盖限制。"""
         result = pdf_store(registry).read_table(table_id, offset=offset, limit=limit)
         verify_pdf_original(registry, result['source'])
-        return {**result, 'kind': 'structured_source_inspection', 'source_kind': 'pdf_table', 'status': 'ok', 'review_status': result['status']}
+        return {**result, 'kind': 'structured_source_inspection', 'source_kind': 'pdf_table', 'status': 'ok',
+                'review_status': result['status'], 'pdf_evidence_contract': dict(PDF_EVIDENCE_CONTRACT)}
 
     @mcp.tool()
     async def query_pdf_table(table_id: str, sql: str, limit: int = 100) -> dict:
-        """对已入库 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID 和列名；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源/单位构造 SQL，程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。公式保留不等于可执行。"""
+        """对已入库 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID 和列名；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源/单位构造 SQL，程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。pdf_evidence_contract区分当前审校与历史页提取观察；附加统计范围/版面事实须绑定实际表或单元格，缺依据则省略。公式保留不等于可执行。"""
         def run():
             selected = pdf_store(registry)
-            verify_pdf_original(registry, selected.read_table(table_id, limit=1)['source'])
-            return {**selected.query(table_id, sql, limit=limit), 'source_kind': 'pdf_table'}
+            original = selected.read_table(table_id, limit=1)
+            verify_pdf_original(registry, original['source'])
+            return {**selected.query(table_id, sql, limit=limit), 'source_kind': 'pdf_table',
+                    'review_status': original['status'], 'pdf_evidence_contract': dict(PDF_EVIDENCE_CONTRACT)}
         try:
             return await run_in_threadpool(run)
         except ValueError as exc:

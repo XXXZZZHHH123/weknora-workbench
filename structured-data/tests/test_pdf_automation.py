@@ -71,6 +71,10 @@ def test_partial_success_persists_and_retry_skips_accepted_tables(tmp_path, monk
     assert result['accepted_count'] == 1 and result['attention_count'] == 1
     assert len(store.list_tables()['tables']) == 1
     assert len(snapshots) >= 3
+    pending = result['groups'][1]
+    assert pending['plan']['fragment_ids'] == ['table-2']
+    assert pending['plan']['columns'][1]['source_columns'] == {'table-2': 1}
+    assert 'quality_reviews' not in pending['plan']
     calls.clear()
     again = process_draft(store, draft['draft_id'], tmp_path, previous=result, save=lambda s: None)
     assert calls == []  # source review is not repaired by repeating the same model call
@@ -129,3 +133,19 @@ def test_unknown_failure_does_not_guess_model_configuration():
     problem = processing_problem(RuntimeError('secret'), stage='grouping')
     assert problem['code'] == 'PROCESSING_FAILED'
     assert problem['action'] == 'retry' and 'secret' not in str(problem)
+
+
+def test_review_preserves_validated_horizontal_plan_and_units(tmp_path, monkeypatch):
+    from test_pdf_tables import horizontal_setup
+    store, draft, plan = horizontal_setup(tmp_path, unlabeled=True)
+    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', lambda *args: [
+        {'fragment_ids': plan['fragment_ids'], 'reason': 'source continuation'}])
+    monkeypatch.setattr('structured_data.pdf_api.suggest_plan', lambda *args: {'status': 'ready', 'plan': deepcopy(plan)})
+    result = process_draft(store, draft['draft_id'], tmp_path, save=lambda state: None)
+    group = result['groups'][0]
+    assert group['status'] == 'needs_attention'
+    assert group['plan'] == plan
+    assert group['plan']['columns'][2]['unit'] == '%'
+    assert group['plan']['row_groups'] == plan['row_groups']
+    assert any(issue['code'] == 'row_alignment_unverified' for issue in group['issues'])
+    assert not store.list_tables()['tables']

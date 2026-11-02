@@ -652,3 +652,84 @@ def test_draft_catalog_uses_persisted_save_time_without_rewriting_evidence(tmp_p
     assert records[0]['created_at'] == datetime.fromtimestamp(1000000100, timezone.utc).isoformat()
     assert [p.read_bytes() for p in paths] == original
     assert store.read_draft(first['draft_id'])['bundle'] == bundle()
+
+
+def test_discovery_directory_separates_published_state_from_original_warnings(tmp_path):
+    raw = bundle([['District', 'Volume'], ['North', '17'], ['South', '23']])
+    raw['fragments'][0]['quality'] = dict(status='needs_review', issues=[
+        dict(code='uncertain_fixture', message='original diagnostic ' * 1000)])
+    store, draft, plan = setup(tmp_path, raw, header_rows={'table-1': []}, types=('text', 'text'))
+    plan['quality_reviews'] = [dict(fragment_id='table-1', issue_index=0, reason='Explicit original review')]
+    published = publish(store, draft, plan)
+    before = store.read_table(published['table_id'])
+    catalog = store.list_tables(discovery=True)
+    item = catalog['tables'][0]
+    assert item['publication_status'] == 'published' and item['status'] == 'reviewed'
+    assert not item['extraction_verified']
+    assert item['coverage']['original_quality_issue_count'] == 1
+    assert item['coverage']['original_quality_issue_codes'] == ['uncertain_fixture']
+    assert item['coverage']['unresolved_quality_issues'] == []
+    assert 'quality_issues' not in item['coverage']
+    assert item['sample_rows'][0]['raw_values'] == {'col0': 'District', 'col1': 'Volume'}
+    assert item['sample_rows'][0]['_row_id'] == before['rows'][0]['_row_id']
+    assert item['sample_rows_truncated']
+    assert item['columns'][0]['name'] == 'col0'  # no invented header mapping
+    assert item['record_sha256'] == before['record_sha256']
+    assert item['plan_sha256'] == before['plan_sha256']
+    assert item['source'] == before['source']
+    assert item['fragments'][0]['page'] == 1
+    assert store.read_table(published['table_id']) == before
+    assert store.list_tables()['tables'][0]['coverage']['quality_issues'][0]['message'] == 'original diagnostic ' * 1000
+    assert 'sample_rows' not in store.list_tables(discovery=True, samples=False)['tables'][0]
+
+
+def test_discovery_directory_pagination_keeps_all_published_identities(tmp_path):
+    store, draft, plan = setup(tmp_path)
+    for i in range(10):
+        publish(store, draft, dict(plan, title=f'Independent fixture revision {i}'))
+    # Browser management remains unpaginated; tool discovery is explicit.
+    expected = [table['table_id'] for table in store.list_tables()['tables']]
+    first = store.list_tables(discovery=True, limit=8)
+    assert first['total_table_count'] == 10 and first['output_truncated']
+    assert first['next_offset'] == 8
+    second = store.list_tables(discovery=True, offset=first['next_offset'], limit=8)
+    assert not second['output_truncated'] and second['next_offset'] is None
+    assert [table['table_id'] for table in first['tables'] + second['tables']] == expected
+    assert store.list_tables(discovery=True, offset=10, limit=8)['tables'] == []
+    for args in ({'offset': -1}, {'limit': 0}, {'limit': 33}, {'offset': True}):
+        with pytest.raises(ValueError, match='offset/limit'):
+            store.list_tables(discovery=True, **args)
+
+
+def test_discovery_navigation_omits_unselected_scope_notes_without_mutating_sources(tmp_path):
+    raw = bundle([['Item', 'Amount'], ['A', '17']], [['Item', 'Amount'], ['B', '23']])
+    for index, fragment in enumerate(raw['fragments']):
+        fragment['caption'] = f'Independent source table {index}'
+        fragment['footnotes'] = [f'Scope note belonging only to table {index}', 'Full original source note ' * 30]
+    store, draft, plan = setup(tmp_path, raw)
+    for fragment in raw['fragments']:
+        fragment_id = fragment['id']
+        selected = dict(plan, fragment_ids=[fragment_id], header_rows={fragment_id: plan['header_rows'][fragment_id]},
+                        columns=[dict(column, unit='units', source_columns={fragment_id: index})
+                                 for index, column in enumerate(plan['columns'])])
+        publish(store, draft, selected)
+    before = {path: path.read_bytes() for path in store.root.rglob('*.json')}
+    management = store.list_tables()['tables']
+    originals = {table['table_id']: store.read_table(table['table_id']) for table in management}
+    pages = [store.list_tables(discovery=True, offset=offset, limit=1)['tables'][0] for offset in range(2)]
+    assert len({table['table_id'] for table in pages}) == 2
+    for table in pages:
+        original = originals[table['table_id']]
+        assert table['source'] == original['source']
+        assert table['plan_sha256'] == original['plan_sha256']
+        assert table['record_sha256'] == original['record_sha256']
+        assert table['fragments'] == [{key: fragment[key] for key in ('id', 'page', 'caption')}
+                                      for fragment in original['fragments']]
+        assert 'Scope note belonging' not in json.dumps(table)
+        assert table['columns'][1]['unit'] == 'units'
+        assert table['sample_rows'][0]['raw_values']['col1'] in ('17', '23')
+        assert table['coverage']['source_document_completeness'] == 'unknown'
+        assert store.read_table(table['table_id']) == original
+        assert original['fragments'][0]['footnotes']
+    assert {path: path.read_bytes() for path in store.root.rglob('*.json')} == before
+    assert store.list_tables()['tables'] == management

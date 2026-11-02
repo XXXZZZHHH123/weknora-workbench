@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -17,7 +18,9 @@ const documentVisualReadInstructions = `图片文字、图例和坐标刻度只�
 // The model still chooses the task and sources from the complete request.
 // Keep this scope reminder after capability instructions, before the first
 // tool decision as well as the independent review. No query routing lives here.
-const workbenchTaskScopeInstructions = `先根据当前完整问题和对话上下文明确必须交付的结果，只为这些结果选择来源和取数计划，不把任务扩展成其他分析。完整真实的字段目录、表头和程序分组计数可以支持结构列举；由你判断它们是否足够回答，不因工具可查记录就主动添加日期、最新值、其他报告、派生指标或行情解释。用户未要求的附加结论直接省略，不为它们继续检索或计算。真正的来源歧义须按实际候选说明，不能按行业常识增加原表没有的类别。实际已读文档表格需要取值或分析时，优先analyze_document_tables按服务器完整用户请求和真实表一次生成并执行计划。已明确的手动计划仍可用calculate_document_table检查和执行；不要把同一张表逐行抄成大批calculate_source_values输入或长原文引用。零散原文标量才使用后者。来源已经足够且计算已成功时交付所请求的结果，不为复核重复取相同证据；缺少的必要证据仍需核验。`
+const workbenchTaskScopeInstructions = `先根据当前完整问题和对话上下文明确必须交付的结果，只为这些结果选择来源和取数计划，不把任务扩展成其他分析。完整真实的字段目录、表头和程序分组计数可以支持结构列举；由你判断它们是否足够回答，不因工具可查记录就主动添加日期、最新值、其他报告、派生指标或行情解释。用户未要求的附加结论直接省略，不为它们继续检索或计算。真正的来源歧义须按实际候选说明，不能按行业常识增加原表没有的类别。实际已读文档表格需要取值或分析时，优先analyze_document_tables按服务器完整用户请求和真实表一次生成并执行计划。已明确的手动计划仍可用calculate_document_table检查和执行；不要把同一张表逐行抄成大批calculate_source_values输入或长原文引用。零散原文标量才使用后者。来源已经足够且计算已成功时交付所请求的结果，不为复核重复取相同证据；缺少的必要证据仍需核验。未找到所需结论时，限定在实际检查的来源和范围内说明；局部、分页或候选目录不能证明整个授权范围只有某一来源或不存在其他资料。` + "\n" + agenttools.CatalogMetadataEvidenceInstructions + "\n" + sourceAnswerPresentationInstructions
+
+const sourceAnswerPresentationInstructions = `答复直接交付所问结果，来源用简短引用；非用户所需不补充取读或核验过程。资料不足时只说明实际检查范围内的缺口，不推测缺失原因、发布制度或未来安排。能回答的部分继续交付，不把局部缺口扩成全部不可答。` + "\n" + sourceGapPresentationInstructions
 
 // A successful current-turn document body deserves semantic source review
 // even when no spreadsheet was queried. This only schedules model review;
@@ -373,6 +376,7 @@ const structuredAnswerReviewInstructions = `输出协议：需要补齐本轮必
 对实际需要交付的对象、字段和时间口径，核对完整表头、维度、公式、基期、分母、单位、覆盖和缺失；执行成功不等于业务口径正确。原表中的相对基期比例、占比和增减率由模型结合表头、脚注和上下文理解，先统一含义和显示精度再比较；取整和舍入不是来源冲突。不得推定原表未标单位、行业年度、流量可加性或整列公式。unit_status=needs_review或表头无单位只表示目录暂未确认单位，不代表原件没有单位。逐个判断所问字段的真实值引用及其绑定的series-axis单位证据；明确公式依赖可支持标注为推导的量纲判断，其他仍标未知。不能把相似名称或另一系列/轴的单位泛套过来，也不能改写目录单位或绕过确定性换算/比较保护。真实图表value_ref精确包含所引单元格时，应评估该直接证据。成功的真实文档/数据集目录只支持其中实际返回的身份、数量和范围，不支持正文结论。目录覆盖、输入覆盖和计算实际使用范围须区分，不能将共同日期范围写成每列有效值范围。OCR错位只说明提取局限，未查看原图不能声称报告排版有错。
 新增合计、换算、变化率、计数和用户要求的比较/排名须有确定性计算。执行成功只证明算式求值正确，还须依据原文核对输入含义、时点和基期关系、增减方向及结果所代表的指标；数值能匹配计算结果不等于解释正确。无关的基期反推、其他时期和交叉验算结果应删去，即使工具已经执行；原文直接披露所问结果时按原文交付，不附加重建。文档表格优先用analyze_document_tables依据完整用户请求和实际表生成并执行批量计划，不为核验已读原值额外执行无关运算。只有已明确的手动计划使用calculate_document_table；零散原文用calculate_source_values绑定真实chunk_id和逐字quote。已成功的来源绑定计算直接复用，不逐项重抄重算。failed_rows须结合真实行内容区别标题/单位等非记录与应有值的记录；不反复计算非记录，业务缺失须说明。比较/排名仅在用户需要时取得完整符合请求的组和程序依据，不靠视觉比较，不擅自加筛选或完整性阈值。已舍入比例不能反推精确变化，有限小数注明舍入精度。
 原件inspect_source/sums也是程序依据。确需检查原件其他区块时使用真实sheet，scan.complete=false、truncated或视图omitted_paths不能证明内容不存在；按实际引用补齐必要范围。多个相关年度区块口径冲突时展示并澄清，不能自行选优先或假定月度窗口替代。来源有冲突时，仅凭文件名、上传顺序、数值接近或模型偏好不能证明版本权威、替代关系或指标等价；实际证据不能确认时并列差异与未决之处。待澄清字段不得绕过放行，未知单位不得按相近数值推成一致。遵守原请求和授权范围。
+` + numericResultPresentationInstructions + `
 runtime_unmatched_numbers是草稿的数字疑点，不是对来源语义的最终判断。在真实结果、完整字段身份和已引用原文中核对：身份代码不是统计值，新增统计仍需程序支持。只补齐本轮必要证据；无依据的附加数字或业务判断删去。系统错误按工具反馈纠正，不说成用户问题含糊。答案完整、来源和计算可靠时简明给出实际结果、必要口径、来源与缺口，不复述核验过程。` + "\n" + structuredAvailabilityInstructions
 
 func hasStructuredEvidence(steps []types.AgentStep) bool {

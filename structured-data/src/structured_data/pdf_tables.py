@@ -699,15 +699,58 @@ class PDFTableStore:
         stored['record_sha256'] = digest
         return stored
 
-    def list_tables(self, source_sha256=None):
+    def list_tables(self, source_sha256=None, *, discovery=False, samples=True, offset=0, limit=None):
         if source_sha256 is not None and (not isinstance(source_sha256, str) or not _SHA.fullmatch(source_sha256)):
             raise ValueError('Invalid source SHA256')
+        if type(offset) is not int or offset < 0 or (limit is not None and (type(limit) is not int or not 1 <= limit <= 32)):
+            raise ValueError('Invalid PDF directory offset/limit')
         items = []
         for path in sorted((self.root / 'tables').glob('pdft_*.json')):
             record = self._read_table(path.stem)
             if source_sha256 is None or record['source']['sha256'] == source_sha256:
-                items.append({k: deepcopy(record[k]) for k in ('table_id', 'draft_id', 'source', 'title', 'fragments', 'columns', 'coverage', 'status', 'extraction_verified', 'plan_sha256')})
-        return dict(tables=items)
+                item = {k: deepcopy(record[k]) for k in ('table_id', 'draft_id', 'source', 'title', 'fragments', 'columns', 'coverage', 'status', 'extraction_verified', 'plan_sha256')}
+                if discovery:
+                    # Directory evidence is bounded and never changes the stored
+                    # plan, column names or queryable values. In particular a
+                    # row resembling a header remains a data row until reviewed.
+                    item['publication_status'] = 'published'
+                    item['record_sha256'] = record['record_sha256']
+                    original_issues = item['coverage'].get('quality_issues', [])
+                    item['coverage'] = coverage = {key: item['coverage'][key] for key in (
+                        'logical_row_count', 'table_input_complete', 'source_document_complete',
+                        'source_document_completeness', 'unresolved_quality_issues') if key in item['coverage']}
+                    coverage['original_quality_issue_count'] = len(original_issues)
+                    coverage['original_quality_issue_codes'] = sorted({str(issue.get('code', 'unknown')) for issue in original_issues})
+                    item['column_count'] = len(item['columns'])
+                    item['fragment_count'] = len(item['fragments'])
+                    item['columns'] = item['columns'][:32]
+                    item['fragments'] = item['fragments'][:16]
+                    item['directory_metadata_truncated'] = item['column_count'] > 32 or item['fragment_count'] > 16
+                    # Candidates expose navigation, not every table's scope
+                    # notes. Full fragment evidence stays in the immutable
+                    # record and is returned by the actual read operation.
+                    item['fragments'] = [{key: fragment[key] for key in ('id', 'page', 'caption')
+                                          if key in fragment} for fragment in item['fragments']]
+                    # Source-column mappings are available in read_pdf_table;
+                    # repeating them in every catalog entry obscures identities.
+                    for column in item['columns']:
+                        column.pop('source_columns', None)
+                    names = [column['name'] for column in item['columns'][:12]]
+                    if samples:
+                        item['sample_rows'] = [dict(_row_id=row['_row_id'],
+                            raw_values={name: row['raw_values'].get(name, '')[:160] for name in names})
+                            for row in record['rows'][:2]]
+                        item['sample_rows_truncated'] = (len(record['rows']) > 2 or len(record['columns']) > 12
+                            or any(len(row['raw_values'].get(name, '')) > 160 for row in record['rows'][:2] for name in names))
+                items.append(item)
+        if not discovery:
+            return dict(tables=items)
+        total = len(items)
+        shown = items[offset:offset + limit] if limit is not None else items[offset:]
+        more = offset + len(shown) < total
+        return dict(tables=shown, total_table_count=total, offset=offset, output_truncated=more,
+                    next_offset=offset + len(shown) if more else None,
+                    directory_notice='这是当前授权空间已发布表目录，优先用它核实入库状态；旧文档索引的待审/仅字段说明不是当前发布状态。reviewed/auto_accepted 均已入库，extraction_verified=false 不表示未入库。历史 original_quality_issue_codes 不等于当前 unresolved_quality_issues。样例仅供选表，可能含未设为表头的文字，不是数值证据或完整输入；先 read_pdf_table 核对列、单位、原值和来源，再 query_pdf_table 计算。目录/样例截断须继续读取，不得据此声称无数据。')
 
     def read_table(self, table_id, *, offset=0, limit=100):
         if type(offset) is not int or offset < 0 or offset > MAX_ROWS or type(limit) is not int or not 1 <= limit <= 500:

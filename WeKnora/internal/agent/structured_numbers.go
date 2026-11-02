@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -21,6 +22,10 @@ import (
 // It verifies traceability, not the semantic appropriateness of a statistic.
 var evidenceDate = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 var proseNumber = regexp.MustCompile(`[-+−]?\d+(?:,\d{3})*(?:\.\d+)?`)
+
+// A heading identity may contain only its leading list/table number. Source
+// body measurements, years, percentages and numeric-only lines are excluded.
+var pdfNumberedSourceHeading = regexp.MustCompile(`^[1-9][0-9]{0,3}[.、][ \t]*([^\p{N}%％\r\n]+)$`)
 
 // Longest complete forms precede partial forms so an invalid complete date is
 // consumed once and cannot later lose its month/day to a shorter match.
@@ -259,6 +264,13 @@ func validCalendarLiteral(value string) bool {
 }
 
 func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawSteps ...[]types.AgentStep) []string {
+	return ungroundedStructuredNumbersWithEmptyEvidence(answer, messages, false, rawSteps...)
+}
+
+// checkEmptyEvidence is used only by the presentation diagnostic after actual
+// source activity: no observed numeric values means unknown claims, rather than
+// the ordinary conversation skip. It never adds a fact or changes delivery policy.
+func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat.Message, checkEmptyEvidence bool, rawSteps ...[]types.AgentStep) []string {
 	values := []float64{}
 	percentageValues := []float64{}
 	filenames := []string{}
@@ -550,7 +562,7 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 			}
 		}
 	}
-	if len(values) == 0 && !hasPDFEvidence {
+	if len(values) == 0 && !hasPDFEvidence && !checkEmptyEvidence {
 		return nil
 	} // No numeric evidence; ordinary conversation.
 	answer = maskCurrentChartImageDestinations(answer, rawSteps...)
@@ -1070,6 +1082,74 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 	}
 	if data["source_kind"] == "pdf_table" {
 		pdfLabels(data)
+		// Read-table values are actual source cells, including text labels in
+		// tables whose header row was intentionally preserved as data. Only
+		// the complete nonnumeric label is an identity; its digits never gain
+		// authority as a bare measurement. SQL-generated strings, provenance
+		// text, raw values and failed reads cannot establish these identities.
+		if data["kind"] == "structured_source_inspection" && data["status"] == "ok" {
+			// Captions and footnotes belong to the actually read source fragment.
+			// Permit the complete original text as a quote/identity, never its
+			// component digits as observations. A directory, query expression,
+			// historic diagnostic or unbound metadata is not source prose.
+			if source, ok := data["source"].(map[string]any); ok {
+				digest, _ := source["sha256"].(string)
+				if len(digest) == 64 && sourceOpaqueToken.FindString(digest) == digest {
+					selectedPages := map[float64]bool{}
+					if fragments, ok := data["fragments"].([]any); ok {
+						for _, raw := range fragments {
+							fragment, ok := raw.(map[string]any)
+							if !ok {
+								continue
+							}
+							if id, _ := fragment["id"].(string); id == "" {
+								continue
+							}
+							if page, ok := fragment["page"].(float64); ok && page > 0 && page == math.Trunc(page) {
+								selectedPages[page] = true
+							}
+							add(fragment["caption"])
+							if footnotes, ok := fragment["footnotes"].([]any); ok {
+								for _, footnote := range footnotes {
+									add(footnote)
+								}
+							}
+						}
+					}
+					if contexts, ok := data["page_context"].([]any); ok {
+						for _, raw := range contexts {
+							context, ok := raw.(map[string]any)
+							if !ok {
+								continue
+							}
+							page, ok := context["page"].(float64)
+							if !ok || !selectedPages[page] {
+								continue
+							}
+							text, _ := context["text"].(string)
+							for _, line := range strings.Split(text, "\n") {
+								line = strings.TrimSpace(line)
+								parts := pdfNumberedSourceHeading.FindStringSubmatch(line)
+								if len(parts) == 2 && strings.IndexFunc(parts[1], unicode.IsLetter) >= 0 {
+									add(line)
+								}
+							}
+						}
+					}
+				}
+			}
+			if rows, ok := data["rows"].([]any); ok {
+				for _, raw := range rows {
+					if row, ok := raw.(map[string]any); ok {
+						if values, ok := row["values"].(map[string]any); ok {
+							for _, value := range values {
+								add(value)
+							}
+						}
+					}
+				}
+			}
+		}
 		return
 	}
 	var catalogue func(any)
@@ -1198,7 +1278,11 @@ func maskExactSourceIdentity(answer, label string) string {
 			break
 		}
 		end := index + len(label)
-		bounded := !(index > 0 && asciiWord(answer[index-1]) && asciiWord(label[0])) && !(end < len(answer) && asciiWord(answer[end]) && asciiWord(label[len(label)-1]))
+		// A numeric label can end or begin with punctuation (for example a
+		// category code ending in '+'). Adjacent ASCII identifiers still
+		// extend that token; a separately grounded suffix must not turn a
+		// forged composite identity into a valid one.
+		bounded := !(index > 0 && asciiWord(answer[index-1])) && !(end < len(answer) && asciiWord(answer[end]))
 		out.WriteString(answer[:index])
 		if bounded {
 			out.WriteByte(' ')

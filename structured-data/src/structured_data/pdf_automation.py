@@ -109,6 +109,8 @@ def process_draft(store, draft_id, model_root, *, save, previous=None, progress=
                 plan = result['plan']
                 stage = 'validation'
                 preview = store.validate_plan(draft_id, plan)
+                # Resume review from the validated mapping, preserving joins and units.
+                group['plan'] = plan
                 issues = preview['coverage'].get('unresolved_quality_issues') or []
                 if issues:
                     group.update(status='needs_attention', message='识别结果存在疑点，需要核对后入库', issues=issues,

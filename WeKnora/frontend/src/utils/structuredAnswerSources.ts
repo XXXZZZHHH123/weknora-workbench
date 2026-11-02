@@ -58,7 +58,9 @@ export function structuredAnswerSources(events: any[], completed = true): Struct
       if (!meaningful) continue
       const key = JSON.stringify([kind, datasetId || tableId, operation,
         data.series?.series_id || data.table_id || '', context?.knowledge_base_id || '',
-        context?.knowledge_base_tenant_id == null ? '' : String(context.knowledge_base_tenant_id)])
+        context?.knowledge_base_tenant_id == null ? '' : String(context.knowledge_base_tenant_id),
+        String(source.sha256 || '').toLowerCase(), source.knowledge_id || '', source.knowledge_base_id || context?.knowledge_base_id || '',
+        data.offset ?? '', data.next_offset ?? '', Array.isArray(data.rows) ? data.rows.length : '', data.sql || ''])
       found.set(key, { kind, data, context, operation })
       }
     }
@@ -79,4 +81,72 @@ export function parseExcelCell(address: unknown): { row: number; column: number;
 
 export function isStructuredImportId(value: unknown): value is string {
   return typeof value === 'string' && HEX_ID.test(value)
+}
+
+export type StructuredSourceTable = {
+  key: string
+  primary: StructuredAnswerSource
+  observations: StructuredAnswerSource[]
+  pages: number[]
+  inspected: boolean
+}
+export type StructuredSourceGroup = {
+  key: string
+  kind: 'excel' | 'pdf'
+  primary: StructuredAnswerSource
+  tables: StructuredSourceTable[]
+  pages: number[]
+  catalogOnly: boolean
+}
+
+/** Presentation grouping preserves every observation and its verified scope. */
+export function groupStructuredAnswerSources(sources: StructuredAnswerSource[]): StructuredSourceGroup[] {
+  const groups = new Map<string, StructuredSourceGroup>()
+  const rank = (item: StructuredAnswerSource) => item.data.kind === 'structured_analysis' ? 2 : item.data.kind === 'structured_source_inspection' ? 1 : 0
+  for (const item of sources) {
+    const source = item.data.source || {}
+    const key = JSON.stringify([item.kind, item.context?.knowledge_base_id || '', String(item.context?.knowledge_base_tenant_id ?? ''),
+      String(source.sha256 || '').toLowerCase(), source.knowledge_base_id || item.context?.knowledge_base_id || '',
+      item.kind === 'pdf' ? source.knowledge_id || item.data.table_id : item.data.dataset_id,
+      item.kind === 'excel' ? [item.operation, item.data.series?.series_id || ''] : ''])
+    let group = groups.get(key)
+    if (!group) {
+      group = { key, kind: item.kind, primary: item, tables: [], pages: [], catalogOnly: item.kind === 'pdf' }
+      groups.set(key, group)
+    }
+    const tableKey = String(item.data.table_id || item.data.dataset_id)
+    let table = group.tables.find(table => table.key === tableKey)
+    if (!table) {
+      table = { key: tableKey, primary: item, observations: [], pages: [], inspected: false }
+      group.tables.push(table)
+    }
+    table.observations.push(item)
+    if (rank(item) >= rank(table.primary)) table.primary = item
+    if (rank(item) >= rank(group.primary)) group.primary = item
+    table.inspected ||= item.data.kind !== 'structured_pdf_tables'
+    if (table.inspected) group.catalogOnly = false
+    table.pages = [...new Set([...table.pages, ...structuredPdfPages(item.data)])].sort((a, b) => a - b)
+  }
+  for (const group of groups.values()) {
+    const relevant = group.tables.filter(table => table.inspected)
+    group.pages = [...new Set((relevant.length ? relevant : group.tables).flatMap(table => table.pages))].sort((a, b) => a - b)
+    group.tables.sort((a, b) => Number(b.inspected) - Number(a.inspected) || (a.pages[0] || 0) - (b.pages[0] || 0))
+  }
+  return [...groups.values()]
+}
+
+/** Page navigation uses actual table fragments/cells, not general page text. */
+export function structuredPdfPages(data: any): number[] {
+  const pages = new Set<number>()
+  const add = (span: any) => { if (Number.isSafeInteger(span?.page) && span.page > 0) pages.add(span.page) }
+  const sourceRow = (row: any) => {
+    for (const spans of Object.values(row?.source_cells || {})) if (Array.isArray(spans)) for (const span of spans) add(span)
+  }
+  for (const fragment of data?.fragments || []) add(fragment)
+  for (const row of data?.rows || []) sourceRow(row)
+  for (const provenance of data?.row_provenance || []) {
+    sourceRow(provenance)
+    for (const row of provenance?.source_rows || []) sourceRow(row)
+  }
+  return [...pages].sort((a, b) => a - b)
 }

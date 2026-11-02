@@ -108,7 +108,12 @@ func TestStructuredKnowledgeScopeMultiRequiresRealModelSelection(t *testing.T) {
 	} {
 		result, err := base.Execute(structuredScopeContext(), json.RawMessage(input))
 		require.NoError(t, err)
-		require.True(t, result.Success)
+		if strings.Contains(input, "query_series") {
+			require.False(t, result.Success)
+			require.Contains(t, result.Error, "尚未执行")
+		} else {
+			require.True(t, result.Success)
+		}
 		var directory struct {
 			Status string                     `json:"status"`
 			Scopes []structuredKnowledgeScope `json:"knowledge_bases"`
@@ -177,7 +182,7 @@ func TestStructuredKnowledgeScopeNamedOperationKeepsServerContract(t *testing.T)
 	var schema map[string]any
 	require.NoError(t, json.Unmarshal(tool.Parameters(), &schema))
 	require.Contains(t, schema["properties"], "knowledge_base_id")
-	require.Equal(t, []any{"series_id"}, schema["required"])
+	require.Equal(t, []any{"series_id", "knowledge_base_id"}, schema["required"])
 	after, err := json.Marshal(directory)
 	require.NoError(t, err)
 	require.JSONEq(t, string(original), string(after), "adding outer scope cannot mutate service metadata")
@@ -333,6 +338,41 @@ func TestStructuredKnowledgeScopeAPIKeyDirectoryRemainsAuthorizedMetadata(t *tes
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	require.Equal(t, int64(1), calls.Load())
+}
+
+func TestStructuredMetadataContractSurvivesQuestionRecallWithoutReclassifyingSources(t *testing.T) {
+	var calls atomic.Int64
+	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		identity := decodeStructuredScopeIdentity(t, r)
+		require.Contains(t, []any{"catalog-a", "catalog-b"}, identity["knowledge_base_id"])
+		_, _ = io.WriteString(w, `{"status":"ok","datasets":[],"pdf_tables":[],"pdf_table_count":0}`)
+	}).WithSearchTargets(types.SearchTargets{
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "catalog-a", TenantID: 7},
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "catalog-b", TenantID: 29},
+	}).WithKnowledgeBaseMetadata([]*types.KnowledgeBase{
+		{ID: "catalog-a", TenantID: 7, Name: "Instrument archive", Description: "Training and calibration material; 913 observations"},
+		{ID: "catalog-b", TenantID: 29, Name: "Field studies", Description: "Operator-maintained collection notes"},
+	})
+	ctx := structuredScopeContext()
+	for _, arguments := range []string{`{}`, `{"question":"What observation interval does the field report specify?"}`} {
+		result, err := base.Execute(ctx, json.RawMessage(`{"operation":"list_datasets","arguments":`+arguments+`}`))
+		require.NoError(t, err)
+		require.True(t, result.Success)
+		require.Contains(t, result.Data["scope_notice"], CatalogMetadataEvidenceInstructions, "both directory and question-prefetch paths preserve the shared contract")
+		var visible map[string]any
+		require.NoError(t, json.Unmarshal([]byte(result.Output), &visible))
+		require.Equal(t, result.Data["scope_notice"], visible["scope_notice"], "the contract must be present in actual model-visible output")
+		rows := structuredRecallRows(visible["knowledge_bases"])
+		require.Len(t, rows, 2)
+		require.Equal(t, "Training and calibration material; 913 observations", rows[0]["description"], "metadata stays available for discovery without being rewritten into a document fact")
+		require.NotContains(t, visible, "source_authenticity", "the directory must not classify contained documents from collection metadata")
+	}
+	require.Equal(t, int64(2), calls.Load(), "only the question path reads the two authorized catalogs; the contract adds no extra source calls")
+	denied := types.WithTenantAPIKeyScope(ctx, types.TenantAPIKeyScope{KnowledgeBaseIDs: types.StringArray{"catalog-a"}})
+	_, err := base.Execute(denied, json.RawMessage(`{"operation":"list_datasets","arguments":{"question":"Read the field report."}}`))
+	require.Error(t, err)
+	require.Equal(t, int64(2), calls.Load(), "metadata guidance must preserve the scope check before recall")
 }
 
 func TestStructuredMultiScopeNamesAndSchemasPermitExplicitDatasetDiscovery(t *testing.T) {

@@ -44,7 +44,7 @@ type StructuredDataTool struct {
 func NewStructuredDataTool() *StructuredDataTool {
 	key, _ := os.ReadFile(os.Getenv("COMMODITY_RESEARCH_TOKEN_FILE"))
 	return &StructuredDataTool{BaseTool: NewBaseTool(ToolStructuredData,
-		"只读查询本轮授权范围的Excel、已确认PDF表格、字段、序列和原单元格证据。单知识库自动限定，多知识库先读取返回的真实知识库目录，再根据完整问题和上下文用knowledge_base_id选择来源。按需describe_tools获取目标操作schema；发现Excel字段后查询或用analyze_table运行完整只读SQL计算；list_datasets的pdf_tables或list_pdf_tables列出已确认PDF表，read_pdf_table核对原页单元格，query_pdf_table按真实列名只读计算；PDF草稿不可用于计算，人工确认不等于识别正确，必须注意跨页覆盖和单位；inspect_source检查原件未解析区域、年度标签和单元格，并可用sums做原值求和。resolve_fields处理语义歧义，confirm_fields须真实用户选择。不会上传、删除或修改原表。",
+		"只读查询本轮授权范围的Excel、已发布PDF表及原单元格证据。单库自动限定，多库先读取真实目录，再按完整问题和上下文选knowledge_base_id。list_datasets的datasets仅指Excel，pdf_tables才是PDF；旧文档索引的待审/仅字段说明可能过时，断言PDF未入库或无数值前须核实当前目录。reviewed/auto_accepted均已入库，extraction_verified=false不表示未入库；历史警告不等于当前未解决警告。list_pdf_tables分页列出列/单位/前两行导航样例，output_truncated时按next_offset继续，通用列名可通过样例理解；样例不能作数值证据。read_pdf_table核对原值/来源，query_pdf_table用真实列名只读计算。PDF草稿不可计算，人工确认不保证OCR正确，仍须检查单位、跨页覆盖。只交付问题所需且绑定实际表/单元格的事实；缺乏绑定证据的附加统计范围或原件版面断言应省略。Excel可analyze_table，inspect_source检查未解析原件；resolve_fields处理语义歧义，confirm_fields须真实用户选择。按需describe_tools获取schema，不会修改原表。",
 		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation","arguments"],"properties":{"knowledge_base_id":{"type":"string","description":"可选的真实知识库ID，必须在本轮已授权的知识库目录中；单库时默认使用该库，多库时先读取返回目录再根据完整问题选择"},"operation":{"type":"string","enum":["describe_tools","inspect_source","list_datasets","list_series","list_charts","query_series","compare_series","convert_price","resolve_fields","confirm_fields","execute_field_plan","get_result_evidence","analyze_table","list_pdf_tables","read_pdf_table","query_pdf_table"]},"arguments":{"type":"object","description":"先describe_tools {operations:[目标操作]}获取参数schema；其余参数沿用操作schema，不接受账号、空间、URL或凭据"}}}`)),
 		endpoint: strings.TrimRight(os.Getenv("STRUCTURED_DATA_URL"), "/"),
 		key:      bytes.TrimSpace(key), client: &http.Client{Timeout: 30 * time.Second,
@@ -93,7 +93,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 	for field := range input {
 		if field != "operation" && field != "arguments" && field != "knowledge_base_id" {
-			return nil, fmt.Errorf("结构化表格不接受账号、空间或未声明的参数")
+			return nil, fmt.Errorf("结构化表格不接受未声明的顶层参数 %q；顶层只允许 operation、arguments、knowledge_base_id。操作参数须按真实工具schema放在 arguments 内，或直接使用已注册的 structured_ 操作工具；不要提交账号、权限或服务配置", field)
 		}
 	}
 	var operation string
@@ -107,6 +107,9 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 	for _, field := range []string{"tenant_id", "user_id", "role", "token", "api_key", "url", "endpoint", "data_dir", "knowledge_base_id", "knowledge_base_tenant_id", "knowledge_base_can_write"} {
 		if _, exists := arguments[field]; exists {
+			if field == "knowledge_base_id" {
+				return nil, fmt.Errorf("knowledge_base_id 必须放在顶层，与 operation、arguments 同级，不能放在 arguments 内；请从本轮已授权目录选择真实ID")
+			}
 			return nil, fmt.Errorf("结构化表格参数不接受身份、凭据或服务配置")
 		}
 	}
@@ -120,11 +123,15 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	if directory != nil {
 		if operation == "list_datasets" {
 			if recalled := t.recallAcrossKnowledgeBases(ctx, arguments, directory); recalled != nil {
-				return recalled, nil
+				return fitStructuredDirectory(ctx, operation, recalled), nil
 			}
 		}
 		if operation != "describe_tools" {
-			return directory, nil
+			if operation != "list_datasets" {
+				directory.Success = false
+				directory.Error = "尚未执行 " + operation + "：多知识库必须在顶层传 knowledge_base_id（与 operation、arguments 同级）；请从返回的已授权目录选择真实ID并重试原操作。此返回不是查询结果，也不表示无数据。"
+			}
+			return fitStructuredDirectory(ctx, operation, directory), nil
 		}
 		// describe_tools is a service protocol directory: the server returns
 		// mcp.list_tools() before accessing any workspace data. Keep the caller
@@ -155,7 +162,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		return nil, err
 	}
 	if cached != nil {
-		return cached, nil
+		return fitStructuredDirectory(ctx, operation, cached), nil
 	}
 	var cacheResult *types.ToolResult
 	defer func() { t.finishStructuredReadCache(lease, cacheResult) }()
@@ -256,5 +263,5 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 	}
 	cacheResult = &types.ToolResult{Success: true, Output: string(body), Data: data}
-	return cacheResult, nil
+	return fitStructuredDirectory(ctx, operation, cacheResult), nil
 }

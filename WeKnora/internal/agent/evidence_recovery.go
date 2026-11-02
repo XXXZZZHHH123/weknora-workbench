@@ -91,12 +91,17 @@ func restoreStructuredReviewConversation(messages []chat.Message, guards *loopGu
 const evidenceRecoveryInstructions = `内部运行状态：审核提出了待核实的证据缺口，现返回证据收集阶段。先核对已有成功结果及已补读片段；审核意见不代表原证据缺失或失效。后续失败仅约束该次请求，不抹去先前成功返回，仍按实际来源范围判断。根据完整用户请求、真实来源及下面的核验意见，自行决定最小必要的读取或计算计划并调用实际工具；不要仅把缺失结论删掉就宣布完成，也不要把核验意见当成来源事实。
 已有证据继续复用。结果被截断、分页未读完或仅有目录/检索摘要时，利用真实来源ID、页码、范围和续读位置定向补读；多来源任务分别核实必要来源，不用一个文件的片段替其他文件。读取顺序、口径和工具由你根据任务决定，权限、来源绑定和确定性计算规则仍适用。新取得证据后重新形成完整候选并接受核验。真正无法取得时说明已尝试的限制和可回答范围，不编造原值、不声称全部完成。` + "\n" + structuredAvailabilityInstructions
 
-const numericValidationRepairInstructions = `内部运行状态：确定性数值校验指出当前候选含有尚未匹配到真实程序结果的数字。以下校验记录只是运行时反馈，不是来源事实。依据完整用户请求、真实工具结果和该反馈修订：保留用户必答内容；可以删除非必要且无依据的附加数字，也可以自行选择已授权的读取或计算工具补足依据。不要把校验反馈当作来源，不要编造、改写或放宽数值规则；修改后的候选仍会再次接受来源核验和确定性数值校验。`
+const numericValidationRepairInstructions = `内部运行状态：确定性数值校验指出当前候选含有尚未匹配到真实程序结果的数字。以下校验记录只是运行时反馈，不是来源事实。依据完整用户请求、真实工具结果和该反馈修订：保留用户必答内容；可以删除非必要且无依据的附加数字，也可以自行选择已授权的读取或计算工具补足依据。不要把校验反馈当作来源，不要编造、改写或放宽数值规则。` + numericResultPresentationInstructions + `修改后的候选仍会再次接受来源核验和确定性数值校验。`
+
+const finalNumericRepairInstructions = `这是本轮最后一次数值修订。按照完整用户请求，只交付已经验证的必答结果和必要来源引用；省略非必要的附加定义、页码、表号、延伸历史数字和解释。不得省略用户要求的差值、比例、比较或其他必答内容；必答数字尚无依据时，仍须调用已授权工具取数或计算，不得靠删掉必答结果结束。先前因无依据删除的附加数字，未取得新依据不要恢复。不得改写成中文数字或其他形式绕过校验。数值门槛、来源复核和剩余执行预算均不变。`
 
 // resumeNumericValidationRepair restores the exact pre-review transcript and
 // resumes the ordinary authorized tool loop. Numeric repairs have their own
 // caller-owned bound and do not consume or reset source-recovery attempts.
 func (e *AgentEngine) resumeNumericValidationRepair(ctx context.Context, state *types.AgentState, messages *[]chat.Message, guards *loopGuards, sessionID, candidate string, feedback map[string]any) {
+	if guards.structuredEvidenceRepairs >= 2 {
+		e.turnReview.NumericWarningAllowed = true
+	}
 	restored, restoredOriginal := restoreStructuredReviewConversation(*messages, guards)
 	if len(guards.numericValidationInputs) > 0 {
 		prior := make(map[string]bool, len(guards.numericValidationInputs))
@@ -120,6 +125,9 @@ func (e *AgentEngine) resumeNumericValidationRepair(ctx context.Context, state *
 		encodedFeedback = []byte(`{"status":"feedback_encoding_failed"}`)
 	}
 	feedbackMessage := numericValidationRepairInstructions + "\n数值校验记录：" + string(encodedFeedback)
+	if guards.structuredEvidenceRepairs >= 2 {
+		feedbackMessage += "\n" + finalNumericRepairInstructions
+	}
 	guards.numericValidationInputs = append(guards.numericValidationInputs, feedbackMessage)
 	*messages = append(*messages, chat.Message{Role: "assistant", Content: candidate}, chat.Message{Role: "system", Content: feedbackMessage})
 	e.structuredReviewMode = false

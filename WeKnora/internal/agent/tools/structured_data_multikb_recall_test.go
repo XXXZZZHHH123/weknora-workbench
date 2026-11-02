@@ -54,7 +54,7 @@ func TestStructuredMultiScopeRecallBoundsPDFCatalogWithoutClaimingAbsence(t *tes
 	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
 		identity := decodeStructuredScopeIdentity(t, r)
 		var tables []map[string]any
-		for i := 0; i < 20; i++ {
+		for i := 0; i < 40; i++ {
 			tables = append(tables, map[string]any{"table_id": fmt.Sprintf("%s-table-%d", identity["knowledge_base_id"], i), "status": "reviewed"})
 		}
 		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"datasets": []any{}, "pdf_tables": tables}))
@@ -64,8 +64,8 @@ func TestStructuredMultiScopeRecallBoundsPDFCatalogWithoutClaimingAbsence(t *tes
 	total := 0
 	for _, catalog := range result.Data["knowledge_base_catalogs"].([]map[string]any) {
 		listed := len(structuredRecallRows(catalog["pdf_tables"]))
-		require.LessOrEqual(t, listed, 16)
-		require.Equal(t, 20, catalog["pdf_table_count"])
+		require.LessOrEqual(t, listed, maxRecallPDFsPerKnowledge)
+		require.Equal(t, 40, catalog["pdf_table_count"])
 		require.Equal(t, true, catalog["pdf_tables_truncated"])
 		total += listed
 	}
@@ -160,4 +160,20 @@ func TestStructuredMultiScopeRecallMarksLibraryBoundTruncation(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Data["knowledge_base_catalogs"].([]map[string]any), maxRecallKnowledgeBases)
 	require.Equal(t, true, result.Data["literal_fields_truncated"], "unqueried libraries are reported as truncation, never as absence")
+}
+
+func TestStructuredMultiScopeRecallPreservesAlreadyBudgetedPDFCount(t *testing.T) {
+	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"datasets":[],"pdf_tables":[{"table_id":"visible-fixture","status":"reviewed"}],"pdf_table_count":99,"pdf_tables_truncated":true}`)
+	}).WithSearchTargets(types.SearchTargets{
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-a", TenantID: 7},
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-b", TenantID: 7},
+	})
+	result, err := base.Execute(structuredScopeContext(), json.RawMessage(`{"operation":"list_datasets","arguments":{"question":"Find the available measurements"}}`))
+	require.NoError(t, err)
+	for _, catalog := range structuredRecallRows(result.Data["knowledge_base_catalogs"]) {
+		require.Equal(t, float64(99), catalog["pdf_table_count"])
+		require.Equal(t, true, catalog["pdf_tables_truncated"])
+	}
+	require.Equal(t, true, result.Data["pdf_tables_truncated"])
 }

@@ -38,11 +38,9 @@ test('PDF review entry is restricted to a PDF preview and mounts the shared auth
   assert.ok(docContent.includes('watch(pdfReviewKey, () => { pdfReviewOpen.value = false; });'))
   assert.ok(docContent.includes('if (!visible) pdfReviewOpen.value = false;'))
   const reviewNote = docContent.match(/<p class="pdf-review-dialog__note">([\s\S]*?)<\/p>/)?.[1]
-  assert.ok(reviewNote, 'keep the review limitations beside the authenticated PDF review frame')
-  assert.match(reviewNote, /识别线索仍需人工检查/)
-  assert.match(reviewNote, /公式不会执行/)
-  assert.match(reviewNote, /确认发布表示人工检查过映射/)
-  assert.match(reviewNote, /不代表 OCR 准确率已验证/)
+  assert.ok(reviewNote)
+  assert.match(reviewNote, /无疑点的表格自动入库/)
+  assert.match(reviewNote, /有疑点时，对照原件修改后确认入库/)
   assert.match(docContent, /:active="visible && viewMode === 'preview'"/)
 })
 

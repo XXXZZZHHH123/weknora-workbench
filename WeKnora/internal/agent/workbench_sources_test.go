@@ -39,6 +39,7 @@ func TestWorkbenchSourceDiscoveryShowsAuthorizedFilesBeforeFirstModelCall(t *tes
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"list_datasets", "describe_tools"}, operations, "discovery never runs a numeric query for a greeting")
 	require.Len(t, model.calls, 1)
+	require.Contains(t, model.calls[0][0].Content, agenttools.CatalogMetadataEvidenceInstructions, "the shared metadata boundary must reach actual generation before prefetched source selection")
 	found := false
 	for _, message := range model.calls[0] {
 		if message.Role == "tool" && strings.Contains(message.Content, "真实原表.xlsx") {

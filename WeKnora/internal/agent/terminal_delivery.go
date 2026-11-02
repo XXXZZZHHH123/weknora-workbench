@@ -38,7 +38,9 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		return
 	}
 	e.turnReview.Committed = true
-	if outcome == "answer" && e.needsSourceConsistencyCheck(state) &&
+	if delivery, ok := e.numericWarningDelivery(answer, state); ok {
+		answer, outcome = delivery, "numeric_warning"
+	} else if outcome == "answer" && e.needsSourceConsistencyCheck(state) &&
 		!e.candidateApprovalCurrent(answer, state) {
 		answer = answerReviewUnavailableFallback
 		existingID = ""
@@ -49,7 +51,10 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	// grounded candidate with a notice rather than a bare failure message.
 	if answer == answerReviewUnavailableFallback || answer == incompleteAnswerFallback || answer == stalledAnswerFallback ||
 		answer == numericFailureFallback || answer == finalNumericFailureFallback {
-		if delivery, ok := e.unverifiedDelivery(); ok {
+		if delivery, ok := e.numericWarningDelivery(e.turnReview.UnverifiedCandidate, state); ok {
+			answer, outcome = delivery, "numeric_warning"
+			existingID, truncated = "", false
+		} else if delivery, ok := e.unverifiedDelivery(); ok {
 			answer = delivery
 			existingID = ""
 			outcome = "unverified"

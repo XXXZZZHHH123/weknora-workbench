@@ -19,6 +19,7 @@ const (
 	candidateRevise          candidateDisposition = "revise"
 	candidateNeedSource      candidateDisposition = "need_source"
 	candidateNumericFailure  candidateDisposition = "numeric_failure"
+	candidateNumericWarning  candidateDisposition = "numeric_warning"
 	candidateProtocolFailure candidateDisposition = "protocol_failure"
 )
 
@@ -27,6 +28,7 @@ const (
 // Hashes are assigned by the runtime, not supplied by a model.
 type candidateDecision struct {
 	Disposition     candidateDisposition
+	Candidate       string
 	CandidateHash   string
 	TaskHash        string
 	EvidenceHash    string
@@ -36,18 +38,23 @@ type candidateDecision struct {
 }
 
 type turnReviewState struct {
-	Repairs       int
-	Checks        int
-	Last          candidateDecision
-	ReadEvidence  *reviewEvidenceHandoff
-	ClosedStreams map[string]bool
-	Committed     bool
-	Query         string
-	Conversation  []chat.Message
-	// Latest non-empty candidate that passed deterministic numeric grounding
-	// but was not approved by the semantic reviewer, with its user caution.
-	UnverifiedCandidate  string
-	UnverifiedUserNotice string
+	AdditionsCache map[string]string
+	Repairs        int
+	Checks         int
+	Last           candidateDecision
+	ReadEvidence   *reviewEvidenceHandoff
+	ClosedStreams  map[string]bool
+	Committed      bool
+	Query          string
+	Conversation   []chat.Message
+	// Latest numerically grounded semantic fallback, or a source-reviewed
+	// numeric-warning delivery. The latter retains the exact checked envelope
+	// separately from its deterministic decoded presentation.
+	UnverifiedCandidate        string
+	UnverifiedCheckedCandidate string
+	UnverifiedUserNotice       string
+	UnverifiedDecision         candidateDecision
+	NumericWarningAllowed      bool
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while
@@ -84,6 +91,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
 	decision = candidateDecision{Disposition: candidateAccepted,
+		Candidate:     candidate,
 		CandidateHash: candidateTextDigest(candidate),
 		TaskHash: reviewDigest(struct {
 			Query        string
@@ -114,22 +122,38 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		decision.Disposition = candidateRevise
 		return
 	}
+	candidate = e.selectCandidateAdditions(ctx, query, candidate, state, conversation)
+	decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, candidate) {
 		evidence := answerNumericEvidence(candidate, state.RoundSteps, conversation)
 		decision.Unsupported = ungroundedStructuredNumbers(candidate, evidence, state.RoundSteps)
 		decision.NumericFeedback = buildNumericValidationFeedback(candidate, decision.Unsupported)
-		if len(decision.Unsupported) > 0 {
+		if len(decision.Unsupported) > 0 && !e.turnReview.NumericWarningAllowed && e.turnReview.Repairs < maxTurnCandidateRepairs {
 			decision.Disposition = candidateNumericFailure
 			return
 		}
 		ctx = withNumericValidationFeedback(ctx, decision.NumericFeedback)
 	}
+	// After the bounded numeric repairs, the matcher remains diagnostic. The
+	// source model judges the complete task and actual evidence, including a
+	// visible caution, rather than rejecting all supported results for an extra
+	// number. This exception never changes ordinary direct-lookup policy.
+	warning := len(decision.Unsupported) > 0
+	if warning && !e.needsSourceConsistencyCheck(state) {
+		decision.Disposition = candidateNumericFailure
+		return
+	}
+	if warning {
+		ctx = context.WithValue(ctx, numericWarningNoticeKey{}, numericWarningNotice(decision.Unsupported))
+	}
 	// Delivery policy (user decision 2026-10-20): direct lookups are delivered
 	// after deterministic numeric grounding, like a single-model answer with
 	// citations; the independent critic is reserved for synthesis tasks, where
 	// it caught real cross-source and trend errors. Without a planner judgement
-	// the critic still runs; fragments still get the completeness check.
-	if e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && !suspectAnswerFragment(candidate, reasoning) {
+	// the critic still runs; fragments still get the completeness check. Actual
+	// successful PDF SQL analysis retains semantic checking even when the
+	// planner initially chose direct lookup; execution does not certify scope.
+	if !warning && e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && !suspectAnswerFragment(candidate, reasoning) && !hasExecutedPDFAnalysis(state.RoundSteps) {
 		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{
 			"reason": "direct_task", "reasoning_depth": e.taskReasoningDepth(),
 		})
@@ -148,15 +172,47 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		if e.answerReviewAction == reviewCollectEvidence {
 			decision.Disposition = candidateNeedSource
 		}
+	} else if warning && e.needsSourceConsistencyCheck(state) {
+		decision.Disposition = candidateNumericWarning
 	}
 	return
+}
+
+// hasExecutedPDFAnalysis recognizes only current canonical results from the
+// actual authorized PDF SQL operation. It does not inspect the question,
+// candidate, SQL text, displayed Output or the planner's proposed tools.
+func hasExecutedPDFAnalysis(steps []types.AgentStep) bool {
+	for _, step := range steps {
+		for _, call := range step.ToolCalls {
+			if call.Result == nil || !call.Result.Success {
+				continue
+			}
+			data := call.Result.Data
+			if data["kind"] != "structured_analysis" || data["status"] != "ok" || data["source_kind"] != "pdf_table" {
+				continue
+			}
+			switch call.ExecutionName() {
+			case "structured_query_pdf_table":
+				return true
+			case "structured_data":
+				if call.ExecutionArgs()["operation"] == "query_pdf_table" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // Recheck version identity at the delivery boundary. No model call is reused
 // when the human task or actual observations changed after its approval.
 func (e *AgentEngine) candidateApprovalCurrent(candidate string, state *types.AgentState) bool {
 	d := e.turnReview.Last
-	return d.Disposition == candidateAccepted && d.CandidateHash == candidateTextDigest(candidate) &&
+	return d.Disposition == candidateAccepted && e.candidateDecisionCurrent(d, candidate, state)
+}
+
+func (e *AgentEngine) candidateDecisionCurrent(d candidateDecision, candidate string, state *types.AgentState) bool {
+	return d.CandidateHash == candidateTextDigest(candidate) &&
 		d.TaskHash == reviewDigest(struct {
 			Query        string
 			Conversation []chat.Message
@@ -165,22 +221,58 @@ func (e *AgentEngine) candidateApprovalCurrent(candidate string, state *types.Ag
 }
 
 // rememberUnverifiedCandidate keeps the newest candidate that reached semantic
-// review (so numeric grounding already passed) and was not approved. Numeric
-// failures and empty candidates are never kept.
+// review and was not approved, or one approved only for numeric-warning
+// delivery. Rejected numeric candidates and empty candidates are never kept.
 func (e *AgentEngine) rememberUnverifiedCandidate(candidate string, decision candidateDecision) {
-	if strings.TrimSpace(candidate) == "" || len(decision.Unsupported) > 0 {
+	if strings.TrimSpace(candidate) == "" || (len(decision.Unsupported) > 0 && decision.Disposition != candidateNumericWarning) {
 		return
 	}
 	switch decision.Disposition {
-	case candidateRevise, candidateNeedSource, candidateProtocolFailure:
+	case candidateRevise, candidateNeedSource, candidateProtocolFailure, candidateNumericWarning:
 	default:
 		return
 	}
+	e.turnReview.UnverifiedCheckedCandidate = candidate
 	if decoded, ok := decodeReviewedAnswerEnvelope(candidate); ok && strings.TrimSpace(decoded) != "" {
 		candidate = decoded
 	}
 	e.turnReview.UnverifiedCandidate = candidate
 	e.turnReview.UnverifiedUserNotice = strings.TrimSpace(e.answerReviewUserNotice)
+	e.turnReview.UnverifiedDecision = decision
+	if decision.Disposition == candidateNumericWarning {
+		e.turnReview.UnverifiedUserNotice = numericWarningNotice(decision.Unsupported)
+	}
+}
+
+type numericWarningNoticeKey struct{}
+
+func numericWarningNotice(tokens []string) string {
+	visible := []string{}
+	for _, token := range tokens {
+		if len(visible) == 4 {
+			break
+		}
+		if len(token) <= 24 && !strings.ContainsAny(token, "\r\n<>") {
+			visible = append(visible, token)
+		}
+	}
+	if len(visible) == 0 {
+		return "部分数字尚未完全核实，请结合引用的原始资料使用。"
+	}
+	return "其中“" + strings.Join(visible, "、") + "”尚未完成逐项核实，请结合引用的原始资料使用。"
+}
+
+func (e *AgentEngine) numericWarningDelivery(candidate string, state *types.AgentState) (string, bool) {
+	d := e.turnReview.UnverifiedDecision
+	base := e.turnReview.UnverifiedCandidate
+	if d.Disposition != candidateNumericWarning || !e.candidateDecisionCurrent(d, e.turnReview.UnverifiedCheckedCandidate, state) {
+		return "", false
+	}
+	delivery := base + "\n\n> 提示：" + e.turnReview.UnverifiedUserNotice
+	if candidate != base && candidate != e.turnReview.UnverifiedCheckedCandidate && candidate != delivery {
+		return "", false
+	}
+	return delivery, true
 }
 
 // unverifiedDelivery is the delivery policy chosen by the user (2026-10-20):
@@ -189,6 +281,9 @@ func (e *AgentEngine) rememberUnverifiedCandidate(candidate string, decision can
 // Reviewer repair advice is written for the author and may itself be wrong, so
 // it is never shown; only the reviewer's separate user-facing caution is.
 func (e *AgentEngine) unverifiedDelivery() (string, bool) {
+	if e.turnReview.UnverifiedDecision.Disposition == candidateNumericWarning {
+		return "", false
+	}
 	candidate := strings.TrimSpace(e.turnReview.UnverifiedCandidate)
 	if candidate == "" {
 		return "", false
