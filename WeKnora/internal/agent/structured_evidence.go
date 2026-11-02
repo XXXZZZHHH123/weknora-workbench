@@ -20,7 +20,7 @@ const documentVisualReadInstructions = `图片文字、图例和坐标刻度只�
 // tool decision as well as the independent review. No query routing lives here.
 const workbenchTaskScopeInstructions = `先根据当前完整问题和对话上下文明确必须交付的结果，只为这些结果选择来源和取数计划，不把任务扩展成其他分析。完整真实的字段目录、表头和程序分组计数可以支持结构列举；由你判断它们是否足够回答，不因工具可查记录就主动添加日期、最新值、其他报告、派生指标或行情解释。用户未要求的附加结论直接省略，不为它们继续检索或计算。真正的来源歧义须按实际候选说明，不能按行业常识增加原表没有的类别。实际已读文档表格需要取值或分析时，优先analyze_document_tables按服务器完整用户请求和真实表一次生成并执行计划。已明确的手动计划仍可用calculate_document_table检查和执行；不要把同一张表逐行抄成大批calculate_source_values输入或长原文引用。零散原文标量才使用后者。来源已经足够且计算已成功时交付所请求的结果，不为复核重复取相同证据；缺少的必要证据仍需核验。未找到所需结论时，限定在实际检查的来源和范围内说明；局部、分页或候选目录不能证明整个授权范围只有某一来源或不存在其他资料。` + "\n" + agenttools.CatalogMetadataEvidenceInstructions + "\n" + sourceAnswerPresentationInstructions
 
-const sourceAnswerPresentationInstructions = `答复直接交付所问结果，来源用简短引用；非用户所需不补充取读或核验过程。资料不足时只说明实际检查范围内的缺口，不推测缺失原因、发布制度或未来安排。能回答的部分继续交付，不把局部缺口扩成全部不可答。`
+const sourceAnswerPresentationInstructions = `答复直接交付所问结果，来源用简短引用；非用户所需不补充取读或核验过程。资料不足时只说明实际检查范围内的缺口，不推测缺失原因、发布制度或未来安排。能回答的部分继续交付，不把局部缺口扩成全部不可答。` + "\n" + sourceGapPresentationInstructions
 
 // A successful current-turn document body deserves semantic source review
 // even when no spreadsheet was queried. This only schedules model review;

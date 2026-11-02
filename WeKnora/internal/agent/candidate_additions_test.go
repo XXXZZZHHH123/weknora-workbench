@@ -214,3 +214,40 @@ func TestCandidateAdditionsInvalidOrUnavailablePlanContinuesOriginalChecks(t *te
 	require.Equal(t, draft, engine.selectCandidateAdditions(t.Context(), query, draft, state, messages))
 	require.Len(t, model.selectionCalls, 1)
 }
+
+func TestCandidateAdditionsMissingDataKeepsBoundedGapAndDeletesUnrequestedAdvice(t *testing.T) {
+	const broad = "The entire authorized archive has no requested-period figure."
+	const known = "The inspected report gives 138.67 for an earlier period; this does not establish the requested period."
+	const advice = "You must wait for the issuer's next bulletin to get that figure; no such bulletin is in the authorized archive."
+	const draft = broad + "\n\n" + known + "\n\n" + advice
+	model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{known}, []string{broad, advice})}, mockChat: mockChat{responses: []mockResponse{chatAnswer(draft)}}}
+	engine := numericRecoveryTestEngine(t, &model.mockChat)
+	engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
+	engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+	state, messages, _ := numericRecoveryFixture()
+	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{{Name: "read_document", Result: documentReadResult("scope-doc", "scope-chunk", "This report describes the earlier observation; it does not cover the requested period.")}}})
+	query := "Give the measure for the requested period."
+	_, err := engine.executeLoop(t.Context(), state, query, messages, engine.buildToolsForLLM(), "s", "m")
+	require.NoError(t, err)
+	require.Equal(t, known, state.FinalAnswer, "deleting unsupported advice/global absence must preserve the actual gap and known reference result")
+	require.Equal(t, candidateTextDigest(known), engine.turnReview.Last.CandidateHash)
+	require.Len(t, model.selectionCalls, 1)
+}
+
+func TestCandidateAdditionsPreservesExplicitlyRequestedSourceSupportedGuidance(t *testing.T) {
+	const known = "The inspected report gives 138.67 for the earlier period only."
+	const guidance = "The report says to request missing entries from its records desk."
+	const extra = "Its next release will contain all missing entries."
+	draft := known + "\n\n" + guidance + "\n\n" + extra
+	model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{known, guidance}, []string{extra})}}
+	engine := numericRecoveryTestEngine(t, &model.mockChat)
+	engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
+	state, messages, _ := numericRecoveryFixture()
+	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{{Name: "read_document", Result: documentReadResult("procedure-doc", "procedure-chunk", "To request missing entries, contact the records desk.")}}})
+	query := "Give the observed value and explain how this report says to request missing entries."
+	edited := engine.selectCandidateAdditions(t.Context(), query, draft, state, messages)
+	require.Contains(t, edited, known)
+	require.Contains(t, edited, guidance)
+	require.NotContains(t, edited, extra)
+	require.Contains(t, rawMessageText(model.selectionCalls[0]), "contact the records desk", "requested guidance retains actual read evidence rather than a guessed recommendation")
+}
