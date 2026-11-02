@@ -41,6 +41,18 @@ const server=http.createServer(async(req,res)=>{
   else if(pathname==='/api/pdf/drafts')body={drafts:[{draft_id:draft.draft_id,source:draft.bundle.source,fragment_count:2,automation}]};
   else if(pathname==='/api/pdf/tables')body={tables:tables()};
   else if(pathname==='/api/pdf/jobs')body={jobs:[]};
+  else if(pathname.endsWith('/preview')){
+   let rawPlan='';for await(const chunk of req)rawPlan+=chunk;const plan=JSON.parse(rawPlan).plan;
+   body={columns:plan.columns,coverage:{},rows:plan.fragment_ids.flatMap(id=>{
+    const f=draft.bundle.fragments.find(f=>f.id===id);
+    return f.rows.flatMap((row,r)=>plan.header_rows?.[id]?.some(h=>h.row===r)?[]:[{
+     values:Object.fromEntries(plan.columns.map(c=>[c.name,row[c.source_columns[id]]?.text||''])),
+     source_rows:[{fragment_id:id,row:r}],source_cells:Object.fromEntries(plan.columns.map(c=>[c.name,[{
+      fragment_id:id,page:f.page,row:r,column:c.source_columns[id],text:row[c.source_columns[id]]?.text||''
+     }]]))
+    }]);
+   })};
+  }
   else if(pathname.endsWith('/auto-process')){
    automaticCalls++;automation={status:automaticCalls===1?'needs_attention':'completed',accepted_count:automaticCalls===1?1:2,attention_count:automaticCalls===1?1:0,groups:[{fragment_ids:['first'],status:'accepted'},{fragment_ids:['second'],status:automaticCalls===1?'needs_attention':'accepted',message:'uncertain value'}]};body={id:'auto_fixture'};
   }else if(pathname==='/api/pdf/jobs/auto_fixture')body={status:'completed',draft_id:draft.draft_id,automatic_result:automation,stage:automation.attention_count?'已入库 1 张，1 张需要处理':'已自动入库 2 张'};

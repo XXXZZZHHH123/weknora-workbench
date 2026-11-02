@@ -31,17 +31,17 @@ const server=http.createServer(async(req,res)=>{try{
  try{const page=await browser.newPage({viewport:{width:1450,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto('http://127.0.0.1:'+server.address().port);
  await page.locator('.pdf-file-actions button').last().click();await page.locator('#pdfFragmentSelect').waitFor();
+ if(await page.locator('#pdfTogglePreview').getAttribute('aria-pressed')==='true')await page.locator('#pdfTogglePreview').click();
  assert.equal(await page.locator('#pdfManualForm,.pdf-mapping-section,.pdf-supporting,.pdf-technical').count(),0);
  assert.equal(await page.getByRole('button',{name:'重新解析',exact:true}).count(),1);
  assert.equal(await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).inputValue(),'金额');
  assert.equal(await page.locator('#pdfPlanEditor').isVisible(),false);
- assert.match(await page.locator('.pdf-review-findings').innerText(),/第 2 行，第 2 列/);
- assert.match(await page.locator('.pdf-review-findings').innerText(),/未提供具体错误位置/);
+ assert.match(await page.locator('.pdf-review-findings').innerText(),/金额.*2/s);
  assert.doesNotMatch(await page.locator('#pdfDraftDetail').innerText(),/请补全列名|检查是否有漏行|请核对文字|更多来源线索|表格设置|高级映射/);
  // The issue action opens exactly the cited cell, not a generic form.
- await page.locator('.pdf-review-findings .pdf-quality-item').filter({hasText:'第 2 行，第 2 列'}).getByRole('button',{name:'查看并修改'}).click();
+ await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();
  assert.match(await page.locator('.pdf-cell-editor legend').innerText(),/第 2 行 · 第 2 列/);
- assert.equal(await page.locator('td.pdf-cell-focused').getAttribute('data-source-row'),'1');
+ assert.equal(await page.locator('td[data-source-row="1"][data-source-column="1"]').getAttribute('data-source-row'),'1');
  await page.getByRole('textbox',{name:'核对后的单元格内容',exact:true}).fill('-1.20');
  await page.getByRole('button',{name:'保存修改',exact:true}).click();
  const viewer=await page.locator('.pdf-source-viewer').elementHandle();
@@ -50,7 +50,7 @@ const server=http.createServer(async(req,res)=>{try{
  assert.equal(await page.getByRole('textbox',{name:'行修改的原件依据'}).count(),0);
  await page.getByRole('button',{name:'确认删除此行',exact:true}).click();assert.equal(await page.locator('.pdf-excluded-row').count(),1);
  await menu().locator('summary').click();await menu().getByRole('button',{name:'恢复此行',exact:true}).click();assert.equal(await page.locator('.pdf-excluded-row').count(),0);
- await page.getByRole('button',{name:'补充漏掉的行',exact:true}).click();
+ await page.getByRole('button',{name:'新增行',exact:true}).click();
  await page.getByRole('textbox',{name:'补行第 1 列',exact:true}).fill('Missing');await page.getByRole('textbox',{name:'补行第 2 列',exact:true}).fill('-2.50');
  await page.getByRole('button',{name:'保存补充行',exact:true}).click();assert.equal(await page.locator('.pdf-inserted-row').count(),1);
  const headerMenu=()=>page.locator('.pdf-raw-table tbody tr').first().locator('.pdf-row-menu');
@@ -65,9 +65,9 @@ const server=http.createServer(async(req,res)=>{try{
  await page.locator('#pdfPublish').click();await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('待核对'));
  let plan=JSON.parse(await page.locator('#pdfPlanEditor').inputValue());assert.equal(plan.quality_reviews.length,3);assert.equal(plan.cell_corrections.length,1);
  assert.equal(publishes,0,'whole-table confirmation cannot waive an uncertain blank cell');
- await page.locator('.pdf-review-findings').getByRole('button',{name:'查看并修改',exact:true}).click();
- assert.equal(await page.getByRole('textbox',{name:'核对后的单元格内容'}).inputValue(),'');
- // One final confirmation saves this cell, records table review and publishes.
+ const blank=page.locator('#pdfPreview textarea[data-source-row="2"][data-source-column="1"]');
+ assert.equal(await blank.inputValue(),'');await page.locator('#pdfPreview .pdf-column-review[data-plan-column="1"]').click();
+ // One final confirmation records table review and publishes all staged cells.
  await page.locator('#pdfPublish').click();
  await page.waitForFunction(()=>document.querySelector('#pdfPublish')?.textContent==='已入库');
  assert.equal(publishes,1);await page.waitForFunction(()=>document.querySelector('#pdfAutomationSlot strong')?.textContent==='解析完成 · 已入库 1 张');

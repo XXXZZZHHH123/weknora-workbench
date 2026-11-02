@@ -50,9 +50,10 @@ const server=http.createServer(async(req,res)=>{try{
  const browser=await chromium.launch({executablePath:process.env.SHEET_REVIEW_BROWSER,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
  try{
  const page=await browser.newPage({viewport:{width:1450,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
- const open=async()=>{await page.goto('http://127.0.0.1:'+server.address().port);await page.locator('.pdf-file-actions button').last().click();await page.locator('.pdf-column-heading input').first().waitFor();};
+ const showRaw=async()=>{await page.locator('#pdfTogglePreview').waitFor();if(await page.locator('#pdfTogglePreview').getAttribute('aria-pressed')==='true')await page.locator('#pdfTogglePreview').click();};
+ const open=async()=>{await page.goto('http://127.0.0.1:'+server.address().port);await page.locator('.pdf-file-actions button').last().click();await showRaw();await page.locator('.pdf-column-heading input').first().waitFor();};
  const select=async index=>{await page.locator('#pdfFragmentSelect').selectOption(String(index));await page.waitForFunction(i=>JSON.parse(document.querySelector('#pdfPlanEditor').value).fragment_ids.includes('table-'+(i+1)),index);};
- const expectPreview=async word=>{await page.waitForFunction(w=>document.querySelector('#pdfPreview')?.textContent.includes(w),word);const text=await page.locator('#pdfPreview').innerText();assert(!text.includes(word==='First-only'?'Second-only':'First-only'));};
+ const expectPreview=async word=>{await page.waitForFunction(w=>[document.querySelector('#pdfPreview')?.textContent,...[...document.querySelectorAll('#pdfPreview textarea')].map(e=>e.value)].join(' ').includes(w),word);const text=await page.locator('#pdfPreview').evaluate(e=>[e.textContent,...[...e.querySelectorAll('textarea')].map(i=>i.value)].join(' '));assert(!text.includes(word==='First-only'?'Second-only':'First-only'));};
  await open();
  if(refreshFixture){
   await page.locator('#pdfTogglePreview').click();await expectPreview('First-only');
@@ -63,8 +64,7 @@ const server=http.createServer(async(req,res)=>{try{
    await page.waitForFunction(()=>document.querySelector('#pdfDetailStatus')?.textContent.includes('待核对'));
    assert.equal(publishes.length,0,'single confirmation cannot waive a located cell issue');
    assert.equal(JSON.parse(await page.locator('#pdfPlanEditor').inputValue()).quality_reviews?.length||0,0);
-   await page.locator('.pdf-review-findings').getByRole('button',{name:'查看并修改',exact:true}).click();
-   await page.getByRole('textbox',{name:'核对后的单元格内容',exact:true}).fill('11');
+   await page.locator('#pdfPreview textarea[data-source-row="1"][data-source-column="1"]').fill('11');
    await page.locator('#pdfPublish').click();
   }
   await page.waitForFunction(()=>document.querySelector('#pdfPublish')?.textContent==='已入库');
@@ -81,7 +81,7 @@ const server=http.createServer(async(req,res)=>{try{
   assert.match(await page.locator('#pdfDetailStatus').innerText(),/重复/);
   await page.locator('#pdfTogglePreview').click();await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('Amount');
   await page.locator('#pdfTogglePreview').click();await expectPreview('Second-only');assert.deepEqual(errors,[]);
-  console.log('PASS: one confirm records current-table review and publishes; preview stays read-only, located issues block, preview failures can be retried.');return;
+  console.log('PASS: one confirm records current-table review and publishes; preview does not auto-confirm, located issues block, preview failures can be retried.');return;
  }
  if(process.env.PDF_AUTO_FIXTURE){
   await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('Unsaved first edit');await select(1);
@@ -104,6 +104,7 @@ const server=http.createServer(async(req,res)=>{try{
  await select(0);await expectPreview('First-only');assert.equal(await page.locator('#pdfPublish').innerText(),'已入库');
  // A fresh visit restores the actual saved plan from the protected table endpoint.
  await page.locator('#pdfBackToFiles').click();await page.locator('.pdf-file-actions button').last().click();
+ await showRaw();
  await page.locator('#pdfFragmentSelect').waitFor();await select(0);
  await page.waitForFunction(()=>document.querySelector('#pdfPublish')?.textContent==='已入库');
  await page.locator('#pdfTogglePreview').click();await expectPreview('First-only');
