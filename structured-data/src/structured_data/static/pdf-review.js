@@ -26,7 +26,10 @@
   let activeFragmentIndex = 0;
   let automationRun = 0;
   let processingDraftId = '';
-  let submitting = false;
+  const reviewStates = new Map();
+  let activeReview = null;
+  let viewGeneration = 0;
+  let previewMode = false;
   let publishedSignature = '';
   const fileProgress = new Map();
   let listScroll = 0;
@@ -82,15 +85,15 @@
     status.classList.toggle('error', Boolean(error));
     status.setAttribute('role', error ? 'alert' : 'status');
     const detailStatus=document.getElementById('pdfDetailStatus');
-    if(detailStatus){detailStatus.textContent=message||'';detailStatus.classList.toggle('error',Boolean(error));}
+    if(detailStatus){detailStatus.textContent=error?message:'';detailStatus.hidden=!error;}
   }
 
   function invalidatePreview(message = '修改已暂存') {
     preview = null;
     previewSignature = '';
     const pane = document.getElementById('pdfPreview');
-    if (pane) pane.replaceChildren(make('p', message, 'muted'));
-    updatePublishButton();
+    if (pane) pane.replaceChildren();
+    stashReview();updatePublishButton();
   }
 
   function revokeSource() {
@@ -100,6 +103,7 @@
   }
 
   function clearScope(message = '账号或知识库已切换，请重新加载 PDF 草稿。') {
+    reviewStates.clear();activeReview=null;viewGeneration++;previewMode=false;
     closeDetail();automationRun++;processingDraftId='';fileProgress.clear();
     operation += 1;
     root.inert = false;
@@ -131,6 +135,88 @@
     }
   }
 
+  function stashReview() {
+    if(!activeReview)return;
+    const editor=document.getElementById('pdfPlanEditor');
+    if(editor)activeReview.plan=jsonValue(editor);
+    Object.assign(activeReview,{preview,previewSignature,publishedSignature});
+  }
+  function applyReview(state) {
+    activeReview=state;
+    document.getElementById('pdfPlanEditor').value=JSON.stringify(state.plan);
+    selectedFragments=new Set(state.plan.fragment_ids||[]);
+    preview=state.preview;previewSignature=state.previewSignature||'';publishedSignature=state.publishedSignature||'';
+  }
+  function settleEditor() {
+    const editor=document.querySelector('.pdf-cell-editor');
+    if(!editor)return;
+    // A deletion is only committed by its explicit confirmation button.
+    if(editor.dataset.kind==='delete')editor.remove();
+    else editor.querySelector('button')?.click();
+  }
+  async function navigateFragment(index) {
+    if(!fragments()[index])return;
+    settleEditor();stashReview();
+    activeFragmentIndex=index;
+    const generation=++viewGeneration,fragment=fragments()[index];
+    const savedEpoch=epoch,savedOperation=operation,id=draft.draft_id;
+    let state=reviewStates.get(fragment.id);
+    if(!state){
+      const group=displayedAutomation(draft)?.groups?.find(g=>g.fragment_ids?.includes(fragment.id));
+      const candidates=tables.filter(t=>t.draft_id===id&&t.fragments?.some(f=>f.id===fragment.id));
+      const saved=candidates.find(t=>t.table_id===group?.table_id)||candidates.find(t=>t.status==='reviewed')||candidates[0];
+      selectedFragments=new Set(group?.plan?.fragment_ids||[fragment.id]);
+      const plan=group?.plan?structuredClone(group.plan):createManualPlan();
+      if(!group?.plan)plan.columns.forEach((c,i)=>{c.name=`列 ${i+1}`;c.source_columns[fragment.id]=i;});
+      state={plan,initialSignature:JSON.stringify(plan),preview:null,previewSignature:'',publishedSignature:'',busy:false,loading:Boolean(saved),tableId:saved?.table_id};
+      for(const fid of plan.fragment_ids)reviewStates.set(fid,state);
+      if(saved){
+        state.load=api(`/api/pdf/tables/${encodeURIComponent(saved.table_id)}?limit=100`).then(record=>{
+          if(!current(savedEpoch,savedOperation)||draft?.draft_id!==id)return;
+          if(record.table_id!==saved.table_id||record.draft_id!==id||record.bundle_sha256!==draft.bundle_sha256||!record.plan?.fragment_ids?.includes(fragment.id))throw new Error('已入库表格与当前原件不一致，请重新打开文件。');
+          state.plan=structuredClone(record.plan);state.initialSignature=JSON.stringify(state.plan);state.preview=record.output_truncated&&record.plan.fragment_ids.length>1?null:record;
+          state.publishedSignature=JSON.stringify(state.plan);state.previewSignature=state.preview?state.publishedSignature:'';
+          for(const fid of state.plan.fragment_ids)if(!reviewStates.has(fid)||reviewStates.get(fid)===state)reviewStates.set(fid,state);
+        }).catch(error=>{state.loadError=error.message;}).finally(()=>{state.loading=false;});
+      }
+    }
+    applyReview(state);renderCurrentFragment();setStatus('');
+    if(state.load){await state.load;if(!current(savedEpoch,savedOperation)||generation!==viewGeneration||activeReview!==state)return;applyReview(state);renderCurrentFragment();}
+    if(state.loadError){setStatus(state.loadError,true);return;}
+    if(previewMode)await previewPlan();
+  }
+  function renderCurrentFragment() {
+    const pane=document.querySelector('.pdf-fragment-pane'),viewer=document.querySelector('.pdf-source-viewer');
+    if(!pane||!viewer)return;
+    renderFragmentInspector(pane,viewer);
+  }
+  async function refreshPublishedReviews() {
+    if(!activeReview)return;
+    stashReview();let reload=false;
+    const untouched=state=>!state.busy&&!state.loading&&JSON.stringify(state.plan)===state.initialSignature&&
+      !(activeReview===state&&document.querySelector('.pdf-cell-editor'));
+    for(const state of new Set(reviewStates.values())){
+      if(!untouched(state))continue;
+      const saved=tables.find(t=>t.draft_id===draft?.draft_id&&t.table_id!==state.tableId&&
+        state.plan.fragment_ids.every(id=>t.fragments?.some(f=>f.id===id))&&
+        t.fragments.every(f=>!reviewStates.has(f.id)||untouched(reviewStates.get(f.id))));
+      if(!saved)continue;
+      for(const [id,context] of reviewStates)if(context===state)reviewStates.delete(id);
+      if(activeReview===state)reload=true;
+    }
+    if(reload)await navigateFragment(activeFragmentIndex);
+  }
+  async function togglePreview() {
+    settleEditor();previewMode=!previewMode;renderCurrentFragment();
+    if(previewMode)await previewPlan();
+  }
+  function renderPreviewMode() {
+    const pane=document.querySelector('.pdf-fragment-pane');if(!pane)return;
+    for(const child of pane.querySelectorAll(':scope>.pdf-raw-table,:scope>.pdf-review-step'))child.hidden=previewMode;
+    const section=document.getElementById('pdfPublicationSection');if(section)section.hidden=!previewMode;
+    const button=document.getElementById('pdfTogglePreview');if(button){button.textContent=previewMode?'返回编辑':'入库预览';button.setAttribute('aria-label',previewMode?'返回编辑':'查看入库预览');button.setAttribute('aria-pressed',String(previewMode));}
+  }
+
   function readEditingPlan() { return jsonValue(document.getElementById('pdfPlanEditor')); }
   function writePlan(plan) {
     document.getElementById('pdfPlanEditor').value=JSON.stringify(plan,null,2);
@@ -144,40 +230,25 @@
     const publication = document.getElementById('pdfPublicationSection');
     if (publication) publication.hidden = false;
     const coverage = result.coverage || {};
-    const note = make('p', `${coverage.logical_row_count ?? result.rows?.length ?? 0} 行 · ${result.columns?.length || 0} 列`);
-    pane.append(note);
+
     const unresolved=coverage.unresolved_quality_issues||[];
     if(unresolved.length){
       const box=make('div',undefined,'pdf-preview-issues');
-      const groups=new Map();
       for(const issue of unresolved){
-        if(issue.code==='uncertain_cell'){
-          const fragment=fragments().find(f=>f.id===issue.fragment_id);
-          if(!fragment)continue;
-          const item=make('div',undefined,'pdf-quality-item');
-          item.append(make('span',`第 ${fragment.page} 页 · 第 ${issue.row+1} 行，第 ${issue.column+1} 列`));
-          item.append(action('查看并修改',()=>locateCell(fragment,issue.row,issue.column),true));box.append(item);
-        }else if(issue.code==='row_alignment_unverified'){
+        if(issue.code==='row_alignment_unverified'){
           const item=make('div',undefined,'pdf-quality-item');
           const pages=[...new Set(fragments().filter(f=>readEditingPlan().fragment_ids.includes(f.id)).map(f=>f.page))];
           item.append(make('span',`第 ${pages.join('、')} 页 · 跨页行对应关系`),action('行对应正确',()=>{
             const plan=readEditingPlan();plan.row_alignment_review={reason:'用户操作：确认跨页行对应关系'};writePlan(plan);item.replaceChildren(make('span','已确认'));
           },true));box.append(item);
-        }else{
-          const fragment=fragments().find(f=>f.id===issue.fragment_id);
-          if(fragment)groups.set(fragment.id,fragment);
         }
-      }
-      for(const fragment of groups.values()){
-        const item=make('div',undefined,'pdf-quality-item');
-        item.append(make('span',`第 ${fragment.page} 页 · 整表核对（未提供具体位置）`),action('查看这张表',()=>{
-          activeFragmentIndex=fragments().indexOf(fragment);renderFragmentInspector(document.querySelector('.pdf-fragment-pane'),document.querySelector('.pdf-source-viewer'));focusReview();
-        },true));box.append(item);
       }
       pane.append(box);
     }
     const columns = result.columns || [];
-    const rows = result.rows || [];
+    let rows = result.rows || [];
+    const fragment=fragments()[activeFragmentIndex];
+    if(readEditingPlan().fragment_ids?.length>1)rows=rows.filter(row=>row.source_rows?.some(ref=>ref.fragment_id===fragment.id)||Object.values(row.source_cells||{}).flat().some(ref=>ref.fragment_id===fragment.id||(!ref.fragment_id&&ref.page===fragment.page)));
     if (!columns.length || !rows.length) {
       pane.append(make('p', '预览没有可显示的数据行。', 'muted'));
       return;
@@ -415,8 +486,9 @@
     saveInlinePlan(plan,parent);
   }
   function locateCell(fragment,row,column) {
+    previewMode=false;
+    if(!readEditingPlan().fragment_ids?.includes(fragment.id)){navigateFragment(fragments().indexOf(fragment)).then(()=>locateCell(fragment,row,column));return;}
     activeFragmentIndex=fragments().indexOf(fragment);
-    if(!readEditingPlan().fragment_ids?.includes(fragment.id)&&!beginCorrection(fragment))return;
     const parent=document.querySelector('.pdf-fragment-pane');
     renderFragmentInspector(parent,document.querySelector('.pdf-source-viewer'));
     editCell(fragment,row,column,parent);
@@ -457,13 +529,13 @@
       if(updated.key_columns)updated.key_columns=updated.key_columns.map(key=>key===old?name.value:key);
       writePlan(updated);
     });
-    const options=make('details',undefined,'pdf-column-options');options.append(make('summary','格式与单位'));
+    const options=make('details',undefined,'pdf-column-options');const trigger=make('summary','⋯');trigger.setAttribute('aria-label',`第 ${sourceColumn+1} 列格式与单位`);options.append(trigger);
     const type=make('select');type.setAttribute('aria-label',`第 ${sourceColumn+1} 列类型`);type.dataset.columnType=String(index);
     for(const [value,label] of [['text','文本'],['decimal','数字']]){const option=make('option',label);option.value=value;type.append(option);}type.value=column.type;
     type.addEventListener('change',()=>{const updated=readEditingPlan();updated.columns[index].type=type.value;writePlan(updated);});
     const unit=make('input');unit.value=column.unit||'';unit.placeholder='单位';unit.dataset.columnUnit=String(index);unit.setAttribute('aria-label',`第 ${sourceColumn+1} 列单位`);
     unit.addEventListener('input',()=>{const updated=readEditingPlan();if(unit.value.trim())updated.columns[index].unit=unit.value.trim();else delete updated.columns[index].unit;writePlan(updated);});
-    options.append(type,unit);th.append(make('small',`第 ${sourceColumn+1} 列`),name,options);return th;
+    options.append(type,unit);const heading=make('div',undefined,'pdf-column-heading');heading.append(name,options);th.append(heading);return th;
   }
   function focusReview() {
     const pane=document.querySelector('.pdf-fragment-pane');
@@ -473,31 +545,15 @@
     const focus=detail?.querySelector('button') || pane?.querySelector('button');focus?.focus({preventScroll:true});
   }
   function beginCorrection(fragment) {
-    const editor=document.getElementById('pdfPlanEditor');
-    const existing=jsonValue(editor);
-    const group=displayedAutomation(draft)?.groups?.find(g=>g.status!=='accepted'&&g.fragment_ids?.includes(fragment.id));
-    const ids=group?.plan?.fragment_ids || [fragment.id];
-    if(existing.fragment_ids?.length && (existing.fragment_ids.length!==ids.length || !ids.every(id=>existing.fragment_ids.includes(id))) &&
-      !window.confirm('开始核对这张表会替换尚未入库的编辑内容。请先保存当前表格，或确认放弃后继续。'))return false;
-    selectedFragments=new Set(ids);
-    if(existing.fragment_ids?.length!==ids.length || !ids.every(id=>existing.fragment_ids.includes(id)) || !existing.columns?.length){
-      const plan=group?.plan ? structuredClone(group.plan) : createManualPlan();
-      if(!group?.plan)plan.columns.forEach((column,index)=>{column.name=`列 ${index+1}`;column.source_columns[fragment.id]=index;});
-      editor.value=JSON.stringify(plan,null,2);
-    }
-    invalidatePreview();
-    const pane=document.querySelector('.pdf-fragment-pane');
-    renderFragmentInspector(pane,document.querySelector('.pdf-source-viewer'));
-    focusReview();
-    setStatus('');
-    return true;
+    if(!activeReview?.plan?.fragment_ids?.includes(fragment.id)){navigateFragment(fragments().indexOf(fragment));return false;}
+    previewMode=false;renderCurrentFragment();return true;
   }
   function editCell(fragment,row,column,parent) {
     parent.querySelector('.pdf-cell-editor')?.remove();
     const editor=document.getElementById('pdfPlanEditor'),plan=readEditingPlan();
     const cell=fragment.rows[row][column];
     const saved=(plan.cell_corrections||[]).find(c=>c.fragment_id===fragment.id&&c.row===row&&c.column===column);
-    const box=make('fieldset',undefined,'pdf-cell-editor');box.append(make('legend',`第 ${fragment.page} 页 · 第 ${row+1} 行 · 第 ${column+1} 列`),make('p',`原始识别：${cell.text || '（空白）'}`));
+    const box=make('fieldset',undefined,'pdf-cell-editor');box.dataset.kind='cell';box.append(make('legend',`第 ${fragment.page} 页 · 第 ${row+1} 行 · 第 ${column+1} 列`),make('p',`原始识别：${cell.text || '（空白）'}`));
     const value=make('textarea');value.rows=2;value.value=saved?.text??cell.text??'';value.setAttribute('aria-label','核对后的单元格内容');
     box.append(make('label','原件中的内容（确实为空时可留空）'),value,action('保存修改',()=>{
       const updated=readEditingPlan();updated.quality_reviews=(updated.quality_reviews||[]).filter(r=>r.fragment_id!==fragment.id);updated.cell_corrections=(updated.cell_corrections||[]).filter(c=>!(c.fragment_id===fragment.id&&c.row===row&&c.column===column));
@@ -522,7 +578,7 @@
     return {box};
   }
   function editRowReason(fragment,row,parent,plan) {
-    const {box}=rowEditor(parent,`删除第 ${row+1} 行？`);
+    const {box}=rowEditor(parent,`删除第 ${row+1} 行？`);box.dataset.kind='delete';
     box.append(action('确认删除此行',()=>{
       plan.excluded_rows=(plan.excluded_rows||[]).filter(item=>!(item.fragment_id===fragment.id&&item.row===row));
       plan.excluded_rows.push({fragment_id:fragment.id,row,reason:actionReceipt(fragment,'删除行',row)});
@@ -533,7 +589,7 @@
   }
   function insertRow(fragment,parent,existing=null) {
     const plan=readEditingPlan();
-    const {box}=rowEditor(parent,existing?'修改补充行':'补充一行');
+    const {box}=rowEditor(parent,existing?'修改补充行':'补充一行');box.dataset.kind='insert';
     const position=make('select');position.setAttribute('aria-label','补行位置');
     for(let i=-1;i<fragment.rows.length;i++){const option=make('option',i===-1?'放在第一行之前':`放在原第 ${i+1} 行之后`);option.value=String(i);position.append(option);}
     position.value=String(existing?.after_row??fragment.rows.length-1);box.append(make('label','插入位置'),position);
@@ -548,9 +604,10 @@
   function renderInsertedRow(fragment,row,parent) {
     const tr=make('tr',undefined,'pdf-inserted-row');tr.append(make('th','补行'));
     for(const text of row.texts)tr.append(make('td',text));
-    const controls=make('td');controls.append(action('修改补行',()=>insertRow(fragment,parent,row),true),action('移除此补行',()=>{
+    const controls=make('td'),menu=make('details',undefined,'pdf-row-menu'),trigger=make('summary','⋯');trigger.setAttribute('aria-label','补充行操作');menu.append(trigger);
+    menu.append(action('修改补行',()=>insertRow(fragment,parent,row),true),action('移除此补行',()=>{
       const plan=readEditingPlan();plan.inserted_rows=plan.inserted_rows.filter(item=>item.id!==row.id);saveInlinePlan(plan,parent);
-    },true));tr.append(controls);return tr;
+    },true));controls.append(menu);tr.append(controls);return tr;
   }
   function renderFragment(fragment, parent) {
     const rows = fragment.rows || [];
@@ -563,7 +620,8 @@
       if(plan.header_rows?.[fragment.id]?.some(h=>h.row===row)||plan.excluded_rows?.some(r=>r.fragment_id===fragment.id&&r.row===row))continue;
       for(const [column,cell] of cells.entries())if(cell.uncertain&&!plan.cell_corrections?.some(c=>c.fragment_id===fragment.id&&c.row===row&&c.column===column))uncertain.push({row,column});
     }
-    for(const issue of remaining)for(const cell of issue.cells||[]){
+    const validationCells=previewSignature===JSON.stringify(plan)?(preview?.coverage?.unresolved_quality_issues||[]).filter(i=>i.fragment_id===fragment.id&&i.code==='uncertain_cell'):[];
+    for(const issue of [...remaining,{cells:validationCells}])for(const cell of issue.cells||[]){
       const row=cell.row,column=cell.column;
       if(Number.isInteger(row)&&Number.isInteger(column)&&fragment.rows[row]?.[column]&&!uncertain.some(c=>c.row===row&&c.column===column)&&!plan.cell_corrections?.some(c=>c.fragment_id===fragment.id&&c.row===row&&c.column===column)&&!plan.header_rows?.[fragment.id]?.some(h=>h.row===row)&&!plan.excluded_rows?.some(r=>r.fragment_id===fragment.id&&r.row===row))uncertain.push({row,column});
     }
@@ -586,9 +644,6 @@
       parent.append(quality);
     }
     if(!editing){const start=action('修改这张表',()=>beginCorrection(fragment),true);start.classList.add('pdf-review-step');parent.append(start);}
-    const rowActions=make('div',undefined,'pdf-inline-row-actions');
-    rowActions.append(action('补充漏掉的行',()=>{if(!editing&&!beginCorrection(fragment))return;insertRow(fragment,parent);},true));
-    parent.append(rowActions);
     const wrap = make('div', undefined, 'pdf-raw-table scroll');
     const table = make('table'), head = make('thead'), header = make('tr');
     header.append(make('th', '行'));
@@ -600,18 +655,18 @@
       const tr = make('tr');tr.dataset.sourceRow=String(rowIndex);
       const isHeader=plan.header_rows?.[fragment.id]?.some(h=>h.row===rowIndex);
       tr.classList.toggle('pdf-header-row',Boolean(isHeader));
-      tr.append(make('th',isHeader?`${rowIndex+1} · 列名`:rowIndex+1));
+      const rowNumber=make('th',rowIndex+1);if(isHeader)rowNumber.title='此行用作列名';tr.append(rowNumber);
       for (const [columnIndex,cell] of row.entries()) {
         const td = make('td');td.dataset.sourceRow=String(rowIndex);td.dataset.sourceColumn=String(columnIndex);
         const corrected=(plan.cell_corrections||[]).find(c=>c.fragment_id===fragment.id&&c.row===rowIndex&&c.column===columnIndex);
         const edit=action(corrected?.text??cell.text??'',()=>{if(!editing&&!beginCorrection(fragment))return;editCell(fragment,rowIndex,columnIndex,parent);},true);edit.classList.add('pdf-cell-value');edit.setAttribute('aria-label',`修改第 ${rowIndex+1} 行第 ${columnIndex+1} 列`);td.append(edit);
-        if(cell.uncertain||corrected){td.classList.add('pdf-cell-flag');td.append(make('small',corrected?'已核对修改':'需核对'));}
+        if(cell.uncertain||corrected){td.classList.add('pdf-cell-flag');td.title=corrected?'已修改':'待核对';}
         if (cell.rowspan > 1 || cell.colspan > 1) td.title = `合并 ${cell.rowspan}×${cell.colspan}`;
         tr.append(td);
       }
       const excluded=(plan.excluded_rows||[]).some(item=>item.fragment_id===fragment.id&&item.row===rowIndex);
       const controls=make('td');
-      const menu=make('details',undefined,'pdf-row-menu');menu.append(make('summary','操作'));
+      const menu=make('details',undefined,'pdf-row-menu');const rowTrigger=make('summary','⋯');rowTrigger.setAttribute('aria-label',`第 ${rowIndex+1} 行操作`);menu.append(rowTrigger);
       menu.append(action(isHeader?'改为数据行':'用这行作列名',()=>{if(!editing&&!beginCorrection(fragment))return;markHeaderRow(fragment,rowIndex,parent);},true));
       menu.append(action(excluded?'恢复此行':'删除此行',()=>{
         if(!editing&&!beginCorrection(fragment))return;
@@ -637,14 +692,24 @@
       const option = make('option', `表格 ${i+1} · 第 ${item.page} 页`); option.value=String(i);picker.append(option);
     }
     picker.value=String(activeFragmentIndex);
-    picker.addEventListener('change',()=>{activeFragmentIndex=Number(picker.value);renderFragmentInspector(parent,viewer);});
-    const previous=action('上一处',()=>{activeFragmentIndex--;renderFragmentInspector(parent,viewer);},true);
-    const next=action('下一处',()=>{activeFragmentIndex++;renderFragmentInspector(parent,viewer);},true);
+    picker.addEventListener('change',()=>{navigateFragment(Number(picker.value)).catch(error=>setStatus(error.message,true));});
+    const previous=action('上一处',()=>navigateFragment(activeFragmentIndex-1),true);
+    const next=action('下一处',()=>navigateFragment(activeFragmentIndex+1),true);
     previous.disabled=activeFragmentIndex===0;next.disabled=activeFragmentIndex===items.length-1;
     toolbar.append(picker,previous,next);parent.append(toolbar);
     const fragment=items[activeFragmentIndex];
-    parent.append(make('p',`第 ${fragment.page} 页 · ${fragment.rows?.length || 0} 行 · ${Math.max(0,...(fragment.rows || []).map(row=>row.length))} 列`,'pdf-table-meta'));
+    const controls=make('div',undefined,'pdf-table-toolbar');
+    controls.append(make('span',`${fragment.rows?.length||0} 行 · ${Math.max(0,...(fragment.rows||[]).map(row=>row.length))} 列`,'pdf-table-meta'));
+    const add=action('补充漏掉的行',()=>{previewMode=false;renderCurrentFragment();insertRow(fragment,parent);},true);add.classList.add('pdf-add-row');
+    const toggle=action('入库预览',togglePreview,true);toggle.id='pdfTogglePreview';toggle.setAttribute('aria-label','查看入库预览');
+    const publish=action('确认并入库',confirmPlan);publish.id='pdfPublish';controls.append(add,toggle,publish);parent.append(controls);
+    const error=make('p','','pdf-table-error');error.id='pdfDetailStatus';error.hidden=true;error.setAttribute('role','alert');parent.append(error);
     renderFragment(fragment,parent);
+    const section=make('section',undefined,'pdf-inline-preview');section.id='pdfPublicationSection';section.hidden=!previewMode;
+    const pane=make('div');pane.id='pdfPreview';section.append(pane);parent.append(section);
+    if(preview&&previewSignature===JSON.stringify(readEditingPlan()))renderPlanPreview(preview);
+    else if(previewMode)pane.append(make('div','正在加载当前表格…','pdf-preview-loading'));
+    renderPreviewMode();updatePublishButton();
     viewer.dataset.page=String(fragment.page);
     viewer.contentWindow?.postMessage({type:'pdf-source-page',page:fragment.page},location.origin);
   }
@@ -734,6 +799,7 @@
           if(draft?.draft_id===id){
             draft.automation=job.automatic_result||drafts.find(item=>item.draft_id===id)?.automation;
             renderAutomation(document.getElementById('pdfAutomationSlot'));
+            await refreshPublishedReviews();
           }
           updateFileProgress();return job;
         }
@@ -782,8 +848,7 @@
         else if(recover==='retry')item.append(text,action('重试未完成表格',()=>autoProcess(draft.draft_id).catch(()=>{}),true));
         else item.append(text,action('查看疑点',()=>{
           const candidate=fragments().find(f=>group.fragment_ids.includes(f.id)&&(f.quality?.status==='needs_review'||f.quality?.issues?.length||f.rows?.some(row=>row.some(cell=>cell.uncertain)))) || fragments().find(f=>group.fragment_ids.includes(f.id));
-          activeFragmentIndex=Math.max(0,fragments().indexOf(candidate));
-          if(candidate&&beginCorrection(candidate))slot.querySelector('.pdf-exception-drawer').open=false;
+          if(candidate){navigateFragment(Math.max(0,fragments().indexOf(candidate)));slot.querySelector('.pdf-exception-drawer').open=false;}
         },true));list.append(item);
       }
       const drawer=make('details',undefined,'pdf-exception-drawer');drawer.append(make('summary',`查看需要处理的表格（${exceptions.length}）`),list);inspection.append(drawer);
@@ -794,6 +859,7 @@
   async function selectDraft(id) {
     const savedEpoch = epoch;
     const savedOperation = ++operation;
+    reviewStates.clear();activeReview=null;viewGeneration++;previewMode=false;
     draft = null;
     activeFragmentIndex = 0;
     selectedFragments = new Set();
@@ -825,7 +891,7 @@
       const pending=displayedAutomation(draft)?.groups?.find(g=>g.status!=='accepted');
       activeFragmentIndex=Math.max(0,fragments().findIndex(f=>pending?.fragment_ids?.includes(f.id)));
       renderSelectedDraft();
-      if(pending||!tables.some(t=>t.draft_id===id)){const first=fragments()[activeFragmentIndex];if(first)beginCorrection(first);}
+      if(fragments().length)await navigateFragment(activeFragmentIndex);
       setStatus('');
       return true;
     } catch (error) {
@@ -865,21 +931,6 @@
     const fragmentList=make('div',undefined,'pdf-fragment-pane');
     sourceAndTables.append(showOriginal,original,fragmentList);target.append(sourceAndTables);
     renderFragmentInspector(fragmentList,viewer);
-    const controls=make('div',undefined,'pdf-table-actions');
-    controls.append(action('查看入库预览',()=>previewPlan(),true));target.append(controls);
-    const confirmation = make('div', undefined, 'mapping-block');
-
-    const publish = action('确认并入库', () => confirmPlan().catch(error => setStatus(error.message, true)));
-    publish.id = 'pdfPublish';
-    publish.disabled = true;
-    confirmation.append(publish);
-    const publishSection=make('div',undefined,'pdf-publication-section');publishSection.id='pdfPublicationSection';publishSection.hidden=true;
-    const previewPane = make('div');
-    previewPane.id = 'pdfPreview';
-    previewPane.append(make('p', '选择片段并预览映射后，结果会显示在这里。', 'muted'));
-    publishSection.append(make('h3','入库预览'),previewPane);target.append(publishSection);
-    confirmation.classList.add('pdf-confirm-bar');target.append(confirmation);
-    const status=make('p','','pdf-detail-status');status.id='pdfDetailStatus';status.setAttribute('role','status');target.append(status);
     updateFileProgress();
     updatePublishButton();
   }
@@ -891,72 +942,65 @@
     if (publish) {
       const pendingEdit=Boolean(document.querySelector('.pdf-cell-editor'));
       const saved=publishedSignature===JSON.stringify(plan)&&!pendingEdit;
-      publish.textContent=saved?'已入库':submitting?'正在保存…':'确认并入库';
-      publish.disabled=saved||submitting||!plan.columns?.length||!plan.fragment_ids?.length;
-      publish.closest('.pdf-confirm-bar').hidden=!plan.columns?.length;
+      const busy=activeReview?.busy||activeReview?.loading;
+      publish.textContent=saved?'已入库':busy?'处理中…':'确认并入库';
+      publish.classList.toggle('is-saved',saved);
+      publish.disabled=saved||busy||Boolean(activeReview?.loadError)||!plan.columns?.length||!plan.fragment_ids?.length;
+      const toggle=document.getElementById('pdfTogglePreview');if(toggle)toggle.disabled=busy||Boolean(activeReview?.loadError)||!plan.columns?.length;
+      const add=document.querySelector('.pdf-add-row');if(add)add.disabled=busy||Boolean(activeReview?.loadError);
+      const grid=document.querySelector('.pdf-raw-table');if(grid)grid.inert=Boolean(activeReview?.loading||activeReview?.loadError);
     }
   }
 
   async function confirmPlan() {
-    if(submitting)return;
-    submitting=true;updatePublishButton();
+    const state=activeReview;if(!state||state.busy||state.loading)return;
+    state.busy=true;updatePublishButton();
+    const generation=viewGeneration,savedEpoch=epoch,savedOperation=operation;
     try {
-      const savedEpoch=epoch,savedOperation=operation,id=draft?.draft_id;
       const pendingEdit=document.querySelector('.pdf-cell-editor');
       if(pendingEdit){pendingEdit.querySelector('button')?.click();if(pendingEdit.isConnected)throw new Error('请先完成当前修改。');}
       const plan=readEditingPlan();
-      if(!preview || JSON.stringify(plan)!==previewSignature)await previewPlan();
-      if(!current(savedEpoch,savedOperation)||draft?.draft_id!==id)return;
-      if(preview?.coverage?.unresolved_quality_issues?.length){setStatus('还有待核对的内容，请处理下方标记。',true);return;}
+      if(!preview||JSON.stringify(plan)!==previewSignature)await previewPlan();
+      if(!current(savedEpoch,savedOperation)||activeReview!==state||viewGeneration!==generation)return;
+      if(preview?.coverage?.unresolved_quality_issues?.length){previewMode=true;renderCurrentFragment();setStatus('请先处理待核对的内容。',true);return;}
       await publishPlan();
-    } finally {submitting=false;updatePublishButton();}
+    } finally {state.busy=false;if(activeReview===state)updatePublishButton();}
   }
 
   async function previewPlan() {
-    if (!draft) throw new Error('请先打开一个 PDF 草稿。');
-    const plan = jsonValue(document.getElementById('pdfPlanEditor'));
+    if(!draft||!activeReview||activeReview.loading)return;
+    const state=activeReview,generation=viewGeneration,savedEpoch=epoch,savedOperation=operation;
+    const plan=readEditingPlan(),signature=JSON.stringify(plan);
     const names=new Set();
     for(const [index,column] of (plan.columns||[]).entries()){
       const name=column.name.trim();if(!name)throw new Error(`第 ${index+1} 列还没有名称。`);
       if(names.has(name.toLowerCase()))throw new Error(`列名“${name}”重复，请为每列填写不同名称。`);names.add(name.toLowerCase());
     }
-    if(plan.fragment_ids?.length!==selectedFragments.size || plan.fragment_ids.some(id=>!selectedFragments.has(id)))throw new Error('当前选择的表格已经改变，请先为所选表格设置字段，再预览。');
-    const savedEpoch = epoch;
-    const savedOperation = operation;
-    setStatus('正在检查计划、来源覆盖和预览行…');
-    const result = await api(`/api/pdf/drafts/${encodeURIComponent(draft.draft_id)}/preview`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({plan})
-    });
-    if (!current(savedEpoch, savedOperation)) return;
-    preview = result;
-    previewSignature = JSON.stringify(plan);
-    renderPlanPreview(result);
-    updatePublishButton();
-    document.getElementById('pdfPublicationSection')?.scrollIntoView({block:'start'});
-    setStatus(result.coverage?.unresolved_quality_issues?.length?'请处理待核对的内容。':'检查通过，可以确认入库。');
+    if(plan.fragment_ids?.length!==selectedFragments.size||plan.fragment_ids.some(id=>!selectedFragments.has(id)))throw new Error('当前表格来源已改变，请重新打开。');
+    if(preview&&previewSignature===signature){renderPlanPreview(preview);renderPreviewMode();return;}
+    const request=(state.previewRequest||0)+1;state.previewRequest=request;
+    let result;
+    try{result=await api(`/api/pdf/drafts/${encodeURIComponent(draft.draft_id)}/preview`,{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan})
+    });}catch(error){if(current(savedEpoch,savedOperation)&&activeReview===state&&generation===viewGeneration)throw error;return;}
+    if(!current(savedEpoch,savedOperation)||activeReview!==state||generation!==viewGeneration||state.previewRequest!==request||JSON.stringify(readEditingPlan())!==signature)return;
+    preview=result;previewSignature=signature;stashReview();renderCurrentFragment();renderPreviewMode();updatePublishButton();setStatus('');
   }
 
   async function publishPlan() {
-    if (!preview) throw new Error('请先验证并预览当前计划。');
-    if (preview.coverage?.unresolved_quality_issues?.length) throw new Error('请先逐项处理质量问题并重新预览。');
-    const editor = document.getElementById('pdfPlanEditor');
-    const plan = jsonValue(editor);
-    if (JSON.stringify(plan) !== previewSignature) throw new Error('计划内容在预览后已改变，请重新预览。');
-    const savedEpoch = epoch;
-    const savedOperation = operation;
-    const submit = {...plan, reviewed: true};
-    setStatus('正在保存已人工确认的 PDF 表格版本…');
-    const result = await api(`/api/pdf/drafts/${encodeURIComponent(draft.draft_id)}/publish`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({plan: submit, reviewed: true})
-    });
-    if (!current(savedEpoch, savedOperation)) return;
-    preview = null;
-    previewSignature = '';
-    publishedSignature=JSON.stringify(plan);
-    updatePublishButton();
-    setStatus('已入库，可用于查询与问答。');
-    await loadTables(savedEpoch, savedOperation);
+    if(!preview||preview.coverage?.unresolved_quality_issues?.length)throw new Error('请先处理待核对的内容。');
+    const state=activeReview,plan=readEditingPlan(),signature=JSON.stringify(plan),draftId=draft.draft_id;
+    if(signature!==previewSignature)throw new Error('表格内容已改变，请重新检查。');
+    const savedEpoch=epoch,savedOperation=operation,generation=viewGeneration;
+    let result;
+    try{result=await api(`/api/pdf/drafts/${encodeURIComponent(draftId)}/publish`,{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:{...plan,reviewed:true},reviewed:true})
+    });}catch(error){if(current(savedEpoch,savedOperation)&&activeReview===state&&generation===viewGeneration)throw error;return;}
+    if(!current(savedEpoch,savedOperation))return;
+    state.publishedSignature=signature;state.tableId=result.table_id;
+    if(result.draft_id===draftId&&Array.isArray(result.fragments))tables=[...tables.filter(t=>t.table_id!==result.table_id),result];
+    if(activeReview===state){publishedSignature=signature;stashReview();updatePublishButton();setStatus('');}
+    await loadTables(savedEpoch,savedOperation);
     if(current(savedEpoch,savedOperation))renderAutomation(document.getElementById('pdfAutomationSlot'));
   }
 

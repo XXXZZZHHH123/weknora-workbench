@@ -152,15 +152,15 @@ async function main() {
     assert.equal(await evaluate("document.querySelector('#pdfPlanEditor').hidden"),true);
     assert.equal(await evaluate("window.__apiCalls.filter(x=>x.path.endsWith('/publish')).length"),0);
     await evaluate("window.__preview.coverage.unresolved_quality_issues=[{fragment_id:'fragment-1',row:1,column:1,code:'uncertain_cell'}];document.querySelector('#pdfPublish').click()");
-    await wait("document.querySelector('#pdfPreview')?.textContent.includes('第 2 行，第 2 列')");
+    await wait("document.querySelector('.pdf-review-findings')?.textContent.includes('第 2 行，第 2 列')");
     assert.equal(await evaluate("window.__apiCalls.filter(x=>x.path.endsWith('/publish')).length"),0);
-    await evaluate("[...document.querySelectorAll('#pdfPreview button')].find(b=>b.textContent==='查看并修改').click()");
+    await evaluate("[...document.querySelectorAll('.pdf-review-findings button')].find(b=>b.textContent==='查看并修改').click()");
     await evaluate("document.querySelector('[aria-label=\"核对后的单元格内容\"]').value='12.50';[...document.querySelectorAll('button')].find(b=>b.textContent==='保存修改').click()");
     const correction=await evaluate("JSON.parse(document.querySelector('#pdfPlanEditor').value).cell_corrections[0]");
     assert.equal(correction.text,'12.50');assert.match(correction.reason,/第 1 页，第 2 行，第 2 列/);
     await evaluate("delete window.__preview.coverage.unresolved_quality_issues;const i=document.querySelector('[data-column-name=\"1\"]');i.value='Amount edited';i.dispatchEvent(new Event('input',{bubbles:true}))");
     const beforePreview=await evaluate("window.__apiCalls.filter(x=>x.path.endsWith('/preview')).length");
-    await evaluate("document.querySelector('#pdfPublish').click()");await wait("document.querySelector('#pdfReviewStatus')?.textContent.includes('已入库，可用于')");
+    await evaluate("document.querySelector('#pdfPublish').click()");await wait("document.querySelector('#pdfPublish')?.textContent==='已入库'");
     assert.ok(await evaluate("window.__apiCalls.filter(x=>x.path.endsWith('/preview')).length")>beforePreview);
     assert.equal(await evaluate("window.__apiCalls.filter(x=>x.path.endsWith('/publish')).length"),1);
     assert.equal(await evaluate("JSON.parse(window.__apiCalls.find(x=>x.path.endsWith('/publish')).body).reviewed"),true);

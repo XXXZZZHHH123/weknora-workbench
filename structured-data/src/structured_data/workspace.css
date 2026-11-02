@@ -357,3 +357,50 @@ html{scrollbar-gutter:stable}html.pdf-detail-open{overflow:hidden}
 .pdf-confirm-bar{justify-content:flex-end}
 .pdf-review-heading>button:last-child{margin-left:0}
 @media(max-width:680px){.pdf-review-findings .pdf-quality-item{gap:8px}.pdf-review-findings .pdf-quality-item>span{min-width:0}.pdf-review-heading>button:last-child{margin-left:auto}}
+
+/* A single table toolbar and a quiet grid replace nested cards and boxed cells. */
+#pdfDraftDetail .pdf-original-pane,#pdfDraftDetail .pdf-fragment-pane{border:0;border-radius:0;padding:0;background:transparent;min-width:0;min-height:620px}
+#pdfDraftDetail .pdf-original-pane{height:620px}#pdfDraftDetail .pdf-review-comparison{gap:24px;margin-top:20px}
+#pdfDraftDetail .pdf-fragment-toolbar{margin-bottom:10px;gap:6px}
+#pdfDraftDetail .pdf-table-toolbar{display:flex;align-items:center;gap:8px;margin:0 0 14px;min-height:34px;flex-wrap:wrap}
+#pdfDraftDetail .pdf-table-toolbar .pdf-table-meta{margin:0 auto 0 0;font-size:12px;color:var(--muted)}
+#pdfDraftDetail .pdf-table-toolbar button{font-size:12px;padding:7px 10px;white-space:nowrap}
+#pdfDraftDetail #pdfPublish.is-saved{color:#27734d;background:#edf7f1;border-color:transparent;opacity:1;cursor:default}
+#pdfDraftDetail .pdf-review-findings{border:0;border-radius:6px;background:var(--surface-soft,#f6f7f9);padding:12px 14px;margin:0 0 14px;box-shadow:none}
+#pdfDraftDetail .pdf-review-findings .pdf-quality-item{border:0;padding:5px 0}
+#pdfDraftDetail .pdf-review-findings>strong{font-size:12px;color:var(--muted)}
+#pdfDraftDetail .pdf-raw-table{border:0;border-radius:0;min-height:260px;max-height:500px}
+#pdfDraftDetail .pdf-raw-table table{border-collapse:collapse;width:100%}
+#pdfDraftDetail .pdf-raw-table :is(th,td){border:0;border-bottom:1px solid var(--line);padding:10px 12px;vertical-align:top}
+#pdfDraftDetail .pdf-raw-table thead th{background:var(--surface-soft,#f6f7f9);min-width:110px;padding:9px 12px}
+#pdfDraftDetail .pdf-raw-table :is(thead th:first-child,tbody th){min-width:28px;width:28px;white-space:nowrap;color:var(--muted);font-size:12px;background:transparent;text-align:center}
+#pdfDraftDetail .pdf-raw-table thead th:last-child{min-width:36px;width:36px}
+#pdfDraftDetail .pdf-column-heading{display:flex;align-items:center;gap:4px;position:relative}
+#pdfDraftDetail .pdf-column-heading>input{border:0!important;border-radius:3px;background:transparent;box-shadow:none;min-width:70px;width:100%;padding:4px 0;font:inherit;font-weight:500;box-sizing:border-box}
+#pdfDraftDetail .pdf-column-heading>input:hover{background:var(--paper)}
+#pdfDraftDetail .pdf-column-heading>input:focus{outline:1px solid var(--primary);outline-offset:3px;background:var(--paper)}
+#pdfDraftDetail .pdf-column-options{margin:0;flex:0 0 20px;font-weight:400;position:relative}
+#pdfDraftDetail .pdf-column-options>summary{list-style:none;text-align:center;cursor:pointer;color:var(--muted);font-size:16px;border:0}
+#pdfDraftDetail .pdf-column-options[open]{z-index:3}
+#pdfDraftDetail .pdf-column-options[open]>:not(summary){position:relative;width:145px;margin-top:6px;background:var(--paper)}
+#pdfDraftDetail .pdf-row-menu>summary{list-style:none;color:var(--muted);font-size:16px;text-align:center}
+#pdfDraftDetail .pdf-row-menu{min-width:28px;position:relative}
+#pdfDraftDetail .pdf-row-menu[open]{z-index:2}
+#pdfDraftDetail .pdf-cell-value{border:0!important;border-radius:3px;box-shadow:none!important;background:transparent!important;min-height:24px;padding:2px 0;font:inherit;text-align:left}
+#pdfDraftDetail .pdf-cell-value:hover{color:var(--primary)}
+#pdfDraftDetail .pdf-cell-value:focus-visible{outline:1px solid var(--primary);outline-offset:3px}
+#pdfDraftDetail .pdf-excluded-row{opacity:1;color:var(--muted);background:var(--surface-soft)}
+#pdfDraftDetail .pdf-cell-editor{position:relative;inset:auto;max-height:none;border:0;border-radius:6px;box-shadow:none;background:var(--surface-soft);padding:14px;margin:0 0 14px}
+#pdfDraftDetail .pdf-cell-editor>p{margin:4px 0 10px;font-size:12px;color:var(--muted)}
+#pdfDraftDetail .pdf-inline-preview{min-height:260px;max-height:500px;overflow:auto}
+#pdfDraftDetail .pdf-inline-preview table{width:100%;border-collapse:collapse}
+#pdfDraftDetail .pdf-inline-preview :is(th,td){padding:10px 12px;border:0;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
+#pdfDraftDetail .pdf-inline-preview th{background:var(--surface-soft)}
+#pdfDraftDetail .pdf-table-error{color:var(--danger,#b9423d);font-size:12px;margin:0 0 12px;padding:10px 12px;background:#fff3f1;border-radius:5px}
+#pdfDraftDetail .pdf-preview-loading{padding:32px 12px;color:var(--muted);font-size:12px}
+#pdfDraftDetail :is(.pdf-raw-table,.pdf-review-findings,.pdf-inline-preview,.pdf-review-step,.pdf-table-error)[hidden]{display:none!important}
+#pdfReviewApp.reviewing-file #pdfReviewStatus{display:none!important}
+@media(max-width:1000px){#pdfDraftDetail .pdf-review-comparison{gap:18px}#pdfDraftDetail .pdf-original-pane{height:380px;min-height:380px}#pdfDraftDetail .pdf-fragment-pane{min-height:480px}}
+@media(max-width:680px){#pdfDraftDetail .pdf-table-toolbar{gap:6px}#pdfDraftDetail .pdf-table-toolbar .pdf-table-meta{flex-basis:100%;margin-bottom:2px}#pdfDraftDetail .pdf-table-toolbar button{flex:1}#pdfDraftDetail .pdf-review-findings{padding:10px}#pdfDraftDetail .pdf-inline-preview{max-height:420px}}
+
+#pdfDraftDetail{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans CJK SC',sans-serif;font-size:13px;line-height:1.55}

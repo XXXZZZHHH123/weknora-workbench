@@ -65,17 +65,18 @@ const server=http.createServer(async(req,res)=>{try{
  assert(await viewer.evaluate(e=>e.isConnected));
  await page.locator('#pdfPublish').click();await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('待核对'));
  assert.equal(publishes,0,'whole-table confirmation cannot waive an uncertain blank cell');
- await page.locator('#pdfPreview').getByRole('button',{name:'查看并修改',exact:true}).click();
+ await page.locator('.pdf-review-findings').getByRole('button',{name:'查看并修改',exact:true}).click();
  assert.equal(await page.getByRole('textbox',{name:'核对后的单元格内容'}).inputValue(),'');
  // Final confirmation saves this open editor, then still requires table flags to be confirmed.
  await page.locator('#pdfPublish').click();await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('待核对'));
  await page.getByRole('button',{name:'已对照原件核对',exact:true}).click();await page.locator('#pdfPublish').click();
- await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('已入库，可用于'));
+ await page.waitForFunction(()=>document.querySelector('#pdfPublish')?.textContent==='已入库');
  assert.equal(publishes,1);await page.waitForFunction(()=>document.querySelector('#pdfAutomationSlot strong')?.textContent==='解析完成 · 已入库 1 张');
  const table=store('tables').tables[0],data=store('query',{id:table.table_id});assert.match(JSON.stringify(data),/-1.2/);
  assert.deepEqual(store('draft',{id:original.draft_id}).bundle,original.bundle);
  assert.equal(table.extraction_verified,false);assert.equal('unit' in table.columns[1],false);assert.equal(table.coverage.cell_correction_count,2);assert.equal(table.coverage.manual_inserted_row_count,1);
  assert.equal(await page.locator('#pdfPublish').isDisabled(),true);
+ await page.locator('#pdfTogglePreview').click();
  await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();assert.equal(await page.locator('#pdfPublish').isDisabled(),false);
  await page.getByRole('button',{name:'取消',exact:true}).last().click();assert.equal(await page.locator('#pdfPublish').isDisabled(),true);
  assert.deepEqual(errors,[]);
