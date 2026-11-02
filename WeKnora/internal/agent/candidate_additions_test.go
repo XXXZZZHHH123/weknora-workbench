@@ -140,7 +140,12 @@ func TestCandidateAdditionsMechanicallyExcludesDiscoveryAndSelectionReasons(t *t
 	require.Contains(t, input, "138.67")
 	onlyDirectories := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: state.RoundSteps[len(state.RoundSteps)-1].ToolCalls[:3]}}}
 	_ = engine.selectCandidateAdditions(t.Context(), query, "A reply.", onlyDirectories, messages)
-	require.Len(t, model.selectionCalls, 1, "no actual body means no extra selection call")
+	require.Len(t, model.selectionCalls, 2, "successful discovery receives a presentation check without body evidence")
+	discoveryInput := rawMessageText(model.selectionCalls[1])
+	for _, excluded := range []string{"DIRECTORY_ONLY_INVENTED_NOTE", "MODEL_SELF_WRITTEN_UNIQUENESS", "METADATA_ONLY_BODY_CLAIM", "CONVERSATION_DIRECTORY_ONLY_NOTE"} {
+		require.NotContains(t, discoveryInput, excluded)
+	}
+	require.NotContains(t, discoveryInput, "Actual read body")
 }
 
 func TestCandidateAdditionsEditedCandidateStillReachesSourceCritic(t *testing.T) {
@@ -250,4 +255,90 @@ func TestCandidateAdditionsPreservesExplicitlyRequestedSourceSupportedGuidance(t
 	require.Contains(t, edited, guidance)
 	require.NotContains(t, edited, extra)
 	require.Contains(t, rawMessageText(model.selectionCalls[0]), "contact the records desk", "requested guidance retains actual read evidence rather than a guessed recommendation")
+}
+
+func TestCandidateAdditionsDiscoveryOnlyChecksDeliveryWithoutTrustingCandidates(t *testing.T) {
+	const known = "The current search did not return the requested measurement."
+	const extra = "The entire archive lacks it, so a future institutional release is required."
+	query, draft := "Give the measurement for the requested period.", known+"\n\n"+extra
+	model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{known}, []string{extra})}, mockChat: mockChat{responses: []mockResponse{chatAnswer(draft)}}}
+	engine := numericRecoveryTestEngine(t, &model.mockChat)
+	engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
+	engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+	state := &types.AgentState{RoundSteps: []types.AgentStep{{Iteration: -1, ToolCalls: []types.ToolCall{
+		{Name: "structured_data", Args: map[string]any{"operation": "list_datasets"}, Result: &types.ToolResult{Success: true, Data: map[string]any{"notes": "UNREAD_CATALOG_CONCLUSION"}}},
+		{Name: "structured_data", Args: map[string]any{"operation": "describe_tools"}, Result: &types.ToolResult{Success: true, Data: map[string]any{"description": "SCHEMA_NOT_SOURCE_FACT"}}},
+		{Name: "search_knowledge", Result: &types.ToolResult{Success: true, Data: map[string]any{"documents": []any{map[string]any{"description": "CANDIDATE_DESCRIPTION_NOT_BODY"}}}}},
+	}}}}
+	_, err := engine.executeLoop(t.Context(), state, query, []chat.Message{{Role: "user", Content: query}}, engine.buildToolsForLLM(), "s", "m")
+	require.NoError(t, err)
+	require.Equal(t, known, state.FinalAnswer)
+	require.Equal(t, candidateTextDigest(known), engine.turnReview.Last.CandidateHash)
+	require.Len(t, model.selectionCalls, 1)
+	var packet map[string]any
+	require.NoError(t, json.Unmarshal([]byte(model.selectionCalls[0][1].Content), &packet))
+	activity := packet["source_discovery_activity"].(map[string]any)
+	require.Equal(t, false, activity["body_evidence_available"])
+	require.Len(t, activity["successful_operations"], 3)
+	for _, marker := range []string{"UNREAD_CATALOG_CONCLUSION", "SCHEMA_NOT_SOURCE_FACT", "CANDIDATE_DESCRIPTION_NOT_BODY"} {
+		require.NotContains(t, rawMessageText(model.selectionCalls[0]), marker)
+	}
+}
+
+func TestCandidateAdditionsDiscoveryReceiptsInvalidateCacheAndSkipNonSourceWork(t *testing.T) {
+	model := &additionsChat{}
+	engine := numericRecoveryTestEngine(t, &model.mockChat)
+	engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
+	query, draft := "Answer the request.", "No requested value was returned by the current search."
+	conversation := []chat.Message{{Role: "user", Content: query}}
+	state := &types.AgentState{}
+	for _, call := range []types.ToolCall{
+		{},
+		{Name: "unrelated_tool", Result: &types.ToolResult{Success: true}},
+		{Name: "search_knowledge", Result: &types.ToolResult{Success: false}},
+	} {
+		state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{call}})
+		require.Equal(t, draft, engine.selectCandidateAdditions(t.Context(), query, draft, state, conversation))
+		require.Empty(t, model.selectionCalls)
+	}
+	call := types.ToolCall{Name: "structured_data", Args: map[string]any{"operation": "describe_tools"}, Result: &types.ToolResult{Success: true, Data: map[string]any{"version": "first"}}}
+	state.RoundSteps = []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}
+	_ = engine.selectCandidateAdditions(t.Context(), query, draft, state, conversation)
+	_ = engine.selectCandidateAdditions(t.Context(), query, draft, state, conversation)
+	require.Len(t, model.selectionCalls, 1)
+	// Capability messages are excluded from source-consistency evidence. The
+	// actual observation digest must independently invalidate the cache.
+	call.Result.Data["version"] = "changed"
+	_ = engine.selectCandidateAdditions(t.Context(), query, draft, state, conversation)
+	require.Len(t, model.selectionCalls, 2)
+	state.RoundSteps = append(state.RoundSteps, types.AgentStep{Iteration: 1, ToolCalls: []types.ToolCall{call}})
+	_ = engine.selectCandidateAdditions(t.Context(), query, draft, state, conversation)
+	require.Len(t, model.selectionCalls, 3)
+}
+
+func TestCandidateAdditionsSentenceBoundariesIgnoreWholeRenderedReferences(t *testing.T) {
+	const citation = `<kb doc="report.pdf" chunk_id="real" kb_id="kb" />`
+	for _, language := range []struct{ main, extra, tail string }{
+		{"The result is 138.67.", "An unsupported publication claim.", "The required scope is retained."},
+		{"结果为138.67。", "未经证实的附加声明。", "保留用户要求的口径。"},
+	} {
+		for _, extra := range []string{language.extra, language.extra + citation, citation + language.extra + citation} {
+			candidate := language.main + citation + extra + language.tail
+			edited, err := applyCandidateAdditions(candidate, candidateAdditionsPlan{Retain: []string{language.main + citation, language.tail}, Delete: []string{extra}})
+			require.NoError(t, err)
+			require.Equal(t, language.main+citation+language.tail, edited)
+		}
+	}
+	const main = "The result is retained."
+	for _, tc := range []struct{ text, remove string }{
+		{main + citation + "The result is not safe.", "not"},
+		{main + citation + "Another value is 1.61 USD.", "61 USD."},
+		{main + citation + "Optional claim " + citation + "continues here.", "Optional claim " + citation},
+		{main + citation + "Another statement.", citation},
+		{main + citation + "Another statement.", `chunk_id="real"`},
+	} {
+		edited, err := applyCandidateAdditions(tc.text, candidateAdditionsPlan{Retain: []string{main}, Delete: []string{tc.remove}})
+		require.Error(t, err)
+		require.Equal(t, tc.text, edited)
+	}
 }
