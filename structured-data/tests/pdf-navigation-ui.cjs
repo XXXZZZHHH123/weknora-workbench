@@ -10,6 +10,7 @@ s=PDFTableStore(sys.argv[1]);req=json.load(sys.stdin);op=req['op']
 if op=='init':
  b=bundle([['Item','Amount'],['First-only','11']],[['Item','Amount'],['Second-only','22']])
  if req.get('review_flags'): b['fragments'][0]['quality']={'status':'needs_review','issues':[{'code':'MODEL_UNCERTAINTY'}]}
+ if req.get('precise_issue'): b['fragments'][0]['quality']['issues'][0]['cells']=[{'row':1,'column':1}]
  r=s.create_draft(b)
 elif op=='preview':r=s.validate_plan(req['id'],req['plan'])
 elif op=='publish':r=s.publish(req['id'],dict(req['plan'],reviewed=True))
@@ -18,7 +19,7 @@ elif op=='table':r=s.read_table(req['id'])
 print(json.dumps(r))`;
 function store(op,args={}){return JSON.parse(execFileSync('python',['-c',py,dir],{input:JSON.stringify({op,...args}),encoding:'utf8',env:{...process.env,PYTHONPATH:'structured-data/src:structured-data/tests'}}));}
 const refreshFixture=Boolean(process.env.PDF_REVIEW_REFRESH_FIXTURE);
-const draft=store('init',{review_flags:refreshFixture});
+const draft=store('init',{review_flags:refreshFixture,precise_issue:Boolean(process.env.PDF_PRECISE_FIXTURE)});
 const plans=draft.bundle.fragments.map(f=>({bundle_sha256:draft.bundle_sha256,fragment_ids:[f.id],header_rows:{[f.id]:[{row:0,reason:'source header'}]},columns:[{name:'Item',type:'text',source_columns:{[f.id]:0}},{name:'Amount',type:'decimal',source_columns:{[f.id]:1}}],excluded_rows:[],boundary_merges:[]}));
 const grouped=Boolean(process.env.PDF_GROUPED_FIXTURE);
 if(grouped){const ids=draft.bundle.fragments.map(f=>f.id);plans[0]={...plans[0],fragment_ids:ids,header_rows:Object.fromEntries(ids.map(id=>[id,[{row:0,reason:'source header'}]])),columns:plans[0].columns.map((c,i)=>({...c,source_columns:Object.fromEntries(ids.map(id=>[id,i]))}))};}
@@ -54,12 +55,23 @@ const server=http.createServer(async(req,res)=>{try{
  const expectPreview=async word=>{await page.waitForFunction(w=>document.querySelector('#pdfPreview')?.textContent.includes(w),word);const text=await page.locator('#pdfPreview').innerText();assert(!text.includes(word==='First-only'?'Second-only':'First-only'));};
  await open();
  if(refreshFixture){
-  await page.locator('#pdfPublish').click();await expectPreview('First-only');
-  assert.equal(await page.getByRole('button',{name:'已对照原件核对',exact:true}).count(),1);
-  const before=previewCalls;await page.getByRole('button',{name:'已对照原件核对',exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('#pdfPreview table')&&!document.querySelector('.pdf-preview-loading'),null,{timeout:5000});
-  assert.equal(previewCalls,before+1,'confirmation must request an updated preview');await expectPreview('First-only');
-  assert.equal(await page.locator('.pdf-review-findings').count(),0);assert.equal(publishes.length,0,'review confirmation does not publish');
+  await page.locator('#pdfTogglePreview').click();await expectPreview('First-only');
+  assert.equal(await page.getByRole('button',{name:'已对照原件核对',exact:true}).count(),0);
+  assert.equal(publishes.length,0);assert.equal(JSON.parse(await page.locator('#pdfPlanEditor').inputValue()).quality_reviews?.length||0,0,'preview does not confirm review');
+  const before=previewCalls;await page.locator('#pdfPublish').click();
+  if(process.env.PDF_PRECISE_FIXTURE){
+   await page.waitForFunction(()=>document.querySelector('#pdfDetailStatus')?.textContent.includes('待核对'));
+   assert.equal(publishes.length,0,'single confirmation cannot waive a located cell issue');
+   assert.equal(JSON.parse(await page.locator('#pdfPlanEditor').inputValue()).quality_reviews?.length||0,0);
+   await page.locator('.pdf-review-findings').getByRole('button',{name:'查看并修改',exact:true}).click();
+   await page.getByRole('textbox',{name:'核对后的单元格内容',exact:true}).fill('11');
+   await page.locator('#pdfPublish').click();
+  }
+  await page.waitForFunction(()=>document.querySelector('#pdfPublish')?.textContent==='已入库');
+  assert(previewCalls>before,'confirmation revalidates the reviewed plan');assert.equal(publishes.length,1);assert.deepEqual(publishes[0],['table-1']);
+  const record=store('table',{id:store('tables').tables[0].table_id});assert.equal(record.plan.quality_reviews.length,1);assert.match(record.plan.quality_reviews[0].reason,/确认整表并入库/);
+  if(await page.locator('#pdfTogglePreview').getAttribute('aria-pressed')!=='true')await page.locator('#pdfTogglePreview').click();
+  assert.equal(await page.locator('.pdf-review-findings').count(),0);
   failNextPreview=true;await select(1);await page.locator('#pdfPreview').getByRole('button',{name:'重试',exact:true}).waitFor();
   assert.equal(await page.locator('.pdf-preview-loading').count(),0,'failed preview must stop loading');
   await page.locator('#pdfPreview').getByRole('button',{name:'重试',exact:true}).click();await expectPreview('Second-only');
@@ -69,7 +81,7 @@ const server=http.createServer(async(req,res)=>{try{
   assert.match(await page.locator('#pdfDetailStatus').innerText(),/重复/);
   await page.locator('#pdfTogglePreview').click();await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('Amount');
   await page.locator('#pdfTogglePreview').click();await expectPreview('Second-only');assert.deepEqual(errors,[]);
-  console.log('PASS: whole-table review refreshes the visible preview; request and validation failures stop loading and can be retried.');return;
+  console.log('PASS: one confirm records current-table review and publishes; preview stays read-only, located issues block, preview failures can be retried.');return;
  }
  if(process.env.PDF_AUTO_FIXTURE){
   await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('Unsaved first edit');await select(1);

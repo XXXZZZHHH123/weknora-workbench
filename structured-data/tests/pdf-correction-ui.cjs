@@ -60,23 +60,23 @@ const server=http.createServer(async(req,res)=>{try{
  await page.getByRole('textbox',{name:'第 1 列名称',exact:true}).fill('项目');await page.getByRole('textbox',{name:'第 2 列名称',exact:true}).fill('金额');
  const options=page.locator('.pdf-column-options').nth(1);await options.locator('summary').click();
  await page.getByRole('combobox',{name:'第 2 列类型',exact:true}).selectOption('decimal');await page.getByRole('textbox',{name:'第 2 列单位',exact:true}).fill('');
- await page.getByRole('button',{name:'已对照原件核对',exact:true}).click();
- let plan=JSON.parse(await page.locator('#pdfPlanEditor').inputValue());assert.equal(plan.quality_reviews.length,3);assert.equal(plan.cell_corrections.length,1);
+ assert.equal(await page.getByRole('button',{name:'已对照原件核对',exact:true}).count(),0);
  assert(await viewer.evaluate(e=>e.isConnected));
  await page.locator('#pdfPublish').click();await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('待核对'));
+ let plan=JSON.parse(await page.locator('#pdfPlanEditor').inputValue());assert.equal(plan.quality_reviews.length,3);assert.equal(plan.cell_corrections.length,1);
  assert.equal(publishes,0,'whole-table confirmation cannot waive an uncertain blank cell');
  await page.locator('.pdf-review-findings').getByRole('button',{name:'查看并修改',exact:true}).click();
  assert.equal(await page.getByRole('textbox',{name:'核对后的单元格内容'}).inputValue(),'');
- // Final confirmation saves this open editor, then still requires table flags to be confirmed.
- await page.locator('#pdfPublish').click();await page.waitForFunction(()=>document.querySelector('#pdfReviewStatus')?.textContent.includes('待核对'));
- await page.getByRole('button',{name:'已对照原件核对',exact:true}).click();await page.locator('#pdfPublish').click();
+ // One final confirmation saves this cell, records table review and publishes.
+ await page.locator('#pdfPublish').click();
  await page.waitForFunction(()=>document.querySelector('#pdfPublish')?.textContent==='已入库');
  assert.equal(publishes,1);await page.waitForFunction(()=>document.querySelector('#pdfAutomationSlot strong')?.textContent==='解析完成 · 已入库 1 张');
  const table=store('tables').tables[0],data=store('query',{id:table.table_id});assert.match(JSON.stringify(data),/-1.2/);
  assert.deepEqual(store('draft',{id:original.draft_id}).bundle,original.bundle);
  assert.equal(table.extraction_verified,false);assert.equal('unit' in table.columns[1],false);assert.equal(table.coverage.cell_correction_count,2);assert.equal(table.coverage.manual_inserted_row_count,1);
+ const confirmedPlan=JSON.parse(await page.locator('#pdfPlanEditor').inputValue());assert.equal(confirmedPlan.quality_reviews.length,3);assert(confirmedPlan.quality_reviews.every(r=>r.reason.includes('确认整表并入库')));
  assert.equal(await page.locator('#pdfPublish').isDisabled(),true);
- await page.locator('#pdfTogglePreview').click();
+ if(await page.locator('#pdfTogglePreview').getAttribute('aria-pressed')==='true')await page.locator('#pdfTogglePreview').click();
  await page.getByRole('button',{name:'修改第 2 行第 2 列',exact:true}).click();assert.equal(await page.locator('#pdfPublish').isDisabled(),false);
  await page.getByRole('button',{name:'取消',exact:true}).last().click();assert.equal(await page.locator('#pdfPublish').isDisabled(),true);
  assert.deepEqual(errors,[]);

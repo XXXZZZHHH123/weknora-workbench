@@ -480,11 +480,20 @@
     return issues.length?issues.map((issue,index)=>({...issue,issue_index:index})):
       fragment.quality?.status==='needs_review'?[{issue_index:-1}]:[];
   }
-  function confirmTableFlags(fragment,parent) {
-    const plan=readEditingPlan();
-    plan.quality_reviews=(plan.quality_reviews||[]).filter(r=>r.fragment_id!==fragment.id);
-    for(const issue of tableIssues(fragment))plan.quality_reviews.push({fragment_id:fragment.id,issue_index:issue.issue_index,reason:actionReceipt(fragment,'对照原件确认整张表')});
-    return saveInlinePlan(plan,parent);
+  function needsCellReview(fragment,{row,column},plan) {
+    return Number.isInteger(row)&&Number.isInteger(column)&&Boolean(fragment.rows[row]?.[column])&&
+      !plan.cell_corrections?.some(c=>c.fragment_id===fragment.id&&c.row===row&&c.column===column)&&
+      !plan.header_rows?.[fragment.id]?.some(h=>h.row===row)&&!plan.excluded_rows?.some(r=>r.fragment_id===fragment.id&&r.row===row);
+  }
+  function recordTableReview(plan,fragment) {
+    let changed=false;
+    for(const issue of tableIssues(fragment)){
+      if(issue.cells?.some(cell=>needsCellReview(fragment,cell,plan))||
+        plan.quality_reviews?.some(r=>r.fragment_id===fragment.id&&r.issue_index===issue.issue_index))continue;
+      (plan.quality_reviews??=[]).push({fragment_id:fragment.id,issue_index:issue.issue_index,reason:actionReceipt(fragment,'确认整表并入库')});
+      changed=true;
+    }
+    return changed;
   }
   function locateCell(fragment,row,column) {
     previewMode=false;
@@ -625,7 +634,7 @@
     const validationCells=previewSignature===JSON.stringify(plan)?(preview?.coverage?.unresolved_quality_issues||[]).filter(i=>i.fragment_id===fragment.id&&i.code==='uncertain_cell'):[];
     for(const issue of [...remaining,{cells:validationCells}])for(const cell of issue.cells||[]){
       const row=cell.row,column=cell.column;
-      if(Number.isInteger(row)&&Number.isInteger(column)&&fragment.rows[row]?.[column]&&!uncertain.some(c=>c.row===row&&c.column===column)&&!plan.cell_corrections?.some(c=>c.fragment_id===fragment.id&&c.row===row&&c.column===column)&&!plan.header_rows?.[fragment.id]?.some(h=>h.row===row)&&!plan.excluded_rows?.some(r=>r.fragment_id===fragment.id&&r.row===row))uncertain.push({row,column});
+      if(needsCellReview(fragment,cell,plan)&&!uncertain.some(c=>c.row===row&&c.column===column))uncertain.push({row,column});
     }
     if(remaining.length||uncertain.length){
       const quality=make('section',undefined,'pdf-review-findings');quality.append(make('strong',uncertain.length?`${uncertain.length} 个单元格待确认`:'整表核对'));
@@ -640,7 +649,6 @@
         }
         const item=make('div',undefined,'pdf-quality-item');
         item.append(make('span',`第 ${fragment.page} 页 · 整表（未提供具体错误位置）`));
-        if(editing)item.append(action('已对照原件核对',()=>confirmTableFlags(fragment,parent),true));
         quality.append(item);
       }
       parent.append(quality);
@@ -962,6 +970,8 @@
       const pendingEdit=document.querySelector('.pdf-cell-editor');
       if(pendingEdit){pendingEdit.querySelector('button')?.click();if(pendingEdit.isConnected)throw new Error('请先完成当前修改。');}
       const plan=readEditingPlan();
+      const fragment=fragments()[activeFragmentIndex];
+      if(fragment&&plan.fragment_ids?.includes(fragment.id)&&recordTableReview(plan,fragment))writePlan(plan);
       if(!preview||JSON.stringify(plan)!==previewSignature)await previewPlan();
       if(!current(savedEpoch,savedOperation)||activeReview!==state||viewGeneration!==generation)return;
       if(preview?.coverage?.unresolved_quality_issues?.length){previewMode=true;renderCurrentFragment();setStatus('请先处理待核对的内容。',true);return;}
