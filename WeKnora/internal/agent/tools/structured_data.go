@@ -93,7 +93,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 	for field := range input {
 		if field != "operation" && field != "arguments" && field != "knowledge_base_id" {
-			return nil, fmt.Errorf("结构化表格不接受账号、空间或未声明的参数")
+			return nil, fmt.Errorf("结构化表格不接受未声明的顶层参数 %q；顶层只允许 operation、arguments、knowledge_base_id。操作参数须按真实工具schema放在 arguments 内，或直接使用已注册的 structured_ 操作工具；不要提交账号、权限或服务配置", field)
 		}
 	}
 	var operation string

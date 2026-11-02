@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -21,6 +22,10 @@ import (
 // It verifies traceability, not the semantic appropriateness of a statistic.
 var evidenceDate = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 var proseNumber = regexp.MustCompile(`[-+−]?\d+(?:,\d{3})*(?:\.\d+)?`)
+
+// A heading identity may contain only its leading list/table number. Source
+// body measurements, years, percentages and numeric-only lines are excluded.
+var pdfNumberedSourceHeading = regexp.MustCompile(`^[1-9][0-9]{0,3}[.、][ \t]*([^\p{N}%％\r\n]+)$`)
 
 // Longest complete forms precede partial forms so an invalid complete date is
 // consumed once and cannot later lose its month/day to a shorter match.
@@ -1083,6 +1088,7 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 			if source, ok := data["source"].(map[string]any); ok {
 				digest, _ := source["sha256"].(string)
 				if len(digest) == 64 && sourceOpaqueToken.FindString(digest) == digest {
+					selectedPages := map[float64]bool{}
 					if fragments, ok := data["fragments"].([]any); ok {
 						for _, raw := range fragments {
 							fragment, ok := raw.(map[string]any)
@@ -1092,10 +1098,33 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 							if id, _ := fragment["id"].(string); id == "" {
 								continue
 							}
+							if page, ok := fragment["page"].(float64); ok && page > 0 && page == math.Trunc(page) {
+								selectedPages[page] = true
+							}
 							add(fragment["caption"])
 							if footnotes, ok := fragment["footnotes"].([]any); ok {
 								for _, footnote := range footnotes {
 									add(footnote)
+								}
+							}
+						}
+					}
+					if contexts, ok := data["page_context"].([]any); ok {
+						for _, raw := range contexts {
+							context, ok := raw.(map[string]any)
+							if !ok {
+								continue
+							}
+							page, ok := context["page"].(float64)
+							if !ok || !selectedPages[page] {
+								continue
+							}
+							text, _ := context["text"].(string)
+							for _, line := range strings.Split(text, "\n") {
+								line = strings.TrimSpace(line)
+								parts := pdfNumberedSourceHeading.FindStringSubmatch(line)
+								if len(parts) == 2 && strings.IndexFunc(parts[1], unicode.IsLetter) >= 0 {
+									add(line)
 								}
 							}
 						}
