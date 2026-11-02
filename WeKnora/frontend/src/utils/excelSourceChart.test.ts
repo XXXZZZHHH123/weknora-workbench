@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { excelSourceChartOption } from './excelSourceChart';
 import type { ExcelPreviewChart } from './excelPreviewCharts';
+import { CHART_SERIES_COLORS } from './chartPalette';
 
 const style = { color: '#222222', muted: '#666666', border: '#dddddd', font: 'serif' };
 function fixture(): ExcelPreviewChart { return { id: 'part', title: 'Saved chart', notices: [],
@@ -98,4 +100,32 @@ test('bar and area axes include the zero baseline while preserving explicit orig
   assert.equal(value.yAxis[0].scale, false); assert.equal(value.yAxis[1].scale, false);
   assert.equal(value.yAxis[0].min, 20); assert.equal(value.yAxis[0].max, 240);
   const line = excelSourceChartOption(fixture(), style).option as any; assert.equal(line.yAxis[1].scale, true);
+});
+test('default chart series use distinct Office colors independent of the interface theme', () => {
+  const chart = fixture();
+  const original = structuredClone(chart);
+  const light = excelSourceChartOption(chart, style).option as any;
+  const dark = excelSourceChartOption(chart, {...style, color: '#eeeeee', border: '#444444'}).option as any;
+  assert.deepEqual(light.color.slice(0, 4), ['#4472C4', '#ED7D31', '#70AD47', '#7030A0']);
+  assert.equal(light.color.length, new Set(light.color).size);
+  assert.deepEqual(dark.color, light.color);
+  assert.deepEqual(chart, original);
+});
+test('explicit original series colors override the shared chart defaults', () => {
+  const chart = fixture();
+  chart.series[0]!.color = '#C00000';
+  const value = excelSourceChartOption(chart, style).option as any;
+  assert.equal(value.series[0].lineStyle.color, '#C00000');
+  assert.equal(value.series[0].itemStyle.color, '#C00000');
+  assert.equal(value.series[1].lineStyle, undefined);
+});
+test('the generated frontend palette matches the canonical native research palette', () => {
+  const mirror = JSON.parse(readFileSync(new URL('./chartPalette.generated.json', import.meta.url), 'utf8'));
+  const source = 'commodity-research/src/tin/web/static/chart-palette.json';
+  assert.equal(mirror._generated_from, source);
+  const native = JSON.parse(readFileSync(new URL('../../../../' + source, import.meta.url), 'utf8'));
+  assert.deepEqual(mirror.colors, native, 'Regenerate the frontend mirror after changing the canonical palette');
+  assert.deepEqual(CHART_SERIES_COLORS, native);
+  assert.deepEqual((excelSourceChartOption(fixture(), style).option as any).color, native);
+  assert(native.every((color: string) => /^#[0-9A-F]{6}$/.test(color)));
 });
