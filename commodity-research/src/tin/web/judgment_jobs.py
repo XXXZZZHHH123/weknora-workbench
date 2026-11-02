@@ -499,3 +499,16 @@ def listing(request: Request, limit: int = Query(default=20, ge=1, le=20)):
 @global_router.post('/{job_id}/dismiss')
 def dismiss(job_id: str):
     return dismiss_job(current_identity.get(), job_id)
+
+
+@global_router.post('/dismiss-all')
+async def dismiss_all(request: Request):
+    identity = current_identity.get()
+    if identity is None:
+        raise HTTPException(401, '请先登录研究工作台')
+    if request.query_params:
+        raise HTTPException(422, '批量忽略不接受账号或任务选择参数')
+    async for chunk in request.stream():
+        if chunk:
+            raise HTTPException(422, '批量忽略无需请求正文')
+    return {'dismissed_ids': await run_in_threadpool(registry.dismiss_all, identity)}

@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from tin.config import settings
 
 ACTIVE = frozenset({'queued', 'running'})
+TERMINAL = frozenset({'succeeded', 'failed', 'interrupted', 'expired', 'applied', 'superseded'})
 RESULTS = frozenset({'succeeded', 'applied'})
 TTL = 24 * 3600
 LEASE = 60
@@ -198,6 +199,21 @@ class Registry:
                 row.update(dismissed=True, dismissed_at=iso())
                 self.write(connection, row)
             return row
+
+    def dismiss_all(self, identity):
+        """Acknowledge only this actor's terminal notices, without pruning results."""
+        with self.transaction() as connection:
+            self.expire(connection)
+            rows = sorted((row for row in self.rows(connection)
+                if (row['tenant_id'], row['user_id']) == (identity.tenant_id, identity.user_id)
+                and row['state'] in TERMINAL), key=self.order)
+            for row in rows:
+                if not row.get('dismissed'):
+                    row.update(dismissed=True, dismissed_at=iso())
+                    self.write(connection, row)
+            # Already acknowledged IDs are included so retries can reconcile a
+            # successful request whose response was lost. Active IDs never enter.
+            return [row['id'] for row in rows]
 
     def claim(self, job_id, worker_id, fence):
         with self.transaction() as connection:

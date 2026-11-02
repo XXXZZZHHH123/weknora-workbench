@@ -168,8 +168,9 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 raise HTTPException(404, "研究工作台路径无效") from None
             route_path = scoped_path[1] if scoped_path else path
-            global_analysis_dismiss = request.method == 'POST' and re.fullmatch(
-                r'/api/research/analysis-jobs/[a-f0-9]{32}/dismiss', path) is not None
+            global_analysis_dismiss = request.method == 'POST' and (
+                path == '/api/research/analysis-jobs/dismiss-all' or re.fullmatch(
+                    r'/api/research/analysis-jobs/[a-f0-9]{32}/dismiss', path) is not None)
             global_analysis_list = (path == '/api/research/analysis-jobs' and request.method == 'GET'
                 or global_analysis_dismiss)
             authorization = request.headers.get("authorization", "")
