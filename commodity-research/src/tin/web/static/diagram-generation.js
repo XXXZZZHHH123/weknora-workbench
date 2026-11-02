@@ -194,7 +194,7 @@ async function dgGenerate(rebuild = false) {
 }
 function dgCheckJob(job) {
   if (!dgJobId(job?.id) || job.purpose && job.purpose !== 'diagram'
-      || !['queued','running','succeeded','failed','interrupted','expired','applied'].includes(job.state)
+      || !['queued','running','succeeded','failed','interrupted','expired','applied','superseded'].includes(job.state)
       || job.workbench_id && window.RESEARCH_CONTEXT?.workbench && job.workbench_id !== window.RESEARCH_CONTEXT.workbench)
     throw new Error('后台任务范围已改变，请重新打开工作台');
 }
@@ -240,7 +240,9 @@ async function dgFollowJob(identifier) {
     try {
       const job=await dgJobRequest('/'+encodeURIComponent(identifier),{signal});
       if (!current()) return;
-      dgCheckJob(job);dgGeneratorJob=job;
+      dgCheckJob(job);
+      if (job.id !== identifier) throw new Error('当前请求与返回的任务不一致，请重新打开任务。');
+      dgGeneratorJob=job;
       if (['queued','running'].includes(job.state)) {
         const labels={queued:'等待生成',reading_source:'正在读取原件',loading_catalog:'正在读取指标目录',structuring:'正在梳理研究主干',selecting:'正在匹配指标',generating:'正在补充指标与细节',reusing:'正在恢复已校验结构',validating:'正在核对覆盖与配置'};
         status.textContent=(labels[job.phase] || '正在后台生成')+'，可关闭窗口。';
@@ -250,7 +252,7 @@ async function dgFollowJob(identifier) {
         if (!current()) return;
         dgPresentGeneration(result);dgAnnounceJob(job);
       } else {
-        status.textContent=job.message || ({failed:'生成未完成，请核对资料后重试。',interrupted:'生成已中断，请重新发起。',expired:'结果已过期，请重新生成。',applied:'配置已导入。'}[job.state] || '任务暂不可用，请重新打开。');
+        status.textContent=job.message || ({failed:'生成未完成，请核对资料后重试。',interrupted:'生成已中断，请重新发起。',expired:'结果已过期，请重新生成。',applied:'配置已导入。',superseded:'已有更新的产业图生成结果，可在生成配置中查看最新暂存结果。'}[job.state] || '任务暂不可用，请重新打开。');
         dgAnnounceJob(job);
       }
     } catch (error) { if (current() && error.name!=='AbortError') status.textContent=error.message; }

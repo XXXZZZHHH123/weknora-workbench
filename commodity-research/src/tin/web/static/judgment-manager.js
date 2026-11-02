@@ -115,6 +115,7 @@
         const job = await api('/jobs/' + encodeURIComponent(identifier));
         if (!current()) return;
         checkJob(job);
+        if (job.id !== identifier) throw new Error('当前请求与返回的任务不一致，请重新打开任务。');
         activeJob = job;
         if (job.state === 'queued' || job.state === 'running') {
           const labels = {queued: '等待分析', selecting: '正在匹配指标', analyzing: '正在分析原文', validating: '正在校验结果'};
@@ -131,7 +132,7 @@
           if (value.source_name) text('file-name', value.source_name);
           if (byId('new-panel-title') && value.panel_title !== undefined) byId('new-panel-title').value = value.panel_title;
           presentDraft(value); await hydrateReview(value); tab('analyze'); inform(previewNotice(value));
-        } else inform(job.message || ({failed: '分析失败，请重新发起。', interrupted: '分析已中断，请重新发起。', expired: '分析结果已过期，请重新分析。', applied: '此分析已保存。'}[job.state] || '分析暂不可用。'), true);
+        } else inform(job.message || ({failed: '分析失败，请重新发起。', interrupted: '分析已中断，请重新发起。', expired: '分析结果已过期，请重新分析。', applied: '此分析已保存。', superseded: '已有更新的研究分析结果，可在导入研判中查看最新暂存结果。'}[job.state] || '分析暂不可用。'), job.state !== 'superseded');
         announceJob(job); setBusy(false);
       } catch (error) {
         if (current() && error.name !== 'AbortError') { setBusy(false); inform(error.message, true); }
