@@ -231,7 +231,7 @@ def test_diagram_canvas_layers_all_share_one_transform():
     html = (web.HERE / "templates" / "diagram.html").read_text(encoding="utf-8")
 
     layers = re.findall(r'<g id="(dg-[a-z]+)"></g>', html)
-    assert set(layers) == {"dg-groups", "dg-edges", "dg-nodes"}
+    assert set(layers) == {"dg-regions", "dg-groups", "dg-edges", "dg-nodes"}
 
     applied = re.search(r'for \(const id of \[([^\]]+)\]\)', js)
     assert applied, "找不到统一施加 transform 的循环"

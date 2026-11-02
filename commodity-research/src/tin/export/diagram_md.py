@@ -361,7 +361,7 @@ def parse(text: str) -> dict:
 
 
 def _position_research_roles(nodes):
-    """Position explicit research roles; ordinary outlines retain their coordinates."""
+    """Default import geometry only; roles never alter containment or relations."""
     groups = [node for node in nodes if node.get('kind') == 'group']
     if not any(group.get('role') for group in groups):
         return
@@ -369,18 +369,69 @@ def _position_research_roles(nodes):
     if (sum(group.get('role') == 'target' for group in roots) != 1
             or any(group.get('role') and group.get('parent') is not None for group in groups)):
         raise MarkdownError('研究图需要唯一的顶层核心标的分组')
-    buckets = {role: [group for group in roots if group.get('role', 'reference') == role]
-               for role in RESEARCH_ROLES}
-    columns = [('supply', 'inventory'), ('target', 'macro', 'reference'), ('demand', 'balance')]
-    widths = [max([COL_W + PAD, *(group['w'] for role in roles for group in buckets[role])])
-              for roles in columns]
-    starts = [PAD, PAD + widths[0] + 60, PAD + widths[0] + widths[1] + 120]
     descendants = defaultdict(list)
     for node in nodes:
         descendants[node.get('parent')].append(node)
 
-    def move(group, column, y):
-        x = starts[column] + (widths[column] - group['w']) / 2
+    # A group with both direct observations and nested groups may be wider
+    # than its initial outline box. Measure the actual subtree before placing
+    # the root, without moving children or changing aggregation membership.
+    fitted, visiting = set(), set()
+
+    def fit(group):
+        identifier = group['id']
+        if identifier in fitted:
+            return
+        if identifier in visiting:
+            raise MarkdownError('产业图分组不能成环')
+        visiting.add(identifier)
+        children = descendants[identifier]
+        for child in children:
+            if child.get('kind') == 'group':
+                fit(child)
+        if children:
+            left = min(group['x'], min(child['x'] for child in children) - 14)
+            top = min(group['y'], min(child['y'] for child in children) - 34)
+            right = max(group['x'] + group['w'], max(child['x'] + child['w'] for child in children) + 14)
+            bottom = max(group['y'] + group['h'], max(child['y'] + child['h'] for child in children) + 14)
+            group.update(x=left, y=top, w=right - left, h=bottom - top)
+        visiting.remove(identifier)
+        fitted.add(identifier)
+
+    for group in groups:
+        fit(group)
+    buckets = {role: [group for group in roots if (group.get('role') or 'reference') == role]
+        for role in RESEARCH_ROLES}
+    buckets['reference'].extend(node for node in nodes
+        if node.get('kind') != 'group' and node.get('parent') is None)
+    gap, band_gap = 32, 64
+    upper = buckets['inventory'] + buckets['balance']
+    macro = buckets['macro']
+
+    def row_width(items):
+        return sum(item['w'] for item in items) + gap * max(0, len(items) - 1)
+
+    def row_height(items):
+        return max((item['h'] for item in items), default=0)
+
+    def stack_height(items):
+        return sum(item['h'] for item in items) + gap * max(0, len(items) - 1)
+
+    widths = [max([COL_W + PAD, *(group['w'] for group in buckets['supply'])]),
+        max([COL_W + PAD, *(group['w'] for group in buckets['target']),
+            row_width(upper) + 36 if upper else 0, row_width(macro)]),
+        max([COL_W + PAD, *(group['w'] for group in buckets['demand'])])]
+    starts = [PAD, PAD + widths[0] + 60, PAD + widths[0] + widths[1] + 120]
+    center_x = starts[1] + widths[1] / 2
+    upper_height = row_height(upper) + 28 + 18 if upper else 0
+    main_top = PAD + upper_height + band_gap if upper else PAD
+    # The center column has its own compact reading axis. Tall supply or
+    # demand stacks extend around that axis, rather than pushing the central
+    # inventory/target/macro sequence apart.
+    main_height = stack_height(buckets['target'])
+    center_y = main_top + main_height / 2
+
+    def move(group, x, y):
         dx, dy = x - group['x'], y - group['y']
         pending = [group]
         while pending:
@@ -389,20 +440,27 @@ def _position_research_roles(nodes):
             node['y'] += dy
             pending.extend(descendants[node['id']])
 
-    def stack(role, column, y):
-        for group in buckets[role]:
-            move(group, column, y)
-            y += group['h'] + 48
-        return y
+    def row(items, x, top):
+        for group in items:
+            move(group, x, top)
+            x += group['w'] + gap
 
-    main_y = stack('macro', 1, PAD)
-    if buckets['macro']:
-        main_y += 12
-    bottoms = [stack(role, column, main_y) for column, role in enumerate(('supply', 'target', 'demand'))]
-    lower_y = max(bottoms) + 12
-    stack('inventory', 0, lower_y)
-    stack('reference', 1, lower_y)
-    stack('balance', 2, lower_y)
+    # Inventory/balance share a display slot, never an invented parent group.
+    row(upper, center_x - row_width(upper) / 2, PAD + 28)
+    for column, role in enumerate(('supply', 'target', 'demand')):
+        y = center_y - stack_height(buckets[role]) / 2
+        for group in buckets[role]:
+            move(group, starts[column] + (widths[column] - group['w']) / 2, y)
+            y += group['h'] + gap
+    macro_top = main_top + main_height + band_gap
+    row(macro, center_x - row_width(macro) / 2, macro_top)
+    placed = [group for group in roots if (group.get('role') or 'reference') != 'reference']
+    reference_top = max(group['y'] + group['h'] for group in placed) + band_gap
+    row(buckets['reference'], PAD, reference_top)
+    shift = max(0, PAD - min(node['y'] for node in nodes))
+    if shift:
+        for node in nodes:
+            node['y'] += shift
 
 
 def dump(layout: dict, name: str = "产业结构") -> str:

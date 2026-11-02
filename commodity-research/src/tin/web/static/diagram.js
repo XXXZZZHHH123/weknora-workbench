@@ -120,8 +120,15 @@ function dgRender() {
   const edges = document.getElementById("dg-edges");
   const groups = document.getElementById("dg-groups");
   if (!nodes || !dg.layout) return;
+  const regions = document.getElementById("dg-regions");
+  if (regions) regions.innerHTML = (window.DiagramGeometry?.regions(dg.layout) || []).map(region => `
+    <g class="dg-research-region" pointer-events="none">
+      <rect x="${region.x}" y="${region.y}" width="${region.w}" height="${region.h}" rx="14"
+        fill="var(--surface)" fill-opacity=".35" stroke="var(--line-strong)" stroke-width="1.2"/>
+      <text x="${region.x + 14}" y="${region.y + 15}" font-size="11" font-weight="650" fill="var(--text-muted)">${dgEsc(region.label)}</text>
+    </g>`).join("");
 
-  // 分组框画在最底层：它是背景分区，不是节点，也不参与连线。
+  // 分组先作为背景分区绘制，真实的分组/节点关系随后叠在线层上。
   // 按层级从浅到深排序，深的画在上面，嵌套关系才看得出来。
   groups.innerHTML = dg.layout.nodes.filter(dgIsGroup)
     .map((g) => ({ g, d: dgDepth(g.id) }))
@@ -222,6 +229,8 @@ function dgTrail(id) {
  * 选法：看两个框中心的相对位置，横向差得多就走左右，纵向差得多就走上下。
  * 贝塞尔的控制点顺着出入方向拉，线才不会在端点处打折。 */
 function dgEdgeGeom(a, b) {
+  const routed = window.DiagramGeometry?.route(dg.layout, a, b);
+  if (routed) return routed;
   const ac = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
   const bc = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
   const dx = bc.x - ac.x, dy = bc.y - ac.y;
@@ -573,8 +582,8 @@ function dgNode(n) {
 function dgApplyTransform() {
   const g = document.getElementById("dg-canvas");
   if (!g) return;
-  for (const id of ["dg-groups", "dg-edges", "dg-nodes"]) {
-    document.getElementById(id).setAttribute(
+  for (const id of ["dg-regions", "dg-groups", "dg-edges", "dg-nodes"]) {
+    document.getElementById(id)?.setAttribute(
       "transform", `translate(${dg.pan.x},${dg.pan.y}) scale(${dg.zoom})`);
   }
   const z = document.getElementById("dg-zoom");
@@ -599,13 +608,15 @@ function dgFit() {
     dgApplyTransform();
     return;
   }
-  const xs = dg.layout.nodes.map((n) => n.x), ys = dg.layout.nodes.map((n) => n.y);
-  const w = Math.max(...dg.layout.nodes.map((n) => n.x + n.w)) - Math.min(...xs);
-  const h = Math.max(...dg.layout.nodes.map((n) => n.y + n.h)) - Math.min(...ys);
-  const pad = 40;
+  const boxes = [...dg.layout.nodes, ...(window.DiagramGeometry?.regions(dg.layout) || [])];
+  const xs = boxes.map((n) => n.x), ys = boxes.map((n) => n.y);
+  const w = Math.max(...boxes.map((n) => n.x + n.w)) - Math.min(...xs);
+  const h = Math.max(...boxes.map((n) => n.y + n.h)) - Math.min(...ys);
+  const top = Math.max(24, (document.getElementById(dg.edit ? "dg-tools" : "dg-views")?.offsetHeight || 0) + 24);
+  const bottom = 48, pad = 40;
   dg.zoom = Math.min((wrap.clientWidth - pad) / Math.max(w, 1),
-                     (wrap.clientHeight - pad) / Math.max(h, 1), 1.4);
-  dg.pan = { x: pad / 2 - Math.min(...xs) * dg.zoom, y: pad / 2 - Math.min(...ys) * dg.zoom };
+                     (wrap.clientHeight - top - bottom) / Math.max(h, 1), 1.4);
+  dg.pan = { x: pad / 2 - Math.min(...xs) * dg.zoom, y: top - Math.min(...ys) * dg.zoom };
   dgApplyTransform();
 }
 
@@ -641,10 +652,12 @@ function dgExitEdit() {
 
 function dgSyncEditUI() {
   const on = dg.edit;
+  const tidy = document.getElementById("dg-tidy");
+  if (tidy) tidy.textContent = window.DiagramGeometry?.canArrange(dg.layout) ? "按研究结构重排" : "整理分组";
   const btn = document.getElementById("dg-edit-btn");
   btn?.classList.toggle("hidden", on);
   for (const [id, hidden] of [["dg-exit", !on], ["dg-save", !on],
-                              ["dg-tools", !on], ["dg-hint", !on]]) {
+                              ["dg-tools", !on], ["dg-hint", !on], ["dg-views", on]]) {
     document.getElementById(id)?.classList.toggle("hidden", hidden);
   }
   if (on && !dg.__clean) dg.__clean = dgSnapshot();   // 进编辑时记下干净版本，供放弃改动时还原
@@ -1352,6 +1365,13 @@ function dgTidyGroups() {
 
   let arranged = 0;
   for (const r of tops.filter(dgIsGroup)) arranged += dgArrange(r.id);
+  const research = window.DiagramGeometry?.arrange(dg.layout);
+  if (research) {
+    dg.layout.nodes = research.nodes;
+    dg.dirty = true; dgSyncSave(); dgRender(); dgFit();
+    showToast("已按研究结构重排，可撤销；保存后生效");
+    return;
+  }
 
   // 顶层也按列归位、统一间距。上一版这里只推开重叠——压上的拉开了，但隔得老远的
   // 照样隔得老远，挨得太近的也照样挨着。「整理」就是要把远近不一的间距拉回同一个值。

@@ -37,7 +37,7 @@ const version='b'.repeat(64);
    requests.push({path:url.pathname,method,body:request.postData(),headers:request.headers()});
    if(url.pathname==='/')return route.fulfill({contentType:'text/html; charset=utf-8',body:chartHtml});
    if(url.pathname==='/fixture-drawers.js')return route.fulfill({contentType:'application/javascript; charset=utf-8',body:drawerScript});
-   if(['/static/chart-palette.js','/static/diagram.js','/static/diagram-generation.js'].includes(url.pathname))return route.fulfill({contentType:'application/javascript; charset=utf-8',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
+   if(['/static/chart-palette.js','/static/diagram-geometry.js','/static/diagram.js','/static/diagram-generation.js'].includes(url.pathname))return route.fulfill({contentType:'application/javascript; charset=utf-8',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
    if(url.pathname.endsWith('/diagram/values'))return route.fulfill({json:{nodes:[],as_of:null}});
    if(url.pathname.endsWith('/diagram/markdown/dump'))return route.fulfill({json:{markdown:originalMarkdown}});
    if(url.pathname.endsWith('/diagram/generation/models')){

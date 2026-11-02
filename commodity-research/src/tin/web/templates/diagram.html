@@ -15,8 +15,8 @@
       <span class="text-[var(--amber)]">没数的环节显示「尚无数据」，不会拿旧值充数</span>
     </p>
   </div>
-  <div class="flex items-center gap-1.5 shrink-0 text-xs">
-    <select id="dg-template" aria-label="选择产业图" onchange="dgSwitch(this.value)" class="px-2 py-1.5 rounded-md">
+  <div class="flex flex-wrap items-center gap-1.5 shrink-0 max-w-full text-xs">
+    <select id="dg-template" aria-label="选择产业图" onchange="dgSwitch(this.value)" class="px-2 py-1.5 rounded-md max-w-full">
       {% for t in templates_all %}
       <option value="{{ t.id }}" {{ 'selected' if t.id == template.id }}>{{ t.name }}{{ '（默认）' if t.is_default }}</option>
       {% endfor %}
@@ -73,6 +73,7 @@
         <line x1="0" y1="0" x2="0" y2="6" stroke="var(--text-muted)" stroke-width="1.2" opacity="0.25"/>
       </pattern>
     </defs>
+    <g id="dg-regions"></g>
     <g id="dg-groups"></g>
     <g id="dg-edges"></g>
     <g id="dg-nodes"></g>
@@ -95,7 +96,7 @@
   </div>
 
   {% endif %}
-  <div id="dg-tools" class="absolute left-3 top-3 hidden flex items-center gap-1 text-xs
+  <div id="dg-tools" style="max-width:calc(100% - 24px)" class="absolute left-3 top-3 hidden flex flex-wrap items-center gap-1 text-xs
        bg-[var(--surface)] rounded-md border border-[var(--line)] px-1 py-0.5 shadow-sm">
     {# 点按钮只是"拿起工具"，真正放在哪由下一次点击/拖拽决定——
        原来一点就落在视口左上角，正好压在别的框上，还会被自动排布卷进别人的分组 #}
@@ -109,7 +110,7 @@
     <button type="button" onclick="dgRedo()" id="dg-redo" disabled title="前进一步 Ctrl+Shift+Z"
       class="px-2 py-1 rounded hover:bg-[var(--surface-soft)] disabled:opacity-40">↷ 前进</button>
     <span class="w-px h-4 bg-[var(--line)]"></span>
-    <button type="button" onclick="dgTidyGroups()" class="px-2 py-1 rounded hover:bg-[var(--surface-soft)]">整理分组</button>
+    <button type="button" id="dg-tidy" onclick="dgTidyGroups()" title="可撤销，保存后生效" class="px-2 py-1 rounded hover:bg-[var(--surface-soft)]">按研究结构重排</button>
   </div>
 
   <!-- 空白布局的落地页：白板本身不说明该做什么 -->
@@ -323,6 +324,7 @@
   {% endif %}window.DG_TEMPLATE = {{ template | tojson }};
   window.DG_DATE = {{ (d or '') | tojson }};
 </script>
+<script src="{{ research_static_prefix() }}/static/diagram-geometry.js?v={{ static_version() }}"></script>
 <script src="{{ research_static_prefix() }}/static/diagram.js?v={{ static_version() }}"></script>
 {% if research_workbench() and not restricted_view %}<script src="{{ research_static_prefix() }}/static/diagram-generation.js?v={{ static_version() }}"></script>{% endif %}
 {% endblock %}
