@@ -99,3 +99,61 @@ test('import identifiers are validated before being placed in a request path', (
   assert.equal(isStructuredImportId('a'.repeat(24)), true)
   assert.equal(isStructuredImportId('../' + 'a'.repeat(24)), false)
 })
+
+test('PDF presentation groups by scoped original identity while retaining every table observation', async () => {
+  const { groupStructuredAnswerSources } = await import('./structuredAnswerSources')
+  const source = { file_name: 'report.pdf', sha256: hash, knowledge_id: 'document-a' }
+  const pdf = (kind: string, table_id: string, page: number): any => ({ kind: 'pdf', operation: kind, context: { knowledge_base_id: 'kb', knowledge_base_tenant_id: 7 },
+    data: { kind, source, table_id, fragments: [{ page }], rows: [] } })
+  const catalog = pdf('structured_pdf_tables', 'pdft-candidate', 13)
+  const read = pdf('structured_source_inspection', 'pdft-used', 7)
+  const query = pdf('structured_analysis', 'pdft-used', 7)
+  const groups = groupStructuredAnswerSources([catalog, read, query])
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].primary, query)
+  assert.equal(groups[0].catalogOnly, false)
+  assert.deepEqual(groups[0].pages, [7], 'directory candidates must not become default answer-page evidence')
+  assert.equal(groups[0].tables.length, 2)
+  assert.deepEqual(groups[0].tables[0].observations, [read, query])
+  assert.equal(groups[0].tables[1].observations[0], catalog, 'folded navigation retains the original candidate')
+})
+
+test('presentation grouping never crosses original version, knowledge ID or authorized library', async () => {
+  const { groupStructuredAnswerSources } = await import('./structuredAnswerSources')
+  const item: any = { kind: 'pdf', operation: 'read_pdf_table', context: { knowledge_base_id: 'kb', knowledge_base_tenant_id: 7 }, data: { kind: 'structured_source_inspection', table_id: 'pdft-a', source: { file_name: 'same.pdf', sha256: hash, knowledge_id: 'document-a' } } }
+  const items = [item,
+    { ...item, context: { ...item.context, knowledge_base_id: 'other-kb' } },
+    { ...item, data: { ...item.data, source: { ...item.data.source, sha256: 'b'.repeat(64) } } },
+    { ...item, data: { ...item.data, source: { ...item.data.source, knowledge_id: 'document-b' } } },
+  ]
+  assert.equal(groupStructuredAnswerSources(items).length, 4)
+  assert.equal(groupStructuredAnswerSources([{ ...item, data: { ...item.data, kind: 'structured_pdf_tables' } }])[0].catalogOnly, true)
+})
+
+test('PDF presentation page labels use real table references, excluding general page-text candidates', async () => {
+  const { structuredPdfPages } = await import('./structuredAnswerSources')
+  assert.deepEqual(structuredPdfPages({ fragments: [{ page: 3 }], rows: [{ source_cells: { amount: [{ page: 4 }] } }], page_context: [{ page: 99 }] }), [3, 4])
+})
+
+test('normalization retains separate PDF read pages and original versions before presentation grouping', async () => {
+  const { groupStructuredAnswerSources } = await import('./structuredAnswerSources')
+  const base = { kind: 'structured_source_inspection', status: 'ok', source_kind: 'pdf_table', table_id: 'pdft_fixture_table',
+    source: { file_name: 'same.pdf', sha256: hash, knowledge_id: 'document-a', knowledge_base_id: 'kb' }, source_context: { knowledge_base_id: 'kb' },
+    rows: [{ source_cells: { field: [{ page: 3, row: 0, column: 0, text: 'first' }] } }] }
+  const later = { ...base, offset: 5, rows: [{ source_cells: { field: [{ page: 3, row: 5, column: 0, text: 'later' }] } }] }
+  const source = (data: any) => call(data, { tool_name: 'structured_read_pdf_table' })
+  const normalized = structuredAnswerSources([source({ ...base, offset: 0 }), source(later), source({ ...base, source: { ...base.source, sha256: 'b'.repeat(64) } })])
+  assert.equal(normalized.length, 3)
+  const groups = groupStructuredAnswerSources(normalized)
+  assert.equal(groups.length, 2)
+  assert.equal(groups[0].tables[0].observations.length, 2)
+  assert.equal(groups[0].tables[0].observations[0].data.rows[0].source_cells.field[0].text, 'first')
+  assert.equal(groups[0].tables[0].observations[1].data.rows[0].source_cells.field[0].text, 'later')
+  const unscoped = ['kb-a', 'kb-b'].map(knowledge_base_id => source({ ...base, source_context: undefined, source: { ...base.source, knowledge_base_id } }))
+  assert.equal(groupStructuredAnswerSources(structuredAnswerSources(unscoped)).length, 2, 'missing verified scope cannot merge distinct source libraries')
+})
+
+test('ordinary table values named page never become PDF navigation references', async () => {
+  const { structuredPdfPages } = await import('./structuredAnswerSources')
+  assert.deepEqual(structuredPdfPages({ rows: [{ page: 77, values: { page: 88 }, raw_values: { page: 99 }, source_cells: { page: [{ page: 4 }] } }], row_provenance: [{ source_rows: [{ values: { page: 66 }, source_cells: { label: [{ page: 5 }] } }] }] }), [4, 5])
+})

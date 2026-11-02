@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><title>Structured answer source fixture</title>
+<style>body{margin:24px auto;padding:0 16px;max-width:920px;font-family:system-ui,sans-serif;color:#26362b}button{font-family:inherit}</style>
 <div id="app"></div>
 <script type="module">
   import { createApp, h } from 'vue'
@@ -12,13 +13,26 @@
 
   const pdfHash = window.fixturePdfHash
   const pdfData = { kind: 'structured_analysis', status: 'ok', table_id: 'pdft_fixture_table', sql: 'SELECT * FROM data', columns: ['value'], rows: [['100']], input_count: 1, input_complete: true, source: { file_name: 'fixture.pdf', sha256: pdfHash, knowledge_id: 'fixture-pdf', knowledge_base_id: 'kb-fixture' }, source_context: { knowledge_base_id: 'kb-fixture', knowledge_base_tenant_id: 7 }, review_status: 'auto_accepted', coverage: { notice: 'synthetic fixture' } }
+  const pdfRead = { ...pdfData, kind: 'structured_source_inspection', fragments: [{ page: 1, caption: '原始数据表' }], offset: 0,
+    rows: [{ source_cells: { value: [{ source_sha256: pdfHash, page: 1, row: 0, column: 0, bbox: [0.1, 0.1, 0.6, 0.2], text: '100' }] } }] }
+  const laterPdfRead = { ...pdfRead, offset: 1, rows: [{ source_cells: { value: [{ source_sha256: pdfHash, page: 1, row: 1, column: 0, bbox: [0.1, 0.2, 0.6, 0.3], text: '200' }] } }] }
+  const candidates = { kind: 'structured_pdf_tables', status: 'ok', source_context: pdfData.source_context, tables: [
+    { ...pdfData, table_id: 'pdft_other_table', status: 'reviewed', fragments: [{ page: 11, caption: '仅检索到的其他表' }] },
+    { ...pdfData, table_id: 'pdft_other_document', status: 'reviewed', source: { ...pdfData.source, file_name: 'candidate-only.pdf', knowledge_id: 'candidate-only' }, fragments: [{ page: 9, caption: '仅目录候选' }] },
+  ] }
   const data = {
     kind: 'structured_analysis', status: 'ok', dataset_id: 'd'.repeat(24), sql: 'SELECT value FROM data',
     columns: ['value'], rows: [[5]], input_count: 1, input_complete: true,
     inputs: { v1: { input_count: 1, valid_count: 1, example_cells: ['B2'], series: { sheet: 'Values', metric: 'Value', unit: 'USD' } } },
     source: { file: 'fixture.xlsx', sha256: 'a'.repeat(64) }, source_context: { knowledge_base_id: 'kb-fixture', knowledge_base_tenant_id: 7 },
   }
-  const app = createApp({ render: () => h(StructuredAnalysisEvidence, { evidence: data, sources: structuredAnswerSources([{ type: 'tool_call', tool_name: 'structured_data', arguments: { operation: 'analyze_table' }, success: true, pending: false, tool_data: data }, { type: 'tool_call', tool_name: 'structured_query_pdf_table', success: true, pending: false, tool_data: pdfData }]) }) })
+  const events = [
+    { type: 'tool_call', tool_name: 'structured_data', arguments: { operation: 'analyze_table' }, success: true, pending: false, tool_data: data },
+    { type: 'tool_call', tool_name: 'structured_list_pdf_tables', success: true, pending: false, tool_data: candidates },
+    ...[pdfRead, laterPdfRead].map(tool_data => ({ type: 'tool_call', tool_name: 'structured_read_pdf_table', success: true, pending: false, tool_data })),
+    { type: 'tool_call', tool_name: 'structured_query_pdf_table', success: true, pending: false, tool_data: pdfData },
+  ]
+  const app = createApp({ render: () => h(StructuredAnalysisEvidence, { evidence: data, sources: structuredAnswerSources(events) }) })
   app.use(createPinia())
   app.use(TDesign)
   app.use(i18n)
@@ -28,13 +42,15 @@
   auth.token = 'fixture-token'
   auth.selectedTenantId = 7
   window.fixtureAuth = auth
+  window.fixtureRequests = []
   window.fetch = async (input, init = {}) => {
+    window.fixtureRequests.push(String(input))
     const headers = new Headers(init.headers)
     if (headers.get('Authorization') !== 'Bearer fixture-token' || headers.get('X-Knowledge-Base-ID') !== 'kb-fixture' || headers.get('X-Tenant-ID') !== '7') throw new Error('request missing scoped auth headers')
     const url = String(input)
     if (url.includes('/report')) return new Response(JSON.stringify({ manifest: { dataset_id: data.dataset_id, sha256: data.source.sha256, import_id: 'b'.repeat(24) } }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     if (url.includes('/sheet-view')) return new Response(JSON.stringify({ sheet_name: 'Values', range: { start_row: 1, end_row: 5, start_col: 1, end_col: 3, row_count: 5, col_count: 3 }, cells: [{ row: 2, column: 2, ref: 'B2', display: '5' }], warnings: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    if (url.includes('/api/pdf/tables/pdft_fixture_table')) return new Response(JSON.stringify({ table_id: pdfData.table_id, source: pdfData.source, rows: [{ source_cells: { value: [{ source_sha256: pdfHash, page: 1, bbox: [0.1, 0.1, 0.6, 0.2], text: '100' }] } }], fragments: [{ page: 1, bbox: [0.08, 0.08, 0.7, 0.25] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url.includes('/api/pdf/tables/pdft_fixture_table')) return new Response(JSON.stringify({ table_id: pdfData.table_id, source: pdfData.source, rows: [...pdfRead.rows, ...laterPdfRead.rows], fragments: [{ page: 1, bbox: [0.08, 0.08, 0.7, 0.25] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     if (url.includes('/api/v1/knowledge/fixture-pdf/preview')) return new Response(Uint8Array.from(atob(window.fixturePdfBase64), c => c.charCodeAt(0)), { status: 200, headers: { 'Content-Type': 'application/pdf' } })
     return new Response('{}', { status: 404 })
   }
