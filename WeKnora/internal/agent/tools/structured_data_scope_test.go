@@ -108,7 +108,12 @@ func TestStructuredKnowledgeScopeMultiRequiresRealModelSelection(t *testing.T) {
 	} {
 		result, err := base.Execute(structuredScopeContext(), json.RawMessage(input))
 		require.NoError(t, err)
-		require.True(t, result.Success)
+		if strings.Contains(input, "query_series") {
+			require.False(t, result.Success)
+			require.Contains(t, result.Error, "尚未执行")
+		} else {
+			require.True(t, result.Success)
+		}
 		var directory struct {
 			Status string                     `json:"status"`
 			Scopes []structuredKnowledgeScope `json:"knowledge_bases"`
@@ -177,7 +182,7 @@ func TestStructuredKnowledgeScopeNamedOperationKeepsServerContract(t *testing.T)
 	var schema map[string]any
 	require.NoError(t, json.Unmarshal(tool.Parameters(), &schema))
 	require.Contains(t, schema["properties"], "knowledge_base_id")
-	require.Equal(t, []any{"series_id"}, schema["required"])
+	require.Equal(t, []any{"series_id", "knowledge_base_id"}, schema["required"])
 	after, err := json.Marshal(directory)
 	require.NoError(t, err)
 	require.JSONEq(t, string(original), string(after), "adding outer scope cannot mutate service metadata")

@@ -107,6 +107,9 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 	for _, field := range []string{"tenant_id", "user_id", "role", "token", "api_key", "url", "endpoint", "data_dir", "knowledge_base_id", "knowledge_base_tenant_id", "knowledge_base_can_write"} {
 		if _, exists := arguments[field]; exists {
+			if field == "knowledge_base_id" {
+				return nil, fmt.Errorf("knowledge_base_id 必须放在顶层，与 operation、arguments 同级，不能放在 arguments 内；请从本轮已授权目录选择真实ID")
+			}
 			return nil, fmt.Errorf("结构化表格参数不接受身份、凭据或服务配置")
 		}
 	}
@@ -124,6 +127,10 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 			}
 		}
 		if operation != "describe_tools" {
+			if operation != "list_datasets" {
+				directory.Success = false
+				directory.Error = "尚未执行 " + operation + "：多知识库必须在顶层传 knowledge_base_id（与 operation、arguments 同级）；请从返回的已授权目录选择真实ID并重试原操作。此返回不是查询结果，也不表示无数据。"
+			}
 			return fitStructuredDirectory(ctx, operation, directory), nil
 		}
 		// describe_tools is a service protocol directory: the server returns

@@ -62,7 +62,11 @@ func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]a
 				continue
 			}
 			scopedSchema["properties"].(map[string]any)["knowledge_base_id"] = map[string]any{
-				"type": "string", "description": "可选的本轮已授权知识库ID；单库默认，多库必须从返回的真实目录选择",
+				"type": "string", "description": "本轮已授权知识库ID；单库默认，多库必填且须从真实授权目录选择",
+			}
+			if len(base.knowledgeScopes) > 1 {
+				required, _ := scopedSchema["required"].([]any)
+				scopedSchema["required"] = append(required, "knowledge_base_id")
 			}
 			raw, err = json.Marshal(scopedSchema)
 			if err != nil || len(raw) > 64*1024 {

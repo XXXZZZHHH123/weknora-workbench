@@ -271,11 +271,11 @@ func allStructuredRowEntriesComplete(entries []structuredQueryRowCompanionEntry)
 
 func isStructuredQueryExecution(call types.ToolCall) bool {
 	switch call.ExecutionName() {
-	case "structured_query_series", "structured_analyze_table", "structured_get_result_evidence":
+	case "structured_query_series", "structured_analyze_table", "structured_get_result_evidence", "structured_query_pdf_table":
 		return true
 	case "structured_data":
 		operation, _ := call.ExecutionArgs()["operation"].(string)
-		return operation == "query_series" || operation == "analyze_table" || operation == "get_result_evidence"
+		return operation == "query_series" || operation == "analyze_table" || operation == "get_result_evidence" || operation == "query_pdf_table"
 	default:
 		return false
 	}
@@ -362,6 +362,9 @@ func projectStructuredQueryMetadata(candidates []structuredQueryRowCandidate, bu
 	for i := range candidates {
 		original := candidates[i].entry.Metadata
 		projectedValue, helperOmissions := projectReviewValue(original, perResultBudget, "/data", 0)
+		if original["source_kind"] == "pdf_table" && original["kind"] == "structured_analysis" {
+			projectedValue, helperOmissions = projectPDFQueryReviewMetadata(original, perResultBudget)
+		}
 		projected := reviewAsMap(projectedValue)
 		if projected == nil {
 			projected = map[string]any{}
@@ -371,6 +374,50 @@ func projectStructuredQueryMetadata(candidates []structuredQueryRowCandidate, bu
 		candidates[i].entry.MetadataProjectionComplete = len(omitted) == 0
 		candidates[i].entry.MetadataOmittedPointers = omitted
 	}
+}
+
+// Preserve actual execution and input identity before large historic PDF
+// diagnostics. This is a protocol projection, independent of question/values;
+// omission handles still require reading any missing evidence before judgment.
+func projectPDFQueryReviewMetadata(original map[string]any, budget int) (any, []string) {
+	keys := []string{"kind", "status", "source_kind", "table_id", "input_complete", "input_count", "output_complete", "output_truncated", "returned_row_count", "sql", "provenance", "source", "columns"}
+	seen := map[string]bool{}
+	for _, key := range keys {
+		seen[key] = true
+	}
+	remainingKeys := []string{}
+	for key := range original {
+		if !seen[key] {
+			remainingKeys = append(remainingKeys, key)
+		}
+	}
+	sort.Strings(remainingKeys)
+	keys = append(keys, remainingKeys...)
+	view := map[string]any{}
+	missing := []string{}
+	remaining := budget - 2
+	for _, key := range keys {
+		value, exists := original[key]
+		if !exists {
+			continue
+		}
+		encodedKey, _ := json.Marshal(key)
+		available := remaining - len(encodedKey) - 2
+		pointer := "/data/" + escapeReviewPointerSegment(key)
+		if available < 8 {
+			missing = append(missing, pointer)
+			continue
+		}
+		if key == "sql" {
+			available = min(available, max(128, budget*2/3))
+		}
+		projected, omitted := projectReviewValue(value, available, pointer, 0)
+		encoded, _ := json.Marshal(projected)
+		view[key] = projected
+		remaining -= len(encodedKey) + len(encoded) + 2
+		missing = append(missing, omitted...)
+	}
+	return view, missing
 }
 
 func structuredQueryMetadataOmittedPointers(original, projected map[string]any, helperOmissions []string) []string {
