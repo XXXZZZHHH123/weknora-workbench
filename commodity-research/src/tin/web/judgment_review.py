@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.integration.page_facts import catalog_page
 from tin.integration.workbench_scope import artifact_session, require_shared_write, resolve_workbench
-from tin.judgments.analysis import AnalysisError, assess_draft, validate_analysis
+from tin.judgments.analysis import AnalysisError, assess_draft, unique_condition_kinds, validate_analysis
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.service import latest, latest_workbench_payload
 from tin.models import AuditLog, SourceMapping
@@ -206,7 +206,8 @@ def initialize_review(preview, assessment, catalog):
         if unit_present(unit):
             rule['unit_confirmed'] = unit
     assessment = assess_draft(candidate, preview['text'], catalog, variety=preview['variety'],
-        actor=assessment.result.payload.author, written_at=assessment.result.payload.written_at)
+        actor=assessment.result.payload.author, written_at=assessment.result.payload.written_at,
+        condition_kinds=unique_condition_kinds(preview.get('source_coverage', {}).get('items', [])))
     baseline = deepcopy(assessment.document)
     # Quarantine records are structured here. Audit prose is never reparsed.
     baseline['unresolved'] = deepcopy(baseline['unresolved'][:len(candidate['unresolved'])])

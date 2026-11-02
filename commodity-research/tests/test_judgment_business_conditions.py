@@ -52,10 +52,18 @@ def test_model_condition_requires_literal_quote_and_complete_explicit_type(condi
     body['unresolved'] = [{'section': 'thresholds', 'text': 'Audit note', 'reason': 'Manual review',
         'business_condition': condition, 'rule_kind': kind}]
     original = deepcopy(body)
-    for check in (validate, lambda value: assess_draft(value, SOURCE, CATALOG,
-                                                      variety='EXAMPLE', actor='owner')):
+    with pytest.raises(AnalysisError) as caught:
+        validate(body)
+    assert any(issue['code'] == code and issue['path'] == '/unresolved/0/' + field
+               for issue in caught.value.issues)
+    if condition == QUOTE and kind is None:
+        assessed = assess_draft(body, SOURCE, CATALOG, variety='EXAMPLE', actor='owner')
+        pending = assessed.result.payload.unstructured[0]
+        assert pending.business_condition is None and pending.rule_kind is None
+        assert QUOTE in pending.text and assessed.candidate_document == original
+    else:
         with pytest.raises(AnalysisError) as caught:
-            check(body)
+            assess_draft(body, SOURCE, CATALOG, variety='EXAMPLE', actor='owner')
         assert any(issue['code'] == code and issue['path'] == '/unresolved/0/' + field
                    for issue in caught.value.issues)
     assert body == original

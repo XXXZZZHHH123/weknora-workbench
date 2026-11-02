@@ -415,7 +415,65 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
                           [item.model_dump() for item in payload.unstructured])
 
 
-def assess_draft(document, original, catalog, *, variety, actor, written_at=None):
+def unique_condition_kinds(items):
+    """Use only an exact, unambiguous classification from a validated inventory.
+
+    Callers validate source quotations independently. Other kinds participate
+    in ambiguity detection; a non-rule classification is not silently ignored.
+    """
+    claims = {}
+    for item in items if isinstance(items, (list, tuple)) else ():
+        if not isinstance(item, dict):
+            continue
+        quote = item.get('quote')
+        if not isinstance(quote, str) or not quote.strip():
+            continue
+        kind = item.get('kind')
+        claims.setdefault(quote, set()).add(kind if isinstance(kind, str) else None)
+    return {quote: next(iter(kinds)) for quote, kinds in claims.items()
+            if len(kinds) == 1 and next(iter(kinds)) in {'threshold', 'falsifier'}}
+
+
+def _normalize_pending_types(document, original, condition_kinds, issues):
+    """Keep literal untyped conditions as prose, never infer a rule from words."""
+    from collections.abc import Mapping
+
+    if not isinstance(original, str):
+        return document
+    result = document
+    for index, item in enumerate(document['unresolved']):
+        if not isinstance(item, dict) or item.get('rule_kind') is not None:
+            continue
+        condition = item.get('business_condition')
+        if not isinstance(condition, str) or not condition.strip() or condition not in original:
+            continue
+        if result is document:
+            result = deepcopy(document)
+        target = result['unresolved'][index]
+        kind = condition_kinds.get(condition) if isinstance(condition_kinds, Mapping) else None
+        if isinstance(kind, str) and kind in {'threshold', 'falsifier'}:
+            target['rule_kind'] = kind
+            issues.append({'code': 'condition_type_completed', 'path': f'/unresolved/{index}/rule_kind',
+                'message': '依据独立原文清单补全待核对条件类型；仅保留为文字，未生成量化规则。',
+                'severity': 'normalized'})
+            continue
+        text = target.get('text')
+        if not isinstance(text, str):
+            # Invalid descriptive shapes still belong to the strict validator.
+            continue
+        if condition not in text:
+            text += ('\n\n' if text else '') + condition
+        if len(text) > 4000:
+            _error('待核对说明与完整条件合并超过4000字，请精简说明；未截断原文条件',
+                   'condition_text_capacity', f'/unresolved/{index}/text')
+        target.update(text=text, business_condition=None, rule_kind=None)
+        issues.append({'code': 'condition_type_pending', 'path': f'/unresolved/{index}/rule_kind',
+            'message': '原文条件尚未明确是观察阈值还是证伪条件，已保留为待核对文字，当前不执行。',
+            'severity': 'warning'})
+    return result
+
+
+def assess_draft(document, original, catalog, *, variety, actor, written_at=None, condition_kinds=None):
     """Keep verified rules; explicitly quarantine invalid rules without making them executable.
 
     Envelope/identity/observation failures remain fatal. This is not a JSON repair
@@ -434,6 +492,7 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
         _error('研究逻辑包含无效数值或结构', 'document_schema', '/')
     bounded(document)
     issues = []
+    original_candidate = deepcopy(document)
     # Model responses may spell an absent optional descriptive section as
     # JSON null. Its existing empty-object default carries no classification,
     # evidence, binding or number; normalize only that absence at this boundary.
@@ -473,6 +532,10 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
         ids.extend(rule.get('id') for rule in rules if isinstance(rule.get('id'), str))
     if len(ids) != len(set(ids)):
         _error('阈值和证伪的局部ID不能重复', 'rule_id_duplicate', '/judgment')
+
+    # Only the model-draft boundary tolerates missing condition metadata. Typed
+    # imports remain strict and only verified rules enter executable arrays.
+    document = _normalize_pending_types(document, original, condition_kinds, issues)
 
     # Validate descriptive structure and fact protections independently of rules.
     skeleton = deepcopy(document)
@@ -576,4 +639,4 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
         _error('待确认条目超过32项，请缩小资料后重试；未静默丢失规则', 'unresolved_capacity', '/unresolved')
     cleaned['unresolved'].extend(notes)
     result = validate_analysis(cleaned, original, catalog, variety=variety, actor=actor, written_at=written_at)
-    return DraftAssessment(cleaned, result, issues, deepcopy(document), [deepcopy(document)])
+    return DraftAssessment(cleaned, result, issues, original_candidate, [deepcopy(original_candidate)])

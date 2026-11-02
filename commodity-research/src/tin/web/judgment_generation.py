@@ -23,7 +23,7 @@ from tin.config import SHANGHAI, settings
 from tin.integration.research_profile import research_variety
 from tin.db import SessionLocal
 from tin.integration.workbench_scope import artifact_session, current_workbench, go_request, resolve_workbench, require_shared_write
-from tin.judgments.analysis import AnalysisError, SOURCE_BYTES, assess_draft, validate_analysis
+from tin.judgments.analysis import AnalysisError, SOURCE_BYTES, assess_draft, unique_condition_kinds, validate_analysis
 from tin.judgments.numbers import exact_float, NumericPrecisionError
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.prompt import GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, SELECTION_PROTOCOL
@@ -414,7 +414,8 @@ def assessed_response(response, body, before, candidates, scope):
         from tin.judgments.coverage import split_coverage_document
         response, mapping = split_coverage_document(response, inventory)
     result = assess_draft(response, body.text, candidates, variety=before.get('variety', settings.variety),
-        actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date())
+        actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date(),
+        condition_kinds=unique_condition_kinds(inventory['items']) if inventory is not None else None)
     # Keep transport accounting outside the judgment protocol and its executable rules.
     result.source_mapping = mapping
     if inventory is not None:
@@ -757,7 +758,8 @@ async def _analyze_scoped(scope, body):
             # later be selected by the reviewer, against today's authorized IDs.
             for candidate in [stored['candidate_document'], *stored['candidate_history']]:
                 assess_draft(candidate, body.text, before['catalog'], variety=before['variety'],
-                    actor=scope.identity.user_id, written_at=written_at)
+                    actor=scope.identity.user_id, written_at=written_at,
+                    condition_kinds=unique_condition_kinds(inventory['items']))
             analyzed = validate_analysis(stored['document'], body.text, before['catalog'],
                 variety=before['variety'], actor=scope.identity.user_id, written_at=written_at)
             from tin.judgments.analysis import DraftAssessment

@@ -224,9 +224,18 @@ def _mapped_target(document, candidate, item, path):
     if quantitative:
         if len(parts) != 2 or parts[0] != 'unresolved' or not isinstance(before, dict):
             return None, 'quantitative_in_prose'
-        if (before.get('rule_kind') != item['kind'] or not isinstance(before.get('business_condition'), str)
-                or not before['business_condition'].strip()
-                or not (before['business_condition'] in item['quote'] or item['quote'] in before['business_condition'])):
+        pending = before
+        # The independent model inventory may supply a uniquely declared type
+        # absent from the final candidate. Assessment preserves that normalized
+        # metadata only for the identical literal source condition; audit input
+        # remains unchanged. Recognize the same item rather than duplicating it.
+        after = _at(document, path)
+        if (before.get('rule_kind') is None and isinstance(after, dict)
+                and after.get('business_condition') == before.get('business_condition')):
+            pending = after
+        if (pending.get('rule_kind') != item['kind'] or not isinstance(pending.get('business_condition'), str)
+                or not pending['business_condition'].strip()
+                or not (pending['business_condition'] in item['quote'] or item['quote'] in pending['business_condition'])):
             return None, 'pending_source_mismatch'
     problem = _research_target(document, path)
     return (None, problem) if problem else (path, None)
