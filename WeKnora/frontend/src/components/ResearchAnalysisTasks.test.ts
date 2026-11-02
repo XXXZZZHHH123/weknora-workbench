@@ -7,11 +7,13 @@ import ts from 'typescript'
 import { parse, compileTemplate } from '@vue/compiler-sfc'
 const source = readFileSync(process.env.ANALYSIS_WIDGET_TEST_SOURCE || new URL('./ResearchAnalysisTasks.vue', import.meta.url), 'utf8')
 const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0]!.replace(/^import .*$/gm, '')
-const code = ts.transpileModule(script + '\n;({ expanded, openTask, notifyCompleted, wake })', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
+const code = ts.transpileModule(script + '\n;({ expanded, openTask, notifyCompleted, wake, rows, ignoreTask: typeof ignoreTask === "function" ? ignoreTask : undefined })', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
 function fixture() {
-  const calls = { start: 0, stop: 0, refresh: 0, closed: 0, notices: [] as any[], opens: [] as any[], read: [] as string[] }
+  const calls = { start: 0, stop: 0, refresh: 0, closed: 0, notices: [] as any[], opens: [] as any[], read: [] as string[], ignored: [] as string[] }
   const store = reactive({ jobs: [] as any[], scopeVersion: 0, activeCount: 0, unreadIds: [] as string[], pendingNotifications: [] as any[], visible: false,
+    dismissingIds: [] as string[], ignoreFails: false,
     start: async () => { calls.start++ }, stop: () => { calls.stop++ }, refresh: async () => { calls.refresh++ }, markRead: (id: string) => { calls.read.push(id) },
+    async dismiss(id: string) { calls.ignored.push(id); if (this.ignoreFails) return false; this.jobs = this.jobs.map(job => job.id === id ? { ...job, dismissed: true } : job); return true },
     takeNotifications() { const result = this.pendingNotifications.slice(); this.pendingNotifications = []; return result } })
   const mounted: Array<() => void> = [], cleanup: Array<() => void> = [], listeners = new Map<string, unknown>()
   const document = { visibilityState: 'visible', addEventListener: (name: string, callback: unknown) => listeners.set(name, callback), removeEventListener: (name: string) => listeners.delete(name) }
@@ -67,5 +69,44 @@ test('a diagram completion opens the diagram view rather than the judgment manag
     f.calls.notices[0].content().children[1].props.onClick()
     assert.equal(f.calls.opens[0].query.view, 'diagram')
     assert.equal(f.calls.opens[0].query.analysis_job, 'diagram-job')
+  } finally { f.close() }
+})
+
+test('finished task prompts offer ignore without opening or saving a result', async () => {
+  const f = fixture()
+  try {
+    const job = { id: 'job-a', workbench_id: 'wb-a', state: 'succeeded', result_available: true }
+    f.store.jobs.push(job); f.store.pendingNotifications.push(job); await nextTick()
+    const buttons = f.calls.notices[0].content().children.filter((node: any) => node.type === 'button')
+    assert.equal(buttons.length, 2)
+    assert.equal(buttons[1].children, '忽略')
+    await buttons[1].props.onClick()
+    assert.deepEqual(f.calls.ignored, ['job-a']); assert.equal(f.calls.opens.length, 0)
+    assert.equal(f.view.rows.value.length, 0)
+    assert.equal(f.store.jobs[0].result_available, true, 'Ignoring a prompt does not discard the retained result')
+  } finally { f.close() }
+})
+
+test('task list hides ignored results and rejects ignore actions for active or stale jobs', async () => {
+  const f = fixture()
+  try {
+    assert.equal(typeof f.view.ignoreTask, 'function')
+    const running = { id: 'active', workbench_id: 'wb-a', state: 'running' }
+    f.store.jobs.push(running, { id: 'done', workbench_id: 'wb-a', state: 'succeeded', dismissed: true })
+    assert.equal(f.view.rows.value.length, 1)
+    await f.view.ignoreTask(running); assert.equal(f.calls.ignored.length, 0)
+    await f.view.ignoreTask({ id: 'old', workbench_id: 'wb-a', state: 'succeeded' }); assert.equal(f.calls.ignored.length, 0)
+    f.view.openTask({ id: 'done', workbench_id: 'wb-a' }); assert.equal(f.calls.opens.length, 0)
+  } finally { f.close() }
+})
+
+test('ignore failure leaves the task and completion prompt available', async () => {
+  const f = fixture()
+  try {
+    assert.equal(typeof f.view.ignoreTask, 'function')
+    const job = { id: 'done', workbench_id: 'wb-a', state: 'failed' }
+    f.store.jobs.push(job); f.store.ignoreFails = true
+    await f.view.ignoreTask(job)
+    assert.equal(f.view.rows.value.length, 1); assert.equal(f.calls.closed, 0)
   } finally { f.close() }
 })

@@ -1,6 +1,6 @@
 import { fetchWithAuthRetry } from '../utils/authFetch'
 
-export type AnalysisJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'expired' | 'applied'
+export type AnalysisJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'expired' | 'applied' | 'superseded'
 export type AnalysisJobPurpose = 'judgments' | 'diagram'
 export interface AnalysisJob {
   id: string
@@ -14,9 +14,11 @@ export interface AnalysisJob {
   expires_at?: string
   result_available: boolean
   purpose?: AnalysisJobPurpose
+  dismissed?: boolean
+  dismissed_at?: string
 }
 export interface AnalysisTaskOwner { userId: string; tenantId: string; token: string }
-const states = new Set<AnalysisJobState>(['queued', 'running', 'succeeded', 'failed', 'interrupted', 'expired', 'applied'])
+const states = new Set<AnalysisJobState>(['queued', 'running', 'succeeded', 'failed', 'interrupted', 'expired', 'applied', 'superseded'])
 const phases = new Set(['queued', 'reading_source', 'loading_catalog', 'selecting', 'analyzing', 'generating', 'validating', ...states])
 
 export function analysisJobId(value: unknown): string {
@@ -36,7 +38,10 @@ export function readAnalysisJobs(value: unknown): AnalysisJob[] {
       phase: typeof item.phase === 'string' && phases.has(item.phase) ? item.phase : '', title: purpose === 'diagram' ? '产业图配置生成' : '研究逻辑分析',
       created_at: timestamp('created_at'), updated_at: timestamp('updated_at'),
       ...(timestamp('finished_at') ? { finished_at: timestamp('finished_at') } : {}),
-      ...(timestamp('expires_at') ? { expires_at: timestamp('expires_at') } : {}), result_available: item.result_available === true })
+      ...(timestamp('expires_at') ? { expires_at: timestamp('expires_at') } : {}),
+      ...(timestamp('dismissed_at') ? { dismissed_at: timestamp('dismissed_at') } : {}),
+      dismissed: item.dismissed === true && item.state !== 'queued' && item.state !== 'running',
+      result_available: item.result_available === true })
   }
   return [...jobs.values()]
 }
@@ -52,4 +57,21 @@ export async function listAnalysisJobs(owner: AnalysisTaskOwner, isCurrent: () =
   const result: unknown = await response.json()
   if (!isCurrent()) throw new Error('账号或空间已切换。')
   return readAnalysisJobs(result)
+}
+
+export async function dismissAnalysisJob(owner: AnalysisTaskOwner, id: string, isCurrent: () => boolean, fetcher?: typeof fetch): Promise<AnalysisJob> {
+  if (!analysisJobId(id) || !isCurrent()) throw new Error('任务或当前账号已改变，请刷新后重试。')
+  const response = await fetchWithAuthRetry(`/research/api/research/analysis-jobs/${encodeURIComponent(id)}/dismiss`, {
+    method: 'POST', credentials: 'same-origin', headers: { 'X-Tenant-ID': owner.tenantId, 'X-Research-User': owner.userId },
+  }, { token: owner.token, isCurrent, ...(fetcher ? { fetcher } : {}) })
+  if (!response.ok) {
+    const error = new Error(response.status === 409 ? '正在运行的任务不能忽略，请刷新进度。' : '暂时无法忽略此提示，请稍后重试。') as Error & { status: number }
+    error.status = response.status
+    throw error
+  }
+  const result: unknown = await response.json()
+  if (!isCurrent()) throw new Error('账号或空间已切换。')
+  const job = readAnalysisJobs({ items: [result] })[0]
+  if (!job || job.id !== id || job.dismissed !== true) throw new Error('忽略状态未能核对，请刷新后重试。')
+  return job
 }
