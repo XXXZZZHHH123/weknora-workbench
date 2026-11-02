@@ -15,23 +15,38 @@
 <section id="research-card-dialog" class="strategy-inline-editor" hidden aria-labelledby="research-card-dialog-title">
   <header class="strategy-preview-header"><h2 id="research-card-dialog-title">策略方案</h2><button type="button" data-research-card-close class="button-muted">返回预览</button></header>
   <form id="research-card-form">
-    <div class="research-card-import"><label>导入<input id="research-card-file" type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"></label><span id="research-card-filename"></span></div>
+    <div class="research-card-import"><label>本地导入<input id="research-card-file" type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"></label><button type="button" id="research-card-library-import" class="button-muted">从知识库导入</button><button type="button" id="research-card-export" class="button-muted">导出 JSON</button><span id="research-card-filename"></span></div>
     <div class="research-card-fields research-card-meta-fields"><label>方案名称<input id="research-card-title" maxlength="120" required></label><label>方向<select id="research-card-direction"><option value="observe">等待验证</option><option value="bull">偏多观察</option><option value="bear">偏空观察</option><option value="range">区间观察</option></select></label><label>复核日期<input id="research-card-review" type="date" required></label></div>
     <div class="research-judgment-reference"><label for="research-card-judgment">依据研判</label><select id="research-card-judgment"><option value="">不引用研判 · 临时观察方案</option></select><button type="button" id="research-card-preview-judgment" class="button-muted" disabled>预览</button></div>
     <div id="research-card-judgment-preview" class="strategy-reference-preview" hidden></div>
-    <label>适用 / 触发<textarea id="research-card-trigger" rows="2" maxlength="4000" required placeholder="什么情况出现后，需要采取下面的应对？"></textarea></label>
-    <label>应对措施<textarea id="research-card-response-action" rows="3" maxlength="4000" placeholder="明确需要做什么、暂缓什么，以及执行顺序。"></textarea></label>
+    <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-trigger">适用 / 触发</label><button type="button" class="button-muted" data-citation-field="trigger">引用</button></div><textarea id="research-card-trigger" rows="2" maxlength="4000" required placeholder="什么情况出现后，需要采取下面的应对？"></textarea><div data-citation-list="trigger"></div></div>
+    <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-response-action">应对措施</label><button type="button" class="button-muted" data-citation-field="response_action">引用</button></div><textarea id="research-card-response-action" rows="3" maxlength="4000" placeholder="明确需要做什么、暂缓什么，以及执行顺序。"></textarea><div data-citation-list="response_action"></div></div>
     <label class="research-observation-option"><input id="research-card-observation-only" type="checkbox"> 保存为观察方案（暂未制定应对措施）</label>
-    <label>暂停 / 撤回<textarea id="research-card-invalidation" rows="2" maxlength="4000" required placeholder="出现什么情况需要暂停、撤回或重新复核？"></textarea></label>
+    <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-invalidation">暂停 / 撤回</label><button type="button" class="button-muted" data-citation-field="invalidation">引用</button></div><textarea id="research-card-invalidation" rows="2" maxlength="4000" required placeholder="出现什么情况需要暂停、撤回或重新复核？"></textarea><div data-citation-list="invalidation"></div></div>
     <details><summary>补充适用范围、执行前核对、关联资料和原文</summary>
-      <label>适用范围与目标<textarea id="research-card-thesis" rows="2" maxlength="8000" required></textarea></label>
-      <label>执行前核对<textarea id="research-card-watch" rows="2" maxlength="8000" required></textarea></label>
-      <div id="research-card-selected-sources" class="research-selected-sources"></div><div id="research-card-sources" class="research-card-sources"></div><button type="button" id="research-card-more-sources" class="button-muted" hidden>更多资料</button><label>原始研究文字<textarea id="research-card-original" rows="4" maxlength="24000"></textarea></label>
+      <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-thesis">适用范围与目标</label><button type="button" class="button-muted" data-citation-field="thesis">引用</button></div><textarea id="research-card-thesis" rows="2" maxlength="8000" required></textarea><div data-citation-list="thesis"></div></div>
+      <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-watch">执行前核对</label><button type="button" class="button-muted" data-citation-field="watch_for">引用</button></div><textarea id="research-card-watch" rows="2" maxlength="8000" required></textarea><div data-citation-list="watch_for"></div></div>
+      <div id="research-card-selected-sources" class="research-selected-sources"></div><div id="research-card-sources" class="research-card-sources"></div><button type="button" id="research-card-more-sources" class="button-muted" hidden>更多资料</button>
+      <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-original">原始研究文字</label><button type="button" class="button-muted" data-citation-field="original_text">引用</button></div><textarea id="research-card-original" rows="4" maxlength="24000"></textarea><div data-citation-list="original_text"></div></div>
     </details>
     <p id="research-card-reference-note" class="strategy-small-note" hidden></p><div id="research-card-form-status" role="status" aria-live="polite"></div>
     <footer><span class="strategy-small-note">保存为个人草稿，文字条件不会自动执行。</span><button type="button" id="research-card-save-copy" class="button-muted" hidden>另存为新方案</button><button type="submit" class="button-primary" id="research-card-save">保存草稿</button></footer>
   </form>
 </section>
 {% endif %}
+<dialog id="strategy-citation-dialog" class="strategy-citation-dialog" aria-labelledby="strategy-citation-title">
+  <header><h2 id="strategy-citation-title">引用</h2><button type="button" class="button-muted" data-citation-close aria-label="关闭引用窗口">×</button></header>
+  <div class="strategy-citation-layout">
+    <section id="strategy-citation-browser" aria-label="选择引用">
+      <div class="strategy-citation-tabs" role="tablist" aria-label="引用类型"><button type="button" role="tab" data-citation-kind="indicator" aria-selected="true">指标</button><button type="button" role="tab" data-citation-kind="judgment_condition" aria-selected="false">研判条件</button><button type="button" role="tab" data-citation-kind="knowledge_file" aria-selected="false">知识库原件</button></div>
+      <div id="strategy-citation-parent" class="strategy-citation-parent" hidden><label for="strategy-citation-judgment">依据研判</label><select id="strategy-citation-judgment"><option value="">请选择研判版本</option></select><button type="button" id="strategy-citation-more-judgments" class="button-muted" hidden>更多研判</button></div>
+      <label class="sr-only" for="strategy-citation-search">搜索当前授权引用</label><input id="strategy-citation-search" type="search" placeholder="搜索名称或说明" autocomplete="off">
+      <div id="strategy-citation-options" class="strategy-citation-options"></div><button type="button" id="strategy-citation-more" class="button-muted" hidden>加载更多</button>
+    </section>
+    <section id="strategy-citation-preview" class="strategy-citation-preview" aria-label="引用内容预览"></section>
+  </div>
+  <p id="strategy-citation-status" role="status" aria-live="polite"></p>
+  <footer><button type="button" id="strategy-citation-clear" class="button-muted">暂无，清除此项引用</button><button type="button" class="button-primary" data-citation-close>完成</button></footer>
+</dialog>
 <script id="research-card-data" type="application/json">{{ research_cards|tojson }}</script>
 {% endif %}
