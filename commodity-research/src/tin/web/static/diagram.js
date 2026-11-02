@@ -1388,7 +1388,7 @@ function dgAxisDate(ticks) {
   return forms[forms.length - 1];
 }
 
-function dgChart(points, unit, w = 420, h = 180) {
+function dgChart(points, unit, w = 420, h = 180, customColor) {
   // 带坐标轴的走势图。只画一条序列——单位与量级不同的序列叠在一张图上会互相淹没，
   // 而双轴是明令禁用的（01 §4.6）。要比趋势走「对比」视图的归一化。
   if (!points || points.length < 2) return "";
@@ -1402,8 +1402,7 @@ function dgChart(points, unit, w = 420, h = 180) {
   const X = (i) => PAD.l + (i / (points.length - 1)) * iw;
   const Y = (v) => PAD.t + ih - ((v - lo) / (hi - lo)) * ih;
   const d = points.map((p, i) => `${i ? "L" : "M"} ${X(i).toFixed(1)} ${Y(p.value).toFixed(1)}`).join(" ");
-  const rising = vals[vals.length - 1] >= vals[0];
-  const color = rising ? "var(--up)" : "var(--down)";
+  const color = window.ChartPalette.color(0, customColor);
 
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => lo + (hi - lo) * f);
   const grid = ticks.map((v) => `
@@ -1578,7 +1577,7 @@ async function dgOpenDetail(nodeId) {
     ${d.history.length > 1 ? `<div class="py-3 border-b border-[var(--line)]">
       <div class="text-[10px] font-semibold text-[var(--text-muted)] mb-1">
         近 ${d.history.length} 期走势（${dgEsc(d.history[0].as_of)} ~ ${dgEsc(d.history[d.history.length - 1].as_of)}）</div>
-      ${dgChart(d.history, d.unit, 420, 180)}</div>` : ""}
+      ${dgChart(d.history, d.unit, 420, 180, d.color)}</div>` : ""}
 
     <div class="py-3 border-b border-[var(--line)] text-[11px]">
       <div class="text-[10px] font-semibold text-[var(--text-muted)] mb-1">口径</div>
@@ -1634,7 +1633,6 @@ function dgCopy(t) {
 
 /* ---------- 多序列对比（#2） ---------- */
 
-const DG_COMPARE_COLORS = ["var(--primary)", "var(--amber)", "var(--blue)", "var(--alert)"];
 
 function dgSyncCompareBtn() {
   // 对比篮子原来没有任何常驻入口：加进去之后抽屉一关就找不回来，也看不出里面有几条。
@@ -1751,7 +1749,7 @@ async function dgRenderCompare() {
     // （从升水变贴水、从缺口变过剩）才是要看的东西。
     const [a, b] = loaded.map(byDayOf);
     series = [{ name: `${loaded[0].name} − ${loaded[1].name}`, unit: loaded[0].unit,
-                color: "var(--primary)", series_id: null,
+                color: window.ChartPalette.color(0), series_id: null,
                 pts: days.map((d) => ({ as_of: d, value: a[d] - b[d] })) }];
     head = `<div class="px-1 pb-2 text-[11px]">
       <b>差值</b>：${dgEsc(loaded[0].name)} − ${dgEsc(loaded[1].name)}，
@@ -1760,7 +1758,7 @@ async function dgRenderCompare() {
     series = loaded.map((s, i) => {
       const byDay = byDayOf(s);
       const base = byDay[days[0]] || 1;
-      return { ...s, color: DG_COMPARE_COLORS[i % 4],
+      return { ...s, color: window.ChartPalette.color(i, s.color),
                pts: days.map((d) => ({ as_of: d, value: (byDay[d] / base) * 100 })) };
     });
     head = `<div class="px-1 pb-2 text-[11px] text-[var(--amber)]">
@@ -1796,8 +1794,8 @@ async function dgRenderCompare() {
 
   // 图例始终列出篮子里的全部序列——差值模式下也要能把其中一条摘掉
   const legend = loaded.map((s, i) => {
-    const color = mode === "diff" ? (i ? "var(--text-muted)" : "var(--primary)")
-                                  : DG_COMPARE_COLORS[i % 4];
+    const color = mode === "diff" ? (i ? "var(--text-muted)" : window.ChartPalette.color(0))
+                                  : series[i].color;
     // 归一化模式右侧给区间涨跌幅（图上读不出来）；差值模式给最新原值（图上画的是差，
     // 两条各自多少反而看不见了）。
     let tail;

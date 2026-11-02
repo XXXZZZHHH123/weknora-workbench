@@ -212,6 +212,8 @@ templates.env.globals["research_url"] = research_url
 templates.env.globals["research_form_url"] = research_form_url
 templates.env.globals["research_identity"] = lambda: current_identity.get()
 templates.env.globals["static_version"] = static_version
+from tin.web.chart_palette import chart_palette
+templates.env.globals["chart_palette"] = chart_palette
 templates.env.filters["num"] = _num
 templates.env.filters["local"] = lambda dt: dt.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M") if dt else ""
 from tin.web.research_display import register_display

@@ -1,6 +1,5 @@
 (() => {
   const svgNS = 'http://www.w3.org/2000/svg';
-  const colors = ['#ED7D31', '#4472C4', '#8064A2', '#6B8E23'];
   const pending = new Map();
   const number = value => new Intl.NumberFormat('zh-CN', {maximumSignificantDigits: 15}).format(value);
   const axisNumber = value => {
@@ -163,15 +162,16 @@
         svg.append(line);
         svg.append(element('text', {x: plot.right - 3, y: Math.max(10, boundary.y - 4), 'text-anchor': 'end', class: 'judgment-chart-boundary-label'}, number(boundary.value)));
       }
-      paths(svg, rendered.points, {class: 'judgment-chart-observation'});
+      const lineColor = window.ChartPalette.color(0, metric.color);
+      paths(svg, rendered.points, {class: 'judgment-chart-observation', style: `stroke:${lineColor}`});
       rendered.averages.forEach((average, index) => {
         const rules = (metric.boundaries || []).filter(item => item.kind === 'sma' && item.window === average.window);
-        paths(svg, average.points, {'data-chart-average': average.window, style: `stroke:${colors[index % colors.length]}`, class: 'judgment-chart-average'},
+        paths(svg, average.points, {'data-chart-average': average.window, style: `stroke:${window.ChartPalette.color(index + 1, rules.find(rule => rule.color)?.color)}`, class: 'judgment-chart-average'},
           rules.map(item => boundaryText(item)).join('；') || `MA${average.window}`);
       });
       const cross = element('g', {'data-chart-crosshair': '', visibility: 'hidden'});
       cross.append(element('line', {y1: plot.top, y2: plot.bottom, class: 'judgment-chart-cross-line'}));
-      cross.append(element('circle', {r: 3.5, class: 'judgment-chart-cross-point'}));
+      cross.append(element('circle', {r: 3.5, class: 'judgment-chart-cross-point', style: `stroke:${lineColor}`}));
       svg.append(cross);
       if (selectedWindow && !rendered.averages.find(item => item.window === selectedWindow)?.values.some(value => value !== null)) message(`MA${selectedWindow}：有效连续观测不足`);
       else message('');
@@ -190,15 +190,15 @@
       line.setAttribute('x1', point.x); line.setAttribute('x2', point.x); dot.setAttribute('cx', point.x); dot.setAttribute('cy', point.y);
       tooltip.replaceChildren();
       const date = document.createElement('div'); date.textContent = point.date.replace('T', ' ').slice(0, 16); tooltip.append(date);
-      const value = document.createElement('strong'); value.textContent = `${number(point.value)} ${metric.unit || ''}`; tooltip.append(value);
+      const value = document.createElement('strong'); value.style.color = window.ChartPalette.color(0, metric.color); value.textContent = `${number(point.value)} ${metric.unit || ''}`; tooltip.append(value);
       const previous = rendered.points[index - 1];
       if (previous && Number.isFinite(previous.value)) {
         const change = document.createElement('span'); const difference = point.value - previous.value;
         if (Number.isFinite(difference)) { change.textContent = `${difference > 0 ? '+' : ''}${number(difference)} 较前次`; tooltip.append(change); }
       }
-      for (const average of rendered.averages) {
+      for (const [averageIndex, average] of rendered.averages.entries()) {
         const value = average.values[index];
-        if (value !== null) { const row = document.createElement('span'); row.textContent = `MA${average.window} ${number(value)}`; tooltip.append(row); }
+        if (value !== null) { const row = document.createElement('span'); row.textContent = `MA${average.window} ${number(value)}`; row.style.color = window.ChartPalette.color(averageIndex + 1, (metric.boundaries || []).find(rule => rule.kind === 'sma' && rule.window === average.window && rule.color)?.color); tooltip.append(row); }
       }
       for (const boundary of (metric.boundaries || []).filter(item => item.kind === 'sma')) {
         const row = document.createElement('span'); row.textContent = boundaryText(boundary); tooltip.append(row);

@@ -33,7 +33,8 @@ env.globals.update(human_text=lambda value,*args:str(value or ''),indicator_name
 print(env.get_template('judgment.html').render(**data))
 `,path.join(web,'templates'),JSON.stringify(fixture)],{encoding:'utf8'});
 assert.equal(render.status,0,render.stderr);
-const html=render.stdout;
+const chartPalette=JSON.parse(fs.readFileSync(path.join(web,'static/chart-palette.json'),'utf8'));
+const html=render.stdout.replace('</head>','<script>window.ChartPaletteColors='+JSON.stringify(chartPalette)+'</script><script src="/static/chart-palette.js"></script></head>');
 (async()=>{
  const browser=await chromium.launch({headless:true,...(process.env.SHEET_REVIEW_BROWSER?{executablePath:process.env.SHEET_REVIEW_BROWSER}:{})});
  const report={passed:false,checks:[],screenshots:[],page_errors:[]};
@@ -50,12 +51,17 @@ const html=render.stdout;
     return route.fulfill({contentType:file.endsWith('.css')?'text/css':'font/woff2',body:fs.readFileSync(file)});
    }
    if(url.pathname==='/static/judgment-research.css'&&process.env.JUDGMENT_CHART_TEST_CSS)return route.fulfill({contentType:'text/css',body:fs.readFileSync(process.env.JUDGMENT_CHART_TEST_CSS)});
-   if(['/static/judgment-chart.js','/static/judgment-research.css','/static/judgment-manager.css','/static/research-display.js'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('.js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
+   if(['/static/chart-palette.js','/static/judgment-chart.js','/static/judgment-research.css','/static/judgment-manager.css','/static/research-display.js'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('.js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
    throw new Error('Unexpected fixture request '+url.pathname);
   });
   await page.goto('http://judgment-chart.fixture/');
   await page.evaluate(()=>document.fonts.ready);
   const chart=page.locator('[data-judgment-chart]').first(),svg=chart.locator('svg');
+  await chart.locator('.judgment-chart-observation').first().waitFor();
+  assert.deepEqual(await page.locator('.judgment-chart-observation').evaluateAll(nodes=>[...new Set(nodes.map(node=>getComputedStyle(node).stroke))]),['rgb(68, 114, 196)'],'Both research sides use shared blue data lines');
+  assert.equal(await chart.locator('[data-chart-average="20"]').first().evaluate(node=>getComputedStyle(node).stroke),'rgb(237, 125, 49)','MA20 is the contrasting shared orange');
+  await svg.focus();await page.keyboard.press('End');
+  assert.equal(await chart.locator('[data-chart-tooltip] span').filter({hasText:'MA20'}).first().evaluate(node=>getComputedStyle(node).color),'rgb(237, 125, 49)','Hover MA color matches the line');
   await page.locator('[data-research-item="evidence"]').first().waitFor();
   for(const side of['bull','bear']){
    const column=page.locator(`.judgment-hypothesis[data-hypothesis="${side}"]`);

@@ -341,7 +341,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderComparison(data) {
     const output = get("compare-result");
     if (data.status !== "ok") { output.textContent = data.reason; return; }
-    const colors = ["#4472C4", "#ED7D31", "#A5A5A5", "#FFC000"];
+    const colors = data.series.map((series, index) => window.ChartPalette.color(index, series.color));
     const values = data.series.flatMap((s) => s.values);
     const low = Math.min(...values), high = Math.max(...values);
     const span = high - low || 1;

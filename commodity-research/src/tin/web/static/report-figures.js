@@ -33,10 +33,11 @@ document.addEventListener("DOMContentLoaded", () => {
         header.append(el("h4", "", s.name), el("small", "", s.unit || "原表未注明单位"));
         figure.append(header);
         if (s.points.length) {
+          const color = window.ChartPalette.color(0, s.color);
           const mid = s.min / 2 + s.max / 2;
           const grid = [[16, s.max], [72, mid], [128, s.min]].map(([y, v]) => `<line x1="52" y1="${y}" x2="484" y2="${y}" stroke="var(--line)" stroke-width=".8"/><text x="45" y="${y + 3}" text-anchor="end" fill="var(--text-muted)" font-size="9">${esc(fmt(v))}</text>`).join("");
-          const path = s.path && !s.caliber_changed && !s.invalid_points ? `<polyline points="${s.points.map((p) => `${p.x},${p.y}`).join(" ")}" fill="none" stroke="var(--primary)" stroke-width="1.8" stroke-linejoin="round"/>` : "";
-          const dots = s.points.map((p) => `<circle cx="${p.x}" cy="${p.y}" r="2.6" fill="var(--primary)"><title>${esc(p.date)} · ${esc(fmt(p.value))} ${esc(s.unit)}</title></circle>`).join("");
+          const path = s.path && !s.caliber_changed && !s.invalid_points ? `<polyline points="${s.points.map((p) => `${p.x},${p.y}`).join(" ")}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round"/>` : "";
+          const dots = s.points.map((p) => `<circle cx="${p.x}" cy="${p.y}" r="2.6" fill="${color}"><title>${esc(p.date)} · ${esc(fmt(p.value))} ${esc(s.unit)}</title></circle>`).join("");
           const first = s.points[0], last = s.points[s.points.length - 1];
           const dates = first.date === last.date ? `<text x="268" y="151" text-anchor="middle" fill="var(--text-muted)" font-size="9">${esc(first.date)}</text>` : `<text x="52" y="151" fill="var(--text-muted)" font-size="9">${esc(first.date)}</text><text x="484" y="151" text-anchor="end" fill="var(--text-muted)" font-size="9">${esc(last.date)}</text>`;
           const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
