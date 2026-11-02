@@ -237,6 +237,17 @@ async function main(){
   }
   if(process.argv.includes('--loading-regression')) {
    await verify('Saved review is visible on the first visit',"Boolean(d.querySelector('.sheet-grid td'))");
+   nativeStall='source-sheet-timeout';
+   const sheetRequests=()=>requests.filter(r=>r.path.endsWith('/sheet')).length;
+   const beforeRefresh=sheetRequests();
+   await exec('w.refreshCurrentScope();return true');
+   for(let attempt=0;attempt<200&&sheetRequests()===beforeRefresh;attempt++)await pause(10);
+   assert(sheetRequests()>beforeRefresh,'first refresh must reach the delayed sheet request');
+   await exec('w.refreshCurrentScope();return true');
+   await wait('d.querySelector(".sheet-grid td") && !d.getElementById("notice").textContent');
+   await pause(1000);
+   await verify('Superseded sheet loading leaves no cancellation or timeout notice',"!d.getElementById('notice').textContent && Boolean(d.querySelector('.sheet-grid td'))");
+   nativeStall='';
    await js("window.savedGrid=document.getElementById('frame').contentDocument.getElementById('sheetDetail');window.view('query')");
    await wait("d.querySelector('#seriesRows button') && d.querySelector('#scope [data-download]')");
    checks.push('Query resources load on demand without recreating the review');
@@ -398,6 +409,7 @@ async function main(){
  }finally{
   socket?.close();
   try{await stopBrowser(chrome);}finally{
+   server.closeAllConnections();
    await new Promise(resolve=>server.close(resolve));fs.rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});if(!keepArtifacts)fs.rmSync(output,{recursive:true,force:true});
   }
  }

@@ -104,6 +104,7 @@ document.body.classList.toggle('review-only',reviewOnly);if(reviewOnly){$('impor
 if(embedded){$('loginPanel').classList.add('hidden');$('notice').textContent='正在连接研究工作台登录状态…'}
 function authHeaders(headers={}){return {...headers,...(bearer?{Authorization:'Bearer '+bearer,'X-Tenant-ID':activeTenant,...(activeKnowledgeBase?{'X-Knowledge-Base-ID':activeKnowledgeBase}:{})}:{})}}
 function note(s){$('notice').textContent=s}
+function reportRequestError(error){if(error.name!=='AbortError')note(error.message)}
 function progressLabel(message,progress){
  const completed=progress?.completed??progress?.completed_blocks,total=progress?.total??progress?.total_blocks;
  return Number.isInteger(completed)&&Number.isInteger(total)&&total>0&&completed>=0&&completed<=total?`${message} · ${Math.floor(completed/total*100)}%（${completed}/${total}）`:message;
@@ -173,7 +174,8 @@ async function api(path,options={},requestContext=null){
 }
 window.pdfReviewHost={unifiedUpload:true,loadKnowledgeResult,openModelSettings:()=>showModelSettings(),onFileCatalog:count=>{pdfFileCount=count;chooseDefaultResults();},onUploadStatus:(message,error)=>{if(uploadBusy&&selectedUploadFile?.name.toLowerCase().endsWith('.pdf')){$('jobState').textContent=message;$('jobState').classList.toggle('error',Boolean(error))}},api,authenticatedFetch,getAuthEpoch:()=>authEpoch,isWorkspaceReady:()=>!$('workspace').classList.contains('hidden'),showWorkspace:()=>{$('workspace').classList.remove('hidden');$('loginPanel').classList.add('hidden')}};
 function notifyPDFWorkspaceReady(){window.dispatchEvent(new Event('structured-workspace-ready'))}
-function refreshCurrentScope(){const epoch=authEpoch,own=nativeSourceRequest,isCurrent=()=>epoch===authEpoch&&own===nativeSourceRequest;return refresh(isCurrent).catch(error=>{if(isCurrent())note(error.message)})}
+let scopeRefreshVersion=0;
+function refreshCurrentScope(){const version=++scopeRefreshVersion,epoch=authEpoch,own=nativeSourceRequest,isCurrent=()=>version===scopeRefreshVersion&&epoch===authEpoch&&own===nativeSourceRequest;note('');return refresh(isCurrent).catch(error=>{if(isCurrent())reportRequestError(error)})}
 async function refresh(isCurrent=()=>true,preferredImport,preferredDataset,requestApi=api){
  if(reviewOnly){$('loginPanel').classList.add('hidden');$('workspace').classList.remove('hidden');notifyPDFWorkspaceReady();if(!pinnedImport){note('请从资料中心选择需要核对的扫描记录。');return}await refreshImports(pinnedImport,isCurrent,requestApi);return}
  const data=await requestApi('/api/datasets'+(showSamples?'?include_samples=true':''));if(!isCurrent())return;$('loginPanel').classList.add('hidden');$('workspace').classList.remove('hidden');notifyPDFWorkspaceReady();
@@ -423,7 +425,7 @@ async function openKnowledgeSource(sourceId){
 $('retrySourceImport').onclick=()=>{if(requestedSourceKnowledge&&!nativeSourceBusy)openStructuredKnowledgeSource(requestedSourceKnowledge,requestedSourceType)};
 async function confirmMapping(){const mapping=readMapping();if(!mappingConfirmed||!$('ackMapping').checked)throw Error('请先预览解析结果，并确认映射正确。');const importId=currentImport.import_id,version=reviewVersion,scopeEpoch=authEpoch;setMappingBusy(true);$('mappingFeedback').textContent='正在保存映射并生成数据集新版本…';try{const job=await api(`/api/imports/${encodeURIComponent(importId)}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping,save_template:$('saveTemplate').checked})});const result=await waitJob(job.id);if(scopeEpoch!==authEpoch)throw Error('账号或空间已切换，请重新查看处理结果');note('映射已确认，新数据集版本已生成。');await refresh();await refreshImports(importId);if(result.dataset_id&&!reviewOnly){$('dataset').value=result.dataset_id;await selectDataset()}notifyImportUpdated(importId,result.dataset_id,'confirmed',scopeEpoch)}finally{if(version===reviewVersion)setMappingBusy(false)}}
 function notifyImportUpdated(importId,datasetId,status,expectedEpoch=authEpoch){if(embedded&&expectedEpoch===authEpoch)parent.postMessage({type:'structured-import-updated',import_id:importId,dataset_id:datasetId||'',tenant_id:activeTenant,knowledge_base_id:activeKnowledgeBase,status},location.origin)}
-$('sheetList').onclick=e=>{const b=e.target.closest('[data-sheet-index]');if(b)selectSheet(Number(b.dataset.sheetIndex)).catch(e=>note(e.message))};$('importSelect').onchange=()=>selectImport().catch(e=>note(e.message));$('reloadImports').onclick=()=>refreshImports().catch(e=>note(e.message));
+$('sheetList').onclick=e=>{const b=e.target.closest('[data-sheet-index]');if(b)selectSheet(Number(b.dataset.sheetIndex)).catch(reportRequestError)};$('importSelect').onchange=()=>selectImport().catch(reportRequestError);$('reloadImports').onclick=()=>refreshImports().catch(reportRequestError);
 $('sampleImportList').onclick=e=>{const button=e.target.closest('[data-sample-import]');if(button)refreshImports(button.dataset.sampleImport).catch(e=>note(e.message));};
 $('rescanImport').onclick=async()=>{if(!currentImport)return;const id=currentImport.import_id,scopeEpoch=authEpoch;$('rescanImport').disabled=true;try{await api('/api/imports/'+id+'/rescan',{method:'POST'});await refreshImports(id);note('已更新待确认表的识别建议。已确认映射和已发布数据保持原版本。');notifyImportUpdated(id,'','rescanned',scopeEpoch)}catch(e){note(e.message)}finally{$('rescanImport').disabled=false}};
 async function loadKnowledgeResult(sourceId,options={}){

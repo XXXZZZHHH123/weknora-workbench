@@ -132,8 +132,8 @@ jobs:
           path: WeKnora/frontend/dist
           if-no-files-found: error
           retention-days: 7
-      - name: Verify browser startup and cleanup
-        run: node --test ../../structured-data/tests/browser-launcher.test.cjs
+      - name: Verify browser lifecycle, auth, and request cancellation
+        run: node --test ../../structured-data/tests/browser-launcher.test.cjs ../../structured-data/tests/auth-session-ui.cjs ../../structured-data/tests/request-cancellation-ui.cjs
       - name: Verify structured loading and knowledge base isolation
         run: |
           export SHEET_REVIEW_BROWSER="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
