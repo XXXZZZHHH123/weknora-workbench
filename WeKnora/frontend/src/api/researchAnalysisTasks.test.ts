@@ -79,3 +79,39 @@ test('ignore errors preserve a safe status without exposing provider bodies', as
   await assert.rejects(analysisApi.dismissAnalysisJob({ userId: 'user-a', tenantId: '17', token: 'token' }, 'job-a', () => true,
     async () => new Response('private provider body', { status: 409 })), error => (error as { status?: number }).status === 409 && !String(error).includes('private'))
 })
+
+test('ignore all uses one authenticated POST without a client task list and validates every returned ID', async () => {
+  assert.equal(typeof analysisApi.dismissAllAnalysisJobs, 'function')
+  const calls: Array<{ path: string; options: RequestInit }> = []
+  const result = await analysisApi.dismissAllAnalysisJobs({ userId: 'user-a', tenantId: '17', token: 'synthetic-token' }, () => true, async (url, options) => {
+    calls.push({ path: String(url), options: options! })
+    return new Response(JSON.stringify({ dismissed_ids: ['job-a', 'job-outside-current-page'], source_text: 'private' }))
+  })
+  assert.deepEqual(result, ['job-a', 'job-outside-current-page'])
+  assert.equal(calls.length, 1); assert.equal(calls[0]!.path, '/research/api/research/analysis-jobs/dismiss-all')
+  assert.equal(calls[0]!.options.method, 'POST'); assert.equal(calls[0]!.options.body, undefined)
+  const headers = new Headers(calls[0]!.options.headers)
+  assert.equal(headers.get('Authorization'), 'Bearer synthetic-token'); assert.equal(headers.get('X-Tenant-ID'), '17'); assert.equal(headers.get('X-Research-User'), 'user-a')
+})
+
+test('ignore all rejects malformed, duplicate or oversized acknowledgement IDs and accepts empty idempotent results', async () => {
+  assert.equal(typeof analysisApi.dismissAllAnalysisJobs, 'function')
+  const owner = { userId: 'user-a', tenantId: '17', token: 'token' }
+  for (const result of [null, {}, { dismissed_ids: 'job-a' }, { dismissed_ids: ['../unsafe'] }, { dismissed_ids: ['job-a', 'job-a'] },
+    { dismissed_ids: Array.from({ length: 513 }, (_, index) => 'job-' + index) }, { dismissed_ids: [null] }]) {
+    await assert.rejects(analysisApi.dismissAllAnalysisJobs(owner, () => true, async () => new Response(JSON.stringify(result))))
+  }
+  assert.deepEqual(await analysisApi.dismissAllAnalysisJobs(owner, () => true, async () => new Response('{"dismissed_ids":[]}')), [])
+  const allRetained = Array.from({ length: 512 }, (_, index) => 'retained-' + index)
+  assert.deepEqual(await analysisApi.dismissAllAnalysisJobs(owner, () => true, async () => new Response(JSON.stringify({ dismissed_ids: allRetained }))), allRetained)
+})
+
+test('ignore all rejects stale owners before and after the request and does not expose error bodies', async () => {
+  assert.equal(typeof analysisApi.dismissAllAnalysisJobs, 'function')
+  const owner = { userId: 'user-a', tenantId: '17', token: 'token' }; let calls = 0, current = true
+  const fetcher: typeof fetch = async () => { calls++; current = false; return new Response('{"dismissed_ids":["job-a"]}') }
+  await assert.rejects(analysisApi.dismissAllAnalysisJobs(owner, () => false, fetcher)); assert.equal(calls, 0)
+  await assert.rejects(analysisApi.dismissAllAnalysisJobs(owner, () => current, fetcher)); assert.equal(calls, 1)
+  await assert.rejects(analysisApi.dismissAllAnalysisJobs(owner, () => true, async () => new Response('private provider body', { status: 503 })),
+    error => (error as { status?: number }).status === 503 && !String(error).includes('private'))
+})

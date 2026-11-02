@@ -75,3 +75,25 @@ export async function dismissAnalysisJob(owner: AnalysisTaskOwner, id: string, i
   if (!job || job.id !== id || job.dismissed !== true) throw new Error('忽略状态未能核对，请刷新后重试。')
   return job
 }
+
+export function readDismissedAnalysisJobIds(value: unknown): string[] {
+  const ids = value && typeof value === 'object' ? (value as { dismissed_ids?: unknown }).dismissed_ids : undefined
+  if (!Array.isArray(ids) || ids.length > 512 || ids.some(id => !analysisJobId(id)) || new Set(ids).size !== ids.length)
+    throw new Error('忽略状态未能核对，请刷新后重试。')
+  return [...ids] as string[]
+}
+
+export async function dismissAllAnalysisJobs(owner: AnalysisTaskOwner, isCurrent: () => boolean, fetcher?: typeof fetch): Promise<string[]> {
+  if (!isCurrent()) throw new Error('账号或空间已切换。')
+  const response = await fetchWithAuthRetry('/research/api/research/analysis-jobs/dismiss-all', {
+    method: 'POST', credentials: 'same-origin', headers: { 'X-Tenant-ID': owner.tenantId, 'X-Research-User': owner.userId },
+  }, { token: owner.token, isCurrent, ...(fetcher ? { fetcher } : {}) })
+  if (!response.ok) {
+    const error = new Error('暂时无法忽略全部提示，请稍后重试。') as Error & { status: number }
+    error.status = response.status
+    throw error
+  }
+  const result: unknown = await response.json()
+  if (!isCurrent()) throw new Error('账号或空间已切换。')
+  return readDismissedAnalysisJobIds(result)
+}

@@ -1,11 +1,12 @@
 import { computed, ref, watch } from 'vue'
-import { analysisJobId, type AnalysisJob, type AnalysisTaskOwner } from '../api/researchAnalysisTasks'
+import { analysisJobId, readDismissedAnalysisJobIds, type AnalysisJob, type AnalysisTaskOwner } from '../api/researchAnalysisTasks'
 
 interface Timers { setTimer: (callback: () => void, delay: number) => unknown; clearTimer: (handle: unknown) => void }
 interface Dependencies {
   owner: () => AnalysisTaskOwner | null
   fetchJobs: (owner: AnalysisTaskOwner, isCurrent: () => boolean) => Promise<AnalysisJob[]>
   dismissJob?: (owner: AnalysisTaskOwner, id: string, isCurrent: () => boolean) => Promise<AnalysisJob>
+  dismissAllJobs?: (owner: AnalysisTaskOwner, isCurrent: () => boolean) => Promise<string[]>
   storage?: Pick<Storage, 'getItem' | 'setItem'>
   isVisible?: () => boolean
   timers?: Timers
@@ -41,7 +42,7 @@ function latestAvailableResults(rows: AnalysisJob[]): AnalysisJob[] {
 
 export function createAnalysisTasks(deps: Dependencies) {
   const jobs = ref<AnalysisJob[]>([]), unreadIds = ref<string[]>([]), pendingNotifications = ref<AnalysisJob[]>([]), error = ref('')
-  const dismissingIds = ref<string[]>([])
+  const dismissingIds = ref<string[]>([]), dismissingAll = ref(false)
   const scopeVersion = ref(0)
   const seen = new Set<string>(), notified = new Set<string>(), dismissed = new Set<string>()
   const timers: Timers = deps.timers || { setTimer: (callback, delay) => setTimeout(callback, delay), clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) }
@@ -117,12 +118,12 @@ export function createAnalysisTasks(deps: Dependencies) {
     if (previous && key === previous[0] && token === previous[1]) return
     if (key !== currentKey) {
       clearTimer(); generation++; scopeVersion.value++; pending = null; currentKey = key || ''; blocked = false; failures = 0
-      jobs.value = []; unreadIds.value = []; pendingNotifications.value = []; dismissingIds.value = []; error.value = ''; restore()
+      jobs.value = []; unreadIds.value = []; pendingNotifications.value = []; dismissingIds.value = []; dismissingAll.value = false; error.value = ''; restore()
     } else if (previous && blocked && token !== previous[1]) { blocked = false; failures = 0 }
     if (started && currentKey) void refresh()
   }, { flush: 'sync', immediate: true })
   function start() { if (started) return refresh(); started = true; return refresh() }
-  function stop() { started = false; clearTimer(); generation++; pending = null; dismissingIds.value = [] }
+  function stop() { started = false; clearTimer(); generation++; pending = null; dismissingIds.value = []; dismissingAll.value = false }
   function markRead(id: string) {
     const job = jobs.value.find(row => row.id === id)
     if (!job || active(job)) return
@@ -131,7 +132,7 @@ export function createAnalysisTasks(deps: Dependencies) {
   }
   async function dismiss(id: string): Promise<boolean> {
     const job = jobs.value.find(row => row.id === id), owner = deps.owner(), epoch = generation, scope = currentKey
-    if (!started || !job || active(job) || !owner || keyFor(owner) !== scope || !deps.dismissJob || dismissingIds.value.includes(id)) return false
+    if (!started || !job || active(job) || !owner || keyFor(owner) !== scope || !deps.dismissJob || dismissingAll.value || dismissingIds.value.includes(id)) return false
     if (job.dismissed) return true
     const isCurrent = () => started && epoch === generation && scope === keyFor(deps.owner())
     dismissingIds.value.push(id)
@@ -152,10 +153,32 @@ export function createAnalysisTasks(deps: Dependencies) {
       if (isCurrent()) dismissingIds.value = dismissingIds.value.filter(value => value !== id)
     }
   }
+  async function dismissAll(): Promise<string[] | null> {
+    const owner = deps.owner(), epoch = generation, scope = currentKey
+    if (!started || !owner || keyFor(owner) !== scope || !deps.dismissAllJobs || dismissingAll.value || dismissingIds.value.length
+      || !jobs.value.some(job => !active(job) && !job.dismissed)) return null
+    const isCurrent = () => started && epoch === generation && scope === keyFor(deps.owner())
+    dismissingAll.value = true
+    try {
+      const acknowledged = await deps.dismissAllJobs(owner, isCurrent)
+      if (!isCurrent()) return null
+      const ids = readDismissedAnalysisJobIds({ dismissed_ids: acknowledged })
+        .filter(id => !jobs.value.some(job => job.id === id && active(job)))
+      const confirmed = new Set(ids)
+      for (const id of ids) { dismissed.add(id); seen.add(id) }
+      jobs.value = jobs.value.map(job => confirmed.has(job.id) && !active(job) ? { ...job, dismissed: true } : job)
+      unreadIds.value = unreadIds.value.filter(id => !confirmed.has(id))
+      pendingNotifications.value = pendingNotifications.value.filter(job => !confirmed.has(job.id))
+      error.value = ''; persist(); return ids
+    } catch {
+      if (isCurrent()) error.value = '暂时无法忽略全部提示，请稍后重试。'
+      return null
+    } finally { if (isCurrent()) dismissingAll.value = false }
+  }
   function takeNotifications() {
     const result = pendingNotifications.value.slice(); pendingNotifications.value = []
     for (const job of result) notified.add(job.id)
     persist(); return result
   }
-  return { jobs, unreadIds, pendingNotifications, dismissingIds, error, scopeVersion, activeCount, visible, start, stop, refresh, markRead, dismiss, takeNotifications }
+  return { jobs, unreadIds, pendingNotifications, dismissingIds, dismissingAll, error, scopeVersion, activeCount, visible, start, stop, refresh, markRead, dismiss, dismissAll, takeNotifications }
 }

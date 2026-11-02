@@ -9,15 +9,17 @@ function fixture(storage = new Map<string, string>()) {
   const owner = ref<AnalysisTaskOwner | null>({ userId: 'user-a', tenantId: '17', token: 'token-a' }), visible = ref(true)
   const calls: Array<{ owner: AnalysisTaskOwner; isCurrent: () => boolean; resolve: (value: AnalysisJob[]) => void; reject: (error: unknown) => void }> = []
   const dismissals: Array<{ owner: AnalysisTaskOwner; id: string; isCurrent: () => boolean; resolve: (value: AnalysisJob) => void; reject: (error: unknown) => void }> = []
+  const bulkDismissals: Array<{ owner: AnalysisTaskOwner; isCurrent: () => boolean; resolve: (value: string[]) => void; reject: (error: unknown) => void }> = []
   const scheduled = new Map<number, { callback: () => void; delay: number }>(); let handle = 0
   const scope = effectScope()
   const tasks = scope.run(() => createAnalysisTasks({ owner: () => owner.value, isVisible: () => visible.value,
     storage: { getItem: key => storage.get(key) || null, setItem: (key, value) => { storage.set(key, value) } },
     fetchJobs: (context, isCurrent) => new Promise((resolve, reject) => calls.push({ owner: context, isCurrent, resolve, reject })),
     dismissJob: (context, id, isCurrent) => new Promise((resolve, reject) => dismissals.push({ owner: context, id, isCurrent, resolve, reject })),
+    dismissAllJobs: (context, isCurrent) => new Promise((resolve, reject) => bulkDismissals.push({ owner: context, isCurrent, resolve, reject })),
     timers: { setTimer: (callback, delay) => { scheduled.set(++handle, { callback, delay }); return handle }, clearTimer: value => { scheduled.delete(value as number) } },
   }))!
-  return { tasks, owner, visible, calls, dismissals, scheduled, storage, close() { tasks.stop(); scope.stop() } }
+  return { tasks, owner, visible, calls, dismissals, bulkDismissals, scheduled, storage, close() { tasks.stop(); scope.stop() } }
 }
 
 test('global discovery restores a running task without client job refs, deduplicates reads and polls active/idle at real intervals', async () => {
@@ -233,5 +235,66 @@ test('only the latest available result per workbench and purpose is announced wi
     const refreshed = f.tasks.refresh()
     f.calls[1]!.resolve([job('failed', 'latest-failed'), job('succeeded', 'last-good')]); await refreshed
     assert.equal(f.tasks.jobs.value.some(row => row.id === 'last-good'), true, 'A failed attempt cannot destroy the last recoverable result')
+  } finally { f.close() }
+})
+
+test('ignore all waits for server acknowledgement, retains active and concurrent new terminal tasks, and marks off-page IDs', async () => {
+  const f = fixture()
+  try {
+    const started = f.tasks.start(); f.calls[0]!.resolve([job('failed', 'finished'), job('running', 'active')]); await started
+    assert.equal(typeof f.tasks.dismissAll, 'function')
+    const ignored = f.tasks.dismissAll(); assert.equal(f.tasks.dismissingAll.value, true)
+    assert.equal(f.tasks.jobs.value.some(row => row.dismissed), false)
+    const refreshed = f.tasks.refresh(); f.calls[1]!.resolve([job('failed', 'finished'), job('running', 'active'), job('failed', 'newly-finished')]); await refreshed
+    f.bulkDismissals[0]!.resolve(['finished', 'off-page', 'active']); assert.deepEqual(await ignored, ['finished', 'off-page'])
+    assert.equal(f.tasks.jobs.value.find(row => row.id === 'finished')!.dismissed, true)
+    assert.notEqual(f.tasks.jobs.value.find(row => row.id === 'newly-finished')!.dismissed, true)
+    assert.notEqual(f.tasks.jobs.value.find(row => row.id === 'active')!.dismissed, true)
+    assert.equal(f.tasks.activeCount.value, 1); assert.equal(f.tasks.visible.value, true)
+    const next = f.tasks.refresh(); f.calls[2]!.resolve([job('failed', 'off-page'), job('running', 'active'), job('failed', 'newly-finished')]); await next
+    assert.equal(f.tasks.jobs.value.find(row => row.id === 'off-page')!.dismissed, true)
+    assert.deepEqual(f.tasks.unreadIds.value, ['newly-finished'])
+  } finally { f.close() }
+})
+
+test('bulk ignore failure is retryable and cannot race individual dismissals or hide unacknowledged records', async () => {
+  const f = fixture()
+  try {
+    const started = f.tasks.start(); f.calls[0]!.resolve([job('failed', 'one'), job('failed', 'two')]); await started
+    assert.equal(typeof f.tasks.dismissAll, 'function')
+    const first = f.tasks.dismissAll(); assert.equal(await f.tasks.dismissAll(), null); assert.equal(await f.tasks.dismiss('one'), false)
+    assert.equal(f.bulkDismissals.length, 1); assert.equal(f.dismissals.length, 0)
+    f.bulkDismissals[0]!.reject({ status: 503 }); assert.equal(await first, null)
+    assert.equal(f.tasks.dismissingAll.value, false); assert(f.tasks.error.value); assert.equal(f.tasks.visible.value, true)
+    assert.equal(f.tasks.jobs.value.some(row => row.dismissed), false)
+    const retry = f.tasks.dismissAll(); f.bulkDismissals[1]!.resolve(['one']); assert.deepEqual(await retry, ['one'])
+    assert.equal(f.tasks.jobs.value.find(row => row.id === 'two')!.dismissed, undefined)
+    assert.equal(f.tasks.error.value, '')
+  } finally { f.close() }
+})
+
+test('bulk acknowledgement from an old owner or stopped observer cannot mark the new scope', async () => {
+  const f = fixture()
+  try {
+    const started = f.tasks.start(); f.calls[0]!.resolve([job('failed')]); await started
+    assert.equal(typeof f.tasks.dismissAll, 'function')
+    const previous = f.tasks.dismissAll(); f.owner.value = { userId: 'user-b', tenantId: '18', token: 'token-b' }
+    assert.equal(f.tasks.dismissingAll.value, false); assert.equal(f.bulkDismissals[0]!.isCurrent(), false)
+    f.calls[1]!.resolve([job('failed', 'new-owner')]); await flush()
+    f.bulkDismissals[0]!.resolve(['job-a', 'new-owner']); assert.equal(await previous, null)
+    assert.equal(f.tasks.jobs.value[0]!.id, 'new-owner'); assert.notEqual(f.tasks.jobs.value[0]!.dismissed, true); assert.equal(f.storage.size, 0)
+    const stopped = f.tasks.dismissAll(); f.tasks.stop(); assert.equal(f.tasks.dismissingAll.value, false)
+    f.bulkDismissals[1]!.resolve(['new-owner']); assert.equal(await stopped, null)
+  } finally { f.close() }
+})
+
+test('active-only observers never submit bulk ignore and malformed bulk acknowledgements do not remove tasks', async () => {
+  const f = fixture()
+  try {
+    const started = f.tasks.start(); f.calls[0]!.resolve([job('running')]); await started
+    assert.equal(typeof f.tasks.dismissAll, 'function'); assert.equal(await f.tasks.dismissAll(), null); assert.equal(f.bulkDismissals.length, 0)
+    const refreshed = f.tasks.refresh(); f.calls[1]!.resolve([job('failed')]); await refreshed
+    const malformed = f.tasks.dismissAll(); f.bulkDismissals[0]!.resolve(['job-a', 'job-a']); assert.equal(await malformed, null)
+    assert.notEqual(f.tasks.jobs.value[0]!.dismissed, true); assert.equal(f.tasks.visible.value, true)
   } finally { f.close() }
 })

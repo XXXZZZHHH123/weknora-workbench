@@ -12,6 +12,7 @@ const label = computed(() => store.activeCount ? `研究分析进行中：${stor
   : store.unreadIds.length ? `研究分析：${store.unreadIds.length} 项待查看` : `研究分析：${rows.value.length} 项记录`)
 const notifications = new Map<string, ReturnType<typeof NotifyPlugin.success>>()
 const isRunning = (job: AnalysisJob) => job.state === 'queued' || job.state === 'running'
+const canIgnoreAll = computed(() => !store.dismissingAll && !store.dismissingIds.length && rows.value.some(job => !isRunning(job)))
 function closeNotice(id?: string) {
   for (const [key, notification] of notifications) {
     if (id !== undefined && key !== id) continue
@@ -25,12 +26,20 @@ function openTask(job: AnalysisJob) {
   void router.push({ name: 'researchWorkbenchDetail', params: { workbenchId: job.workbench_id }, query: { view: job.purpose === 'diagram' ? 'diagram' : 'judgment', analysis_job: job.id } })
 }
 async function ignoreTask(job: AnalysisJob) {
-  if (isRunning(job) || !rows.value.some(row => row.id === job.id && row.workbench_id === job.workbench_id)) return
+  if (store.dismissingAll || isRunning(job) || !rows.value.some(row => row.id === job.id && row.workbench_id === job.workbench_id)) return
   const scope = store.scopeVersion
   const ignored = await store.dismiss(job.id)
   if (scope !== store.scopeVersion) return
   if (ignored) closeNotice(job.id)
   else expanded.value = true
+}
+async function ignoreAll() {
+  if (!canIgnoreAll.value) return
+  const scope = store.scopeVersion
+  const ignored = await store.dismissAll()
+  if (scope !== store.scopeVersion) return
+  if (ignored === null) expanded.value = true
+  else for (const id of ignored) closeNotice(id)
 }
 function notifyCompleted() {
   if (document.visibilityState === 'hidden') return
@@ -41,7 +50,7 @@ function notifyCompleted() {
     const notification = NotifyPlugin.success({ title: job.purpose === 'diagram' ? '产业图配置已生成' : '研究分析已完成',
       content: () => h('div', { class: 'analysis-completion' }, [h('span', '结果已暂存，尚未保存。'),
         h('button', { type: 'button', onClick: () => openTask(job) }, '查看结果'),
-        h('button', { type: 'button', disabled: store.dismissingIds.includes(job.id), onClick: () => ignoreTask(job) }, '忽略')]),
+        h('button', { type: 'button', disabled: store.dismissingAll || store.dismissingIds.includes(job.id), onClick: () => ignoreTask(job) }, '忽略')]),
       duration: 6000, closeBtn: true, onClose: forget, onCloseBtnClick: forget, onDurationEnd: forget })
     notifications.set(job.id, notification)
   }
@@ -57,7 +66,7 @@ onBeforeUnmount(() => { closeNotice(); store.stop(); document.removeEventListene
 <template>
   <section v-if="store.visible" class="analysis-tasks" aria-label="后台研究分析">
     <div v-if="expanded" id="research-analysis-tasks-list" class="analysis-tasks-list">
-      <header><strong>研究分析</strong><button type="button" aria-label="收起分析进度" @click="expanded = false"><t-icon name="close" /></button></header>
+      <header><strong>研究分析</strong><div class="analysis-task-header-actions"><button type="button" class="analysis-dismiss-all" :disabled="!canIgnoreAll" title="忽略已结束任务的提示，运行中的任务继续" @click="ignoreAll">{{ store.dismissingAll ? '正在忽略…' : '忽略全部' }}</button><button type="button" aria-label="收起分析进度" @click="expanded = false"><t-icon name="close" /></button></div></header>
       <p v-if="store.error" class="analysis-task-error" role="status">{{ store.error }}</p>
       <ul>
         <li v-for="job in rows" :key="job.id">
@@ -67,7 +76,7 @@ onBeforeUnmount(() => { closeNotice(); store.stop(); document.removeEventListene
             <span class="analysis-task-action">{{ job.result_available ? '查看结果' : '查看进度' }}</span>
             <i v-if="store.unreadIds.includes(job.id)" class="analysis-unread" aria-label="未读" />
           </button>
-          <button v-if="!isRunning(job)" type="button" class="analysis-task-ignore" :disabled="store.dismissingIds.includes(job.id)" :aria-label="`忽略${job.title}提示`" @click="ignoreTask(job)">忽略</button>
+          <button v-if="!isRunning(job)" type="button" class="analysis-task-ignore" :disabled="store.dismissingAll || store.dismissingIds.includes(job.id)" :aria-label="`忽略${job.title}提示`" @click="ignoreTask(job)">忽略</button>
         </li>
       </ul>
     </div>
@@ -85,6 +94,7 @@ onBeforeUnmount(() => { closeNotice(); store.stop(); document.removeEventListene
 .analysis-tasks-list{width:340px;max-width:calc(100vw - 32px);max-height:320px;overflow:auto;border:1px solid var(--app-border-color);border-radius:var(--app-radius-lg);background:var(--app-card-bg);box-shadow:var(--td-shadow-2);color:var(--app-text-primary)}
 .analysis-tasks-list header{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--app-border-color);font-size:var(--app-text-sm)}
 .analysis-tasks-list header button{display:grid;place-items:center;padding:3px;border:0;background:transparent;color:var(--app-text-secondary);cursor:pointer}
+.analysis-task-header-actions{display:flex;align-items:center;gap:10px}.analysis-tasks-list header .analysis-dismiss-all{font:inherit;font-size:var(--app-text-xs)}.analysis-dismiss-all:hover{color:var(--td-brand-color)}.analysis-dismiss-all:disabled{opacity:.6;cursor:default}
 .analysis-tasks-list ul{list-style:none;margin:0;padding:4px}
 .analysis-tasks-list li{display:flex;align-items:center}
 .analysis-task-row{display:flex;align-items:center;gap:9px;flex:1;min-width:0;padding:10px 8px;border:0;border-radius:var(--app-radius-sm);background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer}
