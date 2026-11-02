@@ -7,7 +7,8 @@ import json
 import threading
 from types import SimpleNamespace
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+import httpx
 import pytest
 from sqlalchemy import func, select
 
@@ -16,6 +17,7 @@ from tin.integration.identity import Identity, current_identity
 from tin.integration.workbench_scope import WorkbenchScope, artifact_session, current_workbench
 from tin.models import DiagramTemplate, SourceMapping
 from tin.web import diagram_generation as generation
+from tin.web import diagram_analysis_cache as cache
 from tin.web import judgment_jobs
 from tin.web.judgment_job_registry import Registry
 
@@ -48,7 +50,11 @@ def case(tmp_path, monkeypatch):
         monkeypatch.setattr(jobs, 'registry', index)
     monkeypatch.setattr(jobs, 'runtime', jobs.Runtime())
     state = {'can_edit': True, 'can_read_source': True, 'revision': 1,
-             'version': VERSION, 'calls': [], 'failure': None, 'block': None, 'entered': None}
+             'version': VERSION, 'calls': [], 'failure': None, 'block': None, 'entered': None,
+             'node_label': 'Input', 'model_reads': [],
+             'model': {'id': 'synthetic-vision', 'name': 'Synthetic model', 'tenant_id': 56,
+                'type': 'KnowledgeQA', 'status': 'active', 'updated_at': 'synthetic-v1',
+                'parameters': {'supports_vision': True, 'api_key': 'synthetic-private-key'}}}
 
     def scope(user='diagram-owner', tenant=56, workbench=WB):
         identity = Identity(user, user + '@fixture.invalid', user, tenant, 'contributor')
@@ -74,7 +80,7 @@ def case(tmp_path, monkeypatch):
 
     async def complete(verified, model_id, prompt, image=None):
         state['calls'].append({'user': verified.identity.user_id, 'board': verified.workbench_id,
-                               'model': model_id, 'image': image})
+                               'model': model_id, 'image': image, 'phase': prompt.split('\n', 1)[0]})
         assert current_identity.get() == verified.identity and current_workbench.get() == verified
         if state['entered'] is not None:
             state['entered'].set()
@@ -82,12 +88,27 @@ def case(tmp_path, monkeypatch):
             await state['block'].wait()
         if state['failure'] is not None:
             raise state['failure']
-        return {'title': 'Synthetic flow', 'groups': [{'id': 'supply', 'label': 'Supply', 'parent_id': None}],
-                'nodes': [{'id': 'raw', 'label': 'Input', 'group_id': 'supply', 'series_id': SERIES}],
+        graph = {'title': 'Synthetic flow', 'groups': [
+                    {'id': 'supply', 'label': 'Supply', 'parent_id': None, 'role': 'target'}],
+                'nodes': [{'id': 'raw', 'label': state['node_label'], 'group_id': 'supply', 'series_id': SERIES}],
                 'edges': []}
+        if prompt.startswith('阶段：研究骨架提取\n'):
+            graph['nodes'][0].pop('series_id')
+            graph['coverage'] = [{'id': 'section', 'label': 'Synthetic section', 'node_ids': ['raw']}]
+        else:
+            assert prompt.startswith('阶段：绑定与有界细化\n'), 'The one-row directory needs no shard selection or repair'
+            assert image is None, 'Later stages use the frozen source skeleton, not another image interpretation'
+        return graph
+
+    async def model_record(verified, path, *args, **kwargs):
+        assert verified.identity.user_id == current_identity.get().user_id
+        assert path == '/api/v1/models/synthetic-vision', 'No external provider or business API is used'
+        state['model_reads'].append(path)
+        return {'data': deepcopy(state['model'])}
 
     monkeypatch.setattr(generation, 'catalog_snapshot', snapshot)
     monkeypatch.setattr(generation, 'completion', complete)
+    monkeypatch.setattr(generation, 'go_request', model_record)
     monkeypatch.setattr(generation, 'resolve_workbench', resolve)
     monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
     if hasattr(jobs, 'resolve_workbench'):
@@ -127,13 +148,14 @@ def test_detached_generation_runs_real_compiler_and_restores_private_preview_wit
         assert meta['purpose'] == 'diagram'
         assert result['version'] == VERSION and result['nodes'] == 1
         assert result['bindings'] == [{'node': 'Input', 'series_id': SERIES, 'name': 'Synthetic supply', 'unit': 'kg'}]
-        assert 'Synthetic flow' in result['markdown'] and len(case.state['calls']) == 1
+        assert 'Synthetic flow' in result['markdown'] and len(case.state['calls']) == 2
+        assert [call['phase'] for call in case.state['calls']] == ['阶段：研究骨架提取', '阶段：绑定与有界细化']
         with active(case.first), artifact_session(case.first) as session:
             assert session.scalar(select(func.count()).select_from(DiagramTemplate)) == 0
         monkeypatch.setattr(case.jobs, 'runtime', case.jobs.Runtime())
         with active(case.first):
             restored = await case.jobs.job_result(case.first, meta['id'])
-        assert restored['markdown'] == result['markdown'] and len(case.state['calls']) == 1
+        assert restored['markdown'] == result['markdown'] and len(case.state['calls']) == 2
     run(case, scenario)
 
 
@@ -153,11 +175,12 @@ def test_inline_image_reaches_generation_but_is_not_persisted_or_returned(case):
                 row = session.get(SourceMapping, case.jobs.job_key(case.first, meta['id']))
                 assert image not in json.dumps(row.config) and 'image' not in row.config['request']
             assert image not in json.dumps(result)
-        assert len(case.state['calls']) == 1 and case.state['calls'][0]['image'] == image
+        assert len(case.state['calls']) == 2 and case.state['calls'][0]['image'] == image
+        assert case.state['calls'][1]['image'] is None
     run(case, scenario)
 
 
-def test_duplicate_request_reuses_one_model_call_and_rejects_different_body(case):
+def test_duplicate_request_reuses_one_two_stage_analysis_and_rejects_different_body(case):
     async def scenario():
         with active(case.first):
             first = await case.jobs.start_job(case.first, body(), 'synthetic-diagram-request')
@@ -168,7 +191,7 @@ def test_duplicate_request_reuses_one_model_call_and_rejects_different_body(case
                 await asyncio.wait_for(work, 5)
             assert (await case.jobs.job_status(case.first, first['id']))['state'] == 'succeeded'
             third = await case.jobs.start_job(case.first, body(), 'synthetic-diagram-request')
-            assert third['id'] == first['id'] and len(case.state['calls']) == 1
+            assert third['id'] == first['id'] and len(case.state['calls']) == 2
             altered = generation.GenerateRequest(model_id='another-model', instructions='Synthetic supply diagram')
             with pytest.raises(HTTPException) as error:
                 await case.jobs.start_job(case.first, altered, 'synthetic-diagram-request')
@@ -199,7 +222,7 @@ def test_completed_results_are_rechecked_against_current_grants_and_source_versi
         with active(case.first), pytest.raises(HTTPException) as error:
             await case.jobs.job_result(case.first, meta['id'])
         assert error.value.status_code in {403, 409}
-        assert len(case.state['calls']) == 1
+        assert len(case.state['calls']) == 2
     run(case, scenario)
 
 
@@ -252,6 +275,10 @@ def test_shutdown_interrupts_without_rescheduling_or_saving(case):
 
 
 def test_cancelling_http_starter_does_not_cancel_an_accepted_generation(case, monkeypatch):
+    # Keep this deadline about the gated admission/cancellation, rather than
+    # first-use schema creation on a slow test filesystem.
+    with active(case.first):
+        assert_no_saved_diagrams(case)
     original = case.jobs._create_private
     entered, released = threading.Event(), threading.Event()
 
@@ -279,7 +306,7 @@ def test_cancelling_http_starter_does_not_cancel_an_accepted_generation(case, mo
                 assert len(listed) == 1 and listed[0]['state'] == 'succeeded'
                 restored = await case.jobs.job_result(case.first, listed[0]['id'])
                 assert 'Synthetic flow' in restored['markdown']
-            assert len(case.state['calls']) == 1
+            assert len(case.state['calls']) == 2
         finally:
             released.set()
     run(case, scenario)
@@ -321,7 +348,7 @@ def test_original_replacement_or_removal_revokes_an_existing_preview(case, monke
             with pytest.raises(HTTPException) as error:
                 await case.jobs.job_result(case.first, meta['id'])
             assert error.value.status_code in {403, 404, 409}
-        assert len(case.state['calls']) == 1
+        assert len(case.state['calls']) == 2
     run(case, scenario)
 
 
@@ -334,7 +361,7 @@ def test_private_record_owner_tampering_cannot_restore_result(case):
             session.commit()
         with active(case.first), pytest.raises(HTTPException) as error:
             await case.jobs.job_result(case.first, meta['id'])
-        assert error.value.status_code == 404 and len(case.state['calls']) == 1
+        assert error.value.status_code == 404 and len(case.state['calls']) == 2
     run(case, scenario)
 
 
@@ -449,7 +476,7 @@ def test_expired_index_is_not_revived_by_a_persisted_completed_result(case):
             with pytest.raises(HTTPException) as error:
                 await case.jobs.job_result(case.first, meta['id'])
             assert error.value.status_code == 410
-        assert len(case.state['calls']) == 1
+        assert len(case.state['calls']) == 2
     run(case, scenario)
 
 
@@ -468,4 +495,150 @@ def test_invalid_request_identifiers_do_not_admit_model_work(case, key):
         with active(case.first), pytest.raises(HTTPException) as error:
             await case.jobs.start_job(case.first, body(), key)
         assert error.value.status_code == 422 and case.state['calls'] == []
+    run(case, scenario)
+
+
+def cache_record(case, key):
+    with artifact_session(case.first) as session:
+        row = session.get(SourceMapping, key)
+        return deepcopy(row.config) if row is not None else None
+
+
+def assert_no_saved_diagrams(case):
+    with artifact_session(case.first) as session:
+        assert session.scalar(select(func.count()).select_from(DiagramTemplate)) == 0
+
+
+def test_worker_rollback_ticket_never_enters_private_preview_or_result_http(case, monkeypatch):
+    actual_generate = generation.generate
+    tickets = []
+
+    async def capture_worker_result(request):
+        result = await actual_generate(request)
+        tickets.append(deepcopy(result['_analysis_ticket']))
+        return result
+
+    monkeypatch.setattr(generation, 'generate', capture_worker_result)
+
+    async def scenario():
+        meta, direct_result = await completed(case)
+        assert len(tickets) == 1 and tickets[0]['key'] == direct_result['analysis_snapshot']
+        assert tickets[0]['fence'], 'The generator really supplied a worker-only rollback capability'
+        app = FastAPI()
+        app.include_router(case.jobs.router)
+        with active(case.first):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://synthetic.invalid') as client:
+                response = await client.get('/api/sn/diagram/jobs/' + meta['id'] + '/result')
+            assert response.status_code == 200
+            private = cache_record(case, case.jobs.job_key(case.first, meta['id']))
+            for value in (direct_result, response.json(), private['result']):
+                encoded = json.dumps(value)
+                assert '_analysis_ticket' not in encoded and tickets[0]['fence'] not in encoded
+                assert 'synthetic-private-key' not in encoded
+            stored = cache_record(case, direct_result['analysis_snapshot'])
+            assert stored['delivery_pending'] is False and 'fence' not in stored
+            assert_no_saved_diagrams(case)
+        assert len(case.state['calls']) == 2
+    run(case, scenario)
+
+
+@pytest.mark.parametrize('stage', ['scope_recheck', 'private_delivery'])
+def test_post_publish_delivery_failure_immediately_restores_previous_success(case, monkeypatch, stage):
+    actual_publish = cache.publish
+    published = []
+
+    def publish_and_interrupt(scope, ticket, snapshot):
+        actual_publish(scope, ticket, snapshot)
+        published.append(cache_record(case, ticket['key']))
+        if stage == 'scope_recheck':
+            case.state['can_edit'] = False
+
+    def reject_private_delivery(scope, meta, result, source_identity):
+        assert '_analysis_ticket' not in result
+        raise HTTPException(503, 'Synthetic private delivery unavailable')
+
+    async def scenario():
+        previous_job, previous_result = await completed(case)
+        key = previous_result['analysis_snapshot']
+        with active(case.first):
+            previous_snapshot = cache_record(case, key)['snapshot']
+            monkeypatch.setattr(cache, 'publish', publish_and_interrupt)
+            if stage == 'private_delivery':
+                monkeypatch.setattr(case.jobs, '_complete', reject_private_delivery)
+            case.state['node_label'] = 'Replacement concept'
+            meta = await case.jobs.start_job(case.first, body(rebuild=True), 'synthetic-delivery-failure')
+            await case.jobs.runtime.tasks[meta['id']]
+            case.state['can_edit'] = True
+            assert (await case.jobs.job_status(case.first, meta['id']))['state'] == 'failed'
+            assert len(published) == 1 and published[0]['delivery_pending'] is True
+            assert published[0]['snapshot']['graph']['nodes'][0]['label'] == 'Replacement concept'
+            assert published[0]['previous_ready']['snapshot'] == previous_snapshot
+            restored = cache_record(case, key)
+            assert restored['state'] == 'ready' and restored['delivery_pending'] is False
+            assert restored['snapshot'] == previous_snapshot and 'previous_ready' not in restored
+            assert cache.claim(case.first, key)['snapshot'] == previous_snapshot
+            assert (await case.jobs.job_result(case.first, previous_job['id']))['markdown'] == previous_result['markdown']
+            with pytest.raises(HTTPException) as failed_result:
+                await case.jobs.job_result(case.first, meta['id'])
+            assert failed_result.value.status_code == 409
+            assert_no_saved_diagrams(case)
+        assert len(case.state['calls']) == 4
+    run(case, scenario)
+
+
+def test_delivered_private_preview_stays_successful_while_result_get_retries_transient_cache_cleanup(case, monkeypatch):
+    actual_mark = cache.mark_delivered
+    attempts = []
+
+    def temporarily_unavailable(scope, key):
+        attempts.append(key)
+        if len(attempts) <= 2:
+            raise HTTPException(503, 'Synthetic cleanup temporarily unavailable')
+        return actual_mark(scope, key)
+
+    monkeypatch.setattr(cache, 'mark_delivered', temporarily_unavailable)
+
+    async def scenario():
+        with active(case.first):
+            meta = await case.jobs.start_job(case.first, body(), 'synthetic-deferred-cleanup')
+            await case.jobs.runtime.tasks[meta['id']]
+            assert (await case.jobs.job_status(case.first, meta['id']))['state'] == 'succeeded'
+            private = cache_record(case, case.jobs.job_key(case.first, meta['id']))
+            assert private['result'] and '_analysis_ticket' not in private['result']
+            key = private['result']['analysis_snapshot']
+            assert cache_record(case, key)['delivery_pending'] is True and len(attempts) == 1
+            app = FastAPI()
+            app.include_router(case.jobs.router)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://synthetic.invalid') as client:
+                path = '/api/sn/diagram/jobs/' + meta['id'] + '/result'
+                first = await client.get(path)
+                assert first.status_code == 200, 'Housekeeping failure cannot invalidate an already committed preview'
+                assert len(attempts) == 2 and cache_record(case, key)['delivery_pending'] is True
+                second = await client.get(path)
+                assert second.status_code == 200 and len(attempts) == 3
+                delivered = cache_record(case, key)
+                assert delivered['delivery_pending'] is False and 'fence' not in delivered
+                third = await client.get(path)
+                assert third.status_code == 200 and len(attempts) == 4
+            assert first.json() == second.json() == third.json()
+            assert cache_record(case, key)['snapshot'] == delivered['snapshot']
+            assert (await case.jobs.job_status(case.first, meta['id']))['state'] == 'succeeded'
+            assert_no_saved_diagrams(case)
+        assert len(case.state['calls']) == 2, 'Retrying delivery housekeeping never regenerates a structure'
+    run(case, scenario)
+
+
+def test_current_model_configuration_hash_controls_structure_reuse(case):
+    async def scenario():
+        _, first = await completed(case)
+        _, repeated = await completed(case, key='synthetic-same-model-new-request')
+        assert repeated['analysis_reused'] is True
+        assert repeated['analysis_snapshot'] == first['analysis_snapshot'] and len(case.state['calls']) == 2
+        case.state['model']['updated_at'] = 'synthetic-v2'
+        _, changed = await completed(case, key='synthetic-new-model-configuration')
+        assert changed['analysis_reused'] is False
+        assert changed['analysis_snapshot'] != first['analysis_snapshot'] and len(case.state['calls']) == 4
+        assert case.state['model_reads'], 'The real model-eligibility validator is used even for cache reuse'
+        with active(case.first):
+            assert_no_saved_diagrams(case)
     run(case, scenario)

@@ -134,6 +134,14 @@ def _complete(scope, meta, result, source_identity):
         for old in retired:
             old['payload_pruned'] = True
             registry.write(connection, old)
+    if result.get('analysis_snapshot'):
+        from tin.web.diagram_analysis_cache import mark_delivered
+        try:
+            mark_delivered(scope, result['analysis_snapshot'])
+        except HTTPException:
+            # The private preview has already committed. Deferred housekeeping
+            # must not turn a successfully delivered result into a failed job.
+            logging.getLogger(__name__).warning('Diagram structure delivery cleanup deferred')
 
 
 def cleanup_expired():
@@ -197,12 +205,19 @@ class Runtime(shared.Runtime):
                     await run_in_threadpool(registry.touch, meta['id'], self.worker_id, meta['fence'], phase)
                 callback = getattr(generation, '_generation_progress', None)
                 marker = callback.set(progress) if callback is not None else None
+                structure_ticket = None
                 try:
                     result = await generation.generate(body)
+                    structure_ticket = result.pop('_analysis_ticket', None)
                     await fresh_scope(scope)
                     if source_identity is not None and await original_fingerprint(scope, body.source_id) != source_identity:
                         raise HTTPException(409, '生成期间原件已改变')
                     await run_in_threadpool(_complete, scope, meta, result, source_identity)
+                except BaseException:
+                    if structure_ticket is not None:
+                        from tin.web.diagram_analysis_cache import abandon
+                        await run_in_threadpool(abandon, scope, structure_ticket)
+                    raise
                 finally:
                     if marker is not None:
                         callback.reset(marker)
@@ -308,6 +323,12 @@ async def job_result(scope, job_id):
         if value.get('source_identity') is not None and await original_fingerprint(verified, source_id) != value['source_identity']:
             raise HTTPException(409, '原件已改变，请重新生成产业图')
         await fresh_scope(verified)
+        if result.get('analysis_snapshot'):
+            from tin.web.diagram_analysis_cache import mark_delivered
+            try:
+                await run_in_threadpool(mark_delivered, verified, result['analysis_snapshot'])
+            except HTTPException:
+                logging.getLogger(__name__).warning('Diagram structure delivery cleanup deferred')
         return {**result, 'request': value['request'], 'job': status}
     finally:
         current_workbench.reset(scope_marker)

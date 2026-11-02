@@ -21,6 +21,8 @@ function dgCancelGeneration() {
   if (restore && !dgGeneratorOpen()) restore.hidden = true;
   const button = document.getElementById('dg-ai-run');
   if (button) button.disabled = dgSubmittingJob || !!dgJobActive();
+  const rebuild = document.getElementById('dg-ai-rebuild');
+  if (rebuild) rebuild.disabled = dgSubmittingJob || !!dgJobActive();
   return dgGeneratorEpoch;
 }
 function dgGenerationIsCurrent(operation) { return operation === dgGeneratorEpoch; }
@@ -120,6 +122,8 @@ function dgUpdateGenerationCapability() {
   const hasImage = !!dgGeneratorImage || source.selectedOptions[0]?.dataset.kind === 'image';
   const unsupported = hasImage && model.selectedOptions[0]?.dataset.vision !== 'true';
   document.getElementById('dg-ai-run').disabled = !model.value || unsupported || dgSubmittingJob || !!dgJobActive();
+  const rebuild = document.getElementById('dg-ai-rebuild');
+  if (rebuild) rebuild.disabled = document.getElementById('dg-ai-run').disabled;
   if (unsupported) document.getElementById('dg-ai-status').textContent = '当前模型不支持图片，请选择带“视觉”标识的模型，或改用文字原件与结构说明。';
   return !unsupported;
 }
@@ -161,14 +165,16 @@ async function dgChooseImage(input) {
     dgUpdateGenerationCapability();
   } catch { status.textContent = '图片读取失败，请重新选择。'; }
 }
-async function dgGenerate() {
+async function dgGenerate(rebuild = false) {
   const button = document.getElementById('dg-ai-run'), status = document.getElementById('dg-ai-status');
   if (button.disabled) return;
   const model = document.getElementById('dg-ai-model').value;
   if (!model) { status.textContent = '请先选择生成模型。';return; }
   if (!dgUpdateGenerationCapability()) return;
   if (dgSubmittingJob || dgJobActive()) return;
-  const body = dgGenerationRequestBody();
+  if (rebuild === true && !window.confirm('重新分析原件会重新选择结构和指标，结果可能与当前版本不同。已有保存布局不会改变，失败时保留上次成功结果。是否继续？')) return;
+  const inputBody = dgGenerationRequestBody();
+  const body = rebuild === true ? JSON.stringify({...JSON.parse(inputBody),rebuild:true}) : inputBody;
   if (!dgSubmission || dgSubmission.body !== body) {
     const bytes = new Uint8Array(16);window.crypto.getRandomValues(bytes);
     dgSubmission = {body,key:Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('')};
@@ -176,7 +182,7 @@ async function dgGenerate() {
   const submission = dgSubmission;
   dgCancelGeneration(); dgGeneratorJob = null; dgGenerationResult = null;
   dgGenerationContext = {markdown:document.getElementById('dg-md-text').value,
-    instructions:document.getElementById('dg-ai-instructions').value,body};
+    instructions:document.getElementById('dg-ai-instructions').value,body:inputBody};
   dgSubmittingJob = true;button.disabled = true;status.textContent = '正在提交后台生成，可关闭窗口。';
   try {
     // Closing the drawer may abort metadata reads, but must not cancel an accepted server task.
@@ -217,7 +223,8 @@ function dgPresentGeneration(data, force = false) {
     const item=document.createElement('li');item.textContent=`${binding.node} → ${binding.name}（${binding.unit || '单位未注明'}）`;list.append(item);
   });
   detail.hidden = data.bindings.length === 0;
-  status.textContent = `已生成 ${data.nodes} 个节点，绑定 ${data.bindings.length} 个真实指标。请核对下方配置后导入。` +
+  status.textContent = (data.analysis_reused ? '已复用相同资料的研究结构。' : '') +
+    `已生成 ${data.nodes} 个节点，绑定 ${data.bindings.length} 个真实指标。请核对下方配置后导入。` +
     (data.candidates_truncated ? ' 当前仅提供部分召回候选，可补充口径要求后重试。' : '');
   document.getElementById('dg-md-msg').textContent = '生成结果尚未保存；导入为新布局，或确认后应用到当前布局。';
   dgGenerationContext={markdown:data.markdown,body:dgGenerationRequestBody()};
@@ -235,7 +242,7 @@ async function dgFollowJob(identifier) {
       if (!current()) return;
       dgCheckJob(job);dgGeneratorJob=job;
       if (['queued','running'].includes(job.state)) {
-        const labels={queued:'等待生成',reading_source:'正在读取原件',loading_catalog:'正在读取指标目录',selecting:'正在匹配指标',generating:'正在生成图结构',validating:'正在核对配置'};
+        const labels={queued:'等待生成',reading_source:'正在读取原件',loading_catalog:'正在读取指标目录',structuring:'正在梳理研究主干',selecting:'正在匹配指标',generating:'正在补充指标与细节',reusing:'正在恢复已校验结构',validating:'正在核对覆盖与配置'};
         status.textContent=(labels[job.phase] || '正在后台生成')+'，可关闭窗口。';
         dgJobTimer=setTimeout(poll,2000);
       } else if (job.state==='succeeded') {

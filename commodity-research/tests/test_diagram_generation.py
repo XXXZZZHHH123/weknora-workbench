@@ -1,5 +1,6 @@
 import json
 import asyncio
+import copy
 from types import SimpleNamespace
 
 import httpx
@@ -14,10 +15,40 @@ def endpoint(suffix=''):
 
 
 def model_graph(series_id=SERIES):
-    return {'title':'Process','groups':[{'id':'g','label':'Materials','parent_id':None}],
+    return {'title':'Process','groups':[{'id':'g','label':'Materials','parent_id':None,'role':'target'}],
             'nodes':[{'id':'feed','label':'Feed','group_id':'g','series_id':series_id},
                      {'id':'output','label':'Output','group_id':'g','series_id':None}],
             'edges':[{'from':'feed','to':'output'}]}
+
+
+def is_outline(prompt):
+    return prompt.startswith('阶段：研究骨架提取\n')
+
+
+def model_outline(document=None):
+    """A synthetic source-stage response, separate from final binding failures."""
+    from pydantic import ValidationError
+    from tin.web.diagram_draft import Graph
+    try:
+        graph = Graph.model_validate(document if document is not None else model_graph())
+    except ValidationError:
+        graph = Graph.model_validate(model_graph())
+    result = graph.model_dump(by_alias=True)
+    roots = [group for group in result['groups'] if group['parent_id'] is None]
+    if not any(group['role'] == 'target' for group in roots):
+        roots[0]['role'] = 'target'
+    for group in roots:
+        if group['role'] is None:
+            group['role'] = 'reference'
+    result['nodes'] = [{key: node[key] for key in ('id', 'label', 'group_id')}
+                       for node in result['nodes']]
+    result['coverage'] = [{'id': 'source_' + node['id'], 'label': node['label'], 'node_ids': [node['id']]}
+                          for node in result['nodes']]
+    return result
+
+
+async def configured_model(scope, model_id, requires_image=False):
+    return 'synthetic-qualification-' + model_id
 
 
 @pytest.fixture
@@ -28,8 +59,9 @@ def generator(canonical,monkeypatch):
     async def complete(scope,model_id,prompt,image=None):
         assert scope.knowledge_base_id==KB
         model_calls.append({'model':model_id,'prompt':prompt,'image':image})
-        return dict(response)
+        return model_outline(response) if is_outline(prompt) else copy.deepcopy(response)
     monkeypatch.setattr(generation,'completion',complete)
+    monkeypatch.setattr(generation,'current_model',configured_model)
     return client,headers,state,response,model_calls
 
 
@@ -41,7 +73,9 @@ def test_generated_markdown_binds_only_actual_kb_ids_and_does_not_save_before_co
     body=result.json()
     assert body['bindings']==[{'node':'Feed','series_id':SERIES,'name':'Measured quantity','unit':'吨'}]
     assert body['nodes']==2 and body['model_id']=='configured-model'
-    assert SERIES in calls[0]['prompt'] and 'A process outline' in calls[0]['prompt']
+    assert len(calls) == 2 and is_outline(calls[0]['prompt'])
+    assert SERIES not in calls[0]['prompt'] and 'A process outline' in calls[0]['prompt']
+    assert SERIES in calls[1]['prompt'] and 'A process outline' in calls[1]['prompt']
     assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
     applied=client.post(page(suffix='/api/sn/diagram/markdown'),headers=headers,json={
         'markdown':body['markdown'],'fact_version':body['version']})
@@ -66,7 +100,7 @@ def test_generated_research_roles_and_influence_edges_reach_existing_preview_wit
     assert next(node for node in layout['nodes'] if node['id'] == 'target')['role'] == 'target'
     assert layout['edges'][0]['kind'] == 'influence'
     assert result.json()['bindings'][0]['series_id'] == SERIES
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert client.get(page(suffix='/api/sn/diagram/markdown'), headers=headers).status_code == 404
 
 
@@ -97,9 +131,9 @@ def test_source_version_changes_during_generation_or_before_apply_require_refres
     apply=client.post(page(suffix='/api/sn/diagram/markdown'),headers=headers,json={
         'markdown':result['markdown'],'fact_version':result['version']})
     assert apply.status_code==409,apply.text
-    async def changing(*args,**kwargs):
+    async def changing(scope, model, prompt, image=None):
         state['value']+=1
-        return response
+        return model_outline(response) if is_outline(prompt) else response
     monkeypatch.setattr(generation,'completion',changing)
     assert client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Structure'}).status_code==409
 
@@ -159,7 +193,7 @@ def test_v2_diagram_generation_rejects_a_changed_source_revision_before_reusing_
 
 
 @pytest.mark.parametrize('changed', [False, True])
-def test_v2_original_selection_uses_native_scope_and_rejects_changes_without_full_inventory(monkeypatch, changed):
+def test_v2_original_selection_uses_native_scope_and_rejects_changes_without_full_inventory(canonical, monkeypatch, changed):
     import base64
     from fastapi import HTTPException
     from tin.integration.identity import Identity
@@ -179,13 +213,15 @@ def test_v2_original_selection_uses_native_scope_and_rejects_changes_without_ful
     async def content(identifier, *, scope):
         assert identifier == 'original-image' and scope.source_binding_id == 'binding'
         return {'supported': True, 'image_data_url': 'data:image/png;base64,' + base64.b64encode(b'synthetic-image').decode(), 'sha256': '1' * 64}
-    async def completion(*args): return model_graph()
+    async def completion(scope, model, prompt, image=None):
+        return model_outline() if is_outline(prompt) else model_graph()
     async def verify(*args): return None
     monkeypatch.setattr(generation, 'go_request', metadata)
     monkeypatch.setattr(generation, 'source_content', content)
     monkeypatch.setattr(generation, 'completion', completion)
+    monkeypatch.setattr(generation, 'current_model', configured_model)
     monkeypatch.setattr(generation, 'verify_generation_scope', verify)
-    monkeypatch.setattr(generation, 'catalog_snapshot', lambda: ('f' * 64, [{'id': SERIES, 'name': 'Measured quantity', 'unit': '吨'}]))
+    monkeypatch.setattr(generation, 'catalog_snapshot', lambda scope=None: ('f' * 64, [{'id': SERIES, 'name': 'Measured quantity', 'unit': '吨'}]))
     token = current_workbench.set(scope)
     try:
         body = generation.GenerateRequest(model_id='synthetic-model', source_id='original-image')
@@ -196,7 +232,7 @@ def test_v2_original_selection_uses_native_scope_and_rejects_changes_without_ful
         else:
             result = asyncio.run(generation.generate(body))
             assert result['bindings'][0]['series_id'] == SERIES
-        assert len(calls) == 2
+        assert len(calls) == (2 if changed else 5)
         async def foreign(*args, **kwargs): return {'data': {'id': 'original-image', 'knowledge_base_id': 'unbound-kb'}}
         monkeypatch.setattr(generation, 'go_request', foreign)
         with pytest.raises(HTTPException) as caught:
@@ -231,15 +267,18 @@ def catalog_bytes(fields):
 def test_complete_catalog_over_256_fields_reaches_model_without_keyword_filter(generator,monkeypatch):
     client,headers,_,_,calls=generator
     fields=catalog_fields(300)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return model_graph(fields[-1]['id'])
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Study the bottleneck'})
     assert result.status_code==200,result.text
-    assert len(calls)==1 and result.json()['candidate_count']==300
-    assert prompt_fields(calls[0][2])==fields
+    assert len(calls)==2 and result.json()['candidate_count']==300
+    assert is_outline(calls[0][2])
+    assert prompt_fields(calls[1][2])==fields
     assert result.json()['bindings'][0]['series_id']==fields[-1]['id']
     assert result.json()['candidates_truncated'] is False
 
@@ -249,11 +288,13 @@ def test_catalog_selection_covers_all_byte_bounded_batches_with_full_input(gener
     fields=catalog_fields(5,'统计范围'*40)
     budget=catalog_bytes(fields[:2])
     monkeypatch.setattr(generation,'CATALOG_BYTES',budget,raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     responses=[{'series_ids':[]},{'series_ids':[fields[3]['id']]},
                {'series_ids':[fields[4]['id']]},model_graph(fields[4]['id'])]
     async def complete(scope,model,prompt,image=None):
         calls.append({'prompt':prompt,'image':image})
+        if is_outline(prompt):
+            return model_outline()
         return responses.pop(0)
     monkeypatch.setattr(generation,'completion',complete)
     image='data:image/png;base64,eA=='
@@ -261,12 +302,15 @@ def test_catalog_selection_covers_all_byte_bounded_batches_with_full_input(gener
     result=client.post(endpoint(),headers=headers,json={
         'model_id':'configured-model','instructions':instruction,'image':image})
     assert result.status_code==200,result.text
-    assert len(calls)==4
-    batches=[prompt_fields(call['prompt']) for call in calls[:-1]]
+    assert len(calls)==5 and is_outline(calls[0]['prompt'])
+    batches=[prompt_fields(call['prompt']) for call in calls[1:-1]]
     assert [field for batch in batches for field in batch]==fields
     assert [len(batch) for batch in batches]==[2,2,1]
     assert all(catalog_bytes(batch)<=budget for batch in batches)
-    assert all(instruction in call['prompt'] and call['image']==image for call in calls)
+    assert all(instruction in call['prompt'] for call in calls)
+    assert calls[0]['image'] == image
+    assert all(call['image'] is None for call in calls[1:])
+    assert all('共享研究主干' in call['prompt'] for call in calls[1:-1])
     assert prompt_fields(calls[-1]['prompt'])==[fields[3],fields[4]]
     assert result.json()['candidate_count']==2 and result.json()['candidates_truncated'] is False
     assert result.json()['bindings'][0]['series_id']==fields[4]['id']
@@ -281,14 +325,17 @@ def test_catalog_selection_rejects_invalid_plans_without_generating_or_saving(ge
     client,headers,_,_,calls=generator
     fields=catalog_fields(3)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return selection
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
-    assert len(calls)==2
+    assert len(calls)==3
+    assert is_outline(calls[0][2])
     assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
 
 
@@ -297,16 +344,18 @@ def test_catalog_selection_accepts_explicit_id_array_including_empty(generator,m
     client,headers,_,_,calls=generator
     fields=catalog_fields(2)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     selected=[] if empty else [fields[0]['id']]
     responses=[selected,[],model_graph(None if empty else fields[0]['id'])]
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return responses.pop(0)
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==200,result.text
-    assert len(calls)==3
+    assert len(calls)==4
     assert result.json()['candidate_count']==len(selected)
     assert [binding['series_id'] for binding in result.json()['bindings']]==selected
     assert prompt_fields(calls[-1][2])==([] if empty else fields[:1])
@@ -318,17 +367,19 @@ def test_repeated_real_ids_form_one_candidate_set_without_losing_distinct_choice
     client,headers,_,_,calls=generator
     fields=catalog_fields(3)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:2]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     identifiers=[fields[1]['id'],fields[0]['id'],fields[1]['id']]
     selection={'series_ids':identifiers} if object_wrapper else identifiers
     responses=[selection,[],model_graph(fields[1]['id'])]
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return responses.pop(0)
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==200,result.text
-    assert len(calls)==3 and result.json()['candidate_count']==2
+    assert len(calls)==4 and result.json()['candidate_count']==2
     assert prompt_fields(calls[-1][2])==fields[:2]
     assert result.json()['bindings'][0]['series_id']==fields[1]['id']
 
@@ -337,14 +388,16 @@ def test_raw_selection_limit_applies_before_deduplicating_real_ids(generator,mon
     client,headers,_,_,calls=generator
     fields=catalog_fields(3)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:2]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return [fields[0]['id']]*25
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
-    assert len(calls)==2
+    assert len(calls)==3
 
 
 @pytest.mark.parametrize('kind',['unknown','other-batch','non-string','nested','field-name','over-limit'])
@@ -352,7 +405,7 @@ def test_catalog_selection_array_keeps_all_id_and_capacity_guards(generator,monk
     client,headers,_,_,calls=generator
     fields=catalog_fields(26)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:25]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     invalid={
         'unknown':['invented-id'],'other-batch':[fields[-1]['id']],
         'non-string':[1],
@@ -361,13 +414,15 @@ def test_catalog_selection_array_keeps_all_id_and_capacity_guards(generator,monk
     }[kind]
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return invalid
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
     message = result.json()['detail']
     assert ('上限' in message if kind == 'over-limit' else '编号格式' in message if kind in {'non-string','nested'} else '目录以外' in message)
-    assert len(calls)==2
+    assert len(calls)==3
     assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
 
 
@@ -375,14 +430,16 @@ def test_catalog_selection_rejects_real_id_from_other_batch(generator,monkeypatc
     client,headers,_,_,calls=generator
     fields=catalog_fields(3)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return {'series_ids':[fields[-1]['id']]}
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
-    assert len(calls)==2
+    assert len(calls)==3
 
 
 @pytest.mark.parametrize('kind',['single-field','batch-count'])
@@ -392,7 +449,7 @@ def test_catalog_capacity_is_preflighted_before_any_model_call(generator,monkeyp
     budget=catalog_bytes(fields[:1])-(1 if kind=='single-field' else 0)
     monkeypatch.setattr(generation,'CATALOG_BYTES',budget,raising=False)
     monkeypatch.setattr(generation,'CATALOG_MAX_BATCHES',4,raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==413,result.text
     assert calls==[]
@@ -402,59 +459,68 @@ def test_selected_catalog_over_budget_is_rejected_instead_of_truncated(generator
     client,headers,_,_,calls=generator
     fields=catalog_fields(3)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     async def complete(scope,model,prompt,image=None):
         calls.append(prompt)
+        if is_outline(prompt):
+            return model_outline()
         return {'series_ids':[field['id'] for field in prompt_fields(prompt)]}
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==413,result.text
-    assert len(calls)==3
+    assert len(calls)==4
 
 
 def test_no_compatible_selection_is_explicitly_unbound_without_keyword_fallback(generator,monkeypatch):
     client,headers,_,_,calls=generator
     fields=catalog_fields(2)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     responses=[{'series_ids':[]},{'series_ids':[]},model_graph(None)]
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return responses.pop(0)
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==200,result.text
-    assert len(calls)==3 and result.json()['candidate_count']==0 and result.json()['bindings']==[]
-    assert '待补全' in result.json()['notice']
+    assert len(calls)==4 and result.json()['candidate_count']==0 and result.json()['bindings']==[]
+    assert result.json()['nodes'] == 2 and '未绑定概念保留' in result.json()['notice']
 
 
 def test_complete_catalog_byte_boundary_does_not_add_unnecessary_selection_call(generator,monkeypatch):
     client,headers,_,_,calls=generator
     fields=catalog_fields(2,'多字节')
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return model_graph(fields[1]['id'])
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==200,result.text
-    assert len(calls)==1 and prompt_fields(calls[0][2])==fields
+    assert len(calls)==2 and prompt_fields(calls[1][2])==fields
+    assert is_outline(calls[0][2])
 
 
 def test_catalog_selection_output_limit_is_rejected_without_taking_first_ids(generator,monkeypatch):
     client,headers,_,_,calls=generator
     fields=catalog_fields(66)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:65]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return {'series_ids':[field['id'] for field in fields[:65]]}
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
     assert '24项上限' in result.json()['detail']
-    assert len(calls)==2
+    assert len(calls)==3
 
 
 @pytest.mark.parametrize('selected_count',[24,25])
@@ -462,25 +528,27 @@ def test_compact_catalog_selection_budget_accepts_24_and_rejects_25(generator,mo
     client,headers,_,_,calls=generator
     fields=catalog_fields(26)
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:25]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:('d'*64,fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     responses=[{'series_ids':[field['id'] for field in fields[:selected_count]]},
                {'series_ids':[]},model_graph(fields[0]['id'])]
     if selected_count==25:
         responses=[responses[0],responses[0]]
     async def complete(*args,**kwargs):
         calls.append(args)
+        if is_outline(args[2]):
+            return model_outline()
         return responses.pop(0)
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research overview'})
     if selected_count==24:
         assert result.status_code==200,result.text
-        assert len(calls)==3 and result.json()['candidate_count']==24
+        assert len(calls)==4 and result.json()['candidate_count']==24
         assert prompt_fields(calls[-1][2])==fields[:24]
         assert result.json()['bindings'][0]['series_id']==fields[0]['id']
     else:
         assert result.status_code==422,result.text
         assert '24项上限' in result.json()['detail']
-        assert len(calls)==2
+        assert len(calls)==3
 
 
 def test_explicit_detail_request_keeps_all_26_legal_nodes_without_truncation(generator):
@@ -511,17 +579,19 @@ def test_source_change_during_catalog_selection_stops_before_final_generation(ge
     fields=catalog_fields(2)
     version=['d'*64]
     monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:1]),raising=False)
-    monkeypatch.setattr(generation,'catalog_snapshot',lambda:(version[0],fields))
+    monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:(version[0],fields))
     responses=[{'series_ids':[fields[0]['id']]},{'series_ids':[]},model_graph(fields[0]['id'])]
     async def complete(*args,**kwargs):
         calls.append(args)
-        if len(calls)==2:
+        if is_outline(args[2]):
+            return model_outline()
+        if len(calls)==3:
             version[0]='e'*64
         return responses.pop(0)
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==409,result.text
-    assert len(calls)==2
+    assert len(calls)==3
     assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
 
 
