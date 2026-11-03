@@ -81,6 +81,12 @@ def _prose_follows(text, units=()):
     if not following:
         return False
     first = following[0]
+    if first == '(':
+        # An opening note bracket after the literal, e.g. 40-41万(补货线), ends the
+        # quantity for review unless the bracket itself states a unit or number.
+        inner = following[1:].lstrip()
+        return bool(inner) and not inner[0].isnumeric() and not _SCALE.match(inner) and not any(
+            inner.startswith(_width(unit).strip()) for unit in units if isinstance(unit, str) and unit.strip())
     if first in ',.':
         # Width-normalized clause punctuation (，。) only when prose follows.
         # A digit, a masked digit ('x') or ASCII text keeps it a decimal point,
