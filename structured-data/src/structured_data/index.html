@@ -307,7 +307,8 @@ async function refreshImports(preferred,isCurrent=()=>true,requestApi=api){
 }
 
 function setWorkbookEmpty(empty){$('importReview').classList.toggle('review-empty',empty);$('workbookEmpty').hidden=!empty}
-async function selectImport(isCurrent=()=>true,requestApi=api){const id=$('importSelect').value;if(!id)return;setWorkbookEmpty(false);const version=++reviewVersion;const r=await requestApi('/api/imports/'+encodeURIComponent(id));if(version!==reviewVersion||!isCurrent())return;currentImport=r;currentSheet=null;const sheets=r.sheets||[];const counts={};sheets.forEach(s=>counts[s.status]=(counts[s.status]||0)+1);$('importSummary').textContent=`${sheets.length} 张工作表 · `+Object.entries(counts).map(([k,v])=>`${statusLabels[k]||k} ${v}`).join(' / ');$('sheetList').innerHTML=sheets.map((s,i)=>`<button class="sheet-button" data-sheet-index="${i}" aria-pressed="false"><strong>${esc(s.name)}</strong>${sheetStatusBadge(s)}<small>${esc(layoutLabels[s.layout]||'布局待检查')}${publishedQualityText(s)?' · '+esc(publishedQualityText(s)):''}</small></button>`).join('');$('sheetDetail').innerHTML='<p class="muted">选择工作表以查看预览和映射。</p>';if(sheets.length)await selectSheet(0,requestApi)}
+function renderImportCatalog(r){const sheets=r.sheets||[];const counts={};sheets.forEach(s=>counts[s.status]=(counts[s.status]||0)+1);$('importSummary').textContent=`${sheets.length} 张工作表 · `+Object.entries(counts).map(([k,v])=>`${statusLabels[k]||k} ${v}`).join(' / ');$('sheetList').innerHTML=sheets.map((s,i)=>`<button class="sheet-button" data-sheet-index="${i}" aria-pressed="false"><strong>${esc(s.name)}</strong>${sheetStatusBadge(s)}<small>${esc(layoutLabels[s.layout]||'布局待检查')}${publishedQualityText(s)?' · '+esc(publishedQualityText(s)):''}</small></button>`).join('');document.querySelectorAll('[data-sheet-index]').forEach(b=>b.setAttribute('aria-pressed',String(sheets[Number(b.dataset.sheetIndex)]?.name===currentSheet?.name)));}
+async function selectImport(isCurrent=()=>true,requestApi=api){const id=$('importSelect').value;if(!id)return;setWorkbookEmpty(false);const version=++reviewVersion;const r=await requestApi('/api/imports/'+encodeURIComponent(id));if(version!==reviewVersion||!isCurrent())return;currentImport=r;currentSheet=null;renderImportCatalog(r);$('sheetDetail').innerHTML='<p class="muted">选择工作表以查看预览和映射。</p>';if(r.sheets?.length)await selectSheet(0,requestApi)}
 function previewHTML(preview){if(!preview)return '<p class="muted">此工作表暂无预览。</p>';let rows=Array.isArray(preview)?preview:preview.rows;if(!Array.isArray(rows))return `<pre class="scroll compact">${esc(describe(preview))}</pre>`;if(rows.length&&Array.isArray(rows[0]))return `<div class="scroll compact"><table><tbody>${rows.map(row=>`<tr>${row.map(v=>`<td>${v&&typeof v==='object'&&'cell' in v?`<small>${esc(v.cell)}</small><br>${esc(describe(v.value))}`:esc(describe(v))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;return `<pre class="scroll compact">${esc(describe(preview))}</pre>`}
 async function selectSheet(index,requestApi=api){if(!currentImport)return;const selected=currentImport.sheets[index];if(!selected)return;const version=++reviewVersion;const importId=currentImport.import_id;const s=await requestApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(selected.name)}`);if(version!==reviewVersion)return;currentSheet=s;document.querySelectorAll('[data-sheet-index]').forEach(b=>b.setAttribute('aria-pressed',String(Number(b.dataset.sheetIndex)===index)));renderSheet(s)}
 function dateCandidatesHTML(items){return `<div class="scroll"><table><thead><tr><th>候选日期列</th><th>首个数据行</th><th>样本</th></tr></thead><tbody>${items.map(c=>`<tr><td>${esc(c.column)} 列${c.date_mode==='period_needs_review'?'（年度或月份，需明确口径）':''}</td><td>${esc(c.first_data_row||'待确认')}</td><td>${esc((c.examples||[]).join('、')||'尚未识别完整日期')}</td></tr>`).join('')}</tbody></table></div>`}
@@ -425,25 +426,34 @@ async function openKnowledgeSource(sourceId,{retryFailed=false}={}){
     if(previous.file_hash&&restarted.file_hash!==previous.file_hash)throw Error('原件已更新，请重新打开当前文件查看处理结果。');
    }
   }
-  const response=await loadKnowledgeResult(sourceId,{signal:controller.signal,expectedAttempt,expectedSourceHash,isCurrent});if(!isCurrent())return;
+  let displayedImport='';
+  const showPartial=async result=>{
+   if(!isCurrent()||!result?.import_id)return;
+   if(!displayedImport){await refresh(isCurrent,result.import_id,result.dataset_id,requestApi);if(!isCurrent())return;displayedImport=result.import_id;}
+   else if(currentImport?.import_id===result.import_id){
+    const row=await requestApi('/api/imports/'+encodeURIComponent(result.import_id));if(!isCurrent())return;
+    currentImport=row;renderImportCatalog(row);
+   }
+  };
+  const response=await loadKnowledgeResult(sourceId,{signal:controller.signal,expectedAttempt,expectedSourceHash,isCurrent,onPartialResult:showPartial});if(!isCurrent())return;
   const result=response.import_result;
   if(!result?.import_id)throw Error('这份文件还没有工作表处理结果。请在目录的文件操作中重新处理，后台会自动完成。');
-  await refresh(isCurrent,result.import_id,result.dataset_id,requestApi);if(!isCurrent())return;
+  if(displayedImport)await showPartial(result);else await refresh(isCurrent,result.import_id,result.dataset_id,requestApi);if(!isCurrent())return;
   if($('importSelect').value!==result.import_id)throw Error('当前知识库未找到这份原件的扫描记录，请刷新后重试。');
   $('jobState').textContent=(currentImport?.source_file||'当前原件')+' · '+'已打开工作表处理结果。';
- }catch(error){if(isCurrent()){const message=error.name==='AbortError'?'读取原件超时，请重试。':error.message;$('jobState').textContent=message;if(!currentSheet)$('sheetDetail').innerHTML='<p class="error" role="alert">原件准备未完成：'+esc(message)+'</p>';if($('workspace').classList.contains('hidden'))note(message);$('retrySourceImport').textContent=error.nativeProcessingFailed?'重新处理':'重新读取';$('retrySourceImport').classList.remove('hidden')}}
+ }catch(error){if(isCurrent()){currentImport=null;currentSheet=null;for(const id of ['importSelect','sheetList','importSummary'])$(id).innerHTML='';const message=error.name==='AbortError'?'读取原件超时，请重试。':error.message;$('jobState').textContent=message;if(!currentSheet)$('sheetDetail').innerHTML='<p class="error" role="alert">原件准备未完成：'+esc(message)+'</p>';if($('workspace').classList.contains('hidden'))note(message);$('retrySourceImport').textContent=error.nativeProcessingFailed?'重新处理':'重新读取';$('retrySourceImport').classList.remove('hidden')}}
  finally{if(isCurrent()){endTaskProgress($('jobState'));nativeSourceController=null;nativeSourceBusy=false;$('upload').disabled=false}}
 }
 $('retrySourceImport').onclick=()=>{if(requestedSourceKnowledge&&!nativeSourceBusy){if(requestedSourceType==='xlsx')void openKnowledgeSource(requestedSourceKnowledge,{retryFailed:true});else openStructuredKnowledgeSource(requestedSourceKnowledge,requestedSourceType)}};
 async function confirmMapping(){const mapping=readMapping();if(!mappingConfirmed||!$('ackMapping').checked)throw Error('请先预览解析结果，并确认映射正确。');const importId=currentImport.import_id,version=reviewVersion,scopeEpoch=authEpoch;setMappingBusy(true);$('mappingFeedback').textContent='正在保存映射并生成数据集新版本…';try{const job=await api(`/api/imports/${encodeURIComponent(importId)}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping,save_template:$('saveTemplate').checked})});const result=await waitJob(job.id);if(scopeEpoch!==authEpoch)throw Error('账号或空间已切换，请重新查看处理结果');note('映射已确认，新数据集版本已生成。');await refresh();await refreshImports(importId);if(result.dataset_id&&!reviewOnly){$('dataset').value=result.dataset_id;await selectDataset()}notifyImportUpdated(importId,result.dataset_id,'confirmed',scopeEpoch)}finally{if(version===reviewVersion)setMappingBusy(false)}}
 function notifyImportUpdated(importId,datasetId,status,expectedEpoch=authEpoch){if(embedded&&expectedEpoch===authEpoch)parent.postMessage({type:'structured-import-updated',import_id:importId,dataset_id:datasetId||'',tenant_id:activeTenant,knowledge_base_id:activeKnowledgeBase,status},location.origin)}
-$('sheetList').onclick=e=>{const b=e.target.closest('[data-sheet-index]');if(b)selectSheet(Number(b.dataset.sheetIndex)).catch(reportRequestError)};$('importSelect').onchange=()=>selectImport().catch(reportRequestError);$('reloadImports').onclick=()=>refreshImports().catch(reportRequestError);
+$('sheetList').onclick=e=>{const b=e.target.closest('[data-sheet-index]');if(b)selectSheet(Number(b.dataset.sheetIndex)).catch(reportRequestError)};$('importSelect').onchange=()=>{if(nativeSourceBusy)clearKnowledgeSource();selectImport().catch(reportRequestError)};$('reloadImports').onclick=()=>refreshImports().catch(reportRequestError);
 $('sampleImportList').onclick=e=>{const button=e.target.closest('[data-sample-import]');if(button)refreshImports(button.dataset.sampleImport).catch(e=>note(e.message));};
 $('rescanImport').onclick=async()=>{if(!currentImport)return;const id=currentImport.import_id,scopeEpoch=authEpoch;$('rescanImport').disabled=true;try{await api('/api/imports/'+id+'/rescan',{method:'POST'});await refreshImports(id);note('已更新待确认表的识别建议。已确认映射和已发布数据保持原版本。');notifyImportUpdated(id,'','rescanned',scopeEpoch)}catch(e){note(e.message)}finally{$('rescanImport').disabled=false}};
 function validateKnowledgeDocument(document,sourceId){if(!document||document.id!==sourceId||document.knowledge_base_id!==activeKnowledgeBase)throw Error('原件不属于当前知识库。')}
 async function loadKnowledgeDocument(sourceId,options={}){const response=await api('/api/v1/knowledge/'+encodeURIComponent(sourceId),{}, {signal:options.signal,timeoutMs:30000});validateKnowledgeDocument(response.data,sourceId);return response.data}
 async function loadKnowledgeResult(sourceId,options={}){
- const epoch=authEpoch;
+ const epoch=authEpoch;let nextPartialCheck=0;
  for(;;){
   if(options.signal?.aborted||epoch!==authEpoch||options.isCurrent&&!options.isCurrent())throw Error('账号或知识库已切换，请重新打开文件。');
   const document=await loadKnowledgeDocument(sourceId,options);
@@ -455,6 +465,13 @@ async function loadKnowledgeResult(sourceId,options={}){
    const result=await api('/api/knowledge-results/'+encodeURIComponent(sourceId),{}, {signal:options.signal,timeoutMs:30000});
    if(result.source_knowledge_id!==sourceId)throw Error('处理结果与当前原件不一致。');
    return {...result,processing};
+  }
+  if(options.onPartialResult&&Date.now()>=nextPartialCheck){
+   nextPartialCheck=Date.now()+10000;
+   const partial=await api('/api/knowledge-results/'+encodeURIComponent(sourceId),{}, {signal:options.signal,timeoutMs:30000});
+   if(options.isCurrent&&!options.isCurrent())throw Error('来源已切换，请查看当前文件');
+   if(partial.source_knowledge_id!==sourceId)throw Error('处理结果与当前原件不一致。');
+   if(partial.import_result?.import_id)await options.onPartialResult(partial.import_result);
   }
   taskProgress($('jobState'),processing?.stage||'正在后台处理文件，离开页面后会继续。');
   await new Promise(resolve=>setTimeout(resolve,1500));
