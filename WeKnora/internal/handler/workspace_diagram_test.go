@@ -193,6 +193,8 @@ func TestWorkspaceDiagramGeneratesDraftUsingConfiguredProductionModel(t *testing
 	require.Equal(t, "完整资料与真实目录。\n保持指定配置协议和未绑定项。", f.models.client.messages[1].Content)
 	require.Equal(t, 8192, f.models.client.options.MaxTokens)
 	require.False(t, f.models.client.options.DisableImageFallback, "text-only generation leaves the existing option default")
+	require.Equal(t, workspaceDraftTemperature, f.models.client.options.Temperature, "regenerating one source must not use provider-default sampling")
+	require.Equal(t, workspaceDraftSeed, f.models.client.options.Seed)
 	require.WithinDuration(t, before.Add(120*time.Second), f.models.client.deadline, time.Second)
 	var count int64
 	require.NoError(t, f.db.Model(&types.ResearchWorkbench{}).Count(&count).Error)

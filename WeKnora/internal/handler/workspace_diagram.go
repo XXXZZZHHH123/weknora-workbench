@@ -33,6 +33,12 @@ const (
 	workspaceDiagramBodyLimit   = 8 * 1024 * 1024
 	workspaceDiagramTokens      = 8192
 	workspaceDiagramTimeout     = 120 * time.Second
+	// Structured drafts are validated against fixed protocols; regenerating the
+	// same source must not wander between unrelated structures. Zero means
+	// "provider default" in chat.ChatOptions, so a small positive value is used.
+	// Adapters drop both fields where a vendor or reasoning mode rejects them.
+	workspaceDraftTemperature = 0.1
+	workspaceDraftSeed        = 20261103
 )
 
 // Only a draft is generated here. The research service validates the returned
@@ -227,7 +233,8 @@ func workspaceDraftGenerator(workspaces *WorkspaceHandler, models *ModelHandler,
 		if input.Image != "" {
 			message.Images = []string{input.Image}
 		}
-		options := &chat.ChatOptions{MaxTokens: workspaceDiagramTokens, DisableImageFallback: input.Image != ""}
+		options := &chat.ChatOptions{MaxTokens: workspaceDiagramTokens, DisableImageFallback: input.Image != "",
+			Temperature: workspaceDraftTemperature, Seed: workspaceDraftSeed}
 		if !allowImages {
 			// Keep the bounded draft budget available for the requested JSON output.
 			thinking := false

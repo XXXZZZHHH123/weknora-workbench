@@ -32,6 +32,8 @@ func TestWorkspaceJudgmentUsesFixedResearchSystemAndNormalConfiguredModel(t *tes
 	require.NotNil(t, f.models.client.options.Thinking)
 	require.False(t, *f.models.client.options.Thinking)
 	require.JSONEq(t, `{"type":"object"}`, string(f.models.client.options.Format))
+	require.Equal(t, workspaceDraftTemperature, f.models.client.options.Temperature, "the same source must parse to the same draft")
+	require.Equal(t, workspaceDraftSeed, f.models.client.options.Seed)
 	require.Contains(t, response.Body.String(), `"finish_reason":"unknown"`)
 }
 
