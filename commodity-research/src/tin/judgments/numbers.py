@@ -1,4 +1,6 @@
 """Bounded numeric syntax and exact decimal evidence; never business intent."""
+from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import Decimal, DecimalException
 import math
 import re
@@ -54,6 +56,41 @@ _FREQUENCIES = {
 
 def _obscures_quantity(char):
     return not char.isprintable() or unicodedata.category(char) in {'Mn', 'Mc', 'Me'}
+
+
+# Strict reading treats any unclassified word attached to a typed quantity as a
+# possible unknown unit, because only language understanding can tell 19时 from
+# 19美分. Review reading accepts such a word as a boundary so the exact literal
+# can be shown to a person; it never makes a rule executable by itself.
+_PROSE_REVIEW = ContextVar('judgment_number_prose_review', default=False)
+
+
+@contextmanager
+def prose_review():
+    token = _PROSE_REVIEW.set(True)
+    try:
+        yield
+    finally:
+        _PROSE_REVIEW.reset(token)
+
+
+def _prose_follows(text, units=()):
+    if not _PROSE_REVIEW.get() or not text:
+        return False
+    following = text.lstrip()
+    if not following:
+        return False
+    first = following[0]
+    if first in ',.':
+        # Width-normalized clause punctuation (，。) only when prose follows.
+        # A digit, a masked digit ('x') or ASCII text keeps it a decimal point,
+        # thousands separator or truncated literal such as 12|.5kg.
+        rest = following[1:]
+        return (not rest or rest[0].isspace() or not rest[0].isascii()
+                and not rest[0].isnumeric() and rest[0] not in _CHINESE_CONTINUATIONS)
+    if first.isascii() or not first.isalpha() or first in _CHINESE_CONTINUATIONS or _SCALE.match(following):
+        return False
+    return not any(following.startswith(unit) for unit in units if unit)
 
 
 def chinese_quantity_continuation(char):
@@ -160,7 +197,7 @@ def _unit_boundary(remainder, units=(), *, allow_logical=True):
     if _obscures_quantity(following[0]):
         return False
     if _LOGICAL_JOIN.match(following):
-        return allow_logical and _logical_clause_boundary(following)
+        return allow_logical and _logical_clause_boundary(following) or _prose_follows(remainder, units)
     if following.startswith('· '):
         return True  # Renderer field delimiter, rather than kg·m.
     for suffix in _COMPARISON_SUFFIXES:
@@ -170,6 +207,8 @@ def _unit_boundary(remainder, units=(), *, allow_logical=True):
     if following[0] in '/^*·×÷%‰‱':
         return False
     if remainder[0].isspace():
+        return True
+    if _prose_follows(remainder, units):
         return True
     return not (remainder[0].isalnum() or remainder[0] == '_')
 
@@ -235,14 +274,15 @@ def _unit_value(value, tail, unit, units, *, allow_logical=True):
     if unit_prefix:
         return None
     if _LOGICAL_JOIN.match(following):
-        return value if allow_logical and _logical_clause_boundary(following) else None
+        return value if allow_logical and _logical_clause_boundary(following) or _prose_follows(tail, known) else None
     match = _SCALE.match(following)
     if match:
         remainder = following[match.end():].lstrip()
         comparison = next((suffix for suffix in _COMPARISON_SUFFIXES if remainder.startswith(suffix)), None)
         closed = (not remainder or remainder[0] in '，;；。!?！？、)]}）'
             or remainder[0] in ',.' and (len(remainder) == 1 or remainder[1].isspace())
-            or comparison is not None and _comparison_tail_safe(remainder[len(comparison):], known))
+            or comparison is not None and _comparison_tail_safe(remainder[len(comparison):], known)
+            or _prose_follows(remainder, known))
         if remainder and (remainder[0] in '万亿千0123456789' + _CONNECTORS
                 or remainder[0] in ',.' and not closed):
             return None
@@ -257,6 +297,8 @@ def _unit_value(value, tail, unit, units, *, allow_logical=True):
                     allow_logical=allow_logical):
                 return None
         return _scale(value, _POWERS[match[0]])
+    if _prose_follows(tail, known):
+        return value
     if expected and following and (following[0].isalpha() or following[0] in '([{'):
         return None
     if following and (following[0].isnumeric() or following[0] in '十百千万亿兆两〇零一二三四五六七八九%‰‱'):

@@ -57,6 +57,7 @@ class UpdateRequest(ReviewRequest):
     remember: bool = False
     caliber: CaliberUpdate | None = None
     binding_warning_token: str | None = Field(default=None, max_length=128)
+    number_review_token: str | None = Field(default=None, max_length=128)
 
 
 class ReuseRequest(ReviewRequest):
@@ -189,6 +190,26 @@ def acknowledge_binding(scope, body, preview, item, known):
     return {'series_id': body.series_id, 'unit': unit, 'source_unit': source_unit, 'previous_unit': previous_unit,
         'confirmed_revision': body.revision, 'catalog_version': preview['fact_version'],
         'confirmed_by': scope.identity.user_id, 'confirmed_at': datetime.now(timezone.utc).isoformat()}
+
+
+def acknowledge_numbers(scope, body, preview, item, subject):
+    """A person attests one exact rule/quote/value/unit; the program cannot decide it."""
+    signed = {'purpose': 'number_review', 'scope': generation.scope_key(scope), 'draft_id': body.draft_id,
+        'revision': body.revision, 'item_id': item['id'], 'subject': subject,
+        'fact_version': preview['fact_version']}
+    secret = preview['review'].get('binding_warning_secret')
+    key = secret.encode() if isinstance(secret, str) and secret else _binding_warning_secret
+    token = hmac.new(key, digest(signed).encode(), hashlib.sha256).hexdigest()
+    if not body.number_review_token or not hmac.compare_digest(token.encode(), body.number_review_token.encode()):
+        from tin.judgments.analysis import number_review_source
+        unit = subject['unit'] or '单位未确认'
+        message = ('原文：' + number_review_source(subject) + '\n规则数值：' + '、'.join(subject['values'])
+            + '（' + unit + '）\n程序无法自动判断数字后面的文字是否属于单位。'
+            + '请对照原文确认数值和单位一致；确认后本条按此数值执行，并记录为你的人工核对。')
+        raise HTTPException(422, {'code': 'number_review', 'message': message,
+            'confirmation_token': token, 'attention_fields': ['condition']})
+    return {**subject, 'confirmed_by': scope.identity.user_id,
+        'confirmed_at': datetime.now(timezone.utc).isoformat()}
 
 
 def initialize_review(preview, assessment, catalog):
@@ -465,10 +486,17 @@ def trusted_calibers(preview):
         and item.get('caliber_confirmation')}
 
 
+def trusted_numbers(preview):
+    return {item['value']['id']: deepcopy(item['number_confirmation'])
+        for item in preview.get('review', {}).get('items', [])
+        if item['kind'] in {'thresholds', 'falsifiers'} and item['status'] == 'confirmed'
+        and item.get('number_confirmation')}
+
+
 def checked(preview, document, catalog, scope):
     return validate_analysis(document, preview['text'], catalog, variety=preview['variety'],
         actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']),
-        caliber_confirmations=trusted_calibers(preview))
+        caliber_confirmations=trusted_calibers(preview), number_confirmations=trusted_numbers(preview))
 
 
 def confirmation_issues(preview, item, catalog, scope):
@@ -704,6 +732,8 @@ def record_decisions(scope, token, before, preview, catalog, decisions):
                 detail['caliber_confirmation'] = deepcopy(item['caliber_confirmation'])
             if item.get('binding_warning_confirmation'):
                 detail['binding_warning'] = deepcopy(item['binding_warning_confirmation'])
+            if item.get('number_confirmation'):
+                detail['number_confirmation'] = deepcopy(item['number_confirmation'])
             preview['review']['audit'].append(detail)
             session.add(AuditLog(at=now, actor=verified_actor(session, ''), action='研判逐项确认',
                 target_type='judgment_preview', target_id=digest(token), detail=detail))
@@ -776,6 +806,7 @@ async def update_review(request: Request):
                 item.pop('caliber_confirmation', None)
                 item.pop('caliber_choice', None)
                 item.pop('binding_warning_confirmation', None)
+                item.pop('number_confirmation', None)
             if acknowledgement:
                 item['binding_warning_confirmation'] = acknowledgement
             item['series_id'] = body.series_id
@@ -835,6 +866,8 @@ async def update_review(request: Request):
         if body.source_quote is not None:
             if not body.source_quote.strip() or body.source_quote not in preview['text']:
                 reject_fields(['source_quote'])
+            if body.source_quote != item['source_quote']:
+                item.pop('number_confirmation', None)
             item['source_quote'] = body.source_quote
         if body.remember and (body.action != 'confirm' or not can_bind or not binding_ids(item)):
             raise HTTPException(422, '只有明确确认绑定指标时才可勾选记住')
@@ -844,10 +877,19 @@ async def update_review(request: Request):
             item['remembered'] = False
             item.pop('caliber_confirmation', None)
             item.pop('caliber_choice', None)
+            item.pop('number_confirmation', None)
         item['status'] = {'confirm': 'confirmed', 'keep_text': 'kept_text', 'exclude': 'excluded'}[body.action]
         item['origin'] = 'user'
         if body.action == 'confirm':
             issues = confirmation_issues(preview, item, state['catalog'], scope)
+            # Only a lone "program cannot classify the attached wording" issue
+            # may be attested. Missing numbers, scale or unit conflicts and all
+            # other failures still require editing the rule or its binding.
+            if (item['kind'] in {'thresholds', 'falsifiers'} and len(issues) == 1
+                    and issues[0].get('code') == 'number_review_required'
+                    and isinstance(issues[0].get('number_review'), dict)):
+                item['number_confirmation'] = acknowledge_numbers(scope, body, preview, item, issues[0]['number_review'])
+                issues = confirmation_issues(preview, item, state['catalog'], scope)
             if issues:
                 reject_fields(attention_fields(issues), issues)
         try:

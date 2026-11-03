@@ -12,7 +12,7 @@ from tin.compute.moving_average import sma_source_window
 from tin.judgments.service import _refs
 from tin.judgments.numbers import (quoted_quantities, check_rule_number, _SCALAR, _arrays, _width,
     starts_chinese_scaled_quantity, chinese_quantity_continuation, observation_periods,
-    period_matches_frequency, _COMPARISON_SUFFIXES, _logical_clause_boundary)
+    period_matches_frequency, _COMPARISON_SUFFIXES, _logical_clause_boundary, prose_review)
 from tin.judgments.markdown_protocol import (
     exported_rules, quoted_rule_records, threshold_signature, falsifier_signature,
 )
@@ -144,6 +144,54 @@ def _period_quote_context(original, quote, record):
     return bool(occurrences)
 
 
+NUMBER_REVIEW_FIELDS = ('kind', 'rule_id', 'series_id', 'unit', 'quote', 'following', 'values', 'rule')
+
+
+def _quantity_evidence(original, quote, values, unit, units):
+    """Return 'verified', 'review' or None (no literal supports these values)."""
+    needed = [Decimal(str(value)) for value in values]
+    if (all(value in quoted_quantities(quote, unit=unit, units=units) for value in needed)
+            and _quote_quantity_context(original, quote, needed, unit, units)):
+        return 'verified'
+    with prose_review():
+        if (all(value in quoted_quantities(quote, unit=unit, units=units) for value in needed)
+                and _quote_quantity_context(original, quote, needed, unit, units)):
+            return 'review'
+    return None
+
+
+def number_review_subject(kind, rule, quote, unit, values, original):
+    """The exact facts a person attests; any later change invalidates it.
+
+    The words right after the quote are part of what the reviewer must see:
+    a short quote can end at 吨 while the source continues with 公里.
+    """
+    start = original.find(quote)
+    tail = original[start + len(quote):start + len(quote) + 40] if start >= 0 else ''
+    dumped = rule.model_dump(mode='json', exclude={'caliber_confirmation'})
+    return {'kind': kind, 'rule_id': rule.id, 'series_id': rule.series_id, 'unit': unit,
+        'quote': quote, 'following': re.match(r'[^\r\n，。；;!?！？]*', tail)[0],
+        'values': [format(Decimal(str(value)).normalize(), 'f') for value in values],
+        'rule': json.dumps(dumped, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}
+
+
+def number_review_source(subject):
+    following = subject.get('following') or ''
+    return '“' + subject['quote'][:300] + '”' + ('（原文紧接：“' + following + '”）' if following else '')
+
+
+def _number_review(subject, confirmations, actor, path):
+    supplied = confirmations.get(subject['rule_id']) if isinstance(confirmations, dict) else None
+    if (isinstance(supplied, dict) and supplied.get('confirmed_by') == actor
+            and {key: supplied.get(key) for key in NUMBER_REVIEW_FIELDS} == subject):
+        return
+    unit = subject['unit'] or '单位未确认'
+    message = ('程序无法自动判断原文数字后的文字是否属于单位：请对照原文' + number_review_source(subject)
+        + '核对数值' + '、'.join(subject['values']) + '（' + unit + '）后确认本条')
+    raise AnalysisError(message, issues=[{'code': 'number_review_required', 'path': path,
+        'message': message, 'number_review': subject}])
+
+
 @dataclass
 class AnalysisResult:
     payload: JudgmentIn
@@ -212,7 +260,8 @@ def rule_frequency_issues(kind, rule, quote, source_frequency):
     return []
 
 
-def validate_analysis(document, original, catalog, *, variety, actor, written_at=None, caliber_confirmations=None):
+def validate_analysis(document, original, catalog, *, variety, actor, written_at=None, caliber_confirmations=None,
+                      number_confirmations=None):
     if not isinstance(original, str) or not original.strip() or len(original.encode('utf-8')) > SOURCE_BYTES:
         raise AnalysisError('请提供48 KiB以内的完整研究逻辑文本')
     if not isinstance(document, dict) or set(document) != {'judgment', 'binding_units', 'rule_quotes', 'unresolved'}:
@@ -409,12 +458,16 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         if not matches_source or not matches_quote:
             _error('规则与引文所在行明确记录的指标、条件、区间或类型不一致，或引文多处定位不一致，未改写或执行',
                    'exported_rule_mismatch', f'/judgment/thresholds/{index}')
-        if any(Decimal(str(value)) not in source_numbers for value in values):
-            _error('阈值数字或单位无法从原文依据核验，请核对指标单位和原文条件', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
-        if not _quote_quantity_context(original, quotes[rule.id], values, known[rule.series_id].get('unit'),
-                [row.get('unit') for row in catalog]):
+        unit, all_units = known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]
+        evidence = _quantity_evidence(original, quotes[rule.id], values, unit, all_units)
+        if evidence is None:
+            if any(Decimal(str(value)) not in source_numbers for value in values):
+                _error('阈值数字或单位无法从原文依据核验，请核对指标单位和原文条件', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
             _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
                    'unit_context', f'/judgment/thresholds/{index}/value')
+        if evidence == 'review':
+            _number_review(number_review_subject('thresholds', rule, quotes[rule.id], unit, values, original),
+                number_confirmations, actor, f'/judgment/thresholds/{index}/value')
     for index, rule in enumerate(payload.falsifiers):
         match = EXPRESSION.fullmatch(rule.expression)
         directional_zero = bool(match and match.group(1) == 'change' and Decimal(match.group(3)) == 0)
@@ -429,7 +482,10 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         if not matches_source or not matches_quote:
             _error('证伪条件与引文所在行明示的指标、比较方式、连续期数、单位或证伪对象不一致，或引文多处定位不一致，未执行',
                    'falsifier_source_mismatch', f'/judgment/falsifiers/{index}')
-        if not match or not directional_zero and Decimal(match.group(3)) not in source_numbers:
+        unit, all_units = known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]
+        evidence = ('verified' if match and directional_zero else
+            _quantity_evidence(original, quotes[rule.id], [Decimal(match.group(3))], unit, all_units) if match else None)
+        if not match or evidence is None and Decimal(match.group(3)) not in source_numbers:
             value = match.group(3) if match else rule.expression
             unit = known[rule.series_id].get('unit') or '单位未确认'
             _error(f'证伪数字{value}（{unit}）暂不能从原文依据核验。确认单位不能代替数值核对，请核对原文中的数量与倍率。',
@@ -453,10 +509,12 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
                     'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
             _error(f'原文依据暂不能核验连续{rule.consecutive_periods}期，请核对原文中的连续次数或统计周期。',
                    'number_not_in_source', f'/judgment/falsifiers/{index}/consecutive_periods')
-        if not directional_zero and not _quote_quantity_context(original, quotes[rule.id], [Decimal(match.group(3))],
-                known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]):
+        if evidence is None:
             _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
                    'unit_context', f'/judgment/falsifiers/{index}/expression')
+        if evidence == 'review':
+            _number_review(number_review_subject('falsifiers', rule, quotes[rule.id], unit, [Decimal(match.group(3))],
+                original), number_confirmations, actor, f'/judgment/falsifiers/{index}/expression')
     return AnalysisResult(payload, units, quotes,
                           [item.model_dump() for item in payload.unstructured])
 

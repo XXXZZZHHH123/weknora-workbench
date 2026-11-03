@@ -879,11 +879,11 @@ def persist(scope, preview):
             if preview.get('_job_id'):
                 from tin.web.judgment_jobs import mark_applied
                 mark_applied(session, scope, preview)
-            from tin.web.judgment_review import trusted_calibers
+            from tin.web.judgment_review import trusted_calibers, trusted_numbers
             declarations = trusted_calibers(preview)
             result = validate_analysis(preview['document'], preview['text'], catalog, variety=preview.get('variety', settings.variety),
                 actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']),
-                caliber_confirmations=declarations)
+                caliber_confirmations=declarations, number_confirmations=trusted_numbers(preview))
             row = save_version(session, result.payload, actor=scope.identity.user_id,
                                expected_base_version=preview['base_version'], caliber_confirmations=declarations)
             from tin.web.judgment_panels import register_panel

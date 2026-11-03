@@ -48,6 +48,7 @@ ISSUE_REASONS = {
     'unknown_series_id': 'selection_invalid',
     'rule_number_type': 'number_validation', 'number_precision': 'number_validation',
     'number_not_in_source': 'number_validation', 'rule_number_context': 'number_validation',
+    'number_review_required': 'number_validation',
     'quote_quantity_boundary': 'quote_validation', 'unit_context': 'quote_validation',
     'exported_rule_mismatch': 'quote_validation', 'falsifier_source_mismatch': 'quote_validation',
     'unit_schema': 'unit_validation', 'unit_coverage': 'unit_validation',

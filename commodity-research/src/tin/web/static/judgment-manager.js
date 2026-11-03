@@ -61,6 +61,7 @@
       const error = new Error(message); error.status = response.status; error.fields = detail?.attention_fields;
       if (typeof detail?.frequency_required === 'boolean') error.frequencyRequired = detail.frequency_required;
       if (detail?.code === 'binding_warning' && typeof detail.confirmation_token === 'string') error.bindingWarningToken = detail.confirmation_token;
+      if (detail?.code === 'number_review' && typeof detail.confirmation_token === 'string') error.numberReviewToken = detail.confirmation_token;
       throw error; }
     return value;
   }
@@ -731,13 +732,23 @@
     edit.saving = true; edit.renderOutcome?.(); setBusy(true); inform('正在同步修改…');
     try {
       let result;
-      try { result = await api('/review/update', body); }
-      catch (error) {
-        if (!error.bindingWarningToken || !body.series_id || action !== 'confirm') throw error;
-        if (!window.confirm(error.message)) {
-          reviewEdits.delete(item.id); renderReview(); inform('已取消绑定。'); return;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try { result = await api('/review/update', body); break; }
+        catch (error) {
+          if (action !== 'confirm' || attempt === 2) throw error;
+          if (error.bindingWarningToken && body.series_id && !Object.hasOwn(body, 'binding_warning_token')) {
+            if (!window.confirm(error.message)) {
+              reviewEdits.delete(item.id); renderReview(); inform('已取消绑定。'); return;
+            }
+            body.binding_warning_token = error.bindingWarningToken;
+          } else if (error.numberReviewToken && !Object.hasOwn(body, 'number_review_token')) {
+            if (!window.confirm(error.message)) {
+              edit.errorMessage = '未确认数值，本条保持待核对。'; edit.errorFields = ['condition'];
+              edit.renderErrors?.(); inform('未确认数值，本条保持待核对。', true); return false;
+            }
+            body.number_review_token = error.numberReviewToken;
+          } else throw error;
         }
-        result = await api('/review/update', {...body, binding_warning_token: error.bindingWarningToken});
       }
       if (body.remember) rememberedChoices.add(item.id); else rememberedChoices.delete(item.id);
       reviewEdits.delete(item.id); presentDraft(result, true);

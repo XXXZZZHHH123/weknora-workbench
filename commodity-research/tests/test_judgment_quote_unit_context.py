@@ -23,10 +23,27 @@ def catalog(unit, *other_units):
             for index, other in enumerate(other_units)]]
 
 
+@pytest.mark.parametrize('source,quote,unit,following', [
+    ('费用超过12元/千瓦时需要复核。', '费用超过12元/千瓦', '元/千瓦', '时需要复核'),
+    ('运输超过12吨公里需要复核。', '运输超过12吨', '吨', '公里需要复核'),
+    ('产出超过12吨当量需要复核。', '产出超过12吨', '吨', '当量需要复核'),
+])
+@pytest.mark.parametrize('kind', ['thresholds', 'falsifiers'])
+def test_short_quote_before_unclassified_words_is_never_executed_without_showing_them(
+        source, quote, unit, following, kind):
+    # Whether 时/公里/当量 extends the unit is language understanding. It stays
+    # non-executable, and a reviewer must see the words the quote cut off.
+    document = envelope(quote, unit, kind=kind)
+    before = deepcopy(document)
+    with pytest.raises(AnalysisError) as error:
+        validate_analysis(document, source, catalog(unit), variety='TEST', actor='synthetic')
+    issue = error.value.issues[0]
+    assert issue['code'] == 'number_review_required'
+    assert issue['number_review']['following'] == following and following in issue['message']
+    assert document == before
+
+
 @pytest.mark.parametrize('source,quote,unit,other_units', [
-    ('费用超过12元/千瓦时需要复核。', '费用超过12元/千瓦', '元/千瓦', []),
-    ('运输超过12吨公里需要复核。', '运输超过12吨', '吨', []),
-    ('产出超过12吨当量需要复核。', '产出超过12吨', '吨', []),
     ('容量超过12安时需要复核。', '容量超过12安', '安', ['安时']),
     ('数量超过12kg/m2。', '数量超过12kg/m', 'kg/m', ['kg/m2']),
     ('数量超过12kg per year。', '数量超过12kg', 'kg', ['kg per year']),
@@ -78,7 +95,8 @@ def test_rejected_context_keeps_the_typed_candidate_and_its_exact_number():
     assert result.document['judgment']['thresholds'] == []
     assert result.candidate_document['judgment']['thresholds'] == document['judgment']['thresholds']
     assert result.candidate_document['judgment']['thresholds'][0]['value'] == 12
-    assert result.issues[0]['code'] == 'unit_context'
+    assert result.issues[0]['code'] == 'number_review_required'
+    assert '时需要复核' in result.issues[0]['message']
     assert result.result.payload.unstructured[0].business_condition == document['rule_quotes']['synthetic']
 
 
@@ -106,7 +124,8 @@ def test_complete_unit_followed_by_ambiguous_chinese_remains_a_visible_candidate
         variety='TEST', actor='synthetic')
     assert result.document['judgment']['thresholds'] == []
     assert result.candidate_document['judgment']['thresholds'][0]['value'] == 12
-    assert result.issues[0]['code'] == 'unit_context'
+    assert result.issues[0]['code'] == 'number_review_required'
+    assert '时复核' in result.issues[0]['message']
 
 
 def test_closed_scaled_range_keeps_catalog_unit_inheritance_before_prose():
