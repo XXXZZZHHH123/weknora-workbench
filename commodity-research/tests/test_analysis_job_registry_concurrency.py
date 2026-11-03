@@ -6,11 +6,11 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 import pytest
 
-from tin.web.judgment_job_registry import GLOBAL_PENDING, GLOBAL_RUNNING, Registry
+from tin.web.judgment_job_registry import ACTOR_ACTIVE, GLOBAL_PENDING, GLOBAL_RUNNING, Registry
 
 
-def scope(workbench='board-a'):
-    return SimpleNamespace(identity=SimpleNamespace(user_id='synthetic-owner', tenant_id=71),
+def scope(workbench='board-a', user='synthetic-owner'):
+    return SimpleNamespace(identity=SimpleNamespace(user_id=user, tenant_id=71),
         workbench_id=workbench, metadata={})
 
 
@@ -47,15 +47,18 @@ def test_idempotent_retry_remains_scoped_and_conflicting_input_is_rejected_with_
     assert created and other_board['id'] not in {first['id'], other_purpose['id']}
 
 
-def test_same_account_parallel_admissions_obey_atomic_global_queue_capacity(tmp_path):
+def test_parallel_admissions_from_many_accounts_obey_atomic_global_queue_capacity(tmp_path):
     path, attempts = tmp_path / 'index.sqlite', GLOBAL_PENDING + 4
     ready = Barrier(attempts)
+
+    def owner(number):
+        return scope('board-' + str(number % 3), user='synthetic-owner-' + str(number))
 
     def admit(number):
         index = Registry(path)
         ready.wait(timeout=10)
         try:
-            row, created = index.create(scope(), 'request-' + str(number), 'key-' + str(number),
+            row, created = index.create(owner(number), 'request-' + str(number), 'key-' + str(number),
                 'worker-' + str(number), 'diagram' if number % 2 else 'judgments')
             assert created
             return row['id']
@@ -68,7 +71,7 @@ def test_same_account_parallel_admissions_obey_atomic_global_queue_capacity(tmp_
     accepted = [identifier for identifier in outcomes if identifier]
     assert len(accepted) == len(set(accepted)) == GLOBAL_PENDING
     index = Registry(path)
-    rows = index.listing(scope().identity)
+    rows = [row for number in range(attempts) for row in index.listing(owner(number).identity)]
     assert {row['id'] for row in rows} == set(accepted)
     ready = Barrier(len(rows))
 
@@ -78,4 +81,48 @@ def test_same_account_parallel_admissions_obey_atomic_global_queue_capacity(tmp_
 
     with ThreadPoolExecutor(max_workers=len(rows)) as pool:
         assert sum(pool.map(claim, rows)) == GLOBAL_RUNNING
-    assert sum(row['state'] == 'running' for row in index.listing(scope().identity)) == GLOBAL_RUNNING
+
+
+def test_one_account_runs_both_purposes_in_two_workbenches_but_leaves_queue_for_others(tmp_path):
+    assert 4 <= ACTOR_ACTIVE < GLOBAL_PENDING
+    path = tmp_path / 'index.sqlite'
+    index = Registry(path)
+    mine = [index.create(scope(board), 'request-' + board + purpose, 'key-' + board + purpose,
+        'worker-' + board + purpose, purpose)[0]
+        for board in ('board-a', 'board-b') for purpose in ('judgments', 'diagram')]
+    for number in range(len(mine), ACTOR_ACTIVE):
+        mine.append(index.create(scope('board-' + str(number)), 'request-' + str(number),
+            'key-' + str(number), 'worker-' + str(number))[0])
+    with pytest.raises(HTTPException) as busy:
+        index.create(scope('board-z'), 'request-extra', 'key-extra', 'worker-extra', 'diagram')
+    assert busy.value.status_code == 429 and busy.value.detail == '当前账号进行中的分析任务较多，请等待已有任务完成'
+    retry, created = index.create(scope('board-a'), 'request-board-ajudgments', 'key-board-ajudgments', 'worker-retry')
+    assert not created and retry['id'] == mine[0]['id']
+    other, created = index.create(scope(user='synthetic-other'), 'request-other', 'key-other', 'worker-other')
+    assert created
+    index.finish(mine[0]['id'], mine[0]['worker_id'], mine[0]['fence'], 'failed')
+    again, created = index.create(scope('board-z'), 'request-extra', 'key-extra', 'worker-extra', 'diagram')
+    assert created and again['state'] == 'queued'
+
+
+def test_same_account_parallel_admissions_obey_atomic_per_account_capacity(tmp_path):
+    path, attempts = tmp_path / 'index.sqlite', ACTOR_ACTIVE + 4
+    ready = Barrier(attempts)
+
+    def admit(number):
+        index = Registry(path)
+        ready.wait(timeout=10)
+        try:
+            row, created = index.create(scope('board-' + str(number)), 'request-' + str(number),
+                'key-' + str(number), 'worker-' + str(number), 'diagram' if number % 2 else 'judgments')
+            assert created
+            return row['id']
+        except HTTPException as error:
+            assert error.status_code == 429 and error.detail == '当前账号进行中的分析任务较多，请等待已有任务完成'
+            return None
+
+    with ThreadPoolExecutor(max_workers=attempts) as pool:
+        outcomes = list(pool.map(admit, range(attempts)))
+    accepted = [identifier for identifier in outcomes if identifier]
+    assert len(accepted) == len(set(accepted)) == ACTOR_ACTIVE
+    assert {row['id'] for row in Registry(path).listing(scope().identity)} == set(accepted)

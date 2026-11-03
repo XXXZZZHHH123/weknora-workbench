@@ -18,6 +18,9 @@ TTL = 24 * 3600
 LEASE = 60
 GLOBAL_RUNNING = 2
 GLOBAL_PENDING = 10
+# One account may run several workbenches and purposes at once, but must
+# leave shared queue capacity for other accounts.
+ACTOR_ACTIVE = 4
 MAX_RECORDS = 512
 
 
@@ -116,6 +119,9 @@ class Registry:
             # Independent workbenches and task purposes may run for one actor.
             # Idempotency above handles retries; claim() reserves shared running
             # slots atomically, so admission must not serialize an entire actor.
+            actor = (scope.identity.tenant_id, scope.identity.user_id)
+            if sum((row['tenant_id'], row['user_id']) == actor for row in active) >= ACTOR_ACTIVE:
+                raise HTTPException(429, '当前账号进行中的分析任务较多，请等待已有任务完成')
             if len(active) >= GLOBAL_PENDING:
                 raise HTTPException(429, '分析队列已满，请稍后重试')
             if len(rows) >= MAX_RECORDS:
