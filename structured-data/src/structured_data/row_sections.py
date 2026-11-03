@@ -10,7 +10,7 @@ SUMMARY_LABELS = {'日变化', '日变动', '涨跌', '合计', '总计', '平�
 VISUAL_LABELS = {'趋势', '走势图'}
 
 
-def discover_row_sections(ws, blocks, path):
+def discover_row_sections(ws, blocks, path, *, formula_sheet_loader=None):
     """Never truncate an uninspected tail or silently skip an invalid date.
 
     Only short, single-block review candidates qualify. Every remaining row in
@@ -35,11 +35,17 @@ def discover_row_sections(ws, blocks, path):
         return None
     if str(rows[boundary-1][dc-1]).strip() not in SUMMARY_LABELS:
         return None
-    rawbook = load_workbook(path, read_only=True, data_only=False, keep_links=False)
-    try:
-        rawrows = list(rawbook[ws.title].iter_rows(max_row=ws.max_row, max_col=width, values_only=True))
-    finally:
-        rawbook.close()
+    if formula_sheet_loader is None:
+        rawbook = load_workbook(path, read_only=True, data_only=False, keep_links=False)
+        try:
+            rawrows = list(rawbook[ws.title].iter_rows(max_row=ws.max_row, max_col=width, values_only=True))
+        finally:
+            rawbook.close()
+    else:
+        # The scan owns this reader and closes it after all sheet inspections.
+        # Ask only once the source's complete tail qualifies for inspection.
+        rawrows = list(formula_sheet_loader(ws.title).iter_rows(
+            max_row=ws.max_row, max_col=width, values_only=True))
     dated = deepcopy(block)
     dated.update(name=block.get('name') or '每日数据', data_end_row=boundary-1)
     result = [dated]

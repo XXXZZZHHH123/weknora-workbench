@@ -23,6 +23,14 @@ _PROBLEMS = {
     'GROUPING_INVALID': ('模型未能完整划分表格', '分组存在遗漏、重复或缺少依据，可重新整理。未发布不完整结果。', 'retry', True),
     'GROUPING_INPUT_LIMIT': ('文件中的表格信息超过单次整理范围', '请拆分文件后上传，或在查看表格中选择较少片段处理。反复重试同一文件不会解决此限制。', 'review', False),
     'PLAN_INPUT_LIMIT': ('这组表格超过单次字段识别范围', '请在查看表格中选择较少片段处理，原件没有被截断。', 'review', False),
+    'TASK_TIMEOUT': ('表格处理超过设定时限', '本次处理已停止，原件和已完成结果均已保留。可重新处理，或由管理员调整导入时限。', 'retry', True),
+    'TASK_MEMORY_LIMIT': ('表格处理超过内存限制', '原件和已完成结果均已保留。请减少一次处理的范围，或联系管理员调整内存限制。', 'retry', True),
+    'TASK_CANCELLED': ('表格处理已取消', '未提交的工作已停止，已有数据仍可使用。', 'retry', True),
+    'TASK_WORKER_EXIT': ('表格处理进程已停止', '任务没有完成，原件和已完成结果均已保留。可重试；持续失败时请联系管理员检查资源。', 'retry', True),
+    'TASK_RESOURCE_INVALID': ('表格处理资源配置无效', '任务未启动，请联系管理员检查处理时限和内存配置。', 'retry', False),
+    'TASK_PERMISSION_CHANGED': ('表格处理权限已变化', '系统已停止发布未完成结果，请检查文件归属和处理权限后重试。', 'retry', False),
+    'TASK_PROCESSING_FAILED': ('工作表处理失败', '原件和已完成结果均已保留。可重试；持续失败时请提供错误代码。', 'retry', True),
+    'SOURCE_CHECK_UNAVAILABLE': ('暂时无法核验原件处理权限', '未发布未经权限核验的结果，请稍后重试。', 'retry', True),
     'SOURCE_INVALID': ('原件暂不可用或内容已改变', '请检查原文件，必要时重新上传；系统没有采用改变后的来源。', 'upload', False),
     'PLAN_INVALID': ('表格字段或行列映射未通过检查', '请查看对应表格的表头、数值和续表关系，或重新识别。', 'review', False),
     'EXTRACTION_REVIEW_REQUIRED': ('表格存在识别疑点', '请查看标出的表格并核对原件；其余可用表格会继续入库。', 'review', False),
@@ -33,7 +41,11 @@ _PROBLEMS = {
 def processing_problem(exc, *, stage):
     code = getattr(exc, 'public_code', None)
     if code not in _PROBLEMS:
-        if stage == 'source':
+        if isinstance(exc, MemoryError):
+            code = 'TASK_MEMORY_LIMIT'
+        elif isinstance(exc, TimeoutError):
+            code = 'TASK_TIMEOUT'
+        elif stage == 'source':
             code = 'SOURCE_INVALID'
         elif stage == 'validation' and isinstance(exc, ValueError):
             code = 'PLAN_INVALID'

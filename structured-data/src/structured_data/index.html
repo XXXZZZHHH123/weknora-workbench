@@ -81,7 +81,7 @@ followWorkspaceTypography();
 <div class="import-actions"><label class="upload-file-label"><span class="file-trigger">上传文件</span><input id="file" class="visually-hidden" type="file" accept=".xlsx,.pdf" aria-label="上传文件" aria-describedby="selectedFileName uploadHint"><span id="selectedFileName" class="selected-file-name" role="status">支持 Excel、PDF</span></label><button id="upload" class="hidden" type="button">重试处理</button></div>
 <small id="uploadHint">Excel（.xlsx）最大 100 MB · PDF 最大 50 MB · 每次处理一个文件</small>
 <div class="upload-steps" aria-label="处理流程"><span>1 上传文件</span><span>2 自动识别</span><span>3 查看并使用</span></div>
-<div id="jobState" role="status" aria-live="polite"></div><button id="retrySourceImport" type="button" class="secondary hidden">重试读取知识库原件</button></section>
+<div id="jobState" role="status" aria-live="polite"></div><button id="retrySourceImport" type="button" class="secondary hidden">重新读取</button></section>
 <section class="guide-card"><h2>在研究对话里提问</h2><p>使用<strong id="agentName">普通研究对话</strong>即可读取当前空间的表格，不需要切换专用智能体。说明文件、工作表、指标与筛选条件；含义不明确时，工作台会请你进一步确认。</p><p class="muted">复杂计算可在对话中完成，并核对日期范围、单位与原单元格来源。文件只需上传一次，正文、图片和表格会自动处理。</p><p><a class="action-link materials-link" href="/platform/materials" target="_top">添加资料</a> <a class="conversation-link" href="/platform/creatChat" target="_top">开始研究对话 →</a></p><p class="warning">数据截止日期取决于文件版本；公式使用已保存结果。截图图片尚不参与表格计算。</p></section></div>
 <nav id="processingResults" aria-label="处理结果"><span>处理结果</span><button id="workbookResults" type="button" class="secondary" aria-pressed="true" aria-controls="importReview">Excel 工作表</button><button id="documentResults" type="button" class="secondary" aria-pressed="false" aria-controls="pdfReviewPanel">PDF 表格</button></nav>
 <section id="pdfReviewPanel" aria-label="PDF 表格处理结果"><div id="pdfReviewApp"><p class="muted" role="status">正在加载处理记录…</p></div></section>
@@ -400,7 +400,7 @@ function knowledgeSourcePresentation(active){document.body.classList.toggle('nat
 function clearKnowledgeSource(){nativeSourceController?.abort();nativeSourceController=null;requestedSourceKnowledge='';requestedSourceType='xlsx';nativeSourceRequest+=1;nativeSourceBusy=false;endTaskProgress($('jobState'));window.pdfReviewHost?.closeKnowledgeSource?.();document.body.classList.remove('pdf-native-source');knowledgeSourcePresentation(false);$('retrySourceImport').classList.add('hidden');$('upload').disabled=false}
 function openStructuredKnowledgeSource(sourceId,sourceType='xlsx'){requestedSourceKnowledge=sourceId;requestedSourceType=sourceType==='pdf'?'pdf':'xlsx';if(requestedSourceType==='pdf'){document.body.classList.add('pdf-native-source');window.pdfReviewHost?.openKnowledgeSource(sourceId);return}document.body.classList.remove('pdf-native-source');window.pdfReviewHost?.closeKnowledgeSource?.();openKnowledgeSource(sourceId)}
 window.pdfReviewHost.routeKnowledgeSource=openStructuredKnowledgeSource;
-async function openKnowledgeSource(sourceId){
+async function openKnowledgeSource(sourceId,{retryFailed=false}={}){
  if(reviewOnly)return;
  nativeSourceController?.abort();
  const own=++nativeSourceRequest,epoch=authEpoch,library=activeKnowledgeBase;requestedSourceKnowledge=sourceId;
@@ -413,29 +413,44 @@ async function openKnowledgeSource(sourceId){
  $('sheetDetail').innerHTML='<p class="grid-loading">正在准备当前知识库的 Excel 原件…</p>';
  try{
   const requestApi=(path,options={})=>api(path,options,{signal:controller.signal,timeoutMs:30000});
-  const response=await loadKnowledgeResult(sourceId,{signal:controller.signal});if(!isCurrent())return;
+  let expectedAttempt='',expectedSourceHash='';
+  if(retryFailed){
+   const previous=await loadKnowledgeDocument(sourceId,{signal:controller.signal});if(!isCurrent())return;
+   if(['failed','cancelled'].includes(previous.parse_status)){
+    taskProgress($('jobState'),'正在重新提交处理任务…');
+    const receipt=await requestApi('/api/v1/knowledge/'+encodeURIComponent(sourceId)+'/reparse',{method:'POST'});if(!isCurrent())return;
+    const restarted=receipt.data;validateKnowledgeDocument(restarted,sourceId);
+    expectedAttempt=restarted.metadata?._knowledge_ingestion?.attempt||'';expectedSourceHash=previous.file_hash||'';
+    if(!expectedAttempt||expectedAttempt===previous.metadata?._knowledge_ingestion?.attempt)throw Error('未能确认新的处理任务，请重新读取当前状态。');
+    if(previous.file_hash&&restarted.file_hash!==previous.file_hash)throw Error('原件已更新，请重新打开当前文件查看处理结果。');
+   }
+  }
+  const response=await loadKnowledgeResult(sourceId,{signal:controller.signal,expectedAttempt,expectedSourceHash,isCurrent});if(!isCurrent())return;
   const result=response.import_result;
   if(!result?.import_id)throw Error('这份文件还没有工作表处理结果。请在目录的文件操作中重新处理，后台会自动完成。');
   await refresh(isCurrent,result.import_id,result.dataset_id,requestApi);if(!isCurrent())return;
   if($('importSelect').value!==result.import_id)throw Error('当前知识库未找到这份原件的扫描记录，请刷新后重试。');
   $('jobState').textContent=(currentImport?.source_file||'当前原件')+' · '+'已打开工作表处理结果。';
- }catch(error){if(isCurrent()){const message=error.name==='AbortError'?'读取原件超时，请重试。':error.message;$('jobState').textContent=message;if(!currentSheet)$('sheetDetail').innerHTML='<p class="error" role="alert">原件准备未完成：'+esc(message)+'</p>';if($('workspace').classList.contains('hidden'))note(message);$('retrySourceImport').classList.remove('hidden')}}
+ }catch(error){if(isCurrent()){const message=error.name==='AbortError'?'读取原件超时，请重试。':error.message;$('jobState').textContent=message;if(!currentSheet)$('sheetDetail').innerHTML='<p class="error" role="alert">原件准备未完成：'+esc(message)+'</p>';if($('workspace').classList.contains('hidden'))note(message);$('retrySourceImport').textContent=error.nativeProcessingFailed?'重新处理':'重新读取';$('retrySourceImport').classList.remove('hidden')}}
  finally{if(isCurrent()){endTaskProgress($('jobState'));nativeSourceController=null;nativeSourceBusy=false;$('upload').disabled=false}}
 }
-$('retrySourceImport').onclick=()=>{if(requestedSourceKnowledge&&!nativeSourceBusy)openStructuredKnowledgeSource(requestedSourceKnowledge,requestedSourceType)};
+$('retrySourceImport').onclick=()=>{if(requestedSourceKnowledge&&!nativeSourceBusy){if(requestedSourceType==='xlsx')void openKnowledgeSource(requestedSourceKnowledge,{retryFailed:true});else openStructuredKnowledgeSource(requestedSourceKnowledge,requestedSourceType)}};
 async function confirmMapping(){const mapping=readMapping();if(!mappingConfirmed||!$('ackMapping').checked)throw Error('请先预览解析结果，并确认映射正确。');const importId=currentImport.import_id,version=reviewVersion,scopeEpoch=authEpoch;setMappingBusy(true);$('mappingFeedback').textContent='正在保存映射并生成数据集新版本…';try{const job=await api(`/api/imports/${encodeURIComponent(importId)}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping,save_template:$('saveTemplate').checked})});const result=await waitJob(job.id);if(scopeEpoch!==authEpoch)throw Error('账号或空间已切换，请重新查看处理结果');note('映射已确认，新数据集版本已生成。');await refresh();await refreshImports(importId);if(result.dataset_id&&!reviewOnly){$('dataset').value=result.dataset_id;await selectDataset()}notifyImportUpdated(importId,result.dataset_id,'confirmed',scopeEpoch)}finally{if(version===reviewVersion)setMappingBusy(false)}}
 function notifyImportUpdated(importId,datasetId,status,expectedEpoch=authEpoch){if(embedded&&expectedEpoch===authEpoch)parent.postMessage({type:'structured-import-updated',import_id:importId,dataset_id:datasetId||'',tenant_id:activeTenant,knowledge_base_id:activeKnowledgeBase,status},location.origin)}
 $('sheetList').onclick=e=>{const b=e.target.closest('[data-sheet-index]');if(b)selectSheet(Number(b.dataset.sheetIndex)).catch(reportRequestError)};$('importSelect').onchange=()=>selectImport().catch(reportRequestError);$('reloadImports').onclick=()=>refreshImports().catch(reportRequestError);
 $('sampleImportList').onclick=e=>{const button=e.target.closest('[data-sample-import]');if(button)refreshImports(button.dataset.sampleImport).catch(e=>note(e.message));};
 $('rescanImport').onclick=async()=>{if(!currentImport)return;const id=currentImport.import_id,scopeEpoch=authEpoch;$('rescanImport').disabled=true;try{await api('/api/imports/'+id+'/rescan',{method:'POST'});await refreshImports(id);note('已更新待确认表的识别建议。已确认映射和已发布数据保持原版本。');notifyImportUpdated(id,'','rescanned',scopeEpoch)}catch(e){note(e.message)}finally{$('rescanImport').disabled=false}};
+function validateKnowledgeDocument(document,sourceId){if(!document||document.id!==sourceId||document.knowledge_base_id!==activeKnowledgeBase)throw Error('原件不属于当前知识库。')}
+async function loadKnowledgeDocument(sourceId,options={}){const response=await api('/api/v1/knowledge/'+encodeURIComponent(sourceId),{}, {signal:options.signal,timeoutMs:30000});validateKnowledgeDocument(response.data,sourceId);return response.data}
 async function loadKnowledgeResult(sourceId,options={}){
  const epoch=authEpoch;
  for(;;){
-  if(options.signal?.aborted||epoch!==authEpoch)throw Error('账号或知识库已切换，请重新打开文件。');
-  const response=await api('/api/v1/knowledge/'+encodeURIComponent(sourceId),{}, {signal:options.signal,timeoutMs:30000});
-  const document=response.data;if(!document||document.id!==sourceId||document.knowledge_base_id!==activeKnowledgeBase)throw Error('原件不属于当前知识库。');
+  if(options.signal?.aborted||epoch!==authEpoch||options.isCurrent&&!options.isCurrent())throw Error('账号或知识库已切换，请重新打开文件。');
+  const document=await loadKnowledgeDocument(sourceId,options);
   const processing=document.metadata?._knowledge_ingestion;
-  if(['failed','cancelled','deleting'].includes(document.parse_status))throw Error(document.error_message||'文件处理未完成，请在目录中查看原因并重试。');
+  if(options.expectedSourceHash&&document.file_hash!==options.expectedSourceHash)throw Error('原件已更新，请重新打开当前文件查看处理结果。');
+  if(options.expectedAttempt&&processing?.attempt!==options.expectedAttempt)throw Error('处理任务已更新，请重新读取当前文件的结果。');
+  if(['failed','cancelled','deleting'].includes(document.parse_status)){const error=Error(document.error_message||'文件处理未完成，请重试。');error.nativeProcessingFailed=['failed','cancelled'].includes(document.parse_status);throw error}
   if(!['pending','processing','finalizing'].includes(document.parse_status)&&!['pending','processing'].includes(processing?.status)){
    const result=await api('/api/knowledge-results/'+encodeURIComponent(sourceId),{}, {signal:options.signal,timeoutMs:30000});
    if(result.source_knowledge_id!==sourceId)throw Error('处理结果与当前原件不一致。');

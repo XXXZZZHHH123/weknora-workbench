@@ -161,3 +161,72 @@ def test_native_excel_followup_publishes_with_one_source_guard(setup):
     review=result['result']['automatic_review']
     assert review['sheets_imported']==['records'] and not review['sheets_failed'],review
     assert len(checks)>3
+
+
+@pytest.mark.parametrize('kind,expected', [
+    ('timeout', 'TASK_TIMEOUT'), ('memory', 'TASK_MEMORY_LIMIT'),
+    ('cancelled', 'TASK_CANCELLED'), ('worker_exit', 'TASK_WORKER_EXIT'),
+    ('permission', 'TASK_PERMISSION_CHANGED'), ('unexpected', 'PROCESSING_FAILED'),
+    ('source', 'SOURCE_INVALID'),
+])
+def test_excel_task_failures_keep_real_category_instead_of_changed_source(setup, monkeypatch, caplog, kind, expected):
+    from structured_data.review_worker import ReviewTaskError
+    from structured_data.pdf_errors import PDFProcessingError
+    client, root, checks = setup
+    errors = {
+        'timeout': ReviewTaskError('TASK_TIMEOUT', 'exceeded explicit task deadline'),
+        'memory': MemoryError('/private/source.xlsx'),
+        'cancelled': ReviewTaskError('TASK_CANCELLED', 'cancelled'),
+        'worker_exit': ReviewTaskError('TASK_WORKER_EXIT', 'worker stopped'),
+        'permission': ReviewTaskError('TASK_PERMISSION_CHANGED', 'permission changed'),
+        'unexpected': RuntimeError('/private/path with sensitive runtime text'),
+        'source': PDFProcessingError('SOURCE_INVALID', 'source hash mismatch'),
+    }
+    def fail(*args, **kwargs):
+        raise errors[kind]
+    monkeypatch.setattr('structured_data.review_worker.run_review_task', fail)
+    data, envelope = workbook(), b'{}'
+    claim = claim_for(data, envelope)
+    response = client.post(ingestion.UPLOAD_PATH, files={'file': ('source.xlsx', data)}, data={'bundle': '{}'},
+        headers=ingestion.signed_headers(claim, 'POST', ingestion.UPLOAD_PATH))
+    assert response.status_code == 200
+    result = finish(client, claim)
+    assert result['status'] == 'failed'
+    assert result['problem']['code'] == expected
+    assert any(getattr(record, 'problem_code', None) == expected and
+               getattr(record, 'exception_type', None) == type(errors[kind]).__name__ for record in caplog.records)
+    assert '/private' not in caplog.text
+    if kind != 'source':
+        assert result['problem']['code'] != 'SOURCE_INVALID'
+        assert '原件暂不可用或内容已改变' not in result['stage']
+    assert '/private' not in json.dumps(result, ensure_ascii=False)
+    assert not list(root.glob('**/manifest.json'))
+    assert checks, 'admission source checks remain required'
+
+
+@pytest.mark.parametrize('status,body,code', [
+    (200, {'valid': True}, None), (200, {'valid': False}, 'SOURCE_INVALID'),
+    (403, {}, 'TASK_PERMISSION_CHANGED'), (409, {}, 'SOURCE_INVALID'),
+    (503, {}, 'SOURCE_CHECK_UNAVAILABLE'), (200, [], 'SOURCE_CHECK_UNAVAILABLE'),
+])
+def test_native_guard_separates_unavailable_checks_from_revoked_or_changed_sources(monkeypatch, status, body, code):
+    import httpx
+    from structured_data.pdf_errors import PDFProcessingError
+    response = httpx.Response(status, json=body)
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def post(self, *args, **kwargs):
+            return response
+    monkeypatch.setattr(ingestion.httpx, 'AsyncClient', Client)
+    monkeypatch.setattr(ingestion, 'signed_headers', lambda *args: {})
+    if code is None:
+        ingestion.check_task_write({})
+    else:
+        with pytest.raises(PDFProcessingError) as caught:
+            ingestion.check_task_write({})
+        assert caught.value.public_code == code

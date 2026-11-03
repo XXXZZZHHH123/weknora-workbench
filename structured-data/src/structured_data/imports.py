@@ -17,6 +17,7 @@ from contextlib import ExitStack, contextmanager
 
 from .store import DataStore, dump
 from .progress import report_progress
+from .generic_parser import mapped_workbook_session
 
 READY = {'auto_ready', 'template_ready', 'confirmed'}
 AUTOMATIC_REVIEW_REVISION = 'full-candidate-block-validation-v1'
@@ -402,23 +403,24 @@ class ImportManager:
         total = len(candidates)
         if total:
             report_progress(progress, 'review', completed=0, total=total)
-        for index, sheet in enumerate(candidates):
-            mapping = sheet['mapping']
-            with self._records() as (observations, issues):
-                try:
-                    parsed = parse_mapped_workbook(self.source_path(doc), [mapping], scan=doc,
-                                                  observations=observations, issues=issues)
-                    if not parsed['series'] or not len(observations):
-                        raise ValueError('区块没有产生可查询记录，请核对数据范围。')
-                    self._require_block_values(mapping, observations)
-                except ValueError as exc:
-                    sheet['review_state'] = self._review_failed(doc, sheet, mapping, exc)
-                else:
-                    sheet['review_state'] = self._review_success(mapping)
-                    sheet['review_state']['status'] = 'structure_checked'
-                    sheet['review_state']['notice'] = '全部区块通过结构校验，业务指标和口径仍请对照原件核对。'
-            sheet['review_state']['automatic_structure_check'] = True
-            report_progress(progress, 'review', completed=index + 1, total=total)
+        with mapped_workbook_session(self.source_path(doc)):
+            for index, sheet in enumerate(candidates):
+                mapping = sheet['mapping']
+                with self._records() as (observations, issues):
+                    try:
+                        parsed = parse_mapped_workbook(self.source_path(doc), [mapping], scan=doc,
+                                                      observations=observations, issues=issues)
+                        if not parsed['series'] or not len(observations):
+                            raise ValueError('区块没有产生可查询记录，请核对数据范围。')
+                        self._require_block_values(mapping, observations)
+                    except ValueError as exc:
+                        sheet['review_state'] = self._review_failed(doc, sheet, mapping, exc)
+                    else:
+                        sheet['review_state'] = self._review_success(mapping)
+                        sheet['review_state']['status'] = 'structure_checked'
+                        sheet['review_state']['notice'] = '全部区块通过结构校验，业务指标和口径仍请对照原件核对。'
+                sheet['review_state']['automatic_structure_check'] = True
+                report_progress(progress, 'review', completed=index + 1, total=total)
         doc['automatic_review_revision'] = AUTOMATIC_REVIEW_REVISION
 
     @staticmethod
@@ -494,6 +496,7 @@ class ImportManager:
         if total:
             report_progress(progress, 'parse', completed=0, total=total)
         with ExitStack() as temporary:
+            temporary.enter_context(mapped_workbook_session(path))
             parts = []
             for sheet in doc['sheets']:
                 if sheet['name'] not in legacy_names or reuse_legacy:

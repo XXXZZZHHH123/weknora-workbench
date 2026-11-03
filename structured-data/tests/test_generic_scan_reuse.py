@@ -115,3 +115,56 @@ def test_invalid_or_duplicate_scan_shapes_force_real_discovery(scanned, monkeypa
     for copy in copies:
         generic_parser.parse_mapped_workbook(path, [mapping], scan=copy)
     assert len(calls) == len(copies)
+
+
+def test_operation_readers_reused_but_released_between_requests(scanned, monkeypatch):
+    path, scan, mapping = scanned
+    opened = []
+    load = generic_parser.load_workbook
+    def tracked(*args, **kwargs):
+        book = load(*args, **kwargs)
+        opened.append(book)
+        return book
+    monkeypatch.setattr(generic_parser, 'load_workbook', tracked)
+    with generic_parser.mapped_workbook_session(path):
+        first = generic_parser.parse_mapped_workbook(path, [mapping], scan=scan)
+        second = generic_parser.parse_mapped_workbook(path, [mapping], scan=scan)
+        assert first == second
+        assert len(opened) == 2
+        assert all(book._archive.fp is not None for book in opened)
+    assert all(book._archive.fp is None for book in opened)
+    generic_parser.parse_mapped_workbook(path, [mapping], scan=scan)
+    assert len(opened) == 4
+
+
+def test_active_readers_reject_source_replaced_even_with_new_scan(scanned):
+    path, scan, mapping = scanned
+    with generic_parser.mapped_workbook_session(path):
+        generic_parser.parse_mapped_workbook(path, [mapping], scan=scan)
+        book = Workbook()
+        ws = book.active
+        ws.title = 'measurements'
+        ws.append(['date', 'measurement'])
+        ws.append([datetime(2025, 1, 1), 999])
+        ws.append([datetime(2025, 1, 2), 1000])
+        book.save(path)
+        current = scan_workbook(path, use_reviewed_mappings=False)
+        with pytest.raises(ValueError, match='源文件已变化'):
+            generic_parser.parse_mapped_workbook(path, [current['sheets'][0]['mapping']], scan=current)
+
+
+def test_second_reader_open_failure_closes_first_and_clears_session(scanned, monkeypatch):
+    path, scan, mapping = scanned
+    load = generic_parser.load_workbook
+    opened = []
+    def fail_formula(*args, **kwargs):
+        if not kwargs['data_only']:
+            raise OSError('cannot open formula reader')
+        book = load(*args, **kwargs)
+        opened.append(book)
+        return book
+    monkeypatch.setattr(generic_parser, 'load_workbook', fail_formula)
+    with pytest.raises(OSError, match='formula reader'):
+        generic_parser.parse_mapped_workbook(path, [mapping], scan=scan)
+    assert opened[0]._archive.fp is None
+    assert generic_parser._workbook_session.get() is None

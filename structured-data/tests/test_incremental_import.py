@@ -300,3 +300,38 @@ def test_verified_override_is_not_reverted_when_rebuilding_without_base(tmp_path
     assert manager.store.manifest(dataset)['observation_count']==3
     assert next(s for s in doc['sheets'] if s['name']=='核验记录')['status']=='confirmed'
     assert manager.store.query_series(dataset,'fixture.other')['record_count']==2
+
+
+def test_multi_sheet_import_reuses_readers_without_mixing_values_or_formulas(tmp_path, monkeypatch):
+    from structured_data import generic_parser
+    source = tmp_path / 'multiple.xlsx'
+    book = Workbook()
+    book.remove(book.active)
+    for index in range(4):
+        sheet = book.create_sheet(f'sheet-{index}')
+        sheet.append(['日期', '数值'])
+        sheet.append([datetime(2025, 1, 1), index * 100])
+        sheet.append([datetime(2025, 1, 2), '=NA()' if index == 2 else index * 100 + 1])
+    book.save(source)
+    opened = []
+    load = generic_parser.load_workbook
+    def tracked(*args, **kwargs):
+        item = load(*args, **kwargs)
+        opened.append(item)
+        return item
+    monkeypatch.setattr(generic_parser, 'load_workbook', tracked)
+    manager = ImportManager(tmp_path / 'data')
+    imported = manager.ingest(source, use_reviewed_mappings=False)
+    assert len(opened) == 2
+    assert all(item._archive.fp is None for item in opened)
+    manifest = manager.store.manifest(imported['dataset_id'])
+    assert manifest['observation_count'] == 8
+    for series in manager.store.list_series(imported['dataset_id'])['series']:
+        index = int(series['sheet'].split('-')[1])
+        rows = manager.store.query_series(imported['dataset_id'], series['series_id'])['rows']
+        assert rows[0]['value'] == index * 100
+        assert rows[0]['source_cell'] == 'B2' and rows[0]['date_cell'] == 'A2'
+        if index == 2:
+            assert rows[1]['formula'] == '=NA()' and rows[1]['value'] is None
+        else:
+            assert rows[1]['value'] == index * 100 + 1

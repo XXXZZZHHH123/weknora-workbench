@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import contextmanager, ExitStack
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import date, datetime
 from hashlib import sha256
@@ -19,6 +21,45 @@ from .review_errors import ReviewValidationError
 from .scanner import complete_date, scan_workbook
 
 RULE_VERSION = 'generic-mapped-v3'
+_workbook_session = ContextVar('mapped_workbook_session', default=None)
+
+
+@contextmanager
+def mapped_workbook_session(path):
+    """Share read-only ZIP readers within one operation, never across requests.
+
+    Each parse still verifies the source hash and mapping. Keeping the workbook
+    open avoids decoding the entire shared-string catalogue for every sheet.
+    Readers are opened lazily so metadata-only operations need no workbook.
+    """
+    path = Path(path).expanduser().resolve()
+    active = _workbook_session.get()
+    if active is not None and active['path'] == path:
+        yield active
+        return
+    with ExitStack() as resources:
+        session = {'path': path, 'resources': resources, 'readers': None}
+        token = _workbook_session.set(session)
+        try:
+            yield session
+        finally:
+            _workbook_session.reset(token)
+
+
+@contextmanager
+def _mapped_readers(path, source_hash):
+    with mapped_workbook_session(path) as session:
+        if session.get('sha256', source_hash) != source_hash:
+            raise ValueError('源文件已变化，请重新扫描后导入')
+        if session['readers'] is None:
+            session['sha256'] = source_hash
+            readers = []
+            for data_only in (True, False):
+                workbook = load_workbook(path, read_only=True, data_only=data_only, keep_links=False)
+                session['resources'].callback(workbook.close)
+                readers.append(workbook)
+            session['readers'] = tuple(readers)
+        yield session['readers']
 
 
 def has_period_number(value):
@@ -249,9 +290,7 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
         'issues':[] if issues is None else issues,'excluded_regions':[],
         'charts':{'status':'inventory_only','visual_content_parsed':False,
             'sheets':[dict(sheet=m['sheet'],**byname[m['sheet']]['charts']) for m in checked]}}
-    vw=load_workbook(path,read_only=True,data_only=True,keep_links=False)
-    fw=load_workbook(path,read_only=True,data_only=False,keep_links=False)
-    try:
+    with _mapped_readers(path, current['sha256']) as (vw, fw):
         for m in checked:
             name=m['sheet'];ws=vw[name];fs=fw[name]
             from .regions import reviewed_regions, validate_region_mapping
@@ -385,6 +424,4 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                 'parsed_range':'; '.join(ranges),'fingerprint':m['fingerprint'],'mapping':m})
             result['excluded_regions'].append({'sheet':name,'range':'outside_explicit_mapping','reason':'仅导入明确区块范围；独立小表使用自己的日期来源，区域外内容不参与查询。'})
             if profile:result['excluded_regions'] += [{'sheet':name,'range':r['range'],'reason':r['reason']} for r in profile['regions'] if r['status']=='needs_review']
-    finally:
-        vw.close();fw.close()
     return result

@@ -434,3 +434,118 @@ def test_spawn_preserves_structured_error_location_and_existing_data(tmp_path):
         review_worker.run_review_task(root, 'preview', import_id=imported['import_id'], mapping=mapping)
     assert caught.value.review_target == {'sheet': '复杂表', 'block_index': 0, 'field': 'header_rows', 'cells': []}
     assert manager.get(imported['import_id'])['dataset_id'] == imported['dataset_id']
+
+
+@pytest.mark.parametrize('action,override,timed_out', [
+    ('import', None, False), ('preview', None, True),
+    ('import', '12', True), ('import', '0', False),
+])
+def test_default_import_survives_previous_whole_workbook_limit(tmp_path, monkeypatch, action, override, timed_out):
+    """Exercise the real parent path with a worker alive beyond 300 seconds."""
+    clock = [0.0]
+    workers = []
+    monkeypatch.setattr(review_worker.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setenv('STRUCTURED_REVIEW_TIMEOUT_SECONDS', '300')
+    monkeypatch.delenv('STRUCTURED_IMPORT_TIMEOUT_SECONDS', raising=False)
+    if override is not None:
+        monkeypatch.setenv('STRUCTURED_IMPORT_TIMEOUT_SECONDS', override)
+
+    class Worker(FakeProcess):
+        exitcode = 0
+
+        def __init__(self, *, target, args, daemon):
+            super().__init__()
+            self.args = args
+            workers.append(self)
+
+        def start(self):
+            clock[0] = 301.0
+
+        def join(self, timeout=None):
+            from pathlib import Path
+            Path(self.args[1]).write_text('{"ok":true,"result":{"completed":true}}')
+            self.alive = False
+
+        def close(self):
+            pass
+
+    class Context:
+        Process = Worker
+
+    monkeypatch.setattr(review_worker.multiprocessing, 'get_context', lambda method: Context())
+    monkeypatch.setattr(review_worker, '_read_rss_bytes', lambda pid: 0)
+    arguments = {'path': tmp_path / 'source.xlsx'} if action == 'import' else {'import_id': 'import-a', 'mapping': {}}
+    if timed_out:
+        with pytest.raises(review_worker.ReviewTaskError) as caught:
+            review_worker.run_review_task(tmp_path, action, **arguments)
+        assert caught.value.public_code == 'TASK_TIMEOUT'
+        assert workers[0].terminated
+    else:
+        assert review_worker.run_review_task(tmp_path, action, **arguments) == {'completed': True}
+        assert workers[0].args[3] is None
+        assert not workers[0].terminated
+
+
+def test_untimed_worker_keeps_memory_and_cancel_watchdogs():
+    process = FakeProcess()
+    with pytest.raises(review_worker.ReviewTaskError) as caught:
+        review_worker._monitor_worker(process, None, 512, rss_reader=lambda pid: 513)
+    assert caught.value.public_code == 'TASK_MEMORY_LIMIT'
+    assert process.terminated
+    process = FakeProcess()
+    with pytest.raises(review_worker.ReviewTaskError) as caught:
+        review_worker._monitor_worker(process, None, 512, cancel_check=lambda: True)
+    assert caught.value.public_code == 'TASK_CANCELLED'
+    assert process.terminated
+
+
+def test_untimed_child_keeps_memory_core_limits_without_new_cpu_ceiling():
+    class Resource:
+        RLIMIT_AS, RLIMIT_CPU, RLIMIT_CORE, RLIM_INFINITY = 1, 2, 3, -1
+
+        def __init__(self):
+            self.applied = {}
+
+        def getrlimit(self, kind):
+            return (-1, -1)
+
+        def setrlimit(self, kind, limits):
+            self.applied[kind] = limits
+
+    resource = Resource()
+    assert review_worker._apply_resource_limits(1024, None, resource)
+    assert resource.applied == {1: (3072, 3072), 3: (0, 0)}
+
+
+def test_child_resource_failure_preserves_machine_code_without_private_exception(tmp_path, monkeypatch):
+    monkeypatch.setattr(review_worker, '_apply_resource_limits', lambda *args: None)
+    monkeypatch.setattr(review_worker, '_limit_duckdb', lambda *args: (_ for _ in ()).throw(MemoryError('/private/source.xlsx')))
+    result = tmp_path / 'result.json'
+    review_worker._review_child({}, result, 1024, None)
+    payload = json.loads(result.read_text())
+    assert payload['error_code'] == 'TASK_MEMORY_LIMIT'
+    assert '/private' not in payload['error']
+
+
+def test_spawn_denied_guard_preserves_failure_code(tmp_path):
+    root = tmp_path / 'data'
+    source = make_source(root)
+    def denied():
+        raise ValueError('编辑权限已撤销，未发布。')
+    with pytest.raises(review_worker.ReviewTaskError) as caught:
+        review_worker.run_review_task(root, 'import', path=source, publish_guard=denied)
+    assert caught.value.public_code == 'TASK_PERMISSION_CHANGED'
+    assert ImportManager(root).store.list_datasets(include_samples=True) == []
+
+
+def test_child_unexpected_failure_logs_type_without_private_details(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(review_worker, '_apply_resource_limits', lambda *args: None)
+    monkeypatch.setattr(review_worker, '_limit_duckdb', lambda *args: (_ for _ in ()).throw(RuntimeError('/private/secret-source.xlsx token=private')))
+    result = tmp_path / 'result.json'
+    review_worker._review_child({}, result, 1024, None)
+    payload = json.loads(result.read_text())
+    assert payload['error_code'] == 'TASK_PROCESSING_FAILED'
+    assert any(getattr(record, 'exception_type', None) == 'RuntimeError' and
+               getattr(record, 'problem_code', None) == 'TASK_PROCESSING_FAILED' for record in caplog.records)
+    assert '/private' not in caplog.text and 'token=private' not in caplog.text
+    assert '/private' not in payload['error']

@@ -110,14 +110,15 @@ wb exec --user 0 -T postgres sh -c 'set -e; umask 077; backup="/backups/manual-$
 
 ### 调整结构化解析的时间与内存预算
 
-结构化工作进程默认限时 300 秒、内存 768 MB。大文件首次导入若报“任务超过时间限制”，可在实际部署的 `shared/.env` 中设置，例如：
+Excel 首次导入默认不设整本工作簿的工作进程总时限，预览、核对和确认等其他操作默认限时 300 秒；默认内存预算仍为 768 MB。需要为导入另设总时限时，可在实际部署的 `shared/.env` 中设置正数秒值；`0` 表示不设导入工作进程总时限，例如：
 
 ```dotenv
-STRUCTURED_REVIEW_TIMEOUT_SECONDS=900
+STRUCTURED_IMPORT_TIMEOUT_SECONDS=0
+STRUCTURED_REVIEW_TIMEOUT_SECONDS=300
 STRUCTURED_REVIEW_MEMORY_MB=768
 ```
 
-当前版本的 `structured-data.environment` 必须包含这两个变量的转发；旧版本只修改 `.env` 不会生效。更新配置后，先确认没有正在处理的解析任务，再复用上面的 `wb()` 函数，仅重建结构化服务：
+当前版本的 `structured-data.environment` 必须包含这三个变量的转发；旧版本只修改 `.env` 不会生效。更新配置后，先确认没有正在处理的解析任务，再复用上面的 `wb()` 函数，仅重建结构化服务：
 
 ```sh
 wb up -d --no-deps --no-build --pull never --force-recreate structured-data
@@ -125,13 +126,13 @@ wb up -d --no-deps --no-build --pull never --force-recreate structured-data
 
 这会保留原数据卷。`restart` 不会重新读取修改后的环境变量；不要执行 `down -v`。`wb()` 已固定原生产项目名、两份环境文件和当前版本的 Compose 路径，不能在其他目录执行裸 `docker compose`，以免操作另一套服务。
 
-重建前后可核对运行进程的实际值；下面的命令只打印这两个参数，不输出完整环境或密钥：
+重建前后可核对运行进程的实际值；下面的命令只打印这三个参数，不输出完整环境或密钥：
 
 ```sh
-wb exec -T structured-data python -c 'from pathlib import Path; rows=Path("/proc/1/environ").read_bytes().split(b"\0"); keys=("STRUCTURED_REVIEW_TIMEOUT_SECONDS","STRUCTURED_REVIEW_MEMORY_MB"); print({k:next((v.split(b"=",1)[1].decode() for v in rows if v.startswith(k.encode()+b"=")),"<unset>") for k in keys})'
+wb exec -T structured-data python -c 'from pathlib import Path; rows=Path("/proc/1/environ").read_bytes().split(b"\0"); keys=("STRUCTURED_IMPORT_TIMEOUT_SECONDS","STRUCTURED_REVIEW_TIMEOUT_SECONDS","STRUCTURED_REVIEW_MEMORY_MB"); print({k:next((v.split(b"=",1)[1].decode() for v in rows if v.startswith(k.encode()+b"=")),"<unset>") for k in keys})'
 ```
 
-`<unset>` 表示未传入，对应程序默认值。`/structured/health` 不返回工作进程预算，健康检查通过不能证明新的时限已生效。
+`<unset>` 表示未传入，对应程序默认值。旧的 `STRUCTURED_REVIEW_TIMEOUT_SECONDS` 不再限制首次导入；外层原生文档任务仍默认限时 2 小时，内存、取消和发布前权限检查继续生效。`/structured/health` 不返回工作进程预算，健康检查通过不能证明新的时限已生效。
 
 ### 维护时禁止更新、回退版本
 
