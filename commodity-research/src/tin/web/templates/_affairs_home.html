@@ -3,7 +3,7 @@
 </div></header>
 
 <section class="affairs-alerts" aria-labelledby="affairs-alert-title">
-  <div class="affairs-section-head"><h2 id="affairs-alert-title">预警与触发 <span>已记录预警；打开页面时自动核对一次当前研判规则{% if affairs.monitored_strategies %}与 {{ affairs.monitored_strategies }} 个策略方案的引用条件{% endif %}</span></h2><button id="affairs-check" type="button" class="affairs-check" {% if not affairs.can_check %}disabled{% endif %}>重新检查</button></div>
+  <div class="affairs-section-head"><h2 id="affairs-alert-title">预警与触发 <span>{% if affairs.can_check %}已记录预警；打开页面时自动核对一次当前研判规则{% if affairs.monitored_strategies %}与 {{ affairs.monitored_strategies }} 个策略方案的引用条件{% endif %}{% else %}已记录预警；保存研判规则或在策略方案中引用研判条件后，打开页面会自动核对{% endif %}</span></h2><button id="affairs-check" type="button" class="affairs-check" {% if not affairs.can_check %}disabled{% endif %}>重新检查</button></div>
   <p id="affairs-check-status" class="affairs-status" role="status" aria-live="polite"></p>
   <div id="affairs-alert-list">
     {% for item in affairs.alerts %}
