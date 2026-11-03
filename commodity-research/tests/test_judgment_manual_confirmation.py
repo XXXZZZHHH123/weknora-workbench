@@ -135,3 +135,44 @@ def test_fixed_level_without_frequency_does_not_require_an_unnecessary_frequency
     confirmed = pick(result.json(), 'thresholds')
     assert confirmed['status'] == 'confirmed'
     assert confirmed['caliber']['frequency'] is None
+
+
+@pytest.mark.parametrize('explicit_unit,short_quote', [(False, False), (True, False), (True, True)])
+def test_compound_source_numeric_condition_confirms_and_saves_without_a_redundant_caliber_form(
+        generator, monkeypatch, explicit_unit, short_quote):
+    client, headers, _, _, calls = generator
+    clause = 'AAA>17.5' + ('吨' if explicit_unit else '')
+    source = clause + '或BBB破23日线→复核'
+    quote = clause if short_quote else source
+    candidate = {'judgment': {'contradiction': {}, 'thresholds': [{
+        'id': 'boundary', 'name': 'Synthetic numeric condition', 'series_id': SERIES,
+        'operator': '>', 'value': 17.5, 'type': '观察位', 'horizon': '短期'}]},
+        'binding_units': {SERIES: '吨'}, 'rule_quotes': {'boundary': quote}, 'unresolved': []}
+
+    async def complete(scope, model, prompt):
+        calls.append({'model': model, 'prompt': prompt})
+        if prompt.startswith('research-source-inventory.v1'):
+            return {'blocks': [{'id': 's0001', 'disposition': 'research', 'reason': 'Synthetic source'}],
+                'items': [{'id': 'i_condition', 'block_ids': ['s0001'], 'quote': source,
+                    'kind': 'threshold', 'source_unit': '吨' if explicit_unit else None}]}
+        return {**deepcopy(candidate), 'source_coverage': {'i_condition': '/judgment/thresholds/0'}}
+
+    monkeypatch.setattr(generation, 'completion', complete)
+    generated = client.post(endpoint('/generate'), headers=headers, json={
+        'model_id': 'synthetic-chat', 'text': source, 'base_version': 0})
+    assert generated.status_code == 200, generated.text
+    preview = generated.json()
+    item = pick(preview, 'thresholds')
+    assert item['can_confirm'] and item['status'] == 'ready'
+    result = update(client, headers, preview, item, series_id=SERIES,
+        related_series_ids=[], remember=False)
+    assert result.status_code == 200, result.text
+    confirmed = result.json()
+    assert pick(confirmed, 'thresholds')['status'] == 'confirmed'
+    assert pick(confirmed, 'thresholds')['source_quote'] == quote
+    saved = client.post(endpoint('/apply'), headers=headers, json={
+        'draft_id': confirmed['draft_id'], 'base_version': 0,
+        'review_revision': confirmed['review']['revision']})
+    assert saved.status_code == 200, saved.text
+    assert rows()[0].thresholds[0]['value'] == 17.5
+    assert rows()[0].source_note == source

@@ -316,7 +316,7 @@
     const unit = unitPresent(row.unit) ? row.unit.trim() : '';
     return '采用指标口径 · ' + (unit ? display.text(unit) : '来源未注明单位');
   }
-  function changed(edit) { edit.dirty = true; edit.renderCondition?.(); edit.renderErrors?.(); edit.renderConfirmation?.(); syncReviewVisibility(); syncReviewControls(); syncApply(); }
+  function changed(edit) { edit.dirty = true; edit.renderCondition?.(); edit.renderErrors?.(); edit.renderConfirmation?.(); edit.renderOutcome?.(); syncReviewVisibility(); syncReviewControls(); syncApply(); }
   const ruleNumber = '[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?';
   const singleRuleNumber = new RegExp('^' + ruleNumber + '$');
   const rangeRuleNumbers = new RegExp('^\\[\\s*(' + ruleNumber + ')\\s*,\\s*(' + ruleNumber + ')\\s*\\]$');
@@ -324,7 +324,7 @@
   const comparisonWords = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于'};
   const averageCrossingWords = {crosses_below: '下穿', crosses_above: '上穿'};
   function ruleCondition(item, edit) {
-    const rule = item.rule, sourceUnit = unitPresent(edit.selected?.unit) ? edit.selected.unit.trim() : '';
+    const rule = item.rule || {}, sourceUnit = unitPresent(edit.selected?.unit) ? edit.selected.unit.trim() : '';
     const unit = sourceUnit ? ' ' + display.text(sourceUnit) : edit.selected ? '（来源未注明单位）' : '（尚未关联指标）';
     const details = [rule.type, rule.horizon].filter(value => typeof value === 'string' && value).map(value => display.text(value));
     if (item.kind === 'thresholds') {
@@ -414,7 +414,14 @@
     const knownUnit = unitPresent(sourceUnit);
     const knownFrequency = frequencyPresent(sourceFrequency);
     const frequencyRequired = edit.frequencyRequired ?? caliber.frequency_required;
-    if (knownUnit && (frequencyRequired !== true || knownFrequency)) return updateReview(item, edit, 'confirm');
+    if (knownUnit && (frequencyRequired !== true || knownFrequency)) {
+      const updated = await updateReview(item, edit, 'confirm');
+      // The current catalog may reveal missing cadence after the preview was
+      // rendered. Continue into the form on the same click, without reposting.
+      if (updated === false && edit.frequencyRequired === true && !knownFrequency)
+        return confirmWholeItem(item, edit);
+      return updated;
+    }
     closeItemConfirmation();
     const modal = element('dialog', 'logic-confirm-dialog'); modal.id = 'logic-confirm-item-dialog';
     const title = element('h3', '', '核对并确认整条'); title.id = 'logic-confirm-item-title'; modal.setAttribute('aria-labelledby', title.id);
@@ -477,7 +484,7 @@
     node.cancelBindingSearch?.();
     reviewControls = reviewControls.filter(control => !node.contains(control.node));
   }
-  function renderBindings(item, edit) {
+  function renderBindings(item, edit, toolbar) {
     const group = element('div', 'logic-binding-group'), rows = element('div', 'logic-binding-rows');
     const limit = Number.isSafeInteger(item.max_bindings) ? Math.min(8, Math.max(1, item.max_bindings)) : 8;
     const add = item.can_add_binding ? registerControl(element('button', 'logic-binding-add', '新增绑定指标'), item, 'add-binding', () => bindingSlots(edit).length >= limit) : null;
@@ -516,7 +523,7 @@
         if (busy || !managed?.can_write || bindingSlots(edit).length >= limit) return;
         edit.additional.push({selected: null, query: ''}); edit.extraRowsAdded = true; drawRows();
       });
-      group.append(add);
+      toolbar.append(add);
     }
     drawRows(); return group;
   }
@@ -651,6 +658,8 @@
           edit.renderCondition(); card.append(condition);
         }
         const columns = element('div', 'logic-item-columns'), original = element('div', 'logic-item-original');
+        const toolbar = element('div', 'logic-item-toolbar');
+        let rememberLabel = null;
         const excerpt = item.original_text || item.source_quote;
         const sourceParagraph = element('p', 'logic-item-source', excerpt || ''); sourceParagraph.hidden = !excerpt; original.append(sourceParagraph);
         const localSource = element('pre', 'logic-source-text'); localSource.tabIndex = 0;
@@ -668,16 +677,24 @@
         fullSource.append(quoteButton); original.append(quote, fullSource); field(original, 'source_quote');
         if (item.can_bind) {
           columns.append(original);
-          const binding = renderBindings(item, edit); field(binding, 'binding');
-          const rememberLabel = element('label', 'logic-remember-label');
+          const binding = renderBindings(item, edit, toolbar); field(binding, 'binding');
+          rememberLabel = element('label', 'logic-remember-label');
           const remember = registerControl(element('input'), item, 'remember', () => !hasBinding(edit)); remember.type = 'checkbox'; remember.checked = edit.remember;
           remember.addEventListener('change', () => { edit.remember = remember.checked; changed(edit); return updateReview(item, edit, 'confirm'); });
-          rememberLabel.append(remember, element('span', '', '记住选择')); binding.append(rememberLabel); columns.append(binding); card.append(columns);
+          rememberLabel.append(remember, element('span', '', '记住选择')); columns.append(binding); card.append(columns);
         }
         const confirmItem = registerControl(element('button', 'logic-confirm-whole', '核对并确认整条'), item, 'confirm-item'); confirmItem.type = 'button';
         confirmItem.addEventListener('click', () => confirmWholeItem(item, edit));
-        edit.renderConfirmation = () => { confirmItem.hidden = !needsAttention(item); };
-        edit.renderConfirmation(); card.append(confirmItem);
+        toolbar.append(confirmItem);
+        if (rememberLabel) toolbar.append(rememberLabel);
+        const outcome = element('span', 'logic-item-outcome'); outcome.setAttribute('role', 'status'); outcome.setAttribute('aria-live', 'polite');
+        edit.renderOutcome = () => {
+          outcome.textContent = edit.saving ? '正在核对…' : edit.errorMessage ? '未确认，请处理红框' : item.status === 'confirmed' && !edit.dirty ? '已确认' : '';
+          outcome.dataset.error = String(Boolean(edit.errorMessage) && !edit.saving); outcome.hidden = !outcome.textContent;
+        };
+        edit.renderOutcome(); toolbar.append(outcome);
+        edit.renderConfirmation = () => { confirmItem.hidden = !needsAttention(item); toolbar.hidden = !item.can_bind && confirmItem.hidden && outcome.hidden; };
+        edit.renderConfirmation(); card.append(toolbar);
         const actions = element('div', 'logic-item-actions');
         for (const [action, label] of [['keep_text', '仅保留文字'], ['exclude', '排除']]) {
           const button = registerControl(element('button', '', label), item, action); button.type = 'button'; button.addEventListener('click', () => updateReview(item, edit, action)); actions.append(button);
@@ -711,7 +728,7 @@
     if (item.can_add_binding && (action === 'confirm' || action === 'keep_text')) body.related_series_ids = action === 'keep_text' ? [] : (edit.additional || []).map(slot => slot.selected?.series_id).filter(Boolean);
     if (caliber !== null && action === 'confirm') body.caliber = caliber;
     if (edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
-    setBusy(true); inform('正在同步修改…');
+    edit.saving = true; edit.renderOutcome?.(); setBusy(true); inform('正在同步修改…');
     try {
       let result;
       try { result = await api('/review/update', body); }
@@ -723,12 +740,14 @@
         result = await api('/review/update', {...body, binding_warning_token: error.bindingWarningToken});
       }
       if (body.remember) rememberedChoices.add(item.id); else rememberedChoices.delete(item.id);
-      reviewEdits.delete(item.id); presentDraft(result, true); return true;
+      reviewEdits.delete(item.id); presentDraft(result, true);
+      inform(action === 'confirm' ? '本条已确认。' : action === 'keep_text' ? '本条已保留为文字。' : '本条已排除。');
+      return true;
     } catch (error) {
       if (error.status === 409) { invalidate(); inform(error.message, true); }
-      else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; if (typeof error.frequencyRequired === 'boolean') edit.frequencyRequired = error.frequencyRequired; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; edit.renderErrors?.(); edit.renderConfirmation?.(); inform(''); }
+      else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; if (typeof error.frequencyRequired === 'boolean') edit.frequencyRequired = error.frequencyRequired; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; edit.renderErrors?.(); edit.renderConfirmation?.(); inform('本条未确认：' + error.message, true); }
       return false;
-    } finally { if (!holdBusy) setBusy(false); }
+    } finally { edit.saving = false; edit.renderOutcome?.(); if (!holdBusy) setBusy(false); }
   }
   async function open(requestedJob) {
     if (busy) return;

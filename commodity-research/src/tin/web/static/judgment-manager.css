@@ -42,11 +42,14 @@
 .logic-binding-row { position: relative; }
 .logic-binding-row > .logic-item-label { padding-right: 40px; }
 .logic-dialog .logic-binding-remove { position: absolute; right: 0; top: -3px; padding: 1px 3px; border-color: transparent; color: var(--text-muted); background: transparent; font-size: 10px; }
-.logic-dialog .logic-binding-add { margin-top: 7px; padding: 3px 6px; color: var(--primary); font-size: 10px; }
-.logic-binding-group > .logic-remember-label { margin-top: 7px; }
+.logic-item-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.logic-dialog .logic-binding-add { padding: 4px 8px; color: var(--primary); font-size: 11px; }
+.logic-item-toolbar > .logic-remember-label { margin: 0; }
+.logic-item-outcome { color: var(--text-muted); font-size: 11px; }
+.logic-item-outcome[data-error=true] { color: var(--alert); }
 .logic-recovery-toolbar { padding: 0 20px; margin: 0; }
 .logic-recovery-toolbar:has(> button:not([hidden])) { margin-bottom: 10px; }
-.logic-dialog .logic-confirm-whole { margin-top: 9px; padding: 4px 8px; border-color: var(--primary); color: var(--primary); font-size: 11px; }
+.logic-dialog .logic-confirm-whole { padding: 4px 8px; border-color: var(--primary); color: var(--primary); font-size: 11px; }
 .logic-confirm-dialog { width: min(480px, calc(100vw - 28px)); max-height: calc(100vh - 36px); overflow: auto; box-sizing: border-box; padding: 18px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--text); box-shadow: 0 12px 40px #0003; font: inherit; }
 .logic-confirm-dialog::backdrop { background: #0004; }
 .logic-confirm-dialog h3 { margin: 0 0 13px; font-size: 15px; }

@@ -11,6 +11,39 @@ const changes = env => env.requests.filter(request=>request.url.endsWith('/revie
 const modal = env => descendants(env.nodes['judgment-manager']).find(node=>node.className==='logic-confirm-dialog'&&node.open);
 (async()=>{
   {
+    const env=await generateReview({reviewSections:sections(row({binding:{series_id:'synthetic-main',name:'Known-unit observation',unit:'kg',frequency:null},
+      caliber:{catalog_unit:'kg',catalog_frequency:null,frequency:null,frequency_required:false}})),reviewFailure:true,reviewFrequencyRequired:true});
+    await control(env,'confirm-item').fire('click');
+    assert.ok(modal(env),'A frequency requirement learned during this confirmation opens its form on the first click');
+    assert.equal(changes(env).length,1,'Opening the required form does not retry or duplicate the confirmation request');
+    assert.equal(control(env,'confirm-frequency').value,'');env.context.window.JudgmentManager.close();
+  }
+  {
+    const env=await generateReview({reviewSections:sections(row({rule:null}))});
+    const before=env.nodes['logic-status'].textContent;
+    await assert.doesNotReject(()=>control(env,'confirm-item').fire('click'),'A legacy incomplete display rule must not make a visible button throw silently');
+    assert.ok(modal(env)||env.nodes['logic-status'].textContent!==before,'The user receives a confirmation form or a readable recovery message');
+    assert.doesNotMatch((modal(env)?.textContent||'')+env.nodes['logic-status'].textContent,/TypeError|undefined/);
+    assert.equal(changes(env).length,0,'An incomplete display rule cannot be silently confirmed without review');env.context.window.JudgmentManager.close();
+  }
+  {
+    const env=await generateReview({reviewSections:sections(row({binding:{series_id:'synthetic-main',name:'Known metadata',unit:'kg',frequency:'日'},
+      caliber:{catalog_unit:'kg',catalog_frequency:'日',frequency_required:false}})),reviewDeferred:true});
+    const confirming=control(env,'confirm-item').fire('click');
+    while(!env.reviewReplies.length)await flush();
+    const outcome=()=>descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-item-outcome');
+    assert.equal(outcome().textContent,'正在核对…');assert.equal(control(env,'confirm-item').disabled,true);
+    env.reviewReplies[0]();await confirming;assert.equal(outcome().textContent,'已确认');assert.equal(outcome().hidden,false);
+    assert.match(env.nodes['logic-status'].textContent,/本条已确认/);env.context.window.JudgmentManager.close();
+  }
+  {
+    const env=await generateReview({reviewSections:sections(row({kind:'description',can_bind:false,can_add_binding:false,rule:undefined,binding:null,caliber:{}}))});
+    await control(env,'confirm-item').fire('click');
+    const outcome=descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-item-outcome');
+    assert.equal(outcome.textContent,'已确认');assert.equal(outcome.parentNode.hidden,false,'A confirmed text-only item keeps its local completion feedback visible');
+    env.context.window.JudgmentManager.close();
+  }
+  {
     const env=await generateReview({reviewSections:sections(row())});
     assert.ok(control(env,'confirm-item'),'Every problem item has one explicit whole-item confirmation entry');
     await control(env,'confirm-item').fire('click');assert.ok(modal(env));
@@ -97,6 +130,8 @@ const modal = env => descendants(env.nodes['judgment-manager']).find(node=>node.
     await control(env,'confirm-submit').fire('click');assert.ok(modal(env),'Rejected numbers or metadata never become a fake confirmation');
     assert.equal(control(env,'confirm-unit').value,'t');assert.equal(control(env,'confirm-frequency').value,'周');
     assert.match(modal(env).textContent,/当前修改已保留/);assert.equal(env.nodes['logic-apply'].disabled,true);
+    assert.match(env.nodes['logic-status'].textContent,/本条未确认/);
+    assert.equal(descendants(env.nodes['logic-review-items']).find(node=>node.className==='logic-item-outcome').textContent,'未确认，请处理红框');
     await control(env,'confirm-cancel').fire('click');assert.equal(modal(env),undefined);
     await control(env,'confirm-item').fire('click');assert.equal(control(env,'confirm-unit').value,'t','Cancelled manual edits are retained locally for correction');
     env.context.window.JudgmentManager.close();assert.equal(modal(env),undefined,'Closing the manager also closes a pending confirmation form');

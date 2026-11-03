@@ -12,7 +12,7 @@ from tin.compute.moving_average import sma_source_window
 from tin.judgments.service import _refs
 from tin.judgments.numbers import (quoted_quantities, check_rule_number, _SCALAR, _arrays, _width,
     starts_chinese_scaled_quantity, chinese_quantity_continuation, observation_periods,
-    period_matches_frequency, _COMPARISON_SUFFIXES)
+    period_matches_frequency, _COMPARISON_SUFFIXES, _logical_clause_boundary)
 from tin.judgments.markdown_protocol import (
     exported_rules, quoted_rule_records, threshold_signature, falsifier_signature,
 )
@@ -47,6 +47,18 @@ def _quote_continuation(original, end, quote, units):
     leading = len(tail) - len(tail.lstrip(' \t'))
     explicit = [unit for unit in units if normalized.rstrip().endswith(unit)]
     unit_prefix = [unit for unit in units if following.startswith(unit)]
+    trimmed_end = end - (len(normalized) - len(normalized.rstrip()))
+    extends_unit = any(len(actual) > len(short) and actual.startswith(short)
+        and _width(original[trimmed_end - len(short):]).startswith(actual)
+        for short in explicit for actual in units)
+    if not extends_unit and _logical_clause_boundary(following):
+        return ''
+    if not extends_unit and unit_prefix:
+        actual = max(unit_prefix, key=len)
+        if _logical_clause_boundary(following[len(actual):]):
+            # Retain the complete adjoining unit, then stop at punctuation;
+            # numbers in another clause must never become evidence here.
+            return tail[:leading + len(actual)]
     wrapped = following[:1] in {'(', '['} and (
         any(following[1:].lstrip().startswith(unit) for unit in units)
         or following[1:].lstrip()[:1].isascii() and following[1:].lstrip()[:1].isalpha())
@@ -70,7 +82,6 @@ def _quote_continuation(original, end, quote, units):
     for unit in unit_prefix:
         protected.append((leading, leading + len(unit)))
         length = max(length, leading + len(unit) + 1)
-    trimmed_end = end - (len(normalized) - len(normalized.rstrip()))
     for short in explicit:
         start = trimmed_end - len(short)
         for unit in units:

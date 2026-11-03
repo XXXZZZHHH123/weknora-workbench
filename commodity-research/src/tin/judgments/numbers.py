@@ -25,6 +25,7 @@ _CHINESE_SCALED = re.compile(_START + r'(?:(?P<coefficient>[' + ''.join(_CHINESE
 _CHINESE_CONTINUATIONS = frozenset(_CONNECTORS + '_.,]十百千万亿兆零〇一二两三四五六七八九'
     '壹贰叁肆伍陆柒捌玖拾佰仟萬億负負正点點之几数多余半')
 _COMPARISON_SUFFIXES = ('及以上', '及以下', '以上', '以下', '以内', '以外')
+_LOGICAL_JOIN = re.compile(r'(?:或者|并且|或|且|&&|\|\||∧|∨|(?i:and|or)\b)')
 _COMPARISON_ARITHMETIC = re.compile('(?:' + '|'.join(_COMPARISON_SUFFIXES)
     + r')[ \t]*[+-][ \t]*' + _GROUPED)
 _PERIOD_UNITS = {
@@ -109,6 +110,40 @@ def check_rule_number(value):
     return value
 
 
+def _logical_clause_boundary(remainder):
+    """A complete literal may end before an explicit logical clause join.
+
+    This is quantity punctuation, not selection or interpretation of a rule.
+    A bare second number/scale/unit suffix is not an independent clause.
+    """
+    match = _LOGICAL_JOIN.match(remainder.lstrip())
+    if match is None:
+        return False
+    following = remainder.lstrip()[match.end():].lstrip()
+    if following[:1] in {'(', '[', '{', '（', '【'}:
+        following = following[1:].lstrip()
+    if not following or not following[0].isalpha():
+        return False
+    clause = re.split(r'[\r\n，。；;!?！？]', following[:512], maxsplit=1)[0]
+    # Only the immediate operand can establish this boundary. A later clause
+    # must not rescue a malformed number in the first one. ASCII joins inside
+    # words such as "floor" are not separators.
+    for separator in _LOGICAL_JOIN.finditer(clause):
+        if (separator[0].isascii() and separator[0].isalpha() and separator.start()
+                and (clause[separator.start() - 1].isascii()
+                     and clause[separator.start() - 1].isalnum()
+                     or clause[separator.start() - 1] == '_')):
+            continue
+        clause = clause[:separator.start()]
+        break
+    # Reuse the complete numeric grammar (dates, ratios, arrays, exponents and
+    # precision bounds), with logical recognition disabled to avoid recursion.
+    # Percent units are complete scalar spellings, independently of the left
+    # rule's selected catalog unit. No rule/operator meaning is interpreted.
+    return any(quoted_quantities(clause, unit=unit, _allow_logical=False)
+               for unit in (None, '%', '‰', '‱'))
+
+
 def _scale(value, power):
     # Constructing the decimal tuple changes only the explicit base-ten scale;
     # Decimal's ambient precision cannot round the original significand.
@@ -116,7 +151,7 @@ def _scale(value, power):
     return Decimal((parts.sign, parts.digits, parts.exponent + power))
 
 
-def _unit_boundary(remainder, units=()):
+def _unit_boundary(remainder, units=(), *, allow_logical=True):
     if not remainder:
         return True
     following = remainder.lstrip()
@@ -124,6 +159,8 @@ def _unit_boundary(remainder, units=()):
         return True
     if _obscures_quantity(following[0]):
         return False
+    if _LOGICAL_JOIN.match(following):
+        return allow_logical and _logical_clause_boundary(following)
     if following.startswith('· '):
         return True  # Renderer field delimiter, rather than kg·m.
     for suffix in _COMPARISON_SUFFIXES:
@@ -153,21 +190,21 @@ def _comparison_tail_safe(rest, units=()):
     return not any(head.startswith(unit) for unit in units if unit)
 
 
-def _complete_quantity_unit(following, unit):
+def _complete_quantity_unit(following, unit, *, allow_logical=True):
     expected = _width(unit).strip() if isinstance(unit, str) else ''
     if not expected or _SCALE.fullmatch(expected):
         return False
     following = following.lstrip()
-    if following.startswith(expected) and _unit_boundary(following[len(expected):]):
+    if following.startswith(expected) and _unit_boundary(following[len(expected):], allow_logical=allow_logical):
         return True
     scale = _SCALE.match(following)
     if scale is None:
         return False
     remainder = following[scale.end():].lstrip()
-    return remainder.startswith(expected) and _unit_boundary(remainder[len(expected):])
+    return remainder.startswith(expected) and _unit_boundary(remainder[len(expected):], allow_logical=allow_logical)
 
 
-def _unit_value(value, tail, unit, units):
+def _unit_value(value, tail, unit, units, *, allow_logical=True):
     following = tail.lstrip()
     if following and _obscures_quantity(following[0]):
         return None
@@ -185,7 +222,7 @@ def _unit_value(value, tail, unit, units):
     for actual in sorted(known - {''}, key=len, reverse=True):
         if following.startswith(actual):
             unit_prefix = True
-            if not _unit_boundary(following[len(actual):], known):
+            if not _unit_boundary(following[len(actual):], known, allow_logical=allow_logical):
                 continue
             if actual == expected:
                 return value
@@ -197,6 +234,8 @@ def _unit_value(value, tail, unit, units):
     # unitless. Unknown attached text is equally ambiguous for a typed quantity.
     if unit_prefix:
         return None
+    if _LOGICAL_JOIN.match(following):
+        return value if allow_logical and _logical_clause_boundary(following) else None
     match = _SCALE.match(following)
     if match:
         remainder = following[match.end():].lstrip()
@@ -214,7 +253,8 @@ def _unit_value(value, tail, unit, units):
                 # source unit to disambiguate the repeated multiplier.
                 if _SCALE.match(expected):
                     return None
-            elif not remainder.startswith(expected) or not _unit_boundary(remainder[len(expected):], known):
+            elif not remainder.startswith(expected) or not _unit_boundary(remainder[len(expected):], known,
+                    allow_logical=allow_logical):
                 return None
         return _scale(value, _POWERS[match[0]])
     if expected and following and (following[0].isalpha() or following[0] in '([{'):
@@ -304,7 +344,7 @@ def _range_pattern(unit, units):
         + rf'(?:-|–|—|~|～|至|到|(?i:\bto\b))\s*(?P<upper>{_GROUPED})(?:\s*(?P<upper_unit>{suffix}))?')
 
 
-def _connected_ranges(text, unit, units, original):
+def _connected_ranges(text, unit, units, original, *, allow_logical=True):
     """Consume whole candidate intervals, including rejected ones.
 
     Only explicit units or multipliers distinguish these from bare subtraction
@@ -331,8 +371,10 @@ def _connected_ranges(text, unit, units, original):
                 lower_tail = lower_suffix + base_unit
             else:
                 lower_tail = lower_suffix
-            lower = _unit_value(_decimal(match['lower'].replace(',', '')), lower_tail, unit, units)
-            upper = _unit_value(_decimal(match['upper'].replace(',', '')), upper_tail, unit, units)
+            lower = _unit_value(_decimal(match['lower'].replace(',', '')), lower_tail, unit, units,
+                allow_logical=allow_logical)
+            upper = _unit_value(_decimal(match['upper'].replace(',', '')), upper_tail, unit, units,
+                allow_logical=allow_logical)
             if lower is not None and upper is not None and lower < upper:
                 values.update((lower, upper))
         except (ValueError, DecimalException):
@@ -355,7 +397,7 @@ def _arrays(text):
         yield start, len(text)
 
 
-def quoted_quantities(quote, *, unit=None, units=()):
+def quoted_quantities(quote, *, unit=None, units=(), _allow_logical=True):
     """Read explicit decimal literals, masking malformed/nested list contents.
 
     A flat numeric list owns its commas: [1,200] contains 1 and 200, never 1200.
@@ -376,7 +418,8 @@ def quoted_quantities(quote, *, unit=None, units=()):
         if len(members) > 32 or any(not _MEMBER.fullmatch(member.strip()) for member in members):
             continue
         try:
-            parsed = [_unit_value(_decimal(member.strip()), text[end:], unit, units) for member in members]
+            parsed = [_unit_value(_decimal(member.strip()), text[end:], unit, units,
+                allow_logical=_allow_logical) for member in members]
             if all(value is not None for value in parsed):
                 values.update(parsed)
         except (ValueError, DecimalException):
@@ -384,7 +427,8 @@ def quoted_quantities(quote, *, unit=None, units=()):
     scalar_text = ''.join(masked)
     for pattern in (_GROUPED_SPACE, _ARITHMETIC, _COMPARISON_ARITHMETIC):
         scalar_text = pattern.sub(lambda match: 'x' * len(match[0]), scalar_text)
-    scalar_text, range_values = _connected_ranges(scalar_text, unit, units, text)
+    scalar_text, range_values = _connected_ranges(scalar_text, unit, units, text,
+        allow_logical=_allow_logical)
     values.update(range_values)
     masked = list(scalar_text)
     # A literal pair can share its final unit. Both endpoints must validate
@@ -394,7 +438,8 @@ def quoted_quantities(quote, *, unit=None, units=()):
             preceding = text[:pair.start()].rstrip()
             invalid_start = preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～负負')
             parsed = [] if invalid_start else [
-                _unit_value(_decimal(member.replace(',', '')), text[pair.end():], unit, units)
+                _unit_value(_decimal(member.replace(',', '')), text[pair.end():], unit, units,
+                    allow_logical=_allow_logical)
                 for member in pair.groups()]
             if all(value is not None for value in parsed):
                 values.update(parsed)
@@ -409,10 +454,10 @@ def quoted_quantities(quote, *, unit=None, units=()):
         if preceding and chinese_quantity_continuation(preceding[-1]):
             continue
         tail = text[match.start('scale'):]
-        if not _complete_quantity_unit(tail, unit):
+        if not _complete_quantity_unit(tail, unit, allow_logical=_allow_logical):
             continue
         coefficient = _CHINESE_DIGITS.get(match['coefficient'], 1)
-        value = _unit_value(Decimal(coefficient), tail, unit, units)
+        value = _unit_value(Decimal(coefficient), tail, unit, units, allow_logical=_allow_logical)
         if value is not None:
             values.add(value)
     for match in _SCALAR.finditer(scalar_text):
@@ -420,7 +465,8 @@ def quoted_quantities(quote, *, unit=None, units=()):
             preceding = text[:match.start()].rstrip()
             if preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～负負'):
                 continue
-            value = _unit_value(_decimal(match[0].replace(',', '')), text[match.end():], unit, units)
+            value = _unit_value(_decimal(match[0].replace(',', '')), text[match.end():], unit, units,
+                allow_logical=_allow_logical)
             if value is not None:
                 values.add(value)
         except (ValueError, DecimalException):

@@ -150,3 +150,45 @@ def test_monthly_numeric_condition_accepts_trailing_english_prose_without_losing
     with pytest.raises(AnalysisError) as error:
         check(source, unit='吨', frequency='日', expression='value > 12', periods=2)
     assert error.value.issues[0]['code'] == 'period_frequency'
+
+
+@pytest.mark.parametrize('connector', ['或', '且', ' OR ', ' and ', ' || ', ' && ', '∨', '∧'])
+@pytest.mark.parametrize('explicit_unit', [False, True])
+def test_logical_clause_boundary_preserves_a_model_selected_numeric_condition(connector, explicit_unit):
+    # The model selects the rule and operator. The numeric lexer only verifies
+    # its literal inside a complete quote containing another condition.
+    suffix = '点' if explicit_unit else ''
+    source = f'AAA>17.5{suffix}{connector}BBB破23日线→复核'
+    assert check(source, unit='点', value=17.5, operator='>').payload.thresholds[0].value == 17.5
+    assert check(source, quote=f'AAA>17.5{suffix}', unit='点', value=17.5,
+                 operator='>').payload.thresholds[0].value == 17.5
+
+
+@pytest.mark.parametrize('amount', [
+    '17.5%', '17.5‰', '17.5kg', '17.5点/年', '17.5点公里',
+    '17.5万美元/吨', '17.5abc', '17.5/2', '17.5e+', '17.5²',
+])
+def test_logical_clause_boundaries_never_erase_a_conflicting_or_malformed_unit(amount):
+    source = f'AAA>{amount}或BBB<23→复核'
+    assert Decimal('17.5') not in quoted_quantities(source, unit='点',
+        units=['点', '点公里', 'kg', '%', '‰', '美元/吨'])
+    with pytest.raises(AnalysisError):
+        check(source, quote='AAA>17.5', unit='点', value=17.5, operator='>')
+
+
+@pytest.mark.parametrize('tail', ['或', '且', '或20', '或/吨', 'oranges', 'ORANGE', 'ANDY',
+    '或者未知单位', '点或然率', '点或', '点且', '点∨20'])
+def test_attached_words_or_incomplete_logical_operands_are_not_numeric_boundaries(tail):
+    assert Decimal('17.5') not in quoted_quantities('17.5' + tail, unit='点')
+
+
+@pytest.mark.parametrize('quote', ['AAA>17.5', 'AAA>17.5kg'])
+def test_a_registered_longer_unit_still_owns_its_apparent_logical_suffix(quote):
+    source = 'AAA>17.5kg或未知单位 23'
+    document = {'judgment': {'contradiction': {}, 'thresholds': [{
+        'id': 'boundary', 'name': 'Synthetic bound', 'series_id': SID,
+        'operator': '>', 'value': 17.5, 'type': '观察位', 'horizon': '短期'}]},
+        'binding_units': {SID: 'kg'}, 'rule_quotes': {'boundary': quote}, 'unresolved': []}
+    with pytest.raises(AnalysisError):
+        validate_analysis(document, source, [{'id': SID, 'unit': 'kg'},
+            {'id': 'other', 'unit': 'kg或未知单位'}], variety='TEST', actor='synthetic')
