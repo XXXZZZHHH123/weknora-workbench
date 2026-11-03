@@ -340,6 +340,7 @@ function renderSeriesChart() {
     point.y = yOf(point);
   });
 
+  const lineColor = window.ChartPalette.color(0, seriesChartState.data.color);
   const line = points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
   const area = points.length > 1
     ? `${line} L${points[points.length - 1].x.toFixed(2)},${(margin.top + plotHeight).toFixed(2)} `
@@ -367,13 +368,13 @@ function renderSeriesChart() {
     <defs><clipPath id="series-chart-clip"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}"/></clipPath></defs>
     <g>${yTicks}${xTicks}</g>
     <g clip-path="url(#series-chart-clip)">
-      ${area ? `<path d="${area}" fill="var(--primary-soft)" opacity="0.72"/>` : ""}
-      <path d="${line}" fill="none" stroke="var(--primary)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-      <circle cx="${latest.x}" cy="${latest.y}" r="4" fill="var(--surface)" stroke="var(--primary)" stroke-width="2" vector-effect="non-scaling-stroke"/>
+      ${area ? `<path d="${area}" fill="${lineColor}" opacity="0.12"/>` : ""}
+      <path d="${line}" fill="none" stroke="${lineColor}" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      <circle cx="${latest.x}" cy="${latest.y}" r="4" fill="var(--surface)" stroke="${lineColor}" stroke-width="2" vector-effect="non-scaling-stroke"/>
       <g id="series-chart-crosshair" visibility="hidden">
         <line id="series-chart-cross-x" y1="${margin.top}" y2="${margin.top + plotHeight}" stroke="var(--text-muted)" stroke-width="1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
         <line id="series-chart-cross-y" x1="${margin.left}" x2="${width - margin.right}" stroke="var(--text-muted)" stroke-width="1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
-        <circle id="series-chart-cross-point" r="5" fill="var(--surface)" stroke="var(--primary)" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+        <circle id="series-chart-cross-point" r="5" fill="var(--surface)" stroke="${lineColor}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
       </g>
     </g>
     <rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="transparent"/>

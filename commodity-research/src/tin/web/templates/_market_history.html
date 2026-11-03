@@ -17,8 +17,8 @@
         <line x1="52" y1="128" x2="484" y2="128" stroke="var(--line)"/>
         <text x="46" y="20" text-anchor="end" fill="var(--text-muted)" font-size="9" class="tabular">{{ line.max | num(line.unit) }}</text>
         <text x="46" y="128" text-anchor="end" fill="var(--text-muted)" font-size="9" class="tabular">{{ line.min | num(line.unit) }}</text>
-        {% if line.count > 1 %}<polyline points="{{ line.path }}" fill="none" stroke="var(--primary)" stroke-width="1.8" vector-effect="non-scaling-stroke"/>{% endif %}
-        {% for point in line.points %}<circle cx="{{ point.x }}" cy="{{ point.y }}" r="{{ 3 if line.count == 1 else 1.5 }}" fill="var(--primary)"><title>{{ point.date }} · {{ point.value | num(line.unit) }} {{ line.unit }}</title></circle>{% endfor %}
+        {% if line.count > 1 %}<polyline points="{{ line.path }}" fill="none" stroke="var(--chart-series-1)" stroke-width="1.8" vector-effect="non-scaling-stroke"/>{% endif %}
+        {% for point in line.points %}<circle cx="{{ point.x }}" cy="{{ point.y }}" r="{{ 3 if line.count == 1 else 1.5 }}" fill="var(--chart-series-1)"><title>{{ point.date }} · {{ point.value | num(line.unit) }} {{ line.unit }}</title></circle>{% endfor %}
         <text x="52" y="151" fill="var(--text-muted)" font-size="9" class="tabular">{{ line.first_date }}</text>
         {% if line.count > 1 %}<text x="484" y="151" text-anchor="end" fill="var(--text-muted)" font-size="9" class="tabular">{{ line.last_date }}</text>{% endif %}
       </svg>

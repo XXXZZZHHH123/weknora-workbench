@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { researchFramePath } from './researchFrameSession'
+import { analysisJobId, analysisJudgmentId, researchFramePath } from './researchFrameSession'
 import { computed, defineAsyncComponent, effectScope, h, nextTick, reactive, ref, shallowRef, watch } from 'vue'
 import { directKnowledgeBaseIds, workbenchSourceLabel } from './workbenchDataSources'
 
@@ -22,17 +22,19 @@ function fixture() {
   let header = 1
   const requests: Array<{ id: string; tenant: number; resolve: (data: unknown) => void }> = []
   const unmounts: Array<() => void> = []
+  const jobRefreshes: number[] = [], replacements: any[] = []
   const scope = effectScope()
   const view: any = scope.run(() => runInNewContext(code, {
-    computed, defineAsyncComponent, h, nextTick, ref, shallowRef, watch, useAuthStore: () => auth, useRoute: () => route, useRouter: () => ({ replace: async () => {} }),
+    computed, defineAsyncComponent, h, nextTick, ref, shallowRef, watch, useAuthStore: () => auth, useRoute: () => route, useRouter: () => ({ replace: async (value: unknown) => { replacements.push(value) } }),
+    useAnalysisTasksStore: () => ({ refresh: async () => { jobRefreshes.push(1) } }),
     useTheme: () => ({ effectiveTheme: ref('light'), setTheme() {} }),
     onMounted() {}, onBeforeUnmount: (fn: () => void) => unmounts.push(fn),
     window: { location: { origin: 'https://test.local' }, removeEventListener() {} },
-    authenticateResearchFrame: async () => true, researchFramePath,
+    authenticateResearchFrame: async () => true, researchFramePath, analysisJobId, analysisJudgmentId,
     directKnowledgeBaseIds, workbenchSourceLabel,
     getResearchWorkbench: (id: string) => new Promise(resolve => requests.push({ id, tenant: header, resolve })),
   }))
-  return { auth, route, view, requests, setHeader: (tenant: number) => { header = tenant }, close: () => { unmounts.forEach(fn => fn()); scope.stop() } }
+  return { auth, route, view, requests, jobRefreshes, replacements, setHeader: (tenant: number) => { header = tenant }, close: () => { unmounts.forEach(fn => fn()); scope.stop() } }
 }
 
 test('identity changes clear the old workspace synchronously and wait for its persisted tenant header', async () => {
@@ -313,5 +315,58 @@ test('unversioned empty-source metadata remains invalid', async () => {
     await new Promise(setImmediate)
     assert.equal(f.view.canShowResearch.value, false)
     assert.ok(f.view.workbenchError.value)
+  } finally { f.close() }
+})
+
+test('analysis messages can only refresh metadata for the current authorized frame and workbench', async () => {
+  const f = fixture()
+  try {
+    await nextTick(); f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } }); await new Promise(setImmediate)
+    f.view.frame.value = { contentWindow: { postMessage() {} } }
+    const message = { origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-analysis-job-started', workbenchId: 'workbench-a', jobId: 'job-a', result: '<script>ignored</script>' } }
+    f.view.receive({ ...message, origin: 'https://other.test' }); f.view.receive({ ...message, source: {} })
+    f.view.receive({ ...message, data: { ...message.data, workbenchId: 'workbench-b' } }); f.view.receive({ ...message, data: { ...message.data, jobId: '../bad' } })
+    assert.equal(f.jobRefreshes.length, 0); f.view.receive(message); assert.equal(f.jobRefreshes.length, 1)
+    assert.equal(f.replacements.length, 0, 'A started message cannot inject or open untrusted result content')
+  } finally { f.close() }
+})
+test('task query changes reopen native results and applied messages remove consumed task queries safely', async () => {
+  const f = fixture()
+  try {
+    await nextTick(); f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } }); await new Promise(setImmediate)
+    const query = f.route.query as Record<string, unknown>; query.analysis_job = 'job-a'; query.view = 'judgment'; await nextTick()
+    assert.equal(new URL(f.view.frameUrl.value, 'https://test.local').searchParams.get('analysis_job'), 'job-a')
+    assert.match(f.view.frameUrl.value, /\/sn\/judgment\?/)
+    const before = f.view.generation.value; query.analysis_job = 'job-b'; await nextTick(); assert(f.view.generation.value > before)
+    f.view.frame.value = { contentWindow: { postMessage() {} } }
+    const message = { origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-analysis-job-applied', workbenchId: 'workbench-a', jobId: 'job-b', judgmentId: 42 } }
+    f.view.receive({ ...message, data: { ...message.data, judgmentId: -1 } }); assert.equal(f.replacements.length, 0)
+    f.view.receive(message); assert.equal(f.jobRefreshes.length, 1)
+    assert.equal(f.replacements[0].query.analysis_job, undefined); assert.equal(f.replacements[0].query.judgment_id, '42')
+    query.analysis_job = undefined; query.judgment_id = '42'; await nextTick()
+    assert.equal(new URL(f.view.frameUrl.value, 'https://test.local').searchParams.get('judgment_id'), '42')
+    assert.equal(new URL(f.view.frameUrl.value, 'https://test.local').searchParams.has('analysis_job'), false)
+  } finally { f.close() }
+})
+test('diagram task links reopen its native page and only the scoped applied message consumes the task query', async () => {
+  const f = fixture()
+  try {
+    await nextTick(); f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } }); await new Promise(setImmediate)
+    const query = f.route.query as Record<string, unknown>; query.analysis_job = 'diagram-job'; query.view = 'diagram'; await nextTick()
+    const frameUrl = new URL(f.view.frameUrl.value, 'https://test.local')
+    assert.match(frameUrl.pathname, /\/sn\/diagram$/)
+    assert.equal(frameUrl.searchParams.get('analysis_job'), 'diagram-job')
+    f.view.frame.value = { contentWindow: { postMessage() {} } }
+    const message = { origin: 'https://test.local', source: f.view.frame.value.contentWindow, data: { type: 'research-analysis-job-applied', purpose: 'diagram', workbenchId: 'workbench-a', jobId: 'diagram-job', templateId: 23 } }
+    f.view.receive({ ...message, source: {} }); f.view.receive({ ...message, origin: 'https://other.test' })
+    f.view.receive({ ...message, data: { ...message.data, templateId: -1 } })
+    assert.equal(f.replacements.length, 0)
+    f.view.receive(message)
+    assert.equal(f.jobRefreshes.length, 1)
+    assert.equal(f.replacements[0].query.analysis_job, undefined)
+    assert.equal(f.replacements[0].query.view, 'diagram')
+    assert.equal(f.replacements[0].query.diagram_template, '23')
+    Object.assign(query, f.replacements[0].query); delete query.analysis_job; await nextTick()
+    assert.equal(new URL(f.view.frameUrl.value, 'https://test.local').searchParams.get('template'), '23')
   } finally { f.close() }
 })

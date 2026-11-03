@@ -1,4 +1,5 @@
-            <a href="#indicator-top" data-indicator-jump data-target="indicator-top" class="macro-filter-link active" aria-current="true">全部 <span data-jump-total>{{ rows | length }}</span></a>
+            <span class="indicator-page-categories">{{ '当前清单分类' if restricted_view else '本页分类' }}</span>
+            <a href="#indicator-top" data-indicator-jump data-target="indicator-top" class="macro-filter-link active" aria-current="true">{{ '当前全部' if restricted_view else '本页全部' }} <span data-jump-total>{{ rows | length }}</span></a>
             {% for group in groups %}
             <a href="#indicator-group-{{ (catalog_offset | default(0)) + loop.index }}" data-indicator-jump data-target="indicator-group-{{ (catalog_offset | default(0)) + loop.index }}" class="macro-filter-link">{{ group.name }} <span data-jump-count>{{ group.rows | length }}</span></a>
             {% endfor %}

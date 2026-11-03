@@ -5,7 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_serializer
 from sqlalchemy import func, select
 
 from tin.integration.page_facts import page_read_scope
@@ -14,6 +14,8 @@ from tin.models.workbench import WorkbenchArtifact
 from tin.web.workbench_artifacts import (
     ArtifactInput, ArtifactModule, artifact_query, create_artifact, serialize_artifact, update_artifact,
 )
+
+from tin.web.strategy_citations import Citation, router as citations_router
 
 FORMAT = "research-strategy-card.v1"
 MAX_REQUEST_BYTES = 128 * 1024
@@ -35,6 +37,14 @@ class ResearchStrategyCard(BaseModel):
     reference: "StrategyReference | None" = None
     judgment_reference: "JudgmentReference | None" = None
     response_action: str | None = Field(default=None, max_length=4000)
+    citations: list[Citation] = Field(default_factory=list, max_length=32)
+
+    @model_serializer(mode="wrap")
+    def omit_empty_citations(self, handler):
+        value = handler(self)
+        if not value.get("citations"):
+            value.pop("citations", None)
+        return value
 
     @field_validator("review_date", mode="before")
     @classmethod
@@ -253,6 +263,9 @@ async def source_choices(page: int = Query(1, ge=1, le=500)):
     return {"items": [{key: item.get(key) for key in ("id", "title", "file_name", "file_type")}
                       for item in document["data"] if item.get("parse_status") not in {"deleted", "deleting"}],
             "page": page, "has_more": page * 100 < document["total"]}
+
+
+router.include_router(citations_router)
 
 
 @router.get("/{card_id}")

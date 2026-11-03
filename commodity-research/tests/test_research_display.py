@@ -108,16 +108,21 @@ def test_actual_authorized_route_registers_helpers_and_renders_saved_binding_nam
     response['judgment']['thresholds'][0]['name'] += ' [' + TECH + ']'
     preview = generate(client, headers)
     assert preview.status_code == 200, preview.text
+    # Source inventory, initial analysis and the bounded completeness review.
+    assert len(calls) == 3
+    assert calls[0]['prompt'].startswith('research-source-inventory.v1')
     saved = apply(client, headers, preview.json())
     assert saved.status_code == 200, saved.text
     login(client, headers)
+    before_read = len(calls)
+    assert before_read == 3
     result = client.get(page(FIRST, '/sn/judgment'))
     assert result.status_code == 200, result.text
     text = visible(result.text)
     assert SERIES not in text and TECH not in text
     assert 'Measured quantity' in text and 'Stock watch' in text
     assert 'research-display.js' in result.text and '◈' not in text
-    assert len(calls) == 1
+    assert len(calls) == before_read
 
 
 def test_actual_shared_javascript_display_keeps_binding_identity():

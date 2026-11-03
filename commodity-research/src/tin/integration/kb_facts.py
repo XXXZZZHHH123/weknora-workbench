@@ -310,9 +310,11 @@ def install_projection(connection, scope, sources=None, pinned_version=None, *, 
         connection.exec_driver_sql('DROP TABLE IF EXISTS temp."_kb_' + table + '"')
         connection.exec_driver_sql('CREATE TEMP TABLE "_kb_' + table + '" AS SELECT * FROM main."' + table + '" WHERE 0')
     known, seen, version, datasets, raw_counts = {}, {}, None, [], {}
+    include_invalid = False
     fetched_at = _sql_time(datetime.now(timezone.utc))
     caliber = json.dumps({'time_type': '原表日期'})
     for index, page in enumerate(fact_pages(scope, sources, pinned_version) if pages is None else pages):
+        include_invalid = include_invalid or page.get('include_invalid') is True
         version = page['version']
         if index == 0:
             datasets = page.get('datasets', [])
@@ -358,9 +360,10 @@ def install_projection(connection, scope, sources=None, pinned_version=None, *, 
             if page.get('encoding') != FACT_ENCODING:
                 raw_counts[spec['dataset_id']] = raw_counts.get(spec['dataset_id'], 0) + 1
             value = raw.get('value')
-            if raw.get('value_status') not in {'valid', 'ok', '正常'} or value is None:
+            missing = page.get('include_invalid') is True and raw.get('value_status') == 'missing' and value is None
+            if not missing and (raw.get('value_status') not in {'valid', 'ok', '正常'} or value is None):
                 continue
-            if type(value) not in {int, float} or not math.isfinite(value):
+            if not missing and (type(value) not in {int, float} or not math.isfinite(value)):
                 raise HTTPException(503, '知识库观测数值无效')
             when = raw.get('date')
             if when is None:
@@ -381,7 +384,7 @@ def install_projection(connection, scope, sources=None, pinned_version=None, *, 
             rows.append({'id': identifier, 'series_id': raw['series_id'], 'value': value, 'as_of': stamp,
                 'fetched_at': fetched_at, 'caliber_snapshot': caliber,
                 'source': '知识库结构化', 'source_url': None, 'revision': 0, 'entered_by': None,
-                'note': '直接读取知识库已确认结构化数据，原表日期不表示发布时间', 'status': '正常'})
+                'note': '直接读取知识库已确认结构化数据，原表日期不表示发布时间', 'status': '数据缺失' if missing else '正常'})
             evidence_rows.append((identifier,raw['series_id'],raw.get('source_cell'),raw.get('date_cell'),
                 json.dumps(raw.get('raw_value'),ensure_ascii=False),raw.get('formula'),when))
         _insert(connection, 'observations', rows)
@@ -402,6 +405,7 @@ def install_projection(connection, scope, sources=None, pinned_version=None, *, 
 
     connection.connection.driver_connection.set_authorizer(protect)
     return {'knowledge_facts': True, 'knowledge_facts_version': version,
+            **({'knowledge_facts_include_invalid': True} if include_invalid else {}),
             'knowledge_facts_catalog': known,
             'knowledge_facts_datasets': [{**dataset,
                 'series_count': sum(spec['dataset_id'] == dataset.get('dataset_id') for spec in known.values()),

@@ -1,7 +1,7 @@
 """Compile an explicitly referenced model graph into the existing MD format."""
 import logging
 from collections import defaultdict
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -17,9 +17,17 @@ class DraftObject(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
 
 
-def reject(kind, message):
+def reject(kind, message, hint=None):
     logger.warning('Diagram graph rejected: class=%s', kind)
-    raise HTTPException(422, message)
+    error = HTTPException(422, message)
+    # Model-facing repair detail only; never shown to users or stored.
+    error.repair_hint = hint
+    raise error
+
+
+def schema_hint(error):
+    return '；'.join('.'.join(str(part) for part in item['loc']) + '：' + item['msg']
+        for item in error.errors()[:6])
 
 
 def plain_text(value):
@@ -35,6 +43,7 @@ class Group(DraftObject):
     id: Identifier
     label: Label
     parent_id: Identifier | None = None
+    role: Literal['target', 'supply', 'demand', 'macro', 'inventory', 'balance', 'reference'] | None = None
 
     _plain_label = field_validator('label')(plain_text)
 
@@ -57,6 +66,7 @@ class Node(DraftObject):
 class Edge(DraftObject):
     from_id: Identifier = Field(alias='from')
     to: Identifier
+    kind: Literal['flow', 'influence'] = 'flow'
 
 
 class Graph(DraftObject):
@@ -71,15 +81,28 @@ class Graph(DraftObject):
 def compile_graph(document):
     try:
         graph = Graph.model_validate(document)
-    except ValidationError:
-        reject('invalid_schema', '模型生成的图结构格式不完整，请重新生成')
+    except ValidationError as error:
+        reject('invalid_schema', '模型生成的图结构格式不完整，请重新生成', schema_hint(error))
     objects = [*graph.groups, *graph.nodes]
     if len(objects) > 256:
         reject('too_many_nodes', '产业图超过256个节点和分组，请缩小范围')
     identifiers = {item.id for item in objects}
     if len(identifiers) != len(objects):
-        reject('duplicate_id', '模型生成的节点编号重复，请重新生成')
+        seen, repeated = set(), set()
+        for item in objects:
+            (repeated if item.id in seen else seen).add(item.id)
+        reject('duplicate_id', '模型生成的节点编号重复，请重新生成',
+            f'分组和概念的id必须全局唯一，这些id重复：{sorted(repeated)}')
     groups = {item.id: item for item in graph.groups}
+    if any(group.role for group in graph.groups):
+        targets = [group.id for group in graph.groups if group.role == 'target']
+        if len(targets) != 1:
+            reject('target_role', '研究图需要明确且唯一的核心标的分组，请核对后重新生成',
+                f'role为target的分组必须恰好1个，现在是：{targets}')
+        nested = [group.id for group in graph.groups if group.role and group.parent_id is not None]
+        if nested:
+            reject('nested_role', '研究角色应标注在顶层分组，子分组保留包含关系',
+                f'这些子分组的role必须为null：{nested}')
     children = defaultdict(list)
     members = defaultdict(list)
     depths = {}
@@ -91,10 +114,12 @@ def compile_graph(document):
             reject('group_cycle', '模型生成的分组层级存在循环，请重新生成')
         parent = groups[identifier].parent_id
         if parent is not None and parent not in groups:
-            reject('unknown_parent', '模型生成的上级分组不存在，请重新生成')
+            reject('unknown_parent', '模型生成的上级分组不存在，请重新生成',
+                f'分组{identifier}的parent_id不存在：{parent}')
         value = 0 if parent is None else depth(parent, ancestors | {identifier}) + 1
         if value > 2:
-            reject('group_depth', '产业图分组超过三级，请简化层级后重新生成')
+            reject('group_depth', '产业图分组超过三级，请简化层级后重新生成',
+                f'分组{identifier}位于第{value + 1}级，分组最多三级')
         depths[identifier] = value
         return value
 
@@ -104,22 +129,34 @@ def compile_graph(document):
     populated = set()
     for node in graph.nodes:
         if node.group_id not in groups:
-            reject('unknown_group', '模型生成的节点所属分组不存在，请重新生成')
+            reject('unknown_group', '模型生成的节点所属分组不存在，请重新生成',
+                f'概念{node.id}的group_id不存在：{node.group_id}')
         members[node.group_id].append(node)
         parent = node.group_id
         while parent is not None:
             populated.add(parent)
             parent = groups[parent].parent_id
     if populated != groups.keys():
-        reject('empty_group', '模型生成了没有节点的分组，请重新生成')
+        reject('empty_group', '模型生成了没有节点的分组，请重新生成',
+            f'这些分组及其子分组里没有任何概念，需要放入概念或删除：{sorted(groups.keys() - populated)}')
     edge_pairs = list(dict.fromkeys((edge.from_id, edge.to) for edge in graph.edges))
-    if any(a not in identifiers or b not in identifiers for a, b in edge_pairs):
-        reject('unknown_endpoint', '模型生成的连线端点不存在，请重新生成')
+    edge_kinds = {}
+    for edge in graph.edges:
+        pair = (edge.from_id, edge.to)
+        if pair in edge_kinds and edge_kinds[pair] != edge.kind:
+            reject('edge_kind_conflict', '同一连线的物料与研究影响类型冲突，请核对',
+                f'{pair[0]}到{pair[1]}同时出现了flow和influence，只能保留一种')
+        edge_kinds[pair] = edge.kind
+    unknown = sorted({value for pair in edge_pairs for value in pair if value not in identifiers})
+    if unknown:
+        reject('unknown_endpoint', '模型生成的连线端点不存在，请重新生成',
+            f'edges的from/to只能使用已定义的分组或概念id，这些id不存在：{unknown}')
 
     lines = [f'# {graph.title}', '']
 
     def emit(group):
-        lines.append(f'{"#" * (2 + depths[group.id])} {group.label} <!-- id: {group.id} -->')
+        role = f' <!-- role: {group.role} -->' if group.role else ''
+        lines.append(f'{"#" * (2 + depths[group.id])} {group.label} <!-- id: {group.id} -->{role}')
         for node in members[group.id]:
             binding = f' <!-- bind: {node.series_id} -->' if node.series_id else ''
             lines.append(f'- {node.label} <!-- id: {node.id} -->{binding}')
@@ -129,7 +166,8 @@ def compile_graph(document):
 
     for group in children[None]:
         emit(group)
-    lines.extend(f'@{a} -> @{b}' for a, b in edge_pairs)
+    lines.extend(f'@{a} -> @{b}' + (' <!-- relation: influence -->' if edge_kinds[(a, b)] == 'influence' else '')
+                 for a, b in edge_pairs)
     markdown = '\n'.join(lines).rstrip() + '\n'
     if len(markdown.encode('utf-8')) > 64000:
         reject('too_large', '生成的产业图配置过大，请缩小范围')
@@ -142,13 +180,14 @@ def compile_graph(document):
     for group in graph.groups:
         node = actual.get(group.id, {})
         matches &= (node.get('kind') == 'group' and node.get('label') == group.label
-                    and node.get('parent') == group.parent_id)
+                    and node.get('parent') == group.parent_id and node.get('role') == group.role)
     for item in graph.nodes:
         node = actual.get(item.id, {})
         binding = {'kind': 'series', 'series_id': item.series_id} if item.series_id else {'kind': 'none'}
         matches &= (node.get('kind') != 'group' and node.get('label') == item.label
                     and node.get('parent') == item.group_id and node.get('binding') == binding)
     matches &= {(edge['from'], edge['to']) for edge in restored['edges']} == set(edge_pairs)
+    matches &= all(edge.get('kind', 'flow') == edge_kinds[(edge['from'], edge['to'])] for edge in restored['edges'])
     if not matches:
         reject('roundtrip_topology', '图结构转换后层级或连线不一致，未应用到当前工作台')
     return markdown

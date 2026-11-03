@@ -79,7 +79,11 @@ def present_watch(items, names, units=None):
         if row.get('kind') == 'threshold':
             value = row.get('value')
             unit = _plain(units.get(identifier))
-            if row.get('operator') == 'between' and isinstance(value, list) and len(value) == 2:
+            if isinstance(value, dict) and value.get('kind') == 'sma':
+                comparison = {**_COMPARISON, 'crosses_below': '下穿', 'crosses_above': '上穿'}.get(row.get('operator'))
+                if comparison:
+                    condition = f'{name}{comparison} MA{value["window"]}'
+            elif row.get('operator') == 'between' and isinstance(value, list) and len(value) == 2:
                 condition = f'{name}处于 {value[0]} — {value[1]}{unit} 区间'
             elif row.get('operator') in _COMPARISON and type(value) in {int, float}:
                 condition = f'{name}{_COMPARISON[row["operator"]]} {value}{unit}'

@@ -1,58 +1,101 @@
 {% extends "base.html" %}
-{% block title %}研究判断 · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
+{% from "_judgment_metric.html" import metric_view with context %}
+{% block title %}研究判断 · {{ research_workbench().metadata.name if research_workbench() else '商品研究' }}{% endblock %}
 {% block head %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-manager.css?v={{ static_version() }}">
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-research.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/judgment-chart.js?v={{ static_version() }}"></script>
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/judgment-manager.js?v={{ static_version() }}"></script>{% endif %}
 {% endblock %}
 {% block main %}
 <script id="research-display-names" type="application/json">{{ names|default({})|tojson }}</script>
 <script src="{{ research_static_prefix() }}/static/research-display.js?v={{ static_version() }}"></script>
-
-<div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
-  <div>
-    <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">RESEARCH THESIS &amp; SIGNALS</div>
-    <h1 class="text-2xl font-black tracking-tight flex items-center gap-3 flex-wrap">研究判断与风控线
-      {% if j %}<span class="text-xs font-semibold px-2 py-0.5 rounded border
-        {{ 'bg-[var(--amber-soft)] text-[var(--amber)] border-[var(--amber)]/20' if j.status == '草稿' else 'bg-[var(--primary-soft)] text-[var(--primary)] border-[var(--primary)]/20' }}">{{ j.written_at }} · {{ j.status }}</span>{% endif %}
-    </h1>
-    <p class="text-xs text-[var(--text-muted)] mt-1">九字段结构化研判 ｜ 阈值与证伪条件绑定已登记指标 ｜ 复核周期预警</p>
-    {% if j and selected_judgment_id %}<p class="text-xs text-[var(--text-muted)] mt-1">正在查看 {{ j.written_at }} 的研究判断；面板选择不改变正式生效版本。</p>{% endif %}
-  </div>
-  {% if not restricted_view %}<button type="button" data-open-logic class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] shrink-0">管理研究逻辑</button>{% endif %}
-</div>
-
+{% set research = research|default({}) %}
+{% macro item_thresholds(metric) %}
+{% if metric and metric.series_id %}
+  {% set related = radar|selectattr('series_id', 'equalto', metric.series_id)|list %}
+  {% if related %}<div class="judgment-item-conditions">
+    {% for item in related %}<div class="judgment-item-condition" data-item-threshold>
+      <span><strong>{{ human_text(item.name, names) }}</strong> · {{ human_text(item.condition, names) }}</span>
+      <span class="judgment-item-condition-state" data-state="{{ item.state }}">{{ item.state }}</span>
+    </div>{% endfor %}
+  </div>{% endif %}
+{% endif %}
+{% endmacro %}
+{% macro item_metrics(item) %}
+  {% set values = item.metrics|default([item.metric] if item.metric else []) %}
+  {% if values %}<div class="judgment-item-metrics">
+    {% for metric in values %}<div>{{ metric_view(metric) }}{{ item_thresholds(metric) }}</div>{% endfor %}
+  </div>{% elif item.series_id %}<span class="judgment-evidence-unbound">{{ indicator_name(item.series_id, names) }} · 暂无可用数值</span>{% else %}<span class="judgment-evidence-unbound">文字依据 · 尚未关联指标</span>{% endif %}
+{% endmacro %}
+<div class="judgment-research">
+<header class="judgment-research-header">
+  <div><h1>研究判断</h1><p>{% if j %}{{ j.author }} · {{ j.written_at }} · {{ j.status }}{% else %}梳理多空分歧，跟踪依据与验证条件{% endif %}</p></div>
+  {% if not restricted_view %}<button type="button" data-open-logic>管理研究逻辑</button>{% endif %}
+</header>
 {% if j is none %}
-<div id="judgment-empty" class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-6 shadow-sm">
-  <h3 class="text-base font-bold">尚未登记判断</h3>
-  <p class="text-xs text-[var(--text-muted)] mt-1">{{ '主人尚未分享已保存研究逻辑；本页按授权展示主人内容，不展示其他成员的个人记录。' if restricted_view else '点击“管理研究逻辑”导入完整原文，由模型分析并匹配知识库指标，预览后保存草稿。' }}</p>
-</div>
+<section id="judgment-empty" class="judgment-research-section"><h2>尚未登记判断</h2><p>{{ '主人尚未分享已保存研究逻辑。' if restricted_view else '导入研究原文，核对多空依据与监测条件后保存。' }}</p></section>
 {% else %}
-
-{% if block.expired_days %}
-<div class="px-4 py-3 rounded-lg border-l-4 border-[var(--amber)] bg-[var(--amber-soft)] text-[var(--amber)] text-sm flex gap-4 flex-wrap">
-  <b>判断需要复核</b><span>写定于 {{ j.written_at }}，已超过复核周期 {{ block.expired_days }} 天（复核日 {{ j.review_due }}）。监测不停止，所有输出都带此标记。</span>
+<div class="judgment-research-summary"><strong class="judgment-research-tone">{{ j.tone or '方向待明确' }}</strong>
+  {% if research.counts %}<span>{{ research.counts.available }}/{{ research.counts.bound }} 项依据有数值</span><span>{{ j.thresholds|length }} 条可计算阈值 · {{ j.falsifiers|length }} 条证伪条件</span>{% endif %}
+  <span>复核日 {{ j.review_due }}</span>
 </div>
+{% if block.expired_days %}<div class="judgment-research-notice">判断需要复核 · 超过复核周期 {{ block.expired_days }} 天。监测继续，结论需复核。</div>{% endif %}
+{% if block.blockers %}<details class="judgment-research-notice"><summary>草稿尚未生效 · 查看需补充的内容</summary><p>{{ block.blockers|join('；') }}</p></details>{% endif %}
+{% if j.tone_note %}<p class="research-prose">{{ human_text(j.tone_note, names) }}</p>{% endif %}
+<section class="judgment-research-section" id="judgment-hypotheses">
+  <h2>核心分歧 · 多 vs 空</h2>
+  {% set rows = namespace(evidence=1, falsifiers=1) %}
+  {% for side in ['bull', 'bear'] %}
+    {% set hypothesis = (research.sides|default({})).get(side, {}) %}
+    {% set rows.evidence = [rows.evidence, hypothesis.evidence|default(j.contradiction[side].evidence)|length]|max %}
+    {% set rows.falsifiers = [rows.falsifiers, hypothesis.falsifiers|default([])|length]|max %}
+  {% endfor %}
+  <div class="judgment-hypotheses" style="--judgment-evidence-rows:{{ rows.evidence }};--judgment-total-rows:{{ 4 + rows.evidence + rows.falsifiers }}">
+  {% for side, label in [('bull','多方'),('bear','空方')] %}
+    {% set hypothesis = (research.sides|default({})).get(side, {}) %}
+    {% set original = j.contradiction[side] %}
+    <article class="judgment-hypothesis" data-hypothesis="{{ side }}">
+      <h3>{{ label }}逻辑</h3>
+      <p class="judgment-hypothesis-claim">{{ human_text(hypothesis.claim or original.claim or '该方观点尚待补充', names) }}</p>
+      <h4 class="judgment-support-heading">支持依据与变化</h4>
+      <ul class="judgment-evidence-list">
+      {% for evidence in hypothesis.evidence|default(original.evidence) %}
+        <li class="judgment-item-card" data-research-item="evidence"><p class="judgment-evidence-desc">{{ human_text(evidence.desc, names) }}</p>
+          {{ item_metrics(evidence) }}
+        </li>
+      {% else %}<li class="judgment-research-empty">尚待补充支持依据</li>{% endfor %}
+      </ul>
+      <h4 class="judgment-falsifier-section" style="grid-row:{{ 4 + rows.evidence }}">什么变化会证伪{{ label }}判断</h4>
+      {% for item in hypothesis.falsifiers|default([]) %}
+        <div class="judgment-falsifier judgment-item-card" data-research-item="falsifier" style="grid-row:{{ 5 + rows.evidence + loop.index0 }}"><div class="judgment-falsifier-heading"><strong>{{ human_text(item.rule.desc, names) }}</strong><span class="judgment-falsifier-state" data-state="{{ item.state }}">{{ item.state }}</span></div>
+          {% if item.condition %}<p>{{ item.condition }}</p>{% endif %}
+          {{ item_metrics(item) }}
+          {% if item.gap_note %}<p>{{ human_text(item.gap_note, names) }}</p>{% endif %}
+        </div>
+      {% else %}<p class="judgment-research-empty judgment-falsifier-empty" style="grid-row:{{ 5 + rows.evidence }}">尚无已核验的证伪条件{% if research.pending_conditions %}，待验证内容见下方。{% endif %}</p>{% endfor %}
+    </article>
+  {% endfor %}
+  </div>
+</section>
+{% if research.shared %}
+<section class="judgment-research-section" id="judgment-shared"><h2>多空分歧对照</h2>
+  <div class="judgment-shared-list">{% for row in research.shared %}
+    <article class="judgment-shared" data-shared-indicator>
+      {{ metric_view(row.metric) }}
+      <div class="judgment-shared-explanations">
+      {% for side,label in [('bull','多方'),('bear','空方')] %}
+        <div data-hypothesis="{{ side }}"><b>{{ label }}依据</b>
+        {% for text in row[side ~ '_texts'] %}<p>{{ human_text(text, names) }}</p>{% endfor %}
+        {% for item in row[side ~ '_falsifiers'] %}<p>证伪：{{ human_text(item.rule.desc, names) }} · {{ item.state }}</p>{% endfor %}
+        </div>
+      {% endfor %}
+      </div>
+    </article>
+  {% endfor %}</div>
+</section>
 {% endif %}
-
-<div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-  <div><span class="text-[var(--text-muted)]">基调 &amp; 范式</span>
-    <div class="text-base font-bold text-[var(--primary)] mt-0.5">{{ j.tone or '未定' }} · {{ j.paradigm or '—' }}</div></div>
-  <div><span class="text-[var(--text-muted)]">责任作者</span>
-    <div class="text-base font-bold mt-0.5">{{ j.author }}<span class="text-xs font-normal text-[var(--text-muted)]"> · {{ j.written_at }} 写定</span></div></div>
-  <div><span class="text-[var(--text-muted)]">复核周期状态</span>
-    <div class="text-base font-bold mt-0.5 {{ 'text-[var(--alert)]' if block.expired_days else 'text-[var(--primary)]' }}">
-      {{ ('超期 ' ~ block.expired_days ~ ' 天') if block.expired_days else ('复核日 ' ~ j.review_due) }}</div></div>
-  <div><span class="text-[var(--text-muted)]">白名单指标</span>
-    <div class="text-base font-bold mt-0.5">{{ j.whitelist | length }} 个全部绑定</div></div>
-</div>
-
-{% if block.blockers %}
-<div class="px-4 py-3 rounded-lg bg-[var(--amber-soft)] text-[var(--amber)] text-xs">
-  <b class="mr-2">尚未生效</b>{{ block.blockers | join('；') }}
-</div>
-{% endif %}
-
-<section id="judgment-thresholds" class="space-y-3">
+<section id="judgment-thresholds" class="judgment-research-section space-y-3">
   <div class="flex items-center justify-between gap-3 flex-wrap">
     <h2 class="text-sm font-bold flex items-center gap-2">
       <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">01</span>
@@ -73,172 +116,60 @@
         {% for t in radar %}
         <tr>
           <td class="py-3 px-3 font-bold">{{ human_text(t.name, names) }}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.type }} · {{ t.horizon }}</div></td>
-          <td class="py-3 px-3"><span data-indicator-reference>{{ indicator_name(t.series_id, names) }}</span></td>
+          <td class="py-3 px-3"><span data-indicator-reference>{{ indicator_name(t.series_id, names) }}</span>
+            {% set related = (research.threshold_related|default({})).get(t.id, []) %}
+            {% if related %}<details class="judgment-threshold-related"><summary>关联观察 · {{ related|length }} 项</summary>
+              <div class="judgment-item-metrics">{% for metric in related %}<div>{{ metric_view(metric) }}</div>{% endfor %}</div>
+            </details>{% endif %}
+          </td>
           <td class="py-3 px-3 tabular font-bold {{ 'text-[var(--alert)]' if t.type == '风控线' else 'text-[var(--primary)]' }}">{{ human_text(t.condition, names) }}</td>
           <td class="py-3 px-3 text-right tabular font-bold">{{ t.value | num(t.unit) if t.value is not none else '—' }}
             {% if t.as_of %}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.as_of[5:] }}</div>{% endif %}</td>
           <td class="py-3 px-3">
             <div class="text-[10px] text-[var(--text-muted)] mb-1">{{ t.distance }}</div>
-            <div class="w-full bg-[var(--surface-soft)] h-2 rounded-full overflow-hidden border border-[var(--line)]">
-              <div class="h-full rounded-full {{ 'bg-[var(--alert)]' if t.state == '已触发' and t.type == '风控线' else 'bg-[var(--amber)]' if t.state in ('已触发', '在区间内') else 'bg-[var(--primary)]' }}" style="width: {{ t.progress | round(0) }}%;"></div>
+            <div data-threshold-state="{{ 'missing' if t.value is none else 'observed' }}" aria-label="{{ '该指标暂无实际观测' if t.value is none else t.distance }}" class="w-full bg-[var(--surface-soft)] h-2 rounded-full overflow-hidden border border-[var(--line)]">
+              {% if t.value is not none %}{% set progress = [0, [100, t.progress] | min] | max %}
+              <div data-threshold-fill class="h-full rounded-full {{ 'bg-[var(--alert)]' if t.state == '已触发' and t.type == '风控线' else 'bg-[var(--amber)]' if t.state in ('已触发', '在区间内') else 'bg-[var(--primary)]' }}" style="width: {{ progress | round(0) }}%;"></div>
+              {% endif %}
             </div></td>
           <td class="py-3 px-3 text-[var(--text-muted)]">{{ human_text(t.action_hint or '—', names) }}{% if t.note %}<div class="text-[10px] mt-0.5">{{ human_text(t.note, names) }}</div>{% endif %}</td>
           <td class="py-3 px-3 text-center"><span class="px-2 py-0.5 text-[10px] font-semibold rounded whitespace-nowrap
-            {% if t.state == '已触发' and t.type == '风控线' %}bg-[var(--alert-soft)] text-[var(--alert)]
+            {% if t.value is none %}bg-[var(--surface-soft)] text-[var(--text-muted)]
+            {% elif t.state == '已触发' and t.type == '风控线' %}bg-[var(--alert-soft)] text-[var(--alert)]
             {% elif t.state in ('已触发', '在区间内') %}bg-[var(--amber-soft)] text-[var(--amber)]
             {% elif t.state == '数据缺失' %}bg-[var(--amber-soft)] text-[var(--amber)]
             {% else %}bg-[var(--primary-soft)] text-[var(--primary)]{% endif %}">{{ t.state }}</span></td>
         </tr>
         {% else %}
-        <tr><td colspan="7" class="py-4 px-3 text-center text-[var(--text-muted)]">该判断没有登记阈值</td></tr>
+        <tr><td colspan="7" class="py-4 px-3 text-center text-[var(--text-muted)]">尚无已核验的可计算阈值；待验证条件列在下方。</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-  <p class="text-[11px] text-[var(--text-muted)]">每日比对与触发记录将在监测层（M3）接入后写入 signals 表；此处按当日最新值实时测距。</p>
+  <p class="text-[11px] text-[var(--text-muted)]">{% if d %}此处按截至所选日期的实际观测测距。{% else %}暂无可用观测日期，已登记阈值保留，测距等待实际数据。{% endif %}</p>
 </section>
 
-<section class="space-y-3">
-  <h2 class="text-sm font-bold flex items-center gap-2">
-    <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">02</span>
-    主逻辑与证伪条件
-  </h2>
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-    <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
-      <div class="text-[11px] font-bold text-[var(--primary)] mb-1">多方依据</div>
-      <p class="research-prose text-sm">{{ human_text(j.contradiction.bull.claim, names) }}</p>
-      <ul class="mt-2 space-y-1 text-[11px] text-[var(--text-muted)]">
-        {% for e in j.contradiction.bull.evidence %}
-        <li>· {{ human_text(e.desc, names) }}{% if e.series_id %}<span class="text-[var(--primary)]">（<span data-indicator-reference>{{ indicator_name(e.series_id, names) }}</span>）</span>{% elif e.source %}（{{ human_text(e.source, names) }}）{% endif %}
-          {% if e.note %}<span class="text-[var(--amber)]"> — {{ human_text(e.note, names) }}</span>{% endif %}</li>
-        {% endfor %}
-      </ul>
-    </div>
-    <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
-      <div class="text-[11px] font-bold text-[var(--alert)] mb-1">空方依据</div>
-      <p class="research-prose text-sm">{{ human_text(j.contradiction.bear.claim, names) }}</p>
-      <ul class="mt-2 space-y-1 text-[11px] text-[var(--text-muted)]">
-        {% for e in j.contradiction.bear.evidence %}
-        <li>· {{ human_text(e.desc, names) }}{% if e.series_id %}<span class="text-[var(--primary)]">（<span data-indicator-reference>{{ indicator_name(e.series_id, names) }}</span>）</span>{% elif e.source %}（{{ human_text(e.source, names) }}）{% endif %}</li>
-        {% endfor %}
-      </ul>
-    </div>
-  </div>
-  {% if research_workbench() and j.contradiction.text %}<details class="text-xs text-[var(--text-muted)]"><summary>导入的主逻辑原文（待核对多空论点与证据）</summary><p class="research-prose mt-2 whitespace-pre-wrap">{{ human_text(j.contradiction.text, names) }}</p></details>{% endif %}
-  {% if j.contradiction.window %}
-  <p class="text-[11px] text-[var(--text-muted)]">验证窗口：{{ j.contradiction.window['from'] }} 至 {{ j.contradiction.window.to }} · {{ human_text(j.contradiction.window.note, names) }}</p>
-  {% endif %}
-
-  <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] overflow-hidden shadow-sm overflow-x-auto">
-    <table class="w-full text-left text-xs">
-      <thead class="bg-[var(--surface-soft)] text-[11px] font-semibold text-[var(--text-muted)] border-b border-[var(--line)]">
-        <tr><th class="py-2.5 px-3">证伪条件</th><th class="py-2.5 px-3">绑定指标</th><th class="py-2.5 px-3">判定表达式</th>
-          <th class="py-2.5 px-3 text-center">连续期数</th><th class="py-2.5 px-3">单位口径</th><th class="py-2.5 px-3 text-center">攻击方向</th></tr>
-      </thead>
-      <tbody class="divide-y divide-[var(--line)]">
-        {% for f in j.falsifiers %}
-        <tr class="hover:bg-[var(--surface-soft)]">
-          <td class="py-2.5 px-3 font-bold">{{ human_text(f.desc, names) }}{% if f.note %}<div class="text-[10px] font-normal text-[var(--amber)]">{{ human_text(f.note, names) }}</div>{% endif %}</td>
-          <td class="py-2.5 px-3"><span data-indicator-reference>{{ indicator_name(f.series_id, names) }}</span></td>
-          <td class="py-2.5 px-3"><code class="px-1.5 py-0.5 rounded bg-[var(--surface-soft)] tabular">{{ condition_text(f.expression) }}</code></td>
-          <td class="py-2.5 px-3 text-center tabular">{{ f.consecutive_periods }}</td>
-          <td class="py-2.5 px-3">{{ f.unit_confirmed }}</td>
-          <td class="py-2.5 px-3 text-center">{{ '多方' if f.side == 'bull' else '空方' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-
-{% if j.unstructured %}
-<section class="space-y-3">
-  <h2 class="text-sm font-bold flex items-center gap-2">
-    <span class="text-[10px] font-bold tabular text-[var(--amber)] bg-[var(--amber-soft)] px-1.5 py-0.5 rounded">03</span>
-    尚未结构化（原文保留，不参与自动监测）
-  </h2>
-  <div class="rounded-lg border border-[var(--amber)]/30 bg-[var(--surface)] overflow-hidden shadow-sm overflow-x-auto">
-    <table class="w-full text-left text-xs">
-      <thead class="bg-[var(--amber-soft)]/40 text-[11px] font-semibold text-[var(--text-muted)] border-b border-[var(--line)]">
-        <tr><th class="py-2 px-3">来源段落</th><th class="py-2 px-3">原文</th><th class="py-2 px-3">为何无法自动化</th></tr>
-      </thead>
-      <tbody class="divide-y divide-[var(--line)]">
-        {% for u in j.unstructured %}
-        <tr><td class="py-2 px-3 font-semibold">{{ human_text(u.section, names) }}</td><td class="py-2 px-3">{{ human_text(u.text, names) }}</td>
-          <td class="py-2 px-3 text-[var(--text-muted)]">{{ human_text(u.reason, names) }}</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+{% if research.pending_conditions %}
+<section class="judgment-research-section" id="judgment-pending"><h2>待验证条件</h2>
+  <ul class="judgment-pending-list">{% for item in research.pending_conditions %}<li><span>待核对</span><div>{{ human_text(item.text, names) }}{% if item.metrics %}{{ item_metrics(item) }}{% endif %}</div></li>{% endfor %}</ul>
+  {% if not restricted_view %}<p>在“管理研究逻辑”中核对指标与条件后，可纳入监测。</p>{% endif %}
 </section>
 {% endif %}
-
-<section class="space-y-3">
-  <h2 class="text-sm font-bold flex items-center gap-2">
-    <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">04</span>
-    其余字段
-  </h2>
-  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 text-xs">
-    <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
-      <h3 class="font-bold text-[var(--primary)] mb-2">短线边际</h3>
-      {% for m in j.marginal_focus %}<div class="mb-1">· {{ human_text(m.desc, names) }} <span class="text-[10px] text-[var(--text-muted)]"><span data-indicator-reference>{{ indicator_name(m.series_id, names) }}</span></span></div>{% endfor %}
-    </div>
-    <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
-      <h3 class="font-bold text-[var(--primary)] mb-2">指标白名单（{{ j.whitelist | length }}）</h3>
-      {% for w in j.whitelist %}<div class="mb-1">· <span data-indicator-reference>{{ indicator_name(w, names) }}</span></div>{% endfor %}
-    </div>
-    <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
-      <h3 class="font-bold text-[var(--primary)] mb-2">边际定价权{% if j.pricing_power.category %} · {{ j.pricing_power.category }}{% endif %}</h3>
-      <div class="mb-1"><b>短期</b> {{ j.pricing_power.short | join('；') }}</div>
-      {% if j.pricing_power.key %}<div class="mb-1"><b>关键</b> {{ j.pricing_power.key }}</div>{% endif %}
-      <div><b>中长期</b> {{ j.pricing_power.long | join(' > ') }}</div>
-    </div>
-    <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
-      <h3 class="font-bold text-[var(--primary)] mb-2">成本线</h3>
-      {% for c in (j.cost_line or {}).get('items', []) %}<div class="mb-1">· {{ human_text(c.desc, names) }}</div>{% endfor %}
-      {% if j.cost_line and j.cost_line.note %}<div class="mt-2 text-[10px] text-[var(--amber)]">{{ human_text(j.cost_line.note, names) }}</div>{% endif %}
-    </div>
-    <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
-      <h3 class="font-bold text-[var(--primary)] mb-2">时间维度</h3>
-      <div class="mb-1"><b>短期</b> {{ (j.time_dimension or {}).short }}</div>
-      <div><b>中长期</b> {{ (j.time_dimension or {}).long }}</div>
-    </div>
-    <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
-      <h3 class="font-bold text-[var(--primary)] mb-2">基调附注</h3>
-      <div class="research-prose">{{ human_text(j.tone_note or '—', names) }}</div>
-    </div>
+<details class="judgment-research-details"><summary>研究背景与边界</summary>
+  <div class="judgment-context-grid">
+    {% if j.contradiction.text %}<div class="judgment-context-wide"><h3>研究背景</h3><p>{{ human_text(j.contradiction.text, names) }}</p></div>{% endif %}
+    {% if j.time_dimension %}<div><h3>观察周期</h3><p>{{ human_text(j.time_dimension.short, names) }}</p><p>{{ human_text(j.time_dimension.long, names) }}</p></div>{% endif %}
+    {% if j.marginal_focus %}<div><h3>下一步关注的变化</h3>{% for item in research.marginal_focus|default(j.marginal_focus) %}<p>{{ human_text(item.desc, names) }}</p>{% if item.metrics %}{{ item_metrics(item) }}{% endif %}{% endfor %}</div>{% endif %}
+    {% if j.cost_line %}<div><h3>成本与估值边界</h3>{% for item in research.cost_items|default(j.cost_line.get('items',[])) %}<p>{{ human_text(item.desc, names) }}</p>{% if item.metrics %}{{ item_metrics(item) }}{% endif %}{% endfor %}<p>{{ human_text(j.cost_line.note, names) }}</p></div>{% endif %}
+    {% if j.pricing_power %}<div><h3>价格驱动</h3><p>{{ human_text(j.pricing_power.key, names) }}</p><p>{{ human_text(j.pricing_power.short|join('；'), names) }}</p><p>{{ human_text(j.pricing_power.long|join('；'), names) }}</p></div>{% endif %}
+    {% if j.survey_notes %}<div class="judgment-context-wide"><h3>调研补充</h3><p>{{ human_text(j.survey_notes, names) }}</p></div>{% endif %}
   </div>
-  <details class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm text-xs">
-    <summary class="cursor-pointer font-bold text-[var(--primary)]">调研信息差原文</summary>
-    <pre class="research-prose mt-2 whitespace-pre-wrap font-sans text-[var(--text-muted)]">{{ human_text(j.survey_notes, names) }}</pre>
-  </details>
-</section>
+</details>
+<details class="judgment-research-details"><summary>资料关联与版本</summary>
+  <div class="judgment-context-grid"><div><h3>关联指标</h3>{% for identifier in j.whitelist %}<p>{{ indicator_name(identifier, names) }}</p>{% endfor %}</div>
+  <div><h3>已保存研究</h3>{% for version in versions %}<p>{{ version.written_at }} · {{ version.status }} · {{ version.author }}</p>{% endfor %}</div></div>
+</details>
 {% endif %}
-
-{% if versions %}
-<section class="space-y-3">
-  <h2 class="text-sm font-bold flex items-center gap-2">
-    <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">06</span>
-    版本记录
-  </h2>
-  <p class="text-[11px] text-[var(--text-muted)]">{% if restricted_view and restricted_data.versions_truncated %}已显示最近 50 个版本；更早记录仍保留，受限视角不开放任意历史查询。{% elif restricted_view %}展示主人已分享的版本记录。{% else %}显示最近50个版本；可在“管理研究逻辑”的版本比较中按版号查看更早记录。{% endif %}</p>
-  <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] overflow-hidden shadow-sm overflow-x-auto">
-    <table class="w-full text-left text-xs">
-      <thead class="bg-[var(--surface-soft)] text-[11px] font-semibold text-[var(--text-muted)] border-b border-[var(--line)]">
-        <tr><th class="py-2 px-3">版本</th><th class="py-2 px-3">状态</th><th class="py-2 px-3">作者</th>
-          <th class="py-2 px-3">写定</th><th class="py-2 px-3">复核日</th><th class="py-2 px-3">保存时间</th></tr>
-      </thead>
-      <tbody class="divide-y divide-[var(--line)]">
-        {% for v in versions %}
-        <tr class="hover:bg-[var(--surface-soft)]"><td class="py-2 px-3 font-bold tabular">{{ v.written_at }} 保存的研判</td>
-          <td class="py-2 px-3">{{ v.status }}</td><td class="py-2 px-3">{{ v.author }}</td>
-          <td class="py-2 px-3 tabular">{{ v.written_at }}</td><td class="py-2 px-3 tabular">{{ v.review_due }}</td>
-          <td class="py-2 px-3 tabular text-[var(--text-muted)]">{{ v.created_at | local }}</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-{% endif %}
+</div>
 {% if restricted_view %}{% include "_restricted_entries.html" %}{% else %}{% include "_judgment_manager.html" %}{% endif %}
 {% endblock %}

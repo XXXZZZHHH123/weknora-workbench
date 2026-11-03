@@ -1,5 +1,6 @@
 import type { EChartsCoreOption } from 'echarts/core';
 import type { ExcelPreviewChart } from './excelPreviewCharts';
+import { CHART_SERIES_COLORS } from './chartPalette';
 
 export function excelSourceChartOption(chart: ExcelPreviewChart, style: { color: string; muted: string; border: string; font: string }, view: { connectGaps?: boolean } = {}) {
   const notices: string[] = [];
@@ -90,7 +91,7 @@ export function excelSourceChartOption(chart: ExcelPreviewChart, style: { color:
   const safeText = (value: unknown) => String(value ?? '').replace(/[{}]/g, '');
   const option = {
     animation: false, backgroundColor: 'transparent', textStyle: { fontFamily: style.font, color: style.color },
-    color: ['#A84427', '#3A7180', '#8B749E', '#77874D', '#C09243', '#6D8D9C', '#B66C79'],
+    color: [...CHART_SERIES_COLORS],
     title: { text: chart.title, left: 12, top: 8, textStyle: { fontFamily: style.font, fontSize: 15, fontWeight: 500, color: style.color } },
     legend: { type: 'scroll', bottom: 4, left: 12, right: 12, textStyle: { color: style.muted, fontFamily: style.font }, animation: false },
     tooltip: { trigger: 'axis', renderMode: 'richText', confine: true, textStyle: { fontFamily: style.font },

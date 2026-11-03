@@ -22,11 +22,18 @@ def test_restricted_legacy_judgment_shows_verified_owner_full_page(canonical):
     assert response.status_code == 200, response.text
     assert 'researcher original thesis' in response.text
     assert 'Human record' in response.text
-    assert '主逻辑与证伪条件' in response.text and '版本记录' in response.text
+    # Legacy ownership grants the same full research view as an isolated workbench.
+    assert 'id="judgment-hypotheses"' in response.text
+    assert 'data-hypothesis="bull"' in response.text and 'data-hypothesis="bear"' in response.text
+    assert '什么变化会证伪多方判断' in response.text and '什么变化会证伪空方判断' in response.text
+    assert '资料关联与版本' in response.text and '已保存研究' in response.text
     assert 'another-user' not in response.text
     assert '历史记录尚未归属' not in response.text
     assert 'data-open-logic' not in response.text and 'judgment-manager.js' not in response.text
-    assert state['pages'] == before and not state.get('bounded_requests')
+    assert state['pages'] == before
+    assert state['bounded_requests'] and all(request['series_ids'] == [SERIES]
+        and request['view_module'] == 'judgments' and request['include_invalid'] is True
+        for request in state['bounded_requests'])
 
 
 def test_restricted_legacy_judgment_fetches_only_its_bound_threshold(canonical):

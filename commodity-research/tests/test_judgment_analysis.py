@@ -58,6 +58,51 @@ def test_missing_source_rules_are_not_carried_or_invented():
     assert result.payload.whitelist == [] and result.payload.priority_rule is None
 
 
+def test_null_optional_description_is_empty_without_inventing_a_judgment_or_mutating_input():
+    body = document()
+    body['judgment']['pricing_power'] = None
+    original = copy.deepcopy(body)
+    # Typed imports remain strict; only the model-draft boundary accepts the
+    # equivalent representation of an absent optional descriptive section.
+    with pytest.raises(AnalysisError):
+        validate(body)
+    assessed = assess_draft(body, TEXT, CATALOG, variety='TEST', actor='researcher',
+                            written_at=date(2030, 1, 2))
+    assert body == original
+    absent = assess_draft(document(), TEXT, CATALOG, variety='TEST', actor='researcher',
+                          written_at=date(2030, 1, 2))
+    assert assessed.result.payload.model_dump() == absent.result.payload.model_dump()
+    assert assessed.document['judgment']['pricing_power'] == {}
+    assert assessed.issues == [{'code': 'empty_description', 'path': '/judgment/pricing_power',
+        'message': '未提供定价权说明，保留为空；未推断分类或补写研究观点', 'severity': 'normalized'}]
+    assert validate(assessed.document).payload.model_dump() == assessed.result.payload.model_dump()
+
+
+@pytest.mark.parametrize('value', [[], '', False, 0, 'unavailable',
+                                  {'category': 'unsupported-category'}, {'short': [None]}])
+def test_description_empty_compatibility_does_not_hide_wrong_types_or_categories(value):
+    body = document()
+    body['judgment']['pricing_power'] = value
+    original = copy.deepcopy(body)
+    with pytest.raises(AnalysisError):
+        assess_draft(body, TEXT, CATALOG, variety='TEST', actor='researcher')
+    assert body == original
+
+
+@pytest.mark.parametrize('change', [
+    lambda d: d['judgment']['marginal_focus'][0].update(series_id='unknown'),
+    lambda d: d['judgment']['contradiction']['bull']['evidence'][0].update(value=99),
+    lambda d: d['judgment'].update(cost_line={'value': 99}),
+    lambda d: d['judgment'].update(extra='unsupported'),
+])
+def test_empty_description_never_licenses_unknown_identity_facts_or_protocol(change):
+    body = document()
+    body['judgment']['pricing_power'] = None
+    change(body)
+    with pytest.raises(AnalysisError):
+        assess_draft(body, TEXT, CATALOG, variety='TEST', actor='researcher')
+
+
 def test_cost_line_references_receive_same_id_and_unit_validation():
     value = document()
     value['judgment']['cost_line'] = {'type': 'cash', 'items': [{'desc': 'Cost basis', 'series_id': 'foreign'}]}

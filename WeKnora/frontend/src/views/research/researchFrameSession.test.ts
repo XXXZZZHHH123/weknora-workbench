@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => null, removeItem() {} } })
 Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { pathname: '/research', href: '' } } })
-import { authenticateResearchFrame, researchFramePath } from './researchFrameSession'
+import { analysisJudgmentId, authenticateResearchFrame, researchFramePath } from './researchFrameSession'
 
 test('cookie exchanges finish in order across account changes; stale calls never mount', async () => {
   const original = globalThis.fetch
@@ -46,4 +46,21 @@ test('navigation is a direct scoped path containing no auth or bootstrap hop', (
   assert.equal(researchFramePath('','home'),'')
   assert.equal(researchFramePath('workbench-a','../other'),'')
   assert.equal(researchFramePath('workbench-a','toString'),'')
+})
+
+test('analysis results reopen through the authorized native judgment page', () => {
+  assert.equal(researchFramePath('workbench-a','judgment','analysis-job-1'),'/research/workbenches/workbench-a/sn/judgment?analysis_job=analysis-job-1')
+  assert.equal(researchFramePath('workbench-a','home','analysis-job-1'),'/research/workbenches/workbench-a/')
+  assert.equal(researchFramePath('workbench-a','judgment',['analysis-job-1']),'/research/workbenches/workbench-a/sn/judgment')
+  assert.equal(researchFramePath('workbench-a','judgment','../secret'),'/research/workbenches/workbench-a/sn/judgment')
+  assert.equal(researchFramePath('workbench-a','judgment',undefined,'42'),'/research/workbenches/workbench-a/sn/judgment?judgment_id=42')
+  assert.equal(analysisJudgmentId('9223372036854775807'),'9223372036854775807')
+  assert.equal(analysisJudgmentId('9223372036854775808'),'')
+  assert.equal(analysisJudgmentId(9007199254740993),'')
+})
+
+test('diagram results reopen through their own authorized page and preserve only valid layout identifiers', () => {
+  assert.equal(researchFramePath('workbench-a','diagram','diagram-job-1'),'/research/workbenches/workbench-a/sn/diagram?analysis_job=diagram-job-1')
+  assert.equal(researchFramePath('workbench-a','diagram',undefined,undefined,'7'),'/research/workbenches/workbench-a/sn/diagram?template=7')
+  assert.equal(researchFramePath('workbench-a','diagram','../invalid',undefined,'-1'),'/research/workbenches/workbench-a/sn/diagram')
 })

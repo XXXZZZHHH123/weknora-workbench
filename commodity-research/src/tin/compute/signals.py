@@ -11,11 +11,13 @@ LLM 只在下游 compose_brief 出现，而它看到的 signals 已经是算好�
 import operator
 from contextvars import ContextVar
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tin.compute.engine import day_end, latest_obs
+from tin.compute.rule_values import decimal_difference, decimal_value
 from tin.config import SHANGHAI
 from tin.export.board import threshold_radar
 from tin.judgments.service import current as current_judgment
@@ -135,12 +137,13 @@ def _threshold_signals(session: Session, j: Judgment, variety: str, d: date) -> 
 
 # ---------- 证伪条件 ----------
 
-def _quantities(kind: str, points: list[Observation]) -> list[tuple[Observation, float]]:
+def _quantities(kind: str, points: list[Observation]) -> list[tuple[Observation, Decimal]]:
     """把观测序列折成被比较的量。change 的语义是与上一个数据点的差值，
     因此 n 期 change 要 n+1 个点，首个点只当基期不参与判定。"""
     if kind == "change":
-        return [(cur, cur.value - prev.value) for prev, cur in zip(points, points[1:], strict=False)]
-    return [(p, p.value) for p in points]
+        return [(cur, decimal_difference(cur.value, prev.value))
+                for prev, cur in zip(points, points[1:], strict=False)]
+    return [(p, decimal_value(p.value)) for p in points]
 
 
 def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal:
@@ -154,13 +157,19 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
         # 保存时 schemas.judgment.Falsifier 已经把表达式限死成这个形状；走到这里说明有人
         # 绕过服务层直接写库。宁可让流水线响，也不能把「算不了」悄悄渲染成「未触发」。
         raise ValueError(f"证伪条件 {f['id']} 的表达式无法解析：{f['expression']!r}")
-    kind, op, target = m.group(1), m.group(2), float(m.group(3))
+    kind, op, target = m.group(1), m.group(2), decimal_value(m.group(3))
     indicator = session.get(Indicator, f['series_id'])
     confirmed = f.get('unit_confirmed')
+    from tin.compute.rule_caliber import rule_unit, rule_frequency, unit_present
+    try:
+        current_unit = rule_unit(f, indicator.unit if indicator else None)
+        rule_frequency(f, indicator.frequency if indicator else None)
+    except ValueError:
+        current_unit = None
     if indicator is not None and (not isinstance(confirmed, str) or not confirmed.strip()
-            or not indicator.unit or indicator.unit != confirmed):
+            or current_unit is None or current_unit != confirmed):
         gap = (f"指标 {f['series_id']} 已确认单位为「{confirmed or '未注明'}」，"
-               f"当前单位为「{indicator.unit or '未注明'}」；单位不一致或未注明，无法比对")
+               f"当前单位为「{indicator.unit or '未注明'}」；单位或统计频率不一致、未确认，无法比对")
         return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [], gap)
     need = int(f.get("consecutive_periods") or 1)
     want = need + 1 if kind == "change" else need
@@ -175,6 +184,13 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
         evidence = [_evidence(p, f"已有数据点：{p.value}", p.value, note="不足以判定") for p in points]
         return _upsert(session, j.id, f["id"], FALSIFIER, d, "数据缺失", None, evidence, gap)
 
+    if any(point.value is None or point.status != '正常' for point in points):
+        return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [],
+                       '证伪条件所需窗口含缺失或未确认观测，未跳过缺失期计算')
+    if any(unit_present((point.caliber_snapshot or {}).get('unit'))
+            and point.caliber_snapshot['unit'] != confirmed for point in points):
+        return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [],
+            '观测窗口的真实单位与本条确认口径不一致，未进行数值换算')
     quantities = _quantities(kind, points)
     hits = [OPS[op](q, target) for _p, q in quantities]
     evidence = []
@@ -186,7 +202,7 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
         evidence.append(_evidence(p, f"{_iso(p.as_of)[:10]} {moved}", p.value,
                                   note=f"{f['expression']} {'成立' if hit else '不成立'}"))
     state = "触发" if all(hits) else "未触发"
-    return _upsert(session, j.id, f["id"], FALSIFIER, d, state, quantities[-1][1], evidence, None)
+    return _upsert(session, j.id, f["id"], FALSIFIER, d, state, float(quantities[-1][1]), evidence, None)
 
 
 # ---------- 对外入口 ----------
@@ -205,7 +221,11 @@ def evaluate_preview(session: Session, variety: str, d: date) -> list[Signal]:
         require_owned(session, judgment)
         if len(judgment.thresholds) + len(judgment.falsifiers) > 256:
             raise ValueError('当前规则超过256条，请拆分研究逻辑后试算')
-        windows = {rule['series_id']: 1 for rule in judgment.thresholds}
+        from tin.compute.moving_average import moving_average_points
+        windows = {}
+        for rule in judgment.thresholds:
+            windows[rule['series_id']] = max(windows.get(rule['series_id'], 0),
+                moving_average_points(rule['value'], rule['operator']))
         for rule in judgment.falsifiers:
             match = EXPRESSION.fullmatch(rule['expression'].strip())
             periods = rule.get('consecutive_periods', 1)

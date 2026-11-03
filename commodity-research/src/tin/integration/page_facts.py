@@ -19,9 +19,11 @@ LEGACY_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z')
 
 
 @contextmanager
-def page_read_scope(module, *, series_ids=None, day=None, template_id=None, points_per_series=None, judgment_id=None):
+def page_read_scope(module, *, series_ids=None, day=None, template_id=None, points_per_series=None, judgment_id=None, include_invalid=False):
     if module not in MODULES:
         raise HTTPException(400, '研究页面模块无效')
+    if type(include_invalid) is not bool or include_invalid and module != 'judgments':
+        raise HTTPException(400, '缺失观测窗口仅用于研究判断')
     if points_per_series is not None and (type(points_per_series) is not int or not 1 <= points_per_series <= 2000):
         raise HTTPException(400, '页面所需观测点数无效')
     if judgment_id is not None and (module != 'judgments' or type(judgment_id) is not int
@@ -48,8 +50,10 @@ def page_read_scope(module, *, series_ids=None, day=None, template_id=None, poin
         template_id = previous['template_id'] if template_id is None else template_id
         points_per_series = previous.get('points') if points_per_series is None else points_per_series
         judgment_id = previous.get('judgment_id') if judgment_id is None else judgment_id
+        include_invalid = include_invalid or previous.get('include_invalid', False)
     marker = _page.set({'module':module,'series_ids':series_ids,'day':day,'template_id':template_id,
-                       'points':points_per_series,'judgment_id':judgment_id})
+                       'points':points_per_series,'judgment_id':judgment_id,
+                       **({'include_invalid':True} if include_invalid else {})})
     try:
         yield
     finally:
@@ -177,6 +181,12 @@ def _judgment_windows(payload):
     from tin.judgments.service import _refs
     from tin.schemas.judgment import EXPRESSION
     windows={identifier:2 for _,_,identifier in _refs(payload)}
+    from tin.schemas.judgment import MovingAverageTarget
+    from tin.compute.moving_average import CROSSING_OPERATORS
+    for rule in payload.thresholds:
+        if isinstance(rule.value, MovingAverageTarget):
+            windows[rule.series_id] = max(windows[rule.series_id],
+                rule.value.window + int(rule.operator in CROSSING_OPERATORS))
     for rule in payload.falsifiers:
         match=EXPRESSION.fullmatch(rule.expression.strip())
         if match is None or not 1<=rule.consecutive_periods<=120:
@@ -197,7 +207,8 @@ def _saved_plan(scope, request):
         row = session.get(SourceMapping,mapping_key(session,ORIGINS_KEY))
         origins = (row.config or {}).get('origins',{}) if row else {}
         if request['series_ids'] is not None:
-            return [dict(ids=list(request['series_ids']),points=request.get('points') or 2,explicit=True)],origins
+            return [dict(ids=list(request['series_ids']),points=request.get('points') or 2,explicit=True,
+                         **({'include_invalid':True} if request.get('include_invalid') else {}))],origins
         if module == 'market':
             history, contracts = history_config(session),contract_config(session)
             return [dict(ids=core_config(session),points=2),
@@ -215,7 +226,10 @@ def _saved_plan(scope, request):
         if module in {'home','reports','judgments','strategies'}:
             from tin.judgments.service import current,to_payload
             from tin.integration.research_profile import research_variety
-            if module == 'judgments' and request.get('judgment_id') is not None:
+            if module == 'judgments' and getattr(scope, 'restricted', False):
+                from tin.web.restricted_views import shared_judgment
+                judgment = shared_judgment(session, scope, request.get('judgment_id'))
+            elif module == 'judgments' and request.get('judgment_id') is not None:
                 from tin.web.judgment_panels import selected_judgment
                 judgment = selected_judgment(session, request['judgment_id'], scope=scope)
             else:
@@ -223,6 +237,12 @@ def _saved_plan(scope, request):
             if judgment:
                 payload = to_payload(judgment)
                 windows.update(_judgment_windows(payload))
+                if module == 'judgments' and (scope.scope_version == 2 or getattr(scope, 'restricted', False)):
+                    windows = {identifier: max(24, points) for identifier, points in windows.items()}
+                    from tin.schemas.judgment import MovingAverageTarget
+                    for rule in payload.thresholds:
+                        if isinstance(rule.value, MovingAverageTarget):
+                            windows[rule.series_id] = max(windows[rule.series_id], min(121, rule.value.window + 23))
         contract_plan = None
         if module in {'strategies','reports'}:
             if module == 'strategies':
@@ -239,9 +259,11 @@ def _saved_plan(scope, request):
         grouped = {}
         for identifier,points in windows.items():
             requested = request.get('points')
-            count = max(requested, points) if module == 'reports' and requested else requested or points
+            preserve = module == 'reports' or module == 'judgments' and (scope.scope_version == 2 or getattr(scope, 'restricted', False))
+            count = max(requested, points) if preserve and requested else requested or points
             grouped.setdefault(count,[]).append(identifier)
-        plans=[dict(ids=values,points=points) for points,values in sorted(grouped.items())]
+        preserve = module == 'judgments' and (scope.scope_version == 2 or getattr(scope, 'restricted', False))
+        plans=[dict(ids=values,points=points,**({'include_invalid':True} if preserve else {})) for points,values in sorted(grouped.items())]
         if contract_plan and contract_plan['ids']:plans.append(contract_plan)
         if len(set(windows)|set(contract_plan['ids'] if contract_plan else []))>256:
             raise HTTPException(413,'当前页面绑定超过256项，请分开研究页面')
@@ -250,7 +272,7 @@ def _saved_plan(scope, request):
         return plans,origins
 
 
-def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=None, origins=None, direct_only=False):
+def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=None, origins=None, direct_only=False, include_invalid=False):
     identifiers = list(dict.fromkeys(identifiers))
     query_ids=[identifier for identifier in identifiers if isinstance(identifier,str) and SERIES.fullmatch(identifier)]
     legacy_unavailable=set(identifiers)-set(query_ids)
@@ -279,6 +301,10 @@ def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=No
         'view_module':module,'points_per_series':points,
         'as_of':day or datetime.now(SHANGHAI).date().isoformat(), 'allow_unavailable':not direct_only}
     if same_day: body['same_day_series_ids'] = same_day
+    if include_invalid:
+        if module != 'judgments' or scope.scope_version != 2 or same_day:
+            raise HTTPException(400, '缺失观测仅允许新版研究判断的明确窗口')
+        body['include_invalid'] = True
     result = _request(scope,body)
     unavailable = result.get('unavailable_series_ids',[])
     if (not isinstance(unavailable,list) or any(identifier not in query_ids for identifier in unavailable)
@@ -303,10 +329,13 @@ def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=No
                 or spec.get('source_id') != source['source_id'] or spec.get('source_type') != source['source_type']):
             raise HTTPException(503,'页面字段来源与授权绑定不一致')
     seen,counts = set(),{}
+    if include_invalid and result.get('include_invalid') is not True:
+        raise HTTPException(503, '来源服务未提供完整的均线观测窗口')
     for row in result['rows']:
+        missing = include_invalid and row.get('value_status') == 'missing' and row.get('value') is None if isinstance(row, dict) else False
         if (not isinstance(row,dict) or row.get('series_id') not in identifiers
-                or type(row.get('value')) not in {int,float} or not math.isfinite(row['value'])
-                or row.get('value_status') not in {'valid','ok','正常'}
+                or not missing and (type(row.get('value')) not in {int,float} or not math.isfinite(row['value'])
+                or row.get('value_status') not in {'valid','ok','正常'})
                 or not isinstance(row.get('date'),str) or row['date'] > body['as_of']
                 or (row['series_id'],row['date']) in seen):
             raise HTTPException(503,'页面取值包含未授权或重复观测')
@@ -343,10 +372,20 @@ def projected_page_session(engine, scope, **kwargs):
     request = _page.get() or {'module':'home','series_ids':None,'day':None,'template_id':None}
     plans, origins = _saved_plan(scope,request)
     rows, fields, versions, totals, unavailable, calendars, source_versions = [], {}, [], {}, set(), [], {}
+    legacy_snapshots = {}
     for plan in plans:
         if not plan['ids']: continue
-        result = bounded_facts(scope,plan['ids'],request['module'],day=request['day'],points=plan['points'],
-            same_day=plan.get('same_day'),origins=origins,direct_only=plan.get('explicit',False))
+        if scope.scope_version != 2 and getattr(scope, 'restricted', False) and request['module'] == 'judgments':
+            result = _legacy_shared_window(scope, plan, origins, request['day'])
+        else:
+            result = bounded_facts(scope,plan['ids'],request['module'],day=request['day'],points=plan['points'],
+                same_day=plan.get('same_day'),origins=origins,direct_only=plan.get('explicit',False),include_invalid=plan.get('include_invalid',False))
+        if scope.scope_version != 2:
+            for field in result['indicators']:
+                source, dataset = field['source_knowledge_id'], field['dataset_id']
+                if source in legacy_snapshots and legacy_snapshots[source] != dataset:
+                    raise HTTPException(409, '研判来源在不同必要窗口读取期间已变化，请刷新')
+                legacy_snapshots[source] = dataset
         for binding_id,source_version in result.get('source_versions',{}).items():
             if binding_id in source_versions and source_versions[binding_id]!=source_version:
                 raise HTTPException(409,'页面不同必要窗口的来源快照已变化，请刷新后重试')
@@ -369,7 +408,8 @@ def projected_page_session(engine, scope, **kwargs):
     version = hashlib.sha256(json.dumps([scope.sources_revision,versions],separators=(',',':')).encode()).hexdigest()
     decoded = [{**row,**{key:fields[row['series_id']].get(key) for key in ('source_knowledge_id','dataset_id','source_series_id')}} for row in rows]
     page = {'version':version,'indicators':list(fields.values()),'datasets':[],'rows':decoded,'total':len(decoded),
-            'offset':0,'next_offset':None,'truncated':False}
+            'offset':0,'next_offset':None,'truncated':False,
+            **({'include_invalid':True} if any(plan.get('include_invalid') for plan in plans) else {})}
     connection = _projection_engine(engine).connect()
     try:
         _clear_projection(connection)
@@ -384,3 +424,34 @@ def projected_page_session(engine, scope, **kwargs):
         return session
     except BaseException:
         connection.invalidate();connection.close();raise
+
+
+def _legacy_shared_window(scope, plan, origins, day):
+    """Only owner-saved IDs and their recorded origins enter a legacy projection."""
+    from tin.web.judgment_charts import _legacy_points, _metric
+    day = date.fromisoformat(day) if day else datetime.now(SHANGHAI).date()
+    rows, fields, parts, snapshots, unavailable = [], [], [], {}, []
+    permitted = {(scope.knowledge_base_id, scope.knowledge_base_tenant_id),
+        *((source['knowledge_base_id'], source['tenant_id']) for source in scope.additional_knowledge_bases)}
+    for identifier in plan['ids']:
+        origin = origins.get(identifier)
+        if (not SERIES.fullmatch(identifier) or not isinstance(origin, dict)
+                or (origin.get('knowledge_base_id'), origin.get('tenant_id')) not in permitted):
+            unavailable.append(identifier)
+            continue
+        result = _legacy_points(scope, identifier, day, plan['points'], origins)
+        _metric(result, identifier, day, plan['points'])
+        field = result['indicators'][0]
+        key = (field.get('source_knowledge_id'), field.get('dataset_id'), field.get('source_series_id'))
+        if any(not isinstance(value, str) or not value for value in key):
+            raise HTTPException(503, '研判来源字段身份不完整，未展示历史副本')
+        source = field['source_knowledge_id']
+        if source in snapshots and snapshots[source] != field['dataset_id']:
+            raise HTTPException(409, '研判来源在读取期间已变化，请刷新')
+        snapshots[source] = field['dataset_id']
+        fields.append(field)
+        rows.extend(result['rows'])
+        parts.append(result['version'])
+    version = hashlib.sha256(json.dumps(parts, separators=(',', ':')).encode()).hexdigest()
+    return {'version': version, 'rows': rows, 'indicators': fields, 'include_invalid': True,
+            'unavailable_series_ids': unavailable}

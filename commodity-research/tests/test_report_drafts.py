@@ -32,6 +32,20 @@ def document(**changes):
     return result
 
 
+def seed_reference(client, state):
+    """The projected prose is mocked; the fenced source is a real owned row."""
+    from tin.judgments.service import save_version
+    from tin.schemas.judgment import JudgmentIn
+    from tin.web.research_references import remember_record_scope
+    client.get(URL)
+    with state['storage'](state['scope']) as session:
+        row = save_version(session, JudgmentIn(variety='TEST', author='first', written_at=date(2026, 1, 2), contradiction={}), actor='first')
+        row.id, row.version = 18, 3
+        session.flush()
+        remember_record_scope(session, 'judgment', str(row.id))
+        session.commit()
+
+
 @pytest.fixture
 def reports(tmp_path, monkeypatch):
     from tin.web import report_drafts
@@ -148,6 +162,7 @@ def test_report_write_acl_cannot_be_bypassed_with_a_draft(headers, status, repor
 
 def test_selected_references_freeze_only_explicit_real_revision_projection(reports):
     client, state = reports
+    seed_reference(client, state)
     ref = {'kind': 'judgment', 'id': '18', 'revision': 3, 'section': 'research'}
     saved = client.post(URL, json={'draft': document(references=[ref])})
     assert saved.status_code == 201, saved.text
@@ -177,6 +192,7 @@ def test_lost_reference_permissions_do_not_return_frozen_quotations(reports, mon
     from tin.web import report_drafts
     from tin.web.report_view import readable_markdown
     client, _state = reports
+    seed_reference(client, _state)
     ref = {'kind': 'judgment', 'id': '18', 'revision': 3, 'section': 'research'}
     assert client.post(URL, json={'draft': document(references=[ref])}).status_code == 201
     def denied(*_args):

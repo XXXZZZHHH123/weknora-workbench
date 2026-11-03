@@ -2,14 +2,20 @@
 from dataclasses import dataclass
 from copy import deepcopy
 from datetime import date
-from decimal import Decimal, DecimalException, localcontext
+from decimal import Decimal
 import json
 import math
 import re
-import unicodedata
 from pydantic import ValidationError
-from tin.schemas.judgment import EXPRESSION, JudgmentIn
+from tin.schemas.judgment import EXPRESSION, JudgmentIn, MovingAverageTarget
+from tin.compute.moving_average import sma_source_window
 from tin.judgments.service import _refs
+from tin.judgments.numbers import (quoted_quantities, check_rule_number, _SCALAR, _arrays, _width,
+    starts_chinese_scaled_quantity, chinese_quantity_continuation, observation_periods,
+    period_matches_frequency, _COMPARISON_SUFFIXES, _logical_clause_boundary, prose_review)
+from tin.judgments.markdown_protocol import (
+    exported_rules, quoted_rule_records, threshold_signature, falsifier_signature,
+)
 
 SOURCE_BYTES = 48 * 1024
 OUTPUT_BYTES = 96 * 1024
@@ -29,6 +35,163 @@ def _error(message, code, path):
     raise AnalysisError(message, code=code, path=path)
 
 
+def _quote_continuation(original, end, quote, units):
+    """Inspect only a quantity's adjoining token, never a later source amount."""
+    tail = original[end:]
+    if not tail:
+        return ''
+    units = {_width(unit).strip() for unit in units if isinstance(unit, str) and unit.strip()}
+    units.update({'%', '‰', '‱'})
+    normalized = _width(quote)
+    following = _width(tail).lstrip(' \t')
+    leading = len(tail) - len(tail.lstrip(' \t'))
+    explicit = [unit for unit in units if normalized.rstrip().endswith(unit)]
+    unit_prefix = [unit for unit in units if following.startswith(unit)]
+    trimmed_end = end - (len(normalized) - len(normalized.rstrip()))
+    extends_unit = any(len(actual) > len(short) and actual.startswith(short)
+        and _width(original[trimmed_end - len(short):]).startswith(actual)
+        for short in explicit for actual in units)
+    if not extends_unit and _logical_clause_boundary(following):
+        return ''
+    if not extends_unit and unit_prefix:
+        actual = max(unit_prefix, key=len)
+        if _logical_clause_boundary(following[len(actual):]):
+            # Retain the complete adjoining unit, then stop at punctuation;
+            # numbers in another clause must never become evidence here.
+            return tail[:leading + len(actual)]
+    wrapped = following[:1] in {'(', '['} and (
+        any(following[1:].lstrip().startswith(unit) for unit in units)
+        or following[1:].lstrip()[:1].isascii() and following[1:].lstrip()[:1].isalpha())
+    first = following[:1]
+    clause = re.match(r'[^\r\n，。；;!?！？、]*', following[:256])[0]
+    compound = any(char in clause for char in '/^*·×÷⁄∕')
+    comparison = any(following.startswith(suffix) for suffix in _COMPARISON_SUFFIXES)
+    # A bare number can inherit its selected catalog unit. Pure Chinese prose
+    # does not prove an extra unit; model/user binding still owns that meaning.
+    if not (explicit or unit_prefix or wrapped or compound or comparison or first and (
+            first.isascii() and first.isalpha() or first.isnumeric()
+            or first in '.,:+-/*^×÷⁄∕千万元亿')):
+        return ''
+    maximum = max(256, max(map(len, units), default=0) + 2)
+    candidate = tail[:maximum]
+    token = re.match(r'[ \t]*[^\s，。；;!?！？、"“”‘’()（）{}<>=]*', candidate)
+    length = max(leading + 1, token.end())
+    if compound or comparison:
+        length = max(length, leading + len(clause))
+    protected = []
+    for unit in unit_prefix:
+        protected.append((leading, leading + len(unit)))
+        length = max(length, leading + len(unit) + 1)
+    for short in explicit:
+        start = trimmed_end - len(short)
+        for unit in units:
+            if len(unit) > len(short) and unit.startswith(short) and _width(original[start:]).startswith(unit):
+                finish = start + len(unit) - end
+                if finish > 0:
+                    protected.append((0, finish))
+                    length = max(length, finish + 1)
+    raw = candidate[:min(length, maximum)]
+    masked = list(raw)
+    for index, char in enumerate(raw):
+        if char.isnumeric() and not any(start <= index < finish for start, finish in protected):
+            masked[index] = 'x'
+    return ''.join(masked)
+
+
+def _quote_quantity_context(original, quote, values, unit, units):
+    needed = {Decimal(str(value)) for value in values}
+    normalized = _width(quote)
+    matches = list(_SCALAR.finditer(normalized))
+    owner = matches[-1].start() if matches else None
+    if owner is not None:
+        owner = next((start for start, end in _arrays(normalized) if start <= owner < end), owner)
+    offset, occurrences = 0, 0
+    while (start := original.find(quote, offset)) >= 0:
+        occurrences += 1
+        if occurrences > 128:
+            return False
+        offset = start + 1
+        if starts_chinese_scaled_quantity(quote, unit=unit):
+            preceding = _width(original[:start]).rstrip()
+            if preceding and chinese_quantity_continuation(preceding[-1]):
+                return False
+        prefix = _width(original[max(0, start - 1):start])
+        if _SCALAR.match(normalized) and not _SCALAR.match(prefix + normalized, len(prefix)):
+            return False
+        continuation = _quote_continuation(original, start + len(quote), quote, units)
+        if not needed <= quoted_quantities(prefix + quote + continuation, unit=unit, units=units):
+            return False
+        if owner is not None:
+            suffix = quote[owner:]
+            owned = needed & quoted_quantities(suffix, unit=unit, units=units)
+            before = _width(original[max(0, start + owner - 1):start + owner])
+            if not owned <= quoted_quantities(before + suffix + continuation, unit=unit, units=units):
+                return False
+    return bool(occurrences)
+
+
+def _period_quote_context(original, quote, record):
+    full = observation_periods(original)
+    offset, occurrences = 0, 0
+    while (start := original.find(quote, offset)) >= 0:
+        occurrences += 1
+        if occurrences > 128:
+            return False
+        offset = start + 1
+        expected = {**record, 'start': start + record['start'], 'end': start + record['end']}
+        if expected not in full:
+            return False
+    return bool(occurrences)
+
+
+NUMBER_REVIEW_FIELDS = ('kind', 'rule_id', 'series_id', 'unit', 'quote', 'following', 'values', 'rule')
+
+
+def _quantity_evidence(original, quote, values, unit, units):
+    """Return 'verified', 'review' or None (no literal supports these values)."""
+    needed = [Decimal(str(value)) for value in values]
+    if (all(value in quoted_quantities(quote, unit=unit, units=units) for value in needed)
+            and _quote_quantity_context(original, quote, needed, unit, units)):
+        return 'verified'
+    with prose_review():
+        if (all(value in quoted_quantities(quote, unit=unit, units=units) for value in needed)
+                and _quote_quantity_context(original, quote, needed, unit, units)):
+            return 'review'
+    return None
+
+
+def number_review_subject(kind, rule, quote, unit, values, original):
+    """The exact facts a person attests; any later change invalidates it.
+
+    The words right after the quote are part of what the reviewer must see:
+    a short quote can end at 吨 while the source continues with 公里.
+    """
+    start = original.find(quote)
+    tail = original[start + len(quote):start + len(quote) + 40] if start >= 0 else ''
+    dumped = rule.model_dump(mode='json', exclude={'caliber_confirmation'})
+    return {'kind': kind, 'rule_id': rule.id, 'series_id': rule.series_id, 'unit': unit,
+        'quote': quote, 'following': re.match(r'[^\r\n，。；;!?！？]*', tail)[0],
+        'values': [format(Decimal(str(value)).normalize(), 'f') for value in values],
+        'rule': json.dumps(dumped, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}
+
+
+def number_review_source(subject):
+    following = subject.get('following') or ''
+    return '“' + subject['quote'][:300] + '”' + ('（原文紧接：“' + following + '”）' if following else '')
+
+
+def _number_review(subject, confirmations, actor, path):
+    supplied = confirmations.get(subject['rule_id']) if isinstance(confirmations, dict) else None
+    if (isinstance(supplied, dict) and supplied.get('confirmed_by') == actor
+            and {key: supplied.get(key) for key in NUMBER_REVIEW_FIELDS} == subject):
+        return
+    unit = subject['unit'] or '单位未确认'
+    message = ('程序无法自动判断原文数字后的文字是否属于单位：请对照原文' + number_review_source(subject)
+        + '核对数值' + '、'.join(subject['values']) + '（' + unit + '）后确认本条')
+    raise AnalysisError(message, issues=[{'code': 'number_review_required', 'path': path,
+        'message': message, 'number_review': subject}])
+
+
 @dataclass
 class AnalysisResult:
     payload: JudgmentIn
@@ -42,6 +205,8 @@ class DraftAssessment:
     document: dict
     result: AnalysisResult
     issues: list
+    candidate_document: dict | None = None
+    candidate_history: list | None = None
 
 
 def bounded(value, depth=0):
@@ -62,29 +227,41 @@ def bounded(value, depth=0):
             bounded(item, depth + 1)
 
 
-# This is numeric source verification, never business-intent classification.
-QUANTITY = re.compile(r"(?<![0-9A-Za-z_.,])([+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)(?![0-9,.])\s*(万亿|亿|万|千)?")
-SCALES = {None: Decimal(1), '千': Decimal(1000), '万': Decimal(10000),
-          '亿': Decimal(100000000), '万亿': Decimal(1000000000000)}
+def rule_frequency_issues(kind, rule, quote, source_frequency):
+    """Report cadence requirements independently of unit/number failures.
+
+    This is diagnostic only: it never supplies source metadata or validates a
+    rule. Both full validation and review use the same count/cadence syntax.
+    """
+    from tin.compute.rule_caliber import rule_frequency, frequency_kind
+    if not isinstance(rule, dict) or not isinstance(quote, str):
+        return []
+    try:
+        frequency = rule_frequency(rule, source_frequency)
+    except ValueError:
+        return []  # The full validator reports conflicting declarations.
+    if kind == 'thresholds':
+        target = rule.get('value')
+        window = target.get('window') if isinstance(target, dict) and target.get('kind') == 'sma' else None
+        if type(window) is not int or not 2 <= window <= 120:
+            return []
+        daily = re.search(rf'(?<![0-9.+-]){window}\s*日\s*(?:简单移动平均线|移动平均线|均线|线)', quote)
+        if daily and frequency_kind(frequency) != 'day':
+            return [{'code': 'moving_average_frequency', 'field': 'value',
+                'message': '原文要求日均线，所选指标未确认日频，请核对统计周期'}]
+    elif kind == 'falsifiers':
+        count = rule.get('consecutive_periods', 1)
+        if type(count) is not int or not 2 <= count <= 120:
+            return []
+        records = [record for record in observation_periods(quote) if record['count'] == count]
+        if records and not any(period_matches_frequency(record, frequency) for record in records):
+            return [{'code': 'period_frequency', 'field': 'consecutive_periods',
+                'message': '原文连续周期与所选指标的统计频率不一致或频率未确认，请核对日、周、月等口径。'}]
+    return []
 
 
-def quoted_quantities(quote):
-    normalized = unicodedata.normalize('NFKC', quote).replace('−', '-')
-    values = set()
-    for match in QUANTITY.finditer(normalized):
-        try:
-            literal = match.group(1).replace(',', '')
-            if len(literal) > 128: continue
-            with localcontext() as context:
-                context.prec = 128
-                number = Decimal(literal) * SCALES[match.group(2)]
-            if number.is_finite(): values.add(number)
-        except DecimalException:
-            continue
-    return values
-
-
-def validate_analysis(document, original, catalog, *, variety, actor, written_at=None):
+def validate_analysis(document, original, catalog, *, variety, actor, written_at=None, caliber_confirmations=None,
+                      number_confirmations=None):
     if not isinstance(original, str) or not original.strip() or len(original.encode('utf-8')) > SOURCE_BYTES:
         raise AnalysisError('请提供48 KiB以内的完整研究逻辑文本')
     if not isinstance(document, dict) or set(document) != {'judgment', 'binding_units', 'rule_quotes', 'unresolved'}:
@@ -98,6 +275,46 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
     fields = document['judgment']
     if not isinstance(fields, dict) or set(fields) - ALLOWED_FIELDS:
         raise AnalysisError('模型包含不允许的判断字段')
+    # The model never supplies this authority. Only an explicit review mutation
+    # can attach a server-authored declaration to one rule in this preview.
+    from tin.schemas.judgment import CaliberConfirmation
+    from tin.compute.rule_caliber import unit_present, rule_frequency
+    known_units = {row['id']: row.get('unit') for row in catalog}
+    known_frequencies = {row['id']: row.get('frequency') for row in catalog}
+    local_units = {}
+    for kind in ('thresholds', 'falsifiers'):
+        for index, rule in enumerate(fields.get(kind, []) if isinstance(fields.get(kind, []), list) else []):
+            if not isinstance(rule, dict) or rule.get('caliber_confirmation') is None:
+                continue
+            path = f'/judgment/{kind}/{index}/caliber_confirmation'
+            supplied = rule['caliber_confirmation']
+            if (not isinstance(caliber_confirmations, dict)
+                    or caliber_confirmations.get(rule.get('id')) != supplied):
+                _error('人工口径必须由当前用户在确认页面明确核对，不能由模型或导入稿代填', 'unit_confirmation_authority', path)
+            try:
+                declaration = CaliberConfirmation.model_validate(supplied)
+            except ValueError:
+                _error('人工口径的单位、依据或确认记录不完整', 'unit_confirmation_schema', path)
+            sid = rule.get('series_id')
+            if declaration.series_id != sid or declaration.confirmed_by != actor:
+                _error('人工口径不属于当前用户和此指标绑定', 'unit_confirmation_scope', path)
+            if unit_present(known_units.get(sid)) and known_units[sid] != declaration.unit:
+                _error('人工口径不能覆盖来源已登记的不同单位', 'unit_mismatch', path)
+            try:
+                rule_frequency(rule, known_frequencies.get(sid))
+            except ValueError:
+                _error('人工统计频率不能覆盖来源已登记的不同口径，请核对本条规则', 'frequency_confirmation_conflict', path)
+            if sid in local_units and local_units[sid] != declaration.unit:
+                _error('同一研判版本的同一指标不能声明相互矛盾的单位', 'unit_confirmation_conflict', path)
+            local_units[sid] = declaration.unit
+    for kind in ('thresholds', 'falsifiers'):
+        for index, rule in enumerate(fields.get(kind, []) if isinstance(fields.get(kind, []), list) else []):
+            if (isinstance(rule, dict) and rule.get('series_id') in local_units
+                    and not unit_present(known_units.get(rule.get('series_id')))
+                    and rule.get('caliber_confirmation') is None):
+                _error('此规则尚未人工确认缺失的来源单位；其他条目的声明不能代替此绑定',
+                    'unit_metadata_missing', f'/judgment/{kind}/{index}')
+    catalog = [{**row, 'unit': local_units.get(row['id'], row.get('unit'))} for row in catalog]
     for name in ('thresholds', 'falsifiers'):
         rules = fields.get(name, [])
         if not isinstance(rules, list) or len(rules) > 24: raise AnalysisError('研究规则超过本次容量')
@@ -105,8 +322,20 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
             path = f'/judgment/{name}/{index}'
             if not isinstance(rule, dict): raise AnalysisError('研究规则格式无效')
             value = rule.get('value')
-            if name == 'thresholds' and any(type(number) not in (int, float) for number in (value if isinstance(value, list) else [value])):
+            moving = name == 'thresholds' and isinstance(value, dict) and value.get('kind') == 'sma'
+            if moving:
+                try:
+                    MovingAverageTarget.model_validate(value)
+                except ValueError:
+                    _error('均线窗口必须是2至120的整数，且仅支持简单移动平均', 'rule_moving_average', path + '/value')
+            if name == 'thresholds' and not moving and any(type(number) not in (int, float) for number in (value if isinstance(value, list) else [value])):
                 _error('研究规则必须使用有限数字，不能使用布尔值或字符串', 'rule_number_type', path + '/value')
+            if name == 'thresholds' and not moving:
+                try:
+                    for number in value if isinstance(value, list) else [value]:
+                        check_rule_number(number)
+                except ValueError:
+                    _error('研究规则数值超出当前存储精度，未采用舍入值', 'number_precision', path + '/value')
             if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}', str(rule.get('id', ''))):
                 _error('研究规则局部ID无效', 'rule_id', path + '/id')
             if name == 'falsifiers' and (type(rule.get('consecutive_periods', 1)) is not int or not 1 <= rule.get('consecutive_periods', 1) <= 120):
@@ -180,7 +409,8 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
     quantitative = {rule.series_id for rule in [*payload.thresholds, *payload.falsifiers]}
     for sid, unit in units.items():
         expected = known[sid].get('unit')
-        if sid in quantitative and (not isinstance(expected, str) or not expected.strip()):
+        from tin.compute.rule_caliber import unit_present
+        if sid in quantitative and not unit_present(expected):
             _error('量化规则引用指标的目录单位尚未确认', 'unit_metadata_missing', '/binding_units/' + sid)
         if unit != expected or (unit is not None and not isinstance(unit, str)):
             _error('绑定单位与知识库原单位不一致', 'unit_mismatch', '/binding_units/' + sid)
@@ -194,22 +424,160 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
     for identifier, quote in quotes.items():
         if not isinstance(quote, str) or not quote.strip() or quote not in original:
             _error('阈值或证伪条件缺少完整原文中的逐字依据', 'quote_not_in_source', '/rule_quotes/' + identifier)
+    explicit = exported_rules(original)
     for index, rule in enumerate(payload.thresholds):
+        moving = isinstance(rule.value, MovingAverageTarget)
+        if moving:
+            source_records = explicit['thresholds'].get(rule.series_id)
+            signature = threshold_signature(rule.model_dump())
+            quoted = quoted_rule_records(original, quotes[rule.id])
+            if (source_records and not any(record[0] == signature and (record[1] is None or record[1] == units[rule.series_id]) for record in source_records)
+                    or quoted is None or quoted and not any(kind == 'thresholds' and sid == rule.series_id
+                        and record[0] == signature and (record[1] is None or record[1] == units[rule.series_id])
+                        for kind, sid, record in quoted)):
+                _error('均线规则与原文明确记录的指标、条件或周期不一致',
+                       'exported_rule_mismatch', f'/judgment/thresholds/{index}')
+            if not quoted and not sma_source_window(quotes[rule.id], rule.value.window, original):
+                _error('均线周期没有完整的原文依据，请核对MA周期或原文均线条件',
+                       'number_not_in_source', f'/judgment/thresholds/{index}/value')
+            for issue in rule_frequency_issues('thresholds', rule.model_dump(), quotes[rule.id], known[rule.series_id].get('frequency')):
+                _error(issue['message'], issue['code'], f'/judgment/thresholds/{index}/' + issue['field'])
+            continue
         values = rule.value if isinstance(rule.value, list) else [rule.value]
-        source_numbers = quoted_quantities(quotes[rule.id])
-        if any(Decimal(str(value)) not in source_numbers for value in values):
-            _error('阈值数字无法从原文摘录核验；请将缺少明确数字的规则列为待确认项', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
+        source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
+                                           units=[row.get('unit') for row in catalog])
+        records = explicit['thresholds'].get(rule.series_id)
+        signature = threshold_signature(rule.model_dump())
+        quoted = quoted_rule_records(original, quotes[rule.id])
+        matches_source = not records or any(source_signature == signature
+            and (unit is None or unit == units[rule.series_id]) for source_signature, unit in records)
+        matches_quote = quoted is not None and (
+            not records and not quoted or any(kind == 'thresholds' and sid == rule.series_id
+                and record[0] == signature and (record[1] is None or record[1] == units[rule.series_id])
+                for kind, sid, record in quoted))
+        if not matches_source or not matches_quote:
+            _error('规则与引文所在行明确记录的指标、条件、区间或类型不一致，或引文多处定位不一致，未改写或执行',
+                   'exported_rule_mismatch', f'/judgment/thresholds/{index}')
+        unit, all_units = known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]
+        evidence = _quantity_evidence(original, quotes[rule.id], values, unit, all_units)
+        if evidence is None:
+            if any(Decimal(str(value)) not in source_numbers for value in values):
+                _error('阈值数字或单位无法从原文依据核验，请核对指标单位和原文条件', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
+            _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
+                   'unit_context', f'/judgment/thresholds/{index}/value')
+        if evidence == 'review':
+            _number_review(number_review_subject('thresholds', rule, quotes[rule.id], unit, values, original),
+                number_confirmations, actor, f'/judgment/thresholds/{index}/value')
     for index, rule in enumerate(payload.falsifiers):
         match = EXPRESSION.fullmatch(rule.expression)
-        source_numbers = quoted_quantities(quotes[rule.id])
-        if not match or Decimal(match.group(3)) not in source_numbers or (
-                rule.consecutive_periods > 1 and Decimal(rule.consecutive_periods) not in source_numbers):
-            _error('证伪数字或连续期数无法从原文摘录核验；请列为待确认项', 'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
+        directional_zero = bool(match and match.group(1) == 'change' and Decimal(match.group(3)) == 0)
+        source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
+                                           units=[row.get('unit') for row in catalog])
+        records = explicit['falsifiers'].get(rule.series_id)
+        signature = falsifier_signature(rule.model_dump())
+        quoted = quoted_rule_records(original, quotes[rule.id])
+        matches_source = not records or signature in records
+        matches_quote = quoted is not None and (
+            not records and not quoted or ('falsifiers', rule.series_id, signature) in quoted)
+        if not matches_source or not matches_quote:
+            _error('证伪条件与引文所在行明示的指标、比较方式、连续期数、单位或证伪对象不一致，或引文多处定位不一致，未执行',
+                   'falsifier_source_mismatch', f'/judgment/falsifiers/{index}')
+        unit, all_units = known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]
+        evidence = ('verified' if match and directional_zero else
+            _quantity_evidence(original, quotes[rule.id], [Decimal(match.group(3))], unit, all_units) if match else None)
+        if not match or evidence is None and Decimal(match.group(3)) not in source_numbers:
+            value = match.group(3) if match else rule.expression
+            unit = known[rule.series_id].get('unit') or '单位未确认'
+            _error(f'证伪数字{value}（{unit}）暂不能从原文依据核验。确认单位不能代替数值核对，请核对原文中的数量与倍率。',
+                   'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
+        period_records = [record for record in observation_periods(quotes[rule.id])
+            if record['count'] == rule.consecutive_periods] if rule.consecutive_periods > 1 else []
+        if period_records:
+            for issue in rule_frequency_issues('falsifiers', rule.model_dump(), quotes[rule.id], known[rule.series_id].get('frequency')):
+                _error(issue['message'], issue['code'], f'/judgment/falsifiers/{index}/' + issue['field'])
+            compatible = [record for record in period_records
+                if period_matches_frequency(record, rule_frequency(rule.model_dump(), known[rule.series_id].get('frequency')))]
+            if not any(_period_quote_context(original, quotes[rule.id], record) for record in compatible):
+                _error('引文可能截断了连续次数或统计周期，请选取完整原文条件。',
+                    'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
+        if rule.consecutive_periods > 1 and not period_records:
+            # Preserve the precise truncation error, but never borrow a
+            # measurement number as a count of observations.
+            if (Decimal(rule.consecutive_periods) in quoted_quantities(quotes[rule.id])
+                    and not _quote_quantity_context(original, quotes[rule.id], [rule.consecutive_periods], None, [])):
+                _error('引文可能截断了连续次数或统计周期，请选取完整原文条件。',
+                    'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
+            _error(f'原文依据暂不能核验连续{rule.consecutive_periods}期，请核对原文中的连续次数或统计周期。',
+                   'number_not_in_source', f'/judgment/falsifiers/{index}/consecutive_periods')
+        if evidence is None:
+            _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
+                   'unit_context', f'/judgment/falsifiers/{index}/expression')
+        if evidence == 'review':
+            _number_review(number_review_subject('falsifiers', rule, quotes[rule.id], unit, [Decimal(match.group(3))],
+                original), number_confirmations, actor, f'/judgment/falsifiers/{index}/expression')
     return AnalysisResult(payload, units, quotes,
                           [item.model_dump() for item in payload.unstructured])
 
 
-def assess_draft(document, original, catalog, *, variety, actor, written_at=None):
+def unique_condition_kinds(items):
+    """Use only an exact, unambiguous classification from a validated inventory.
+
+    Callers validate source quotations independently. Other kinds participate
+    in ambiguity detection; a non-rule classification is not silently ignored.
+    """
+    claims = {}
+    for item in items if isinstance(items, (list, tuple)) else ():
+        if not isinstance(item, dict):
+            continue
+        quote = item.get('quote')
+        if not isinstance(quote, str) or not quote.strip():
+            continue
+        kind = item.get('kind')
+        claims.setdefault(quote, set()).add(kind if isinstance(kind, str) else None)
+    return {quote: next(iter(kinds)) for quote, kinds in claims.items()
+            if len(kinds) == 1 and next(iter(kinds)) in {'threshold', 'falsifier'}}
+
+
+def _normalize_pending_types(document, original, condition_kinds, issues):
+    """Keep literal untyped conditions as prose, never infer a rule from words."""
+    from collections.abc import Mapping
+
+    if not isinstance(original, str):
+        return document
+    result = document
+    for index, item in enumerate(document['unresolved']):
+        if not isinstance(item, dict) or item.get('rule_kind') is not None:
+            continue
+        condition = item.get('business_condition')
+        if not isinstance(condition, str) or not condition.strip() or condition not in original:
+            continue
+        if result is document:
+            result = deepcopy(document)
+        target = result['unresolved'][index]
+        kind = condition_kinds.get(condition) if isinstance(condition_kinds, Mapping) else None
+        if isinstance(kind, str) and kind in {'threshold', 'falsifier'}:
+            target['rule_kind'] = kind
+            issues.append({'code': 'condition_type_completed', 'path': f'/unresolved/{index}/rule_kind',
+                'message': '依据独立原文清单补全待核对条件类型；仅保留为文字，未生成量化规则。',
+                'severity': 'normalized'})
+            continue
+        text = target.get('text')
+        if not isinstance(text, str):
+            # Invalid descriptive shapes still belong to the strict validator.
+            continue
+        if condition not in text:
+            text += ('\n\n' if text else '') + condition
+        if len(text) > 4000:
+            _error('待核对说明与完整条件合并超过4000字，请精简说明；未截断原文条件',
+                   'condition_text_capacity', f'/unresolved/{index}/text')
+        target.update(text=text, business_condition=None, rule_kind=None)
+        issues.append({'code': 'condition_type_pending', 'path': f'/unresolved/{index}/rule_kind',
+            'message': '原文条件尚未明确是观察阈值还是证伪条件，已保留为待核对文字，当前不执行。',
+            'severity': 'warning'})
+    return result
+
+
+def assess_draft(document, original, catalog, *, variety, actor, written_at=None, condition_kinds=None):
     """Keep verified rules; explicitly quarantine invalid rules without making them executable.
 
     Envelope/identity/observation failures remain fatal. This is not a JSON repair
@@ -227,20 +595,34 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
     except (TypeError, ValueError, UnicodeError, RecursionError):
         _error('研究逻辑包含无效数值或结构', 'document_schema', '/')
     bounded(document)
+    issues = []
+    original_candidate = deepcopy(document)
+    # Model responses may spell an absent optional descriptive section as
+    # JSON null. Its existing empty-object default carries no classification,
+    # evidence, binding or number; normalize only that absence at this boundary.
+    # Typed imports and every non-null invalid shape remain strict.
+    if document['judgment'].get('pricing_power', {}) is None:
+        document = deepcopy(document)
+        document['judgment']['pricing_power'] = {}
+        issues.append({'code': 'empty_description', 'path': '/judgment/pricing_power',
+            'message': '未提供定价权说明，保留为空；未推断分类或补写研究观点', 'severity': 'normalized'})
     known = {row['id']: row for row in catalog}
     fields, declared = document['judgment'], document['binding_units']
-    issues = []
 
     def check_ids(value, path='/judgment'):
         if isinstance(value, dict):
             for key, child in value.items():
                 if key == 'series_id' and child is not None and (not isinstance(child, str) or child not in known):
                     _error('引用指标不属于本次已授权真实目录', 'unknown_series_id', path + '/series_id')
+                if key == 'related_series_ids' and (not isinstance(child, list) or len(child) > 7
+                        or any(not isinstance(sid, str) or sid not in known for sid in child)):
+                    _error('附加指标不属于本次已授权真实目录或超过7项', 'unknown_series_id', path + '/related_series_ids')
                 check_ids(child, path + '/' + key)
         elif isinstance(value, list):
             for index, child in enumerate(value): check_ids(child, path + '/' + str(index))
 
     check_ids(fields)
+    check_ids(document['unresolved'], '/unresolved')
     if any(sid not in known for sid in declared):
         _error('单位声明包含未知指标ID', 'unknown_series_id', '/binding_units')
     whitelist = fields.get('whitelist', [])
@@ -258,6 +640,10 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
     if len(ids) != len(set(ids)):
         _error('阈值和证伪的局部ID不能重复', 'rule_id_duplicate', '/judgment')
 
+    # Only the model-draft boundary tolerates missing condition metadata. Typed
+    # imports remain strict and only verified rules enter executable arrays.
+    document = _normalize_pending_types(document, original, condition_kinds, issues)
+
     # Validate descriptive structure and fact protections independently of rules.
     skeleton = deepcopy(document)
     skeleton['judgment'].update(thresholds=[], falsifiers=[], priority_rule=None)
@@ -270,7 +656,8 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
     except ValidationError as error:
         raise AnalysisError('研究逻辑描述字段格式无效', issues=[{
             'code': 'field_schema', 'path': '/judgment/' + '/'.join(map(str, item['loc'])),
-            'message': '描述字段类型或枚举不符合协议'} for item in error.errors(include_url=False)[:16]]) from None
+            'message': '描述字段类型或枚举不符合协议', 'error_type': item['type']}
+            for item in error.errors(include_url=False, include_input=False, include_context=False)[:16]]) from None
     descriptive_ids = {sid for _, _, sid in _refs(descriptive)}
     skeleton['binding_units'] = {sid: known[sid].get('unit') for sid in descriptive_ids}
     for sid in descriptive_ids:
@@ -289,6 +676,9 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
             trial = deepcopy(skeleton)
             trial['judgment'][kind] = [rule]
             sid = rule.get('series_id')
+            for related_id in rule.get('related_series_ids', []):
+                if related_id in declared:
+                    trial['binding_units'][related_id] = declared[related_id]
             if sid is not None:
                 trial['binding_units'].pop(sid, None)
                 if sid in declared: trial['binding_units'][sid] = declared[sid]
@@ -326,6 +716,7 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
         kept = [identifier for identifier in parsed.order if identifier in remaining]
         cleaned['judgment']['priority_rule'] = {**priority, 'order': kept} if kept else None
     final_ids = descriptive_ids | {r['series_id'] for rules in valid.values() for r in rules}
+    final_ids.update(sid for rules in valid.values() for rule in rules for sid in rule.get('related_series_ids', []))
     extra = set(declared) - final_ids
     if extra:
         issues.append({'code': 'redundant_unit_declaration', 'path': '/binding_units',
@@ -359,4 +750,4 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
         _error('待确认条目超过32项，请缩小资料后重试；未静默丢失规则', 'unresolved_capacity', '/unresolved')
     cleaned['unresolved'].extend(notes)
     result = validate_analysis(cleaned, original, catalog, variety=variety, actor=actor, written_at=written_at)
-    return DraftAssessment(cleaned, result, issues)
+    return DraftAssessment(cleaned, result, issues, original_candidate, [deepcopy(original_candidate)])

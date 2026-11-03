@@ -2,6 +2,7 @@
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -58,7 +59,8 @@ def _owner_id(session, scope):
 
 def _owned(session, scope, model):
     owner = _owner_id(session, scope)
-    return select(model).where(model.researcher_id == owner) if owner is not None else select(model).where(false())
+    query = select(model).where(model.researcher_id == owner) if owner is not None else select(model).where(false())
+    return query.where(Judgment.status != '已删除') if model is Judgment else query
 
 
 @contextmanager
@@ -90,11 +92,12 @@ def _directory_proofs(session, scope, groups):
                     cache['artifact_proofs'][identifier] = 'foreign' if outside else 'current' if has_url else 'unassigned'
         if groups.get('judgment'):
             owner = _owner_id(session, scope)
-            latest_variety = session.scalar(select(Judgment.variety).where(Judgment.researcher_id == owner)
+            latest_variety = session.scalar(select(Judgment.variety).where(Judgment.researcher_id == owner,
+                Judgment.status != '已删除')
                 .order_by(Judgment.created_at.desc(), Judgment.id.desc()).limit(1)) if owner is not None else None
             if latest_variety is not None:
                 cache['visible_judgment'] = session.scalar(select(Judgment.id).where(Judgment.researcher_id == owner,
-                    Judgment.variety == latest_variety).order_by(case((Judgment.status == '生效', 0), else_=1),
+                    Judgment.variety == latest_variety, Judgment.status != '已删除').order_by(case((Judgment.status == '生效', 0), else_=1),
                     Judgment.version.desc()).limit(1))
     marker = _directory_scope.set(cache)
     try:
@@ -105,6 +108,8 @@ def _directory_proofs(session, scope, groups):
 
 def record_scope_status(session, scope, kind, identifier, record=None):
     """Scope proof complements, rather than replaces, the caller's owner query."""
+    if kind == 'judgment' and record is not None and _get(record, 'status') == '已删除':
+        return 'deleted'
     if scope is None or session.info.get('workbench_id') != scope.workbench_id:
         return 'foreign'
     if str(session.info.get('weknora_user_id') or '') != scope.identity.user_id:
@@ -246,7 +251,72 @@ def list_references(session, scope, kind, limit=50, offset=0):
             'offset': offset, 'truncated': offset+limit < total}
 
 
-def resolve_reference(session, scope, kind, reference_id, revision=None):
+def declared_references(payload, *, strict=True):
+    """Read explicit authored pins without depending on a strategy model class.
+
+    Indicator/file citations are traceability only and are deliberately not
+    interpreted as judgment identities. Their source checks belong to the
+    strategy input boundary.
+    """
+    if not isinstance(payload, dict):
+        return []
+    references = []
+    for key in ('judgment_reference', 'reference'):
+        if payload.get(key) is not None:
+            references.append(payload[key])
+    rows = payload.get('references', [])
+    if not isinstance(rows, list):
+        if strict:
+            raise HTTPException(422, '研究引用列表格式无效')
+        rows = []
+    if len(rows) > 32:
+        raise HTTPException(413, '研究引用数量过多，请精简引用')
+    references.extend(rows)
+    citations = payload.get('citations', [])
+    if not isinstance(citations, list):
+        if strict:
+            raise HTTPException(422, '策略引用列表格式无效')
+        citations = []
+    if len(citations) > 32:
+        raise HTTPException(413, '策略引用超过32项，请精简引用')
+    for item in citations:
+        if not isinstance(item, dict) or not isinstance(item.get('kind'), str):
+            if strict:
+                raise HTTPException(422, '策略引用格式无效')
+            continue
+        if item['kind'] == 'judgment_condition':
+            references.append(item)
+        elif item['kind'] not in {'indicator', 'knowledge_file'} and strict:
+            raise HTTPException(422, '策略引用类型无效')
+    context = payload.get('source_context')
+    research = context.get('research') if isinstance(context, dict) else None
+    if isinstance(research, dict) and research.get('id') is not None:
+        references.append({'kind': 'judgment', 'id': str(research['id']), 'revision': research.get('version')})
+    return references
+
+
+def resolve_judgment_condition(session, scope, reference):
+    """Resolve one immutable, explicitly typed condition inside a fixed judgment."""
+    if hasattr(reference, 'model_dump'):
+        reference = reference.model_dump()
+    if (not isinstance(reference, dict) or reference.get('kind') != 'judgment_condition'
+            or not isinstance(reference.get('id'), str)
+            or type(reference.get('revision')) is not int or reference['revision'] < 1
+            or reference.get('rule_kind') not in ('threshold', 'falsifier')
+            or not isinstance(reference.get('rule_id'), str)
+            or not 1 <= len(reference['rule_id']) <= 64):
+        raise HTTPException(422, '请明确选择研判版本及其中的阈值或证伪条件')
+    actual = resolve_reference(session, scope, 'judgment', reference['id'], reference['revision'])
+    field = 'thresholds' if reference['rule_kind'] == 'threshold' else 'falsifiers'
+    matches = [rule for rule in actual['payload'].get(field, [])
+               if isinstance(rule, dict) and rule.get('id') == reference['rule_id']]
+    if len(matches) != 1:
+        raise HTTPException(404, '所选研判版本中不存在该条件，请重新选择')
+    return {**actual, 'kind': 'judgment_condition', 'rule_kind': reference['rule_kind'],
+        'rule_id': reference['rule_id'], 'condition': deepcopy(matches[0])}
+
+
+def resolve_reference(session, scope, kind, reference_id, revision=None, *, include_declared=False):
     _guard(session, scope, kind);_revision(revision)
     if kind == 'judgment':
         identifier = _positive_id(reference_id)
@@ -279,6 +349,10 @@ def resolve_reference(session, scope, kind, reference_id, revision=None):
             if chosen is None:raise HTTPException(404, '所选策略版本未保留')
         from tin.web.research_strategy import ResearchStrategyCard
         try:
+            authored = json.loads(chosen.body)
+        except (ValueError, TypeError, RecursionError):
+            authored = None
+        try:
             card = ResearchStrategyCard.model_validate_json(chosen.body)
             data = card.model_dump(mode='json', exclude_none=True)
             labels = [('thesis', '适用范围与目标'), ('watch_for', '执行前核对'), ('trigger', '适用／触发'),
@@ -291,12 +365,18 @@ def resolve_reference(session, scope, kind, reference_id, revision=None):
                     'status': chosen.status}
         identifiers = []
         linked = data.get('judgment_reference')
-        if isinstance(linked, dict) and 'judgments' in scope.view_modules:
+        if not include_declared and isinstance(linked, dict) and 'judgments' in scope.view_modules:
             child = resolve_reference(session, scope, 'judgment', linked.get('id'), linked.get('revision'))
             identifiers = child['series_ids']
-        return {**metadata, 'payload': data, 'source_ids': list(chosen.source_ids),
+        result = {**metadata, 'payload': data, 'source_ids': list(chosen.source_ids),
                 'series_ids': identifiers, 'body_text': text[:2000], 'body_text_truncated': len(text) > 2000,
                 'summary': _text(data.get('thesis') or text, 800)}
+        if include_declared:
+            # Publication/deletion callers walk these pins themselves. Reading
+            # the original JSON prevents an invalid card's prose fallback from
+            # silently swallowing nested, version-pinned references.
+            result['declared_references'] = declared_references(authored)
+        return result
     if reference_id.startswith('plan:'):
         identifier = _positive_id(reference_id.removeprefix('plan:'))
         row = session.scalar(_owned(session, scope, Strategy).where(Strategy.id == identifier))
@@ -308,10 +388,13 @@ def resolve_reference(session, scope, kind, reference_id, revision=None):
         identifiers = [leg.get('quote_series_id') for leg in data.get('legs') or [] if isinstance(leg, dict)]
         identifiers += [item.get('series_id') for item in data.get('evidence') or [] if isinstance(item, dict)]
         text = '\n'.join(str(data.get(field) or '') for field in ['thesis', 'invalidation', 'review_at'])
-        return {**_plan_metadata(row), 'payload': data, 'source_ids': [],
+        result = {**_plan_metadata(row), 'payload': data, 'source_ids': [],
                 'series_ids': list(dict.fromkeys(value for value in identifiers if isinstance(value, str))),
                 'body_text': text[:2000], 'body_text_truncated': len(text) > 2000,
                 'summary': _text(data.get('thesis'), 800)}
+        if include_declared:
+            result['declared_references'] = declared_references(data)
+        return result
     raise HTTPException(404, '策略引用不存在')
 
 

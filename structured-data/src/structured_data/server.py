@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field, ConfigDict, create_model, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from .store import DataStore, dump
-from .imports import ImportManager
+from .imports import ImportManager, NativeSourceVersionConflict
 from .workspaces import WorkspaceRegistry, Identity, current_identity, valid_knowledge_base_id
 from .review_worker import run_review_task, MAX_REQUEST_BYTES
 from .review_errors import error_location
@@ -828,7 +828,10 @@ def create_app(data_dir: str | Path | None = None):
         native = await load_source(source_id, request.state.verified_authorization, identity, MAX_UPLOAD,
                                    allowed_types=('pdf', 'xlsx'))
         if native['file_name'].lower().endswith('.xlsx'):
-            existing = await run_in_threadpool(manager.find_native_source, native)
+            try:
+                existing = await run_in_threadpool(manager.find_native_source, native, use_reviewed_mappings=None)
+            except NativeSourceVersionConflict as exc:
+                raise HTTPException(409, str(exc)) from None
             return {'source_knowledge_id': source_id, 'file_type': 'xlsx', 'import_result': existing}
         catalog = await run_in_threadpool(PDFTableStore(registry.directory() / 'pdf-tables').list_drafts)
         matches = [item for item in catalog['drafts'] if item.get('source', {}).get('knowledge_id') == source_id

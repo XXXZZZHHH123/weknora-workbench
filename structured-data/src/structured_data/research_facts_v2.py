@@ -14,7 +14,7 @@ from .research_facts import _hash, _bounded_parameters, _bounded_rows, _same_day
 
 def parameters(body):
     allowed = {'source_bindings','catalog_only','offset','limit','search','series_ids','version',
-               'view_module','as_of','points_per_series','same_day_series_ids','allow_unavailable','source_kind'}
+               'view_module','as_of','points_per_series','same_day_series_ids','allow_unavailable','source_kind','include_invalid'}
     if not isinstance(body, dict) or set(body) - allowed:
         raise ValueError('多来源读取只接受明确绑定、目录分页或页面所需字段')
     sources = body.get('source_bindings')
@@ -31,7 +31,7 @@ def parameters(body):
     if requested is not None and (not isinstance(requested, str) or not re.fullmatch('[a-f0-9]{64}', requested)):
         raise ValueError('多来源快照版本无效')
     if catalog:
-        if {'view_module','as_of','points_per_series','same_day_series_ids'} & body.keys():
+        if {'view_module','as_of','points_per_series','same_day_series_ids','include_invalid'} & body.keys():
             raise ValueError('目录接口不接受观测取值参数')
         offset, limit, search = body.get('offset', 0), body.get('limit', 200), body.get('search', '')
         if (type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200
@@ -134,6 +134,7 @@ def _read_current(registry, body, sources, leases):
     result = {'bounded':True,'indicators':fields,'rows':rows,'total':len(rows),'offset':0,
         'next_offset':None,'truncated':False,'version':version,
         'series_totals':totals,'calendar':calendar,'source_versions':dict(parts),'unavailable_series_ids':sorted(unavailable),
+        **({'include_invalid':True} if selection.get('include_invalid') else {}),
         **({'selected_date':selection['selected_date']} if 'same_day_series_ids' in selection else {})}
     if body.get('version') is not None and body['version'] != version:
         raise HTTPException(409, '来源快照在读取期间发生变化，请重新读取')

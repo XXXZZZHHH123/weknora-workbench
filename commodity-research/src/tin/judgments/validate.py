@@ -11,7 +11,7 @@ def activation_blockers(j: JudgmentIn) -> list[str]:
             out.append(f"主逻辑{label}缺失：必须填写多空两边，每边至少一条证据")
     if not j.marginal_focus:
         out.append("短线边际至少一条")
-    elif any(m.series_id is None for m in j.marginal_focus):
+    elif any(not m.series_id and not m.related_series_ids for m in j.marginal_focus):
         out.append("短线边际的每一条都必须关联一个已登记指标")
     if not (j.pricing_power.short and j.pricing_power.long):
         out.append("边际定价权必须分别填写短期与中长期")

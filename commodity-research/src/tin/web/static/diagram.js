@@ -1,7 +1,7 @@
 /* 动态产业图画布。
  *
- * 手写 SVG 而不是引图库：这张图是分层固定结构（供给 → 精锡 → 需求），
- * 连线由层次自动生成、用户只拖节点，通用图库的自动布局与路由算法都用不上，
+ * 手写 SVG 而不是引图库：布局与研究角色由显式配置保存，
+ * 连线保留物料流与研究影响的区别，
  * 而项目没有构建步骤，多一个几百 KB 的依赖不划算。
  */
 
@@ -120,14 +120,23 @@ function dgRender() {
   const edges = document.getElementById("dg-edges");
   const groups = document.getElementById("dg-groups");
   if (!nodes || !dg.layout) return;
+  const regions = document.getElementById("dg-regions");
+  if (regions) regions.innerHTML = (window.DiagramGeometry?.regions(dg.layout) || []).map(region => `
+    <g class="dg-research-region" pointer-events="none">
+      <rect x="${region.x}" y="${region.y}" width="${region.w}" height="${region.h}" rx="14"
+        fill="var(--surface)" fill-opacity=".35" stroke="var(--line-strong)" stroke-width="1.2"/>
+      <text x="${region.x + 14}" y="${region.y + 15}" font-size="11" font-weight="650" fill="var(--text-muted)">${dgEsc(region.label)}</text>
+    </g>`).join("");
 
-  // 分组框画在最底层：它是背景分区，不是节点，也不参与连线。
+  // 分组先作为背景分区绘制，真实的分组/节点关系随后叠在线层上。
   // 按层级从浅到深排序，深的画在上面，嵌套关系才看得出来。
   groups.innerHTML = dg.layout.nodes.filter(dgIsGroup)
     .map((g) => ({ g, d: dgDepth(g.id) }))
     .sort((a, b) => a.d - b.d)
     .map(({ g, d }) => {
-      const c = DG_DEPTH[Math.min(d, DG_DEPTH.length - 1)];
+      const c = g.role === 'target'
+        ? {...DG_DEPTH[0], stroke: 'var(--primary)', width: 2.8, dash: '', fill: 'var(--primary-soft)', fillOpacity: .8}
+        : DG_DEPTH[Math.min(d, DG_DEPTH.length - 1)];
       const trail = d ? dgTrail(g.id) : "";
       // 标签做成实心色块：分组框的底色很淡，纯文字压在上面读不出来，
       // 而层级本身也要一眼可辨——靠色块颜色，不靠字号差那 0.8px。
@@ -157,6 +166,7 @@ function dgRender() {
     // 二十来条线互相穿插，谁流向谁反而看不出来。现在分组也能连——
     // 物料流向本来就是环节之间的事，不是某个具体指标之间的事。
     const group = dgIsGroup(a) && dgIsGroup(b);
+    const influence = e.kind === 'influence';
     const geo = dgEdgeGeom(a, b);
     const d = geo.d;
     // 编辑态在箭头附近放一个 ×：要删一条线，Shift 再连一次这种"知道了才会用"的
@@ -171,11 +181,12 @@ function dgRender() {
               stroke-linecap="round"/>
         <title>删除「${dgEsc(a.label)} → ${dgEsc(b.label)}」</title></g>`;
     }
-    return `<path d="${d}"
-      fill="none" stroke="var(--text-muted)" stroke-width="${group ? 3 : 1.6}"
-      opacity="${group ? 0.9 : 0.5}" stroke-linecap="round"
-      ${group ? "" : 'stroke-dasharray="5 4"'}
-      marker-end="url(#dg-arrow${group ? "" : "-thin"})"/>${kill}`;
+    return `<path d="${d}" data-edge-kind="${influence ? 'influence' : 'flow'}"
+      fill="none" stroke="${influence ? 'var(--blue)' : 'var(--text-muted)'}" stroke-width="${group && !influence ? 3 : 1.6}"
+      opacity="${influence ? .75 : group ? 0.9 : 0.5}" stroke-linecap="round"
+      ${influence ? 'stroke-dasharray="2 5"' : group ? "" : 'stroke-dasharray="5 4"'}
+      marker-end="url(#dg-arrow${group && !influence ? "" : "-thin"})"><title>${
+        dgEsc(influence ? `研究影响：${a.label} → ${b.label}（非物料流）` : `物料流向：${a.label} → ${b.label}`)}</title></path>${kill}`;
   }).join("");
 
   nodes.innerHTML = dg.layout.nodes.filter((n) => !dgIsGroup(n)).map((n) => dgNode(n)).join("");
@@ -218,6 +229,8 @@ function dgTrail(id) {
  * 选法：看两个框中心的相对位置，横向差得多就走左右，纵向差得多就走上下。
  * 贝塞尔的控制点顺着出入方向拉，线才不会在端点处打折。 */
 function dgEdgeGeom(a, b) {
+  const routed = window.DiagramGeometry?.route(dg.layout, a, b);
+  if (routed) return routed;
   const ac = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
   const bc = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
   const dx = bc.x - ac.x, dy = bc.y - ac.y;
@@ -569,8 +582,8 @@ function dgNode(n) {
 function dgApplyTransform() {
   const g = document.getElementById("dg-canvas");
   if (!g) return;
-  for (const id of ["dg-groups", "dg-edges", "dg-nodes"]) {
-    document.getElementById(id).setAttribute(
+  for (const id of ["dg-regions", "dg-groups", "dg-edges", "dg-nodes"]) {
+    document.getElementById(id)?.setAttribute(
       "transform", `translate(${dg.pan.x},${dg.pan.y}) scale(${dg.zoom})`);
   }
   const z = document.getElementById("dg-zoom");
@@ -595,13 +608,15 @@ function dgFit() {
     dgApplyTransform();
     return;
   }
-  const xs = dg.layout.nodes.map((n) => n.x), ys = dg.layout.nodes.map((n) => n.y);
-  const w = Math.max(...dg.layout.nodes.map((n) => n.x + n.w)) - Math.min(...xs);
-  const h = Math.max(...dg.layout.nodes.map((n) => n.y + n.h)) - Math.min(...ys);
-  const pad = 40;
+  const boxes = [...dg.layout.nodes, ...(window.DiagramGeometry?.regions(dg.layout) || [])];
+  const xs = boxes.map((n) => n.x), ys = boxes.map((n) => n.y);
+  const w = Math.max(...boxes.map((n) => n.x + n.w)) - Math.min(...xs);
+  const h = Math.max(...boxes.map((n) => n.y + n.h)) - Math.min(...ys);
+  const top = Math.max(24, (document.getElementById(dg.edit ? "dg-tools" : "dg-views")?.offsetHeight || 0) + 24);
+  const bottom = 48, pad = 40;
   dg.zoom = Math.min((wrap.clientWidth - pad) / Math.max(w, 1),
-                     (wrap.clientHeight - pad) / Math.max(h, 1), 1.4);
-  dg.pan = { x: pad / 2 - Math.min(...xs) * dg.zoom, y: pad / 2 - Math.min(...ys) * dg.zoom };
+                     (wrap.clientHeight - top - bottom) / Math.max(h, 1), 1.4);
+  dg.pan = { x: pad / 2 - Math.min(...xs) * dg.zoom, y: top - Math.min(...ys) * dg.zoom };
   dgApplyTransform();
 }
 
@@ -637,10 +652,12 @@ function dgExitEdit() {
 
 function dgSyncEditUI() {
   const on = dg.edit;
+  const tidy = document.getElementById("dg-tidy");
+  if (tidy) tidy.textContent = window.DiagramGeometry?.canArrange(dg.layout) ? "按研究结构重排" : "整理分组";
   const btn = document.getElementById("dg-edit-btn");
   btn?.classList.toggle("hidden", on);
   for (const [id, hidden] of [["dg-exit", !on], ["dg-save", !on],
-                              ["dg-tools", !on], ["dg-hint", !on]]) {
+                              ["dg-tools", !on], ["dg-hint", !on], ["dg-views", on]]) {
     document.getElementById(id)?.classList.toggle("hidden", hidden);
   }
   if (on && !dg.__clean) dg.__clean = dgSnapshot();   // 进编辑时记下干净版本，供放弃改动时还原
@@ -1255,7 +1272,13 @@ function dgRenameActive() {
 /* ---------- Markdown 导入导出 ---------- */
 
 async function dgOpenMarkdown() {
+  const retained = window.dgHasBackgroundGeneration?.();
   const operation = window.dgCancelGeneration?.();
+  if (retained) {
+    toggleDrawer('dg-md-drawer', true);
+    await window.dgLoadGenerator?.();
+    return true;
+  }
   dg.generatedVersion = null;
   // 导的是**画布此刻的样子**，不是库里存的那一份。
   // 按 template_id 从库里导，画布上刚改的结构不在里面——在图上加了个节点，
@@ -1298,6 +1321,7 @@ async function dgImportMarkdown(into) {
   });
   const data = await res.json();
   if (!res.ok) { msg.textContent = data.detail || "失败"; return; }
+  window.dgGenerationApplied?.(data.saved?.id || dg.layout.__id);
   // 导入只给框和标签，绑定要靠「建议参考」逐个补——把这件事说清楚，别让人以为导完就完了
   if (!data.replaced) {
     msg.textContent = `已建「${data.saved.name}」，其中 ${data.unbound} 个节点尚未绑定指标，正在跳转…`;
@@ -1339,6 +1363,13 @@ function dgTidyGroups() {
   const tops = dg.layout.nodes.filter((n) => !n.parent || !ids.has(n.parent));
   if (!tops.length) { showToast("图是空的"); return; }
 
+  const research = window.DiagramGeometry?.arrange(dg.layout);
+  if (research) {
+    dg.layout.nodes = research.nodes;
+    dg.dirty = true; dgSyncSave(); dgRender(); dgFit();
+    showToast("已按研究结构重排，可撤销；保存后生效");
+    return;
+  }
   let arranged = 0;
   for (const r of tops.filter(dgIsGroup)) arranged += dgArrange(r.id);
 
@@ -1377,7 +1408,7 @@ function dgAxisDate(ticks) {
   return forms[forms.length - 1];
 }
 
-function dgChart(points, unit, w = 420, h = 180) {
+function dgChart(points, unit, w = 420, h = 180, customColor) {
   // 带坐标轴的走势图。只画一条序列——单位与量级不同的序列叠在一张图上会互相淹没，
   // 而双轴是明令禁用的（01 §4.6）。要比趋势走「对比」视图的归一化。
   if (!points || points.length < 2) return "";
@@ -1391,8 +1422,7 @@ function dgChart(points, unit, w = 420, h = 180) {
   const X = (i) => PAD.l + (i / (points.length - 1)) * iw;
   const Y = (v) => PAD.t + ih - ((v - lo) / (hi - lo)) * ih;
   const d = points.map((p, i) => `${i ? "L" : "M"} ${X(i).toFixed(1)} ${Y(p.value).toFixed(1)}`).join(" ");
-  const rising = vals[vals.length - 1] >= vals[0];
-  const color = rising ? "var(--up)" : "var(--down)";
+  const color = window.ChartPalette.color(0, customColor);
 
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => lo + (hi - lo) * f);
   const grid = ticks.map((v) => `
@@ -1567,7 +1597,7 @@ async function dgOpenDetail(nodeId) {
     ${d.history.length > 1 ? `<div class="py-3 border-b border-[var(--line)]">
       <div class="text-[10px] font-semibold text-[var(--text-muted)] mb-1">
         近 ${d.history.length} 期走势（${dgEsc(d.history[0].as_of)} ~ ${dgEsc(d.history[d.history.length - 1].as_of)}）</div>
-      ${dgChart(d.history, d.unit, 420, 180)}</div>` : ""}
+      ${dgChart(d.history, d.unit, 420, 180, d.color)}</div>` : ""}
 
     <div class="py-3 border-b border-[var(--line)] text-[11px]">
       <div class="text-[10px] font-semibold text-[var(--text-muted)] mb-1">口径</div>
@@ -1623,7 +1653,6 @@ function dgCopy(t) {
 
 /* ---------- 多序列对比（#2） ---------- */
 
-const DG_COMPARE_COLORS = ["var(--primary)", "var(--amber)", "var(--blue)", "var(--alert)"];
 
 function dgSyncCompareBtn() {
   // 对比篮子原来没有任何常驻入口：加进去之后抽屉一关就找不回来，也看不出里面有几条。
@@ -1740,7 +1769,7 @@ async function dgRenderCompare() {
     // （从升水变贴水、从缺口变过剩）才是要看的东西。
     const [a, b] = loaded.map(byDayOf);
     series = [{ name: `${loaded[0].name} − ${loaded[1].name}`, unit: loaded[0].unit,
-                color: "var(--primary)", series_id: null,
+                color: window.ChartPalette.color(0), series_id: null,
                 pts: days.map((d) => ({ as_of: d, value: a[d] - b[d] })) }];
     head = `<div class="px-1 pb-2 text-[11px]">
       <b>差值</b>：${dgEsc(loaded[0].name)} − ${dgEsc(loaded[1].name)}，
@@ -1749,7 +1778,7 @@ async function dgRenderCompare() {
     series = loaded.map((s, i) => {
       const byDay = byDayOf(s);
       const base = byDay[days[0]] || 1;
-      return { ...s, color: DG_COMPARE_COLORS[i % 4],
+      return { ...s, color: window.ChartPalette.color(i, s.color),
                pts: days.map((d) => ({ as_of: d, value: (byDay[d] / base) * 100 })) };
     });
     head = `<div class="px-1 pb-2 text-[11px] text-[var(--amber)]">
@@ -1785,8 +1814,8 @@ async function dgRenderCompare() {
 
   // 图例始终列出篮子里的全部序列——差值模式下也要能把其中一条摘掉
   const legend = loaded.map((s, i) => {
-    const color = mode === "diff" ? (i ? "var(--text-muted)" : "var(--primary)")
-                                  : DG_COMPARE_COLORS[i % 4];
+    const color = mode === "diff" ? (i ? "var(--text-muted)" : window.ChartPalette.color(0))
+                                  : series[i].color;
     // 归一化模式右侧给区间涨跌幅（图上读不出来）；差值模式给最新原值（图上画的是差，
     // 两条各自多少反而看不见了）。
     let tail;

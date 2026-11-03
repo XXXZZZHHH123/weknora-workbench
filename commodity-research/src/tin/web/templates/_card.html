@@ -115,7 +115,7 @@
       {% if m.change %}<div class="text-[10px] font-medium {{ 'text-[var(--up)]' if not m.change.startswith('−') and not m.change.startswith('-') else 'text-[var(--down)]' }}">较前值 {{ m.change }}</div>{% endif %}
     </div>
     <svg class="w-20 h-7 overflow-visible shrink-0" viewBox="0 0 100 36" preserveAspectRatio="none" role="img" aria-label="{{ m.name }} 最近 {{ m.count }} 个观测走势">
-      <polyline points="{{ m.points }}" fill="none" stroke="var(--primary)" stroke-width="2" vector-effect="non-scaling-stroke"/>
+      <polyline points="{{ m.points }}" fill="none" stroke="var(--chart-series-1)" stroke-width="2" vector-effect="non-scaling-stroke"/>
     </svg>
   </div>
   <div class="text-[10px] text-[var(--text-muted)] tabular border-t border-[var(--line)] pt-1 flex justify-between">

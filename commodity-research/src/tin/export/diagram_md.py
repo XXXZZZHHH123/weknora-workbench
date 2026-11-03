@@ -30,6 +30,7 @@
 """
 
 import re
+from collections import defaultdict
 
 BIND = re.compile(r"<!--\s*bind:\s*([A-Za-z0-9_.一-鿿-]+)\s*-->")
 # `agg: sum` 对全体直接子节点；`agg: sum(甲, 乙)` 只算括号里点名的那几个。
@@ -44,6 +45,11 @@ ID_TAG = re.compile(r"<!--\s*id:\s*(.*?)\s*-->")
 ID_START = re.compile(r"<!--\s*id:")
 PARENT_TAG = re.compile(r"<!--\s*parent:\s*(.*?)\s*-->")
 PARENT_START = re.compile(r"<!--\s*parent:")
+RESEARCH_ROLES = frozenset({'target', 'supply', 'demand', 'macro', 'inventory', 'balance', 'reference'})
+ROLE_TAG = re.compile(r"<!--\s*role:\s*([a-z]+)\s*-->")
+ROLE_START = re.compile(r"<!--\s*role:")
+RELATION_TAG = re.compile(r"<!--\s*relation:\s*(flow|influence)\s*-->")
+RELATION_START = re.compile(r"<!--\s*relation:")
 
 # 画布坐标：一列分组、组内节点按缩进分列
 COL_W, ROW_H, PAD = 164, 80, 22
@@ -115,13 +121,18 @@ def parse(text: str) -> dict:
     title = None
     lines, reserved = _id_lines(text)
     used: set[str] = set(reserved)
-    flows: list[tuple[str, list[str]]] = []   # (原行, 名称序列)
+    flows: list[tuple[str, list[str], str]] = []
 
     for raw, identifier, root_node in lines:
         if not raw.strip():
             continue
         if (m := HEAD.match(raw)):
             level, label = len(m.group(1)), m.group(2)
+            roles = ROLE_TAG.findall(label)
+            if ROLE_START.search(label):
+                if len(roles) != 1 or roles[0] not in RESEARCH_ROLES or level != 2:
+                    raise MarkdownError('研究角色只能在顶层分组标注一次，并使用支持的角色')
+                label = ROLE_TAG.sub('', label).strip()
             agg = AGG.search(label)
             label = AGG.sub("", label).strip()
             if level == 1 and title is None:
@@ -129,20 +140,30 @@ def parse(text: str) -> dict:
                 continue
             current = {"label": label, "level": level, "items": [],
                        "reference_id": identifier,
+                       **({'role': roles[0]} if roles else {}),
                        "agg": agg.group(1) if agg else None,
                        "agg_members": ([m.strip() for m in (agg.group(2) or "").split("、" if "、" in (agg.group(2) or "") else ",") if m.strip()]
                                        if agg and agg.group(2) else None)}
             groups.append(current)
             continue
+        if ROLE_START.search(raw):
+            raise MarkdownError('研究角色只能标注在顶层分组标题')
         if not ITEM.match(raw) and FLOW_SEP.search(raw):
+            relation = RELATION_TAG.findall(raw)
+            if RELATION_START.search(raw):
+                if len(relation) != 1:
+                    raise MarkdownError('连线关系须明确为flow或influence，且只能标注一次')
+                raw = RELATION_TAG.sub('', raw).strip()
             parts = [p.strip() for p in FLOW_SEP.split(raw.strip())]
             if any(p.startswith("@") for p in parts) and any(not p for p in parts):
                 raise MarkdownError("显式 id 流向不能缺少端点")
             parts = [p for p in parts if p]
             if len(parts) >= 2:
-                flows.append((raw.strip(), parts))
+                flows.append((raw.strip(), parts, relation[0] if relation else 'flow'))
                 continue
         if (m := ITEM.match(raw)):
+            if RELATION_START.search(raw):
+                raise MarkdownError('研究影响关系只能标注在显式连线上')
             if current is None and not root_node:  # 没有分组标题时给一个默认组
                 current = {"label": "未分组", "level": 2, "items": []}
                 groups.append(current)
@@ -222,6 +243,7 @@ def parse(text: str) -> dict:
                           "x": x - 14, "y": PAD, "w": width, "h": height,
                           "binding": (_agg_binding(g) if g.get("agg")
                                       else {"kind": "none"}), "statics": [],
+                          **({'role': g['role']} if g.get('role') else {}),
                           **({"reference_id": gid} if g.get("reference_id") else {})})
         x += width + PAD
 
@@ -235,7 +257,8 @@ def parse(text: str) -> dict:
             box = {"id": g["gid"], "kind": "group", "label": g["label"], "parent": g["parent"],
                    "x": g["empty_x"], "y": PAD, "w": COL_W + PAD, "h": 60,
                    "binding": (_agg_binding(g) if g.get("agg") else {"kind": "none"}),
-                   "statics": [], "reference_id": g["gid"]}
+                   "statics": [], "reference_id": g["gid"],
+                   **({'role': g['role']} if g.get('role') else {})}
             nodes.insert(0, box)
             boxes[g["gid"]] = box
             continue
@@ -246,6 +269,7 @@ def parse(text: str) -> dict:
                "h": max(k["y"] + k["h"] for k in kids) - min(k["y"] for k in kids) + 48,
                "binding": (_agg_binding(g) if g.get("agg")
                            else {"kind": "none"}), "statics": [],
+               **({'role': g['role']} if g.get('role') else {}),
                **({"reference_id": g["gid"]} if g.get("reference_id") else {})}
         nodes.insert(0, box)
         boxes[g["gid"]] = box
@@ -254,7 +278,7 @@ def parse(text: str) -> dict:
     by_id = {n["id"]: n for n in nodes}
     id_references = set()
     id_mode = bool(reserved or root_items
-                   or any(p.startswith("@") for _, parts in flows for p in parts)
+                   or any(p.startswith("@") for _, parts, _ in flows for p in parts)
                    or any(str(m).startswith("@") for n in nodes
                           for m in (n.get("binding") or {}).get("members", [])))
     label_to_id: dict[str, str] = {}
@@ -294,7 +318,8 @@ def parse(text: str) -> dict:
     for n in nodes:
         by_label.setdefault(n["label"], []).append(n["id"])
     seen_edges = {(e["from"], e["to"]) for e in edges}
-    for raw, names in flows:
+    edge_kinds = {(e['from'], e['to']): e.get('kind', 'flow') for e in edges}
+    for raw, names, relation in flows:
         hit = []
         for name in names:
             if name.startswith("@"):
@@ -319,10 +344,14 @@ def parse(text: str) -> dict:
                 "（同名的分组/节点不止一个，无法确定连哪个，请先改名）")
         chain = [ids[0] for ids in hit]
         for a, b in zip(chain, chain[1:]):
+            if (a, b) in edge_kinds and edge_kinds[(a, b)] != relation:
+                raise MarkdownError('同一连线的物料与研究影响类型冲突，请核对')
+            edge_kinds[(a, b)] = relation
             if (a, b) not in seen_edges:
                 seen_edges.add((a, b))
-                edges.append({"from": a, "to": b})
+                edges.append({"from": a, "to": b, **({'kind': relation} if relation != 'flow' else {})})
 
+    _position_research_roles(nodes)
     result = {"name": title or "导入的结构图", "nodes": nodes, "edges": edges}
     if id_mode:
         result["reference_mode"] = "id"
@@ -331,9 +360,103 @@ def parse(text: str) -> dict:
     return result
 
 
+def _position_research_roles(nodes):
+    """Default import geometry only; roles never alter containment or relations."""
+    groups = [node for node in nodes if node.get('kind') == 'group']
+    if not any(group.get('role') for group in groups):
+        return
+    roots = [group for group in groups if group.get('parent') is None]
+    if (sum(group.get('role') == 'target' for group in roots) != 1
+            or any(group.get('role') and group.get('parent') is not None for group in groups)):
+        raise MarkdownError('研究图需要唯一的顶层核心标的分组')
+    descendants = defaultdict(list)
+    for node in nodes:
+        descendants[node.get('parent')].append(node)
+
+    fitted, visiting = set(), set()
+
+    def move(group, x, y):
+        dx, dy = x - group['x'], y - group['y']
+        pending = [group]
+        while pending:
+            node = pending.pop()
+            node['x'] += dx
+            node['y'] += dy
+            pending.extend(descendants[node['id']])
+
+    def pack(group):
+        identifier = group['id']
+        if identifier in fitted:
+            return
+        if identifier in visiting:
+            raise MarkdownError('产业图分组不能成环')
+        visiting.add(identifier)
+        items = descendants[identifier]
+        for child in items:
+            if child.get('kind') == 'group':
+                pack(child)
+        # Apply the same presentation budget as the explicit canvas reflow:
+        # four rows or 368px per column, including mixed leaves/subgroups.
+        x, y = group['x'] + 14, group['y'] + 34
+        count, column_width, bottom = 0, 0, y
+        for child in items:
+            if count and (count >= 4 or y + child['h'] - group['y'] - 34 > 368):
+                x += column_width + 24
+                y, count, column_width = group['y'] + 34, 0, 0
+            move(child, x, y)
+            column_width = max(column_width, child['w'])
+            bottom = max(bottom, y + child['h'])
+            y += child['h'] + 16
+            count += 1
+        if items:
+            group.update(w=max(COL_W + PAD, x + column_width - group['x'] + 14),
+                h=bottom - group['y'] + 14)
+        visiting.remove(identifier)
+        fitted.add(identifier)
+
+    for group in groups:
+        pack(group)
+    buckets = {role: [group for group in roots if (group.get('role') or 'reference') == role]
+        for role in RESEARCH_ROLES}
+    buckets['reference'].extend(node for node in nodes
+        if node.get('kind') != 'group' and node.get('parent') is None)
+    gap, band_gap = 32, 64
+    stock = buckets['inventory'] + buckets['balance']
+    macro = buckets['macro']
+
+    def row_width(items):
+        return sum(item['w'] for item in items) + gap * max(0, len(items) - 1)
+
+    def row_height(items):
+        return max((item['h'] for item in items), default=0)
+
+    slots = [items for items in (buckets['supply'], buckets['target'], stock, buckets['demand']) if items]
+    center_y = PAD + max(row_height(items) / 2 + (28 if items is stock else 0) for items in slots)
+
+    def row(items, x, cy):
+        for group in items:
+            move(group, x, cy - group['h'] / 2)
+            x += group['w'] + gap
+
+    x = PAD
+    for items in slots:
+        slot_width = (max(row_width(items), row_width(macro)) if items is buckets['target']
+            else row_width(items) + (36 if items is stock else 0))
+        row(items, x + (slot_width - row_width(items)) / 2, center_y)
+        if items is buckets['target']:
+            center_x = x + slot_width / 2
+        x += slot_width + 60
+    target = buckets['target'][0]
+    row(macro, center_x - row_width(macro) / 2, target['y'] + target['h'] + band_gap + row_height(macro) / 2)
+    placed = [group for group in roots if (group.get('role') or 'reference') != 'reference']
+    reference_top = max(group['y'] + group['h'] for group in placed) + band_gap
+    row(buckets['reference'], PAD, reference_top + row_height(buckets['reference']) / 2)
+
+
 def dump(layout: dict, name: str = "产业结构") -> str:
     """布局 → Markdown。绑定写成注释，所以导出再导入无损。"""
-    if layout.get("reference_mode") == "id" or any(n.get("reference_id") for n in layout.get("nodes", [])):
+    if (layout.get("reference_mode") == "id" or any(n.get("reference_id") or n.get('role') for n in layout.get("nodes", []))
+            or any(edge.get('kind') == 'influence' for edge in layout.get('edges', []))):
         return _dump_ids(layout, name)
     nodes = layout.get("nodes", [])
     groups = [n for n in nodes if n.get("kind") == "group"]
@@ -468,7 +591,11 @@ def _dump_ids(layout, name):
         if identifier in written or depth > 2:
             raise MarkdownError("ID模式分组不能成环且最多支持三级分组")
         written.add(identifier)
-        lines.append(f"{'#' * (depth + 2)} {group['label']}{_agg_tag(group, {i: '@' + i for i in by_id})} <!-- id: {identifier} -->")
+        role = group.get('role')
+        if role and (role not in RESEARCH_ROLES or depth != 0):
+            raise MarkdownError('研究角色须属于顶层分组并使用支持的角色')
+        role_tag = f' <!-- role: {role} -->' if role else ''
+        lines.append(f"{'#' * (depth + 2)} {group['label']}{_agg_tag(group, {i: '@' + i for i in by_id})} <!-- id: {identifier} -->{role_tag}")
         for node in nodes:
             if node.get("kind") == "group" or node.get("parent") != identifier:
                 continue
@@ -486,7 +613,11 @@ def _dump_ids(layout, name):
     for edge in layout.get("edges") or []:
         if edge.get("from") not in by_id or edge.get("to") not in by_id:
             raise MarkdownError("ID模式流向引用了未知 id")
-        lines.append(f"@{edge['from']} -> @{edge['to']}")
+        kind = edge.get('kind', 'flow')
+        if kind not in {'flow', 'influence'}:
+            raise MarkdownError('连线关系须明确为flow或influence')
+        relation = ' <!-- relation: influence -->' if kind == 'influence' else ''
+        lines.append(f"@{edge['from']} -> @{edge['to']}{relation}")
     return "\n".join(lines).rstrip() + "\n"
 
 

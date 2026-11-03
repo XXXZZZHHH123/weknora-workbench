@@ -73,6 +73,8 @@ def test_historical_catalog_page_renders_date_for_charts_and_detail_links(native
     links = html.xpath('//a/@href')
     assert links and all(link.endswith('/sn/indicators/' + identifier + '?date=2026-01-02') for link in links)
     assert fromstring(data['nav_html']).xpath('//*[@data-jump-total]/text()') == ['1']
+    assert '本页分类' in fromstring(data['nav_html']).text_content()
+    assert '本页全部' in fromstring(data['nav_html']).text_content()
 
 
 def test_invalid_catalog_date_does_not_fetch_any_metadata(native_catalog_client):

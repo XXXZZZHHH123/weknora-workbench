@@ -3,12 +3,15 @@
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tin.compute.engine import contracts_on, day_end, latest_derived, latest_obs
 from tin.compute.formulas import REGISTRY
+from tin.compute.rule_values import decimal_difference, decimal_value
+from tin.compute.moving_average import moving_average_target, sma_boundary
 from tin.config import NEW_YORK, SHANGHAI, settings
 from tin.ingest.fred import FEATURED_SERIES, FRED_SERIES, SERIES_BY_ID, SOURCE_CATALOG, MacroSeries
 from tin.judgments.service import current as current_judgment
@@ -86,6 +89,9 @@ def _obs_card(session: Session, key: str, label: str, series_id: str, d: date) -
                 expected_by=exp.isoformat() if exp else None)
     if o is None:
         card.note = "尚无数据"
+        return card
+    if o.value is None or o.status != '正常':
+        card.note = '最近一期观测缺失或尚未确认'
         return card
     if exp and o.as_of.astimezone(SHANGHAI).date() < exp:
         card.note = f"最近一次数据时点 {_local(o.as_of)}，已过预期更新日"
@@ -411,7 +417,7 @@ def snapshot(session: Session, variety: str, d: date) -> dict:
     }
 
 
-def _fmt(v: float | None, unit: str = "") -> str:
+def _fmt(v: float | Decimal | None, unit: str = "") -> str:
     if v is None:
         return "—"
     digits = 4 if unit == "元" else 0 if abs(v) >= 1000 or float(v).is_integer() else 2
@@ -426,8 +432,11 @@ def threshold_radar(session: Session, variety: str, d: date, *, judgment=None) -
     def lookup(identifier):
         indicator = session.get(Indicator, identifier)
         observation = latest_obs(session, identifier, day_end(d)) if indicator else None
+        if observation is not None and (observation.value is None or observation.status != '正常'):
+            observation = None
         return indicator, observation
-    return _threshold_radar(j, lookup)
+    return _threshold_radar(j, lookup, lambda identifier, window, crossing=False, declared_unit=None:
+        sma_boundary(session, identifier, d, window, crossing=crossing, declared_unit=declared_unit))
 
 
 def threshold_radar_values(judgment, values):
@@ -437,15 +446,25 @@ def threshold_radar_values(judgment, values):
         value = values.get(identifier)
         if value is None:
             return None, None
-        indicator = SimpleNamespace(name=value['name'], unit=value['unit'])
-        observation = (SimpleNamespace(value=value['value'], as_of=datetime.combine(
+        indicator = SimpleNamespace(name=value['name'], unit=value['unit'], frequency=value.get('frequency'))
+        points = value.get('points') or []
+        point_unit = points[-1].get('unit') if points and isinstance(points[-1], dict) else None
+        observation = (SimpleNamespace(value=value['value'], unit=point_unit, as_of=datetime.combine(
             date.fromisoformat(value['date']), datetime.min.time(), SHANGHAI))
             if value.get('date') and value.get('value') is not None else None)
         return indicator, observation
-    return _threshold_radar(judgment, lookup) if judgment else []
+    def moving_lookup(identifier, window, crossing=False, declared_unit=None):
+        from tin.compute.moving_average import sma_result, sma_crossing_result
+        field = values.get(identifier) or {}
+        points = field.get('points') or []
+        if declared_unit is not None:
+            from tin.compute.rule_caliber import declared_points
+            points = declared_points(points, declared_unit)
+        return (sma_crossing_result if crossing else sma_result)(points, window, declared_unit or field.get('unit'))
+    return _threshold_radar(judgment, lookup, moving_lookup) if judgment else []
 
 
-def _threshold_radar(j, lookup):
+def _threshold_radar(j, lookup, moving_lookup=None):
     out = []
     for t in j.thresholds:
         ind, o = lookup(t['series_id'])
@@ -454,29 +473,97 @@ def _threshold_radar(j, lookup):
                "type": t["type"], "horizon": t["horizon"], "action_hint": t.get("action_hint"),
                "note": t.get("note"), "state": "数据缺失", "value": None, "progress": 0,
                "distance": "该指标暂无数据", "as_of": None}
+        from tin.compute.rule_caliber import rule_unit, rule_frequency, unit_present
+        try:
+            unit = rule_unit(t, ind.unit if ind else None)
+            rule_frequency(t, getattr(ind, 'frequency', None))
+        except ValueError:
+            row['distance'] = '来源单位或统计频率与本条人工口径不一致，请重新核对'
+            out.append(row)
+            continue
+        if unit is None:
+            row['distance'] = '来源单位尚未确认，请在研究逻辑中核对此绑定口径'
+            out.append(row)
+            continue
+        row['unit'] = unit
+        declared_unit = unit if t.get('caliber_confirmation') and not unit_present(ind.unit if ind else None) else None
         op, target = t["operator"], t["value"]
-        row["condition"] = (f"{_fmt(target[0])} – {_fmt(target[1])}" if op == "between"
+        from tin.compute.moving_average import CROSSING_OPERATORS
+        crossing = op in CROSSING_OPERATORS
+        moving = moving_average_target(target)
+        if moving:
+            if op not in {'>', '>=', '<', '<='} | CROSSING_OPERATORS:
+                raise ValueError('简单移动平均阈值比较方式无效')
+            label = {'crosses_below': '下穿', 'crosses_above': '上穿'}.get(op, op)
+            row.update(condition=f"{label} MA{moving['window']}", target_value=None,
+                       dynamic_target={**moving, 'basis': 'observations'})
+            boundary = ((moving_lookup(t['series_id'], moving['window'], crossing, declared_unit) if declared_unit
+                else moving_lookup(t['series_id'], moving['window'], True) if crossing
+                else moving_lookup(t['series_id'], moving['window'])) if moving_lookup else None)
+            if boundary is None or boundary['value'] is None:
+                row['distance'] = boundary['error'] if boundary else '尚未加载均线所需的观测窗口'
+                out.append(row)
+                continue
+            target = boundary['total'] / moving['window']
+            row['target_value'] = boundary['value']
+        else:
+            if crossing:
+                raise ValueError('均线交叉事件必须引用简单移动平均窗口')
+            row['target_value'] = target
+        row["condition"] = row.get('condition') or (f"{_fmt(target[0])} – {_fmt(target[1])}" if op == "between"
                             else f"{op} {_fmt(target)}")
         if o is None:
             out.append(row)
             continue
-        v = o.value
-        row.update({"value": v, "as_of": _local(o.as_of)})
+        point_unit = getattr(o, 'unit', None) or (getattr(o, 'caliber_snapshot', None) or {}).get('unit')
+        if unit_present(point_unit) and point_unit != unit:
+            row['distance'] = '当前观测单位与本条确认口径不一致，未进行数值换算'
+            out.append(row)
+            continue
+        v = decimal_value(o.value)
+        row.update({"value": o.value, "as_of": _local(o.as_of)})
+        if crossing:
+            from decimal import localcontext
+            previous = boundary['previous_value']
+            with localcontext() as context:
+                context.prec = max(28, len(str(boundary['total'])) + len(str(boundary['previous_total']))
+                    + len(str(previous)) + len(str(v)) + 8)
+                current_scaled = v * moving['window']
+                previous_scaled = previous * moving['window']
+                hit = ((previous_scaled >= boundary['previous_total'] and current_scaled < boundary['total'])
+                    if op == 'crosses_below' else
+                    (previous_scaled <= boundary['previous_total'] and current_scaled > boundary['total']))
+            row.update(state='已触发' if hit else '未触发', progress=100 if hit else 0,
+                distance=('本期新发生' if hit else '本期未发生') + label)
+            out.append(row)
+            continue
         if op == "between":
-            lo, hi = target
+            lo, hi = (decimal_value(endpoint) for endpoint in target)
             hit = lo <= v <= hi
-            gap = 0 if hit else (lo - v if v < lo else v - hi)
+            gap = Decimal(0) if hit else (decimal_difference(lo, v) if v < lo
+                                          else decimal_difference(v, hi))
             row["state"] = "在区间内" if hit else "未触发"
-            row["progress"] = 100 if hit else max(0, 100 - abs(gap) / max(hi - lo, 1) * 100)
-            row["distance"] = "已进入区间" if hit else f"距区间 {_fmt(abs(gap), row['unit'])} {row['unit']}"
+            row["progress"] = 100 if hit else float(max(0, 100 - gap.copy_abs()
+                / max(decimal_difference(hi, lo), 1) * 100))
+            row["distance"] = "已进入区间" if hit else f"距区间 {_fmt(gap.copy_abs(), row['unit'])} {row['unit']}"
         else:
-            hit = (v > target if op == ">" else v >= target if op == ">=" else
-                   v < target if op == "<" else v <= target)
+            target = decimal_value(target)
+            comparison, compared_target = v, target
+            if moving:
+                from decimal import localcontext
+                with localcontext() as context:
+                    context.prec = max(28, len(str(boundary['total'])) + len(str(v)) + 8)
+                    comparison, compared_target = v * moving['window'], boundary['total']
+            hit = (comparison > compared_target if op == ">" else comparison >= compared_target if op == ">=" else
+                   comparison < compared_target if op == "<" else comparison <= compared_target)
             row["state"] = "已触发" if hit else "未触发"
-            row["progress"] = min(100, v / target * 100 if target else 0) if op in (">", ">=") \
-                else min(100, target / v * 100 if v else 0)
+            gap = decimal_difference(target, v).copy_abs()
+            scale = (target.copy_abs() if op in (">", ">=")
+                     else max(v.copy_abs(), target.copy_abs())) or Decimal(1)
+            row["progress"] = 100 if hit else float(max(0, 100 - gap / scale * 100))
             row["distance"] = ("已越线" if hit else
-                               f"距触发 {_fmt(abs(target - v), row['unit'])} {row['unit']}")
+                               f"距触发 {_fmt(gap, row['unit'])} {row['unit']}")
+        row["progress"] = max(0, min(100, row["progress"]))
         out.append(row)
     return out
 

@@ -3,13 +3,14 @@
 import re
 from datetime import date
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from tin.judgments.numbers import NUMBER, check_rule_number, exact_float
 
 TONES = ("偏多", "偏空", "观望", "区间震荡", "回调买入", "反弹做空", "等信号")
 PARADIGMS = ("总线合成", "对抗称重", "编排层")
-EXPRESSION = re.compile(r"^(value|change)\s*(>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)$")
+EXPRESSION = re.compile(r"^(value|change)\s*(>=|<=|>|<)\s*(" + NUMBER + r")$")
 
 
 class ThresholdType(StrEnum):
@@ -27,7 +28,33 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class Evidence(_Model):
+class _Bindings(_Model):
+    related_series_ids: list[Annotated[str, Field(strict=True, min_length=1, max_length=256)]] = Field(
+        default_factory=list, max_length=7)
+
+    @model_validator(mode='after')
+    def _distinct_bindings(self):
+        ids = ([self.series_id] if getattr(self, 'series_id', None) else []) + self.related_series_ids
+        if len(ids) != len(set(ids)):
+            raise ValueError('同一条目不能重复绑定相同指标')
+        return self
+
+    @model_serializer(mode='wrap')
+    def _without_empty_related(self, handler):
+        value = handler(self)
+        if not value.get('related_series_ids'):
+            value.pop('related_series_ids', None)
+        return value
+
+
+def binding_ids(value):
+    """Ordered explicit bindings; only series_id owns quantitative semantics."""
+    primary = value.get('series_id') if isinstance(value, dict) else getattr(value, 'series_id', None)
+    related = value.get('related_series_ids', []) if isinstance(value, dict) else getattr(value, 'related_series_ids', [])
+    return ([primary] if primary else []) + list(related)
+
+
+class Evidence(_Bindings):
     desc: str
     series_id: str | None = None
     value: float | None = None
@@ -56,12 +83,12 @@ class Contradiction(_Model):
     text: str | None = None
 
 
-class MarginalItem(_Model):
+class MarginalItem(_Bindings):
     desc: str
     series_id: str | None = None
 
 
-class CostItem(_Model):
+class CostItem(_Bindings):
     desc: str
     series_id: str | None = None
     value: float | None = None
@@ -88,19 +115,73 @@ class TimeDimension(_Model):
     long: str | None = None
 
 
-class Threshold(_Model):
+class MovingAverageTarget(_Model):
+    kind: Literal['sma']
+    window: int = Field(ge=2, le=120, strict=True)
+
+
+class CaliberConfirmation(_Model):
+    """A human declaration stored only with this saved rule, never with a source."""
+    series_id: str = Field(min_length=1, max_length=256)
+    unit: str = Field(min_length=1, max_length=80)
+    basis: str = Field(min_length=1, max_length=1000)
+    scope_note: str = Field(default='', max_length=1000)
+    confirmed_by: str = Field(min_length=1, max_length=128)
+    confirmed_at: str = Field(min_length=16, max_length=40)
+    catalog_version: str = Field(min_length=1, max_length=128)
+    frequency: Literal['日', '周', '月', '季', '年'] | None = None
+
+    @model_serializer(mode='wrap')
+    def _without_empty_frequency(self, handler):
+        value = handler(self)
+        if value.get('frequency') is None:
+            value.pop('frequency', None)
+        return value
+
+    @field_validator('unit', 'basis')
+    @classmethod
+    def _not_blank(cls, value):
+        if not value.strip():
+            raise ValueError('人工口径必须填写单位和核对依据')
+        return value.strip()
+
+
+class _Rule(_Bindings):
+    @model_serializer(mode='wrap')
+    def _without_empty_caliber(self, handler):
+        value = handler(self)
+        if value.get('caliber_confirmation') is None:
+            value.pop('caliber_confirmation', None)
+        if not value.get('related_series_ids'):
+            value.pop('related_series_ids', None)
+        return value
+
+
+class Threshold(_Rule):
     id: str
     name: str
     series_id: str
-    operator: Literal[">", ">=", "<", "<=", "between"]
-    value: float | list[float]
+    operator: Literal[">", ">=", "<", "<=", "between", "crosses_below", "crosses_above"]
+    value: float | list[float] | MovingAverageTarget
     type: ThresholdType
     horizon: Horizon
     action_hint: str | None = None
     note: str | None = None
+    caliber_confirmation: CaliberConfirmation | None = None
+
+    @field_validator('value', mode='before')
+    @classmethod
+    def _exact_number(cls, value):
+        if isinstance(value, (dict, MovingAverageTarget)):
+            return value
+        for number in value if isinstance(value, list) else [value]:
+            check_rule_number(number)
+        return value
 
     @model_validator(mode="after")
     def _value_shape(self):
+        if self.operator in {"crosses_below", "crosses_above"} and not isinstance(self.value, MovingAverageTarget):
+            raise ValueError("均线交叉事件必须引用简单移动平均窗口")
         if self.operator == "between":
             if not (isinstance(self.value, list) and len(self.value) == 2 and self.value[0] < self.value[1]):
                 raise ValueError(f"阈值 {self.id}：区间必须是 [下限, 上限] 且下限小于上限")
@@ -109,21 +190,24 @@ class Threshold(_Model):
         return self
 
 
-class Falsifier(_Model):
+class Falsifier(_Rule):
     id: str
     desc: str
     series_id: str
     expression: str
     unit_confirmed: str
     consecutive_periods: int = Field(1, ge=1)
-    side: Literal["bull", "bear"]
+    side: Literal["bull", "bear"] = Field(description='被证伪的原假设一方：bull为多方原假设失效，bear为空方原假设失效；不是条件触发后的价格涨跌方向。')
     note: str | None = None
+    caliber_confirmation: CaliberConfirmation | None = None
 
     @field_validator("expression")
     @classmethod
     def _expr(cls, v: str) -> str:
-        if not EXPRESSION.match(v.strip()):
+        match = EXPRESSION.fullmatch(v.strip())
+        if match is None:
             raise ValueError(f"判定表达式无法自动验证：「{v}」，请写成 value/change 比较一个数，如 value >= 10000")
+        exact_float(match.group(3))
         return v.strip()
 
 
@@ -132,10 +216,11 @@ class PriorityRule(_Model):
     note: str | None = None
 
 
-class UnstructuredItem(_Model):
+class UnstructuredItem(_Bindings):
     section: str
     text: str
     reason: str
+    series_id: str | None = None
     business_condition: str | None = None
     rule_kind: Literal["threshold", "falsifier"] | None = None
 
@@ -144,9 +229,11 @@ class UnstructuredItem(_Model):
         result = handler(self)
         # Old saved JSON has neither key. Explicit new nulls identify audit-only
         # entries and must not acquire the legacy display compatibility.
-        for name in ("business_condition", "rule_kind"):
+        for name in ("business_condition", "rule_kind", "series_id"):
             if name not in self.model_fields_set:
                 result.pop(name, None)
+        if not result.get('related_series_ids'):
+            result.pop('related_series_ids', None)
         return result
 
 

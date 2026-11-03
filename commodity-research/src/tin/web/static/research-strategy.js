@@ -11,6 +11,9 @@
   const fields = {title: 'title', direction: 'direction', thesis: 'thesis', watch_for: 'watch',
     trigger: 'trigger', response_action: 'response-action', invalidation: 'invalidation',
     review_date: 'review', original_text: 'original'};
+  const citationFields = {thesis: '适用范围与目标', watch_for: '执行前核对', trigger: '适用 / 触发',
+    response_action: '应对措施', invalidation: '暂停 / 撤回', original_text: '原始研究文字'};
+  const citationKinds = {indicator: '指标', judgment_condition: '研判条件', knowledge_file: '知识库原件'};
   const cache = new Map(), drafts = new Map(), metadata = new Map();
   for (const item of research.items || []) metadata.set('research:' + item.id, item);
   for (const item of state.plans || []) metadata.set(item.key, item);
@@ -20,6 +23,12 @@
   let selectedSources = new Set(), sourcesPage = 0, loadingSources = false, fileSequence = 0;
   let sourceNames = new Map();
   let cardSource = null, cardReference = null, judgmentReference = null, planSource = null, saving = false;
+  let citations = [], citationContext = null, citationKind = 'indicator', citationRows = [], citationChoice = null;
+  let citationNext = null, citationTimer = null, citationListToken = 0, citationPreviewToken = 0;
+  let citationListController = null, citationPreviewController = null, citationImportController = null;
+  let citationParent = null, citationParents = [], citationParentNext = 0, citationParentsLoaded = false;
+  let citationParentController = null, citationParentToken = 0;
+  const citationDialog = byId('strategy-citation-dialog');
   const host = document.createElement('div'); host.id = 'strategy-dynamic-preview';
   byId('strategy-preview-content').prepend(host);
   byId('research-card-panels')?.setAttribute('hidden', '');
@@ -44,17 +53,19 @@
     }
     return body;
   }
-  function definition(parent, entries) {
+  function definition(parent, entries, references = [], selectionKey) {
     const list = element('dl', undefined, 'research-preview-fields');
-    for (const [name, value] of entries) {
-      const row = element('div'); row.append(element('dt', name), element('dd', value || '尚未填写')); list.append(row);
+    for (const [name, value, slot] of entries) {
+      const row = element('div'), content = element('dd', value || '尚未填写');
+      if (slot) content.append(citationCards(references, slot, false, selectionKey));
+      row.append(element('dt', name), content); list.append(row);
     }
     parent.append(list);
   }
-  function disclosure(parent, title, text) {
-    if (!text) return;
+  function disclosure(parent, title, text, references = [], slot, selectionKey) {
+    if (!text && !references.some(item => item.field === slot)) return;
     const details = element('details'), summary = element('summary', title);
-    details.append(summary, element('pre', text)); parent.append(details);
+    details.append(summary, element('pre', text || '')); if (slot) details.append(citationCards(references, slot, false, selectionKey)); parent.append(details);
   }
   function referenceText(data) {
     if (data.markdown) return data.markdown;
@@ -82,6 +93,7 @@
     for (const [name, id] of Object.entries(fields)) card[name] = field(id).value;
     if (cardReference) card.reference = {...cardReference};
     if (judgmentReference) card.judgment_reference = {...judgmentReference};
+    if (citations.length) card.citations = structuredClone(citations);
     return {card, source_ids: [...selectedSources], acknowledge_observation: field('observation-only').checked,
       ...(cardSource ? {revision: cardSource.revision} : {})};
   }
@@ -143,6 +155,7 @@
     });
   }
   function hideEditors() {
+    closeCitations();
     editSequence += 1; activeEditor = null;
     if (editor) editor.hidden = true;
     if (planEditor) planEditor.hidden = true;
@@ -169,11 +182,11 @@
           button('预览依据', () => previewReference(ref, line, key)));
         article.append(line);
       }
-      definition(article, [['适用 / 触发', card.trigger], ['应对措施', card.response_action || '待补应对措施；当前仅作为观察方案保留。'],
-        ['暂停 / 撤回', card.invalidation], ['复核日期', card.review_date]]);
-      disclosure(article, '适用范围与目标', card.thesis);
-      disclosure(article, '执行前核对', card.watch_for);
-      disclosure(article, '原始文字', card.original_text);
+      definition(article, [['适用 / 触发', card.trigger, 'trigger'], ['应对措施', card.response_action || '待补应对措施；当前仅作为观察方案保留。', 'response_action'],
+        ['暂停 / 撤回', card.invalidation, 'invalidation'], ['复核日期', card.review_date]], card.citations || [], key);
+      disclosure(article, '适用范围与目标', card.thesis, card.citations || [], 'thesis', key);
+      disclosure(article, '执行前核对', card.watch_for, card.citations || [], 'watch_for', key);
+      disclosure(article, '原始文字', card.original_text, card.citations || [], 'original_text', key);
       if (card.reference) {
         const line = element('div', undefined, 'strategy-basis-line');
         line.append(element('span', '引用策略 · 独立副本'),
@@ -237,10 +250,276 @@
     for (const [name, id] of Object.entries(fields)) field(id).value = body.card[name] || (name === 'direction' ? 'observe' : '');
     selectedSources = new Set(body.source_ids || []); cardReference = body.card.reference || null;
     judgmentReference = body.card.judgment_reference || null; field('observation-only').checked = body.acknowledge_observation === true;
+    citations = structuredClone(body.card.citations || []);
     field('reference-note').hidden = !cardReference;
     field('reference-note').textContent = cardReference ? '引用已保存策略；独立副本不随原记录更新。' : '';
     field('judgment-preview').hidden = true; field('judgment-preview').replaceChildren();
     renderSelectedSources();
+    renderCitationFields();
+  }
+  function citationIdentity(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(citationFields, value.field))
+      throw new Error('引用所属文字项无效，请重新选择。');
+    const keys = {indicator: ['series_id', 'source_version', 'source_binding_id'],
+      judgment_condition: ['id', 'revision', 'rule_kind', 'rule_id'], knowledge_file: ['source_binding_id', 'knowledge_id', 'file_version']}[value.kind];
+    if (!keys || Object.keys(value).some(key => !['kind', 'field', 'snapshot', ...keys].includes(key)))
+      throw new Error('引用格式无效，请从当前工作台重新选择。');
+    const result = {kind: value.kind, field: value.field};
+    for (const key of keys) {
+      if (value.kind === 'indicator' && key === 'source_binding_id' && value[key] === undefined) continue;
+      if (key === 'revision') {
+        if (!Number.isSafeInteger(value[key]) || value[key] < 1) throw new Error('研判引用版本无效。');
+      } else if (typeof value[key] !== 'string' || !value[key] || value[key].length > 128) throw new Error('引用信息不完整，请重新选择。');
+      result[key] = value[key];
+    }
+    if (value.kind === 'judgment_condition' && !['threshold', 'falsifier'].includes(value.rule_kind)) throw new Error('请选择真实的阈值或证伪条件。');
+    for (const key of ['source_version', 'file_version']) if (key in result && !/^[a-f0-9]{64}$/.test(result[key])) throw new Error('引用来源版本无效。');
+    return result;
+  }
+  const citationKey = value => JSON.stringify(citationIdentity(value));
+  function citationCards(items, slot, editing, selectionKey) {
+    const list = element('div', undefined, 'strategy-citation-chips');
+    for (const item of items.filter(value => value.field === slot)) {
+      const chip = element('span', undefined, 'strategy-citation-chip');
+      const title = item.snapshot?.title || citationKinds[item.kind] || '待核对引用';
+      const open = button(title, () => openCitationPreview(item, editing ? null : selectionKey), 'strategy-citation-open');
+      open.title = [title, item.snapshot?.subtitle].filter(Boolean).join(' · '); chip.append(open);
+      if (editing) {
+        const remove = button('×', () => { citations = citations.filter(value => citationKey(value) !== citationKey(item)); renderCitationFields(); dirty(); }, 'strategy-citation-remove');
+        remove.setAttribute('aria-label', '移除引用：' + title); chip.append(remove);
+      }
+      list.append(chip);
+    }
+    return list;
+  }
+  function renderCitationFields() {
+    document.querySelectorAll('[data-citation-list]').forEach(node => node.replaceChildren(citationCards(citations, node.dataset.citationList, true)));
+  }
+  function cancelCitationRequests() {
+    clearTimeout(citationTimer); citationListToken++; citationPreviewToken++;
+    citationListController?.abort(); citationPreviewController?.abort(); citationImportController?.abort();
+    citationParentController?.abort(); citationParentToken++;
+  }
+  function closeCitations() {
+    cancelCitationRequests(); citationContext = null; citationChoice = null;
+    if (citationDialog?.open) citationDialog.close();
+  }
+  function currentCitationContext(context) {
+    return Boolean(context) && citationContext === context && (context.mode === 'preview'
+      ? context.selection === selectSequence && context.selected === selected
+      : context.editing === editSequence && context.key === activeEditor && !editor.hidden);
+  }
+  function citationStatus(message, error = false) { status(message, error, byId('strategy-citation-status')); }
+  function showCitationDialog(context) {
+    closeCitations(); citationContext = context;
+    citationParents = []; citationParentNext = 0; citationParentsLoaded = false;
+    citationParent = context.parent || (judgmentReference ? {...judgmentReference} : null);
+    byId('strategy-citation-title').textContent = context.mode === 'preview' ? '引用预览' : '引用 · ' + citationFields[context.field];
+    byId('strategy-citation-browser').hidden = context.mode === 'preview';
+    byId('strategy-citation-clear').hidden = context.mode === 'preview';
+    byId('strategy-citation-clear').disabled = !citations.some(item => item.field === context.field);
+    byId('strategy-citation-preview').replaceChildren(element('p', '选择一项查看内容。', 'strategy-small-note'));
+    citationStatus(''); if (!citationDialog.open) citationDialog.showModal();
+  }
+  function openCitationPicker(slot, importOriginal = false) {
+    if (saving || !activeEditor || !Object.hasOwn(citationFields, slot)) return;
+    const context = {mode: importOriginal ? 'import' : 'edit', field: slot, key: activeEditor, editing: editSequence};
+    showCitationDialog(context); citationKind = importOriginal ? 'knowledge_file' : 'indicator';
+    byId('strategy-citation-search').value = ''; loadCitationOptions();
+  }
+  function openCitationPreview(item, selectionKey) {
+    const context = {mode: selectionKey ? 'preview' : 'edit', field: item.field, key: activeEditor,
+      editing: editSequence, selection: selectSequence, selected,
+      parent: item.kind === 'judgment_condition' ? {id: item.id, revision: item.revision, title: item.snapshot?.preview?.judgment_title} : null};
+    showCitationDialog(context); if (!selectionKey) { citationKind = item.kind; byId('strategy-citation-search').value = ''; loadCitationOptions(); }
+    previewCitation(item);
+  }
+  function drawCitationOptions() {
+    const context = citationContext, list = byId('strategy-citation-options'); list.replaceChildren();
+    for (const item of citationRows) {
+      const choice = button('', () => { if (currentCitationContext(context)) previewCitation({...item.citation, field: context.field}); }, 'strategy-citation-option');
+      choice.append(element('strong', item.title), element('small', item.subtitle || ''));
+      choice.setAttribute('aria-pressed', String(citationChoice && citationKey(citationChoice.citation) === citationKey({...item.citation, field: citationContext.field})));
+      list.append(choice);
+    }
+    if (!citationRows.length) list.append(element('p', citationNext === null ? '没有匹配条目。' : '本批暂无可选条目，可继续加载。', 'strategy-small-note'));
+    byId('strategy-citation-more').hidden = citationNext === null;
+    document.querySelectorAll('[data-citation-kind]').forEach(node => node.setAttribute('aria-selected', String(node.dataset.citationKind === citationKind)));
+    byId('strategy-citation-parent').hidden = citationKind !== 'judgment_condition';
+  }
+  function renderCitationParents() {
+    const selector = byId('strategy-citation-judgment'); selector.replaceChildren(element('option', '请选择研判版本')); selector.firstChild.value = '';
+    const rows = citationParent && !citationParents.some(item => item.id === citationParent.id && item.revision === citationParent.revision)
+      ? [citationParent, ...citationParents] : citationParents;
+    for (const row of rows) {
+      const title = row.title ? display.reference(row) : '当前依据研判';
+      const option = element('option', title + ' · 第' + row.revision + '版'); option.value = row.id + ':' + row.revision;
+      if (citationParent?.id === row.id && citationParent?.revision === row.revision) option.selected = true;
+      selector.append(option);
+    }
+    byId('strategy-citation-more-judgments').hidden = citationParentNext === null;
+  }
+  async function loadCitationParents(append = false) {
+    const context = citationContext; if (!context || citationKind !== 'judgment_condition') return;
+    citationParentController?.abort(); citationParentController = new AbortController(); const token = ++citationParentToken;
+    const offset = append ? citationParentNext : 0; if (offset === null) return;
+    const more = byId('strategy-citation-more-judgments'); more.disabled = true; citationStatus('正在读取研判目录…'); renderCitationParents();
+    try {
+      const data = await request('/research-references?' + new URLSearchParams({kind: 'judgment', limit: '30', offset: String(offset)}), {signal: citationParentController.signal});
+      if (!currentCitationContext(context) || token !== citationParentToken || citationKind !== 'judgment_condition') return;
+      if (!Array.isArray(data.items) || data.items.length > 30 || !Number.isSafeInteger(data.total) || data.total < 0) throw new Error('研判目录暂时不完整，请重试。');
+      const rows = data.items.filter(item => item.kind === 'judgment' && typeof item.id === 'string' && Number.isSafeInteger(item.revision) && item.revision >= 1);
+      if (rows.length !== data.items.length) throw new Error('研判版本信息不完整，请重试。');
+      citationParents = append ? [...citationParents, ...rows.filter(item => !citationParents.some(row => row.id === item.id && row.revision === item.revision))] : rows;
+      const next = offset + data.items.length;
+      if (data.truncated && next <= offset) throw new Error('研判目录分页暂时不可用，请重新打开。');
+      citationParentNext = data.truncated ? next : null; citationParentsLoaded = true;
+      if (!citationParent && rows.length) citationParent = rows[0]; renderCitationParents();
+      if (!append) await loadCitationOptions(); else citationStatus('');
+    } catch (error) { if (error.name !== 'AbortError' && currentCitationContext(context) && token === citationParentToken) citationStatus(error.message, true); }
+    finally { if (currentCitationContext(context) && token === citationParentToken) more.disabled = false; }
+  }
+  async function loadCitationOptions(append = false) {
+    const context = citationContext; if (!context || context.mode === 'preview') return;
+    byId('strategy-citation-parent').hidden = citationKind !== 'judgment_condition';
+    clearTimeout(citationTimer); citationListController?.abort(); citationListController = new AbortController();
+    const token = ++citationListToken, offset = append ? citationNext : 0;
+    if (offset === null) return;
+    if (!append) {
+      citationRows = []; citationNext = null; citationChoice = null; citationPreviewToken++;
+      citationPreviewController?.abort(); citationImportController?.abort();
+      byId('strategy-citation-preview').replaceChildren(element('p', '选择一项查看内容。', 'strategy-small-note'));
+      drawCitationOptions();
+    }
+    if (citationKind === 'judgment_condition' && !citationParentsLoaded) { await loadCitationParents(); return; }
+    if (citationKind === 'judgment_condition' && !citationParent) { citationStatus('先选择研判版本，再查看具体条件。'); return; }
+    byId('strategy-citation-more').disabled = true; citationStatus('正在搜索…');
+    try {
+      const query = new URLSearchParams({kind: citationKind, search: byId('strategy-citation-search').value.trim(), offset: String(offset), limit: '30'});
+      if (citationKind === 'judgment_condition') { query.set('judgment_id', citationParent.id); query.set('revision', String(citationParent.revision)); }
+      const data = await request('/research-strategies/citation-options?' + query, {signal: citationListController.signal});
+      if (!currentCitationContext(context) || token !== citationListToken) return;
+      if (!Array.isArray(data.items) || data.items.length > 30 || typeof data.has_more !== 'boolean') throw new Error('引用目录暂时不完整，请重试。');
+      const rows = data.items.map(item => ({...item, citation: citationIdentity({...item.citation, field: context.field})}));
+      const next = data.has_more ? (data.next_offset ?? offset + (data.limit || 30)) : null;
+      if (next !== null && (!Number.isSafeInteger(next) || next <= offset)) throw new Error('引用目录分页暂时不可用，请重新搜索。');
+      citationRows = append ? [...citationRows, ...rows.filter(item => !citationRows.some(row => citationKey(row.citation) === citationKey(item.citation)))] : rows;
+      citationNext = next; drawCitationOptions(); citationStatus('');
+    } catch (error) {
+      if (error.name !== 'AbortError' && currentCitationContext(context) && token === citationListToken) {
+        drawCitationOptions(); citationStatus(error.message, true);
+      }
+    } finally { if (currentCitationContext(context) && token === citationListToken) byId('strategy-citation-more').disabled = false; }
+  }
+  function citationLink(url, title) {
+    try {
+      const resolved = new URL(url, location.href); if (resolved.origin !== location.origin || !/^\/(?:platform\/knowledge-bases\/|research\/|sn\/)/.test(resolved.pathname)) return null;
+      if (resolved.pathname.startsWith('/sn/') && prefix) resolved.pathname = prefix + resolved.pathname;
+      const link = element('a', title, 'strategy-detail-link'); link.href = resolved.href; link.target = '_blank'; link.rel = 'noopener'; return link;
+    } catch (_) { return null; }
+  }
+  function drawCitationPreview(data, context) {
+    const panel = byId('strategy-citation-preview'), preview = data.preview || {};
+    panel.replaceChildren(element('h3', data.title), element('p', data.subtitle || '', 'strategy-small-note'));
+    if (preview.type === 'condition') panel.append(element('p', preview.text, 'strategy-citation-condition'));
+    if (preview.notice) panel.append(element('p', preview.notice, 'strategy-small-note'));
+    const link = citationLink(preview.url || preview.detail_url || preview.origin_url, preview.type === 'file' ? '预览知识库原件 ↗' : preview.type === 'condition' ? '查看所引研判 ↗' : '查看指标详情 ↗');
+    if (link) panel.append(link);
+    if (preview.type === 'indicator') { const values = element('div', '正在读取所选指标…', 'strategy-small-note'); panel.append(values); loadCitationIndicator(data, context, values); }
+    const controls = element('div', undefined, 'strategy-citation-actions');
+    if (context.mode !== 'preview') {
+      const used = citations.some(item => citationKey(item) === citationKey(data.citation));
+      const add = button(used ? '已引用' : '引用此项', () => {
+        if (!currentCitationContext(context) || saving) return;
+        if (citations.length >= 32) { citationStatus('每份策略最多引用32项，请先移除不需要的引用。', true); return; }
+        citations.push(structuredClone(data.citation)); renderCitationFields(); dirty();
+        byId('strategy-citation-clear').disabled = false; add.disabled = true; add.textContent = '已引用'; citationStatus('已加入' + citationFields[context.field] + '。');
+      }, 'button-primary'); add.disabled = used || preview.version_status === 'updated'; controls.append(add);
+      if (preview.type === 'file' && preview.content_supported && preview.version_status !== 'updated') controls.append(button('导入正文', () => importCitationFile(data, context)));
+      else if (preview.type === 'file' && preview.version_status === 'updated') panel.append(element('p', '原件已有更新，请在知识库原件中重新选择当前版本。', 'strategy-small-note'));
+      else if (preview.type === 'file') panel.append(element('p', '此格式可预览和引用，暂不支持导入正文。', 'strategy-small-note'));
+    }
+    panel.append(controls);
+  }
+  async function previewCitation(item) {
+    const context = citationContext; if (!context) return;
+    citationPreviewController?.abort(); citationPreviewController = new AbortController(); const token = ++citationPreviewToken;
+    const panel = byId('strategy-citation-preview'); panel.replaceChildren(element('p', '正在核对引用…', 'strategy-small-note')); citationStatus('');
+    try {
+      const data = await request('/research-strategies/citation-preview', {method: 'POST', headers: {'Content-Type': 'application/json'}, signal: citationPreviewController.signal,
+        body: JSON.stringify({citation: citationIdentity(item)})});
+      if (!currentCitationContext(context) || token !== citationPreviewToken) return;
+      citationIdentity(data.citation); citationChoice = data; drawCitationOptions(); drawCitationPreview(data, context);
+    } catch (error) {
+      if (error.name !== 'AbortError' && currentCitationContext(context) && token === citationPreviewToken) {
+        citationChoice = null; panel.replaceChildren(button('重试预览', () => previewCitation(item))); citationStatus(error.message, true);
+      }
+    }
+  }
+  async function loadCitationIndicator(data, context, target) {
+    const token = citationPreviewToken;
+    try {
+      const query = new URLSearchParams({series_id: data.preview.series_id});
+      const date = new URL(location.href).searchParams.get('date'); if (date) query.set('date', date);
+      const result = await request('/indicators/previews?' + query, {signal: citationPreviewController.signal});
+      if (!currentCitationContext(context) || token !== citationPreviewToken || !target.isConnected) return;
+      const card = result.cards?.[0]; if (!card) throw new Error('该指标暂无可用观测。');
+      target.replaceChildren(element('strong', card.status === 'ok' ? observationText(card) : '暂无可用观测'),
+        element('p', card.as_of ? '观测日期 ' + card.as_of : card.note || ''));
+      if (card.change) target.append(element('p', '较前值 ' + card.change));
+    } catch (error) { if (error.name !== 'AbortError' && currentCitationContext(context) && token === citationPreviewToken) target.textContent = '观测暂不可读，指标引用仍可保留。'; }
+  }
+  function observationText(card) { return [card.value, card.unit].filter(value => value !== null && value !== undefined && value !== '').join(' '); }
+  function parseImport(text, filename) {
+    if (!/\.json$/i.test(filename)) {
+      if (text.length > 24000) throw new Error('原文超过24,000字，请先摘录所需部分。');
+      return {text};
+    }
+    const input = JSON.parse(text), original = input?.card || input, optional = new Set(['format', 'reference', 'judgment_reference', 'citations']);
+    if (!original || typeof original !== 'object' || Array.isArray(original) || original.format !== 'research-strategy-card.v1'
+        || Object.keys(original).some(key => !optional.has(key) && !Object.hasOwn(fields, key))
+        || Object.keys(fields).some(key => original[key] !== undefined && original[key] !== null && typeof original[key] !== 'string')) throw new Error('该 JSON 不是策略方案格式，请选择策略导出的 JSON，或用 TXT/MD 导入原文。');
+    const card = structuredClone(original);
+    for (const name of ['reference', 'judgment_reference']) if (card[name] && (typeof card[name].id !== 'string' || !Number.isSafeInteger(card[name].revision) || card[name].revision < 1 || card[name].kind !== (name === 'reference' ? 'strategy' : 'judgment'))) throw new Error('引用版本格式无效。');
+    if (card.citations !== undefined) {
+      if (!Array.isArray(card.citations) || card.citations.length > 32) throw new Error('每份策略最多引用32项。');
+      card.citations = card.citations.map(citationIdentity);
+    }
+    if (input.source_ids !== undefined && (!Array.isArray(input.source_ids) || input.source_ids.length > 100 || input.source_ids.some(id => typeof id !== 'string'))) throw new Error('关联资料格式无效。');
+    return {body: {card, source_ids: input.source_ids || [...selectedSources], acknowledge_observation: input.acknowledge_observation === true}};
+  }
+  function applyImport(text, filename, originalCitation, content = {}) {
+    const fragments = content.content_kind === 'parsed_fragments';
+    const parsed = parseImport(text, fragments ? 'fragments.txt' : filename), body = parsed.body || readCardForm();
+    if (!parsed.body) { body.card.original_text = parsed.text; if (!body.card.title) body.card.title = filename.replace(/\.(txt|md)$/i, '').slice(0, 120); }
+    if (originalCitation) {
+      const source = {...originalCitation, field: 'original_text'}, entries = body.card.citations || [];
+      if (!entries.some(item => citationKey(item) === citationKey(source))) entries.push(source);
+      if (entries.length > 32) throw new Error('导入后引用将超过32项，请先移除不需要的引用。'); body.card.citations = entries;
+    }
+    const occupied = parsed.body ? Object.keys(citationFields).some(name => field(fields[name]).value.trim()) || field('title').value.trim() || citations.length : field('original').value.trim();
+    const notice = fragments ? content.notice || '知识库已有解析片段，不等同原件全文。' : '';
+    const confirmation = parsed.body ? '导入将替换当前策略表单及引用，未保存的内容会被覆盖。继续导入？' :
+      occupied ? '导入将替换当前原始研究文字，其他策略文字保留。继续导入？' : '将这些片段载入原始研究文字，供继续编辑。是否导入？';
+    if ((occupied || fragments) && !window.confirm([notice, confirmation].filter(Boolean).join('\n\n'))) return false;
+    fillCard(body); loadJudgments(); field('sources').querySelectorAll('input').forEach(box => box.checked = selectedSources.has(box.value));
+    field('original').closest('details').open = true; field('filename').textContent = filename + (fragments ? ' · 已解析文本片段' : '');
+    const draft = drafts.get(activeEditor); if (draft) draft.importLabel = field('filename').textContent; dirty();
+    status('原文已载入，可继续编辑后保存。', false, field('form-status')); return true;
+  }
+  async function importCitationFile(data, context) {
+    citationImportController?.abort(); citationImportController = new AbortController(); const sequence = ++fileSequence;
+    citationStatus('正在读取原件正文…');
+    try {
+      const item = citationIdentity(data.citation), query = new URLSearchParams({source_binding_id: item.source_binding_id, knowledge_id: item.knowledge_id, file_version: item.file_version});
+      const result = await request('/research-strategies/citation-file-content?' + query, {signal: citationImportController.signal});
+      if (!currentCitationContext(context) || sequence !== fileSequence) return;
+      if (result.knowledge_id !== item.knowledge_id || result.file_version !== item.file_version) throw new Error('原件版本与所选引用不一致，请重新选择。');
+      if (!result.supported || typeof result.text !== 'string') throw new Error(result.notice || '此格式暂不支持导入正文，请预览原件。');
+      if (result.content_kind === 'parsed_fragments') citationStatus(result.notice || '知识库已有解析片段，不等同原件全文。');
+      if (applyImport(result.text, result.filename || data.preview.file_name, data.citation, result)) closeCitations();
+      else citationStatus('已取消导入，原有输入保留。');
+    } catch (error) { if (error.name !== 'AbortError' && currentCitationContext(context) && sequence === fileSequence) citationStatus(error.message + ' 输入内容已保留。', true); }
   }
   function renderSelectedSources() {
     const container = field('selected-sources'); if (!container) return;
@@ -302,7 +581,7 @@
     cardSource = draft?.source ?? item;
     sourceNames = new Map((cardSource?.source_snapshots || []).map(row => [row.knowledge_id, row.title || row.file_name]));
     const body = draft?.body || {card: item?.card || {}, source_ids: item?.source_ids || []};
-    fillCard(body); field('file').value = ''; field('filename').textContent = ''; field('sources').replaceChildren();
+    fillCard(body); field('file').value = ''; field('filename').textContent = draft?.importLabel || ''; field('sources').replaceChildren();
     field('thesis').closest('details').open = !field('thesis').value || !field('watch').value;
     sourcesPage = 0; loadingSources = false; field('more-sources').hidden = true; field('save').disabled = false;
     field('save-copy').hidden = true; field('judgment-preview').hidden = true; field('judgment-preview').replaceChildren();
@@ -376,7 +655,7 @@
       delete body.revision;
       if (cardSource) body.card.reference = {kind: 'strategy', id: 'research:' + cardSource.id, revision: cardSource.revision};
     }
-    saving = true; const unlock = lock(form); status('正在保存…', false, field('form-status'));
+    closeCitations(); saving = true; const unlock = lock(form); status('正在保存…', false, field('form-status'));
     try {
       const item = await request('/research-strategies' + (!copy && cardSource ? '/' + encodeURIComponent(cardSource.id) : ''),
         {method: !copy && cardSource ? 'PATCH' : 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
@@ -406,23 +685,40 @@
         if (!/\.(txt|md|json)$/i.test(file.name) || file.size > 96000) throw new Error('请选择不超过96 KB的 UTF-8 .txt、.md 或研究策略卡 .json 文件');
         const text = new TextDecoder('utf-8', {fatal: true}).decode(await file.arrayBuffer());
         if (own !== editSequence || sequence !== fileSequence || editor.hidden) return;
-        if (/\.json$/i.test(file.name)) {
-          const input = JSON.parse(text), card = input.card || input;
-          const optional = new Set(['format', 'reference', 'judgment_reference']);
-          if (!card || typeof card !== 'object' || Array.isArray(card) || card.format !== 'research-strategy-card.v1'
-              || Object.keys(card).some(key => !optional.has(key) && !Object.hasOwn(fields, key))
-              || Object.keys(fields).some(key => card[key] !== undefined && card[key] !== null && typeof card[key] !== 'string')) throw new Error('该 JSON 不是策略方案格式；可改用 TXT/MD 保留原文。');
-          for (const name of ['reference', 'judgment_reference']) if (card[name] && (typeof card[name].id !== 'string' || !Number.isInteger(card[name].revision) || card[name].revision < 1 || card[name].kind !== (name === 'reference' ? 'strategy' : 'judgment'))) throw new Error('引用版本格式无效。');
-          if (input.source_ids !== undefined && (!Array.isArray(input.source_ids) || input.source_ids.some(id => typeof id !== 'string'))) throw new Error('关联资料编号格式无效。');
-          fillCard({card, source_ids: input.source_ids || [...selectedSources]}); loadJudgments();
-          field('sources').querySelectorAll('input').forEach(box => box.checked = selectedSources.has(box.value));
-        } else {
-          if (text.length > 24000) throw new Error('原文超过24,000字，请先缩短。');
-          field('original').value = text; if (!field('title').value) field('title').value = file.name.replace(/\.(txt|md)$/i, '').slice(0, 120);
-          field('original').closest('details').open = true;
-        }
-        field('filename').textContent = file.name; dirty(); status('原文已载入，请补充适用条件、应对与撤回条件。', false, field('form-status'));
+        applyImport(text, file.name);
       } catch (error) { if (own === editSequence) status(error.message, true, field('form-status')); }
+    });
+  }
+  if (citationDialog) {
+    document.querySelectorAll('[data-citation-field]').forEach(node => node.addEventListener('click', () => openCitationPicker(node.dataset.citationField)));
+    document.querySelectorAll('[data-citation-kind]').forEach(node => node.addEventListener('click', () => {
+      citationKind = node.dataset.citationKind; byId('strategy-citation-search').value = ''; loadCitationOptions();
+    }));
+    document.querySelectorAll('[data-citation-close]').forEach(node => node.addEventListener('click', closeCitations));
+    citationDialog.addEventListener('close', closeCitations);
+    byId('strategy-citation-search').addEventListener('input', () => {
+      clearTimeout(citationTimer); citationListToken++; citationListController?.abort();
+      citationPreviewToken++; citationPreviewController?.abort(); citationImportController?.abort(); citationChoice = null;
+      citationRows = []; citationNext = null; drawCitationOptions();
+      byId('strategy-citation-preview').replaceChildren(element('p', '选择一项查看内容。', 'strategy-small-note'));
+      citationTimer = setTimeout(() => loadCitationOptions(), 250);
+    });
+    byId('strategy-citation-more').addEventListener('click', () => loadCitationOptions(true));
+    byId('strategy-citation-more-judgments').addEventListener('click', () => loadCitationParents(true));
+    byId('strategy-citation-judgment').addEventListener('change', event => {
+      citationParent = citationParents.find(row => row.id + ':' + row.revision === event.target.value) || null;
+      byId('strategy-citation-search').value = ''; loadCitationOptions();
+    });
+    byId('strategy-citation-clear').addEventListener('click', () => {
+      const context = citationContext; if (!context || !currentCitationContext(context) || context.mode === 'preview') return;
+      citations = citations.filter(item => item.field !== context.field); renderCitationFields(); dirty(); closeCitations();
+    });
+    field('library-import')?.addEventListener('click', () => openCitationPicker('original_text', true));
+    field('export')?.addEventListener('click', () => {
+      const body = readCardForm(); delete body.revision;
+      const url = URL.createObjectURL(new Blob([JSON.stringify(body, null, 2)], {type: 'application/json;charset=utf-8'}));
+      const link = document.createElement('a'); link.href = url; link.download = (body.card.title || '策略方案').replace(/[\\/:*?"<>|]/g, '_') + '.json';
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
   }
   byId('strategy-plan-form')?.addEventListener('input', dirty);

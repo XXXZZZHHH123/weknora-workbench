@@ -5,6 +5,7 @@ uses a short cached /auth/me verification; tenant and role come from that respon
 """
 import base64
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass, replace
@@ -167,12 +168,17 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 raise HTTPException(404, "研究工作台路径无效") from None
             route_path = scoped_path[1] if scoped_path else path
+            global_analysis_dismiss = request.method == 'POST' and (
+                path == '/api/research/analysis-jobs/dismiss-all' or re.fullmatch(
+                    r'/api/research/analysis-jobs/[a-f0-9]{32}/dismiss', path) is not None)
+            global_analysis_list = (path == '/api/research/analysis-jobs' and request.method == 'GET'
+                or global_analysis_dismiss)
             authorization = request.headers.get("authorization", "")
             if path == "/api/tools/read":
                 from tin.integration.service_auth import verify_service_request
                 identity = await verify_service_request(request)
             elif (path.startswith("/api/library") or path.startswith("/api/workbenches/")
-                  or scoped_path is not None
+                  or scoped_path is not None or global_analysis_list
                   or (path == "/api/sn/indicators/catalog" and request.method == "GET")) and request.headers.get("authorization", "").startswith("Bearer "):
                 if request.method not in {"GET", "HEAD", "OPTIONS"} and not _same_origin(request):
                     raise HTTPException(403, "请求来源不匹配")
@@ -225,7 +231,8 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                     raise HTTPException(403, "当前页面的账号或空间已改变，请重新打开商品研究")
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
                     read_posts = {"/api/sn/diagram/values", "/api/sn/diagram/markdown/dump", "/api/sn/affairs/check"}
-                    if not identity.can_write and route_path not in read_posts and not path.startswith("/api/library"):
+                    if (not identity.can_write and route_path not in read_posts
+                            and not path.startswith("/api/library") and not global_analysis_dismiss):
                         raise HTTPException(403, "当前空间角色只有读取权限")
                     if not _same_origin(request):
                         raise HTTPException(403, "请求来源不匹配")
@@ -273,7 +280,7 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                 scope_marker = current_workbench.set(scope)
                 request.scope["path"] = prefix + route_path
                 request.scope["raw_path"] = (prefix + route_path).encode()
-            elif path != '/api/tools/read' and not path.startswith('/api/workbenches/'):
+            elif path != '/api/tools/read' and not path.startswith('/api/workbenches/') and not global_analysis_list:
                 raise HTTPException(409, '请先选择绑定知识库的研究工作台，未读取旧工作台事实')
             if path.startswith('/api/workbenches/') and request.method == 'POST':
                 suffix = path.split('/', 4)[-1]

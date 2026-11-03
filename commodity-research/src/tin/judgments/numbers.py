@@ -1,0 +1,516 @@
+"""Bounded numeric syntax and exact decimal evidence; never business intent."""
+from contextlib import contextmanager
+from contextvars import ContextVar
+from decimal import Decimal, DecimalException
+import math
+import re
+import unicodedata
+
+
+NUMBER = r'[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
+_GROUPED = r'[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
+_CONNECTORS = '+-/:*^×÷⁄∕‐‑‒–—~～'
+_START = r'(?<![0-9A-Za-z_.,' + re.escape(_CONNECTORS) + r'万亿千\]])'
+_SCALAR = re.compile(_START + _GROUPED)
+_SHARED_UNIT_PAIR = re.compile(_START + '(' + _GROUPED + r')\s+and\s+(' + _GROUPED + ')', re.IGNORECASE)
+_MEMBER = re.compile(NUMBER)
+_SCALE = re.compile(r'万亿|亿|万|千')
+_POWERS = {'千': 3, '万': 4, '亿': 8, '万亿': 12}
+_WIDTH = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)}
+_WIDTH.update({0x3000: ord(' '), 0x2212: ord('-')})
+_GROUPED_SPACE = re.compile(r'[0-9]+(?:(?:[\u00a0\u202f\u2009][0-9]+)|(?: +[0-9]{3}))+')
+_ARITHMETIC = re.compile(_GROUPED + r'\s*[*^×÷⁄∕/]\s*' + _GROUPED)
+_CHINESE_DIGITS = {'零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3,
+                   '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+_CHINESE_SCALED = re.compile(_START + r'(?:(?P<coefficient>[' + ''.join(_CHINESE_DIGITS)
+    + r'])\s*)?(?P<scale>万亿|亿|万|千)')
+_CHINESE_CONTINUATIONS = frozenset(_CONNECTORS + '_.,]十百千万亿兆零〇一二两三四五六七八九'
+    '壹贰叁肆伍陆柒捌玖拾佰仟萬億负負正点點之几数多余半')
+_COMPARISON_SUFFIXES = ('及以上', '及以下', '以上', '以下', '以内', '以外')
+_LOGICAL_JOIN = re.compile(r'(?:或者|并且|或|且|&&|\|\||∧|∨|(?i:and|or)\b)')
+_COMPARISON_ARITHMETIC = re.compile('(?:' + '|'.join(_COMPARISON_SUFFIXES)
+    + r')[ \t]*[+-][ \t]*' + _GROUPED)
+_PERIOD_UNITS = {
+    '期': None, '周期': None, 'period': None, 'periods': None,
+    'observation': None, 'observations': None,
+    '日': 'day', '日度': 'day', '天': 'day', 'day': 'day', 'days': 'day',
+    '周': 'week', '周度': 'week', '星期': 'week', 'week': 'week', 'weeks': 'week',
+    '月': 'month', '月度': 'month', 'month': 'month', 'months': 'month',
+    '季度': 'quarter', '季': 'quarter', 'quarter': 'quarter', 'quarters': 'quarter',
+    '年': 'year', '年度': 'year', 'year': 'year', 'years': 'year',
+}
+_PERIOD_ADVERBS = {'daily': 'day', 'weekly': 'week', 'monthly': 'month',
+    'quarterly': 'quarter', 'annual': 'year', 'yearly': 'year'}
+_PERIOD = re.compile(_START + r'(?P<count>[0-9零〇一二两三四五六七八九十百]{1,9})\s*(?:个\s*)?'
+    + r'(?:consecutive\s+)?(?:(?P<cadence>' + '|'.join(_PERIOD_ADVERBS) + r')\s+)?'
+    + r'(?P<unit>' + '|'.join(re.escape(unit) for unit in sorted(_PERIOD_UNITS, key=len, reverse=True)) + ')',
+    re.IGNORECASE)
+_FREQUENCIES = {
+    'day': {'日', '日度', 'day', 'daily', '1d'},
+    'week': {'周', '周度', 'week', 'weekly', '1w'},
+    'month': {'月', '月度', 'month', 'monthly'},
+    'quarter': {'季', '季度', 'quarter', 'quarterly', '1q'},
+    'year': {'年', '年度', 'year', 'yearly', 'annual', '1y'},
+}
+
+
+def _obscures_quantity(char):
+    return not char.isprintable() or unicodedata.category(char) in {'Mn', 'Mc', 'Me'}
+
+
+# Strict reading treats any unclassified word attached to a typed quantity as a
+# possible unknown unit, because only language understanding can tell 19时 from
+# 19美分. Review reading accepts such a word as a boundary so the exact literal
+# can be shown to a person; it never makes a rule executable by itself.
+_PROSE_REVIEW = ContextVar('judgment_number_prose_review', default=False)
+
+
+@contextmanager
+def prose_review():
+    token = _PROSE_REVIEW.set(True)
+    try:
+        yield
+    finally:
+        _PROSE_REVIEW.reset(token)
+
+
+def _prose_follows(text, units=()):
+    if not _PROSE_REVIEW.get() or not text:
+        return False
+    following = text.lstrip()
+    if not following:
+        return False
+    first = following[0]
+    if first in ',.':
+        # Width-normalized clause punctuation (，。) only when prose follows.
+        # A digit, a masked digit ('x') or ASCII text keeps it a decimal point,
+        # thousands separator or truncated literal such as 12|.5kg.
+        rest = following[1:]
+        return (not rest or rest[0].isspace() or not rest[0].isascii()
+                and not rest[0].isnumeric() and rest[0] not in _CHINESE_CONTINUATIONS)
+    if first.isascii() or not first.isalpha() or first in _CHINESE_CONTINUATIONS or _SCALE.match(following):
+        return False
+    return not any(following.startswith(unit) for unit in units if unit)
+
+
+def chinese_quantity_continuation(char):
+    """A preceding numeric/code token cannot be removed from a quoted quantity."""
+    char = _width(char) if isinstance(char, str) else ''
+    return bool(char) and (char.isnumeric() or char.isascii() and char.isalnum()
+        or char in _CHINESE_CONTINUATIONS or _obscures_quantity(char))
+
+
+def starts_chinese_scaled_quantity(text, *, unit=None):
+    if not isinstance(text, str):
+        return False
+    normalized = _width(text).lstrip()
+    match = _CHINESE_SCALED.match(normalized)
+    return match is not None and (unit is None or _complete_quantity_unit(normalized[match.start('scale'):], unit))
+
+
+def _width(text):
+    # Width variants only: NFKC would invent digits from ², ①, ½ and styled
+    # numerals, turning an unsupported source quantity into a different value.
+    return text.translate(_WIDTH)
+
+
+class NumericPrecisionError(ValueError):
+    pass
+
+
+def _decimal(literal):
+    if not isinstance(literal, str) or len(literal) > 128:
+        raise ValueError('numeric literal too long')
+    value = Decimal(literal)
+    if not value.is_finite() or abs(value.as_tuple().exponent) > 1000:
+        raise ValueError('nonfinite or excessive numeric exponent')
+    return value
+
+
+def exact_float(literal):
+    """Reject a lossy JSON/expression conversion instead of rounding silently."""
+    try:
+        decimal = _decimal(literal)
+        value = float(decimal)
+        if (not math.isfinite(value) or Decimal(str(value)) != decimal
+                or decimal == decimal.to_integral_value() and Decimal.from_float(value) != decimal):
+            raise ValueError('lossy conversion')
+    except (ValueError, DecimalException, OverflowError):
+        raise NumericPrecisionError('研究规则数值超出当前存储精度，不能舍入、截断或改为零') from None
+    return value
+
+
+def check_rule_number(value):
+    if type(value) not in (int, float):
+        raise ValueError('研究规则必须使用有限JSON数字，不能使用布尔值或字符串')
+    exact_float(str(value))
+    return value
+
+
+def _logical_clause_boundary(remainder):
+    """A complete literal may end before an explicit logical clause join.
+
+    This is quantity punctuation, not selection or interpretation of a rule.
+    A bare second number/scale/unit suffix is not an independent clause.
+    """
+    match = _LOGICAL_JOIN.match(remainder.lstrip())
+    if match is None:
+        return False
+    following = remainder.lstrip()[match.end():].lstrip()
+    if following[:1] in {'(', '[', '{', '（', '【'}:
+        following = following[1:].lstrip()
+    if not following or not following[0].isalpha():
+        return False
+    clause = re.split(r'[\r\n，。；;!?！？]', following[:512], maxsplit=1)[0]
+    # Only the immediate operand can establish this boundary. A later clause
+    # must not rescue a malformed number in the first one. ASCII joins inside
+    # words such as "floor" are not separators.
+    for separator in _LOGICAL_JOIN.finditer(clause):
+        if (separator[0].isascii() and separator[0].isalpha() and separator.start()
+                and (clause[separator.start() - 1].isascii()
+                     and clause[separator.start() - 1].isalnum()
+                     or clause[separator.start() - 1] == '_')):
+            continue
+        clause = clause[:separator.start()]
+        break
+    # Reuse the complete numeric grammar (dates, ratios, arrays, exponents and
+    # precision bounds), with logical recognition disabled to avoid recursion.
+    # Percent units are complete scalar spellings, independently of the left
+    # rule's selected catalog unit. No rule/operator meaning is interpreted.
+    return any(quoted_quantities(clause, unit=unit, _allow_logical=False)
+               for unit in (None, '%', '‰', '‱'))
+
+
+def _scale(value, power):
+    # Constructing the decimal tuple changes only the explicit base-ten scale;
+    # Decimal's ambient precision cannot round the original significand.
+    parts = value.as_tuple()
+    return Decimal((parts.sign, parts.digits, parts.exponent + power))
+
+
+def _unit_boundary(remainder, units=(), *, allow_logical=True):
+    if not remainder:
+        return True
+    following = remainder.lstrip()
+    if not following:
+        return True
+    if _obscures_quantity(following[0]):
+        return False
+    if _LOGICAL_JOIN.match(following):
+        return allow_logical and _logical_clause_boundary(following) or _prose_follows(remainder, units)
+    if following.startswith('· '):
+        return True  # Renderer field delimiter, rather than kg·m.
+    for suffix in _COMPARISON_SUFFIXES:
+        if following.startswith(suffix):
+            rest = following[len(suffix):].lstrip()
+            return _comparison_tail_safe(rest, units)
+    if following[0] in '/^*·×÷%‰‱':
+        return False
+    if remainder[0].isspace():
+        return True
+    if _prose_follows(remainder, units):
+        return True
+    return not (remainder[0].isalnum() or remainder[0] == '_')
+
+
+def _comparison_tail_safe(rest, units=()):
+    """A comparison suffix cannot conceal attached unit or arithmetic syntax."""
+    rest = rest.lstrip()
+    if not rest or rest.startswith('· '):
+        return True
+    if _obscures_quantity(rest[0]) or rest[0] in _CONNECTORS + '%‰‱_':
+        return False
+    clause = re.match(r'[^\r\n，。；;!?！？、]*', rest)[0]
+    if any(char in clause for char in '/^*·×÷⁄∕%‰‱') or any(unicodedata.category(char) == 'Sc' for char in clause):
+        return False
+    head = clause.lstrip(' ([{（【').lstrip()
+    if head and head[0].isascii() and (head[0].isalpha() or head[0].isdigit()):
+        return False
+    return not any(head.startswith(unit) for unit in units if unit)
+
+
+def _complete_quantity_unit(following, unit, *, allow_logical=True):
+    expected = _width(unit).strip() if isinstance(unit, str) else ''
+    if not expected or _SCALE.fullmatch(expected):
+        return False
+    following = following.lstrip()
+    if following.startswith(expected) and _unit_boundary(following[len(expected):], allow_logical=allow_logical):
+        return True
+    scale = _SCALE.match(following)
+    if scale is None:
+        return False
+    remainder = following[scale.end():].lstrip()
+    return remainder.startswith(expected) and _unit_boundary(remainder[len(expected):], allow_logical=allow_logical)
+
+
+def _unit_value(value, tail, unit, units, *, allow_logical=True):
+    following = tail.lstrip()
+    if following and _obscures_quantity(following[0]):
+        return None
+    expected = _width(unit).strip() if isinstance(unit, str) else None
+    known = {_width(item).strip() for item in units if isinstance(item, str) and item.strip()}
+    known.update({'%', '‰', '‱'})
+    if expected:
+        known.add(expected)
+        prefix = _SCALE.match(expected)
+        if prefix:
+            known.add(expected[prefix.end():])
+    # A compound source unit wins over its prefix. Only an explicit base-ten
+    # multiplier plus the complete expected unit can change the numeric scale.
+    unit_prefix = False
+    for actual in sorted(known - {''}, key=len, reverse=True):
+        if following.startswith(actual):
+            unit_prefix = True
+            if not _unit_boundary(following[len(actual):], known, allow_logical=allow_logical):
+                continue
+            if actual == expected:
+                return value
+            power = _SCALE.match(actual)
+            if expected and power and actual[power.end():] == expected:
+                return _scale(value, _POWERS[power[0]])
+            return None
+    # A failed unit boundary is not permission to reinterpret a quantity as
+    # unitless. Unknown attached text is equally ambiguous for a typed quantity.
+    if unit_prefix:
+        return None
+    if _LOGICAL_JOIN.match(following):
+        return value if allow_logical and _logical_clause_boundary(following) or _prose_follows(tail, known) else None
+    match = _SCALE.match(following)
+    if match:
+        remainder = following[match.end():].lstrip()
+        comparison = next((suffix for suffix in _COMPARISON_SUFFIXES if remainder.startswith(suffix)), None)
+        closed = (not remainder or remainder[0] in '，;；。!?！？、)]}）'
+            or remainder[0] in ',.' and (len(remainder) == 1 or remainder[1].isspace())
+            or comparison is not None and _comparison_tail_safe(remainder[len(comparison):], known)
+            or _prose_follows(remainder, known))
+        if remainder and (remainder[0] in '万亿千0123456789' + _CONNECTORS
+                or remainder[0] in ',.' and not closed):
+            return None
+        if expected:
+            if closed:
+                # A closed explicit multiplier is numeric evidence like a bare
+                # literal. An already scaled catalog unit needs an actual
+                # source unit to disambiguate the repeated multiplier.
+                if _SCALE.match(expected):
+                    return None
+            elif not remainder.startswith(expected) or not _unit_boundary(remainder[len(expected):], known,
+                    allow_logical=allow_logical):
+                return None
+        return _scale(value, _POWERS[match[0]])
+    if _prose_follows(tail, known):
+        return value
+    if expected and following and (following[0].isalpha() or following[0] in '([{'):
+        return None
+    if following and (following[0].isnumeric() or following[0] in '十百千万亿兆两〇零一二三四五六七八九%‰‱'):
+        return None
+    if following and following[0] in _CONNECTORS:
+        return None
+    if tail and not tail[0].isspace():
+        first = tail[0]
+        if first in ',.':
+            if len(tail) > 1 and not tail[1].isspace():
+                return None
+        elif first in '+-/:0123456789' or first.isascii() and (first.isalpha() or first == '_'):
+            return None
+    return value
+
+
+def _period_count(literal):
+    if literal.isascii() and literal.isdigit():
+        value = int(literal)
+    else:
+        # Canonical bounded cardinals only. Colloquial abbreviated hundreds,
+        # digit strings, fractions and partial suffixes cannot become counts.
+        digit = r'[一二两三四五六七八九]'
+        if not re.fullmatch(r'(?:' + digit + r'|十' + digit + r'?|[二三四五六七八九]十' + digit
+                + r'?|一百(?:零' + digit + r'|[一二两]十' + digit + r'?)?)', literal):
+            return None
+        value, rest = 0, literal
+        if rest.startswith('一百'):
+            value, rest = 100, rest[2:].removeprefix('零')
+        if '十' in rest:
+            tens, ones = rest.split('十')
+            value += (_CHINESE_DIGITS[tens] if tens else 1) * 10
+            rest = ones
+        if rest:
+            value += _CHINESE_DIGITS[rest]
+    return value if 1 <= value <= 120 else None
+
+
+def observation_periods(text):
+    """Read count/cadence syntax without interpreting research conditions."""
+    text, records = _width(text), []
+    for match in _PERIOD.finditer(text):
+        before, raw_after = text[:match.start()].rstrip(' \t'), text[match.end():]
+        after = raw_after.lstrip(' \t')
+        if before and (before[-1].isnumeric() or before[-1] in _CHINESE_CONTINUATIONS
+                or _obscures_quantity(before[-1]) and before[-1] not in '\r\n'):
+            continue
+        closed = (not after or after[0] in '\r\n，。；;!?！？、)]}）' or after.startswith('· ')
+            or after[0] in ',.' and (len(after) == 1 or not after[1].isnumeric()))
+        if not closed and (after[0].isnumeric() or after[0] in _CHINESE_CONTINUATIONS
+                or _obscures_quantity(after[0])
+                or after[0] in '/^*·×÷⁄∕日天周月季年期'
+                or not raw_after[0].isspace() and after[0].isascii() and after[0].isalpha()):
+            continue
+        count = _period_count(match['count'])
+        cadence = _PERIOD_UNITS[match['unit'].lower()]
+        if match['cadence']:
+            qualifier = _PERIOD_ADVERBS[match['cadence'].lower()]
+            if cadence is not None and cadence != qualifier:
+                continue
+            cadence = qualifier
+        if count is not None:
+            records.append({'start': match.start(), 'end': match.end(), 'count': count,
+                'cadence': cadence})
+    return records
+
+
+def period_matches_frequency(record, frequency):
+    return record['cadence'] is None or str(frequency or '').strip().lower() in _FREQUENCIES[record['cadence']]
+
+
+def _range_pattern(unit, units):
+    known = {_width(item).strip() for item in units if isinstance(item, str) and item.strip()}
+    known.update({'%', '‰', '‱'})
+    if isinstance(unit, str) and unit.strip():
+        expected = _width(unit).strip()
+        known.add(expected)
+        prefix = _SCALE.match(expected)
+        if prefix:
+            known.add(expected[prefix.end():])
+    literal_units = '|'.join(re.escape(item) for item in sorted(known - {''}, key=lambda item: (-len(item), item)))
+    scale = _SCALE.pattern
+    suffix = rf'(?:(?:{scale})\s*(?:{literal_units})|(?:{literal_units})|(?:{scale}))'
+    return re.compile(_START + rf'(?P<lower>{_GROUPED})(?:\s*(?P<lower_unit>{suffix}))?\s*'
+        + rf'(?:-|–|—|~|～|至|到|(?i:\bto\b))\s*(?P<upper>{_GROUPED})(?:\s*(?P<upper_unit>{suffix}))?')
+
+
+def _connected_ranges(text, unit, units, original, *, allow_logical=True):
+    """Consume whole candidate intervals, including rejected ones.
+
+    Only explicit units or multipliers distinguish these from bare subtraction
+    or date fragments. The model, rather than this syntax reader, still chooses
+    whether the original describes a threshold, observation, or other rule.
+    """
+    masked, values = list(text), set()
+    for match in _range_pattern(unit, units).finditer(text):
+        masked[match.start():match.end()] = ' ' * (match.end() - match.start())
+        lower_suffix, upper_suffix = match['lower_unit'] or '', match['upper_unit'] or ''
+        preceding = original[:match.start()].rstrip()
+        after = text[match.end():].lstrip()
+        if (not re.compile(_START).match(original, match.start()) or not upper_suffix
+                or preceding and (preceding[-1].isnumeric() or preceding[-1] in _CONNECTORS + '负負')
+                or after and (after[0].isnumeric() or after[0] in _CONNECTORS)):
+            continue
+        try:
+            upper_tail = text[match.end('upper'):]
+            if not lower_suffix:
+                lower_tail = upper_tail
+            elif _SCALE.fullmatch(lower_suffix):
+                prefix = _SCALE.match(upper_suffix)
+                base_unit = upper_suffix[prefix.end():].strip() if prefix else upper_suffix
+                lower_tail = lower_suffix + base_unit
+            else:
+                lower_tail = lower_suffix
+            lower = _unit_value(_decimal(match['lower'].replace(',', '')), lower_tail, unit, units,
+                allow_logical=allow_logical)
+            upper = _unit_value(_decimal(match['upper'].replace(',', '')), upper_tail, unit, units,
+                allow_logical=allow_logical)
+            if lower is not None and upper is not None and lower < upper:
+                values.update((lower, upper))
+        except (ValueError, DecimalException):
+            continue
+    return ''.join(masked), values
+
+
+def _arrays(text):
+    start, depth = None, 0
+    for index, char in enumerate(text):
+        if char == '[':
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == ']' and depth:
+            depth -= 1
+            if depth == 0:
+                yield start, index + 1
+    if depth:
+        yield start, len(text)
+
+
+def quoted_quantities(quote, *, unit=None, units=(), _allow_logical=True):
+    """Read explicit decimal literals, masking malformed/nested list contents.
+
+    A flat numeric list owns its commas: [1,200] contains 1 and 200, never 1200.
+    Outside lists, only complete thousands groups are grouped; comma plus space
+    is a separator. No arithmetic, ratios, code fragments or unit aliases are
+    inferred. The caller still checks full original quotes and catalog units.
+    """
+    units = tuple(units)
+    text = _width(quote)
+    masked, values = list(text), set()
+    for start, end in _arrays(text):
+        masked[start:end] = ' ' * (end - start)
+        if text[end - 1] != ']':
+            continue
+        if text[:start].rstrip().endswith(('负', '負')):
+            continue
+        members = text[start + 1:end - 1].split(',')
+        if len(members) > 32 or any(not _MEMBER.fullmatch(member.strip()) for member in members):
+            continue
+        try:
+            parsed = [_unit_value(_decimal(member.strip()), text[end:], unit, units,
+                allow_logical=_allow_logical) for member in members]
+            if all(value is not None for value in parsed):
+                values.update(parsed)
+        except (ValueError, DecimalException):
+            continue
+    scalar_text = ''.join(masked)
+    for pattern in (_GROUPED_SPACE, _ARITHMETIC, _COMPARISON_ARITHMETIC):
+        scalar_text = pattern.sub(lambda match: 'x' * len(match[0]), scalar_text)
+    scalar_text, range_values = _connected_ranges(scalar_text, unit, units, text,
+        allow_logical=_allow_logical)
+    values.update(range_values)
+    masked = list(scalar_text)
+    # A literal pair can share its final unit. Both endpoints must validate
+    # together; an unknown word after the first number is never a bare value.
+    for pair in _SHARED_UNIT_PAIR.finditer(scalar_text):
+        try:
+            preceding = text[:pair.start()].rstrip()
+            invalid_start = preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～负負')
+            parsed = [] if invalid_start else [
+                _unit_value(_decimal(member.replace(',', '')), text[pair.end():], unit, units,
+                    allow_logical=_allow_logical)
+                for member in pair.groups()]
+            if all(value is not None for value in parsed):
+                values.update(parsed)
+        except (ValueError, DecimalException):
+            pass
+        masked[pair.start():pair.end()] = ' ' * (pair.end() - pair.start())
+    scalar_text = ''.join(masked)
+    # This grammar reads quantities selected as rule evidence. It neither
+    # chooses a comparison operator nor interprets the research around them.
+    for match in _CHINESE_SCALED.finditer(scalar_text):
+        preceding = text[:match.start()].rstrip()
+        if preceding and chinese_quantity_continuation(preceding[-1]):
+            continue
+        tail = text[match.start('scale'):]
+        if not _complete_quantity_unit(tail, unit, allow_logical=_allow_logical):
+            continue
+        coefficient = _CHINESE_DIGITS.get(match['coefficient'], 1)
+        value = _unit_value(Decimal(coefficient), tail, unit, units, allow_logical=_allow_logical)
+        if value is not None:
+            values.add(value)
+    for match in _SCALAR.finditer(scalar_text):
+        try:
+            preceding = text[:match.start()].rstrip()
+            if preceding and (preceding[-1].isnumeric() or preceding[-1] in '*/^×÷⁄∕‐‑‒–—~～负負'):
+                continue
+            value = _unit_value(_decimal(match[0].replace(',', '')), text[match.end():], unit, units,
+                allow_logical=_allow_logical)
+            if value is not None:
+                values.add(value)
+        except (ValueError, DecimalException):
+            continue
+    return values

@@ -43,7 +43,7 @@ def test_saved_rules_only_extend_their_own_series_and_include_change_baseline(mo
     from types import SimpleNamespace
     from tin.judgments import service
     descriptive,short,long=['kb-'+letter*48 for letter in ('a','b','c')]
-    payload=SimpleNamespace(falsifiers=[
+    payload=SimpleNamespace(thresholds=[],falsifiers=[
         SimpleNamespace(series_id=short,expression='value >= 10',consecutive_periods=3),
         SimpleNamespace(series_id=long,expression='change > 0',consecutive_periods=120)])
     monkeypatch.setattr(service,'_refs',lambda value:[('whitelist',sid,sid) for sid in (descriptive,short,long)])

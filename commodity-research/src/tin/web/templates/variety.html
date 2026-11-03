@@ -165,13 +165,13 @@
           <line x1="0" y1="8" x2="400" y2="8" stroke="var(--line)" stroke-width="0.75" stroke-dasharray="3,3"/>
           <line x1="0" y1="62" x2="400" y2="62" stroke="var(--line)" stroke-width="0.75" stroke-dasharray="3,3"/>
           <line x1="0" y1="118" x2="400" y2="118" stroke="var(--line)" stroke-width="0.75" stroke-dasharray="3,3"/>
-          <polyline points="{{ curve.points }}" fill="none" stroke="var(--primary)" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+          <polyline points="{{ curve.points }}" fill="none" stroke="var(--chart-series-1)" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
           {% for r in curve.rows %}
           <circle cx="{{ r.x }}" cy="{{ r.y }}" r="{{ 5.5 if r.main else 4 }}"
                   data-contract-point="{{ r.contract }}" data-main="{{ 1 if r.main else 0 }}"
                   data-caption="{{ r.contract }}{{ '（主力）' if r.main }}: {{ r.settle | num(price_unit) }} {{ price_unit }}"
-                  fill="{{ 'var(--primary)' if r.main else 'var(--surface)' }}"
-                  stroke="{{ 'var(--surface)' if r.main else ('var(--primary)' if r.active else 'var(--text-muted)') }}"
+                  fill="{{ 'var(--chart-series-1)' if r.main else 'var(--surface)' }}"
+                  stroke="{{ 'var(--surface)' if r.main else ('var(--chart-series-1)' if r.active else 'var(--text-muted)') }}"
                   stroke-width="2" vector-effect="non-scaling-stroke"/>
           {% endfor %}
         </svg>

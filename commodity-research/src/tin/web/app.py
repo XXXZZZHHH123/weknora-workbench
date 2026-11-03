@@ -33,6 +33,7 @@ from tin.export.board import (
     snapshot,
     source_catalog,
     threshold_radar,
+    threshold_radar_values,
     ticker,
 )
 from tin.export import templates as export_templates
@@ -211,6 +212,8 @@ templates.env.globals["research_url"] = research_url
 templates.env.globals["research_form_url"] = research_form_url
 templates.env.globals["research_identity"] = lambda: current_identity.get()
 templates.env.globals["static_version"] = static_version
+from tin.web.chart_palette import chart_palette
+templates.env.globals["chart_palette"] = chart_palette
 templates.env.filters["num"] = _num
 templates.env.filters["local"] = lambda dt: dt.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M") if dt else ""
 from tin.web.research_display import register_display
@@ -239,6 +242,17 @@ from tin.web.diagram_generation import router as diagram_generation_router
 app.include_router(diagram_generation_router)
 from tin.web.judgment_generation import router as judgment_generation_router
 app.include_router(judgment_generation_router)
+from tin.web.judgment_jobs import router as judgment_jobs_router, global_router as judgment_jobs_global_router
+app.include_router(judgment_jobs_router)
+app.include_router(judgment_jobs_global_router)
+from tin.web.diagram_jobs import router as diagram_jobs_router
+app.include_router(diagram_jobs_router)
+from tin.web.judgment_review import router as judgment_review_router
+app.include_router(judgment_review_router)
+from tin.web.judgment_radar import router as judgment_radar_router
+app.include_router(judgment_radar_router)
+from tin.web.judgment_charts import router as judgment_charts_router
+app.include_router(judgment_charts_router)
 from tin.web.judgment_structured import router as judgment_structured_router
 app.include_router(judgment_structured_router)
 from tin.web.research_strategy import router as research_strategy_router
@@ -247,6 +261,8 @@ from tin.web.research_references import router as research_references_router
 app.include_router(research_references_router)
 from tin.web.judgment_panels import router as judgment_panels_router
 app.include_router(judgment_panels_router)
+from tin.web.judgment_lifecycle import router as judgment_lifecycle_router
+app.include_router(judgment_lifecycle_router)
 from tin.web.report_drafts import router as report_drafts_router
 app.include_router(report_drafts_router)
 from tin.web.report_figures import router as report_figures_router
@@ -262,6 +278,23 @@ app.include_router(build_market_router(lambda: _page_session('market'), template
 def _start_workspace_refresh():
     from tin.refresh.scheduler import start
     start()
+
+
+@app.on_event('shutdown')
+async def _stop_judgment_jobs():
+    from tin.web.judgment_jobs import runtime
+    await runtime.shutdown()
+    from tin.web.diagram_jobs import runtime as diagram_runtime
+    await diagram_runtime.shutdown()
+
+
+@app.on_event('startup')
+async def _start_judgment_jobs():
+    if settings.weknora_api_url:
+        from tin.web.judgment_jobs import runtime
+        await runtime.startup()
+        from tin.web.diagram_jobs import runtime as diagram_runtime
+        await diagram_runtime.startup()
 
 
 @app.on_event('shutdown')
@@ -551,6 +584,7 @@ def judgment_page(request: Request, err: str | None = None):
 
 def _judgment_response(request: Request, *, err=None, logic_input=""):
     from tin.web.judgment_panels import judgment_directory, selected_judgment
+    from tin.web.judgment_research import judgment_research_view
     selected_id = request.query_params.get('judgment_id')
     if selected_id is not None:
         if not selected_id.isascii() or not selected_id.isdecimal() or not 1 <= len(selected_id) <= 19:
@@ -579,11 +613,17 @@ def _judgment_response(request: Request, *, err=None, logic_input=""):
             audit_filter.append(AuditLog.detail['workbench_id'].as_string() == scope.workbench_id)
         last_import = s.scalars(select(AuditLog).where(*audit_filter)
                                 .order_by(AuditLog.id.desc()).limit(1)).first()
+        indicators = {indicator.series_id: indicator for indicator in s.scalars(select(Indicator))}
+        missing_values = {identifier: {'name': indicator.name, 'unit': indicator.unit, 'value': None, 'date': None}
+            for identifier, indicator in indicators.items()}
+        radar_rows = (threshold_radar(s, variety, d, judgment=j) if d
+            else threshold_radar_values(j, missing_values)) if j is not None else []
         return templates.TemplateResponse(request, "judgment.html", _shell(
             s, "judgment", d, j=j, block=judgment_record_block(j, today), versions=versions,
             selected_judgment_id=selected_id,
-            names={i.series_id: i.name for i in s.scalars(select(Indicator))},
-            radar=threshold_radar(s, variety, d, judgment=j) if d and j is not None else [],
+            names={identifier: indicator.name for identifier, indicator in indicators.items()},
+            research=judgment_research_view(s, j, d),
+            radar=radar_rows,
             report=last_import.detail if last_import else None, err=err, logic_input=logic_input))
 
 

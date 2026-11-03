@@ -6,9 +6,10 @@ import httpx
 import pytest
 from sqlalchemy import select
 from tests.test_knowledge_facts import canonical, FIRST, SECOND, KB, SERIES, page
+from tests.test_judgment_catalog_capacity import restore as restore_catalog, encoded_directory, selected_refs
 from tin.web import judgment_generation as generation
 from tin.integration.workbench_scope import isolated_session_factory
-from tin.models import Judgment
+from tin.models import AuditLog, Judgment
 
 TEXT='A supply contraction and soft orders require opposing evidence. Stocks above 12 吨 require review.'
 def document():
@@ -19,6 +20,37 @@ def document():
                       'value':12,'type':'观察位','horizon':'短期'}]},
         'binding_units':{SERIES:'吨'},'rule_quotes':{'watch':'Stocks above 12 吨'},
         'unresolved':[{'section':'demand','text':'Orders','reason':'No comparable indicator'}]}
+
+
+def inventory_fixture():
+    """Independent synthetic interpretation, before field selection or analysis."""
+    return {'blocks': [{'id': 's0001', 'disposition': 'research', 'reason': 'Research source'}],
+        'items': [
+            {'id': 'i_bull', 'block_ids': ['s0001'], 'quote': 'A supply contraction',
+                'kind': 'bull_claim', 'source_unit': None},
+            {'id': 'i_bear', 'block_ids': ['s0001'], 'quote': 'soft orders',
+                'kind': 'bear_claim', 'source_unit': None},
+            {'id': 'i_stock', 'block_ids': ['s0001'], 'quote': 'Stocks above 12 吨',
+                'kind': 'bull_evidence', 'source_unit': '吨'},
+            {'id': 'i_watch', 'block_ids': ['s0001'], 'quote': 'Stocks above 12 吨',
+                'kind': 'threshold', 'source_unit': '吨'},
+        ]}
+
+
+def covered_fixture(value):
+    result = copy.deepcopy(value)
+    result['source_coverage'] = {
+        'i_bull': '/judgment/contradiction/bull/claim',
+        'i_bear': '/judgment/contradiction/bear/claim',
+        'i_stock': '/judgment/contradiction/bull/evidence/0',
+        'i_watch': '/judgment/thresholds/0',
+    }
+    return result
+
+
+def model_fixture(prompt, value):
+    return inventory_fixture() if prompt.startswith('research-source-inventory.v1') else covered_fixture(value)
+
 def endpoint(suffix):return page(FIRST,'/api/sn/judgment'+suffix)
 def rows():
     with isolated_session_factory(17,FIRST)() as session:
@@ -28,7 +60,7 @@ def generator(canonical,monkeypatch):
     client,headers,state,tmp=canonical;calls=[];response=document()
     async def complete(scope,model,prompt):
         assert scope.knowledge_base_id==KB
-        calls.append({'model':model,'prompt':prompt});return copy.deepcopy(response)
+        calls.append({'model':model,'prompt':prompt});return model_fixture(prompt,response)
     monkeypatch.setattr(generation,'completion',complete);generation.previews.items.clear()
     return client,headers,state,response,calls
 
@@ -40,8 +72,8 @@ def apply(client,headers,preview):
 def test_generate_is_preview_only_then_explicit_save_appends_draft(generator):
     client,headers,_,_,calls=generator
     generated=generate(client,headers);assert generated.status_code==200,generated.text
-    preview=generated.json();assert TEXT in calls[0]['prompt'] and SERIES in calls[0]['prompt']
-    assert len(calls) == 1
+    preview=generated.json();assert TEXT in calls[1]['prompt'] and SERIES in calls[1]['prompt']
+    assert len(calls) == 3
     assert rows()==[] and preview['bindings'][0]['unit']=='吨'
     saved=apply(client,headers,preview);assert saved.status_code==200,saved.text
     assert saved.json()['status']=='草稿' and saved.json()['version']==1
@@ -66,7 +98,7 @@ def test_new_explicit_product_reuses_model_analysis_without_inheriting_other_pro
     managed = client.get(endpoint('/manage'), headers=headers).json()
     assert managed['variety'] == 'XY' and managed['current']['variety'] == 'XY'
     assert client.get(endpoint('/manage?variety=SN'), headers=headers).json()['current']['variety'] == 'SN'
-    assert len(calls) == 2
+    assert len(calls) == 6
 
 @pytest.mark.parametrize('change',[
     lambda d:d['judgment']['thresholds'][0].update(series_id='foreign'),
@@ -77,20 +109,31 @@ def test_invalid_model_draft_never_creates_version(generator,change):
     assert rows()==[]
 
 
-@pytest.mark.parametrize('change', [
-    lambda d: d['binding_units'].update({SERIES: 'kg'}),
-    lambda d: d['judgment']['thresholds'][0].update(value=99999),
-])
-def test_invalid_quantitative_item_is_not_executable_after_one_bounded_repair(generator, change):
-    client, headers, _, response, calls = generator; change(response)
+def test_invalid_quantitative_item_is_not_executable_after_one_bounded_repair(generator):
+    client, headers, _, response, calls = generator
+    response['judgment']['thresholds'][0]['value'] = 99999
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 2 and result.json()['repair_attempts'] == 1
-    assert '上次结构化校验反馈' in calls[1]['prompt']
+    assert len(calls) == 3 and result.json()['repair_attempts'] == 1
+    assert '上次结构化校验反馈' in calls[2]['prompt']
     preview = result.json()
     assert preview['validation_issues'] and preview['unresolved'] and rows() == []
     assert apply(client, headers, preview).status_code == 200
     assert rows()[0].status == '草稿' and rows()[0].thresholds == [] and rows()[0].source_note == TEXT
+
+
+def test_model_unit_is_replaced_by_registered_unit_without_changing_verified_numbers(generator):
+    client, headers, _, response, calls = generator
+    response['binding_units'][SERIES] = 'kg'
+    preview = generate(client, headers)
+    assert preview.status_code == 200, preview.text
+    result = preview.json()
+    assert len(calls) == 3 and result['repair_attempts'] == 1
+    assert result['bindings'][0]['unit'] == '吨'
+    assert apply(client, headers, result).status_code == 200
+    assert rows()[0].status == '草稿'
+    assert rows()[0].thresholds[0]['value'] == response['judgment']['thresholds'][0]['value'] == 12
+    assert rows()[0].source_note == TEXT
 
 
 def test_single_repair_can_fix_exact_quote_and_never_loops(generator, monkeypatch):
@@ -98,10 +141,10 @@ def test_single_repair_can_fix_exact_quote_and_never_loops(generator, monkeypatc
     broken = copy.deepcopy(response); broken['rule_quotes']['watch'] = 'paraphrased source'
     async def complete(scope, model, prompt):
         calls.append({'prompt': prompt})
-        return copy.deepcopy(broken if len(calls) == 1 else response)
+        return model_fixture(prompt,broken if len(calls) == 2 else response)
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
-    assert result.status_code == 200 and len(calls) == 2
+    assert result.status_code == 200 and len(calls) == 3
     assert result.json()['validation_issues'] == [] and result.json()['repair_attempts'] == 1
 
 
@@ -110,12 +153,12 @@ def test_forbidden_cost_fact_feedback_names_every_field_and_never_saves_unchange
     response['judgment']['cost_line'] = {'type': 'cash', 'value': 7, 'source': 'untrusted',
         'items': [{'desc': 'Cost', 'series_id': SERIES, 'value': 7}]}
     result = generate(client, headers)
-    assert result.status_code == 422 and len(calls) == 2 and rows() == []
+    assert result.status_code == 422 and len(calls) == 3 and rows() == []
     paths = {'/judgment/cost_line/value', '/judgment/cost_line/source',
              '/judgment/cost_line/items/0/value'}
     assert {issue['path'] for issue in result.json()['detail']['issues']} == paths
-    assert all(path in calls[1]['prompt'] for path in paths)
-    assert 'JSON null' in calls[1]['prompt']
+    assert all(path in calls[2]['prompt'] for path in paths)
+    assert 'JSON null' in calls[2]['prompt']
 
 
 def test_repair_cannot_drop_a_previously_verified_rule(generator, monkeypatch):
@@ -125,11 +168,12 @@ def test_repair_cannot_drop_a_previously_verified_rule(generator, monkeypatch):
     broken['rule_quotes']['bad'] = response['rule_quotes']['watch']
     async def complete(scope, model, prompt):
         calls.append({'prompt': prompt})
-        if len(calls) == 1: return broken
-        return {'judgment': {'contradiction': {}}, 'binding_units': {}, 'rule_quotes': {}, 'unresolved': []}
+        if prompt.startswith('research-source-inventory.v1'): return inventory_fixture()
+        if len(calls) == 2: return covered_fixture(broken)
+        return covered_fixture({'judgment': {'contradiction': {}}, 'binding_units': {}, 'rule_quotes': {}, 'unresolved': []})
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
-    assert result.status_code == 200 and len(calls) == 2
+    assert result.status_code == 200 and len(calls) == 3
     assert any(item['code'] == 'repair_changed_verified_rule' for item in result.json()['validation_issues'])
     assert apply(client, headers, result.json()).status_code == 200
     assert [item['id'] for item in rows()[0].thresholds] == ['watch']
@@ -143,15 +187,21 @@ def test_repair_transport_failure_keeps_the_already_verified_partial_draft(gener
     broken['rule_quotes']['pending'] = response['rule_quotes']['watch']
     async def complete(scope, model, prompt):
         calls.append({'prompt': prompt})
-        if len(calls) == 1: return broken
+        if prompt.startswith('research-source-inventory.v1'): return inventory_fixture()
+        if len(calls) == 2: return covered_fixture(broken)
         raise HTTPException(503, 'Synthetic unavailable repair')
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
-    assert result.status_code == 200 and len(calls) == 2
+    assert result.status_code == 200 and len(calls) == 3
     assert any(item['code'] == 'repair_unavailable' for item in result.json()['validation_issues'])
     assert apply(client, headers, result.json()).status_code == 200
     assert [item['id'] for item in rows()[0].thresholds] == ['watch']
-    assert any('pending' in item['text'] for item in rows()[0].unstructured)
+    assert any(item['status'] == 'pending' for section in result.json()['review']['sections'] for item in section['items'])
+    assert '未通过校验的模型候选' not in result.json()['markdown']
+    with isolated_session_factory(17, FIRST)() as session:
+        audit = session.scalar(select(AuditLog).where(AuditLog.action == '研究逻辑分析保存'))
+        candidates = audit.detail['review_candidates']['judgment']['thresholds']
+        assert next(item for item in candidates if item['id'] == 'pending') == broken['judgment']['thresholds'][1]
 
 
 def test_source_access_failure_during_repair_never_releases_a_partial_preview(generator, monkeypatch):
@@ -160,11 +210,12 @@ def test_source_access_failure_during_repair_never_releases_a_partial_preview(ge
     broken = copy.deepcopy(response); broken['judgment']['thresholds'][0]['value'] = 99999
     async def complete(scope, model, prompt):
         calls.append({'prompt': prompt})
-        if len(calls) == 1: return broken
+        if prompt.startswith('research-source-inventory.v1'): return inventory_fixture()
+        if len(calls) == 2: return covered_fixture(broken)
         raise HTTPException(403, 'Synthetic access revoked')
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
-    assert result.status_code == 403 and len(calls) == 2 and rows() == []
+    assert result.status_code == 403 and len(calls) == 3 and rows() == []
     assert generation.previews.items == {}
 
 def test_viewer_and_foreign_workbench_preview_are_rejected(generator):
@@ -179,7 +230,8 @@ def test_viewer_and_foreign_workbench_preview_are_rejected(generator):
 def test_stale_preview_and_changed_source_cannot_save(generator):
     client,headers,state,_,_=generator
     a=generate(client,headers).json();b=generate(client,headers).json()
-    assert apply(client,headers,a).status_code==200
+    assert apply(client,headers,a).status_code==409 and rows()==[]
+    assert apply(client,headers,b).status_code==200 and len(rows())==1
     assert apply(client,headers,b).status_code==409 and len(rows())==1
     c=generate(client,headers,1).json();state['value']+=1
     assert apply(client,headers,c).status_code==409 and len(rows())==1
@@ -196,7 +248,7 @@ def test_latest_draft_is_basis_even_if_an_older_version_is_active(generator):
 
 def test_source_change_during_generation_discards_preview(generator,monkeypatch):
     client,headers,state,response,_=generator
-    async def complete(*args):state['value']+=1;return copy.deepcopy(response)
+    async def complete(scope,model,prompt):state['value']+=1;return model_fixture(prompt,response)
     monkeypatch.setattr(generation,'completion',complete)
     assert generate(client,headers).status_code==409 and rows()==[]
 
@@ -237,13 +289,11 @@ def test_complete_catalog_batches_and_complete_source_are_model_selected(monkeyp
     observed, chosen = [], []
     async def choose(scope, model, prompt):
         assert TEXT in prompt
-        encoded = prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0]
-        import json
-        chunk = json.loads(encoded)
+        chunk = restore_catalog(encoded_directory(prompt))
         observed.extend(row['id'] for row in chunk)
         chosen.append(chunk[0])
         assert len(prompt.encode('utf-8')) <= generation.PROMPT_BYTES
-        return {'series_ids': [chunk[0]['id']]}
+        return {'selection_refs': selected_refs(encoded_directory(prompt), [chunk[0]['id']])}
     monkeypatch.setattr(generation, 'completion', choose)
     selected, partial = asyncio.run(generation.choose_catalog(None, 'm', catalog, TEXT))
     assert partial and selected == chosen
@@ -293,10 +343,9 @@ def test_source_index_compression_preserves_every_field_and_full_source_without_
     prompt = generation.make_prompt(generation.analysis_protocol(False), selected, TEXT)
     assert len(prompt.encode()) <= generation.PROMPT_BYTES and TEXT in prompt
     encoded = prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0]
-    grouped = json.loads(encoded)
-    restored = [{**{key: value for key, value in field.items() if key != 'source_ref'},
-                 **grouped['sources'][field['source_ref']]} for field in grouped['indicators']]
-    assert restored == catalog and len(grouped['sources']) == 1
+    restored = restore_catalog(json.loads(encoded))
+    source_encoded, grouped = generation.prompt_catalog(catalog)
+    assert restored == catalog and grouped and len(json.loads(source_encoded)['sources']) == 1
     assert 'source_ref不是指标ID' in prompt
 
 
@@ -383,7 +432,7 @@ def test_total_generate_deadline_preserves_existing_versions_and_no_preview(gene
     assert rows() == [] and not generation.previews.items
 
 
-def test_222k_catalog_uses_three_complete_selections_then_one_final_analysis(generator,monkeypatch):
+def test_222k_catalog_uses_three_complete_selections_then_analysis_and_coverage(generator,monkeypatch):
     client, headers, _, response, _ = generator
     catalog = [{'id': SERIES if index == 0 else 'real-' + str(index), 'unit': '吨',
                 'name': '量' * 1400 + str(index)} for index in range(53)]
@@ -393,19 +442,26 @@ def test_222k_catalog_uses_three_complete_selections_then_one_final_analysis(gen
     calls, seen = [], []
     async def complete(scope, model, prompt):
         calls.append(prompt)
+        if prompt.startswith('research-source-inventory.v1'):
+            return inventory_fixture()
         if prompt.startswith(generation.SELECTION_PROTOCOL):
             import json
-            chunk = json.loads(prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0])
+            chunk = restore_catalog(encoded_directory(prompt))
             seen.extend(item['id'] for item in chunk)
-            return {'series_ids': [SERIES] if any(item['id'] == SERIES for item in chunk) else []}
-        return copy.deepcopy(response)
+            return {'selection_refs': selected_refs(encoded_directory(prompt), [SERIES])}
+        # Temporary selector references never become analysis IDs or metadata.
+        assert all('selection_ref' not in field for field in restore_catalog(encoded_directory(prompt)))
+        assert {field['id'] for field in restore_catalog(encoded_directory(prompt))} == {SERIES}
+        return covered_fixture(response)
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 4 and len(seen) == len(catalog)
+    assert len(calls) == 6 and len(seen) == len(catalog)
+    assert sum(prompt.startswith(generation.SELECTION_PROTOCOL) for prompt in calls) == 3
     assert seen == [item['id'] for item in catalog]
     assert all(TEXT in prompt for prompt in calls)
     assert rows() == []
+    assert result.json()['bindings'] == [{'series_id': SERIES, 'unit': '吨', 'name': catalog[0]['name']}]
 
 
 def test_actual_model_request_contains_a_machine_readable_numeric_rule_contract(generator):
@@ -413,18 +469,27 @@ def test_actual_model_request_contains_a_machine_readable_numeric_rule_contract(
     client, headers, _, _, calls = generator
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 1 and rows() == []
-    prompt = calls[0]['prompt']
+    assert len(calls) == 3 and rows() == []
+    prompt = calls[1]['prompt']
     marker = '阈值条目的 JSON Schema 类型示意：\n'
     assert marker in prompt
     schema, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
     assert schema['type'] == 'object'
     assert {'operator', 'series_id', 'value'} <= set(schema['required'])
-    assert schema['properties']['value']['oneOf'] == [
+    choices = schema['properties']['value']['oneOf']
+    assert choices[:2] == [
         {'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}, 'minItems': 2, 'maxItems': 2}]
+    assert len(choices) == 3
+    moving = choices[2]
+    assert moving['type'] == 'object' and moving['additionalProperties'] is False
+    assert set(moving['required']) == {'kind', 'window'}
+    assert moving['properties']['kind']['const'] == 'sma'
+    assert moving['properties']['window']['type'] == 'integer'
+    assert moving['properties']['window']['minimum'] == 2
+    assert moving['properties']['window']['maximum'] == 120
     assert schema['if']['properties']['operator']['const'] == 'between'
     assert schema['then']['properties']['value']['type'] == 'array'
-    assert schema['else']['properties']['value']['type'] == 'number'
+    assert schema['else']['properties']['value']['oneOf'] == [{'type': 'number'}, moving]
     # The type example is abstract: actual source, unit and IDs arrive only in
     # the request's authorized catalog and source, not as schema defaults.
     assert 'default' not in json.dumps(schema) and SERIES not in json.dumps(schema)
@@ -438,8 +503,8 @@ def test_actual_model_request_uses_the_exact_pricing_power_schema(generator):
     client, headers, _, _, calls = generator
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 1 and rows() == []
-    prompt = calls[0]['prompt']
+    assert len(calls) == 3 and rows() == []
+    prompt = calls[1]['prompt']
     marker = '定价权对象的 JSON Schema：\n'
     assert marker in prompt
     schema, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
@@ -452,6 +517,28 @@ def test_actual_model_request_uses_the_exact_pricing_power_schema(generator):
     assert SERIES not in json.dumps(schema)
 
 
+def test_missing_pricing_description_preserves_verified_preview_with_one_coverage_pass(generator):
+    client, headers, _, response, calls = generator
+    response['judgment']['pricing_power'] = None
+    original = copy.deepcopy(response)
+    result = generate(client, headers)
+    assert result.status_code == 200, result.text
+    preview = result.json()
+    assert len(calls) == 3 and preview['repair_attempts'] == 1
+    assert rows() == [] and response == original
+    assert '## 边际定价权\n未提供' in preview['markdown']
+    assert any(issue['code'] == 'empty_description' and issue['severity'] == 'normalized'
+               for issue in preview['validation_issues'])
+    # Explicit saving is still a separate operation; absence never becomes a
+    # guessed pricing category, evidence or an executable rule.
+    saved = apply(client, headers, preview)
+    assert saved.status_code == 200, saved.text
+    row = rows()[0]
+    assert row.pricing_power == {'category': None, 'short': [], 'long': [], 'key': None, 'sources': []}
+    assert [rule['id'] for rule in row.thresholds] == ['watch']
+    assert row.source_note == TEXT and row.status == '草稿'
+
+
 @pytest.mark.parametrize('category', ['unsupported-category', True, {'category': 'unsupported-category'}])
 def test_pricing_power_schema_keeps_invalid_model_categories_rejected(generator, category):
     client, headers, _, response, calls = generator
@@ -461,12 +548,11 @@ def test_pricing_power_schema_keeps_invalid_model_categories_rejected(generator,
     detail = result.json()['detail']
     assert detail['code'] == 'judgment_validation'
     assert any(issue['code'] == 'field_schema' and issue['path'] == '/judgment/pricing_power/category' for issue in detail['issues'])
-    assert len(calls) == 2 and rows() == [] and not generation.previews.items
+    assert len(calls) == 3 and rows() == [] and not generation.previews.items
 
 
 @pytest.mark.parametrize('value', ['12', True, None, {'minimum': 12}, 'missing'])
 def test_invalid_numeric_threshold_stays_unmodified_in_pending_items_and_never_executes(generator, value):
-    import json
     from tin.judgments.analysis import AnalysisError, validate_analysis
     client, headers, _, response, calls = generator
     rule = response['judgment']['thresholds'][0]
@@ -481,14 +567,19 @@ def test_invalid_numeric_threshold_stays_unmodified_in_pending_items_and_never_e
     result = generate(client, headers)
     assert result.status_code == 200, result.text
     preview = result.json()
-    assert len(calls) == 2 and rows() == [] and preview['repair_attempts'] == 1
+    assert len(calls) == 3 and rows() == [] and preview['repair_attempts'] == 1
     assert any(item['code'] == 'rule_number_type' and item['path'] == '/judgment/thresholds/0/value' for item in preview['validation_issues'])
-    pending = next(item for item in preview['unresolved'] if item['section'] == 'thresholds[0]待确认')
-    assert json.loads(pending['text'].split('未通过校验的模型候选（不执行）：', 1)[1]) == original
-    assert 'Stocks above 12 吨' in pending['text'] and '有限数字' in pending['reason']
+    pending = next(item for section in preview['review']['sections'] for item in section['items'] if item['kind'] == 'thresholds')
+    assert pending['status'] == 'pending' and pending['source_quote'] == 'Stocks above 12 吨'
+    assert pending['can_confirm'] is False and any('有限数字' in message for message in pending['warnings'])
+    assert '未通过校验的模型候选' not in preview['markdown'] and '"series_id"' not in preview['markdown']
     assert apply(client, headers, preview).status_code == 200
     saved = rows()[0]
     assert saved.status == '草稿' and saved.thresholds == [] and saved.source_note == TEXT
+    with isolated_session_factory(17, FIRST)() as session:
+        audit = session.scalar(select(AuditLog).where(AuditLog.action == '研究逻辑分析保存'))
+        assert audit.detail['review_candidates']['judgment']['thresholds'] == [original]
+        assert audit.detail['review_candidate_history'][0]['judgment']['thresholds'] == [original]
 
 
 def test_explicit_numeric_interval_with_original_quote_remains_a_valid_preview(generator):
@@ -499,7 +590,7 @@ def test_explicit_numeric_interval_with_original_quote_remains_a_valid_preview(g
     result = client.post(endpoint('/generate'), headers=headers,
         json={'model_id': 'synthetic-chat', 'text': TEXT + ' ' + quote, 'base_version': 0})
     assert result.status_code == 200, result.text
-    assert len(calls) == 1 and rows() == []
+    assert len(calls) == 3 and rows() == []
     assert result.json()['bindings'][0]['unit'] == '吨'
 
 
@@ -528,8 +619,8 @@ def test_authorized_macro_threshold_and_original_monthly_falsifier_are_valid_pre
     result = client.post(endpoint('/generate'), headers=headers,
         json={'model_id': 'synthetic-chat', 'text': text, 'base_version': 0})
     assert result.status_code == 200, result.text
-    assert len(calls) == 1 and rows() == []
-    prompt = calls[0]['prompt']
+    assert len(calls) == 3 and rows() == []
+    prompt = calls[1]['prompt']
     assert SOURCE_BINDING_PROTOCOL in prompt and macro in prompt
     assert 'primary和macro只是来源分类' in prompt and '观测频率与研究期限分开处理' in prompt
     changed = {item['field']: item['after'] for item in result.json()['diff']['fields']}
@@ -548,14 +639,9 @@ def test_catalog_selector_keeps_authorized_macro_and_original_cadence_in_every_b
     observed = []
     async def choose(scope, model, prompt):
         assert SOURCE_BINDING_PROTOCOL in prompt and TEXT in prompt
-        document = json.loads(prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0])
-        if isinstance(document, dict):
-            fields = [{**{k: v for k, v in item.items() if k != 'source_ref'},
-                       **document['sources'][item['source_ref']]} for item in document['indicators']]
-        else:
-            fields = document
+        fields = restore_catalog(encoded_directory(prompt))
         observed.extend(fields)
-        return {'series_ids': ['real-0'] if any(field['id'] == 'real-0' for field in fields) else []}
+        return {'selection_refs': selected_refs(encoded_directory(prompt), ['real-0'])}
     monkeypatch.setattr(generation, 'completion', choose)
     selected, partial = asyncio.run(generation.choose_catalog(None, 'm', catalog, TEXT))
     assert partial and selected == [catalog[0]] and observed == catalog
@@ -592,9 +678,9 @@ def test_selection_empty_example_keeps_one_object_shape_on_every_complete_batch(
         marker = '空结果 JSON 示例：\n'
         assert marker in prompt, 'The selection protocol must provide an unambiguous empty object example'
         example, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])
-        assert isinstance(example, dict) and set(example) == {'series_ids'}
-        assert example['series_ids'] == []
-        fields = json.loads(prompt.split('真实字段目录：', 1)[1].split('\n完整原文：', 1)[0])
+        assert isinstance(example, dict) and set(example) == {'selection_refs'}
+        assert example['selection_refs'] == []
+        fields = restore_catalog(encoded_directory(prompt))
         observed.extend(field['id'] for field in fields)
         assert TEXT in prompt
         return example
@@ -606,8 +692,9 @@ def test_selection_empty_example_keeps_one_object_shape_on_every_complete_batch(
 
 
 @pytest.mark.parametrize('response', [
-    [], {'series_ids': [], 'extra': 'not part of protocol'}, {'series_ids': None},
-    {'series_ids': ['unknown-id']}, {'series_ids': [True]}, {'series_ids': ['real-0'] * 33},
+    [], {'selection_refs': [], 'extra': 'not part of protocol'}, {'selection_refs': None},
+    {'selection_refs': ['unknown-ref']}, {'selection_refs': [True]}, {'selection_refs': ['r1'] * 33},
+    {'selection_refs': ['r1', 'r1']}, {'series_ids': ['real-0']},
 ])
 def test_selection_protocol_keeps_strict_shape_source_and_raw_size_validation(monkeypatch, response):
     from fastapi import HTTPException
