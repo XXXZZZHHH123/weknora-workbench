@@ -1,7 +1,7 @@
 """Run workbook work outside the web process, with bounded results and resources.
 
 The caller must serialize tasks (the HTTP import lock does this). Linux uses
-address-space/CPU limits as well as the parent's RSS/wall-clock watchdog. Windows
+address-space limits and, for timed tasks, CPU limits, plus the parent's RSS/watchdog. Windows
 has no ``resource`` limits; its native RSS watchdog and wall-clock timeout are
 the portable fallback, not an OS hard memory limit.
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import json
+import logging
 from itertools import islice
 import math
 import multiprocessing
@@ -29,6 +30,19 @@ DEFAULT_TIMEOUT_SECONDS = 300
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESULT_BYTES = 2 * 1024 * 1024
 POLL_SECONDS = 0.05
+_logger = logging.getLogger(__name__)
+
+
+class ReviewTaskError(ReviewValidationError):
+    """A stable task failure code, preserved across the isolated worker boundary."""
+    def __init__(self, code, message, **location):
+        super().__init__(message, **location)
+        self.public_code = code
+
+
+def _failure_code(exc, fallback=None):
+    code = getattr(exc, 'public_code', fallback)
+    return code if isinstance(code, str) and re.fullmatch(r'[A-Z][A-Z_]{0,63}', code) else fallback
 
 
 def _json_default(value):
@@ -85,23 +99,25 @@ def _apply_resource_limits(memory_bytes, timeout_seconds, resource_module=None):
             import resource as resource_module
         except ImportError:
             if sys.platform.startswith("linux"):
-                raise ValueError("当前环境无法设置工作进程资源限制，任务未启动。") from None
+                raise ReviewTaskError("TASK_RESOURCE_INVALID", "当前环境无法设置工作进程资源限制，任务未启动。") from None
             return False
     # Native libraries reserve more virtual space than resident memory. The
     # separate RSS watchdog uses the exact user-configured resident budget.
     address_limit = memory_bytes * 3
-    cpu_limit = max(1, math.ceil(timeout_seconds))
+    cpu_limit = max(1, math.ceil(timeout_seconds)) if timeout_seconds is not None else None
     try:
-        for kind, desired in ((resource_module.RLIMIT_AS, address_limit),
-                              (resource_module.RLIMIT_CPU, cpu_limit),
-                              (resource_module.RLIMIT_CORE, 0)):
+        limits = [(resource_module.RLIMIT_AS, address_limit),
+                  (resource_module.RLIMIT_CORE, 0)]
+        if cpu_limit is not None:
+            limits.append((resource_module.RLIMIT_CPU, cpu_limit))
+        for kind, desired in limits:
             soft, hard = resource_module.getrlimit(kind)
             values = [desired] + [v for v in (soft, hard)
                                   if v != resource_module.RLIM_INFINITY]
             limit = min(values)
             resource_module.setrlimit(kind, (limit, limit))
     except (OSError, ValueError):
-        raise ValueError("无法设置工作进程资源限制，任务未启动。") from None
+        raise ReviewTaskError("TASK_RESOURCE_INVALID", "无法设置工作进程资源限制，任务未启动。") from None
     return True
 
 
@@ -189,7 +205,7 @@ def _validated_native_source(source):
     fields = {"source_knowledge_id", "file_name", "file_size", "file_hash",
               "knowledge_base_id", "tenant_id"}
     if not isinstance(source, dict) or set(source) != fields:
-        raise ValueError("原件绑定信息无效。")
+        raise ReviewTaskError("SOURCE_INVALID", "原件绑定信息无效。")
     source_id = source.get("source_knowledge_id")
     knowledge_base_id = source.get("knowledge_base_id")
     filename = source.get("file_name")
@@ -208,7 +224,7 @@ def _validated_native_source(source):
             or not isinstance(fingerprint, str)
             or re.fullmatch(r"[0-9a-f]{32}", fingerprint) is None
             or type(tenant) is not int or tenant <= 0):
-        raise ValueError("原件绑定信息无效。")
+        raise ReviewTaskError("SOURCE_INVALID", "原件绑定信息无效。")
     return dict(source)
 
 
@@ -229,7 +245,8 @@ def _review_child(request, result_path, memory_bytes, timeout_seconds, control=N
             reply = control.recv()
             if not isinstance(reply, dict) or reply.get("ok") is not True:
                 message = reply.get("error") if isinstance(reply, dict) else None
-                raise ValueError(message or "发布前权限核验失败，原有版本仍可使用。")
+                code = reply.get("code") if isinstance(reply, dict) else None
+                raise ReviewTaskError(code or "TASK_PERMISSION_CHANGED", message or "发布前权限核验失败，原有版本仍可使用。")
 
         def progress(value):
             if control is not None and request.get('report_progress'):
@@ -258,13 +275,15 @@ def _review_child(request, result_path, memory_bytes, timeout_seconds, control=N
                 native_source=request.get("native_source"), progress=progress)
         _write_result(result_path, {"ok": True, "result": result})
     except MemoryError:
-        _write_result(result_path, {"ok": False, "error": "任务超过内存限制，原有版本仍可使用。"})
+        _write_result(result_path, {"ok": False, "error_code": "TASK_MEMORY_LIMIT", "error": "任务超过内存限制，原有版本仍可使用。"})
     except ValueError as exc:
-        _write_result(result_path, {"ok": False, "error": _safe_business_error(exc, request), **error_location(exc)})
-    except Exception:
+        _write_result(result_path, {"ok": False, "error_code": _failure_code(exc), "error": _safe_business_error(exc, request), **error_location(exc)})
+    except Exception as exc:
+        _logger.warning("worker_failure code=TASK_PROCESSING_FAILED exception_type=%s", type(exc).__name__,
+                        extra={"problem_code": "TASK_PROCESSING_FAILED", "exception_type": type(exc).__name__})
         # Unexpected library errors may contain absolute paths or other private
         # runtime details; return a stable notice instead of raw exception text.
-        _write_result(result_path, {"ok": False, "error": "工作表任务失败，原有版本仍可使用。请检查文件或缩小范围后重试。"})
+        _write_result(result_path, {"ok": False, "error_code": "TASK_PROCESSING_FAILED", "error": "工作表任务失败，原有版本仍可使用。请检查文件或缩小范围后重试。"})
     finally:
         if control is not None:
             control.close()
@@ -286,7 +305,7 @@ def _monitor_worker(process, deadline, memory_bytes, rss_reader=None,
     while True:
         if cancel_check is not None and cancel_check():
             _stop_process(process)
-            raise ValueError('任务已取消，未提交的工作表停止处理；已有数据保留。')
+            raise ReviewTaskError('TASK_CANCELLED', '任务已取消，未提交的工作表停止处理；已有数据保留。')
         # Drain bounded messages promptly, without making fast sheet scans wait
         # for one watchdog interval per event. Guards still run exactly once.
         for _ in range(128):
@@ -307,7 +326,7 @@ def _monitor_worker(process, deadline, memory_bytes, rss_reader=None,
                 continue
             if (message != {"kind": "authorize_publish"} or guard_used
                     or publish_guard is None):
-                reply = {"ok": False, "error": "发布权限核验协议无效，原有版本仍可使用。"}
+                reply = {"ok": False, "code": "TASK_PERMISSION_CHANGED", "error": "发布权限核验协议无效，原有版本仍可使用。"}
             else:
                 guard_used = True
                 try:
@@ -315,7 +334,7 @@ def _monitor_worker(process, deadline, memory_bytes, rss_reader=None,
                 except Exception as exc:
                     detail = getattr(exc, "detail", None)
                     message = str(detail if detail is not None else exc)[:500]
-                    reply = {"ok": False, "error": message or "发布前权限已失效，原有版本仍可使用。"}
+                    reply = {"ok": False, "code": _failure_code(exc, "TASK_PERMISSION_CHANGED"), "error": message or "发布前权限已失效，原有版本仍可使用。"}
                 else:
                     reply = {"ok": True}
             try:
@@ -327,13 +346,13 @@ def _monitor_worker(process, deadline, memory_bytes, rss_reader=None,
                 control = None
         if not process.is_alive():
             return
-        if time.monotonic() >= deadline:
+        if deadline is not None and time.monotonic() >= deadline:
             _stop_process(process)
-            raise ValueError("任务超过时间限制，已停止；原有版本仍可使用。")
+            raise ReviewTaskError("TASK_TIMEOUT", "任务超过时间限制，已停止；原有版本仍可使用。")
         rss = rss_reader(process.pid)
         if rss is not None and rss > memory_bytes:
             _stop_process(process)
-            raise ValueError("任务超过内存限制，已停止；原有版本仍可使用。请缩小工作表或区块范围。")
+            raise ReviewTaskError("TASK_MEMORY_LIMIT", "任务超过内存限制，已停止；原有版本仍可使用。请缩小工作表或区块范围。")
         process.join(timeout=POLL_SECONDS)
 
 
@@ -370,8 +389,10 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
                     publish_guard=None, native_source=None, progress_callback=None, cancel_check=None):
     """Return a bounded task result or raise ValueError with a safe Chinese notice.
 
-    Defaults: STRUCTURED_REVIEW_MEMORY_MB=768 and
-    STRUCTURED_REVIEW_TIMEOUT_SECONDS=300. RSS checks run every 50 ms, so the
+    Defaults: STRUCTURED_REVIEW_MEMORY_MB=768; imports have no whole-workbook
+    deadline (STRUCTURED_IMPORT_TIMEOUT_SECONDS=0), other actions use
+    STRUCTURED_REVIEW_TIMEOUT_SECONDS=300. An explicit positive timeout overrides
+    either default. RSS checks run every 50 ms, so the
     budget is a termination threshold, not a zero-overshoot allocation promise.
     The caller must hold its cross-action import/confirmation lock throughout.
     """
@@ -391,15 +412,20 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
     native_source = _validated_native_source(native_source)
     try:
         if timeout is None:
-            timeout = float(os.environ.get("STRUCTURED_REVIEW_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
+            if action == "import":
+                timeout = float(os.environ.get("STRUCTURED_IMPORT_TIMEOUT_SECONDS", "0"))
+                if timeout == 0:
+                    timeout = None
+            else:
+                timeout = float(os.environ.get("STRUCTURED_REVIEW_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
         if memory_limit_mb is None:
             memory_limit_mb = int(os.environ.get("STRUCTURED_REVIEW_MEMORY_MB", DEFAULT_MEMORY_MB))
-        if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+        if timeout is not None and (isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0):
             raise ValueError
         if type(memory_limit_mb) is not int or not 32 <= memory_limit_mb <= 65536:
             raise ValueError
     except (TypeError, ValueError):
-        raise ValueError("工作表任务资源限制配置无效。") from None
+        raise ReviewTaskError("TASK_RESOURCE_INVALID", "工作表任务资源限制配置无效。") from None
     root = Path(root).resolve()
     request = {"root": str(root), "action": action, "import_id": import_id,
                "mapping": mapping, "save_template": bool(save_template),
@@ -435,7 +461,7 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
                                             memory_limit_mb * 1024 * 1024, timeout,
                                             child_control),
                                       daemon=True)
-            deadline = time.monotonic() + timeout
+            deadline = time.monotonic() + timeout if timeout is not None else None
             process.start()
             if child_control is not None:
                 child_control.close()
@@ -444,7 +470,7 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
                             control=parent_control, publish_guard=publish_guard,
                             progress_callback=progress_callback, cancel_check=cancel_check)
             if process.exitcode != 0 or not result_path.is_file():
-                raise ValueError("工作进程已停止，任务未能完成；原有版本仍可使用。")
+                raise ReviewTaskError("TASK_WORKER_EXIT", "工作进程已停止，任务未能完成；原有版本仍可使用。")
             if result_path.stat().st_size > MAX_RESULT_BYTES:
                 raise ValueError("工作表任务结果超过大小限制。")
             try:
@@ -452,11 +478,15 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
             except (OSError, ValueError):
                 raise ValueError("工作表任务没有返回完整结果，请重试。") from None
             if not isinstance(payload, dict) or not payload.get("ok"):
-                failure = ReviewValidationError(payload.get("error", "工作表任务失败。")
-                                 if isinstance(payload, dict) else "工作表任务结果无效。",
-                                 target=payload.get("review_target") if isinstance(payload, dict) else None)
-                if isinstance(payload, dict) and isinstance(payload.get("review_state"), dict):
-                    failure.review_state = payload["review_state"]
+                data = payload if isinstance(payload, dict) else {}
+                message = data.get("error", "工作表任务失败。")
+                code = data.get("error_code")
+                if isinstance(code, str) and re.fullmatch(r'[A-Z][A-Z_]{0,63}', code):
+                    failure = ReviewTaskError(code, message, target=data.get("review_target"))
+                else:
+                    failure = ReviewValidationError(message, target=data.get("review_target"))
+                if isinstance(data.get("review_state"), dict):
+                    failure.review_state = data["review_state"]
                 raise failure
             result = payload.get("result")
             if not isinstance(result, dict) or "observations" in result:

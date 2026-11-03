@@ -31,6 +31,7 @@ let pdfAutomatic=false;
 const jobs = new Map();
 const nativeImports = new Map();
 const nativeAttempts = new Map();
+const nativeRetries = new Map();
 function catalogue(scope) {
   return [
     {dataset_id:ids.primary,source_file:`${scope || 'legacy'}_合成样本甲.xlsx`,dataset_kind:'business',is_latest_for_source:true,imported_at:'2025-01-04T00:00:00Z',sheets:[{name:fixtureSheet.name}]},
@@ -77,6 +78,22 @@ async function main(){
   }else if(route==='/api/v1/knowledge-bases/'+scope+'/knowledge/file'&&req.method==='POST'){
    uploadCount++;const kind=payload.toString().includes('.pdf')?'pdf':'xlsx',id='uploaded-'+uploadCount;
    jobs.set(id,{count:0,kind,failed:payload.toString().includes('\r\nfixture\r\n')});body={success:true,data:{id}};
+  }else if(route.startsWith('/api/v1/knowledge/')&&route.endsWith('/reparse')&&req.method==='POST'){
+   const sourceId=route.split('/').at(-2),retry=nativeRetries.get(sourceId);
+   if(!retry){status=404;body={message:'Unknown retry fixture'}}
+   else if(sourceId==='native-retry-denied'){status=403;body={message:'没有编辑当前知识库的权限'}}
+   else{retry.posts++;retry.status='processing';retry.count=0;retry.attempt='new-attempt';
+    if(sourceId==='native-retry-stale')await pause(450);
+    body={success:true,data:{id:sourceId,knowledge_base_id:scope,parse_status:'pending',file_hash:'a'.repeat(32),metadata:{_knowledge_ingestion:{attempt:retry.attempt,status:'pending'}}}};
+   }
+  }else if(route.startsWith('/api/v1/knowledge/')&&route.split('/').at(-1).startsWith('native-retry-')){
+   const sourceId=route.split('/').at(-1);let retry=nativeRetries.get(sourceId);
+   if(!retry){retry={status:'failed',attempt:'old-attempt',count:0,gets:0,posts:0};nativeRetries.set(sourceId,retry)}
+   if(retry.gets++>0&&sourceId==='native-retry-already-running'&&retry.posts===0){retry.status='processing';retry.attempt='external-attempt'}
+   if(retry.gets>1&&sourceId==='native-retry-already-complete'&&retry.posts===0){retry.status='completed';retry.attempt='external-attempt'}
+   if(retry.status==='processing'&&retry.count++>0){retry.status=sourceId==='native-retry-refailed'?'failed':'completed'}
+   if(sourceId==='native-retry-superseded'&&retry.posts)retry.attempt='superseding-attempt';
+   body={success:true,data:{id:sourceId,knowledge_base_id:scope,file_hash:(sourceId==='native-retry-source-changed'&&retry.posts?'b':'a').repeat(32),parse_status:retry.status,error_message:retry.status==='failed'?'隔离夹具：上次处理超时':'',metadata:{_knowledge_ingestion:{attempt:retry.attempt,status:retry.status,stage:'正在继续处理工作表'}}}};
   }else if(route.startsWith('/api/v1/knowledge/')){
    const sourceId=route.split('/').at(-1),job=jobs.get(sourceId),pending=job&&job.count++===0;
    if(sourceId==='source-timeout')await pause(800);
@@ -186,6 +203,50 @@ async function main(){
   await wait("d.querySelector('.sheet-grid td') && d.querySelector('#dataset option')");
   assert(!requests.some(r=>r.path.endsWith('/report')||r.path.endsWith('/series')||r.path.endsWith('/charts')));
   checks.push('Import renders saved review without waiting for report, series or native charts');
+  if(process.argv.includes('--native-retry')){
+   await exec("w.originalTimeout=w.setTimeout;w.setTimeout=(fn,ms,...args)=>w.originalTimeout(fn,ms===1500?30:ms,...args)");
+   const failed=async id=>{await js(`window.auth('kb-a','fixture-token',${JSON.stringify(id)})`);await wait("d.getElementById('retrySourceImport').textContent==='重新处理' && !d.getElementById('retrySourceImport').classList.contains('hidden') && !d.getElementById('upload').disabled")};
+   await failed('native-retry-success');
+   assert.equal(requests.filter(r=>r.path.endsWith('/reparse')).length,0,'viewing failure alone must never enqueue a task');
+   await exec("d.getElementById('retrySourceImport').click();d.getElementById('retrySourceImport').click()");
+   await wait("d.querySelector('.sheet-grid td') && d.getElementById('jobState').textContent.includes('已打开工作表处理结果') && !d.getElementById('upload').disabled");
+   assert.equal(nativeRetries.get('native-retry-success').posts,1,'double clicks cannot duplicate a reparse');
+   const restart=requests.find(r=>r.path.endsWith('/native-retry-success/reparse'));
+   assert.equal(restart.scope,'kb-a');assert.equal(restart.authorized,true);assert.equal(restart.size,0,'reuse stored processing config');
+   checks.push('Failed native XLSX explicitly restarts the authorized native task once and polls its fresh attempt to actual rows');
+   await screenshot('10_Excel重新处理完成_1600');
+   await failed('native-retry-denied');await click('#retrySourceImport');
+   await wait("d.getElementById('jobState').textContent.includes('没有编辑') && !d.getElementById('upload').disabled");
+   assert.equal(nativeRetries.get('native-retry-denied').posts,0);checks.push('A native reparse permission denial remains visible without an alternate import');
+   await failed('native-retry-refailed');await click('#retrySourceImport');
+   await wait("d.getElementById('jobState').textContent.includes('上次处理超时') && d.getElementById('retrySourceImport').textContent==='重新处理' && !d.getElementById('upload').disabled");
+   assert.equal(nativeRetries.get('native-retry-refailed').posts,1);assert.equal(await exec("return Boolean(d.querySelector('.sheet-grid td'))"),false);checks.push('A second processing failure shows the new failure instead of an old or fabricated result');
+   await failed('native-retry-already-running');await click('#retrySourceImport');
+   await wait("d.getElementById('jobState').textContent.includes('已打开工作表处理结果') && !d.getElementById('upload').disabled");
+   assert.equal(nativeRetries.get('native-retry-already-running').posts,0);checks.push('A retry rechecks current state and joins an already running task');
+   await failed('native-retry-already-complete');await click('#retrySourceImport');
+   await wait("d.getElementById('jobState').textContent.includes('已打开工作表处理结果') && !d.getElementById('upload').disabled");
+   assert.equal(nativeRetries.get('native-retry-already-complete').posts,0);checks.push('A task completed elsewhere is opened without starting another attempt');
+   await failed('native-retry-superseded');await click('#retrySourceImport');
+   await wait("d.getElementById('jobState').textContent.includes('处理任务已更新') && !d.getElementById('upload').disabled");
+   assert.equal(await exec("return Boolean(d.querySelector('.sheet-grid td'))"),false);checks.push('Polling rejects a superseding attempt instead of displaying its result as the requested retry');
+   await failed('native-retry-source-changed');await click('#retrySourceImport');
+   await wait("d.getElementById('jobState').textContent.includes('原件已更新') && !d.getElementById('upload').disabled");
+   assert.equal(await exec("return Boolean(d.querySelector('.sheet-grid td'))"),false);checks.push('A changed original fingerprint stops retry polling without borrowing another source result');
+   await failed('native-retry-stale');await click('#retrySourceImport');
+   for(let i=0;i<100&&!requests.some(r=>r.path.endsWith('/native-retry-stale/reparse'));i++)await pause(10);
+   assert(requests.some(r=>r.path.endsWith('/native-retry-stale/reparse')));
+   await js("window.auth('kb-b','fixture-token','source-reused')");
+   await wait("d.getElementById('jobState').textContent.includes('已打开工作表处理结果') && !d.getElementById('upload').disabled");await pause(550);
+   assert.equal(await exec("return d.getElementById('importSelect').value"),'444444444444444444444444');
+   assert(requests.filter(r=>r.path.includes('/native-retry-stale')).every(r=>r.scope==='kb-a'));
+   checks.push('Changing knowledge base aborts stale retry presentation and keeps the newly selected source');
+   assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')&&r.method==='POST').length,0);
+   assert(!requests.some(r=>r.path.includes('/suggest')||r.path.includes('/resolve_fields')||r.path.includes('/model-settings')&&r.method!=='GET'));
+   assert.deepEqual(errors,[]);
+   if(keepArtifacts)fs.writeFileSync(path.join(output,'browser-acceptance.json'),JSON.stringify({passed:checks.length,checks,requests,errors,real_model_calls:0,real_business_writes:0},null,2));
+   console.log(JSON.stringify({passed:checks.length,checks,real_model_calls:0,real_business_writes:0}));return;
+  }
   if(process.argv.includes('--unified-ingestion')||process.argv.includes('--upload-regression')){
    await exec("w.originalTimeout=w.setTimeout;w.setTimeout=(fn,ms,...args)=>w.originalTimeout(fn,ms===1500?30:ms,...args)");
    const choose=async name=>{await exec(`const file=new w.File(['isolated upload'],${JSON.stringify(name)});const list=new w.DataTransfer();list.items.add(file);d.getElementById('file').files=list.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}));`);};

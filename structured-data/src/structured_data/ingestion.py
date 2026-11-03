@@ -7,6 +7,7 @@ import contextvars
 import hashlib
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -18,6 +19,7 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.datastructures import UploadFile
 from .workspaces import Identity, current_identity, valid_knowledge_base_id
+from .pdf_errors import PDFProcessingError
 
 UPLOAD_PATH = '/internal/ingestion/upload'
 CHECK_PATH = '/internal/ingestion/check'
@@ -26,6 +28,7 @@ FIELDS = {'attempt', 'tenant_id', 'knowledge_base_id', 'knowledge_id', 'user_id'
 current_ingestion_claim = ContextVar('structured_ingestion_claim', default=None)
 current_ingestion_model = ContextVar('structured_ingestion_model', default='')
 MAX_BYTES = 100 * 1024 * 1024
+_logger = logging.getLogger(__name__)
 
 
 def key_bytes():
@@ -93,12 +96,24 @@ def check_task_write(claim):
         base = os.environ.get('WEKNORA_API_URL', 'http://127.0.0.1:18081').rstrip('/')
         async with httpx.AsyncClient(trust_env=False, timeout=15, follow_redirects=False) as client:
             response = await client.post(base + CHECK_PATH, headers=signed_headers(claim, 'POST', CHECK_PATH))
-        if response.status_code != 200 or response.json().get('valid') is not True:
-            raise ValueError('原件、处理任务或知识库归属已改变，已停止自动入库')
+        if response.status_code in {401, 403}:
+            raise PDFProcessingError('TASK_PERMISSION_CHANGED', '处理权限已失效，已停止自动入库')
+        if response.status_code in {400, 404, 409}:
+            raise PDFProcessingError('SOURCE_INVALID', '原件、处理任务或知识库归属已改变，已停止自动入库')
+        if response.status_code != 200:
+            raise PDFProcessingError('SOURCE_CHECK_UNAVAILABLE', '暂时无法核验原件处理权限，未自动入库')
+        try:
+            verdict = response.json()
+        except ValueError:
+            raise PDFProcessingError('SOURCE_CHECK_UNAVAILABLE', '原件权限核验没有返回有效结果，未自动入库') from None
+        if not isinstance(verdict, dict):
+            raise PDFProcessingError('SOURCE_CHECK_UNAVAILABLE', '原件权限核验没有返回有效结果，未自动入库')
+        if verdict.get('valid') is not True:
+            raise PDFProcessingError('SOURCE_INVALID', '原件、处理任务或知识库归属已改变，已停止自动入库')
     try:
         asyncio.run(check())
     except (httpx.HTTPError, KeyError, TypeError):
-        raise ValueError('暂时无法核验原件处理权限，未自动入库') from None
+        raise PDFProcessingError('SOURCE_CHECK_UNAVAILABLE', '暂时无法核验原件处理权限，未自动入库') from None
 
 
 def install_ingestion_routes(app, registry):
@@ -158,7 +173,7 @@ def install_ingestion_routes(app, registry):
                 if envelope.get('engine') == 'remote_vlm':
                     bundle = envelope['bundle']
                     if bundle.get('source', {}).get('sha256') != claim['source_sha256']:
-                        raise ValueError('PDF 识别结果与原件不一致')
+                        raise PDFProcessingError('SOURCE_INVALID', 'PDF 识别结果与原件不一致')
                     bundle['source'].update(source)
                 elif envelope.get('engine') in {'mineru_v1', 'mineru_legacy'}:
                     bundle = normalize_parser_response(envelope['engine'], envelope['response'], source, allow_empty_tables=True)
@@ -184,7 +199,7 @@ def install_ingestion_routes(app, registry):
                 original.parent.mkdir(parents=True, exist_ok=True)
                 if original.exists():
                     if hashlib.sha256(original.read_bytes()).hexdigest() != claim['source_sha256']:
-                        raise ValueError('已保存的PDF原件校验失败')
+                        raise PDFProcessingError('SOURCE_INVALID', '已保存的PDF原件校验失败')
                 else:
                     import shutil
                     pending = original.with_suffix('.' + uuid.uuid4().hex + '.tmp')
@@ -208,7 +223,9 @@ def install_ingestion_routes(app, registry):
             save(claim, {'status': 'completed', 'stage': '表格处理完成', 'result': result})
         except Exception as exc:
             from .pdf_errors import processing_problem
-            problem = processing_problem(exc, stage='source')
+            problem = processing_problem(exc, stage='processing')
+            _logger.warning('ingestion_failure code=%s exception_type=%s', problem['code'], type(exc).__name__,
+                            extra={'problem_code': problem['code'], 'exception_type': type(exc).__name__})
             save(claim, {'status': 'failed', 'stage': problem['title'], 'error': problem['message'], 'problem': problem})
         finally:
             path.unlink(missing_ok=True)

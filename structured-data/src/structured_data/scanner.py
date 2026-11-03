@@ -118,6 +118,14 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True, progress=
             digest.update(block)
     visuals = _drawings(path)
     wb = load_workbook(path, read_only=True, data_only=True, keep_links=False)
+    formulas = None
+
+    def formula_sheet(title):
+        nonlocal formulas
+        if formulas is None:
+            formulas = load_workbook(path, read_only=True, data_only=False, keep_links=False)
+        return formulas[title]
+
     sheets = []
     try:
         total = len(wb.sheetnames)
@@ -221,7 +229,7 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True, progress=
             regions=[]
             if blocks and status=='needs_review':
                 from .row_sections import discover_row_sections, REVISION
-                sections=discover_row_sections(ws,blocks,path)
+                sections=discover_row_sections(ws,blocks,path,formula_sheet_loader=formula_sheet)
                 if sections:
                     blocks=sections['blocks'];regions=sections['regions'];layout='mixed_regions'
                     candidate_revision=REVISION
@@ -238,24 +246,25 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True, progress=
                 'layout':layout,'candidate_revision':candidate_revision,'regions':regions,'fingerprint':fingerprint,'preview':[[{'cell':f'{get_column_letter(ci)}{ri}', 'value':_json_value(v)} for ci,v in enumerate(r,1)] for ri,r in enumerate(rows[:8],1)],
                 'sample_rows':len(rows),'date_candidates':dates,'mapping':mapping,'reasons':reasons,'charts':visual})
             report_progress(progress, 'scan', completed=sheet_index + 1, total=total)
-    finally:
-        wb.close()
-    # Only an identical reviewed original may supply migrated region metadata.
-    configuration = None
-    if use_reviewed_mappings:
-        from .profiles.reviewed import reviewed_mapping
-        from .regions import reviewed_regions, apply_profile
-        configuration = reviewed_mapping(path)
-    if configuration and configuration.get('region_profiles'):
-        book = load_workbook(path, read_only=True, data_only=True, keep_links=False)
-        try:
+        # Only an identical reviewed original may supply migrated region metadata.
+        # Reuse the same source reader; worksheet row iterators are independent.
+        configuration = None
+        if use_reviewed_mappings:
+            from .profiles.reviewed import reviewed_mapping
+            from .regions import reviewed_regions, apply_profile
+            configuration = reviewed_mapping(path)
+        if configuration and configuration.get('region_profiles'):
             for sheet in sheets:
                 if sheet['name'] in configuration['region_profiles']:
-                    profile = reviewed_regions(path, book[sheet['name']])
+                    profile = reviewed_regions(path, wb[sheet['name']])
                     if profile:
                         apply_profile(sheet, profile)
+    finally:
+        try:
+            if formulas is not None:
+                formulas.close()
         finally:
-            book.close()
+            wb.close()
     return {'rule_version':RULE_VERSION,'source_file':str(path),'sha256':digest.hexdigest(),
         'use_reviewed_mappings':use_reviewed_mappings,
         'sheets':sheets,'summary':dict(Counter(s['status'] for s in sheets)), 'sheet_count':len(sheets),

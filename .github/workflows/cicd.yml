@@ -138,6 +138,7 @@ jobs:
         run: |
           export SHEET_REVIEW_BROWSER="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           node ../../structured-data/tests/workspace-ui.cjs --loading-regression
+          node ../../structured-data/tests/workspace-ui.cjs --native-retry
           node ../../structured-data/tests/knowledge-scope-ui.cjs
 
   go:
