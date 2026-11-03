@@ -2,6 +2,47 @@
 
 本文件集中维护开发环境信息。项目介绍见[根 README](../README.md)，生产环境操作见[服务器运维](../deploy/README.md)。
 
+## 当前远程开发与生产约定
+
+| 环境 | 入口 | 默认更新方式 |
+|---|---|---|
+| 远程开发 | `18190`，`/mnt/weknora-storage/weknora-dev/src/weknora-workbench` 或其中的 worktree | 本地构建或重载源码，检查通过后直接测试；不等待 GitHub CI、Release 或 GHCR 业务镜像。 |
+| 生产 | `18090`，`/home/codexuser/weknora-workbench` | 获得生产更新授权后，等待 PR 完整 CI、合并 main、main 完整发布与正式镜像，再备份、更新和验证。 |
+
+这个约定适用于当前远程服务器；下方通用 Docker 与 Linux/WSL 原生运行说明对应其他本地配置。推送和开 PR 可以与开发验证分别进行，不能把“CI 还没结束”作为开发环境不能更新的原因；本地通过也不等于已完成合并或生产发布。
+
+在目标源码或 worktree 的根目录先核对环境，再按改动选择命令：
+
+```sh
+# 查看当前开发来源和工作区；必要时用 docker inspect 核对各组件真实挂载
+wkdev source
+git status --short
+
+# Go 后端改动
+wkdev build app
+
+# Vue 前端改动
+wkdev build frontend
+
+# 首次构建，或新 worktree 尚无后端和前端完整产物
+wkdev build all
+
+# 已挂载源码的 Python 服务改动：只重载实际改动的服务
+wkdev reload structured-data
+wkdev reload commodity-research
+wkdev reload docreader
+
+# 观察更新结果与错误
+wkdev logs app
+curl -fsS http://127.0.0.1:18190/structured/health
+```
+
+这些是按需选择的分支，不要求每次逐条执行。`wkdev build app/frontend` 只缩小编译范围，最后仍会重新绑定多个组件到当前 worktree 并重建开发服务；目标目录必须已有后端和前端产物。前端构建会暂时停止开发服务以控制内存，结束后恢复。若当前组件分别挂载不同 worktree，先核对并保留这些改动，再决定统一切换的来源；单独 `reload` 不会自动切换到终端所在的源码目录。
+
+若只更新 Python 组件且目标 worktree 不同，先把 `/mnt/weknora-storage/weknora-dev/compose.json` 备份到私有目录，仅更换该服务的源码挂载，再执行对应的 `wkdev reload`。核对配置差异只包含目标源码和本次必需参数，保留其余组件的现有来源、数据挂载与鉴权配置；不需要为单个 Python 服务执行 `wkdev build all`。
+
+依赖安装可能需要网络或现有基础运行镜像；无需因此等待本次 GitHub 正式业务镜像。必要测试使用 `wkdev tool <命令>`，需要联网时用 `wkdev online <命令>`。完成后检查实际页面或相关接口与来源版本；健康检查只能证明服务可用，不能代替真实上传、问答等功能验收。开发更新保持生产项目、配置及数据不变。
+
 ## 环境与配置
 
 各组件的依赖版本以 `WeKnora/go.mod`、`WeKnora/frontend/package.json`、`structured-data/pyproject.toml` 和 `commodity-research/requirements.txt` 为准。Docker 与 Linux/WSL 原生运行是两种本地运行方式，配置和数据路径不同，不应交叉覆盖。

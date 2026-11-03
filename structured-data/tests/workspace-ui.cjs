@@ -91,9 +91,10 @@ async function main(){
    if(!retry){retry={status:'failed',attempt:'old-attempt',count:0,gets:0,posts:0};nativeRetries.set(sourceId,retry)}
    if(retry.gets++>0&&sourceId==='native-retry-already-running'&&retry.posts===0){retry.status='processing';retry.attempt='external-attempt'}
    if(retry.gets>1&&sourceId==='native-retry-already-complete'&&retry.posts===0){retry.status='completed';retry.attempt='external-attempt'}
-   if(retry.status==='processing'&&retry.count++>0){retry.status=sourceId==='native-retry-refailed'?'failed':'completed'}
+   if(sourceId.startsWith('native-retry-partial'))retry.status=retry.finish?'completed':'processing';
+   if(!sourceId.startsWith('native-retry-partial')&&retry.status==='processing'&&retry.count++>0){retry.status=sourceId==='native-retry-refailed'?'failed':'completed'}
    if(sourceId==='native-retry-superseded'&&retry.posts)retry.attempt='superseding-attempt';
-   body={success:true,data:{id:sourceId,knowledge_base_id:scope,file_hash:(sourceId==='native-retry-source-changed'&&retry.posts?'b':'a').repeat(32),parse_status:retry.status,error_message:retry.status==='failed'?'隔离夹具：上次处理超时':'',metadata:{_knowledge_ingestion:{attempt:retry.attempt,status:retry.status,stage:'正在继续处理工作表'}}}};
+   body={success:true,data:{id:sourceId,knowledge_base_id:scope,file_hash:(sourceId==='native-retry-source-changed'&&retry.posts?'b':'a').repeat(32),parse_status:retry.status,error_message:retry.status==='failed'?'隔离夹具：上次处理超时':'',metadata:{_knowledge_ingestion:{attempt:retry.attempt,status:retry.status,stage:sourceId.startsWith('native-retry-partial')?'已检查 1/3 张 · 合成工作表 · 正在自动识别':'正在继续处理工作表'}}}};
   }else if(route.startsWith('/api/v1/knowledge/')){
    const sourceId=route.split('/').at(-1),job=jobs.get(sourceId),pending=job&&job.count++===0;
    if(sourceId==='source-timeout')await pause(800);
@@ -206,6 +207,23 @@ async function main(){
   if(process.argv.includes('--native-retry')){
    await exec("w.originalTimeout=w.setTimeout;w.setTimeout=(fn,ms,...args)=>w.originalTimeout(fn,ms===1500?30:ms,...args)");
    const failed=async id=>{await js(`window.auth('kb-a','fixture-token',${JSON.stringify(id)})`);await wait("d.getElementById('retrySourceImport').textContent==='重新处理' && !d.getElementById('retrySourceImport').classList.contains('hidden') && !d.getElementById('upload').disabled")};
+   nativeRetries.set('native-retry-partial',{status:'processing',attempt:'running-attempt',count:0,gets:0,posts:0,finish:false});
+   await js("window.auth('kb-a','fixture-token','native-retry-partial')");
+   await wait("d.querySelector('.sheet-grid td') && d.getElementById('upload').disabled && d.getElementById('jobState').textContent.includes('已检查 1/3 张')");
+   checks.push('Saved worksheets and concrete progress appear while the native task is still processing');
+   await exec("d.getElementById('mappingEditor').value='unsaved partial-review draft'");
+   nativeRetries.get('native-retry-partial').finish=true;
+   await wait("d.getElementById('jobState').textContent.includes('已打开工作表处理结果') && !d.getElementById('upload').disabled");
+   assert.equal(await exec("return d.getElementById('mappingEditor').value"),'unsaved partial-review draft');
+   assert.equal(nativeRetries.get('native-retry-partial').posts,0);
+   checks.push('Completion updates the catalogue without overwriting an open draft or restarting the task');
+   await js("window.auth('kb-a','fixture-token','native-retry-partial-select')");
+   await wait("d.querySelector('.sheet-grid td') && d.getElementById('upload').disabled && d.getElementById('jobState').textContent.includes('已检查 1/3 张')");
+   await exec(`d.getElementById('importSelect').value='${ids.import}';d.getElementById('importSelect').dispatchEvent(new w.Event('change'))`);
+   await wait("!d.getElementById('upload').disabled && d.querySelector('.sheet-grid td')");
+   nativeRetries.get('native-retry-partial-select').finish=true;await pause(100);
+   assert.equal(await exec("return d.getElementById('importSelect').value"),ids.import);
+   checks.push('Selecting another saved file stops stale progress updates without replacing that file');
    await failed('native-retry-success');
    assert.equal(requests.filter(r=>r.path.endsWith('/reparse')).length,0,'viewing failure alone must never enqueue a task');
    await exec("d.getElementById('retrySourceImport').click();d.getElementById('retrySourceImport').click()");

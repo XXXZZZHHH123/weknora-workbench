@@ -116,6 +116,15 @@ def check_task_write(claim):
         raise PDFProcessingError('SOURCE_CHECK_UNAVAILABLE', '暂时无法核验原件处理权限，未自动入库') from None
 
 
+def workbook_progress(value):
+    stage = str(value.get('stage') or '正在检查工作表')
+    completed, total = value.get('completed'), value.get('total')
+    if type(completed) is int and type(total) is int and 0 <= completed <= total and total > 0:
+        sheet = str(value.get('sheet') or '')[:200]
+        return f'已检查 {completed}/{total} 张 · {sheet} · {stage}'[:500]
+    return stage[:500]
+
+
 def install_ingestion_routes(app, registry):
     running = set()
     lock = threading.Lock()
@@ -154,7 +163,7 @@ def install_ingestion_routes(app, registry):
                             per_sheet_max_requests=8, max_seconds=1200,
                             task=lambda action, **kwargs: run_review_task(directory, action, **kwargs),
                             check_write=guard, cancelled=lambda: False,
-                            progress=lambda value: progress(value.get('stage', '正在核对工作表')))
+                            progress=lambda value: progress(workbook_progress(value)))
                         result['automatic_review'] = assisted
                 finally:
                     import_lock.release()
@@ -289,9 +298,12 @@ def install_ingestion_routes(app, registry):
         path = state_path(claim)
         if not path.exists():
             raise HTTPException(404, '处理任务不存在')
-        state = json.loads(path.read_text())
-        if state.get('status') == 'processing' and str(path) not in running:
-            raise HTTPException(503, '后台处理已中断，知识库任务将自动恢复')
+        # Keep the persisted-state read and live-worker check consistent with
+        # terminal cleanup; otherwise a just-finished worker can look interrupted.
+        with lock:
+            state = json.loads(path.read_text())
+            if state.get('status') == 'processing' and str(path) not in running:
+                raise HTTPException(503, '后台处理已中断，知识库任务将自动恢复')
         if state.pop('claim', None) != claim:
             raise HTTPException(409, '处理任务与原件不一致')
         return state

@@ -138,7 +138,15 @@ def test_pdf_without_tables_still_completes_native_document(setup, engine):
     assert not list(root.glob('**/drafts/*.json'))
 
 
-def test_native_excel_followup_publishes_with_one_source_guard(setup):
+def test_native_excel_followup_publishes_with_one_source_guard(setup, monkeypatch):
+    from structured_data import pdf_api
+    stages = []
+    write = pdf_api._write
+    def capture(path, state):
+        if state.get('status') == 'processing':
+            stages.append(state.get('stage', ''))
+        return write(path, state)
+    monkeypatch.setattr(pdf_api, '_write', capture)
     from io import BytesIO
     from openpyxl import load_workbook
     client, root, checks = setup
@@ -161,6 +169,8 @@ def test_native_excel_followup_publishes_with_one_source_guard(setup):
     review=result['result']['automatic_review']
     assert review['sheets_imported']==['records'] and not review['sheets_failed'],review
     assert len(checks)>3
+    assert any('已检查 0/1 张' in stage and 'records' in stage for stage in stages)
+    assert any('已检查 1/1 张' in stage for stage in stages)
 
 
 @pytest.mark.parametrize('kind,expected', [
