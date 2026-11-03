@@ -75,7 +75,9 @@ def test_generated_markdown_binds_only_actual_kb_ids_and_does_not_save_before_co
     assert body['nodes']==2 and body['model_id']=='configured-model'
     assert len(calls) == 2 and is_outline(calls[0]['prompt'])
     assert SERIES not in calls[0]['prompt'] and 'A process outline' in calls[0]['prompt']
-    assert SERIES in calls[1]['prompt'] and 'A process outline' in calls[1]['prompt']
+    # The binding stage sees the real catalog entry under a short id, never the long source id.
+    assert '"name":"Measured quantity"' in calls[1]['prompt'] and 'A process outline' in calls[1]['prompt']
+    assert SERIES not in calls[1]['prompt']
     assert client.get(page(suffix='/api/sn/diagram/markdown'),headers=headers).status_code==404
     applied=client.post(page(suffix='/api/sn/diagram/markdown'),headers=headers,json={
         'markdown':body['markdown'],'fact_version':body['version']})
@@ -255,9 +257,23 @@ def catalog_fields(count, padding=''):
              'knowledge_base_id':KB,'source_kind':'structured'} for i in range(count)]
 
 
+LIMIT = generation.CATALOG_SELECTION_LIMIT
+
+
 def prompt_fields(prompt):
     encoded=prompt.rpartition('\n真实字段目录：')[2].partition('\n资料：')[0]
     return json.loads(encoded)
+
+
+def shown(prompt):
+    """Catalog metadata as the model sees it: short sequential ids, everything else unchanged."""
+    fields=prompt_fields(prompt)
+    assert [field['id'] for field in fields]==[f'c{index}' for index in range(1,len(fields)+1)]
+    return plain(fields)
+
+
+def plain(fields):
+    return [{key:value for key,value in field.items() if key!='id'} for field in fields]
 
 
 def catalog_bytes(fields):
@@ -278,7 +294,7 @@ def test_complete_catalog_over_256_fields_reaches_model_without_keyword_filter(g
     assert result.status_code==200,result.text
     assert len(calls)==2 and result.json()['candidate_count']==300
     assert is_outline(calls[0][2])
-    assert prompt_fields(calls[1][2])==fields
+    assert shown(calls[1][2])==plain(fields)
     assert result.json()['bindings'][0]['series_id']==fields[-1]['id']
     assert result.json()['candidates_truncated'] is False
 
@@ -303,15 +319,15 @@ def test_catalog_selection_covers_all_byte_bounded_batches_with_full_input(gener
         'model_id':'configured-model','instructions':instruction,'image':image})
     assert result.status_code==200,result.text
     assert len(calls)==5 and is_outline(calls[0]['prompt'])
-    batches=[prompt_fields(call['prompt']) for call in calls[1:-1]]
-    assert [field for batch in batches for field in batch]==fields
+    batches=[shown(call['prompt']) for call in calls[1:-1]]
+    assert [field for batch in batches for field in batch]==plain(fields)
     assert [len(batch) for batch in batches]==[2,2,1]
     assert all(catalog_bytes(batch)<=budget for batch in batches)
     assert all(instruction in call['prompt'] for call in calls)
     assert calls[0]['image'] == image
     assert all(call['image'] is None for call in calls[1:])
-    assert all('共享研究主干' in call['prompt'] for call in calls[1:-1])
-    assert prompt_fields(calls[-1]['prompt'])==[fields[3],fields[4]]
+    assert all('\n研究骨架：' in call['prompt'] for call in calls[1:-1])
+    assert shown(calls[-1]['prompt'])==plain([fields[3],fields[4]])
     assert result.json()['candidate_count']==2 and result.json()['candidates_truncated'] is False
     assert result.json()['bindings'][0]['series_id']==fields[4]['id']
 
@@ -358,7 +374,7 @@ def test_catalog_selection_accepts_explicit_id_array_including_empty(generator,m
     assert len(calls)==4
     assert result.json()['candidate_count']==len(selected)
     assert [binding['series_id'] for binding in result.json()['bindings']]==selected
-    assert prompt_fields(calls[-1][2])==([] if empty else fields[:1])
+    assert shown(calls[-1][2])==plain(([] if empty else fields[:1]))
     assert result.json()['candidates_truncated'] is False
 
 
@@ -380,7 +396,7 @@ def test_repeated_real_ids_form_one_candidate_set_without_losing_distinct_choice
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==200,result.text
     assert len(calls)==4 and result.json()['candidate_count']==2
-    assert prompt_fields(calls[-1][2])==fields[:2]
+    assert shown(calls[-1][2])==plain(fields[:2])
     assert result.json()['bindings'][0]['series_id']==fields[1]['id']
 
 
@@ -393,7 +409,7 @@ def test_raw_selection_limit_applies_before_deduplicating_real_ids(generator,mon
         calls.append(args)
         if is_outline(args[2]):
             return model_outline()
-        return [fields[0]['id']]*25
+        return [fields[0]['id']]*(LIMIT+1)
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
@@ -403,14 +419,14 @@ def test_raw_selection_limit_applies_before_deduplicating_real_ids(generator,mon
 @pytest.mark.parametrize('kind',['unknown','other-batch','non-string','nested','field-name','over-limit'])
 def test_catalog_selection_array_keeps_all_id_and_capacity_guards(generator,monkeypatch,kind):
     client,headers,_,_,calls=generator
-    fields=catalog_fields(26)
-    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:25]),raising=False)
+    fields=catalog_fields(LIMIT+2)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:LIMIT+1]),raising=False)
     monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     invalid={
         'unknown':['invented-id'],'other-batch':[fields[-1]['id']],
         'non-string':[1],
         'nested':[[fields[0]['id']]],'field-name':[fields[0]['name']],
-        'over-limit':[field['id'] for field in fields[:25]],
+        'over-limit':[field['id'] for field in fields[:LIMIT+1]],
     }[kind]
     async def complete(*args,**kwargs):
         calls.append(args)
@@ -502,36 +518,36 @@ def test_complete_catalog_byte_boundary_does_not_add_unnecessary_selection_call(
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==200,result.text
-    assert len(calls)==2 and prompt_fields(calls[1][2])==fields
+    assert len(calls)==2 and shown(calls[1][2])==plain(fields)
     assert is_outline(calls[0][2])
 
 
 def test_catalog_selection_output_limit_is_rejected_without_taking_first_ids(generator,monkeypatch):
     client,headers,_,_,calls=generator
-    fields=catalog_fields(66)
-    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:65]),raising=False)
+    fields=catalog_fields(LIMIT+2)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:LIMIT+1]),raising=False)
     monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     async def complete(*args,**kwargs):
         calls.append(args)
         if is_outline(args[2]):
             return model_outline()
-        return {'series_ids':[field['id'] for field in fields[:65]]}
+        return {'series_ids':[field['id'] for field in fields[:LIMIT+1]]}
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research outline'})
     assert result.status_code==422,result.text
-    assert '24项上限' in result.json()['detail']
+    assert f'{LIMIT}项上限' in result.json()['detail']
     assert len(calls)==3
 
 
-@pytest.mark.parametrize('selected_count',[24,25])
-def test_compact_catalog_selection_budget_accepts_24_and_rejects_25(generator,monkeypatch,selected_count):
+@pytest.mark.parametrize('selected_count',[LIMIT,LIMIT+1])
+def test_compact_catalog_selection_budget_accepts_the_limit_and_rejects_one_more(generator,monkeypatch,selected_count):
     client,headers,_,_,calls=generator
-    fields=catalog_fields(26)
-    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:25]),raising=False)
+    fields=catalog_fields(LIMIT+2)
+    monkeypatch.setattr(generation,'CATALOG_BYTES',catalog_bytes(fields[:LIMIT+1]),raising=False)
     monkeypatch.setattr(generation,'catalog_snapshot',lambda scope=None:('d'*64,fields))
     responses=[{'series_ids':[field['id'] for field in fields[:selected_count]]},
                {'series_ids':[]},model_graph(fields[0]['id'])]
-    if selected_count==25:
+    if selected_count==LIMIT+1:
         responses=[responses[0],responses[0]]
     async def complete(*args,**kwargs):
         calls.append(args)
@@ -540,14 +556,14 @@ def test_compact_catalog_selection_budget_accepts_24_and_rejects_25(generator,mo
         return responses.pop(0)
     monkeypatch.setattr(generation,'completion',complete)
     result=client.post(endpoint(),headers=headers,json={'model_id':'configured-model','instructions':'Research overview'})
-    if selected_count==24:
+    if selected_count==LIMIT:
         assert result.status_code==200,result.text
-        assert len(calls)==4 and result.json()['candidate_count']==24
-        assert prompt_fields(calls[-1][2])==fields[:24]
+        assert len(calls)==4 and result.json()['candidate_count']==LIMIT
+        assert shown(calls[-1][2])==plain(fields[:LIMIT])
         assert result.json()['bindings'][0]['series_id']==fields[0]['id']
     else:
         assert result.status_code==422,result.text
-        assert '24项上限' in result.json()['detail']
+        assert f'{LIMIT}项上限' in result.json()['detail']
         assert len(calls)==3
 
 

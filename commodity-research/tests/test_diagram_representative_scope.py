@@ -23,18 +23,19 @@ def test_source_stage_can_cover_multiple_source_questions_with_one_representativ
 
 def test_all_stages_share_the_same_representative_scope_and_detail_gate():
     shared = structure.REPRESENTATIVE_SCOPE_PROTOCOL
-    assert '真实目录' in shared and '统计范围' in shared
-    assert '覆盖不足' in shared and '十分必要的独立研究差异' in shared
-    assert '用户明确要求' in shared and '数量上限不作为' in shared
+    assert '整体优先' in shared and '统计范围' in shared and '最新日期' in shared
+    assert '独立研究价值' in shared and '资料明确要求' in shared
+    assert '数量上限不是建议数量' in shared
     protocols = [structure.outline_prompt(),
         generation.selection_protocol() + structure.selection_context(),
         generation.graph_protocol([], [], False) + structure.final_constraint()]
     assert all(shared in protocol for protocol in protocols)
     assert all(protocol.count(shared) == 1 for protocol in protocols)
     assert all('少量代表' not in protocol and '12–20' not in protocol for protocol in protocols)
-    assert '不逐个复制' in protocols[0]
-    assert '不能把局部指标或代理指标冒充整体' in shared
-    assert '同口径' in generation.graph_protocol([], [], False)
+    # A structure image is transcribed box by box; leaf examples stay in their category.
+    assert '逐字核对' in protocols[0] and '不逐个展开' in protocols[0] and '图例' in protocols[0]
+    assert '局部指标或代理指标不能冒充整体' in shared
+    assert '口径不符就填null' in generation.graph_protocol([], [], False)
 
 
 def test_representative_guidance_does_not_allow_dropping_a_frozen_axis_or_changing_geometry_roles():
@@ -68,7 +69,7 @@ def test_prompt_change_invalidates_reuse_without_adding_a_model_stage(case, monk
             return await original(scope, model_id, prompt, image)
 
         monkeypatch.setattr(generation, 'completion', capture)
-        assert generation.PROMPT_VERSION == 'diagram-outline-v2'
+        assert generation.PROMPT_VERSION == 'diagram-outline-v3'
         _, first = await completed(case, key='synthetic-representative-first')
         assert first['analysis_reused'] is False and len(prompts) == 2
         assert all(structure.REPRESENTATIVE_SCOPE_PROTOCOL in prompt for prompt in prompts)
