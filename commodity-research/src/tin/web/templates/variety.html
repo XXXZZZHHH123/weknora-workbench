@@ -70,7 +70,7 @@
       </div>
       <div class="text-2xl font-black tracking-tight text-[var(--primary)] mb-1">{{ j.tone or '未定基调' }}</div>
       <div class="text-[11px] text-[var(--text-muted)] flex items-center gap-2 flex-wrap">
-        <span>{{ j.author }}</span><span>·</span><span>{{ j.written_at[5:] }} 写定</span>
+        {% if author_label(j.author) %}<span>{{ author_label(j.author) }}</span><span>·</span>{% endif %}<span>{{ j.written_at[5:] }} 写定</span>
         {% if j.expired_days %}<span>·</span><span class="text-[var(--amber)] font-medium">超期 {{ j.expired_days }} 天</span>{% endif %}
       </div>
       {% if j.tone_note %}<div class="text-[11px] text-[var(--text-muted)] mt-1.5 line-clamp-2" title="{{ j.tone_note }}">{{ j.tone_note }}</div>{% endif %}

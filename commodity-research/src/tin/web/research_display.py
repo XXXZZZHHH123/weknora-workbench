@@ -2,12 +2,13 @@
 import re
 
 from tin.schemas.judgment import EXPRESSION
-from tin.web.report_watch import display_text
+from tin.web.report_watch import display_text, strip_list_mark
 
 _TAG = re.compile(r'\[\s*(?:kb-[0-9a-f]{48}|[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+)\s*\]')
 _DEFAULT_TITLE = re.compile(r'^(?:研判|研究判断)\s*(?:v\d+|#\d+)?$')
 _IDENTIFIER = re.compile(r'kb-[0-9a-f]{48}|[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+')
 _COMPARISON = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于'}
+_ACCOUNT_ID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
 
 
 def human_text(value, names=None):
@@ -18,6 +19,23 @@ def human_text(value, names=None):
     labels = {match[0]: (names or {})[match[0]] for match in _IDENTIFIER.finditer(text)
               if match[0] in (names or {})}
     return _TAG.sub('', display_text(text, labels)).strip()
+
+
+def author_label(value, identity=None):
+    """Saved authors are verified account IDs; show a person, never the raw ID."""
+    from tin.integration.identity import current_identity
+    text = value.strip() if isinstance(value, str) else ''
+    identity = identity or current_identity.get()
+    if identity is not None and text and text == identity.user_id:
+        return (identity.display_name or '').strip() or (identity.email or '').strip() or '本人'
+    if not text or _ACCOUNT_ID.fullmatch(text):
+        return '研究员' if text else ''
+    return text
+
+
+def plain_item(value, names=None):
+    """Display one saved list item without the source Markdown list marker."""
+    return strip_list_mark(human_text(value, names))
 
 
 def indicator_name(identifier, names=None):
@@ -51,4 +69,5 @@ def priority_labels(order, thresholds):
 
 def register_display(environment):
     environment.globals.update(human_text=human_text, indicator_name=indicator_name,
+        author_label=author_label, plain_item=plain_item,
         reference_label=reference_label, condition_text=condition_text, priority_labels=priority_labels)

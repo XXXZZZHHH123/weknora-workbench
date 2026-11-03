@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from tin.compute.engine import day_end
 from tin.config import SHANGHAI
 from tin.integration.page_facts import page_read_scope, projected_page_session
+from tin.web.research_display import human_text
 from tin.integration.workbench_scope import artifact_session
 from tin.models import Indicator, Judgment, Observation, Researcher, Strategy
 from tin.web.market_history import _chart as chart_view
@@ -96,7 +97,7 @@ def read_figures(session, identifiers, through, period):
             points.append({'date': stamp, 'value': row['value']})
             calibers.append(row['caliber_snapshot'])
         spec = specs[identifier]
-        chart = chart_view(identifier, spec.name, spec.unit, points)
+        chart = chart_view(identifier, human_text(spec.name) or spec.name, spec.unit, points)
         chart.update(source=spec.source, frequency=spec.frequency, invalid_points=invalid,
             caliber_changed=bool(calibers and any(value != calibers[0] for value in calibers[1:])),
             notice='存在无效观测，未用旧修订复活或补零' if invalid else '')

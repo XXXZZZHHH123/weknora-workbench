@@ -180,10 +180,11 @@ def test_condition_preview_retains_exact_rule_and_version_without_reading_observ
     scope, state = case
     row = run(case, lambda: citations.resolve_citations(scope, [condition()]))[0]
     preview = row['snapshot']['preview']
-    assert preview['type'] == 'condition' and preview['text'] == '指标数值不低于 12345.67'
+    assert preview['type'] == 'condition' and preview['text'] == 'Synthetic quantity 不低于 12345.67'
     assert preview['origin_url'].endswith('judgment_id=17')
     assert state['rule_reads'] == [('synthetic-owner', WB, '17', 4)]
-    assert state['catalog_reads'] == [] and state['downloads'] == []
+    # Only the rule's own indicator name is looked up for display; no observations or files.
+    assert [(read[2], read[-1]) for read in state['catalog_reads']] == [(1, [SID])] and state['downloads'] == []
 
 
 def test_condition_directory_supports_threshold_falsifier_and_literal_search(case):
@@ -192,7 +193,7 @@ def test_condition_directory_supports_threshold_falsifier_and_literal_search(cas
     assert '连续 2 期' in result['items'][0]['subtitle']
     selected = result['items'][0]['citation']
     row = run(case, lambda: citations.resolve_citations(case[0], [selected]))[0]
-    assert row['snapshot']['preview']['text'] == '较上一期变化高于 0 kg，连续 2 期'
+    assert row['snapshot']['preview']['text'] == 'Synthetic quantity 较上一期变化高于 0 kg，连续 2 期'
 
 
 @pytest.mark.parametrize('changes', [{'id': '18'}, {'revision': 5}, {'rule_id': 'missing'}, {'rule_kind': 'falsifier'}])

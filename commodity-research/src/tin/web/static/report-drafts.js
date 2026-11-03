@@ -6,7 +6,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const get = (suffix) => document.getElementById(`report-${suffix}`);
   const status = (value) => { get("edit-status").textContent = value; };
   const node = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
-  const labels = { summary: "摘要", research: "研判策略", dashboard: "数据展板", watch: "待关注" };
+  const labels = { summary: "导语", research: "研判", dashboard: "图表", watch: "策略" };
   let draft, selected = "summary", saving = false, records = [], generation = 0;
   const titles = new Map(), options = new Map(initial.figure_options.map((x) => [x.series_id, x]));
   const refKey = (r) => JSON.stringify([r.kind, r.id, r.revision]);
@@ -84,7 +84,9 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.querySelectorAll("[data-report-section]").forEach((button) => button.addEventListener("click", () => { writeSection(); selected = button.dataset.reportSection; readSection(); }));
   open.addEventListener("click", () => {
-    draft = structuredClone(initial.draft); selected = "summary"; get("edit-title").value = draft.title;
+    draft = structuredClone(initial.draft); selected = "summary";
+    if (!initial.id && typeof initial.default_title === "string" && initial.default_title.trim()) draft.title = initial.default_title.trim().slice(0, 120);
+    get("edit-title").value = draft.title;
     status(""); readSection(); renderFigures(); dialog.showModal(); loadReferences();
   });
   const close = () => { if (!saving) { generation++; dialog.close(); } };

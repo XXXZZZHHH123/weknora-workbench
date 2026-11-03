@@ -123,6 +123,14 @@ def _indicator_preview(field):
         'detail_url': '/sn/indicators/' + quote(field['series_id'], safe='')}
 
 
+def _indicator_subtitle(preview, *, source=False):
+    # Unknown unit/frequency are left out rather than repeated as "未注明".
+    parts = [preview[key] for key in ('unit', 'frequency') if preview[key] != '未注明']
+    if source:
+        parts.append(preview['source'])
+    return ' · '.join(parts) or '单位与频率未注明'
+
+
 def _result(citation, title, subtitle, preview):
     normalized = {**citation, 'snapshot': {'title': title, 'subtitle': subtitle, 'preview': preview}}
     return {'citation': normalized, 'title': title, 'subtitle': subtitle, 'preview': preview}
@@ -141,7 +149,7 @@ def _resolve_indicator(scope, citation):
         raise HTTPException(409, '引用指标的来源版本已更新，请重新选择并核对口径')
     normalized = _indicator_citation(scope, field, page, citation['field'])
     preview = _indicator_preview(field)
-    return _result(normalized, preview['name'], preview['unit'] + ' · ' + preview['frequency'], preview)
+    return _result(normalized, preview['name'], _indicator_subtitle(preview), preview)
 
 
 def _condition_data(session, scope, citation):
@@ -149,7 +157,28 @@ def _condition_data(session, scope, citation):
     return resolve_judgment_condition(session, scope, citation)
 
 
-def _condition_text(rule, kind):
+def _series_names(scope, identifiers):
+    """Readable names for the rule indicators actually shown; never a selection step."""
+    wanted = sorted({value for value in identifiers if isinstance(value, str) and value})[:200]
+    if not wanted:
+        return {}
+    try:
+        page = catalog_page(scope, limit=len(wanted), series_ids=wanted)
+    except HTTPException:
+        return {}
+    return {field['series_id']: human_text(field.get('metric') or field.get('name'))
+            for field in page.get('series') or [] if isinstance(field, dict) and field.get('series_id') in wanted
+            and human_text(field.get('metric') or field.get('name'))}
+
+
+def _condition_text(rule, kind, subject=None):
+    text = _rule_text(rule, kind)
+    if subject:
+        text = subject + ' ' + (text[len('指标数值'):] if text.startswith('指标数值') else text)
+    return text
+
+
+def _rule_text(rule, kind):
     if kind == 'falsifier':
         text = condition_text(rule.get('expression'))
         unit = rule.get('unit_confirmed')
@@ -176,7 +205,7 @@ def _resolve_condition(scope, citation):
     rule = actual['condition']
     name = human_text(rule.get('name') or rule.get('desc')) or ('阈值条件' if citation['rule_kind'] == 'threshold' else '证伪条件')
     judgment_title = reference_label(actual)
-    text = _condition_text(rule, citation['rule_kind'])
+    text = _condition_text(rule, citation['rule_kind'], _series_names(scope, [rule.get('series_id')]).get(rule.get('series_id')))
     preview = {'type': 'condition', 'text': text, 'judgment_title': judgment_title,
         'rule_name': name, 'rule_kind': citation['rule_kind'],
         'origin_url': '/sn/judgment?judgment_id=' + quote(citation['id'], safe=''),
@@ -291,18 +320,21 @@ def _condition_options(scope, search, offset, limit, judgment_id=None, revision=
             parents = directory['items']
             if directory['total'] > 100:
                 raise HTTPException(413, '研判记录较多，请先明确选择要引用的研判版本')
-        rows = []
+        resolved = []
         for parent in parents:
-            actual = parent if 'payload' in parent else resolve_reference(session, scope, 'judgment', parent['id'], parent['revision'])
-            for key, kind in (('thresholds', 'threshold'), ('falsifiers', 'falsifier')):
-                for rule in actual['payload'].get(key, []):
-                    label = human_text(rule.get('name') or rule.get('desc')) or ('阈值条件' if kind == 'threshold' else '证伪条件')
-                    subtitle = reference_label(actual) + ' · ' + _condition_text(rule, kind)
-                    if search and search.casefold() not in (label + ' ' + subtitle).casefold():
-                        continue
-                    citation = {'kind': 'judgment_condition', 'field': 'thesis', 'id': actual['id'],
-                        'revision': actual['revision'], 'rule_kind': kind, 'rule_id': rule['id']}
-                    rows.append({'citation': citation, 'title': label, 'subtitle': subtitle})
+            resolved.append(parent if 'payload' in parent else resolve_reference(session, scope, 'judgment', parent['id'], parent['revision']))
+    rows, names = [], _series_names(scope, [rule.get('series_id') for actual in resolved
+        for key in ('thresholds', 'falsifiers') for rule in actual['payload'].get(key, [])])
+    for actual in resolved:
+        for key, kind in (('thresholds', 'threshold'), ('falsifiers', 'falsifier')):
+            for rule in actual['payload'].get(key, []):
+                label = human_text(rule.get('name') or rule.get('desc')) or ('阈值条件' if kind == 'threshold' else '证伪条件')
+                subtitle = reference_label(actual) + ' · ' + _condition_text(rule, kind, names.get(rule.get('series_id')))
+                if search and search.casefold() not in (label + ' ' + subtitle).casefold():
+                    continue
+                citation = {'kind': 'judgment_condition', 'field': 'thesis', 'id': actual['id'],
+                    'revision': actual['revision'], 'rule_kind': kind, 'rule_id': rule['id']}
+                rows.append({'citation': citation, 'title': label, 'subtitle': subtitle})
     total = len(rows)
     return {'items': rows[offset:offset + limit], 'total': total, 'offset': offset, 'limit': limit,
         'has_more': offset + limit < total, 'next_offset': offset + limit if offset + limit < total else None}
@@ -363,7 +395,7 @@ async def citation_options(kind: Literal['indicator', 'judgment_condition', 'kno
         for field in fields:
             preview = _indicator_preview(field)
             rows.append({'citation': _indicator_citation(scope, field, page), 'title': preview['name'],
-                'subtitle': preview['unit'] + ' · ' + preview['frequency'] + ' · ' + preview['source']})
+                'subtitle': _indicator_subtitle(preview, source=True)})
         next_offset = page.get('next_offset')
         return {'items': rows, 'total': page['total'], 'offset': offset, 'limit': limit,
             'has_more': next_offset is not None, 'next_offset': next_offset}

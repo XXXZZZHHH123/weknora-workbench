@@ -75,6 +75,29 @@ def test_stale_node_says_how_long_it_has_been_silent(session):
     assert out["value"] == 1, "断更仍要显示最后一个值，但必须同时说明它有多旧"
 
 
+def _monthly(session, series_id, months, frequency):
+    add_series(session, series_id, frequency=frequency)
+    for month in months:
+        record(session, ObservationIn(series_id=series_id, value=month, as_of=datetime(2026, month, 28, 15, tzinfo=SHANGHAI),
+            caliber=Caliber(time_type="发布时点"), source="测试", entered_by="测试", note="测试"))
+    session.flush()
+
+
+def test_undeclared_frequency_is_judged_by_the_series_own_spacing(session):
+    """A monthly series without a declared frequency is not stale 40 days after its last month."""
+    _monthly(session, "T.MONTHLY", [5, 6, 7, 8], "未注明")
+    out = diagram.resolve(session, {"nodes": [node("n1", series="T.MONTHLY")]}, date(2026, 10, 7))[0]
+    assert out["state"] == diagram.OK and out["frequency"] == "月（推断）"
+    late = diagram.resolve(session, {"nodes": [node("n1", series="T.MONTHLY")]}, date(2026, 11, 30))[0]
+    assert late["state"] == diagram.STALE and "按观测间隔推断为月频" in late["note"]
+
+
+def test_declared_frequency_still_takes_precedence(session):
+    _monthly(session, "T.DAILY_LABEL", [5, 6, 7, 8], "日")
+    out = diagram.resolve(session, {"nodes": [node("n1", series="T.DAILY_LABEL")]}, date(2026, 10, 7))[0]
+    assert out["state"] == diagram.STALE and out["frequency"] == "日"
+
+
 def test_registered_but_empty_series_says_no_data(session):
     add_series(session, "T.EMPTY")
     out = diagram.resolve(session, {"nodes": [node("n1", series="T.EMPTY")]}, TODAY)[0]

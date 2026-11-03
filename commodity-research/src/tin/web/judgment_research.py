@@ -261,6 +261,8 @@ def judgment_research_view(session, judgment, day):
             if item['kind'] == 'observation':
                 pending.append({**item, 'text': human_text(item['text'], names),
                     'metrics': [metrics[identifier] for identifier in binding_ids(note)]})
+    from tin.web.report_watch import without_aggregates
+    pending = without_aggregates(pending)
     counts.update(bound=len(metrics), available=sum(metric['latest'] is not None for metric in metrics.values()),
         thresholds=len(payload.thresholds), falsifiers=len(payload.falsifiers),
         triggered=sum(item['state'] == '触发' for side in sides.values() for item in side['falsifiers']),

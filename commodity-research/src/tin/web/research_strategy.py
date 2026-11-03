@@ -28,8 +28,9 @@ class ResearchStrategyCard(BaseModel):
     format: Literal["research-strategy-card.v1"] = FORMAT
     title: str = Field(min_length=1, max_length=120)
     direction: Literal["bull", "bear", "range", "observe"] = "observe"
-    thesis: str = Field(min_length=1, max_length=8000)
-    watch_for: str = Field(min_length=1, max_length=8000)
+    # Scope and pre-execution checks are optional supplements to the plan.
+    thesis: str = Field(default="", max_length=8000)
+    watch_for: str = Field(default="", max_length=8000)
     trigger: str = Field(min_length=1, max_length=4000)
     invalidation: str = Field(min_length=1, max_length=4000)
     review_date: date
@@ -115,7 +116,7 @@ async def read_input(request):
                           parse_constant=_reject_constant)
         return CardInput.model_validate(data)
     except (UnicodeDecodeError, ValueError, TypeError, ValidationError):
-        raise HTTPException(422, "请完整填写研究假设、观察依据、触发、失效与复核日期；导入文件须符合研究策略卡格式") from None
+        raise HTTPException(422, "请完整填写方案名称、适用 / 触发、暂停 / 撤回与复核日期；导入文件须符合策略方案格式") from None
 
 
 def serialize_card(row):
@@ -177,6 +178,9 @@ def workspace_context(session, scope, *, selected_id=None, select_first=True):
         selected = _read_card(session, scope, selected_id)
     if selected is None and select_first and data["items"]:
         selected = data["items"][0]
+    if selected is not None and "judgment_label" not in selected:
+        selected = {**selected, "judgment_label": _judgment_label(
+            session, scope, (selected.get("card") or {}).get("judgment_reference"))}
     rows = [{key: item[key] for key in ("id", "title", "status", "revision", "updated_at",
             "direction_label", "scope_status", "can_edit", "can_apply")} | {
             "direction": (item["card"] or {}).get("direction"),
@@ -197,8 +201,21 @@ def _read_card(session, scope, card_id):
         raise HTTPException(404, "研究方案不存在或无权访问")
     value = serialize_card(serialize_artifact(row))
     value.update(scope_status=state, can_edit=scope.can_edit and state == "current",
-                 can_apply=state == "current" and value["card"] is not None)
+                 can_apply=state == "current" and value["card"] is not None,
+                 judgment_label=_judgment_label(session, scope, (value["card"] or {}).get("judgment_reference")))
     return value
+
+
+def _judgment_label(session, scope, reference):
+    """A short label for the cited judgment version, or None when it is no longer readable."""
+    if not isinstance(reference, dict):
+        return None
+    from tin.web.research_display import reference_label
+    from tin.web.research_references import resolve_reference
+    try:
+        return reference_label(resolve_reference(session, scope, "judgment", reference["id"], reference["revision"]))
+    except (HTTPException, KeyError, TypeError, ValueError):
+        return None
 
 
 def _validate_reference(session, scope, reference):
@@ -227,7 +244,7 @@ def report_projection(session, scope, *, limit=40):
         except (ValidationError, ValueError, TypeError):
             continue
         items.append({**{key: record[key] for key in ("id", "title", "status", "revision", "created_at", "updated_at")},
-            **card.model_dump(mode="json", exclude_none=True, include={"direction", "thesis", "watch_for", "trigger", "invalidation", "review_date", "response_action", "judgment_reference"}),
+            **card.model_dump(mode="json", exclude_none=True, include={"direction", "thesis", "watch_for", "trigger", "invalidation", "review_date", "response_action", "judgment_reference", "citations"}),
             "direction_label": DIRECTION_LABELS[card.direction],
             "status_label": "个人草稿" if record["status"] == "draft" else "人工确认记录",
             "evidence_notice": "当前保存的人工研究方案，不代表历史当时已知观点或实际成交；正文数字未逐项核验。"})
@@ -236,9 +253,12 @@ def report_projection(session, scope, *, limit=40):
 
 
 def artifact_input(body):
-    for field in ("title", "thesis", "watch_for", "trigger", "invalidation"):
+    for field in ("title", "trigger", "invalidation"):
         if not getattr(body.card, field).strip():
-            raise HTTPException(422, "研究策略卡的必填字段不能只含空白")
+            raise HTTPException(422, "方案名称、适用 / 触发与暂停 / 撤回不能只含空白")
+    for field in ("thesis", "watch_for"):
+        if not getattr(body.card, field).strip():
+            setattr(body.card, field, "")
     if body.card.response_action is not None and not body.card.response_action.strip() and not body.acknowledge_observation:
         raise HTTPException(422, "请填写应对措施，或明确选择保存为待补应对的观察方案")
     text = body.card.model_dump_json(exclude_none=True)
@@ -266,6 +286,19 @@ async def source_choices(page: int = Query(1, ge=1, le=500)):
 
 
 router.include_router(citations_router)
+
+
+@router.get("/{card_id}/monitor")
+def card_monitor_view(card_id: str, day: str | None = Query(None, alias="date", max_length=10)):
+    """Current status of explicitly cited conditions and indicators; read only."""
+    scope = require_card_scope()
+    with artifact_session(scope) as session:
+        card = _read_card(session, scope, card_id)
+    from tin.web.strategy_monitor import card_monitor
+    if card["card"] is None:
+        return {"card_id": card_id, "conditions": [], "indicators": [], "counts": {
+            "conditions": 0, "triggered": 0, "missing": 0, "indicators": 0}, "notice": "历史记录未整理，无引用可监测。"}
+    return card_monitor(scope, card, day=day)
 
 
 @router.get("/{card_id}")

@@ -14,8 +14,9 @@ from tin.web.research_references import record_in_workbench
 
 
 def check_current(scope, *, day=None):
+    modules = set(scope.view_modules) if scope is not None else set()
     if (scope is None or not scope.authorization or scope.restricted
-            or 'home' not in scope.view_modules or 'judgments' not in scope.view_modules):
+            or 'home' not in modules or not modules & {'judgments', 'strategies'}):
         raise HTTPException(403, '当前授权不开放研判预警检查')
     if scope.scope_version != 2:
         raise HTTPException(409, '请重新打开研究台以更新来源授权后检查预警')
@@ -23,6 +24,64 @@ def check_current(scope, *, day=None):
     if type(cutoff) is not date:
         raise HTTPException(422, '预警检查需要明确的日期')
     checked = datetime.now(SHANGHAI).isoformat(timespec='seconds')
+    result = (_judgment_alerts(scope, cutoff, checked) if 'judgments' in modules else
+              {'alerts': [], 'checked_at': checked, 'checked_rules': 0, 'partial': False,
+               'notice': '当前授权不开放研判规则检查。'})
+    if 'strategies' in modules:
+        strategy = _strategy_alerts(scope, cutoff, checked)
+        result['alerts'].extend(strategy['alerts'])
+        result['checked_strategies'] = strategy['checked']
+        result['partial'] = result['partial'] or strategy['partial']
+        if strategy['notice']:
+            result['notice'] = (result['notice'] + ' ' if result['notice'] else '') + strategy['notice']
+    return result
+
+
+def _strategy_cards(scope):
+    """This person's strategy cards in this workbench that cite a judgment condition."""
+    from tin.web.research_strategy import build_context
+    with workbench_scope.artifact_session(scope) as session:
+        data = build_context(session, scope, limit=100)
+    cards = [item for item in data['items'] if item.get('scope_status') == 'current' and item.get('card')
+             and any(row.get('kind') == 'judgment_condition' for row in item['card'].get('citations') or [])]
+    return cards, data.get('truncated', False)
+
+
+def _strategy_alerts(scope, cutoff, checked):
+    from tin.web.strategy_monitor import monitor_cards
+    cards, truncated = _strategy_cards(scope)
+    result = {'alerts': [], 'checked': len(cards), 'partial': truncated, 'notice': ''}
+    if not cards:
+        return result
+    # Cited judgment conditions only; quoted indicators are not rules and are not checked here.
+    stripped = [{**card, 'card': {**card['card'], 'citations': [row for row in card['card']['citations']
+                                                               if row.get('kind') == 'judgment_condition']}}
+                for card in cards]
+    try:
+        states = monitor_cards(scope, stripped, day=cutoff, include_indicators=False)
+    except HTTPException as exc:
+        result.update(partial=True, notice='策略引用条件未完成检查：' + (exc.detail if isinstance(exc.detail, str) else '请稍后重试'))
+        return result
+    for card in stripped:
+        href = '/sn/strategies?selected=research:' + card['id']
+        for row in states[card['id']]['conditions']:
+            if row['state'] not in {'触发', '数据缺失', '无法核对'}:
+                continue
+            triggered = row['state'] == '触发'
+            meaning = ('「' + row['field_label'] + '」所引条件已触发，请按方案核对' if triggered and row['field_label']
+                       else '所引条件' + row['state'])
+            value = row.get('value')
+            facts = [meaning, ('当前 ' + format(value, 'g') + (' ' + row['unit'] if row.get('unit') else ''))
+                     if type(value) in {int, float} else '', row.get('note') or '']
+            result['alerts'].append({'kind': 'strategy' if triggered else 'strategy_missing',
+                'title': card['title'] + ' · ' + row['title'], 'detail': '；'.join(filter(None, facts))[:1000],
+                'href': href, 'recorded_at': checked, 'trade_date': cutoff.isoformat(),
+                'evidence_dates': [row['as_of']] if row.get('as_of') else []})
+    result['notice'] = f'同时核对了 {len(cards)} 个策略方案引用的研判条件。'
+    return result
+
+
+def _judgment_alerts(scope, cutoff, checked):
     result = {'alerts': [], 'checked_at': checked, 'checked_rules': 0, 'partial': False,
               'notice': '尚未保存可检查的研判规则，不能据此认定未触发。'}
     with workbench_scope.artifact_session(scope) as session:

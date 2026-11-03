@@ -30,7 +30,7 @@
 {% endmacro %}
 <div class="judgment-research">
 <header class="judgment-research-header">
-  <div><h1>研究判断</h1><p>{% if j %}{{ j.author }} · {{ j.written_at }} · {{ j.status }}{% else %}梳理多空分歧，跟踪依据与验证条件{% endif %}</p></div>
+  <div><h1>研究判断</h1><p>{% if j %}{% if author_label(j.author) %}{{ author_label(j.author) }} · {% endif %}{{ j.written_at }} · {{ j.status }}{% else %}梳理多空分歧，跟踪依据与验证条件{% endif %}</p></div>
   {% if not restricted_view %}<button type="button" data-open-logic>管理研究逻辑</button>{% endif %}
 </header>
 {% if j is none %}
@@ -151,7 +151,7 @@
 
 {% if research.pending_conditions %}
 <section class="judgment-research-section" id="judgment-pending"><h2>待验证条件</h2>
-  <ul class="judgment-pending-list">{% for item in research.pending_conditions %}<li><span>待核对</span><div>{{ human_text(item.text, names) }}{% if item.metrics %}{{ item_metrics(item) }}{% endif %}</div></li>{% endfor %}</ul>
+  <ul class="judgment-pending-list">{% for item in research.pending_conditions %}<li><span>待核对</span><div>{{ plain_item(item.text, names) }}{% if item.metrics %}{{ item_metrics(item) }}{% endif %}</div></li>{% endfor %}</ul>
   {% if not restricted_view %}<p>在“管理研究逻辑”中核对指标与条件后，可纳入监测。</p>{% endif %}
 </section>
 {% endif %}
@@ -167,7 +167,7 @@
 </details>
 <details class="judgment-research-details"><summary>资料关联与版本</summary>
   <div class="judgment-context-grid"><div><h3>关联指标</h3>{% for identifier in j.whitelist %}<p>{{ indicator_name(identifier, names) }}</p>{% endfor %}</div>
-  <div><h3>已保存研究</h3>{% for version in versions %}<p>{{ version.written_at }} · {{ version.status }} · {{ version.author }}</p>{% endfor %}</div></div>
+  <div><h3>已保存研究</h3>{% for version in versions %}<p>{{ version.written_at }} · {{ version.status }}{% if author_label(version.author) %} · {{ author_label(version.author) }}{% endif %}</p>{% endfor %}</div></div>
 </details>
 {% endif %}
 </div>

@@ -22,5 +22,14 @@
     const stamp = row?.written_at || row?.created_at || row?.updated_at;
     return title + (stamp ? ' · ' + String(stamp).slice(0, 16).replace('T', ' ') : '');
   }
-  window.ResearchDisplay = {text, indicator: id => text(names[id]) || '指标名称待核对', reference};
+  // Source layout only: a Markdown list marker or table row border is not part of the condition.
+  const listMark = /^\s*(?:[-*+•·]\s+|\d{1,3}(?:[.)]\s+|、)|[（(]\d{1,3}[)）]\s*)/;
+  function line(value) {
+    const labelled = /^([^：:|\s]{1,8}[：:]\s*)(.*)$/.exec(value), label = labelled ? labelled[1] : '';
+    let body = (labelled ? labelled[2] : value).trim().replace(listMark, '');
+    if (/^\|.*\|$/.test(body)) body = body.slice(1, -1).split('|').map(cell => cell.trim()).filter(Boolean).join(' · ');
+    return label + body;
+  }
+  function prose(value) { return text(value).split('\n').map(line).join('\n'); }
+  window.ResearchDisplay = {text, prose, indicator: id => text(names[id]) || '指标名称待核对', reference};
 })();

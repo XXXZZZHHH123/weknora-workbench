@@ -224,15 +224,17 @@ def test_manual_sections_and_markdown_remain_same_and_empty_text_does_not_fallba
     assert view['panels']['watch']['visible'] is False
     assert view['observations'][0]['value'] == 7
     md = readable_markdown(payload)
-    assert 'Do not overwrite' not in md
-    assert '&lt;script&gt;human text&lt;/script&gt;' in md
-    assert 'Saved explanation' in md and '## 待关注' not in md
+    # The saved brief is part of the 研判 record; an empty personal note is never refilled with it.
+    lead = md.split('\n## 导语\n', 1)[1].split('\n## 研判\n', 1)[0]
+    assert md.count('Do not overwrite') == 2 and lead.count('Do not overwrite') == 1 and '- 研判结论：' in lead
+    assert '&lt;script&gt;human text&lt;/script&gt;' in md and '研究员按语' in md
+    assert 'Saved explanation' in md and '\n## 策略\n' not in md
     assert 'Actual fact' in md and 'artifact' in md
     from tin.web.brief_export import _markdown
     scope = SimpleNamespace(metadata={'name': 'A real workbench'}, workbench_id=WB,
         knowledge_base_id='library', identity=SimpleNamespace(user_id='first'))
     _name, blob, _hash = _markdown(scope, 'weekly', '2026-01-09', 'reports/chosen-folder', payload)
     main = blob.decode().split('<details><summary>原始记录与来源审计</summary>')[0]
-    assert 'Saved explanation' in main and 'Do not overwrite' not in main
+    assert 'Saved explanation' in main and '研究员按语' in main
     assert 'reports/chosen-folder' in main and 'v2' in main
     assert payload == old

@@ -182,13 +182,26 @@ def test_bounded_input_rejects_duplicate_properties_nonfinite_and_fake_confirmat
     assert client.post(URL, content=b'{"card":{},"card":{}}').status_code == 422
     assert client.post(URL, content=b'{"card":NaN}').status_code == 422
     assert client.post(URL, json=entry(confirmed=True, status="confirmed")).status_code == 422
-    bad = entry()
-    bad["card"]["thesis"] = " \n "
-    assert client.post(URL, json=bad).status_code == 422
+    for required in ("title", "trigger", "invalidation"):
+        bad = entry()
+        bad["card"][required] = " \n "
+        assert client.post(URL, json=bad).status_code == 422
     bad = entry()
     bad["card"]["review_date"] = 0
     assert client.post(URL, json=bad).status_code == 422
     assert state["source_reads"] == []
+
+
+def test_scope_and_pre_execution_checks_are_optional_supplements(cards):
+    client, _ = cards
+    value = entry()
+    del value["card"]["thesis"]
+    value["card"]["watch_for"] = " \n "
+    created = client.post(URL, json=value)
+    assert created.status_code == 201, created.text
+    card = created.json()["card"]
+    assert card["thesis"] == "" and card["watch_for"] == ""
+    assert card["trigger"] == entry()["card"]["trigger"]
 
 
 def test_report_projection_is_personal_bounded_and_omits_frozen_sources(cards):

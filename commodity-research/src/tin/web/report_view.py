@@ -105,6 +105,56 @@ def _content_rows(rows, names):
     return output
 
 
+def _unit(value):
+    return value if isinstance(value, str) and value.strip() and value != '未注明' else ''
+
+
+def _card_monitor_view(row, names):
+    """Readable state of a card's cited conditions and indicators, from the saved monitor result."""
+    monitor = row.get('monitor') if isinstance(row.get('monitor'), dict) else None
+    conditions, indicators = [], []
+    for item in (monitor or {}).get('conditions') or []:
+        unit = _unit(item.get('unit'))
+        value = item.get('value')
+        conditions.append({'title': human_text(item.get('title'), names), 'state': item.get('state') or '无法核对',
+            'field_label': item.get('field_label') or '', 'condition': human_text(item.get('condition'), names),
+            'value_text': (_number(value) + (' ' + unit if unit else '')) if value is not None else '',
+            'as_of': item.get('as_of') or '', 'note': human_text(item.get('note'), names),
+            'outdated': item.get('outdated') is True, 'chart': item.get('chart')})
+    for item in (monitor or {}).get('indicators') or []:
+        chart = item.get('chart') if isinstance(item.get('chart'), dict) else {}
+        unit = _unit(chart.get('unit'))
+        change = chart.get('change')
+        fresh = chart.get('freshness') if isinstance(chart.get('freshness'), dict) else {}
+        indicators.append({'title': human_text(item.get('title'), names), 'field_label': item.get('field_label') or '',
+            'value_text': (_number(chart.get('latest')) + (' ' + unit if unit else '')) if chart.get('latest') is not None else '暂无可用观测',
+            'change_text': (('+' if type(change) in (int, float) and change > 0 else '') + _number(change)) if change is not None else '',
+            'as_of': str(chart.get('date') or '')[:10], 'chart': chart or None,
+            'stale_note': f"最新数据距今 {fresh['age_days']} 天，可能已停更" if fresh.get('stale') else '',
+            'note': human_text(item.get('note'), names)})
+    return {'monitored': monitor is not None, 'conditions': conditions, 'indicators': indicators,
+            'triggered': sum(item['state'] == '触发' for item in conditions)}
+
+
+def _strategy_overview(view):
+    cards = view['research_cards']
+    triggered = [(card['title'], item) for card in cards for item in card['monitor_view']['conditions'] if item['state'] == '触发']
+    parts = []
+    if cards:
+        parts.append(f'{len(cards)} 个策略方案')
+    if view['strategies']:
+        parts.append(f"{len(view['strategies'])} 个交易计划")
+    if not parts:
+        return {'text': '尚无已保存策略', 'triggered': []}
+    conditions = sum(len(card['monitor_view']['conditions']) for card in cards)
+    indicators = sum(len(card['monitor_view']['indicators']) for card in cards)
+    if conditions:
+        parts.append(f'{len(triggered)} 项所引条件已触发' if triggered else f'所引 {conditions} 项条件暂无触发')
+    elif indicators:
+        parts.append(f'跟踪 {indicators} 个引用指标')
+    return {'text': ' · '.join(parts), 'triggered': [title + '：' + item['title'] for title, item in triggered]}
+
+
 def present_snapshot(payload, names=None):
     from tin.web.report_watch import present_watch, watch_items
     fallback = {item['series_id']: item['name'] for item in payload.get('observations') or []
@@ -137,15 +187,34 @@ def present_snapshot(payload, names=None):
             'rule_preview': payload.get('rule_preview'),
             'period': payload.get('period'), 'changes': changes, 'briefs': briefs,
             'strategies': _content_rows(payload.get('strategies'), names), 'strategy_events': _content_rows(payload.get('strategy_events'), names),
-            'research_cards': _content_rows(payload.get('research_cards'), names),
+            'research_cards': [{**row, 'monitor_view': _card_monitor_view(row, names)}
+                               for row in _content_rows(payload.get('research_cards'), names)],
             'research_events': payload.get('research_events') or [],
             'coverage': payload.get('coverage') or {},
             'next_review': present_watch(watch_items(payload.get('judgment'),
                 payload.get('strategies') or [], payload.get('research_cards') or []), names, units),
             'counts': {'observations': len(observations),
                        **{key: len(rows) for key, rows in sections.items()}}}
+    from tin.web.report_watch import without_aggregates
+    result['pending_conditions'] = without_aggregates([row for row in result['next_review'] if row.get('kind') == 'observation'])
+    result['latest_values'] = {row['series_id']: {'value_text': _number(row.get('value')) + (
+        ' ' + _unit(row.get('unit')) if _unit(row.get('unit')) else ''), 'as_of': str(row.get('as_of') or '')[:10]}
+        for row in observations if row.get('value') is not None}
+    result['strategy_overview'] = _strategy_overview(result)
+    result['conclusion'] = _conclusion(result)
     result.update(_workflow_view(result, payload, names))
     return result
+
+
+def _conclusion(view):
+    """The one-line research conclusion already saved, for the report lead; never generated."""
+    for brief in view['briefs']:
+        if _plain(brief.get('summary')):
+            return {'tone': _plain(brief.get('tone')), 'text': _plain(brief.get('summary')), 'source': '已保存日报结论'}
+    replay = view['judgment_replay']
+    if replay:
+        return {'tone': replay['tone'], 'text': replay['tone_note'], 'source': replay['label']}
+    return None
 
 
 def _workflow_view(view, payload, names):
@@ -156,31 +225,18 @@ def _workflow_view(view, payload, names):
     saved = manual.get('draft') if isinstance(manual, dict) else None
     if not isinstance(saved, dict) or saved.get('format') != FORMAT:
         saved = None
-    summary = '\n\n'.join(_plain(row.get('summary')) for row in view['briefs'] if row.get('summary'))
-    if not summary and view['judgment_replay']:
-        summary = view['judgment_replay']['tone_note']
-    research = []
-    if view['judgment']:
-        judgment = view['judgment']
-        if judgment.get('contradiction'):
-            research.append(judgment['contradiction'])
-        research.extend(side['label'] + '：' + side['claim'] for side in judgment['cases'] if side['claim'])
-    research.extend(row['title'] + '：触发 ' + row['trigger'] + '；应对 '
-                    + (row.get('response_action') or '尚未填写') for row in view['research_cards'])
-    research.extend(row['title'] + '：' + row['thesis'] for row in view['strategies'] if row.get('thesis'))
-    texts = {'summary': summary, 'research': '\n\n'.join(research), 'dashboard': '',
-             'watch': '\n'.join(row['text'] for row in view['next_review'] if row.get('text'))}
     panels = {}
+    references = (saved or {}).get('reference_snapshots') or []
     for key, label in SECTION_LABELS.items():
         selected = (saved.get('sections') or {}).get(key) if saved else None
-        # A saved empty string is an intentional edit. Only an entirely absent
-        # personal draft receives automatic material from saved research.
+        # Notes are additions beside saved 研判 and 策略; they start empty and a
+        # saved empty note stays empty. The saved records are always shown.
         panels[key] = {'label': label,
             'visible': selected.get('visible') is True if selected is not None else True,
-            'text': _plain(selected.get('text')) if selected is not None else texts[key],
-            'references': [row for row in (saved or {}).get('reference_snapshots') or [] if row.get('section') == key]}
-        if key == 'watch':
-            panels[key]['text'] = display_text(panels[key]['text'], names)
+            'text': display_text(_plain(selected.get('text')), names) if selected is not None else '',
+            # Quoted versions sit with their own kind: 研判 under 研判, 策略 under 策略.
+            'references': [row for row in references if
+                (row.get('kind') == 'strategy') == (key == 'watch') and key in {'research', 'watch'}]}
     default_ids = payload.get('report_figure_selection')
     if not isinstance(default_ids, list):
         default_ids = [row['series_id'] for row in view['observations'][:6]]
@@ -205,34 +261,12 @@ def _md(value):
     return _plain(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('|', '\\|').replace('\n', ' ')
 
 
-def _legacy_markdown(payload, *, title='研究报告', names=None):
-    view = present_snapshot(payload, names)
-    period = view.get('period') or {'kind': 'daily', 'start': payload.get('as_of'), 'end': payload.get('as_of')}
-    weekly = period['kind'] == 'weekly'
-    lines = ['# ' + _md(title), '', '> 报告期：' + str(period['start']) + ' — ' + str(period['end']),
-             '> 依据当前已确认来源回放；研究逻辑和策略为当前保存版本，不代表当时已形成的判断。', '',
-             '## 研究结论', '']
-    if view['briefs']:
-        for brief in view['briefs']:
-            lines += ['### ' + str(brief.get('trade_date')) + ' · ' + _md(brief.get('status')), '',
-                      _md(brief.get('summary')) or '未填写已保存结论', '',
-                      '- 基调：' + (_md(brief.get('tone')) or '未填写'),
-                      '- 操作倾向：' + (_md(brief.get('stance')) or '未填写'), '']
-            for claim in brief['claims']:
-                lines.append('- ' + _md(claim['text']))
-                for evidence in claim['evidence']:
-                    lines.append('  - ' + _md(evidence.get('name') or '已保存证据') + '：' + _md(evidence.get('value'))
-                                 + ' · ' + _md(evidence.get('as_of')))
-    elif view['judgment_replay']:
-        replay = view['judgment_replay']
-        lines += ['### ' + replay['label'] + ' · ' + _md(replay['status']), '',
-                  '- 基调：' + ( _md(replay['tone']) or '未填写'), '',
-                  _md(replay['tone_note']) or '当前保存记录未填写基调说明。', '',
-                  '> 回放当前已保存研究判断，供本次数据核对；没有据此生成新的日报结论。', '']
-    else:
-        lines += ['尚无已保存研究结论；本报告只呈现事实和已保存研究逻辑。', '']
-    lines += ['## 主要变化', '', '| 指标 | 首个有效值 | 末个有效值 | 变化 | 单位 | 数据日期 |',
-              '| --- | --- | --- | --- | --- | --- |']
+def _md_lines(text):
+    return [_md(line) for line in _plain(text).splitlines() if line.strip()]
+
+
+def _changes_table(view):
+    lines = ['| 指标 | 首个有效值 | 末个有效值 | 变化 | 单位 | 数据日期 |', '| --- | --- | --- | --- | --- | --- |']
     notes = []
     if view['changes']:
         for item in view['changes']:
@@ -246,115 +280,162 @@ def _legacy_markdown(payload, *, title='研究报告', names=None):
         for row in view['observations']:
             lines.append('| ' + ' | '.join(_md(value) if value is not None else '—' for value in
                 [row['name'], None, row.get('value'), None, row.get('unit'), row.get('as_of')]) + ' |')
-    if notes:
-        lines += ['', *notes]
-    lines += ['', '## 研究判断', '']
-    judgment = view['judgment']
-    if judgment:
-        lines += ['- 研究状态：' + _md(judgment.get('status')),
-                  '- 基调：' + _md(judgment.get('tone')), _md(judgment.get('contradiction')), '']
-        for side in judgment['cases']:
-            lines += ['### ' + side['label'], _md(side['claim'])]
-            lines += ['- ' + _md(item['text']) + (' · ' + _md(item.get('name')) if item.get('name') else '')
-                      for item in side['evidence']]
-        for key, heading in [('thresholds', '区间与阈值'), ('falsifiers', '证伪条件')]:
-            lines += ['', '### ' + heading]
-            if view['rule_preview']:
-                lines += ['> ' + _md(view['rule_preview']['label']) + '：' + _md(view['rule_preview']['notice'])]
-            lines += ['- ' + _md(item['name']) + ' · ' + _md(item['series_name']) + '：' + _md(item['condition']) + ' · ' + _md(item['state'])
-                      + ('（当前规则试算）' if item['is_preview'] else '')
-                      + (' · 已记录：' + _md(item['recorded_state']) if item['recorded_state'] else '')
-                      + (' · 依据日期：' + '、'.join(_md(value) for value in item['evidence_dates']) if item['evidence_dates'] else '')
-                      for item in judgment[key]]
+    return lines + ([''] + notes if notes else [])
+
+
+def _note_lines(panel, heading):
+    lines = []
+    if panel['text']:
+        lines += ['> **' + heading + '**', '>'] + ['> ' + line for line in _md_lines(panel['text'])] + ['']
+    for ref in panel['references']:
+        lines += ['#### ' + _md(ref['title']) + ' · 引用 v' + str(ref['revision']),
+                  '> 引用已保存记录的明确版本；原文数字不据此变成核验事实。', '',
+                  *_md_lines(ref.get('body_text') or ref.get('summary')), '']
+    return lines
+
+
+def _judgment_lines(view):
+    lines = ['### 研究结论', '']
+    if view['briefs']:
+        for brief in view['briefs']:
+            lines += ['#### ' + _md(brief.get('trade_date')) + ' · ' + _md(brief.get('status')), '',
+                      _md(brief.get('summary')) or '未填写已保存结论', '',
+                      '- 基调：' + (_md(brief.get('tone')) or '未填写'),
+                      '- 操作倾向：' + (_md(brief.get('stance')) or '未填写'), '']
+            for claim in brief['claims']:
+                lines.append('- ' + _md(claim['text']))
+                for evidence in claim['evidence']:
+                    lines.append('  - ' + _md(evidence.get('name') or '已保存证据') + '：' + _md(evidence.get('value'))
+                                 + ' · ' + _md(evidence.get('as_of')))
+            lines.append('')
+    elif view['judgment_replay']:
+        replay = view['judgment_replay']
+        lines += ['#### ' + replay['label'] + ' · ' + _md(replay['status']), '',
+                  '- 基调：' + (_md(replay['tone']) or '未填写'), '',
+                  _md(replay['tone_note']) or '当前保存记录未填写基调说明。', '',
+                  '> 回放当前已保存研究判断，供本次数据核对；没有据此生成新的日报结论。', '']
     else:
-        lines.append('未登记研究判断。')
-    lines += ['', '## 策略跟踪', '', '策略条件触发不等于实际成交记录。']
+        lines += ['尚无已保存研究结论；本报告只呈现事实和已保存研究逻辑。', '']
+    judgment = view['judgment']
+    lines += ['### 研究判断', '']
+    if not judgment:
+        return lines + ['未登记研究判断。', '']
+    lines += ['- 研究状态：' + _md(judgment.get('status')), '- 基调：' + _md(judgment.get('tone')), '']
+    if judgment.get('contradiction'):
+        lines += [_md(judgment['contradiction']), '']
+    latest = view['latest_values']
+    for side in judgment['cases']:
+        lines += ['#### ' + side['label'], _md(side['claim']) or '待补充']
+        for item in side['evidence']:
+            value = latest.get(item.get('series_id')) if item.get('series_id') else None
+            lines.append('- ' + _md(item['text']) + (' · ' + _md(item.get('name')) if item.get('name') else '')
+                         + (' · 最新 ' + _md(value['value_text']) + (' · ' + _md(value['as_of']) if value['as_of'] else '')
+                            if value else ''))
+        lines.append('')
+    for key, heading in [('thresholds', '区间与阈值'), ('falsifiers', '证伪条件')]:
+        if not judgment[key]:
+            continue
+        lines += ['#### ' + heading]
+        if view['rule_preview']:
+            lines += ['> ' + _md(view['rule_preview']['label']) + '：' + _md(view['rule_preview']['notice'])]
+        lines += ['- ' + _md(item['name']) + ' · ' + _md(item['series_name']) + '：' + _md(item['condition']) + ' · ' + _md(item['state'])
+                  + ('（当前规则试算）' if item['is_preview'] else '')
+                  + (' · 已记录：' + _md(item['recorded_state']) if item['recorded_state'] else '')
+                  + (' · 依据日期：' + '、'.join(_md(value) for value in item['evidence_dates']) if item['evidence_dates'] else '')
+                  for item in judgment[key]]
+        lines.append('')
+    if view['pending_conditions']:
+        lines += ['#### 待验证条件', '', *['- [ ] ' + _md(item['text']) for item in view['pending_conditions']],
+                  '', '> 尚未绑定可计算规则，需研究员在研判中核对后才纳入监测。', '']
+    return lines
+
+
+def _strategy_lines(view):
+    lines = []
     if view['research_cards']:
-        lines += ['', '### 当前保存的人工研究策略', '',
-                  '以下为当前人工研究方案，不代表历史当时已知观点或实际成交；正文数字未逐项核验。']
+        lines += ['### 当前保存的人工研究策略', '',
+                  '以下为当前人工研究方案，不代表历史当时已知观点或实际成交；正文数字未逐项核验；所引条件按截至报告日的可读数据试算。', '']
     for card in view['research_cards']:
-        lines += ['', '#### ' + _md(card['title']) + ' · ' + _md(card['direction_label']),
-            '- 触发条件：' + _md(card['trigger']),
+        monitor = card['monitor_view']
+        lines += ['#### ' + _md(card['title']) + ' · ' + _md(card['direction_label']),
+            '- 适用 / 触发：' + _md(card['trigger']),
             '- 应对：' + (_md(card.get('response_action')) or '尚未填写 · 观察方案待补应对'),
-            '- 暂停/撤回：' + _md(card['invalidation']), '- 复核日期：' + _md(card['review_date']),
-            '- 补充范围：' + _md(card['thesis']), '- 执行前核对：' + _md(card['watch_for'])]
+            '- 暂停 / 撤回：' + _md(card['invalidation']), '- 复核日期：' + _md(card['review_date'])]
+        if card.get('thesis'):
+            lines.append('- 适用范围：' + _md(card['thesis']))
+        if card.get('watch_for'):
+            lines.append('- 执行前核对：' + _md(card['watch_for']))
+        for item in monitor['conditions']:
+            facts = [item['value_text'] and '当前 ' + item['value_text'], item['condition'] and '条件 ' + item['condition'],
+                     item['as_of'] and '数据 ' + item['as_of'], item['note']]
+            lines.append('- 所引条件「' + _md(item['title']) + '」（' + _md(item['field_label']) + '）：'
+                         + _md('已触发' if item['state'] == '触发' else item['state'])
+                         + ('；' + _md(' · '.join(filter(None, facts))) if any(facts) else ''))
+        for item in monitor['indicators']:
+            facts = ['最新 ' + item['value_text'], item['change_text'] and '较前值 ' + item['change_text'],
+                     item['as_of'] and '数据 ' + item['as_of'], item['stale_note']]
+            lines.append('- 所引指标「' + _md(item['title']) + '」：' + _md(' · '.join(filter(None, facts))))
+        lines.append('')
     for item in view['strategies']:
-        lines += ['', '### ' + _md(item['title']) + ' · ' + _md(item['status_label']),
+        lines += ['### 交易计划 · ' + _md(item['title']) + ' · ' + _md(item['status_label']),
                   '- 类型：' + _md(item['mode_label']), '- 依据：' + _md(item.get('thesis')),
-                  '- 失效/复核：' + _md(item.get('invalidation'))]
+                  '- 失效/复核：' + _md(item.get('invalidation')), '']
     if not view['strategies'] and not view['research_cards']:
-        lines.append('尚无已保存策略；请先由研究员确认研究逻辑和具体合约。')
-    for item in view['strategy_events']:
-        lines.append('- ' + _md(item['at']) + ' · ' + _md(item['title']) + ' · ' + _md(item['label']) + '：' + _md(item['reason']))
-    lines += ['', '## ' + ('下周待验证' if weekly else '下次研究待验证'), '']
-    lines += ['- ' + _md(item['text']) for item in view['next_review']]
-    if not view['next_review']:
-        lines.append('- 暂无已保存验证条件，需研究员补充。')
-    lines += ['', '## 数据缺口与来源', '']
+        lines += ['尚无已保存策略；请先由研究员确认研究逻辑和具体合约。', '']
+    if view['strategy_events']:
+        lines += ['### 报告期内策略事件', '', '策略条件触发不等于实际成交记录。']
+        lines += ['- ' + _md(item['at']) + ' · ' + _md(item['title']) + ' · ' + _md(item['label']) + '：' + _md(item['reason'])
+                  for item in view['strategy_events']]
+        lines.append('')
+    return lines
+
+
+def readable_markdown(payload, *, title='研究报告', names=None):
+    """The same collection as the HTML page: saved 研判, then saved 策略, with notes and charts as aids."""
+    view = present_snapshot(payload, names)
+    manual = view['manual_report']
+    if manual and manual.get('unavailable_references'):
+        from fastapi import HTTPException
+        raise HTTPException(409, '报告引用已不可读，请调整引用后再导出')
+    saved = manual['draft'] if manual else None
+    period = view.get('period') or {'kind': 'daily', 'start': payload.get('as_of'), 'end': payload.get('as_of')}
+    weekly = period.get('kind') == 'weekly'
+    panels = view['panels']
+    lines = ['# ' + _md(saved['title'] if saved else title), '',
+             '> 报告期：' + str(period.get('start')) + ' — ' + str(period.get('end')),
+             '> 依据当前已确认来源回放；研究逻辑和策略为当前保存版本，不代表当时已形成的判断。'
+             + ('按语为个人报告 v' + str(manual['revision']) + ' 的人工内容，原始指标事实保持只读。' if manual else ''), '']
+    if panels['summary']['visible']:
+        lines += ['## 导语', '']
+        lines += _md_lines(panels['summary']['text']) + ([''] if panels['summary']['text'] else [])
+        conclusion = view['conclusion']
+        lines += ['- 研判结论：' + (_md((conclusion['tone'] + '，' if conclusion['tone'] else '') + conclusion['text'])
+                                    + '（' + conclusion['source'] + '）' if conclusion else '暂无已保存研究结论'),
+                  '- 策略概况：' + _md(view['strategy_overview']['text'])]
+        lines += ['  - ' + _md(item) for item in view['strategy_overview']['triggered']]
+        lines.append('')
+    if panels['research']['visible']:
+        lines += ['## 研判', ''] + _note_lines(panels['research'], '研究员按语') + _judgment_lines(view)
+        if panels['dashboard']['visible']:
+            lines += ['### ' + ('本周主要变化' if weekly else '主要变化'), ''] + _note_lines(panels['dashboard'], '图表说明')
+            lines += _changes_table(view)
+            figure_names = {row['series_id']: row['name'] for row in view['observations']}
+            for figure in view['selected_figures'] if saved else []:
+                lines.append('- 选图：' + _md(figure_names.get(figure['series_id']) or '已引用指标')
+                             + (' · ' + _md(figure.get('caption')) if figure.get('caption') else ''))
+            lines.append('')
+    if panels['watch']['visible']:
+        lines += ['## 策略', ''] + _note_lines(panels['watch'], '研究员按语') + _strategy_lines(view)
+    lines += ['<details><summary>数据缺口与来源</summary>', '', '## 数据缺口与来源', '']
+    if manual:
+        lines += ['- 个人报告记录：`' + _md(manual.get('id')) + '` · v' + str(manual.get('revision')),
+                  '- 来源版本：`' + _md(saved.get('source_revision')) + '`']
+        lines += ['- 引用：' + _md(ref['kind']) + ' `' + _md(ref['id']) + '` · v' + str(ref['revision'])
+                  for ref in saved.get('references') or []]
     for item in view['gaps']:
         lines.append('- ' + _md(item.get('name') or item.get('series_id')) + '：' + _md(item.get('reason')))
     for item in view['observations']:
         lines.append('- ' + _md(item['name']) + ' · `' + _md(item['series_id']).replace('`', '') + '` · '
                      + _md(item.get('as_of')) + ' · ' + _md(item.get('source')))
-    return '\n'.join(lines).rstrip() + '\n'
-
-
-def readable_markdown(payload, *, title='研究报告', names=None):
-    """The same four panels as HTML; manual omissions are never auto-filled."""
-    view = present_snapshot(payload, names)
-    if not view['is_manual_report']:
-        original = _legacy_markdown(payload, title=title, names=names)
-        pieces = original.split('\n## ')
-        intro, sections = pieces[0], {}
-        for piece in pieces[1:]:
-            heading, _, content = piece.partition('\n')
-            sections[heading] = content.strip()
-        watch = sections.get('下周待验证') or sections.get('下次研究待验证') or ''
-        source = sections.get('数据缺口与来源', '')
-        return (intro.rstrip() + '\n\n## 摘要\n\n### 研究结论\n\n' + sections.get('研究结论', '')
-            + '\n\n## 研判策略\n\n### 研究判断\n\n' + sections.get('研究判断', '')
-            + '\n\n### 策略跟踪\n\n' + sections.get('策略跟踪', '')
-            + '\n\n## 数据展板\n\n### 主要变化\n\n' + sections.get('主要变化', '')
-            + '\n\n## 待关注\n\n' + watch
-            + '\n\n<details><summary>数据缺口与来源</summary>\n\n## 数据缺口与来源\n\n'
-            + source + '\n\n</details>\n')
-    manual = view['manual_report']
-    if manual.get('unavailable_references'):
-        from fastapi import HTTPException
-        raise HTTPException(409, '报告引用已不可读，请调整引用后再导出')
-    saved = manual['draft']
-    period = view.get('period') or {'start': saved['date'], 'end': saved['date']}
-    lines = ['# ' + _md(saved['title']), '', '> 报告期：' + str(period.get('start')) + ' — ' + str(period.get('end')),
-        '> 个人手工报告 v' + str(manual['revision']) + '；文字为人工内容，原始指标事实保持只读。', '']
-    for key, panel in view['panels'].items():
-        if not panel['visible']:
-            continue
-        lines += ['## ' + panel['label'], '']
-        lines += [_md(line) for line in panel['text'].splitlines()]
-        for ref in panel['references']:
-            lines += ['', '### ' + _md(ref['title']) + ' · v' + str(ref['revision']),
-                '> 引用已保存记录的明确版本；原文数字不据此变成核验事实。', '',
-                *[_md(line) for line in (ref.get('body_text') or ref.get('summary') or '').splitlines()]]
-        if key == 'dashboard':
-            lines += ['', '| 指标 | 首个有效值 | 末个有效值 | 变化 | 单位 | 数据日期 |',
-                '| --- | --- | --- | --- | --- | --- |']
-            rows = view['changes'] or [{'name': row['name'], 'first_text': '—', 'last_text': _number(row.get('value')),
-                'change_text': '—', 'unit': row.get('unit'), 'last': {'as_of': row.get('as_of')}} for row in view['observations']]
-            for row in rows:
-                first, last = row.get('first') or {}, row.get('last') or {}
-                lines.append('| ' + ' | '.join(_md(value) for value in [row['name'], row['first_text'], row['last_text'],
-                    row['change_text'], row.get('unit'), _plain(first.get('as_of')) + ' → ' + _plain(last.get('as_of'))]) + ' |')
-            names = {row['series_id']: row['name'] for row in view['observations']}
-            for figure in saved['figures']:
-                lines += ['', '- 选图：' + _md(names.get(figure['series_id']) or '已引用指标')
-                    + (' · ' + _md(figure.get('caption')) if figure.get('caption') else '')]
-        lines.append('')
-    lines += ['<details><summary>报告版本与来源</summary>', '',
-        '- 记录：`' + _md(manual['id']) + '` · v' + str(manual['revision']),
-        '- 来源版本：`' + _md(saved['source_revision']) + '`']
-    for ref in saved.get('references') or []:
-        lines.append('- 引用：' + _md(ref['kind']) + ' `' + _md(ref['id']) + '` · v' + str(ref['revision']))
-    for row in view['observations']:
-        lines.append('- ' + _md(row['name']) + ' · `' + _md(row['series_id']) + '` · ' + _md(row.get('as_of')))
     lines += ['', '</details>', '']
     return '\n'.join(lines)

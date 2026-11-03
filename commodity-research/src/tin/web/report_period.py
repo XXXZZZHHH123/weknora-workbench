@@ -89,6 +89,41 @@ def _changes(session, identifiers, names, end, kind):
     return output
 
 
+def _rule_preview(session, scope, variety, end, judgment):
+    """Try the saved rules with the judgment page's own read window.
+
+    A report's page read keeps only a few points per series and drops missing
+    periods; moving-average rules need the judgment's complete window, so the
+    report reads exactly what the judgment page reads instead of a shorter one.
+    """
+    from tin.compute.signals import evaluate_preview
+    identifier = judgment.get('id')
+    if scope is None or scope.restricted or getattr(scope, 'scope_version', 1) != 2 or type(identifier) is not int:
+        return evaluate_preview(session, variety, end)
+    from tin.integration import workbench_scope
+    from tin.integration.page_facts import page_read_scope
+    with page_read_scope('judgments', judgment_id=identifier, day=end.isoformat()):
+        with workbench_scope.workbench_session(scope) as rules_session:
+            return evaluate_preview(rules_session, variety, end)
+
+
+def _attach_card_monitor(result, scope, end):
+    """Current state of what each strategy card explicitly cites, as of the report date."""
+    cards = [{'id': row['id'], 'card': {'citations': row.get('citations') or []}}
+             for row in result.get('research_cards') or [] if row.get('citations')]
+    if not cards or scope is None or scope.restricted or getattr(scope, 'scope_version', 1) != 2:
+        return
+    from tin.web.strategy_monitor import monitor_cards
+    try:
+        states = monitor_cards(scope, cards, day=end)
+    except HTTPException as exc:
+        result['coverage']['research_cards_monitor_error'] = exc.detail if isinstance(exc.detail, str) else '策略引用条件暂不可读'
+        return
+    for row in result['research_cards']:
+        if row['id'] in states:
+            row['monitor'] = states[row['id']]
+
+
 def build_period(session, variety, end: date, kind='daily', *, source=None, preview_rules=None):
     from tin.export.board import snapshot
     from tin.integration.workbench_scope import current_workbench
@@ -146,9 +181,8 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
     judgment = result.get('judgment') or {}
     live_rules = source is None if preview_rules is None else preview_rules
     if live_rules and judgment:
-        from tin.compute.signals import evaluate_preview
         try:
-            preview = evaluate_preview(session, variety, end)
+            preview = _rule_preview(session, current_workbench.get(), variety, end, judgment)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
         expected = len(judgment.get('thresholds') or []) + len(judgment.get('falsifiers') or [])
@@ -162,6 +196,8 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
                 ('rule_id','rule_type','trade_date','state','current_value','evidence','gap_note')} for row in preview]}
     from tin.web.report_watch import watch_items
     result['next_review'] = watch_items(judgment, result['strategies'], result['research_cards'])
+    if live_rules:
+        _attach_card_monitor(result, current_workbench.get(), end)
     if live_rules:
         from tin.web.report_drafts import attach_saved_report, bound_series
         scope = current_workbench.get()

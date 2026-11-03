@@ -3,7 +3,7 @@ import json
 from tin.schemas.judgment import PricingPower, MovingAverageTarget
 from tin.judgments.output_schema import OUTPUT_SCHEMA
 
-PROMPT_VERSION = 'research-logic-v18'
+PROMPT_VERSION = 'research-logic-v19'
 SOURCE_BINDING_PROTOCOL = '''本次目录中的全部字段均已通过当前研究台来源权限核验；primary和macro只是来源分类，不是可用范围或许可等级。
 原文引用的宏观、跨市场或跨品种因素可以作为数据锚、白名单、阈值或证伪依据，不得以“不是本品种专属指标”或“不属于商品侧Series”为由排除目录中的相容字段。
 指标的观测频率与研究期限分开处理：沿用原文明确的统计周期、比较方式和连续期数，不擅自要求更高频数据；原文的低频条件可用于短期研究观察，不能因为目录为低频就改成高频或声称没有指标。

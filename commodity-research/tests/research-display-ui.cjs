@@ -17,4 +17,9 @@ const ref = {id: '42', revision: 23, title: '研判 v23', written_at: '2026-01-0
 assert.equal(display.reference(ref), '研究判断 · 2026-01-09');
 assert.equal(ref.id, '42'); assert.equal(ref.revision, 23);
 assert.equal(display.reference({title: '已命名研判', created_at: '2026-01-09T10:24:00'}), '已命名研判 · 2026-01-09 10:24');
+// Source list markers and table borders are layout; numbers that are content stay.
+assert.equal(display.prose('AI建议说明：- 短期: 现货转松'), 'AI建议说明：短期: 现货转松');
+assert.equal(display.prose('| 开工率 a10083975 | SMM | 需求验证 |'), '开工率 · SMM · 需求验证');
+assert.equal(display.prose('风控红线: ①短线\n2、中长线'), '风控红线: ①短线\n中长线');
+assert.equal(display.prose('1.5%以上'), '1.5%以上');
 console.log('research-display UI checks passed');

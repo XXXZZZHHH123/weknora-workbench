@@ -35,7 +35,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (s.points.length) {
           const color = window.ChartPalette.color(0, s.color);
           const mid = s.min / 2 + s.max / 2;
-          const grid = [[16, s.max], [72, mid], [128, s.min]].map(([y, v]) => `<line x1="52" y1="${y}" x2="484" y2="${y}" stroke="var(--line)" stroke-width=".8"/><text x="45" y="${y + 3}" text-anchor="end" fill="var(--text-muted)" font-size="9">${esc(fmt(v))}</text>`).join("");
+          const grid = (s.max === s.min ? [[72, s.max]] : [[16, s.max], [72, mid], [128, s.min]]).map(([y, v]) => `<line x1="52" y1="${y}" x2="484" y2="${y}" stroke="var(--line)" stroke-width=".8"/><text x="45" y="${y + 3}" text-anchor="end" fill="var(--text-muted)" font-size="9">${esc(fmt(v))}</text>`).join("");
           const path = s.path && !s.caliber_changed && !s.invalid_points ? `<polyline points="${s.points.map((p) => `${p.x},${p.y}`).join(" ")}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round"/>` : "";
           const dots = s.points.map((p) => `<circle cx="${p.x}" cy="${p.y}" r="2.6" fill="${color}"><title>${esc(p.date)} · ${esc(fmt(p.value))} ${esc(s.unit)}</title></circle>`).join("");
           const first = s.points[0], last = s.points[s.points.length - 1];

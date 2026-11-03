@@ -363,12 +363,16 @@ def open_workbench_session(scope: WorkbenchScope, **kwargs):
     session = factory()
     try:
         expected = (scope.knowledge_base_id, scope.knowledge_base_tenant_id)
-        session.execute(text("INSERT INTO isolated_scope "
-                             "(workbench_id,knowledge_base_id,knowledge_base_tenant_id) VALUES (:id,:kb,:tenant) "
-                             "ON CONFLICT(workbench_id) DO NOTHING"),
-                        {"id": scope.workbench_id, "kb": expected[0], "tenant": expected[1]})
-        existing = session.execute(text("SELECT knowledge_base_id, knowledge_base_tenant_id FROM isolated_scope "
-                                        "WHERE workbench_id=:id"), {"id": scope.workbench_id}).first()
+        lookup = text("SELECT knowledge_base_id, knowledge_base_tenant_id FROM isolated_scope WHERE workbench_id=:id")
+        existing = session.execute(lookup, {"id": scope.workbench_id}).first()
+        if existing is None:
+            # Only the first open writes. Later (and nested) read sessions must not
+            # queue for the SQLite write lock held by an enclosing page session.
+            session.execute(text("INSERT INTO isolated_scope "
+                                 "(workbench_id,knowledge_base_id,knowledge_base_tenant_id) VALUES (:id,:kb,:tenant) "
+                                 "ON CONFLICT(workbench_id) DO NOTHING"),
+                            {"id": scope.workbench_id, "kb": expected[0], "tenant": expected[1]})
+            existing = session.execute(lookup, {"id": scope.workbench_id}).first()
         if scope.scope_version != 2 and tuple(existing) != expected:
             raise HTTPException(409, "工作台主知识库已改变，需重新建立独立来源范围，未提供旧来源数据")
         session.commit()

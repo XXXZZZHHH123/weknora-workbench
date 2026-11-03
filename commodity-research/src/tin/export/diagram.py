@@ -29,7 +29,7 @@ RETIRED = "retired"          # 绑的指标已停用或已被删除
 
 # 各频率的预期更新间隔（天）。超过就算断更。
 # 宽限是必要的：月频数据常在次月中旬才发布，按 30 天卡会天天误报。
-_EXPECTED_DAYS = {"日": 5, "周": 12, "月": 55, "季": 130, "年": 430, "事件": 90}
+_EXPECTED_DAYS = {"日": 5, "周": 12, "月": 55, "季": 130, "半年": 250, "年": 430, "事件": 90}
 
 
 def _norm(t: str) -> str:
@@ -115,15 +115,23 @@ def _observation_node(session: Session, node: dict, series_id: str, through: dat
     latest = rows[0]
     day = latest.as_of.astimezone(SHANGHAI).date()
     gap_days = (through - day).days
-    expected = _EXPECTED_DAYS.get(ind.frequency, 30)
+    frequency, inferred = ind.frequency, False
+    if frequency not in _EXPECTED_DAYS:
+        # Undeclared frequency: judge staleness by the series' own spacing, not a fixed 30 days.
+        from tin.compute.frequency import observed_frequency
+        observed = observed_frequency([row.as_of.astimezone(SHANGHAI).date() for row in rows])
+        frequency, inferred = (observed, True) if observed else (frequency, False)
+    expected = _EXPECTED_DAYS.get(frequency, 30)
     state = STALE if gap_days > expected else OK
-    note = f"已 {gap_days} 天未更新（{ind.frequency}频预期 {expected} 天内）" if state == STALE else None
+    basis = f"按观测间隔推断为{frequency}频" if inferred else f"{frequency}频"
+    note = f"已 {gap_days} 天未更新（{basis}，预期 {expected} 天内）" if state == STALE else None
 
     return NodeValue(
-        node["id"], state, label, value=latest.value, unit=ind.unit, frequency=ind.frequency,
+        node["id"], state, label, value=latest.value, unit=ind.unit,
+        frequency=(frequency + "（推断）") if inferred else ind.frequency,
         as_of=day.isoformat(),
         mom=_change(latest.value, rows[1].value if len(rows) > 1 else None),
-        yoy=_change(latest.value, _same_period_last_year(rows, ind.frequency)),
+        yoy=_change(latest.value, _same_period_last_year(rows, frequency)),
         delta=(latest.value - rows[1].value) if len(rows) > 1 else None,
         note=note, proxy=proxy, series_id=series_id,
     )
@@ -187,7 +195,8 @@ def judgment_roles(session: Session, variety: str = "SN") -> tuple[dict[str, lis
         out.setdefault(series_id, [])
         if label not in out[series_id]:
             out[series_id].append(label)
-    meta = {"version": j.version, "status": j.status, "author": j.author,
+    from tin.web.research_display import author_label
+    meta = {"version": j.version, "status": j.status, "author": j.author, "author_label": author_label(j.author),
             "written_at": j.written_at.isoformat() if j.written_at else None,
             "review_due": j.review_due.isoformat() if j.review_due else None}
     return out, meta

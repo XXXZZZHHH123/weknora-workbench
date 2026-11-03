@@ -132,3 +132,36 @@ def test_actual_shared_javascript_display_keeps_binding_identity():
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'research-display UI checks passed' in result.stdout
+
+
+def test_saved_account_ids_are_shown_as_people_not_identifiers():
+    from tin.integration.identity import Identity
+    from tin.web.research_display import author_label
+    me = Identity('c74517fc-00e0-4f25-a30a-3a63be866313', 'me@example.invalid', 'Fixture Researcher', 1, 'owner')
+    assert author_label(me.user_id, me) == 'Fixture Researcher'
+    assert author_label(me.user_id, Identity(me.user_id, 'me@example.invalid', '', 1, 'owner')) == 'me@example.invalid'
+    assert author_label('11111111-2222-4333-8444-555555555555', me) == '研究员'
+    assert author_label('A named author', me) == 'A named author' and author_label('', me) == ''
+
+
+def test_source_list_markers_are_layout_not_condition_text():
+    from tin.web.research_display import plain_item
+    from tin.web.report_watch import present_watch
+    assert plain_item('- 短期: 现货转松') == '短期: 现货转松'
+    assert plain_item('2、需求回落') == '需求回落' and plain_item('（3）库存') == '库存' and plain_item('1. 第一') == '第一'
+    # Numbers and signs that are content are kept.
+    assert plain_item('1.5%以上') == '1.5%以上' and plain_item('-5%跌幅') == '-5%跌幅'
+    assert present_watch([{'kind': 'observation', 'text': '- ⚠ 证伪: 月进口回升'}], {})[0]['text'] == '⚠ 证伪: 月进口回升'
+
+
+def test_judgment_reference_title_is_a_short_version_label():
+    from types import SimpleNamespace
+    from datetime import date
+    from tin.web.research_display import reference_label
+    from tin.web.research_references import _judgment_metadata
+    row = SimpleNamespace(id=3, version=3, status='草稿', variety='XY', written_at=date(2026, 11, 2), tone='区间震荡',
+        tone_note='A short conclusion', contradiction={'text': 'A long research background ' * 20})
+    meta = _judgment_metadata(row)
+    assert meta['title'] == '研判 v3 · 区间震荡' and meta['summary'] == 'A short conclusion'
+    assert reference_label(meta) == '研判 v3 · 区间震荡 · 2026-11-02'
+    assert _judgment_metadata(SimpleNamespace(**{**vars(row), 'tone': None}))['title'] == '研判 v3'

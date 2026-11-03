@@ -1,5 +1,6 @@
-"""A lightweight personal inbox; opening it never evaluates market facts."""
+"""A lightweight personal inbox; rendering it never evaluates market facts."""
 from datetime import date, datetime
+import json
 from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException
@@ -52,15 +53,84 @@ def _artifacts(session, scope, module):
     # Workbench result stores are SQLite. Project only small JSON metadata in
     # the DB; never transfer report prose, snapshots or strategy bodies home.
     safe_body = case((func.json_valid(WorkbenchArtifact.body) == 1, WorkbenchArtifact.body), else_='{}')
-    fields = ['format', 'review_date', 'date', 'period', 'workbench_id']
+    fields = ['format', 'review_date', 'date', 'period', 'workbench_id', 'direction']
     columns = [WorkbenchArtifact.id, WorkbenchArtifact.title, WorkbenchArtifact.status,
                WorkbenchArtifact.revision, WorkbenchArtifact.updated_at]
     columns += [func.json_extract(safe_body, '$.' + name).label(name) for name in fields]
+    # Only whether a response exists and which kinds are cited; never the authored prose.
+    columns += [func.length(func.trim(func.coalesce(func.json_extract(safe_body, '$.response_action'), ''))).label('response_length'),
+                func.json_extract(safe_body, '$.citations').label('citations')]
     rows = list(session.execute(select(*columns).where(WorkbenchArtifact.actor == scope.identity.user_id,
         WorkbenchArtifact.module == module).order_by(WorkbenchArtifact.updated_at.desc(),
         WorkbenchArtifact.id.desc()).limit(RECORD_BUDGET + 1)).mappings())
     return [row for row in rows[:RECORD_BUDGET] if record_in_workbench(
         session, scope, 'artifact', row['id'], record=row)], len(rows) > RECORD_BUDGET
+
+
+JOB_PHASES = {'judgments': {'queued': '等待分析', 'selecting': '核对资料范围', 'analyzing': '正在分析',
+                             'validating': '核对分析结果'},
+              'diagram': {'queued': '等待生成', 'reading_source': '读取原件', 'loading_catalog': '读取指标目录',
+                          'selecting': '匹配指标', 'generating': '生成图结构', 'validating': '核对配置'}}
+
+
+def _analysis_jobs(scope, modules):
+    """Background 研判/产业图 analyses of this workbench that still need attention."""
+    import sqlite3
+    from tin.web.judgment_job_registry import ACTIVE
+    from tin.web.judgment_jobs import list_jobs
+    try:
+        items = list_jobs(scope.identity, 20)['items']
+    except (HTTPException, OSError, ValueError, sqlite3.Error):
+        return []
+    rows, finished = [], set()
+    for job in items:  # newest first
+        purpose = job.get('purpose')
+        if (job.get('workbench_id') != scope.workbench_id or job.get('dismissed')
+                or purpose not in JOB_PHASES or purpose not in modules):
+            continue
+        state, page = job.get('state'), '/sn/judgment' if purpose == 'judgments' else '/sn/diagram'
+        if state not in ACTIVE:
+            # Only the newest finished analysis of each kind needs attention; a
+            # later result or failure replaces what an older attempt reported.
+            if purpose in finished:
+                continue
+            finished.add(purpose)
+        if state in ACTIVE:
+            status, detail = '进行中', JOB_PHASES[purpose].get(job.get('phase'), '后台运行中')
+        elif state == 'succeeded' and job.get('result_available'):
+            status, detail = '待核对', ('分析已完成，核对后保存为研判草稿' if purpose == 'judgments'
+                                         else '配置已生成，核对后导入产业图')
+        elif state in {'failed', 'interrupted'}:
+            status = '未完成'
+            detail = (str(job.get('message') or '') or ('分析已中断' if state == 'interrupted' else '分析未完成'))[:200]
+        else:
+            continue
+        stamp = job.get('updated_at') or job.get('created_at')
+        try:
+            stamp = _stamp(datetime.fromisoformat(stamp)) if isinstance(stamp, str) else ''
+        except ValueError:
+            stamp = ''
+        rows.append({'title': job.get('title') or '后台分析', 'status': status,
+            'detail': detail + (' · ' + stamp if stamp else ''), 'href': page + '?analysis_job=' + str(job['id'])})
+    return rows
+
+
+def _draft_progress(session, formal):
+    """A saved draft that is not yet effective: what still needs the researcher."""
+    from tin.web.report_watch import watch_items
+    if formal is None or formal.status != '草稿':
+        return None
+    row = session.execute(select(Judgment.unstructured, Judgment.thresholds, Judgment.falsifiers)
+        .where(Judgment.id == formal.id)).first()
+    if row is None:
+        return None
+    pending = sum(item['kind'] == 'observation' for item in watch_items(
+        {'unstructured': [note for note in row.unstructured or [] if isinstance(note, dict)]}))
+    rules = len(row.thresholds or []) + len(row.falsifiers or [])
+    parts = [f'{rules} 条可监测规则'] + ([f'{pending} 条待验证条件需核对指标'] if pending else [])
+    return {'title': f'研判 v{formal.version} 尚未生效', 'status': '草稿',
+            'detail': '草稿保存于 ' + formal.written_at.isoformat() + ' · ' + '，'.join(parts),
+            'href': '/sn/judgment?judgment_id=' + str(formal.id)}
 
 
 def _formal_judgment(rows):
@@ -118,6 +188,7 @@ def build_affairs(session, scope, *, today=None, limit=8):
     today = today or datetime.now(SHANGHAI).date()
     owner_id = session.scalar(select(Researcher.id).where(Researcher.weknora_user_id == scope.identity.user_id))
     review, approvals, reports, judgments, formal = [], [], [], [], None
+    progress, observations, report_links, monitored = [], [], [], 0
     partial = False
     modules = set(scope.view_modules)
     if 'judgments' in modules:
@@ -129,17 +200,33 @@ def build_affairs(session, scope, *, today=None, limit=8):
         if formal is not None and formal not in judgments:
             judgments.append(formal)
         if formal is not None and formal.status != '已归档' and formal.review_due <= today:
-            review.append({'title': f'{formal.variety} 研判 · v{formal.version}',
+            review.append({'title': f'研判 v{formal.version}' + (f' · {formal.tone}' if getattr(formal, 'tone', None) else ''),
                 'detail': f'{formal.status} · 复核日期 {formal.review_due.isoformat()}',
                 'href': '/sn/judgment?judgment_id=' + str(formal.id), 'due_date': formal.review_due.isoformat()})
+        draft = _draft_progress(session, formal)
+        if draft is not None:
+            progress.append(draft)
+    progress[:0] = _analysis_jobs(scope, modules)
     if 'strategies' in modules:
         cards, truncated = _artifacts(session, scope, 'strategies')
         partial |= truncated
         for row in cards:
+            if row['format'] != 'research-strategy-card.v1':
+                continue
             due = _day(row['review_date'])
-            if row['format'] == 'research-strategy-card.v1' and due is not None and due <= today:
-                review.append({'title': row['title'], 'detail': '研究策略 · 复核日期 ' + due.isoformat(),
-                    'href': '/sn/strategies?selected=research:' + row['id'], 'due_date': due.isoformat()})
+            href = '/sn/strategies?selected=research:' + row['id']
+            if due is not None and due <= today:
+                review.append({'title': row['title'], 'detail': '策略方案 · 复核日期 ' + due.isoformat(),
+                    'href': href, 'due_date': due.isoformat()})
+            if not row['response_length']:
+                observations.append({'title': row['title'], 'detail': '观察方案 · 尚未填写应对措施', 'href': href})
+            try:
+                cited = json.loads(row['citations']) if isinstance(row['citations'], str) else []
+            except ValueError:
+                cited = []
+            # Only cited judgment conditions can trigger; quoted indicators are context.
+            monitored += isinstance(cited, list) and any(
+                isinstance(item, dict) and item.get('kind') == 'judgment_condition' for item in cited)
         plans, truncated = _owned_records(session, scope, Strategy,
             [Strategy.id, Strategy.researcher_id, Strategy.title, Strategy.status, Strategy.version], owner_id, 'plan')
         partial |= truncated
@@ -156,20 +243,32 @@ def build_affairs(session, scope, *, today=None, limit=8):
                 reports.append({'title': row['title'],
                     'detail': ('周报' if row['period'] == 'weekly' else '日报') + f" · {row['date']} · v{row['revision']}",
                     'href': '/sn/reports?date=' + row['date'] + '&period=' + row['period']})
+        saved = {(row['period'], row['date']) for row in drafts if row['format'] == 'research-report-draft.v1'}
+        day = today.isoformat()
+        if ('daily', day) not in saved:
+            report_links.append({'title': '今日日报 · ' + day, 'detail': '汇集当前研判与策略，可直接查看或编辑后导出',
+                               'href': '/sn/reports?date=' + day + '&period=daily'})
+        if today.weekday() >= 4 and ('weekly', day) not in saved:
+            report_links.append({'title': '本周周报 · 截至 ' + day, 'detail': '汇集本周研判与策略变化，可编辑后导出',
+                               'href': '/sn/reports?date=' + day + '&period=weekly'})
     alerts, truncated = _recorded_alerts(session, judgments, limit)
     partial |= truncated
     review.sort(key=lambda item: item['due_date'])
-    counts = {'review': len(review), 'approvals': len(approvals), 'reports': len(reports)}
-    sections = (['review'] if modules.intersection({'judgments', 'strategies'}) else [])
+    counts = {'progress': len(progress), 'review': len(review), 'approvals': len(approvals) + len(observations),
+              'reports': len(reports)}
+    sections = ['progress'] if modules.intersection({'judgments', 'diagram'}) else []
+    sections += ['review'] if modules.intersection({'judgments', 'strategies'}) else []
     sections += ['approvals'] if 'strategies' in modules else []
     sections += ['reports'] if 'reports' in modules else []
     shortcuts = [{'title': title, 'href': href} for module, title, href in [
         ('market', '市场总览', '/sn'), ('judgments', '研究判断', '/sn/judgment'),
-        ('strategies', '策略', '/sn/strategies'), ('reports', '日报与周报', '/sn/reports')] if module in modules]
-    return {'alerts': alerts, 'review': review[:limit], 'approvals': approvals[:limit], 'reports': reports[:limit],
-        'counts': counts, 'sections': sections, 'shortcuts': shortcuts, 'partial': partial,
-        'record_budget': RECORD_BUDGET, 'signal_budget': SIGNAL_BUDGET,
-        'can_check': formal is not None and formal.status != '已归档'}
+        ('strategies', '策略', '/sn/strategies'), ('diagram', '产业图', '/sn/diagram'),
+        ('reports', '日报与周报', '/sn/reports')] if module in modules]
+    can_check = ('judgments' in modules and formal is not None and formal.status != '已归档') or monitored > 0
+    return {'alerts': alerts, 'progress': progress[:limit], 'review': review[:limit], 'approvals': approvals[:limit],
+        'observations': observations[:limit], 'reports': reports[:limit], 'report_links': report_links, 'counts': counts, 'sections': sections, 'shortcuts': shortcuts, 'partial': partial,
+        'record_budget': RECORD_BUDGET, 'signal_budget': SIGNAL_BUDGET, 'monitored_strategies': monitored,
+        'can_check': can_check}
 
 
 @router.post('/check')

@@ -187,7 +187,8 @@ def _text(value, limit):
 def _judgment_metadata(row):
     contradiction = row.contradiction if isinstance(row.contradiction, dict) else {}
     return {'kind': 'judgment', 'id': str(row.id), 'revision': row.version, 'resource_type': 'judgment',
-        'title': _text(contradiction.get('text'), 100) or '研判 v' + str(row.version),
+        # A short, stable label; the long research text stays in summary/preview.
+        'title': '研判 v' + str(row.version) + (' · ' + row.tone.strip() if isinstance(row.tone, str) and row.tone.strip() else ''),
         'status': row.status, 'variety': row.variety, 'written_at': row.written_at.isoformat(),
         'summary': _text(row.tone_note or contradiction.get('text'), 200),
         'origin_path': '/sn/judgment?judgment_id=' + str(row.id)}

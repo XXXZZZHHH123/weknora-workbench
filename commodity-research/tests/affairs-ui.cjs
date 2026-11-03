@@ -11,8 +11,9 @@ class Element {
   append(...items){this.children.push(...items);}
   replaceChildren(...items){this.children=items;}
 }
-function setup({failure=false,zeroRules=false}={}) {
+function setup({failure=false,zeroRules=false,checkable=true}={}) {
   const nodes=Object.fromEntries(['affairs-check','affairs-check-status','affairs-alert-list'].map(id=>[id,new Element()]));
+  nodes['affairs-check'].disabled=!checkable;
   nodes['affairs-alert-list'].children.push('Original persisted alert');
   const requests=[];
   const context={window:{RESEARCH_PREFIX:'/research/workbenches/fixture'},
@@ -23,10 +24,13 @@ function setup({failure=false,zeroRules=false}={}) {
   vm.runInNewContext(source,context);
   return {nodes,requests};
 }
+const settle=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
-  const env=setup();assert.equal(env.requests.length,0,'The home page must never start automatic fact checks');
-  await env.nodes['affairs-check'].fire('click');
-  assert.equal(env.requests.length,1);assert.equal(env.requests[0].options.method,'POST');
+  const idle=setup({checkable:false});await settle();
+  assert.equal(idle.requests.length,0,'Without saved rules or cited conditions the page must not start a check');
+  const env=setup();assert.equal(env.requests.length,1,'Opening the page starts exactly one bounded check');
+  await settle();
+  assert.equal(env.requests[0].options.method,'POST');
   assert.equal(env.requests[0].url,'/research/workbenches/fixture/api/sn/affairs/check');
   const row=env.nodes['affairs-alert-list'].children[0];
   assert.equal(row.href,'/research/workbenches/fixture/sn/judgment?judgment_id=7');
@@ -34,12 +38,15 @@ function setup({failure=false,zeroRules=false}={}) {
   assert.ok(JSON.stringify(row).includes('触发'));assert.ok(JSON.stringify(row).includes('依据时点 2025-12-30'));
   assert.match(env.nodes['affairs-check-status'].textContent,/Read-only check/);
   assert.equal(env.nodes['affairs-check'].disabled,false);
-  const rejected=setup({failure:true});await rejected.nodes['affairs-check'].fire('click');
+  await env.nodes['affairs-check'].fire('click');
+  assert.equal(env.requests.length,2,'The button re-runs the check on demand');
+  const rejected=setup({failure:true});await settle();
   assert.deepEqual(rejected.nodes['affairs-alert-list'].children,['Original persisted alert'],'A failed check preserves the last visible records');
   assert.equal(rejected.nodes['affairs-check-status'].dataset.error,'true');
-  const empty=setup({zeroRules:true});await empty.nodes['affairs-check'].fire('click');
+  const empty=setup({zeroRules:true});await settle();
   assert.equal(empty.nodes['affairs-alert-list'].children[0].textContent,'尚未保存可检查规则','No saved rule must never be described as no trigger');
-  const double=setup();const first=double.nodes['affairs-check'].fire('click');const second=double.nodes['affairs-check'].fire('click');await Promise.all([first,second]);
-  assert.equal(double.requests.length,1,'A double click must not start concurrent fact checks');
-  console.log('5 isolated affairs UI interaction checks passed');
+  const double=setup();const automatic=double.nodes['affairs-check'].fire('click');await settle();
+  const first=double.nodes['affairs-check'].fire('click');const second=double.nodes['affairs-check'].fire('click');await Promise.all([automatic,first,second]);
+  assert.equal(double.requests.length,2,'Clicks during a running check must not start concurrent fact checks');
+  console.log('6 isolated affairs UI interaction checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -297,8 +297,8 @@ def test_snapshot_export_matches_actual_current_source_rows_and_ignores_render_c
     assert first.status_code == 200, first.text
     content = state['uploads'][0]['file'].decode()
     assert field in content and '"value": 0.0' in content
-    assert '## 主要变化' in content and '## 研究判断' in content and '## 策略跟踪' in content
-    assert content.index('## 研究判断') < content.index('<details><summary>原始记录与来源审计')
+    assert '\n## 研判\n' in content and '\n### 主要变化\n' in content and '\n## 策略\n' in content
+    assert content.index('\n### 研究判断\n') < content.index('<details><summary>原始记录与来源审计')
     audit = json.loads(content.split('<details><summary>原始记录与来源审计', 1)[1]
                        .split('```json', 1)[1].split('```', 1)[0])
     assert 'generated_at' not in audit
@@ -315,7 +315,7 @@ def test_snapshot_export_matches_actual_current_source_rows_and_ignores_render_c
     before_home = len(state['calls'])
     home = client.get('/research/workbenches/'+WB+'/',headers=headers)
     assert home.status_code == 200, home.text
-    assert 'affairs-header' in home.text and '报告草稿' in home.text and '/sn/reports' in home.text
+    assert 'affairs-header' in home.text and '日报与周报' in home.text and '/sn/reports' in home.text
     assert 'affairs.js' in home.text and '隔离的日报正文' not in home.text
     assert not any(path.endswith('/knowledge') for _, path in state['calls'][before_home:]), 'The metadata inbox must not scan source documents'
 
