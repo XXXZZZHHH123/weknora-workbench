@@ -18,11 +18,12 @@ import (
 
 type taskPlannerChat struct {
 	mockChat
-	plan     *types.ChatResponse
-	err      error
-	wait     bool
-	requests [][]chat.Message
-	options  []*chat.ChatOptions
+	plan      *types.ChatResponse
+	chartPlan *types.ChatResponse
+	err       error
+	wait      bool
+	requests  [][]chat.Message
+	options   []*chat.ChatOptions
 }
 
 func (model *taskPlannerChat) Chat(ctx context.Context, messages []chat.Message, options *chat.ChatOptions) (*types.ChatResponse, error) {
@@ -31,6 +32,11 @@ func (model *taskPlannerChat) Chat(ctx context.Context, messages []chat.Message,
 	if model.wait {
 		<-ctx.Done()
 		return nil, ctx.Err()
+	}
+	if purpose, _ := types.LLMCallMetadataFromContext(ctx); purpose == "chart_plan_review" {
+		// A chart verdict must be supplied explicitly by the test. Planning
+		// JSON and the absence of a fixture cannot certify a successful chart.
+		return model.chartPlan, model.err
 	}
 	return model.plan, model.err
 }

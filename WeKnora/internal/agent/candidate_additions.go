@@ -314,6 +314,12 @@ func (e *AgentEngine) selectCandidateAdditions(ctx context.Context, query, candi
 	if e.config == nil || !e.config.WorkbenchDefault || !e.config.CandidateAdditionsEnabled || e.chatModel == nil || state == nil || len(candidate) > 32768 {
 		return candidate
 	}
+	// An action's missing output or failure explanation is part of delivery,
+	// not an optional aside. Leave this candidate unchanged for the independent
+	// completion/source check, which can request a necessary correction.
+	if e.needsDeliveryReview(state) {
+		return candidate
+	}
 	sources := candidateAdditionsSources(state)
 	activities := candidateAdditionsDiscovery(state)
 	if len(sources.RoundSteps) == 0 && len(activities) == 0 {

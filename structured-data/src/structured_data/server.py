@@ -372,7 +372,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     async def query_pdf_table(table_id: str, sql: str, limit: int = 100) -> dict:
-        """对已入库 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID 和列名；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源/单位构造 SQL，程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。pdf_evidence_contract区分当前审校与历史页提取观察；附加统计范围/版面事实须绑定实际表或单元格，缺依据则省略。公式保留不等于可执行。"""
+        """对已入库 PDF 表执行单条 DuckDB SELECT/WITH。先 list_pdf_tables 获取真实 ID，再 read_pdf_table 核对真实列、行列方向和单位；data 含 _row_id 和真实列，decimal 为 DECIMAL(38,18)，text 为 VARCHAR。模型根据完整问题/来源构造 SQL，从真实源字段取值或整形；横向表可用实际列构造 unnest 数组或显式 UNPIVOT，不能把已读数字重抄成常量观测。常量仅可作为标签、计算参数或阈值，不能充当有来源的测量值；_row_id 是技术身份。程序以 DuckDB AST 绑定输出表达式的源列和源行计数依赖；sql_column_dependencies 中 source_value/source_cardinality 才可作数值观测，constant_label/source_metadata/mixed_constant_values 不可。sql_source_dependency_verified 不是逐单元格血缘或轴语义验真。程序只读计算全部已选逻辑行，输出 limit 不截断输入。禁止联网/文件/其他表/写操作。缺失为 NULL，不补零或自动换算单位。结果小数以字符串无损返回，带原文件/计划指纹与输入覆盖；聚合不伪造逐格 SQL 血缘，需 read_pdf_table 核对输入页码。input_complete=false 时不得声称全表统计。pdf_evidence_contract区分当前审校与历史页提取观察；附加统计范围/版面事实须绑定实际表或单元格，缺依据则省略。公式保留不等于可执行。"""
         def run():
             selected = pdf_store(registry)
             original = selected.read_table(table_id, limit=1)

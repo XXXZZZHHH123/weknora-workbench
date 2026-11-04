@@ -342,6 +342,20 @@ bash ~/weknora-workbench/bin/update.sh
 
 基础镜像版本集中在 `deploy/image-builds.json`，变更版本会重建相应服务。手动运行工作流可勾选 `force_rebuild` 强制重建全部镜像。PR 保留七个镜像的构建验证，不推送。只有测试、镜像构建或复用检查、发布步骤全部成功的版本才会进入服务器。不要手动把其他类型的 Release 标记为 Latest，以免阻断生产发布发现。
 
+### 用户明确选择本地生产镜像时
+
+用户可明确授权以本机制作的生产镜像更新 `18090`，避免下载 GitHub/GHCR 业务镜像。仍须先完成 PR、合并及合并提交的完整 CI；本地构建应来自该合并 SHA 的干净源码，不以开发 `18190` 的运行产物冒充生产镜像。保留各服务的构建输入哈希、实际镜像 ID、平台、源码版本、构建参数与校验结果；复用未变化镜像时也要记录其原版本和输入一致性。镜像 ID/摘要是本地制品证据，不能声称它与 GitHub 构建的镜像字节一致。
+
+镜像制作与发布目录准备需要单独完成；`deploy.sh` 不构建镜像。准备好的 `$release_dir` 必须位于原生产目录的 `releases/production-<完整合并SHA>-<数字编号>-<数字次数>/`，包含经核对的 `compose.yml`、支持本参数的 `deploy.sh` 和记录七个实际镜像引用及输入哈希的 `release.env`，并保留制品清单及校验和。准备完成后显式执行：
+
+```sh
+bash "$release_dir/deploy.sh" /home/codexuser/weknora-workbench "$(basename "$release_dir")" --local-images
+```
+
+该模式逐个检查 Compose 使用的全部镜像已存在于本机且平台为 `linux/amd64`。任一镜像缺失或平台错误，会在备份、更新容器和移动版本指针前退出，不回退到下载。它不调用 `docker pull`、Compose `pull` 或 `regctl export`，也不更改 `shared/poller.json`；其后的 PostgreSQL 和研究数据备份、`up --no-build --pull never`、健康及鉴权/静态资源检查、`current`/`previous` 切换与正常部署相同。源码、来源/权限保护、配置和数据隔离仍需验证，健康通过不等于真实模型问答验收。
+
+`bin/update.sh`/`poll.sh` 不接受 `--local-images`，仍会查询 GitHub Release 并按原配置准备镜像；本次本地交付应直接调用已准备的发布目录脚本。不传新参数时原有 Docker/regctl 更新行为保持不变。本地模式失败后同样先检查日志、迁移及数据兼容性，不能仅因 `current` 未移动就认为容器或数据库未变。
+
 首次健康检查确认前端、受保护 API 返回 401、结构化 `/health` 返回 JSON；这不等于已验证真实模型问答。首次配置账号及模型后，还需检查页面登录、工作台上传/查询、歧义选择和证据显示。
 
 结构化 MCP 智能体需要一次性注册，参考 `structured-data/docs/WeKnora接入.md`。服务 URL 使用 `http://structured-data:18082/mcp`，token 位于 structured-data 容器的 `/data/service-token`。注册脚本默认只读预览；应用注册时用 `--apply`，以后发布不重复注册或覆盖智能体配置。

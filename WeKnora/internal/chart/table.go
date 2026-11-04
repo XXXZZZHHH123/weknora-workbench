@@ -33,10 +33,12 @@ type Writer interface {
 }
 
 type Column struct {
-	Index   int    `json:"index"`
-	Name    string `json:"name"`
-	Unit    string `json:"unit,omitempty"`
-	Numeric bool   `json:"numeric"`
+	Index          int    `json:"index"`
+	Name           string `json:"name"`
+	Unit           string `json:"unit,omitempty"`
+	Numeric        bool   `json:"numeric"`
+	Role           string `json:"role,omitempty"`
+	DependencyKind string `json:"dependency_kind,omitempty"`
 }
 type Table struct {
 	ID         string     `json:"source_id"`
