@@ -31,8 +31,10 @@ type citationReviewChunk struct {
 	knowledgeID            string
 	content                string
 	contentKnown           bool
+	sourceView             citationSourceView
 	additionalObservations []citationReviewChunk
 	observationsOmitted    int
+	fullBodyViewsVerified  bool
 }
 
 // citedSourceEvidenceFromSteps gives the source critic a citation-first view
@@ -389,6 +391,7 @@ func uniqueCandidateCitationIDs(answer string) []string {
 func citationChunksFromMessages(messages []chat.Message) (map[string]citationReviewChunk, map[string]bool) {
 	records := map[string]citationReviewChunk{}
 	conflicts := map[string]bool{}
+	observations := map[string][]citationReviewChunk{}
 	for _, message := range messages {
 		if message.Role != "tool" || (message.Name != tools.ToolReadDocument && message.Name != tools.ToolSearchKnowledge) {
 			continue
@@ -423,7 +426,9 @@ func citationChunksFromMessages(messages []chat.Message) (map[string]citationRev
 					jsonPointer: fmt.Sprintf("%s/%s/%d/content", pointerPrefix, field, index),
 					chunk:       citationChunkMetadata(chunk, content), document: doc, sourceScope: citationSourceScope(data),
 					chunkID: id, knowledgeID: knowledgeID, content: content, contentKnown: true,
+					sourceView: citationSourceView{row: chunk, data: data},
 				}
+				observations[id] = append(observations[id], item)
 				if conflicts[id] {
 					continue
 				}
@@ -448,6 +453,34 @@ func citationChunksFromMessages(messages []chat.Message) (map[string]citationRev
 				records[id] = item
 			}
 		}
+	}
+	for id, observed := range observations {
+		views := make([]citationSourceView, len(observed))
+		for index, item := range observed {
+			views[index] = item.sourceView
+		}
+		index, verified := canonicalCitationFullView(views)
+		if !verified {
+			if citationViewsRequireProofValidation(views) {
+				delete(records, id)
+				conflicts[id] = true
+			}
+			continue
+		}
+		canonical := observed[index]
+		canonical.fullBodyViewsVerified = true
+		for i, item := range observed {
+			if i == index {
+				continue
+			}
+			if len(canonical.additionalObservations) < 7 {
+				canonical.additionalObservations = append(canonical.additionalObservations, item)
+			} else {
+				canonical.observationsOmitted++
+			}
+		}
+		records[id] = canonical
+		delete(conflicts, id)
 	}
 	return records, conflicts
 }
@@ -503,7 +536,7 @@ func citationDocumentMetadata(data map[string]any, knowledgeID string) map[strin
 }
 
 func citationChunkMetadata(chunk map[string]any, content string) map[string]any {
-	metadata := selectCitationFields(chunk, []string{"chunk_id", "knowledge_id", "chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id", "page", "physical_page", "source_page", "content_offset", "content_offset_space", "content_complete", "next_content_offset", "source_locators"})
+	metadata := selectCitationFields(chunk, []string{"chunk_id", "knowledge_id", "chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id", "page", "physical_page", "source_page", "content_offset", "content_offset_space", "content_complete", "content_revision", "content_source_view", "next_content_offset", "source_locators"})
 	locators, ok := metadata["source_locators"].([]any)
 	if !ok {
 		return metadata
@@ -626,6 +659,10 @@ func citationReviewItem(record citationReviewChunk, prefixRunes int, reviewHandl
 	} else {
 		item["source_pointer_unavailable"] = true
 		item["reader_available"] = false
+	}
+	if record.fullBodyViewsVerified {
+		item["presentation_ranges_verified_against_full_body"] = true
+		item["presentation_notice"] = "Canonical content is an actual full current chunk. Each additional content_source_view was checked rune by rune against that same body, revision and locators before model handle encoding. Ranges count original repository runes; encoded resource handles may change displayed positions. Each page/range and reader pointer remains separate. This validates source identity only: judge adjacent claims against the exact source and explicitly bound images, never another chunk or an unrelated page."
 	}
 	if complete, ok := record.chunk["content_complete"]; ok {
 		item["source_content_complete"] = complete

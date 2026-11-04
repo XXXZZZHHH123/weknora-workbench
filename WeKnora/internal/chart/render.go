@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 )
 
 type Spec struct {
@@ -53,31 +52,16 @@ func Render(table Table, spec Spec) ([]byte, error) {
 			}
 		}
 	}
-	n := len(table.Rows)
-	xs := make([]float64, n)
-	xmin, xmax := math.Inf(1), math.Inf(-1)
+	xValues := make([]string, len(table.Rows))
 	for i, row := range table.Rows {
 		if len(row) != len(table.Columns) || strings.TrimSpace(row[spec.X]) == "" {
 			return nil, fmt.Errorf("missing X or inconsistent source row at %d", i)
 		}
-		x := float64(i)
-		switch spec.XType {
-		case "numeric":
-			var ok bool
-			x, ok = Number(row[spec.X])
-			if !ok {
-				return nil, fmt.Errorf("X column is not numeric at row %d", i)
-			}
-		case "time":
-			date, err := time.Parse("2006-01-02", row[spec.X])
-			if err != nil {
-				return nil, fmt.Errorf("time X requires actual ISO dates; no inferred dates (row %d)", i)
-			}
-			x = float64(date.Unix())
-		}
-		xs[i] = x
-		xmin = math.Min(xmin, x)
-		xmax = math.Max(xmax, x)
+		xValues[i] = row[spec.X]
+	}
+	xs, xmin, xmax, err := xAxisCoordinates(xValues, spec.XType)
+	if err != nil {
+		return nil, err
 	}
 	series := make([][]point, len(spec.Y))
 	ymin, ymax := math.Inf(1), math.Inf(-1)
@@ -108,18 +92,13 @@ func Render(table Table, spec Spec) ([]byte, error) {
 		ymin = math.Min(ymin, 0)
 		ymax = math.Max(ymax, 0)
 	}
-	if xmax == xmin {
-		pad := math.Max(math.Abs(xmin)*0.05, 0.5)
-		xmin -= pad
-		xmax += pad
-	}
 	if ymax == ymin {
 		pad := math.Max(math.Abs(ymin)*0.05, 1)
 		ymin -= pad
 		ymax += pad
 	}
 	// Reject overflow rather than producing invalid pixel coordinates.
-	if math.IsInf(xmax-xmin, 0) || math.IsInf(ymax-ymin, 0) {
+	if math.IsInf(ymax-ymin, 0) {
 		return nil, fmt.Errorf("numeric range exceeds renderer limits")
 	}
 	return renderPNG(table, spec, series, xs, xmin, xmax, ymin, ymax)

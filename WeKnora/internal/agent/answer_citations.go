@@ -233,6 +233,11 @@ func (e *AgentEngine) validateCitationCheck(check *sourceCitationCheck, candidat
 
 func currentCitationReferenceRows(state *types.AgentState) (map[string]*types.SearchResult, map[string]bool) {
 	rows, conflicts, revisions := map[string]*types.SearchResult{}, map[string]bool{}, map[string]string{}
+	type observation struct {
+		view citationSourceView
+		ref  *types.SearchResult
+	}
+	observations := map[string][]observation{}
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {
 			if (call.ExecutionName() != "read_document" && call.ExecutionName() != "search_knowledge") || call.Result == nil || !call.Result.Success {
@@ -262,7 +267,7 @@ func currentCitationReferenceRows(state *types.AgentState) (map[string]*types.Se
 						continue
 					}
 					ref.ContentRevision = citationInt(row["content_revision"])
-					ref.ContentRewritten = citationInt(row["content_offset"]) > 0 || row["content_complete"] == false
+					ref.ContentRewritten = citationInt(row["content_offset"]) > 0 || row["content_complete"] == false || row["content_source_view"] != nil && !citationViewIsFull(citationSourceView{row: row, data: data})
 					if citationString(data["knowledge_id"]) == ref.KnowledgeID {
 						if ref.KnowledgeBaseID == "" {
 							ref.KnowledgeBaseID = citationString(data["knowledge_base_id"])
@@ -284,8 +289,21 @@ func currentCitationReferenceRows(state *types.AgentState) (map[string]*types.Se
 						conflicts[ref.ID] = true
 					}
 					revisions[ref.ID], rows[ref.ID] = revision, &ref
+					observations[ref.ID] = append(observations[ref.ID], observation{view: citationSourceView{row: row, data: data}, ref: &ref})
 				}
 			}
+		}
+	}
+	for id, observed := range observations {
+		views := make([]citationSourceView, len(observed))
+		for index, item := range observed {
+			views[index] = item.view
+		}
+		if index, verified := canonicalCitationFullView(views); verified {
+			rows[id] = observed[index].ref
+			delete(conflicts, id)
+		} else if citationViewsRequireProofValidation(views) {
+			conflicts[id] = true
 		}
 	}
 	return rows, conflicts
