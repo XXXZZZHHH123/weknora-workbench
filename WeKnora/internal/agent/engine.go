@@ -648,8 +648,9 @@ type loopGuards struct {
 	failedToolCallNudged       bool
 	// Feedback repeats survive harmless parameter edits and unrelated reads.
 	// They only add advice; normal execution and completion guards stay intact.
-	failedToolFeedback       failedToolFeedbackLoop
-	failedToolFeedbackNudged bool
+	failedToolFeedback          failedToolFeedbackLoop
+	failedToolFeedbackNudged    bool
+	failedToolFeedbackOperation string
 }
 
 // recordFailedToolCall tracks consecutive failures of the same model-facing
@@ -658,6 +659,7 @@ type loopGuards struct {
 func (g *loopGuards) recordFailedToolCall(call types.ToolCall) (string, int, bool) {
 	feedback := g.failedToolFeedback.observe(call)
 	g.failedToolFeedbackNudged = false
+	g.failedToolFeedbackOperation = ""
 	if call.Result != nil && call.Result.Success {
 		g.resetFailedToolCallStreak()
 		return "", 0, false
@@ -685,6 +687,7 @@ func (g *loopGuards) recordFailedToolCall(call types.ToolCall) (string, int, boo
 	}
 	if feedback != nil {
 		g.failedToolFeedbackNudged = true
+		g.failedToolFeedbackOperation = feedback.operation
 		return feedback.name, feedback.attempts, true
 	}
 	return "", g.consecutiveFailedToolCalls, false

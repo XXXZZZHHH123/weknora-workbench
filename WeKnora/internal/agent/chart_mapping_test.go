@@ -55,6 +55,152 @@ func TestChartPDFCellMappingPreservesAllCoordinatesUnitsAndMissingValues(t *test
 	require.Len(t, writer.requests, 1)
 }
 
+// A current SELECT * result includes a technical identity alongside the real
+// horizontal cells. These are synthetic values, unrelated to an acceptance
+// question; the runtime must project coordinates rather than inventing rows.
+func pdfSQLHorizontalChartFixture() types.ToolCall {
+	columns := []string{"_row_id", "label", "first", "second", "third"}
+	dependencies := make([]map[string]any, len(columns))
+	for index, name := range columns {
+		dependencies[index] = map[string]any{"column_index": index, "column": name, "kind": "source_value", "source_columns": []string{name}, "source_row_dependency": true, "technical_metadata": false}
+	}
+	dependencies[0]["kind"] = "source_metadata"
+	dependencies[0]["technical_metadata"] = true
+	return types.ToolCall{ID: "pdf-sql-current", Name: "structured_query_pdf_table", Result: &types.ToolResult{Success: true, Data: map[string]any{
+		"kind": "structured_analysis", "status": "ok", "source_kind": "pdf_table", "table_id": "actual-query-table",
+		"source":  map[string]any{"file": "isolated-query.pdf", "sha256": strings.Repeat("ed", 32)},
+		"columns": columns, "rows": [][]any{{"pdfr_axis", "Period", "2031", "2034", "2040"}, {"pdfr_measure", "Reading", "8.25", nil, "11.5"}},
+		"sql": "SELECT * FROM data", "input_complete": false, "output_truncated": false,
+		"sql_source_dependency_verified": true, "sql_source_dependency_method": "duckdb_ast_output_expression_dependencies_v1", "sql_column_dependencies": dependencies,
+	}}}
+}
+
+func TestChartPDFSQLCatalogSourceMapsHorizontalCellsAndKeepsDependencies(t *testing.T) {
+	ctx := chartContext(t)
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{pdfSQLHorizontalChartFixture()}}}
+	writer := &chartWriterFixture{}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, writer, "session", "message")
+	inspect := chartRun(t, tool, ctx, map[string]any{"operation": "inspect"})
+	require.True(t, inspect.Success)
+	require.Empty(t, inspect.Data["input_sources"])
+	require.Len(t, inspect.Data["sources"], 1)
+	view := inspect.Data["sources"].([]any)[0].(map[string]any)
+	id := view["source_id"].(string)
+	require.Equal(t, map[string]int{"rows": 2, "columns": 5}, view["matrix_shape"])
+	require.Equal(t, true, view["mapping_supported"])
+	require.Equal(t, true, view["render_supported"])
+	require.Equal(t, true, view["source_truncated"])
+	mapping := map[string]any{"orientation": "rows", "x_index": 0, "y_indexes": []int{1}, "value_indexes": []int{2, 3, 4}, "label_index": 1}
+	invalid := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": "actual-query-table", "mapping": mapping})
+	require.False(t, invalid.Success)
+	require.Equal(t, "chart_mapping_source_not_current", invalid.Data["reason_code"])
+	require.Equal(t, []string{id}, invalid.Data["available_mapping_source_ids"])
+	result := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": id, "mapping": mapping})
+	require.True(t, result.Success, result.Error)
+	mappedID := result.Data["source_id"].(string)
+	mapped := tool.mapped[mappedID].Table
+	require.Equal(t, id, tool.mapped[mappedID].ParentID)
+	require.Equal(t, [][]string{{"2031", "8.25"}, {"2034", ""}, {"2040", "11.5"}}, mapped.Rows)
+	require.Equal(t, []chart.Column{{Name: "Period", Numeric: true, DependencyKind: "source_value"}, {Index: 1, Name: "Reading", Numeric: true, DependencyKind: "source_value"}}, mapped.Columns)
+	require.True(t, mapped.Truncated)
+	var proof struct {
+		SourceProvenance  string `json:"source_provenance"`
+		ProjectionColumns []struct {
+			OutputIndex         int            `json:"output_index"`
+			SourceColumnIndexes []int          `json:"source_column_indexes"`
+			SourceRowIndexes    []int          `json:"source_row_indexes"`
+			SourceColumns       []chart.Column `json:"source_columns"`
+		} `json:"projection_columns"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(mapped.Provenance), &proof))
+	require.Contains(t, proof.SourceProvenance, `"sql_source_dependency_verified":true`)
+	require.Contains(t, proof.SourceProvenance, `"technical_metadata":true`)
+	require.Len(t, proof.ProjectionColumns, 2)
+	for index, column := range proof.ProjectionColumns {
+		require.Equal(t, index, column.OutputIndex)
+		require.Equal(t, []int{2, 3, 4}, column.SourceColumnIndexes)
+		require.Equal(t, []int{index}, column.SourceRowIndexes)
+		require.Len(t, column.SourceColumns, 3)
+		for originalIndex, original := range column.SourceColumns {
+			require.Equal(t, []string{"first", "second", "third"}[originalIndex], original.Name)
+			require.Equal(t, "source_value", original.DependencyKind)
+		}
+	}
+	rendered := chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": mappedID, "chart_type": "line", "x_type": "numeric", "x_column": 0, "y_columns": []int{1}})
+	require.True(t, rendered.Success, rendered.Error)
+	require.Equal(t, mapped.Rows, rendered.Data["selected_rows"])
+	require.Len(t, writer.requests, 1)
+	// Remapping an already verified projection keeps its original fresh anchor.
+	remapped := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": mappedID, "mapping": map[string]any{"orientation": "columns", "x_index": 0, "y_indexes": []int{1}, "value_indexes": []int{0, 1, 2}}})
+	require.True(t, remapped.Success, remapped.Error)
+	remappedID := remapped.Data["source_id"].(string)
+	require.Equal(t, id, tool.mapped[remappedID].ParentID)
+	require.Equal(t, "source_value", tool.mapped[remappedID].Table.Columns[1].DependencyKind)
+	steps[0].ToolCalls[0].Result.Data["source"] = map[string]any{"file": "isolated-query.pdf", "sha256": strings.Repeat("fe", 32)}
+	for _, stale := range []string{id, mappedID, remappedID} {
+		rejected := chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": stale, "chart_type": "line", "x_type": "numeric", "x_column": 0, "y_columns": []int{1}})
+		require.False(t, rejected.Success)
+	}
+	require.Len(t, writer.requests, 1)
+	steps = nil
+	rejected := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": mappedID, "mapping": mapping})
+	require.False(t, rejected.Success)
+	require.Empty(t, rejected.Data["available_mapping_source_ids"])
+}
+
+func TestChartPDFSQLMappingCannotLaunderTechnicalOrLiteralColumns(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		kind      string
+		technical bool
+	}{
+		{name: "literal", kind: "constant_label"},
+		{name: "mixed", kind: "mixed_constant_values"},
+		{name: "renamed-metadata", kind: "source_metadata", technical: true},
+		{name: "technical-expression", kind: "source_value", technical: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := chartContext(t)
+			call := pdfSQLHorizontalChartFixture()
+			dependency := call.Result.Data["sql_column_dependencies"].([]map[string]any)[2]
+			dependency["kind"], dependency["technical_metadata"] = test.kind, test.technical
+			steps := []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}
+			writer := &chartWriterFixture{}
+			tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, writer, "session", "message")
+			inspect := chartRun(t, tool, ctx, map[string]any{"operation": "inspect"})
+			require.Len(t, inspect.Data["sources"], 1)
+			id := inspect.Data["sources"].([]any)[0].(map[string]any)["source_id"].(string)
+			for _, mapping := range []map[string]any{
+				{"orientation": "rows", "x_index": 0, "y_indexes": []int{1}, "value_indexes": []int{2, 3, 4}, "label_index": 1},
+				{"orientation": "columns", "x_index": 3, "y_indexes": []int{2}, "value_indexes": []int{0, 1}},
+			} {
+				mapped := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": id, "mapping": mapping})
+				require.False(t, mapped.Success)
+				require.Empty(t, tool.mapped)
+			}
+			// Direct rendering remains guarded as well; failed maps cannot
+			// manufacture a replacement handle or save an artifact.
+			rendered := chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": id, "chart_type": "line", "x_column": 3, "y_columns": []int{2}})
+			require.False(t, rendered.Success)
+			require.Empty(t, writer.requests)
+		})
+	}
+	t.Run("technical-identity-as-values-or-label", func(t *testing.T) {
+		call := pdfSQLHorizontalChartFixture()
+		tables, _ := chartSources([]types.AgentStep{{ToolCalls: []types.ToolCall{call}}})
+		require.Len(t, tables, 1)
+		zero, one := 0, 1
+		for _, mapping := range []chartSourceMapping{
+			{Orientation: "rows", XIndex: &zero, YIndexes: []int{1}, ValueIndexes: []int{0, 2, 3}, LabelIndex: &one},
+			{Orientation: "rows", XIndex: &zero, YIndexes: []int{1}, ValueIndexes: []int{2, 3, 4}, LabelIndex: &zero},
+			{Orientation: "columns", XIndex: &zero, YIndexes: []int{2}, ValueIndexes: []int{0, 1}},
+		} {
+			_, err := mapChartSource(tables[0], mapping)
+			require.Error(t, err)
+		}
+	})
+}
+
 func TestChartMappingRejectsFakeValuesDuplicateCoordinatesAndNonReadSources(t *testing.T) {
 	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{pdfCellChartFixture()}}}
 	input := pdfChartInputSources(steps)[0]

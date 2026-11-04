@@ -111,6 +111,15 @@ func mapChartSource(source chart.Table, mapping chartSourceMapping) (chart.Table
 	if mapping.Orientation == "rows" && mapping.LabelIndex == nil {
 		return chart.Table{}, fmt.Errorf("rows映射需要label_index复制真实行标签，不能用技术行号作图轴或图例；原文无标签时请用引用真实源值且显式列名的查询整形")
 	}
+	if mapping.Orientation == "rows" {
+		if *mapping.LabelIndex < 0 || *mapping.LabelIndex >= len(source.Columns) {
+			return chart.Table{}, fmt.Errorf("label_index不是实际来源坐标")
+		}
+		label := source.Columns[*mapping.LabelIndex]
+		if label.Name == "_row_id" || label.Role == "source_row_identifier" || label.DependencyKind == "source_metadata" {
+			return chart.Table{}, fmt.Errorf("技术来源行ID不能作为映射后的业务标签；请选择真实标签列")
+		}
+	}
 	width, values := len(source.Columns), len(source.Rows)
 	if mapping.Orientation == "rows" {
 		width, values = values, width
@@ -130,17 +139,50 @@ func mapChartSource(source chart.Table, mapping chartSourceMapping) (chart.Table
 		}
 		seen[i] = true
 	}
+	if mapping.Orientation == "columns" {
+		if err := validateChartSourceColumns(source, chart.Spec{X: *mapping.XIndex, Y: mapping.YIndexes}); err != nil {
+			return chart.Table{}, err
+		}
+	}
+	rowDependencyKind := ""
+	if mapping.Orientation == "rows" {
+		// Each transposed axis uses a value from every selected original
+		// column. An ID/literal column must not acquire a fresh business role
+		// merely because the model changes the orientation.
+		for _, index := range mapping.ValueIndexes {
+			column := source.Columns[index]
+			if column.Name == "_row_id" || column.Role == "source_row_identifier" || column.DependencyKind == "source_metadata" {
+				return chart.Table{}, fmt.Errorf("所选观测坐标包含技术来源行ID；须排除技术列，选择真实源值")
+			}
+			switch column.DependencyKind {
+			case "constant_label", "mixed_constant_values":
+				return chart.Table{}, fmt.Errorf("所选观测坐标包含SQL常量或混入常量的列，不能通过转置变成来源测量值")
+			case "source_value", "source_cardinality":
+				if rowDependencyKind == "" {
+					rowDependencyKind = column.DependencyKind
+				} else if rowDependencyKind != column.DependencyKind {
+					rowDependencyKind = "source_value"
+				}
+			case "": // Directly read cells retain their existing source proof.
+			default:
+				return chart.Table{}, fmt.Errorf("所选观测列的来源依赖分类未知，不能映射为测量值")
+			}
+		}
+	}
 	columns := make([]chart.Column, len(indexes))
+	columnProvenance := make([]map[string]any, 0, len(indexes))
 	for i, index := range indexes {
 		if mapping.Orientation == "columns" {
 			columns[i] = source.Columns[index]
+			columnProvenance = append(columnProvenance, map[string]any{"output_index": i, "source_column_indexes": []int{index}, "source_row_indexes": mapping.ValueIndexes, "source_columns": []chart.Column{source.Columns[index]}})
 		} else {
-			if mapping.LabelIndex != nil {
-				if *mapping.LabelIndex < 0 || *mapping.LabelIndex >= len(source.Columns) {
-					return chart.Table{}, fmt.Errorf("label_index不是实际来源坐标")
-				}
-				columns[i].Name = source.Rows[index][*mapping.LabelIndex]
+			columns[i].Name = source.Rows[index][*mapping.LabelIndex]
+			columns[i].DependencyKind = rowDependencyKind
+			originalColumns := make([]chart.Column, 0, len(mapping.ValueIndexes))
+			for _, selected := range mapping.ValueIndexes {
+				originalColumns = append(originalColumns, source.Columns[selected])
 			}
+			columnProvenance = append(columnProvenance, map[string]any{"output_index": i, "source_column_indexes": mapping.ValueIndexes, "source_row_indexes": []int{index}, "source_columns": originalColumns})
 			// Explicitly copy the selected declared unit, never infer it from
 			// values, titles, years or the requested indicator.
 			if i > 0 && mapping.UnitIndex != nil {
@@ -169,8 +211,8 @@ func mapChartSource(source chart.Table, mapping chartSourceMapping) (chart.Table
 		}
 		rows = append(rows, row)
 	}
-	meta, _ := json.Marshal(map[string]any{"kind": "source_cell_projection", "source_id": source.ID, "source_provenance": source.Provenance, "mapping": mapping, "source_rows": len(source.Rows), "source_columns": len(source.Columns), "projection_applied_by_runtime": true, "projection_output_rows": len(rows), "source_cells": source.Rows})
-	table := chart.Table{Columns: columns, Rows: rows, Provenance: string(meta), Truncated: source.Truncated, Notice: source.Notice + " 仅复制显式选择的真实单元格，保留原值、缺失和顺序；所选范围不代表全库。"}
+	meta, _ := json.Marshal(map[string]any{"kind": "source_cell_projection", "source_id": source.ID, "source_provenance": source.Provenance, "mapping": mapping, "source_rows": len(source.Rows), "source_columns": len(source.Columns), "projection_columns": columnProvenance, "projection_applied_by_runtime": true, "projection_output_rows": len(rows), "source_cells": source.Rows})
+	table := chart.Table{Columns: columns, Rows: rows, Provenance: string(meta), Truncated: source.Truncated, Notice: source.Notice + " 仅复制本轮已验证来源结果中的显式坐标，保留原值、缺失、顺序及SQL依赖分类；所选范围不代表全库。"}
 	if err := table.Seal(source.ID + "/map"); err != nil {
 		return chart.Table{}, err
 	}
