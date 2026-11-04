@@ -9,6 +9,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/chart"
@@ -23,6 +24,10 @@ type renderChartTool struct {
 	writer                  chart.Writer
 	tenant                  uint64
 	owner, session, message string
+	mapped                  map[string]mappedChartSource
+	reviewPlan              chartPlanReviewer
+	receipts                map[string]verifiedChartReceipt
+	mu                      sync.Mutex
 }
 
 func (e *AgentEngine) SetChartWriter(writer chart.Writer) {
@@ -32,10 +37,36 @@ func (e *AgentEngine) SetChartWriter(writer chart.Writer) {
 }
 func newRenderChartTool(ctx context.Context, steps func() []types.AgentStep, writer chart.Writer, session, message string) *renderChartTool {
 	return &renderChartTool{BaseTool: agenttools.NewBaseTool(renderChartToolName,
-		"根据本轮成功读取的真实数值表格确定性绘图，保存可预览和下载的PNG图片。先inspect核对真实source_id/列索引/单位/范围，再render选择source_id、x_column、y_columns、chart_type(line/bar/scatter)、x_type(category/numeric/time)、简短title。依据完整问题与对话选择来源和图型，不提交任意数字、代码、URL或推造日期，缺失留空断线，不平滑补值；单位未知保持未知，多个不同单位需分图。图内仅放标题、坐标、图例和必要标注，不放原始表、技术JSON、解释段落。delivery_mode默认chart_only：用户只要求图时最终回复仅包含返回的图片Markdown，不重复价格、统计、过程、来源解释或后续建议；只有用户明确同时要求文字分析时才选择chart_with_analysis并简短回答该分析。内部来源与范围在工具审计中保留，不需要复述到聊天。保存失败不能声称已交付。",
-		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation"],"properties":{"operation":{"type":"string","enum":["inspect","render"]},"source_id":{"type":"string","maxLength":128},"chart_type":{"type":"string","enum":["line","bar","scatter"]},"x_column":{"type":"integer","minimum":0},"y_columns":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"integer","minimum":0}},"x_type":{"type":"string","enum":["category","numeric","time"]},"title":{"type":"string","maxLength":512},"delivery_mode":{"type":"string","enum":["chart_only","chart_with_analysis"],"description":"根据完整请求选择：默认chart_only，只交付图片；明确同时要求文字分析才用chart_with_analysis。"}}}`)), steps: steps, writer: writer, tenant: types.CallerFromContext(ctx).TenantID, owner: types.SessionOwnerIDFromContext(ctx), session: session, message: message}
+		"从本轮真实来源确定性绘图。先inspect查看sources及input_sources；input_sources是本轮已读PDF二维单元格，须先map；sources是实际查询/读取结果，可直接render，也可按真实行列map整形。两类都只使用inspect返回的source_id，表ID/result_id不是绘图句柄。前轮文字或表格不能替代本轮来源，目录为空时先重新read_pdf_table或执行引用真实源列的query_pdf_table。由模型根据完整任务理解行列，不能把横向维度行和指标行混成观测。map提交mapping:{orientation:rows|columns,x_index,y_indexes,value_indexes,label_index?,unit_index?}：rows表示X/Y分别取真实行、value_indexes取跨列观测；columns表示X/Y取列、value_indexes取观测行。label_index从来源标签格取名；unit_index只显式复制真实列元数据中的单位。技术行ID及常量测量列不能通过转置变成观测。map返回可直接render的真实source_id。也可query_pdf_table引用真实源字段整形，不能用重抄数值的SQL常量冒充原表观测。render选择真实source_id、x_column、y_columns(最多6)、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。依据完整任务选择业务维度，内部行ID不能充当业务轴。不得提交任意观测值、代码或URL，缺失留空，不补值，未知单位保持未知。保存前核验图的指标、维度、单位、范围与完整请求是否一致；明确的语义不匹配反馈后修正真实映射。核验临时未完成或协议无效时，保留同一source_id、mapping及全部render参数重试，不要为通过核验改变x_type；连续时间或数值变化应保留实际间隔，真正的离散类别比较允许category。delivery_mode默认chart_only，只交付返回的图片Markdown；明确还要文字分析时用chart_with_analysis。保存失败不能声称交付。",
+		json.RawMessage(`{
+  "type":"object","additionalProperties":false,"required":["operation"],
+  "properties":{
+    "operation":{"type":"string","enum":["inspect","map","render"]},
+    "source_id":{"type":"string","maxLength":128},
+    "mapping":{
+      "type":"object","additionalProperties":false,
+      "required":["orientation","x_index","y_indexes","value_indexes"],
+      "properties":{
+        "orientation":{"type":"string","enum":["rows","columns"],"description":"按X/Y序列所在方向命名。rows：X/Y各占原表一行，沿原列生成观测；columns：X/Y各占原表一列，沿原行生成观测。先对照inspect的matrix_shape和实际单元格选定方向。"},
+        "x_index":{"type":"integer","minimum":0,"description":"rows时为X序列的原行索引；columns时为X序列的原列索引。均从0起算。"},
+        "y_indexes":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"integer","minimum":0},"description":"选择指标系列而非观测点。与x_index同一坐标空间：rows选指标所在原行，columns选指标所在原列，不得与X重复。"},
+        "value_indexes":{"type":"array","minItems":1,"maxItems":2000,"items":{"type":"integer","minimum":0},"description":"观测沿另一方向排列：rows时选择原列索引；columns时选择原行索引。顺序原样保留，不含标签坐标。"},
+        "label_index":{"type":"integer","minimum":0,"description":"rows必填，指定真实行标签所在原列，不包含在value_indexes；columns的轴名直接复制原列名。"},
+        "unit_index":{"type":"integer","minimum":0,"description":"rows时可选，仅从该原列的已声明元数据复制Y单位；全部所选观测列须声明相同单位。未知时省略，不根据标题猜测。"}
+      }
+    },
+    "chart_type":{"type":"string","enum":["line","bar","scatter"]},
+    "x_column":{"type":"integer","minimum":0,"description":"render选择的来源结果列；map输出中X固定为0，不再填原表坐标。"},
+    "y_columns":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"integer","minimum":0},"description":"render选择的来源结果列；map输出中Y依次为1至输出列数减1，不再填原表坐标。"},
+    "x_type":{"type":"string","enum":["category","numeric","time"]},
+    "title":{"type":"string","maxLength":512},
+    "delivery_mode":{"type":"string","enum":["chart_only","chart_with_analysis"]}
+  }
+}`)), steps: steps, writer: writer, tenant: types.CallerFromContext(ctx).TenantID, owner: types.SessionOwnerIDFromContext(ctx), session: session, message: message}
 }
 func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	fail := func(message string) (*types.ToolResult, error) {
 		return &types.ToolResult{Success: false, Error: message, Data: map[string]any{"kind": "data_chart", "status": "error"}}, nil
 	}
@@ -47,22 +78,23 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		return fail("绘图计划或真实工具记录无效")
 	}
 	var input struct {
-		Operation    string `json:"operation"`
-		SourceID     string `json:"source_id"`
-		Type         string `json:"chart_type"`
-		X            *int   `json:"x_column"`
-		Y            []int  `json:"y_columns"`
-		XType        string `json:"x_type"`
-		Title        string `json:"title"`
-		DeliveryMode string `json:"delivery_mode"`
+		Operation    string              `json:"operation"`
+		SourceID     string              `json:"source_id"`
+		Type         string              `json:"chart_type"`
+		X            *int                `json:"x_column"`
+		Y            []int               `json:"y_columns"`
+		XType        string              `json:"x_type"`
+		Title        string              `json:"title"`
+		DeliveryMode string              `json:"delivery_mode"`
+		Mapping      *chartSourceMapping `json:"mapping"`
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF {
 		return fail("绘图参数必须为单个合法对象，不接受数值、代码、URL或身份参数")
 	}
-	if input.Operation != "inspect" && input.Operation != "render" {
-		return fail("operation必须为inspect或render")
+	if input.Operation != "inspect" && input.Operation != "map" && input.Operation != "render" {
+		return fail("operation必须为inspect、map或render")
 	}
 	if input.DeliveryMode == "" {
 		input.DeliveryMode = "chart_only"
@@ -70,13 +102,24 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	if input.DeliveryMode != "chart_only" && input.DeliveryMode != "chart_with_analysis" {
 		return fail("delivery_mode必须为chart_only或chart_with_analysis")
 	}
-	tables, omitted, rejected := chartSourcesDetailed(t.steps())
+	steps := t.steps()
+	tables, omitted, rejected := chartSourcesDetailed(steps)
+	inputs := pdfChartInputSources(steps)
+	parents := map[string]bool{}
+	for _, source := range append(append([]chart.Table{}, tables...), inputs...) {
+		parents[source.ID] = true
+	}
+	for _, mapped := range t.mapped {
+		if parents[mapped.ParentID] {
+			tables = append(tables, mapped.Table)
+		}
+	}
 	if input.Operation == "inspect" {
 		rejectedCount := omitted
 		diagnostics, _ := json.Marshal(rejected)
 		views := []any{}
 		for _, table := range tables {
-			views = append(views, map[string]any{"source_id": table.ID, "columns": table.Columns, "row_count": len(table.Rows), "sample_rows": table.Rows[:min(5, len(table.Rows))], "source_truncated": table.Truncated, "provenance": table.Provenance, "notice": table.Notice})
+			views = append(views, map[string]any{"source_id": table.ID, "columns": table.Columns, "row_count": len(table.Rows), "matrix_shape": map[string]int{"rows": len(table.Rows), "columns": len(table.Columns)}, "sample_rows": table.Rows[:min(5, len(table.Rows))], "mapping_supported": true, "render_supported": true, "source_truncated": table.Truncated, "provenance": table.Provenance, "notice": table.Notice})
 		}
 		for len(views) > 0 {
 			encoded, _ := json.Marshal(views)
@@ -86,9 +129,61 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 			views = views[:len(views)-1]
 			omitted++
 		}
-		data := map[string]any{"kind": "chart_source_catalog", "sources": views, "omitted_source_count": omitted, "rejected_source_count": rejectedCount, "source_rejections": rejected, "source_rejections_truncated": rejectedCount > len(rejected), "notice": "source_id仅来自本轮实际成功查询的观测/分析结果或已读原文表格；目录与元数据不可绘图。render必须使用sources[].source_id，分析result_id/resolution_id不是绘图句柄。全部索引0起算。sample_rows仅为展示示例，绘图使用该句柄的全部实际返回行（单表最多2000行），不是重新抄写数值。空值不补零，单位不推断。目录为空但source_rejections非空表示真实结果校验失败，不表示没有查询过数据；按具体拒绝原因处理，不循环猜句柄。"}
+		inputViews := []any{}
+		for _, table := range inputs {
+			view := map[string]any{"source_id": table.ID, "columns": table.Columns, "row_count": len(table.Rows), "matrix_shape": map[string]int{"rows": len(table.Rows), "columns": len(table.Columns)}, "sample_rows": table.Rows[:min(8, len(table.Rows))], "mapping_supported": true, "render_supported": false, "source_truncated": table.Truncated, "requires_mapping": true, "provenance": table.Provenance, "notice": table.Notice}
+			candidate, _ := json.Marshal(append(append([]any{}, views...), append(inputViews, view)...))
+			if len(candidate)+len(diagnostics) > 62*1024 {
+				omitted++
+				continue
+			}
+			inputViews = append(inputViews, view)
+		}
+		data := map[string]any{"kind": "chart_source_catalog", "sources": views, "input_sources": inputViews, "omitted_source_count": omitted, "rejected_source_count": rejectedCount, "source_rejections": rejected, "source_rejections_truncated": rejectedCount > len(rejected), "notice": "先根据完整问题理解真实行列。input_sources须map后绘图；sources可直接render，也可map选择/整形其真实结果坐标。map/render均用本目录source_id。全部索引0起算，sample_rows仅展示样例，真实句柄绑定全部已返回行。表ID、result_id不是绘图句柄。无来源时先本轮read_pdf_table恢复真实单元格，或执行引用真实源列的query_pdf_table，不猜ID、不重抄常量。"}
 		body, _ := json.Marshal(data)
 		return &types.ToolResult{Success: true, Data: data, Output: string(body)}, nil
+	}
+	if input.Operation == "map" {
+		if input.Mapping == nil {
+			return fail("map需要完整mapping与inspect返回的真实source_id")
+		}
+		mappingSources := append(append([]chart.Table{}, inputs...), tables...)
+		for _, source := range mappingSources {
+			if source.ID != input.SourceID {
+				continue
+			}
+			mapped, err := mapChartSource(source, *input.Mapping)
+			if err != nil {
+				return t.sourceFailureDiagnostics(err.Error(), source, steps), nil
+			}
+			if t.mapped == nil {
+				t.mapped = map[string]mappedChartSource{}
+			}
+			if len(t.mapped) >= chart.MaxSources {
+				return fail("本轮映射数量已达上限")
+			}
+			parentID := source.ID
+			if previous, ok := t.mapped[source.ID]; ok {
+				// A remap remains bound to the current original source snapshot,
+				// rather than becoming detached from that source's version/ACL.
+				parentID = previous.ParentID
+			}
+			t.mapped[mapped.ID] = mappedChartSource{Table: mapped, ParentID: parentID, Mapping: *input.Mapping}
+			data := map[string]any{"kind": "chart_source_mapping", "source_id": mapped.ID, "columns": mapped.Columns, "rows": mapped.Rows, "mapping": input.Mapping, "source_truncated": mapped.Truncated, "provenance": mapped.Provenance, "notice": "已按真实坐标复制。核对输出columns/rows是否满足完整任务；满足时下一步直接render此source_id，X列为0，Y列依次为1至输出列数减1，无需再生成等价映射。"}
+			body, _ := json.Marshal(data)
+			return &types.ToolResult{Success: true, Data: data, Output: string(body)}, nil
+		}
+		result, _ := fail("map需要inspect返回的本轮sources或input_sources的source_id，不能使用表ID/result_id或历史句柄。目录为空时先本轮read_pdf_table或执行引用真实源列的query_pdf_table；已有可用结果可直接render")
+		available := make([]string, 0, len(mappingSources))
+		for _, source := range mappingSources {
+			available = append(available, source.ID)
+		}
+		result.Data["reason_code"] = "chart_mapping_source_not_current"
+		result.Data["available_mapping_source_ids"] = available
+		// Failed results reach the model through Output and Error, not Data.
+		body, _ := json.Marshal(result.Data)
+		result.Output = string(body)
+		return result, nil
 	}
 	if input.SourceID == "" || len(input.SourceID) > 128 || input.X == nil || t.writer == nil {
 		return fail("render需要inspect返回的真实source_id、X/Y列和可用附件服务")
@@ -113,9 +208,23 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	if title == "" {
 		title = "数据图表"
 	}
-	png, err := chart.Render(*source, chart.Spec{Type: input.Type, X: *input.X, Y: input.Y, XType: input.XType, Title: title})
+	spec := chart.Spec{Type: input.Type, X: *input.X, Y: input.Y, XType: input.XType, Title: title}
+	if spec.XType == "" {
+		spec.XType = "category"
+	}
+	if err := validateChartSourceColumns(*source, spec); err != nil {
+		return fail(err.Error())
+	}
+	png, err := chart.Render(*source, spec)
 	if err != nil {
 		return fail(err.Error())
+	}
+	var validation *chartSemanticValidation
+	if t.reviewPlan != nil {
+		validation, err = t.reviewPlan(ctx, *source, spec)
+		if err != nil {
+			return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
+		}
 	}
 	delivered, err := t.writer.SaveChart(ctx, chart.SaveRequest{SessionID: t.session, MessageID: t.message, ToolCallID: meta.ToolCallID, FileName: "chart.png", SourceID: source.ID, PNG: png})
 	if err != nil {
@@ -127,8 +236,22 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	if _, ok := types.ParseResourcePath(delivered.Handle); !ok || !strings.HasSuffix(delivered.FileName, ".png") || delivered.Index < 0 {
 		return fail("图表附件服务没有返回有效持久化资源")
 	}
-	data := map[string]any{"kind": "data_chart", "status": "ok", "artifact": delivered, "delivery_mode": input.DeliveryMode, "source_id": source.ID, "row_count": len(source.Rows), "source_truncated": source.Truncated, "provenance": source.Provenance}
-	return &types.ToolResult{Success: true, Data: data, Output: fmt.Sprintf("![图表](%s)", delivered.Handle)}, nil
+	columns, rows := selectedChartData(*source, spec)
+	data := map[string]any{"kind": "data_chart", "status": "ok", "artifact": delivered, "delivery_mode": input.DeliveryMode, "source_id": source.ID, "row_count": len(source.Rows), "source_truncated": source.Truncated, "provenance": source.Provenance, "chart_spec": spec, "selected_columns": columns, "selected_rows": rows}
+	if mapped, ok := t.mapped[source.ID]; ok {
+		data["source_mapping"] = mapped.Mapping
+	}
+	output := fmt.Sprintf("![图表](%s)", delivered.Handle)
+	if validation != nil {
+		data["semantic_validation"] = validation
+	}
+	if validation != nil && validation.FullTaskView && validation.CompleteDelivery {
+		if t.receipts == nil {
+			t.receipts = map[string]verifiedChartReceipt{}
+		}
+		t.receipts[delivered.Handle] = verifiedChartReceipt{CallID: meta.ToolCallID, TaskHash: validation.TaskHash, DataHash: reviewDigest(data), Output: output, Mode: input.DeliveryMode}
+	}
+	return &types.ToolResult{Success: true, Data: data, Output: output}, nil
 }
 
 // Only successful numeric query executions and fetched document bodies are
@@ -302,9 +425,38 @@ func checkedStructuredChartTable(call types.ToolCall) (chart.Table, error) {
 		if !analysis && name == "value" {
 			cols[i].Unit, _ = series["unit"].(string)
 		}
+		if name == "_row_id" {
+			cols[i].Role = "source_row_identifier"
+		}
+	}
+	if analysis && data["source_kind"] == "pdf_table" {
+		if data["sql_source_dependency_verified"] != true {
+			return chart.Table{}, fmt.Errorf("pdf_sql_source_dependency_not_verified")
+		}
+		dependencies, ok := data["sql_column_dependencies"].([]any)
+		if !ok || len(dependencies) != len(cols) {
+			return chart.Table{}, fmt.Errorf("pdf_sql_column_dependencies_missing")
+		}
+		for i, rawDependency := range dependencies {
+			dependency, ok := rawDependency.(map[string]any)
+			index, number := dependency["column_index"].(float64)
+			kind, _ := dependency["kind"].(string)
+			if !ok || !number || index != float64(i) || dependency["column"] != cols[i].Name {
+				return chart.Table{}, fmt.Errorf("pdf_sql_column_dependencies_invalid")
+			}
+			switch kind {
+			case "source_value", "source_cardinality", "constant_label", "source_metadata", "mixed_constant_values":
+			default:
+				return chart.Table{}, fmt.Errorf("pdf_sql_column_dependency_kind_invalid")
+			}
+			cols[i].DependencyKind = kind
+			if dependency["technical_metadata"] == true || kind == "source_metadata" {
+				cols[i].Role = "source_row_identifier"
+			}
+		}
 	}
 	meta := map[string]any{}
-	for _, key := range []string{"kind", "source", "dataset_id", "series", "filters", "requested_range", "actual_first_date", "actual_last_date", "record_count", "scope_record_count", "missing_count", "inputs", "sql", "result_id", "warnings", "rows_are", "input_complete", "input_count", "output_truncated", "truncated", "returned_row_count"} {
+	for _, key := range []string{"kind", "source", "dataset_id", "series", "filters", "requested_range", "actual_first_date", "actual_last_date", "record_count", "scope_record_count", "missing_count", "inputs", "sql", "result_id", "warnings", "rows_are", "input_complete", "input_count", "output_truncated", "truncated", "returned_row_count", "sql_source_dependency_verified", "sql_column_dependencies", "sql_source_dependency_method"} {
 		if value, exists := data[key]; exists {
 			meta[key] = value
 		}
@@ -389,4 +541,4 @@ func chartAuditMetadata(meta map[string]any) (string, bool, error) {
 	return string(encoded), true, nil
 }
 
-const dataChartInstructions = `render_chart从已授权且本轮真正读取的typed行或原文表格生成PNG图片，inspect核对真实句柄、列、单位和范围，render确定性绘制。保持原值、真实日期与缺失，不平滑补数，不用generate_image编造数据。图内只需标题、图形、坐标、图例和必要范围标注，技术来源和审计不进图片。根据完整用户请求选择delivery_mode：只要绘图时默认chart_only，最终回答只输出成功返回的图片Markdown，可交付多张图；不额外重复数据表、涨跌统计、来源说明、方法介绍、局限段落或后续建议。明确同时要求文字分析时用chart_with_analysis，只补用户要求的分析。失败或数据不足时简短说明实际缺口，不伪造图片或已完成状态。`
+const dataChartInstructions = `render_chart从已授权且本轮真正读取的数值行或原文表格生成PNG。inspect同时提供可render的sources及须先map的input_sources；已读PDF二维表可直接用map按模型明确的行/列坐标整形，不必绕行原页或SQL，不重抄数值。横向表的维度行和指标行要配对成逐观测记录，内部_row_id是技术身份，不能作为业务轴。SQL替代路径必须引用真实源值，常量数组不是源表取数。inspect/map返回真实source_id，不能猜表ID。最多6个Y系列；更多观测点应由正确行列整形得到，不应通过删除所需数据点来满足系列上限。按完整请求核验变量、维度、单位、范围和图型，渲染前会独立检查。保持原值、真实日期与缺失，不平滑补数，不用generate_image编造数据。图内只需标题、图形、坐标、图例和必要范围标注。只需图时delivery_mode默认chart_only，最终仅输出本轮成功返回的图片Markdown；明确同时要求分析时用chart_with_analysis。失败时保留真实未交付说明，不能以表格代替所要求的图。`

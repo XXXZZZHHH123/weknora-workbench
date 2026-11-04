@@ -35,12 +35,16 @@ class DeploymentTests(unittest.TestCase):
         self.http_log = self.root / 'http.log'
         self.env = dict(os.environ, PATH=str(self.mockbin) + ':' + os.environ['PATH'], MOCK_ROOT=str(self.root))
         self.executable('docker', '''#!/usr/bin/env python3
-import os, sys
+import json, os, sys
 from pathlib import Path
 r=Path(os.environ['MOCK_ROOT']); a=sys.argv[1:]
 with (r/'docker.log').open('a') as f: f.write(' '.join(a)+'\\n')
 if 'info' in a: print(str(r))
-elif 'image' in a and 'inspect' in a: sys.exit(1)
+elif a[:2] == ['image', 'inspect']:
+ available = r/'available-images.json'
+ platforms = json.loads(available.read_text()) if available.exists() else {}
+ if a[2] not in platforms: sys.exit(1)
+ if '--format' in a: print(platforms[a[2]])
 elif 'config' in a and '--images' in a: print('ghcr.io/owner/repo-app:test\\nghcr.io/owner/repo-frontend:test')
 elif 'load' in a: sys.stdin.read(); print('Loaded image')
 elif 'ps' in a and 'postgres' in a and (r/'existing-db').exists(): print('existing-postgres')
@@ -156,6 +160,88 @@ sys.exit(subprocess.call(['/usr/bin/sed']+args))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / 'current').resolve(), new)
         self.assertEqual((self.root / 'previous').resolve(), old)
+
+    def local_images(self, **overrides):
+        platforms = {'ghcr.io/owner/repo-app:test': 'linux/amd64',
+                     'ghcr.io/owner/repo-frontend:test': 'linux/amd64'}
+        platforms.update(overrides)
+        (self.root / 'available-images.json').write_text(json.dumps(platforms))
+
+    def test_local_images_preserve_backups_health_and_previous_without_downloads(self):
+        old = self.previous()
+        new = self.release()
+        self.local_images()
+        (self.root / 'existing-db').touch()
+        (self.root / 'existing-research').touch()
+        # Explicit local mode overrides either configured download transport.
+        (self.shared / 'poller.json').write_text(json.dumps({'image_transport': 'regctl'}))
+        config_before = (self.shared / 'poller.json').read_bytes()
+        result = self.run_script('deploy.sh', TAG, '--local-images')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'current').resolve(), new)
+        self.assertEqual((self.root / 'previous').resolve(), old)
+        self.assertEqual((self.shared / 'poller.json').read_bytes(), config_before)
+        self.assertEqual(len(list((self.shared / 'backups').glob('*.pg.dump'))), 1)
+        self.assertEqual(len(list((self.shared / 'backups').glob('*.research.tar.gz'))), 1)
+        log = self.log.read_text()
+        self.assertNotIn(' pull ', log)
+        self.assertNotIn(' load', log)
+        self.assertFalse((self.root / 'exports.log').exists())
+        self.assertLess(log.index('image inspect ghcr.io/owner/repo-frontend:test'), log.index('pg_dump'))
+        self.assertLess(log.index('pg_dump'), log.index(' up '))
+        self.assertLess(log.index('/app/deploy/container/backup.py'), log.index(' up '))
+        self.assertIn('--no-build --pull never --wait', log)
+        self.assertIn('http://frontend/api/v1/auth/me', log)
+        self.assertIn('http://frontend/research/static/app.css', log)
+        self.assertIn('http://frontend/research/api/board', log)
+
+    def test_missing_local_image_fails_before_backups_or_update(self):
+        old = self.previous()
+        self.release()
+        (self.root / 'available-images.json').write_text(json.dumps({'ghcr.io/owner/repo-app:test': 'linux/amd64'}))
+        (self.root / 'existing-db').touch()
+        (self.root / 'existing-research').touch()
+        result = self.run_script('deploy.sh', TAG, '--local-images')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Required local image is unavailable: ghcr.io/owner/repo-frontend:test', result.stderr)
+        self.assertIn('downloads are disabled', result.stderr)
+        log = self.log.read_text()
+        self.assertNotIn(' pull ', log)
+        self.assertNotIn('pg_dump', log)
+        self.assertNotIn('/app/deploy/container/backup.py', log)
+        self.assertNotIn(' up ', log)
+        self.assertFalse((self.root / 'exports.log').exists())
+        self.assertEqual((self.root / 'current').resolve(), old)
+        self.assertFalse((self.root / 'previous').exists())
+
+    def test_local_image_wrong_platform_fails_before_backups_or_update(self):
+        for platform in ('linux/arm64', 'windows/amd64'):
+            with self.subTest(platform=platform):
+                old = self.previous() if not (self.root / 'current').exists() else (self.root / 'current').resolve()
+                self.release()
+                self.local_images(**{'ghcr.io/owner/repo-frontend:test': platform})
+                (self.root / 'existing-db').touch()
+                (self.root / 'existing-research').touch()
+                result = self.run_script('deploy.sh', TAG, '--local-images')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Local image must be linux/amd64', result.stderr)
+                log = self.log.read_text()
+                self.assertNotIn(' pull ', log)
+                self.assertNotIn('pg_dump', log)
+                self.assertNotIn('/app/deploy/container/backup.py', log)
+                self.assertNotIn(' up ', log)
+                self.assertFalse((self.root / 'exports.log').exists())
+                self.assertEqual((self.root / 'current').resolve(), old)
+                self.assertFalse((self.root / 'previous').exists())
+
+    def test_unknown_deployment_flags_are_rejected_before_operations(self):
+        self.release()
+        for flags in (('--unknown',), ('--local-images', '--unknown'), ('--local-images', '--local-images')):
+            with self.subTest(flags=flags):
+                result = self.run_script('deploy.sh', TAG, *flags)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('usage:', result.stderr)
+                self.assertFalse(self.log.exists())
 
     def test_public_host_is_checked_before_promotion(self):
         old = self.previous()

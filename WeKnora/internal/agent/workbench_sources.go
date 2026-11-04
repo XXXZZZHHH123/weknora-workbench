@@ -31,21 +31,24 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 	if len(planned) > 0 {
 		selection = planned[0]
 	}
+	discoveryQuery := e.plannedSourceDiscoveryQuery(query)
 	requests := []types.LLMToolCall{}
 	if tool, err := e.toolRegistry.GetTool(agenttools.ToolStructuredData); err == nil {
 		if base, ok := tool.(*agenttools.StructuredDataTool); ok {
 			base.BindSourceConversation(query, messages)
 		}
 		if shouldPrefetchStructuredSources(selection) {
-			catalogArgs, _ := json.Marshal(map[string]any{"operation": "list_datasets", "arguments": map[string]string{"question": query}})
-			requests = append(requests,
-				types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(catalogArgs)}},
-				types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: `{"operation":"describe_tools","arguments":{"operations":["list_series","query_series","analyze_table","inspect_source","get_result_evidence","list_pdf_tables","read_pdf_table","query_pdf_table"]}}`}},
-			)
+			catalogArgs, _ := json.Marshal(map[string]any{"operation": "list_datasets", "arguments": map[string]string{"question": discoveryQuery}})
+			requests = append(requests, types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(catalogArgs)}})
+		}
+		if shouldPrefetchStructuredSources(selection) || e.plannedSourceRecovery() {
+			// Known-source recovery still needs the real read/query contracts.
+			// Describing capabilities performs no source search or content read.
+			requests = append(requests, types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: `{"operation":"describe_tools","arguments":{"operations":["list_series","query_series","analyze_table","inspect_source","get_result_evidence","list_pdf_tables","read_pdf_table","query_pdf_table"]}}`}})
 		}
 	}
 	if _, err := e.toolRegistry.GetTool(agenttools.ToolSearchKnowledge); err == nil && shouldPrefetchKnowledgeSources(selection) {
-		args, _ := json.Marshal(map[string]string{"query": query})
+		args, _ := json.Marshal(map[string]string{"query": discoveryQuery})
 		requests = append(requests, types.LLMToolCall{ID: fmt.Sprintf("source-knowledge-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolSearchKnowledge, Arguments: string(args)}})
 	}
 	if len(requests) == 0 {
@@ -76,7 +79,7 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 		}
 	}
 	state.RoundSteps = append(state.RoundSteps, step)
-	return e.appendToolResults(messages, compactWorkbenchDiscovery(step, query, registered))
+	return e.appendToolResults(messages, compactWorkbenchDiscovery(step, discoveryQuery, registered))
 }
 
 func shouldPrefetchKnowledgeSources(selected map[string]bool) bool {

@@ -93,11 +93,8 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	decision = candidateDecision{Disposition: candidateAccepted,
 		Candidate:     candidate,
 		CandidateHash: candidateTextDigest(candidate),
-		TaskHash: reviewDigest(struct {
-			Query        string
-			Conversation []chat.Message
-		}{query, e.semanticReviewConversation(conversation)}),
-		EvidenceHash: reviewDigest(e.sourceConsistencyMessages(state, conversation)),
+		TaskHash:      e.candidateTaskDigest(query, conversation),
+		EvidenceHash:  reviewDigest(e.sourceConsistencyMessages(state, conversation)),
 	}
 	defer func() {
 		e.turnReview.Checks++
@@ -120,6 +117,13 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	}
 	if strings.TrimSpace(candidate) == "" {
 		decision.Disposition = candidateRevise
+		return
+	}
+	// Only the runtime's private receipt for this exact task, result and saved
+	// Markdown can reuse the independent pre-render semantic source check.
+	// Public success/accepted fields and a merely existing image cannot do so.
+	if e.isVerifiedChartDelivery(query, candidate, state, conversation) {
+		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{"reason": "verified_chart_delivery"})
 		return
 	}
 	candidate = e.selectCandidateAdditions(ctx, query, candidate, state, conversation)
@@ -153,7 +157,12 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	// the critic still runs; fragments still get the completeness check. Actual
 	// successful PDF SQL analysis retains semantic checking even when the
 	// planner initially chose direct lookup; execution does not certify scope.
-	if !warning && e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && !suspectAnswerFragment(candidate, reasoning) && !hasExecutedPDFAnalysis(state.RoundSteps) {
+	// The fast path also requires an explicit text-only delivery contract.
+	// Direct reasoning depth alone cannot waive requested artifact completion.
+	// With citations enabled, missing/invalid current references still need the
+	// existing critic's semantic required/not_required/unavailable decision.
+	// This eligibility check neither chooses a source nor infers a user intent.
+	if !warning && e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && e.hasExplicitTextDeliveryPlan() && !suspectAnswerFragment(candidate, reasoning) && !hasExecutedPDFAnalysis(state.RoundSteps) && !e.needsDeliveryReview(state) && e.directCitationDeliveryEligible(candidate, state, conversation) {
 		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{
 			"reason": "direct_task", "reasoning_depth": e.taskReasoningDepth(),
 		})
@@ -176,6 +185,14 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		decision.Disposition = candidateNumericWarning
 	}
 	return
+}
+
+func (e *AgentEngine) directCitationDeliveryEligible(candidate string, state *types.AgentState, conversation []chat.Message) bool {
+	if !e.config.CitationsEnabled() {
+		return true
+	}
+	ids := uniqueCandidateCitationIDs(candidate)
+	return len(ids) > 0 && len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) == len(ids)
 }
 
 // hasExecutedPDFAnalysis recognizes only current canonical results from the
@@ -213,10 +230,7 @@ func (e *AgentEngine) candidateApprovalCurrent(candidate string, state *types.Ag
 
 func (e *AgentEngine) candidateDecisionCurrent(d candidateDecision, candidate string, state *types.AgentState) bool {
 	return d.CandidateHash == candidateTextDigest(candidate) &&
-		d.TaskHash == reviewDigest(struct {
-			Query        string
-			Conversation []chat.Message
-		}{e.turnReview.Query, e.semanticReviewConversation(e.turnReview.Conversation)}) &&
+		d.TaskHash == e.candidateTaskDigest(e.turnReview.Query, e.turnReview.Conversation) &&
 		d.EvidenceHash == reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation))
 }
 

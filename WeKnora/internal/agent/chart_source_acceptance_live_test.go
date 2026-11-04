@@ -109,7 +109,7 @@ func TestChartSourceEngineAcceptanceWiring(t *testing.T) {
 					chatAnswer("已观测的前段上升、后段下降；缺失区间无法判断连续走势。\n\n![图表](res://0001)"))
 			}
 			responses = append(responses, sourceAcceptedVerdict())
-			model := &taskPlannerChat{plan: &types.ChatResponse{Content: string(plan), FinishReason: "stop"}, mockChat: mockChat{responses: responses}}
+			model := &taskPlannerChat{plan: &types.ChatResponse{Content: string(plan), FinishReason: "stop"}, chartPlan: &types.ChatResponse{Content: `{"accepted":true,"complete_delivery":false,"required_x_type":"time","assessment":"Synthetic chart wiring fixture with real selected dates, missing values and observations.","feedback":""}`, FinishReason: "stop"}, mockChat: mockChat{responses: responses}}
 			writer := &chartSourceAcceptanceWriter{}
 			e := chartSourceAcceptanceEngine(t, model, writer)
 			snapshot := chartSourceObserveTerminalTask(e)
@@ -169,10 +169,7 @@ func chartSourceAcceptanceAssert(t *testing.T, e *AgentEngine, state *types.Agen
 	require.True(t, e.turnReview.Committed)
 	require.NotEmpty(t, taskSnapshot)
 	require.Equal(t, candidateTextDigest(state.FinalAnswer), e.turnReview.Last.CandidateHash, "the delivered answer must be the exact accepted candidate, not a fallback or a later draft")
-	require.Equal(t, reviewDigest(struct {
-		Query        string
-		Conversation []chat.Message
-	}{e.turnReview.Query, taskSnapshot}), e.turnReview.Last.TaskHash)
+	require.Equal(t, e.candidateTaskDigest(e.turnReview.Query, taskSnapshot), e.turnReview.Last.TaskHash)
 	require.Equal(t, reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation)), e.turnReview.Last.EvidenceHash)
 	operations := map[string]bool{}
 	for _, step := range state.RoundSteps {

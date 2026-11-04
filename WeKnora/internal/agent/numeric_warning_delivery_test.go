@@ -18,7 +18,7 @@ func TestNumericWarningExceptionalTerminalsStillReviewAndDeliver(t *testing.T) {
 				model.responses = []mockResponse{chatAnswer(candidate), chatAnswer(candidate), chatAnswer(candidate), sourceAcceptedVerdict()}
 			}
 			engine := numericRecoveryTestEngine(t, model)
-			engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+			engine.taskPlan = explicitTextDeliveryPlan()
 			state, messages, query := numericRecoveryFixture()
 			recorder := &terminalAnswerRecorder{}
 			recorder.attach(engine.eventBus)
@@ -83,7 +83,7 @@ func TestNumericWarningBindsCheckedEnvelopeTaskAndEvidence(t *testing.T) {
 func TestNumericWarningCannotTurnArbitrarySourceIntoVerifiedCoreValue(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{sourceConsistencyVerdict(`{"complete":false,"feedback":"The requested value is not in the returned source; answer only the supported measurement.","user_notice":"The additional value is not established by the cited source.","next_action":"revise_answer"}`)}}
 	engine := numericRecoveryTestEngine(t, model)
-	engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+	engine.taskPlan = explicitTextDeliveryPlan()
 	engine.turnReview.NumericWarningAllowed = true
 	state, messages, query := numericRecoveryFixture()
 	decision := engine.checkCandidate(t.Context(), query, "The requested value is 999.", "", state, messages, false)

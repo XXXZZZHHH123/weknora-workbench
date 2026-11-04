@@ -9,16 +9,15 @@ import (
 
 func TestDirectTaskSkipsSourceCriticAfterNumericGrounding(t *testing.T) {
 	model := &mockChat{}
-	e := sourceConsistencyEngine(t, model)
-	e.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
-	decision := e.checkCandidate(t.Context(), "Report the indicator.", "The report describes covered area.", "", sourceConsistencyState(), nil, false)
+	e, state, candidate := directCitationReadFixture(t, model, true)
+	decision := e.checkCandidate(t.Context(), "Report the indicator.", candidate, "", state, nil, false)
 	require.Equal(t, candidateAccepted, decision.Disposition)
 	require.Empty(t, model.calls, "no critic call for a direct lookup")
-	require.True(t, e.candidateApprovalCurrent("The report describes covered area.", sourceConsistencyState()), "terminal delivery accepts the direct decision")
+	require.True(t, e.candidateApprovalCurrent(candidate, state), "terminal delivery accepts the direct decision")
 }
 
 func TestSynthesisAndUnplannedTasksKeepSourceCritic(t *testing.T) {
-	for _, plan := range []*taskEvidencePlan{{ReasoningDepth: "synthesis"}, nil, {}} {
+	for _, plan := range []*taskEvidencePlan{{ReasoningDepth: "synthesis"}, {ReasoningDepth: "direct"}, nil, {}} {
 		model := &mockChat{responses: []mockResponse{sourceAcceptedVerdict()}}
 		e := sourceConsistencyEngine(t, model)
 		e.taskPlan = plan
@@ -31,7 +30,7 @@ func TestSynthesisAndUnplannedTasksKeepSourceCritic(t *testing.T) {
 func TestDirectTaskStillChecksFragmentsAndNumbers(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{completenessVerdict(false)}}
 	e := sourceConsistencyEngine(t, model)
-	e.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+	e.taskPlan = explicitTextDeliveryPlan()
 	// Existing fragment definition: a very short body after long reasoning.
 	reasoning := strings.Repeat("considering the source table ", 20)
 	decision := e.checkCandidate(t.Context(), "Report the indicator.", "The", reasoning, sourceConsistencyState(), nil, false)

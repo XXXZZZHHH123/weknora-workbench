@@ -9,6 +9,7 @@ import (
 	"image/draw"
 	"image/png"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"unicode"
@@ -130,6 +131,34 @@ func (r *raster) rect(x, y, w, h float64, c color.Color) {
 	r.polygon([][2]float64{{x, y}, {x + w, y}, {x + w, y + h}, {x, y + h}}, c)
 }
 
+// Keep the entire group inside the plot, using the same affine X mapping for
+// bars and ticks. The inset includes the actual group half-width; source X
+// values and their distance ratios are unchanged.
+func barHorizontalGeometry(xs []float64, xmin, xmax float64, seriesCount int) (width, inset float64) {
+	const gutter = 2.0
+	count := float64(seriesCount)
+	width = math.Min(38, plotWidth/float64(len(xs))/(count+1))
+	positions := make([]float64, len(xs))
+	for i, x := range xs {
+		positions[i] = (x - xmin) / (xmax - xmin)
+	}
+	// Sort a geometry-only copy. Unsorted observations still keep their exact
+	// original rows/order, and the nearest distinct groups must not overlap.
+	sort.Float64s(positions)
+	gap := math.Inf(1)
+	for i := 1; i < len(positions); i++ {
+		if distance := positions[i] - positions[i-1]; distance > 0 {
+			gap = math.Min(gap, distance)
+		}
+	}
+	if !math.IsInf(gap, 1) {
+		// w <= gap * (plotWidth - 2*gutter - count*w)/(count+1).
+		// Solve once so width and inset agree even for close real coordinates.
+		width = math.Min(width, gap*(plotWidth-2*gutter)/(count+1+count*gap))
+	}
+	return width, gutter + count*width/2
+}
+
 func renderPNG(table Table, spec Spec, series [][]point, xs []float64, xmin, xmax, ymin, ymax float64) ([]byte, error) {
 	title, err := chartFace(38)
 	if err != nil {
@@ -175,7 +204,11 @@ func renderPNG(table Table, spec Spec, series [][]point, xs []float64, xmin, xma
 	if table.Truncated {
 		r.text(label, "部分数据", 1485, 113, "right", ink)
 	}
-	px := func(x float64) float64 { return plotLeft + (x-xmin)/(xmax-xmin)*plotWidth }
+	barWidth, xInset := 0.0, 0.0
+	if spec.Type == "bar" {
+		barWidth, xInset = barHorizontalGeometry(xs, xmin, xmax, len(spec.Y))
+	}
+	px := func(x float64) float64 { return plotLeft + xInset + (x-xmin)/(xmax-xmin)*(plotWidth-2*xInset) }
 	py := func(y float64) float64 { return plotTop + plotHeight - (y-ymin)/(ymax-ymin)*plotHeight }
 	for i := 0; i <= 5; i++ {
 		y := ymin + (ymax-ymin)*float64(i)/5
@@ -209,15 +242,6 @@ func renderPNG(table Table, spec Spec, series [][]point, xs []float64, xmin, xma
 		// whose many segments cross the whole plot. All subpaths use one winding.
 		r.batch = vector.NewRasterizer(ImageWidth, ImageHeight)
 		var previous *point
-		// Width also respects real X spacing so adjacent time/numeric bars do not
-		// overlap simply because the original observations have irregular gaps.
-		barWidth := math.Min(38, plotWidth/float64(len(xs))/float64(len(spec.Y)+1))
-		for i := 1; i < len(xs); i++ {
-			distance := math.Abs(px(xs[i]) - px(xs[i-1]))
-			if distance > 0 {
-				barWidth = math.Min(barWidth, distance/float64(len(spec.Y)+1))
-			}
-		}
 		for i, p := range series[k] {
 			if p.missing {
 				previous = nil

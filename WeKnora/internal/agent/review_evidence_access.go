@@ -426,12 +426,13 @@ func reviewRejectsCandidate(content string) bool {
 		return false
 	}
 	var verdict struct {
-		Complete   *bool              `json:"complete"`
-		Assessment string             `json:"assessment,omitempty"`
-		Feedback   *string            `json:"feedback,omitempty"`
-		UserNotice string             `json:"user_notice,omitempty"`
-		NextAction string             `json:"next_action,omitempty"`
-		Audit      []reviewClaimCheck `json:"audit,omitempty"`
+		Complete      *bool                `json:"complete"`
+		Assessment    string               `json:"assessment,omitempty"`
+		Feedback      *string              `json:"feedback,omitempty"`
+		UserNotice    string               `json:"user_notice,omitempty"`
+		NextAction    string               `json:"next_action,omitempty"`
+		Audit         []reviewClaimCheck   `json:"audit,omitempty"`
+		DeliveryCheck *answerDeliveryCheck `json:"delivery_check,omitempty"`
 	}
 	decoder := json.NewDecoder(strings.NewReader(normalized))
 	decoder.DisallowUnknownFields()
@@ -449,12 +450,13 @@ func reviewRequestsAdditionalEvidence(content string) bool {
 		return false
 	}
 	var verdict struct {
-		Complete   *bool              `json:"complete"`
-		Assessment string             `json:"assessment,omitempty"`
-		Feedback   *string            `json:"feedback,omitempty"`
-		UserNotice string             `json:"user_notice,omitempty"`
-		NextAction string             `json:"next_action,omitempty"`
-		Audit      []reviewClaimCheck `json:"audit,omitempty"`
+		Complete      *bool                `json:"complete"`
+		Assessment    string               `json:"assessment,omitempty"`
+		Feedback      *string              `json:"feedback,omitempty"`
+		UserNotice    string               `json:"user_notice,omitempty"`
+		NextAction    string               `json:"next_action,omitempty"`
+		Audit         []reviewClaimCheck   `json:"audit,omitempty"`
+		DeliveryCheck *answerDeliveryCheck `json:"delivery_check,omitempty"`
 	}
 	decoder := json.NewDecoder(strings.NewReader(content))
 	decoder.DisallowUnknownFields()

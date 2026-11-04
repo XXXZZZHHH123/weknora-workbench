@@ -237,6 +237,8 @@ def test_scoped_sql_uses_complete_inputs_and_auditable_output(tmp_path):
     assert agg['rows'] == [['1.250000000000000000', 2, 3]]
     assert agg['row_provenance'][0]['scope'] == 'all_loaded_inputs_not_sql_lineage'
     assert not agg['provenance']['sql_result_lineage_verified']
+    assert agg['sql_source_dependency_verified']
+    assert [c['kind'] for c in agg['sql_column_dependencies']] == ['source_value', 'source_value', 'source_cardinality']
     assert agg['source']['sha256'] == 'a' * 64
     assert not agg['extraction_verified']
 
@@ -250,14 +252,8 @@ def test_scoped_sql_uses_complete_inputs_and_auditable_output(tmp_path):
 def test_sql_is_scoped_read_only(tmp_path, sql):
     store, draft, plan = setup(tmp_path)
     tid = publish(store, draft, plan)['table_id']
-    # Catalog functions see only an isolated in-memory database, but direct
-    # catalog table access and external relations are rejected as table names.
-    if sql == 'SELECT * FROM duckdb_tables()':
-        result = store.query(tid, sql)
-        assert all('/' not in str(v) for row in result['rows'] for v in row if isinstance(v, str))
-    else:
-        with pytest.raises(ValueError):
-            store.query(tid, sql)
+    with pytest.raises(ValueError):
+        store.query(tid, sql)
     assert store.query(tid, 'SELECT count(*) FROM data')['rows'] == [[2]]
 
 
@@ -272,9 +268,18 @@ def test_query_budgets_and_wide_nontimeseries_tables(tmp_path):
         with pytest.raises(ValueError):
             store.query(tid, **kwargs)
     with pytest.raises(ValueError, match='byte budget'):
-        store.query(tid, "SELECT repeat('x',200001) FROM data")
-    with pytest.raises(ValueError, match='Scoped PDF SQL failed'):
+        store.query(tid, "SELECT repeat(col0,200001) FROM data")
+    with pytest.raises(ValueError, match='source dependency cannot be verified'):
         store.query(tid, 'SELECT sum(a.i*b.i) FROM range(1000000) a(i), range(1000000) b(i)', budget_seconds=.05)
+
+
+def test_scoped_source_calculations_still_obey_query_time_budget(tmp_path):
+    raw = bundle([['Item', 'Value'], *[[str(i), str(i)] for i in range(2000)]])
+    store, draft, plan = setup(tmp_path, raw)
+    tid = publish(store, draft, plan)['table_id']
+    with pytest.raises(ValueError, match='Scoped PDF SQL failed.*Interrupt'):
+        store.query(tid, 'SELECT sum(CAST(a.col1 AS DOUBLE)*CAST(b.col1 AS DOUBLE)*CAST(c.col1 AS DOUBLE)) '
+                        'FROM data a CROSS JOIN data b CROSS JOIN data c', budget_seconds=.05)
 
 
 def test_tampered_draft_and_table_fail_closed(tmp_path):
@@ -423,13 +428,16 @@ def test_sql_forged_row_id_is_only_a_reference_not_verified_lineage(tmp_path):
     store, draft, plan = setup(tmp_path)
     table = publish(store, draft, plan)
     real_id = table['rows'][0]['_row_id']
-    result = store.query(table['table_id'], f"SELECT '{real_id}' AS _row_id, 999999 AS invented")
+    with pytest.raises(ValueError, match='source dependency cannot be verified'):
+        store.query(table['table_id'], f"SELECT '{real_id}' AS _row_id, 999999 AS invented")
+    result = store.query(table['table_id'], f"SELECT '{real_id}' AS _row_id, col1, 999999 AS invented FROM data LIMIT 1")
     ref = result['row_provenance'][0]
     assert ref['scope'] == 'returned_row_id_references'
     assert not ref['sql_result_lineage_verified']
     assert not result['provenance']['sql_result_lineage_verified']
+    assert result['sql_column_dependencies'][2]['kind'] == 'constant_label'
     assert ref['source_rows'][0]['raw_values']['col1'] == '-1.20'
-    result = store.query(table['table_id'], "SELECT 'pdfr_invented' AS _row_id")
+    result = store.query(table['table_id'], "SELECT 'pdfr_invented' AS _row_id,col1 FROM data LIMIT 1")
     assert not result['row_provenance'][0]['source_rows']
     assert result['row_provenance'][0]['scope'] == 'all_loaded_inputs_not_sql_lineage'
 
