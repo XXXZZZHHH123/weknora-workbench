@@ -18,7 +18,7 @@ func explicitTextDeliveryPlan() *taskEvidencePlan {
 }
 
 func deliveryVerdict(status string) mockResponse {
-	return sourceConsistencyVerdict(`{"complete":true,"assessment":"The actual candidate and current source evidence were considered.","audit":[{"claim":"The requested response is supported at the returned scope.","candidate_statement":"The provided result and its limitation.","candidate_fidelity":"as_written","basis":"limitation","assessment":"The current evidence supports the stated limitation.","evidence":[]}],"delivery_check":{"status":"` + status + `","assessment":"Checked the requested format against current execution."}}`)
+	return sourceConsistencyVerdict(`{"complete":true,"citation_check":{"requirement":"not_required","reason":"This fixture judges artifact completion and honest execution limits, without an inline knowledge citation requirement."},"assessment":"The actual candidate and current source evidence were considered.","audit":[{"claim":"The requested response is supported at the returned scope.","candidate_statement":"The provided result and its limitation.","candidate_fidelity":"as_written","basis":"limitation","assessment":"The current evidence supports the stated limitation.","evidence":[]}],"delivery_check":{"status":"` + status + `","assessment":"Checked the requested format against current execution."}}`)
 }
 
 func failedChartState() *types.AgentState {

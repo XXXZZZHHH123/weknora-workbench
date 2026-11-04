@@ -96,7 +96,10 @@ func acceptedSourceReviewFixture(messages []chat.Message) (string, error) {
 		assessment = "test fixture limitation: witness records execution status only and makes no source-fact claim"
 	}
 	audit := []fixtureAudit{{Claim: claim, CandidateStatement: claim, Fidelity: reviewFidelityAsWritten, Basis: basis, Assessment: assessment, Evidence: []reviewSourceWitness{witness}}}
-	encoded, err := json.Marshal(map[string]any{"complete": true, "assessment": "Test fixture preserves the prior mock acceptance decision.", "audit": audit})
+	// Historical semantic fixtures explicitly opt out of citation delivery;
+	// citation contract tests override this decision and use real tool results.
+	encoded, err := json.Marshal(map[string]any{"complete": true, "assessment": "Test fixture preserves the prior mock acceptance decision.", "audit": audit,
+		"citation_check": sourceCitationCheck{Requirement: "not_required", Reason: "This isolated fixture explicitly accepts citation-optional presentation; citation requirements are tested separately."}})
 	return string(encoded), err
 }
 
