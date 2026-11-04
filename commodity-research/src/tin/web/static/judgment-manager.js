@@ -722,7 +722,7 @@
         if (rememberLabel) toolbar.append(rememberLabel);
         const outcome = element('span', 'logic-item-outcome'); outcome.setAttribute('role', 'status'); outcome.setAttribute('aria-live', 'polite');
         edit.renderOutcome = () => {
-          outcome.textContent = edit.saving ? '正在核对…' : edit.errorMessage ? '未确认，请处理红框' : item.status === 'confirmed' && !edit.dirty ? '已确认' : '';
+          outcome.textContent = edit.saving ? '正在核对…' : edit.errorMessage ? '未确认，请处理红框' : item.status === 'confirmed' && !edit.dirty ? (item.manually_confirmed ? '已人工确认（未能从原文自动核对）' : '已确认') : '';
           outcome.dataset.error = String(Boolean(edit.errorMessage) && !edit.saving); outcome.hidden = !outcome.textContent;
         };
         edit.renderOutcome(); toolbar.append(outcome);

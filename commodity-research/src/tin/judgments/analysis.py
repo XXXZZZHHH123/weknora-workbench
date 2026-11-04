@@ -214,6 +214,38 @@ def number_review_source(subject):
     return '“' + subject['quote'][:300] + '”' + ('（原文紧接：“' + following + '”）' if following else '')
 
 
+# Checks that compare a rule with its source wording. Automatic analysis accepts a rule only when they pass,
+# but the researcher who wrote the logic may confirm the rule as written; integrity checks (authorized
+# indicator, recorded unit, schema) never pass by confirmation.
+SOURCE_MATCH_CODES = frozenset({'quote_not_in_source', 'exported_rule_mismatch', 'falsifier_source_mismatch',
+    'number_not_in_source', 'unit_context', 'number_review_required', 'period_frequency', 'moving_average_frequency'})
+MANUAL_FIELDS = ('mode', 'kind', 'rule_id', 'series_id', 'unit', 'quote', 'rule')
+
+
+def manual_confirmation_subject(kind, rule, quote, unit):
+    """The exact rule a researcher confirms as written; any later change to it invalidates the confirmation."""
+    dumped = rule.model_dump(mode='json', exclude={'caliber_confirmation'})
+    return {'mode': 'manual', 'kind': kind, 'rule_id': rule.id, 'series_id': rule.series_id, 'unit': unit,
+        'quote': quote if isinstance(quote, str) else '',
+        'rule': json.dumps(dumped, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}
+
+
+def _manually_confirmed(confirmations, subject, actor):
+    supplied = confirmations.get(subject['rule_id']) if isinstance(confirmations, dict) else None
+    return (isinstance(supplied, dict) and supplied.get('confirmed_by') == actor
+            and {key: supplied.get(key) for key in MANUAL_FIELDS} == subject)
+
+
+def _issue_rule(path, payload):
+    parts = path.split('/') if isinstance(path, str) else []
+    if len(parts) >= 3 and parts[1] == 'rule_quotes':
+        return parts[2]
+    if len(parts) >= 4 and parts[1] == 'judgment' and parts[2] in {'thresholds', 'falsifiers'} and parts[3].isdigit():
+        rules = getattr(payload, parts[2])
+        return rules[int(parts[3])].id if int(parts[3]) < len(rules) else None
+    return None
+
+
 def _number_review(subject, confirmations, actor, path):
     supplied = confirmations.get(subject['rule_id']) if isinstance(confirmations, dict) else None
     if (isinstance(supplied, dict) and supplied.get('confirmed_by') == actor
@@ -455,100 +487,120 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
     identifiers = {rule.id for rule in [*payload.thresholds, *payload.falsifiers]}
     if not isinstance(quotes, dict) or set(quotes) != identifiers:
         _error('规则依据必须覆盖且仅覆盖全部量化规则', 'quote_coverage', '/rule_quotes')
-    for identifier, quote in quotes.items():
-        if not isinstance(quote, str) or not quote.strip() or quote not in original:
-            _error('阈值或证伪条件缺少完整原文中的逐字依据', 'quote_not_in_source', '/rule_quotes/' + identifier)
-    explicit = exported_rules(original)
-    for index, rule in enumerate(payload.thresholds):
-        moving = isinstance(rule.value, MovingAverageTarget)
-        if moving:
-            source_records = explicit['thresholds'].get(rule.series_id)
+    subjects = {rule.id: manual_confirmation_subject(kind, rule, quotes.get(rule.id), units.get(rule.series_id))
+        for kind, rules in (('thresholds', payload.thresholds), ('falsifiers', payload.falsifiers)) for rule in rules}
+    confirmed = {identifier for identifier, subject in subjects.items()
+        if _manually_confirmed(number_confirmations, subject, actor)}
+    try:
+        for identifier, quote in quotes.items():
+            if not isinstance(quote, str):
+                _error('阈值或证伪条件的原文依据格式无效', 'quote_not_in_source', '/rule_quotes/' + identifier)
+            if identifier in confirmed:
+                continue
+            if not quote.strip() or quote not in original:
+                _error('阈值或证伪条件缺少完整原文中的逐字依据', 'quote_not_in_source', '/rule_quotes/' + identifier)
+        explicit = exported_rules(original)
+        for index, rule in enumerate(payload.thresholds):
+            if rule.id in confirmed:
+                continue
+            moving = isinstance(rule.value, MovingAverageTarget)
+            if moving:
+                source_records = explicit['thresholds'].get(rule.series_id)
+                signature = threshold_signature(rule.model_dump())
+                quoted = quoted_rule_records(original, quotes[rule.id])
+                if (source_records and not any(record[0] == signature and (record[1] is None or record[1] == units[rule.series_id]) for record in source_records)
+                        or quoted is None or quoted and not any(kind == 'thresholds' and sid == rule.series_id
+                            and record[0] == signature and (record[1] is None or record[1] == units[rule.series_id])
+                            for kind, sid, record in quoted)):
+                    _error('均线规则与原文明确记录的指标、条件或周期不一致',
+                           'exported_rule_mismatch', f'/judgment/thresholds/{index}')
+                if not quoted and not sma_source_window(quotes[rule.id], rule.value.window, original):
+                    _error('均线周期没有完整的原文依据，请核对MA周期或原文均线条件',
+                           'number_not_in_source', f'/judgment/thresholds/{index}/value')
+                for issue in rule_frequency_issues('thresholds', rule.model_dump(), quotes[rule.id], known[rule.series_id].get('frequency')):
+                    _error(issue['message'], issue['code'], f'/judgment/thresholds/{index}/' + issue['field'])
+                continue
+            values = rule.value if isinstance(rule.value, list) else [rule.value]
+            source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
+                                               units=[row.get('unit') for row in catalog])
+            records = explicit['thresholds'].get(rule.series_id)
             signature = threshold_signature(rule.model_dump())
             quoted = quoted_rule_records(original, quotes[rule.id])
-            if (source_records and not any(record[0] == signature and (record[1] is None or record[1] == units[rule.series_id]) for record in source_records)
-                    or quoted is None or quoted and not any(kind == 'thresholds' and sid == rule.series_id
-                        and record[0] == signature and (record[1] is None or record[1] == units[rule.series_id])
-                        for kind, sid, record in quoted)):
-                _error('均线规则与原文明确记录的指标、条件或周期不一致',
+            matches_source = not records or any(source_signature == signature
+                and (unit is None or unit == units[rule.series_id]) for source_signature, unit in records)
+            matches_quote = quoted is not None and (
+                not records and not quoted or any(kind == 'thresholds' and sid == rule.series_id
+                    and record[0] == signature and (record[1] is None or record[1] == units[rule.series_id])
+                    for kind, sid, record in quoted))
+            if not matches_source or not matches_quote:
+                _error('规则与引文所在行明确记录的指标、条件、区间或类型不一致，或引文多处定位不一致，未改写或执行',
                        'exported_rule_mismatch', f'/judgment/thresholds/{index}')
-            if not quoted and not sma_source_window(quotes[rule.id], rule.value.window, original):
-                _error('均线周期没有完整的原文依据，请核对MA周期或原文均线条件',
-                       'number_not_in_source', f'/judgment/thresholds/{index}/value')
-            for issue in rule_frequency_issues('thresholds', rule.model_dump(), quotes[rule.id], known[rule.series_id].get('frequency')):
-                _error(issue['message'], issue['code'], f'/judgment/thresholds/{index}/' + issue['field'])
-            continue
-        values = rule.value if isinstance(rule.value, list) else [rule.value]
-        source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
-                                           units=[row.get('unit') for row in catalog])
-        records = explicit['thresholds'].get(rule.series_id)
-        signature = threshold_signature(rule.model_dump())
-        quoted = quoted_rule_records(original, quotes[rule.id])
-        matches_source = not records or any(source_signature == signature
-            and (unit is None or unit == units[rule.series_id]) for source_signature, unit in records)
-        matches_quote = quoted is not None and (
-            not records and not quoted or any(kind == 'thresholds' and sid == rule.series_id
-                and record[0] == signature and (record[1] is None or record[1] == units[rule.series_id])
-                for kind, sid, record in quoted))
-        if not matches_source or not matches_quote:
-            _error('规则与引文所在行明确记录的指标、条件、区间或类型不一致，或引文多处定位不一致，未改写或执行',
-                   'exported_rule_mismatch', f'/judgment/thresholds/{index}')
-        unit, all_units = known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]
-        evidence = _quantity_evidence(original, quotes[rule.id], values, unit, all_units)
-        if evidence is None:
-            if any(Decimal(str(value)) not in source_numbers for value in values):
-                _error('阈值数字或单位无法从原文依据核验，请核对指标单位和原文条件', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
-            _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
-                   'unit_context', f'/judgment/thresholds/{index}/value')
-        if evidence == 'review':
-            _number_review(number_review_subject('thresholds', rule, quotes[rule.id], unit, values, original),
-                number_confirmations, actor, f'/judgment/thresholds/{index}/value')
-    for index, rule in enumerate(payload.falsifiers):
-        match = EXPRESSION.fullmatch(rule.expression)
-        directional_zero = bool(match and match.group(1) == 'change' and Decimal(match.group(3)) == 0)
-        source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
-                                           units=[row.get('unit') for row in catalog])
-        records = explicit['falsifiers'].get(rule.series_id)
-        signature = falsifier_signature(rule.model_dump())
-        quoted = quoted_rule_records(original, quotes[rule.id])
-        matches_source = not records or signature in records
-        matches_quote = quoted is not None and (
-            not records and not quoted or ('falsifiers', rule.series_id, signature) in quoted)
-        if not matches_source or not matches_quote:
-            _error('证伪条件与引文所在行明示的指标、比较方式、连续期数、单位或证伪对象不一致，或引文多处定位不一致，未执行',
-                   'falsifier_source_mismatch', f'/judgment/falsifiers/{index}')
-        unit, all_units = known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]
-        evidence = ('verified' if match and directional_zero else
-            _quantity_evidence(original, quotes[rule.id], [Decimal(match.group(3))], unit, all_units) if match else None)
-        if not match or evidence is None and Decimal(match.group(3)) not in source_numbers:
-            value = match.group(3) if match else rule.expression
-            unit = known[rule.series_id].get('unit') or '单位未确认'
-            _error(f'证伪数字{value}（{unit}）暂不能从原文依据核验。确认单位不能代替数值核对，请核对原文中的数量与倍率。',
-                   'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
-        period_records = [record for record in observation_periods(quotes[rule.id])
-            if record['count'] == rule.consecutive_periods] if rule.consecutive_periods > 1 else []
-        if period_records:
-            for issue in rule_frequency_issues('falsifiers', rule.model_dump(), quotes[rule.id], known[rule.series_id].get('frequency')):
-                _error(issue['message'], issue['code'], f'/judgment/falsifiers/{index}/' + issue['field'])
-            compatible = [record for record in period_records
-                if period_matches_frequency(record, rule_frequency(rule.model_dump(), known[rule.series_id].get('frequency')))]
-            if not any(_period_quote_context(original, quotes[rule.id], record) for record in compatible):
-                _error('引文可能截断了连续次数或统计周期，请选取完整原文条件。',
-                    'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
-        if rule.consecutive_periods > 1 and not period_records:
-            # Preserve the precise truncation error, but never borrow a
-            # measurement number as a count of observations.
-            if (Decimal(rule.consecutive_periods) in quoted_quantities(quotes[rule.id])
-                    and not _quote_quantity_context(original, quotes[rule.id], [rule.consecutive_periods], None, [])):
-                _error('引文可能截断了连续次数或统计周期，请选取完整原文条件。',
-                    'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
-            _error(f'原文依据暂不能核验连续{rule.consecutive_periods}期，请核对原文中的连续次数或统计周期。',
-                   'number_not_in_source', f'/judgment/falsifiers/{index}/consecutive_periods')
-        if evidence is None:
-            _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
-                   'unit_context', f'/judgment/falsifiers/{index}/expression')
-        if evidence == 'review':
-            _number_review(number_review_subject('falsifiers', rule, quotes[rule.id], unit, [Decimal(match.group(3))],
-                original), number_confirmations, actor, f'/judgment/falsifiers/{index}/expression')
+            unit, all_units = known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]
+            evidence = _quantity_evidence(original, quotes[rule.id], values, unit, all_units)
+            if evidence is None:
+                if any(Decimal(str(value)) not in source_numbers for value in values):
+                    _error('阈值数字或单位无法从原文依据核验，请核对指标单位和原文条件', 'number_not_in_source', f'/judgment/thresholds/{index}/value')
+                _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
+                       'unit_context', f'/judgment/thresholds/{index}/value')
+            if evidence == 'review':
+                _number_review(number_review_subject('thresholds', rule, quotes[rule.id], unit, values, original),
+                    number_confirmations, actor, f'/judgment/thresholds/{index}/value')
+        for index, rule in enumerate(payload.falsifiers):
+            if rule.id in confirmed:
+                continue
+            match = EXPRESSION.fullmatch(rule.expression)
+            directional_zero = bool(match and match.group(1) == 'change' and Decimal(match.group(3)) == 0)
+            source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),
+                                               units=[row.get('unit') for row in catalog])
+            records = explicit['falsifiers'].get(rule.series_id)
+            signature = falsifier_signature(rule.model_dump())
+            quoted = quoted_rule_records(original, quotes[rule.id])
+            matches_source = not records or signature in records
+            matches_quote = quoted is not None and (
+                not records and not quoted or ('falsifiers', rule.series_id, signature) in quoted)
+            if not matches_source or not matches_quote:
+                _error('证伪条件与引文所在行明示的指标、比较方式、连续期数、单位或证伪对象不一致，或引文多处定位不一致，未执行',
+                       'falsifier_source_mismatch', f'/judgment/falsifiers/{index}')
+            unit, all_units = known[rule.series_id].get('unit'), [row.get('unit') for row in catalog]
+            evidence = ('verified' if match and directional_zero else
+                _quantity_evidence(original, quotes[rule.id], [Decimal(match.group(3))], unit, all_units) if match else None)
+            if not match or evidence is None and Decimal(match.group(3)) not in source_numbers:
+                value = match.group(3) if match else rule.expression
+                unit = known[rule.series_id].get('unit') or '单位未确认'
+                _error(f'证伪数字{value}（{unit}）未能从原文依据自动核对，请对照原文核对数量与倍率。',
+                       'number_not_in_source', f'/judgment/falsifiers/{index}/expression')
+            period_records = [record for record in observation_periods(quotes[rule.id])
+                if record['count'] == rule.consecutive_periods] if rule.consecutive_periods > 1 else []
+            if period_records:
+                for issue in rule_frequency_issues('falsifiers', rule.model_dump(), quotes[rule.id], known[rule.series_id].get('frequency')):
+                    _error(issue['message'], issue['code'], f'/judgment/falsifiers/{index}/' + issue['field'])
+                compatible = [record for record in period_records
+                    if period_matches_frequency(record, rule_frequency(rule.model_dump(), known[rule.series_id].get('frequency')))]
+                if not any(_period_quote_context(original, quotes[rule.id], record) for record in compatible):
+                    _error('引文可能截断了连续次数或统计周期，请选取完整原文条件。',
+                        'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
+            if rule.consecutive_periods > 1 and not period_records:
+                # Preserve the precise truncation error, but never borrow a
+                # measurement number as a count of observations.
+                if (Decimal(rule.consecutive_periods) in quoted_quantities(quotes[rule.id])
+                        and not _quote_quantity_context(original, quotes[rule.id], [rule.consecutive_periods], None, [])):
+                    _error('引文可能截断了连续次数或统计周期，请选取完整原文条件。',
+                        'unit_context', f'/judgment/falsifiers/{index}/consecutive_periods')
+                _error(f'原文依据暂不能核验连续{rule.consecutive_periods}期，请核对原文中的连续次数或统计周期。',
+                       'number_not_in_source', f'/judgment/falsifiers/{index}/consecutive_periods')
+            if evidence is None:
+                _error('引文可能截断了原文数字或单位，请核对完整条件及所选指标单位；该条件保留为待确认',
+                       'unit_context', f'/judgment/falsifiers/{index}/expression')
+            if evidence == 'review':
+                _number_review(number_review_subject('falsifiers', rule, quotes[rule.id], unit, [Decimal(match.group(3))],
+                    original), number_confirmations, actor, f'/judgment/falsifiers/{index}/expression')
+    except AnalysisError as error:
+        # A source-matching failure names the exact rule the researcher may confirm as written.
+        for issue in error.issues:
+            identifier = _issue_rule(issue.get('path'), payload)
+            if issue.get('code') in SOURCE_MATCH_CODES and identifier in subjects:
+                issue['manual_confirmation'] = subjects[identifier]
+        raise
     return AnalysisResult(payload, units, quotes,
                           [item.model_dump() for item in payload.unstructured])
 
