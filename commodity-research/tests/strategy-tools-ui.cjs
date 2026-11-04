@@ -147,6 +147,32 @@ assert.match(rendered.stdout, /id="strategy-workspace-data"|strategy-workspace/)
     await page.locator('#research-card-add').click();
     await page.waitForFunction(() => document.querySelector('#research-card-dialog-title')?.textContent === '新建策略方案');
     assert.equal(await page.locator('#research-sidebar-list [data-draft-mark]:not([hidden])').count(), 2, 'Both unsaved drafts are listed');
+    // Unsaved cards can be dropped: the blank new one, then the organized one.
+    const discard = page.locator('#research-card-discard'), marks = page.locator('#research-sidebar-list [data-draft-mark]:not([hidden])');
+    assert.equal(await discard.innerText(), '放弃草稿');
+    page.once('dialog', dialog => dialog.accept()); await discard.click();
+    await page.locator('#strategy-workspace-status').filter({hasText: '已放弃未保存的方案'}).waitFor();
+    assert.equal(await marks.count(), 1);
+    await page.locator('#research-sidebar-list [data-strategy-select^="new:"]').first().click();
+    await page.locator('#research-card-dialog').waitFor({state: 'visible'});
+    assert.equal(await page.locator('#research-card-title').inputValue(), '累库撤回方案');
+    page.once('dialog', dialog => dialog.dismiss()); await discard.click();
+    assert.equal(await marks.count(), 1, 'Cancelling keeps the draft');
+    page.once('dialog', dialog => dialog.accept()); await discard.click();
+    await page.waitForFunction(() => !document.querySelector('#research-sidebar-list [data-strategy-select^="new:"]'));
+    assert.equal(await marks.count(), 0);
+    // Unsaved edits to a saved card are dropped and the saved version is shown again.
+    await page.locator('#research-sidebar-list [data-strategy-select^="research:"]').first().click();
+    await page.locator('#strategy-dynamic-preview button', {hasText: '编辑'}).first().click();
+    await page.locator('#research-card-dialog').waitFor({state: 'visible'});
+    assert.equal(await discard.isHidden(), true, 'Nothing to drop before an edit');
+    await page.locator('#research-card-title').fill('改过但不想要的名称');
+    assert.equal(await discard.innerText(), '放弃修改');
+    page.once('dialog', dialog => dialog.accept()); await discard.click();
+    await page.locator('#strategy-workspace-status').filter({hasText: '已放弃未保存的修改'}).waitFor();
+    assert.equal(await page.locator('#strategy-dynamic-preview h2').innerText(), '合成方案甲');
+    assert.equal(await marks.count(), 0);
+    assert.equal(calls.filter(row => /^POST \/research-strategies$|^PATCH \/research-strategies\/[0-9a-f-]+$/.test(row)).length, 0, 'Discarding never saves');
     assert.deepEqual(failures, []);
     console.log('PASS real Chromium: Markdown export/check/invalidate/confirm/import and text organizing into a form draft or Markdown preview; synthetic data only.');
   } catch (error) {
