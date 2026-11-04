@@ -60,6 +60,10 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 	if rowEvidence != nil {
 		inputData["structured_query_row_companion"] = rowEvidence
 	}
+	chartEvidence := chartDeliveryReviewEvidence(state, sourceMessages)
+	if chartEvidence != nil {
+		inputData["chart_delivery_companion"] = chartEvidence
+	}
 	documentEvidence := documentRetrievalCompanionWithBudget(sourceMessages, sourceReviewDocumentBudget*scale)
 	if documentEvidence != nil {
 		inputData["document_retrieval_companion"] = documentEvidence
@@ -68,6 +72,7 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 	catalogEvidence := documentCatalogReviewEvidence(sourceMessages, sourceReviewCatalogBudget, true)
 	inputData["source_catalog_companion"] = catalogEvidence
 	rowEvidenceIncomplete := rowEvidence != nil && rowEvidence["projection_complete"] != true
+	chartEvidenceIncomplete := chartEvidence != nil && chartEvidence["projection_complete"] != true
 	documentEvidenceIncomplete := documentEvidence != nil && documentEvidence["projection_complete"] != true
 	imageObservations, imageScope := documentImageConsistencySummariesWithSources(state, sourceMessages)
 	hasImageObservations = len(imageObservations) > 0
@@ -81,7 +86,7 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 	citationBudget := sourceReviewCitationBudgetForBaseScaled(inputData, scale)
 	citationEvidence := citedSourceEvidenceFromMessagesWithBudget(sourceMessages, content, citationBudget, true, sourceReviewCitationBudget*scale)
 	inputData["citation_source_evidence"] = citationEvidence
-	if !scope.ViewComplete || citationEvidence["view_complete"] != true || catalogEvidence["view_complete"] != true || rowEvidenceIncomplete || documentEvidenceIncomplete || !imageScope.ViewComplete || !tableExecutionScope.ViewComplete {
+	if !scope.ViewComplete || citationEvidence["view_complete"] != true || catalogEvidence["view_complete"] != true || rowEvidenceIncomplete || chartEvidenceIncomplete || documentEvidenceIncomplete || !imageScope.ViewComplete || !tableExecutionScope.ViewComplete {
 		evidenceReader = sourceRecords
 		inputData["review_evidence_access"] = "Use evidence_id handles with read_review_evidence to restore omitted real result paths."
 	}

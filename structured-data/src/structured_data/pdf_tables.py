@@ -21,6 +21,8 @@ import threading
 
 import duckdb
 
+from .pdf_sql_provenance import verify_pdf_sql_dependencies
+
 MAX_ROWS = 50000
 MAX_COLUMNS = 256
 MAX_BUNDLE_BYTES = 32 * 1024 * 1024
@@ -780,6 +782,7 @@ class PDFTableStore:
                     raise ValueError('Query may only reference the scoped data table')
                 definitions = ['_row_id VARCHAR'] + [quote(c['name']) + (' DECIMAL(38,18)' if c['type'] == 'decimal' else ' VARCHAR') for c in record['columns']]
                 con.execute('CREATE TABLE data (' + ','.join(definitions) + ')')
+                dependencies = verify_pdf_sql_dependencies(con, sql, [c['name'] for c in record['columns']])
                 if record['rows']:
                     values = [[r['_row_id']] + [r['values'][c['name']] for c in record['columns']] for r in record['rows']]
                     con.executemany('INSERT INTO data VALUES (' + ','.join('?' for _ in definitions) + ')', values)
@@ -788,6 +791,9 @@ class PDFTableStore:
                 try:
                     result = con.execute(sql)
                     names = [c[0] for c in result.description]
+                    if len(names) != len(dependencies):
+                        raise ValueError('PDF SQL source dependency output shape does not match bound query; use explicit column projections')
+                    dependencies = [dict(d, column=names[i]) for i, d in enumerate(dependencies)]
                     if len(names) > MAX_COLUMNS + 1:
                         raise ValueError('Query result exceeds column budget')
                     values = result.fetchmany(limit + 1)
@@ -825,6 +831,8 @@ class PDFTableStore:
         source = deepcopy(record['source'])
         source['file'] = source['file_name']
         return dict(kind='structured_analysis', status='ok', table_id=table_id, sql=sql, columns=names, rows=output,
+                    sql_source_dependency_verified=True, sql_column_dependencies=dependencies,
+                    sql_source_dependency_method='duckdb_ast_output_expression_dependencies_v1',
                     row_provenance=row_provenance, returned_row_count=len(output), output_truncated=len(values) > limit,
                     output_complete=len(values) <= limit, input_complete=record['coverage']['table_input_complete'],
                     input_count=len(record['rows']), coverage=record['coverage'], source=source,
@@ -832,5 +840,6 @@ class PDFTableStore:
                                     bundle_sha256=record['bundle_sha256'], plan_sha256=record['plan_sha256'],
                                     table_record_sha256=record['record_sha256'], input_row_count=len(record['rows']),
                                     row_source_access='read_table(table_id, offset, limit); read_draft(draft_id)',
+                                    sql_source_dependency_verified=True,
                                     sql_result_lineage_verified=False), extraction_verified=False,
-                    notice='Reviewed plan only; extraction and full-document completeness are unverified. SQL runs over every selected logical row. Output limits do not truncate calculation inputs. Row IDs identify source references only; arbitrary SQL expression/aggregate lineage is not inferred.')
+                    notice='Reviewed plan only; extraction and full-document completeness are unverified. SQL runs over every selected logical row. Output limits do not truncate calculation inputs. Output dependencies are classified using DuckDB AST column scopes, not per-cell lineage or proof of algebraic influence. Constant-label, mixed-constant-values and technical-metadata outputs must not be used as sourced numeric observations. Row IDs identify source references only; full SQL expression/aggregate cell lineage is not inferred.')

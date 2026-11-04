@@ -88,7 +88,7 @@ func TestCandidateAdditionsThreeDeliveryPathsUseEditedCandidateAndHash(t *testin
 			engine := numericRecoveryTestEngine(t, &model.mockChat)
 			engine.chatModel = model
 			engine.config.CandidateAdditionsEnabled = true
-			engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+			engine.taskPlan = explicitTextDeliveryPlan()
 			state, messages, query := numericRecoveryFixture()
 			recorder := &terminalAnswerRecorder{}
 			recorder.attach(engine.eventBus)
@@ -204,7 +204,7 @@ func TestCandidateAdditionsInvalidOrUnavailablePlanContinuesOriginalChecks(t *te
 		engine := numericRecoveryTestEngine(t, &model.mockChat)
 		engine.chatModel = model
 		engine.config.CandidateAdditionsEnabled = true
-		engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+		engine.taskPlan = explicitTextDeliveryPlan()
 		state, messages, query := numericRecoveryFixture()
 		decision := engine.checkCandidate(t.Context(), query, draft, "", state, messages, false)
 		require.Equal(t, candidateAccepted, decision.Disposition)
@@ -228,7 +228,7 @@ func TestCandidateAdditionsMissingDataKeepsBoundedGapAndDeletesUnrequestedAdvice
 	model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{known}, []string{broad, advice})}, mockChat: mockChat{responses: []mockResponse{chatAnswer(draft)}}}
 	engine := numericRecoveryTestEngine(t, &model.mockChat)
 	engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
-	engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+	engine.taskPlan = explicitTextDeliveryPlan()
 	state, messages, _ := numericRecoveryFixture()
 	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{{Name: "read_document", Result: documentReadResult("scope-doc", "scope-chunk", "This report describes the earlier observation; it does not cover the requested period.")}}})
 	query := "Give the measure for the requested period."
@@ -264,7 +264,7 @@ func TestCandidateAdditionsDiscoveryOnlyChecksDeliveryWithoutTrustingCandidates(
 	model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{known}, []string{extra})}, mockChat: mockChat{responses: []mockResponse{chatAnswer(draft)}}}
 	engine := numericRecoveryTestEngine(t, &model.mockChat)
 	engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
-	engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+	engine.taskPlan = explicitTextDeliveryPlan()
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{Iteration: -1, ToolCalls: []types.ToolCall{
 		{Name: "structured_data", Args: map[string]any{"operation": "list_datasets"}, Result: &types.ToolResult{Success: true, Data: map[string]any{"notes": "UNREAD_CATALOG_CONCLUSION"}}},
 		{Name: "structured_data", Args: map[string]any{"operation": "describe_tools"}, Result: &types.ToolResult{Success: true, Data: map[string]any{"description": "SCHEMA_NOT_SOURCE_FACT"}}},

@@ -78,7 +78,7 @@ func TestDirectFailedPDFQueryKeepsLookupDeliveryPolicy(t *testing.T) {
 	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{call}})
 	model := &mockChat{}
 	engine := sourceConsistencyEngine(t, model)
-	engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "direct"}
+	engine.taskPlan = explicitTextDeliveryPlan()
 	decision := engine.checkCandidate(t.Context(), "Report the source indicator.", "The report describes covered area.", "", state, nil, false)
 	require.Equal(t, candidateAccepted, decision.Disposition)
 	require.Empty(t, model.calls, "a failed query must not reclassify ordinary direct source lookup")
