@@ -38,6 +38,7 @@ HELP = ('<!-- ' + FORMAT + '：每个“## 方案名称”是一份方案。修�
 _CARD = re.compile(r'^<!--\s*card:\s*(\S+)\s+revision:\s*(\d+)\s*-->$')
 _META = re.compile(r'^\s*[-*]\s*([^：:]+?)\s*[：:]\s*(.*?)\s*$')
 _JUDGMENT = re.compile(r'<!--\s*judgment:\s*(\S+?)@(\d+)\s*-->')
+_STRATEGY = re.compile(r'<!--\s*strategy:\s*(\S+?)@(\d+)\s*-->')
 _CITE = re.compile(r'<!--\s*cite:\s*(\{.*\})\s*-->\s*$')
 _NOTE = re.compile(r'^<!--\s*待核对[：:]\s*(.*?)\s*-->$')
 _DATE = re.compile(r'^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?$')
@@ -60,7 +61,7 @@ def _identity(citation):
     return {key: citation[key] for key in ('kind', *IDENTITY.get(citation.get('kind'), ())) if key in citation}
 
 
-def dump(items, judgment_labels):
+def dump(items, judgment_labels, strategy_labels=None):
     """Readable Markdown for saved cards; hidden comments keep each card's and reference's real identity."""
     lines = ['# 策略方案', '', HELP]
     for item in items:
@@ -75,6 +76,10 @@ def dump(items, judgment_labels):
             lines.append(f'- 依据研判：{label} <!-- judgment: {reference["id"]}@{reference["revision"]} -->')
         else:
             lines.append('- 依据研判：不引用')
+        followed = card.get('reference')
+        if followed:
+            label = _one_line((strategy_labels or {}).get((followed['id'], followed['revision'])) or '已引用策略')
+            lines.append(f'- 参考策略：{label} <!-- strategy: {followed["id"]}@{followed["revision"]} -->')
         if not (card.get('response_action') or '').strip():
             lines.append('- 观察方案：是（暂未制定应对措施）')
         # Notes about an organized draft; shown as reminders when checked, gone once the line is deleted.
@@ -208,6 +213,14 @@ def _parse_card(block):
             else:
                 card['meta']['judgment_reference'] = None
                 card['warnings'].append(f'第 {number} 行的依据研判缺少导出编号，导入后不引用研判，可在表单中选择。')
+        elif key == '参考策略':
+            followed = _STRATEGY.search(value)
+            if followed:
+                card['meta']['reference'] = {'kind': 'strategy', 'id': followed.group(1), 'revision': int(followed.group(2))}
+            else:
+                card['meta']['reference'] = None
+                if value.strip() not in {'', '不引用', '无'}:
+                    card['warnings'].append(f'第 {number} 行的参考策略缺少导出编号，导入后不设置参考策略。')
         elif key == '观察方案':
             card['meta']['observation'] = value.strip().startswith('是')
         else:
@@ -219,7 +232,7 @@ def _parse_card(block):
 
 
 def _comparable(card):
-    value = {key: card.get(key) for key in ('title', 'direction', 'review_date', 'judgment_reference',
+    value = {key: card.get(key) for key in ('title', 'direction', 'review_date', 'judgment_reference', 'reference',
                                             *(key for key, _ in SECTIONS))}
     for key, _ in SECTIONS:
         value[key] = (value[key] or '').strip('\n')
@@ -230,6 +243,7 @@ def _comparable(card):
 
 def _changes(before, after):
     labels = {'title': '方案名称', 'direction': '方向', 'review_date': '复核日期', 'judgment_reference': '依据研判',
+              'reference': '参考策略',
               'citations': '引用', **LABELS}
     old, new = _comparable(before), _comparable(after)
     return [label for key, label in labels.items() if old.get(key) != new.get(key)]
@@ -291,8 +305,9 @@ async def preview(scope, text):
                 'citations': card['citations']}
         for key, _ in SECTIONS:
             body[key] = card['sections'].get(key, '')
-        if base.get('reference'):
-            body['reference'] = base['reference']
+        followed = meta['reference'] if 'reference' in meta else base.get('reference')
+        if followed:
+            body['reference'] = followed
         observation = not body['response_action'].strip()
         if observation and not meta.get('observation'):
             card['warnings'].append('未填写应对措施，将保存为观察方案。')
@@ -321,10 +336,13 @@ async def preview(scope, text):
             try:
                 if body.get('citations'):
                     await resolve_citations(scope, body['citations'])
-                if body.get('judgment_reference'):
-                    with artifact_session(scope) as session:
+                with artifact_session(scope) as session:
+                    if body.get('judgment_reference'):
                         strategy._validate_reference(session, scope,
                             strategy.JudgmentReference.model_validate(body['judgment_reference']))
+                    if body.get('reference') and body['reference'] != base.get('reference'):
+                        strategy._validate_reference(session, scope,
+                            strategy.StrategyReference.model_validate(body['reference']))
             except HTTPException as error:
                 errors.append(str(error.detail) if isinstance(error.detail, str) else '引用或依据研判已不可用，请重新选择。')
         results.append({'line': card['line'], 'title': card['title'] or '（未命名）', 'card_id': card['id'],
@@ -383,7 +401,8 @@ def export_markdown():
             reference = item['card'].get('judgment_reference')
             if reference and (reference['id'], reference['revision']) not in labels:
                 labels[(reference['id'], reference['revision'])] = strategy._judgment_label(session, scope, reference)
-    return {'markdown': dump(items, labels), 'count': len(items), 'total': data['total'],
+        followed = {('research:' + item['id'], item['revision']): item['title'] for item in data['items']}
+    return {'markdown': dump(items, labels, followed), 'count': len(items), 'total': data['total'],
             'skipped': len(data['items']) - len(items), 'truncated': data['truncated'],
             'can_import': scope.can_edit}
 

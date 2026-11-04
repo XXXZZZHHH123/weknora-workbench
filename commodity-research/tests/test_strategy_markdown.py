@@ -154,3 +154,22 @@ def test_citations_and_judgment_reference_round_trip_with_their_identity_and_fie
                               'judgment_reference': {'kind': 'judgment', 'id': '17', 'revision': 4}}
     assert parsed['citations'] == [{key: value for key, value in item.items() if key != 'snapshot'} for item in citations]
     assert parsed['sections'] == {'trigger': 'T', 'response_action': 'R', 'invalidation': 'I'}
+
+
+def test_followed_strategy_round_trips_and_a_stale_one_is_reported(cards):
+    client, _ = cards
+    base = save(client)
+    follower = save(client, card={**entry()['card'], 'title': 'Follower',
+        'reference': {'kind': 'strategy', 'id': 'research:' + base['id'], 'revision': 1}})
+    text = exported(client)['markdown']
+    assert f'- 参考策略：A testable research hypothesis <!-- strategy: research:{base["id"]}@1 -->' in text
+    plan = check(client, text).json()
+    assert plan['counts']['unchanged'] == 2 and not any(row['errors'] for row in plan['cards'])
+    stale = text.replace(f'research:{base["id"]}@1', f'research:{base["id"]}@9')
+    rows = {row['title']: row for row in check(client, stale).json()['cards']}
+    assert rows['Follower']['action'] == 'error' and rows['Follower']['errors']
+    cleared = text.replace(f'- 参考策略：A testable research hypothesis <!-- strategy: research:{base["id"]}@1 -->', '- 参考策略：不引用')
+    rows = {row['title']: row for row in check(client, cleared).json()['cards']}
+    assert rows['Follower']['action'] == 'update' and rows['Follower']['changes'] == ['参考策略']
+    assert apply(client, cleared).status_code == 200
+    assert 'reference' not in client.get(URL + '/' + follower['id']).json()['card']
