@@ -229,6 +229,16 @@ def assess_tables(selected, candidates, verified):
             issues.append({"code": "UNREADABLE_CELL", "message": "At least one source cell could not be read"})
         if any(not header.strip() for header in table["columns"]):
             issues.append({"code": "MISSING_HEADER", "message": "At least one header is absent or unreadable"})
+        # Two agreeing grids must not hide a dissenting printed unit: a missing
+        # unit can change the scale even when every digit is identical.
+        uncertain_units = {ci for ci, unit in enumerate(table["units"])
+            if any(index >= len(c["tables"]) or ci >= len(c["tables"][index]["units"])
+                   or (c["tables"][index]["units"][ci] or None) != (unit or None) for c in candidates)}
+        if uncertain_units:
+            columns = '、'.join(str(ci + 1) for ci in sorted(uncertain_units))
+            issues.append({"code": "TRANSCRIPTION_UNIT_CONFLICT",
+                           "message": f"第 {columns} 列的单位识别存在分歧，请对照原件核对单位",
+                           "cells": [{"row": 0, "column": ci} for ci in sorted(uncertain_units)]})
         uncertain_headers = {ci for ci, header in enumerate(table["columns"])
             if any(index >= len(c["tables"]) or ci >= len(c["tables"][index]["columns"])
                    or c["tables"][index]["columns"][ci] != header for c in candidates)}

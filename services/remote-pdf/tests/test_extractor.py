@@ -373,3 +373,23 @@ def test_failed_optional_reconciliation_preserves_original_and_review(tmp_path):
     assert page['tables'][0]['rows'][0][1] == '1'
     assert page['quality']['status'] == 'needs_review'
     assert len(page['transcriptions']) == 3
+
+
+def test_matching_digits_do_not_hide_dissenting_or_missing_units():
+    printed, missing = sample(), sample()
+    missing['tables'][0]['units'] = [None, '']
+    readings = [printed, missing, deepcopy(missing)]
+    selected = e._select(readings)
+    table = e.assess_tables(selected, readings, True)[0]
+    assert table['quality']['matching_transcriptions'] == 2
+    assert table['quality']['status'] == 'needs_review'
+    issue = next(i for i in table['quality']['issues'] if i['code'] == 'TRANSCRIPTION_UNIT_CONFLICT')
+    assert issue['cells'] == [{'row': 0, 'column': 1}]
+    assert '第 2 列' in issue['message']
+
+
+def test_absent_unit_representations_do_not_create_false_conflict():
+    empty, null = sample(), sample()
+    empty['tables'][0]['units'][0] = ''
+    table = e.assess_tables(empty, [empty, null], True)[0]
+    assert not any(i['code'] == 'TRANSCRIPTION_UNIT_CONFLICT' for i in table['quality']['issues'])
