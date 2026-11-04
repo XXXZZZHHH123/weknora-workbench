@@ -287,19 +287,27 @@
     </div>
   </details>
   {% if research_workbench() and can_edit_diagram %}
-  <section id="dg-generator" aria-label="从资料生成 Markdown" class="mt-2 p-2 rounded-md border border-[var(--line)] text-xs">
-    <div class="flex items-center gap-2 flex-wrap">
-      <select id="dg-ai-model" aria-label="生成模型" onchange="dgGenerationInputChanged()" class="px-2 py-1 rounded-md max-w-[220px]"></select>
-      <label class="cursor-pointer text-[var(--primary)]">添加图片<input id="dg-ai-image" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onchange="dgChooseImage(this)"></label>
-      <select id="dg-ai-source" aria-label="知识库原件" onchange="dgGenerationInputChanged(this)" class="px-2 py-1 rounded-md max-w-[180px]"><option value="">知识库原件</option></select>
-      <button type="button" id="dg-ai-rebuild" onclick="dgGenerate(true)" title="重新分析原件；失败时保留上次成功结果" class="ml-auto px-2 py-1 rounded-md border border-[var(--line)] disabled:opacity-40">重新构图</button>
-      <button type="button" id="dg-ai-run" onclick="dgGenerate()" class="px-2.5 py-1 rounded-md bg-[var(--primary)] text-white disabled:opacity-40">生成配置</button>
+  <section id="dg-generator" aria-label="从资料生成 Markdown" class="mt-2 p-3 rounded-md border border-[var(--line)] text-xs">
+    <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2 max-[520px]:grid-cols-1">
+      <select id="dg-ai-model" aria-label="生成模型" onchange="dgGenerationInputChanged()" class="w-full min-w-0 px-2 py-1.5 rounded-md"></select>
+      <div class="flex min-w-0 gap-2">
+        <select id="dg-ai-source" aria-label="知识库原件" onchange="dgGenerationInputChanged(this)" class="flex-1 min-w-0 px-2 py-1.5 rounded-md"><option value="">知识库原件</option></select>
+        <label class="shrink-0 inline-flex items-center px-2.5 rounded-md border border-[var(--line)] cursor-pointer whitespace-nowrap text-[var(--primary)] hover:bg-[var(--surface-soft)]">添加图片<input id="dg-ai-image" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onchange="dgChooseImage(this)"></label>
+      </div>
     </div>
-    <div id="dg-ai-attachment" class="text-[11px] text-[var(--text-muted)] mt-1" hidden><span></span> <button type="button" onclick="dgClearImage()" aria-label="移除图片">×</button></div>
+    <div id="dg-ai-attachment" class="text-[11px] text-[var(--text-muted)] mt-1.5" hidden><span></span> <button type="button" onclick="dgClearImage()" aria-label="移除图片">×</button></div>
     <textarea id="dg-ai-instructions" rows="2" maxlength="12000" placeholder="补充结构或口径要求，也可直接粘贴产业链大纲"
       class="mt-2 px-2 py-1.5 rounded-md w-full resize-y text-xs" style="max-height:120px"></textarea>
-    <p id="dg-ai-status" role="status" class="mt-1 text-[11px] text-[var(--text-muted)]">使用已配置模型；生成后在下方核对配置，再导入布局。</p>
-    <button id="dg-ai-restore-result" type="button" class="mt-1 text-[11px] text-[var(--primary)] underline" hidden>查看最新暂存结果</button>
+    <div class="mt-2 flex items-start gap-3">
+      <div class="flex-1 min-w-0">
+        <p id="dg-ai-status" role="status" class="text-[11px] leading-5 text-[var(--text-muted)]">使用已配置模型；生成后在下方核对配置，再导入布局。</p>
+        <button id="dg-ai-restore-result" type="button" class="mt-1 text-[11px] text-[var(--primary)] underline" hidden>查看最新暂存结果</button>
+      </div>
+      <div class="flex shrink-0 items-center gap-2">
+        <button type="button" id="dg-ai-rebuild" onclick="dgGenerate(true)" title="重新分析原件；失败时保留上次成功结果" class="whitespace-nowrap px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] disabled:opacity-40 disabled:hover:bg-transparent">重新构图</button>
+        <button type="button" id="dg-ai-run" onclick="dgGenerate()" class="whitespace-nowrap px-3 py-1.5 rounded-md border border-[var(--primary)] bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-40 disabled:hover:bg-[var(--primary)]">生成配置</button>
+      </div>
+    </div>
     <details id="dg-ai-bindings" hidden class="mt-1 text-[11px]"><summary>查看指标绑定</summary><ul class="mt-1 space-y-1"></ul></details>
   </section>
   {% endif %}
