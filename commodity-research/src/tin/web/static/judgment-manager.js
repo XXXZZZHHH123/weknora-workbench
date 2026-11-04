@@ -309,6 +309,7 @@
       draft?.analysis_complete === false ? '部分原文尚未完成核对，可先保存现有草稿。' : '内容已解析，可以保存草稿；保存后不会自动生效。';
     if (byId('review-reuse')) byId('review-reuse').disabled = busy || !review || unsynced || !managed?.can_write;
     if (byId('review-edit')) byId('review-edit').disabled = busy;
+    if (byId('review-discard')) byId('review-discard').disabled = busy || managed?.can_write === false;
   }
   function syncReviewControls() {
     for (const control of reviewControls) control.node.disabled = busy || !managed?.can_write || Boolean(control.disabled?.());
@@ -872,6 +873,21 @@
     if (byId('discard-result')) byId('discard-result').hidden = true;
     if (parent !== window) parent.postMessage({type: 'research-drawer-state', open: false}, location.origin);
   }
+  // Discard the result under review, whether it came from a background analysis or an import.
+  byId('review-discard')?.addEventListener('click', async () => {
+    if (busy || !draft?.draft_id || managed?.can_write === false) return;
+    if (!window.confirm('舍弃后，这份尚未保存的研判结果及其中已做的指标选择会被删除，不能恢复；已保存的研判不受影响。确定舍弃吗？')) return;
+    const token = draft.draft_id, job = jobId(activeJob?.id) ? activeJob.id : null;
+    setBusy(true); inform('正在舍弃…');
+    try {
+      await api('/preview/discard', {draft_id: token});
+      if (latestResultJob && (latestResultJob.id === job || token.startsWith('job.' + latestResultJob.id + '.'))) {
+        latestResultJob = null; if (byId('restore-result')) byId('restore-result').hidden = true;
+      }
+      invalidate(); renderReview(); setBusy(false); inform('已舍弃这份尚未保存的研判结果。');
+    } catch (error) { setBusy(false); inform(error.message, true); }
+    finally { syncDiscard(); }
+  });
   byId('discard-result')?.addEventListener('click', async () => {
     const job = discardableJob();
     if (busy || !job) return;

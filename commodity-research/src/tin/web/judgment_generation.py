@@ -100,6 +100,20 @@ class PreviewStore:
             self.items.pop(token, None)
             self.mutations.pop(token, None)
 
+    def discard(self, scope, token):
+        """Remove this owner's unsaved preview; one that is already gone needs nothing more."""
+        with self.lock:
+            item = self.items.get(token)
+            if item is None or item[0] <= time.monotonic():
+                return
+            if item[1] != scope_key(scope):
+                raise HTTPException(404, '研究逻辑预览不存在或无权访问')
+            lock = self.mutations.get(token)
+            if lock is not None and lock.locked():
+                raise HTTPException(409, '研究逻辑预览正在修改或保存，请稍后再舍弃')
+            self.items.pop(token, None)
+            self.mutations.pop(token, None)
+
     def mutation(self, scope, token):
         self.get(scope, token)
         with self.lock:
@@ -918,6 +932,23 @@ def persist(scope, preview):
         except AnalysisError as error:
             session.rollback()
             raise HTTPException(422, str(error)) from None
+
+
+class DiscardRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    draft_id: str = Field(min_length=1, max_length=160)
+
+
+@router.post('/preview/discard')
+async def discard_preview(request: Request):
+    """Discard an unsaved analysis result, whatever produced it; saved judgments are untouched."""
+    scope = scope_for_analysis(write=True)
+    body = await read_body(request, DiscardRequest)
+    if body.draft_id.startswith('job.'):
+        from tin.web.judgment_jobs import discard_job, token_job_id
+        return {'discarded': True, **(await discard_job(scope, token_job_id(body.draft_id)))}
+    previews.discard(scope, body.draft_id)
+    return {'discarded': True}
 
 
 @router.post('/apply')

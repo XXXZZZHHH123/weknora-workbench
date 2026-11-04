@@ -60,3 +60,27 @@ def test_saved_and_foreign_results_cannot_be_discarded(background):
     refused = discard(client, headers, meta['id'])
     assert refused.status_code == 409 and '已保存' in refused.json()['detail']
     assert len(rows()) == 1 and rows()[0].status == '草稿'
+
+
+def test_an_unsaved_preview_of_any_origin_can_be_discarded_before_saving(background):
+    from tests.test_judgment_generation import generate
+    client, headers, _, _, _ = background
+    preview = generate(client, headers).json()
+    other = {**headers, 'Authorization': 'Bearer source-viewer'}
+    assert client.post(page(FIRST, '/api/sn/judgment/preview/discard'), headers=other,
+                       json={'draft_id': preview['draft_id']}).status_code in {403, 404}
+    discarded = client.post(page(FIRST, '/api/sn/judgment/preview/discard'), headers=headers, json={'draft_id': preview['draft_id']})
+    assert discarded.status_code == 200 and discarded.json()['discarded'] is True
+    saved = client.post(page(FIRST, '/api/sn/judgment/apply'), headers=headers,
+                        json={'draft_id': preview['draft_id'], 'base_version': 0, 'review_revision': preview['review']['revision']})
+    assert saved.status_code == 409 and rows() == []
+    again = client.post(page(FIRST, '/api/sn/judgment/preview/discard'), headers=headers, json={'draft_id': preview['draft_id']})
+    assert again.status_code == 200, 'a preview that is already gone needs nothing more'
+
+
+def test_a_background_result_is_discarded_through_the_same_review_action(background):
+    client, headers, _, _, _ = background
+    scope, meta, result = asyncio.run(completed_job())
+    response = client.post(page(FIRST, '/api/sn/judgment/preview/discard'), headers=headers, json={'draft_id': result['draft_id']})
+    assert response.status_code == 200 and response.json()['job']['discarded'] is True
+    assert asyncio.run(jobs.latest_job(scope))['job'] is None and private_record(scope, meta['id'])['preview'] is None

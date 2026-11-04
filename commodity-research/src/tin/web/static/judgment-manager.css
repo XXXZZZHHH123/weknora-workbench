@@ -137,3 +137,4 @@
 .logic-caliber-label input,.logic-caliber-label textarea{box-sizing:border-box;width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--text);font:inherit}
 .logic-caliber-label textarea{min-height:64px;max-height:130px;margin:0}
 #logic-history-state{margin-right:auto}#logic-version{max-width:min(100%,520px)}
+.logic-dialog .logic-quiet-danger{color:var(--text-muted)}.logic-dialog .logic-quiet-danger:hover:not(:disabled){color:var(--alert);border-color:var(--alert)}
