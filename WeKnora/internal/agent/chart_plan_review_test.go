@@ -63,11 +63,9 @@ func TestChartReviewSelectsAxisWithoutCandidateType(t *testing.T) {
 			require.True(t, verdict.FullTaskView)
 		}
 	}
-	require.Len(t, model.seen, 3)
-	// Changing only the candidate's axis produces the same independent review
-	// request, while the runtime still compares and binds the actual spec.
-	require.Equal(t, model.seen[0], model.seen[1])
-	require.Equal(t, model.seen[0], model.seen[2])
+	require.Len(t, model.seen, 1)
+	// Changing only the candidate's axis reuses the independently accepted
+	// decision, while the runtime still compares and binds the actual spec.
 	var input map[string]any
 	require.NoError(t, json.Unmarshal([]byte(model.seen[0][1].Content), &input))
 	spec := input["chart_spec"].(map[string]any)
@@ -124,7 +122,12 @@ func TestChartReviewBudgetAndProtocolBounds(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			model.response = chartAxisReviewResponse(t, test.axis, test.assessment, test.feedback)
-			verdict, err := reviewer(chartContext(t), table, spec)
+			// Exercise an actual invalid response, not the valid decision this
+			// test's earlier reviewer has already retained for the same input.
+			invalidReviewer := e.chartPlanReviewer("Use the actual observation positions.", &types.AgentState{})
+			callsBefore := len(model.seen)
+			verdict, err := invalidReviewer(chartContext(t), table, spec)
+			require.Len(t, model.seen, callsBefore+1)
 			require.Nil(t, verdict)
 			require.ErrorContains(t, err, test.reason)
 			require.ErrorContains(t, err, "绘图参数不变重试")
@@ -190,8 +193,11 @@ func TestChartReviewIncompleteFailuresDoNotSaveOrChangePlan(t *testing.T) {
 			require.NotContains(t, result.Error, "PRIVATE_UPSTREAM_DIAGNOSTIC")
 			require.Empty(t, writer.requests)
 			require.Empty(t, tool.receipts)
-			if response != nil {
+			if response != nil && !test.canceled && !test.expired {
 				require.Equal(t, chartReviewCompletionBudget, state.TurnUsage.CompletionTokens)
+			} else if test.canceled || test.expired {
+				require.Empty(t, model.seen)
+				require.Zero(t, state.TurnUsage.CompletionTokens)
 			}
 		})
 	}
