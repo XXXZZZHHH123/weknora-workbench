@@ -169,6 +169,9 @@ func MergeParserEngineConfigForUpdate(incoming, existing *ParserEngineConfig) *P
 	if existing != nil {
 		prev = *existing
 	}
+	if incoming.PDFProcessing == nil && existing != nil {
+		out.PDFProcessing = existing.PDFProcessing
+	}
 	out.MinerUAPIKey = PreserveIfRedacted(out.MinerUAPIKey, prev.MinerUAPIKey)
 	out.MinerUServerAPIKey = PreserveIfRedacted(out.MinerUServerAPIKey, prev.MinerUServerAPIKey)
 	out.PaddleOCRVLCloudToken = PreserveIfRedacted(out.PaddleOCRVLCloudToken, prev.PaddleOCRVLCloudToken)

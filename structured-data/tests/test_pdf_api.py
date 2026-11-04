@@ -772,7 +772,11 @@ def test_remote_reread_uses_server_profile_and_preserves_snapshot(pdf_service, m
     job = finish_pdf_job(client, response.json()['id'])
     result = client.get('/api/pdf/drafts/' + job['draft_id'], headers=headers()).json()
     assert calls[0][0] == state['contents']
-    assert calls[0][1] is config
+    assert calls[0][1] is not config  # immutable task-local policy snapshot
+    assert calls[0][1].url == config.url
+    assert calls[0][1].api_key == config.api_key
+    assert calls[0][1].timeout_seconds == 7200
+    assert config.timeout_seconds == 600
     assert result['bundle']['parser'].get('requested_tier') is None
     assert client.get('/api/pdf/drafts/' + original['draft_id'], headers=headers()).json()['bundle'] == original['bundle']
 
@@ -947,3 +951,40 @@ def test_mapping_proposal_keeps_uncertain_cells_but_quality_is_checked_on_origin
     with pytest.raises(ValueError):
         store.publish_automatic(draft['draft_id'], result['plan'])
     assert store.list_tables()['tables'] == []
+
+
+def test_remote_task_captures_admin_policy_before_background_work(pdf_service, monkeypatch):
+    import threading
+    from structured_data.pdf_processing_settings import PDFProcessingSettings, current_settings
+    from structured_data.pdf_parser_bridge import ParserConfig
+    client, _, state, _, _ = pdf_service
+    policy = [PDFProcessingSettings(overlap_pages=2, grouping_request_bytes=36000,
+                                   queue_timeout_seconds=7200, execution_timeout_seconds=900)]
+    expected = policy[0]
+    async def settings(*args): return policy[0]
+    monkeypatch.setattr('structured_data.pdf_api.load_settings', settings)
+    base = ParserConfig('remote_vlm', 'http://remote.test', api_key='fixture')
+    monkeypatch.setattr(ParserConfig, 'from_env', classmethod(lambda cls: base))
+    started, release = threading.Event(), threading.Event()
+    configurations, grouped = [], []
+    async def parse(path, source=None, **options):
+        configurations.append(options['config'])
+        started.set(); assert release.wait(3)
+        raw = bundle(); raw['source'] = source
+        return raw
+    def group(*args):
+        grouped.append(current_settings.get())
+        raise RuntimeError('isolated fixture stops before model/publication')
+    monkeypatch.setattr('structured_data.pdf_parser_bridge.parse_pdf', parse)
+    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', group)
+    result = client.post('/api/pdf/import-knowledge', json={'source_knowledge_id':'source-a'}, headers=headers(role='contributor'))
+    assert result.status_code == 200, result.text
+    assert started.wait(2)
+    policy[0] = PDFProcessingSettings()
+    release.set()
+    job = finish_pdf_job(client, result.json()['id'])
+    assert job['processing_settings'] == expected.snapshot()
+    assert grouped == [expected]
+    assert configurations[0].timeout_seconds == 900
+    assert configurations[0].queue_timeout_seconds == 7200
+    assert base.timeout_seconds == 600

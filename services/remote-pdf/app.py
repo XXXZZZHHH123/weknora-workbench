@@ -24,7 +24,8 @@ log = logging.getLogger('remote_pdf')
 
 DEFAULTS = dict(document_concurrency=2, page_concurrency=2, global_outstanding=16,
                 owner_outstanding=4, scope_outstanding=8, max_upload_bytes=100*1024*1024, max_uploads=4,
-                queue_timeout_seconds=1800, execution_timeout_seconds=1800,
+                queue_timeout_seconds=86400, execution_timeout_seconds=7200,
+                max_queue_timeout_seconds=86400, max_execution_timeout_seconds=7200,
                 retention_seconds=86400, disk_reserve_bytes=512*1024*1024,
                 max_storage_bytes=5*1024**3, max_job_output_bytes=256*1024**2)
 
@@ -92,6 +93,9 @@ def safe_error(exc):
 def public(job):
     return {k: job[k] for k in ('id', 'status', 'created', 'started', 'finished', 'execution_used')} | {
         'engine': 'remote_vlm', 'progress': json.loads(job['progress']),
+        'queue_elapsed_seconds': job.get('queue_used', 0) + (max(0, time.time()-job['queued']) if job['status']=='queued' else 0),
+        'timeout_policy': {'queue_timeout_seconds': job.get('queue_timeout'),
+                           'execution_timeout_seconds': job.get('execution_timeout')},
         'error': json.loads(job['error']) if job['error'] else None,
     }
 
@@ -251,7 +255,7 @@ class Worker:
                 await asyncio.sleep(1)
         heartbeat_task = asyncio.create_task(heartbeat())
         try:
-            budget = self.settings['execution_timeout_seconds'] - job['execution_used']
+            budget = (job.get('execution_timeout') or self.settings['execution_timeout_seconds']) - job['execution_used']
             if budget <= 0:
                 raise TimeoutError()
             if job['profile'] != self.profile:
@@ -320,9 +324,32 @@ def create_app(settings=None, parser=None):
     async def health():
         return {'status': 'ok', 'engine': 'remote_vlm', 'schema': 'remote_pdf_v1'}
 
+    @app.get('/v1/capacity')
+    async def capacity(identity=Depends(identity)):
+        scope, owner = identity
+        try:
+            worker.capacity(owner, scope)
+        except QueueFull:
+            raise HTTPException(429, '解析队列已满，等待空位。', headers={'Retry-After': '10'})
+        return {'available': True}
+
+    def requested_time_policy(request):
+        policy = {}
+        for name, header in (('queue', 'x-parse-queue-timeout'), ('execution', 'x-parse-execution-timeout')):
+            raw = request.headers.get(header)
+            try:
+                value = int(raw) if raw is not None else settings[name + '_timeout_seconds']
+                if value <= 0 or value > settings['max_' + name + '_timeout_seconds']:
+                    raise ValueError()
+            except ValueError:
+                raise HTTPException(422, 'Requested parser time budget is outside server limits') from None
+            policy[name + '_timeout'] = value
+        return policy
+
     @app.post('/v1/jobs', status_code=202)
     async def submit(request: Request, identity=Depends(identity)):
         scope, owner = identity
+        policy = requested_time_policy(request)
         worker.cleanup()
         # Existing cached jobs can still be reused when queue is full, so final queue admission follows hashing.
         if shutil.disk_usage(worker.root).free < settings['disk_reserve_bytes'] + settings['max_upload_bytes']:
@@ -349,7 +376,7 @@ def create_app(settings=None, parser=None):
                 if existing:
                     return public(existing) | {'reused': True, 'lease_id': worker.store.lease(existing['id'])}
                 worker.capacity(owner, scope)
-                job, reused = worker.store.insert(scope, owner, digest.hexdigest(), worker.profile, size)
+                job, reused = worker.store.insert(scope, owner, digest.hexdigest(), worker.profile, size, **policy)
                 directory = worker.directory(job['id'])
                 directory.mkdir(parents=True, mode=0o700)
                 tmp_path.replace(directory/'input.pdf')
@@ -444,7 +471,7 @@ def create_app(settings=None, parser=None):
         return public(worker.store.get(job_id))
 
     @app.post('/v1/jobs/{job_id}/retry', status_code=202)
-    async def retry(job_id: str, x_parse_retry_key: str = Header(default=''), identity=Depends(identity)):
+    async def retry(job_id: str, request: Request, x_parse_retry_key: str = Header(default=''), identity=Depends(identity)):
         job = lookup(job_id, identity)
         if not x_parse_retry_key or len(x_parse_retry_key) > 128 or any(ord(c) < 33 or ord(c) > 126 for c in x_parse_retry_key):
             raise HTTPException(400, 'A unique trusted X-Parse-Retry-Key is required for this manual action')
@@ -452,7 +479,7 @@ def create_app(settings=None, parser=None):
             raise HTTPException(409, 'Parser profile changed; submit source again')
         key_hash = hashlib.sha256(x_parse_retry_key.encode()).hexdigest()
         try:
-            retried, lease_id, reused = worker.store.retry(job_id, key_hash, identity[1])
+            retried, lease_id, reused = worker.store.retry(job_id, key_hash, identity[1], **requested_time_policy(request))
             return public(retried) | {'lease_id': lease_id, 'reused': reused}
         except RetryOwnerMismatch:
             raise HTTPException(404, 'Retry request not found')

@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
+from .pdf_processing_settings import PDFProcessingSettings, load_settings, use_settings
 from .pdf_errors import PDFProcessingError, processing_problem
 from .workspaces import current_identity
 from .pdf_parser_bridge import is_storage_space_error
@@ -48,7 +49,8 @@ def _pdf_failure(exc):
             return {'error': _STORAGE_ERROR_MESSAGE, 'error_code': 'PARSER_STORAGE_EXHAUSTED'}
         messages = {
             'HTTP_429': '解析队列已满，请稍后手动重试；现有任务不会被重复识别。',
-            'CLIENT_TIMEOUT': '等待远程解析超时，已停止本次等待；请查看任务状态后手动重试。',
+            'CLIENT_TIMEOUT': '实际解析超过设定时限，已保留完成的页面；可稍后继续。',
+            'CLIENT_QUEUE_TIMEOUT': '排队已超过保留时间，未消耗实际解析时限；可稍后重新排队。',
             'QUEUE_TIMEOUT': '解析排队超时，尚未取得执行资源；请稍后手动重试。',
             'EXECUTION_TIMEOUT': '远程解析超过执行时限；已完成的页面会保留，请手动重试以继续处理。',
             'MODEL_AUTH': '远程模型鉴权或账户授权失败，请管理员检查已配置模型的密钥、权限及账户状态。',
@@ -297,9 +299,10 @@ def install_pdf_routes(app, registry, *, publish_guard):
                 from .model_gateway import current_authorization
                 publish_guard(current_authorization.get(), identity)
                 source_path(draft_id)
-            return process_draft(pdf_store(registry), draft_id, registry.directory(), previous=previous,
-                                 save=lambda state: _write(state_path, state), progress=progress,
-                                 before_publish=before_publish)
+            with use_settings(job.get('processing_settings') or PDFProcessingSettings()):
+                return process_draft(pdf_store(registry), draft_id, registry.directory(), previous=previous,
+                                     save=lambda state: _write(state_path, state), progress=progress,
+                                     before_publish=before_publish)
 
     def automatic_summary(result):
         accepted = result.get('accepted_count', 0)
@@ -311,18 +314,26 @@ def install_pdf_routes(app, registry, *, publish_guard):
         return f'已自动入库 {accepted} 张表格' + (f'，{pending} 张需要处理' if pending else '')
 
     async def start_import(path, file_name, native=None, *, parser_config=None,
-                           parser_request=None, retry_token=None):
+                           parser_request=None, retry_token=None, processing_settings=None):
         from .pdf_parser_bridge import ParserConfig, parser_availability
         availability = parser_availability()
         if not availability.get('configured'):
             path.unlink(missing_ok=True)
             raise HTTPException(503, 'PDF 表格解析服务尚未配置，请配置独立解析服务后重试')
+        from .model_gateway import current_authorization
+        policy = (PDFProcessingSettings(**processing_settings) if isinstance(processing_settings, dict)
+                  else await load_settings(current_authorization.get(), current_identity.get()))
         effective_config = parser_config
         if effective_config is None:
             try:
                 effective_config = ParserConfig.from_env()
             except (ValueError, RuntimeError):
                 effective_config = None
+        if effective_config is not None and effective_config.engine == 'remote_vlm':
+            from copy import copy
+            effective_config = copy(effective_config)
+            effective_config.timeout_seconds = policy.execution_timeout_seconds
+            effective_config.queue_timeout_seconds = policy.queue_timeout_seconds
         remote = effective_config is not None and effective_config.engine == "remote_vlm"
         slot = _remote_waiters if remote else _parse_slot
         if not slot.acquire(blocking=False):
@@ -333,7 +344,7 @@ def install_pdf_routes(app, registry, *, publish_guard):
         job_path = scoped_root / 'jobs' / (job_id + '.json')
         job = {'id': job_id, 'status': 'processing',
                'stage': '正在识别 PDF 版面、表格和公式' if not parser_request else '正在使用指定模型重新识别原件',
-               'file_name': file_name}
+               'file_name': file_name, 'processing_settings': policy.snapshot()}
         try:
             _write(job_path, job)
             with _jobs_lock:
@@ -644,7 +655,9 @@ def install_pdf_routes(app, registry, *, publish_guard):
                 raise HTTPException(409, '此任务不能重试；仅允许显式重试失败或中断的远程解析')
             source = job.get('source') or {}
             original = verify_pdf_original(registry, source)
-            config = ParserConfig.from_env()
+            policy = await load_settings(request.state.verified_authorization, identity)
+            with use_settings(policy):
+                config = ParserConfig.from_env()
             if config.engine != 'remote_vlm' or job.get('parser_profile_sha256') != _parser_profile_sha256(config):
                 raise HTTPException(409, '解析配置已改变，请重新导入原件')
             uploads = directory() / 'uploads'
@@ -667,7 +680,7 @@ def install_pdf_routes(app, registry, *, publish_guard):
                 path.unlink(missing_ok=True)
                 return pdf_job(job['retry_job_id'])
             retry_token = uuid.uuid4().hex
-            result = await start_import(path, source['file_name'], native, parser_config=config, retry_token=retry_token)
+            result = await start_import(path, source['file_name'], native, parser_config=config, retry_token=retry_token, processing_settings=policy.snapshot())
             path = None  # the asynchronous job now owns this temporary copy
             _write(directory() / 'jobs' / (_identifier(job_id) + '.json'), {**job, 'retry_job_id': result['id']})
             return result
@@ -697,7 +710,7 @@ def install_pdf_routes(app, registry, *, publish_guard):
         return explain(pdf_store(registry).read_draft(_identifier(draft_id)), fragment_id, registry.directory())
 
     @app.post('/api/pdf/drafts/{draft_id}/auto-process')
-    def pdf_auto_process(draft_id: str):
+    async def pdf_auto_process(draft_id: str):
         identity = current_identity.get()
         if identity is None or not identity.can_write:
             raise HTTPException(403, '没有处理 PDF 表格的权限')
@@ -705,13 +718,15 @@ def install_pdf_routes(app, registry, *, publish_guard):
             source_path(draft_id)
         except ValueError:
             raise HTTPException(404, 'PDF 原件不存在、已改变或无权访问') from None
+        from .model_gateway import current_authorization
+        policy = await load_settings(current_authorization.get(), identity)
         job_id = 'auto_' + _identifier(draft_id)
         job_path = directory() / 'jobs' / (job_id + '.json')
         with _jobs_lock:
             if str(job_path) in _running_jobs:
                 return json.loads(job_path.read_text())
             job = {'id': job_id, 'kind': 'automatic', 'draft_id': draft_id,
-                   'status': 'processing', 'stage': '等待自动整理表格'}
+                   'status': 'processing', 'stage': '等待自动整理表格', 'processing_settings': policy.snapshot()}
             _write(job_path, job)
             _running_jobs.add(str(job_path))
         def run():

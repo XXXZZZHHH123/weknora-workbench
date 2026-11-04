@@ -103,6 +103,7 @@ class ParserConfig:
                  max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
                  max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
                  max_polls: int | None = None,
+                 queue_timeout_seconds: int = 86400,
                  poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
                  paddle_params: Mapping[str, Any] | None = None):
         self.engine = str(engine).strip().lower()
@@ -112,6 +113,7 @@ class ParserConfig:
         self.api_key = str(api_key or "").strip()
         self.tier = tier if tier in {"", "flash", "basic", "standard", "advanced"} else ""
         self.ocr_mode = ocr_mode if ocr_mode in {"auto", "txt", "ocr"} else "auto"
+        self.queue_timeout_seconds = _bounded_int(queue_timeout_seconds, 1, 86400, "queue_timeout_seconds")
         self.timeout_seconds = _bounded_int(timeout_seconds, 1, MAX_TIMEOUT_SECONDS, "timeout_seconds")
         self.max_file_bytes = _bounded_int(max_file_bytes, 1, 100 * 1024 * 1024, "max_file_bytes")
         self.max_response_bytes = _bounded_int(max_response_bytes, 1024, 64 * 1024 * 1024, "max_response_bytes")
@@ -131,12 +133,15 @@ class ParserConfig:
         endpoint = os.getenv("PDF_TABLE_PARSER_URL", "").strip()
         if not engine or not endpoint:
             raise PDFParserError("PDF table parser is not configured (PDF_TABLE_PARSER_ENGINE and PDF_TABLE_PARSER_URL required)")
+        from .pdf_processing_settings import current_settings
+        policy = current_settings.get() if engine.lower() == "remote_vlm" else None
         return cls(
             engine, endpoint,
             api_key=os.getenv("PDF_TABLE_PARSER_API_KEY", ""),
             tier=os.getenv("PDF_TABLE_PARSER_TIER", ""),
             ocr_mode=os.getenv("PDF_TABLE_PARSER_OCR_MODE", "auto"),
-            timeout_seconds=_env_int("PDF_TABLE_PARSER_TIMEOUT_SECONDS",
+            queue_timeout_seconds=policy.queue_timeout_seconds if policy else 86400,
+            timeout_seconds=policy.execution_timeout_seconds if policy else _env_int("PDF_TABLE_PARSER_TIMEOUT_SECONDS",
                                      DEFAULT_REMOTE_TIMEOUT_SECONDS if engine.lower() == "remote_vlm"
                                      else DEFAULT_TIMEOUT_SECONDS),
             max_file_bytes=_env_int("PDF_TABLE_PARSER_MAX_FILE_BYTES", DEFAULT_MAX_FILE_BYTES),

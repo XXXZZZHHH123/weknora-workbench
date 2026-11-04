@@ -123,3 +123,15 @@ PYTHONPATH=WeKnora WeKnora/docreader/.venv/bin/python -m unittest discover -s We
 - Go、发布脚本与镜像：检查范围见 [CI 配置](../.github/workflows/cicd.yml)。
 
 真实原文件和在线模型验收需要单独配置，不能以缺少这些条件的测试结果代替业务验收。开发测试使用隔离的样例与数据目录，不向业务空间上传验收文件。
+
+
+### PDF 管理员配置与排队验证
+
+管理员在「设置 → 文档解析 → PDF 表格处理」配置完整页重叠、整理批次大小、排队保留和实际解析时限。
+推荐值为 1 页、24KB、24 小时、120 分钟；普通用户不展示配置入口，后端也校验管理员权限。
+详细协议、边界和 worker 兼容性见 [远程 PDF 服务说明](../services/remote-pdf/README.md#workspace-policy-and-independent-clocks)。
+
+涉及这些设置时须同时验证 Go 原件后台任务、结构化 PDF 上传/重试、远程 worker、前端保存与权限。
+用隔离队列测试证明长时间等待不消耗执行额度，包含满队列等待、重启恢复、同次重试请求幂等、取消消费者隔离和跨空间知识库权限。
+不能仅延长某一层 HTTP 超时后宣称排队问题已解决。开发更新需实际重载 worker 的 `app.py`、`store.py` 和 `remote_pdf` 包，
+不能只挂载识别包而让调度器继续运行镜像中的旧代码；保留数据目录及设置文件。生产仍遵循正式发布流程。

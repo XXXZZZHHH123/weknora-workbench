@@ -25,12 +25,14 @@ import (
 // Provides functionality for creating, retrieving, updating, and deleting tenants
 // through the REST API endpoints
 type TenantHandler struct {
-	service       interfaces.TenantService
-	apiKeyService interfaces.TenantAPIKeyService
-	userService   interfaces.UserService
-	memberService interfaces.TenantMemberService
-	kbService     interfaces.KnowledgeBaseService
-	config        *config.Config
+	service           interfaces.TenantService
+	apiKeyService     interfaces.TenantAPIKeyService
+	userService       interfaces.UserService
+	memberService     interfaces.TenantMemberService
+	kbService         interfaces.KnowledgeBaseService
+	kbShareService    interfaces.KBShareService
+	agentShareService interfaces.AgentShareService
+	config            *config.Config
 	// systemSettingSvc resolves runtime tenant policies and limits.
 	// Reading goes DB > ENV >
 	// in-code default, so a SystemAdmin's UI override applies on the
@@ -63,19 +65,23 @@ func NewTenantHandler(
 	userService interfaces.UserService,
 	memberService interfaces.TenantMemberService,
 	kbService interfaces.KnowledgeBaseService,
+	kbShareService interfaces.KBShareService,
+	agentShareService interfaces.AgentShareService,
 	config *config.Config,
 	systemSettingSvc interfaces.SystemSettingService,
 	modelService interfaces.ModelService,
 ) *TenantHandler {
 	return &TenantHandler{
-		service:          service,
-		apiKeyService:    apiKeyService,
-		userService:      userService,
-		memberService:    memberService,
-		kbService:        kbService,
-		config:           config,
-		systemSettingSvc: systemSettingSvc,
-		modelService:     modelService,
+		service:           service,
+		apiKeyService:     apiKeyService,
+		userService:       userService,
+		memberService:     memberService,
+		kbService:         kbService,
+		kbShareService:    kbShareService,
+		agentShareService: agentShareService,
+		config:            config,
+		systemSettingSvc:  systemSettingSvc,
+		modelService:      modelService,
 	}
 }
 
@@ -1294,6 +1300,9 @@ func (h *TenantHandler) GetTenantKV(c *gin.Context) {
 	case "prompt-templates":
 		h.GetPromptTemplates(c)
 		return
+	case "pdf-processing-settings":
+		h.GetPDFProcessingSettings(c)
+		return
 	case "parser-engine-config":
 		h.GetTenantParserEngineConfig(c)
 		return
@@ -1341,7 +1350,7 @@ func (h *TenantHandler) UpdateTenantKV(c *gin.Context) {
 	key := secutils.SanitizeForLog(c.Param("key"))
 
 	switch key {
-	case "web-search-config", "parser-engine-config", "storage-engine-config":
+	case "web-search-config", "parser-engine-config", "storage-engine-config", "pdf-processing-settings":
 		if !dto.CanViewIntegrationSecrets(ctx) {
 			c.Error(errors.NewForbiddenError("integration configuration requires admin access"))
 			return
@@ -1351,6 +1360,9 @@ func (h *TenantHandler) UpdateTenantKV(c *gin.Context) {
 	switch key {
 	case "web-search-config":
 		h.updateTenantWebSearchConfigInternal(c)
+		return
+	case "pdf-processing-settings":
+		h.updatePDFProcessingSettings(c)
 		return
 	case "parser-engine-config":
 		h.updateTenantParserEngineConfigInternal(c)
@@ -1488,6 +1500,12 @@ func (h *TenantHandler) updateTenantParserEngineConfigInternal(c *gin.Context) {
 		logger.Error(ctx, "Workspace is empty")
 		c.Error(errors.NewBadRequestError("Workspace is empty"))
 		return
+	}
+	if cfg.PDFProcessing != nil {
+		if err := cfg.PDFProcessing.Validate(); err != nil {
+			c.Error(errors.NewValidationError(err.Error()))
+			return
+		}
 	}
 	merged := types.MergeParserEngineConfigForUpdate(&cfg, tenant.ParserEngineConfig)
 	if err := validateParserEngineOutboundURLs(merged); err != nil {

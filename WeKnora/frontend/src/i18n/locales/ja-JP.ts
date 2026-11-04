@@ -1,4 +1,5 @@
 export default {
+  pdfProcessing: {"title": "PDF table processing", "timingHint": "Queue waiting and parsing use separate clocks.", "overlap": "Overlapping pages", "batch": "Content per batch", "queue": "Maximum queue wait", "execution": "Parsing time limit", "pages": "pages", "hours": "hours", "minutes": "min", "retry": "Retry", "restore": "Restore recommended", "save": "Save settings", "saved": "Saved. New tasks will use these settings.", "applyHint": "Applies to newly started tasks.", "failed": "Could not load or save settings. Please retry.", "invalid": "Enter valid whole numbers."},
   chartRendering: {
     type: 'データグラフ',
     rendering: 'グラフを描画中',

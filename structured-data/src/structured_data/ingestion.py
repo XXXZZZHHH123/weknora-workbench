@@ -223,8 +223,10 @@ def install_ingestion_routes(app, registry):
                 draft = store.create_draft(bundle)
                 auto = directory / 'pdf-tables' / 'automation' / (draft['draft_id'] + '.json')
                 previous = json.loads(auto.read_text()) if auto.exists() else None
-                result = process_draft(store, draft['draft_id'], directory, previous=previous,
-                    save=lambda state: _write(auto, state), progress=progress, before_publish=guard)
+                from .pdf_processing_settings import PDFProcessingSettings, use_settings
+                with use_settings(envelope.get('processing_settings') or PDFProcessingSettings()):
+                    result = process_draft(store, draft['draft_id'], directory, previous=previous,
+                        save=lambda state: _write(auto, state), progress=progress, before_publish=guard)
                 result = {**result, 'draft_id': draft['draft_id'],
                           'attention_count':result.get('attention_count',0)+page_attention,
                           'page_attention_count':page_attention}

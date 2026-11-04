@@ -48,14 +48,20 @@ def _encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 
 
+def _request_budget():
+    from .pdf_processing_settings import current_settings
+    policy = current_settings.get()
+    return policy.grouping_request_bytes if policy else GROUPING_REQUEST_BYTES
+
+
 def _grouping_call(cfg, evidence, *, extra=''):
     from .pdf_api import _model_json
     prompt = _GROUPING_PROMPT + extra
     content = _encoded(evidence)
     size = len((prompt + content).encode('utf-8'))
-    if size > GROUPING_REQUEST_BYTES:
+    if size > _request_budget():
         raise PDFProcessingError('GROUPING_INPUT_LIMIT', '完整来源超过分批整理预算，未截断原件',
-                                 input_bytes=size, limit_bytes=GROUPING_REQUEST_BYTES)
+                                 input_bytes=size, limit_bytes=_request_budget())
     return _model_json(cfg, [{'role': 'system', 'content': prompt},
                             {'role': 'user', 'content': content}])
 
@@ -94,7 +100,10 @@ def _overlapping_batches(evidence):
                    {c['page'] for c in evidence['page_context']})
     batches, current = [], []
     # Leave room for the grouping prompt and bounded summary instructions.
-    budget = GROUPING_REQUEST_BYTES - 3000
+    from .pdf_processing_settings import current_settings
+    policy = current_settings.get()
+    overlap = policy.overlap_pages if policy else 1
+    budget = _request_budget() - 3000
     for page in pages:
         trial = current + [page]
         if len(_encoded(_page_evidence(evidence, set(trial))).encode('utf-8')) <= budget:
@@ -105,7 +114,7 @@ def _overlapping_batches(evidence):
         batches.append(set(current))
         # Share the last complete page, including every table and narrative
         # on it. Packaging by page never asserts a continuation relationship.
-        current = current[-1:] + [page]
+        current = current[-overlap:] + [page]
         if len(_encoded(_page_evidence(evidence, set(current))).encode('utf-8')) > budget:
             raise PDFProcessingError('GROUPING_INPUT_LIMIT', '完整重叠页超过整理范围，未删除边界来源')
     if current:
@@ -120,7 +129,7 @@ def group_fragments(draft, model_root, progress=None):
     actual = [f['id'] for f in evidence['fragments']]
     if not actual:
         return []
-    if len((_GROUPING_PROMPT + _encoded(evidence)).encode('utf-8')) <= GROUPING_REQUEST_BYTES:
+    if len((_GROUPING_PROMPT + _encoded(evidence)).encode('utf-8')) <= _request_budget():
         return _checked_groups(_grouping_call(cfg, evidence), actual)
 
     catalog, local_groups = [], set()
