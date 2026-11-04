@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -31,12 +33,25 @@ func pageNumberInMarker(match []string) int {
 // pageText propagates the last explicit page boundary across chunk splits,
 // while clipping a chunk containing multiple pages to the requested page.
 func pageText(content string, current, requested int) (string, int) {
+	text, next, _ := pageTextWithRanges(content, current, requested)
+	return text, next
+}
+
+func pageTextWithRanges(content string, current, requested int) (string, int, []types.ChunkRuneRange) {
 	markers := documentPageMarker.FindAllStringSubmatchIndex(content, -1)
 	start := 0
 	var selected strings.Builder
+	ranges := []types.ChunkRuneRange{}
+	appendRange := func(left, right int) {
+		if left >= right {
+			return
+		}
+		selected.WriteString(content[left:right])
+		ranges = append(ranges, types.ChunkRuneRange{Start: utf8.RuneCountInString(content[:left]), End: utf8.RuneCountInString(content[:right])})
+	}
 	for _, marker := range markers {
 		if current == requested {
-			selected.WriteString(content[start:marker[0]])
+			appendRange(start, marker[0])
 		}
 		markerText := content[marker[0]:marker[1]]
 		current = pageNumberInMarker(documentPageMarker.FindStringSubmatch(markerText))
@@ -51,9 +66,19 @@ func pageText(content string, current, requested int) (string, int) {
 		}
 	}
 	if current == requested {
-		selected.WriteString(content[start:])
+		appendRange(start, len(content))
 	}
-	return strings.TrimSpace(selected.String()), current
+	joined := selected.String()
+	trimmed := strings.TrimSpace(joined)
+	if trimmed == "" || len(ranges) > types.MaxChunkContentViewRanges {
+		return trimmed, current, nil
+	}
+	left := utf8.RuneCountInString(joined) - utf8.RuneCountInString(strings.TrimLeftFunc(joined, unicode.IsSpace))
+	view := sliceChunkContentView(&types.ChunkContentView{Ranges: ranges}, left, left+utf8.RuneCountInString(trimmed))
+	if view == nil {
+		return trimmed, current, nil
+	}
+	return trimmed, current, view.Ranges
 }
 
 func chunkMetadataPage(c *types.Chunk) int {
@@ -103,6 +128,7 @@ func pageImages(info, content string, page int, clipped bool) string {
 
 func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *types.Knowledge, requested, offset, limit int, segment *chunkContentSegment) (*types.ToolResult, error) {
 	var selected []*types.Chunk
+	views := map[string]*types.ChunkContentView{}
 	var total int64
 	current := 0
 	for page := 1; ; page++ {
@@ -116,7 +142,7 @@ func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *type
 			if metadataPage := chunkMetadataPage(c); metadataPage > 0 {
 				current = metadataPage
 			}
-			content, nextPage := pageText(c.Content, current, requested)
+			content, nextPage, ranges := pageTextWithRanges(c.Content, current, requested)
 			current = nextPage
 			if content == "" {
 				continue
@@ -124,6 +150,7 @@ func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *type
 			copy := *c
 			copy.Content = content
 			copy.ImageInfo = pageImages(c.ImageInfo, content, requested, content != strings.TrimSpace(c.Content))
+			views[c.ID] = chunkContentView(c, ranges)
 			selected = append(selected, &copy)
 		}
 		if len(chunks) == 0 || int64(page*readDocumentScanPageSize) >= total {
@@ -150,6 +177,7 @@ func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *type
 			return &types.ToolResult{Success: false, Error: err.Error()}, nil
 		}
 		row.role = "requested_page"
+		row.contentView = sliceChunkContentView(views[target.ID], segment.offset, segment.offset+utf8.RuneCountInString(row.chunk.Content))
 		selected = []*types.Chunk{row.chunk}
 		rows := []readChunkRow{row}
 		data := t.buildData(knowledge, total, rows)
@@ -184,7 +212,7 @@ func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *type
 	rows := make([]readChunkRow, 0, len(selected))
 	visual := false
 	for _, c := range selected {
-		rows = append(rows, readChunkRow{chunk: c, role: "requested_page"})
+		rows = append(rows, readChunkRow{chunk: c, role: "requested_page", contentView: views[c.ID]})
 		if len(chunkImageList(c.ImageInfo)) > 0 || strings.Contains(c.Content, "![") {
 			visual = true
 		}

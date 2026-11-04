@@ -185,6 +185,7 @@ func NewReadDocumentTool(
 // (page entry, search match, or context around a match).
 type readChunkRow struct {
 	chunk             *types.Chunk
+	contentView       *types.ChunkContentView
 	role              string // "", "match", "context_before", "context_after", "focus"
 	snippet           string
 	contentOffset     int
@@ -577,6 +578,9 @@ func sliceChunkContent(ctx context.Context, chunk *types.Chunk, offset, requeste
 	copy := *chunk
 	copy.Content = string(runes[offset:end])
 	row := readChunkRow{chunk: &copy, role: "focus", contentOffset: offset, contentComplete: end == len(runes)}
+	if offset > 0 || end < len(runes) {
+		row.contentView = chunkContentView(chunk, []types.ChunkRuneRange{{Start: offset, End: end}})
+	}
 	if !row.contentComplete {
 		row.nextContentOffset = end
 	}
@@ -597,6 +601,9 @@ func boundChunkRowsContent(ctx context.Context, rows []readChunkRow) []readChunk
 		}
 		segment.role = row.role
 		segment.snippet = row.snippet
+		if row.contentView != nil {
+			segment.contentView = sliceChunkContentView(row.contentView, 0, utf8.RuneCountInString(segment.chunk.Content))
+		}
 		rows[i] = segment
 	}
 	return rows
@@ -852,6 +859,10 @@ func (t *ReadDocumentTool) buildData(
 			sourceChunkID = r.chunk.ID
 		}
 		row := chunkDataMap(i+1, r.chunk)
+		row["content_revision"] = r.chunk.ContentRevision
+		if r.contentView != nil && !identityChunkContentView(r.chunk, r.contentView) {
+			row["content_source_view"] = r.contentView
+		}
 		if row["knowledge_id"] == "" {
 			row["knowledge_id"] = knowledge.ID
 		}
