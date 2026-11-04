@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
-root="${1:?usage: deploy.sh ABSOLUTE_DEPLOY_DIR RELEASE_ID}"
-release_id="${2:?release ID required}"
+if [[ $# -lt 2 || $# -gt 3 || ( $# -eq 3 && "${3:-}" != --local-images ) ]]; then
+  echo 'usage: deploy.sh ABSOLUTE_DEPLOY_DIR RELEASE_ID [--local-images]' >&2
+  exit 2
+fi
+root="$1"
+release_id="$2"
+local_images=false
+[[ "${3:-}" != --local-images ]] || local_images=true
 [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ && "$release_id" =~ ^production-[a-f0-9]{40}-[0-9]+-[0-9]+$ ]] || { echo 'Invalid deployment arguments' >&2; exit 1; }
 root="$(cd "$root" && pwd -P)"
 release="$root/releases/$release_id"
@@ -29,27 +35,47 @@ free_kib="$(df -Pk "${docker_root:?Docker data directory unavailable}" | awk 'NR
   echo "Docker data filesystem needs at least 15 GiB free before deployment: $docker_root" >&2
   exit 1
 }
-transport=docker
-if [[ -f "$root/shared/poller.json" ]]; then
-  transport="$(jq -r '.image_transport // "docker"' "$root/shared/poller.json")"
+if [[ "$local_images" == true ]]; then
+  # Explicitly offline preparation: inspect every exact Compose reference
+  # before any backup or update. Missing/wrong-platform images never fall
+  # through to either transport or an implicit Compose download.
+  images="$("${compose[@]}" config --images)"
+  [[ -n "$images" ]] || { echo 'No local deployment images were configured.' >&2; exit 1; }
+  while IFS= read -r image; do
+    [[ -n "$image" ]] || continue
+    platform="$(docker image inspect "$image" --format '{{.Os}}/{{.Architecture}}')" || {
+      echo "Required local image is unavailable: $image; downloads are disabled." >&2
+      exit 1
+    }
+    [[ "$platform" == linux/amd64 ]] || {
+      echo "Local image must be linux/amd64: $image ($platform); downloads are disabled." >&2
+      exit 1
+    }
+    echo "Verified local image: $image ($platform)"
+  done <<< "$images"
+else
+  transport=docker
+  if [[ -f "$root/shared/poller.json" ]]; then
+    transport="$(jq -r '.image_transport // "docker"' "$root/shared/poller.json")"
+  fi
+  case "$transport" in
+    docker) "${compose[@]}" pull --quiet ;;
+    regctl)
+      command -v regctl >/dev/null
+      proxy="$(jq -r '.proxy // ""' "$root/shared/poller.json")"
+      if [[ -n "$proxy" ]]; then export HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy"; fi
+      while IFS= read -r image; do
+        if docker image inspect "$image" >/dev/null 2>&1; then
+          echo "Image already available: $image"
+          continue
+        fi
+        echo "Importing $image"
+        regctl image export "$image" --platform linux/amd64 | docker load
+      done < <("${compose[@]}" config --images)
+      ;;
+    *) echo 'Unsupported image transport' >&2; exit 1 ;;
+  esac
 fi
-case "$transport" in
-  docker) "${compose[@]}" pull --quiet ;;
-  regctl)
-    command -v regctl >/dev/null
-    proxy="$(jq -r '.proxy // ""' "$root/shared/poller.json")"
-    if [[ -n "$proxy" ]]; then export HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy"; fi
-    while IFS= read -r image; do
-      if docker image inspect "$image" >/dev/null 2>&1; then
-        echo "Image already available: $image"
-        continue
-      fi
-      echo "Importing $image"
-      regctl image export "$image" --platform linux/amd64 | docker load
-    done < <("${compose[@]}" config --images)
-    ;;
-  *) echo 'Unsupported image transport' >&2; exit 1 ;;
-esac
 
 # Back up PostgreSQL before starting the new app (which may run migrations).
 # Failed backups abort deployment; no service or volume is removed.
