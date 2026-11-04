@@ -48,5 +48,42 @@
   <p id="strategy-citation-status" role="status" aria-live="polite"></p>
   <footer><button type="button" id="strategy-citation-clear" class="button-muted">暂无，清除此项引用</button><button type="button" class="button-primary" data-citation-close>完成</button></footer>
 </dialog>
+{% if research_cards.can_write %}
+<dialog id="strategy-text-dialog" class="strategy-tool-dialog" aria-labelledby="strategy-text-title">
+  <header><div><h2 id="strategy-text-title">文字整理</h2><p>用自己的话写下方案，模型整理成方案字段，并从近期研判条件和授权指标中挑选引用。结果只填入表单，核对后由你保存。</p></div><button type="button" class="button-muted" data-tool-close aria-label="关闭文字整理">×</button></header>
+  <label class="sr-only" for="strategy-text-input">方案文字</label>
+  <textarea id="strategy-text-input" rows="7" maxlength="6000" placeholder="例如：锡价跌到 40 万以下、VIX 回落到 19 以下时分批低吸；跌破 38 万或社库连续两周累库就撤回；月底复核。"></textarea>
+  <div class="strategy-tool-row"><label for="strategy-text-model">模型</label><select id="strategy-text-model" disabled><option value="">正在读取模型…</option></select><span id="strategy-text-count" class="strategy-small-note">0 / 6000</span></div>
+  <p id="strategy-text-status" class="strategy-tool-status" role="status" aria-live="polite"></p>
+  <footer><button type="button" class="button-muted" data-tool-close>取消</button><button type="button" id="strategy-text-run" class="button-primary" disabled>整理成方案</button></footer>
+</dialog>
+{% endif %}
+<dialog id="strategy-markdown-dialog" class="strategy-tool-dialog strategy-markdown-dialog" aria-labelledby="strategy-markdown-title">
+  <header><div><h2 id="strategy-markdown-title">md管理</h2><p>全部方案导出为一份 Markdown。{% if research_cards.can_write %}修改后先检查再导入：保留注释里的编号会更新原方案，删去编号则另存为新方案；文档里没有的方案保持不变，不会被删除。{% else %}当前角色可以导出和复制，不能导入。{% endif %}</p></div><button type="button" class="button-muted" data-tool-close aria-label="关闭md管理">×</button></header>
+  <details class="strategy-markdown-help"><summary>格式说明</summary><pre>## 方案名称
+&lt;!-- card: 编号 revision: 版本 --&gt;   导出时自动生成；新方案不写这一行
+- 方向：偏多观察 / 偏空观察 / 区间观察 / 等待验证
+- 复核日期：2026-11-30
+- 依据研判：研判名称 &lt;!-- judgment: 编号@版本 --&gt;   不引用时写“不引用”
+&lt;!-- 待核对：… --&gt;   文字整理留下的提醒，检查时显示，核对后可删除
+
+### 适用 / 触发
+什么情况出现时采取应对
+
+### 应对措施
+具体怎么做；不写则保存为观察方案
+
+### 暂停 / 撤回
+什么情况暂停、撤回或重新复核
+
+### 适用范围与目标、### 执行前核对、### 原始研究文字   选填
+
+### 引用
+- 适用 / 触发 · 指标：名称 &lt;!-- cite: … --&gt;   可删除或改所属文字项；新引用请在表单中选择</pre></details>
+  <textarea id="strategy-markdown-text" spellcheck="false" aria-label="策略 Markdown" placeholder="正在导出…"></textarea>
+  <div id="strategy-markdown-preview" class="strategy-markdown-preview" hidden></div>
+  <p id="strategy-markdown-status" class="strategy-tool-status" role="status" aria-live="polite"></p>
+  <footer><button type="button" id="strategy-markdown-export" class="button-muted">重新导出</button><button type="button" id="strategy-markdown-copy" class="button-muted">复制</button><button type="button" id="strategy-markdown-download" class="button-muted">下载 .md</button><span class="strategy-tool-spacer"></span>{% if research_cards.can_write %}<button type="button" id="strategy-markdown-check" class="button-muted">检查导入</button><button type="button" id="strategy-markdown-apply" class="button-primary" disabled>导入</button>{% endif %}</footer>
+</dialog>
 <script id="research-card-data" type="application/json">{{ research_cards|tojson }}</script>
 {% endif %}

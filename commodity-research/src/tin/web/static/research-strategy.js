@@ -6,6 +6,10 @@
   const research = sourceNode ? JSON.parse(sourceNode.textContent) : {items: [], enabled: false};
   const prefix = window.RESEARCH_PREFIX || '', api = prefix + '/api/sn';
   const byId = id => document.getElementById(id), field = id => byId('research-card-' + id);
+  // Unsaved-draft keys. randomUUID exists only in secure contexts (HTTPS or localhost); a plain-HTTP
+  // workbench address still needs a unique key for each new card.
+  const draftKey = () => 'new:' + (typeof crypto.randomUUID === 'function' ? crypto.randomUUID()
+    : Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join(''));
   const display = window.ResearchDisplay || {text: value => String(value ?? ''), indicator: () => '指标名称待核对', reference: row => row?.title || '已保存研究判断'};
   const form = field('form'), editor = field('dialog'), planEditor = byId('strategy-plan-editor');
   const fields = {title: 'title', direction: 'direction', thesis: 'thesis', watch_for: 'watch',
@@ -673,7 +677,7 @@
       const result = await request('/research-references/strategy/' + encodeURIComponent(key) + '?revision=' + item.revision);
       if (own !== selectSequence || selected !== key) return;
       if (result.can_apply === false || result.resource_type !== 'research-card') throw new Error('该记录可预览，不能直接作为结构化方案应用。');
-      const newKey = 'new:' + crypto.randomUUID(), card = structuredClone(result.payload);
+      const newKey = draftKey(), card = structuredClone(result.payload);
       card.reference = {kind: 'strategy', id: result.id, revision: result.revision};
       // A copy must be distinguishable from its original in the list.
       card.title = (String(card.title || '').slice(0, 114) + '（副本）').slice(0, 120);
@@ -737,7 +741,7 @@
   if (form) {
     form.addEventListener('input', dirty); form.addEventListener('change', dirty);
     form.addEventListener('submit', event => { event.preventDefault(); saveCard(); });
-    field('add')?.addEventListener('click', () => openCard('new:' + crypto.randomUUID()));
+    field('add')?.addEventListener('click', () => openCard(draftKey()));
     field('more-sources').addEventListener('click', loadSources);
     field('save-copy').addEventListener('click', () => saveCard(true));
     field('judgment').addEventListener('change', event => {
@@ -818,5 +822,20 @@
   window.addEventListener('beforeunload', event => {
     if ([...drafts.values()].some(draft => draft.dirty)) { event.preventDefault(); event.returnValue = ''; }
   });
+  // Entry points for the text and Markdown tools: an organized draft opens as an unsaved new card, and
+  // imported cards refresh the list without discarding drafts open in the editor.
+  window.ResearchStrategyEditor = {
+    openDraft(body, label, notes = []) {
+      if (saving || !form) return false;
+      const key = draftKey(), draft = {type: 'card', source: null, body, dirty: true, importLabel: label || ''};
+      drafts.set(key, draft); openCard(key, null, draft);
+      if (notes.length) status('请核对：' + notes.map(note => String(note).replace(/[。；;\s]+$/, '')).join('；') + '。', false, field('form-status'));
+      return true;
+    },
+    imported(items) {
+      for (const item of items) { cache.delete('research:' + item.id); updateEntry('research:' + item.id, item, 'card'); }
+      if (items.length && !activeEditor) select('research:' + items[0].id, false);
+    },
+  };
   select(selected);
 })();
