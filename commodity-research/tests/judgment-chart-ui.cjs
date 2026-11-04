@@ -29,7 +29,7 @@ host='''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name
 env=Environment(loader=ChoiceLoader([DictLoader({'base.html':host,'_restricted_entries.html':''}),FileSystemLoader(sys.argv[1])]),autoescape=select_autoescape(['html']))
 env.filters['num']=lambda value,unit=None: str(value)
 data=json.loads(sys.argv[2])
-env.globals.update(human_text=lambda value,*args:str(value or ''),indicator_name=lambda value,*args:data['names'].get(value,'合成指标'),research_workbench=lambda:None,research_static_prefix=lambda:'',static_version=lambda:'fixture',research_url=lambda value:value)
+env.globals.update(human_text=lambda value,*args:str(value or ''),indicator_name=lambda value,*args:data['names'].get(value,'合成指标'),research_workbench=lambda:None,research_static_prefix=lambda:'',static_version=lambda:'fixture',research_url=lambda value:value,author_label=lambda value,*args:str(value or ''),plain_item=lambda value,*args:str(value or ''))
 print(env.get_template('judgment.html').render(**data))
 `,path.join(web,'templates'),JSON.stringify(fixture)],{encoding:'utf8'});
 assert.equal(render.status,0,render.stderr);
@@ -58,10 +58,15 @@ const html=render.stdout.replace('</head>','<script>window.ChartPaletteColors='+
   await page.evaluate(()=>document.fonts.ready);
   const chart=page.locator('[data-judgment-chart]').first(),svg=chart.locator('svg');
   await chart.locator('.judgment-chart-observation').first().waitFor();
-  assert.deepEqual(await page.locator('.judgment-chart-observation').evaluateAll(nodes=>[...new Set(nodes.map(node=>getComputedStyle(node).stroke))]),['rgb(68, 114, 196)'],'Both research sides use shared blue data lines');
-  assert.equal(await chart.locator('[data-chart-average="20"]').first().evaluate(node=>getComputedStyle(node).stroke),'rgb(237, 125, 49)','MA20 is the contrasting shared orange');
+  // Both sides draw observations in the one shared first palette color (chart-palette.json).
+  const first=JSON.parse(fs.readFileSync(path.join(web,'static/chart-palette.json'),'utf8'))[0];
+  const expected=await page.evaluate(value=>{const probe=document.createElement('i');probe.style.color=value;document.body.append(probe);const color=getComputedStyle(probe).color;probe.remove();return color;},first);
+  assert.deepEqual(await page.locator('.judgment-chart-observation').evaluateAll(nodes=>[...new Set(nodes.map(node=>getComputedStyle(node).stroke))]),[expected],'Both research sides use the shared first palette color for data lines');
+  const second=JSON.parse(fs.readFileSync(path.join(web,'static/chart-palette.json'),'utf8'))[1];
+  const average=await page.evaluate(value=>{const probe=document.createElement('i');probe.style.color=value;document.body.append(probe);const color=getComputedStyle(probe).color;probe.remove();return color;},second);
+  assert.equal(await chart.locator('[data-chart-average="20"]').first().evaluate(node=>getComputedStyle(node).stroke),average,'MA20 uses the contrasting second palette color');
   await svg.focus();await page.keyboard.press('End');
-  assert.equal(await chart.locator('[data-chart-tooltip] span').filter({hasText:'MA20'}).first().evaluate(node=>getComputedStyle(node).color),'rgb(237, 125, 49)','Hover MA color matches the line');
+  assert.equal(await chart.locator('[data-chart-tooltip] span').filter({hasText:'MA20'}).first().evaluate(node=>getComputedStyle(node).color),average,'Hover MA color matches the line');
   await page.locator('[data-research-item="evidence"]').first().waitFor();
   for(const side of['bull','bear']){
    const column=page.locator(`.judgment-hypothesis[data-hypothesis="${side}"]`);
