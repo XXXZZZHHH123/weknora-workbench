@@ -257,11 +257,11 @@ def structure_prompt(text, today, judgments, conditions, strategies=(), files=()
     plans = json.dumps([{key: row[key] for key in ('ref', 'title', 'direction', 'review_date')} for row in strategies],
                        ensure_ascii=False)
     if files is None:
-        file_rule = ('- files：原话指向的知识库文件（如“310周报”“锡的研究逻辑那份”）。文件较多未列出，请给出检索用的简短名称 query（不要 ref）、'
+        file_rule = ('- files：原话指向的知识库文件，结合原话中的期次、主题或其他指向描述判断。文件较多未列出，请给出检索用的简短名称 query（不要 ref）、'
                      'field 填它在原话中出现的那一项；原话要求把文件中某部分原文摘进来时，excerpt 用一句话写明摘哪部分，只引用文件时 excerpt 填空字符串；没有就给空数组。')
         file_list = '知识库文件较多，未在此列出；请在 files 中给出检索名称。'
     else:
-        file_rule = ('- files：原话指向的知识库文件（如“310周报”“锡的研究逻辑那份”），按下方文件列表的含义判断是哪一个，写出编号 ref（f 开头）和 field；'
+        file_rule = ('- files：原话指向的知识库文件，结合原话中的期次、主题或其他指向描述，按下方文件列表的含义判断是哪一个，写出编号 ref（f 开头）和 field；'
                      '原话要求把文件中某部分原文摘进来时，excerpt 用一句话写明摘哪部分，只引用文件时 excerpt 填空字符串；判断不出是哪个文件时不要引用，在 gaps 中说明；没有就给空数组。')
         file_list = '知识库文件：' + json.dumps([{key: row[key] for key in ('ref', 'name', 'type')} for row in files], ensure_ascii=False)
     return f'''任务：把研究员用自己的话写的策略想法整理成「策略方案」草稿。研究员保存前会逐项核对。
@@ -276,11 +276,11 @@ def structure_prompt(text, today, judgments, conditions, strategies=(), files=()
 - thesis：适用的合约、期限与目标；只有原话明确写到时才填，否则填空字符串。
 - watch_for：执行前要再核对的数据或条件；只有原话明确要求执行前核对时才填，否则填空字符串，不要把触发或撤回条件里的指标挪到这里。
 - review_date：原话写了复核时间时换算成 YYYY-MM-DD（例如“月底”是本月最后一天，“下周五”按今天推算）；没写填 null。
-- judgment：方案依据的研判编号（下方 j 开头），按含义判断（如“锡研判”“上次的研判”），原话不涉及研判时填 null。
+- judgment：方案依据的研判编号（下方 j 开头），结合原话对研究对象与研判版本的指向，按含义判断，原话不涉及研判时填 null。
 - strategy：原话说参考、沿用或在某份已有方案基础上调整时，填下方已有策略的编号（s 开头）；按含义判断是哪一份，判断不出或原话没有提到时填 null。
 - conditions：原话中与下方研判条件意思一致的部分，写出条件编号（c 开头）和它出现在哪个字段；意思不一致时不要引用。
 {file_rule}
-- indicator_queries：原话提到、但下方研判条件里没有的指标，给出在指标目录中检索用的简短名称（如“锡锭社会库存”），field 填该指标在原话中出现的那一项（例如在撤回条件里提到就填 invalidation），每份最多 4 个；没有就给空数组。
+- indicator_queries：原话提到、但下方研判条件里没有的指标，保留原话中的研究对象与指标口径，给出在指标目录中检索用的简短名称，field 填该指标在原话中出现的那一项（例如在撤回条件里提到就填 invalidation），每份最多 4 个；没有就给空数组。
 - excerpt：原话中对应这份方案的连续原文；只有一份方案时填空字符串。
 - gaps：只写研究员需要补充或核对的业务内容（如缺少的合约、仓位、价格单位，或原话指向哪份文件、哪份研判不明确），每条一句话，最多 5 条；已经引用成功的内容不要再写，不要解释某个字段为什么为空，不要写字段名、编号或 ID；没有就给空数组。
 原话通常只写了一份方案；只有原话明确写了几份相互独立的方案时才拆成多份，最多 {MAX_CARDS} 份。

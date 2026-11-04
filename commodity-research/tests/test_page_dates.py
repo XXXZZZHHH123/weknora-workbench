@@ -39,4 +39,3 @@ def test_data_api_still_rejects_a_day_before_confirmed_observations(canonical, s
     enable_macro(state)
     response = client.get(page(FIRST, suffix), params={**params, 'date': '2026-01-01'}, headers=headers)
     assert response.status_code == 404, response.text
-
