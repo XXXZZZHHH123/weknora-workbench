@@ -262,3 +262,43 @@ def test_same_remote_cache_result_produces_same_immutable_draft(remote_fixture, 
     assert a['draft_id'] == b['draft_id']
     assert len(store.list_drafts()['drafts']) == 1
     assert first['parser']['profile_sha256'] == 'b' * 64
+
+
+@pytest.mark.parametrize('override,completes', [(None, True), ('600', False)])
+def test_remote_wait_survives_local_parser_deadline_but_honors_override(remote_fixture, monkeypatch, override, completes):
+    path, sha, _, state = remote_fixture
+    state['initial']['status'] = 'running'
+    state['polls'] = [dict(id='job-actual', status='completed')]
+    monkeypatch.setenv('PDF_TABLE_PARSER_ENGINE', 'remote_vlm')
+    monkeypatch.setenv('PDF_TABLE_PARSER_URL', 'http://remote-pdf.test')
+    monkeypatch.setenv('PDF_TABLE_PARSER_API_KEY', 'server-fixture-token')
+    if override is None:
+        monkeypatch.delenv('PDF_TABLE_PARSER_TIMEOUT_SECONDS', raising=False)
+    else:
+        monkeypatch.setenv('PDF_TABLE_PARSER_TIMEOUT_SECONDS', override)
+    cfg = ParserConfig.from_env()
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        original_time, original_sleep = loop.time, asyncio.sleep
+        elapsed = [0.0]
+
+        async def advance_poll(delay):
+            if delay:
+                elapsed[0] += 601
+            await original_sleep(0)
+            await original_sleep(0)
+
+        with monkeypatch.context() as clock_patch:
+            clock_patch.setattr(loop, 'time', lambda: original_time() + elapsed[0])
+            clock_patch.setattr(asyncio, 'sleep', advance_poll)
+            return await parse_remote_pdf(path, {'sha256': sha}, cfg)
+
+    if completes:
+        assert asyncio.run(scenario())['source']['sha256'] == sha
+        assert not any(r.method == 'DELETE' for r in state['requests'])
+    else:
+        with pytest.raises(RemotePDFError, match='client_timeout'):
+            asyncio.run(scenario())
+        assert state['requests'][-1].method == 'DELETE'
+        assert state['requests'][-1].headers['x-parse-lease'] == 'lease-consumer-a'

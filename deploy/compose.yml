@@ -75,6 +75,7 @@ services:
       PDF_TABLE_PARSER_URL: ${PDF_TABLE_PARSER_URL:-}
       PDF_TABLE_PARSER_API_KEY: ${PDF_TABLE_PARSER_API_KEY:-}
       PDF_TABLE_PARSER_TIER: ${PDF_TABLE_PARSER_TIER:-standard}
+      PDF_TABLE_PARSER_TIMEOUT_SECONDS: ${PDF_TABLE_PARSER_TIMEOUT_SECONDS:-}
     volumes:
       - structured-data:/data
       - ${DEPLOY_SHARED_DIR:?shared directory required}/research-service-token:/run/secrets/research-token:ro

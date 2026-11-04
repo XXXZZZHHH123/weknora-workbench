@@ -328,3 +328,48 @@ def test_optional_continuation_provider_failure_preserves_complete_pages(tmp_pat
     assert issue["code"] == "MODEL_CONTENT_FILTER"
     assert issue["needs_review"] is True
     assert (tmp_path / "output" / "artifact.json").exists()
+
+
+def test_three_disagreeing_readings_use_source_image_reconciliation_without_a_vote(tmp_path):
+    source = tmp_path / 'source.pdf'
+    pdf(source, 1)
+    readings = [sample('10'), sample('11'), sample('12')]
+    readings[0]['tables'][0]['columns'] = ['category', 'category']
+    repaired = sample('10')
+    prompts = []
+    class Client:
+        async def request(self, prompt, images=()):
+            assert images  # actual rendered source, never just majority text
+            prompts.append(prompt)
+            return deepcopy((readings + [repaired])[len(prompts)-1]), {'finish_reason': 'stop'}
+    page, cached = asyncio.run(e._page_vlm(source, 1, tmp_path, config(repair_attempts=0), Client(), None, None))
+    assert not cached and len(prompts) == 4
+    assert 'assisted reconciliation' in prompts[-1]
+    assert page['tables'][0]['columns'] == ['region', 'count']
+    assert page['reconciliation']['tables'][0]['rows'][0][1] == '10'
+    assert len(page['transcriptions']) == 3
+    assert page['tables'][0]['quality']['matching_transcriptions'] == 0
+    assert page['tables'][0]['quality']['status'] == 'needs_review'
+    bundle = e.build_bundle({}, [page], {})
+    header = bundle['fragments'][0]['rows'][0]
+    assert all(c.get('uncertain') for c in header)
+    assert any(i.get('cells') == [{'row': 0, 'column': 0}, {'row': 0, 'column': 1}]
+               for i in bundle['fragments'][0]['quality']['issues'])
+
+
+def test_failed_optional_reconciliation_preserves_original_and_review(tmp_path):
+    source = tmp_path / 'source.pdf'
+    pdf(source, 1)
+    count = 0
+    class Client:
+        async def request(self, prompt, images=()):
+            nonlocal count
+            count += 1
+            if count == 4:
+                raise e.ModelRequestError('unavailable', code='MODEL_UNAVAILABLE')
+            return sample(str(count)), {'finish_reason': 'stop'}
+    page, _ = asyncio.run(e._page_vlm(source, 1, tmp_path, config(repair_attempts=0), Client(), None, None))
+    assert page['reconciliation'] is None
+    assert page['tables'][0]['rows'][0][1] == '1'
+    assert page['quality']['status'] == 'needs_review'
+    assert len(page['transcriptions']) == 3

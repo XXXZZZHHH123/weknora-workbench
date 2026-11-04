@@ -176,6 +176,18 @@ def _model_json(cfg, messages):
             except httpx.HTTPError:
                 raise PDFProcessingError('MODEL_CONNECTION', '模型服务连接失败') from None
             if response.status_code != 200:
+                # Provider protocol diagnostics, never document/question matching.
+                # Do not persist arbitrary response text, URLs or credentials.
+                if response.status_code in {400, 413}:
+                    try:
+                        error = response.json().get('error', {})
+                        code, message = error.get('code'), str(error.get('message', '')).lower()
+                    except (ValueError, AttributeError):
+                        code, message = None, ''
+                    if (response.status_code == 413 or code == 'context_length_exceeded'
+                            or 'range of input length should be' in message
+                            or 'maximum context length' in message):
+                        raise PDFProcessingError('MODEL_INPUT_LIMIT', '完整来源超过模型输入范围，未接受结果')
                 raise PDFProcessingError({401: 'MODEL_AUTH', 403: 'MODEL_AUTH', 404: 'MODEL_NOT_FOUND', 429: 'MODEL_RATE_LIMIT'}.get(response.status_code, 'MODEL_HTTP_ERROR'), f'表格规划模型请求失败（HTTP {response.status_code}），未生成映射')
             if len(response.content) > 200000:
                 raise PDFProcessingError('MODEL_RESPONSE_LIMIT', '表格规划模型响应超过预算')
@@ -187,7 +199,16 @@ def _model_json(cfg, messages):
         choice = completion['choices'][0]
         if choice.get('finish_reason') != 'stop':
             raise PDFProcessingError('MODEL_OUTPUT_TRUNCATED', '表格规划模型未正常完成，未接受不完整映射')
-        result = json.loads(choice['message']['content'])
+        content = choice['message']['content']
+        if not isinstance(content, str):
+            raise TypeError('Model content must be text')
+        lines = content.strip().splitlines()
+        # Accept one complete JSON code fence, never search prose for a payload.
+        if len(lines) >= 3 and lines[0].strip() in {'```json', '```'} and lines[-1].strip() == '```':
+            content = '\n'.join(lines[1:-1])
+        result = json.loads(content)
+        if not isinstance(result, dict):
+            raise TypeError('Model result must be an object')
     except (KeyError, IndexError, TypeError, json.JSONDecodeError):
         raise PDFProcessingError('MODEL_OUTPUT_INVALID', '表格规划模型返回格式无效，未接受映射') from None
     return result
@@ -206,7 +227,11 @@ def suggest_plan(draft, body, model_root):
     selected = [fragments[i] for i in body.fragment_ids]
     from .pdf_tables import selected_page_context
     # No truncation: an unseen boundary row must never authorize a merge.
-    evidence = json.dumps({'fragments': selected, 'instructions': body.instructions,
+    # Mapping proposals cannot approve OCR. Derived review diagnoses are applied
+    # by validate_plan to the original immutable draft, not by the model. Keep
+    # every source cell (including uncertainty/padding flags), span and unit.
+    proposal_fragments = [{k: v for k, v in f.items() if k not in {'quality', 'requires_review'}} for f in selected]
+    evidence = json.dumps({'fragments': proposal_fragments, 'instructions': body.instructions,
                            'continuation_proposals': [p for p in bundle.get('continuation_proposals', [])
                                                      if p.get('left_fragment_id') in body.fragment_ids and p.get('right_fragment_id') in body.fragment_ids],
                            **selected_page_context(bundle, {f['page'] for f in selected})}, ensure_ascii=False)
@@ -216,6 +241,8 @@ def suggest_plan(draft, body, model_root):
 只输出 JSON {status:"ready"|"needs_review",message:"依据和需核对事项",plan:对象或null}。ready时 plan={bundle_sha256:输入提供的指纹,fragment_ids:所选真实ID的阅读顺序,header_rows:{每个片段ID:[{row:零起算表头行号,reason:"剔除该表头行的依据"}]},columns:[{name:依据真实表头的唯一列名,type:"text"|"decimal",unit:可选字符串,source_columns:{每个片段ID:原始零起算列号}}],excluded_rows:[],boundary_merges:[]}。unit 仅在原表格或可核实的 page_context 明确提供该单位、且证据足以支持其与该列对应时填写；必须在 message 中指出证据所在页和原文依据。page_context 只是同页候选正文，不能仅凭邻近或同页关系认定单位归属；证据不明确时省略 unit 并要求人工核对，绝不能推测或标准化单位。纵向续行时每个片段必须有每个输出列的映射；横向按后述协议只映射实际贡献片段。只有实际数值列使用decimal，不把标识/日期数字当度量。无法无损表示的数值保留text。不要提供reviewed或捏造原值。不得丢列；只有真实重复表头可以从数据行剔除。单行或单元格跨页、合并单元格导致列归属不确定时返回needs_review，禁止猜测拼接。计划须经过程序来源与质量校验；没有识别疑点的完整计划可由系统自动入库。'''
     prompt += '\npage_context 是所选页的候选正文证据，不是程序确认的表格单位、标题或脚注；应结合原文判断关联，不得把同页出现就当成归属。coverage=incomplete 或来源页不明时必须明确说明遗漏与待核对处。'
     prompt += '\n横向续列协议：同一组实体后页延续其他指标时用 join_mode:"horizontal"，columns 每列 source_columns 只包含实际贡献该列的片段；相同实体键列可映射多个片段但原文必须完全相同。必须保留不同年份、单位和统计指标的独立列，不能同名合并或上下追加。所有来源列只能映射一次。提供 key_columns:[所有片段共有的真实逻辑标识列名]、row_groups:[{source_rows:[{fragment_id:真实ID,row:零起算数据行号}],reason:"该行对应依据"}]。每个 row_group 必须包含每个片段恰好一行，每个数据行恰好覆盖一次。可按真实标识对齐不同顺序；重复键、缺失行、冲突值不得猜测，返回 needs_review。无共有行标识时 key_columns:[]，仅在原文或 continuation_proposals 给出明确续表及行对应证据时可给出供人工核对的完整 row_groups，message 必须强调无法自动核实行对应且需人工逐行确认，禁止仅按行数相等推测。continuation_proposals 只是模型候选而非事实。纵向默认 join_mode:"vertical"，不提供水平字段。永远不要填写 row_alignment_review、quality_reviews、cell_corrections 或 reviewed；这些只能由人工对照原 PDF 后明确提供。质量问题仍需人工处理，结构正确不代表识别准确。'
+
+    prompt += '\n将结构映射与识别质量核对分开：ready仅表示可以完整映射当前真实来源的行列，不表示OCR正确或已经审核。若表头行、列对应和类型可以确定，即使quality标记needs_review或存在转录冲突，也应返回ready及完整结构计划，并在message说明待核对位置；程序仍会独立阻止有未处理疑点的自动入库。不要为了回避已有质量疑点而隐藏可确定的列名和类型。单位归属不确定时省略该列unit并说明，不能借此捏造单位。只有结构本身无法完整映射或续表关系不确定时返回needs_review且plan为null。'
 
     messages = [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({
         'bundle_sha256': draft['bundle_sha256'], 'evidence': json.loads(evidence)}, ensure_ascii=False)}]

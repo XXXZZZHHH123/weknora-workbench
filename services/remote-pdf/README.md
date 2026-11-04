@@ -106,3 +106,7 @@ The complete original transcription stays in the review artifact. Exact table
 answers must use source-reviewed, published structured data. Ordinary text pages
 retain text indexing and source-page citations. This deliberately trades immediate
 numeric recall for a verifiable table approval boundary.
+
+### Disagreeing page readings
+
+When three independent full-grid readings all disagree, one bounded assisted pass re-reads the original rendered page with the complete candidate tables. It can repair repeated or misplaced headers and column units from the image; it does not select values using business keywords, dates or numeric trends. Assisted output is retained separately and never counted as an independent agreeing vote. All independent readings and unresolved cell/header differences remain available for review. If this optional pass fails or the complete candidate evidence exceeds its budget, the initial source result remains available with review required. Parser version and prompt digest isolate older checkpoints.

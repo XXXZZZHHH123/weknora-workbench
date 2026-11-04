@@ -63,7 +63,7 @@ def finish_pdf_job(client, job_id):
 def test_upload_automatically_accepts_clean_tables_and_retry_is_idempotent(pdf_service, monkeypatch):
     client, _, _, _, _ = pdf_service
     calls = []
-    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', lambda draft, root: [
+    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', lambda draft, root, progress=None: [
         {'fragment_ids': [f['id'] for f in draft['bundle']['fragments']], 'reason': 'explicit continuation'}])
     def suggest(draft, body, root):
         calls.append(body.fragment_ids)
@@ -109,7 +109,7 @@ def test_automatic_failure_keeps_draft_and_safe_retry_state(pdf_service, monkeyp
 
 def test_automatic_acceptance_rechecks_permission_after_model_call(pdf_service, monkeypatch):
     client, _, state, _, _ = pdf_service
-    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', lambda draft, root: [
+    monkeypatch.setattr('structured_data.pdf_automation.group_fragments', lambda draft, root, progress=None: [
         {'fragment_ids': ['table-1', 'table-2'], 'reason': 'explicit continuation'}])
     def suggest(draft, body, root):
         state['permission'] = 'viewer'
@@ -492,6 +492,7 @@ def test_model_suggestion_binds_complete_fragments_and_handles_truncated_output(
     assert evidence['evidence']['fragments'] == raw['fragments']
     assert evidence['evidence']['page_context'][0]['text'] == 'Amounts in kg'
     prompt = requests[0]['messages'][0]['content']
+    assert '将结构映射与识别质量核对分开' in prompt
     assert 'unit:可选字符串' in prompt
     assert '绝不能推测或标准化单位' in prompt
     assert PDFTableStore(tmp_path).validate_plan(draft['draft_id'], result['plan'])['coverage']['logical_row_count'] == 2
@@ -873,3 +874,76 @@ def test_pdf_candidate_directories_keep_notes_for_actual_read_only(pdf_service):
     assert client.get('/api/pdf/tables').status_code == 401
     assert client.get('/api/pdf/tables', headers=headers()).json()['tables'][0] == management
     assert {path: path.read_bytes() for path in root.rglob('tables/pdft_*.json')} == before
+
+
+@pytest.mark.parametrize('content,valid', [
+    ('```json\n{"groups": []}\n```', True),
+    ('```\n{"groups": []}\n```', True),
+    ('{"groups": []}', True),
+    ('some advice\n```json\n{"groups": []}\n```', False),
+    ('```json\n{"groups": []}', False),
+    ('{"groups": []}\n{"groups": []}', False),
+    ('[]', False),
+])
+def test_model_json_accepts_only_complete_json_or_single_code_fence(monkeypatch, content, valid):
+    import httpx
+    from structured_data.pdf_api import _model_json
+    class Model:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, *args, **kwargs):
+            return httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': content}}]})
+    monkeypatch.setattr(httpx, 'Client', Model)
+    cfg = {'base_url': 'http://model.test/v1', 'api_key': 'fixture', 'model': 'fixture'}
+    if valid:
+        assert _model_json(cfg, []) == {'groups': []}
+    else:
+        with pytest.raises(ValueError, match='格式无效'):
+            _model_json(cfg, [])
+
+
+def test_provider_input_limit_has_non_retrying_action_and_no_provider_body(monkeypatch):
+    import httpx
+    from structured_data.pdf_api import _model_json
+    from structured_data.pdf_errors import processing_problem
+    class Model:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, *args, **kwargs):
+            return httpx.Response(400, json={'error': {'code': 'invalid_parameter_error',
+                'message': 'Range of input length should be [1, 12345] private-provider-detail'}})
+    monkeypatch.setattr(httpx, 'Client', Model)
+    with pytest.raises(ValueError) as caught:
+        _model_json({'base_url': 'http://model.test/v1', 'api_key': 'fixture', 'model': 'fixture'}, [])
+    problem = processing_problem(caught.value, stage='grouping')
+    assert problem['code'] == 'MODEL_INPUT_LIMIT'
+    assert problem['retryable'] is False
+    assert 'private-provider-detail' not in str(problem)
+
+
+def test_mapping_proposal_keeps_uncertain_cells_but_quality_is_checked_on_original(tmp_path, monkeypatch):
+    from structured_data.pdf_api import suggest_plan, PDFSuggestRequest
+    from structured_data.pdf_tables import PDFTableStore
+    raw = bundle()
+    raw['fragments'][0]['quality'] = {'status': 'needs_review', 'issues': [
+        {'code': 'TRANSCRIPTION_CELL_CONFLICT', 'cells': [{'row': 1, 'column': 1}]}]}
+    raw['fragments'][0]['requires_review'] = True
+    raw['fragments'][0]['rows'][1][1]['uncertain'] = True
+    from test_pdf_tables import setup
+    store, draft, mapping = setup(tmp_path, raw)
+    def model(cfg, messages):
+        fragment = json.loads(messages[1]['content'])['evidence']['fragments'][0]
+        assert 'quality' not in fragment and 'requires_review' not in fragment
+        assert fragment['rows'] == raw['fragments'][0]['rows']
+        assert fragment['rows'][1][1]['uncertain'] is True
+        return {'status': 'ready', 'plan': mapping}
+    monkeypatch.setattr('structured_data.model_settings.read_model', lambda root: {'native_model_id': 'fixture'})
+    monkeypatch.setattr('structured_data.pdf_api._model_json', model)
+    result = suggest_plan(draft, PDFSuggestRequest(fragment_ids=['table-1']), tmp_path)
+    assert result['status'] == 'ready'
+    assert store.read_draft(draft['draft_id'])['bundle'] == raw
+    with pytest.raises(ValueError):
+        store.publish_automatic(draft['draft_id'], result['plan'])
+    assert store.list_tables()['tables'] == []

@@ -82,6 +82,13 @@ def test_environment_budget_defaults_and_explicit_poll_limit(monkeypatch):
     monkeypatch.delenv('PDF_TABLE_PARSER_MAX_POLLS', raising=False)
     monkeypatch.delenv('PDF_TABLE_PARSER_POLL_INTERVAL_SECONDS', raising=False)
     assert bridge.ParserConfig.from_env().timeout_seconds == 600
+    monkeypatch.setenv('PDF_TABLE_PARSER_ENGINE', 'remote_vlm')
+    assert bridge.ParserConfig.from_env().timeout_seconds == 7200
+    monkeypatch.setenv('PDF_TABLE_PARSER_TIMEOUT_SECONDS', '')
+    assert bridge.ParserConfig.from_env().timeout_seconds == 7200
+    monkeypatch.setenv('PDF_TABLE_PARSER_TIMEOUT_SECONDS', '45')
+    assert bridge.ParserConfig.from_env().timeout_seconds == 45
+    monkeypatch.setenv('PDF_TABLE_PARSER_ENGINE', 'mineru_v1')
     monkeypatch.setenv('PDF_TABLE_PARSER_TIMEOUT_SECONDS', '3600')
     monkeypatch.setenv('PDF_TABLE_PARSER_POLL_INTERVAL_SECONDS', '20')
     assert bridge.ParserConfig.from_env().max_polls == 181

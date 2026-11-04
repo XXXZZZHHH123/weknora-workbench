@@ -35,6 +35,9 @@ MAX_PAGE_CONTEXT_TEXT_BYTES = 16 * 1024
 MAX_PAGE_CONTEXT_TOTAL_TEXT_BYTES = 1024 * 1024
 DEFAULT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 600
+# A queued remote service has independent queue/execution budgets; its consumer
+# must not cancel a healthy long document at the short local-parser default.
+DEFAULT_REMOTE_TIMEOUT_SECONDS = 7200
 MAX_TIMEOUT_SECONDS = 7200
 MIN_POLL_INTERVAL_SECONDS = 0.05
 MAX_POLLS = math.ceil(MAX_TIMEOUT_SECONDS / MIN_POLL_INTERVAL_SECONDS) + 1
@@ -133,7 +136,9 @@ class ParserConfig:
             api_key=os.getenv("PDF_TABLE_PARSER_API_KEY", ""),
             tier=os.getenv("PDF_TABLE_PARSER_TIER", ""),
             ocr_mode=os.getenv("PDF_TABLE_PARSER_OCR_MODE", "auto"),
-            timeout_seconds=_env_int("PDF_TABLE_PARSER_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+            timeout_seconds=_env_int("PDF_TABLE_PARSER_TIMEOUT_SECONDS",
+                                     DEFAULT_REMOTE_TIMEOUT_SECONDS if engine.lower() == "remote_vlm"
+                                     else DEFAULT_TIMEOUT_SECONDS),
             max_file_bytes=_env_int("PDF_TABLE_PARSER_MAX_FILE_BYTES", DEFAULT_MAX_FILE_BYTES),
             max_response_bytes=_env_int("PDF_TABLE_PARSER_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES),
             max_archive_bytes=_env_int("PDF_TABLE_PARSER_MAX_ARCHIVE_BYTES", DEFAULT_MAX_ARCHIVE_BYTES),
