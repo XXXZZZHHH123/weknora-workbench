@@ -1,0 +1,2 @@
+{# Inline report sparkline from server-computed points; no client-supplied IDs. #}
+{% macro spark(chart) %}{% if chart and chart.segments %}<svg class="report-spark" viewBox="0 0 240 48" aria-hidden="true">{% for segment in chart.segments %}<polyline points="{{ segment }}"/>{% endfor %}{% set last = chart.points[-1] if chart.points else none %}{% if last %}<circle cx="{{ last.x }}" cy="{{ last.y }}" r="2.5"/>{% endif %}</svg>{% endif %}{% endmacro %}

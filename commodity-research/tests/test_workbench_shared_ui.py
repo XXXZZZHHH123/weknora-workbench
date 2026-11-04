@@ -261,7 +261,7 @@ def test_empty_workbench_guidance_and_quick_entry_lead_to_scoped_sources(isolate
         if suffix == '/sn':
             assert '请在「资料与来源」准备并确认本知识库资料' in response.text
         else:
-            assert '事务中心' in response.text and '尚未进行本次检查' in response.text
+            assert '事务中心' in response.text and '不能据此判断当前没有风险' in response.text
         assert '「数据更新」中立即更新' not in response.text
         assert '下方「数据更新」中立即更新' not in response.text
         elements = _html_elements(response.text)
@@ -380,3 +380,16 @@ def test_diagram_cutoff_before_real_observations_is_missing_not_a_source_date(is
     assert response.json()['nodes'][0]['value'] is None
     assert client.post(page('/api/sn/diagram/values'), headers={'Origin':'http://testserver'},
                        json={'date':'not-a-date','layout':{'nodes':[]}}).status_code == 400
+
+
+def test_viewer_may_preview_a_citation_but_still_cannot_save_a_strategy(isolated):
+    client, headers, state, tmp = isolated
+    viewer = {**headers, 'Authorization':'Bearer viewer', 'X-Research-User':'viewer'}
+    login(client, viewer)
+    origin = {'Origin':'http://testserver'}
+    # The preview body only reads; a malformed citation is rejected by the endpoint, not by the write guard.
+    preview = client.post(page('/api/sn/research-strategies/citation-preview'), headers=origin, json={'citation': {}})
+    assert preview.status_code == 422, preview.text
+    assert client.post(page('/api/sn/research-strategies/citation-preview'), json={'citation': {}}).status_code == 403
+    saved = client.post(page('/api/sn/research-strategies'), headers=origin, json={})
+    assert saved.status_code == 403 and '只有读取权限' in saved.text

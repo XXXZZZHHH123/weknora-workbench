@@ -1,22 +1,28 @@
-<header class="affairs-header"><div><h1>事务中心</h1><p>核对已记录预警，复核研究，处理计划与报告草稿。</p>
+<header class="affairs-header"><div><h1>事务中心</h1><p>汇总后台分析进度、研判与策略的触发和待办，以及日报周报入口。</p>
   <div class="affairs-shortcuts">{% for item in affairs.shortcuts %}<a href="{{ research_url(item.href) }}">{{ item.title }} ↗</a>{% endfor %}</div>
 </div></header>
 
 <section class="affairs-alerts" aria-labelledby="affairs-alert-title">
-  <div class="affairs-section-head"><h2 id="affairs-alert-title">已记录预警 <span>按需检查，不在后台轮询</span></h2><button id="affairs-check" type="button" class="affairs-check" {% if not affairs.can_check %}disabled{% endif %}>检查预警</button></div>
+  <div class="affairs-section-head"><h2 id="affairs-alert-title">预警与触发 <span>{% if affairs.can_check %}已记录预警；打开页面时自动核对一次当前研判规则{% if affairs.monitored_strategies %}与 {{ affairs.monitored_strategies }} 个策略方案的引用条件{% endif %}{% else %}已记录预警；保存研判规则或在策略方案中引用研判条件后，打开页面会自动核对{% endif %}</span></h2><button id="affairs-check" type="button" class="affairs-check" {% if not affairs.can_check %}disabled{% endif %}>重新检查</button></div>
   <p id="affairs-check-status" class="affairs-status" role="status" aria-live="polite"></p>
   <div id="affairs-alert-list">
     {% for item in affairs.alerts %}
     <a class="affairs-row" href="{{ research_url(item.href) }}"><div><div class="affairs-row-title"><span class="affairs-row-kind">{{ item.kind }}</span>{{ item.title }}</div><div class="affairs-row-detail">{{ item.detail }}{% if item.trade_date %} · 计算日期 {{ item.trade_date }}{% endif %}{% if item.recorded_at %} · 记录于 {{ item.recorded_at }}{% endif %} · 非实时记录</div></div><span class="affairs-row-arrow">查看 →</span></a>
-    {% else %}<div class="affairs-empty">暂无已记录的触发或缺数预警。尚未进行本次检查，不能据此判断当前没有风险。</div>{% endfor %}
+    {% else %}<div class="affairs-empty">{% if affairs.can_check %}暂无已记录的触发或缺数预警，正在核对当前规则。{% else %}尚未保存可检查的研判规则或引用条件的策略方案，不能据此判断当前没有风险。{% endif %}</div>{% endfor %}
   </div>
 </section>
 
 <div class="affairs-grid">
-  {% for key, label, more, empty in [('review', '待复核', '/sn/judgment', '暂无已到复核日期的研判或策略。'), ('approvals', '待审核计划', '/sn/strategies', '暂无待审核的交易计划。研究策略卡仍可在策略页管理。'), ('reports', '报告草稿', '/sn/reports', '暂无手动保存的日报或周报草稿。')] %}
+  {% for key, label, more, empty in [
+      ('progress', '研究进度', '/sn/judgment', '暂无进行中的后台分析或待生效的研判草稿。'),
+      ('review', '待复核', '/sn/judgment', '暂无已到复核日期的研判或策略。'),
+      ('approvals', '策略待处理', '/sn/strategies', '暂无待审核的交易计划或待补应对的策略方案。'),
+      ('reports', '日报与周报', '/sn/reports', '暂无手动保存的日报或周报草稿。')] %}
   {% if key in affairs.sections %}<section class="affairs-group" aria-label="{{ label }}"><div class="affairs-section-head"><h2>{{ label }}</h2><a class="affairs-count" href="{{ research_url(more) }}">{{ affairs.counts[key] }} 项 · 查看全部 ↗</a></div>
-    {% for item in affairs[key] %}<a class="affairs-row" href="{{ research_url(item.href) }}"><div><div class="affairs-row-title">{{ item.title }}</div><div class="affairs-row-detail">{{ item.detail }}</div></div><span class="affairs-row-arrow">→</span></a>
-    {% else %}<div class="affairs-empty">{{ empty }}</div>{% endfor %}
+    {% set rows = affairs[key] + (affairs.observations if key == 'approvals' else []) %}
+    {% if key == 'reports' %}{% for item in affairs.report_links %}<a class="affairs-row affairs-row-link" href="{{ research_url(item.href) }}"><div><div class="affairs-row-title">{{ item.title }}</div><div class="affairs-row-detail">{{ item.detail }}</div></div><span class="affairs-row-arrow">打开 →</span></a>{% endfor %}{% endif %}
+    {% for item in rows %}<a class="affairs-row" href="{{ research_url(item.href) }}"><div><div class="affairs-row-title">{% if item.status %}<span class="affairs-row-kind" data-status="{{ item.status }}">{{ item.status }}</span>{% endif %}{{ item.title }}</div><div class="affairs-row-detail">{{ item.detail }}</div></div><span class="affairs-row-arrow">→</span></a>
+    {% else %}{% if not (key == 'reports' and affairs.report_links) %}<div class="affairs-empty">{{ empty }}</div>{% endif %}{% endfor %}
   </section>{% endif %}
   {% endfor %}
 </div>

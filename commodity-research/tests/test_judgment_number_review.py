@@ -34,6 +34,9 @@ REVIEWABLE = [
     ('价格跌破25万元/吨离场', '价格跌破25万元/吨离场', '元/吨', 250000, ''),
     ('价格在40万附近放量', '价格在40万附近放量', '元/吨', 400000, ''),
     ('AAA>17.5或BBB>1/2', 'AAA>17.5或BBB>1/2', '点', 17.5, ''),
+    # A note bracket after a multiplier ends the literal for a person to check.
+    ('价格在40万(补货线+成本区)附近介入', '价格在40万(补货线+成本区)附近介入', '元/吨', 400000, ''),
+    ('价格在40万（补货线）附近介入', '价格在40万（补货线）附近介入', '元/吨', 400000, ''),
 ]
 
 
@@ -155,3 +158,12 @@ def test_bulk_confirmation_never_attests_numbers(generator, monkeypatch):
         'draft_id': preview['draft_id'], 'revision': preview['review']['revision']})
     assert result.status_code == 200, result.text
     assert pick(result.json(), 'thresholds')['status'] == 'pending'
+
+
+@pytest.mark.parametrize('source,unit,others', [
+    ('价格19(美元/吨)时离场', '元/吨', ('美元/吨',)), ('价格19万(美元/吨)时离场', '元/吨', ('美元/吨',)),
+    ('库存5(万吨)时减仓', '吨', ('万吨',)), ('价格40万(2026)附近', '元/吨', ())])
+def test_a_bracket_that_states_a_unit_or_number_is_never_sent_to_review(source, unit, others):
+    value = 190000 if '19万' in source else 400000 if '40万' in source else 5 if '5(' in source else 19
+    issue = outcome(source, source, unit, value, others=others)
+    assert issue is not None and issue['code'] != 'number_review_required'

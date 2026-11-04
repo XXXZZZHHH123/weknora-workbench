@@ -17,7 +17,8 @@ const dg = {
 };
 
 const DG_STATE = {
-  ok:       { stroke: "var(--primary)",    fill: "var(--surface)",     tone: "text-[var(--text)]" },
+  // Normal is deliberately neutral: the brand red is too close to the amber/red alert states.
+  ok:       { stroke: "var(--line-strong)", fill: "var(--surface)",    tone: "text-[var(--text)]" },
   stale:    { stroke: "var(--amber)",      fill: "var(--amber-soft)",  tone: "text-[var(--amber)]" },
   blocked:  { stroke: "var(--alert)",      fill: "var(--alert-soft)",  tone: "text-[var(--alert)]" },
   missing_input: { stroke: "var(--amber)", fill: "var(--amber-soft)",  tone: "text-[var(--amber)]", dash: "5 3" },
@@ -43,12 +44,17 @@ const DG_DEPTH = [
 const dgEsc = (t) => String(t == null ? "" : t).replace(/[<>&"]/g, (c) =>
   ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c]));
 
+// Catalog placeholders for an unknown unit/frequency are not shown as if they were values.
+function dgKnown(text) {
+  return text && !/^(?:原表)?未注明(?:单位)?$/.test(String(text).trim()) ? String(text) : "";
+}
+
 function dgNum(v, unit) {
   if (v == null) return "—";
   const abs = Math.abs(v);
   const digits = abs >= 1000 ? 0 : abs >= 10 ? 1 : 2;
   return v.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits })
-    + (unit ? ` ${unit}` : "");
+    + (dgKnown(unit) ? ` ${dgKnown(unit)}` : "");
 }
 
 function dgPct(v) {
@@ -521,7 +527,7 @@ function dgNode(n) {
       ${parts.length ? `<div class="${d.cls} text-[9.5px] font-semibold tabular leading-none mt-[3px] truncate">
         ${d.mark} ${parts.join(" ")}</div>` : ""}
       <div class="text-[8.5px] text-[var(--text-muted)] tabular leading-none mt-[3px] truncate">
-        ${dgEsc(v.frequency || "")}·${dgEsc((v.as_of || "").slice(2))}</div>`;
+        ${dgKnown(v.frequency) ? dgEsc(dgKnown(v.frequency).replace("（推断）", "")) + "·" : ""}${dgEsc((v.as_of || "").slice(2))}</div>`;
   } else if (v.state === "blocked" || v.state === "missing_input") {
     // 两者都留空，但要说清楚是"补数据就能算"还是"口径对不上，补也没用"
     main = `<div class="text-[10px] font-semibold mt-1">${
@@ -1577,7 +1583,7 @@ async function dgOpenDetail(nodeId) {
           ${dir.mark} ${dgEsc(dgNum(v.delta, "").replace(/^-/, "−"))}　${dgPct(v.mom) || ""}</span>` : ""}
       </div>
       <div class="text-[11px] text-[var(--text-muted)] mt-1 tabular">
-        ${dgEsc(d.frequency)}频 · 数据时点 ${dgEsc(v.as_of || "—")}
+        ${dgKnown(d.frequency) ? dgEsc(dgKnown(d.frequency)) + "频" : "频率未注明"} · 数据时点 ${dgEsc(v.as_of || "—")}
         · 状态 <b class="${v.state === "ok" ? "" : "text-[var(--amber)]"}">${stateText[v.state] || v.state}</b>
         ${v.proxy ? ' · <b class="text-[var(--amber)]">代理指标，非本环节实测</b>' : ""}
       </div>
@@ -1885,7 +1891,7 @@ function dgToggleJudgment() {
     if (dg.judgmentView) {
       bar.innerHTML = j.version
         ? `重点关注来自<b>判断 v${j.version}</b>（${dgEsc(j.status)}${
-            j.author ? " · " + dgEsc(j.author) : ""}${
+            j.author_label ? " · " + dgEsc(j.author_label) : ""}${
             j.written_at ? " · 写于 " + dgEsc(j.written_at) : ""}）——
            ${n} 个环节被它引用，其余淡出。<a href="${window.RESEARCH_PREFIX || ''}/sn/judgment"
            class="underline font-semibold">改判断</a>后这里会跟着变。`

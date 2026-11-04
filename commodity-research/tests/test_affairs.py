@@ -186,3 +186,51 @@ def test_affairs_template_has_alerts_and_real_deep_links_without_fake_health_cla
     assert '<img src=x' not in html and '&lt;img' in html
     assert '全景数据墙' not in html and '昨夜到今早' not in html
     assert '证伪条件没触发' not in html
+
+
+def test_affairs_shows_latest_analysis_of_each_kind_and_draft_progress(affairs_records, monkeypatch):
+    from tin.web import judgment_jobs
+    from tin.web.affairs import build_affairs
+    scope, identifiers = affairs_records
+    def job(identifier, purpose, state, **extra):
+        return {'id': identifier, 'job_id': identifier, 'workbench_id': WB, 'purpose': purpose, 'state': state,
+                'phase': extra.pop('phase', state), 'title': '研究逻辑分析' if purpose == 'judgments' else '产业图配置生成',
+                'result_available': state == 'succeeded', 'dismissed': False,
+                'updated_at': '2026-03-02T08:00:00+00:00', **extra}
+    jobs = [job('9', 'diagram', 'running', phase='selecting'), job('8', 'diagram', 'succeeded'),
+            job('7', 'diagram', 'failed', message='Older failure'), job('6', 'judgments', 'failed', message='Real failure'),
+            job('5', 'judgments', 'succeeded'), {**job('4', 'judgments', 'running'), 'workbench_id': OTHER},
+            {**job('3', 'diagram', 'succeeded'), 'dismissed': True}]
+    monkeypatch.setattr(judgment_jobs, 'list_jobs', lambda identity, limit=20: {'items': jobs})
+    with artifact_session(scope) as session:
+        result = build_affairs(session, scope, today=TODAY)
+    rows = [(row['status'], row['href']) for row in result['progress']]
+    assert rows[:3] == [('进行中', '/sn/diagram?analysis_job=9'), ('待核对', '/sn/diagram?analysis_job=8'),
+                        ('未完成', '/sn/judgment?analysis_job=6')]
+    assert result['progress'][0]['detail'].startswith('匹配指标') and 'Real failure' in result['progress'][2]['detail']
+    draft = result['progress'][3]
+    assert draft['status'] == '草稿' and draft['href'] == '/sn/judgment?judgment_id=' + str(identifiers['judgment'])
+    assert '1 条可监测规则' in draft['detail'] and len(result['progress']) == 4
+    assert result['report_links'] == [{'title': '今日日报 · 2026-03-03', 'detail': '汇集当前研判与策略，可直接查看或编辑后导出',
+                                       'href': '/sn/reports?date=2026-03-03&period=daily'}]
+    hidden = replace(scope, view_modules=('home', 'reports'))
+    with artifact_session(hidden) as session:
+        assert build_affairs(session, hidden, today=TODAY)['progress'] == []
+
+
+def test_affairs_offers_weekly_report_from_friday_unless_already_saved(affairs_records):
+    from tin.web.affairs import build_affairs
+    scope, _ = affairs_records
+    with artifact_session(scope) as session:
+        friday = build_affairs(session, scope, today=date(2026, 3, 6))
+        assert [row['href'] for row in friday['report_links']] == [
+            '/sn/reports?date=2026-03-06&period=daily', '/sn/reports?date=2026-03-06&period=weekly']
+        from tin.web.report_drafts import report_id
+        weekly = WorkbenchArtifact(id=report_id(scope, '2026-03-06', 'weekly'), module='briefs', actor='owner',
+            title='Saved Friday weekly', status='draft', body=json.dumps({'format': 'research-report-draft.v1',
+                'date': '2026-03-06', 'period': 'weekly', 'workbench_id': WB}), source_ids=[], source_snapshots=[],
+            revision=1, created_at=STAMP, updated_at=STAMP)
+        session.add(weekly); session.flush(); remember_record_scope(session, 'artifact', weekly.id); session.commit()
+        saved = build_affairs(session, scope, today=date(2026, 3, 6))
+        assert [row['href'] for row in saved['report_links']] == ['/sn/reports?date=2026-03-06&period=daily']
+        assert any(row['title'] == 'Saved Friday weekly' for row in saved['reports'])

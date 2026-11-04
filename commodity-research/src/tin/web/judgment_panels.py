@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
 from tin.judgments.service import _refs, to_payload
+from tin.web.research_display import author_label
 from tin.models import AuditLog, Judgment
 from tin.models.workbench import WorkbenchArtifact
 from tin.ownership import scope_query
@@ -92,7 +93,8 @@ def _view(judgment, named=None):
     return {'id': named.id if named is not None else None, 'judgment_id': judgment.id,
             'version': judgment.version, 'variety': judgment.variety, 'status': judgment.status,
             'title': named.title if named is not None else f'{judgment.variety} 研判 · v{judgment.version}',
-            'author': judgment.author, 'written_at': judgment.written_at.isoformat(),
+            'author': judgment.author, 'author_label': author_label(judgment.author),
+            'written_at': judgment.written_at.isoformat(),
             'revision': named.revision if named is not None else None,
             'named': named is not None}
 

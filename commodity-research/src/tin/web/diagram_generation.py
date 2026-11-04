@@ -17,6 +17,7 @@ from tin.export import diagram_md
 from tin.integration.workbench_scope import current_workbench, go_request, require_shared_write, resolve_workbench, source_scope_for_binding
 from tin.web.diagram_draft import compile_graph
 from tin.web.workbench_sources import source_content
+from tin.compute.frequency import observed_frequency
 
 router = APIRouter(prefix='/api/sn/diagram/generation')
 CATALOG_BYTES = 96 * 1024
@@ -328,19 +329,6 @@ async def extract_outline(scope, model_id, request, image, fresh):
         if len((repair + prior).encode('utf-8')) <= MODEL_PROMPT_BYTES:
             repair += prior
     return validate_outline(await completion(scope, model_id, repair, image)), 1
-
-
-def observed_frequency(dates):
-    """Spacing of real observations; catalog frequency labels are often absent."""
-    if len(dates) < 3:
-        return None
-    ordered = sorted(dates)
-    gaps = sorted((later - earlier).days for earlier, later in zip(ordered, ordered[1:]))
-    middle = gaps[len(gaps) // 2]
-    for limit, label in ((4, '日'), (10, '周'), (45, '月'), (135, '季'), (220, '半年')):
-        if middle <= limit:
-            return label
-    return '年'
 
 
 def candidate_status(scope, identifiers):

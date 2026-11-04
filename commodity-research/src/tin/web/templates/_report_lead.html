@@ -1,0 +1,14 @@
+<section class="report-section report-lead-section" id="report-summary">
+  {% if report.panels.summary.text %}<p class="research-prose whitespace-pre-wrap report-lead">{{ report.panels.summary.text }}</p>{% endif %}
+  <div class="report-lead-grid">
+    <div class="report-lead-card"><small>研判结论</small>
+      {% if report.conclusion %}<strong>{{ report.conclusion.tone or '未填写基调' }}</strong><p class="research-prose whitespace-pre-wrap">{{ report.conclusion.text or '当前保存记录未填写基调说明。' }}</p><small class="report-muted">{{ report.conclusion.source }} · 不是本次新生成的结论</small>
+      {% elif report.judgment %}<strong>{{ report.judgment.tone or '未填写基调' }}</strong><p class="report-muted">当前保存记录未填写结论说明。</p>
+      {% else %}<p class="report-muted">暂无已保存研究结论；先导入并核对研究逻辑。</p>{% endif %}
+    </div>
+    <div class="report-lead-card"><small>策略概况</small><strong>{{ report.strategy_overview.text }}</strong>
+      {% for item in report.strategy_overview.triggered[:4] %}<p class="report-lead-alert">{{ item }}</p>{% endfor %}
+      {% if report.strategy_overview.triggered|length > 4 %}<p class="report-muted">另有 {{ report.strategy_overview.triggered|length - 4 }} 项，见下方策略。</p>{% endif %}
+    </div>
+  </div>
+</section>

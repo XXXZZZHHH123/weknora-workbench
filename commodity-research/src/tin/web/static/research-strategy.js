@@ -165,8 +165,9 @@
     const article = element('article', undefined, 'strategy-preview-article');
     const header = element('header', undefined, 'strategy-preview-header'), title = element('div');
     const card = item.card;
+    const stamp = localDay(item.updated_at || item.created_at);
     title.append(element('div', (item.direction_label || '研究记录') + ' · ' +
-      (card?.response_action?.trim() ? '应对策略草稿' : '观察方案 · 待补应对') + (item.created_at ? ' · ' + item.created_at.slice(0, 10) : ''), 'strategy-card-top'), element('h2', item.title));
+      (card?.response_action?.trim() ? '应对策略草稿' : '观察方案 · 待补应对') + (stamp ? ' · 更新于 ' + stamp : ''), 'strategy-card-top'), element('h2', item.title));
     const actions = element('div', undefined, 'strategy-preview-actions');
     if (item.can_edit !== false && editable(key) && card) actions.append(button(drafts.get(key)?.dirty ? '继续编辑草稿' : '编辑',
       () => openCard(key, drafts.get(key)?.source || item, drafts.get(key))));
@@ -178,7 +179,7 @@
       if (card.judgment_reference) {
         const line = element('div', undefined, 'strategy-basis-line');
         const ref = card.judgment_reference;
-        line.append(element('span', '依据研判 · 已保存记录'),
+        line.append(element('span', '依据研判 · ' + (item.judgment_label || '所引版本已不可读，请重新选择')),
           button('预览依据', () => previewReference(ref, line, key)));
         article.append(line);
       }
@@ -197,6 +198,69 @@
     } else disclosure(article, '历史研究记录全文', item.legacy_body);
     article.append(element('small', item.evidence_notice || '', 'strategy-small-note'));
     host.replaceChildren(article);
+    if (card && (card.citations || []).some(row => row.kind === 'indicator' || row.kind === 'judgment_condition'))
+      loadMonitor(item, article.querySelector('.research-preview-fields'));
+  }
+  function localDay(value) {
+    const stamp = value ? new Date(value) : null;
+    if (!stamp || Number.isNaN(stamp.getTime())) return '';
+    return [stamp.getFullYear(), String(stamp.getMonth() + 1).padStart(2, '0'), String(stamp.getDate()).padStart(2, '0')].join('-');
+  }
+  function formatNumber(value) {
+    return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits: 4}) : '—';
+  }
+  function knownUnit(unit) { return unit && unit !== '未注明' ? unit : ''; }
+  function sparkline(chart, boundary) {
+    const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 240 48'); svg.setAttribute('class', 'strategy-monitor-spark'); svg.setAttribute('aria-hidden', 'true');
+    for (const segment of chart?.segments || []) {
+      const line = document.createElementNS(ns, 'polyline'); line.setAttribute('points', segment); svg.append(line);
+    }
+    const last = (chart?.points || []).at(-1);
+    if (last) { const dot = document.createElementNS(ns, 'circle'); dot.setAttribute('cx', last.x); dot.setAttribute('cy', last.y); dot.setAttribute('r', '2.5'); svg.append(dot); }
+    return svg;
+  }
+  const monitorStates = {'触发': '已触发', '未触发': '未触发', '数据缺失': '数据缺失', '无法核对': '无法核对'};
+  function monitorItem(row, kind) {
+    const node = element('article', undefined, 'strategy-monitor-item'), top = element('div', undefined, 'strategy-monitor-top');
+    node.dataset.state = kind === 'condition' ? row.state : 'indicator';
+    top.append(element('span', kind === 'condition' ? monitorStates[row.state] || row.state : '指标', 'strategy-monitor-state'),
+      element('small', [row.field_label, kind === 'condition' ? (row.rule_kind === 'falsifier' ? '研判证伪条件' : '研判阈值') : '引用指标'].filter(Boolean).join(' · ')));
+    node.append(top, element('strong', row.title));
+    const chart = row.chart || {};
+    const unit = knownUnit(kind === 'condition' ? row.unit || chart.unit : chart.unit);
+    const facts = kind === 'condition'
+      ? [row.value !== undefined && row.value !== null ? '当前 ' + formatNumber(row.value) + (unit ? ' ' + unit : '') : '', row.condition ? '条件 ' + row.condition : '', row.as_of ? '数据 ' + row.as_of : '']
+      : [chart.latest !== undefined && chart.latest !== null ? '最新 ' + formatNumber(chart.latest) + (unit ? ' ' + unit : '') : '暂无可用观测',
+        typeof chart.change === 'number' ? '较前值 ' + (chart.change > 0 ? '+' : '') + formatNumber(chart.change) : '', chart.date ? '数据 ' + chart.date.slice(0, 10) : ''];
+    node.append(element('p', facts.filter(Boolean).join(' · ')));
+    if ((chart.segments || []).length) node.append(sparkline(chart));
+    const fresh = chart.freshness;
+    const notes = [row.note, fresh?.stale ? '最新数据距今 ' + fresh.age_days + ' 天，超过该指标通常的更新间隔，可能已停更' : '',
+      row.outdated ? '所引研判已有新版本（v' + row.judgment.current_revision + '），这里仍按引用时的 v' + row.judgment.revision + ' 核对' : ''].filter(Boolean);
+    if (fresh?.stale) node.dataset.stale = 'true';
+    if (notes.length) node.append(element('small', notes.join('；'), 'strategy-small-note'));
+    return node;
+  }
+  async function loadMonitor(item, anchor) {
+    const own = selectSequence, panel = element('section', undefined, 'strategy-monitor');
+    panel.setAttribute('aria-label', '条件监测'); panel.setAttribute('aria-live', 'polite');
+    const head = element('header'); head.append(element('strong', '条件监测'), element('small', '正在核对所引条件与指标…'));
+    panel.append(head); (anchor || host.firstChild)?.after(panel);
+    try {
+      const query = new URLSearchParams(); const day = new URL(location.href).searchParams.get('date'); if (day) query.set('date', day);
+      const data = await request('/research-strategies/' + encodeURIComponent(item.id) + '/monitor' + (query.size ? '?' + query : ''));
+      if (own !== selectSequence || !panel.isConnected) return;
+      const counts = data.counts || {};
+      head.replaceChildren(element('strong', '条件监测' + (counts.conditions ? ' · 所引条件 ' + counts.conditions + ' 项，' + (counts.triggered ? counts.triggered + ' 项已触发' : '暂无触发') : '')), element('small', data.notice || ''));
+      const grid = element('div', undefined, 'strategy-monitor-grid');
+      for (const row of data.conditions || []) grid.append(monitorItem(row, 'condition'));
+      for (const row of data.indicators || []) grid.append(monitorItem(row, 'indicator'));
+      panel.append(grid);
+    } catch (error) {
+      if (own !== selectSequence || !panel.isConnected) return;
+      head.replaceChildren(element('strong', '条件监测'), element('small', error.message || '暂时无法核对所引条件；方案内容不受影响。'));
+    }
   }
   function renderPlan(item, key) {
     const article = element('article', undefined, 'strategy-preview-article'), plan = item.plan;
@@ -611,6 +675,8 @@
       if (result.can_apply === false || result.resource_type !== 'research-card') throw new Error('该记录可预览，不能直接作为结构化方案应用。');
       const newKey = 'new:' + crypto.randomUUID(), card = structuredClone(result.payload);
       card.reference = {kind: 'strategy', id: result.id, revision: result.revision};
+      // A copy must be distinguishable from its original in the list.
+      card.title = (String(card.title || '').slice(0, 114) + '（副本）').slice(0, 120);
       const draft = {type: 'card', source: null, dirty: true, body: {card, source_ids: result.source_ids || [], acknowledge_observation: false}};
       drafts.set(newKey, draft); openCard(newKey, null, draft); status('');
     } catch (error) { if (own === selectSequence) status(error.message, true); }

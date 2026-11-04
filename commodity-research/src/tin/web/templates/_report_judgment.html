@@ -1,0 +1,31 @@
+{% for brief in report.briefs %}
+<article class="report-brief">
+  <header><strong>日报结论 · {{ brief.trade_date }}</strong><span class="report-badge">{{ brief.status }}{% if brief.status == '草稿' %} · 未经研究员确认{% endif %}</span></header>
+  <p class="research-prose whitespace-pre-wrap">{{ brief.summary or '未填写结论' }}</p>
+  <p class="report-muted">基调：{{ brief.tone or '未填写' }}{% if brief.stance %} · 操作倾向：{{ brief.stance }}{% endif %}{% if brief.range_low is not none and brief.range_high is not none %} · 参考区间：{{ brief.range_low }} – {{ brief.range_high }}{% endif %}</p>
+  {% for claim in brief.claims %}<details class="report-evidence"><summary>{{ claim.text }}</summary><ul>{% for evidence in claim.evidence %}<li>{{ evidence.name or '已保存证据' }}{% if evidence.value is not none %} · {{ evidence.value }}{% endif %}{% if evidence.as_of %} · {{ evidence.as_of }}{% endif %}</li>{% endfor %}</ul></details>{% endfor %}
+  {% if brief.unverified %}<div class="report-warning"><strong>待核验内容</strong>{% for item in brief.unverified %}<p>{{ item.text }}{% if item.reason %} · {{ item.reason }}{% endif %}</p>{% endfor %}</div>{% endif %}
+</article>
+{% endfor %}
+{% if report.judgment %}{% set j = report.judgment %}
+<div class="report-judgment">
+  <h4 class="report-subheading">研究判断</h4>
+  <p class="report-muted">{{ j.written_at or '已保存研判' }} · {{ j.status or '未登记状态' }} · {{ j.tone or '未填写基调' }} · 复核期限 {{ j.review_due or '未登记' }} · 当前保存版本用于本次数据回放，不代表报告期当时已形成该判断。</p>
+  {% if report.judgment_replay and not report.briefs %}<p class="report-muted">{{ report.judgment_replay.label }}：回放当前已保存研究判断，供本次数据核对；没有据此生成新的日报结论。</p>{% endif %}
+  {% if j.tone_note and not report.panels.summary.visible %}<p class="research-prose whitespace-pre-wrap report-lead">{{ j.tone_note }}</p>{% endif %}
+  {% if j.contradiction %}<p class="research-prose whitespace-pre-wrap">{{ j.contradiction }}</p>{% endif %}
+  <div class="report-cases">{% for side in j.cases %}<div><h4>{{ side.label }}</h4><p class="research-prose">{{ side.claim or '待补充' }}</p><ul>{% for evidence in side.evidence %}{% set latest = report.latest_values.get(evidence.series_id) if evidence.series_id else none %}<li>{{ evidence.text }}{% if evidence.name %}<small>{{ evidence.name }}{% if latest %} · 最新 {{ latest.value_text }}{% if latest.as_of %} · {{ latest.as_of }}{% endif %}{% endif %}</small>{% else %}<small>未绑定指标</small>{% endif %}</li>{% endfor %}</ul></div>{% endfor %}</div>
+  {% if report.rule_preview %}<p class="report-muted">{{ report.rule_preview.label }}：{{ report.rule_preview.notice }}</p>{% endif %}
+  {% for rules, heading in [(j.thresholds, '区间与阈值'), (j.falsifiers, '证伪条件')] %}
+  {% if rules %}<div class="report-rule-section"><h4>{{ heading }}</h4><div class="report-scroll"><table class="report-table"><thead><tr><th>条件</th><th>指标与规则</th><th>{{ report.rule_preview.label if report.rule_preview else '已记录状态' }}</th></tr></thead><tbody>{% for rule in rules %}<tr data-state="{{ rule.state }}"><td>{{ rule.name }}</td><td>{{ rule.series_name }}<small>{{ rule.condition }}</small></td><td><span class="report-state">{{ rule.state }}</span>{% if rule.current_value is not none %}<small>{{ '试算值' if rule.is_preview else '已记录值' }} {{ rule.current_value_text }}</small>{% endif %}{% if rule.is_preview and rule.recorded_state %}<small>原已记录：{{ rule.recorded_state }}</small>{% endif %}{% if rule.evidence_dates %}<details><summary>依据日期</summary>{% for stamp in rule.evidence_dates %}<small>{{ stamp }}</small>{% endfor %}</details>{% endif %}{% if rule.gap_note %}<small>{{ rule.gap_note }}</small>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div>{% endif %}
+  {% endfor %}
+  {% if report.pending_conditions %}<div class="report-rule-section"><h4>待验证条件</h4><ul class="report-checklist">{% for item in report.pending_conditions %}<li><span aria-hidden="true">○</span>{{ item.text }}</li>{% endfor %}</ul><p class="report-muted">尚未绑定可计算规则，需研究员在研判中核对后才纳入监测。</p></div>{% endif %}
+  {% if report.research_events %}<details class="report-evidence"><summary>报告期内登记的版本变化</summary><ul>{% for event in report.research_events %}<li>{{ event.written_at }} 保存 · 当前状态 {{ event.status }} · 登记 {{ event.recorded_at }}</li>{% endfor %}</ul></details>{% endif %}
+</div>
+{% else %}<p class="report-muted">未登记研究判断；请导入并确认研究逻辑后，再跟踪区间和证伪条件。</p>{% endif %}
+{% if report.panels.dashboard.visible %}
+<div class="report-section-heading report-subheading"><h4>图表</h4><small>研判所绑定的指标 · 观测点数而非自然天数</small></div>
+{% if report.panels.dashboard.text %}<div class="report-note"><strong>图表说明</strong><p class="research-prose whitespace-pre-wrap">{{ report.panels.dashboard.text }}</p></div>{% endif %}
+{% if live_report and report.selected_figures %}<div id="report-figures" class="report-figures" data-series-count="{{ report.selected_figures | length }}" data-url="{{ research_prefix() }}/api/sn/reports/figures" data-day="{{ selected.date }}" data-period="{{ period_kind }}" data-revision="{{ report.manual_report.revision if report.is_manual_report else '' }}" aria-live="polite"><div class="report-figure-state"><span class="report-spinner" aria-hidden="true"></span>正在读取报告所需图表</div></div>{% elif live_report %}<p class="report-muted" id="report-no-figures">未选择报告图表，可在编辑报告中选择已有绑定指标。</p>{% else %}<p class="report-muted">历史冻结归档沿用保存时的数据，不重新加载当前图表。</p>{% endif %}
+{% endif %}
+<details class="report-evidence report-changes"{% if not report.judgment %} open{% endif %}><summary>{{ '本周主要变化' if period_kind == 'weekly' else '主要变化' }} · 指标事实只读，手工说明不改写这些数值</summary>{% include '_report_saved_data.html' %}</details>

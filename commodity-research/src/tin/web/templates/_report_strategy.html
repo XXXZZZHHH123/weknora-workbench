@@ -1,0 +1,32 @@
+{% from '_report_macros.html' import spark %}
+<p class="report-muted">当前保存的策略方案与交易计划；条件触发不等于实际成交记录。</p>
+{% if report.research_cards %}
+<div class="report-card-list">
+{% for card in report.research_cards %}{% set m = card.monitor_view %}
+<article class="report-strategy" data-direction="{{ card.direction }}">
+  <header><a href="{{ research_prefix() }}/sn/strategies?selected=research:{{ card.id }}">{{ card.title }}</a><span class="report-badge">{{ card.direction_label }} · {{ card.status_label }}{% if m.triggered %} · {{ m.triggered }} 项条件已触发{% endif %}</span></header>
+  <dl class="report-strategy-fields">
+    <div><dt>适用 / 触发</dt><dd>{{ card.trigger }}</dd></div>
+    <div><dt>应对措施</dt><dd>{{ card.response_action or '尚未填写 · 观察方案待补应对' }}</dd></div>
+    <div><dt>暂停 / 撤回</dt><dd>{{ card.invalidation }}</dd></div>
+    <div><dt>复核日期</dt><dd>{{ card.review_date }}{% if card.thesis %}<small>适用范围：{{ card.thesis }}</small>{% endif %}{% if card.watch_for %}<small>执行前核对：{{ card.watch_for }}</small>{% endif %}</dd></div>
+  </dl>
+  {% if m.conditions or m.indicators %}<div class="report-monitor">
+    {% for item in m.conditions %}<div class="report-monitor-item" data-state="{{ item.state }}"><div><span class="report-state">{{ '已触发' if item.state == '触发' else item.state }}</span><strong>{{ item.title }}</strong><small>{{ item.field_label }}</small></div><p>{{ [item.value_text and '当前 ' ~ item.value_text, item.condition and '条件 ' ~ item.condition, item.as_of and '数据 ' ~ item.as_of]|select|join(' · ') }}</p>{{ spark(item.chart) }}{% if item.note or item.outdated %}<small>{{ item.note }}{% if item.outdated %}{{ '；' if item.note }}所引研判已有新版本{% endif %}</small>{% endif %}</div>{% endfor %}
+    {% for item in m.indicators %}<div class="report-monitor-item" data-state="indicator"><div><span class="report-state">指标</span><strong>{{ item.title }}</strong><small>{{ item.field_label }}</small></div><p>{{ ['最新 ' ~ item.value_text, item.change_text and '较前值 ' ~ item.change_text, item.as_of and '数据 ' ~ item.as_of]|select|join(' · ') }}</p>{{ spark(item.chart) }}{% if item.stale_note or item.note %}<small>{{ item.stale_note or item.note }}</small>{% endif %}</div>{% endfor %}
+  </div>{% elif card.citations %}<p class="report-muted">{{ report.coverage.research_cards_monitor_error or '所引条件将在当前研究台中核对。' }}</p>{% endif %}
+</article>
+{% endfor %}
+</div>
+<p class="report-muted">策略方案为人工研究草稿；所引条件按截至报告日的可读数据试算。</p>
+{% endif %}
+{% if report.coverage.research_cards_truncated or report.coverage.research_cards_legacy %}<p class="report-muted">仅展示最近40张已整理策略方案；未整理的旧记录保留在策略管理。</p>{% endif %}
+{% for strategy in report.strategies %}<article class="report-strategy"><header><a href="{{ research_prefix() }}/sn/strategies/{{ strategy.id }}">{{ strategy.title }}</a><span class="report-badge">交易计划 · {{ strategy.status_label }} · {{ strategy.mode_label }}</span></header>
+  {% if strategy.thesis %}<p class="research-prose">{{ strategy.thesis }}</p>{% endif %}
+  <p class="report-muted">{% for leg in strategy.legs %}{{ leg.contract }} · {{ '买入' if leg.side == 'buy' else '卖出' if leg.side == 'sell' else leg.side }}{% if not loop.last %} ／ {% endif %}{% endfor %}{% if strategy.entry %} · 入场 {{ strategy.entry.low }} – {{ strategy.entry.high }}{% endif %}</p>
+  {% if strategy.invalidation %}<p>失效/复核：{{ strategy.invalidation }}</p>{% endif %}
+  {% if strategy.review_at %}<small class="report-muted">复核时间 {{ strategy.review_at }}</small>{% endif %}
+</article>{% endfor %}
+{% if not report.research_cards and not report.strategies %}<p class="report-muted">尚无已保存策略。先在策略页记录适用条件与应对措施，或由研究员审核交易计划草稿。</p>{% endif %}
+{% if report.strategy_events %}<details class="report-evidence" open><summary>报告期内策略事件</summary><ul>{% for event in report.strategy_events %}<li><time>{{ event.at }}</time> · {{ event.title }} · {{ event.label }}{% if event.reason %}：{{ event.reason }}{% endif %}</li>{% endfor %}</ul></details>{% elif report.strategies %}<p class="report-muted">报告期内无已记录策略事件。</p>{% endif %}
+{% if report.coverage.strategies_truncated or report.coverage.events_truncated %}<p class="report-muted">已展示最近40个交易计划和100条期内事件；更多记录请在策略管理查看。</p>{% endif %}

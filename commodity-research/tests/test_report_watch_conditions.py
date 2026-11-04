@@ -19,11 +19,16 @@ def sample():
         'next_review': [{'kind': 'unconfirmed', 'text': FIELD + ' · 模型返回了错误字段'}]}
 
 
+def watch_text(view):
+    return '\n'.join(row['text'] for row in view['next_review'])
+
+
 def test_watch_uses_original_research_conditions_not_import_diagnostics():
     payload = sample()
     original = deepcopy(payload)
     view = present_snapshot(payload)
-    text = view['panels']['watch']['text']
+    text = watch_text(view)
+    assert [row['text'] for row in view['pending_conditions']] == text.splitlines()
     assert '港口库存' in text and '是否高于 10' in text
     assert '观察库存是否连续两周增加' in text
     for diagnosis in ['模型返回', '错误字段', '连续期接口', '目录尚未绑定', 'binding_units', 'a12345678']:
@@ -35,9 +40,10 @@ def test_watch_uses_original_research_conditions_not_import_diagnostics():
 def test_watch_export_and_default_editor_use_same_human_readable_conditions():
     payload = sample()
     view = present_snapshot(payload)
-    assert view['editable_draft']['sections']['watch']['text'] == view['panels']['watch']['text']
+    # Personal notes start empty: saved conditions are shown as records, not copied into a note.
+    assert all(section['text'] == '' for section in view['editable_draft']['sections'].values())
     markdown = readable_markdown(payload)
-    watch = markdown.split('## 待关注\n\n', 1)[1].split('<details>', 1)[0]
+    watch = markdown.split('#### 待验证条件\n\n', 1)[1].split('<details>', 1)[0]
     assert FIELD not in watch and 'ID123456' not in watch and '模型返回' not in watch
     assert '连续两周增加' in watch and '是否高于 10' in watch
 
@@ -52,7 +58,7 @@ def test_watch_keeps_quantitative_rules_strategy_conditions_and_human_labels():
         'research_cards': [{'title': '跟踪计划', 'trigger': '库存回落后再评估',
             'invalidation': '供给恢复则撤回', 'review_date': '2026-01-12'}]}
     view = present_snapshot(payload, {FIELD: '库存 / 流量比率'})
-    text = view['panels']['watch']['text']
+    text = watch_text(view)
     assert '库存 / 流量比率' in text and '0' in text and '10' in text
     assert '连续 2 期' in text and '较上一期变化' in text
     assert '需求反弹则复核' in text and '库存回落后再评估' in text and '供给恢复则撤回' in text
@@ -63,7 +69,7 @@ def test_watch_keeps_quantitative_rules_strategy_conditions_and_human_labels():
 def test_watch_unknown_field_hides_protocol_id_without_guessing_a_source():
     payload = {'as_of': '2026-01-09', 'judgment': {'unstructured': [
         {'section': 'falsifiers', 'text': FIELD + '连续两个观测期上升', 'reason': '缺少当前数据'}]}}
-    text = present_snapshot(payload)['panels']['watch']['text']
+    text = watch_text(present_snapshot(payload))
     assert FIELD not in text and '连续两个观测期上升' in text
     assert '缺少当前数据' not in text
 
@@ -75,7 +81,7 @@ def test_watch_resolves_known_legacy_ids_and_keeps_the_observed_unit():
         'judgment': {'thresholds': [{'name': '复核补库条件', 'series_id': legacy,
             'operator': '>=', 'value': 10}], 'unstructured': [
                 {'section': 'falsifiers', 'text': legacy + '连续两期上升', 'reason': '系统未支持'}]}}
-    text = present_snapshot(payload)['panels']['watch']['text']
+    text = watch_text(present_snapshot(payload))
     assert '库存不低于 10吨' in text and '库存连续两期上升' in text
     assert legacy not in text and '系统未支持' not in text
 
@@ -92,3 +98,16 @@ def test_manual_watch_is_presented_with_names_without_rewriting_stored_text():
     view = present_snapshot(payload)
     assert '港口库存' in view['panels']['watch']['text'] and FIELD not in view['panels']['watch']['text']
     assert payload == original and view['manual_report']['draft']['sections']['watch']['text'].startswith(FIELD)
+
+
+def test_a_line_that_only_lists_other_pending_items_is_not_repeated():
+    from tin.web.report_watch import without_aggregates
+    items = [{'text': text} for text in ['Imports recover', 'Stocks build two weeks', 'Volume spikes near 400k',
+             '⚠️ Falsified: Imports recover / Stocks build two weeks / Volume spikes near 400k',
+             'Short term: SPX/VIX guard', '- Imports recover / Unlisted condition']]
+    assert [row['text'] for row in without_aggregates(items)] == ['Imports recover', 'Stocks build two weeks',
+        'Volume spikes near 400k', 'Short term: SPX/VIX guard', '- Imports recover / Unlisted condition']
+    payload = {'as_of': '2026-01-09', 'judgment': {'unstructured': [
+        {'section': 'falsifiers', 'text': text} for text in ['- A first condition', '- A second condition',
+                                                             '- Summary: A first condition / A second condition']]}}
+    assert [row['text'] for row in present_snapshot(payload)['pending_conditions']] == ['A first condition', 'A second condition']

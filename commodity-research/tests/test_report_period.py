@@ -109,10 +109,11 @@ def test_weekly_report_page_has_period_switch_and_readable_download(isolated):
     assert 'id="report-period-switch"' in response.text
     assert '2026-01-05 — 2026-01-09' in response.text
     assert '首个有效值' in response.text and '末个有效值' in response.text
-    panel_ids = ['id="report-summary"', 'id="report-research"', 'id="report-dashboard"', 'id="report-watch"']
+    # A collection of the saved 研判 and 策略, led by their saved conclusions.
+    panel_ids = ['id="report-summary"', 'id="report-research"', 'id="report-strategy"']
     assert all(identifier in response.text for identifier in panel_ids)
     assert [response.text.index(identifier) for identifier in panel_ids] == sorted(response.text.index(identifier) for identifier in panel_ids)
-    assert '待关注' in response.text and 'report-figures.js' in response.text
+    assert '研判结论' in response.text and '策略概况' in response.text and 'report-figures.js' in response.text
     assert '实际成交记录' in response.text
     download = client.get(page('/sn/reports/2026-01-09/weekly.md'))
     assert download.status_code == 200
@@ -120,8 +121,10 @@ def test_weekly_report_page_has_period_switch_and_readable_download(isolated):
     assert '# ' in download.text and '周报' in download.text
     assert '| Quantity |' in download.text and field in download.text
     assert '99.0' not in download.text
-    assert '## 研究判断' in download.text
-    assert all('\n## ' + title in download.text for title in ['摘要', '研判策略', '数据展板', '待关注'])
+    assert '\n### 研究判断\n' in download.text
+    assert all('\n## ' + title + '\n' in download.text for title in ['导语', '研判', '策略'])
+    headings = [download.text.index('\n## ' + title + '\n') for title in ['导语', '研判', '策略', '数据缺口与来源']]
+    assert headings == sorted(headings)
     assert client.get(page('/sn/reports?period=unknown')).status_code == 400
 
 
@@ -238,7 +241,8 @@ def test_weekly_export_on_a_weekend_uses_only_its_week_and_keeps_native_idempote
     assert '| 期内合成字段 | 10 | 16 | 6 | 件 |' in content
     assert '"value": 10.0' in content and '"value": 16.0' in content
     assert '999.0' not in content
-    assert all('\n## ' + title in content for title in ['摘要', '研判策略', '数据展板', '待关注'])
+    assert all('\n## ' + title + '\n' in content for title in ['导语', '研判', '策略'])
+    assert '\n### 本周主要变化\n' in content
     repeated = client.post(endpoint('reports/2026-02-08/weekly/export'), headers=headers, json={'folder_path':'日报'})
     assert repeated.status_code == 200
     assert repeated.json()['knowledge_id'] == first.json()['knowledge_id']
@@ -274,7 +278,7 @@ def test_saved_research_without_facts_still_has_a_readable_report_and_export(exp
     response = client.get('/research/workbenches/'+WB+'/sn/reports',headers=headers)
     assert response.status_code == 200
     assert '无行情的人工研究卡' in response.text and '暂无可比较的已绑定指标' in response.text
-    assert '当前保存版本用于本次数据回放' in response.text or '人工研究方案用于跟踪假设与条件' in response.text
+    assert '策略方案为人工研究草稿' in response.text and '未登记研究判断' in response.text
     result = client.post(endpoint('reports/2026-01-09/export'),headers=headers,json={})
     assert result.status_code == 200, result.text
     content = state['uploads'][0]['file'].decode()

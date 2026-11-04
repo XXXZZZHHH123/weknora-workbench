@@ -18,7 +18,10 @@ from tin.models.workbench import WorkbenchArtifact
 from tin.web.workbench_artifacts import artifact_query, record_revision
 
 FORMAT = 'research-report-draft.v1'
-SECTION_LABELS = {'summary': '摘要', 'research': '研判策略', 'dashboard': '数据展板', 'watch': '待关注'}
+# Stored keys stay stable for saved drafts; the report itself is a collection of
+# 研判 and 策略. Text written here is a researcher note shown beside the saved
+# records, never a replacement for them.
+SECTION_LABELS = {'summary': '导语', 'research': '研判', 'dashboard': '图表说明', 'watch': '策略'}
 MAX_BYTES = 128 * 1024
 router = APIRouter(prefix='/api/sn/report-drafts')
 

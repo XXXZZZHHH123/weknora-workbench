@@ -79,6 +79,8 @@ def test_large_repeated_metadata_directory_reaches_complete_bounded_model_select
     assert seen == catalog and candidates == selected and catalog == before
     assert all(encoded_directory(prompt)['format'] == 'research-selection-columns.v1' for prompt in calls)
     assert all('字典索引不是指标ID' in prompt for prompt in calls)
+    # Reasons are written for researchers, with decoded values rather than directory encoding.
+    assert all('不提目录格式、字典或索引' in prompt for prompt in calls)
     assert seen_refs == [f'r{index + 1}' for index in range(len(catalog))]
     assert all(set(item) == set(catalog[0]) for item in candidates)
 
@@ -145,6 +147,7 @@ def test_dictionary_encoding_keeps_absence_null_types_and_untrusted_literals_dis
     assert restore(encoded) == catalog
     assert all(row[0] == field['id'] and row[1] == field['name']
                for row, field in zip(encoded['indicators'], catalog))
+    assert '不提目录格式、字典、索引或列序号' in prompt
 
 
 @pytest.mark.parametrize('kind', ['single-field', 'five-batches', 'full-prompt'])

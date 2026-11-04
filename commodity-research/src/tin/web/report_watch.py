@@ -8,10 +8,35 @@ from tin.schemas.judgment import EXPRESSION
 _FIELD_ID = re.compile(r'kb-[0-9a-f]{48}(?![0-9a-f])|generic\.[0-9a-f]{12,48}(?![0-9a-f])')
 _VENDOR_ID = re.compile(r'(?<![A-Za-z0-9])(?:ID\d{5,}|[A-Za-z]\d{7,})(?![A-Za-z0-9])')
 _COMPARISON = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于'}
+# Source Markdown list markers ("- ", "1. ", "（2）") are layout, not content.
+_LIST_MARK = re.compile(r'^\s*(?:[-*+•·]\s+|\d{1,3}(?:[.)]\s+|、)|[（(]\d{1,3}[)）]\s*)')
 
 
 def _plain(value):
     return value.strip() if isinstance(value, str) else ''
+
+
+def strip_list_mark(value):
+    return _LIST_MARK.sub('', value if isinstance(value, str) else '', count=1).strip()
+
+
+_LABEL = re.compile(r'^[^:：/]{1,12}[:：]\s*')
+_PARTS = re.compile(r'\s*(?:/|／|；|;|、)\s*')
+
+
+def without_aggregates(items, key='text'):
+    """Drop a line that only lists other items already shown on their own (e.g. "证伪: A / B / C").
+
+    Purely structural: every listed part must equal another item's own text."""
+    texts = [strip_list_mark(str(item.get(key) or '')) for item in items]
+    own = {text for text in texts if text}
+    result = []
+    for item, text in zip(items, texts):
+        parts = [part for part in _PARTS.split(_LABEL.sub('', text, count=1)) if part]
+        if len(parts) >= 2 and all(part in own and part != text for part in parts):
+            continue
+        result.append(item)
+    return result
 
 
 def display_text(value, names=None):
@@ -72,7 +97,7 @@ def present_watch(items, names, units=None):
     result = []
     for item in items:
         row = dict(item)
-        text = display_text(row.get('text'), names)
+        text = strip_list_mark(display_text(row.get('text'), names))
         identifier = row.get('series_id')
         name = display_text(names.get(identifier)) or '该指标'
         condition = ''

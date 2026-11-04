@@ -2,7 +2,7 @@
   const dialog = document.getElementById('judgment-manager');
   if (!dialog) return;
   const byId = name => document.getElementById('logic-' + name);
-  const display = window.ResearchDisplay || {text: value => String(value ?? ''), reference: row => row?.title || (row?.created_at ? '研究判断 · ' + row.created_at.slice(0, 16).replace('T', ' ') : '已保存研究判断')};
+  const display = window.ResearchDisplay || {text: value => String(value ?? ''), prose: value => String(value ?? ''), reference: row => row?.title || (row?.created_at ? '研究判断 · ' + row.created_at.slice(0, 16).replace('T', ' ') : '已保存研究判断')};
   const input = byId('input'), status = byId('status');
   const endpoint = (window.RESEARCH_PREFIX || '') + '/api/sn/judgment';
   let managed, draft, displayed, busy = false, controller, panels = [], review = null, reviewEpoch = 0;
@@ -427,7 +427,7 @@
     const modal = element('dialog', 'logic-confirm-dialog'); modal.id = 'logic-confirm-item-dialog';
     const title = element('h3', '', '核对并确认整条'); title.id = 'logic-confirm-item-title'; modal.setAttribute('aria-labelledby', title.id);
     const content = element('div', 'logic-confirm-content');
-    content.append(element('strong', '', display.text(item.title)), element('p', '', display.text(item.description || '')),
+    content.append(element('strong', '', display.text(item.title)), element('p', '', (display.prose || display.text)(item.description || '')),
       element('p', 'logic-confirm-condition', ruleCondition(item, edit)),
       element('p', 'logic-confirm-source', '计算指标：' + display.text(edit.selected.name || '已选指标')));
     if (edit.additional?.some(slot => slot.selected)) content.append(element('p', 'logic-confirm-source',
@@ -651,7 +651,7 @@
           node.append(error); fields.set(name, {node, error}); return node;
         }
         const note = element('div', 'logic-item-description');
-        note.append(element('p', '', display.text(item.description || ''))); field(note, 'content'); card.append(note);
+        note.append(element('p', '', (display.prose || display.text)(item.description || ''))); field(note, 'content'); card.append(note);
         if (item.rule) {
           const condition = element('div', 'logic-item-condition'); condition.dataset.reviewItem = item.id; condition.dataset.reviewControl = 'condition';
           const value = element('span'); condition.append(value); field(condition, 'condition');
