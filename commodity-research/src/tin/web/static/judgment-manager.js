@@ -33,6 +33,7 @@
     stopSearches(); draft = null; review = null; reviewEdits.clear(); rememberedChoices.clear();
     byId('preview').hidden = true;
     if (byId('import')) byId('import').hidden = false;
+    syncDiscard();
   }
   function tab(name) {
     dialog.querySelectorAll('[data-logic-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.logicTab === name)));
@@ -46,6 +47,7 @@
     for (const name of ['panel-name', 'panel-save', 'new-panel-title']) if (byId(name)) byId(name).disabled = value || managed?.can_write === false;
     for (const name of ['panel-switch', 'panel-open', 'panel-more']) if (byId(name)) byId(name).disabled = value;
     if (byId('restore-result')) byId('restore-result').disabled = value || managed?.can_write === false;
+    syncDiscard();
     syncManagement();
     syncReviewControls();
     syncApply();
@@ -80,6 +82,17 @@
         || (strictScope ? !workbench || job.workbench_id !== workbench : job.workbench_id && workbench && job.workbench_id !== workbench))
       throw new Error('后台任务范围已改变，请重新打开工作台。');
   }
+  // An unsaved background result can be discarded: the one offered for viewing, or the one under review now.
+  function discardableJob() {
+    if (managed?.can_write === false) return null;
+    if (draft && activeJob?.state === 'succeeded' && jobId(activeJob.id)) return activeJob;
+    return latestResultJob;
+  }
+  function syncDiscard() {
+    const button = byId('discard-result');
+    if (!button) return;
+    button.hidden = !discardableJob(); button.disabled = busy;
+  }
   async function discoverLatestResult() {
     const button = byId('restore-result');
     latestResultJob = null;
@@ -93,6 +106,7 @@
       if (result.job.state !== 'succeeded' || result.job.result_available !== true) return;
       latestResultJob = result.job; button.hidden = false;
     } catch { /* A missing temporary result never blocks the editor. */ }
+    finally { syncDiscard(); }
   }
   function announceJob(job, appliedId) {
     const workbenchId = window.RESEARCH_CONTEXT?.workbench;
@@ -277,7 +291,7 @@
     else for (const [id, edit] of reviewEdits) if (!edit.dirty && !edit.extraRowsAdded) reviewEdits.delete(id);
     review = value.review || null;
     if (!preserveEdits) { reviewView = 'all'; selectedSection = ''; }
-    renderReview(); inform(previewNotice(value));
+    renderReview(); syncDiscard(); inform(previewNotice(value));
   }
   function element(tag, className, value) {
     const node = document.createElement(tag); if (className) node.className = className;
@@ -855,8 +869,23 @@
     stopJobMonitor();
     controller?.abort(); stopSearches(); setBusy(false); dialog.close();
     if (byId('restore-result')) byId('restore-result').hidden = true;
+    if (byId('discard-result')) byId('discard-result').hidden = true;
     if (parent !== window) parent.postMessage({type: 'research-drawer-state', open: false}, location.origin);
   }
+  byId('discard-result')?.addEventListener('click', async () => {
+    const job = discardableJob();
+    if (busy || !job) return;
+    if (!window.confirm('舍弃后，这份暂存结果及其中已做的指标选择会被删除，不能恢复；已保存的研判不受影响。确定舍弃吗？')) return;
+    const viewing = Boolean(draft) && activeJob?.id === job.id;
+    setBusy(true); inform('正在舍弃暂存结果…');
+    try {
+      await api('/jobs/' + encodeURIComponent(job.id) + '/discard', {});
+      if (latestResultJob?.id === job.id) { latestResultJob = null; if (byId('restore-result')) byId('restore-result').hidden = true; }
+      if (viewing) { invalidate(); renderReview(); }
+      setBusy(false); inform('已舍弃暂存结果。');
+    } catch (error) { setBusy(false); inform(error.message, true); }
+    finally { syncDiscard(); }
+  });
   byId('restore-result')?.addEventListener('click', async () => {
     if (busy || !managed?.can_write || !latestResultJob) return;
     try { checkJob(latestResultJob, true); } catch (error) { return inform(error.message, true); }
