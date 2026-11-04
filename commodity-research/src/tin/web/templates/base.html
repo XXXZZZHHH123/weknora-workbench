@@ -61,7 +61,10 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
     <form method="get" action="{{ research_form_url(request.url.path) }}" class="date-switcher hidden sm:inline-flex items-center rounded-lg border border-[var(--line)] bg-[var(--surface-soft)] p-0.5 text-xs text-[var(--text-muted)]">
       {% if research_identity() %}<input type="hidden" name="_research_tenant" value="{{ research_identity().tenant_id }}"><input type="hidden" name="_research_user" value="{{ research_identity().user_id }}">{% endif %}
       {% if selected_judgment_id %}<input type="hidden" name="judgment_id" value="{{ selected_judgment_id }}">{% endif %}
-      {% if prev_date %}<a href="?date={{ prev_date }}{% if selected_judgment_id %}&amp;judgment_id={{ selected_judgment_id }}{% endif %}" class="px-2 py-1 hover:text-[var(--text)]" title="前一交易日">&larr;</a>
+      {# The diagram page keeps the open layout while changing the board day. #}
+      {% set date_layout = template.id if nav == 'diagram' and template is mapping and template.id else none %}
+      {% if date_layout %}<input type="hidden" name="template" value="{{ date_layout }}">{% endif %}
+      {% if prev_date %}<a href="?date={{ prev_date }}{% if selected_judgment_id %}&amp;judgment_id={{ selected_judgment_id }}{% endif %}{% if date_layout %}&amp;template={{ date_layout }}{% endif %}" class="px-2 py-1 hover:text-[var(--text)]" title="前一交易日">&larr;</a>
       {% else %}<span class="px-2 py-1 opacity-40">&larr;</span>{% endif %}
       <label class="date-picker-label flex items-center gap-1.5 px-1.5 cursor-pointer" title="选择看板日期">
         <span class="w-1.5 h-1.5 rounded-full bg-[var(--primary)] shrink-0"></span>
@@ -72,7 +75,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
                onchange="this.form.submit()" aria-label="选择看板日期"
                class="date-picker-input tabular font-semibold text-[var(--text)] cursor-pointer">
       </label>
-      {% if next_date %}<a href="?date={{ next_date }}{% if selected_judgment_id %}&amp;judgment_id={{ selected_judgment_id }}{% endif %}" class="px-2 py-1 hover:text-[var(--text)]" title="后一交易日">&rarr;</a>
+      {% if next_date %}<a href="?date={{ next_date }}{% if selected_judgment_id %}&amp;judgment_id={{ selected_judgment_id }}{% endif %}{% if date_layout %}&amp;template={{ date_layout }}{% endif %}" class="px-2 py-1 hover:text-[var(--text)]" title="后一交易日">&rarr;</a>
       {% else %}<span class="px-2 py-1 opacity-40" title="已是最近交易日">&rarr;</span>{% endif %}
     </form>
     {% endif %}

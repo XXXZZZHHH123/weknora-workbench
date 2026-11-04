@@ -230,3 +230,14 @@ def test_shared_source_uses_the_real_owner_storage_namespace(multi):
     bounded=read({'source_bindings':['binding-b'],'series_ids':[shared['series_id']],
         'view_module':'diagram','points_per_series':2},sources[1:])
     assert sorted(row['value'] for row in bounded['rows'])==[30,40]
+
+
+@pytest.mark.parametrize('count,points,allowed',[(1,121,True),(1,122,False),(2,24,True),(2,25,False),(40,24,True),(40,121,False)])
+def test_diagram_detail_reads_one_series_with_the_research_window_but_boards_stay_short(count,points,allowed):
+    from structured_data.research_facts_v2 import parameters
+    body={'source_bindings':['binding-a'],'series_ids':['kb-'+f'{number:048x}' for number in range(count)],
+          'view_module':'diagram','points_per_series':points}
+    if allowed:
+        assert parameters(body)['selection']['points_per_series']==points
+    else:
+        with pytest.raises(ValueError):parameters(body)

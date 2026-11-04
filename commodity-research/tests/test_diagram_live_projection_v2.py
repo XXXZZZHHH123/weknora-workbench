@@ -88,6 +88,9 @@ def live_projection(tmp_path,monkeypatch):
                 return httpx.Response(200,json={**envelope,'catalog_only':True,'series':selected,'datasets':[],
                     'total':len(selected),'offset':0,'next_offset':None,'truncated':False})
             assert body['view_module']=='diagram'
+            # The structured facts service grants a diagram board 24 points per series, one node's detail 121.
+            if not 1<=body['points_per_series']<=(121 if len(body['series_ids'])==1 else 24):
+                return httpx.Response(400,json={'detail':'页面指标点数超出允许范围'})
             rows=[]
             for spec in selected:
                 values=[]
@@ -140,3 +143,25 @@ def test_unknown_canonical_binding_is_rejected_without_partial_live_values(live_
     assert response.status_code==403,response.text
     assert all(body.get('catalog_only') is True for body in calls)
     assert 'nodes' not in response.json()
+
+
+def test_node_detail_trend_reads_the_single_series_window_instead_of_two_points(live_projection):
+    client,headers,calls=live_projection
+    response=client.get('/research/workbenches/'+WB+'/api/sn/diagram/detail',headers=headers,
+                        params={'series_id':KNOWN,'date':'2026-09-30'})
+    assert response.status_code==200,response.text
+    history=response.json()['history']
+    assert len(history)==13 and history[-1]['as_of']=='2026-09-30'
+    bounded=[body for body in calls if not body.get('catalog_only')]
+    assert bounded[-1]['series_ids']==[KNOWN] and bounded[-1]['points_per_series']==121
+
+
+def test_diagram_page_renders_the_requested_board_day_and_keeps_the_layout(live_projection):
+    client,headers,calls=live_projection
+    response=client.get('/research/workbenches/'+WB+'/sn/diagram',headers=headers,params={'date':'2026-06-30'})
+    assert response.status_code==200,response.text
+    assert 'window.DG_DATE = "2026-06-30"' in response.text
+    assert 'name="date" value="2026-06-30"' in response.text
+    template=json.loads(response.text.split('window.DG_TEMPLATE = ',1)[1].split(';\n',1)[0])
+    assert f'name="template" value="{template["id"]}"' in response.text
+    assert all(body['as_of']=='2026-06-30' for body in calls if not body.get('catalog_only'))
