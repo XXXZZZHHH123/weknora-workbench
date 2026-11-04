@@ -18,8 +18,10 @@ Create the private data directory and its `tmp` child, writable by UID 10001. Mo
   "owner_outstanding": 4,
   "max_upload_bytes": 104857600,
   "max_uploads": 4,
-  "queue_timeout_seconds": 1800,
-  "execution_timeout_seconds": 1800,
+  "queue_timeout_seconds": 86400,
+  "execution_timeout_seconds": 7200,
+  "max_queue_timeout_seconds": 86400,
+  "max_execution_timeout_seconds": 7200,
   "retention_seconds": 86400,
   "max_storage_bytes": 5368709120,
   "max_job_output_bytes": 268435456,
@@ -116,7 +118,7 @@ Unit disagreements are reviewed independently of digit agreement. Two matching t
 
 ### Workspace policy and independent clocks
 
-Administrators control **Settings → Document parsing → PDF table processing**.
+Administrators control **Settings → Parser engines → PDF table processing**.
 Ordinary users have no configuration controls. The authenticated nonsecret policy
 endpoint is `GET /api/v1/tenants/kv/pdf-processing-settings`; only workspace owners
 and administrators can `PUT` it. Shared knowledge bases use their owner's policy

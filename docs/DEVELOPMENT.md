@@ -127,7 +127,7 @@ PYTHONPATH=WeKnora WeKnora/docreader/.venv/bin/python -m unittest discover -s We
 
 ### PDF 管理员配置与排队验证
 
-管理员在「设置 → 文档解析 → PDF 表格处理」配置完整页重叠、整理批次大小、排队保留和实际解析时限。
+管理员在「设置 → 解析引擎 → PDF 表格处理」配置完整页重叠、整理批次大小、排队保留和实际解析时限。
 推荐值为 1 页、24KB、24 小时、120 分钟；普通用户不展示配置入口，后端也校验管理员权限。
 详细协议、边界和 worker 兼容性见 [远程 PDF 服务说明](../services/remote-pdf/README.md#workspace-policy-and-independent-clocks)。
 
