@@ -27,11 +27,48 @@ func (m *additionsChat) Chat(_ context.Context, messages []chat.Message, opts *c
 		return nil, m.err
 	}
 	if len(m.plans) == 0 {
-		return &types.ChatResponse{Content: `{"retain_spans":[],"delete_spans":[]}`, FinishReason: "stop"}, nil
+		return &types.ChatResponse{Content: additionsSelectionFixture(messages, ""), FinishReason: "stop"}, nil
 	}
 	content := m.plans[0]
 	m.plans = m.plans[1:]
-	return &types.ChatResponse{Content: content, FinishReason: "stop"}, nil
+	return &types.ChatResponse{Content: additionsSelectionFixture(messages, content), FinishReason: "stop"}, nil
+}
+
+// Existing fixture declarations name exact text for readability. Only this
+// test adapter resolves those declarations against the real model-facing ID
+// catalog. Production accepts the ID protocol exclusively.
+func additionsSelectionFixture(messages []chat.Message, content string) string {
+	var packet struct {
+		Hash    string                    `json:"candidate_hash"`
+		Options []candidateAdditionOption `json:"candidate_spans"`
+	}
+	if len(messages) < 2 || json.Unmarshal([]byte(messages[1].Content), &packet) != nil {
+		return content
+	}
+	var plan candidateAdditionsPlan
+	if content != "" {
+		var err error
+		plan, err = decodeCandidateAdditions(content)
+		if err != nil {
+			return content // Includes intentionally invalid and already-ID fixtures.
+		}
+	}
+	ids := func(texts []string) []string {
+		result := []string{}
+		for _, text := range texts {
+			id := "fixture_span_not_in_catalog"
+			for _, option := range packet.Options {
+				if option.Text == text {
+					id = option.ID
+					break
+				}
+			}
+			result = append(result, id)
+		}
+		return result
+	}
+	encoded, _ := json.Marshal(candidateAdditionSelection{CandidateHash: packet.Hash, RetainIDs: ids(plan.Retain), DeleteIDs: ids(plan.Delete)})
+	return string(encoded)
 }
 
 func additionsPlanJSON(t *testing.T, keep, remove []string) string {
@@ -391,4 +428,247 @@ func TestCandidateAdditionsNoBodyReferenceParagraphCanLeaveWhileGapRemains(t *te
 	diagnostic := packet["actual_body_numeric_diagnostic"].(map[string]any)
 	require.Equal(t, float64(1), diagnostic["unsupported_token_count"])
 	require.Equal(t, float64(0), packet["source_discovery_activity"].(map[string]any)["omitted_operation_count"])
+}
+
+func additionOptionForText(t *testing.T, catalog candidateAdditionCatalog, text string) candidateAdditionOption {
+	t.Helper()
+	for _, option := range catalog.Options {
+		if option.Text == text {
+			return option
+		}
+	}
+	t.Fatalf("missing candidate option for %q", text)
+	return candidateAdditionOption{}
+}
+
+func additionSelectionJSON(t *testing.T, catalog candidateAdditionCatalog, retain, remove []string) string {
+	t.Helper()
+	encoded, err := json.Marshal(candidateAdditionSelection{CandidateHash: catalog.CandidateHash, RetainIDs: retain, DeleteIDs: remove})
+	require.NoError(t, err)
+	return string(encoded)
+}
+
+func TestCandidateAdditionIDsPreserveUnicodeFormattingAndBoundReferences(t *testing.T) {
+	const main = "测量值为 **138.67 单位**"
+	const aside = "（未请求的换算为7.25）"
+	const citation = `<kb doc="report.pdf" chunk_id="real" kb_id="kb" />`
+	const scope = "保留用户要求的范围。" + citation
+	candidate := main + aside + "。\n\n" + scope
+	catalog := buildCandidateAdditionCatalog(candidate)
+	require.Equal(t, catalog, buildCandidateAdditionCatalog(candidate))
+	require.True(t, catalog.Complete)
+	core := additionOptionForText(t, catalog, main)
+	optional := additionOptionForText(t, catalog, aside)
+	protectedScope := additionOptionForText(t, catalog, scope)
+	require.False(t, core.CanDelete)
+	require.Equal(t, "parenthetical", optional.Kind)
+	require.True(t, optional.CanDelete)
+	edited, err := applyCandidateAdditionSelection(candidate, catalog, candidateAdditionSelection{CandidateHash: catalog.CandidateHash, RetainIDs: []string{core.ID, protectedScope.ID}, DeleteIDs: []string{optional.ID}})
+	require.NoError(t, err)
+	require.Equal(t, main+"。\n\n"+scope, edited)
+	require.Contains(t, edited, citation)
+	_, err = applyCandidateAdditions(candidate, candidateAdditionsPlan{Retain: []string{main}, Delete: []string{aside}})
+	require.ErrorContains(t, err, "partial sentence", "legacy exact-text helpers must not silently gain inline deletion")
+}
+
+func TestCandidateAdditionIDsDistinguishRepeatedWholeStatements(t *testing.T) {
+	const main = "Keep the requested measurement and its unit."
+	const repeated = "An optional ancillary statement."
+	candidate := main + "\n\n" + repeated + "\n\n" + repeated
+	catalog := buildCandidateAdditionCatalog(candidate)
+	var copies []candidateAdditionOption
+	for _, option := range catalog.Options {
+		if option.Text == repeated {
+			copies = append(copies, option)
+		}
+	}
+	require.Len(t, copies, 2)
+	require.NotEqual(t, copies[0].ID, copies[1].ID)
+	core := additionOptionForText(t, catalog, main)
+	edited, err := applyCandidateAdditionSelection(candidate, catalog, candidateAdditionSelection{CandidateHash: catalog.CandidateHash, RetainIDs: []string{core.ID}, DeleteIDs: []string{copies[1].ID}})
+	require.NoError(t, err)
+	require.Equal(t, main+"\n\n"+repeated, edited)
+}
+
+func TestCandidateAdditionIDsRejectStaleUnknownOverlappingAndPartialOptions(t *testing.T) {
+	const main = "The requested value is **138.67 units**"
+	const aside = "（an optional aside）"
+	candidate := main + aside + ".\n\nA required explanation."
+	catalog := buildCandidateAdditionCatalog(candidate)
+	core := additionOptionForText(t, catalog, main)
+	optional := additionOptionForText(t, catalog, aside)
+	whole := additionOptionForText(t, catalog, main+aside+".")
+	for _, tc := range []struct {
+		name string
+		plan candidateAdditionSelection
+	}{
+		{"unknown ID", candidateAdditionSelection{catalog.CandidateHash, []string{core.ID}, []string{"span_999"}}},
+		{"text is not an ID", candidateAdditionSelection{catalog.CandidateHash, []string{core.ID}, []string{aside}}},
+		{"retain-only deletion", candidateAdditionSelection{catalog.CandidateHash, []string{whole.ID}, []string{core.ID}}},
+		{"protected whole answer", candidateAdditionSelection{catalog.CandidateHash, []string{whole.ID}, []string{optional.ID}}},
+		{"repeated deletion ID", candidateAdditionSelection{catalog.CandidateHash, []string{core.ID}, []string{optional.ID, optional.ID}}},
+		{"same retain and delete ID", candidateAdditionSelection{catalog.CandidateHash, []string{optional.ID}, []string{optional.ID}}},
+		{"wrong candidate hash", candidateAdditionSelection{strings.Repeat("0", 64), []string{core.ID}, []string{optional.ID}}},
+		{"no protected answer", candidateAdditionSelection{catalog.CandidateHash, nil, []string{optional.ID}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			edited, err := applyCandidateAdditionSelection(candidate, catalog, tc.plan)
+			require.Error(t, err)
+			require.Equal(t, candidate, edited)
+		})
+	}
+	changed := strings.Replace(candidate, "units", "unit", 1)
+	edited, err := applyCandidateAdditionSelection(changed, catalog, candidateAdditionSelection{catalog.CandidateHash, []string{core.ID}, []string{optional.ID}})
+	require.ErrorContains(t, err, "hash mismatch")
+	require.Equal(t, changed, edited)
+}
+
+func TestCandidateAdditionCatalogKeepsStructuralCodeCitationAndParenthesisBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+		want       []string
+		reject     []string
+	}{
+		{"nested", "Main result（a complete (nested) aside）.", []string{"（a complete (nested) aside）"}, []string{"(nested)"}},
+		{"mixed mismatch", "Main result（a mismatched aside).", nil, []string{"（a mismatched aside)"}},
+		{"inline code", "Keep `f(argument)` and （optional note）.", []string{"（optional note）"}, []string{"(argument)"}},
+		{"fenced code", "Keep the result.\n```text\nf(argument)\n```", nil, []string{"(argument)"}},
+		{"Markdown link", "Keep [source](https://example.invalid/reference).", nil, []string{"(https://example.invalid/reference)"}},
+		{"citation identity", `Keep the result.<kb doc="report(extra).pdf" chunk_id="actual" kb_id="kb" />`, nil, []string{"(extra)"}},
+		{"crossed emphasis", "Keep result（**optional note）**.", nil, []string{"（**optional note）"}},
+		{"crossed single star", "Keep result（*optional note）*.", nil, []string{"（*optional note）"}},
+		{"crossed single underscore", "Keep result（_optional note）_.", nil, []string{"（_optional note）"}},
+		{"crossed strikethrough", "Keep result（~~optional note）~~.", nil, []string{"（~~optional note）"}},
+		{"strikethrough starts before bracket", "Keep ~~result（optional note~~）.", nil, []string{"（optional note~~）"}},
+		{"complete emphasis inside", "Keep result（an *optional* note）.", []string{"（an *optional* note）"}, nil},
+		{"complete strikethrough inside", "Keep result（an ~~optional~~ note）.", []string{"（an ~~optional~~ note）"}, nil},
+		{"escaped brackets", `Keep result \(optional\).`, nil, []string{`(optional\)`}},
+		{"escaped math with nested parentheses", `Keep \(f(argument)\) and （optional note）.`, []string{"（optional note）"}, []string{"(argument)"}},
+		{"escaped opening bracket", `Keep result \(optional).`, nil, []string{"(optional)"}},
+		{"escaped closing bracket", `Keep result (optional\).`, nil, []string{`(optional\)`}},
+		{"bare URI", "Keep result custom+type://local/part(note).", nil, []string{"(note)"}},
+		{"autolink URI", "Keep <custom://local/part(note)>.", nil, []string{"(note)"}},
+		{"artifact URI", "Keep artifact://current/plot(note).", nil, []string{"(note)"}},
+		{"URN without authority", "Keep urn:example:part(optional).", nil, []string{"(optional)"}},
+		{"data URI without authority", "Keep data:text/plain,part(optional).", nil, []string{"(optional)"}},
+		{"mail URI without authority", "Keep mailto:reader+part(optional)@example.invalid.", nil, []string{"(optional)"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := buildCandidateAdditionCatalog(tc.text)
+			for _, text := range tc.want {
+				require.Equal(t, "parenthetical", additionOptionForText(t, catalog, text).Kind)
+			}
+			for _, option := range catalog.Options {
+				for _, text := range tc.reject {
+					require.NotEqual(t, text, option.Text)
+				}
+				for _, loc := range documentAnswerCitation.FindAllStringIndex(tc.text, -1) {
+					citation := candidateTextSpan{loc[0], loc[1]}
+					if additionsOverlap(option.span, citation) {
+						require.LessOrEqual(t, option.span.start, citation.start)
+						require.GreaterOrEqual(t, option.span.end, citation.end)
+					}
+				}
+			}
+		})
+	}
+	const protected = "Keep the requested result."
+	const openFence = protected + "\n\n```text\nAn optional statement."
+	catalog := buildCandidateAdditionCatalog(openFence)
+	core := additionOptionForText(t, catalog, protected)
+	optional := additionOptionForText(t, catalog, "An optional statement.")
+	edited, err := applyCandidateAdditionSelection(openFence, catalog, candidateAdditionSelection{catalog.CandidateHash, []string{core.ID}, []string{optional.ID}})
+	require.ErrorContains(t, err, "unbalanced code fence")
+	require.Equal(t, openFence, edited)
+}
+
+func TestCandidateAdditionURIIdentityAllowsOnlyWholeStatementDeletion(t *testing.T) {
+	const main = "Keep the requested measurement and its unit."
+	for _, uri := range []string{"urn:example:part(optional)", "data:text/plain,part(optional)", "custom+type:part(optional)"} {
+		t.Run(uri, func(t *testing.T) {
+			optional := "An unrequested reference is " + uri + "."
+			candidate := main + "\n\n" + optional
+			catalog := buildCandidateAdditionCatalog(candidate)
+			for _, option := range catalog.Options {
+				require.NotEqual(t, "(optional)", option.Text)
+			}
+			core := additionOptionForText(t, catalog, main)
+			whole := additionOptionForText(t, catalog, optional)
+			require.True(t, whole.CanDelete)
+			edited, err := applyCandidateAdditionSelection(candidate, catalog, candidateAdditionSelection{catalog.CandidateHash, []string{core.ID}, []string{whole.ID}})
+			require.NoError(t, err)
+			require.Equal(t, main, edited)
+		})
+	}
+}
+
+func TestCandidateAdditionIDProtocolIsStrictAndDoesNotNormalizeText(t *testing.T) {
+	hash := candidateTextDigest("A current candidate.")
+	valid := `{"candidate_hash":"` + hash + `","retain_ids":[],"delete_ids":[]}`
+	_, err := decodeCandidateAdditionSelection(valid)
+	require.NoError(t, err)
+	for _, invalid := range []string{
+		`{"retain_spans":[],"delete_spans":[]}`,
+		strings.Replace(valid, `"retain_ids":[]`, `"retain_ids":null`, 1),
+		strings.Replace(valid, `"retain_ids":[]`, `"retain_ids":[],"retain_ids":[]`, 1),
+		strings.Replace(valid, `"delete_ids":[]`, `"delete_ids":[],"answer":"replacement"`, 1),
+		valid + valid,
+		strings.Replace(valid, `"delete_ids":[]`, `"delete_ids":[""]`, 1),
+	} {
+		_, err := decodeCandidateAdditionSelection(invalid)
+		require.Error(t, err)
+	}
+	composed := "Keep Café（optional）."
+	decomposed := "Keep Cafe\u0301（optional）."
+	catalog := buildCandidateAdditionCatalog(composed)
+	core := additionOptionForText(t, catalog, "Keep Café")
+	optional := additionOptionForText(t, catalog, "（optional）")
+	edited, err := applyCandidateAdditionSelection(decomposed, catalog, candidateAdditionSelection{catalog.CandidateHash, []string{core.ID}, []string{optional.ID}})
+	require.ErrorContains(t, err, "hash mismatch")
+	require.Equal(t, decomposed, edited)
+}
+
+func TestCandidateAdditionCatalogBoundsModelFacingOptions(t *testing.T) {
+	candidate := strings.Repeat("A supported measurement（an optional aside）.\n", 1000)
+	catalog := buildCandidateAdditionCatalog(candidate)
+	require.LessOrEqual(t, len(catalog.Options), 128)
+	require.Positive(t, catalog.Omitted)
+	require.False(t, catalog.Complete)
+	textBytes := 0
+	for _, option := range catalog.Options {
+		textBytes += len(option.Text)
+		require.Equal(t, option.Text, candidate[option.span.start:option.span.end])
+	}
+	require.LessOrEqual(t, textBytes, 32768)
+}
+
+func TestCandidateAdditionInlineIDsStillRunNumericChecksWithoutExtraSourceCalls(t *testing.T) {
+	for _, value := range []string{"138.67", "9.99"} {
+		t.Run(value, func(t *testing.T) {
+			main := "The measured value is **" + value + " units**"
+			const aside = "（an unrequested conversion is 7.25）"
+			draft := main + aside + "."
+			catalog := buildCandidateAdditionCatalog(draft)
+			core := additionOptionForText(t, catalog, main)
+			optional := additionOptionForText(t, catalog, aside)
+			model := &additionsChat{plans: []string{additionSelectionJSON(t, catalog, []string{core.ID}, []string{optional.ID})}}
+			engine := numericRecoveryTestEngine(t, &model.mockChat)
+			engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
+			engine.taskPlan = explicitTextDeliveryPlan()
+			state, conversation, query := numericRecoveryFixture()
+			before := countTotalToolCalls(state.RoundSteps)
+			decision := engine.checkCandidate(t.Context(), query, draft, "", state, conversation, false)
+			require.Equal(t, main+".", decision.Candidate)
+			if value == "138.67" {
+				// "units" is not an invented numerical observation; the actual
+				// read fixture supports this value under the ordinary guard.
+				require.Equal(t, candidateAccepted, decision.Disposition)
+			} else {
+				require.Equal(t, candidateNumericFailure, decision.Disposition)
+			}
+			require.Equal(t, before, countTotalToolCalls(state.RoundSteps))
+			require.Len(t, model.selectionCalls, 1)
+			require.Empty(t, model.calls)
+		})
+	}
 }

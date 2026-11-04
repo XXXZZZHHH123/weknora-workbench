@@ -1,0 +1,219 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"strings"
+
+	"github.com/Tencent/WeKnora/internal/event"
+	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/types"
+)
+
+const sourceCitationPolicyBudget = 4 * 1024
+
+// This is a model decision about the actual answer, never a rule that a
+// retrieved candidate, matching title or shared page must be cited.
+const sourceCitationReviewInstructions = `Source citation policy is runtime-owned and is supplied as source_citation_policy. When enabled=false, do not require citations or add source attribution. When enabled=true, judge from the complete task and actual evidence which material knowledge-source claims require an inline, clickable citation. A plain filename or table title is not a citation. A citation must identify the exact current supporting chunk; another read chunk, the same document/page, or a matching value cannot lend support. available_anchors lists only current successful source bodies with real citation handles; the directory is not proof that every anchor supports this answer. Request a minimal answer revision using the appropriate existing handle when needed, never cite every candidate. For a material PDF-source claim with no supporting chunk anchor, verified_document_reads provides navigation to actual source documents returned by authorized PDF tools: request collect_evidence for the minimum necessary read_document call using that real document identity, then judge the fetched chunk against the claim. Do not guess a table-to-chunk mapping or accept an arbitrary same-page chunk. Missing/omitted anchors are not evidence that a source is absent. If no genuine citation handle or verified read target is available, do not invent one. Pure chart/file delivery, conversation-only answers and output formats that prohibit inline markup do not require adding factual prose or breaking the requested format merely to cite a source.`
+
+func (e *AgentEngine) sourceCitationReviewPolicy(state *types.AgentState, conversation []chat.Message) map[string]any {
+	enabled := e != nil && e.config.CitationsEnabled()
+	policy := map[string]any{
+		"enabled": enabled, "available_anchors": []any{}, "verified_document_reads": []any{},
+		"available_anchor_count": 0, "omitted_anchor_count": 0,
+		"verified_document_read_count": 0, "omitted_document_read_count": 0,
+		"projection_complete": true,
+	}
+	if !enabled || e.config == nil || e.modelContext == nil || state == nil {
+		return policy
+	}
+	messages := e.sourceConsistencyMessages(state, conversation)
+	records, conflicts := citationChunksFromMessages(messages)
+	referenceRows, rowConflicts := currentCitationReferenceRows(state)
+	anchors := []any{}
+	for _, id := range rewriteCitationSourceIDsInMessageOrder(messages, records, conflicts) {
+		record := records[id]
+		handle := e.modelContext.CitableChunkHandle(id)
+		if conflicts[id] || rowConflicts[id] || referenceRows[id] == nil || handle == "" || !record.contentKnown || strings.TrimSpace(record.content) == "" {
+			continue
+		}
+		anchors = append(anchors, map[string]any{
+			"citation_handle": handle, "chunk_id": id, "knowledge_id": record.knowledgeID,
+			"tool_call_id": record.toolCallID, "evidence_id": record.evidenceID, "json_pointer": record.jsonPointer,
+		})
+	}
+	reads := e.verifiedCitationDocumentReads(state)
+	policy["available_anchor_count"], policy["verified_document_read_count"] = len(anchors), len(reads)
+	// Counts include omissions. A bounded navigation directory never turns an
+	// omitted body/anchor into evidence of absence or a guessed source link.
+	for _, group := range []struct {
+		field, omitted string
+		items          []any
+	}{{"available_anchors", "omitted_anchor_count", anchors}, {"verified_document_reads", "omitted_document_read_count", reads}} {
+		kept := []any{}
+		for index, item := range group.items {
+			policy[group.field] = append(append([]any(nil), kept...), item)
+			policy[group.omitted] = len(group.items) - index - 1
+			encoded, err := json.Marshal(policy)
+			if err != nil || len(encoded) > sourceCitationPolicyBudget-32 {
+				break
+			}
+			kept = append(kept, item)
+		}
+		policy[group.field], policy[group.omitted] = kept, len(group.items)-len(kept)
+	}
+	policy["projection_complete"] = policy["omitted_anchor_count"] == 0 && policy["omitted_document_read_count"] == 0
+	return policy
+}
+
+func (e *AgentEngine) verifiedCitationDocumentReads(state *types.AgentState) []any {
+	reads := []any{}
+	seen := map[string]bool{}
+	for _, step := range state.RoundSteps {
+		for _, call := range step.ToolCalls {
+			if call.Result == nil || !call.Result.Success {
+				continue
+			}
+			operation := call.ExecutionName()
+			if operation == "structured_data" {
+				operation, _ = call.ExecutionArgs()["operation"].(string)
+			}
+			if operation != "structured_read_pdf_table" && operation != "structured_query_pdf_table" && operation != "read_pdf_table" && operation != "query_pdf_table" {
+				continue
+			}
+			data := call.Result.Data
+			if data["status"] != "ok" || data["source_kind"] != "pdf_table" || (data["kind"] != "structured_analysis" && data["kind"] != "structured_source_inspection") {
+				continue
+			}
+			source, _ := data["source"].(map[string]any)
+			scope, _ := data["source_context"].(map[string]any)
+			document, kb := citationString(source["knowledge_id"]), citationString(scope["knowledge_base_id"])
+			if document == "" || kb == "" || seen[document] || (citationString(source["knowledge_base_id"]) != "" && citationString(source["knowledge_base_id"]) != kb) {
+				continue
+			}
+			seen[document] = true
+			// A verified document ID grants navigation only, never a chunk's
+			// evidence/citation status. The authorized read still has to run.
+			reads = append(reads, map[string]any{
+				"document_handle": e.modelContext.RegisterDocument(document), "knowledge_id": document,
+				"knowledge_base_id": kb, "tool_call_id": call.ID,
+			})
+		}
+	}
+	return reads
+}
+
+// Completion/persistence gets only the final model-selected canonical cites.
+// Syntactic IDs never establish meaning: the existing source critic owns that
+// judgement, while this intersection preserves current identity/version/ACL
+// evidence. No filename/page/number can select a source here.
+func (e *AgentEngine) finalAnswerKnowledgeReferences(state *types.AgentState) []*types.SearchResult {
+	refs := []*types.SearchResult{}
+	if e == nil || e.config == nil || !e.config.CitationsEnabled() || e.modelContext == nil || state == nil {
+		return refs
+	}
+	approved := e.candidateApprovalCurrent(state.FinalAnswer, state)
+	if !approved {
+		_, approved = e.numericWarningDelivery(state.FinalAnswer, state)
+	}
+	if !approved {
+		return refs
+	}
+	records, conflicts := citationChunksFromMessages(e.sourceConsistencyMessages(state, e.turnReview.Conversation))
+	rows, rowConflicts := currentCitationReferenceRows(state)
+	for _, id := range uniqueCandidateCitationIDs(state.FinalAnswer) {
+		record, ok := records[id]
+		ref := rows[id]
+		if !ok || conflicts[id] || rowConflicts[id] || ref == nil || e.modelContext.CitableChunkHandle(id) == "" ||
+			!record.contentKnown || strings.TrimSpace(record.content) == "" || record.knowledgeID != ref.KnowledgeID || record.content != ref.Content {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+func currentCitationReferenceRows(state *types.AgentState) (map[string]*types.SearchResult, map[string]bool) {
+	rows, conflicts, revisions := map[string]*types.SearchResult{}, map[string]bool{}, map[string]string{}
+	for _, step := range state.RoundSteps {
+		for _, call := range step.ToolCalls {
+			if (call.ExecutionName() != "read_document" && call.ExecutionName() != "search_knowledge") || call.Result == nil || !call.Result.Success {
+				continue
+			}
+			data := call.Result.Data
+			for _, field := range []string{"chunks", "results"} {
+				encoded, err := json.Marshal(data[field])
+				var batch []map[string]any
+				if err != nil {
+					continue
+				}
+				decoder := json.NewDecoder(bytes.NewReader(encoded))
+				decoder.UseNumber()
+				if decoder.Decode(&batch) != nil {
+					continue
+				}
+				for _, row := range batch {
+					selected := selectCitationFields(row, []string{"content", "knowledge_id", "knowledge_base_id", "knowledge_title", "knowledge_filename", "knowledge_source", "knowledge_channel", "chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id", "image_info", "matched_images", "source_locators", "chunk_metadata"})
+					encoded, _ := json.Marshal(selected)
+					var ref types.SearchResult
+					if json.Unmarshal(encoded, &ref) != nil {
+						continue
+					}
+					ref.ID = citationString(row["chunk_id"])
+					if ref.ID == "" || ref.KnowledgeID == "" || strings.TrimSpace(ref.Content) == "" {
+						continue
+					}
+					ref.ContentRevision = citationInt(row["content_revision"])
+					ref.ContentRewritten = citationInt(row["content_offset"]) > 0 || row["content_complete"] == false
+					if citationString(data["knowledge_id"]) == ref.KnowledgeID {
+						if ref.KnowledgeBaseID == "" {
+							ref.KnowledgeBaseID = citationString(data["knowledge_base_id"])
+						}
+						if ref.KnowledgeTitle == "" {
+							ref.KnowledgeTitle = citationString(data["knowledge_title"])
+						}
+					}
+					if document, ok := data["document"].(map[string]any); ok && citationString(document["knowledge_id"]) == ref.KnowledgeID {
+						if ref.KnowledgeTitle == "" {
+							ref.KnowledgeTitle = citationString(document["title"])
+						}
+						if ref.KnowledgeFilename == "" {
+							ref.KnowledgeFilename = citationString(document["file_name"])
+						}
+					}
+					revision := reviewDigest([]any{ref.KnowledgeID, ref.KnowledgeBaseID, ref.Content, ref.SourceLocators, ref.ContentRevision, row["content_offset"]})
+					if prior, exists := revisions[ref.ID]; exists && prior != revision {
+						conflicts[ref.ID] = true
+					}
+					revisions[ref.ID], rows[ref.ID] = revision, &ref
+				}
+			}
+		}
+	}
+	return rows, conflicts
+}
+
+func (e *AgentEngine) publishFinalKnowledgeReferences(ctx context.Context, state *types.AgentState, sessionID string) {
+	// Completion is also the checkpoint/stop event. Only replace collected
+	// durable state after this run actually committed its checked answer; an
+	// interrupted, suspended or failed run must retain its resumable references.
+	if state == nil || !state.IsComplete || state.Suspended != nil || !e.turnReview.Committed {
+		return
+	}
+	approved := e.candidateApprovalCurrent(state.FinalAnswer, state)
+	if !approved {
+		_, approved = e.numericWarningDelivery(state.FinalAnswer, state)
+	}
+	if !approved {
+		return
+	}
+	state.KnowledgeRefs = e.finalAnswerKnowledgeReferences(state)
+	if len(state.KnowledgeRefs) == 0 || e.eventBus == nil {
+		return
+	}
+	_ = e.eventBus.Emit(ctx, event.Event{
+		ID: generateEventID("references"), Type: event.EventAgentReferences, SessionID: sessionID,
+		Data: event.AgentReferencesData{References: state.KnowledgeRefs},
+	})
+}

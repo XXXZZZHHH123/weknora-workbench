@@ -288,8 +288,15 @@ func (e *AgentEngine) emitCompletionEvent(
 		})
 	}
 	// Convert knowledge refs to interface{} slice for event data
-	knowledgeRefsInterface := make([]interface{}, 0, len(state.KnowledgeRefs))
-	for _, ref := range state.KnowledgeRefs {
+	e.publishFinalKnowledgeReferences(ctx, state, sessionID)
+	knowledgeRefs := state.KnowledgeRefs
+	if !e.config.CitationsEnabled() {
+		// A resumed checkpoint keeps its durable references, while this run's
+		// output still respects the current citation setting.
+		knowledgeRefs = nil
+	}
+	knowledgeRefsInterface := make([]interface{}, 0, len(knowledgeRefs))
+	for _, ref := range knowledgeRefs {
 		knowledgeRefsInterface = append(knowledgeRefsInterface, ref)
 	}
 
