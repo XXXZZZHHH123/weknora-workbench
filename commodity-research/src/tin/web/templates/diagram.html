@@ -6,17 +6,13 @@
 {% if restricted_view %}<div class="restricted-notice" role="status"><span aria-hidden="true">&#128274;</span><strong>受限视角</strong><span>展示已授权的完整产业图与绑定数值；指标目录、原始资料、任意查询和下载未开放。</span></div>{% endif %}
 
 
-<div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
+<header class="rw-page-head dg-page-head">
   <div>
-    <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">INDUSTRY CHAIN · LIVE</div>
-    <h1 class="text-2xl font-black tracking-tight">动态产业图</h1>
-    <p class="text-xs text-[var(--text-muted)] mt-1">
-      {% if research_workbench() %}结构由当前工作台独立建立，每个环节仅绑定已确认来源 ——{% else %}结构来自《锡产业基础研究框架》，每个环节的数值从事实层现取 ——{% endif %}
-      <span class="text-[var(--amber)]">没数的环节显示「尚无数据」，不会拿旧值充数</span>
-    </p>
+    <h1>产业图</h1>
+    <p>{% if research_workbench() %}结构由当前工作台独立建立，每个环节只绑定已确认来源{% else %}结构来自《锡产业基础研究框架》，每个环节的数值从事实层现取{% endif %}；没有数据的环节显示“尚无数据”，不用旧值充数。</p>
   </div>
-  <div class="flex flex-wrap items-center gap-1.5 shrink-0 max-w-full text-xs">
-    <select id="dg-template" aria-label="选择产业图" onchange="dgSwitch(this.value)" class="px-2 py-1.5 rounded-md max-w-full">
+  <div class="rw-tools">
+    <select id="dg-template" aria-label="选择产业图" onchange="dgSwitch(this.value)" class="dg-template-select">
       {% for t in templates_all %}
       <option value="{{ t.id }}" {{ 'selected' if t.id == template.id }}>{{ t.name }}{{ '（默认）' if t.is_default }}</option>
       {% endfor %}
@@ -24,21 +20,18 @@
     </select>
     {% if not restricted_view %}
     <button type="button" onclick="dgDeleteTemplate()" title="删除当前布局" {% if not can_edit_diagram %}disabled{% endif %}
-      class="px-2 py-1.5 rounded-md border border-[var(--line)] text-[var(--text-muted)] hover:text-[var(--alert)] hover:bg-[var(--surface-soft)]">🗑</button>
+      class="rw-btn dg-delete-btn" aria-label="删除当前布局">删除</button>
     {# 上方工具栏只放"这张图本身"的事：换布局、结构文本、进出编辑。
        看图时才用的判断视角 / 趋势对比挪到画布右上角——它们是看图的选项，不是编辑动作。 #}
-    <button type="button" onclick="dgOpenMarkdown()" id="dg-md-btn"
-      class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">md管理</button>
+    <button type="button" onclick="dgOpenMarkdown()" id="dg-md-btn" class="rw-btn">md管理</button>
     <button type="button" onclick="dgToggleEdit()" id="dg-edit-btn" {% if not can_edit_diagram %}disabled title="当前账号只有工作台查看权限"{% endif %}
-      class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">编辑布局</button>
+      class="rw-btn">编辑布局</button>
     {# 保存只在编辑态出现：看图时摆在那里既点不动也提示不了什么 #}
-    <button type="button" onclick="dgExitEdit()" id="dg-exit" class="hidden
-      px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)] font-semibold">退出编辑</button>
-    <button type="button" onclick="dgSave()" id="dg-save" disabled class="hidden
-      px-3 py-1.5 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-40">保存</button>
+    <button type="button" onclick="dgExitEdit()" id="dg-exit" class="rw-btn hidden">退出编辑</button>
+    <button type="button" onclick="dgSave()" id="dg-save" disabled class="rw-btn rw-btn-primary hidden">保存</button>
     {% endif %}
   </div>
-</div>
+</header>
 
 <div class="flex items-center flex-wrap gap-3 py-2 text-[11px] text-[var(--text-muted)]">
   <span class="font-semibold text-[var(--text)]">图例</span>

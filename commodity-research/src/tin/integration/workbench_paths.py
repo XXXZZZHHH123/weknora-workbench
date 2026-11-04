@@ -27,6 +27,8 @@ def parse_workbench_path(path: str) -> tuple[str, str] | None:
 
 
 def allowed_workbench_route(path: str, method: str) -> bool:
+    if path.rstrip('/') == '/sn/entry' or path.startswith('/api/sn/import/'):
+        return False
     if path == '/api/sn/market/core':
         return method in {'GET', 'HEAD'}
     if path == '/':

@@ -68,6 +68,8 @@ let browser, failSave = false, failContent = false;
       }
       const endpoint = url.pathname.startsWith(api) ? url.pathname.slice(api.length) : '';
       if (endpoint === '/research-strategies/sources') return route.fulfill({json: {items: [], has_more: false}});
+      // Card monitoring (cited conditions' current state) is read-only; this fixture cites nothing it evaluates.
+      if (/^\/research-strategies\/[^/]+\/monitor$/.test(endpoint) && method === 'GET') return route.fulfill({json: {conditions: [], indicators: [], counts: {conditions: 0, triggered: 0, missing: 0, indicators: 0}, notice: ''}});
       if (endpoint === '/research-references') {
         const limit = Number(url.searchParams.get('limit') || 30), offset = Number(url.searchParams.get('offset') || 0);
         const all = Array.from({length: 137}, (_, index) => ({kind: 'judgment', id: String(index + 17), revision: 2,

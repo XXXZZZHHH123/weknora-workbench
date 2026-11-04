@@ -25,7 +25,7 @@
     <div class="logic-toolbar"><label for="logic-variety">品种代码</label><input id="logic-variety" maxlength="16" aria-label="研究品种代码" placeholder="按研究原文填写" style="width:90px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--text);font:inherit"><label for="logic-model">分析模型</label><select id="logic-model" aria-label="研究逻辑分析模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-generate" class="logic-primary">分析原文</button><span class="logic-hint">先预览，再确认保存；不会自动生效。</span></div>
     </div>
     <div id="logic-preview" hidden>
-      <div class="logic-toolbar logic-review-heading"><strong>研究逻辑解析结果</strong><span id="logic-review-count"></span><button type="button" id="logic-review-edit">修改原文</button><button type="button" id="logic-apply" class="logic-primary">保存为新草稿</button></div>
+      <div class="logic-toolbar logic-review-heading"><strong>研究逻辑解析结果</strong><span id="logic-review-count"></span><button type="button" id="logic-review-discard" class="logic-quiet-danger" title="删除这份尚未保存的结果；已保存的研判不受影响">舍弃</button><button type="button" id="logic-review-edit">修改原文</button><button type="button" id="logic-apply" class="logic-primary">保存为新草稿</button></div>
       <p id="logic-review-save-note" class="logic-hint"></p>
       <section id="logic-review" aria-label="研究逻辑解析结果" hidden>
         <div class="logic-review-views" role="group" aria-label="显示内容"><button type="button" id="logic-review-attention" aria-pressed="false">仅看问题</button><button type="button" id="logic-review-all" aria-pressed="true">全部内容</button></div>

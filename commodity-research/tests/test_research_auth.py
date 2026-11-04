@@ -47,7 +47,7 @@ def login(client, token="alice", tenant=101):
 def test_sensitive_pages_api_and_download_require_identity(embedded):
     client, _, tmp = embedded
     for path in ("/research/", "/research/sn", "/research/sn/judgment", "/research/sn/reports/2026-09-18.json",
-                 "/research/sn/contracts.csv", "/research/api/sn/import/template", "/research/api/sn/strategies",
+                 "/research/sn/contracts.csv", "/research/api/sn/export/fields", "/research/api/sn/strategies",
                  "/research/openapi.json", "/research/docs"):
         assert client.get(path).status_code == 401, path
     assert not (tmp / "workspaces").exists()
@@ -96,7 +96,7 @@ def test_exchange_origin_membership_cookie_and_revocation(embedded):
     assert client.get("/research/sn/judgment", headers={"X-Tenant-ID": "999"}).status_code == 403
     assert not (tmp / "workspaces" / "999").exists()
     assert client.get("/research/api/sn/strategies", headers={"X-Research-User": "different"}).status_code == 403
-    assert client.post("/research/sn/entry?_research_tenant=102&_research_user=alice-id", data={},
+    assert client.post("/research/api/sn/strategies?_research_tenant=102&_research_user=alice-id", json={},
                        headers={"Origin": "http://testserver"}).status_code == 403
     identities.pop("alice")
     assert client.get("/research/sn/judgment").status_code == 401
@@ -116,9 +116,7 @@ def test_tenant_database_prefix_actor_and_new_user_no_legacy_seed(embedded):
         current_identity.reset(marker)
     assert not tenant_database_path(101).exists()
     assert not (tmp / 'tin.db').exists()
-    response = client.post('/research/sn/entry', data={
-        'series_id': 'old-unbound-field', 'value': '200000', 'as_of': '2026-01-01T12:00',
-        'entered_by': 'forged', 'note': 'Attempted unbound write'},
+    response = client.post('/research/api/sn/strategies', json={'author': 'forged'},
         headers={'Origin': 'http://testserver'}, follow_redirects=False)
     assert response.status_code == 409
     assert not (tmp / 'workspaces').exists()

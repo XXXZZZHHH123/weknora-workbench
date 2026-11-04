@@ -286,6 +286,11 @@ async def source_choices(page: int = Query(1, ge=1, le=500)):
 
 
 router.include_router(citations_router)
+# Registered before /{card_id} so these fixed paths are not read as a card id.
+from tin.web.strategy_markdown import router as markdown_router  # noqa: E402
+router.include_router(markdown_router)
+from tin.web.strategy_text import router as text_router  # noqa: E402
+router.include_router(text_router)
 
 
 @router.get("/{card_id}/monitor")

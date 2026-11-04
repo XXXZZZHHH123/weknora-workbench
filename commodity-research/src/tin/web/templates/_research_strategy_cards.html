@@ -15,7 +15,7 @@
 <section id="research-card-dialog" class="strategy-inline-editor" hidden aria-labelledby="research-card-dialog-title">
   <header class="strategy-preview-header"><h2 id="research-card-dialog-title">策略方案</h2><button type="button" data-research-card-close class="button-muted">返回预览</button></header>
   <form id="research-card-form">
-    <div class="research-card-import"><label>本地导入<input id="research-card-file" type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"></label><button type="button" id="research-card-library-import" class="button-muted">从知识库导入</button><button type="button" id="research-card-export" class="button-muted">导出 JSON</button><span id="research-card-filename"></span></div>
+    <div class="research-card-import"><span class="research-card-import-label">导入</span><label class="research-file-button" title="导入 .txt / .md 原文，或策略导出的 .json">本地文件<input id="research-card-file" type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"></label><button type="button" id="research-card-library-import" title="从知识库原件载入原始研究文字">知识库原件</button><span id="research-card-filename"></span><span class="research-card-import-spacer"></span><button type="button" id="research-card-export">导出 JSON</button></div>
     <div class="research-card-fields research-card-meta-fields"><label>方案名称<input id="research-card-title" maxlength="120" required></label><label>方向<select id="research-card-direction"><option value="observe">等待验证</option><option value="bull">偏多观察</option><option value="bear">偏空观察</option><option value="range">区间观察</option></select></label><label>复核日期<input id="research-card-review" type="date" required></label></div>
     <div class="research-judgment-reference"><label for="research-card-judgment">依据研判</label><select id="research-card-judgment"><option value="">不引用研判 · 临时观察方案</option></select><button type="button" id="research-card-preview-judgment" class="button-muted" disabled>预览</button></div>
     <div id="research-card-judgment-preview" class="strategy-reference-preview" hidden></div>
@@ -23,14 +23,14 @@
     <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-response-action">应对措施</label><button type="button" class="button-muted" data-citation-field="response_action">引用</button></div><textarea id="research-card-response-action" rows="3" maxlength="4000" placeholder="明确需要做什么、暂缓什么，以及执行顺序。"></textarea><div data-citation-list="response_action"></div></div>
     <label class="research-observation-option"><input id="research-card-observation-only" type="checkbox"> 保存为观察方案（暂未制定应对措施）</label>
     <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-invalidation">暂停 / 撤回</label><button type="button" class="button-muted" data-citation-field="invalidation">引用</button></div><textarea id="research-card-invalidation" rows="2" maxlength="4000" required placeholder="出现什么情况需要暂停、撤回或重新复核？"></textarea><div data-citation-list="invalidation"></div></div>
-    <details><summary>选填：适用范围、执行前核对、关联资料和原文</summary>
+    <details><summary>选填：适用范围、执行前核对和原文</summary>
       <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-thesis">适用范围与目标</label><button type="button" class="button-muted" data-citation-field="thesis">引用</button></div><textarea id="research-card-thesis" rows="2" maxlength="8000" placeholder="选填：适用的合约、期限与目标。"></textarea><div data-citation-list="thesis"></div></div>
       <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-watch">执行前核对</label><button type="button" class="button-muted" data-citation-field="watch_for">引用</button></div><textarea id="research-card-watch" rows="2" maxlength="8000" placeholder="选填：执行前需要再核对的数据或条件。"></textarea><div data-citation-list="watch_for"></div></div>
-      <div id="research-card-selected-sources" class="research-selected-sources"></div><div id="research-card-sources" class="research-card-sources"></div><button type="button" id="research-card-more-sources" class="button-muted" hidden>更多资料</button>
+      <div id="research-card-selected-sources" class="research-selected-sources" hidden></div>
       <div class="research-cited-field"><div class="research-cited-label"><label for="research-card-original">原始研究文字</label><button type="button" class="button-muted" data-citation-field="original_text">引用</button></div><textarea id="research-card-original" rows="4" maxlength="24000"></textarea><div data-citation-list="original_text"></div></div>
     </details>
     <p id="research-card-reference-note" class="strategy-small-note" hidden></p><div id="research-card-form-status" role="status" aria-live="polite"></div>
-    <footer><span class="strategy-small-note">保存为个人草稿，文字条件不会自动执行。</span><button type="button" id="research-card-save-copy" class="button-muted" hidden>另存为新方案</button><button type="submit" class="button-primary" id="research-card-save">保存草稿</button></footer>
+    <footer><span class="strategy-small-note">保存为个人草稿，文字条件不会自动执行。</span><button type="button" id="research-card-discard" class="button-muted research-card-discard" hidden>放弃草稿</button><button type="button" id="research-card-save-copy" class="button-muted" hidden>另存为新方案</button><button type="submit" class="button-primary" id="research-card-save">保存草稿</button></footer>
   </form>
 </section>
 {% endif %}
@@ -47,6 +47,44 @@
   </div>
   <p id="strategy-citation-status" role="status" aria-live="polite"></p>
   <footer><button type="button" id="strategy-citation-clear" class="button-muted">暂无，清除此项引用</button><button type="button" class="button-primary" data-citation-close>完成</button></footer>
+</dialog>
+{% if research_cards.can_write %}
+<dialog id="strategy-text-dialog" class="strategy-tool-dialog" aria-labelledby="strategy-text-title">
+  <header><div><h2 id="strategy-text-title">文字整理</h2><p>用自己的话写下方案，可以像平时一样提“锡研判”“之前那份低吸方案”“310周报里讲库存的那段”。模型整理成方案字段，并在近期研判、已有策略、知识库文件和授权指标中找出你指的内容作为引用；要求摘录的原文会核对确为文件原文后放进“原始研究文字”。结果只填入表单，核对后由你保存。</p></div><button type="button" class="button-muted" data-tool-close aria-label="关闭文字整理">×</button></header>
+  <label class="sr-only" for="strategy-text-input">方案文字</label>
+  <textarea id="strategy-text-input" rows="7" maxlength="6000" placeholder="例如：锡价跌到 40 万以下、VIX 回落到 19 以下时分批低吸；跌破 38 万或社库连续两周累库就撤回；月底复核。"></textarea>
+  <div class="strategy-tool-row"><label for="strategy-text-model">模型</label><select id="strategy-text-model" disabled><option value="">正在读取模型…</option></select><span id="strategy-text-count" class="strategy-small-note">0 / 6000</span></div>
+  <p id="strategy-text-status" class="strategy-tool-status" role="status" aria-live="polite"></p>
+  <footer><button type="button" class="button-muted" data-tool-close>取消</button><button type="button" id="strategy-text-run" class="button-primary" disabled>整理成方案</button></footer>
+</dialog>
+{% endif %}
+<dialog id="strategy-markdown-dialog" class="strategy-tool-dialog strategy-markdown-dialog" aria-labelledby="strategy-markdown-title">
+  <header><div><h2 id="strategy-markdown-title">md管理</h2><p>全部方案导出为一份 Markdown。{% if research_cards.can_write %}修改后先检查再导入：保留注释里的编号会更新原方案，删去编号则另存为新方案；文档里没有的方案保持不变，不会被删除。{% else %}当前角色可以导出和复制，不能导入。{% endif %}</p></div><button type="button" class="button-muted" data-tool-close aria-label="关闭md管理">×</button></header>
+  <details class="strategy-markdown-help"><summary>格式说明</summary><pre>## 方案名称
+&lt;!-- card: 编号 revision: 版本 --&gt;   导出时自动生成；新方案不写这一行
+- 方向：偏多观察 / 偏空观察 / 区间观察 / 等待验证
+- 复核日期：2026-11-30
+- 依据研判：研判名称 &lt;!-- judgment: 编号@版本 --&gt;   不引用时写“不引用”
+- 参考策略：方案名称 &lt;!-- strategy: 编号@版本 --&gt;   选填，删去这一行或写“不引用”即不参考
+&lt;!-- 待核对：… --&gt;   文字整理留下的提醒，检查时显示，核对后可删除
+
+### 适用 / 触发
+什么情况出现时采取应对
+
+### 应对措施
+具体怎么做；不写则保存为观察方案
+
+### 暂停 / 撤回
+什么情况暂停、撤回或重新复核
+
+### 适用范围与目标、### 执行前核对、### 原始研究文字   选填
+
+### 引用
+- 适用 / 触发 · 指标：名称 &lt;!-- cite: … --&gt;   可删除或改所属文字项；新引用请在表单中选择</pre></details>
+  <textarea id="strategy-markdown-text" spellcheck="false" aria-label="策略 Markdown" placeholder="正在导出…"></textarea>
+  <div id="strategy-markdown-preview" class="strategy-markdown-preview" hidden></div>
+  <p id="strategy-markdown-status" class="strategy-tool-status" role="status" aria-live="polite"></p>
+  <footer><button type="button" id="strategy-markdown-export" class="button-muted">重新导出</button><button type="button" id="strategy-markdown-copy" class="button-muted">复制</button><button type="button" id="strategy-markdown-download" class="button-muted">下载 .md</button><span class="strategy-tool-spacer"></span>{% if research_cards.can_write %}<button type="button" id="strategy-markdown-check" class="button-muted">检查导入</button><button type="button" id="strategy-markdown-apply" class="button-primary" disabled>导入</button>{% endif %}</footer>
 </dialog>
 <script id="research-card-data" type="application/json">{{ research_cards|tojson }}</script>
 {% endif %}

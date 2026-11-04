@@ -1648,8 +1648,6 @@ async function dgOpenDetail(nodeId) {
          class="px-2.5 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">加入对比</button>
       <a href="${window.RESEARCH_PREFIX || ''}/sn/indicators#${dgEsc(d.series_id)}"
          class="px-2.5 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">在指标页查看</a>
-      ${d.fetch_mode === "manual" ? `<a href="${window.RESEARCH_PREFIX || ''}/sn/entry"
-         class="px-2.5 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">去录入</a>` : ""}
       <button type="button" onclick="dgCopy('${dgEsc(d.series_id)}')"
          class="px-2.5 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制代码</button>
     </div>`;

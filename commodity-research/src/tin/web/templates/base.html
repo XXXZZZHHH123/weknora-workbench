@@ -79,10 +79,6 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
       {% else %}<span class="px-2 py-1 opacity-40" title="已是最近交易日">&rarr;</span>{% endif %}
     </form>
     {% endif %}
-    {% if not restricted_view %}<button id="quick-entry" type="button" {% if research_identity() and not research_identity().can_write %}disabled{% endif %} onclick="{% if research_workbench() and not manual_indicators %}parent.postMessage({type:'research-open-sources'},location.origin){% else %}toggleDrawer('quick-drawer', true){% endif %}" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-md shadow-sm transition-colors">
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-      <span class="hidden sm:inline">{{ '维护数据' if research_workbench() else '快速录入' }}</span>
-    </button>{% endif %}
     <button type="button" onclick="toggleTheme()" class="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-soft)]" title="切换暗色/浅色" aria-label="切换深色或浅色主题">
       <svg class="icon-dark w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
       <svg class="icon-light w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
@@ -94,7 +90,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
       {% for key, label, href in [
         ('home', '事务中心' if research_workbench() else '工作台', '/'), ('variety', '市场总览', '/sn'), ('indicators', '指标', '/sn/indicators'),
         ('judgment', '研究判断', '/sn/judgment'), ('strategies', '策略', '/sn/strategies'),
-        ('diagram', '产业图', '/sn/diagram'), ('reports', '日报周报', '/sn/reports'), ('entry', '人工录入', '/sn/entry')] %}
+        ('diagram', '产业图', '/sn/diagram'), ('reports', '日报周报', '/sn/reports')] %}
       {% set view_module = {'variety': 'market', 'judgment': 'judgments'}.get(key, key) %}
       {% if not restricted_view or key == 'home' or view_module in research_workbench().view_modules %}<a href="{{ research_url(href) }}{% if key in ('home', 'variety', 'indicators') and d and not restricted_view %}?date={{ d }}{% endif %}"
          class="nav-btn {{ 'active' if nav == key }}" {% if nav == key %}aria-current="page"{% endif %}>{{ label }}</a>
@@ -123,58 +119,6 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 {% block drawer %}{% endblock %}
 
 <div id="drawer-backdrop" onclick="closeDrawers()" class="hidden fixed inset-0 z-40 bg-black/30 transition-opacity"></div>
-{% if not research_workbench() %}
-<aside id="quick-drawer" data-drawer class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-md bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col justify-between translate-x-full transition-transform duration-300 ease-in-out">
-  <form id="drawer-form" method="post" action="{{ research_form_url('/sn/entry') }}" class="flex flex-col h-full">
-    <div class="flex items-center justify-between pb-4 border-b border-[var(--line)]">
-      <div>
-        <h3 class="text-base font-bold text-[var(--text)]">原地快速录入</h3>
-        <p class="text-xs text-[var(--text-muted)] mt-0.5">{{ '为当前工作台已确认指标补充观测与来源' if research_workbench() else '不用离开当前页面；提交后自动重算派生指标' }}</p>
-      </div>
-      <button type="button" onclick="closeDrawers()" class="p-1 rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-soft)] text-lg">&times;</button>
-    </div>
-
-    <div class="mt-5 space-y-4 text-xs overflow-y-auto">
-      <input type="hidden" name="return_to" value="{{ research_url(request.url.path) }}{% if d %}?date={{ d }}{% endif %}">
-      <div>
-        <label class="block font-semibold mb-1">录入指标</label>
-        <select id="drawer-series" name="series_id" required onchange="syncDrawerUnit()" class="w-full px-3 py-2 rounded-md">
-          {% if not manual_indicators %}<option value="" disabled selected>尚无可录入指标</option>{% endif %}
-          {% for i in manual_indicators %}
-          <option value="{{ i.series_id }}" data-unit="{{ i.unit }}" data-as-of="{{ i.default_as_of }}">{{ i.name }} — {{ i.series_id }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label class="block font-semibold mb-1">录入数值</label>
-        <div class="relative">
-          <input type="number" step="any" id="drawer-value" name="value" required
-                 class="w-full px-3 py-2 rounded-md tabular font-bold text-sm" placeholder="例如 17500">
-          <span id="drawer-unit" class="absolute right-3 top-2 text-[var(--text-muted)]"></span>
-        </div>
-      </div>
-      <div>
-        <label class="block font-semibold mb-1">数据时点 as_of<span class="font-normal text-[var(--text-muted)]">（这个数代表哪一刻，不是录入时刻）</span></label>
-        <input type="datetime-local" id="drawer-as-of" name="as_of" required class="w-full px-3 py-2 rounded-md tabular">
-      </div>
-      <div>
-        <label class="block font-semibold mb-1">来源说明 / 凭据</label>
-        <input type="text" name="note" required class="w-full px-3 py-2 rounded-md" placeholder="例如：Mysteel 周报 11:00 报价">
-      </div>
-      <div>
-        <label class="block font-semibold mb-1">录入人</label>
-        <input type="text" name="entered_by" required class="w-full px-3 py-2 rounded-md" {% if research_identity() %}value="{{ research_identity().display_name }}" readonly{% endif %}>
-      </div>
-    </div>
-
-    <div class="mt-auto pt-4 border-t border-[var(--line)] flex items-center justify-end gap-3">
-      <button type="button" onclick="closeDrawers()" class="px-4 py-2 rounded-md border border-[var(--line)] font-medium text-[var(--text-muted)] hover:bg-[var(--surface-soft)]">取消</button>
-      <button type="submit" {% if not manual_indicators or (research_identity() and not research_identity().can_write) %}disabled{% endif %} class="px-5 py-2 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)] shadow-sm">{{ '提交观测值' if research_workbench() else '提交并立即重算' }}</button>
-    </div>
-  </form>
-</aside>
-{% endif %}
-
 {% if not restricted_view %}
 <div id="series-chart-modal" class="series-chart-modal hidden fixed inset-0" role="dialog"
      aria-modal="true" aria-hidden="true" aria-labelledby="series-chart-title">

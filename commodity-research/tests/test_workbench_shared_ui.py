@@ -25,7 +25,7 @@ def test_original_pages_share_layout_and_scope_every_link(isolated, monkeypatch)
     client, headers, state, tmp = isolated
     login(client, headers)
     no_legacy(monkeypatch)
-    for suffix in ("/", "/sn", "/sn/indicators", "/sn/judgment", "/sn/strategies", "/sn/diagram", "/sn/reports", "/sn/entry"):
+    for suffix in ("/", "/sn", "/sn/indicators", "/sn/judgment", "/sn/strategies", "/sn/diagram", "/sn/reports"):
         response = client.get(page(suffix))
         assert response.status_code == 200, (suffix, response.text)
         assert 'class="research-nav-main"' in response.text
@@ -190,7 +190,7 @@ def test_original_judgment_form_preserves_private_input_without_saving_versions(
         assert session.scalars(select(Judgment)).all() == [], 'Model preview and explicit confirmation are required'
 
 
-def test_source_indicator_manual_edit_and_report_export_use_original_scope(isolated, monkeypatch):
+def test_removed_manual_edit_cannot_change_source_facts_and_report_export_uses_original_scope(isolated, monkeypatch):
     from tests.test_isolated_workbenches import confirm_kb_source
     client, headers, state, tmp = isolated
     series = confirm_kb_source(state, [{'date': '2026-01-02', 'value': 8.5, 'value_status': 'valid',
@@ -200,7 +200,7 @@ def test_source_indicator_manual_edit_and_report_export_use_original_scope(isola
     entry = client.post(page('/sn/entry'), headers={'Origin':'http://testserver'}, data={
         'series_id':series,'value':'99','as_of':'2026-01-02T15:00','entered_by':'forged',
         'note':'Attempted separate research copy.','return_to':'/sn/entry'}, follow_redirects=False)
-    assert entry.status_code == 409 and '知识库' in entry.text
+    assert entry.status_code == 404
     reports = client.get(page('/sn/reports'))
     assert reports.status_code == 200 and '2026-01-02' in reports.text
     for workbench in (WB, OTHER):
@@ -252,7 +252,7 @@ def _html_elements(html):
     return parsed.rows
 
 
-def test_empty_workbench_guidance_and_quick_entry_lead_to_scoped_sources(isolated):
+def test_empty_workbench_guidance_keeps_sources_without_manual_entry(isolated):
     client, headers, state, tmp = isolated
     login(client, headers)
     for suffix in ('/', '/sn'):
@@ -263,43 +263,50 @@ def test_empty_workbench_guidance_and_quick_entry_lead_to_scoped_sources(isolate
         else:
             assert '事务中心' in response.text and '不能据此判断当前没有风险' in response.text
         assert '「数据更新」中立即更新' not in response.text
-        assert '下方「数据更新」中立即更新' not in response.text
+        assert '/sn/entry' not in response.text
+        assert 'research-materials-link' in response.text
+        assert '绑定知识库' in response.text or '资料与来源</button>' in response.text
         elements = _html_elements(response.text)
-        quick = next(attrs for tag, attrs in elements if tag == 'button' and attrs.get('id') == 'quick-entry')
-        assert "research-open-sources" in quick['onclick']
-        assert 'disabled' not in quick
-        assert 'px-3 py-1.5' in quick['class']
-        assert not any(attrs.get('id') == 'drawer-form' for tag, attrs in elements)
+        assert not any(attrs.get('id') in {'quick-entry', 'drawer-form', 'quick-drawer'}
+                       for tag, attrs in elements)
     error = client.get(page('/api/sn/snapshot'))
     assert error.status_code == 404
     assert '资料与来源' in error.json()['detail']
 
 
-def test_empty_viewer_cannot_use_quick_entry_to_write(isolated):
+@pytest.mark.parametrize('viewer', [False, True])
+@pytest.mark.parametrize('configured', [False, True])
+def test_manual_entry_is_removed_for_every_workbench_role(isolated, viewer, configured):
+    from tests.test_isolated_workbenches import confirm_kb_source
     client, headers, state, tmp = isolated
-    login(client, {**headers, 'Authorization':'Bearer viewer', 'X-Research-User':'viewer'})
+    if configured:
+        confirm_kb_source(state)
+    if viewer:
+        headers = {**headers, 'Authorization':'Bearer viewer', 'X-Research-User':'viewer'}
+    login(client, headers)
     response = client.get(page())
     assert response.status_code == 200
     elements = _html_elements(response.text)
-    quick = next(attrs for tag, attrs in elements if tag == 'button' and attrs.get('id') == 'quick-entry')
-    assert 'disabled' in quick
-    assert not any(attrs.get('id') == 'drawer-form' for tag, attrs in elements)
+    assert not any(attrs.get('id') in {'quick-entry', 'drawer-form', 'quick-drawer'}
+                   for tag, attrs in elements)
+    assert '/sn/entry' not in response.text
+    assert client.get(page('/sn/entry')).status_code == 404
+    assert client.post(page('/sn/entry'), headers={'Origin':'http://testserver'}, data={
+        'series_id':'retired-field','value':'99','as_of':'2026-01-02T15:00',
+        'entered_by':'forged','note':'Retired write must not persist'}).status_code == (403 if viewer else 404)
 
 
-def test_confirmed_manual_indicator_keeps_original_quick_entry_form(isolated):
-    from tests.test_isolated_workbenches import confirm_kb_source
+@pytest.mark.parametrize('suffix,method', [
+    ('/api/sn/import/template', 'get'), ('/api/sn/import/preview', 'post'),
+    ('/api/sn/import/commit', 'post'), ('/api/sn/import/terminal/commit', 'post'),
+    ('/api/sn/import/jobs/retired-job', 'get'),
+])
+def test_manual_entry_import_routes_are_retired(isolated, suffix, method):
     client, headers, state, tmp = isolated
-    confirm_kb_source(state)
     login(client, headers)
-    response = client.get(page())
-    elements = _html_elements(response.text)
-    quick = next(attrs for tag, attrs in elements if tag == 'button' and attrs.get('id') == 'quick-entry')
-    assert 'research-open-sources' in quick['onclick']
-    assert 'disabled' not in quick
-    assert not any(attrs.get('id') == 'drawer-form' for tag, attrs in elements)
-    entry = client.get(page('/sn/entry'))
-    assert entry.status_code == 200 and '知识库数据维护' in entry.text
-    assert 'name="value"' not in entry.text
+    response = getattr(client, method)(page(suffix), headers={'Origin':'http://testserver'})
+    assert response.status_code == 404
+    assert not (tmp / 'workspaces').exists()
 
 
 @pytest.mark.parametrize('configured', [False, True])

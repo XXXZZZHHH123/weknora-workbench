@@ -5,15 +5,17 @@
 <script src="{{ research_static_prefix() }}/static/research-display.js?v={{ static_version() }}"></script>
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/strategy.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/research-strategy.css?v={{ static_version() }}">
-<header class="strategy-head strategy-workspace-head">
+<header class="rw-page-head strategy-workspace-head">
   <div><h1>策略</h1><p>选择方案查看条件、应对与引用依据，核对后编辑或引用为独立草稿。</p></div>
-  <div class="strategy-workspace-tools">
+  <div class="rw-tools strategy-workspace-tools">
+    {% if not restricted_view and workspace_can_write and research_cards.enabled %}<button type="button" id="strategy-text-open" class="rw-btn" title="用自己的话写方案，由模型整理成方案草稿">文字整理</button>{% endif %}
+    {% if not restricted_view and research_cards and research_cards.enabled %}<button type="button" id="strategy-markdown-open" class="rw-btn" title="全部方案导出为 Markdown，修改后导入">md管理</button>{% endif %}
     {% if not restricted_view and workspace_can_write %}
-      {% if research_cards.enabled %}<button type="button" id="research-card-add" class="button-muted">＋ 策略方案</button>{% endif %}
-      <details class="strategy-generation-menu"><summary>生成交易草稿</summary><div class="strategy-generation-controls">
+      <details class="strategy-generation-menu"><summary class="rw-btn">生成交易草稿</summary><div class="strategy-generation-controls">
       {% if platform_models %}<select id="strategy-model" aria-label="策略分析模型" disabled><option value="">正在读取模型…</option></select>{% endif %}
       <button class="button-primary" id="generate-strategies" {% if platform_models %}disabled data-platform-model="true"{% endif %}>生成待审阅草稿</button>
       <small>使用生效研判与真实合约证据，生成后仍需人工审阅。</small></div></details>
+      {% if research_cards.enabled %}<button type="button" id="research-card-add" class="rw-btn rw-btn-primary">＋ 新建方案</button>{% endif %}
     {% endif %}
   </div>
 </header>
@@ -57,12 +59,13 @@
       <div class="strategy-plan-bands">{% for key,label in [('entry','入场'),('target','目标'),('stop','止损')] %}<fieldset><legend>{{ label }}区间</legend><div><input id="plan-edit-{{ key }}-low" type="number" step="any" aria-label="{{ label }}下限" required><span>—</span><input id="plan-edit-{{ key }}-high" type="number" step="any" aria-label="{{ label }}上限" required></div><label>依据<input id="plan-edit-{{ key }}-reason" required></label></fieldset>{% endfor %}</div>
       <label>入场条件<textarea id="plan-edit-entry-condition" rows="2" required></textarea></label><label>失效条件<textarea id="plan-edit-invalidation" rows="2" required></textarea></label>
       <div class="research-card-fields"><label>复核时间<input id="plan-edit-review" type="datetime-local" required></label><label>计划风险预算（元）<input id="plan-edit-risk" type="number" min="0" step="any" required></label></div>
-      <div id="strategy-plan-edit-status" role="status"></div><footer><button type="button" data-plan-edit-close class="button-muted">取消编辑</button><button type="submit" class="button-primary" id="strategy-plan-save">保存独立草稿</button></footer></form>
+      <div id="strategy-plan-edit-status" role="status"></div><footer><button type="button" id="strategy-plan-discard" class="button-muted" hidden>放弃修改</button><button type="button" data-plan-edit-close class="button-muted">取消编辑</button><button type="submit" class="button-primary" id="strategy-plan-save">保存独立草稿</button></footer></form>
     </section>
   </div>
 </section>
 <script id="strategy-workspace-data" type="application/json">{{ {'plans': strategy_entries, 'selected': workspace_selected, 'initial_plan': workspace_initial if workspace_selected and workspace_selected.startswith('plan:') else none, 'can_write': workspace_can_write}|tojson }}</script>
 <script src="{{ research_static_prefix() }}/static/research-strategy.js?v={{ static_version() }}"></script>
+{% if not restricted_view and research_cards and research_cards.enabled %}<script src="{{ research_static_prefix() }}/static/strategy-tools.js?v={{ static_version() }}"></script>{% endif %}
 <script src="{{ research_static_prefix() }}/static/strategy.js?v={{ static_version() }}"></script>
 {% endif %}
 {% endblock %}

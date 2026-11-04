@@ -34,6 +34,7 @@ const preview=()=>({draft_id:review.draft_id,base_version:0,source_text:'合成�
       else if(p.endsWith('/jobs/'+job))data=meta();
       else if(p.endsWith('/jobs/'+job+'/result'))data={...preview(),job:meta()};
       else if(p.endsWith('/jobs/'+job+'/discard')&&request.method()==='POST'){discards.push(p);state='superseded';data={job:meta()};}
+      else if(p.endsWith('/preview/discard')&&request.method()==='POST'){discards.push(p+' '+request.postDataJSON().draft_id);state='superseded';data={discarded:true};}
       else throw new Error('Unexpected synthetic request '+request.method()+' '+p);
       return route.fulfill({json:data});
     });
@@ -54,6 +55,17 @@ const preview=()=>({draft_id:review.draft_id,base_version:0,source_text:'合成�
     // Reopening finds no staged result to offer.
     await page.locator('[data-logic-close]').click();await page.locator('[data-open-logic]').click();await page.waitForTimeout(600);
     assert.equal(await restore.isVisible(),false);assert.equal(await discard.isVisible(),false);
+    // The result under review can also be discarded where it is reviewed, next to saving it.
+    state='succeeded';
+    await page.locator('[data-logic-close]').click();await page.locator('[data-open-logic]').click();
+    await restore.waitFor({state:'visible'});page.once('dialog',dialog=>dialog.accept());await restore.click();await page.locator('#logic-review').waitFor({state:'visible'});
+    const inline=page.locator('#logic-review-discard');
+    assert.equal(await inline.isVisible(),true);
+    page.once('dialog',dialog=>dialog.accept());await inline.click();
+    await page.locator('#logic-status').filter({hasText:'已舍弃这份尚未保存的研判结果'}).waitFor();
+    assert.equal(discards.at(-1),'/research/workbenches/synthetic/api/sn/judgment/preview/discard '+review.draft_id);
+    assert.equal(await page.locator('#logic-review').isVisible(),false);
+    assert.equal(await restore.isVisible(),false);
     assert.deepEqual(errors,[]);
     console.log('PASS real Chromium: discard offered beside the staged result and during its review, confirmation required, review cleared; synthetic data only.');
   }finally{await browser.close();}

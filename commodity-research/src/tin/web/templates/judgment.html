@@ -29,9 +29,9 @@
   </div>{% elif item.series_id %}<span class="judgment-evidence-unbound">{{ indicator_name(item.series_id, names) }} · 暂无可用数值</span>{% else %}<span class="judgment-evidence-unbound">文字依据 · 尚未关联指标</span>{% endif %}
 {% endmacro %}
 <div class="judgment-research">
-<header class="judgment-research-header">
+<header class="rw-page-head judgment-research-header">
   <div><h1>研究判断</h1><p>{% if j %}{% if author_label(j.author) %}{{ author_label(j.author) }} · {% endif %}{{ j.written_at }} · {{ j.status }}{% else %}梳理多空分歧，跟踪依据与验证条件{% endif %}</p></div>
-  {% if not restricted_view %}<button type="button" data-open-logic>管理研究逻辑</button>{% endif %}
+  {% if not restricted_view %}<div class="rw-tools"><button type="button" class="rw-btn rw-btn-primary" data-open-logic>管理研究逻辑</button></div>{% endif %}
 </header>
 {% if j is none %}
 <section id="judgment-empty" class="judgment-research-section"><h2>尚未登记判断</h2><p>{{ '主人尚未分享已保存研究逻辑。' if restricted_view else '导入研究原文，核对多空依据与监测条件后保存。' }}</p></section>
@@ -97,10 +97,7 @@
 {% endif %}
 <section id="judgment-thresholds" class="judgment-research-section space-y-3">
   <div class="flex items-center justify-between gap-3 flex-wrap">
-    <h2 class="text-sm font-bold flex items-center gap-2">
-      <span class="text-[10px] font-bold tabular text-[var(--primary)] bg-[var(--primary-soft)] px-1.5 py-0.5 rounded">01</span>
-      阈值监测与测距
-    </h2>
+    <h2 class="judgment-section-title">阈值监测与测距</h2>
     <span class="text-xs text-[var(--text-muted)]">
       冲突优先级：{% if j.priority_rule %}{{ priority_labels(j.priority_rule.order, j.thresholds) }}{% else %}<b class="text-[var(--amber)]">未填写</b>{% endif %}</span>
   </div>

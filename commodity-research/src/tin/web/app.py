@@ -8,22 +8,20 @@ from datetime import date as CalendarDate
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import ValidationError
 from sqlalchemy import select, text
 
 from tin.brief import store as brief_store
 from tin.caliber.dictionary import DIMENSIONS
-from tin.compute.engine import compute_day, latest_trade_date, observation_boundary
+from tin.compute.engine import latest_trade_date, observation_boundary
 from tin.config import SHANGHAI, settings
 from tin.db import SessionLocal
 from tin import schema_check
 from tin.export.board import (
     archive_days,
-    audit_entries,
     contract_curve,
     core_cards,
     gaps,
@@ -37,19 +35,15 @@ from tin.export.board import (
     ticker,
 )
 from tin.export import templates as export_templates
-from tin.export.excel import Column, build_export, build_import_template, field_catalog
+from tin.export.excel import Column, build_export, field_catalog
 from tin.export import diagram as diagram_api
 from tin.export import diagram_md
 from tin.export import indicators as indicator_data
-from tin.ingest import excel_importer, import_jobs, vendor_terminal
-from tin.ingest.record import RecordError, record
 from tin.jobs.seed import seed_researcher
 from tin.judgments.service import JudgmentError, current, save_version, to_payload
 from tin.models import AuditLog, DailyBrief, Indicator, Judgment, Observation, TradingDay
 from tin.schemas.brief import STANCES
-from tin.schemas.caliber import Caliber
 from tin.schemas.judgment import TONES
-from tin.schemas.observation import ObservationIn
 from tin.integration.identity import current_identity, research_prefix, research_url, research_form_url, verified_actor
 from tin.integration.auth import ResearchAuthMiddleware
 from tin.ownership import scope_query
@@ -68,8 +62,6 @@ templates = Jinja2Templates(directory=HERE / "templates")
 
 V = settings.variety
 from tin.integration.research_profile import research_variety
-# 指标未登记默认发布时刻时的兜底值（收盘截点）
-FALLBACK_ENTRY_TIME = time(15, 0)
 
 
 @contextmanager
@@ -366,24 +358,15 @@ def _neighbour_dates(s, d: date) -> tuple[str | None, str | None]:
     return prev, nxt
 
 
-def _manual_indicators(s) -> list[dict]:
-    rows = s.scalars(select(Indicator).where(Indicator.fetch_mode == "manual", Indicator.status == "可用")
-                     .order_by(Indicator.category, Indicator.series_id)).all()
-    today = datetime.now(SHANGHAI).date()
-    return [{"series_id": i.series_id, "name": i.name, "unit": i.unit, "frequency": i.frequency,
-             "default_as_of": datetime.combine(today, i.default_entry_time or FALLBACK_ENTRY_TIME)
-             .strftime("%Y-%m-%dT%H:%M")} for i in rows]
-
-
 def _shell(s, nav: str, d: date | None = None, **extra) -> dict:
-    """所有页面共用的外壳数据：行情条、日期切换、快速录入抽屉。
+    """所有页面共用的外壳数据：行情条、日期切换。
 
     **行情条与日期选择器是两件事。** 行情条是"此刻的市场状态"，每一页都该有；
     日期选择器是页面自己的翻页，只有按日期取数的页面才需要。早先两者都挂在 `d` 上，
     于是不按日期取数的页面（策略页传 d=None）连行情条一起没了——那一条是研究员
     扫一眼就知道盘面的地方，缺了很显眼。
     """
-    ctx = {"nav": nav, "d": d.isoformat() if d else None, "manual_indicators": _manual_indicators(s)}
+    ctx = {"nav": nav, "d": d.isoformat() if d else None}
     ctx['names'] = {identifier: row.get('name') or row.get('metric') or ''
                     for identifier, row in s.info.get('knowledge_facts_catalog', {}).items()
                     if isinstance(row, dict)}
@@ -413,6 +396,18 @@ def _home_date(s, q: str | None) -> date | None:
     return latest_trade_date(s)
 
 
+def _page_date(s, q: str | None) -> date | None:
+    """The board day of a workbench page. Navigation carries the day between pages (研判 → 指标); a page
+    whose own projected facts have nothing before it renders that day with empty states instead of a raw
+    error response. APIs keep the strict check of ``_home_date``."""
+    try:
+        return _home_date(s, q)
+    except HTTPException as error:
+        if q and error.status_code == 404 and s.info.get("workbench_id"):
+            return date.fromisoformat(q)
+        raise
+
+
 @app.get("/")
 def home_page(request: Request, date: str | None = None, err: str | None = None):
     """Verified workbenches open a metadata inbox; standalone keeps its brief review."""
@@ -422,10 +417,10 @@ def home_page(request: Request, date: str | None = None, err: str | None = None)
         from tin.web.affairs import build_affairs
         with artifact_session(scope) as session:
             return templates.TemplateResponse(request, 'home.html', {
-                'nav': 'home', 'd': None, 'manual_indicators': [], 'ticker': [],
+                'nav': 'home', 'd': None, 'ticker': [],
                 'affairs': build_affairs(session, scope, today=datetime.now(SHANGHAI).date()), 'err': err})
     with _page_session('home', day=date) as s:
-        d = _home_date(s, date)
+        d = _page_date(s, date)
         researcher = seed_researcher(s)
         brief = brief_store.current(s, researcher.id, research_variety(s), d) if d is not None else None
         return templates.TemplateResponse(request, "home.html", _shell(
@@ -550,7 +545,7 @@ def healthz():
 @app.get("/sn")
 def variety_page(request: Request, date: str | None = None, err: str | None = None):
     with _page_session('market', day=date) as s:
-        d = _home_date(s, date)
+        d = _page_date(s, date)
         today = datetime.now(SHANGHAI).date()
         cards = saved_core_cards(s, d, core_cards(s, research_variety(s), d) if d is not None else [])
         from tin.web.market_history import market_history
@@ -593,7 +588,7 @@ def _judgment_response(request: Request, *, err=None, logic_input=""):
         if not 1 <= selected_id <= 2**63 - 1:
             raise HTTPException(422, '研究判断编号无效')
     with _page_session('judgments', day=request.query_params.get('date'), judgment_id=selected_id) as s:
-        d = _home_date(s, request.query_params.get('date'))
+        d = _page_date(s, request.query_params.get('date'))
         today = datetime.now(SHANGHAI).date()
         scope = current_workbench.get()
         j = selected_judgment(s, selected_id, scope=scope) if selected_id is not None else current(s, research_variety(s))
@@ -642,47 +637,6 @@ async def judgment_import(request: Request, file: UploadFile | None = None, text
     return _judgment_response(request, err="请在管理研究逻辑中选择模型分析，预览后确认保存。", logic_input=raw)
 
 
-@app.get("/sn/entry")
-def entry_form(request: Request, series_id: str | None = None, err: str | None = None):
-    with SessionLocal() as s:
-        if s.info.get('knowledge_facts'):
-            return templates.TemplateResponse(request, 'knowledge_entry.html', _shell(
-                s, 'entry', latest_trade_date(s)))
-        return templates.TemplateResponse(request, "entry.html", _shell(
-            s, "entry", latest_trade_date(s), indicators=_manual_indicators(s), selected=series_id, err=err,
-            audit=audit_entries(s), now=datetime.now(SHANGHAI).strftime("%Y-%m-%dT%H:%M")))
-
-
-@app.post("/sn/entry")
-def entry_submit(series_id: str = Form(...), value: float = Form(...), as_of: str = Form(...),
-                 entered_by: str = Form(...), note: str = Form(...), return_to: str = Form("/sn/entry")):
-    entered_by = verified_actor(entered_by)
-    with SessionLocal() as s:
-        ind = s.get(Indicator, series_id)
-        if ind is None or ind.fetch_mode != "manual":
-            raise HTTPException(400, "只能为人工录入指标录入数值")
-        when = datetime.fromisoformat(as_of).replace(tzinfo=SHANGHAI)
-        try:
-            row = record(s, ObservationIn(series_id=series_id, value=value, as_of=when,
-                                          caliber=Caliber.model_validate(ind.caliber), source="人工",
-                                          entered_by=entered_by.strip(), note=note.strip()))
-        except (RecordError, ValidationError) as e:
-            return _redirect(return_to.split("?")[0], err=e)
-        s.add(AuditLog(at=datetime.now(SHANGHAI), actor=entered_by.strip(), action="人工录入",
-                       target_type="observation", target_id=series_id,
-                       detail={"value": value, "as_of": when.isoformat(), "note": note}))
-        s.commit()
-        d = latest_trade_date(s)
-        if d is not None:
-            if not s.info.get("workbench_id"):
-                compute_day(s, d)
-        completion = "，已保存本工作台观测" if s.info.get("workbench_id") else "，派生指标已重算"
-        text = f"已录入 {ind.name} = {value:g}{completion}" if row else "与已有值相同，未重复写入"
-        base, _, query = return_to.partition("?")
-        params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
-        return _redirect(base, msg=text, **params)
-
-
 @app.get("/sn/indicators")
 def indicators_page(request: Request, date: str | None = None):
     with _page_session('indicators', day=date) as s:
@@ -701,7 +655,7 @@ def indicators_page(request: Request, date: str | None = None):
             rows = directory['indicators']
         else:
             rows = indicator_data.catalog(s)
-        day = _home_date(s, date)
+        day = _page_date(s, date)
         groups = [{"name": name, "rows": [r for r in rows if r["category"] == name]}
                   for name in dict.fromkeys(r["category"] for r in rows)]
         checks = diagram_api.crosscheck(s, research_variety(s), day) if day else []
@@ -722,7 +676,7 @@ def indicator_page(request: Request, series_id: str, date: str | None = None):
     历史上有没有被改过（修订）。**「被谁在用」是分辨要不要维护它的唯一依据。**
     """
     with _page_session('indicators', day=date, series_ids=[series_id], points_per_series=120) as s:
-        day = _home_date(s, date)
+        day = _page_date(s, date)
         try:
             d = diagram_api.detail(s, series_id, day, limit=120)
         except diagram_api.DiagramError as e:
@@ -779,7 +733,7 @@ def diagram_page(request: Request, template: int | None = None, date: str | None
             raise HTTPException(404, f"没有这张布局：{template}")
         # The header calendar submits ?date=; render that board day instead of always the latest one.
         return templates.TemplateResponse(request, "diagram.html", _shell(
-            s, "diagram", _home_date(s, date), template=tpl or default,
+            s, "diagram", _page_date(s, date), template=tpl or default,
             templates_all=rows))
 
 
@@ -1091,90 +1045,7 @@ def contracts_csv(date: str | None = None):
                              headers={"Content-Disposition": f'attachment; filename="{V}_contracts_{d}.csv"'})
 
 
-# ---------- Excel 批量导入 ----------
-
 XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-
-@app.get("/api/sn/import/template")
-def import_template():
-    with SessionLocal() as s:
-        data = build_import_template(s, V)
-    name = f"{V}_批量导入模板_{datetime.now(SHANGHAI):%Y%m%d}.xlsx"
-    return StreamingResponse(iter([data]), media_type=XLSX_MEDIA,
-                             headers={"Content-Disposition": f'attachment; filename="{quote(name)}"'})
-
-
-@app.post("/api/sn/import/preview")
-async def import_preview(file: UploadFile = File(...), actor: str = Form(...)):
-    actor = verified_actor(actor)
-    if not actor.strip():
-        raise HTTPException(400, "请填写导入操作人")
-    data = await file.read()
-    name = file.filename or "未命名文件"
-
-    # 数据商终端原样导出的工作簿动辄几十万条，逐行预览既装不下也没人看得完。
-    # 它按供应商编码精确对齐，不存在"这列对应哪个指标"的不确定性，该确认的是批次级信息。
-    if vendor_terminal.detect(data) is not None:
-        with SessionLocal() as s:
-            try:
-                summary = vendor_terminal.summarize(s, io.BytesIO(data), V)
-            except vendor_terminal.VendorFormatError as e:
-                raise HTTPException(400, str(e)) from None
-        return JSONResponse({**summary, "token": import_jobs.stage(data), "filename": name})
-
-    with SessionLocal() as s:
-        try:
-            return JSONResponse(excel_importer.build_preview(s, data, name, actor.strip(), V))
-        except excel_importer.ImportError_ as e:
-            raise HTTPException(400, str(e)) from None
-
-
-@app.post("/api/sn/import/terminal/commit")
-def import_terminal_commit(tasks: BackgroundTasks, body: dict = Body(...)):
-    """确认整体导入。立刻返回任务号，几分钟的入库放后台跑。"""
-    actor = verified_actor(str(body.get("actor", "")).strip())
-    if not actor:
-        raise HTTPException(400, "请填写导入操作人")
-    try:
-        job_id = import_jobs.create_terminal_job(
-            str(body.get("token", "")), actor, str(body.get("filename", "未命名文件")), V)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from None
-    if not import_jobs.staging_path(str(body["token"])).exists():
-        raise HTTPException(400, "暂存文件已过期，请重新上传")
-    tasks.add_task(import_jobs.execute, job_id)
-    return {"job_id": job_id}
-
-
-@app.get("/api/sn/import/jobs/{job_id}")
-def import_job_status(job_id: str):
-    state = import_jobs.snapshot(job_id)
-    if state is None:
-        raise HTTPException(404, "任务不存在或已过期")
-    return state
-
-
-@app.post("/api/sn/import/commit")
-def import_commit(body: dict = Body(...)):
-    actor = verified_actor(str(body.get("actor", "")).strip())
-    note = str(body.get("default_note", "")).strip()
-    if not actor or not note:
-        raise HTTPException(400, "导入操作人与来源说明均为必填")
-    with SessionLocal() as s:
-        try:
-            result = excel_importer.commit_preview(
-                s, str(body.get("preview_id", "")), list(body.get("selected_row_keys") or []),
-                dict(body.get("column_overrides") or {}), actor, note)
-        except excel_importer.ImportError_ as e:
-            raise HTTPException(400, str(e)) from None
-        s.add(AuditLog(at=datetime.now(SHANGHAI), actor=actor, action="Excel批量导入",
-                       target_type="observation", target_id=str(body.get("preview_id", ""))[:80],
-                       detail={"committed": result["committed"], "revisions": result["revisions"],
-                               "stale": len(result["stale_rows"]), "note": note,
-                               "recalculated_dates": result["recalculated_dates"]}))
-        s.commit()
-        return JSONResponse(result)
 
 
 # ---------- Excel 自定义导出 ----------

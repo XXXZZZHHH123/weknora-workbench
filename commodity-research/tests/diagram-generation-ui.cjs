@@ -4,7 +4,7 @@ const {spawnSync}=require('node:child_process');
 const {chromium}=require(process.env.RESEARCH_PLAYWRIGHT || 'playwright');
 const web=path.join(__dirname,'..','src','tin','web');
 const appScript=fs.readFileSync(path.join(web,'static/app.js'),'utf8');
-const drawerScript=appScript.slice(appScript.indexOf('function toggleDrawer('),appScript.indexOf('function openDrawerWith('));
+const drawerScript=appScript.slice(appScript.indexOf('function toggleDrawer('),appScript.indexOf('function showToast('));
 assert(drawerScript.includes('function closeDrawers('));
 const render=spawnSync(process.env.RESEARCH_PYTHON||'python',['-c',`
 import sys

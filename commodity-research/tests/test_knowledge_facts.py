@@ -324,8 +324,7 @@ def test_connection_expiry_and_metadata_eviction_reuse_verified_disk_projection(
 def test_research_cannot_register_or_manually_write_another_fact_copy(canonical):
     client, headers, state, _ = canonical
     assert client.post('/research/auth/session', headers=headers).status_code == 200
-    for path in (api(suffix='imports/confirm'), api(suffix='imports/confirm-batch'), api(suffix='indicators'),
-                 page(suffix='/sn/entry'), page(suffix='/api/sn/import/commit')):
+    for path in (api(suffix='imports/confirm'), api(suffix='imports/confirm-batch'), api(suffix='indicators')):
         response = client.post(path, headers=headers, json={})
         assert response.status_code == 409, (path, response.text)
         assert '知识库' in response.text

@@ -115,14 +115,13 @@ def todos(session: Session, variety: str, d: date | None) -> list[dict]:
                 continue
             seen.add(key)
             ind = session.get(Indicator, sid) if sid else None
-            manual = ind is not None and ind.fetch_mode == "manual"
             name = ind.name if ind else (sid or s.rule_id)
             out.append({
                 "kind": TODO_GAP, "title": f"{name} 今日无可用观测", "series_id": sid,
                 "detail": s.gap_note or f"{rule.get('kind') or '规则'}「{rule.get('name') or s.rule_id}」无法比对",
                 "assignee": None, "created_at": None,
-                "href": f"/sn/entry?series_id={sid}" if manual else "/sn/indicators",
-                "cta": "去补录" if manual else "看指标登记"})
+                "href": f"/sn/indicators/{sid}" if sid else "/sn/indicators",
+                "cta": "看指标登记"})
 
     return sorted(out, key=lambda x: TODO_ORDER.get(x["kind"], 9))
 

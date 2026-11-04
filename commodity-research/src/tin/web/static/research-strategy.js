@@ -6,6 +6,10 @@
   const research = sourceNode ? JSON.parse(sourceNode.textContent) : {items: [], enabled: false};
   const prefix = window.RESEARCH_PREFIX || '', api = prefix + '/api/sn';
   const byId = id => document.getElementById(id), field = id => byId('research-card-' + id);
+  // Unsaved-draft keys. randomUUID exists only in secure contexts (HTTPS or localhost); a plain-HTTP
+  // workbench address still needs a unique key for each new card.
+  const draftKey = () => 'new:' + (typeof crypto.randomUUID === 'function' ? crypto.randomUUID()
+    : Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join(''));
   const display = window.ResearchDisplay || {text: value => String(value ?? ''), indicator: () => '指标名称待核对', reference: row => row?.title || '已保存研究判断'};
   const form = field('form'), editor = field('dialog'), planEditor = byId('strategy-plan-editor');
   const fields = {title: 'title', direction: 'direction', thesis: 'thesis', watch_for: 'watch',
@@ -20,7 +24,7 @@
   if (research.selected) cache.set('research:' + research.selected.id, research.selected);
   if (state.initial_plan) cache.set('plan:' + state.initial_plan.id, state.initial_plan);
   let selected = state.selected || null, activeEditor = null, selectSequence = 0, editSequence = 0;
-  let selectedSources = new Set(), sourcesPage = 0, loadingSources = false, fileSequence = 0;
+  let selectedSources = new Set(), fileSequence = 0;
   let sourceNames = new Map();
   let cardSource = null, cardReference = null, judgmentReference = null, planSource = null, saving = false;
   let citations = [], citationContext = null, citationKind = 'indicator', citationRows = [], citationChoice = null;
@@ -117,6 +121,28 @@
   function dirty() {
     if (!activeEditor) return;
     const draft = drafts.get(activeEditor); if (draft) { draft.dirty = true; stash(); markDraft(activeEditor, true); }
+    syncDiscardDraft();
+  }
+  // New cards and unsaved edits to either cards or transaction plans can be dropped.
+  function syncDiscardDraft() {
+    const fresh = Boolean(activeEditor?.startsWith('new:'));
+    const plan = Boolean(activeEditor?.startsWith('plan:'));
+    for (const [node, forPlan] of [[field('discard'), false], [byId('strategy-plan-discard'), true]]) {
+      if (!node) continue;
+      node.hidden = !activeEditor || plan !== forPlan || !(fresh || drafts.get(activeEditor)?.dirty);
+      node.textContent = fresh ? '放弃草稿' : '放弃修改';
+    }
+  }
+  function discardDraft() {
+    if (saving || !activeEditor) return;
+    const key = activeEditor, fresh = key.startsWith('new:');
+    if (!window.confirm(fresh ? '放弃这份尚未保存的方案？填写的内容不会保存，也不能恢复。' : '放弃未保存的修改，恢复为已保存的版本？')) return;
+    drafts.delete(key); markDraft(key, false);
+    if (fresh) removeTemp(key);
+    activeEditor = null; hideEditors();
+    const saved = document.querySelector('#research-sidebar-list [data-strategy-select^="research:"]')?.dataset.strategySelect || null;
+    select(fresh ? (state.selected && metadata.has(state.selected) ? state.selected : saved) : key, false);
+    status(fresh ? '已放弃未保存的方案。' : '已放弃未保存的修改，显示已保存的版本。');
   }
   function tempEntry(key, title) {
     if (metadata.has(key)) return;
@@ -166,8 +192,10 @@
     const header = element('header', undefined, 'strategy-preview-header'), title = element('div');
     const card = item.card;
     const stamp = localDay(item.updated_at || item.created_at);
-    title.append(element('div', (item.direction_label || '研究记录') + ' · ' +
-      (card?.response_action?.trim() ? '应对策略草稿' : '观察方案 · 待补应对') + (stamp ? ' · 更新于 ' + stamp : ''), 'strategy-card-top'), element('h2', item.title));
+    const top = element('div', undefined, 'strategy-card-top'), direction = element('span', item.direction_label || '研究记录', 'strategy-direction');
+    if (card?.direction) direction.dataset.direction = card.direction;
+    top.append(direction, element('span', (card?.response_action?.trim() ? '应对策略草稿' : '观察方案 · 待补应对') + (stamp ? ' · 更新于 ' + stamp : '')));
+    title.append(top, element('h2', item.title));
     const actions = element('div', undefined, 'strategy-preview-actions');
     if (item.can_edit !== false && editable(key) && card) actions.append(button(drafts.get(key)?.dirty ? '继续编辑草稿' : '编辑',
       () => openCard(key, drafts.get(key)?.source || item, drafts.get(key))));
@@ -346,7 +374,9 @@
     for (const item of items.filter(value => value.field === slot)) {
       const chip = element('span', undefined, 'strategy-citation-chip');
       const title = item.snapshot?.title || citationKinds[item.kind] || '待核对引用';
-      const open = button(title, () => openCitationPreview(item, editing ? null : selectionKey), 'strategy-citation-open');
+      const open = button('', () => openCitationPreview(item, editing ? null : selectionKey), 'strategy-citation-open');
+      open.append(element('small', {indicator: '指标', judgment_condition: '条件', knowledge_file: '文件'}[item.kind] || '引用', 'strategy-citation-kind'), element('span', title));
+      chip.dataset.kind = item.kind;
       open.title = [title, item.snapshot?.subtitle].filter(Boolean).join(' · '); chip.append(open);
       if (editing) {
         const remove = button('×', () => { citations = citations.filter(value => citationKey(value) !== citationKey(item)); renderCitationFields(); dirty(); }, 'strategy-citation-remove');
@@ -566,7 +596,7 @@
     const confirmation = parsed.body ? '导入将替换当前策略表单及引用，未保存的内容会被覆盖。继续导入？' :
       occupied ? '导入将替换当前原始研究文字，其他策略文字保留。继续导入？' : '将这些片段载入原始研究文字，供继续编辑。是否导入？';
     if ((occupied || fragments) && !window.confirm([notice, confirmation].filter(Boolean).join('\n\n'))) return false;
-    fillCard(body); loadJudgments(); field('sources').querySelectorAll('input').forEach(box => box.checked = selectedSources.has(box.value));
+    fillCard(body); loadJudgments();
     field('original').closest('details').open = true; field('filename').textContent = filename + (fragments ? ' · 已解析文本片段' : '');
     const draft = drafts.get(activeEditor); if (draft) draft.importLabel = field('filename').textContent; dirty();
     status('原文已载入，可继续编辑后保存。', false, field('form-status')); return true;
@@ -585,37 +615,21 @@
       else citationStatus('已取消导入，原有输入保留。');
     } catch (error) { if (error.name !== 'AbortError' && currentCitationContext(context) && sequence === fileSequence) citationStatus(error.message + ' 输入内容已保留。', true); }
   }
+  // Files linked before field-level citations existed stay on the card (read-only, removable);
+  // new material is cited per field with its version, or imported as the original text.
   function renderSelectedSources() {
     const container = field('selected-sources'); if (!container) return;
-    container.replaceChildren();
+    container.replaceChildren(); container.hidden = !selectedSources.size;
+    if (!selectedSources.size) return;
+    container.append(element('small', '早期关联资料（保留用于追溯；新资料请用“引用”或“从知识库导入”）'));
     for (const id of selectedSources) {
       const chip = element('span');
       chip.append(element('span', sourceNames.get(id) || '已关联资料'), button('×', () => {
-        selectedSources.delete(id); field('sources').querySelectorAll('input').forEach(box => { if (box.value === id) box.checked = false; });
-        renderSelectedSources(); dirty();
+        selectedSources.delete(id); renderSelectedSources(); dirty();
       }));
       chip.lastChild.setAttribute('aria-label', '移除关联资料：' + (sourceNames.get(id) || '已关联资料'));
       container.append(chip);
     }
-  }
-  async function loadSources() {
-    if (loadingSources || !editor || editor.hidden) return;
-    loadingSources = true; const own = editSequence, page = sourcesPage + 1;
-    field('more-sources').disabled = true;
-    try {
-      const data = await request('/research-strategies/sources?page=' + page);
-      if (own !== editSequence || editor.hidden) return;
-      for (const item of data.items || []) {
-        sourceNames.set(item.id, item.file_name || item.title || '未命名关联资料');
-        const label = element('label'), box = element('input'); box.type = 'checkbox'; box.value = item.id;
-        box.checked = selectedSources.has(item.id);
-        box.addEventListener('change', () => { box.checked ? selectedSources.add(item.id) : selectedSources.delete(item.id); renderSelectedSources(); dirty(); });
-        label.append(box, element('span', item.file_name || item.title || '未命名关联资料')); field('sources').append(label);
-      }
-      renderSelectedSources();
-      sourcesPage = page; field('more-sources').hidden = !data.has_more;
-    } catch (error) { if (own === editSequence) status(error.message, true, field('form-status')); }
-    finally { if (own === editSequence) { loadingSources = false; field('more-sources').disabled = false; } }
   }
   function showJudgmentOption(ref, title) {
     const option = element('option', title || '已引用研究判断'); option.value = ref.id + ':' + ref.revision;
@@ -645,15 +659,16 @@
     cardSource = draft?.source ?? item;
     sourceNames = new Map((cardSource?.source_snapshots || []).map(row => [row.knowledge_id, row.title || row.file_name]));
     const body = draft?.body || {card: item?.card || {}, source_ids: item?.source_ids || []};
-    fillCard(body); field('file').value = ''; field('filename').textContent = draft?.importLabel || ''; field('sources').replaceChildren();
+    fillCard(body); field('file').value = ''; field('filename').textContent = draft?.importLabel || '';
     field('thesis').closest('details').open = !field('thesis').value || !field('watch').value;
-    sourcesPage = 0; loadingSources = false; field('more-sources').hidden = true; field('save').disabled = false;
+    field('save').disabled = false;
     field('save-copy').hidden = true; field('judgment-preview').hidden = true; field('judgment-preview').replaceChildren();
     field('dialog-title').textContent = cardSource ? '编辑策略方案' : '新建策略方案';
     status('', false, field('form-status'));
     if (!draft) drafts.set(key, {type: 'card', source: item, body, dirty: false});
     if (draft?.dirty) markDraft(key, true);
-    loadSources(); loadJudgments();
+    syncDiscardDraft();
+    loadJudgments();
   }
   async function previewReference(ref, target, selectionKey) {
     const own = selectSequence, editing = editSequence;
@@ -673,7 +688,7 @@
       const result = await request('/research-references/strategy/' + encodeURIComponent(key) + '?revision=' + item.revision);
       if (own !== selectSequence || selected !== key) return;
       if (result.can_apply === false || result.resource_type !== 'research-card') throw new Error('该记录可预览，不能直接作为结构化方案应用。');
-      const newKey = 'new:' + crypto.randomUUID(), card = structuredClone(result.payload);
+      const newKey = draftKey(), card = structuredClone(result.payload);
       card.reference = {kind: 'strategy', id: result.id, revision: result.revision};
       // A copy must be distinguishable from its original in the list.
       card.title = (String(card.title || '').slice(0, 114) + '（副本）').slice(0, 120);
@@ -696,6 +711,7 @@
     byId('plan-edit-review').value = localDateTime(plan.review_at); byId('plan-edit-risk').value = plan.risk_budget;
     byId('strategy-plan-save').disabled = false; status('', false, byId('strategy-plan-edit-status'));
     if (!draft) drafts.set(key, {type: 'plan', source: item, body: {base_version: item.version, plan}, dirty: false});
+    syncDiscardDraft();
   }
   function updateEntry(key, item, type) {
     const isCard = type === 'card';
@@ -737,9 +753,9 @@
   if (form) {
     form.addEventListener('input', dirty); form.addEventListener('change', dirty);
     form.addEventListener('submit', event => { event.preventDefault(); saveCard(); });
-    field('add')?.addEventListener('click', () => openCard('new:' + crypto.randomUUID()));
-    field('more-sources').addEventListener('click', loadSources);
+    field('add')?.addEventListener('click', () => openCard(draftKey()));
     field('save-copy').addEventListener('click', () => saveCard(true));
+    field('discard')?.addEventListener('click', discardDraft);
     field('judgment').addEventListener('change', event => {
       judgmentReference = event.target.selectedOptions[0]?.dataset.reference ? JSON.parse(event.target.selectedOptions[0].dataset.reference) : null;
       field('preview-judgment').disabled = !judgmentReference; field('judgment-preview').hidden = true; field('judgment-preview').replaceChildren(); dirty();
@@ -788,6 +804,7 @@
     });
   }
   byId('strategy-plan-form')?.addEventListener('input', dirty);
+  byId('strategy-plan-discard')?.addEventListener('click', discardDraft);
   byId('strategy-plan-form')?.addEventListener('submit', async event => {
     event.preventDefault(); if (saving) return;
     const key = activeEditor, own = editSequence; let body;
@@ -818,5 +835,20 @@
   window.addEventListener('beforeunload', event => {
     if ([...drafts.values()].some(draft => draft.dirty)) { event.preventDefault(); event.returnValue = ''; }
   });
+  // Entry points for the text and Markdown tools: an organized draft opens as an unsaved new card, and
+  // imported cards refresh the list without discarding drafts open in the editor.
+  window.ResearchStrategyEditor = {
+    openDraft(body, label, notes = []) {
+      if (saving || !form) return false;
+      const key = draftKey(), draft = {type: 'card', source: null, body, dirty: true, importLabel: label || ''};
+      drafts.set(key, draft); openCard(key, null, draft);
+      if (notes.length) status('请核对：' + notes.map(note => String(note).replace(/[。；;\s]+$/, '')).join('；') + '。', false, field('form-status'));
+      return true;
+    },
+    imported(items) {
+      for (const item of items) { cache.delete('research:' + item.id); updateEntry('research:' + item.id, item, 'card'); }
+      if (items.length && !activeEditor) select('research:' + items[0].id, false);
+    },
+  };
   select(selected);
 })();
