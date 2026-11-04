@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.integration.page_facts import catalog_page
 from tin.integration.workbench_scope import artifact_session, require_shared_write, resolve_workbench
-from tin.judgments.analysis import AnalysisError, assess_draft, unique_condition_kinds, validate_analysis
+from tin.judgments.analysis import AnalysisError, assess_draft, restored_quotes, unique_condition_kinds, validate_analysis
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.service import latest, latest_workbench_payload
 from tin.models import AuditLog, SourceMapping
@@ -216,6 +216,8 @@ def initialize_review(preview, assessment, catalog):
     original_candidate = deepcopy(assessment.candidate_document or assessment.document)
     history = deepcopy(assessment.candidate_history or [original_candidate])
     candidate = deepcopy(original_candidate)
+    # Review items cite the contiguous source passage an elided model quote abbreviates.
+    candidate['rule_quotes'] = restored_quotes(candidate['rule_quotes'], preview['text'])[0]
     known = {field['id']: field for field in catalog}
     from tin.compute.rule_caliber import unit_present
     # Choosing an actual indicator adopts its registered unit. This never

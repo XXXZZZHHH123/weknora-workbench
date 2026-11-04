@@ -35,6 +35,40 @@ def _error(message, code, path):
     raise AnalysisError(message, code=code, path=path)
 
 
+# A model quote sometimes abbreviates one source passage with an ellipsis ("A…B"). It is accepted only as
+# the contiguous source span it abbreviates: every fragment verbatim and in order, within a short distance.
+# The restored span then goes through the same verbatim, rule and number checks as any other quote.
+_ELISION = re.compile(r'\s*(?:\.{3,}|…+|⋯+)\s*')
+ELIDED_SPAN_CHARS = 400
+
+
+def restore_elided_quote(quote, original):
+    if not isinstance(quote, str) or not isinstance(original, str) or not quote.strip() or quote in original:
+        return None
+    parts = _ELISION.split(quote)
+    if len(parts) < 2 or any(not part.strip() for part in parts):
+        return None
+    best, start = None, original.find(parts[0])
+    while start != -1:
+        end = start + len(parts[0])
+        for part in parts[1:]:
+            found = original.find(part, end)
+            if found == -1:
+                return best
+            end = found + len(part)
+        if end - start <= ELIDED_SPAN_CHARS and (best is None or end - start < len(best)):
+            best = original[start:end]
+        start = original.find(parts[0], start + 1)
+    return best
+
+
+def restored_quotes(quotes, original):
+    """Rule quotes with elided fragments replaced by their contiguous source span, and the restored IDs."""
+    spans = {identifier: restore_elided_quote(quote, original) for identifier, quote in quotes.items()}
+    return {identifier: spans[identifier] or quote for identifier, quote in quotes.items()}, \
+        [identifier for identifier, span in spans.items() if span]
+
+
 def _quote_continuation(original, end, quote, units):
     """Inspect only a quantity's adjoining token, never a later source amount."""
     tail = original[end:]
@@ -597,6 +631,13 @@ def assess_draft(document, original, catalog, *, variety, actor, written_at=None
     bounded(document)
     issues = []
     original_candidate = deepcopy(document)
+    # The audit candidate keeps the model's own quote; checks use the contiguous span it abbreviates.
+    quotes, restored = restored_quotes(document['rule_quotes'], original)
+    if restored:
+        document = {**document, 'rule_quotes': quotes}
+        issues.extend({'code': 'quote_elision_restored', 'path': '/rule_quotes/' + identifier,
+            'message': '引文用省略号连接了原文片段，已按原文还原为连续段落后再核验', 'severity': 'normalized'}
+            for identifier in restored)
     # Model responses may spell an absent optional descriptive section as
     # JSON null. Its existing empty-object default carries no classification,
     # evidence, binding or number; normalize only that absence at this boundary.
