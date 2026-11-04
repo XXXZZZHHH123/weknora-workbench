@@ -9,6 +9,7 @@ import (
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/chart"
+	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
@@ -199,6 +200,43 @@ func TestChartPDFSQLMappingCannotLaunderTechnicalOrLiteralColumns(t *testing.T) 
 			require.Error(t, err)
 		}
 	})
+}
+
+func TestChartMappingFailureShowsCurrentEligibleIDsInModelContext(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		registry *modelcontext.Registry
+	}{
+		{name: "citations", registry: modelcontext.NewRegistry(true)},
+		{name: "without-citations", registry: modelcontext.NewRegistry(false)},
+		{name: "nil-facade"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := chartContext(t)
+			steps := []types.AgentStep{{ToolCalls: []types.ToolCall{pdfSQLHorizontalChartFixture()}}}
+			tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, &chartWriterFixture{}, "session", "message")
+			catalog := chartRun(t, tool, ctx, map[string]any{"operation": "inspect"})
+			currentID := catalog.Data["sources"].([]any)[0].(map[string]any)["source_id"].(string)
+			mapping := map[string]any{"orientation": "rows", "x_index": 0, "y_indexes": []int{1}, "value_indexes": []int{2, 3, 4}, "label_index": 1}
+			failed := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": "actual-query-table", "mapping": mapping})
+			require.False(t, failed.Success)
+			// Exercise the actual model-facing failure path. Data alone is
+			// intentionally not consumed by this registry for failed calls.
+			modelText := test.registry.ModelToolResultForTool(renderChartToolName, failed)
+			require.Contains(t, modelText, failed.Error)
+			var recovery struct {
+				ReasonCode string   `json:"reason_code"`
+				SourceIDs  []string `json:"available_mapping_source_ids"`
+			}
+			require.NoError(t, json.NewDecoder(strings.NewReader(modelText)).Decode(&recovery))
+			require.Equal(t, "chart_mapping_source_not_current", recovery.ReasonCode)
+			require.Equal(t, []string{currentID}, recovery.SourceIDs)
+			// Copying the handle the model actually received succeeds;
+			// neither the raw table ID nor a guessed alias was substituted.
+			recovered := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": recovery.SourceIDs[0], "mapping": mapping})
+			require.True(t, recovered.Success, recovered.Error)
+		})
+	}
 }
 
 func TestChartMappingRejectsFakeValuesDuplicateCoordinatesAndNonReadSources(t *testing.T) {

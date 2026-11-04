@@ -180,6 +180,9 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		}
 		result.Data["reason_code"] = "chart_mapping_source_not_current"
 		result.Data["available_mapping_source_ids"] = available
+		// Failed results reach the model through Output and Error, not Data.
+		body, _ := json.Marshal(result.Data)
+		result.Output = string(body)
 		return result, nil
 	}
 	if input.SourceID == "" || len(input.SourceID) > 128 || input.X == nil || t.writer == nil {
