@@ -230,3 +230,83 @@ func (e *AgentEngine) isVerifiedChartDelivery(query, candidate string, state *ty
 	}
 	return matched > 0 && strings.TrimSpace(remaining) == ""
 }
+
+// narrowVerifiedChartCandidate can discard an unrequested prose suffix only
+// when the independent reviewer already certified this one image as the full
+// delivery. It does not approve the original prose or choose an image subset.
+// checkCandidate must replace the actual candidate and then run the ordinary
+// private-receipt check on the narrowed output.
+func (e *AgentEngine) narrowVerifiedChartCandidate(query, candidate string, state *types.AgentState, conversation []chat.Message) (string, bool) {
+	if e == nil || e.toolRegistry == nil || state == nil || e.taskPlan == nil || len(e.taskPlan.DeliveryRequirements) != 1 || e.taskPlan.DeliveryRequirements[0].Kind != "chart" {
+		return "", false
+	}
+	registered, err := e.toolRegistry.GetTool(renderChartToolName)
+	tool, ok := registered.(*renderChartTool)
+	if err != nil || !ok {
+		return "", false
+	}
+	var rendered *types.ToolCall
+	for stepIndex := range state.RoundSteps {
+		for callIndex := range state.RoundSteps[stepIndex].ToolCalls {
+			call := &state.RoundSteps[stepIndex].ToolCalls[callIndex]
+			if call.ExecutionName() != renderChartToolName || call.Result == nil || !call.Result.Success {
+				continue
+			}
+			if call.ExecutionArgs()["operation"] != "render" && call.Result.Data["kind"] != "data_chart" {
+				continue
+			}
+			if rendered != nil {
+				return "", false
+			}
+			rendered = call
+		}
+	}
+	if rendered == nil || rendered.ExecutionArgs()["operation"] != "render" {
+		return "", false
+	}
+	tool.mu.Lock()
+	defer tool.mu.Unlock()
+	if len(tool.receipts) != 1 {
+		return "", false
+	}
+	for handle, receipt := range tool.receipts {
+		if receipt.CallID != rendered.ID || receipt.Mode != "chart_only" || receipt.TaskHash != e.chartTaskHash(query, conversation) || receipt.DataHash != reviewDigest(rendered.Result.Data) || rendered.Result.Output != receipt.Output {
+			return "", false
+		}
+		if _, valid := types.ParseResourcePath(handle); !valid || receipt.Output != "![图表]("+handle+")" || rendered.Result.Data["kind"] != "data_chart" || rendered.Result.Data["status"] != "ok" || rendered.Result.Data["delivery_mode"] != "chart_only" {
+			return "", false
+		}
+		if ordinaryChartProseSuffix(candidate, receipt.Output) {
+			return receipt.Output, true
+		}
+	}
+	return "", false
+}
+
+// Recognize a deliberately narrow presentation shape, never business meaning:
+// the exact saved Markdown occupies the first line, then a blank line and
+// ordinary prose. Do not trim indentation, unwrap Markdown, or remove another
+// attachment, citation, link, code block or other structured deliverable.
+func ordinaryChartProseSuffix(candidate, output string) bool {
+	if strings.Count(candidate, output) != 1 {
+		return false
+	}
+	var suffix string
+	switch {
+	case strings.HasPrefix(candidate, output+"\n\n"):
+		suffix = strings.TrimPrefix(candidate, output+"\n\n")
+	case strings.HasPrefix(candidate, output+"\r\n\r\n"):
+		suffix = strings.TrimPrefix(candidate, output+"\r\n\r\n")
+	default:
+		return false
+	}
+	if strings.TrimSpace(suffix) == "" || strings.ContainsAny(suffix, "[]<>`\\/:@!#*_|~=$\t") || strings.Contains(strings.ToLower(suffix), "www.") {
+		return false
+	}
+	for _, line := range strings.Split(suffix, "\n") {
+		if strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "+ ") || strings.TrimSpace(line) == "---" {
+			return false
+		}
+	}
+	return true
+}

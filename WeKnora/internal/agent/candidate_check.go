@@ -122,6 +122,13 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	// Only the runtime's private receipt for this exact task, result and saved
 	// Markdown can reuse the independent pre-render semantic source check.
 	// Public success/accepted fields and a merely existing image cannot do so.
+	if narrowed, ok := e.narrowVerifiedChartCandidate(query, candidate, state, conversation); ok {
+		candidate = narrowed
+		decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
+		common.PipelineInfo(ctx, "Agent", "chart_delivery_normalized", map[string]interface{}{
+			"candidate_hash": decision.CandidateHash, "reason": "verified_complete_chart_only",
+		})
+	}
 	if e.isVerifiedChartDelivery(query, candidate, state, conversation) {
 		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{"reason": "verified_chart_delivery"})
 		return
