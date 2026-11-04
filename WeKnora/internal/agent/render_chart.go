@@ -37,7 +37,7 @@ func (e *AgentEngine) SetChartWriter(writer chart.Writer) {
 }
 func newRenderChartTool(ctx context.Context, steps func() []types.AgentStep, writer chart.Writer, session, message string) *renderChartTool {
 	return &renderChartTool{BaseTool: agenttools.NewBaseTool(renderChartToolName,
-		"从本轮真实来源确定性绘图。先inspect查看sources及input_sources；input_sources是已读PDF二维单元格，先map按完整问题选择行列，不能把横向表的年份行和指标行当成两条观测。map提交mapping:{orientation:rows|columns,x_index,y_indexes,value_indexes,label_index?,unit_index?}：rows表示X/Y分别取真实行、value_indexes取跨列观测；columns表示X/Y取列、value_indexes取观测行。label_index从来源标签格取名；unit_index只显式复制真实列元数据中的单位。map返回可直接render的真实source_id。也可query_pdf_table引用真实源字段整形，不能用重抄数值的SQL常量冒充原表观测。render选择真实source_id、x_column、y_columns(最多6)、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。依据完整任务选择业务维度，内部行ID不能充当业务轴。不得提交任意观测值、代码或URL，缺失留空，不补值，未知单位保持未知。保存前核验图的指标、维度、单位、范围与完整请求是否一致；失败反馈后修正真实映射。delivery_mode默认chart_only，只交付返回的图片Markdown；明确还要文字分析时用chart_with_analysis。保存失败不能声称交付。",
+		"从本轮真实来源确定性绘图。先inspect查看sources及input_sources；input_sources是本轮已读PDF二维单元格，须先map；sources是实际查询/读取结果，可直接render，也可按真实行列map整形。两类都只使用inspect返回的source_id，表ID/result_id不是绘图句柄。前轮文字或表格不能替代本轮来源，目录为空时先重新read_pdf_table或执行引用真实源列的query_pdf_table。由模型根据完整任务理解行列，不能把横向维度行和指标行混成观测。map提交mapping:{orientation:rows|columns,x_index,y_indexes,value_indexes,label_index?,unit_index?}：rows表示X/Y分别取真实行、value_indexes取跨列观测；columns表示X/Y取列、value_indexes取观测行。label_index从来源标签格取名；unit_index只显式复制真实列元数据中的单位。技术行ID及常量测量列不能通过转置变成观测。map返回可直接render的真实source_id。也可query_pdf_table引用真实源字段整形，不能用重抄数值的SQL常量冒充原表观测。render选择真实source_id、x_column、y_columns(最多6)、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。依据完整任务选择业务维度，内部行ID不能充当业务轴。不得提交任意观测值、代码或URL，缺失留空，不补值，未知单位保持未知。保存前核验图的指标、维度、单位、范围与完整请求是否一致；失败反馈后修正真实映射。delivery_mode默认chart_only，只交付返回的图片Markdown；明确还要文字分析时用chart_with_analysis。保存失败不能声称交付。",
 		json.RawMessage(`{
   "type":"object","additionalProperties":false,"required":["operation"],
   "properties":{
@@ -102,8 +102,9 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	if input.DeliveryMode != "chart_only" && input.DeliveryMode != "chart_with_analysis" {
 		return fail("delivery_mode必须为chart_only或chart_with_analysis")
 	}
-	tables, omitted, rejected := chartSourcesDetailed(t.steps())
-	inputs := pdfChartInputSources(t.steps())
+	steps := t.steps()
+	tables, omitted, rejected := chartSourcesDetailed(steps)
+	inputs := pdfChartInputSources(steps)
 	parents := map[string]bool{}
 	for _, source := range append(append([]chart.Table{}, tables...), inputs...) {
 		parents[source.ID] = true
@@ -118,7 +119,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		diagnostics, _ := json.Marshal(rejected)
 		views := []any{}
 		for _, table := range tables {
-			views = append(views, map[string]any{"source_id": table.ID, "columns": table.Columns, "row_count": len(table.Rows), "sample_rows": table.Rows[:min(5, len(table.Rows))], "source_truncated": table.Truncated, "provenance": table.Provenance, "notice": table.Notice})
+			views = append(views, map[string]any{"source_id": table.ID, "columns": table.Columns, "row_count": len(table.Rows), "matrix_shape": map[string]int{"rows": len(table.Rows), "columns": len(table.Columns)}, "sample_rows": table.Rows[:min(5, len(table.Rows))], "mapping_supported": true, "render_supported": true, "source_truncated": table.Truncated, "provenance": table.Provenance, "notice": table.Notice})
 		}
 		for len(views) > 0 {
 			encoded, _ := json.Marshal(views)
@@ -130,7 +131,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		}
 		inputViews := []any{}
 		for _, table := range inputs {
-			view := map[string]any{"source_id": table.ID, "columns": table.Columns, "row_count": len(table.Rows), "matrix_shape": map[string]int{"rows": len(table.Rows), "columns": len(table.Columns)}, "sample_rows": table.Rows[:min(8, len(table.Rows))], "source_truncated": table.Truncated, "requires_mapping": true, "provenance": table.Provenance, "notice": table.Notice}
+			view := map[string]any{"source_id": table.ID, "columns": table.Columns, "row_count": len(table.Rows), "matrix_shape": map[string]int{"rows": len(table.Rows), "columns": len(table.Columns)}, "sample_rows": table.Rows[:min(8, len(table.Rows))], "mapping_supported": true, "render_supported": false, "source_truncated": table.Truncated, "requires_mapping": true, "provenance": table.Provenance, "notice": table.Notice}
 			candidate, _ := json.Marshal(append(append([]any{}, views...), append(inputViews, view)...))
 			if len(candidate)+len(diagnostics) > 62*1024 {
 				omitted++
@@ -138,7 +139,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 			}
 			inputViews = append(inputViews, view)
 		}
-		data := map[string]any{"kind": "chart_source_catalog", "sources": views, "input_sources": inputViews, "omitted_source_count": omitted, "rejected_source_count": rejectedCount, "source_rejections": rejected, "source_rejections_truncated": rejectedCount > len(rejected), "notice": "先根据完整问题理解真实行列。input_sources须map后绘图；sources可render。全部索引0起算，sample_rows仅展示样例，真实句柄绑定全部已返回行。表ID、result_id不是绘图句柄。无来源时按拒绝原因恢复真实数据，不猜ID、不重抄常量。"}
+		data := map[string]any{"kind": "chart_source_catalog", "sources": views, "input_sources": inputViews, "omitted_source_count": omitted, "rejected_source_count": rejectedCount, "source_rejections": rejected, "source_rejections_truncated": rejectedCount > len(rejected), "notice": "先根据完整问题理解真实行列。input_sources须map后绘图；sources可直接render，也可map选择/整形其真实结果坐标。map/render均用本目录source_id。全部索引0起算，sample_rows仅展示样例，真实句柄绑定全部已返回行。表ID、result_id不是绘图句柄。无来源时先本轮read_pdf_table恢复真实单元格，或执行引用真实源列的query_pdf_table，不猜ID、不重抄常量。"}
 		body, _ := json.Marshal(data)
 		return &types.ToolResult{Success: true, Data: data, Output: string(body)}, nil
 	}
@@ -146,7 +147,8 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		if input.Mapping == nil {
 			return fail("map需要完整mapping与inspect返回的真实source_id")
 		}
-		for _, source := range inputs {
+		mappingSources := append(append([]chart.Table{}, inputs...), tables...)
+		for _, source := range mappingSources {
 			if source.ID != input.SourceID {
 				continue
 			}
@@ -160,12 +162,28 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 			if len(t.mapped) >= chart.MaxSources {
 				return fail("本轮映射数量已达上限")
 			}
-			t.mapped[mapped.ID] = mappedChartSource{Table: mapped, ParentID: source.ID, Mapping: *input.Mapping}
+			parentID := source.ID
+			if previous, ok := t.mapped[source.ID]; ok {
+				// A remap remains bound to the current original source snapshot,
+				// rather than becoming detached from that source's version/ACL.
+				parentID = previous.ParentID
+			}
+			t.mapped[mapped.ID] = mappedChartSource{Table: mapped, ParentID: parentID, Mapping: *input.Mapping}
 			data := map[string]any{"kind": "chart_source_mapping", "source_id": mapped.ID, "columns": mapped.Columns, "rows": mapped.Rows, "mapping": input.Mapping, "source_truncated": mapped.Truncated, "provenance": mapped.Provenance, "notice": "已按真实坐标复制。核对输出columns/rows是否满足完整任务；满足时下一步直接render此source_id，X列为0，Y列依次为1至输出列数减1，无需再生成等价映射。"}
 			body, _ := json.Marshal(data)
 			return &types.ToolResult{Success: true, Data: data, Output: string(body)}, nil
 		}
-		return fail("map的source_id不属于当前仍可验证的真实来源")
+		result, _ := fail("map需要inspect返回的本轮sources或input_sources的source_id，不能使用表ID/result_id或历史句柄。目录为空时先本轮read_pdf_table或执行引用真实源列的query_pdf_table；已有可用结果可直接render")
+		available := make([]string, 0, len(mappingSources))
+		for _, source := range mappingSources {
+			available = append(available, source.ID)
+		}
+		result.Data["reason_code"] = "chart_mapping_source_not_current"
+		result.Data["available_mapping_source_ids"] = available
+		// Failed results reach the model through Output and Error, not Data.
+		body, _ := json.Marshal(result.Data)
+		result.Output = string(body)
+		return result, nil
 	}
 	if input.SourceID == "" || len(input.SourceID) > 128 || input.X == nil || t.writer == nil {
 		return fail("render需要inspect返回的真实source_id、X/Y列和可用附件服务")
