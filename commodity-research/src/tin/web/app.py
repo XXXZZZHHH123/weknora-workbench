@@ -409,7 +409,16 @@ def _home_date(s, q: str | None) -> date | None:
     首屏和总览在尚未采集行情时也应保留导航、研究判断与数据更新入口。
     """
     if q:
-        return _board_date(s, q)
+        try:
+            return _board_date(s, q)
+        except HTTPException as error:
+            if not s.info.get("workbench_id"):
+                raise
+            # Navigation carries the board day between pages (研判 → 指标). A page whose own projected
+            # facts have nothing before that day shows its empty states instead of a raw error response.
+            if error.status_code == 404:
+                return date.fromisoformat(q)
+            raise
     return latest_trade_date(s)
 
 
