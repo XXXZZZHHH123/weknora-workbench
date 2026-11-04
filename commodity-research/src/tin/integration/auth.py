@@ -267,7 +267,7 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                 scope = await resolve_workbench(identity, scoped_path[0], authorization)
                 if not allowed_workbench_route(route_path, request.method):
                     raise HTTPException(404, "此入口不属于当前研究工作台")
-                if source_preparation_required(route_path) or (route_path == '/sn/entry' and request.method == 'POST'):
+                if source_preparation_required(route_path):
                     raise HTTPException(409, "请在绑定知识库准备资料，并从本工作台的资料与来源入口核对后导入")
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
                     if not identity.can_write and route_path not in READ_ONLY_POSTS:

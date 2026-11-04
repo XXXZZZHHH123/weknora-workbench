@@ -266,7 +266,7 @@
           <td class="py-2.5 px-3 text-[var(--amber)]">{{ g.reason }}</td>
           <td class="py-2.5 px-3 text-right">
             {% if g.fetch_mode == 'manual' %}
-            <button onclick="openDrawerWith('{{ g.series_id }}')" class="px-2.5 py-1 text-xs font-semibold rounded bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] whitespace-nowrap">原地快录</button>
+            <a href="{{ research_prefix() }}/sn/indicators/{{ g.series_id }}" class="text-xs text-[var(--primary)] hover:underline">查看指标</a>
             {% else %}<span class="text-[10px] text-[var(--text-muted)]">等待下次采集</span>{% endif %}</td>
         </tr>
         {% endfor %}

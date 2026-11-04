@@ -13,7 +13,7 @@ async function researchFetch(input, options = {}) {
   return response;
 }
 
-// 页面交互：主题、口径穿透弹层、快速录入抽屉、提示条、合约表与期限结构联动。
+// 页面交互：主题、口径穿透弹层、提示条、合约表与期限结构联动。
 // 页面切换走服务端路由，不在前端做 SPA。
 
 // Keep embedded pages on the shell's interface, reading, title and code fonts.
@@ -99,7 +99,7 @@ document.addEventListener("click", (e) => {
   document.querySelectorAll("[data-popover]").forEach((p) => p.classList.add("hidden"));
 });
 
-// 抽屉通用开关：支持快速录入、批量导入等多个抽屉共用同一个遮罩
+// 抽屉通用开关：产业图和数据导出抽屉共用同一个遮罩
 function toggleDrawer(drawerId, open) {
   const drawer = document.getElementById(drawerId);
   const backdrop = document.getElementById("drawer-backdrop");
@@ -117,9 +117,6 @@ function toggleDrawer(drawerId, open) {
   document.body.classList.toggle("overflow-hidden", anyOpen);
   document.body.classList.toggle("drawer-open", anyOpen);
   if (window.parent && window.parent !== window) window.parent.postMessage({type:'research-drawer-state',open:anyOpen},window.location.origin);
-  if (open && drawerId === "quick-drawer") {
-    setTimeout(() => document.getElementById("drawer-value").focus(), 320);
-  }
 }
 
 function closeDrawers() {
@@ -127,31 +124,6 @@ function closeDrawers() {
   document.querySelectorAll("[data-drawer]").forEach((d) => d.classList.add("translate-x-full"));
   document.getElementById("drawer-backdrop").classList.add("hidden");
   document.body.classList.remove("overflow-hidden");
-}
-
-function openDrawerWith(seriesId) {
-  const select = document.getElementById("drawer-series");
-  if (select) {
-    select.value = seriesId;
-    syncDrawerUnit();
-  }
-  toggleDrawer("quick-drawer", true);
-}
-
-function syncDrawerUnit() {
-  const select = document.getElementById("drawer-series");
-  const unit = document.getElementById("drawer-unit");
-  const asOf = document.getElementById("drawer-as-of");
-  if (!select || !unit) return;
-  const opt = select.selectedOptions[0];
-  if (!opt) {
-    unit.innerText = "";
-    if (asOf && !asOf.dataset.touched) asOf.value = "";
-    return;
-  }
-  unit.innerText = opt.dataset.unit || "";
-  // 数据时点默认填该指标的常规发布时刻，提醒填的是数据代表时点而非录入时刻
-  if (asOf && opt.dataset.asOf && !asOf.dataset.touched) asOf.value = opt.dataset.asOf;
 }
 
 function showToast(msg) {
@@ -521,9 +493,6 @@ function initSeriesCharts() {
 document.addEventListener("DOMContentLoaded", () => {
   const params = new URLSearchParams(window.location.search);
   if (params.get("msg")) showToast(params.get("msg"));
-  const asOf = document.getElementById("drawer-as-of");
-  if (asOf) asOf.addEventListener("input", () => { asOf.dataset.touched = "1"; });
-  syncDrawerUnit();
   initMacroFilters();
   initSeriesCharts();
   initBriefTimer();
@@ -695,270 +664,6 @@ async function briefSubmit() {
   if (briefAction === "改") payload.changes = briefChanges();
   await briefPost(payload, document.getElementById("brief-submit"));
 }
-
-// ---------- Excel 批量导入 ----------
-
-let importState = null;
-
-function openImportDrawer() {
-  toggleDrawer("import-drawer", true);
-}
-
-function importReset() {
-  importState = null;
-  document.getElementById("import-result").innerHTML = "";
-  document.getElementById("import-commit").disabled = true;
-  document.getElementById("import-file").value = "";
-}
-
-async function importUpload(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const actor = document.getElementById("import-actor").value.trim();
-  if (!actor) {
-    showToast("请先填写导入操作人");
-    input.value = "";
-    return;
-  }
-  const box = document.getElementById("import-result");
-  box.innerHTML = '<div class="py-8 text-center text-[var(--text-muted)]">正在解析文件结构与核验口径…</div>';
-
-  const body = new FormData();
-  body.append("file", file);
-  body.append("actor", actor);
-  try {
-    const res = await researchFetch((window.RESEARCH_PREFIX || "") + "/api/sn/import/preview", { method: "POST", body });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "解析失败");
-    importState = data;
-    // SMM 终端导出走摘要确认：按指标Id 精确对齐，没有"这列对应哪个指标"可确认，
-    // 几十万行也没人逐行看得完，该判断的是批次级信息
-    if (data.mode === "vendor_terminal") smmRenderSummary(data);
-    else importRender();
-  } catch (err) {
-    box.innerHTML = `<div class="p-3 rounded-lg bg-[var(--alert-soft)] text-[var(--alert)]">${err.message}</div>`;
-    document.getElementById("import-commit").disabled = true;
-  }
-}
-
-function smmRenderSummary(d) {
-  const esc = (t) => String(t == null ? "" : t).replace(/[<>&"]/g, (c) =>
-    ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c]));
-  const n = (v) => Number(v).toLocaleString("zh-CN");
-  const stat = (label, value, tone = "") =>
-    `<div class="flex items-baseline justify-between py-1">
-       <span class="text-[var(--text-muted)]">${label}</span>
-       <b class="tabular ${tone}">${value}</b></div>`;
-
-  const notes = (d.caliber_notes || []).concat(d.frequency_mismatches || []);
-  const reused = d.reused_indicators || [];
-  document.getElementById("import-result").innerHTML = `
-    <div class="p-3 rounded-lg bg-[var(--primary-soft)] text-xs">
-      <div class="font-semibold text-[var(--primary)] mb-1">识别为${esc(d.vendor ? " " + d.vendor : "数据商终端")}导出格式</div>
-      <div class="text-[var(--text-muted)] text-[11px]">按供应商编码精确对齐，不做名称猜测。
-        规模超出逐行预览的范围，请确认下面的批次信息。</div>
-    </div>
-    <div class="mt-3 text-xs">
-      ${stat("新登记指标", n(d.new_indicators) + " 个")}
-      ${stat("复用已登记", n(reused.length) + " 个")}
-      ${reused.length ? `<div class="pl-3 text-[11px] text-[var(--text-muted)]">${
-        reused.map((r) => esc(r.name) + " — " + esc(r.series_id)).join("；")}</div>` : ""}
-      ${stat("跳过已停用列", n(d.skipped_discontinued) + " 列")}
-      ${stat("观测点", n(d.points) + " 条")}
-      ${stat("时间范围", esc(d.first_date) + " ~ " + esc(d.last_date))}
-      ${d.future_points ? stat("其中晚于今天的点", n(d.future_points) + " 条（年/季频按期末标注，该期尚未走完）",
-                               "text-[var(--amber)]") : ""}
-      ${stat("登记与推导的差异", notes.length ? n(notes.length) + " 条（以登记为准）" : "无",
-             notes.length ? "text-[var(--amber)]" : "")}
-      ${notes.length ? `<div class="pl-3 text-[11px] text-[var(--amber)]">${
-        notes.slice(0, 6).map(esc).join("<br>")}</div>` : ""}
-      <div class="mt-2 pt-2 border-t border-[var(--line)]">
-        <div class="text-[var(--text-muted)] mb-1">新指标分类</div>
-        <div class="flex flex-wrap gap-1">${Object.entries(d.categories || {}).map(([k, v]) =>
-          `<span class="px-1.5 py-0.5 rounded bg-[var(--surface-soft)]">${esc(k)} ${v}</span>`).join("")}</div>
-      </div>
-    </div>
-    <div class="mt-3 p-2.5 rounded-md bg-[var(--amber-soft)] text-[var(--amber)] text-[11px]">
-      新指标的口径由系统从 SMM 的层级命名推导，推不出的维度留空。导入后请在「指标」页复核口径。
-    </div>
-    <div class="mt-3 flex justify-end">
-      <button type="button" onclick="smmCommit()" id="smm-commit"
-        class="px-5 py-2 rounded-md bg-[var(--primary)] text-white text-xs font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-40">
-        确认导入 ${n(d.points)} 条</button>
-    </div>`;
-  const commit = document.getElementById("import-commit");
-  if (commit) commit.classList.add("hidden");  // 这条路不走逐行确认的提交按钮
-}
-
-async function smmCommit() {
-  const btn = document.getElementById("smm-commit");
-  btn.disabled = true;
-  btn.textContent = "正在提交…";
-  try {
-    const res = await researchFetch((window.RESEARCH_PREFIX || "") + "/api/sn/import/terminal/commit", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: importState.token, filename: importState.filename,
-                             actor: document.getElementById("import-actor").value.trim() }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "提交失败");
-    smmPoll(data.job_id);
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = "确认导入";
-    showToast(err.message);
-  }
-}
-
-async function smmPoll(jobId) {
-  const box = document.getElementById("import-result");
-  const n = (v) => Number(v).toLocaleString("zh-CN");
-  const tick = async () => {
-    const res = await researchFetch(`${window.RESEARCH_PREFIX || ""}/api/sn/import/jobs/${jobId}`);
-    if (!res.ok) {
-      box.innerHTML = '<div class="p-3 rounded-lg bg-[var(--alert-soft)] text-[var(--alert)]">任务已过期，请重新上传</div>';
-      return;
-    }
-    const j = await res.json();
-    if (j.state === "running") {
-      box.innerHTML = `
-        <div class="py-6 text-center text-xs">
-          <div class="font-semibold">正在入库…</div>
-          <div class="mt-3 h-2 rounded-full bg-[var(--surface-soft)] overflow-hidden">
-            <div class="h-full bg-[var(--primary)] transition-all" style="width:${j.percent}%"></div></div>
-          <div class="mt-2 text-[var(--text-muted)] tabular">
-            ${j.done}/${j.total} 条序列 · 已写入 ${n(j.written)} 条</div>
-          <div class="mt-1 text-[11px] text-[var(--text-muted)]">几十万条需要几分钟，可以离开本页，回来再看进度</div>
-        </div>`;
-      setTimeout(tick, 2000);
-      return;
-    }
-    if (j.state === "failed") {
-      box.innerHTML = `<div class="p-3 rounded-lg bg-[var(--alert-soft)] text-[var(--alert)] text-xs">
-        导入失败：${j.error}</div>`;
-      return;
-    }
-    box.innerHTML = `
-      <div class="p-3 rounded-lg bg-[var(--primary-soft)] text-xs">
-        <div class="font-semibold text-[var(--primary)]">导入完成</div>
-        <div class="mt-2 tabular">新登记指标 ${n(j.registered)} 个 ·
-          写入 ${n(j.written)} 条 · 值未变跳过 ${n(j.unchanged)} 条</div>
-        ${j.rejected.length ? `<div class="mt-2 text-[var(--alert)]">
-          ${j.rejected.length} 条被闸门拒绝：<br>${j.rejected.slice(0, 5).join("<br>")}</div>` : ""}
-      </div>`;
-    showToast(`已导入 ${n(j.written)} 条观测`);
-  };
-  tick();
-}
-
-function importRender() {
-  const d = importState;
-  const options = JSON.parse(document.getElementById("import-options").textContent);
-  const esc = (t) => String(t == null ? "" : t).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
-  const pending = d.columns.filter((c) => c.needs_choice);
-
-  const chip = (label, n, tone) =>
-    `<span class="px-2 py-1 rounded ${tone}">${label} <b class="tabular">${n}</b></span>`;
-  let html = `<div class="flex flex-wrap gap-2 text-[11px] mb-3">
-    ${chip("可导入", d.ready_count, "bg-[var(--primary-soft)] text-[var(--primary)]")}
-    ${chip("将产生修订", d.revision_count, "bg-[var(--amber-soft)] text-[var(--amber)]")}
-    ${chip("相同忽略", d.skipped_count, "bg-[var(--surface-soft)] text-[var(--text-muted)]")}
-    ${chip("异常未导入", d.error_count, "bg-[var(--alert-soft)] text-[var(--alert)]")}
-  </div>`;
-
-  if (pending.length) {
-    html += `<div class="mb-3 p-3 rounded-lg bg-[var(--amber-soft)] text-[11px]">
-      <b class="text-[var(--amber)]">${pending.length} 列需要确认口径后才能导入</b>
-      <div class="text-[var(--text-muted)] mt-0.5">名称匹配无法区分品位与计量口径，请逐列选定。</div>
-      ${pending.map((c) => `<div class="mt-2">
-        <div class="font-semibold">${esc(c.header)}</div>
-        <div class="text-[var(--text-muted)] mb-1">${esc(c.error)}</div>
-        <select data-col="${c.col_key}" onchange="importSyncCommit()" class="w-full px-2 py-1.5 rounded-md">
-          <option value="">— 请选择对应指标 —</option>
-          ${options.map((o) => `<option value="${o.series_id}">${esc(o.name)}（${esc(o.unit)}）— ${o.series_id}</option>`).join("")}
-        </select></div>`).join("")}
-    </div>`;
-  }
-
-  const list = (title, rows, tone, checked, selectable) => {
-    if (!rows.length) return "";
-    return `<details class="mb-2" ${rows.length && selectable ? "open" : ""}>
-      <summary class="cursor-pointer text-xs font-semibold ${tone}">${title}（${rows.length}）</summary>
-      <div class="mt-1 max-h-52 overflow-y-auto text-[11px] divide-y divide-[var(--line)]">
-        ${rows.map((r) => `<label class="flex items-start gap-2 py-1.5">
-          ${selectable ? `<input type="checkbox" class="mt-0.5" data-row="${r.row_key}" ${checked ? "checked" : ""}>` : ""}
-          <span class="flex-1">
-            <span class="tabular">${esc(r.as_of).slice(0, 16).replace("T", " ")}</span>
-            <span class="ml-2">${esc(r.series_id || "—")}</span>
-            <b class="ml-2 tabular">${r.value}</b>
-            ${r.old_value != null ? `<span class="ml-2 text-[var(--amber)]">原值 ${r.old_value} → 新值 ${r.value}</span>` : ""}
-            ${r.warn ? `<div class="text-[var(--amber)]">${esc(r.warn)}</div>` : ""}
-            ${r.reason ? `<div class="text-[var(--alert)]">${esc(r.reason)}</div>` : ""}
-            ${r.time_filled ? '<span class="ml-1 text-[var(--text-muted)]">[时点按登记发布时刻补齐]</span>' : ""}
-          </span></label>`).join("")}
-      </div></details>`;
-  };
-
-  const by = (c) => d.rows.filter((r) => r.category === c);
-  html += list("可导入", by("ready"), "text-[var(--primary)]", true, true);
-  html += list("将产生修订（需逐条确认）", by("revision"), "text-[var(--amber)]", false, true);
-  html += list("异常未导入", by("error"), "text-[var(--alert)]", false, false);
-  if (d.skipped_count) {
-    html += `<div class="text-[11px] text-[var(--text-muted)]">${d.skipped_count} 条与库内数值完全一致，已自动忽略。</div>`;
-  }
-  document.getElementById("import-result").innerHTML = html;
-  importSyncCommit();
-}
-
-function importSyncCommit() {
-  const unresolved = [...document.querySelectorAll("#import-result select[data-col]")]
-    .some((s) => !s.value);
-  const chosen = document.querySelectorAll("#import-result input[data-row]:checked").length;
-  const btn = document.getElementById("import-commit");
-  btn.disabled = unresolved || !chosen;
-  btn.textContent = unresolved ? "请先确认口径" : `确认入库（${chosen} 条）`;
-}
-
-async function importCommit() {
-  const note = document.getElementById("import-note").value.trim();
-  const actor = document.getElementById("import-actor").value.trim();
-  if (!note || !actor) {
-    showToast("导入操作人与来源说明均为必填");
-    return;
-  }
-  const overrides = {};
-  document.querySelectorAll("#import-result select[data-col]").forEach((s) => {
-    if (s.value) overrides[s.dataset.col] = { series_id: s.value };
-  });
-  const keys = [...document.querySelectorAll("#import-result input[data-row]:checked")]
-    .map((c) => c.dataset.row);
-
-  const btn = document.getElementById("import-commit");
-  btn.disabled = true;
-  btn.textContent = "正在入库…";
-  try {
-    const res = await researchFetch((window.RESEARCH_PREFIX || "") + "/api/sn/import/commit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        preview_id: importState.preview_id, selected_row_keys: keys,
-        column_overrides: overrides, actor, default_note: note,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "入库失败");
-    const stale = data.stale_rows.length ? `，${data.stale_rows.length} 条被拦截` : "";
-    showToast(`已入库 ${data.committed} 条${stale}；已重算 ${data.recalculated_dates.length} 个交易日`);
-    setTimeout(() => window.location.reload(), 1200);
-  } catch (err) {
-    showToast(err.message);
-    importSyncCommit();
-  }
-}
-
-document.addEventListener("change", (e) => {
-  if (e.target.matches("#import-result input[data-row]")) importSyncCommit();
-});
 
 // ---------- Excel 自定义导出 ----------
 

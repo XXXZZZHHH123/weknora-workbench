@@ -123,15 +123,18 @@
     const draft = drafts.get(activeEditor); if (draft) { draft.dirty = true; stash(); markDraft(activeEditor, true); }
     syncDiscardDraft();
   }
-  // An unsaved new card, or unsaved edits to a saved one, can be dropped instead of lingering in the list.
+  // New cards and unsaved edits to either cards or transaction plans can be dropped.
   function syncDiscardDraft() {
-    const node = field('discard'); if (!node) return;
     const fresh = Boolean(activeEditor?.startsWith('new:'));
-    node.hidden = !activeEditor || activeEditor.startsWith('plan:') || !(fresh || drafts.get(activeEditor)?.dirty);
-    node.textContent = fresh ? '放弃草稿' : '放弃修改';
+    const plan = Boolean(activeEditor?.startsWith('plan:'));
+    for (const [node, forPlan] of [[field('discard'), false], [byId('strategy-plan-discard'), true]]) {
+      if (!node) continue;
+      node.hidden = !activeEditor || plan !== forPlan || !(fresh || drafts.get(activeEditor)?.dirty);
+      node.textContent = fresh ? '放弃草稿' : '放弃修改';
+    }
   }
   function discardDraft() {
-    if (saving || !activeEditor || activeEditor.startsWith('plan:')) return;
+    if (saving || !activeEditor) return;
     const key = activeEditor, fresh = key.startsWith('new:');
     if (!window.confirm(fresh ? '放弃这份尚未保存的方案？填写的内容不会保存，也不能恢复。' : '放弃未保存的修改，恢复为已保存的版本？')) return;
     drafts.delete(key); markDraft(key, false);
@@ -708,6 +711,7 @@
     byId('plan-edit-review').value = localDateTime(plan.review_at); byId('plan-edit-risk').value = plan.risk_budget;
     byId('strategy-plan-save').disabled = false; status('', false, byId('strategy-plan-edit-status'));
     if (!draft) drafts.set(key, {type: 'plan', source: item, body: {base_version: item.version, plan}, dirty: false});
+    syncDiscardDraft();
   }
   function updateEntry(key, item, type) {
     const isCard = type === 'card';
@@ -800,6 +804,7 @@
     });
   }
   byId('strategy-plan-form')?.addEventListener('input', dirty);
+  byId('strategy-plan-discard')?.addEventListener('click', discardDraft);
   byId('strategy-plan-form')?.addEventListener('submit', async event => {
     event.preventDefault(); if (saving) return;
     const key = activeEditor, own = editSequence; let body;

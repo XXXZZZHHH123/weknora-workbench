@@ -658,7 +658,7 @@ async def restricted_response(request, scope, route_path):
     context = {'nav': {'market': 'variety', 'judgments': 'judgment'}.get(module, module),
         'restricted_view': True, 'restricted_module': module, 'restricted_title': title,
         'restricted_authorized': authorized, 'restricted_pages': PAGES, 'restricted_data': payload,
-        'd': None, 'ticker': [], 'manual_indicators': [], 'err': None}
+        'd': None, 'ticker': [], 'err': None}
     if authorized and module == 'home':
         return templates.TemplateResponse(request, 'readonly_home.html', context)
     if authorized and module == 'diagram' and payload.get('diagram'):

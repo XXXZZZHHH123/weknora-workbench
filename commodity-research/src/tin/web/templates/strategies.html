@@ -59,7 +59,7 @@
       <div class="strategy-plan-bands">{% for key,label in [('entry','入场'),('target','目标'),('stop','止损')] %}<fieldset><legend>{{ label }}区间</legend><div><input id="plan-edit-{{ key }}-low" type="number" step="any" aria-label="{{ label }}下限" required><span>—</span><input id="plan-edit-{{ key }}-high" type="number" step="any" aria-label="{{ label }}上限" required></div><label>依据<input id="plan-edit-{{ key }}-reason" required></label></fieldset>{% endfor %}</div>
       <label>入场条件<textarea id="plan-edit-entry-condition" rows="2" required></textarea></label><label>失效条件<textarea id="plan-edit-invalidation" rows="2" required></textarea></label>
       <div class="research-card-fields"><label>复核时间<input id="plan-edit-review" type="datetime-local" required></label><label>计划风险预算（元）<input id="plan-edit-risk" type="number" min="0" step="any" required></label></div>
-      <div id="strategy-plan-edit-status" role="status"></div><footer><button type="button" data-plan-edit-close class="button-muted">取消编辑</button><button type="submit" class="button-primary" id="strategy-plan-save">保存独立草稿</button></footer></form>
+      <div id="strategy-plan-edit-status" role="status"></div><footer><button type="button" id="strategy-plan-discard" class="button-muted" hidden>放弃修改</button><button type="button" data-plan-edit-close class="button-muted">取消编辑</button><button type="submit" class="button-primary" id="strategy-plan-save">保存独立草稿</button></footer></form>
     </section>
   </div>
 </section>

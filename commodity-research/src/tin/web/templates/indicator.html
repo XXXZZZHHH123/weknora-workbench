@@ -19,10 +19,6 @@
     </p>
   </div>
   <div class="flex items-center gap-1.5 shrink-0 text-xs">
-    {% if d.fetch_mode == 'manual' %}
-    <a href="{{ research_prefix() }}/sn/entry?series_id={{ d.series_id }}"
-       class="px-3 py-1.5 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)]">去录入</a>
-    {% endif %}
     <a href="{{ research_prefix() }}/sn/diagram" class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">产业图</a>
   </div>
 </div>

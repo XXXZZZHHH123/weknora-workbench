@@ -10,6 +10,12 @@ const record = (id, title) => ({id, title, status: 'draft', revision: 1, source_
   card: card(title), direction_label: '等待验证', can_edit: true, can_apply: true, scope_status: 'current'});
 const a = record('00000000-0000-4000-8000-000000000201', '合成方案甲');
 const records = new Map([[a.id, a]]);
+const planRecord = {id: 41, title: '合成交易计划', status: 'draft', version: 1, scope_status: 'current',
+  plan: {title: '合成交易计划', thesis: '原有研究逻辑', invalidation: '条件变化后撤回', entry_condition: '人工核对后入场',
+    entry: {low: 100, high: 110, reason: '合成入场依据'}, target: {low: 120, high: 130, reason: '合成目标依据'},
+    stop: {low: 80, high: 90, reason: '合成止损依据'}, review_at: '2030-01-02T08:00:00Z', risk_budget: 100,
+    legs: [{contract: 'FIXTURE2601', side: 'buy', ratio: 1}], evidence: [], alternative_explanation: '合成替代解释',
+    market_expectation: '合成市场预期', catalyst: '下一次观察', horizon_days: 2}};
 const exported = '# 策略方案\n\n## 合成方案甲\n<!-- card: ' + a.id + ' revision: 1 -->\n- 方向：等待验证\n- 复核日期：2030-01-02\n- 依据研判：不引用\n\n### 适用 / 触发\n原有触发条件\n\n### 应对措施\n等待确认后应对\n\n### 暂停 / 撤回\n条件变化后撤回\n';
 const condition = {kind: 'judgment_condition', field: 'invalidation', id: '17', revision: 2, rule_kind: 'falsifier', rule_id: 'synthetic-rule',
   snapshot: {title: '库存连续两期增加', subtitle: '库存增减 · 连续 2 期'}};
@@ -24,10 +30,11 @@ data=json.load(sys.stdin)
 host='''<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/app.css"><style>[hidden]{display:none!important}body{margin:0}main{max-width:1440px;margin:16px auto;padding:0 16px}</style><script>window.RESEARCH_PREFIX='/research/workbenches/fixture';window.researchFetch=(url,options)=>fetch(url,options)</script></head><body><main>{% block main %}{% endblock %}</main></body></html>'''
 env=Environment(loader=ChoiceLoader([DictLoader({'base.html':host}),FileSystemLoader(sys.argv[1])]),autoescape=select_autoescape(['html']))
 env.globals.update(research_workbench=lambda:SimpleNamespace(metadata=SimpleNamespace(name='隔离研究台')),research_prefix=lambda:'/research/workbenches/fixture',research_static_prefix=lambda:'',static_version=lambda:'tools-fixture',human_text=lambda x,names=None:str(x or ''))
-[a]=data
+[a,plan]=data
 cards={'enabled':True,'can_write':True,'items':[dict(a,card=None)],'selected':a,'metadata_only':True}
-print(env.get_template('strategies.html').render(names={},restricted_view=False,workspace_can_write=True,platform_models=True,research_cards=cards,strategies=[],strategy_entries=[],workspace_selected='research:'+a['id'],workspace_initial=None))
-`, path.join(web, 'templates')], {input: JSON.stringify([a]), encoding: 'utf8', maxBuffer: 4 * 1024 * 1024});
+entries=[dict(plan,key='plan:'+str(plan['id']),status_label='草稿',kind_label='方向策略',review_date='2030-01-02')]
+print(env.get_template('strategies.html').render(names={},restricted_view=False,workspace_can_write=True,platform_models=True,research_cards=cards,strategies=[],strategy_entries=entries,workspace_selected='research:'+a['id'],workspace_initial=None))
+`, path.join(web, 'templates')], {input: JSON.stringify([a, planRecord]), encoding: 'utf8', maxBuffer: 4 * 1024 * 1024});
 assert.equal(rendered.status, 0, rendered.stderr);
 assert.match(rendered.stdout, /id="strategy-workspace-data"|strategy-workspace/);
 
@@ -71,6 +78,7 @@ assert.match(rendered.stdout, /id="strategy-workspace-data"|strategy-workspace/)
         return route.fulfill({json: {saved: [saved], counts: {create: 0, update: 1, unchanged: 0, error: 0}, untouched: 2}});
       }
       if (endpoint === '/strategies/models') return route.fulfill({json: {models: [{id: 'synthetic-model', name: '合成通用模型'}]}});
+      if (endpoint === '/strategies/' + planRecord.id && method === 'GET') return route.fulfill({json: planRecord});
       if (endpoint === '/research-strategies/draft-from-text' && method === 'POST') {
         const body = request.postDataJSON();
         assert.equal(body.model_id, 'synthetic-model');
@@ -173,8 +181,37 @@ assert.match(rendered.stdout, /id="strategy-workspace-data"|strategy-workspace/)
     assert.equal(await page.locator('#strategy-dynamic-preview h2').innerText(), '合成方案甲');
     assert.equal(await marks.count(), 0);
     assert.equal(calls.filter(row => /^POST \/research-strategies$|^PATCH \/research-strategies\/[0-9a-f-]+$/.test(row)).length, 0, 'Discarding never saves');
+    // Transaction-plan revisions have the same discard behavior as research cards.
+    const planEntry = page.locator('[data-strategy-select="plan:' + planRecord.id + '"]');
+    await planEntry.click();
+    await page.locator('#strategy-dynamic-preview button', {hasText: '编辑为独立草稿'}).click();
+    const planEditor = page.locator('#strategy-plan-editor'), planDiscard = page.locator('#strategy-plan-discard');
+    await planEditor.waitFor({state: 'visible'});
+    assert.equal(await planDiscard.isHidden(), true, 'An unchanged transaction plan has nothing to discard');
+    await page.locator('#plan-edit-title').fill('尚未保存的交易计划修订');
+    await page.locator('#plan-edit-thesis').fill('尚未保存的研究逻辑');
+    assert.equal(await planDiscard.isVisible(), true);
+    assert.equal(await planEntry.locator('[data-draft-mark]').isVisible(), true);
+    page.once('dialog', dialog => dialog.dismiss()); await planDiscard.click();
+    assert.equal(await page.locator('#plan-edit-title').inputValue(), '尚未保存的交易计划修订', 'Cancelling a discard keeps the revision');
+    assert.equal(await planEditor.isVisible(), true);
+    await planEditor.locator('[data-plan-edit-close]').first().click();
+    await planEntry.click();
+    await planEditor.waitFor({state: 'visible'});
+    assert.equal(await page.locator('#plan-edit-thesis').inputValue(), '尚未保存的研究逻辑', 'Returning to preview keeps the revision available');
+    page.once('dialog', dialog => dialog.accept()); await planDiscard.click();
+    await page.locator('#strategy-workspace-status').filter({hasText: '已放弃未保存的修改'}).waitFor();
+    assert.equal(await planEditor.isHidden(), true);
+    assert.equal(await page.locator('#strategy-dynamic-preview h2').innerText(), planRecord.title);
+    assert.match(await page.locator('#strategy-dynamic-preview').innerText(), /原有研究逻辑/);
+    assert.equal(await planEntry.locator('[data-draft-mark]').isHidden(), true);
+    await page.locator('#strategy-dynamic-preview button', {hasText: '编辑为独立草稿'}).click();
+    assert.equal(await page.locator('#plan-edit-title').inputValue(), planRecord.title, 'Reopening starts from the saved transaction plan');
+    assert.equal(await page.locator('#plan-edit-thesis').inputValue(), planRecord.plan.thesis);
+    assert.equal(await planDiscard.isHidden(), true);
+    assert.equal(calls.filter(row => /^(POST|PATCH|DELETE) \/strategies(?:\/|$)/.test(row)).length, 0, 'Discarding never saves or deletes a transaction plan');
     assert.deepEqual(failures, []);
-    console.log('PASS real Chromium: Markdown export/check/invalidate/confirm/import and text organizing into a form draft or Markdown preview; synthetic data only.');
+    console.log('PASS real Chromium: Markdown/text tools and discarding unsaved cards or transaction-plan revisions; synthetic data only.');
   } catch (error) {
     console.error('calls:', calls.join(' | '), '\nfailures:', failures.join(' | '), '\nstatus:', page && await page.locator('#strategy-markdown-status').textContent().catch(() => ''), '\ntext status:', page && await page.locator('#strategy-text-status').textContent().catch(() => ''), '\nform:', page && await page.evaluate(() => [document.querySelector('#research-card-dialog')?.hidden, !!window.ResearchStrategyEditor, document.querySelector('#strategy-text-dialog')?.open]).catch(e => e.message));
     throw error;

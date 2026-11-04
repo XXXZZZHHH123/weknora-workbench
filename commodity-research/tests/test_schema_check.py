@@ -112,7 +112,7 @@ def test_every_page_is_guarded_not_just_the_one_that_broke_last_time(monkeypatch
                         sessionmaker(engine, expire_on_commit=False))
     client = TestClient(app, raise_server_exceptions=False)
 
-    for path in ("/", "/sn", "/sn/judgment", "/sn/indicators", "/sn/diagram", "/sn/entry"):
+    for path in ("/", "/sn", "/sn/judgment", "/sn/indicators", "/sn/diagram"):
         r = client.get(path)
         assert r.status_code == 503, f"{path} 应当拦住"
         assert "alembic upgrade head" in r.text, f"{path} 没说该跑什么"

@@ -236,3 +236,16 @@ def test_diagram_canvas_layers_all_share_one_transform():
     applied = re.search(r'for \(const id of \[([^\]]+)\]\)', js)
     assert applied, "找不到统一施加 transform 的循环"
     assert set(re.findall(r'"(dg-[a-z]+)"', applied.group(1))) == set(layers)
+
+
+@pytest.mark.parametrize('path,method', [
+    ('/sn/entry', 'get'), ('/sn/entry', 'post'),
+    ('/api/sn/import/template', 'get'), ('/api/sn/import/preview', 'post'),
+    ('/api/sn/import/commit', 'post'), ('/api/sn/import/terminal/commit', 'post'),
+    ('/api/sn/import/jobs/retired-job', 'get'),
+])
+def test_retired_manual_entry_routes_do_not_open_a_database(monkeypatch, path, method):
+    def forbidden():
+        raise AssertionError('Retired entry routes must not open research storage')
+    monkeypatch.setattr('tin.web.app.SessionLocal', forbidden)
+    assert getattr(TestClient(app), method)(path).status_code == 404

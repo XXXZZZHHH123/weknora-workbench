@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/app.css?v={{ static_version() }}">
 </head>
 <body class="min-h-screen">
-{# 这一页刻意不继承 base.html：外壳自己要查库（行情条、快速录入的指标列表），
+{# 这一页刻意不继承 base.html：外壳自己要查库（行情条与日期范围），
    而库正落后——继承就会在渲染提示的过程中再炸一次。 #}
 <div style="max-width:44rem;margin:12vh auto;padding:0 1.5rem">
   <div class="rounded-lg p-6" style="border:1px solid var(--amber);background:var(--amber-soft)">
