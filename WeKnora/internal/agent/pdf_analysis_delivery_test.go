@@ -74,12 +74,10 @@ func TestPDFAnalysisGateUsesCanonicalSuccessAndActualOperation(t *testing.T) {
 func TestDirectFailedPDFQueryKeepsLookupDeliveryPolicy(t *testing.T) {
 	call := pdfAnalysisDeliveryFixture(t)
 	call.Result.Success = false
-	state := sourceConsistencyState()
-	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{call}})
 	model := &mockChat{}
-	engine := sourceConsistencyEngine(t, model)
-	engine.taskPlan = explicitTextDeliveryPlan()
-	decision := engine.checkCandidate(t.Context(), "Report the source indicator.", "The report describes covered area.", "", state, nil, false)
+	engine, state, candidate := directCitationReadFixture(t, model, true)
+	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{call}})
+	decision := engine.checkCandidate(t.Context(), "Report the source indicator.", candidate, "", state, nil, false)
 	require.Equal(t, candidateAccepted, decision.Disposition)
 	require.Empty(t, model.calls, "a failed query must not reclassify ordinary direct source lookup")
 }

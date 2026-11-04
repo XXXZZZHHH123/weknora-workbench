@@ -154,7 +154,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 			}
 			mapped, err := mapChartSource(source, *input.Mapping)
 			if err != nil {
-				return fail(err.Error())
+				return t.sourceFailureDiagnostics(err.Error(), source, steps), nil
 			}
 			if t.mapped == nil {
 				t.mapped = map[string]mappedChartSource{}
@@ -223,7 +223,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	if t.reviewPlan != nil {
 		validation, err = t.reviewPlan(ctx, *source, spec)
 		if err != nil {
-			return fail(err.Error())
+			return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
 		}
 	}
 	delivered, err := t.writer.SaveChart(ctx, chart.SaveRequest{SessionID: t.session, MessageID: t.message, ToolCallID: meta.ToolCallID, FileName: "chart.png", SourceID: source.ID, PNG: png})

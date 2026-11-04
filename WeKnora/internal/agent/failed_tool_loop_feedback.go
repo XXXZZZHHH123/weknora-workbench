@@ -154,7 +154,7 @@ func (g *loopGuards) failedToolLoopGuidance(name string, attempts int) string {
 		}
 		notice = fmt.Sprintf("The tool %q%s has returned the same failure feedback %d times in the recent tool-call window, even though arguments changed or other tools ran between attempts. A successful inspection or another operation does not resolve this failure. Do not retry by merely rewording the same failed plan. ", name, operation, attempts)
 		if name == agenttools.ToolRenderChart && g.failedToolFeedbackOperation == "map" {
-			notice += "For chart mapping, inspect current sources/input_sources and copy exactly a source_id marked mapping_supported=true; use its current matrix_shape for coordinates. "
+			notice += "For chart mapping, inspect current sources/input_sources and copy exactly a source_id marked mapping_supported=true; use its current matrix_shape for coordinates. Mapping or transposition only copies existing result coordinates; it cannot repair values already paired incorrectly by SQL. When the result itself is wrong, consider reading the actual source cells through the source-bound raw_source_reads menu before choosing a new mapping. The menu is a read-only locator, not a business-axis decision or an instruction to copy literal values into SQL. "
 		}
 	} else {
 		// Preserve the existing exact-call correction as a separate signal.

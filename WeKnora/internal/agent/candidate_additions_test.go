@@ -121,7 +121,11 @@ func TestCandidateAdditionsThreeDeliveryPathsUseEditedCandidateAndHash(t *testin
 	const draft = main + "\n\n" + extra
 	for _, path := range []string{"ordinary", "stalled", "final"} {
 		t.Run(path, func(t *testing.T) {
-			model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{main}, []string{extra})}, mockChat: mockChat{responses: []mockResponse{chatAnswer(draft)}}}
+			responses := []mockResponse{sourceAcceptedVerdict()}
+			if path != "stalled" {
+				responses = append([]mockResponse{chatAnswer(draft)}, responses...)
+			}
+			model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{main}, []string{extra})}, mockChat: mockChat{responses: responses}}
 			engine := numericRecoveryTestEngine(t, &model.mockChat)
 			engine.chatModel = model
 			engine.config.CandidateAdditionsEnabled = true
@@ -237,7 +241,7 @@ func TestCandidateAdditionsCacheBindsOriginalEditedTaskAndActualEvidence(t *test
 func TestCandidateAdditionsInvalidOrUnavailablePlanContinuesOriginalChecks(t *testing.T) {
 	const draft = "The measured value is 138.67. Keep its actual scope."
 	for _, invalid := range []string{`{"retain_spans":[],"delete_spans":["138.67"]}`, `{"retain_spans":[],"delete_spans":[],"answer":"Made up rewrite"}`, `{"retain_spans":[],"retain_spans":[],"delete_spans":[]}`} {
-		model := &additionsChat{plans: []string{invalid}}
+		model := &additionsChat{plans: []string{invalid}, mockChat: mockChat{responses: []mockResponse{sourceAcceptedVerdict()}}}
 		engine := numericRecoveryTestEngine(t, &model.mockChat)
 		engine.chatModel = model
 		engine.config.CandidateAdditionsEnabled = true
@@ -246,6 +250,7 @@ func TestCandidateAdditionsInvalidOrUnavailablePlanContinuesOriginalChecks(t *te
 		decision := engine.checkCandidate(t.Context(), query, draft, "", state, messages, false)
 		require.Equal(t, candidateAccepted, decision.Disposition)
 		require.Equal(t, draft, decision.Candidate)
+		require.Len(t, model.calls, 1, "an unchanged uncited candidate still reaches the source critic")
 	}
 	model := &additionsChat{err: errors.New("selector unavailable")}
 	engine := numericRecoveryTestEngine(t, &model.mockChat)
@@ -262,7 +267,7 @@ func TestCandidateAdditionsMissingDataKeepsBoundedGapAndDeletesUnrequestedAdvice
 	const known = "The inspected report gives 138.67 for an earlier period; this does not establish the requested period."
 	const advice = "You must wait for the issuer's next bulletin to get that figure; no such bulletin is in the authorized archive."
 	const draft = broad + "\n\n" + known + "\n\n" + advice
-	model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{known}, []string{broad, advice})}, mockChat: mockChat{responses: []mockResponse{chatAnswer(draft)}}}
+	model := &additionsChat{plans: []string{additionsPlanJSON(t, []string{known}, []string{broad, advice})}, mockChat: mockChat{responses: []mockResponse{chatAnswer(draft), sourceAcceptedVerdict()}}}
 	engine := numericRecoveryTestEngine(t, &model.mockChat)
 	engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
 	engine.taskPlan = explicitTextDeliveryPlan()
@@ -652,6 +657,9 @@ func TestCandidateAdditionInlineIDsStillRunNumericChecksWithoutExtraSourceCalls(
 			core := additionOptionForText(t, catalog, main)
 			optional := additionOptionForText(t, catalog, aside)
 			model := &additionsChat{plans: []string{additionSelectionJSON(t, catalog, []string{core.ID}, []string{optional.ID})}}
+			if value == "138.67" {
+				model.responses = []mockResponse{sourceAcceptedVerdict()}
+			}
 			engine := numericRecoveryTestEngine(t, &model.mockChat)
 			engine.chatModel, engine.config.CandidateAdditionsEnabled = model, true
 			engine.taskPlan = explicitTextDeliveryPlan()
@@ -663,12 +671,13 @@ func TestCandidateAdditionInlineIDsStillRunNumericChecksWithoutExtraSourceCalls(
 				// "units" is not an invented numerical observation; the actual
 				// read fixture supports this value under the ordinary guard.
 				require.Equal(t, candidateAccepted, decision.Disposition)
+				require.Len(t, model.calls, 1, "an uncited numeric candidate still reaches the source critic")
 			} else {
 				require.Equal(t, candidateNumericFailure, decision.Disposition)
+				require.Empty(t, model.calls, "the numeric guard rejects before source review")
 			}
 			require.Equal(t, before, countTotalToolCalls(state.RoundSteps))
 			require.Len(t, model.selectionCalls, 1)
-			require.Empty(t, model.calls)
 		})
 	}
 }

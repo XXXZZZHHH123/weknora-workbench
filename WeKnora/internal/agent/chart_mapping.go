@@ -134,7 +134,7 @@ func mapChartSource(source chart.Table, mapping chartSourceMapping) (chart.Table
 	}
 	seen = map[int]bool{}
 	for _, i := range mapping.ValueIndexes {
-		if i < 0 || i >= values || seen[i] || mapping.LabelIndex != nil && *mapping.LabelIndex == i {
+		if i < 0 || i >= values || seen[i] || mapping.Orientation == "rows" && mapping.LabelIndex != nil && *mapping.LabelIndex == i {
 			return chart.Table{}, fmt.Errorf("value_indexes须为不重复的真实观测坐标，不能包含标签坐标")
 		}
 		seen[i] = true

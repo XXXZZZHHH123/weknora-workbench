@@ -159,7 +159,10 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	// planner initially chose direct lookup; execution does not certify scope.
 	// The fast path also requires an explicit text-only delivery contract.
 	// Direct reasoning depth alone cannot waive requested artifact completion.
-	if !warning && e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && e.hasExplicitTextDeliveryPlan() && !suspectAnswerFragment(candidate, reasoning) && !hasExecutedPDFAnalysis(state.RoundSteps) && !e.needsDeliveryReview(state) {
+	// With citations enabled, missing/invalid current references still need the
+	// existing critic's semantic required/not_required/unavailable decision.
+	// This eligibility check neither chooses a source nor infers a user intent.
+	if !warning && e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && e.hasExplicitTextDeliveryPlan() && !suspectAnswerFragment(candidate, reasoning) && !hasExecutedPDFAnalysis(state.RoundSteps) && !e.needsDeliveryReview(state) && e.directCitationDeliveryEligible(candidate, state, conversation) {
 		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{
 			"reason": "direct_task", "reasoning_depth": e.taskReasoningDepth(),
 		})
@@ -182,6 +185,14 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		decision.Disposition = candidateNumericWarning
 	}
 	return
+}
+
+func (e *AgentEngine) directCitationDeliveryEligible(candidate string, state *types.AgentState, conversation []chat.Message) bool {
+	if !e.config.CitationsEnabled() {
+		return true
+	}
+	ids := uniqueCandidateCitationIDs(candidate)
+	return len(ids) > 0 && len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) == len(ids)
 }
 
 // hasExecutedPDFAnalysis recognizes only current canonical results from the

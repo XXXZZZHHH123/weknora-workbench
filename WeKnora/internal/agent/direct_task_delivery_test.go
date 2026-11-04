@@ -9,12 +9,11 @@ import (
 
 func TestDirectTaskSkipsSourceCriticAfterNumericGrounding(t *testing.T) {
 	model := &mockChat{}
-	e := sourceConsistencyEngine(t, model)
-	e.taskPlan = explicitTextDeliveryPlan()
-	decision := e.checkCandidate(t.Context(), "Report the indicator.", "The report describes covered area.", "", sourceConsistencyState(), nil, false)
+	e, state, candidate := directCitationReadFixture(t, model, true)
+	decision := e.checkCandidate(t.Context(), "Report the indicator.", candidate, "", state, nil, false)
 	require.Equal(t, candidateAccepted, decision.Disposition)
 	require.Empty(t, model.calls, "no critic call for a direct lookup")
-	require.True(t, e.candidateApprovalCurrent("The report describes covered area.", sourceConsistencyState()), "terminal delivery accepts the direct decision")
+	require.True(t, e.candidateApprovalCurrent(candidate, state), "terminal delivery accepts the direct decision")
 }
 
 func TestSynthesisAndUnplannedTasksKeepSourceCritic(t *testing.T) {
