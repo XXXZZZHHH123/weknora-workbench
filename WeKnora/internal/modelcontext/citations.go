@@ -26,6 +26,7 @@ Retrieved content uses request-local source handles: chunk://N identifies a know
 
 const citationEnabledProtocolPrompt = `
 - Source citations are enabled for this answer. Cite a knowledge chunk with exactly <ref id="chunk://N"/> and a web page with exactly <ref id="url://N"/>.
+- When a material answer claim uses current knowledge-source content and a supporting chunk handle is available, include its inline citation. A plain filename or table title does not satisfy enabled citations. Select the actual supporting chunk; do not attach every retrieved candidate or borrow an unrelated same-page chunk.
 - Copy the complete handle, including its numeric index, verbatim from the supporting result. N in the syntax above is a schema placeholder, never a literal citation identifier.
 - Cite only chunk://N/url://N handles backed by tool results for the current task, and only when that source supports the adjacent
   claim. Never cite doc://N/kb://N.
