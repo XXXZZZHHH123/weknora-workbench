@@ -41,9 +41,10 @@ func (t *countingTool) Execute(context.Context, json.RawMessage) (*types.ToolRes
 // ---------------------------------------------------------------------------
 
 type mockResponse struct {
-	chunks             []types.StreamResponse
-	acceptSourceReview bool
-	sourceReviewUsage  *types.TokenUsage
+	chunks              []types.StreamResponse
+	acceptSourceReview  bool
+	sourceCitationCheck *sourceCitationCheck
+	sourceReviewUsage   *types.TokenUsage
 }
 
 type mockChat struct {
@@ -69,6 +70,18 @@ func (m *mockChat) ChatStream(
 		verdict, err := acceptedSourceReviewFixture(messages)
 		if err != nil {
 			return nil, err
+		}
+		if resp.sourceCitationCheck != nil {
+			var value map[string]any
+			if err := json.Unmarshal([]byte(verdict), &value); err != nil {
+				return nil, err
+			}
+			value["citation_check"] = resp.sourceCitationCheck
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return nil, err
+			}
+			verdict = string(encoded)
 		}
 		resp.chunks = []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: verdict, Usage: resp.sourceReviewUsage, Done: true, FinishReason: "stop"}}
 	}

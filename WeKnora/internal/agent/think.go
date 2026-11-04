@@ -47,7 +47,7 @@ const sourceReviewFeedbackLimit = 240
 const sourceReviewUserNoticeLimit = 160
 
 var answerCompletenessSchema = json.RawMessage(`{"type":"object","properties":{"complete":{"type":"boolean"}},"required":["complete"],"additionalProperties":false}`)
-var sourceConsistencySchema = json.RawMessage(`{"type":"object","properties":{"complete":{"type":"boolean","description":"True only when the entire candidate is accepted unchanged with an overall assessment and supported critical audit."},"assessment":{"type":"string","maxLength":1200},"feedback":{"type":"string","maxLength":240},"user_notice":{"type":"string","maxLength":160,"description":"Only with complete=false: one neutral sentence for the end user, in their language, naming which part of the answer may be inaccurate and which original source to check. Shown only if this answer is delivered without passing review. No instructions to the author, no internal identifiers or handles, and do not present your own reading as established fact."},"next_action":{"type":"string","enum":["revise_answer","collect_evidence"]},"audit":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"claim":{"type":"string"},"candidate_statement":{"type":"string","minLength":1,"maxLength":600},"candidate_fidelity":{"type":"string","enum":["as_written","narrowed","contradicted"]},"basis":{"type":"string","enum":["source","inference","limitation","presentation"]},"assessment":{"type":"string"},"evidence":{"type":"array","items":{"type":"object","properties":{"source_pointer_ref":{"type":"integer","minimum":0},"evidence_id":{"type":"string"},"json_pointer":{"type":"string"},"quote":{"type":["string","number","boolean"],"minLength":1},"kind":{"type":"string","enum":["source","execution"]},"row_ref":{"type":"object","properties":{"entry_index":{"type":"integer","minimum":0},"row_index":{"type":"integer","minimum":0},"column":{"type":"string","minLength":1}},"required":["entry_index","row_index","column"],"additionalProperties":false}},"required":["kind"],"additionalProperties":false,"anyOf":[{"required":["evidence_id","quote"],"not":{"anyOf":[{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}},{"required":["source_pointer_ref","quote"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["row_ref"]},{"required":["evidence_id"]},{"required":["json_pointer"]}]}},{"required":["row_ref"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["quote"]},{"required":["evidence_id"]},{"required":["json_pointer"]},{"required":["source_pointer_ref"]}]}},{"required":["evidence_id","json_pointer"],"properties":{"kind":{"const":"source"},"evidence_id":{"minLength":1},"json_pointer":{"minLength":1}},"not":{"anyOf":[{"required":["quote"]},{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}}]}}},"required":["claim","candidate_statement","candidate_fidelity","basis","assessment","evidence"],"additionalProperties":false}}},"required":["complete"],"additionalProperties":false}`)
+var sourceConsistencySchema = json.RawMessage(`{"type":"object","properties":{"complete":{"type":"boolean","description":"True only when the entire candidate is accepted unchanged with an overall assessment and supported critical audit."},"citation_check":{"type":"object","additionalProperties":false,"required":["requirement","reason"],"properties":{"requirement":{"type":"string","enum":["required","not_required","unavailable"]},"reason":{"type":"string","minLength":1,"maxLength":240}}},"assessment":{"type":"string","maxLength":1200},"feedback":{"type":"string","maxLength":240},"user_notice":{"type":"string","maxLength":160,"description":"Only with complete=false: one neutral sentence for the end user, in their language, naming which part of the answer may be inaccurate and which original source to check. Shown only if this answer is delivered without passing review. No instructions to the author, no internal identifiers or handles, and do not present your own reading as established fact."},"next_action":{"type":"string","enum":["revise_answer","collect_evidence"]},"audit":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"claim":{"type":"string"},"candidate_statement":{"type":"string","minLength":1,"maxLength":600},"candidate_fidelity":{"type":"string","enum":["as_written","narrowed","contradicted"]},"basis":{"type":"string","enum":["source","inference","limitation","presentation"]},"assessment":{"type":"string"},"evidence":{"type":"array","items":{"type":"object","properties":{"source_pointer_ref":{"type":"integer","minimum":0},"evidence_id":{"type":"string"},"json_pointer":{"type":"string"},"quote":{"type":["string","number","boolean"],"minLength":1},"kind":{"type":"string","enum":["source","execution"]},"row_ref":{"type":"object","properties":{"entry_index":{"type":"integer","minimum":0},"row_index":{"type":"integer","minimum":0},"column":{"type":"string","minLength":1}},"required":["entry_index","row_index","column"],"additionalProperties":false}},"required":["kind"],"additionalProperties":false,"anyOf":[{"required":["evidence_id","quote"],"not":{"anyOf":[{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}},{"required":["source_pointer_ref","quote"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["row_ref"]},{"required":["evidence_id"]},{"required":["json_pointer"]}]}},{"required":["row_ref"],"properties":{"kind":{"const":"source"}},"not":{"anyOf":[{"required":["quote"]},{"required":["evidence_id"]},{"required":["json_pointer"]},{"required":["source_pointer_ref"]}]}},{"required":["evidence_id","json_pointer"],"properties":{"kind":{"const":"source"},"evidence_id":{"minLength":1},"json_pointer":{"minLength":1}},"not":{"anyOf":[{"required":["quote"]},{"required":["row_ref"]},{"required":["source_pointer_ref"]}]}}]}}},"required":["claim","candidate_statement","candidate_fidelity","basis","assessment","evidence"],"additionalProperties":false}}},"required":["complete","citation_check"],"additionalProperties":false}`)
 
 // This is only a protocol-shape suspicion gate. It never interprets the
 // question or decides whether a short reply satisfies the requested format.
@@ -195,7 +195,13 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		for key, value := range snapshot.input {
 			inputData[key] = value
 		}
-		inputData["source_citation_policy"] = e.sourceCitationReviewPolicy(state, messages)
+		citationPolicy := e.sourceCitationReviewPolicy(state, messages)
+		inputData["source_citation_policy"] = citationPolicy
+		common.PipelineInfo(ctx, "Agent", "source_citation_policy", map[string]interface{}{
+			"enabled": citationPolicy["enabled"], "available_anchor_count": citationPolicy["available_anchor_count"],
+			"included_anchor_count": len(citationPolicy["available_anchors"].([]any)), "omitted_anchor_count": citationPolicy["omitted_anchor_count"],
+			"conflicting_anchor_count": citationPolicy["conflicting_anchor_count"], "projection_complete": citationPolicy["projection_complete"],
+		})
 		evidenceReader = snapshot.reader
 		hasImageObservations = snapshot.hasImages
 	}
@@ -252,7 +258,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 	completionBudget := 256
 	format := answerCompletenessSchema
 	if checkSources {
-		system = sourceConsistencyReviewInstructions + "\n" + sourceRecoveryReviewInstructions + "\n" + sourceReviewReceiptInstructions + "\n" + researchSynthesisInstructions + "\n" + sourceCitationReviewInstructions
+		system = sourceConsistencyReviewInstructions + "\n" + sourceRecoveryReviewInstructions + "\n" + sourceReviewReceiptInstructions + "\n" + researchSynthesisInstructions + "\n" + sourceCitationReviewInstructions + "\n" + sourceCitationDecisionInstructions
 		if notice, ok := ctx.Value(numericWarningNoticeKey{}).(string); ok {
 			inputData["numeric_warning_delivery_notice"] = notice
 			// Re-encode below: the numeric matcher has diagnosed a limitation,
@@ -333,6 +339,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		UserNotice    string               `json:"user_notice,omitempty"`
 		NextAction    *string              `json:"next_action,omitempty"`
 		Audit         []reviewClaimCheck   `json:"audit,omitempty"`
+		CitationCheck *sourceCitationCheck `json:"citation_check,omitempty"`
 		DeliveryCheck *answerDeliveryCheck `json:"delivery_check,omitempty"`
 	}
 	var target any = &verdict
@@ -382,6 +389,29 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 	if checkSources && !*verdict.Complete {
 		if notice := strings.TrimSpace(sourceVerdict.UserNotice); utf8.RuneCountInString(notice) <= sourceReviewUserNoticeLimit {
 			e.answerReviewUserNotice = notice
+		}
+	}
+	if checkSources {
+		messages := []chat.Message{}
+		if len(conversation) > 0 {
+			messages = conversation[0]
+		}
+		repair, err := e.validateCitationCheck(sourceVerdict.CitationCheck, content, state, messages, *verdict.Complete)
+		if err != nil {
+			return true, err
+		}
+		requirement := ""
+		if sourceVerdict.CitationCheck != nil {
+			requirement = sourceVerdict.CitationCheck.Requirement
+		}
+		common.PipelineInfo(ctx, "Agent", "citation_review_verdict", map[string]interface{}{
+			"enabled": e.config.CitationsEnabled(), "requirement": requirement,
+			"canonical_citation_count":      len(uniqueCandidateCitationIDs(content)),
+			"valid_current_reference_count": len(e.currentCandidateKnowledgeReferences(content, state, messages)),
+			"complete":                      *verdict.Complete && !repair,
+		})
+		if repair {
+			return true, nil
 		}
 	}
 	if *verdict.Complete {

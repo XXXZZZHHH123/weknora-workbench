@@ -190,10 +190,13 @@ func TestBarContainsPositiveAndNegativeActualObservations(t *testing.T) {
 	out, err := Render(table, Spec{Type: "bar", X: 0, Y: []int{1}})
 	require.NoError(t, err)
 	picture := decodeChart(t, out)
-	require.True(t, blueNear(picture, 165, 575))
-	require.True(t, blueNear(picture, 1485, 290))
-	require.False(t, blueNear(picture, 165, 290))
-	require.False(t, blueNear(picture, 1485, 575))
+	negative := barColorRuns(picture, 575, palette[0])
+	positive := barColorRuns(picture, 290, palette[0])
+	require.Len(t, negative, 1, "only the negative source bar belongs below zero")
+	require.Len(t, positive, 1, "only the positive source bar belongs above zero")
+	require.Less(t, negative[0].last, positive[0].first)
+	require.Greater(t, negative[0].first, int(plotLeft))
+	require.Less(t, positive[0].last, int(plotLeft+plotWidth))
 }
 
 func TestConcurrentChartRenderingProducesIdenticalImages(t *testing.T) {

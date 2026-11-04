@@ -9,7 +9,7 @@ import (
 
 // Synthetic wording only; the narrowed verdict mirrors the observed failure
 // shape (reviewer accepted a weaker proposition than the candidate stated).
-const narrowedVerdict = `{"complete":true,"assessment":"Main comparison is supported.","audit":[{"claim":"Both reports treat the factor as a pricing variable, but its effect is opposite in the later period.","candidate_statement":"The factor was a shared driver of both rallies.","candidate_fidelity":"narrowed","basis":"source","assessment":"Later evidence shows the factor suppressed prices.","evidence":[]}]}`
+const narrowedVerdict = `{"complete":true,"citation_check":{"requirement":"not_required","reason":"This fixture tests semantic narrowing independently of citation presentation."},"assessment":"Main comparison is supported.","audit":[{"claim":"Both reports treat the factor as a pricing variable, but its effect is opposite in the later period.","candidate_statement":"The factor was a shared driver of both rallies.","candidate_fidelity":"narrowed","basis":"source","assessment":"Later evidence shows the factor suppressed prices.","evidence":[]}]}`
 
 func TestReviewFidelityRevisionRequiresDeclarations(t *testing.T) {
 	_, _, err := reviewFidelityRevision([]reviewClaimCheck{{Claim: "c", Fidelity: reviewFidelityAsWritten}})
