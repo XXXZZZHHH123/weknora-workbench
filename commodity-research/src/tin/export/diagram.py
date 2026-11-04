@@ -502,7 +502,13 @@ def suggest(session: Session, variety: str, label: str, bound: set[str] | None =
 
 # ---------- 节点详情（方案 08 §10） ----------
 
-def detail(session: Session, series_id: str, through: date, limit: int = 60) -> dict:
+# Observations per series a workbench diagram board reads for every node, and the longer window one
+# node's detail reads for its single series (both are the structured facts ceilings for this page).
+PAGE_POINTS = 24
+DETAIL_POINTS = 121
+
+
+def detail(session: Session, series_id: str, through: date, limit: int = DETAIL_POINTS) -> dict:
     """点开一个节点要看到什么。
 
     重点不是再报一遍数值——图上已经有了。重点是**这个数字凭什么可信**：

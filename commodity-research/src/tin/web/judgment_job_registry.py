@@ -189,6 +189,28 @@ class Registry:
                 and row['state'] == 'succeeded']
             return max(rows, key=self.order, default=None)
 
+    def discard_result(self, identity, job_id, workbench_id, purpose):
+        """Retire this actor's unsaved result on request. It becomes a superseded record without a successor,
+        so the normal pruning removes its private preview; a repeated request returns the same record."""
+        with self.transaction() as connection:
+            self.expire(connection)
+            row = self.owned(self.fetch(connection, job_id), identity, workbench_id)
+            if row.get('purpose', 'judgments') != purpose:
+                raise HTTPException(404, '分析任务不存在或无权访问')
+            if row['state'] == 'superseded':
+                return row
+            if row['state'] in ACTIVE:
+                raise HTTPException(409, '分析仍在进行，完成后才能舍弃结果')
+            if row['state'] == 'applied':
+                raise HTTPException(409, '此分析已保存为草稿，不能舍弃；可在版本记录中管理草稿')
+            if row['state'] != 'succeeded':
+                raise HTTPException(410, '这份结果已过期或已失效，无需舍弃')
+            row.update(state='superseded', phase='superseded', superseded_by=None, discarded=True,
+                message='已舍弃暂存结果', dismissed=True, dismissed_at=row.get('dismissed_at') or iso(),
+                updated_at=iso(), finished_at=row.get('finished_at') or iso(), payload_pruned=False)
+            self.write(connection, row)
+            return row
+
     def dismiss(self, identity, job_id):
         with self.transaction() as connection:
             self.expire(connection)
@@ -324,4 +346,5 @@ def metadata(row):
             result['failure'] = safe
     return {**result, 'job_id': row['id'], 'purpose': purpose,
         'title': '产业图配置生成' if purpose == 'diagram' else '研究逻辑分析',
-        'result_available': row['state'] == 'succeeded', 'dismissed': row.get('dismissed') is True}
+        'result_available': row['state'] == 'succeeded', 'dismissed': row.get('dismissed') is True,
+        'discarded': row.get('discarded') is True}

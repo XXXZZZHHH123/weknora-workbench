@@ -467,6 +467,33 @@ async def latest_job(scope):
     return {'job': metadata(meta) if meta is not None else None}
 
 
+def _discard_snapshot_key(scope, job_id):
+    with artifact_session(scope) as session:
+        config = owned_record(session, scope, job_id).config
+        return (config.get('preview') or {}).get('analysis_snapshot') if config.get('state') == 'succeeded' else None
+
+
+def _forget_discarded(scope, key):
+    cleanup_discarded(KIND, registry, 'judgments')
+    from tin.web.judgment_analysis_cache import forget_snapshot
+    forget_snapshot(scope, key)
+
+
+async def discard_job(scope, job_id):
+    verified = await fresh_scope(scope)
+    meta = await run_in_threadpool(registry.get, verified.identity, job_id, verified.workbench_id)
+    if meta.get('purpose', 'judgments') != 'judgments':
+        raise HTTPException(404, '分析任务不存在或无权访问')
+    key = await run_in_threadpool(_discard_snapshot_key, verified, job_id) if meta['state'] == 'succeeded' else None
+    meta = await run_in_threadpool(registry.discard_result, verified.identity, job_id, verified.workbench_id, 'judgments')
+    try:
+        await run_in_threadpool(_forget_discarded, verified, key)
+    except (sqlite3.Error, OSError, HTTPException):
+        # The result is already retired; the maintenance sweep prunes the private preview later.
+        logging.getLogger(__name__).warning('Discarded analysis cleanup deferred')
+    return {'job': metadata(meta)}
+
+
 @router.post('', status_code=202)
 async def create(request: Request):
     scope = generation.scope_for_analysis(write=True)
@@ -482,6 +509,11 @@ async def latest():
 @router.get('/{job_id}')
 async def status(job_id: str):
     return await job_status(generation.scope_for_analysis(write=True), job_id)
+
+
+@router.post('/{job_id}/discard')
+async def discard(job_id: str):
+    return await discard_job(generation.scope_for_analysis(write=True), job_id)
 
 
 @router.get('/{job_id}/result')

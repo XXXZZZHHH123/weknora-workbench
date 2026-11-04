@@ -55,8 +55,8 @@ async function openPanel(panel: 'market' | 'logic' | 'logic-analysis' | 'logic-c
     openedLogic = false
   } else if (panel === 'diagram-close') doc.querySelector<HTMLButtonElement>('#dg-md-drawer button[onclick*="dgCloseMarkdown"]')?.click()
   else if (doc.querySelector('#dg-md-drawer')?.classList.contains('translate-x-full')) doc.querySelector<HTMLButtonElement>('#dg-md-btn')?.click()
-  // Opening Markdown serializes the current canvas without saving a layout;
-  // wait for its normal drawer animation before measuring the real control.
+  // Opening Markdown serializes the current canvas without saving a layout. The drawer
+  // slides in only after that request returns; the spotlight follows it until it settles.
   await nextTick()
   if (owner !== epoch) return
   if (currentFrame()?.document !== doc) pause()

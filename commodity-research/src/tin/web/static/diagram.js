@@ -1131,7 +1131,9 @@ function dgSwitch(templateId) {
     if (sel) sel.value = dg.layout.__id;
     return;
   }
-  window.location.href = `${window.RESEARCH_PREFIX || ""}/sn/diagram?template=${templateId}`;
+  // Switching layouts keeps a board day the researcher chose explicitly.
+  const day = new URLSearchParams(window.location.search).get("date");
+  window.location.href = `${window.RESEARCH_PREFIX || ""}/sn/diagram?template=${templateId}${day ? `&date=${encodeURIComponent(day)}` : ""}`;
 }
 
 async function dgNewTemplate() {
@@ -1563,7 +1565,8 @@ async function dgOpenDetail(nodeId) {
     return;
   }
   box.innerHTML = '<div class="py-8 text-center text-[var(--text-muted)] text-xs">加载中…</div>';
-  const res = await researchFetch(`${window.RESEARCH_PREFIX || ""}/api/sn/diagram/detail?series_id=${encodeURIComponent(v.series_id)}`);
+  const res = await researchFetch(`${window.RESEARCH_PREFIX || ""}/api/sn/diagram/detail?series_id=${encodeURIComponent(v.series_id)}${
+    window.DG_DATE ? `&date=${encodeURIComponent(window.DG_DATE)}` : ""}`);
   if (!res.ok) { box.innerHTML = '<div class="py-8 text-center text-[var(--alert)] text-xs">读取失败</div>'; return; }
   const d = await res.json();
   dg.lastDetail = d;

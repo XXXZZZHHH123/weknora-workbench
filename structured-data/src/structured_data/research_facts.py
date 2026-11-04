@@ -74,7 +74,10 @@ def _bounded_parameters(body, *, extended=False):
     # The v1 protocol keeps its original two-point grant. The v2 caller has a
     # verified page plan and explicit per-module/total resource ceilings.
     history = module == 'market' and type(points) is int and points > 2
-    maximum = 180 if history else 121 if include_invalid else ({'home':121,'reports':121,'judgments':121,'strategies':121,'diagram':24,'indicators':2000}.get(module,2) if extended else 2)
+    # A diagram board reads every bound node with a short window. One node's detail reads a single
+    # series and may use the same single-indicator window as the other research pages.
+    diagram = 121 if len(identifiers) == 1 else 24
+    maximum = 180 if history else 121 if include_invalid else ({'home':121,'reports':121,'judgments':121,'strategies':121,'diagram':diagram,'indicators':2000}.get(module,2) if extended else 2)
     if type(points) is not int or not 1 <= points <= maximum:
         raise ValueError('页面指标点数超出允许范围')
     if history and len(identifiers) > 12:

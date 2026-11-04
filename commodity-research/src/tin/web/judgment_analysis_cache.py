@@ -145,6 +145,16 @@ def prune_snapshots_after_success(scope, keep_key):
         session.commit()
 
 
+def forget_snapshot(scope, key):
+    """Drop the stored analysis a researcher discarded, so the same source is analysed afresh next time."""
+    if not isinstance(key, str) or not key:
+        return
+    with storage(scope) as session:
+        session.execute(delete(SourceMapping).where(SourceMapping.id == key, *_owner_filters(scope),
+            SourceMapping.config['state'].as_string() == 'ready'))
+        session.commit()
+
+
 def abandon(scope, ticket):
     if 'fence' not in ticket:
         return

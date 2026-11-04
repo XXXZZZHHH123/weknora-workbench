@@ -96,3 +96,25 @@ const enabled = computed(() => authStore.isLoggedIn && route.matched.some((r) =>
   }
 }
 </style>
+
+<style lang="less">
+// Other bottom-right floating entries (the platform task dock) stack above this launcher instead of
+// under it: launcher offset + its height + a 12px gap, following its raised and narrow-screen positions.
+body:has(.feedback-launcher) {
+  --feedback-launcher-clearance: 76px;
+}
+
+body:has(.feedback-launcher.is-raised) {
+  --feedback-launcher-clearance: 212px;
+}
+
+@media (max-width: 768px) {
+  body:has(.feedback-launcher) {
+    --feedback-launcher-clearance: 72px;
+  }
+
+  body:has(.feedback-launcher.is-raised) {
+    --feedback-launcher-clearance: 216px;
+  }
+}
+</style>

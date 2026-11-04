@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.integration.page_facts import catalog_page
 from tin.integration.workbench_scope import artifact_session, require_shared_write, resolve_workbench
-from tin.judgments.analysis import AnalysisError, assess_draft, unique_condition_kinds, validate_analysis
+from tin.judgments.analysis import AnalysisError, assess_draft, restored_quotes, unique_condition_kinds, validate_analysis
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.service import latest, latest_workbench_payload
 from tin.models import AuditLog, SourceMapping
@@ -192,6 +192,30 @@ def acknowledge_binding(scope, body, preview, item, known):
         'confirmed_by': scope.identity.user_id, 'confirmed_at': datetime.now(timezone.utc).isoformat()}
 
 
+def acknowledge_rule(scope, body, preview, item, subject, issues):
+    """The researcher confirms a rule as written although its source wording could not be matched automatically.
+
+    The confirmation names every check that did not pass and is bound to this exact rule, indicator, unit and
+    quote; editing any of them requires confirming again.
+    """
+    signed = {'purpose': 'manual_rule_confirmation', 'scope': generation.scope_key(scope), 'draft_id': body.draft_id,
+        'revision': body.revision, 'item_id': item['id'], 'subject': subject,
+        'fact_version': preview['fact_version']}
+    secret = preview['review'].get('binding_warning_secret')
+    key = secret.encode() if isinstance(secret, str) and secret else _binding_warning_secret
+    token = hmac.new(key, digest(signed).encode(), hashlib.sha256).hexdigest()
+    reasons = list(dict.fromkeys(issue['message'] for issue in issues if issue.get('message')))
+    if not body.number_review_token or not hmac.compare_digest(token.encode(), body.number_review_token.encode()):
+        unit = subject['unit'] or '单位未确认'
+        message = ('规则：' + (item.get('description') or item.get('title') or '本条规则') + '（' + unit + '）'
+            + '\n程序未能从原文自动核对：' + '；'.join(reasons)
+            + '\n如果这就是你要登记的规则，确认后按此执行，并记录为你的人工确认；之后修改规则、指标、单位或原文依据需要重新确认。')
+        raise HTTPException(422, {'code': 'number_review', 'message': message,
+            'confirmation_token': token, 'attention_fields': attention_fields(issues) or ['condition']})
+    return {**subject, 'unverified': [issue.get('code') for issue in issues],
+        'confirmed_by': scope.identity.user_id, 'confirmed_at': datetime.now(timezone.utc).isoformat()}
+
+
 def acknowledge_numbers(scope, body, preview, item, subject):
     """A person attests one exact rule/quote/value/unit; the program cannot decide it."""
     signed = {'purpose': 'number_review', 'scope': generation.scope_key(scope), 'draft_id': body.draft_id,
@@ -216,6 +240,8 @@ def initialize_review(preview, assessment, catalog):
     original_candidate = deepcopy(assessment.candidate_document or assessment.document)
     history = deepcopy(assessment.candidate_history or [original_candidate])
     candidate = deepcopy(original_candidate)
+    # Review items cite the contiguous source passage an elided model quote abbreviates.
+    candidate['rule_quotes'] = restored_quotes(candidate['rule_quotes'], preview['text'])[0]
     known = {field['id']: field for field in catalog}
     from tin.compute.rule_caliber import unit_present
     # Choosing an actual indicator adopts its registered unit. This never
@@ -573,6 +599,11 @@ def review_response(scope, token, preview, catalog):
                 continue
             issues = confirmation_issues(preview, item, catalog, scope)
             errors = list(dict.fromkeys(issue['message'] for issue in issues))
+            from tin.judgments.analysis import SOURCE_MATCH_CODES
+            if (item['kind'] in {'thresholds', 'falsifiers'} and issues and has_binding(item)
+                    and all(issue.get('code') in SOURCE_MATCH_CODES for issue in issues)):
+                # The card shows the first reason; it carries the way forward.
+                errors[0] = errors[0].rstrip('。') + '。规则本身无误时，点“核对并确认整条”即可按原样登记，系统记录为你的人工确认。'
             fields = []
             if item['status'] == 'pending':
                 fields = attention_fields(issues) if issues else list(item['initial_attention_fields'])
@@ -608,6 +639,8 @@ def review_response(scope, token, preview, catalog):
             items.append({'id': item['id'], 'kind': item['kind'], 'title': item['title'],
                 'description': item['description'], 'original_text': item['source_quote'],
                 'source_quote': item['source_quote'], 'status': item['status'],
+                'manually_confirmed': item['status'] == 'confirmed'
+                    and (item.get('number_confirmation') or {}).get('mode') == 'manual',
                 'origin': item['origin'], 'requires_attention': item['status'] == 'pending',
                 'attention_fields': fields,
                 'attention_reasons': [attention_message(fields)] if fields else [],
@@ -882,13 +915,20 @@ async def update_review(request: Request):
         item['origin'] = 'user'
         if body.action == 'confirm':
             issues = confirmation_issues(preview, item, state['catalog'], scope)
-            # Only a lone "program cannot classify the attached wording" issue
-            # may be attested. Missing numbers, scale or unit conflicts and all
-            # other failures still require editing the rule or its binding.
+            # The researcher wrote this logic: when the only remaining problems are that the rule could not be
+            # matched with its source wording, their explicit confirmation registers it as written. Integrity
+            # failures (indicator, recorded unit, schema, other items) still require editing.
+            from tin.judgments.analysis import SOURCE_MATCH_CODES
+            subject = next((issue['manual_confirmation'] for issue in issues
+                if isinstance(issue.get('manual_confirmation'), dict)), None)
             if (item['kind'] in {'thresholds', 'falsifiers'} and len(issues) == 1
                     and issues[0].get('code') == 'number_review_required'
                     and isinstance(issues[0].get('number_review'), dict)):
                 item['number_confirmation'] = acknowledge_numbers(scope, body, preview, item, issues[0]['number_review'])
+                issues = confirmation_issues(preview, item, state['catalog'], scope)
+            elif (item['kind'] in {'thresholds', 'falsifiers'} and issues and subject is not None
+                    and all(issue.get('code') in SOURCE_MATCH_CODES for issue in issues)):
+                item['number_confirmation'] = acknowledge_rule(scope, body, preview, item, subject, issues)
                 issues = confirmation_issues(preview, item, state['catalog'], scope)
             if issues:
                 reject_fields(attention_fields(issues), issues)

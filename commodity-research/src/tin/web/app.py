@@ -768,8 +768,8 @@ def indicator_catalog(scope: str = "all", search: str = Query('', max_length=200
 
 
 @app.get("/sn/diagram")
-def diagram_page(request: Request, template: int | None = None):
-    with _page_session('diagram', template_id=template) as s:
+def diagram_page(request: Request, template: int | None = None, date: str | None = None):
+    with _page_session('diagram', day=date, template_id=template) as s:
         # 这里原来无条件返回默认布局，`?template=` 被整个忽略——下拉框选哪张都回到同一张，
         # 新建的布局也永远打不开。切换布局是这个页面最基本的操作之一。
         default = diagram_api.ensure_default(s, V)
@@ -777,8 +777,9 @@ def diagram_page(request: Request, template: int | None = None):
         tpl = next((t for t in rows if t["id"] == template), None) if template else None
         if template is not None and tpl is None:
             raise HTTPException(404, f"没有这张布局：{template}")
+        # The header calendar submits ?date=; render that board day instead of always the latest one.
         return templates.TemplateResponse(request, "diagram.html", _shell(
-            s, "diagram", latest_trade_date(s), template=tpl or default,
+            s, "diagram", _home_date(s, date), template=tpl or default,
             templates_all=rows))
 
 
@@ -820,7 +821,7 @@ def diagram_values_live(body: dict = Body(...)):
     于是新节点永远查不到值，看上去就是「绑了但不显示」。编辑态必须走这个入口。
     """
     layout = body.get("layout") or {}
-    with _page_session('diagram', day=body.get('date'), series_ids=_layout_series_ids(layout), points_per_series=24) as s:
+    with _page_session('diagram', day=body.get('date'), series_ids=_layout_series_ids(layout), points_per_series=diagram_api.PAGE_POINTS) as s:
         day, as_of = _diagram_query_date(s, body.get("date"))
         roles_meta = diagram_api.judgment_roles(s, V)[1]
         return {"as_of": as_of, "judgment": roles_meta,
@@ -918,7 +919,9 @@ def diagram_crosscheck(date: str | None = None):
 
 @app.get("/api/sn/diagram/detail")
 def diagram_detail(series_id: str, date: str | None = None):
-    with _page_session('diagram', day=date, series_ids=[series_id]) as s:
+    # An explicit series reads two points unless told otherwise; one node's trend reads its single
+    # series with the longer detail window (the board keeps its short per-node window).
+    with _page_session('diagram', day=date, series_ids=[series_id], points_per_series=diagram_api.DETAIL_POINTS) as s:
         try:
             return diagram_api.detail(s, series_id, _board_date(s, date))
         except diagram_api.DiagramError as e:

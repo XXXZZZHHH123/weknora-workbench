@@ -54,7 +54,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { SpotlightGuideStep } from '@/types/spotlightGuide'
-import { spotlightDocument, spotlightRect } from './spotlightFrame'
+import { followUntilStable, spotlightDocument, spotlightRect } from './spotlightFrame'
 
 const CARD_WIDTH = 340
 const GAP = 16
@@ -156,6 +156,30 @@ const rootRef = ref<HTMLElement | null>(null)
 const cardRef = ref<HTMLElement | null>(null)
 
 let retryTimer: ReturnType<typeof setTimeout> | null = null
+let stopFollow: (() => void) | null = null
+let sizeWatch: ResizeObserver | null = null
+
+const stopFollowing = () => {
+  stopFollow?.()
+  stopFollow = null
+  sizeWatch?.disconnect()
+  sizeWatch = null
+}
+// The highlighted control may still be sliding in or growing when it is first measured; follow it
+// frame by frame until it settles instead of keeping the first, half-animated rectangle.
+const follow = (el: HTMLElement) => {
+  stopFollow?.()
+  stopFollow = followUntilStable(targetRect.value,
+    () => (props.active && targetEl.value === el && el.isConnected ? spotlightRect(el, props.targetFrame) : undefined),
+    (rect) => { targetRect.value = rect },
+    (callback) => window.requestAnimationFrame(callback), (handle) => window.cancelAnimationFrame(handle))
+}
+const watchSize = (el: HTMLElement) => {
+  sizeWatch?.disconnect()
+  const Observer = (el.ownerDocument.defaultView as (Window & typeof globalThis) | null)?.ResizeObserver
+  sizeWatch = Observer ? new Observer(() => { if (targetEl.value === el) follow(el) }) : null
+  sizeWatch?.observe(el)
+}
 
 const step = computed(() => props.steps[index.value] ?? props.steps[0])
 const isLast = computed(() => index.value === props.steps.length - 1)
@@ -284,6 +308,7 @@ const locate = async (retry = 0, scrollToTarget = false) => {
   vh.value = window.innerHeight
 
   const cur = step.value
+  stopFollowing()
   if (!cur.target) {
     targetEl.value = null
     targetRect.value = null
@@ -311,6 +336,8 @@ const locate = async (retry = 0, scrollToTarget = false) => {
   if (scrollToTarget) el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
   targetEl.value = el
   targetRect.value = spotlightRect(el, props.targetFrame)
+  follow(el)
+  watchSize(el)
   await measureCard()
 }
 
@@ -342,6 +369,7 @@ const close = () => {
     retryTimer = null
   }
   emit('update:active', false)
+  stopFollowing()
   targetEl.value = null
   targetRect.value = null
 }
@@ -361,6 +389,21 @@ const dismiss = () => {
 const onViewportChange = () => {
   if (!props.active) return
   locate()
+}
+
+// Transform animations (drawers, dialogs) report no geometry events; follow the target whenever one runs.
+const onMotion = (event: Event) => {
+  const el = targetEl.value
+  if (!props.active || !el) return
+  const node = event.target as Node | null
+  if (node && rootRef.value?.contains(node)) return
+  follow(el)
+}
+const motionEvents = ['transitionrun', 'transitionend', 'animationstart', 'animationend'] as const
+let observedMotionDocument: Document | null = null
+const stopMotionObservation = () => {
+  try { for (const name of motionEvents) observedMotionDocument?.removeEventListener(name, onMotion, true) } catch { /* left origin */ }
+  observedMotionDocument = null
 }
 
 const open = async () => {
@@ -391,9 +434,11 @@ const stopFrameObservation = () => {
     observedFrameWindow?.removeEventListener('resize', onViewportChange)
   } catch { /* The frame may have left this origin while the guide was open. */ }
   observedFrameWindow = null
+  stopMotionObservation()
 }
 onBeforeUnmount(() => {
   stopFrameObservation()
+  stopFollowing()
   window.removeEventListener('resize', onViewportChange)
   window.removeEventListener('scroll', onViewportChange, true)
   if (retryTimer) clearTimeout(retryTimer)
@@ -408,10 +453,13 @@ watch(
       try {
         observedFrameWindow?.addEventListener('scroll', onViewportChange, true)
         observedFrameWindow?.addEventListener('resize', onViewportChange)
+        observedMotionDocument = spotlightDocument(props.targetFrame, document)
+        for (const name of motionEvents) observedMotionDocument?.addEventListener(name, onMotion, true)
       } catch { stopFrameObservation() }
       window.addEventListener('resize', onViewportChange)
       window.addEventListener('scroll', onViewportChange, true)
     } else {
+      stopFollowing()
       window.removeEventListener('resize', onViewportChange)
       window.removeEventListener('scroll', onViewportChange, true)
     }

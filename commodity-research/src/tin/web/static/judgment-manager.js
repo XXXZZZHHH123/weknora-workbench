@@ -33,6 +33,7 @@
     stopSearches(); draft = null; review = null; reviewEdits.clear(); rememberedChoices.clear();
     byId('preview').hidden = true;
     if (byId('import')) byId('import').hidden = false;
+    syncDiscard();
   }
   function tab(name) {
     dialog.querySelectorAll('[data-logic-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.logicTab === name)));
@@ -46,6 +47,7 @@
     for (const name of ['panel-name', 'panel-save', 'new-panel-title']) if (byId(name)) byId(name).disabled = value || managed?.can_write === false;
     for (const name of ['panel-switch', 'panel-open', 'panel-more']) if (byId(name)) byId(name).disabled = value;
     if (byId('restore-result')) byId('restore-result').disabled = value || managed?.can_write === false;
+    syncDiscard();
     syncManagement();
     syncReviewControls();
     syncApply();
@@ -80,6 +82,17 @@
         || (strictScope ? !workbench || job.workbench_id !== workbench : job.workbench_id && workbench && job.workbench_id !== workbench))
       throw new Error('后台任务范围已改变，请重新打开工作台。');
   }
+  // An unsaved background result can be discarded: the one offered for viewing, or the one under review now.
+  function discardableJob() {
+    if (managed?.can_write === false) return null;
+    if (draft && activeJob?.state === 'succeeded' && jobId(activeJob.id)) return activeJob;
+    return latestResultJob;
+  }
+  function syncDiscard() {
+    const button = byId('discard-result');
+    if (!button) return;
+    button.hidden = !discardableJob(); button.disabled = busy;
+  }
   async function discoverLatestResult() {
     const button = byId('restore-result');
     latestResultJob = null;
@@ -93,6 +106,7 @@
       if (result.job.state !== 'succeeded' || result.job.result_available !== true) return;
       latestResultJob = result.job; button.hidden = false;
     } catch { /* A missing temporary result never blocks the editor. */ }
+    finally { syncDiscard(); }
   }
   function announceJob(job, appliedId) {
     const workbenchId = window.RESEARCH_CONTEXT?.workbench;
@@ -277,7 +291,7 @@
     else for (const [id, edit] of reviewEdits) if (!edit.dirty && !edit.extraRowsAdded) reviewEdits.delete(id);
     review = value.review || null;
     if (!preserveEdits) { reviewView = 'all'; selectedSection = ''; }
-    renderReview(); inform(previewNotice(value));
+    renderReview(); syncDiscard(); inform(previewNotice(value));
   }
   function element(tag, className, value) {
     const node = document.createElement(tag); if (className) node.className = className;
@@ -546,7 +560,7 @@
     const meta = element('p', 'logic-binding-meta', selection.selected ? bindingMeta(selection.selected) : '请先选择指标');
     meta.title = meta.textContent; meta.textContent = sourceCaliber(selection.selected);
     search.title = meta.title;
-    const session = {timer: null, controller: null, token: 0, rows: [], active: -1, next: null, epoch: reviewEpoch, list}; searchSessions.push(session);
+    const session = {timer: null, controller: null, token: 0, rows: [], active: -1, next: null, epoch: reviewEpoch, list, loaded: null, quiet: false}; searchSessions.push(session);
     field.cancelBindingSearch = () => { clearTimeout(session.timer); session.controller?.abort(); session.token++; searchSessions = searchSessions.filter(value => value !== session); };
     const options = () => [null, ...session.rows];
     function closeMenu() { menu.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute?.('aria-activedescendant'); }
@@ -565,48 +579,63 @@
       if (!hasBinding(edit)) { edit.remember = false; rememberedChoices.delete(item.id); }
       changed(edit); closeMenu(); return updateReview(item, edit, hasBinding(edit) ? 'confirm' : 'keep_text');
     }
+    function optionNode(row, index) {
+      const option = element('button', 'logic-binding-option'); option.type = 'button'; option.id = list.id + '-' + index;
+      option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false'); option.tabIndex = -1;
+      const name = element('span', '', row ? display.text(row.name) : '暂无，暂不关联');
+      option.title = row ? bindingMeta(row) : '保留文字，暂不关联指标'; option.append(name);
+      if (row) option.append(element('small', '', bindingMeta(row)));
+      option.addEventListener('click', () => choose(row)); return option;
+    }
     function drawOptions() {
-      list.replaceChildren();
-      for (const [index, row] of options().entries()) {
-        const option = element('button', 'logic-binding-option'); option.type = 'button'; option.id = list.id + '-' + index;
-        option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false'); option.tabIndex = -1;
-        const name = element('span', '', row ? display.text(row.name) : '暂无，暂不关联');
-        option.title = row ? bindingMeta(row) : '保留文字，暂不关联指标'; option.append(name);
-        if (row) option.append(element('small', '', bindingMeta(row)));
-        option.addEventListener('mousedown', event => event.preventDefault());
-        option.addEventListener('click', () => choose(row)); list.append(option);
-      }
+      list.replaceChildren(...options().map(optionNode));
       session.active = -1; more.hidden = session.next === null || session.next === undefined;
+    }
+    // Later pages are appended under the rows already shown, so an option being clicked is never replaced.
+    function appendOptions(rows) {
+      const start = options().length;
+      session.rows = [...session.rows, ...rows]; list.append(...rows.map((row, offset) => optionNode(row, start + offset)));
+      more.hidden = session.next === null || session.next === undefined;
     }
     async function load(append = false) {
       clearTimeout(session.timer); session.controller?.abort(); session.controller = new AbortController();
-      const token = ++session.token, draftId = draft?.draft_id;
+      const token = ++session.token, draftId = draft?.draft_id, wanted = selection.query || '';
       if (!draftId) return;
-      showMenu(); drawOptions(); feedback.textContent = '正在搜索授权目录…'; more.disabled = true;
+      showMenu(); if (!append) drawOptions(); feedback.textContent = '正在搜索授权目录…'; more.disabled = true;
       try {
-        const query = new URLSearchParams({draft_id: draftId, search: selection.query || '', offset: String(append ? session.next : 0), limit: '20'});
+        const query = new URLSearchParams({draft_id: draftId, search: wanted, offset: String(append ? session.next : 0), limit: '20'});
         const result = await api('/review/indicators?' + query, undefined, 'GET', session.controller.signal);
         if (token !== session.token || session.epoch !== reviewEpoch || draft?.draft_id !== draftId) return;
         const rows = result.items || [];
-        session.rows = append ? [...session.rows, ...rows.filter(row => !session.rows.some(existing => existing.series_id === row.series_id))] : rows;
-        session.next = result.next_offset; drawOptions();
+        session.next = result.next_offset; session.loaded = wanted;
+        if (append) appendOptions(rows.filter(row => !session.rows.some(existing => existing.series_id === row.series_id)));
+        else { session.rows = rows; drawOptions(); }
         feedback.textContent = session.rows.length ? `已显示 ${session.rows.length} / ${result.total} 个匹配指标` : '没有匹配指标，可调整搜索或保留文字。';
       } catch (error) {
         if (error.name !== 'AbortError' && token === session.token && session.epoch === reviewEpoch) feedback.textContent = '指标目录暂时不可用，请稍后重试。';
       } finally { if (token === session.token) more.disabled = false; }
     }
-    search.addEventListener('focus', () => load());
+    function openList() {
+      // Reopen what was already loaded for this query (including later pages) instead of starting over.
+      if (session.loaded === (selection.query || '') && session.rows.length) { showMenu(); return; }
+      return load();
+    }
+    search.addEventListener('focus', () => { if (!session.quiet) return openList(); });
+    // Focus may already be here (kept after saving this item); a click still opens the list.
+    search.addEventListener('click', () => { if (menu.hidden) return openList(); });
     search.addEventListener('input', () => {
       selection.query = search.value; selection.selected = null; edit.errorFields = [...new Set([...(edit.errorFields || item.attention_fields || []), 'binding'])]; edit.errorMessage = '请选择搜索结果中的指标。'; changed(edit);
       session.token++; session.controller?.abort(); clearTimeout(session.timer);
-      session.rows = []; drawOptions(); more.hidden = true;
+      session.rows = []; session.loaded = null; drawOptions(); more.hidden = true;
       meta.textContent = '请选择搜索结果中的指标'; showMenu(); feedback.textContent = '等待搜索…';
       session.timer = setTimeout(() => load(), 180);
     });
     search.addEventListener('keydown', event => {
       if (event.key === 'Escape') { closeMenu(); event.preventDefault(); }
       else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault(); showMenu();
+        event.preventDefault();
+        if (menu.hidden && session.loaded !== (selection.query || '')) return openList();
+        showMenu();
         const length = options().length;
         activate(session.active < 0 ? (event.key === 'ArrowDown' ? 0 : length - 1) :
           (session.active + (event.key === 'ArrowDown' ? 1 : -1) + length) % length);
@@ -614,8 +643,11 @@
         event.preventDefault(); if (session.active >= 0) return choose(options()[session.active]);
       } else if (event.key === 'Tab') closeMenu();
     });
-    search.addEventListener('blur', () => { session.timer = setTimeout(closeMenu, 120); });
+    search.addEventListener('blur', event => { if (!menu.contains(event.relatedTarget)) session.timer = setTimeout(closeMenu, 120); });
+    // Any press inside the open list (options, 更多指标, its scrollbar or gaps) keeps focus in the search box.
+    menu.addEventListener('mousedown', event => event.preventDefault());
     more.addEventListener('click', () => { if (session.next !== null && session.next !== undefined) return load(true); });
+    field.focusSearch = () => { session.quiet = true; try { search.focus({preventScroll: true}); } finally { session.quiet = false; } };
     const picker = element('div', 'logic-binding-picker'); picker.append(search, menu);
     field.append(label, picker, meta); return field;
   }
@@ -690,7 +722,7 @@
         if (rememberLabel) toolbar.append(rememberLabel);
         const outcome = element('span', 'logic-item-outcome'); outcome.setAttribute('role', 'status'); outcome.setAttribute('aria-live', 'polite');
         edit.renderOutcome = () => {
-          outcome.textContent = edit.saving ? '正在核对…' : edit.errorMessage ? '未确认，请处理红框' : item.status === 'confirmed' && !edit.dirty ? '已确认' : '';
+          outcome.textContent = edit.saving ? '正在核对…' : edit.errorMessage ? '未确认，请处理红框' : item.status === 'confirmed' && !edit.dirty ? (item.manually_confirmed ? '已人工确认（未能从原文自动核对）' : '已确认') : '';
           outcome.dataset.error = String(Boolean(edit.errorMessage) && !edit.saving); outcome.hidden = !outcome.textContent;
         };
         edit.renderOutcome(); toolbar.append(outcome);
@@ -721,6 +753,46 @@
   async function hydrateReview(value) {
     if (value.review_available && !value.review) { review = await api('/review?draft_id=' + encodeURIComponent(value.draft_id)); draft.review = review; renderReview(); }
   }
+  // Saving one item re-renders the review and disables its controls meanwhile. Keep the reviewer on the
+  // same card and control instead of letting focus fall to the page and later cards jump into place.
+  function findNode(node, test) {
+    for (const child of node?.children || []) { if (test(child)) return child; const found = findNode(child, test); if (found) return found; }
+    return null;
+  }
+  function reviewCards() {
+    const cards = [];
+    for (const group of byId('review-items')?.children || []) for (const node of group.children || []) if (node.dataset?.reviewItem && String(node.className).includes('logic-review-card')) cards.push(node);
+    return cards;
+  }
+  function reviewPlace(itemId) {
+    const cards = reviewCards(), start = cards.findIndex(node => node.dataset.reviewItem === itemId);
+    if (start < 0) return null;
+    const active = document.activeElement, own = active && cards[start].contains(active) ? active : null;
+    let binding = null;
+    for (let node = own; node && node !== cards[start]; node = node.parentElement) if (node.dataset?.bindingIndex !== undefined) { binding = node.dataset.bindingIndex; break; }
+    return {item: itemId, order: cards.slice(start).map(node => node.dataset.reviewItem), top: cards[start].getBoundingClientRect?.().top,
+      control: own?.dataset?.reviewControl || null, binding};
+  }
+  function keepPlace(place) {
+    if (!place || typeof place.top !== 'number') return;
+    const cards = new Map(reviewCards().map(node => [node.dataset.reviewItem, node]));
+    const anchor = place.order.map(id => cards.get(id)).find(node => node && !node.hidden);
+    const top = anchor?.getBoundingClientRect?.().top;
+    if (typeof top !== 'number' || Math.abs(top - place.top) < 1) return;
+    for (let box = anchor.parentElement; box; box = box.parentElement) {
+      if (box.scrollHeight > box.clientHeight && /(auto|scroll)/.test(getComputedStyle(box).overflowY)) { box.scrollTop += top - place.top; return; }
+    }
+    document.scrollingElement?.scrollBy?.(0, top - place.top);
+  }
+  function restoreFocus(place) {
+    if (!place?.control) return;
+    const card = reviewCards().find(node => node.dataset.reviewItem === place.item);
+    if (!card || card.hidden) return;
+    const row = place.binding === null ? null : findNode(card, node => node.dataset?.bindingIndex === place.binding);
+    if (place.control === 'search' && row?.focusSearch) return row.focusSearch();
+    const control = findNode(row || card, node => node.dataset?.reviewControl === place.control);
+    if (control && !control.disabled && !control.hidden && control.getClientRects?.().length) control.focus?.({preventScroll: true});
+  }
   async function updateReview(item, edit, action, holdBusy = false, caliber = null) {
     if ((busy && !holdBusy) || !review || !draft || !managed?.can_write) return;
     if (action === 'confirm' && item.can_bind && pendingBindingQuery(edit)) { edit.errorFields = ['binding']; edit.errorMessage = '请选择搜索结果中的指标，或选择“暂无”。'; changed(edit); return; }
@@ -729,6 +801,7 @@
     if (item.can_add_binding && (action === 'confirm' || action === 'keep_text')) body.related_series_ids = action === 'keep_text' ? [] : (edit.additional || []).map(slot => slot.selected?.series_id).filter(Boolean);
     if (caliber !== null && action === 'confirm') body.caliber = caliber;
     if (edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
+    const place = reviewPlace(item.id);
     edit.saving = true; edit.renderOutcome?.(); setBusy(true); inform('正在同步修改…');
     try {
       let result;
@@ -751,14 +824,14 @@
         }
       }
       if (body.remember) rememberedChoices.add(item.id); else rememberedChoices.delete(item.id);
-      reviewEdits.delete(item.id); presentDraft(result, true);
+      reviewEdits.delete(item.id); presentDraft(result, true); keepPlace(place);
       inform(action === 'confirm' ? '本条已确认。' : action === 'keep_text' ? '本条已保留为文字。' : '本条已排除。');
       return true;
     } catch (error) {
       if (error.status === 409) { invalidate(); inform(error.message, true); }
       else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; if (typeof error.frequencyRequired === 'boolean') edit.frequencyRequired = error.frequencyRequired; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; edit.renderErrors?.(); edit.renderConfirmation?.(); inform('本条未确认：' + error.message, true); }
       return false;
-    } finally { edit.saving = false; edit.renderOutcome?.(); if (!holdBusy) setBusy(false); }
+    } finally { edit.saving = false; edit.renderOutcome?.(); if (!holdBusy) { setBusy(false); restoreFocus(place); } }
   }
   async function open(requestedJob) {
     if (busy) return;
@@ -796,8 +869,23 @@
     stopJobMonitor();
     controller?.abort(); stopSearches(); setBusy(false); dialog.close();
     if (byId('restore-result')) byId('restore-result').hidden = true;
+    if (byId('discard-result')) byId('discard-result').hidden = true;
     if (parent !== window) parent.postMessage({type: 'research-drawer-state', open: false}, location.origin);
   }
+  byId('discard-result')?.addEventListener('click', async () => {
+    const job = discardableJob();
+    if (busy || !job) return;
+    if (!window.confirm('舍弃后，这份暂存结果及其中已做的指标选择会被删除，不能恢复；已保存的研判不受影响。确定舍弃吗？')) return;
+    const viewing = Boolean(draft) && activeJob?.id === job.id;
+    setBusy(true); inform('正在舍弃暂存结果…');
+    try {
+      await api('/jobs/' + encodeURIComponent(job.id) + '/discard', {});
+      if (latestResultJob?.id === job.id) { latestResultJob = null; if (byId('restore-result')) byId('restore-result').hidden = true; }
+      if (viewing) { invalidate(); renderReview(); }
+      setBusy(false); inform('已舍弃暂存结果。');
+    } catch (error) { setBusy(false); inform(error.message, true); }
+    finally { syncDiscard(); }
+  });
   byId('restore-result')?.addEventListener('click', async () => {
     if (busy || !managed?.can_write || !latestResultJob) return;
     try { checkJob(latestResultJob, true); } catch (error) { return inform(error.message, true); }

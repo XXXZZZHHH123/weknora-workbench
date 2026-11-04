@@ -267,9 +267,9 @@ onUnmounted(() => {
 });
 </script>
 <style lang="less">
-.platform-task-dock{position:fixed;right:var(--app-space-6);bottom:var(--app-space-6);z-index:var(--z-dropdown);display:flex;flex-direction:column;align-items:flex-end;gap:12px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);pointer-events:none}
+.platform-task-dock{position:fixed;right:var(--app-space-6);bottom:var(--feedback-launcher-clearance,var(--app-space-6));z-index:var(--z-dropdown);display:flex;flex-direction:column;align-items:flex-end;gap:12px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);pointer-events:none}
 .main .platform-task-dock>.upload-tasks-panel{position:static;min-height:0;flex:0 1 auto;pointer-events:auto}
-@media(max-width:640px){.platform-task-dock{right:var(--app-space-4);bottom:var(--app-space-4)}}
+@media(max-width:640px){.platform-task-dock{right:var(--app-space-4);bottom:var(--feedback-launcher-clearance,var(--app-space-4))}}
 .main {
     display: flex;
     align-items: stretch;
