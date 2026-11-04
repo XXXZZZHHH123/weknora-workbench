@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/chart"
+	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -36,6 +38,26 @@ const (
 
 func incompleteChartReview(reason string) error {
 	return fmt.Errorf("绘图语义核验暂未完成（%s），未保存图片；保持本轮source_id、mapping及全部绘图参数不变重试，不要为通过核验改变x_type。只有明确的语义不匹配反馈才要求修改计划", reason)
+}
+
+func chartReviewContextFailure(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return incompleteChartReview("chart_review_timeout")
+	}
+	if ctx.Err() != nil {
+		return incompleteChartReview("chart_review_canceled")
+	}
+	return nil
+}
+
+// This is an independent semantic decision, not approval of a render spec or
+// a reusable artifact receipt. Its key and lifetime belong to one turn's
+// reviewer closure; a corrected candidate axis is still compared and rebound.
+type acceptedChartAxisDecision struct {
+	requiredXType    string
+	assessment       string
+	completeDelivery bool
+	hash             string
 }
 
 func selectedChartData(table chart.Table, spec chart.Spec) ([]chart.Column, [][]string) {
@@ -79,7 +101,15 @@ func (e *AgentEngine) chartTaskHash(query string, conversation []chat.Message) s
 }
 
 func (e *AgentEngine) chartPlanReviewer(query string, state *types.AgentState) chartPlanReviewer {
+	// Execute installs a fresh reviewer for each turn. Retain only the current
+	// exact input, and evict it even when a changed input is later rejected.
+	var cacheMu sync.Mutex
+	var cachedKey string
+	var cached *acceptedChartAxisDecision
 	return func(ctx context.Context, table chart.Table, spec chart.Spec) (*chartSemanticValidation, error) {
+		if err := chartReviewContextFailure(ctx); err != nil {
+			return nil, err
+		}
 		if e.chatModel == nil {
 			return nil, fmt.Errorf("绘图语义核验模型不可用，未交付图片")
 		}
@@ -103,11 +133,57 @@ func (e *AgentEngine) chartPlanReviewer(query string, state *types.AgentState) c
 		// The model chooses axis semantics from the task and actual evidence.
 		// Withhold the candidate's XType so it cannot justify whichever type
 		// the proposing model happened to try; compare the two below instead.
-		independentSpec := map[string]any{"chart_type": spec.Type, "x_column": spec.X, "y_columns": spec.Y, "title": spec.Title}
+		// Copy the complete spec so future non-axis parameters cannot be left
+		// outside either the model's decision or its exact-input binding.
+		independent := spec
+		independent.XType = ""
+		specJSON, err := json.Marshal(independent)
+		independentSpec := map[string]any{}
+		if err != nil || json.Unmarshal(specJSON, &independentSpec) != nil {
+			return nil, incompleteChartReview("chart_review_invalid_spec")
+		}
+		delete(independentSpec, "x_type")
 		input := map[string]any{"current_user_request": query, "conversation": rows, "omitted_conversation_messages": omitted, "omitted_user_image_count": omittedImages, "delivery_plan": e.taskPlan, "chart_spec": independentSpec, "eligible_x_types": eligibleXTypes, "selected_columns": columns, "selected_rows": values, "source_provenance": table.Provenance, "source_notice": table.Notice, "source_partial": table.Truncated, "source_id": table.ID}
 		encoded, err := json.Marshal(input)
 		if err != nil || len(encoded) > 96*1024 {
 			return nil, fmt.Errorf("绘图实际数据超出语义核验预算，请缩小真实范围或拆图；不能静默省略观测")
+		}
+		fullView := omitted == 0 && omittedImages == 0
+		for _, row := range rows {
+			if row["view_complete"] == false {
+				fullView = false
+			}
+		}
+		taskHash := e.chartTaskHash(query, conversation)
+		evidenceHash := reviewDigest([]any{table, table.Rows})
+		// Table.Rows is excluded from the table's JSON, so bind it explicitly.
+		// The full table also includes unselected columns/rows, metadata,
+		// provenance, version-sealed identity, notice and coverage limitations.
+		decisionKey := reviewDigest([]any{taskHash, table, table.Rows, input})
+		bindDecision := func(decision acceptedChartAxisDecision) (*chartSemanticValidation, error) {
+			if err := chartReviewContextFailure(ctx); err != nil {
+				return nil, err
+			}
+			if decision.requiredXType != spec.XType {
+				return nil, fmt.Errorf("绘图计划未通过语义核验：轴类型与完整任务不符，独立核验要求%s，当前为%s；请修正真实绘图参数", decision.requiredXType, spec.XType)
+			}
+			return &chartSemanticValidation{TaskHash: taskHash, EvidenceHash: evidenceHash, SpecHash: reviewDigest(spec), RequiredXType: decision.requiredXType, EligibleXTypes: append([]string(nil), eligibleXTypes...), Assessment: decision.assessment, FullTaskView: fullView, CompleteDelivery: decision.completeDelivery}, nil
+		}
+		logDecision := func(action string, decision acceptedChartAxisDecision) {
+			common.PipelineInfo(ctx, "Agent", action, map[string]interface{}{"task_hash": taskHash, "evidence_hash": evidenceHash, "decision_hash": decision.hash, "required_x_type": decision.requiredXType})
+		}
+		cacheMu.Lock()
+		if cachedKey != decisionKey || !fullView {
+			cachedKey, cached = decisionKey, nil
+		}
+		previous := cached
+		cacheMu.Unlock()
+		if previous != nil {
+			if err := chartReviewContextFailure(ctx); err != nil {
+				return nil, err
+			}
+			logDecision("chart_review_decision_reused", *previous)
+			return bindDecision(*previous)
 		}
 		format, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "required": []string{"accepted", "complete_delivery", "required_x_type", "assessment", "feedback"}, "properties": map[string]any{"accepted": map[string]any{"type": "boolean"}, "complete_delivery": map[string]any{"type": "boolean"}, "required_x_type": map[string]any{"type": "string", "enum": eligibleXTypes}, "assessment": map[string]any{"type": "string", "maxLength": chartReviewAssessmentLimit}, "feedback": map[string]any{"type": "string", "maxLength": chartReviewFeedbackLimit}}})
 		options := &chat.ChatOptions{Temperature: 0, MaxCompletionTokens: chartReviewCompletionBudget, ToolChoice: "none", ReasoningEffort: "off", Format: format}
@@ -171,19 +247,36 @@ func (e *AgentEngine) chartPlanReviewer(query string, state *types.AgentState) c
 		if !*verdict.Accepted {
 			return nil, fmt.Errorf("绘图计划未通过语义核验：%s", taskPlanPrefix(*verdict.Feedback, 1200))
 		}
-		if verdict.RequiredXType != spec.XType {
-			return nil, fmt.Errorf("绘图计划未通过语义核验：轴类型与完整任务不符，独立核验要求%s，当前为%s；请修正真实绘图参数", verdict.RequiredXType, spec.XType)
-		}
 		if *verdict.Feedback != "" {
 			return nil, fmt.Errorf("绘图核验仍有未处理修改项，未交付图片")
 		}
-		fullView := omitted == 0 && omittedImages == 0
-		for _, row := range rows {
-			if row["view_complete"] == false {
-				fullView = false
+		if err := chartReviewContextFailure(reviewCtx); err != nil {
+			return nil, err
+		}
+		decision := acceptedChartAxisDecision{requiredXType: verdict.RequiredXType, assessment: verdict.Assessment, completeDelivery: *verdict.CompleteDelivery}
+		decision.hash = reviewDigest([]any{decisionKey, decision.requiredXType, decision.assessment, decision.completeDelivery})
+		if fullView {
+			cacheMu.Lock()
+			// The tool executes serially. For direct concurrent callers, keep
+			// the first valid decision for this still-current exact input,
+			// without holding a mutex across a model/network operation.
+			stored := false
+			if cachedKey == decisionKey && reviewCtx.Err() == nil {
+				if cached == nil {
+					copy := decision
+					cached, stored = &copy, true
+				} else {
+					decision = *cached
+				}
+			}
+			cacheMu.Unlock()
+			if stored {
+				logDecision("chart_review_decision_recorded", decision)
 			}
 		}
-		return &chartSemanticValidation{TaskHash: e.chartTaskHash(query, conversation), EvidenceHash: reviewDigest([]any{table, table.Rows}), SpecHash: reviewDigest(spec), RequiredXType: verdict.RequiredXType, EligibleXTypes: eligibleXTypes, Assessment: verdict.Assessment, FullTaskView: fullView, CompleteDelivery: *verdict.CompleteDelivery}, nil
+		// Store before comparing XType: the independently approved axis must
+		// remain stable when the proposer corrects only that candidate field.
+		return bindDecision(decision)
 	}
 }
 
