@@ -33,6 +33,10 @@ func TestTaskPlanContextualDiscoveryKeepsHumanRequestAndAuthorizedTargets(t *tes
 		mu.Lock()
 		requests = append(requests, input)
 		mu.Unlock()
+		if input["operation"] == "describe_tools" {
+			_, _ = io.WriteString(w, workbenchDatasetManifest)
+			return
+		}
 		_, _ = io.WriteString(w, `{}`)
 	})
 	service := &sourceDiscoveryKnowledgeService{}

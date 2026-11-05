@@ -190,6 +190,52 @@ func TestStructuredCapabilityRefreshFailureHasBoundedRecoveryAndNoDataRead(t *te
 	require.Contains(t, missing.Data["available_tools"], ToolStructuredCapabilities)
 }
 
+func TestStructuredCapabilityTurnBudgetsCountOnlyActualColdAndWarmNegotiations(t *testing.T) {
+	for _, warm := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cold_bootstrap_then_two_refreshes", true: "warm_cache_then_three_refreshes"}[warm], func(t *testing.T) {
+			var calls atomic.Int64
+			base := nativeReadTestTool(t, func(w http.ResponseWriter, request *http.Request) {
+				calls.Add(1)
+				var input map[string]any
+				require.NoError(t, json.NewDecoder(request.Body).Decode(&input))
+				require.Equal(t, "describe_tools", input["operation"], "protocol bootstrap and recovery never perform a data operation")
+				require.NoError(t, json.NewEncoder(w).Encode(structuredProtocolDirectory("a")))
+			})
+			cacheKey := structuredManifestServiceKey(base)
+			structuredManifestCache.Lock()
+			delete(structuredManifestCache.entries, cacheKey)
+			structuredManifestCache.Unlock()
+			t.Cleanup(func() {
+				structuredManifestCache.Lock()
+				delete(structuredManifestCache.entries, cacheKey)
+				structuredManifestCache.Unlock()
+			})
+			registry := NewToolRegistry()
+			registry.RegisterTool(base)
+			if warm {
+				installed, err := registry.InstallStructuredManifest(structuredProtocolDirectory("a"))
+				require.NoError(t, err)
+				require.True(t, installed.Success)
+			}
+			_, hit := registry.BeginStructuredProtocolTurn(structuredScopeContext())
+			require.Equal(t, warm, hit)
+			require.Zero(t, calls.Load(), "a cache miss or hit does not consume an unperformed HTTP negotiation")
+			for attempt := 0; attempt < 3; attempt++ {
+				result, err := registry.ExecuteTool(structuredScopeContext(), ToolStructuredCapabilities, json.RawMessage(`{"refresh":true}`))
+				require.NoError(t, err)
+				require.True(t, result.Success, "cold bootstrap counts once and leaves exactly two real recoveries")
+				require.Equal(t, int64(attempt+1), calls.Load())
+			}
+			denied, err := registry.ExecuteTool(structuredScopeContext(), ToolStructuredCapabilities, json.RawMessage(`{"refresh":true}`))
+			require.NoError(t, err)
+			require.False(t, denied.Success)
+			require.Equal(t, "manifest_refresh_budget_exceeded", denied.Data["code"])
+			require.Equal(t, false, denied.Data["execution_started"])
+			require.Equal(t, int64(3), calls.Load(), "a fourth attempt is rejected before native HTTP")
+		})
+	}
+}
+
 func TestStructuredCapabilityRefreshWaitsForCapturedRead(t *testing.T) {
 	entered, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {

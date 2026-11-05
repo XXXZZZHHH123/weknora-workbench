@@ -100,6 +100,7 @@ func TestWorkbenchDiscoveryOmitsOnlySchemasActuallyRegistered(t *testing.T) {
 func TestWorkbenchDiscoveryModelViewCompactsButFreshAuthorizedCallsAndRawStepsRemain(t *testing.T) {
 	schema, err := os.ReadFile("tools/testdata/structured_read_operations.json")
 	require.NoError(t, err)
+	schema = withWorkbenchDatasetDefinition(t, schema)
 	catalogue := discoveryCompactionFixture(t)
 	counts := map[string]int{}
 	var mu sync.Mutex
@@ -134,7 +135,7 @@ func TestWorkbenchDiscoveryModelViewCompactsButFreshAuthorizedCallsAndRawStepsRe
 			if strings.HasPrefix(message.ToolCallID, "source-catalog-") {
 				catalogText = message.Content
 			}
-			if strings.HasPrefix(message.ToolCallID, "source-schemas-") {
+			if strings.HasPrefix(message.ToolCallID, "source-capabilities-") {
 				schemaText = message.Content
 			}
 		}
@@ -145,7 +146,8 @@ func TestWorkbenchDiscoveryModelViewCompactsButFreshAuthorizedCallsAndRawStepsRe
 		require.Contains(t, catalogText, "source_context")
 		require.Contains(t, catalogText, "coverage")
 		require.NotContains(t, schemaText, "inputSchema")
-		require.Contains(t, schemaText, "schema_in_function_definition")
+		require.Contains(t, schemaText, "structured_capabilities")
+		require.Contains(t, schemaText, "canonical_operation")
 		for _, name := range []string{"list_series", "query_series", "analyze_table", "inspect_source", "get_result_evidence"} {
 			_, err := registry.GetTool("structured_" + name)
 			require.NoError(t, err)
@@ -157,17 +159,18 @@ func TestWorkbenchDiscoveryModelViewCompactsButFreshAuthorizedCallsAndRawStepsRe
 	require.Len(t, state.RoundSteps, 2)
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {
-			if call.Args["operation"] == "list_datasets" {
+			operation, _ := agenttools.StructuredOperationFromCall(call)
+			if operation == "list_datasets" {
 				require.Contains(t, call.Result.Output, "尚未核对的其他业务工作表_109")
 			}
-			if call.Args["operation"] == "describe_tools" {
-				require.Contains(t, call.Result.Output, "inputSchema")
+			if call.Name == agenttools.ToolStructuredCapabilities {
+				require.Equal(t, false, call.Result.Data["source_data_read"])
 			}
 		}
 	}
 }
 
-func TestWorkbenchDiscoveryKeepsChangedSchemaWhenRegistrationRetainsOlderTool(t *testing.T) {
+func TestWorkbenchDiscoveryDoesNotClaimChangedSchemaWhenRegistrationRetainsOlderTool(t *testing.T) {
 	fixture, err := os.ReadFile("tools/testdata/structured_read_operations.json")
 	require.NoError(t, err)
 	var previous, current map[string]any
@@ -202,27 +205,24 @@ func TestWorkbenchDiscoveryKeepsChangedSchemaWhenRegistrationRetainsOlderTool(t 
 	messages := engine.discoverWorkbenchSources(ctx, &types.AgentState{}, nil, "问题", "session", "schema-change")
 	found := false
 	for _, message := range messages {
-		if message.Role != "tool" || !strings.HasPrefix(message.ToolCallID, "source-schemas-") {
+		if message.Role != "tool" || !strings.HasPrefix(message.ToolCallID, "source-capabilities-") {
 			continue
 		}
 		var model map[string]any
 		require.NoError(t, json.Unmarshal([]byte(message.Content), &model))
 		found = true
-		for _, entry := range model["tools"].([]any) {
-			tool := entry.(map[string]any)
-			if tool["name"] == "query_series" {
-				require.Contains(t, tool, "inputSchema", "a new schema not actually registered must remain visible")
-				require.Contains(t, tool["inputSchema"].(map[string]any)["properties"].(map[string]any), "new_filter")
-				require.NotContains(t, tool, "schema_in_function_definition")
-			} else {
-				require.NotContains(t, tool, "inputSchema")
-			}
-		}
+		require.Equal(t, "structured_capabilities", model["kind"])
+		require.Empty(t, model["tools"], "retained first-wins definitions must not be reported as newly installed current schemas")
+		require.Equal(t, false, model["source_data_read"])
 	}
 	require.True(t, found, "the first model context includes the described service directory")
 	retained, err := registry.GetTool("structured_query_series")
 	require.NoError(t, err)
 	require.NotContains(t, string(retained.Parameters()), "new_filter", "the first-wins retained contract differs from the latest response")
+	blocked, err := retained.Execute(ctx, json.RawMessage(`{"series_id":"actual-retained-field"}`))
+	require.NoError(t, err)
+	require.False(t, blocked.Success)
+	require.Equal(t, "manifest_changed", blocked.Data["code"], "a stale retained schema must still fail before data transport")
 }
 
 // Optional local audit replays a saved actual acceptance trace without any
