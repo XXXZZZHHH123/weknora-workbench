@@ -23,6 +23,59 @@ type structuredKnowledgeMetadata struct {
 	Description string `json:"description,omitempty"`
 }
 
+type structuredScopeError struct {
+	code, message string
+	retryable     bool
+}
+
+func (e *structuredScopeError) Error() string { return e.message }
+
+// A scope failure is diagnostic data, never an implicit source selection or
+// retry. Authenticate before inspecting the saved grants; filter every entry
+// through the current API-key ceiling before exposing even its name or ID.
+func (t *StructuredDataTool) structuredScopeFailure(ctx context.Context, err error) *types.ToolResult {
+	code, retryable := "scope_unavailable", false
+	if failure, ok := err.(*structuredScopeError); ok {
+		code, retryable = failure.code, failure.retryable
+	}
+	result := structuredProtocolFailure(code, err.Error(), "scope", false)
+	result.Data["source_data_read"] = false
+	caller := types.CallerFromContext(ctx)
+	if caller.TenantID != 0 && caller.UserID != "" && caller.Role.IsValid() && t.scopeError == nil && t.scopeConfigured {
+		rows := []map[string]any{}
+		omitted := 0
+		for _, scope := range t.knowledgeScopes {
+			if types.AuthorizeTenantAPIKeyKnowledgeBases(ctx, scope.KnowledgeBaseID) != nil {
+				continue
+			}
+			if len(rows) >= maxRecallKnowledgeBases {
+				omitted++
+				continue
+			}
+			row := map[string]any{"knowledge_base_id": scope.KnowledgeBaseID}
+			if metadata, exists := t.knowledgeMetadata[scope.KnowledgeBaseID]; exists {
+				row["name"] = metadata.Name
+			}
+			rows = append(rows, row)
+		}
+		if len(rows) > 0 {
+			result.Data["scope_recovery"] = map[string]any{
+				"selection_argument": "knowledge_base_id", "knowledge_bases": rows,
+				"directory_complete": omitted == 0, "omitted_count": omitted,
+				"notice": "仅为当前授权目录，不是数值证据。按完整任务选择目录中的原样ID；先使用当前实际能力查看目录，不猜库、不扩权限、不自动重放原调用。",
+			}
+			result.Data["retryable"] = retryable
+		}
+	}
+	if descriptor, ok := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); ok {
+		attachStructuredDiagnosticDescriptor(result, descriptor)
+	} else {
+		encoded, _ := json.Marshal(result.Data)
+		result.Output = string(encoded)
+	}
+	return result
+}
+
 // CatalogMetadataEvidenceInstructions is shared by source-discovery responses
 // and workbench generation. Catalog annotations retain their discovery value
 // without becoming assertions about every document stored in that catalog.
@@ -99,19 +152,19 @@ func (t *StructuredDataTool) WithSearchTargets(targets types.SearchTargets) *Str
 func (t *StructuredDataTool) resolveStructuredKnowledgeScope(raw json.RawMessage) (structuredKnowledgeScope, *types.ToolResult, error) {
 	var selected string
 	if raw != nil && (json.Unmarshal(raw, &selected) != nil || !structuredKnowledgeBaseID.MatchString(selected)) {
-		return structuredKnowledgeScope{}, nil, fmt.Errorf("结构化知识库ID格式无效")
+		return structuredKnowledgeScope{}, nil, &structuredScopeError{"scope_id_invalid", "结构化知识库ID格式无效", true}
 	}
 	if t.scopeError != nil {
 		return structuredKnowledgeScope{}, nil, t.scopeError
 	}
 	if !t.scopeConfigured {
 		if raw != nil {
-			return structuredKnowledgeScope{}, nil, fmt.Errorf("结构化知识库不在当前授权范围内")
+			return structuredKnowledgeScope{}, nil, &structuredScopeError{"scope_not_authorized", "结构化知识库不在当前授权范围内", false}
 		}
 		return structuredKnowledgeScope{}, nil, nil
 	}
 	if len(t.knowledgeScopes) == 0 {
-		return structuredKnowledgeScope{}, nil, fmt.Errorf("当前来源范围未授权整个结构化知识库；文档或标签范围不能扩展读取其他表格")
+		return structuredKnowledgeScope{}, nil, &structuredScopeError{"scope_not_authorized", "当前来源范围未授权整个结构化知识库；文档或标签范围不能扩展读取其他表格", false}
 	}
 	if raw == nil && len(t.knowledgeScopes) == 1 {
 		return t.knowledgeScopes[0], nil, nil
@@ -122,7 +175,7 @@ func (t *StructuredDataTool) resolveStructuredKnowledgeScope(raw json.RawMessage
 		}
 	}
 	if raw != nil {
-		return structuredKnowledgeScope{}, nil, fmt.Errorf("结构化知识库不在当前授权范围内")
+		return structuredKnowledgeScope{}, nil, &structuredScopeError{"scope_not_authorized", "结构化知识库不在当前授权范围内", false}
 	}
 	rows := make([]map[string]any, 0, len(t.knowledgeScopes))
 	for _, scope := range t.knowledgeScopes {
@@ -136,6 +189,7 @@ func (t *StructuredDataTool) resolveStructuredKnowledgeScope(raw json.RawMessage
 	}
 	data := map[string]any{
 		"kind": "structured_knowledge_scope_directory", "status": "scope_selection_required",
+		"code": "scope_selection_required", "reason_code": "scope_selection_required", "stage": "scope", "retryable": true, "execution_started": false, "source_data_read": false,
 		"knowledge_bases":        rows,
 		"selection_argument":     "knowledge_base_id",
 		"dataset_catalog_status": "not_queried",

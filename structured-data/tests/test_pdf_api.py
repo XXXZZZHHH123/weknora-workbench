@@ -4,6 +4,7 @@ from copy import deepcopy
 import hashlib
 import hmac
 import json
+from pathlib import Path
 import time
 
 import pytest
@@ -33,6 +34,25 @@ def pdf_service(native, monkeypatch):
     return client, app, state, root, key
 
 
+def wait_pdf_worker_cleanup(job, deadline):
+    # The terminal file is written before the worker's finally releases its
+    # slot. Immediate follow-up tests need that barrier, not another POST.
+    from structured_data import pdf_api
+    while time.monotonic() < deadline:
+        with pdf_api._jobs_lock:
+            running = any(Path(path).stem == job['id'] for path in pdf_api._running_jobs)
+        if not running:
+            if job.get('kind') == 'automatic':
+                return
+            slot = pdf_api._remote_waiters if job.get('parser_engine') == 'remote_vlm' else pdf_api._parse_slot
+            if slot.acquire(timeout=max(0, deadline - time.monotonic())):
+                slot.release()
+                return
+            break
+        time.sleep(.01)
+    raise AssertionError('mocked PDF worker did not release its slot')
+
+
 def imported(service, native=False):
     client, _, state, _, _ = service
     # Seed historical native originals through their explicit recovery route.
@@ -44,6 +64,7 @@ def imported(service, native=False):
         job = client.get('/api/pdf/jobs/' + response.json()['id'], headers=headers()).json()
         if job['status'] != 'processing':
             assert job['status'] == 'completed', job
+            wait_pdf_worker_cleanup(job, deadline)
             return client.get('/api/pdf/drafts/' + job['draft_id'], headers=headers()).json()
         time.sleep(.01)
     raise AssertionError('mocked PDF import did not finish')
@@ -55,6 +76,7 @@ def finish_pdf_job(client, job_id):
         job = client.get('/api/pdf/jobs/' + job_id, headers=headers()).json()
         if job['status'] != 'processing':
             assert job['status'] == 'completed', job
+            wait_pdf_worker_cleanup(job, deadline)
             return job
         time.sleep(.01)
     raise AssertionError('mocked PDF parse job did not finish')

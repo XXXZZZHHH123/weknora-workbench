@@ -126,6 +126,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	if len(definitions) == 0 || len(definitions) > 128 {
 		return messages
 	}
+	e.syncStructuredToolSourceContracts()
 	// The plan runs before eager discovery. Keep this view empty unless a caller
 	// explicitly provides real current-turn discovery results; omission paths
 	// and coverage flags remain visible when there is a bounded catalogue.

@@ -149,11 +149,18 @@ func (t *structuredReadOperationTool) Execute(ctx context.Context, args json.Raw
 			result.Data = map[string]any{}
 		}
 		result.Data["_structured_execution"] = executionDescriptor
-		if result.Data["kind"] == "structured_protocol_error" {
-			result.Data["manifest_version"] = executionDescriptor.ManifestSHA256
-			encoded, _ := json.Marshal(result.Data)
-			result.Output = string(encoded)
-		}
+		attachStructuredDiagnosticDescriptor(result, executionDescriptor)
 	}
 	return result, err
+}
+
+func attachStructuredDiagnosticDescriptor(result *types.ToolResult, descriptor StructuredOperationDescriptor) {
+	if result == nil || result.Data == nil || (result.Data["kind"] != "structured_protocol_error" && result.Data["status"] != "scope_selection_required") {
+		return
+	}
+	result.Data["_structured_execution"] = descriptor
+	result.Data["manifest_version"], result.Data["schema_sha256"] = descriptor.ManifestSHA256, descriptor.SchemaSHA256
+	result.Data["protocol_version"], result.Data["generation"] = descriptor.ProtocolVersion, descriptor.Generation
+	encoded, _ := json.Marshal(result.Data)
+	result.Output = string(encoded)
 }

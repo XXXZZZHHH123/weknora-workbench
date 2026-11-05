@@ -37,6 +37,7 @@ type webMeta struct {
 // round). Handles are never persisted or accepted across requests.
 type sourceRegistry struct {
 	citationsEnabled bool
+	structuredTools  structuredToolContracts
 	// Addressable IDs from history, directory entries, and tool arguments are
 	// not evidence until a current tool result supplies the source.
 	citable sync.Map // handle -> true; registrations may run concurrently
@@ -243,7 +244,7 @@ func (r *sourceRegistry) decodeToolCallsWithPathPolicy(toolCalls []types.LLMTool
 			false,
 			func(path []string) bool { return policy == nil || policy(toolName, path) },
 			func(path []string) bool { return len(path) > 0 && bare != nil && bare(toolName, path[len(path)-1]) },
-			len(toolHandlePolicies[toolName].rootOnlySourceIDKeys) == 0,
+			!r.rootOnlyToolArguments(toolName),
 		)
 	}
 }
@@ -272,7 +273,7 @@ func (r *sourceRegistry) UnresolvedToolHandlesWithPathPolicy(
 		return nil
 	}
 	seen := make(map[string]struct{})
-	r.collectUnresolvedToolHandlesPath(nil, value, seen, func(path []string) bool { return policy == nil || policy(toolName, path) }, len(toolHandlePolicies[toolName].rootOnlySourceIDKeys) == 0)
+	r.collectUnresolvedToolHandlesPath(nil, value, seen, func(path []string) bool { return policy == nil || policy(toolName, path) }, !r.rootOnlyToolArguments(toolName))
 	result := make([]string, 0, len(seen))
 	for handle := range seen {
 		result = append(result, handle)
@@ -427,7 +428,7 @@ func (r *sourceRegistry) EncodeMessagesWithPathPolicies(
 				out[i].ToolCalls[j].Function.Arguments,
 				true,
 				func(path []string) bool { return argumentPolicy == nil || argumentPolicy(toolName, path) },
-				nil, len(toolHandlePolicies[toolName].rootOnlySourceIDKeys) == 0,
+				nil, !r.rootOnlyToolArguments(toolName),
 			)
 		}
 	}
