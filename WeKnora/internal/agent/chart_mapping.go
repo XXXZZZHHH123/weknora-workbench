@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/chart"
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -36,6 +38,16 @@ func pdfChartInputSources(steps []types.AgentStep) []chart.Table {
 			}
 			encoded, err := json.Marshal(call.Result.Data)
 			if err != nil || len(encoded) > chart.MaxSourceBytes {
+				continue
+			}
+			var original map[string]any
+			decoder := json.NewDecoder(bytes.NewReader(encoded))
+			decoder.UseNumber()
+			if decoder.Decode(&original) != nil {
+				continue
+			}
+			contract, contractErr := structuredresult.ValidatePayload(original)
+			if contractErr != nil {
 				continue
 			}
 			var data struct {
@@ -81,8 +93,47 @@ func pdfChartInputSources(steps []types.AgentStep) []chart.Table {
 			if !valid {
 				continue
 			}
-			meta, _ := json.Marshal(map[string]any{"kind": "pdf_source_cells", "source": data.Source, "table_id": data.TableID, "record_sha256": data.RecordSHA, "coverage": data.Coverage, "columns": data.Columns, "offset": data.Offset, "total_row_count": data.TotalRowCount, "returned_row_count": len(data.Rows), "page_context": data.PageContext, "source_snapshot_hash": reviewDigest(call.Result.Data)})
-			table := chart.Table{Columns: data.Columns, Rows: matrix, Provenance: string(meta), Truncated: data.OutputTruncated || data.Coverage["table_input_complete"] != true || data.Offset > 0 || data.TotalRowCount == nil || data.TotalRowCount != nil && *data.TotalRowCount != len(data.Rows), Notice: "本轮实际读取的PDF单元格，须按完整任务显式map；来源审核不证明完整文档覆盖或OCR准确。索引均为0起算，不能把技术行ID当业务维度。"}
+			if contract != nil {
+				if len(contract.Columns) != len(data.Columns) {
+					continue
+				}
+				for i, c := range contract.Columns {
+					data.Columns[i].DisplayName = c.DisplayName
+					u := c.Unit
+					data.Columns[i].UnitMetadata = &u
+					data.Columns[i].Unit = u.Symbol
+					data.Columns[i].DependencyKind = c.Dependency.Kind
+					if c.Dependency.TechnicalMetadata {
+						data.Columns[i].Role = "source_row_identifier"
+					}
+				}
+			}
+			meta := map[string]any{"kind": "pdf_source_cells", "source": data.Source, "table_id": data.TableID, "record_sha256": data.RecordSHA, "coverage": data.Coverage, "columns": data.Columns, "offset": data.Offset, "total_row_count": data.TotalRowCount, "returned_row_count": len(data.Rows), "page_context": data.PageContext, "source_snapshot_hash": reviewDigest(call.Result.Data)}
+			for _, key := range []string{"bundle_sha256", "plan_sha256", "result_contract"} {
+				if value, ok := original[key]; ok {
+					meta[key] = value
+				}
+			}
+			coordinates := []any{}
+			if rawRows, ok := original["rows"].([]any); ok {
+				for _, raw := range rawRows {
+					if row, ok := raw.(map[string]any); ok {
+						coordinates = append(coordinates, map[string]any{"_row_id": row["_row_id"], "source_cells": row["source_cells"], "source_rows": row["source_rows"]})
+					}
+				}
+			}
+			if len(coordinates) > 0 {
+				meta["row_source_coordinates"] = coordinates
+			}
+			provenance, partial, auditErr := chartAuditMetadata(meta)
+			if auditErr != nil {
+				continue
+			}
+			notice := "本轮实际读取的PDF单元格，须按完整任务显式map；来源审核不证明完整文档覆盖或OCR准确。索引均为0起算，不能把技术行ID当业务维度。"
+			if partial {
+				notice += " 完整来源坐标/元数据由摘要绑定，显示投影不证明全书完整性。"
+			}
+			table := chart.Table{Columns: data.Columns, Rows: matrix, Provenance: provenance, Truncated: data.OutputTruncated || data.Coverage["table_input_complete"] != true || data.Offset > 0 || data.TotalRowCount == nil || data.TotalRowCount != nil && *data.TotalRowCount != len(data.Rows), Notice: notice}
 			if table.Seal(call.ID+"/pdf-cells") == nil && len(tables) < chart.MaxSources {
 				tables = append(tables, table)
 			}
@@ -177,6 +228,9 @@ func mapChartSource(source chart.Table, mapping chartSourceMapping) (chart.Table
 			columnProvenance = append(columnProvenance, map[string]any{"output_index": i, "source_column_indexes": []int{index}, "source_row_indexes": mapping.ValueIndexes, "source_columns": []chart.Column{source.Columns[index]}})
 		} else {
 			columns[i].Name = source.Rows[index][*mapping.LabelIndex]
+			if source.Columns[*mapping.LabelIndex].DisplayName != "" || source.Columns[*mapping.LabelIndex].UnitMetadata != nil {
+				columns[i].DisplayName = columns[i].Name
+			}
 			columns[i].DependencyKind = rowDependencyKind
 			originalColumns := make([]chart.Column, 0, len(mapping.ValueIndexes))
 			for _, selected := range mapping.ValueIndexes {
@@ -196,6 +250,16 @@ func mapChartSource(source chart.Table, mapping chartSourceMapping) (chart.Table
 					}
 				}
 				columns[i].Unit = unit
+				if metadata := source.Columns[*mapping.UnitIndex].UnitMetadata; metadata != nil {
+					copy := *metadata
+					copy.Evidence = nil
+					for _, selected := range mapping.ValueIndexes {
+						if u := source.Columns[selected].UnitMetadata; u != nil {
+							copy.Evidence = append(copy.Evidence, u.Evidence...)
+						}
+					}
+					columns[i].UnitMetadata = &copy
+				}
 			}
 		}
 	}
@@ -211,8 +275,15 @@ func mapChartSource(source chart.Table, mapping chartSourceMapping) (chart.Table
 		}
 		rows = append(rows, row)
 	}
-	meta, _ := json.Marshal(map[string]any{"kind": "source_cell_projection", "source_id": source.ID, "source_provenance": source.Provenance, "mapping": mapping, "source_rows": len(source.Rows), "source_columns": len(source.Columns), "projection_columns": columnProvenance, "projection_applied_by_runtime": true, "projection_output_rows": len(rows), "source_cells": source.Rows})
-	table := chart.Table{Columns: columns, Rows: rows, Provenance: string(meta), Truncated: source.Truncated, Notice: source.Notice + " 仅复制本轮已验证来源结果中的显式坐标，保留原值、缺失、顺序及SQL依赖分类；所选范围不代表全库。"}
+	meta, partial, err := boundedChartMappingMetadata(map[string]any{"kind": "source_cell_projection", "source_id": source.ID, "source_provenance": source.Provenance, "mapping": mapping, "source_rows": len(source.Rows), "source_columns": len(source.Columns), "projection_columns": columnProvenance, "projection_applied_by_runtime": true, "projection_output_rows": len(rows), "source_cells": source.Rows})
+	if err != nil {
+		return chart.Table{}, err
+	}
+	notice := source.Notice + " 仅复制本轮已验证来源结果中的显式坐标，保留原值、缺失、顺序及SQL依赖分类；所选范围不代表全库。"
+	if partial {
+		notice += " 原始审计元数据为受限投影；完整内容已绑定摘要，未知单位、原注适用和OCR/覆盖限制未因此消除。"
+	}
+	table := chart.Table{Columns: columns, Rows: rows, Provenance: meta, Truncated: source.Truncated, Notice: notice}
 	if err := table.Seal(source.ID + "/map"); err != nil {
 		return chart.Table{}, err
 	}

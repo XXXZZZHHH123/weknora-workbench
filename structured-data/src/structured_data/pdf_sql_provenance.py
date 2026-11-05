@@ -364,21 +364,44 @@ def verify_pdf_sql_dependencies(connection, sql, source_columns):
     parsed = json.loads(serialized)
     if parsed.get('error') or len(parsed.get('statements', [])) != 1:
         _fail('DuckDB could not parse one SELECT statement')
-    def validate_relations(value):
+    visits=0
+    def validate_relations(value, ctes=frozenset(), depth=0):
         # Inspect even unused CTEs, predicates and aggregate filters. An unused
         # external relation must not escape validation just because it does not
         # contribute to the selected output expressions.
+        nonlocal visits
+        visits+=1
+        if visits>50000 or depth>100:
+            _fail('relation scope validation exceeds bounded AST budget')
         if isinstance(value, dict):
-            if value.get('type') == 'BASE_TABLE' and (
-                    value.get('catalog_name') or value.get('schema_name') not in (None, '', 'main')):
-                _fail('only the scoped data table and local CTEs are allowed')
+            if value.get('type') in ('SELECT_NODE','SET_OPERATION_NODE'):
+                environment=set(ctes)
+                for entry in value.get('cte_map',{}).get('map',[]):
+                    name=entry['key'].casefold()
+                    # Check definitions in their lexical namespace, including
+                    # unused/nested CTEs. Never let an unrelated query's same-
+                    # name CTE authorize a foreign relation in this query.
+                    # A non-recursive definition cannot authorize its own
+                    # physical relation name (notably system/catalog views).
+                    # Only previously bound lexical CTEs are visible here.
+                    validate_relations(entry['value']['query'],frozenset(environment),depth+1)
+                    environment.add(name)
+                for key,child in value.items():
+                    if key!='cte_map':validate_relations(child,frozenset(environment),depth+1)
+                return
+            if value.get('type') == 'BASE_TABLE':
+                schema=value.get('schema_name')
+                name=value.get('table_name','').casefold()
+                if (value.get('catalog_name') or schema not in (None,'','main')
+                        or name!='data' and (name not in ctes or schema not in (None,''))):
+                    _fail('only the scoped data table and lexically bound local CTEs are allowed')
             if value.get('type') == 'TABLE_FUNCTION' and value.get('function', {}).get('function_name', '').casefold() != 'unnest':
                 _fail('external, catalog, dynamic SQL and generated table functions are not source data')
             for child in value.values():
-                validate_relations(child)
+                validate_relations(child,ctes,depth+1)
         elif isinstance(value, list):
             for child in value:
-                validate_relations(child)
+                validate_relations(child,ctes,depth+1)
     validate_relations(parsed)
     result = _Binder(source_columns).query(parsed['statements'][0]['node'])
     if not any(c.dependency.sourced and not c.dependency.mixed_constants for c in result.columns):
