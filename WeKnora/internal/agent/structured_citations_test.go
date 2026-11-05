@@ -232,6 +232,29 @@ func TestChartCitationsUseActualSQLSourceIdentityAndAggregateSelectedRows(t *tes
 	require.Contains(t, string(refs[0].Manifest), `"rows":[`)
 	require.Equal(t, []string{"abcdefghijklmnopqrstuv", "resource://abcdefghijklmnopqrstuv"}, refs[0].ArtifactIDs)
 	require.NoError(t, refs[0].ValidateStored())
+	for _, candidate := range []string{
+		"![Observed series](resource://abcdefghijklmnopqrstuv)",
+		"![Observed series](<resource://abcdefghijklmnopqrstuv>)",
+		`![Observed series](resource://abcdefghijklmnopqrstuv "Saved chart")`,
+		"![Observed series](resource://abcdefghijklmnopqrstuv 'Saved chart')",
+	} {
+		state.FinalAnswer = candidate
+		actual := e.finalChartEvidenceReferences(state, nil)
+		require.Len(t, actual, 1, "presentation changes retain the same current rendered source association")
+		require.Equal(t, refs[0].ArtifactIDs, actual[0].ArtifactIDs)
+		require.Equal(t, candidateTextDigest(candidate), actual[0].CandidateHash)
+		require.NoError(t, actual[0].ValidateStored())
+	}
+	for _, candidate := range []string{
+		"The saved URI is resource://abcdefghijklmnopqrstuv",
+		"[Download chart](resource://abcdefghijklmnopqrstuv)",
+		"`![Observed series](resource://abcdefghijklmnopqrstuv)`",
+		"```\n![Observed series](resource://abcdefghijklmnopqrstuv)\n```",
+		`\![Observed series](resource://abcdefghijklmnopqrstuv)`,
+	} {
+		state.FinalAnswer = candidate
+		require.Empty(t, e.finalChartEvidenceReferences(state, nil), "a non-image or code example cannot acquire the rendered source manifest")
+	}
 	state.FinalAnswer = "![other](resource://anotherartifactidentity)"
 	require.Empty(t, e.finalChartEvidenceReferences(state, nil), "an uncited artifact cannot borrow this render's source manifest")
 }

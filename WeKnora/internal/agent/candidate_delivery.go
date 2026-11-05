@@ -119,13 +119,28 @@ func chartIncludedInCandidate(candidate string, state *types.AgentState) bool {
 	if state == nil {
 		return false
 	}
+	images := visibleChartImageHandles(candidate)
+	if len(images) == 0 {
+		return false
+	}
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {
 			if !chartDeliveryExecution(call) || call.Result == nil || !call.Result.Success || call.Result.Data["kind"] != "data_chart" || call.Result.Data["status"] != "ok" {
 				continue
 			}
-			output := strings.TrimSpace(call.Result.Output)
-			if output != "" && strings.Contains(candidate, output) {
+			// Live delivery is typed; persisted tool results decode into maps.
+			encoded, err := json.Marshal(call.Result.Data["artifact"])
+			if err != nil {
+				continue
+			}
+			var artifact struct {
+				Handle string `json:"handle"`
+			}
+			if json.Unmarshal(encoded, &artifact) != nil {
+				continue
+			}
+			handle, valid := types.ParseResourcePath(artifact.Handle)
+			if valid && images[handle] {
 				return true
 			}
 		}
