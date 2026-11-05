@@ -160,7 +160,7 @@ jobs:
         run: |
           go test ./internal/structuredresult -count=1
           go test ./internal/chart -count=1
-          go test ./internal/agent -run 'Test(Chart|NonTextDelivery|MissingDelivery|DeliveryContract|DeliveryVerdict|ActualArtifactExecution|FailedToolFeedback|ExecuteLoopRepeatedFeedback)' -count=1
+          go test ./internal/agent -run 'Test(Chart|V2NestedMap|MappingByteBudget|MappingDepth|NonTextDelivery|MissingDelivery|DeliveryContract|DeliveryVerdict|ActualArtifactExecution|FailedToolFeedback|ExecuteLoopRepeatedFeedback)' -count=1
       - run: go test ./internal/handler/session ./internal/modelcontext ./internal/database -count=1
       - run: go test ./internal/handler -run TestUpdateModel -count=1
       - run: go test ./internal/application/service -run 'TestAgentConfig|TestDefaultWorkbench|TestWorkbench|TestBuildAssistantHistoryMessages|TestBuildTurnBodyMessages|TestMCPProxyHistory|TestRegisterToolsCommodityResearch' -count=1
