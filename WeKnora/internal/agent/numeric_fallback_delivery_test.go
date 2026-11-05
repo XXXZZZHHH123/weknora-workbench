@@ -14,7 +14,7 @@ func TestNumericFailureFallbackDeliversEarlierGroundedCandidate(t *testing.T) {
 		state := sourceConsistencyState()
 		// An earlier candidate passed numeric grounding and reached review; a
 		// later rewrite failed grounding. The earlier one is delivered.
-		engine.rememberUnverifiedCandidate("Grounded draft.", candidateDecision{Disposition: candidateRevise})
+		engine.rememberUnverifiedCandidate("Grounded draft.", candidateDecision{Disposition: candidateRevise, SourceReviewAttempted: true})
 		engine.rememberUnverifiedCandidate("Later draft with 999.", candidateDecision{Disposition: candidateNumericFailure, Unsupported: []string{"999"}})
 		engine.commitTerminalResult(t.Context(), state, "session", fallback, "", "failed", false)
 		require.True(t, strings.HasPrefix(state.FinalAnswer, "Grounded draft."))

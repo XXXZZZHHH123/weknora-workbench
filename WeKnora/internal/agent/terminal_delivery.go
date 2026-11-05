@@ -55,7 +55,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 			answer, outcome = delivery, "numeric_warning"
 			existingID, truncated = "", false
 		} else if delivery, ok := e.unverifiedDelivery(); ok {
-			answer = delivery
+			answer = e.prepareUnverifiedCitationDelivery(ctx, state, delivery)
 			existingID = ""
 			outcome = "unverified"
 			truncated = false

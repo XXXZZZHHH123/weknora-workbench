@@ -35,14 +35,14 @@ vm.runInNewContext(compiled, {
 })
 const useChatStreamHandler = exports.useChatStreamHandler!
 
-function setup() {
+function setup(agentStreamSession = true) {
   const messagesList = vue.reactive<Record<string, any>[]>([])
   const loading = vue.ref(false), isReplying = vue.ref(false)
   const currentAssistantMessageId = vue.ref(''), fullContent = vue.ref('')
   const turns: unknown[] = []
   const handler = useChatStreamHandler({
     messagesList, loading, isReplying, currentAssistantMessageId, fullContent,
-    isAgentStreamSession: () => true, scrollToBottom() {},
+    isAgentStreamSession: () => agentStreamSession, scrollToBottom() {},
     onTurnComplete: (m) => turns.push(m),
     preserveIncompleteStreamReactive: true,
   })
@@ -59,6 +59,37 @@ test('typed evidence identity is retained in final SSE and history without borro
   const replay = setup()
   await replay.handler.handleMsgList([{ id: 'a1', request_id: 'r1', role: 'assistant', content: 'Bound fact.', is_completed: true, evidence_references: refs }])
   assert.deepEqual(replay.messagesList[0].evidence_references, refs)
+})
+
+test('authoritative final references replace early cards and preserve unverified status across history', async () => {
+  const live = setup()
+  const refs = [{ id: 'ev_check', kind: 'raw_cell', result_id: 'actual', result_hash: 'a'.repeat(64), review_status: 'unverified' }]
+  live.handler.processStreamChunk({ response_type: 'agent_query', id: 'r1', assistant_message_id: 'a1' })
+  live.handler.processStreamChunk({ response_type: 'references', id: 'r1', data: { references: [{ id: 'early_read', knowledge_id: 'doc', content: 'Earlier read.' }] } })
+  assert.equal(live.messagesList[0].knowledge_references.length, 1)
+  live.handler.processStreamChunk({ response_type: 'complete', id: 'r1', data: {
+    final_content: 'Answer with a warning.', knowledge_references: [], evidence_references: refs,
+  } })
+  assert.equal(live.messagesList[0].knowledge_references.length, 0)
+  assert.deepEqual(live.messagesList[0].evidence_references, refs)
+  const replay = setup()
+  await replay.handler.handleMsgList([{ id: 'a1', request_id: 'r1', role: 'assistant', content: 'Answer with a warning.',
+    is_completed: true, knowledge_references: [], evidence_references: refs }])
+  assert.equal(replay.messagesList[0].knowledge_references.length, 0)
+  assert.deepEqual(replay.messagesList[0].evidence_references, refs)
+})
+
+test('non-agent completion also reconciles explicit empty navigation sets', () => {
+  const live = setup(false)
+  live.messagesList.push({ id: 'a1', request_id: 'r1', role: 'assistant', content: '', is_completed: false,
+    knowledge_references: [{ id: 'early_read' }], evidence_references: [{ id: 'earlier_evidence' }] })
+  live.handler.processStreamChunk({ response_type: 'complete', id: 'r1', data: {
+    final_content: 'Final answer with a warning.', knowledge_references: [], evidence_references: [],
+  } })
+  assert.equal(live.messagesList[0].content, 'Final answer with a warning.')
+  assert.equal(live.messagesList[0].knowledge_references.length, 0)
+  assert.equal(live.messagesList[0].evidence_references.length, 0)
+  assert.equal(live.messagesList[0].is_completed, true)
 })
 
 test('mixed evidence and attachments replay the approved text and separate delivery failure metadata', async () => {

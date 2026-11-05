@@ -1,9 +1,50 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
+
+const maxReviewProtocolResponseBytes = 8192
+
+type reviewProtocolResponseKey struct{}
+
+// This is private feedback to the same evaluator, never source evidence,
+// author-facing repair advice or a reusable review approval.
+type reviewProtocolResponse struct {
+	Text      string `json:"text"`
+	SHA256    string `json:"sha256"`
+	Bytes     int    `json:"bytes"`
+	Complete  bool   `json:"complete_view"`
+	JSONValid bool   `json:"json_valid"`
+}
+
+type reviewProtocolResponseError struct {
+	cause    error
+	response reviewProtocolResponse
+}
+
+func (err *reviewProtocolResponseError) Error() string { return err.cause.Error() }
+func (err *reviewProtocolResponseError) Unwrap() error { return err.cause }
+
+func reviewErrorWithActualResponse(cause error, content string) error {
+	if cause == nil {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(content))
+	limit := min(len(content), maxReviewProtocolResponseBytes)
+	for limit > 0 && !utf8.ValidString(content[:limit]) {
+		limit--
+	}
+	return &reviewProtocolResponseError{cause: cause, response: reviewProtocolResponse{
+		Text: strings.Clone(content[:limit]), SHA256: hex.EncodeToString(digest[:]),
+		Bytes: len(content), Complete: limit == len(content), JSONValid: json.Valid([]byte(content)),
+	}}
+}
 
 // normalizeReviewVerdictEnvelope removes only a Markdown transport envelope.
 // The caller must still validate the complete JSON value, schema and verdict.

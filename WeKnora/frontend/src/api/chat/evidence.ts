@@ -11,6 +11,7 @@ export type EvidenceReference = {
   summary?: string
   artifact_ids?: string[]
   version_status?: string
+  review_status?: 'unverified'
 }
 
 export type EvidenceUnit = {

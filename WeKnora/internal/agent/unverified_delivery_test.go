@@ -10,7 +10,7 @@ import (
 
 func TestUnverifiedDeliveryNeverKeepsNumericFailuresOrEmptyCandidates(t *testing.T) {
 	e := &AgentEngine{}
-	e.rememberUnverifiedCandidate("A grounded draft.", candidateDecision{Disposition: candidateRevise})
+	e.rememberUnverifiedCandidate("A grounded draft.", candidateDecision{Disposition: candidateRevise, SourceReviewAttempted: true})
 	e.answerReviewFeedback = "ignored after capture"
 	delivery, ok := e.unverifiedDelivery()
 	require.True(t, ok)
@@ -28,7 +28,7 @@ func TestUnverifiedDeliveryNeverKeepsNumericFailuresOrEmptyCandidates(t *testing
 func TestUnverifiedDeliveryNeverShowsAuthorRepairAdvice(t *testing.T) {
 	e := &AgentEngine{}
 	e.answerReviewFeedback = "请基于实际图像重新描述末端水平并据此改写结论。"
-	e.rememberUnverifiedCandidate("Draft.", candidateDecision{Disposition: candidateRevise})
+	e.rememberUnverifiedCandidate("Draft.", candidateDecision{Disposition: candidateRevise, SourceReviewAttempted: true})
 	delivery, ok := e.unverifiedDelivery()
 	require.True(t, ok)
 	require.NotContains(t, delivery, "重新描述", "repair advice addressed to the author is never shown to users")
@@ -38,7 +38,7 @@ func TestUnverifiedDeliveryNeverShowsAuthorRepairAdvice(t *testing.T) {
 	e = &AgentEngine{}
 	e.answerReviewFeedback = "请改写第二段。"
 	e.answerReviewUserNotice = "图中末端读数与上一轮回答不一致，建议查看原图核对。"
-	e.rememberUnverifiedCandidate("Draft.", candidateDecision{Disposition: candidateRevise})
+	e.rememberUnverifiedCandidate("Draft.", candidateDecision{Disposition: candidateRevise, SourceReviewAttempted: true})
 	delivery, ok = e.unverifiedDelivery()
 	require.True(t, ok)
 	require.True(t, strings.HasPrefix(delivery, "Draft."))

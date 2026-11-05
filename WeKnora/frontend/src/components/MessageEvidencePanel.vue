@@ -28,6 +28,8 @@ const unitDeclarations = computed(() => {
   return perColumn.length ? perColumn : globalUnit.value ? [{ label: t('evidence.unit'), unit: globalUnit.value }] : []
 })
 const isCalculation = computed(() => detail.value?.reference.kind === 'structured_result')
+const isUnverified = computed(() => detail.value?.reference.review_status === 'unverified')
+const hasUnverifiedReferences = computed(() => props.references?.some(reference => reference.review_status === 'unverified'))
 const computation = computed(() => detail.value?.manifest?.computation)
 const formula = computed(() => computation.value?.sql || computation.value?.expression)
 const hasComputation = computed(() => !!computation.value && (formula.value || computation.value.input_scope !== undefined || computation.value.input_count !== undefined || computation.value.coverage !== undefined || computation.value.mappings?.length || computation.value.source_truncated || computation.value.input_complete === false))
@@ -104,7 +106,7 @@ defineExpose({ open })
 
 <template>
   <div v-if="references?.length" class="message-evidence">
-    <button type="button" class="message-evidence__open" @click="open()">{{ t('evidence.button') }} · {{ references.length }}</button>
+    <button type="button" class="message-evidence__open" @click="open()">{{ t(hasUnverifiedReferences ? 'evidence.checkingButton' : 'evidence.button') }} · {{ references.length }}</button>
     <Teleport to="body">
       <div v-if="visible" class="message-evidence__backdrop" @click.self="close">
         <section ref="panel" tabindex="-1" class="message-evidence__panel" role="dialog" aria-modal="true" :aria-label="t('evidence.title')" @keydown="onKeydown">
@@ -116,6 +118,7 @@ defineExpose({ open })
           <p v-else-if="error" role="alert">{{ error }}</p>
           <template v-else-if="detail">
             <h4>{{ detail.reference.title || t('evidence.result') }}</h4>
+            <p v-if="isUnverified" class="message-evidence__review-warning" role="status">{{ t('evidence.unverifiedReview') }}</p>
             <p v-if="detail.status !== 'snapshot'" role="status">{{ detail.message || t('evidence.unavailable') }}</p>
             <template v-else>
               <p class="message-evidence__note">{{ t('evidence.snapshot') }}</p>
@@ -153,6 +156,7 @@ defineExpose({ open })
 .message-evidence__tabs button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .message-evidence__tabs [aria-pressed=true] { border-color: var(--td-brand-color); color: var(--td-brand-color); }
 .message-evidence__note { color: var(--td-text-color-secondary); font-size: 12px; }
+.message-evidence__review-warning { color: var(--td-warning-color-active, #8c5400); }
 .message-evidence__table { overflow: auto; max-height: 35vh; }
 .message-evidence__table table { border-collapse: collapse; min-width: 100%; }
 .message-evidence__table th, .message-evidence__table td { border: 1px solid var(--td-component-border); padding: 7px 10px; text-align: left; white-space: nowrap; }

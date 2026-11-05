@@ -912,8 +912,10 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 		}
 		h.assistantMessage.AgentDurationMs = data.TotalDurationMs
 
-		// Update knowledge references if provided
-		if len(data.KnowledgeRefs) > 0 {
+		// A completed run's explicit empty set removes earlier navigation cards.
+		// Nil remains the legacy "not supplied" signal; suspension keeps the
+		// existing checkpoint behavior.
+		if len(data.KnowledgeRefs) > 0 || (suspended == nil && data.KnowledgeRefs != nil) {
 			knowledgeRefs := make([]*types.SearchResult, 0, len(data.KnowledgeRefs))
 			for _, ref := range data.KnowledgeRefs {
 				if sr, ok := ref.(*types.SearchResult); ok {
@@ -921,6 +923,9 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 				}
 			}
 			h.assistantMessage.KnowledgeReferences = knowledgeRefs
+			if suspended == nil {
+				h.knowledgeRefs = knowledgeRefs
+			}
 		}
 		if suspended == nil && data.EvidenceRefs != nil {
 			refs := types.EvidenceReferencesFromInternal(data.EvidenceRefs)
@@ -1128,7 +1133,10 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 	if len(h.assistantMessage.Artifacts) > 0 {
 		completeData["artifacts"] = publicArtifactViews(h.assistantMessage.Artifacts)
 	}
-	if len(h.assistantMessage.EvidenceReferences) > 0 {
+	if suspended == nil && data.KnowledgeRefs != nil {
+		completeData["knowledge_references"] = types.References(h.assistantMessage.KnowledgeReferences)
+	}
+	if len(h.assistantMessage.EvidenceReferences) > 0 || (suspended == nil && data.EvidenceRefs != nil) {
 		completeData["evidence_references"] = publicEventEvidenceReferences(h.assistantMessage.EvidenceReferences)
 	}
 	if h.assistantMessage.ArtifactDeliveryIncomplete {
