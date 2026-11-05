@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 )
 
 const MaxPNGBytes = 8 * 1024 * 1024
@@ -33,12 +35,14 @@ type Writer interface {
 }
 
 type Column struct {
-	Index          int    `json:"index"`
-	Name           string `json:"name"`
-	Unit           string `json:"unit,omitempty"`
-	Numeric        bool   `json:"numeric"`
-	Role           string `json:"role,omitempty"`
-	DependencyKind string `json:"dependency_kind,omitempty"`
+	Index          int                    `json:"index"`
+	Name           string                 `json:"name"`
+	DisplayName    string                 `json:"display_name,omitempty"`
+	Unit           string                 `json:"unit,omitempty"`
+	UnitMetadata   *structuredresult.Unit `json:"unit_metadata,omitempty"`
+	Numeric        bool                   `json:"numeric"`
+	Role           string                 `json:"role,omitempty"`
+	DependencyKind string                 `json:"dependency_kind,omitempty"`
 }
 type Table struct {
 	ID         string     `json:"source_id"`
@@ -57,7 +61,7 @@ func (t *Table) Seal(identity string) error {
 	for i := range t.Columns {
 		t.Columns[i].Index = i
 		t.Columns[i].Numeric = false
-		if len(t.Columns[i].Name) > 512 || len(t.Columns[i].Unit) > 128 {
+		if len(t.Columns[i].Name) > 512 || len(t.Columns[i].DisplayName) > 512 || len(t.Columns[i].Unit) > 128 {
 			return fmt.Errorf("source column exceeds limits")
 		}
 	}
@@ -82,6 +86,15 @@ func (t *Table) Seal(identity string) error {
 	sum := sha256.Sum256(meta)
 	t.ID = "chart-source-" + hex.EncodeToString(sum[:16])
 	return nil
+}
+
+// Label is a bound presentation label; Name always remains the exact result
+// column identifier. No aliases are translated or guessed by the renderer.
+func (c Column) Label() string {
+	if strings.TrimSpace(c.DisplayName) != "" {
+		return c.DisplayName
+	}
+	return c.Name
 }
 
 var numeric = regexp.MustCompile(`^[+\-−]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?(?:[eE][+\-]?[0-9]+)?$`)

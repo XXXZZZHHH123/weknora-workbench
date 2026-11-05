@@ -761,6 +761,17 @@ class PDFTableStore:
         count = len(record['rows'])
         record['rows'] = record['rows'][offset:offset + limit]
         record.update(total_row_count=count, offset=offset, output_truncated=offset + limit < count)
+        from .result_contract import attach_result_contract, snapshot, source_column, pdf_source_units
+        units = pdf_source_units(record)
+        attach_result_contract(record, source_snapshot=snapshot(record['source'], kind='pdf_table',
+            table_id=table_id, scope='returned_source_rows', input_data=record['rows'],
+            versions={k:record[k] for k in ('record_sha256','bundle_sha256','plan_sha256')}),
+            execution=dict(kind='raw_read', engine='reviewed_pdf_table', engine_version='1',
+                numeric_semantics='reviewed_text_and_decimal_strings',
+                input_scope='returned_source_rows', cell_lineage_verified=False),
+            columns=[source_column(c['name'], i, c['type'], unit=units[c['name']])
+                     for i,c in enumerate(record['columns'])], source_cells=True,
+            dependency_verified=True)
         return record
 
     def query(self, table_id, sql='SELECT * FROM data', *, limit=100, budget_seconds=5):
@@ -778,11 +789,23 @@ class PDFTableStore:
                 statements = con.extract_statements(sql)
                 if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
                     raise ValueError('Only a single read-only SELECT/WITH query is allowed')
-                if con.get_table_names(sql) - {'data'}:
-                    raise ValueError('Query may only reference the scoped data table')
                 definitions = ['_row_id VARCHAR'] + [quote(c['name']) + (' DECIMAL(38,18)' if c['type'] == 'decimal' else ' VARCHAR') for c in record['columns']]
                 con.execute('CREATE TABLE data (' + ','.join(definitions) + ')')
+                # DuckDB binds explicit UNPIVOT column names while discovering
+                # referenced tables. Supply only the empty scoped schema first;
+                # the user query is still validated before inserting/executing.
                 dependencies = verify_pdf_sql_dependencies(con, sql, [c['name'] for c in record['columns']])
+                try:
+                    if con.get_table_names(sql) - {'data'}:
+                        raise ValueError('Query may only reference the scoped data table')
+                except duckdb.BinderException:
+                    # DuckDB 1.5's table-name inspector cannot bind explicit
+                    # UNPIVOT even against this real schema. The complete AST
+                    # has already checked every relation in lexical scope,
+                    # including unused/nested CTEs and predicate subqueries.
+                    # Only this binding error may use that strict alternative;
+                    # the original SQL still executes without modification.
+                    pass
                 if record['rows']:
                     values = [[r['_row_id']] + [r['values'][c['name']] for c in record['columns']] for r in record['rows']]
                     con.executemany('INSERT INTO data VALUES (' + ','.join('?' for _ in definitions) + ')', values)
@@ -791,12 +814,17 @@ class PDFTableStore:
                 try:
                     result = con.execute(sql)
                     names = [c[0] for c in result.description]
+                    logical_types = [str(c[1]) for c in result.description]
                     if len(names) != len(dependencies):
                         raise ValueError('PDF SQL source dependency output shape does not match bound query; use explicit column projections')
                     dependencies = [dict(d, column=names[i]) for i, d in enumerate(dependencies)]
                     if len(names) > MAX_COLUMNS + 1:
                         raise ValueError('Query result exceeds column budget')
                     values = result.fetchmany(limit + 1)
+                    from .result_contract import pdf_source_units, unknown_unit
+                    from .sql_result_units import infer_sql_units
+                    source_units = {'_row_id':unknown_unit(), **pdf_source_units(record)}
+                    units = infer_sql_units(con, sql, source_units, len(names))
                 finally:
                     timer.cancel()
             except duckdb.Error as exc:
@@ -830,7 +858,7 @@ class PDFTableStore:
             raise ValueError('Result provenance exceeds byte budget; reduce output rows or columns')
         source = deepcopy(record['source'])
         source['file'] = source['file_name']
-        return dict(kind='structured_analysis', status='ok', table_id=table_id, sql=sql, columns=names, rows=output,
+        document = dict(kind='structured_analysis', status='ok', table_id=table_id, sql=sql, columns=names, rows=output,
                     sql_source_dependency_verified=True, sql_column_dependencies=dependencies,
                     sql_source_dependency_method='duckdb_ast_output_expression_dependencies_v1',
                     row_provenance=row_provenance, returned_row_count=len(output), output_truncated=len(values) > limit,
@@ -843,3 +871,11 @@ class PDFTableStore:
                                     sql_source_dependency_verified=True,
                                     sql_result_lineage_verified=False), extraction_verified=False,
                     notice='Reviewed plan only; extraction and full-document completeness are unverified. SQL runs over every selected logical row. Output limits do not truncate calculation inputs. Output dependencies are classified using DuckDB AST column scopes, not per-cell lineage or proof of algebraic influence. Constant-label, mixed-constant-values and technical-metadata outputs must not be used as sourced numeric observations. Row IDs identify source references only; full SQL expression/aggregate cell lineage is not inferred.')
+        from .result_contract import attach_result_contract, snapshot, source_column, sql_execution
+        return attach_result_contract(document, source_snapshot=snapshot(source, kind='pdf_table',
+            table_id=table_id, scope='loaded_inputs_before_user_sql', input_data=record['rows'],
+            versions={k:record[k] for k in ('record_sha256','bundle_sha256','plan_sha256')}),
+            execution=sql_execution(sql, duckdb.__version__, 'DECIMAL(38,18); decimal outputs encoded losslessly as strings'),
+            columns=[source_column(name, i, logical_types[i], unit=units[i], dependency={
+                k:v for k,v in dependencies[i].items() if k not in ('column_index','column')})
+                for i,name in enumerate(names)], dependency_verified=True)

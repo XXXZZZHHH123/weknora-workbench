@@ -1,0 +1,214 @@
+{
+  "columns": [
+    "dimension",
+    "observation"
+  ],
+  "coverage": {
+    "covered_data_source_row_count": 2,
+    "excluded_row_count": 0,
+    "extraction_ambiguity_count": 0,
+    "extraction_requires_review": false,
+    "extraction_verified": false,
+    "header_row_count": 1,
+    "logical_row_count": 2,
+    "raw_fragment_count": 1,
+    "selected_columns_accounted": true,
+    "selected_fragment_count": 1,
+    "selected_raw_row_count": 3,
+    "selected_rows_accounted": true,
+    "source_document_complete": false,
+    "source_document_completeness": "unknown",
+    "table_input_complete": true
+  },
+  "extraction_verified": false,
+  "input_complete": true,
+  "input_count": 2,
+  "kind": "structured_analysis",
+  "notice": "Reviewed plan only; extraction and full-document completeness are unverified. SQL runs over every selected logical row. Output limits do not truncate calculation inputs. Output dependencies are classified using DuckDB AST column scopes, not per-cell lineage or proof of algebraic influence. Constant-label, mixed-constant-values and technical-metadata outputs must not be used as sourced numeric observations. Row IDs identify source references only; full SQL expression/aggregate cell lineage is not inferred.",
+  "output_complete": true,
+  "output_truncated": false,
+  "provenance": {
+    "bundle_sha256": "0a46802d9cdfeaff52f386d1eace1ead62511186cd7c7e251bdceb370a0f9d0a",
+    "draft_id": "pdfd_0a46802d9cdfeaff52f386d1eace1ead62511186cd7c7e251bdceb370a0f9d0a",
+    "input_row_count": 2,
+    "plan_sha256": "5c67eb90ddc16de0551bd3f14808d502438cafeb1e0b66df940adf4179f372c0",
+    "row_source_access": "read_table(table_id, offset, limit); read_draft(draft_id)",
+    "scope": "all_loaded_inputs_before_user_sql",
+    "sql_result_lineage_verified": false,
+    "sql_source_dependency_verified": true,
+    "table_record_sha256": "329b46248011f5d98bcdb962b013c95be251d7425aef0fc3c05ab696dc9bd345"
+  },
+  "result_contract": {
+    "column_metadata": [
+      {
+        "dependency": {
+          "kind": "source_value",
+          "source_columns": [
+            "col0"
+          ],
+          "source_row_dependency": false,
+          "technical_metadata": false
+        },
+        "display_name": "dimension",
+        "index": 0,
+        "logical_type": "VARCHAR",
+        "name": "dimension",
+        "unit": {
+          "binding_scope": "result_column",
+          "evidence": [],
+          "evidence_level": "none",
+          "reason": "No bound unit declaration for this expression",
+          "status": "unknown"
+        }
+      },
+      {
+        "dependency": {
+          "kind": "source_value",
+          "source_columns": [
+            "col1"
+          ],
+          "source_row_dependency": false,
+          "technical_metadata": false
+        },
+        "display_name": "observation",
+        "index": 1,
+        "logical_type": "DECIMAL(38,18)",
+        "name": "observation",
+        "unit": {
+          "binding_scope": "result_column",
+          "evidence": [
+            {
+              "binding_scope": "reviewed_logical_column_declaration",
+              "declared_unit": "kg",
+              "original_annotation_verified": false,
+              "plan_sha256": "5c67eb90ddc16de0551bd3f14808d502438cafeb1e0b66df940adf4179f372c0",
+              "source_column": "col1",
+              "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "table_id": "pdft_1934421d547da186672ed683988e7e23b376a4764ce85db486b82fc2a8d2ec19"
+            }
+          ],
+          "evidence_level": "reviewed_plan_declaration",
+          "status": "declared",
+          "symbol": "kg"
+        }
+      }
+    ],
+    "evidence_capabilities": {
+      "aggregate_membership_verified": false,
+      "cell_lineage_verified": false,
+      "column_dependencies_verified": true,
+      "level": "dependency_only",
+      "source_cells_available": false
+    },
+    "execution": {
+      "cell_lineage_verified": false,
+      "engine": "duckdb",
+      "engine_version": "1.5.5",
+      "input_scope": "loaded_inputs_before_user_sql",
+      "kind": "sql",
+      "numeric_semantics": "DECIMAL(38,18); decimal outputs encoded losslessly as strings",
+      "sql_sha256": "3f6deba40f87d344e88258c2ee25f7ad53ec80491ede7af5284f3e30326e27cc"
+    },
+    "hash_algorithm": "sha256-typed-json-v1",
+    "hash_input_keys": [
+      "columns",
+      "coverage",
+      "extraction_verified",
+      "input_complete",
+      "input_count",
+      "notice",
+      "output_complete",
+      "output_truncated",
+      "provenance",
+      "returned_row_count",
+      "row_provenance",
+      "rows",
+      "source",
+      "sql",
+      "sql_column_dependencies",
+      "sql_source_dependency_method",
+      "sql_source_dependency_verified",
+      "table_id"
+    ],
+    "result_hash": "9d254459ad3625c007aca2c9e0ee14d0793efc61ebf6b0a74a4ee99c2c043c70",
+    "result_id": "0c3f4ba258afdd26c2638d91",
+    "schema_version": 2,
+    "source_snapshot": {
+      "file": "example.pdf",
+      "input_digest_sha256": "726989fabcb3712801a25aaa33e56905a13df32ef288cb7428c3f817fce9b9d5",
+      "kind": "pdf_table",
+      "knowledge_base_id": "kb-fixture",
+      "knowledge_id": "doc-fixture",
+      "scope": "loaded_inputs_before_user_sql",
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "table_id": "pdft_1934421d547da186672ed683988e7e23b376a4764ce85db486b82fc2a8d2ec19",
+      "versions": {
+        "bundle_sha256": "0a46802d9cdfeaff52f386d1eace1ead62511186cd7c7e251bdceb370a0f9d0a",
+        "plan_sha256": "5c67eb90ddc16de0551bd3f14808d502438cafeb1e0b66df940adf4179f372c0",
+        "record_sha256": "329b46248011f5d98bcdb962b013c95be251d7425aef0fc3c05ab696dc9bd345"
+      }
+    }
+  },
+  "returned_row_count": 2,
+  "row_provenance": [
+    {
+      "bundle_sha256": "0a46802d9cdfeaff52f386d1eace1ead62511186cd7c7e251bdceb370a0f9d0a",
+      "scope": "all_loaded_inputs_not_sql_lineage",
+      "source_rows": [],
+      "sql_result_lineage_verified": false,
+      "table_id": "pdft_1934421d547da186672ed683988e7e23b376a4764ce85db486b82fc2a8d2ec19"
+    },
+    {
+      "bundle_sha256": "0a46802d9cdfeaff52f386d1eace1ead62511186cd7c7e251bdceb370a0f9d0a",
+      "scope": "all_loaded_inputs_not_sql_lineage",
+      "source_rows": [],
+      "sql_result_lineage_verified": false,
+      "table_id": "pdft_1934421d547da186672ed683988e7e23b376a4764ce85db486b82fc2a8d2ec19"
+    }
+  ],
+  "rows": [
+    [
+      "A",
+      "1.250000000000000000"
+    ],
+    [
+      "B",
+      "4.500000000000000000"
+    ]
+  ],
+  "source": {
+    "file": "example.pdf",
+    "file_name": "example.pdf",
+    "knowledge_base_id": "kb-fixture",
+    "knowledge_id": "doc-fixture",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "source_kind": "pdf_table",
+  "sql": "SELECT col0 AS dimension,col1 AS observation FROM data ORDER BY col0",
+  "sql_column_dependencies": [
+    {
+      "column": "dimension",
+      "column_index": 0,
+      "kind": "source_value",
+      "source_columns": [
+        "col0"
+      ],
+      "source_row_dependency": false,
+      "technical_metadata": false
+    },
+    {
+      "column": "observation",
+      "column_index": 1,
+      "kind": "source_value",
+      "source_columns": [
+        "col1"
+      ],
+      "source_row_dependency": false,
+      "technical_metadata": false
+    }
+  ],
+  "sql_source_dependency_method": "duckdb_ast_output_expression_dependencies_v1",
+  "sql_source_dependency_verified": true,
+  "status": "ok",
+  "table_id": "pdft_1934421d547da186672ed683988e7e23b376a4764ce85db486b82fc2a8d2ec19"
+}

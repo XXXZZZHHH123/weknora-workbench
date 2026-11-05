@@ -175,17 +175,22 @@ func renderPNG(table Table, spec Spec, series [][]point, xs []float64, xmin, xma
 		return nil, err
 	}
 	defer label.Close()
-	r := raster{image: image.NewRGBA(image.Rect(0, 0, ImageWidth, ImageHeight)), title: title, axis: axis, label: label}
+	legend, legendBottom := layoutLegend(label, table, spec.Y)
+	imageHeight := ImageHeight
+	if legendBottom+32 > imageHeight {
+		imageHeight = legendBottom + 32
+	}
+	r := raster{image: image.NewRGBA(image.Rect(0, 0, ImageWidth, imageHeight)), title: title, axis: axis, label: label}
 	draw.Draw(r.image, r.image.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	heading := spec.Title
 	if strings.TrimSpace(heading) == "" {
-		heading = table.Columns[spec.Y[0]].Name
+		heading = table.Columns[spec.Y[0]].Label()
 	}
 	// Font coverage is checked before painting: unsupported labels never silently
 	// turn into tofu boxes which could misidentify a source series.
-	labels := []string{heading, table.Columns[spec.X].Name, "部分数据", "单位未确认"}
+	labels := []string{heading, table.Columns[spec.X].Label(), "部分数据", "单位未确认"}
 	for _, c := range spec.Y {
-		labels = append(labels, table.Columns[c].Name, table.Columns[c].Unit)
+		labels = append(labels, table.Columns[c].Label(), table.Columns[c].Unit)
 	}
 	for _, row := range table.Rows {
 		labels = append(labels, row[spec.X])
@@ -235,12 +240,12 @@ func renderPNG(table Table, spec Spec, series [][]point, xs []float64, xmin, xma
 		r.text(label, text, x, plotTop+plotHeight+40, "center", ink)
 		previousRight = x + w/2
 	}
-	r.text(axis, fit(axis, table.Columns[spec.X].Name, 1200), plotLeft+plotWidth/2, 810, "center", ink)
-	for k, col := range spec.Y {
+	r.text(axis, fit(axis, table.Columns[spec.X].Label(), 1200), plotLeft+plotWidth/2, 810, "center", ink)
+	for k := range spec.Y {
 		c := palette[k]
 		// A single bounded mask per series also bounds the cost of unsorted input
 		// whose many segments cross the whole plot. All subpaths use one winding.
-		r.batch = vector.NewRasterizer(ImageWidth, ImageHeight)
+		r.batch = vector.NewRasterizer(ImageWidth, imageHeight)
 		var previous *point
 		for i, p := range series[k] {
 			if p.missing {
@@ -262,15 +267,13 @@ func renderPNG(table Table, spec Spec, series [][]point, xs []float64, xmin, xma
 		}
 		r.batch.Draw(r.image, r.image.Bounds(), image.NewUniform(c), image.Point{})
 		r.batch = nil
-		unit := table.Columns[col].Unit
-		if unit == "" {
-			unit = "单位未确认"
-		}
-		name := table.Columns[col].Name + "（" + unit + "）"
-		x, y := 180+float64(k%3)*460, 875+float64(k/3)*48
+		item := legend[k]
+		x, y := float64(item.x), float64(item.y)
 		r.line(x, y-7, x+28, y-7, 4, c)
 		r.dot(x+14, y-7, 4, c)
-		r.text(label, fit(label, name, 390), x+40, y, "left", ink)
+		for line, text := range item.lines {
+			r.text(label, text, x+40, y+float64(line*30), "left", ink)
+		}
 	}
 	var out bytes.Buffer
 	encoder := png.Encoder{CompressionLevel: png.BestSpeed}
@@ -281,4 +284,71 @@ func renderPNG(table Table, spec Spec, series [][]point, xs []float64, xmin, xma
 		return nil, fmt.Errorf("rendered chart exceeds PNG output budget")
 	}
 	return out.Bytes(), nil
+}
+
+type legendItem struct {
+	x, y  int
+	lines []string
+}
+
+// No source label or its unit is silently ellipsized. Short labels retain the
+// compact layout; longer labels wrap, and only the canvas below the plot grows.
+// Plot geometry and numeric/time intervals remain unchanged.
+func layoutLegend(face font.Face, table Table, selected []int) ([]legendItem, int) {
+	labels := make([]string, len(selected))
+	maxWidth := 0
+	for i, col := range selected {
+		unit := table.Columns[col].Unit
+		if unit == "" {
+			unit = "单位未确认"
+		}
+		labels[i] = table.Columns[col].Label() + "（" + unit + "）"
+		if width := font.MeasureString(face, labels[i]).Ceil(); width > maxWidth {
+			maxWidth = width
+		}
+	}
+	columns := 3
+	if maxWidth > 390 {
+		columns = 2
+	}
+	if maxWidth > 620 {
+		columns = 1
+	}
+	cellWidth := 1380 / columns
+	items := make([]legendItem, len(selected))
+	y, bottom := 875, 875
+	for start := 0; start < len(labels); start += columns {
+		linesInRow := 1
+		for k := 0; k < columns && start+k < len(labels); k++ {
+			lines := wrapLegend(face, labels[start+k], cellWidth-70)
+			items[start+k] = legendItem{x: 180 + k*cellWidth, y: y, lines: lines}
+			if len(lines) > linesInRow {
+				linesInRow = len(lines)
+			}
+		}
+		bottom = y + (linesInRow-1)*30 + 8
+		y += linesInRow*30 + 18
+	}
+	return items, bottom
+}
+
+func wrapLegend(face font.Face, text string, width int) []string {
+	lines := []string{}
+	line := []rune{}
+	for _, ch := range text {
+		candidate := append(append([]rune{}, line...), ch)
+		if len(line) > 0 && font.MeasureString(face, string(candidate)).Ceil() > width {
+			lines = append(lines, string(line))
+			line = []rune{ch}
+		} else {
+			line = candidate
+		}
+	}
+	if len(line) > 0 {
+		lines = append(lines, string(line))
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
 }

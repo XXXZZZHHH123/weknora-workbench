@@ -129,27 +129,32 @@ class DataStore:
 
     def _display_native_source(self, manifest):
         """Resolve a presentation name from a saved native binding when available."""
+        binding=self._native_source_binding(manifest)
+        return binding['file_name'] if binding else manifest.get('source_file')
+
+    def _native_source_binding(self, manifest, *, verify_content=False):
+        """Return an existing exact native binding, never choose by file name."""
         from .workspaces import current_identity, valid_knowledge_base_id
         kb_id = self.root.name
         if self.root.parent.name != 'knowledge-bases' or not valid_knowledge_base_id(kb_id):
-            return manifest.get('source_file')
+            return None
         identity = current_identity.get()
         if identity is not None and identity.knowledge_base_id != kb_id:
-            return manifest.get('source_file')
+            return None
         import_id = manifest.get('import_id')
         if not isinstance(import_id, str) or not re.fullmatch(r'[0-9a-f]{24}', import_id):
-            return manifest.get('source_file')
+            return None
         review_path = self.root / 'imports' / import_id / 'review.json'
         try:
             if review_path.is_symlink() or not review_path.resolve().is_relative_to(self.root.resolve()):
-                return manifest.get('source_file')
+                return None
             review = json.loads(review_path.read_text())
         except (OSError, ValueError):
-            return manifest.get('source_file')
+            return None
         if (not isinstance(review, dict) or review.get('import_id') != import_id
                 or review.get('sha256') != manifest.get('sha256')
                 or review.get('source_file') != manifest.get('source_file')):
-            return manifest.get('source_file')
+            return None
         original = self.root / 'imports' / import_id / review.get('storage_file', review['source_file'])
         bindings = review.get('native_source_bindings', [])
         for binding in reversed(bindings if isinstance(bindings, list) else []):
@@ -166,10 +171,31 @@ class DataStore:
                     or type(binding.get('file_size')) is not int or binding['file_size'] <= 0
                     or not isinstance(binding.get('file_hash'), str)
                     or not re.fullmatch(r'[0-9a-fA-F]{32}', binding['file_hash'])
+                    or original.is_symlink() or not original.resolve().is_relative_to(review_path.parent.resolve())
                     or not original.is_file() or original.stat().st_size != binding['file_size']):
                 continue
-            return name
-        return manifest.get('source_file')
+            if verify_content:
+                sha=hashlib.sha256();md5=hashlib.md5(usedforsecurity=False)
+                with original.open('rb') as stream:
+                    for block in iter(lambda:stream.read(1024*1024),b''):
+                        sha.update(block);md5.update(block)
+                if sha.hexdigest()!=manifest.get('sha256') or md5.hexdigest()!=binding['file_hash'].lower():
+                    continue
+            return binding
+        return None
+
+    def result_source(self, dataset_id, manifest=None, **metadata):
+        manifest=manifest or self.manifest(dataset_id)
+        result={'file':manifest['source_file'],'sha256':manifest['sha256'],**metadata}
+        # manifest() may already have replaced an internal import filename with
+        # the native display name; validate against the stored original record.
+        raw=json.loads((self._path(dataset_id)/'manifest.json').read_text())
+        binding=self._native_source_binding(raw,verify_content=True)
+        if binding:
+            result.update(knowledge_id=binding['source_knowledge_id'],
+                knowledge_base_id=binding['knowledge_base_id'],
+                knowledge_base_tenant_id=binding['tenant_id'],file_hash=binding['file_hash'].lower())
+        return result
 
     def chart_index(self, dataset_id):
         from .native_charts import index
@@ -720,6 +746,26 @@ class DataStore:
                              'record_count': count,
                              'truncated': result['truncated'],
                              'filters': filters})
+        result['source']=self.result_source(dataset_id,manifest,sheet=series['sheet'],header_cells=series.get('header_cells',[]))
+        from .result_contract import (attach_result_contract, snapshot, source_column,
+                                      unknown_unit, excel_value_unit, typed_sha256)
+        names=sorted(records[0]) if records else []
+        value_unit=excel_value_unit({series_id:series},manifest['sha256'])
+        technical={'source_cell','date_cell','category_cell','period_cell','metric_cell','formula'}
+        attach_result_contract(result,source_snapshot=snapshot(result['source'],kind='excel_observations',
+            dataset_id=dataset_id,scope='returned_source_rows',input_data=records,
+            versions={'manifest_sha256':typed_sha256(manifest)}),
+            execution=dict(kind='series_query',engine='duckdb',engine_version=duckdb.__version__,
+                numeric_semantics='saved DOUBLE values; Excel formulas are not recalculated',
+                input_scope='returned_source_rows',cell_lineage_verified=False,
+                operation=operation,column_metadata_scope='returned_rows_not_aggregate'),
+            columns=[source_column(name,i,'DOUBLE' if name=='value' else 'source_value',
+                unit=value_unit if name=='value' else unknown_unit(),
+                display_name=series.get('metric') if name=='value' else name,
+                dependency=dict(kind='source_metadata' if name in technical else 'source_value',
+                    source_columns=[name],source_row_dependency=False,technical_metadata=name in technical))
+                for i,name in enumerate(names)],dependency_verified=True,
+            source_cells=result['rows_are'] in ('observations','extremum_observations','latest_valid_observation'))
         return result
 
     def compare_series(self, dataset_id: str, left_series_id: str, right_series_id: str, date: str, comparison_basis: str = 'same_explicit_unit') -> dict:

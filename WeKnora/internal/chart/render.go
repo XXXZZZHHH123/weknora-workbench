@@ -42,6 +42,13 @@ func Render(table Table, spec Spec) ([]byte, error) {
 			return nil, fmt.Errorf("select distinct real X/Y columns")
 		}
 		seen[col] = true
+		column := table.Columns[col]
+		if column.DependencyKind == "constant_label" || column.DependencyKind == "mixed_constant_values" || column.DependencyKind == "source_metadata" || column.DependencyKind == "unknown" {
+			return nil, fmt.Errorf("Y column has no verified source-value dependency")
+		}
+		if column.UnitMetadata != nil && (column.UnitMetadata.Status == "mixed" || len(spec.Y) > 1 && column.UnitMetadata.Status == "unknown") {
+			return nil, fmt.Errorf("mixed or unconfirmed result units require separate source selections; no inferred shared scale")
+		}
 		u := table.Columns[col].Unit
 		if len(spec.Y) > 1 {
 			if !knownUnit {

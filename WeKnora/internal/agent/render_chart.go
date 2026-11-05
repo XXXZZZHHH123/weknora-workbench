@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/chart"
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -349,8 +351,14 @@ func checkedStructuredChartTable(call types.ToolCall) (chart.Table, error) {
 		return chart.Table{}, fmt.Errorf("structured_source_payload_over_budget")
 	}
 	var data map[string]any
-	if json.Unmarshal(raw, &data) != nil || data["status"] != "ok" {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&data) != nil || data["status"] != "ok" {
 		return chart.Table{}, fmt.Errorf("structured_result_not_ok")
+	}
+	contract, contractErr := structuredresult.ValidatePayload(data)
+	if contractErr != nil {
+		return chart.Table{}, contractErr
 	}
 	rows, ok := data["rows"].([]any)
 	if !ok || len(rows) == 0 || len(rows) > chart.MaxRows {
@@ -429,6 +437,24 @@ func checkedStructuredChartTable(call types.ToolCall) (chart.Table, error) {
 			cols[i].Role = "source_row_identifier"
 		}
 	}
+	if contract != nil {
+		if len(contract.Columns) != len(cols) {
+			return chart.Table{}, fmt.Errorf("structured_result_column_shape_invalid")
+		}
+		for i, metadata := range contract.Columns {
+			if metadata.Name != cols[i].Name {
+				return chart.Table{}, fmt.Errorf("structured_result_column_identity_invalid")
+			}
+			cols[i].DisplayName = metadata.DisplayName
+			unit := metadata.Unit
+			cols[i].UnitMetadata = &unit
+			cols[i].Unit = unit.Symbol
+			cols[i].DependencyKind = metadata.Dependency.Kind
+			if metadata.Dependency.TechnicalMetadata || metadata.Dependency.Kind == "source_metadata" {
+				cols[i].Role = "source_row_identifier"
+			}
+		}
+	}
 	if analysis && data["source_kind"] == "pdf_table" {
 		if data["sql_source_dependency_verified"] != true {
 			return chart.Table{}, fmt.Errorf("pdf_sql_source_dependency_not_verified")
@@ -439,9 +465,9 @@ func checkedStructuredChartTable(call types.ToolCall) (chart.Table, error) {
 		}
 		for i, rawDependency := range dependencies {
 			dependency, ok := rawDependency.(map[string]any)
-			index, number := dependency["column_index"].(float64)
+			index, number := metadataInteger(dependency["column_index"])
 			kind, _ := dependency["kind"].(string)
-			if !ok || !number || index != float64(i) || dependency["column"] != cols[i].Name {
+			if !ok || !number || index != int64(i) || dependency["column"] != cols[i].Name {
 				return chart.Table{}, fmt.Errorf("pdf_sql_column_dependencies_invalid")
 			}
 			switch kind {
@@ -456,7 +482,7 @@ func checkedStructuredChartTable(call types.ToolCall) (chart.Table, error) {
 		}
 	}
 	meta := map[string]any{}
-	for _, key := range []string{"kind", "source", "dataset_id", "series", "filters", "requested_range", "actual_first_date", "actual_last_date", "record_count", "scope_record_count", "missing_count", "inputs", "sql", "result_id", "warnings", "rows_are", "input_complete", "input_count", "output_truncated", "truncated", "returned_row_count", "sql_source_dependency_verified", "sql_column_dependencies", "sql_source_dependency_method"} {
+	for _, key := range []string{"kind", "source", "table_id", "dataset_id", "series", "filters", "requested_range", "actual_first_date", "actual_last_date", "record_count", "scope_record_count", "missing_count", "inputs", "sql", "result_id", "result_contract", "provenance", "coverage", "record_sha256", "bundle_sha256", "plan_sha256", "extraction_verified", "warnings", "rows_are", "input_complete", "input_count", "output_truncated", "truncated", "returned_row_count", "sql_source_dependency_verified", "sql_column_dependencies", "sql_source_dependency_method"} {
 		if value, exists := data[key]; exists {
 			meta[key] = value
 		}
@@ -495,6 +521,43 @@ func chartAuditMetadata(meta map[string]any) (string, bool, error) {
 	}
 	if len(full) <= budget {
 		return string(full), false, nil
+	}
+	// Exact coordinate/unit evidence can exceed a chart's text budget. Bind the
+	// complete server-observed metadata before projecting optional detail; a
+	// projected view never upgrades SQL lineage or unit evidence.
+	projectedOptional := make(map[string]any, len(meta)+1)
+	for key, value := range meta {
+		projectedOptional[key] = value
+	}
+	omitted := map[string]any{}
+	for _, key := range []string{"row_source_coordinates", "row_provenance", "page_context"} {
+		if value, exists := projectedOptional[key]; exists {
+			body, marshalErr := json.Marshal(value)
+			if marshalErr != nil {
+				return "", false, fmt.Errorf("structured_audit_encoding_invalid")
+			}
+			digest := sha256.Sum256(body)
+			omitted[key] = map[string]any{"sha256": hex.EncodeToString(digest[:]), "original_bytes": len(body)}
+			delete(projectedOptional, key)
+		}
+	}
+	if raw, exists := projectedOptional["result_contract"]; exists {
+		if encoded, marshalErr := json.Marshal(raw); marshalErr == nil {
+			var contract structuredresult.Contract
+			if json.Unmarshal(encoded, &contract) == nil {
+				projectedOptional["result_contract_summary"] = map[string]any{"schema_version": contract.SchemaVersion, "result_id": contract.ResultID, "result_hash": contract.ResultHash, "source_snapshot": contract.SourceSnapshot, "execution": contract.Execution, "evidence_capabilities": contract.Capabilities, "notice": "完整合同已在消费前验证；此为受限审计投影，非逐格SQL血缘。"}
+				delete(projectedOptional, "result_contract")
+				omitted["result_contract"] = map[string]any{"result_hash": contract.ResultHash, "original_bytes": len(encoded)}
+			}
+		}
+	}
+	if len(omitted) > 0 {
+		digest := sha256.Sum256(full)
+		projectedOptional["audit_projection"] = map[string]any{"projection_partial": true, "original_bytes": len(full), "sha256": hex.EncodeToString(digest[:]), "omitted_metadata": omitted}
+		if encoded, marshalErr := json.Marshal(projectedOptional); marshalErr == nil && len(encoded) <= budget {
+			return string(encoded), true, nil
+		}
+		meta = projectedOptional
 	}
 	inputs, ok := meta["inputs"].(map[string]any)
 	if !ok || len(inputs) == 0 {
