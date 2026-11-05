@@ -141,7 +141,10 @@ type AgentQueryData struct {
 type AgentCompleteData struct {
 	// Artifacts contains runtime-delivered child files (types.MessageArtifacts).
 	// Internal only: stream handlers publish sanitized metadata after persistence.
-	Artifacts       interface{}            `json:"-"`
+	Artifacts interface{} `json:"-"`
+	// EvidenceRefs is the server-only full snapshot, persisted before exposing
+	// sanitized evidence_references to a stream or history consumer.
+	EvidenceRefs    []interface{}          `json:"-"`
 	SessionID       string                 `json:"session_id"`
 	TotalSteps      int                    `json:"total_steps"`
 	FinalAnswer     string                 `json:"final_answer"`
@@ -201,8 +204,9 @@ type AgentToolResultData struct {
 
 // AgentReferencesData represents knowledge references data
 type AgentReferencesData struct {
-	References interface{} `json:"references"` // []*types.SearchResult
-	Iteration  int         `json:"iteration"`
+	References         interface{} `json:"references"` // []*types.SearchResult
+	EvidenceReferences interface{} `json:"evidence_references,omitempty"`
+	Iteration          int         `json:"iteration"`
 }
 
 // MemoryRecalledData carries the long-term memories injected into this turn.

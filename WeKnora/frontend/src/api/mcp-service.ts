@@ -300,7 +300,7 @@ export async function resolveToolApproval(
     access?: 'read' | 'write'
   }
 ): Promise<{ resumed: boolean }> {
-  const res: any = await post(`/api/v1/agent/tool-approvals/${encodeURIComponent(pendingId)}`, body)
+  const res: any = await post(`/api/v1/agent/tool-approvals/${encodeURIComponent(pendingId)}`, body, { headers: { 'X-WeKnora-Evidence-Version': '1' } })
   // resumed: the run had been suspended and now continues on the server;
   // the client must re-attach to the message's stream.
   return { resumed: Boolean(res?.resumed) }
@@ -335,7 +335,7 @@ export async function resolveAgentPrompt(
   kind: string,
   response: Record<string, unknown>,
 ): Promise<{ resumed: boolean }> {
-  const res: any = await post(`/api/v1/agent/prompts/${encodeURIComponent(promptId)}`, { kind, response })
+  const res: any = await post(`/api/v1/agent/prompts/${encodeURIComponent(promptId)}`, { kind, response }, { headers: { 'X-WeKnora-Evidence-Version': '1' } })
   return { resumed: Boolean(res?.resumed) }
 }
 
@@ -346,11 +346,11 @@ export async function resolveMCPOAuth(
   pendingId: string,
   body: { service_id: string; decision?: 'authorize' | 'cancel' }
 ): Promise<void> {
-  await post(`/api/v1/agent/mcp-oauth-resolutions/${encodeURIComponent(pendingId)}`, body)
+  await post(`/api/v1/agent/mcp-oauth-resolutions/${encodeURIComponent(pendingId)}`, body, { headers: { 'X-WeKnora-Evidence-Version': '1' } })
 }
 
 export async function cancelMCPOAuth(pendingId: string): Promise<void> {
-  await post(`/api/v1/agent/mcp-oauth-resolutions/${encodeURIComponent(pendingId)}/cancel`, {})
+  await post(`/api/v1/agent/mcp-oauth-resolutions/${encodeURIComponent(pendingId)}/cancel`, {}, { headers: { 'X-WeKnora-Evidence-Version': '1' } })
 }
 
 // Persisted directory: GET never opens an upstream MCP connection.

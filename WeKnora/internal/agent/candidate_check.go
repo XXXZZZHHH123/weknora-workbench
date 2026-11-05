@@ -38,15 +38,18 @@ type candidateDecision struct {
 }
 
 type turnReviewState struct {
-	AdditionsCache map[string]string
-	Repairs        int
-	Checks         int
-	Last           candidateDecision
-	ReadEvidence   *reviewEvidenceHandoff
-	ClosedStreams  map[string]bool
-	Committed      bool
-	Query          string
-	Conversation   []chat.Message
+	StructuredCitations     map[string]structuredCitationObservation
+	StructuredCitationCalls map[string][]string
+	StructuredCitationNonce string
+	AdditionsCache          map[string]string
+	Repairs                 int
+	Checks                  int
+	Last                    candidateDecision
+	ReadEvidence            *reviewEvidenceHandoff
+	ClosedStreams           map[string]bool
+	Committed               bool
+	Query                   string
+	Conversation            []chat.Message
 	// Latest numerically grounded semantic fallback, or a source-reviewed
 	// numeric-warning delivery. The latter retains the exact checked envelope
 	// separately from its deterministic decoded presentation.
@@ -115,6 +118,12 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		decision.Err = ctx.Err()
 		return
 	}
+	if !e.candidateEvidenceBudgetFits(candidate, state) {
+		e.answerReviewFeedback = "所选证据超出单条消息存储预算。使用同一次真实返回结果的聚合引用，保留必要原格和计算依据；不能丢弃引用后把未保存证据宣布为已完成。"
+		e.answerReviewAction = reviewReviseAnswer
+		decision.Disposition = candidateRevise
+		return
+	}
 	if strings.TrimSpace(candidate) == "" {
 		decision.Disposition = candidateRevise
 		return
@@ -169,7 +178,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	// With citations enabled, missing/invalid current references still need the
 	// existing critic's semantic required/not_required/unavailable decision.
 	// This eligibility check neither chooses a source nor infers a user intent.
-	if !warning && e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && e.hasExplicitTextDeliveryPlan() && !suspectAnswerFragment(candidate, reasoning) && !hasExecutedPDFAnalysis(state.RoundSteps) && !e.needsDeliveryReview(state) && e.directCitationDeliveryEligible(candidate, state, conversation) {
+	if !forceReview && !warning && e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && e.hasExplicitTextDeliveryPlan() && !suspectAnswerFragment(candidate, reasoning) && !hasExecutedPDFAnalysis(state.RoundSteps) && !e.needsDeliveryReview(state) && e.directCitationDeliveryEligible(candidate, state, conversation) {
 		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{
 			"reason": "direct_task", "reasoning_depth": e.taskReasoningDepth(),
 		})
@@ -195,11 +204,18 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 }
 
 func (e *AgentEngine) directCitationDeliveryEligible(candidate string, state *types.AgentState, conversation []chat.Message) bool {
+	// A source value plus an inline position does not prove the prose's
+	// measure or scope. Retain semantic review until a private claim receipt
+	// binds those meanings; matching values, units or date digits is not one.
+	if hasStructuredEvidence(state.RoundSteps) {
+		return false
+	}
 	if !e.config.CitationsEnabled() {
 		return true
 	}
 	ids := uniqueCandidateCitationIDs(candidate)
-	return len(ids) > 0 && len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) == len(ids)
+	evidenceIDs := uniqueCandidateEvidenceIDs(candidate)
+	return len(ids)+len(evidenceIDs) > 0 && len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) == len(ids) && len(e.currentCandidateEvidenceReferences(candidate, state)) == len(evidenceIDs)
 }
 
 // hasExecutedPDFAnalysis recognizes only current canonical results from the

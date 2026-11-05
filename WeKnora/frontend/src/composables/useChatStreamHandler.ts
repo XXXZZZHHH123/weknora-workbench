@@ -288,6 +288,14 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     return Array.isArray(refs) ? refs : []
   }
 
+  const applyEvidenceReferences = (data: ChatMessage) => {
+    const metadata = data.data as ChatMessage | undefined
+    const refs = data.evidence_references || metadata?.evidence_references
+    if (!Array.isArray(refs)) return
+    const message = resolveActiveAssistantMessage(data)
+    if (message) message.evidence_references = refs.slice()
+  }
+
   const replaySegments = new Map<string, ChatMessage>()
 
   /** Match the in-flight assistant row by request id or assistant message id. */
@@ -778,6 +786,8 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       if (!message.knowledge_references) {
         message.knowledge_references = payload.knowledge_references
       }
+      if (Array.isArray(payload.evidence_references)) message.evidence_references = payload.evidence_references
+      if (typeof payload.artifact_delivery_incomplete === 'boolean') message.artifact_delivery_incomplete = payload.artifact_delivery_incomplete
       if (payload.is_fallback) message.is_fallback = true
       if (payload.is_completed) message.is_completed = true
       emitMessageUpdated(message, payload)
@@ -1517,6 +1527,8 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
         if (dataId) replaySegments.delete(dataId)
         log('[Agent] Complete event received')
         applyFinalArtifactContent(message, (dataPayload as any)?.final_content)
+        if (Array.isArray((dataPayload as any)?.evidence_references)) message.evidence_references = (dataPayload as any).evidence_references
+        message.artifact_delivery_incomplete = (dataPayload as any)?.artifact_delivery_incomplete === true
         loading.value = false
         isReplying.value = false
         message.is_completed = true
@@ -1722,6 +1734,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
 
     if (data.response_type === 'references') {
       applyKnowledgeReferences(data)
+      applyEvidenceReferences(data)
       scrollToBottom()
       return
     }
@@ -1771,6 +1784,8 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       if (existingMessage.is_completed) return
       const metadata = data.data as ChatMessage | undefined
       applyFinalArtifactContent(existingMessage, metadata?.final_content)
+      if (Array.isArray(metadata?.evidence_references)) existingMessage.evidence_references = metadata.evidence_references
+      existingMessage.artifact_delivery_incomplete = metadata?.artifact_delivery_incomplete === true
       if (Array.isArray(metadata?.artifacts)) existingMessage.artifacts = metadata.artifacts
       const usage = metadata?.usage || data.usage
       if (usage) existingMessage.usage = usage

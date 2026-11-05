@@ -511,6 +511,7 @@ func (s *AutomationService) agentQA(
 		}
 		if finishStream == nil {
 			answer.Content = data.FinalAnswer
+			answer.EvidenceReferences = types.EvidenceReferencesFromInternal(data.EvidenceRefs)
 			answer.AgentDurationMs = data.TotalDurationMs
 			if steps, ok := data.AgentSteps.([]types.AgentStep); ok {
 				answer.AgentSteps = tools.SanitizeAgentStepsForStorage(steps)

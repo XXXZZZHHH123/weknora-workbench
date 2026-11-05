@@ -49,6 +49,39 @@ function setup() {
   return { handler, messagesList, isReplying, currentAssistantMessageId, turns }
 }
 
+test('typed evidence identity is retained in final SSE and history without borrowing knowledge chunks', async () => {
+  const refs = [{ id: 'ev_actual', kind: 'raw_cell', result_id: 'result', result_hash: 'a'.repeat(64), title: 'Actual source' }]
+  const live = setup()
+  live.handler.processStreamChunk({ response_type: 'agent_query', id: 'r1', assistant_message_id: 'a1' })
+  live.handler.processStreamChunk({ response_type: 'complete', id: 'r1', data: { final_content: 'Bound fact.', evidence_references: refs } })
+  assert.deepEqual(live.messagesList[0].evidence_references, refs)
+  assert.equal(live.messagesList[0].knowledge_references.length, 0)
+  const replay = setup()
+  await replay.handler.handleMsgList([{ id: 'a1', request_id: 'r1', role: 'assistant', content: 'Bound fact.', is_completed: true, evidence_references: refs }])
+  assert.deepEqual(replay.messagesList[0].evidence_references, refs)
+})
+
+test('mixed evidence and attachments replay the approved text and separate delivery failure metadata', async () => {
+  const refs = [{ id: 'ev_mixed', kind: 'raw_cell', result_id: 'actual', result_hash: 'c'.repeat(64) }]
+  const artifacts = [{ index: 0, handle: `resource://${'a'.repeat(22)}`, file_name: 'figure.png', file_type: '.png' }]
+  const candidate = '![Figure](sandbox:figure.png) <evidence evidence_id="ev_mixed" />'
+  const live = setup()
+  live.handler.processStreamChunk({ response_type: 'agent_query', id: 'r1', assistant_message_id: 'a1' })
+  live.handler.processStreamChunk({ response_type: 'complete', id: 'r1', data: {
+    final_content: candidate, evidence_references: refs, artifacts, artifact_delivery_incomplete: true,
+  } })
+  assert.equal(live.messagesList[0].content, candidate)
+  assert.equal(live.messagesList[0].artifact_delivery_incomplete, true)
+  assert.deepEqual(live.messagesList[0].artifacts, artifacts)
+  const replay = setup()
+  await replay.handler.handleMsgList([{ id: 'a1', request_id: 'r1', role: 'assistant', content: candidate,
+    is_completed: true, evidence_references: refs, artifacts, artifact_delivery_incomplete: true }])
+  assert.equal(replay.messagesList[0].content, candidate)
+  assert.equal(replay.messagesList[0].artifact_delivery_incomplete, true)
+  assert.deepEqual(replay.messagesList[0].artifacts, artifacts)
+  assert.deepEqual(replay.messagesList[0].evidence_references, refs)
+})
+
 const awaitingRow = () => ({
   id: 'a1', request_id: 'r1', role: 'assistant', content: '', is_completed: false,
   run_state: 'awaiting_input', agent_duration_ms: 1200,

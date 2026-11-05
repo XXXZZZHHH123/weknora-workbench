@@ -33,7 +33,10 @@ func (r *messageRepository) CreateMessage(
 		if err := tx.Create(message).Error; err != nil {
 			return err
 		}
-		return insertMessageArtifacts(tx, []*types.Message{message})
+		if err := insertMessageArtifacts(tx, []*types.Message{message}); err != nil {
+			return err
+		}
+		return insertMessageEvidence(tx, []*types.Message{message})
 	})
 	if err != nil {
 		return nil, err
@@ -281,7 +284,10 @@ func (r *messageRepository) UpdateMessage(ctx context.Context, message *types.Me
 		).Update("run_state", message.RunState).Error; err != nil {
 			return err
 		}
-		return writeMessageArtifacts(tx, message)
+		if err := writeMessageArtifacts(tx, message); err != nil {
+			return err
+		}
+		return writeMessageEvidence(tx, message)
 	})
 }
 
@@ -322,6 +328,13 @@ func (r *messageRepository) DeleteMessagesFrom(
 		if err := invalidateDependentCheckpoints(tx, deleted[0]); err != nil {
 			return err
 		}
+		ids := make([]string, len(deleted))
+		for i, message := range deleted {
+			ids[i] = message.ID
+		}
+		if err := deleteMessageEvidence(tx, sessionID, ids); err != nil {
+			return err
+		}
 		return scope().Delete(&types.Message{}).Error
 	})
 	if err != nil {
@@ -332,9 +345,12 @@ func (r *messageRepository) DeleteMessagesFrom(
 
 // DeleteMessage deletes a message
 func (r *messageRepository) DeleteMessage(ctx context.Context, sessionID string, messageID string) error {
-	return r.db.WithContext(ctx).Where(
-		"id = ? AND session_id = ?", messageID, sessionID,
-	).Delete(&types.Message{}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := deleteMessageEvidence(tx, sessionID, []string{messageID}); err != nil {
+			return err
+		}
+		return tx.Where("id = ? AND session_id = ?", messageID, sessionID).Delete(&types.Message{}).Error
+	})
 }
 
 // GetFirstMessageOfUser retrieves the first message from a user in a session
@@ -577,7 +593,12 @@ func (r *messageRepository) GetLatestContextCheckpoint(
 
 // DeleteMessagesBySessionID deletes all messages belonging to a session (soft delete)
 func (r *messageRepository) DeleteMessagesBySessionID(ctx context.Context, sessionID string) error {
-	return r.db.WithContext(ctx).Where("session_id = ?", sessionID).Delete(&types.Message{}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("session_id = ?", sessionID).Delete(&types.MessageEvidenceRecord{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("session_id = ?", sessionID).Delete(&types.Message{}).Error
+	})
 }
 
 // UpdateMessageKnowledgeID updates the knowledge_id field for a message

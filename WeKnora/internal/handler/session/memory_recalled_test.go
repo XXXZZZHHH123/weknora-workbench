@@ -21,7 +21,7 @@ func TestMemoryRecalledClearSurvivesMessageSaveAndReload(t *testing.T) {
 		t.Run(fmt.Sprintf("nil=%v", empty == nil), func(t *testing.T) {
 			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 			require.NoError(t, err)
-			require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}))
+			require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}, &types.MessageEvidenceRecord{}))
 			sqlDB, err := db.DB()
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = sqlDB.Close() })

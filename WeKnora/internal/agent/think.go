@@ -197,6 +197,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		}
 		citationPolicy := e.sourceCitationReviewPolicy(state, messages)
 		inputData["source_citation_policy"] = citationPolicy
+		inputData["structured_citation_evidence"] = e.structuredCitationReviewDirectory(content, state)
 		common.PipelineInfo(ctx, "Agent", "source_citation_policy", map[string]interface{}{
 			"enabled": citationPolicy["enabled"], "available_anchor_count": citationPolicy["available_anchor_count"],
 			"included_anchor_count": len(citationPolicy["available_anchors"].([]any)), "omitted_anchor_count": citationPolicy["omitted_anchor_count"],

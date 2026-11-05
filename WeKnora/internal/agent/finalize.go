@@ -299,9 +299,14 @@ func (e *AgentEngine) emitCompletionEvent(
 	for _, ref := range knowledgeRefs {
 		knowledgeRefsInterface = append(knowledgeRefsInterface, ref)
 	}
+	evidenceRefs := make([]interface{}, 0, len(state.EvidenceRefs))
+	for _, ref := range state.EvidenceRefs {
+		evidenceRefs = append(evidenceRefs, ref)
+	}
 
 	data := event.AgentCompleteData{
 		Artifacts:       e.collaborationArtifacts(),
+		EvidenceRefs:    evidenceRefs,
 		FinalAnswer:     state.FinalAnswer,
 		KnowledgeRefs:   knowledgeRefsInterface,
 		AgentSteps:      steps,

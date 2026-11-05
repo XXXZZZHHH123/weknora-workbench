@@ -62,6 +62,24 @@ test('saved PNG charts render as protected inline images from image or link Mark
   }
 })
 
+test('approved sandbox and resource chart text retains clickable evidence and attachments without a storage rewrite', () => {
+  for (const source of [{ handle: artifactHref }, { url: artifactHref }]) {
+    const artifacts = [{ index: 0, file_name: 'figure.png', file_type: '.png', ...source }]
+    const renderRef = ({ href, text }: { href: string; text: string }) => renderArtifactReference({
+      href, alt: text, artifacts, labels: artifactLabels, context: { sessionId: 'saved-session', messageId: 'saved-message' },
+    })
+    const renderer = createChatMarkdownRenderer({ linkRenderer: renderRef, imageRenderer: args => renderRef(args) || '' })
+    for (const destination of ['sandbox:figure.png', artifactHref]) {
+      const candidate = `![Figure](${destination}) <evidence evidence_id="ev_mixed" />`
+      const html = renderChatMarkdown(candidate, { renderer, escapeMarkdown: value => value, sanitizeHtml: value => value })
+      assert.match(html, /data-artifact-index="0"/)
+      assert.match(html, /data-evidence-id="ev_mixed"/)
+      assert.match(html, /class="markdown-image artifact-ref-image"/)
+      assert.doesNotMatch(html, /src="(?:sandbox:|resource:\/\/)/)
+    }
+  }
+})
+
 test('artifact metadata arriving after answer text turns the same link into a card', () => {
   let artifacts: ArtifactRefMeta[] = []
   const render = artifactMarkdown(() => artifacts)

@@ -1,5 +1,5 @@
 <template>
-    <div class="bot_msg" :class="{ 'is-embedded': embeddedMode }">
+    <div class="bot_msg" :class="{ 'is-embedded': embeddedMode }" @click.capture="handleEvidenceCitation" @keydown.capture="handleEvidenceCitation">
         <div class="bot-message-context">
             <AnswerProgress :session="session" />
             <!-- 显示@的知识库和文件（非 Agent 模式下显示） -->
@@ -131,6 +131,8 @@
             <div v-if="isImgLoading" class="img_loading"><t-loading size="small"></t-loading><span>{{
                 $t('common.loading') }}</span></div>
         </div>
+        <t-alert v-if="!session.isAgentMode && session.artifact_delivery_incomplete" theme="warning" :message="t('evidence.deliveryIncomplete')" />
+        <MessageEvidencePanel v-if="!embeddedMode && !session.isAgentMode && session.evidence_references?.length" ref="evidencePanel" :session-id="sessionId" :message-id="persistedAssistantId(session) || session.id" :references="session.evidence_references" />
         <picturePreview :reviewImg="reviewImg" :reviewUrl="reviewUrl" @closePreImg="closePreImg"></picturePreview>
         <Teleport to="body">
             <ChatCitationFloat :float="citationFloat" :on-enter="cancelCitationClose"
@@ -158,6 +160,7 @@ import ChatActionIcon from '@/components/ChatActionIcon.vue';
 import AssistantActionsButton from '@/components/assistant/AssistantActionsButton.vue';
 import ChatRequestInfoButton from '@/components/ChatRequestInfoButton.vue';
 import ChatCitationFloat from '@/components/ChatCitationFloat.vue';
+import MessageEvidencePanel from '@/components/MessageEvidencePanel.vue';
 import picturePreview from '@/components/picture-preview.vue';
 import ChatArtifactsDrawer from './ChatArtifactsDrawer.vue';
 import { isCollectingSkillArtifacts } from '@/utils/skillArtifacts';
@@ -264,6 +267,19 @@ const props = defineProps({
         default: false
     }
 });
+
+const evidencePanel = ref(null);
+function handleEvidenceCitation(event) {
+    if (props.session?.isAgentMode) return;
+    if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+    const target = event.target instanceof Element ? event.target.closest('.citation-evidence') : null;
+    if (!target || !evidencePanel.value) return;
+    const id = target.getAttribute('data-evidence-id');
+    if (!props.session?.evidence_references?.some(ref => ref.id === id)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    evidencePanel.value.open(id);
+}
 // The popover evaluates sessionId during setup, so it must follow defineProps.
 const { float: citationFloat, rebind: rebindCitations, cancelClose: cancelCitationClose, scheduleClose: scheduleCitationClose } = useChatCitationPopover(parentMd, {
     getKnowledgeReferences: () => props.session?.knowledge_references,

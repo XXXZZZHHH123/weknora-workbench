@@ -466,6 +466,9 @@ func (r *sessionRepository) CreateForkedWithAssignment(
 			if err := insertMessageArtifacts(tx, messages); err != nil {
 				return err
 			}
+			if err := insertMessageEvidence(tx, messages); err != nil {
+				return err
+			}
 		}
 		if assignment == nil {
 			return nil

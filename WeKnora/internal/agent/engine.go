@@ -41,6 +41,7 @@ const langfuseQueryPreview = 2000
 // cross-turn buffer.
 type AgentEngine struct {
 	turnReview                       turnReviewState
+	replayingEvidenceHistory         bool           // replay is navigation, never a fresh structured execution
 	structuredReviewMode             bool           // bounded source review must not restart open-ended reasoning
 	reviewedAnswerDeliveryRepairUsed bool           // at most one protocol-only serialization repair per turn
 	answerReviewFeedback             string         // bounded semantic review advice, never source evidence
@@ -402,6 +403,7 @@ func (e *AgentEngine) Execute(
 	llmContext []chat.Message,
 	imageURLs ...[]string,
 ) (*types.AgentState, error) {
+	e.turnReview = turnReviewState{}
 	e.memoryAcceptedSteers = nil
 	e.structuredReviewMode = false
 	e.reviewedAnswerDeliveryRepairUsed = false
@@ -830,7 +832,15 @@ func (e *AgentEngine) executeLoop(
 	// Keep a turn-local snapshot of real conversation through the last human
 	// request. Later assistant plans, tool exchanges and synthetic reviewer
 	// envelopes belong to the runtime transcript, not the semantic history.
-	e.turnReview = turnReviewState{}
+	// Discovery may already have appended actual current reads. Reset review
+	// decisions without discarding their request-local evidence handles. Resume
+	// suppresses registration while replaying old steps; Execute clears these
+	// maps before any new turn work begins.
+	e.turnReview = turnReviewState{
+		StructuredCitations:     e.turnReview.StructuredCitations,
+		StructuredCitationCalls: e.turnReview.StructuredCitationCalls,
+		StructuredCitationNonce: e.turnReview.StructuredCitationNonce,
+	}
 	e.reviewConversation = conversationThroughLastHuman(messages)
 	e.reviewConversationReady = true
 	defer func() {

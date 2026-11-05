@@ -27,6 +27,7 @@ services:
       DB_DRIVER: postgres
       DB_HOST: postgres
       DB_PORT: "5432"
+      AUTO_RECOVER_DIRTY: "false"
       RETRIEVE_DRIVER: postgres
       REDIS_ADDR: redis:6379
       DOCREADER_ADDR: docreader:50051

@@ -607,6 +607,7 @@ func (s *AgentCollaboration) run(ctx context.Context, w collaboration.Work) (col
 		// references and artifacts. Do not append the final answer twice.
 		if finishStream == nil {
 			answer.Content = data.FinalAnswer
+			answer.EvidenceReferences = types.EvidenceReferencesFromInternal(data.EvidenceRefs)
 			answer.AgentDurationMs = data.TotalDurationMs
 			if steps, ok := data.AgentSteps.([]types.AgentStep); ok {
 				answer.AgentSteps = tools.SanitizeAgentStepsForStorage(steps)

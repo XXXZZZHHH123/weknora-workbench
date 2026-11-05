@@ -16,7 +16,7 @@ const sourceHandleProtocolPrompt = `
 
 ## Source handling protocol (system-owned)
 Retrieved content uses request-local source handles: chunk://N identifies a knowledge chunk, url://N a web page,
-  doc://N a document, and kb://N a knowledge base.
+  doc://N a document, kb://N a knowledge base, and evidence://N a verified current structured observation or calculation.
 - Copy handles exactly, in this form, wherever you refer to the source: tool arguments, instructions or prompts
   you write for other agents or automations, Markdown links, and your answer. The system replaces them with the
   real URL or a stable reference after generation, so a handle in saved text still points to the same source
@@ -26,9 +26,10 @@ Retrieved content uses request-local source handles: chunk://N identifies a know
 
 const citationEnabledProtocolPrompt = `
 - Source citations are enabled for this answer. Cite a knowledge chunk with exactly <ref id="chunk://N"/> and a web page with exactly <ref id="url://N"/>.
+- Cite a current table observation or calculation with exactly <ref id="evidence://N"/> from the server's structured_evidence_citations directory. Select the actual output cell or calculation supporting the adjacent claim, including its scope and unit. A calculation citation means computed from the supplied inputs, not a value printed in a PDF cell. Do not fetch an unrelated document chunk just to add a citation when this genuine result citation already supports the claim.
 - When a material answer claim uses current knowledge-source content and a supporting chunk handle is available, include its inline citation. A plain filename or table title does not satisfy enabled citations. Select the actual supporting chunk; do not attach every retrieved candidate or borrow an unrelated same-page chunk.
 - Copy the complete handle, including its numeric index, verbatim from the supporting result. N in the syntax above is a schema placeholder, never a literal citation identifier.
-- Cite only chunk://N/url://N handles backed by tool results for the current task, and only when that source supports the adjacent
+- Cite only chunk://N/url://N/evidence://N handles backed by tool results for the current task, and only when that source supports the adjacent
   claim. Never cite doc://N/kb://N.
 - Each chunk://N covers only its own supplied text or image evidence, not every chunk of the same document.
   For a direct quotation, verify that the quoted words occur in the cited chunk://N. Use the later chunk's handle
@@ -42,14 +43,14 @@ const citationEnabledProtocolPrompt = `
   are links observed in the result, not proof that every linked page was read.
 - If a source has no citation handle, use its exact supplied HTTP(S) URL as a Markdown link when available.
   If neither is available, omit the citation; never invent or borrow a source.
-- Never output <kb> or <web> tags yourself; the system expands valid <ref/> tags after generation.
+- Never output <kb>, <web> or <evidence> tags yourself; the system expands valid <ref/> tags after generation.
 - Keep each <ref/> inline on the same line as the claim it supports. Do not group citations ` +
 	`at the end. For a requested exact output format, use citations only where the format ` +
 	`permits them; do not break a required schema to add citations.
 - These rules supersede earlier, saved, or custom prompt instructions about citation syntax.`
 
 const citationDisabledProtocolPrompt = `
-- Source citations are disabled for this answer. Do not add <ref>, <kb>, <web>, or source ` +
+- Source citations are disabled for this answer. Do not add <ref>, <kb>, <web>, <evidence>, or source ` +
 	`attribution links to the answer. This does not prohibit a URL explicitly requested by the ` +
 	`user, Wiki navigation links, downloadable deliverables, or relevant image URLs.
 - These rules supersede earlier, saved, or custom prompt instructions that require source citations.`
@@ -75,6 +76,8 @@ func (r *sourceRegistry) ProtocolPrompt() string {
 var (
 	publicKBTagRE        = regexp.MustCompile(`(?is)<kb\b[^>]*>`)
 	publicWebTagRE       = regexp.MustCompile(`(?is)<web\b[^>]*>`)
+	publicEvidenceTagRE  = regexp.MustCompile(`(?is)<evidence\b[^>]*>`)
+	evidenceAttrRE       = regexp.MustCompile(`(?i)\bevidence_id\s*=\s*"([^"]+)"`)
 	docAttrRE            = regexp.MustCompile(`(?i)\bdoc\s*=\s*"([^"]*)"`)
 	chunkAttrRE          = regexp.MustCompile(`(?i)\bchunk_id\s*=\s*"([^"]+)"`)
 	publicKBAttrRE       = regexp.MustCompile(`(?i)\bkb_id\s*=\s*"([^"]*)"`)
@@ -111,6 +114,13 @@ func (r *sourceRegistry) CompactPublicCitations(text string, evidence bool) stri
 	if r == nil || text == "" {
 		return text
 	}
+	text = publicEvidenceTagRE.ReplaceAllStringFunc(text, withJSONCitationEscaping(func(tag string) string {
+		handle := r.registerEvidence(EvidenceCitation{ID: publicAttr(evidenceAttrRE, tag)}, false)
+		if handle == "" {
+			return ""
+		}
+		return `<ref id="` + handle + `"/>`
+	}))
 	text = publicKBTagRE.ReplaceAllStringFunc(text, withJSONCitationEscaping(func(tag string) string {
 		chunkID := publicAttr(chunkAttrRE, tag)
 		if chunkID == "" {
@@ -161,13 +171,14 @@ func publicAttr(expression *regexp.Regexp, tag string) string {
 }
 
 var (
-	refTagRE       = regexp.MustCompile(`(?i)<ref\s+id\s*=\s*"([^"]+)"\s*/?>`)
-	refCandidateRE = regexp.MustCompile(`(?is)<ref(?:\s|$)[^>]*(?:>|$)`)
-	modelKBTagRE   = regexp.MustCompile(`(?is)<kb(?:\s|$)[^>]*(?:>|$)`)
-	modelWebTagRE  = regexp.MustCompile(`(?is)<web(?:\s|$)[^>]*(?:>|$)`)
+	refTagRE           = regexp.MustCompile(`(?i)<ref\s+id\s*=\s*"([^"]+)"\s*/?>`)
+	refCandidateRE     = regexp.MustCompile(`(?is)<ref(?:\s|$)[^>]*(?:>|$)`)
+	modelKBTagRE       = regexp.MustCompile(`(?is)<kb(?:\s|$)[^>]*(?:>|$)`)
+	modelWebTagRE      = regexp.MustCompile(`(?is)<web(?:\s|$)[^>]*(?:>|$)`)
+	modelEvidenceTagRE = regexp.MustCompile(`(?is)<evidence(?:\s|$)[^>]*(?:>|$)`)
 )
 
-var jsonCitationTagRE = regexp.MustCompile(`(?i)^<(?:ref|kb|web)\s+[a-z_]+\s*=\s*\\"`)
+var jsonCitationTagRE = regexp.MustCompile(`(?i)^<(?:ref|kb|web|evidence)\s+[a-z_]+\s*=\s*\\"`)
 
 var (
 	documentAttrRE    = regexp.MustCompile(`(?i)\bknowledge_id\s*=\s*"([^"]+)"`)
@@ -210,6 +221,7 @@ func (r *sourceRegistry) ExpandText(text string) string {
 	// by the model, then create canonical tags solely from registered handles.
 	text = modelKBTagRE.ReplaceAllString(text, "")
 	text = modelWebTagRE.ReplaceAllString(text, "")
+	text = modelEvidenceTagRE.ReplaceAllString(text, "")
 	return refCandidateRE.ReplaceAllStringFunc(text, func(tag string) string {
 		return rewriteRefTag(r, tag)
 	})
@@ -234,6 +246,9 @@ func (r *sourceRegistry) citationTag(handle string) string {
 	}
 	if rawURL, web, ok := r.webs.resolve(handle); ok {
 		return fmt.Sprintf(`<web url="%s" title="%s" />`, escapeAttr(rawURL), escapeAttr(web.title))
+	}
+	if id, _, ok := r.evidence.resolve(handle); ok {
+		return fmt.Sprintf(`<evidence evidence_id="%s" />`, escapeAttr(id))
 	}
 	return ""
 }
@@ -282,7 +297,7 @@ func (d *citationStreamExpander) Feed(chunk string) string {
 			data = data[end+1:]
 			continue
 		}
-		if isNamedTagStart(lower, "kb") || isNamedTagStart(lower, "web") {
+		if isNamedTagStart(lower, "kb") || isNamedTagStart(lower, "web") || isNamedTagStart(lower, "evidence") {
 			end := strings.IndexByte(data, '>')
 			if end < 0 {
 				d.pending = data
@@ -314,7 +329,7 @@ func isNamedTagStart(value, name string) bool {
 }
 
 func isSourceTagPending(value string) bool {
-	for _, name := range []string{"ref", "kb", "web"} {
+	for _, name := range []string{"ref", "kb", "web", "evidence"} {
 		prefix := "<" + name
 		if (len(value) <= len(prefix) && strings.HasPrefix(prefix, value)) || isNamedTagStart(value, name) {
 			return true

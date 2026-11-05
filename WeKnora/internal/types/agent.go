@@ -100,6 +100,7 @@ const UnlimitedMaxIterations = -1
 // AgentConfig represents the full agent configuration (used at tenant level and runtime)
 // This includes all configuration parameters for agent execution
 type AgentConfig struct {
+	EvidenceReferencesEnabled bool `json:"-"`                                // Negotiated runtime client protocol, never a saved/custom/model configuration.
 	WorkbenchDefault          bool `json:"-"`                                // scoped ordinary-chat runtime, never a user configurable agent preset
 	TaskPlanningEnabled       bool `json:"-"`                                // internal, per-request tool projection; never changes authorization
 	CandidateAdditionsEnabled bool `json:"-"`                                // internal source-grounded deletion pass, enabled explicitly by the workbench runtime
@@ -596,6 +597,7 @@ type AgentState struct {
 	IsComplete           bool                  `json:"is_complete"`    // Whether agent has finished
 	FinalAnswer          string                `json:"final_answer"`   // The final answer to the query
 	KnowledgeRefs        []*SearchResult       `json:"knowledge_refs"` // Collected knowledge references
+	EvidenceRefs         EvidenceReferences    `json:"-"`              // This run's final approved evidence; no reusable reviewer receipt.
 	TurnUsage            TokenUsage            `json:"turn_usage"`     // LLM usage accumulated across this turn
 	// Suspended is set when the run ended waiting on a user prompt.
 	// SuspendedStep is the interrupted round: its thought and the calls

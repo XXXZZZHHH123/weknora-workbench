@@ -1023,6 +1023,13 @@ func (e *AgentEngine) appendToolResults(
 	messages []chat.Message,
 	step types.AgentStep,
 ) []chat.Message {
+	return e.appendToolResultsWithReplayPrefix(messages, step, 0)
+}
+
+// A resumed pending round contains an old completed prefix and freshly run
+// suffix. Both retain their exact transcript, but only the suffix may register
+// current evidence. This is independent of the unchanged provider call IDs.
+func (e *AgentEngine) appendToolResultsWithReplayPrefix(messages []chat.Message, step types.AgentStep, replayPrefix int) []chat.Message {
 	// Add assistant message with tool calls (if any). The reasoning artifacts
 	// count as content of their own: an Anthropic round can consist purely of
 	// a redacted_thinking block, and dropping the turn loses state the next
@@ -1060,8 +1067,13 @@ func (e *AgentEngine) appendToolResults(
 	}
 
 	// Add tool result messages (role: "tool", following OpenAI format)
-	for _, toolCall := range step.ToolCalls {
+	for callIndex, toolCall := range step.ToolCalls {
+		structuredCitations := ""
+		if callIndex >= replayPrefix {
+			structuredCitations = e.currentStructuredCitationView(toolCall)
+		}
 		resultContent := e.modelContext.ModelToolResultForTool(toolCall.Name, toolCall.Result)
+		resultContent += structuredCitations
 
 		toolMsg := chat.Message{
 			Role:       "tool",

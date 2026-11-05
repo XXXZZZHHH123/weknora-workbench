@@ -41,10 +41,11 @@ type sourceRegistry struct {
 	// not evidence until a current tool result supplies the source.
 	citable sync.Map // handle -> true; registrations may run concurrently
 
-	chunks *handleTable[ChunkReference]
-	docs   *handleTable[struct{}]
-	kbs    *handleTable[struct{}]
-	webs   *handleTable[webMeta]
+	chunks   *handleTable[ChunkReference]
+	docs     *handleTable[struct{}]
+	kbs      *handleTable[struct{}]
+	webs     *handleTable[webMeta]
+	evidence *handleTable[EvidenceCitation]
 }
 
 func newSourceRegistry(citationsEnabled ...bool) *sourceRegistry {
@@ -58,6 +59,7 @@ func newSourceRegistry(citationsEnabled ...bool) *sourceRegistry {
 		docs:             newHandleTable[struct{}](docHandlePrefix, 0, 1),
 		kbs:              newHandleTable[struct{}](kbHandlePrefix, 0, 1),
 		webs:             newHandleTable[webMeta](webHandlePrefix, 0, 1),
+		evidence:         newHandleTable[EvidenceCitation](evidenceHandlePrefix, 0, 1),
 	}
 }
 
@@ -65,7 +67,7 @@ func (r *sourceRegistry) Count() int {
 	if r == nil {
 		return 0
 	}
-	return r.chunks.size() + r.webs.size()
+	return r.chunks.size() + r.webs.size() + r.evidence.size()
 }
 
 // knownHandle implements the shared guard for handle-shaped registration

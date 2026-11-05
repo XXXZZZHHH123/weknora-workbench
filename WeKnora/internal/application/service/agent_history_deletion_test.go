@@ -30,7 +30,7 @@ func checkRewoundSteerHistory(t *testing.T, checkpointed bool) {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}))
+	require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}, &types.MessageEvidenceRecord{}))
 	repo := repository.NewMessageRepository(db)
 	ctx := t.Context()
 	const session = "rewind-session"

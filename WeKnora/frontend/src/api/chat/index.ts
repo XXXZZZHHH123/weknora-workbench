@@ -63,7 +63,7 @@ export async function rewindSession(
 }
 
 export async function knowledgeChat(data: { session_id: string; query: string; }) {
-  return postChat(`/api/v1/knowledge-chat/${data.session_id}`, { query: data.query, channel: "web" });
+  return postChat(`/api/v1/knowledge-chat/${data.session_id}`, { query: data.query, channel: "web" }, { headers: { 'X-WeKnora-Evidence-Version': '1' } });
 }
 
 // Agent chat with streaming support
@@ -78,7 +78,7 @@ export async function agentChat(data: {
     knowledge_base_ids: data.knowledge_base_ids,
     agent_enabled: data.agent_enabled,
     channel: "web"
-  });
+  }, { headers: { 'X-WeKnora-Evidence-Version': '1' } });
 }
 
 export async function getMessageList(data: { session_id: string; limit: number, created_at: string }) {

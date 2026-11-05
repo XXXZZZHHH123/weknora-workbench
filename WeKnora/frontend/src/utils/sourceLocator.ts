@@ -19,6 +19,8 @@ export type SourceLocator = {
   sheet?: string
   row_start?: number
   row_end?: number
+  column_start?: number
+  column_end?: number
   start?: number
   end?: number
   start_ms?: number

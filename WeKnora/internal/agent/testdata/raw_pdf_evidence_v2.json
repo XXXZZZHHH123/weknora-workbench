@@ -1,0 +1,423 @@
+{
+  "kind": "structured_source_inspection",
+  "source_kind": "pdf_table",
+  "status": "ok",
+  "source": {
+    "file_name": "Synthetic.pdf",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "knowledge_id": "doc-synthetic",
+    "knowledge_base_id": "kb-synthetic"
+  },
+  "table_id": "pdft_synthetic",
+  "columns": [
+    {
+      "name": "label",
+      "type": "text"
+    },
+    {
+      "name": "c1",
+      "type": "decimal",
+      "unit": "kg"
+    },
+    {
+      "name": "c2",
+      "type": "decimal",
+      "unit": "kg"
+    },
+    {
+      "name": "c3",
+      "type": "decimal",
+      "unit": "kg"
+    }
+  ],
+  "rows": [
+    {
+      "values": {
+        "label": "Period",
+        "c1": "2031",
+        "c2": "2033",
+        "c3": "2038"
+      },
+      "source_cells": {
+        "label": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 0,
+            "column": 0,
+            "text": "Period",
+            "bbox": [
+              0.0,
+              0.16666666666666666,
+              0.2,
+              0.3
+            ]
+          }
+        ],
+        "c1": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 0,
+            "column": 1,
+            "text": "2031",
+            "bbox": [
+              0.2,
+              0.16666666666666666,
+              0.4,
+              0.3
+            ]
+          }
+        ],
+        "c2": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 0,
+            "column": 2,
+            "text": "2033",
+            "bbox": [
+              0.4,
+              0.16666666666666666,
+              0.6,
+              0.3
+            ]
+          }
+        ],
+        "c3": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 0,
+            "column": 3,
+            "text": "2038",
+            "bbox": [
+              0.6,
+              0.16666666666666666,
+              0.8,
+              0.3
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "values": {
+        "label": "Measure A",
+        "c1": "12.500",
+        "c2": "15.000",
+        "c3": "20.000"
+      },
+      "source_cells": {
+        "label": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 1,
+            "column": 0,
+            "text": "Measure A",
+            "bbox": [
+              0.0,
+              0.3333333333333333,
+              0.2,
+              0.4666666666666666
+            ]
+          }
+        ],
+        "c1": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 1,
+            "column": 1,
+            "text": "12.500",
+            "bbox": [
+              0.2,
+              0.3333333333333333,
+              0.4,
+              0.4666666666666666
+            ]
+          }
+        ],
+        "c2": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 1,
+            "column": 2,
+            "text": "15.000",
+            "bbox": [
+              0.4,
+              0.3333333333333333,
+              0.6,
+              0.4666666666666666
+            ]
+          }
+        ],
+        "c3": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 1,
+            "column": 3,
+            "text": "20.000",
+            "bbox": [
+              0.6,
+              0.3333333333333333,
+              0.8,
+              0.4666666666666666
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "values": {
+        "label": "Measure B",
+        "c1": "12.500",
+        "c2": "24.000",
+        "c3": "30.000"
+      },
+      "source_cells": {
+        "label": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 2,
+            "column": 0,
+            "text": "Measure B",
+            "bbox": [
+              0.0,
+              0.5,
+              0.2,
+              0.6333333333333333
+            ]
+          }
+        ],
+        "c1": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 2,
+            "column": 1,
+            "text": "12.500",
+            "bbox": [
+              0.2,
+              0.5,
+              0.4,
+              0.6333333333333333
+            ]
+          }
+        ],
+        "c2": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 2,
+            "column": 2,
+            "text": "24.000",
+            "bbox": [
+              0.4,
+              0.5,
+              0.6,
+              0.6333333333333333
+            ]
+          }
+        ],
+        "c3": [
+          {
+            "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "page": 3,
+            "row": 2,
+            "column": 3,
+            "text": "30.000",
+            "bbox": [
+              0.6,
+              0.5,
+              0.8,
+              0.6333333333333333
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "offset": 0,
+  "total_row_count": 3,
+  "output_truncated": false,
+  "coverage": {
+    "table_input_complete": true
+  },
+  "record_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "plan_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "result_contract": {
+    "schema_version": 2,
+    "hash_algorithm": "sha256-typed-json-v1",
+    "result_id": "9669ce56c65ef2a9c5c8697f",
+    "hash_input_keys": [
+      "bundle_sha256",
+      "columns",
+      "coverage",
+      "offset",
+      "output_truncated",
+      "plan_sha256",
+      "record_sha256",
+      "rows",
+      "source",
+      "table_id",
+      "total_row_count"
+    ],
+    "source_snapshot": {
+      "kind": "pdf_table",
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "file": "Synthetic.pdf",
+      "versions": {
+        "record_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "plan_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "input_digest_sha256": "61417c1af23ea51d4bd3f3c2c4df73a7419dccabd47de723815e87e5e80a3870",
+      "knowledge_base_id": "kb-synthetic",
+      "knowledge_id": "doc-synthetic",
+      "table_id": "pdft_synthetic",
+      "scope": "returned_source_rows"
+    },
+    "execution": {
+      "kind": "raw_read",
+      "engine": "pdf_table_store",
+      "engine_version": "fixture-v1",
+      "numeric_semantics": "exact_source_text",
+      "input_scope": "returned_source_rows",
+      "cell_lineage_verified": false
+    },
+    "column_metadata": [
+      {
+        "index": 0,
+        "name": "label",
+        "display_name": "label",
+        "logical_type": "text",
+        "dependency": {
+          "kind": "source_value",
+          "source_columns": [
+            "label"
+          ],
+          "source_row_dependency": false,
+          "technical_metadata": false
+        },
+        "unit": {
+          "status": "unknown",
+          "evidence_level": "none",
+          "binding_scope": "result_column",
+          "evidence": [],
+          "reason": "No bound unit declaration for this expression"
+        }
+      },
+      {
+        "index": 1,
+        "name": "c1",
+        "display_name": "c1",
+        "logical_type": "decimal",
+        "dependency": {
+          "kind": "source_value",
+          "source_columns": [
+            "c1"
+          ],
+          "source_row_dependency": false,
+          "technical_metadata": false
+        },
+        "unit": {
+          "status": "declared",
+          "symbol": "kg",
+          "evidence_level": "reviewed_plan_declaration",
+          "binding_scope": "result_column",
+          "evidence": [
+            {
+              "source_column": "c1",
+              "declared_unit": "kg",
+              "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "table_id": "pdft_synthetic",
+              "plan_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "binding_scope": "reviewed_logical_column_declaration",
+              "original_annotation_verified": false
+            }
+          ]
+        }
+      },
+      {
+        "index": 2,
+        "name": "c2",
+        "display_name": "c2",
+        "logical_type": "decimal",
+        "dependency": {
+          "kind": "source_value",
+          "source_columns": [
+            "c2"
+          ],
+          "source_row_dependency": false,
+          "technical_metadata": false
+        },
+        "unit": {
+          "status": "declared",
+          "symbol": "kg",
+          "evidence_level": "reviewed_plan_declaration",
+          "binding_scope": "result_column",
+          "evidence": [
+            {
+              "source_column": "c2",
+              "declared_unit": "kg",
+              "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "table_id": "pdft_synthetic",
+              "plan_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "binding_scope": "reviewed_logical_column_declaration",
+              "original_annotation_verified": false
+            }
+          ]
+        }
+      },
+      {
+        "index": 3,
+        "name": "c3",
+        "display_name": "c3",
+        "logical_type": "decimal",
+        "dependency": {
+          "kind": "source_value",
+          "source_columns": [
+            "c3"
+          ],
+          "source_row_dependency": false,
+          "technical_metadata": false
+        },
+        "unit": {
+          "status": "declared",
+          "symbol": "kg",
+          "evidence_level": "reviewed_plan_declaration",
+          "binding_scope": "result_column",
+          "evidence": [
+            {
+              "source_column": "c3",
+              "declared_unit": "kg",
+              "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "table_id": "pdft_synthetic",
+              "plan_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "binding_scope": "reviewed_logical_column_declaration",
+              "original_annotation_verified": false
+            }
+          ]
+        }
+      }
+    ],
+    "evidence_capabilities": {
+      "level": "source_cells",
+      "column_dependencies_verified": false,
+      "cell_lineage_verified": false,
+      "source_cells_available": true,
+      "aggregate_membership_verified": false
+    },
+    "result_hash": "46a2a2d542dcffef82f72a41ff49cb8f18343d563d4fd8c04f2a1b077e81d275"
+  },
+  "source_context": {
+    "knowledge_base_id": "kb-synthetic",
+    "knowledge_base_tenant_id": 7
+  }
+}
