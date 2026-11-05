@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"strings"
 
 	"github.com/Tencent/WeKnora/internal/chart"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -14,6 +13,7 @@ func (e *AgentEngine) finalChartEvidenceReferences(state *types.AgentState, exis
 	if state == nil {
 		return nil
 	}
+	images := visibleChartImageHandles(state.FinalAnswer)
 	bySource := map[string]types.ToolCall{}
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {
@@ -47,7 +47,7 @@ func (e *AgentEngine) finalChartEvidenceReferences(state *types.AgentState, exis
 				continue
 			}
 			handle, ok := types.ParseResourcePath(delivery.Handle)
-			if !ok || !strings.Contains(state.FinalAnswer, "]("+delivery.Handle+")") {
+			if !ok || !images[handle] {
 				continue
 			}
 			parent, ok := bySource[citationString(data["source_id"])]
