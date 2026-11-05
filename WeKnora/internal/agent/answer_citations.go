@@ -330,11 +330,12 @@ func (e *AgentEngine) publishFinalKnowledgeReferences(ctx context.Context, state
 	if !approved {
 		_, approved = e.numericWarningDelivery(state.FinalAnswer, state)
 	}
-	if !approved {
+	if approved {
+		state.KnowledgeRefs = e.finalAnswerKnowledgeReferences(state)
+		state.EvidenceRefs = e.finalAnswerEvidenceReferences(state)
+	} else if !e.publishUnverifiedCitationReferences(ctx, state) {
 		return
 	}
-	state.KnowledgeRefs = e.finalAnswerKnowledgeReferences(state)
-	state.EvidenceRefs = e.finalAnswerEvidenceReferences(state)
 	common.PipelineInfo(ctx, "Agent", "final_citation_delivery", map[string]interface{}{
 		"enabled": e.config.CitationsEnabled(), "canonical_citation_count": len(uniqueCandidateCitationIDs(state.FinalAnswer)),
 		"published_reference_count": len(state.KnowledgeRefs),

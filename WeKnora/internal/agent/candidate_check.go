@@ -32,9 +32,12 @@ type candidateDecision struct {
 	CandidateHash   string
 	TaskHash        string
 	EvidenceHash    string
-	Unsupported     []string
-	NumericFeedback map[string]any
-	Err             error
+	SourceScopeHash string // Runtime scope at the check; never supplied by a model.
+	// Set only after the numeric guards and immediately before source review.
+	SourceReviewAttempted bool
+	Unsupported           []string
+	NumericFeedback       map[string]any
+	Err                   error
 }
 
 type turnReviewState struct {
@@ -58,6 +61,7 @@ type turnReviewState struct {
 	UnverifiedUserNotice       string
 	UnverifiedDecision         candidateDecision
 	NumericWarningAllowed      bool
+	UnverifiedCitationDelivery *unverifiedCitationDeliveryBinding
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while
@@ -94,10 +98,11 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
 	decision = candidateDecision{Disposition: candidateAccepted,
-		Candidate:     candidate,
-		CandidateHash: candidateTextDigest(candidate),
-		TaskHash:      e.candidateTaskDigest(query, conversation),
-		EvidenceHash:  reviewDigest(e.sourceConsistencyMessages(state, conversation)),
+		Candidate:       candidate,
+		CandidateHash:   candidateTextDigest(candidate),
+		TaskHash:        e.candidateTaskDigest(query, conversation),
+		EvidenceHash:    reviewDigest(e.sourceConsistencyMessages(state, conversation)),
+		SourceScopeHash: e.unverifiedSourceScopeDigest(ctx),
 	}
 	defer func() {
 		e.turnReview.Checks++
@@ -184,6 +189,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		})
 		return
 	}
+	decision.SourceReviewAttempted = true
 	var repair bool
 	if forceReview {
 		repair, decision.Err = e.evaluateAnswerCompleteness(ctx, query, candidate, state, conversation)
@@ -261,7 +267,7 @@ func (e *AgentEngine) candidateDecisionCurrent(d candidateDecision, candidate st
 // review and was not approved, or one approved only for numeric-warning
 // delivery. Rejected numeric candidates and empty candidates are never kept.
 func (e *AgentEngine) rememberUnverifiedCandidate(candidate string, decision candidateDecision) {
-	if strings.TrimSpace(candidate) == "" || (len(decision.Unsupported) > 0 && decision.Disposition != candidateNumericWarning) {
+	if !decision.SourceReviewAttempted || strings.TrimSpace(candidate) == "" || (len(decision.Unsupported) > 0 && decision.Disposition != candidateNumericWarning) {
 		return
 	}
 	switch decision.Disposition {

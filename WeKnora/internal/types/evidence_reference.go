@@ -54,15 +54,17 @@ type EvidenceSourceSnapshot struct {
 // it explicitly only after message AND current source authorization.
 // No field carries a reusable private reviewer receipt or execution privilege.
 type EvidenceReference struct {
-	ID            string                   `json:"id"`
-	Kind          string                   `json:"kind"`
-	ResultID      string                   `json:"result_id"`
-	ResultHash    string                   `json:"result_hash"`
-	Title         string                   `json:"title,omitempty"`
-	Summary       string                   `json:"summary,omitempty"`
-	CandidateHash string                   `json:"candidate_hash,omitempty"`
-	ArtifactIDs   []string                 `json:"artifact_ids,omitempty"`
-	VersionStatus string                   `json:"version_status,omitempty"`
+	ID            string   `json:"id"`
+	Kind          string   `json:"kind"`
+	ResultID      string   `json:"result_id"`
+	ResultHash    string   `json:"result_hash"`
+	Title         string   `json:"title,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+	CandidateHash string   `json:"candidate_hash,omitempty"`
+	ArtifactIDs   []string `json:"artifact_ids,omitempty"`
+	VersionStatus string   `json:"version_status,omitempty"`
+	// Unverified is a navigation warning, never a reviewer/execution privilege.
+	ReviewStatus  string                   `json:"review_status,omitempty"`
 	Sources       []EvidenceSourceSnapshot `json:"-"`
 	Locators      SourceLocators           `json:"-"`
 	Manifest      json.RawMessage          `json:"-"`
@@ -113,6 +115,9 @@ func EvidenceReferencesFromInternal(values []interface{}) EvidenceReferences {
 // ValidateStored checks protocol shape only. Successful validation never
 // substitutes for the agent's actual source/claim checks or current ACLs.
 func (ref EvidenceReference) ValidateStored() error {
+	if ref.ReviewStatus != "" && ref.ReviewStatus != "unverified" {
+		return fmt.Errorf("invalid evidence review status")
+	}
 	if ref.ID == "" || len(ref.ID) > 128 || strings.ContainsAny(ref.ID, "/\\\r\n") || ref.ResultID == "" || len(ref.ResultID) > 256 {
 		return fmt.Errorf("invalid evidence identity")
 	}

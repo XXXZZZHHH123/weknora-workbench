@@ -1527,6 +1527,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
         if (dataId) replaySegments.delete(dataId)
         log('[Agent] Complete event received')
         applyFinalArtifactContent(message, (dataPayload as any)?.final_content)
+        if (Array.isArray((dataPayload as any)?.knowledge_references)) message.knowledge_references = (dataPayload as any).knowledge_references.slice()
         if (Array.isArray((dataPayload as any)?.evidence_references)) message.evidence_references = (dataPayload as any).evidence_references
         message.artifact_delivery_incomplete = (dataPayload as any)?.artifact_delivery_incomplete === true
         loading.value = false
@@ -1784,6 +1785,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       if (existingMessage.is_completed) return
       const metadata = data.data as ChatMessage | undefined
       applyFinalArtifactContent(existingMessage, metadata?.final_content)
+      if (Array.isArray(metadata?.knowledge_references)) existingMessage.knowledge_references = metadata.knowledge_references.slice()
       if (Array.isArray(metadata?.evidence_references)) existingMessage.evidence_references = metadata.evidence_references
       existingMessage.artifact_delivery_incomplete = metadata?.artifact_delivery_incomplete === true
       if (Array.isArray(metadata?.artifacts)) existingMessage.artifacts = metadata.artifacts

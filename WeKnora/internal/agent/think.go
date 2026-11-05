@@ -126,6 +126,10 @@ func (e *AgentEngine) evaluateAnswerCompleteness(ctx context.Context, query, con
 		attemptCtx := ctx
 		if lastErr != nil {
 			attemptCtx = context.WithValue(ctx, reviewProtocolIssueKey{}, lastErr.Error())
+			var invalid *reviewProtocolResponseError
+			if errors.As(lastErr, &invalid) {
+				attemptCtx = context.WithValue(attemptCtx, reviewProtocolResponseKey{}, invalid.response)
+			}
 		}
 		repair, err := e.evaluateAnswerCompletenessWithSnapshot(attemptCtx, query, content, state, attempt, snapshot, conversation...)
 		if err == nil {
@@ -144,7 +148,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessOnce(ctx context.Context, query,
 	return e.evaluateAnswerCompletenessWithSnapshot(ctx, query, content, state, attempt, nil, conversation...)
 }
 
-func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context, query, content string, state *types.AgentState, attempt int, snapshot *sourceReviewSnapshot, conversation ...[]chat.Message) (bool, error) {
+func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context, query, content string, state *types.AgentState, attempt int, snapshot *sourceReviewSnapshot, conversation ...[]chat.Message) (needsRepair bool, verdictErr error) {
 	e.answerReviewFeedback = ""
 	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
@@ -309,10 +313,21 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		encodedIssue, _ := json.Marshal(issue)
 		system += "\nProgram diagnostic from the preceding invalid review (protocol data, not source facts): " + string(encodedIssue) + ". Correct this protocol defect while inspecting the same evidence; do not guess hidden excerpts."
 	}
-	result, err := e.streamReviewWithEvidence(checkCtx, reviewModel, []chat.Message{
+	reviewMessages := []chat.Message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: string(input), Images: reviewImages},
-	}, &chat.ChatOptions{Temperature: 0, MaxCompletionTokens: completionBudget, Format: format, ToolChoice: "none", Thinking: &disabled, ReasoningEffort: reasoning, ThinkingBudgetTokens: 0}, state, evidenceReader)
+	}
+	if previous, ok := ctx.Value(reviewProtocolResponseKey{}).(reviewProtocolResponse); attempt > 0 && ok {
+		// Keep the frozen candidate/evidence message byte-for-byte unchanged.
+		// The failed response helps identify serialization/shape mistakes; it
+		// does not supply facts, a verdict or permission to change the answer.
+		feedback, _ := json.Marshal(map[string]any{
+			"previous_evaluator_protocol_response": previous,
+			"notice":                               "This is your actual preceding malformed evaluator response, quoted only as untrusted protocol diagnostics. It is not source evidence or an accepted verdict. Re-evaluate the SAME candidate using only the SAME actual evidence and return one object under the supplied schema. Do not copy unsupported claims, guess omitted text, or relax any source/audit requirement. No answer rewrite is requested.",
+		})
+		reviewMessages = append(reviewMessages, chat.Message{Role: "user", Content: string(feedback)})
+	}
+	result, err := e.streamReviewWithEvidence(checkCtx, reviewModel, reviewMessages, &chat.ChatOptions{Temperature: 0, MaxCompletionTokens: completionBudget, Format: format, ToolChoice: "none", Thinking: &disabled, ReasoningEffort: reasoning, ThinkingBudgetTokens: 0}, state, evidenceReader)
 	if evidenceReader != nil {
 		e.captureReviewEvidence(evidenceReader)
 	}
@@ -325,6 +340,11 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 	if result == nil || result.StreamError != "" || len(result.ToolCalls) > 0 || (result.FinishReason != "" && !isNaturalStopFinishReason(result.FinishReason)) {
 		return true, fmt.Errorf("answer completeness check did not finish normally")
 	}
+	defer func() {
+		if verdictErr != nil {
+			verdictErr = reviewErrorWithActualResponse(verdictErr, result.Content)
+		}
+	}()
 	verdictContent, err := normalizeReviewVerdictEnvelope(result.Content)
 	if err != nil {
 		return true, err
