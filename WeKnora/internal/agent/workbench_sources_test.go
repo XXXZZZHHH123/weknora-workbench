@@ -28,6 +28,10 @@ func TestWorkbenchSourceDiscoveryShowsAuthorizedFilesBeforeFirstModelCall(t *tes
 		mu.Lock()
 		operations = append(operations, input.Operation)
 		mu.Unlock()
+		if input.Operation == "describe_tools" {
+			_, _ = io.WriteString(w, workbenchDatasetManifest)
+			return
+		}
 		_, _ = io.WriteString(w, `{"datasets":[{"dataset_id":"real-version","source_file":"真实原表.xlsx","is_latest_for_source":true}]}`)
 	})
 	model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Content: "你好。", Done: true, FinishReason: "stop"}}}}}
@@ -218,7 +222,8 @@ func TestWorkbenchSourceDiscoveryKeepsFailureDistinctFromNoFiles(t *testing.T) {
 	messages := engine.discoverWorkbenchSources(ctx, state, nil, "问题", "session", "message")
 	require.Len(t, state.RoundSteps, 1)
 	require.False(t, state.RoundSteps[0].ToolCalls[0].Result.Success)
-	require.Contains(t, messages[len(messages)-1].Content, "503")
+	require.Equal(t, agenttools.ToolStructuredCapabilities, state.RoundSteps[0].ToolCalls[0].Name)
+	require.Contains(t, messages[len(messages)-1].Content, "manifest_unavailable")
 	require.NotContains(t, messages[len(messages)-1].Content, `"datasets":[]`)
 }
 

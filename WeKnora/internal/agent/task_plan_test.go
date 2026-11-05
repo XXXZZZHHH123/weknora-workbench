@@ -184,6 +184,10 @@ func TestEvidencePlanDiscoversBothAuthorizedSourceDirectories(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
 		operation, _ := input["operation"].(string)
 		operations <- operation
+		if operation == "describe_tools" {
+			_, _ = io.WriteString(w, workbenchDatasetManifest)
+			return
+		}
 		_, _ = io.WriteString(w, `{}`)
 	})
 	knowledge := newCountingTool(agenttools.ToolSearchKnowledge)

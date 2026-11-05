@@ -34,32 +34,16 @@ func (e *AgentEngine) prepareWorkbenchCapabilities(ctx context.Context, state *t
 	base := baseTool.(*agenttools.StructuredDataTool)
 	base.BindSourceConversation(query, messages)
 	step := types.AgentStep{Iteration: -1, Timestamp: time.Now()}
-	registered := map[string]string{}
 	if cached, ok := e.toolRegistry.BeginStructuredProtocolTurn(ctx); ok {
 		step.ToolCalls = []types.ToolCall{{ID: fmt.Sprintf("source-capabilities-%s", messageID), Name: agenttools.ToolStructuredCapabilities, Args: map[string]any{"refresh": false}, Result: cached}}
 	} else {
-		arguments, _ := json.Marshal(map[string]any{"operation": "describe_tools", "arguments": map[string]any{"operations": agenttools.StructuredOperationNames()}})
 		protocolCtx, cancel := context.WithTimeout(ctx, agenttools.StructuredManifestTimeout)
-		call := e.runToolCall(protocolCtx, types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(arguments)}}, 0, -1, 0, sessionID, messageID)
+		call := e.runToolCall(protocolCtx, types.LLMToolCall{ID: fmt.Sprintf("source-capabilities-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredCapabilities, Arguments: `{"refresh":true}`}}, 0, -1, 0, sessionID, messageID)
 		cancel()
-		if call.Result != nil && call.Result.Success {
-			installed, err := e.toolRegistry.InstallStructuredManifest(call.Result.Data)
-			if err != nil || installed == nil || !installed.Success {
-				call.Result.Success = false
-				call.Result.Error = "未取得合法结构化工具定义；可使用 structured_capabilities refresh=true 在预算内恢复，不能判断来源无数据"
-			}
-		}
 		step.ToolCalls = []types.ToolCall{call}
-		if call.Result != nil && call.Result.Success {
-			for _, described := range agenttools.NewStructuredReadOperationTools(base, call.Result.Data) {
-				if current, err := e.toolRegistry.GetTool(described.Name()); err == nil && string(current.Parameters()) == string(described.Parameters()) && current.Description() == described.Description() {
-					registered[strings.TrimPrefix(described.Name(), "structured_")] = described.Name()
-				}
-			}
-		}
 	}
 	state.RoundSteps = append(state.RoundSteps, step)
-	return e.appendToolResults(messages, compactWorkbenchDiscovery(step, "", registered))
+	return e.appendToolResults(messages, step)
 }
 
 // Discover files before the first reasoning call. This is authorized source
@@ -89,8 +73,16 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 			base.BindSourceConversation(query, messages)
 		}
 		if shouldPrefetchStructuredSources(selection) {
-			catalogArgs, _ := json.Marshal(map[string]any{"operation": "list_datasets", "arguments": map[string]string{"question": discoveryQuery}})
-			requests = append(requests, types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(catalogArgs)}})
+			catalogArgs, _ := json.Marshal(map[string]string{"question": discoveryQuery})
+			// The operation comes from a current registered native descriptor,
+			// never from a constructed name or an unnegotiated legacy wrapper.
+			for _, definition := range e.toolRegistry.GetModelFunctionDefinitions() {
+				descriptor, _, native := e.toolRegistry.StructuredInvocation(definition.Name, catalogArgs)
+				if native && descriptor.Operation == "list_datasets" && descriptor.ToolName == definition.Name && descriptor.Generation > 0 && descriptor.SchemaSHA256 != "" {
+					requests = append(requests, types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: descriptor.ToolName, Arguments: string(catalogArgs)}})
+					break
+				}
+			}
 		}
 	}
 	if _, err := e.toolRegistry.GetTool(agenttools.ToolSearchKnowledge); err == nil && shouldPrefetchKnowledgeSources(selection) {
@@ -144,11 +136,15 @@ func compactWorkbenchDiscovery(step types.AgentStep, query string, registered ma
 	modelStep := step
 	modelStep.ToolCalls = append([]types.ToolCall(nil), step.ToolCalls...)
 	for i, call := range modelStep.ToolCalls {
-		if call.Name != agenttools.ToolStructuredData || call.Result == nil || !call.Result.Success || call.Result.Data == nil {
+		if call.Result == nil || !call.Result.Success || call.Result.Data == nil {
+			continue
+		}
+		operation, structured := agenttools.StructuredOperationFromCall(call)
+		if !structured {
 			continue
 		}
 		var compact map[string]any
-		switch call.Args["operation"] {
+		switch operation {
 		case "list_datasets":
 			compact = compactDiscoveryCatalogue(call.Result.Data, query)
 		case "describe_tools":

@@ -367,7 +367,6 @@ func (r *ToolRegistry) BeginStructuredProtocolTurn(ctx context.Context) (*types.
 	entry, found := cache.entries[structuredManifestServiceKey(set.base)]
 	cache.Unlock()
 	if !found || time.Since(entry.at) > 10*time.Minute {
-		set.refreshes = 1
 		return nil, false
 	}
 	var data map[string]any

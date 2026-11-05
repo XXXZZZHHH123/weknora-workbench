@@ -27,7 +27,7 @@ func TestWorkbenchMultiLibraryDiscoveryPreservesPendingScopeAndRegistersSchemas(
 		switch payload["operation"] {
 		case "describe_tools":
 			require.NotContains(t, identity, "knowledge_base_id")
-			_, _ = io.WriteString(w, `{"tools":[{"name":"list_series","description":"List the actual selected dataset fields","inputSchema":{"type":"object","properties":{"dataset_id":{"type":"string"}}}}]}`)
+			_, _ = w.Write(withWorkbenchDatasetDefinition(t, []byte(`{"tools":[{"name":"list_series","description":"List the actual selected dataset fields","inputSchema":{"type":"object","properties":{"dataset_id":{"type":"string"}}}}]}`)))
 		case "list_datasets":
 			// Each authorized library is read under its own signed scope.
 			require.Contains(t, []any{"reports", "measurements"}, identity["knowledge_base_id"])
