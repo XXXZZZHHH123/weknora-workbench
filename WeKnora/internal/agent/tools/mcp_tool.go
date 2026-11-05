@@ -828,7 +828,18 @@ func structuredFieldTool(ctx context.Context, registry *ToolRegistry, sourceName
 	if registry == nil {
 		return "", fmt.Errorf("当前智能体没有字段确认工具")
 	}
+	if source, err := registry.GetTool(sourceName); sourceName != "" && err == nil {
+		if native, ok := source.(*structuredReadOperationTool); ok && (native.operation == "resolve_fields" || native.operation == "confirm_fields") {
+			if selected, ok := registry.tools["structured_"+operation].(*structuredReadOperationTool); ok && selected.base == native.base {
+				return selected.Name(), nil
+			}
+			return ToolStructuredData, nil // Retain the same adapter and signed scope.
+		}
+	}
 	if sourceName == "" || sourceName == ToolStructuredData {
+		if selected, ok := registry.tools["structured_"+operation].(*structuredReadOperationTool); ok && selected.base == registry.structuredBase() {
+			return selected.Name(), nil
+		}
 		if _, err := registry.GetTool(ToolStructuredData); err == nil {
 			return ToolStructuredData, nil
 		}

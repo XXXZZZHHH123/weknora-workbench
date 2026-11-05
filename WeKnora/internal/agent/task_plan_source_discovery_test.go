@@ -143,9 +143,10 @@ func TestTaskPlanSourceRecoverySkipsBroadSearchAndKeepsRealQueryContracts(t *tes
 	require.Zero(t, knowledge.calls)
 	require.False(t, hasStructuredEvidence(state.RoundSteps), "recovery instructions and schemas never stand in for newly read source evidence")
 	definitions := listToolNames(engine.buildToolsForLLM())
-	for _, name := range []string{"structured_read_pdf_table", "structured_query_pdf_table", agenttools.ToolStructuredData, agenttools.ToolReadDocument, agenttools.ToolBindDocumentScope, agenttools.ToolSearchKnowledge} {
+	for _, name := range []string{"structured_read_pdf_table", "structured_query_pdf_table", agenttools.ToolStructuredCapabilities, agenttools.ToolReadDocument, agenttools.ToolBindDocumentScope, agenttools.ToolSearchKnowledge} {
 		require.Contains(t, definitions, name, "the execution model can recover sources or explicitly discover a missing source")
 	}
+	require.NotContains(t, definitions, agenttools.ToolStructuredData, "the historical nested entry remains executable but is not a second model protocol")
 }
 
 func TestTaskPlanRejectsAmbiguousSourceAndDeliveryContracts(t *testing.T) {

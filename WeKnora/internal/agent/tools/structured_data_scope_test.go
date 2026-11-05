@@ -288,7 +288,7 @@ func TestStructuredSourceContextSurvivesCacheAndTypedFacade(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{
 		"knowledge_base_id":        "library",
-		"knowledge_base_tenant_id": float64(7),
+		"knowledge_base_tenant_id": json.Number("7"),
 	}, hit.Data["source_context"], "typed tools must preserve trusted source scope on cache hits")
 	require.Equal(t, true, hit.Data["_execution_cache"].(map[string]any)["cache_hit"])
 	require.NotContains(t, hit.Output, "source_context", "scope metadata must not enter model-visible output")

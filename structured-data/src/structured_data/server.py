@@ -20,7 +20,7 @@ from typing import get_type_hints
 from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
-from fastapi.encoders import decimal_encoder
+from fastapi.encoders import decimal_encoder, jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.fastmcp import FastMCP
@@ -411,10 +411,24 @@ def create_app(data_dir: str | Path | None = None):
     app.state.import_manager = manager
     app.state.mcp = mcp
     app.state.workspaces = registry
+    from .tool_manifest import build_fingerprint, manifest as make_tool_manifest
+    tool_build_version = build_fingerprint()
+    tool_manifest = None
     install_pdf_routes(app, registry, publish_guard=lambda authorization, identity: check_job_write(authorization, identity))
 
     @app.post('/api/tools/read')
     async def native_read(request: Request):
+        nonlocal tool_manifest
+        if tool_manifest is None:
+            tool_manifest = make_tool_manifest(await mcp.list_tools(), tool_build_version)
+        current_manifest = tool_manifest['manifest_sha256']
+        expected_manifest = request.headers.get('X-Structured-Manifest-SHA256')
+        if expected_manifest is not None and expected_manifest != current_manifest:
+            return JSONResponse(status_code=409, content={'detail':{
+                'code':'manifest_changed', 'manifest_sha256':current_manifest,
+                'protocol_version':2,
+                'message':'工具目录版本已变化；本次未执行。请重新读取真实协议后决定是否重试。'}},
+                headers={'X-Structured-Manifest-SHA256':current_manifest})
         body = await request.json()
         if not isinstance(body, dict) or set(body) != {'operation','arguments'}:
             raise HTTPException(400, '只接受 operation 和 arguments')
@@ -425,10 +439,11 @@ def create_app(data_dir: str | Path | None = None):
             if (set(body['arguments']) - {'operations'} or not isinstance(selected, list)
                     or len(selected)>len(read_operations) or any(not isinstance(n,str) or n not in read_operations for n in selected)):
                 raise HTTPException(400, '请指定目录中的操作名称')
-            tools = await mcp.list_tools()
-            return {'tools':[{'name':tool.name, 'description':tool.description,
-                              **({'inputSchema':tool.inputSchema} if selected else {})}
-                             for tool in tools if not selected or tool.name in selected]}
+            return JSONResponse({**{k:v for k,v in tool_manifest.items() if k != 'tools'},
+                'tools':[{**{'name':tool['name'], 'description':tool['description']},
+                          **({'inputSchema':tool['inputSchema']} if selected else {})}
+                         for tool in tool_manifest['tools'] if not selected or tool['name'] in selected]},
+                headers={'X-Structured-Manifest-SHA256':current_manifest})
         fn = read_operations.get(body['operation'])
         if fn is None or not isinstance(body['arguments'], dict):
             raise HTTPException(400, '未知只读操作')
@@ -437,8 +452,11 @@ def create_app(data_dir: str | Path | None = None):
         except (TypeError,ValidationError):
             raise HTTPException(400, '查询参数与操作不匹配') from None
         if inspect.iscoroutinefunction(fn):
-            return await fn(**arguments)
-        return await run_in_threadpool(lambda: fn(**arguments))
+            result = await fn(**arguments)
+        else:
+            result = await run_in_threadpool(lambda: fn(**arguments))
+        return JSONResponse(content=jsonable_encoder(result),
+                            headers={'X-Structured-Manifest-SHA256':current_manifest})
 
     @app.post('/api/research/facts')
     async def research_facts(request: Request):

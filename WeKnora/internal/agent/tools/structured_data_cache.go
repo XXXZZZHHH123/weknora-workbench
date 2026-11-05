@@ -25,12 +25,13 @@ var immutableStructuredDatasetID = regexp.MustCompile(`^[a-f0-9]{24}$`)
 // available turn identifiers. Rebinding (even to the same question) invalidates
 // the generation and prevents an older in-flight query publishing into it.
 type structuredReadCache struct {
-	mu         sync.Mutex
-	generation uint64
-	entries    map[string]structuredReadCacheEntry
-	order      []string
-	bytes      int
-	inflight   map[string]chan struct{}
+	mu                   sync.Mutex
+	generation           uint64
+	entries              map[string]structuredReadCacheEntry
+	order                []string
+	bytes                int
+	inflight             map[string]chan struct{}
+	confirmationAttempts map[string]bool
 }
 
 type structuredReadCacheEntry struct {
@@ -59,6 +60,7 @@ func (t *StructuredDataTool) bindStructuredSourceQuestion(question string) {
 	t.sourceQuestion = question
 	c.generation++
 	c.entries, c.order, c.inflight, c.bytes = nil, nil, nil, 0
+	c.confirmationAttempts = nil
 }
 
 func (t *StructuredDataTool) structuredSourceQuestion() (string, uint64) {
@@ -104,12 +106,20 @@ func (t *StructuredDataTool) structuredReadCacheKey(ctx context.Context, caller 
 		"knowledge_scope": scope,
 		"turn":            turn, "generation": generation, "source_question": question,
 		"operation": operation, "arguments": canonical,
+		"protocol_snapshot": structuredReadProtocolSnapshot(ctx),
 	})
 	if err != nil {
 		return "", false
 	}
 	hash := sha256.Sum256(encoded)
 	return hex.EncodeToString(hash[:]), true
+}
+
+func structuredReadProtocolSnapshot(ctx context.Context) any {
+	if descriptor, ok := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); ok && (descriptor.ManifestSHA256 != "" || descriptor.Generation > 0) {
+		return descriptor
+	}
+	return nil // Bare legacy typed/generic adapters still share one protocol.
 }
 
 func (t *StructuredDataTool) beginStructuredReadCache(ctx context.Context, caller types.Caller, scope structuredKnowledgeScope, operation string,
@@ -167,7 +177,9 @@ func (t *StructuredDataTool) beginStructuredReadCache(ctx context.Context, calle
 func cloneStructuredCacheHit(entry structuredReadCacheEntry) *types.ToolResult {
 	var result types.ToolResult
 	// Entries are marshalled by this process; no shared map/array escapes.
-	if json.Unmarshal(entry.encoded, &result) != nil {
+	decoder := json.NewDecoder(bytes.NewReader(entry.encoded))
+	decoder.UseNumber()
+	if decoder.Decode(&result) != nil {
 		return nil
 	}
 	if entry.outputFiles != nil {

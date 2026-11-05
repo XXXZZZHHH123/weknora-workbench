@@ -20,6 +20,8 @@ type fieldConfirmationTurn struct {
 	priorIDs     []string
 	contextSheet string
 	date         string
+	pendingKB    string
+	pendingTool  string
 }
 
 var fieldToolName = regexp.MustCompile(`^(?:mcp__)?(?:resolve_fields|confirm_fields)(?:_[a-z0-9]+)?$`)
@@ -30,22 +32,39 @@ var confirmToolName = regexp.MustCompile(`^(?:mcp__)?confirm_fields(?:_[a-z0-9]+
 func withFieldConfirmationTurn(ctx context.Context, query string, history []chat.Message) context.Context {
 	turn := &fieldConfirmationTurn{question: query}
 	names := map[string]string{}
+	callArgs := map[string]map[string]any{}
 	for _, msg := range history {
 		for _, call := range msg.ToolCalls {
 			names[call.ID] = call.Function.Name
+			var input map[string]any
+			if json.Unmarshal([]byte(call.Function.Arguments), &input) == nil {
+				callArgs[call.ID] = input
+			}
 		}
 		name := msg.Name
 		if name == "" {
 			name = names[msg.ToolCallID]
 		}
-		if msg.Role != "tool" || (!fieldToolName.MatchString(name) && name != "call_mcp_tool" && name != "structured_data") {
+		if msg.Role != "tool" || (!isFieldProtocolName(name) && name != "call_mcp_tool" && name != "structured_data") {
 			continue
 		}
 		if id, status := fieldResolutionIdentity(msg.Content); id != "" {
 			turn.previousID = id
 			turn.pendingID = ""
+			turn.pendingKB, turn.pendingTool = "", ""
 			if status == "needs_clarification" {
 				turn.pendingID = id
+				turn.pendingTool = name
+				if name == "structured_data" || name == "structured_resolve_fields" || name == "structured_confirm_fields" {
+					turn.pendingKB, _ = callArgs[msg.ToolCallID]["knowledge_base_id"].(string)
+					if outcome := structuredOutcome(msg.Content); outcome != nil {
+						if binding, ok := outcome["resolution_binding"].(map[string]any); ok && binding["resolution_id"] == id {
+							if actual, ok := binding["knowledge_base_id"].(string); ok && actual != "" {
+								turn.pendingKB = actual
+							}
+						}
+					}
+				}
 				turn.priorIDs = nil
 				turn.contextSheet = ""
 				turn.date = ""
@@ -95,6 +114,12 @@ func withFieldConfirmationTurn(ctx context.Context, query string, history []chat
 		}
 	}
 	return context.WithValue(ctx, fieldConfirmationTurnKey{}, turn)
+}
+
+func isFieldProtocolName(name string) bool {
+	// Exact legacy native aliases are a history compatibility rule, not an
+	// authorization decision. Live calls resolve registered descriptors first.
+	return fieldToolName.MatchString(name) || name == "structured_resolve_fields" || name == "structured_confirm_fields"
 }
 
 // Decode data only from a completed tool outcome, never from user messages.

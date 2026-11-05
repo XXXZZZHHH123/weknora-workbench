@@ -53,9 +53,9 @@ func failedToolOperation(call types.ToolCall) (failedToolFeedbackScope, bool) {
 		return failedToolFeedbackScope{}, false
 	}
 	scope := failedToolFeedbackScope{tool: name}
-	if name != agenttools.ToolStructuredData && strings.HasPrefix(name, "structured_") {
+	if operation, ok := agenttools.StructuredOperationFromCall(call); ok {
 		scope.tool = agenttools.ToolStructuredData
-		scope.operation = strings.TrimPrefix(name, "structured_")
+		scope.operation = operation
 	} else {
 		scope.operation, _ = call.ExecutionArgs()["operation"].(string)
 	}

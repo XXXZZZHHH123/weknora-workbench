@@ -6,14 +6,17 @@ import "encoding/json"
 // arbitrary code, and unknown/MCP tools form execution barriers. In particular,
 // a file write must finish before the next shell or skill call starts.
 func CanRunConcurrently(name string) bool {
+	for operation, contract := range structuredOperationContracts {
+		if name == "structured_"+operation {
+			return contract.effect == "read"
+		}
+	}
 	switch name {
 	case ToolSearchKnowledge, ToolReadDocument, ToolListDocuments,
 		ToolQueryKnowledgeGraph, ToolSearchConversations,
 		ToolSearchMemory, ToolDataSchema, ToolWebSearch, ToolWebFetch,
 		ToolReadFile, ToolListSandboxFiles,
-		ToolWikiSearch, ToolWikiReadPage, ToolWikiReadIssue,
-		"structured_list_series", "structured_query_series", "structured_analyze_table",
-		"structured_inspect_source", "structured_get_result_evidence", "structured_list_pdf_tables", "structured_read_pdf_table", "structured_query_pdf_table":
+		ToolWikiSearch, ToolWikiReadPage, ToolWikiReadIssue:
 		return true
 	default:
 		return false
@@ -42,11 +45,6 @@ func CanRunToolCallConcurrently(name, arguments string) bool {
 	if json.Unmarshal(input["operation"], &operation) != nil || json.Unmarshal(input["arguments"], &params) != nil || params == nil {
 		return false
 	}
-	switch operation {
-	case "describe_tools", "list_datasets", "list_series", "list_charts",
-		"query_series", "analyze_table", "inspect_source", "get_result_evidence", "list_pdf_tables", "read_pdf_table", "query_pdf_table":
-		return true
-	default:
-		return false
-	}
+	contract, supported := structuredOperationContracts[operation]
+	return supported && (contract.effect == "read" || contract.scope == "protocol")
 }

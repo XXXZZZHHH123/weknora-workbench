@@ -54,7 +54,7 @@ func nativeReadTestTool(t *testing.T, handler http.HandlerFunc) *StructuredDataT
 	return NewStructuredDataTool()
 }
 
-func TestStructuredNamedReadToolsExposeRealSchemasAndOnlyAllowKnownReads(t *testing.T) {
+func TestStructuredNamedToolsExposeRealSchemasAndRejectPublication(t *testing.T) {
 	data := describedStructuredReadTools(t)
 	base := &StructuredDataTool{}
 	reads := NewStructuredReadOperationTools(base, data)
@@ -76,10 +76,10 @@ func TestStructuredNamedReadToolsExposeRealSchemasAndOnlyAllowKnownReads(t *test
 	require.Equal(t, "string", schema["properties"].(map[string]any)["sheet"].(map[string]any)["anyOf"].([]any)[0].(map[string]any)["type"])
 
 	unknown := map[string]any{"name": "delete_dataset", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}}
-	confirm := map[string]any{"name": "confirm_fields", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}}
-	data["tools"] = append(data["tools"].([]any), unknown, confirm)
+	publication := map[string]any{"name": "publish_pdf_table", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}}
+	data["tools"] = append(data["tools"].([]any), unknown, publication)
 	require.Len(t, NewStructuredReadOperationTools(base, data), 5)
-	require.Empty(t, NewStructuredReadOperationTools(base, map[string]any{"tools": []any{unknown, confirm}}))
+	require.Empty(t, NewStructuredReadOperationTools(base, map[string]any{"tools": []any{unknown, publication}}))
 	require.Empty(t, NewStructuredReadOperationTools(base, map[string]any{"tools": []any{map[string]any{"name": "query_series"}}}))
 	duplicate := data["tools"].([]any)[0]
 	data["tools"] = append(data["tools"].([]any), duplicate)

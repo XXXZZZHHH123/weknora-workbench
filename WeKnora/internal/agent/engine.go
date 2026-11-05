@@ -409,6 +409,7 @@ func (e *AgentEngine) Execute(
 	logger.Infof(ctx, "[Agent] Starting execution: session=%s, message=%s, query_len=%d, context_msgs=%d",
 		sessionID, messageID, len(query), len(llmContext))
 	ctx = withFieldConfirmationTurn(ctx, query, llmContext)
+	e.toolRegistry.BeginStructuredHumanTurn()
 	// Ensure tools are cleaned up after execution
 	defer e.toolRegistry.Cleanup(ctx)
 
@@ -467,7 +468,11 @@ func (e *AgentEngine) Execute(
 		TurnUsage: types.TokenUsage{ContextTokenScale: e.config.ContextTokenScale},
 	}
 
+	if e.toolRegistry != nil {
+		e.toolRegistry.PrepareStructuredProtocol()
+	}
 	if e.config.WorkbenchDefault && e.toolRegistry != nil {
+		agenttools.PrepareDocumentScope(e.toolRegistry)
 		e.toolRegistry.RegisterTool(newSourceCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
 		e.toolRegistry.RegisterTool(newDocumentTableCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
 		e.registerDocumentTableAnalysis(state, query, sessionID, llmContext)
@@ -513,6 +518,7 @@ func (e *AgentEngine) Execute(
 	}
 
 	if !strings.HasPrefix(query, fieldConfirmationPrefix) {
+		messages = e.prepareWorkbenchCapabilities(ctx, state, messages, query, sessionID, messageID)
 		messages = e.planWorkbenchTask(ctx, state, query, messages, sessionID)
 		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID, e.plannedSourceDiscoverySelection())
 	}

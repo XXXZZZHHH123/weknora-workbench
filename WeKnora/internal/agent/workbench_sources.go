@@ -12,6 +12,56 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
+// Negotiate capabilities before planning, independently of source discovery.
+// The fixed service has a short protocol budget; its failure cannot make an
+// unrelated task wait on the ordinary 30-second data-request timeout.
+func (e *AgentEngine) prepareWorkbenchCapabilities(ctx context.Context, state *types.AgentState, messages []chat.Message, query, sessionID, messageID string) []chat.Message {
+	if e.toolRegistry == nil || state == nil {
+		return messages
+	}
+	for _, step := range state.RoundSteps {
+		for _, call := range step.ToolCalls {
+			if call.ID == fmt.Sprintf("source-capabilities-%s", messageID) && call.Name == agenttools.ToolStructuredCapabilities || call.ID == fmt.Sprintf("source-schemas-%s", messageID) && call.Name == agenttools.ToolStructuredData && call.Args["operation"] == "describe_tools" {
+				return messages
+			}
+		}
+	}
+	caller := types.CallerFromContext(ctx)
+	if caller.TenantID == 0 || caller.UserID == "" || !caller.Role.IsValid() || !e.toolRegistry.PrepareStructuredProtocol() {
+		return messages
+	}
+	baseTool, _ := e.toolRegistry.GetTool(agenttools.ToolStructuredData)
+	base := baseTool.(*agenttools.StructuredDataTool)
+	base.BindSourceConversation(query, messages)
+	step := types.AgentStep{Iteration: -1, Timestamp: time.Now()}
+	registered := map[string]string{}
+	if cached, ok := e.toolRegistry.BeginStructuredProtocolTurn(ctx); ok {
+		step.ToolCalls = []types.ToolCall{{ID: fmt.Sprintf("source-capabilities-%s", messageID), Name: agenttools.ToolStructuredCapabilities, Args: map[string]any{"refresh": false}, Result: cached}}
+	} else {
+		arguments, _ := json.Marshal(map[string]any{"operation": "describe_tools", "arguments": map[string]any{"operations": agenttools.StructuredOperationNames()}})
+		protocolCtx, cancel := context.WithTimeout(ctx, agenttools.StructuredManifestTimeout)
+		call := e.runToolCall(protocolCtx, types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(arguments)}}, 0, -1, 0, sessionID, messageID)
+		cancel()
+		if call.Result != nil && call.Result.Success {
+			installed, err := e.toolRegistry.InstallStructuredManifest(call.Result.Data)
+			if err != nil || installed == nil || !installed.Success {
+				call.Result.Success = false
+				call.Result.Error = "未取得合法结构化工具定义；可使用 structured_capabilities refresh=true 在预算内恢复，不能判断来源无数据"
+			}
+		}
+		step.ToolCalls = []types.ToolCall{call}
+		if call.Result != nil && call.Result.Success {
+			for _, described := range agenttools.NewStructuredReadOperationTools(base, call.Result.Data) {
+				if current, err := e.toolRegistry.GetTool(described.Name()); err == nil && string(current.Parameters()) == string(described.Parameters()) && current.Description() == described.Description() {
+					registered[strings.TrimPrefix(described.Name(), "structured_")] = described.Name()
+				}
+			}
+		}
+	}
+	state.RoundSteps = append(state.RoundSteps, step)
+	return e.appendToolResults(messages, compactWorkbenchDiscovery(step, "", registered))
+}
+
 // Discover files before the first reasoning call. This is authorized source
 // metadata, never an inferred answer or an unrestricted database connection.
 // The normal execution boundary records the actual call and its failure too;
@@ -24,6 +74,7 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 	if caller.TenantID == 0 || caller.UserID == "" {
 		return messages
 	}
+	messages = e.prepareWorkbenchCapabilities(ctx, state, messages, query, sessionID, messageID)
 	// The real QA model plans sources from the complete conversation and
 	// authorized metadata; code validates the explicit plan before content reads.
 	agenttools.PrepareDocumentScope(e.toolRegistry)
@@ -41,11 +92,6 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 			catalogArgs, _ := json.Marshal(map[string]any{"operation": "list_datasets", "arguments": map[string]string{"question": discoveryQuery}})
 			requests = append(requests, types.LLMToolCall{ID: fmt.Sprintf("source-catalog-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: string(catalogArgs)}})
 		}
-		if shouldPrefetchStructuredSources(selection) || e.plannedSourceRecovery() {
-			// Known-source recovery still needs the real read/query contracts.
-			// Describing capabilities performs no source search or content read.
-			requests = append(requests, types.LLMToolCall{ID: fmt.Sprintf("source-schemas-%s", messageID), Function: types.FunctionCall{Name: agenttools.ToolStructuredData, Arguments: `{"operation":"describe_tools","arguments":{"operations":["list_series","query_series","analyze_table","inspect_source","get_result_evidence","list_pdf_tables","read_pdf_table","query_pdf_table"]}}`}})
-		}
 	}
 	if _, err := e.toolRegistry.GetTool(agenttools.ToolSearchKnowledge); err == nil && shouldPrefetchKnowledgeSources(selection) {
 		args, _ := json.Marshal(map[string]string{"query": discoveryQuery})
@@ -60,26 +106,12 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 	// These calls only discover authorized sources and schema; their independent
 	// providers can run concurrently without executing a numeric query or write.
 	e.executeToolCallsParallel(ctx, response, &step, -1, sessionID, messageID)
-	registered := map[string]string{}
-	if tool, err := e.toolRegistry.GetTool(agenttools.ToolStructuredData); err == nil {
-		if base, ok := tool.(*agenttools.StructuredDataTool); ok {
-			for _, call := range step.ToolCalls {
-				if call.Args["operation"] == "describe_tools" && call.Result != nil && call.Result.Success {
-					for _, operation := range agenttools.NewStructuredReadOperationTools(base, call.Result.Data) {
-						e.toolRegistry.RegisterTool(operation)
-						// Registration is first-wins. A retained older contract
-						// must not make a changed service schema disappear.
-						current, err := e.toolRegistry.GetTool(operation.Name())
-						if err == nil && string(current.Parameters()) == string(operation.Parameters()) && current.Description() == operation.Description() {
-							registered[strings.TrimPrefix(operation.Name(), "structured_")] = operation.Name()
-						}
-					}
-				}
-			}
-		}
+	if len(state.RoundSteps) > 0 && state.RoundSteps[len(state.RoundSteps)-1].Iteration == -1 {
+		state.RoundSteps[len(state.RoundSteps)-1].ToolCalls = append(state.RoundSteps[len(state.RoundSteps)-1].ToolCalls, step.ToolCalls...)
+	} else {
+		state.RoundSteps = append(state.RoundSteps, step)
 	}
-	state.RoundSteps = append(state.RoundSteps, step)
-	return e.appendToolResults(messages, compactWorkbenchDiscovery(step, discoveryQuery, registered))
+	return e.appendToolResults(messages, compactWorkbenchDiscovery(step, discoveryQuery, nil))
 }
 
 func shouldPrefetchKnowledgeSources(selected map[string]bool) bool {

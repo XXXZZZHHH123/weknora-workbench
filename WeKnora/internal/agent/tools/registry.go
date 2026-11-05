@@ -16,13 +16,14 @@ import (
 
 // ToolRegistry manages the registration and retrieval of tools
 type ToolRegistry struct {
-	executionGuard    func(context.Context, types.Tool) error
-	mcpCallGuard      MCPCallGuard
-	tools             map[string]types.Tool
-	deferred          map[string]bool
-	mcpDirect         bool // Full exposure is an explicit compatibility path.
-	mcpPrepared       bool
-	maxToolOutputSize int // maximum chars for tool output (0 = use DefaultMaxToolOutput)
+	executionGuard         func(context.Context, types.Tool) error
+	mcpCallGuard           MCPCallGuard
+	tools                  map[string]types.Tool
+	deferred               map[string]bool
+	mcpDirect              bool // Full exposure is an explicit compatibility path.
+	mcpPrepared            bool
+	maxToolOutputSize      int // maximum chars for tool output (0 = use DefaultMaxToolOutput)
+	structuredCapabilities *structuredCapabilitySet
 }
 
 // outputLimitProvider is implemented by tools that expose a caller-configurable
@@ -233,6 +234,19 @@ func (r *ToolRegistry) ExecuteTool(
 			"tool":  name,
 			"error": err.Error(),
 		})
+		if r.structuredCapabilities != nil {
+			failed := structuredProtocolFailure("tool_not_available", "工具名不在本轮真实目录中；使用当前工具定义或 structured_capabilities，不猜测名称或自动调用近似工具", "dispatch", false)
+			names := []string{}
+			for _, definition := range r.GetModelFunctionDefinitions() {
+				if len(names) < 64 {
+					names = append(names, definition.Name)
+				}
+			}
+			failed.Data["available_tools"], failed.Data["tool_directory_complete"] = names, len(names) == len(r.GetModelFunctionDefinitions())
+			encoded, _ := json.Marshal(failed.Data)
+			failed.Output = string(encoded)
+			return failed, nil
+		}
 		return &types.ToolResult{
 			Success: false,
 			Error:   err.Error(),
@@ -291,6 +305,13 @@ func (r *ToolRegistry) execute(ctx context.Context, tool types.Tool, args json.R
 			"tool":   name,
 			"errors": errMsg,
 		})
+		if native, ok := tool.(*structuredReadOperationTool); ok {
+			failed := structuredProtocolFailure("parameter_validation_failed", errMsg, "schema", false)
+			failed.Data["manifest_version"], failed.Data["schema_sha256"] = native.descriptor.ManifestSHA256, native.descriptor.SchemaSHA256
+			encoded, _ := json.Marshal(failed.Data)
+			failed.Output = string(encoded)
+			return failed, nil
+		}
 		return &types.ToolResult{
 			Success: false,
 			Error:   errMsg,

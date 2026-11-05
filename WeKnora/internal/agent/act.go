@@ -310,7 +310,7 @@ func (e *AgentEngine) executeToolCallsParallel(
 
 	for i, tc := range response.ToolCalls {
 		i, tc := i, tc // capture loop vars
-		if !agenttools.CanRunToolCallConcurrently(tc.Function.Name, tc.Function.Arguments) {
+		if !e.toolRegistry.CanRunStructuredCallConcurrently(tc.Function.Name, tc.Function.Arguments) {
 			// Drain preceding reads before a mutation, and finish the mutation
 			// before starting later reads. Preserve model order across barriers.
 			_ = g.Wait()
@@ -547,8 +547,34 @@ func (e *AgentEngine) runToolCallAnswered(
 			executionArgs = map[string]any{}
 		}
 	}
+	structuredDescriptor, structuredArguments, nativeStructured := e.toolRegistry.StructuredInvocation(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+	replayArgs := args
+	if nativeStructured {
+		original, _ := json.Marshal(args)
+		replayArgs = nil
+		_ = json.Unmarshal(original, &replayArgs)
+		confirmationName = structuredDescriptor.Operation
+		executionArgs = structuredArguments
+		// Name/Args and provider metadata retain the exact model call. The
+		// separate target records trusted protocol identity for all consumers.
+		target = &types.ToolCallTarget{Name: tc.Function.Name, Args: args, ServiceName: "structured_data", ToolName: structuredDescriptor.Operation}
+	}
 	if err := guardFieldConfirmation(ctx, confirmationName, executionArgs); err != nil {
-		return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: args, Result: &types.ToolResult{Success: false, Error: err.Error()}}
+		return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: replayArgs, ProviderMetadata: tc.ProviderMetadata, Result: &types.ToolResult{Success: false, Error: err.Error()}}
+	}
+	if nativeStructured && structuredDescriptor.Operation == "confirm_fields" {
+		if turn, ok := ctx.Value(fieldConfirmationTurnKey{}).(*fieldConfirmationTurn); ok && turn.pendingKB != "" && executionArgs["resolution_id"] == turn.pendingID {
+			if selected, _ := args["knowledge_base_id"].(string); selected != "" && selected != turn.pendingKB {
+				return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: replayArgs, ProviderMetadata: tc.ProviderMetadata, Result: &types.ToolResult{Success: false, Error: "字段确认的知识库与真实待选方案不一致；不会跨库确认"}}
+			}
+			// Restore transport scope from the actual pending tool outcome, not
+			// from a business-name guess. Normal authorization still runs below.
+			if tc.Function.Name == agenttools.ToolStructuredData {
+				args["knowledge_base_id"] = turn.pendingKB
+			} else {
+				executionArgs["knowledge_base_id"] = turn.pendingKB
+			}
+		}
 	}
 	if ctx.Value(fieldConfirmationTurnKey{}) != nil && fieldToolName.MatchString(confirmationName) {
 		if tc.Function.Name == agenttools.ToolCallMCPTool || tc.Function.Name == agenttools.ToolStructuredData {
@@ -558,6 +584,9 @@ func (e *AgentEngine) runToolCallAnswered(
 		}
 		normalized, _ := json.Marshal(args)
 		tc.Function.Arguments = string(normalized)
+		if target != nil && nativeStructured {
+			target.Args = args
+		}
 	}
 
 	logger.Debugf(ctx, "%s Args: %s", toolTag, tc.Function.Arguments)
@@ -569,6 +598,9 @@ func (e *AgentEngine) runToolCallAnswered(
 	operation := ""
 	if tc.Function.Name == agenttools.ToolStructuredData {
 		operation, _ = args["operation"].(string)
+	}
+	if nativeStructured {
+		operation = structuredDescriptor.Operation
 	}
 	e.eventBus.Emit(ctx, event.Event{
 		ID:        tc.ID + "-tool-hint",
@@ -603,8 +635,12 @@ func (e *AgentEngine) runToolCallAnswered(
 	// leaking raw SQL into the observability backend.
 	toolSpanInput := buildToolSpanInput(tc, executionArgs, toolHintSensitiveArgs[executionName])
 	if target != nil {
-		toolSpanInput["mcp_service"] = target.ServiceName
-		toolSpanInput["mcp_tool"] = target.ToolName
+		if nativeStructured {
+			toolSpanInput["structured_protocol"] = structuredDescriptor
+		} else {
+			toolSpanInput["mcp_service"] = target.ServiceName
+			toolSpanInput["mcp_tool"] = target.ToolName
+		}
 	}
 	argumentResolution, _ := toolSpanInput["argument_resolution"].(string)
 	toolCtx, toolSpan := mgr.StartSpan(ctx, langfuse.SpanOptions{
@@ -667,7 +703,7 @@ func (e *AgentEngine) runToolCallAnswered(
 		Target:           target,
 		ID:               tc.ID,
 		Name:             tc.Function.Name,
-		Args:             args,
+		Args:             replayArgs,
 		Result:           result,
 		Duration:         duration,
 		ProviderMetadata: tc.ProviderMetadata,
@@ -675,10 +711,10 @@ func (e *AgentEngine) runToolCallAnswered(
 
 	if err != nil {
 		logger.Errorf(ctx, "%s Failed in %dms: %v", toolTag, duration, err)
-		toolCall.Result = &types.ToolResult{
-			Success: false,
-			Error:   err.Error(),
+		if toolCall.Result == nil {
+			toolCall.Result = &types.ToolResult{}
 		}
+		toolCall.Result.Success, toolCall.Result.Error = false, err.Error()
 	} else {
 		success := result != nil && result.Success
 		outputLen := 0
@@ -700,6 +736,11 @@ func (e *AgentEngine) runToolCallAnswered(
 		"tool_call_id": tc.ID,
 		"duration_ms":  duration,
 		"success":      toolSuccess,
+	}
+	if nativeStructured {
+		pipelineFields["canonical_operation"] = structuredDescriptor.Operation
+		pipelineFields["manifest_sha256"] = structuredDescriptor.ManifestSHA256
+		pipelineFields["manifest_generation"] = structuredDescriptor.Generation
 	}
 	if toolCall.Result != nil && toolCall.Result.Error != "" {
 		pipelineFields["error"] = toolCall.Result.Error

@@ -230,9 +230,13 @@ func TestEvidencePlanDiscoversBothAuthorizedSourceDirectories(t *testing.T) {
 }
 
 func TestTaskPlanAllowsNoExternalEvidenceAndDiscoveryUsesThatChoice(t *testing.T) {
-	operations := 0
+	operations := []string{}
 	registry := nativeStructuredRegistry(t, func(w http.ResponseWriter, r *http.Request) {
-		operations++
+		var request struct {
+			Operation string `json:"operation"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		operations = append(operations, request.Operation)
 		_, _ = io.WriteString(w, `{}`)
 	})
 	plan, err := json.Marshal(taskEvidencePlan{
@@ -254,7 +258,7 @@ func TestTaskPlanAllowsNoExternalEvidenceAndDiscoveryUsesThatChoice(t *testing.T
 	state, err := engine.Execute(ctx, "session", "message", "解释仓单和持仓的概念差异。", nil)
 	require.NoError(t, err)
 	require.Equal(t, "概念解释。", state.FinalAnswer)
-	require.Zero(t, operations, "a valid model plan with no external evidence skips eager catalog/schema discovery")
+	require.Equal(t, []string{"describe_tools"}, operations, "protocol negotiation precedes planning, while a no-evidence plan still performs no source/catalog/data read")
 	require.NotNil(t, engine.taskProjection)
 	require.NotNil(t, engine.plannedSourceDiscoverySelection(), "explicit no-evidence plan returns an empty selection and skips both directories")
 	require.Empty(t, engine.plannedSourceDiscoverySelection())
