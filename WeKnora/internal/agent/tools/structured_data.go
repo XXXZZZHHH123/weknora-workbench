@@ -17,6 +17,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -30,15 +31,18 @@ const ToolStructuredData = "structured_data"
 // or a shared agent's execution tenant. No operation writes research state.
 type StructuredDataTool struct {
 	BaseTool
-	endpoint          string
-	sourceQuestion    string
-	key               []byte
-	client            *http.Client
-	readCache         structuredReadCache
-	knowledgeScopes   []structuredKnowledgeScope
-	knowledgeMetadata map[string]structuredKnowledgeMetadata
-	scopeConfigured   bool
-	scopeError        error
+	endpoint            string
+	sourceQuestion      string
+	key                 []byte
+	client              *http.Client
+	readCache           structuredReadCache
+	knowledgeScopes     []structuredKnowledgeScope
+	knowledgeMetadata   map[string]structuredKnowledgeMetadata
+	scopeConfigured     bool
+	scopeError          error
+	protocolMu          sync.RWMutex
+	protocolGeneration  uint64
+	protocolDescriptors map[string]StructuredOperationDescriptor
 }
 
 func NewStructuredDataTool() *StructuredDataTool {
@@ -101,9 +105,16 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	if json.Unmarshal(input["operation"], &operation) != nil || json.Unmarshal(input["arguments"], &arguments) != nil || arguments == nil {
 		return nil, fmt.Errorf("结构化表格需要合法 operation 和 arguments 对象")
 	}
-	allowed := map[string]bool{"describe_tools": true, "inspect_source": true, "list_datasets": true, "list_series": true, "list_charts": true, "query_series": true, "compare_series": true, "convert_price": true, "resolve_fields": true, "confirm_fields": true, "execute_field_plan": true, "get_result_evidence": true, "analyze_table": true, "list_pdf_tables": true, "read_pdf_table": true, "query_pdf_table": true}
-	if !allowed[operation] {
+	if _, supported := structuredOperationContracts[operation]; !supported {
 		return nil, fmt.Errorf("结构化表格不支持此操作")
+	}
+	if _, pinned := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); !pinned && operation != "describe_tools" {
+		t.protocolMu.RLock()
+		descriptor, available := t.protocolDescriptors[operation]
+		t.protocolMu.RUnlock()
+		if available {
+			ctx = withStructuredInvocation(ctx, descriptor)
+		}
 	}
 	for _, field := range []string{"tenant_id", "user_id", "role", "token", "api_key", "url", "endpoint", "data_dir", "knowledge_base_id", "knowledge_base_tenant_id", "knowledge_base_can_write"} {
 		if _, exists := arguments[field]; exists {
@@ -193,6 +204,9 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		return nil, fmt.Errorf("结构化表格请求构造失败")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if descriptor, ok := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); ok && descriptor.ManifestSHA256 != "" {
+		req.Header.Set("X-Structured-Manifest-SHA256", descriptor.ManifestSHA256)
+	}
 	req.Header.Set("X-Research-Identity", encoded)
 	req.Header.Set("X-Research-Timestamp", stamp)
 	req.Header.Set("X-Research-Signature", hex.EncodeToString(mac.Sum(nil)))
@@ -200,7 +214,33 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		req.Header.Set("Authorization", authorization)
 	}
 	requestStarted := time.Now()
+	var confirmationAttempt structuredConfirmationAttempt
+	if operation == "confirm_fields" {
+		var allowed bool
+		confirmationAttempt, allowed = t.beginStructuredConfirmationAttempt(caller, scope, arguments)
+		if !allowed {
+			return structuredProtocolFailure("confirmation_already_attempted", "本轮已向该待选方案提交过一次真实用户回复；不会再次确认或重放。请依据实际返回等待用户继续补充，传输失败时不能假定确认未执行", "confirmation", false), nil
+		}
+	}
 	response, err := t.client.Do(req)
+	if err != nil && ctx.Err() == nil {
+		contract := structuredOperationContracts[operation]
+		deadline, bounded := ctx.Deadline()
+		var networkError net.Error
+		if contract.effect == "read" && errors.As(err, &networkError) && (!bounded || time.Until(deadline) > 250*time.Millisecond) && req.GetBody != nil {
+			// One transport retry for a pure read. Stateful resolution and human
+			// confirmation never enter this path; no business parameters change.
+			if response != nil && response.Body != nil {
+				_ = response.Body.Close()
+			}
+			retryCtx, retryCancel := context.WithTimeout(ctx, 2*time.Second)
+			defer retryCancel()
+			retry := req.Clone(retryCtx)
+			if retry.Body, err = req.GetBody(); err == nil {
+				response, err = t.client.Do(retry)
+			}
+		}
+	}
 	if err != nil {
 		ctxErr := ctx.Err()
 		ctxCancelled := errors.Is(ctxErr, context.Canceled)
@@ -217,7 +257,26 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		return nil, fmt.Errorf("结构化表格服务连接失败")
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusConflict {
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 16*1024+1))
+		if readErr == nil && len(body) <= 16*1024 {
+			var conflict struct {
+				Detail struct {
+					Code string `json:"code"`
+				} `json:"detail"`
+				Code string `json:"code"`
+			}
+			if json.Unmarshal(body, &conflict) == nil && (conflict.Code == "manifest_changed" || conflict.Detail.Code == "manifest_changed") {
+				t.releaseUnexecutedStructuredConfirmation(confirmationAttempt)
+				return structuredProtocolFailure("manifest_changed", "结构化服务能力版本已变化；本次未执行。请通过 structured_capabilities refresh=true 取得当前扁平定义，再修正调用，不能自动重放旧参数", "manifest", false), nil
+			}
+		}
+		return nil, fmt.Errorf("结构化表格读取失败（HTTP 409），本次未取得可用结果；核对真实来源范围与当前版本")
+	}
 	if response.StatusCode == http.StatusBadRequest {
+		// Native argument validation happens before its operation is called.
+		// Correcting a rejected schema is not replay of an executed selection.
+		t.releaseUnexecutedStructuredConfirmation(confirmationAttempt)
 		// The destination is fixed and signed. Validation details are evidence
 		// for correcting arguments, not instructions, and have a smaller bound.
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, 16*1024+1))
@@ -240,12 +299,17 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("结构化表格读取失败（HTTP %d），请检查服务、身份或查询参数", response.StatusCode)
 	}
+	if descriptor, ok := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); ok && descriptor.ManifestSHA256 != "" && response.Header.Get("X-Structured-Manifest-SHA256") != descriptor.ManifestSHA256 {
+		return structuredProtocolFailure("manifest_execution_unverified", "服务未确认本次工具协议版本；未接受结果。状态操作不得重放，请核对当前服务能力", "manifest", true), nil
+	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 512*1024+1))
 	if err != nil || len(body) > 512*1024 {
 		return nil, fmt.Errorf("结构化表格结果过大，请缩小范围")
 	}
 	var data map[string]any
-	if json.Unmarshal(body, &data) != nil || data == nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if decoder.Decode(&data) != nil || data == nil {
 		return nil, fmt.Errorf("结构化表格结果格式无效")
 	}
 	if status, _ := data["status"].(string); status == "error" {
@@ -255,6 +319,16 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		cacheResult = &types.ToolResult{Success: false, Output: string(body), Data: data, Error: detail}
 		return cacheResult, nil
+	}
+	if scope.KnowledgeBaseID != "" && (operation == "resolve_fields" || operation == "confirm_fields") && data["kind"] == "structured_field_resolution" {
+		// Persist the actual resolution's transport binding separately from the
+		// model call. A subsequent human clarification must return to this KB,
+		// including when the prior model omitted the scope restored by runtime.
+		// No account, owner tenant or credential is exposed in this locator.
+		data["resolution_binding"] = map[string]any{"knowledge_base_id": scope.KnowledgeBaseID, "canonical_operation": operation, "resolution_id": data["resolution_id"]}
+		if visible, encodeErr := json.Marshal(data); encodeErr == nil {
+			body = visible
+		}
 	}
 	if operation != "describe_tools" && scope.KnowledgeBaseID != "" {
 		data["source_context"] = map[string]any{

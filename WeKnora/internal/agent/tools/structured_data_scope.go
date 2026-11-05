@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -301,7 +302,9 @@ func structuredRecallRows(value any) []map[string]any {
 		return nil
 	}
 	var rows []map[string]any
-	if json.Unmarshal(encoded, &rows) != nil {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if decoder.Decode(&rows) != nil {
 		return nil
 	}
 	return rows

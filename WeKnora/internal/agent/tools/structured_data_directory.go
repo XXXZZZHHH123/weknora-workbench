@@ -29,11 +29,27 @@ func fitStructuredDirectory(ctx context.Context, operation string, result *types
 	}
 	var data map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	if operation == "query_pdf_table" {
-		decoder.UseNumber()
-	}
+	decoder.UseNumber()
 	if decoder.Decode(&data) != nil {
 		return result
+	}
+	_, contractBound := result.Data["result_contract"]
+	var contractReference map[string]any
+	if contractBound {
+		// A v2 contract binds the complete executed result. Only the model view
+		// may be projected; do not change/re-sign trusted rows or coverage.
+		reference := map[string]any{"projection": true}
+		if contract, ok := data["result_contract"].(map[string]any); ok {
+			for _, key := range []string{"schema_version", "result_id", "result_hash"} {
+				if value, exists := contract[key]; exists {
+					reference[key] = value
+				}
+			}
+		}
+		delete(data, "result_contract")
+		data["result_contract_ref"] = reference
+		data["output_view_only"] = true
+		contractReference = reference
 	}
 	// The authenticated context is attached to Data for application use, not
 	// injected into the model-visible service response. Preserve that contract
@@ -44,7 +60,14 @@ func fitStructuredDirectory(ctx context.Context, operation string, result *types
 	if !contextWasVisible {
 		delete(data, "source_context")
 	}
-	render := func() bool { encoded, err = json.Marshal(data); return err == nil && utf8.RuneCount(encoded) <= budget }
+	render := func() bool {
+		if contractBound {
+			delete(data, "result_contract")
+			data["result_contract_ref"], data["output_view_only"] = contractReference, true
+		}
+		encoded, err = json.Marshal(data)
+		return err == nil && utf8.RuneCount(encoded) <= budget
+	}
 	if render() {
 		copy := *result
 		copy.Output = string(encoded)
@@ -96,7 +119,7 @@ func fitStructuredDirectory(ctx context.Context, operation string, result *types
 		data["metadata_projection"] = "Plan and historic issue details omitted to preserve complete source rows; hashes and current unresolved/coverage states retained."
 		rows := structuredRecallRows(data["rows"])
 		data["rows"] = rows
-		offset, _ := data["offset"].(float64)
+		offset := structuredDirectoryOffset(data["offset"])
 		data["returned_row_count"] = len(rows)
 		if truncated, _ := data["output_truncated"].(bool); truncated {
 			data["next_offset"] = int(offset) + len(rows)
@@ -117,7 +140,7 @@ func fitStructuredDirectory(ctx context.Context, operation string, result *types
 			row["sample_rows_truncated"] = true
 		}
 		data["tables"] = rows
-		offset, _ := data["offset"].(float64)
+		offset := structuredDirectoryOffset(data["offset"])
 		for !render() && len(rows) > 1 {
 			rows = rows[:len(rows)-1]
 			data["tables"], data["output_truncated"], data["next_offset"] = rows, true, int(offset)+len(rows)
@@ -198,11 +221,33 @@ func fitStructuredDirectory(ctx context.Context, operation string, result *types
 		data["source_context"] = scope
 	}
 	copy.Output, copy.Data = string(encoded), data
+	if contractBound {
+		copy.Data = result.Data
+	}
 	if data["status"] == "query_output_budget_exceeded" {
 		copy.Success = false
 		copy.Error = "PDF query output exceeds tool budget; request fewer output columns/rows or an explicit aggregation."
 	}
 	return &copy
+}
+
+func structuredDirectoryOffset(value any) int {
+	switch number := value.(type) {
+	case json.Number:
+		parsed, err := number.Int64()
+		if err == nil && parsed >= 0 && int64(int(parsed)) == parsed {
+			return int(parsed)
+		}
+	case float64:
+		if number >= 0 && float64(int(number)) == number {
+			return int(number)
+		}
+	case int:
+		if number >= 0 {
+			return number
+		}
+	}
+	return 0
 }
 
 func projectPDFHistoricReviewMetadata(data map[string]any) {

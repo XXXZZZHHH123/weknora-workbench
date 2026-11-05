@@ -690,7 +690,7 @@ func isCapabilityDefinitionToolCall(call types.ToolCall) bool {
 	if call.Result == nil || !call.Result.Success {
 		return false
 	}
-	if call.Name == expandTaskToolsName {
+	if call.Name == expandTaskToolsName || call.Name == agenttools.ToolStructuredCapabilities {
 		return true
 	}
 	if call.Name != agenttools.ToolStructuredData {

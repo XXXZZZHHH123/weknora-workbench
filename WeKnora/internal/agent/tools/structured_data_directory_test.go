@@ -52,13 +52,56 @@ func TestStructuredMultiScopePDFDirectoryBudgetNeverMeansAbsent(t *testing.T) {
 	require.LessOrEqual(t, utf8.RuneCountInString(result.Output), 900)
 	require.True(t, json.Valid([]byte(result.Output)))
 	for _, catalog := range structuredRecallRows(result.Data["knowledge_base_catalogs"]) {
-		require.Equal(t, float64(1), catalog["pdf_table_count"])
+		require.Equal(t, json.Number("1"), catalog["pdf_table_count"])
 		require.Equal(t, true, catalog["pdf_tables_truncated"])
 		require.Equal(t, "list_pdf_tables", catalog["pdf_catalog_next_operation"])
 	}
 	require.Len(t, catalogs[0]["pdf_tables"], 1)
 	// Numerical evidence is never modified by this discovery-only renderer.
 	require.Same(t, original, fitStructuredDirectory(WithOutputBudget(context.Background(), 10), "query_series", original))
+}
+
+func TestStructuredV2BudgetProjectsOnlyModelOutputAndKeepsBoundResult(t *testing.T) {
+	for _, operation := range []string{"read_pdf_table", "query_pdf_table"} {
+		t.Run(operation, func(t *testing.T) {
+			rows := []any{}
+			provenance := []any{}
+			for index := 0; index < 12; index++ {
+				if operation == "read_pdf_table" {
+					rows = append(rows, map[string]any{"_row_id": "row-" + string(rune('a'+index)), "raw_values": map[string]any{"amount": json.Number("9007199254740993"), "label": strings.Repeat("large original label ", 16)}})
+				} else {
+					rows = append(rows, []any{json.Number("9007199254740993"), strings.Repeat("large original label ", 16)})
+				}
+				provenance = append(provenance, map[string]any{"sql_result_lineage_verified": false})
+			}
+			original := &types.ToolResult{Success: true, Data: map[string]any{
+				"kind": "structured_analysis", "status": "ok", "table_id": "actual-table", "columns": []any{"amount", "label"},
+				"rows": rows, "row_provenance": provenance, "offset": 0, "output_truncated": false,
+				"coverage":        map[string]any{"table_input_complete": true},
+				"source_context":  map[string]any{"knowledge_base_id": "current-scope"},
+				"result_contract": map[string]any{"schema_version": 2, "result_id": "actual-result", "result_hash": strings.Repeat("a", 64), "columns": []any{map[string]any{"index": 0, "unit": "declared-unit"}}},
+			}}
+			before, err := json.Marshal(original.Data)
+			require.NoError(t, err)
+			projected := fitStructuredDirectory(WithOutputBudget(context.Background(), 1500), operation, original)
+			after, err := json.Marshal(projected.Data)
+			require.NoError(t, err)
+			require.Equal(t, before, after, "projection cannot alter any byte-semantic field of the bound executed result")
+			require.Len(t, projected.Data["rows"].([]any), 12)
+			var view map[string]any
+			require.NoError(t, json.Unmarshal([]byte(projected.Output), &view))
+			require.LessOrEqual(t, utf8.RuneCountInString(projected.Output), 1500)
+			require.NotContains(t, view, "result_contract", "the bounded model view cannot claim the complete result contract")
+			require.Equal(t, true, view["output_view_only"])
+			reference := view["result_contract_ref"].(map[string]any)
+			require.Equal(t, true, reference["projection"])
+			require.Equal(t, "actual-result", reference["result_id"])
+			require.Equal(t, strings.Repeat("a", 64), reference["result_hash"])
+			require.Less(t, len(view["rows"].([]any)), 12)
+			require.Equal(t, true, view["output_truncated"])
+			require.NotContains(t, projected.Output, "source_context", "trusted runtime scope remains private")
+		})
+	}
 }
 
 func TestStructuredPDFReadBudgetKeepsSourceRowsAndExactContinuation(t *testing.T) {

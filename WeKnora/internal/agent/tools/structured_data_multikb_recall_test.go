@@ -172,7 +172,7 @@ func TestStructuredMultiScopeRecallPreservesAlreadyBudgetedPDFCount(t *testing.T
 	result, err := base.Execute(structuredScopeContext(), json.RawMessage(`{"operation":"list_datasets","arguments":{"question":"Find the available measurements"}}`))
 	require.NoError(t, err)
 	for _, catalog := range structuredRecallRows(result.Data["knowledge_base_catalogs"]) {
-		require.Equal(t, float64(99), catalog["pdf_table_count"])
+		require.Equal(t, json.Number("99"), catalog["pdf_table_count"])
 		require.Equal(t, true, catalog["pdf_tables_truncated"])
 	}
 	require.Equal(t, true, result.Data["pdf_tables_truncated"])

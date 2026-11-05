@@ -8,14 +8,14 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
-// NewStructuredReadOperationTools exposes only the read operations described by
-// the configured service. Registration parses an already fetched directory;
-// it never contacts a service or infers schemas from names or examples.
+// NewStructuredReadOperationTools retains its legacy API name while exposing
+// permitted data reads and guarded resolution-state operations from the real
+// service schema. It never exposes import/publication mutations, contacts a
+// service during registration or infers schemas from names/examples.
 func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]any) []types.Tool {
 	if base == nil {
 		return nil
 	}
-	allowed := map[string]bool{"list_series": true, "query_series": true, "analyze_table": true, "inspect_source": true, "get_result_evidence": true, "list_pdf_tables": true, "read_pdf_table": true, "query_pdf_table": true}
 	directory, ok := data["tools"].([]any)
 	if !ok {
 		return nil
@@ -36,7 +36,8 @@ func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]a
 			continue
 		}
 		name, _ := entry["name"].(string)
-		if !allowed[name] || counts[name] != 1 {
+		descriptor, supported := structuredDescriptor(name, "structured_"+name)
+		if !supported || name == "describe_tools" || counts[name] != 1 {
 			continue
 		}
 		schema, ok := entry["inputSchema"].(map[string]any)
@@ -64,7 +65,7 @@ func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]a
 			scopedSchema["properties"].(map[string]any)["knowledge_base_id"] = map[string]any{
 				"type": "string", "description": "本轮已授权知识库ID；单库默认，多库必填且须从真实授权目录选择",
 			}
-			if len(base.knowledgeScopes) > 1 {
+			if len(base.knowledgeScopes) > 1 && descriptor.ScopeMode == "knowledge_base" {
 				required, _ := scopedSchema["required"].([]any)
 				scopedSchema["required"] = append(required, "knowledge_base_id")
 			}
@@ -84,6 +85,10 @@ func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]a
 		result = append(result, &structuredReadOperationTool{
 			BaseTool: NewBaseTool("structured_"+name, description, raw), base: base,
 			operation: name, argumentKeys: keys,
+			descriptor: func() StructuredOperationDescriptor {
+				descriptor.SchemaSHA256 = structuredDigest(json.RawMessage(raw))
+				return descriptor
+			}(),
 		})
 	}
 	return result
@@ -94,9 +99,27 @@ type structuredReadOperationTool struct {
 	base         *StructuredDataTool
 	operation    string
 	argumentKeys map[string]bool
+	descriptor   StructuredOperationDescriptor
+	generation   uint64
 }
 
 func (t *structuredReadOperationTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
+	// Hold this generation through transport. Capability refresh is an execution
+	// barrier and cannot change the interpretation beneath an in-flight read.
+	t.base.protocolMu.RLock()
+	defer t.base.protocolMu.RUnlock()
+	executionDescriptor := t.descriptor
+	if t.generation > 0 {
+		if t.generation != t.base.protocolGeneration {
+			return structuredProtocolFailure("manifest_changed", "该工具定义已过期；请查看当前 structured_capabilities，按本轮真实扁平 schema 修正后重试", "manifest", false), nil
+		}
+	} else if t.base.protocolGeneration > 0 {
+		current, available := t.base.protocolDescriptors[t.operation]
+		if !available || current.SchemaSHA256 != t.descriptor.SchemaSHA256 {
+			return structuredProtocolFailure("manifest_changed", "保留的同名工具定义与本轮真实服务协议不一致；未执行，不会覆盖其它注册者。请核对当前能力冲突", "manifest", false), nil
+		}
+		executionDescriptor = current
+	}
 	var input map[string]json.RawMessage
 	if len(args) > 16384 || json.Unmarshal(args, &input) != nil || input == nil {
 		return nil, fmt.Errorf("结构化表格参数需要符合工具schema的对象")
@@ -120,5 +143,17 @@ func (t *structuredReadOperationTool) Execute(ctx context.Context, args json.Raw
 	if err != nil {
 		return nil, fmt.Errorf("结构化表格参数格式无效")
 	}
-	return t.base.Execute(ctx, wrapped)
+	result, err := t.base.Execute(withStructuredInvocation(ctx, executionDescriptor), wrapped)
+	if result != nil {
+		if result.Data == nil {
+			result.Data = map[string]any{}
+		}
+		result.Data["_structured_execution"] = executionDescriptor
+		if result.Data["kind"] == "structured_protocol_error" {
+			result.Data["manifest_version"] = executionDescriptor.ManifestSHA256
+			encoded, _ := json.Marshal(result.Data)
+			result.Output = string(encoded)
+		}
+	}
+	return result, err
 }

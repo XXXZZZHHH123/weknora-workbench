@@ -50,7 +50,7 @@ func TestStructuredReadCacheCanonicalTypedQueryKeepsSourceAndCloneIsolation(t *t
 	require.Equal(t, int64(1), calls.Load())
 	require.Equal(t, body, hit.Output, "original numeric/source bytes survive reuse")
 	require.Equal(t, "original-sha", hit.Data["source"].(map[string]any)["sha256"])
-	require.Equal(t, float64(777.008062964705883), hit.Data["rows"].([]any)[0].(map[string]any)["value"])
+	require.Equal(t, json.Number("777.008062964705883"), hit.Data["rows"].([]any)[0].(map[string]any)["value"])
 	trace := hit.Data["_execution_cache"].(map[string]any)
 	require.Equal(t, true, trace["cache_hit"])
 	require.Equal(t, "original-call", trace["origin_tool_call_id"])
@@ -224,7 +224,7 @@ func TestStructuredReadCacheConcurrentReadsAndCancelledWaiter(t *testing.T) {
 	wg.Wait()
 	for i := range results {
 		require.NoError(t, errs[i])
-		require.Equal(t, float64(12), results[i].Data["rows"].([]any)[0].(map[string]any)["value"])
+		require.Equal(t, json.Number("12"), results[i].Data["rows"].([]any)[0].(map[string]any)["value"])
 	}
 	require.Equal(t, int64(1), calls.Load())
 }
@@ -250,12 +250,12 @@ func TestStructuredReadCacheOldInflightCannotPublishAfterRebind(t *testing.T) {
 	base.BindSourceQuestion("second")
 	second, err := base.Execute(structuredCacheTestContext("new"), structuredCacheQuery(cacheDatasetA))
 	require.NoError(t, err)
-	require.Equal(t, float64(2), second.Data["request_count"])
+	require.Equal(t, json.Number("2"), second.Data["request_count"])
 	close(release)
 	require.NoError(t, <-done)
 	hit, err := base.Execute(structuredCacheTestContext("new-repeat"), structuredCacheQuery(cacheDatasetA))
 	require.NoError(t, err)
-	require.Equal(t, float64(2), hit.Data["request_count"])
+	require.Equal(t, json.Number("2"), hit.Data["request_count"])
 	require.Equal(t, int64(2), calls.Load())
 }
 
