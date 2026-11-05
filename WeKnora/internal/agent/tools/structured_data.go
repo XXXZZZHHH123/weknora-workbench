@@ -126,10 +126,10 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 	scope, directory, err := t.resolveStructuredKnowledgeScope(input["knowledge_base_id"])
 	if err != nil {
-		return nil, err
+		return t.structuredScopeFailure(ctx, err), err
 	}
 	if err = t.authorizeStructuredAPIKeyScope(ctx, scope, directory != nil); err != nil {
-		return nil, err
+		return t.structuredScopeFailure(ctx, &structuredScopeError{"scope_not_authorized", err.Error(), false}), err
 	}
 	if directory != nil {
 		if operation == "list_datasets" {
@@ -141,6 +141,9 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 			if operation != "list_datasets" {
 				directory.Success = false
 				directory.Error = "尚未执行 " + operation + "：多知识库必须在顶层传 knowledge_base_id（与 operation、arguments 同级）；请从返回的已授权目录选择真实ID并重试原操作。此返回不是查询结果，也不表示无数据。"
+			}
+			if descriptor, ok := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); ok {
+				attachStructuredDiagnosticDescriptor(directory, descriptor)
 			}
 			return fitStructuredDirectory(ctx, operation, directory), nil
 		}

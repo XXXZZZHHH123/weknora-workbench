@@ -90,7 +90,7 @@ func (r *Registry) EncodeMessages(messages []chat.Message) []chat.Message {
 			messages[i].Content = r.encodeToolPrivateResult(messages[i].Name, messages[i].Content)
 		}
 	}
-	messages = r.sources.EncodeMessagesWithPathPolicies(messages, sourceArgumentPathAllowed, sourceOutputAllowed)
+	messages = r.sources.EncodeMessagesWithPathPolicies(messages, r.sources.argumentPathAllowed, sourceOutputAllowed)
 	for i := range messages {
 		if len(messages[i].ToolCalls) == 0 {
 			continue
@@ -116,7 +116,7 @@ func (r *Registry) DecodeToolCalls(toolCalls []types.LLMToolCall) {
 	normalizeWebFetchItems(toolCalls)
 	normalizeMCPCallArguments(toolCalls)
 	r.resources.DecodeToolCalls(toolCalls)
-	r.sources.DecodeToolCallsWithPathPolicy(toolCalls, sourceArgumentPathAllowed)
+	r.sources.DecodeToolCallsWithPathPolicy(toolCalls, r.sources.argumentPathAllowed)
 	for i := range toolCalls {
 		r.decodeToolPolicies(&toolCalls[i])
 		decodedMCP, unresolvedMCP := r.decodeMCPArguments(toolCalls[i].Function.Name, toolCalls[i].Function.Arguments)
@@ -125,7 +125,7 @@ func (r *Registry) DecodeToolCalls(toolCalls []types.LLMToolCall) {
 		unresolved := append(
 			r.resources.OrphanHandles(resolved),
 			r.sources.UnresolvedToolHandlesWithPathPolicy(
-				toolCalls[i].Function.Name, resolved, sourceArgumentPathAllowed,
+				toolCalls[i].Function.Name, resolved, r.sources.argumentPathAllowed,
 			)...,
 		)
 		unresolved = append(unresolved, r.unresolvedPrivateToolHandles(toolCalls[i].Function.Name, resolved)...)
