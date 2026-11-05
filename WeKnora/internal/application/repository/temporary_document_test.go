@@ -31,7 +31,7 @@ func TestExpiredDocumentsKeepLiveConversationReferences(t *testing.T) {
 			sqlDB, err := db.DB()
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
-			require.NoError(t, db.AutoMigrate(&types.Session{}, &types.Message{}, &types.TemporaryDocument{}))
+			require.NoError(t, db.AutoMigrate(&types.Session{}, &types.Message{}, &types.MessageEvidenceRecord{}, &types.TemporaryDocument{}))
 			migration := "../../../migrations/sqlite/000036_messages_attachment_lookup.up.sql"
 			if backend == "postgres" {
 				migration = "../../../migrations/versioned/000117_messages_attachment_lookup.up.sql"

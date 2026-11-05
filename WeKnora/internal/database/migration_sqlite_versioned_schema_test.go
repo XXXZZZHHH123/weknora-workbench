@@ -45,6 +45,7 @@ var versionedSQLiteTables = []string{
 	"mcp_endpoints",
 	"mcp_metadata",
 	"message_artifacts",
+	"message_evidence_records",
 	"image_generation_executions",
 	"tenant_skills",
 	"tenant_skill_snapshots",
@@ -85,15 +86,16 @@ var versionedSQLiteColumns = map[string][]string{
 		"research_workbench_id",    // 000041
 		"owner_auth_source",        // 000046
 	},
-	"session_sandbox_assignments": {"released_at", "cleanup_due_at"},    // 000047
-	"tenant_invitations":          {"token", "accepted_count"},          // 000054
-	"embed_channels":              {"allow_memory"},                     // 000060
-	"im_channels":                 {"locale"},                           // 000030
-	"chunks":                      {"source_locators"},                  // 000033
-	"mcp_oauth_tokens":            {"principal_type", "principal_id"},   // 000064
-	"mcp_tool_approvals":          {"enabled", "risk", "observed_risk"}, // 000091, 000126
-	"mcp_services":                {"usage_instructions"},               // 000092
-	"message_artifacts":           {"deleted_at"},                       // 000107
+	"session_sandbox_assignments": {"released_at", "cleanup_due_at"},                                                                  // 000047
+	"tenant_invitations":          {"token", "accepted_count"},                                                                        // 000054
+	"embed_channels":              {"allow_memory"},                                                                                   // 000060
+	"im_channels":                 {"locale"},                                                                                         // 000030
+	"chunks":                      {"source_locators"},                                                                                // 000033
+	"mcp_oauth_tokens":            {"principal_type", "principal_id"},                                                                 // 000064
+	"mcp_tool_approvals":          {"enabled", "risk", "observed_risk"},                                                               // 000091, 000126
+	"mcp_services":                {"usage_instructions"},                                                                             // 000092
+	"message_artifacts":           {"deleted_at"},                                                                                     // 000107
+	"message_evidence_records":    {"message_id", "evidence_id", "session_id", "position", "payload", "payload_sha256", "created_at"}, // 000066
 	"tenant_skills": {
 		"envs", "served", "catalog_id", "install_session_id", "install_message_id",
 	}, // 000028
@@ -103,7 +105,7 @@ var versionedSQLiteColumns = map[string][]string{
 	}, // 000028
 }
 
-const expectedSQLiteMigrationVersion = 65
+const expectedSQLiteMigrationVersion = 66
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)

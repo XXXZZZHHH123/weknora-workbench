@@ -1,5 +1,5 @@
 <template>
-  <div ref="rootElement" class="agent-stream-display" :class="{ 'is-embedded': embeddedMode, 'is-rag-mode': ragMode, 'is-steer-prefix': session?.steerForked }">
+  <div ref="rootElement" class="agent-stream-display" :class="{ 'is-embedded': embeddedMode, 'is-rag-mode': ragMode, 'is-steer-prefix': session?.steerForked }" @click.capture="handleEvidenceCitation" @keydown.capture="handleEvidenceCitation">
 
     <t-drawer v-if="selectedChild && !childAgentTabs" attach="body" :close-btn="true" :z-index="2000" :visible="true" :header="selectedChild.displayName" size="min(680px, 95vw)" :footer="false" @close="selectedChildId = ''">
       <ChildAgentStream :key="selectedChild.id + ':' + selectedChild.runId" :task="selectedChild" />
@@ -713,6 +713,8 @@
     </div>
 
   </div>
+  <t-alert v-if="session.artifact_delivery_incomplete" theme="warning" :message="t('evidence.deliveryIncomplete')" />
+  <MessageEvidencePanel v-if="!embeddedMode && !embedToken && session.evidence_references?.length && sessionId" ref="evidencePanel" :session-id="sessionId" :message-id="persistedAssistantId(session) || session.id || ''" :references="session.evidence_references" />
   <!-- 引用 hover 浮层（与历史消息共用同一组件） -->
   <ChatCitationFloat :float="citationFloat" :on-enter="cancelCitationClose" :on-leave="scheduleCitationClose" />
 
@@ -794,6 +796,8 @@ import HostApprovalCard from './HostApprovalCard.vue';
 import { isHostApprovalEvent } from './hostApproval';
 import ChatRequestInfoButton from '@/components/ChatRequestInfoButton.vue';
 import ChatCitationFloat from '@/components/ChatCitationFloat.vue';
+import MessageEvidencePanel from '@/components/MessageEvidencePanel.vue';
+import type { EvidenceReference } from '@/api/chat/evidence';
 import picturePreview from '@/components/picture-preview.vue';
 import ChatArtifactsDrawer from './ChatArtifactsDrawer.vue';
 import { isCollectingSkillArtifacts } from '@/utils/skillArtifacts';
@@ -1201,6 +1205,7 @@ interface SessionData {
   isAgentMode?: boolean;
   agentEventStream?: any[];
   knowledge_references?: any[];
+  evidence_references?: EvidenceReference[];
   [key: string]: unknown;
 }
 
@@ -1222,6 +1227,17 @@ const props = defineProps<{
   // install have no composer slot, so they render the MCP card inline.
   deferToolApprovals?: boolean;
 }>();
+
+const evidencePanel = ref<InstanceType<typeof MessageEvidencePanel> | null>(null);
+function handleEvidenceCitation(event: MouseEvent | KeyboardEvent) {
+  if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Enter' && (event as KeyboardEvent).key !== ' ') return;
+  const target = event.target instanceof Element ? event.target.closest('.citation-evidence') : null;
+  if (!target || !evidencePanel.value) return;
+  const id = target.getAttribute('data-evidence-id') || '';
+  if (!props.session.evidence_references?.some(ref => ref.id === id)) return;
+  event.preventDefault(); event.stopPropagation();
+  void evidencePanel.value.open(id);
+}
 
 const emit = defineEmits<{
   (event: 'render-complete-change', ready: boolean): void;

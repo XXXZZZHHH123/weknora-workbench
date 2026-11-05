@@ -7,7 +7,7 @@ import { renderToString } from 'vue/server-renderer'
 
 let server: ViteDevServer
 let useStream: typeof import('./streame').useStream
-let transport: { requests: Array<{ url: string; options: { body: string } }> }
+let transport: { requests: Array<{ url: string; options: { body: string; headers: Record<string, string> } }> }
 const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
 before(async () => {
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
@@ -53,6 +53,19 @@ test('approval reattach identifies the resumed segment without changing ordinary
       const request = transport.requests.at(-1)!
       assert.equal(request.url, '/api/v1/sessions/continue-stream/session?message_id=message' +
         (pendingId ? '&resume_pending_id=pending%2Fa%2Bb' : ''))
+      assert.equal(request.options.headers['X-WeKnora-Evidence-Version'], '1')
+    }
+  } finally { stream.stopStream() }
+})
+
+test('only evidence-capable authenticated chat advertises the typed citation version', async () => {
+  let stream!: ReturnType<typeof useStream>
+  await renderToString(createSSRApp({ setup() { stream = useStream(); return () => null } }))
+  try {
+    for (const embed_token of [undefined, 'embed-test-token']) {
+      await stream.startStream({ session_id: 'session', query: 'question', method: 'POST', url: '/api/v1/agent-chat', embed_token })
+      const request = transport.requests.at(-1)!
+      assert.equal(request.options.headers['X-WeKnora-Evidence-Version'], embed_token ? undefined : '1')
     }
   } finally { stream.stopStream() }
 })

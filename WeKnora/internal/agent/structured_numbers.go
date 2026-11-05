@@ -31,7 +31,7 @@ var pdfNumberedSourceHeading = regexp.MustCompile(`^[1-9][0-9]{0,3}[.、][ \t]*(
 // consumed once and cannot later lose its month/day to a shorter match.
 var calendarDateLiteral = regexp.MustCompile(`\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{2,4}年\d{1,2}月\d{1,2}日?|\d{4}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}|\d{2,4}年(?:\d{1,2}月)?|\d{1,2}月(?:\d{1,2}日?)?`)
 var cellOrListMarker = regexp.MustCompile(`\b[A-Z]{1,3}\d+\b|(?m)^\s*(?:[#>*-]|\*\*)*\s*\d+[.)）、]`)
-var sourceCitationTag = regexp.MustCompile(`<(?:kb|web)\b[^>]*>`)
+var sourceCitationTag = regexp.MustCompile(`<(?:kb|web|evidence)\b[^>]*>`)
 var sourceDigestLabel = regexp.MustCompile(`(?i)\bSHA-?256\b`)
 var sourceOpaqueToken = regexp.MustCompile(`\b(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{24}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})\b`)
 var abbreviatedSourceDigest = regexp.MustCompile(`\b([a-fA-F0-9]{8,32})(?:…|\.\.\.)([a-fA-F0-9]{4,16})\b`)

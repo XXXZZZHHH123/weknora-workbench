@@ -181,7 +181,7 @@ func uploadOnlyQuery(ctx context.Context, req *CreateKnowledgeQARequest) string 
 // parseQARequest parses and validates a QA request, returns the request context
 func (h *Handler) parseQARequest(c *gin.Context, logPrefix string) (*qaRequestContext, *CreateKnowledgeQARequest, error) {
 	receivedAt := time.Now()
-	ctx := logger.CloneContext(c.Request.Context())
+	ctx := types.WithEvidenceReferencesClientVersion(logger.CloneContext(c.Request.Context()), c.GetHeader(types.EvidenceReferencesClientHeader))
 	requestID := secutils.SanitizeForLog(c.GetString(types.RequestIDContextKey.String()))
 	logger.Infof(ctx, "[%s] TTFB:start request_id=%s received_at=%d",
 		logPrefix, requestID, receivedAt.UnixMilli())

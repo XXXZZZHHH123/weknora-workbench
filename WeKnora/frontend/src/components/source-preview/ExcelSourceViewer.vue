@@ -121,8 +121,10 @@ async function locateSource() {
   if (current.unavailable) { emit('located', { found: false, precise: false, reason: 'unavailable' }); return; }
   const locator = current.locators.find(l => l.type === 'sheet' && l.mapping === 'exact' && !l.partial
     && Number.isSafeInteger(l.row_start) && (l.row_start || 0) > 0 && l.sheet && sheetNames.value.includes(l.sheet));
+  const exactColumns = locator && Number.isSafeInteger(locator.column_start) && (locator.column_start || 0) > 0
+    && (!locator.column_end || Number.isSafeInteger(locator.column_end) && locator.column_end >= locator.column_start!);
   if (locator) {
-    if (!await showPage(locator.sheet!, (locator.row_start || 1) - 1)) return;
+    if (!await showPage(locator.sheet!, (locator.row_start || 1) - 1, exactColumns ? locator.column_start! - 1 : 0)) return;
     if (own !== generation || current.token !== props.locate?.token || !page.value) return;
     // The worker owns the accessible range. A future fallback may retain a
     // bounded range, while full worksheets can be cited beyond any old cap.
@@ -134,6 +136,19 @@ async function locateSource() {
   }
   if (own !== generation || current.token !== props.locate?.token || !viewport.value) return;
   const box = viewport.value;
+  if (locator && exactColumns) {
+    const cells = [...box.querySelectorAll<HTMLElement>('td[data-column]')].filter(cell => {
+      const row = Number(cell.dataset.row), rowEnd = Number(cell.dataset.rowEnd);
+      const column = Number(cell.dataset.column), columnEnd = Number(cell.dataset.columnEnd);
+      return row <= (locator.row_end || locator.row_start!) && rowEnd >= locator.row_start!
+        && column <= (locator.column_end || locator.column_start!) && columnEnd >= locator.column_start!;
+    });
+    if (cells.length) {
+      marks.push(highlightElements(cells)); scrollRectIntoContainer(box, cells[0].getBoundingClientRect());
+      emit('located', { found: true, precise: true, granularity: 'cell' }); return;
+    }
+    emit('located', { found: false, precise: false, reason: 'out_of_range' }); return;
+  }
   const targets = locator ? [...box.querySelectorAll<HTMLElement>('tbody tr[data-row]')].filter(row => {
     const number = Number(row.dataset.row);
     return number >= (locator.row_start || 1) && number <= (locator.row_end || locator.row_start || 1);
@@ -245,7 +260,7 @@ onUnmounted(() => { generation++; queuedLocate = null; dispose(); });
         <tbody><tr v-for="row in page.rows" :key="row.number" :data-row="row.number">
           <th scope="row">{{ row.number }}</th>
           <template v-for="(cell, index) in row.cells" :key="index">
-            <td v-if="!cell.hidden" :rowspan="cell.rowSpan" :colspan="cell.colSpan" :title="cell.text">{{ cell.text }}</td>
+            <td v-if="!cell.hidden" :rowspan="cell.rowSpan" :colspan="cell.colSpan" :title="cell.text" :data-row="row.number" :data-row-end="row.number + cell.rowSpan - 1" :data-column="page.startColumn + index + 1" :data-column-end="page.startColumn + index + cell.colSpan">{{ cell.text }}</td>
           </template>
         </tr></tbody>
       </table>

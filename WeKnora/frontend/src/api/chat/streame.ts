@@ -236,6 +236,9 @@ export function useStream() {
           await Promise.race([idle, fetchEventSource(url, {
         method: streamMethod,
         headers: {
+          // This frontend understands typed evidence citations and protected
+          // detail replay. Embedded clients retain their existing source flow.
+          ...(!embedToken ? { 'X-WeKnora-Evidence-Version': '1' } : {}),
           "Content-Type": "application/json",
           "Authorization": embedToken ? `Embed ${embedToken}` : `Bearer ${authToken}`,
           "Accept-Language": i18n.global.locale?.value || localStorage.getItem('locale') || 'zh-CN',

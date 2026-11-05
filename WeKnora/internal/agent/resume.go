@@ -22,6 +22,7 @@ func (e *AgentEngine) Resume(
 	snapshot []byte,
 	answered *types.AgentPrompt,
 ) (*types.AgentState, error) {
+	e.turnReview = turnReviewState{}
 	snap, err := DecodeRunSnapshot(snapshot)
 	if err != nil {
 		return nil, err
@@ -86,6 +87,8 @@ func (e *AgentEngine) Resume(
 		}
 		return nil
 	}
+	e.replayingEvidenceHistory = true
+	defer func() { e.replayingEvidenceHistory = false }()
 	for i, step := range state.RoundSteps {
 		e.replayCollaborationDeliveries(&messages, i, true)
 		if err := appendUsers(step); err != nil {
@@ -95,6 +98,7 @@ func (e *AgentEngine) Resume(
 		messages = e.appendToolResults(messages, step)
 		messages = e.appendToolImages(ctx, messages, step)
 	}
+	e.replayingEvidenceHistory = false
 	e.replayCollaborationDeliveries(&messages, len(state.RoundSteps), true)
 	if err := appendUsers(p.Step); err != nil {
 		return nil, err
@@ -130,7 +134,7 @@ func (e *AgentEngine) Resume(
 			return state, nil
 		}
 		state.RoundSteps = append(state.RoundSteps, step)
-		messages = e.appendToolResults(messages, step)
+		messages = e.appendToolResultsWithReplayPrefix(messages, step, len(p.Step.ToolCalls))
 		messages = e.appendToolImages(ctx, messages, step)
 		state.CurrentRound++
 	}

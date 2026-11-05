@@ -922,8 +922,23 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 			}
 			h.assistantMessage.KnowledgeReferences = knowledgeRefs
 		}
+		if suspended == nil && data.EvidenceRefs != nil {
+			refs := types.EvidenceReferencesFromInternal(data.EvidenceRefs)
+			if len(refs) != len(data.EvidenceRefs) {
+				return fmt.Errorf("invalid internal completion evidence")
+			}
+			h.assistantMessage.EvidenceReferences = refs
+		}
 
 		h.assistantMessage.Content += data.FinalAnswer
+		// Typed references bind the engine-approved candidate byte for byte.
+		// Artifact collection may attach files and delivery metadata, but must
+		// not rewrite its links or append unreviewed version/status prose.
+		preserveEvidenceCandidate := len(h.assistantMessage.EvidenceReferences) > 0
+		if suspended == nil {
+			h.assistantMessage.ArtifactDeliveryIncomplete = false
+			h.assistantMessage.ExecutionContext.ArtifactDeliveryIncomplete = false
+		}
 
 		// Update agent steps if provided
 		if data.AgentSteps != nil {
@@ -1000,7 +1015,12 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 					)
 					// The turn has ended, but delivery did not succeed. Preserve
 					// successful attachments and distinguish them from missing files.
-					h.assistantMessage.Content = "**文件交付未完成：部分生成文件未能保存为可下载附件。请以实际附件列表为准，稍后重试。**\n\n" + h.assistantMessage.Content
+					if preserveEvidenceCandidate {
+						h.assistantMessage.ArtifactDeliveryIncomplete = true
+						h.assistantMessage.ExecutionContext.ArtifactDeliveryIncomplete = true
+					} else {
+						h.assistantMessage.Content = "**文件交付未完成：部分生成文件未能保存为可下载附件。请以实际附件列表为准，稍后重试。**\n\n" + h.assistantMessage.Content
+					}
 				}
 			}
 
@@ -1031,9 +1051,11 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 				// them in the sandbox. Bind those names to artifact indices now
 				// that the index space is final, so a reloaded conversation
 				// renders them instead of showing a broken link.
-				h.assistantMessage.Content = rewriteArtifactReferences(
-					h.assistantMessage.Content, attached,
-				)
+				if !preserveEvidenceCandidate {
+					h.assistantMessage.Content = rewriteArtifactReferences(
+						h.assistantMessage.Content, attached,
+					)
+				}
 				logger.GetLogger(h.ctx).Infof(
 					"artifact collect attached %d file(s) to message=%s session=%s",
 					len(attached), h.assistantMessageID, h.sessionID,
@@ -1043,9 +1065,11 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 			// message that first produced the file cannot invalidate it.
 			h.artifactCollector.BindArtifactsToMessage(collectCtx, h.assistantMessageID, previous)
 		}
-		h.assistantMessage.Content = rewriteArtifactReferences(h.assistantMessage.Content, h.assistantMessage.Artifacts)
-		h.assistantMessage.Content = types.ClarifyArtifactVersions(h.assistantMessage.Content,
-			h.assistantMessage.Artifacts, previous, types.LanguageFromContextOrDefault(h.ctx))
+		if !preserveEvidenceCandidate {
+			h.assistantMessage.Content = rewriteArtifactReferences(h.assistantMessage.Content, h.assistantMessage.Artifacts)
+			h.assistantMessage.Content = types.ClarifyArtifactVersions(h.assistantMessage.Content,
+				h.assistantMessage.Artifacts, previous, types.LanguageFromContextOrDefault(h.ctx))
+		}
 	}
 
 	// Fallback: if no answer events were streamed but we have a final answer,
@@ -1103,6 +1127,12 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 	// tenant ownership.
 	if len(h.assistantMessage.Artifacts) > 0 {
 		completeData["artifacts"] = publicArtifactViews(h.assistantMessage.Artifacts)
+	}
+	if len(h.assistantMessage.EvidenceReferences) > 0 {
+		completeData["evidence_references"] = publicEventEvidenceReferences(h.assistantMessage.EvidenceReferences)
+	}
+	if h.assistantMessage.ArtifactDeliveryIncomplete {
+		completeData["artifact_delivery_incomplete"] = true
 	}
 	// Carry the turn's aggregated LLM usage both inside data (map consumers)
 	// and on the typed event field, which buildStreamResponse promotes to the

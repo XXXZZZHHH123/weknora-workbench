@@ -23,7 +23,7 @@ func newSuspendedRunFixture(t *testing.T) (*SuspendedRunService, *hitl.Broker, *
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}))
+	require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}, &types.MessageEvidenceRecord{}))
 	broker := hitl.NewBroker(nil, nil)
 	return NewSuspendedRunService(broker, repository.NewMessageRepository(db)), broker, db
 }

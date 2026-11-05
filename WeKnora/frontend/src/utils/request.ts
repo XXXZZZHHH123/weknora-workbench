@@ -264,10 +264,11 @@ export function postUpload(
   }) as unknown as Promise<any>;
 }
 
-export function postChat<T = any>(url: string, data = {}): Promise<T> {
+export function postChat<T = any>(url: string, data = {}, options: { headers?: Record<string, string> } = {}): Promise<T> {
   // SSE stream: body is a string, so no `$httpStatus` is attached (see WithStatus).
   return instance.post(url, data, {
     headers: {
+      ...options.headers,
       "Content-Type": "text/event-stream;charset=utf-8",
       "X-Request-ID": `${generateRandomString(12)}`,
     },

@@ -53,7 +53,7 @@ func (h *Handler) ResumeSuspendedRun(
 	if h.promptBroker == nil || h.suspendedRuns == nil {
 		return
 	}
-	ctx := logger.CloneContext(context.WithoutCancel(c.Request.Context()))
+	ctx := types.WithEvidenceReferencesClientVersion(logger.CloneContext(context.WithoutCancel(c.Request.Context())), c.GetHeader(types.EvidenceReferencesClientHeader))
 	stopLease := h.promptBroker.KeepLease(ctx, prompt.ID, prompt.OwnerInstance)
 	if err := h.awaitSuspendedRunSettled(ctx, prompt, ownerGone, ownerLeaseUntil); err != nil {
 		stopLease()

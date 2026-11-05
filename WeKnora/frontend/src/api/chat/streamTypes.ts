@@ -54,6 +54,8 @@ export interface AgentStepRecord extends Record<string, unknown> {
 }
 
 export interface ChatHistoryMessage extends Record<string, unknown> {
+  evidence_references?: import('./evidence').EvidenceReference[]
+  artifact_delivery_incomplete?: boolean
   collaboration_status?: CollaborationStatus
   agent_steps?: AgentStepRecord[]
 }

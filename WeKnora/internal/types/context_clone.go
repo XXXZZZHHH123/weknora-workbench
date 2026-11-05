@@ -21,6 +21,9 @@ import "sort"
 // false is a valid, meaningful answer — it means "deliberately does not
 // survive a detach" — and is not the same as being absent.
 var contextCloneAcrossDetach = map[ContextKey]bool{
+	// A response-format capability follows this request's detached chat work;
+	// it grants no permission and is renegotiated by a resumed HTTP request.
+	evidenceReferencesClientContextKey: true,
 	// Caller identity and workspace scope. Background work runs as the same
 	// principal in the same workspace, so all of this has to survive; a
 	// detached goroutine that loses its tenant reads another tenant's rows or

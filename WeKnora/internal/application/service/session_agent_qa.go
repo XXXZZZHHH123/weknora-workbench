@@ -569,10 +569,15 @@ func (s *sessionService) buildAgentConfig(
 	if inherited, err := inheritedConfigFromBinding(ctx); err != nil {
 		return nil, err
 	} else if inherited != nil {
-		return s.restoreInheritedConfig(ctx, inherited, tenantInfo)
+		config, err := s.restoreInheritedConfig(ctx, inherited, tenantInfo)
+		if config != nil {
+			config.EvidenceReferencesEnabled = types.EvidenceReferencesClientEnabled(ctx)
+		}
+		return config, err
 	}
 	customAgent := req.CustomAgent
 	agentConfig := &types.AgentConfig{
+		EvidenceReferencesEnabled:     types.EvidenceReferencesClientEnabled(ctx),
 		WorkbenchDefault:              customAgent.WorkbenchDefault,
 		TaskPlanningEnabled:           customAgent.WorkbenchDefault,
 		CandidateAdditionsEnabled:     customAgent.WorkbenchDefault,

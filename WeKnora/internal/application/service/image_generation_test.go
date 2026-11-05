@@ -60,7 +60,7 @@ func (*imageGeneratorFixture) GetModelID() string   { return "image-model" }
 func newImageDeliveryFixture(t *testing.T, generator imagegen.Generator) (*ImageGenerationService, *gorm.DB, context.Context) {
 	t.Helper()
 	catalog, db := newResourceCatalogForTest(t)
-	require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}, &types.ImageGenerationExecution{}))
+	require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}, &types.MessageEvidenceRecord{}, &types.ImageGenerationExecution{}))
 	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Create(&types.Message{ID: "message", SessionID: "session", Role: "assistant"}).Error)
 	files := fileService.NewResourceCatalogFileService(fileService.NewLocalFileService(t.TempDir(), ""), catalog)
 	svc := NewImageGenerationService(db, imageModelFixture{generator: generator}, imageSessionFixture{}, files, catalog)

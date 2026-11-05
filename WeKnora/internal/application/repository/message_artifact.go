@@ -175,9 +175,10 @@ func attachArtifacts(ctx context.Context, db *gorm.DB, messages ...*types.Messag
 	for _, m := range messages {
 		if m != nil && m.ID != "" {
 			m.Artifacts = byMessage[m.ID]
+			m.ArtifactDeliveryIncomplete = m.ExecutionContext.ArtifactDeliveryIncomplete
 		}
 	}
-	return nil
+	return attachEvidenceReferences(ctx, db, messages...)
 }
 
 // attachArtifactsWithSession is attachArtifacts for search-style results.

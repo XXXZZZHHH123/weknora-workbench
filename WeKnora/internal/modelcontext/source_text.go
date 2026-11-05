@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	chunkHandlePrefix = "chunk://"
-	docHandlePrefix   = "doc://"
-	kbHandlePrefix    = "kb://"
-	webHandlePrefix   = "url://"
+	chunkHandlePrefix    = "chunk://"
+	docHandlePrefix      = "doc://"
+	kbHandlePrefix       = "kb://"
+	webHandlePrefix      = "url://"
+	evidenceHandlePrefix = "evidence://"
 
 	durableURIScheme = "weknora://"
 )
@@ -27,14 +28,15 @@ const (
 	durableKindKnowledgeBase = "kb"
 	durableKindDocument      = "doc"
 	durableKindChunk         = "chunk"
+	durableKindEvidence      = "evidence"
 )
 
-var sourceHandlePrefixes = []string{chunkHandlePrefix, docHandlePrefix, kbHandlePrefix, webHandlePrefix}
+var sourceHandlePrefixes = []string{chunkHandlePrefix, docHandlePrefix, kbHandlePrefix, webHandlePrefix, evidenceHandlePrefix}
 
 // sourceHandleTokenRE finds scheme-shaped tokens. The token body is matched
 // greedily over identifier characters and validated in code, so "url://3a"
 // is not mistaken for url://3 followed by text.
-var sourceHandleTokenRE = regexp.MustCompile(`(?i)\b(?:chunk|doc|kb|url)://[0-9A-Za-z_\-]*`)
+var sourceHandleTokenRE = regexp.MustCompile(`(?i)\b(?:chunk|doc|kb|url|evidence)://[0-9A-Za-z_\-]*`)
 
 var sourceHandleNumberRE = regexp.MustCompile(`^[1-9][0-9]*$`)
 
@@ -46,7 +48,7 @@ var legacyHandlePrefixes = map[byte]string{
 	'c': chunkHandlePrefix, 'd': docHandlePrefix, 'b': kbHandlePrefix, 'w': webHandlePrefix,
 }
 
-var durableURIRE = regexp.MustCompile(`(?i)weknora://(kb|doc|chunk)/([0-9A-Za-z][0-9A-Za-z_\-]*)`)
+var durableURIRE = regexp.MustCompile(`(?i)weknora://(kb|doc|chunk|evidence)/([0-9A-Za-z][0-9A-Za-z_\-]*)`)
 
 // parseSourceHandleToken returns the canonical handle for one scheme-shaped
 // token, or "" when the token body is not a positive integer.
@@ -113,6 +115,9 @@ func (r *sourceRegistry) resolveSourceHandle(handle string) (prefix, durable str
 	case strings.HasPrefix(handle, webHandlePrefix):
 		durable, _, ok = r.webs.resolve(handle)
 		return webHandlePrefix, durable, ChunkReference{}, ok
+	case strings.HasPrefix(handle, evidenceHandlePrefix):
+		durable, _, ok = r.evidence.resolve(handle)
+		return evidenceHandlePrefix, durable, ChunkReference{}, ok
 	}
 	return "", "", ChunkReference{}, false
 }
@@ -131,6 +136,8 @@ func (r *sourceRegistry) durableTextForHandle(handle string) string {
 		return durableURI(durableKindDocument, durable)
 	case kbHandlePrefix:
 		return durableURI(durableKindKnowledgeBase, durable)
+	case evidenceHandlePrefix:
+		return durableURI(durableKindEvidence, durable)
 	default:
 		return durable
 	}
@@ -213,6 +220,8 @@ func (r *sourceRegistry) registerDurable(kind, id string) string {
 		return r.RegisterDocument(id)
 	case durableKindChunk:
 		return r.registerChunk(ChunkReference{ChunkID: id}, false)
+	case durableKindEvidence:
+		return r.registerEvidence(EvidenceCitation{ID: id}, false)
 	}
 	return ""
 }
@@ -230,7 +239,7 @@ func (r *sourceRegistry) ExpandHandleText(text string) string {
 		if !ok {
 			return ""
 		}
-		if prefix != chunkHandlePrefix {
+		if prefix != chunkHandlePrefix && prefix != evidenceHandlePrefix {
 			return r.durableTextForHandle(handle)
 		}
 		if tag := r.citationTag(handle); tag != "" {

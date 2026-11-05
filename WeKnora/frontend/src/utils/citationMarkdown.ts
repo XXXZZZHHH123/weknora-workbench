@@ -1,9 +1,10 @@
 /** Shared citation tag preprocessing for chat markdown (QA + agent). */
 
 /** Self-closing or unclosed `<kb/>` / `<web/>` tags from model output. */
-export const KB_WEB_TAG_RE = /<(?:kb|web)\b[^>]*?\s*\/?>/g
+export const KB_WEB_TAG_RE = /<(?:kb|web|evidence)\b[^>]*?\s*\/?>/g
 const KB_TAG_ATTR_RE = /<kb\b([^>]*?)\s*\/?>/g
 const WEB_TAG_ATTR_RE = /<web\b([^>]*?)\s*\/?>/g
+const EVIDENCE_TAG_ATTR_RE = /<evidence\b([^>]*?)\s*\/?>/g
 
 const ATTRIBUTE_REGEX = /([\w-]+)\s*=\s*"([^"]*)"/g
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -27,6 +28,7 @@ export function stripIncompleteCitationTag(content: string): string {
   const isCitationPrefix = tail === '<'
     || /^<k(?:b(?:\s[\s\S]*)?)?$/i.test(tail)
     || /^<w(?:e(?:b(?:\s[\s\S]*)?)?)?$/i.test(tail)
+    || /^<e(?:v(?:i(?:d(?:e(?:n(?:c(?:e(?:\s[\s\S]*)?)?)?)?)?)?)?)?$/i.test(tail)
 
   return isCitationPrefix ? content.slice(0, start) : content
 }
@@ -151,6 +153,12 @@ export function preprocessCitationTags(
   if (!contentStr.trim()) return ''
 
   return contentStr
+    .replace(EVIDENCE_TAG_ATTR_RE, (_m, attrString: string) => {
+      const attrs = parseTagAttributes(attrString)
+      const id = attrs.evidence_id || ''
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return ''
+      return `<span class="citation citation-evidence" data-evidence-id="${escapeHtml(id)}" role="button" tabindex="0" aria-label="Data source"><span class="citation-icon citation-icon--book" aria-hidden="true"></span><span aria-hidden="true">↗</span></span>`
+    })
     .replace(WEB_TAG_ATTR_RE, (_m, attrString: string) => {
       const attrs = parseTagAttributes(attrString)
       const url = attrs.url || ''
@@ -243,14 +251,14 @@ export function joinCitationTagsToPreviousLine(content: string): string {
   while (result !== prev) {
     prev = result
     result = result.replace(
-      /(<(?:kb|web)\b[^>]*?\s*\/?>)\s*\n+\s*(<(?:kb|web)\b)/gi,
+      /(<(?:kb|web|evidence)\b[^>]*?\s*\/?>)\s*\n+\s*(<(?:kb|web|evidence)\b)/gi,
       '$1 $2',
     )
   }
 
   // Blank lines before citations: join to the previous content. Fenced-code
   // delimiters are the only exception because ``` / ~~~ must stay on their own line.
-  result = result.replace(/\n[ \t]*\n+([ \t]*<(?:kb|web)\b)/gi, (match, kbStart, offset, full) => {
+  result = result.replace(/\n[ \t]*\n+([ \t]*<(?:kb|web|evidence)\b)/gi, (match, kbStart, offset, full) => {
     const before = full.slice(0, offset)
     const lastLine = before.split('\n').filter((line: string) => line.trim()).pop() || ''
     if (isFencedCodeDelimiterLine(lastLine)) {
@@ -261,7 +269,7 @@ export function joinCitationTagsToPreviousLine(content: string): string {
 
   // Single newline before citation when it follows text or another citation (not after a blank line)
   result = result.replace(
-    /(?<!\n)(<(?:kb|web)\b[^>]*?\s*\/?>|[ \t]*\S[^\n]*?)\n([ \t]*<(?:kb|web)\b)/g,
+    /(?<!\n)(<(?:kb|web|evidence)\b[^>]*?\s*\/?>|[ \t]*\S[^\n]*?)\n([ \t]*<(?:kb|web|evidence)\b)/g,
     (match, beforePart: string, kbStart: string, offset: number, full: string) => {
       // Resolve the full preceding line: lazy capture + lookbehind can grab only a
       // partial line (e.g. ``` captured as ``), which would skip the fence check.

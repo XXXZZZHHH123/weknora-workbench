@@ -66,9 +66,9 @@ func (check *sourceCitationCheck) UnmarshalJSON(raw []byte) error {
 
 // This is a model decision about the actual answer, never a rule that a
 // retrieved candidate, matching title or shared page must be cited.
-const sourceCitationReviewInstructions = `Source citation policy is runtime-owned and is supplied as source_citation_policy. When enabled=false, do not require citations or add source attribution. When enabled=true, judge from the complete task and actual evidence which material knowledge-source claims require an inline, clickable citation. A plain filename or table title is not a citation. A citation must identify the exact current supporting chunk; another read chunk, the same document/page, or a matching value cannot lend support. available_anchors lists only current successful source bodies with real citation handles; the directory is not proof that every anchor supports this answer. Request a minimal answer revision using the appropriate existing handle when needed, never cite every candidate. For a material PDF-source claim with no supporting chunk anchor, verified_document_reads provides navigation to actual source documents returned by authorized PDF tools: request collect_evidence for the minimum necessary read_document call using that real document identity, then judge the fetched chunk against the claim. Do not guess a table-to-chunk mapping or accept an arbitrary same-page chunk. Missing/omitted anchors are not evidence that a source is absent. If no genuine citation handle or verified read target is available, do not invent one. Pure chart/file delivery, conversation-only answers and output formats that prohibit inline markup do not require adding factual prose or breaking the requested format merely to cite a source.`
+const sourceCitationReviewInstructions = `Source citation policy is runtime-owned and is supplied as source_citation_policy. When enabled=false, do not require citations or add source attribution. When enabled=true, judge from the complete task and actual evidence which material knowledge-source claims require an inline, clickable citation. A plain filename or table title is not a citation. A citation must identify the actual supporting current chunk OR structured result. available_anchors lists actual document chunks. available_evidence lists current execution-backed evidence:// handles; structured_citation_evidence provides the exact selected result cells, unit, versions and canonical candidate binding for evidence citations already used. A raw_cell is an original observation; structured_result is an executed calculation, not a value printed in a PDF cell. Dependency-only SQL explicitly does not claim source-cell lineage or aggregate membership. Check business meaning, unit and scope against the actual selected result. Another read chunk, same document/page, or coincidentally matching value cannot lend support. A directory entry alone does not establish semantic support. Request a minimal answer revision using the appropriate existing handle when needed, never cite every candidate. A genuine structured-result citation can directly support a table fact: do not force an unrelated read_document merely to manufacture a chunk citation. Only when actual necessary support is missing, verified_document_reads provides real document navigation for a minimum authorized read. Do not guess a table-to-chunk mapping or accept an arbitrary same-page chunk. Missing/omitted anchors are not evidence of absence. Pure chart/file delivery, conversation-only answers and formats prohibiting markup do not require adding factual prose or breaking the requested format just to cite a source.`
 
-const sourceCitationDecisionInstructions = `Return citation_check={requirement,reason} in the SAME verdict, including a brief reason in the user's language. requirement=required means the candidate makes material knowledge-source claims that need inline citations backed by the actual supporting current chunk; if those citations are missing, return complete=false and next_action=revise_answer using existing evidence. Do not accept a filename/title as a citation. requirement=not_required applies when citations are disabled, or when the complete task genuinely does not call for inline knowledge citations (for example pure artifact delivery, conversation-only text or a format prohibiting markup); explain the actual task reason. requirement=unavailable means the factual answer is supported by actual evidence but no genuine supporting chunk citation can be supplied, such as structured XLSX results without chunk anchors. Other available anchors do not establish support for this claim, and their existence alone cannot make it required. A partial/omitted directory is not proof of unavailability: inspect necessary actual source pointers or request a necessary authorized read when possible. Do not use unavailable merely to excuse missing citations when the appropriate supporting handle is present. Citation classification is your semantic judgment of the complete task and evidence; runtime counts never choose the source or infer the claim. Existing citation binding/entailment checks still apply to every citation actually used.`
+const sourceCitationDecisionInstructions = `Return citation_check={requirement,reason} in the SAME verdict, including a brief reason in the user's language. requirement=required means material knowledge-source claims need inline citations backed by the actual current supporting chunk or structured evidence; missing citations need complete=false and next_action=revise_answer using existing evidence. A filename/title is not a citation. requirement=not_required applies when citations are disabled or the complete task does not call for inline knowledge citations (pure artifact delivery, conversation-only text or a format prohibiting markup); explain the actual task reason. requirement=unavailable means no genuine supporting chunk OR structured-evidence citation can be supplied despite actual factual support. A current evidence:// handle is a real citation even for XLSX without document chunks. Other anchors do not establish support for a claim, and their existence alone cannot make it required. A partial directory is not proof of unavailability; use actual source pointers or a necessary authorized read. Do not use unavailable to excuse omitting an appropriate current handle. Classification remains your semantic judgment of the full task and evidence, not runtime counts. Existing binding/entailment checks apply to every citation used.`
 
 func (e *AgentEngine) sourceCitationReviewPolicy(state *types.AgentState, conversation []chat.Message) map[string]any {
 	enabled := e != nil && e.config.CitationsEnabled()
@@ -78,6 +78,7 @@ func (e *AgentEngine) sourceCitationReviewPolicy(state *types.AgentState, conver
 		"verified_document_read_count": 0, "omitted_document_read_count": 0,
 		"projection_complete":      true,
 		"conflicting_anchor_count": 0,
+		"available_evidence":       []any{}, "available_evidence_count": 0, "omitted_evidence_count": 0,
 	}
 	if !enabled || e.config == nil || e.modelContext == nil || state == nil {
 		return policy
@@ -106,13 +107,20 @@ func (e *AgentEngine) sourceCitationReviewPolicy(state *types.AgentState, conver
 		})
 	}
 	reads := e.verifiedCitationDocumentReads(state)
+	structured := []any{}
+	for _, id := range e.sortedCurrentStructuredCitationIDs() {
+		if observation, ok := e.currentStructuredObservation(id, state); ok {
+			structured = append(structured, observation.Directory)
+		}
+	}
+	policy["available_evidence_count"] = len(structured)
 	policy["available_anchor_count"], policy["verified_document_read_count"] = len(anchors), len(reads)
 	// Counts include omissions. A bounded navigation directory never turns an
 	// omitted body/anchor into evidence of absence or a guessed source link.
 	for _, group := range []struct {
 		field, omitted string
 		items          []any
-	}{{"available_anchors", "omitted_anchor_count", anchors}, {"verified_document_reads", "omitted_document_read_count", reads}} {
+	}{{"available_evidence", "omitted_evidence_count", structured}, {"available_anchors", "omitted_anchor_count", anchors}, {"verified_document_reads", "omitted_document_read_count", reads}} {
 		kept := []any{}
 		for index, item := range group.items {
 			policy[group.field] = append(append([]any(nil), kept...), item)
@@ -125,7 +133,7 @@ func (e *AgentEngine) sourceCitationReviewPolicy(state *types.AgentState, conver
 		}
 		policy[group.field], policy[group.omitted] = kept, len(group.items)-len(kept)
 	}
-	policy["projection_complete"] = policy["omitted_anchor_count"] == 0 && policy["omitted_document_read_count"] == 0
+	policy["projection_complete"] = policy["omitted_anchor_count"] == 0 && policy["omitted_document_read_count"] == 0 && policy["omitted_evidence_count"] == 0
 	return policy
 }
 
@@ -221,10 +229,12 @@ func (e *AgentEngine) validateCitationCheck(check *sourceCitationCheck, candidat
 	}
 	ids := uniqueCandidateCitationIDs(candidate)
 	refs := e.currentCandidateKnowledgeReferences(candidate, state, conversation)
-	invalid := len(ids) != len(refs)
-	missing := check.Requirement == "required" && len(refs) == 0
-	if accepted && (invalid || missing || (!e.config.CitationsEnabled() && len(ids) != 0)) {
-		e.answerReviewFeedback = "请按审核判定补齐本轮知识事实所需的可点击来源引用：只使用真实已读且支持相邻断言的 chunk 句柄，保留原答案范围，不用文件名、同页其他片段或未读身份代替。没有实际支持句柄时须如实限定引用不可用，不能编造。"
+	evidenceIDs := uniqueCandidateEvidenceIDs(candidate)
+	evidenceRefs := e.currentCandidateEvidenceReferences(candidate, state)
+	invalid := len(ids) != len(refs) || len(evidenceIDs) != len(evidenceRefs)
+	missing := check.Requirement == "required" && len(refs)+len(evidenceRefs) == 0
+	if accepted && (invalid || missing || (!e.config.CitationsEnabled() && len(ids)+len(evidenceIDs) != 0)) {
+		e.answerReviewFeedback = "请按审核判定补齐本轮事实的可点击引用：使用真实已读且支持相邻断言的chunk或evidence结果句柄。原值引用实际原格，计算引用实际结果与范围；不借同页索引片段或其他图片补证。保留原答案范围，不编造来源。"
 		e.answerReviewAction = reviewReviseAnswer
 		return true, nil
 	}
@@ -324,15 +334,17 @@ func (e *AgentEngine) publishFinalKnowledgeReferences(ctx context.Context, state
 		return
 	}
 	state.KnowledgeRefs = e.finalAnswerKnowledgeReferences(state)
+	state.EvidenceRefs = e.finalAnswerEvidenceReferences(state)
 	common.PipelineInfo(ctx, "Agent", "final_citation_delivery", map[string]interface{}{
 		"enabled": e.config.CitationsEnabled(), "canonical_citation_count": len(uniqueCandidateCitationIDs(state.FinalAnswer)),
 		"published_reference_count": len(state.KnowledgeRefs),
+		"published_evidence_count":  len(state.EvidenceRefs),
 	})
-	if len(state.KnowledgeRefs) == 0 || e.eventBus == nil {
+	if len(state.KnowledgeRefs)+len(state.EvidenceRefs) == 0 || e.eventBus == nil {
 		return
 	}
 	_ = e.eventBus.Emit(ctx, event.Event{
 		ID: generateEventID("references"), Type: event.EventAgentReferences, SessionID: sessionID,
-		Data: event.AgentReferencesData{References: state.KnowledgeRefs},
+		Data: event.AgentReferencesData{References: state.KnowledgeRefs, EvidenceReferences: state.EvidenceRefs.PublicSummaries()},
 	})
 }

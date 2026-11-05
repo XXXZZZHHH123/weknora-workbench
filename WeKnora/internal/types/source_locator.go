@@ -55,6 +55,9 @@ type SourceLocator struct {
 	Sheet    string `json:"sheet,omitempty"`
 	RowStart int    `json:"row_start,omitempty"`
 	RowEnd   int    `json:"row_end,omitempty"`
+	// Optional 1-based worksheet columns narrow a row locator to actual cells.
+	ColumnStart int `json:"column_start,omitempty"`
+	ColumnEnd   int `json:"column_end,omitempty"`
 	// Start/End are rune offsets into the original text file.
 	Start int `json:"start,omitempty"`
 	End   int `json:"end,omitempty"`

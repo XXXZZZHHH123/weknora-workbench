@@ -19,7 +19,7 @@ func newSessionRepositoryForForkTest(t *testing.T) (interfaces.SessionRepository
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
-		&types.Session{}, &types.Message{}, &types.MessageArtifactRecord{}, &types.ForkSnapshotLease{},
+		&types.Session{}, &types.Message{}, &types.MessageArtifactRecord{}, &types.MessageEvidenceRecord{}, &types.ForkSnapshotLease{},
 	))
 
 	return NewSessionRepository(db), db

@@ -386,6 +386,8 @@ bash ~/weknora-workbench/bin/update.sh --retry-failed
 
 回到旧镜像前先设置 `shared/PAUSED`，核对旧代码与当前数据库结构兼容性，再运行 previous 目录下的 deploy.sh。脚本仅回退镜像/Compose，不还原数据库，数据库恢复须停写并从选定备份恢复。不要使用 `docker compose down -v`。服务器卷固定使用 `weknora-workbench-prod` 项目名，不能随版本改变。
 
+生产 Compose 固定 `AUTO_RECOVER_DIRTY=false`，迁移异常时保留实际版本与 dirty 状态，先检查结构再前向修复，不能通过强制改版本账本完成发布。证据表迁移的 down 保留记录；仅含旧迁移文件的应用镜像仍可能无法识别新版本，因此不能据此认定可直接回退。回退前须验证迁移文件与当前结构兼容，并独立核对迁移版本和 dirty 状态；`/health` 成功不替代这些检查。
+
 ## 5. 验证范围
 
 CI 检查结构化服务和商品研究测试、研究空库迁移及模型对齐、前端类型与测试、Go MCP 回归、ShellCheck、部署状态与失败路径测试、Compose 配置以及七个镜像构建；用户态镜像导入及失败中止也有回归测试。没有访问生产密钥、生产数据或调用收费模型。只有服务器实际拉取、启动并通过健康检查，才证明该版本可以在这台 CentOS 7 主机上运行；源码检查不能替代该验证。

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"sync"
 
@@ -77,8 +78,13 @@ type PendingCall struct {
 // DecodeRunSnapshot parses a saved snapshot, rejecting unknown versions.
 func DecodeRunSnapshot(data []byte) (*RunSnapshot, error) {
 	var snap RunSnapshot
-	if err := json.Unmarshal(data, &snap); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&snap); err != nil {
 		return nil, fmt.Errorf("decode run snapshot: %w", err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, fmt.Errorf("decode run snapshot: expected one JSON object")
 	}
 	if snap.Version != RunSnapshotVersion {
 		return nil, fmt.Errorf("unsupported run snapshot version %d", snap.Version)
