@@ -228,6 +228,8 @@ from tin.web.workbench_artifacts import router as workbench_artifacts_router
 app.include_router(workbench_artifacts_router)
 from tin.web.charts import router as charts_router
 app.include_router(charts_router)
+from tin.web.ppt import router as ppt_router
+app.include_router(ppt_router)
 from tin.web.chart_import import router as chart_import_router
 app.include_router(chart_import_router)
 from tin.web.chart_pages import build_router as build_chart_pages_router
