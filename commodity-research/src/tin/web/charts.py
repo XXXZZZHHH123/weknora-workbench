@@ -125,6 +125,108 @@ def create_chart(body: ChartDefinition):
         return result
 
 
+# Keep this literal route ahead of /charts/{chart_id}.
+@router.get('/charts/anomalies')
+def chart_anomalies(date: str | None = None, limit: int | None = Query(None, ge=1)):
+    """Compare every saved cycle chart; limit applies after the global sort."""
+    scope = require_scope()
+    day = cutoff(date)
+    grouped, items, failed = {}, [], []
+
+    def failure(row, error):
+        reason = error.detail if isinstance(error, HTTPException) else str(error)
+        failed.append({'id': row.id, 'title': row.title, 'reason': reason or '图表读取或计算失败'})
+
+    with artifact_session(scope) as session:
+        rows = session.scalars(artifact_query().order_by(WorkbenchArtifact.id)).all()
+        for row in rows:
+            try:
+                definition = decode_definition(row)
+                if definition.time.mode == 'cycle':
+                    grouped.setdefault(definition.curves[0].series_id, []).append((row, definition))
+            except Exception as error:
+                failure(row, error)
+
+    def read_batch(identifiers):
+        try:
+            fields = catalog_fields(scope, identifiers)
+            data = read_series([sid for sid in identifiers if sid in fields], day, limit=2000)
+        except Exception as error:
+            # Authorization and source changes must still reject the read. Do
+            # not retry them against a new grant or snapshot within this request.
+            if isinstance(error, HTTPException) and error.status_code in {401, 403, 409}:
+                raise
+            if len(identifiers) > 1:
+                middle = len(identifiers) // 2
+                read_batch(identifiers[:middle])
+                read_batch(identifiers[middle:])
+            else:
+                for row, _ in grouped[identifiers[0]]:
+                    failure(row, error)
+            return
+        for sid in identifiers:
+            for row, definition in grouped[sid]:
+                try:
+                    field, series = fields.get(sid), data.get(sid)
+                    if field is None:
+                        raise HTTPException(404, '指标已不在当前来源目录')
+                    if series is None:
+                        raise HTTPException(404, '指标观测不可读')
+                    if (field.get('unit') or '').strip() and field['unit'].strip() != series['unit'].strip():
+                        raise HTTPException(409, '图表单位在目录与观测读取之间已变化，请刷新核对')
+                    item = anomaly_item(row, definition, field, series, day)
+                    if item is not None:
+                        items.append(item)
+                except Exception as error:
+                    failure(row, error)
+
+    identifiers = list(grouped)
+    # Retain the chart data window: 2000 points per metric, at most 256 metrics
+    # and 20000 points per page projection. Shared metrics are fetched once.
+    batch_size = min(256, 20000 // 2000)
+    for offset in range(0, len(identifiers), batch_size):
+        read_batch(identifiers[offset:offset + batch_size])
+    items.sort(key=lambda item: (not any(reason in {'extreme_high', 'extreme_low'} for reason in item['reasons']),
+                                -abs(item['rank_change'] or 0), item['title'], item['id']))
+    failed.sort(key=lambda item: item['id'])
+    return {'as_of': day.isoformat(), 'items': items[:limit], 'total': len(items), 'failed': failed}
+
+
+def anomaly_item(row, definition, field, series, day):
+    time = definition.time
+    template = time.template.model_dump(mode='json', exclude_none=True)
+    template['transform'] = time.transform
+    current = cycle_result(series, template, day, band_cycles=time.band_cycles, cycles=time.cycles)
+    position = current['position']
+    if position is None or position['n'] < 3 or position.get('rank') is None:
+        return None
+    previous_days = [point['date'] for point in series['points']
+                     if point['value'] is not None and point['date'] < position['date']]
+    previous = (cycle_result(series, template, cutoff(previous_days[-1]),
+                             band_cycles=time.band_cycles, cycles=time.cycles)['position']
+                if previous_days else None)
+    previous_rank = previous.get('rank') if previous else None
+    rank_change = position['rank'] - previous_rank if previous_rank is not None else None
+    reasons = []
+    if position['rank'] <= 2:
+        reasons.append('extreme_high')
+    if position['rank'] >= position['n']:
+        reasons.append('extreme_low')
+    if rank_change is not None and abs(rank_change) >= 2:
+        reasons.append('rank_change')
+    if not reasons:
+        return None
+    recent_values = [peer['value'] for peer in position['peers'][:5]]
+    return {'id': row.id, 'title': definition.title, 'revision': row.revision, 'series_id': definition.curves[0].series_id,
+            'metric': field.get('metric') or series['name'], 'date': position['date'], 'value': position['value'],
+            'unit': field.get('unit'), 'transform': time.transform, 'rank': position['rank'], 'n': position['n'],
+            'previous_date': previous['date'] if previous else None, 'previous_rank': previous_rank,
+            'previous_n': previous['n'] if previous else None, 'rank_change': rank_change,
+            'share_below': position['share_below'], 'vs_recent_mean': position['vs_recent_mean'],
+            'recent_mean': sum(recent_values) / len(recent_values), 'recent_cycles': len(recent_values),
+            'reasons': reasons, 'warnings': current['warnings']}
+
+
 @router.get('/charts/{chart_id}')
 def get_chart(chart_id: str):
     scope = require_scope()

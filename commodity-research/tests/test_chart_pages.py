@@ -46,6 +46,14 @@ def pages():
         return web.templates.TemplateResponse(request, 'indicator.html', shell(None, 'indicators', detail=detail,
             usage={'judgment': [], 'nodes': [], 'crosscheck': []}))
 
+    @app.get('/fixture-reports')
+    def reports(request: Request):
+        scope = current_workbench.get()
+        return web.templates.TemplateResponse(request, 'reports.html', shell(None, 'reports',
+            restricted_view=bool(scope and scope.restricted), restricted_data={'briefs': [], 'entries': []},
+            period_kind=request.query_params.get('period', 'daily'), live_report=True,
+            files=[], selected={'date': request.query_params.get('date')}, report=None))
+
     def get(url, headers=None):
         # Invoke the actual registered endpoint without a TestClient background
         # loop: the restricted runner disallows its local socket wakeups.
@@ -158,6 +166,33 @@ def test_detail_notices_are_small_text_directly_below_the_chart(pages):
     assert plot.getnext() == notice
     assert notice.tag == 'p' and notice.get('class') == 'charts-footnote'
     assert notice.get('role') == 'status'
+
+
+def test_library_anomalies_are_expanded_before_the_chart_list(pages):
+    client, _ = pages
+    html = fromstring(client.get('/sn/charts').text)
+    panel = html.get_element_by_id('chart-anomalies')
+    assert panel.tag == 'details' and 'open' in panel.attrib
+    assert '本周同期异动' in panel.xpath('./summary')[0].text_content()
+    assert panel.getnext().get('class') == 'charts-layout'
+    more = html.get_element_by_id('chart-anomalies-more')
+    assert more.get('aria-expanded') == 'false' and more.get('aria-controls') == 'chart-anomalies-rows'
+
+
+@pytest.mark.parametrize('period', ['daily', 'weekly'])
+def test_daily_and_weekly_report_entry_keeps_date_and_workbench_prefix(pages, period):
+    client, _ = pages
+    html = fromstring(client.get('/fixture-reports?period=' + period + '&date=2030-01-02').text)
+    link = html.get_element_by_id('report-chart-anomalies')
+    assert link.text_content() == '本周同期异动'
+    assert link.get('href') == '/workbenches/fixture-workbench/sn/charts?date=2030-01-02#chart-anomalies'
+
+
+@pytest.mark.parametrize('headers', [{'x-restricted': 'true'}, {'x-version': '1'}, {'x-local': 'true'}])
+def test_report_does_not_offer_an_unavailable_chart_library(pages, headers):
+    client, _ = pages
+    html = fromstring(client.get('/fixture-reports', headers=headers).text)
+    assert not html.xpath('//*[@id="report-chart-anomalies"]')
 
 
 @pytest.mark.parametrize('headers', [{'x-restricted': 'true'}, {'x-version': '1'}, {'x-local': 'true'}])

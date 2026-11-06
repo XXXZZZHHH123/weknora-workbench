@@ -44,6 +44,16 @@
 .charts-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
 .charts-table td, .charts-table th { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .charts-table th { color: var(--text-muted); font-weight: 500; }
+.charts-anomalies > summary { cursor: pointer; font-size: 15px; font-weight: 700; }
+.charts-anomalies > p { margin: 10px 0; }
+.charts-anomalies td { overflow-wrap: anywhere; min-width: 75px; }
+.charts-anomalies td:first-child, .charts-anomalies td:nth-child(2) { min-width: 140px; }
+.charts-anomalies a { color: var(--primary); text-decoration: underline; }
+.charts-anomalies > button { margin-top: 12px; }
+.charts-anomaly-tag { display: inline-block; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); padding: 2px 6px; margin: 0 4px 4px 0; white-space: nowrap; font-size: 11px; }
+.charts-anomalies-failed { color: var(--text-muted); margin-top: 12px; }
+.charts-anomalies-failed summary { cursor: pointer; }
+.charts-anomalies-failed ul { list-style: disc; padding-left: 20px; margin-top: 8px; overflow-wrap: anywhere; }
 .charts-history details { border-top: 1px solid var(--line); padding: 10px 0; }
 .charts-history pre { font-size: 11px; max-height: 240px; overflow: auto; white-space: pre-wrap; }
 .charts-sheet { margin-bottom: 18px; }

@@ -7,6 +7,17 @@
     {% if chart_page.enabled %}<a class="charts-button" href="{{ research_url('/sn/charts/import') }}">从原表导入</a>{% endif %}
   </header>
   {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
+  <details id="chart-anomalies" class="charts-panel charts-anomalies" open>
+    <summary>本周同期异动 <span id="chart-anomalies-count" class="charts-muted"></span></summary>
+    <p class="charts-muted">按截止日的最新有效观测比较，排名从高到低；仅列示同期位置与排名变化。</p>
+    <p id="chart-anomalies-status" role="status" aria-live="polite"></p>
+    <div id="chart-anomalies-table" class="charts-table-scroll" hidden><table class="charts-table">
+      <thead><tr><th scope="col">图表</th><th scope="col">指标</th><th scope="col">日期</th><th scope="col">当前值</th><th scope="col">同期排名</th><th scope="col">上一观测排名</th><th scope="col">原因</th></tr></thead>
+      <tbody id="chart-anomalies-rows"></tbody>
+    </table></div>
+    <button type="button" id="chart-anomalies-more" class="charts-button" aria-expanded="false" aria-controls="chart-anomalies-rows" hidden>展开全部</button>
+    <details id="chart-anomalies-failed" class="charts-anomalies-failed" hidden><summary id="chart-anomalies-failed-summary"></summary><ul id="chart-anomalies-failed-list"></ul></details>
+  </details>
   <div class="charts-layout">
     <aside class="charts-groups" id="chart-groups" aria-label="图表分组"><button type="button" class="charts-button" aria-pressed="true" data-group="">全部分组</button></aside>
     <section aria-label="图表列表">

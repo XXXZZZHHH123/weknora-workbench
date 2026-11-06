@@ -8,6 +8,7 @@ const libraryHTML = render('charts.html'), detailHTML = render('chart_detail.htm
     records.forEach((r, i) => { if (i) r.definition.title = '合成图' + (i + 1); r.definition.group = i % 2 ? '乙组' : '甲组'; });
     let active = 0, maximum = 0, dataCalls = 0;
     const lib = await open(browser, '/sn/charts', libraryHTML, async ({path, url, reply}) => {
+      if (path === '/charts/anomalies') return reply({as_of: '2029-09-15', items: [], total: 0, failed: []});
       if (path === '/charts') {
         const q = url.searchParams.get('q') || '', group = url.searchParams.get('group'), offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit'));
         const filtered = records.filter(r => r.definition.title.includes(q) && (!group || r.definition.group === group));

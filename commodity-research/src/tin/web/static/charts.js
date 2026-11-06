@@ -9,7 +9,45 @@
   if (page.dataset.chartsPage === 'library') library();
   if (page.dataset.chartsPage === 'detail') detail();
 
+  async function anomalies() {
+    const status = $('chart-anomalies-status'), table = $('chart-anomalies-table'), more = $('chart-anomalies-more');
+    const labels = {extreme_high: '同期前两高', extreme_low: '同期前两低', rank_change: '排名变化'};
+    const controller = new AbortController();
+    window.addEventListener('pagehide', () => controller.abort(), {once: true});
+    U.notice(status, '正在读取同期位置…');
+    try {
+      const data = await U.api('/charts/anomalies' + dataDate, {signal: controller.signal});
+      let expanded = false;
+      function render() {
+        const items = expanded ? data.items : data.items.slice(0, 10);
+        $('chart-anomalies-rows').innerHTML = items.map(item => {
+          const link = U.pageURL('/sn/charts/' + encodeURIComponent(item.id)) + '?date=' + encodeURIComponent(data.as_of);
+          const unit = item.transform === 'rebase' ? '（起点=100）' : (item.unit ? ' ' + item.unit : '') + (item.transform === 'change' ? '（相对起点变化）' : '');
+          const previous = item.previous_rank == null ? '暂无可用排名' : `${item.previous_rank}/${item.previous_n + 1}`;
+          return `<tr><td><a href="${E(link)}">${E(item.title)}</a></td><td>${E(item.metric)}</td><td>${E(item.date)}</td><td>${E(U.fmt(item.value) + unit)}</td><td>${E(item.rank)}/${E(item.n + 1)}</td><td>${E(previous)}${item.previous_date ? `<br><span class="charts-muted">${E(item.previous_date)}</span>` : ''}</td><td>${item.reasons.map(reason => `<span class="charts-anomaly-tag">${E(labels[reason] || reason)}</span>`).join('')}</td></tr>`;
+        }).join('');
+        table.hidden = !items.length;
+        $('chart-anomalies-count').textContent = `共 ${data.total} 张`;
+        more.hidden = data.items.length <= 10;
+        more.textContent = expanded ? '收起为前 10 条' : `展开全部 ${data.total} 条`;
+        more.setAttribute('aria-expanded', String(expanded));
+      }
+      more.addEventListener('click', () => { expanded = !expanded; render(); });
+      render();
+      const limited = data.items.filter(item => item.warnings?.includes('observation_window_limited')).length;
+      U.notice(status, !data.items.length ? '本期没有同期前两高、前两低或排名明显变化的图表' :
+        limited ? `${limited} 张图表已达到观测读取上限，排名仅覆盖已读取的窗口。` : '', limited ? 'warning' : '');
+      const failed = data.failed || [];
+      $('chart-anomalies-failed').hidden = !failed.length;
+      $('chart-anomalies-failed-summary').textContent = `${failed.length} 张图表读取或计算失败，未纳入本次清单，展开查看原因`;
+      $('chart-anomalies-failed-list').innerHTML = failed.map(item => `<li>${E(item.title)}：${E(item.reason)}</li>`).join('');
+    } catch (error) {
+      if (error.name !== 'AbortError') U.notice(status, '同期异动读取失败：' + error.message, 'error');
+    }
+  }
+
   function library() {
+    anomalies();
     const cards = $('chart-cards'), status = $('charts-status'), more = $('charts-more'), groups = $('chart-groups');
     const knownGroups = new Set(), renderers = new Set(), controllers = new Set();
     let selectedGroup = null, nextOffset = null, generation = 0, busy = false, listController, searchTimer, closed = false;
