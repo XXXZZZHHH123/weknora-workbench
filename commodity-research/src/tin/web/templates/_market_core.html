@@ -1,24 +1,39 @@
 <section id="market-core" class="space-y-3" aria-labelledby="market-core-title">
   <div class="market-core-heading">
-    <div><h2 id="market-core-title">核心指标 <span id="market-core-count" class="market-core-muted">{{ cards | length }}</span></h2><p>{{ '当前工作台保存的核心指标 · 仅加载已绑定的必要数值' if restricted_view else '来自当前知识库指标目录 · 选中后自动加入自选 · 可调整显示顺序' }}</p></div>
+    <div><h2 id="market-core-title">核心关注 <span id="market-core-count" class="market-core-muted">{{ cards | length }}</span></h2><p>{{ '当前工作台保存的核心关注 · 仅加载已授权指标的必要数值' if restricted_view else '指标与图表集中关注 · 选中后自动加入账号自选 · 可调整显示顺序' }}</p></div>
     {% if not restricted_view %}<button id="market-core-open" type="button" class="market-core-button" aria-haspopup="dialog">选择与排序</button>{% endif %}
   </div>
+  {% if restricted_view and restricted_data.core_charts_hidden %}<p class="market-core-notice">图表条目暂不对受限视角开放</p>{% endif %}
   <p id="market-core-notice" class="market-core-notice" role="status" hidden></p>
   <div id="market-core-grid" class="market-core-grid" aria-live="polite">{% include '_market_cards.html' %}</div>
-  <div id="market-core-empty" class="market-core-empty" {% if cards %}hidden{% endif %}>{{ '尚未配置可展示的绑定指标。' if restricted_view else '尚未选择核心指标。点击“选择与排序”从知识库目录添加。' }}</div>
+  <div id="market-core-empty" class="market-core-empty" {% if cards %}hidden{% endif %}>
+    <p>{{ '尚未配置可展示的授权指标。' if restricted_view else '尚未选择核心关注。点击“选择与排序”添加指标或图表，也可以根据研究框架生成建议。' }}</p>
+    {% if not restricted_view %}
+    {% include '_source_status_hint.html' %}
+    <button id="market-core-suggestions-open" type="button" class="market-core-button market-core-primary" aria-haspopup="dialog">生成建议</button>
+    {% endif %}
+  </div>
   <div id="market-core-error" class="market-core-error" role="alert" hidden><span></span> <button id="market-core-retry" type="button" class="market-core-button">重试</button></div>
 </section>
 {% if not restricted_view %}
 <script id="market-core-catalog" type="application/json">{{ market_catalog | tojson }}</script>
 <dialog id="market-core-dialog" class="market-core-dialog" aria-labelledby="market-core-dialog-title">
-  <h2 id="market-core-dialog-title">选择与排序核心指标</h2>
-  <p class="market-core-muted">最多 12 项，按右侧顺序显示。保存时自动加入指标页自选；移出核心会保留自选。{% if market_catalog.can_edit_shared %}核心指标会保存到当前工作台，供获准页面展示；自选仍按当前账号隔离。{% else %}当前排列与自选仅保存在本浏览器，不修改工作台共享配置。{% endif %}</p>
+  <h2 id="market-core-dialog-title">选择与排序核心关注</h2>
+  <p class="market-core-muted">最多 16 项，按右侧顺序显示。保存时自动加入账号自选；移出核心关注会保留自选。{% if market_catalog.can_edit_shared %}核心关注保存到当前工作台，自选按当前账号隔离。{% else %}只有研究台编辑成员可以保存共享核心关注。{% endif %}</p>
   <div class="market-core-columns">
-    <section><h3>知识库指标</h3><label><span class="sr-only">查找核心指标</span><input id="market-core-search" class="market-core-search" type="search" placeholder="搜索名称、来源或单位" autocomplete="off"></label><div id="market-core-choices" class="market-core-choices"></div><p id="market-core-no-results" class="market-core-muted" hidden>没有匹配的指标。</p></section>
-    <section><h3>显示顺序 <span id="market-core-draft-count" class="market-core-muted"></span></h3><ol id="market-core-selected" class="market-core-selected"></ol><p id="market-core-selected-empty" class="market-core-muted" hidden>从左侧勾选指标。</p></section>
+    <section><h3>添加条目</h3><label class="market-core-source"><span>从这里选择</span><select id="market-core-source"><option value="favorites">账号自选</option><option value="catalog">指标目录</option><option value="charts">图表库</option></select></label><label><span class="sr-only">查找核心关注</span><input id="market-core-search" class="market-core-search" type="search" placeholder="搜索名称、来源或单位" autocomplete="off"></label><div id="market-core-choices" class="market-core-choices"></div><p id="market-core-no-results" class="market-core-muted" hidden>没有匹配的条目。</p></section>
+    <section><h3>显示顺序 <span id="market-core-draft-count" class="market-core-muted"></span></h3><ol id="market-core-selected" class="market-core-selected"></ol><p id="market-core-selected-empty" class="market-core-muted" hidden>从左侧勾选指标或图表。</p></section>
   </div>
   <p id="market-core-dialog-error" class="market-core-error" role="alert" hidden></p>
-  <footer class="market-core-footer"><button id="market-core-cancel" type="button" class="market-core-button">取消</button><button id="market-core-save" type="button" class="market-core-button market-core-primary">保存</button></footer>
+  <footer class="market-core-footer"><button id="market-core-cancel" type="button" class="market-core-button">取消</button><button id="market-core-save" type="button" class="market-core-button market-core-primary" {% if not market_catalog.can_edit_shared %}disabled{% endif %}>保存</button></footer>
 </dialog>
-
+<dialog id="market-core-suggestions-dialog" class="market-core-dialog" aria-labelledby="market-core-suggestions-title">
+  <h2 id="market-core-suggestions-title">生成核心关注建议</h2>
+  <p class="market-core-muted">模型按研究框架选择工作表，再从真实字段中给出最多 12 个建议。核对后采用所选条目。</p>
+  <label class="market-core-source"><span>平台模型</span><select id="market-core-suggestions-model" disabled><option value="">正在读取模型…</option></select></label>
+  <button id="market-core-suggestions-run" type="button" class="market-core-button" disabled>生成建议</button>
+  <p id="market-core-suggestions-status" class="market-core-notice" role="status"></p>
+  <div id="market-core-suggestions-list" class="market-core-choices market-core-suggestions-list"></div>
+  <footer class="market-core-footer"><button id="market-core-suggestions-close" type="button" class="market-core-button">关闭</button><button id="market-core-suggestions-adopt" type="button" class="market-core-button market-core-primary" disabled>采用所选</button></footer>
+</dialog>
 {% endif %}

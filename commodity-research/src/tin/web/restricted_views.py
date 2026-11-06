@@ -75,19 +75,56 @@ def _save_mapping(session, key, config):
         row.config, row.confirmed_by, row.confirmed_at = config, actor, now
 
 
-def save_core_config(session, identifiers):
-    identifiers = _ids(identifiers, 12)
+def _core_items(items):
+    from tin.integration.page_facts import LEGACY_ID
+    if (not isinstance(items, list) or len(items) > 16
+            or any(not isinstance(item, dict) or set(item) != {'kind', 'id'}
+                   or not isinstance(item.get('kind'), str)
+                   or item.get('kind') not in {'indicator', 'chart'}
+                   or not isinstance(item.get('id'), str) or not LEGACY_ID.fullmatch(item['id'])
+                   or item['kind'] == 'indicator' and not SERIES_ID.fullmatch(item['id'])
+                   for item in items)
+            or len({(item['kind'], item['id']) for item in items}) != len(items)):
+        raise HTTPException(409, '核心关注配置无效，请重新选择；最多16项且条目不能重复')
+    return [{'kind': item['kind'], 'id': item['id']} for item in items]
+
+
+def save_core_config(session, items):
+    # Accept callers of the original helper while always persisting the new format.
+    if isinstance(items, list) and all(isinstance(item, str) for item in items):
+        items = [{'kind': 'indicator', 'id': identifier} for identifier in items]
+    items = _core_items(items)
+    identifiers = [item['id'] for item in items if item['kind'] == 'indicator']
     catalog = session.info.get('knowledge_facts_catalog') or {}
     if any(identifier not in catalog for identifier in identifiers):
-        raise HTTPException(404, '核心指标已不在当前知识库来源，请刷新后重新选择')
+        raise HTTPException(404, '核心关注指标已不在当前知识库来源，请刷新后重新选择')
+    chart_ids = [item['id'] for item in items if item['kind'] == 'chart']
+    if chart_ids:
+        from tin.models.workbench import WorkbenchArtifact
+        from tin.web.charts import artifact_query
+        charts = session.scalars(artifact_query().where(WorkbenchArtifact.id.in_(chart_ids))).all()
+        if set(chart_ids) != {row.id for row in charts}:
+            raise HTTPException(404, '核心关注图表不属于本研究台或已删除，请重新选择')
     remember_origins(session, identifiers)
-    _save_mapping(session, CORE_KEY, {'series_ids': identifiers})
+    _save_mapping(session, CORE_KEY, {'items': items})
     session.commit()
 
 
-def core_config(session):
+def core_items(session):
     row = session.get(SourceMapping, mapping_key(session, CORE_KEY))
-    return _ids((row.config or {}).get('series_ids', []), 12) if row else []
+    if row is None:
+        return []
+    config = row.config or {}
+    if not isinstance(config, dict):
+        raise HTTPException(409, '核心关注配置无效，请重新选择')
+    if 'items' in config:
+        return _core_items(config['items'])
+    return [{'kind': 'indicator', 'id': identifier} for identifier in _ids(config.get('series_ids', []), 16)]
+
+
+def core_config(session):
+    """Only indicator bindings can enter bounded or delegated facts requests."""
+    return [item['id'] for item in core_items(session) if item['kind'] == 'indicator']
 
 
 def shared_diagrams(session):
@@ -494,6 +531,7 @@ def page_data(scope, module, template_id=None):
         output['market_cards'] = _market_cards(core_ids if module == 'market' else identifiers, values,
                                                compact=module == 'market')
         if module == 'market':
+            output['core_charts_hidden'] = any(item['kind'] == 'chart' for item in core_items(session))
             from tin.export.board import threshold_radar_values
             from tin.web.market_history import readonly_market_history
             from tin.web.market_contracts import readonly_contract_curve

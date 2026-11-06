@@ -10,7 +10,9 @@ from datetime import date, datetime
 import json
 import logging
 import re
+from time import perf_counter
 from typing import Any, Literal
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import httpx
@@ -139,36 +141,79 @@ class TextInput(_Strict):
     model_id: str = Field(min_length=1, max_length=128)
 
 
-async def completion(scope, model_id, prompt):
+def _record_completion(scope, model_id, prompt, purpose, envelope, error, elapsed_ms):
+    """Use the existing llm_calls writer for platform completions as well."""
+    from tin.llm.audit import _persist
+    from tin.llm.base import LlmRequest, LlmResponse, Message
+    data = envelope.get('data') if isinstance(envelope, dict) else None
+    text = data.get('content') if isinstance(data, dict) else None
+    response = LlmResponse(status='error' if error else 'ok', provider='workbench', model=model_id,
+        text=text if isinstance(text, str) else None, raw=envelope if isinstance(envelope, dict) else {},
+        latency_ms=elapsed_ms, error=error)
+    with citations.artifact_session(scope) as session:
+        _persist(session, SimpleNamespace(name='workbench', model=model_id),
+                 LlmRequest(purpose=purpose, messages=(Message('user', prompt),)), response, elapsed_ms)
+
+
+async def completion(scope, model_id, prompt, *, purpose=None):
     """One JSON object from the workbench's fixed strategy drafting route."""
     body = {'model_id': model_id, 'prompt': prompt, 'knowledge_base_id': scope.knowledge_base_id}
     if type(getattr(scope, 'sources_revision', None)) is int and scope.sources_revision > 0:
         body['sources_revision'] = scope.sources_revision
+    envelope, failure, started = None, None, perf_counter()
     try:
         async with httpx.AsyncClient(timeout=125, follow_redirects=False, trust_env=False) as client:
             response = await client.post(settings.weknora_api_url.rstrip('/') + '/api/v1/workspaces/research/'
                 + quote(scope.workbench_id, safe='') + '/strategy/generate', json=body,
                 headers={'Authorization': scope.authorization, 'X-Tenant-ID': str(scope.identity.tenant_id)})
         if response.status_code != 200:
+            if purpose:
+                try:
+                    envelope = response.json()
+                except ValueError:
+                    envelope = {'http_status': response.status_code}
             status = response.status_code if response.status_code in {401, 403, 404, 409, 413, 429} else 503
+            unavailable = ('模型服务暂时不可用，核心关注尚未修改，请稍后重试' if purpose
+                           else '模型未完成整理，原文保持不变，请稍后重试')
             raise HTTPException(status, {401: '登录已失效，请重新登录', 403: '没有当前知识库或模型的使用权限',
                 404: '模型或知识库已不存在', 409: '工作台来源已改变，请刷新后重试', 413: '文字过长，请缩短后重试',
-                429: '模型请求受限，请稍后重试'}.get(status, '模型未完成整理，原文保持不变，请稍后重试'))
+                429: '模型请求受限，请稍后重试'}.get(status, unavailable))
         envelope = response.json()
         data = envelope.get('data')
         if envelope.get('success') is not True or not isinstance(data, dict) or data.get('model_id') != model_id:
             raise ValueError('invalid model envelope')
         if data.get('finish_reason') in {'length', 'max_tokens'}:
-            raise HTTPException(422, '模型输出达到长度上限，请缩短文字或分几次整理')
+            raise HTTPException(422, '模型输出达到长度上限，请重新生成建议或更换模型' if purpose
+                                else '模型输出达到长度上限，请缩短文字或分几次整理')
         from tin.web.diagram_generation import strict_json
-        document = strict_json(data.get('content'))
+        try:
+            document = strict_json(data.get('content'))
+        except HTTPException:
+            if purpose:
+                raise HTTPException(422, '模型返回了无效 JSON，请重新生成建议；未使用固定列表') from None
+            raise
         if not isinstance(document, dict):
+            if purpose:
+                raise HTTPException(422, '模型未返回有效的 JSON 对象，请重新生成建议；未使用固定列表')
             raise ValueError('expected an object')
         return document
-    except HTTPException:
+    except asyncio.CancelledError:
+        failure = '模型调用已取消或超时'
+        raise
+    except HTTPException as exc:
+        failure = str(exc.detail)
         raise
     except (httpx.HTTPError, ValueError, TypeError, AttributeError, RecursionError):
-        raise HTTPException(503, '模型服务暂时不可用，原文保持不变') from None
+        failure = '模型服务响应不可用'
+        raise HTTPException(503, '模型服务暂时不可用，核心关注尚未修改' if purpose else '模型服务暂时不可用，原文保持不变') from None
+    finally:
+        if purpose:
+            try:
+                await run_in_threadpool(_record_completion, scope, model_id, prompt, purpose,
+                                        envelope, failure, int((perf_counter() - started) * 1000))
+            except Exception:
+                logging.getLogger(__name__).exception('Platform model call audit could not be saved')
+                raise HTTPException(503, '模型调用审计未能保存，请稍后重试；建议未采用') from None
 
 
 def _context(scope):

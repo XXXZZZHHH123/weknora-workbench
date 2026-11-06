@@ -3,7 +3,7 @@
 {% block main %}
 {% include "_ppt_assets.html" %}
 <div class="charts-page ppt-page" data-ppt-page="detail">
-  <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/ppt') }}">我的 PPT 模板</a><h1 id="ppt-title">PPT 图位确认</h1><p id="ppt-meta" class="charts-muted"></p></div>{% if ppt_page.enabled %}<a id="ppt-export-link" class="charts-button" href="{{ research_url('/sn/ppt/' ~ ppt_page.id ~ '/export') }}">导出 PPT</a>{% endif %}</header>
+  <header class="charts-header"><div>{% include '_ppt_breadcrumb.html' %}<h1 id="ppt-title">PPT 图位确认</h1><p id="ppt-meta" class="charts-muted"></p></div>{% if ppt_page.enabled %}<a id="ppt-export-link" class="charts-button" href="{{ research_url('/sn/reports/ppt/' ~ (ppt_page.id | urlencode) ~ '/export') }}{% if ppt_page.date %}?date={{ ppt_page.date | urlencode }}{% endif %}">导出 PPT</a>{% endif %}</header>
   {% if not ppt_page.enabled %}<p class="charts-notice error" role="alert">{{ ppt_page.reason }}</p>{% else %}
   {% if not ppt_page.can_write %}<p class="charts-notice" id="ppt-write-reason">{{ ppt_page.write_reason }}</p>{% endif %}
   <div id="ppt-detail-status" role="status" aria-live="polite" hidden></div>

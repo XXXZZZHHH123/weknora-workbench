@@ -1,15 +1,16 @@
-/* Run outside the restricted sandbox with RESEARCH_PYTHON and Playwright set. */
+/* Isolated browser test: every document, asset and API request is fulfilled in-process. */
 const {assert, render, launch, open, prefix, record: chartRecord, cycle, pptRecord, seriesId, otherSeriesId, slot, multipart} = require('./ppt-ui-fixture.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Match the bounded list response: no presentation, bindings or candidates.
 const listItem = value => ({id: value.id, title: value.title, filename: value.filename, revision: value.revision,
   slide_count: value.slide_count, slot_count: value.slot_count, updated_at: value.updated_at,
-  slot_counts: {bound: 0, kept: 2, pending: 3}});
+  slot_counts: {bound: 0, kept: 2, pending: 3}, last_export: value.last_export || null});
 (async () => {
   const browser = await launch();
   try {
-    let saved = pptRecord(), deletionConflict = true, uploadFail = true, deletedRevision;
-    const list = await open(browser, '/sn/ppt', render('ppt.html', {id: null}), async entry => {
+    let saved = {...pptRecord(), last_export: {created_at: '2029-09-15T08:01:00Z', export_id: 'export-last',
+      download_url: '/api/sn/ppt-templates/template-1/exports/export-last'}}, deletionConflict = true, uploadFail = true, deletedRevision;
+    const list = await open(browser, '/sn/reports?date=2029-09-15', render('reports.html', {id: null, date: '2029-09-15'}), async entry => {
       const {path, method, url, reply} = entry;
       if (path.startsWith('/ppt-templates') && method === 'POST') {
         assert.ok(multipart(entry).has('file')); await delay(100);
@@ -25,8 +26,16 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
       return false;
     });
     const lp = list.page;
+    assert.equal(await lp.locator('#report-ppt').getAttribute('open'), null, 'PPT 区域默认折叠');
+    assert.match(await lp.locator('#report-ppt > summary').innerText(), /按我的 PPT 版式导出/);
+    assert.equal(list.calls.some(call => call.path === '/ppt-templates'), false, '折叠时不读取个人模板列表');
+    await lp.locator('#report-ppt > summary').click();
     await lp.locator('[data-ppt-counts]').filter({hasText: '已绑定 0 / 保留原图 2 / 待确认 3'}).waitFor();
     assert.equal(await lp.locator('[data-ppt-updated]').innerText(), '2029-09-15 16:00');
+    assert.match(await lp.locator('[data-ppt-last-export]').innerText(), /^2029-09-15 16:01/);
+    assert.equal(await lp.locator('[data-ppt-download]').getAttribute('href'), prefix + '/api/sn/ppt-templates/template-1/exports/export-last');
+    assert.equal(await lp.locator('[data-ppt-bind]').getAttribute('href'), prefix + '/sn/reports/ppt/template-1?date=2029-09-15');
+    assert.equal(await lp.locator('[data-ppt-export]').getAttribute('href'), prefix + '/sn/reports/ppt/template-1/export?date=2029-09-15');
     assert.match(await lp.locator('.ppt-list thead').innerText(), /更新时间（北京时间）/);
     assert.equal(list.calls.some(call => call.method === 'GET' && call.path === '/ppt-templates/template-1'), false);
     assert.doesNotMatch(await lp.locator('#ppt-list-rows').innerText(), /正在读取图位统计|T08:00/);
@@ -37,7 +46,7 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
     assert.equal(await lp.locator('#ppt-upload-status img').count(), 0);
     await lp.locator('#ppt-upload-form button').click();
     await lp.locator('#ppt-upload-status a').waitFor();
-    assert.equal(await lp.locator('#ppt-upload-status a').getAttribute('href'), prefix + '/sn/ppt/template-1');
+    assert.equal(await lp.locator('#ppt-upload-status a').getAttribute('href'), prefix + '/sn/reports/ppt/template-1?date=2029-09-15');
     assert.equal(await lp.locator('#ppt-upload-bar').getAttribute('value'), '100');
     lp.once('dialog', dialog => dialog.accept()); await lp.locator('[data-ppt-delete]').click();
     await lp.locator('#ppt-list-conflict').waitFor({state: 'visible'}); assert.equal(deletedRevision, 1);
@@ -47,8 +56,34 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
     await lp.waitForFunction(() => !document.querySelector('#ppt-list-rows tr')); assert.equal(deletedRevision, 2);
     assert.equal(await lp.evaluate(() => window.__xss), undefined); await list.close();
 
+    for (const [period, date, lastExport] of [['weekly', '2030-01-04', null], ['daily', null,
+      {created_at: '2030-01-04T08:00:00Z', export_id: 'unsafe', download_url: 'javascript:alert(1)'}]]) {
+      const reports = await open(browser, '/sn/reports?period=' + period, render('reports.html', {id: null, period, date}), ({path, reply}) => {
+        if (path === '/ppt-templates') return reply({items: [listItem({...pptRecord(), last_export: lastExport})], total: 1, next_offset: null});
+        return false;
+      });
+      await reports.page.locator('#report-ppt > summary').click();
+      await reports.page.locator('[data-ppt-export]').waitFor();
+      assert.equal(await reports.page.locator('[data-ppt-export]').getAttribute('href'), prefix + '/sn/reports/ppt/template-1/export' + (date ? '?date=' + date : ''));
+      if (lastExport) {
+        assert.equal(await reports.page.locator('[data-ppt-download]').getAttribute('href'), prefix + '/api/sn/ppt-templates/template-1/exports/unsafe', '下载链接依据真实 ID 构建，不采用外部地址');
+      } else {
+        assert.equal(await reports.page.locator('[data-ppt-download]').count(), 0);
+        assert.match(await reports.page.locator('#ppt-list-rows').innerText(), /尚未导出/);
+      }
+      await reports.close();
+    }
+
+    const anchored = await open(browser, '/sn/reports#report-ppt', render('reports.html', {id: null}), ({path, reply}) => {
+      if (path === '/ppt-templates') return reply({items: [], total: 0, next_offset: null});
+      return false;
+    });
+    assert.equal(await anchored.page.locator('#report-ppt').getAttribute('open'), '', '旧入口跳到区域锚点时自动展开');
+    await anchored.page.locator('#ppt-list-status').filter({hasText: '还没有模板'}).waitFor();
+    await anchored.close();
+
     saved = pptRecord(); let patch, shouldConflict = true;
-    const detail = await open(browser, '/sn/ppt/template-1', render('ppt_detail.html'), async ({path, method, body, reply}) => {
+    const detail = await open(browser, '/sn/reports/ppt/template-1', render('ppt_detail.html'), async ({path, method, body, reply}) => {
       if (path === '/ppt-templates/template-1') return reply(saved);
       if (path.endsWith('/bindings')) {
         patch = body;
@@ -64,6 +99,9 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
     });
     const dp = detail.page;
     await dp.locator('.ppt-board .ppt-slot').first().waitFor();
+    assert.equal(await dp.locator('#ppt-breadcrumb-title').innerText(), saved.title);
+    assert.equal(await dp.locator('#ppt-breadcrumb-title img').count(), 0);
+    assert.equal(await dp.locator('#ppt-export-link').getAttribute('href'), prefix + '/sn/reports/ppt/template-1/export');
     const board = await dp.locator('.ppt-board').first().boundingBox(); assert.ok(Math.abs(board.width / board.height - 2) < .03);
     await dp.locator('.ppt-board [data-slot-id="chart-slot"]').click();
     assert.equal(await dp.locator('.ppt-texts li').count(), 20);
@@ -104,14 +142,15 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
     assert.equal(await dp.locator('.ppt-slot').first().evaluate(el => getComputedStyle(el).color === getComputedStyle(el).backgroundColor), false);
     await detail.close();
 
-    for (const template of ['ppt.html', 'ppt_detail.html', 'ppt_export.html']) {
-      const pathname = template === 'ppt.html' ? '/sn/ppt' : '/sn/ppt/template-1' + (template === 'ppt_export.html' ? '/export' : '');
+    for (const template of ['reports.html', 'ppt_detail.html', 'ppt_export.html']) {
+      const pathname = template === 'reports.html' ? '/sn/reports' : '/sn/reports/ppt/template-1' + (template === 'ppt_export.html' ? '/export' : '');
       const ro = await open(browser, pathname, render(template, {can_write: false, write_reason: '当前账号没有研究工作台编辑权限'}), ({path, reply}) => {
         if (path === '/ppt-templates') return reply({items: [listItem(pptRecord())], total: 1, next_offset: null});
         return reply(pptRecord());
       });
+      if (template === 'reports.html') await ro.page.locator('#report-ppt > summary').click();
       assert.match(await ro.page.locator('#ppt-write-reason').innerText(), /没有研究工作台编辑权限/);
-      const selector = template === 'ppt.html' ? '#ppt-file' : template === 'ppt_export.html' ? '#ppt-export-date' : '#ppt-save';
+      const selector = template === 'reports.html' ? '#ppt-file' : template === 'ppt_export.html' ? '#ppt-export-date' : '#ppt-save';
       assert.equal(await ro.page.locator(selector).isDisabled(), true);
       assert.equal(ro.calls.some(call => call.method !== 'GET'), false); await ro.close();
     }
@@ -122,7 +161,7 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
     saved.presentation.slides[1].slots.push(...extraSlots); saved.slot_count += extraSlots.length;
     extraSlots.forEach((value, i) => { saved.bindings[value.slot_id] = {kind: 'chart', chart_id: i === 3 ? 'broken' : 'chart-' + (i + 2)}; });
     let active = 0, maximum = 0, form;
-    const exporting = await open(browser, '/sn/ppt/template-1/export', render('ppt_export.html'), async entry => {
+    const exporting = await open(browser, '/sn/reports/ppt/template-1/export?date=2029-09-15', render('ppt_export.html', {date: '2029-09-15'}), async entry => {
       const {path, method, reply, url} = entry;
       if (path === '/ppt-templates/template-1') return reply(saved);
       if (path.endsWith('/export') && method === 'POST') {
@@ -158,7 +197,8 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
     });
     const ep = exporting.page;
     await ep.waitForFunction(() => !document.querySelector('#ppt-export-fields').disabled);
-    assert.equal(await ep.locator('#ppt-export-date').inputValue(), await ep.evaluate(() => window.PptUI.today()));
+    assert.equal(await ep.locator('#ppt-export-date').inputValue(), '2029-09-15');
+    assert.equal(await ep.locator('#ppt-breadcrumb-title').innerText(), saved.title);
     await ep.evaluate(() => {
       // A dark host theme must still export opaque white slides with dark type.
       document.documentElement.style.setProperty('--surface', '#111827');
@@ -218,17 +258,18 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
     assert.equal(await ep.locator('[data-preview-slot="table-slot"] img').count(), 1); await exporting.close();
 
     let reads = 0, posted = false;
-    const stale = await open(browser, '/sn/ppt/template-1/export', render('ppt_export.html'), ({method, reply}) => {
+    const stale = await open(browser, '/sn/reports/ppt/template-1/export', render('ppt_export.html'), ({method, reply}) => {
       if (method === 'POST') posted = true;
       const value = pptRecord(); value.revision = ++reads;
       return reply(value);
     });
     await stale.page.waitForFunction(() => !document.querySelector('#ppt-export-fields').disabled);
+    assert.equal(await stale.page.locator('#ppt-export-date').inputValue(), await stale.page.evaluate(() => window.PptUI.today()));
     await stale.page.locator('#ppt-export-form button').click(); await stale.page.locator('#ppt-export-conflict').waitFor({state: 'visible'});
     assert.equal(posted, false); await stale.close();
 
     const changing = pptRecord();
-    const raced = await open(browser, '/sn/ppt/template-1/export', render('ppt_export.html'), ({method, reply}) => {
+    const raced = await open(browser, '/sn/reports/ppt/template-1/export', render('ppt_export.html', {date: '2029-02-30'}), ({method, reply}) => {
       if (method !== 'POST') return reply(changing);
       changing.revision = 3;
       const report = {revision: 3, date: '2029-09-15', export_id: 'raced-export', updated_slots: [], kept_slots: [], headlines_to_check: [],
@@ -236,6 +277,7 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
       changing.exports.push(report); return reply(report);
     });
     await raced.page.waitForFunction(() => !document.querySelector('#ppt-export-fields').disabled);
+    assert.equal(await raced.page.locator('#ppt-export-date').inputValue(), await raced.page.evaluate(() => window.PptUI.today()));
     await raced.page.locator('#ppt-export-form button').click(); await raced.page.locator('#ppt-export-conflict').waitFor({state: 'visible'});
     assert.equal(await raced.page.locator('#ppt-download').count(), 0);
     await raced.page.locator('#ppt-export-reload').click(); await raced.page.locator('#ppt-meta').filter({hasText: 'v3'}).waitFor();

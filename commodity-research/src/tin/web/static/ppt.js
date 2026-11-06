@@ -140,18 +140,14 @@
     const fields = Object.fromEntries(parts.map(part => [part.type, part.value]));
     return `${fields.year}-${fields.month}-${fields.day} ${fields.hour}:${fields.minute}`;
   }
-  const helpers = {emuToPx, slotSize, slideLayout, slotRect, allSlots, slotState, counts, summary, candidateBinding, confidentCandidate, firstCandidates, unclearCandidates, mapLimit, pageURL, apiURL, api, uploadFile, responseError, notice, esc, reason, types, today, formatBeijingTime};
-  if (typeof module !== 'undefined' && module.exports) module.exports = helpers;
-  root.PptUI = Object.freeze(helpers);
-  if (!root.document) return;
-  const page = root.document.querySelector('[data-ppt-page]'), configNode = root.document.getElementById('ppt-page-config');
-  if (!page || !configNode) return;
-  const config = JSON.parse(configNode.textContent), $ = id => root.document.getElementById(id), E = esc;
-  if (!config.enabled) return;
-  if (page.dataset.pptPage === 'list') library();
-  if (page.dataset.pptPage === 'detail') detail();
-
-  function library() {
+  function templateURL(id, date = '', exporting = false) {
+    const path = '/sn/reports/ppt/' + encodeURIComponent(id) + (exporting ? '/export' : '');
+    return pageURL(path) + (date ? '?' + new URLSearchParams({date}) : '');
+  }
+  function initLibrary(page, config) {
+    const $ = id => page.querySelector('[id="' + id + '"]'), E = esc;
+    if (!config.enabled) return;
+    const disclosure = page.closest('details');
     const status = $('ppt-list-status'), rows = $('ppt-list-rows'), more = $('ppt-list-more'), fields = $('ppt-upload-fields');
     const controller = new AbortController(); let offset = 0, busy = false, closed = false, uploading = false, reloadQueued = false;
     const records = new Map(); fields.disabled = !config.can_write;
@@ -165,7 +161,9 @@
         for (const item of data.items) {
           records.set(item.id, item);
           const tr = root.document.createElement('tr'); tr.dataset.templateId = item.id;
-          tr.innerHTML = `<td><a href="${E(pageURL('/sn/ppt/' + encodeURIComponent(item.id)))}">${E(item.title || item.filename)}</a></td><td>${E(item.slide_count)}</td><td data-ppt-counts>${E(item.slot_counts ? summary(item.slot_counts) : '统计暂不可用，请重新加载')}</td><td data-ppt-updated>${E(formatBeijingTime(item.updated_at))}</td><td><button type="button" class="charts-button danger" data-ppt-delete ${config.can_write ? '' : 'disabled'}>删除</button></td>`;
+          const boundURL = templateURL(item.id, config.date), exportURL = templateURL(item.id, config.date, true);
+          const last = item.last_export, download = last?.export_id ? apiURL('/ppt-templates/' + encodeURIComponent(item.id) + '/exports/' + encodeURIComponent(last.export_id)) : null;
+          tr.innerHTML = `<td><a href="${E(boundURL)}">${E(item.title || item.filename)}</a></td><td>${E(item.slide_count)}</td><td data-ppt-counts>${E(item.slot_counts ? summary(item.slot_counts) : '统计暂不可用，请重新加载')}</td><td data-ppt-updated>${E(formatBeijingTime(item.updated_at))}</td><td data-ppt-last-export>${download ? `${E(formatBeijingTime(last.created_at))}<br><a data-ppt-download href="${E(download)}" download>下载</a>` : '尚未导出'}</td><td><div class="ppt-list-actions"><a data-ppt-bind class="charts-button" href="${E(boundURL)}">绑定图位</a><a data-ppt-export class="charts-button" href="${E(exportURL)}">导出</a><button type="button" class="charts-button danger" data-ppt-delete ${config.can_write ? '' : 'disabled'}>删除</button></div></td>`;
           rows.append(tr);
         }
         offset = data.next_offset; more.hidden = offset === null;
@@ -200,7 +198,7 @@
           notice(output, phase === 'parse' ? '上传完成，正在解析幻灯片与图位…' : percent === null ? '正在上传…' : `正在上传 ${Math.floor(percent)}%…`);
         }, controller.signal);
         bar.value = 100; output.replaceChildren(); output.hidden = false;
-        const link = root.document.createElement('a'); link.className = 'ppt-report-link'; link.href = pageURL('/sn/ppt/' + encodeURIComponent(record.id));
+        const link = root.document.createElement('a'); link.className = 'ppt-report-link'; link.href = templateURL(record.id, config.date);
         link.textContent = `解析完成：${record.slide_count} 页、${record.slot_count} 个图位，点击确认绑定`; output.append(link);
         $('ppt-upload-form').reset();
         await load(true);
@@ -208,9 +206,28 @@
       finally { uploading = false; fields.disabled = !config.can_write; }
     });
     more.addEventListener('click', () => load()); $('ppt-list-reload').addEventListener('click', () => load(true));
-    root.addEventListener('pagehide', () => { closed = true; controller.abort(); }, {once: true});
-    load();
+    let started = false;
+    const start = () => { if (!started && !closed) { started = true; load(); } };
+    const revealAnchor = () => {
+      if (disclosure && root.location.hash === '#' + disclosure.id) { disclosure.open = true; start(); }
+    };
+    disclosure?.addEventListener('toggle', () => { if (disclosure.open) start(); });
+    root.addEventListener('hashchange', revealAnchor);
+    root.addEventListener('pagehide', () => { closed = true; controller.abort(); root.removeEventListener('hashchange', revealAnchor); }, {once: true});
+    if (!disclosure || disclosure.open) start();
+    revealAnchor();
   }
+  const helpers = {emuToPx, slotSize, slideLayout, slotRect, allSlots, slotState, counts, summary, candidateBinding, confidentCandidate, firstCandidates, unclearCandidates, mapLimit, pageURL, apiURL, api, uploadFile, responseError, notice, esc, reason, types, today, formatBeijingTime, templateURL, initLibrary};
+  if (typeof module !== 'undefined' && module.exports) module.exports = helpers;
+  root.PptUI = Object.freeze(helpers);
+  if (!root.document) return;
+  const page = root.document.querySelector('[data-ppt-page]'), configNode = root.document.getElementById('ppt-page-config');
+  if (!page || !configNode) return;
+  const config = JSON.parse(configNode.textContent), $ = id => root.document.getElementById(id), E = esc;
+  if (!config.enabled) return;
+  if (page.dataset.pptPage === 'list') initLibrary(page, config);
+  if (page.dataset.pptPage === 'detail') detail();
+
 
   function detail() {
     const path = '/ppt-templates/' + encodeURIComponent(config.id), status = $('ppt-detail-status'), inspector = $('ppt-inspector');
@@ -381,6 +398,7 @@
         const next = await api(path, {signal: controller.signal}); clearInspector();
         record = next; bindings = structuredClone(record.bindings); pending.clear(); conflict = false; selected = undefined;
         $('ppt-conflict').hidden = true; $('ppt-title').textContent = record.title || record.filename;
+        if ($('ppt-breadcrumb-title')) $('ppt-breadcrumb-title').textContent = record.title || record.filename;
         Object.values(record.candidates || {}).flat().forEach(candidate => labels.set(labelKey(candidate), candidate.title || candidate.name));
         inspector.innerHTML = '<p class="charts-muted">点击左侧图位开始确认。</p>'; drawSlides(); refresh();
         notice(status, record.warnings?.length ? '部分图表定义无效，候选可能不完整；请核对绑定。' : '');

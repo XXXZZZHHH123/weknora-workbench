@@ -1,0 +1,21 @@
+{# Shared upload and personal template library, embedded in reports. #}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/ppt.css?v={{ static_version() }}">
+<div class="charts-page ppt-page ppt-library" data-ppt-page="list">
+  <p class="charts-muted">上传以往的日报或周报，确认图位绑定后，按原版式导出{% if ppt_page.date %}，默认数据截止日为 {{ ppt_page.date }}{% endif %}。</p>
+  {% if not ppt_page.enabled %}<p class="charts-notice error" role="alert">{{ ppt_page.reason }}</p>{% else %}
+  {% if not ppt_page.can_write %}<p class="charts-notice" id="ppt-write-reason">{{ ppt_page.write_reason }}</p>{% endif %}
+  <section class="charts-panel"><h2>上传模板</h2>
+    <form id="ppt-upload-form"><fieldset id="ppt-upload-fields" disabled>
+      <div class="charts-toolbar"><label class="charts-field">选择 .pptx 文件（不超过 60 MB）<input id="ppt-file" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" required></label><button class="charts-button primary" type="submit">上传并解析</button></div>
+    </fieldset></form>
+    <div id="ppt-upload-progress" hidden><progress id="ppt-upload-bar" max="100" value="0" aria-label="上传与解析进度"></progress><p id="ppt-upload-status" role="status" aria-live="polite"></p></div>
+  </section>
+  <div id="ppt-list-status" role="status" aria-live="polite" hidden></div>
+  <div id="ppt-list-conflict" class="charts-notice warning" role="alert" hidden>模板已有新版本，请重新加载后操作。<button id="ppt-list-reload" type="button" class="charts-button">重新加载列表</button></div>
+  <section class="charts-panel" aria-label="我的模板列表"><div class="charts-table-scroll"><table class="charts-table ppt-list"><thead><tr><th scope="col">名称</th><th scope="col">页数</th><th scope="col">图位统计</th><th scope="col">更新时间（北京时间）</th><th scope="col">最近导出（北京时间）</th><th scope="col">操作</th></tr></thead><tbody id="ppt-list-rows"></tbody></table></div></section>
+  <button id="ppt-list-more" type="button" class="charts-button" hidden>加载更多模板</button>
+  {% endif %}
+</div>
+<script type="application/json" id="ppt-page-config">{{ ppt_page | tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/ppt.js?v={{ static_version() }}"></script>

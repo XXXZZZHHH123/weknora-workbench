@@ -43,3 +43,11 @@
 .ppt-report-kept summary { cursor: pointer; font-weight: 600; }
 .ppt-report-kept .ppt-report-list { max-height: 260px; overflow-y: auto; margin-bottom: 4px; }
 @media(max-width: 900px) { .ppt-workspace { grid-template-columns: minmax(0, 1fr); } .ppt-inspector { position: static; max-height: none; } }
+
+.report-ppt { border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.report-ppt > summary { padding: 13px 18px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.report-ppt > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.report-ppt .ppt-library { padding: 0 16px 16px; }
+.ppt-list-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 175px; }
+.ppt-list-actions a.charts-button { text-decoration: none; }
+@media print { .report-ppt { display: none !important; } }

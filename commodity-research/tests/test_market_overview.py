@@ -17,7 +17,8 @@ def test_market_selector_uses_current_catalog_in_both_workbench_modes(canonical,
     tree = fromstring(response.text)
     assert tree.xpath('//*[@id="market-core-open"]')
     assert tree.xpath('//*[@id="market-core-catalog"]')
-    assert tree.xpath('//*[@data-market-card-series]/@data-market-card-series') == [SERIES]
+    assert not tree.xpath('//*[@data-market-card-series]')
+    assert tree.xpath('//*[@id="market-core-suggestions-open"]')
     assert 'SHFE.SN.main.settle' not in tree.get_element_by_id('market-core-catalog').text
     assert tree.xpath('//*[@id="market-contract-source"]//a[contains(@href,"shfe.com.cn")]')
     assert '当前通用字段确认尚未提供这些语义绑定' in tree.get_element_by_id('market-contract-source').text_content()
@@ -49,13 +50,13 @@ def test_cutoff_and_withdrawn_sources_never_show_future_or_stored_old_quotes(can
     assert '所选日期之前尚无已确认观测' in response.json()['detail']
     state['ready'] = False
     assert client.get(market(), params={'series_id': SERIES}, headers=headers).status_code == 404
-    assert client.get(market(), params={'series_id': 'SHFE.SN.main.settle'}, headers=headers).status_code == 404
+    assert client.get(market(), params={'series_id': 'SHFE.SN.main.settle'}, headers=headers).status_code == 422
 
 
 @pytest.mark.parametrize('query,status', [
-    ('', 422), ('series_id=', 422), ('series_id=unknown', 404),
+    ('', 422), ('series_id=', 422), ('series_id=unknown', 422),
     ('series_id=' + SERIES + '&series_id=' + SERIES, 422),
-    ('&'.join('series_id=field-' + str(i) for i in range(13)), 422),
+    ('&'.join('series_id=field-' + str(i) for i in range(17)), 422),
     ('series_id=' + SERIES + '&date=invalid', 400),
     ('series_id=' + SERIES + '&date=20260102', 400),
     ('series_id=' + SERIES + '&date=', 400),

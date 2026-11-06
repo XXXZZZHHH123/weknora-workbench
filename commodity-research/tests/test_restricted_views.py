@@ -148,7 +148,7 @@ def test_source_readable_editor_saves_verified_core_for_restricted_members(canon
     with isolated_session_factory(17, FIRST)() as session:
         config = session.get(SourceMapping, 'workbench-market-core:' + FIRST)
         origins = session.get(SourceMapping, 'workbench-series-origins:' + FIRST)
-        assert config.config['series_ids'] == [SERIES]
+        assert config.config == {'items': [{'kind': 'indicator', 'id': SERIES}]}
         assert origins.config['origins'][SERIES] == {'knowledge_base_id': KB, 'tenant_id': 17}
     delegated(state)
     assert client.get(page(FIRST, '/sn'), headers=headers).status_code == 200

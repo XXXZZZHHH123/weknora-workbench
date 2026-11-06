@@ -40,5 +40,12 @@
 <details class="report-editor-tools"><summary>选图与图说 · 最多6条</summary><div id="report-figure-options"></div></details><p class="report-muted">手工文字与引用保留版本；数值、单位、日期和来源仍由系统读取。清空后不会重新填回默认内容。</p><p id="report-edit-status" class="report-edit-status" role="status" aria-live="polite"></p></div><footer class="report-editor-footer"><button type="button" id="report-edit-cancel" class="report-button">取消</button><button type="submit" id="report-edit-save" class="report-button report-button-primary">保存草稿</button></footer></form></dialog>
 {% endif %}
 {% endif %}
+{% if scope and scope.scope_version == 2 and not scope.restricted %}
+<details id="report-ppt" class="report-ppt"><summary>按我的 PPT 版式导出</summary>
+{% with ppt_page={'enabled': true, 'can_write': scope.can_edit, 'id': none, 'date': selected.date or '', 'write_reason': '' if scope.can_edit else '当前账号没有研究工作台编辑权限，无法上传、修改、删除或生成PPT'} %}
+{% include '_ppt_library.html' %}
+{% endwith %}
+</details>
+{% endif %}
 {% endif %}
 {% endblock %}

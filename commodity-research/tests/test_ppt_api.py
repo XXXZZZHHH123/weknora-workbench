@@ -3,6 +3,7 @@ import hashlib
 from io import BytesIO
 import json
 import stat
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 from fastapi import HTTPException
@@ -50,6 +51,32 @@ def export(client, identifier, *, images=None, **data):
         files={key: ('render.png', value, 'image/png') for key, value in (images or {}).items()})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.mark.parametrize('export_count', [0, 2])
+def test_template_summary_keeps_latest_export_metadata_bounded(export_count, monkeypatch):
+    reports = [{'export_id': 'export-' + str(index), 'created_at': '2030-01-02T08:00:00Z',
+                'download_url': '/api/sn/ppt-templates/template-1/exports/export-' + str(index),
+                'updated_slots': [{'slot_id': 'slide-1-pic-1'}], 'kept_slots': [],
+                'headlines_to_check': [{'title': '合成标题'}]}
+               for index in range(export_count)]
+    row = SimpleNamespace(id='template-1', title='合成模板', status='draft', revision=1,
+        created_at='2030-01-02T08:00:00Z', updated_at='2030-01-02T08:00:00Z',
+        body=json.dumps({'format': 'ppt-template.v1', 'filename': 'synthetic.pptx', 'sha256': 'a' * 64,
+                         'presentation': ppt.parse_pptx(make_pptx()), 'bindings': {}, 'exports': reports}))
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail('Serializing recent export metadata must not read sources')
+
+    for name in ('chart_evidence', 'template_candidates', 'catalog_fields', 'read_series'):
+        monkeypatch.setattr(ppt, name, unexpected_read)
+    item = ppt.serialize(row, detail=False)
+    assert item['last_export'] == (None if not reports else {
+        'created_at': '2030-01-02T08:00:00Z', 'export_id': 'export-1',
+        'download_url': '/api/sn/ppt-templates/template-1/exports/export-1'})
+    assert not {'bindings', 'presentation', 'candidates', 'exports'} & item.keys()
+    detail = ppt.serialize(row)
+    assert detail['last_export'] == item['last_export'] and detail['exports'] == reports
 
 
 def test_uploaded_templates_are_personal_private_hashed_and_soft_deleted(ppt_client):
@@ -127,12 +154,35 @@ def test_list_includes_readonly_slot_counts_without_candidates_or_source_reads(p
         assert item['id'] == saved['id'] and item['revision'] == saved['revision']
         assert item['updated_at'] == saved['updated_at']
         assert item['slot_counts'] == expected and sum(item['slot_counts'].values()) == item['slot_count']
+        assert item['last_export'] is None
         assert not {'bindings', 'presentation', 'candidates', 'exports'} & item.keys()
     assert client.get(BASE, headers={'x-actor': 'second'}).json()['items'] == []
     with isolated_session_factory(17, WB)() as session:
         row = session.get(WorkbenchArtifact, saved['id'])
         assert row.revision == saved['revision']
         assert json.loads(row.body)['bindings'] == saved['bindings']
+    assert state.requests == []
+
+
+def test_list_exposes_only_latest_personal_export_summary_without_reading_sources(ppt_client, monkeypatch):
+    client, state = ppt_client
+    saved = upload(client)
+    export(client, saved['id'])
+    latest = export(client, saved['id'])
+    state.requests.clear()
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail('Recent export metadata must not load sources or candidates')
+
+    for name in ('chart_evidence', 'template_candidates', 'catalog_fields', 'read_series'):
+        monkeypatch.setattr(ppt, name, unexpected_read)
+    for headers in ({}, {'x-role': 'viewer', 'x-can-edit': 'false'}):
+        item = client.get(BASE, headers=headers).json()['items'][0]
+        assert item['last_export'] == {key: latest[key] for key in ('created_at', 'export_id', 'download_url')}
+        assert not {'bindings', 'presentation', 'candidates', 'exports'} & item.keys()
+        assert client.get(item['last_export']['download_url'], headers=headers).status_code == 200
+    assert client.get(BASE, headers={'x-actor': 'second'}).json()['items'] == []
+    assert client.get(BASE, headers={'x-workbench': SECOND_WB}).json()['items'] == []
     assert state.requests == []
 
 

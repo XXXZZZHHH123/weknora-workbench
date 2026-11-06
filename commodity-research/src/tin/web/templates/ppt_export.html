@@ -3,7 +3,7 @@
 {% block main %}
 {% include "_ppt_assets.html" %}
 <div class="charts-page ppt-page" data-ppt-page="export">
-  <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/ppt/' ~ ppt_page.id) }}">返回图位确认</a><h1 id="ppt-title">导出 PPT</h1><p id="ppt-meta" class="charts-muted"></p></div></header>
+  <header class="charts-header"><div>{% with ppt_breadcrumb_link=true %}{% include '_ppt_breadcrumb.html' %}{% endwith %}<h1 id="ppt-title">导出 PPT</h1><p id="ppt-meta" class="charts-muted"></p></div></header>
   {% if not ppt_page.enabled %}<p class="charts-notice error" role="alert">{{ ppt_page.reason }}</p>{% else %}
   {% if not ppt_page.can_write %}<p class="charts-notice" id="ppt-write-reason">{{ ppt_page.write_reason }}</p>{% endif %}
   <section class="charts-panel"><h2>生成新一期 PPT</h2><p class="charts-muted">按原图位比例生成图片。单个图位失败时保留原图，并在报告中说明；标题文字需要人工核对。</p>

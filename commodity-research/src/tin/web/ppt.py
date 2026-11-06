@@ -92,6 +92,9 @@ def serialize(row, *, detail=True):
     result.update(filename=value['filename'], sha256=value['sha256'],
                   slide_count=len(value['presentation']['slides']),
                   slot_count=len(slots), slot_counts=slot_counts)
+    latest = value['exports'][-1] if value['exports'] else None
+    result['last_export'] = ({key: latest[key] for key in ('created_at', 'export_id', 'download_url')}
+                             if latest else None)
     if detail:
         result.update(presentation=value['presentation'], bindings=value['bindings'], exports=value['exports'])
     return result

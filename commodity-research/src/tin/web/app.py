@@ -278,6 +278,8 @@ app.include_router(report_figures_router)
 from tin.web.affairs import router as affairs_router
 app.include_router(affairs_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
+from tin.web.focus_suggestions import router as focus_suggestions_router
+app.include_router(focus_suggestions_router)
 app.include_router(build_market_router(lambda: _page_session('market'), templates,
                                        lambda session, day: _home_date(session, day)))
 
@@ -566,11 +568,14 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
         cards = saved_core_cards(s, d, core_cards(s, research_variety(s), d) if d is not None else [])
         from tin.web.market_history import market_history
         from tin.web.market_contracts import configured_contract_curve
+        from tin.integration.source_status import source_status_hint
         curve = (configured_contract_curve(s, d if date else None) if s.info.get('workbench_id')
                  else contract_curve(s, research_variety(s), d) if d is not None else None)
         return templates.TemplateResponse(request, "variety.html", _shell(
             s, "variety", d, cards=cards,
+            has_core_charts=any(isinstance(card, dict) and card.get('kind') == 'chart' for card in cards),
             market_catalog=market_catalog_data(s, cards, d) if s.info.get('workbench_id') else None,
+            source_status_hint=source_status_hint(),
             judgment=judgment_block(s, research_variety(s), today),
             radar=threshold_radar(s, research_variety(s), d) if d is not None else [],
             gaps=gaps(s, research_variety(s), d) if d is not None else [],
@@ -676,9 +681,11 @@ def indicators_page(request: Request, date: str | None = None):
                   for name in dict.fromkeys(r["category"] for r in rows)]
         checks = diagram_api.crosscheck(s, research_variety(s), day) if day else []
         from tin.web.chart_pages import page_config
+        from tin.integration.source_status import source_status_hint
         return templates.TemplateResponse(request, "indicators.html", _shell(
             s, "indicators", day, rows=rows, groups=groups, dimensions=DIMENSIONS, checks=checks,
             chart_page=page_config(request),
+            source_status_hint=source_status_hint(scope),
             catalog_remote=remote, catalog_offset=directory['offset'] if directory else 0,
             catalog_total=directory['total'] if directory else len(rows),
             catalog_next=directory['next_offset'] if directory else None,

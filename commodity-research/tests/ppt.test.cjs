@@ -41,6 +41,15 @@ test('更新时间统一为北京时间，兼容SQLite无时区UTC值、偏移�
   assert.equal(P.formatBeijingTime('2029-09-15T01:30:00-07:00'), '2029-09-15 16:30');
   for (const value of [null, undefined, '', 'not-a-date', '<img onerror=bad()>']) assert.equal(P.formatBeijingTime(value), '—');
 });
+test('日报周报内的版式链接保留研究台前缀与报告日期，模板 ID 始终编码', t => {
+  const prefix = globalThis.RESEARCH_PREFIX;
+  t.after(() => { globalThis.RESEARCH_PREFIX = prefix; });
+  globalThis.RESEARCH_PREFIX = '/research/workbenches/fixture';
+  assert.equal(P.templateURL('template-1'), '/research/workbenches/fixture/sn/reports/ppt/template-1');
+  assert.equal(P.templateURL('template-1', '2030-01-04', true), '/research/workbenches/fixture/sn/reports/ppt/template-1/export?date=2030-01-04');
+  assert.equal(P.templateURL('template/"<name>', '2030-01-04'), '/research/workbenches/fixture/sn/reports/ppt/template%2F%22%3Cname%3E?date=2030-01-04');
+  assert.equal(P.templateURL('template-1', '', true), '/research/workbenches/fixture/sn/reports/ppt/template-1/export');
+});
 test('报告按页归并已更新图位并保留各自数据截至日；312个保留图位按原因汇总', () => {
   const report = {updated_slots: [{slide: 9, slot_id: 'updated-b', data_as_of: '2030-01-02'},
     {slide: 2, slot_id: 'updated-a', data_as_of: '2030-01-01'}, {slide: 9, slot_id: 'updated-c', data_as_of: '2030-01-03'}],

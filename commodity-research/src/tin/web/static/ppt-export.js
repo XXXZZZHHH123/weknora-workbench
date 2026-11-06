@@ -99,7 +99,7 @@
   const $ = id => root.document.getElementById(id), E = P.esc, path = '/ppt-templates/' + encodeURIComponent(config.id);
   const status = $('ppt-export-status'), fields = $('ppt-export-fields'), controller = new AbortController(), urls = new Set();
   const cards = new Map(), conflictedExports = new Set(); let record, busy = false, loading = false, conflict = false, closed = false;
-  $('ppt-export-date').value = P.today();
+  $('ppt-export-date').value = validDate(config.date) ? config.date : P.today();
   function controls() { fields.disabled = !config.can_write || !record || busy || loading || conflict; }
   function disposePreviews() { urls.forEach(url => root.URL.revokeObjectURL(url)); urls.clear(); cards.clear(); $('ppt-export-previews').replaceChildren(); }
   function previews() {
@@ -130,6 +130,7 @@
       record = await P.api(path, {signal: controller.signal});
       conflict = false; $('ppt-export-conflict').hidden = true;
       $('ppt-title').textContent = '导出 · ' + (record.title || record.filename);
+      $('ppt-breadcrumb-title').textContent = record.title || record.filename;
       $('ppt-meta').textContent = `${record.slide_count} 页 · 修订 v${record.revision}`;
       $('ppt-export-summary').textContent = P.summary(P.counts(record)); previews();
       const previous = record.exports?.at(-1); if (previous) reportMarkup(previous); else $('ppt-export-report').hidden = true;

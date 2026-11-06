@@ -43,7 +43,8 @@ test('only current real catalog IDs survive persisted choices, including an expl
 });
 
 test('limits never silently evict favorites or truncate an explicit selection', () => {
-  assert.throws(() => preferences.plan([...allowed].slice(0, 13), [], allowed), /12/);
+  assert.equal(preferences.plan([...allowed].slice(0, 16), [], allowed).core.length, 16);
+  assert.throws(() => preferences.plan([...allowed].slice(0, 17), [], allowed), /16/);
   const favorites = [...allowed].slice(0, 100).map(item), copy = [...favorites];
   assert.throws(() => preferences.plan(['field-104'], favorites, allowed), /100/);
   assert.deepEqual(favorites, copy);

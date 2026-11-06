@@ -9,11 +9,11 @@
 {% if restricted_module == 'home' %}
 <section class="restricted-empty"><strong>研究工作台</strong><p>通过上方导航查看已授权页面。每页仅按研究台保存的绑定读取必要数值，不加载整个指标库。</p></section>
 {% elif restricted_module == 'market' %}
-<section id="market-core" class="space-y-3"><h2 class="text-sm font-bold">核心指标</h2><div id="market-core-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">{% from '_card.html' import card with context %}{% for item in restricted_data.market_cards %}{{ card(item) }}{% else %}<p class="text-sm text-[var(--text-muted)]">尚未配置可展示的绑定指标。</p>{% endfor %}</div></section>
+<section id="market-core" class="space-y-3"><h2 class="text-sm font-bold">核心关注</h2>{% if restricted_data.core_charts_hidden %}<p>图表条目暂不对受限视角开放</p>{% endif %}<div id="market-core-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">{% from '_card.html' import card with context %}{% for item in restricted_data.market_cards %}{{ card(item) }}{% else %}<p class="text-sm text-[var(--text-muted)]">尚未配置可展示的绑定指标。</p>{% endfor %}</div></section>
 {% elif restricted_module == 'indicators' %}
 {% if restricted_data.cards %}<section class="restricted-cards" aria-label="已绑定指标">
 {% for card in restricted_data.cards %}<article class="restricted-card"><h2>{{ card.name }}</h2><div class="restricted-value tabular">{{ card.value | num(card.unit) }} <small>{{ card.unit }}</small></div><p>{{ card.date or '暂无观测' }}{% if card.change is not none %}<span class="tabular">较上期 {{ card.change | num(card.unit, true) }}</span>{% endif %}</p></article>{% endfor %}
-</section>{% else %}<section class="restricted-empty"><strong>尚未配置可展示的绑定指标</strong><p>由具备来源和研究台编辑权限的成员保存核心指标或产业图绑定后，这里才会读取对应的必要数值。</p></section>{% endif %}
+</section>{% else %}<section class="restricted-empty"><strong>尚未配置可展示的绑定指标</strong><p>由具备来源和研究台编辑权限的成员保存核心关注或产业图绑定后，这里才会读取对应的必要数值。</p></section>{% endif %}
 {% elif restricted_module == 'diagram' %}
 <section class="restricted-empty"><strong>尚未保存产业图</strong><p>当前工作台还没有可展示的产业图。请由可读取来源的研究台编辑成员在成员与权限中保存产业图展示配置。</p></section>
 {% else %}
