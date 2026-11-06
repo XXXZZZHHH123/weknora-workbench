@@ -152,7 +152,9 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
             result['omitted_segments'].append(label)
             continue
         flags = ['incomplete'] if end > as_of else []
-        effective_days = (min(end, as_of) - start).days + 1
+        # A stale series must not look sparse just because the cutoff is today:
+        # the latest real observation bounds the elapsed part of an open segment.
+        effective_days = (min(end, as_of, row_days[-1]) - start).days + 1
         if freq is not None and (effective_days <= 0 or len(selected) / effective_days * freq < 0.5):
             flags.append('sparse')
         if selected and transform != 'raw' and (selected[0][0] - start).days > tol:

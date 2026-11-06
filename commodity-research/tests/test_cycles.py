@@ -340,3 +340,19 @@ def test_nonempty_cycles_have_no_omission_notice_even_with_unusable_transforms()
 def test_invalid_pure_function_input_is_rejected(points):
     with pytest.raises(ValueError):
         compute_cycles(points, BUILTIN_TEMPLATES['自然年'], '2024-01-02')
+
+
+def test_stale_series_current_segment_coverage_uses_latest_observation():
+    """Data stopping months before the cutoff keeps a weekly current segment usable."""
+    from datetime import date, timedelta
+    from tin.compute.cycles import compute_cycles
+    rows = []
+    for year in range(2016, 2024):
+        start = date(year, 8, 3)
+        weeks = 52 if year < 2023 else 6
+        rows.extend((start + timedelta(days=7 * i), float(10 + year - 2016 + i)) for i in range(weeks))
+    template = {'kind': 'repeat', 'name': '美棉年度', 'start': '08-01', 'period': 'year', 'align': 'days', 'transform': 'raw'}
+    result = compute_cycles(rows, template, '2026-11-06')
+    current = next(part for part in result['segments'] if part['current'])
+    assert 'sparse' not in current['flags']
+    assert result['position']['status'] == 'ok' and result['position']['n'] == 7
