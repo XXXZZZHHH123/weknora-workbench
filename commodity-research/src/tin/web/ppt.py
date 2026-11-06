@@ -82,9 +82,16 @@ def contents(row):
 def serialize(row, *, detail=True):
     result = {key: getattr(row, key) for key in ('id', 'title', 'status', 'revision', 'created_at', 'updated_at')}
     value = contents(row)
+    slots = [slot for slide in value['presentation']['slides'] for slot in slide['slots']]
+    slot_counts = {'bound': 0, 'kept': 0, 'pending': 0}
+    for slot in slots:
+        binding = value['bindings'].get(slot['slot_id'])
+        state = ('kept' if not slot['replaceable'] or (binding and binding['kind'] == 'keep')
+                 else 'bound' if binding else 'pending')
+        slot_counts[state] += 1
     result.update(filename=value['filename'], sha256=value['sha256'],
                   slide_count=len(value['presentation']['slides']),
-                  slot_count=sum(len(slide['slots']) for slide in value['presentation']['slides']))
+                  slot_count=len(slots), slot_counts=slot_counts)
     if detail:
         result.update(presentation=value['presentation'], bindings=value['bindings'], exports=value['exports'])
     return result

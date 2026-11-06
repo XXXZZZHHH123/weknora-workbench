@@ -37,4 +37,9 @@
 .ppt-render-target { position: fixed; left: -100000px; top: 0; pointer-events: none; }
 .ppt-preview img { width: 100%; height: auto; display: block; border: 1px solid var(--line); }
 .ppt-report-list { list-style: disc; margin: 8px 0 14px; padding-left: 22px; overflow-wrap: anywhere; }
+.ppt-report-page h4 { margin-top: 12px; font-size: 13px; }
+.ppt-kept-summary { margin: 8px 0 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.ppt-report-kept { margin: 8px 0; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
+.ppt-report-kept summary { cursor: pointer; font-weight: 600; }
+.ppt-report-kept .ppt-report-list { max-height: 260px; overflow-y: auto; margin-bottom: 4px; }
 @media(max-width: 900px) { .ppt-workspace { grid-template-columns: minmax(0, 1fr); } .ppt-inspector { position: static; max-height: none; } }

@@ -28,6 +28,47 @@ function attr(element, key, value) { return nodes(element).filter(node => Object
 function pathXs(node) { return [...node.attrs.d.matchAll(/[ML](-?[\d.]+),/g)].map(match => Number(match[1])); }
 function assertClose(actual, expected) { assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} ≈ ${expected}`); }
 
+test('导出按实际图位布局：深色文字、完整标题、白底、浅网格和区间带，细线提高下限', () => {
+  for (const [width, height] of [[320, 180], [400, 180], [960, 400], [1600, 600]]) {
+    const container = fixture(), payload = cycle(), def = structuredClone(definition), style = K.exportStyle(width);
+    def.title = '导出标题 <img onerror=bad()>';
+    def.time.segment_styles = payload.segments.map(part => ({label: part.label, width: .5}));
+    const original = structuredClone(payload), handle = K.render(container, payload, {width, height, exactSize: true, export: true, definition: def});
+    const all = nodes(container), svg = all.find(node => node.name === 'svg'), texts = all.filter(node => node.name === 'text');
+    assert.equal(svg.attrs.viewBox, `0 0 ${width} ${height}`);
+    assert.equal(svg.attrs['aria-label'], def.title);
+    assert.equal(all.filter(node => node.attrs.transform).length, 0, '字号和线宽不再被场景缩小');
+    assert.equal(attr(container, 'data-chart-title').map(node => node.textContent).join(''), def.title);
+    assert.ok(attr(container, 'data-chart-title').every(node => Number(node.attrs['font-size']) >= 13));
+    assert.ok(texts.every(node => Number(node.attrs['font-size']) >= 11 && node.attrs.fill === style.text));
+    assert.ok(texts.every(node => Number(node.attrs.y) > 0 && Number(node.attrs.y) < height));
+    assert.ok(all.some(node => node.name === 'rect' && node.attrs.fill === '#ffffff' && Number(node.attrs.width) === width && Number(node.attrs.height) === height));
+    assert.ok(all.some(node => node.name === 'line' && node.attrs.stroke === style.grid));
+    assert.ok(attr(container, 'data-band', 'range').every(node => node.attrs.fill === style.band && Number(node.attrs['fill-opacity']) <= .13));
+    for (const [index, part] of payload.segments.entries()) {
+      const group = attr(container, 'data-series', String(index))[0], curve = attr(group, 'data-curve-run')[0];
+      const line = attr(container, 'data-legend', String(index))[0].children.find(node => node.name === 'line');
+      assert.equal(Number(curve.attrs['stroke-width']), part.current ? style.currentLineWidth : style.lineWidth);
+      assert.equal(line.attrs['stroke-width'], curve.attrs['stroke-width']); assert.equal(group.attrs.opacity, '1');
+    }
+    assert.equal(all.filter(node => node.name === 'img').length, 0);
+    assert.deepEqual(payload, original); handle.destroy();
+  }
+});
+test('导出图例根据文字宽度换行，横轴日期避开重叠，过小图位明确失败而不缩小文字', () => {
+  const container = fixture(), payload = {curves: Array.from({length: 4}, (_, i) => ({label: '合成指标图例 ' + i,
+    points: [{date: '2030-01-01', value: i}, {date: '2030-02-01', value: i + 2}]}))};
+  const handle = K.render(container, payload, {width: 320, height: 220, exactSize: true, export: true, definition: {title: '合成图表'}});
+  const legends = attr(container, 'data-legend').map(node => node.children.find(child => child.name === 'text'));
+  assert.ok(new Set(legends.map(node => node.attrs.y)).size > 1);
+  assert.ok(legends.every(node => Number(node.attrs.x) >= 24 && Number(node.attrs.x) < 320));
+  const dates = nodes(container).filter(node => node.name === 'text' && /^2030-\d\d-\d\d$/.test(node._text));
+  assert.ok(dates.length >= 2 && dates.length < K.dateTicks(Date.parse('2030-01-01') / 86400000, Date.parse('2030-02-01') / 86400000).length);
+  for (let i = 1; i < dates.length; i++) assert.ok(Number(dates[i].attrs.x) - Number(dates[i - 1].attrs.x) >= 10 * .62 * 11 + 6);
+  handle.destroy();
+  assert.throws(() => K.render(container, payload, {width: 320, height: 60, export: true}), /图位过小/);
+});
+
 test('月度周期曲线和band居中、标签在月中而刻度在月界，tooltip保留真实月末日期', () => {
   const payload = {template: {kind: 'repeat', start: '09-01', period: 'quarter'}, freq_days: 28, tolerance_days: 1,
     segments: [{label: '2023', start: '2023-09-01', end: '2023-11-30', current: true,

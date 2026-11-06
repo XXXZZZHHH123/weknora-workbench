@@ -4,6 +4,19 @@ const K = require('../src/tin/web/static/chart-kit.js');
 const point = (x, value = x) => ({x, value, date: `2030-01-${String(x + 1).padStart(2, '0')}`});
 const day = date => Date.parse(date + 'T00:00:00Z') / 86400000;
 
+test('导出字号以1倍图位像素计，小图不低于11/13px，大图按宽度增加且有上限', () => {
+  const small = K.exportStyle(160), base = K.exportStyle(640), wide = K.exportStyle(960), maximum = K.exportStyle(1280);
+  assert.deepEqual(small, base);
+  assert.equal(base.axisFontSize, 11); assert.equal(base.legendFontSize, 11); assert.equal(base.titleFontSize, 13);
+  assert.equal(base.currentLineWidth, 2.5); assert.equal(base.lineWidth, 1.5);
+  for (const key of ['axisFontSize', 'legendFontSize', 'titleFontSize', 'tableFontSize', 'currentLineWidth', 'lineWidth']) {
+    assert.equal(wide[key], base[key] * 1.5); assert.equal(maximum[key], base[key] * 2);
+  }
+  assert.deepEqual(K.exportStyle(10000), maximum);
+  assert.equal(base.text, '#30343b'); assert.equal(base.background, '#ffffff');
+  for (const value of [0, -1, NaN, Infinity, '640']) assert.throws(() => K.exportStyle(value), /尺寸无效/);
+});
+
 test('年度刻度从模板起点依次跨年，不把9月起点画成自然年', () => {
   const ticks = K.cycleTicks({kind: 'repeat', start: '09-01', period: 'year'}, 0, 364, '2029-09-01');
   assert.deepEqual(ticks.map(t => t.label), ['9月', '10月', '11月', '12月', '1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月']);

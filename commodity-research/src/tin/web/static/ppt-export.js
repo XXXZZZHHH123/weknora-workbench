@@ -46,7 +46,7 @@
       target = dependencies.createTarget ? dependencies.createTarget(size) : root.document.createElement('div');
       target.className = 'ppt-render-target'; target.style.width = size.width + 'px'; target.style.height = size.height + 'px';
       if (!dependencies.createTarget) root.document.body.append(target);
-      renderer = binding.kind === 'chart' ? kit.render(target, data, {...size, exactSize: true, definition}) : kit.renderTable(target, points, {...size, title});
+      renderer = binding.kind === 'chart' ? kit.render(target, data, {...size, exactSize: true, export: true, definition, title}) : kit.renderTable(target, points, {...size, export: true, title});
       const blob = await renderer.toPNGBlob();
       if (blob.type !== 'image/png' || blob.size === 0) throw new Error('未能生成有效 PNG 图片');
       if (blob.size > 4 * 1024 * 1024) throw new Error('生成的 PNG 超过 4 MB，此图位保留原图');
@@ -64,7 +64,32 @@
     const path = '/api/sn/ppt-templates/' + encodeURIComponent(id) + '/exports/' + encodeURIComponent(report.export_id);
     return report.download_url === path ? P.pageURL(path) : null;
   }
-  const helpers = {validDate, latestRows, lastObservation, renderSlot, buildFormData, downloadURL};
+  const failureReasons = new Set(['missing_media', 'chart_missing', 'chart_invalid', 'series_missing',
+    'chart_unit_mismatch', 'source_unavailable', 'data_read_failed', 'png_not_supplied']);
+  function summarizeReport(report) {
+    const pages = new Map(), reasons = new Map();
+    for (const item of report.updated_slots || []) {
+      if (!pages.has(item.slide)) pages.set(item.slide, {slide: item.slide, items: []});
+      pages.get(item.slide).items.push(item);
+    }
+    for (const item of report.kept_slots || []) {
+      if (!reasons.has(item.reason)) reasons.set(item.reason, {reason: item.reason, label: P.reason(item.reason) || '原因未提供',
+        failed: failureReasons.has(item.reason), count: 0, items: []});
+      const group = reasons.get(item.reason); group.count++; group.items.push(item);
+    }
+    const keptReasons = [...reasons.values()].sort((a, b) => b.count - a.count);
+    return {updatedPages: [...pages.values()].sort((a, b) => a.slide - b.slide), keptReasons,
+      keptSummary: keptReasons.map(group => `${group.label} ${group.count} 个`).join('、')};
+  }
+  function reportSections(report) {
+    const E = P.esc, groups = summarizeReport(report);
+    const row = item => `${E(item.slot_id)} · 数据截至 ${E(item.data_as_of || '未提供')}`;
+    return `<h3>已更新图位（按页）与数据截至日</h3>${groups.updatedPages.length ? groups.updatedPages.map(page =>
+      `<section class="ppt-report-page" data-report-page="${E(page.slide)}"><h4>第 ${E(page.slide)} 页 · ${page.items.length} 个图位</h4><ul class="ppt-report-list">${page.items.map(item => `<li>${row(item)}</li>`).join('')}</ul></section>`).join('') : '<p class="charts-muted">没有更新图位。</p>'}
+      <h3>保留原图及原因</h3>${groups.keptReasons.length ? `<p class="ppt-kept-summary" data-report-kept-summary>${E(groups.keptSummary)}</p>` + groups.keptReasons.map(group =>
+      `<details class="ppt-report-kept" data-report-reason="${E(group.reason)}"${group.failed ? ' open' : ''}><summary>${E(group.label)} ${group.count} 个</summary><ul class="ppt-report-list">${group.items.map(item => `<li>第 ${E(item.slide)} 页 · ${row(item)}${item.detail ? '；' + E(item.detail) : ''}</li>`).join('')}</ul></details>`).join('') : '<p class="charts-muted">无</p>'}`;
+  }
+  const helpers = {validDate, latestRows, lastObservation, renderSlot, buildFormData, downloadURL, summarizeReport, reportSections};
   if (typeof module !== 'undefined' && module.exports) module.exports = helpers;
   root.PptExport = Object.freeze(helpers);
   if (!root.document) return;
@@ -93,12 +118,10 @@
     if (changed) conflictedExports.add(report.export_id);
     const suspect = conflictedExports.has(report.export_id);
     const href = downloadURL(report, config.id);
-    const row = item => `第 ${E(item.slide)} 页 · ${E(item.slot_id)} · 数据截至 ${E(item.data_as_of || '未提供')}`;
     container.hidden = false;
     container.innerHTML = `<h2>导出报告</h2><p>${E(report.date)} · 已更新 ${updated.length} 个图位 / 保留原图 ${kept.length} 个图位 · 修订 v${E(report.revision)}</p>
       ${suspect ? '<p class="charts-notice warning">生成期间模板版本发生变化，请重新加载并生成。</p>' : href ? `<p><a class="charts-button primary" id="ppt-download" href="${E(href)}" download>下载 PPTX</a></p>` : '<p class="charts-notice error">下载地址无效，请重新生成。</p>'}
-      <h3>已更新与各图数据截至日</h3>${updated.length ? '<ul class="ppt-report-list">' + updated.map(item => `<li>${row(item)}</li>`).join('') + '</ul>' : '<p class="charts-muted">没有更新图位。</p>'}
-      <h3>保留原图及原因</h3>${kept.length ? '<ul class="ppt-report-list">' + kept.map(item => `<li>${row(item)}：${E(P.reason(item.reason))}${item.detail ? '；' + E(item.detail) : ''}</li>`).join('') + '</ul>' : '<p class="charts-muted">无</p>'}
+      ${reportSections(report)}
       <h3>需核对标题${report.mark_headlines ? '（已标黄）' : ''}</h3>${titles.length ? '<ul class="ppt-report-list">' + titles.map(item => `<li>第 ${E(item.slide)} 页：${E(item.title)}</li>`).join('') + '</ul>' : '<p class="charts-muted">没有含数字的标题。</p>'}`;
   }
   async function load() {

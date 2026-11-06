@@ -59,6 +59,31 @@ test('60行按给定图位高度收紧；空数据不补零，无效尺寸明确
   assert.throws(() => K.renderTable(container, []), /暂无有效观测/);
   assert.throws(() => K.renderTable(container, [{date: '2030-01-01', value: 1}], {width: -1}), /尺寸无效/);
 });
+test('导出小表使用固定深色与清晰字号，按最长单元格分配列宽并保持2倍PNG尺寸', async t => {
+  const {container, canvases} = fixture(t);
+  const points = [{date: '2030-01-01', value: -123456789.12345678}, {date: '2030-01-02', value: 0}];
+  const handle = K.renderTable(container, points, {width: 300, height: 96, export: true});
+  const all = nodes(container), texts = all.filter(node => node.name === 'text');
+  assert.ok(texts.every(node => Number(node.attrs['font-size']) >= 11 && node.attrs.fill === '#30343b'));
+  assert.ok(all.some(node => node.name === 'rect' && node.attrs.fill === '#ffffff' && node.attrs.height === '96'));
+  const split = Number(all.find(node => node.name === 'line' && node.attrs.x1 === node.attrs.x2).attrs.x1);
+  assert.ok(split < 150, '长数值自动获得比日期更多的宽度');
+  assert.equal(texts.at(-1).textContent, '0');
+  await handle.toPNGBlob(); const canvas = canvases.at(-1);
+  assert.equal(canvas.width, 600); assert.equal(canvas.height, 192); handle.destroy();
+  const shorter = K.renderTable(container, [{date: '2030-01-01', value: 1}], {width: 300, height: 96, export: true});
+  const shorterSplit = Number(nodes(container).find(node => node.name === 'line' && node.attrs.x1 === node.attrs.x2).attrs.x1);
+  assert.ok(shorterSplit > split); shorter.destroy();
+  assert.throws(() => K.renderTable(container, Array.from({length: 60}, () => points[0]), {width: 300, height: 400, export: true}), /至少 11px/);
+});
+test('导出图表PNG精确保留图位2倍像素，字号没有被exactSize缩小', async t => {
+  const {container, canvases} = fixture(t);
+  const handle = K.render(container, {curves: [{label: '曲线', points: [{date: '2030-01-01', value: 1}]}]},
+    {width: 400.5, height: 180, exactSize: true, export: true, definition: {title: '导出标题'}});
+  assert.ok(nodes(container).filter(node => node.name === 'text').every(node => Number(node.attrs['font-size']) >= 11));
+  await handle.toPNGBlob(); const canvas = canvases.at(-1);
+  assert.equal(canvas.width, 801); assert.equal(canvas.height, 360); handle.destroy();
+});
 test('PPT短图位精确保留宽高比，PNG为CSS尺寸2倍；常规图表仍遵守原最小高度', async t => {
   const {container, canvases} = fixture(t), payload = {curves: [{label: '曲线', points: [{date: '2030-01-01', value: 1}]}]};
   const handle = K.render(container, payload, {width: 320, height: 90, exactSize: true});

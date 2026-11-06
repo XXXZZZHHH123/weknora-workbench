@@ -5,7 +5,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
   const types = {chart: '图', table: '数据小表', image: '图片'};
   const reasons = {native_chart: '原生图表暂不支持替换', svg: 'SVG 图片暂不支持替换', missing_media: '原件媒体缺失',
-    unbound: '尚未绑定', keep: '已选择保留原图', chart_missing: '绑定图表已删除或不可访问', chart_invalid: '绑定图表定义无效',
+    unbound: '尚未绑定', keep: '研究员选择保留', chart_missing: '绑定图表已删除或不可访问', chart_invalid: '绑定图表定义无效',
     series_missing: '绑定指标已不在当前来源目录', chart_unit_mismatch: '图表纵轴单位不一致', source_unavailable: '来源暂不可读',
     data_read_failed: '数据读取或图片生成失败', png_not_supplied: '未提供新图片'};
   const reason = code => reasons[code] || code || '';
@@ -128,7 +128,19 @@
   function today() {
     const date = new Date(); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
-  const helpers = {emuToPx, slotSize, slideLayout, slotRect, allSlots, slotState, counts, summary, candidateBinding, confidentCandidate, firstCandidates, unclearCandidates, mapLimit, pageURL, apiURL, api, uploadFile, responseError, notice, esc, reason, types, today};
+  function formatBeijingTime(value) {
+    if (typeof value !== 'string' || !value.trim()) return '—';
+    const iso = value.trim().replace(' ', 'T');
+    // SQLite returns UTC datetimes without an offset; never interpret them in
+    // the browser's local timezone.
+    const stamp = Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(iso) ? iso : iso + 'Z');
+    if (!Number.isFinite(stamp)) return '—';
+    const parts = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).formatToParts(new Date(stamp));
+    const fields = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    return `${fields.year}-${fields.month}-${fields.day} ${fields.hour}:${fields.minute}`;
+  }
+  const helpers = {emuToPx, slotSize, slideLayout, slotRect, allSlots, slotState, counts, summary, candidateBinding, confidentCandidate, firstCandidates, unclearCandidates, mapLimit, pageURL, apiURL, api, uploadFile, responseError, notice, esc, reason, types, today, formatBeijingTime};
   if (typeof module !== 'undefined' && module.exports) module.exports = helpers;
   root.PptUI = Object.freeze(helpers);
   if (!root.document) return;
@@ -141,32 +153,23 @@
 
   function library() {
     const status = $('ppt-list-status'), rows = $('ppt-list-rows'), more = $('ppt-list-more'), fields = $('ppt-upload-fields');
-    const controller = new AbortController(); let offset = 0, busy = false, closed = false, generation = 0, uploading = false, reloadQueued = false;
+    const controller = new AbortController(); let offset = 0, busy = false, closed = false, uploading = false, reloadQueued = false;
     const records = new Map(); fields.disabled = !config.can_write;
     async function load(reset = false) {
       if (busy) { if (reset) reloadQueued = true; return; }
-      if (reset) { generation++; records.clear(); rows.replaceChildren(); offset = 0; $('ppt-list-conflict').hidden = true; }
-      const own = generation; busy = true; more.disabled = true; notice(status, '正在读取模板…');
+      if (reset) { records.clear(); rows.replaceChildren(); offset = 0; $('ppt-list-conflict').hidden = true; }
+      busy = true; more.disabled = true; notice(status, '正在读取模板…');
       try {
         const data = await api('/ppt-templates?' + new URLSearchParams({offset, limit: 12}), {signal: controller.signal});
+        if (closed) return;
         for (const item of data.items) {
           records.set(item.id, item);
           const tr = root.document.createElement('tr'); tr.dataset.templateId = item.id;
-          tr.innerHTML = `<td><a href="${E(pageURL('/sn/ppt/' + encodeURIComponent(item.id)))}">${E(item.title || item.filename)}</a></td><td>${E(item.slide_count)}</td><td data-ppt-counts>正在读取图位统计…</td><td data-ppt-updated>${E(item.updated_at || '—')}</td><td><button type="button" class="charts-button danger" data-ppt-delete ${config.can_write ? '' : 'disabled'}>删除</button></td>`;
+          tr.innerHTML = `<td><a href="${E(pageURL('/sn/ppt/' + encodeURIComponent(item.id)))}">${E(item.title || item.filename)}</a></td><td>${E(item.slide_count)}</td><td data-ppt-counts>${E(item.slot_counts ? summary(item.slot_counts) : '统计暂不可用，请重新加载')}</td><td data-ppt-updated>${E(formatBeijingTime(item.updated_at))}</td><td><button type="button" class="charts-button danger" data-ppt-delete ${config.can_write ? '' : 'disabled'}>删除</button></td>`;
           rows.append(tr);
         }
         offset = data.next_offset; more.hidden = offset === null;
         notice(status, data.total ? `共 ${data.total} 个模板` : '还没有模板，请上传以往的 PPTX 周报。');
-        // The list has no binding counts; use existing owner-checked detail reads.
-        await mapLimit(data.items, 4, async item => {
-          const tr = [...rows.children].find(row => row.dataset.templateId === item.id);
-          try {
-            const record = await api('/ppt-templates/' + encodeURIComponent(item.id), {signal: controller.signal});
-            if (closed || own !== generation || !tr?.isConnected) return;
-            records.set(item.id, record); tr.querySelector('[data-ppt-counts]').textContent = summary(counts(record));
-            tr.querySelector('[data-ppt-updated]').textContent = record.updated_at || '—';
-          } catch (error) { if (!closed && tr?.isConnected) tr.querySelector('[data-ppt-counts]').textContent = '统计暂不可用：' + error.message; }
-        });
       } catch (error) { if (error.name !== 'AbortError') notice(status, error.message, 'error'); }
       finally {
         busy = false; more.disabled = false;

@@ -137,6 +137,40 @@
   function format(value) {
     return finite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits: 3}) : '—';
   }
+  // These are 1x slot pixels; the 2x PNG rasterization must not halve the type.
+  function exportStyle(width = 960) {
+    if (!finite(width) || width <= 0) throw new Error('图位尺寸无效');
+    const scale = Math.min(2, Math.max(1, width / 640));
+    return {scale, axisFontSize: 11 * scale, legendFontSize: 11 * scale, titleFontSize: 13 * scale,
+      tableFontSize: 12 * scale, currentLineWidth: 2.5 * scale, lineWidth: 1.5 * scale,
+      text: '#30343b', background: '#ffffff', grid: '#e5e7eb', band: '#94a3b8',
+      fontFamily: 'Arial, "Microsoft YaHei", sans-serif'};
+  }
+  function textMeasure(document, fontFamily) {
+    const context = document.createElement('canvas').getContext?.('2d');
+    return (value, size, bold = false) => {
+      if (context?.measureText) {
+        context.font = `${bold ? 700 : 400} ${size}px ${fontFamily}`;
+        return context.measureText(String(value)).width;
+      }
+      return [...String(value)].reduce((sum, char) => sum + (char.charCodeAt(0) < 256 ? .62 : 1), 0) * size;
+    };
+  }
+  function wrapText(value, maxWidth, measure) {
+    const lines = []; let line = '';
+    for (const char of String(value || '')) {
+      if (char === '\n' || (line && measure(line + char) > maxWidth)) { lines.push(line); line = ''; }
+      if (char !== '\n') line += char;
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+  function fitText(value, maxWidth, measure) {
+    let label = String(value);
+    if (measure(label) <= maxWidth) return label;
+    while (label && measure(label + '…') > maxWidth) label = label.slice(0, -1);
+    return label + '…';
+  }
   function svgElement(name, attrs = {}, content) {
     const el = root.document.createElementNS(NS, name);
     Object.entries(attrs).forEach(([key, value]) => { if (value !== undefined && value !== null) el.setAttribute(key, String(value)); });
@@ -177,25 +211,38 @@
     const wrapper = container.ownerDocument.createElement('div'); wrapper.className = 'chart-kit chart-kit-table';
     const svg = svgElement('svg', {viewBox: `0 0 ${width} ${height}`, width, height, role: 'img', 'aria-label': options.title || '日期与数值', xmlns: NS});
     const add = (name, attrs, text) => { const node = svgElement(name, attrs, text); svg.append(node); return node; };
-    const rowHeight = height / (rows.length + 1), split = width * .56;
+    const rowHeight = height / (rows.length + 1), style = options.export ? exportStyle(width) : null;
+    let split = width * .56;
     const dateLength = Math.max(4, ...rows.map(point => String(point.date).length)), valueLength = Math.max(4, ...rows.map(point => String(point.value).length));
-    const fontSize = Math.min(16, rowHeight * .53, width / 15, split * .9 / (dateLength * .62), (width - split) * .9 / (valueLength * .62));
-    add('rect', {width, height, fill: 'var(--surface)'});
-    add('rect', {width, height: rowHeight, fill: 'var(--surface-soft)'});
-    const text = (x, y, value, header = false) => add('text', {x, y, fill: 'var(--text)', 'font-size': fontSize,
+    let fontSize = Math.min(16, rowHeight * .53, width / 15, split * .9 / (dateLength * .62), (width - split) * .9 / (valueLength * .62));
+    if (style) {
+      svg.style.fontFamily = style.fontFamily;
+      const measure = textMeasure(container.ownerDocument, style.fontFamily), padding = 6 * style.scale;
+      const dateWidth = Math.max(measure('日期', 1, true), ...rows.map(point => measure(point.date, 1)));
+      const valueWidth = Math.max(measure('数值', 1, true), ...rows.map(point => measure(point.value, 1)));
+      fontSize = Math.min(style.tableFontSize, rowHeight / 1.5, (width - 4 * padding) / (dateWidth + valueWidth));
+      if (fontSize < 11) throw new Error('图位过小，无法以至少 11px 字号显示数据小表，请减少行数或增大图位');
+      split = 2 * padding + (width - 4 * padding) * dateWidth / (dateWidth + valueWidth);
+    }
+    add('rect', {width, height, fill: style?.background || 'var(--surface)'});
+    add('rect', {width, height: rowHeight, fill: style ? '#f3f4f6' : 'var(--surface-soft)'});
+    const text = (x, y, value, header = false) => add('text', {x, y, fill: style?.text || 'var(--text)', 'font-size': fontSize,
       'font-weight': header ? 600 : 400, 'text-anchor': 'middle', 'dominant-baseline': 'central'}, value);
     text(split / 2, rowHeight / 2, '日期', true); text((split + width) / 2, rowHeight / 2, '数值', true);
     rows.forEach((point, index) => {
       const y = (index + 1.5) * rowHeight;
       text(split / 2, y, point.date); text((split + width) / 2, y, String(point.value));
     });
-    for (let index = 1; index <= rows.length; index++) add('line', {x1: 0, x2: width, y1: index * rowHeight, y2: index * rowHeight, stroke: 'var(--line)', 'stroke-width': .6});
-    add('line', {x1: split, x2: split, y1: 0, y2: height, stroke: 'var(--line)', 'stroke-width': .6});
+    for (let index = 1; index <= rows.length; index++) add('line', {x1: 0, x2: width, y1: index * rowHeight, y2: index * rowHeight, stroke: style?.grid || 'var(--line)', 'stroke-width': .6});
+    add('line', {x1: split, x2: split, y1: 0, y2: height, stroke: style?.grid || 'var(--line)', 'stroke-width': .6});
     wrapper.append(svg); container.replaceChildren(wrapper);
     return {destroy() { wrapper.remove(); }, ...imageMethods(() => svg, container.ownerDocument)};
   }
   function render(container, payload, options = {}) {
     const document = container.ownerDocument, cycle = Array.isArray(payload.segments), definition = options.definition || {};
+    const exporting = !!options.export, exportTheme = exporting ? exportStyle(options.width || 960) : null;
+    const title = options.title || (exporting ? definition.title : '');
+    const measure = exporting ? textMeasure(document, exportTheme.fontFamily) : null;
     const base = definition.curves?.[0] || {};
     const parts = cycle ? payload.segments.filter(part => (part.points || []).some(p => finite(p.x) && finite(p.value))) : (payload.curves || []);
     const current = cycle ? parts.find(p => p.current) : null;
@@ -213,12 +260,13 @@
       })}));
     function appearance(s) {
       const isPrevious = cycle && parts[s.key] === previous;
-      const palette = root.ChartPalette ? root.ChartPalette.color(s.key) : `var(--chart-series-${s.key + 1})`;
-      const color = s.style.color || (cycle && s.current ? base.style?.color || 'var(--primary)' : palette);
+      const palette = root.ChartPalette ? root.ChartPalette.color(s.key) : exporting ? ['#2563eb', '#d97706', '#059669', '#7c3aed'][s.key % 4] : `var(--chart-series-${s.key + 1})`;
+      const color = s.style.color || (cycle && s.current ? base.style?.color || (exporting ? '#2563eb' : 'var(--primary)') : palette);
       const width = s.style.width || (cycle ? s.current ? Math.max(3, base.style?.width || 3) : isPrevious ? 2 : 1.2 : 2);
       const dash = s.style.dash ?? (isPrevious ? 'dash' : null);
-      return {color, width, dash: dash === 'dash' ? '7 4' : dash === 'dot' ? '2 4' : null,
-        opacity: cycle && !s.current && !s.style.color ? (isPrevious ? .85 : .5) : 1};
+      return {color, width: exporting ? Math.max(width, s.current ? exportTheme.currentLineWidth : exportTheme.lineWidth) : width,
+        dash: dash === 'dash' ? '7 4' : dash === 'dot' ? '2 4' : null,
+        opacity: !exporting && cycle && !s.current && !s.style.color ? (isPrevious ? .85 : .5) : 1};
     }
     const hidden = new Set(), wrapper = document.createElement('div'), tip = document.createElement('div');
     wrapper.className = 'chart-kit'; tip.className = 'chart-kit-tooltip'; tip.hidden = true;
@@ -228,14 +276,32 @@
       if (destroyed) return;
       tip.hidden = true;
       const targetWidth = options.width || 960, targetHeight = options.height || 440;
-      // PPT slots must retain their exact dimensions, including small/short slots.
-      // Lay out in readable design coordinates, then scale the whole scene uniformly.
-      const designScale = options.exactSize ? Math.min(1, targetWidth / 960, targetHeight / (160 + Math.ceil(series.length / 4) * 24)) : 1;
+      // Interactive exactSize callers retain their old design scale. PPT exports
+      // lay out directly in slot pixels so small slots never shrink their text.
+      const designScale = options.exactSize && !exporting ? Math.min(1, targetWidth / 960, targetHeight / (160 + Math.ceil(series.length / 4) * 24)) : 1;
       const width = targetWidth / designScale;
-      const legendRows = options.thumbnail ? 0 : Math.ceil(series.length / 4);
-      const margin = {left: 72, right: 72, top: options.title ? 46 : 28, bottom: 54 + legendRows * 24};
-      const height = options.exactSize ? targetHeight / designScale : Math.max(options.height || (options.thumbnail ? 210 : 440), margin.top + margin.bottom + (options.thumbnail ? 80 : 200));
-      const right = width - margin.right, bottom = height - margin.bottom;
+      const scale = exportTheme?.scale || 1, axisFont = exportTheme?.axisFontSize || 11;
+      const legendFont = exportTheme?.legendFontSize || 12, legendRowHeight = exporting ? legendFont * 1.7 : 24;
+      const titleLines = exporting ? wrapText(title, width - 16 * scale, value => measure(value, exportTheme.titleFontSize, true)) : [];
+      const legendLayout = [];
+      if (exporting && !options.thumbnail) {
+        let x = 8 * scale, row = 0;
+        for (const s of series) {
+          const label = fitText(s.label + (s.current ? '（当前）' : ''), width - 40 * scale, value => measure(value, legendFont));
+          const itemWidth = measure(label, legendFont) + 24 * scale;
+          if (x > 8 * scale && x + itemWidth > width - 8 * scale) { row++; x = 8 * scale; }
+          legendLayout.push({x, row, label, width: itemWidth}); x += itemWidth + 14 * scale;
+        }
+      }
+      const legendRows = options.thumbnail ? 0 : exporting ? (legendLayout.at(-1)?.row ?? -1) + 1 : Math.ceil(series.length / 4);
+      const margin = exporting ? {left: 72 * scale, right: 72 * scale,
+        top: 8 * scale + titleLines.length * exportTheme.titleFontSize * 1.3 + axisFont * 1.7,
+        bottom: axisFont * 2.6 + legendRows * legendRowHeight + 8 * scale}
+        : {left: 72, right: 72, top: options.title ? 46 : 28, bottom: 54 + legendRows * 24};
+      const height = exporting ? targetHeight : options.exactSize ? targetHeight / designScale : Math.max(options.height || (options.thumbnail ? 210 : 440), margin.top + margin.bottom + (options.thumbnail ? 80 : 200));
+      if (exporting && height - margin.top - margin.bottom < axisFont * 3) throw new Error('图位过小，无法容纳清晰的标题、坐标轴与图例，请增大图位');
+      let right = width - margin.right;
+      const bottom = height - margin.bottom;
       const visible = series.filter(s => !hidden.has(s.key));
       const validBand = cycle ? filterBand(band) : [];
       const showBand = cycle && visible.length > 0;
@@ -259,15 +325,28 @@
         const fixed = (definition.axes || payload.axes || {})[axis] || {};
         min = finite(fixed.min) ? fixed.min : min - pad; max = finite(fixed.max) ? fixed.max : max + pad;
         if (max <= min) max = min + 1;
-        const nice = niceAxis(min, max, {thumbnail: !!options.thumbnail, fixedMin: finite(fixed.min), fixedMax: finite(fixed.max)});
+        const nice = niceAxis(min, max, {thumbnail: !!options.thumbnail || (exporting && bottom - margin.top < axisFont * 8), fixedMin: finite(fixed.min), fixedMax: finite(fixed.max)});
         axes[axis] = {...nice, members, scale: y => bottom - (y - nice.min) / (nice.max - nice.min) * (bottom - margin.top)};
       }
-      const next = svgElement('svg', {viewBox: `0 0 ${width * designScale} ${height * designScale}`, width: width * designScale, height: height * designScale, role: 'img', 'aria-label': options.title || (cycle ? '周期对比图' : '走势图'), xmlns: NS});
-      const scene = options.exactSize ? svgElement('g', {transform: `scale(${designScale})`}) : next;
+      const ticks = cycle ? cycleTicks(payload.template || {}, minX, maxX, monthly ? anchorDate : current?.start, monthly) : dateTicks(minX, maxX);
+      if (exporting) {
+        const halfLabel = Math.max(0, ...ticks.map(tick => measure(tick.label, axisFont))) / 2;
+        for (const axis of ['left', 'right']) {
+          const labelWidth = series.some(s => s.axis === axis) ? Math.max(0, ...axes[axis].ticks.map(tick => measure(tick.label, axisFont))) : 0;
+          margin[axis] = Math.max(labelWidth, halfLabel) + 8 * scale;
+        }
+        right = width - margin.right;
+        if (right - margin.left < axisFont * 4) throw new Error('图位过窄，无法容纳清晰的坐标轴，请增大图位');
+      }
+      const next = svgElement('svg', {viewBox: `0 0 ${width * designScale} ${height * designScale}`, width: width * designScale, height: height * designScale, role: 'img', 'aria-label': title || (cycle ? '周期对比图' : '走势图'), xmlns: NS});
+      if (exporting) next.style.fontFamily = exportTheme.fontFamily;
+      const scene = options.exactSize && !exporting ? svgElement('g', {transform: `scale(${designScale})`}) : next;
       if (scene !== next) next.append(scene);
       const add = (name, attrs, content, parent = scene) => { const el = svgElement(name, attrs, content); parent.append(el); return el; };
-      add('rect', {width, height, fill: 'var(--surface)'});
-      if (options.title) add('text', {x: margin.left, y: 24, fill: 'var(--text)', 'font-size': 16, 'font-weight': 600}, options.title);
+      add('rect', {width, height, fill: exportTheme?.background || 'var(--surface)'});
+      if (exporting) titleLines.forEach((line, index) => add('text', {x: width / 2, y: 8 * scale + exportTheme.titleFontSize * (1 + index * 1.3),
+        fill: exportTheme.text, 'font-size': exportTheme.titleFontSize, 'font-weight': 700, 'text-anchor': 'middle', 'data-chart-title': ''}, line));
+      else if (options.title) add('text', {x: margin.left, y: 24, fill: 'var(--text)', 'font-size': 16, 'font-weight': 600}, options.title);
       const clipId = 'chart-kit-clip-' + (++render.sequence), defs = add('defs');
       const clip = add('clipPath', {id: clipId}, undefined, defs);
       add('rect', {x: margin.left, y: margin.top, width: right - margin.left, height: bottom - margin.top}, undefined, clip);
@@ -276,19 +355,26 @@
         if (!series.some(s => s.axis === axis)) continue;
         for (const tick of spec.ticks) {
           const y = spec.scale(tick.value);
-          if (axis === 'left' || !series.some(s => s.axis === 'left')) add('line', {x1: margin.left, x2: right, y1: y, y2: y, stroke: 'var(--line)'});
-          add('text', {x: axis === 'left' ? margin.left - 8 : right + 8, y: y + 4, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': axis === 'left' ? 'end' : 'start', 'data-axis-tick': axis}, tick.label);
+          if (axis === 'left' || !series.some(s => s.axis === 'left')) add('line', {x1: margin.left, x2: right, y1: y, y2: y, stroke: exportTheme?.grid || 'var(--line)'});
+          add('text', {x: axis === 'left' ? margin.left - 8 * scale : right + 8 * scale, y: y + 4 * scale, fill: exportTheme?.text || 'var(--text-muted)', 'font-size': axisFont, 'text-anchor': axis === 'left' ? 'end' : 'start', 'data-axis-tick': axis}, tick.label);
         }
         const unit = cycle && (payload.template || {}).transform === 'rebase' ? '起点=100' : cycle && (payload.template || {}).transform === 'change' ? '变化值' + (payload.unit ? `（${payload.unit}）` : '') : [...new Set(spec.members.map(s => s.unit || payload.unit).filter(Boolean))].join(' / ');
-        if (unit) add('text', {x: axis === 'left' ? margin.left : right, y: margin.top - 10, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': axis === 'left' ? 'start' : 'end'}, unit);
+        if (unit) add('text', {x: axis === 'left' ? margin.left : right, y: margin.top - (exporting ? axisFont * .6 : 10), fill: exportTheme?.text || 'var(--text-muted)', 'font-size': axisFont, 'text-anchor': axis === 'left' ? 'start' : 'end'}, unit);
       }
-      const ticks = cycle ? cycleTicks(payload.template || {}, minX, maxX, monthly ? anchorDate : current?.start, monthly) : dateTicks(minX, maxX);
       const every = options.thumbnail ? Math.max(1, Math.ceil(ticks.length / 4)) : 1;
+      let lastLabelRight = -Infinity;
       ticks.forEach((tick, index) => {
         if (index % every) return;
         const x = xScale(tick.x), labelX = tick.labelX ?? tick.x;
-        if (tick.x >= minX && tick.x <= maxX) add('line', {x1: x, x2: x, y1: bottom, y2: bottom + 4, stroke: 'var(--line)'});
-        if (labelX >= minX && labelX <= maxX) add('text', {x: xScale(labelX), y: bottom + 20, 'text-anchor': 'middle', fill: 'var(--text-muted)', 'font-size': options.thumbnail ? 13 : 11}, tick.label);
+        if (tick.x >= minX && tick.x <= maxX) add('line', {x1: x, x2: x, y1: bottom, y2: bottom + 4 * scale, stroke: exportTheme?.grid || 'var(--line)'});
+        if (labelX >= minX && labelX <= maxX) {
+          if (exporting) {
+            const half = measure(tick.label, axisFont) / 2;
+            if (xScale(labelX) - half < lastLabelRight + 6 * scale) return;
+            lastLabelRight = xScale(labelX) + half;
+          }
+          add('text', {x: xScale(labelX), y: bottom + (exporting ? axisFont * 1.7 : 20), 'text-anchor': 'middle', fill: exportTheme?.text || 'var(--text-muted)', 'font-size': exporting ? axisFont : options.thumbnail ? 13 : 11}, tick.label);
+        }
       });
       const plot = add('g', {'clip-path': `url(#${clipId})`});
       const path = (run, y) => run.map((p, i) => `${i ? 'L' : 'M'}${xScale(p.x).toFixed(2)},${y(p.value).toFixed(2)}`).join(' ');
@@ -297,8 +383,8 @@
         // Keep low-n holes as explicit breaks; a band may extend beyond the current segment.
         bandRuns(band, payload.freq_days).forEach(run => {
           const upper = run.map(p => ({...p, value: p.max})), lower = run.slice().reverse().map(p => ({...p, value: p.min}));
-          add('path', {d: path(upper, y) + ' ' + path(lower, y).replace(/^M/, 'L') + ' Z', fill: 'var(--text-muted)', 'fill-opacity': .13, 'data-band': 'range'}, undefined, plot);
-          add('path', {d: path(run, y), fill: 'none', stroke: 'var(--text-muted)', 'stroke-width': 1.5, 'stroke-dasharray': '6 4', 'data-band': 'mean'}, undefined, plot);
+          add('path', {d: path(upper, y) + ' ' + path(lower, y).replace(/^M/, 'L') + ' Z', fill: exportTheme?.band || 'var(--text-muted)', 'fill-opacity': exporting ? .12 : .13, 'data-band': 'range'}, undefined, plot);
+          add('path', {d: path(run, y), fill: 'none', stroke: exportTheme?.band || 'var(--text-muted)', 'stroke-width': 1.5 * scale, 'stroke-dasharray': '6 4', 'data-band': 'mean'}, undefined, plot);
         });
       }
       const ordered = visible.slice().sort((a, b) => Number(!!a.current) - Number(!!b.current));
@@ -320,16 +406,18 @@
           }
         }
       }
-      if (!visible.some(s => s.points.some(p => finite(p.value)))) add('text', {x: width / 2, y: (margin.top + bottom) / 2, 'text-anchor': 'middle', fill: 'var(--text-muted)', 'font-size': 14}, hidden.size ? '点击图例显示曲线' : '暂无有效观测；缺失值不会补为零');
+      if (!visible.some(s => s.points.some(p => finite(p.value)))) add('text', {x: width / 2, y: (margin.top + bottom) / 2, 'text-anchor': 'middle', fill: exportTheme?.text || 'var(--text-muted)', 'font-size': exporting ? axisFont : 14}, hidden.size ? '点击图例显示曲线' : '暂无有效观测；缺失值不会补为零');
       if (!options.thumbnail) {
         series.forEach((s, index) => {
-          const x = margin.left + (index % 4) * ((right - margin.left) / 4), y = bottom + 48 + Math.floor(index / 4) * 24;
+          const layout = legendLayout[index];
+          const x = exporting ? layout.x : margin.left + (index % 4) * ((right - margin.left) / 4);
+          const y = exporting ? height - 8 * scale - (legendRows - 1 - layout.row) * legendRowHeight : bottom + 48 + Math.floor(index / 4) * 24;
           const legend = add('g', {role: 'button', tabindex: 0, 'aria-label': s.label, 'aria-pressed': String(!hidden.has(s.key)), 'data-legend': s.key, opacity: hidden.has(s.key) ? .4 : 1});
-          add('rect', {x: x - 4, y: y - 16, width: (right - margin.left) / 4 - 8, height: 23, fill: 'var(--surface)'}, undefined, legend);
+          add('rect', {x: x - 4 * scale, y: y - 16 * scale, width: exporting ? layout.width + 4 * scale : (right - margin.left) / 4 - 8, height: exporting ? legendRowHeight : 23, fill: exportTheme?.background || 'var(--surface)'}, undefined, legend);
           const {color, width, dash, opacity} = appearance(s);
-          add('line', {x1: x, x2: x + 18, y1: y - 4, y2: y - 4, stroke: color, 'stroke-width': width, 'stroke-dasharray': dash, opacity}, undefined, legend);
+          add('line', {x1: x, x2: x + 18 * scale, y1: y - 4 * scale, y2: y - 4 * scale, stroke: color, 'stroke-width': width, 'stroke-dasharray': dash, opacity}, undefined, legend);
           const label = s.label + (s.current ? '（当前）' : ''), short = label.length > 20 ? label.slice(0, 19) + '…' : label;
-          const text = add('text', {x: x + 24, y, fill: 'var(--text)', 'font-size': 12}, short, legend);
+          const text = add('text', {x: x + 24 * scale, y, fill: exportTheme?.text || 'var(--text)', 'font-size': legendFont}, exporting ? layout.label : short, legend);
           add('title', {}, label, text);
           const toggle = () => { hidden.has(s.key) ? hidden.delete(s.key) : hidden.add(s.key); draw(); };
           legend.addEventListener('click', toggle);
@@ -360,12 +448,12 @@
       svg = next;
     }
     draw();
-    const observer = typeof root.MutationObserver === 'function' ? new root.MutationObserver(draw) : null;
+    const observer = !exporting && typeof root.MutationObserver === 'function' ? new root.MutationObserver(draw) : null;
     observer?.observe(document.documentElement, {attributes: true, attributeFilter: ['class', 'style', 'theme-mode']});
     return {destroy() { destroyed = true; observer?.disconnect(); wrapper.remove(); }, ...imageMethods(() => svg, document)};
   }
   render.sequence = 0;
-  const api = {render, renderTable, monthMidpoint, monthlyBand, medianInterval, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, filterBand, bandRuns, nearestPoint, tooltipValues};
+  const api = {render, renderTable, exportStyle, monthMidpoint, monthlyBand, medianInterval, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, filterBand, bandRuns, nearestPoint, tooltipValues};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.ChartKit = Object.freeze(api);
 })(typeof window !== 'undefined' ? window : globalThis);

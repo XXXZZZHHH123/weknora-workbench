@@ -84,6 +84,8 @@ def test_shell_uses_only_bounded_metadata_projection(pages, path, marker, identi
     assert sessions == [('indicators', {'series_ids': [], 'points_per_series': 1})]
     assert html.xpath('//nav//a[@href="/workbenches/fixture-workbench/sn/ppt" and @aria-current="page"]')
     assert 'PPT 模板' in response.text
+    if path == '/sn/ppt':
+        assert html.xpath('//th[text()="更新时间（北京时间）"]')
     if path.endswith('/export'):
         assert html.xpath('//a[@href="/workbenches/fixture-workbench/sn/ppt/template-1"]')
     if marker == 'ppt-save':

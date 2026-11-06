@@ -1,6 +1,10 @@
 /* Run outside the restricted sandbox with RESEARCH_PYTHON and Playwright set. */
 const {assert, render, launch, open, prefix, record: chartRecord, cycle, pptRecord, seriesId, otherSeriesId, slot, multipart} = require('./ppt-ui-fixture.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+// Match the bounded list response: no presentation, bindings or candidates.
+const listItem = value => ({id: value.id, title: value.title, filename: value.filename, revision: value.revision,
+  slide_count: value.slide_count, slot_count: value.slot_count, updated_at: value.updated_at,
+  slot_counts: {bound: 0, kept: 2, pending: 3}});
 (async () => {
   const browser = await launch();
   try {
@@ -12,17 +16,20 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         if (uploadFail) { uploadFail = false; return reply({detail: '合成解析错误 <img onerror=window.__xss=1>'}, 400); }
         return reply(saved, 201);
       }
-      if (path === '/ppt-templates') return reply({items: [saved], total: 1, next_offset: null});
+      if (path === '/ppt-templates') return reply({items: [listItem(saved)], total: 1, next_offset: null});
       if (method === 'DELETE') {
         deletedRevision = Number(url.searchParams.get('revision'));
         if (deletionConflict) { deletionConflict = false; saved.revision = 2; return reply({detail: 'PPT模板已更新，请刷新后继续'}, 409); }
         return reply({revision: 3, status: 'deleted'});
       }
-      if (path === '/ppt-templates/template-1') return reply(saved);
       return false;
     });
     const lp = list.page;
     await lp.locator('[data-ppt-counts]').filter({hasText: '已绑定 0 / 保留原图 2 / 待确认 3'}).waitFor();
+    assert.equal(await lp.locator('[data-ppt-updated]').innerText(), '2029-09-15 16:00');
+    assert.match(await lp.locator('.ppt-list thead').innerText(), /更新时间（北京时间）/);
+    assert.equal(list.calls.some(call => call.method === 'GET' && call.path === '/ppt-templates/template-1'), false);
+    assert.doesNotMatch(await lp.locator('#ppt-list-rows').innerText(), /正在读取图位统计|T08:00/);
     assert.equal(await lp.locator('#ppt-list-rows img').count(), 0);
     await lp.locator('#ppt-file').setInputFiles({name: 'fixture.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', buffer: Buffer.from('synthetic')});
     await lp.locator('#ppt-upload-form button').click();
@@ -100,7 +107,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     for (const template of ['ppt.html', 'ppt_detail.html', 'ppt_export.html']) {
       const pathname = template === 'ppt.html' ? '/sn/ppt' : '/sn/ppt/template-1' + (template === 'ppt_export.html' ? '/export' : '');
       const ro = await open(browser, pathname, render(template, {can_write: false, write_reason: '当前账号没有研究工作台编辑权限'}), ({path, reply}) => {
-        if (path === '/ppt-templates') return reply({items: [pptRecord()], total: 1, next_offset: null});
+        if (path === '/ppt-templates') return reply({items: [listItem(pptRecord())], total: 1, next_offset: null});
         return reply(pptRecord());
       });
       assert.match(await ro.page.locator('#ppt-write-reason').innerText(), /没有研究工作台编辑权限/);
@@ -152,11 +159,60 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     const ep = exporting.page;
     await ep.waitForFunction(() => !document.querySelector('#ppt-export-fields').disabled);
     assert.equal(await ep.locator('#ppt-export-date').inputValue(), await ep.evaluate(() => window.PptUI.today()));
+    await ep.evaluate(() => {
+      // A dark host theme must still export opaque white slides with dark type.
+      document.documentElement.style.setProperty('--surface', '#111827');
+      document.documentElement.style.setProperty('--text', '#f9fafb');
+      document.documentElement.style.setProperty('--text-muted', '#9ca3af');
+      const kit = window.ChartKit; window.__pptExports = [];
+      const capture = (kind, draw) => (target, data, options) => {
+        const handle = draw(target, data, options);
+        window.__pptExports.push({kind, export: options.export, title: options.title, svg: handle.toSVG()});
+        return handle;
+      };
+      window.ChartKit = {...kit, render: capture('chart', kit.render), renderTable: capture('table', kit.renderTable)};
+    });
     await ep.locator('#ppt-export-date').fill('2029-09-15'); await ep.locator('#ppt-mark-headlines').check();
     await ep.locator('#ppt-export-form button').click(); await ep.locator('#ppt-download').waitFor();
     assert.ok(maximum <= 4 && maximum > 1); assert.ok(form);
     assert.match(await ep.locator('#ppt-export-report').innerText(), /已更新 6 个图位 \/ 保留原图 4 个图位/);
     assert.match(await ep.locator('#ppt-export-report').innerText(), /合成来源不可读/);
+    assert.deepEqual(await ep.locator('[data-report-page]').evaluateAll(elements => elements.map(element => element.dataset.reportPage)), ['1', '2']);
+    assert.match(await ep.locator('[data-report-page="1"]').innerText(), /table-slot · 数据截至 2029-09-10/);
+    const keptSummary = await ep.locator('[data-report-kept-summary]').innerText();
+    assert.match(keptSummary, /尚未绑定 1 个/); assert.match(keptSummary, /研究员选择保留 1 个/);
+    assert.match(keptSummary, /数据读取或图片生成失败 1 个/);
+    assert.equal(await ep.locator('.ppt-report-kept').count(), 4);
+    assert.equal(await ep.locator('.ppt-report-kept[open]').count(), 1);
+    assert.equal(await ep.locator('[data-report-reason="data_read_failed"]').getAttribute('open'), '');
+    for (const reason of ['keep', 'unbound', 'native_chart']) {
+      assert.equal(await ep.locator(`[data-report-reason="${reason}"]`).getAttribute('open'), null);
+      assert.equal(await ep.locator(`[data-report-reason="${reason}"] ul`).isVisible(), false);
+    }
+    await ep.locator('[data-report-reason="unbound"] summary').click();
+    assert.match(await ep.locator('[data-report-reason="unbound"] ul').innerText(), /pending-slot/);
+    const drawings = await ep.evaluate(() => window.__pptExports.map(item => {
+      const svg = new DOMParser().parseFromString(item.svg, 'image/svg+xml').documentElement;
+      const texts = [...svg.querySelectorAll('text')];
+      return {kind: item.kind, export: item.export, title: item.title,
+        background: svg.querySelector('rect').getAttribute('fill'),
+        textStyles: texts.map(node => ({size: parseFloat(node.style.fontSize), fill: node.style.fill})),
+        titleText: [...svg.querySelectorAll('[data-chart-title]')].map(node => node.textContent).join(''),
+        titleSizes: [...svg.querySelectorAll('[data-chart-title]')].map(node => Number(node.getAttribute('font-size'))),
+        lineWidths: [...svg.querySelectorAll('[data-curve-run]')].map(node => Number(node.getAttribute('stroke-width'))),
+        scaled: [...svg.querySelectorAll('[transform]')].some(node => /scale\(/.test(node.getAttribute('transform')))};
+    }));
+    assert.equal(drawings.length, 6);
+    for (const drawing of drawings) {
+      assert.equal(drawing.export, true); assert.equal(drawing.background, '#ffffff'); assert.equal(drawing.scaled, false);
+      assert.ok(drawing.textStyles.every(text => text.size >= 11 && ['rgb(48, 52, 59)', '#30343b'].includes(text.fill)));
+      if (drawing.kind === 'chart') {
+        assert.equal(drawing.titleText, chartRecord().definition.title);
+        assert.ok(drawing.titleSizes.length && drawing.titleSizes.every(size => size >= 13));
+        assert.ok(drawing.lineWidths.length && drawing.lineWidths.every(width => width >= 1.5));
+        assert.ok(drawing.lineWidths.some(width => width >= 2.5));
+      }
+    }
     assert.equal(await ep.locator('#ppt-download').getAttribute('href'), prefix + '/api/sn/ppt-templates/template-1/exports/export-1');
     assert.equal(await ep.locator('#ppt-export-report img').count(), 0); assert.equal(await ep.evaluate(() => window.__xss), undefined);
     assert.equal(await ep.locator('[data-preview-slot="table-slot"] img').count(), 1); await exporting.close();

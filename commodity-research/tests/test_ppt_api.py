@@ -98,6 +98,44 @@ def test_personal_templates_in_shared_legacy_database_are_still_workbench_scoped
     assert (tenant_database_path(17).parent / 'ppt' / (saved['sha256'] + '.pptx')).exists()
 
 
+def test_list_includes_readonly_slot_counts_without_candidates_or_source_reads(ppt_client, monkeypatch):
+    client, state = ppt_client
+    saved = upload(client)
+    assert saved['slot_counts'] == {'bound': 0, 'kept': 3, 'pending': 6}
+    chart = create(client)
+    saved = patch(client, saved, {
+        'slide-1-pic-1': {'kind': 'chart', 'chart_id': chart['id']},
+        'slide-1-pic-2': {'kind': 'series', 'series_id': SID, 'rows': 5},
+        'slide-1-pic-3': {'kind': 'keep'},
+        'slide-1-pic-4': {'kind': 'keep'},  # Unsupported slots count as kept only once.
+        'slide-1-pic-6': None})
+    expected = {'bound': 2, 'kept': 4, 'pending': 3}
+    assert saved['slot_counts'] == expected
+    state.requests.clear()
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail('Template list must not calculate candidates or read chart/source data')
+
+    for name in ('chart_evidence', 'template_candidates', 'catalog_fields', 'read_series'):
+        monkeypatch.setattr(ppt, name, unexpected_read)
+    for headers in ({}, {'x-role': 'viewer', 'x-can-edit': 'false'}):
+        response = client.get(BASE + '?limit=1', headers=headers)
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result['total'] == 1 and result['next_offset'] is None
+        item = result['items'][0]
+        assert item['id'] == saved['id'] and item['revision'] == saved['revision']
+        assert item['updated_at'] == saved['updated_at']
+        assert item['slot_counts'] == expected and sum(item['slot_counts'].values()) == item['slot_count']
+        assert not {'bindings', 'presentation', 'candidates', 'exports'} & item.keys()
+    assert client.get(BASE, headers={'x-actor': 'second'}).json()['items'] == []
+    with isolated_session_factory(17, WB)() as session:
+        row = session.get(WorkbenchArtifact, saved['id'])
+        assert row.revision == saved['revision']
+        assert json.loads(row.body)['bindings'] == saved['bindings']
+    assert state.requests == []
+
+
 @pytest.mark.parametrize('headers,status', [({'x-restricted': 'true'}, 403), ({'x-scope-version': '1'}, 409),
                                           ({'x-local': 'true'}, 409)])
 @pytest.mark.parametrize('method,path,body', [

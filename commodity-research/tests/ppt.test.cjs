@@ -33,6 +33,47 @@ test('状态统计与明确批量确认：只选择尚未绑定且可替换图�
   assert.deepEqual(P.unclearCandidates(slide, bindings, candidates), []);
   assert.deepEqual(bindings, original, '生成候选选择不修改现有绑定');
 });
+test('更新时间统一为北京时间，兼容SQLite无时区UTC值、偏移量与跨日；无效值不显示原串', () => {
+  for (const value of ['2029-09-15T08:00:59Z', '2029-09-15T08:00:59.123456', '2029-09-15 08:00:00', '2029-09-15T16:00:00+08:00']) {
+    assert.equal(P.formatBeijingTime(value), '2029-09-15 16:00');
+  }
+  assert.equal(P.formatBeijingTime('2029-09-15T16:30:00Z'), '2029-09-16 00:30');
+  assert.equal(P.formatBeijingTime('2029-09-15T01:30:00-07:00'), '2029-09-15 16:30');
+  for (const value of [null, undefined, '', 'not-a-date', '<img onerror=bad()>']) assert.equal(P.formatBeijingTime(value), '—');
+});
+test('报告按页归并已更新图位并保留各自数据截至日；312个保留图位按原因汇总', () => {
+  const report = {updated_slots: [{slide: 9, slot_id: 'updated-b', data_as_of: '2030-01-02'},
+    {slide: 2, slot_id: 'updated-a', data_as_of: '2030-01-01'}, {slide: 9, slot_id: 'updated-c', data_as_of: '2030-01-03'}],
+    kept_slots: [...Array.from({length: 300}, (_, i) => ({slide: 1, slot_id: 'unbound-' + i, reason: 'unbound'})),
+      {slide: 1, slot_id: 'keep', reason: 'keep'},
+      ...Array.from({length: 2}, (_, i) => ({slide: 2, slot_id: 'failed-' + i, reason: 'data_read_failed', detail: '<img onerror=bad()>'})),
+      ...Array.from({length: 9}, (_, i) => ({slide: 3, slot_id: 'native-' + i, reason: 'native_chart'}))]};
+  const original = structuredClone(report), grouped = X.summarizeReport(report), markup = X.reportSections(report);
+  assert.deepEqual(grouped.updatedPages.map(page => [page.slide, page.items.map(item => item.data_as_of)]),
+    [[2, ['2030-01-01']], [9, ['2030-01-02', '2030-01-03']]]);
+  assert.equal(grouped.keptReasons.reduce((sum, group) => sum + group.count, 0), 312);
+  assert.match(grouped.keptSummary, /尚未绑定 300 个/); assert.match(grouped.keptSummary, /研究员选择保留 1 个/);
+  assert.match(grouped.keptSummary, /数据读取或图片生成失败 2 个/);
+  assert.equal((markup.match(/<details\b/g) || []).length, 4);
+  assert.match(markup, /data-report-reason="data_read_failed" open>/);
+  for (const reason of ['unbound', 'keep', 'native_chart']) assert.match(markup, new RegExp(`data-report-reason="${reason}">`));
+  assert.ok(markup.indexOf('data-report-page="2"') < markup.indexOf('data-report-page="9"'));
+  for (const item of report.updated_slots) assert.ok(markup.includes(item.slot_id + ' · 数据截至 ' + item.data_as_of));
+  assert.match(markup, /&lt;img onerror=bad\(\)&gt;/); assert.doesNotMatch(markup, /<img/);
+  assert.deepEqual(report, original);
+  const empty = X.reportSections({}); assert.match(empty, /没有更新图位/); assert.doesNotMatch(empty, /<details/);
+});
+test('报告仅失败类原因默认展开；不同失败原因分别计数且未知原因安全转义', () => {
+  const failures = ['missing_media', 'chart_missing', 'chart_invalid', 'series_missing', 'chart_unit_mismatch',
+    'source_unavailable', 'data_read_failed', 'png_not_supplied'];
+  const regular = ['unbound', 'keep', 'native_chart', 'svg', '"><img onerror=bad()>'];
+  const kept_slots = [...failures, ...regular].map((reason, index) => ({slide: index + 1, slot_id: '<slot>', reason}));
+  const groups = X.summarizeReport({kept_slots}).keptReasons, markup = X.reportSections({kept_slots});
+  assert.deepEqual(groups.filter(group => group.failed).map(group => group.reason), failures);
+  assert.ok(groups.every(group => group.count === 1));
+  assert.equal((markup.match(/ open>/g) || []).length, failures.length);
+  assert.doesNotMatch(markup, /<img|<slot>/);
+});
 test('批量确认不选择分数过低或与第二名接近的图表候选', () => {
   const slide = {slots: [slot('tied'), slot('weak'), slot('clear')]};
   const candidates = {tied: [{kind: 'chart', chart_id: 'a', score: 0.242}, {kind: 'chart', chart_id: 'b', score: 0.241}],
@@ -77,8 +118,9 @@ test('渲染按真实接口取数、精确CSS尺寸、单行小表limit=2；始�
   const table = await X.renderSlot(slot(), {kind: 'series', series_id: 'series-1', rows: 1}, '2030-01-10', deps);
   assert.deepEqual(calls, ['/charts/chart-1', '/charts/chart-1/data?date=2030-01-10', '/series/series-1/history?date=2030-01-10&limit=2']);
   assert.equal(chart.dataAsOf, '2030-01-02'); assert.equal(table.dataAsOf, '2030-01-02');
-  assert.deepEqual(draws[0][3], {width: 400, height: 180, exactSize: true, definition: {title: '图表'}});
+  assert.deepEqual(draws[0][3], {width: 400, height: 180, exactSize: true, export: true, definition: {title: '图表'}, title: '图表'});
   assert.deepEqual(draws[1][2], [{date: '2030-01-02', value: 0}]);
+  assert.deepEqual(draws[1][3], {width: 400, height: 180, export: true, title: '指标'});
   assert.equal(targets[0].style.width, '400px'); assert.equal(targets[0].style.height, '180px');
   assert.equal(destroyed, 2); assert.ok(targets.every(target => target.removed));
   await assert.rejects(X.renderSlot(slot('unsupported', {replaceable: false}), {kind: 'chart'}, '2030-01-10', deps), /保留原图/);
