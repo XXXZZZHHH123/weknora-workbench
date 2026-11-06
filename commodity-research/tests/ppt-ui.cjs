@@ -4,15 +4,31 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Match the bounded list response: no presentation, bindings or candidates.
 const listItem = value => ({id: value.id, title: value.title, filename: value.filename, revision: value.revision,
   slide_count: value.slide_count, slot_count: value.slot_count, updated_at: value.updated_at,
-  slot_counts: {bound: 0, kept: 2, pending: 3}, last_export: value.last_export || null});
+  slot_counts: {bound: 0, kept: 2, pending: 3}, last_export: value.last_export || null,
+  source: value.source, source_state: value.source_state});
+const pptSource = (id = 'knowledge-1') => ({knowledge_base_id: 'kb-authorized', knowledge_id: id,
+  filename: id + ' 周报 <img onerror=window.__xss=1>.pptx', created_at: '2029-09-15T08:00:00Z', size: 1024 * 1024,
+  slide_count: 12, file_hash: 'a'.repeat(64)});
+const sourceRecord = (status = 'ready') => ({...pptRecord(), source: {kind: 'knowledge_base',
+  knowledge_base_id: 'kb-authorized', knowledge_id: 'knowledge-1', file_hash: 'a'.repeat(64)}, source_state: {status}});
 (async () => {
   const browser = await launch();
   try {
     let saved = {...pptRecord(), last_export: {created_at: '2029-09-15T08:01:00Z', export_id: 'export-last',
-      download_url: '/api/sn/ppt-templates/template-1/exports/export-last'}}, deletionConflict = true, uploadFail = true, deletedRevision;
+      download_url: '/api/sn/ppt-templates/template-1/exports/export-last'}}, deletionConflict = true, uploadFail = true, deletedRevision, createdSource, createFail = true;
     const list = await open(browser, '/sn/reports?date=2029-09-15', render('reports.html', {id: null, date: '2029-09-15'}), async entry => {
-      const {path, method, url, reply} = entry;
-      if (path.startsWith('/ppt-templates') && method === 'POST') {
+      const {path, method, url, reply, body} = entry;
+      if (path === '/ppt-templates/sources') {
+        const later = url.searchParams.get('offset') === '20', searching = url.searchParams.get('search') === '周报';
+        return reply({items: [pptSource(later || searching ? 'knowledge-2' : 'knowledge-1')], total: searching ? 1 : 21,
+          next_offset: later || searching ? null : 20});
+      }
+      if (path === '/ppt-templates/from-source') {
+        createdSource = body;
+        if (createFail) { createFail = false; return reply({detail: {code: 'source_changed', message: '知识库原件已变化 <img onerror=window.__xss=1>，请重新选择'}}, 409); }
+        return reply(saved, 201);
+      }
+      if (path === '/ppt-templates' && method === 'POST') {
         assert.ok(multipart(entry).has('file')); await delay(100);
         if (uploadFail) { uploadFail = false; return reply({detail: '合成解析错误 <img onerror=window.__xss=1>'}, 400); }
         return reply(saved, 201);
@@ -40,6 +56,29 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
     assert.equal(list.calls.some(call => call.method === 'GET' && call.path === '/ppt-templates/template-1'), false);
     assert.doesNotMatch(await lp.locator('#ppt-list-rows').innerText(), /正在读取图位统计|T08:00/);
     assert.equal(await lp.locator('#ppt-list-rows img').count(), 0);
+    assert.equal(list.calls.some(call => call.path === '/ppt-templates/sources'), false, '新建前不读取知识库文件');
+    assert.equal(await lp.locator('#ppt-source-dialog').isVisible(), false);
+    await lp.locator('#ppt-new-template').click();
+    await lp.locator('#ppt-source-dialog[open]').waitFor();
+    await lp.locator('#ppt-source-rows label').filter({hasText: 'knowledge-1'}).waitFor();
+    assert.match(await lp.locator('#ppt-source-rows').innerText(), /2029-09-15 16:00[\s\S]*1.0 MB[\s\S]*12/);
+    assert.equal(await lp.locator('#ppt-source-rows img').count(), 0);
+    assert.equal(await lp.locator('#ppt-source-create').isDisabled(), true);
+    await lp.locator('#ppt-source-next').click();
+    await lp.locator('#ppt-source-rows label').filter({hasText: 'knowledge-2'}).waitFor();
+    assert.equal(await lp.locator('#ppt-source-next').isDisabled(), true);
+    await lp.locator('#ppt-source-prev').click();
+    await lp.locator('#ppt-source-rows label').filter({hasText: 'knowledge-1'}).waitFor();
+    await lp.locator('#ppt-source-query').fill('周报'); await lp.locator('#ppt-source-search button').click();
+    await lp.locator('#ppt-source-rows label').filter({hasText: 'knowledge-2'}).waitFor();
+    assert.equal(await lp.locator('#ppt-source-prev').isDisabled(), true);
+    await lp.locator('#ppt-source-rows input').check(); await lp.locator('#ppt-source-create').click();
+    await lp.locator('#ppt-source-status').filter({hasText: '知识库原件已变化'}).waitFor();
+    assert.equal(await lp.locator('#ppt-source-status img').count(), 0);
+    await lp.locator('#ppt-source-create').click(); await lp.locator('#ppt-source-status a').waitFor();
+    assert.deepEqual(createdSource, {knowledge_base_id: 'kb-authorized', knowledge_id: 'knowledge-2', file_hash: 'a'.repeat(64)});
+    assert.equal(await lp.locator('#ppt-source-status a').getAttribute('href'), prefix + '/sn/reports/ppt/template-1?date=2029-09-15');
+    await lp.locator('#ppt-local-upload > summary').click();
     await lp.locator('#ppt-file').setInputFiles({name: 'fixture.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', buffer: Buffer.from('synthetic')});
     await lp.locator('#ppt-upload-form button').click();
     await lp.locator('#ppt-upload-status').filter({hasText: '合成解析错误'}).waitFor();
@@ -48,6 +87,7 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
     await lp.locator('#ppt-upload-status a').waitFor();
     assert.equal(await lp.locator('#ppt-upload-status a').getAttribute('href'), prefix + '/sn/reports/ppt/template-1?date=2029-09-15');
     assert.equal(await lp.locator('#ppt-upload-bar').getAttribute('value'), '100');
+    await lp.locator('#ppt-source-close').click();
     lp.once('dialog', dialog => dialog.accept()); await lp.locator('[data-ppt-delete]').click();
     await lp.locator('#ppt-list-conflict').waitFor({state: 'visible'}); assert.equal(deletedRevision, 1);
     await lp.locator('#ppt-list-reload').click();
@@ -150,9 +190,73 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
       });
       if (template === 'reports.html') await ro.page.locator('#report-ppt > summary').click();
       assert.match(await ro.page.locator('#ppt-write-reason').innerText(), /没有研究工作台编辑权限/);
-      const selector = template === 'reports.html' ? '#ppt-file' : template === 'ppt_export.html' ? '#ppt-export-date' : '#ppt-save';
+      const selector = template === 'reports.html' ? '#ppt-new-template' : template === 'ppt_export.html' ? '#ppt-export-date' : '#ppt-save';
       assert.equal(await ro.page.locator(selector).isDisabled(), true);
       assert.equal(ro.calls.some(call => call.method !== 'GET'), false); await ro.close();
+    }
+
+    for (const [period, state, expected] of [['weekly', 'changed', '知识库原件已变化'], ['daily', 'deleted', '知识库原件已删除']]) {
+      let current = sourceRecord(state), replacement;
+      const blocked = await open(browser, '/sn/reports?period=' + period, render('reports.html', {period, id: null}), ({path, method, body, reply}) => {
+        if (path === '/ppt-templates') return reply({items: [listItem(current)], total: 1, next_offset: null});
+        if (path === '/ppt-templates/sources') return reply({items: [pptSource('replacement')], total: 1, next_offset: null});
+        if (path.endsWith('/source') && method === 'PATCH') {
+          replacement = body; current = {...sourceRecord(), revision: 2, bindings: {}}; return reply(current);
+        }
+        return false;
+      });
+      const bp = blocked.page;
+      await bp.locator('#report-ppt > summary').click();
+      await bp.locator('[data-ppt-source-warning]').filter({hasText: expected}).waitFor();
+      assert.equal(await bp.locator('[data-ppt-export]').getAttribute('aria-disabled'), 'true');
+      assert.equal(await bp.locator('[data-ppt-export]').getAttribute('href'), null);
+      await bp.locator('[data-ppt-reselect]').click();
+      assert.match(await bp.locator('#ppt-source-reset-warning').innerText(), /重新解析 PPT 并清空现有图位绑定/);
+      assert.equal(await bp.locator('#ppt-local-upload').isVisible(), false);
+      await bp.locator('#ppt-source-rows input').check(); await bp.locator('#ppt-source-create').click();
+      await bp.locator('#ppt-source-status a').waitFor(); await bp.locator('#ppt-source-close').click();
+      assert.deepEqual(replacement, {revision: 1, knowledge_base_id: 'kb-authorized', knowledge_id: 'replacement', file_hash: 'a'.repeat(64)});
+      await bp.locator('[data-ppt-export][href]').waitFor();
+      assert.equal(await bp.locator('[data-ppt-source-warning]').count(), 0); await blocked.close();
+    }
+
+    for (const [state, expected] of [['changed', '知识库原件已变化'], ['deleted', '知识库原件已删除'],
+      ['forbidden', '授权已失效'], ['unavailable', '暂时无法核验']]) {
+      const blocked = await open(browser, '/sn/reports/ppt/template-1/export', render('ppt_export.html'), ({reply}) => reply(sourceRecord(state)));
+      await blocked.page.locator('#ppt-source-state').filter({hasText: expected}).waitFor();
+      assert.equal(await blocked.page.locator('#ppt-export-date').isDisabled(), true);
+      assert.equal(blocked.calls.some(call => call.method === 'POST'), false); await blocked.close();
+    }
+
+    let replacedDetail = sourceRecord('deleted'), detailReplacement;
+    const missingDetail = await open(browser, '/sn/reports/ppt/template-1', render('ppt_detail.html'), ({path, method, body, reply}) => {
+      if (path === '/ppt-templates/template-1') return reply(replacedDetail);
+      if (path === '/ppt-templates/sources') return reply({items: [pptSource()], total: 1, next_offset: null});
+      if (path.endsWith('/source') && method === 'PATCH') {
+        detailReplacement = body; replacedDetail = {...sourceRecord(), bindings: {}, revision: 2}; return reply(replacedDetail);
+      }
+      return false;
+    });
+    await missingDetail.page.locator('#ppt-source-state').filter({hasText: '知识库原件已删除'}).waitFor();
+    assert.equal(await missingDetail.page.locator('#ppt-export-link').getAttribute('aria-disabled'), 'true');
+    await missingDetail.page.locator('#ppt-source-reselect').click(); await missingDetail.page.locator('#ppt-source-rows input').check();
+    await missingDetail.page.locator('#ppt-source-create').click(); await missingDetail.page.locator('#ppt-source-status a').waitFor();
+    await missingDetail.page.locator('#ppt-source-close').click();
+    assert.equal(detailReplacement.revision, 1); assert.equal(await missingDetail.page.locator('#ppt-source-state').isVisible(), false);
+    assert.equal(await missingDetail.page.locator('#ppt-export-link').getAttribute('aria-disabled'), 'false'); await missingDetail.close();
+
+    for (const detectedAt of ['recheck', 'export']) {
+      let reads = 0;
+      const changedSource = await open(browser, '/sn/reports/ppt/template-1/export', render('ppt_export.html'), ({method, reply}) => {
+        if (method === 'GET') return reply(sourceRecord(++reads > 1 && detectedAt === 'recheck' ? 'changed' : 'ready'));
+        return reply({detail: {code: 'source_changed', message: '知识库原件已变化，请重新选择并确认后导出。'}}, 409);
+      });
+      await changedSource.page.waitForFunction(() => !document.querySelector('#ppt-export-fields').disabled);
+      await changedSource.page.locator('#ppt-export-form button').click();
+      await changedSource.page.locator('#ppt-source-state').filter({hasText: '知识库原件已变化'}).waitFor();
+      assert.equal(await changedSource.page.locator('#ppt-export-date').isDisabled(), true);
+      assert.equal(await changedSource.page.locator('#ppt-export-conflict').isVisible(), false, '来源变化显示重新选择提示');
+      assert.equal(changedSource.calls.some(call => call.method === 'POST'), detectedAt === 'export'); await changedSource.close();
     }
 
     saved = pptRecord(); saved.bindings['chart-slot'] = {kind: 'chart', chart_id: 'chart-1'};
@@ -167,6 +271,7 @@ const listItem = value => ({id: value.id, title: value.title, filename: value.fi
       if (path.endsWith('/export') && method === 'POST') {
         form = multipart(entry); const meta = JSON.parse(form.get('meta').toString());
         assert.equal(form.get('date').toString(), '2029-09-15'); assert.equal(form.get('mark_headlines').toString(), 'true');
+        assert.equal(form.get('revision').toString(), '1');
         assert.equal(meta['table-slot'].data_as_of, '2029-09-10'); assert.match(meta['extra-3'].error, /合成来源不可读/);
         assert.equal(form.has('extra-3'), false); assert.equal(form.has('keep-slot'), false);
         for (const id of ['chart-slot', 'table-slot', 'extra-0']) {

@@ -50,4 +50,15 @@
 .report-ppt .ppt-library { padding: 0 16px 16px; }
 .ppt-list-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 175px; }
 .ppt-list-actions a.charts-button { text-decoration: none; }
+.ppt-source-dialog { width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow: auto; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; padding: 20px; box-shadow: var(--shadow-md); }
+.ppt-source-dialog::backdrop { background: rgb(0 0 0 / .35); }
+.ppt-source-dialog h2 { margin: 0; }
+.ppt-source-dialog > p, .ppt-source-dialog > form, .ppt-source-dialog > details { margin-top: 14px; }
+.ppt-source-dialog .ppt-source-list { margin-top: 12px; }
+.ppt-source-list td { overflow-wrap: anywhere; }
+.ppt-source-list td:nth-child(2) { min-width: 180px; }
+.ppt-source-list td:nth-child(3) { white-space: nowrap; }
+.ppt-source-list label, #ppt-local-upload > summary { cursor: pointer; }
+.ppt-source-pagination { justify-content: flex-start; margin: 14px 0; }
+.ppt-page [aria-disabled=true] { opacity: .55; cursor: not-allowed; }
 @media print { .report-ppt { display: none !important; } }

@@ -81,8 +81,8 @@
   const apiURL = path => pageURL('/api/sn' + path);
   function responseError(body, status) {
     const detail = body?.detail;
-    const message = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(item => item.msg || '输入无效').join('；') : '请求失败，请稍后重试';
-    return Object.assign(new Error(message), {status});
+    const message = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(item => item.msg || '输入无效').join('；') : detail?.message || '请求失败，请稍后重试';
+    return Object.assign(new Error(message), {status, code: detail?.code});
   }
   async function api(path, options = {}) {
     const headers = new root.Headers(options.headers || {}), init = {...options, headers};
@@ -144,6 +144,94 @@
     const path = '/sn/reports/ppt/' + encodeURIComponent(id) + (exporting ? '/export' : '');
     return pageURL(path) + (date ? '?' + new URLSearchParams({date}) : '');
   }
+  function sourceReady(record) { return !record?.source_state || record.source_state.status === 'ready'; }
+  function sourceMessage(record) {
+    const messages = {changed: '知识库原件已变化，请重新选择并确认后导出。', deleted: '知识库原件已删除，请重新选择。',
+      forbidden: '知识库原件授权已失效，请核对来源权限。', unavailable: '知识库原件暂时无法核验，请稍后重试。'};
+    return record?.source_state?.message || messages[record?.source_state?.status] || '';
+  }
+  function sourceErrorState(error) {
+    const status = {source_changed: 'changed', source_deleted: 'deleted'}[error.code];
+    return status ? {status, message: error.message} : null;
+  }
+  function renderSourceState(page, record, canWrite) {
+    const container = page.querySelector('#ppt-source-state'); if (!container) return;
+    container.hidden = sourceReady(record);
+    page.querySelector('#ppt-source-state-text').textContent = sourceMessage(record);
+    page.querySelector('#ppt-source-reselect').hidden = !canWrite || record?.source?.kind !== 'knowledge_base';
+  }
+  function formatFileSize(value) {
+    if (!Number.isFinite(value) || value < 0) return '—';
+    return value >= 1024 * 1024 ? (value / 1024 / 1024).toFixed(1) + ' MB' : value >= 1024 ? (value / 1024).toFixed(1) + ' KB' : value + ' B';
+  }
+  function initSourcePicker(page, config, onSaved) {
+    const $ = id => page.querySelector('[id="' + id + '"]'), dialog = $('ppt-source-dialog');
+    if (!dialog) return {open() {}};
+    const rows = $('ppt-source-rows'), output = $('ppt-source-status'), create = $('ppt-source-create');
+    let target, selected, offset = 0, next = null, total = 0, version = 0, loading = false, saving = false, request;
+    function controls() {
+      create.disabled = !config.can_write || !selected || loading || saving;
+      $('ppt-source-prev').disabled = loading || saving || !offset;
+      $('ppt-source-next').disabled = loading || saving || next === null;
+      $('ppt-source-close').disabled = saving;
+      $('ppt-source-search').querySelectorAll('input,button').forEach(node => { node.disabled = saving; });
+      rows.querySelectorAll('input').forEach(node => { node.disabled = saving; });
+    }
+    async function load(newOffset = 0) {
+      request?.abort(); request = new AbortController(); const own = ++version;
+      loading = true; selected = undefined; offset = newOffset; next = null; rows.replaceChildren(); controls();
+      notice(output, '正在读取知识库 PPT…');
+      try {
+        const data = await api('/ppt-templates/sources?' + new URLSearchParams({search: $('ppt-source-query').value.trim(), offset, limit: 20}), {signal: request.signal});
+        if (own !== version || !dialog.open) return;
+        data.items.forEach((item, index) => {
+          const tr = root.document.createElement('tr'), inputId = 'ppt-source-choice-' + index;
+          tr.innerHTML = `<td><input type="radio" name="ppt-source-choice" id="${inputId}"></td><td><label for="${inputId}">${esc(item.filename)}</label></td><td>${esc(formatBeijingTime(item.created_at))}</td><td>${esc(formatFileSize(item.size))}</td><td>${esc(item.slide_count ?? '—')}</td>`;
+          const radio = tr.querySelector('input'); radio.setAttribute('aria-label', '选择 ' + item.filename);
+          radio.addEventListener('change', () => { selected = item; controls(); }); rows.append(tr);
+        });
+        next = data.next_offset; total = data.total;
+        $('ppt-source-page').textContent = total ? `第 ${Math.floor(offset / 20) + 1} 页 · 共 ${total} 份` : '共 0 份';
+        notice(output, data.items.length ? '' : '没有匹配的 PPTX 文件，可调整搜索或上传本地文件。');
+      } catch (error) { if (error.name !== 'AbortError' && own === version) { $('ppt-source-page').textContent = ''; notice(output, error.message, 'error'); } }
+      finally { if (own === version) { loading = false; controls(); } }
+    }
+    function open(record) {
+      if (!config.can_write || saving) return;
+      target = record; selected = undefined; $('ppt-source-query').value = '';
+      $('ppt-source-title').textContent = record ? '重新选择知识库原件' : '新建 PPT 模板';
+      $('ppt-source-reset-warning').hidden = !record;
+      create.textContent = record ? '使用所选原件并重置绑定' : '使用所选 PPT 创建模板';
+      if ($('ppt-local-upload')) $('ppt-local-upload').hidden = !!record;
+      dialog.showModal(); load();
+    }
+    function stop() { request?.abort(); version++; loading = false; }
+    $('ppt-source-close').addEventListener('click', () => { if (!saving) dialog.close(); });
+    dialog.addEventListener('cancel', event => { if (saving) event.preventDefault(); });
+    dialog.addEventListener('close', stop);
+    $('ppt-source-search').addEventListener('submit', event => { event.preventDefault(); if (!saving) load(); });
+    $('ppt-source-prev').addEventListener('click', () => load(Math.max(0, offset - 20)));
+    $('ppt-source-next').addEventListener('click', () => { if (next !== null) load(next); });
+    create.addEventListener('click', async () => {
+      if (!config.can_write || !selected || loading || saving) return;
+      saving = true; controls(); notice(output, '正在读取知识库原件并解析…');
+      const body = {knowledge_base_id: selected.knowledge_base_id, knowledge_id: selected.knowledge_id, file_hash: selected.file_hash};
+      if (target) body.revision = target.revision;
+      try {
+        const record = await api(target ? '/ppt-templates/' + encodeURIComponent(target.id) + '/source' : '/ppt-templates/from-source',
+          {method: target ? 'PATCH' : 'POST', body});
+        selected = undefined; notice(output, '');
+        const link = root.document.createElement('a'); link.className = 'ppt-report-link'; link.href = templateURL(record.id, config.date);
+        link.textContent = `解析完成：${record.slide_count} 页、${record.slot_count} 个图位，点击确认绑定`; output.append(link); output.hidden = false;
+        const replacing = !!target;
+        if (replacing) target = record;
+        await onSaved?.(record, replacing);
+      } catch (error) { notice(output, error.message, 'error'); }
+      finally { saving = false; controls(); }
+    });
+    root.addEventListener('pagehide', stop, {once: true});
+    return {open};
+  }
   function initLibrary(page, config) {
     const $ = id => page.querySelector('[id="' + id + '"]'), E = esc;
     if (!config.enabled) return;
@@ -151,6 +239,9 @@
     const status = $('ppt-list-status'), rows = $('ppt-list-rows'), more = $('ppt-list-more'), fields = $('ppt-upload-fields');
     const controller = new AbortController(); let offset = 0, busy = false, closed = false, uploading = false, reloadQueued = false;
     const records = new Map(); fields.disabled = !config.can_write;
+    const picker = initSourcePicker(page, config, () => load(true));
+    $('ppt-new-template').disabled = !config.can_write;
+    $('ppt-new-template').addEventListener('click', () => picker.open());
     async function load(reset = false) {
       if (busy) { if (reset) reloadQueued = true; return; }
       if (reset) { records.clear(); rows.replaceChildren(); offset = 0; $('ppt-list-conflict').hidden = true; }
@@ -163,11 +254,12 @@
           const tr = root.document.createElement('tr'); tr.dataset.templateId = item.id;
           const boundURL = templateURL(item.id, config.date), exportURL = templateURL(item.id, config.date, true);
           const last = item.last_export, download = last?.export_id ? apiURL('/ppt-templates/' + encodeURIComponent(item.id) + '/exports/' + encodeURIComponent(last.export_id)) : null;
-          tr.innerHTML = `<td><a href="${E(boundURL)}">${E(item.title || item.filename)}</a></td><td>${E(item.slide_count)}</td><td data-ppt-counts>${E(item.slot_counts ? summary(item.slot_counts) : '统计暂不可用，请重新加载')}</td><td data-ppt-updated>${E(formatBeijingTime(item.updated_at))}</td><td data-ppt-last-export>${download ? `${E(formatBeijingTime(last.created_at))}<br><a data-ppt-download href="${E(download)}" download>下载</a>` : '尚未导出'}</td><td><div class="ppt-list-actions"><a data-ppt-bind class="charts-button" href="${E(boundURL)}">绑定图位</a><a data-ppt-export class="charts-button" href="${E(exportURL)}">导出</a><button type="button" class="charts-button danger" data-ppt-delete ${config.can_write ? '' : 'disabled'}>删除</button></div></td>`;
+          const ready = sourceReady(item), sourceWarning = sourceMessage(item);
+          tr.innerHTML = `<td><a href="${E(boundURL)}">${E(item.title || item.filename)}</a>${!ready ? `<p data-ppt-source-warning class="charts-notice warning">${E(sourceWarning)}</p>` : ''}</td><td>${E(item.slide_count)}</td><td data-ppt-counts>${E(item.slot_counts ? summary(item.slot_counts) : '统计暂不可用，请重新加载')}</td><td data-ppt-updated>${E(formatBeijingTime(item.updated_at))}</td><td data-ppt-last-export>${download ? `${E(formatBeijingTime(last.created_at))}<br><a data-ppt-download href="${E(download)}" download>下载</a>` : '尚未导出'}</td><td><div class="ppt-list-actions"><a data-ppt-bind class="charts-button" href="${E(boundURL)}">绑定图位</a>${ready ? `<a data-ppt-export class="charts-button" href="${E(exportURL)}">导出</a>` : `<span data-ppt-export class="charts-button" aria-disabled="true">导出</span>${config.can_write && item.source?.kind === 'knowledge_base' ? '<button data-ppt-reselect type="button" class="charts-button">重新选择原件</button>' : ''}`}<button type="button" class="charts-button danger" data-ppt-delete ${config.can_write ? '' : 'disabled'}>删除</button></div></td>`;
           rows.append(tr);
         }
         offset = data.next_offset; more.hidden = offset === null;
-        notice(status, data.total ? `共 ${data.total} 个模板` : '还没有模板，请上传以往的 PPTX 周报。');
+        notice(status, data.total ? `共 ${data.total} 个模板` : '还没有模板，请新建并选择以往的 PPTX 周报。');
       } catch (error) { if (error.name !== 'AbortError') notice(status, error.message, 'error'); }
       finally {
         busy = false; more.disabled = false;
@@ -175,6 +267,8 @@
       }
     }
     rows.addEventListener('click', async event => {
+      const reselect = event.target.closest('[data-ppt-reselect]');
+      if (reselect && config.can_write) { picker.open(records.get(reselect.closest('tr').dataset.templateId)); return; }
       const button = event.target.closest('[data-ppt-delete]'); if (!button || !config.can_write) return;
       const tr = button.closest('tr'), record = records.get(tr.dataset.templateId);
       if (!root.confirm(`删除模板“${record.title || record.filename}”？`)) return;
@@ -217,7 +311,7 @@
     if (!disclosure || disclosure.open) start();
     revealAnchor();
   }
-  const helpers = {emuToPx, slotSize, slideLayout, slotRect, allSlots, slotState, counts, summary, candidateBinding, confidentCandidate, firstCandidates, unclearCandidates, mapLimit, pageURL, apiURL, api, uploadFile, responseError, notice, esc, reason, types, today, formatBeijingTime, templateURL, initLibrary};
+  const helpers = {emuToPx, slotSize, slideLayout, slotRect, allSlots, slotState, counts, summary, candidateBinding, confidentCandidate, firstCandidates, unclearCandidates, mapLimit, pageURL, apiURL, api, uploadFile, responseError, notice, esc, reason, types, today, formatBeijingTime, templateURL, sourceReady, sourceMessage, sourceErrorState, renderSourceState, formatFileSize, initSourcePicker, initLibrary};
   if (typeof module !== 'undefined' && module.exports) module.exports = helpers;
   root.PptUI = Object.freeze(helpers);
   if (!root.document) return;
@@ -233,15 +327,19 @@
     const path = '/ppt-templates/' + encodeURIComponent(config.id), status = $('ppt-detail-status'), inspector = $('ppt-inspector');
     const controller = new AbortController(), labels = new Map(), pending = new Map();
     let record, bindings = {}, selected, loading = false, saving = false, conflict = false, inspectorController, resizeObserver, plots = [];
+    const picker = initSourcePicker(page, config, () => load());
+    $('ppt-source-reselect').addEventListener('click', () => picker.open(record));
     const stateText = {bound: '已绑定', kept: '保留原图', pending: '待确认'};
     const labelKey = binding => binding.kind === 'chart' ? 'chart:' + binding.chart_id : 'series:' + binding.series_id;
     const bindingText = binding => !binding ? '尚未绑定' : binding.kind === 'keep' ? '保留原图' :
       (labels.get(labelKey(binding)) || (binding.kind === 'chart' ? '图表 ' + binding.chart_id : '指标 ' + binding.series_id)) + (binding.kind === 'series' ? ` · ${binding.rows} 行` : '');
-    function editable() { return config.can_write && record && !loading && !saving && !conflict; }
+    function editable() { return config.can_write && record && sourceReady(record) && !loading && !saving && !conflict; }
     function controls() {
       $('ppt-save').disabled = !editable() || !pending.size;
       root.document.querySelectorAll('[data-ppt-edit]').forEach(button => { button.disabled = !editable(); });
       inspector.querySelectorAll('[data-ppt-replace]').forEach(fieldset => { fieldset.disabled = !editable() || !selected?.replaceable; });
+      $('ppt-source-reselect').disabled = !config.can_write || loading || saving;
+      $('ppt-export-link').setAttribute('aria-disabled', String(!!record && !sourceReady(record)));
     }
     function refresh() {
       $('ppt-summary').textContent = summary(counts(record, bindings));
@@ -397,6 +495,7 @@
       try {
         const next = await api(path, {signal: controller.signal}); clearInspector();
         record = next; bindings = structuredClone(record.bindings); pending.clear(); conflict = false; selected = undefined;
+        renderSourceState(page, record, config.can_write);
         $('ppt-conflict').hidden = true; $('ppt-title').textContent = record.title || record.filename;
         if ($('ppt-breadcrumb-title')) $('ppt-breadcrumb-title').textContent = record.title || record.filename;
         Object.values(record.candidates || {}).flat().forEach(candidate => labels.set(labelKey(candidate), candidate.title || candidate.name));
@@ -416,7 +515,10 @@
       } finally { saving = false; controls(); }
     });
     $('ppt-reload').addEventListener('click', load);
-    $('ppt-export-link').addEventListener('click', event => { if (pending.size && !root.confirm('还有未保存的绑定选择，离开后将丢失。继续导出已保存版本？')) event.preventDefault(); });
+    $('ppt-export-link').addEventListener('click', event => {
+      if (!sourceReady(record)) { event.preventDefault(); notice(status, sourceMessage(record), 'error'); return; }
+      if (pending.size && !root.confirm('还有未保存的绑定选择，离开后将丢失。继续导出已保存版本？')) event.preventDefault();
+    });
     root.addEventListener('pagehide', () => { controller.abort(); clearInspector(); resizeObserver?.disconnect(); }, {once: true});
     load();
   }

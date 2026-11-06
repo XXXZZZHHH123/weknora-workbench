@@ -10,6 +10,16 @@ class PptModel(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
 
 
+class SourceSelection(PptModel):
+    knowledge_base_id: str = Field(min_length=1, max_length=128)
+    knowledge_id: str = Field(min_length=1, max_length=128)
+    file_hash: str = Field(pattern=r'^(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{64})$')
+
+
+class SourceReplacement(SourceSelection):
+    revision: int = Field(ge=1, strict=True)
+
+
 class ChartBinding(PptModel):
     kind: Literal['chart']
     chart_id: str = Field(min_length=1, max_length=128)

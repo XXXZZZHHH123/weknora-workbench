@@ -1,5 +1,6 @@
 """Personal PPT templates. All reads stay inside a verified v2 workbench."""
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
+from tin.integration import ppt_sources
 from tin.models.workbench import WorkbenchArtifact
 from tin.ppt.candidates import template_candidates
 from tin.ppt.exporter import MAX_IMAGES, MAX_PNG, PNG_SIGNATURE, assemble
@@ -23,7 +25,7 @@ from tin.ppt.package import MAX_UPLOAD, PptError
 from tin.ppt.parser import parse_pptx
 from tin.ppt.storage import export_lock, export_path, read_original, save_original, storage_root
 from tin.schemas.chart import RevisionInput
-from tin.schemas.ppt import BindingsUpdate, ExportSlotMeta
+from tin.schemas.ppt import BindingsUpdate, ExportSlotMeta, SourceReplacement, SourceSelection
 from tin.web import charts
 from tin.web.chart_data import catalog_fields, cutoff, read_series, unit_notices
 from tin.web.workbench_artifacts import record_revision
@@ -90,8 +92,10 @@ def serialize(row, *, detail=True):
                  else 'bound' if binding else 'pending')
         slot_counts[state] += 1
     result.update(filename=value['filename'], sha256=value['sha256'],
+                  source=value.get('source', {'kind': 'upload'}),
                   slide_count=len(value['presentation']['slides']),
                   slot_count=len(slots), slot_counts=slot_counts)
+    result['source_state'] = {'status': 'ready', 'message': ''}
     latest = value['exports'][-1] if value['exports'] else None
     result['last_export'] = ({key: latest[key] for key in ('created_at', 'export_id', 'download_url')}
                              if latest else None)
@@ -100,13 +104,31 @@ def serialize(row, *, detail=True):
     return result
 
 
-def save_revision(session, scope, row, revision, value, *, status=None):
+def checked_source_states(scope, items):
+    """Fetch one fresh inventory per response; never hide an unavailable source."""
+    referenced = [item for item in items if item['source']['kind'] == 'knowledge_base']
+    if not referenced:
+        return items
+    try:
+        inventory = ppt_sources.source_inventory(scope)
+    except HTTPException as exc:
+        status = 'forbidden' if exc.status_code in {401, 403} else 'unavailable'
+        for item in referenced:
+            item['source_state'] = {'status': status, 'message': '知识库原件暂时无法核验，请检查来源授权后重试'}
+    else:
+        for item in referenced:
+            item['source_state'] = ppt_sources.source_state(scope, item['source'], inventory=inventory)
+    return items
+
+
+def save_revision(session, scope, row, revision, value, *, status=None, title=None):
     changed = session.execute(update(WorkbenchArtifact).where(
         WorkbenchArtifact.id == row.id, WorkbenchArtifact.module == 'ppt_templates',
         WorkbenchArtifact.actor == scope.identity.user_id, WorkbenchArtifact.status != 'deleted',
         WorkbenchArtifact.revision == revision).values(
             body=json.dumps(value, ensure_ascii=False, allow_nan=False), revision=revision + 1,
-            status=status or row.status, updated_at=datetime.now(timezone.utc)))
+            status=status or row.status, title=title if title is not None else row.title,
+            updated_at=datetime.now(timezone.utc)))
     if changed.rowcount != 1:
         raise HTTPException(409, 'PPT模板已更新，请刷新后继续')
     session.refresh(row)
@@ -141,16 +163,40 @@ def list_templates(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, l
         total = session.scalar(select(func.count()).select_from(query.subquery()))
         rows = session.scalars(query.order_by(WorkbenchArtifact.updated_at.desc(), WorkbenchArtifact.id)
                                .offset(offset).limit(limit)).all()
-        return {'items': [serialize(row, detail=False) for row in rows], 'total': total, 'offset': offset,
+        return {'items': checked_source_states(scope, [serialize(row, detail=False) for row in rows]), 'total': total, 'offset': offset,
                 'next_offset': offset + len(rows) if offset + len(rows) < total else None}
 
 
-def create_template(scope, filename, data):
+@router.get('/sources')
+def list_sources(search: str = Query('', max_length=200), offset: int = Query(0, ge=0),
+                 limit: int = Query(20, ge=1, le=100)):
+    return ppt_sources.list_ppt_sources(require_scope(), search=search, offset=offset, limit=limit)
+
+
+def selected_source(scope, selection):
+    reference = {'kind': 'knowledge_base', 'knowledge_base_id': selection.knowledge_base_id,
+                 'knowledge_id': selection.knowledge_id, 'file_hash': selection.file_hash.lower()}
+    metadata = ppt_sources.get_ppt_source(scope, selection.knowledge_base_id, selection.knowledge_id)
+    # read_ppt_source rechecks the selected hash and the downloaded bytes. The
+    # browser's inventory may already be stale when the user confirms selection.
+    data = ppt_sources.read_ppt_source(scope, reference)
+    return reference, metadata['filename'], data
+
+
+@router.post('/from-source', status_code=201)
+def create_from_source(body: SourceSelection):
+    scope = require_scope(write=True)
+    reference, filename, data = selected_source(scope, body)
+    return create_template(scope, filename, data, source=reference)
+
+
+def create_template(scope, filename, data, *, source=None):
     presentation = parse_pptx(data)
     now = datetime.now(timezone.utc)
     with artifact_session(scope) as session:
-        digest = save_original(storage_root(session), data)
+        digest = hashlib.sha256(data).hexdigest() if source else save_original(storage_root(session), data)
         value = {'format': 'ppt-template.v1', 'filename': filename, 'sha256': digest,
+                 'source': source or {'kind': 'upload'},
                  'presentation': presentation, 'bindings': {}, 'exports': []}
         row = WorkbenchArtifact(id=str(uuid4()), module='ppt_templates', actor=scope.identity.user_id,
             title=filename[:120], body=json.dumps(value, ensure_ascii=False), status='draft',
@@ -189,10 +235,35 @@ def get_template(template_id: str):
     with artifact_session(scope) as session:
         row = load_template(session, scope, template_id)
         result = serialize(row)
+        checked_source_states(scope, [result])
+        if result['source_state']['status'] != 'ready':
+            result.update(candidates={}, warnings=[])
+            return result
         evidence, fields, warnings = chart_evidence(session, scope)
     result['candidates'] = template_candidates(result['presentation'], result['bindings'], evidence, fields, read_series)
     result['warnings'] = warnings
     return result
+
+
+@router.patch('/{template_id}/source')
+def replace_source(template_id: str, body: SourceReplacement):
+    scope = require_scope(write=True)
+    with artifact_session(scope) as session:
+        row = load_template(session, scope, template_id)
+        if row.revision != body.revision:
+            raise HTTPException(409, 'PPT模板已更新，请刷新后继续')
+        root = storage_root(session)
+    reference, filename, data = selected_source(scope, body)
+    presentation = parse_pptx(data)
+    with export_lock(root, template_id), artifact_session(scope) as session:
+        row = load_template(session, scope, template_id)
+        value = contents(row)
+        # Explicit reselection replaces the parsed layout and its bindings as
+        # one revision, fenced against concurrent exports and binding edits.
+        value.update(source=reference, filename=filename, sha256=hashlib.sha256(data).hexdigest(),
+                     presentation=presentation, bindings={})
+        save_revision(session, scope, row, body.revision, value, title=filename[:120])
+        return serialize(row)
 
 
 @router.patch('/{template_id}/bindings')
@@ -230,7 +301,7 @@ def patch_bindings(template_id: str, body: BindingsUpdate):
                 if chart is None:
                     raise HTTPException(422, '绑定图表不存在于本研究台图表库')
         save_revision(session, scope, row, body.revision, value)
-        return serialize(row)
+        return checked_source_states(scope, [serialize(row)])[0]
 
 
 @router.delete('/{template_id}')
@@ -279,10 +350,19 @@ def binding_states(session, scope, bindings):
     return fields, reasons, False
 
 
-def export_template(scope, template_id, images, day, mark_headlines, meta, root):
+def export_template(scope, template_id, images, day, mark_headlines, meta, root, expected_revision=None):
     with export_lock(root, template_id), artifact_session(scope) as session:
         row = load_template(session, scope, template_id)
         value, revision = contents(row), row.revision
+        referenced = value.get('source', {}).get('kind') == 'knowledge_base'
+        if ((expected_revision is not None and revision != expected_revision)
+                or (referenced and expected_revision is None)):
+            raise HTTPException(409, 'PPT模板已更新或缺少版本号，请刷新后重新生成')
+        original = (ppt_sources.read_ppt_source(scope, value['source']) if referenced
+                    else read_original(root, value['sha256']))
+        if hashlib.sha256(original).hexdigest() != value['sha256']:
+            raise HTTPException(409, {'code': 'source_changed',
+                'message': '知识库原件已变化，请重新选择原件并确认图位绑定后导出'})
         slots = {slot['slot_id']: slot for slide in value['presentation']['slides'] for slot in slide['slots']}
         if (set(images) | set(meta)) - slots.keys():
             raise HTTPException(422, '导出包含未知图位')
@@ -314,7 +394,6 @@ def export_template(scope, template_id, images, day, mark_headlines, meta, root)
             else:
                 replacements[identifier] = images[identifier]
                 updated.append(item)
-        original = read_original(root, value['sha256'])
         export_id = str(uuid4())
         destination = export_path(root, template_id, export_id)
         with NamedTemporaryFile(dir=destination.parent, prefix='.assembling-', delete=False) as stream:
@@ -347,7 +426,7 @@ async def post_export(template_id: str, request: Request):
     with artifact_session(scope) as session:
         load_template(session, scope, template_id)  # Reject foreign templates before consuming files.
         root = storage_root(session)
-    async with request.form(max_files=MAX_IMAGES, max_fields=3, max_part_size=1024 * 1024) as form:
+    async with request.form(max_files=MAX_IMAGES, max_fields=4, max_part_size=1024 * 1024) as form:
         items = list(form.multi_items())
         keys = [key for key, _ in items]
         if len(set(keys)) != len(keys):
@@ -355,6 +434,11 @@ async def post_export(template_id: str, request: Request):
         if not isinstance(form.get('date'), str):
             raise HTTPException(422, '导出需要date字段')
         day = cutoff(form['date'])
+        raw_revision = form.get('revision')
+        if raw_revision is not None and (not isinstance(raw_revision, str) or not raw_revision.isascii()
+                or not raw_revision.isdecimal() or len(raw_revision) > 10 or int(raw_revision) < 1):
+            raise HTTPException(422, 'revision需要有效的模板版本号')
+        expected_revision = int(raw_revision) if raw_revision is not None else None
         mark = form.get('mark_headlines', 'false')
         if mark not in {'true', 'false', '1', '0', 'on', 'off'}:
             raise HTTPException(422, 'mark_headlines需要布尔值')
@@ -370,7 +454,7 @@ async def post_export(template_id: str, request: Request):
         with TemporaryDirectory(dir=root, prefix='.export-input-') as directory:
             images = {}
             for key, upload in items:
-                if key in {'date', 'mark_headlines', 'meta'}:
+                if key in {'date', 'mark_headlines', 'meta', 'revision'}:
                     continue
                 if not isinstance(upload, UploadFile):
                     raise HTTPException(422, '导出包含未知文本字段')
@@ -385,7 +469,7 @@ async def post_export(template_id: str, request: Request):
                     stream.write(data)
                     images[key] = Path(stream.name)
             return await run_in_threadpool(export_template, scope, template_id, images, day,
-                                           mark in {'true', '1', 'on'}, meta, root)
+                                           mark in {'true', '1', 'on'}, meta, root, expected_revision)
 
 
 @router.get('/{template_id}/exports/{export_id}')

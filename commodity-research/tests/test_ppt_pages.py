@@ -188,8 +188,14 @@ def test_report_ppt_region_is_collapsed_and_offers_shared_upload_and_list(pages,
     assert '按我的 PPT 版式导出' in panel.xpath('./summary')[0].text_content()
     assert panel.xpath('.//*[@data-ppt-page="list"]') or panel.get('data-ppt-page') == 'list'
     for marker in ('ppt-upload-form', 'ppt-file', 'ppt-upload-fields', 'ppt-upload-progress',
-                   'ppt-upload-status', 'ppt-list-rows', 'ppt-list-conflict', 'ppt-list-more'):
+                   'ppt-upload-status', 'ppt-list-rows', 'ppt-list-conflict', 'ppt-list-more',
+                   'ppt-new-template', 'ppt-source-dialog', 'ppt-source-search', 'ppt-source-rows',
+                   'ppt-source-prev', 'ppt-source-next', 'ppt-source-create', 'ppt-local-upload'):
         assert panel.xpath('.//*[@id="' + marker + '"]')
+    dialog = html.get_element_by_id('ppt-source-dialog')
+    assert dialog.tag == 'dialog' and 'open' not in dialog.attrib
+    assert '已授权来源知识库' in dialog.text_content()
+    assert all(label in dialog.text_content() for label in ('文件名', '上传时间', '大小', '页数', '上传本地文件'))
     assert 'disabled' in html.get_element_by_id('ppt-upload-fields').attrib
     assert '.pptx' in html.get_element_by_id('ppt-file').get('accept')
     assert '最近导出' in panel.text_content()

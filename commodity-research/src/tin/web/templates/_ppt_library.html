@@ -1,15 +1,13 @@
-{# Shared upload and personal template library, embedded in reports. #}
+{# Shared source picker and personal template library, embedded in reports. #}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/ppt.css?v={{ static_version() }}">
 <div class="charts-page ppt-page ppt-library" data-ppt-page="list">
-  <p class="charts-muted">上传以往的日报或周报，确认图位绑定后，按原版式导出{% if ppt_page.date %}，默认数据截止日为 {{ ppt_page.date }}{% endif %}。</p>
+  <p class="charts-muted">从知识库选择以往的日报或周报 PPT，确认图位绑定后，按原版式导出{% if ppt_page.date %}，默认数据截止日为 {{ ppt_page.date }}{% endif %}。</p>
   {% if not ppt_page.enabled %}<p class="charts-notice error" role="alert">{{ ppt_page.reason }}</p>{% else %}
   {% if not ppt_page.can_write %}<p class="charts-notice" id="ppt-write-reason">{{ ppt_page.write_reason }}</p>{% endif %}
-  <section class="charts-panel"><h2>上传模板</h2>
-    <form id="ppt-upload-form"><fieldset id="ppt-upload-fields" disabled>
-      <div class="charts-toolbar"><label class="charts-field">选择 .pptx 文件（不超过 60 MB）<input id="ppt-file" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" required></label><button class="charts-button primary" type="submit">上传并解析</button></div>
-    </fieldset></form>
-    <div id="ppt-upload-progress" hidden><progress id="ppt-upload-bar" max="100" value="0" aria-label="上传与解析进度"></progress><p id="ppt-upload-status" role="status" aria-live="polite"></p></div>
+  <section class="charts-panel"><h2>我的 PPT 版式</h2>
+    <button id="ppt-new-template" type="button" class="charts-button primary" disabled>新建模板</button>
+    {% with ppt_source_upload=true %}{% include '_ppt_source_dialog.html' %}{% endwith %}
   </section>
   <div id="ppt-list-status" role="status" aria-live="polite" hidden></div>
   <div id="ppt-list-conflict" class="charts-notice warning" role="alert" hidden>模板已有新版本，请重新加载后操作。<button id="ppt-list-reload" type="button" class="charts-button">重新加载列表</button></div>

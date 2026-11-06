@@ -190,6 +190,10 @@ def test_list_exposes_only_latest_personal_export_summary_without_reading_source
                                           ({'x-local': 'true'}, 409)])
 @pytest.mark.parametrize('method,path,body', [
     ('GET', '', None), ('POST', '', None), ('GET', '/absent', None),
+    ('GET', '/sources', None),
+    ('POST', '/from-source', {'knowledge_base_id': 'fixture-kb', 'knowledge_id': 'fixture-ppt', 'file_hash': 'a' * 32}),
+    ('PATCH', '/absent/source', {'revision': 1, 'knowledge_base_id': 'fixture-kb',
+                               'knowledge_id': 'fixture-ppt', 'file_hash': 'a' * 32}),
     ('PATCH', '/absent/bindings', {'revision': 1, 'slots': [{'slot_id': 'a', 'binding': None}]}),
     ('DELETE', '/absent', None), ('POST', '/absent/export', None), ('GET', '/absent/exports/absent', None),
 ])

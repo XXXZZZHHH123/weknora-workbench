@@ -54,9 +54,10 @@
     } catch (error) { if (dataAsOf) error.dataAsOf = dataAsOf; throw error; }
     finally { renderer?.destroy(); target?.remove(); }
   }
-  function buildFormData(date, markHeadlines, images, meta) {
+  function buildFormData(date, markHeadlines, images, meta, revision) {
     const form = new root.FormData(); form.append('date', date); form.append('mark_headlines', String(!!markHeadlines));
     form.append('meta', JSON.stringify(meta));
+    if (revision !== undefined) form.append('revision', String(revision));
     for (const [id, blob] of images) form.append(id, blob, 'slot.png');
     return form;
   }
@@ -99,8 +100,13 @@
   const $ = id => root.document.getElementById(id), E = P.esc, path = '/ppt-templates/' + encodeURIComponent(config.id);
   const status = $('ppt-export-status'), fields = $('ppt-export-fields'), controller = new AbortController(), urls = new Set();
   const cards = new Map(), conflictedExports = new Set(); let record, busy = false, loading = false, conflict = false, closed = false;
+  const picker = P.initSourcePicker(page, config, () => load());
+  $('ppt-source-reselect').addEventListener('click', () => picker.open(record));
   $('ppt-export-date').value = validDate(config.date) ? config.date : P.today();
-  function controls() { fields.disabled = !config.can_write || !record || busy || loading || conflict; }
+  function controls() {
+    fields.disabled = !config.can_write || !record || !P.sourceReady(record) || busy || loading || conflict;
+    $('ppt-source-reselect').disabled = !config.can_write || busy || loading;
+  }
   function disposePreviews() { urls.forEach(url => root.URL.revokeObjectURL(url)); urls.clear(); cards.clear(); $('ppt-export-previews').replaceChildren(); }
   function previews() {
     disposePreviews();
@@ -128,6 +134,7 @@
     if (busy || loading) return; loading = true; controls(); P.notice(status, '正在读取模板…');
     try {
       record = await P.api(path, {signal: controller.signal});
+      P.renderSourceState(page, record, config.can_write);
       conflict = false; $('ppt-export-conflict').hidden = true;
       $('ppt-title').textContent = '导出 · ' + (record.title || record.filename);
       $('ppt-breadcrumb-title').textContent = record.title || record.filename;
@@ -140,7 +147,7 @@
   }
   $('ppt-export-reload').addEventListener('click', load);
   $('ppt-export-form').addEventListener('submit', async event => {
-    event.preventDefault(); if (!config.can_write || !record || busy || loading || conflict) return;
+    event.preventDefault(); if (!config.can_write || !record || !P.sourceReady(record) || busy || loading || conflict) return;
     const date = $('ppt-export-date').value, mark = $('ppt-mark-headlines').checked;
     if (!validDate(date)) { P.notice(status, '请选择有效的数据截止日', 'error'); return; }
     busy = true; controls(); previews(); $('ppt-export-report').hidden = true;
@@ -176,13 +183,16 @@
       });
       const unexpected = results.find(result => result.status === 'rejected'); if (unexpected) throw unexpected.reason;
       if (closed) return;
-      // Export currently has no revision input. Catch changes before sending pixels,
-      // and check the report revision as well; the API must provide an atomic fence
-      // to completely close the remaining race between this read and assembly.
+      // Recheck both the source and revision before sending pixels; the server
+      // fences the same revision while reading the original and assembling.
       const latest = await P.api(path, {signal: controller.signal});
+      if (!P.sourceReady(latest)) {
+        record.source_state = latest.source_state; P.renderSourceState(page, record, config.can_write);
+        throw new Error(P.sourceMessage(latest));
+      }
       if (latest.revision !== record.revision) throw Object.assign(new Error('模板在生成期间已更新，请重新加载并生成'), {status: 409});
       P.notice(status, `图位生成完成（${failed} 个失败保留原图），正在上传图片并组装 PPT…`);
-      const report = await P.api(path + '/export', {method: 'POST', body: buildFormData(date, mark, images, meta), signal: controller.signal});
+      const report = await P.api(path + '/export', {method: 'POST', body: buildFormData(date, mark, images, meta, record.revision), signal: controller.signal});
       const changed = report.revision !== record.revision + 1;
       reportMarkup(report, changed);
       if (changed) { conflict = true; $('ppt-export-conflict').hidden = false; P.notice(status, '生成期间模板版本发生变化，请重新加载并生成。', 'warning'); }
@@ -191,7 +201,9 @@
         P.notice(status, `PPT 已生成：已更新 ${report.updated_slots.length} 个图位，保留原图 ${report.kept_slots.length} 个图位。`);
       }
     } catch (error) {
-      if (error.status === 409) { conflict = true; $('ppt-export-conflict').hidden = false; }
+      const sourceState = P.sourceErrorState(error);
+      if (sourceState) { record.source_state = sourceState; P.renderSourceState(page, record, config.can_write); }
+      else if (error.status === 409) { conflict = true; $('ppt-export-conflict').hidden = false; }
       if (error.name !== 'AbortError') P.notice(status, error.message, 'error');
     } finally { busy = false; progress.hidden = true; images.clear(); controls(); }
   });
