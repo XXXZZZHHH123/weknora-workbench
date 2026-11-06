@@ -262,8 +262,8 @@ document.addEventListener("DOMContentLoaded", () => {
   function syncSelection() {
     pruneNames();
     get("compare-bar").hidden = !selected.size;
-    get("selection").textContent = `已选 ${selected.size}/4：${[...selected].map((sid) => names.get(sid)).join("、")}`;
-    get("compare-open").disabled = selected.size < 2;
+    get("selection").textContent = `已选 ${selected.size}/16：${[...selected].map((sid) => names.get(sid)).join("、")}`;
+    get("compare-open").disabled = selected.size < 2 || selected.size > 4;
     root.querySelectorAll("[data-compare]").forEach((box) => { box.checked = selected.has(box.dataset.compare); });
     updateJumpFromScroll();
   }
@@ -271,8 +271,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const box = event.target.closest("[data-compare]");
     if (!box) return;
     if (!box.checked) selected.delete(box.dataset.compare);
-    else if (selected.size < 4) selected.add(box.dataset.compare);
-    else showToast("最多同时比较 4 项指标");
+    else if (selected.size < 16) selected.add(box.dataset.compare);
+    else showToast("最多选择 16 项指标作图");
     syncSelection();
   });
 
@@ -302,7 +302,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   get("compare-open").addEventListener("click", async () => {
-    if (selected.size < 2) return;
+    if (selected.size < 2 || selected.size > 4) return;
     const dialog = get("compare-dialog");
     get("compare-result").textContent = "正在对齐共同观测日…";
     dialog.showModal();
@@ -320,6 +320,7 @@ document.addEventListener("DOMContentLoaded", () => {
   get("compare-close").addEventListener("click", () => get("compare-dialog").close());
   get("compare-dialog").addEventListener("close", () => { if (compareController) compareController.abort(); });
   get("selection-clear").addEventListener("click", () => { selected.clear(); syncSelection(); });
+  get("chart-open")?.addEventListener("click", () => window.ChartBuilder?.open([...selected]));
   get("search").addEventListener("input", searchCatalog);
   get("expand").addEventListener("click", () => groups.forEach((g) => { g.open = true; }));
   get("collapse").addEventListener("click", () => groups.forEach((g) => { g.open = false; }));

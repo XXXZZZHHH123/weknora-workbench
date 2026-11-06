@@ -11,6 +11,11 @@
     observation_window_limited: '观测读取已达上限，当前图表和统计仅覆盖已读取的窗口', sparse: '观测覆盖不足', start_missing: '缺少周期起点观测',
     invalid_base: '起点值不大于零，不能换算为起点=100', incomplete: '当前周期尚未结束', missing: '指标已不在当前来源目录',
     unit_missing: '曲线缺少单位，请核对口径', axis_unit_mismatch: '同一纵轴的单位不一致，请修改图表',
+    unit_confirmed: '单位缺失，研究员已明确确认相减口径', division_by_zero: '除数为零，该日期不计算比值',
+    derived_non_finite: '计算结果超出有效数值范围，该日期不绘制', transform_non_finite: '变换结果超出有效数值范围，该日期不绘制',
+    non_finite_transform: '变换结果超出有效数值范围，该日期不绘制', invalid_transform: '本期变换存在无效数值，不纳入统计',
+    non_finite_result: '部分计算结果超出有效数值范围，已标为不可用',
+    current_missing: '该指标在共同当前期没有有效观测',
     already_imported: '已导入，跳过重复图表', pending_source: '曲线来源尚未接入', unsupported: '暂不支持该图型', no_data: '曲线没有可用数据', unconfirmed_sheet: '工作表尚未确认'
   };
   function message(value) {
@@ -80,6 +85,18 @@
       ? `<details class="charts-import-unavailable"><summary>${unavailable.length} 张无法转换，展开查看原因</summary>${unavailable.map(item).join('')}</details>` : '');
   }
   function stats(element, payload, {showWarnings = true} = {}) {
+    if (payload.mode === 'cycle' && Array.isArray(payload.curves) && payload.curves.length > 1) {
+      const transform = payload.template?.transform || 'raw';
+      const rows = payload.curves.map(curve => {
+        const data = curve.cycle || curve, p = data.position;
+        const recent = p?.recent_mean ?? (p?.vs_recent_mean?.cycles ? (p.peers || []).slice(0, p.vs_recent_mean.cycles).reduce((sum, peer) => sum + peer.value, 0) / p.vs_recent_mean.cycles : null);
+        return `<tr><th scope="row">${esc(curve.label)}</th><td>${esc(curve.unit || '未注明')}</td><td>${esc(p?.date || '—')}</td><td>${esc(fmt(p?.value))}</td><td>${p?.rank != null ? `${esc(p.rank)}/${esc(p.n + 1)}` : esc(message(p?.status || data.status || 'no_observations'))}</td><td>${esc(fmt(recent))}${p?.vs_recent_mean?.cycles ? `（${esc(p.vs_recent_mean.cycles)} 期）` : ''}</td></tr>`;
+      });
+      element.hidden = false;
+      element.innerHTML = '<h2>周期统计</h2><p class="charts-muted">数值口径：' + (transform === 'rebase' ? '起点=100（无量纲）；表内单位列仅说明来源原单位' : transform === 'change' ? '相对起点变化（保留各指标原单位）' : '原值') + '</p><div class="charts-table-scroll"><table class="charts-table"><thead><tr><th>指标</th><th>原单位</th><th>观测日</th><th>当前值</th><th>同期排名（从高到低）</th><th>较近 5 期均值</th></tr></thead><tbody>' + rows.join('') + '</tbody></table></div><p class="charts-muted">每行分别按该指标有效往期统计；样本不足 5 期时使用实际样本。历史参照，不是预测；缺失观测不补点。</p>';
+      if (showWarnings && payload.warnings?.length) element.innerHTML += `<p class="charts-footnote">${esc(noticeText(payload.warnings))}</p>`;
+      return;
+    }
     if (!Array.isArray(payload.segments)) { element.replaceChildren(); element.hidden = true; return; }
     element.hidden = false;
     const p = payload.position, n = p?.n || 0, status = p?.status || payload.status || (p?.rank != null ? 'ok' : 'no_observations');

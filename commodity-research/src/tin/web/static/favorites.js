@@ -140,6 +140,11 @@ document.addEventListener('DOMContentLoaded', () => {
         title.append(link); details.textContent = '等待进入视野…';
       }
       details.className = 'favorite-details'; actions.className = 'favorite-actions';
+      if (!invalid && item.kind === 'indicator') {
+        const selection = document.createElement('label'), box = document.createElement('input');
+        box.type = 'checkbox'; box.dataset.builderFavorite = item.id; box.setAttribute('aria-label', '选择作图 ' + label);
+        selection.append(box, document.createTextNode(' 选择作图')); actions.append(selection);
+      }
       for (const [delta, text] of [[-1, '上移'], [1, '下移']]) {
         const control = button(text, () => move(index, delta), `${text} ${label}`, index + delta < 0 || index + delta >= client.items.length);
         control.dataset.move = String(delta); actions.append(control);

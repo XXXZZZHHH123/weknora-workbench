@@ -104,7 +104,29 @@ def _nearest(points, positions, target, tolerance):
     return points[chosen] if abs(positions[chosen] - target) <= tolerance else None
 
 
-def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4, 8, 12), cycles=None):
+def _finite_result(result):
+    """Keep arithmetic overflow explicit and the read model JSON-safe."""
+    unavailable = False
+
+    def clean(value):
+        nonlocal unavailable
+        if isinstance(value, float) and not isfinite(value):
+            unavailable = True
+            return None
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+
+    result = clean(result)
+    if unavailable and 'non_finite_result' not in result['warnings']:
+        result['warnings'].append('non_finite_result')
+    return result
+
+
+def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4, 8, 12), cycles=None,
+                   current_start=None):
     """Return the chart.v1 cycle read model, without changing the input.
 
     A single observation cannot establish a frequency: curves remain available,
@@ -113,6 +135,7 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
     """
     template = _TEMPLATE.validate_python(template).model_dump(mode='json', exclude_none=True)
     as_of = _date(as_of)
+    current_start = _date(current_start) if current_start is not None else None
     if type(band_cycles) is not int or band_cycles < 1:
         raise ValueError('区间带周期数需为正整数')
     if cycles is not None and (type(cycles) is not int or cycles < 1):
@@ -166,6 +189,12 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
         for day, raw in selected:
             value = (raw if transform == 'raw' else raw - base if transform == 'change' else
                      raw / base * 100 if base > 0 else None)
+            if value is not None and not isfinite(value):
+                value = None
+                if 'invalid_transform' not in flags:
+                    flags.append('invalid_transform')
+                if 'non_finite_transform' not in result['warnings']:
+                    result['warnings'].append('non_finite_transform')
             points.append({'x': (day - anchor).days, 'date': day.isoformat(), 'value': value, 'raw': raw})
         part = {'label': label, 'start': start.isoformat(), 'end': end.isoformat(),
                 'current': False, 'flags': flags, 'points': points}
@@ -176,12 +205,26 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
         result['warnings'].append('empty_segments_omitted')
     if not candidates:
         result['warnings'].extend(['no_observations', 'insufficient_cycles'])
-        return result
-    _, _, current_index = max(candidates)
+        return _finite_result(result)
+    if current_start is None:
+        _, _, current_index = max(candidates)
+    else:
+        current_index = next((index for _, start, index in candidates if start == current_start), None)
+        result['current_start'] = current_start.isoformat()
+        if current_index is None:
+            # A multi-curve comparison shares the period, including for stale
+            # series. Their old observations must not masquerade as current.
+            available = sorted((part for part in result['segments'] if _date(part['start']) < current_start),
+                               key=lambda part: part['start'], reverse=True)
+            selected = {id(part) for part in available[:max(0, cycles - 1)]} if cycles is not None else None
+            result['segments'] = [part for part in result['segments'] if
+                _date(part['start']) < current_start and (selected is None or id(part) in selected)]
+            result['warnings'].extend(['current_missing', 'insufficient_cycles'])
+            return _finite_result(result)
     current = result['segments'][current_index]
     current['current'] = True
     last = current['points'][-1]
-    eligible = lambda part: not set(part['flags']) & {'sparse', 'start_missing', 'invalid_base'}
+    eligible = lambda part: not set(part['flags']) & {'sparse', 'start_missing', 'invalid_base', 'invalid_transform'}
     past = sorted((part for i, part in enumerate(result['segments'])
                    if i != current_index and part['start'] <= current['start']), key=lambda part: part['start'], reverse=True)
     if cycles is not None:
@@ -203,10 +246,10 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
     if freq is None or len(peers) < 3:
         position['status'] = 'insufficient_cycles'
         result['warnings'].append('insufficient_cycles')
-        return result
+        return _finite_result(result)
     if not eligible(current):
         position['status'] = 'unusable_current'
-        return result
+        return _finite_result(result)
     values = [peer['value'] for peer in peers]
     recent = peers[:5]
     recent_mean = mean(peer['value'] for peer in recent)
@@ -214,6 +257,7 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
     position.update(status='ok', rank=1 + sum(value > last['value'] for value in values),
                     share_below=sum(value < last['value'] for value in values) / len(values),
                     min=min(values), max=max(values), median=median(values), mean=mean(values),
+                    recent_mean=recent_mean,
                     vs_recent_mean={'kind': 'pct' if percentage else 'change',
                         'value': (last['value'] - recent_mean) / recent_mean if percentage else last['value'] - recent_mean,
                         'cycles': len(recent)})
@@ -240,6 +284,10 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
             if following is None or following[0] <= _date(peer['date']):
                 continue
             change = following[1] - peer['raw']
+            if not isfinite(change):
+                if 'non_finite_result' not in result['warnings']:
+                    result['warnings'].append('non_finite_result')
+                continue
             items.append({'label': peer['label'], 'date': peer['date'], 'end_date': following[0].isoformat(),
                           'change': change, 'pct': change / abs(peer['raw']) if peer['raw'] != 0 else None})
         changes = [item['change'] for item in items]
@@ -247,4 +295,60 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
                                  'median': median(changes) if changes else None,
                                  'min': min(changes) if changes else None, 'max': max(changes) if changes else None,
                                  'up': sum(change > 0 for change in changes)})
+    return _finite_result(result)
+
+
+def _previous_start(template, current_start):
+    """The actual preceding template interval, even when it has no observations."""
+    current_start = _date(current_start)
+    if template['kind'] == 'repeat':
+        return repeat_bounds(template, current_start - timedelta(days=1))[0].isoformat()
+    if template['kind'] == 'segments':
+        starts = [_date(part['start']) for part in template['segments']]
+    else:
+        anchors = SPRING_FESTIVAL if template.get('calendar') else [_date(item['date']) for item in template['anchors']]
+        starts = [anchor - timedelta(days=template['before_days']) for anchor in anchors]
+    earlier = [start for start in starts if start < current_start]
+    return max(earlier).isoformat() if earlier else None
+
+
+def compute_multi_cycles(curves, template, as_of, *, band_cycles=5, cycles=None):
+    """Compare curves on one explicit calendar, keeping each curve's statistics.
+
+    Every item uses the most recent period observed by any selected curve. The
+    common previous period is derived from the template, not from a label or the
+    last period that happened to contain data. Bands are suppressed for multi-
+    curve displays; historical observations remain available for statistics.
+    """
+    if not 2 <= len(curves) <= 8:
+        raise ValueError('多指标周期对比需要2至8条曲线')
+    template = _TEMPLATE.validate_python(template).model_dump(mode='json', exclude_none=True)
+    computed = []
+    for curve in curves:
+        observations = [(point['date'], point['value']) for point in curve.get('points', [])
+                        if type(point['value']) in {int, float} and isfinite(point['value'])]
+        cycle = compute_cycles(observations, template, as_of, band_cycles=band_cycles, cycles=cycles)
+        computed.append((curve, observations, cycle))
+    starts = [part['start'] for _, _, cycle in computed for part in cycle['segments'] if part['current']]
+    current_start = max(starts) if starts else None
+    previous_start = _previous_start(template, current_start) if current_start else None
+    result = {'mode': 'cycle', 'template': deepcopy(template), 'as_of': _date(as_of).isoformat(),
+              'common_current_start': current_start, 'common_previous_start': previous_start,
+              'curves': [], 'band': [], 'warnings': []}
+    for curve, observations, cycle in computed:
+        own_start = next((part['start'] for part in cycle['segments'] if part['current']), None)
+        if current_start is not None and own_start != current_start:
+            cycle = compute_cycles(observations, template, as_of, band_cycles=band_cycles, cycles=cycles,
+                                   current_start=current_start)
+        cycle['current_start'] = current_start
+        cycle['previous_start'] = previous_start
+        cycle['band'] = []
+        if curve.get('limited') and 'observation_window_limited' not in cycle['warnings']:
+            cycle['warnings'].append('observation_window_limited')
+        for warning in [*cycle['warnings'], *curve.get('warnings', [])]:
+            notice = ({'code': warning} if isinstance(warning, str) else deepcopy(warning))
+            notice['label'] = curve.get('label', '')
+            if notice not in result['warnings']:
+                result['warnings'].append(notice)
+        result['curves'].append({**deepcopy(curve), 'cycle': cycle})
     return result

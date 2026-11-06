@@ -10,3 +10,4 @@
 <section class="charts-panel indicator-cycle" id="indicator-related-panel"><h2>相关图表</h2><div id="indicator-related-status" role="status" hidden></div><div id="indicator-related-charts"></div><button type="button" id="indicator-related-more" class="charts-button" hidden>加载更多相关图表</button></section>
 <script type="application/json" id="indicator-cycle-config">{{ {'enabled': true if cycle_enabled else false, 'can_write': true if cycle_write else false, 'series_id': d.series_id, 'name': d.name, 'date': request.query_params.get('date'), 'reason': '受限视角暂不开放图表库和周期对比' if cycle_scope and cycle_scope.restricted else '图表库需要来源版本2，请重新打开研究台更新来源授权'} | tojson }}</script>
 <script src="{{ research_static_prefix() }}/static/indicator-cycle.js?v={{ static_version() }}"></script>
+{% if cycle_enabled %}{% include '_chart_builder.html' %}{% endif %}

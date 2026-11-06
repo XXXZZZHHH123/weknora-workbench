@@ -97,29 +97,49 @@ class CurveDescriptor(ChartModel):
     column: str = Field(default='', max_length=80)
 
 
+class DerivedSeries(ChartModel):
+    op: Literal['sub', 'div']
+    a: str = Field(min_length=1, max_length=128)
+    b: str = Field(min_length=1, max_length=128)
+    # This records the researcher's explicit confirmation, not a unit inferred
+    # from the label or a programmatic conversion.
+    unit_confirmed: bool = Field(default=False, strict=True)
+
+
 class ChartCurve(ChartModel):
-    series_id: str = Field(min_length=1, max_length=128)
+    series_id: str | None = Field(default=None, min_length=1, max_length=128)
+    derived: DerivedSeries | None = None
     label: str = Field(min_length=1, max_length=120)
     kind: Literal['line', 'bar', 'area'] = 'line'
     axis: Literal['left', 'right'] = 'left'
     style: CurveStyle = Field(default_factory=CurveStyle)
     descriptor: CurveDescriptor = Field(default_factory=CurveDescriptor)
+    curve_cycles: Literal['current', 'current_and_previous'] | None = None
+
+    @model_validator(mode='after')
+    def one_source(self):
+        if (self.series_id is None) == (self.derived is None):
+            raise ValueError('每条曲线需明确选择一个指标或一个计算公式')
+        return self
 
 
 class RecentTime(ChartModel):
     mode: Literal['recent']
     points: int = Field(default=120, ge=1, le=2000, strict=True)
+    transform: Literal['raw', 'change', 'rebase'] = 'raw'
 
 
 class SinceTime(ChartModel):
     mode: Literal['since']
     start: CalendarDate
+    transform: Literal['raw', 'change', 'rebase'] = 'raw'
 
 
 class RangeTime(ChartModel):
     mode: Literal['range']
     start: CalendarDate
     end: CalendarDate
+    transform: Literal['raw', 'change', 'rebase'] = 'raw'
 
     @model_validator(mode='after')
     def ordered(self):
@@ -135,6 +155,7 @@ class CycleTime(ChartModel):
     visible_cycles: int | None = Field(default=None, ge=1, le=40, strict=True)
     band_cycles: int = Field(default=5, ge=1, strict=True)
     transform: Literal['raw', 'change', 'rebase'] = 'raw'
+    curve_cycles: Literal['current', 'current_and_previous'] = 'current'
     segment_styles: list[SegmentStyle] = Field(default_factory=list, max_length=40)
 
     @model_validator(mode='after')
@@ -182,8 +203,8 @@ class ChartDefinition(ChartModel):
     def cycle_curve(self):
         if not self.title.strip():
             raise ValueError('请填写图表标题')
-        if self.time.mode == 'cycle' and len(self.curves) != 1:
-            raise ValueError('周期模式一期只支持一条指标曲线')
+        if self.time.mode == 'cycle' and len(self.curves) > 8:
+            raise ValueError('同周期对比最多支持8条指标曲线，请减少指标或使用批量周期图')
         return self
 
 

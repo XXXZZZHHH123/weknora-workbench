@@ -19,6 +19,7 @@
     </p>
   </div>
   <div class="flex items-center gap-1.5 shrink-0 text-xs">
+    {% if research_workbench() and research_workbench().scope_version == 2 and not research_workbench().restricted %}<button type="button" class="charts-button" data-chart-builder="single" data-builder-series="{{ d.series_id }}">作图</button>{% endif %}
     {% if research_workbench() and research_workbench().scope_version == 2 and not research_workbench().restricted %}<button type="button" class="favorites-star" data-favorite="{{ d.series_id }}" data-favorite-kind="indicator" data-favorite-label="{{ d.name }}" aria-pressed="false" disabled>☆ 自选</button>{% endif %}
     <a href="{{ research_prefix() }}/sn/diagram" class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">产业图</a>
   </div>

@@ -41,6 +41,21 @@ const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
     assert.match(await lib.page.locator('.charts-card').innerText(), /合成图30/);
     await lib.close();
 
+    const galleryRecords = records.map(item => ({...item, definition: {...item.definition, group: '整组图集'}}));
+    const gallery = await open(browser, '/sn/indicators?tab=charts', libraryHTML, ({path, url, reply}) => {
+      if (path === '/charts/anomalies') return reply({items: [], total: 0, failed: []});
+      if (path === '/charts') {
+        const offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit') || 24);
+        return reply({items: galleryRecords.slice(offset, offset + limit), total: 30, next_offset: offset + limit < 30 ? offset + limit : null});
+      }
+      if (path.endsWith('/data')) return reply(cycle());
+      return false;
+    });
+    await gallery.page.locator('#chart-groups button').filter({hasText: '整组图集'}).click();
+    await gallery.page.waitForFunction(() => document.querySelectorAll('.charts-card').length === 30);
+    assert.equal(await gallery.page.locator('#charts-more').isVisible(), false, '选择分组后自动平铺整组，继续复用懒加载');
+    await gallery.close();
+
     let saved = record(), conflict = true, patch, deletedRevision;
     saved.definition.time.segment_styles = [{label: '2027', color: '#AA5500', width: 1.25, dash: 'dot'}];
     saved.definition.time.visible_cycles = 4;

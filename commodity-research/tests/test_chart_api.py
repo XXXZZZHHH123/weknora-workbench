@@ -195,6 +195,10 @@ def test_revision_compare_and_swap_rechecks_after_directory_validation(chart_cli
     ('GET', '/api/sn/charts/absent/data', None), ('GET', '/api/sn/cycle-templates', None),
     ('POST', '/api/sn/cycle-templates', {'kind': 'repeat', 'name': '模板', 'start': '01-01', 'period': 'year'}),
     ('POST', '/api/sn/charts/import/native/preview', {}),
+    ('POST', '/api/sn/charts/preview', definition()),
+    ('GET', '/api/sn/charts/builder-options', None),
+    ('POST', '/api/sn/charts/batch', {'series_ids': [SID], 'group': '图集'}),
+    ('POST', '/api/sn/charts/batch/preview', {'series_ids': [SID], 'group': '图集'}),
     ('POST', '/api/sn/charts/import/native/apply', {'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]}),
 ])
 def test_all_library_routes_reject_restricted_and_old_grants_without_reads(chart_client, headers, status, method, path, body):
@@ -239,11 +243,11 @@ def test_same_axis_unit_mismatch_rejected_and_unknown_units_only_warn(chart_clie
     assert response.json()['warnings'][0]['code'] == 'unit_missing'
 
 
-def test_cycle_multiple_curves_and_unknown_nested_fields_are_rejected(chart_client):
+def test_cycle_multiple_curves_are_supported_and_unknown_nested_fields_are_rejected(chart_client):
     client, _ = chart_client
     value = definition(curves=[{'series_id': SID, 'label': '一'}, {'series_id': OTHER, 'label': '二'}],
                        time={'mode': 'cycle', 'template': {'kind': 'repeat', 'name': '年', 'start': '01-01', 'period': 'year'}})
-    assert client.post('/api/sn/charts', json=value).status_code == 422
+    assert client.post('/api/sn/charts', json=value).status_code == 201
     for path in ('top', 'curve', 'template', 'style', 'axes'):
         value = definition()
         if path == 'top':

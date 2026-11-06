@@ -360,3 +360,116 @@ test('同月多条观测居中到相同横坐标时，末端标注仍取真实�
     handle.destroy();
   }
 });
+
+function multiCycleFixture() {
+  const first = cycle(), second = cycle();
+  second.segments.forEach(part => part.points.forEach(point => { point.value /= 10; }));
+  return {mode: 'cycle', template: first.template, band: first.band, curves: [
+    {series_id: 'fixture-a', label: '研究员选择的量', axis: 'left', unit: '吨', curve_cycles: 'current_and_previous',
+      style: {color: '#123456', dash: 'solid'}, cycle: first},
+    {series_id: null, derived: {op: 'div', a: 'fixture-a', b: 'fixture-b'}, label: '研究员比值 <安全>',
+      axis: 'right', unit: '倍', style: {color: '#CC5500'}, cycle: second}]};
+}
+
+test('多指标周期只显示各自当前期与所选上一期，同色虚线、双轴且始终无区间带', () => {
+  const payload = multiCycleFixture(), original = structuredClone(payload), container = fixture();
+  const handle = K.render(container, payload, {definition: {time: {mode: 'cycle', curve_cycles: 'current'}}});
+  assert.equal(attr(container, 'data-series').length, 3);
+  assert.equal(attr(container, 'data-band').length, 0, '即使响应包含区间带也不画多指标区间带');
+  assert.equal(attr(container, 'data-show-all-cycles').length, 0);
+  const current = attr(attr(container, 'data-series', '0')[0], 'data-curve-run')[0];
+  const previous = attr(attr(container, 'data-series', '1')[0], 'data-curve-run')[0];
+  assert.equal(current.attrs.stroke, '#123456'); assert.equal(previous.attrs.stroke, current.attrs.stroke);
+  assert.equal(current.attrs['stroke-dasharray'], undefined);
+  assert.equal(previous.attrs['stroke-dasharray'], '7 4', '上一期覆盖曲线的实线配置');
+  const previousLegend = attr(container, 'data-legend', '1')[0].children.find(node => node.name === 'line');
+  assert.equal(previousLegend.attrs['stroke-dasharray'], previous.attrs['stroke-dasharray']);
+  assert.equal(attr(container, 'data-axis-unit', 'left')[0].textContent, '吨');
+  assert.equal(attr(container, 'data-axis-unit', 'right')[0].textContent, '倍');
+  const left = attr(container, 'data-axis-tick', 'left'), right = attr(container, 'data-axis-tick', 'right');
+  assert.equal(left.length, right.length);
+  left.forEach((node, i) => assertClose(Number(node.attrs.y), Number(right[i].attrs.y)));
+  assert.ok(right.every(node => node.attrs.fill === '#CC5500'));
+  assert.match(attr(container, 'data-legend', '2')[0].textContent, /研究员比值 <安全>/);
+  assert.equal(nodes(container).filter(node => node.name === 'svg').length, 1);
+  assert.deepEqual(payload, original);
+  handle.destroy();
+});
+
+test('多指标周期沿用每条曲线的频率与匹配容差，tooltip保留日期及各自单位', () => {
+  const payload = multiCycleFixture(), container = fixture();
+  payload.curves[0].curve_cycles = 'current';
+  payload.curves[1].cycle.freq_days = 1; payload.curves[1].cycle.tolerance_days = 1;
+  payload.curves[1].cycle.segments.at(-1).points = [{x: 10, date: '2029-09-11', value: 2}];
+  const handle = K.render(container, payload);
+  const overlay = attr(container, 'data-chart-hover')[0], tip = nodes(container).find(node => node.className === 'chart-kit-tooltip');
+  overlay.events.pointermove({clientX: 72 + 816 * 9 / 364, clientY: 100});
+  assert.match(tip.textContent, /20 吨 · 2029-09-08/);
+  assert.match(tip.textContent, /2\.0 倍 · 2029-09-11/);
+  overlay.events.pointermove({clientX: 72 + 816 * 7 / 364, clientY: 100});
+  assert.match(tip.textContent, /研究员比值 <安全>.*此位置缺失/);
+  assert.deepEqual(pathXs(attr(attr(container, 'data-series', '0')[0], 'data-curve-run')[0]),
+    [0, 7, 14].map(x => Number((72 + 816 * x / 364).toFixed(2))));
+  handle.destroy();
+});
+
+test('八指标周期遵循全图上一期选项，指标无有效当前期不冒充当前或按标签猜年份', () => {
+  const payload = multiCycleFixture(), prototype = payload.curves[0];
+  payload.curves = Array.from({length: 8}, (_, index) => ({...structuredClone(prototype), curve_cycles: undefined,
+    series_id: 'fixture-' + index, label: '指标' + index, style: {}, axis: 'left', cycle: cycle()}));
+  payload.curves.forEach(curve => curve.cycle.segments.forEach(part => { part.label = '<任意期标签>'; }));
+  payload.curves[7].cycle.segments.at(-1).points = [];
+  const container = fixture(), handle = K.render(container, payload,
+    {definition: {time: {mode: 'cycle', curve_cycles: 'current_and_previous'}}});
+  assert.equal(attr(container, 'data-series').length, 15);
+  assert.equal(attr(container, 'data-legend').length, 15);
+  assert.equal(attr(container, 'data-series').filter(group => attr(group, 'data-curve-run').some(node => node.attrs['stroke-dasharray'] === '7 4')).length, 8);
+  assert.equal(attr(container, 'data-latest-value').some(node => node.attrs['data-latest-value'] === '14'), false);
+  const first = attr(attr(container, 'data-series', '0')[0], 'data-curve-run')[0];
+  const prior = attr(attr(container, 'data-series', '1')[0], 'data-curve-run')[0];
+  assert.equal(first.attrs.stroke, prior.attrs.stroke);
+  assert.equal(attr(attr(container, 'data-series', '2')[0], 'data-curve-run')[0].attrs.stroke, palette.color(1));
+  handle.destroy();
+});
+
+test('走势计算序列使用研究员图例与比值单位，不显示公式ID或自动推断名称', () => {
+  const container = fixture(), label = '<研究员定义的公式图例>', handle = K.render(container,
+    {mode: 'recent', curves: [{series_id: null, derived: {op: 'div', a: 'fixture-a', b: 'fixture-b'}, label, unit: '倍',
+      points: [{date: '2030-01-01', value: 2}, {date: '2030-01-02', value: 3}]}]});
+  assert.match(attr(container, 'data-legend', '0')[0].textContent, /研究员定义的公式图例/);
+  assert.equal(attr(container, 'data-axis-unit', 'left')[0].textContent, '倍');
+  assert.doesNotMatch(container.textContent, /fixture-a|fixture-b/);
+  handle.destroy();
+});
+
+test('共同周期起点保护陈旧指标，缺上一期时不以更早有数据的周期替代', () => {
+  const payload = multiCycleFixture(), container = fixture();
+  payload.common_current_start = '2029-09-01'; payload.common_previous_start = '2028-09-01';
+  payload.curves[1].curve_cycles = 'current_and_previous';
+  payload.curves[1].cycle.segments.pop();
+  payload.curves[1].cycle.segments.at(-1).current = true;
+  const original = structuredClone(payload), handle = K.render(container, payload);
+  const derivedLegend = attr(container, 'data-legend', '2')[0];
+  assert.match(derivedLegend.textContent, /2028/);
+  assert.doesNotMatch(derivedLegend.textContent, /当前/);
+  assert.equal(attr(attr(container, 'data-series', '2')[0], 'data-curve-run')[0].attrs['stroke-dasharray'], '7 4');
+  assert.deepEqual(payload, original); handle.destroy();
+  payload.curves[1].cycle.segments.pop();
+  const missing = K.render(container, payload);
+  assert.equal(attr(container, 'data-series').length, 2, '2027有数据也不会冒充2028');
+  assert.ok(attr(container, 'data-legend').every(node => !node.textContent.includes('研究员比值')));
+  missing.destroy();
+});
+
+test('走势变换明确标明指数或变化值，不把rebase数值误标为原始单位', () => {
+  for (const transform of ['change', 'rebase']) {
+    const container = fixture(), handle = K.render(container, {transform, curves: [{label: '指标', unit: '吨',
+      points: [{date: '2030-01-01', value: 100}, {date: '2030-01-02', value: 110}]}]});
+    assert.equal(attr(container, 'data-axis-unit', 'left')[0].textContent, transform === 'rebase' ? '起点=100' : '变化值（吨）');
+    const overlay = attr(container, 'data-chart-hover')[0], tip = nodes(container).find(node => node.className === 'chart-kit-tooltip');
+    overlay.events.pointermove({clientX: 72, clientY: 100});
+    if (transform === 'rebase') { assert.match(tip.textContent, /起点=100/); assert.doesNotMatch(tip.textContent, /吨/); }
+    else assert.match(tip.textContent, /吨/);
+    handle.destroy();
+  }
+});

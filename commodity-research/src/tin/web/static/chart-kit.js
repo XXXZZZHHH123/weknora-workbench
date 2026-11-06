@@ -311,42 +311,61 @@
     return {destroy() { wrapper.remove(); }, ...imageMethods(() => svg, container.ownerDocument)};
   }
   function render(container, payload, options = {}) {
-    const document = container.ownerDocument, cycle = Array.isArray(payload.segments), definition = options.definition || {};
+    const document = container.ownerDocument, definition = options.definition || {};
+    const multiCycle = payload.mode === 'cycle' && Array.isArray(payload.curves) && payload.curves.some(curve => curve.cycle);
+    const cycle = multiCycle || Array.isArray(payload.segments);
+    const transform = payload.transform || payload.template?.transform || definition.time?.transform || 'raw';
     const exporting = !!options.export, exportTheme = exporting ? exportStyle(options.width || 960) : null;
     const title = options.title || (exporting ? definition.title : '');
     const measure = exporting ? textMeasure(document, exportTheme.fontFamily) : null;
     const base = definition.curves?.[0] || {};
-    const parts = cycle ? payload.segments.filter(part => (part.points || []).some(p => finite(p.x) && finite(p.value))) : (payload.curves || []);
+    const hasPoints = part => (part.points || []).some(p => finite(p.x) && finite(p.value));
+    const parts = multiCycle ? payload.curves.flatMap((curve, curveIndex) => {
+      const result = curve.cycle || {}, segments = result.segments || [], ownCurrent = segments.find(part => part.current);
+      const currentStart = result.current_start || payload.common_current_start || ownCurrent?.start;
+      const current = ownCurrent?.start === currentStart ? ownCurrent : null;
+      const hasPreviousStart = Object.hasOwn(result, 'previous_start') || Object.hasOwn(payload, 'common_previous_start');
+      const previousStart = result.previous_start ?? payload.common_previous_start;
+      const previous = hasPreviousStart ? segments.find(part => part.start === previousStart) : currentStart
+        ? segments.filter(part => part.start < currentStart).slice().sort((a, b) => b.start.localeCompare(a.start))[0] : null;
+      const selection = curve.curve_cycles || definition.curves?.[curveIndex]?.curve_cycles || definition.time?.curve_cycles || 'current';
+      return [current, ...(selection === 'current_and_previous' ? [previous] : [])].filter(part => part && hasPoints(part))
+        .map(part => ({...part, current: part === current, label: `${curve.label} · ${part.label}`, kind: curve.kind || 'line', axis: curve.axis || 'left',
+          unit: curve.unit, style: curve.style || {}, curveIndex, previous: part === previous,
+          freq_days: result.freq_days, tolerance_days: result.tolerance_days}));
+    }) : cycle ? payload.segments.filter(hasPoints) : (payload.curves || []);
     const current = cycle ? parts.find(p => p.current) : null;
     const previous = cycle ? parts.filter(p => !p.current && (!current || p.start <= current.start)).slice().sort((a, b) => b.start.localeCompare(a.start))[0] : null;
-    const monthly = cycle && payload.template?.kind !== 'event' && payload.freq_days >= 28;
-    const anchorDate = current?.start || parts[0]?.start || '2000-' + (payload.template?.start || '01-01');
-    const band = monthly ? monthlyBand(payload.band, anchorDate) : payload.band;
+    const monthly = cycle && payload.template?.kind !== 'event' && (multiCycle
+      ? payload.curves.length > 0 && payload.curves.every(curve => curve.cycle?.freq_days >= 28) : payload.freq_days >= 28);
+    const anchorDate = (multiCycle ? payload.common_current_start : null) || current?.start || parts[0]?.start || '2000-' + (payload.template?.start || '01-01');
+    const band = multiCycle ? [] : monthly ? monthlyBand(payload.band, anchorDate) : payload.band;
     const series = parts.map((part, index) => ({...part, key: index, label: part.label || part.series_id || '未命名曲线',
-      kind: cycle ? (base.kind || 'line') : part.kind || 'line', axis: cycle ? (base.axis || 'left') : part.axis || 'left',
-      style: cycle ? (definition.time?.segment_styles || []).find(style => style.label === part.label) || {} : (part.style || {}),
+      kind: cycle && !multiCycle ? (base.kind || 'line') : part.kind || 'line', axis: cycle && !multiCycle ? (base.axis || 'left') : part.axis || 'left',
+      style: cycle && !multiCycle ? (definition.time?.segment_styles || []).find(style => style.label === part.label) || {} : (part.style || {}),
       points: (part.points || []).map(p => {
         const x = cycle ? p.x : dayNumber(p.date);
         const centered = monthly && finite(x) ? monthMidpoint(dayNumber(p.date), dayNumber(part.start)) : NaN;
         return {...p, x: finite(centered) ? centered : x};
       })}));
     function appearance(s) {
-      const isPrevious = cycle && parts[s.key] === previous;
-      const palette = root.ChartPalette ? root.ChartPalette.color(s.key) : exporting ? ['#2563eb', '#d97706', '#059669', '#7c3aed'][s.key % 4] : `var(--chart-series-${s.key + 1})`;
-      const color = s.style.color || (cycle && s.current ? base.style?.color || (exporting ? '#2563eb' : 'var(--primary)') : palette);
-      const width = s.style.width || (cycle ? s.current ? Math.max(3, base.style?.width || 3) : isPrevious ? 2 : 1.2 : 2);
-      const dash = s.style.dash ?? (isPrevious ? 'dash' : null);
+      const isPrevious = multiCycle ? s.previous : cycle && parts[s.key] === previous;
+      const colorIndex = multiCycle ? s.curveIndex : s.key;
+      const palette = root.ChartPalette ? root.ChartPalette.color(colorIndex) : exporting ? ['#2563eb', '#d97706', '#059669', '#7c3aed'][colorIndex % 4] : `var(--chart-series-${colorIndex + 1})`;
+      const color = s.style.color || (cycle && !multiCycle && s.current ? base.style?.color || (exporting ? '#2563eb' : 'var(--primary)') : palette);
+      const width = s.style.width || (cycle ? s.current ? Math.max(3, multiCycle ? 3 : base.style?.width || 3) : isPrevious ? 2 : 1.2 : 2);
+      const dash = multiCycle && isPrevious ? 'dash' : s.style.dash ?? (isPrevious ? 'dash' : null);
       return {color, width: exporting ? Math.max(width, s.current ? exportTheme.currentLineWidth : exportTheme.lineWidth) : width,
         dash: dash === 'dash' ? '7 4' : dash === 'dot' ? '2 4' : null,
         opacity: !exporting && cycle && !s.current && !s.style.color ? (isPrevious ? .85 : .5) : 1};
     }
-    const defaultKeys = cycle ? visibleCycleKeys(series, definition.time?.visible_cycles) : new Set(series.map(s => s.key));
+    const defaultKeys = cycle && !multiCycle ? visibleCycleKeys(series, definition.time?.visible_cycles) : new Set(series.map(s => s.key));
     const hidden = new Set(series.filter(s => !defaultKeys.has(s.key)).map(s => s.key));
     const wrapper = document.createElement('div'), tip = document.createElement('div');
     wrapper.className = 'chart-kit'; tip.className = 'chart-kit-tooltip'; tip.hidden = true;
     tip.setAttribute('role', 'status'); wrapper.append(tip); container.replaceChildren(wrapper);
     let allYears;
-    if (cycle && !options.thumbnail && !exporting) {
+    if (cycle && !multiCycle && !options.thumbnail && !exporting) {
       allYears = document.createElement('button'); allYears.type = 'button';
       allYears.textContent = '显示全部年份'; allYears.setAttribute('data-show-all-cycles', '');
       allYears.addEventListener('click', () => {
@@ -391,7 +410,7 @@
       const bottom = height - margin.bottom;
       const visible = series.filter(s => !hidden.has(s.key));
       const validBand = cycle ? filterBand(band) : [];
-      const showBand = cycle && validBand.length > 0;
+      const showBand = cycle && !multiCycle && validBand.length > 0;
       const allX = series.flatMap(s => s.points.filter(p => finite(p.x)).map(p => p.x));
       if (showBand) allX.push(...validBand.map(p => p.x));
       let minX = allX.length ? Math.min(...allX) : 0, maxX = allX.length ? Math.max(...allX) : 1;
@@ -452,7 +471,8 @@
           if (axis === 'left' || !series.some(s => s.axis === 'left')) add('line', {x1: margin.left, x2: right, y1: y, y2: y, stroke: exportTheme?.grid || 'var(--line)'});
           add('text', {x: axis === 'left' ? margin.left - 8 * scale : right + 8 * scale, y: y + 4 * scale, fill: labelColor, 'font-size': axisFont, 'text-anchor': axis === 'left' ? 'end' : 'start', 'data-axis-tick': axis}, tick.label);
         }
-        const unit = cycle && (payload.template || {}).transform === 'rebase' ? '起点=100' : cycle && (payload.template || {}).transform === 'change' ? '变化值' + (payload.unit ? `（${payload.unit}）` : '') : [...new Set(spec.members.map(s => s.unit || payload.unit).filter(Boolean))].join(' / ');
+        const sourceUnit = [...new Set(spec.members.map(s => s.unit || payload.unit).filter(Boolean))].join(' / ');
+        const unit = transform === 'rebase' ? '起点=100' : transform === 'change' ? '变化值' + (sourceUnit ? `（${sourceUnit}）` : '') : sourceUnit;
         if (unit) add('text', {x: axis === 'left' ? margin.left : right, y: margin.top - (exporting ? axisFont * .6 : 10), fill: labelColor, 'font-size': axisFont, 'text-anchor': axis === 'left' ? 'start' : 'end', 'data-axis-unit': axis}, unit);
       }
       const every = options.thumbnail ? Math.max(1, Math.ceil(ticks.length / 4)) : 1;
@@ -485,7 +505,7 @@
       for (const s of ordered) {
         const y = axes[s.axis].scale, {color, width: strokeWidth, dash, opacity} = appearance(s);
         const group = add('g', {'data-series': s.key, opacity}, undefined, plot);
-        const runs = splitObservations(s.points, cycle, payload.freq_days);
+        const runs = splitObservations(s.points, cycle, s.freq_days ?? payload.freq_days);
         const interval = medianInterval(s.points, cycle) || 1;
         const barMembers = visible.filter(other => other.kind === 'bar' && other.axis === s.axis), barIndex = barMembers.indexOf(s);
         const barWidth = Math.min(32, Math.max(1, Math.abs(xScale(minX + interval) - xScale(minX)) * .75 / Math.max(1, barMembers.length)));
@@ -562,14 +582,14 @@
           crosshair.setAttribute('x1', xScale(hoverX)); crosshair.setAttribute('x2', xScale(hoverX)); crosshair.setAttribute('visibility', 'visible');
           tip.replaceChildren();
           const heading = document.createElement('strong'); heading.textContent = cycle ? `第 ${hoverX} 天` : new Date(hoverX * DAY).toISOString().slice(0, 10); tip.append(heading);
-          const tolerance = cycle ? (payload.tolerance_days ?? Math.max(1, Math.floor((payload.freq_days || 1) / 2))) : null;
+          const tolerance = s => cycle ? (s.tolerance_days ?? payload.tolerance_days ?? Math.max(1, Math.floor((s.freq_days || payload.freq_days || 1) / 2))) : Math.max(1, Math.floor((medianInterval(s.points) || 1) / 2));
           const rows = (cycle ? series : visible).map(s => ({s,
-            point: nearestPoint(s.points, hoverX, tolerance ?? Math.max(1, Math.floor((medianInterval(s.points) || 1) / 2)))}))
+            point: nearestPoint(s.points, hoverX, tolerance(s))}))
             .sort((a, b) => (b.point?.value ?? -Infinity) - (a.point?.value ?? -Infinity));
           for (const {s, point} of rows) {
             const row = document.createElement('div');
             if (s.current) { row.style.fontWeight = '700'; row.setAttribute('data-tooltip-current', ''); }
-            const unit = cycle && payload.template?.transform === 'rebase' ? '（起点=100）' : (payload.unit || s.unit ? ' ' + (payload.unit || s.unit) : '');
+            const unit = transform === 'rebase' ? '（起点=100）' : (s.unit || payload.unit ? ' ' + (s.unit || payload.unit) : '');
             row.textContent = `${s.label}${s.current ? '（当前）' : ''}：${point ? formatNumber(point.value, axes[s.axis].step) + unit + ' · ' + point.date : '此位置缺失'}`;
             tip.append(row);
           }

@@ -119,17 +119,19 @@
   "group": "TTEB下游情况(图)",       // 0–80 字，可选
   "note": "",                        // 0–600 字
   "curves": [{                        // 1–16 条
-    "series_id": "kb-...",
+    "series_id": "kb-...",           // 与 derived 二选一
     "label": "纯棉纱负荷",
     "kind": "line|bar|area",
     "axis": "left|right",
+    "curve_cycles": "current|current_and_previous", // 多指标周期图可逐曲线覆盖 time.curve_cycles
     "style": {"color": "#C00000", "width": 2, "dash": "solid|dash|dot"},
     "descriptor": {"source_file": "...", "sheet": "...", "metric": "...", "column": "M"}
   }],
-  "time": {"mode": "recent", "points": 120}
-       | {"mode": "since", "start": "2016-01-01"}
-       | {"mode": "range", "start": "...", "end": "..."}
+  "time": {"mode": "recent", "points": 120, "transform": "raw|change|rebase"}
+       | {"mode": "since", "start": "2016-01-01", "transform": "raw|change|rebase"}
+       | {"mode": "range", "start": "...", "end": "...", "transform": "raw|change|rebase"}
        | {"mode": "cycle", "template": {...}, "cycles": 8, "visible_cycles": 5, "band_cycles": 5, "transform": "raw",
+          "curve_cycles": "current",
           "segment_styles": [{"label": "2023", "color": "#C00000", "width": 2.25, "dash": "solid"}]},
   "axes": {"left": {"min": null, "max": null}, "right": {"min": null, "max": null}},
   "origin": {"kind": "manual|native|chat|ppt", "ref": "nc-..."}
@@ -138,12 +140,36 @@
 
 校验：
 
-- `series_id` 必须在当前研究台目录中存在（经目录读取核验），否则拒绝保存；已保存图表中失效的曲线在读取时标记 `missing`，不静默删除。
+- 每条曲线必须且只能设置 `series_id` 或 `derived`。所有直接指标与公式操作数 ID 必须在当前研究台目录中存在（经目录读取核验），否则拒绝保存；已保存图表中失效的曲线在读取时标记 `missing`，不静默删除。列表的 `series_id` 筛选也包含公式操作数引用。
 - 同一根纵轴上的曲线单位必须一致；单位缺失的曲线单独提示，不阻止保存。
-- `cycle` 模式一期限 1 条曲线。
+- `cycle` 支持 1–8 条曲线；一条曲线沿用历史多周期对比、显隐、区间带和统计。2–8 条曲线共用模板和周期横轴，`time.curve_cycles` 为 `"current" | "current_and_previous"`，默认 `current`；各曲线同名可选字段覆盖该默认值。`current_and_previous` 仅显示真实当前期与紧邻上一期，上一期虚线。缺少上一期观测时不拿更早周期代替。
+- 多指标共用最近实际观测所属的当前周期；某指标在该共同周期没有观测时，显示当前期缺失，统计不借用该指标更早周期冒充当前期。每个指标仍用自己的实际观测频率、匹配容差和有效历史计算统计。返回 `mode: "cycle"`、共同 `template`、`common_current_start` / `common_previous_start` 和 `curves`；每项保留曲线元数据，`cycle` 子对象为第一节完整输出。顶层及各曲线不输出区间带。单指标保留原响应格式。
+- 原值模式下，同单位使用同轴，第二种单位使用右轴；超过两种单位提示研究员变换或调整曲线，不做单位换算。`rebase` 将各曲线规范到起点=100；`change` 为减去各自起点的变化值，仍保留原单位并遵守单位轴规则。走势模式同样支持这些变换，先执行用户时间范围裁剪，再取每条曲线首条有效观测作为基准；`rebase` 基准不为正时提示且不产生有效变换值。
 - `cycle.visible_cycles`（定义中的 `time.visible_cycles`）可选，严格整数 1–40，表示首次绘制时可见的总期数；缺省显示当前段、上一段及额外最多 3 个最近往期段（共最多 5 期）。按实际段起点倒序选择，不解析标签；隐藏期仍保留在数据与图例中，可逐条点开或使用“显示全部年份”开关。此项不改变 `cycles` 取数范围、区间带或统计。
 - `cycle.segment_styles` 可选，默认空列表，最多 40 项；每项 `label` 为 1–40 字，`color` 为 `#RRGGBB` 或 `null`，`width`、`dash` 沿用曲线样式校验（可省略或为 `null`）。仅当渲染段标签与 `label` 完全相等时应用，不裁剪空白、不解析年份或按顺序猜测映射；未匹配的段使用默认配色与样式。编辑周期设置时保留此列表。
 - `descriptor` 用于来源失效后的重新绑定候选，只作提示，不自动改绑。
+
+### 计算序列
+
+曲线可由研究员明确选择两个真实指标，保存如下公式和自定义图例（不保存计算结果）：
+
+```json
+{"derived": {"op": "sub", "a": "kb-...", "b": "kb-...", "unit_confirmed": false}, "label": "研究员填写的图例", "axis": "left"}
+```
+
+- `op` 只允许 `sub` 或 `div`；`a`、`b` 为当前研究台真实指标 ID，不允许嵌套公式、表达式文本或自行编造 ID。
+- 读取时只在两者都有有效观测的相同日期计算，不插值、不补点。除数为零、计算溢出等不可用结果不成为有效观测。
+- `sub` 要求非空单位完全一致，不做换算。任一操作数单位缺失时返回确认提示，研究员明确勾选后设置 `derived.unit_confirmed: true` 才可预览或保存；该确认不能放行两个已知但不一致的单位。单位缺失提示保留。
+- `div` 的结果单位固定为“倍”。计算序列可用于走势或周期模式；周期统计、近期均值与往期后续同样只用实际计算得到的有效日期。
+- 每次读取仍通过 `page_read_scope('indicators', …)` 读取真实操作数；每个操作数最多 `min(2000, floor(20000 / max(定义曲线数, 去重操作数数)))` 点，较小的 `recent.points` 继续生效。重复和失效曲线保留原定义点数上限约束；不会因为只显示一个公式而越过 20000 点预算。
+
+### 依据指标作图与图集
+
+单指标页“作图”默认选中该指标并打开周期对比；指标目录和自选中的指标可多选后作图；图表栏提供“新建图表”。面板可搜索当前目录、从自选快捷选择，最多选择 16 个指标；研究员选择周期、走势或批量周期图，并预览后保存，选择已有分组或输入新分组，保存后可加入账号自选。多指标周期对比上限 8 条曲线，走势上限 16 条。
+
+单指标默认周期模板只从当前已保存、未删除的原表导入周期图定义读取：要求 `origin.kind == native` 且 `origin.ref` 非空，`time.template.kind == repeat`，曲线 `descriptor.source_file`、`descriptor.sheet` 与目标指标目录元数据完全相同，并通过实际绑定 ID 核对 `source_knowledge_id`、`dataset_id`、`source_binding_id` 同源。按明确的 `template.start` 统计图表张数，取出现最多的模板起点；若同起点存在多种 `period`，再取该起点最常见的 `period`；并列取最早保存的定义。原表分段图没有通用重复起点，不推断起点；缺少上述证据时回到自然年。指标名、图表标题、分组名或关键词不参与默认选择。
+
+批量周期图一次为每个所选指标创建一张单指标周期图，要求共用一个非空分组，最多 16 张。未显式覆盖模板时，各指标按上述规则单独取默认值；确认保存前整组校验，任一 ID 无效则整组不写入。图表栏选择分组后复用既有卡片和懒加载整组平铺。批量预览同一请求的底层观测总预算不超过 20000 点；图集保存后仍只保存定义。
 
 周期模板可另存为共享对象（`module = "cycle_templates"`），结构同上文模板，权限规则同图表。
 
@@ -171,12 +197,16 @@
 |---|---|---|
 | GET | `/api/sn/charts` | 列表；`q`、`group`、`series_id`、`offset`、`limit≤100` |
 | POST | `/api/sn/charts` | 新建 |
+| GET | `/api/sn/charts/builder-options?series_id=` | 可选真实指标的默认 `template`、`template_source`（`native_sheet` / `natural_year`）及现有 `groups`；不读观测 |
+| POST | `/api/sn/charts/preview?date=` | 请求为完整 `ChartDefinition`，只读预览，沿用保存图表的数据路径和权限 |
+| POST | `/api/sn/charts/batch/preview?date=` | 请求 `{series_ids: [...], group, template?, cycles?, transform?}`，只读返回 `items: [{definition, payload}]` |
+| POST | `/api/sn/charts/batch` | 同上请求，原子创建图集，返回 `created` 与 `group`，需共享写权限 |
 | GET | `/api/sn/charts/{id}` | 定义与当前 revision |
 | PATCH | `/api/sn/charts/{id}` | 修改，需 `revision` |
 | DELETE | `/api/sn/charts/{id}` | 标记删除，需 `revision` |
 | GET | `/api/sn/charts/{id}/revisions` | 修订历史 |
 | GET | `/api/sn/charts/{id}/reconvert` | 按当前授权原表重新生成建议，返回 `id`、当前 `revision` 与 `suggestion`；只预览，确认后用现有 PATCH 保存 |
-| GET | `/api/sn/charts/{id}/data?date=` | 按定义读取数据（经 `page_read_scope('indicators', …)`，每条最多 `min(2000, floor(20000 / 曲线数))` 点，与结构化服务每次 20000 点的总上限一致）；`cycle` 模式返回第一节输出 |
+| GET | `/api/sn/charts/{id}/data?date=` | 按定义读取数据（经 `page_read_scope('indicators', …)`，包含计算序列操作数预算）；单指标 `cycle` 返回第一节输出，多指标返回各曲线的 `cycle` 子对象 |
 | GET | `/api/sn/indicators/{series_id}/cycle?template=&date=` | 单指标即时周期对比，不保存；`template` 为内置模板名或已保存模板 id |
 | GET/POST | `/api/sn/cycle-templates` | 内置与已保存模板列表、新建 |
 | POST | `/api/sn/charts/import/native/preview` | 转换建议，分页读取原生图表 |
@@ -191,6 +221,7 @@
   - 段标签完全匹配 `segment_styles` 时使用其中颜色、线宽、虚线，未指定属性使用默认值。默认当前段使用曲线颜色（缺失时用强调色）与粗线，上一段虚线，更早段为淡色细线；默认显隐遵循 `visible_cycles`，图例可点开隐藏段，“显示全部年份”开关可显示全部段，区间带不随显隐改变。图例与对应曲线样式一致；无有效点的段不画线、不列图例或悬停项。
   - 周期图在当前段最新点旁标注数值，悬停列出该位置各年真实值，按数值从高到低排列，当前段加粗，缺失位置明确提示。走势图在每条曲线末端标注最新值；空间不足时优先只标注左轴主曲线。
   - 最近 `band_cycles` 期最小–最大灰带与均值线保持原规则；缺失观测断线。走势图沿用定义颜色或默认调色板；支持“复制为图片”（SVG 转 PNG）和“下载 SVG”。一期只在新页面使用，不替换已有的四处画图代码。
+  - 多指标周期图按指标保留颜色，当前期实线、上一期同色虚线，左右轴按单位分配，禁用区间带；图例包括研究员填写的计算序列名称。统计面板按曲线逐行列出同期排名与较近 5 期均值（含实际样本数）。
 - **图表库** `/sn/indicators?tab=charts`：按分组、搜索浏览，卡片懒加载缩略图；卡片提示显示为标题旁带 `title` 说明的小标记。旧入口 `/sn/charts` 保留查询参数并跳转到指标页图表栏。进入详情 `/sn/charts/{id}`：大图、图下方一行小字提示、周期统计（排名、区间、较近 5 期均值、往期后续表）、编辑定义、修订历史。
 - **原表导入** `/sn/charts/import`：按工作表展示转换建议，批量确认。
 - **单指标页**：新增"周期对比"面板（模板下拉：内置 + 已保存；排名、往期区间、较近 5 期均值、往期后续逐期列表并标样本数）、"相关图表"（包含该指标的已保存图表）、"另存为图表"；"被谁在用"中加入图表引用数。
@@ -209,5 +240,6 @@
 - 两个服务完整测试通过；新增测试覆盖周期计算边界（缺失、稀疏、跨年、闰年、事件窗口、重叠段、样本不足、截止日）、转换规则、权限与修订冲突、页面交互。
 - 用本机棉花知识库副本核对：周期计算结果与离线逐项计算一致；原表转换数量与按当前规则的离线统计一致；“原图缺最新周期”提示与离线统计一致。旧规则历史基线为原生图表索引 721 张：188 张无可用曲线、442 张年度周期图、42 张分段周期图、49 张走势图，年度起点以 01-01、09-01 为主；允许缺年度后须重新统计，不将该旧基线当作新规则验收结果。统计以索引中 `linked` 曲线计，研究读取中未确认工作表的曲线会再减少。
 - Node 回归覆盖日历取整刻度、量级与精度、segments 月份轴、默认显示期数及全部年份开关、末端标注、双轴网格；Python 回归覆盖缺失年度的 repeat 判断、segments 各段终点上界、重新转换的来源与权限、修订冲突和 `visible_cycles` 校验。
+- 指标作图新增 Python 定义与接口验收：多指标共同周期和逐指标统计、派生公式日期交集与单位确认、原表模板元数据默认值、图集完整校验和共同读取预算、预览只读权限。Node 验收多曲线周期、上一期虚线、右轴和派生图例；浏览器夹具 `tests/chart-builder-ui.cjs` 覆盖面板入口、选择、预览、分组保存与图集。
 - 浏览器实际查看：单指标页周期面板、图表库、导入确认、图表详情编辑与修订、重新转换的预览和确认保存；同步更新受影响的组件断言。
 - 测试样例与预期数值只放在测试夹具中，不进入业务代码。

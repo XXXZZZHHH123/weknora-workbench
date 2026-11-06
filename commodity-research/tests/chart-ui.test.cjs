@@ -22,6 +22,14 @@ test('统计不可用时明确原因且不画有效统计', () => {
   const element = {}; U.stats(element, payload);
   assert.match(element.innerHTML, /有效往期不足 3 期/); assert.doesNotMatch(element.innerHTML, /同期排名/);
 });
+test('多指标统计逐行展示同期排名及各自近期均值，计算序列标签安全转义', () => {
+  const payload = {mode: 'cycle', curves: [{label: '指标甲', unit: '吨', cycle: cycle()},
+    {label: '计算 <A/B>', unit: '倍', cycle: {...cycle(), position: {...cycle().position, recent_mean: 2.5}}}]};
+  const element = {}; U.stats(element, payload);
+  assert.equal(element.hidden, false); assert.match(element.innerHTML, /较近 5 期均值/);
+  assert.match(element.innerHTML, /指标甲[\s\S]*1\/4[\s\S]*计算 &lt;A\/B&gt;[\s\S]*2.5/);
+  assert.doesNotMatch(element.innerHTML, /<A\/B>|往期后续/);
+});
 test('输入与提示安全转义，自定义起点按真实月日验证', () => {
   assert.equal(U.esc('<img a="\'&">'), '&lt;img a=&quot;&#39;&amp;&quot;&gt;');
   assert.equal(U.validMonthDay('02-29'), true); assert.equal(U.validMonthDay('02-30'), false);

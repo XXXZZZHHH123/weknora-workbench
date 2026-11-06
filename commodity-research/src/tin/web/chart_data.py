@@ -42,31 +42,141 @@ def catalog_fields(scope, identifiers):
     return fields
 
 
+def curve_series_ids(curve):
+    """The explicit operands are the only bindings of a computed curve."""
+    return [curve.series_id] if curve.series_id is not None else list(dict.fromkeys([curve.derived.a, curve.derived.b]))
+
+
+def definition_series_ids(definition):
+    return list(dict.fromkeys(sid for curve in definition.curves for sid in curve_series_ids(curve)))
+
+
+def curve_unit(curve, fields, *, reject=False):
+    """Resolve units from current catalog metadata, never from names or labels.
+
+    Read-only callers may inspect a broken saved definition. Validation callers
+    opt into errors, so a changed operand unit cannot produce a false spread.
+    """
+    if any(sid not in fields for sid in curve_series_ids(curve)):
+        return ''
+    if curve.derived is None:
+        return (fields[curve.series_id].get('unit') or '').strip()
+    formula = curve.derived
+    a, b = [(fields[sid].get('unit') or '').strip() for sid in (formula.a, formula.b)]
+    error = None
+    if formula.op == 'div':
+        return '倍'
+    if a and b and a != b:
+        error = '相减的两个指标单位必须一致；程序不会换算单位'
+    elif (not a or not b) and not formula.unit_confirmed:
+        error = '相减指标单位缺失，请研究员核对后明确确认单位一致'
+    if error:
+        if reject:
+            raise HTTPException(422, error)
+        return ''
+    return a or b
+
+
 def unit_notices(definition, fields, *, reject=False):
-    units, notices = {}, []
+    units, notices, unit_axes = {}, [], {}
     for curve in definition.curves:
-        field = fields.get(curve.series_id)
-        if field is None:
-            notices.append({'code': 'missing', 'series_id': curve.series_id, 'label': curve.label})
+        missing = [sid for sid in curve_series_ids(curve) if sid not in fields]
+        if missing:
+            notices.append({'code': 'missing', 'series_id': missing[0], 'label': curve.label})
             continue
-        unit = (field.get('unit') or '').strip()
+        try:
+            unit = curve_unit(curve, fields, reject=True)
+        except HTTPException as exc:
+            if reject:
+                raise
+            notices.append({'code': 'derived_unit_invalid', 'label': curve.label, 'message': exc.detail})
+            continue
         if not unit:
             notices.append({'code': 'unit_missing', 'series_id': curve.series_id, 'label': curve.label})
             continue
+        if curve.derived and curve.derived.op == 'sub' and any(
+                not (fields[sid].get('unit') or '').strip() for sid in curve_series_ids(curve)):
+            notices.append({'code': 'unit_confirmed', 'label': curve.label})
+        if definition.time.transform == 'rebase':
+            unit = '起点=100'
         units.setdefault(curve.axis, set()).add(unit)
+        unit_axes.setdefault(unit, set()).add(curve.axis)
+    if len(set().union(*units.values())) > 2:
+        if reject:
+            raise HTTPException(422, '超过两种单位，请改用change或rebase变换；change保留原单位仍需符合双轴规则，rebase起点=100；不会自动换算单位')
+        notices.append({'code': 'too_many_units'})
     for axis, values in units.items():
         if len(values) > 1:
             if reject:
                 raise HTTPException(422, f'{axis}轴的曲线单位不一致，请分别使用左右轴；不会自动换算单位')
             notices.append({'code': 'axis_unit_mismatch', 'axis': axis, 'units': sorted(values)})
+    for unit, axes in unit_axes.items():
+        if len(axes) > 1:
+            if reject:
+                raise HTTPException(422, '相同单位的曲线请使用同一根纵轴')
+            notices.append({'code': 'unit_axis_split', 'unit': unit})
     return notices
 
 
 def validate_definition(scope, definition):
-    fields = catalog_fields(scope, [curve.series_id for curve in definition.curves])
-    if any(curve.series_id not in fields for curve in definition.curves):
+    identifiers = definition_series_ids(definition)
+    fields = catalog_fields(scope, identifiers)
+    if any(sid not in fields for sid in identifiers):
         raise HTTPException(422, '曲线指标不存在于当前研究台来源目录，请重新选择真实指标')
     return unit_notices(definition, fields, reject=True)
+
+
+def resolve_curves(definition, fields, data):
+    """Evaluate formulas on the intersection of observed dates, without filling.
+
+    The result is ephemeral. Only ``derived`` is stored in a chart definition.
+    Zero denominators and non-finite arithmetic remain explicit missing points.
+    """
+    result = []
+    for curve in definition.curves:
+        ids = curve_series_ids(curve)
+        sources = [data.get(sid) for sid in ids]
+        item = {**curve.model_dump(mode='json'), 'unit': curve_unit(curve, fields),
+                'status': 'linked', 'points': [], 'freq_days': None,
+                'limited': any(source and source.get('limited') for source in sources), 'warnings': []}
+        if any(sid not in fields or data.get(sid) is None for sid in ids):
+            item['status'] = 'missing'
+            result.append(item)
+            continue
+        try:
+            curve_unit(curve, fields, reject=True)
+        except HTTPException as exc:
+            item.update(status='invalid', warnings=[{'code': 'derived_unit_invalid', 'message': exc.detail}])
+            result.append(item)
+            continue
+        if curve.derived is None:
+            item.update({key: data[curve.series_id].get(key) for key in
+                ('points', 'freq_days', 'limited', 'point_limit', 'source_version')})
+        else:
+            formula = curve.derived
+            observations = []
+            for sid in (formula.a, formula.b):
+                observations.append({point['date']: point['value'] for point in data[sid]['points']
+                    if type(point['value']) in {int, float} and math.isfinite(point['value'])})
+            for stamp in sorted(observations[0].keys() & observations[1].keys()):
+                a, b = observations[0][stamp], observations[1][stamp]
+                value = a - b if formula.op == 'sub' else a / b if b != 0 else None
+                if value is None:
+                    item['warnings'].append({'code': 'division_by_zero', 'date': stamp})
+                elif not math.isfinite(value):
+                    value = None
+                    item['warnings'].append({'code': 'derived_non_finite', 'date': stamp})
+                item['points'].append({'date': stamp, 'value': value})
+            dates = [date.fromisoformat(point['date']) for point in item['points'] if point['value'] is not None]
+            gaps = [(b - a).days for a, b in zip(dates, dates[1:])]
+            item['freq_days'] = median(gaps) if gaps else None
+            item['point_limit'] = min(source.get('point_limit', 2000) for source in sources)
+            versions = {source.get('source_version') for source in sources if source.get('source_version')}
+            if len(versions) > 1:
+                raise HTTPException(409, '计算序列的来源在读取期间已变化，请刷新')
+            item['source_version'] = next(iter(versions), None)
+        result.append(item)
+    return result
 
 
 def read_series(identifiers, day, *, limit=2000):

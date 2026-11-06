@@ -47,15 +47,21 @@
   function chartSummary(data, definition) {
     const cycle = definition?.time?.mode === 'cycle';
     const finite = value => typeof value === 'number' && Number.isFinite(value);
-    const latest = points => (points || []).filter(point => finite(cycle ? point.raw : point.value))
+    const sourceValue = point => cycle || finite(point.raw) ? point.raw : point.value;
+    const latest = points => (points || []).filter(point => finite(sourceValue(point)))
       .reduce((previous, point) => !previous || point.date > previous.date ? point : previous, null);
     if (cycle) {
-      const segment = (data.segments || []).find(item => item.current), point = latest(segment?.points);
-      return [{label: definition.curves?.[0]?.label || '', value: point?.raw ?? null, date: point?.date || null,
-        unit: data.unit || '', rank: data.position?.rank ?? null, n: data.position?.n ?? null}];
+      const summarize = (result, label, unit) => {
+        const segment = (result?.segments || []).find(item => item.current), point = latest(segment?.points);
+        return {label, value: point?.raw ?? null, date: point?.date || null,
+          unit: unit || '', rank: result?.position?.rank ?? null, n: result?.position?.n ?? null};
+      };
+      if ((data.curves || []).some(curve => curve.cycle)) return data.curves.map((curve, index) =>
+        summarize(curve.cycle, curve.label || definition.curves?.[index]?.label || '', curve.unit));
+      return [summarize(data, definition.curves?.[0]?.label || '', data.unit)];
     }
     return (data.curves || []).map(curve => { const point = latest(curve.points); return {
-      label: curve.label || '', value: point?.value ?? null, date: point?.date || null, unit: curve.unit || '', rank: null, n: null,
+      label: curve.label || '', value: point ? sourceValue(point) : null, date: point?.date || null, unit: curve.unit || '', rank: null, n: null,
     }; });
   }
   function pool(limit = 4) {

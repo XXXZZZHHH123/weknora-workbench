@@ -138,6 +138,30 @@ def test_charts_preserve_missing_curves_without_descriptor_rebinding(chart_reads
     assert data['charts'][0]['curves'] == [{'series_id': SID, 'label': '保留名称', 'name': '保留名称', 'status': 'missing'}]
 
 
+def test_charts_derived_references_are_readable_and_filter_by_both_real_operands(chart_reads):
+    client, read, state = chart_reads
+    formula = {'op': 'sub', 'a': SID, 'b': OTHER}
+    saved = create(client, title='研究员公式图', curves=[{'derived': formula, 'label': '研究员自定义图例'}])
+    create(client, title='其他图')
+    response = read({'operation': 'charts'})
+    assert response.status_code == 200, response.text
+    derived = next(item for item in response.json()['charts'] if item['id'] == saved['id'])
+    assert derived['curves'] == [{'series_id': None, 'derived': {**formula, 'unit_confirmed': False},
+        'label': '研究员自定义图例', 'name': '研究员自定义图例', 'status': 'linked'}]
+    for operand in (SID, OTHER):
+        response = read({'operation': 'charts', 'search': '研究员公式图', 'series_id': operand})
+        assert response.status_code == 200, response.text
+        assert [item['id'] for item in response.json()['charts']] == [saved['id']]
+    assert read({'operation': 'charts', 'search': '研究员公式图',
+                 'series_id': 'kb-' + 'd' * 48}).json()['charts'] == []
+    del state.fields[OTHER]
+    response = read({'operation': 'charts', 'series_id': OTHER})
+    assert response.status_code == 200, response.text
+    curve = response.json()['charts'][0]['curves'][0]
+    assert curve['status'] == 'missing' and curve['derived'] == {**formula, 'unit_confirmed': False}
+    assert all(body.get('catalog_only') for _, body in state.requests)
+
+
 def test_cycle_uses_chart_calculation_and_bounded_projection_without_curve_points(chart_reads):
     client, read, state = chart_reads
     observations = []

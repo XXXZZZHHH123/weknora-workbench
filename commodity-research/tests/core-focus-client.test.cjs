@@ -40,6 +40,27 @@ test('trend card summary keeps each curve and ignores missing values', () => {
   assert.equal(summary[0].value, 7); assert.equal(summary[0].date, '2026-11-01'); assert.equal(summary[1].value, null);
 });
 
+test('multi-cycle cards summarize every real or computed curve and keep missing current periods empty', () => {
+  const definition = {time: {mode: 'cycle'}, curves: [{label: '量'}, {derived: {op: 'div', a: 'a', b: 'b'}, label: '研究员比值'}, {label: '缺当前'}]};
+  const result = (raw, rank, n) => ({segments: [{current: false, points: [{date: '2025-11-05', raw: 999}]},
+    {current: true, points: [{date: '2026-11-05', raw, value: 110}, {date: '2026-11-06', raw: null, value: null}]}], position: {rank, n}});
+  const data = {mode: 'cycle', curves: [{label: '量', unit: '吨', cycle: result(14, 2, 5)},
+    {label: '研究员比值', unit: '倍', cycle: result(2, 3, 7)},
+    {label: '缺当前', unit: '吨', cycle: {segments: [{current: false, points: [{date: '2025-11-05', raw: 999}]}], position: null}}]};
+  const original = structuredClone(data);
+  assert.deepEqual(P.chartSummary(data, definition), [
+    {label: '量', value: 14, date: '2026-11-05', unit: '吨', rank: 2, n: 5},
+    {label: '研究员比值', value: 2, date: '2026-11-05', unit: '倍', rank: 3, n: 7},
+    {label: '缺当前', value: null, date: null, unit: '吨', rank: null, n: null}]);
+  assert.deepEqual(data, original);
+});
+
+test('transformed trend cards retain original values with their actual source units', () => {
+  const summary = P.chartSummary({transform: 'rebase', curves: [{label: '量', unit: '吨', points: [
+    {date: '2026-11-01', raw: 20, value: 100}, {date: '2026-11-02', raw: 30, value: 150}]}]}, {time: {mode: 'recent', transform: 'rebase'}});
+  assert.deepEqual(summary, [{label: '量', value: 30, date: '2026-11-02', unit: '吨', rank: null, n: null}]);
+});
+
 test('chart work is lazy until queued, shares at most four running tasks and survives failed tasks', async () => {
   const enqueue = P.pool(4); let active = 0, peak = 0, started = 0;
   const releases = [];

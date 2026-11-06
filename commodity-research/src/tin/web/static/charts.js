@@ -121,7 +121,13 @@
         U.notice(status, data.total ? '' : '没有匹配图表。可从原表导入，或在单指标页另存为图表。');
       } catch (error) {
         if (error.name !== 'AbortError' && ownGeneration === generation) { U.notice(status, error.message, 'error'); more.hidden = true; }
-      } finally { if (ownGeneration === generation) { busy = false; more.disabled = false; } }
+      } finally {
+        if (ownGeneration === generation) {
+          busy = false; more.disabled = false;
+          // A selected group is a gallery: tile all definitions; thumbnails still load near the viewport.
+          if (!closed && selectedGroup !== null && nextOffset !== null && !more.hidden) setTimeout(() => load(false), 0);
+        }
+      }
     }
     // The list API has no group catalogue. Read only definition metadata to index all groups.
     async function indexGroups() {
@@ -139,6 +145,7 @@
     $('chart-search-form').addEventListener('submit', event => { event.preventDefault(); clearTimeout(searchTimer); load(true); });
     $('chart-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(true), 300); });
     more.addEventListener('click', () => load(false));
+    document.addEventListener('chart:saved', () => { load(true); indexGroups(); });
     window.addEventListener('pagehide', () => { closed = true; clearTimeout(searchTimer); listController?.abort(); controllers.forEach(c => c.abort()); observer?.disconnect(); renderers.forEach(c => c.destroy()); }, {once: true});
     load(true); indexGroups();
   }
@@ -187,11 +194,12 @@
       input('visible_cycles').value = time.visible_cycles ?? '';
       if ($('chart-reconvert-panel')) $('chart-reconvert-panel').hidden = def.origin?.kind !== 'native' || !def.origin.ref;
       setTemplateOptions(time);
-      $('chart-curve-fields').innerHTML = def.curves.map((curve, index) => `<div class="charts-curve" data-curve-index="${index}"><div><strong>${E(curve.label)}</strong><p class="charts-muted">${E(curve.series_id)}</p></div><label class="charts-field">图型<select data-curve-kind><option value="line">线</option><option value="bar">柱</option><option value="area">面积</option></select></label><label class="charts-field">纵轴<select data-curve-axis><option value="left">左轴</option><option value="right">右轴</option></select></label><label class="charts-field">颜色（留空用调色板）<input data-curve-color maxlength="7" placeholder="#RRGGBB" pattern="#[0-9a-fA-F]{6}"></label></div>`).join('');
+      $('chart-curve-fields').innerHTML = def.curves.map((curve, index) => `<div class="charts-curve" data-curve-index="${index}"><div><strong>${E(curve.label)}</strong><p class="charts-muted">${E(curve.derived ? `${curve.derived.a} ${curve.derived.op === 'sub' ? '−' : '÷'} ${curve.derived.b}` : curve.series_id)}</p>${def.time.mode === 'cycle' && def.curves.length > 1 ? '<label>周期显示<select data-curve-cycle><option value="current">当前期</option><option value="current_and_previous">当前期 + 上一期（虚线）</option></select></label>' : ''}</div><label class="charts-field">图型<select data-curve-kind><option value="line">线</option><option value="bar">柱</option><option value="area">面积</option></select></label><label class="charts-field">纵轴<select data-curve-axis><option value="left">左轴</option><option value="right">右轴</option></select></label><label class="charts-field">颜色（留空用调色板）<input data-curve-color maxlength="7" placeholder="#RRGGBB" pattern="#[0-9a-fA-F]{6}"></label></div>`).join('');
       $('chart-curve-fields').querySelectorAll('[data-curve-index]').forEach((row, index) => {
         row.querySelector('[data-curve-kind]').value = def.curves[index].kind;
         row.querySelector('[data-curve-axis]').value = def.curves[index].axis;
         row.querySelector('[data-curve-color]').value = def.curves[index].style?.color || '';
+        if (row.querySelector('[data-curve-cycle]')) row.querySelector('[data-curve-cycle]').value = def.curves[index].curve_cycles || time.curve_cycles || 'current';
       });
       timeFields(); fields.disabled = !config.can_write;
     }
@@ -247,8 +255,9 @@
       if (mode === 'recent') time = {mode, points: Number(input('points').value)};
       if (mode === 'since') time = {mode, start: input('start').value};
       if (mode === 'range') time = {mode, start: input('start').value, end: input('end').value};
+      if (mode !== 'cycle') time.transform = record.definition.time.transform || 'raw';
       if (mode === 'cycle') {
-        if (record.definition.curves.length !== 1) throw new Error('周期模式一期只支持一条指标曲线，请保留走势模式');
+        if (record.definition.curves.length > 8) throw new Error('单张周期图最多 8 条曲线');
         let template;
         if (input('template').value === '__custom') {
           const start = input('cycle_start').value.trim(); if (!U.validMonthDay(start)) throw new Error('请填写有效的周期起点 MM-DD');
@@ -256,11 +265,12 @@
         } else template = input('template').value === '__current' ? currentTemplate : templates.find(t => t.id === input('template').value)?.template;
         if (!template) throw new Error('请选择周期模板');
         time = {mode, template: {...template, transform: input('transform').value}, cycles: Number(input('cycles').value), band_cycles: Number(input('band_cycles').value), transform: input('transform').value,
-          segment_styles: record.definition.time.segment_styles || []};
+          segment_styles: record.definition.time.segment_styles || [], curve_cycles: record.definition.time.curve_cycles || 'current'};
         if (input('visible_cycles').value !== '') time.visible_cycles = Number(input('visible_cycles').value);
       }
       const curves = [...$('chart-curve-fields').querySelectorAll('[data-curve-index]')].map((row, index) => ({...record.definition.curves[index],
         kind: row.querySelector('[data-curve-kind]').value, axis: row.querySelector('[data-curve-axis]').value,
+        ...(row.querySelector('[data-curve-cycle]') ? {curve_cycles: row.querySelector('[data-curve-cycle]').value} : {}),
         style: {...record.definition.curves[index].style, color: row.querySelector('[data-curve-color]').value.trim() || null}}));
       return {revision: record.revision, title: input('title').value.trim(), group: input('group').value.trim(), note: input('note').value, time, curves};
     }

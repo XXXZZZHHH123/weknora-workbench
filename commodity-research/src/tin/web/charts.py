@@ -1,19 +1,23 @@
 """Shared chart definitions, revisions, templates and bounded chart data."""
 from datetime import datetime, timezone
+from copy import deepcopy
 import json
+import math
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from pydantic import TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError, model_validator
 from sqlalchemy import func, select, update
 
-from tin.compute.cycles import BUILTIN_TEMPLATES, compute_cycles
+from tin.compute.cycles import BUILTIN_TEMPLATES, compute_cycles, compute_multi_cycles
 from tin.config import settings
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
 from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
 from tin.models import SourceMapping
-from tin.schemas.chart import ChartDefinition, ChartUpdate, CycleTemplate, RevisionInput
-from tin.web.chart_data import catalog_fields, cutoff, read_series, unit_notices, validate_definition
+from tin.schemas.chart import ChartDefinition, ChartModel, ChartUpdate, CycleTemplate, RevisionInput
+from tin.web.chart_data import (catalog_fields, cutoff, curve_series_ids, curve_unit,
+    definition_series_ids, read_series, resolve_curves, unit_notices, validate_definition)
 from tin.web.workbench_artifacts import record_revision
 
 router = APIRouter(prefix='/api/sn')
@@ -69,8 +73,9 @@ def serialize(row, *, definition=None, fields=None):
     result['definition'] = definition.model_dump(mode='json')
     result['warnings'] = unit_notices(definition, fields) if fields is not None else []
     if fields is not None:
-        result['curves'] = [{**curve.model_dump(mode='json'), 'status': 'linked' if curve.series_id in fields else 'missing',
-                             'unit': fields.get(curve.series_id, {}).get('unit')} for curve in definition.curves]
+        result['curves'] = [{**curve.model_dump(mode='json'),
+            'status': 'linked' if all(sid in fields for sid in curve_series_ids(curve)) else 'missing',
+            'unit': curve_unit(curve, fields)} for curve in definition.curves]
     if row.source_snapshots:
         result['source_snapshots'] = row.source_snapshots
     return result
@@ -105,10 +110,10 @@ def list_charts(q: str = Query('', max_length=200), group: str | None = Query(No
         rows = session.scalars(query.order_by(WorkbenchArtifact.updated_at.desc(), WorkbenchArtifact.id)).all()
         definitions = [(row, decode_definition(row)) for row in rows]
         if series_id is not None:
-            definitions = [(row, value) for row, value in definitions if any(c.series_id == series_id for c in value.curves)]
+            definitions = [(row, value) for row, value in definitions if series_id in definition_series_ids(value)]
         total = len(definitions)
         selected = definitions[offset:offset + limit]
-        fields = catalog_fields(scope, [curve.series_id for _, value in selected for curve in value.curves])
+        fields = catalog_fields(scope, [sid for _, value in selected for sid in definition_series_ids(value)])
         return {'items': [serialize(row, definition=value, fields=fields) for row, value in selected],
                 'total': total, 'offset': offset, 'next_offset': offset + len(selected) if offset + len(selected) < total else None}
 
@@ -125,13 +130,148 @@ def create_chart(body: ChartDefinition):
         return result
 
 
+class BatchChartInput(ChartModel):
+    series_ids: list[str] = Field(min_length=1, max_length=16)
+    group: str = Field(min_length=1, max_length=80)
+    template: CycleTemplate | None = None
+    cycles: int = Field(default=8, ge=1, le=40, strict=True)
+    transform: Literal['raw', 'change', 'rebase'] = 'raw'
+
+    @model_validator(mode='after')
+    def distinct(self):
+        if len(set(self.series_ids)) != len(self.series_ids):
+            raise ValueError('批量作图不能重复选择同一指标')
+        if not self.group.strip():
+            raise ValueError('批量周期图需要选择或新建同一分组')
+        return self
+
+
+def builder_definitions(scope):
+    with artifact_session(scope) as session:
+        rows = session.scalars(artifact_query().order_by(WorkbenchArtifact.created_at, WorkbenchArtifact.id)).all()
+        return [decode_definition(row) for row in rows]
+
+
+def default_cycle_template(scope, field, definitions):
+    """Use explicit imported chart bindings and repeat metadata, never names.
+
+    A sheet belongs to its real source document/dataset. Descriptors supply the
+    exact source file and sheet, and current IDs confirm that identity. A native
+    segments template has no repeating start and cannot suggest one.
+    """
+    fallback = deepcopy(BUILTIN_TEMPLATES['自然年'])
+    source_file, sheet = field.get('source_file'), field.get('sheet')
+    if not source_file or not sheet:
+        return fallback, 'natural_year'
+    candidates = []
+    for value in definitions:
+        if (value.origin.kind != 'native' or not value.origin.ref or value.time.mode != 'cycle'
+                or value.time.template.kind != 'repeat'):
+            continue
+        matching = [curve for curve in value.curves if curve.series_id
+            and curve.descriptor.source_file == source_file and curve.descriptor.sheet == sheet]
+        if matching:
+            candidates.append((value, matching))
+    ids = [curve.series_id for _, curves in candidates for curve in curves]
+    imported_fields = catalog_fields(scope, ids) if ids else {}
+    counts, period_counts, templates = {}, {}, {}
+    identity_keys = ('source_knowledge_id', 'dataset_id', 'source_binding_id')
+    for value, curves in candidates:
+        if not any(curve.series_id in imported_fields
+                   and all(field.get(key) and imported_fields[curve.series_id].get(key) == field.get(key)
+                           for key in identity_keys) for curve in curves):
+            continue
+        template = value.time.template.model_dump(mode='json', exclude_none=True)
+        start = template['start']
+        key = (start, template['period'])
+        counts[start] = counts.get(start, 0) + 1
+        period_counts[key] = period_counts.get(key, 0) + 1
+        templates.setdefault(key, template)
+    if not counts:
+        return fallback, 'natural_year'
+    # dict order retains the first explicit definition when counts tie.
+    chosen = max(counts, key=counts.get)
+    period = max((key for key in period_counts if key[0] == chosen), key=period_counts.get)
+    selected = deepcopy(templates[period])
+    selected['transform'] = 'raw'
+    return selected, 'native_sheet'
+
+
+@router.get('/charts/builder-options')
+def builder_options(series_id: str | None = Query(None, max_length=128)):
+    scope = require_scope()
+    definitions = builder_definitions(scope)
+    template, source = deepcopy(BUILTIN_TEMPLATES['自然年']), 'natural_year'
+    if series_id is not None:
+        fields = catalog_fields(scope, [series_id])
+        if series_id not in fields:
+            raise HTTPException(422, '指标不存在于当前研究台来源目录')
+        template, source = default_cycle_template(scope, fields[series_id], definitions)
+    return {'groups': sorted({value.group for value in definitions if value.group}),
+            'template': template, 'template_source': source}
+
+
+@router.post('/charts/preview')
+def preview_chart(body: ChartDefinition, date: str | None = None):
+    scope = require_scope()
+    validate_definition(scope, body)
+    return definition_data(scope, body, cutoff(date))
+
+
+def batch_definitions(scope, body):
+    fields = catalog_fields(scope, body.series_ids)
+    if any(sid not in fields for sid in body.series_ids):
+        raise HTTPException(422, '指标不存在于当前研究台来源目录，请重新选择')
+    saved = builder_definitions(scope) if body.template is None else []
+    definitions = []
+    for sid in body.series_ids:
+        field = fields[sid]
+        label = (field.get('metric') or field.get('name') or '指标')[:120]
+        template = (body.template.model_dump(mode='json', exclude_none=True) if body.template is not None
+                    else default_cycle_template(scope, field, saved)[0])
+        template['transform'] = body.transform
+        value = ChartDefinition.model_validate({'title': label, 'group': body.group,
+            'curves': [{'series_id': sid, 'label': label, 'descriptor': {
+                key: field.get(key) or '' for key in ('source_file', 'sheet', 'metric', 'column')}}],
+            'time': {'mode': 'cycle', 'template': template, 'cycles': body.cycles, 'transform': body.transform}})
+        definitions.append(value)
+    return definitions, fields
+
+
+@router.post('/charts/batch/preview')
+def preview_batch(body: BatchChartInput, date: str | None = None):
+    scope = require_scope()
+    day = cutoff(date)
+    definitions, fields = batch_definitions(scope, body)
+    limit = min(2000, 20000 // len(body.series_ids))
+    data = read_series(body.series_ids, day, limit=limit)
+    return {'items': [{'definition': value.model_dump(mode='json'),
+                       'payload': definition_data(scope, value, day, fields=fields, data=data, point_limit=limit)}
+                      for value in definitions], 'group': body.group, 'point_limit': limit}
+
+
+@router.post('/charts/batch', status_code=201)
+def create_batch(body: BatchChartInput):
+    scope = require_scope(write=True)
+    definitions, fields = batch_definitions(scope, body)
+    # Validate the whole batch before any insert; the transaction is atomic.
+    notices = [unit_notices(value, fields, reject=True) for value in definitions]
+    with artifact_session(scope) as session:
+        rows = [create_row(session, scope, value) for value in definitions]
+        session.commit()
+        created = [serialize(row, definition=value) for row, value in zip(rows, definitions)]
+        for item, warnings in zip(created, notices):
+            item['warnings'] = warnings
+        return {'created': created, 'group': body.group}
+
+
 # Keep this literal route ahead of /charts/{chart_id}.
 @router.get('/charts/anomalies')
 def chart_anomalies(date: str | None = None, limit: int | None = Query(None, ge=1)):
     """Compare every saved cycle chart; limit applies after the global sort."""
     scope = require_scope()
     day = cutoff(date)
-    grouped, items, failed = {}, [], []
+    grouped, items, failed, compound = {}, [], [], []
 
     def failure(row, error):
         reason = error.detail if isinstance(error, HTTPException) else str(error)
@@ -143,7 +283,10 @@ def chart_anomalies(date: str | None = None, limit: int | None = Query(None, ge=
             try:
                 definition = decode_definition(row)
                 if definition.time.mode == 'cycle':
-                    grouped.setdefault(definition.curves[0].series_id, []).append((row, definition))
+                    if len(definition.curves) == 1 and definition.curves[0].series_id:
+                        grouped.setdefault(definition.curves[0].series_id, []).append((row, definition))
+                    else:
+                        compound.append((row, definition))
             except Exception as error:
                 failure(row, error)
 
@@ -186,17 +329,41 @@ def chart_anomalies(date: str | None = None, limit: int | None = Query(None, ge=
     batch_size = min(256, 20000 // 2000)
     for offset in range(0, len(identifiers), batch_size):
         read_batch(identifiers[offset:offset + batch_size])
+    for row, definition in compound:
+        try:
+            fields = catalog_fields(scope, definition_series_ids(definition))
+            identifiers = definition_series_ids(definition)
+            point_limit = min(2000, 20000 // max(len(definition.curves), len(identifiers)))
+            # Share the resolved observations with current and preceding-date
+            # comparisons instead of persisting a derived result anywhere.
+            raw = read_series([sid for sid in identifiers if sid in fields], day, limit=point_limit)
+            payload = definition_data(scope, definition, day, fields=fields, data=raw, point_limit=point_limit)
+            curves = resolve_curves(definition, fields, raw)
+            current = [item['cycle'] for item in payload['curves']] if len(curves) > 1 else [payload]
+            for index, (curve, series, cycle) in enumerate(zip(definition.curves, curves, current)):
+                if series['status'] == 'missing':
+                    raise HTTPException(404, '指标已不在当前来源目录')
+                field = fields.get(curve.series_id, {})
+                item = anomaly_item(row, definition, field, series, day, curve=curve, current=cycle)
+                if item is not None:
+                    item['curve_index'] = index
+                    items.append(item)
+        except Exception as error:
+            if isinstance(error, HTTPException) and error.status_code in {401, 403, 409}:
+                raise
+            failure(row, error)
     items.sort(key=lambda item: (not any(reason in {'extreme_high', 'extreme_low'} for reason in item['reasons']),
                                 -abs(item['rank_change'] or 0), item['title'], item['id']))
     failed.sort(key=lambda item: item['id'])
     return {'as_of': day.isoformat(), 'items': items[:limit], 'total': len(items), 'failed': failed}
 
 
-def anomaly_item(row, definition, field, series, day):
+def anomaly_item(row, definition, field, series, day, *, curve=None, current=None):
+    curve = curve or definition.curves[0]
     time = definition.time
     template = time.template.model_dump(mode='json', exclude_none=True)
     template['transform'] = time.transform
-    current = cycle_result(series, template, day, band_cycles=time.band_cycles, cycles=time.cycles)
+    current = current or cycle_result(series, template, day, band_cycles=time.band_cycles, cycles=time.cycles)
     position = current['position']
     if position is None or position['n'] < 3 or position.get('rank') is None:
         return None
@@ -217,9 +384,11 @@ def anomaly_item(row, definition, field, series, day):
     if not reasons:
         return None
     recent_values = [peer['value'] for peer in position['peers'][:5]]
-    return {'id': row.id, 'title': definition.title, 'revision': row.revision, 'series_id': definition.curves[0].series_id,
-            'metric': field.get('metric') or series['name'], 'date': position['date'], 'value': position['value'],
-            'unit': field.get('unit'), 'transform': time.transform, 'rank': position['rank'], 'n': position['n'],
+    return {'id': row.id, 'title': definition.title, 'revision': row.revision, 'series_id': curve.series_id,
+            'derived': curve.derived.model_dump() if curve.derived else None,
+            'metric': curve.label if curve.derived else field.get('metric') or series.get('name') or curve.label,
+            'date': position['date'], 'value': position['value'],
+            'unit': series.get('unit') or field.get('unit'), 'transform': time.transform, 'rank': position['rank'], 'n': position['n'],
             'previous_date': previous['date'] if previous else None, 'previous_rank': previous_rank,
             'previous_n': previous['n'] if previous else None, 'rank_change': rank_change,
             'share_below': position['share_below'], 'vs_recent_mean': position['vs_recent_mean'],
@@ -233,7 +402,7 @@ def get_chart(chart_id: str):
     with artifact_session(scope) as session:
         row = load_artifact(session, chart_id)
         definition = decode_definition(row)
-        fields = catalog_fields(scope, [curve.series_id for curve in definition.curves])
+        fields = catalog_fields(scope, definition_series_ids(definition))
         return serialize(row, definition=definition, fields=fields)
 
 
@@ -336,40 +505,66 @@ def chart_data(chart_id: str, date: str | None = None):
     with artifact_session(scope) as session:
         row = load_artifact(session, chart_id)
         definition, revision = decode_definition(row), row.revision
-    fields = catalog_fields(scope, [curve.series_id for curve in definition.curves])
+    return definition_data(scope, definition, day, chart_id=chart_id, revision=revision)
+
+
+def definition_data(scope, definition, day, *, chart_id=None, revision=None, fields=None, data=None, point_limit=None):
+    """Preview and saved charts share the same permission and observation path."""
+    identifiers = definition_series_ids(definition)
+    fields = catalog_fields(scope, identifiers) if fields is None else fields
     notices = unit_notices(definition, fields)
-    if any(item['code'] == 'axis_unit_mismatch' for item in notices):
-        raise HTTPException(409, '来源单位已变化，同一纵轴单位不一致，请修改图表')
+    if any(item['code'] in {'axis_unit_mismatch', 'derived_unit_invalid', 'too_many_units', 'unit_axis_split'}
+           for item in notices):
+        raise HTTPException(409, '来源单位已变化，公式或纵轴单位校验未通过，请修改图表并重新核对单位')
     time = definition.time
     if time.mode == 'range':
         day = min(day, time.end)
-    limit = min(2000, 20000 // len(definition.curves))
+    # A derived curve consumes its real operands' budgets; repeated/missing
+    # curves still retain the existing definition-based cap.
+    limit = point_limit or min(2000, 20000 // max(len(definition.curves), len(identifiers)))
     if time.mode == 'recent':
         limit = min(limit, time.points)
-    data = read_series([sid for sid in dict.fromkeys(c.series_id for c in definition.curves) if sid in fields], day, limit=limit)
+    data = read_series([sid for sid in identifiers if sid in fields], day, limit=limit) if data is None else data
     if any((fields[sid].get('unit') or '').strip() and fields[sid]['unit'].strip() != series['unit'].strip()
            for sid, series in data.items()):
         raise HTTPException(409, '图表单位在目录与观测读取之间已变化，请刷新核对')
+    curves = resolve_curves(definition, fields, data)
+    for curve in curves:
+        if curve['status'] == 'linked':
+            curve['status'] = 'ok'
+        notices.extend({**warning, 'label': curve['label']} for warning in curve.get('warnings', []))
     if time.mode == 'cycle':
-        sid = definition.curves[0].series_id
         template = time.template.model_dump(mode='json', exclude_none=True)
         template['transform'] = time.transform
-        series = data.get(sid, {'points': [], 'limited': False})
-        result = cycle_result(series, template, day, band_cycles=time.band_cycles, cycles=time.cycles)
-        result.update(id=chart_id, revision=revision, series_id=sid, unit=fields.get(sid, {}).get('unit'), notices=notices)
+        if len(curves) == 1:
+            result = cycle_result(curves[0], template, day, band_cycles=time.band_cycles, cycles=time.cycles)
+            result.update(series_id=definition.curves[0].series_id, unit=curves[0]['unit'])
+        else:
+            result = compute_multi_cycles(curves, template, day, band_cycles=time.band_cycles, cycles=time.cycles)
+        result.update(id=chart_id, revision=revision, notices=notices, point_limit=limit)
         return result
-    curves = []
-    for curve in definition.curves:
-        series = data.get(curve.series_id)
-        points = series['points'] if series is not None else []
+    for curve in curves:
+        points = curve['points']
         if time.mode in {'since', 'range'}:
             points = [point for point in points if point['date'] >= time.start.isoformat()]
-        curves.append({**curve.model_dump(mode='json'), 'status': 'ok' if series else 'missing',
-                       'unit': fields.get(curve.series_id, {}).get('unit'), 'points': points,
-                       'freq_days': series['freq_days'] if series else None,
-                       'limited': series['limited'] if series else False})
+        if time.transform != 'raw':
+            base = next((point['value'] for point in points if point['value'] is not None), None)
+            usable = base is not None and (time.transform != 'rebase' or base > 0)
+            if not usable and points:
+                notices.append({'code': 'invalid_base', 'label': curve['label']})
+            transformed = []
+            for point in points:
+                value = (point['value'] - base if time.transform == 'change' else point['value'] / base * 100
+                         ) if usable and point['value'] is not None else None
+                if value is not None and not math.isfinite(value):
+                    value = None
+                    notices.append({'code': 'transform_non_finite', 'label': curve['label'], 'date': point['date']})
+                transformed.append({**point, 'raw': point['value'], 'value': value})
+            points = transformed
+        curve['points'] = points
     return {'id': chart_id, 'revision': revision, 'as_of': day.isoformat(), 'curves': curves,
-            'axes': definition.axes.model_dump(), 'warnings': notices, 'point_limit': limit}
+            'axes': definition.axes.model_dump(), 'warnings': notices, 'point_limit': limit,
+            'transform': time.transform}
 
 
 @router.get('/indicators/{series_id}/cycle')

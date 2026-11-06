@@ -97,7 +97,7 @@ def test_short_disjoint_segments_preserve_labels_and_dates():
 def test_other_structures_are_open_ended_trends_even_when_names_look_like_years(curves):
     result = propose_chart(native_chart(title='年度周期', curves=curves), FIELDS)
     assert result['convertible'] and result['mode'] == 'trend'
-    assert result['definition']['time'] == {'mode': 'since', 'start': '2020-01-04'}
+    assert result['definition']['time'] == {'mode': 'since', 'start': '2020-01-04', 'transform': 'raw'}
     assert len(result['definition']['curves']) == len(curves)
 
 
@@ -108,7 +108,7 @@ def test_trends_with_up_to_sixteen_curves_can_be_converted(count):
     curves = [native_curve(series_id=sid, label=f'曲线{index}') for index, sid in enumerate(identifiers)]
     result = propose_chart(native_chart(curves=curves), fields)
     assert result['convertible'] and result['mode'] == 'trend'
-    assert result['definition']['time'] == {'mode': 'since', 'start': '2020-01-04'}
+    assert result['definition']['time'] == {'mode': 'since', 'start': '2020-01-04', 'transform': 'raw'}
     assert [curve['series_id'] for curve in result['definition']['curves']] == identifiers
     assert result['missing_curves'] == []
 
@@ -305,6 +305,6 @@ def test_seasonal_columns_with_shared_dates_stay_trends_and_keep_each_year_colum
     # Different columns are distinct real series, regardless of their year-like legends.
     result = propose_chart(native, {sid: {**FIELDS[sid], 'unit': '件'} for sid in identifiers})
     assert result['convertible'] and result['mode'] == 'trend'
-    assert result['definition']['time'] == {'mode': 'since', 'start': '2020-01-04'}
+    assert result['definition']['time'] == {'mode': 'since', 'start': '2020-01-04', 'transform': 'raw'}
     assert [c['series_id'] for c in result['definition']['curves']] == list(identifiers)
     assert [c['label'] for c in result['definition']['curves']] == ['2020', '2021', '2022']

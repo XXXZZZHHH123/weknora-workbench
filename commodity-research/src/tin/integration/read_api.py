@@ -349,7 +349,7 @@ def read_chart_research(session, body: ReadRequest, workbench_id: str):
     """Read shared definitions and compact cycle facts using chart-library rules."""
     from tin.models.workbench import WorkbenchArtifact
     from tin.web.charts import artifact_query, decode_definition, indicator_cycle, require_scope
-    from tin.web.chart_data import catalog_fields
+    from tin.web.chart_data import catalog_fields, curve_series_ids, definition_series_ids
 
     identity = current_identity.get()
     if identity is None:
@@ -384,16 +384,23 @@ def read_chart_research(session, body: ReadRequest, workbench_id: str):
                        if search in value.title.casefold() or search in value.group.casefold()]
     if body.series_id is not None:
         definitions = [(row, value) for row, value in definitions
-                       if any(curve.series_id == body.series_id for curve in value.curves)]
+                       if body.series_id in definition_series_ids(value)]
     total = len(definitions)
     selected = definitions[body.offset:body.offset + body.limit]
-    fields = catalog_fields(scope, [curve.series_id for _, value in selected for curve in value.curves])
+    fields = catalog_fields(scope, [sid for _, value in selected for sid in definition_series_ids(value)])
+
+    def curve_summary(curve):
+        field = fields.get(curve.series_id, {})
+        result = {'series_id': curve.series_id, 'label': curve.label,
+                  'name': field.get('metric') or field.get('name') or curve.label,
+                  'status': 'linked' if all(sid in fields for sid in curve_series_ids(curve)) else 'missing'}
+        if curve.derived is not None:
+            result['derived'] = curve.derived.model_dump(mode='json')
+        return result
+
     charts = [{'id': row.id, 'title': value.title, 'group': value.group,
                'mode': 'cycle' if value.time.mode == 'cycle' else 'trend',
-               'curves': [{'series_id': curve.series_id, 'label': curve.label,
-                           'name': fields.get(curve.series_id, {}).get('metric')
-                                   or fields.get(curve.series_id, {}).get('name') or curve.label,
-                           'status': 'linked' if curve.series_id in fields else 'missing'} for curve in value.curves],
+               'curves': [curve_summary(curve) for curve in value.curves],
                'url': '/sn/charts/' + row.id} for row, value in selected]
     end = body.offset + len(selected)
     return {**base, 'charts': charts, 'total': total, 'limit': body.limit, 'offset': body.offset,
